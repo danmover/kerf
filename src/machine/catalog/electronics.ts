@@ -686,7 +686,7 @@ export const ELECTRONICS: CatalogPart[] = [
     kind: "fuse",
     name: "Inline blade fuse holder (ATC/ATO) with fuse",
     generic: true,
-    summary: "Protects the battery wiring. Pick the fuse rating with the wire gauge in mind.",
+    summary: "Protects the wiring after it from a short. Comes with a 20 A fuse: set rating: to what you fit, no more than the thinnest wire after it can carry.",
     specs: { rating_a: 20, v_max: 32 },
     pins: [{ id: "IN", type: "passive", through: "OUT", required: true }, { id: "OUT", type: "passive", through: "IN", required: true }],
     geom: { g: "box", dims: { w: 40, d: 14, h: 22, r: 2 }, color: "#20242a" },

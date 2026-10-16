@@ -141,7 +141,7 @@ component drv_s = lib.motor_driver("tb6612fng") { at: (-58, 0, top_shelf + 1.5),
 component drv_f = lib.motor_driver("pololu_g2_18v17") { at: (-40, 0, bot_shelf + 1.5), role: "front driver" }
 component reg = lib.regulator("d24v50f5") { at: (-68, 0, bot_shelf + 1.5) }
 component vsense = lib.sensor("voltage_sensor_25v") { at: (-95, 0, bot_shelf + 1.5) }
-component fuse = lib.fuse("fuse_holder_atc") { at: (-131, 11, -15.5), rotate: (90, 0, 0) }
+component fuse = lib.fuse("fuse_holder_atc") { at: (-131, 11, -15.5), rotate: (90, 0, 0), rating: 15A }
 component xt = lib.connector("xt60_pair") { at: (-174, 0, -8) }
 component bat = lib.battery("lipo_3s_2200") { at: (a_end - 14 - 53, 0, -10.5) }
 component drv_r = lib.motor_driver("pololu_g2_18v17") { at: (-210, 0, 12.5), role: "rear driver" }
@@ -151,6 +151,7 @@ let front_pt = calc.motor_point(motor: m_front, load: front.torque, voltage: bat
 let rear_pt = calc.motor_point(motor: m_rear, load: rear.torque, voltage: bat.v_nom)
 let advance = min(front_pt.rpm, rear_pt.rpm) / 60 * front.advance_per_rev     // mm/s
 let crossing_min = pit_l / advance / 60
+let give_up = 1.25 * pit_l / advance     // s: no breakthrough by then means it is turning in place, so it backs out
 // from the wall hole only the front screw is in the sand until the rear screw gets there (about drag_l in):
 // by then the body drags more than the front screw pulls, so it needs a push from behind
 let start_push = max(0, 1.3 * (front.resist + rear.resist) - front.thrust)     // N
@@ -159,6 +160,7 @@ let convey = calc.conveying(d: flight_d, core_d: shell_d, pitch: pitch, rpm: fro
 let steer_need = calc.hinge_steer(thrust: rear.thrust, angle: steer_max, front_length: nose_tip, d: flight_d, sigma_h: sand.sigma_h)
 let steer_have = calc.actuator_moment(actuator: steer, arm: pin_x, slope: cam_slope, friction: 0.2)
 let power_wire = calc.wire_gauge(current: front_pt.current + rear_pt.current + 1.4, length: 400, voltage: bat.v_nom)
+let main_awg = 14     // battery leads, the VBAT trunk and the power ground; the fuse is sized to it
 let thrust_life = calc.bearing_life(bearing: "6810", load: front.thrust, rpm: front_pt.rpm)
 
 // ── Front section ────────────────────────────────────────
@@ -476,10 +478,10 @@ component tail_hub_screws = lib.screw(M4, 20) { at: [(r_end - 24, hub_pts[0].x, 
 
 // ── Wiring ───────────────────────────────────────────────
 // battery → XT60 (the power switch: plug in, then close the body) → fuse → everything
-wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: 14, color: "red", label: "battery +" }
-net VBAT: fuse.OUT, drv_f.VIN, drv_r.VIN, drv_s.VM, reg.VIN, vsense.VCC_IN { gauge: 16, color: "red" }
-wire bat.NEG -> xt.NEG_A { gauge: 14, color: "black", label: "battery −" }
-net GND_PWR: xt.NEG_B, drv_f.GND_PWR, drv_r.GND_PWR, reg.GND { gauge: 14, color: "black" }
+wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: main_awg, color: "red", label: "battery +" }
+net VBAT: fuse.OUT, drv_f.VIN, drv_r.VIN, drv_s.VM, reg.VIN, vsense.VCC_IN { gauge: main_awg, color: "red" }
+wire bat.NEG -> xt.NEG_A { gauge: main_awg, color: "black", label: "battery −" }
+net GND_PWR: xt.NEG_B, drv_f.GND_PWR, drv_r.GND_PWR, reg.GND { gauge: main_awg, color: "black" }
 net GND: reg.GND, ctrl.GND, drv_f.GND, drv_r.GND, drv_s.GND, imu.GND, vsense.GND_IN, vsense.MINUS, m_front.ENC_GND, m_rear.ENC_GND, steer.FB_GND { gauge: 24, color: "black" }
 net V5: reg.VOUT, ctrl.V5, imu.VIN, drv_s.VCC, drv_s.STBY, m_front.ENC_VCC, m_rear.ENC_VCC, steer.FB_VCC { gauge: 24, color: "red" }
 // motors
@@ -512,10 +514,10 @@ wire ctrl.A5 -> imu.SCL { gauge: 24, color: "yellow" }
 // ── Firmware ─────────────────────────────────────────────
 firmware brain {
   board: ctrl
-  behaviour: "Wait two minutes after power-up, then dig across the pit holding the starting heading. Back off and retry on stalls, and stop when the nose breaks out on the far side or the wall stops it. If neither happens by half again the expected time, or the motors get warm first, back out on the reserve."
+  behaviour: "Wait two minutes after power-up, then dig across the pit holding the starting heading. Back off and retry on stalls, and stop when the nose breaks out on the far side or the wall stops it. If neither happens by a quarter more than the expected time, or the motors get warm first, back out on the reserve."
   start_delay: 120s
   run_distance: pit_l + 150mm
-  give_up_time: 1.5 * pit_l / advance
+  give_up_time: give_up
   pitch: pitch
   slip: 0.5
   power: 0.8
@@ -541,7 +543,7 @@ test "Battery soak": "Run the two box tests back to back for 12 minutes in all, 
 
 // ── Also buy ─────────────────────────────────────────────
 buy "goBILDA 8 mm REX pattern mount hub" { qty: 2, price: 8, search: "goBILDA 1310 Series 8mm REX Bore Pattern Mount Hub" }
-buy "ATC blade fuse 20 A" { qty: 3, price: 1, search: "ATC blade fuse 20A" }
+buy "ATC blade fuse 15 A" { qty: 3, price: 1, search: "ATC blade fuse 15A" }
 buy "LiPo balance charger (3S)" { qty: 1, price: 35, search: "LiPo balance charger 3S XT60" }
 buy "LiPo fireproof charging bag" { qty: 1, price: 10, search: "LiPo safe charging bag" }
 buy "Silicone wire 14, 16 and 24 AWG" { qty: 1, price: 18, search: "silicone wire kit 14 16 24 AWG" }
@@ -563,9 +565,10 @@ require "One person can push it in from the wall until the rear screw bites" for
 require "Front motor runs below half its stall torque" for cross: front_pt.load_fraction <= 0.5
 require "Rear motor runs below half its stall torque" for cross: rear_pt.load_fraction <= 0.5
 require "Battery lasts two crossings" for reserve: run.minutes >= 2 * crossing_min
+require "Battery covers giving up and backing out the whole way" for reserve: run.time >= 2 * give_up
 require "Body friction stops it rolling with the screws" for cross: roll_hold >= 3 * abs(front.torque - rear.torque)
 require "Steering has twice the moment it needs" for steer: steer_have.moment >= 2 * steer_need.moment
 require "Steering holds without power" for steer: steer_have.hold_moment >= steer_need.moment
 require "The slot ends stop the hinge just past the steering limit" for steer: atan(slot_half * cam_slope / pin_x) >= steer_max
-require "Main power wire is thick enough" for cross: power_wire.awg >= 14
+require "Main power wire is thick enough" for cross: power_wire.awg >= main_awg
 require "Flights can carry most of the sand the shell displaces" soft for cross: convey.ratio >= 0.5

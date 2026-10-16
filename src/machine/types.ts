@@ -208,6 +208,8 @@ export interface MachineComponent {
   length?: number;
   buyUrl?: string;
   price?: number;
+  /** a fuse's rating in A (component prop `rating:`), in place of the catalog's */
+  rating?: number;
   span: Span;
 }
 
