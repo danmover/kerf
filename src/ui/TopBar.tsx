@@ -12,6 +12,7 @@ import { LogoMark } from "./Logo";
 import { Icon } from "./icons";
 import { mod } from "./common";
 import { ExportMenu } from "./ExportMenu";
+import { SyncBadge } from "./Account";
 
 export function TopBar() {
   const project = useProject((s) => s.current);
@@ -67,6 +68,7 @@ export function TopBar() {
         </span>
       </nav>
       <SaveState state={save} />
+      <SyncBadge />
       <div className="grow" />
       <Pipeline />
       <div className="grow" />

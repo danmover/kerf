@@ -3,6 +3,7 @@
 // tokens at Anthropic's standard API rates (October 2026).
 
 import type { Effort } from "../app/settings";
+import { webSearchFee } from "../ai/web";
 
 export interface Price {
   input: number;
@@ -30,6 +31,8 @@ export interface Usage {
   output_tokens: number;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  /** web searches are billed per search on top of the tokens */
+  server_tool_use?: { web_search_requests?: number | null } | null;
 }
 
 export interface Tally {
@@ -43,9 +46,15 @@ export interface Tally {
 
 export const emptyTally = (): Tally => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, requests: 0, cost: 0 });
 
+const unpriced = new Set<string>();
+
 export function priceFor(model: string, promptTokens = 0): Price {
   const id = Object.keys(PRICES).find((k) => model === k || model.startsWith(k + "-")) ?? "";
   if (id === "claude-haiku-5-5" && promptTokens > 100_000) return HAIKU_LONG;
+  if (!PRICES[id] && model && !unpriced.has(model)) {
+    unpriced.add(model);
+    console.warn(`[kerf] No price for ${model}; costs for it are counted at Opus 5.5 rates.`);
+  }
   return PRICES[id] ?? PRICES["claude-opus-5-5"];
 }
 
@@ -53,7 +62,7 @@ export function costOf(model: string, u: Usage): number {
   const write = u.cache_creation_input_tokens ?? 0;
   const read = u.cache_read_input_tokens ?? 0;
   const p = priceFor(model, u.input_tokens + write + read);
-  return (u.input_tokens * p.input + u.output_tokens * p.output + write * p.cacheWrite + read * p.cacheRead) / 1e6;
+  return (u.input_tokens * p.input + u.output_tokens * p.output + write * p.cacheWrite + read * p.cacheRead) / 1e6 + webSearchFee(u);
 }
 
 export function addUsage(t: Tally, model: string, u: Usage): Tally {

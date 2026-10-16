@@ -2,9 +2,10 @@
 // (axis along +Z, or mouth facing +X for connectors). The evaluator places
 // the result and converts local fields to world coordinates.
 
-import type { PartRecipe, ShapeRecipe, V2, V3 } from "../kernel/recipe";
+import type { PartRecipe, ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/recipe";
 import { BEARINGS, THREADS, type ThreadSpec } from "./standards";
 import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
+import { MACHINE_LIBRARY } from "../machine/library";
 
 export type Placement = "axis" | "facing" | "free";
 
@@ -35,8 +36,11 @@ export interface CompDef {
   solids: CompSolid[];
   fields: LocalFields;
   fastener?: { headTop: V3; outward: V3; key: number; headD: number; size: string };
-  gear?: { m: number; z: number; width: number; pa: number };
-  bom: { description: string; standard?: string };
+  gear?: { m: number; z: number; width: number; pa: number; bore: number };
+  bearing?: { code: string; bore: number; od: number; width: number; dynamicLoadN: number };
+  bom: { description: string; standard?: string; catalogId?: string; length?: number };
+  /** catalog-backed purchasable part */
+  catalog?: { id: string; length?: number; travel?: number };
 }
 
 export interface LibArgs {
@@ -59,6 +63,14 @@ export interface LibEntry {
   doc: string;
   signature: string;
   make(a: LibArgs, phase: number): CompDef;
+  /** argument names in positional order (built-in entries list theirs in the evaluator) */
+  positional?: string[];
+  /** every accepted argument name */
+  params?: string[];
+  /** default group in the part tree */
+  group?: string;
+  /** a purchasable catalog part: accepts the machine properties (role:, load:, buy:, price:) */
+  machine?: boolean;
 }
 
 function hexPoints(af: number): V2[] {
@@ -69,10 +81,15 @@ function hexPoints(af: number): V2[] {
   });
 }
 
+/** Nominal ISO metric thread for library hardware (no printing clearance). */
+function isoThread(t: { d: number; pitch: number }): ThreadSpec3 {
+  return { d: t.d, pitch: t.pitch, form: "iso", starts: 1, left: false, clearance: 0 };
+}
+
 export const LIBRARY: Record<string, LibEntry> = {
   bearing: {
     signature: 'lib.bearing("608") { at: (x, y, z), axis: Y }',
-    doc: "Deep-groove ball bearing. Codes: 623 625 626 608 688 MR105 6000 6001 6002 6200 6201 6800 6801. `at` is the centre of one face, the bearing extends along `axis` by its width. Fields: bore, od, width, at, end, center, axis.",
+    doc: "Deep-groove ball bearing. Codes: 623 625 626 608 688 MR105 6000 6001 6002 6005 6200 6201 6205 6800 6801 6806 6808 6810 6812 (68xx are thin-section). `at` is the centre of one face, the bearing extends along `axis` by its width. Fields: bore, od, width, at, end, center, axis.",
     make(a) {
       const code = a.str("code", "608");
       const b = BEARINGS[code];
@@ -97,6 +114,7 @@ export const LIBRARY: Record<string, LibEntry> = {
           points: { at: Z0, end: [0, 0, b.width], center: [0, 0, b.width / 2] },
           dirs: { axis: ZP },
         },
+        bearing: { code, bore: b.bore, od: b.od, width: b.width, dynamicLoadN: b.dynamicLoadN },
         bom: { description: `Deep groove ball bearing ${code} (${b.bore}x${b.od}x${b.width})`, standard: "ISO 15" },
       };
     },
@@ -108,13 +126,16 @@ export const LIBRARY: Record<string, LibEntry> = {
     make(a) {
       const t = a.thread("size", "M3");
       const L = a.num("length", 10);
+      const b = 2 * t.d + 12;
       const socket = hexPoints(t.key);
       const recipe: PartRecipe = {
         base: { t: "cyl", d: t.head_d, h: t.head_h, at: [0, 0, -t.head_h], dir: ZP },
         ops: [
           { op: "fillet", r: Math.min(0.4, t.head_h * 0.15), edges: "bottom" },
           { op: "cut", shape: { t: "prism", pts: socket, h: t.head_h * 0.6, at: [0, 0, -t.head_h - 0.01], dir: ZP, rot: 0 } },
-          { op: "add", shape: { t: "cyl", d: t.tap, h: L, at: [0, 0, -0.01], dir: ZP } },
+          ...(L > b ? [{ op: "add" as const, shape: { t: "cyl" as const, d: t.tap, h: L - b + 0.01, at: [0, 0, -0.01] as V3, dir: ZP } }] : []),
+          // the thread length (b = 2d + 12, or the whole shank): a plain tap-size cylinder in checks, the real ISO thread in detail builds
+          { op: "add", shape: { t: "thread", spec: isoThread(t), length: L > b ? b : L + 0.01, at: [0, 0, L > b ? L - b : -0.01], dir: ZP, internal: false, lead: 0, fastD: t.tap } },
         ],
       };
       return {
@@ -140,7 +161,11 @@ export const LIBRARY: Record<string, LibEntry> = {
       const t = a.thread("size", "M3");
       const recipe: PartRecipe = {
         base: { t: "prism", pts: hexPoints(t.nut_af), h: t.nut_h, at: Z0, dir: ZP, rot: 0 },
-        ops: [{ op: "cut", shape: { t: "cyl", d: t.tap, h: t.nut_h + 0.2, at: [0, 0, -0.1], dir: ZP } }],
+        ops: [
+          // detailed builds break the corners on both faces; the hole is a plain tap-size bore in checks and the real ISO thread in detail
+          { op: "chamfer", r: Math.min(0.4, t.nut_af * 0.04), edges: { s: "or", a: ["top", "bottom"] }, cosmetic: true },
+          { op: "cut", shape: { t: "thread", spec: isoThread(t), length: t.nut_h + 0.2, at: [0, 0, -0.1], dir: ZP, internal: true, lead: 0, fastD: t.tap } },
+        ],
       };
       return {
         kind: "nut",
@@ -207,7 +232,7 @@ export const LIBRARY: Record<string, LibEntry> = {
           points: { at: Z0, center: [0, 0, w / 2], end: [0, 0, w + hubL] },
           dirs: { axis: ZP },
         },
-        gear: { m, z, width: w, pa },
+        gear: { m, z, width: w, pa, bore },
         bom: { description: `Spur gear module ${m}, ${z} teeth, ${w} mm face` },
       };
     },
@@ -384,5 +409,8 @@ export const LIBRARY: Record<string, LibEntry> = {
     },
   },
 };
+
+// Purchasable catalog parts (controllers, motors, rails...) as lib.<kind>("id").
+for (const [k, v] of Object.entries(MACHINE_LIBRARY)) if (!(k in LIBRARY)) LIBRARY[k] = v;
 
 export const THREAD_NAMES = Object.keys(THREADS);

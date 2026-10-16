@@ -1,22 +1,24 @@
 // Export actions shared by the top bar menu and keyboard shortcuts.
 
 import * as THREE from "three";
-import { kernel } from "../kernel/client";
+import { detailKernel, kernel } from "../kernel/client";
 import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
+import { detailImportsLoaded, recipeUsesImport } from "../core/imports";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
+import { buildDirection, buildPack, orientForPrint } from "../machine/pack";
+import { zip } from "../machine/zip";
 import { exportProject, useProject } from "./project";
 import { useView } from "./view";
 import { viewport } from "./viewportApi";
 import { toast, errorText, dismissToast } from "./ui";
 import { bomRows } from "../persist/files";
 import type { ViewPreset } from "./view";
-import { whenChecked as whenCheckedAll } from "../core/engine";
 import type { EvalPart } from "../core/model";
 import type { MeshData } from "../kernel/build";
 import { xformMatrix } from "../kernel/recipe";
 // as zipFiles, so it can sit beside the build pack's own zip() from machine/zip
 import { zip as zipFiles } from "../persist/zip";
-import { layoutPlate, mul4, restingRotation, threeMfFiles, transformedBounds, translation, writeObj, type PlacedMesh } from "../persist/meshFormats";
+import { layoutPlate, meshBounds, threeMfFiles, translation, writeObj, type PlacedMesh } from "../persist/meshFormats";
 import { briefData, processInfo } from "../core/brief";
 import { appearanceFor } from "../ui/viewport/render/appearance";
 import { markSvg } from "../ui/logoGeometry";
@@ -32,16 +34,25 @@ function visibleParts(selectionOnly: boolean) {
 
 const baseName = () => useProject.getState().current?.name ?? useDesign.getState().model?.name ?? "design";
 
+/** Exact STEP of placed parts, with their full detail; the STEP export and the build pack share it. */
+async function stepOf(parts: ReturnType<typeof visibleParts>) {
+  await whenRefined();
+  const items = parts.filter((p) => meshes.has(p.hash)).map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color, recipe: p.recipe }));
+  // the detail worker holds the real threads and cosmetic detail; the main one builds them if it has to
+  if (detailKernel.status !== "error") detailKernel.start();
+  // imported STEP bodies are exported from the detail worker too, so it needs the files
+  if (detailKernel.status !== "error" && parts.some((p) => p.imported || recipeUsesImport(p.recipe))) await detailImportsLoaded();
+  return { data: await (detailKernel.status === "error" ? kernel : detailKernel).exportStep(items), count: items.length };
+}
+
 export async function exportStep(selectionOnly = false) {
   const parts = visibleParts(selectionOnly);
   if (!parts.length) return toast({ kind: "warn", title: "Nothing to export", detail: selectionOnly ? "Select one or more parts first." : "The design has no visible parts." });
   const t = toast({ kind: "info", title: "Preparing STEP…", detail: "Exporting exact B-rep solids from the kernel." }, 0);
   try {
-    await whenChecked();
-    const items = parts.filter((p) => meshes.has(p.hash)).map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color }));
-    const data = await kernel.exportStep(items);
+    const { data, count } = await stepOf(parts);
     download(data, safeFileName(baseName() + (selectionOnly ? " selection" : ""), "step"), "application/step");
-    toast({ kind: "success", title: "STEP exported", detail: `${items.length} solids in millimetres, ready for other CAD tools.` });
+    toast({ kind: "success", title: "STEP exported", detail: `${count} solids in millimetres, ready for other CAD tools.` });
   } catch (e) {
     toast({ kind: "error", title: "STEP export failed", detail: errorText(e) }, 9000);
   } finally {
@@ -57,6 +68,52 @@ export async function exportStl(selectionOnly = false) {
   if (!items.length) return toast({ kind: "warn", title: "The geometry is still building", detail: "Try again in a moment." });
   download(writeStl(items, `Kerf: ${baseName()}`), safeFileName(baseName() + (selectionOnly ? " selection" : ""), "stl"), "model/stl");
   toast({ kind: "success", title: "STL exported", detail: `${items.length} solids, fine tessellation, millimetres.` });
+}
+
+/** The build pack name keeps spaces, unlike other exports, so it reads well in a downloads folder. */
+const packName = (s: string) => s.replace(/[^A-Za-z0-9 _.()-]+/g, "").replace(/\s+/g, " ").trim().slice(0, 80) || "design";
+
+let packBusy: Promise<void> | null = null;
+
+/** Everything needed to order, make, wire, program and test the machine, as one zip. */
+export function exportBuildPack(): Promise<void> {
+  packBusy ??= makeBuildPack().finally(() => (packBusy = null));
+  return packBusy;
+}
+
+async function makeBuildPack() {
+  if (!useDesign.getState().model?.machine) {
+    toast({ kind: "warn", title: "No build pack for this design", detail: "Build packs are for machines: designs with catalog parts, wiring or firmware." });
+    return;
+  }
+  const t = toast({ kind: "info", title: "Preparing the build pack…", detail: "Waiting for the final geometry and checks, then writing every file." }, 0);
+  try {
+    await whenRefined();
+    await whenChecked();
+    const { model, report } = useDesign.getState();
+    if (!model?.machine) throw new Error("The design changed and no longer has machine data.");
+    const parts = visibleParts(false).filter((p) => meshes.has(p.hash));
+    let step: ArrayBuffer | undefined;
+    let stepNote = "";
+    if (parts.length) {
+      try {
+        step = (await stepOf(parts)).data;
+      } catch (e) {
+        stepNote = ` The STEP file was left out: ${errorText(e)}`;
+      }
+    }
+    const name = baseName();
+    const files = buildPack(model, report, { name, step, meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
+    const folder = `${packName(name)} build pack`;
+    const data = zip(files.map((f) => ({ path: `${folder}/${f.path}`, data: f.data })));
+    download(data, `${folder}.zip`, "application/zip");
+    const stl = files.filter((f) => f.path.endsWith(".stl")).length;
+    toast({ kind: "success", title: "Build pack downloaded", detail: `${files.length} files${stl ? `, ${stl} to print or make` : ""}. Start with README.md.${stepNote}` }, stepNote ? 9000 : undefined);
+  } catch (e) {
+    toast({ kind: "error", title: "Could not make the build pack", detail: errorText(e) }, 9000);
+  } finally {
+    dismissToast(t);
+  }
 }
 
 export function exportSource() {
@@ -120,18 +177,19 @@ function uniqueMade(items: Placed[]) {
   return [...byHash.values()];
 }
 
-/** Every made part lying on its largest flat face on one print plate, repeated as many times as the design uses it. */
+/** Every made part on one print plate, turned the way it prints and repeated as many times as the design uses it. */
 export async function export3mfPlate(selectionOnly = false) {
   const items = await placedMeshes(selectionOnly, madePart);
   if (!items) return;
   const unique = uniqueMade(items);
   const brief = briefData(useDesign.getState().model?.brief);
   const bed = brief?.buildVolume ?? processInfo(brief?.process)?.volume ?? [220, 220, 250];
-  // each part turned onto its largest flat face, so a cover lies down instead of standing on its edge
+  // each part turned the way the build pack prints it: onto its largest flat face, or along its process's build direction
   const copies = unique.flatMap((u) => {
-    const rest = restingRotation(u.mesh).matrix;
-    const box = transformedBounds(u.mesh, rest);
-    return Array.from({ length: u.qty }, () => ({ ...u, rest, box }));
+    const o = orientForPrint(u.mesh, buildDirection(u.part));
+    const mesh: MeshData = { positions: o.positions, indices: o.indices, normals: new Float32Array(0), edges: new Float32Array(0) };
+    const box = meshBounds(mesh);
+    return Array.from({ length: u.qty }, () => ({ ...u, mesh, box }));
   });
   const spots = layoutPlate(
     copies.map((c) => ({ w: c.box.max[0] - c.box.min[0], d: c.box.max[1] - c.box.min[1] })),
@@ -147,7 +205,7 @@ export async function export3mfPlate(selectionOnly = false) {
     color: c.part.color,
     material: c.part.material,
     mesh: c.mesh,
-    matrix: mul4(translation(ox + spots[i].x - c.box.min[0], oy + spots[i].y - c.box.min[1], -c.box.min[2]), c.rest),
+    matrix: translation(ox + spots[i].x - c.box.min[0], oy + spots[i].y - c.box.min[1], -c.box.min[2]),
   }));
   const data = await zipFiles(threeMfFiles(placed, baseName()));
   download(data, safeFileName(baseName() + " print plate" + suffix(selectionOnly), "3mf"), "model/3mf");
@@ -155,7 +213,7 @@ export async function export3mfPlate(selectionOnly = false) {
   toast(
     tooBig
       ? { kind: "warn", title: "Print plate exported, but it is bigger than the bed", detail: `${copies.length} parts need ${Math.round(extentX)} × ${Math.round(extentY)} mm. Split them across plates in your slicer.` }
-      : { kind: "success", title: "Print plate exported", detail: `${copies.length} part${copies.length === 1 ? "" : "s"}, each on its largest flat face, on a ${bed[0]} × ${bed[1]} mm bed in their colours. Opens in PrusaSlicer, Bambu Studio, Cura and Orca.` },
+      : { kind: "success", title: "Print plate exported", detail: `${copies.length} part${copies.length === 1 ? "" : "s"}, each turned to print on a flat face, on a ${bed[0]} × ${bed[1]} mm bed in their colours. Opens in PrusaSlicer, Bambu Studio, Cura and Orca.` },
   );
 }
 
@@ -428,7 +486,7 @@ export async function exportReport() {
   if (!model) return;
   const t = toast({ kind: "info", title: "Writing the design report…", detail: "Rendering views and gathering the checks." }, 0);
   try {
-    await whenCheckedAll();
+    await whenChecked();
     await whenRefined();
     const latest = useDesign.getState();
     const views: { label: string; url: string }[] = [];

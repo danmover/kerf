@@ -1,0 +1,612 @@
+/* Sketch editor: overlay drawing, tool palette and panels. */
+
+.sk-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.sk-layer.on {
+  background: radial-gradient(1400px 900px at 50% 40%, rgba(8, 10, 15, 0.42), rgba(8, 10, 15, 0.62));
+}
+.sk-layer.on.tool-select {
+  cursor: default;
+}
+.sk-layer.on:not(.tool-select) {
+  cursor: crosshair;
+}
+.sk-svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  font-family: var(--mono);
+}
+
+/* grid on the sketch plane */
+.sk-grid line {
+  stroke: rgba(130, 150, 200, 0.09);
+  stroke-width: 1;
+}
+.sk-grid line.major {
+  stroke: rgba(130, 150, 200, 0.17);
+}
+.sk-grid line.axis-x {
+  stroke: rgba(255, 93, 108, 0.45);
+}
+.sk-grid line.axis-y {
+  stroke: rgba(61, 220, 151, 0.45);
+}
+
+.sk-fill {
+  fill: rgba(109, 139, 255, 0.11);
+  stroke: none;
+  transition: fill 0.2s var(--ease);
+}
+
+/* curves: colour says how constrained they are */
+.sk-curve {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.15s var(--ease), stroke-width 0.15s var(--ease);
+}
+.sk-curve.st-free {
+  stroke: #7cc4ff;
+}
+.sk-curve.st-defined,
+.sk-curve.st-fixed {
+  stroke: #e9eef8;
+}
+.sk-curve.st-conflict {
+  stroke: var(--fail);
+}
+.sk-curve.construction {
+  stroke: #f5b84b;
+  stroke-width: 1.4;
+  stroke-dasharray: 6 4;
+  opacity: 0.85;
+}
+.sk-curve.external {
+  /* projected from another sketch: a fixed reference */
+  stroke: #c792ea;
+  stroke-width: 1.4;
+  stroke-dasharray: 2 4;
+  opacity: 0.9;
+}
+.sk-curve.hover {
+  stroke: #b7c6ff;
+  stroke-width: 3;
+}
+.sk-curve.selected {
+  stroke: var(--accent);
+  stroke-width: 3;
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+.sk-curve.problem {
+  stroke: var(--fail);
+  stroke-width: 3;
+  animation: sk-pulse 1.2s ease-in-out infinite;
+}
+.sk-corner {
+  fill: none;
+  stroke: #e9eef8;
+  stroke-width: 2;
+  opacity: 0.9;
+}
+@keyframes sk-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* points */
+.sk-point circle,
+.sk-point rect {
+  stroke-width: 1.6;
+  transition: r 0.15s var(--ease);
+}
+.sk-point.st-free circle {
+  fill: #0b0e14;
+  stroke: #7cc4ff;
+}
+.sk-point.st-defined circle {
+  fill: #e9eef8;
+  stroke: #e9eef8;
+}
+.sk-point.st-fixed rect,
+.sk-point.origin rect {
+  fill: #c9d2e3;
+  stroke: #0b0e14;
+}
+.sk-point.origin rect {
+  fill: #ff9aa4;
+}
+.sk-point.external rect {
+  fill: #c792ea;
+}
+.sk-point.st-conflict circle {
+  fill: var(--fail);
+  stroke: var(--fail);
+}
+.sk-point.hover circle {
+  r: 5;
+  stroke: #b7c6ff;
+}
+.sk-point.selected circle,
+.sk-point.selected rect {
+  fill: var(--accent);
+  stroke: #fff;
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+.sk-point.problem circle {
+  r: 6;
+  fill: var(--fail);
+  stroke: #fff;
+  animation: sk-pulse 1.2s ease-in-out infinite;
+}
+.sk-free-arrow path {
+  stroke: rgba(124, 196, 255, 0.75);
+  fill: rgba(124, 196, 255, 0.75);
+  stroke-width: 1.2;
+}
+
+/* relation glyphs */
+.sk-glyph {
+  pointer-events: all;
+  cursor: pointer;
+}
+.sk-glyph rect {
+  fill: rgba(16, 20, 28, 0.92);
+  stroke: rgba(160, 175, 210, 0.35);
+}
+.sk-glyph text {
+  fill: #b9c4dc;
+  font-size: 9.5px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  font-weight: 600;
+}
+.sk-glyph:hover rect,
+.sk-glyph.selected rect {
+  stroke: var(--accent);
+  fill: rgba(30, 40, 70, 0.95);
+}
+.sk-glyph.st-redundant rect,
+.sk-glyph.st-involved rect {
+  stroke: var(--warn);
+}
+.sk-glyph.st-conflict rect {
+  stroke: var(--fail);
+  fill: rgba(60, 16, 24, 0.95);
+}
+
+/* dimensions */
+.sk-dim path {
+  stroke: #8f9ab2;
+  stroke-width: 1;
+  fill: none;
+}
+.sk-dim path.arrow {
+  fill: #8f9ab2;
+  stroke: none;
+}
+.sk-dim path.dash {
+  stroke-dasharray: 3 3;
+}
+.sk-dim-label {
+  pointer-events: all;
+  cursor: ew-resize;
+}
+.sk-dim.driven .sk-dim-label {
+  cursor: pointer;
+}
+.sk-dim-label rect {
+  fill: rgba(13, 16, 23, 0.94);
+  stroke: rgba(160, 175, 210, 0.3);
+}
+.sk-dim-label text {
+  fill: #e3e9f6;
+  font-size: 11px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+.sk-dim.driven .sk-dim-label text {
+  fill: var(--violet);
+}
+.sk-dim.driven path {
+  stroke: rgba(199, 146, 255, 0.6);
+}
+.sk-dim.driven path.arrow {
+  fill: rgba(199, 146, 255, 0.6);
+}
+.sk-dim-label:hover rect,
+.sk-dim.selected .sk-dim-label rect {
+  stroke: var(--accent);
+  fill: rgba(28, 36, 62, 0.96);
+}
+.sk-dim.st-conflict .sk-dim-label rect {
+  stroke: var(--fail);
+  fill: rgba(60, 16, 24, 0.95);
+}
+.sk-dim.st-conflict path {
+  stroke: var(--fail);
+}
+.sk-dim.st-redundant .sk-dim-label rect,
+.sk-dim.st-involved .sk-dim-label rect {
+  stroke: var(--warn);
+}
+
+.sk-dim-edit {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: all;
+  z-index: 6;
+}
+.sk-dim-edit .input {
+  width: 128px;
+  height: 26px;
+  text-align: center;
+  font-size: 12px;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
+}
+.sk-dim-hint {
+  position: absolute;
+  top: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--text-3);
+  background: rgba(13, 16, 23, 0.9);
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+.sk-dim-hint.err {
+  color: #ffb3bb;
+  white-space: normal;
+  width: 240px;
+}
+
+/* drafting */
+.sk-draft {
+  fill: none;
+  stroke: #9fb2ff;
+  stroke-width: 1.6;
+  stroke-dasharray: 2 0;
+}
+.sk-draft.dash {
+  stroke-dasharray: 4 4;
+  opacity: 0.7;
+}
+.sk-guide {
+  stroke: rgba(245, 184, 75, 0.6);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.sk-snap {
+  fill: none;
+  stroke: #9fb2ff;
+  stroke-width: 1.4;
+}
+.sk-snap.hit {
+  stroke: #f5b84b;
+  stroke-width: 2;
+}
+.sk-readout rect {
+  fill: rgba(13, 16, 23, 0.92);
+  stroke: rgba(160, 175, 210, 0.3);
+}
+.sk-readout text {
+  fill: #dfe5f2;
+  font-size: 11px;
+  dominant-baseline: middle;
+}
+.sk-box {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(109, 139, 255, 0.08);
+  border-radius: 2px;
+}
+
+/* plane picker */
+.sk-layer.picking {
+  cursor: pointer;
+}
+.sk-plane path {
+  fill: rgba(109, 139, 255, 0.07);
+  stroke: rgba(143, 168, 255, 0.55);
+  stroke-width: 1.2;
+  transition: fill 0.15s var(--ease);
+}
+.sk-plane text {
+  fill: rgba(200, 212, 240, 0.75);
+  font-size: 11px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+.sk-plane.hover path {
+  fill: rgba(109, 139, 255, 0.24);
+  stroke: var(--accent-2);
+  stroke-width: 2;
+}
+.sk-plane.face path {
+  fill: rgba(245, 184, 75, 0.25);
+  stroke: var(--warn);
+}
+
+/* chrome */
+.sk-ui {
+  pointer-events: all;
+}
+.sk-header {
+  left: 50%;
+  top: 10px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px 6px 10px !important;
+  z-index: 6;
+}
+.sk-header-row {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sk-header .sk-state,
+.sk-header .sk-usedby {
+  margin: 0;
+  white-space: nowrap;
+}
+/* the sketch header takes the view toolbar's place */
+.viewport.sketching .vp-toolbar {
+  display: none;
+}
+.sk-pick-card {
+  left: 50%;
+  top: 56px;
+  width: min(460px, calc(100% - 24px));
+  z-index: 6;
+}
+.sk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 5px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sk-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 7px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.sk-state .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #7cc4ff;
+  box-shadow: 0 0 8px rgba(124, 196, 255, 0.7);
+}
+.sk-state.st-defined .dot {
+  background: var(--pass);
+  box-shadow: 0 0 8px rgba(61, 220, 151, 0.7);
+}
+.sk-state.st-conflict .dot {
+  background: var(--fail);
+  box-shadow: 0 0 8px rgba(255, 93, 108, 0.7);
+}
+.sk-problem {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 7px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: #ffc2c8;
+  background: var(--fail-soft);
+}
+.sk-problem span {
+  flex: 1;
+}
+.sk-problem.warn {
+  color: #ffe1a6;
+  background: var(--warn-soft);
+}
+.sk-problem.note {
+  color: var(--text-2);
+  background: var(--bg-3);
+}
+.sk-header .sk-problem {
+  max-width: 560px;
+}
+.sk-usedby {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.sk-tools {
+  left: 12px;
+  top: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  z-index: 6;
+}
+.sk-tools .sep {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--line-2);
+}
+.sk-tools .icon-btn.warnish {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.sk-hint {
+  position: absolute;
+  bottom: 12px;
+  pointer-events: none;
+  left: 50%;
+  max-width: min(640px, calc(100% - 140px));
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(13, 16, 23, 0.85);
+  border: 1px solid var(--line-2);
+  color: var(--text-2);
+  font-size: 12px;
+  z-index: 6;
+  text-align: center;
+}
+.sk-hint.flash {
+  color: #ffe1a6;
+  border-color: rgba(245, 184, 75, 0.45);
+}
+.sk-side {
+  right: 12px;
+  top: 64px;
+  width: 280px;
+  max-height: calc(100% - 140px);
+  overflow: auto;
+  z-index: 6;
+}
+.sk-desc {
+  font-size: 11px;
+  line-height: 1.7;
+}
+.sk-st.st-free {
+  color: #7cc4ff;
+}
+.sk-st.st-defined,
+.sk-st.st-fixed {
+  color: var(--pass);
+}
+.sk-st.st-conflict {
+  color: var(--fail);
+}
+.sk-group {
+  margin-top: 10px;
+}
+.sk-group .field-label {
+  margin-bottom: 5px;
+}
+.sk-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.sk-chips .btn {
+  gap: 6px;
+}
+.sk-chips .kbd {
+  font-size: 9.5px;
+  padding: 0 4px;
+  min-width: 0;
+  height: 15px;
+  line-height: 15px;
+  opacity: 0.7;
+}
+.sk-actions {
+  margin-top: 12px;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.sk-feature .segmented {
+  width: 100%;
+}
+.sk-field {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sk-field .field-label {
+  margin: 0;
+}
+.sk-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 8px;
+}
+.sk-preview {
+  margin-top: 10px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--cyan);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* sketches list in the left panel */
+.sk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+.sk-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.sk-item:hover {
+  border-color: var(--line-3);
+  background: var(--bg-3);
+}
+.sk-item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.sk-item .meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.sk-item .state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.sk-item .state .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #7cc4ff;
+}
+.sk-item .state.st-defined .dot {
+  background: var(--pass);
+}
+.sk-item .state.st-conflict .dot {
+  background: var(--fail);
+}
+
+/* the sketches group under the parts tree */
+.sk-section .sk-list {
+  padding: 2px 8px 10px;
+}

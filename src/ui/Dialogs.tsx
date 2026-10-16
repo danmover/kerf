@@ -71,6 +71,8 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["X"], "Toggle x-ray"],
       [["I"], "Isolate the selection"],
       [["M"], "Draw on the view for Claude"],
+      [["R"], "Measure faces, edges and corners"],
+      [["D"], "Switch between the 3D view and drawings"],
       [["Space"], "Play or pause the mechanism"],
       [["A"], "Play the assembly animation"],
       [["T"], "Turntable"],

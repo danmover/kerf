@@ -1,6 +1,7 @@
 // The bottom dock. It opens on the overview (status, brief, the design at a
-// glance, the selected part and recent changes); the brief, checks, parts
-// list and graph sit next to it, and design.kerf sits at the end of the row
+// glance, the selected part and recent changes); the brief, checks, strength,
+// the build tab for machines, the parts list and the graph sit next to it,
+// and design.kerf sits at the end of the row
 // as the file behind it all, one click (or C) away. Features add a tab with
 // an entry in DOCK_TABS, the way they add left-panel tabs through LEFT_TABS.
 
@@ -10,12 +11,15 @@ import { useDesign } from "../core/engine";
 import { useView } from "../app/view";
 import { CodeEditor } from "./CodeEditor";
 import { ChecksPanel } from "./ChecksPanel";
+import { AnalysisPanel } from "./AnalysisPanel";
+import { useAnalysis } from "../analysis/runtime";
 import { GraphView } from "./GraphView";
 import { BomTable } from "./BomTable";
 import { BriefPanel } from "./BriefPanel";
 import { Overview, OverviewGlyph } from "./Overview";
 import { BIcon } from "./briefIcons";
 import { briefData, openAssumptions } from "../core/brief";
+import { MachinePanel } from "./MachinePanel";
 import { Icon } from "./icons";
 import { lineCol } from "../lang/lexer";
 
@@ -52,10 +56,32 @@ function useCodeBadge() {
   return errors ? { count: errors, tone: "fail" as const } : null;
 }
 
+function useStrengthBadge() {
+  const analyses = useDesign((s) => s.model?.analyses.length ?? 0);
+  const fails = useDesign((s) => s.report?.items.filter((i) => i.category === "analysis" && i.status === "fail").length ?? 0);
+  if (!analyses) return null;
+  return fails ? { count: fails, tone: "fail" as const } : { count: analyses };
+}
+
+/** the strength tab's icon turns into a spinner while an analysis runs */
+function StrengthIcon() {
+  const analysing = useAnalysis((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
+  return analysing ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Stress size={13} />;
+}
+
+function useBuildBadge() {
+  const fails = useDesign((s) => s.report?.items.filter((i) => i.status === "fail" && (i.category === "electrical" || i.category === "engineering")).length ?? 0);
+  return fails ? { count: fails, tone: "fail" as const } : null;
+}
+
+const useIsMachine = () => useDesign((s) => !!s.model?.machine);
+
 export const DOCK_TABS: DockTabDef[] = [
   { id: "overview", label: "overview", icon: <OverviewGlyph size={13} />, Body: Overview },
   { id: "brief", label: "brief", icon: <BIcon.Brief size={13} />, useBadge: useBriefBadge, Body: BriefPanel },
   { id: "checks", label: "checks", icon: <Icon.Shield size={13} />, useBadge: useChecksBadge, Body: ChecksPanel },
+  { id: "analysis", label: "strength", icon: <StrengthIcon />, useBadge: useStrengthBadge, Body: AnalysisPanel },
+  { id: "build", label: "build", icon: <Icon.Wrench size={13} />, useBadge: useBuildBadge, useShown: useIsMachine, Body: MachinePanel },
   { id: "bom", label: "parts list", icon: <Icon.List size={13} />, Body: BomTable },
   { id: "graph", label: "graph", icon: <Icon.Graph size={13} />, Body: GraphView },
   { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, useBadge: useCodeBadge, Body: () => null, file: true },
@@ -85,8 +111,9 @@ export function Dock({ projectKey }: { projectKey: string }) {
   const model = useDesign((s) => s.model);
   const source = useDesign((s) => s.source);
   const errors = model?.diagnostics.filter((d) => d.severity === "error") ?? [];
-  const known = DOCK_TABS.some((t) => t.id === tab);
-  const current = known ? tab : "overview";
+  // DOCK_TABS never changes, so these hooks always run in the same order
+  const shown = DOCK_TABS.map((t) => t.useShown?.() ?? true);
+  const current = DOCK_TABS.some((t, i) => t.id === tab && shown[i]) ? tab : "overview";
   const set = (t: string) => useView.setState({ dockTab: t, dockOpen: true });
   const main = DOCK_TABS.filter((t) => !t.file);
   const files = DOCK_TABS.filter((t) => t.file);

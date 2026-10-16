@@ -7,7 +7,9 @@ import { ChoiceCard } from "./ChoiceCard";
 import { ChangeCard } from "./ChangeCard";
 import { DiffView } from "./DiffView";
 import { openSpot, spotLabel } from "../app/spot";
+import { safeUrl, domainOf } from "../ai/web";
 import { getApiKey, subscribeKey } from "../persist/vault";
+import { useAccount } from "../cloud/account";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
 import { useProject } from "../app/project";
@@ -26,9 +28,13 @@ import { PlanPane } from "./PlanPane";
 import { ReviewCard } from "./ReviewCard";
 import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Attachments";
 import { useStickToBottom } from "./useStickToBottom";
+import { CostLine, fmtCost, useChatSpend } from "./CostLine";
 
+/** The browser's key, or "account" when chat goes through a Kerf server that holds the key. */
 export function useApiKey() {
-  return useSyncExternalStore(subscribeKey, getApiKey);
+  const key = useSyncExternalStore(subscribeKey, getApiKey);
+  const viaAccount = useAccount((s) => s.status === "signed-in" && !!s.info?.claude?.source);
+  return key ?? (viaAccount ? "account" : null);
 }
 
 export function ChatPanel() {
@@ -40,6 +46,8 @@ export function ChatPanel() {
   const stick = useStickToBottom(feed, lastUser);
   const settings = useSettings();
   const model = MODELS.find((m) => m.id === settings.model)!;
+  const spend = useChatSpend();
+  const routes = settings.routeQuick && !settings.model.startsWith("claude-haiku");
 
   useLayoutEffect(() => {
     const el = feed.current;
@@ -56,7 +64,8 @@ export function ChatPanel() {
           width={290}
           trigger={(open, toggle) => (
             <button className={`chip ${open ? "accent" : ""}`} style={{ cursor: "pointer" }} onClick={toggle} aria-label="Choose model">
-              {model.label.replace("Claude ", "")} · {settings.effort} <Icon.ChevronDown size={11} />
+              {model.label.replace("Claude ", "")} · {settings.effort}
+              {routes && <span className="dim"> · auto</span>} <Icon.ChevronDown size={11} />
             </button>
           )}
         >
@@ -95,10 +104,34 @@ export function ChatPanel() {
                   {e}
                 </MenuItem>
               ))}
+              <div className="menu-sep" />
+              <MenuItem
+                icon={settings.routeQuick ? <Icon.Check size={14} /> : undefined}
+                onClick={() => {
+                  updateSettings({ routeQuick: !settings.routeQuick });
+                  close();
+                }}
+              >
+                <div>
+                  <div>Quick questions on Haiku 5.5</div>
+                  <div className="dim" style={{ fontSize: 11 }}>
+                    Anything that changes the design stays on {model.label.replace("Claude ", "")}.
+                  </div>
+                </div>
+              </MenuItem>
             </>
           )}
         </Menu>
         <div className="grow" />
+        {settings.showCost && spend.cost > 0 && (
+          <button
+            className="chip cost-total"
+            onClick={() => openSettings("ai")}
+            data-tip={`This conversation so far: ${fmtCost(spend.cost)}${spend.saved >= 0.001 ? `, at least ${fmtCost(spend.saved)} less than running it all on the design model with no keep-warm` : ""}. Click for cost settings.`}
+          >
+            {fmtCost(spend.cost)}
+          </button>
+        )}
         <button
           className="icon-btn sm"
           disabled={!items.length || busy}
@@ -211,7 +244,7 @@ function Item({ it }: { it: ChatItem }) {
                 </button>
               )}
               {it.action === "continue" && (
-                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.")}>
+                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.", { design: true })}>
                   <Icon.Play size={11} /> Continue
                 </button>
               )}
@@ -225,6 +258,8 @@ function Item({ it }: { it: ChatItem }) {
       return <ReviewCard it={it} />;
     case "suggest":
       return null;
+    case "cost":
+      return <CostLine it={it} />;
   }
 }
 
@@ -282,6 +317,7 @@ function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) 
           {it.streaming && <span className="caret" />}
         </div>
       )}
+      {!it.streaming && !!it.sources?.length && <Sources sources={it.sources} />}
       {it.note && (
         <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
           {it.note}
@@ -291,14 +327,38 @@ function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) 
   );
 }
 
+/** Pages Claude cited from its web searches. Links open in a new tab and never get access to this page. */
+function Sources({ sources }: { sources: { url: string; title: string }[] }) {
+  const links = sources.map((s) => ({ ...s, url: safeUrl(s.url) })).filter((s): s is { url: string; title: string } => !!s.url);
+  if (!links.length) return null;
+  return (
+    <div className="msg-sources">
+      <div className="ms-label">Sources</div>
+      <ol>
+        {links.map((s) => (
+          <li key={s.url}>
+            <a href={s.url} target="_blank" rel="noopener noreferrer" title={s.url}>
+              <span className="ms-title">{s.title}</span>
+              <span className="ms-domain">{domainOf(s.url)}</span>
+            </a>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
   const canOpen = !!it.diff || !!it.image;
   const stats = useMemo(() => (it.diff ? diffStats(it.diff.before, it.diff.after) : null), [it.diff]);
+  const link = it.link ? safeUrl(it.link.url) : null;
+  // a web search or page that did not work is shown quietly: Claude carries on without it
+  const quiet = it.web && it.status === "error";
   return (
-    <motion.div className={`tool-card ${it.status}`} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} layout="position">
+    <motion.div className={`tool-card ${quiet ? "web-miss" : it.status}${it.web ? " web" : ""}`} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} layout="position">
       <div className="tc-head" onClick={() => canOpen && setOpen((o) => !o)} style={{ cursor: canOpen ? "pointer" : "default" }}>
-        {it.status === "running" ? <div className="spinner" /> : it.status === "error" ? <span style={{ color: "var(--fail)", display: "inline-grid" }}><Icon.Alert size={14} /></span> : <span style={{ color: "var(--pass)", display: "inline-grid" }}><Icon.Check size={14} /></span>}
+        {it.status === "running" ? <div className="spinner" /> : quiet ? <span style={{ color: "var(--text-3)", display: "inline-grid" }}><Icon.Info size={14} /></span> : it.status === "error" ? <span style={{ color: "var(--fail)", display: "inline-grid" }}><Icon.Alert size={14} /></span> : <span style={{ color: "var(--pass)", display: "inline-grid" }}><Icon.Check size={14} /></span>}
         <span className="grow" style={{ minWidth: 0 }}>
           {it.status === "running" ? <span className="shimmer-text">{it.title}</span> : it.title}
         </span>
@@ -312,6 +372,13 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
       </div>
       {it.status === "running" && <div className="tc-progress" />}
       {it.detail && !it.diff && <div className="tc-detail">{it.detail}</div>}
+      {link && (
+        <div className="tc-link">
+          <a href={link} target="_blank" rel="noopener noreferrer" title={link}>
+            {it.link!.label || domainOf(link)}
+          </a>
+        </div>
+      )}
       <AnimatePresence>
         {open && it.diff && (
           <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} style={{ overflow: "hidden" }}>
@@ -325,6 +392,7 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
 }
 
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
+  const routing = useChat((s) => s.routing);
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
   const draft = useChatDraft();
@@ -406,7 +474,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
         <div className="row">
           <AttachButton att={att} disabled={!hasKey} />
           <span className="mono dim" style={{ fontSize: 10.5 }}>
-            {busy ? <span className="shimmer-text">Claude is working</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
+            {busy ? <span className="shimmer-text">{routing ? "Choosing a model" : "Claude is working"}</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
           </span>
           <div className="grow" />
           <MicButton voice={voice} />
@@ -423,7 +491,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
         <VoiceBar voice={voice} />
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 6, textAlign: "center" }}>
-        Claude can make mistakes. Checks verify geometry, not strength. Test before you rely on a part.
+        Claude can make mistakes. Strength checks are estimates from a simplified model. Test before you rely on a part.
       </div>
     </div>
   );

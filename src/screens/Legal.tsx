@@ -79,28 +79,35 @@ function Terms() {
   return (
     <Doc title="Terms of Service">
       <h2>1. What Kerf is</h2>
-      <p>Kerf is a prototype design tool. It runs in your web browser, builds 3D models from a design file, checks them, and lets an AI model (Claude, by Anthropic) edit that design file when you ask it to. By using Kerf you agree to these terms.</p>
+      <p>Kerf is a prototype design tool. It runs in your web browser, builds 3D models from a design file, checks them, and lets an AI model (Claude, by Anthropic) edit that design file when you ask it to. Some copies of Kerf are served by a Kerf server that also offers accounts; others run entirely in your browser. By using Kerf you agree to these terms.</p>
       <h2>2. Prototype status</h2>
       <p>Kerf is early software provided for evaluation. Features may change or be removed, and it may contain errors. Keep your own copies of anything important by exporting it.</p>
       <h2>3. Your designs</h2>
-      <p>You own the designs you create. Kerf stores them only in your browser and does not receive a copy. You are responsible for backing them up; clearing your browser data deletes them.</p>
-      <h2>4. Engineering responsibility</h2>
+      <p>You own the designs you create. Without an account, Kerf stores them only in your browser and nobody else receives a copy; clearing your browser data deletes them. If you sign in to a Kerf account, the projects you add to it, with their version history and chats, are also stored on the Kerf server so they can sync between your devices. You allow whoever runs that server to store and transmit them only to provide Kerf to you.</p>
+      <h2>4. Accounts</h2>
+      <ul>
+        <li>Use an email address you control, and keep your password to yourself. You are responsible for what happens in your account.</li>
+        <li>You can download everything in your account and delete it at any time from Settings → Account. Deleting it removes your projects, history, chats and saved Claude key from the server straight away; copies in the server's backups go when those backups expire.</li>
+        <li>Whoever runs the server can suspend an account that breaks these terms or the Acceptable use policy, or that puts the service at risk.</li>
+      </ul>
+      <h2>5. Engineering responsibility</h2>
       <ul>
         <li>The checks Kerf runs (interference, clearances, tool access, gear meshing, motion and your own requirements) are aids. They do not cover strength, fatigue, thermal behaviour, tolerances of a specific machine or material, or regulatory requirements.</li>
         <li>AI output can be wrong even when it sounds confident. Review every change, inspect the geometry, and test physical parts before relying on them.</li>
         <li>Do not use Kerf as the only basis for parts where failure could injure people or damage property.</li>
       </ul>
-      <h2>5. Your Claude API key</h2>
-      <p>The AI features use your own Anthropic API key. Requests go directly from your browser to Anthropic, are billed to your Anthropic account, and are governed by Anthropic's own terms and usage policies as well as these. You are responsible for keeping your key secure and for usage made with it.</p>
-      <h2>6. Acceptable use</h2>
+      <h2>6. Your Claude API key</h2>
+      <p>The AI features use your own Anthropic API key. Without an account, requests go directly from your browser to Anthropic. If you save the key to your Kerf account, it is stored encrypted on the Kerf server, and your requests go through that server, which adds the key and passes them to Anthropic. Either way, usage is billed to your Anthropic account and governed by Anthropic's own terms and usage policies as well as these, and you are responsible for keeping the key secure.</p>
+      <p>If the server lets your account use a key it provides instead, that use is limited to the daily allowance shown in Settings and can be changed or withdrawn at any time.</p>
+      <h2>7. Acceptable use</h2>
       <p>You agree to follow the Acceptable use policy, including not using Kerf to design weapons or anything intended to cause harm.</p>
-      <h2>7. Third-party software</h2>
+      <h2>8. Third-party software</h2>
       <p>Kerf includes open-source components under their own licences, listed on the Open-source licences page.</p>
-      <h2>8. No warranty</h2>
-      <p>To the extent the law allows, Kerf is provided "as is", without warranties of any kind, including fitness for a particular purpose, and the people who make it are not liable for losses arising from its use, including lost designs or the performance of manufactured parts.</p>
-      <h2>9. Changes</h2>
+      <h2>9. No warranty</h2>
+      <p>To the extent the law allows, Kerf is provided "as is", without warranties of any kind, including fitness for a particular purpose or that the service will be available or free of data loss, and the people who make or run it are not liable for losses arising from its use, including lost designs or the performance of manufactured parts.</p>
+      <h2>10. Changes</h2>
       <p>If these terms change, Kerf will show the new version and ask you to accept it before you continue.</p>
-      <h2>10. Contact</h2>
+      <h2>11. Contact</h2>
       <p>Contact details will be added before public launch.</p>
     </Doc>
   );
@@ -110,8 +117,8 @@ function Privacy() {
   return (
     <Doc title="Privacy notice">
       <h2>The short version</h2>
-      <p>Kerf has no server and no accounts. Your designs, history, chats and settings stay in this browser. When you chat with Claude, your browser sends the conversation directly to Anthropic's API using your key. If you talk to Claude with voice input, your speech is turned into text on your device when the browser can; otherwise your browser's own speech service hears it, and only if you allow that. Kerf has no analytics, tracking or advertising.</p>
-      <h2>What is stored, and where</h2>
+      <p>Without an account, Kerf has no server: your designs, history, chats and settings stay in this browser, and when you chat with Claude your browser sends the conversation directly to Anthropic's API using your key. If you sign in to a Kerf account, the projects you add to it are also kept on the Kerf server so they sync between your devices, and you can keep your Claude key there instead of in the browser. If you talk to Claude with voice input, your speech is turned into text on your device when the browser can; otherwise your browser's own speech service hears it, and only if you allow that. Kerf has no analytics, tracking or advertising, with or without an account.</p>
+      <h2>In this browser</h2>
       <table>
         <thead>
           <tr>
@@ -132,7 +139,7 @@ function Privacy() {
             <td>Clear the chat, delete the project, or clear all data</td>
           </tr>
           <tr>
-            <td>Preferences (model, display and voice options, terms version accepted)</td>
+            <td>Preferences (model, display and voice options, terms version accepted) and sync bookkeeping</td>
             <td>localStorage in this browser</td>
             <td>Clear all data</td>
           </tr>
@@ -142,14 +149,67 @@ function Privacy() {
             <td>Nothing to remove</td>
           </tr>
           <tr>
-            <td>Claude API key</td>
+            <td>Claude API key, if you keep it in the browser</td>
             <td>Memory only, by default. If you choose "Remember on this device", it is encrypted with a browser key that cannot be exported and stored in IndexedDB.</td>
             <td>Settings → Claude → Forget key, or clear all data</td>
           </tr>
+          <tr>
+            <td>Sign-in session, if you have an account</td>
+            <td>A cookie that scripts on the page cannot read, sent only to the Kerf server</td>
+            <td>Sign out</td>
+          </tr>
+          <tr>
+            <td>A mark that this browser has signed in to your account before, so failed sign-ins elsewhere can't lock it out</td>
+            <td>A cookie that scripts on the page cannot read, kept for a year</td>
+            <td>Clear this site's cookies</td>
+          </tr>
         </tbody>
       </table>
+      <h2>On the Kerf server, only if you sign in</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>How long</th>
+            <th>How to remove it</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Your email, name, a scrypt hash of your password (never the password itself), whether your email is confirmed, and which terms you accepted</td>
+            <td>Until you delete the account. On an invite-only server, a sign-up whose emailed link is never used is removed after 7 days.</td>
+            <td>Settings → Account → Delete account</td>
+          </tr>
+          <tr>
+            <td>Projects you add to your account, with thumbnails, up to 300 versions of history each, their chats, and the files they use (imported STEP files, reference photos and PDFs)</td>
+            <td>Until you delete them. A small marker that a project was deleted is kept for 90 days so your other devices remove it too. A file no project uses any more is removed after a day.</td>
+            <td>Delete the project, or delete the account</td>
+          </tr>
+          <tr>
+            <td>Your Claude API key, if you save it to your account</td>
+            <td>Until you remove it. It is encrypted with AES-256-GCM under a key only the server holds, and only its last 4 characters are ever shown back.</td>
+            <td>Settings → Claude → Remove, or delete the account</td>
+          </tr>
+          <tr>
+            <td>Signed-in devices: a hash of each session token, the browser name, IP address and when it was last used</td>
+            <td>Until you sign out, after 30 days unused, or 90 days at most</td>
+            <td>Sign out, or sign a device out in Settings → Account</td>
+          </tr>
+          <tr>
+            <td>Security activity (sign-ins, password and key changes, with IP addresses)</td>
+            <td>Your latest 200 events</td>
+            <td>Delete the account</td>
+          </tr>
+          <tr>
+            <td>Daily counts of Claude requests and tokens by model, used for the usage chart and any shared allowance. Never the content of your messages.</td>
+            <td>About 13 months</td>
+            <td>Delete the account</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>The server sends you email only to confirm your address or reset your password, through the email provider its operator chose. It does not log the content of requests.</p>
       <h2>What is sent to Anthropic</h2>
-      <p>Only when you send a chat message, Kerf sends Anthropic's API (api.anthropic.com): your message, the conversation so far in that project, the current design file, check results, and images of the 3D view that Claude asks for. Anthropic processes this under its own commercial terms and privacy policy. Kerf does not send anything to Anthropic, or anywhere else, until you chat.</p>
+      <p>Only when you send a chat message, Kerf sends Anthropic's API (api.anthropic.com): your message, the conversation so far in that project, the current design file, check results, and images of the 3D view that Claude asks for. With the key on your account, the same content goes through the Kerf server, which adds the key, passes it on without storing it, and labels the request with a random-looking ID derived from your account rather than your email. Anthropic processes this under its own commercial terms and privacy policy. Apart from checking a key when you add it, Kerf does not send anything to Anthropic until you chat.</p>
       <h2>Voice input</h2>
       <p>The microphone is off until you tap the mic button or press V. Kerf uses your browser's built-in speech recognition and never records, stores or uploads audio itself.</p>
       <ul>
@@ -164,13 +224,14 @@ function Privacy() {
       </ul>
       <p>Kerf's Content Security Policy controls the connections Kerf itself makes. It cannot govern the browser's own speech service, which is why Kerf asks before using it.</p>
       <h2>What is sent elsewhere</h2>
-      <p>Nothing else. The 3D kernel, checks and exports run on your device. Fonts and code are bundled with the app. If Kerf is hosted on a web server, that server sees ordinary web requests for the app's files, as with any website.</p>
+      <p>Nothing else. The 3D kernel, checks and exports run on your device. Fonts and code are bundled with the app. The web server that hosts Kerf sees ordinary web requests for the app's files, as with any website.</p>
       <h2>Security</h2>
       <ul>
-        <li>The app sets a strict Content Security Policy that only allows network connections to its own files and to api.anthropic.com.</li>
+        <li>The app sets a strict Content Security Policy that only allows network connections to its own server and to api.anthropic.com.</li>
         <li>Only Kerf's own page may use the microphone, and only for voice input. Your browser asks for your permission the first time.</li>
         <li>AI output is never rendered as HTML, and imported files are size-limited and validated before use.</li>
-        <li>Anyone with access to your unlocked computer and browser profile could use a remembered key. Do not remember the key on a shared computer.</li>
+        <li>On the server, passwords are hashed with scrypt, sign-in attempts are rate-limited, session cookies are HttpOnly, Secure and SameSite=Strict, and requests from other websites are refused.</li>
+        <li>Anyone with access to your unlocked computer and browser profile could use a remembered key or a signed-in session. Do not remember the key on a shared computer, and sign out with "remove copies" there.</li>
       </ul>
       <h2>Children</h2>
       <p>Kerf is not directed at children under 13, and an Anthropic API account is required for the AI features.</p>
@@ -207,6 +268,9 @@ const LICENCES: { name: string; use: string; licence: string; url: string }[] = 
   { name: "Framer Motion 11", use: "Animation", licence: "MIT", url: "https://github.com/motiondivision/motion" },
   { name: "Zod 4", use: "Validating imported files and tool input", licence: "MIT", url: "https://github.com/colinhacks/zod" },
   { name: "IBM Plex Sans and Mono", use: "Typefaces", licence: "SIL Open Font License 1.1", url: "https://github.com/IBM/plex" },
+  { name: "Hono 4 and @hono/node-server", use: "Kerf server: web framework", licence: "MIT", url: "https://github.com/honojs/hono" },
+  { name: "Nodemailer", use: "Kerf server: account emails", licence: "MIT-0", url: "https://github.com/nodemailer/nodemailer" },
+  { name: "SQLite (built into Node.js)", use: "Kerf server: database", licence: "Public domain", url: "https://sqlite.org/copyright.html" },
 ];
 
 function Licenses() {

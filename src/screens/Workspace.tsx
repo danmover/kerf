@@ -14,6 +14,7 @@ import { viewport } from "../app/viewportApi";
 import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
+import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
 import { PhoneWorkspace, usePhoneLayout } from "./PhoneWorkspace";
 import { PlanHud } from "../ui/PlanHud";
 import { RefViewer } from "../ui/RefViewer";
@@ -53,9 +54,15 @@ export function Workspace() {
             <div className="plan-hud-anchor" style={{ bottom: dockOpen ? dock : 37 }}>
               <PlanHud />
             </div>
-            <ErrorBoundary label="3D view">
-              <Viewport />
-            </ErrorBoundary>
+            <div className="center-stage">
+              <ErrorBoundary label="3D view">
+                <Viewport />
+              </ErrorBoundary>
+              <ErrorBoundary label="Drawings">
+                <DrawingView />
+                <DrawingSwitch />
+              </ErrorBoundary>
+            </div>
             <PreviewBanner />
             {dockOpen && <Splitter dir="h" style={{ bottom: dock }} onDrag={(d) => setDock(dock - d)} onEnd={saveDock} />}
             <ErrorBoundary label="Editor">
@@ -119,7 +126,7 @@ function useThumbnails() {
       if (!vp || useDesign.getState().rev !== rev || useProject.getState().preview) return;
       if (!useDesign.getState().model?.parts.length) return;
       try {
-        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12 });
+        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12, overlays: false });
         last.current = rev;
         await saveThumbnail(url);
       } catch {

@@ -2,17 +2,33 @@
 // components with geometry recipes, requirement results and a dependency graph.
 
 import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
-import { parse, type Diagnostic } from "./parser";
-import { Fn, Obj, Pending, Ref, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
-import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, edgeSel, geoFns, libNamespace, threadConstants } from "./builtins";
+import { parse, parseExpression, type Diagnostic } from "./parser";
+import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
+import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
+import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
 import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
 import type { ImportRef, ImportTable } from "../kernel/imports";
-import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
+import { frameFor, hasDetail, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import { CalcObj, calcNamespace } from "../machine/calcs";
+import { catalogPart } from "../machine/catalog";
+import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
+import { emptyMachine, type MachineData, type PinRef } from "../machine/types";
+import { suggest } from "./suggest";
+import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
+import { SOLVE_MS, budgetMs, type Budget } from "../sketch/solver";
+import { sketchFns } from "../sketch/fns";
+import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
+import type { EvalSketch } from "../sketch/types";
+import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
+import type { AnalysisSpec } from "../analysis/spec";
+import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromValue, toProcess } from "../mfg/spec";
+import { specToSource } from "../mfg/profiles";
+import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -63,7 +79,7 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "finish", "label"];
 
 /** Fields of the brief block, by the type of value each takes. */
@@ -71,6 +87,8 @@ const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as cons
 const BRIEF_LISTS = ["priorities", "exposure"] as const;
 const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as const;
 export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", "max_size", "max_mass"];
+/** extra properties of purchasable catalog parts */
+const MACHINE_PROPS = ["role", "load", "buy", "price", "rating"];
 const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
@@ -85,12 +103,51 @@ interface CompInfo {
   value: Obj;
 }
 
+interface PartState {
+  base: ShapeRecipe | null;
+  baseName?: string;
+  ops: PartOp[];
+  props: Record<string, Value>;
+  propSpans: Record<string, Span>;
+  flags: Set<string>;
+  /** the part's top scope, where `as` names live */
+  root: Scope;
+  /** inside a cosmetic { } block */
+  cosmetic: boolean;
+  feats: Map<string, { kind: string; cosmetic: boolean }>;
+  /** counters for unnamed ready-made features (screw_boss#1) */
+  auto: Map<string, number>;
+  strain: { strain: number; span: Span }[];
+}
+
 class Scope {
   vars = new Map<string, Value>();
   constructor(public parent?: Scope) {}
   get(name: string): Value | undefined {
     if (this.vars.has(name)) return this.vars.get(name);
     return this.parent?.get(name);
+  }
+}
+
+/**
+ * Evaluate a selector written as text (`boss.root`, `near((0, 0, 10))`,
+ * `"top" + circles(3)`) for a part with the given feature names, seeing the params and lets of the design source.
+ */
+export function evaluateSelector(text: string, features: string[], design?: string): { sel?: Sel; error?: string } {
+  const parsed = parseExpression(text);
+  if (!parsed.expr) return { error: parsed.error };
+  const ev = new Evaluator(design ?? text, {});
+  // the design's params and lets, so near((0, 0, wall), 1) can use them
+  if (design) ev.run(parse(design).program);
+  const scope = new Scope();
+  for (const f of features) scope.vars.set(f, new FeatRef(f, "feature"));
+  try {
+    const v = ev.expr(parsed.expr, scope);
+    ev.callSpan = parsed.expr.span;
+    return { sel: toSel(v, ev.ctx(), "the selection") };
+  } catch (e) {
+    if (e instanceof EvalError || e instanceof Error) return { error: e.message };
+    throw e;
   }
 }
 
@@ -117,18 +174,26 @@ class Evaluator {
   params: EvalParam[] = [];
   reqs: EvalRequirement[] = [];
   decisions: EvalDecision[] = [];
+  sketches: EvalSketch[] = [];
+  /** sketch solving time shared by the whole evaluation (from its first sketch), so a huge file cannot freeze the page */
+  sketchBudget: Budget | undefined;
+  analyses: AnalysisSpec[] = [];
+  /** functions that win over other names in call position (analysis blocks) */
+  callOverride: Record<string, Fn> | null = null;
   diags: Diagnostic[] = [];
   blocks: Model["blocks"] = [];
   name = "Untitled design";
   notes: string[] = [];
   brief: Brief | null = null;
   geoQueries: GeoQuery[] = [];
+  drawings: DrawingSpec[] = [];
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
   reqStmts: Extract<Stmt, { k: "require" }>[] = [];
   /** guards against runaway loops in source written by people or the AI */
   steps = 0;
+  machine: MachineData = emptyMachine();
 
   constructor(
     private src: string,
@@ -137,9 +202,19 @@ class Evaluator {
     for (const [k, v] of Object.entries(CONSTANTS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(threadConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(SHAPE_FNS)) this.builtins.set(k, v);
+    for (const [k, v] of Object.entries(MODELLING_FNS)) this.builtins.set(k, v);
+    // after the other shape functions: extrude() and revolve() of a sketch, anything else falls through
+    const registered = (name: string) => {
+      const f = this.builtins.get(name);
+      return f instanceof Fn ? f : undefined;
+    };
+    for (const [k, v] of Object.entries(sketchFns(registered))) this.builtins.set(k, v);
+    for (const [k, v] of Object.entries(planeConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(MATH_FNS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);
     this.builtins.set("lib", libNamespace());
+    this.builtins.set("calc", calcNamespace());
+    this.builtins.set("mfg", mfgNamespace());
   }
 
   ctx(): CallCtx {
@@ -147,6 +222,7 @@ class Evaluator {
       error: (msg: string): never => {
         throw new EvalError(msg, this.callSpan);
       },
+      warn: (msg: string) => this.diags.push({ message: msg, start: this.callSpan.start, end: Math.max(this.callSpan.end, this.callSpan.start + 1), severity: "warning" }),
       geo: (q: GeoQuery) => {
         const key = geoKey(q);
         this.stmtGeo.push(q);
@@ -154,12 +230,14 @@ class Evaluator {
         if (typeof v === "number") return v;
         return new Pending([key]);
       },
+      tick: (n: number) => this.tick(n, this.callSpan),
     };
   }
 
   define(name: string, kind: DepNode["kind"], value: Value, span: Span, label?: string) {
     if (this.globals.has(name)) throw new EvalError(`"${name}" is already defined`, span);
-    if (this.builtins.has(name)) throw new EvalError(`"${name}" is a built-in name; choose another name`, span);
+    // a design's own names shadow built-in ones (lookup reads globals first), so designs written before a
+    // built-in of the same name was added keep working
     this.globals.set(name, value);
     this.defKind.set(name, kind);
     this.defLabel.set(name, label ?? name);
@@ -174,7 +252,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -189,7 +267,9 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
+    if (s.k === "drawing" || s.k === "wire" || s.k === "net" || s.k === "firmware" || s.k === "test" || s.k === "buy") return undefined;
     // decisions record choices; nothing reads them, so they stay out of the dependency graph
+    if (s.k === "analysis") return `analysis:${s.label}`;
     return "name" in s && s.k !== "design" && s.k !== "decision" ? s.name : undefined;
   }
 
@@ -236,6 +316,7 @@ class Evaluator {
         this.blocks.push({ name: s.name, kind: "let", span: s.span, locked: false });
         const v = this.expr(s.value, null);
         this.define(s.name, "let", v, s.nameSpan);
+        if (v instanceof CalcObj) this.machine.calcs.push({ ...v.trace, name: s.name, span: s.span });
         return;
       }
       case "interface": {
@@ -259,9 +340,112 @@ class Evaluator {
       case "require":
         this.requirement(s);
         return;
+      case "drawing":
+        this.drawing(s);
+        return;
       case "decision":
         this.decision(s);
         return;
+      case "sketch":
+        this.sketch(s);
+        return;
+      case "analysis":
+        this.analysis(s);
+        return;
+      case "wire":
+      case "net":
+      case "firmware":
+      case "test":
+      case "buy":
+        this.machineStmt(s);
+        return;
+    }
+  }
+
+  // ---------------- machines: wiring, firmware, tests, purchases ----------------
+
+  pinRef(e: Expr): PinRef {
+    if (e.k !== "member") throw new EvalError("Expected a pin like ctrl.D5", e.span);
+    let comp: string;
+    let index: number | undefined;
+    if (e.obj.k === "ident") comp = e.obj.name;
+    else if (e.obj.k === "index" && e.obj.obj.k === "ident") {
+      comp = e.obj.obj.name;
+      index = this.num(this.expr(e.obj.index, null), e.obj.index.span, "an instance index");
+    } else throw new EvalError("Expected a pin like ctrl.D5", e.span);
+    const info = this.comps.get(comp);
+    if (!info) {
+      const sugg = suggest(comp, [...this.comps.keys()]);
+      throw new EvalError(`"${comp}" is not a component${sugg ? `. Did you mean "${sugg}"?` : ". Define components before wiring them."}`, e.obj.span);
+    }
+    this.current?.add(comp);
+    const part = info.def.catalog ? catalogPart(info.def.catalog.id) : undefined;
+    if (!part) throw new EvalError(`"${comp}" is not a catalog part, so it has no pins to wire`, e.obj.span);
+    const want = e.name.toLowerCase();
+    const pin = part.pins.find((p) => p.id.toLowerCase() === want) ?? part.pins.find((p) => p.label?.toLowerCase() === want);
+    if (!pin) {
+      const sugg = suggest(e.name, part.pins.map((p) => p.id));
+      throw new EvalError(`${part.name} has no pin "${e.name}"${sugg ? `. Did you mean "${sugg}"?` : `. Pins: ${part.pins.map((p) => p.id).join(", ")}`}`, e.span);
+    }
+    const count = info.value.fields.count;
+    if (index !== undefined && (typeof count !== "number" || index < 0 || index >= count || !Number.isInteger(index))) {
+      throw new EvalError(`"${comp}" has ${typeof count === "number" ? count : 1} instance(s): index ${index} is out of range`, e.obj.span);
+    }
+    return { comp, index, pin: pin.id, span: e.span };
+  }
+
+  machineProps(items: Item[], allowed: string[] | null, what: string): Record<string, number | string | boolean> {
+    const out: Record<string, number | string | boolean> = {};
+    for (const it of items) {
+      if (it.k !== "prop") throw new EvalError(`${what} only takes properties like gauge: 22`, it.span);
+      if (allowed && !allowed.includes(it.name)) throw new EvalError(`Unknown ${what} property "${it.name}". Use: ${allowed.join(", ")}`, it.span);
+      const v = this.expr(it.value, null);
+      if (typeof v === "number" || typeof v === "string" || typeof v === "boolean") out[it.name] = v;
+      else if (v instanceof Obj && v.kind === "component") out[it.name] = String(v.fields.name);
+      else if (v instanceof Obj && v.kind === "calc") throw new EvalError(`${it.name}: give one result of the calculation, e.g. ${it.name}: speed.rpm`, it.span);
+      else throw new EvalError(`${it.name} should be a number, text or true/false (got ${typeName(v)})`, it.span);
+    }
+    return out;
+  }
+
+  machineStmt(s: Extract<Stmt, { k: "wire" | "net" | "firmware" | "test" | "buy" }>) {
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    const numv = (v: unknown) => (typeof v === "number" ? v : undefined);
+    switch (s.k) {
+      case "wire": {
+        const refs = s.path.map((e) => this.pinRef(e));
+        const pr = this.machineProps(s.items, ["gauge", "color", "label"], "wire");
+        for (let i = 0; i + 1 < refs.length; i++) this.machine.wires.push({ a: refs[i], b: refs[i + 1], gauge: numv(pr.gauge), color: str(pr.color), label: str(pr.label), span: s.span });
+        return;
+      }
+      case "net": {
+        if (this.machine.nets.some((n) => n.name === s.name)) throw new EvalError(`Net "${s.name}" is already defined: add the pins to it`, s.nameSpan);
+        const pins = s.pins.map((e) => this.pinRef(e));
+        const pr = this.machineProps(s.items, ["gauge", "color"], "net");
+        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), color: str(pr.color), span: s.span });
+        return;
+      }
+      case "firmware": {
+        if (this.machine.firmware.some((f) => f.name === s.name)) throw new EvalError(`Firmware "${s.name}" is already defined`, s.nameSpan);
+        const settings = this.machineProps(s.items, null, "firmware");
+        const board = str(settings.board);
+        if (board && !this.comps.has(board)) throw new EvalError(`firmware board: "${board}" is not a component`, s.span);
+        this.machine.firmware.push({ name: s.name, board, settings, span: s.span });
+        return;
+      }
+      case "test": {
+        const v = this.expr(s.procedure, null);
+        if (typeof v !== "string") throw new EvalError("A test needs a procedure in quotes: test \"Label\": \"what to do and what to measure\"", s.procedure.span);
+        this.machine.tests.push({ label: s.label, procedure: v, span: s.span });
+        return;
+      }
+      case "buy": {
+        const pr = this.machineProps(s.items, ["qty", "price", "url", "search"], "buy");
+        const url = str(pr.url);
+        if (url !== undefined && !/^https?:\/\//.test(url)) throw new EvalError('url: should be a web address in quotes, e.g. url: "https://www.pololu.com/product/713"', s.span);
+        this.machine.items.push({ name: s.label, label: s.label, qty: numv(pr.qty) ?? 1, price: numv(pr.price), buyUrl: str(pr.url), search: str(pr.search) ?? s.label, span: s.span });
+        return;
+      }
     }
   }
 
@@ -306,6 +490,32 @@ class Evaluator {
       this.diags.push({ message: `Decision "${s.name}" chose "${d.chose}", which is not one of its options`, start: sp.start, end: sp.end, severity: "warning" });
     }
     this.decisions.push(d);
+  }
+
+  // ---------------- sketches ----------------
+
+  sketch(s: Extract<Stmt, { k: "sketch" }>) {
+    const locked = s.items.some((i) => i.k === "flag" && i.name === "locked");
+    this.blocks.push({ name: s.name, kind: "sketch", span: s.span, locked });
+    const host: SketchHost = {
+      src: this.src,
+      expr: (e, scope) => this.expr(e, scope as Scope),
+      newScope: () => new Scope(),
+      setVar: (scope, name, v) => (scope as Scope).vars.set(name, v),
+      fail: (msg, span) => {
+        throw new EvalError(msg, span);
+      },
+      diag: (message, span, severity) => this.diags.push({ message, start: span.start, end: Math.max(span.end, span.start + 1), severity }),
+      report: (e) => {
+        if (!(e instanceof EvalError)) return false;
+        this.diags.push({ message: e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
+        return true;
+      },
+      budget: (this.sketchBudget ??= budgetMs(4 * SOLVE_MS)),
+    };
+    const { value, sketch } = evaluateSketch(host, s);
+    this.define(s.name, "sketch", value, s.nameSpan);
+    this.sketches.push(sketch);
   }
 
   // ---------------- expressions ----------------
@@ -361,6 +571,7 @@ class Evaluator {
         if (v instanceof Pending) return v;
         if (e.op === "!") return !truthy(v);
         if (typeof v === "number") return -v;
+        if (isPlane(v)) return flipPlane(v);
         if (v instanceof Vec) return new Vec(v.v.map((x) => -x));
         throw new EvalError(`Cannot negate ${typeName(v)}`, e.span);
       }
@@ -385,7 +596,8 @@ class Evaluator {
         throw new EvalError(`Cannot index ${typeName(o)}`, e.span);
       }
       case "call": {
-        const callee = this.expr(e.callee, scope);
+        const override = e.callee.k === "ident" ? this.callOverride?.[e.callee.name] : undefined;
+        const callee = override ?? this.expr(e.callee, scope);
         if (!(callee instanceof Fn)) throw new EvalError(`${show(callee)} is not a function`, e.callee.span);
         const pos: Value[] = [];
         const named: Record<string, Value> = {};
@@ -424,6 +636,20 @@ class Evaluator {
       if (name === "first") return o[0] ?? null;
       if (name === "last") return o[o.length - 1] ?? null;
       throw new EvalError(`A list has length, first and last, not "${name}"`, span);
+    }
+    if (o instanceof FeatRef) {
+      const m = featMember(o, name);
+      if (m !== undefined) return m;
+      throw new EvalError(`Feature "${o.name}" has root, tip, edges, faces, convex and concave, not "${name}"`, span);
+    }
+    if (o instanceof SelV) {
+      const m = selMember(o, name);
+      if (m !== undefined) return m;
+      throw new EvalError(`A selection has convex and concave, not "${name}"`, span);
+    }
+    if (o instanceof FeatureV) {
+      if (name in o.info) return o.info[name];
+      throw new EvalError(`${o.kind}() has ${Object.keys(o.info).join(", ")}, not "${name}"`, span);
     }
     if (o instanceof Obj) {
       if (name in o.fields) return o.fields[name];
@@ -479,6 +705,32 @@ class Evaluator {
       return new Vec(l.v.map((x) => (op === "*" ? x * r : x / r)));
     }
     if (typeof l === "number" && r instanceof Vec && op === "*") return new Vec(r.v.map((x) => x * l));
+    if (l instanceof ProfileV && r instanceof ProfileV && (op === "+" || op === "-")) {
+      // a chain of additions copies the list each time: count it so long chains hit the step budget
+      if (op === "+") {
+        const ps = [...(l.recipe.t === "union2" ? l.recipe.ps : [l.recipe]), r.recipe];
+        this.tick(ps.length, span);
+        return new ProfileV({ t: "union2", ps });
+      }
+      const b = l.recipe.t === "diff2" ? [...l.recipe.b, r.recipe] : [r.recipe];
+      this.tick(b.length, span);
+      return new ProfileV(l.recipe.t === "diff2" ? { t: "diff2", a: l.recipe.a, b } : { t: "diff2", a: l.recipe, b });
+    }
+    if ((isSelValue(l) || isSelValue(r)) && (op === "+" || op === "-")) {
+      const ctx = this.ctx();
+      const saved = this.callSpan;
+      this.callSpan = span;
+      try {
+        const a = toSel(l, ctx, "the left side");
+        const b = toSel(r, ctx, "the right side");
+        if (op === "-") return new SelV({ s: "minus", a, b });
+        const any = [...(typeof a !== "string" && a.s === "or" ? a.a : [a]), b];
+        this.tick(any.length, span);
+        return new SelV({ s: "or", a: any });
+      } finally {
+        this.callSpan = saved;
+      }
+    }
     if (op === "+" && (typeof l === "string" || typeof r === "string")) return show(l).replace(/^"|"$/g, "") + show(r).replace(/^"|"$/g, "");
     if (op === "+" && Array.isArray(l) && Array.isArray(r)) {
       if (l.length + r.length > 100_000) throw new EvalError("Lists are limited to 100,000 items", span);
@@ -496,7 +748,6 @@ class Evaluator {
       throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), or from an imported STEP file with step("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
     }
     const key = callee instanceof ImportFn ? "step" : callee.libKey;
-    const entry = LIBRARY[key];
     const pos: Value[] = [];
     const named: Record<string, Value> = {};
     for (const a of s.call.args) {
@@ -505,8 +756,13 @@ class Evaluator {
       if (a.name) named[a.name] = v;
       else pos.push(v);
     }
+    // lib.connector("xt60_pair") is a catalog part; lib.connector(w: ...) the generic panel body
+    const catalogForm = !!MACHINE_LIBRARY[key] && LIBRARY[key] !== MACHINE_LIBRARY[key] && typeof pos[0] === "string";
+    // undefined for step(): an imported file has no library entry
+    const entry: (typeof LIBRARY)[string] | undefined = catalogForm ? MACHINE_LIBRARY[key] : LIBRARY[key];
+    const compProps = entry?.machine ? [...COMP_PROPS, ...MACHINE_PROPS] : COMP_PROPS;
     this.callSpan = s.call.span;
-    const args = new Args(key === "step" ? "step" : `lib.${key}`, pos, named, this.ctx(), mergeParams(POSITIONAL[key] ?? [], LIB_ARGS[key] ?? []));
+    const args = new Args(key === "step" ? "step" : `lib.${key}`, pos, named, this.ctx(), mergeParams((catalogForm ? undefined : POSITIONAL[key]) ?? entry?.positional ?? [], (catalogForm ? undefined : LIB_ARGS[key]) ?? entry?.params ?? []));
 
     // properties
     const props: Record<string, Value> = {};
@@ -514,7 +770,7 @@ class Evaluator {
     const propSpans: Record<string, Span> = {};
     for (const it of s.items) {
       if (it.k === "prop") {
-        if (!COMP_PROPS.includes(it.name)) throw new EvalError(`Unknown component property "${it.name}". Use: ${COMP_PROPS.join(", ")}`, it.span);
+        if (!compProps.includes(it.name)) throw new EvalError(`Unknown component property "${it.name}". Use: ${compProps.join(", ")}`, it.span);
         props[it.name] = this.expr(it.value, null);
         propSpans[it.name] = it.span;
       } else if (it.k === "flag") {
@@ -587,7 +843,7 @@ class Evaluator {
       def = importDef(ref, origin);
     } else {
       try {
-        def = entry.make(libArgs, phase);
+        def = entry!.make(libArgs, phase);
       } catch (e) {
         if (e instanceof EvalError) throw e;
         throw new EvalError((e as Error).message, s.call.span);
@@ -646,16 +902,42 @@ class Evaluator {
     const value = new Obj(fields0, "component", s.name);
 
     const gear: GearInfo | undefined = def.gear
-      ? { m: def.gear.m, z: def.gear.z, width: def.gear.width, pa: def.gear.pa, backlash: args.num("backlash", 0.05), center: at0, axis, phase, meshWith }
+      ? { m: def.gear.m, z: def.gear.z, width: def.gear.width, pa: def.gear.pa, bore: def.gear.bore, backlash: args.num("backlash", 0.05), center: at0, axis, phase, meshWith }
       : undefined;
     const info: CompInfo = { def, at: at0, axis, xf: xfs[0], motion, gear, value };
     this.define(s.name, "component", value, s.nameSpan, def.label);
     this.comps.set(s.name, info);
+    if (def.catalog) {
+      const cp = catalogPart(def.catalog.id);
+      if (cp) {
+        const load = props.load !== undefined ? this.num(props.load, propSpans.load, "load (torque at the output, N·mm)") : undefined;
+        const price = props.price !== undefined ? this.num(props.price, propSpans.price, "price") : undefined;
+        if (props.buy !== undefined && (typeof props.buy !== "string" || !/^https?:\/\//.test(props.buy))) throw new EvalError('buy: should be a web address in quotes, e.g. buy: "https://www.pololu.com/product/713"', propSpans.buy);
+        if (props.role !== undefined && typeof props.role !== "string") throw new EvalError('role: should be text, e.g. role: "front screw"', propSpans.role);
+        if (props.rating !== undefined && cp.kind !== "fuse") throw new EvalError("rating: is a fuse's rating in amps; only fuses take it", propSpans.rating);
+        const rating = props.rating !== undefined ? this.num(props.rating, propSpans.rating, "rating (the fuse's rating, A)") : undefined;
+        if (rating !== undefined && !(rating > 0)) throw new EvalError("rating: should be a current above zero, like 15A", propSpans.rating);
+        this.machine.components.push({
+          name: s.name,
+          catalogId: cp.id,
+          kind: cp.kind,
+          label: typeof props.label === "string" ? props.label : cp.name,
+          count: atList.length,
+          role: typeof props.role === "string" ? props.role : undefined,
+          load,
+          length: def.catalog.length,
+          buyUrl: typeof props.buy === "string" ? props.buy : undefined,
+          price,
+          rating,
+          span: s.span,
+        });
+      }
+    }
 
     if (this.opts.skipGeometry) return;
     const anyMoving = def.solids.some((sd) => sd.moving);
     const color = typeof props.color === "string" ? props.color : undefined;
-    const group = typeof props.group === "string" ? props.group : groupFor(key);
+    const group = typeof props.group === "string" ? props.group : def.catalog ? (groupForCatalog(def.catalog.id) ?? entry?.group ?? "Components") : (entry?.group ?? groupFor(key));
     xfs.forEach((xf, idx) => {
       def.solids.forEach((sd, sdIdx) => {
         const base = multi ? `${s.name}#${idx + 1}` : s.name;
@@ -681,6 +963,7 @@ class Evaluator {
           deps: [],
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
           gear: sd.suffix ? undefined : gear,
+          bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           fastener:
             def.fastener && !sd.suffix
               ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
@@ -749,14 +1032,19 @@ class Evaluator {
   // ---------------- parts ----------------
 
   part(s: Extract<Stmt, { k: "part" }>) {
-    const state: { base: ShapeRecipe | null; ops: PartOp[]; props: Record<string, Value>; propSpans: Record<string, Span>; flags: Set<string> } = {
+    const scope = new Scope();
+    const state: PartState = {
       base: null,
       ops: [],
       props: {},
       propSpans: {},
       flags: new Set(),
+      root: scope,
+      cosmetic: false,
+      feats: new Map(),
+      auto: new Map(),
+      strain: [],
     };
-    const scope = new Scope();
     const lockedFlag = s.items.some((i) => i.k === "flag" && i.name === "locked");
     this.blocks.push({ name: s.name, kind: "part", span: s.span, locked: lockedFlag });
     // define the name first so other statements can refer to it even if geometry fails
@@ -786,7 +1074,28 @@ class Evaluator {
     }
     if (motion) this.partMotion.set(s.name, motion);
     this.checkMaterial(state.props, state.propSpans);
+    const processSpan = state.propSpans.process;
+    const process =
+      state.props.process === undefined || state.props.process === null || state.props.process === false
+        ? undefined
+        : toProcess(state.props.process, (msg) => {
+            throw new EvalError(msg, processSpan ?? s.span);
+          });
+    const material = partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process);
+    const limit = allowableStrain(material);
+    for (const c of state.strain) {
+      if (c.strain > limit) {
+        this.diags.push({
+          message: `In part "${s.name}": this snap hook bends ${fmtNum(c.strain * 100, 1)}% at full deflection, more than the ~${fmtNum(limit * 100, 1)}% ${material} takes without cracking or creeping. Make it longer (strain falls with length²), thinner, or give it a shallower catch.`,
+          start: c.span.start,
+          end: c.span.end,
+          severity: "warning",
+          rule: `${s.name} snap hook strain`,
+        });
+      }
+    }
     const recipe: PartRecipe = { base: state.base, ops: state.ops };
+    if (state.baseName) recipe.baseName = state.baseName;
     this.parts.push({
       id: s.name,
       name: s.name,
@@ -794,8 +1103,12 @@ class Evaluator {
       kind: "part",
       group: typeof state.props.group === "string" ? state.props.group : "Parts",
       color: typeof state.props.color === "string" ? state.props.color : DEFAULT_COLORS[this.colorIdx++ % DEFAULT_COLORS.length],
-      material: typeof state.props.material === "string" ? state.props.material : "PLA",
+      material,
       finish: typeof state.props.finish === "string" ? state.props.finish : undefined,
+      process,
+      processSpan,
+      ...(state.props.process === false ? { processNone: true } : {}),
+      materialSpan: state.propSpans.material,
       recipe,
       hash: recipeHash(recipe),
       xf,
@@ -805,14 +1118,45 @@ class Evaluator {
       span: s.span,
       deps: [],
       motion,
+      features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
+      detail: hasDetail(recipe),
     });
   }
 
-  items(items: Item[], scope: Scope, st: { base: ShapeRecipe | null; ops: PartOp[]; props: Record<string, Value>; propSpans: Record<string, Span>; flags: Set<string> }, depth: number) {
+  /** Register `as name` for an operation; returns the feature name to put in the recipe. */
+  nameFeature(st: PartState, name: string, kind: string, span: Span): string {
+    const prev = st.feats.get(name);
+    if (prev) {
+      // the same name again (often in a loop) adds more tools to the same feature
+      if (!st.cosmetic) prev.cosmetic = false;
+      return name;
+    }
+    if (this.globals.has(name) || this.builtins.has(name)) throw new EvalError(`"${name}" is already defined outside this part; give the feature another name`, span);
+    if (st.root.vars.has(name)) throw new EvalError(`"${name}" is already used in this part`, span);
+    st.feats.set(name, { kind, cosmetic: st.cosmetic });
+    st.root.vars.set(name, new FeatRef(name, kind));
+    return name;
+  }
+
+  /** Feature names a non-cosmetic step may not rely on (they are missing from fast builds). */
+  checkSelFeatures(st: PartState, sel: Sel, span: Span) {
+    if (st.cosmetic) return;
+    for (const f of selFeatures(sel)) {
+      if (st.feats.get(f)?.cosmetic) throw new EvalError(`"${f}" is cosmetic detail, so it is missing from fast builds. Move this step into the cosmetic { } block too.`, span);
+    }
+  }
+
+  pushOp(st: PartState, op: PartOp, span: Span) {
+    st.ops.push(st.cosmetic ? { ...op, cosmetic: true } : op);
+    if (st.ops.length > 600) throw new EvalError("A part is limited to 600 operations", span);
+  }
+
+  items(items: Item[], scope: Scope, st: PartState, depth: number) {
     if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? { start: 0, end: 0 });
     for (const it of items) {
       switch (it.k) {
         case "prop": {
+          if (st.cosmetic) throw new EvalError("Properties belong outside the cosmetic { } block", it.span);
           if (!PART_PROPS.includes(it.name)) throw new EvalError(`Unknown part property "${it.name}". Use: ${PART_PROPS.join(", ")}`, it.span);
           st.props[it.name] = this.expr(it.value, scope);
           st.propSpans[it.name] = it.span;
@@ -826,23 +1170,57 @@ class Evaluator {
           scope.vars.set(it.name, this.expr(it.value, scope));
           break;
         case "op": {
-          const shapes = flattenShapes(this.expr(it.shape, scope), it.shape.span);
+          const v = this.expr(it.shape, scope);
+          const feats = flattenFeatures(v);
+          if (feats) {
+            if (it.op !== "add") throw new EvalError(`${feats[0].kind}() adds and cuts on its own: write add ${feats[0].kind}(...)`, it.span);
+            if (!st.base) throw new EvalError(`${feats[0].kind}() needs a body to stand on; start the part with body ...`, it.span);
+            for (const f of feats) {
+              let name: string;
+              if (it.name) name = this.nameFeature(st, it.name, f.kind, it.nameSpan ?? it.span);
+              else {
+                const k = (st.auto.get(f.kind) ?? 0) + 1;
+                st.auto.set(f.kind, k);
+                name = `${f.kind}#${k}`;
+                st.feats.set(name, { kind: f.kind, cosmetic: st.cosmetic });
+              }
+              for (const step of f.steps) {
+                if ("shape" in step) this.pushOp(st, { op: step.op, shape: step.shape, name }, it.span);
+                else st.ops.push({ op: step.op, r: step.r, edges: { s: "feat", f: name, part: step.part }, cosmetic: true });
+              }
+              if (f.strain !== undefined) st.strain.push({ strain: f.strain, span: it.shape.span });
+            }
+            break;
+          }
+          const shapes = flattenShapes(v, it.shape.span);
+          if (it.op === "body" && st.cosmetic) throw new EvalError("The body cannot be cosmetic; put body before the cosmetic { } block", it.span);
           for (const sh of shapes) {
             if (it.op === "body" || (it.op === "add" && !st.base)) {
-              if (!st.base) st.base = sh.recipe;
-              else st.ops.push({ op: "add", shape: sh.recipe });
+              if (!st.base) {
+                st.base = sh.recipe;
+                if (it.name) st.baseName = this.nameFeature(st, it.name, "body", it.nameSpan ?? it.span);
+              } else this.pushOp(st, { op: "add", shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, "add", it.nameSpan ?? it.span) }, it.span);
             } else {
               if (!st.base) throw new EvalError(`"${it.op}" needs a body first (start the part with body ...)`, it.span);
-              st.ops.push({ op: it.op, shape: sh.recipe });
+              this.pushOp(st, { op: it.op, shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, it.op, it.nameSpan ?? it.span) }, it.span);
             }
           }
-          if (st.ops.length > 600) throw new EvalError("A part is limited to 600 operations", it.span);
+          break;
+        }
+        case "cosmetic": {
+          if (st.cosmetic) throw new EvalError("cosmetic { } blocks do not nest", it.span);
+          st.cosmetic = true;
+          try {
+            this.items(it.body, new Scope(scope), st, depth + 1);
+          } finally {
+            st.cosmetic = false;
+          }
           break;
         }
         case "modifier": {
           const callee = it.call.callee;
           if (callee.k !== "ident" || !(callee.name in MODIFIER_PARAMS)) {
-            throw new EvalError("Only shell(), fillet() and chamfer() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
+            throw new EvalError("Only shell(), fillet(), chamfer() and draft() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
           }
           if (!st.base) throw new EvalError(`${callee.name}() needs a body first`, it.span);
           const pos: Value[] = [];
@@ -853,9 +1231,35 @@ class Evaluator {
             else pos.push(v);
           }
           this.callSpan = it.call.span;
-          const a = new Args(callee.name, pos, named, this.ctx(), MODIFIER_PARAMS[callee.name]);
-          if (callee.name === "shell") st.ops.push({ op: "shell", t: a.positive("t"), open: a.dir("open", [0, 0, 1]) });
-          else st.ops.push({ op: callee.name as "fillet" | "chamfer", r: a.positive("r"), edges: edgeSel(a.str("edges", "all"), this.ctx()) });
+          const ctx = this.ctx();
+          const a = new Args(callee.name, pos, named, ctx, MODIFIER_PARAMS[callee.name]);
+          if (callee.name === "shell") {
+            const t = a.positive("t");
+            const openV = a.value("open");
+            let open: PartOp & { op: "shell" } extends { open: infer O } ? O : never;
+            if (openV === undefined) open = [0, 0, 1];
+            else if (openV instanceof Vec) open = a.dir("open");
+            else {
+              const list = Array.isArray(openV) ? openV : [openV];
+              open = list.map((o, i): OpenSpec => {
+                if (o instanceof Vec) return { dir: vnorm(o.v3()) };
+                const sel = toSel(o, ctx, `shell(): open item ${i + 1}`);
+                this.checkSelFeatures(st, sel, it.call.span);
+                return { sel };
+              });
+            }
+            this.pushOp(st, { op: "shell", t, open }, it.span);
+          } else if (callee.name === "draft") {
+            const angle = a.num("angle");
+            if (Math.abs(angle) < 1e-6 || Math.abs(angle) > 30) ctx.error("draft(): angle must be between 0 and 30 degrees (1–3° is typical)");
+            const faces = toSel(a.value("faces") ?? "vertical", ctx, "draft(): faces");
+            this.checkSelFeatures(st, faces, it.call.span);
+            this.pushOp(st, { op: "draft", angle, faces, pull: a.dir("pull", [0, 0, 1]), neutral: a.vec3("neutral", [0, 0, 0]) }, it.span);
+          } else {
+            const edges = toSel(a.value("edges") ?? "all", ctx, `${callee.name}(): edges`);
+            this.checkSelFeatures(st, edges, it.call.span);
+            this.pushOp(st, { op: callee.name as "fillet" | "chamfer", r: a.positive("r"), edges }, it.span);
+          }
           break;
         }
         case "for": {
@@ -878,6 +1282,222 @@ class Evaluator {
         }
       }
     }
+  }
+
+  // ---------------- drawings ----------------
+
+  drawing(s: Extract<Stmt, { k: "drawing" }>) {
+    const locked = s.items.some((i) => i.k === "flag" && i.name === "locked");
+    this.blocks.push({ name: s.name, kind: "drawing", span: s.span, locked });
+    if (this.drawings.some((d) => d.name === s.name)) throw new EvalError(`A drawing called "${s.name}" already exists`, s.nameSpan);
+    if (this.opts.skipGeometry) return;
+    const spec = defaultSpec(s.name, s.name.replace(/_/g, " "), []);
+    spec.auto = false;
+    spec.locked = locked;
+    spec.span = s.span;
+    spec.views = [];
+    let viewsProp: ViewKind[] | null = null;
+    const ctx = () => this.ctx();
+    const str = (v: Value, span: Span, what: string): string => {
+      if (typeof v === "string") return v;
+      if (typeof v === "number") return fmtNum(v, 4);
+      throw new EvalError(`${what} should be text in quotes, got ${typeName(v)}`, span);
+    };
+    const bool = (v: Value, span: Span, what: string): boolean => {
+      if (typeof v === "boolean") return v;
+      throw new EvalError(`${what} should be true or false`, span);
+    };
+    const viewKind = (v: Value, span: Span, what: string): ViewKind => {
+      const k = typeof v === "string" ? v.toLowerCase() : "";
+      if ((VIEW_KINDS as readonly string[]).includes(k)) return k as ViewKind;
+      throw new EvalError(`${what} should be one of ${VIEW_KINDS.map((x) => `"${x}"`).join(", ")}`, span);
+    };
+    const scale = (v: Value, span: Span): number => {
+      const n = typeof v === "number" || typeof v === "string" ? parseScale(v) : null;
+      if (n === null || n < 0.001 || n > 1000) throw new EvalError('scale should be a positive number such as 0.5, or text such as "1:2"', span);
+      return n;
+    };
+    const names = (v: Value, span: Span): string[] => {
+      const list = Array.isArray(v) ? v : [v];
+      return list.map((x) => {
+        const n = x instanceof Ref ? x.name : x instanceof Obj && (x.kind === "component" || x.kind === "part") ? String(x.fields.name) : typeof x === "string" ? x : null;
+        if (!n) throw new EvalError("of: should name parts or components, e.g. of: base or of: [base, lid]", span);
+        if (!this.parts.some((p) => p.name === n)) throw new EvalError(`of: "${n}" is not a part or component defined above this drawing`, span);
+        return n;
+      });
+    };
+    const walk = (items: Item[], scope: Scope, depth: number) => {
+      if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? s.span);
+      for (const it of items) {
+        switch (it.k) {
+          case "prop": {
+            if (!(DRAWING_PROPS as readonly string[]).includes(it.name)) throw new EvalError(`Unknown drawing property "${it.name}". Use: ${DRAWING_PROPS.join(", ")}`, it.span);
+            const v = this.expr(it.value, scope);
+            switch (it.name) {
+              case "title":
+                spec.title = str(v, it.span, "title");
+                break;
+              case "of":
+                spec.of = names(v, it.span);
+                break;
+              case "sheet": {
+                const t = str(v, it.span, "sheet");
+                const hit = SHEET_NAMES.find((n) => n.toLowerCase() === t.toLowerCase());
+                if (!hit) throw new EvalError(`sheet should be one of ${SHEET_NAMES.map((n) => `"${n}"`).join(", ")}`, it.span);
+                spec.sheet = hit as SheetSize;
+                break;
+              }
+              case "orientation": {
+                const t = str(v, it.span, "orientation");
+                if (t !== "landscape" && t !== "portrait") throw new EvalError('orientation should be "landscape" or "portrait"', it.span);
+                spec.orientation = t;
+                break;
+              }
+              case "scale":
+                spec.scale = scale(v, it.span);
+                break;
+              case "projection": {
+                const t = str(v, it.span, "projection");
+                if (t !== "first" && t !== "third") throw new EvalError('projection should be "first" (ISO) or "third" (ASME)', it.span);
+                spec.projection = t;
+                break;
+              }
+              case "hidden_lines":
+                spec.hidden = bool(v, it.span, "hidden_lines");
+                break;
+              case "auto_dims":
+                spec.autoDims = bool(v, it.span, "auto_dims");
+                break;
+              case "parts_list":
+                spec.partsList = bool(v, it.span, "parts_list");
+                break;
+              case "balloons":
+                spec.balloons = bool(v, it.span, "balloons");
+                break;
+              case "views": {
+                if (!Array.isArray(v)) throw new EvalError('views should be a list such as ["front", "top", "right", "iso"]', it.span);
+                viewsProp = v.map((x) => viewKind(x, it.span, "each view"));
+                break;
+              }
+              case "tolerance":
+                spec.tolerance = str(v, it.span, "tolerance");
+                spec.toleranceSet = true;
+                break;
+              default:
+                (spec as unknown as Record<string, string>)[it.name] = str(v, it.span, it.name);
+            }
+            break;
+          }
+          case "flag":
+            if (it.name !== "locked") throw new EvalError(`Unknown flag "${it.name}". Drawings accept the flag locked.`, it.span);
+            break;
+          case "let":
+            scope.vars.set(it.name, this.expr(it.value, scope));
+            break;
+          case "for": {
+            const iter = this.expr(it.iter, scope);
+            const list = Array.isArray(iter) ? iter : iter instanceof Vec ? iter.v : null;
+            if (!list) throw new EvalError(`for ... in needs a list, got ${typeName(iter)}`, it.iter.span);
+            for (const v of list) {
+              const inner = new Scope(scope);
+              inner.vars.set(it.varName, v);
+              walk(it.body, inner, depth + 1);
+            }
+            break;
+          }
+          case "if": {
+            const c = this.expr(it.cond, scope);
+            if (truthy(c)) walk(it.then, new Scope(scope), depth + 1);
+            else if (it.else) walk(it.else, new Scope(scope), depth + 1);
+            break;
+          }
+          case "op":
+            throw new EvalError(`Drawings do not take ${it.op} shapes. Use view(), section(), detail(), dim(), diameter() and note().`, it.span);
+          case "modifier": {
+            const callee = it.call.callee;
+            const fname = callee.k === "ident" ? callee.name : "";
+            if (!(fname in DRAWING_CALLS)) throw new EvalError(`Drawings accept ${Object.keys(DRAWING_CALLS).map((k) => k + "()").join(", ")}`, it.span);
+            const pos: Value[] = [];
+            const named: Record<string, Value> = {};
+            for (const arg of it.call.args) {
+              const v = this.expr(arg.value, scope);
+              if (v instanceof Pending) throw new EvalError("Drawing positions cannot depend on measured geometry", arg.span);
+              if (arg.name) named[arg.name] = v;
+              else pos.push(v);
+            }
+            this.callSpan = it.call.span;
+            const a = new Args(fname, pos, named, ctx(), DRAWING_CALLS[fname]);
+            const optStr = (n: string) => (a.has(n) ? a.str(n) : undefined);
+            const at2 = (n: string): [number, number] | undefined => {
+              if (!a.has(n)) return undefined;
+              const p = a.vec3(n);
+              return [p[0], p[1]];
+            };
+            const tol = (): [number, number] | undefined => {
+              const v = a.value("tol");
+              if (v === undefined) return undefined;
+              if (typeof v === "number") return [Math.abs(v), -Math.abs(v)];
+              if (v instanceof Vec && v.v.length === 2) return [v.v[0], v.v[1]];
+              return ctx().error("tol should be a number for ± (tol: 0.1) or (upper, lower) such as tol: (0.1, -0.05)");
+            };
+            switch (fname) {
+              case "view":
+                spec.views.push({ kind: viewKind(a.value("kind") ?? null, it.call.span, "view()"), label: optStr("label"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined, hidden: a.has("hidden") ? a.bool("hidden") : undefined, at: at2("at") });
+                break;
+              case "section":
+                spec.sections.push({
+                  label: a.str("label"),
+                  at: a.vec3("at", [0, 0, 0]),
+                  normal: a.dir("normal"),
+                  view: a.has("view") ? viewKind(a.value("view")!, it.call.span, "section(view:)") : undefined,
+                  scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined,
+                });
+                break;
+              case "detail":
+                spec.details.push({ label: a.str("label"), view: a.str("view", "front"), at: a.vec3("at"), r: a.positive("r"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : 2 });
+                break;
+              case "dim":
+              case "diameter": {
+                const align = a.str("align", "auto");
+                if (!["auto", "h", "v", "aligned"].includes(align)) ctx().error('align should be "auto", "h", "v" or "aligned"');
+                spec.dims.push({
+                  kind: fname === "dim" ? "linear" : "diameter",
+                  a: a.vec3(fname === "dim" ? "a" : "at"),
+                  b: fname === "dim" ? a.vec3("b") : undefined,
+                  d: fname === "diameter" ? a.positive("d") : undefined,
+                  view: optStr("view"),
+                  align: align as "auto",
+                  offset: a.has("offset") ? a.num("offset") : undefined,
+                  tol: tol(),
+                  fit: optStr("fit"),
+                  text: optStr("text"),
+                  ref: a.bool("ref"),
+                  basic: a.bool("basic"),
+                  span: it.call.span,
+                });
+                break;
+              }
+              case "tol": {
+                const t = tol();
+                const fit = optStr("fit");
+                if (!t && !fit) ctx().error('tol() needs a tolerance or a fit, e.g. tol("top:overall-width-x", 0.1)');
+                spec.tols.push({ id: a.str("id"), tol: t, fit, span: it.call.span });
+                break;
+              }
+              case "note":
+                spec.notes.push(a.str("text"));
+                break;
+            }
+            break;
+          }
+        }
+      }
+    };
+    walk(s.items, new Scope(), 0);
+    if (viewsProp) spec.views = [...(viewsProp as ViewKind[]).filter((k) => !spec.views.some((v) => v.kind === k)).map((kind) => ({ kind })), ...spec.views];
+    if (!spec.views.length && !spec.sections.length) spec.views = defaultSpec("", "", []).views;
+    if (spec.views.length + spec.sections.length + spec.details.length > 12) throw new EvalError("A drawing is limited to 12 views", s.span);
+    this.drawings.push(spec);
   }
 
   // ---------------- the brief ----------------
@@ -908,7 +1528,17 @@ class Evaluator {
       case "field": {
         const n = it.name;
         if (it.to && n !== "temp") throw new EvalError(`Only temp takes a range (temp: -10C .. 40C)`, it.span);
-        if ((BRIEF_TEXT as readonly string[]).includes(n)) {
+        if (n === "process") {
+          // text, or a process value whose settings every part without its own process then takes
+          const v = this.expr(it.value, null);
+          if (v instanceof ProcessV) {
+            b.process = specToSource(v.spec);
+            b.processSpec = v.spec;
+          } else if (typeof v === "string") {
+            b.process = v;
+            b.processSpec = processFromValue(v) ?? undefined;
+          } else throw new EvalError(`process should be text like "FDM print", or a process like mfg.fdm(layer: 0.2)`, it.value.span);
+        } else if ((BRIEF_TEXT as readonly string[]).includes(n)) {
           (b as unknown as Record<string, string>)[n] = text(it.value, n);
         } else if ((BRIEF_LISTS as readonly string[]).includes(n)) {
           const v = this.expr(it.value, null);
@@ -1101,11 +1731,83 @@ class Evaluator {
       else if (e.op === "<=" || e.op === "<") margin = rn - ln;
       else margin = -Math.abs(ln - rn);
       const ok = e.op === "==" ? Math.abs(ln - rn) < 1e-6 : e.op === ">" || e.op === "<" ? margin > 0 : margin >= -1e-9;
-      return { ok, margin, detail: `${fmtNum(ln)} ${sym} ${fmtNum(rn)}` };
+      // calculators stand in 1e12 for "no limit" (a self-locking slot holds any moment)
+      const shown = (n: number) => (Math.abs(n) >= 1e12 ? (n > 0 ? "∞" : "−∞") : fmtNum(n));
+      return { ok, margin, detail: `${shown(ln)} ${sym} ${shown(rn)}` };
     }
     const v = this.expr(e, scope);
     if (v instanceof Pending) return { ok: null, detail: "measuring…" };
     return { ok: truthy(v), detail: show(v) };
+  }
+
+  // ---------------- analyses ----------------
+
+  analysis(s: Extract<Stmt, { k: "analysis" }>) {
+    this.blocks.push({ name: s.label, kind: "analysis", span: s.span, locked: s.items.some((i) => i.k === "flag" && i.name === "locked") });
+    if (this.analyses.some((a) => a.label === s.label)) throw new EvalError(`There is already an analysis called "${s.label}"`, s.labelSpan);
+    const props: AnalysisItem[] = [];
+    const flags: AnalysisItem[] = [];
+    const saved = this.callOverride;
+    this.callOverride = ANALYSIS_FNS;
+    try {
+      this.analysisItems(s.items, new Scope(), props, flags, 0);
+    } finally {
+      this.callOverride = saved;
+    }
+    const spec = buildAnalysis(s.label, props, flags, s.span, {
+      fail: (msg, span) => {
+        throw new EvalError(msg, span);
+      },
+      kindOf: (name) => {
+        const k = this.defKind.get(name);
+        if (k) this.current?.add(name);
+        return k;
+      },
+    });
+    // the parts it reads are dependencies, so the graph and incremental reruns see them
+    if (spec.kind === "structural") for (const p of spec.parts) if (this.defKind.has(p)) this.current?.add(p);
+    if (spec.kind === "drivetrain") {
+      const k = this.defKind.get(spec.drive);
+      if (k !== "component" && k !== "part") throw new EvalError(`drive: "${spec.drive}" is not a component or part`, s.span);
+      this.current?.add(spec.drive);
+    }
+    this.analyses.push(spec);
+  }
+
+  analysisItems(items: Item[], scope: Scope, props: AnalysisItem[], flags: AnalysisItem[], depth: number) {
+    if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? { start: 0, end: 0 });
+    for (const it of items) {
+      switch (it.k) {
+        case "prop":
+          props.push({ name: it.name, value: this.expr(it.value, scope), span: it.span });
+          break;
+        case "flag":
+          flags.push({ name: it.name, value: true, span: it.span });
+          break;
+        case "let":
+          scope.vars.set(it.name, this.expr(it.value, scope));
+          break;
+        case "for": {
+          const iter = this.expr(it.iter, scope);
+          const list = Array.isArray(iter) ? iter : iter instanceof Vec ? iter.v : null;
+          if (!list) throw new EvalError(`for ... in needs a list, got ${typeName(iter)}`, it.iter.span);
+          for (const v of list) {
+            const inner = new Scope(scope);
+            inner.vars.set(it.varName, v);
+            this.analysisItems(it.body, inner, props, flags, depth + 1);
+          }
+          break;
+        }
+        case "if": {
+          const c = this.expr(it.cond, scope);
+          if (truthy(c)) this.analysisItems(it.then, new Scope(scope), props, flags, depth + 1);
+          else if (it.else) this.analysisItems(it.else, new Scope(scope), props, flags, depth + 1);
+          break;
+        }
+        default:
+          throw new EvalError("An analysis block takes properties such as fix:, load:, safety:, flags such as gravity, and let, for and if.", it.span);
+      }
+    }
   }
 
   // ---------------- output ----------------
@@ -1116,6 +1818,7 @@ class Evaluator {
     const edges: { from: string; to: string }[] = [];
     for (const [name, kind] of this.defKind) nodes.push({ id: name, kind, label: this.defLabel.get(name) ?? name });
     for (const r of this.reqs) nodes.push({ id: `require:${r.label}`, kind: "require", label: r.label });
+    for (const a of this.analyses) nodes.push({ id: `analysis:${a.label}`, kind: "analysis", label: a.label });
     for (const [id, set] of this.deps) for (const d of set) if (d !== id) edges.push({ from: d, to: id });
     const usedBy = new Map<string, string[]>();
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
@@ -1128,7 +1831,8 @@ class Evaluator {
       for (const o of d.options)
         for (const st of o.sets)
           if (!paramNames.has(st.param)) this.diags.push({ message: `Option "${o.label}" sets "${st.param}", which is not a parameter`, start: st.span.start, end: st.span.end, severity: "warning" });
-    return {
+    for (const sk of this.sketches) sk.usedBy = (usedBy.get(sk.name) ?? []).filter((n) => this.defKind.get(n) === "part");
+    const model: Model = {
       name: this.name,
       notes: this.notes,
       brief: this.brief,
@@ -1136,16 +1840,28 @@ class Evaluator {
       parts: this.parts,
       requirements: this.reqs,
       decisions: this.decisions,
+      sketches: this.sketches,
+      analyses: this.analyses,
       diagnostics: [...parseDiags, ...this.diags],
       graph: { nodes, edges },
       blocks: this.blocks,
       geoQueries: dedupeGeo(this.geoQueries),
+      drawings: this.drawings,
       evalMs: 0,
+      machine: hasMachine(this.machine) ? this.machine : undefined,
     };
+    // the brief's "how it's made" is the default for every custom part
+    const b = this.brief;
+    if (b) applyDefaultProcess(model, b.processSpec ?? null, { buildVolume: b.buildVolume, material: b.material });
+    return model;
   }
 }
 
 // ---------------- helpers ----------------
+
+function hasMachine(m: MachineData): boolean {
+  return m.components.length + m.wires.length + m.nets.length + m.calcs.length + m.firmware.length + m.tests.length + m.items.length > 0;
+}
 
 function truthy(v: Value): boolean {
   if (typeof v === "boolean") return v;
@@ -1160,9 +1876,17 @@ function mergePending(l: Value, r: Value): Pending {
   return new Pending(keys);
 }
 
+/** The ready-made features in a value (a feature or a list of them), or null when it holds none. */
+function flattenFeatures(v: Value): FeatureV[] | null {
+  if (v instanceof FeatureV) return [v];
+  if (Array.isArray(v) && v.length && v.every((x) => x instanceof FeatureV)) return v as FeatureV[];
+  return null;
+}
+
 function flattenShapes(v: Value, span: Span): ShapeV[] {
   if (v instanceof ShapeV) return [v];
   if (Array.isArray(v)) return v.flatMap((x) => flattenShapes(x, span));
+  if (v instanceof ProfileV) throw new EvalError("This is a flat profile; turn it into a solid with extrude(), revolve(), sweep(), loft(), emboss() or engrave()", span);
   throw new EvalError(`Expected a shape (box, cylinder, hole, ...) but got ${typeName(v)}`, span);
 }
 
@@ -1261,31 +1985,5 @@ function collectScope(s: Scope): string[] {
   return out;
 }
 
-export function suggest(name: string, options: string[]): string | undefined {
-  let best: string | undefined;
-  let bestD = Infinity;
-  for (const o of options) {
-    const d = levenshtein(name.toLowerCase(), o.toLowerCase());
-    if (d < bestD) {
-      bestD = d;
-      best = o;
-    }
-  }
-  return bestD <= Math.max(2, Math.floor(name.length / 3)) ? best : undefined;
-}
-
-function levenshtein(a: string, b: string): number {
-  const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const tmp = dp[j];
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-      prev = tmp;
-    }
-  }
-  return dp[b.length];
-}
-
+export { suggest };
 export type { V2 };

@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { MeshData } from "../kernel/build";
 import { xformMatrix, type Xform } from "../kernel/recipe";
 import type { EvalPart, Model } from "../core/model";
+import { catalogPart, searchLinks, shopLinks, type ShopLink } from "../machine/catalog";
+import type { CatalogPart } from "../machine/types";
 import { IMPORT_META_VERSION, MAX_BODIES, MAX_STEP_BYTES, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { cleanName } from "../kernel/stepText";
 import { fromBase64, gunzip, sha256Hex } from "./blobs";
@@ -315,10 +317,38 @@ export function writeStl(items: { mesh: MeshData; xf: Xform[] }[], header = "Ker
   return buf;
 }
 
-/** Bill of materials grouped by identical description. */
-export function bomRows(model: Model): { qty: number; item: string; description: string; standard: string; material: string; kind: string }[] {
-  const rows = new Map<string, { qty: number; item: string; description: string; standard: string; material: string; kind: string }>();
+export interface BomRow {
+  qty: number;
+  item: string;
+  description: string;
+  standard: string;
+  material: string;
+  kind: string;
+  /** unit price in USD: the component's price:, the catalog's typical price, or a buy item's price */
+  price?: number;
+  /** how the price was worked out, e.g. "$8 per metre" */
+  priceNote?: string;
+  /** the best place to buy: the design's buy: link, else the maker or distributor page */
+  link?: string;
+  /** every shop link: direct pages first, then marketplace searches */
+  links: ShopLink[];
+  catalogId?: string;
+  /** cut length in mm for stock items */
+  length?: number;
+}
+
+/** Price per metre when the catalog says so (profiles), else per piece. */
+function catalogPrice(p: CatalogPart, length?: number): { price?: number; note?: string } {
+  if (p.price_usd === undefined) return {};
+  if (p.price_per === "m" && length) return { price: Math.round(p.price_usd * (length / 1000) * 100) / 100, note: `$${p.price_usd} per metre` };
+  return { price: p.price_usd };
+}
+
+/** Bill of materials grouped by identical description, with purchased extras from buy statements. */
+export function bomRows(model: Model): BomRow[] {
+  const rows = new Map<string, BomRow>();
   const seenInstance = new Set<string>();
+  const comps = new Map((model.machine?.components ?? []).map((c) => [c.name, c]));
   for (const p of model.parts) {
     // count multi-solid components (motor body + shaft) once per instance
     const instance = p.id.split(".")[0];
@@ -326,23 +356,55 @@ export function bomRows(model: Model): { qty: number; item: string; description:
     seenInstance.add(instance);
     const description = p.bom?.description ?? (p.kind === "part" ? `Custom part: ${p.label}` : p.label);
     const kind = p.kind === "part" ? "Make" : "Buy";
-    const key = `${kind}|${description}|${p.material}`;
+    const cp = p.bom?.catalogId ? catalogPart(p.bom.catalogId) : undefined;
+    const mc = cp ? comps.get(p.name) : undefined;
+    let price: number | undefined;
+    let priceNote: string | undefined;
+    let links: ShopLink[] = [];
+    if (cp) {
+      const c = catalogPrice(cp, p.bom?.length);
+      price = mc?.price ?? c.price;
+      priceNote = mc?.price !== undefined ? undefined : c.note;
+      links = shopLinks(cp);
+      if (mc?.buyUrl) links = [{ vendor: "Design link", url: mc.buyUrl, direct: true }, ...links.filter((l) => l.url !== mc.buyUrl)];
+    }
+    const link = links.find((l) => l.direct)?.url;
+    const key = `${kind}|${description}|${p.material}|${price ?? ""}|${link ?? ""}`;
     const row = rows.get(key);
+    // a bought catalog part's material is only its colour in the model; stock cut to length keeps it
+    const material = cp && !cp.cut_to_length ? "" : p.material;
     if (row) row.qty++;
-    else rows.set(key, { qty: 1, item: p.kind === "part" ? p.name : p.imported ? p.imported.file : p.libKind ?? p.name, description, standard: p.bom?.standard ?? "", material: p.material, kind });
+    else rows.set(key, { qty: 1, item: p.kind === "part" ? p.name : p.imported ? p.imported.file : (cp?.kind ?? p.libKind ?? p.name), description, standard: p.bom?.standard ?? "", material, kind, price, priceNote, link, links, catalogId: cp?.id, length: p.bom?.length });
+  }
+  for (const it of model.machine?.items ?? []) {
+    const links: ShopLink[] = [...(it.buyUrl ? [{ vendor: "Design link", url: it.buyUrl, direct: true }] : []), ...searchLinks(it.search ?? it.label)];
+    rows.set(`Buy|item|${it.label}|${rows.size}`, { qty: it.qty, item: "item", description: it.label, standard: "", material: "", kind: "Buy", price: it.price, link: it.buyUrl, links });
   }
   return [...rows.values()].sort((a, b) => (a.kind === b.kind ? a.item.localeCompare(b.item) : a.kind === "Make" ? -1 : 1));
 }
 
+/** Sum of qty × price over priced rows, and how many rows have no price. */
+export function bomTotal(rows: BomRow[]): { total: number; unpriced: number } {
+  let total = 0;
+  let unpriced = 0;
+  for (const r of rows) {
+    if (r.kind !== "Buy") continue;
+    if (r.price === undefined) unpriced++;
+    else total += r.price * r.qty;
+  }
+  return { total: Math.round(total * 100) / 100, unpriced };
+}
+
+export function csvEscape(s: string | number | undefined): string {
+  const t = s === undefined ? "" : String(s);
+  // neutralise spreadsheet formula injection
+  const safe = /^[=+\-@\t\r]/.test(t) ? "'" + t : t;
+  return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+}
+
 export function bomCsv(model: Model): string {
-  const esc = (s: string | number) => {
-    const t = String(s);
-    // neutralise spreadsheet formula injection
-    const safe = /^[=+\-@\t\r]/.test(t) ? "'" + t : t;
-    return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-  };
-  const lines = [["Qty", "Make/Buy", "Item", "Description", "Material", "Standard"].join(",")];
-  for (const r of bomRows(model)) lines.push([r.qty, r.kind, r.item, r.description, r.material, r.standard].map(esc).join(","));
+  const lines = [["Qty", "Make/Buy", "Item", "Description", "Material", "Standard", "Price", "Link"].join(",")];
+  for (const r of bomRows(model)) lines.push([r.qty, r.kind, r.item, r.description, r.material, r.standard, r.price !== undefined ? r.price.toFixed(2) : "", r.link ?? r.links[0]?.url ?? ""].map(csvEscape).join(","));
   return lines.join("\n") + "\n";
 }
 

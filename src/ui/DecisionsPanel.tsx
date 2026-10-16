@@ -248,7 +248,7 @@ function DecisionCard({ d, model, source, open, onToggle }: { d: EvalDecision; m
                             </button>
                           </>
                         ) : (
-                          <button className="btn sm" disabled={busy} onClick={() => void sendMessage(`Switch the decision “${d.title}” to “${o.label}”.`)} data-tip="This needs a design change, so Claude makes it">
+                          <button className="btn sm" disabled={busy} onClick={() => void sendMessage(`Switch the decision “${d.title}” to “${o.label}”.`, { design: true })} data-tip="This needs a design change, so Claude makes it">
                             <Icon.Sparkle size={12} /> Ask Claude to switch
                           </button>
                         )}

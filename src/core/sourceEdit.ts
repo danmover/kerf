@@ -4,9 +4,12 @@
 import type { EvalParam, Model } from "./model";
 import { fmtNum } from "../lang/values";
 import { parse } from "../lang/parser";
+import { UNITS } from "../lang/lexer";
 
-const KEEP_UNITS = new Set(["", "mm", "deg", "g", "N", "rpm"]);
-const BASE_UNIT: Record<string, string> = { cm: "mm", m: "mm", in: "mm", rad: "deg", kg: "g", Nm: "Nm", "%": "" };
+// Units a parameter keeps when its value is rewritten (the value is written back in that unit), and units
+// that are rewritten in their base unit instead.
+const KEEP_UNITS = new Set(["", "mm", "deg", "g", "N", "rpm", "MPa", "Nmm", "Nm", "s", "ms", "min", "h", "hr", "V", "mV", "A", "mA", "W", "kW", "Wh", "Ah", "mAh", "Ohm", "kOhm", "Hz", "kHz", "C", "degC"]);
+const BASE_UNIT: Record<string, string> = { cm: "mm", m: "mm", in: "mm", rad: "deg", kg: "g", "%": "", kN: "N", lbf: "N", kgf: "N", GPa: "MPa", kPa: "MPa", bar: "MPa", psi: "MPa" };
 
 export function formatParamValue(p: EvalParam, value: number | string | boolean): string {
   if (typeof value === "string") return JSON.stringify(value);
@@ -15,9 +18,10 @@ export function formatParamValue(p: EvalParam, value: number | string | boolean)
   const m = /^-?\d+(?:\.\d+)?\s*([a-zA-Z%]*)$/.exec(text);
   let unit = m ? m[1] : "";
   if (!KEEP_UNITS.has(unit)) unit = BASE_UNIT[unit] ?? "";
-  if (unit === "Nm") return `${fmtNum(value / 1000, 4)}Nm`;
-  const digits = Math.abs(value) < 10 ? 3 : 2;
-  return `${fmtNum(value, digits)}${unit}`;
+  // values are in base units (seconds, N·mm, ...): write them back in the unit the text uses
+  const shown = unit ? value / (UNITS[unit] ?? 1) : value;
+  const digits = unit === "Nm" ? 4 : Math.abs(shown) < 10 ? 3 : 2;
+  return `${fmtNum(shown, digits)}${unit}`;
 }
 
 /** Replace a parameter's value expression with a literal. */

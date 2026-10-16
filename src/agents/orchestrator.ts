@@ -6,7 +6,7 @@
 // integrated checks back to the lead assistant.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { getApiKey } from "../persist/vault";
+import { claudeClient, claudeParallel, claudeRoute } from "../ai/client";
 import { useSettings, type Effort } from "../app/settings";
 import { setSource, useDesign, whenChecked } from "../core/engine";
 import { commitSource, onProjectOpen, setUndoGuard, useProject } from "../app/project";
@@ -17,6 +17,7 @@ import type { ToolOutcome } from "../ai/tools";
 import { composeSections, definedNames, INTEGRATION, LAYOUT, mergeByRegion, newSection, ownerAt, splitSections, withMeta, type Section, type Sectioned } from "./sections";
 import { checkPlan, sectionOrder, type SubPlan } from "./plan";
 import { addUsage, emptyTally, estimateRun, fmtUsd, roughTokens, type Tally } from "./pricing";
+import { recordSpend } from "../ai/spend";
 import { kickoffMessage, subagentSystemPrompt } from "./prompts";
 import { runAgent, SUBAGENT_TOOLS, type AgentEnd, type Workspace } from "./subagent";
 import { defaultWorkers, pool } from "./isolated";
@@ -76,7 +77,7 @@ setUndoGuard(() => (live ? "Undo waits for the parallel build. Stop it from its 
 
 export async function startBuild(input: BuildInput, ctx: { signal?: AbortSignal; toolUseId?: string }): Promise<ToolOutcome> {
   if (live) return fail("A parallel build is already running. Wait for it to finish.", "Another build is running");
-  if (!getApiKey()) return fail("No API key is available for the agents.", "No API key");
+  if (!claudeRoute()) return fail("No API key is available for the agents.", "No API key");
   const projectId = useProject.getState().current?.id;
   if (!projectId) return fail("No project is open.", "No project open");
 
@@ -116,7 +117,7 @@ export async function startBuild(input: BuildInput, ctx: { signal?: AbortSignal;
 
 /** Re-run one subassembly's agent with an instruction from the user (outside the chat). */
 export async function reviseSubassembly(id: string, instruction: string, parentRunId?: string): Promise<void> {
-  if (live || !instruction.trim() || !getApiKey()) return;
+  if (live || !instruction.trim() || !claudeRoute()) return;
   const projectId = useProject.getState().current?.id;
   if (!projectId) return;
   const source = useDesign.getState().source;
@@ -292,7 +293,7 @@ function applyReviewEdits(l: Live) {
 async function schedule(l: Live, instruction?: string) {
   const settings = useSettings.getState();
   pool.size = settings.agentWorkers || defaultWorkers();
-  const anthropic = new Anthropic({ apiKey: getApiKey()!, dangerouslyAllowBrowser: true, maxRetries: 3, timeout: 10 * 60 * 1000 });
+  const anthropic = claudeClient({ maxRetries: 3 })!;
   const system = subagentSystemPrompt();
   const pending = l.planIds.slice();
   const running = new Map<string, Promise<void>>();
@@ -301,7 +302,7 @@ async function schedule(l: Live, instruction?: string) {
   const statusOf = (id: string) => getAgentRun()?.branches.find((b) => b.id === id)?.status;
   while (pending.length || running.size) {
     for (const id of pending.slice()) {
-      if (running.size >= settings.agentParallel) break;
+      if (running.size >= claudeParallel(settings.agentParallel)) break;
       if (l.runAbort.signal.aborted || l.fatal) {
         pending.splice(pending.indexOf(id), 1);
         patchBranch(id, (b) => (b.status === "queued" || b.status === "waiting" ? { ...b, status: "stopped", activity: undefined, summary: l.fatal ?? "Stopped before it started." } : b));
@@ -381,6 +382,7 @@ async function startAgent(l: Live, id: string, anthropic: Anthropic, system: str
         },
         updateStep: (sid, p) => patchBranch(id, (b) => ({ ...b, steps: b.steps.map((s) => (s.id === sid ? { ...s, ...p } : s)) })),
         usage: (model, u) => {
+          recordSpend("agents", model, u);
           const t = addUsage(l.tally.get(id) ?? emptyTally(), model, u);
           l.tally.set(id, t);
           const total = [...l.tally.values()].reduce((a, x) => a + x.cost, 0);
@@ -456,7 +458,7 @@ function workspace(l: Live, id: string): Workspace {
       const vp = viewport();
       if (!vp) return { text: "The 3D view is not available right now." };
       const ids = partsOf(useDesign.getState().source, id);
-      const url = await vp.capture({ view, width: 1024, height: 704, focus: ids, section, mime: "image/jpeg", quality: 0.85, samples: 24 });
+      const url = await vp.capture({ view, width: 1024, height: 704, focus: ids, section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: false });
       const note = l.userEdited ? " The user is editing the design, so this may not show your latest changes." : "";
       return { image: url.split(",")[1] ?? "", text: `Rendered the ${view} view of the assembled model${section ? `, sectioned across ${section}` : ""}, with your ${ids.length} solid(s) highlighted and other parts ghosted. Other subassemblies may still be in progress. Z is up.${note}` };
     },

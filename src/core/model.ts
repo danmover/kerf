@@ -4,6 +4,11 @@ import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
+import type { MachineData } from "../machine/types";
+import type { EvalSketch } from "../sketch/types";
+import type { AnalysisSpec } from "../analysis/spec";
+import type { ProcessSpec } from "../mfg/types";
+import type { DrawingSpec } from "../drawing/spec";
 
 export interface Motion {
   origin: V3;
@@ -22,6 +27,19 @@ export interface GearInfo {
   axis: V3;
   phase: number; // degrees, in frameFor(axis)
   meshWith?: string; // component name of the gear it meshes with
+  bore?: number; // shaft hole diameter (0 or missing: none)
+}
+
+export interface BearingInfo {
+  code: string;
+  bore: number;
+  od: number;
+  width: number;
+  /** basic dynamic load rating C, N */
+  dynamicLoadN: number;
+  /** global centre and axis */
+  center: V3;
+  axis: V3;
 }
 
 export interface FastenerInfo {
@@ -41,6 +59,18 @@ export interface EvalPart {
   group: string;
   color: string;
   material: string;
+  /** how the part is made (custom parts only; library components are bought) */
+  process?: ProcessSpec;
+  /** span of the part's process: property, for edits */
+  processSpan?: Span;
+  /** the process came from a design-wide default (applyDefaultProcess), not from the part */
+  processInherited?: boolean;
+  /** process: false: bought or made by hand, so the brief's process does not apply */
+  processNone?: boolean;
+  /** process settings filled in from design-wide defaults; left out when the process is written back */
+  processDefaults?: string[];
+  /** span of the part's material: property, when it names one */
+  materialSpan?: Span;
   /** surface finish; undefined means the material's default (see library/materials) */
   finish?: string;
   recipe: PartRecipe;
@@ -54,8 +84,13 @@ export interface EvalPart {
   deps: string[];
   motion?: Motion;
   gear?: GearInfo;
+  bearing?: BearingInfo;
   fastener?: FastenerInfo;
-  bom?: { description: string; standard?: string };
+  bom?: { description: string; standard?: string; catalogId?: string; length?: number };
+  /** named features (`add ... as name`), for selectors and inspection */
+  features?: { name: string; kind: string; cosmetic: boolean }[];
+  /** detailed builds differ from fast ones (threads, knurls, cosmetic steps) */
+  detail?: boolean;
   /** set for bodies of an imported STEP file */
   imported?: ImportedBody;
 }
@@ -138,7 +173,7 @@ export interface EvalDecision {
 
 export interface DepNode {
   id: string;
-  kind: "param" | "given" | "let" | "interface" | "component" | "part" | "require";
+  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "require" | "analysis";
   label: string;
 }
 
@@ -201,7 +236,10 @@ export interface Brief {
   temp?: [number, number];
   outdoor?: boolean;
   exposure: string[];
+  /** as written: text, or process source like mfg.fdm(layer: 0.2) */
   process?: string;
+  /** the process parts default to, when Kerf has rules for it */
+  processSpec?: ProcessSpec;
   material?: string;
   quantity?: number;
   buildVolume?: V3;
@@ -227,6 +265,10 @@ export interface Model {
   parts: EvalPart[];
   requirements: EvalRequirement[];
   decisions: EvalDecision[];
+  /** 2D constrained sketches, solved, with what the sketch editor needs */
+  sketches: EvalSketch[];
+  /** stress and drivetrain analyses declared with analysis blocks */
+  analyses: AnalysisSpec[];
   diagnostics: Diagnostic[];
   /** dependency graph: edges from a definition to what reads it */
   graph: { nodes: DepNode[]; edges: { from: string; to: string }[] };
@@ -234,5 +276,9 @@ export interface Model {
   blocks: { name: string; kind: string; span: Span; locked: boolean }[];
   /** geometric queries requested by requirements */
   geoQueries: GeoQuery[];
+  /** engineering drawings defined in the source */
+  drawings: DrawingSpec[];
   evalMs: number;
+  /** purchased parts, wiring, calculations, firmware and tests (designs that use catalog parts) */
+  machine?: MachineData;
 }

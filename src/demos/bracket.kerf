@@ -1,0 +1,111 @@
+design "Shaft Support Bracket"
+note "Bent-plate bracket built from constrained sketches: a side profile extruded to width, mounting holes and a shaft bore cut through, a gusset, and a flanged bushing revolved from its own profile. Open the sketches tab to edit any profile."
+
+// ── Sizes ──────────────────────────────────────────────
+param thickness = 5mm   range 2 .. 12   "Plate thickness"
+param base_len  = 60mm  range 35 .. 120 "Length of the foot"
+param height    = 55mm  range 35 .. 120 "Height of the upright"
+param width     = 40mm  range 25 .. 80  "Bracket width"
+param bend_r    = 4mm   range 0.5 .. 10 "Inside bend radius"
+param shaft_d   = 8mm   "Shaft diameter"
+param shaft_z   = 37mm  "Shaft height above the floor"
+
+let sleeve_od = shaft_d + 4
+let flange_d  = shaft_d + 12
+
+// ── Side profile, drawn on the front plane (X across, Z up) ──
+sketch side {
+  plane: XZ
+  line l1 = (0, 0) -> (60, 0)
+  line l2 = l1.end -> (60, 5)
+  line l3 = l2.end -> (5, 5)
+  line l4 = l3.end -> (5, 55)
+  line l5 = l4.end -> (0, 55)
+  line l6 = l5.end -> l1.start
+  coincident l1.start, origin
+  horizontal l1, l3, l5
+  vertical l2, l4, l6
+  length l1 = base_len
+  length l6 = height
+  distance l1, l3 = thickness
+  distance l6, l4 = thickness
+  fillet l3.end = bend_r
+  fillet l1.start = bend_r + thickness
+}
+
+// gusset between the foot and the upright, starting at the side profile's
+// inside corner so it follows the plate thickness
+sketch gusset {
+  plane: XZ
+  line g1 = side.l3.end -> (28, 5)
+  line g2 = g1.end -> (5, 28)
+  line g3 = g2.end -> g1.start
+  horizontal g1
+  vertical g3
+  equal g1, g3
+  length g1 = (base_len - thickness) * 0.4
+}
+
+// mounting holes in the foot
+sketch mount_holes {
+  plane: XY
+  offset: thickness
+  circle h1 = (42, -12), d: 5.5
+  circle h2 = (42, 12), d: 5.5
+  equal h1, h2
+  symmetric h1.center, h2.center, x_axis
+  vdistance h1.center, h2.center = width - 16
+  hdistance origin, h1.center = base_len - 18
+  diameter h1 = 5.5
+}
+
+// bore for the bushing, on the side plane (Y across, Z up)
+sketch bore {
+  plane: YZ
+  circle c1 = (0, 37), d: 12
+  coincident c1.center, y_axis
+  vdistance origin, c1.center = shaft_z
+  diameter c1 = sleeve_od + 0.2
+}
+
+// half-section of the flanged bushing, spun about its axis
+sketch bushing_profile {
+  plane: XZ
+  construction line axis = (-10, 37) -> (15, 37)
+  line b1 = (-3, 41) -> (9, 41)
+  line b2 = b1.end -> (9, 43)
+  line b3 = b2.end -> (0, 43)
+  line b4 = b3.end -> (0, 47)
+  line b5 = b4.end -> (-3, 47)
+  line b6 = b5.end -> b1.start
+  horizontal axis, b1, b3, b5
+  vertical b2, b4, b6
+  vdistance origin, axis.start = shaft_z
+  hdistance axis.start, origin = 10
+  length axis = 25
+  distance axis, b1 = shaft_d / 2
+  distance axis, b3 = sleeve_od / 2
+  distance axis, b5 = flange_d / 2
+  coincident b3.end, y_axis
+  length b5 = 3
+  length b1 = 3 + thickness + 4
+}
+
+// ── Parts ──────────────────────────────────────────────
+part bracket {
+  color: #5b8cff
+  material: "Aluminum 6061"
+  body extrude(side, width, symmetric: true)
+  add extrude(gusset, 4, symmetric: true)
+  cut extrude(mount_holes, through: true)
+  cut extrude(bore, through: true)
+}
+
+part bushing {
+  color: #e0a84e
+  material: "Brass"
+  body revolve(bushing_profile, axis: bushing_profile.axis)
+}
+
+require "shaft clears the foot": shaft_z - flange_d / 2 >= thickness + 2
+require "bolt holes stay on the foot": base_len - 18 + 5.5 / 2 <= base_len - 3
