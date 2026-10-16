@@ -229,35 +229,67 @@ function panelMesh(pn: Panel): THREE.Mesh {
   return mesh;
 }
 
+function studioScene(p: LightingPreset) {
+  const scene = new THREE.Scene();
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(40, 64, 32), skyMaterial(p)));
+  for (const pn of p.panels) scene.add(panelMesh(pn));
+  return scene;
+}
+
+function disposeScene(scene: THREE.Scene) {
+  scene.traverse((o) => {
+    if (o instanceof THREE.Mesh) {
+      o.geometry.dispose();
+      (o.material as THREE.Material).dispose();
+    }
+  });
+}
+
 /** Bakes and caches the environment map for each preset. */
 export class StudioEnvironments {
   private cache = new Map<LightingId, THREE.WebGLRenderTarget>();
+  private cubes = new Map<LightingId, THREE.WebGLCubeRenderTarget>();
   constructor(private renderer: THREE.WebGLRenderer) {}
 
+  /** Prefiltered for the interactive view. */
   get(p: LightingPreset): THREE.Texture {
     let rt = this.cache.get(p.id);
     if (!rt) {
-      const scene = new THREE.Scene();
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(40, 64, 32), skyMaterial(p));
-      scene.add(dome);
-      for (const pn of p.panels) scene.add(panelMesh(pn));
+      const scene = studioScene(p);
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       rt = pmrem.fromScene(scene, 0, 0.1, 100);
       pmrem.dispose();
-      scene.traverse((o) => {
-        if (o instanceof THREE.Mesh) {
-          o.geometry.dispose();
-          (o.material as THREE.Material).dispose();
-        }
-      });
+      disposeScene(scene);
       this.cache.set(p.id, rt);
+    }
+    return rt.texture;
+  }
+
+  /** Unfiltered HDR cube for the path tracer, which samples the lights in it directly. */
+  cube(p: LightingPreset): THREE.CubeTexture {
+    let rt = this.cubes.get(p.id);
+    if (!rt) {
+      rt = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType, generateMipmaps: false });
+      const scene = studioScene(p);
+      const cam = new THREE.CubeCamera(0.1, 100, rt);
+      const r = this.renderer;
+      const auto = r.autoClear;
+      const prev = r.getRenderTarget();
+      r.autoClear = true;
+      cam.update(r, scene);
+      r.autoClear = auto;
+      r.setRenderTarget(prev);
+      disposeScene(scene);
+      this.cubes.set(p.id, rt);
     }
     return rt.texture;
   }
 
   dispose() {
     for (const rt of this.cache.values()) rt.dispose();
+    for (const rt of this.cubes.values()) rt.dispose();
     this.cache.clear();
+    this.cubes.clear();
   }
 }
 

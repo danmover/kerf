@@ -54,6 +54,7 @@ npm run typecheck
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
 - Kerf's own renderer on WebGL: soft area-light shadows, ambient occlusion, clean anti-aliased edges and gentle bloom that refine when the view is still. Five studio lighting presets, a turnable key light (Alt-drag), and draft/balanced/high quality.
+- Photoreal view (P): the same parts, materials and lighting, path traced on the GPU while the view is still. Light bounces between parts, metals reflect each other, clear plastics refract, and shadows soften with the size of the light. It is denoised while it refines, and the interactive view takes over the moment anything moves.
 - Realistic materials and finishes (printed layer lines, brushed and machined metal, anodizing, carbon weave, wood grain, clear plastics). Pick them from a material picker that previews on the model as you hover, or write `material:` and `finish:` in the design.
 - Animations: parts sweep in when built, dissolve and re-form when they change, spring apart when exploded, assemble in order, and turn on a turntable (T). The camera glides between views.
 - Code editor with highlighting, autocomplete and inline errors. Clicking a part jumps to its code.

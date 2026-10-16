@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SceneController } from "./viewport/scene";
+import { SceneController, type PhotoStatus } from "./viewport/scene";
 import { meshes, useDesign } from "../core/engine";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
@@ -27,6 +27,7 @@ export function Viewport() {
   const view = useView();
   const settings = useSettings();
   const [webglError, setWebglError] = useState("");
+  const [photo, setPhoto] = useState<PhotoStatus>({ state: "off", samples: 0, max: 0 });
 
   useEffect(() => {
     if (!mount.current) return;
@@ -54,6 +55,7 @@ export function Viewport() {
     if (import.meta.env.DEV) (window as unknown as { __kerfViewport?: SceneController }).__kerfViewport = c;
     c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
     c.onTurntableStop = () => useView.setState({ turntable: false });
+    c.onPhotoStatus = setPhoto;
     registerViewport({
       capture: (o) => c.capture(o),
       swatch: (m, f, col, size) => c.swatch(m, f, col, size),
@@ -68,8 +70,13 @@ export function Viewport() {
   }, []);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality });
-  }, [settings.lighting, settings.lightAngle, settings.quality]);
+    ctl.current?.setRenderSettings({
+      lighting: settings.lighting,
+      lightAngle: settings.lightAngle,
+      quality: settings.quality,
+      photoreal: settings.photoreal,
+    });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal]);
 
   useEffect(() => {
     if (model) ctl.current?.setParts(model.parts, meshes);
@@ -170,6 +177,9 @@ export function Viewport() {
         </button>
         <div className="sep" />
         <LightingMenu />
+        <button className={`icon-btn ${settings.photoreal ? "active" : ""}`} onClick={() => updateSettings({ photoreal: !settings.photoreal })} data-tip="Photoreal view (P)" aria-label="Photoreal view" aria-pressed={settings.photoreal}>
+          <Icon.Aperture />
+        </button>
         <button className={`icon-btn ${view.turntable ? "active" : ""}`} disabled={!visibleParts} onClick={() => useView.setState({ turntable: !view.turntable })} data-tip="Turntable (T)" aria-label="Turntable">
           <Icon.Orbit />
         </button>
@@ -224,6 +234,7 @@ export function Viewport() {
       </AnimatePresence>
 
       <Hud stage={stage} parts={visibleParts} />
+      <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
 
@@ -327,6 +338,45 @@ function Hud({ stage, parts }: { stage: string; parts: number }) {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+const PHOTO_LABEL: Record<PhotoStatus["state"], string> = {
+  off: "",
+  paused: "Photoreal is paused",
+  waiting: "Photoreal",
+  preparing: "Preparing the photoreal view",
+  rendering: "Photoreal",
+  done: "Photoreal",
+};
+
+/** Progress of the path traced view, bottom centre of the viewport. */
+function PhotoPill({ s }: { s: PhotoStatus }) {
+  const p = s.max ? Math.min(1, s.samples / s.max) : 0;
+  const label = (s.state === "paused" && s.reason) || PHOTO_LABEL[s.state];
+  return (
+    <motion.div className={`vp-photo ${s.state}`} initial={{ opacity: 0, y: 6, x: "-50%" }} animate={{ opacity: 1, y: 0, x: "-50%" }} exit={{ opacity: 0, y: 6, x: "-50%" }} role="status" aria-live="polite">
+      {s.state === "preparing" ? <span className="spinner sm" /> : <Icon.Aperture size={13} />}
+      <span>{label}</span>
+      {(s.state === "rendering" || s.state === "waiting" || s.state === "done") && (
+        <>
+          <span className="vp-photo-bar">
+            <span style={{ transform: `scaleX(${p})` }} />
+          </span>
+          <span className="mono">
+            {s.state === "done" ? (
+              <>
+                {s.max} <Icon.Check size={11} />
+              </>
+            ) : (
+              <>
+                {s.samples}/{s.max}
+              </>
+            )}
+          </span>
+        </>
+      )}
+    </motion.div>
   );
 }
 

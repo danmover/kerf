@@ -72,6 +72,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["A"], "Play the assembly animation"],
       [["T"], "Turntable"],
       [["L"], "Next lighting (Shift+L: previous)"],
+      [["P"], "Photoreal view"],
     ],
   },
   {

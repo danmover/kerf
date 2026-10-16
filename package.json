@@ -30,6 +30,8 @@
     "replicad": "^1.1.0",
     "replicad-opencascadejs": "^1.1.0",
     "three": "^0.169.0",
+    "three-gpu-pathtracer": "0.0.23",
+    "three-mesh-bvh": "0.8.3",
     "zod": "^4.6.7",
     "zustand": "^5.0.0"
   },

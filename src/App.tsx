@@ -164,6 +164,8 @@ function useShortcuts() {
           return;
         case "t":
           return useView.setState({ turntable: !v.turntable });
+        case "p":
+          return updateSettings({ photoreal: !useSettings.getState().photoreal });
         case "a":
           return useView.setState({ explode: v.explode > 0 ? v.explode : 0.5, assemblyRequest: v.assemblyRequest + 1 });
         case "l": {

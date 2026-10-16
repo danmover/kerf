@@ -16,6 +16,7 @@ import { appearanceFor, type Appearance } from "./render/appearance";
 import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, type PartUniforms } from "./render/partShader";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
+import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 
 const ACCENT = new THREE.Color("#6d8bff");
 const HOVER = new THREE.Color("#a9bcff");
@@ -95,7 +96,31 @@ export interface RenderSettings {
   /** degrees the lighting is turned about the vertical axis */
   lightAngle: number;
   quality: Quality;
+  /** path trace the view while it is still */
+  photoreal: boolean;
 }
+
+/** What the photoreal view is doing, for the viewport's status line. */
+export interface PhotoStatus {
+  state: "off" | "paused" | "waiting" | "preparing" | "rendering" | "done";
+  /** why it is paused, as a line to show */
+  reason?: string;
+  samples: number;
+  max: number;
+}
+
+const PHOTO_QUALITY: Record<Quality, (pixelRatio: number) => PhotoQuality> = {
+  draft: () => ({ maxSamples: 96, scale: 0.5, bounces: 3 }),
+  // trace at CSS pixels on high-density screens
+  balanced: (pr) => ({ maxSamples: 512, scale: Math.min(1, 1 / pr), bounces: 5 }),
+  high: () => ({ maxSamples: 2048, scale: 1, bounces: 8 }),
+};
+/** interactive samples drawn under the photoreal view before path tracing starts */
+const PHOTO_PREVIEW = 8;
+/** stillness before path tracing starts, ms */
+const PHOTO_DELAY = 250;
+/** samples by which the path traced image has fully replaced the interactive one */
+const PHOTO_TAKEOVER = 12;
 
 /** Temporary look shown while hovering a material in the picker. */
 export interface AppearanceOverride {
@@ -115,7 +140,20 @@ export class SceneController {
   private pipe: RenderPipeline;
   private envs: StudioEnvironments;
   private preset: LightingPreset = lightingPreset("studio");
-  private render$: RenderSettings = { lighting: "studio", lightAngle: 0, quality: "balanced" };
+  private render$: RenderSettings = { lighting: "studio", lightAngle: 0, quality: "balanced", photoreal: false };
+  private photo: PhotoRenderer | null = null;
+  /** how much of the frame is the path traced image (fades in) */
+  private photoMix = 0;
+  private photoStatusKey = "";
+  private photoStatusAt = 0;
+  /** photoreal status changed (throttled) */
+  onPhotoStatus: (s: PhotoStatus) => void = () => undefined;
+  private photoLookOn = false;
+  /** the last frame only traced: its length is the tracer's cost */
+  private traceOnly = false;
+  /** the path tracer's code is loading (it is only fetched when first used) */
+  private photoLoading = false;
+  private photoError = "";
   private root = new THREE.Group();
   private overlay = new THREE.Scene();
   private interGroup = new THREE.Group();
@@ -314,6 +352,7 @@ export class SceneController {
     }
     this.pipe.dispose();
     this.swatchPipe?.dispose();
+    this.photo?.dispose();
     this.envs.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
@@ -325,6 +364,19 @@ export class SceneController {
     const prev = this.render$;
     this.render$ = { ...s };
     if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle) this.applyLighting();
+    if (prev.photoreal !== s.photoreal) {
+      if (!s.photoreal) {
+        // free the path tracer's buffers and scene copy; turning it back on rebuilds them
+        this.photoMix = 0;
+        this.photo?.dispose();
+        this.photo = null;
+        this.photoError = "";
+      }
+    }
+    if (this.photo && prev.quality !== s.quality) {
+      this.photo.quality = PHOTO_QUALITY[s.quality](this.renderer.getPixelRatio());
+      this.photo.restart(performance.now());
+    }
     if (prev.quality !== s.quality) {
       this.pipe.maxSamples = SAMPLES[s.quality];
       this.key.shadow.mapSize.setScalar(s.quality === "high" ? 4096 : 2048);
@@ -642,7 +694,7 @@ export class SceneController {
     if (d.reduceMotion) obj.opacity = obj.opacityTarget;
     const visible = !d.hidden.has(obj.id) && !p.hidden;
     obj.group.visible = visible;
-    obj.edges.visible = d.edges || selected || hovered;
+    obj.edges.visible = (d.edges && !this.photoLookOn) || selected || hovered;
     obj.mesh.layers.set(0);
     if (visible && obj.opacityTarget >= 1 && !obj.removing) {
       obj.mesh.layers.enable(L_OPAQUE);
@@ -692,8 +744,9 @@ export class SceneController {
   setDisplay(d: DisplayState) {
     this.display = d;
     for (const obj of this.parts.values()) this.applyMaterial(obj);
-    if (this.grid.visible !== d.grid) this.changed = true;
-    this.grid.visible = d.grid;
+    const grid = d.grid && !this.photoLookOn;
+    if (this.grid.visible !== grid) this.changed = true;
+    this.grid.visible = grid;
     this.updateInterferenceLook();
     const sk = [...d.selected].sort().join(",");
     if (sk !== this.selKey) {
@@ -1130,22 +1183,35 @@ export class SceneController {
 
   private frame() {
     const now = performance.now();
-    const dt = Math.min(0.05, (now - this.last) / 1000);
+    const frameMs = now - this.last;
+    const dt = Math.min(0.05, frameMs / 1000);
     this.last = now;
     const controlsMoved = this.controls.update();
     const moving = this.animate(now, dt) || controlsMoved;
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
     this.camera.updateMatrixWorld();
+    // the photoreal look hides CAD edges and the grid, but only while it can run
+    const look = this.render$.photoreal && !this.photoBlocked();
+    if (look !== this.photoLookOn) {
+      this.photoLookOn = look;
+      for (const o of this.parts.values()) this.applyMaterial(o);
+      this.grid.visible = this.display.grid && !look;
+      this.changed = true;
+    }
     if (this.pipe.cameraMoved(this.camera)) {
       if (import.meta.env.DEV) this.debugReason += " camera";
       this.changed = true;
     }
+    let restarted = false;
     if (this.changed) {
       this.changed = false;
       this.pipe.reset();
       this.maskDirty = true;
+      restarted = true;
     }
+    const photo = this.photoActive();
+    if (photo && (restarted || !photo.samples)) photo.sync(this.photoParts(), this.photoStage(), now);
     if (this.maskDirty) {
       this.renderMask();
       this.maskDirty = false;
@@ -1164,13 +1230,120 @@ export class SceneController {
     }
     if (this.interferences.length) this.needComposite = true;
 
-    if (!this.pipe.done) {
+    // under the photoreal view the interactive image is only a preview
+    const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
+    let rastered = false;
+    if (this.pipe.samples < rasterMax) {
       this.pipe.renderSample(this.scene, this.camera, (i) => this.placeKey(i));
       this.needComposite = true;
+      rastered = true;
     }
+    // anything that moves restarts the photo image, so waiting on the restart covers motion too
+    let traced = false;
+    if (photo && now - photo.changedAt > PHOTO_DELAY && this.pipe.samples >= 1) {
+      // the last frame's length sizes the tracer's tiles, when tracing was all that frame did
+      if (photo.render(this.traceOnly ? frameMs : undefined)) this.needComposite = true;
+      traced = true;
+    }
+    // the path traced image takes over as its noise clears, and leaves at once when anything moves
+    const mixTarget = photo && photo.samples >= 2 ? Math.min(1, (photo.samples - 1) / PHOTO_TAKEOVER) : 0;
+    if (!mixTarget) {
+      if (this.photoMix) this.needComposite = true;
+      this.photoMix = 0;
+    } else if (this.photoMix < mixTarget - 1e-3) {
+      this.photoMix = this.display.reduceMotion ? mixTarget : Math.min(mixTarget, this.photoMix + dt * 4);
+      this.needComposite = true;
+    }
+    this.reportPhoto(photo, now);
+    this.traceOnly = traced && !rastered && !this.needComposite;
     if (!this.needComposite) return;
     this.needComposite = false;
+    if (photo && this.photoMix > 0) this.pipe.photo(photo.texture, { mix: this.photoMix, samples: photo.samples, near: this.camera.near, far: this.camera.far });
+    else this.pipe.photo(null);
     this.present(now);
+  }
+
+  // ---------- photoreal ----------
+
+  /** Why the photoreal view can't run right now, as a line for the status pill. */
+  private photoBlocked(): string | null {
+    const d = this.display;
+    if (this.photoError) return this.photoError;
+    if (this.section.on) return "Photoreal pauses in section view";
+    if (d.xray) return "Photoreal pauses in x-ray";
+    if (d.focus.size || (d.isolate && d.selected.size)) return "Photoreal pauses while parts are isolated";
+    if (!this.parts.size) return "Nothing to render yet";
+    return null;
+  }
+
+  private photoActive(): PhotoRenderer | null {
+    if (!this.render$.photoreal || this.photoBlocked()) return null;
+    if (!this.photo && !this.photoLoading) {
+      this.photoLoading = true;
+      import("./render/photoreal")
+        .then((m) => {
+          if (this.disposed || !this.render$.photoreal || this.photo) return;
+          this.photo = new m.PhotoRenderer(this.renderer, this.camera);
+          this.photo.quality = PHOTO_QUALITY[this.render$.quality](this.renderer.getPixelRatio());
+          this.changed = true;
+        })
+        .catch((e) => {
+          console.warn("Photoreal view unavailable", e);
+          this.photoError = "This device can't run the photoreal view";
+        })
+        .finally(() => {
+          this.photoLoading = false;
+        });
+    }
+    return this.photo;
+  }
+
+  private photoParts(): PhotoPart[] {
+    this.root.updateMatrixWorld(true);
+    const out: PhotoPart[] = [];
+    for (const o of this.parts.values()) {
+      if (o.removing || !o.group.visible || o.opacityTarget < 1) continue;
+      out.push({ id: o.id, geoKey: o.geoKey, geometry: o.mesh.geometry, matrix: o.mesh.matrixWorld, look: o.look });
+    }
+    return out;
+  }
+
+  private photoStage(): PhotoStage {
+    const p = this.preset;
+    const size = this.bounds.getSize(new THREE.Vector3());
+    const floorZ = this.grid.position.z;
+    return {
+      floorZ,
+      center: this.bounds.getCenter(new THREE.Vector3()),
+      radius: Math.max(size.x, size.y, size.z, 20),
+      floor: new THREE.Color(p.backdrop.bottom),
+      shadow: p.shadow,
+      env: this.envs.cube(p),
+      envIntensity: p.envIntensity,
+      envRotation: THREE.MathUtils.degToRad(this.render$.lightAngle),
+      key: { dir: this.keyDir.clone(), color: this.key.color.clone(), intensity: p.key.i, size: p.key.size },
+      below: this.camera.position.z < floorZ,
+    };
+  }
+
+  private reportPhoto(photo: PhotoRenderer | null, now: number) {
+    let s: PhotoStatus;
+    if (!this.render$.photoreal) s = { state: "off", samples: 0, max: 0 };
+    else if (!photo) {
+      const reason = this.photoBlocked();
+      s = reason ? { state: "paused", reason, samples: 0, max: 0 } : { state: "preparing", samples: 0, max: 0 };
+    } else {
+      const max = photo.quality.maxSamples;
+      const samples = Math.floor(photo.samples);
+      const state = photo.done ? "done" : photo.compiling ? "preparing" : now - photo.changedAt <= PHOTO_DELAY ? "waiting" : "rendering";
+      s = { state, samples, max };
+    }
+    const key = `${s.state}|${s.reason ?? ""}`;
+    // state changes go out at once; sample counts at most a few times a second
+    if (key === this.photoStatusKey && (now - this.photoStatusAt < 250 || s.state !== "rendering")) return;
+    this.photoStatusKey = key;
+    this.photoStatusAt = now;
+    this.onPhotoStatus(s);
   }
 
   /** Composite the accumulated image to the canvas, then overlays and the axis triad. */
