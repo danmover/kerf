@@ -28,6 +28,7 @@ import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/sessi
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/Measure";
+import { SimLayer } from "./sim/SimLayer";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -301,6 +302,7 @@ export function Viewport() {
       <MeasureTool host={measureHost} />
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
+      {scene && !inSketch && <SimLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
