@@ -22,6 +22,7 @@ import { generalClass, scaleText } from "../../drawing/spec";
 import { Menu, MenuItem } from "../common";
 import { Icon } from "../icons";
 import { BLUEPRINT, SheetCanvas, WHITE, type CanvasApi } from "./SheetCanvas";
+import { useTheme } from "../../app/theme";
 
 const SheetIcon = ({ size = 16 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -36,15 +37,18 @@ export function DrawingSwitch() {
   const model = useDesign((s) => s.model);
   if (!model?.parts.length) return null;
   return (
-    <div className="dwg-switch segmented" role="tablist" aria-label="Centre view">
-      <button className={!open ? "active" : ""} role="tab" aria-selected={!open} onClick={closeDrawings} data-tip="3D model">
-        {!open && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
-        <span>3D</span>
-      </button>
-      <button className={open ? "active" : ""} role="tab" aria-selected={open} onClick={() => openDrawings()} data-tip="Engineering drawings (D)">
-        {open && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
-        <span>Drawings</span>
-      </button>
+    // the row measures the centre's width, so the switch can step below a toolbar it would cover
+    <div className="dwg-switch-row">
+      <div className="dwg-switch segmented" role="tablist" aria-label="Centre view">
+        <button className={!open ? "active" : ""} role="tab" aria-selected={!open} onClick={closeDrawings} data-tip="3D model">
+          {!open && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
+          <span>3D</span>
+        </button>
+        <button className={open ? "active" : ""} role="tab" aria-selected={open} onClick={() => openDrawings()} data-tip="Engineering drawings (D)">
+          {open && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
+          <span>Drawings</span>
+        </button>
+      </div>
     </div>
   );
 }
@@ -79,7 +83,8 @@ function DrawingPane() {
   const list = useDrawings((s) => s.list);
   const pending = useDrawings((s) => s.pending);
   const selected = useDrawings((s) => s.selected);
-  const theme = useDrawings((s) => s.theme);
+  const appTheme = useTheme();
+  const theme = useDrawings((s) => s.theme) ?? (appTheme === "light" ? "paper" : "blueprint");
   const asked = useDrawings((s) => s.asked);
   const sel3d = useView((s) => s.selected);
   const api = useRef<CanvasApi | null>(null);

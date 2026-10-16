@@ -95,7 +95,7 @@
   line-height: 1.5;
 }
 .import-error {
-  color: #ffb3bb;
+  color: var(--fail-ink);
   font-family: var(--sans);
   font-size: 11.5px;
 }
@@ -113,7 +113,7 @@
   margin-top: 4px;
   padding: 4px 7px;
   border-radius: 6px;
-  background: rgba(79, 209, 197, 0.1);
+  background: rgb(var(--cyan-rgb) / 0.1);
   color: var(--cyan);
 }
 .gap-readout b {
@@ -127,7 +127,7 @@
   z-index: 40;
   display: grid;
   place-items: center;
-  background: rgba(7, 9, 13, 0.55);
+  background: rgb(var(--bg-0-rgb) / 0.55);
   backdrop-filter: blur(3px);
   outline: 2px dashed var(--accent);
   outline-offset: -10px;

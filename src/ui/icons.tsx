@@ -340,6 +340,12 @@ export const Icon = {
       <path d="M6 7v10M18 8c0 5-7 4-11 9.5" />
     </I>
   ),
+  PanelLeft: (p: P) => (
+    <I {...p}>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M9 4v16" />
+    </I>
+  ),
   Compare: (p: P) => (
     <I {...p}>
       <rect x="3" y="5" width="18" height="14" rx="2" />
@@ -360,6 +366,14 @@ export const Icon = {
   Wrench: (p: P) => (
     <I {...p}>
       <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" />
+    </I>
+  ),
+  /** a lab flask: a simulated test */
+  Flask: (p: P) => (
+    <I {...p}>
+      <path d="M9 3h6" />
+      <path d="M10 3v6.2L4.6 18.4A1.7 1.7 0 0 0 6.1 21h11.8a1.7 1.7 0 0 0 1.5-2.6L14 9.2V3" />
+      <path d="M7.2 15h9.6" />
     </I>
   ),
   /** a beam fixed at a wall, bending under a load */

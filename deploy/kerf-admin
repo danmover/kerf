@@ -1,0 +1,10 @@
+#!/bin/sh
+# Admin commands inside the container, run as the same user as the server:
+#   kerf-admin list
+#   kerf-admin create-user dan@example.com Dan
+set -e
+cd /app
+if [ "$(id -u)" = "0" ]; then
+  exec setpriv --reuid=node --regid=node --init-groups node server/dist/admin.js "$@"
+fi
+exec node server/dist/admin.js "$@"

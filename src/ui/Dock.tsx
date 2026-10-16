@@ -1,5 +1,5 @@
 // The bottom dock: the brief, source code, checks, dependency graph, parts
-// list and, for machines, the build tab.
+// list and, for machines, the build and simulate tabs.
 
 import { motion } from "framer-motion";
 import { useDesign } from "../core/engine";
@@ -14,6 +14,8 @@ import { BriefPanel } from "./BriefPanel";
 import { BIcon } from "./briefIcons";
 import { briefData, openAssumptions } from "../core/brief";
 import { MachinePanel } from "./MachinePanel";
+import { SimPanel } from "./sim/SimPanel";
+import { useSim } from "../sim/runtime";
 import { Icon } from "./icons";
 import { lineCol } from "../lang/lexer";
 
@@ -29,6 +31,9 @@ export function Dock({ projectKey }: { projectKey: string }) {
   const analyses = model?.analyses.length ?? 0;
   const analysisFails = report?.items.filter((i) => i.category === "analysis" && i.status === "fail").length ?? 0;
   const analysing = useAnalysis((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
+  const scenarios = model?.scenarios?.length ?? 0;
+  const simFails = report?.items.filter((i) => i.category === "simulation" && i.status === "fail").length ?? 0;
+  const simulating = useSim((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
   const set = (t: DockTab) => useView.setState({ dockTab: t, dockOpen: true });
   const briefFails = report?.items.filter((i) => i.category === "brief" && i.status === "fail").length ?? 0;
   const toConfirm = openAssumptions(briefData(model?.brief)).length;
@@ -41,6 +46,8 @@ export function Dock({ projectKey }: { projectKey: string }) {
     { id: "bom", label: "parts list", icon: <Icon.List size={13} /> },
   ];
   if (model?.machine) tabs.push({ id: "build", label: "build", icon: <Icon.Wrench size={13} />, count: buildFails || undefined, bad: buildFails > 0 });
+  if (model?.machine || scenarios)
+    tabs.push({ id: "sim", label: "simulate", icon: simulating ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Flask size={13} />, count: scenarios ? simFails || scenarios : undefined, bad: simFails > 0 });
   return (
     <div className="dock">
       <div className="dock-head">
@@ -56,7 +63,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
         </div>
         <div className="grow" />
         {tab === "code" && errors[0] && (
-          <button className="btn ghost sm" style={{ color: "#ff9aa4", alignSelf: "center" }} onClick={() => useView.setState({ reveal: { span: { start: errors[0].start, end: errors[0].end }, nonce: Date.now() } })}>
+          <button className="btn ghost sm" style={{ color: "var(--fail-ink)", alignSelf: "center" }} onClick={() => useView.setState({ reveal: { span: { start: errors[0].start, end: errors[0].end }, nonce: Date.now() } })}>
             <Icon.Alert size={13} /> line {lineCol(source, errors[0].start).line}: {errors[0].message.slice(0, 70)}
           </button>
         )}
@@ -77,6 +84,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
           {tab === "graph" && <GraphView />}
           {tab === "bom" && <BomTable />}
           {tab === "build" && <MachinePanel />}
+          {tab === "sim" && <SimPanel />}
         </div>
       )}
     </div>

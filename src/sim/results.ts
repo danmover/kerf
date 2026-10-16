@@ -1,0 +1,129 @@
+// The numbers a scenario run produces, by name, with their units: what an
+// `expect` line can read, how the results table shows them, and the list
+// Claude is given. Values are in the design language's base units (mm, s,
+// degrees, V, A, mAh, °C), and shares are fractions so `battery_left > 30%`
+// reads as it is written.
+
+import { fmtNum } from "../lang/values";
+
+export type ResultUnit = "mm" | "mm/s" | "s" | "deg" | "share" | "V" | "A" | "mAh" | "C" | "bytes" | "N" | "count" | "turns" | "yes/no" | "text";
+
+export interface ResultInfo {
+  unit: ResultUnit;
+  doc: string;
+}
+
+/** Every run, whatever the world. `<motor>` and `<actuator>` stand for component names. */
+export const COMMON_RESULTS: Record<string, ResultInfo> = {
+  time: { unit: "s", doc: "simulated time when the run ended" },
+  stopped: { unit: "text", doc: 'why the run ended: "the job is done", "everything stopped", "duration" or a firmware stop' },
+  state: { unit: "text", doc: 'the firmware\'s last "state: …" line on the serial console' },
+  faults: { unit: "count", doc: "firmware mistakes the virtual chip caught (a pin used the wrong way, writing past an array)" },
+  ram: { unit: "bytes", doc: "RAM used: globals plus the deepest stack" },
+  ram_use: { unit: "share", doc: "RAM used as a share of the chip's RAM" },
+  loop_time: { unit: "s", doc: "longest single pass of loop()" },
+  battery_left: { unit: "share", doc: "battery charge left at the end" },
+  battery_min_volts: { unit: "V", doc: "lowest battery voltage under load" },
+  battery_used: { unit: "mAh", doc: "charge drawn from the battery" },
+  battery_peak_amps: { unit: "A", doc: "highest battery current" },
+  "<motor>.peak_amps": { unit: "A", doc: "highest motor current" },
+  "<motor>.max_temp": { unit: "C", doc: "hottest the motor winding got" },
+  "<motor>.load": { unit: "share", doc: "highest one-second average torque as a share of the motor's stall torque" },
+  "<actuator>.travel": { unit: "mm", doc: "total rod travel of a linear actuator" },
+  "fw.<name>": { unit: "count", doc: "a firmware global variable at the end of the run" },
+};
+
+export const WORLD_RESULTS: Record<string, Record<string, ResultInfo>> = {
+  sand_pit: {
+    reached: { unit: "yes/no", doc: "the nose reached the far wall" },
+    through: { unit: "yes/no", doc: "it broke through the far wall's opening (needs exit: on the pit)" },
+    out: { unit: "yes/no", doc: "the front screw came all the way out of the far side" },
+    progress: { unit: "mm", doc: "how far the nose moved towards the far wall" },
+    remaining: { unit: "mm", doc: "distance from the nose to the far wall at the end (0 when reached)" },
+    offset: { unit: "mm", doc: "how far off the straight line the nose is at the end of the run" },
+    miss: { unit: "mm", doc: "how far off the straight line the nose arrived at the far wall (only when it got there)" },
+    miss_side: { unit: "mm", doc: "sideways part of miss (+ is left)" },
+    miss_height: { unit: "mm", doc: "height part of miss (+ is up)" },
+    heading_max: { unit: "deg", doc: "largest heading error on the way" },
+    heading_end: { unit: "deg", doc: "heading at the end (+ is turned left)" },
+    roll_max: { unit: "deg", doc: "largest roll of the rear body" },
+    pitch_max: { unit: "deg", doc: "largest pitch" },
+    speed: { unit: "mm/s", doc: "average speed while moving" },
+    slip: { unit: "share", doc: "average screw slip in the sand (0 = no slip, like a nut on a thread)" },
+    side_wall: { unit: "yes/no", doc: "it ran into a side wall" },
+    floor: { unit: "yes/no", doc: "it ran along the floor" },
+    stuck_time: { unit: "s", doc: "time spent stuck (the screws turning, nothing moving)" },
+    time_to_wall: { unit: "s", doc: "when the nose reached the far wall (only when it did)" },
+    time_out: { unit: "s", doc: "when the front screw came out of the far side (only when it did)" },
+    push_peak: { unit: "N", doc: "the hardest the helper had to push the tail (only with push: on the pit)" },
+    push_distance: { unit: "mm", doc: "how far the helper pushed it in (only with push: on the pit)" },
+    "<motor>.thrust": { unit: "N", doc: "screw thrust at the end" },
+  },
+  bench: {
+    "<motor>.turns": { unit: "turns", doc: "output shaft turns over the run" },
+  },
+};
+
+/** The info for a result name, matching `<motor>` style patterns. */
+export function resultInfo(name: string, world?: string): ResultInfo | undefined {
+  const tables = [...(world && Object.hasOwn(WORLD_RESULTS, world) ? [WORLD_RESULTS[world]] : []), COMMON_RESULTS];
+  for (const t of tables) if (Object.hasOwn(t, name)) return t[name];
+  const dot = name.indexOf(".");
+  if (dot < 0) return undefined;
+  const field = name.slice(dot + 1);
+  if (name.startsWith("fw.")) return COMMON_RESULTS["fw.<name>"];
+  for (const t of tables) {
+    for (const [k, v] of Object.entries(t)) if (k.startsWith("<") && k.endsWith(`.${field}`)) return v;
+  }
+  return undefined;
+}
+
+/** A result value with its unit, for people. */
+export function fmtResult(v: number | boolean | string | undefined, unit?: ResultUnit): string {
+  if (v === undefined) return "not recorded";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "string") return v;
+  if (!Number.isFinite(v)) return String(v);
+  switch (unit) {
+    case "share":
+      return `${fmtNum(v * 100, Math.abs(v) < 0.1 ? 1 : 0)} %`;
+    case "s":
+      return Math.abs(v) < 1 && v !== 0 ? `${fmtNum(v * 1000, 2)} ms` : v >= 120 ? `${fmtNum(v / 60, 1)} min` : `${fmtNum(v, 1)} s`;
+    case "deg":
+      return `${fmtNum(v, 1)}°`;
+    case "C":
+      return `${fmtNum(v, 0)} °C`;
+    case "V":
+      return `${fmtNum(v, 2)} V`;
+    case "A":
+      return `${fmtNum(v, 2)} A`;
+    case "mAh":
+      return `${fmtNum(v, 0)} mAh`;
+    case "mm":
+      return `${fmtNum(v, 0)} mm`;
+    case "mm/s":
+      return `${fmtNum(v, 2)} mm/s`;
+    case "bytes":
+      return `${fmtNum(v, 0)} bytes`;
+    case "N":
+      return `${fmtNum(v, 0)} N`;
+    case "turns":
+      return `${fmtNum(v, 1)} turns`;
+    case "yes/no":
+      return v ? "yes" : "no";
+    default:
+      return fmtNum(v, 3);
+  }
+}
+
+/** The result names a world gives, for Claude and the editor's help. */
+export function resultDocs(world?: string): string {
+  const line = (k: string, i: ResultInfo) => `  ${k} (${i.unit}): ${i.doc}`;
+  const out: string[] = [];
+  for (const [w, t] of Object.entries(WORLD_RESULTS)) {
+    if (world && w !== world) continue;
+    out.push(`${w}:`, ...Object.entries(t).map(([k, i]) => line(k, i)));
+  }
+  out.push("every run:", ...Object.entries(COMMON_RESULTS).map(([k, i]) => line(k, i)));
+  return out.join("\n");
+}

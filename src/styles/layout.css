@@ -1,0 +1,329 @@
+/* The workspace grid for each layout (see app/layout.ts), the model panel's
+   rail of tabs, and touch sizing for tablets. */
+
+.workspace {
+  grid-template-areas: "left center chat";
+}
+/* folding the model panel slides the columns rather than jumping */
+.workspace.folding {
+  transition: grid-template-columns 0.32s var(--ease);
+}
+.workspace.portrait {
+  grid-template-areas:
+    "center center"
+    "left chat";
+}
+.ws-left {
+  grid-area: left;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.ws-panel {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.ws-panel[hidden] {
+  display: none;
+}
+.ws-panel > .panel {
+  flex: 1;
+}
+.ws-center {
+  grid-area: center;
+}
+.ws-chat {
+  grid-area: chat;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.ws-chat > .panel {
+  flex: 1;
+}
+
+/* beside a rail the panel keeps its width while the column opens, so its
+   contents slide in rather than squeezing */
+.workspace.has-rail .ws-panel {
+  flex: none;
+  width: var(--panel-w);
+}
+/* the rail is the panel's tab row on these layouts */
+.workspace.has-rail .lp-tabs {
+  display: none;
+}
+
+/* upright: the panel and chat sit under the 3D view */
+.workspace.portrait .ws-left,
+.workspace.portrait .ws-chat {
+  border-top: 1px solid var(--line);
+}
+.workspace.portrait .panel-right {
+  border-left: 0;
+}
+.workspace.portrait.panel-folded .ws-chat {
+  border-left: 1px solid var(--line);
+}
+
+/* ---------- the rail ---------- */
+
+.lp-rail {
+  flex: none;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px 5px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.lp-rail button {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  border-radius: 8px;
+  transition: background 0.15s, color 0.15s;
+}
+.lp-rail button:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.lp-rail-fold {
+  display: grid;
+  place-items: center;
+  height: 38px;
+  margin-bottom: 4px;
+}
+.lp-rail-fold svg {
+  transition: transform 0.3s var(--ease);
+}
+.lp-rail-fold.open {
+  color: var(--accent-2);
+}
+.lp-rail-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 0 6px;
+}
+.lp-rail-tab.active {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.lp-rail-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  height: 18px;
+}
+.lp-rail-icon svg {
+  width: 17px;
+  height: 17px;
+}
+.lp-rail-count {
+  position: absolute;
+  left: calc(100% - 3px);
+  top: -6px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--bg-4);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 15px;
+  text-align: center;
+}
+.lp-rail-count:empty {
+  display: none;
+}
+.lp-rail-tab.active .lp-rail-count {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.lp-rail-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.lp-rail-line {
+  position: absolute;
+  left: -5px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* ---------- touch screens ---------- */
+
+.splitter {
+  touch-action: none;
+}
+/* a hover tip has nothing to hover on a touch screen, and sticks after a tap */
+@media (hover: none) {
+  [data-tip]:hover::after {
+    display: none;
+  }
+}
+@media (pointer: coarse) {
+  /* splitters: a wider grab area, with a grip to show they move */
+  .splitter.v {
+    width: 22px;
+    margin-left: -11px;
+  }
+  .splitter.h {
+    height: 22px;
+    margin-bottom: -11px;
+  }
+  .splitter::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    border-radius: 3px;
+    background: var(--line-3);
+    transform: translate(-50%, -50%);
+  }
+  .splitter.v::after {
+    width: 4px;
+    height: 36px;
+  }
+  .splitter.h::after {
+    width: 36px;
+    height: 4px;
+  }
+  .splitter:hover,
+  .splitter.dragging {
+    background: none;
+  }
+  .splitter.dragging::after {
+    background: var(--accent);
+  }
+  /* finger-sized controls */
+  .vp-toolbar .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+  .topbar .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+  .lp-rail-tab {
+    padding: 10px 0 8px;
+  }
+  .tab {
+    min-height: 40px;
+  }
+  .composer textarea {
+    font-size: 16px;
+  }
+}
+
+/* ---------- narrow panels ---------- */
+
+/* the dock's tabs scroll sideways rather than wrapping onto two lines */
+.dock-head .tabs {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dock-head .tab {
+  flex: none;
+  white-space: nowrap;
+}
+/* a narrow chat drops the keyboard hints under the message box */
+.panel-right {
+  container-type: inline-size;
+}
+@container (max-width: 400px) {
+  .composer-box > .row > .mono:not(:has(.shimmer-text)) {
+    display: none;
+  }
+}
+/* and so does any touch screen, where they mean nothing */
+@media (pointer: coarse) {
+  .composer-box > .row > .mono:not(:has(.shimmer-text)) {
+    display: none;
+  }
+}
+/* a tablet's top bar: the save state keeps its dot, and the "projects /"
+   crumb goes (the logo still leads back to them) so the name keeps some room */
+@media (max-width: 1279px) {
+  .app:not(.phone) .topbar .save-state {
+    font-size: 0;
+    gap: 0;
+  }
+  .app:not(.phone) .topbar .crumbs {
+    flex: 0 1 auto;
+  }
+  .app:not(.phone) .topbar .crumbs > .link,
+  .app:not(.phone) .topbar .crumbs > span {
+    display: none;
+  }
+  .app:not(.phone) .topbar .project-name {
+    min-width: 96px;
+  }
+}
+
+/* the app's one column never grows past the window: a long top bar or status
+   bar gives way instead of pushing the chat off the right edge */
+.app {
+  grid-template-columns: minmax(0, 1fr);
+}
+.app > .topbar,
+.app > .statusbar {
+  min-width: 0;
+}
+
+/* press and hold on the model: a disc fills a ring around the finger, then
+   the spot chat opens (transform and opacity only, so it stays smooth while
+   a rebuild keeps the main thread busy) */
+.vp-hold {
+  position: absolute;
+  z-index: 6;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  border-radius: 50%;
+  border: 2px solid rgb(var(--accent-rgb) / 0.55);
+  pointer-events: none;
+  animation: vp-hold-ring 0.55s var(--ease) both;
+}
+.vp-hold::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: rgb(var(--accent-rgb) / 0.3);
+  animation: vp-hold-fill 0.55s linear both;
+}
+@keyframes vp-hold-ring {
+  from {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes vp-hold-fill {
+  from {
+    transform: scale(0.1);
+  }
+  to {
+    transform: scale(1);
+  }
+}

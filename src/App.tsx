@@ -8,6 +8,7 @@ import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } 
 import { useView, requestCamera, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
 import { startAnalysisRuntime } from "./analysis/runtime";
+import { startSimRuntime } from "./sim/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
 import { Onboarding } from "./screens/Onboarding";
@@ -18,8 +19,12 @@ import { SettingsModal } from "./ui/Settings";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
+import { AuthDialog } from "./ui/Account";
+import { initAccount } from "./cloud/account";
+import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
 import { startMaterialChecks } from "./materials/runtime";
+import { useThemeSync } from "./app/theme";
 
 // each opened project brings its own conversation
 onProjectOpen((p) => void loadChat(p.id));
@@ -29,6 +34,7 @@ export function App() {
   const screen = useUi((s) => s.screen);
   const hasProject = useProject((s) => !!s.current);
   const reduceMotion = useSettings((s) => s.reduceMotion);
+  useThemeSync();
   useShortcuts();
   useUnloadGuard();
 
@@ -57,6 +63,7 @@ export function App() {
           </div>
         )}
         <SettingsModal />
+        <AuthDialog />
         <ShortcutsModal />
         <ConfirmDialog />
         <Toasts />
@@ -80,7 +87,9 @@ function useBoot() {
     startEngine();
     startMaterialChecks();
     startAnalysisRuntime();
-    void Promise.allSettled([loadRememberedKey(), refreshProjects()]).then(() => {
+    startSimRuntime();
+    void Promise.allSettled([loadRememberedKey(), refreshProjects(), initAccount()]).then(() => {
+      startSync();
       if (!live) return;
       const s = useSettings.getState();
       go(!s.onboarded || s.termsAccepted !== TERMS_VERSION ? { name: "onboarding" } : { name: "home" });

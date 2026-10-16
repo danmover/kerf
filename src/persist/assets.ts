@@ -70,8 +70,16 @@ export async function addAsset(projectId: string, file: Blob, name: string): Pro
     throw new Error(`${name} is not an image or a PDF. Add photos, screenshots, sketches or PDF drawings.`);
   }
   await db.put("assets", rec);
+  for (const l of addedListeners) l(projectId);
   return rec;
 }
+
+const addedListeners = new Set<(projectId: string) => void>();
+/** Called when a file is added to a project (account sync sends it). */
+export const onAssetAdded = (fn: (projectId: string) => void) => {
+  addedListeners.add(fn);
+  return () => addedListeners.delete(fn);
+};
 
 export const getAsset = (projectId: string, id: string) => db.getOne<AssetRecord>("assets", `${projectId}:${id}`);
 

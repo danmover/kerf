@@ -14,7 +14,7 @@ import { briefChecks, type GeomLookup } from "./briefChecks";
 import { machineChecks } from "../machine/checks";
 import type { SettingValue } from "../mfg/types";
 
-export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "analysis" | "electrical" | "engineering" | "testing" | "info";
+export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "analysis" | "simulation" | "electrical" | "engineering" | "testing" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -30,7 +30,7 @@ export interface CheckItem {
   /** brief uses this check serves */
   uses?: string[];
   /** how the result was established: simulation is the finite-element solver, calculation a textbook formula, electrical rules the wiring check, physical test a test still to do */
-  basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "calculation" | "electrical rules" | "physical test";
+  basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "virtual test" | "calculation" | "electrical rules" | "physical test";
   /** what to change, in plain words */
   fix?: string;
   /** a change the app can make in one click */

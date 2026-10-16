@@ -8,6 +8,8 @@ import { useMfgView } from "./mfgView";
 import { meshes, useDesign } from "../core/engine";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
+import { useTheme } from "../app/theme";
+import { lightingPreset } from "./viewport/render/studio";
 import { registerViewport } from "../app/viewportApi";
 import { Icon } from "./icons";
 import { Menu, MenuItem } from "./common";
@@ -27,6 +29,7 @@ import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/sessi
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/Measure";
+import { SimLayer } from "./sim/SimLayer";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -42,8 +45,11 @@ export function Viewport() {
   const stage = useDesign((s) => s.stage);
   const view = useView();
   const settings = useSettings();
+  const theme = useTheme();
   const [webglError, setWebglError] = useState("");
   const [scene, setScene] = useState<SceneController | null>(null);
+  // a ring that fills while a finger is held on the model, to open the spot chat
+  const [hold, setHold] = useState<{ x: number; y: number; n: number } | null>(null);
   const sketching = useSketch((s) => !!s.active || s.picking);
   const inSketch = useSketch((s) => !!s.active);
   const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
@@ -79,6 +85,10 @@ export function Viewport() {
     if (import.meta.env.DEV) (window as unknown as { __kerfViewport?: SceneController }).__kerfViewport = c;
     c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
     c.onTurntableStop = () => useView.setState({ turntable: false });
+    c.onHold = (at) => {
+      const r = mount.current?.getBoundingClientRect();
+      setHold(at && r ? { x: at.x - r.left, y: at.y - r.top, n: Date.now() } : null);
+    };
     c.onContext = (hit) => {
       // the right button pans in a sketch; the spot chat waits until it is closed
       const sk = useSketch.getState();
@@ -111,8 +121,8 @@ export function Viewport() {
   }, []);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality });
-  }, [settings.lighting, settings.lightAngle, settings.quality]);
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, theme });
+  }, [settings.lighting, settings.lightAngle, settings.quality, theme]);
 
   useEffect(() => {
     if (model) ctl.current?.setParts(model.parts, meshes);
@@ -168,8 +178,9 @@ export function Viewport() {
   }, [sketching]);
 
   return (
-    <div className={`viewport ${inSketch ? "sketching" : ""}`}>
+    <div className={`viewport ${inSketch ? "sketching" : ""}`} data-backdrop={lightingPreset(settings.lighting, theme).light ? "light" : "dark"}>
       <div className="vp-mount" ref={mount} />
+      {hold && <div key={hold.n} className="vp-hold" style={{ left: hold.x, top: hold.y }} aria-hidden="true" />}
 
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
         <Menu
@@ -292,6 +303,7 @@ export function Viewport() {
       <MeasureTool host={measureHost} />
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
+      {scene && !inSketch && <SimLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
@@ -461,7 +473,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
       {issues.length > 0 && (
         <div style={{ marginTop: 8 }}>
           {issues.slice(0, 3).map((i) => (
-            <div key={i.id} className="row" style={{ fontSize: 11.5, color: i.status === "fail" ? "#ffb3bb" : "#ffe1a6", alignItems: "flex-start", marginTop: 3 }}>
+            <div key={i.id} className="row" style={{ fontSize: 11.5, color: i.status === "fail" ? "var(--fail-ink)" : "var(--warn-ink)", alignItems: "flex-start", marginTop: 3 }}>
               <span className={`dot ${i.status}`} style={{ marginTop: 5 }} />
               <span>{i.title}</span>
             </div>
