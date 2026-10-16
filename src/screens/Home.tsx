@@ -374,7 +374,8 @@ export function TemplateArt({ id }: { id: string }) {
         <text x="118" y="30" fill="#e9f6ff" fontSize="8" fontFamily="monospace">A</text>
         <motion.path d="M134 23v7" stroke="#e9f6ff" strokeWidth="1.4" animate={{ x: [-6, 2, 0, 0] }} transition={{ duration: 3.2, repeat: Infinity, ease: "easeOut" }} />
         <circle cx="100" cy="73" r="30" fill="none" style={line} strokeWidth="1.2" />
-        <motion.circle cx="100" cy="73" r="22" style={tint(0.1)} strokeWidth="1.3" animate={{ r: [21, 23.5, 21] }} transition={{ duration: 0.5, repeat: Infinity, ease: "easeInOut" }} />
+        {/* the cone pulses by scale: animating r logs "attribute r: Expected length" when the card unmounts mid-pulse */}
+        <motion.circle cx="100" cy="73" r="21" style={{ ...tint(0.1), originX: "100px", originY: "73px" }} strokeWidth="1.3" animate={{ scale: [1, 1.12, 1] }} transition={{ duration: 0.5, repeat: Infinity, ease: "easeInOut" }} />
         <circle cx="100" cy="73" r="7" style={{ ...violet, fill: "rgb(var(--violet-rgb) / 0.25)" }} strokeWidth="1.1" />
       </svg>
     );

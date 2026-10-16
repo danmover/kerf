@@ -1893,16 +1893,21 @@ a:hover {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+    transition-delay: 0s !important;
   }
 }
+/* delays too: a staggered list (the export panel) would otherwise sit hidden until its last delay */
 .reduce-motion *,
 .reduce-motion *::before,
 .reduce-motion *::after {
   animation-duration: 0.001ms !important;
+  animation-delay: 0s !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
+  transition-delay: 0s !important;
 }
 
 @media (max-width: 900px) {
