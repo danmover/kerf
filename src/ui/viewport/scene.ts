@@ -19,6 +19,8 @@ import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, ty
 import { MeasureOverlay } from "./measure";
 
 const ACCENT = new THREE.Color("#6d8bff");
+/** how long a finger or pen is held still to open the spot chat, ms */
+const HOLD_MS = 550;
 const HOVER = new THREE.Color("#a9bcff");
 
 /** Layers used to draw subsets of the parts (selection mask). */
@@ -128,6 +130,8 @@ export interface RenderSettings {
   /** degrees the lighting is turned about the vertical axis */
   lightAngle: number;
   quality: Quality;
+  /** the app theme: a dark lighting set swaps to a pale backdrop in the light theme */
+  theme?: "dark" | "light";
 }
 
 /** Temporary look shown while hovering a material in the picker. */
@@ -217,6 +221,8 @@ export class SceneController {
   onDoublePick: (id: string | null) => void = () => undefined;
   /** a right-click without dragging: what is under the pointer, and where on screen */
   onContext: (hit: Hit | null, clientX: number, clientY: number) => void = () => undefined;
+  /** a finger or pen held still on the view, in client pixels, and null when it lifts, moves or completes */
+  onHold: (at: { x: number; y: number } | null) => void = () => undefined;
   onFirstFrame: () => void = () => undefined;
   /** the user turned the lighting by dragging with Alt held */
   onLightAngle: (deg: number) => void = () => undefined;
@@ -312,8 +318,46 @@ export class SceneController {
       },
       { capture: true },
     );
+    // On a touch screen or with a pen, pressing and holding is the right click:
+    // it opens the spot chat on what is under the finger. A second finger
+    // (a pinch) or a move of more than a few pixels cancels it.
+    let hold: { timer: number; x: number; y: number } | null = null;
+    const endHold = () => {
+      if (!hold) return;
+      clearTimeout(hold.timer);
+      hold = null;
+      this.onHold(null);
+    };
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" || !e.isPrimary) return endHold();
+      const { clientX: x, clientY: y } = e;
+      hold = {
+        x,
+        y,
+        timer: window.setTimeout(() => {
+          endHold();
+          down = null;
+          // the finger lifts over the card that just opened: that is not a tap on
+          // it. Swallow the click the lift makes, until the next press
+          const swallow = (ev: Event) => (ev.stopPropagation(), ev.preventDefault(), done());
+          const done = () => {
+            window.removeEventListener("click", swallow, true);
+            window.removeEventListener("pointerdown", done, true);
+          };
+          window.addEventListener("click", swallow, true);
+          window.addEventListener("pointerdown", done, true);
+          this.onContext(this.hitAt(x, y), x, y);
+        }, HOLD_MS),
+      };
+      this.onHold({ x, y });
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (hold && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > 8) endHold();
+    });
+    el.addEventListener("pointercancel", endHold);
     el.addEventListener("pointerdown", (e) => (down = { x: e.clientX, y: e.clientY }));
     el.addEventListener("pointerup", (e) => {
+      endHold();
       if (this.lightDrag) {
         this.lightDrag = null;
         this.controls.enabled = true;
@@ -375,7 +419,7 @@ export class SceneController {
   setRenderSettings(s: RenderSettings) {
     const prev = this.render$;
     this.render$ = { ...s };
-    if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle) this.applyLighting();
+    if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle || prev.theme !== s.theme) this.applyLighting();
     if (prev.quality !== s.quality) {
       this.pipe.maxSamples = SAMPLES[s.quality];
       this.key.shadow.mapSize.setScalar(s.quality === "high" ? 4096 : 2048);
@@ -386,7 +430,7 @@ export class SceneController {
   }
 
   private applyLighting() {
-    const p = (this.preset = lightingPreset(this.render$.lighting));
+    const p = (this.preset = lightingPreset(this.render$.lighting, this.render$.theme));
     this.scene.environment = this.envs.get(p);
     this.scene.environmentIntensity = p.envIntensity;
     const rot = THREE.MathUtils.degToRad(this.render$.lightAngle);
@@ -411,6 +455,7 @@ export class SceneController {
       o.edgeMat.color.set(p.edge.color);
       this.applyMaterial(o);
     }
+    this.paintTriad(!!p.light);
     this.placeKey(0);
     this.swatchCache.clear();
     this.changed = true;
@@ -1518,30 +1563,48 @@ export class SceneController {
     r.setRenderTarget(null);
   }
 
+  private triad: { line: THREE.LineBasicMaterial; tip: THREE.MeshBasicMaterial; ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; label: string; axis: number }[] = [];
+
   private buildTriad() {
-    const axes: [THREE.Vector3, string, string][] = [
-      [new THREE.Vector3(1, 0, 0), "#ff5d6c", "X"],
-      [new THREE.Vector3(0, 1, 0), "#3ddc97", "Y"],
-      [new THREE.Vector3(0, 0, 1), "#6d8bff", "Z"],
+    const axes: [THREE.Vector3, string][] = [
+      [new THREE.Vector3(1, 0, 0), "X"],
+      [new THREE.Vector3(0, 1, 0), "Y"],
+      [new THREE.Vector3(0, 0, 1), "Z"],
     ];
-    for (const [v, color, label] of axes) {
+    axes.forEach(([v, label], axis) => {
+      const line = new THREE.LineBasicMaterial();
+      const tip = new THREE.MeshBasicMaterial();
       const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), v.clone().multiplyScalar(0.9)]);
-      this.triadScene.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color })));
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8), new THREE.MeshBasicMaterial({ color }));
-      tip.position.copy(v.clone().multiplyScalar(0.9));
-      this.triadScene.add(tip);
+      this.triadScene.add(new THREE.Line(g, line));
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8), tip);
+      ball.position.copy(v.clone().multiplyScalar(0.9));
+      this.triadScene.add(ball);
       const c = document.createElement("canvas");
       c.width = c.height = 64;
-      const ctx = c.getContext("2d")!;
-      ctx.fillStyle = color;
-      ctx.font = "600 40px 'IBM Plex Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, 32, 34);
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
+      const tex = new THREE.CanvasTexture(c);
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
       sp.position.copy(v.clone().multiplyScalar(1.28));
       sp.scale.setScalar(0.5);
       this.triadScene.add(sp);
+      this.triad.push({ line, tip, ctx: c.getContext("2d")!, tex, label, axis });
+    });
+    this.paintTriad(false);
+  }
+
+  /** Axis colours: the bright set on a dark backdrop, deeper ones that hold up on a light backdrop. */
+  private paintTriad(light: boolean) {
+    const colors = light ? ["#d63a4a", "#12985f", "#4763e6"] : ["#ff5d6c", "#3ddc97", "#6d8bff"];
+    for (const t of this.triad) {
+      const color = colors[t.axis];
+      t.line.color.set(color);
+      t.tip.color.set(color);
+      t.ctx.clearRect(0, 0, 64, 64);
+      t.ctx.fillStyle = color;
+      t.ctx.font = "600 40px 'IBM Plex Mono', monospace";
+      t.ctx.textAlign = "center";
+      t.ctx.textBaseline = "middle";
+      t.ctx.fillText(t.label, 32, 34);
+      t.tex.needsUpdate = true;
     }
   }
 
