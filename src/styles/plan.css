@@ -1,0 +1,659 @@
+/* The live plan: Claude's to-do tree above the chat, and its pill in the 3D view. */
+
+.plan {
+  --plan-you: var(--violet);
+  flex: none;
+  max-height: 48%;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(16, 20, 28, 0.9), rgba(11, 14, 20, 0.6));
+  position: relative;
+  min-height: 0;
+}
+.plan.is-busy::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+  opacity: 0.8;
+}
+
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px 7px;
+  background: none;
+  border: 0;
+  text-align: left;
+  color: var(--text);
+  flex: none;
+}
+.plan-head:hover .plan-goal {
+  color: var(--text);
+}
+.plan-kicker {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+  padding: 1px 5px;
+  border: 1px solid rgba(109, 139, 255, 0.35);
+  border-radius: 4px;
+  flex: none;
+}
+.plan-goal {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  transition: color 0.15s;
+}
+.plan-count {
+  font-size: 10.5px;
+  color: var(--text-3);
+  flex: none;
+}
+.plan-segs {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+}
+.plan-segs .seg {
+  width: 9px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-3);
+  transition: background 0.3s;
+}
+.plan-segs .seg.done {
+  background: var(--pass);
+}
+.plan-segs .seg.live {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: plan-pulse 1.2s ease-in-out infinite;
+}
+.plan-segs .seg.paused,
+.plan-segs .seg.waiting,
+.plan-segs .seg.blocked {
+  background: var(--warn);
+}
+.plan-segs .seg.skipped {
+  background: var(--bg-4);
+}
+
+.plan-now {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 8px 14px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.plan-body {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0 6px 6px 8px;
+}
+.plan-tree,
+.ps-children,
+.ps-activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* a step */
+.ps {
+  position: relative;
+}
+.ps-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  cursor: default;
+  position: relative;
+  outline: none;
+  transition: background 0.15s;
+}
+.ps-row:hover,
+.ps-row:focus-visible,
+.ps-row:focus-within {
+  background: var(--bg-3);
+}
+.ps-row:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.ps.live > .ps-row {
+  background: linear-gradient(90deg, rgba(109, 139, 255, 0.13), rgba(109, 139, 255, 0.02));
+}
+.ps.live > .ps-row::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.ps.flash > .ps-row {
+  animation: plan-flash 1.2s var(--ease);
+}
+.ps-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  padding-top: 1px;
+}
+.ps-title {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text);
+  word-break: break-word;
+}
+.ps.done > .ps-row .ps-title {
+  color: var(--text-2);
+}
+.ps.skipped > .ps-row .ps-title {
+  color: var(--text-4);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-4);
+}
+.ps.todo > .ps-row .ps-title {
+  color: var(--text-2);
+}
+.ps.root > .ps-row .ps-title {
+  font-weight: 500;
+}
+.ps-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.ps-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--line-2);
+  color: var(--text-3);
+  background: var(--bg-2);
+  white-space: nowrap;
+}
+.ps-tag.you {
+  color: var(--plan-you);
+  border-color: rgba(199, 146, 255, 0.35);
+  background: rgba(199, 146, 255, 0.06);
+}
+.ps-tag.agent {
+  color: var(--cyan);
+  border-color: rgba(79, 209, 197, 0.35);
+  background: rgba(79, 209, 197, 0.06);
+}
+.ps-tag.pause,
+.ps-tag.warn {
+  color: var(--warn);
+  border-color: rgba(245, 184, 75, 0.35);
+  background: var(--warn-soft);
+}
+.ps-tag.steer {
+  color: var(--plan-you);
+  border-color: rgba(199, 146, 255, 0.45);
+  background: rgba(199, 146, 255, 0.1);
+}
+.ps-tag.steer.seen {
+  color: var(--pass);
+  border-color: rgba(61, 220, 151, 0.35);
+  background: var(--pass-soft);
+}
+.ps-tag.diff {
+  cursor: pointer;
+}
+.ps-tag.diff:hover {
+  border-color: var(--line-3);
+  color: var(--text-2);
+}
+.ps-tag.meta {
+  color: var(--text-3);
+}
+.ps-time {
+  font-size: 10px;
+  color: var(--text-4);
+  padding-top: 3px;
+  flex: none;
+  min-width: 18px;
+  text-align: right;
+}
+.ps.live > .ps-row .ps-time {
+  color: var(--accent-2);
+}
+
+/* status marks */
+.ps-mark {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--line-3);
+  color: var(--text-3);
+  position: relative;
+}
+.ps-mark-in {
+  display: grid;
+  place-items: center;
+}
+.ps-mark.done {
+  border-color: var(--pass);
+  background: var(--pass);
+  color: var(--bg-0);
+}
+.ps-mark.live {
+  border-color: rgba(109, 139, 255, 0.3);
+  color: var(--accent-2);
+}
+.ps-mark.live::after {
+  content: "";
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  border-top-color: var(--accent-2);
+  border-right-color: var(--accent-2);
+  animation: spin 0.9s linear infinite;
+}
+.ps-mark.live:not(:has(svg))::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: plan-pulse 1.2s ease-in-out infinite;
+}
+.ps-mark.paused,
+.ps-mark.waiting,
+.ps-mark.blocked {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.ps-mark.skipped {
+  border-style: dashed;
+  border-color: var(--text-4);
+  color: var(--text-4);
+}
+
+/* actions appear on hover or keyboard focus, floating over the row's right
+   end so showing them never reflows the tree (a row that rewraps on blur
+   would move whatever the pointer is pressing) */
+.ps-actions {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  display: flex;
+  gap: 1px;
+  padding-left: 14px;
+  border-radius: 0 6px 6px 0;
+  background: linear-gradient(90deg, transparent, var(--bg-3) 12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.ps-row:hover > .ps-actions,
+.ps-row:focus-within > .ps-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ps-row:hover > .ps-time,
+.ps-row:focus-within > .ps-time {
+  visibility: hidden;
+}
+.ps-act {
+  width: 21px;
+  height: 21px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  border: 0;
+  background: none;
+  color: var(--text-3);
+}
+.ps-act:hover {
+  background: var(--bg-4);
+  color: var(--text);
+}
+.ps-act.on {
+  color: var(--warn);
+}
+
+/* what is under a step */
+.ps-more {
+  overflow: hidden;
+  padding-left: 30px;
+}
+.ps-detail {
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding: 0 6px 3px 0;
+  line-height: 1.45;
+}
+.ps-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 2px 6px 4px 0;
+  padding: 5px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(199, 146, 255, 0.28);
+  background: rgba(199, 146, 255, 0.06);
+  color: #e6d4ff;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.ps-note svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--plan-you);
+}
+.ps-note-state {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  flex: none;
+  margin-top: 2px;
+}
+.ps-note-state.waiting {
+  color: var(--plan-you);
+}
+.ps-note-state.seen {
+  color: var(--pass);
+}
+.ps-x {
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  padding: 2px;
+  border-radius: 4px;
+  display: grid;
+}
+.ps-x:hover {
+  color: var(--text);
+  background: var(--bg-4);
+}
+.ps-activity {
+  margin: 1px 0 4px;
+  border-left: 1px dashed var(--line-2);
+  padding-left: 9px;
+}
+.pa {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 1.5px 6px 1.5px 0;
+  min-width: 0;
+}
+.pa-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pa-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 12px;
+  color: var(--pass);
+}
+.pa.error .pa-mark {
+  color: var(--fail);
+}
+.pa-stats {
+  font-size: 10px;
+  flex: none;
+}
+.spinner.xs {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+.ps-children {
+  margin-left: 13px;
+  padding-left: 9px;
+  border-left: 1px solid var(--line-2);
+}
+.ps.live > .ps-children {
+  border-left-color: rgba(109, 139, 255, 0.35);
+}
+.ps-fold {
+  font-size: 10px;
+  color: var(--text-4);
+  padding: 0 0 3px 30px;
+}
+.ps-diff {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--bg-0);
+  margin: 2px 6px 6px 0;
+}
+.ps-diff .ln {
+  display: grid;
+  grid-template-columns: 30px 12px 1fr;
+  white-space: pre;
+}
+.ps-diff .ln .n {
+  color: var(--text-4);
+  text-align: right;
+  padding-right: 5px;
+}
+.ps-diff .ln.add {
+  background: rgba(61, 220, 151, 0.09);
+  color: #b5f5d6;
+}
+.ps-diff .ln.del {
+  background: rgba(255, 93, 108, 0.09);
+  color: #ffc0c6;
+}
+.ps-diff .ln.same {
+  color: var(--text-3);
+}
+
+/* editing */
+.ps-input {
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(199, 146, 255, 0.55);
+  background: var(--bg-0);
+  color: var(--text);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(199, 146, 255, 0.12);
+  resize: none;
+  font-family: var(--sans);
+  line-height: 1.4;
+}
+textarea.ps-input {
+  display: block;
+  margin: 2px 6px 4px 0;
+  width: calc(100% - 6px);
+}
+.plan-add-input {
+  display: block;
+  margin: 3px 6px 3px 30px;
+  width: calc(100% - 36px);
+}
+.plan-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 2px 6px;
+  padding: 3px 7px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  background: none;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+}
+.plan-add:hover {
+  color: var(--plan-you);
+  border-color: rgba(199, 146, 255, 0.35);
+}
+
+/* changes waiting for Claude, and the way to continue */
+.plan-steer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  border-top: 1px solid rgba(199, 146, 255, 0.25);
+  background: rgba(199, 146, 255, 0.07);
+  font-size: 11.5px;
+  color: var(--text);
+  overflow: hidden;
+  flex: none;
+}
+.plan-steer.resume {
+  border-top-color: rgba(245, 184, 75, 0.25);
+  background: rgba(245, 184, 75, 0.06);
+  color: var(--text-2);
+}
+.plan-steer.resume svg {
+  color: var(--warn);
+}
+.steer-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--plan-you);
+  box-shadow: 0 0 8px rgba(199, 146, 255, 0.8);
+  animation: plan-pulse 1.2s ease-in-out infinite;
+  flex: none;
+}
+
+/* the pill in the 3D view */
+.plan-hud-anchor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.plan-hud {
+  pointer-events: auto;
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(560px, calc(100% - 40px));
+  padding: 6px 12px 6px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(109, 139, 255, 0.4);
+  background: rgba(11, 14, 22, 0.86);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow), 0 0 30px -12px var(--accent-glow);
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.plan-hud:hover {
+  border-color: rgba(143, 168, 255, 0.7);
+}
+.plan-hud .hud-step {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent-2);
+  white-space: nowrap;
+  flex: none;
+}
+.plan-hud .hud-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-hud .hud-sub {
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex-shrink: 2;
+}
+.plan-hud .plan-segs {
+  margin-left: 2px;
+}
+.plan-hud.paused {
+  border-color: rgba(245, 184, 75, 0.45);
+  box-shadow: var(--shadow);
+}
+.plan-hud.paused .hud-step {
+  color: var(--warn);
+}
+
+@keyframes plan-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes plan-flash {
+  0% {
+    background: rgba(199, 146, 255, 0.28);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plan.is-busy::before,
+  .plan-segs .seg.live,
+  .ps-mark.live::after,
+  .ps-mark.live::before,
+  .steer-dot {
+    animation: none;
+  }
+}

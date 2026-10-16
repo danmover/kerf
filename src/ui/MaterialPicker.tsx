@@ -99,6 +99,8 @@ export function MaterialButton({ parts }: { parts: EvalPart[] }) {
   const finish = resolveFinish(p.material, p.finish);
   const def = materialDef(p.material);
   const key = parts.map((q) => q.id).join(",");
+  // a component's extra solids (motor.shaft) keep the library's look: the block's material reaches only its main solid
+  const fixed = parts.some((q) => q.id.startsWith(`${q.name}.`) && !q.imported);
   useEffect(() => setOpen(false), [key]);
   // The picker lives in the viewport layer, not inside the selection card,
   // so it can sit beside the card and use the viewport's full height.
@@ -108,13 +110,20 @@ export function MaterialButton({ parts }: { parts: EvalPart[] }) {
   const picker = <AnimatePresence>{open && <MaterialPicker key={key} parts={parts} onClose={() => setOpen(false)} />}</AnimatePresence>;
   return (
     <>
-      <button ref={btn} className={`mat-button ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open} data-tip="Change material, finish and colour">
+      <button
+        ref={btn}
+        className={`mat-button ${open ? "open" : ""}`}
+        onClick={() => !fixed && setOpen((o) => !o)}
+        aria-disabled={fixed}
+        aria-expanded={open}
+        data-tip={fixed ? "Part of a library component, so its material is fixed. Select the component's main body to change the component." : "Change material, finish and colour"}
+      >
         <Swatch material={p.material} finish={finish} color={p.color} size={30} render={64} />
         <span className="grow" style={{ minWidth: 0 }}>
           <span className="mat-name">{same ? (def?.label ?? p.material) : "Mixed materials"}</span>
           <span className="mat-sub">{same ? `${FINISHES[finish]?.label ?? finish} · ${p.color}` : `${parts.length} parts`}</span>
         </span>
-        <Icon.Chevron size={14} style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform .2s" }} />
+        {!fixed && <Icon.Chevron size={14} style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform .2s" }} />}
       </button>
       {host ? createPortal(picker, host) : picker}
     </>
@@ -250,7 +259,7 @@ function MaterialPicker({ parts, onClose }: { parts: EvalPart[]; onClose: () => 
             <button key={c} className={`mat-color ${c.toLowerCase() === cur.color.toLowerCase() ? "active" : ""}`} style={{ background: c }} onMouseEnter={() => setHover({ ...cur, color: c })} onFocus={() => setHover({ ...cur, color: c })} onClick={() => commit({ ...cur, color: c }, `color ${c}`)} aria-label={`Color ${c}`} />
           ))}
           <label className="mat-color custom" data-tip="Any color" style={{ background: `conic-gradient(#ff5d6c, #f5b84b, #3ddc97, #4fd1c5, #6d8bff, #c792ff, #ff5d6c)` }}>
-            <input type="color" value={cur.color.length === 7 ? cur.color : "#888888"} aria-label="Custom color" onInput={(e) => setHover({ ...cur, color: (e.target as HTMLInputElement).value })} onChange={(e) => commit({ ...cur, color: e.target.value }, `color ${e.target.value}`)} />
+            <CustomColor key={cur.color} initial={cur.color.length === 7 ? cur.color : "#888888"} onPreview={(c) => setHover({ ...cur, color: c })} onPick={(c) => commit({ ...cur, color: c }, `color ${c}`)} />
           </label>
         </div>
       </div>
@@ -260,4 +269,23 @@ function MaterialPicker({ parts, onClose }: { parts: EvalPart[]; onClose: () => 
       </button>
     </motion.div>
   );
+}
+
+/**
+ * The browser's colour picker. React's onChange fires on every movement, which
+ * would record a version each time; the picked colour is committed on the
+ * native change event, once the picker closes.
+ */
+function CustomColor({ initial, onPreview, onPick }: { initial: string; onPreview: (c: string) => void; onPick: (c: string) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const pick = useRef(onPick);
+  pick.current = onPick;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const done = () => pick.current(el.value);
+    el.addEventListener("change", done);
+    return () => el.removeEventListener("change", done);
+  }, []);
+  return <input ref={ref} type="color" defaultValue={initial} aria-label="Custom color" onInput={(e) => onPreview((e.target as HTMLInputElement).value)} />;
 }

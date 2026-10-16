@@ -14,6 +14,11 @@ import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
 import { LightingMenu } from "./LightingMenu";
 import { MaterialButton } from "./MaterialPicker";
+import { SpotChat } from "./SpotChat";
+import { Markup, toggleMarkup, useMarkup } from "./Markup";
+import { openSpot, closeSpot, useSpot } from "../app/spot";
+import { useGap, type Gap } from "./useGap";
+import { ImportFacts } from "./ImportsPanel";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -42,7 +47,10 @@ export function Viewport() {
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
       const s = useView.getState();
-      if (!id) return select([]);
+      if (!id) {
+        closeSpot();
+        return select([]);
+      }
       if (additive) select(s.selected.includes(id) ? s.selected.filter((x) => x !== id) : [...s.selected, id]);
       else select([id]);
       const part = useDesign.getState().model?.parts.find((p) => p.id === id);
@@ -56,11 +64,22 @@ export function Viewport() {
     c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
     c.onTurntableStop = () => useView.setState({ turntable: false });
     c.onPhotoStatus = setPhoto;
+    c.onContext = (hit) => {
+      const part = hit && useDesign.getState().model?.parts.find((p) => p.id === hit.id);
+      if (!hit || !part) return closeSpot();
+      select([hit.id]);
+      openSpot({ partId: hit.id, label: part.label, local: hit.local, point: hit.point, normal: hit.normal });
+    };
     registerViewport({
       capture: (o) => c.capture(o),
       swatch: (m, f, col, size) => c.swatch(m, f, col, size),
       preview: (ids, look) => c.setOverride(ids, look),
       materialMode: (on) => c.setMaterialMode(on),
+      bounds: () => c.modelBounds(),
+      viewDir: () => c.viewDir(),
+      anchor: (id, local) => c.anchor(id, local),
+      snapshot: () => c.snapshot(),
+      hitAt: (x, y) => c.hitAt(x, y),
     });
     return () => {
       registerViewport(null);
@@ -108,6 +127,8 @@ export function Viewport() {
     if (view.assemblyRequest) ctl.current?.playAssembly();
   }, [view.assemblyRequest]);
   useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
+  const gap = useGap(view.selected);
+  useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
   useEffect(() => {
     if (view.cameraRequest) ctl.current?.fit(view.cameraRequest.preset === "fit" ? "current" : view.cameraRequest.preset);
   }, [view.cameraRequest]);
@@ -116,6 +137,8 @@ export function Viewport() {
   const visibleParts = model?.parts.length ?? 0;
   const selectedParts = useMemo(() => (model ? model.parts.filter((p) => view.selected.includes(p.id)) : []), [model, view.selected]);
   const empty = model && model.parts.length === 0 && kernelStatus === "ready";
+  const spotOpen = useSpot((s) => s.spot !== null);
+  const marking = useMarkup((s) => s.on);
 
   return (
     <div className="viewport">
@@ -169,6 +192,10 @@ export function Viewport() {
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
         <div className="sep" />
+        <button className={`icon-btn ${marking ? "active" : ""}`} onClick={() => toggleMarkup()} data-tip="Draw on the view for Claude (M)" aria-label="Draw on the view for Claude">
+          <Icon.Edit />
+        </button>
+        <div className="sep" />
         <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">
           <Icon.Grid />
         </button>
@@ -215,7 +242,7 @@ export function Viewport() {
                     <span className="field-label" style={{ margin: 0 }}>
                       Explode
                     </span>
-                    <button className="btn sm ghost" onClick={() => useView.setState((s) => ({ assemblyRequest: s.assemblyRequest + 1 }))} data-tip="Watch the parts go together in design order (A)">
+                    <button className="btn sm ghost" onClick={() => useView.setState((s) => ({ explode: 0, assemblyRequest: s.assemblyRequest + 1 }))} data-tip="Watch the parts go together in design order (A)">
                       <Icon.Assemble size={13} /> Play assembly
                     </button>
                   </div>
@@ -236,7 +263,10 @@ export function Viewport() {
       <Hud stage={stage} parts={visibleParts} />
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
-      <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
+      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
+
+      <SpotChat />
+      <Markup />
 
       {empty && (
         <div className="vp-empty">
@@ -350,12 +380,12 @@ const PHOTO_LABEL: Record<PhotoStatus["state"], string> = {
   done: "Photoreal",
 };
 
-/** Progress of the path traced view, bottom centre of the viewport. */
+/** Progress of the path traced view, bottom right of the viewport (the plan pill has the centre). */
 function PhotoPill({ s }: { s: PhotoStatus }) {
   const p = s.max ? Math.min(1, s.samples / s.max) : 0;
   const label = (s.state === "paused" && s.reason) || PHOTO_LABEL[s.state];
   return (
-    <motion.div className={`vp-photo ${s.state}`} initial={{ opacity: 0, y: 6, x: "-50%" }} animate={{ opacity: 1, y: 0, x: "-50%" }} exit={{ opacity: 0, y: 6, x: "-50%" }} role="status" aria-live="polite">
+    <motion.div className={`vp-photo ${s.state}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }} role="status" aria-live="polite">
       {s.state === "preparing" ? <span className="spinner sm" /> : <Icon.Aperture size={13} />}
       <span>{label}</span>
       {(s.state === "rendering" || s.state === "waiting" || s.state === "done") && (
@@ -380,7 +410,7 @@ function PhotoPill({ s }: { s: PhotoStatus }) {
   );
 }
 
-function SelectionCard({ ids }: { ids: string[] }) {
+function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
   const model = useDesign((s) => s.model);
   const report = useDesign((s) => s.report);
   const parts = model?.parts.filter((p) => ids.includes(p.id)) ?? [];
@@ -390,6 +420,8 @@ function SelectionCard({ ids }: { ids: string[] }) {
   const entry = meshes.get(p.hash);
   const vol = parts.reduce((s, q) => s + (meshes.get(q.hash)?.volume ?? 0), 0);
   const mass = parts.reduce((s, q) => s + ((meshes.get(q.hash)?.volume ?? 0) / 1000) * materialDensity(q.material), 0);
+  // an imported part has no material until the design gives it one
+  const massKnown = parts.every((q) => q.material);
   const issues = report?.items.filter((i) => (i.status === "fail" || i.status === "warn") && i.parts?.some((x) => ids.includes(x))) ?? [];
   const size = entry ? entry.bbox[1].map((v, i) => v - entry.bbox[0][i]) : null;
   return (
@@ -405,8 +437,9 @@ function SelectionCard({ ids }: { ids: string[] }) {
         {parts.length === 1 && (
           <>
             <div>
-              id <span style={{ color: "var(--text-2)" }}>{p.id}</span> · {p.kind === "component" ? `lib.${p.libKind}` : "part"}
+              id <span style={{ color: "var(--text-2)" }}>{p.id}</span> · {p.imported ? `step("${p.imported.file}")` : p.kind === "component" ? `lib.${p.libKind}` : "part"}
             </div>
+            {p.imported && <ImportFacts part={p} />}
             <div>
               {p.group}
               {p.locked ? " · locked" : ""}
@@ -420,8 +453,14 @@ function SelectionCard({ ids }: { ids: string[] }) {
           </>
         )}
         <div>
-          {fmtNum(vol / 1000, 2)} cm³ · {fmtNum(mass, 1)} g
+          {fmtNum(vol / 1000, 2)} cm³{massKnown ? ` · ${fmtNum(mass, 1)} g` : ""}
         </div>
+        {gap && (
+          <div className="gap-readout" data-tip="Smallest distance between the two, from the exact geometry">
+            gap <b>{gap.distance < 1e-4 ? "0" : fmtNum(gap.distance, 3)} mm</b>
+            {gap.distance < 1e-4 ? " · touching or overlapping" : ` · Δ ${gap.b.map((v, k) => fmtNum(Math.abs(v - gap.a[k]), 2)).join(", ")}`}
+          </div>
+        )}
         {p.motion && parts.length === 1 && <div>turns at {fmtNum(Math.abs(p.motion.ratio), 3)}× the input</div>}
       </div>
       <MaterialButton parts={parts} />
@@ -442,9 +481,16 @@ function SelectionCard({ ids }: { ids: string[] }) {
         <button className="btn sm" onClick={() => useView.setState((s) => ({ hiddenIds: [...new Set([...s.hiddenIds, ...ids])], selected: [] }))}>
           <Icon.EyeOff size={13} /> Hide
         </button>
-        <button className="btn sm" onClick={() => setDraft(`About ${parts.map((q) => q.id).join(", ")}: `)}>
+        <button
+          className="btn sm"
+          onClick={() => (parts.length === 1 ? openSpot({ partId: p.id, label: p.label }) : setDraft(`About ${parts.map((q) => q.id).join(", ")}${gap ? ` (gap ${fmtNum(gap.distance, 2)} mm)` : ""}: `))}
+          data-tip={parts.length === 1 ? "Ask Claude about this part, right here" : "Ask Claude about these parts"}
+        >
           <Icon.Sparkle size={13} /> Ask
         </button>
+      </div>
+      <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
+        Right-click a spot on the model to ask about it
       </div>
     </motion.div>
   );

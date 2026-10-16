@@ -17,6 +17,7 @@ import { SettingsModal } from "./ui/Settings";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
+import { toggleMarkup } from "./ui/Markup";
 
 // each opened project brings its own conversation
 onProjectOpen((p) => void loadChat(p.id));
@@ -159,6 +160,8 @@ function useShortcuts() {
           return useView.setState({ explode: v.explode > 0 ? 0 : 0.5 });
         case "x":
           return useView.setState({ xray: !v.xray });
+        case "m":
+          return toggleMarkup();
         case "i":
           if (v.selected.length || v.isolate) useView.setState({ isolate: !v.isolate });
           return;
@@ -167,7 +170,8 @@ function useShortcuts() {
         case "p":
           return updateSettings({ photoreal: !useSettings.getState().photoreal });
         case "a":
-          return useView.setState({ explode: v.explode > 0 ? v.explode : 0.5, assemblyRequest: v.assemblyRequest + 1 });
+          // the parts fly in from an exploded start and end assembled
+          return useView.setState({ explode: 0, assemblyRequest: v.assemblyRequest + 1 });
         case "l": {
           const ids = LIGHTING_IDS;
           const cur = useSettings.getState().lighting;

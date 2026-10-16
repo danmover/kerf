@@ -25,10 +25,25 @@ describe("imports", () => {
 
   it("rejects malformed and hostile files", async () => {
     await expect(readImport(file("x.json", "{not json"))).rejects.toThrow(/could not be read/);
-    await expect(readImport(file("x.json", JSON.stringify({ format: "kerf-project", version: 2, name: "x", source: "" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("x.json", JSON.stringify({ format: "kerf-project", version: 3, name: "x", source: "" })))).rejects.toThrow(/not a Kerf project/);
     await expect(readImport(file("x.json", JSON.stringify({ format: "kerf-project", version: 1, name: "x", source: "", versions: [{ ts: 1, author: "admin", message: "", source: "" }] })))).rejects.toThrow();
     await expect(readImport(file("big.kerf", "a".repeat(MAX_SOURCE_CHARS + 1)))).rejects.toThrow(/longer/);
     await expect(readImport(file("bin.kerf", "abc\u0000def"))).rejects.toThrow(/binary/);
+  });
+
+  it("reads reference files carried by a project file", async () => {
+    const asset = { id: "ast_abc123", kind: "image", mime: "image/jpeg", name: "tube.jpg", data: "AAEC" };
+    const proj = { format: "kerf-project", version: 1, name: "Bracket", source: "", assets: [asset] };
+    const [p] = await readImport(file("b.kerfproj", JSON.stringify(proj)));
+    expect(p.assets).toEqual([asset]);
+  });
+
+  it("rejects reference files that are not what they claim", async () => {
+    const proj = (a: object) => JSON.stringify({ format: "kerf-project", version: 1, name: "x", source: "", assets: [{ id: "ast_abc123", kind: "image", mime: "image/jpeg", name: "a", data: "AAEC", ...a }] });
+    await expect(readImport(file("a.kerfproj", proj({ mime: "text/html" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("a.kerfproj", proj({ kind: "pdf" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("a.kerfproj", proj({ id: "../../etc" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("a.kerfproj", proj({ data: "<script>" })))).rejects.toThrow(/not a Kerf project/);
   });
 
   it("strips control characters from names", async () => {

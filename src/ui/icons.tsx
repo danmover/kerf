@@ -166,6 +166,18 @@ export const Icon = {
       <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />
     </I>
   ),
+  Mic: (p: P) => (
+    <I {...p}>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+    </I>
+  ),
+  MicOff: (p: P) => (
+    <I {...p}>
+      <path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 4.6 2.5" />
+      <path d="M18.5 11a6.5 6.5 0 0 1-1 3.4M5.5 11a6.5 6.5 0 0 0 10.2 5.4M12 17.5V21M8.5 21h7M3 3l18 18" />
+    </I>
+  ),
   Sparkle: (p: P) => (
     <I {...p}>
       <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.5 2.5M15.2 15.2l2.5 2.5M6.3 17.7l2.5-2.5M15.2 8.8l2.5-2.5" />
@@ -324,6 +336,31 @@ export const Icon = {
       <rect x="8" y="12" width="8" height="8" rx="1" />
       <path d="M12 2v6M9 5l3 3 3-3" />
       <path d="M3 8h3M18 8h3" strokeOpacity={0.6} />
+    </I>
+  ),
+  Fork: (p: P) => (
+    <I {...p}>
+      <circle cx="6" cy="5" r="2" />
+      <circle cx="6" cy="19" r="2" />
+      <circle cx="18" cy="6" r="2" />
+      <path d="M6 7v10M18 8c0 5-7 4-11 9.5" />
+    </I>
+  ),
+  Compare: (p: P) => (
+    <I {...p}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M12 3v18" />
+    </I>
+  ),
+  Pin: (p: P) => (
+    <I {...p}>
+      <path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11z" />
+      <circle cx="12" cy="10" r="2.3" />
+    </I>
+  ),
+  Chat: (p: P) => (
+    <I {...p}>
+      <path d="M6 18l-3 3V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z" />
     </I>
   ),
   Wrench: (p: P) => (
