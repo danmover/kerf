@@ -16,6 +16,7 @@ import { composeSheet } from "../src/drawing/compose";
 import { autoDrawings, planDrawing } from "../src/drawing/views";
 import { dxfText, sheetsToPdf, sheetToDxf, sheetToSvg } from "../src/drawing/render";
 import type { Sheet } from "../src/drawing/sheet";
+import { fitText, textWidth } from "../src/drawing/text";
 import type { DrawingSpec } from "../src/drawing/spec";
 import { addBlockLine, blockRange, ensureBlock, setBlockProp, setDimTolerance, specToSource } from "../src/drawing/source";
 
@@ -269,5 +270,17 @@ part after { body box(10, 10, drawing) }
     expect(model.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
     expect(model.params.find((p) => p.name === "drawing")?.value).toBeCloseTo(3, 9);
     expect(model.drawings.map((d) => d.name)).toEqual(["plate_dwg"]);
+  });
+});
+
+describe("fitting text", () => {
+  it("keeps the longest start of the text that fits with an ellipsis", () => {
+    const s = "Mounting plate for the two-stage reducer housing";
+    for (const w of [4, 12, 30, 61]) {
+      let out = s;
+      while (out.length > 1 && textWidth(out + "…", 3.5, false) > w) out = out.slice(0, -1);
+      expect(fitText(s, 3.5, w)).toBe(out.trimEnd() + "…");
+    }
+    expect(fitText(s, 3.5, 1000)).toBe(s);
   });
 });

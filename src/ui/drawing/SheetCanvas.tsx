@@ -78,6 +78,8 @@ export interface CanvasApi {
   toScreen: (b: Box) => Box;
   fit: () => void;
   zoom: (f: number) => void;
+  /** calls back whenever the sheet pans, zooms or resizes */
+  subscribe: (fn: () => void) => () => void;
 }
 
 /** Which item a shape key belongs to when clicked: parts keep their view-part key. */
@@ -146,11 +148,21 @@ export function SheetCanvas({
     });
   }, []);
 
+  const listeners = useRef(new Set<() => void>());
   apiRef.current = {
     toScreen: (b) => [tf.tx + b[0] * tf.k, tf.ty + b[1] * tf.k, tf.tx + b[2] * tf.k, tf.ty + b[3] * tf.k],
     fit,
     zoom: (f) => zoomAt(f, size.w / 2, size.h / 2),
+    subscribe: (fn) => {
+      listeners.current.add(fn);
+      return () => {
+        listeners.current.delete(fn);
+      };
+    },
   };
+  useEffect(() => {
+    for (const l of listeners.current) l();
+  }, [tf, size]);
 
   useEffect(() => {
     const el = svg.current;
@@ -169,9 +181,15 @@ export function SheetCanvas({
     if (e.button !== 0 && e.button !== 1) return;
     drag.current = { x: e.clientX, y: e.clientY, tx: tf.tx, ty: tf.ty, moved: false, id: e.pointerId };
   };
+  const endDrag = () => {
+    drag.current = null;
+    setPanning(false);
+  };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current;
-    if (d && d.id === e.pointerId) {
+    // a drag whose button came up outside the window (or was taken by the browser) has ended
+    if (d && e.buttons === 0) endDrag();
+    else if (d && d.id === e.pointerId) {
       const dx = e.clientX - d.x;
       const dy = e.clientY - d.y;
       if (!d.moved && Math.hypot(dx, dy) > 4) {
@@ -221,7 +239,7 @@ export function SheetCanvas({
   const pad = Math.max(0.8, 3 / tf.k);
 
   return (
-    <svg ref={svg} className={`dwg-svg ${panning ? "panning" : ""}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={() => setHover(null)} onDoubleClick={fit}>
+    <svg ref={svg} className={`dwg-svg ${panning ? "panning" : ""}`} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={endDrag} onLostPointerCapture={endDrag} onPointerLeave={() => setHover(null)} onDoubleClick={fit}>
       <g transform={`translate(${tf.tx} ${tf.ty}) scale(${tf.k})`}>
         <rect className="dwg-sheet-shadow" x={0} y={0} width={sheet.w} height={sheet.h} fill={theme.paper} />
         {groups.map((g) => (

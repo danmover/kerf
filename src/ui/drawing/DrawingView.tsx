@@ -207,7 +207,7 @@ function DrawingPane() {
         </div>
       )}
 
-      <AnimatePresence>{sheet && selected && <ItemCard key={`${sheet.name}|${selected}`} sheet={sheet} itemKey={selected} api={api} />}</AnimatePresence>
+      <AnimatePresence>{sheet && selected && <ItemCard key={selected} sheet={sheet} itemKey={selected} api={api} />}</AnimatePresence>
     </motion.div>
   );
 }
@@ -223,7 +223,8 @@ function editDrawing(sheet: Sheet, message: string, change: (src: string, block:
   const next = change(src, name);
   if (next === source) return;
   commitSource(next, "you", created ? `${message} (wrote out the ${spec.title} drawing)` : message);
-  if (created) showDrawing(name);
+  // the same sheet under its block name: keep the card open on the item being edited
+  if (created) showDrawing(name, { keepSelection: true });
 }
 
 function editInSource(sheet: Sheet) {
@@ -303,11 +304,9 @@ function ItemCard({ sheet, itemKey, api }: { sheet: Sheet; itemKey: string; api:
   const wrap = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
-  // stay beside the item; re-place when the sheet moves under it
+  // stay beside the item; re-place when the sheet pans, zooms or resizes, or the card grows
   useEffect(() => {
-    let raf = 0;
-    const tick = () => {
-      raf = requestAnimationFrame(tick);
+    const place = () => {
       const el = wrap.current;
       const host = el?.parentElement;
       if (!el || !host || !box || !api.current) return;
@@ -322,8 +321,15 @@ function ItemCard({ sheet, itemKey, api }: { sheet: Sheet; itemKey: string; api:
       const y = Math.max(54, Math.min(H - ch - 10, (s[1] + s[3]) / 2 - ch / 2));
       setPos((p) => (p && Math.abs(p.x - x) < 0.5 && Math.abs(p.y - y) < 0.5 ? p : { x, y }));
     };
-    tick();
-    return () => cancelAnimationFrame(raf);
+    place();
+    const off = api.current?.subscribe(place);
+    const ro = new ResizeObserver(place);
+    if (wrap.current) ro.observe(wrap.current);
+    if (wrap.current?.parentElement) ro.observe(wrap.current.parentElement);
+    return () => {
+      off?.();
+      ro.disconnect();
+    };
   }, [box, api]);
 
   if (!info) return null;

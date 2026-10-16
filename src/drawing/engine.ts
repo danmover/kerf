@@ -165,7 +165,7 @@ function schedule() {
   }, 60);
 }
 
-function refresh() {
+function refresh(keepSelection = false) {
   const { model } = useDesign.getState();
   const specs = drawingSpecs(model);
   const list = specs.map((s) => ({ name: s.name, title: s.title, auto: !!s.auto }));
@@ -183,7 +183,7 @@ function refresh() {
   const sheet = compose(plan, model);
   const prev = get().sheet;
   const changed = !prev || prev.name !== sheet.name;
-  set({ list, active, sheet, pending: waiting.length, selected: changed ? null : get().selected });
+  set({ list, active, sheet, pending: waiting.length, selected: changed && !keepSelection ? null : get().selected });
 }
 
 let started = false;
@@ -216,9 +216,9 @@ export function closeDrawings() {
   set({ open: false, selected: null });
 }
 
-export function showDrawing(name: string) {
-  set({ active: name, selected: null });
-  refresh();
+export function showDrawing(name: string, opts: { keepSelection?: boolean } = {}) {
+  set({ active: name, selected: opts.keepSelection ? get().selected : null });
+  refresh(opts.keepSelection);
 }
 
 export function selectSheetItem(key: string | null) {

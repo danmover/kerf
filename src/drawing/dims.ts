@@ -43,6 +43,8 @@ export interface DimDef {
   anchors?: [number, number][];
   /** which way a callout's leader runs */
   lead?: "left" | "right";
+  /** the features a dimension runs between ("o3.4", "2.4x26"), so its id doesn't depend on the order dimensions come in */
+  tag?: string;
   meta: Omit<SheetDim, "view" | "box" | "value" | "text">;
 }
 
@@ -203,6 +205,15 @@ function trackFeature(partId: string, index: number, frame: Frame): (parts: Part
 interface Anchor {
   c: [number, number];
   at: (parts: Parts) => [number, number] | undefined;
+  /** the feature's size, for dimension ids */
+  tag: string;
+}
+
+/** A short name for a feature's size, used in dimension ids. */
+function featureTag(f: Feature): string {
+  if (f.t === "hole" || f.t === "cyl") return `o${fmtNum(f.d)}`;
+  if (f.t === "slot") return `${fmtNum(f.w)}x${fmtNum(f.h)}`;
+  return f.t;
 }
 
 /** All dimensions and callouts for a drawing, in view space. */
@@ -266,7 +277,7 @@ function assignIds(dims: DimDef[], plan: DrawingPlan) {
       .replace(/ø/g, "o")
       .replace(/[^a-z0-9.]+/g, "-")
       .replace(/^-+|-+$/g, "");
-    const base = `${plan.views[d.view]?.name ?? "view"}:${slug}`;
+    const base = `${plan.views[d.view]?.name ?? "view"}:${slug}${d.tag ? `-${d.tag}` : ""}`;
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
     d.meta.id = n > 1 ? `${base}-${n}` : base;
@@ -413,7 +424,11 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     const groups = anchors.get(vi) ?? [];
     const same = (a: Anchor[], b: [number, number][]) => a.length === b.length && a.every(({ c }) => b.some((d) => close(c[0], d[0], 0.01) && close(c[1], d[1], 0.01)));
     const frame = ctx.plan.views[vi].frame;
-    if (!groups.some((g) => same(g, centers))) groups.push(list.map((f, k) => ({ c: centers[k], at: trackFeature(part.id, feats.indexOf(f), frame) })));
+    const tag = featureTag(list[0]);
+    const twin = groups.find((g) => same(g, centers));
+    // concentric features share the group, and their sizes together name it
+    if (twin) for (const a of twin) a.tag = a.tag.split("-").includes(tag) ? a.tag : `${a.tag}-${tag}`;
+    else groups.push(list.map((f, k) => ({ c: centers[k], at: trackFeature(part.id, feats.indexOf(f), frame), tag })));
     anchors.set(vi, groups);
   };
 
@@ -633,7 +648,9 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
       warnings.push(`Some ${word} feature positions in the ${ctx.plan.views[vi].name} view are not dimensioned`);
       out.length = 7;
     }
+    const tagAt = (val: number) => all.find((x) => close(x.c[axis], val, 0.01))?.tag;
     for (const [a, b, value, text, label] of out) {
+      const tag = [...new Set([tagAt(a), tagAt(b)].filter(Boolean))].join("-") || undefined;
       const pa: [number, number] = axis === 0 ? [a, near(a)] : [near(a), a];
       const pb: [number, number] = axis === 0 ? [b, near(b)] : [near(b), b];
       const length: Probe = (parts) => {
@@ -641,7 +658,7 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
         const eb = endIn(b, parts);
         return ea === undefined || eb === undefined ? undefined : Math.abs(eb - ea);
       };
-      push({ view: vi, kind: axis === 0 ? "h" : "v", a: pa, b: pb, value, text: { main: text }, side: axis === 0 ? "bottom" : "right", meta: { label, param: paramFor(value, length) } });
+      push({ view: vi, kind: axis === 0 ? "h" : "v", a: pa, b: pb, value, text: { main: text }, side: axis === 0 ? "bottom" : "right", tag, meta: { label, param: paramFor(value, length) } });
     }
   }
 }

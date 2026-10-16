@@ -20,9 +20,15 @@ export function textWidth(s: string, size: number, bold = false): number {
 /** Shortens text with an ellipsis so it fits a width. */
 export function fitText(s: string, size: number, maxW: number, bold = false): string {
   if (textWidth(s, size, bold) <= maxW) return s;
-  let out = s;
-  while (out.length > 1 && textWidth(out + "…", size, bold) > maxW) out = out.slice(0, -1);
-  return out.trimEnd() + "…";
+  // the longest prefix that fits with the ellipsis, found by halving
+  let lo = 1;
+  let hi = s.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (textWidth(s.slice(0, mid) + "…", size, bold) <= maxW) lo = mid;
+    else hi = mid - 1;
+  }
+  return s.slice(0, lo).trimEnd() + "…";
 }
 
 /** WinAnsi byte for a character, for PDF base-14 fonts (unknown characters become "?"). */
