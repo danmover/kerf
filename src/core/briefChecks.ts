@@ -108,6 +108,27 @@ export function briefChecks(model: Model, reqItems: CheckItem[], geom: GeomLooku
   return out;
 }
 
+/**
+ * A use's status from the checks that serve it. Requirements are linked here;
+ * later report passes (simulations) link their own items through the same call.
+ */
+export function useVerdict(id: string, linked: CheckItem[]): Pick<CheckItem, "status" | "detail" | "basis"> {
+  if (!linked.length) return { status: "warn", detail: `No check covers this use yet. Add a requirement or a scenario with “for ${id}”, or ask Claude to.`, basis: "parameters" };
+  const status = worst(linked.map((i) => (i.status === "info" ? "pass" : i.status)));
+  // failures first, and warnings (often only the pessimistic run of a simulation) counted apart from them
+  const fails = linked.filter((i) => i.status === "fail");
+  const warns = linked.filter((i) => i.status === "warn");
+  const counted = [fails.length ? `${fails.length} ${fails.length === 1 ? "fails" : "fail"}` : "", warns.length ? `${warns.length} ${warns.length === 1 ? "warns" : "warn"}` : ""].filter(Boolean).join(" and ");
+  const detail =
+    status === "pass"
+      ? `${linked.length === 1 ? "Its check passes" : `All ${linked.length} of its checks pass`}: ${linked.map((i) => i.title).join("; ")}`
+      : status === "pending"
+        ? `Measuring ${linked.filter((i) => i.status === "pending").length} of ${linked.length} checks`
+        : `${linked.length === 1 ? "Its check" : `Of its ${linked.length} checks, ${counted}`}${linked.length === 1 ? (fails.length ? " fails" : " warns") : ""}: ${[...fails, ...warns].map((i) => `${i.title} (${i.detail})`).join("; ")}`;
+  const basis = linked.some((i) => i.basis === "geometry") ? "geometry" : linked.some((i) => i.basis === "virtual test") ? "virtual test" : "parameters";
+  return { status, detail, basis };
+}
+
 /** Each use is covered by the requirements that name it; loads also need analysis. */
 function useChecks(b: Brief, model: Model, reqItems: CheckItem[]): CheckItem[] {
   const out: CheckItem[] = [];
@@ -116,19 +137,7 @@ function useChecks(b: Brief, model: Model, reqItems: CheckItem[]): CheckItem[] {
     const linked = reqItems.filter((i) => labels.includes(i.title));
     const parts = u.on ? model.parts.filter((p) => p.name === u.on).map((p) => p.id) : undefined;
     const base = { id: `use:${u.id}`, category: "brief" as const, title: u.text, parts, span: u.span, uses: [u.id] };
-    if (!linked.length) {
-      out.push({ ...base, status: "warn", detail: `No check covers this use yet. Add a requirement with “for ${u.id}”, or ask Claude to.`, basis: "parameters" });
-    } else {
-      const status = worst(linked.map((i) => i.status === "info" ? "pass" : i.status));
-      const bad = linked.filter((i) => i.status === "fail" || i.status === "warn");
-      const detail =
-        status === "pass"
-          ? `${linked.length === 1 ? "Its check passes" : `All ${linked.length} of its checks pass`}: ${linked.map((i) => i.title).join("; ")}`
-          : status === "pending"
-            ? `Measuring ${linked.filter((i) => i.status === "pending").length} of ${linked.length} checks`
-            : `${bad.length} of ${linked.length} checks ${bad.length === 1 ? "fails" : "fail"}: ${bad.map((i) => `${i.title} (${i.detail})`).join("; ")}`;
-      out.push({ ...base, status, detail, basis: linked.some((i) => i.basis === "geometry") ? "geometry" : "parameters" });
-    }
+    out.push({ ...base, ...useVerdict(u.id, linked) });
     if (u.load !== undefined) {
       out.push({
         id: `use-load:${u.id}`,

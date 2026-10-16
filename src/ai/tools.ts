@@ -21,6 +21,7 @@ import { generateFirmware } from "../machine/firmware";
 import type { CatalogPart } from "../machine/types";
 import { calcParams } from "./reference";
 import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
+import { SIM_TOOL_DEFS, SIM_TOOL_TITLES, runSimTool } from "./simTools";
 import { PROCESSES } from "../mfg/profiles";
 import { sheetFor, useDrawings } from "../drawing/engine";
 import { describeSheet, sheetToPng } from "../drawing/export";
@@ -363,6 +364,7 @@ export const TOOL_DEFS = [
     },
   },
   ...PROCESS_TOOL_DEFS,
+  ...SIM_TOOL_DEFS,
   BUILD_TOOL,
   REVIEW_TOOL,
   {
@@ -779,7 +781,7 @@ export function reportSummary(r: CheckReport | null, limit = 60): string {
   const head = `Checks: ${c.pass} pass, ${c.fail} fail, ${c.warn} warn, ${c.pending} pending, ${c.info} info.`;
   const notable = r.items.filter((i) => i.status !== "pass");
   // machine checks say how they were established: rules, calculation or a physical test still to do
-  const basis = (i: CheckReport["items"][number]) => (i.basis === "electrical rules" || i.basis === "calculation" || i.basis === "physical test" ? `; ${i.basis}` : "");
+  const basis = (i: CheckReport["items"][number]) => (i.basis === "electrical rules" || i.basis === "calculation" || i.basis === "physical test" || i.basis === "virtual test" ? `; ${i.basis}` : "");
   const body = notable
     .slice(0, limit)
     .map((i) => `  - [${i.status}] (${i.category}${basis(i)}) ${i.title}: ${i.detail}${i.fix ? ` Fix: ${i.fix}` : ""}${i.action ? ` One-click option: ${i.action.label} (${i.action.setting} on the part's process).` : ""}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
@@ -1179,6 +1181,8 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
   }
   const processOutcome = await runProcessTool(name, input);
   if (processOutcome) return processOutcome;
+  const simOutcome = await runSimTool(name, input, ctx);
+  if (simOutcome) return simOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
@@ -1213,6 +1217,7 @@ export const TOOL_TITLES: Record<string, string> = {
   catalog_lookup: "Looking up parts",
   engineering_calc: "Calculating",
   ...PROCESS_TOOL_TITLES,
+  ...SIM_TOOL_TITLES,
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
   suggest_next_steps: "Suggesting next steps",

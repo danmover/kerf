@@ -340,11 +340,25 @@
   color: var(--violet);
 }
 
+.dwg-switch-row {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  pointer-events: none;
+  container: dwg-row / inline-size;
+}
 .dwg-switch {
   position: absolute;
   top: 10px;
   left: 12px;
-  z-index: 9;
+  pointer-events: auto;
+}
+/* Too narrow for the switch and a centred toolbar side by side (the drawing
+   toolbar and a touch screen's 3D toolbar run to about 590px): step under it. */
+@container dwg-row (max-width: 880px) {
+  .dwg-switch {
+    top: 60px;
+  }
 }
 
 .measure-card {
