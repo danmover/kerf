@@ -115,7 +115,7 @@ export const TEMPLATES: Template[] = [
       "Swap the tone stack for a single tone knob and show me how the sound changes",
       "Make it battery powered for busking and check how long it plays",
     ],
-    stats: "266 parts · 12 requirements · tuner firmware",
+    stats: "266 parts · 11 requirements · tuner firmware",
   },
 ];
 
