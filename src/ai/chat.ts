@@ -16,8 +16,7 @@ import { paramEdits, upsertDecision, applySpanEdits, type SetMap } from "../core
 import { fmtNum } from "../lang/values";
 import { shotOf, changeShots, type ChangeShots } from "../app/changeShots";
 import { spotText, type SpotRef } from "../app/spot";
-import { getAgentRun, isLive } from "../agents/progress";
-import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering } from "./plan";
+import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering, anyBranchOpen } from "./plan";
 import { appDeps, currentBrief as reviewBrief, designerReport, registerBriefProvider, ReviewError, ReviewInput, ReviewSession, runReview, type Finding, type ReviewProgress, type ReviewResult } from "./review";
 import { shrinkImage } from "./review/renders";
 import { isSubstantial } from "./review/gate";
@@ -695,13 +694,12 @@ const isAbort = (e: unknown) => e instanceof Anthropic.APIUserAbortError || (e i
  */
 export async function applyPlanChangesNow() {
   if (!pendingSteering(usePlan.getState()).length) return;
-  // parallel agents take changes on their branches at their next step; interrupting would stop them all
-  if (isLive(getAgentRun())) return;
   if (!get().busy) {
     await sendMessage(describeSteering(usePlan.getState()));
     return;
   }
-  if (!abort || redirect) return;
+  // sub-agents run inside the main loop's current action; they take their own changes at their next step
+  if (!abort || redirect || anyBranchOpen()) return;
   redirect = true;
   abort.abort();
 }

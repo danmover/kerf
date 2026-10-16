@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   addNote,
+  anyBranchOpen,
+  loadPlan,
+  pendingByScope,
   addStep,
   applyUpdate,
   checkSteps,
@@ -213,6 +216,35 @@ describe("branches for sub-agents", () => {
     b.setStatus("doing");
     expect(findStep(usePlan.getState(), b.id)?.status).toBe("doing");
     expect(findStep(usePlan.getState(), b.id)?.startedAt).toBeDefined();
+  });
+
+  it("lights a branch's parts once they exist, and counts its changes apart from the main loop's", () => {
+    const b = openBranch({ title: "Housing", agent: "housing", id: "housing" });
+    b.setSteps([{ id: "h1", title: "Shell", status: "doing" }]);
+    b.setParts(["housing#0", "lid#0"]);
+    expect(findStep(usePlan.getState(), b.id)?.parts).toEqual(["housing#0", "lid#0"]);
+    expect(anyBranchOpen()).toBe(true);
+    userNote("b.housing/h1", "2 mm walls");
+    expect(pendingByScope(usePlan.getState())).toEqual({ main: 0, branches: 1 });
+    b.finish("done");
+    expect(anyBranchOpen()).toBe(false);
+    expect(pendingByScope(usePlan.getState())).toEqual({ main: 1, branches: 0 });
+  });
+
+  it("stops unfinished branches when the page is reloaded", () => {
+    updatePlanFromClaude({ steps: [{ id: "s1", title: "Build", status: "doing" }] });
+    const b = openBranch({ title: "Lid", agent: "lid", id: "lid" });
+    b.setSteps([{ id: "l1", title: "Snap fits", status: "doing" }, { id: "l2", title: "Hinge", status: "todo" }]);
+    const q = openBranch({ title: "Base", agent: "base", id: "base" });
+    q.setStatus("todo", "Waits for the lid");
+    loadPlan(JSON.parse(JSON.stringify(usePlan.getState())));
+    const p = usePlan.getState();
+    expect(findStep(p, "b.lid")).toMatchObject({ status: "blocked", detail: "Interrupted when the page closed." });
+    expect(findStep(p, "b.lid/l1")?.status).toBe("blocked");
+    expect(findStep(p, "b.lid/l2")?.status).toBe("todo");
+    expect(findStep(p, "b.base")?.status).toBe("blocked");
+    expect(findStep(p, "s1")?.status).toBe("doing");
+    expect(anyBranchOpen()).toBe(false);
   });
 
   it("knows when the user skipped the whole branch", () => {
