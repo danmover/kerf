@@ -30,34 +30,41 @@ export function setup(env: Record<string, string> = {}, upstream?: FetchFn) {
   return { app, deps, mailer, logs, calls, cfg };
 }
 
-/** A browser-like client: keeps the session cookie and sends Kerf's same-origin headers. */
+/** A browser-like client: keeps cookies and sends Kerf's same-origin headers. */
 export function client(app: ReturnType<typeof createApp>) {
-  let cookie = "";
-  const req = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
+  const jar = new Map<string, string>();
+  const header = () => [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+  const req = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) => {
     const h: Record<string, string> = { origin: ORIGIN, "x-kerf": "1", ...headers };
-    if (cookie) h.cookie = cookie;
+    if (jar.size) h.cookie = header();
     let payload: string | undefined;
     if (body !== undefined) {
       payload = typeof body === "string" ? body : JSON.stringify(body);
       h["content-type"] = "application/json";
     }
-    const res = await app.request(`${ORIGIN}${path}`, { method, headers: h, body: payload });
-    const set = res.headers.get("set-cookie");
-    if (set) {
+    const res = await app.request(`${ORIGIN}${path}`, { method, headers: h, body: payload, signal });
+    for (const set of res.headers.getSetCookie()) {
       const [pair] = set.split(";");
-      cookie = /=$/.test(pair) || /max-age=0/i.test(set) ? "" : pair;
+      const i = pair.indexOf("=");
+      const name = pair.slice(0, i);
+      const value = pair.slice(i + 1);
+      if (!value || /max-age=0/i.test(set)) jar.delete(name);
+      else jar.set(name, value);
     }
     return res;
   };
   return {
+    /** the Cookie header this client sends */
     get cookie() {
-      return cookie;
+      return header();
     },
-    set cookie(v: string) {
-      cookie = v;
+    /** the session token alone */
+    get session() {
+      return jar.get("__Host-kerf_session") ?? "";
     },
+    forget: (name: string) => jar.delete(name),
     get: (p: string, headers?: Record<string, string>) => req("GET", p, undefined, headers),
-    post: (p: string, b?: unknown, headers?: Record<string, string>) => req("POST", p, b ?? {}, headers),
+    post: (p: string, b?: unknown, headers?: Record<string, string>, signal?: AbortSignal) => req("POST", p, b ?? {}, headers, signal),
     put: (p: string, b?: unknown, headers?: Record<string, string>) => req("PUT", p, b ?? {}, headers),
     patch: (p: string, b?: unknown) => req("PATCH", p, b ?? {}),
     del: (p: string) => req("DELETE", p),

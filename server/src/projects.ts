@@ -14,6 +14,7 @@ export const LIMITS = {
   sourceChars: 300_000,
   thumbnailChars: 400_000,
   chatChars: 4_000_000,
+  extraChars: 256_000,
   versionsPerProject: 300,
   versionsPerRequest: 100,
   projectsPerUser: 2000,
@@ -46,6 +47,11 @@ const Push = z.object({
     .nullable()
     .optional(),
   versions: z.array(Version).max(LIMITS.versionsPerRequest).optional(),
+  /** project fields the app keeps that the server stores without reading, such as the list of imported files */
+  extra: z
+    .record(z.string(), z.unknown())
+    .refine((x) => JSON.stringify(x).length <= LIMITS.extraChars, "Too much project data.")
+    .optional(),
 });
 
 interface ProjectRow {
@@ -58,9 +64,23 @@ interface ProjectRow {
   updated_at: number;
   rev: number;
   deleted_at: number | null;
+  extra: string;
 }
 
-const head = (p: ProjectRow) => ({ id: p.id, name: p.name, source: p.source, template: p.template, thumbnail: p.thumbnail, createdAt: p.created_at, updatedAt: p.updated_at, rev: p.rev, deletedAt: p.deleted_at });
+const head = (p: ProjectRow) => ({ id: p.id, name: p.name, source: p.source, template: p.template, thumbnail: p.thumbnail, extra: JSON.parse(p.extra || "{}") as Record<string, unknown>, createdAt: p.created_at, updatedAt: p.updated_at, rev: p.rev, deletedAt: p.deleted_at });
+
+/** Everything an account stores: projects with their history and chats, plus files. */
+export function accountBytes(deps: Deps, userId: string): number {
+  return (
+    deps.db.get<{ n: number }>("SELECT coalesce(sum(bytes), 0) AS n FROM projects WHERE user_id = ?", userId)!.n +
+    deps.db.get<{ n: number }>("SELECT coalesce(sum(length(data)), 0) AS n FROM files WHERE user_id = ?", userId)!.n
+  );
+}
+
+export function checkQuota(deps: Deps, userId: string) {
+  const used = accountBytes(deps, userId);
+  if (used > LIMITS.bytesPerUser) throw new HttpError(413, "quota", `Your account is full (${Math.round(used / 1048576)} MB of ${LIMITS.bytesPerUser / 1048576} MB). Delete projects you no longer need.`);
+}
 
 export function projectRoutes(deps: Deps) {
   const app = new Hono<AppEnv>();
@@ -77,7 +97,7 @@ export function projectRoutes(deps: Deps) {
   const recount = (userId: string, id: string) =>
     db.run(
       `UPDATE projects SET bytes =
-         length(source) + coalesce(length(thumbnail), 0)
+         length(source) + coalesce(length(thumbnail), 0) + length(extra)
          + coalesce((SELECT sum(length(source) + length(message)) FROM versions WHERE user_id = ?1 AND project_id = ?2), 0)
          + coalesce((SELECT length(data) FROM chats WHERE user_id = ?1 AND project_id = ?2), 0)
        WHERE user_id = ?1 AND id = ?2`,
@@ -85,10 +105,6 @@ export function projectRoutes(deps: Deps) {
       id,
     );
 
-  const checkQuota = (userId: string) => {
-    const used = db.get<{ n: number }>("SELECT coalesce(sum(bytes), 0) AS n FROM projects WHERE user_id = ?", userId)!.n;
-    if (used > LIMITS.bytesPerUser) throw new HttpError(413, "quota", `Your account is full (${Math.round(used / 1048576)} MB of ${LIMITS.bytesPerUser / 1048576} MB). Delete projects you no longer need.`);
-  };
 
   app.get("/", (c) => {
     const rows = db.all<ProjectRow & { chat_updated_at: number | null }>(
@@ -146,24 +162,26 @@ export function projectRoutes(deps: Deps) {
         const count = db.get<{ n: number }>("SELECT count(*) AS n FROM projects WHERE user_id = ?", user.id)!.n;
         if (count >= LIMITS.projectsPerUser) throw new HttpError(413, "quota", `An account can hold ${LIMITS.projectsPerUser} projects. Delete some you no longer need.`);
         db.run(
-          "INSERT INTO projects (user_id, id, name, source, template, thumbnail, created_at, updated_at, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+          "INSERT INTO projects (user_id, id, name, source, template, thumbnail, extra, created_at, updated_at, rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
           user.id,
           id,
           clean(body.name).slice(0, 120),
           clean(body.source),
           body.template ?? "blank",
           body.thumbnail ?? null,
+          JSON.stringify(body.extra ?? {}),
           body.createdAt ?? now,
           body.updatedAt ?? now,
         );
       } else {
         if (p.rev !== body.baseRev) throw new HttpError(409, "conflict", "This project changed on another device.", { project: head(p) });
         db.run(
-          `UPDATE projects SET name = ?, source = ?, template = ?, thumbnail = ?, updated_at = ?, rev = rev + 1, deleted_at = NULL WHERE user_id = ? AND id = ?`,
+          `UPDATE projects SET name = ?, source = ?, template = ?, thumbnail = ?, extra = ?, updated_at = ?, rev = rev + 1, deleted_at = NULL WHERE user_id = ? AND id = ?`,
           body.name !== undefined ? clean(body.name).slice(0, 120) : p.name,
           body.source !== undefined ? clean(body.source) : p.source,
           body.template ?? p.template,
           body.thumbnail !== undefined ? body.thumbnail : p.thumbnail,
+          body.extra !== undefined ? JSON.stringify(body.extra) : p.extra,
           body.updatedAt ?? now,
           user.id,
           id,
@@ -192,7 +210,7 @@ export function projectRoutes(deps: Deps) {
         LIMITS.versionsPerProject,
       );
       recount(user.id, id);
-      checkQuota(user.id);
+      checkQuota(deps, user.id);
       return { rev };
     });
     return c.json(result);
@@ -208,7 +226,7 @@ export function projectRoutes(deps: Deps) {
       // the design and its history are erased; a small marker tells other devices to remove their copy
       db.run("DELETE FROM chats WHERE user_id = ? AND project_id = ?", user.id, id);
       db.run("DELETE FROM versions WHERE user_id = ? AND project_id = ?", user.id, id);
-      db.run("UPDATE projects SET source = '', thumbnail = NULL, deleted_at = ?, updated_at = ?, rev = rev + 1, bytes = 0 WHERE user_id = ? AND id = ?", Date.now(), Date.now(), user.id, id);
+      db.run("UPDATE projects SET source = '', thumbnail = NULL, extra = '{}', deleted_at = ?, updated_at = ?, rev = rev + 1, bytes = 0 WHERE user_id = ? AND id = ?", Date.now(), Date.now(), user.id, id);
       return p.rev + 1;
     });
     return c.json({ ok: true, rev });
@@ -241,7 +259,7 @@ export function projectRoutes(deps: Deps) {
         body.updatedAt,
       );
       recount(user.id, id);
-      checkQuota(user.id);
+      checkQuota(deps, user.id);
       return body.updatedAt;
     });
     return c.json({ updatedAt });

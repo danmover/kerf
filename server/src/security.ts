@@ -66,6 +66,12 @@ export class RateLimiter {
     return b.count > limit ? Math.ceil((b.reset - now) / 1000) : 0;
   }
 
+  /** Like hit, but only looks: 0 when under the limit, or the seconds to wait. */
+  peek(key: string, limit: number, now = Date.now()): number {
+    const b = this.buckets.get(key);
+    return b && b.reset > now && b.count >= limit ? Math.ceil((b.reset - now) / 1000) : 0;
+  }
+
   /** Forget a key, e.g. failed logins after a success. */
   clear(key: string) {
     this.buckets.delete(key);

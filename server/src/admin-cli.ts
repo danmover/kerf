@@ -42,20 +42,23 @@ const date = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 16
 try {
   switch (cmd) {
     case "list": {
-      const rows = db.all<{ email: string; name: string; created_at: number; disabled: number; email_verified_at: number | null; has_key: number; projects: number; bytes: number }>(
-        `SELECT u.email, u.name, u.created_at, u.disabled, u.email_verified_at, u.claude_key_enc IS NOT NULL AS has_key,
+      const rows = db.all<{ email: string; name: string; created_at: number; disabled: number; email_verified_at: number | null; pending: number; has_key: number; projects: number; bytes: number }>(
+        `SELECT u.email, u.name, u.created_at, u.disabled, u.email_verified_at, u.password_hash = '' AS pending, u.claude_key_enc IS NOT NULL AS has_key,
                 (SELECT count(*) FROM projects p WHERE p.user_id = u.id AND p.deleted_at IS NULL) AS projects,
-                (SELECT coalesce(sum(bytes), 0) FROM projects p WHERE p.user_id = u.id) AS bytes
+                (SELECT coalesce(sum(bytes), 0) FROM projects p WHERE p.user_id = u.id)
+                  + (SELECT coalesce(sum(length(data)), 0) FROM files f WHERE f.user_id = u.id) AS bytes
          FROM users u ORDER BY u.created_at`,
       );
       if (!rows.length) console.log("No accounts yet.");
       for (const r of rows)
-        console.log(`${r.email.padEnd(36)} ${date(r.created_at)}  ${String(r.projects).padStart(4)} projects ${(r.bytes / 1048576).toFixed(1).padStart(7)} MB  key:${r.has_key ? "yes" : "no "}  ${r.email_verified_at ? "verified" : "unverified"}${r.disabled ? "  DISABLED" : ""}`);
+        console.log(`${r.email.padEnd(36)} ${date(r.created_at)}  ${String(r.projects).padStart(4)} projects ${(r.bytes / 1048576).toFixed(1).padStart(7)} MB  key:${r.has_key ? "yes" : "no "}  ${r.pending ? "waiting for the emailed link" : r.email_verified_at ? "verified" : "unverified"}${r.disabled ? "  DISABLED" : ""}`);
       break;
     }
     case "create-user": {
       const email = args[0]?.trim().toLowerCase();
       if (!email || !email.includes("@")) throw new Error("Give an email address.");
+      // a sign-up still waiting for its emailed link is replaced
+      db.run("DELETE FROM users WHERE email = ? AND password_hash = '' AND email_verified_at IS NULL", email);
       if (db.get("SELECT 1 FROM users WHERE email = ?", email)) throw new Error(`${email} already has an account.`);
       const password = randomToken(15);
       db.run("INSERT INTO users (id, email, name, password_hash, terms_version, created_at, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?)", newId("usr"), email, args.slice(1).join(" "), await hashPassword(password), "admin-created", Date.now(), Date.now());

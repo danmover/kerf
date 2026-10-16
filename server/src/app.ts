@@ -10,6 +10,7 @@ import { ZodError } from "zod";
 import { accountRoutes, sessionInfo } from "./account.js";
 import { authRoutes, loadSession } from "./auth.js";
 import { claudeRoutes, MAX_REQUEST_BYTES } from "./claude.js";
+import { fileRoutes, MAX_FILE_BYTES } from "./files.js";
 import { projectRoutes } from "./projects.js";
 import { apiHeaders, clientIp, loadHeaderRules, sameOrigin } from "./security.js";
 import { HttpError, type AppEnv, type Deps } from "./types.js";
@@ -55,6 +56,8 @@ export function createApp(deps: Deps) {
   app.route("/api/account", accountRoutes(deps));
   app.use("/api/projects/*", limit(48 * 1024 * 1024));
   app.route("/api/projects", projectRoutes(deps));
+  app.use("/api/files/*", limit(MAX_FILE_BYTES + 1024));
+  app.route("/api/files", fileRoutes(deps));
   app.use("/api/claude/*", limit(MAX_REQUEST_BYTES));
   app.route("/api/claude", claudeRoutes(deps));
   app.all("/api/*", (c) => c.json({ error: "not_found", message: "No such API endpoint." }, 404));

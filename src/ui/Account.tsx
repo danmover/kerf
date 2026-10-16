@@ -5,7 +5,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useId, useMemo, useState, type FormEvent, type ReactNode, type SVGProps } from "react";
 import { api } from "../cloud/api";
-import { closeAuth, openAuth, refreshAccount, requestReset, resetPassword, signIn, signOut, signUp, useAccount, type AuthMode } from "../cloud/account";
+import { closeAuth, finishSignUp, openAuth, refreshAccount, requestReset, resetPassword, signIn, signOut, signUp, useAccount, type AuthMode } from "../cloud/account";
 import { keepOnThisDevice, keepWaitingLocal, setAutoUpload, syncNow, uploadToAccount, useSync } from "../cloud/sync";
 import { closeSettings, confirmDialog, go, openSettings, toast } from "../app/ui";
 import { useProject } from "../app/project";
@@ -106,7 +106,7 @@ function PasswordMeter({ value }: { value: string }) {
 
 // ---------- sign in / sign up dialog ----------
 
-const TITLES: Record<AuthMode, string> = { signin: "Sign in to Kerf", signup: "Create your Kerf account", forgot: "Reset your password", reset: "Choose a new password" };
+const TITLES: Record<AuthMode, string> = { signin: "Sign in to Kerf", signup: "Create your Kerf account", forgot: "Reset your password", reset: "Choose a new password", finish: "Finish creating your account" };
 
 export function AuthDialog() {
   const auth = useAccount((s) => s.auth);
@@ -143,11 +143,13 @@ export function AuthDialog() {
     setError("");
     try {
       if (mode === "signin") await signIn(email, password);
-      else if (mode === "signup") await signUp(email, password, name);
-      else if (mode === "forgot") {
+      else if (mode === "signup") {
+        if ((await signUp(email, password, name)) === "email") setSent(true);
+      } else if (mode === "forgot") {
         await requestReset(email);
         setSent(true);
       } else if (mode === "reset") await resetPassword(auth?.token ?? "", password);
+      else if (mode === "finish") await finishSignUp(auth?.token ?? "", password);
       setPassword("");
     } catch (err) {
       setError(errText(err));
@@ -157,6 +159,11 @@ export function AuthDialog() {
   };
 
   const signup = info?.server.signup ?? "open";
+  // invite-only servers confirm the address before the account exists, which needs email
+  const invite = signup === "allowlist";
+  const noSignup = signup === "closed" || (invite && !info?.server.mail);
+  const formHidden = (mode === "signup" && (noSignup || sent)) || (mode === "forgot" && (sent || !info?.server.mail));
+  const asksPassword = mode === "signin" || mode === "reset" || mode === "finish" || (mode === "signup" && !invite && !noSignup);
   return (
     <Modal open={!!auth} onClose={closeAuth} title={TITLES[mode]} icon={mode === "signin" || mode === "signup" ? <UserIcon size={16} /> : <Icon.Key size={16} />} width={440}>
       <div className="modal-body">
@@ -164,7 +171,15 @@ export function AuthDialog() {
           <motion.form key={mode} onSubmit={submit} initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} transition={{ duration: 0.16 }} className="auth-form" noValidate>
             {mode === "signin" && <p className="muted">Your projects, their history and your Claude key follow you to any browser you sign in on.</p>}
             {mode === "signup" && signup === "closed" && <div className="notice warn">This Kerf server is not taking new sign-ups. Ask whoever runs it to create an account for you.</div>}
-            {mode === "signup" && signup === "allowlist" && <p className="muted">This server takes sign-ups from invited email addresses.</p>}
+            {mode === "signup" && invite && !info?.server.mail && <div className="notice warn">This server takes invited addresses only, and it can't send email to confirm them. Ask whoever runs it to create your account.</div>}
+            {mode === "signup" && invite && info?.server.mail && !sent && <p className="muted">This server takes sign-ups from invited email addresses. We'll email you a link to confirm the address and choose your password.</p>}
+            {mode === "signup" && sent && (
+              <div className="notice">
+                <div className="t">Check your email</div>
+                <div className="d">We sent a link to {email}. Open it to choose your password and finish creating your account. It works for 24 hours.</div>
+              </div>
+            )}
+            {mode === "finish" && <p className="muted">Your email is confirmed. Choose a password to finish.</p>}
             {mode === "forgot" && !info?.server.mail && <div className="notice warn">This server can't send email. Ask whoever runs it to reset your password.</div>}
             {mode === "forgot" && sent && (
               <div className="notice">
@@ -173,21 +188,21 @@ export function AuthDialog() {
               </div>
             )}
 
-            {mode === "signup" && signup !== "closed" && (
+            {mode === "signup" && !noSignup && !sent && (
               <Field label="Name (optional)">
                 {(id) => (
                   <input id={id} className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" maxLength={80} />
                 )}
               </Field>
             )}
-            {mode !== "reset" && !(mode === "signup" && signup === "closed") && !(mode === "forgot" && (sent || !info?.server.mail)) && (
+            {mode !== "reset" && mode !== "finish" && !formHidden && (
               <Field label="Email">
                 {(id) => (
                   <input id={id} className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" autoFocus={!email} required maxLength={254} />
                 )}
               </Field>
             )}
-            {(mode === "signin" || mode === "reset" || (mode === "signup" && signup !== "closed")) && (
+            {asksPassword && (
               <Field label={mode === "signin" ? "Password" : "New password"}>
                 {(id) => (
                   <>
@@ -199,7 +214,7 @@ export function AuthDialog() {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         autoComplete={mode === "signin" ? "current-password" : "new-password"}
-                        autoFocus={!!email || mode === "reset"}
+                        autoFocus={!!email || mode === "reset" || mode === "finish"}
                         required
                         maxLength={256}
                       />
@@ -219,14 +234,14 @@ export function AuthDialog() {
               </motion.div>
             )}
 
-            {!(mode === "signup" && signup === "closed") && !(mode === "forgot" && (sent || !info?.server.mail)) && (
+            {!formHidden && (
               <button className="btn primary lg auth-submit" type="submit" disabled={busy}>
                 {busy && <span className="spinner" />}
-                {mode === "signin" ? "Sign in" : mode === "signup" ? "Create account" : mode === "forgot" ? "Send reset link" : "Set password and sign in"}
+                {mode === "signin" ? "Sign in" : mode === "signup" ? (invite ? "Send confirmation link" : "Create account") : mode === "forgot" ? "Send reset link" : mode === "finish" ? "Create account and sign in" : "Set password and sign in"}
               </button>
             )}
 
-            {mode === "signup" && signup !== "closed" && (
+            {mode === "signup" && !noSignup && !sent && (
               <p className="help" style={{ marginTop: 10 }}>
                 Creating an account means accepting the draft{" "}
                 <a href="#" onClick={(e) => (e.preventDefault(), closeAuth(), go({ name: "legal", doc: "terms", back: "home" }))}>
@@ -236,7 +251,7 @@ export function AuthDialog() {
                 <a href="#" onClick={(e) => (e.preventDefault(), closeAuth(), go({ name: "legal", doc: "privacy", back: "home" }))}>
                   Privacy notice
                 </a>
-                . Your password is stored only as a salted hash.
+                . {invite ? "You'll choose a password from the emailed link." : "Your password is stored only as a salted hash."}
               </p>
             )}
 
@@ -390,6 +405,7 @@ export function UploadBanner() {
 export function AccountKeySection({ browserForm }: { browserForm: ReactNode }) {
   const status = useAccount((s) => s.status);
   const claude = useAccount((s) => s.info?.claude);
+  const mail = useAccount((s) => !!s.info?.server.mail);
   const browserKey = getApiKey();
   const [replacing, setReplacing] = useState(false);
   useEffect(() => setReplacing(false), [claude?.account?.hint]);
@@ -461,13 +477,23 @@ export function AccountKeySection({ browserForm }: { browserForm: ReactNode }) {
               <MoveKeyButton keyValue={browserKey} />
             </div>
           )}
-          {claude?.shared && !account && (
+          {claude?.shared && !account && claude.shared.needsConfirmedEmail && (
+            <div className="setting">
+              <span className="dot warn" />
+              <div className="grow">
+                <div className="t">Shared key on this server</div>
+                <div className="d">Whoever runs this server lets your account use their key once your email address is confirmed. Open the link we emailed you, or add your own key below.</div>
+              </div>
+              <ResendVerification mail={mail} />
+            </div>
+          )}
+          {claude?.shared && !account && !claude.shared.needsConfirmedEmail && (
             <div className="setting">
               <span className="dot pass" />
               <div className="grow">
                 <div className="t">Shared key on this server</div>
                 <div className="d">
-                  Whoever runs this server lets your account use their key: {fmtTokens(claude.shared.usedToday)} of {fmtTokens(claude.shared.dailyTokens)} tokens used today. Add your own key to remove the limit.
+                  Whoever runs this server lets your account use their key: {fmtTokens(claude.shared.usedToday)} of {fmtTokens(claude.shared.dailyTokens)} tokens used today, one request at a time. Add your own key to remove the limit.
                 </div>
                 <div className="quota">
                   <motion.span initial={{ width: 0 }} animate={{ width: `${Math.min(100, (claude.shared.usedToday / Math.max(1, claude.shared.dailyTokens)) * 100)}%` }} />

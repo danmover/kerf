@@ -45,7 +45,7 @@ export interface SessionInfo {
   user: { id: string; email: string; name: string; emailVerified: boolean; createdAt: number; termsVersion: string } | null;
   claude: {
     account: { hint: string; savedAt: number } | null;
-    shared: { dailyTokens: number; usedToday: number } | null;
+    shared: { dailyTokens: number; usedToday: number; needsConfirmedEmail: boolean } | null;
     source: "account" | "shared" | null;
   } | null;
 }
@@ -75,6 +75,8 @@ export interface RemoteProject {
   source: string;
   template: string;
   thumbnail: string | null;
+  /** the project's other fields (see extraOf in sync.ts), stored by the server without reading them */
+  extra?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
   rev: number;

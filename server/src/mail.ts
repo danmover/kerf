@@ -63,3 +63,8 @@ export const resetEmail = (origin: string, token: string): Omit<Mail, "to"> => (
   subject: "Reset your Kerf password",
   text: `Someone asked to reset the password for your Kerf account. To choose a new password, open this link:\n\n${origin}/#reset=${token}\n\nThe link works for one hour and only once. If you did not ask for this, ignore this email; your password has not changed.`,
 });
+
+export const signupEmail = (origin: string, token: string): Omit<Mail, "to"> => ({
+  subject: "Finish creating your Kerf account",
+  text: `To finish creating your Kerf account, open this link and choose a password:\n\n${origin}/#signup=${token}\n\nThe link works for 24 hours and only once. If you did not ask for a Kerf account, ignore this email; nothing has been created.`,
+});

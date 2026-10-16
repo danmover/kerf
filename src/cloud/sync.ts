@@ -238,6 +238,10 @@ async function markAllUnsynced(projectId: string) {
 
 const wire = (v: VersionRecord): RemoteVersion => ({ id: v.id, ts: v.ts, author: v.author, message: v.message.slice(0, 2000), source: v.source });
 
+/** The fields the server knows about; any others a project gains (such as imported files) travel as `extra`. */
+const CORE = new Set(["id", "name", "source", "template", "createdAt", "updatedAt", "thumbnail"]);
+const extraOf = (p: ProjectRecord): Record<string, unknown> => Object.fromEntries(Object.entries(p).filter(([k, v]) => !CORE.has(k) && v !== undefined));
+
 async function push(local: ProjectRecord, m: ProjectMeta, depth = 0): Promise<void> {
   const pending = ((await db.versionsFor(local.id)) as SyncedVersion[]).filter((v) => !v.synced);
   const headChanged = m.rev === 0 || local.updatedAt !== m.at || thumbSig(local.thumbnail) !== m.thumb;
@@ -251,7 +255,7 @@ async function push(local: ProjectRecord, m: ProjectMeta, depth = 0): Promise<vo
   if (!chunks.length) chunks.push([]);
   for (let i = 0; i < chunks.length; i++) {
     const body: Record<string, unknown> = { baseRev: rev, versions: chunks[i].map(wire) };
-    if (i === 0) Object.assign(body, { name: local.name, source: local.source, template: local.template, createdAt: local.createdAt, updatedAt: local.updatedAt, thumbnail: local.thumbnail ?? null });
+    if (i === 0) Object.assign(body, { name: local.name, source: local.source, template: local.template, createdAt: local.createdAt, updatedAt: local.updatedAt, thumbnail: local.thumbnail ?? null, extra: extraOf(local) });
     try {
       rev = (await api<{ rev: number }>("PUT", `/projects/${encodeURIComponent(local.id)}`, body)).rev;
     } catch (e) {
@@ -313,7 +317,7 @@ async function download(id: string, local: ProjectRecord | null) {
     again = true;
     return;
   }
-  const rec: ProjectRecord = { id, name: project.name, source: project.source, template: project.template, createdAt: project.createdAt, updatedAt: project.updatedAt };
+  const rec = { ...(project.extra ?? {}), id, name: project.name, source: project.source, template: project.template, createdAt: project.createdAt, updatedAt: project.updatedAt } as ProjectRecord;
   if (project.thumbnail) rec.thumbnail = project.thumbnail;
   await db.put("projects", rec);
   meta.projects[id] = { rev: project.rev, at: rec.updatedAt, thumb: thumbSig(rec.thumbnail), chatAt: m?.chatAt ?? 0, src: srcHash(rec.source) };
@@ -342,10 +346,12 @@ const chatBusy = (id: string) => useChat.getState().projectId === id && (useChat
 
 async function pushChat(id: string, m: ProjectMeta) {
   if (chatBusy(id)) return;
-  const rec = await db.getOne<ChatRecord & { pending?: unknown }>("chats", id);
+  const rec = await db.getOne<ChatRecord>("chats", id);
   if (!rec || rec.updatedAt <= m.chatAt) return;
+  // the whole record travels, so fields the chat keeps (such as what its history is bound to) arrive intact
+  const { projectId: _id, updatedAt, ...data } = rec;
   try {
-    const r = await api<{ updatedAt: number }>("PUT", `/projects/${encodeURIComponent(id)}/chat`, { updatedAt: rec.updatedAt, data: { items: rec.items, history: rec.history, pending: rec.pending ?? null } });
+    const r = await api<{ updatedAt: number }>("PUT", `/projects/${encodeURIComponent(id)}/chat`, { updatedAt, data });
     m.chatAt = r.updatedAt;
   } catch (e) {
     if (e instanceof ApiError && (e.status === 413 || e.status === 400)) m.chatAt = rec.updatedAt;
@@ -356,9 +362,9 @@ async function pushChat(id: string, m: ProjectMeta) {
 async function pullChat(id: string, m: ProjectMeta) {
   if (chatBusy(id)) return;
   const local = await db.getOne<ChatRecord>("chats", id);
-  const { data, updatedAt } = await api<{ data: { items: unknown[]; history: unknown[]; pending?: unknown }; updatedAt: number }>("GET", `/projects/${encodeURIComponent(id)}/chat`);
+  const { data, updatedAt } = await api<{ data: Omit<ChatRecord, "projectId" | "updatedAt">; updatedAt: number }>("GET", `/projects/${encodeURIComponent(id)}/chat`);
   if (local && local.updatedAt > updatedAt) return;
-  await db.put("chats", { projectId: id, items: data.items, history: data.history, pending: data.pending ?? null, updatedAt });
+  await db.put<ChatRecord>("chats", { ...data, projectId: id, updatedAt });
   m.chatAt = updatedAt;
   if (useChat.getState().projectId === id && !chatBusy(id)) await loadChat(id);
 }

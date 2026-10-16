@@ -132,7 +132,7 @@ describe("cloud projects", () => {
 });
 
 describe("housekeeping", () => {
-  it("drops old markers, expired sessions and old usage, and nothing else", async () => {
+  it("drops old markers, expired sessions, old usage and abandoned sign-ups, and nothing else", async () => {
     const { app, deps } = setup();
     const c = await signedIn(app);
     await c.put("/api/projects/prj_old", { baseRev: 0, name: "Old", source: "s" });
@@ -148,7 +148,12 @@ describe("housekeeping", () => {
     deps.db.run("INSERT INTO usage (user_id, day, source, model) VALUES (?, '2020-01-01', 'account', 'claude-opus-5-5')", userId);
     deps.db.run("INSERT INTO usage (user_id, day, source, model) VALUES (?, ?, 'account', 'claude-opus-5-5')", userId, new Date(now).toISOString().slice(0, 10));
 
+    // an invite-only sign-up whose link was never used, and one still in time
+    deps.db.run("INSERT INTO users (id, email, name, password_hash, terms_version, created_at) VALUES ('usr_stale', 'stale@example.com', '', '', 't', ?)", now - 8 * day);
+    deps.db.run("INSERT INTO users (id, email, name, password_hash, terms_version, created_at) VALUES ('usr_fresh', 'fresh@example.com', '', '', 't', ?)", now - day);
+
     housekeeping(deps, now);
+    expect(deps.db.all<{ email: string }>("SELECT email FROM users ORDER BY email").map((r) => r.email)).toEqual(["dan@example.com", "fresh@example.com"]);
     const ids = deps.db.all<{ id: string }>("SELECT id FROM projects ORDER BY id").map((r) => r.id);
     expect(ids).toEqual(["prj_live", "prj_new"]);
     expect(deps.db.get<{ n: number }>("SELECT count(*) AS n FROM sessions")!.n).toBe(1);

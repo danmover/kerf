@@ -153,6 +153,11 @@ function Privacy() {
             <td>A cookie that scripts on the page cannot read, sent only to the Kerf server</td>
             <td>Sign out</td>
           </tr>
+          <tr>
+            <td>A mark that this browser has signed in to your account before, so failed sign-ins elsewhere can't lock it out</td>
+            <td>A cookie that scripts on the page cannot read, kept for a year</td>
+            <td>Clear this site's cookies</td>
+          </tr>
         </tbody>
       </table>
       <h2>On the Kerf server, only if you sign in</h2>
@@ -167,7 +172,7 @@ function Privacy() {
         <tbody>
           <tr>
             <td>Your email, name, a scrypt hash of your password (never the password itself), whether your email is confirmed, and which terms you accepted</td>
-            <td>Until you delete the account</td>
+            <td>Until you delete the account. On an invite-only server, a sign-up whose emailed link is never used is removed after 7 days.</td>
             <td>Settings → Account → Delete account</td>
           </tr>
           <tr>

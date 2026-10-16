@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { estimateInputTokens } from "../src/claude.js";
 import { client, setup, signedIn, sse, type FetchFn } from "./helpers.js";
 
 const KEY = "sk-ant-api03-" + "a".repeat(40) + "WXYZ";
@@ -155,34 +156,105 @@ describe("Claude proxy", () => {
     await again.text();
   });
 
-  it("lets listed accounts use a shared key within a daily budget", async () => {
-    const { app, calls, deps } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "*@team.example", KERF_SHARED_DAILY_TOKENS: "2000" }, anthropic);
+  it("lets listed accounts use a shared key once their email is confirmed", async () => {
+    const { app, calls, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "*@team.example", KERF_SHARED_DAILY_TOKENS: "1000000" }, anthropic);
     const outsider = await signedIn(app, "eve@example.com");
     expect((await outsider.json<{ claude: { source: unknown } }>(await outsider.get("/api/session"))).claude.source).toBeNull();
     expect((await outsider.post("/api/claude/v1/messages", message())).status).toBe(400);
 
+    // signing up with a listed address isn't enough: it has to be confirmed
     const ann = await signedIn(app, "ann@team.example");
-    expect((await ann.json<{ claude: unknown }>(await ann.get("/api/session"))).claude).toMatchObject({ source: "shared", shared: { dailyTokens: 2000, usedToday: 0 } });
+    expect((await ann.json<{ claude: unknown }>(await ann.get("/api/session"))).claude).toMatchObject({ source: null, shared: { needsConfirmedEmail: true } });
+    expect((await ann.post("/api/claude/v1/messages", message())).status).toBe(403);
+    expect(calls).toHaveLength(0);
+    const token = /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent.find((m) => m.to === "ann@team.example")!.text)![1];
+    await ann.post("/api/auth/verify", { token });
+    expect((await ann.json<{ claude: unknown }>(await ann.get("/api/session"))).claude).toMatchObject({ source: "shared", shared: { dailyTokens: 1_000_000, usedToday: 0, needsConfirmedEmail: false } });
+
     // server-side tools are refused on the shared key
     expect((await ann.post("/api/claude/v1/messages", { ...message(), tools: [{ type: "web_search_20250305", name: "web_search" }] })).status).toBe(400);
-    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 100_000 });
+    // betas and fallback to other models stay off it
+    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 100_000, fallbacks: "default" }, { "anthropic-beta": "server-side-fallback-2026-07-01" });
     expect(res.status).toBe(200);
     await res.text();
-    expect((calls.at(-1)!.init.headers as Record<string, string>)["x-api-key"]).toBe(SHARED);
-    expect(JSON.parse(String(calls.at(-1)!.init.body)).max_tokens).toBe(64_000);
-    await new Promise((r) => setTimeout(r, 10));
-    // 1200 in + 42 out + 300 cache writes + 5000/10 cache reads = 2042, over the 2000 budget
-    expect(deps.db.get<{ source: string }>("SELECT source FROM usage")!.source).toBe("shared");
-    const over = await ann.post("/api/claude/v1/messages", message());
-    expect(over.status).toBe(429);
-    expect(over.headers.get("retry-after")).toBeTruthy();
+    const sent = calls.at(-1)!;
+    expect((sent.init.headers as Record<string, string>)["x-api-key"]).toBe(SHARED);
+    expect((sent.init.headers as Record<string, string>)["anthropic-beta"]).toBeUndefined();
+    const body = JSON.parse(String(sent.init.body));
+    expect(body.max_tokens).toBe(64_000);
+    expect(body.fallbacks).toBeUndefined();
 
-    // their own key takes over from the shared one
+    // their own key takes over from the shared one, betas included
     await ann.put("/api/claude/key", { key: KEY });
-    const own = await ann.post("/api/claude/v1/messages", message());
+    const own = await ann.post("/api/claude/v1/messages", message(), { "anthropic-beta": "server-side-fallback-2026-07-01" });
     expect(own.status).toBe(200);
     await own.text();
     expect((calls.at(-1)!.init.headers as Record<string, string>)["x-api-key"]).toBe(KEY);
+    expect((calls.at(-1)!.init.headers as Record<string, string>)["anthropic-beta"]).toBe("server-side-fallback-2026-07-01");
+  });
+
+  it("keeps the shared key inside each account's daily allowance", async () => {
+    const { app, calls, deps, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example", KERF_SHARED_DAILY_TOKENS: "10000" }, anthropic);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+
+    // output is capped to what's left of the allowance
+    const big = { ...message(), max_tokens: 50_000 };
+    const res = await ann.post("/api/claude/v1/messages", big);
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(JSON.parse(String(calls.at(-1)!.init.body)).max_tokens).toBe(10_000 - estimateInputTokens(big));
+    await new Promise((r) => setTimeout(r, 10));
+    // 1200 in + 42 out + 300 cache writes + 5000/10 cache reads = 2042 used
+    expect(deps.db.get<{ source: string; requests: number }>("SELECT source, requests FROM usage")).toMatchObject({ source: "shared", requests: 1 });
+
+    // too little left for a request is refused before it starts
+    deps.db.run("UPDATE usage SET output_tokens = output_tokens + 7500");
+    const short = await ann.post("/api/claude/v1/messages", message());
+    expect(short.status).toBe(400);
+    expect(((await short.json()) as { error: { message: string } }).error.message).toMatch(/isn't enough/);
+    // and nothing at all once it's used up
+    deps.db.run("UPDATE usage SET output_tokens = output_tokens + 1000");
+    const over = await ann.post("/api/claude/v1/messages", message());
+    expect(over.status).toBe(429);
+    expect(over.headers.get("retry-after")).toBeTruthy();
+  });
+
+  it("runs one shared-key request at a time, and only allowed models", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow: FetchFn = async (url, init) => {
+      if (url.includes("/v1/messages")) await gate;
+      return anthropic(url, init);
+    };
+    const { app, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example", KERF_SHARED_MODELS: "claude-sonnet-5-5, claude-haiku-5-5" }, slow);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    const opus = await ann.post("/api/claude/v1/messages", message("claude-opus-5-5"));
+    expect(opus.status).toBe(400);
+    expect(((await opus.json()) as { error: { message: string } }).error.message).toMatch(/claude-sonnet-5-5, claude-haiku-5-5/);
+
+    const first = ann.post("/api/claude/v1/messages", message());
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await ann.post("/api/claude/v1/messages", message())).status).toBe(429);
+    release();
+    const done = await first;
+    expect(done.status).toBe(200);
+    await done.text();
+  });
+
+  it("records a request's usage once when the browser goes away mid-answer", async () => {
+    const { app, deps } = setup({}, anthropic);
+    const c = await signedIn(app);
+    await c.put("/api/claude/key", { key: KEY });
+    const stop = new AbortController();
+    const res = await c.post("/api/claude/v1/messages", message(), {}, stop.signal);
+    const reader = res.body!.getReader();
+    await reader.read();
+    stop.abort();
+    await reader.cancel().catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(deps.db.all("SELECT requests FROM usage")).toEqual([{ requests: 1 }]);
   });
 
   it("reports an unreachable API without leaking details", async () => {

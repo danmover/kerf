@@ -25,8 +25,8 @@ export interface Config {
   smtpUrl: string | null;
   mailFrom: string;
   anthropicBaseUrl: string;
-  /** an operator-paid key that listed accounts may use, with a daily token budget each */
-  shared: { key: string; emails: string[]; dailyTokens: number } | null;
+  /** an operator-paid key that listed, confirmed accounts may use, with a daily token budget each */
+  shared: { key: string; emails: string[]; dailyTokens: number; models: string[] } | null;
   trustProxy: TrustProxy;
   version: string;
 }
@@ -93,6 +93,8 @@ export function loadConfig(env: Env = process.env, version = "0.0.0"): Config {
   const sharedEmails = list(env.KERF_SHARED_CLAUDE_EMAILS);
   const dailyTokens = Number(env.KERF_SHARED_DAILY_TOKENS ?? 1_000_000);
   if (!Number.isFinite(dailyTokens) || dailyTokens < 0) throw new Error("KERF_SHARED_DAILY_TOKENS must be a number of tokens");
+  // empty means any Claude model
+  const sharedModels = list(env.KERF_SHARED_MODELS);
 
   const trust = (env.KERF_TRUST_PROXY ?? "none").toLowerCase() as TrustProxy;
   if (!["none", "fly", "cloudflare", "x-forwarded-for"].includes(trust)) throw new Error("KERF_TRUST_PROXY must be none, fly, cloudflare or x-forwarded-for");
@@ -114,7 +116,7 @@ export function loadConfig(env: Env = process.env, version = "0.0.0"): Config {
     smtpUrl: env.SMTP_URL?.trim() || null,
     mailFrom: env.MAIL_FROM?.trim() || `Kerf <no-reply@${url.hostname}>`,
     anthropicBaseUrl,
-    shared: sharedKey && sharedEmails.length ? { key: sharedKey, emails: sharedEmails, dailyTokens } : null,
+    shared: sharedKey && sharedEmails.length ? { key: sharedKey, emails: sharedEmails, dailyTokens, models: sharedModels } : null,
     trustProxy: trust,
     version,
   };

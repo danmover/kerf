@@ -38,17 +38,18 @@ Everything is set with environment variables. With `NODE_ENV=production`, the se
 | --- | --- | --- |
 | `KERF_ORIGIN` | `http://localhost:5173` in development, required in production | The public address, such as `https://kerf.example.com`. It must be `https` in production. Requests from any other origin are refused, and links in emails point here. |
 | `KERF_SECRET_KEY` | A key kept in the data folder in development, required in production | 32 random bytes, base64-encoded, which encrypt the Claude keys people save. Generate one with `npm run -s server:secret`. **If you lose it, saved Claude keys can't be read, and people have to add them again. Nothing else is affected.** |
-| `KERF_SIGNUP` | `open` in development, `allowlist` in production | `open` lets anyone sign up. `allowlist` lets only `KERF_ALLOWED_EMAILS` sign up. `closed` allows no sign-ups; create accounts with the admin commands instead. |
+| `KERF_SIGNUP` | `open` in development, `allowlist` in production | `open` lets anyone sign up; the account works straight away and the email is confirmed later. `allowlist` lets only `KERF_ALLOWED_EMAILS` sign up, and the address must prove itself first: Kerf emails a link, and the account exists only once that link is opened and a password chosen there. This needs `SMTP_URL`. `closed` allows no sign-ups. In every mode you can create accounts with the admin commands instead. |
 | `KERF_ALLOWED_EMAILS` | none | Comma-separated: `dan@example.com, *@team.example`. In production, an empty list with `allowlist` means nobody can sign up. |
-| `SMTP_URL` | none | For example `smtps://user:pass@smtp.example.com:465`. Without it, production sends no email, so confirmation and "forgot password" are unavailable; reset passwords with the admin commands instead. |
+| `SMTP_URL` | none | For example `smtps://user:pass@smtp.example.com:465`. Without it, production sends no email. Then invite-only sign-up, confirmation and "forgot password" are unavailable, so create accounts and reset passwords with the admin commands instead. |
 | `MAIL_FROM` | `Kerf <no-reply@your-host>` | The sender of account emails. |
 | `KERF_TRUST_PROXY` | `none` | Where to find the visitor's IP, used for rate limits and the device list: `fly` (Fly-Client-IP), `cloudflare` (CF-Connecting-IP), `x-forwarded-for` (the last entry, for one reverse proxy such as Caddy or nginx), or `none` (the connection itself). Set it only when a proxy you control is in front; otherwise visitors could fake their IP. |
 | `KERF_DATA_DIR` | `server/data`, or `/data` in production | Where `kerf.db` is kept. |
 | `KERF_STATIC_DIR` | `dist` | The built app. Set it empty to serve the API only. |
 | `PORT`, `HOST` | `8787` and `127.0.0.1`, or `8080` and `0.0.0.0` in production | Where the server listens. |
 | `KERF_SHARED_ANTHROPIC_KEY` | none | Optional. A Claude key you pay for, which listed accounts may use when they haven't added their own. It is off unless this variable and the next are both set. |
-| `KERF_SHARED_CLAUDE_EMAILS` | none | Who may use the shared key, in the same format as `KERF_ALLOWED_EMAILS`. |
-| `KERF_SHARED_DAILY_TOKENS` | `1000000` | Each account's daily allowance on the shared key. Input, output and cache writes count in full, and cache reads count a tenth. On the shared key, requests are also capped at 64k output tokens, and server-side tools (web search, code execution) are refused. |
+| `KERF_SHARED_CLAUDE_EMAILS` | none | Who may use the shared key, in the same format as `KERF_ALLOWED_EMAILS`. An account must also have confirmed its email address. |
+| `KERF_SHARED_DAILY_TOKENS` | `1000000` | Each account's daily allowance on the shared key. Input, output and cache writes count in full, and cache reads count a tenth. Each account runs one request at a time on the shared key, and each request's output is capped at 64k tokens or what's left of the allowance, whichever is less. So a day's use can pass the allowance by at most one request's estimated input. Server-side tools (web search, code execution), beta features and fallback to other models are off on the shared key. |
+| `KERF_SHARED_MODELS` | any Claude model | Optional. Comma-separated model IDs the shared key may use, such as `claude-sonnet-5-5, claude-haiku-5-5`. |
 
 ## Deploy to Fly.io
 
@@ -68,14 +69,15 @@ The repository has a `Dockerfile` and a `fly.toml`. Hosting costs money, so chec
    fly secrets set KERF_ORIGIN=https://your-kerf.fly.dev \
      KERF_SECRET_KEY="$(npm run -s server:secret)" \
      KERF_ALLOWED_EMAILS=you@example.com
-   # optional: email for confirmations and password resets
+   # email, so invited people can sign up themselves and reset forgotten passwords
    fly secrets set SMTP_URL='smtps://user:pass@smtp.example.com:465' MAIL_FROM='Kerf <kerf@example.com>'
    ```
+   Without email, skip the second command and create each account in step 6 with `fly ssh console -C "kerf-admin create-user you@example.com"`.
 5. Deploy as a single machine. SQLite lives on one volume, so the app must not be scaled past one machine:
    ```bash
    fly deploy --ha=false
    ```
-6. Open `https://your-kerf.fly.dev`, sign up with the allowed email, and check Settings → Account.
+6. Open `https://your-kerf.fly.dev`, sign up with the allowed email, open the link Kerf emails you, and check Settings → Account.
 
 Later:
 
@@ -108,7 +110,7 @@ The container runs as an unprivileged user, and it reports its health from `/api
 
 - [ ] `KERF_SECRET_KEY` is stored somewhere safe.
 - [ ] Sign-ups are limited (`allowlist` or `closed`), unless you mean to open them.
-- [ ] `SMTP_URL` is set, so people can confirm their address and reset a forgotten password.
+- [ ] `SMTP_URL` is set, so invited people can sign up themselves and reset a forgotten password.
 - [ ] Backups are running (below).
 - [ ] The Terms, Privacy notice and Acceptable use policy have had legal review. They are drafts, and the app says so on every page.
 
@@ -134,13 +136,14 @@ Everything is in one file, `kerf.db`, on the data volume. `kerf-admin backup /da
 ## Security
 
 - **Passwords.** Passwords are hashed with scrypt (N=2^15, r=8, p=3). They must be at least 12 characters, not a common password, and not the email's name.
-- **Sign-in limits.** Attempts are rate-limited per IP and per account. Failed sign-ins get the same message whether or not the account exists, and so does the "forgot password" form.
+- **Sign-in limits.** Attempts are rate-limited per IP, and failed attempts per account. A browser that has signed in to an account before keeps a signed mark, so failures from elsewhere can't lock it out. Failed sign-ins get the same message whether or not the account exists, and so does the "forgot password" form.
+- **Invitations.** On an invite-only server, nobody can claim an invited address without its inbox: the password is chosen from the emailed link. The shared Claude key, if any, works only for confirmed addresses.
 - **Sessions.** Each session is a random token in a `__Host-` cookie that is HttpOnly, Secure and SameSite=Strict. Only a hash of the token is stored. A session ends after 30 days unused, or 90 days at most. Changing or resetting the password signs out the other devices.
 - **Cross-site requests.** Every request that changes something must come from `KERF_ORIGIN` and carry an `x-kerf` header, so other sites can't act for a signed-in user.
 - **Claude keys.** Saved keys are encrypted with AES-256-GCM, bound to the account, and checked with Anthropic before they are saved. Only the last 4 characters are ever shown back. The proxy forwards only the four Claude endpoints Kerf uses. It drops every browser header, and it replaces the user ID with a pseudonym. It limits each account to 60 requests a minute and 4 at a time, and records token counts but never message content.
 - **Projects.** Projects are checked and size-limited: 300k characters of source, 300 versions per project, and 500 MB per account. Writes use revision numbers, so a stale device can never overwrite newer work; its edits are merged instead.
 - **Headers.** Every API response is `no-store`, with a `default-src 'none'` CSP. The app gets the same headers as `public/_headers`, plus HSTS.
-- **Housekeeping.** Once a day, the server removes expired sessions and email links, deleted-project markers older than 90 days, and usage counts older than about 13 months.
+- **Housekeeping.** Once a day, the server removes expired sessions and email links, invite-only sign-ups never finished after 7 days, deleted-project markers older than 90 days, and usage counts older than about 13 months.
 
 The rate limits are kept in memory. That is right for one instance; a deployment with several instances would need a shared store.
 

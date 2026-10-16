@@ -8,7 +8,7 @@ import { TERMS_VERSION } from "../app/settings";
 import { toast } from "../app/ui";
 
 export type AccountStatus = "checking" | "none" | "unreachable" | "signed-out" | "signed-in";
-export type AuthMode = "signin" | "signup" | "forgot" | "reset";
+export type AuthMode = "signin" | "signup" | "forgot" | "reset" | "finish";
 
 interface AccountState {
   status: AccountStatus;
@@ -74,16 +74,24 @@ export async function refreshAccount(): Promise<void> {
   } else set({ status: readMemo().server ? "unreachable" : "none" });
 }
 
-/** At start-up: find the server, then act on a link opened from an email (#verify=… or #reset=…). */
+/** At start-up: find the server, then act on a link opened from an email (#verify=…, #reset=… or #signup=…). */
 export async function initAccount() {
   await refreshAccount();
-  const m = /^#(verify|reset)=([A-Za-z0-9_-]{20,100})$/.exec(location.hash);
+  // a link pasted into a tab that already has Kerf open changes only the hash
+  if (!listening) window.addEventListener("hashchange", () => void openEmailLink());
+  listening = true;
+  await openEmailLink();
+}
+let listening = false;
+
+async function openEmailLink() {
+  const m = /^#(verify|reset|signup)=([A-Za-z0-9_-]{20,100})$/.exec(location.hash);
   if (!m) return;
   // the token never stays in the address bar or history
   history.replaceState(null, "", location.pathname + location.search);
   if (!serverAvailable()) return;
-  if (m[1] === "reset") {
-    set({ auth: { mode: "reset", token: m[2] } });
+  if (m[1] === "reset" || m[1] === "signup") {
+    set({ auth: { mode: m[1] === "reset" ? "reset" : "finish", token: m[2] } });
     return;
   }
   try {
@@ -112,10 +120,24 @@ export async function signIn(email: string, password: string) {
   await afterSignIn();
 }
 
-export async function signUp(email: string, password: string, name: string) {
-  await api("POST", "/auth/signup", { email, password, name, termsVersion: TERMS_VERSION });
+/**
+ * Creates an account. On an invite-only server the address is confirmed first:
+ * nothing exists until the emailed link is opened, and this returns "email".
+ */
+export async function signUp(email: string, password: string, name: string): Promise<"signed-in" | "email"> {
+  const invite = get().info?.server.signup === "allowlist";
+  const r = await api<{ confirm?: string }>("POST", "/auth/signup", invite ? { email, name, termsVersion: TERMS_VERSION } : { email, password, name, termsVersion: TERMS_VERSION });
+  if (r.confirm === "email") return "email";
   await afterSignIn();
   toast({ kind: "success", title: "Account created", detail: get().info?.server.mail ? "We sent you an email to confirm your address." : "Your projects and Claude key can now follow you to any device." });
+  return "signed-in";
+}
+
+/** The last step of an invite-only sign-up: choose a password from the emailed link. */
+export async function finishSignUp(token: string, password: string) {
+  await api("POST", "/auth/finish-signup", { token, password });
+  await afterSignIn();
+  toast({ kind: "success", title: "Account created", detail: "Your email is confirmed, and your projects and Claude key can now follow you to any device." });
 }
 
 export async function resetPassword(token: string, password: string) {

@@ -96,6 +96,19 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX activity_user ON activity(user_id, ts);
   `,
+  // project fields the server doesn't interpret (such as imported files), and the bytes of files themselves
+  `
+  ALTER TABLE projects ADD COLUMN extra TEXT NOT NULL DEFAULT '{}';
+  CREATE TABLE files (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    hash TEXT NOT NULL,
+    encoding TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, hash)
+  );
+  `,
 ];
 
 export class Db {

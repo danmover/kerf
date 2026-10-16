@@ -45,6 +45,23 @@ export const randomToken = (bytes = 32) => randomBytes(bytes).toString("base64ur
 export const sha256 = (s: string) => createHash("sha256").update(s).digest("base64url");
 export const newId = (prefix: string) => `${prefix}_${randomBytes(12).toString("base64url")}`;
 
+/**
+ * A mark a browser keeps after signing in to an account, so failed sign-ins
+ * from elsewhere can't lock that browser out. It proves nothing else.
+ */
+const deviceMac = (secret: Buffer, email: string, nonce: string) => createHmac("sha256", secret).update(`device:${email}:${nonce}`).digest("base64url").slice(0, 32);
+export function deviceMark(secret: Buffer, email: string): string {
+  const nonce = randomBytes(12).toString("base64url");
+  return `${nonce}.${deviceMac(secret, email, nonce)}`;
+}
+export function deviceMarkValid(secret: Buffer, email: string, value: string | undefined): boolean {
+  const [nonce, mac] = (value ?? "").split(".");
+  if (!nonce || !mac || nonce.length > 40) return false;
+  const want = Buffer.from(deviceMac(secret, email, nonce));
+  const got = Buffer.from(mac);
+  return got.length === want.length && timingSafeEqual(got, want);
+}
+
 /** A stable pseudonymous id for a user, sent to Anthropic as metadata.user_id for abuse tracking. */
 export const pseudonym = (secret: Buffer, userId: string) => createHmac("sha256", secret).update(`anthropic-user:${userId}`).digest("hex").slice(0, 32);
 
