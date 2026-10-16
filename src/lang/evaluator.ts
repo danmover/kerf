@@ -7,6 +7,8 @@ import { Fn, Obj, Pending, Ref, ShapeV, Vec, fmtNum, geoKey, show, typeName, typ
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, edgeSel, geoFns, libNamespace, threadConstants } from "./builtins";
 import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
+import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
+import type { ImportRef, ImportTable } from "../kernel/imports";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
@@ -20,6 +22,8 @@ export interface EvalOptions {
   geo?: Record<string, number>;
   /** reuse an existing parse */
   parsed?: { program: Program; diagnostics: Diagnostic[] };
+  /** STEP files imported into the project (defaults to the table set with setEvalImports) */
+  imports?: ImportTable;
 }
 
 class EvalError extends Error {
@@ -42,6 +46,7 @@ const POSITIONAL: Record<string, string[]> = {
   usb_c: [],
   connector: ["w", "h", "d"],
   dowel: ["d", "length"],
+  step: ["file"],
 };
 const LIB_ARGS: Record<string, string[]> = {
   bearing: ["code"],
@@ -54,6 +59,7 @@ const LIB_ARGS: Record<string, string[]> = {
   usb_c: ["opening_w", "opening_h"],
   connector: ["w", "h", "d", "opening_w", "opening_h"],
   dowel: ["d", "length"],
+  step: ["file", "origin"],
 };
 
 const PART_PROPS = ["color", "material", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
@@ -256,7 +262,8 @@ class Evaluator {
       return this.globals.get(name)!;
     }
     if (this.builtins.has(name)) return this.builtins.get(name)!;
-    const all = [...this.globals.keys(), ...this.builtins.keys(), ...(scope ? collectScope(scope) : [])];
+    if (name === "step") return STEP_FN;
+    const all = [...this.globals.keys(), ...this.builtins.keys(), "step", ...(scope ? collectScope(scope) : [])];
     const sugg = suggest(name, all);
     throw new EvalError(`"${name}" is not defined${sugg ? `. Did you mean "${sugg}"?` : ". Definitions must come before they are used."}`, span);
   }
@@ -414,10 +421,10 @@ class Evaluator {
 
   component(s: Extract<Stmt, { k: "component" }>) {
     const callee = this.expr(s.call.callee, null);
-    if (!(callee instanceof LibFn)) {
-      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
+    if (!(callee instanceof LibFn) && !(callee instanceof ImportFn)) {
+      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), or from an imported STEP file with step("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
     }
-    const key = callee.libKey;
+    const key = callee instanceof ImportFn ? "step" : callee.libKey;
     const entry = LIBRARY[key];
     const pos: Value[] = [];
     const named: Record<string, Value> = {};
@@ -428,7 +435,7 @@ class Evaluator {
       else pos.push(v);
     }
     this.callSpan = s.call.span;
-    const args = new Args(`lib.${key}`, pos, named, this.ctx(), mergeParams(POSITIONAL[key] ?? [], LIB_ARGS[key] ?? []));
+    const args = new Args(key === "step" ? "step" : `lib.${key}`, pos, named, this.ctx(), mergeParams(POSITIONAL[key] ?? [], LIB_ARGS[key] ?? []));
 
     // properties
     const props: Record<string, Value> = {};
@@ -495,11 +502,24 @@ class Evaluator {
       has: (n) => args.has(n),
     };
     let def: CompDef;
-    try {
-      def = entry.make(libArgs, phase);
-    } catch (e) {
-      if (e instanceof EvalError) throw e;
-      throw new EvalError((e as Error).message, s.call.span);
+    let imported: { ref: ImportRef; origin: ImportOrigin } | undefined;
+    if (key === "step") {
+      const table = this.opts.imports ?? evalImports();
+      const file = args.str("file");
+      const ref = findImport(table, file);
+      if (!ref) throw new EvalError(missingImportMessage(table, file), s.call.span);
+      const origin = args.str("origin", "base");
+      if (origin !== "base" && origin !== "center" && origin !== "file") throw new EvalError('step(): origin must be "base" (centre of the bottom, the default), "center" or "file" (the file\'s own origin)', s.call.span);
+      if (!ref.meta.bodies.length) throw new EvalError(`"${ref.name}" has no geometry Kerf could read`, s.call.span);
+      imported = { ref, origin };
+      def = importDef(ref, origin);
+    } else {
+      try {
+        def = entry.make(libArgs, phase);
+      } catch (e) {
+        if (e instanceof EvalError) throw e;
+        throw new EvalError((e as Error).message, s.call.span);
+      }
     }
 
     // orientation (shared by all instances)
@@ -532,6 +552,14 @@ class Evaluator {
       for (const [k, d] of Object.entries(lf.dirs ?? {})) fields[k] = new Vec(vnorm(applyXformsToDir(d, xf)));
       for (const [k, list] of Object.entries(lf.pointLists ?? {})) fields[k] = list.map((p) => new Vec(applyXforms(p, xf)));
       for (const [k, sh] of Object.entries(lf.shapes ?? {})) fields[k] = new ShapeV({ t: "xform", shape: sh, xf });
+      if (imported) {
+        const base = multi ? `${s.name}#${idx + 1}` : s.name;
+        const ids = def.solids.map((sd) => (sd.suffix ? `${base}.${sd.suffix}` : base));
+        const own = importFields(imported.ref, imported.origin, xf, ids);
+        // keep the lazy body list lazy
+        for (const k of Object.keys(own)) Object.defineProperty(fields, k, Object.getOwnPropertyDescriptor(own, k)!);
+        fields.name = s.name;
+      }
       return fields;
     };
     const xfs = atList.map((p) => [...rot, { op: "translate", v: p } as Xform]);
@@ -557,19 +585,19 @@ class Evaluator {
     const color = typeof props.color === "string" ? props.color : undefined;
     const group = typeof props.group === "string" ? props.group : groupFor(key);
     xfs.forEach((xf, idx) => {
-      for (const sd of def.solids) {
+      def.solids.forEach((sd, sdIdx) => {
         const base = multi ? `${s.name}#${idx + 1}` : s.name;
         const id = sd.suffix ? `${base}.${sd.suffix}` : base;
         const spins = motion && (!anyMoving || sd.moving);
         this.parts.push({
           id,
           name: s.name,
-          label: (typeof props.label === "string" && !sd.suffix ? props.label : sd.label) + (multi ? ` #${idx + 1}` : ""),
+          label: (typeof props.label === "string" && (!sd.suffix || imported) ? (imported && def.solids.length > 1 ? `${props.label}: ${imported.ref.meta.bodies[sdIdx].name}` : props.label) : sd.label) + (multi ? ` #${idx + 1}` : ""),
           kind: "component",
           libKind: key,
           group,
-          color: (!sd.suffix && color) || sd.color,
-          material: (typeof props.material === "string" && !sd.suffix ? props.material : undefined) ?? sd.material,
+          color: ((!sd.suffix || imported) && color) || sd.color,
+          material: (typeof props.material === "string" && (!sd.suffix || imported) ? props.material : undefined) ?? sd.material,
           recipe: sd.recipe,
           hash: recipeHash(sd.recipe),
           xf,
@@ -584,9 +612,19 @@ class Evaluator {
             def.fastener && !sd.suffix
               ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
               : undefined,
-          bom: sd.suffix ? undefined : def.bom,
+          bom: (imported ? sdIdx > 0 : sd.suffix) ? undefined : def.bom,
+          imported: imported
+            ? {
+                asset: imported.ref.hash,
+                file: imported.ref.name,
+                body: sdIdx,
+                bodyName: imported.ref.meta.bodies[sdIdx].name,
+                kind: imported.ref.meta.bodies[sdIdx].kind,
+                faceColors: !color && !!imported.ref.meta.bodies[sdIdx].faceColors,
+              }
+            : undefined,
         });
-      }
+      });
     });
   }
 
@@ -868,6 +906,8 @@ function groupFor(kind: string): string {
     case "usb_c":
     case "connector":
       return "Electronics";
+    case "step":
+      return "Imported";
     default:
       return "Components";
   }

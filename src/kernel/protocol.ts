@@ -3,6 +3,8 @@
 import type { PartRecipe, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
+import type { ImportMeta } from "./imports";
+import type { MeasureResult } from "./core";
 
 export interface BuildItem {
   hash: string;
@@ -75,7 +77,11 @@ export type ToWorker =
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
   | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
-  | { type: "evict"; keep: string[] };
+  | { type: "evict"; keep: string[] }
+  /** read a STEP file and keep its bodies for "import" recipes; `analyse` false skips the hole search for a file analysed before */
+  | { type: "import-step"; jobId: number; hash: string; file: string; data: ArrayBuffer; analyse: boolean }
+  | { type: "drop-import"; hash: string }
+  | { type: "measure"; jobId: number; a: { hash: string; xf: Xform[] }[]; b: { hash: string; xf: Xform[] }[] };
 
 export type FromWorker =
   | { type: "ready"; ms: number }
@@ -86,4 +92,8 @@ export type FromWorker =
   | { type: "checks"; jobId: number; result: ChecksResult }
   | { type: "checks-error"; jobId: number; message: string }
   | { type: "exported"; jobId: number; data: ArrayBuffer }
-  | { type: "export-error"; jobId: number; message: string };
+  | { type: "export-error"; jobId: number; message: string }
+  | { type: "imported"; jobId: number; hash: string; meta: ImportMeta }
+  | { type: "import-error"; jobId: number; hash: string; message: string }
+  | { type: "measured"; jobId: number; result: MeasureResult }
+  | { type: "measure-error"; jobId: number; message: string };
