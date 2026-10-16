@@ -80,6 +80,7 @@ export const CATEGORY_LABEL: Record<string, string> = {
   build: "Build",
   electrical: "Wiring",
   engineering: "Calculations",
+  simulation: "Simulations",
   testing: "Physical tests",
   info: "Needs analysis",
 };

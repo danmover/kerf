@@ -25,6 +25,8 @@ export interface RunOptions {
   duration: number;
   /** text typed into the serial console, at seconds since power-up */
   console?: { t: number; text: string }[];
+  /** #define values to change in the firmware for this run */
+  config?: Record<string, number | string>;
   /** battery state of charge at the start, 0..1 */
   soc?: number;
   variants?: VariantName[];
@@ -87,7 +89,7 @@ export interface VariantRun {
 }
 
 export interface RunResult {
-  firmware: { name: string; board: string; boardName: string; files: string[] };
+  firmware: { name: string; board: string; boardName: string; files: string[]; config: { name: string; from: string; to: string }[] };
   variants: VariantRun[];
   error?: string;
 }
@@ -110,18 +112,19 @@ function watchList(globals: Map<string, { t: { k: string } }>): string[] {
 export function runScenario(opts: RunOptions): RunResult {
   const fwOut = generateFirmware(opts.machine, opts.designName);
   const fw = (opts.firmware ? fwOut.find((f) => f.name === opts.firmware) : fwOut.find((f) => f.target === "arduino")) ?? fwOut[0];
-  const empty: RunResult = { firmware: { name: opts.firmware ?? "", board: "", boardName: "", files: [] }, variants: [] };
+  const empty: RunResult = { firmware: { name: opts.firmware ?? "", board: "", boardName: "", files: [], config: [] }, variants: [] };
   if (!fw) return { ...empty, error: "The design has no firmware block to run" };
   if (fw.target !== "arduino") return { ...empty, error: fw.target === "klipper" ? `${fw.name} is a Klipper printer configuration: Kerf cannot simulate Klipper yet` : fw.summary };
   const mcu = opts.machine.components.find((c) => c.name === fw.board);
   const board = boardForPart(mcu?.catalogId);
-  const files = Object.fromEntries(fw.files.filter((f) => /\.(ino|h|hpp|c|cpp)$/.test(f.path)).map((f) => [f.path.split("/").pop()!, f.content]));
-  const info = { name: fw.name, board: fw.board, boardName: board.name, files: Object.keys(files) };
+  const files: Record<string, string> = Object.fromEntries(fw.files.filter((f) => /\.(ino|h|hpp|c|cpp)$/.test(f.path)).map((f) => [f.path.split("/").pop()!, f.content]));
+  const changed = applyConfig(files, opts.config ?? {});
+  if (typeof changed === "string") return { ...empty, firmware: { ...empty.firmware, name: fw.name }, error: changed };
+  const info = { name: fw.name, board: fw.board, boardName: board.name, files: Object.keys(files), config: changed };
   const variants = opts.variants ?? VARIANTS;
   const out: VariantRun[] = [];
-  for (let i = 0; i < variants.length; i++) {
-    out.push(runVariant(opts, variants[i], (opts.seed ?? 1) + i * 7919, files, fw.board, board));
-  }
+  // each variant has its own seed, so one variant run alone matches the same variant in a full run
+  for (const v of variants) out.push(runVariant(opts, v, (opts.seed ?? 1) + VARIANTS.indexOf(v) * 7919, files, fw.board, board));
   return { firmware: info, variants: out };
 }
 
@@ -250,19 +253,20 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   results.stopped = stop;
   if (state) results.state = state;
   results.faults = hal.faults.length;
+  // shares are fractions and times seconds, so `battery_left > 30%` and `loop_time < 5ms` read as written
   results.ram = summary.ram.used;
-  results.ram_pct = (summary.ram.used / summary.ram.total) * 100;
-  results.loop_ms = summary.loopMax;
+  results.ram_use = summary.ram.used / summary.ram.total;
+  results.loop_time = summary.loopMax / 1000;
   if (summary.battery) {
-    results.battery_left = summary.battery.end;
-    results.battery_min_v = summary.battery.minVolts;
+    results.battery_left = summary.battery.end / 100;
+    results.battery_min_volts = summary.battery.minVolts;
     results.battery_used = summary.battery.usedMah;
-    results.battery_peak_a = summary.battery.peakAmps;
+    results.battery_peak_amps = summary.battery.peakAmps;
   }
   for (const m of summary.motors) {
     results[`${m.name}.peak_amps`] = m.peakAmps;
     results[`${m.name}.max_temp`] = m.maxTemp;
-    results[`${m.name}.load`] = m.loadPeak * 100;
+    results[`${m.name}.load`] = m.loadPeak;
   }
   for (const a of plant.acts) results[`${a.comp}.travel`] = a.a.travel;
   if (fwRef) for (const g of watch) {
@@ -301,4 +305,31 @@ function peakOf(f: Frames, name: string): number {
     if (i >= w - 1) best = Math.max(best, sum / w);
   }
   return best;
+}
+
+/**
+ * Changes `#define NAME value` lines in the firmware files for this run.
+ * Returns what changed, or why it could not (a name the firmware does not define).
+ */
+export function applyConfig(files: Record<string, string>, config: Record<string, number | string>): { name: string; from: string; to: string }[] | string {
+  const out: { name: string; from: string; to: string }[] = [];
+  for (const [name, value] of Object.entries(config)) {
+    const re = new RegExp(`^([ \\t]*#define[ \\t]+${name}[ \\t]+)([^\\r\\n]*?)([ \\t]*(//[^\\r\\n]*)?)$`, "m");
+    let found = false;
+    for (const [f, text] of Object.entries(files)) {
+      const m = re.exec(text);
+      if (!m) continue;
+      const to = typeof value === "number" ? String(value) : JSON.stringify(value);
+      files[f] = text.replace(re, (_all, head: string, _v: string, tail: string) => `${head}${to}${tail}`);
+      out.push({ name, from: m[2].trim(), to });
+      found = true;
+      break;
+    }
+    if (!found) {
+      const names = new Set<string>();
+      for (const text of Object.values(files)) for (const m of text.matchAll(/^[ \t]*#define[ \t]+([A-Z_][A-Z0-9_]*)[ \t]+\S/gm)) names.add(m[1]);
+      return `config: the firmware has no setting ${name}${names.size ? `. Its settings: ${[...names].slice(0, 30).join(", ")}` : ""}`;
+    }
+  }
+  return out;
 }

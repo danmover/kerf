@@ -13,8 +13,12 @@ import type { VariantName } from "./common";
 export interface BenchSpec {
   /** load on each motor, N·mm (defaults to the component's `load:`) */
   loads: Record<string, number>;
+  /** multiplies every motor's load (1 = the design load, 0 = running free) */
+  loadFactor: number;
   /** force on each actuator rod, N (+ pushes it in) */
   forces: Record<string, number>;
+  /** force on actuators without their own entry in forces, N */
+  force: number;
   /** what range sensors see, mm */
   range: number;
   ambient: number;
@@ -27,7 +31,7 @@ export class Bench implements World {
   events: WorldEvent[] = [];
   limits = [
     "The machine stands still: motors turn against a steady friction load and sensors read a level machine with nothing moving round it.",
-    "Loads are the design's own `load:` numbers, ±30 % across the three runs.",
+    "Loads are the design's own `load:` numbers (times load:), ±30 % across the three runs.",
   ];
   assumptions: string[] = [];
   private loads = new Map<string, number>();
@@ -42,11 +46,11 @@ export class Bench implements World {
     for (const mc of machine.components) {
       const part = catalogPart(mc.catalogId);
       if (part?.kind !== "gearmotor") continue;
-      const load = spec.loads[mc.name] ?? mc.load ?? 0;
+      const load = (spec.loads[mc.name] ?? mc.load ?? 0) * spec.loadFactor;
       this.loads.set(mc.name, load * K[variant]);
-      if (!(mc.name in spec.loads) && mc.load === undefined) this.assumptions.push(`${mc.name}: no load: given, so it runs free`);
+      if (!(mc.name in spec.loads) && mc.load === undefined && spec.loadFactor) this.assumptions.push(`${mc.name}: no load: given, so it runs free`);
     }
-    this.assumptions.push(`${variant} run: motor loads ×${K[variant]}`);
+    this.assumptions.push(spec.loadFactor ? `${variant} run: motor loads ×${+(spec.loadFactor * K[variant]).toFixed(2)} of the design load` : "Motors run free (no load)");
   }
 
   motorLoad(comp: string): MotorLoad {
@@ -54,7 +58,7 @@ export class Bench implements World {
   }
 
   actuatorLoad(comp: string): number {
-    return this.spec.forces[comp] ?? 0;
+    return this.spec.forces[comp] ?? this.spec.force;
   }
 
   orientation(): Orientation {

@@ -621,7 +621,7 @@ export class SandPit implements World {
       out[`${s.motor}.thrust`] = this.thrust.get(s.motor) ?? 0;
       out[`${s.motor}.slip`] = (this.slip.get(s.motor) ?? 0) * 100;
       out[`${s.motor}.buried`] = (this.eng.get(s.motor) ?? 0) * 100;
-      out[`${s.motor}.load`] = (this.torque.get(s.motor) ?? 0) / 1000;
+      out[`${s.motor}.sand_torque`] = (this.torque.get(s.motor) ?? 0) / 1000;
     }
     const pose = (id: string, yaw: number) => {
       out[`${id}.px`] = this.px;
@@ -642,26 +642,29 @@ export class SandPit implements World {
 
   results(): Record<string, number | boolean | string> {
     const nose = this.at(this.robot.nose);
-    const miss = this.missAt ?? { y: nose[1], z: nose[2] - this.pit.axis };
     const r: Record<string, number | boolean | string> = {
       reached: this.tReach !== undefined,
       through: this.through,
       out: this.exitedAt !== undefined,
       progress: this.noseMax - this.noseStart,
       remaining: Math.max(0, this.pit.length - this.noseMax),
-      miss: Math.hypot(miss.y, miss.z),
-      miss_side: miss.y,
-      miss_height: miss.z,
+      offset: Math.hypot(nose[1], nose[2] - this.pit.axis),
       heading_max: this.headingMax,
       heading_end: this.psi * R2D,
       roll_max: this.rollMax,
       pitch_max: this.pitchMax,
       speed: this.moveTime > 0 ? this.moveDist / this.moveTime : 0,
-      slip: this.slipN ? (this.slipSum / this.slipN) * 100 : 0,
+      slip: this.slipN ? this.slipSum / this.slipN : 0,
       side_wall: this.wallSide,
       floor: this.floorTouch,
-      stuck_s: this.stuckTotal,
+      stuck_time: this.stuckTotal,
     };
+    // how far off the line it arrived means something only once it arrived
+    if (this.missAt) {
+      r.miss = Math.hypot(this.missAt.y, this.missAt.z);
+      r.miss_side = this.missAt.y;
+      r.miss_height = this.missAt.z;
+    }
     if (this.tReach !== undefined) r.time_to_wall = this.tReach;
     if (this.exitedAt !== undefined) r.time_out = this.exitedAt;
     return r;

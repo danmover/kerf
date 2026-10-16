@@ -26,3 +26,7 @@
 # The stress analysis worker: plain arithmetic on meshes, no network.
 /assets/fea.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
+
+# The simulation worker: firmware compiled to closures on a virtual chip, no eval, no network.
+/assets/sim.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'

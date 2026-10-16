@@ -114,21 +114,24 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   simFn(
     "bench",
-    ["range", "ambient"],
-    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. range: what a distance sensor sees (1 m); ambient: room temperature (20C).",
-    (a) => new SimSpec("world", { kind: "bench", bench: { loads: {}, forces: {}, range: a.positive("range", 1000), ambient: a.num("ambient", 20) } }, "bench"),
+    ["load", "force", "range", "ambient"],
+    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. Use it for power-up, battery runtime, overload and hot-room tests. load: share of the design load (1; 0 runs the motors free, 1.5 is a 50 % overload); force: push on each linear actuator's rod (0 N); range: what a distance sensor sees (1 m); ambient: room temperature (20C).",
+    (a) => {
+      const load = a.num("load", 1);
+      if (load < 0) a.ctx.error("sim.bench(): load is a share of the design load, 0 or more");
+      return new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: load, forces: {}, force: a.num("force", 0), range: a.positive("range", 1000), ambient: a.num("ambient", 20) } }, "bench");
+    },
   ),
   simFn(
     "screw",
     ["motor", "d", "core", "pitch", "from", "length", "dir", "face", "advance", "turn"],
-    "One screw section of a burrowing machine. motor: the gearmotor that turns it; d: flight outside diameter; core: shell diameter; pitch: flight pitch; from: design X where the flights start; length: flighted length along dir (X or -X, default X); face: true for the section that cuts the face; advance: -1 if it pulls backwards when its motor turns forward; turn: its turning sense about X (the motor's spin: by default).",
+    "One screw section of a burrowing machine. motor: the gearmotor that turns it; d: flight outside diameter; core: shell diameter; pitch: flight pitch; from: design X where the flights start; length: flighted length along dir (X or -X, default X); face: true for the section that cuts the face; advance: -1 if it pulls backwards when its motor turns forward; turn: its turning sense about X, 1 or -1 (the face section 1 and the others -1 by default, so they counter-rotate).",
     (a, ctx) => {
       const motorV = a.value("motor");
       const motor = compName(motorV, ctx, "sim.screw(): motor");
       const from = a.num("from");
       const length = a.positive("length");
       const dir = signOf(a.value("dir"), ctx, "sim.screw(): dir", 1);
-      const spin = motorV instanceof Obj && typeof motorV.fields.speed === "number" ? Math.sign(motorV.fields.speed as number) || 1 : undefined;
       const face = a.bool("face", false);
       const s: ScrewSpec = {
         motor,
@@ -139,7 +142,8 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
         to: dir > 0 ? from + length : from,
         face,
         advance: a.num("advance", 1) < 0 ? -1 : 1,
-        turn: a.has("turn") ? (a.num("turn") < 0 ? -1 : 1) : (spin ?? (face ? 1 : -1)),
+        // counter-rotating sections by default: their twisting cancels
+        turn: a.has("turn") ? (a.num("turn") < 0 ? -1 : 1) : face ? 1 : -1,
       };
       if (s.core >= s.d) ctx.error("sim.screw(): core must be smaller than d");
       return new SimSpec("screw", s, `screw on ${motor}`);

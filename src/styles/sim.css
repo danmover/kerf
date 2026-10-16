@@ -1,0 +1,750 @@
+/* ---------- simulation: the Simulate tab ---------- */
+
+.sim {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sim-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  flex: none;
+  flex-wrap: wrap;
+}
+.sim-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition:
+    border-color 0.15s,
+    color 0.15s,
+    background 0.15s;
+}
+.sim-pick:hover {
+  color: var(--text);
+  border-color: var(--line-3);
+}
+.sim-pick.active {
+  color: var(--text);
+  border-color: rgba(109, 139, 255, 0.55);
+  background: var(--accent-soft);
+}
+.sim-pick .val {
+  color: var(--text-3);
+}
+.sim-pick .val.fail {
+  color: var(--fail);
+}
+.sim-pick .val.warn {
+  color: var(--warn);
+}
+.sim-pick .val.pass {
+  color: var(--pass);
+}
+.sim-pick .prog {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  transition: width 0.3s var(--ease);
+}
+.sim-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sim-toggle:hover {
+  color: var(--text);
+}
+.sim-toggle.on {
+  color: var(--accent-2);
+  border-color: rgba(109, 139, 255, 0.45);
+  background: var(--accent-soft);
+}
+.sim-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr) minmax(250px, 340px);
+}
+.sim-col {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 14px;
+  border-right: 1px solid var(--line);
+}
+.sim-col:last-child {
+  border-right: 0;
+}
+.sim-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 2px 0 8px;
+}
+.sim-h .grow {
+  flex: 1;
+}
+
+/* verdict and expectations */
+.sim-verdict {
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  position: relative;
+  overflow: hidden;
+}
+.sim-verdict::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--text-4);
+}
+.sim-verdict.pass::before {
+  background: var(--pass);
+}
+.sim-verdict.warn::before {
+  background: var(--warn);
+}
+.sim-verdict.fail::before {
+  background: var(--fail);
+}
+.sim-verdict.pending::before {
+  background: var(--accent);
+  animation: sim-pulse 1.4s ease-in-out infinite;
+}
+@keyframes sim-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.sim-verdict .big {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sim-verdict .sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+  line-height: 1.45;
+}
+.sim-variants {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+.sim-var {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.sim-var.active {
+  color: var(--text);
+  border-color: rgba(109, 139, 255, 0.55);
+  background: var(--accent-soft);
+}
+.sim-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-4);
+  flex: none;
+}
+.sim-dot.pass {
+  background: var(--pass);
+}
+.sim-dot.fail {
+  background: var(--fail);
+}
+.sim-dot.warn {
+  background: var(--warn);
+}
+.sim-dot.pending {
+  background: var(--accent);
+  animation: sim-pulse 1.2s ease-in-out infinite;
+}
+.sim-exp {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  gap: 2px 8px;
+  align-items: start;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sim-exp:hover {
+  background: var(--bg-3);
+}
+.sim-exp .status-icon {
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+}
+.sim-exp .t {
+  font-size: 12.5px;
+  color: var(--text);
+}
+.sim-exp .t small {
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  margin-left: 6px;
+}
+.sim-exp .d {
+  grid-column: 2 / 4;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.sim-exp .per {
+  display: flex;
+  gap: 3px;
+  margin-top: 4px;
+}
+.sim-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 10px;
+}
+.sim-stat {
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 7px 9px;
+}
+.sim-stat .k {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.sim-stat .v {
+  font-family: var(--mono);
+  font-size: 15px;
+  color: var(--text);
+  margin-top: 2px;
+}
+.sim-stat .v small {
+  font-size: 10.5px;
+  color: var(--text-3);
+  margin-left: 3px;
+}
+.sim-stat.fail .v {
+  color: var(--fail);
+}
+.sim-stat.warn .v {
+  color: var(--warn);
+}
+.sim-note {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.5;
+  margin: 6px 0 0;
+}
+.sim-note li {
+  margin: 2px 0;
+}
+
+/* plots */
+.sim-plots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sim-plot {
+  position: relative;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 6px 8px 4px;
+}
+.sim-plot canvas {
+  display: block;
+  width: 100%;
+  height: 96px;
+  cursor: crosshair;
+}
+.sim-plot-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  margin-bottom: 2px;
+  flex-wrap: wrap;
+}
+.sim-plot-head .sw {
+  display: inline-block;
+  width: 9px;
+  height: 2px;
+  border-radius: 1px;
+  margin-right: 5px;
+  vertical-align: 3px;
+}
+.sim-plot-head .now {
+  color: var(--text);
+}
+.sim-plot-head button {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: var(--text-4);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.sim-plot-head button:hover {
+  color: var(--text);
+}
+.sim-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.sim-add select {
+  flex: 1;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px dashed var(--line-2);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+/* timeline */
+.sim-timeline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.sim-time {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  min-width: 92px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sim-scrub {
+  position: relative;
+  flex: 1;
+  height: 26px;
+  cursor: pointer;
+  touch-action: none;
+}
+.sim-scrub .track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 11px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-4);
+}
+.sim-scrub .fill {
+  position: absolute;
+  left: 0;
+  top: 11px;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+}
+.sim-scrub .knob {
+  position: absolute;
+  top: 6px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow:
+    0 0 0 3px rgba(109, 139, 255, 0.35),
+    0 2px 6px rgba(0, 0, 0, 0.5);
+}
+.sim-scrub .tick {
+  position: absolute;
+  top: 4px;
+  width: 2px;
+  height: 18px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text-4);
+  opacity: 0.8;
+}
+.sim-scrub .tick.goal {
+  background: var(--pass);
+}
+.sim-scrub .tick.stall,
+.sim-scrub .tick.warn {
+  background: var(--fail);
+}
+.sim-scrub .tick.contact {
+  background: var(--warn);
+}
+
+/* events and console */
+.sim-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.sim-tabs button {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.sim-tabs button.on {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.sim-event {
+  display: grid;
+  grid-template-columns: 44px 10px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.sim-event:hover {
+  background: var(--bg-3);
+}
+.sim-event.future {
+  opacity: 0.45;
+}
+.sim-event .at {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  text-align: right;
+}
+.sim-event .k {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-4);
+  align-self: center;
+}
+.sim-event .k.goal {
+  background: var(--pass);
+}
+.sim-event .k.stall,
+.sim-event .k.warn {
+  background: var(--fail);
+}
+.sim-event .k.contact {
+  background: var(--warn);
+}
+.sim-console {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+  background: #05070a;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 120px;
+  max-height: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.sim-console .ln {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 8px;
+}
+.sim-console .ln .at {
+  color: var(--text-4);
+  text-align: right;
+}
+.sim-console .ln.in {
+  color: var(--accent-2);
+}
+.sim-console .ln.state {
+  color: var(--cyan);
+}
+
+/* empty state and gallery */
+.sim-empty {
+  padding: 16px 18px;
+  overflow: auto;
+  height: 100%;
+}
+.sim-empty h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.sim-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.sim-card {
+  text-align: left;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  padding: 10px 12px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    transform 0.15s var(--ease);
+}
+.sim-card:hover:not(:disabled) {
+  border-color: rgba(109, 139, 255, 0.5);
+  transform: translateY(-1px);
+}
+.sim-card:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.sim-card .t {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.sim-card .b {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 4px;
+  line-height: 1.45;
+}
+.sim-card .why {
+  font-size: 11px;
+  color: var(--warn);
+  margin-top: 6px;
+}
+.sim-card .tag {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--accent-2);
+  font-weight: 400;
+}
+.sim-describe {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.sim-describe textarea {
+  flex: 1;
+  min-height: 54px;
+  resize: vertical;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 8px 10px;
+}
+.sim-describe textarea:focus {
+  outline: none;
+  border-color: rgba(109, 139, 255, 0.6);
+}
+.sim-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-4);
+  overflow: hidden;
+  margin-top: 8px;
+}
+.sim-progress > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+  transition: width 0.3s var(--ease);
+}
+
+/* ---------- simulation in the viewport ---------- */
+
+.simv-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  width: min(760px, calc(100% - 32px));
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(10, 13, 19, 0.88);
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+.simv-bar .sim-scrub {
+  min-width: 120px;
+}
+.simv-bar select {
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.simv-hud {
+  position: absolute;
+  left: 12px;
+  top: 54px;
+  z-index: 6;
+  width: 236px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(10, 13, 19, 0.86);
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+.simv-hud .title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.simv-hud .state {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--cyan);
+  margin: 4px 0 6px;
+}
+.simv-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding: 2px 0;
+}
+.simv-row b {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.simv-meter {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bg-4);
+  overflow: hidden;
+  margin: 2px 0 4px;
+}
+.simv-meter > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+}
+.simv-event {
+  position: absolute;
+  left: 50%;
+  bottom: 70px;
+  transform: translateX(-50%);
+  z-index: 7;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(10, 13, 19, 0.9);
+  border: 1px solid var(--line-2);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.simv-event.goal {
+  border-color: rgba(61, 220, 151, 0.6);
+  color: #aef2d0;
+}
+.simv-event.stall,
+.simv-event.warn {
+  border-color: rgba(255, 93, 108, 0.6);
+  color: #ffc4ca;
+}
+.simv-event.contact {
+  border-color: rgba(245, 184, 75, 0.6);
+  color: #ffe0a8;
+}
+@media (max-width: 900px) {
+  .sim-body {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+  .sim-col {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow: visible;
+  }
+  .simv-hud {
+    display: none;
+  }
+}
