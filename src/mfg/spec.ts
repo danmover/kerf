@@ -7,6 +7,7 @@ import { PROCESSES, PROCESS_IDS, isProcessId, resolveRules, ruleFields, resolved
 import { defaultMaterial } from "./materials";
 import type { ProcessId, ProcessSpec, SettingValue } from "./types";
 import type { V3 } from "../kernel/recipe";
+import type { EvalPart, Model } from "../core/model";
 
 export type { ProcessId, ProcessSpec };
 
@@ -160,4 +161,34 @@ export function processFromText(text: string): ProcessId | null {
 /** The material a part with this process ends up with. */
 export function partMaterial(material: string | undefined, spec: ProcessSpec | undefined): string {
   return material ?? spec?.material ?? (spec ? defaultMaterial(spec.id) : "PLA");
+}
+
+/**
+ * Design-wide defaults, for the project brief's "how it's made": custom parts
+ * that name no process get this one (marked processInherited), and take its
+ * usual material unless they name their own. A build volume becomes the bed
+ * of every printing process that does not set one, explicit or inherited.
+ */
+export function applyDefaultProcess(model: Model, spec: ProcessSpec | null, opts: { buildVolume?: V3 } = {}): void {
+  for (const p of model.parts) {
+    if (p.kind !== "part") continue;
+    if (!p.process && spec) {
+      p.process = { ...spec, settings: { ...spec.settings } };
+      p.processInherited = true;
+      if (!p.materialSpan) p.material = partMaterial(undefined, p.process);
+    }
+    const bedless = p.process && PROCESSES[p.process.id].settings.some((s) => s.key === "bed") && p.process.settings.bed === undefined;
+    if (bedless && opts.buildVolume) {
+      p.process = { ...p.process!, settings: { ...p.process!.settings, bed: opts.buildVolume } };
+      p.processDefaults = [...(p.processDefaults ?? []), "bed"];
+    }
+  }
+}
+
+/** The part's process as its own source states it: without settings filled in from design-wide defaults. */
+export function ownProcess(part: EvalPart): ProcessSpec | undefined {
+  if (!part.process || !part.processDefaults?.length) return part.process;
+  const settings = { ...part.process.settings };
+  for (const k of part.processDefaults) delete settings[k];
+  return { ...part.process, settings };
 }

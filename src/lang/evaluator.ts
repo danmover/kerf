@@ -673,6 +673,7 @@ class Evaluator {
       material: partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process),
       process,
       processSpan,
+      materialSpan: state.propSpans.material,
       recipe,
       hash: recipeHash(recipe),
       xf,

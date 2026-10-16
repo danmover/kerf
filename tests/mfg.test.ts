@@ -4,7 +4,7 @@ import opencascade from "replicad-opencascadejs";
 import * as R from "replicad";
 import { KernelCore } from "../src/kernel/core";
 import { evaluate } from "../src/lang/evaluator";
-import { processFromText, processFromValue } from "../src/mfg/spec";
+import { applyDefaultProcess, ownProcess, processFromText, processFromValue } from "../src/mfg/spec";
 import { setPartProcess, withSetting } from "../src/mfg/edit";
 import { compareProbes, findingFor, findingId, parseFindingId, processItems, processProbes, summarize } from "../src/mfg/report";
 import { PROCESS_IDS, resolveRules, specToSource } from "../src/mfg/profiles";
@@ -82,11 +82,46 @@ part g { body box(10, 10, 10) process: mfg.injection(pull: 3) }
   });
 
   it("round-trips process source", () => {
-    const spec: ProcessSpec = { id: "cnc_mill", settings: { tool_d: 2, setups: [[0, 0, 1], [0, 0, -1], [1, 0, 0]] }, material: "Aluminum 6061" };
+    const spec: ProcessSpec = {
+      id: "cnc_mill",
+      settings: {
+        tool_d: 2,
+        setups: [
+          [0, 0, 1],
+          [0, 0, -1],
+          [1, 0, 0],
+        ],
+      },
+      material: "Aluminum 6061",
+    };
     const src = specToSource(spec);
     expect(src).toBe('mfg.cnc_mill(tool_d: 2, setups: [Z, -Z, X], material: "Aluminum 6061")');
     const m = evaluate(`part p { body box(10, 10, 10) process: ${src} }`);
     expect(m.parts[0].process).toEqual(spec);
+  });
+});
+
+describe("design-wide default process", () => {
+  it("fills parts with no process, keeps their own material and sets the printer bed", () => {
+    const m = evaluate(`
+part a { body box(10, 10, 10) }
+part b { body box(10, 10, 10) material: "PETG" }
+part c { body box(10, 10, 10) process: mfg.cnc_mill(tool_d: 2) }
+part d { body box(10, 10, 10) process: mfg.fdm(build: -Z) }
+`);
+    applyDefaultProcess(m, processFromValue("resin printed"), { buildVolume: [120, 70, 150] });
+    const by = Object.fromEntries(m.parts.map((p) => [p.name, p]));
+    expect(by.a.process).toEqual({ id: "sla", settings: { bed: [120, 70, 150] } });
+    expect(by.a.processInherited).toBe(true);
+    expect(by.a.material).toBe("Resin");
+    expect(by.b.material).toBe("PETG");
+    expect(by.c.process).toEqual({ id: "cnc_mill", settings: { tool_d: 2 } });
+    expect(by.c.processInherited).toBeUndefined();
+    expect(by.d.process?.settings.bed).toEqual([120, 70, 150]);
+    expect(resolveRules(by.d.process!, by.d.material).envelope?.size).toEqual([120, 70, 150]);
+    // written back without the default, so the part's source keeps following the brief
+    expect(ownProcess(by.d)).toEqual({ id: "fdm", settings: { build: [0, 0, -1] } });
+    expect(processProbes(m, new Set(m.parts.map((p) => p.hash))).map((p) => p.id)).toEqual(["a", "b", "c", "d"]);
   });
 });
 
@@ -151,7 +186,7 @@ describe("process rules and guidance", () => {
 
 beforeAll(async () => {
   const wasm = readFileSync("node_modules/replicad-opencascadejs/dist/replicad_single.wasm");
-  R.setOC(await (opencascade as unknown as (o: { wasmBinary: Buffer }) => Promise<unknown>)({ wasmBinary: wasm }) as never);
+  R.setOC((await (opencascade as unknown as (o: { wasmBinary: Buffer }) => Promise<unknown>)({ wasmBinary: wasm })) as never);
 });
 
 const core = new KernelCore();

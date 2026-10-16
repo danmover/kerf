@@ -12,6 +12,7 @@ import type { EvalPart } from "../core/model";
 import { PROCESSES, PROCESS_IDS } from "../mfg/profiles";
 import { madeParts, summarize } from "../mfg/report";
 import { setPartProcess, withSetting } from "../mfg/edit";
+import { ownProcess } from "../mfg/spec";
 import { compareProcesses, type ProcessOption } from "../mfg/compare";
 import type { ProcessId } from "../mfg/types";
 import { StatusIcon, Icon } from "./icons";
@@ -24,7 +25,7 @@ const ROWS = 6;
 
 function setProcess(part: EvalPart, id: ProcessId | null) {
   const { source } = useDesign.getState();
-  const spec = id ? (part.process?.id === id ? part.process : { id, settings: {} }) : null;
+  const spec = id ? (part.process?.id === id ? ownProcess(part)! : { id, settings: {} }) : null;
   const next = setPartProcess(source, part, spec);
   if (next !== source) commitSource(next, "you", id ? `${part.label} made by ${PROCESSES[id].label}` : `${part.label}: no process`);
 }
@@ -74,8 +75,9 @@ function PartRow({ part, summary, error, comparing, onCompare }: { part: EvalPar
   return (
     <div className="mfg-part">
       <div className="mfg-row">
-        <span className="mfg-name" title={part.name}>
+        <span className="mfg-name" title={part.processInherited ? `${part.name}: uses the design's default process` : part.name}>
           {part.label}
+          {part.processInherited && <span className="muted"> · default</span>}
         </span>
         <select className="select mfg-select" value={part.process?.id ?? ""} onChange={(e) => setProcess(part, (e.target.value || null) as ProcessId | null)} aria-label={`How ${part.label} is made`}>
           <option value="">Not chosen</option>
@@ -162,7 +164,7 @@ function applyAction(a: CheckAction) {
   const { source, model } = useDesign.getState();
   const part = model?.parts.find((p) => p.id === a.part);
   if (!part?.process) return;
-  const next = setPartProcess(source, part, withSetting(part.process, a.setting, a.value));
+  const next = setPartProcess(source, part, withSetting(ownProcess(part)!, a.setting, a.value));
   if (next !== source) {
     commitSource(next, "you", `${part.label}: ${a.label.charAt(0).toLowerCase()}${a.label.slice(1)}`);
     useView.setState({ focusCheck: null, focusParts: [] });

@@ -46,6 +46,12 @@ export interface EvalPart {
   process?: ProcessSpec;
   /** span of the part's process: property, for edits */
   processSpan?: Span;
+  /** the process came from a design-wide default (applyDefaultProcess), not from the part */
+  processInherited?: boolean;
+  /** process settings filled in from design-wide defaults; left out when the process is written back */
+  processDefaults?: string[];
+  /** span of the part's material: property, when it names one */
+  materialSpan?: Span;
   recipe: PartRecipe;
   hash: string;
   xf: Xform[];
