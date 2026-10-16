@@ -7,6 +7,7 @@ import type { GeoQuery } from "../lang/values";
 import type { EvalSketch } from "../sketch/types";
 import type { AnalysisSpec } from "../analysis/spec";
 import type { ProcessSpec } from "../mfg/types";
+import type { DrawingSpec } from "../drawing/spec";
 
 export interface Motion {
   origin: V3;
@@ -270,5 +271,7 @@ export interface Model {
   blocks: { name: string; kind: string; span: Span; locked: boolean }[];
   /** geometric queries requested by requirements */
   geoQueries: GeoQuery[];
+  /** engineering drawings defined in the source */
+  drawings: DrawingSpec[];
   evalMs: number;
 }

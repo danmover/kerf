@@ -107,7 +107,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && tk.kind === "kw" && TOP_LEVEL.has(tk.value) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -118,11 +118,23 @@ class Parser {
     return !prev || prev.line < this.peek().line;
   }
 
+  /** `drawing <name> {` starts a drawing block; elsewhere "drawing" is an ordinary name. */
+  atDrawing() {
+    return this.is("ident", "drawing") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
+  }
+
   stmt(): Stmt {
     const tk = this.peek();
+    if (this.atDrawing()) {
+      const start = tk.start;
+      this.next();
+      const nameTk = this.expect("ident", undefined, "a drawing name");
+      const items = this.block();
+      return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+    }
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -478,6 +490,14 @@ class Parser {
         case "locked":
           this.next();
           return { k: "flag", name: "locked", span: { start, end: this.prevEnd() } };
+        case "note":
+          // note("...") inside a drawing block
+          if (this.isOp("(", 1)) {
+            const kw = this.next();
+            const call = this.callTail({ k: "ident", name: "note", span: { start: kw.start, end: kw.end } });
+            return { k: "modifier", call, span: { start, end: this.prevEnd() } };
+          }
+          break;
       }
     }
     if (tk.kind === "ident") {
@@ -665,25 +685,29 @@ class Parser {
     }
     return base;
   }
+  /** The argument list of a call on callee, starting at "(". */
+  callTail(callee: Expr): Expr & { k: "call" } {
+    this.expect("op", "(");
+    const args: Arg[] = [];
+    while (!this.isOp(")")) {
+      const aStart = this.peek().start;
+      let name: string | undefined;
+      if ((this.is("ident") || this.is("kw")) && this.isOp(":", 1)) {
+        name = this.next().value;
+        this.next();
+      }
+      const value = this.expr();
+      args.push({ name, value, span: { start: aStart, end: this.prevEnd() } });
+      if (!this.eat("op", ",")) break;
+    }
+    this.expect("op", ")", '")" to close the call');
+    return { k: "call", callee, args, span: { start: callee.span.start, end: this.prevEnd() } };
+  }
   postfix(): Expr {
     let e = this.primary();
     for (;;) {
       if (this.isOp("(")) {
-        this.next();
-        const args: Arg[] = [];
-        while (!this.isOp(")")) {
-          const aStart = this.peek().start;
-          let name: string | undefined;
-          if ((this.is("ident") || this.is("kw")) && this.isOp(":", 1)) {
-            name = this.next().value;
-            this.next();
-          }
-          const value = this.expr();
-          args.push({ name, value, span: { start: aStart, end: this.prevEnd() } });
-          if (!this.eat("op", ",")) break;
-        }
-        this.expect("op", ")", '")" to close the call');
-        e = { k: "call", callee: e, args, span: { start: e.span.start, end: this.prevEnd() } };
+        e = this.callTail(e);
       } else if (this.isOp(".")) {
         this.next();
         const nameTk = this.peek();

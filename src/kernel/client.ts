@@ -6,6 +6,7 @@ import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, ToWorker } fro
 import type { PartInspection } from "./inspect";
 import type { V3, Xform } from "./recipe";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
+import type { PickMeasure, PickRef, ViewRequest, ViewResult } from "./drawing";
 import type { ImportMeta } from "./imports";
 import type { MeasureResult } from "./core";
 
@@ -164,6 +165,8 @@ export class KernelClient {
       case "checks":
       case "exported":
       case "process":
+      case "projected":
+      case "pick-measured":
       case "inspected":
       case "imported":
       case "measured": {
@@ -175,6 +178,7 @@ export class KernelClient {
       case "checks-error":
       case "export-error":
       case "process-error":
+      case "job-error":
       case "import-error":
       case "measure-error": {
         const job = this.jobs.get(m.jobId);
@@ -222,6 +226,21 @@ export class KernelClient {
 
   exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]) {
     return this.value<ArrayBuffer>((jobId) => ({ type: "export-step", jobId, items }));
+  }
+
+  /** Hidden-line projection of placed solids for a drawing view. Runs after any builds and checks. */
+  project(req: ViewRequest) {
+    let id = 0;
+    const promise = this.value<ViewResult>((jobId) => {
+      id = jobId;
+      return { type: "project", jobId, req };
+    });
+    return { promise, cancel: () => this.post({ type: "cancel", jobId: id }) };
+  }
+
+  /** Exact properties of a picked face, edge or point, or the measurement between two of them. */
+  measurePick(a: PickRef, b?: PickRef) {
+    return this.value<PickMeasure>((jobId) => ({ type: "pick-measure", jobId, req: { a, b } }));
   }
 
   /** Detail inspection of built parts (sharp edges, support, walls), by geometry hash. */

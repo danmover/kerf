@@ -87,6 +87,13 @@ npm run typecheck
 - Gear trains get a drivetrain block (`drive:`, `torque:`, `speed:`, `life:`) that checks tooth bending (Lewis), bearing L10 life and shaft torsion for every gear and bearing the driver turns.
 - Claude sets analyses up from the part's intended use, runs them, looks at the results, strengthens weak spots and reports before-and-after numbers.
 
+**Drawings and measuring**
+- Every part and the assembly get an engineering drawing automatically: first-angle ISO views, a section through the main features, an isometric view, dimensions with hole and slot callouts, general tolerances (ISO 2768), a title block and, for the assembly, balloons and a parts list. Sheet size and scale are chosen to fit.
+- Drawings update with the design. Click any dimension, view, part or the title block to change it (a parameter, a tolerance or fit, title fields, hidden lines) or to ask Claude about it. Changes are written into a `drawing` block in the design file, so undo, history and Claude see them, and tolerances stay with their dimension when the design changes.
+- Claude can look at a drawing and edit it like the rest of the design.
+- Export drawings as PDF (all sheets), SVG or DXF.
+- Measure in the 3D view (press `R`): click a face, edge or corner for its exact size, and a second one for the distance, angle and centre distance between them. A measurement can be added to the part's drawing as a dimension.
+
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
 - Kerf's own renderer on WebGL: soft area-light shadows, ambient occlusion, clean anti-aliased edges and gentle bloom that refine when the view is still. Five studio lighting presets, a turnable key light (Alt-drag), and draft/balanced/high quality.
@@ -106,7 +113,6 @@ Four complete examples ship with it: a sensor-hub enclosure (21 solids), a print
 - **Direct modelling.** Push and pull on faces, and sketching on curved faces, are not there yet; profiles come from sketches on flat planes.
 - **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds it. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
 - **More analysis.** The stress solver is linear elastic on a voxel grid: no contact between parts, buckling, large deflection, creep, vibration or thermal analysis, and features smaller than a grid cell are smoothed over. Drivetrain checks leave out tooth pitting, wear and heat. There are no tolerance stack-ups yet. Treat results as a design guide and test parts that matter.
-- **Drawings and measurement.** No 2D drawings or interactive measuring tool yet.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
 - **Accounts and sharing.** No server, sign-in, sync or collaboration. A hosted version would need a server-side key proxy, rate limits and billing.
 - A larger hardware library, a light theme, and a tablet layout. The phone layout covers the 3D view, chat, model panel, code and settings.
@@ -121,6 +127,7 @@ src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build 
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
 src/analysis/   Stress solver (voxel hex8 FEA, multigrid CG, separate worker), drivetrain checks, analysis blocks
 src/mfg/        Manufacturing processes: rules, materials, geometry analysis, findings
+src/drawing/    Engineering drawings: view planning, dimensions, sheet layout, PDF/SVG/DXF
 src/ai/         Claude tools, system prompt, language reference, chat loop
 src/app/        Projects, history and previews, settings, view state, spots, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats

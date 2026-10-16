@@ -9,6 +9,7 @@ import * as db from "../persist/db";
 import { useSettings } from "../app/settings";
 import { useDesign, evaluateOnly } from "../core/engine";
 import { useView } from "../app/view";
+import { drawingContext } from "../drawing/engine";
 import { commitSource, useProject, endPreview } from "../app/project";
 import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, briefSummary, type AskOption, type ToolOutcome } from "./tools";
@@ -410,6 +411,7 @@ function contextNote(): string {
     changed,
     reportSummary(report, 12),
     selected.length ? `The user has selected: ${selected.slice(0, 20).join(", ")}` : "",
+    drawingContext(),
     lastEditedSource !== null && lastEditedSource !== source ? "The source changed since your last edit (the user edited it). Call get_design before editing." : "",
     `</context>`,
   ];

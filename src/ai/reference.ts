@@ -5,6 +5,7 @@ import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
 import { processReference } from "../mfg/guide";
+import { DRAWING_DOCS, DRAWING_PROPS } from "../drawing/spec";
 import { FINISHES, MATERIAL_LIST } from "../library/materials";
 import { importsReference } from "./importTools";
 import { CONSTRAINTS } from "../sketch/evaluate";
@@ -180,6 +181,7 @@ Component fields are world-space after placement (motor.holes is a list of world
 
 ${lib}
 
+${drawingReference()}
 ${importsReference()}
 
 ## Standard data
@@ -254,4 +256,28 @@ Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-print
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
 Things geometry cannot prove are reported as "needs analysis" until an analysis block covers them; heat and real printer tolerances are not analysed.
 `;
+}
+
+function drawingReference(): string {
+  const calls = Object.values(DRAWING_DOCS)
+    .map((d) => `- ${d}`)
+    .join("\n");
+  return `## Drawings
+Every design gets automatic engineering drawings: one for the whole design (views, overall sizes, parts list and balloons) and one per custom part (views, a section when it has hidden features, dimensions, hole callouts, title block). A drawing block in the source replaces the automatic drawing of the same target and is how drawings are changed:
+drawing housing_drawing {
+  title: "Housing"
+  of: housing
+  sheet: "A3"
+  scale: "1:2"
+  views: ["front", "top", "right", "iso"]
+  section("A", at: (0, 12, 0), normal: X, view: "front")
+  detail("B", view: "front", at: (30, 0, 30), r: 8, scale: 4)
+  dim((-20, 0, 0), (20, 0, 0), view: "top", tol: 0.05)
+  diameter((30, 0, 30), 16, view: "front", fit: "H7")
+  note("Print in PETG, 0.2 mm layers")
+}
+Properties: ${DRAWING_PROPS.join(", ")}. of names parts or components defined above (omit it for the whole design). Leave out sheet and scale to have them chosen. Dimensions, hole callouts and position dimensions are generated (auto_dims: false turns them off); a dim() or diameter() that repeats a generated one replaces it, which is how to add a tolerance or a fit. Positions are model coordinates in mm; views are first-angle (ISO) unless projection: "third".
+Calls inside a drawing block:
+${calls}
+Use view_drawing to look at a drawing and get its dimension list before changing it. When the user points at something on a drawing, their message names it (for example a dimension's text and view); change the drawing block, or the design itself when they ask for a different size.`;
 }

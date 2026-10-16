@@ -4,6 +4,7 @@ import type { PartRecipe, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
+import type { PickMeasure, PickRef, ViewRequest, ViewResult } from "./drawing";
 import type { PartInspection } from "./inspect";
 import type { ImportMeta } from "./imports";
 import type { MeasureResult } from "./core";
@@ -81,6 +82,8 @@ export type ToWorker =
   | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
   | { type: "process"; jobId: number; probes: ProcessProbe[] }
   | { type: "evict"; keep: string[] }
+  | { type: "project"; jobId: number; req: ViewRequest }
+  | { type: "pick-measure"; jobId: number; req: { a: PickRef; b?: PickRef } }
   | { type: "inspect"; jobId: number; hashes: string[] }
   /** read a STEP file and keep its bodies for "import" recipes; `analyse` false skips the hole search for a file analysed before */
   | { type: "import-step"; jobId: number; hash: string; file: string; data: ArrayBuffer; analyse: boolean }
@@ -99,6 +102,9 @@ export type FromWorker =
   | { type: "export-error"; jobId: number; message: string }
   | { type: "process"; jobId: number; results: ProcessResult[] }
   | { type: "process-error"; jobId: number; message: string }
+  | { type: "projected"; jobId: number; result: ViewResult }
+  | { type: "pick-measured"; jobId: number; result: PickMeasure }
+  | { type: "job-error"; jobId: number; message: string }
   | { type: "inspected"; jobId: number; result: Record<string, PartInspection | { error: string }> }
   | { type: "imported"; jobId: number; hash: string; meta: ImportMeta }
   | { type: "import-error"; jobId: number; hash: string; message: string }

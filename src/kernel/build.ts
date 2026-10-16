@@ -300,6 +300,10 @@ export interface MeshData {
   normals: Float32Array;
   indices: Uint32Array;
   edges: Float32Array;
+  /** (first index, index count, face id) per B-rep face, for picking faces */
+  faceGroups?: Int32Array;
+  /** (first point, point count, edge id) per B-rep edge, for picking edges */
+  edgeGroups?: Int32Array;
   /** per-vertex RGB, only for imported bodies whose faces have their own colours */
   colors?: Uint8Array;
 }
@@ -313,6 +317,8 @@ export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColo
     normals: new Float32Array(m.normals),
     indices: new Uint32Array(m.triangles),
     edges: new Float32Array(e.lines),
+    faceGroups: new Int32Array(m.faceGroups.flatMap((g) => [g.start, g.count, g.faceId])),
+    edgeGroups: new Int32Array(e.edgeGroups.flatMap((g) => [g.start, g.count, g.edgeId])),
   };
   if (faceColors?.length) out.colors = vertexColors(shape, m, faceColors);
   return out;

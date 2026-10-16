@@ -153,7 +153,8 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
         if (!thread) return a.ctx.error("hole(): csink: true needs a thread size");
         csink = thread.d * 2;
       } else if (typeof cs === "number") csink = cs;
-      return new ShapeV({ t: "hole", d, depth, at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", [0, 0, -1]), cbore, csink });
+      // the thread and fit ride along for drawing callouts; they do not change the solid
+      return new ShapeV({ t: "hole", d, depth, at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", [0, 0, -1]), cbore, csink, thread: thread?.name, fit: thread ? a.str("fit", "clearance") : undefined });
     },
     'hole(d or M3, depth:, at:, dir: -Z, through: false, fit: "clearance"|"close"|"tap"|"insert", cbore: true|(d, depth), csink: true|d) — a cutting tool: use with `cut`. `at` is the entry point on the surface, dir points into the material.',
   ),

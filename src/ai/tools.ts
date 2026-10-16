@@ -15,6 +15,8 @@ import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
 import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
 import { PROCESSES } from "../mfg/profiles";
+import { sheetFor, useDrawings } from "../drawing/engine";
+import { describeSheet, sheetToPng } from "../drawing/export";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
 import { REVIEW_TOOL } from "./review/tool";
@@ -138,6 +140,18 @@ export const TOOL_DEFS = [
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
       },
       required: ["view"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "view_drawing",
+    description:
+      "Look at an engineering drawing of the design: returns the sheet as an image and a list of its views, dimensions (with ids such as d3 and the parameter each one shows), notes and warnings. Without a name it shows the drawing the user has open, or the first one. Automatic drawings (names starting auto:) are generated from the model; the result includes a drawing block to start from when one needs changing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Drawing block name, auto:<part> for an automatic drawing, or a drawing title." },
+      },
       additionalProperties: false,
     },
   },
@@ -334,6 +348,7 @@ const ViewInput = z.object({
   analysis: z.string().max(200).optional(),
 });
 const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional() });
+const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
 const AskInput = z.object({
   title: z.string().max(80).optional(),
@@ -918,6 +933,24 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
         card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : `Looked at the ${p.data.view} view`, image: url },
       };
     }
+    case "view_drawing": {
+      const p = DrawingInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      try {
+        const sheet = await sheetFor(p.data.name ?? useDrawings.getState().active ?? undefined, { signal: ctx.signal });
+        const url = await sheetToPng(sheet, 1568);
+        return {
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: url.split(",")[1] ?? "" } },
+            { type: "text", text: describeSheet(sheet) },
+          ],
+          card: { title: `Looked at the ${sheet.title} drawing`, detail: `${sheet.size} · ${sheet.views.length} views · ${sheet.dims.length} dimensions`, image: url },
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { isError: true, content: msg, card: { title: "Drawing unavailable", detail: msg, status: "error" } };
+      }
+    }
     case "update_brief": {
       const p = BriefInput.safeParse(input);
       if (!p.success) return invalid(p.error);
@@ -1016,6 +1049,7 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
+  view_drawing: "Looking at the drawing",
   update_brief: "Updating the brief",
   view_reference: "Looking at a reference",
   run_analysis: "Running the analysis",
