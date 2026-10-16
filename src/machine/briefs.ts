@@ -22,6 +22,8 @@ export interface Brief {
   firmware?: "arduino" | "klipper";
   /** at least this many requirements tied to the brief's purpose */
   minRequirements: number;
+  /** the answer must write the job into a brief { } block: these givens, and a requirement for every use */
+  givens?: string[];
 }
 
 export const BRIEFS: Brief[] = [
@@ -33,6 +35,16 @@ export const BRIEFS: Brief[] = [
     calcs: ["sand_stress", "screw_burrow", "motor_point", "battery_runtime"],
     firmware: "arduino",
     minRequirements: 5,
+  },
+  {
+    id: "sand-pit",
+    text: "Make sure the drill can go through a 2 m long pit of sand at ground level when the sand is 5 m deep, like a box where you have to drill through the bottom.",
+    reference: "sand-tunneller",
+    kinds: ["controller", "gearmotor", "motor_driver", "battery", "sensor"],
+    calcs: ["sand_stress", "screw_burrow", "motor_point", "battery_runtime"],
+    firmware: "arduino",
+    minRequirements: 5,
+    givens: ["pit_l", "pit_depth"],
   },
   {
     id: "printer",
@@ -125,6 +137,24 @@ export function scoreBrief(brief: Brief, model: Model, items?: CheckItem[]): Bri
   const reqs = model.requirements;
   const passing = reqs.filter((r) => r.status === "pass").length;
   add("States and meets requirements", reqs.length >= brief.minRequirements && passing === reqs.length, `${passing} of ${reqs.length} pass (needs at least ${brief.minRequirements})`);
+
+  if (brief.givens) {
+    const b = model.brief;
+    const names = new Set(b?.givens.map((g) => g.name) ?? []);
+    const missing = brief.givens.filter((g) => !names.has(g));
+    const uncovered = b?.uses.filter((u) => !reqs.some((r) => r.uses.includes(u.id))) ?? [];
+    const ok = !!b && missing.length === 0 && b.uses.length > 0 && uncovered.length === 0;
+    const detail = !b
+      ? "no brief block"
+      : missing.length
+        ? `missing givens ${missing.join(", ")}`
+        : !b.uses.length
+          ? "no uses"
+          : uncovered.length
+            ? `no requirement for ${uncovered.map((u) => u.id).join(", ")}`
+            : `${b.givens.length} givens, ${b.uses.length} uses, each with requirements`;
+    add("Writes the job into the brief", ok, detail);
+  }
 
   const tests = m?.tests.length ?? 0;
   add("Plans physical tests", tests > 0, `${tests} tests`);
