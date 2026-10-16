@@ -3,9 +3,11 @@
 // (lower than moulded), with a separate knock-down for strength between
 // layers. These are design estimates, not certified allowables.
 //
-// Keyed by the same names as `material:` in the design language. When the
-// shared material record lands (appearance and engineering in one place),
-// this table should read from it.
+// Keyed by the same names as `material:` in the design language, and read
+// from the shared material record (library/materialDb), so the analysis,
+// the look, the process checks and the advisor never disagree.
+
+import { MATERIAL_DB } from "../library/materialDb";
 
 export interface MechMaterial {
   name: string;
@@ -31,26 +33,9 @@ export interface MechMaterial {
   note?: string;
 }
 
-const M = (m: Omit<MechMaterial, "assumed">): MechMaterial => m;
-
-export const MECH: Record<string, MechMaterial> = {
-  PLA: M({ name: "PLA", E: 3000, nu: 0.36, density: 1.24, yield: 45, uts: 50, fatigue: 15, elongation: 4, layerFactor: 0.6, printedByDefault: true, note: "Brittle; creeps under constant load, softens above about 55 °C." }),
-  PETG: M({ name: "PETG", E: 1900, nu: 0.38, density: 1.27, yield: 40, uts: 48, fatigue: 13, elongation: 20, layerFactor: 0.65, printedByDefault: true, note: "Tough; softens above about 70 °C." }),
-  ABS: M({ name: "ABS", E: 2000, nu: 0.35, density: 1.04, yield: 32, uts: 38, fatigue: 11, elongation: 8, layerFactor: 0.55, printedByDefault: true }),
-  ASA: M({ name: "ASA", E: 1900, nu: 0.35, density: 1.07, yield: 34, uts: 40, fatigue: 11, elongation: 10, layerFactor: 0.6, printedByDefault: true }),
-  Nylon: M({ name: "Nylon PA12", E: 1600, nu: 0.39, density: 1.14, yield: 42, uts: 48, fatigue: 15, elongation: 15, layerFactor: 0.85, printedByDefault: true, note: "Values for SLS-printed PA12; absorbs moisture, which lowers stiffness." }),
-  POM: M({ name: "POM (Delrin)", E: 2900, nu: 0.35, density: 1.41, yield: 62, uts: 68, fatigue: 28, elongation: 25, layerFactor: 1, printedByDefault: false, note: "Machined or moulded." }),
-  "Aluminum 6061": M({ name: "Aluminum 6061-T6", E: 68900, nu: 0.33, density: 2.7, yield: 276, uts: 310, fatigue: 96, elongation: 12, layerFactor: 1, printedByDefault: false }),
-  // the other aluminium grades in the material list, so they never borrow 6061's strength
-  "Aluminum 7075": M({ name: "Aluminum 7075-T6", E: 71700, nu: 0.33, density: 2.81, yield: 503, uts: 572, fatigue: 159, elongation: 11, layerFactor: 1, printedByDefault: false }),
-  "Aluminum 5052": M({ name: "Aluminum 5052-H32", E: 70300, nu: 0.33, density: 2.68, yield: 193, uts: 228, fatigue: 117, elongation: 12, layerFactor: 1, printedByDefault: false }),
-  "Aluminum A380": M({ name: "Aluminum A380 (die cast)", E: 71000, nu: 0.33, density: 2.74, yield: 160, uts: 324, fatigue: 138, elongation: 3.5, layerFactor: 1, printedByDefault: false, note: "As-cast values; porosity in die castings lowers fatigue strength." }),
-  Steel: M({ name: "Steel (mild, S275)", E: 200000, nu: 0.29, density: 7.85, yield: 275, uts: 430, fatigue: 190, elongation: 20, layerFactor: 1, printedByDefault: false }),
-  "Stainless 304": M({ name: "Stainless 304", E: 193000, nu: 0.29, density: 8.0, yield: 215, uts: 505, fatigue: 210, elongation: 40, layerFactor: 1, printedByDefault: false }),
-  "Stainless 316": M({ name: "Stainless 316", E: 193000, nu: 0.3, density: 8.0, yield: 205, uts: 515, fatigue: 205, elongation: 40, layerFactor: 1, printedByDefault: false }),
-  Brass: M({ name: "Brass C360", E: 97000, nu: 0.31, density: 8.5, yield: 124, uts: 338, fatigue: 97, elongation: 25, layerFactor: 1, printedByDefault: false }),
-  FR4: M({ name: "FR4", E: 20000, nu: 0.14, density: 1.85, yield: 250, uts: 300, fatigue: 90, elongation: 2, layerFactor: 1, printedByDefault: false, note: "In-plane values; much weaker through the thickness." }),
-};
+export const MECH: Record<string, MechMaterial> = Object.fromEntries(
+  MATERIAL_DB.map((m) => [m.name, { name: m.grade, E: m.mech.E, nu: m.mech.nu, density: m.density, yield: m.mech.yield, uts: m.mech.uts, fatigue: m.mech.fatigue, elongation: m.mech.elongation, layerFactor: m.mech.layerFactor, printedByDefault: !!m.printed, ...(m.mech.note ? { note: m.mech.note } : {}) }]),
+);
 
 const ALIASES: Record<string, string> = {
   pla: "PLA",
@@ -101,10 +86,49 @@ const ALIASES: Record<string, string> = {
   brass: "Brass",
   fr4: "FR4",
   "fr-4": "FR4",
+  "nylon cf": "Nylon CF",
+  "pa-cf": "Nylon CF",
+  "pa cf": "Nylon CF",
+  pacf: "Nylon CF",
+  "carbon fiber nylon": "Nylon CF",
+  "carbon fibre nylon": "Nylon CF",
+  tpu: "TPU",
+  "tpu 95a": "TPU",
+  tpe: "TPU",
+  pc: "PC",
+  polycarbonate: "PC",
+  pp: "PP",
+  polypropylene: "PP",
+  acrylic: "Acrylic",
+  pmma: "Acrylic",
+  plexiglass: "Acrylic",
+  resin: "Resin",
+  "sla resin": "Resin",
+  zamak: "Zamak 3",
+  "zamak 3": "Zamak 3",
+  "zinc die cast": "Zamak 3",
+  "4140": "Steel 4140",
+  "steel 4140": "Steel 4140",
+  "alloy steel": "Steel 4140",
+  "chromoly": "Steel 4140",
+  copper: "Copper",
+  titanium: "Titanium",
+  "ti-6al-4v": "Titanium",
+  ti64: "Titanium",
+  "carbon fiber": "Carbon fiber",
+  "carbon fibre": "Carbon fiber",
+  cfrp: "Carbon fiber",
+  silicone: "Silicone",
+  "silicone rubber": "Silicone",
+  plywood: "Wood",
+  "birch plywood": "Wood",
+  wood: "Wood",
 };
 
 // longest first, so on a tie in strength the most specific name wins
 const LOOSE = Object.keys(ALIASES).sort((a, b) => b.length - a.length);
+/** Words that also describe a fill or a grade ("Wood PLA", "nylon resin"): they name the material only when nothing else in the name does. */
+const GENERIC = new Set(["wood", "plywood", "birch plywood", "resin", "sla resin"]);
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Properties for a material name; unknown names fall back to PLA and are marked assumed. */
@@ -116,11 +140,11 @@ export function mechMaterial(name: string | undefined): MechMaterial {
   // loose match: "Brushed aluminium", "Black ABS", "316 stainless"... Short aliases (abs, pla, 304)
   // only count as whole words, so "pa" does not match inside "paper". When several names match
   // ("Stainless steel 316" holds steel, stainless and 316) the weakest wins, so the check errs safe.
+  // A generic word ("Wood PLA", "glass-filled nylon resin") gives way to the polymer it qualifies.
+  const hits = LOOSE.filter((k) => (k.length > 3 ? key.includes(k) : new RegExp(`(^|[^a-z0-9])${escape(k)}($|[^a-z0-9])`).test(key)));
+  const specific = hits.filter((k) => !GENERIC.has(k));
   let best: MechMaterial | null = null;
-  for (const k of LOOSE) {
-    const hit = k.length > 3 ? key.includes(k) : new RegExp(`(^|[^a-z0-9])${escape(k)}($|[^a-z0-9])`).test(key);
-    if (hit && (!best || MECH[ALIASES[k]].yield < best.yield)) best = MECH[ALIASES[k]];
-  }
+  for (const k of specific.length ? specific : hits) if (!best || MECH[ALIASES[k]].yield < best.yield) best = MECH[ALIASES[k]];
   if (best) return best;
   return { ...MECH.PLA, name: raw || "unknown", assumed: true, note: `No strength data for "${raw || "this material"}"; PLA values assumed, so treat the result as a rough guide.` };
 }

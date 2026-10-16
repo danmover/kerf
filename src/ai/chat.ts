@@ -833,9 +833,12 @@ class NeedsDesignModel extends Error {
   }
 }
 
+/** Tools that change the design: each one counts as an edit for the turn card, the "before" picture, revert and the self-review. */
+const EDIT_TOOLS = new Set(["edit_design", "write_design", "build_subassemblies", "set_material"]);
+
 /** Why a quick turn that called this tool goes to the design model. */
 function handoverWhy(tool: string) {
-  if (tool === "edit_design" || tool === "write_design" || tool === "build_subassemblies") return "it needs a design change";
+  if (EDIT_TOOLS.has(tool)) return "it needs a design change";
   if (tool === "update_brief") return "it changes the brief";
   if (tool === "update_plan") return "it needs a plan";
   if (tool === "ask_user" || tool === "explore_fixes") return "it needs a design decision";
@@ -1137,7 +1140,7 @@ async function runLoop(opts: LoopOptions = {}) {
         const mirrored = u.name !== "update_plan" && u.name !== "suggest_next_steps";
         if (mirrored) mainActivityStart(itemId, TOOL_TITLES[u.name] ?? u.name);
         // the change card's "before" picture is taken before the first edit lands
-        if (!edits && (u.name === "edit_design" || u.name === "write_design" || u.name === "build_subassemblies")) await Promise.race([before, new Promise((r) => setTimeout(r, 4000))]);
+        if (!edits && EDIT_TOOLS.has(u.name)) await Promise.race([before, new Promise((r) => setTimeout(r, 4000))]);
         if (stale()) return;
         // Claude reads and edits the real design, never one the user is previewing
         endPreview();
@@ -1162,7 +1165,7 @@ async function runLoop(opts: LoopOptions = {}) {
           results.push({ type: "tool_result", tool_use_id: u.id, content: outcome.content as BetaToolResultBlockParam["content"] });
           continue;
         }
-        if (u.name === "edit_design" || u.name === "write_design" || u.name === "build_subassemblies" || u.name === "update_brief") {
+        if (EDIT_TOOLS.has(u.name) || u.name === "update_brief") {
           if (!outcome.isError) {
             edits++;
             lastEditedSource = useDesign.getState().source;

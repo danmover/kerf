@@ -51,7 +51,7 @@ npm run typecheck
 - Claude shows its plan as a live to-do tree above the chat and keeps it current as it works, with a pill in the 3D view for the step it is on. While it works you can rename, annotate, skip, reorder or add steps, or ask it to stop after one for your review. Your changes reach Claude after its current action, or at once with Apply now.
 - Each Claude turn ends with a summary bar showing what changed, with Review and one-click Revert.
 - Talk instead of typing: tap the mic (or press `V`) and say the change. Speech is turned into text on your device when the browser can; the browser's online speech service is used only if you allow it. You can review the words before sending, or have them sent when you stop talking.
-- On a phone, the workspace shows the 3D view on top and the chat below, with Model and Code & checks one tap away. Turn the phone on its side and the 3D view and the panel sit side by side.
+- On a phone, the workspace shows the 3D view on top and the chat below, with Model and Overview one tap away. Turn the phone on its side and the 3D view and the panel sit side by side.
 - On a tablet held upright, the 3D view runs across the top with the model panel and the chat side by side below it. Held sideways, the model panel folds into a rail of tabs so the 3D view keeps its room; tap a tab to open it. Splitters have finger-sized grips, and pressing and holding the model opens the spot chat.
 - Locked parameters and parts are protected: Claude's edits to them are refused unless you asked for that change.
 
@@ -117,12 +117,17 @@ npm run typecheck
 - Kerf's own renderer on WebGL: soft area-light shadows, ambient occlusion, clean anti-aliased edges and gentle bloom that refine when the view is still. Five studio lighting presets, a turnable key light (Alt-drag), and draft/balanced/high quality.
 - Realistic materials and finishes (printed layer lines, brushed and machined metal, anodizing, carbon weave, wood grain, clear plastics). Pick them from a material picker that previews on the model as you hover, or write `material:` and `finish:` in the design.
 - Animations: parts sweep in when built, dissolve and re-form when they change, spring apart when exploded, assemble in order, and turn on a turntable (T). The camera glides between views.
-- Code editor with highlighting, autocomplete and inline errors. Clicking a part jumps to its code.
+- The bottom panel opens on an overview: whether the design passes its checks and what needs a look, how far it meets its brief, its size, mass, parts and materials, the selected part with a peek at its code, and the latest changes (click one to preview it). The brief, checks, parts list and dependency graph sit next to it.
+- design.kerf, the code behind it all, is one click away at the end of the panel's tabs, or press `C` (again to go back). The editor has highlighting, autocomplete and inline errors, and clicking a part jumps to its code.
 - A model panel with three tabs. Parts lists every part grouped as the design groups it, says what each one is, and follows the viewport selection. Params lists the driving values under the design's own section headings: drag a value sideways to scrub it, click to type, or open it for a slider, the parts it moves and the checks it feeds. History shows every version with who made it, a diff, a 3D preview and one-click restore.
-- A dependency graph and a parts list in the bottom dock.
 - Projects save automatically in the browser. You can rename, duplicate, delete, import and back them up.
 - With a Kerf server: an account, sync of projects, history, chats, imported STEP files and reference images between browsers (offline edits merge when you reconnect, and the other device's version stays in history), the Claude key kept encrypted on the account, a usage chart, signed-in devices, recent security activity, and a download of everything in the account.
-- Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
+- Export from one panel in the top bar, grouped by what you want to do, with "Again" for the last one and "only the selected parts" where it applies:
+  - 3D models: STEP (exact solids), glTF with materials (.glb) for Blender and the web, USDZ to place it in a room with an iPhone, and OBJ with a material library.
+  - Printing: a 3MF print plate with every part to make turned to print on a flat face (as the build pack turns them), centred on the bed, in colour, one STL per part in a zip (named with how many to print), or one STL of the assembly.
+  - Images: the current view at 1920 × 1200 or 4K, a four-view sheet (iso, front, top, right) with the design's size, mass and check result, or copy the view to paste into a chat or email.
+  - Documents: engineering drawings as PDF, a design report (brief, views, checks, driving values and parts list on one page that prints to PDF), the parts list as CSV and, for machines, the build pack.
+  - The project file with history, and the design source.
 - Dark and light themes. Dark is the default; switch with the sun and moon button or in Settings → Display, where Match device follows your system. In the light theme the lighting presets with a dark set show a pale backdrop instead.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 

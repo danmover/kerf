@@ -31,7 +31,7 @@ import {
 import { assemblyStats } from "../core/briefChecks";
 import type { CheckItem, CheckStatus } from "../core/checks";
 import { MATERIALS } from "../library/standards";
-import { MATERIAL_SERVICE } from "../library/materialService";
+import { BriefMaterialHint } from "./materials/BriefMaterialHint";
 import { fmtNum } from "../lang/values";
 import type { V3 } from "../kernel/recipe";
 import { Icon } from "./icons";
@@ -929,7 +929,6 @@ function EnvCard({ data }: { data: BriefData }) {
 
 function MakeCard({ data }: { data: BriefData }) {
   const info = processInfo(data.process);
-  const svc = data.material ? MATERIAL_SERVICE[data.material] : undefined;
   const materials = [...new Set([...Object.keys(MATERIALS), ...(data.material ? [data.material] : [])])];
   const processes = [...new Set([...PROCESSES.map((p) => p.label), ...(data.process ? [data.process] : [])])];
   const field = (k: FieldKey, apply: (d: BriefData) => void, msg: string) =>
@@ -975,12 +974,7 @@ function MakeCard({ data }: { data: BriefData }) {
         </select>
         <Assumed field="material" data={data} />
       </div>
-      {svc && (
-        <div className="brief-hint">
-          {data.material} is good to about {svc.maxC} °C, {svc.sunlight === "good" ? "handles sunlight well" : svc.sunlight === "fair" ? "fades slowly in sunlight" : "degrades in sunlight"}
-          {svc.wet ? `. ${svc.wet}` : ""}.
-        </div>
-      )}
+      <BriefMaterialHint data={data} />
       <div className="brief-field">
         <span className="brief-label">Quantity</span>
         <NumField value={data.quantity} placeholder="1" width={64} label="Quantity" onCommit={(n) => field("quantity", (d) => void (d.quantity = n && n >= 1 ? Math.round(n) : undefined), "quantity")} />

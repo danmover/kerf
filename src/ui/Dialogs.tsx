@@ -53,6 +53,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [[mod, "Z"], "Undo"],
       [[mod, "⇧", "Z"], "Redo"],
       [[mod, "S"], "Save now (Kerf also saves automatically)"],
+      [["C"], "Show design.kerf (again: back to the tab you were on)"],
       [["?"], "Show this sheet"],
       [["Esc"], "Clear selection, close dialogs"],
     ],

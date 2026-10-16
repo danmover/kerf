@@ -32,6 +32,7 @@ import { useProject } from "../app/project";
 import { assetBlock } from "../persist/assets";
 import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssumptions, protectedBriefChanges, validId, writeBrief, type BriefData, type FieldKey } from "../core/brief";
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
+import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./materialTools";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
 import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
@@ -394,6 +395,7 @@ export const TOOL_DEFS = [
     },
   },
   ...IMPORT_TOOL_DEFS,
+  ...MATERIAL_TOOL_DEFS,
 ];
 
 const EditInput = z.object({
@@ -1185,6 +1187,8 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
   if (simOutcome) return simOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;
+  const material = await runMaterialTool(name, input, ctx);
+  if (material) return material;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -1206,6 +1210,7 @@ export const TOOL_TITLES: Record<string, string> = {
   write_design: "Writing the design",
   run_checks: "Building and checking",
   explore_fixes: "Searching for fixes",
+  ...MATERIAL_TOOL_TITLES,
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
   view_drawing: "Looking at the drawing",

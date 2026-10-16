@@ -15,6 +15,10 @@ import { CATEGORY_LABELS, FINISHES, MATERIAL_LIST, materialDef, resolveFinish, t
 import { fmtNum } from "../lang/values";
 import { Icon } from "./icons";
 import { useChatDraft } from "./chatDraft";
+import { applyOption, useLiveAdvice } from "./materials/live";
+import { useMaterials } from "../materials/store";
+import { materialRecord, pricePerKg } from "../library/materialDb";
+import { processLabel, type MaterialOption } from "../materials/advise";
 
 interface Look {
   material: string;
@@ -164,6 +168,14 @@ function MaterialPicker({ parts, onClose }: { parts: EvalPart[]; onClose: () => 
   const volume = parts.reduce((s, q) => s + (meshes.get(q.hash)?.volume ?? 0), 0);
   const mass = (volume / 1000) * (shownDef?.density ?? 1.2);
   const who = blocks.length === 1 ? blocks[0] : `${blocks.length} parts`;
+  // one part block: rank the materials for it, and apply them with the finish and process they need
+  const advice = useLiveAdvice(blocks.length === 1 ? blocks[0] : null);
+  const fit = useMemo(() => new Map((blocks.length === 1 ? advice?.options : undefined)?.map((o) => [o.name, o]) ?? []), [advice, blocks.length]);
+  const suggested = (blocks.length === 1 ? advice?.options : undefined)?.filter((o) => o.verdict !== "unsuitable" && !o.otherWay).slice(0, 3) ?? [];
+  const shownRec = materialRecord(shown.material);
+  const shownOpt = fit.get(shown.material);
+  const shownPrice = shownRec ? pricePerKg(shownRec, shownOpt?.process) : null;
+  const lookOf = (o: MaterialOption): Look => ({ material: o.name, finish: o.finish, color: o.color });
 
   const commit = (next: Look, what: string) => {
     setHover(null);
@@ -181,6 +193,13 @@ function MaterialPicker({ parts, onClose }: { parts: EvalPart[]; onClose: () => 
   };
 
   const pickMaterial = (m: MaterialDef) => {
+    const o = fit.get(m.name);
+    if (o && m.name !== cur.material) {
+      setHover(null);
+      viewport()?.preview(ids, null);
+      applyOption(blocks[0], o);
+      return;
+    }
     const finish = m.name === cur.material ? cur.finish : m.finishes[0];
     commit({ material: m.name, finish, color: tileColor(m, cur) }, `${m.label} (${FINISHES[finish]?.label.toLowerCase() ?? finish})`);
   };
@@ -214,8 +233,63 @@ function MaterialPicker({ parts, onClose }: { parts: EvalPart[]; onClose: () => 
           <div className="mono" style={{ fontSize: 10.5, color: "var(--text-3)", marginTop: 6 }}>
             {fmtNum(shownDef?.density ?? 1.2, 2)} g/cm³ · {volume > 0 ? `${fmtNum(mass, mass < 10 ? 1 : 0)} g for ${parts.length > 1 ? "these" : "this part"}` : "mass after build"}
           </div>
+          {shownRec && (
+            <div className="mat-hero-stats">
+              <span data-tip="Highest temperature for long use under light load">to {shownRec.maxC} °C</span>
+              <span data-tip="Yield strength">{shownRec.mech.yield} MPa</span>
+              <span data-tip="Stiffness (Young's modulus)">{fmtNum(shownRec.mech.E / 1000, shownRec.mech.E < 10000 ? 1 : 0)} GPa</span>
+              {shownPrice && <span data-tip={`Typical price as ${shownPrice.form}${shownOpt?.process ? `, for ${processLabel(shownOpt.process)}` : ""}`}>${fmtNum(shownPrice.price, shownPrice.price < 10 ? 1 : 0)}/kg</span>}
+            </div>
+          )}
+          {shownOpt && shownOpt.name !== cur.material && (
+            <div className={`mat-hero-fit v-${shownOpt.verdict}`}>
+              <span className={`mo-dot v-${shownOpt.verdict}`} />
+              {shownOpt.summary || "No strong points either way"}
+              {shownOpt.processChange ? ` · made by ${processLabel(shownOpt.processChange.to)}` : ""}
+            </div>
+          )}
         </div>
       </div>
+
+      {suggested.length > 0 && (
+        <div className="mat-section">
+          <div className="mat-section-label row">
+            <span className="grow">Suggested for {advice!.subject}</span>
+            <button
+              className="mat-compare-link"
+              onClick={() => {
+                useMaterials.getState().compare(blocks[0]);
+                onClose();
+              }}
+              data-tip="Line up every material for this part on the model, with its numbers"
+            >
+              Compare all
+            </button>
+          </div>
+          <div className="mat-suggest">
+            {suggested.map((o) => (
+              <button
+                key={o.name}
+                className={`mat-suggest-tile v-${o.verdict} ${o.current ? "active" : ""}`}
+                onMouseEnter={() => setHover(lookOf(o))}
+                onFocus={() => setHover(lookOf(o))}
+                onClick={() => !o.current && pickMaterial(materialDef(o.name)!)}
+                aria-pressed={o.current}
+                data-tip={o.criteria.filter((k) => k.weight > 0).slice(0, 6).map((k) => `${k.label} ${k.value}: ${k.why}`).join("\n")}
+              >
+                <Swatch material={o.name} finish={o.finish} color={o.color} size={34} render={72} />
+                <span className="grow" style={{ minWidth: 0 }}>
+                  <span className="mat-suggest-name">
+                    {o.label.replace(/ \(.*\)$/, "")}
+                    {o.current && <span className="mo-now"> · now</span>}
+                  </span>
+                  <span className="mat-suggest-why">{o.summary}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {CATEGORIES.map((c) => {
         const list = MATERIAL_LIST.filter((m) => m.category === c);
@@ -225,11 +299,13 @@ function MaterialPicker({ parts, onClose }: { parts: EvalPart[]; onClose: () => 
             <div className="mat-section-label">{CATEGORY_LABELS[c]}</div>
             <div className="mat-grid">
               {list.map((m) => {
-                const color = tileColor(m, cur);
-                const finish = m.name === cur.material ? cur.finish : m.finishes[0];
+                const o = fit.get(m.name);
                 const active = m.name === cur.material;
+                const color = o && !active ? o.color : tileColor(m, cur);
+                const finish = active ? cur.finish : (o?.finish ?? m.finishes[0]);
                 return (
-                  <button key={m.name} className={`mat-tile ${active ? "active" : ""}`} onMouseEnter={() => setHover({ material: m.name, finish, color })} onFocus={() => setHover({ material: m.name, finish, color })} onClick={() => pickMaterial(m)} aria-pressed={active} aria-label={m.label}>
+                  <button key={m.name} className={`mat-tile ${active ? "active" : ""}`} onMouseEnter={() => setHover({ material: m.name, finish, color })} onFocus={() => setHover({ material: m.name, finish, color })} onClick={() => pickMaterial(m)} aria-pressed={active} aria-label={m.label} data-tip={o ? `${o.summary || o.label}${o.processChange ? ` · made by ${processLabel(o.processChange.to)}` : ""}` : undefined}>
+                    {o && <span className={`mo-dot mat-tile-fit v-${o.verdict}`} aria-label={o.verdict} />}
                     <Swatch material={m.name} finish={finish} color={color} size={44} render={88} />
                     <span className="mat-tile-name">{m.label.replace(/ \(.*\)$/, "")}</span>
                   </button>

@@ -1,55 +1,71 @@
-// The Kerf mark: a block with a saw cut through it. The cut draws itself in.
+// The Kerf mark: a block sawn in two. On first show the block rises, a laser
+// runs down the cut and the halves part, leaving the sawn face glowing in the
+// kerf. Hovering pulls the halves further apart; `busy` makes the cut pulse
+// while the design rebuilds, and `idle` (the home page) lets the blade pass
+// again now and then. All motion is CSS (styles/brand.css), so it
+// stays smooth while the kernel keeps the main thread busy.
 
-import { motion } from "framer-motion";
-import { useTheme } from "../app/theme";
+import { useId, type CSSProperties } from "react";
+import { MARK, MARK_COLORS } from "./logoGeometry";
 
-// the mark is deeper on the light theme, so it holds up on white
-const MARK = {
-  dark: { from: "#8fa8ff", to: "#c792ff", fill: "rgba(109,139,255,0.10)", cut: "#ffcb6b" },
-  light: { from: "#4763e6", to: "#8a4fd8", fill: "rgba(71,99,230,0.08)", cut: "#df960b" },
-};
-
-export function LogoMark({ size = 26, animate = true }: { size?: number; animate?: boolean }) {
-  const c = MARK[useTheme()];
+export function LogoMark({ size = 26, animate = true, busy = false, idle = false }: { size?: number; animate?: boolean; busy?: boolean; idle?: boolean }) {
+  const uid = "km" + useId().replace(/[^A-Za-z0-9]/g, "");
+  const url = (n: string) => `url(#${uid}-${n})`;
+  const C = MARK_COLORS;
+  // small marks need a wider kerf to read
+  const split = size <= 20 ? 0.1 : size <= 28 ? 0.08 : 0.06;
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
+    <svg className={`kerf-mark ${animate ? "intro" : ""} ${busy ? "busy" : ""} ${idle ? "idle" : ""}`} width={size} height={size} viewBox="0 0 40 40" aria-hidden="true" style={{ "--split": split } as CSSProperties}>
       <defs>
-        <linearGradient id="kerf-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor={c.from} />
-          <stop offset="1" stopColor={c.to} />
+        <linearGradient id={`${uid}-top`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={C.top[0]} />
+          <stop offset="1" stopColor={C.top[1]} />
         </linearGradient>
+        <linearGradient id={`${uid}-left`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={C.left[0]} />
+          <stop offset="1" stopColor={C.left[1]} />
+        </linearGradient>
+        <linearGradient id={`${uid}-front`} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor={C.front[0]} />
+          <stop offset="1" stopColor={C.front[1]} />
+        </linearGradient>
+        <linearGradient id={`${uid}-hot`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={C.hot[0]} />
+          <stop offset="0.5" stopColor={C.hot[1]} />
+          <stop offset="1" stopColor={C.hot[2]} />
+        </linearGradient>
+        <filter id={`${uid}-glow`} x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="1.6" />
+        </filter>
       </defs>
-      <motion.path
-        d="M6 9 16 4l10 5v14l-10 5-10-5z"
-        fill={c.fill}
-        stroke="url(#kerf-g)"
-        strokeWidth={1.6}
-        strokeLinejoin="round"
-        initial={animate ? { pathLength: 0, opacity: 0.4 } : false}
-        animate={{ pathLength: 1, opacity: 1 }}
-        transition={{ duration: 0.9, ease: "easeOut" }}
-      />
-      <motion.path d="M6 9l10 5 10-5M16 14v14" fill="none" stroke="url(#kerf-g)" strokeWidth={1.2} strokeOpacity={0.55} initial={animate ? { pathLength: 0 } : false} animate={{ pathLength: 1 }} transition={{ duration: 0.8, delay: 0.3 }} />
-      <motion.path
-        d="M9.5 24.5 22.5 7.5"
-        stroke={c.cut}
-        strokeWidth={2}
-        strokeLinecap="round"
-        initial={animate ? { pathLength: 0 } : false}
-        animate={{ pathLength: 1 }}
-        transition={{ duration: 0.5, delay: 0.75, ease: "easeInOut" }}
-      />
+      <g className="km-body">
+        <g className="km-b">
+          <polygon className="km-cut km-glow" points={MARK.b.cut} fill={url("hot")} filter={url("glow")} />
+          <polygon className="km-cut" points={MARK.b.cut} fill={url("hot")} />
+          <polygon points={MARK.b.top} fill={url("top")} />
+          <polygon points={MARK.b.front} fill={url("front")} />
+          <path className="km-rim" d={MARK.rimB} />
+        </g>
+        <g className="km-a">
+          <polygon points={MARK.a.left} fill={url("left")} />
+          <polygon points={MARK.a.top} fill={url("top")} />
+          <polygon points={MARK.a.front} fill={url("front")} />
+          <path className="km-rim" d={MARK.rimA} />
+        </g>
+      </g>
+      <path className="km-laser km-laser-glow" d={MARK.laser} pathLength={1} filter={url("glow")} />
+      <path className="km-laser" d={MARK.laser} pathLength={1} />
     </svg>
   );
 }
 
-export function Logo({ size = 24 }: { size?: number }) {
+export function Logo({ size = 24, busy = false, animate = true }: { size?: number; busy?: boolean; animate?: boolean }) {
   return (
-    <div className="row" style={{ gap: 9 }}>
-      <LogoMark size={size} />
-      <span className="logo-word">
+    <span className="kerf-logo">
+      <LogoMark size={size} busy={busy} animate={animate} />
+      <span className={`logo-word ${animate ? "intro" : ""}`} style={{ fontSize: Math.round(size * 0.62) }}>
         kerf<span className="slash">/</span>
       </span>
-    </div>
+    </span>
   );
 }
