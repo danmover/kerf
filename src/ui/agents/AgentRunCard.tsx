@@ -12,6 +12,9 @@ import { MODELS } from "../../app/settings";
 import { useView, select } from "../../app/view";
 import { useChat } from "../../ai/chat";
 import { useChatDraft } from "../chatDraft";
+import { usePlan } from "../../ai/plan";
+import { branchRootId } from "../../agents/planBranches";
+import { revealStep } from "../planUi";
 import { Icon } from "../icons";
 import { useTick } from "../common";
 import "./agents.css";
@@ -42,9 +45,9 @@ export function RunView({ run }: { run: AgentRunTree }) {
 // ---------- header ----------
 
 const STATUS_LABEL: Record<AgentRunTree["status"], string> = {
-  review: "review the plan",
-  running: "agents working",
-  integrating: "merging and checking",
+  review: "review",
+  running: "running",
+  integrating: "merging",
   done: "done",
   stopped: "stopped",
   failed: "failed",
@@ -75,11 +78,6 @@ function RunHead({ run }: { run: AgentRunTree }) {
             <span className="dim"> / {fmtUsd(run.budget)}</span>
           </span>
         )}
-        {live && (
-          <button className="btn sm ghost ar-stop" onClick={stopRun} data-tip="Stop every agent. Work so far is kept.">
-            <Icon.Stop size={11} /> Stop
-          </button>
-        )}
       </div>
       <div className="ar-title">
         <span>{run.title}</span>
@@ -87,6 +85,11 @@ function RunHead({ run }: { run: AgentRunTree }) {
           <span className="mono dim ar-meta">
             {done}/{included} · {fmtDuration(secs)}
           </span>
+        )}
+        {live && (
+          <button className="btn sm ghost ar-stop" onClick={stopRun} data-tip="Stop every agent. Work so far is kept.">
+            <Icon.Stop size={11} /> Stop
+          </button>
         )}
       </div>
       {run.status !== "review" && (
@@ -247,6 +250,8 @@ function ReviewFoot({ run }: { run: AgentRunTree }) {
 function BranchRow({ b, run, i }: { b: AgentBranch; run: AgentRunTree; i: number }) {
   const [open, setOpen] = useState(false);
   const live = isLive(run);
+  // the agent's steps and tool calls live in the plan tree; older runs kept them here
+  const inPlan = usePlan((p) => p.steps.some((s) => s.id === branchRootId(b.id)));
   const working = b.status === "running" || b.status === "queued" || b.status === "waiting";
   if (!b.include) return null;
   return (
@@ -267,7 +272,7 @@ function BranchRow({ b, run, i }: { b: AgentBranch; run: AgentRunTree; i: number
         {open && (
           <motion.div className="ar-detail" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
             <div className="ar-brief small">{b.brief}</div>
-            {b.steps.length > 0 && (
+            {!inPlan && b.steps.length > 0 && (
               <ol className="ar-steps">
                 {b.steps.map((s) => (
                   <li key={s.id} className={s.status}>
@@ -296,6 +301,11 @@ function BranchRow({ b, run, i }: { b: AgentBranch; run: AgentRunTree; i: number
               {b.partIds.length > 0 && (
                 <button className="btn sm ghost" onClick={() => select(b.partIds)} data-tip="Select this subassembly's parts in the 3D view">
                   <Icon.Target size={12} /> {b.partIds.length} part{b.partIds.length === 1 ? "" : "s"}
+                </button>
+              )}
+              {inPlan && (
+                <button className="btn sm ghost" onClick={() => revealStep(branchRootId(b.id))} data-tip="This agent's steps and what it is doing, in the plan above the chat">
+                  <PlanIcon /> Steps in the plan
                 </button>
               )}
               <div className="grow" />
@@ -499,6 +509,16 @@ function AutoText({ value, onChange, label }: { value: string; onChange: (v: str
     el.style.height = Math.min(220, el.scrollHeight + 2) + "px";
   }, [value]);
   return <textarea ref={ref} className="ar-brief-edit" value={value} maxLength={4000} onChange={(e) => onChange(e.target.value)} aria-label={label} autoFocus />;
+}
+
+function PlanIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
+      <path d="M3 3.5h10M5.5 8H13M8 12.5h5" />
+      <circle cx="3" cy="8" r=".6" fill="currentColor" />
+      <circle cx="5.5" cy="12.5" r=".6" fill="currentColor" />
+    </svg>
+  );
 }
 
 function ForkIcon() {

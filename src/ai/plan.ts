@@ -574,7 +574,13 @@ export function loadPlan(saved: unknown) {
     ...emptyPlan(),
     ...p,
     pauseHit: null,
-    steps: p.steps.map((s) => ({ ...s, notes: s.notes ?? [], activity: (s.activity ?? []).map((a) => (a.status === "running" ? { ...a, status: "error" as const, title: `${a.title} (interrupted)` } : a)) })),
+    steps: p.steps.map((s) => ({
+      ...s,
+      // no branch agent survives a reload
+      ...(s.kind !== "step" && (s.status === "doing" || s.status === "todo") ? { status: "blocked" as const, detail: "Interrupted when the page closed." } : s.owner !== MAIN && s.status === "doing" ? { status: "blocked" as const } : {}),
+      notes: s.notes ?? [],
+      activity: (s.activity ?? []).map((a) => (a.status === "running" ? { ...a, status: "error" as const, title: `${a.title} (interrupted)` } : a)),
+    })),
     steering: p.steering ?? [],
   });
 }
@@ -643,6 +649,8 @@ export interface PlanBranch {
   endLog(logId: string, status: "done" | "error", title?: string): void;
   /** One short line on the branch root, e.g. tokens and cost. */
   setMeta(meta: string): void;
+  /** The parts the whole branch works on, lit up when its root is hovered. */
+  setParts(parts: string[]): void;
   /** The branch's own state while it is open: todo (queued or waiting on another branch), doing, or blocked. */
   setStatus(status: "todo" | "doing" | "blocked", detail?: string): void;
   /** The user's changes to this branch since the last call, formatted for the agent's next tool result; null if none. */
@@ -698,6 +706,9 @@ export function openBranch(opts: { title: string; agent: string; under?: string;
     },
     setMeta(meta) {
       change((p) => patchStep(p, id, { meta: clip(meta, 80) }));
+    },
+    setParts(parts) {
+      change((p) => patchStep(p, id, { parts: parts.slice(0, 60) }));
     },
     setStatus(status, detail) {
       change((p) => patchStep(p, id, { status, detail: detail !== undefined ? clip(detail, LIMITS.detail) : undefined }));

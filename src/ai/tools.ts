@@ -388,5 +388,5 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
-  build_subassemblies: "Planning parallel agents",
+  build_subassemblies: "Building subassemblies in parallel",
 };

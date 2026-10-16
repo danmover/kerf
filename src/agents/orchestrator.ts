@@ -20,6 +20,7 @@ import { addUsage, emptyTally, estimateRun, fmtUsd, roughTokens, type Tally } fr
 import { kickoffMessage, subagentSystemPrompt } from "./prompts";
 import { runAgent, SUBAGENT_TOOLS, type AgentEnd, type Workspace } from "./subagent";
 import { defaultWorkers, pool } from "./isolated";
+import { closeRunBranches, noteForBranch, openRunBranches, setBranchSteps, takeBranchSteering } from "./planBranches";
 import { getAgentRun, isLive, loadRuns, patchBranch, patchRun, saveRuns, setRun, type AgentBranch, type AgentRunTree, type CrossIssue } from "./progress";
 
 export interface BuildInput {
@@ -46,7 +47,6 @@ interface Live {
   userEdited: boolean;
   runAbort: AbortController;
   controllers: Map<string, AbortController>;
-  notes: Map<string, string[]>;
   decide: ((d: "start" | "cancel") => void) | null;
   warm: Promise<void>;
   warmed: () => void;
@@ -175,13 +175,13 @@ export function setRunModel(model: string) {
   patchRun((t) => ({ ...t, model, estimate: estimateFor({ ...t, model }, live!.doc) }));
 }
 
-/** A note for one agent, delivered before its next model call. */
+/** A note for one agent, delivered through the plan tree before its next model call. */
 export function steerAgent(id: string, note: string) {
   const text = note.trim().slice(0, 2000);
   if (!live || !text) return;
   const b = getAgentRun()?.branches.find((x) => x.id === id);
   if (!b || (b.status !== "running" && b.status !== "queued" && b.status !== "waiting")) return;
-  live.notes.set(id, [...(live.notes.get(id) ?? []), text]);
+  noteForBranch(id, text);
   patchBranch(id, (x) => ({ ...x, notes: [...x.notes, { text, ts: Date.now(), delivered: false }] }));
 }
 
@@ -216,7 +216,6 @@ async function run(tree: AgentRunTree, doc: Sectioned, startSource: string, sign
     userEdited: false,
     runAbort: new AbortController(),
     controllers: new Map(),
-    notes: new Map(),
     decide: null,
     warm,
     warmed,
@@ -249,6 +248,7 @@ async function run(tree: AgentRunTree, doc: Sectioned, startSource: string, sign
     }
 
     patchRun((r) => ({ ...r, status: "running", startedAt: Date.now() }));
+    openRunBranches(getAgentRun()!, stopAgent);
     // a revision keeps its integration requirements visible; a fresh build adds them once every section exists
     l.previewTail = getAgentRun()!.branches.every((b) => !b.include || b.revising);
     pushPreview(true);
@@ -257,6 +257,7 @@ async function run(tree: AgentRunTree, doc: Sectioned, startSource: string, sign
     return await integrate(l);
   } finally {
     signal?.removeEventListener("abort", onAbort);
+    closeRunBranches();
     if (l.pushTimer) clearTimeout(l.pushTimer);
     if (live === l) live = null;
     pool.closeSoon();
@@ -387,13 +388,12 @@ async function startAgent(l: Live, id: string, anthropic: Anthropic, system: str
           const r = getAgentRun();
           return !r || r.cost < r.budget;
         },
-        takeNotes: () => {
-          const n = l.notes.get(id) ?? [];
-          if (!n.length) return [];
-          l.notes.set(id, []);
-          patchBranch(id, (b) => ({ ...b, notes: b.notes.map((x) => ({ ...x, delivered: true })) }));
-          return n;
+        takeSteering: () => {
+          const text = takeBranchSteering(id);
+          if (text) patchBranch(id, (b) => ({ ...b, notes: b.notes.map((x) => ({ ...x, delivered: true })) }));
+          return text;
         },
+        setSteps: (steps) => setBranchSteps(id, steps),
         firstEvent: () => l.warmed(),
       },
     );

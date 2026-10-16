@@ -4,6 +4,9 @@ import { checkPlan, sectionOrder, waves } from "../src/agents/plan";
 import { addUsage, costOf, emptyTally, estimateRun, fmtUsd } from "../src/agents/pricing";
 import { sectionReport } from "../src/agents/subagent";
 import { evaluate } from "../src/lang/evaluator";
+import { closeRunBranches, branchRootId, noteForBranch, openRunBranches, setBranchSteps, takeBranchSteering } from "../src/agents/planBranches";
+import { getAgentRun, patchBranch, setRun, type AgentBranch } from "../src/agents/progress";
+import { findStep, resetPlan, updatePlanFromClaude, usePlan, userSkip } from "../src/ai/plan";
 
 const LAYOUT_SRC = `design "Fan"
 param d = 120mm
@@ -179,5 +182,61 @@ describe("an agent's view of its checks", () => {
     expect(out.text).toContain("1 problem(s) outside your section");
     expect(out.text).toMatch(/collisions/);
     expect(out.counts.fail).toBe(2);
+  });
+});
+
+describe("reporting into the plan tree", () => {
+  const branch = (id: string, after: string[] = []): AgentBranch => ({ id, title: id.replace(/^./, (c) => c.toUpperCase()), brief: "", status: "queued", after, uses: [], steps: [], notes: [], requests: [], cost: 0, tokens: 0, partIds: [], include: true, revising: false });
+  const start = () => {
+    resetPlan();
+    updatePlanFromClaude({ goal: "Fan", steps: [{ id: "s1", title: "Lay out", status: "done" }, { id: "s2", title: "Build the subassemblies", status: "doing" }] });
+    setRun({ runId: "r1", projectId: "p", title: "Fan", goal: "", mode: "build", status: "running", model: "claude-opus-5-5", effort: "high", cost: 0, estimate: { low: 0, high: 0 }, budget: 5, branches: [branch("base"), branch("guard", ["base"])], issues: [], createdAt: 0, warnings: [] });
+    const skipped: string[] = [];
+    openRunBranches(getAgentRun()!, (id) => skipped.push(id));
+    return skipped;
+  };
+  const step = (id: string) => findStep(usePlan.getState(), id);
+
+  it("opens a branch per agent under the lead's current step and follows its status", () => {
+    start();
+    expect(step(branchRootId("base"))).toMatchObject({ parent: "s2", status: "todo", kind: "agent", title: "Base" });
+    patchBranch("guard", (b) => ({ ...b, status: "waiting", activity: "Waiting for Base" }));
+    expect(step(branchRootId("guard"))?.detail).toBe("Waiting for Base");
+    patchBranch("base", (b) => ({ ...b, status: "running", cost: 0.12, checks: { pass: 3, fail: 0, warn: 0 } }));
+    expect(step(branchRootId("base"))).toMatchObject({ status: "doing", meta: "$0.12 · 3 pass" });
+    patchBranch("base", (b) => ({ ...b, steps: [{ id: "x1", title: "Checking the geometry", status: "running", ts: 0 }] }));
+    expect(step(branchRootId("base"))?.activity.at(-1)).toMatchObject({ title: "Checking the geometry", status: "running" });
+    patchBranch("base", (b) => ({ ...b, steps: [{ ...b.steps[0], status: "done", title: "All 3 checks pass" }] }));
+    expect(step(branchRootId("base"))?.activity.at(-1)).toMatchObject({ title: "All 3 checks pass", status: "done" });
+    patchBranch("base", (b) => ({ ...b, status: "done", summary: "Built the base. Plate is 4 mm.", partIds: ["base_plate"] }));
+    expect(step(branchRootId("base"))).toMatchObject({ status: "done", detail: "Built the base.", parts: ["base_plate"] });
+    closeRunBranches();
+  });
+
+  it("shows an agent's own steps and routes the user's changes on them to that agent", () => {
+    start();
+    patchBranch("base", (b) => ({ ...b, status: "running" }));
+    expect(setBranchSteps("base", [{ id: "a", title: "Plate", status: "doing" }, { id: "b", title: "Post", status: "todo" }])).toBeNull();
+    expect(step(`${branchRootId("base")}/a`)).toMatchObject({ title: "Plate", owner: branchRootId("base") });
+    noteForBranch("base", "Make the plate 6 mm thick");
+    userSkip(`${branchRootId("base")}/b`);
+    const text = takeBranchSteering("base");
+    expect(text).toContain("Make the plate 6 mm thick");
+    expect(text).toContain("Skip step b “Post”");
+    expect(takeBranchSteering("base")).toBeNull();
+    expect(takeBranchSteering("guard")).toBeNull();
+    patchBranch("base", (b) => ({ ...b, status: "done", summary: "Done." }));
+    expect(step(`${branchRootId("base")}/a`)?.status).toBe("done");
+    closeRunBranches();
+  });
+
+  it("stops an agent when its whole branch is skipped", () => {
+    const skipped = start();
+    userSkip(branchRootId("guard"));
+    expect(skipped).toEqual(["guard"]);
+    patchBranch("guard", (b) => ({ ...b, status: "stopped", summary: "Stopped before it started." }));
+    expect(step(branchRootId("guard"))).toMatchObject({ status: "skipped" });
+    closeRunBranches();
+    expect(step(branchRootId("base"))?.status).toBe("blocked");
   });
 });

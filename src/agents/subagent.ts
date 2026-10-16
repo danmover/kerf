@@ -14,6 +14,7 @@ import { MAX_SOURCE_CHARS } from "../persist/files";
 import { checkIsolated } from "./isolated";
 import type { Usage } from "./pricing";
 import type { AgentStep } from "./progress";
+import { STEP_STATUSES, type StepInput } from "../ai/plan";
 
 z.config({ jitless: true });
 
@@ -95,6 +96,35 @@ export const SUBAGENT_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "update_plan",
+    description:
+      "Show the user your subassembly's to-do list as a branch of Kerf's live plan tree, and keep it current. Call it at the start with every step (the parts and features you will build, then checking), in the same response as your first write_section, then again as steps start and finish, in the same response as your next action so it costs no extra turn. Send the whole list each time, keep one step doing, and name the parts each step works on. The user can rename, annotate, skip and add steps while you work; their changes reach you as a <plan-changes> note and come before your brief.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        steps: {
+          type: "array",
+          maxItems: 20,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Short stable id, e.g. s1. Keep ids across updates, including steps the user added." },
+              title: { type: "string", description: "What the step does, a few words in the user's terms." },
+              status: { type: "string", enum: [...STEP_STATUSES] },
+              detail: { type: "string", description: "Optional one line: what you found or decided." },
+              parts: { type: "array", items: { type: "string" }, maxItems: 20, description: "Part names this step works on." },
+              parent: { type: "string", description: "Optional id of an earlier step this is a sub-step of." },
+            },
+            required: ["id", "title", "status"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["steps"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const WriteIn = z.object({ summary: z.string().min(1).max(300), source: z.string().max(MAX_SOURCE_CHARS) });
@@ -102,6 +132,20 @@ const EditIn = z.object({ summary: z.string().min(1).max(300), edits: z.array(z.
 const LookIn = z.object({ view: z.enum(VIEWS), section: z.enum(["x", "y", "z"]).optional() });
 const ReadIn = z.object({ id: z.string().max(60) });
 const ReqIn = z.object({ target: z.string().min(1).max(60), change: z.string().min(1).max(1000), reason: z.string().max(1000) });
+const PlanIn = z.object({
+  steps: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(40),
+        title: z.string().min(1).max(300),
+        status: z.enum(STEP_STATUSES),
+        detail: z.string().max(1000).optional(),
+        parts: z.array(z.string().max(80)).max(20).optional(),
+        parent: z.string().max(40).optional(),
+      }),
+    )
+    .max(20),
+});
 
 type ResultContent = BetaToolResultBlockParam["content"];
 
@@ -128,8 +172,10 @@ export interface AgentHooks {
   usage(model: string, u: Usage): void;
   /** false once the run's spending cap is reached */
   budgetOk(): boolean;
-  /** notes from the user not yet delivered */
-  takeNotes(): string[];
+  /** the user's changes to this agent's branch of the plan since the last call, ready to send; null if none */
+  takeSteering(): string | null;
+  /** show the agent's own steps in the plan; returns a problem with them, or null */
+  setSteps(steps: StepInput[]): string | null;
   /** resolved once the shared prompt is in the cache, so later agents read it instead of writing it again */
   firstEvent(): void;
 }
@@ -160,7 +206,7 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
   for (let step = 0; step < cfg.maxSteps; step++) {
     if (cfg.signal.aborted) return { status: "stopped", summary: lastText || "Stopped before finishing." };
     if (!hooks.budgetOk()) return { status: "stopped", summary: lastText || "Stopped at the run's spending cap." };
-    deliverNotes(history, hooks.takeNotes());
+    deliver(history, hooks.takeSteering());
     trimImages(history);
 
     const params: Record<string, unknown> = {
@@ -213,10 +259,10 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
       continue;
     }
     if (final.stop_reason !== "tool_use") {
-      // a note that arrived during the last request still gets an answer
-      const late = hooks.takeNotes();
-      if (late.length && !cfg.signal.aborted) {
-        history.push({ role: "user", content: [{ type: "text", text: notesText(late) }] });
+      // a change the user made during the last request still gets an answer
+      const late = hooks.takeSteering();
+      if (late && !cfg.signal.aborted) {
+        history.push({ role: "user", content: [{ type: "text", text: late }] });
         continue;
       }
       hooks.activity(undefined);
@@ -301,6 +347,7 @@ const TOOL_ACTIVITY: Record<string, string> = {
   look: "Looking at the model",
   read_subassembly: "Reading a neighbouring subassembly",
   request_change: "Requesting a change",
+  update_plan: "Updating its steps",
 };
 
 // ---------- tools ----------
@@ -367,6 +414,14 @@ async function runTool(name: string, input: unknown, ws: Workspace, hooks: Agent
       if (!p.success) return invalid(p.error);
       hooks.step({ title: `Asked to change ${p.data.target}`, status: "done", detail: p.data.change });
       return { content: ws.requestChange(p.data.target, p.data.change, p.data.reason) };
+    }
+    case "update_plan": {
+      const p = PlanIn.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      const problem = hooks.setSteps(p.data.steps);
+      if (problem) return { content: `Your steps were not shown: ${problem}`, isError: true };
+      const n = (st: string) => p.data.steps.filter((x) => x.status === st).length;
+      return { content: `Steps shown to the user: ${n("done")} done, ${n("doing")} doing, ${n("todo")} to do.` };
     }
   }
   return { content: `Unknown tool ${name}`, isError: true };
@@ -465,15 +520,11 @@ const numbered = (src: string) => {
   return lines.map((l, i) => `${String(i + 1).padStart(w, " ")}| ${l}`).join("\n");
 };
 
-function notesText(notes: string[]) {
-  return notes.map((n) => `<note from="user">${n}</note>`).join("\n") + "\nThe user sent this while you were working. Take it into account now; where it conflicts with your brief, the note wins.";
-}
-
-function deliverNotes(history: BetaMessageParam[], notes: string[]) {
-  if (!notes.length) return;
+function deliver(history: BetaMessageParam[], text: string | null) {
+  if (!text) return;
   const last = history[history.length - 1];
-  if (last.role === "user" && typeof last.content !== "string") last.content = [...last.content, { type: "text", text: notesText(notes) }];
-  else history.push({ role: "user", content: [{ type: "text", text: notesText(notes) }] });
+  if (last.role === "user" && typeof last.content !== "string") last.content = [...last.content, { type: "text", text }];
+  else history.push({ role: "user", content: [{ type: "text", text }] });
 }
 
 /** Keep the two most recent images; older ones become a short note. */
