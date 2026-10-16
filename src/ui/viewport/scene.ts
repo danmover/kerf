@@ -1291,7 +1291,10 @@ export class SceneController {
       restarted = true;
     }
     const photo = this.photoActive();
-    if (photo && (restarted || !photo.samples)) photo.sync(this.photoParts(), this.photoStage(), now);
+    if (photo && (restarted || !photo.samples)) {
+      const parts = this.photoParts();
+      photo.sync(parts, this.photoStage(parts), now);
+    }
     if (this.maskDirty) {
       this.renderMask();
       this.maskDirty = false;
@@ -1388,10 +1391,17 @@ export class SceneController {
     return out;
   }
 
-  private photoStage(): PhotoStage {
+  private photoStage(parts: PhotoPart[]): PhotoStage {
     const p = this.preset;
     const size = this.bounds.getSize(new THREE.Vector3());
-    const floorZ = this.grid.position.z;
+    // the floor is solid in the photo: drop it under parts exploded below the grid
+    let floorZ = this.grid.position.z;
+    const box = new THREE.Box3();
+    for (const q of parts) {
+      if (!q.geometry.boundingBox) q.geometry.computeBoundingBox();
+      box.copy(q.geometry.boundingBox!).applyMatrix4(q.matrix);
+      floorZ = Math.min(floorZ, box.min.z - 0.01);
+    }
     return {
       floorZ,
       center: this.bounds.getCenter(new THREE.Vector3()),
