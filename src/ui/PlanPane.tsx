@@ -144,7 +144,7 @@ export function PlanPane() {
                   "Steps left to do"
                 )}
               </span>
-              <button className="btn sm primary" onClick={() => void sendMessage("Continue with the plan.")}>
+              <button className="btn sm primary" onClick={() => void sendMessage("Continue with the plan.", { design: true })}>
                 <Icon.Play size={10} /> Continue
               </button>
             </motion.div>
