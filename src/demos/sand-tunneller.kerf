@@ -2,11 +2,12 @@ design "Sand Tunneller"
 note "A battery robot that screws itself sideways along the bottom of a sand pit, holding its heading and stopping on the far side. Arduino Nano brain, two goBILDA gearmotors, an Actuonix steering actuator, 3S LiPo."
 note "How it moves: two counter-rotating screw sections. The front screw (right-hand) pulls, the rear screw (left-hand) pushes, and their twisting cancels so the body does not roll. A vertical hinge behind the front screw steers left and right: the actuator slides a cam bar whose slanted slot pushes a pin on the front section sideways."
 note "Print: PETG for the structure (100% infill for the cam bar and hinge parts), TPU 95A for the hinge boot. Print the screws standing up with tree supports under the flights."
+note "Starting: from the hole in the end wall, push it in by the tail with the push cup on a 25 mm pole (a broom handle) until the rear screw is in the sand, about 300 mm. The front screw alone can't pull the body in; once both screws bite it digs on its own."
 note "Build order: front core with bearing 1, motor and plate, then into the front screw; boot and hinge; electronics on the shelves of the middle body; battery and rear driver in the rear body; rear core and screw last. Seal every gap with grease and tape: sand finds every hole."
 
 brief {
   purpose: "Drill through a 2 m long sand pit along its bottom, under 5 m of sand, and come out the far wall"
-  setting: "Buried in dry sand at the bottom of a pit dug at ground level; starts from a hole in one end wall"
+  setting: "Buried in dry sand at the bottom of a pit dug at ground level; starts from a hole in one end wall, pushed in by the tail until the rear screw is in the sand"
   priorities: ["gets through", "steers straight", "uses parts you can buy"]
   temp: 5C .. 35C assumed
 
@@ -150,6 +151,9 @@ let front_pt = calc.motor_point(motor: m_front, load: front.torque, voltage: bat
 let rear_pt = calc.motor_point(motor: m_rear, load: rear.torque, voltage: bat.v_nom)
 let advance = min(front_pt.rpm, rear_pt.rpm) / 60 * front.advance_per_rev     // mm/s
 let crossing_min = pit_l / advance / 60
+// from the wall hole only the front screw is in the sand until the rear screw gets there (about drag_l in):
+// by then the body drags more than the front screw pulls, so it needs a push from behind
+let start_push = max(0, 1.3 * (front.resist + rear.resist) - front.thrust)     // N
 let run = calc.battery_runtime(battery: bat, current: front_pt.current + rear_pt.current + 0.4, peak: 2 * m_front.i_stall)
 let convey = calc.conveying(d: flight_d, core_d: shell_d, pitch: pitch, rpm: front_pt.rpm, fill: 0.45, body_d: shell_d, advance: advance)
 let steer_need = calc.hinge_steer(thrust: rear.thrust, angle: steer_max, front_length: nose_tip, d: flight_d, sigma_h: sand.sigma_h)
@@ -436,6 +440,22 @@ part tail {
   }
 }
 
+// ── Launch tool: push it in by the tail until the rear screw reaches the sand ──
+// The front screw alone can't pull the body in from the wall hole (see start_push).
+// A greased cone seat on a 25 mm pole: the tail turns inside it, the pole doesn't.
+let pole_d = 25
+let cup_a = 14              // the seat starts this far behind the tail's base
+let cup_gap = 1             // along the axis, for grease
+let cup_r0 = shell_d / 2 - (shell_d / 2 - 4) * (cup_a - cup_gap) / (tail_l - 6)
+part push_cup {
+  color: #6b7280
+  material: "PETG"
+  group: "Launch tool"
+  process: mfg.fdm(build: X)   // printed standing on the pole socket
+  removable                    // shown where it pushes; it comes off with the pole
+  body revolve([(cup_r0, cup_a), (30, cup_a), (30, 40), (17, 55), (17, 100), (pole_d / 2 + 0.25, 100), (pole_d / 2 + 0.25, 60), (0, 45), (0, tail_l + cup_gap), (4, tail_l - 6 + cup_gap)], at: (r_shell_end, 0, 0), dir: -X)
+}
+
 component seal_r = lib.seal("seal_tc_50x65x8") { at: (r_shell0, 0, 0), axis: -X }
 component bearing_r1 = lib.bearing("6810") { at: (r_b1, 0, 0), axis: -X }
 component bearing_r2 = lib.bearing("6810") { at: (r_b2, 0, 0), axis: -X }
@@ -492,9 +512,10 @@ wire ctrl.A5 -> imu.SCL { gauge: 24, color: "yellow" }
 // ── Firmware ─────────────────────────────────────────────
 firmware brain {
   board: ctrl
-  behaviour: "Wait two minutes after power-up, then dig across the pit holding the starting heading. Back off and retry on stalls, and stop when the nose breaks out on the far side or the wall stops it."
+  behaviour: "Wait two minutes after power-up, then dig across the pit holding the starting heading. Back off and retry on stalls, and stop when the nose breaks out on the far side or the wall stops it. If neither happens by half again the expected time, back out on the reserve."
   start_delay: 120s
   run_distance: pit_l + 150mm
+  give_up_time: 1.5 * pit_l / advance
   pitch: pitch
   slip: 0.5
   power: 0.8
@@ -502,6 +523,9 @@ firmware brain {
   steer_slope: cam_slope
   steer_max: steer_max
   steer_mid: act_mid
+  // extending the actuator slides the slot forward and pushes the pin (ahead of the hinge) to +Y, so the
+  // nose turns anticlockwise seen from above, while the IMU heading grows clockwise
+  steer_sign: -1
 }
 
 // ── Checks only a test can make ──────────────────────────
@@ -510,6 +534,7 @@ test "Bucket dig": "Bury the front screw in a bucket of damp sand and run it at 
 test "Screw at depth": "Build a plywood box 0.4 m long, 0.3 m wide and 0.4 m tall with a 95 mm hole in one end. Put the front screw through the hole, fill the box with the same dry sand, lay a board on the sand and load it with about 180 kg of sandbags (roughly the 17 kPa at the bottom of the pit). Run it at full power: the motor current stays under 4 A, the robot pulls itself in at least 4 mm/s and nothing slips on the motor shaft. Repeat with the rear screw."
 test "Motor heat": "In the loaded box, run the front screw for 6 minutes, one crossing: the motor can stays below 60 °C. If it runs hotter, lower the firmware's POWER before the real pit."
 test "Trench run": "Dig a trench 2.5 m long in the same sand, lay the robot in the bottom and cover it with 0.3 m of sand. Let it run the full distance: it comes out within 100 mm of the line, the IMU roll on the console stays within ±15° and the firmware stops at breakthrough. If it rolls, glue a few 5 mm strips along the middle body so it grips the sand."
+test "Push start": "Build a board wall with a 95 mm hole across one end of the trench, sand behind it. Put the nose in the hole with the front screw in the sand, start it, and push the tail with the push cup on its pole: it should need no more than a firm push (about 120 N, like a loaded wheelbarrow) and keep digging on its own once the rear screw is in the sand, about 300 mm in."
 test "Steering in the trench": "In the trench, command 5° left then 5° right while advancing: the robot should curve visibly (more than 20 mm sideways over 0.5 m) and the actuator should reach its target without stalling."
 test "Sand seal": "After the runs, open the screws and check for sand inside the cores and past the seals. Regrease the seals and bearings."
 test "Battery soak": "Run the two box tests back to back for 12 minutes in all, the time of two crossings, with the other motor running free: the battery stays above 3.6 V per cell."
@@ -530,9 +555,11 @@ buy "Double-sided foam tape (boards)" { qty: 1, price: 6, search: "double sided 
 buy "Play sand for the test box, 25 kg" { qty: 4, price: 8, search: "play sand 25kg" }
 buy "Woven sandbags for the box load" { qty: 8, price: 1, search: "woven polypropylene sandbags" }
 buy "Plywood 12 mm, 1200 × 600 mm (test box)" { qty: 1, price: 15, search: "12mm plywood sheet 1200x600" }
+buy "Push pole: broom handle or 25 mm dowel, 1.2 m" { qty: 1, price: 6, search: "25mm wooden dowel 1200mm" }
 
 // ── Requirements ─────────────────────────────────────────
 require "Screws push harder than the sand resists" for cross: front.thrust + rear.thrust >= 1.3 * (front.resist + rear.resist)
+require "One person can push it in from the wall until the rear screw bites" for cross: start_push <= 150N
 require "Front motor runs below half its stall torque" for cross: front_pt.load_fraction <= 0.5
 require "Rear motor runs below half its stall torque" for cross: rear_pt.load_fraction <= 0.5
 require "Battery lasts two crossings" for reserve: run.minutes >= 2 * crossing_min

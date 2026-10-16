@@ -161,7 +161,7 @@ describe("sand tunneller", () => {
     // in a 1 m wide pit the walls carry less of the sand: about 27 kPa at the bottom instead of 17
     const wide = evaluate(TUNNELLER.replace(/given pit_w = 0\.5m/, "given pit_w = 1m"));
     const failing = wide.requirements.filter((r) => r.status === "fail").map((r) => r.label);
-    expect(failing).toEqual(["Front motor runs below half its stall torque", "Rear motor runs below half its stall torque", "Battery lasts two crossings"]);
+    expect(failing).toEqual(["One person can push it in from the wall until the rear screw bites", "Front motor runs below half its stall torque", "Rear motor runs below half its stall torque", "Battery lasts two crossings"]);
   });
 
   it("generates an Arduino sketch with its pins taken from the wiring", () => {
@@ -173,6 +173,30 @@ describe("sand tunneller", () => {
     expect(ino.content).toContain("void setup()");
     expect(config.content).toMatch(/#define STEER_SLOPE\s+0\.2f/);
     expect(fw.pinTable.length).toBeGreaterThan(10);
+  });
+
+  it("steers the right way and knows when it is through, stuck or rolling (found by the pit simulation)", () => {
+    const [fw] = generateFirmware(model.machine!, model.name ?? "design");
+    const ino = fw.files.find((f) => f.path.endsWith(".ino"))!.content;
+    const config = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    // extending the actuator turns the nose anticlockwise, while the heading grows clockwise
+    expect(config).toMatch(/#define STEER_SIGN\s+-1\b/);
+    // breakthrough reads the front motor only: the rear screw keeps digging
+    expect(ino).toContain("frontAmps < digAmps * BREAK_FRAC");
+    expect(ino).not.toMatch(/amps < digAmps \* BREAK_FRAC/);
+    // turning in place: no breakthrough by twice the distance or the give-up time, so it backs out
+    expect(config).toMatch(/#define GIVE_UP_MM\s+4300/);
+    const giveUp = Number(/#define GIVE_UP_S\s+([\d.]+)/.exec(config)?.[1]);
+    expect(giveUp).toBeGreaterThan(400);
+    expect(giveUp).toBeLessThan(700);
+    expect(ino).toContain("case RETREAT:");
+    // the turn count alone ends a run only when there is no current reading to see breakthrough
+    expect(ino).toContain('if (frontAmps < 0 && distance >= RUN_DISTANCE_MM)');
+    expect(ino).toContain("ROLL_LIMIT_DEG");
+    // a design without steer_sign keeps +1
+    const plain = evaluate(TUNNELLER.replace(/\n  steer_sign: -1\n/, "\n"));
+    const plainConfig = generateFirmware(plain.machine!, "design")[0].files.find((f) => f.path.endsWith("config.h"))!.content;
+    expect(plainConfig).toMatch(/#define STEER_SIGN\s+1\b/);
   });
 
   const compilers = [
