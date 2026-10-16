@@ -31,6 +31,9 @@ export const SOLVER_CSP = "default-src 'none'; script-src 'self'";
 /** The stress analysis worker is plain arithmetic on meshes: no eval, no network. */
 export const FEA_CSP = "default-src 'none'; script-src 'self'";
 
+/** The circuit render and board routing workers are plain arithmetic too: no eval, no network. */
+export const CIRCUIT_CSP = "default-src 'none'; script-src 'self'";
+
 const COMMON_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
@@ -55,6 +58,7 @@ function securityPolicy(): Plugin {
         if (/^\/assets\/worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", WORKER_CSP);
         else if (/^\/assets\/solver\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SOLVER_CSP);
         else if (/^\/assets\/fea\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FEA_CSP);
+        else if (/^\/assets\/(render|route)\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CIRCUIT_CSP);
         else if (path === "/" || path.endsWith(".html")) {
           res.setHeader("Content-Security-Policy", `${CSP}; frame-ancestors 'none'`);
           res.setHeader("X-Frame-Options", "DENY");
