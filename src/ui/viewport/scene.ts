@@ -422,6 +422,8 @@ export class SceneController {
   /** Call fn after each frame drawn to the canvas, so 2D overlays can follow the camera. Returns the way to stop. */
   onRendered(fn: () => void): () => void {
     this.renderListeners.add(fn);
+    // draw once more so a new overlay sees the camera as it is now, even if nothing moves again
+    this.needComposite = true;
     return () => void this.renderListeners.delete(fn);
   }
 

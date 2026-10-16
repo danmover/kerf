@@ -197,7 +197,7 @@ export function Viewport() {
           <Icon.Edit />
         </button>
         <button className={`icon-btn ${sketching ? "active" : ""}`} onClick={() => (sketching ? exitSketch() : startPicking())} data-tip={sketching ? "Leave the sketch" : "New sketch"} aria-label="Sketch">
-          <T.Pencil />
+          <T.Sketch />
         </button>
         <div className="sep" />
         <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">

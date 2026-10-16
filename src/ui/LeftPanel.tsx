@@ -57,7 +57,7 @@ const HistoryCount: FC = () => {
 export const LEFT_TABS: LeftTabDef[] = [
   { id: "structure", label: "parts", icon: <Icon.Layers size={14} />, Count: PartsCount, filter: "Filter parts", Body: PartsTab },
   { id: "params", label: "params", icon: <Icon.Sliders size={14} />, Count: ParamsCount, filter: "Filter parameters", Body: ParamsTab },
-  { id: "sketches", label: "sketches", icon: <T.Pencil size={14} />, Count: SketchesCount, filter: "Filter sketches", Body: SketchesTab },
+  { id: "sketches", label: "sketches", icon: <T.Sketch size={14} />, Count: SketchesCount, filter: "Filter sketches", Body: SketchesTab },
   { id: "decisions", label: "decisions", icon: <Icon.Fork size={14} />, Count: DecisionsCount, Body: DecisionsTab },
   { id: "history", label: "history", icon: <Icon.History size={14} />, Count: HistoryCount, Tools: HistoryTools, Body: HistoryTab },
 ];

@@ -19,6 +19,15 @@ export const T = {
       <path d="M14 6l3 3" />
     </I>
   ),
+  /** a constrained profile: an outline with its corner points (told apart from the markup pen) */
+  Sketch: (p: P) => (
+    <I {...p}>
+      <path d="M5 18V7h8l6 6v5z" />
+      <circle cx="5" cy="7" r="1.6" />
+      <circle cx="13" cy="7" r="1.6" />
+      <circle cx="19" cy="13" r="1.6" />
+    </I>
+  ),
   Pointer: (p: P) => (
     <I {...p}>
       <path d="M5 3l14 8-6 1.5L10 19z" />
