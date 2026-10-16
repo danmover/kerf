@@ -10,8 +10,15 @@ import type { CheckReport } from "../core/checks";
 import { commitSource } from "../app/project";
 import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
-import { fmtNum } from "../lang/values";
+import { fmtNum, Obj, type Value } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { evaluate } from "../lang/evaluator";
+import { BEARINGS } from "../library/standards";
+import { CATALOG_KINDS, catalogPart, describePart, searchCatalog } from "../machine/catalog";
+import { CALC_FNS, isCalc } from "../machine/calcs";
+import { generateFirmware } from "../machine/firmware";
+import type { CatalogPart } from "../machine/types";
+import { calcParams } from "./reference";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -72,7 +79,7 @@ export const TOOL_DEFS = [
   {
     name: "run_checks",
     description:
-      "Wait for the geometry kernel to build the current design, then return every check: requirements with margins, solid interference, fastener tool access, gear meshing, swept motion envelopes and build errors.",
+      "Wait for the geometry kernel to build the current design, then return every check: requirements with margins, solid interference, fastener tool access, gear meshing, swept motion envelopes, build errors, and for machines the electrical rules, motor loads, the physical test plan and a summary of the generated firmware with its warnings.",
     input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
   },
   {
@@ -82,6 +89,39 @@ export const TOOL_DEFS = [
     input_schema: {
       type: "object" as const,
       properties: { hold: { type: "array", items: { type: "string" }, maxItems: 50, description: "Parameter names that must not change." } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "catalog_lookup",
+    description:
+      "Look up purchasable parts in Kerf's parts catalog. Give id for one part in full: specs, every pin with its electrical type and ratings, shape and fields, notes, the physical tests it usually needs, and where to buy it. Or search with query (for example \"15 A motor driver\", \"NEMA 17\", \"3S LiPo\") and/or kind: the best matches come back in full and the rest as one line each. With only kind, every part of that kind is listed in one line each. Call it before choosing or wiring a catalog part: only catalog parts have pins.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string", description: "A catalog id, e.g. \"pololu_g2_18v17\"." },
+        query: { type: "string", description: "Words to search ids, names, makers, part numbers, summaries and specs." },
+        kind: { type: "string", enum: [...CATALOG_KINDS], description: "Only parts of this kind." },
+        limit: { type: "integer", minimum: 0, maximum: 12, description: "How many matches to return in full (default 3 for a query, 0 for a kind listing)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "engineering_calc",
+    description:
+      "Run one engineering calculator (calc.<name>) outside the design and get its full working: inputs, results, method, assumptions, confidence and what a physical test should confirm, plus every result field in base units. Use it to size a machine before choosing parts, to compare options, or to check a number; then record the calculation you rely on in the design as `let x = calc.<name>(...)`. Arguments are named, as in the language reference. Values: numbers in base units (mm, N, N·mm, MPa, V, A, W, s, g), or text with a unit such as \"9.5m\", \"10.8Nm\", \"32deg\", \"12kPa\"; true or false for flags; a catalog id (\"gobilda_5203_188\") or the name of a catalog component in the current design for motor, battery and actuator arguments; a bearing code (\"6808\") for bearing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", enum: Object.keys(CALC_FNS), description: "The calculator." },
+        args: {
+          type: "object",
+          description: "Named arguments, e.g. {\"depth\": \"9.5m\", \"box_w\": \"1m\"}.",
+          additionalProperties: { anyOf: [{ type: "number" }, { type: "string" }, { type: "boolean" }] },
+        },
+      },
+      required: ["name"],
       additionalProperties: false,
     },
   },
@@ -142,6 +182,12 @@ const AskInput = z.object({
   options: z.array(z.object({ label: z.string().min(1).max(80), consequence: z.string().max(300), recommended: z.boolean().optional() })).min(2).max(4),
 });
 
+const LookupInput = z.object({ id: z.string().max(80).optional(), query: z.string().max(200).optional(), kind: z.string().max(40).optional(), limit: z.number().int().min(0).max(12).optional() });
+const CalcInput = z.object({
+  name: z.string().min(1).max(60),
+  args: z.record(z.string().max(60), z.union([z.number(), z.string().max(200), z.boolean()])).optional(),
+});
+
 export type ToolResultContent = string | ({ type: "text"; text: string } | { type: "image"; source: { type: "base64"; media_type: "image/jpeg" | "image/png"; data: string } })[];
 
 export interface ToolOutcome {
@@ -174,6 +220,8 @@ export function modelSummary(m: Model | null): string {
     groups.set(k, arr);
   }
   lines.push("Parts by group: " + [...groups].map(([g, ns]) => `${g}: ${ns.join(", ")}`).join("; "));
+  const machine = machineSummary(m);
+  if (machine) lines.push(machine);
   if (m.requirements.length) {
     // geometry-based requirements are only resolved once the kernel has measured them
     const report = useDesign.getState().report;
@@ -200,9 +248,44 @@ export function reportSummary(r: CheckReport | null, limit = 40): string {
   const c = r.counts;
   const head = `Checks: ${c.pass} pass, ${c.fail} fail, ${c.warn} warn, ${c.pending} pending, ${c.info} info.`;
   const notable = r.items.filter((i) => i.status !== "pass");
-  const body = notable.slice(0, limit).map((i) => `  - [${i.status}] (${i.category}) ${i.title}: ${i.detail}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
+  // machine checks say how they were established: rules, calculation or a physical test still to do
+  const basis = (i: CheckReport["items"][number]) => (i.basis === "electrical rules" || i.basis === "calculation" || i.basis === "physical test" ? `; ${i.basis}` : "");
+  const body = notable.slice(0, limit).map((i) => `  - [${i.status}] (${i.category}${basis(i)}) ${i.title}: ${i.detail}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
+  if (notable.length > limit) body.push(`  - … and ${notable.length - limit} more not shown (fix the ones above, then check again)`);
   const passed = r.items.filter((i) => i.status === "pass").map((i) => i.title);
-  return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}` : ""].filter(Boolean).join("\n");
+  return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}${passed.length > 60 ? `; … (${passed.length - 60} more)` : ""}` : ""].filter(Boolean).join("\n");
+}
+
+/** Purchased parts, wiring and calculations at a glance. */
+export function machineSummary(m: Model): string {
+  const mm = m.machine;
+  if (!mm) return "";
+  let cost = 0;
+  for (const c of mm.components) cost += (c.price ?? catalogPart(c.catalogId)?.price_usd ?? 0) * c.count;
+  for (const it of mm.items) cost += (it.price ?? 0) * it.qty;
+  const n = (k: number, one: string, many = one + "s") => `${k} ${k === 1 ? one : many}`;
+  const lines = [
+    `Machine: ${n(mm.components.reduce((s, c) => s + c.count, 0), "catalog part")}, ${n(mm.wires.length, "wire")}, ${n(mm.nets.length, "net")}, ${n(mm.calcs.length, "calculation")}, ${n(mm.firmware.length, "firmware block")}, ${n(mm.tests.length, "test")}, ${n(mm.items.length, "buy item")}; parts about $${Math.round(cost)}.`,
+  ];
+  if (mm.calcs.length) lines.push("Calculations: " + mm.calcs.map((c) => `${c.name} (${c.title}; ${c.confidence})`).join("; "));
+  return lines.join("\n");
+}
+
+/** What the firmware generators make of the design, and what they warn about. */
+export function firmwareSummary(m: Model | null): { text: string; warnings: number } {
+  const mm = m?.machine;
+  if (!m || !mm?.firmware.length) return { text: "", warnings: 0 };
+  try {
+    const outs = generateFirmware(mm, m.name);
+    const warnings = outs.reduce((s, o) => s + o.warnings.length, 0);
+    const lines = outs.map((o) => {
+      const head = `  - ${o.name} (board ${o.board || "?"}): ${o.target === "none" ? "no code generated" : o.target === "arduino" ? "Arduino sketch" : "Klipper config"}. ${o.summary}. ${o.files.length} file${o.files.length === 1 ? "" : "s"}, ${o.pinTable.length} wired signal${o.pinTable.length === 1 ? "" : "s"}.`;
+      return o.warnings.length ? `${head}\n    Warnings:\n${o.warnings.map((w) => `    * ${w}`).join("\n")}` : `${head} No warnings.`;
+    });
+    return { text: ["Firmware:", ...lines].join("\n"), warnings };
+  } catch (e) {
+    return { text: `Firmware: the generator failed (${e instanceof Error ? e.message : String(e)}).`, warnings: 1 };
+  }
 }
 
 function numbered(src: string) {
@@ -305,11 +388,12 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       if (s.kernelStatus === "error") return { isError: true, content: `The geometry kernel is unavailable: ${s.kernelError}`, card: { title: "Geometry kernel unavailable", status: "error" } };
       const r = s.report;
       const c = r?.counts;
+      const fw = firmwareSummary(s.model);
       return {
-        content: `${modelSummary(s.model)}\n\n${reportSummary(r)}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
+        content: `${modelSummary(s.model)}\n\n${reportSummary(r)}${fw.text ? `\n${fw.text}` : ""}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
         card: {
           title: c ? (c.fail ? `${c.fail} check${c.fail > 1 ? "s" : ""} failing` : `All ${c.pass} checks pass`) : "Checks unavailable",
-          detail: c ? `${c.pass} pass · ${c.fail} fail · ${c.warn} warn` : undefined,
+          detail: c ? `${c.pass} pass · ${c.fail} fail · ${c.warn} warn${fw.warnings ? ` · ${fw.warnings} firmware warning${fw.warnings > 1 ? "s" : ""}` : ""}` : undefined,
           status: c && c.fail === 0 ? "done" : "error",
         },
       };
@@ -356,6 +440,16 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       if (!p.success) return invalid(p.error);
       return { content: "", card: { title: p.data.question }, ask: { question: p.data.question, options: p.data.options } };
     }
+    case "catalog_lookup": {
+      const p = LookupInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      return catalogLookup(p.data);
+    }
+    case "engineering_calc": {
+      const p = CalcInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      return engineeringCalc(p.data.name, p.data.args ?? {});
+    }
   }
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
@@ -379,4 +473,158 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
+  catalog_lookup: "Looking up parts",
+  engineering_calc: "Calculating",
 };
+
+// ---------- parts catalog ----------
+
+const oneLine = (p: CatalogPart) => `${p.id} | ${p.name} | ${p.summary.split(/(?<=\.)\s+/).slice(0, 2).join(" ")}${p.price_usd ? ` | ~$${p.price_usd}` : ""}`;
+const usage = (p: CatalogPart) => `Use as: lib.${p.kind}("${p.id}"${p.cut_to_length ? ", length: <mm>" : ""}) or lib.part("${p.id}")`;
+
+export function catalogLookup(q: { id?: string; query?: string; kind?: string; limit?: number }): ToolOutcome {
+  if (q.id?.trim()) {
+    const id = q.id.trim();
+    const p = catalogPart(id);
+    if (!p) {
+      const near = searchCatalog(id.replace(/[_-]+/g, " "), undefined, 6);
+      return {
+        isError: true,
+        content: `No catalog part has the id "${id}".${near.length ? ` Closest matches:\n${near.map(oneLine).join("\n")}` : ""}`,
+        card: { title: `No catalog part "${id}"`, status: "error" },
+      };
+    }
+    return { content: `${usage(p)}\n${describePart(p)}`, card: { title: `Looked up ${p.name}`, detail: `${p.id} · ${p.kind}${p.price_usd ? ` · about $${p.price_usd}` : ""}` } };
+  }
+  const kind = q.kind?.trim() || undefined;
+  if (kind && !CATALOG_KINDS.includes(kind as CatalogPart["kind"])) {
+    return { isError: true, content: `"${kind}" is not a catalog kind. Kinds: ${CATALOG_KINDS.join(", ")}.`, card: { title: `Unknown part kind "${kind}"`, status: "error" } };
+  }
+  const query = q.query?.trim() ?? "";
+  if (!query && !kind) return { isError: true, content: "Give an id, a query or a kind.", card: { title: "Nothing to look up", status: "error" } };
+  const found = searchCatalog(query, kind, 40);
+  const what = [query && `"${query}"`, kind && `kind ${kind}`].filter(Boolean).join(", ");
+  if (!found.length) {
+    return {
+      content: `No catalog part matches ${what}. Kinds in the catalog: ${CATALOG_KINDS.join(", ")}. If the design needs a part the catalog lacks, search the web for a real product (maker, part number, price, product page) and add it as a buy item.`,
+      card: { title: `No catalog match for ${what}`, detail: "Not in the catalog" },
+    };
+  }
+  const full = Math.min(found.length, q.limit ?? (query ? 3 : 0));
+  const parts = [`${found.length} catalog part${found.length === 1 ? "" : "s"} match ${what}.`];
+  for (const p of found.slice(0, full)) parts.push(`${usage(p)}\n${describePart(p)}`);
+  if (found.length > full) parts.push(`${full ? "Other matches" : "Matches"} (look one up by id for its pins and specs):\n${found.slice(full).map(oneLine).join("\n")}`);
+  return { content: parts.join("\n\n---\n\n"), card: { title: `Searched the parts catalog: ${what}`, detail: found.slice(0, 6).map((p) => p.id).join(", ") + (found.length > 6 ? ", …" : "") } };
+}
+
+// ---------- engineering calculators ----------
+
+const num4 = (n: number) => (Number.isFinite(n) ? String(Number(n.toPrecision(4))) : String(n));
+
+function specFields(p: CatalogPart): Record<string, Value> {
+  const out: Record<string, Value> = {};
+  for (const [k, v] of Object.entries(p.specs)) out[k] = typeof v === "boolean" ? (v ? 1 : 0) : v;
+  return { ...out, catalog_id: p.id, price: p.price_usd ?? 0 };
+}
+
+/** Read one literal the way the language does (units, true/false, simple arithmetic). */
+function readLiteral(text: string): { value: Value } | { error: string } {
+  if (!text || /[\n\r{};]/.test(text)) return { error: "write one value, such as 9.5m or 10.8Nm" };
+  const m = evaluate(`param v = ${text}\n`, { skipGeometry: true });
+  const err = m.diagnostics.find((d) => d.severity === "error");
+  if (err) return { error: err.message };
+  const p = m.params.find((x) => x.name === "v");
+  return p ? { value: p.value } : { error: "not a value" };
+}
+
+/** A catalog part from an id, or from a component of that name in the current design. */
+function partFor(text: string): { part: CatalogPart; label: string; ref: string } | null {
+  const direct = catalogPart(text);
+  if (direct) return { part: direct, label: direct.name, ref: `<your lib.${direct.kind}("${direct.id}") component>` };
+  const mc = useDesign.getState().model?.machine?.components.find((c) => c.name === text);
+  const p = mc && catalogPart(mc.catalogId);
+  return p ? { part: p, label: text, ref: text } : null;
+}
+
+const COMPONENT_ARGS = new Set(["motor", "battery", "actuator"]);
+
+export function engineeringCalc(name: string, args: Record<string, number | string | boolean>): ToolOutcome {
+  const fn = CALC_FNS[name];
+  if (!fn) return { isError: true, content: `There is no calc.${name}. Calculators: ${Object.keys(CALC_FNS).join(", ")}.`, card: { title: `No calculator ${name}`, status: "error" } };
+  const accepts = calcParams(name);
+  const fail = (msg: string): ToolOutcome => ({ isError: true, content: `calc.${name}: ${msg}${accepts.length ? `\nIt accepts: ${accepts.join(", ")}. ${fn.doc ?? ""}` : ""}`, card: { title: `calc.${name} could not run`, detail: msg, status: "error" } });
+  const unknown = Object.keys(args).filter((k) => accepts.length && !accepts.includes(k));
+  if (unknown.length) return fail(`no argument${unknown.length > 1 ? "s" : ""} ${unknown.map((k) => `"${k}"`).join(", ")}`);
+
+  const named: Record<string, Value> = {};
+  const shown: string[] = [];
+  for (const [k, raw] of Object.entries(args)) {
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw)) return fail(`${k} must be a finite number`);
+      named[k] = raw;
+      shown.push(`${k}: ${raw}`);
+      continue;
+    }
+    if (typeof raw === "boolean") {
+      named[k] = raw;
+      shown.push(`${k}: ${raw}`);
+      continue;
+    }
+    const text = raw.trim();
+    const comp = partFor(text);
+    if (comp) {
+      named[k] = new Obj(specFields(comp.part), "component", comp.label);
+      shown.push(`${k}: ${comp.ref}`);
+      continue;
+    }
+    if (COMPONENT_ARGS.has(k)) return fail(`${k}: "${text}" is not a catalog id or a catalog component in the design`);
+    if (k === "bearing") {
+      if (!BEARINGS[text]) return fail(`unknown bearing "${text}". Codes: ${Object.keys(BEARINGS).join(", ")}`);
+      named[k] = text;
+      shown.push(`${k}: "${text}"`);
+      continue;
+    }
+    const lit = readLiteral(text);
+    if ("error" in lit) return fail(`could not read ${k}: "${text}" (${lit.error})`);
+    named[k] = lit.value;
+    shown.push(`${k}: ${text}`);
+  }
+
+  let result: Value;
+  try {
+    result = fn.call([], named, {
+      error: (msg: string) => {
+        throw new Error(msg);
+      },
+      geo: () => 0,
+    });
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+  if (!isCalc(result)) return fail("did not return a calculation");
+  const t = result.trace;
+  const line = (l: { label: string; value: number; unit: string; note?: string }) => `  - ${l.label}: ${num4(l.value)}${l.unit ? ` ${l.unit}` : ""}${l.note ? ` (${l.note})` : ""}`;
+  const fields = Object.entries(result.fields)
+    .map(([k, v]) => `${k} = ${typeof v === "number" ? num4(v) : typeof v === "string" ? JSON.stringify(v) : String(v)}`)
+    .join(", ");
+  const call = `calc.${name}(${shown.join(", ")})`;
+  const text = [
+    call,
+    `${t.title} (confidence: ${t.confidence})`,
+    "Inputs:",
+    ...t.inputs.map(line),
+    "Results:",
+    ...t.outputs.map(line),
+    "Method:",
+    ...t.method.map((m) => `  - ${m}`),
+    "Assumptions:",
+    ...t.assumptions.map((a) => `  - ${a}`),
+    t.verify ? `Confirm with a physical test: ${t.verify}` : "",
+    `Result fields in base units (mm, N, N·mm, MPa, V, A, W, s), for other calculations and the design: ${fields}`,
+    `To record it in the design: let <name> = ${call}`,
+  ].filter(Boolean);
+  return {
+    content: text.join("\n"),
+    card: { title: t.title, detail: t.outputs.slice(0, 3).map((l) => `${l.label.trim()} ${num4(l.value)}${l.unit ? ` ${l.unit}` : ""}`).join(" · ") },
+  };
+}

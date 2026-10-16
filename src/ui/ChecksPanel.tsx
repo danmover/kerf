@@ -20,7 +20,19 @@ const CATEGORY_LABEL: Record<string, string> = {
   motion: "Motion",
   gears: "Gears",
   build: "Build",
+  electrical: "Wiring",
+  engineering: "Calculations",
+  testing: "Physical tests",
   info: "Needs analysis",
+};
+
+const BASIS_LABEL: Record<string, string> = {
+  "needs analysis": "analysis",
+  geometry: "geometry",
+  parameters: "params",
+  "electrical rules": "wiring rules",
+  calculation: "calculated",
+  "physical test": "test",
 };
 
 export function ChecksPanel() {
@@ -108,7 +120,7 @@ export function ChecksPanel() {
                     </div>
                     <div className="detail">{i.detail}</div>
                   </div>
-                  <div className="basis">{i.basis === "needs analysis" ? "analysis" : i.basis === "geometry" ? "geometry" : "params"}</div>
+                  <div className="basis">{BASIS_LABEL[i.basis] ?? i.basis}</div>
                 </motion.div>
               ))}
             </AnimatePresence>

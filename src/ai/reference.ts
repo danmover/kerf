@@ -2,8 +2,11 @@
 // builtin tables the evaluator uses so it cannot drift from the code.
 
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
+import { UNITS } from "../lang/lexer";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { CALC_FNS, CALC_PARAMS } from "../machine/calcs";
+import { CATALOG, CATALOG_KINDS, catalogOfKind } from "../machine/catalog";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -13,6 +16,178 @@ const geoDocs: Record<string, string> = {
   bbox_max: 'bbox_max(a, "x"|"y"|"z") — highest world coordinate.',
   size: 'size(a, "x"|"y"|"z") — overall extent along an axis.',
 };
+
+/** Argument names of a calculator, in positional order. */
+export function calcParams(name: string): string[] {
+  return CALC_PARAMS[name] ?? [];
+}
+
+/** First sentence, without splitting decimals like 3.3 V. */
+function sentences(s: string, n: number): string {
+  const parts = s.split(/(?<=\.)\s+/);
+  return parts.slice(0, n).join(" ");
+}
+
+/** One line per catalog part, grouped by kind. Generated from the catalog so it never drifts. */
+export function partsTable(): string {
+  const lines: string[] = [];
+  for (const kind of CATALOG_KINDS) {
+    lines.push(`${kind}:`);
+    for (const p of catalogOfKind(kind)) {
+      const tags = [p.cut_to_length ? "cut to length" : "", p.generic ? "generic" : "", p.price_usd ? `~$${p.price_usd}` : ""].filter(Boolean).join(", ");
+      lines.push(`  ${p.id} | ${p.name} | ${sentences(p.summary, 2)}${tags ? ` | ${tags}` : ""}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/** Where `at` sits and which fields each catalog kind exposes (from the library entries). */
+function kindDocs(): string {
+  return CATALOG_KINDS.map((k) => {
+    const doc = (LIBRARY[k]?.doc ?? "")
+      .replace(/^Purchasable [^.]*\.\s*/, "")
+      .replace(/\s*Ids: [\s\S]*$/, "")
+      .trim();
+    return `- ${k}: ${doc || "`at` is the part's reference point."}`;
+  }).join("\n");
+}
+
+function calcDocs(): string {
+  return Object.entries(CALC_FNS)
+    .map(([name, fn]) => `- calc.${name}(${calcParams(name).join(", ")}): ${fn.doc ?? ""}`)
+    .join("\n");
+}
+
+const UNIT_BASE: Record<string, string> = {
+  mm: "length (mm)",
+  cm: "length (mm)",
+  m: "length (mm)",
+  in: "length (mm)",
+  deg: "angle (deg)",
+  rad: "angle (deg)",
+  "%": "fraction",
+  g: "mass (g)",
+  kg: "mass (g)",
+  rpm: "speed (rpm)",
+  N: "force (N)",
+  kN: "force (N)",
+  Nm: "torque (N·mm)",
+  Ncm: "torque (N·mm)",
+  Nmm: "torque (N·mm)",
+  kgcm: "torque (N·mm)",
+  V: "voltage (V)",
+  mV: "voltage (V)",
+  A: "current (A)",
+  mA: "current (A)",
+  W: "power (W)",
+  kW: "power (W)",
+  Wh: "energy (Wh)",
+  Ah: "charge (mAh)",
+  mAh: "charge (mAh)",
+  Ohm: "resistance (Ohm)",
+  kOhm: "resistance (Ohm)",
+  mH: "inductance (mH)",
+  MPa: "pressure and stress (MPa = N/mm²)",
+  kPa: "pressure and stress (MPa = N/mm²)",
+  Pa: "pressure and stress (MPa = N/mm²)",
+  GPa: "pressure and stress (MPa = N/mm²)",
+  s: "time (s)",
+  ms: "time (s)",
+  min: "time (s)",
+  h: "time (s)",
+  Hz: "frequency (Hz)",
+  kHz: "frequency (Hz)",
+  degC: "temperature (°C)",
+};
+
+/** Every unit suffix the lexer accepts, grouped by what it measures, with its factor into the base unit. */
+export function unitsTable(): string {
+  const groups = new Map<string, string[]>();
+  for (const [u, f] of Object.entries(UNITS)) {
+    const g = UNIT_BASE[u] ?? "other";
+    const factor = f === 1 ? "" : ` ×${Number(f.toPrecision(5))}`;
+    groups.set(g, [...(groups.get(g) ?? []), `${u}${factor}`]);
+  }
+  return [...groups].map(([g, us]) => `- ${g}: ${us.join(", ")}`).join("\n");
+}
+
+/** Controllers grouped by what Kerf generates for them. */
+function firmwareBoards(): string {
+  const ctrl = CATALOG.filter((p) => p.kind === "controller");
+  const arduino = ctrl.filter((p) => String(p.specs.platform ?? "").startsWith("arduino")).map((p) => p.id);
+  const klipper = ctrl.filter((p) => p.specs.platform === "klipper").map((p) => p.id);
+  return `Arduino sketch (the .ino, pins.h, config.h and a README with the bring-up steps): ${arduino.join(", ")}. Klipper printer.cfg (plus a README with the calibration commands): ${klipper.join(", ")}.`;
+}
+
+function machineReference(): string {
+  return `## Machines: purchasable parts, wiring, calculations, firmware and tests
+
+A machine is the same .kerf file with purchasable catalog parts (motors, boards, drivers, batteries, rails...), the wiring between their pins, engineering calculations, a firmware block, physical tests and extra purchases. Everything is checked on every rebuild and feeds the parts list, wiring list, firmware and build pack.
+
+### Catalog components
+component drive = lib.gearmotor("gobilda_5203_188") { at: (0, 0, 40), axis: X, role: "front screw", load: 10.8Nm }
+component ctrl = lib.part("arduino_nano") { at: (0, 0, 0) }            // lib.part takes any catalog id
+component rail_x = lib.rail("mgn12h", length: 300, travel: 120) { at: (0, 0, 0), axis: X }
+Arguments: the catalog id (first, in quotes); length (mm, required for cut-to-length stock: extrusions, rails, rods, lead screws); travel (mm: carriage, nut or actuator position along its stroke).
+Every normal component property works (at, axis, rotate, color, group, label, at: [list] for patterns). Catalog parts also take:
+- role: "text": what the part does here ("front screw", "steering hinge", "x", "extruder", "part cooling"). The firmware generators read it to tell motors, axes and fans apart.
+- load: torque on the output shaft (N·mm, write 10.8Nm). The engineering check compares it with the stall or holding torque (fail at 100 %, warning above 50 %), and the wiring rules use the current it implies to size drivers, wires and supplies.
+- buy: "https://…": a direct product page for this exact item; replaces the catalog link in the parts list.
+- price: USD each; replaces the catalog price.
+Fields: every catalog spec (drive.t_stall, drive.rpm_free, drive.i_stall, bat.capacity_mah, bat.v_max; true/false specs read 1/0), the placement fields below, plus catalog_id and price. Spec units are mm, N·mm, A, V, W, g, rpm and mAh unless the name says otherwise.
+Pins: comp.PIN by pin id or by the label printed on the board (ctrl.D9, bat.POS, drv.OUTA); one instance of a pattern: comp[1].PIN. Only catalog parts have pins. Call catalog_lookup for a part's pins, ratings and notes before wiring it.
+
+Placement and fields by kind:
+${kindDocs()}
+
+### Parts catalog
+id | name | summary | tags (~typical price in USD)
+${partsTable()}
+
+### Wiring
+wire ctrl.D9 -> drv.PWM { gauge: 24, color: "orange", label: "front PWM" }
+wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: 14, color: "red" }   // a chain is one wire per hop
+net GND: ctrl.GND, drv.GND, imu.GND { gauge: 24, color: "black" }             // named net: every listed pin on one conductor
+wire skr.XM -> motor_x.PLUG                                                    // port to port: one cable
+Properties: gauge (AWG), color, label (wires only). Net names are unique; list all of a net's pins in one net statement. A pin may appear in several wires and nets: they join into one electrical net.
+Give every power and motor conductor a gauge sized for its current (calc.wire_gauge) and use red for supply, black for ground and distinct colours for signals; 22 to 26 AWG suits logic signals.
+Ports are multi-conductor connectors: stepper4, fan2, heater2, therm2, endstop3, probe5, usb. Join a board port (source) to a device port (sink) of the same kind with one wire; never wire a port to a single pin.
+Pin types in catalog_lookup: gnd; pwr_in (needs vmin–vmax V, damaged above vabs; "draw" is its own current); pwr_out (supplies v at up to imax A); pwr_rail (a board rail that supplies its voltage unless something else feeds it); io (controller GPIO at its logic voltage, with pwm, adc, irq, input-only and bus roles such as i2c_sda); in (module input: tolerates vmax, reads high above vih; "needs pwm" means drive it from a PWM pin); out (module output; "needs irq" means read it on an interrupt pin); analog_out (needs an adc pin); motor_out (driver output terminal, channel A or B); motor (motor terminal); passive (switch, fuse or connector terminal, joined to its partner when closed); port. "required" pins must be connected.
+
+### Engineering calculations
+let sand = calc.sand_stress(depth: 9.5m, box_w: 1m)
+let screw = calc.screw_burrow(d: 90, core_d: 70, length: 150, pitch: 40, sigma_v: sand.sigma_v, sigma_h: sand.sigma_h, face: true)
+let point = calc.motor_point(motor: drive, load: screw.torque)
+A let that holds a calculation records its working (inputs, method, assumptions, how far to trust it, what a test should confirm) in the design's calculations, shown to the user. Results are fields in base units (mm, N, N·mm, MPa, V, A, W, s, rpm): feed them into other calculations, load:, firmware settings and require lines. Arguments are named; anything in brackets in the descriptions below is the default. Confidence: standard (textbook method), estimate (sound method, some inputs guessed), rough (little published basis: can be off by 2× and needs a physical test). The engineering_calc tool runs one calculation outside the design.
+${calcDocs()}
+
+### Firmware
+firmware brain { board: ctrl, behaviour: "Dig forward holding heading; back off on stalls; stop at the far side", run_distance: 1100mm, start_delay: 10s }
+Kerf generates the code from the wiring, so every pin number matches the harness: change the wiring, never the generated pin files. ${firmwareBoards()} Settings are numbers, text or true/false; times are in seconds (10s, 500ms) and distances in mm.
+Arduino boards: behaviour text that mentions tunnel, burrow, sand, drill, dig or bore (with DC motors on drivers) gives the autonomous tunnelling program; anything else gives the bench program (a serial console that drives each motor and reads each sensor). Both include the console. The generator finds:
+- DC motors and actuators through the driver channel their M_PLUS/M_MINUS are wired to (control schemes: pwm_dir, rpwm_lpwm, in1_in2_en, in1_in2_pwm, in1_in2_pwm_both); the front and rear motors by name or role (front/nose/head, rear/back/tail); the steering actuator or servo by steer or hinge. Driver current-sense pins wired to analog pins give stall detection.
+- encoders (ENC_A on an interrupt pin, ENC_B), actuator position feedback (FB on an analog pin), servos (SIG; on AVR boards the Servo library disables PWM on pins 9 and 10), a BNO055 or MPU-6050 on the I2C pins, battery voltage through voltage_sensor_25v.S, and the battery's cell count.
+- settings (default): start_delay (10 s), run_distance (1100 mm), max_run_time (3600 s), power (0.8 of full PWM), pitch (40 mm screw pitch), slip (0.5), stall_current (80 % of the front motor's stall current, A), stall_time (0.6 s), backoff_time (1.5 s), max_retries (8), breakthrough_current (0.5 of the digging average), heading_kp (1.5), heading_ki (0.05), steer_max (8 deg), steer_arm (40 mm, hinge pin to where the actuator or cam pushes), steer_slope (1: sideways movement per mm of stroke; the slot slope for a cam), steer_deadband (0.4 mm of actuator position error ignored), steer_mid (half the actuator stroke, mm), roll_kp (0.01), roll_trim_max (0.25), low_cell (3.4 V per cell), log_interval (5 s).
+Klipper boards: axes come from the board port each stepper is cabled to (X…, Y…, Z…, E…) or the stepper's role ("x", "y", "z", "extruder"); hotend and bed heaters and thermistors from their heater2 and therm2 cables (a heated_bed part is the bed); fans by role or port label (part/blower, hotend/heatsink, controller/electronics); endstops from XSTOP/YSTOP/ZSTOP; a probe5 cable makes the probe the Z endstop. Rotation distances come from GT2 pulleys (role "x"/"y"), the lead screw and the extruder.
+- settings (default): x_size (220), y_size (220), z_size (250) in mm; kinematics ("cartesian"); max_velocity (300 mm/s); max_accel (3000 mm/s²); x_rotation_distance, y_rotation_distance (from the pulley, else 40), z_rotation_distance (the lead screw's lead, else 8), e_rotation_distance (the extruder's, else 22.68); x_run_current, y_run_current, z_run_current, e_run_current (A, from the motor rating and the driver limit); probe_x, probe_y (probe offset from the nozzle, -40 and -10 mm).
+Firmware warnings (for example a motor whose driver pins are not wired) come back from run_checks.
+
+### Physical tests and purchases
+test "Bucket dig": "Dig 30 cm into a bucket of damp sand at full power; motor current must stay under 6 A and the screws must not slip on their shafts"
+buy "M3 socket screw assortment" { qty: 1, price: 12, url: "https://…" }
+buy "Plywood for the sand box" { qty: 3, price: 28, search: "18 mm plywood sheet 1220 x 2440" }
+A test is a procedure, what to measure and the pass criterion, for anything only a real build can confirm. buy lists something to purchase that has no model or pins (hardware kits, wire, tube, sheet material, a tool): qty, price (USD each), and url (a direct product page) or search (text for marketplace searches).
+
+### Units (literal suffixes; values convert to the base unit shown)
+${unitsTable()}
+Write a space before a name after a number (2 * width, not 2width).
+
+### Machine checks (run on every rebuild, returned by run_checks)
+- electrical (basis: electrical rules): supplies, shorts, two supplies fighting, board rails fed the wrong voltage, unpowered required pins, voltage against each pin's ratings, logic levels (5 V into 3.3 V pins), PWM-capable and ADC pins where needed, interrupt pins for encoders, I2C/UART pins, input-only pins, strapping and USB-serial pins, two outputs on one net, motors without a driver, driver current against the motor's load and stall current, motor over-voltage, both motor terminals on one driver channel, port kinds and sides, stepper, fan and heater current against the port, a common ground between parts that exchange signals, required pins left unconnected, a fuse and a switch on every battery, the current budget of every supply, and wire gauge against current. A design with a controller and no firmware block gets a warning.
+- engineering (basis: calculation): motor load (load:) against stall or holding torque, and a summary of the calculations (rough ones are flagged).
+- testing (basis: physical test): the test plan: every test line, every rough calculation's verify step and the tests the catalog lists for the chosen parts.
+`;
+}
 
 export function languageReference(): string {
   const shapes = Object.values(SHAPE_FNS)
@@ -25,7 +200,9 @@ export function languageReference(): string {
     .map((d) => `- ${d}`)
     .join("\n");
   const geo = GEO_FNS.map((g) => `- ${geoDocs[g] ?? g}`).join("\n");
+  // catalog kinds are documented once, in the machines section
   const lib = Object.entries(LIBRARY)
+    .filter(([, e]) => !e.machine)
     .map(([k, e]) => `### lib.${k}\n${e.signature}\n${e.doc}`)
     .join("\n\n");
   const threads = Object.entries(THREADS)
@@ -40,17 +217,21 @@ export function languageReference(): string {
 
 A design is one text file. It is the single source of truth: the app evaluates it, builds exact B-rep solids with OpenCASCADE, runs checks and renders the result. Every manual edit and every AI edit is an edit to this text.
 
-Units: millimetres and degrees. Literals may carry units (2cm, 0.5in, 1.5rad) which convert to mm/deg. World axes: X right, Y back, Z up. Constants X, Y, Z are unit vectors; ORIGIN is (0, 0, 0). Points are (x, y) or (x, y, z) with fields .x .y .z. Lists use [a, b, c] and index with [i] (0-based). Comments: // and /* */. Colors: #4f7cff.
+Units: millimetres and degrees. Literals may carry units (2cm, 0.5in, 1.5rad, 10.8Nm, 12V; the full list is under Machines) which convert to the base unit. World axes: X right, Y back, Z up. Constants X, Y, Z are unit vectors; ORIGIN is (0, 0, 0). Points are (x, y) or (x, y, z) with fields .x .y .z. Lists use [a, b, c] and index with [i] (0-based). Comments: // and /* */. Colors: #4f7cff.
 
 ## Statements (top level, evaluated in order; a name must be defined before it is used)
 design "Name"
 note "Free text shown to the user"
 param name = expr [range lo .. hi] ["description"] [locked]   // tunable inputs; locked means the user froze it
-let name = expr                                              // derived values: layout skeleton, positions, lists of points
+let name = expr                                              // derived values: layout skeleton, positions, lists of points; let x = calc.<fn>(...) records a calculation
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
-component name = lib.kind(args) { props and flags }           // standard parts from the library
+component name = lib.kind(args) { props and flags }           // standard parts from the library, and purchasable catalog parts
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
 require "Label" [hard|soft]: condition                         // checked every rebuild; hard by default
+wire a.PIN -> b.PIN { gauge: 22 }  /  net NAME: a.PIN, b.PIN   // wiring between catalog parts (see Machines)
+firmware name { board: ctrl, ... }                             // generated firmware for a controller
+test "Label": "procedure"                                      // a physical test the build must pass
+buy "Label" { qty: 1, price: 10, url: "https://…" }            // a purchase with no model
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -100,7 +281,9 @@ Bearings for lib.bearing(code): ${bearings}
 - swept envelopes of rotating gears against static parts
 - gear meshing: same module, exact centre distance, face overlap, and tooth clearance through a rotation
 - build errors (a modelling step the kernel could not perform)
+- for machines: electrical rules, engineering loads and the physical test plan (see Machines below)
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
 Things geometry cannot prove (strength, torque, heat, tolerances on a real printer) are reported as "needs analysis".
-`;
+
+${machineReference()}`;
 }

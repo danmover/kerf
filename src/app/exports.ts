@@ -3,6 +3,8 @@
 import { kernel } from "../kernel/client";
 import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
+import { buildPack } from "../machine/pack";
+import { zip } from "../machine/zip";
 import { exportProject, useProject } from "./project";
 import { useView } from "./view";
 import { viewport } from "./viewportApi";
@@ -42,6 +44,52 @@ export async function exportStl(selectionOnly = false) {
   if (!items.length) return toast({ kind: "warn", title: "The geometry is still building", detail: "Try again in a moment." });
   download(writeStl(items, `Kerf: ${baseName()}`), safeFileName(baseName() + (selectionOnly ? " selection" : ""), "stl"), "model/stl");
   toast({ kind: "success", title: "STL exported", detail: `${items.length} solids, fine tessellation, millimetres.` });
+}
+
+/** The build pack name keeps spaces, unlike other exports, so it reads well in a downloads folder. */
+const packName = (s: string) => s.replace(/[^A-Za-z0-9 _.()-]+/g, "").replace(/\s+/g, " ").trim().slice(0, 80) || "design";
+
+let packBusy: Promise<void> | null = null;
+
+/** Everything needed to order, make, wire, program and test the machine, as one zip. */
+export function exportBuildPack(): Promise<void> {
+  packBusy ??= makeBuildPack().finally(() => (packBusy = null));
+  return packBusy;
+}
+
+async function makeBuildPack() {
+  if (!useDesign.getState().model?.machine) {
+    toast({ kind: "warn", title: "No build pack for this design", detail: "Build packs are for machines: designs with catalog parts, wiring or firmware." });
+    return;
+  }
+  const t = toast({ kind: "info", title: "Preparing the build pack…", detail: "Waiting for the final geometry and checks, then writing every file." }, 0);
+  try {
+    await whenRefined();
+    await whenChecked();
+    const { model, report } = useDesign.getState();
+    if (!model?.machine) throw new Error("The design changed and no longer has machine data.");
+    const parts = visibleParts(false).filter((p) => meshes.has(p.hash));
+    let step: ArrayBuffer | undefined;
+    let stepNote = "";
+    if (parts.length) {
+      try {
+        step = await kernel.exportStep(parts.map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color })));
+      } catch (e) {
+        stepNote = ` The STEP file was left out: ${errorText(e)}`;
+      }
+    }
+    const name = baseName();
+    const files = buildPack(model, report, { name, step, meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
+    const folder = `${packName(name)} build pack`;
+    const data = zip(files.map((f) => ({ path: `${folder}/${f.path}`, data: f.data })));
+    download(data, `${folder}.zip`, "application/zip");
+    const stl = files.filter((f) => f.path.endsWith(".stl")).length;
+    toast({ kind: "success", title: "Build pack downloaded", detail: `${files.length} files${stl ? `, ${stl} to print or make` : ""}. Start with README.md.${stepNote}` }, stepNote ? 9000 : undefined);
+  } catch (e) {
+    toast({ kind: "error", title: "Could not make the build pack", detail: errorText(e) }, 9000);
+  } finally {
+    dismissToast(t);
+  }
 }
 
 export function exportSource() {

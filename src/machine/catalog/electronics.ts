@@ -1,0 +1,806 @@
+// Controllers, motor drivers, power and sensors.
+// Specs are from the maker's page or datasheet where one exists (see
+// `source`). Parts marked generic are commodity modules sold by many
+// sellers; their numbers are typical listing values and vary.
+
+import type { CatalogPart, PinDef } from "../types";
+import { avrPins, gnd, input, motorOut, port, pwrIn, pwrOut, rail } from "./pins";
+
+// ---------------- controllers ----------------
+
+const unoPins: PinDef[] = [
+  ...avrPins({ digital: 14, pwm: [3, 5, 6, 9, 10, 11], analog: 6, bus: { A4: "i2c_sda", A5: "i2c_scl", D0: "uart_rx", D1: "uart_tx" }, serial: { 0: "USB serial RX: avoid while using the serial monitor", 1: "USB serial TX: avoid while using the serial monitor" } }),
+  pwrIn("VIN", 7, 12, { vabs: 20, draw: 0.05, required: false, note: "Barrel jack / VIN through the onboard 5 V regulator" }),
+  rail("V5", 5, 0.3, 0.05, { label: "5V", note: "From the onboard regulator when powered from VIN (keep loads small: it heats up), or feed a regulated 5 V in here" }),
+  pwrOut("V3V3", 3.3, 0.05, { label: "3.3V" }),
+  gnd(),
+];
+
+const megaPins: PinDef[] = [
+  ...avrPins({
+    digital: 54,
+    pwm: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 44, 45, 46],
+    irq: [2, 3, 18, 19, 20, 21],
+    analog: 16,
+    bus: { D20: "i2c_sda", D21: "i2c_scl", D0: "uart_rx", D1: "uart_tx", D19: "uart_rx", D18: "uart_tx", D17: "uart_rx", D16: "uart_tx", D15: "uart_rx", D14: "uart_tx" },
+    serial: { 0: "USB serial RX: avoid while using the serial monitor", 1: "USB serial TX: avoid while using the serial monitor" },
+  }),
+  pwrIn("VIN", 7, 12, { vabs: 20, draw: 0.08, required: false, note: "Barrel jack / VIN through the onboard 5 V regulator" }),
+  rail("V5", 5, 0.3, 0.08, { label: "5V", note: "From the onboard regulator when powered from VIN, or feed a regulated 5 V in here" }),
+  pwrOut("V3V3", 3.3, 0.05, { label: "3.3V" }),
+  gnd(),
+];
+
+const nanoPins: PinDef[] = [
+  ...avrPins({ digital: 14, pwm: [3, 5, 6, 9, 10, 11], analog: 8, analogOnly: [6, 7], bus: { A4: "i2c_sda", A5: "i2c_scl", D0: "uart_rx", D1: "uart_tx" }, serial: { 0: "USB serial RX", 1: "USB serial TX" } }),
+  pwrIn("VIN", 7, 12, { vabs: 20, draw: 0.03, required: false }),
+  rail("V5", 5, 0.25, 0.03, { label: "5V" }),
+  pwrOut("V3V3", 3.3, 0.05, { label: "3.3V" }),
+  gnd(),
+];
+
+function esp32Pins(): PinDef[] {
+  const out: PinDef[] = [];
+  const io = [0, 2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+  const adc1 = [32, 33, 34, 35, 36, 39];
+  const adc2 = [0, 2, 4, 12, 13, 14, 15, 25, 26, 27];
+  const strap: Record<number, string> = { 0: "Boot strapping pin: must be high at reset", 2: "Strapping pin: keep low or floating at reset", 5: "Strapping pin", 12: "Strapping pin: must be low at reset (flash voltage)", 15: "Strapping pin" };
+  for (const n of io) {
+    out.push({ id: `IO${n}`, type: "io", v: 3.3, imax: 0.02, pwm: true, irq: true, adc: adc1.includes(n) || adc2.includes(n), mcu: String(n), bus: n === 21 ? "i2c_sda" : n === 22 ? "i2c_scl" : n === 17 ? "uart_tx" : n === 16 ? "uart_rx" : undefined, note: [strap[n], adc2.includes(n) ? "ADC2: analog reads do not work while Wi-Fi is on" : ""].filter(Boolean).join(". ") || undefined });
+  }
+  for (const n of [34, 35, 36, 39]) out.push({ id: `IO${n}`, type: "io", v: 3.3, adc: true, irq: true, input_only: true, mcu: String(n), note: "Input only, no pull-ups" });
+  out.push(pwrIn("V5", 4.75, 5.25, { label: "5V", vabs: 6, draw: 0.25, required: false, note: "5 V input (or USB). Draws up to 0.25 A with Wi-Fi on" }));
+  out.push(pwrOut("V3V3", 3.3, 0.4, { label: "3.3V" }));
+  out.push(gnd());
+  return out;
+}
+
+function picoPins(): PinDef[] {
+  const out: PinDef[] = [];
+  for (let n = 0; n <= 28; n++) {
+    if (n >= 23 && n <= 25) continue;
+    const bus = n === 4 ? "i2c_sda" : n === 5 ? "i2c_scl" : n === 0 ? "uart_tx" : n === 1 ? "uart_rx" : undefined;
+    out.push({ id: `GP${n}`, type: "io", v: 3.3, imax: 0.012, pwm: true, irq: true, adc: n >= 26, mcu: String(n), bus: bus as PinDef["bus"] });
+  }
+  out.push(pwrIn("VSYS", 1.8, 5.5, { draw: 0.05, required: false, note: "Main supply input (1.8 to 5.5 V)" }));
+  out.push(pwrOut("V3V3", 3.3, 0.3, { label: "3V3(OUT)", note: "Keep the load under 300 mA" }));
+  out.push(gnd());
+  return out;
+}
+
+// BIGTREETECH SKR Mini E3 V3.0 ports. The mcu strings carry the Klipper pin
+// names from Klipper's reference config for this board.
+function skrMiniE3V3Pins(): PinDef[] {
+  const stepper = (id: string, label: string, mcu: string): PinDef => port(id, "stepper4", "source", { label, imax: 1.4, ipeak: 2.0, mcu, note: "Onboard TMC2209 (UART)" });
+  return [
+    pwrIn("POWER", 12, 24, { label: "DCIN +", vabs: 28, draw: 0.1, note: "12 V or 24 V main input" }),
+    gnd("POWER_GND", "DCIN −"),
+    stepper("XM", "X motor", "step=PB13,dir=!PB12,enable=!PB14,uart=PC11,tx=PC10,addr=0"),
+    stepper("YM", "Y motor", "step=PB10,dir=!PB2,enable=!PB11,uart=PC11,tx=PC10,addr=2"),
+    stepper("ZAM", "Z motor A", "step=PB0,dir=PC5,enable=!PB1,uart=PC11,tx=PC10,addr=1"),
+    stepper("ZBM", "Z motor B (parallel with A)", "step=PB0,dir=PC5,enable=!PB1,uart=PC11,tx=PC10,addr=1"),
+    stepper("E0M", "Extruder motor", "step=PB3,dir=!PB4,enable=!PD1,uart=PC11,tx=PC10,addr=3"),
+    port("HE0", "heater2", "source", { label: "Hotend heater", imax: 5, mcu: "PC8" }),
+    port("HB", "heater2", "source", { label: "Bed heater", imax: 10, mcu: "PC9", note: "BTT publishes no rating: 10 A is the usual Ender-3 bed load on this terminal" }),
+    port("TH0", "therm2", "source", { label: "Hotend thermistor", mcu: "PA0" }),
+    port("THB", "therm2", "source", { label: "Bed thermistor", mcu: "PC4" }),
+    port("FAN0", "fan2", "source", { label: "Part fan", imax: 1, mcu: "PC6" }),
+    port("FAN1", "fan2", "source", { label: "Hotend fan", imax: 1, mcu: "PC7" }),
+    port("FAN2", "fan2", "source", { label: "Controller fan", imax: 1, mcu: "PB15" }),
+    port("XSTOP", "endstop3", "source", { label: "X-STOP", mcu: "^PC0" }),
+    port("YSTOP", "endstop3", "source", { label: "Y-STOP", mcu: "^PC1" }),
+    port("ZSTOP", "endstop3", "source", { label: "Z-STOP", mcu: "^PC2" }),
+    port("PROBE", "probe5", "source", { label: "BLTouch / PROBE", mcu: "sensor=^PC14,control=PA1" }),
+    port("USB", "usb", "source", { label: "Micro-USB to the host" }),
+  ];
+}
+
+// ---------------- motor drivers ----------------
+
+const l298nPins: PinDef[] = [
+  pwrIn("V12", 5, 35, { label: "+12V", vabs: 46, draw: 0.04, note: "Motor supply. Keep the 5 V jumper only below 12 V" }),
+  gnd(),
+  rail("V5", 5, 0.4, 0.04, { label: "+5V", note: "Output from the onboard regulator while the jumper is fitted, otherwise feed 5 V logic power here" }),
+  input("ENA", 7, 2.3, { needs: "pwm", required: true }),
+  input("IN1", 7, 2.3, { required: true }),
+  input("IN2", 7, 2.3, { required: true }),
+  input("IN3", 7, 2.3),
+  input("IN4", 7, 2.3),
+  input("ENB", 7, 2.3, { needs: "pwm" }),
+  motorOut("OUT1", "A", 2, 3),
+  motorOut("OUT2", "A", 2, 3),
+  motorOut("OUT3", "B", 2, 3),
+  motorOut("OUT4", "B", 2, 3),
+];
+
+const tb6612Pins: PinDef[] = [
+  pwrIn("VM", 4.5, 13.5, { vabs: 15, draw: 0.002, note: "Motor supply" }),
+  pwrIn("VCC", 2.7, 5.5, { vabs: 6, draw: 0.002, note: "Logic supply" }),
+  gnd(),
+  input("AIN1", 5.5, 0.7 * 3.3, { required: true }),
+  input("AIN2", 5.5, 0.7 * 3.3, { required: true }),
+  input("PWMA", 5.5, 0.7 * 3.3, { needs: "pwm", required: true }),
+  input("BIN1", 5.5, 0.7 * 3.3),
+  input("BIN2", 5.5, 0.7 * 3.3),
+  input("PWMB", 5.5, 0.7 * 3.3, { needs: "pwm" }),
+  input("STBY", 5.5, 0.7 * 3.3, { required: true, note: "Pull high to enable" }),
+  motorOut("AO1", "A", 1, 3),
+  motorOut("AO2", "A", 1, 3),
+  motorOut("BO1", "B", 1, 3),
+  motorOut("BO2", "B", 1, 3),
+];
+
+const bts7960Pins: PinDef[] = [
+  pwrIn("B_PLUS", 6, 27, { label: "B+", vabs: 40, draw: 0.002, note: "Motor supply" }),
+  gnd("B_MINUS", "B−"),
+  pwrIn("VCC", 3.3, 5.5, { vabs: 6, draw: 0.01, note: "Logic supply for the 74HC244 buffer: use the controller's logic voltage" }),
+  gnd(),
+  input("RPWM", 5.5, 3.15, { needs: "pwm", required: true, note: "PWM for one direction" }),
+  input("LPWM", 5.5, 3.15, { needs: "pwm", required: true, note: "PWM for the other direction" }),
+  input("R_EN", 5.5, 3.15, { required: true, note: "Tie high or drive from a pin" }),
+  input("L_EN", 5.5, 3.15, { required: true, note: "Tie high or drive from a pin" }),
+  { id: "R_IS", type: "analog_out", v: 8.3, note: "Current sense: about 1.2 V per amp through the board's 10 kΩ resistor, not clamped: add a divider before an ADC pin" },
+  { id: "L_IS", type: "analog_out", v: 8.3, note: "Current sense: about 1.2 V per amp through the board's 10 kΩ resistor, not clamped: add a divider before an ADC pin" },
+  motorOut("M_PLUS", "A", 15, 43, "M+"),
+  motorOut("M_MINUS", "A", 15, 43, "M−"),
+];
+
+const mdd10aPins: PinDef[] = [
+  pwrIn("POWER", 5, 30, { label: "POWER +", vabs: 30, draw: 0.02 }),
+  gnd("POWER_GND", "POWER −"),
+  gnd(),
+  input("PWM1", 5.5, 1.6, { needs: "pwm", required: true }),
+  input("DIR1", 5.5, 1.6, { required: true }),
+  input("PWM2", 5.5, 1.6, { needs: "pwm" }),
+  input("DIR2", 5.5, 1.6),
+  motorOut("M1A", "A", 10, 30),
+  motorOut("M1B", "A", 10, 30),
+  motorOut("M2A", "B", 10, 30),
+  motorOut("M2B", "B", 10, 30),
+];
+
+const md10cPins: PinDef[] = [
+  pwrIn("POWER", 5, 30, { label: "POWER +", vabs: 30, draw: 0.02 }),
+  gnd("POWER_GND", "POWER −"),
+  gnd(),
+  input("PWM", 5.5, 3.0, { needs: "pwm", required: true }),
+  input("DIR", 5.5, 3.0, { required: true }),
+  motorOut("MA", "A", 13, 30),
+  motorOut("MB", "A", 13, 30),
+];
+
+const drv8833Pins: PinDef[] = [
+  pwrIn("VIN", 2.7, 10.8, { vabs: 11.8, draw: 0.002, note: "Motor supply (also powers the logic)" }),
+  gnd(),
+  input("AIN1", 7, 2.0, { needs: "pwm", required: true }),
+  input("AIN2", 7, 2.0, { needs: "pwm", required: true }),
+  input("BIN1", 7, 2.0, { needs: "pwm" }),
+  input("BIN2", 7, 2.0, { needs: "pwm" }),
+  motorOut("AOUT1", "A", 1.2, 2),
+  motorOut("AOUT2", "A", 1.2, 2),
+  motorOut("BOUT1", "B", 1.2, 2),
+  motorOut("BOUT2", "B", 1.2, 2),
+];
+
+function stepstickPins(vmin: number, vmax: number, imax: number, ipeak: number, opts: { vdd?: boolean; vih?: number; vmaxIn?: number; uart?: boolean } = {}): PinDef[] {
+  const vih = opts.vih ?? 0.7 * 3.3;
+  const vin = opts.vmaxIn ?? 5.5;
+  return [
+    pwrIn("VMOT", vmin, vmax, { draw: 0.005, note: "Motor supply: add a 100 µF capacitor across VMOT and GND" }),
+    gnd(),
+    ...(opts.vdd === false ? [{ id: "FAULT", type: "out", v: 5, note: "Fault output (open drain)" } as PinDef] : [pwrIn("VDD", 3, 5.5, { vabs: 6, draw: 0.008, note: "Logic supply" })]),
+    input("STEP", vin, vih, { required: true }),
+    input("DIR", vin, vih, { required: true }),
+    input("EN", vin, vih, { note: "Active low: pull low or drive from a pin" }),
+    ...(opts.uart ? [input("PDN_UART", vin, vih, { bus: "uart_tx", note: "Single-wire UART for current and mode settings" }), { id: "DIAG", type: "out", v: 3.3, note: "StallGuard / fault output" } as PinDef] : []),
+    port("MOTOR", "stepper4", "source", { label: "1A 1B 2A 2B", imax, ipeak }),
+  ];
+}
+
+// ---------------- power ----------------
+
+function batteryPins(v: number, vmin: number, vmax: number, imax: number): PinDef[] {
+  return [pwrOut("POS", v, imax, { label: "+", vmin, vmax, note: `Nominal ${v} V, ${vmin} to ${vmax} V over the charge` } as Partial<PinDef>), gnd("NEG", "−")];
+}
+
+// ---------------- the list ----------------
+
+export const ELECTRONICS: CatalogPart[] = [
+  {
+    id: "arduino_uno",
+    kind: "controller",
+    name: "Arduino Uno R3",
+    maker: "Arduino",
+    mpn: "A000066",
+    summary: "ATmega328P, 5 V logic, 14 digital pins (6 PWM), 6 analog, 7 to 12 V input. Easiest to start with.",
+    specs: { mcu: "ATmega328P", logic_v: 5, clock_mhz: 16, flash_kb: 32, digital: 14, pwm: 6, analog: 6, vin_min: 7, vin_max: 12, platform: "arduino", fqbn: "arduino:avr:uno", pio_board: "uno" },
+    pins: unoPins,
+    geom: {
+      g: "board",
+      dims: { w: 68.6, d: 53.4, t: 1.6 },
+      holes: [
+        [-20.32, -24.13],
+        [-19.05, 24.13],
+        [31.75, -19.05],
+        [31.75, 8.89],
+      ],
+      hole_d: 3.2,
+      features: [
+        { kind: "usb", x: -32.6, y: 11.4, w: 16, d: 12, h: 11 },
+        { kind: "jack", x: -29.1, y: -19.1, w: 14, d: 9, h: 11 },
+        { kind: "header", x: 7.5, y: 24.2, w: 46, d: 2.5, h: 8.5 },
+        { kind: "header", x: 12.5, y: -24.2, w: 36, d: 2.5, h: 8.5 },
+        { kind: "chip", x: 13.7, y: -9.7, w: 35, d: 7.6, h: 4 },
+      ],
+    },
+    price_usd: 27.6,
+    buy: [{ vendor: "Arduino Store", url: "https://store.arduino.cc/products/arduino-uno-rev3" }, { vendor: "Marketplace", search: "Arduino Uno R3" }],
+    source: "https://docs.arduino.cc/hardware/uno-rev3/",
+  },
+  {
+    id: "arduino_nano",
+    kind: "controller",
+    name: "Arduino Nano",
+    maker: "Arduino",
+    mpn: "A000005",
+    summary: "ATmega328P in a 45 × 18 mm board, 5 V logic, 14 digital (6 PWM), 8 analog. Small robots.",
+    specs: { mcu: "ATmega328P", logic_v: 5, clock_mhz: 16, flash_kb: 32, digital: 14, pwm: 6, analog: 8, vin_min: 7, vin_max: 12, platform: "arduino", fqbn: "arduino:avr:nano", pio_board: "nanoatmega328" },
+    pins: nanoPins,
+    geom: {
+      g: "board",
+      dims: { w: 43.18, d: 17.78, t: 1.6 },
+      holes: [
+        [-20.32, -7.62],
+        [-20.32, 7.62],
+        [20.32, -7.62],
+        [20.32, 7.62],
+      ],
+      hole_d: 1.78,
+      features: [
+        { kind: "usb", x: -20.5, y: 0, w: 9, d: 7.5, h: 4 },
+        { kind: "chip", x: 4, y: 0, w: 7, d: 7, h: 1.2 },
+        { kind: "header", x: 0, y: 7.6, w: 38, d: 2.5, h: 2.5 },
+        { kind: "header", x: 0, y: -7.6, w: 38, d: 2.5, h: 2.5 },
+      ],
+    },
+    price_usd: 24.9,
+    buy: [{ vendor: "Arduino Store", url: "https://store.arduino.cc/products/arduino-nano" }, { vendor: "Marketplace", search: "Arduino Nano V3 ATmega328P" }],
+    source: "https://docs.arduino.cc/hardware/nano/",
+  },
+  {
+    id: "arduino_mega",
+    kind: "controller",
+    name: "Arduino Mega 2560 Rev3",
+    maker: "Arduino",
+    mpn: "A000067",
+    summary: "ATmega2560, 5 V logic, 54 digital (15 PWM), 16 analog, 4 serial ports. For machines with many motors and sensors.",
+    specs: { mcu: "ATmega2560", logic_v: 5, clock_mhz: 16, flash_kb: 256, digital: 54, pwm: 15, analog: 16, vin_min: 7, vin_max: 12, platform: "arduino", fqbn: "arduino:avr:mega", pio_board: "megaatmega2560" },
+    pins: megaPins,
+    geom: {
+      g: "board",
+      dims: { w: 101.52, d: 53.3, t: 1.6 },
+      holes: [
+        [-36.83, -24.11],
+        [-35.56, 24.15],
+        [15.24, -19.03],
+        [15.24, 8.91],
+        [39.37, 24.15],
+        [45.72, -24.11],
+      ],
+      hole_d: 3.2,
+      features: [
+        { kind: "usb", x: -48.4, y: 11.4, w: 16, d: 12, h: 11 },
+        { kind: "jack", x: -45, y: -19.1, w: 14, d: 9, h: 11 },
+        { kind: "header", x: 2, y: 24.2, w: 70, d: 2.5, h: 8.5 },
+        { kind: "header", x: 2, y: -24.2, w: 70, d: 2.5, h: 8.5 },
+        { kind: "header", x: 46.5, y: 0, w: 5, d: 46, h: 8.5 },
+        { kind: "chip", x: 6, y: -2, w: 14, d: 14, h: 1.4 },
+      ],
+    },
+    price_usd: 48.4,
+    buy: [{ vendor: "Arduino Store", url: "https://store.arduino.cc/products/arduino-mega-2560-rev3" }, { vendor: "Marketplace", search: "Arduino Mega 2560 R3" }],
+    source: "https://docs.arduino.cc/hardware/mega-2560/",
+  },
+  {
+    id: "esp32_devkitc",
+    kind: "controller",
+    name: "ESP32-DevKitC V4 (WROOM-32E)",
+    maker: "Espressif",
+    mpn: "ESP32-DEVKITC-32E",
+    summary: "Dual-core 240 MHz with Wi-Fi and Bluetooth, 3.3 V logic (not 5 V tolerant), PWM on any output pin. For remote control or telemetry.",
+    specs: { mcu: "ESP32", logic_v: 3.3, clock_mhz: 240, flash_kb: 4096, wifi: true, bluetooth: true, platform: "arduino-esp32", fqbn: "esp32:esp32:esp32", pio_board: "esp32dev" },
+    pins: esp32Pins(),
+    geom: {
+      g: "board",
+      dims: { w: 54.4, d: 27.9, t: 1.6 },
+      features: [
+        { kind: "module", x: 13, y: 0, w: 25.5, d: 18, h: 3.2 },
+        { kind: "usb", x: -25.5, y: 0, w: 6, d: 8, h: 3 },
+        { kind: "header", x: -2, y: 12.7, w: 48, d: 2.5, h: 2.5 },
+        { kind: "header", x: -2, y: -12.7, w: 48, d: 2.5, h: 2.5 },
+      ],
+    },
+    price_usd: 10,
+    buy: [{ vendor: "Espressif (DigiKey)", url: "https://www.digikey.com/en/products/result?keywords=ESP32-DEVKITC-32E" }, { vendor: "Marketplace", search: "ESP32-DevKitC V4 WROOM-32E" }],
+    source: "https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html",
+  },
+  {
+    id: "rpi_pico",
+    kind: "controller",
+    name: "Raspberry Pi Pico",
+    maker: "Raspberry Pi",
+    mpn: "SC0915",
+    summary: "RP2040, 3.3 V logic, 26 GPIO all with PWM, 3 analog. Cheap and fast.",
+    specs: { mcu: "RP2040", logic_v: 3.3, clock_mhz: 133, flash_kb: 2048, platform: "arduino-pico", fqbn: "rp2040:rp2040:rpipico", pio_board: "pico" },
+    pins: picoPins(),
+    geom: {
+      g: "board",
+      dims: { w: 51, d: 21, t: 1 },
+      holes: [
+        [-23.5, -5.7],
+        [-23.5, 5.7],
+        [23.5, -5.7],
+        [23.5, 5.7],
+      ],
+      hole_d: 2.1,
+      features: [
+        { kind: "usb", x: -23.5, y: 0, w: 5.5, d: 8, h: 3 },
+        { kind: "chip", x: 0, y: 0, w: 7, d: 7, h: 1 },
+      ],
+    },
+    price_usd: 4,
+    buy: [{ vendor: "Raspberry Pi", url: "https://www.raspberrypi.com/products/raspberry-pi-pico/" }, { vendor: "Marketplace", search: "Raspberry Pi Pico RP2040" }],
+    source: "https://datasheets.raspberrypi.com/pico/pico-datasheet.pdf",
+  },
+  {
+    id: "skr_mini_e3_v3",
+    kind: "controller",
+    name: "BIGTREETECH SKR Mini E3 V3.0",
+    maker: "BIGTREETECH",
+    summary: "32-bit 3D printer board (STM32G0B1) with four TMC2209 drivers, hotend and bed heater outputs, 3 fans, endstops and a BLTouch port. 12 or 24 V.",
+    specs: { mcu: "STM32G0B1RET6", logic_v: 3.3, drivers: 4, driver: "TMC2209", platform: "klipper", klipper_mcu: "stm32g0b1", vin_min: 12, vin_max: 24 },
+    pins: skrMiniE3V3Pins(),
+    geom: {
+      g: "board",
+      dims: { w: 103.75, d: 70.25, t: 1.6 },
+      // Ender-3 pattern, from BTT's dimension drawing (edge offsets ±0.2 mm)
+      holes: [
+        [-28.45, 31.94],
+        [33.7, 31.94],
+        [-46.27, -3.04],
+        [-14.47, -5.69],
+        [49.38, -32.52],
+      ],
+      hole_d: 3.2,
+      features: [
+        { kind: "terminal", x: -31.5, y: -29.7, w: 34, d: 10, h: 12 },
+        { kind: "header", x: -8, y: 30, w: 73, d: 6, h: 7 },
+        { kind: "chip", x: 5, y: 0, w: 10, d: 10, h: 1.5 },
+        { kind: "heatsink", x: -7, y: 17, w: 83, d: 10, h: 4 },
+        { kind: "usb", x: 49, y: 10, w: 9, d: 9, h: 3.5 },
+      ],
+    },
+    price_usd: 49.85,
+    buy: [{ vendor: "BIGTREETECH", url: "https://biqu.equipment/products/bigtreetech-skr-mini-e3-v2-0-32-bit-control-board-for-ender-3" }, { vendor: "Marketplace", search: "BIGTREETECH SKR Mini E3 V3.0" }],
+    source: "https://github.com/bigtreetech/BIGTREETECH-SKR-mini-E3",
+    notes: [
+      "Runs Klipper (needs a Linux host such as a Raspberry Pi) or Marlin.",
+      "Some boards ship with the STM32G0B0 chip instead of G0B1: pick the chip printed on yours in Klipper's menuconfig.",
+      "BTT publishes no driver current limit. Its 0.11 Ω sense resistors cap the TMC2209s at about 1.77 A RMS; keep run_current at or below 1.0 A without a fan on the drivers.",
+      "One 20 A input fuse covers everything: bed, hotend, motors and fans together.",
+    ],
+  },
+  {
+    id: "rpi_zero_2w",
+    kind: "host",
+    name: "Raspberry Pi Zero 2 W",
+    maker: "Raspberry Pi",
+    mpn: "SC0510",
+    summary: "Small Linux computer with Wi-Fi. Runs Klipper and its web interface for a 3D printer.",
+    specs: { os: "Raspberry Pi OS Lite", ram_mb: 512 },
+    pins: [pwrIn("V5", 4.75, 5.25, { label: "5V (micro USB or GPIO 2/4)", vabs: 5.5, draw: 0.6 }), gnd(), port("USB", "usb", "sink", { label: "USB to the printer board" })],
+    geom: {
+      g: "board",
+      dims: { w: 65, d: 30, t: 1.4 },
+      holes: [
+        [-29, -11.5],
+        [-29, 11.5],
+        [29, -11.5],
+        [29, 11.5],
+      ],
+      hole_d: 2.75,
+      features: [
+        { kind: "chip", x: 0, y: 0, w: 14, d: 14, h: 1.4 },
+        { kind: "socket", x: -27, y: 0, w: 12, d: 12, h: 1.5 },
+      ],
+    },
+    price_usd: 15,
+    buy: [{ vendor: "Raspberry Pi", url: "https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/" }, { vendor: "Marketplace", search: "Raspberry Pi Zero 2 W" }],
+    source: "https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/",
+    notes: ["Also needs a 16 GB+ microSD card."],
+  },
+
+  // ---- DC motor drivers ----
+  {
+    id: "l298n",
+    kind: "motor_driver",
+    name: "L298N dual H-bridge module",
+    generic: true,
+    summary: "Two DC motors up to 2 A each, 5 to 35 V. Cheap but drops about 3 V and runs hot.",
+    specs: { channels: 2, i_cont: 2, i_peak: 3, v_min: 5, v_max: 35, v_drop: 3, control: "in1_in2_en", pwm_khz_max: 25 },
+    pins: l298nPins,
+    geom: { g: "board", dims: { w: 43, d: 43, t: 1.6 }, holes: [[-18.5, -18.5], [-18.5, 18.5], [18.5, -18.5], [18.5, 18.5]], hole_d: 3, color: "#b3261e", features: [{ kind: "heatsink", x: 0, y: 8, w: 23, d: 16, h: 25 }, { kind: "terminal", x: 0, y: -18, w: 22, d: 7, h: 10 }] },
+    price_usd: 4,
+    buy: [{ vendor: "Marketplace", search: "L298N motor driver module" }],
+    notes: ["The bipolar bridge wastes 2 to 5 V: a 12 V supply gives the motor about 9 V at 1 A and about 7 V at 2 A."],
+  },
+  {
+    id: "tb6612fng",
+    kind: "motor_driver",
+    name: "TB6612FNG dual motor driver carrier",
+    maker: "Pololu",
+    mpn: "713",
+    summary: "Two small DC motors, 1 A each (3 A peak), 4.5 to 13.5 V, 2.7 to 5.5 V logic. Efficient MOSFET bridge.",
+    specs: { channels: 2, i_cont: 1, i_peak: 3, v_min: 4.5, v_max: 13.5, control: "in1_in2_pwm", pwm_khz_max: 100 },
+    pins: tb6612Pins,
+    geom: { g: "board", dims: { w: 15.2, d: 20.3, t: 1.6 }, features: [{ kind: "chip", x: 0, y: 0, w: 6, d: 6, h: 1.2 }, { kind: "header", x: 6.35, y: 0, w: 2.5, d: 18, h: 2.5 }, { kind: "header", x: -6.35, y: 0, w: 2.5, d: 18, h: 2.5 }] },
+    price_usd: 4.95,
+    buy: [{ vendor: "Pololu", url: "https://www.pololu.com/product/713" }, { vendor: "Marketplace", search: "TB6612FNG motor driver" }],
+    source: "https://www.pololu.com/product/713",
+  },
+  {
+    id: "bts7960",
+    kind: "motor_driver",
+    name: "BTS7960 43 A H-bridge module (IBT-2)",
+    generic: true,
+    summary: "One big DC motor, about 15 A continuous with its heatsink (43 A chip limit), 6 to 27 V, built-in current sense. 3.3 or 5 V logic.",
+    specs: { channels: 1, i_cont: 15, i_peak: 43, v_min: 6, v_max: 27, control: "rpwm_lpwm", current_sense_v_per_a: 1.18, pwm_khz_max: 25 },
+    pins: bts7960Pins,
+    geom: { g: "board", dims: { w: 50, d: 50, t: 1.6 }, holes: [[-21.5, -21.5], [-21.5, 21.5], [21.5, -21.5], [21.5, 21.5]], hole_d: 3, color: "#1f3a7a", features: [{ kind: "heatsink", x: 0, y: 2, w: 40, d: 40, h: 26 }, { kind: "terminal", x: -20, y: -20, w: 9, d: 9, h: 11 }, { kind: "header", x: 18, y: 0, w: 2.5, d: 20, h: 8.5 }] },
+    price_usd: 9,
+    buy: [{ vendor: "Marketplace", search: "BTS7960 IBT-2 43A motor driver" }],
+    notes: ["The 43 A figure is the chip's peak. Treat 15 A as the continuous limit of the common IBT-2 board and its heatsink."],
+    tests: ["Run the motor at full load for 10 minutes and check the heatsink stays below about 70 °C."],
+  },
+  {
+    id: "cytron_mdd10a",
+    kind: "motor_driver",
+    name: "Cytron MDD10A dual 10 A motor driver",
+    maker: "Cytron",
+    mpn: "MDD10A",
+    summary: "Two DC motors, 10 A each (30 A peak for 10 s), 5 to 30 V, PWM + DIR inputs, 3.3 V and 5 V logic.",
+    specs: { channels: 2, i_cont: 10, i_peak: 30, v_min: 5, v_max: 30, control: "pwm_dir", pwm_khz_max: 20 },
+    pins: mdd10aPins,
+    geom: { g: "board", dims: { w: 84.5, d: 62, t: 1.6 }, holes: [[-38, -27], [-38, 27], [38, -27], [38, 27]], hole_d: 3.2, color: "#1b1b1b", features: [{ kind: "terminal", x: 0, y: -25, w: 50, d: 8, h: 11 }, { kind: "chip", x: -15, y: 5, w: 20, d: 15, h: 3 }, { kind: "chip", x: 15, y: 5, w: 20, d: 15, h: 3 }] },
+    price_usd: 28,
+    buy: [{ vendor: "Cytron", url: "https://www.cytron.io/p-10amp-5v-30v-dc-motor-driver-2-channels" }, { vendor: "Marketplace", search: "Cytron MDD10A" }],
+    source: "https://www.cytron.io/p-10amp-5v-30v-dc-motor-driver-2-channels",
+  },
+  {
+    id: "cytron_md10c",
+    kind: "motor_driver",
+    name: "Cytron MD10C 13 A motor driver",
+    maker: "Cytron",
+    mpn: "MD10C",
+    summary: "One DC motor, 13 A continuous (30 A peak), 5 to 30 V, PWM + DIR, 3.3 or 5 V logic.",
+    specs: { channels: 1, i_cont: 13, i_peak: 30, v_min: 5, v_max: 30, control: "pwm_dir", pwm_khz_max: 20 },
+    pins: md10cPins,
+    geom: { g: "board", dims: { w: 75, d: 43, t: 1.6 }, holes: [[-33.5, -17.5], [-33.5, 17.5], [33.5, -17.5], [33.5, 17.5]], hole_d: 3.2, color: "#1b1b1b", features: [{ kind: "terminal", x: 25, y: 0, w: 8, d: 30, h: 11 }, { kind: "chip", x: -5, y: 0, w: 22, d: 16, h: 3 }] },
+    price_usd: 15,
+    buy: [{ vendor: "Cytron", url: "https://www.cytron.com.my/p-md10c" }, { vendor: "Marketplace", search: "Cytron MD10C" }],
+    source: "https://www.cytron.com.my/p-md10c",
+  },
+  {
+    id: "pololu_g2_18v17",
+    kind: "motor_driver",
+    name: "Pololu G2 high-power motor driver 18v17",
+    maker: "Pololu",
+    mpn: "2991",
+    summary: "One DC motor, 17 A continuous (40 A current limit), 6.5 to 30 V (24 V or less recommended), PWM + DIR, 1.8 to 5 V logic, current sense 20 mV/A. Only 33 × 20 mm, 3.3 g.",
+    specs: { channels: 1, i_cont: 17, i_peak: 40, v_min: 6.5, v_max: 30, v_safe: 24, control: "pwm_dir", pwm_khz_max: 100, current_sense_v_per_a: 0.02, current_sense_offset_v: 0.05, mass_g: 3.3 },
+    pins: [
+      pwrIn("VIN", 6.5, 30, { vabs: 30, draw: 0.01, note: "Motor supply (reverse-voltage protected)" }),
+      gnd("GND_PWR", "GND (power)"),
+      gnd(),
+      input("PWM", 5.5, 1.3, { needs: "pwm", required: true }),
+      input("DIR", 5.5, 1.3, { required: true }),
+      input("SLP", 5.5, 1.3, { note: "Pulled high on the board, so the driver is on by default; drive low to sleep" }),
+      { id: "FLT", type: "out", v: 5, note: "Fault flag, open drain: pulled low on a fault" },
+      { id: "CS", type: "analog_out", v: 3.3, note: "Current sense, about 20 mV per amp plus 50 mV (needs an ADC pin). Reads low while braking or current-limiting." },
+      motorOut("OUTA", "A", 17, 40, "OUTA"),
+      motorOut("OUTB", "A", 17, 40, "OUTB"),
+    ],
+    geom: { g: "board", dims: { w: 33, d: 20.3, t: 1.6 }, holes: [[-7.6, -7.85], [8.2, 7.85]], hole_d: 2.2, color: "#1f4fa3", features: [{ kind: "chip", x: 2, y: 0, w: 14, d: 12, h: 2 }, { kind: "terminal", x: -12, y: 0, w: 6, d: 18, h: 6 }] },
+    price_usd: 44.95,
+    buy: [{ vendor: "Pololu", url: "https://www.pololu.com/product/2991" }, { vendor: "Marketplace", search: "Pololu G2 18v17 motor driver" }],
+    source: "https://www.pololu.com/product/2991",
+    notes: ["Tiny enough to fit inside a 44 mm tube.", "Pololu recommends batteries of 18 V nominal or less (30 V is the absolute maximum).", "The VIN/GND/OUTA/OUTB holes are 5 mm apart: solder thick wires straight in, or use the supplied terminal block.", "Mounting holes are Ø2.18 mm on opposite corners, 15.75 mm apart both ways: check the diagonal on your board before drilling."],
+  },
+  {
+    id: "drv8833",
+    kind: "motor_driver",
+    name: "DRV8833 dual motor driver carrier",
+    maker: "Pololu",
+    mpn: "2130",
+    summary: "Two small DC motors, 1.2 A each (2 A peak), 2.7 to 10.8 V. For small battery robots.",
+    specs: { channels: 2, i_cont: 1.2, i_peak: 2, v_min: 2.7, v_max: 10.8, control: "in1_in2_pwm_both", pwm_khz_max: 50 },
+    pins: drv8833Pins,
+    geom: { g: "board", dims: { w: 20.3, d: 12.7, t: 1.6 }, features: [{ kind: "chip", x: 0, y: 0, w: 5, d: 4.5, h: 1 }] },
+    price_usd: 10.95,
+    buy: [{ vendor: "Pololu", url: "https://www.pololu.com/product/2130" }, { vendor: "Marketplace", search: "DRV8833 motor driver" }],
+    source: "https://www.pololu.com/product/2130",
+  },
+
+  // ---- stepper drivers ----
+  {
+    id: "a4988",
+    kind: "stepper_driver",
+    name: "A4988 stepper driver carrier",
+    maker: "Pololu",
+    mpn: "1182",
+    summary: "One bipolar stepper, about 1 A per phase without a heatsink (2 A with good cooling), 8 to 35 V. STEP/DIR.",
+    specs: { i_cont: 1, i_peak: 2, v_min: 8, v_max: 35, microsteps: 16, control: "step_dir" },
+    pins: stepstickPins(8, 35, 1, 2),
+    geom: { g: "board", dims: { w: 15.2, d: 20.3, t: 1.6 }, features: [{ kind: "chip", x: 0, y: 0, w: 5, d: 5, h: 1 }, { kind: "header", x: 6.35, y: 0, w: 2.5, d: 20, h: 2.5 }, { kind: "header", x: -6.35, y: 0, w: 2.5, d: 20, h: 2.5 }] },
+    price_usd: 9,
+    buy: [{ vendor: "Pololu", url: "https://www.pololu.com/product/1182" }, { vendor: "Marketplace", search: "A4988 stepper driver" }],
+    source: "https://www.pololu.com/product/1182",
+  },
+  {
+    id: "drv8825",
+    kind: "stepper_driver",
+    name: "DRV8825 stepper driver carrier",
+    maker: "Pololu",
+    mpn: "2133",
+    summary: "One bipolar stepper, about 1.5 A per phase without a heatsink (2.2 A with cooling), 8.2 to 45 V, up to 1/32 step.",
+    specs: { i_cont: 1.5, i_peak: 2.2, v_min: 8.2, v_max: 45, microsteps: 32, control: "step_dir" },
+    pins: stepstickPins(8.2, 45, 1.5, 2.2, { vdd: false, vih: 2.2, vmaxIn: 5.25 }),
+    geom: { g: "board", dims: { w: 15.2, d: 20.3, t: 1.6 }, features: [{ kind: "chip", x: 0, y: 0, w: 5, d: 5, h: 1 }, { kind: "header", x: 6.35, y: 0, w: 2.5, d: 20, h: 2.5 }, { kind: "header", x: -6.35, y: 0, w: 2.5, d: 20, h: 2.5 }] },
+    price_usd: 15.95,
+    buy: [{ vendor: "Pololu", url: "https://www.pololu.com/product/2133" }, { vendor: "Marketplace", search: "DRV8825 stepper driver" }],
+    source: "https://www.pololu.com/product/2133",
+  },
+  {
+    id: "tmc2209",
+    kind: "stepper_driver",
+    name: "TMC2209 stepper driver (StepStick)",
+    maker: "BIGTREETECH",
+    summary: "Quiet stepper driver, 2 A RMS (2.8 A peak), 4.75 to 29 V, STEP/DIR with UART configuration.",
+    specs: { i_cont: 2, i_peak: 2.8, v_min: 4.75, v_max: 29, microsteps: 256, control: "step_dir", uart: true },
+    pins: stepstickPins(4.75, 29, 2, 2.8, { uart: true }),
+    geom: { g: "board", dims: { w: 15.2, d: 20.3, t: 1.6 }, features: [{ kind: "heatsink", x: 0, y: 0, w: 9, d: 9, h: 9 }] },
+    price_usd: 8,
+    buy: [{ vendor: "BIGTREETECH", url: "https://biqu.equipment/products/bigtreetech-tmc2209-stepper-motor-driver-for-3d-printer-board-vs-tmc2208" }, { vendor: "Marketplace", search: "BIGTREETECH TMC2209 V1.3" }],
+    source: "https://www.analog.com/en/products/tmc2209.html",
+  },
+
+  // ---- power ----
+  {
+    id: "lipo_3s_5000",
+    kind: "battery",
+    name: "3S LiPo 11.1 V 5000 mAh 50C (XT60)",
+    generic: true,
+    summary: "11.1 V nominal (9.9 to 12.6 V), 5 Ah, about 55 Wh. The XT60 plug limits it to 30 A continuous (60 A bursts). Needs a balance charger.",
+    specs: { cells: 3, chemistry: "LiPo", v_nom: 11.1, v_max: 12.6, v_min: 9.9, capacity_mah: 5000, c_rating: 50, i_cont: 30, energy_wh: 55.5, connector: "XT60", mass_g: 381 },
+    pins: batteryPins(11.1, 9.9, 12.6, 30),
+    geom: { g: "box", dims: { w: 139, d: 43.5, h: 30.5, r: 3, band: 18 }, color: "#1d2128", color2: "#d4382c", material: "ABS" },
+    price_usd: 40,
+    buy: [{ vendor: "Marketplace", search: "3S LiPo 11.1V 5000mAh 50C XT60" }],
+    notes: ["Charge with a LiPo balance charger and never below 3.3 V per cell.", "Add a fuse and a switch on the positive lead."],
+  },
+  {
+    id: "lipo_3s_2200",
+    kind: "battery",
+    name: "3S LiPo 11.1 V 2200 mAh 30C (XT60)",
+    generic: true,
+    summary: "11.1 V nominal (9.9 to 12.6 V), 2.2 Ah, about 24 Wh, small enough for a 44 mm tube. 30 A continuous through its XT60. Needs a balance charger.",
+    specs: { cells: 3, chemistry: "LiPo", v_nom: 11.1, v_max: 12.6, v_min: 9.9, capacity_mah: 2200, c_rating: 30, i_cont: 30, energy_wh: 24.4, connector: "XT60", mass_g: 168 },
+    pins: batteryPins(11.1, 9.9, 12.6, 30),
+    geom: { g: "box", dims: { w: 106, d: 34, h: 21, r: 3, band: 16 }, color: "#1d2128", color2: "#d4382c", material: "ABS" },
+    price_usd: 22,
+    buy: [{ vendor: "Marketplace", search: "3S LiPo 11.1V 2200mAh 30C XT60" }],
+    notes: ["Charge with a LiPo balance charger and never below 3.3 V per cell.", "Add a fuse and a switch on the positive lead."],
+  },
+  {
+    id: "lipo_4s_5000",
+    kind: "battery",
+    name: "4S LiPo 14.8 V 5000 mAh 50C (XT60)",
+    generic: true,
+    summary: "14.8 V nominal (13.2 to 16.8 V), 5 Ah, about 74 Wh. 30 A continuous through the XT60 plug.",
+    specs: { cells: 4, chemistry: "LiPo", v_nom: 14.8, v_max: 16.8, v_min: 13.2, capacity_mah: 5000, c_rating: 50, i_cont: 30, energy_wh: 74, connector: "XT60", mass_g: 436 },
+    pins: batteryPins(14.8, 13.2, 16.8, 30),
+    geom: { g: "box", dims: { w: 137, d: 43, h: 34, r: 3, band: 20 }, color: "#1d2128", color2: "#d4382c", material: "ABS" },
+    price_usd: 55,
+    buy: [{ vendor: "Marketplace", search: "4S LiPo 14.8V 5000mAh 50C XT60" }],
+    notes: ["Charge with a LiPo balance charger and never below 3.3 V per cell.", "Add a fuse and a switch on the positive lead."],
+  },
+  {
+    id: "lipo_6s_5000",
+    kind: "battery",
+    name: "6S LiPo 22.2 V 5000 mAh 50C (XT60)",
+    generic: true,
+    summary: "22.2 V nominal (19.8 to 25.2 V), 5 Ah, about 111 Wh. For 24 V motors.",
+    specs: { cells: 6, chemistry: "LiPo", v_nom: 22.2, v_max: 25.2, v_min: 19.8, capacity_mah: 5000, c_rating: 50, i_cont: 30, energy_wh: 111, connector: "XT60", mass_g: 735 },
+    pins: batteryPins(22.2, 19.8, 25.2, 30),
+    geom: { g: "box", dims: { w: 163, d: 45, h: 44, r: 3, band: 24 }, color: "#1d2128", color2: "#d4382c", material: "ABS" },
+    price_usd: 85,
+    buy: [{ vendor: "Marketplace", search: "6S LiPo 22.2V 5000mAh XT60" }],
+    notes: ["Charge with a LiPo balance charger.", "Add a fuse and a switch on the positive lead."],
+  },
+  {
+    id: "lrs_350_24",
+    kind: "psu",
+    name: "Mean Well LRS-350-24 (24 V 14.6 A)",
+    maker: "Mean Well",
+    mpn: "LRS-350-24",
+    summary: "Enclosed 350 W mains supply, 24 V at 14.6 A, 90 to 132 or 180 to 264 V AC (set by a switch). The usual 3D printer supply.",
+    specs: { v_out: 24, i_out: 14.6, power_w: 350, v_in: "90-132 / 180-264 V AC (switch)" },
+    pins: [pwrOut("V_PLUS", 24, 14.6, { label: "+V" }), gnd("V_MINUS", "−V"), { id: "AC_L", type: "passive", label: "L (mains)", note: "Mains live: use an IEC inlet with fuse and switch" }, { id: "AC_N", type: "passive", label: "N (mains)" }, { id: "FG", type: "passive", label: "Earth" }],
+    geom: { g: "box", dims: { w: 215, d: 115, h: 30, r: 1 }, color: "#b7bcc4", material: "Steel", holes: [[-75, -25], [-75, 25], [75, -25], [75, 25]], hole_d: 3.3 },
+    price_usd: 40,
+    buy: [{ vendor: "Mean Well (DigiKey)", url: "https://www.digikey.com/en/products/result?keywords=LRS-350-24" }, { vendor: "Marketplace", search: "Mean Well LRS-350-24" }],
+    source: "https://www.meanwell.com/Upload/PDF/LRS-350/LRS-350-SPEC.PDF",
+    notes: ["Mains wiring can kill. Use an IEC inlet with a fused switch, an earth to the frame, and cover the terminals."],
+  },
+  {
+    id: "lm2596",
+    kind: "regulator",
+    name: "LM2596 adjustable buck converter module",
+    generic: true,
+    summary: "Steps 4.5 to 40 V down to 1.25 to 35 V (set with the trim pot), about 2 A continuous (3 A peak). For 5 V logic from a battery.",
+    specs: { v_in_min: 4.5, v_in_max: 40, v_out: 5, i_out: 2, efficiency: 0.85, adjustable: true },
+    pins: [pwrIn("IN_POS", 6.5, 35, { label: "IN+", vabs: 40, draw: 0.005 }), gnd("IN_NEG", "IN−"), pwrOut("OUT_POS", 5, 2, { label: "OUT+", note: "Set to 5.0 V with a meter before connecting anything" }), gnd("OUT_NEG", "OUT−")],
+    geom: { g: "board", dims: { w: 43, d: 21, t: 1.6 }, holes: [[-15, -7.5], [15, 7.5]], hole_d: 3, color: "#1d4fa0", features: [{ kind: "cap", x: -12, y: 2, w: 8, d: 8, h: 11 }, { kind: "chip", x: 4, y: -2, w: 12, d: 10, h: 7 }, { kind: "module", x: 14, y: 2, w: 9, d: 9, h: 12 }] },
+    price_usd: 3,
+    buy: [{ vendor: "Marketplace", search: "LM2596 buck converter module" }],
+    tests: ["Set the output to 5.0 V with a multimeter before connecting the controller."],
+  },
+  {
+    id: "d24v50f5",
+    kind: "regulator",
+    name: "Pololu 5 V 5 A step-down regulator D24V50F5",
+    maker: "Pololu",
+    mpn: "2851",
+    summary: "Fixed 5 V at up to 5 A from 6 to 38 V input. Clean logic and servo power.",
+    specs: { v_in_min: 6, v_in_max: 38, v_out: 5, i_out: 5, efficiency: 0.9 },
+    pins: [pwrIn("VIN", 6, 38, { vabs: 40, draw: 0.002 }), gnd(), pwrOut("VOUT", 5, 5), { id: "EN", type: "in", vmax: 40, vih: 1.2, note: "Leave unconnected to run" }],
+    geom: { g: "board", dims: { w: 17.8, d: 20.3, t: 1.6 }, holes: [[-6.73, -8.0], [6.73, 8.0]], hole_d: 2.18, features: [{ kind: "module", x: 0, y: 0, w: 10, d: 10, h: 7 }] },
+    price_usd: 32.95,
+    buy: [{ vendor: "Pololu", url: "https://www.pololu.com/product/2851" }],
+    source: "https://www.pololu.com/product/2851",
+  },
+  {
+    id: "buck_24v_5v_3a",
+    kind: "regulator",
+    name: "24 V to 5 V 3 A buck module (USB output)",
+    generic: true,
+    summary: "Fixed 5 V at 3 A from 9 to 36 V. Powers a Raspberry Pi from a 24 V printer supply.",
+    specs: { v_in_min: 9, v_in_max: 36, v_out: 5, i_out: 3, efficiency: 0.9 },
+    pins: [pwrIn("IN_POS", 9, 36, { label: "IN+", draw: 0.005 }), gnd("IN_NEG", "IN−"), pwrOut("OUT_POS", 5, 3, { label: "5V OUT" }), gnd("OUT_NEG", "GND OUT")],
+    geom: { g: "board", dims: { w: 36, d: 26, t: 1.6 }, features: [{ kind: "module", x: 0, y: 0, w: 14, d: 14, h: 7 }, { kind: "usb", x: 14, y: 0, w: 14, d: 6, h: 7 }] },
+    price_usd: 6,
+    buy: [{ vendor: "Marketplace", search: "24V to 5V 3A buck converter module" }],
+  },
+  {
+    id: "fuse_holder_atc",
+    kind: "fuse",
+    name: "Inline blade fuse holder (ATC/ATO) with fuse",
+    generic: true,
+    summary: "Protects the battery wiring. Pick the fuse rating with the wire gauge in mind.",
+    specs: { rating_a: 20, v_max: 32 },
+    pins: [{ id: "IN", type: "passive", through: "OUT", required: true }, { id: "OUT", type: "passive", through: "IN", required: true }],
+    geom: { g: "box", dims: { w: 40, d: 14, h: 22, r: 2 }, color: "#20242a" },
+    price_usd: 5,
+    buy: [{ vendor: "Marketplace", search: "inline ATC blade fuse holder 12 AWG waterproof" }],
+  },
+  {
+    id: "rocker_switch_20a",
+    kind: "switch",
+    name: "Rocker switch 20 A 12 V DC",
+    generic: true,
+    summary: "Main power switch for a battery machine.",
+    specs: { rating_a: 20, v_max: 32 },
+    pins: [{ id: "IN", type: "passive", through: "OUT", required: true }, { id: "OUT", type: "passive", through: "IN", required: true }],
+    geom: { g: "box", dims: { w: 31, d: 25, h: 28, r: 2 }, color: "#c62828" },
+    price_usd: 4,
+    buy: [{ vendor: "Marketplace", search: "rocker switch 20A 12V DC SPST" }],
+  },
+  {
+    id: "xt60_pair",
+    kind: "connector",
+    name: "XT60 connector pair",
+    generic: true,
+    summary: "Battery connector, 30 A continuous (60 A bursts).",
+    specs: { rating_a: 30, rating_burst_a: 60 },
+    pins: [{ id: "POS_A", type: "passive", through: "POS_B" }, { id: "POS_B", type: "passive", through: "POS_A" }, { id: "NEG_A", type: "passive", through: "NEG_B" }, { id: "NEG_B", type: "passive", through: "NEG_A" }],
+    geom: { g: "box", dims: { w: 16, d: 8, h: 16, r: 1 }, color: "#e8b423" },
+    price_usd: 2,
+    buy: [{ vendor: "Marketplace", search: "XT60 connector pair" }],
+  },
+
+  // ---- sensors ----
+  {
+    id: "mpu6050",
+    kind: "sensor",
+    name: "MPU-6050 6-axis IMU breakout (GY-521)",
+    generic: true,
+    summary: "3-axis gyro + accelerometer over I2C (0x68). Tilt and heading changes. 3.3 to 5 V supply.",
+    specs: { iface: "i2c", i2c_addr: "0x68", measures: "rotation rate, acceleration, tilt", v_min: 3, v_max: 5.5 },
+    pins: [pwrIn("VCC", 3, 5.5, { vabs: 6, draw: 0.005 }), gnd(), { id: "SCL", type: "in", vmax: 5.5, vih: 2.3, bus: "i2c_scl", required: true }, { id: "SDA", type: "in", vmax: 5.5, vih: 2.3, bus: "i2c_sda", required: true }, { id: "INT", type: "out", v: 3.3 }],
+    geom: { g: "board", dims: { w: 21, d: 16, t: 1.6 }, holes: [[-8, 5.5], [8, 5.5]], hole_d: 3, color: "#1d4fa0", features: [{ kind: "chip", x: 0, y: -1, w: 4, d: 4, h: 0.9 }, { kind: "header", x: 0, y: -6.5, w: 20, d: 2.5, h: 8.5 }] },
+    price_usd: 4,
+    buy: [{ vendor: "Marketplace", search: "GY-521 MPU-6050 module" }],
+    notes: ["Integrated yaw drifts over minutes: re-zero heading at the start of each run."],
+  },
+  {
+    id: "bno055",
+    kind: "sensor",
+    name: "Adafruit BNO055 absolute orientation sensor",
+    maker: "Adafruit",
+    mpn: "2472",
+    summary: "9-axis IMU with onboard sensor fusion: heading, roll and pitch in degrees over I2C (0x28). 3.3 to 5 V.",
+    specs: { iface: "i2c", i2c_addr: "0x28", measures: "heading, roll, pitch", v_min: 3.3, v_max: 5 },
+    pins: [pwrIn("VIN", 3.3, 5, { vabs: 5.5, draw: 0.012 }), gnd(), { id: "SCL", type: "in", vmax: 5.5, vih: 2.3, bus: "i2c_scl", required: true }, { id: "SDA", type: "in", vmax: 5.5, vih: 2.3, bus: "i2c_sda", required: true }],
+    geom: { g: "board", dims: { w: 26.7, d: 20.3, t: 1.6 }, holes: [[-10.8, -7.62], [-10.8, 7.62], [10.8, -7.62], [10.8, 7.62]], hole_d: 2.5, color: "#1a1a1a", features: [{ kind: "chip", x: 0, y: -1, w: 5.2, d: 3.8, h: 1.1 }] },
+    price_usd: 34.95,
+    buy: [{ vendor: "Adafruit", url: "https://www.adafruit.com/product/2472" }],
+    source: "https://www.adafruit.com/product/2472",
+    notes: ["Use IMU mode (no magnetometer) near motors, steel or underground: the compass reading is unreliable there."],
+  },
+  {
+    id: "voltage_sensor_25v",
+    kind: "sensor",
+    name: "0 to 25 V voltage sensor module (5:1 divider)",
+    generic: true,
+    summary: "Resistor divider (30 kΩ / 7.5 kΩ) that scales up to 25 V down to 5 V for an analog pin. Used to watch battery voltage.",
+    specs: { iface: "analog", ratio: 5, v_in_max: 25 },
+    pins: [
+      pwrIn("VCC_IN", 0, 25, { label: "VCC (measured +)", draw: 0.0007, vabs: 25, required: true, note: "Connect to the voltage being measured" }),
+      gnd("GND_IN", "GND (measured −)"),
+      { id: "S", type: "analog_out", v: 5, label: "S", required: true, note: "Divided voltage: needs an ADC pin" },
+      { id: "MINUS", type: "gnd", label: "−" },
+      { id: "PLUS", type: "passive", label: "+", note: "Not connected on the module" },
+    ],
+    geom: { g: "board", dims: { w: 28, d: 14, t: 1.6 }, holes: [[-10.5, 0]], hole_d: 3, color: "#b3261e", features: [{ kind: "terminal", x: 6, y: 0, w: 8, d: 10, h: 10 }] },
+    price_usd: 2,
+    buy: [{ vendor: "Marketplace", search: "voltage sensor module 0-25V arduino" }],
+    notes: ["On a 3.3 V controller the S pin can exceed 3.3 V above 16.5 V input: keep the measured voltage below that or add a resistor."],
+  },
+  {
+    id: "hc_sr04",
+    kind: "sensor",
+    name: "HC-SR04 ultrasonic distance sensor",
+    generic: true,
+    summary: "2 cm to 4 m distance in air. 5 V. Useless in sand or water.",
+    specs: { iface: "pulse", range_mm: 4000, v_min: 4.5, v_max: 5.5 },
+    pins: [pwrIn("VCC", 4.5, 5.5, { draw: 0.015 }), gnd(), input("TRIG", 5.5, 2.4, { required: true }), { id: "ECHO", type: "out", v: 5, required: true }],
+    geom: { g: "board", dims: { w: 45, d: 20, t: 1.6 }, holes: [[-20.5, 8], [20.5, -8]], hole_d: 2, color: "#1d4fa0", features: [{ kind: "module", x: -13, y: 0, w: 16, d: 16, h: 12 }, { kind: "module", x: 13, y: 0, w: 16, d: 16, h: 12 }] },
+    price_usd: 3,
+    buy: [{ vendor: "Marketplace", search: "HC-SR04 ultrasonic sensor" }],
+  },
+  {
+    id: "endstop_mech",
+    kind: "sensor",
+    name: "Mechanical endstop switch board (3-pin)",
+    generic: true,
+    summary: "Microswitch on a small board with a 3-pin plug. Homing for 3D printers and CNC.",
+    specs: { iface: "digital" },
+    pins: [port("PLUG", "endstop3", "sink")],
+    geom: { g: "board", dims: { w: 40, d: 16, t: 1.6 }, holes: [[-9.5, -5], [9.5, -5]], hole_d: 2.8, color: "#b3261e", features: [{ kind: "module", x: 4, y: 2, w: 13, d: 6, h: 6 }] },
+    price_usd: 2,
+    buy: [{ vendor: "Marketplace", search: "mechanical endstop switch 3 pin 3D printer" }],
+  },
+  {
+    id: "bltouch",
+    kind: "sensor",
+    name: "BLTouch Smart V3.1 bed probe",
+    maker: "ANTCLABS",
+    summary: "Touch probe for automatic bed levelling and Z homing. 5-wire servo-style plug.",
+    specs: { iface: "probe", accuracy_mm: 0.005, v_min: 4.8, v_max: 5.1, i_peak: 0.3, mass_g: 10, stroke_mm: 6 },
+    pins: [port("PLUG", "probe5", "sink")],
+    geom: { g: "box", dims: { w: 26, d: 11.5, h: 36.3, r: 1 }, color: "#f2f2f2", material: "ABS", holes: [[-9, 0], [9, 0]], hole_d: 3.2 },
+    price_usd: 40,
+    buy: [{ vendor: "ANTCLABS", url: "https://www.antclabs.com/bltouch-v3" }, { vendor: "Marketplace", search: "BLTouch V3.1" }],
+    source: "https://www.antclabs.com/bltouch-v3",
+  },
+];

@@ -89,6 +89,21 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
     (a) => new ShapeV({ t: "cone", d1: a.num("d1"), d2: a.num("d2"), h: a.positive("h"), at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", Z) }),
     "cone(d1:, d2:, h:, at:, dir: Z) — d1 at `at`, d2 at the far end.",
   ),
+  def(
+    "flight",
+    ["d", "core_d", "pitch", "length", "t", "root_t", "at", "dir", "left"],
+    (a) => {
+      const d = a.positive("d");
+      const core = a.positive("core_d");
+      if (core >= d) a.ctx.error(`flight(): core_d (${core}) must be smaller than d (${d})`);
+      const pitch = a.positive("pitch");
+      const tip = a.positive("t", 2.5);
+      const root = a.positive("root_t", Math.max(tip, tip * 1.6));
+      if (root >= pitch) a.ctx.error(`flight(): root_t (${root}) must be smaller than the pitch (${pitch})`);
+      return new ShapeV({ t: "flight", d, core_d: core, pitch, length: a.positive("length"), tip, root, at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", Z), left: a.bool("left", false) });
+    },
+    "flight(d:, core_d:, pitch:, length:, t: 2.5, root_t: 1.6 t, at:, dir: Z, left: false) — helical screw flight (auger, screw conveyor) from core_d out to d, starting at `at` and running length along dir. t is the tip thickness, root_t the thickness where it meets the core. left: true for a left-hand helix. Add it to a tube or cylinder of core_d.",
+  ),
   def("sphere", ["d", "at"], (a) => new ShapeV({ t: "sphere", d: a.positive("d"), at: a.vec3("at", [0, 0, 0]) }), "sphere(d:, at:)"),
   def(
     "prism",
@@ -241,7 +256,11 @@ export const MATH_FNS: Record<string, Fn> = Object.fromEntries([
     ["a", "b", "c", "d"],
     (a) => {
       const first = a.value("a");
-      const vals = Array.isArray(first) ? first.map((v) => num(v, a.ctx, "min()")) : ["a", "b", "c", "d"].filter((k) => a.has(k)).map((k) => a.num(k));
+      const raw = Array.isArray(first) ? first : ["a", "b", "c", "d"].filter((k) => a.has(k)).map((k) => a.value(k)!);
+      // a geometry measurement that is not ready yet makes the result not ready either
+      const pending = raw.filter((v): v is Pending => v instanceof Pending);
+      if (pending.length) return new Pending(pending.flatMap((v) => v.keys));
+      const vals = raw.map((v) => num(v, a.ctx, "min()"));
       if (!vals.length) a.ctx.error("min() needs values");
       return Math.min(...vals);
     },
@@ -252,7 +271,11 @@ export const MATH_FNS: Record<string, Fn> = Object.fromEntries([
     ["a", "b", "c", "d"],
     (a) => {
       const first = a.value("a");
-      const vals = Array.isArray(first) ? first.map((v) => num(v, a.ctx, "max()")) : ["a", "b", "c", "d"].filter((k) => a.has(k)).map((k) => a.num(k));
+      const raw = Array.isArray(first) ? first : ["a", "b", "c", "d"].filter((k) => a.has(k)).map((k) => a.value(k)!);
+      // a geometry measurement that is not ready yet makes the result not ready either
+      const pending = raw.filter((v): v is Pending => v instanceof Pending);
+      if (pending.length) return new Pending(pending.flatMap((v) => v.keys));
+      const vals = raw.map((v) => num(v, a.ctx, "max()"));
       if (!vals.length) a.ctx.error("max() needs values");
       return Math.max(...vals);
     },

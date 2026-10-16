@@ -29,7 +29,7 @@ Chatting with Claude needs an Anthropic API key from the [Claude Console](https:
 ### Checks
 
 ```bash
-npm test             # 29 unit tests: language, gears, conflict solver, edits, imports
+npm test             # language, gears, conflict solver, edits, imports, machines
 npm run typecheck
 ```
 
@@ -59,13 +59,26 @@ npm run typecheck
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
-Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two-stage 12:1 gear reducer (26 solids). Both pass every check. Each comes with suggested prompts for a substantial revision.
+Four complete examples ship with it: a sensor-hub enclosure (21 solids), a two-stage 12:1 gear reducer (26 solids), a sand tunnelling robot and a 3D printer. All pass every check. Each comes with suggested prompts for a substantial revision.
+
+## Complete machines from a brief
+
+Type what the machine has to do, for example "a drill powered by an Arduino that drives forwards and turns, and passes through a metre of sand in a 10 m tall box". Claude designs the whole machine, not just the shape:
+
+- **Real parts.** A catalog of purchasable parts with their dimensions, pins and ratings: Arduino and ESP32 boards, motor and stepper drivers, goBILDA gearmotors, NEMA 17 steppers, actuators, batteries, power supplies, regulators, fuses, connectors, sensors, hot ends, heated beds, extrusions, rails, lead screws, pulleys and seals. Each part links to where to buy it. With web search on (Settings → Claude), Claude checks current prices and stock with the Claude API's web search and web fetch, and cites the pages.
+- **Sizing calculations.** `calc.` functions Claude and you can call from the design: soil pressure in a sand box (Janssen), screw burrowing torque and thrust, motor operating point, battery runtime, screw conveying, hinge steering moment, actuator force through a cam slot, wire gauge and bearing life. Each shows its inputs, method, assumptions and how far to trust it, and requirements can use the results.
+- **Wiring.** `wire` and `net` statements connect component pins. An electrical rules check catches wrong voltages, overloaded pins and supplies, missing grounds, motors on logic pins, encoders on non-interrupt pins and undersized wire.
+- **Firmware.** A `firmware` block generates an Arduino sketch whose pin map comes from the wiring (with a serial console to test every motor and sensor, and an autonomous run mode for the tunneller), or a Klipper `printer.cfg` for 3D printer boards.
+- **Build pack.** The Build tab says whether the machine is ready to order and build, then downloads a zip: STL files oriented for printing, STEP, the parts list with buy links and prices, a cut list, a wiring diagram and wire list, the firmware, the calculations, the check results, an assembly order and a test plan.
+- **Honest about what is proven.** Geometry, wiring and the arithmetic are checked by Kerf. Anything that depends on the real world (how sand behaves, how a print holds up, motor heating) is marked as an estimate and goes in the test plan with what to measure and what counts as a pass.
+
+`src/machine/briefs.ts` holds a benchmark of briefs, each with what a complete answer must contain, and a scorer that reports what a design is missing. The tunneller answers the first brief completely.
 
 ## Not in 0.1
 
 - **Sketch and direct modelling tools.** Manual editing today is through parameters and the design file, not 2D sketches with constraints or push and pull on faces.
 - **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds it. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
-- **Engineering analysis.** No stress, deflection or thermal analysis, and no tolerance stack-ups. The checks are geometric.
+- **Engineering analysis.** No stress, deflection or thermal analysis, and no tolerance stack-ups. The checks are geometric, plus the sizing calculations for machines.
 - **Drawings and measurement.** No 2D drawings or interactive measuring tool yet.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
 - **Accounts and sharing.** No server, sign-in, sync or collaboration. A hosted version would need a server-side key proxy, rate limits and billing.
@@ -78,7 +91,8 @@ src/lang/       Kerf language: lexer, parser, evaluator (no eval, step-limited)
 src/library/    Standard parts, thread and bearing tables, involute gears
 src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
-src/ai/         Claude tools, system prompt, language reference, chat loop
+src/machine/    Parts catalog, calculators, wiring rules, firmware generators, build pack
+src/ai/         Claude tools, system prompt, language reference, chat loop, web search
 src/app/        Projects and history, settings, view state, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats
 src/ui/         Viewport (three.js), editor (CodeMirror), panels, chat, dialogs

@@ -3,6 +3,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useChat, sendMessage, stop, choose, retryLast, revertTurn, clearChat, type ChatItem } from "../ai/chat";
+import { safeUrl, domainOf } from "../ai/web";
 import { getApiKey, subscribeKey } from "../persist/vault";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
@@ -224,6 +225,7 @@ function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) 
           {it.streaming && <span className="caret" />}
         </div>
       )}
+      {!it.streaming && !!it.sources?.length && <Sources sources={it.sources} />}
       {it.note && (
         <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
           {it.note}
@@ -233,14 +235,38 @@ function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) 
   );
 }
 
+/** Pages Claude cited from its web searches. Links open in a new tab and never get access to this page. */
+function Sources({ sources }: { sources: { url: string; title: string }[] }) {
+  const links = sources.map((s) => ({ ...s, url: safeUrl(s.url) })).filter((s): s is { url: string; title: string } => !!s.url);
+  if (!links.length) return null;
+  return (
+    <div className="msg-sources">
+      <div className="ms-label">Sources</div>
+      <ol>
+        {links.map((s) => (
+          <li key={s.url}>
+            <a href={s.url} target="_blank" rel="noopener noreferrer" title={s.url}>
+              <span className="ms-title">{s.title}</span>
+              <span className="ms-domain">{domainOf(s.url)}</span>
+            </a>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
   const canOpen = !!it.diff || !!it.image;
   const stats = useMemo(() => (it.diff ? diffStats(it.diff.before, it.diff.after) : null), [it.diff]);
+  const link = it.link ? safeUrl(it.link.url) : null;
+  // a web search or page that did not work is shown quietly: Claude carries on without it
+  const quiet = it.web && it.status === "error";
   return (
-    <motion.div className={`tool-card ${it.status}`} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} layout="position">
+    <motion.div className={`tool-card ${quiet ? "web-miss" : it.status}${it.web ? " web" : ""}`} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} layout="position">
       <div className="tc-head" onClick={() => canOpen && setOpen((o) => !o)} style={{ cursor: canOpen ? "pointer" : "default" }}>
-        {it.status === "running" ? <div className="spinner" /> : it.status === "error" ? <span style={{ color: "var(--fail)", display: "inline-grid" }}><Icon.Alert size={14} /></span> : <span style={{ color: "var(--pass)", display: "inline-grid" }}><Icon.Check size={14} /></span>}
+        {it.status === "running" ? <div className="spinner" /> : quiet ? <span style={{ color: "var(--text-3)", display: "inline-grid" }}><Icon.Info size={14} /></span> : it.status === "error" ? <span style={{ color: "var(--fail)", display: "inline-grid" }}><Icon.Alert size={14} /></span> : <span style={{ color: "var(--pass)", display: "inline-grid" }}><Icon.Check size={14} /></span>}
         <span className="grow" style={{ minWidth: 0 }}>
           {it.status === "running" ? <span className="shimmer-text">{it.title}</span> : it.title}
         </span>
@@ -254,6 +280,13 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
       </div>
       {it.status === "running" && <div className="tc-progress" />}
       {it.detail && !it.diff && <div className="tc-detail">{it.detail}</div>}
+      {link && (
+        <div className="tc-link">
+          <a href={link} target="_blank" rel="noopener noreferrer" title={link}>
+            {it.link!.label || domainOf(link)}
+          </a>
+        </div>
+      )}
       <AnimatePresence>
         {open && it.diff && (
           <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} style={{ overflow: "hidden" }}>

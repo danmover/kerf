@@ -234,6 +234,46 @@ export function TemplateArt({ id }: { id: string }) {
         <motion.rect x="76" y="50" width="48" height="10" rx="2" fill="#3ddc97" opacity={0.6} animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ duration: 2.4, repeat: Infinity }} />
       </svg>
     );
+  if (id === "sand-tunneller") {
+    // two screw sections either side of the body; the flights scroll as if turning
+    const flights = (x0: number, dir: number) => (
+      <g clipPath={`url(#tun-${x0})`}>
+        <motion.g animate={{ x: [0, 10 * dir] }} transition={{ duration: 0.9, repeat: Infinity, ease: "linear" }}>
+          {Array.from({ length: 8 }, (_, i) => (
+            <path key={i} d={`M${x0 - 10 + i * 10} 44l${6 * dir} 32`} stroke="#e8b84a" strokeWidth="2" strokeLinecap="round" />
+          ))}
+        </motion.g>
+      </g>
+    );
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <defs>
+          <clipPath id="tun-36"><rect x="36" y="40" width="44" height="40" /></clipPath>
+          <clipPath id="tun-122"><rect x="122" y="40" width="44" height="40" /></clipPath>
+        </defs>
+        {[[24, 30], [62, 22], [104, 34], [150, 24], [182, 38], [40, 94], [96, 100], [138, 92], [176, 98]].map(([cx, cy], i) => (
+          <circle key={i} cx={cx} cy={cy} r="1.6" fill="#39445c" />
+        ))}
+        <rect x="30" y="50" width="142" height="20" rx="4" fill="rgba(109,139,255,.10)" stroke={stroke} strokeWidth="1.3" />
+        <path d="M172 50l18 10-18 10" fill="none" stroke={stroke} strokeWidth="1.3" />
+        <rect x="84" y="50" width="34" height="20" fill="rgba(109,139,255,.22)" stroke="#39445c" />
+        {flights(36, 1)}
+        {flights(122, -1)}
+      </svg>
+    );
+  }
+  if (id === "printer")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <path d="M58 104V16h84v88" fill="none" stroke="#39445c" strokeWidth="2" />
+        <motion.g animate={{ y: [0, -16, 0] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}>
+          <path d="M50 58h100" stroke={stroke} strokeWidth="1.6" />
+          <motion.rect x="66" y="50" width="16" height="22" rx="2" fill="rgba(109,139,255,.18)" stroke={stroke} strokeWidth="1.3" animate={{ x: [0, 52, 0] }} transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }} />
+        </motion.g>
+        <motion.rect x="62" y="92" width="76" height="5" rx="1.5" fill="rgba(232,184,74,.35)" stroke="#e8b84a" strokeWidth="1" animate={{ x: [-10, 10, -10] }} transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }} />
+        <path d="M44 104h112" stroke="#39445c" strokeWidth="2" />
+      </svg>
+    );
   return (
     <svg viewBox="0 0 200 120" width="70%" height="70%">
       <motion.rect x="60" y="25" width="80" height="70" rx="6" fill="none" stroke="#39445c" strokeDasharray="6 5" animate={{ strokeDashoffset: [0, -22] }} transition={{ duration: 1.6, repeat: Infinity, ease: "linear" }} />

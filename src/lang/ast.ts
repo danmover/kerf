@@ -74,7 +74,13 @@ export type Stmt =
       level: "hard" | "soft";
       expr: Expr;
       span: Span;
-    };
+    }
+  // machine statements: wiring, firmware and physical tests
+  | { k: "wire"; path: Expr[]; items: Item[]; span: Span }
+  | { k: "net"; name: string; pins: Expr[]; items: Item[]; span: Span; nameSpan: Span }
+  | { k: "firmware"; name: string; items: Item[]; span: Span; nameSpan: Span }
+  | { k: "test"; label: string; procedure: Expr; span: Span }
+  | { k: "buy"; label: string; items: Item[]; span: Span };
 
 export interface Program {
   stmts: Stmt[];
@@ -91,6 +97,9 @@ export function stmtName(s: Stmt): string | undefined {
       return s.name;
     case "require":
       return s.label;
+    case "net":
+    case "firmware":
+      return s.name;
     default:
       return undefined;
   }

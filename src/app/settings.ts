@@ -22,9 +22,19 @@ export interface Settings {
   edges: boolean;
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
+  /** let Claude search the web and read pages (Anthropic's server tools) to find parts the catalog lacks */
+  webSearch: boolean;
   termsAccepted: string | null;
   onboarded: boolean;
+  /** version of these defaults the stored settings were last migrated to */
+  rev: number;
 }
+
+/** Steps per message: enough for Claude to design, wire and check a whole machine in one go. */
+export const DEFAULT_STEPS = 30;
+export const MIN_STEPS = 4;
+export const MAX_STEPS = 80;
+const SETTINGS_REV = 2;
 
 const DEFAULTS: Settings = {
   model: "claude-opus-5-5",
@@ -33,9 +43,11 @@ const DEFAULTS: Settings = {
   reduceMotion: false,
   grid: true,
   edges: true,
-  maxSteps: 16,
+  maxSteps: DEFAULT_STEPS,
+  webSearch: true,
   termsAccepted: null,
   onboarded: false,
+  rev: SETTINGS_REV,
 };
 
 const KEY = "kerf.settings.v1";
@@ -53,7 +65,12 @@ function load(): Settings {
     }
     if (!MODELS.some((m) => m.id === out.model)) out.model = DEFAULTS.model;
     if (!["low", "medium", "high", "xhigh", "max"].includes(out.effort)) out.effort = DEFAULTS.effort;
-    out.maxSteps = Math.min(40, Math.max(4, Math.round(out.maxSteps)));
+    // settings saved before rev 2 had no rev; their untouched 16-step default becomes the new default
+    if (typeof v.rev !== "number" || v.rev < 2) {
+      if (v.maxSteps === undefined || v.maxSteps === 16) out.maxSteps = DEFAULT_STEPS;
+    }
+    out.rev = SETTINGS_REV;
+    out.maxSteps = Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.round(Number.isFinite(out.maxSteps) ? out.maxSteps : DEFAULT_STEPS)));
     return out;
   } catch {
     return DEFAULTS;

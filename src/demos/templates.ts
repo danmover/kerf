@@ -3,6 +3,8 @@
 import enclosure from "./enclosure.kerf?raw";
 import reducer from "./reducer.kerf?raw";
 import blank from "./blank.kerf?raw";
+import tunneller from "./sand-tunneller.kerf?raw";
+import printer from "./printer.kerf?raw";
 
 export interface Template {
   id: string;
@@ -50,6 +52,30 @@ export const TEMPLATES: Template[] = [
       "Why are two of the gears marked removable?",
     ],
     stats: "26 parts · 8 requirements",
+  },
+  {
+    id: "sand-tunneller",
+    name: "Sand Tunneller",
+    tagline: "Arduino robot that screws itself through 1 m of sand and steers: parts list, wiring, firmware and test plan.",
+    source: tunneller,
+    prompts: [
+      "Make it cross 2 m of sand instead of 1 m and check the battery still lasts",
+      "Use a bigger battery and update the wiring, the runtime and the parts list",
+      "Why does the steering push the hinge through a slanted slot instead of directly?",
+    ],
+    stats: "90 parts · 10 requirements · firmware",
+  },
+  {
+    id: "printer",
+    name: "Kerf i3 220 Printer",
+    tagline: "220 × 220 × 250 mm bed-slinger on rails: printed parts, wiring, Klipper config, parts list and test plan.",
+    source: printer,
+    prompts: [
+      "Make the print volume 300 × 300 × 300 mm and check the bed heater, power supply and frame still work",
+      "Give each Z motor its own driver so the gantry levels itself, and update the wiring and Klipper config",
+      "Why is the power supply at 92 % with everything heating, and what would you change?",
+    ],
+    stats: "96 parts · 28 requirements · Klipper",
   },
 ];
 

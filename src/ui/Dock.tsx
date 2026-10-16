@@ -1,4 +1,5 @@
-// The bottom dock: source code, checks, dependency graph and parts list.
+// The bottom dock: source code, checks, dependency graph, parts list and,
+// for machines, the build tab.
 
 import { motion } from "framer-motion";
 import { useDesign } from "../core/engine";
@@ -7,6 +8,7 @@ import { CodeEditor } from "./CodeEditor";
 import { ChecksPanel } from "./ChecksPanel";
 import { GraphView } from "./GraphView";
 import { BomTable } from "./BomTable";
+import { MachinePanel } from "./MachinePanel";
 import { Icon } from "./icons";
 import { lineCol } from "../lang/lexer";
 
@@ -18,6 +20,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
   const source = useDesign((s) => s.source);
   const errors = model?.diagnostics.filter((d) => d.severity === "error") ?? [];
   const fails = report?.counts.fail ?? 0;
+  const buildFails = report?.items.filter((i) => i.status === "fail" && (i.category === "electrical" || i.category === "engineering")).length ?? 0;
   const set = (t: DockTab) => useView.setState({ dockTab: t, dockOpen: true });
   const tabs: { id: DockTab; label: string; icon: JSX.Element; count?: number; bad?: boolean }[] = [
     { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, count: errors.length || undefined, bad: errors.length > 0 },
@@ -25,6 +28,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
     { id: "graph", label: "graph", icon: <Icon.Graph size={13} /> },
     { id: "bom", label: "parts list", icon: <Icon.List size={13} /> },
   ];
+  if (model?.machine) tabs.push({ id: "build", label: "build", icon: <Icon.Wrench size={13} />, count: buildFails || undefined, bad: buildFails > 0 });
   return (
     <div className="dock">
       <div className="dock-head">
@@ -58,6 +62,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
           {tab === "checks" && <ChecksPanel />}
           {tab === "graph" && <GraphView />}
           {tab === "bom" && <BomTable />}
+          {tab === "build" && <MachinePanel />}
         </div>
       )}
     </div>

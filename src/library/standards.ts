@@ -48,6 +48,12 @@ export const BEARINGS: Record<string, BearingSpec> = {
   "6201": { code: "6201", bore: 12, od: 32, width: 10, dynamicLoadN: 6890 },
   "6800": { code: "6800", bore: 10, od: 19, width: 5, dynamicLoadN: 1720 },
   "6801": { code: "6801", bore: 12, od: 21, width: 5, dynamicLoadN: 1740 },
+  "6005": { code: "6005", bore: 25, od: 47, width: 12, dynamicLoadN: 11900 },
+  "6205": { code: "6205", bore: 25, od: 52, width: 15, dynamicLoadN: 14800 },
+  "6806": { code: "6806", bore: 30, od: 42, width: 7, dynamicLoadN: 4490 },
+  "6808": { code: "6808", bore: 40, od: 52, width: 7, dynamicLoadN: 4490 },
+  "6810": { code: "6810", bore: 50, od: 65, width: 7, dynamicLoadN: 6760 },
+  "6812": { code: "6812", bore: 60, od: 78, width: 10, dynamicLoadN: 11900 },
 };
 
 /** Density in g/cm^3 */
@@ -63,6 +69,7 @@ export const MATERIALS: Record<string, { density: number; label: string }> = {
   Brass: { density: 8.5, label: "Brass" },
   FR4: { density: 1.85, label: "FR4" },
   POM: { density: 1.41, label: "POM (Delrin)" },
+  TPU: { density: 1.21, label: "TPU 95A" },
 };
 
 export function materialDensity(name: string): number {

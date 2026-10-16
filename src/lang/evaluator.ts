@@ -10,6 +10,10 @@ import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import { CalcObj, calcNamespace } from "../machine/calcs";
+import { catalogPart } from "../machine/catalog";
+import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
+import { emptyMachine, type MachineData, type PinRef } from "../machine/types";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -58,6 +62,8 @@ const LIB_ARGS: Record<string, string[]> = {
 
 const PART_PROPS = ["color", "material", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "label"];
+/** extra properties of purchasable catalog parts */
+const MACHINE_PROPS = ["role", "load", "buy", "price"];
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
 
@@ -112,6 +118,7 @@ class Evaluator {
   stmtGeo: GeoQuery[] = [];
   /** guards against runaway loops in source written by people or the AI */
   steps = 0;
+  machine: MachineData = emptyMachine();
 
   constructor(
     private src: string,
@@ -123,6 +130,7 @@ class Evaluator {
     for (const [k, v] of Object.entries(MATH_FNS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);
     this.builtins.set("lib", libNamespace());
+    this.builtins.set("calc", calcNamespace());
   }
 
   ctx(): CallCtx {
@@ -172,6 +180,7 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
+    if (s.k === "wire" || s.k === "net" || s.k === "firmware" || s.k === "test" || s.k === "buy") return undefined;
     return "name" in s && s.k !== "design" ? s.name : undefined;
   }
 
@@ -215,6 +224,7 @@ class Evaluator {
         this.blocks.push({ name: s.name, kind: "let", span: s.span, locked: false });
         const v = this.expr(s.value, null);
         this.define(s.name, "let", v, s.nameSpan);
+        if (v instanceof CalcObj) this.machine.calcs.push({ ...v.trace, name: s.name, span: s.span });
         return;
       }
       case "interface": {
@@ -238,6 +248,98 @@ class Evaluator {
       case "require":
         this.requirement(s);
         return;
+      case "wire":
+      case "net":
+      case "firmware":
+      case "test":
+      case "buy":
+        this.machineStmt(s);
+        return;
+    }
+  }
+
+  // ---------------- machines: wiring, firmware, tests, purchases ----------------
+
+  pinRef(e: Expr): PinRef {
+    if (e.k !== "member") throw new EvalError("Expected a pin like ctrl.D5", e.span);
+    let comp: string;
+    let index: number | undefined;
+    if (e.obj.k === "ident") comp = e.obj.name;
+    else if (e.obj.k === "index" && e.obj.obj.k === "ident") {
+      comp = e.obj.obj.name;
+      index = this.num(this.expr(e.obj.index, null), e.obj.index.span, "an instance index");
+    } else throw new EvalError("Expected a pin like ctrl.D5", e.span);
+    const info = this.comps.get(comp);
+    if (!info) {
+      const sugg = suggest(comp, [...this.comps.keys()]);
+      throw new EvalError(`"${comp}" is not a component${sugg ? `. Did you mean "${sugg}"?` : ". Define components before wiring them."}`, e.obj.span);
+    }
+    this.current?.add(comp);
+    const part = info.def.catalog ? catalogPart(info.def.catalog.id) : undefined;
+    if (!part) throw new EvalError(`"${comp}" is not a catalog part, so it has no pins to wire`, e.obj.span);
+    const want = e.name.toLowerCase();
+    const pin = part.pins.find((p) => p.id.toLowerCase() === want) ?? part.pins.find((p) => p.label?.toLowerCase() === want);
+    if (!pin) {
+      const sugg = suggest(e.name, part.pins.map((p) => p.id));
+      throw new EvalError(`${part.name} has no pin "${e.name}"${sugg ? `. Did you mean "${sugg}"?` : `. Pins: ${part.pins.map((p) => p.id).join(", ")}`}`, e.span);
+    }
+    const count = info.value.fields.count;
+    if (index !== undefined && (typeof count !== "number" || index < 0 || index >= count || !Number.isInteger(index))) {
+      throw new EvalError(`"${comp}" has ${typeof count === "number" ? count : 1} instance(s): index ${index} is out of range`, e.obj.span);
+    }
+    return { comp, index, pin: pin.id, span: e.span };
+  }
+
+  machineProps(items: Item[], allowed: string[] | null, what: string): Record<string, number | string | boolean> {
+    const out: Record<string, number | string | boolean> = {};
+    for (const it of items) {
+      if (it.k !== "prop") throw new EvalError(`${what} only takes properties like gauge: 22`, it.span);
+      if (allowed && !allowed.includes(it.name)) throw new EvalError(`Unknown ${what} property "${it.name}". Use: ${allowed.join(", ")}`, it.span);
+      const v = this.expr(it.value, null);
+      if (typeof v === "number" || typeof v === "string" || typeof v === "boolean") out[it.name] = v;
+      else if (v instanceof Obj && v.kind === "component") out[it.name] = String(v.fields.name);
+      else if (v instanceof Obj && v.kind === "calc") throw new EvalError(`${it.name}: give one result of the calculation, e.g. ${it.name}: speed.rpm`, it.span);
+      else throw new EvalError(`${it.name} should be a number, text or true/false (got ${typeName(v)})`, it.span);
+    }
+    return out;
+  }
+
+  machineStmt(s: Extract<Stmt, { k: "wire" | "net" | "firmware" | "test" | "buy" }>) {
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    const numv = (v: unknown) => (typeof v === "number" ? v : undefined);
+    switch (s.k) {
+      case "wire": {
+        const refs = s.path.map((e) => this.pinRef(e));
+        const pr = this.machineProps(s.items, ["gauge", "color", "label"], "wire");
+        for (let i = 0; i + 1 < refs.length; i++) this.machine.wires.push({ a: refs[i], b: refs[i + 1], gauge: numv(pr.gauge), color: str(pr.color), label: str(pr.label), span: s.span });
+        return;
+      }
+      case "net": {
+        if (this.machine.nets.some((n) => n.name === s.name)) throw new EvalError(`Net "${s.name}" is already defined: add the pins to it`, s.nameSpan);
+        const pins = s.pins.map((e) => this.pinRef(e));
+        const pr = this.machineProps(s.items, ["gauge", "color"], "net");
+        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), color: str(pr.color), span: s.span });
+        return;
+      }
+      case "firmware": {
+        if (this.machine.firmware.some((f) => f.name === s.name)) throw new EvalError(`Firmware "${s.name}" is already defined`, s.nameSpan);
+        const settings = this.machineProps(s.items, null, "firmware");
+        const board = str(settings.board);
+        if (board && !this.comps.has(board)) throw new EvalError(`firmware board: "${board}" is not a component`, s.span);
+        this.machine.firmware.push({ name: s.name, board, settings, span: s.span });
+        return;
+      }
+      case "test": {
+        const v = this.expr(s.procedure, null);
+        if (typeof v !== "string") throw new EvalError("A test needs a procedure in quotes: test \"Label\": \"what to do and what to measure\"", s.procedure.span);
+        this.machine.tests.push({ label: s.label, procedure: v, span: s.span });
+        return;
+      }
+      case "buy": {
+        const pr = this.machineProps(s.items, ["qty", "price", "url", "search"], "buy");
+        this.machine.items.push({ name: s.label, label: s.label, qty: numv(pr.qty) ?? 1, price: numv(pr.price), buyUrl: str(pr.url), search: str(pr.search) ?? s.label, span: s.span });
+        return;
+      }
     }
   }
 
@@ -418,7 +520,6 @@ class Evaluator {
       throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
     }
     const key = callee.libKey;
-    const entry = LIBRARY[key];
     const pos: Value[] = [];
     const named: Record<string, Value> = {};
     for (const a of s.call.args) {
@@ -427,8 +528,12 @@ class Evaluator {
       if (a.name) named[a.name] = v;
       else pos.push(v);
     }
+    // lib.connector("xt60_pair") is a catalog part; lib.connector(w: ...) the generic panel body
+    const catalogForm = !!MACHINE_LIBRARY[key] && LIBRARY[key] !== MACHINE_LIBRARY[key] && typeof pos[0] === "string";
+    const entry = catalogForm ? MACHINE_LIBRARY[key] : LIBRARY[key];
+    const compProps = entry.machine ? [...COMP_PROPS, ...MACHINE_PROPS] : COMP_PROPS;
     this.callSpan = s.call.span;
-    const args = new Args(`lib.${key}`, pos, named, this.ctx(), mergeParams(POSITIONAL[key] ?? [], LIB_ARGS[key] ?? []));
+    const args = new Args(`lib.${key}`, pos, named, this.ctx(), mergeParams((catalogForm ? undefined : POSITIONAL[key]) ?? entry.positional ?? [], (catalogForm ? undefined : LIB_ARGS[key]) ?? entry.params ?? []));
 
     // properties
     const props: Record<string, Value> = {};
@@ -436,7 +541,7 @@ class Evaluator {
     const propSpans: Record<string, Span> = {};
     for (const it of s.items) {
       if (it.k === "prop") {
-        if (!COMP_PROPS.includes(it.name)) throw new EvalError(`Unknown component property "${it.name}". Use: ${COMP_PROPS.join(", ")}`, it.span);
+        if (!compProps.includes(it.name)) throw new EvalError(`Unknown component property "${it.name}". Use: ${compProps.join(", ")}`, it.span);
         props[it.name] = this.expr(it.value, null);
         propSpans[it.name] = it.span;
       } else if (it.k === "flag") {
@@ -551,11 +656,33 @@ class Evaluator {
     const info: CompInfo = { def, at: at0, axis, xf: xfs[0], motion, gear, value };
     this.define(s.name, "component", value, s.nameSpan, def.label);
     this.comps.set(s.name, info);
+    if (def.catalog) {
+      const cp = catalogPart(def.catalog.id);
+      if (cp) {
+        const load = props.load !== undefined ? this.num(props.load, propSpans.load, "load (torque at the output, N·mm)") : undefined;
+        const price = props.price !== undefined ? this.num(props.price, propSpans.price, "price") : undefined;
+        if (props.buy !== undefined && (typeof props.buy !== "string" || !/^https?:\/\//.test(props.buy))) throw new EvalError('buy: should be a web address in quotes, e.g. buy: "https://www.pololu.com/product/713"', propSpans.buy);
+        if (props.role !== undefined && typeof props.role !== "string") throw new EvalError('role: should be text, e.g. role: "front screw"', propSpans.role);
+        this.machine.components.push({
+          name: s.name,
+          catalogId: cp.id,
+          kind: cp.kind,
+          label: typeof props.label === "string" ? props.label : cp.name,
+          count: atList.length,
+          role: typeof props.role === "string" ? props.role : undefined,
+          load,
+          length: def.catalog.length,
+          buyUrl: typeof props.buy === "string" ? props.buy : undefined,
+          price,
+          span: s.span,
+        });
+      }
+    }
 
     if (this.opts.skipGeometry) return;
     const anyMoving = def.solids.some((sd) => sd.moving);
     const color = typeof props.color === "string" ? props.color : undefined;
-    const group = typeof props.group === "string" ? props.group : groupFor(key);
+    const group = typeof props.group === "string" ? props.group : def.catalog ? (groupForCatalog(def.catalog.id) ?? entry.group ?? "Components") : (entry.group ?? groupFor(key));
     xfs.forEach((xf, idx) => {
       for (const sd of def.solids) {
         const base = multi ? `${s.name}#${idx + 1}` : s.name;
@@ -822,11 +949,16 @@ class Evaluator {
       blocks: this.blocks,
       geoQueries: dedupeGeo(this.geoQueries),
       evalMs: 0,
+      machine: hasMachine(this.machine) ? this.machine : undefined,
     };
   }
 }
 
 // ---------------- helpers ----------------
+
+function hasMachine(m: MachineData): boolean {
+  return m.components.length + m.wires.length + m.nets.length + m.calcs.length + m.firmware.length + m.tests.length + m.items.length > 0;
+}
 
 function truthy(v: Value): boolean {
   if (typeof v === "boolean") return v;

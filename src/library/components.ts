@@ -5,6 +5,7 @@
 import type { PartRecipe, ShapeRecipe, V2, V3 } from "../kernel/recipe";
 import { BEARINGS, THREADS, type ThreadSpec } from "./standards";
 import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
+import { MACHINE_LIBRARY } from "../machine/library";
 
 export type Placement = "axis" | "facing" | "free";
 
@@ -34,7 +35,9 @@ export interface CompDef {
   fields: LocalFields;
   fastener?: { headTop: V3; outward: V3; key: number; headD: number; size: string };
   gear?: { m: number; z: number; width: number; pa: number };
-  bom: { description: string; standard?: string };
+  bom: { description: string; standard?: string; catalogId?: string; length?: number };
+  /** catalog-backed purchasable part */
+  catalog?: { id: string; length?: number; travel?: number };
 }
 
 export interface LibArgs {
@@ -57,6 +60,14 @@ export interface LibEntry {
   doc: string;
   signature: string;
   make(a: LibArgs, phase: number): CompDef;
+  /** argument names in positional order (built-in entries list theirs in the evaluator) */
+  positional?: string[];
+  /** every accepted argument name */
+  params?: string[];
+  /** default group in the part tree */
+  group?: string;
+  /** a purchasable catalog part: accepts the machine properties (role:, load:, buy:, price:) */
+  machine?: boolean;
 }
 
 function hexPoints(af: number): V2[] {
@@ -70,7 +81,7 @@ function hexPoints(af: number): V2[] {
 export const LIBRARY: Record<string, LibEntry> = {
   bearing: {
     signature: 'lib.bearing("608") { at: (x, y, z), axis: Y }',
-    doc: "Deep-groove ball bearing. Codes: 623 625 626 608 688 MR105 6000 6001 6002 6200 6201 6800 6801. `at` is the centre of one face, the bearing extends along `axis` by its width. Fields: bore, od, width, at, end, center, axis.",
+    doc: "Deep-groove ball bearing. Codes: 623 625 626 608 688 MR105 6000 6001 6002 6005 6200 6201 6205 6800 6801 6806 6808 6810 6812 (68xx are thin-section). `at` is the centre of one face, the bearing extends along `axis` by its width. Fields: bore, od, width, at, end, center, axis.",
     make(a) {
       const code = a.str("code", "608");
       const b = BEARINGS[code];
@@ -382,5 +393,8 @@ export const LIBRARY: Record<string, LibEntry> = {
     },
   },
 };
+
+// Purchasable catalog parts (controllers, motors, rails...) as lib.<kind>("id").
+for (const [k, v] of Object.entries(MACHINE_LIBRARY)) if (!(k in LIBRARY)) LIBRARY[k] = v;
 
 export const THREAD_NAMES = Object.keys(THREADS);

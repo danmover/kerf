@@ -4,6 +4,7 @@ import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
+import type { MachineData } from "../machine/types";
 
 export interface Motion {
   origin: V3;
@@ -53,7 +54,7 @@ export interface EvalPart {
   motion?: Motion;
   gear?: GearInfo;
   fastener?: FastenerInfo;
-  bom?: { description: string; standard?: string };
+  bom?: { description: string; standard?: string; catalogId?: string; length?: number };
 }
 
 export interface EvalParam {
@@ -102,4 +103,6 @@ export interface Model {
   /** geometric queries requested by requirements */
   geoQueries: GeoQuery[];
   evalMs: number;
+  /** purchased parts, wiring, calculations, firmware and tests (designs that use catalog parts) */
+  machine?: MachineData;
 }
