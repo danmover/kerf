@@ -6,7 +6,7 @@
 // integrated checks back to the lead assistant.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { getApiKey } from "../persist/vault";
+import { claudeClient, claudeParallel, claudeRoute } from "../ai/client";
 import { useSettings, type Effort } from "../app/settings";
 import { setSource, useDesign, whenChecked } from "../core/engine";
 import { commitSource, onProjectOpen, setUndoGuard, useProject } from "../app/project";
@@ -77,7 +77,7 @@ setUndoGuard(() => (live ? "Undo waits for the parallel build. Stop it from its 
 
 export async function startBuild(input: BuildInput, ctx: { signal?: AbortSignal; toolUseId?: string }): Promise<ToolOutcome> {
   if (live) return fail("A parallel build is already running. Wait for it to finish.", "Another build is running");
-  if (!getApiKey()) return fail("No API key is available for the agents.", "No API key");
+  if (!claudeRoute()) return fail("No API key is available for the agents.", "No API key");
   const projectId = useProject.getState().current?.id;
   if (!projectId) return fail("No project is open.", "No project open");
 
@@ -117,7 +117,7 @@ export async function startBuild(input: BuildInput, ctx: { signal?: AbortSignal;
 
 /** Re-run one subassembly's agent with an instruction from the user (outside the chat). */
 export async function reviseSubassembly(id: string, instruction: string, parentRunId?: string): Promise<void> {
-  if (live || !instruction.trim() || !getApiKey()) return;
+  if (live || !instruction.trim() || !claudeRoute()) return;
   const projectId = useProject.getState().current?.id;
   if (!projectId) return;
   const source = useDesign.getState().source;
@@ -293,7 +293,7 @@ function applyReviewEdits(l: Live) {
 async function schedule(l: Live, instruction?: string) {
   const settings = useSettings.getState();
   pool.size = settings.agentWorkers || defaultWorkers();
-  const anthropic = new Anthropic({ apiKey: getApiKey()!, dangerouslyAllowBrowser: true, maxRetries: 3, timeout: 10 * 60 * 1000 });
+  const anthropic = claudeClient({ maxRetries: 3 })!;
   const system = subagentSystemPrompt();
   const pending = l.planIds.slice();
   const running = new Map<string, Promise<void>>();
@@ -302,7 +302,7 @@ async function schedule(l: Live, instruction?: string) {
   const statusOf = (id: string) => getAgentRun()?.branches.find((b) => b.id === id)?.status;
   while (pending.length || running.size) {
     for (const id of pending.slice()) {
-      if (running.size >= settings.agentParallel) break;
+      if (running.size >= claudeParallel(settings.agentParallel)) break;
       if (l.runAbort.signal.aborted || l.fatal) {
         pending.splice(pending.indexOf(id), 1);
         patchBranch(id, (b) => (b.status === "queued" || b.status === "waiting" ? { ...b, status: "stopped", activity: undefined, summary: l.fatal ?? "Stopped before it started." } : b));
