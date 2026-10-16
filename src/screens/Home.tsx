@@ -86,7 +86,7 @@ export function Home() {
             <br />
             The checks keep it honest.
           </h1>
-          <p>Kerf is mechanical CAD where the AI does the modelling and you direct the design. Every change, by you or by Claude, edits one design file that is rebuilt as exact solids and checked for fit, interference, tool access and motion.</p>
+          <p>Kerf is mechanical CAD where the AI does the modelling and you direct the design. Every change, by you or by Claude, edits one design file that is rebuilt as exact solids and checked for fit, interference, tool access, motion and strength.</p>
         </motion.div>
 
         {save === "memory" && (
@@ -236,6 +236,37 @@ export function TemplateArt({ id }: { id: string }) {
         <circle cx="80" cy="62" r="4" fill={stroke} />
         <circle cx="131" cy="62" r="3" fill="#c792ff" />
         <rect x="30" y="18" width="150" height="88" rx="6" fill="none" stroke="#39445c" />
+      </svg>
+    );
+  if (id === "shelf")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <defs>
+          <linearGradient id="tpl-stress" x1="0" x2="1">
+            <stop offset="0" stopColor="#ff4d5e" />
+            <stop offset="0.3" stopColor="#ffd25e" />
+            <stop offset="0.65" stopColor="#3ddc97" />
+            <stop offset="1" stopColor="#3b6cff" />
+          </linearGradient>
+        </defs>
+        <path d="M46 12v98" stroke="#39445c" strokeWidth="2" />
+        {[20, 34, 48, 62, 76, 90, 104].map((y) => (
+          <path key={y} d={`M46 ${y}l-7 6`} stroke="#39445c" />
+        ))}
+        <rect x="48" y="22" width="8" height="78" fill="rgba(109,139,255,.12)" stroke={stroke} strokeWidth="1.2" />
+        <path d="M56 30h50L56 78z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.2" />
+        <motion.path
+          fill="url(#tpl-stress)"
+          stroke="none"
+          initial={{ d: "M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z" }}
+          animate={{ d: ["M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z", "M56 22 Q110 23 164 29 L164 37 Q110 31 56 30 Z", "M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z"] }}
+          transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <path d="M56 22h108v8H56" fill="none" stroke="#8fa8ff" strokeOpacity="0.25" strokeDasharray="3 3" />
+        <motion.g animate={{ y: [0, 6, 0] }} transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}>
+          <path d="M150 2v14" stroke="#ffb454" strokeWidth="1.6" />
+          <path d="m146 12 4 5 4-5" fill="none" stroke="#ffb454" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </motion.g>
       </svg>
     );
   if (id === "enclosure")

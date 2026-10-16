@@ -7,6 +7,8 @@ import type { Brief, Model } from "./model";
 import type { V3 } from "../kernel/recipe";
 import { parse } from "../lang/parser";
 import { fmtNum } from "../lang/values";
+import { processFromText } from "../mfg/spec";
+import type { ProcessId } from "../mfg/types";
 
 export interface BriefUseData {
   id: string;
@@ -132,10 +134,11 @@ const list = (xs: string[]) => `[${xs.map(quote).join(", ")}]`;
 
 function fieldText(d: BriefData, key: FieldKey): string | null {
   switch (key) {
+    case "process":
+      return d.process ? (isProcessSource(d.process) ? d.process : quote(d.process)) : null;
     case "purpose":
     case "setting":
     case "look":
-    case "process":
     case "material": {
       const v = d[key];
       return v ? quote(v) : null;
@@ -156,6 +159,26 @@ function fieldText(d: BriefData, key: FieldKey): string | null {
     case "max_mass":
       return d.maxMass ? `${num(d.maxMass, 1)}g` : null;
   }
+}
+
+/**
+ * Process source as the evaluator writes it back (mfg.fdm(bed: (250, 210, 210))),
+ * which goes into the brief as code so it reads back as a process with its
+ * settings. Only plain, balanced text qualifies; anything else is quoted.
+ */
+export function isProcessSource(v: string): boolean {
+  if (!/^mfg\.[a-z_]+\([\w .:,+\-()[\]"]*\)$/.test(v)) return false;
+  // no backslashes get past the pattern, so quotes pair up into strings
+  if ((v.match(/"/g)?.length ?? 0) % 2) return false;
+  const bare = v.replace(/"[^"]*"/g, '""');
+  const open: string[] = [];
+  for (const c of bare) {
+    if (c === "(" || c === "[") open.push(c);
+    else if (c === ")" || c === "]") {
+      if (open.pop() !== (c === ")" ? "(" : "[")) return false;
+    }
+  }
+  return open.length === 0;
 }
 
 export function serializeBrief(d: BriefData): string {
@@ -263,18 +286,23 @@ export const PROCESSES: { kind: ProcessKind; label: string; print?: boolean; vol
   { kind: "other", label: "Other" },
 ];
 
-/** Reads loose process names ("3D printed in PETG", "machined") as a process kind. */
+const KINDS: Record<ProcessId, ProcessKind> = {
+  fdm: "fdm",
+  sla: "resin",
+  sls: "sls",
+  cnc_mill: "cnc",
+  cnc_lathe: "cnc",
+  laser_cut: "laser",
+  sheet_metal: "sheet",
+  injection: "molding",
+  die_cast: "molding",
+};
+
+/** Reads loose process names ("3D printed in PETG", "machined") as a process kind, with the same reading the manufacturing checks use. */
 export function processKind(p: string | undefined): ProcessKind | null {
   if (!p) return null;
-  const s = p.toLowerCase();
-  if (/resin|sla|msla|dlp/.test(s)) return "resin";
-  if (/sls|mjf|powder|multi jet/.test(s)) return "sls";
-  if (/fdm|fff|3d.?print|print/.test(s)) return "fdm";
-  if (/cnc|machin|mill|lathe|turn/.test(s)) return "cnc";
-  if (/laser|waterjet|water jet/.test(s)) return "laser";
-  if (/sheet|bend|fold|brake/.test(s)) return "sheet";
-  if (/mou?ld|inject|cast/.test(s)) return "molding";
-  return "other";
+  const id = processFromText(p);
+  return id ? KINDS[id] : "other";
 }
 export const processInfo = (p: string | undefined) => PROCESSES.find((x) => x.kind === processKind(p)) ?? null;
 

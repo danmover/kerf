@@ -21,7 +21,7 @@ export class ParseError extends Error {
   }
 }
 
-const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "brief", "decision", "sketch"]);
+const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "brief", "decision", "sketch", "analysis"]);
 
 /** Entries inside `brief { ... }` that are not `field: value` pairs. Not keywords, so they stay usable as names elsewhere. */
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
@@ -122,7 +122,7 @@ class Parser {
     const tk = this.peek();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -240,6 +240,11 @@ class Parser {
       }
       case "decision":
         return this.decision(start);
+      case "analysis": {
+        const labelTk = this.expect("str", undefined, 'an analysis name in quotes, like analysis "Shelf load" { ... }');
+        const items = this.block();
+        return { k: "analysis", label: labelTk.value, items, span: { start, end: this.prevEnd() }, labelSpan: { start: labelTk.start, end: labelTk.end } };
+      }
     }
     throw new ParseError("Unknown statement", tk.start, tk.end);
   }

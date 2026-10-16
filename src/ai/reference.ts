@@ -4,10 +4,13 @@
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { processReference } from "../mfg/guide";
 import { FINISHES, MATERIAL_LIST } from "../library/materials";
 import { importsReference } from "./importTools";
 import { CONSTRAINTS } from "../sketch/evaluate";
 import { SKETCH_FNS } from "../sketch/fns";
+import { ANALYSIS_FNS } from "../analysis/lang";
+import { MECH } from "../analysis/materials";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -46,6 +49,12 @@ export function languageReference(): string {
   const constraints = Object.values(CONSTRAINTS)
     .map((c) => `- ${c.doc}`)
     .join("\n");
+  const analysisFns = Object.values(ANALYSIS_FNS)
+    .map((f) => `- ${f.doc ?? f.name}`)
+    .join("\n");
+  const mech = Object.entries(MECH)
+    .map(([k, m]) => `${k}: E ${m.E / 1000} GPa, yield ${m.yield} MPa, fatigue ${m.fatigue} MPa${m.layerFactor < 1 ? `, layers ${Math.round(m.layerFactor * 100)} %` : ""}`)
+    .join("; ");
 
   return `# Kerf design language (.kerf)
 
@@ -65,6 +74,7 @@ part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // c
 require "Label" [hard|soft] [for use_id, ...]: condition      // checked every rebuild; hard by default; for links it to brief uses
 brief { ... }                                                 // the design brief, once, near the top (see below)
 decision name "Title" { ask, chose, by, why, option ... }      // a recorded design choice and its alternatives (below)
+analysis "Label" { props }                                     // a strength analysis or drivetrain duty, re-run after every change (see Analysis blocks)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -79,10 +89,10 @@ brief {
   outdoor: true
   exposure: ["sunlight", "rain", "vibration"]
 
-  process: "FDM print"                   // FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded
+  process: "FDM print"                   // the default process of every part; text, or a value like mfg.fdm(layer: 0.2)
   material: "PETG"
   quantity: 2
-  build_volume: (220, 220, 250)          // printer bed, mm; defaults by process when missing
+  build_volume: (220, 220, 250)          // printer bed, mm; the bed of every printed part
 
   max_size: (80, 60, 50)                 // the whole design must fit in this box, mm
   max_mass: 60g
@@ -99,9 +109,10 @@ brief {
   assume "Rider weight is not carried by this part"
   assume "Printed with 4 walls" confirmed
 }
-A trailing assumed marks what Claude estimated; the user confirms it. Fields: purpose, setting, look (text), priorities, exposure (lists of text), temp (range with C), outdoor (true/false), process, material (text), quantity (integer), build_volume, max_size (three sizes in mm), max_mass (mass). use id "text" { load (force in N, or a mass in kg or g read as its weight), dir (direction: X, -Z or a vector), on (part or component name), cycles, note }. given name = value ["description"] defines a fixed name the design reads like a locked param (bar_d above). reference id "title" { file (an attached file id), url, notes }. Unknown fields are kept and warned about.
+A trailing assumed marks what Claude estimated; the user confirms it. Fields: purpose, setting, look (text), priorities, exposure (lists of text), temp (range with C), outdoor (true/false), process (text or an mfg.* process), material (text), quantity (integer), build_volume, max_size (three sizes in mm), max_mass (mass). use id "text" { load (force in N, or a mass in kg or g read as its weight), dir (direction: X, -Z or a vector), on (part or component name), cycles, note }. given name = value ["description"] defines a fixed name the design reads like a locked param (bar_d above). reference id "title" { file (an attached file id), url, notes }. Unknown fields are kept and warned about.
+The brief's process is the default for every custom part with no process of its own, unless the part's own material cannot be made that way (a steel shaft in a printed design); parts naming no material take the brief's material. Put process: on a part only where it differs.
 Requirements link to uses with for: require "Clamp grips the bar" for hold_light: clamp_gap < bar_d.
-Brief checks the app adds: uses no requirement covers, loads that need strength analysis, the material against the temperature range, sunlight, wet and impact exposure and the process, food contact on printed parts, printed parts against the build volume, the whole design against max_size and max_mass, and givens nothing uses.
+Brief checks the app adds: uses no requirement covers, loads that need strength analysis, the material against the temperature range, sunlight, wet and impact exposure, food contact on printed parts, the whole design against max_size and max_mass, and givens nothing uses.
 
 ## Part blocks
 part bracket {
@@ -116,7 +127,7 @@ part bracket {
   for x in [-12, 12] { cut hole(M3, depth: 6, at: (x, 0, 5)) }
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
 }
-Part props: color, material, finish, group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
+Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
 Order matters: shell/fillet/chamfer apply to the body built so far, so put them right after the body and before bosses and holes. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
@@ -160,6 +171,8 @@ ${constraints}
 A good sketch is fully defined (0 degrees of freedom): every point is fixed by constraints, usually by dimensions driven from params plus horizontal/vertical/coincident relations and one point tied to the origin. Redundant constraints are warned about; conflicting ones fail and name the culprit. A closed profile is one or more non-crossing loops; inner loops become holes. Sketch values expose .area, .plane, .normal and each named entity in world coordinates (side.l1.mid, side.c1.center), so other statements can position things from a sketch.
 Use sketches for profiles that are awkward to build from primitives (bent plates, cams, levers, gussets, custom outlines, turned parts) and whenever the user wants to edit a profile by hand. Primitives are still fine for plain boxes, cylinders and holes.
 
+${processReference()}
+
 ## Components
 component name = lib.kind(args) { at: point, axis: dir, ... }
 Props: at (a point, or a LIST of points to make a pattern of identical instances: name#1..n; use name.all[i] or name.count), axis (orientation for axial parts), facing (horizontal direction for connectors), rotate, spin (drives the mechanism: spin: 1), mesh (gears: mesh with another spur_gear; the phase and speed are computed so teeth interleave), turns_with (locks to another component's rotation, e.g. a gear on a motor shaft), color, group, material, finish, label. Flags: locked, hidden, removable.
@@ -199,6 +212,36 @@ decision wall_thickness "Wall thickness" {
 }
 An option's { param: value } list names parameters only; switching to that option writes those values into the params. Options without values are structural (switching them needs a design change). The chosen option's values should match the params; the panel shows any difference as "adjusted".
 
+## Analysis blocks
+A structural analysis says how parts are held and what loads them. After every build the app solves a finite-element model of the named parts (bonded where they touch) and adds strength and stiffness checks.
+analysis "Shelf load" {
+  parts: [bracket, gusset]                  // optional: defaults to the parts that face() names
+  fix: face(bracket, -Y)                    // held in every direction (screwed or glued to the wall)
+  fix: zone(at: hole_pos, d: M4.clearance + 2, axis: Z, length: 5)   // a bolt hole: the bore surface
+  fix: roller(face(bracket, -Z), Z)         // only stops movement along Z (resting on a surface)
+  load: force(face(bracket, +Z), (0, 0, -shelf_kg * 9.81N))   // total force spread over the region
+  load: pressure(face(lid, +Z), 0.02MPa)
+  load: torque(zone(at: hub_pos, d: 8, axis: Z, length: 6), 0.5Nm, axis: Z)
+  gravity                                   // self-weight; or accel: (0, 0, -3) for 3 g
+  material: "PETG"                          // optional: overrides the parts' material
+  printed                                   // FDM part: layer bonds are weaker; build: Z gives the stacking direction (default Z)
+  cycles: 1e5                               // repeated loading: judged against fatigue strength
+  safety: 2                                 // required lowest factor of safety (default 2)
+  max_deflection: 0.5mm                     // optional stiffness limit
+  resolution: "standard"                    // "draft" ~8k elements, "standard" ~30k (default), "fine" ~110k, or a cell size like 0.6mm
+}
+fix: and load: may repeat or take lists. Units: N, kN, lbf, kgf (weight of a kilogram: 5kgf = 49 N; kg is a mass in grams, so never kg × 9.81N), Nm, Nmm, MPa, kPa, bar, psi, GPa. Inside an analysis block these functions exist:
+${analysisFns}
+A drivetrain analysis gives a gear train's duty instead; the app checks tooth bending (Lewis), bearing L10 life and shaft torsion for every gear and bearing the driver turns:
+analysis "Gearbox duty" {
+  drive: motor_gear        // the component that drives the train
+  torque: 0.3Nm            // input torque
+  speed: 3000rpm           // input speed
+  life: 2000h              // required running life (sets fatigue cycles and the bearing life target)
+  safety: 1.5
+}
+Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
+
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins
 - exact solid interference between every pair of nearby parts (OpenCASCADE booleans); parts of one multi-solid component are not checked against each other; gears are checked by tooth geometry instead
@@ -206,7 +249,9 @@ An option's { param: value } list names parameters only; switching to that optio
 - swept envelopes of rotating gears against static parts
 - gear meshing: same module, exact centre distance, face overlap, and tooth clearance through a rotation
 - build errors (a modelling step the kernel could not perform)
+- every analysis block: structural strength (factor of safety) and stiffness, or the drivetrain's tooth, bearing and shaft checks
+- manufacturing: every part with a process: is checked against that process's rules on its exact geometry (walls by ray casting, draft and undercuts along the pull, tool reach per setup, inside corner radii, slots, overhangs and orientation, turning, sheet thickness and bends, flat profiles, holes, voids, machine size), plus whether its material suits the process
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
-Things geometry cannot prove (strength, torque, heat, tolerances on a real printer) are reported as "needs analysis".
+Things geometry cannot prove are reported as "needs analysis" until an analysis block covers them; heat and real printer tolerances are not analysed.
 `;
 }

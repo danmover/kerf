@@ -3,6 +3,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SceneController } from "./viewport/scene";
+import { ProcessOverlay } from "./viewport/processOverlay";
+import { useMfgView } from "./mfgView";
 import { meshes, useDesign } from "../core/engine";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
@@ -22,10 +24,14 @@ import { ImportFacts } from "./ImportsPanel";
 import { SketchLayer } from "./sketch/SketchPanels";
 import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
 import { T } from "./sketch/glyphs";
+import { ResultsLayer } from "./ResultsLayer";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
   const ctl = useRef<SceneController | null>(null);
+  const mfgOverlay = useRef<ProcessOverlay | null>(null);
+  const processResults = useDesign((s) => s.process);
+  const showProcessIssues = useMfgView((s) => s.overlay);
   const model = useDesign((s) => s.model);
   const meshVersion = useDesign((s) => s.meshVersion);
   const interferences = useDesign((s) => s.interferences);
@@ -49,6 +55,7 @@ export function Viewport() {
       return;
     }
     ctl.current = c;
+    mfgOverlay.current = new ProcessOverlay(c);
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
       const s = useView.getState();
@@ -92,6 +99,8 @@ export function Viewport() {
     return () => {
       setScene(null);
       registerViewport(null);
+      mfgOverlay.current?.destroy();
+      mfgOverlay.current = null;
       c.dispose();
       ctl.current = null;
     };
@@ -131,6 +140,10 @@ export function Viewport() {
     if (view.assemblyRequest) ctl.current?.playAssembly();
   }, [view.assemblyRequest]);
   useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
+  // after setParts above, so overlays attach to the current part groups
+  useEffect(() => {
+    if (model) mfgOverlay.current?.update(model.parts, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion);
+  }, [model, meshVersion, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion]);
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
   useEffect(() => {
@@ -271,6 +284,8 @@ export function Viewport() {
       </AnimatePresence>
 
       <Hud stage={stage} parts={visibleParts} />
+
+      {scene && !inSketch && <ResultsLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 

@@ -11,8 +11,9 @@ import { materialDensity } from "../library/standards";
 import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { briefChecks, type GeomLookup } from "./briefChecks";
+import type { SettingValue } from "../mfg/types";
 
-export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "info";
+export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "analysis" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -27,9 +28,16 @@ export interface CheckItem {
   margin?: number;
   /** brief uses this check serves */
   uses?: string[];
-  /** how the result was established */
-  basis: "geometry" | "parameters" | "needs analysis";
+  /** how the result was established: simulation is the finite-element solver, calculation a textbook formula */
+  basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "calculation";
+  /** what to change, in plain words */
+  fix?: string;
+  /** a change the app can make in one click */
+  action?: CheckAction;
 }
+
+/** One-click fixes: for now, a setting of a part's manufacturing process (print upside down, add a setup). */
+export type CheckAction = { kind: "process-setting"; label: string; part: string; setting: string; value: SettingValue };
 
 export interface CheckReport {
   items: CheckItem[];
@@ -151,7 +159,25 @@ export function gearChecks(model: Model): CheckItem[] {
   return out;
 }
 
-export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>, geom: GeomLookup = () => undefined): CheckReport {
+/** What the core checks are worked out from, besides the model. */
+export interface ReportInputs {
+  /** the model evaluated again with the kernel's geometric query results */
+  geoModel?: Model | null;
+  kernel?: ChecksResult | null;
+  buildErrors?: Map<string, string>;
+  /** defaults to the model's parts */
+  partsById?: Map<string, EvalPart>;
+  /** meshes by geometry hash, for the brief's size checks */
+  geom?: GeomLookup;
+}
+
+/**
+ * The core checks. Checks from other modules (manufacturing processes,
+ * analyses) are added afterwards by the passes in reportPasses.
+ */
+export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckReport {
+  const { geoModel = null, kernel = null, buildErrors = new Map<string, string>(), geom = () => undefined } = inputs;
+  const partsById = inputs.partsById ?? new Map(model.parts.map((p) => [p.id, p]));
   const t0 = performance.now();
   const items: CheckItem[] = [];
   const label = (id: string) => partsById.get(id)?.label ?? id;
@@ -229,17 +255,22 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
 
   // things geometry cannot prove
   if (model.parts.some((p) => p.motion)) {
-    items.push({ id: "analysis:loads", category: "info", status: "info", title: "Torque, tooth strength and wear", detail: "Not verified by geometry. Check gear tooth bending stress and bearing loads for the expected torque, then test a printed prototype.", basis: "needs analysis" });
+    items.push({ id: "analysis:loads", category: "info", status: "info", title: "Torque, tooth strength and wear", detail: "Not verified yet. Add an analysis block with drive:, torque: and speed: (or ask Claude to) to check tooth bending, bearing life and shaft torsion, then test a printed prototype.", basis: "needs analysis" });
   }
   if (model.parts.some((p) => p.kind === "part" && isPrinted(p.material))) {
     items.push({ id: "analysis:print", category: "info", status: "info", title: "Print tolerances", detail: "Hole and boss fits assume a calibrated printer (±0.15 mm). Print a fit test before a full build.", basis: "needs analysis" });
   }
 
+  return finishReport(items, performance.now() - t0 + (kernel?.ms ?? 0));
+}
+
+/** Order items by status and count them (also used when analysis results are merged in later). */
+export function finishReport(items: CheckItem[], ms: number): CheckReport {
   const order: Record<CheckStatus, number> = { fail: 0, warn: 1, pending: 2, pass: 3, info: 4 };
   items.sort((a, b) => order[a.status] - order[b.status]);
   const counts: Record<CheckStatus, number> = { pass: 0, fail: 0, warn: 0, pending: 0, info: 0 };
   for (const i of items) counts[i.status]++;
-  return { items, counts, ms: performance.now() - t0 + (kernel?.ms ?? 0) };
+  return { items, counts, ms };
 }
 
 function mapReq(s: ReqStatus, level: "hard" | "soft"): CheckStatus {

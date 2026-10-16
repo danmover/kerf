@@ -112,7 +112,8 @@ export type Stmt =
       nameSpan: Span;
       /** offset of the closing brace, where new items are inserted */
       bodyEnd: number;
-    };
+    }
+  | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span };
 
 /** Geometry declared in a sketch: points, lines, circles and arcs. */
 export type SketchEntityKind = "point" | "line" | "circle" | "arc";
@@ -166,6 +167,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "sketch":
       return s.name;
     case "require":
+    case "analysis":
       return s.label;
     case "decision":
       return s.name;
