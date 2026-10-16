@@ -254,16 +254,37 @@ export class Topo {
     const n2 = this.normalNear(f2, e.m);
     if (vdot(n1, n2) > Math.cos((12 * Math.PI) / 180)) return "smooth";
     // which way does the second face leave the edge, relative to the first face's outside?
-    const c2 = this.nearestSample(f2, e.m);
-    let d = vsub(c2, e.m);
-    d = vsub(d, vscale(e.tangent, vdot(d, e.tangent)));
-    const side = vdot(d, n1);
-    const c1 = this.nearestSample(f1, e.m);
-    let d1 = vsub(c1, e.m);
-    d1 = vsub(d1, vscale(e.tangent, vdot(d1, e.tangent)));
-    const side1 = vdot(d1, n2);
+    const side = vdot(this.intoFace(f2, n2, e), n1);
+    const side1 = vdot(this.intoFace(f1, n1, e), n2);
     const s = side + side1;
     return s < 0 ? "convex" : "concave";
+  }
+
+  /** The direction from the edge's midpoint into face fi, square to the edge. */
+  private intoFace(fi: number, n: V3, e: EdgeInfo): V3 {
+    // a step along the face either way from the edge: the one that lands on the face is the way in
+    const w = vnorm(vcross(n, e.tangent));
+    if (vlen(w) > 0.5) {
+      const step = 0.02;
+      const off = (sign: number) => {
+        const v = R.makeVertex(vadd(e.m, vscale(w, sign * step)));
+        try {
+          return this.dist.distanceBetween(v, this.faces[fi]);
+        } catch {
+          return NaN;
+        } finally {
+          v.delete();
+        }
+      };
+      const plus = off(1);
+      const minus = off(-1);
+      if (plus < step / 2 && !(minus < step / 2)) return w;
+      if (minus < step / 2 && !(plus < step / 2)) return vscale(w, -1);
+    }
+    // a face too thin to step onto: fall back to its nearest sample
+    let d = vsub(this.nearestSample(fi, e.m, e.tangent), e.m);
+    d = vsub(d, vscale(e.tangent, vdot(d, e.tangent)));
+    return d;
   }
 
   private normalNear(fi: number, p: V3): V3 {
@@ -284,14 +305,22 @@ export class Topo {
     }
   }
 
-  private nearestSample(fi: number, p: V3): V3 {
+  /**
+   * The face sample nearest p, preferring ones square to the edge from p: beside a curved edge, a sample further
+   * round the curve can lie on the other side of the tangent line (a boss root read as convex).
+   */
+  private nearestSample(fi: number, p: V3, tangent: V3): V3 {
     const s = this.face(fi);
     let best = s.cents[0];
     let bd = Infinity;
     for (const q of s.cents) {
-      const d = vlen(vsub(q, p));
-      if (d < bd && d > 1e-6) {
-        bd = d;
+      const d = vsub(q, p);
+      const along = vdot(d, tangent);
+      const len2 = vdot(d, d);
+      if (len2 < 1e-12) continue;
+      const score = len2 - along * along + 16 * along * along;
+      if (score < bd) {
+        bd = score;
         best = q;
       }
     }
@@ -410,10 +439,18 @@ export class Topo {
     }
     switch (sel.s) {
       case "feat": {
+        // where an added feature meets the body is an inside corner, and where a cut does an outside one. Without this,
+        // a face the fuse merged across both (a wall flush with the plate's side) pulls the plate's own edges into root,
+        // and a hole cut later through a boss puts its rim there.
+        const kind = this.features.get(sel.f)?.kind;
+        const rootLike = (i: number) => {
+          const c = this.edge(i).convexity;
+          return kind === "add" ? c === "concave" : kind === "cut" ? c === "convex" : true;
+        };
         return pick((i) => {
           const fs = [...new Set(this.adj()[i])];
           const n = fs.filter((f) => this.onFeature(sel.f, f)).length;
-          if (sel.part === "root") return n === 1 && fs.length === 2;
+          if (sel.part === "root") return n === 1 && fs.length === 2 && rootLike(i);
           if (sel.part === "tip") return n === 2 && !this.isSeam(i) && this.edge(i).convexity !== "smooth";
           return n >= 1 && !this.isSeam(i);
         });
@@ -577,21 +614,19 @@ export class Topo {
     }
   }
 
-  /** The outermost planar face whose outward normal points along dir (shell's open: Z). */
-  outermostFace(dir: V3): number | undefined {
+  /**
+   * The outermost planar faces whose outward normal points along dir (shell's open: Z): every one in that top
+   * plane, so a slot cut across the top before shelling still opens on both sides.
+   */
+  outermostFaces(dir: V3): number[] {
     const d = vnorm(dir);
-    let best: number | undefined;
-    let bestH = -Infinity;
+    const flat: { i: number; h: number }[] = [];
     this.faces.forEach((_, i) => {
       const s = this.face(i);
-      if (s.kind !== "PLANE" || vdot(s.normals[0], d) < 0.999) return;
-      const h = vdot(s.pts[0], d);
-      if (h > bestH + TOL) {
-        bestH = h;
-        best = i;
-      }
+      if (s.kind === "PLANE" && vdot(s.normals[0], d) >= 0.999) flat.push({ i, h: vdot(s.pts[0], d) });
     });
-    return best;
+    const top = flat.reduce((m, f) => Math.max(m, f.h), -Infinity);
+    return flat.filter((f) => f.h > top - TOL).map((f) => f.i);
   }
 }
 

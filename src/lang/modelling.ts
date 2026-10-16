@@ -7,12 +7,46 @@ import { Args, toV3 } from "./args";
 import { def, SHAPE_FNS } from "./builtins";
 import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
 import { SEL_PRESETS, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
-import { threadDepth } from "../kernel/threadMath";
+import { threadDepth, threadTurnsError } from "../kernel/threadMath";
 import { THREADS, parseThreadName } from "../library/standards";
 
 const Z: V3 = [0, 0, 1];
 const prof = (p: Profile) => new ProfileV(p);
 const r2 = (n: number) => Math.round(n * 100) / 100;
+
+// Limits that keep one source value from tying up the geometry kernel for minutes.
+const MAX_HELIX_TURNS = 200;
+const MAX_TWIST = 3600;
+const MAX_LOFT_SECTIONS = 50;
+/** outlines and holes in a swept profile: each one is a sweep and a boolean */
+const MAX_SWEEP_LOOPS = 8;
+
+/** Outlines plus holes a profile draws (Infinity for text, whose glyphs are not counted). */
+function profileLoops(p: Profile): number {
+  switch (p.t) {
+    case "text":
+      return Infinity;
+    case "offset":
+    case "fillet2":
+    case "place2":
+      return profileLoops(p.p);
+    case "union2":
+      return p.ps.reduce((n, q) => n + profileLoops(q), 0);
+    case "diff2":
+      return p.b.reduce((n, q) => n + profileLoops(q), profileLoops(p.a));
+    case "common2":
+      return Math.max(profileLoops(p.a), profileLoops(p.b));
+    default:
+      return 1;
+  }
+}
+
+function sweepable(a: Args, p: Profile): Profile {
+  const n = profileLoops(p);
+  if (n === Infinity) a.ctx.error("sweep(): text cannot be swept along a path; put lettering on with emboss() or engrave()");
+  else if (n > MAX_SWEEP_LOOPS) a.ctx.error(`sweep(): the profile has ${n} outlines and holes; Kerf sweeps at most ${MAX_SWEEP_LOOPS}. Sweep the outline and cut or add the rest as separate steps`);
+  return p;
+}
 
 function at2(a: Args, name = "at"): V2 {
   const v = a.vec3(name, [0, 0, 0]);
@@ -28,10 +62,18 @@ function pt2(v: Value, ctx: CallCtx, what: string): V2 {
 
 /** Rough 2D bounds of a profile; null when unknown (text). */
 export function profileBounds(p: Profile): [V2, V2] | null {
-  const fromPts = (pts: V2[]): [V2, V2] => [
-    [Math.min(...pts.map((q) => q[0])), Math.min(...pts.map((q) => q[1]))],
-    [Math.max(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[1]))],
-  ];
+  // a loop, not Math.min(...pts): spreading a very large polygon overflows the stack
+  const fromPts = (pts: V2[]): [V2, V2] => {
+    const lo: V2 = [Infinity, Infinity];
+    const hi: V2 = [-Infinity, -Infinity];
+    for (const q of pts) {
+      if (q[0] < lo[0]) lo[0] = q[0];
+      if (q[1] < lo[1]) lo[1] = q[1];
+      if (q[0] > hi[0]) hi[0] = q[0];
+      if (q[1] > hi[1]) hi[1] = q[1];
+    }
+    return [lo, hi];
+  };
   switch (p.t) {
     case "circle":
       return fromPts([
@@ -274,7 +316,12 @@ export const PATH_FNS: Record<string, Fn> = Object.fromEntries([
   def(
     "helix",
     ["d", "pitch", "h", "at", "dir", "left"],
-    (a) => new PathV({ t: "helix", d: a.positive("d"), pitch: a.positive("pitch"), h: a.positive("h"), at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", Z), left: a.bool("left") }),
+    (a) => {
+      const pitch = a.positive("pitch");
+      const h = a.positive("h");
+      if (h / pitch > MAX_HELIX_TURNS) a.ctx.error(`helix(): ${Math.round(h / pitch)} turns is more than the ${MAX_HELIX_TURNS} Kerf sweeps; use a coarser pitch or a shorter helix`);
+      return new PathV({ t: "helix", d: a.positive("d"), pitch, h, at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", Z), left: a.bool("left") });
+    },
     "helix(d, pitch, h, at:, dir: Z, left: false) — a helix of diameter d (springs, coils, spiral ramps).",
   ),
   def(
@@ -356,7 +403,9 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
       if (a.bool("symmetric")) f = shiftFrame(f, -h / 2);
       const scale = a.num("scale", 1);
       if (!(scale > 0)) a.ctx.error("extrude(): scale must be greater than 0");
-      return new ShapeV({ t: "extrude", p, h, f, twist: a.num("twist", 0), scale });
+      const twist = a.num("twist", 0);
+      if (Math.abs(twist) > MAX_TWIST) a.ctx.error(`extrude(): twist ${twist}° is more than ${MAX_TWIST / 360} full turns; for a coil, sweep() a profile along a helix()`);
+      return new ShapeV({ t: "extrude", p, h, f, twist, scale });
     },
     "extrude(profile, h, at: (0, 0, 0), dir: Z, rot: 0, twist: 0, scale: 1, symmetric: false) — pushes a profile h along dir. The profile's (x, y) map to X, Y for dir Z; for a horizontal dir, y is up. twist turns it (degrees over h); scale shrinks the far end (tapered bosses, nozzles).",
   ),
@@ -382,7 +431,7 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
   def(
     "sweep",
     ["profile", "path", "rot"],
-    (a) => new ShapeV({ t: "sweep", p: a.profile("profile"), path: a.path("path"), rot: a.num("rot", 0), frenet: false }),
+    (a) => new ShapeV({ t: "sweep", p: sweepable(a, a.profile("profile")), path: a.path("path"), rot: a.num("rot", 0), frenet: false }),
     "sweep(profile, path, rot: 0) — moves a profile along a 3D path, kept square to it. The profile's (0, 0) rides on the path. Handles, hoses, cable guides, springs (with helix).",
   ),
   def(
@@ -409,6 +458,7 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
     (a) => {
       const list = a.value("sections");
       if (!Array.isArray(list) || list.length < 2) return a.ctx.error("loft(): needs a list of at least 2 profiles or section(...)s");
+      if (list.length > MAX_LOFT_SECTIONS) a.ctx.error(`loft(): ${list.length} sections is more than the ${MAX_LOFT_SECTIONS} Kerf lofts through; a few well-placed sections give the same smooth skin`);
       const dir = a.dir("dir", Z);
       const base = a.vec3("at", [0, 0, 0]);
       const hsV = a.value("heights");
@@ -459,7 +509,8 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
     (a) => {
       const { spec } = threadSpec(a);
       const length = a.positive("length");
-      if (length / spec.pitch > 400) a.ctx.error("thread(): at most 400 turns; shorten the thread");
+      const turns = threadTurnsError("thread()", length, spec.pitch);
+      if (turns) a.ctx.error(turns);
       const internal = a.bool("internal");
       const lead = internal ? a.num("lead", 0.5 * spec.pitch) : 0;
       if (lead < 0) a.ctx.error("thread(): lead must be 0 or more");
@@ -679,13 +730,15 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
           });
         }
       }
+      const turns = fit === "thread" ? threadTurnsError("screw_boss()", depth, t.pitch) : null;
+      if (turns) a.ctx.error(turns);
       if (fit === "thread") steps.push({ op: "cut", shape: { t: "hole", d: t.d, depth, at: top, dir: vscale(dir, -1), thread: holeThread(t), lead: 0.5 * t.pitch } });
       else steps.push({ op: "cut", shape: { t: "hole", d: holeD, depth, at: top, dir: vscale(dir, -1), csink: holeD + 0.8 } });
       const rr = a.num("root_r", 0.5);
       if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
       return new FeatureV("screw_boss", steps, { hole_d: holeD, d, h, depth, top: new Vec(top) });
     },
-    'screw_boss(at, size: M3, h, d:, fit: "insert"|"tap"|"clearance"|"thread", depth:, dir: Z, root_r: 0.5, gussets: 0, t:) — a screw post standing h tall on the floor point `at`: the boss, a hole sized for a heat-set insert (default when one exists) or a self-tapping screw, an entry chamfer, a filleted root and optional gussets. Use with add (it adds and cuts).',
+    'screw_boss(at, size, h, d:, fit: "insert"|"tap"|"clearance"|"thread", depth:, dir: Z, root_r: 0.5, gussets: 0, t:) — a screw post standing h tall on the floor point `at` for a screw of size (a thread such as M3): the boss, a hole sized for a heat-set insert (default when one exists) or a self-tapping screw, an entry chamfer, a filleted root and optional gussets. Use with add (it adds and cuts).',
   ),
   def(
     "snap_hook",

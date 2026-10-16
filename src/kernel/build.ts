@@ -173,7 +173,13 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
   if (!p.base) throw new BuildError("Part has no body");
   const features = new Map<string, FeatureTools>();
   const warnings: string[] = [];
-  let shape = buildShape(p.base, detail);
+  let shape: Shape3D;
+  try {
+    shape = buildShape(p.base, detail);
+  } catch (e) {
+    if (isTrap(e) || e instanceof BuildError) throw e;
+    throw new BuildError(`The kernel could not build the body ${p.base.t}${p.baseName ? ` as ${p.baseName}` : ""} (step 1): ${errMsg(e)}.`);
+  }
   if (p.baseName) features.set(p.baseName, { name: p.baseName, kind: "body", tools: [shape] });
   let topo: Topo | null = null;
   const topoNow = () => (topo && topo.shape === shape ? topo : (topo?.dispose(), (topo = new Topo(shape, features))));
@@ -183,6 +189,8 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
     try {
       shape = applyOp(shape, op, detail, features, topoNow);
     } catch (e) {
+      // a WebAssembly trap leaves OpenCASCADE in an unknown state: let the worker restart
+      if (isTrap(e)) throw e;
       const what = opLabel(op);
       if (op.cosmetic) {
         warnings.push(`${what} (${step}) was left out: ${errMsg(e)}`);
@@ -241,9 +249,9 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       const picked = new Set<number>();
       for (const sp of specs) {
         if ("dir" in sp) {
-          const f = t.outermostFace(sp.dir);
-          if (f === undefined) throw new BuildError(`no flat face points along (${sp.dir.map((x) => Math.round(x * 100) / 100).join(", ")}) to leave open`);
-          picked.add(f);
+          const fs = t.outermostFaces(sp.dir);
+          if (!fs.length) throw new BuildError(`no flat face points along (${sp.dir.map((x) => Math.round(x * 100) / 100).join(", ")}) to leave open`);
+          fs.forEach((f) => picked.add(f));
         } else {
           const fs = t.selectFaces(sp.sel);
           if (!fs.size) throw new BuildError(`the open faces ${describeSel(sp.sel)} matched nothing`);
@@ -251,23 +259,24 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
         }
       }
       const faces = [...picked].map((i) => t.faces[i]);
-      return shape.shell(op.t, (f) => f.inList(faces));
+      return checked(shape.shell(op.t, (f) => f.inList(faces)));
     }
     case "fillet":
     case "chamfer": {
       const t = topo();
       const idx = t.selectEdges(op.edges);
       if (!idx.size) throw new BuildError(`edges: ${describeSel(op.edges)} matched no edges`);
+      if (idx.size > MAX_ROUNDED_EDGES) throw new BuildError(`edges: ${describeSel(op.edges)} picks ${idx.size} edges, more than the ${MAX_ROUNDED_EDGES} Kerf rounds in one step`);
       const chosen = [...idx].map((i) => t.edges[i]);
       const byHash = new Map<number, R.Edge[]>();
       for (const e of chosen) byHash.set(e.hashCode, [...(byHash.get(e.hashCode) ?? []), e]);
       const has = (e: R.Edge) => !!byHash.get(e.hashCode)?.some((x) => x.isSame(e));
       if (op.op === "fillet") {
         const r = op.r;
-        return shape.fillet((e) => (has(e) ? r : null));
+        return checked(shape.fillet((e) => (has(e) ? r : null)));
       }
       const r = Array.isArray(op.r) ? op.r[0] : op.r;
-      return shape.chamfer((e) => (has(e) ? r : null));
+      return checked(shape.chamfer((e) => (has(e) ? r : null)));
     }
     case "draft": {
       const t = topo();
@@ -275,7 +284,7 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       if (!idx.size) throw new BuildError(`faces: ${describeSel(op.faces)} matched no faces`);
       const faces = [...idx].map((i) => t.faces[i]);
       const plane = new R.Plane(op.neutral, frameFor(op.pull).u, op.pull);
-      return shape.draft(op.angle, (f) => f.inList(faces), plane);
+      return checked(shape.draft(op.angle, (f) => f.inList(faces), plane));
     }
   }
 }
@@ -385,7 +394,26 @@ export function solidVolume(s: Shape3D): number {
   }
 }
 
-function errMsg(e: unknown): string {
+/** Most edges one fillet or chamfer takes: a knurl's 720 ridge edges take over a minute. */
+const MAX_ROUNDED_EDGES = 200;
+
+/** Fillet, chamfer, draft and shell can return a solid that looks right but is broken (later booleans fail). */
+function checked(s: Shape3D): Shape3D {
+  const oc = R.getOC();
+  const check = new oc.BRepCheck_Analyzer(s.wrapped, true, false);
+  const ok = check.IsValid();
+  check.delete();
+  if (!ok) throw new BuildError("it made an invalid solid");
+  return s;
+}
+
+/** A WebAssembly trap (out of memory, an abort): unlike an OpenCASCADE exception, the kernel cannot carry on. */
+export function isTrap(e: unknown): boolean {
+  return typeof WebAssembly !== "undefined" && e instanceof WebAssembly.RuntimeError;
+}
+
+/** Readable text for anything a build throws. */
+export function errMsg(e: unknown): string {
   if (e instanceof Error) return e.message || e.name;
   if (typeof e === "number") return `OpenCASCADE error ${e}`;
   // OpenCASCADE failures arrive as bare WebAssembly exceptions with no text

@@ -6,6 +6,7 @@ import type { ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/recipe";
 import { THREADS } from "../library/standards";
 import { centerDistance } from "../library/gears";
 import { LIBRARY } from "../library/components";
+import { threadTurnsError } from "../kernel/threadMath";
 
 const deg = Math.PI / 180;
 const Z: V3 = [0, 0, 1];
@@ -161,6 +162,8 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
       const dir = a.dir("dir", [0, 0, -1]);
       if (tapped) {
         if (csink) a.ctx.error("hole(): a threaded hole has its own entry chamfer (lead:); leave out csink");
+        const turns = threadTurnsError("hole()", depth, tapped.pitch);
+        if (turns) a.ctx.error(turns);
         const lead = a.num("lead", 0.5 * tapped.pitch);
         if (lead < 0) a.ctx.error("hole(): lead must be 0 or more");
         return new ShapeV({ t: "hole", d, depth, at, dir, cbore, thread: tapped, lead });

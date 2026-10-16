@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluate, evaluateSelector } from "../src/lang/evaluator";
+import { profileBounds } from "../src/lang/modelling";
 import type { PartRecipe, ShapeRecipe } from "../src/kernel/recipe";
 
 const errors = (src: string) => evaluate(src).diagnostics.filter((d) => d.severity === "error").map((d) => d.message);
@@ -111,5 +112,46 @@ part clip {
   add snap_hook(at: (0, 0, 3), length: 16, t: 1.4, w: 5, catch: 0.8)
 }`);
     expect(m.diagnostics.filter((d) => d.rule?.includes("snap hook"))).toEqual([]);
+  });
+});
+
+describe("limits that keep builds fast", () => {
+  const err = (body: string) => errors(part(body)).join(" ");
+
+  it("caps helix turns, twist and loft sections", () => {
+    expect(err(`body sweep(circle(1), helix(d: 20, pitch: 1, h: 250))`)).toMatch(/250 turns is more than the 200/);
+    expect(err(`body extrude(rect(10, 10), h: 10, twist: 7200)`)).toMatch(/twist 7200° is more than 10 full turns/);
+    const many = Array.from({ length: 60 }, () => "circle(10)").join(", ");
+    const hs = Array.from({ length: 60 }, (_, i) => i).join(", ");
+    expect(err(`body loft([${many}], heights: [${hs}])`)).toMatch(/60 sections is more than the 50/);
+  });
+
+  it("keeps swept profiles small and refuses text", () => {
+    expect(err(`body sweep(text("ABCDE", size: 3), path([(0, 0, 0), (0, 0, 20), (20, 0, 20)], r: 10))`)).toMatch(/text cannot be swept/);
+    const dots = Array.from({ length: 9 }, (_, i) => `circle(1, at: (${i * 3}, 0))`).join(" + ");
+    expect(err(`body sweep(${dots}, path([(0, 0, 0), (0, 0, 20)]))`)).toMatch(/9 outlines and holes/);
+    expect(err(`body sweep(circle(6) - circle(4), path([(0, 0, 0), (0, 0, 20)]))`)).toBe("");
+  });
+
+  it("caps thread turns in threads, threaded holes and threaded bosses", () => {
+    expect(err(`body thread(d: 10, pitch: 1, length: 250)`)).toMatch(/thread\(\): 250 turns of thread is more than the 200/);
+    expect(err(`body box(20, 20, 300)\ncut hole(M3, fit: "thread", depth: 290, at: (0, 0, 300))`)).toMatch(/hole\(\): 580 turns/);
+    expect(err(`body box(40, 40, 4)\nadd screw_boss(at: (0, 0, 4), size: M2, h: 250, fit: "thread")`)).toMatch(/screw_boss\(\): 625 turns/);
+    expect(err(`body box(20, 20, 30)\ncut hole(M3, fit: "thread", depth: 20, at: (0, 0, 30))`)).toBe("");
+  });
+
+  it("measures very large outlines without overflowing the stack", () => {
+    const pts = Array.from({ length: 200_000 }, (_, i): [number, number] => [Math.cos(i) * 10, Math.sin(i) * 5]);
+    const b = profileBounds({ t: "poly", pts, r: 0 })!;
+    expect(b[0][0]).toBeCloseTo(-10, 3);
+    expect(b[1][1]).toBeCloseTo(5, 3);
+  });
+});
+
+describe("selectors written for inspect_part", () => {
+  it("see the design's params and lets", () => {
+    const design = `design "t"\nparam wall = 2.4\nlet lip = wall * 2\npart p {\n  body box(10, 10, 10)\n}\n`;
+    expect(evaluateSelector(`near((0, 0, wall), 1)`, []).error).toMatch(/wall/);
+    expect(evaluateSelector(`near((0, 0, wall), lip)`, [], design).sel).toEqual({ s: "near", p: [0, 0, 2.4], r: 4.8 });
   });
 });

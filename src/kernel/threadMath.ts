@@ -3,6 +3,16 @@
 
 import type { ThreadForm, ThreadSpec3 } from "./recipe";
 
+/** Most turns (length / pitch) of one thread: more takes the detailed build minutes. */
+export const MAX_THREAD_TURNS = 200;
+
+/** Why a thread of this length cannot be built, or null when it can. */
+export function threadTurnsError(fn: string, length: number, pitch: number): string | null {
+  const turns = length / pitch;
+  if (turns <= MAX_THREAD_TURNS) return null;
+  return `${fn}: ${Math.round(turns)} turns of thread is more than the ${MAX_THREAD_TURNS} Kerf builds; model only the length that engages (at most ${Math.floor(MAX_THREAD_TURNS * pitch)} mm at pitch ${pitch})`;
+}
+
 /** Radial depth of the basic thread form. */
 export function threadDepth(form: ThreadForm, pitch: number) {
   switch (form) {

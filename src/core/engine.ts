@@ -245,6 +245,8 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
       // the simple shape stays on screen; say what the detail pass could not do
       detailFailed.add(hash);
       issues.set(hash, `The detailed build failed, so the simple shape is shown: ${message}`);
+      // keep it even if this run is cut short: a detail worker that stalls is replaced, which cancels the run
+      set({ detailIssues: new Map(get().detailIssues).set(hash, issues.get(hash)!) });
     };
     const item = (p: EvalPart) => ({ hash: p.hash, recipe: p.recipe, label: p.label });
     const detailed = refine.filter((p) => hasDetail(p.recipe));

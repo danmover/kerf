@@ -5,6 +5,7 @@ import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import * as R from "replicad";
 import { KernelCore } from "./core";
+import { errMsg, isTrap } from "./build";
 import type { FromWorker, ToWorker } from "./protocol";
 import { fontsIn, type FontName } from "./recipe";
 import { fontLoaded, loadFontData } from "./profiles";
@@ -54,6 +55,13 @@ function enqueue(fn: () => Promise<void>) {
   queue = queue.then(fn).catch(() => undefined);
 }
 
+/** After a WebAssembly trap OpenCASCADE's memory can be corrupt: report it, do nothing more, and wait to be replaced. */
+let broken = false;
+function fatal(jobId: number, e: unknown, hash?: string) {
+  broken = true;
+  post({ type: "fatal", jobId, hash, message: errMsg(e) });
+}
+
 self.onmessage = (ev: MessageEvent<ToWorker>) => {
   const msg = ev.data;
   if (msg.type === "cancel") {
@@ -66,6 +74,7 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
   }
   enqueue(async () => {
     await init();
+    if (broken) return;
     switch (msg.type) {
       case "build": {
         const t0 = performance.now();
@@ -95,7 +104,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
               [copy.positions.buffer, copy.normals.buffer, copy.indices.buffer, copy.edges.buffer],
             );
           } catch (e) {
-            post({ type: "part-error", jobId: msg.jobId, hash: item.hash, message: e instanceof Error ? e.message : String(e) });
+            if (isTrap(e)) return fatal(msg.jobId, e, item.hash);
+            post({ type: "part-error", jobId: msg.jobId, hash: item.hash, message: errMsg(e) });
           }
           await yieldToEvents();
         }
@@ -110,7 +120,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
           for (const i of result.interferences) if (i.mesh) transfer.push(i.mesh.positions.buffer, i.mesh.normals.buffer, i.mesh.indices.buffer, i.mesh.edges.buffer);
           post({ type: "checks", jobId: msg.jobId, result }, transfer);
         } catch (e) {
-          post({ type: "checks-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+          if (isTrap(e)) return fatal(msg.jobId, e);
+          post({ type: "checks-error", jobId: msg.jobId, message: errMsg(e) });
         }
         return;
       }
@@ -121,7 +132,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
           const data = await blob.arrayBuffer();
           post({ type: "exported", jobId: msg.jobId, data }, [data]);
         } catch (e) {
-          post({ type: "export-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+          if (isTrap(e)) return fatal(msg.jobId, e);
+          post({ type: "export-error", jobId: msg.jobId, message: errMsg(e) });
         }
         return;
       }
@@ -130,7 +142,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
           await ensureFonts(fontsIn(msg.req.recipe));
           post({ type: "inspected", jobId: msg.jobId, result: core.inspect(msg.req) });
         } catch (e) {
-          post({ type: "inspect-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+          if (isTrap(e)) return fatal(msg.jobId, e);
+          post({ type: "inspect-error", jobId: msg.jobId, message: errMsg(e) });
         }
         return;
       }

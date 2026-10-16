@@ -4,6 +4,7 @@ import * as R from "replicad";
 import { loadOC } from "./occ";
 import { buildPartFull, buildShape, solidVolume } from "../src/kernel/build";
 import { buildThread } from "../src/kernel/threads";
+import { Topo } from "../src/kernel/topology";
 import type { PartRecipe, ShapeRecipe, ThreadSpec3 } from "../src/kernel/recipe";
 import { evaluate } from "../src/lang/evaluator";
 
@@ -160,6 +161,18 @@ component n = lib.nut(M3) { at: (40, 0, 0), axis: Z }
   }, 120000);
 });
 
+describe("demos", () => {
+  it("still build every part of the enclosure and reducer with the validity checks on", () => {
+    for (const name of ["enclosure", "reducer"]) {
+      const src = readFileSync(new URL(`../src/demos/${name}.kerf`, import.meta.url), "utf8");
+      for (const b of buildAll(src)) {
+        expect(b.fast.warnings, b.part.id).toEqual([]);
+        expect(valid(b.detail.shape), b.part.id).toBe(true);
+      }
+    }
+  }, 120000);
+});
+
 describe("screw-top canister demo", () => {
   it("builds the jar and the knurled, threaded lid in detail without warnings", () => {
     const src = readFileSync(new URL("../src/demos/canister.kerf", import.meta.url), "utf8");
@@ -170,4 +183,66 @@ describe("screw-top canister demo", () => {
       expect(b.detailMs, b.part.id).toBeLessThan(30000);
     }
   }, 120000);
+});
+
+describe("edges and faces picked for rounding and shelling", () => {
+  const built = (body: string, detail = false) => {
+    const m = evaluate(`design "t"\npart p {\n${body}\n}\n`);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    return buildPartFull(m.parts[0].recipe, { detail });
+  };
+  const rootEdges = (b: ReturnType<typeof built>, f: string) => {
+    const t = new Topo(b.shape, b.features);
+    const out = [...t.selectEdges({ s: "feat", f, part: "root" })].map((i) => t.edge(i).convexity);
+    t.dispose();
+    return out;
+  };
+
+  it("finds only the inside corners at the root of a wall flush with the plate's sides", () => {
+    const b = built(`body box(40, 30, 4) as plate\nadd box(10, 30, 10, at: (15, 0, 4)) as wall`);
+    // the wall is flush with the plate's end too, so its one inside corner is the whole root
+    expect(rootEdges(b, "wall")).toEqual(["concave"]);
+    const f = built(`body box(40, 30, 4) as plate\nadd box(10, 30, 10, at: (15, 0, 4)) as wall\nfillet(1, edges: wall.root)`);
+    expect(valid(f.shape)).toBe(true);
+    expect(solidVolume(f.shape)).toBeGreaterThan(solidVolume(b.shape));
+  });
+
+  it("leaves a hole cut later through a boss out of the boss's root", () => {
+    const b = built(`body box(40, 30, 5) as plate\nadd cylinder(d: 10, h: 8, at: (0, 0, 5)) as boss\ncut hole(4, through: true, at: (0, 0, 13))`);
+    expect(rootEdges(b, "boss")).toEqual(["concave"]);
+    // a boss near a rounded corner: its root still reads as an inside corner
+    const near = built(`body box(40, 30, 5) as plate\nfillet(2, edges: "vertical")\nadd cylinder(d: 10, h: 8, at: (14, 1, 5)) as boss`);
+    expect(rootEdges(near, "boss")).toEqual(["concave"]);
+  });
+
+  it("reports a fillet that leaves an invalid solid instead of passing it on", () => {
+    expect(() => built(`body box(40, 30, 5) as plate\nfillet(2, edges: "vertical")\nadd cylinder(d: 10, h: 8, at: (14, 9, 5)) as boss\nfillet(1, edges: boss.root)`)).toThrow(/invalid solid/);
+  });
+
+  it("opens every face in the top plane when shelling", () => {
+    const b = built(`body box(40, 30, 20)\ncut box(4, 34, 5, at: (0, 0, 15))`);
+    const t = new Topo(b.shape, b.features);
+    expect(t.outermostFaces([0, 0, 1]).length).toBe(2);
+    t.dispose();
+    const m = evaluate(`design "t"\npart p {\nbody box(40, 30, 20)\ncut box(4, 34, 5, at: (0, 0, 15))\nshell(1.5, open: Z)\n}\n`);
+    const recipe = m.parts[0].recipe;
+    const slotted = buildPartFull(recipe);
+    expect(valid(slotted.shape)).toBe(true);
+    // opening only the half beside (10, 0, 20) leaves a 1.5 mm lid over the other half
+    const half = buildPartFull({ ...recipe, ops: recipe.ops.map((o) => (o.op === "shell" ? { ...o, open: [{ sel: { s: "near", p: [10, 0, 20], r: 0.5 } }] } : o)) });
+    expect(solidVolume(half.shape) - solidVolume(slotted.shape)).toBeGreaterThan(500);
+  });
+
+  it("refuses to round hundreds of edges in one step", () => {
+    expect(built(`body knurl(d: 30, h: 10, count: 150, depth: 0.5)\nfillet(0.2, edges: "top")`).warnings).toEqual([]);
+    expect(() => built(`body knurl(d: 30, h: 10, count: 150, depth: 0.5)\nfillet(0.2, edges: "top")`, true)).toThrow(/picks 300 edges, more than the 200/);
+  });
+
+  it("says which step failed when the body itself cannot be built", () => {
+    const recipe: PartRecipe = {
+      base: { t: "loft", secs: [{ p: { t: "diff2", a: { t: "circle", d: 20, c: [0, 0] }, b: [{ t: "circle", d: 8, c: [0, 0] }] }, f: { o: [0, 0, 0], u: [1, 0, 0], n: [0, 0, 1] } }, { p: { t: "circle", d: 16, c: [0, 0] }, f: { o: [0, 0, 10], u: [1, 0, 0], n: [0, 0, 1] } }], ruled: false },
+      ops: [],
+    };
+    expect(() => buildPartFull(recipe)).toThrow(/could not build the body loft \(step 1\): loft\(\): section 1 must be a single outline/);
+  });
 });

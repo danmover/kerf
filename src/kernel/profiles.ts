@@ -219,6 +219,9 @@ export function sweepProfile(p: Profile, path: Path3, rot: number, frenet: boole
   const spine = pathWire(path);
   const f = startFrame(path, rot);
   const regions = profileRegions(p, f);
+  // each outline and hole is a sweep and a boolean; the language stops more than this before it gets here
+  const loops = regions.reduce((n, r) => n + 1 + r.inner.length, 0);
+  if (loops > 8) throw new ProfileError(`sweep(): the profile has ${loops} outlines and holes; Kerf sweeps at most 8`);
   const cfg = { frenet: frenet || path.t === "helix", transitionMode: "round" as const };
   let out: Shape3D | null = null;
   for (const reg of regions) {

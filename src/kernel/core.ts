@@ -289,7 +289,7 @@ export class KernelCore {
   exportStep(items: ExportItem[]): Blob {
     // the detailed solid when it has been built (real threads, cosmetic detail), else the fast one
     const shapes = items.map((it) => {
-      const e = it.recipe ? this.build({ hash: it.hash, recipe: it.recipe, label: it.name }, "final") : (this.detailCache.get(it.hash) ?? this.get(it.hash));
+      const e = it.recipe ? this.build({ hash: it.hash, recipe: it.recipe, label: it.name }, it.fast ? "preview" : "final") : (this.detailCache.get(it.hash) ?? this.get(it.hash));
       if (!e) throw new Error("not built: " + it.name);
       return { shape: applyXf(e.shape.clone(), it.xf), name: it.name, color: it.color };
     });

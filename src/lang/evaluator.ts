@@ -100,12 +100,14 @@ class Scope {
 
 /**
  * Evaluate a selector written as text (`boss.root`, `near((0, 0, 10))`,
- * `"top" + circles(3)`) for a part with the given feature names.
+ * `"top" + circles(3)`) for a part with the given feature names, seeing the params and lets of the design source.
  */
-export function evaluateSelector(text: string, features: string[]): { sel?: Sel; error?: string } {
+export function evaluateSelector(text: string, features: string[], design?: string): { sel?: Sel; error?: string } {
   const parsed = parseExpression(text);
   if (!parsed.expr) return { error: parsed.error };
-  const ev = new Evaluator(text, {});
+  const ev = new Evaluator(design ?? text, {});
+  // the design's params and lets, so near((0, 0, wall), 1) can use them
+  if (design) ev.run(parse(design).program);
   const scope = new Scope();
   for (const f of features) scope.vars.set(f, new FeatRef(f, "feature"));
   try {

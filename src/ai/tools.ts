@@ -394,7 +394,7 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       if (!m || !part) return { isError: true, content: `No part or component named "${p.data.part}". Parts: ${(m?.parts ?? []).slice(0, 60).map((q) => q.id).join(", ")}`, card: { title: "Part not found", detail: p.data.part, status: "error" } };
       let sel;
       if (p.data.select) {
-        const r = evaluateSelector(p.data.select, (part.features ?? []).map((f) => f.name));
+        const r = evaluateSelector(p.data.select, (part.features ?? []).map((f) => f.name), useDesign.getState().source);
         if (!r.sel) return { isError: true, content: `The selector did not evaluate: ${r.error}`, card: { title: "Selector error", detail: r.error, status: "error" } };
         sel = r.sel;
       }

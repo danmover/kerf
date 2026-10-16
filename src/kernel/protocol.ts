@@ -11,6 +11,8 @@ export interface ExportItem {
   color: string;
   /** lets the worker build the part if it has not yet */
   recipe?: PartRecipe;
+  /** use the simple shape (its detailed build could not finish) */
+  fast?: boolean;
 }
 
 export interface BuildItem {
@@ -139,4 +141,6 @@ export type FromWorker =
   | { type: "exported"; jobId: number; data: ArrayBuffer }
   | { type: "export-error"; jobId: number; message: string }
   | { type: "inspected"; jobId: number; result: InspectResult }
-  | { type: "inspect-error"; jobId: number; message: string };
+  | { type: "inspect-error"; jobId: number; message: string }
+  /** WebAssembly trapped (out of memory, an abort): the worker must be replaced; hash is the part being built */
+  | { type: "fatal"; jobId: number; hash?: string; message: string };
