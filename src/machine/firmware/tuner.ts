@@ -203,6 +203,7 @@ const uint8_t SIGNAL_CHANNEL = SIGNAL_PIN - A0;  // ADC input number of the sign
 
 // Loudness gate, as peak-to-peak in 8-bit ADC counts (19.5 mV each)
 const uint8_t BLOCK = 64;              // samples per block for the gate and pluck detection (6.7 ms)
+const uint8_t N_BLOCKS = N_SAMPLES / BLOCK;
 const uint8_t PLUCK_PP = 6;            // a pluck: 3 blocks swing at least this much (0.12 V) and over twice the 3 before
 const uint8_t GATE_START_PP = 7;       // to start showing a note (0.14 V peak to peak)
 const uint8_t GATE_KEEP_PP = 4;        // to keep following it as it fades
@@ -366,7 +367,6 @@ static uint32_t sqDiff2(const uint8_t *p, const uint8_t *q, uint8_t n) {
 // peak) and its middle value. The last blocks' figures carry over to the next
 // buffer.
 static uint16_t findSpan(uint16_t *end, uint8_t *loudness, uint8_t *middle) {
-  const uint8_t N_BLOCKS = N_SAMPLES / BLOCK;
   uint8_t pp[N_BLOCKS];
   uint16_t start = 0;
   uint8_t lo = 255, hi = 0;
@@ -1108,7 +1108,7 @@ void setup() {
   }
 
   Wire.begin();
-  TWBR = ((F_CPU / 400000UL) - 16) / 2;              // 400 kHz I2C
+  Wire.setClock(400000);                             // 400 kHz I2C
 #if defined(WIRE_HAS_TIMEOUT)
   Wire.setWireTimeout(3000, true);                   // a stuck bus cannot hang the tuner
 #endif

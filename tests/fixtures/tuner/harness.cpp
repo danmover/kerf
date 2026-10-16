@@ -338,6 +338,8 @@ static int txLen = 0;
 static bool wireBegun = false;
 static uint64_t wireOverflows = 0, wireBytes = 0, wireTransmissions = 0;
 void TwoWire::begin() { wireBegun = true; }
+// as the Arduino core does it: SCL = F_CPU / (16 + 2 * TWBR) with the prescaler at 1
+void TwoWire::setClock(uint32_t hz) { TWBR = (uint8_t)((16000000UL / hz - 16) / 2); }
 void TwoWire::beginTransmission(uint8_t address) { txAddr = address; txLen = 0; }
 size_t TwoWire::write(uint8_t b) {
   if (txLen >= 32) { wireOverflows++; return 0; }
