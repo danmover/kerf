@@ -44,6 +44,10 @@ interface DriveOut {
   fb?: Io;
   csVPerA: number;
   csOffset: number;
+  /** the driver's current sense reads only while driving, about 0 V in the PWM off-time */
+  csDriveOnly: boolean;
+  /** heat estimate: winding resistance (ohm), heat capacity (J/K) and thermal resistance to free air (K/W); 0 = none */
+  heat: { r: number; c: number; rth: number };
 }
 
 interface ServoOut {
@@ -90,6 +94,22 @@ function channelPins(part: CatalogPart, channel: string): Partial<Record<Role, s
     default:
       return {};
   }
+}
+
+/**
+ * A one-lump heat estimate for a DC motor: winding resistance from the rated voltage and stall current,
+ * and the catalog's thermal resistance and time constant when it gives them. Otherwise a guess scaled
+ * from the motor's mass (the same one the simulation uses), so the firmware and the simulation agree.
+ */
+function motorHeat(part: CatalogPart): { r: number; c: number; rth: number } {
+  const v = Number(part.specs.v_rated ?? 0);
+  const iStall = Number(part.specs.i_stall ?? 0);
+  if (part.kind !== "gearmotor" || !(v > 0) || !(iStall > 0)) return { r: 0, c: 0, rth: 0 };
+  const r = v / iStall;
+  const { rth_k_per_w: rth, tau_th_s: tau } = part.specs;
+  if (typeof rth === "number" && typeof tau === "number" && rth > 0 && tau > 0) return { r, c: tau / rth, rth };
+  const mass = Number(part.specs.mass_g ?? 300);
+  return { r, c: mass * 0.45, rth: 12 * Math.sqrt(524 / mass) };
 }
 
 const NEEDED: Record<string, Role[]> = {
@@ -174,6 +194,8 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
         sign,
         csVPerA: typeof dpart.specs.current_sense_v_per_a === "number" ? dpart.specs.current_sense_v_per_a : 0,
         csOffset: typeof dpart.specs.current_sense_offset_v === "number" ? dpart.specs.current_sense_offset_v : 0,
+        csDriveOnly: dpart.specs.current_sense_drive_only === true,
+        heat: motorHeat(part),
       };
       if (part.pins.some((p) => p.id === "ENC_A")) {
         out.encA = io(mc.name, "ENC_A", i);
@@ -269,6 +291,8 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     BREAK_FRAC: setting(c.fw, "breakthrough_current", 0.5),
     STEER_SIGN: setting(c.fw, "steer_sign", 1) < 0 ? -1 : 1,
     ROLL_LIMIT_DEG: setting(c.fw, "roll_limit", 60),
+    MOTOR_HOT_K: setting(c.fw, "motor_hot_rise", 60),
+    MOTOR_COOLING: setting(c.fw, "motor_cooling", 0.5),
     GIVE_UP_S: setting(c.fw, "give_up_time", 0),
   };
 
@@ -337,7 +361,13 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     C.push(`#define BACKOFF_MS       ${cNum(S.BACKOFF_MS)}    // reverse this long, then dig again`);
     C.push(`#define MAX_RETRIES      ${cNum(S.MAX_RETRIES)}      // give up after this many stalls without progress`);
     C.push(`#define BREAK_FRAC       ${cNum(S.BREAK_FRAC)}     // front motor current falls below this share of its digging average at breakthrough`);
+    C.push("#define DIG_REF_S        20      // time constant of that average, s");
+    C.push("#define DIG_HOLD_S       60      // a drop held out of the average this long becomes the new normal");
     C.push(`#define ROLL_LIMIT_DEG   ${cNum(S.ROLL_LIMIT_DEG)}      // the body rolling past this means the screws no longer balance: stop`);
+    C.push("");
+    C.push("// Motor heating (estimated from the current: check the can temperature on the bench)");
+    C.push(`#define MOTOR_HOT_K      ${cNum(S.MOTOR_HOT_K)}      // estimated rise above the surroundings that is too hot: rest. Digging turns back at 3/4 of it`);
+    C.push(`#define MOTOR_COOLING    ${cNum(S.MOTOR_COOLING)}     // share of free-air cooling the motor gets where it runs (buried in sand: a guess)`);
     C.push("");
     C.push("// Steering and roll");
     C.push(`#define HEADING_KP       ${cNum(S.HEADING_KP)}     // degrees of hinge per degree of heading error`);
@@ -444,18 +474,22 @@ function sketch(a: SketchArgs): string {
   L.push("  uint8_t scheme;");
   L.push("  int16_t pwm, dir, in1, in2, en, en2, cs, cs2, flt;  // -1 = not wired");
   L.push("  float csVPerA, csOffset;                         // current sense volts per amp and offset");
+  L.push("  bool csDriveOnly;                                // current sense reads only while driving (0 V in the PWM off-time)");
   L.push("  int8_t fwd;                                      // +1 or -1");
   L.push("  int16_t cmd;                                     // last command, -255..255");
   L.push("  float amps;                                      // filtered current, -1 = no sensor");
+  L.push("  float rOhm, heatJK, rthKW;                       // winding resistance, heat capacity, thermal resistance to free air (0: no estimate)");
+  L.push("  float heat;                                      // estimated rise above the surroundings, K");
   L.push("};", "");
   if (outs.length) {
     L.push("Motor motors[] = {");
     for (const o of outs) {
       const pinsList = (["pwm", "dir", "in1", "in2", "en", "en2", "cs", "cs2", "flt"] as Role[]).map((r) => pinOr(o, r)).join(", ");
-      L.push(`  { "${o.label}", ${SCHEME_C[o.scheme]}, ${pinsList}, ${cFloat(o.csVPerA)}, ${cFloat(o.csOffset)}, ${o.key}_FWD, 0, -1 },`);
+      const h = o.kind === "dc" ? o.heat : { r: 0, c: 0, rth: 0 };
+      L.push(`  { "${o.label}", ${SCHEME_C[o.scheme]}, ${pinsList}, ${cFloat(o.csVPerA)}, ${cFloat(o.csOffset)}, ${o.csDriveOnly}, ${o.key}_FWD, 0, -1, ${cFloat(h.r)}, ${cFloat(h.c)}, ${cFloat(h.rth)}, 0 },`);
     }
     L.push("};");
-  } else L.push("Motor motors[1] = { { \"none\", PWM_DIR, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 1, 0, -1 } };");
+  } else L.push("Motor motors[1] = { { \"none\", PWM_DIR, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, false, 1, 0, -1, 0, 0, 0, 0 } };");
   L.push(`const uint8_t N_MOTORS = ${outs.length};`);
   for (const o of outs) L.push(`const uint8_t ${o.key}_IDX = ${outs.indexOf(o)};`);
   L.push("");
@@ -486,11 +520,14 @@ void motorWrite(Motor &m, int s) {
 
 void stopAll() { for (uint8_t i = 0; i < N_MOTORS; i++) motorWrite(motors[i], 0); }
 
-// Driver current sense, if wired. The G2's CS reads low while braking.
+// Driver current sense, if wired: -1 = no sensor, -2 = this sample says nothing. Some drivers (the G2)
+// sense only while driving and read about 0 V, below their offset, in the PWM off-time. Those samples
+// are skipped rather than averaged in, or the reading would come out low by the duty cycle.
 float readAmps(const Motor &m) {
   int16_t p = (m.cs2 >= 0 && m.cmd * m.fwd < 0) ? m.cs2 : m.cs;
   if (p < 0 || m.csVPerA <= 0) return -1;
   float v = analogRead(p) * (ADC_REF_V / ADC_MAX);
+  if (m.csDriveOnly && m.cmd != 0 && v < m.csOffset * 0.5f) return -2;
   float a = (v - m.csOffset) / m.csVPerA;
   return a < 0 ? 0 : a;
 }
@@ -690,7 +727,7 @@ void actCalibrate() { Serial.println(F("Servo steering: nothing to calibrate. Se
   L.push('const char *stateName[] = { "waiting", "digging", "backing off", "backing out", "done", "fault", "bench" };');
   L.push(`State state = ${a.tunneller ? "WAITING" : "BENCH"};`);
   L.push('const char *reason = "";');
-  L.push("unsigned long t0, stateSince, stallSince, quietSince, rollSince, lastLog, testUntil, digMs;");
+  L.push("unsigned long t0, stateSince, stallSince, quietSince, rollSince, lastLog, testUntil, digMs, refAt, lowSince, coolSince, pausedMs;");
   L.push("float distance = 0, targetYaw = 0, headingI = 0, digAmps = 0, lastProgress = 0;");
   L.push("uint8_t retries = 0;");
   L.push("bool stopped = false;");
@@ -743,12 +780,23 @@ bool batteryPresent() {
 }
 void startRun(const char *why) {
   t0 = millis(); targetYaw = yaw; headingI = 0; distance = 0; lastProgress = 0; retries = 0; digAmps = 0; rollSince = 0; quietSince = 0;
+  refAt = 0; lowSince = 0; coolSince = 0; pausedMs = 0;
   encAtStart = ${fe >= 0 ? `encRead(${fe})` : "0"};
   logClear();
   setState(${a.tunneller ? "DIGGING" : "BENCH"}, why);
 }`);
   // amps helper
   L.push("float maxAmps() { float a = -1; for (uint8_t i = 0; i < N_MOTORS; i++) if (motors[i].amps > a) a = motors[i].amps; return a; }");
+  if (a.tunneller)
+    L.push(`// Motor heating, one lump per motor: I²R in (the winding's resistance grows as it warms), the rise over
+// the thermal resistance out. An estimate from the current, not a measurement.
+void heatUpdate(Motor &m, float dt) {
+  if (m.rOhm <= 0 || m.amps < 0) return;
+  float p = m.amps * m.amps * m.rOhm * (1 + 0.0039f * m.heat);
+  m.heat += dt * (p - m.heat * MOTOR_COOLING / m.rthKW) / m.heatJK;
+  if (m.heat < 0) m.heat = 0;
+}
+float hottest() { float h = 0; for (uint8_t i = 0; i < N_MOTORS; i++) if (motors[i].heat > h) h = motors[i].heat; return h; }`);
   L.push(`void logNow() {
   LogRec r;
   r.t = (uint16_t)((millis() - t0) / 1000); r.distMm = (int16_t)distance;
@@ -763,7 +811,7 @@ void startRun(const char *why) {
   Serial.print(F("state ")); Serial.print(stateName[state]);
   Serial.print(F("  dist ")); Serial.print(distance, 0); Serial.print(F(" mm"));
   Serial.print(F("  yaw ")); Serial.print(yaw, 1); Serial.print(F("  roll ")); Serial.print(roll, 1); Serial.print(F("  pitch ")); Serial.print(pitch, 1);
-  for (uint8_t i = 0; i < N_MOTORS; i++) { Serial.print(F("  ")); Serial.print(motors[i].name); Serial.print(F(" ")); Serial.print(motors[i].cmd); if (motors[i].amps >= 0) { Serial.print(F("/")); Serial.print(motors[i].amps, 1); Serial.print(F("A")); } }
+  for (uint8_t i = 0; i < N_MOTORS; i++) { Serial.print(F("  ")); Serial.print(motors[i].name); Serial.print(F(" ")); Serial.print(motors[i].cmd); if (motors[i].amps >= 0) { Serial.print(F("/")); Serial.print(motors[i].amps, 1); Serial.print(F("A")); } if (motors[i].heat >= 1) { Serial.print(F(" +")); Serial.print(motors[i].heat, 0); Serial.print(F("K")); } }
   for (uint8_t i = 0; i < N_ENC; i++) { Serial.print(F("  rpm")); Serial.print(i); Serial.print(F(" ")); Serial.print(encRpm[i], 1); }
   if (vbat > 0) { Serial.print(F("  battery ")); Serial.print(vbat, 2); Serial.print(F(" V")); }
   Serial.println();
@@ -848,11 +896,15 @@ void setup() {
   if (now - tFast >= 20) {
     tFast = now;
     if (imuOk) imuRead();
-    for (uint8_t i = 0; i < N_MOTORS; i++) { float a = readAmps(motors[i]); motors[i].amps = a < 0 ? -1 : (motors[i].amps < 0 ? a : motors[i].amps * 0.8f + a * 0.2f); }
+    for (uint8_t i = 0; i < N_MOTORS; i++) {
+      float a = readAmps(motors[i]);
+      if (a < -1.5f) continue;   // PWM off-time sample: keep the last reading
+      motors[i].amps = a < 0 ? -1 : (motors[i].amps < 0 ? a : motors[i].amps * 0.8f + a * 0.2f);
+    }
     if (!testUntil && state != DONE && state != FAULT) actService();
   }
   if (now - tSlow >= 200) {
-    encUpdate((now - tSlow) / 1000.0f);
+    encUpdate((now - tSlow) / 1000.0f);${a.tunneller ? "\n    for (uint8_t i = 0; i < N_MOTORS; i++) heatUpdate(motors[i], (now - tSlow) / 1000.0f);" : ""}
     tSlow = now;
     float v = readBattery();
     vbat = v < 0 ? -1 : (vbat < 0 ? v : vbat * 0.9f + v * 0.1f);
@@ -867,7 +919,7 @@ void setup() {
   if (state != BENCH && state != DONE && state != FAULT) {
     if (batteryLow()) { stopAll(); setState(FAULT, "battery low"); }
     else if (driverFault()) { stopAll(); setState(FAULT, "motor driver fault"); }
-    else if ((now - t0) / 1000 > MAX_RUN_S && state != WAITING) { stopAll(); setState(DONE, "time limit"); }
+    else if ((now - t0 - pausedMs - (coolSince ? now - coolSince : 0)) / 1000 > MAX_RUN_S && state != WAITING) { stopAll(); setState(DONE, "time limit"); }
   }
 
   switch (state) {
@@ -891,11 +943,18 @@ void setup() {
         setState(RETREAT, "no breakthrough: probably turning in place, backing out");
         break;
       }
+      // working this hard for this long without breaking through: back out while the motors still have the margin
+      if (hottest() > MOTOR_HOT_K * 0.75f) {
+        stopAll(); delay(300); digMs = now - t0;
+        setState(RETREAT, "motors getting hot without breaking through: backing out");
+        break;
+      }
       if (distance - lastProgress > 50) { lastProgress = distance; retries = 0; }
 
       // the screws balance each other's twist; a body that keeps rolling means one is no longer biting
-      if (imuOk && fabs(roll) > ROLL_LIMIT_DEG) { if (!rollSince) rollSince = now; else if (now - rollSince > 2000) { stopAll(); setState(FAULT, "body rolling: the screws no longer balance"); break; } }
-      else rollSince = 0;
+      // (a quarter second over the limit; it only clears back under half of it, so a roll past 180 can't reset it)
+      if (imuOk && fabs(roll) > ROLL_LIMIT_DEG) { if (!rollSince) rollSince = now; else if (now - rollSince > 250) { stopAll(); setState(FAULT, "body rolling: the screws no longer balance"); break; } }
+      else if (!imuOk || fabs(roll) < ROLL_LIMIT_DEG * 0.5f) rollSince = 0;
 
       // heading hold: steer the hinge towards the start heading
       float err = imuOk ? wrap180(targetYaw - yaw) : 0;
@@ -924,7 +983,16 @@ void setup() {
       // breakthrough: the front screw comes out and its load drops away (the rear screw is still digging,
       // so only the front motor's current tells). Stop both: the rear screw alone would twist the body.
       // The turn count reads low when the sand slips less than SLIP, so this starts checking early.
-      if (now - stateSince > 3000 && frontAmps > 0) digAmps = digAmps <= 0 ? frontAmps : digAmps * 0.995f + frontAmps * 0.005f;
+      // The reference is a slow average (DIG_REF_S) of the front current while digging. Readings more than
+      // 20 % below it are held out for up to DIG_HOLD_S, so the current falling away as the nose comes out
+      // can't drag the reference down with it; a lighter load that lasts longer than that is the new normal.
+      if (now - stateSince > 3000 && frontAmps > 0 && now - refAt >= 100) {
+        refAt = now;
+        bool low = digAmps > 0 && frontAmps < digAmps * 0.8f;
+        if (!low) lowSince = 0; else if (!lowSince) lowSince = now;
+        if (digAmps <= 0) digAmps = frontAmps;
+        else if (!low || now - lowSince > DIG_HOLD_S * 1000UL) digAmps += (frontAmps - digAmps) * (0.1f / DIG_REF_S);
+      }
       if (distance > RUN_DISTANCE_MM * 0.4f && digAmps > 0 && frontAmps >= 0 && frontAmps < digAmps * BREAK_FRAC) {
         if (!quietSince) quietSince = now;
         else if (now - quietSince > 1500) { stopAll(); setState(DONE, "broke through"); }
@@ -933,7 +1001,13 @@ void setup() {
     }
 
     case RETREAT: {
-      // back out the way it came, straight, for at most as long as it dug
+      // back out the way it came, straight, for at most as long as it dug. If the motors get too hot it
+      // rests until they cool, and the rest counts towards neither time limit.
+      if (coolSince) {
+        if (hottest() > MOTOR_HOT_K * 0.6f) break;
+        stateSince += now - coolSince; pausedMs += now - coolSince; coolSince = 0;
+        Serial.println(F("motors cooled: backing out again"));
+      } else if (hottest() > MOTOR_HOT_K) { stopAll(); coolSince = now; Serial.println(F("motors hot: resting until they cool")); break; }
       steerTo(0);
       motorWrite(motors[${fr}], -(int)(POWER * 255));
       ${rear ? `motorWrite(motors[${rr}], -(int)(POWER * 255));` : ""}
@@ -994,7 +1068,7 @@ function arduinoReadme(a: {
   const L: string[] = [];
   L.push(`# ${c.fw.name}: firmware for ${c.designName}`, "");
   L.push(`Generated by Kerf from the design's wiring for **${c.board.name}** (${c.boardPart.name}). Every pin in \`pins.h\` comes from a wire in the design, so if you change the wiring, export again.`, "");
-  L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, and backs off when it stalls. It stops when the front motor's load drops as the nose breaks through, or when the far wall stops it. Screw turns only estimate the distance (screws turning in place count too), so if neither happens by twice the expected distance or the give-up time, it backs out on the reserve. It stops if the body keeps rolling, and logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
+  L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, and backs off when it stalls. It stops when the front motor's load drops as the nose breaks through, or when the far wall stops it. Screw turns only estimate the distance (screws turning in place count too), so if neither happens by twice the expected distance or the give-up time, it backs out on the reserve. It also estimates each motor's heating from its current and backs out when they get warm without a breakthrough, resting on the way out if they get hot. It stops if the body rolls, and logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
   if (a.warnings.length) {
     L.push("## Fix before uploading", "");
     for (const w of a.warnings) L.push(`- ${w}`);
@@ -1023,7 +1097,10 @@ function arduinoReadme(a: {
     ...(a.steer ? ["`k` runs the steering actuator to both ends and prints the potentiometer readings: copy them into config.h. Then `t 0`, `t 5`, `t -5` and check the hinge angle with a protractor."] : []),
     ...(a.imu ? ["`i` and turn the robot by hand: yaw should change by the angle you turn it, roll by the angle you twist it. `t 5` should turn the nose clockwise seen from above, the way yaw grows; if it turns it the other way, flip STEER_SIGN (or set steer_sign in the design's firmware block)."] : []),
     ...(a.vsense ? ["`s` and compare the battery voltage with a multimeter: it should agree within 0.2 V."] : []),
-    ...(a.tunneller ? ["Run in a bucket of sand first with `g`: watch the currents in `s`. Set STALL_A just above the highest normal digging current.", "After a run, `l` prints the log; paste it into a spreadsheet to see distance, heading and current over time."] : []),
+    ...(a.outs.some((o) => o.csDriveOnly && o.pins.cs)
+      ? ["Check the current reading: run a motor against a load at part power (`m <n> 150`) and compare `s` with your bench supply's ammeter; they should agree within 10 %. Wire the driver's CS straight to its pin with no capacitor: the firmware skips the samples taken in the PWM off-time, when this driver's CS reads 0 V."]
+      : []),
+    ...(a.tunneller ? ["Run in a bucket of sand first with `g`: watch the currents in `s`. Set STALL_A just above the highest normal digging current.", "After a long bucket run, feel the motor cans: `s` shows each motor's estimated rise (+K). If the cans are hotter than that suggests, lower MOTOR_COOLING.", "After a run, `l` prints the log; paste it into a spreadsheet to see distance, heading and current over time."] : []),
   ];
   steps.forEach((s, i) => L.push(`${i + 1}. ${s}`));
   L.push("");

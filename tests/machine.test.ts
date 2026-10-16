@@ -199,6 +199,51 @@ describe("sand tunneller", () => {
     expect(plainConfig).toMatch(/#define STEER_SIGN\s+1\b/);
   });
 
+  it("reads the G2's true current, keeps a steady breakthrough reference and watches motor heat (found by the pit simulation)", () => {
+    const [fw] = generateFirmware(model.machine!, model.name ?? "design");
+    const ino = fw.files.find((f) => f.path.endsWith(".ino"))!.content;
+    const config = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    // the G2 reads 0 V in the PWM off-time: those samples are skipped, not averaged in (that read 20 % low at POWER 0.8)
+    expect(ino).toContain("if (m.csDriveOnly && m.cmd != 0 && v < m.csOffset * 0.5f) return -2;");
+    const table = ino.slice(ino.indexOf("Motor motors[] = {"), ino.indexOf("const uint8_t N_MOTORS"));
+    const rows = table.split("\n").filter((l) => l.trim().startsWith("{"));
+    const front = rows.find((l) => /m_front/.test(l))!;
+    const steer = rows.find((l) => /steer/.test(l))!;
+    expect(front).toMatch(/, true, /);
+    expect(steer).toMatch(/, false, /);
+    // the reference is a slow average that a falling current can't drag down (it followed the drop and never fired)
+    expect(ino).not.toContain("digAmps * 0.995f");
+    expect(ino).toContain("now - refAt >= 100");
+    expect(ino).toContain("(0.1f / DIG_REF_S)");
+    expect(config).toMatch(/#define DIG_HOLD_S\s+60/);
+    // heating: the front motor's numbers come from its catalog entry
+    const nums = front.slice(front.indexOf("_FWD")).match(/-?[\d.]+f/g)!.map((n) => parseFloat(n));
+    const [r, c, rth] = nums;
+    expect(r).toBeCloseTo(12 / 9.2, 3);
+    expect(c).toBeCloseTo(524 * 0.45, 1);
+    expect(rth).toBeCloseTo(12, 1);
+    const hot = Number(/#define MOTOR_HOT_K\s+([\d.]+)/.exec(config)?.[1]);
+    const cooling = Number(/#define MOTOR_COOLING\s+([\d.]+)/.exec(config)?.[1]);
+    expect(ino).toContain("hottest() > MOTOR_HOT_K * 0.75f");
+    // the firmware's own heat model, step for step
+    const riseAfter = (amps: number, seconds: number) => {
+      let h = 0;
+      for (let t = 0; t < seconds; t += 0.2) h += (0.2 * (amps * amps * r * (1 + 0.0039 * h) - (h * cooling) / rth)) / c;
+      return h;
+    };
+    // a crossing at the design's digging current stays well under the turn-back level...
+    const crossing = Number(/#define GIVE_UP_S\s+([\d.]+)/.exec(config)?.[1]) / 1.5;   // give_up_time is 1.5 crossings
+    expect(riseAfter(3.5, crossing)).toBeLessThan(hot * 0.5);
+    // ...while turning in place near stall turns back within five minutes, long before the give-up time
+    expect(riseAfter(5.1, 300)).toBeGreaterThan(hot * 0.75);
+    // a hot motor rests on the way out, and the rest doesn't count towards the time limits
+    expect(ino).toContain('motors hot: resting until they cool');
+    expect(ino).toContain("now - t0 - pausedMs");
+    // the roll guard acts in a quarter second and only clears under half the limit
+    expect(ino).toContain("now - rollSince > 250");
+    expect(ino).toContain("fabs(roll) < ROLL_LIMIT_DEG * 0.5f");
+  });
+
   const compilers = [
     { name: "g++", cmd: "g++", args: ["-std=gnu++17"] },
     { name: "clang for AVR", cmd: "clang++", args: ["--target=avr", "-mmcu=atmega328p", "-std=gnu++17", "-ffreestanding"] },

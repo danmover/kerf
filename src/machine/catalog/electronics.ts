@@ -497,7 +497,7 @@ export const ELECTRONICS: CatalogPart[] = [
     maker: "Pololu",
     mpn: "2991",
     summary: "One DC motor, 17 A continuous (40 A current limit), 6.5 to 30 V (24 V or less recommended), PWM + DIR, 1.8 to 5 V logic, current sense 20 mV/A. Only 33 × 20 mm, 3.3 g.",
-    specs: { channels: 1, i_cont: 17, i_peak: 40, v_min: 6.5, v_max: 30, v_safe: 24, control: "pwm_dir", pwm_khz_max: 100, current_sense_v_per_a: 0.02, current_sense_offset_v: 0.05, mass_g: 3.3 },
+    specs: { channels: 1, i_cont: 17, i_peak: 40, v_min: 6.5, v_max: 30, v_safe: 24, control: "pwm_dir", pwm_khz_max: 100, current_sense_v_per_a: 0.02, current_sense_offset_v: 0.05, current_sense_drive_only: true, mass_g: 3.3 },
     pins: [
       pwrIn("VIN", 6.5, 30, { vabs: 30, draw: 0.01, note: "Motor supply (reverse-voltage protected)" }),
       gnd("GND_PWR", "GND (power)"),
