@@ -15,6 +15,7 @@ import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { PhoneWorkspace, usePhoneLayout } from "./PhoneWorkspace";
+import { PlanHud } from "../ui/PlanHud";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
@@ -43,6 +44,9 @@ export function Workspace() {
             <LeftPanel />
           </ErrorBoundary>
           <div className="center" ref={center} style={{ gridTemplateRows: dockOpen ? `1fr ${dock}px` : `1fr 37px`, position: "relative" }}>
+            <div className="plan-hud-anchor" style={{ bottom: dockOpen ? dock : 37 }}>
+              <PlanHud />
+            </div>
             <ErrorBoundary label="3D view">
               <Viewport />
             </ErrorBoundary>
