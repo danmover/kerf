@@ -88,14 +88,22 @@ export function inventoryText(inv: DetailInventory): string {
       const placed = m.support.find((s) => s.down === p.asPlaced);
       const best = [...m.support].sort((a, b) => a.area - b.area)[0];
       const placedText = placed ? `printed as placed in the assembly (part ${placed.down} on the bed): ${n(placed.area, 0)} mm² needs support` : "as placed it does not sit square to the bed";
-      out.push(`  - Overhangs past 45°: ${placedText}; least support with part ${best.down} on the bed: ${n(best.area, 0)} mm²`);
+      const bestText = placed && best.area >= placed.area - 1 ? "which is already the best orientation" : `least support with part ${best.down} on the bed: ${n(best.area, 0)} mm²`;
+      out.push(`  - Overhangs past 45°: ${placedText}; ${bestText}`);
     }
     if (m.truncated) out.push("  - (very many edges: only the first 4000 were inspected)");
   }
   if (inv.missing.length) out.push("", `Not measured (not built yet or the kernel was busy): ${inv.missing.join(", ")}`);
   out.push("", `Dimensions typed directly into part geometry (not from a param, let or interface): ${inv.literals.length}${inv.literals.length >= 80 ? "+" : ""}`);
-  for (const l of inv.literals.slice(0, 30)) out.push(`  - ${l.part}, line ${l.line}: ${l.value} in \`${l.context}\``);
-  if (inv.literals.length > 30) out.push(`  - …and ${inv.literals.length - 30} more`);
+  // one line per source line: "lid, line 79: 2.4, 26, 1.1 in `…`"
+  const groups: { part: string; line: number; values: string[]; context: string }[] = [];
+  for (const l of inv.literals) {
+    const g = groups.at(-1);
+    if (g && g.part === l.part && g.line === l.line) g.values.push(l.value);
+    else groups.push({ part: l.part, line: l.line, values: [l.value], context: l.context });
+  }
+  for (const g of groups.slice(0, 24)) out.push(`  - ${g.part}, line ${g.line}: ${g.values.join(", ")} in \`${g.context}\``);
+  if (groups.length > 24) out.push(`  - …and ${groups.length - 24} more lines`);
   return out.join("\n");
 }
 

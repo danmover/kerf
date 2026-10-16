@@ -40,7 +40,7 @@ export class ReviewSession {
         unknown.push(r.id);
         continue;
       }
-      this.latest.set(f.id, { ...f, status: r.status, note: r.note.trim() || f.note });
+      this.latest.set(f.id, { ...f, status: r.status, response: r.note.trim() || f.response });
     }
     return unknown;
   }

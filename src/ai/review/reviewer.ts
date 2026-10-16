@@ -164,7 +164,10 @@ function firstMessage(i: ReviewerInput): BetaContentBlockParam[] {
   if (i.earlier.length) {
     text(
       `<earlier_findings round="${i.round - 1}">\n${i.earlier
-        .map((f) => `${f.id} [${f.severity}, ${f.area}] ${f.title}. Fix asked: ${f.fix}${f.note ? `\n   Designer: ${f.status === "declined" ? "kept it" : f.status === "needs_user" ? "left it for the user" : "fixed it"}: ${f.note}` : ""}`)
+        .map((f) => {
+          const said = f.status === "fixed" ? "fixed it" : f.status === "declined" ? "kept it" : f.status === "needs_user" ? "left it for the user" : "did not respond";
+          return `${f.id} [${f.severity}, ${f.area}] ${f.title}. Fix asked: ${f.fix}\n   Designer ${said}${f.response ? `: ${f.response}` : ""}${f.note ? `\n   You said last round: ${f.note}` : ""}`;
+        })
         .join("\n")}\n</earlier_findings>`,
     );
   }

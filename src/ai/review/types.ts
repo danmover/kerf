@@ -41,7 +41,9 @@ export interface Finding {
   view: string;
   needsUser: boolean;
   status: FindingStatus;
-  /** the designer's response, then the reviewer's verdict on it */
+  /** the designer's answer: what it changed, or why it kept the design */
+  response?: string;
+  /** the reviewer's latest word on it */
   note?: string;
 }
 

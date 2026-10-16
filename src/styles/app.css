@@ -2580,6 +2580,8 @@ a:hover {
 .rv-lightbox img {
   display: block;
   width: 100%;
+  max-height: calc(86vh - 150px);
+  object-fit: contain;
   background: var(--bg-0);
 }
 .rv-lb-why {

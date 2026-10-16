@@ -166,7 +166,7 @@ function Result({ it, r }: { it: ReviewItem; r: ReviewResult }) {
         <div className="rv-group">
           <div className="rv-group-head mono">From earlier rounds</div>
           {[...unsettled, ...settled].map((f) => (
-            <FindingRow key={f.id} f={f} earlier />
+            <FindingRow key={f.id} f={f} />
           ))}
         </div>
       )}
@@ -197,7 +197,7 @@ function Result({ it, r }: { it: ReviewItem; r: ReviewResult }) {
   );
 }
 
-function FindingRow({ f, earlier }: { f: Finding; earlier?: boolean }) {
+function FindingRow({ f }: { f: Finding }) {
   const [open, setOpen] = useState(false);
   const busy = useChat((s) => s.busy);
   const st = STATUS[f.status];
@@ -219,9 +219,15 @@ function FindingRow({ f, earlier }: { f: Finding; earlier?: boolean }) {
               <span className="mono">Fix</span>
               <span>{f.fix}</span>
             </div>
+            {f.response && (
+              <div className="rv-f-note">
+                <span className="mono">Claude</span>
+                <span>{f.response}</span>
+              </div>
+            )}
             {f.note && (
               <div className="rv-f-note">
-                <span className="mono">{earlier ? "Latest" : "Note"}</span>
+                <span className="mono">Reviewer</span>
                 <span>{f.note}</span>
               </div>
             )}

@@ -44,7 +44,8 @@ export async function captureViews(capture: Capture, ids: string[] | undefined, 
 
 export async function captureCloseup(capture: Capture, ids: string[], view: ViewPreset, section: "x" | "y" | "z" | undefined, why: string, parts: string[]): Promise<ReviewView> {
   const image = await capture({ view, width: VIEW_W, height: VIEW_H, section, focus: ids, frame: "focus", mime: "image/jpeg", quality: 0.88 });
-  return { name: `closeup-${view}${section ? `-${section}` : ""}`, label: `Close-up of ${parts.join(", ")} from the ${view}${section ? `, cut across ${section}` : ""}`, image, closeup: { parts, why } };
+  const from = view === "iso" ? "3/4 view" : `from the ${view}`;
+  return { name: `closeup-${view}${section ? `-${section}` : ""}`, label: `Close-up of ${parts.join(", ")}, ${from}${section ? `, cut across ${section.toUpperCase()}` : ""}`, image, closeup: { parts, why } };
 }
 
 /** Lay views out on one labelled JPEG. Returns "" when the browser cannot draw it. */

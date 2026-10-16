@@ -120,7 +120,7 @@ describe("review sessions", () => {
     ]);
     expect(unknown).toEqual(["R9"]);
     expect(s.findings.find((f) => f.id === "R1")!.status).toBe("fixed");
-    expect(s.findings.find((f) => f.id === "R1")!.note).toBe("Added a 1 mm fillet");
+    expect(s.findings.find((f) => f.id === "R1")!.response).toBe("Added a 1 mm fillet");
     expect(s.carried().map((f) => f.id)).toEqual(["R1", "R2", "R3"]);
 
     s.add(result(2, [finding("R4", "minor", { round: 2 })], [finding("R1", "major", { status: "verified" })]));
@@ -210,5 +210,16 @@ describe("the detail inventory", () => {
     }, () => undefined);
     expect(inv.missing.length).toBeGreaterThan(0);
     expect(inventoryText(inv)).toMatch(/not measured: kernel busy/);
+  });
+});
+
+describe("unexplained dimensions in the inventory", () => {
+  it("lists each number once per line, grouped by line", async () => {
+    const src = `design "t"\nparam w = 40mm\npart a {\n  body box(w - 0.4, w - 0.4, 26)\n  add box(3, 3, 3)\n}\n`;
+    const lits = unexplainedLiterals(src);
+    expect(lits.filter((l) => l.line === 4).map((l) => l.value)).toEqual(["0.4", "26"]);
+    const text = inventoryText({ parts: [], literals: lits, missing: [] });
+    expect(text).toMatch(/a, line 4: 0\.4, 26 in `body box\(w - 0\.4, w - 0\.4, 26\)`/);
+    expect(text).toMatch(/a, line 5: 3 in/);
   });
 });

@@ -18,7 +18,10 @@ export function unexplainedLiterals(src: string, limit = 80): Literal[] {
   const lines = src.split("\n");
   const add = (part: string, e: Expr & { k: "num" }) => {
     const { line } = lineCol(src, e.span.start);
-    out.push({ part, line, value: src.slice(e.span.start, e.span.end), context: (lines[line - 1] ?? "").trim().slice(0, 140) });
+    const value = src.slice(e.span.start, e.span.end);
+    // the same number twice on one line is one decision
+    if (out.some((l) => l.part === part && l.line === line && l.value === value)) return;
+    out.push({ part, line, value, context: (lines[line - 1] ?? "").trim().slice(0, 140) });
   };
 
   const expr = (part: string, e: Expr, parent?: Expr) => {
