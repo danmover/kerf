@@ -274,3 +274,33 @@ export function removeDecision(src: string, model: Model, name: string): string 
   while (src[end] === "\n" && src[end + 1] === "\n") end++;
   return applySpanEdits(src, [deleteLine(src, d.span.start, end)]);
 }
+
+/** Parameters a part depends on, nearest first (through lets and other parts). */
+export function paramsDriving(model: Model, partName: string, limit = 8): string[] {
+  const into = new Map<string, string[]>();
+  for (const e of model.graph.edges) into.set(e.to, [...(into.get(e.to) ?? []), e.from]);
+  const params = new Set(model.params.map((p) => p.name));
+  const out: string[] = [];
+  const seen = new Set([partName]);
+  let frontier = [partName];
+  while (frontier.length && out.length < limit) {
+    const next: string[] = [];
+    for (const n of frontier)
+      for (const m of into.get(n) ?? []) {
+        if (seen.has(m)) continue;
+        seen.add(m);
+        next.push(m);
+        if (params.has(m)) out.push(m);
+      }
+    frontier = next;
+  }
+  return out.slice(0, limit);
+}
+
+/** Decisions whose values shape a part. */
+export function decisionsFor(model: Model, partId: string): EvalDecision[] {
+  return model.decisions.filter((d) => {
+    const ps = decisionParams(d);
+    return ps.length > 0 && partsAffectedBy(model, ps).includes(partId);
+  });
+}

@@ -12,11 +12,13 @@ import { useView } from "../app/view";
 import { commitSource, endPreview } from "../app/project";
 import { paramEdits, upsertDecision, applySpanEdits, type SetMap } from "../core/decisions";
 import { fmtNum } from "../lang/values";
+import { shotOf, changeShots, type ChangeShots } from "../app/changeShots";
+import { spotText, type SpotRef } from "../app/spot";
 import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type AskOption, type ToolOutcome } from "./tools";
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; ts: number }
+  | { kind: "user"; id: string; text: string; ts: number; spot?: SpotRef }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number }
   | {
@@ -35,7 +37,9 @@ export type ChatItem =
       decision?: string;
     }
   | { kind: "notice"; id: string; level: "error" | "warn" | "info"; title: string; detail?: string; action?: "settings" | "retry" }
-  | { kind: "turn"; id: string; before: string; after: string; edits: number; reverted?: boolean };
+  | { kind: "turn"; id: string; before: string; after: string; edits: number; reverted?: boolean; shots?: ChangeShots }
+  /** follow-ups Claude offers as one-click chips */
+  | { kind: "suggest"; id: string; options: { label: string; prompt: string }[] };
 
 interface ChatState {
   projectId: string | null;
@@ -89,7 +93,9 @@ function persist() {
     const { items, pendingChoice } = get();
     // keep stored history small: images are dropped, the text around them stays
     const slimHistory = history.map(stripImages);
-    const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it));
+    const turns = items.filter((it) => it.kind === "turn" && it.shots);
+    const keepShots = new Set(turns.slice(-12).map((it) => it.id));
+    const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it.kind === "turn" && it.shots && !keepShots.has(it.id) ? { ...it, shots: undefined } : it));
     void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"] }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, updatedAt: Date.now() }).catch(() => undefined);
   }, 400);
 }
@@ -163,23 +169,36 @@ export function stop() {
   abort?.abort();
 }
 
-export async function sendMessage(text: string) {
+/**
+ * Send the user's message. With a spot, the message is about that place on
+ * the model (see app/spot); `id` names the chat item so the caller can follow
+ * the replies.
+ */
+export async function sendMessage(text: string, opts: { spot?: SpotRef; id?: string } = {}) {
   const t = text.trim();
   if (!t || get().busy) return;
   endPreview();
   const pending = get().pendingChoice;
-  push({ kind: "user", id: nid(), text: t, ts: Date.now() });
+  push({ kind: "user", id: opts.id ?? nid(), text: t, ts: Date.now(), spot: opts.spot });
   set({ lastUserText: t });
+  const said = opts.spot ? `<spot>${spotText(opts.spot)}</spot>\n${t}` : t;
   if (pending) {
     // the user typed instead of picking: that answers the open question
     patch(pending.itemId, (it) => (it.kind === "choice" ? { ...it, chosen: "(answered in chat)" } : it));
     set({ pendingChoice: null });
-    history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${t}` }, { type: "text", text: contextNote() }] });
+    addUser([...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${said}` }, { type: "text", text: contextNote() }]);
   } else {
-    history.push({ role: "user", content: [{ type: "text", text: contextNote() }, { type: "text", text: t }] });
+    addUser([{ type: "text", text: contextNote() }, { type: "text", text: said }]);
   }
   persist();
   await runLoop();
+}
+
+/** Add user content to the history, joining results a finished turn left waiting for it. */
+function addUser(content: BetaContentBlockParam[]) {
+  const last = history[history.length - 1];
+  if (last?.role === "user" && typeof last.content !== "string" && last.content.every((b) => b.type === "tool_result")) history[history.length - 1] = { role: "user", content: [...last.content, ...content] };
+  else history.push({ role: "user", content });
 }
 
 /**
@@ -205,7 +224,7 @@ export async function choose(itemId: string, label: string, opts: { values?: Set
   set({ pendingChoice: null });
   const tweaks = recorded?.adjusted.length ? ` (${recorded.adjusted.map((a) => `${a.param} ${fmtValue(a.to)}`).join(", ")})` : "";
   push({ kind: "user", id: nid(), text: `${label}${tweaks}${note ? `\n${note}` : ""}`, ts: Date.now() });
-  history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: answerText(label, option, recorded, note) }, { type: "text", text: contextNote() }] });
+  addUser([...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: answerText(label, option, recorded, note) }, { type: "text", text: contextNote() }]);
   persist();
   await runLoop();
 }
@@ -293,6 +312,8 @@ async function runLoop() {
   abort = new AbortController();
   set({ busy: true });
   const startSource = useDesign.getState().source;
+  // a picture of the design as it was, for the change card (none if the design moves on first)
+  const before = shotOf(startSource);
   let edits = 0;
   const settings = useSettings.getState();
   const system = [{ type: "text" as const, text: systemPrompt(), cache_control: { type: "ephemeral" as const } }];
@@ -346,11 +367,14 @@ async function runLoop() {
       const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
       const results: BetaToolResultBlockParam[] = [];
       let ask: { toolUseId: string; outcome: ToolOutcome } | null = null;
+      let offered = false;
       for (const u of uses) {
         if (abort.signal.aborted) break;
         const itemId = [...toolItems.entries()].find(([, id]) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)?.[1] ?? nid();
         if (!get().items.some((i) => i.id === itemId)) push({ kind: "tool", id: itemId, toolUseId: u.id, name: u.name, status: "running", title: TOOL_TITLES[u.name] ?? u.name });
         else patch(itemId, (it) => (it.kind === "tool" ? { ...it, status: "running", title: TOOL_TITLES[u.name] ?? u.name } : it));
+        // the change card's "before" picture is taken before the first edit lands
+        if (!edits && (u.name === "edit_design" || u.name === "write_design")) await Promise.race([before, new Promise((r) => setTimeout(r, 4000))]);
         let outcome: ToolOutcome;
         try {
           outcome = await runTool(u.name, u.input);
@@ -360,6 +384,13 @@ async function runLoop() {
         if (outcome.ask) {
           set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
           ask = { toolUseId: u.id, outcome };
+          continue;
+        }
+        if (outcome.suggest) {
+          set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
+          push({ kind: "suggest", id: nid(), options: outcome.suggest });
+          offered = true;
+          results.push({ type: "tool_result", tool_use_id: u.id, content: outcome.content as BetaToolResultBlockParam["content"] });
           continue;
         }
         if (u.name === "edit_design" || u.name === "write_design") {
@@ -391,6 +422,8 @@ async function runLoop() {
       }
       history.push({ role: "user", content: results });
       persist();
+      // offering next steps closes the turn; the results wait for the user's next message
+      if (offered && uses.every((u) => u.name === "suggest_next_steps")) break;
       if (step === settings.maxSteps - 1) {
         push({ kind: "notice", id: nid(), level: "info", title: `Paused after ${settings.maxSteps} steps`, detail: "Say “continue” to let Claude keep going. You can raise the limit in Settings." });
         history.push({ role: "assistant", content: [{ type: "text", text: "(Paused at the step limit.)" }] });
@@ -407,7 +440,15 @@ async function runLoop() {
   } finally {
     set((s) => ({ busy: false, items: s.items.map((it) => (it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it.kind === "tool" && it.status === "running" ? { ...it, status: "error" as const, detail: "Stopped" } : it)) }));
     const after = useDesign.getState().source;
-    if (edits && after !== startSource) push({ kind: "turn", id: nid(), before: startSource, after, edits });
+    if (edits && after !== startSource) {
+      const tid = nid();
+      push({ kind: "turn", id: tid, before: startSource, after, edits });
+      void changeShots(before, after).then((shots) => {
+        if (!shots || !get().items.some((i) => i.id === tid)) return;
+        patch(tid, (it) => (it.kind === "turn" ? { ...it, shots } : it));
+        persist();
+      });
+    }
     abort = null;
     persist();
   }

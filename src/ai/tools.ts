@@ -134,6 +134,32 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "suggest_next_steps",
+    description:
+      "Offer the user two to four likely follow-ups as one-click chips under your reply: a refinement they will probably want, a check or view worth seeing, or the next part of the design. Each prompt is sent as the user's message when clicked, so write it in their voice and make it specific to this design. Call it once, in the same response as your final reply, after the text. It ends your turn. Skip it after a plain answer to a question.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        suggestions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 4,
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", description: "Two to six words, e.g. 'Add a cable notch'." },
+              prompt: { type: "string", description: "The full message sent when clicked, e.g. 'Add a 10 × 6 mm cable notch to the back wall, centred.'" },
+            },
+            required: ["label", "prompt"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["suggestions"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const EditInput = z.object({
@@ -155,6 +181,10 @@ const AskInput = z.object({
     .refine((os) => new Set(os.map((o) => o.label)).size === os.length, "option labels must be different"),
 });
 
+const SuggestInput = z.object({
+  suggestions: z.array(z.object({ label: z.string().min(1).max(60), prompt: z.string().min(1).max(600) })).min(1).max(4),
+});
+
 export interface AskOption {
   label: string;
   consequence: string;
@@ -171,6 +201,8 @@ export interface ToolOutcome {
   card: { title: string; detail?: string; diff?: { before: string; after: string }; image?: string; status?: "done" | "error" };
   /** ends the turn and waits for the user */
   ask?: { title?: string; question: string; options: AskOption[] };
+  /** follow-ups to show as chips; ends the turn without another request */
+  suggest?: { label: string; prompt: string }[];
 }
 
 // ---------- summaries ----------
@@ -391,6 +423,11 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       if (problems.length) return { isError: true, content: `The question was not shown: ${problems.join("; ")}. Fix the option values (or leave set out for that option) and ask again.`, card: { title: "Question needs fixing", detail: problems[0], status: "error" } };
       return { content: "", card: { title: p.data.question }, ask: { title: p.data.title, question: p.data.question, options: p.data.options } };
     }
+    case "suggest_next_steps": {
+      const p = SuggestInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      return { content: "Shown to the user as chips. A click sends that prompt as their next message.", card: { title: "Suggested next steps" }, suggest: p.data.suggestions };
+    }
   }
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
@@ -414,4 +451,5 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
+  suggest_next_steps: "Suggesting next steps",
 };

@@ -62,3 +62,8 @@ export const select = (ids: string[]) => useView.setState({ selected: ids });
 export const showDecision = (name: string) => useView.setState({ leftTab: "decisions", decisionFocus: { name, nonce: ++nonce } });
 export const resetView = () =>
   useView.setState({ selected: [], hovered: null, focusParts: [], focusCheck: null, hiddenIds: [], isolate: false, xray: false, section: { on: false, axis: "x", t: 0.5, flip: false }, explode: 0, playing: false });
+/** Emphasise parts while something that shapes them is hovered (a focused check keeps the view). */
+export const hoverParts = (ids: string[]) => {
+  if (useView.getState().focusCheck) return;
+  useView.setState({ focusParts: ids });
+};

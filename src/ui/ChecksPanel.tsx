@@ -12,6 +12,9 @@ import type { CheckItem } from "../core/checks";
 import type { FixOption } from "../core/feasibility";
 import { fmtNum } from "../lang/values";
 import { useChatDraft } from "./chatDraft";
+import { useChat, sendMessage } from "../ai/chat";
+import { openSpot } from "../app/spot";
+import { useApiKey } from "./ChatPanel";
 
 const CATEGORY_LABEL: Record<string, string> = {
   requirement: "Requirements",
@@ -30,6 +33,9 @@ export function ChecksPanel() {
   const stage = useDesign((s) => s.stage);
   const checksError = useDesign((s) => s.checksError);
   const focusCheck = useView((s) => s.focusCheck);
+  const busy = useChat((s) => s.busy);
+  const hasKey = !!useApiKey();
+  const model = useDesign((s) => s.model);
   const [filter, setFilter] = useState<"all" | "issues">("all");
   const stale = reportRev < rev;
 
@@ -107,6 +113,18 @@ export function ChecksPanel() {
                       {i.level === "soft" && <span className="chip" style={{ marginLeft: 6, height: 16, fontSize: 9.5 }}>soft</span>}
                     </div>
                     <div className="detail">{i.detail}</div>
+                    {focusCheck === i.id && (i.status === "fail" || i.status === "warn") && hasKey && (
+                      <div className="row" style={{ gap: 4, marginTop: 6 }} onClick={(e) => e.stopPropagation()}>
+                        <button className="btn sm" disabled={busy} onClick={() => void sendMessage(`Fix this ${i.status === "fail" ? "failing check" : "warning"}: ${i.title} (${i.detail}).`)}>
+                          <Icon.Sparkle size={12} /> Ask Claude to fix
+                        </button>
+                        {i.parts?.[0] && model?.parts.some((p) => p.id === i.parts![0]) && (
+                          <button className="btn sm ghost" onClick={() => openSpot({ partId: i.parts![0], label: model.parts.find((p) => p.id === i.parts![0])!.label })}>
+                            <Icon.Pin size={12} /> Talk about it
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="basis">{i.basis === "needs analysis" ? "analysis" : i.basis === "geometry" ? "geometry" : "params"}</div>
                 </motion.div>

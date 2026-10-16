@@ -2,26 +2,25 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useChat, sendMessage, stop, retryLast, revertTurn, clearChat, type ChatItem } from "../ai/chat";
+import { useChat, sendMessage, stop, retryLast, clearChat, type ChatItem } from "../ai/chat";
 import { ChoiceCard } from "./ChoiceCard";
+import { ChangeCard } from "./ChangeCard";
+import { DiffView } from "./DiffView";
+import { openSpot, spotLabel } from "../app/spot";
 import { getApiKey, subscribeKey } from "../persist/vault";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
 import { useProject } from "../app/project";
 import { templateById, TEMPLATES } from "../demos/templates";
-import { lineDiff, diffStats } from "../core/sourceEdit";
-import { evaluateOnly, useDesign } from "../core/engine";
-import { paramUnit, sameValue, withValues } from "../core/decisions";
-import { commitSource, endPreview, previewSource, realSource } from "../app/project";
+import { diffStats } from "../core/sourceEdit";
+import { useDesign } from "../core/engine";
 import { useView, select } from "../app/view";
-import { fmtNum } from "../lang/values";
-import { useRealModel } from "./useRealModel";
-import { ValueField } from "./ValueField";
 import { Markdown } from "./Markdown";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
+import { useStickToBottom } from "./useStickToBottom";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -32,7 +31,8 @@ export function ChatPanel() {
   const busy = useChat((s) => s.busy);
   const key = useApiKey();
   const feed = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
+  const lastUser = useMemo(() => [...items].reverse().find((i) => i.kind === "user")?.id, [items]);
+  const stick = useStickToBottom(feed, lastUser);
   const settings = useSettings();
   const model = MODELS.find((m) => m.id === settings.model)!;
 
@@ -111,19 +111,12 @@ export function ChatPanel() {
       </div>
 
       <div className="chat">
-        <div
-          className="chat-feed"
-          ref={feed}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-          }}
-          aria-live="polite"
-        >
+        <div className="chat-feed" ref={feed} aria-live="polite">
           {!items.length && <Welcome hasKey={!!key} />}
           {items.map((it) => (
             <Item key={it.id} it={it} />
           ))}
+          <Suggestions items={items} busy={busy} />
         </div>
         <Composer busy={busy} hasKey={!!key} />
       </div>
@@ -171,6 +164,20 @@ function Item({ it }: { it: ChatItem }) {
     case "user":
       return (
         <motion.div className="msg-user" initial={{ opacity: 0, y: 6, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }}>
+          {it.spot && (
+            <button
+              className="spot-chip"
+              onClick={() => {
+                if (useDesign.getState().model?.parts.some((p) => p.id === it.spot!.partId)) {
+                  select([it.spot!.partId]);
+                  openSpot(it.spot!);
+                }
+              }}
+              data-tip="The spot this is about. Click to show it."
+            >
+              <Icon.Pin size={11} /> {spotLabel(it.spot)}
+            </button>
+          )}
           {it.text}
         </motion.div>
       );
@@ -202,8 +209,38 @@ function Item({ it }: { it: ChatItem }) {
         </motion.div>
       );
     case "turn":
-      return <TurnBar it={it} />;
+      return <ChangeCard it={it} />;
+    case "suggest":
+      return null;
   }
+}
+
+/** Claude's suggested follow-ups, as chips after its latest reply until the user sends something. */
+function Suggestions({ items, busy }: { items: ChatItem[]; busy: boolean }) {
+  let last: Extract<ChatItem, { kind: "suggest" }> | null = null;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user" || it.kind === "choice") break;
+    if (it.kind === "suggest") {
+      last = it;
+      break;
+    }
+  }
+  if (!last || busy) return null;
+  return <SuggestionChips options={last.options} />;
+}
+
+export function SuggestionChips({ options, onSend }: { options: { label: string; prompt: string }[]; onSend?: (prompt: string) => void }) {
+  return (
+    <motion.div className="suggest" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}>
+      <span className="mono dim">next</span>
+      {options.map((o, i) => (
+        <motion.button key={o.label} className="suggest-chip" initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.05 * i }} onClick={() => (onSend ? onSend(o.prompt) : void sendMessage(o.prompt))} data-tip={o.prompt} data-tip-pos="top">
+          <Icon.Sparkle size={11} /> {o.label}
+        </motion.button>
+      ))}
+    </motion.div>
+  );
 }
 
 function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) {
@@ -274,111 +311,6 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
   );
 }
 
-function DiffView({ before, after }: { before: string; after: string }) {
-  const lines = useMemo(() => lineDiff(before, after, 2), [before, after]);
-  return (
-    <div className="diff">
-      {lines.map((l, i) => (
-        <div key={i} className={`ln ${l.kind}`}>
-          <span className="n">{l.b ?? l.a ?? ""}</span>
-          <span>{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
-          <span>{l.text}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function TurnBar({ it }: { it: Extract<ChatItem, { kind: "turn" }> }) {
-  const [open, setOpen] = useState(false);
-  const stats = useMemo(() => diffStats(it.before, it.after), [it.before, it.after]);
-  const changes = useMemo(() => paramChanges(it.before, it.after), [it.before, it.after]);
-  const key = `turn:${it.id}`;
-  const comparing = useProject((s) => s.preview?.key === key);
-  const busy = useChat((s) => s.busy);
-  const { model: real } = useRealModel();
-  useEffect(() => () => endPreview(key), [key]);
-
-  // fine-tune a value Claude changed, without another round trip
-  const tweak = (name: string, v: number | string | boolean, commit: boolean) => {
-    const src = realSource();
-    const next = withValues(src, evaluateOnly(src), { [name]: v });
-    if (commit) commitSource(next, "you", `Set ${name} to ${typeof v === "number" ? fmtNum(v, 3) : String(v)} after Claude's change`);
-    else previewSource({ key: `tweak:${it.id}`, label: name, quiet: true }, next);
-  };
-
-  return (
-    <div className="turn">
-      <div className="turn-bar">
-        <Icon.Edit size={12} />
-        <span className="grow">
-          {it.reverted ? "Reverted" : `Changed the design in ${it.edits} edit${it.edits > 1 ? "s" : ""}`} · <span style={{ color: "var(--pass)" }}>+{stats.added}</span> <span style={{ color: "var(--fail)" }}>−{stats.removed}</span>
-        </span>
-        {!it.reverted && (
-          <button
-            className={`btn sm ${comparing ? "" : "ghost"}`}
-            disabled={busy}
-            aria-pressed={comparing}
-            onClick={() => (comparing ? endPreview(key) : previewSource({ key, label: "Before Claude's change" }, it.before))}
-            data-tip="Show the design as it was before this reply"
-          >
-            <Icon.Compare size={12} /> {comparing ? "After" : "Before"}
-          </button>
-        )}
-        <button className="btn sm ghost" onClick={() => setOpen((o) => !o)}>
-          {open ? "Hide" : "Review"}
-        </button>
-        {!it.reverted && (
-          <button className="btn sm ghost" onClick={() => revertTurn(it.id)} data-tip="Put the design back as it was before this reply">
-            <Icon.Undo size={12} /> Revert
-          </button>
-        )}
-      </div>
-      {!it.reverted && changes.length > 0 && (
-        <div className="turn-chips">
-          <span className="mono dim tc-label" data-tip="Drag a name or type a value to fine-tune it">
-            tweak
-          </span>
-          {changes.map((c) => {
-            const cur = real?.params.find((p) => p.name === c.name);
-            return (
-              <ValueField
-                key={c.name}
-                name={c.name}
-                from={c.from}
-                value={cur?.value ?? c.to}
-                unit={paramUnit(real, c.name)}
-                accent={!!cur && !sameValue(cur.value, c.to)}
-                disabled={!cur || cur.locked || busy}
-                onLive={(v) => tweak(c.name, v, false)}
-                onCommit={(v) => tweak(c.name, v, true)}
-              />
-            );
-          })}
-        </div>
-      )}
-      {open && (
-        <div style={{ marginTop: 6, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line-2)" }}>
-          <DiffView before={it.before} after={it.after} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Parameters whose values differ between two versions of the source. */
-function paramChanges(before: string, after: string) {
-  const a = evaluateOnly(before);
-  const b = evaluateOnly(after);
-  const out: { name: string; from?: number | string | boolean; to: number | string | boolean }[] = [];
-  for (const p of b.params) {
-    const q = a.params.find((x) => x.name === p.name);
-    if (!q) out.push({ name: p.name, to: p.value });
-    else if (!sameValue(q.value, p.value)) out.push({ name: p.name, from: q.value, to: p.value });
-  }
-  return out.slice(0, 8);
-}
-
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
@@ -439,7 +371,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
                 ? "Add your API key in settings to chat with Claude"
                 : about.length
                   ? `What should change about ${about.length === 1 ? about[0] : "the selected parts"}?`
-                  : "Describe a part, a change or a question… (select parts in 3D to point at them)"
+                  : "Describe a part, a change or a question… (right-click the model to ask about a spot)"
           }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {

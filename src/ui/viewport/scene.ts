@@ -43,6 +43,19 @@ interface PartObj {
   removing: number | null;
 }
 
+/** What is under a point on screen: the part, and the spot on it in the part's own frame and in the assembly. */
+export interface Hit {
+  id: string;
+  /** in the part's own frame, before its placement */
+  local: [number, number, number];
+  /** in assembly coordinates, without explode or motion */
+  point: [number, number, number];
+  /** outward face normal, in assembly coordinates */
+  normal: [number, number, number];
+}
+
+const tuple = (v: THREE.Vector3): [number, number, number] => [v.x, v.y, v.z];
+
 export interface DisplayState {
   hidden: Set<string>;
   selected: Set<string>;
@@ -91,6 +104,8 @@ export class SceneController {
   onHover: (id: string | null) => void = () => undefined;
   onPick: (id: string | null, additive: boolean) => void = () => undefined;
   onDoublePick: (id: string | null) => void = () => undefined;
+  /** a right-click without dragging: what is under the pointer, and where on screen */
+  onContext: (hit: Hit | null, clientX: number, clientY: number) => void = () => undefined;
   onFirstFrame: () => void = () => undefined;
   /** until the user moves the camera, the first complete build re-frames the model */
   private autoFit = true;
@@ -159,7 +174,9 @@ export class SceneController {
     let down: { x: number; y: number } | null = null;
     el.addEventListener("pointerdown", (e) => (down = { x: e.clientX, y: e.clientY }));
     el.addEventListener("pointerup", (e) => {
-      if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5 && e.button === 0) this.onPick(this.pick(e), e.shiftKey || e.metaKey || e.ctrlKey);
+      const still = down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5;
+      if (still && e.button === 0) this.onPick(this.pick(e), e.shiftKey || e.metaKey || e.ctrlKey);
+      else if (still && e.button === 2) this.onContext(this.hitAt(e.clientX, e.clientY), e.clientX, e.clientY);
       down = null;
     });
     let pending: PointerEvent | null = null;
@@ -510,10 +527,10 @@ export class SceneController {
     this.fit("current", true, box);
   }
 
-  private framing(p: ViewPreset | "current", aspect: number, box: THREE.Box3 = this.bounds) {
+  private framing(p: ViewPreset | "current", aspect: number, box: THREE.Box3 = this.bounds, viewDir?: THREE.Vector3) {
     const sphere = box.getBoundingSphere(new THREE.Sphere());
     const r = Math.max(sphere.radius, box === this.bounds ? 5 : 2);
-    const dir = p === "current" ? this.camera.position.clone().sub(this.controls.target).normalize() : this.presetDir(p);
+    const dir = viewDir ? viewDir.clone().normalize() : p === "current" ? this.camera.position.clone().sub(this.controls.target).normalize() : this.presetDir(p);
     const fov = (this.camera.fov * Math.PI) / 180;
     const fit = r / Math.sin(Math.min(fov, fov * aspect) / 2);
     return { pos: sphere.center.clone().add(dir.multiplyScalar(fit * 1.08)), target: sphere.center.clone() };
@@ -534,16 +551,54 @@ export class SceneController {
   // ---------- picking ----------
 
   private pick(e: MouseEvent): string | null {
+    return this.rayHit(e.clientX, e.clientY)?.object.userData.partId ?? null;
+  }
+
+  private rayHit(clientX: number, clientY: number): THREE.Intersection | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
     const meshes = [...this.parts.values()].filter((p) => p.group.visible && p.removing === null && p.mat.opacity > 0.5).map((p) => p.mesh);
     const hits = this.raycaster.intersectObjects(meshes, false);
     for (const h of hits) {
       if (this.section.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
-      return (h.object.userData.partId as string) ?? null;
+      if (h.object.userData.partId) return h;
     }
     return null;
+  }
+
+  /** The part and spot under a screen position. */
+  hitAt(clientX: number, clientY: number): Hit | null {
+    const h = this.rayHit(clientX, clientY);
+    const obj = h && this.parts.get(h.object.userData.partId as string);
+    if (!h || !obj) return null;
+    const local = h.point.clone().applyMatrix4(h.object.matrixWorld.clone().invert());
+    const n = (h.face?.normal ?? new THREE.Vector3(0, 0, 1)).clone();
+    return { id: obj.id, local: tuple(local), point: tuple(local.clone().applyMatrix4(obj.placement)), normal: tuple(n.transformDirection(obj.placement)) };
+  }
+
+  /**
+   * Where a spot on a part shows in the viewport, in CSS pixels from its top
+   * left, following the camera, explode and motion. Without a spot, the part's
+   * centre. Null when the part is not on screen.
+   */
+  anchor(id: string, local?: [number, number, number]): { x: number; y: number; front: boolean } | null {
+    const obj = this.parts.get(id);
+    if (!obj || obj.removing !== null) return null;
+    const v = (local ? new THREE.Vector3(...local) : obj.center.clone()).applyMatrix4(obj.mesh.matrixWorld);
+    const front = v.clone().sub(this.camera.position).dot(this.camera.getWorldDirection(new THREE.Vector3())) > 0;
+    v.project(this.camera);
+    return { x: ((v.x + 1) / 2) * this.container.clientWidth, y: ((1 - v.y) / 2) * this.container.clientHeight, front };
+  }
+
+  /** The model's bounds in assembly coordinates. */
+  modelBounds(): [[number, number, number], [number, number, number]] {
+    return [tuple(this.bounds.min), tuple(this.bounds.max)];
+  }
+
+  /** The direction from the view's target toward the camera. */
+  viewDir(): [number, number, number] {
+    return tuple(this.camera.position.clone().sub(this.controls.target).normalize());
   }
 
   // ---------- frame ----------
@@ -698,7 +753,17 @@ export class SceneController {
 
   // ---------- capture ----------
 
-  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; section?: "x" | "y" | "z"; mime?: string; quality?: number }): Promise<string> {
+  async capture(opts: {
+    view: ViewPreset | "current";
+    width: number;
+    height: number;
+    focus?: string[];
+    section?: "x" | "y" | "z";
+    mime?: string;
+    quality?: number;
+    box?: [[number, number, number], [number, number, number]];
+    dir?: [number, number, number];
+  }): Promise<string> {
     const r = this.renderer;
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, w: this.container.clientWidth, h: this.container.clientHeight, display: this.display, section: this.section, pr: r.getPixelRatio() };
     // let pending reveal animations finish first
@@ -712,7 +777,8 @@ export class SceneController {
       r.setPixelRatio(1);
       r.setSize(opts.width, opts.height, false);
       this.camera.aspect = opts.width / opts.height;
-      const { pos, target } = this.framing(opts.view, this.camera.aspect);
+      const box = opts.box ? new THREE.Box3(new THREE.Vector3(...opts.box[0]), new THREE.Vector3(...opts.box[1])) : undefined;
+      const { pos, target } = this.framing(opts.view, this.camera.aspect, box, opts.dir && new THREE.Vector3(...opts.dir));
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
       this.camera.lookAt(target);

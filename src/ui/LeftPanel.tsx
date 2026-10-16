@@ -3,8 +3,11 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDesign, setSource } from "../core/engine";
-import { useView, revealSpan, select, type LeftTab } from "../app/view";
-import { useProject, commitSource, restoreVersion, undo, redo } from "../app/project";
+import { useView, revealSpan, select, hoverParts, type LeftTab } from "../app/view";
+import { useProject, commitSource, restoreVersion, undo, redo, previewSource, endPreview } from "../app/project";
+import { partsAffectedBy } from "../core/decisions";
+import { changesBetween } from "../core/changes";
+import { useRealModel } from "./useRealModel";
 import { setParamValue, toggleParamLock, lineDiff } from "../core/sourceEdit";
 import type { EvalParam, EvalPart } from "../core/model";
 import { Icon } from "./icons";
@@ -268,8 +271,14 @@ function ParamRow({ p }: { p: EvalParam }) {
   const pct = isNum ? ((v - lo) / (hi - lo || 1)) * 100 : 0;
   const literal = /^-?\d+(\.\d+)?\s*[a-zA-Z%]*$|^".*"$|^(true|false)$/.test(p.text.trim());
 
+  // what this value shapes, highlighted in 3D while the row is hovered
+  const hover = (on: boolean) => {
+    const m = useDesign.getState().model;
+    hoverParts(on && m ? partsAffectedBy(m, [p.name]) : []);
+  };
+
   return (
-    <div className={`param ${flash ? "changed" : ""}`}>
+    <div className={`param ${flash ? "changed" : ""}`} onMouseEnter={() => hover(true)} onMouseLeave={() => hover(false)}>
       <div className="param-head">
         <button className="param-name" style={{ background: "none", border: 0, padding: 0, cursor: "pointer" }} onClick={() => revealSpan(p.span)} data-tip="Show in code">
           {p.name}
@@ -377,7 +386,7 @@ function History() {
   const versions = useProject((s) => s.versions);
   const undoN = useProject((s) => s.undo.length);
   const redoN = useProject((s) => s.redo.length);
-  const source = useDesign((s) => s.source);
+  const { source } = useRealModel();
   const [open, setOpen] = useState<string | null>(null);
   const list = [...versions].reverse();
   const currentId = list.find((v) => v.source === source)?.id;
@@ -406,6 +415,10 @@ function History() {
 
 function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; prev?: VersionRecord; current: boolean; open: boolean; onToggle: () => void }) {
   const diff = useMemo(() => (open ? lineDiff(prev?.source ?? "", v.source, 1) : []), [open, prev, v]);
+  const parts = useMemo(() => (open && prev ? changesBetween(prev.source, v.source).parts : []), [open, prev, v]);
+  const key = `version:${v.id}`;
+  const showing = useProject((s) => s.preview?.key === key);
+  useEffect(() => () => endPreview(key), [key]);
   return (
     <div className={`history-item ${current ? "current" : ""}`}>
       <div className={`history-node ${v.author}`}>{v.author === "claude" ? "AI" : v.author === "you" ? "YOU".slice(0, 2) : "·"}</div>
@@ -420,11 +433,31 @@ function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; pr
             {open ? "Hide changes" : "Changes"}
           </button>
           {!current && (
+            <button
+              className={`btn sm ${showing ? "" : "ghost"}`}
+              aria-pressed={showing}
+              onClick={() => (showing ? endPreview(key) : previewSource({ key, label: `Version: ${v.message}`, apply: () => restoreVersion(v) }, v.source))}
+              data-tip="Show this version in the 3D view without restoring it"
+            >
+              <Icon.Eye size={12} /> {showing ? "Stop" : "Preview"}
+            </button>
+          )}
+          {!current && (
             <button className="btn sm ghost" onClick={() => restoreVersion(v)}>
               <Icon.History size={12} /> Restore
             </button>
           )}
         </div>
+        {parts.length > 0 && (
+          <div className="turn-parts" onMouseLeave={() => hoverParts([])}>
+            {parts.slice(0, 8).map((c) => (
+              <span key={c.id} className={`tp ${c.kind}`} onMouseEnter={() => hoverParts([c.id])}>
+                <span className="m">{{ added: "+", removed: "−", changed: "~", moved: "→" }[c.kind]}</span>
+                {c.label}
+              </span>
+            ))}
+          </div>
+        )}
         {open && (
           <div className="diff" style={{ borderRadius: 6, border: "1px solid var(--line-2)", marginTop: 6 }}>
             {diff.length ? (
