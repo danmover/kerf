@@ -265,15 +265,12 @@
     font-size: 0;
     gap: 0;
   }
-  .app:not(.phone) .topbar .crumbs {
+  .app:not(.phone) .topbar .tb-path {
     flex: 0 1 auto;
-  }
-  .app:not(.phone) .topbar .crumbs > .link,
-  .app:not(.phone) .topbar .crumbs > span {
-    display: none;
   }
   .app:not(.phone) .topbar .project-name {
     min-width: 96px;
+    text-overflow: ellipsis;
   }
 }
 

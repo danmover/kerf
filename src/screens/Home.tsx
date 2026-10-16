@@ -5,7 +5,7 @@ import { useRef, useState } from "react";
 import { useProject, openProject, createProject, duplicateProject, deleteProject, exportProject, importProject, renameProject } from "../app/project";
 import { confirmDialog, go, openSettings, toast } from "../app/ui";
 import { TEMPLATES } from "../demos/templates";
-import { Logo } from "../ui/Logo";
+import { Logo, LogoMark } from "../ui/Logo";
 import { Icon } from "../ui/icons";
 import { Menu, MenuItem, timeAgo, useTick } from "../ui/common";
 import { useApiKey } from "../ui/ChatPanel";
@@ -86,6 +86,9 @@ export function Home() {
         </div>
 
         <motion.div className="hero" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
+          <div className="hero-mark" aria-hidden="true">
+            <LogoMark size={168} idle />
+          </div>
           <h1>
             Describe it. <span style={{ color: "var(--accent-2)" }}>Claude models it.</span>
             <br />

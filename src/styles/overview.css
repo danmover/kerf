@@ -1,0 +1,760 @@
+/* The overview board under the 3D view (ui/Overview.tsx). */
+
+.ov {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(212px, 1fr);
+  gap: 10px;
+  padding: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background:
+    radial-gradient(600px 200px at 0% 0%, rgb(var(--accent-rgb) / 0.05), transparent 70%),
+    var(--bg-1);
+}
+
+.ov-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgb(var(--bg-3-rgb) / 0.92), rgb(var(--bg-2-rgb) / 0.92));
+  box-shadow: inset 0 1px 0 rgb(var(--ink-rgb) / 0.03);
+  overflow: hidden;
+  animation: ov-in 0.42s var(--ease) backwards;
+  animation-delay: calc(var(--i, 0) * 45ms);
+  transition: border-color 0.25s, box-shadow 0.25s;
+}
+.ov-card:hover {
+  border-color: var(--line-2);
+}
+@keyframes ov-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+/* a thin light along the top edge, coloured by the card's state */
+.ov-card::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(var(--accent-2-rgb) / 0.35), transparent);
+  opacity: 0.6;
+}
+.ov-card.pass::before {
+  background: linear-gradient(90deg, transparent, rgb(var(--pass-rgb) / 0.7), transparent);
+  opacity: 1;
+}
+.ov-card.fail::before {
+  background: linear-gradient(90deg, transparent, rgb(var(--fail-rgb) / 0.8), transparent);
+  opacity: 1;
+}
+.ov-card.warn::before {
+  background: linear-gradient(90deg, transparent, rgb(var(--warn-rgb) / 0.7), transparent);
+  opacity: 1;
+}
+
+.ov-card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px 0 6px;
+  flex: none;
+}
+.ov-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: none;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  transition: color 0.15s, background 0.15s;
+}
+.ov-card-title:disabled {
+  cursor: default;
+}
+.ov-card-title:not(:disabled):hover {
+  color: var(--text);
+  background: var(--bg-3);
+}
+.ov-card-title .ov-go {
+  opacity: 0;
+  transform: translateX(-3px);
+  transition: opacity 0.15s, transform 0.2s var(--ease);
+}
+.ov-card-title:hover .ov-go {
+  opacity: 0.8;
+  transform: none;
+}
+.ov-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ov-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-2);
+  background: var(--bg-4);
+  white-space: nowrap;
+}
+.ov-chip.pass {
+  color: var(--pass);
+  background: var(--pass-soft);
+}
+.ov-chip.fail {
+  color: var(--fail-ink);
+  background: var(--fail-soft);
+}
+.ov-chip b {
+  font-weight: 500;
+  color: inherit;
+  opacity: 0.8;
+}
+
+.ov-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ov-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 2px;
+}
+.ov-actions .btn.active {
+  color: var(--accent-2);
+  border-color: rgb(var(--accent-2-rgb) / 0.4);
+}
+.ov-actions .icon-btn.active {
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+
+/* lists of checks and uses */
+.ov-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ov-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.4;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ov-item > svg,
+.ov-item > .ov-nocheck {
+  flex: none;
+  margin-top: 1px;
+}
+.ov-item:hover {
+  background: var(--bg-3);
+}
+.ov-item.focused {
+  background: var(--accent-soft);
+  border-color: rgb(var(--accent-2-rgb) / 0.3);
+}
+.ov-item-text {
+  min-width: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ov-soft {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--text-3);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.ov-nocheck {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1.5px dashed var(--line-3);
+}
+.ov-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: auto;
+}
+.ov-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  color: var(--accent-2);
+}
+.ov-link:hover {
+  text-decoration: underline;
+}
+.ov-link.fail {
+  color: var(--fail-ink);
+}
+.ov-link.warn {
+  color: var(--warn);
+}
+
+/* ---------- status ---------- */
+
+.ov-verdict-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ov-ring-wrap {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex: none;
+}
+.ov-ring {
+  display: block;
+}
+.ov-ring circle {
+  fill: none;
+  stroke-width: 5;
+}
+.ov-ring-track {
+  stroke: var(--bg-4);
+}
+.ov-ring-seg {
+  stroke-linecap: butt;
+  transition: stroke-dasharray 0.6s var(--ease), stroke-dashoffset 0.6s var(--ease);
+  animation: ov-draw 0.9s 0.15s var(--ease) backwards;
+}
+@keyframes ov-draw {
+  from {
+    stroke-dasharray: 0 999;
+  }
+}
+.ov-ring-seg.pass {
+  stroke: var(--pass);
+  filter: drop-shadow(0 0 3px rgb(var(--pass-rgb) / 0.45));
+}
+.ov-ring-seg.warn {
+  stroke: var(--warn);
+}
+.ov-ring-seg.fail {
+  stroke: var(--fail);
+  filter: drop-shadow(0 0 3px rgb(var(--fail-rgb) / 0.5));
+}
+.ov-ring-seg.pending {
+  stroke: var(--accent);
+}
+.ov-ring.spinning {
+  animation: spin 1.6s linear infinite;
+}
+.ov-ring.spinning .ov-ring-seg {
+  opacity: 0.55;
+}
+.ov-ring-n {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--text);
+  animation: ov-tick 0.45s var(--ease);
+}
+.ov-ring-n.pass {
+  color: var(--pass);
+}
+.ov-ring-n.fail {
+  color: var(--fail-ink);
+}
+.ov-ring-n.warn {
+  color: var(--warn);
+}
+@keyframes ov-tick {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+.ov-verdict-text {
+  min-width: 0;
+}
+.ov-headline {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  animation: ov-tick 0.4s var(--ease);
+}
+.ov-headline.pass {
+  color: var(--pass-ink);
+}
+.ov-headline.fail {
+  color: var(--fail-ink);
+}
+.ov-sub {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ov-meta {
+  margin-top: 3px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.ov-updating {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-2);
+}
+.ov-updating .spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+.ov-tally {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.ov-tally .ov-chip {
+  animation: ov-tick 0.35s var(--ease) backwards;
+  animation-delay: calc(0.25s + var(--k, 0) * 40ms);
+}
+
+/* ---------- brief ---------- */
+
+.ov-purpose {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ---------- the design ---------- */
+
+.ov-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ov-fact {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: baseline;
+  gap: 8px;
+}
+.ov-fact dt {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+.ov-fact dd {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+}
+.ov-fact dd small {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.ov-val {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 13px;
+  animation: ov-flash 0.9s var(--ease);
+}
+@keyframes ov-flash {
+  0% {
+    color: var(--accent-2);
+    text-shadow: 0 0 10px var(--accent-glow);
+  }
+}
+.ov-mats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: auto;
+}
+.ov-mat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  font-size: 11px;
+  color: var(--text-2);
+  animation: ov-tick 0.35s var(--ease) backwards;
+  animation-delay: calc(0.2s + var(--k, 0) * 40ms);
+}
+.ov-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset -2px -3px 4px rgba(0, 0, 0, 0.35); /* theme: same */
+}
+.ov-swatch.big {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset -4px -6px 10px rgba(0, 0, 0, 0.35), 0 4px 12px -4px rgb(var(--shade-rgb) / 0.6); /* theme: same */
+}
+
+/* ---------- the selected part ---------- */
+
+.ov-sel {
+  border-color: rgb(var(--accent-2-rgb) / 0.3);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.08), 0 10px 30px -18px var(--accent-glow);
+  animation-name: ov-in-sel;
+}
+/* you asked for this card, so it never starts invisible */
+@keyframes ov-in-sel {
+  from {
+    opacity: 0.4;
+    transform: translateY(10px) scale(0.97);
+  }
+}
+.ov-sel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ov-sel-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-sel-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-sel-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ov-sel-facts .pass {
+  color: var(--pass);
+}
+.ov-sel-facts .fail {
+  color: var(--fail-ink);
+}
+.ov-code {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  /* fills the room the card has, never less than four lines */
+  flex: 1 1 0;
+  min-height: 84px;
+  margin: 0;
+  padding: 8px 10px 8px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--code-field);
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--syn-name);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.ov-code:hover {
+  border-color: rgb(var(--accent-2-rgb) / 0.4);
+}
+.ov-code code {
+  white-space: pre;
+  min-width: 0;
+  overflow: hidden;
+  font: inherit;
+}
+.ov-code-gutter {
+  display: block;
+  text-align: right;
+  color: var(--code-gutter);
+  flex: none;
+  min-width: 18px;
+  user-select: none;
+}
+.ov-code-gutter > span {
+  display: block;
+}
+/* the last lines fade out when the card is short */
+.ov-code::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 26px;
+  background: linear-gradient(180deg, transparent, var(--code-field) 70%);
+  pointer-events: none;
+}
+.ov-code-more {
+  position: absolute;
+  z-index: 1;
+  right: 6px;
+  bottom: 4px;
+  font-size: 9.5px;
+  line-height: 16px;
+  color: var(--text-3);
+  padding: 0 4px;
+}
+.ov-code::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 35%, rgb(var(--accent-2-rgb) / 0.08) 50%, transparent 65%);
+  transform: translateX(-100%);
+  pointer-events: none;
+}
+.ov-code:hover::after {
+  transform: translateX(100%);
+  transition: transform 0.8s var(--ease);
+}
+.tk-k {
+  color: var(--syn-keyword);
+  font-weight: 500;
+}
+.tk-o {
+  color: var(--syn-op);
+  font-weight: 500;
+}
+.tk-c {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.tk-s {
+  color: var(--syn-string);
+}
+.tk-n {
+  color: var(--syn-number);
+}
+.tk-h {
+  color: var(--syn-color);
+}
+.tk-l {
+  color: var(--syn-namespace);
+}
+.tk-p {
+  color: var(--syn-property);
+}
+.tk-f {
+  color: var(--syn-builtin);
+}
+.tk-v {
+  color: var(--syn-name);
+}
+
+/* ---------- recent changes ---------- */
+
+.ov-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+.ov-timeline::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 10px;
+  bottom: 10px;
+  width: 1px;
+  background: linear-gradient(180deg, var(--line-3), var(--line) 80%, transparent);
+}
+.ov-timeline li {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  animation: ov-tick 0.35s var(--ease) backwards;
+}
+.ov-timeline li:nth-child(2) {
+  animation-delay: 40ms;
+}
+.ov-timeline li:nth-child(3) {
+  animation-delay: 80ms;
+}
+.ov-timeline li:nth-child(4) {
+  animation-delay: 120ms;
+}
+.ov-timeline li:nth-child(n + 5) {
+  animation-delay: 160ms;
+}
+.ov-node {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin-top: 6px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  color: var(--text-3);
+}
+.claude > .ov-node {
+  color: var(--violet);
+  border-color: rgb(var(--violet-rgb) / 0.4);
+  background: rgb(var(--violet-rgb) / 0.1);
+}
+.you > .ov-node {
+  color: var(--accent-2);
+  border-color: rgb(var(--accent-2-rgb) / 0.4);
+  background: rgb(var(--accent-rgb) / 0.1);
+}
+.current > .ov-node {
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.12), 0 0 10px var(--accent-glow);
+}
+.ov-ver {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  color: var(--text);
+  transition: background 0.15s, border-color 0.15s;
+}
+.ov-ver:not(:disabled):hover {
+  background: var(--bg-3);
+}
+.ov-ver:disabled {
+  cursor: default;
+}
+.showing .ov-ver {
+  background: var(--accent-soft);
+  border-color: rgb(var(--accent-2-rgb) / 0.3);
+}
+.ov-ver-msg {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-ver-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.ov-ver-meta .add {
+  color: var(--pass);
+}
+.ov-ver-meta .del {
+  color: var(--fail-ink);
+}
+.ov-now {
+  margin-left: 2px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+.ov-now.showing {
+  background: rgb(var(--warn-rgb) / 0.14);
+  color: var(--warn);
+}
+
+/* narrow docks and phones: one column that scrolls */
+@container (max-width: 520px) {
+  .ov {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    overflow-y: auto;
+  }
+}
+.app.phone .ov {
+  grid-auto-flow: row;
+  grid-auto-columns: auto;
+  grid-auto-rows: minmax(min-content, auto);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.app.phone .ov-card {
+  overflow: visible;
+}
+.app.phone .ov-card-body {
+  overflow: visible;
+}
