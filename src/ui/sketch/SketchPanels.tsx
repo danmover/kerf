@@ -58,7 +58,7 @@ function SketchHeader({ sk, ctl }: { sk: EvalSketch; ctl: SceneController }) {
     <motion.div className="sk-ui sk-header vp-float" style={{ x: "-50%" }} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
       <div className="row sk-header-row">
         <span className="sk-badge">
-          <T.Pencil size={13} /> sketch
+          <T.Sketch size={13} /> sketch
         </span>
         <b className="mono">{sk.name}</b>
         <span className="mono muted">{sk.planeText}</span>
@@ -578,7 +578,7 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
       <motion.div className="sk-ui sk-pick-card vp-float" style={{ x: "-50%" }} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}>
         <div className="row" style={{ gap: 8 }}>
           <span className="sk-badge">
-            <T.Pencil size={13} /> new sketch
+            <T.Sketch size={13} /> new sketch
           </span>
           <span className="grow">{hover ? <span className="mono">{hover.label}</span> : "Click a plane, or a flat face of a part"}</span>
           <button className="btn sm ghost" onClick={() => useSketch.setState({ picking: false })}>

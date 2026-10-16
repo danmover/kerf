@@ -69,6 +69,9 @@ export function Viewport() {
     c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
     c.onTurntableStop = () => useView.setState({ turntable: false });
     c.onContext = (hit) => {
+      // the right button pans in a sketch; the spot chat waits until it is closed
+      const sk = useSketch.getState();
+      if (sk.active || sk.picking) return;
       const part = hit && useDesign.getState().model?.parts.find((p) => p.id === hit.id);
       if (!hit || !part) return closeSpot();
       select([hit.id]);
@@ -140,6 +143,12 @@ export function Viewport() {
   const empty = model && model.parts.length === 0 && kernelStatus === "ready";
   const spotOpen = useSpot((s) => s.spot !== null);
   const marking = useMarkup((s) => s.on);
+  // a sketch takes the pointer, so the spot chat and view markup close while it lasts
+  useEffect(() => {
+    if (!sketching) return;
+    closeSpot();
+    toggleMarkup(false);
+  }, [sketching]);
 
   return (
     <div className={`viewport ${inSketch ? "sketching" : ""}`}>
@@ -193,7 +202,7 @@ export function Viewport() {
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
         <div className="sep" />
-        <button className={`icon-btn ${marking ? "active" : ""}`} onClick={() => toggleMarkup()} data-tip="Draw on the view for Claude (M)" aria-label="Draw on the view for Claude">
+        <button className={`icon-btn ${marking ? "active" : ""}`} disabled={sketching} onClick={() => toggleMarkup()} data-tip={sketching ? "Leave the sketch to draw on the view" : "Draw on the view for Claude (M)"} aria-label="Draw on the view for Claude">
           <Icon.Edit />
         </button>
         <button className={`icon-btn ${sketching ? "active" : ""}`} onClick={() => (sketching ? exitSketch() : startPicking())} data-tip={sketching ? "Leave the sketch" : "New sketch"} aria-label="Sketch">
@@ -456,7 +465,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
             .filter((sk) => sk.usedBy.includes(p.name))
             .map((sk) => (
               <button key={sk.name} className="btn sm" onClick={() => enterSketch(sk.name)} data-tip={`Edit the sketch ${p.name} is built from`}>
-                <T.Pencil size={13} /> {sk.name}
+                <T.Sketch size={13} /> {sk.name}
               </button>
             ))}
       </div>

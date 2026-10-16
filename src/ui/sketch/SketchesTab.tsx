@@ -29,7 +29,7 @@ export function SketchesTab({ filter = "" }: { filter?: string }) {
   return (
     <div className="sk-list">
       <button className="btn sm" onClick={startPicking} style={{ alignSelf: "flex-start" }}>
-        <T.Pencil size={13} /> New sketch
+        <T.Sketch size={13} /> New sketch
       </button>
       {!sketches.length && (
         <div className="muted" style={{ fontSize: 12, padding: "6px 2px" }}>
