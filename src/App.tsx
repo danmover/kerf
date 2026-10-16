@@ -23,6 +23,7 @@ import { AuthDialog } from "./ui/Account";
 import { initAccount } from "./cloud/account";
 import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
+import { startMaterialChecks } from "./materials/runtime";
 import { useThemeSync } from "./app/theme";
 
 // each opened project brings its own conversation
@@ -84,6 +85,7 @@ function useBoot() {
   useEffect(() => {
     let live = true;
     startEngine();
+    startMaterialChecks();
     startAnalysisRuntime();
     startSimRuntime();
     void Promise.allSettled([loadRememberedKey(), refreshProjects(), initAccount()]).then(() => {

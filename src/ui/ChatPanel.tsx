@@ -24,6 +24,7 @@ import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
 import { MicButton, VoiceBar, VoiceNotice, useVoiceInput } from "./voice/VoiceInput";
 import { AgentRunCard } from "./agents/AgentRunCard";
+import { MaterialAdviceCard } from "./materials/AdviceCard";
 import { PlanPane } from "./PlanPane";
 import { ReviewCard } from "./ReviewCard";
 import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Attachments";
@@ -226,6 +227,7 @@ function Item({ it }: { it: ChatItem }) {
     case "assistant":
       return <AssistantMsg it={it} />;
     case "tool":
+      if (it.name === "compare_materials" && it.status === "done") return <MaterialAdviceCard toolUseId={it.toolUseId} fallback={<ToolCard it={it} />} />;
       return it.name === "build_subassemblies" ? <AgentRunCard toolUseId={it.toolUseId} fallback={<ToolCard it={it} />} /> : <ToolCard it={it} />;
     case "choice":
       return <ChoiceCard it={it} />;

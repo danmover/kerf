@@ -18,6 +18,7 @@ import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
 import { LightingMenu } from "./LightingMenu";
 import { MaterialButton } from "./MaterialPicker";
+import { MaterialCompareHost } from "./materials/CompareOverlay";
 import { SpotChat } from "./SpotChat";
 import { Markup, toggleMarkup, useMarkup } from "./Markup";
 import { openSpot, closeSpot, useSpot } from "../app/spot";
@@ -308,6 +309,7 @@ export function Viewport() {
 
       <SpotChat />
       <Markup />
+      <MaterialCompareHost />
 
       {scene && <SketchLayer ctl={scene} />}
 

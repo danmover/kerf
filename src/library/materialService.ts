@@ -1,9 +1,12 @@
 // Where each material can live: typical service temperatures, sunlight and
 // moisture behaviour, and the processes that make it. Used by the brief
-// checks. Values are typical for unfilled grades; a specific product's
-// datasheet wins over them.
+// checks, which ask the material advisor (materials/advise) for better picks.
+// Read from the material database (library/materialDb); values are typical
+// for unfilled grades, and a specific product's datasheet wins.
 
 import type { ProcessKind } from "../core/brief";
+import type { ProcessId } from "../mfg/types";
+import { MATERIAL_DB } from "./materialDb";
 
 export interface MaterialService {
   /** highest temperature for long use under light load (about the heat deflection temperature), °C */
@@ -18,20 +21,18 @@ export interface MaterialService {
   processes: ProcessKind[];
 }
 
-export const MATERIAL_SERVICE: Record<string, MaterialService> = {
-  PLA: { maxC: 52, minC: -10, sunlight: "poor", impact: "PLA is brittle and can crack on impact", processes: ["fdm", "molding"] },
-  PETG: { maxC: 70, minC: -20, sunlight: "fair", processes: ["fdm", "molding"] },
-  ABS: { maxC: 88, minC: -20, sunlight: "poor", processes: ["fdm", "molding", "cnc"] },
-  ASA: { maxC: 90, minC: -20, sunlight: "good", processes: ["fdm", "molding"] },
-  Nylon: { maxC: 95, minC: -40, sunlight: "fair", wet: "Nylon absorbs water and swells by about 1 to 2%, which loosens fits", processes: ["sls", "fdm", "molding", "cnc"] },
-  POM: { maxC: 100, minC: -40, sunlight: "poor", processes: ["cnc", "molding"] },
-  "Aluminum 6061": { maxC: 150, minC: -80, sunlight: "good", processes: ["cnc", "sheet", "laser"] },
-  Steel: { maxC: 350, minC: -40, sunlight: "good", wet: "Plain steel rusts unless it is plated, painted or oiled", processes: ["cnc", "sheet", "laser"] },
-  "Stainless 304": { maxC: 400, minC: -100, sunlight: "good", processes: ["cnc", "sheet", "laser"] },
-  Brass: { maxC: 200, minC: -100, sunlight: "good", processes: ["cnc"] },
-  FR4: { maxC: 130, minC: -50, sunlight: "fair", processes: ["cnc", "laser"] },
+const KIND: Record<ProcessId, ProcessKind> = {
+  fdm: "fdm",
+  sla: "resin",
+  sls: "sls",
+  cnc_mill: "cnc",
+  cnc_lathe: "cnc",
+  laser_cut: "laser",
+  sheet_metal: "sheet",
+  injection: "molding",
+  die_cast: "molding",
 };
 
-/** Better choices to suggest when a material fails a condition, in order of preference. */
-export const SUNLIGHT_PICKS = ["ASA", "PETG"];
-export const HEAT_PICKS = ["PETG", "ABS", "ASA", "Nylon"];
+export const MATERIAL_SERVICE: Record<string, MaterialService> = Object.fromEntries(
+  MATERIAL_DB.map((m) => [m.name, { maxC: m.maxC, minC: m.minC, sunlight: m.sunlight, wet: m.wet, impact: m.impact, processes: [...new Set(m.processes.map((p) => KIND[p]))] }]),
+);
