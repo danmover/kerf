@@ -262,7 +262,7 @@ describe("checks from the brief", () => {
     const ref = languageReference();
     const block = ref.slice(ref.indexOf("brief {\n  purpose"), ref.indexOf("\n}\n", ref.indexOf("brief {\n  purpose")) + 2);
     const m = evaluate(`design "doc"\n${block}\npart mount { body box(light_w, bar_d, 10) }\nrequire "Grips" for hold_light, swap: bar_d > 0\n`);
-    expect(m.diagnostics.filter((d) => d.severity !== "info")).toEqual([]);
+    expect(m.diagnostics).toEqual([]);
     expect(m.brief!.uses.map((u) => u.id)).toEqual(["hold_light", "swap"]);
     expect(m.brief!.maxMass).toBe(60);
   });
