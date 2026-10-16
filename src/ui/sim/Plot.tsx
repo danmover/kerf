@@ -9,14 +9,20 @@ import { channelInfo } from "../../sim/channels";
 import { rangeOf, valueAt } from "../../sim/frames";
 import { fmtNum } from "../../lang/values";
 import { useSim } from "../../sim/runtime";
+import { useTheme } from "../../app/theme";
 import { Icon } from "../icons";
 import { seek } from "./simUi";
 
 const COLORS = ["#6d8bff", "#4fd1c5", "#f5b84b", "#c792ff", "#ff7b8a", "#3ddc97"];
 const EVENT_COLOR: Record<string, string> = { goal: "#3ddc97", contact: "#f5b84b", stall: "#ff5d6c", warn: "#ff5d6c", info: "#48526a" };
 
+/** A theme colour from styles/theme.css, for drawing on a canvas. */
+const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 export function Plot({ frames, names, events, onRemove }: { frames: Frames; names: string[]; events: WorldEvent[]; onRemove?: () => void }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  // the grid and cursor are drawn in the theme's ink, so a theme change redraws them
+  const theme = useTheme();
   const base = useRef<HTMLCanvasElement | null>(null);
   const t = useSim((s) => s.t);
   const [w, setW] = useState(0);
@@ -60,8 +66,9 @@ export function Plot({ frames, names, events, onRemove }: { frames: Frames; name
     g.scale(dpr, dpr);
     const [lo, hi] = range;
     const y = (v: number) => H - 4 - ((v - lo) / (hi - lo)) * (H - 8);
+    const ink = cssVar("--ink-rgb") || "255 255 255";
     // grid: zero line and quarter lines
-    g.strokeStyle = "rgba(255,255,255,0.05)";
+    g.strokeStyle = `rgb(${ink} / 0.07)`;
     g.lineWidth = 1;
     for (let i = 1; i < 4; i++) {
       g.beginPath();
@@ -70,7 +77,7 @@ export function Plot({ frames, names, events, onRemove }: { frames: Frames; name
       g.stroke();
     }
     if (lo < 0 && hi > 0) {
-      g.strokeStyle = "rgba(255,255,255,0.14)";
+      g.strokeStyle = `rgb(${ink} / 0.16)`;
       g.beginPath();
       g.moveTo(0, Math.round(y(0)) + 0.5);
       g.lineTo(w, Math.round(y(0)) + 0.5);
@@ -127,7 +134,7 @@ export function Plot({ frames, names, events, onRemove }: { frames: Frames; name
       g.stroke();
     });
     base.current = c;
-  }, [w, frames, names, range, events, end]);
+  }, [w, frames, names, range, events, end, theme]);
 
   // the cursor on top
   useEffect(() => {
@@ -140,13 +147,13 @@ export function Plot({ frames, names, events, onRemove }: { frames: Frames; name
     g.drawImage(base.current, 0, 0);
     g.scale(dpr, dpr);
     const x = Math.round((t / end) * (w - 1)) + 0.5;
-    g.strokeStyle = "rgba(223,229,242,0.75)";
+    g.strokeStyle = cssVar("--text") || "#dfe5f2";
     g.lineWidth = 1;
     g.beginPath();
     g.moveTo(x, 0);
     g.lineTo(x, 96);
     g.stroke();
-  }, [t, w, end, frames, names, range, events]);
+  }, [t, w, end, frames, names, range, events, theme]);
 
   const drag = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.type === "pointermove" && !e.buttons) return;

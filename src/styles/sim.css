@@ -42,7 +42,7 @@
 }
 .sim-pick.active {
   color: var(--text);
-  border-color: rgba(109, 139, 255, 0.55);
+  border-color: rgb(var(--accent-rgb) / 0.55);
   background: var(--accent-soft);
 }
 .sim-pick .val {
@@ -85,7 +85,7 @@
 }
 .sim-toggle.on {
   color: var(--accent-2);
-  border-color: rgba(109, 139, 255, 0.45);
+  border-color: rgb(var(--accent-rgb) / 0.45);
   background: var(--accent-soft);
 }
 .sim-body {
@@ -186,7 +186,7 @@
 }
 .sim-var.active {
   color: var(--text);
-  border-color: rgba(109, 139, 255, 0.55);
+  border-color: rgb(var(--accent-rgb) / 0.55);
   background: var(--accent-soft);
 }
 .sim-dot {
@@ -418,8 +418,8 @@
   border-radius: 50%;
   background: var(--text);
   box-shadow:
-    0 0 0 3px rgba(109, 139, 255, 0.35),
-    0 2px 6px rgba(0, 0, 0, 0.5);
+    0 0 0 3px rgb(var(--accent-rgb) / 0.35),
+    0 2px 6px rgb(var(--shade-rgb) / 0.5);
 }
 .sim-scrub .tick {
   position: absolute;
@@ -509,7 +509,7 @@
   font-size: 11px;
   line-height: 1.5;
   color: var(--text-2);
-  background: #05070a;
+  background: var(--bg-0);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
@@ -565,7 +565,7 @@
     transform 0.15s var(--ease);
 }
 .sim-card:hover:not(:disabled) {
-  border-color: rgba(109, 139, 255, 0.5);
+  border-color: rgb(var(--accent-rgb) / 0.5);
   transform: translateY(-1px);
 }
 .sim-card:disabled {
@@ -616,7 +616,7 @@
 }
 .sim-describe textarea:focus {
   outline: none;
-  border-color: rgba(109, 139, 255, 0.6);
+  border-color: rgb(var(--accent-rgb) / 0.6);
 }
 .sim-progress {
   height: 3px;
@@ -645,7 +645,7 @@
   gap: 8px;
   padding: 8px 10px;
   border-radius: 12px;
-  background: rgba(10, 13, 19, 0.88);
+  background: rgb(var(--bg-1-rgb) / 0.88);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
@@ -670,7 +670,7 @@
   width: 236px;
   padding: 10px 12px;
   border-radius: 12px;
-  background: rgba(10, 13, 19, 0.86);
+  background: rgb(var(--bg-1-rgb) / 0.86);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
@@ -722,7 +722,7 @@
   z-index: 7;
   padding: 6px 12px;
   border-radius: 999px;
-  background: rgba(10, 13, 19, 0.9);
+  background: rgb(var(--bg-1-rgb) / 0.9);
   border: 1px solid var(--line-2);
   font-size: 12px;
   color: var(--text);
@@ -730,17 +730,17 @@
   pointer-events: none;
 }
 .simv-event.goal {
-  border-color: rgba(61, 220, 151, 0.6);
-  color: #aef2d0;
+  border-color: rgb(var(--pass-rgb) / 0.6);
+  color: var(--pass-ink);
 }
 .simv-event.stall,
 .simv-event.warn {
-  border-color: rgba(255, 93, 108, 0.6);
-  color: #ffc4ca;
+  border-color: rgb(var(--fail-rgb) / 0.6);
+  color: var(--fail-ink);
 }
 .simv-event.contact {
-  border-color: rgba(245, 184, 75, 0.6);
-  color: #ffe0a8;
+  border-color: rgb(var(--warn-rgb) / 0.6);
+  color: var(--warn-ink);
 }
 @media (max-width: 900px) {
   .sim-body {
@@ -763,7 +763,7 @@
   image-rendering: pixelated;
   border-radius: 4px;
   border: 1px solid var(--line-2);
-  box-shadow: 0 0 0 3px #05070a;
+  box-shadow: 0 0 0 3px #05070a; /* theme: same */
   max-width: 100%;
   height: auto;
 }

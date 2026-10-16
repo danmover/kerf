@@ -131,7 +131,7 @@ function Waiting({ run }: { run?: SimRun }) {
     const t = setInterval(() => setNow(performance.now()), 250);
     return () => clearInterval(t);
   }, []);
-  if (run?.status === "error") return <div className="sim-note" style={{ color: "#ffc4ca" }}>{run.error}</div>;
+  if (run?.status === "error") return <div className="sim-note" style={{ color: "var(--fail-ink)" }}>{run.error}</div>;
   if (run?.status === "idle")
     return (
       <div className="sim-note">
@@ -141,7 +141,7 @@ function Waiting({ run }: { run?: SimRun }) {
         </button>
       </div>
     );
-  if (run?.result?.error) return <div className="sim-note" style={{ color: "#ffc4ca" }}>{run.result.error}</div>;
+  if (run?.result?.error) return <div className="sim-note" style={{ color: "var(--fail-ink)" }}>{run.result.error}</div>;
   const secs = run ? Math.max(0, (now - run.startedAt) / 1000) : 0;
   return (
     <div className="an-box">
