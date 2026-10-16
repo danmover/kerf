@@ -2,7 +2,7 @@
 
 Mechanical CAD where Claude does the modelling and you direct the design.
 
-You describe a part or a mechanism, give the dimensions and constraints that matter, and Claude writes it as a parametric design. Kerf builds exact solids with OpenCASCADE, checks them for fit, interference, screw access, gear meshing and motion, and shows you the result. You can then ask for changes, drag parameter sliders, or edit the design file by hand. All three edit the same source, with full version history and undo.
+You describe a part or a mechanism, give the dimensions and constraints that matter, and Claude writes it as a parametric design. Kerf builds exact solids with OpenCASCADE, checks them for fit, interference, screw access, gear meshing and motion, and shows you the result. You can then ask for changes, scrub parameter values, or edit the design file by hand. All three edit the same source, with full version history and undo.
 
 This is version 0.1, a working prototype: every screen and button works, and it runs entirely in the browser.
 
@@ -29,7 +29,7 @@ Chatting with Claude needs an Anthropic API key from the [Claude Console](https:
 ### Checks
 
 ```bash
-npm test             # 29 unit tests: language, gears, conflict solver, edits, imports
+npm test             # 40 unit tests: language, gears, conflict solver, edits, imports, model panel
 npm run typecheck
 ```
 
@@ -54,7 +54,8 @@ npm run typecheck
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
 - Code editor with highlighting, autocomplete and inline errors. Clicking a part jumps to its code.
-- Parameter panel with live-preview sliders, a structure tree, version history with diffs and restore, a dependency graph and a parts list.
+- A model panel with three tabs. Parts lists every part grouped as the design groups it, says what each one is, and follows the viewport selection. Params lists the driving values under the design's own section headings: drag a value sideways to scrub it, click to type, or open it for a slider, the parts it moves and the checks it feeds. History shows every version with who made it, a diff and one-click restore.
+- A dependency graph and a parts list in the bottom dock.
 - Projects save automatically in the browser. You can rename, duplicate, delete, import and back them up.
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.

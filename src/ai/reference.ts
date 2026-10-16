@@ -45,7 +45,7 @@ Units: millimetres and degrees. Literals may carry units (2cm, 0.5in, 1.5rad) wh
 ## Statements (top level, evaluated in order; a name must be defined before it is used)
 design "Name"
 note "Free text shown to the user"
-param name = expr [range lo .. hi] ["description"] [locked]   // tunable inputs; locked means the user froze it
+param name = expr [range lo .. hi] ["description"] [locked]   // tunable inputs; locked means the user froze it. The description is the label the user reads in the params panel; a "// ── Title ──" comment above a run of params becomes its heading there
 let name = expr                                              // derived values: layout skeleton, positions, lists of points
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
 component name = lib.kind(args) { props and flags }           // standard parts from the library
@@ -58,7 +58,7 @@ Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vector
 part bracket {
   color: #4f7cff
   material: "PETG"            // one of ${materials}
-  group: "Housing"            // groups parts in the structure tree
+  group: "Housing"            // groups parts in the parts panel
   body box(40, 20, 5)         // first solid
   add cylinder(d: 10, h: 12, at: (0, 0, 5))
   cut hole(M4, through: true, at: (12, 0, 5))

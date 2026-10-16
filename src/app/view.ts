@@ -6,7 +6,8 @@ import type { Span } from "../lang/ast";
 
 export type ViewPreset = "iso" | "front" | "back" | "top" | "bottom" | "left" | "right";
 export type DockTab = "code" | "checks" | "graph" | "bom";
-export type LeftTab = "structure" | "params" | "history";
+/** the built-in tabs; features can add more through LEFT_TABS in ui/LeftPanel */
+export type LeftTab = "structure" | "params" | "history" | (string & {});
 
 interface ViewState {
   /** selected part ids (instances) */
