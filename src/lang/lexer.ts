@@ -55,7 +55,10 @@ export const KEYWORDS = new Set([
   "cosmetic",
 ]);
 
-/** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */
+/**
+ * Unit suffix -> multiplier into base units: mm, degrees, g, N, N·mm, V, A,
+ * W, mAh, Ohm, mH, MPa (N/mm²), s, Hz, °C.
+ */
 export const UNITS: Record<string, number> = {
   mm: 1,
   cm: 10,
@@ -69,21 +72,43 @@ export const UNITS: Record<string, number> = {
   rpm: 1,
   N: 1,
   Nm: 1000,
+  // machines: torque, electrical, pressure, time, frequency
+  kN: 1000,
+  Ncm: 10,
+  Nmm: 1,
+  kgcm: 98.0665,
+  V: 1,
+  mV: 0.001,
+  A: 1,
+  mA: 0.001,
+  W: 1,
+  kW: 1000,
+  Wh: 1,
+  Ah: 1000,
+  mAh: 1,
+  Ohm: 1,
+  kOhm: 1000,
+  mH: 1,
+  MPa: 1,
+  kPa: 0.001,
+  Pa: 0.000001,
+  GPa: 1000,
+  s: 1,
+  ms: 0.001,
+  min: 60,
+  h: 3600,
+  Hz: 1,
+  kHz: 1000,
+  degC: 1,
   // degrees Celsius, for the brief's service temperatures
   C: 1,
-  // structural analysis: force in N, torque in N·mm, stress and pressure in MPa (N/mm²), time in hours
-  kN: 1000,
+  // structural analysis: force in N, torque in N·mm, stress and pressure in MPa (N/mm²); time stays in seconds
   lbf: 4.448222,
   // weight of a kilogram, so 5kgf is 49 N (kg itself is a mass, in grams)
   kgf: 9.80665,
-  Nmm: 1,
-  MPa: 1,
-  GPa: 1000,
-  kPa: 0.001,
   bar: 0.1,
   psi: 0.00689476,
-  h: 1,
-  hr: 1,
+  hr: 3600,
 };
 
 const OPS = [

@@ -11,9 +11,10 @@ import { materialDensity } from "../library/standards";
 import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { briefChecks, type GeomLookup } from "./briefChecks";
+import { machineChecks } from "../machine/checks";
 import type { SettingValue } from "../mfg/types";
 
-export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "analysis" | "info";
+export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "analysis" | "electrical" | "engineering" | "testing" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -28,8 +29,8 @@ export interface CheckItem {
   margin?: number;
   /** brief uses this check serves */
   uses?: string[];
-  /** how the result was established: simulation is the finite-element solver, calculation a textbook formula */
-  basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "calculation";
+  /** how the result was established: simulation is the finite-element solver, calculation a textbook formula, electrical rules the wiring check, physical test a test still to do */
+  basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "calculation" | "electrical rules" | "physical test";
   /** what to change, in plain words */
   fix?: string;
   /** a change the app can make in one click */
@@ -253,6 +254,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     }
   }
   items.push(...gearChecks(model));
+  if (model.machine) items.push(...machineChecks(model.machine));
 
   // things geometry cannot prove
   if (model.parts.some((p) => p.motion)) {

@@ -1,4 +1,5 @@
-// The bottom dock: the brief, source code, checks, dependency graph and parts list.
+// The bottom dock: the brief, source code, checks, dependency graph, parts
+// list and, for machines, the build tab.
 
 import { motion } from "framer-motion";
 import { useDesign } from "../core/engine";
@@ -12,6 +13,7 @@ import { BomTable } from "./BomTable";
 import { BriefPanel } from "./BriefPanel";
 import { BIcon } from "./briefIcons";
 import { briefData, openAssumptions } from "../core/brief";
+import { MachinePanel } from "./MachinePanel";
 import { Icon } from "./icons";
 import { lineCol } from "../lang/lexer";
 
@@ -23,6 +25,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
   const source = useDesign((s) => s.source);
   const errors = model?.diagnostics.filter((d) => d.severity === "error") ?? [];
   const fails = report?.counts.fail ?? 0;
+  const buildFails = report?.items.filter((i) => i.status === "fail" && (i.category === "electrical" || i.category === "engineering")).length ?? 0;
   const analyses = model?.analyses.length ?? 0;
   const analysisFails = report?.items.filter((i) => i.category === "analysis" && i.status === "fail").length ?? 0;
   const analysing = useAnalysis((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
@@ -37,6 +40,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
     { id: "graph", label: "graph", icon: <Icon.Graph size={13} /> },
     { id: "bom", label: "parts list", icon: <Icon.List size={13} /> },
   ];
+  if (model?.machine) tabs.push({ id: "build", label: "build", icon: <Icon.Wrench size={13} />, count: buildFails || undefined, bad: buildFails > 0 });
   return (
     <div className="dock">
       <div className="dock-head">
@@ -72,6 +76,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
           {tab === "analysis" && <AnalysisPanel />}
           {tab === "graph" && <GraphView />}
           {tab === "bom" && <BomTable />}
+          {tab === "build" && <MachinePanel />}
         </div>
       )}
     </div>

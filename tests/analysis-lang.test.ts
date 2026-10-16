@@ -61,7 +61,8 @@ describe("analysis blocks", () => {
     expect(v.c).toBeCloseTo(0.1);
     expect(v.d).toBeCloseTo(0.689, 3);
     expect(v.e).toBe(2000);
-    expect(v.f).toBe(5000);
+    // times are seconds: 5000 hours
+    expect(v.f).toBe(5000 * 3600);
     expect(v.g).toBeCloseTo(44.48, 2);
     // the weight of 5 kg, written either way
     expect(v.h).toBeCloseTo(49.03, 2);

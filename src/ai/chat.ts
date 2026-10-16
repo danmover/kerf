@@ -6,7 +6,7 @@ import type { BetaContentBlock, BetaMessageParam, BetaContentBlockParam, BetaToo
 import { create } from "zustand";
 import { getApiKey } from "../persist/vault";
 import * as db from "../persist/db";
-import { useSettings } from "../app/settings";
+import { updateSettings, useSettings, type Settings } from "../app/settings";
 import { useDesign, evaluateOnly } from "../core/engine";
 import { useView } from "../app/view";
 import { drawingContext } from "../drawing/engine";
@@ -31,6 +31,7 @@ import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS,
 import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
 import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm } from "./keepWarm";
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
+import { webTools, webActivity, describeWebCall, citedSources, isWebTool, isPausedTurn, flattenServerTools, echoContent, isWebToolError, isServerBlockError, type WebActivity } from "./web";
 
 /** A file the user attached to a message; it is also kept as a reference in the brief. */
 export interface ChatFile {
@@ -43,8 +44,8 @@ export interface ChatFile {
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[]; spot?: SpotRef; image?: string }
-  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string }
-  | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number }
+  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[] }
+  | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number; link?: { url: string; label: string }; web?: boolean }
   | {
       kind: "choice";
       id: string;
@@ -123,6 +124,8 @@ let history: BetaMessageParam[] = [];
  * blocks after the first changed message are rejected (see ./history).
  */
 let sent: { binding: string; keys: string[] } | null = null;
+/** The API said a request without the web tools can't carry earlier web results: send them as notes (the history keeps them). */
+let flatServer = false;
 let abort: AbortController | null = null;
 /** bumped whenever the chat leaves its project or is cleared, so a loop still finishing leaves the new state alone */
 let gen = 0;
@@ -137,6 +140,10 @@ const unsupported = (model: string) => {
   if (!s) rejected.set(model, (s = new Set()));
   return s;
 };
+/** this key can't use web search: no request offers it for the rest of the session (it is the same for every model) */
+let webUnavailable = false;
+/** a paused server-tool turn is resumed this many times in a row before Claude stops and says so */
+const MAX_PAUSE_RESUMES = 5;
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
@@ -192,6 +199,7 @@ export async function loadChat(projectId: string) {
   const removed = prepareSaved(history, rec ?? {}, binding);
   if (removed) console.info(`[kerf] Reopened chat: left out ${removed} earlier thinking block(s) that no longer match this conversation.`);
   sent = { binding, keys: messageKeys(history) };
+  flatServer = false;
   const savedPending = (rec as { pending?: ChatState["pendingChoice"] } | undefined)?.pending ?? null;
   const briefSeen = (rec as { briefSeen?: string | null } | undefined)?.briefSeen ?? null;
   const items = ((rec?.items as ChatItem[]) ?? []).map((it) =>
@@ -300,6 +308,7 @@ export async function clearChat() {
   dropPendingSave();
   history = [];
   sent = null;
+  flatServer = false;
   set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
   const { projectId } = get();
@@ -312,6 +321,7 @@ export function resetChat() {
   dropPendingSave();
   history = [];
   sent = null;
+  flatServer = false;
   set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
 }
@@ -563,6 +573,7 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
   const files = addReferences(attached);
   push({ kind: "user", id: opts.id ?? nid(), text: t, ts: Date.now(), files: files.length ? files : undefined, spot: opts.spot, image: opts.image?.url });
   set({ lastUserText: t, busy: true });
+  settlePausedTail();
   let blocks: BetaContentBlockParam[] = [];
   try {
     blocks = await fileBlocks(files);
@@ -682,9 +693,9 @@ function answerText(label: string, option: AskOption, r: ReturnType<typeof recor
 export async function retryLast() {
   if (get().busy) return;
   endPreview();
-  // drop a dangling user turn that never got an answer, then resend it
+  // resend a user turn that never got an answer, or resume a paused web search
   const last = history[history.length - 1];
-  if (last?.role === "user") {
+  if (last?.role === "user" || isPausedTurn(last)) {
     await runLoop();
     return;
   }
@@ -724,7 +735,33 @@ export function revertTurn(itemId: string) {
   persist();
 }
 
+/**
+ * A paused turn ends with a web search that has no result yet. When the user
+ * writes instead of resuming it, the unanswered call is dropped (what Claude
+ * already found stays) so the new message follows a complete turn.
+ */
+function settlePausedTail() {
+  const last = history[history.length - 1];
+  if (!isPausedTurn(last) || typeof last.content === "string") return;
+  const answered = new Set(last.content.filter((b) => b.type.endsWith("_tool_result")).map((b) => (b as { tool_use_id?: string }).tool_use_id));
+  const kept = last.content.filter((b) => b.type !== "server_tool_use" || answered.has(b.id));
+  if (kept.some((b) => b.type !== "thinking" && b.type !== "redacted_thinking")) history[history.length - 1] = { ...last, content: kept };
+  else history.pop();
+}
+
+type ClientFactory = () => Anthropic | null;
+let clientFactory: ClientFactory | null = null;
+/** For tests: replace the API client with a fake (tests never reach the network). Pass null to restore. */
+export function setClientFactory(f: ClientFactory | null) {
+  clientFactory = f;
+}
+/** For tests: the conversation exactly as the next request would send it. */
+export function chatHistory(): readonly BetaMessageParam[] {
+  return history;
+}
+
 function client() {
+  if (clientFactory) return clientFactory();
   const key = getApiKey();
   if (!key) return null;
   return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 10 * 60 * 1000 });
@@ -735,8 +772,8 @@ function systemBlocks() {
 }
 
 /** The system prompt and tools this build of Kerf sends; thinking blocks made under different ones can't be sent back. */
-function currentBinding() {
-  return bindingKey(systemBlocks(), TOOL_DEFS);
+export function currentBinding() {
+  return bindingKey(systemBlocks(), requestTools(useSettings.getState()));
 }
 
 /** The model and effort for design work, as set in Settings. */
@@ -758,7 +795,7 @@ let quickTouched = 0;
 /** Rough prompt size of the conversation before any request has reported one (a reopened chat). */
 function estimatePrompt(): number {
   let images = 0;
-  const text = JSON.stringify([systemPrompt(), TOOL_DEFS, history], (k, v) => {
+  const text = JSON.stringify([systemPrompt(), requestTools(useSettings.getState()), history], (k, v) => {
     if (k === "data" && typeof v === "string") {
       images++;
       return "";
@@ -813,6 +850,87 @@ interface LoopOptions {
   replaces?: { spend: TurnSpend; route: TurnRoute };
 }
 
+
+/** The tools for one request: Kerf's own, plus Anthropic's web search and fetch when the user allows them. The same for every model. */
+export function requestTools(settings: Pick<Settings, "webSearch">): unknown[] {
+  return settings.webSearch && !webUnavailable ? [...TOOL_DEFS, ...webTools()] : [...TOOL_DEFS];
+}
+
+/** What one response looks like in the chat while it streams. */
+interface Live {
+  /** assistant bubbles for this response; text after a web search starts a new one so it reads in order */
+  bubbles: string[];
+  /** Kerf tool rows by content index */
+  toolRows: Map<number, string>;
+  /** web search and page rows by server tool id; shared across resumed turns */
+  webRows: Map<string, string>;
+  /** web search error codes already explained in a notice this run, with the notice's id */
+  noticed: Map<string, string>;
+  /** rows and bubbles created by the current attempt, removed if it is retried */
+  created: string[];
+}
+
+function newBubble(live: Live) {
+  const id = nid();
+  push({ kind: "assistant", id, text: "", thinking: "", streaming: true });
+  live.bubbles.push(id);
+  live.created.push(id);
+  return id;
+}
+const bubbleOf = (live: Live) => live.bubbles[live.bubbles.length - 1];
+
+function upsertWebRow(live: Live, a: WebActivity) {
+  const row = { status: a.status, title: a.title, detail: a.detail, link: a.link };
+  // a row from an earlier run of this turn (resumed with Try again) is updated in place
+  const id = live.webRows.get(a.toolUseId) ?? get().items.find((i) => i.kind === "tool" && i.web && i.toolUseId === a.toolUseId)?.id;
+  const prev = id ? get().items.find((i) => i.id === id) : undefined;
+  const seen = prev?.kind === "tool" && prev.status === "error" && prev.detail === a.detail;
+  if (id) {
+    live.webRows.set(a.toolUseId, id);
+    patch(id, (it) => (it.kind === "tool" ? { ...it, ...row } : it));
+  } else {
+    const rid = nid();
+    live.webRows.set(a.toolUseId, rid);
+    live.created.push(rid);
+    push({ kind: "tool", id: rid, toolUseId: a.toolUseId, name: a.name, web: true, ...row });
+  }
+  // when search itself failed, a quiet note right below the row; Claude carries on with what it has
+  if (a.name === "web_search" && a.error && !seen && !live.noticed.has(a.error.code)) {
+    const nidv = nid();
+    live.noticed.set(a.error.code, nidv);
+    live.created.push(nidv);
+    push({ kind: "notice", id: nidv, level: "info", title: WEB_NOTICE[a.error.code] ?? "A web search did not work", detail: `${a.error.text} Claude carries on with what it has.` });
+  }
+}
+
+function syncWeb(live: Live, content: readonly unknown[], finished: false | true | "paused" = false): WebActivity[] {
+  let acts: WebActivity[];
+  try {
+    acts = webActivity(content as never, finished);
+  } catch {
+    return [];
+  }
+  for (const a of acts) upsertWebRow(live, a);
+  return acts;
+}
+
+/** Undo what a failed attempt showed, before it is retried. */
+function resetLive(live: Live) {
+  const drop = new Set(live.created.filter((id) => id !== live.bubbles[0]));
+  set((s) => ({ items: s.items.filter((i) => !drop.has(i.id)).map((it) => (it.id === live.bubbles[0] && it.kind === "assistant" ? { ...it, text: "", thinking: "" } : it)) }));
+  live.bubbles = live.bubbles.slice(0, 1);
+  for (const [k, id] of live.toolRows) if (drop.has(id)) live.toolRows.delete(k);
+  for (const [k, id] of live.webRows) if (drop.has(id)) live.webRows.delete(k);
+  for (const [k, id] of live.noticed) if (drop.has(id)) live.noticed.delete(k);
+  live.created = [];
+}
+
+const WEB_NOTICE: Record<string, string> = {
+  max_uses_exceeded: "Web search limit reached for this step",
+  too_many_requests: "Web search is busy",
+  unavailable: "Web search is unavailable right now",
+};
+
 async function runLoop(opts: LoopOptions = {}) {
   const anthropic = client();
   if (!anthropic) {
@@ -830,10 +948,14 @@ async function runLoop(opts: LoopOptions = {}) {
   const before = shotOf(startSource);
   let edits = 0;
   const settings = useSettings.getState();
+  if (settings.webNotice) {
+    if (settings.webSearch)
+      push({ kind: "notice", id: nid(), level: "info", title: "Claude can now search the web for parts", detail: "When the parts catalog has nothing suitable, Claude may search the web and read product pages. Each search costs about $0.01 on your API key, plus the tokens the pages use. Turn it off in Settings → Claude → Search the web for parts.", action: "settings" });
+    updateSettings({ webNotice: false });
+  }
   const session = new ReviewSession(settings.reviewRounds);
   const reviewItems: string[] = [];
   const system = systemBlocks();
-  const binding = bindingKey(system, TOOL_DEFS);
   const historyStart = history.length;
   // what this turn costs, from every request made while it runs (the router, reviews and agents included)
   const box = { spend: emptyTurn() };
@@ -841,6 +963,19 @@ async function runLoop(opts: LoopOptions = {}) {
   turnBox = box;
   let route: Route = opts.route ?? designRoute();
   let routeNote: TurnRoute | null = opts.replaces ? { ...opts.replaces.route, escalated: { to: route.model, why: "you asked for it" } } : null;
+  const webRows = new Map<string, string>();
+  const noticed = new Map<string, string>();
+  // content of the paused responses this one continues, so their searches get their results
+  let carried: unknown[] = [];
+  if (isPausedTurn(history[history.length - 1])) {
+    for (let i = history.length - 1; i >= 0 && history[i].role === "assistant"; i--) {
+      const c = history[i].content;
+      if (typeof c !== "string") carried = [...c, ...carried];
+    }
+  }
+  let resumes = 0;
+  /** chat items of this turn's paused responses: a hand-over takes them away with the rest of the quick answer */
+  let pausedItems: string[] = [];
 
   try {
     if (!opts.route) {
@@ -857,16 +992,24 @@ async function runLoop(opts: LoopOptions = {}) {
       if (stale()) return;
       repairHistory();
       capHeavy();
-      const assistantId = nid();
-      push({ kind: "assistant", id: assistantId, text: "", thinking: "", streaming: true });
-      const toolItems = new Map<number, string>();
+      const live: Live = { bubbles: [], toolRows: new Map(), webRows, noticed, created: [] };
+      newBubble(live);
       const r = route;
 
       // the quick model hands the turn over: what it streamed goes, and the design model answers from here
       const handOver = (why: string, wasted?: Usage) => {
         if (wasted) recordSpend("escalated", r.model, wasted, -costOf(r.model, wasted));
-        const partial = new Set([assistantId, ...toolItems.values()]);
+        const partial = new Set([...live.created, ...pausedItems]);
         set((s) => ({ items: s.items.filter((it) => !partial.has(it.id)) }));
+        for (const [k, id] of webRows) if (partial.has(id)) webRows.delete(k);
+        for (const [k, id] of noticed) if (partial.has(id)) noticed.delete(k);
+        // a web search it paused in goes too: the design model starts the answer afresh
+        if (carried.length) {
+          while (history.length > historyStart && history[history.length - 1].role === "assistant") history.pop();
+          carried = [];
+          resumes = 0;
+        }
+        pausedItems = [];
         route = designRoute(why, r.by);
         routeNote = { ...routeNote!, escalated: { to: route.model, why } };
         push({ kind: "notice", id: nid(), level: "info", title: `Passed to ${modelLabel(route.model)}`, detail: `${modelLabel(r.model)} started on this, but ${why}.` });
@@ -875,7 +1018,7 @@ async function runLoop(opts: LoopOptions = {}) {
       let sentReq: { final: Awaited<ReturnType<typeof streamOnce>>["final"]; params: Record<string, unknown> };
       if (r.quick) quickTouched = Date.now();
       try {
-        sentReq = await streamOnce(anthropic, () => buildRequest(system, binding, r), assistantId, toolItems, ac.signal, { design: !r.quick, stopOnTool: r.quick ? (name) => !QUICK_TOOLS.has(name) : undefined });
+        sentReq = await streamOnce(anthropic, () => buildRequest(system, r, settings), live, carried, ac.signal, { design: !r.quick, stopOnTool: r.quick ? (name) => !QUICK_TOOLS.has(name) : undefined });
       } catch (e) {
         if (r.quick && !stale() && !isAbort(e)) {
           if (e instanceof NeedsDesignModel) {
@@ -894,10 +1037,13 @@ async function runLoop(opts: LoopOptions = {}) {
       }
       const { final, params } = sentReq;
       if (stale()) return;
-      const content = final.content as BetaContentBlock[];
+      const raw = final.content as BetaContentBlock[];
+      // after a mid-answer fallback, only what the API accepts back goes into the history
+      const content = echoContent(raw);
       const usage = final.usage as unknown as Usage;
       lastPrompt = promptTokens(usage);
       if (r.quick) {
+        // web searches are server tools, not tool_use blocks: a quick turn may search, and a paused search is resumed, not handed over
         const uses = content.filter((b) => b.type === "tool_use") as { name: string }[];
         const why =
           final.stop_reason === "refusal"
@@ -919,11 +1065,36 @@ async function runLoop(opts: LoopOptions = {}) {
       history.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
       reportDroppedThinking(final.input_transformations);
 
-      const fb = content.find((b) => (b as { type: string }).type === "fallback") as { to?: { model?: string } } | undefined;
-      patch(assistantId, (it) => (it.kind === "assistant" ? { ...it, streaming: false, model: final.model, note: fb?.to?.model ? `Answered by ${fb.to.model} (server-side fallback)` : undefined } : it));
-      // drop an empty assistant bubble (tool-only responses)
-      const bubble = get().items.find((i) => i.id === assistantId);
-      if (bubble?.kind === "assistant" && !bubble.text.trim() && !bubble.thinking.trim()) set((s) => ({ items: s.items.filter((i) => i.id !== assistantId) }));
+      // web searches and pages: the final state of every row
+      syncWeb(live, [...carried, ...raw], final.stop_reason === "pause_turn" ? "paused" : true);
+      const sources = citedSources(raw);
+      const fb = raw.find((b) => (b as { type: string }).type === "fallback") as { to?: { model?: string } } | undefined;
+      const lastBubble = bubbleOf(live);
+      set((s) => ({
+        items: s.items.map((it) =>
+          it.kind === "assistant" && live.bubbles.includes(it.id)
+            ? { ...it, streaming: false, ...(it.id === lastBubble ? { model: final.model, note: fb?.to?.model ? `Answered by ${fb.to.model} (server-side fallback)` : undefined, sources: sources.length ? sources : undefined } : {}) }
+            : it,
+        ),
+      }));
+      // drop empty bubbles (tool-only responses)
+      set((s) => ({ items: s.items.filter((i) => !(i.kind === "assistant" && live.bubbles.includes(i.id) && !i.text.trim() && !i.thinking.trim() && !i.sources?.length)) }));
+
+      if (final.stop_reason === "pause_turn") {
+        // the server paused a long web search: send the turn back unchanged to resume it (not a new step)
+        carried = [...carried, ...raw];
+        pausedItems = [...pausedItems, ...live.created];
+        persist();
+        if (++resumes > MAX_PAUSE_RESUMES) {
+          push({ kind: "notice", id: nid(), level: "info", title: "Claude paused during a long web search", detail: "Press Try again to let it carry on, or write a message to move on.", action: "retry" });
+          break;
+        }
+        step--;
+        continue;
+      }
+      carried = [];
+      resumes = 0;
+      pausedItems = [];
 
       if (final.stop_reason === "refusal") {
         push({ kind: "notice", id: nid(), level: "warn", title: "Claude declined this request", detail: "Try rephrasing what you need. Kerf is for designing mechanical parts and assemblies." });
@@ -936,9 +1107,12 @@ async function runLoop(opts: LoopOptions = {}) {
         break;
       }
       if (final.stop_reason === "end_turn" && edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale))) continue;
+      const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
+      // rows for calls a fallback discarded never run
+      const dropped = new Set([...live.toolRows.values()].filter((id) => !uses.some((u) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)));
+      if (dropped.size) set((s) => ({ items: s.items.filter((i) => !dropped.has(i.id)) }));
       if (final.stop_reason !== "tool_use") break;
 
-      const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
       const results: BetaToolResultBlockParam[] = [];
       let ask: { toolUseId: string; outcome: ToolOutcome } | null = null;
       let pausedAfter: string | null = null;
@@ -951,7 +1125,7 @@ async function runLoop(opts: LoopOptions = {}) {
           results.push({ type: "tool_result", tool_use_id: u.id, content: `Not run: the user asked to pause for review after “${pausedAfter}”. Wait for them.`, is_error: true });
           continue;
         }
-        const itemId = [...toolItems.entries()].find(([, id]) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)?.[1] ?? nid();
+        const itemId = [...live.toolRows.values()].find((id) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id) ?? nid();
         if (!get().items.some((i) => i.id === itemId)) push({ kind: "tool", id: itemId, toolUseId: u.id, name: u.name, status: "running", title: TOOL_TITLES[u.name] ?? u.name });
         else patch(itemId, (it) => (it.kind === "tool" ? { ...it, status: "running", title: TOOL_TITLES[u.name] ?? u.name } : it));
         const mirrored = u.name !== "update_plan" && u.name !== "suggest_next_steps";
@@ -1152,13 +1326,19 @@ async function reviewTool(input: unknown, itemId: string, session: ReviewSession
  * if an earlier message, the system prompt or the tools changed, the thinking
  * blocks from that point on are removed first, because Claude rejects them.
  */
-function buildRequest(system: ReturnType<typeof systemBlocks>, binding: string, route: Route): Record<string, unknown> {
-  let keys = messageKeys(history);
+function buildRequest(system: ReturnType<typeof systemBlocks>, route: Route, settings: Pick<Settings, "webSearch">): Record<string, unknown> {
+  // web search can switch off mid-run (a key that cannot use it), which changes the tools
+  const tools = requestTools(settings);
+  const binding = bindingKey(system, tools);
+  // earlier web results go as plain notes when this request can't carry them; a copy, so the history itself only grows
+  const hasWeb = (tools as { type?: string }[]).some((t) => typeof t.type === "string" && /^web_(search|fetch)_/.test(t.type));
+  const messages = () => (flatServer && !hasWeb ? flattenServerTools(history).history : history);
+  let keys = messageKeys(messages());
   if (sent) {
     const at = sent.binding !== binding ? 0 : firstEdit(sent.keys, keys);
     if (at >= 0 && hasThinking(history, at)) {
       const n = stripThinking(history, at);
-      keys = messageKeys(history);
+      keys = messageKeys(messages());
       console.warn(`[kerf] ${at === 0 && sent.binding !== binding ? "The system prompt or tools changed" : `Chat message ${at} changed`} since the last request; left out ${n} thinking block(s) from there on.`);
     }
   }
@@ -1168,14 +1348,15 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, binding: string, 
   // included: a model that cannot read another model's blocks leaves them out
   // of that request (unbilled), and they count again when the turn returns to
   // the model that wrote them.
+  const msgs = messages();
   const params: Record<string, unknown> = {
     model: route.model,
     max_tokens: 32000,
     system,
-    tools: TOOL_DEFS,
-    messages: withCacheBreakpoint(history, lastBreak.get(route.model)),
+    tools,
+    messages: withCacheBreakpoint(msgs, lastBreak.get(route.model)),
   };
-  lastBreak.set(route.model, history.length - 1);
+  lastBreak.set(route.model, newestUser(msgs));
   const off = unsupported(route.model);
   const betas: string[] = [];
   if (!off.has("thinking")) {
@@ -1224,9 +1405,9 @@ interface StreamOptions {
   stopOnTool?: (name: string) => boolean;
 }
 
-async function streamOnce(anthropic: Anthropic, build: () => Record<string, unknown>, assistantId: string, toolItems: Map<number, string>, signal: AbortSignal, opts: StreamOptions = { design: true }) {
+async function streamOnce(anthropic: Anthropic, build: () => Record<string, unknown>, live: Live, carried: unknown[], signal: AbortSignal, opts: StreamOptions = { design: true }) {
   let strippedOnce = false;
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 7; attempt++) {
     const params = build();
     const at = Date.now();
     let started = false;
@@ -1234,7 +1415,7 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
     let streamedChars = 0;
     const stream = anthropic.beta.messages.stream(params as never, { signal });
     try {
-      stream.on("streamEvent", (ev) => {
+      stream.on("streamEvent", (ev, snapshot) => {
         if (!started) {
           started = true;
           requestStarted(String(params.model), params, at, opts.design);
@@ -1249,16 +1430,29 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
           }
           if (b.type === "tool_use" && b.id && b.name) {
             const id = nid();
-            toolItems.set(ev.index, id);
+            live.toolRows.set(ev.index, id);
+            live.created.push(id);
             push({ kind: "tool", id, toolUseId: b.id, name: b.name, status: "running", title: TOOL_TITLES[b.name] ?? b.name, inputChars: 0 });
+          } else if (b.type === "server_tool_use" && b.id && b.name && isWebTool(b.name)) {
+            upsertWebRow(live, describeWebCall(b.name, b.id, {}));
+          } else if (b.type === "web_search_tool_result" || b.type === "web_fetch_tool_result") {
+            syncWeb(live, [...carried, ...snapshot.content]);
+          } else if (b.type === "text" || b.type === "thinking") {
+            // text after a search row starts a new bubble below it
+            const items = get().items;
+            if (items[items.length - 1]?.id !== bubbleOf(live)) newBubble(live);
           }
+        } else if (ev.type === "content_block_stop") {
+          // the search query or page address is complete: show it
+          if ((snapshot.content[ev.index] as { type?: string } | undefined)?.type === "server_tool_use") syncWeb(live, [...carried, ...snapshot.content]);
         } else if (ev.type === "content_block_delta") {
           const d = ev.delta as { type: string; text?: string; thinking?: string; partial_json?: string };
           streamedChars += (d.text ?? d.thinking ?? d.partial_json ?? "").length;
-          if (d.type === "text_delta" && d.text) patch(assistantId, (it) => (it.kind === "assistant" ? { ...it, text: it.text + d.text } : it));
-          else if (d.type === "thinking_delta" && d.thinking) patch(assistantId, (it) => (it.kind === "assistant" ? { ...it, thinking: it.thinking + d.thinking } : it));
+          const bubble = bubbleOf(live);
+          if (d.type === "text_delta" && d.text) patch(bubble, (it) => (it.kind === "assistant" ? { ...it, text: it.text + d.text } : it));
+          else if (d.type === "thinking_delta" && d.thinking) patch(bubble, (it) => (it.kind === "assistant" ? { ...it, thinking: it.thinking + d.thinking } : it));
           else if (d.type === "input_json_delta" && d.partial_json) {
-            const id = toolItems.get(ev.index);
+            const id = live.toolRows.get(ev.index);
             if (id) patch(id, (it) => (it.kind === "tool" ? { ...it, inputChars: (it.inputChars ?? 0) + d.partial_json!.length } : it));
           }
         }
@@ -1278,6 +1472,7 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
       if (opts.design) requestFailed(params);
       if (e instanceof Anthropic.BadRequestError) {
         const msg = e.message || "";
+        const hasWeb = ((params.tools as { type?: string }[] | undefined) ?? []).some((t) => typeof t.type === "string" && /^web_(search|fetch)_/.test(t.type));
         let retry = false;
         if (isThinkingSignatureError(msg)) {
           // a thinking block that no longer belongs to this conversation: send the
@@ -1286,6 +1481,17 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
             strippedOnce = true;
             const n = stripThinking(history);
             console.warn(`[kerf] Claude rejected an earlier thinking block; resent the chat without ${n} thinking block(s).`);
+            retry = true;
+          }
+        } else if (hasWeb && isWebToolError(msg)) {
+          // this key or model cannot use web search: carry on without it
+          webUnavailable = true;
+          push({ kind: "notice", id: nid(), level: "info", title: "Web search is not available with this key or model", detail: "Claude carries on with the parts catalog. An organisation admin can allow web search in the Claude Console." });
+          retry = true;
+        } else if (!hasWeb && !flatServer && isServerBlockError(msg)) {
+          // earlier web results the request can no longer carry: send them as plain notes from now on
+          if (flattenServerTools(history).changed) {
+            flatServer = true;
             retry = true;
           }
         } else {
@@ -1299,9 +1505,7 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
         }
         if (retry) {
           // clear whatever streamed before the error, including tool cards
-          const partial = new Set(toolItems.values());
-          toolItems.clear();
-          set((s) => ({ items: s.items.filter((it) => !partial.has(it.id)).map((it) => (it.id === assistantId && it.kind === "assistant" ? { ...it, text: "", thinking: "" } : it)) }));
+          resetLive(live);
           continue;
         }
       }
@@ -1346,11 +1550,19 @@ const lastBreak = new Map<string, number>();
  * since (a quick turn with many reads in between, many parallel tool calls)
  * would otherwise miss the whole conversation.
  */
+/** The newest user message: a resumed web search turn may follow it. */
+function newestUser(h: readonly BetaMessageParam[]): number {
+  let i = h.length - 1;
+  while (i > 0 && h[i].role !== "user") i--;
+  return i;
+}
+
 function withCacheBreakpoint(h: BetaMessageParam[], prev?: number): BetaMessageParam[] {
   if (!h.length) return h;
   const out = h.slice();
-  markCache(out, out.length - 1);
-  if (prev !== undefined && prev < out.length - 1) markCache(out, prev);
+  const i = newestUser(out);
+  markCache(out, i);
+  if (prev !== undefined && prev < i) markCache(out, prev);
   return out;
 }
 
