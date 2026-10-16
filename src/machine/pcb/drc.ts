@@ -83,7 +83,10 @@ class UF {
   p: number[] = [];
   find(a: number): number {
     if (this.p[a] === undefined) this.p[a] = a;
-    while (this.p[a] !== a) a = this.p[a];
+    while (this.p[a] !== a) {
+      this.p[a] = this.p[this.p[a]];
+      a = this.p[a];
+    }
     return a;
   }
   union(a: number, b: number) {

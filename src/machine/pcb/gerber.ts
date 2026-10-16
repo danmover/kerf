@@ -8,7 +8,7 @@
 // region is one dark contour and no layer needs clear polarity.
 
 import { holeShape, placedHoles, placedPads, type PlacedPad } from "./board";
-import { cosSin, normDeg, padShape, type Pt } from "./geom";
+import { normDeg, padShape, type Pt } from "./geom";
 import { pourGroups } from "./pour";
 import { boardSilk, type SilkLayer } from "./silk";
 import type { BoardFile, Layer, RoutedBoard } from "./types";
@@ -386,18 +386,6 @@ function splitPolygon(a: N, b: N) {
 /** One contour covering an outline minus its holes, holes joined in by cut-ins. */
 export function fracture(outer: Pt[], holes: Pt[][]): Pt[] {
   const start = ringList(outer);
-  const lefts = holes
-    .filter((h) => h.length >= 3)
-    .map((h) => {
-      let n = ringList(h);
-      let left = n;
-      do {
-        if (n.x < left.x || (n.x === left.x && n.y < left.y)) left = n;
-        n = n.next;
-      } while (n !== left && n.next !== left.next.next.prev.next && n !== ringList.length as unknown);
-      return left;
-    });
-  // the loop above stops after one lap; find the true leftmost by walking the ring once
   const leftmost = holes
     .filter((h) => h.length >= 3)
     .map((h) => {
@@ -406,7 +394,6 @@ export function fracture(outer: Pt[], holes: Pt[][]): Pt[] {
       for (let n = first.next; n !== first; n = n.next) if (n.x < best.x || (n.x === best.x && n.y < best.y)) best = n;
       return best;
     });
-  void lefts;
   leftmost.sort((a, b) => a.x - b.x || a.y - b.y);
   for (const h of leftmost) {
     const bridge = findHoleBridge(h, start);
