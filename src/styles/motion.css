@@ -142,7 +142,7 @@
 }
 .tab.file-tab.active {
   border-style: solid;
-  border-color: rgba(143, 168, 255, 0.35);
+  border-color: rgb(var(--accent-2-rgb) / 0.35);
   background: var(--accent-soft);
   color: var(--text);
 }
@@ -150,7 +150,7 @@
   display: none;
 }
 .dock-error {
-  color: #ff9aa4 !important;
+  color: var(--fail-ink) !important;
   align-self: center;
   flex: 0 1 auto;
   min-width: 0;
@@ -189,7 +189,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.25) 50%, transparent 70%);
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.25) 50%, transparent 70%); /* theme: same */
   transform: translateX(-120%);
   pointer-events: none;
 }
@@ -240,15 +240,15 @@
 }
 .toast.success::before {
   background: var(--pass);
-  box-shadow: 0 0 10px rgba(61, 220, 151, 0.6);
+  box-shadow: 0 0 10px rgb(var(--pass-rgb) / 0.6);
 }
 .toast.error::before {
   background: var(--fail);
-  box-shadow: 0 0 10px rgba(255, 93, 108, 0.6);
+  box-shadow: 0 0 10px rgb(var(--fail-rgb) / 0.6);
 }
 .toast.warn::before {
   background: var(--warn);
-  box-shadow: 0 0 10px rgba(245, 184, 75, 0.5);
+  box-shadow: 0 0 10px rgb(var(--warn-rgb) / 0.5);
 }
 .toast.info::after {
   content: "";
@@ -275,7 +275,7 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: radial-gradient(400px 160px at var(--mx, 50%) 0%, rgba(143, 168, 255, 0.1), transparent 70%);
+  background: radial-gradient(400px 160px at var(--mx, 50%) 0%, rgb(var(--accent-2-rgb) / 0.1), transparent 70%);
   opacity: 0;
   transition: opacity 0.3s;
   pointer-events: none;

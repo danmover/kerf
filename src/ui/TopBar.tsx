@@ -12,6 +12,7 @@ import { LogoMark } from "./Logo";
 import { Icon } from "./icons";
 import { mod } from "./common";
 import { ExportMenu } from "./ExportMenu";
+import { ThemeSwitch } from "./ThemeSwitch";
 import { SyncBadge } from "./Account";
 
 export function TopBar() {
@@ -84,6 +85,7 @@ export function TopBar() {
       <button className="icon-btn" onClick={() => useUi.setState({ shortcutsOpen: true })} data-tip="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
         <Icon.Keyboard />
       </button>
+      <ThemeSwitch />
       <button className="icon-btn" onClick={() => openSettings("ai")} data-tip="Settings" aria-label="Settings">
         <Icon.Settings />
       </button>

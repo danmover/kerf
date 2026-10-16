@@ -11,7 +11,7 @@
   overflow-x: auto;
   overflow-y: hidden;
   background:
-    radial-gradient(600px 200px at 0% 0%, rgba(109, 139, 255, 0.05), transparent 70%),
+    radial-gradient(600px 200px at 0% 0%, rgb(var(--accent-rgb) / 0.05), transparent 70%),
     var(--bg-1);
 }
 
@@ -23,8 +23,8 @@
   min-height: 0;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(21, 26, 36, 0.92), rgba(14, 18, 26, 0.92));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  background: linear-gradient(180deg, rgb(var(--bg-3-rgb) / 0.92), rgb(var(--bg-2-rgb) / 0.92));
+  box-shadow: inset 0 1px 0 rgb(var(--ink-rgb) / 0.03);
   overflow: hidden;
   animation: ov-in 0.42s var(--ease) backwards;
   animation-delay: calc(var(--i, 0) * 45ms);
@@ -47,19 +47,19 @@
   right: 12px;
   top: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(143, 168, 255, 0.35), transparent);
+  background: linear-gradient(90deg, transparent, rgb(var(--accent-2-rgb) / 0.35), transparent);
   opacity: 0.6;
 }
 .ov-card.pass::before {
-  background: linear-gradient(90deg, transparent, rgba(61, 220, 151, 0.7), transparent);
+  background: linear-gradient(90deg, transparent, rgb(var(--pass-rgb) / 0.7), transparent);
   opacity: 1;
 }
 .ov-card.fail::before {
-  background: linear-gradient(90deg, transparent, rgba(255, 93, 108, 0.8), transparent);
+  background: linear-gradient(90deg, transparent, rgb(var(--fail-rgb) / 0.8), transparent);
   opacity: 1;
 }
 .ov-card.warn::before {
-  background: linear-gradient(90deg, transparent, rgba(245, 184, 75, 0.7), transparent);
+  background: linear-gradient(90deg, transparent, rgb(var(--warn-rgb) / 0.7), transparent);
   opacity: 1;
 }
 
@@ -130,7 +130,7 @@
   background: var(--pass-soft);
 }
 .ov-chip.fail {
-  color: #ff8592;
+  color: var(--fail-ink);
   background: var(--fail-soft);
 }
 .ov-chip b {
@@ -154,7 +154,7 @@
 }
 .ov-actions .btn.active {
   color: var(--accent-2);
-  border-color: rgba(143, 168, 255, 0.4);
+  border-color: rgb(var(--accent-2-rgb) / 0.4);
 }
 .ov-actions .icon-btn.active {
   color: var(--accent-2);
@@ -195,7 +195,7 @@
 }
 .ov-item.focused {
   background: var(--accent-soft);
-  border-color: rgba(143, 168, 255, 0.3);
+  border-color: rgb(var(--accent-2-rgb) / 0.3);
 }
 .ov-item-text {
   min-width: 0;
@@ -237,7 +237,7 @@
   text-decoration: underline;
 }
 .ov-link.fail {
-  color: #ff8592;
+  color: var(--fail-ink);
 }
 .ov-link.warn {
   color: var(--warn);
@@ -278,14 +278,14 @@
 }
 .ov-ring-seg.pass {
   stroke: var(--pass);
-  filter: drop-shadow(0 0 3px rgba(61, 220, 151, 0.45));
+  filter: drop-shadow(0 0 3px rgb(var(--pass-rgb) / 0.45));
 }
 .ov-ring-seg.warn {
   stroke: var(--warn);
 }
 .ov-ring-seg.fail {
   stroke: var(--fail);
-  filter: drop-shadow(0 0 3px rgba(255, 93, 108, 0.5));
+  filter: drop-shadow(0 0 3px rgb(var(--fail-rgb) / 0.5));
 }
 .ov-ring-seg.pending {
   stroke: var(--accent);
@@ -311,7 +311,7 @@
   color: var(--pass);
 }
 .ov-ring-n.fail {
-  color: #ff8592;
+  color: var(--fail-ink);
 }
 .ov-ring-n.warn {
   color: var(--warn);
@@ -332,10 +332,10 @@
   animation: ov-tick 0.4s var(--ease);
 }
 .ov-headline.pass {
-  color: #d9fbe9;
+  color: var(--pass-ink);
 }
 .ov-headline.fail {
-  color: #ffd2d7;
+  color: var(--fail-ink);
 }
 .ov-sub {
   font-size: 12px;
@@ -453,20 +453,20 @@
   height: 12px;
   border-radius: 50%;
   flex: none;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset -2px -3px 4px rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset -2px -3px 4px rgba(0, 0, 0, 0.35); /* theme: same */
 }
 .ov-swatch.big {
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset -4px -6px 10px rgba(0, 0, 0, 0.35), 0 4px 12px -4px rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset -4px -6px 10px rgba(0, 0, 0, 0.35), 0 4px 12px -4px rgb(var(--shade-rgb) / 0.6); /* theme: same */
 }
 
 /* ---------- the selected part ---------- */
 
 .ov-sel {
-  border-color: rgba(143, 168, 255, 0.3);
-  box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.08), 0 10px 30px -18px var(--accent-glow);
+  border-color: rgb(var(--accent-2-rgb) / 0.3);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.08), 0 10px 30px -18px var(--accent-glow);
   animation-name: ov-in-sel;
 }
 /* you asked for this card, so it never starts invisible */
@@ -506,7 +506,7 @@
   color: var(--pass);
 }
 .ov-sel-facts .fail {
-  color: #ff8592;
+  color: var(--fail-ink);
 }
 .ov-code {
   position: relative;
@@ -521,17 +521,17 @@
   padding: 8px 10px 8px 6px;
   border-radius: 8px;
   border: 1px solid var(--line);
-  background: #080a0f;
+  background: var(--code-field);
   text-align: left;
   font-family: var(--mono);
   font-size: 11px;
   line-height: 1.55;
-  color: #d6deeb;
+  color: var(--syn-name);
   overflow: hidden;
   transition: border-color 0.2s;
 }
 .ov-code:hover {
-  border-color: rgba(143, 168, 255, 0.4);
+  border-color: rgb(var(--accent-2-rgb) / 0.4);
 }
 .ov-code code {
   white-space: pre;
@@ -542,7 +542,7 @@
 .ov-code-gutter {
   display: block;
   text-align: right;
-  color: #3e475c;
+  color: var(--code-gutter);
   flex: none;
   min-width: 18px;
   user-select: none;
@@ -558,7 +558,7 @@
   right: 0;
   bottom: 0;
   height: 26px;
-  background: linear-gradient(180deg, transparent, #080a0f 70%);
+  background: linear-gradient(180deg, transparent, var(--code-field) 70%);
   pointer-events: none;
 }
 .ov-code-more {
@@ -575,7 +575,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(100deg, transparent 35%, rgba(143, 168, 255, 0.08) 50%, transparent 65%);
+  background: linear-gradient(100deg, transparent 35%, rgb(var(--accent-2-rgb) / 0.08) 50%, transparent 65%);
   transform: translateX(-100%);
   pointer-events: none;
 }
@@ -584,37 +584,37 @@
   transition: transform 0.8s var(--ease);
 }
 .tk-k {
-  color: #c792ff;
+  color: var(--syn-keyword);
   font-weight: 500;
 }
 .tk-o {
-  color: #ff9e64;
+  color: var(--syn-op);
   font-weight: 500;
 }
 .tk-c {
-  color: #5c6680;
+  color: var(--syn-comment);
   font-style: italic;
 }
 .tk-s {
-  color: #a5e075;
+  color: var(--syn-string);
 }
 .tk-n {
-  color: #ffcb6b;
+  color: var(--syn-number);
 }
 .tk-h {
-  color: #ff8fb1;
+  color: var(--syn-color);
 }
 .tk-l {
-  color: #4fd1c5;
+  color: var(--syn-namespace);
 }
 .tk-p {
-  color: #89ddff;
+  color: var(--syn-property);
 }
 .tk-f {
-  color: #7cc4ff;
+  color: var(--syn-builtin);
 }
 .tk-v {
-  color: #d6deeb;
+  color: var(--syn-name);
 }
 
 /* ---------- recent changes ---------- */
@@ -669,16 +669,16 @@
 }
 .claude > .ov-node {
   color: var(--violet);
-  border-color: rgba(199, 146, 255, 0.4);
-  background: rgba(199, 146, 255, 0.1);
+  border-color: rgb(var(--violet-rgb) / 0.4);
+  background: rgb(var(--violet-rgb) / 0.1);
 }
 .you > .ov-node {
   color: var(--accent-2);
-  border-color: rgba(143, 168, 255, 0.4);
-  background: rgba(109, 139, 255, 0.1);
+  border-color: rgb(var(--accent-2-rgb) / 0.4);
+  background: rgb(var(--accent-rgb) / 0.1);
 }
 .current > .ov-node {
-  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.12), 0 0 10px var(--accent-glow);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.12), 0 0 10px var(--accent-glow);
 }
 .ov-ver {
   flex: 1;
@@ -702,7 +702,7 @@
 }
 .showing .ov-ver {
   background: var(--accent-soft);
-  border-color: rgba(143, 168, 255, 0.3);
+  border-color: rgb(var(--accent-2-rgb) / 0.3);
 }
 .ov-ver-msg {
   font-size: 12px;
@@ -723,7 +723,7 @@
   color: var(--pass);
 }
 .ov-ver-meta .del {
-  color: #ff8592;
+  color: var(--fail-ink);
 }
 .ov-now {
   margin-left: 2px;
@@ -733,7 +733,7 @@
   color: var(--accent-2);
 }
 .ov-now.showing {
-  background: rgba(245, 184, 75, 0.14);
+  background: rgb(var(--warn-rgb) / 0.14);
   color: var(--warn);
 }
 

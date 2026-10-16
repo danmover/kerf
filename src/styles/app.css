@@ -33,6 +33,44 @@
   --shadow: 0 18px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   color-scheme: dark;
+
+  /* Theme tokens beyond the palette. The light theme redefines every one of
+     these in theme.css; scripts/theme-colors.mjs moves raw colours onto them. */
+  /* colour channels, for tints: rgb(var(--accent-rgb) / 0.2) */
+  --accent-rgb: 109 139 255;
+  --accent-2-rgb: 143 168 255;
+  --cyan-rgb: 79 209 197;
+  --violet-rgb: 199 146 255;
+  --pass-rgb: 61 220 151;
+  --warn-rgb: 245 184 75;
+  --fail-rgb: 255 93 108;
+  --info-rgb: 124 196 255;
+  --bg-0-rgb: 7 9 13;
+  --bg-1-rgb: 11 14 20;
+  --bg-2-rgb: 16 20 28;
+  --bg-3-rgb: 21 26 36;
+  --line-rgb: 31 37 51;
+  --text-rgb: 223 229 242;
+  --text-2-rgb: 163 173 194;
+  /* highlights: white on the dark theme, ink on the light one */
+  --ink-rgb: 255 255 255;
+  /* drop shadows: black on the dark theme, a soft blue-grey on the light one */
+  --shade-rgb: 0 0 0;
+  /* status colours as text, readable on the panels and on their -soft tints */
+  --accent-ink: #eef1ff;
+  --pass-ink: #b5f5d6;
+  --warn-ink: #ffe1a6;
+  --fail-ink: #ffb3bb;
+  --info-ink: #a6dbff;
+  --violet-ink: #d9ccff;
+  /* text on a solid accent fill, and the primary button's gradient */
+  --on-accent: #fff;
+  --accent-hi: #7b97ff;
+  --accent-lo: #5a76f0;
+  /* the dimmed page behind a dialog, and frosted panels over the 3D view */
+  --scrim: rgba(3, 4, 7, 0.66);
+  --glass: rgba(13, 16, 23, 0.9);
+  --tip-bg: #1b2130;
 }
 
 * {
@@ -76,20 +114,20 @@ a:hover {
   border-radius: 4px;
 }
 ::selection {
-  background: rgba(109, 139, 255, 0.35);
+  background: rgb(var(--accent-rgb) / 0.35);
 }
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #232a3a;
+  background: color-mix(in srgb, var(--line-2), var(--bg-4));
   border-radius: 10px;
   border: 3px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #2f384d;
+  background: color-mix(in srgb, var(--line-2) 67%, var(--line-3));
   background-clip: padding-box;
   border: 3px solid transparent;
 }
@@ -158,22 +196,22 @@ a:hover {
   cursor: not-allowed;
 }
 .btn.primary {
-  background: linear-gradient(180deg, #7b97ff, #5a76f0);
-  border-color: #7d98ff;
-  color: #fff;
-  box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.25), 0 6px 22px -6px var(--accent-glow);
+  background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo));
+  border-color: var(--accent-hi);
+  color: var(--on-accent);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.25), 0 6px 22px -6px var(--accent-glow);
 }
 .btn.primary:hover {
-  background: linear-gradient(180deg, #8aa3ff, #6782f5);
-  box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.4), 0 8px 28px -6px var(--accent-glow);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-hi), #fff 10%), color-mix(in srgb, var(--accent-lo), #fff 10%)); /* theme: same, a touch lighter */
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.4), 0 8px 28px -6px var(--accent-glow);
 }
 .btn.danger {
-  background: rgba(255, 93, 108, 0.12);
-  border-color: rgba(255, 93, 108, 0.45);
-  color: #ffb3bb;
+  background: rgb(var(--fail-rgb) / 0.12);
+  border-color: rgb(var(--fail-rgb) / 0.45);
+  color: var(--fail-ink);
 }
 .btn.danger:hover {
-  background: rgba(255, 93, 108, 0.2);
+  background: rgb(var(--fail-rgb) / 0.2);
 }
 .btn.ghost {
   background: transparent;
@@ -214,7 +252,7 @@ a:hover {
 .icon-btn.active {
   background: var(--accent-soft);
   color: var(--accent-2);
-  border-color: rgba(109, 139, 255, 0.35);
+  border-color: rgb(var(--accent-rgb) / 0.35);
 }
 .icon-btn:disabled {
   opacity: 0.35;
@@ -247,7 +285,7 @@ a:hover {
 .textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.18);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.18);
 }
 .input.mono {
   font-family: var(--mono);
@@ -268,7 +306,7 @@ a:hover {
   margin-top: 6px;
 }
 .err-text {
-  color: #ff98a2;
+  color: color-mix(in srgb, var(--fail) 30%, var(--fail-ink));
   font-size: 12px;
   margin-top: 6px;
 }
@@ -301,7 +339,7 @@ a:hover {
 }
 .toggle.on::after {
   transform: translateX(14px);
-  background: #fff;
+  background: var(--on-accent);
 }
 
 .check {
@@ -332,8 +370,8 @@ a:hover {
   content: "";
   width: 8px;
   height: 4px;
-  border-left: 2px solid #fff;
-  border-bottom: 2px solid #fff;
+  border-left: 2px solid var(--on-accent);
+  border-bottom: 2px solid var(--on-accent);
   transform: rotate(-45deg) translate(1px, -1px);
 }
 
@@ -407,22 +445,22 @@ a:hover {
 }
 .chip.pass {
   color: var(--pass);
-  border-color: rgba(61, 220, 151, 0.35);
+  border-color: rgb(var(--pass-rgb) / 0.35);
   background: var(--pass-soft);
 }
 .chip.fail {
   color: var(--fail);
-  border-color: rgba(255, 93, 108, 0.4);
+  border-color: rgb(var(--fail-rgb) / 0.4);
   background: var(--fail-soft);
 }
 .chip.warn {
   color: var(--warn);
-  border-color: rgba(245, 184, 75, 0.4);
+  border-color: rgb(var(--warn-rgb) / 0.4);
   background: var(--warn-soft);
 }
 .chip.accent {
   color: var(--accent-2);
-  border-color: rgba(109, 139, 255, 0.4);
+  border-color: rgb(var(--accent-rgb) / 0.4);
   background: var(--accent-soft);
 }
 
@@ -435,11 +473,11 @@ a:hover {
 }
 .dot.pass {
   background: var(--pass);
-  box-shadow: 0 0 8px rgba(61, 220, 151, 0.6);
+  box-shadow: 0 0 8px rgb(var(--pass-rgb) / 0.6);
 }
 .dot.fail {
   background: var(--fail);
-  box-shadow: 0 0 8px rgba(255, 93, 108, 0.6);
+  box-shadow: 0 0 8px rgb(var(--fail-rgb) / 0.6);
 }
 .dot.warn {
   background: var(--warn);
@@ -491,7 +529,7 @@ a:hover {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid rgba(143, 168, 255, 0.25);
+  border: 2px solid rgb(var(--accent-2-rgb) / 0.25);
   border-top-color: var(--accent-2);
   animation: spin 0.8s linear infinite;
   flex: none;
@@ -512,7 +550,7 @@ a:hover {
   gap: 10px;
   padding: 0 10px 0 12px;
   border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, #0d1118, #0a0d13);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-1) 60%, var(--bg-2)), var(--bg-1));
   position: relative;
   z-index: 20;
 }
@@ -578,7 +616,7 @@ a:hover {
   gap: 14px;
   padding: 0 12px;
   border-top: 1px solid var(--line);
-  background: #090b10;
+  background: color-mix(in srgb, var(--bg-0), var(--bg-1));
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-3);
@@ -728,9 +766,9 @@ a:hover {
   min-height: 0;
   overflow: hidden;
   background:
-    radial-gradient(1200px 700px at 70% 10%, rgba(80, 104, 200, 0.12), transparent 60%),
-    radial-gradient(900px 600px at 10% 100%, rgba(79, 209, 197, 0.06), transparent 60%),
-    linear-gradient(180deg, #0e121a 0%, #090b10 100%);
+    radial-gradient(1200px 700px at 70% 10%, rgb(var(--accent-rgb) / 0.09), transparent 60%),
+    radial-gradient(900px 600px at 10% 100%, rgb(var(--cyan-rgb) / 0.06), transparent 60%),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-2) 60%, var(--bg-1)) 0%, color-mix(in srgb, var(--bg-0), var(--bg-1)) 100%);
 }
 .vp-mount {
   position: absolute;
@@ -749,7 +787,7 @@ a:hover {
   gap: 2px;
   padding: 3px;
   border-radius: 10px;
-  background: rgba(13, 16, 23, 0.78);
+  background: rgb(var(--bg-1-rgb) / 0.78);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
@@ -764,7 +802,7 @@ a:hover {
   position: absolute;
   z-index: 5;
   border-radius: 10px;
-  background: rgba(13, 16, 23, 0.84);
+  background: rgb(var(--bg-1-rgb) / 0.84);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
@@ -812,7 +850,7 @@ a:hover {
   display: grid;
   place-items: center;
   z-index: 6;
-  background: rgba(7, 9, 13, 0.55);
+  background: rgb(var(--bg-0-rgb) / 0.55);
   backdrop-filter: blur(2px);
 }
 .slider {
@@ -829,16 +867,16 @@ a:hover {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #fff;
+  background: #fff; /* theme: same, a white knob */
   border: 3px solid var(--accent);
-  box-shadow: 0 0 0 4px rgba(109, 139, 255, 0.18);
+  box-shadow: 0 0 0 4px rgb(var(--accent-rgb) / 0.18);
   cursor: pointer;
 }
 .slider::-moz-range-thumb {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #fff;
+  background: #fff; /* theme: same, a white knob */
   border: 3px solid var(--accent);
   cursor: pointer;
 }
@@ -877,11 +915,11 @@ a:hover {
   outline: none;
 }
 .cm-flash {
-  background: rgba(61, 220, 151, 0.16);
+  background: rgb(var(--pass-rgb) / 0.16);
   transition: background 1.2s;
 }
 .cm-reveal {
-  background: rgba(109, 139, 255, 0.18);
+  background: rgb(var(--accent-rgb) / 0.18);
 }
 
 /* ---------- list headings (checks panel) ---------- */
@@ -926,7 +964,7 @@ a:hover {
   gap: 10px;
   align-items: start;
   padding: 9px 14px;
-  border-bottom: 1px solid rgba(31, 37, 51, 0.6);
+  border-bottom: 1px solid rgb(var(--line-rgb) / 0.6);
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -961,13 +999,13 @@ a:hover {
 .conflict {
   margin: 12px 14px;
   border-radius: var(--radius);
-  border: 1px solid rgba(245, 184, 75, 0.4);
-  background: linear-gradient(180deg, rgba(245, 184, 75, 0.08), rgba(245, 184, 75, 0.02));
+  border: 1px solid rgb(var(--warn-rgb) / 0.4);
+  background: linear-gradient(180deg, rgb(var(--warn-rgb) / 0.08), rgb(var(--warn-rgb) / 0.02));
   padding: 12px 14px;
 }
 .conflict.infeasible {
-  border-color: rgba(255, 93, 108, 0.45);
-  background: linear-gradient(180deg, rgba(255, 93, 108, 0.08), rgba(255, 93, 108, 0.02));
+  border-color: rgb(var(--fail-rgb) / 0.45);
+  background: linear-gradient(180deg, rgb(var(--fail-rgb) / 0.08), rgb(var(--fail-rgb) / 0.02));
 }
 .fix-option {
   display: flex;
@@ -1007,9 +1045,9 @@ a:hover {
   max-width: 88%;
   padding: 9px 12px;
   border-radius: 12px 12px 4px 12px;
-  background: linear-gradient(180deg, #23305e, #1d274d);
-  border: 1px solid #34437d;
-  color: #eef1ff;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-lo) 29%, var(--bg-2)), color-mix(in srgb, var(--accent-lo) 20%, var(--bg-2)));
+  border: 1px solid color-mix(in srgb, var(--accent-lo) 48%, var(--bg-2));
+  color: var(--accent-ink);
   white-space: pre-wrap;
   word-wrap: break-word;
   font-size: 13px;
@@ -1051,7 +1089,7 @@ a:hover {
   border-radius: 4px;
   background: var(--bg-3);
   border: 1px solid var(--line-2);
-  color: #c7d3ff;
+  color: color-mix(in srgb, var(--accent-2) 40%, var(--accent-ink));
 }
 .msg-assistant pre {
   background: var(--bg-0);
@@ -1085,7 +1123,7 @@ a:hover {
   border-radius: 1px;
 }
 .thinking {
-  border-left: 2px solid #3b3f6b;
+  border-left: 2px solid color-mix(in srgb, var(--accent-lo) 22%, var(--line-2));
   padding: 2px 0 2px 10px;
   margin: 2px 0 8px;
   color: var(--text-3);
@@ -1140,11 +1178,11 @@ a:hover {
   white-space: pre-wrap;
 }
 .tool-card.error {
-  border-color: rgba(255, 93, 108, 0.35);
+  border-color: rgb(var(--fail-rgb) / 0.35);
 }
 .tool-card.running {
-  border-color: rgba(109, 139, 255, 0.45);
-  box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.12), 0 0 22px -8px var(--accent-glow);
+  border-color: rgb(var(--accent-rgb) / 0.45);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.12), 0 0 22px -8px var(--accent-glow);
 }
 .tool-card .tc-progress {
   height: 2px;
@@ -1178,20 +1216,20 @@ a:hover {
   user-select: none;
 }
 .diff .ln.add {
-  background: rgba(61, 220, 151, 0.09);
-  color: #b5f5d6;
+  background: rgb(var(--pass-rgb) / 0.09);
+  color: var(--pass-ink);
 }
 .diff .ln.del {
-  background: rgba(255, 93, 108, 0.09);
-  color: #ffc0c6;
+  background: rgb(var(--fail-rgb) / 0.09);
+  color: var(--fail-ink);
 }
 .diff .ln.same {
   color: var(--text-3);
 }
 .choice-card {
   border-radius: 10px;
-  border: 1px solid rgba(199, 146, 255, 0.4);
-  background: linear-gradient(180deg, rgba(199, 146, 255, 0.08), rgba(199, 146, 255, 0.02));
+  border: 1px solid rgb(var(--violet-rgb) / 0.4);
+  background: linear-gradient(180deg, rgb(var(--violet-rgb) / 0.08), rgb(var(--violet-rgb) / 0.02));
   padding: 12px;
 }
 .choice-card .q {
@@ -1220,7 +1258,7 @@ a:hover {
 .choice-opt.chosen {
   opacity: 1;
   border-color: var(--violet);
-  background: rgba(199, 146, 255, 0.1);
+  background: rgb(var(--violet-rgb) / 0.1);
 }
 .choice-opt .l {
   font-size: 12.5px;
@@ -1242,11 +1280,11 @@ a:hover {
   font-size: 12.5px;
 }
 .notice.error {
-  border-color: rgba(255, 93, 108, 0.4);
+  border-color: rgb(var(--fail-rgb) / 0.4);
   background: var(--fail-soft);
 }
 .notice.warn {
-  border-color: rgba(245, 184, 75, 0.4);
+  border-color: rgb(var(--warn-rgb) / 0.4);
   background: var(--warn-soft);
 }
 .notice .t {
@@ -1281,8 +1319,8 @@ a:hover {
   padding: 8px 8px 6px 12px;
 }
 .composer-box:focus-within {
-  border-color: rgba(109, 139, 255, 0.7);
-  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.14), 0 0 30px -12px var(--accent-glow);
+  border-color: rgb(var(--accent-rgb) / 0.7);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.14), 0 0 30px -12px var(--accent-glow);
 }
 .composer textarea {
   width: 100%;
@@ -1326,7 +1364,7 @@ a:hover {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(3, 4, 7, 0.66);
+  background: var(--scrim);
   backdrop-filter: blur(6px);
   z-index: 100;
   display: grid;
@@ -1340,8 +1378,8 @@ a:hover {
   flex-direction: column;
   border-radius: 14px;
   border: 1px solid var(--line-2);
-  background: linear-gradient(180deg, #121722, #0d1018);
-  box-shadow: var(--shadow), 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-2), var(--bg-3)), color-mix(in srgb, var(--bg-1), var(--bg-2)));
+  box-shadow: var(--shadow), 0 0 0 1px rgb(var(--ink-rgb) / 0.02) inset;
   overflow: hidden;
 }
 .modal-head {
@@ -1419,7 +1457,7 @@ a:hover {
   padding: 5px;
   border-radius: 10px;
   border: 1px solid var(--line-2);
-  background: #121722;
+  background: color-mix(in srgb, var(--bg-2), var(--bg-3));
   box-shadow: var(--shadow);
   z-index: 60;
 }
@@ -1478,7 +1516,7 @@ a:hover {
   padding: 11px 12px;
   border-radius: 10px;
   border: 1px solid var(--line-2);
-  background: rgba(18, 23, 34, 0.96);
+  background: rgb(var(--bg-3-rgb) / 0.96);
   box-shadow: var(--shadow);
   backdrop-filter: blur(10px);
 }
@@ -1492,13 +1530,13 @@ a:hover {
   margin-top: 2px;
 }
 .toast.error {
-  border-color: rgba(255, 93, 108, 0.45);
+  border-color: rgb(var(--fail-rgb) / 0.45);
 }
 .toast.success {
-  border-color: rgba(61, 220, 151, 0.4);
+  border-color: rgb(var(--pass-rgb) / 0.4);
 }
 .toast.warn {
-  border-color: rgba(245, 184, 75, 0.4);
+  border-color: rgb(var(--warn-rgb) / 0.4);
 }
 
 .banner {
@@ -1507,14 +1545,14 @@ a:hover {
   gap: 10px;
   padding: 8px 14px;
   font-size: 12.5px;
-  border-bottom: 1px solid rgba(245, 184, 75, 0.35);
-  background: rgba(245, 184, 75, 0.08);
-  color: #ffe1a6;
+  border-bottom: 1px solid rgb(var(--warn-rgb) / 0.35);
+  background: rgb(var(--warn-rgb) / 0.08);
+  color: var(--warn-ink);
 }
 .banner.error {
-  border-bottom-color: rgba(255, 93, 108, 0.4);
-  background: rgba(255, 93, 108, 0.08);
-  color: #ffc4ca;
+  border-bottom-color: rgb(var(--fail-rgb) / 0.4);
+  background: rgb(var(--fail-rgb) / 0.08);
+  color: var(--fail-ink);
 }
 
 /* ---------- home and onboarding ---------- */
@@ -1528,7 +1566,7 @@ a:hover {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background-image: linear-gradient(rgba(109, 139, 255, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(109, 139, 255, 0.05) 1px, transparent 1px);
+  background-image: linear-gradient(rgb(var(--accent-rgb) / 0.05) 1px, transparent 1px), linear-gradient(90deg, rgb(var(--accent-rgb) / 0.05) 1px, transparent 1px);
   background-size: 40px 40px;
   mask-image: radial-gradient(ellipse at 50% 0%, black 0%, transparent 72%);
 }
@@ -1536,7 +1574,7 @@ a:hover {
   position: fixed;
   inset: -20%;
   pointer-events: none;
-  background: radial-gradient(600px 400px at 30% 10%, rgba(109, 139, 255, 0.16), transparent 70%), radial-gradient(600px 400px at 80% 20%, rgba(199, 146, 255, 0.1), transparent 70%);
+  background: radial-gradient(600px 400px at 30% 10%, rgb(var(--accent-rgb) / 0.16), transparent 70%), radial-gradient(600px 400px at 80% 20%, rgb(var(--violet-rgb) / 0.1), transparent 70%);
 }
 .home {
   max-width: 1180px;
@@ -1591,7 +1629,7 @@ a:hover {
 .card {
   border-radius: 12px;
   border: 1px solid var(--line-2);
-  background: linear-gradient(180deg, rgba(21, 26, 36, 0.92), rgba(13, 16, 23, 0.92));
+  background: linear-gradient(180deg, rgb(var(--bg-3-rgb) / 0.92), rgb(var(--bg-1-rgb) / 0.92));
   position: relative;
   overflow: hidden;
   transition: border-color 0.2s, transform 0.2s var(--ease), box-shadow 0.25s;
@@ -1600,13 +1638,13 @@ a:hover {
   cursor: pointer;
 }
 .card.clickable:hover {
-  border-color: rgba(109, 139, 255, 0.55);
+  border-color: rgb(var(--accent-rgb) / 0.55);
   transform: translateY(-2px);
-  box-shadow: 0 18px 40px -18px rgba(109, 139, 255, 0.45);
+  box-shadow: 0 18px 40px -18px rgb(var(--accent-rgb) / 0.45);
 }
 .card .thumb {
   aspect-ratio: 16 / 10;
-  background: radial-gradient(circle at 60% 30%, rgba(109, 139, 255, 0.16), transparent 60%), #0b0e14;
+  background: radial-gradient(circle at 60% 30%, rgb(var(--accent-rgb) / 0.16), transparent 60%), var(--bg-1);
   border-bottom: 1px solid var(--line);
   display: grid;
   place-items: center;
@@ -1639,7 +1677,7 @@ a:hover {
   position: absolute;
   top: 8px;
   right: 8px;
-  background: rgba(10, 13, 19, 0.75);
+  background: rgb(var(--bg-1-rgb) / 0.75);
   backdrop-filter: blur(6px);
 }
 .empty-state {
@@ -1664,7 +1702,7 @@ a:hover {
   width: min(620px, 100%);
   border-radius: 16px;
   border: 1px solid var(--line-2);
-  background: linear-gradient(180deg, rgba(20, 25, 36, 0.94), rgba(11, 14, 20, 0.94));
+  background: linear-gradient(180deg, rgb(var(--bg-3-rgb) / 0.94), rgb(var(--bg-1-rgb) / 0.94));
   box-shadow: var(--shadow);
   padding: 30px;
   position: relative;
@@ -1708,7 +1746,7 @@ a:hover {
   place-items: center;
   background: var(--accent-soft);
   color: var(--accent-2);
-  border: 1px solid rgba(109, 139, 255, 0.3);
+  border: 1px solid rgb(var(--accent-rgb) / 0.3);
 }
 .feature .t {
   font-weight: 500;
@@ -1768,9 +1806,9 @@ a:hover {
   align-items: flex-start;
   padding: 12px 14px;
   border-radius: 10px;
-  border: 1px solid rgba(245, 184, 75, 0.45);
-  background: rgba(245, 184, 75, 0.08);
-  color: #ffe1a6;
+  border: 1px solid rgb(var(--warn-rgb) / 0.45);
+  background: rgb(var(--warn-rgb) / 0.08);
+  color: var(--warn-ink);
   font-size: 13px;
   margin: 14px 0 20px;
 }
@@ -1817,7 +1855,7 @@ a:hover {
 }
 .bom td {
   padding: 7px 12px;
-  border-bottom: 1px solid rgba(31, 37, 51, 0.6);
+  border-bottom: 1px solid rgb(var(--line-rgb) / 0.6);
   color: var(--text-2);
 }
 .bom td.qty {
@@ -1836,7 +1874,7 @@ a:hover {
 }
 .graph-edge {
   fill: none;
-  stroke: #2a3245;
+  stroke: var(--line-2);
   stroke-width: 1.2;
   transition: stroke 0.2s, opacity 0.2s;
 }
@@ -1885,7 +1923,7 @@ a:hover {
   transform: translateX(-50%);
   padding: 4px 8px;
   border-radius: 5px;
-  background: #1b2130;
+  background: var(--tip-bg);
   border: 1px solid var(--line-3);
   color: var(--text);
   font-family: var(--sans);
@@ -1896,7 +1934,7 @@ a:hover {
   white-space: nowrap;
   pointer-events: none;
   z-index: 300;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 6px 18px rgb(var(--shade-rgb) / 0.4);
   animation: tip-in 0.12s ease-out 0.35s both;
 }
 [data-tip=""]:hover::after {
@@ -1959,13 +1997,13 @@ a:hover {
   display: block;
   -webkit-user-drag: none;
   user-select: none;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35)); /* theme: same, shading on the ball */
 }
 .mat-ball-flat {
   width: 82%;
   height: 82%;
   border-radius: 50%;
-  box-shadow: inset -3px -4px 8px rgba(0, 0, 0, 0.45), inset 2px 2px 4px rgba(255, 255, 255, 0.25);
+  box-shadow: inset -3px -4px 8px rgba(0, 0, 0, 0.45), inset 2px 2px 4px rgba(255, 255, 255, 0.25); /* theme: same, shading on the ball */
 }
 .tree-row .mat-ball img,
 .lp-row .mat-ball img {
@@ -2024,7 +2062,7 @@ a:hover {
   align-items: flex-start;
   padding: 10px;
   border-radius: 10px;
-  background: radial-gradient(160px 120px at 20% 30%, rgba(109, 139, 255, 0.12), transparent 70%), var(--bg-2);
+  background: radial-gradient(160px 120px at 20% 30%, rgb(var(--accent-rgb) / 0.12), transparent 70%), var(--bg-2);
   border: 1px solid var(--line);
   margin-bottom: 4px;
   min-height: 108px;
@@ -2116,7 +2154,7 @@ a:hover {
   border: 0;
   padding: 0;
   cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), 0 1px 3px rgba(0, 0, 0, 0.4); /* theme: same, shading on the swatch */
   transition: transform 0.12s var(--ease), box-shadow 0.12s;
 }
 .mat-color:hover {
@@ -2168,7 +2206,7 @@ a:hover {
   height: 36px;
   border-radius: 6px;
   overflow: hidden;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); /* theme: same, the edge of the preview */
 }
 .light-ball {
   position: absolute;
@@ -2188,7 +2226,7 @@ a:hover {
   height: 5px;
   margin-left: -11px;
   border-radius: 50%;
-  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.55), transparent);
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.55), transparent); /* theme: same, the ball's shadow */
 }
 .light-name {
   font-size: 10.5px;
@@ -2205,16 +2243,16 @@ a:hover {
 
 .review-card {
   border-radius: 10px;
-  border: 1px solid rgba(79, 209, 197, 0.32);
-  background: linear-gradient(180deg, rgba(79, 209, 197, 0.06), rgba(79, 209, 197, 0.01) 60%), var(--bg-2);
+  border: 1px solid rgb(var(--cyan-rgb) / 0.32);
+  background: linear-gradient(180deg, rgb(var(--cyan-rgb) / 0.06), rgb(var(--cyan-rgb) / 0.01) 60%), var(--bg-2);
   overflow: hidden;
 }
 .review-card.running {
-  border-color: rgba(79, 209, 197, 0.55);
-  box-shadow: 0 0 0 1px rgba(79, 209, 197, 0.1), 0 0 24px -8px rgba(79, 209, 197, 0.45);
+  border-color: rgb(var(--cyan-rgb) / 0.55);
+  box-shadow: 0 0 0 1px rgb(var(--cyan-rgb) / 0.1), 0 0 24px -8px rgb(var(--cyan-rgb) / 0.45);
 }
 .review-card.error {
-  border-color: rgba(255, 93, 108, 0.35);
+  border-color: rgb(var(--fail-rgb) / 0.35);
   background: var(--bg-2);
 }
 .review-card .tc-progress {
@@ -2298,15 +2336,15 @@ a:hover {
   height: 7px;
   border-radius: 50%;
   background: var(--cyan);
-  box-shadow: 0 0 0 0 rgba(79, 209, 197, 0.6);
+  box-shadow: 0 0 0 0 rgb(var(--cyan-rgb) / 0.6);
   animation: rv-pulse 1.4s var(--ease) infinite;
 }
 @keyframes rv-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(79, 209, 197, 0.55);
+    box-shadow: 0 0 0 0 rgb(var(--cyan-rgb) / 0.55);
   }
   100% {
-    box-shadow: 0 0 0 8px rgba(79, 209, 197, 0);
+    box-shadow: 0 0 0 8px rgb(var(--cyan-rgb) / 0);
   }
 }
 .rv-strip {
@@ -2341,7 +2379,7 @@ a:hover {
   object-fit: cover;
 }
 .rv-thumb.closeup {
-  border-color: rgba(199, 146, 255, 0.5);
+  border-color: rgb(var(--violet-rgb) / 0.5);
 }
 .rv-zoom {
   position: absolute;
@@ -2352,7 +2390,7 @@ a:hover {
   width: 15px;
   height: 15px;
   border-radius: 4px;
-  background: rgba(13, 16, 22, 0.85);
+  background: rgb(var(--bg-1-rgb) / 0.85);
   color: var(--violet);
 }
 .rv-sheet {
@@ -2602,7 +2640,7 @@ a:hover {
   width: 2px;
   margin-left: -1px;
   background: var(--cyan);
-  box-shadow: 0 0 10px rgba(79, 209, 197, 0.7);
+  box-shadow: 0 0 10px rgb(var(--cyan-rgb) / 0.7);
   pointer-events: none;
 }
 .rv-compare-tag {
@@ -2611,7 +2649,7 @@ a:hover {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(13, 16, 22, 0.8);
+  background: rgb(var(--bg-1-rgb) / 0.8);
   color: var(--text-2);
   pointer-events: none;
 }
@@ -2675,7 +2713,7 @@ a:hover {
   border-color: var(--accent);
 }
 .vf.accent {
-  border-color: rgba(199, 146, 255, 0.55);
+  border-color: rgb(var(--violet-rgb) / 0.55);
 }
 .vf.accent .vf-input {
   color: var(--violet);
@@ -2770,7 +2808,7 @@ a:hover {
   height: 7px;
   border-radius: 50%;
   background: var(--violet);
-  box-shadow: 0 0 0 3px rgba(199, 146, 255, 0.18);
+  box-shadow: 0 0 0 3px rgb(var(--violet-rgb) / 0.18);
   animation: pulse 1.6s var(--ease) infinite;
   flex: none;
 }
@@ -2801,7 +2839,7 @@ a:hover {
 .choice-opt.selected {
   border-color: var(--violet);
   background: var(--bg-2);
-  box-shadow: 0 0 0 1px rgba(199, 146, 255, 0.25), 0 10px 30px -18px rgba(199, 146, 255, 0.6);
+  box-shadow: 0 0 0 1px rgb(var(--violet-rgb) / 0.25), 0 10px 30px -18px rgb(var(--violet-rgb) / 0.6);
 }
 .choice-opt.dimmed {
   opacity: 0.5;
@@ -2926,7 +2964,7 @@ a:hover {
   border-color: var(--line-3);
 }
 .decision.open {
-  border-color: rgba(199, 146, 255, 0.35);
+  border-color: rgb(var(--violet-rgb) / 0.35);
   background: var(--bg-2);
 }
 .dec-head {
@@ -2955,14 +2993,14 @@ a:hover {
   color: var(--text-2);
 }
 .dec-by.claude {
-  background: linear-gradient(135deg, #2b2f5c, #3e2b5c);
-  border-color: #6b5ccf;
-  color: #d9ccff;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent-lo) 30%, var(--bg-2)), color-mix(in srgb, var(--violet) 27%, var(--bg-2)));
+  border-color: color-mix(in srgb, var(--violet) 30%, var(--accent-lo) 30%);
+  color: var(--violet-ink);
 }
 .dec-by.you {
-  background: #13283a;
-  border-color: #2f6f9e;
-  color: #a6dbff;
+  background: color-mix(in srgb, var(--info) 12%, var(--bg-2));
+  border-color: color-mix(in srgb, var(--info) 50%, var(--bg-2));
+  color: var(--info-ink);
 }
 .dec-main {
   display: flex;
@@ -3028,7 +3066,7 @@ a:hover {
 .dec-drift {
   font-size: 11.5px;
   color: var(--warn);
-  border: 1px solid rgba(245, 184, 75, 0.35);
+  border: 1px solid rgb(var(--warn-rgb) / 0.35);
   background: var(--warn-soft);
   border-radius: 7px;
   padding: 7px 9px;
@@ -3046,12 +3084,12 @@ a:hover {
   background: var(--bg-1);
 }
 .dec-opt.chosen {
-  border-color: rgba(199, 146, 255, 0.5);
-  background: rgba(199, 146, 255, 0.06);
+  border-color: rgb(var(--violet-rgb) / 0.5);
+  background: rgb(var(--violet-rgb) / 0.06);
 }
 .dec-opt.showing {
   border-color: var(--violet);
-  box-shadow: 0 0 0 1px rgba(199, 146, 255, 0.25);
+  box-shadow: 0 0 0 1px rgb(var(--violet-rgb) / 0.25);
 }
 .dec-opt-head {
   display: flex;
@@ -3128,10 +3166,10 @@ a:hover {
   min-width: 0;
   padding: 5px 6px 5px 12px;
   border-radius: 10px;
-  border: 1px solid rgba(199, 146, 255, 0.5);
-  background: rgba(20, 16, 32, 0.86);
+  border: 1px solid rgb(var(--violet-rgb) / 0.5);
+  background: rgb(var(--bg-2-rgb) / 0.86);
   backdrop-filter: blur(10px);
-  box-shadow: var(--shadow), 0 0 40px -14px rgba(199, 146, 255, 0.7);
+  box-shadow: var(--shadow), 0 0 40px -14px rgb(var(--violet-rgb) / 0.7);
   font-size: 12.5px;
   white-space: nowrap;
 }
@@ -3157,7 +3195,7 @@ a:hover {
   border-radius: 9px;
   overflow: hidden;
   border: 1px solid var(--line-2);
-  background: #0d1016;
+  background: var(--bg-1);
 }
 .pics.wipe {
   position: relative;
@@ -3182,8 +3220,8 @@ a:hover {
   top: 0;
   bottom: 0;
   width: 0;
-  border-left: 1.5px solid rgba(223, 229, 242, 0.85);
-  box-shadow: 0 0 12px rgba(109, 139, 255, 0.6);
+  border-left: 1.5px solid rgb(var(--text-rgb) / 0.85);
+  box-shadow: 0 0 12px rgb(var(--accent-rgb) / 0.6);
   pointer-events: none;
 }
 .pics .handle {
@@ -3196,8 +3234,8 @@ a:hover {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: rgba(13, 16, 23, 0.9);
-  border: 1px solid rgba(223, 229, 242, 0.7);
+  background: rgb(var(--bg-1-rgb) / 0.9);
+  border: 1px solid rgb(var(--text-rgb) / 0.7);
   color: var(--text);
 }
 .pics .lbl,
@@ -3210,7 +3248,7 @@ a:hover {
   text-transform: uppercase;
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(7, 9, 13, 0.7);
+  background: rgb(var(--bg-0-rgb) / 0.7);
   color: var(--text-2);
   pointer-events: none;
 }
@@ -3230,7 +3268,7 @@ a:hover {
 .pics.pair figure {
   margin: 0;
   position: relative;
-  background: #0d1016;
+  background: var(--bg-1);
 }
 .pics.pair img {
   display: block;
@@ -3316,8 +3354,8 @@ a:hover {
   min-height: 24px;
   padding: 3px 10px;
   border-radius: 14px;
-  border: 1px solid rgba(109, 139, 255, 0.38);
-  background: rgba(109, 139, 255, 0.08);
+  border: 1px solid rgb(var(--accent-rgb) / 0.38);
+  background: rgb(var(--accent-rgb) / 0.08);
   color: var(--text);
   font: 12px var(--sans);
   cursor: pointer;
@@ -3325,7 +3363,7 @@ a:hover {
   transition: background 0.15s, border-color 0.15s, transform 0.15s var(--ease);
 }
 .suggest-chip:hover:not(:disabled) {
-  background: rgba(109, 139, 255, 0.18);
+  background: rgb(var(--accent-rgb) / 0.18);
   border-color: var(--accent);
   transform: translateY(-1px);
 }
@@ -3346,9 +3384,9 @@ a:hover {
   margin: -2px 0 5px;
   padding: 1px 7px 1px 5px;
   border-radius: 10px;
-  border: 1px solid rgba(143, 168, 255, 0.4);
-  background: rgba(7, 9, 13, 0.35);
-  color: #c9d4ff;
+  border: 1px solid rgb(var(--accent-2-rgb) / 0.4);
+  background: rgb(var(--bg-0-rgb) / 0.35);
+  color: color-mix(in srgb, var(--accent-2) 40%, var(--accent-ink));
   font: 10.5px var(--mono);
   cursor: pointer;
   width: fit-content;
@@ -3376,8 +3414,8 @@ a:hover {
   width: 10px;
   height: 10px;
   background: var(--accent);
-  border: 2px solid #fff;
-  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.35), 0 2px 8px rgba(0, 0, 0, 0.6);
+  border: 2px solid #fff; /* theme: same, a ring round the pin */
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.35), 0 2px 8px rgb(var(--shade-rgb) / 0.6);
 }
 .spot-pin .ring {
   left: -14px;
@@ -3414,8 +3452,8 @@ a:hover {
 }
 .spot-card {
   border-radius: 12px;
-  background: rgba(13, 16, 23, 0.92);
-  border: 1px solid rgba(109, 139, 255, 0.4);
+  background: rgb(var(--bg-1-rgb) / 0.92);
+  border: 1px solid rgb(var(--accent-rgb) / 0.4);
   backdrop-filter: blur(14px);
   box-shadow: var(--shadow), 0 0 40px -16px var(--accent-glow);
   padding: 10px 12px;
@@ -3455,10 +3493,10 @@ a:hover {
   color: var(--text-3);
 }
 .spot-note.error {
-  color: #ffb3bb;
+  color: var(--fail-ink);
 }
 .spot-note.warn {
-  color: #ffe1a6;
+  color: var(--warn-ink);
 }
 .spot-feed {
   margin-top: 10px;
@@ -3477,9 +3515,9 @@ a:hover {
   max-width: 90%;
   padding: 6px 10px;
   border-radius: 10px 10px 3px 10px;
-  background: linear-gradient(180deg, #23305e, #1d274d);
-  border: 1px solid #34437d;
-  color: #eef1ff;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-lo) 29%, var(--bg-2)), color-mix(in srgb, var(--accent-lo) 20%, var(--bg-2)));
+  border: 1px solid color-mix(in srgb, var(--accent-lo) 48%, var(--bg-2));
+  color: var(--accent-ink);
   font-size: 12.5px;
   white-space: pre-wrap;
 }
@@ -3521,8 +3559,8 @@ a:hover {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .spot-input:focus-within {
-  border-color: rgba(109, 139, 255, 0.7);
-  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.14);
+  border-color: rgb(var(--accent-rgb) / 0.7);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.14);
 }
 .spot-input textarea {
   flex: 1;
@@ -3578,10 +3616,10 @@ a:hover {
   align-items: center;
   gap: 7px;
   font-size: 11.5px;
-  color: #ffb3bb;
+  color: var(--fail-ink);
 }
 .spot-issue.warn {
-  color: #ffe1a6;
+  color: var(--warn-ink);
 }
 .spot-actions {
   display: flex;
@@ -3635,7 +3673,7 @@ a:hover {
   height: 100%;
   cursor: crosshair;
   touch-action: none;
-  box-shadow: inset 0 0 0 2px rgba(255, 180, 84, 0.55);
+  box-shadow: inset 0 0 0 2px rgba(255, 180, 84, 0.55); /* theme: same, the markup ink */
 }
 .markup-bar {
   position: absolute;
@@ -3646,8 +3684,8 @@ a:hover {
   gap: 6px;
   padding: 6px 8px;
   border-radius: 10px;
-  background: rgba(13, 16, 23, 0.9);
-  border: 1px solid rgba(255, 180, 84, 0.45);
+  background: rgb(var(--bg-1-rgb) / 0.9);
+  border: 1px solid rgba(255, 180, 84, 0.45); /* theme: same, the markup ink */
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
   max-width: calc(100% - 24px);
@@ -3666,7 +3704,7 @@ a:hover {
   font-size: 10.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #ffd29a;
+  color: color-mix(in srgb, var(--warn) 20%, var(--warn-ink));
   margin: 0 4px;
   white-space: nowrap;
 }
@@ -3690,7 +3728,7 @@ a:hover {
   max-width: 260px;
   border-radius: 8px;
   margin: 0 0 6px;
-  border: 1px solid #34437d;
+  border: 1px solid color-mix(in srgb, var(--accent-lo) 48%, var(--bg-2));
 }
 
 /* ---------- cost line under each reply ---------- */
@@ -3750,8 +3788,8 @@ a:hover {
   color: var(--pass);
 }
 .cost-ask {
-  border: 1px solid rgba(109, 139, 255, 0.38);
-  background: rgba(109, 139, 255, 0.08);
+  border: 1px solid rgb(var(--accent-rgb) / 0.38);
+  background: rgb(var(--accent-rgb) / 0.08);
   color: var(--accent-2);
   font: 10.5px var(--mono);
   padding: 2px 8px;
@@ -3759,7 +3797,7 @@ a:hover {
   cursor: pointer;
 }
 .cost-ask:hover {
-  background: rgba(109, 139, 255, 0.18);
+  background: rgb(var(--accent-rgb) / 0.18);
 }
 .cost-break {
   flex-basis: 100%;
@@ -4185,7 +4223,7 @@ button.mp-stat:hover {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  background: radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.05) 1px, transparent 0) 0 0 / 16px 16px, var(--bg-0);
+  background: radial-gradient(circle at 1px 1px, rgb(var(--ink-rgb) / 0.05) 1px, transparent 0) 0 0 / 16px 16px, var(--bg-0);
   cursor: grab;
   overscroll-behavior: contain;
 }
@@ -4203,9 +4241,9 @@ button.mp-stat:hover {
 .mp-sheet {
   margin: auto;
   flex: none;
-  background: #fff;
+  background: #fff; /* theme: same, a sheet of paper */
   border-radius: 4px;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 1px rgb(var(--shade-rgb) / 0.4), 0 10px 30px rgb(var(--shade-rgb) / 0.45);
   overflow: hidden;
 }
 .mp-sheet svg {
@@ -4220,7 +4258,7 @@ button.mp-stat:hover {
   border-radius: 3px;
   margin-right: 6px;
   vertical-align: -1px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 0 1px rgb(var(--ink-rgb) / 0.25);
 }
 .mp-wires td {
   white-space: nowrap;
@@ -4367,7 +4405,7 @@ button.mp-stat:hover {
   padding: 7px 10px;
   border-radius: 6px;
   background: var(--warn-soft);
-  color: #f7d08e;
+  color: var(--warn-ink);
   font-size: 12px;
 }
 .mp-verify.calm {
@@ -4441,7 +4479,7 @@ button.mp-stat:hover {
   list-style: none;
   border-bottom: 1px solid var(--line);
   background: var(--warn-soft);
-  color: #f7d08e;
+  color: var(--warn-ink);
   font-size: 11.5px;
   flex: none;
   max-height: 30%;
@@ -4481,14 +4519,14 @@ button.mp-stat:hover {
   user-select: none;
 }
 .mp-code .c {
-  color: #6f7f99;
+  color: var(--syn-comment);
   font-style: italic;
 }
 .mp-code .d {
   color: var(--violet);
 }
 .mp-code .s {
-  color: #a5d6a7;
+  color: var(--syn-string);
 }
 .mp-code .h {
   color: var(--accent-2);

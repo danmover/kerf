@@ -69,7 +69,7 @@ function ExportPanel({ close }: { close: () => void }) {
       </div>
       <div className="xp-grid">
         {EXPORT_GROUPS.map((g) => {
-          const items = EXPORT_FORMATS.filter((f) => f.group === g.id);
+          const items = EXPORT_FORMATS.filter((f) => f.group === g.id && (f.shown?.() ?? true));
           if (!items.length) return null;
           return (
             <section key={g.id} className={`xp-group xp-${g.id}`}>

@@ -10,6 +10,8 @@ import "./styles/app.css";
 import "./styles/brand.css";
 import "./styles/topbar.css";
 import "./styles/motion.css";
+import "./styles/theme.css";
+import "./styles/syntax.css";
 import { App } from "./App";
 
 createRoot(document.getElementById("root")!).render(

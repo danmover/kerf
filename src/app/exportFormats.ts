@@ -8,6 +8,7 @@ import {
   copyViewImage,
   export3mfPlate,
   exportBom,
+  exportBuildPack,
   exportGlb,
   exportObj,
   exportPng,
@@ -22,12 +23,19 @@ import {
   exportViewSheet,
 } from "./exports";
 import { errorText, toast } from "./ui";
+import { useDesign } from "../core/engine";
+import { exportDrawingsPdf } from "../drawing/export";
+
+async function exportDrawings() {
+  await exportDrawingsPdf();
+  toast({ kind: "success", title: "Drawings exported", detail: "Every sheet in one PDF, with dimensions and tolerances." });
+}
 
 export type ExportGroup = "model" | "print" | "image" | "document" | "project";
 
 export const EXPORT_GROUPS: { id: ExportGroup; label: string }[] = [
   { id: "model", label: "3D model" },
-  { id: "print", label: "Print" },
+  { id: "print", label: "Make" },
   { id: "image", label: "Images" },
   { id: "document", label: "Documents" },
   { id: "project", label: "Project" },
@@ -47,6 +55,8 @@ export interface ExportFormat {
   selection?: boolean;
   /** greys the entry out with this reason */
   unavailable?: () => string | null;
+  /** leaves the entry out when this returns false (formats only some designs have) */
+  shown?: () => boolean;
   run: (o: { selectionOnly: boolean }) => unknown;
 }
 
@@ -56,7 +66,8 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "usdz", group: "model", label: "USDZ for AR", detail: "Place it on your desk with an iPhone", ext: ".usdz", icon: "Orbit", selection: true, run: (o) => exportUsdz(o.selectionOnly) },
   { id: "obj", group: "model", label: "OBJ + materials", detail: "Renderers and mesh tools", ext: ".zip", icon: "Box", selection: true, run: (o) => exportObj(o.selectionOnly) },
 
-  { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, on its flattest side, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
+  { id: "build-pack", group: "print", label: "Build pack", detail: "Parts to buy and make, wiring, firmware and tests", ext: ".zip", icon: "Wrench", shown: () => !!useDesign.getState().model?.machine, run: () => exportBuildPack() },
+  { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, turned to print, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
   { id: "stl-parts", group: "print", label: "STL per part", detail: "One file per part, named with how many", ext: ".zip", icon: "Layers", selection: true, run: (o) => exportStlParts(o.selectionOnly) },
   { id: "stl", group: "print", label: "STL, one mesh", detail: "The whole assembly in place", ext: ".stl", icon: "Layers", selection: true, run: (o) => exportStl(o.selectionOnly) },
 
@@ -65,6 +76,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "sheet", group: "image", label: "Four-view sheet", detail: "Iso, front, top and right on one image", ext: ".png", icon: "Grid", run: () => exportViewSheet() },
   { id: "copy", group: "image", label: "Copy view", detail: "Paste into a chat, doc or email", ext: "clipboard", icon: "Copy", run: () => copyViewImage() },
 
+  { id: "drawings", group: "document", label: "Engineering drawings", detail: "Every sheet, dimensioned, in one PDF", ext: ".pdf", icon: "Doc", run: () => exportDrawings() },
   { id: "report", group: "document", label: "Design report", detail: "Brief, views, checks and parts; prints to PDF", ext: ".html", icon: "Doc", run: () => exportReport() },
   { id: "bom", group: "document", label: "Parts list", detail: "Quantities, make or buy, materials", ext: ".csv", icon: "List", run: () => exportBom() },
 

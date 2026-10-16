@@ -22,6 +22,7 @@ import { generalClass, scaleText } from "../../drawing/spec";
 import { Menu, MenuItem } from "../common";
 import { Icon } from "../icons";
 import { BLUEPRINT, SheetCanvas, WHITE, type CanvasApi } from "./SheetCanvas";
+import { useTheme } from "../../app/theme";
 
 const SheetIcon = ({ size = 16 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -79,7 +80,8 @@ function DrawingPane() {
   const list = useDrawings((s) => s.list);
   const pending = useDrawings((s) => s.pending);
   const selected = useDrawings((s) => s.selected);
-  const theme = useDrawings((s) => s.theme);
+  const appTheme = useTheme();
+  const theme = useDrawings((s) => s.theme) ?? (appTheme === "light" ? "paper" : "blueprint");
   const asked = useDrawings((s) => s.asked);
   const sel3d = useView((s) => s.selected);
   const api = useRef<CanvasApi | null>(null);

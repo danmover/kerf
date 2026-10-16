@@ -264,7 +264,7 @@ function isPrinted(p: EvalPart): boolean {
 }
 
 /** The build direction a printed part's process gives it (fdm or sla with build:), so the STL prints the way the checks assumed. */
-function buildDirection(p: EvalPart): [number, number, number] | undefined {
+export function buildDirection(p: EvalPart): [number, number, number] | undefined {
   const b = p.process && (p.process.id === "fdm" || p.process.id === "sla") ? p.process.settings.build : undefined;
   if (!Array.isArray(b) || typeof b[0] !== "number") return undefined;
   const [x, y, z] = b as [number, number, number];
