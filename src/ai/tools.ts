@@ -12,6 +12,7 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -127,6 +128,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  BUILD_TOOL,
 ];
 
 const EditInput = z.object({
@@ -275,8 +277,10 @@ function applySource(next: string, summary: string, unlockOk: boolean | undefine
 
 // ---------- handlers ----------
 
-export async function runTool(name: string, input: unknown): Promise<ToolOutcome> {
+export async function runTool(name: string, input: unknown, ctx: { signal?: AbortSignal; toolUseId?: string } = {}): Promise<ToolOutcome> {
   switch (name) {
+    case "build_subassemblies":
+      return runBuildTool(input, ctx);
     case "get_design": {
       const { source, model, report } = useDesign.getState();
       return {
@@ -379,4 +383,5 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
+  build_subassemblies: "Planning parallel agents",
 };

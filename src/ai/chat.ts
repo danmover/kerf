@@ -272,7 +272,7 @@ async function runLoop() {
         else patch(itemId, (it) => (it.kind === "tool" ? { ...it, status: "running", title: TOOL_TITLES[u.name] ?? u.name } : it));
         let outcome: ToolOutcome;
         try {
-          outcome = await runTool(u.name, u.input);
+          outcome = await runTool(u.name, u.input, { signal: abort.signal, toolUseId: u.id });
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
@@ -281,7 +281,7 @@ async function runLoop() {
           ask = { toolUseId: u.id, outcome };
           continue;
         }
-        if (u.name === "edit_design" || u.name === "write_design") {
+        if (u.name === "edit_design" || u.name === "write_design" || u.name === "build_subassemblies") {
           if (!outcome.isError) {
             edits++;
             lastEditedSource = useDesign.getState().source;

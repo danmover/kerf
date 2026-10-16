@@ -12,6 +12,7 @@ import { useApiKey } from "./ChatPanel";
 import { Modal, Segmented, Toggle } from "./common";
 import { Icon } from "./icons";
 import { LogoMark } from "./Logo";
+import { AgentSettings } from "./agents/AgentSettings";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "Claude", icon: <Icon.Sparkle size={14} /> },
@@ -159,6 +160,7 @@ function AiSettings() {
           </div>
         </Row>
       </Section>
+      <AgentSettings />
       <div className="help">Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com.</div>
     </>
   );

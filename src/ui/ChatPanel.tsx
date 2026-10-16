@@ -14,6 +14,7 @@ import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
+import { AgentRunCard } from "./agents/AgentRunCard";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -169,7 +170,7 @@ function Item({ it }: { it: ChatItem }) {
     case "assistant":
       return <AssistantMsg it={it} />;
     case "tool":
-      return <ToolCard it={it} />;
+      return it.name === "build_subassemblies" ? <AgentRunCard toolUseId={it.toolUseId} fallback={<ToolCard it={it} />} /> : <ToolCard it={it} />;
     case "choice":
       return <ChoiceCard it={it} />;
     case "notice":

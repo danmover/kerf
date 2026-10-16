@@ -24,6 +24,16 @@ export interface Settings {
   maxSteps: number;
   termsAccepted: string | null;
   onboarded: boolean;
+  /** parallel subassembly agents: model ("same" follows the chat model) */
+  agentModel: string;
+  /** how many agents may call Claude at once */
+  agentParallel: number;
+  /** spending cap per parallel build, in US dollars */
+  agentBudget: number;
+  /** show the plan and its cost before agents start */
+  agentReview: boolean;
+  /** extra geometry workers for agents' checks (0 = decide from the device) */
+  agentWorkers: number;
 }
 
 const DEFAULTS: Settings = {
@@ -36,6 +46,11 @@ const DEFAULTS: Settings = {
   maxSteps: 16,
   termsAccepted: null,
   onboarded: false,
+  agentModel: "same",
+  agentParallel: 4,
+  agentBudget: 5,
+  agentReview: true,
+  agentWorkers: 0,
 };
 
 const KEY = "kerf.settings.v1";
@@ -54,6 +69,10 @@ function load(): Settings {
     if (!MODELS.some((m) => m.id === out.model)) out.model = DEFAULTS.model;
     if (!["low", "medium", "high", "xhigh", "max"].includes(out.effort)) out.effort = DEFAULTS.effort;
     out.maxSteps = Math.min(40, Math.max(4, Math.round(out.maxSteps)));
+    if (out.agentModel !== "same" && !MODELS.some((m) => m.id === out.agentModel)) out.agentModel = "same";
+    out.agentParallel = Math.min(8, Math.max(1, Math.round(out.agentParallel)));
+    out.agentBudget = Math.min(100, Math.max(0.5, Number(out.agentBudget) || DEFAULTS.agentBudget));
+    out.agentWorkers = Math.min(4, Math.max(0, Math.round(out.agentWorkers)));
     return out;
   } catch {
     return DEFAULTS;
