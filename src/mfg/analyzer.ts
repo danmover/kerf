@@ -22,18 +22,16 @@ export class ProcessAnalyzer {
       hit.used = ++this.tick;
       return hit.result;
     }
+    // not cached: the part may simply not be built yet, and the next run should check it
+    if (!built) return { key, findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: "The part has not been built" };
     const t0 = performance.now();
     let result: ProcessResult;
-    if (!built) {
-      result = { key, findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: "The part has not been built" };
-    } else {
-      try {
-        const ctx = this.context(probe.hash, built);
-        const { findings, stats } = analyzeSolid(ctx, probe.rules);
-        result = { key, findings, stats, ms: performance.now() - t0 };
-      } catch (e) {
-        result = { key, findings: [], stats: { triangles: 0, samples: 0 }, ms: performance.now() - t0, error: e instanceof Error ? e.message : String(e) };
-      }
+    try {
+      const ctx = this.context(probe.hash, built);
+      const { findings, stats } = analyzeSolid(ctx, probe.rules);
+      result = { key, findings, stats, ms: performance.now() - t0 };
+    } catch (e) {
+      result = { key, findings: [], stats: { triangles: 0, samples: 0 }, ms: performance.now() - t0, error: e instanceof Error ? e.message : String(e) };
     }
     this.results.set(key, { result, used: ++this.tick });
     trim(this.results, this.maxResults);
@@ -51,7 +49,7 @@ export class ProcessAnalyzer {
     // fine enough to follow small fillets and holes, coarse enough for large parts
     const tolerance = Math.min(0.1, Math.max(0.02, diag / 3000));
     const mesh = built.shape.mesh({ tolerance, angularTolerance: 10 });
-    const ctx = prepareSolid(analysisMesh(built.shape, mesh));
+    const ctx = prepareSolid(analysisMesh(built.shape, mesh), { tolerance });
     this.solids.set(hash, { ctx, used: ++this.tick });
     trim(this.solids, this.maxSolids);
     return ctx;

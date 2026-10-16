@@ -71,7 +71,7 @@ export function findingFor(id: string, results: Record<string, ProcessResult>): 
 }
 
 /** Check report items for the manufacturing processes. */
-export function processItems(model: Model, results: Record<string, ProcessResult> | null): CheckItem[] {
+export function processItems(model: Model, results: Record<string, ProcessResult> | null, buildErrors?: Map<string, string>): CheckItem[] {
   const items: CheckItem[] = [];
   const made = madeParts(model).filter((p) => !p.hidden);
   const withProcess = made.filter((p) => p.process);
@@ -92,6 +92,10 @@ export function processItems(model: Model, results: Record<string, ProcessResult
     }
 
     const r = results?.[p.id];
+    if (!r && buildErrors?.has(p.hash)) {
+      items.push({ ...base, id: `mfg:${p.id}:pending`, status: "info", title: `${p.label}: ${def.label}`, detail: "Checked once the part builds" });
+      continue;
+    }
     if (!r) {
       if (results) items.push({ ...base, id: `mfg:${p.id}:pending`, status: "pending", title: `${p.label}: ${def.label}`, detail: "Waiting for the part to build" });
       continue;

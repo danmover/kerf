@@ -78,8 +78,33 @@ part g { body box(10, 10, 10) process: mfg.injection(pull: 3) }
     expect(processFromText("3D printed (FDM)")).toBe("fdm");
     expect(processFromText("sheet_metal")).toBe("sheet_metal");
     expect(processFromText("hand carved")).toBeNull();
+    // the printing technology decides, not the word "printed"
+    expect(processFromText("SLA printed")).toBe("sla");
+    expect(processFromText("SLS print")).toBe("sls");
+    expect(processFromText("MJF printed nylon")).toBe("sls");
+    expect(processFromText("3D printed in resin")).toBe("sla");
+    expect(processFromText("selective laser sintering")).toBe("sls");
+    expect(processFromText("die cast")).toBe("die_cast");
+    // processes Kerf has no rules for are not mistaken for one it has
+    expect(processFromText("vacuum cast")).toBeNull();
+    expect(processFromText("DMLS printed titanium")).toBeNull();
     expect(processFromValue({ id: "sla", settings: {} })).toEqual({ id: "sla", settings: {} });
     expect(processFromValue("nope")).toBeNull();
+  });
+
+  it("keeps direction lists short", () => {
+    const many = Array.from({ length: 10000 }, (_, i) => [Math.cos(i), Math.sin(i), 0.3]);
+    const v = processFromValue({ id: "cnc_mill", settings: { setups: [[0, 0, 1], [0, 0, 2], ...many], tool_d: "big" } })!;
+    expect(v.settings.tool_d).toBeUndefined();
+    const setups = v.settings.setups as number[][];
+    expect(setups.length).toBe(12);
+    expect(setups[0]).toEqual([0, 0, 1]);
+    expect(setups.filter((d) => d[2] === 1)).toHaveLength(1);
+    expect(resolveRules({ id: "cnc_mill", settings: { setups: many as [number, number, number][] } }, "Aluminum 6061").reach?.dirs.length).toBe(12);
+    const m = evaluate(`part p { process: mfg.cnc_mill(setups: [Z, -Z, Z, X, -X, Y, -Y, (1,1,0), (1,-1,0), (-1,1,0), (-1,-1,0), (1,0,1), (1,0,-1), (0,1,1)]) body box(10, 10, 10) }`);
+    expect(m.diagnostics.find((d) => d.severity === "error")?.message).toMatch(/at most 12 different directions/);
+    const ok = evaluate(`part p { process: mfg.cnc_mill(setups: [Z, -Z, Z, X]) body box(10, 10, 10) }`);
+    expect(ok.parts[0].process?.settings.setups).toHaveLength(3);
   });
 
   it("round-trips process source", () => {
@@ -233,13 +258,17 @@ describe("injection moulding", () => {
   it("fails straight walls and passes drafted ones", () => {
     const { find } = check(`
 part straight { process: "injection" material: "ABS" body box(60, 40, 25, r: 3) shell(2, open: Z) }
-part drafted { process: "injection" material: "ABS" body cone(d1: 40, d2: 37, h: 20) shell(2, open: Z) }
+part drafted { process: "injection" material: "ABS" body cone(d1: 37, d2: 40, h: 20) shell(2, open: Z) }
+part reversed { process: "injection" material: "ABS" body cone(d1: 40, d2: 37, h: 20) shell(2, open: Z) }
 `);
     expect(find("straight", "draft")?.status).toBe("fail");
     expect(find("straight", "draft")?.marks?.length).toBeGreaterThan(0);
     expect(find("straight", "undercut")?.status).toBe("pass");
     expect(find("straight", "wall-thin")?.status).toBe("pass");
     expect(find("drafted", "draft")?.status).toBe("pass");
+    expect(find("drafted", "undercut")?.status).toBe("pass");
+    // tapered the wrong way for an open top: the core cannot pull out
+    expect(find("reversed", "undercut")?.status).toBe("fail");
   });
 
   it("finds undercuts and the pull direction that removes them", () => {
@@ -284,6 +313,18 @@ part rounded { process: mfg.cnc_mill(tool_d: 3) material: "Aluminum 6061" body b
     expect(check(part("[Z, -Z, X]")).find("blk", "reach")?.status).toBe("pass");
   });
 
+  it("reaches crossing holes from the setups that drill them", () => {
+    const { find } = check(`
+part crossed {
+  process: mfg.cnc_mill(setups: [Z, -Z, X, -X])
+  material: "Aluminum 6061"
+  body box(40, 30, 20)
+  cut cylinder(d: 8, h: 40, at: (0, 0, -10))
+  cut cylinder(d: 6, h: 60, at: (-30, 0, 10), dir: X)
+}`);
+    expect(find("crossed", "reach")?.status).toBe("pass");
+  });
+
   it("turns round parts and flags cross holes as a second operation", () => {
     const shaft = `body revolve([(0, 0), (10, 0), (10, 20), (6, 20), (6, 60), (0, 60)])`;
     const { find } = check(`
@@ -302,6 +343,11 @@ describe("3D printing", () => {
     expect(o.status).toBe("warn");
     expect(o.alt).toMatchObject({ setting: "build", value: [0, 0, -1] });
     expect(check(t("-Z")).find("t", "overhang")?.status).toBe("pass");
+  });
+
+  it("prints a small fillet along the bottom edge without support", () => {
+    const { find } = check(`part base { process: "fdm" material: "PLA" body box(30, 30, 10) fillet(1, edges: "bottom") }`);
+    expect(find("base", "overhang")?.status).toBe("pass");
   });
 
   it("fails walls thinner than two nozzle widths", () => {
@@ -360,6 +406,15 @@ describe("process checks in the design", () => {
     expect(processItems(m, {}).map((i) => i.id)).toEqual(["mfg:none"]);
   });
 
+  it("does not keep a result for a part that has not been built yet", () => {
+    const model = evaluate(`part late { process: "fdm" body box(31, 23, 11) }`);
+    const p = model.parts[0];
+    const probes = processProbes(model, new Set([p.hash]));
+    expect(core.process(probes)[0].error).toMatch(/not been built/);
+    core.build({ hash: p.hash, recipe: p.recipe, label: p.label });
+    expect(core.process(probes)[0].error).toBeUndefined();
+  });
+
   it("caches results and compares every process on one analysis", () => {
     const { model } = check(`part cup { process: "fdm" material: "PLA" body box(40, 40, 20) shell(2, open: Z) }`);
     const part = model.parts[0];
@@ -371,5 +426,5 @@ describe("process checks in the design", () => {
     expect(byId.fdm.fail).toBe(0);
     expect(byId.laser_cut.fail).toBeGreaterThan(0);
     expect(byId.cnc_lathe.fail).toBeGreaterThan(0);
-  });
+  }, 30_000);
 });

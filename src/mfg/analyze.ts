@@ -7,6 +7,7 @@
 import { TriBVH } from "./bvh";
 import { triCentroid, triNormal, type AnalysisMesh, type FaceInfo } from "./brep";
 import { axisName, fmt } from "./profiles";
+import { isMetal } from "./materials";
 import type { Alternative, ProcessFinding, ProcessStats, Rules } from "./types";
 import type { V3 } from "../kernel/recipe";
 
@@ -36,6 +37,7 @@ export class Ctx {
   readonly hi: V3;
   readonly diag: number;
   readonly eps: number;
+  readonly clearEps: number;
   readonly samples: Int32Array;
   readonly sampleOf: Int32Array; // triangle -> sample slot
   readonly sampleArea: Float64Array;
@@ -49,6 +51,8 @@ export class Ctx {
   constructor(
     readonly m: AnalysisMesh,
     maxSamples: number,
+    /** the mesh's chordal deflection: facets sit up to this far inside curved faces */
+    tolerance = 0,
   ) {
     const n = m.idx.length / 3;
     this.n = n;
@@ -71,6 +75,9 @@ export class Ctx {
     this.hi = hi;
     this.diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
     this.eps = Math.max(2e-3, this.diag * 2e-5);
+    // a ray leaving almost along its own curved face (a hole wall seen from a crossing hole) grazes the
+    // neighbouring facets unless it starts further out than they sag
+    this.clearEps = Math.max(this.eps, 2.5 * tolerance);
     // sample every k-th triangle of each face, so every face gets at least one
     const k = Math.max(1, Math.ceil(n / maxSamples));
     const list: number[] = [];
@@ -156,7 +163,8 @@ export class Ctx {
     const hit = this.clearCache.get(key);
     if (hit) return hit;
     const out = new Uint8Array(this.samples.length);
-    const { tn, tc, eps } = this;
+    const { tn, tc } = this;
+    const eps = this.clearEps;
     for (let s = 0; s < this.samples.length; s++) {
       const t = this.samples[s];
       const nx = tn[t * 4],
@@ -323,10 +331,12 @@ const mm2 = (a: number) => (a >= 100 ? `${Math.round(a)} mm²` : `${fmt(a, 1)} m
 
 export interface AnalyzeOptions {
   maxSamples?: number;
+  /** the tolerance the mesh was made with, mm */
+  tolerance?: number;
 }
 
 export function prepareSolid(m: AnalysisMesh, opts: AnalyzeOptions = {}): Ctx {
-  return new Ctx(m, opts.maxSamples ?? 24000);
+  return new Ctx(m, opts.maxSamples ?? 24000, opts.tolerance ?? 0);
 }
 
 export function analyzeSolid(solid: AnalysisMesh | Ctx, rules: Rules, opts: AnalyzeOptions = {}): { findings: ProcessFinding[]; stats: ProcessStats } {
@@ -796,6 +806,9 @@ function gaps(c: Ctx, rules: Rules): ProcessFinding[] {
 
 // ---------------- 3D printing overhangs ----------------
 
+/** Downward faces this close to the bed (mm) need no support. */
+const NEAR_BED = 0.5;
+
 function overhangArea(c: Ctx, b: V3, maxDeg: number, bridgeR: number, flag?: Uint8Array): { area: number; contact: number; bridged: number } {
   const { tn, tc, m } = c;
   let minB = Infinity;
@@ -813,7 +826,8 @@ function overhangArea(c: Ctx, b: V3, maxDeg: number, bridgeR: number, flag?: Uin
       contact += a;
       continue;
     }
-    if (down <= sinMax + 1e-6 || h < 0.05) continue;
+    // the first layers squash onto the bed, so a small fillet or chamfer along the bottom edge prints without support
+    if (down <= sinMax + 1e-6 || h < NEAR_BED) continue;
     const fi = m.faceOf[t];
     let ok = bridgeFace.get(fi);
     if (ok === undefined) {
@@ -1322,7 +1336,8 @@ function profile(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
 
 function holes(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
   const hr = rules.holes!;
-  const minD = rules.sheet || rules.profile ? Math.max(hr.minD, stats.sheetT ?? 0) : hr.minD;
+  // holes narrower than the thickness only trouble metal: acrylic and wood cut fine holes in thick plate
+  const minD = rules.sheet || (rules.profile && isMetal(rules.material)) ? Math.max(hr.minD, stats.sheetT ?? 0) : hr.minD;
   const minDFail = rules.sheet ? minD : hr.minDFail;
   const small = new Set<number>();
   const deep = new Set<number>();

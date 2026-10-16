@@ -402,6 +402,12 @@ export class SceneController {
     return obj && obj.removing === null ? obj.group : undefined;
   }
 
+  /** A part's clipping planes and opacity, so overlays cut and ghost with it. */
+  partLook(id: string): { planes: THREE.Plane[] | null; opacity: number } | undefined {
+    const obj = this.parts.get(id);
+    return obj ? { planes: obj.mat.clippingPlanes, opacity: obj.mat.opacity } : undefined;
+  }
+
   /** Redraw on the next frame (after an overlay changes). */
   requestRender() {
     this.dirty = true;

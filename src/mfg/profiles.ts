@@ -196,7 +196,7 @@ export function resolvedSettings(spec: ProcessSpec): Record<string, SettingValue
 
 const num = (v: SettingValue | null | undefined, d: number) => (typeof v === "number" ? v : d);
 const dir = (v: SettingValue | null | undefined, d: V3): V3 => (Array.isArray(v) && typeof v[0] === "number" ? norm(v as V3) : d);
-const dirs = (v: SettingValue | null | undefined, d: V3[]): V3[] => (Array.isArray(v) && Array.isArray(v[0]) ? (v as V3[]).map(norm) : d);
+const dirs = (v: SettingValue | null | undefined, d: V3[]): V3[] => (Array.isArray(v) && Array.isArray(v[0]) ? uniqueDirs(v as V3[]).slice(0, MAX_DIRECTIONS) : d);
 const size = (v: SettingValue | null | undefined, d: V3): V3 => (Array.isArray(v) && typeof v[0] === "number" ? (v as V3) : d);
 const neg = (v: V3): V3 => [-v[0] + 0, -v[1] + 0, -v[2] + 0];
 /** rounds away float noise such as 3 × 0.6 = 1.7999999999999998 */
@@ -204,6 +204,44 @@ const r6 = (x: number) => Math.round(x * 1e6) / 1e6;
 function norm(v: V3): V3 {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
   return [v[0] / l, v[1] / l, v[2] / l];
+}
+
+/** Each direction is a full set of reach rays over the part, so a list of them is kept short: the six axes and a few diagonals. */
+export const MAX_DIRECTIONS = 12;
+
+/** Unit directions with repeats (within half a degree) removed; stops once it has more than `limit`. */
+export function uniqueDirs(list: V3[], limit = MAX_DIRECTIONS): V3[] {
+  const out: V3[] = [];
+  for (const d of list) {
+    const n = norm(d);
+    if (!out.some((o) => o[0] * n[0] + o[1] * n[1] + o[2] * n[2] > 0.99996)) out.push(n);
+    if (out.length > limit) break;
+  }
+  return out;
+}
+
+const isVec3 = (v: unknown): v is V3 => Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && Number.isFinite(x));
+
+/**
+ * Settings from outside the language (a stored brief, chat, an old file):
+ * known keys with the right kind of value, directions made unit and capped.
+ * Anything else is dropped.
+ */
+export function sanitizeSettings(id: ProcessId, raw: unknown): Record<string, SettingValue> {
+  const out: Record<string, SettingValue> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const sd of PROCESSES[id].settings) {
+    const v = (raw as Record<string, unknown>)[sd.key];
+    if (v === undefined || v === null) continue;
+    if (sd.kind === "number" && typeof v === "number" && Number.isFinite(v) && v >= 0) out[sd.key] = v;
+    else if (sd.kind === "bool" && typeof v === "boolean") out[sd.key] = v;
+    else if (sd.kind === "dir" && isVec3(v) && Math.hypot(...v) > 1e-9) out[sd.key] = norm(v);
+    else if (sd.kind === "dirs" && Array.isArray(v)) {
+      const list = uniqueDirs(v.filter((d): d is V3 => isVec3(d) && Math.hypot(...d) > 1e-9)).slice(0, MAX_DIRECTIONS);
+      if (list.length) out[sd.key] = list;
+    } else if (sd.kind === "size" && isVec3(v) && v.every((x) => x > 0)) out[sd.key] = v;
+  }
+  return out;
 }
 
 /** Turn a process choice into the numbers a part is checked against. */

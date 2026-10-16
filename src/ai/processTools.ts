@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { whenChecked } from "../core/engine";
-import { PROCESSES, PROCESS_IDS } from "../mfg/profiles";
+import { MAX_DIRECTIONS, PROCESSES, PROCESS_IDS, uniqueDirs } from "../mfg/profiles";
 import { processGuideText } from "../mfg/guide";
 import { compareProcesses } from "../mfg/compare";
 import { processFromText } from "../mfg/spec";
@@ -77,8 +77,11 @@ function parseSettings(id: ProcessId, raw: Record<string, unknown>): { settings:
     if (sd.kind === "number" && typeof v === "number" && v >= 0) settings[k] = v;
     else if (sd.kind === "bool" && typeof v === "boolean") settings[k] = v;
     else if (sd.kind === "dir" && toDir(v)) settings[k] = toDir(v)!;
-    else if (sd.kind === "dirs" && Array.isArray(v) && v.length && v.every((d) => toDir(d))) settings[k] = v.map((d) => toDir(d)!);
-    else if (sd.kind === "size" && Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && x > 0)) settings[k] = v as V3;
+    else if (sd.kind === "dirs" && Array.isArray(v) && v.length && v.every((d) => toDir(d))) {
+      const dirs = uniqueDirs(v.map((d) => toDir(d)!));
+      if (dirs.length > MAX_DIRECTIONS) errors.push(`${k}: at most ${MAX_DIRECTIONS} different directions`);
+      else settings[k] = dirs;
+    } else if (sd.kind === "size" && Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && x > 0)) settings[k] = v as V3;
     else
       errors.push(
         `${k}: expected ${sd.kind === "dirs" ? "a list of directions" : sd.kind === "dir" ? 'a direction such as "Z"' : sd.kind === "size" ? "[x, y, z] sizes" : sd.kind === "bool" ? "true or false" : "a non-negative number"}`,

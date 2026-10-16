@@ -3,6 +3,7 @@
 // analysis of the part across all of them.
 
 import { kernel } from "../kernel/client";
+import { whenChecked } from "../core/engine";
 import type { EvalPart } from "../core/model";
 import { PROCESS_IDS } from "./profiles";
 import { compareProbes, summarize, type ProcessSummary } from "./report";
@@ -14,9 +15,17 @@ export interface ProcessOption {
   result: ProcessResult;
 }
 
-/** Every process (or the given ones) for this part, best fit first. */
+/**
+ * Every process (or the given ones) for this part, best fit first. Waits for
+ * the current design to build, then checks the part as it is now.
+ */
 export async function compareProcesses(part: EvalPart, ids: ProcessId[] = PROCESS_IDS): Promise<ProcessOption[]> {
-  const probes = compareProbes(part, ids);
+  const s = await whenChecked();
+  if (s.kernelStatus === "error") throw new Error(`The geometry kernel is unavailable: ${s.kernelError}`);
+  const now = s.model?.parts.find((p) => p.id === part.id) ?? part;
+  const buildError = s.buildErrors.get(now.hash);
+  if (buildError) throw new Error(`${now.label} does not build, so it cannot be checked: ${buildError}`);
+  const probes = compareProbes(now, ids);
   const results = await kernel.process(probes);
   const out = probes.map((p, i) => ({ id: p.id as ProcessId, result: results[i], summary: summarize(results[i]) }));
   return out.sort((a, b) => score(a.summary) - score(b.summary));

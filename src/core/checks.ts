@@ -230,7 +230,7 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
     }
   }
   items.push(...gearChecks(model));
-  items.push(...processItems(model, process));
+  items.push(...processItems(model, process, buildErrors));
 
   // things geometry cannot prove
   if (model.parts.some((p) => p.motion)) {

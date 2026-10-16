@@ -3,7 +3,7 @@
 // process names ("injection moulded", "laser cut") for briefs and chat.
 
 import { Fn, Obj, Vec, typeName, type CallCtx, type Value } from "../lang/values";
-import { PROCESSES, PROCESS_IDS, isProcessId, resolveRules, ruleFields, resolvedSettings, type SettingDef } from "./profiles";
+import { MAX_DIRECTIONS, PROCESSES, PROCESS_IDS, isProcessId, resolveRules, ruleFields, resolvedSettings, sanitizeSettings, uniqueDirs, type SettingDef } from "./profiles";
 import { defaultMaterial } from "./materials";
 import type { ProcessId, ProcessSpec, SettingValue } from "./types";
 import type { V3 } from "../kernel/recipe";
@@ -77,7 +77,9 @@ function settingValue(sd: SettingDef, v: Value, fname: string, ctx: CallCtx): Se
     case "dirs": {
       const list = Array.isArray(v) ? v : [v];
       if (!list.length) return ctx.error(`${what} needs at least one direction`);
-      return list.map((d) => direction(d, what, ctx));
+      const dirs = uniqueDirs(list.map((d) => direction(d, what, ctx)));
+      if (dirs.length > MAX_DIRECTIONS) return ctx.error(`${what} takes at most ${MAX_DIRECTIONS} different directions`);
+      return dirs;
     }
     case "size": {
       if (!(v instanceof Vec) || v.v.length !== 3 || v.v.some((x) => !(x > 0))) return ctx.error(`${what} should be three positive sizes, for example (250, 210, 210)`);
@@ -120,8 +122,8 @@ export function processFromValue(v: unknown): ProcessSpec | null {
     return id ? { id, settings: {} } : null;
   }
   if (v && typeof v === "object" && "id" in v && typeof (v as { id: unknown }).id === "string" && isProcessId((v as { id: string }).id)) {
-    const o = v as { id: ProcessId; settings?: Record<string, SettingValue>; material?: string };
-    return { id: o.id, settings: { ...(o.settings ?? {}) }, ...(o.material ? { material: o.material } : {}) };
+    const o = v as { id: ProcessId; settings?: unknown; material?: unknown };
+    return { id: o.id, settings: sanitizeSettings(o.id, o.settings), ...(typeof o.material === "string" && o.material ? { material: o.material } : {}) };
   }
   return null;
 }
@@ -133,9 +135,38 @@ const ALIASES: [ProcessId, string[]][] = [
   ["die_cast", ["die casting", "die cast", "diecast", "die-cast", "casting", "cast"]],
   ["sheet_metal", ["sheet metal", "bent sheet", "press brake", "folded", "bent", "sheet"]],
   ["laser_cut", ["laser cutting", "laser cut", "lasercut", "waterjet", "water jet", "plasma cut", "plasma", "laser", "profile cut", "flat cut"]],
-  ["sla", ["sla", "msla", "dlp", "resin printed", "resin print", "resin"]],
-  ["sls", ["sls", "mjf", "multi jet fusion", "powder bed", "nylon printed"]],
+  ["sla", ["resin printed", "resin print"]],
+  ["sls", ["nylon printed"]],
   ["fdm", ["fdm", "fff", "3d printed", "3d printing", "3d print", "printed", "print", "filament"]],
+];
+
+/** Printing technologies decide the process whatever else the text says: "SLA printed" is SLA, not FDM. */
+const TECHNOLOGIES: [ProcessId, string[]][] = [
+  ["sla", ["sla", "msla", "dlp", "lcd resin", "resin", "stereolithography", "polyjet"]],
+  ["sls", ["sls", "mjf", "multi jet fusion", "powder bed", "sintered", "sintering", "laser sintered", "selective laser sintering"]],
+];
+
+/** Processes Kerf has no rules for, which would otherwise read as one it has ("vacuum cast" is not die casting). */
+const UNSUPPORTED = [
+  "vacuum cast",
+  "vacuum casting",
+  "urethane cast",
+  "urethane casting",
+  "resin cast",
+  "resin casting",
+  "silicone mould",
+  "silicone mold",
+  "dmls",
+  "slm",
+  "metal printed",
+  "metal printing",
+  "metal 3d printed",
+  "binder jet",
+  "binder jetting",
+  "sand cast",
+  "sand casting",
+  "investment cast",
+  "investment casting",
 ];
 
 /** "injection moulded" → "injection", "laser cut" → "laser_cut". Null when nothing matches. */
@@ -148,11 +179,14 @@ export function processFromText(text: string): ProcessId | null {
     .replace(/\s+/g, " ")
     .trim()} `;
   if (isProcessId(s.trim().replace(/ /g, "_"))) return s.trim().replace(/ /g, "_") as ProcessId;
+  const has = (n: string) => s.includes(` ${n} `);
+  if (UNSUPPORTED.some(has)) return null;
+  for (const [id, names] of TECHNOLOGIES) if (names.some(has)) return id;
   // the longest alias found as whole words wins, so "cnc lathe" beats "cnc"
   let best: { id: ProcessId; len: number } | null = null;
   for (const [id, names] of ALIASES) {
     for (const n of names) {
-      if (s.includes(` ${n} `) && (!best || n.length > best.len)) best = { id, len: n.length };
+      if (has(n) && (!best || n.length > best.len)) best = { id, len: n.length };
     }
   }
   return best?.id ?? null;
