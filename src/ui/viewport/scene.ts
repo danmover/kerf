@@ -1008,7 +1008,7 @@ export class SceneController {
    */
   anchor(id: string, local?: [number, number, number]): { x: number; y: number; front: boolean } | null {
     const obj = this.parts.get(id);
-    if (!obj || obj.removing !== null) return null;
+    if (!obj || obj.removing) return null;
     const v = (local ? new THREE.Vector3(...local) : obj.center.clone()).applyMatrix4(obj.mesh.matrixWorld);
     const front = v.clone().sub(this.camera.position).dot(this.camera.getWorldDirection(new THREE.Vector3())) > 0;
     v.project(this.camera);
@@ -1369,7 +1369,7 @@ export class SceneController {
         box = new THREE.Box3();
         for (const id of opts.focus) {
           const p = this.parts.get(id);
-          if (p && p.removing === null) box.expandByObject(p.group);
+          if (p && !p.removing) box.expandByObject(p.group);
         }
         if (box.isEmpty()) box = undefined;
       }
