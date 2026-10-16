@@ -54,8 +54,18 @@ const KEYWORDS: [RegExp, MaterialProcessInfo][] = [
   [/steel|copper|titanium/i, { family: "metal", processes: METAL_PROCESSES, bendFactor: 1, laserMaxT: 15 }],
 ];
 
+/** A polymer named with a fill or grade ("Wood PLA", "glass-filled nylon resin") is made like that polymer, not like wood or resin. */
+const POLYMERS: [RegExp, string][] = [
+  [/\bpla\b/i, "PLA"],
+  [/\bpetg\b/i, "PETG"],
+  [/\babs\b/i, "ABS"],
+  [/\basa\b/i, "ASA"],
+  [/\bnylon\b/i, "Nylon"],
+];
+
 export function materialInfo(name: string): MaterialProcessInfo {
   if (Object.hasOwn(TABLE, name)) return TABLE[name];
+  for (const [re, n] of POLYMERS) if (re.test(name) && Object.hasOwn(TABLE, n)) return TABLE[n];
   for (const [re, info] of KEYWORDS) if (re.test(name)) return info;
   return { family: "unknown", processes: [] };
 }

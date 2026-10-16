@@ -55,10 +55,12 @@ function galvanic(model: Model, ctx: ReportContext): CheckItem[] {
   );
   const touching: MetalPair[] = [];
   let waiting = false;
+  // only the latest design's contacts are worth the kernel's time: drop pairs queued for earlier states (a slider drag)
+  queue.length = 0;
   for (const pr of pairs) {
     const key = pairKey(pr);
     if (!gaps.has(key)) {
-      if (!queue.some((q) => q.key === key)) queue.push({ key, pair: pr });
+      queue.push({ key, pair: pr });
       waiting = true;
       continue;
     }

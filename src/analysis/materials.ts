@@ -127,6 +127,8 @@ const ALIASES: Record<string, string> = {
 
 // longest first, so on a tie in strength the most specific name wins
 const LOOSE = Object.keys(ALIASES).sort((a, b) => b.length - a.length);
+/** Words that also describe a fill or a grade ("Wood PLA", "nylon resin"): they name the material only when nothing else in the name does. */
+const GENERIC = new Set(["wood", "plywood", "birch plywood", "resin", "sla resin"]);
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Properties for a material name; unknown names fall back to PLA and are marked assumed. */
@@ -138,11 +140,11 @@ export function mechMaterial(name: string | undefined): MechMaterial {
   // loose match: "Brushed aluminium", "Black ABS", "316 stainless"... Short aliases (abs, pla, 304)
   // only count as whole words, so "pa" does not match inside "paper". When several names match
   // ("Stainless steel 316" holds steel, stainless and 316) the weakest wins, so the check errs safe.
+  // A generic word ("Wood PLA", "glass-filled nylon resin") gives way to the polymer it qualifies.
+  const hits = LOOSE.filter((k) => (k.length > 3 ? key.includes(k) : new RegExp(`(^|[^a-z0-9])${escape(k)}($|[^a-z0-9])`).test(key)));
+  const specific = hits.filter((k) => !GENERIC.has(k));
   let best: MechMaterial | null = null;
-  for (const k of LOOSE) {
-    const hit = k.length > 3 ? key.includes(k) : new RegExp(`(^|[^a-z0-9])${escape(k)}($|[^a-z0-9])`).test(key);
-    if (hit && (!best || MECH[ALIASES[k]].yield < best.yield)) best = MECH[ALIASES[k]];
-  }
+  for (const k of specific.length ? specific : hits) if (!best || MECH[ALIASES[k]].yield < best.yield) best = MECH[ALIASES[k]];
   if (best) return best;
   return { ...MECH.PLA, name: raw || "unknown", assumed: true, note: `No strength data for "${raw || "this material"}"; PLA values assumed, so treat the result as a rough guide.` };
 }
