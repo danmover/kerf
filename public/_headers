@@ -27,6 +27,14 @@
 /assets/fea.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
 
+# The circuit simulation worker (Sound tab): plain arithmetic, no network.
+/assets/render.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
+# The circuit board routing worker: plain geometry, no network.
+/assets/route.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
 # The simulation worker: firmware compiled to closures on a virtual chip, no eval, no network.
 /assets/sim.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'

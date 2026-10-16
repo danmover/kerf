@@ -1,6 +1,7 @@
 // Runtime values for the Kerf evaluator.
 
 import type { Path3, Profile, Sel, ShapeRecipe, V2, V3 } from "../kernel/recipe";
+import type { MachineData } from "../machine/types";
 import type { SketchGeom } from "../sketch/types";
 
 export class Vec {
@@ -123,6 +124,8 @@ export interface CallCtx {
   warn?(msg: string): void;
   /** Ask for a geometric quantity; returns the resolved number or a Pending marker. */
   geo(query: GeoQuery): number | Pending;
+  /** The machine as written so far (components, nets, wires above the call), for calculators that read the whole design. */
+  machine?(): MachineData;
   /** Count n steps of list-sized work against the evaluation budget. */
   tick?(n: number): void;
 }

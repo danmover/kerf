@@ -520,7 +520,9 @@ function protection(c: Ctx) {
     if (!switched) item(c, `switch:${b.name}`, "info", `No power switch on ${b.name}`, "Add a switch, or a connector on the positive lead that works as a removable link, so the machine can be turned off quickly.", [b.name], b.span);
   }
   for (const p of c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "psu")) {
-    item(c, `mains:${p.name}`, "info", `${p.name} runs from mains`, "Mains wiring: use a fused, switched IEC inlet, earth the frame and the supply, and cover the terminals. Have someone qualified check it.", [p.name], p.span);
+    // a sealed plug-in adapter keeps the mains outside the build
+    if (catalogPart(p.catalogId)?.external) item(c, `mains:${p.name}`, "pass", `${p.name} keeps mains outside`, "A sealed plug-in adapter: only low voltage comes into the build, so there is no mains wiring to check.", [p.name], p.span);
+    else item(c, `mains:${p.name}`, "info", `${p.name} runs from mains`, "Mains wiring: use a fused, switched IEC inlet, earth the frame and the supply, and cover the terminals. Have someone qualified check it.", [p.name], p.span);
   }
 }
 

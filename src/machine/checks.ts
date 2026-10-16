@@ -4,6 +4,8 @@
 import type { CheckItem } from "../core/checks";
 import { fmtNum } from "../lang/values";
 import { catalogPart } from "./catalog";
+import { placementItems } from "./boardChecks";
+import { circuitChecks } from "./circuit/analysis";
 import { electricalChecks, motorSupplies } from "./erc";
 import type { MachineData } from "./types";
 
@@ -32,6 +34,8 @@ export function machineChecks(m: MachineData): CheckItem[] {
   const supplies = motorSupplies(m);
   const current = motorCurrentFor(m, supplies);
   out.push(...electricalChecks(m, { motorCurrent: current }));
+  out.push(...circuitChecks(m));
+  out.push(...placementItems(m));
 
   for (const mc of m.components) {
     const p = catalogPart(mc.catalogId);

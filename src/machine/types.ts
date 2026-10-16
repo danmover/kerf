@@ -20,7 +20,8 @@ export type PinType =
   | "motor_out" // driver output terminal for a DC motor
   | "motor" // DC motor terminal
   | "passive" // switch, fuse or connector terminal: joins `through` when closed
-  | "port"; // multi-conductor connector (stepper, fan, heater, thermistor, endstop, probe)
+  | "port" // multi-conductor connector (stepper, fan, heater, thermistor, endstop, probe)
+  | "term"; // analog circuit terminal (resistor, capacitor, pot, op-amp signal pin, jack, speaker): checked by the circuit solver, not the logic rules
 
 export type BusKind = "i2c_sda" | "i2c_scl" | "uart_tx" | "uart_rx" | "spi_mosi" | "spi_miso" | "spi_sck";
 
@@ -105,7 +106,21 @@ export type CatalogKind =
   | "lead_screw"
   | "pulley"
   | "coupler"
-  | "seal";
+  | "seal"
+  // circuit-board parts and audio
+  | "resistor"
+  | "capacitor"
+  | "potentiometer"
+  | "diode"
+  | "opamp"
+  | "terminal"
+  | "header"
+  | "jack"
+  | "speaker"
+  | "amplifier"
+  | "display"
+  | "knob"
+  | "circuit_board";
 
 /** Geometry classes. Each generator in geometry.ts reads the numbers it documents. */
 export type GeomClass =
@@ -126,7 +141,13 @@ export type GeomClass =
   | "extruder"
   | "fan"
   | "plate"
-  | "ring";
+  | "ring"
+  // parts soldered to a circuit board: the shape comes from the footprint
+  | "pcb_part"
+  | "panel_jack"
+  | "speaker"
+  | "knob"
+  | "brick";
 
 export interface BoardFeature {
   kind: "usb" | "jack" | "header" | "terminal" | "chip" | "heatsink" | "cap" | "socket" | "module";
@@ -190,7 +211,52 @@ export interface CatalogPart {
   cut_to_length?: boolean;
   /** "m": price_usd is per metre of cut length, otherwise per piece */
   price_per?: "m";
+  /** solders to a circuit board with this footprint (see catalog/footprints.ts) */
+  footprint?: FootprintSpec;
+  /** how the part behaves in the circuit solver (see circuit/netlist.ts) */
+  sim?: SimModel;
+  /** the part takes a value: lib.resistor("10k"), lib.capacitor("100n"), lib.pot("A500k") */
+  valued?: "ohm" | "farad" | "pot";
+  /** a sealed plug-in supply: no mains wiring inside the design */
+  external?: boolean;
+  /** small parts bought with it when it goes on a board (an IC socket, female headers) */
+  extras?: { label: string; qty: number; price_usd?: number; search: string }[];
 }
+
+/** Footprints for through-hole parts, by family. Pin ids are the catalog pin ids. */
+export type FootprintSpec =
+  /** axial lead part lying flat: resistors, diodes. `band` marks the cathode pin */
+  | { k: "axial"; pins: [string, string]; pitch: number; body_d: number; body_l: number; drill: number; pad: number; band?: string; color: string; band_color?: string }
+  /** round radial part standing up: electrolytic capacitors. `plus` is the positive pin */
+  | { k: "radial"; pins: [string, string]; pitch: number; body_d: number; body_h: number; drill: number; pad: number; plus?: string; color: string }
+  /** box or disc radial part: film and ceramic capacitors */
+  | { k: "box"; pins: [string, string]; pitch: number; body_w: number; body_t: number; body_h: number; drill: number; pad: number; color: string }
+  /** dual in-line package, pins listed in pin-number order (1 at the top left, counter-clockwise seen from above) */
+  | { k: "dip"; pins: string[]; row: number; drill: number; pad: number; socket: boolean }
+  /** parts with one row of pins: TO-220, TO-92, headers and screw terminals */
+  | { k: "inline"; pins: string[]; pitch: number; drill: number; pad: number; pad_h?: number; style: "to220" | "to92" | "header_m" | "header_f" | "terminal" }
+  /** Alpha 9 mm vertical potentiometer: pins CCW, W, CW and two mounting tabs (pin MT) */
+  | { k: "pot9" }
+  /** explicit pads (module on headers): positions relative to the part's own origin */
+  | { k: "pads"; pads: { pin: string; num: string; x: number; y: number }[]; drill: number; pad: number; square?: string; lift: number };
+
+/** Circuit solver models. Values come from the component (resistors, capacitors, pots) or the part. */
+export type SimModel =
+  | { k: "R" }
+  | { k: "C" }
+  | { k: "pot" }
+  | { k: "D"; is: number; nf: number; rs: number; bv?: number }
+  /** op-amp package: each channel is [in+, in−, out]; supply pins V+ and V−; iq is per channel */
+  | { k: "opamp"; channels: [string, string, string][]; vpos: string; vneg: string; a0: number; gbw: number; rout: number; swing: [number, number]; iq: number }
+  | { k: "reg"; in: string; gnd: string; out: string; vout: number; dropout: number; ilim: number; iq: number }
+  /** a load between two pins: input of an amplifier module, a speaker */
+  | { k: "load"; a: string; b: string; r: number; l?: number }
+  /** a supply: v volts between pos and neg with an output resistance */
+  | { k: "supply"; pos: string; neg: string; v: number; r: number }
+  /** a guitar input: the source is connected between sig and gnd through the pickup's impedance */
+  | { k: "input"; sig: string; gnd: string }
+  /** draws a fixed current from pwr to gnd (modules: controller, display) */
+  | { k: "draw"; pwr: string; gnd: string; a: number };
 
 // ---------- evaluated machine data on the Model ----------
 
@@ -210,6 +276,32 @@ export interface MachineComponent {
   price?: number;
   /** a fuse's rating in A (component prop `rating:`), in place of the catalog's */
   rating?: number;
+  /** resistance (Ω), capacitance (F) or pot resistance (Ω) */
+  value?: number;
+  /** the value as written: "10k", "100n", "A500k" */
+  valueText?: string;
+  /** pots: "A" log (audio) or "B" linear */
+  taper?: "A" | "B";
+  /** capacitor type and voltage rating */
+  capType?: "film" | "ceramic" | "electrolytic";
+  vRating?: number;
+  /** soldered to a circuit board: board component name, position on it (mm from its bottom-left corner), rotation and side */
+  pcb?: { board: string; x: number; y: number; rot: number; side: "top" | "bottom" };
+  /** reference designator on the board (R1, C4, U2) */
+  ref?: string;
+  span: Span;
+}
+
+/** A circuit board designed in Kerf (lib.circuit_board): routed and turned into board-house files. */
+export interface BoardDef {
+  name: string;
+  title: string;
+  w: number;
+  d: number;
+  t: number;
+  corner: number;
+  /** mounting holes, mm from the bottom-left corner */
+  holes: { x: number; y: number; d: number }[];
   span: Span;
 }
 
@@ -236,6 +328,10 @@ export interface NetDef {
   pins: PinRef[];
   gauge?: number;
   color?: string;
+  /** copper track width on a circuit board, mm */
+  width?: number;
+  /** fill the board's free copper with this net (true), or never pour it (false) */
+  pour?: boolean;
   span: Span;
 }
 
@@ -295,8 +391,10 @@ export interface MachineData {
   firmware: FirmwareDef[];
   tests: TestDef[];
   items: BuyItem[];
+  /** circuit boards designed in Kerf */
+  boards: BoardDef[];
 }
 
 export function emptyMachine(): MachineData {
-  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [] };
+  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [], boards: [] };
 }

@@ -1,0 +1,401 @@
+/* The Build tab's Board section: the board drawing with its overlay, and the side panel. */
+
+.bv {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  /* drawn on the board picture, which looks the same on both themes */
+  --bv-focus: #ffc93c;
+  --bv-hot: #ffe08a;
+  --bv-sel: var(--accent-2);
+  /* the hovered part as text and as a table row, on the theme's panels */
+  --bv-hot-ink: var(--bv-hot);
+  --bv-hot-row: rgba(255, 224, 138, 0.07);
+}
+.bv .bv-chip {
+  gap: 6px;
+}
+.bv-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.bv-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  container-type: size;
+}
+.bv-canvas {
+  cursor: default;
+}
+.bv-canvas.dragging {
+  cursor: grabbing;
+}
+
+/* sheets: the board svg, its shadow and the overlay, all the same size */
+.bv-sheets {
+  display: flex;
+  align-items: flex-start;
+  margin: auto;
+  flex: none;
+}
+.bv-sheet {
+  position: relative;
+  flex: none;
+}
+.bv-shadow {
+  position: absolute;
+  box-shadow: 0 0 0 1px rgb(var(--shade-rgb) / 0.55), 0 14px 34px rgb(var(--shade-rgb) / 0.55), 0 0 60px rgb(var(--pass-rgb) / 0.04);
+  pointer-events: none;
+}
+.bv-svg,
+.bv-ov {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.bv-svg svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.bv-caption {
+  position: absolute;
+  left: 2px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.bv-ov {
+  overflow: visible;
+}
+.bv-ov * {
+  vector-effect: non-scaling-stroke;
+}
+.bv-hit {
+  fill: transparent;
+  stroke: none;
+  cursor: pointer;
+}
+.bv-hit.far {
+  cursor: pointer;
+}
+.bv-hot {
+  fill: rgba(255, 224, 138, 0.12); /* theme: same */
+  stroke: var(--bv-hot);
+  stroke-width: 1.5px;
+  pointer-events: none;
+}
+.bv-sel {
+  fill: rgb(var(--accent-2-rgb) / 0.1);
+  stroke: var(--bv-sel);
+  stroke-width: 1.75px;
+  pointer-events: none;
+}
+.bv-focus-part {
+  fill: rgb(var(--fail-rgb) / 0.1);
+  stroke: var(--fail);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+.bv-aim {
+  fill: none;
+  stroke: none;
+  pointer-events: none;
+}
+.bv-mark {
+  fill: rgb(var(--fail-rgb) / 0.25);
+  stroke: var(--fail);
+  stroke-width: 1.5px;
+  pointer-events: none;
+}
+.bv-mark.on {
+  fill: var(--fail);
+}
+.bv-rat {
+  stroke: var(--fail);
+  stroke-width: 1.25px;
+  stroke-dasharray: 3 3;
+  opacity: 0.7;
+  pointer-events: none;
+}
+.bv-rat.on {
+  stroke-width: 2.25px;
+  opacity: 1;
+}
+.bv-focus .ring {
+  fill: none;
+  stroke: var(--bv-focus);
+  stroke-width: 2px;
+}
+.bv-focus .pulse {
+  fill: none;
+  stroke: var(--bv-focus);
+  stroke-width: 2px;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: bv-pulse 1.4s var(--ease) infinite;
+}
+@keyframes bv-pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
+/* floating notes over the drawing */
+.bv-badge {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 5px 12px;
+  border: 1px solid rgb(var(--accent-rgb) / 0.4);
+  border-radius: 20px;
+  background: rgb(var(--bg-2-rgb) / 0.92);
+  backdrop-filter: blur(6px);
+  font-size: 11.5px;
+  color: var(--text-2);
+  box-shadow: 0 6px 18px rgb(var(--shade-rgb) / 0.4);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bv-badge.fail {
+  border-color: rgb(var(--fail-rgb) / 0.45);
+  color: var(--fail-ink);
+}
+.bv-hud {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  right: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 20px);
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgb(var(--bg-1-rgb) / 0.88);
+  backdrop-filter: blur(6px);
+  font-size: 11.5px;
+  color: var(--text-2);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bv-hud b {
+  color: var(--bv-hot-ink);
+  font-weight: 500;
+}
+.bv-hud .val {
+  color: var(--text);
+}
+.bv-hud .name {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bv-hud.hint {
+  opacity: 0.85;
+}
+/* a short dock keeps the drawing clear: the hint shows only when there is room for it */
+@container (max-height: 300px) {
+  .bv-hud.hint {
+    display: none;
+  }
+}
+
+/* side panel */
+.bv-side {
+  flex: none;
+  width: clamp(340px, 34%, 460px);
+  min-height: 0;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 10px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bv-summary {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 2px 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.bv-summary.pass {
+  border-left-color: var(--pass);
+}
+.bv-summary.fail {
+  border-left-color: var(--fail);
+}
+.bv-summary .status-icon {
+  width: 18px;
+  height: 18px;
+}
+.bv-summary .head {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+.bv-summary .detail {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin-top: 1px;
+}
+.bv-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 7px;
+}
+.bv-stat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-0);
+}
+.bv-stat .k {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.bv-stat .v {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  color: var(--text);
+}
+.bv-stat .v.bad {
+  color: var(--fail);
+}
+.bv-stat .s {
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bv-tabs {
+  display: flex;
+  align-items: center;
+}
+.bv-tabs .segmented button {
+  display: inline-flex;
+  align-items: center;
+}
+.bv-n {
+  margin-left: 5px;
+  color: var(--text-4);
+}
+.bv-n.bad {
+  color: var(--fail);
+}
+.bv-list {
+  flex: none;
+}
+.bv-list .check-item .title {
+  font-size: 12px;
+}
+.bv-list .check-item .detail {
+  font-size: 11px;
+}
+.bv-pass {
+  cursor: default;
+}
+.bv-pass:hover {
+  background: transparent;
+}
+.bv-parts {
+  table-layout: fixed;
+}
+.mp-list .bv-parts td {
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.mp-list .bv-parts th {
+  padding: 6px 8px;
+}
+.bv-parts td.ref {
+  color: var(--text);
+  font-size: 12px;
+}
+.bv-parts td.ref .mp-sub {
+  font-size: 10px;
+}
+.bv-parts td.val {
+  color: var(--text);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.bv-parts .pn {
+  font-size: 12px;
+  line-height: 1.35;
+}
+.bv-parts tbody tr.hot td {
+  background: var(--bv-hot-row);
+}
+.bv-parts tbody tr.hot td.ref {
+  color: var(--bv-hot-ink);
+}
+.bv-parts tbody tr.sel td {
+  background: var(--accent-soft);
+}
+.bv-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+@media (max-width: 860px) {
+  .bv-main {
+    flex-direction: column;
+  }
+  .bv-stage {
+    min-height: 240px;
+  }
+  .bv-side {
+    width: auto;
+    max-height: 45%;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}

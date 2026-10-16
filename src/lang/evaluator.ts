@@ -17,7 +17,7 @@ import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalR
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
-import { emptyMachine, type MachineData, type PinRef } from "../machine/types";
+import { emptyMachine, type MachineComponent, type MachineData, type PinRef } from "../machine/types";
 import { SCENARIO_PROPS, scenarioSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
 import { suggest } from "./suggest";
 import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
@@ -89,7 +89,7 @@ const BRIEF_LISTS = ["priorities", "exposure"] as const;
 const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as const;
 export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", "max_size", "max_mass"];
 /** extra properties of purchasable catalog parts */
-const MACHINE_PROPS = ["role", "load", "buy", "price", "rating"];
+const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref"];
 const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
@@ -195,6 +195,8 @@ class Evaluator {
   /** guards against runaway loops in source written by people or the AI */
   steps = 0;
   machine: MachineData = emptyMachine();
+  /** board parts waiting for an automatic reference designator (R1, C4...) */
+  pendingRefs: { mc: MachineComponent; prefix: string }[] = [];
   scenarios: ScenarioDef[] = [];
 
   constructor(
@@ -233,6 +235,7 @@ class Evaluator {
         if (typeof v === "number") return v;
         return new Pending([key]);
       },
+      machine: () => this.machine,
       tick: (n: number) => this.tick(n, this.callSpan),
     };
   }
@@ -428,8 +431,10 @@ class Evaluator {
       case "net": {
         if (this.machine.nets.some((n) => n.name === s.name)) throw new EvalError(`Net "${s.name}" is already defined: add the pins to it`, s.nameSpan);
         const pins = s.pins.map((e) => this.pinRef(e));
-        const pr = this.machineProps(s.items, ["gauge", "color"], "net");
-        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), color: str(pr.color), span: s.span });
+        const pr = this.machineProps(s.items, ["gauge", "color", "width", "pour"], "net");
+        if (pr.width !== undefined && !(typeof pr.width === "number" && pr.width >= 0.15 && pr.width <= 5)) throw new EvalError("width: is the copper track width on a circuit board, 0.15 to 5 mm", s.span);
+        if (pr.pour !== undefined && typeof pr.pour !== "boolean") throw new EvalError("pour: should be true (fill the board's spare copper with this net) or false", s.span);
+        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), color: str(pr.color), width: numv(pr.width), pour: typeof pr.pour === "boolean" ? pr.pour : undefined, span: s.span });
         return;
       }
       case "firmware": {
@@ -975,9 +980,40 @@ class Evaluator {
       }
     }
 
+    // parts soldered to a Kerf circuit board: at: (x, y) on it, rotate: degrees, side:
+    let onBoard: { board: string; x: number; y: number; rot: number; side: "top" | "bottom"; xf: Xform[] } | undefined;
+    const boardProp = props.on !== undefined ? "on" : props.side !== undefined ? "side" : props.ref !== undefined ? "ref" : undefined;
+    if (boardProp && !def.board) throw new EvalError(`${boardProp}: is for parts soldered to a circuit board; ${def.label} is not one`, propSpans[boardProp]);
+    if (props.on !== undefined && def.board) {
+      const b = this.compRef(props.on, propSpans.on, "on");
+      const cb = b.def.circuitBoard;
+      if (!cb) throw new EvalError(`on: "${String(b.value.fields.name)}" is not a circuit board. Make one with lib.circuit_board(w:, d:)`, propSpans.on);
+      if (multi) throw new EvalError("on: places one part: give each part on a board its own component", propSpans.at ?? propSpans.on);
+      if (props.at !== undefined && toV3(props.at, ctx, "at")[2] !== 0) throw new EvalError("at: on a board is (x, y) in mm from the board's bottom-left corner", propSpans.at);
+      if (spinLike(props)) throw new EvalError("Parts on a circuit board cannot spin, mesh or turn with other parts", propSpans.on);
+      const r = props.rotate !== undefined ? this.num(props.rotate, propSpans.rotate, "rotate (degrees counter-clockwise, seen from the board's top)") : 0;
+      const side = props.side ?? "top";
+      if (side !== "top" && side !== "bottom") throw new EvalError('side: should be "top" or "bottom"', propSpans.side);
+      const [x, y] = at0;
+      if (x < 0 || y < 0 || x > cb.w || y > cb.d) throw new EvalError(`at: (${fmtNum(x)}, ${fmtNum(y)}) is off the ${fmtNum(cb.w)} × ${fmtNum(cb.d)} mm board`, propSpans.at ?? s.span);
+      const ops: Xform[] = [];
+      // a part on the underside is the same part turned over about the board's y axis
+      if (side === "bottom") ops.push({ op: "rotate", angle: 180, origin: [0, 0, 0], axis: [0, 1, 0] });
+      if (r) ops.push({ op: "rotate", angle: r, origin: [0, 0, 0], axis: [0, 0, 1] });
+      ops.push({ op: "translate", v: [x, y, side === "bottom" ? 0 : cb.t] });
+      onBoard = { board: String(b.value.fields.name), x, y, rot: r, side, xf: [...ops, ...b.xf] };
+      if (def.board.mounted) {
+        const m = def.board.mounted();
+        def = { ...def, solids: m.solids, fields: m.fields };
+      }
+    } else if (props.side !== undefined) throw new EvalError("side: needs on: (the board the part is soldered to)", propSpans.side);
+    if (props.ref !== undefined && (typeof props.ref !== "string" || !/^[A-Z]{1,3}[0-9]{1,3}$/.test(props.ref))) throw new EvalError('ref: should be a reference like "R12" or "U2"', propSpans.ref);
+
     // orientation (shared by all instances)
     const rot: Xform[] = [];
-    if (def.placement === "axis") {
+    if (onBoard) {
+      // set by the board placement
+    } else if (def.placement === "axis") {
       if (props.rotate !== undefined) {
         if (meshV !== undefined) throw new EvalError("rotate: cannot be combined with mesh: (the mesh sets the gear's rotation)", propSpans.rotate);
         rot.push({ op: "rotate", angle: this.num(props.rotate, propSpans.rotate, "rotate (degrees about the axis)"), origin: [0, 0, 0], axis: [0, 0, 1] });
@@ -1015,7 +1051,7 @@ class Evaluator {
       }
       return fields;
     };
-    const xfs = atList.map((p) => [...rot, { op: "translate", v: p } as Xform]);
+    const xfs = onBoard ? [onBoard.xf] : atList.map((p) => [...rot, { op: "translate", v: p } as Xform]);
     const fields0 = instanceFields(xfs[0], 0);
     if (motion) fields0.speed = motion.ratio;
     if (multi) {
@@ -1054,8 +1090,31 @@ class Evaluator {
           buyUrl: typeof props.buy === "string" ? props.buy : undefined,
           price,
           rating,
+          value: def.board?.value,
+          valueText: def.board?.valueText,
+          taper: def.board?.taper,
+          capType: def.board?.capType,
+          vRating: def.board?.vRating,
+          pcb: onBoard ? { board: onBoard.board, x: onBoard.x, y: onBoard.y, rot: onBoard.rot, side: onBoard.side } : undefined,
+          ref: typeof props.ref === "string" ? props.ref : undefined,
           span: s.span,
         });
+        const mc = this.machine.components[this.machine.components.length - 1];
+        if (onBoard && def.board) {
+          if (mc.ref && this.machine.components.some((o) => o !== mc && o.ref === mc.ref)) throw new EvalError(`ref: "${mc.ref}" is already used`, propSpans.ref);
+          if (!mc.ref) this.pendingRefs.push({ mc, prefix: def.board.refPrefix });
+          // sockets and headers that come with board-mounted parts
+          for (const e of cp.extras ?? []) {
+            const it = this.machine.items.find((x) => x.label === e.label);
+            if (it) it.qty += e.qty;
+            else this.machine.items.push({ name: e.label, label: e.label, qty: e.qty, price: e.price_usd, search: e.search, span: s.span });
+          }
+        }
+        if (def.circuitBoard) {
+          const cb = def.circuitBoard;
+          if (multi) throw new EvalError("A circuit board is one component: give each board its own name", propSpans.at ?? s.span);
+          this.machine.boards.push({ name: s.name, title: cb.title, w: cb.w, d: cb.d, t: cb.t, corner: cb.corner, holes: cb.holes, span: s.span });
+        }
       }
     }
 
@@ -1107,6 +1166,19 @@ class Evaluator {
         });
       });
     });
+  }
+
+  /** Number board parts without an explicit ref: R1, R2, C1... in the order they are written. */
+  assignRefs() {
+    const used = new Set(this.machine.components.map((c) => c.ref).filter(Boolean));
+    const next = new Map<string, number>();
+    for (const { mc, prefix } of this.pendingRefs) {
+      let n = next.get(prefix) ?? 1;
+      while (used.has(`${prefix}${n}`)) n++;
+      mc.ref = `${prefix}${n}`;
+      used.add(mc.ref);
+      next.set(prefix, n + 1);
+    }
   }
 
   compRef(v: Value, span: Span, what: string): CompInfo {
@@ -1952,6 +2024,7 @@ class Evaluator {
     for (const p of this.parts) p.deps = [...(this.deps.get(p.name) ?? [])];
     // an option may name only parameters (defined anywhere in the file)
     const paramNames = new Set(this.params.map((p) => p.name));
+    this.assignRefs();
     for (const d of this.decisions)
       for (const o of d.options)
         for (const st of o.sets)
@@ -1986,8 +2059,10 @@ class Evaluator {
 // ---------------- helpers ----------------
 
 function hasMachine(m: MachineData): boolean {
-  return m.components.length + m.wires.length + m.nets.length + m.calcs.length + m.firmware.length + m.tests.length + m.items.length > 0;
+  return m.components.length + m.wires.length + m.nets.length + m.calcs.length + m.firmware.length + m.tests.length + m.items.length + m.boards.length > 0;
 }
+
+const spinLike = (props: Record<string, Value>) => props.spin !== undefined || props.mesh !== undefined || props.turns_with !== undefined;
 
 function truthy(v: Value): boolean {
   if (typeof v === "boolean") return v;

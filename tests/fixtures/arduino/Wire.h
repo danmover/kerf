@@ -3,6 +3,7 @@
 class TwoWire {
  public:
   void begin();
+  void setClock(uint32_t hz);
   void beginTransmission(uint8_t address);
   uint8_t endTransmission(bool sendStop = true);
   uint8_t requestFrom(uint8_t address, uint8_t quantity);

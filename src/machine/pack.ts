@@ -11,8 +11,10 @@ import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { bomRows, bomTotal, writeStl, type BomRow } from "../persist/files";
 import { catalogPart } from "./catalog";
+import { boardPackFiles, boardWord, routeBoards, type BoardFolder } from "./boardPack";
 import { buildNetlist, netLabel } from "./erc";
 import { generateFirmware, type FirmwareOutput } from "./firmware";
+import type { RoutedBoard } from "./pcb";
 import type { CalcLine, CalcTrace, CatalogKind, CatalogPart, MachineData } from "./types";
 import { componentPositions, csvCell, wireList, wiresCsv, wiringDiagram, type WireRow } from "./wiring";
 
@@ -30,6 +32,8 @@ export interface PackOptions {
   step?: ArrayBuffer | Uint8Array;
   /** generated firmware, if the caller already has it */
   firmware?: FirmwareOutput[];
+  /** finished routes of the design's circuit boards (the app's board runtime has them); boards without one are routed here */
+  boards?: RoutedBoard[];
   date?: Date;
 }
 
@@ -691,7 +695,7 @@ function machineSummary(m: MachineData): string {
 
 const GROUP_ORDER = ["Frame", "Motion", "Bed", "Drive", "Toolhead", "Parts", "Seals", "Power", "Electronics"];
 
-function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: CutGroup[]; rows: WireRow[]; fw: FirmwareOutput[]; plan: PlanItem[]; ready: Readiness }): string {
+function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: CutGroup[]; rows: WireRow[]; fw: FirmwareOutput[]; plan: PlanItem[]; ready: Readiness; boards: BoardFolder[] }): string {
   const m = model.machine!;
   const L: string[] = [`# Assembly guide: ${name}`, ""];
   L.push("Work through the sections in order and tick each box as you go. Positions are in millimetres in the design's own coordinates, the same as `cad/assembly.step`, so you can check each part against the 3D model. Wire numbers (W1, W2 …) match `wiring/wires.csv` and the wiring diagram.", "");
@@ -699,11 +703,16 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
   // 1. before you start
   L.push("## 1. Before you start", "");
   L.push("- [ ] Check every part against `bom.html` as it arrives.");
+  for (const b of ctx.boards) {
+    if (b.problems) L.push(`- [ ] **Do not order the ${boardWord(b.def.title)} yet:** it has ${plural(b.problems, "problem")} listed in \`boards/${b.folder}/PROBLEMS.txt\`. Fix them in Kerf and download a new pack.`);
+    else if (b.zip) L.push(`- [ ] Order the ${boardWord(b.def.title, "circuit board")} first, as it takes the longest to arrive (one to three weeks): upload \`${b.zip}\` to a board house such as JLCPCB or PCBWay. \`boards/${b.folder}/gerbers/README.txt\` says which options to pick.`);
+  }
   if (ctx.ready.fails.length) L.push(`- [ ] **${ctx.ready.headline}** See \`checks.md\`: ${listJoin(ctx.ready.fails.slice(0, 4).map((f) => f.title))}${ctx.ready.fails.length > 4 ? " and more" : ""}.`);
   else if (ctx.ready.warns.length) L.push(`- [ ] Read the ${plural(ctx.ready.warns.length, "warning")} in \`checks.md\` and decide whether each one matters for your build.`);
   const tools = ["hex keys and screwdrivers", "a multimeter"];
   if (ctx.rows.length) tools.push("wire strippers and a crimp tool for the connectors you use");
-  if (m.components.some((c) => ["connector", "battery", "fuse"].includes(c.kind))) tools.push("a soldering iron and heat-shrink for the power connectors");
+  if (ctx.boards.length) tools.push("a temperature-controlled soldering iron, thin solder and flush cutters for the circuit board");
+  else if (m.components.some((c) => ["connector", "battery", "fuse"].includes(c.kind))) tools.push("a soldering iron and heat-shrink for the power connectors");
   if (ctx.made.some((p) => p.printable)) tools.push("a 3D printer");
   if (ctx.cuts.length) tools.push("a saw with a fine blade and a deburring tool (or have the stock cut when you order it)");
   L.push(`- [ ] Tools: ${tools.join("; ")}.`, "");
@@ -724,9 +733,16 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
     for (const g of ctx.cuts) for (const c of g.cuts) L.push(`- [ ] ${g.stockLength ? "Cut" : "Order or cut"} ${c.qty} × ${fmtNum(c.length)} mm of ${g.part.name} (${listJoin(c.comps)}).`);
     L.push("", "Cut square, deburr the ends, and measure each piece: a frame is only as square as its cuts. The full list with stock lengths is in `cut_list.csv`.", "");
   }
-  // 4. mechanics
-  const mech = model.parts.filter((p) => (p.kind === "part" || p.bom) && !/^(Electronics|Power)$/.test(p.group));
-  const elec = model.parts.filter((p) => p.kind === "component" && p.bom && /^(Electronics|Power)$/.test(p.group));
+  // circuit boards: their own soldering guides
+  if (ctx.boards.length) {
+    L.push(`## ${step++}. Solder the circuit board${ctx.boards.length === 1 ? "" : "s"}`, "");
+    for (const b of ctx.boards) L.push(`- [ ] **${b.def.title}** (\`${b.def.name}\`, ${plural(b.parts, "part")}): follow \`boards/${b.folder}/assembly.md\`, lowest parts first, and finish with its power-up check before the board goes in.`);
+    L.push("", "The parts on a board are listed in its own `parts.csv` and soldering guide, so they are left out of the steps below.", "");
+  }
+  // 4. mechanics; parts soldered to a board are in its own guide
+  const onBoard = new Set(m.components.filter((c) => c.pcb).map((c) => c.name));
+  const mech = model.parts.filter((p) => (p.kind === "part" || p.bom) && !/^(Electronics|Power)$/.test(p.group) && !onBoard.has(p.name));
+  const elec = model.parts.filter((p) => p.kind === "component" && p.bom && /^(Electronics|Power)$/.test(p.group) && !onBoard.has(p.name));
   const seenNotes = new Set<string>();
   const partLine = (p: EvalPart) => {
     const cp = p.bom?.catalogId ? catalogPart(p.bom.catalogId) : undefined;
@@ -825,7 +841,7 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
 
 // ---------------------------------------------------------------- README
 
-function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readiness; rows: WireRow[]; made: MadePart[]; cuts: CutGroup[]; fw: FirmwareOutput[]; plan: PlanItem[]; items: CheckItem[]; files: string[]; step: boolean }): string {
+function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readiness; rows: WireRow[]; made: MadePart[]; cuts: CutGroup[]; fw: FirmwareOutput[]; plan: PlanItem[]; items: CheckItem[]; files: string[]; step: boolean; boards: BoardFolder[] }): string {
   const m = model.machine!;
   const bom = bomRows(model);
   const { total, unpriced } = bomTotal(bom);
@@ -845,12 +861,16 @@ function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readines
   const madeQty = ctx.made.reduce((n, p) => n + p.qty, 0);
   L.push(`| Printed and made parts | ${madeQty}${madeQty !== ctx.made.length ? ` (${plural(ctx.made.length, "file")})` : ""} |`);
   if (ctx.cuts.length) L.push(`| Stock to cut | ${plural(ctx.cuts.reduce((s, g) => s + g.cuts.reduce((x, c) => x + c.qty, 0), 0), "piece")} from ${plural(ctx.cuts.length, "stock size")} |`);
+  if (ctx.boards.length)
+    L.push(`| Circuit boards | ${ctx.boards.map((b) => `${b.def.title}: ${fmtNum(b.def.w)} × ${fmtNum(b.def.d)} mm, ${plural(b.parts, "part")}${b.problems ? ` (${plural(b.problems, "problem")} to fix)` : ""}`).join("; ")} |`);
   L.push(`| Wires | ${ctx.rows.length}${gauges.length ? ` (${gauges.length > 1 ? `${gauges[0]} to ${gauges[gauges.length - 1]}` : gauges[0]} AWG)` : ""} |`);
   L.push(`| Calculations | ${m.calcs.length}${m.calcs.some((c) => c.confidence === "rough") ? ` (${m.calcs.filter((c) => c.confidence === "rough").length} rough)` : ""} |`);
   L.push(`| Checks | ${n("fail")} failing, ${n("warn")} warnings, ${n("pass")} passing |`);
   L.push(`| Physical tests | ${ctx.plan.filter((p) => p.required).length} required${ctx.plan.some((p) => !p.required) ? `, ${ctx.plan.filter((p) => !p.required).length} worth doing` : ""} |`, "");
-  if (ctx.ready.fails.length || ctx.ready.warns.length) {
+  const badBoards = ctx.boards.filter((b) => b.problems);
+  if (ctx.ready.fails.length || ctx.ready.warns.length || badBoards.length) {
     L.push("## Before you order", "");
+    for (const b of badBoards) L.push(`- **Circuit board:** the ${boardWord(b.def.title)} has ${plural(b.problems, "problem")} (\`boards/${b.folder}/PROBLEMS.txt\`). Do not order it until they are fixed.`);
     for (const f of ctx.ready.fails) L.push(`- **Fails:** ${f.title}: ${f.detail}`);
     for (const w of ctx.ready.warns.slice(0, 12)) L.push(`- **Warning:** ${w.title}: ${w.detail}`);
     if (ctx.ready.warns.length > 12) L.push(`- …and ${ctx.ready.warns.length - 12} more in \`checks.md\`.`);
@@ -866,6 +886,7 @@ function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readines
     [/^cad\/assembly\.step$/, "The whole assembly as exact solids, for any CAD program."],
     [/^wiring\/wiring\.svg$/, "Wiring diagram. Open it in a browser and print it landscape."],
     [/^wiring\/wires\.csv$/, "Every wire: from, to, size, colour and length."],
+    [/^boards\/[^/]+\//, "A circuit board: the Gerber and drill files zipped for the board house (`*-gerbers.zip`) and loose in `gerbers/`, pictures of both sides, its parts list and a soldering guide."],
     [/^firmware\//, "Generated firmware. Start with the README in each folder."],
     [/^calculations\.md$/, "The engineering calculations with their inputs, methods and assumptions."],
     [/^checks\.md$/, "Every check Kerf ran on the design, grouped by kind."],
@@ -877,16 +898,19 @@ function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readines
     const d = DESC.find(([re]) => re.test(f));
     if (!d) continue;
     const key = d[0].source;
-    const label = /^print\/(?!README)/.test(f) ? "print/*.stl" : /^firmware\//.test(f) ? "firmware/" : f;
+    const label = /^print\/(?!README)/.test(f) ? "print/*.stl" : /^firmware\//.test(f) ? "firmware/" : /^boards\//.test(f) ? `${f.split("/").slice(0, 2).join("/")}/` : f;
     if (shown.has(key + label)) continue;
     shown.add(key + label);
     L.push(`| \`${label}\` | ${d[1]} |`);
   }
   L.push("");
   L.push("## Order of work", "");
-  L.push(`1. ${ctx.ready.fails.length ? "Fix the failing checks in Kerf and export a new pack." : "Order the parts in `bom.html`."}`);
+  const orderable = ctx.boards.filter((b) => b.zip && !b.problems);
+  const boardsBad = ctx.boards.some((b) => b.problems);
+  L.push(`1. ${ctx.ready.fails.length || boardsBad ? `Fix the failing checks${boardsBad ? " and board problems" : ""} in Kerf and export a new pack.` : `Order the parts in \`bom.html\`${orderable.length ? ` and the circuit board${orderable.length === 1 ? "" : "s"}: upload ${listJoin(orderable.map((b) => `\`${b.zip}\``))} to a board house` : ""}.`}`);
   let k = 2;
   if (ctx.made.length) L.push(`${k++}. Print the parts in \`print/\` while you wait for the deliveries.`);
+  if (ctx.boards.length) L.push(`${k++}. Solder the board${ctx.boards.length === 1 ? "" : "s"} with ${listJoin(ctx.boards.map((b) => `\`boards/${b.folder}/assembly.md\``))} when ${ctx.boards.length === 1 ? "it arrives" : "they arrive"}.`);
   L.push(`${k++}. Follow \`assembly.md\` from start to finish: it covers the cutting, assembly, wiring and firmware.`);
   L.push(`${k++}. Run \`test_plan.md\` before you rely on the machine.`, "");
   L.push("Kerf checks the design against datasheet ratings and engineering rules, but it cannot see the parts you actually receive. Check ratings on the delivered parts, and treat the test plan as part of the design.", "");
@@ -923,12 +947,14 @@ export function buildPack(model: Model, report: CheckReport | null, opts: PackOp
     add("wiring/wiring.svg", wiringDiagram(m, { title: name }).svg);
     add("wiring/wires.csv", wiresCsv(rows));
   }
+  const boards = boardPackFiles(m, m.boards.length ? routeBoards(m, opts.boards) : [], date);
+  for (const f of boards.files) add(f.path, f.data);
   for (const f of fw) for (const file of f.files) add(file.path.startsWith("firmware/") ? file.path : `firmware/${file.path}`, file.content);
   if (m.calcs.length) add("calculations.md", calculationsMd(m.calcs, name));
   add("checks.md", checksMd(items, name));
   add("test_plan.md", testPlanMd(plan, name));
-  add("assembly.md", assemblyMd(model, name, { made, cuts, rows, fw, plan, ready }));
+  add("assembly.md", assemblyMd(model, name, { made, cuts, rows, fw, plan, ready, boards: boards.folders }));
   const paths = ["README.md", ...files.map((f) => f.path)];
-  files.unshift({ path: "README.md", data: readmeMd(model, name, date, { ready, rows, made, cuts, fw, plan, items, files: paths, step: !!opts.step }) });
+  files.unshift({ path: "README.md", data: readmeMd(model, name, date, { ready, rows, made, cuts, fw, plan, items, files: paths, step: !!opts.step, boards: boards.folders }) });
   return files;
 }

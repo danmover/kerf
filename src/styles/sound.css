@@ -1,0 +1,473 @@
+/* The Build tab's Sound section. */
+
+.snd {
+  /* the amp's faceplate: dark here, brushed silver in the light theme (theme.css) */
+  --snd-plate: #1a1d22, #121418;
+  --snd-plate-hi: rgba(255, 255, 255, 0.04);
+  --snd-tick: #5b6170;
+  --snd-tick-major: #9aa1b0;
+  --snd-label: #e8e4d8;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* the amp's control strip */
+.snd-panel {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding: 12px 18px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: linear-gradient(180deg, var(--snd-plate));
+  box-shadow: inset 0 1px 0 var(--snd-plate-hi), 0 8px 24px -14px rgb(var(--shade-rgb) / 0.8);
+}
+.snd-knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 84px;
+  user-select: none;
+}
+.snd-knob svg {
+  cursor: ns-resize;
+  touch-action: none;
+  outline: none;
+  border-radius: 50%;
+}
+.snd-knob svg:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.snd-knob .tick {
+  stroke: var(--snd-tick);
+  stroke-width: 1.2;
+}
+.snd-knob .tick.major {
+  stroke: var(--snd-tick-major);
+  stroke-width: 1.6;
+}
+.snd-knob .arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+.snd-knob .skirt {
+  /* the knobs are black plastic on both themes */
+  fill: #0b0c0f; /* theme: same */
+  stroke: #2c3038; /* theme: same */
+  stroke-width: 1;
+}
+.snd-knob .cap {
+  fill: #23262c; /* theme: same */
+  stroke: #3a3f49; /* theme: same */
+  stroke-width: 1;
+}
+.snd-knob .pointer {
+  stroke: #f2efe6; /* theme: same */
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+.snd-knob-label {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--snd-label);
+}
+.snd-knob-val {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+.snd-knob-val span {
+  color: var(--text-4);
+  margin-left: 2px;
+}
+.snd-panel-side {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  padding-bottom: 6px;
+}
+.snd-side-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.snd-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 14px 18px;
+  align-items: start;
+}
+.snd-card {
+  min-width: 0;
+  padding: 10px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+}
+.snd-note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.snd-note.fail {
+  color: var(--fail);
+}
+
+/* response chart */
+.snd-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.snd-chart .grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.snd-chart .axis {
+  fill: var(--text-4);
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+.snd-chart .guitar-band {
+  fill: var(--accent-soft);
+  opacity: 0.35;
+}
+.snd-chart .noon {
+  fill: none;
+  stroke: var(--text-4);
+  stroke-width: 1.4;
+  stroke-dasharray: 4 3;
+}
+.snd-chart .area {
+  fill: rgb(var(--accent-rgb) / 0.1);
+}
+.snd-chart .now {
+  fill: none;
+  stroke: var(--accent-2);
+  stroke-width: 2.2;
+  stroke-linejoin: round;
+  transition: d 0.12s var(--ease);
+}
+.snd-chart .cursor {
+  stroke: var(--line-3);
+  stroke-dasharray: 2 3;
+}
+.snd-chart .dot {
+  fill: var(--accent-2);
+  stroke: var(--bg-1);
+  stroke-width: 1.5;
+}
+.snd-chart .readout {
+  fill: var(--text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.snd-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3);
+}
+.snd-legend i {
+  display: inline-block;
+  width: 16px;
+  height: 0;
+  border-top: 2px solid var(--accent-2);
+  margin-left: 6px;
+}
+.snd-legend i.noon {
+  border-top: 2px dashed var(--text-4);
+}
+
+/* listen */
+.snd-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-2);
+}
+.snd-takes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.snd-wave {
+  width: 100%;
+  height: 70px;
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+}
+.snd-wave .clip-zone {
+  fill: var(--fail-soft);
+}
+.snd-wave .mid {
+  stroke: var(--line-2);
+}
+.snd-wave .trace {
+  stroke: var(--cyan);
+  stroke-width: 1.4;
+  vector-effect: non-scaling-stroke;
+}
+.snd-wave .head {
+  stroke: var(--text);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.snd-wave .progress {
+  fill: var(--accent);
+}
+
+/* stages */
+.snd-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 4px;
+}
+.snd-stage {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) 2fr 48px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.snd-stage .lbl {
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.snd-stage .lbl b {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--text);
+  margin-right: 4px;
+}
+.snd-stage .bar {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-3);
+  overflow: visible;
+}
+.snd-stage .bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 4px;
+  background: var(--pass);
+  transition: width 0.3s var(--ease);
+}
+.snd-stage.warn .bar i {
+  background: var(--warn);
+}
+.snd-stage.fail .bar i {
+  background: var(--fail);
+}
+.snd-stage.clips .bar i {
+  background: repeating-linear-gradient(135deg, var(--violet) 0 6px, rgb(var(--violet-rgb) / 0.6) 6px 12px);
+}
+.snd-stage .bar em {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 0;
+  border-left: 1.5px solid var(--text-3);
+}
+.snd-stage .pct {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+  text-align: right;
+}
+
+/* tuner */
+.snd-tuner {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+.snd-tuner-ctl {
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.snd-strings {
+  display: flex;
+  gap: 4px;
+}
+.snd-strings .btn {
+  min-width: 30px;
+  justify-content: center;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.snd-strings sub {
+  font-size: 8px;
+  opacity: 0.6;
+}
+.snd-detune {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.snd-detune input {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.snd-tuner-ctl > .btn {
+  align-self: flex-start;
+}
+/* the 0.96" OLED, white on black, 128 × 64: the same on both themes */
+.snd-oled {
+  flex: none;
+  width: 200px;
+  height: 100px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  background: #020304; /* theme: same */
+  border: 6px solid #0d2a4a; /* theme: same */
+  box-shadow: 0 0 0 1px #1d3e66, inset 0 0 18px rgba(0, 0, 0, 0.9); /* theme: same */
+  font-family: var(--mono);
+  color: #e9f6ff; /* theme: same */
+  text-shadow: 0 0 6px rgba(170, 220, 255, 0.45); /* theme: same */
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.snd-oled .oled-idle {
+  margin: auto;
+  font-size: 11px;
+  text-align: center;
+  color: #b8d8ee; /* theme: same */
+}
+.snd-oled .oled-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #a9cde6; /* theme: same */
+}
+.snd-oled .oled-note {
+  font-size: 34px;
+  line-height: 1;
+  font-weight: 600;
+  text-align: center;
+  margin-top: 1px;
+}
+.snd-oled .oled-note sup {
+  font-size: 15px;
+}
+.snd-oled .oled-note sub {
+  font-size: 12px;
+  margin-left: 1px;
+}
+.snd-oled .oled-bar {
+  position: relative;
+  height: 9px;
+  margin: 3px 2px 0;
+  border: 1px solid #a9cde6; /* theme: same */
+}
+.snd-oled .oled-bar .c {
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  border-left: 1px solid #e9f6ff; /* theme: same */
+}
+.snd-oled .oled-bar .n {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 6px;
+  margin-left: -3px;
+  background: #e9f6ff; /* theme: same */
+  transition: left 0.25s var(--ease);
+}
+.snd-oled .oled-cents {
+  font-size: 10px;
+  text-align: center;
+  margin-top: 2px;
+}
+.snd-scope {
+  width: 100%;
+  height: 46px;
+  display: block;
+  margin-top: 9px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+}
+.snd-scope .rail {
+  stroke: var(--fail-soft);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.snd-scope .mid {
+  stroke: var(--line-2);
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.snd-scope .trace {
+  fill: none;
+  stroke: var(--pass);
+  stroke-width: 1.3;
+  vector-effect: non-scaling-stroke;
+}
+
+/* figures */
+.snd-figs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.snd-fig {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  min-width: 96px;
+}
+.snd-fig span {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.snd-fig b {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 12.5px;
+  color: var(--text);
+}

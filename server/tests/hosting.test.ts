@@ -14,6 +14,7 @@ function fakeBuild() {
   writeFileSync(join(dir, "index.html"), "<!doctype html><title>Kerf</title>");
   writeFileSync(join(dir, "assets", "index-abc123.js"), "console.log(1)");
   writeFileSync(join(dir, "assets", "worker-abc123.js"), "self.onmessage=()=>{}");
+  for (const w of ["render", "route"]) writeFileSync(join(dir, "assets", `${w}.worker-abc123.js`), "self.onmessage=()=>{}");
   writeFileSync(join(dir, "assets", "kernel-abc123.wasm"), Buffer.from([0, 97, 115, 109]));
   copyFileSync("public/_headers", join(dir, "_headers"));
   return dir;
@@ -55,6 +56,14 @@ describe("hosting the app", () => {
     expect(wasm.headers.get("content-type")).toBe("application/wasm");
     const js = await app.request("https://kerf.test/assets/index-abc123.js");
     expect(js.headers.get("content-security-policy")).toBeNull();
+  });
+
+  it("locks the amp's circuit and board routing workers down to their own code", async () => {
+    const app = hosted();
+    for (const w of ["render", "route"]) {
+      const res = await app.request(`https://kerf.test/assets/${w}.worker-abc123.js`);
+      expect(res.headers.get("content-security-policy"), w).toBe("default-src 'none'; script-src 'self'");
+    }
   });
 
   it("does not serve the headers file or anything outside the build", async () => {
