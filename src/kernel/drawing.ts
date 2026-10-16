@@ -5,7 +5,7 @@
 import * as R from "replicad";
 import type { AnyShape, Edge, Face, Shape3D } from "replicad";
 import { applyXf } from "./build";
-import { vcross, vdot, vnorm, type V3, type Xform } from "./recipe";
+import { reflect, vcross, vdot, vnorm, type V3, type Xform } from "./recipe";
 
 // ---------- projection ----------
 
@@ -482,7 +482,8 @@ function invertXf(p: V3, xf: Xform[]): V3 {
   for (let i = xf.length - 1; i >= 0; i--) {
     const x = xf[i];
     if (x.op === "translate") q = [q[0] - x.v[0], q[1] - x.v[1], q[2] - x.v[2]];
-    else q = rotate(q, x.origin, x.axis, -x.angle);
+    else if (x.op === "rotate") q = rotate(q, x.origin, x.axis, -x.angle);
+    else q = reflect(q, x.origin, x.normal);
   }
   return q;
 }

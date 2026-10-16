@@ -86,6 +86,10 @@ export interface EvalPart {
   bearing?: BearingInfo;
   fastener?: FastenerInfo;
   bom?: { description: string; standard?: string };
+  /** named features (`add ... as name`), for selectors and inspection */
+  features?: { name: string; kind: string; cosmetic: boolean }[];
+  /** detailed builds differ from fast ones (threads, knurls, cosmetic steps) */
+  detail?: boolean;
   /** set for bodies of an imported STEP file */
   imported?: ImportedBody;
 }

@@ -9,6 +9,8 @@ export interface Diagnostic {
   start: number;
   end: number;
   severity: "error" | "warning";
+  /** a design-rule warning, shown as a check with this title */
+  rule?: string;
 }
 
 export class ParseError extends Error {
@@ -43,6 +45,19 @@ export function parse(src: string): { program: Program; diagnostics: Diagnostic[
   } catch (e) {
     // deeply nested source overflows the recursive parser; report it instead of failing to open the design
     if (e instanceof RangeError) return { program: { stmts: [] }, diagnostics: [{ message: "This source is nested too deeply to read. Flatten the deepest brackets or blocks.", start: 0, end: Math.min(src.length, 1), severity: "error" }] };
+    throw e;
+  }
+}
+
+/** Parse a single expression (a selector typed into a tool, for example). */
+export function parseExpression(src: string): { expr?: Expr; error?: string } {
+  try {
+    const p = new Parser(lex(src));
+    const expr = p.expr();
+    if (!p.is("eof")) return { error: `Unexpected "${p.peek().value}" after the expression` };
+    return { expr };
+  } catch (e) {
+    if (e instanceof ParseError || e instanceof LexError) return { error: e.message };
     throw e;
   }
 }
@@ -460,7 +475,16 @@ class Parser {
         case "intersect": {
           this.next();
           const shape = this.expr();
+          if (this.eat("kw", "as")) {
+            const n = this.expect("ident", undefined, "a feature name after \"as\"");
+            return { k: "op", op: tk.value, shape, name: n.value, nameSpan: { start: n.start, end: n.end }, span: { start, end: this.prevEnd() } };
+          }
           return { k: "op", op: tk.value, shape, span: { start, end: this.prevEnd() } };
+        }
+        case "cosmetic": {
+          this.next();
+          const body = this.block();
+          return { k: "cosmetic", body, span: { start, end: this.prevEnd() } };
         }
         case "for": {
           this.next();
@@ -516,7 +540,7 @@ class Parser {
       return { k: "flag", name: tk.value, span: { start, end: this.prevEnd() } };
     }
     throw new ParseError(
-      `Unexpected "${tk.value || "end of file"}" inside block. Use body/add/cut/intersect, a property like color: #4c8dff, a modifier like shell(2), for, if or let.`,
+      `Unexpected "${tk.value || "end of file"}" inside block. Use body/add/cut/intersect, a property like color: #4c8dff, a modifier like shell(2) or fillet(1, edges: ...), cosmetic { }, for, if or let.`,
       tk.start,
       Math.max(tk.end, tk.start + 1),
     );

@@ -14,7 +14,7 @@ import { commitSource, endComparison } from "../../app/project";
 import { kernel } from "../../kernel/client";
 import type { EntityInfo, PickMeasure, PickRef } from "../../kernel/drawing";
 import type { MeshData } from "../../kernel/build";
-import { xformMatrix, type V3 } from "../../kernel/recipe";
+import { hasDetail, xformMatrix, type V3 } from "../../kernel/recipe";
 import { drawingFor, openDrawings, useDrawings } from "../../drawing/engine";
 import { addBlockLine, ensureBlock } from "../../drawing/source";
 import { fmtNum } from "../../lang/values";
@@ -513,7 +513,10 @@ function placement(part: EvalPart) {
 function pickRef(s: Snap, part: EvalPart | undefined): PickRef | null {
   if (!part) return null;
   const p = s.local.clone().applyMatrix4(placement(part));
-  return { hash: part.hash, xf: part.xf, kind: s.kind, id: s.id, point: [p.x, p.y, p.z] };
+  // a detailed mesh comes from the detail worker, whose face and edge ids mean nothing to the main kernel that
+  // measures: send only the point, so the kernel takes the sub-shape nearest it
+  const detailed = hasDetail(part.recipe) && meshes.get(part.hash)?.final === s.data;
+  return { hash: part.hash, xf: part.xf, kind: s.kind, id: detailed ? undefined : s.id, point: [p.x, p.y, p.z] };
 }
 
 // ---------- overlay ----------

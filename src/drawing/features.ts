@@ -4,7 +4,7 @@
 // are built from these rather than guessed from the projected lines.
 
 import type { EvalPart } from "../core/model";
-import { applyXforms, applyXformsToDir, vadd, vcross, vdot, vnorm, vscale, type ShapeRecipe, type V2, type V3, type Xform } from "../kernel/recipe";
+import { applyXforms, applyXformsToDir, vadd, vcross, vdot, vnorm, vscale, type OpenSpec, type ShapeRecipe, type V2, type V3, type Xform } from "../kernel/recipe";
 
 export type Feature =
   | {
@@ -32,9 +32,18 @@ export type Feature =
 /** World-space extent of a part along a direction, for telling through holes from blind ones. */
 export type Extent = (dir: V3) => [number, number];
 
+/** The direction a shell opens toward: a plain vector, or the first direction among open specs (selector-only opens have none). */
+export function shellOpenDir(open: V3 | OpenSpec[]): V3 | undefined {
+  if (open.length === 3 && open.every((v) => typeof v === "number")) return open as V3;
+  for (const o of open as OpenSpec[]) if (typeof o === "object" && "dir" in o) return o.dir;
+  return undefined;
+}
+
 export function partFeatures(p: EvalPart, extent?: Extent): Feature[] {
   const out: Feature[] = [];
-  const shell = p.recipe.ops.find((o): o is Extract<typeof o, { op: "shell" }> => o.op === "shell");
+  const shellOp = p.recipe.ops.find((o): o is Extract<typeof o, { op: "shell" }> => o.op === "shell");
+  const shellOpen = shellOp && shellOpenDir(shellOp.open);
+  const shell = shellOp && shellOpen ? { t: shellOp.t, open: shellOpen } : undefined;
   /** Does a cut from start along dir for depth come out of the material? */
   const goesThrough = (at: V3, dir: V3, depth: number): boolean => {
     if (!extent) return depth >= 1000;
@@ -63,7 +72,7 @@ export function partFeatures(p: EvalPart, extent?: Extent): Feature[] {
         const at = pt(s.at, xf);
         const dir = dr(s.dir, xf);
         const through = s.depth >= 1000 || goesThrough(at, dir, s.depth);
-        out.push({ t: "hole", part: p.id, d: s.d, depth: s.depth, through, at, dir, cbore: s.cbore, csink: s.csink, thread: s.thread, fit: s.fit });
+        out.push({ t: "hole", part: p.id, d: s.d, depth: s.depth, through, at, dir, cbore: s.cbore, csink: s.csink, thread: s.threadName, fit: s.fit });
         return;
       }
       case "cyl":
@@ -96,7 +105,10 @@ export function partFeatures(p: EvalPart, extent?: Extent): Feature[] {
   if (p.recipe.base) walk(p.recipe.base, "base", []);
   for (const o of p.recipe.ops) {
     if (o.op === "add" || o.op === "cut") walk(o.shape, o.op, []);
-    else if (o.op === "shell") out.push({ t: "shell", part: p.id, wall: o.t, open: o.open });
+    else if (o.op === "shell") {
+      const open = shellOpenDir(o.open);
+      if (open) out.push({ t: "shell", part: p.id, wall: o.t, open });
+    }
   }
   return out;
 }
@@ -221,6 +233,9 @@ export function holeCallout(h: Extract<Feature, { t: "hole" }>, fmt: (n: number)
   if (h.thread && h.fit === "tap") {
     lines.push(`${h.thread} THREAD ${h.through ? "THRU" : `× ${fmt(Math.max(h.depth - 1, 0.5))} DEEP`}`);
     lines.push(`TAP DRILL Ø${fmt(h.d)} ${depth}`);
+  } else if (h.thread && h.fit === "thread") {
+    // a modelled thread (hole(M5, fit: "thread")): the thread runs the whole depth
+    lines.push(`${h.thread} THREAD ${depth}`);
   } else {
     lines.push(`Ø${fmt(h.d)} ${depth}`);
     if (h.thread && h.fit === "insert") lines.push(`FOR ${h.thread} INSERT`);

@@ -73,6 +73,13 @@ npm run typecheck
 - Make solid: extrude (new part, add to or cut from an existing one, through all, either or both directions, depth kept as a slider parameter) or revolve about a sketch line.
 - Every action is a text edit of the design file, so undo, history and Claude all work on sketches too. Claude can read a sketch as solved with `get_sketch`.
 
+**Detailed modelling**
+- 2D profiles (`outline` with arcs and splines, `curve`, `rounded`, `offset`, `text`, and `+`/`-` between them) turned into solids with `extrude` (twist, taper), `revolve`, `sweep`/`pipe` along paths and helices, and `loft` (hollow with `wall:`).
+- Real helical threads (`thread()`, ISO, trapezoid, square and buttress, multi-start, left-hand, threaded tubes) and threaded holes (`hole(M5, fit: "thread")`); knurls, draft, embossed and engraved lettering, O-ring grooves, ribs and gussets.
+- Ready-made features that size themselves: `screw_boss` (insert, tapped or threaded, with gussets) and `snap_hook`, whose bending strain is checked against the material.
+- Name what you add (`add ... as boss`) and round or break edges by meaning: `fillet(1.5, edges: boss.root)`, `both(base.edges, "vertical")`, `near()`, `facing()`. Claude can inspect a part's features and test a selection before using it.
+- `cosmetic { }` steps (edge breaks, lettering) and real threads and knurls appear in the detailed build, which runs in a second kernel worker; checks use the simple shape, so editing stays fast. Library screws and nuts show real ISO threads.
+
 **Checking**
 - Every change runs the full pipeline: evaluate, build (only the parts that changed), check, then refine the meshes.
 - Checks cover requirements, solid interference, tool access to every screw, gear mesh and ratio, and motion.
@@ -106,12 +113,12 @@ npm run typecheck
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
-Four complete examples ship with it: a sensor-hub enclosure (21 solids), a printed wall-shelf bracket with a stress analysis (3 solids), a two-stage 12:1 gear reducer with a drivetrain duty (26 solids) and a shaft support bracket built entirely from five constrained sketches. All pass every hard check, and the enclosure and reducer carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
+Five complete examples ship with it: a sensor-hub enclosure (21 solids), a printed wall-shelf bracket with a stress analysis (3 solids), a two-stage 12:1 gear reducer with a drivetrain duty (26 solids), a shaft support bracket built entirely from five constrained sketches, and a screw-top canister with real, phased two-start threads, a knurled lid and an O-ring seal. All pass every hard check, and the enclosure, reducer and canister carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
 
 ## Not in 0.1
 
 - **Direct modelling.** Push and pull on faces, and sketching on curved faces, are not there yet; profiles come from sketches on flat planes.
-- **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds it. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
+- **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds the geometry that checks use (a second one makes the detailed build). Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
 - **More analysis.** The stress solver is linear elastic on a voxel grid: no contact between parts, buckling, large deflection, creep, vibration or thermal analysis, and features smaller than a grid cell are smoothed over. Drivetrain checks leave out tooth pitting, wear and heat. There are no tolerance stack-ups yet. Treat results as a design guide and test parts that matter.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
 - **Accounts and sharing.** No server, sign-in, sync or collaboration. A hosted version would need a server-side key proxy, rate limits and billing.
@@ -123,7 +130,7 @@ Four complete examples ship with it: a sensor-hub enclosure (21 solids), a print
 src/lang/       Kerf language: lexer, parser, evaluator (no eval, step-limited)
 src/sketch/     Sketch evaluation, constraint solver, profiles, and the text edits the sketch editor makes
 src/library/    Standard parts, thread and bearing tables, involute gears
-src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
+src/kernel/     OpenCASCADE (WebAssembly) in Web Workers (fast builds and checks; detailed builds and STEP); content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
 src/analysis/   Stress solver (voxel hex8 FEA, multigrid CG, separate worker), drivetrain checks, analysis blocks
 src/mfg/        Manufacturing processes: rules, materials, geometry analysis, findings
