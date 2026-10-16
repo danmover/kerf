@@ -1,7 +1,8 @@
 // Export actions shared by the top bar menu and keyboard shortcuts.
 
-import { kernel } from "../kernel/client";
-import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
+import { detailKernel, kernel } from "../kernel/client";
+import { meshes, useDesign, whenRefined } from "../core/engine";
+import { detailImportsLoaded, recipeUsesImport } from "../core/imports";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
 import { exportProject, useProject } from "./project";
 import { useView } from "./view";
@@ -22,9 +23,13 @@ export async function exportStep(selectionOnly = false) {
   if (!parts.length) return toast({ kind: "warn", title: "Nothing to export", detail: selectionOnly ? "Select one or more parts first." : "The design has no visible parts." });
   const t = toast({ kind: "info", title: "Preparing STEP…", detail: "Exporting exact B-rep solids from the kernel." }, 0);
   try {
-    await whenChecked();
-    const items = parts.filter((p) => meshes.has(p.hash)).map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color }));
-    const data = await kernel.exportStep(items);
+    await whenRefined();
+    const items = parts.filter((p) => meshes.has(p.hash)).map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color, recipe: p.recipe }));
+    // the detail worker holds the real threads and cosmetic detail; the main one builds them if it has to
+    if (detailKernel.status !== "error") detailKernel.start();
+    // imported STEP bodies are exported from the detail worker too, so it needs the files
+    if (detailKernel.status !== "error" && parts.some((p) => p.imported || recipeUsesImport(p.recipe))) await detailImportsLoaded();
+    const data = await (detailKernel.status === "error" ? kernel : detailKernel).exportStep(items);
     download(data, safeFileName(baseName() + (selectionOnly ? " selection" : ""), "step"), "application/step");
     toast({ kind: "success", title: "STEP exported", detail: `${items.length} solids in millimetres, ready for other CAD tools.` });
   } catch (e) {

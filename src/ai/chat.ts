@@ -9,6 +9,7 @@ import * as db from "../persist/db";
 import { useSettings } from "../app/settings";
 import { useDesign, evaluateOnly } from "../core/engine";
 import { useView } from "../app/view";
+import { drawingContext } from "../drawing/engine";
 import { commitSource, useProject, endPreview } from "../app/project";
 import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, briefSummary, type AskOption, type ToolOutcome } from "./tools";
@@ -26,6 +27,11 @@ import { isBuilding } from "../agents/orchestrator";
 import { toast } from "../app/ui";
 import { claudeClient, claudeRoute } from "./client";
 import { BINDING_BETA, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
+import { MODELS, type Effort } from "../app/settings";
+import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, type Route, type TurnFacts } from "./routing";
+import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
+import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm } from "./keepWarm";
+import { costOf, roughTokens, type Usage } from "../agents/pricing";
 
 /** A file the user attached to a message; it is also kept as a reference in the brief. */
 export interface ChatFile {
@@ -71,7 +77,27 @@ export type ChatItem =
       error?: string;
     }
   /** follow-ups Claude offers as one-click chips */
-  | { kind: "suggest"; id: string; options: { label: string; prompt: string }[] };
+  | { kind: "suggest"; id: string; options: { label: string; prompt: string }[] }
+  /** what a turn cost, which model answered it and why, and what Kerf saved */
+  | {
+      kind: "cost";
+      id: string;
+      spend: TurnSpend;
+      route: TurnRoute;
+      /** the conversation's length before Claude's first response this turn, so the turn can be asked again */
+      historyStart: number;
+    };
+
+/** How a turn was routed, as shown under the reply. */
+export interface TurnRoute {
+  /** the model the turn started on */
+  model: string;
+  quick: boolean;
+  why: string;
+  by: Route["by"];
+  /** the quick model handed the turn to the design model, and why */
+  escalated?: { to: string; why: string };
+}
 
 interface ChatState {
   projectId: string | null;
@@ -82,9 +108,11 @@ interface ChatState {
   lastUserText: string;
   /** the brief as Claude last saw it (JSON), so the next turn can say what the user changed */
   briefSeen: string | null;
+  /** deciding which model answers the message just sent */
+  routing: boolean;
 }
 
-export const useChat = create<ChatState>(() => ({ projectId: null, items: [], busy: false, pendingChoice: null, lastUserText: "", briefSeen: null }));
+export const useChat = create<ChatState>(() => ({ projectId: null, items: [], busy: false, pendingChoice: null, lastUserText: "", briefSeen: null, routing: false }));
 
 const get = useChat.getState;
 const set = useChat.setState;
@@ -102,8 +130,14 @@ let gen = 0;
 let lastEditedSource: string | null = null;
 let idn = 0;
 const nid = () => `c${Date.now().toString(36)}${(++idn).toString(36)}`;
-/** request features the selected model rejected this session */
-const unsupported = new Set<"effort" | "thinking" | "fallbacks" | "binding">();
+type Feature = "effort" | "thinking" | "fallbacks" | "binding";
+/** request features each model rejected this session */
+const rejected = new Map<string, Set<Feature>>();
+const unsupported = (model: string) => {
+  let s = rejected.get(model);
+  if (!s) rejected.set(model, (s = new Set()));
+  return s;
+};
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
@@ -113,6 +147,37 @@ function patch(id: string, fn: (it: ChatItem) => ChatItem) {
 function push(it: ChatItem) {
   set((s) => ({ items: [...s.items, it] }));
 }
+
+// ---------- spend ----------
+
+/** what the turn in progress has cost so far; null between turns */
+let turnBox: { spend: TurnSpend } | null = null;
+
+onSpend((kind, model, cost, saved, u) => {
+  if (turnBox) {
+    turnBox.spend = addToTurn(turnBox.spend, kind, model, cost, saved, u);
+    return;
+  }
+  // between turns (keeping the cache warm, an agent revised from its card): it belongs to the latest reply
+  const last = [...get().items].reverse().find((i) => i.kind === "cost");
+  if (!last) return;
+  patch(last.id, (it) => (it.kind === "cost" ? { ...it, spend: addToTurn(it.spend, kind, model, cost, saved, u) } : it));
+  persist();
+});
+
+configureWarm({
+  client,
+  minutes: () => useSettings.getState().keepWarm,
+  // a refresh is spend the design model alone would not have had; what it saves shows on the next request
+  record: (model, u) => void recordSpend("warm", model, u, -costOf(model, u)),
+  // after a change of model, effort or thinking display in Settings, the next request is not the one kept warm
+  stale: (p) => {
+    const s = useSettings.getState();
+    const effort = (p.output_config as { effort?: string } | undefined)?.effort;
+    const display = (p.thinking as { display?: string } | undefined)?.display;
+    return p.model !== s.model || (effort !== undefined && effort !== s.effort) || (display !== undefined && display !== (s.showThinking ? "summarized" : "omitted"));
+  },
+});
 
 // ---------- persistence ----------
 
@@ -184,6 +249,10 @@ function dropPendingSave() {
 
 /** Stop the running loop for good; whatever it was doing no longer reaches this chat. */
 function stopLoop() {
+  stopWarm();
+  lastPrompt = 0;
+  quickTouched = 0;
+  lastBreak.clear();
   if (get().busy) persist();
   gen++;
   redirect = false;
@@ -411,6 +480,7 @@ function contextNote(): string {
     changed,
     reportSummary(report, 12),
     selected.length ? `The user has selected: ${selected.slice(0, 20).join(", ")}` : "",
+    drawingContext(),
     lastEditedSource !== null && lastEditedSource !== source ? "The source changed since your last edit (the user edited it). Call get_design before editing." : "",
     `</context>`,
   ];
@@ -479,7 +549,7 @@ export function stop() {
  * brief. With a spot, the message is about that place on the model (see
  * app/spot); `id` names the chat item so the caller can follow the replies.
  */
-export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: { url: string; note: string } } = {}) {
+export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: { url: string; note: string }; design?: boolean } = {}) {
   const t = text.trim();
   const attached = opts.files ?? [];
   if ((!t && !attached.length) || get().busy) return;
@@ -490,6 +560,7 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
   }
   endPreview();
   const pending = get().pendingChoice;
+  const lastReply = [...get().items].reverse().find((i): i is Extract<ChatItem, { kind: "assistant" }> => i.kind === "assistant" && !!i.text.trim())?.text ?? "";
   const files = addReferences(attached);
   push({ kind: "user", id: opts.id ?? nid(), text: t, ts: Date.now(), files: files.length ? files : undefined, spot: opts.spot, image: opts.image?.url });
   set({ lastUserText: t, busy: true });
@@ -502,16 +573,29 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
   const typed = t || "(See the attached reference.)";
   const said = opts.spot ? `<spot>${spotText(opts.spot)}</spot>\n${typed}` : opts.image ? `<markup>${opts.image.note}</markup>\n${typed}` : typed;
   const pic: BetaContentBlockParam[] = opts.image ? [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: opts.image.url.split(",")[1] ?? "" } }] : [];
+  const steer = steering();
   if (pending) {
     // the user typed instead of picking: that answers the open question
     patch(pending.itemId, (it) => (it.kind === "choice" ? { ...it, chosen: "(answered in chat)" } : it));
     set({ pendingChoice: null });
-    addUser([...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${said}` }, ...blocks, { type: "text", text: contextNote() }, ...pic, ...steering()]);
+    addUser([...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${said}` }, ...blocks, { type: "text", text: contextNote() }, ...pic, ...steer]);
   } else {
-    addUser([{ type: "text", text: contextNote() }, ...steering(), ...blocks, ...pic, { type: "text", text: said }]);
+    addUser([{ type: "text", text: contextNote() }, ...steer, ...blocks, ...pic, { type: "text", text: said }]);
   }
   persist();
-  await runLoop();
+  await runLoop({
+    // a change asked for from one of Kerf's panels, not typed: always design work
+    route: opts.design ? designRoute("a change asked for from a panel", "rule") : undefined,
+    facts: {
+      text: t,
+      lastReply,
+      hasFiles: files.length > 0,
+      pointsAtModel: !!opts.spot || !!opts.image,
+      answersChoice: !!pending,
+      steering: steer.length > 0,
+      parts: useDesign.getState().model?.parts.length ?? 0,
+    },
+  });
 }
 
 /** Add user content to the history, joining results a finished turn left waiting for it. */
@@ -609,6 +693,30 @@ export async function retryLast() {
   if (t) await sendMessage(t);
 }
 
+/**
+ * Answer the latest quick turn again on the design model. The quick answer is
+ * removed from the end of the conversation (removing whole turns from the end
+ * leaves every earlier thinking block valid) and its cost is carried into the
+ * new turn.
+ */
+export async function askDesignModel(costId: string) {
+  if (get().busy) return;
+  const items = get().items;
+  const at = items.findIndex((i) => i.id === costId);
+  const it = items[at];
+  if (!it || it.kind !== "cost" || !it.route.quick || it.route.escalated || it.historyStart > history.length) return;
+  // only the latest turn: nothing the user said since
+  if (items.slice(at + 1).some((i) => i.kind === "user" || i.kind === "cost" || i.kind === "choice")) return;
+  let userAt = at - 1;
+  while (userAt >= 0 && items[userAt].kind !== "user") userAt--;
+  if (userAt < 0) return;
+  endPreview();
+  history.length = it.historyStart;
+  set((s) => ({ items: [...s.items.slice(0, userAt + 1), ...s.items.slice(at + 1)] }));
+  persist();
+  await runLoop({ route: designRoute(`you asked for ${modelLabel(useSettings.getState().model)}`, "you"), replaces: { spend: it.spend, route: it.route } });
+}
+
 export function revertTurn(itemId: string) {
   const it = get().items.find((i) => i.id === itemId);
   if (!it || it.kind !== "turn" || it.reverted) return;
@@ -617,7 +725,10 @@ export function revertTurn(itemId: string) {
   persist();
 }
 
-const client = () => claudeClient();
+// a declaration, so configureWarm above can take it before this line runs
+function client() {
+  return claudeClient();
+}
 
 function systemBlocks() {
   return [{ type: "text" as const, text: systemPrompt(), cache_control: { type: "ephemeral" as const } }];
@@ -628,7 +739,81 @@ function currentBinding() {
   return bindingKey(systemBlocks(), TOOL_DEFS);
 }
 
-async function runLoop() {
+/** The model and effort for design work, as set in Settings. */
+function designRoute(why = "design work", by: Route["by"] = "settings"): Route {
+  const s = useSettings.getState();
+  return { model: s.model, effort: s.effort as Effort, quick: false, why, by };
+}
+
+/** A model's short name, such as "Opus 5.5". */
+export const modelLabel = (id: string) => MODELS.find((m) => id === m.id || id.startsWith(m.id + "-"))?.label.replace(/^Claude /, "") ?? id.replace(/^claude-/, "");
+
+/** the quick model is not available to this key: every turn goes to the design model this session */
+let quickUnavailable = false;
+/** prompt tokens of the latest chat request, on any model (0 before the first one of this chat) */
+let lastPrompt = 0;
+/** when the latest quick request started */
+let quickTouched = 0;
+
+/** Rough prompt size of the conversation before any request has reported one (a reopened chat). */
+function estimatePrompt(): number {
+  let images = 0;
+  const text = JSON.stringify([systemPrompt(), TOOL_DEFS, history], (k, v) => {
+    if (k === "data" && typeof v === "string") {
+      images++;
+      return "";
+    }
+    return v;
+  });
+  // a picture costs about 1,600 tokens however long its base64 is
+  return roughTokens(text) + images * 1600;
+}
+
+/** Which model a turn needs: the design model, unless the turn only reads the design. */
+async function chooseRoute(anthropic: Anthropic, facts: TurnFacts | undefined, signal: AbortSignal): Promise<Route> {
+  const s = useSettings.getState();
+  if (!facts) return designRoute();
+  if (!s.routeQuick) return designRoute("cheaper models are off in Settings");
+  if (s.model.startsWith(QUICK_MODEL) || quickUnavailable) return designRoute();
+  const rule = ruleReason(facts);
+  if (rule) return designRoute(rule, "rule");
+  if (!quickCanSave(s.model, lastPrompt || estimatePrompt(), Date.now() - quickTouched < QUICK_WARM_MS)) return designRoute(`a conversation this long costs less on ${modelLabel(s.model)}`, "rule");
+  const r = await askRouter(anthropic, facts, signal);
+  // the router is spend that running everything on the design model would not have had
+  if (r.usage) recordSpend("router", r.model, r.usage, -costOf(r.model, r.usage));
+  return r.quick ? { model: QUICK_MODEL, effort: QUICK_EFFORT, quick: true, why: r.why, by: "router" } : designRoute(r.why, "router");
+}
+
+/** A quick turn reached for something only the design model does. */
+class NeedsDesignModel extends Error {
+  constructor(
+    readonly why: string,
+    readonly usage: Usage,
+  ) {
+    super(why);
+  }
+}
+
+/** Why a quick turn that called this tool goes to the design model. */
+function handoverWhy(tool: string) {
+  if (tool === "edit_design" || tool === "write_design" || tool === "build_subassemblies") return "it needs a design change";
+  if (tool === "update_brief") return "it changes the brief";
+  if (tool === "update_plan") return "it needs a plan";
+  if (tool === "ask_user" || tool === "explore_fixes") return "it needs a design decision";
+  if (tool === "review_design") return "it needs a design review";
+  return "it needs a tool only the design model uses";
+}
+
+interface LoopOptions {
+  /** decided already: a retry, an answered choice, or the user asking for the design model */
+  route?: Route;
+  /** what the router decides from, for a new message */
+  facts?: TurnFacts;
+  /** a quick answer this turn replaces: its spend is carried in, as spend that bought nothing */
+  replaces?: { spend: TurnSpend; route: TurnRoute };
+}
+
+async function runLoop(opts: LoopOptions = {}) {
   const anthropic = client();
   if (!anthropic) {
     push({ kind: "notice", id: nid(), level: "warn", title: "Add your Claude API key to chat", detail: "Kerf talks to Claude directly from your browser with your own key. Everything else works without one.", action: "settings" });
@@ -649,8 +834,25 @@ async function runLoop() {
   const reviewItems: string[] = [];
   const system = systemBlocks();
   const binding = bindingKey(system, TOOL_DEFS);
+  const historyStart = history.length;
+  // what this turn costs, from every request made while it runs (the router, reviews and agents included)
+  const box = { spend: emptyTurn() };
+  if (opts.replaces) box.spend = carryOver(box.spend, opts.replaces.spend);
+  turnBox = box;
+  let route: Route = opts.route ?? designRoute();
+  let routeNote: TurnRoute | null = opts.replaces ? { ...opts.replaces.route, escalated: { to: route.model, why: "you asked for it" } } : null;
 
   try {
+    if (!opts.route) {
+      set({ routing: true });
+      try {
+        route = await chooseRoute(anthropic, opts.facts, ac.signal);
+      } finally {
+        set({ routing: false });
+      }
+    }
+    if (stale()) return;
+    routeNote ??= { model: route.model, quick: route.quick, why: route.why, by: route.by };
     for (let step = 0; step < settings.maxSteps; step++) {
       if (stale()) return;
       repairHistory();
@@ -658,10 +860,62 @@ async function runLoop() {
       const assistantId = nid();
       push({ kind: "assistant", id: assistantId, text: "", thinking: "", streaming: true });
       const toolItems = new Map<number, string>();
+      const r = route;
 
-      const final = await streamOnce(anthropic, () => buildRequest(system, binding, settings), assistantId, toolItems, ac.signal);
+      // the quick model hands the turn over: what it streamed goes, and the design model answers from here
+      const handOver = (why: string, wasted?: Usage) => {
+        if (wasted) recordSpend("escalated", r.model, wasted, -costOf(r.model, wasted));
+        const partial = new Set([assistantId, ...toolItems.values()]);
+        set((s) => ({ items: s.items.filter((it) => !partial.has(it.id)) }));
+        route = designRoute(why, r.by);
+        routeNote = { ...routeNote!, escalated: { to: route.model, why } };
+        push({ kind: "notice", id: nid(), level: "info", title: `Passed to ${modelLabel(route.model)}`, detail: `${modelLabel(r.model)} started on this, but ${why}.` });
+      };
+
+      let sentReq: { final: Awaited<ReturnType<typeof streamOnce>>["final"]; params: Record<string, unknown> };
+      if (r.quick) quickTouched = Date.now();
+      try {
+        sentReq = await streamOnce(anthropic, () => buildRequest(system, binding, r), assistantId, toolItems, ac.signal, { design: !r.quick, stopOnTool: r.quick ? (name) => !QUICK_TOOLS.has(name) : undefined });
+      } catch (e) {
+        if (r.quick && !stale() && !isAbort(e)) {
+          if (e instanceof NeedsDesignModel) {
+            handOver(e.why, e.usage);
+            step--;
+            continue;
+          }
+          if (e instanceof Anthropic.APIError && !(e instanceof Anthropic.AuthenticationError)) {
+            if (e instanceof Anthropic.PermissionDeniedError || e instanceof Anthropic.NotFoundError) quickUnavailable = true;
+            handOver(`${modelLabel(r.model)} could not answer just now`);
+            step--;
+            continue;
+          }
+        }
+        throw e;
+      }
+      const { final, params } = sentReq;
       if (stale()) return;
       const content = final.content as BetaContentBlock[];
+      const usage = final.usage as unknown as Usage;
+      lastPrompt = promptTokens(usage);
+      if (r.quick) {
+        const uses = content.filter((b) => b.type === "tool_use") as { name: string }[];
+        const why =
+          final.stop_reason === "refusal"
+            ? `${modelLabel(r.model)} declined it`
+            : final.stop_reason === "max_tokens"
+              ? "the answer ran long"
+              : uses.some((u) => !QUICK_TOOLS.has(u.name))
+                ? handoverWhy(uses.find((u) => !QUICK_TOOLS.has(u.name))!.name)
+                : uses.length && step >= QUICK_MAX_STEPS - 1
+                  ? "it needs more steps than a quick answer"
+                  : null;
+        if (why) {
+          handOver(why, usage);
+          step--;
+          continue;
+        }
+        recordSpend("quick", final.model, usage, counterfactualCost(useSettings.getState().model, usage) - costOf(final.model, usage));
+      } else recordSpend("chat", final.model, usage, requestFinished(params, usage));
       history.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
       reportDroppedThinking(final.input_transformations);
 
@@ -788,6 +1042,7 @@ async function runLoop() {
       if (hasTool) history.pop();
     }
   } finally {
+    if (turnBox === box) turnBox = null;
     if (!stale()) finishLoop();
   }
   if (stale()) return;
@@ -808,6 +1063,8 @@ async function runLoop() {
         persist();
       });
     }
+    // what the turn cost and which model answered, under the reply
+    if (box.spend.cost > 0 && routeNote) push({ kind: "cost", id: nid(), spend: box.spend, route: routeNote, historyStart });
     // Claude has now seen the brief as it stands
     set({ briefSeen: briefKey(currentBrief()) });
     if (abort === ac) abort = null;
@@ -827,7 +1084,7 @@ const isAbort = (e: unknown) => e instanceof Anthropic.APIUserAbortError || (e i
 export async function applyPlanChangesNow() {
   if (!pendingSteering(usePlan.getState()).length) return;
   if (!get().busy) {
-    await sendMessage(describeSteering(usePlan.getState()));
+    await sendMessage(describeSteering(usePlan.getState()), { design: true });
     return;
   }
   // sub-agents run inside the main loop's current action; they take their own changes at their next step
@@ -895,7 +1152,7 @@ async function reviewTool(input: unknown, itemId: string, session: ReviewSession
  * if an earlier message, the system prompt or the tools changed, the thinking
  * blocks from that point on are removed first, because Claude rejects them.
  */
-function buildRequest(system: ReturnType<typeof systemBlocks>, binding: string, settings: ReturnType<typeof useSettings.getState>): Record<string, unknown> {
+function buildRequest(system: ReturnType<typeof systemBlocks>, binding: string, route: Route): Record<string, unknown> {
   let keys = messageKeys(history);
   if (sent) {
     const at = sent.binding !== binding ? 0 : firstEdit(sent.keys, keys);
@@ -907,26 +1164,32 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, binding: string, 
   }
   sent = { binding, keys };
 
+  // Every model gets the same system prompt, tools and messages, thinking blocks
+  // included: a model that cannot read another model's blocks leaves them out
+  // of that request (unbilled), and they count again when the turn returns to
+  // the model that wrote them.
   const params: Record<string, unknown> = {
-    model: settings.model,
+    model: route.model,
     max_tokens: 32000,
     system,
     tools: TOOL_DEFS,
-    // rolling cache breakpoint on the newest user content
-    messages: withCacheBreakpoint(history),
+    messages: withCacheBreakpoint(history, lastBreak.get(route.model)),
   };
+  lastBreak.set(route.model, history.length - 1);
+  const off = unsupported(route.model);
   const betas: string[] = [];
-  if (!unsupported.has("thinking")) {
-    const thinking: Record<string, unknown> = { type: "adaptive", display: settings.showThinking ? "summarized" : "omitted" };
+  if (!off.has("thinking")) {
+    const thinking: Record<string, unknown> = { type: "adaptive", display: useSettings.getState().showThinking ? "summarized" : "omitted" };
     // a block that still doesn't match is dropped by the API instead of failing the request
-    if (!unsupported.has("binding")) {
+    if (!off.has("binding")) {
       thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
       betas.push(BINDING_BETA);
     }
     params.thinking = thinking;
   }
-  if (!unsupported.has("effort")) params.output_config = { effort: settings.effort };
-  if (!unsupported.has("fallbacks")) {
+  if (!off.has("effort")) params.output_config = { effort: route.effort };
+  // Haiku models have no server-side fallback to send a refusal to
+  if (!off.has("fallbacks") && !route.model.startsWith("claude-haiku")) {
     params.fallbacks = "default";
     betas.push(FALLBACK_BETA);
   }
@@ -944,24 +1207,46 @@ function reportDroppedThinking(list: readonly { type: string; path?: string; rea
   else console.info(`[kerf] Claude left out ${dropped.length} thinking block(s) from another model.`);
 }
 
-/** Which optional request feature a 400 is about, if the selected model rejected one. */
-function rejectedFeature(msg: string): "effort" | "thinking" | "fallbacks" | "binding" | null {
+/** Which optional request feature a 400 is about, if the model rejected one. */
+function rejectedFeature(msg: string, off: ReadonlySet<Feature>): Feature | null {
   if (msg.includes("block_binding") || msg.includes("thinking-binding")) return "binding";
   if (msg.includes("effort") || msg.includes("output_config")) return "effort";
   if (msg.includes("fallback")) return "fallbacks";
   if (msg.includes("thinking")) return "thinking";
-  if (msg.includes("beta")) return !unsupported.has("binding") ? "binding" : "fallbacks";
+  if (msg.includes("beta")) return !off.has("binding") ? "binding" : "fallbacks";
   return null;
 }
 
-async function streamOnce(anthropic: Anthropic, build: () => Record<string, unknown>, assistantId: string, toolItems: Map<number, string>, signal: AbortSignal) {
+interface StreamOptions {
+  /** a design-model request: the one kept warm in the cache */
+  design: boolean;
+  /** stop as soon as the response starts calling a tool this rejects (a quick turn reaching for an edit) */
+  stopOnTool?: (name: string) => boolean;
+}
+
+async function streamOnce(anthropic: Anthropic, build: () => Record<string, unknown>, assistantId: string, toolItems: Map<number, string>, signal: AbortSignal, opts: StreamOptions = { design: true }) {
   let strippedOnce = false;
   for (let attempt = 0; attempt < 6; attempt++) {
+    const params = build();
+    const at = Date.now();
+    let started = false;
+    let stoppedFor: string | null = null;
+    let streamedChars = 0;
+    const stream = anthropic.beta.messages.stream(params as never, { signal });
     try {
-      const stream = anthropic.beta.messages.stream(build() as never, { signal });
       stream.on("streamEvent", (ev) => {
+        if (!started) {
+          started = true;
+          requestStarted(String(params.model), params, at, opts.design);
+        }
+        if (stoppedFor) return;
         if (ev.type === "content_block_start") {
           const b = ev.content_block as { type: string; id?: string; name?: string };
+          if (b.type === "tool_use" && b.name && opts.stopOnTool?.(b.name)) {
+            stoppedFor = b.name;
+            stream.abort();
+            return;
+          }
           if (b.type === "tool_use" && b.id && b.name) {
             const id = nid();
             toolItems.set(ev.index, id);
@@ -969,6 +1254,7 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
           }
         } else if (ev.type === "content_block_delta") {
           const d = ev.delta as { type: string; text?: string; thinking?: string; partial_json?: string };
+          streamedChars += (d.text ?? d.thinking ?? d.partial_json ?? "").length;
           if (d.type === "text_delta" && d.text) patch(assistantId, (it) => (it.kind === "assistant" ? { ...it, text: it.text + d.text } : it));
           else if (d.type === "thinking_delta" && d.thinking) patch(assistantId, (it) => (it.kind === "assistant" ? { ...it, thinking: it.thinking + d.thinking } : it));
           else if (d.type === "input_json_delta" && d.partial_json) {
@@ -977,8 +1263,19 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
           }
         }
       });
-      return await stream.finalMessage();
+      return { final: await stream.finalMessage(), params };
     } catch (e) {
+      if (stoppedFor) {
+        // billed for what it read and wrote before stopping
+        const u = stream.currentMessage?.usage;
+        throw new NeedsDesignModel(handoverWhy(stoppedFor), {
+          input_tokens: u?.input_tokens ?? 0,
+          cache_creation_input_tokens: u?.cache_creation_input_tokens ?? 0,
+          cache_read_input_tokens: u?.cache_read_input_tokens ?? 0,
+          output_tokens: Math.max(u?.output_tokens ?? 0, Math.ceil(streamedChars / 3.6)),
+        });
+      }
+      if (opts.design) requestFailed(params);
       if (e instanceof Anthropic.BadRequestError) {
         const msg = e.message || "";
         let retry = false;
@@ -993,9 +1290,10 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
           }
         } else {
           // a model that rejects an optional feature: drop it and retry
-          const feature = rejectedFeature(msg.toLowerCase());
-          if (feature && !unsupported.has(feature)) {
-            unsupported.add(feature);
+          const off = unsupported(String(params.model));
+          const feature = rejectedFeature(msg.toLowerCase(), off);
+          if (feature && !off.has(feature)) {
+            off.add(feature);
             retry = true;
           }
         }
@@ -1038,17 +1336,32 @@ function repairHistory() {
   }
 }
 
-function withCacheBreakpoint(h: BetaMessageParam[]): BetaMessageParam[] {
+/** per model, the message the last request's rolling cache breakpoint was on */
+const lastBreak = new Map<string, number>();
+
+/**
+ * A rolling cache breakpoint on the newest user content, and another where
+ * the previous request to the same model put it. The API looks back at most
+ * 20 blocks from a breakpoint for a cached prefix, so a turn that added more
+ * since (a quick turn with many reads in between, many parallel tool calls)
+ * would otherwise miss the whole conversation.
+ */
+function withCacheBreakpoint(h: BetaMessageParam[], prev?: number): BetaMessageParam[] {
   if (!h.length) return h;
   const out = h.slice();
-  const last = out[out.length - 1];
-  if (last.role === "user" && typeof last.content !== "string" && last.content.length) {
-    const blocks = last.content.slice();
-    const lb = blocks[blocks.length - 1];
-    if (lb.type === "text" || lb.type === "tool_result") blocks[blocks.length - 1] = { ...lb, cache_control: { type: "ephemeral" } } as BetaContentBlockParam;
-    out[out.length - 1] = { ...last, content: blocks };
-  }
+  markCache(out, out.length - 1);
+  if (prev !== undefined && prev < out.length - 1) markCache(out, prev);
   return out;
+}
+
+function markCache(out: BetaMessageParam[], i: number) {
+  const m = out[i];
+  if (m.role !== "user" || typeof m.content === "string" || !m.content.length) return;
+  const blocks = m.content.slice();
+  const lb = blocks[blocks.length - 1];
+  if (lb.type !== "text" && lb.type !== "tool_result") return;
+  blocks[blocks.length - 1] = { ...lb, cache_control: { type: "ephemeral" } } as BetaContentBlockParam;
+  out[i] = { ...m, content: blocks };
 }
 
 function handleError(e: unknown) {

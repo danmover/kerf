@@ -8,15 +8,23 @@ export type Turn = { tool: string; input?: Record<string, unknown> } | { text: s
 interface Options {
   /** answer like a model that rejects thinking.block_binding */
   rejectBinding?: boolean;
+  /** how the model router answers (a request for JSON output): "design" unless set; "broken" fails it */
+  route?: "quick" | "design" | "broken";
+  /** the usage reported for each streamed response */
+  usage?: (body: Body) => Record<string, number>;
 }
 
 const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 const noCache = (k: string, v: unknown) => (k === "cache_control" ? undefined : v);
 
-type Body = { system?: unknown; tools?: unknown; messages: { role: string; content: string | { type: string; signature?: string }[] }[]; thinking?: { block_binding?: { prefix_mismatch_behavior?: string } } };
+type Body = { model?: string; stream?: boolean; max_tokens?: number; output_config?: { effort?: string; format?: unknown }; fallbacks?: unknown; system?: unknown; tools?: unknown; messages: { role: string; content: string | { type: string; signature?: string }[] }[]; thinking?: { block_binding?: { prefix_mismatch_behavior?: string } } };
 
 function prefix(body: Body, upTo: number) {
   return JSON.stringify([body.system, body.tools, body.messages.slice(0, upTo)], noCache);
+}
+
+function json(o: object, status = 200) {
+  return new Response(JSON.stringify(o), { status, headers: { "content-type": "application/json", "request-id": "req_json" } });
 }
 
 function error(message: string) {
@@ -27,11 +35,29 @@ export function fakeClaude(script: Turn[], opts: Options = {}) {
   const issued = new Map<string, string>();
   const requests: Body[] = [];
   const dropped: string[] = [];
+  /** requests asking which model a turn needs */
+  const routerRequests: Body[] = [];
+  /** max_tokens: 0 requests that keep the cache warm */
+  const warmRequests: Body[] = [];
   let n = 0;
+
+  // the router and keep-warm ask without streaming; neither uses the script
+  function answer(body: Body): Response {
+    if (body.output_config?.format) {
+      routerRequests.push(structuredClone(body));
+      if (opts.route === "broken") return json({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }, 529);
+      const route = opts.route ?? "design";
+      const reason = route === "quick" ? "Reads a dimension from the design." : "Needs engineering judgment.";
+      return json({ id: "msg_route", type: "message", role: "assistant", model: body.model, content: [{ type: "text", text: JSON.stringify({ route, reason }) }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 400, output_tokens: 15 } });
+    }
+    warmRequests.push(structuredClone(body));
+    return json({ id: "msg_warm", type: "message", role: "assistant", model: body.model, content: [], stop_reason: "max_tokens", stop_sequence: null, usage: { input_tokens: 10, cache_read_input_tokens: 20000, output_tokens: 0 } });
+  }
 
   async function fetch(url: string | URL | Request, init?: RequestInit): Promise<Response> {
     if (!String(url).includes("/v1/messages")) return new Response("not found", { status: 404 });
     const body = JSON.parse(String(init?.body)) as Body;
+    if (!body.stream) return answer(body);
     const betas = (new Headers(init?.headers).get("anthropic-beta") ?? "").split(",").map((s) => s.trim());
     const behavior = body.thinking?.block_binding?.prefix_mismatch_behavior;
     if (body.thinking?.block_binding && (opts.rejectBinding || !betas.includes(BINDING_BETA))) return error("thinking.block_binding: Extra inputs are not permitted");
@@ -68,7 +94,7 @@ export function fakeClaude(script: Turn[], opts: Options = {}) {
     issued.set(signature, prefix(body, body.messages.length));
 
     const events: object[] = [
-      { type: "message_start", message: { id: `msg_${id}`, type: "message", role: "assistant", model: "claude-opus-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1 }, ...(betas.includes(BINDING_BETA) ? { input_transformations: transformations } : {}) } },
+      { type: "message_start", message: { id: `msg_${id}`, type: "message", role: "assistant", model: body.model ?? "claude-opus-5-5", content: [], stop_reason: null, stop_sequence: null, usage: opts.usage?.(body) ?? { input_tokens: 10, output_tokens: 1 }, ...(betas.includes(BINDING_BETA) ? { input_transformations: transformations } : {}) } },
       { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
       { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: `thought ${id}` } },
       { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } },
@@ -92,7 +118,7 @@ export function fakeClaude(script: Turn[], opts: Options = {}) {
     return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream", "request-id": `req_${id}` } });
   }
 
-  return { fetch, requests, dropped, script };
+  return { fetch, requests, dropped, script, routerRequests, warmRequests };
 }
 
 /** The messages of a request as the API compares them. */

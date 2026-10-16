@@ -9,6 +9,8 @@ export interface Diagnostic {
   start: number;
   end: number;
   severity: "error" | "warning";
+  /** a design-rule warning, shown as a check with this title */
+  rule?: string;
 }
 
 export class ParseError extends Error {
@@ -43,6 +45,19 @@ export function parse(src: string): { program: Program; diagnostics: Diagnostic[
   } catch (e) {
     // deeply nested source overflows the recursive parser; report it instead of failing to open the design
     if (e instanceof RangeError) return { program: { stmts: [] }, diagnostics: [{ message: "This source is nested too deeply to read. Flatten the deepest brackets or blocks.", start: 0, end: Math.min(src.length, 1), severity: "error" }] };
+    throw e;
+  }
+}
+
+/** Parse a single expression (a selector typed into a tool, for example). */
+export function parseExpression(src: string): { expr?: Expr; error?: string } {
+  try {
+    const p = new Parser(lex(src));
+    const expr = p.expr();
+    if (!p.is("eof")) return { error: `Unexpected "${p.peek().value}" after the expression` };
+    return { expr };
+  } catch (e) {
+    if (e instanceof ParseError || e instanceof LexError) return { error: e.message };
     throw e;
   }
 }
@@ -107,7 +122,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && tk.kind === "kw" && TOP_LEVEL.has(tk.value) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -118,11 +133,23 @@ class Parser {
     return !prev || prev.line < this.peek().line;
   }
 
+  /** `drawing <name> {` starts a drawing block; elsewhere "drawing" is an ordinary name. */
+  atDrawing() {
+    return this.is("ident", "drawing") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
+  }
+
   stmt(): Stmt {
     const tk = this.peek();
+    if (this.atDrawing()) {
+      const start = tk.start;
+      this.next();
+      const nameTk = this.expect("ident", undefined, "a drawing name");
+      const items = this.block();
+      return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+    }
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -448,7 +475,16 @@ class Parser {
         case "intersect": {
           this.next();
           const shape = this.expr();
+          if (this.eat("kw", "as")) {
+            const n = this.expect("ident", undefined, "a feature name after \"as\"");
+            return { k: "op", op: tk.value, shape, name: n.value, nameSpan: { start: n.start, end: n.end }, span: { start, end: this.prevEnd() } };
+          }
           return { k: "op", op: tk.value, shape, span: { start, end: this.prevEnd() } };
+        }
+        case "cosmetic": {
+          this.next();
+          const body = this.block();
+          return { k: "cosmetic", body, span: { start, end: this.prevEnd() } };
         }
         case "for": {
           this.next();
@@ -478,6 +514,14 @@ class Parser {
         case "locked":
           this.next();
           return { k: "flag", name: "locked", span: { start, end: this.prevEnd() } };
+        case "note":
+          // note("...") inside a drawing block
+          if (this.isOp("(", 1)) {
+            const kw = this.next();
+            const call = this.callTail({ k: "ident", name: "note", span: { start: kw.start, end: kw.end } });
+            return { k: "modifier", call, span: { start, end: this.prevEnd() } };
+          }
+          break;
       }
     }
     if (tk.kind === "ident") {
@@ -496,7 +540,7 @@ class Parser {
       return { k: "flag", name: tk.value, span: { start, end: this.prevEnd() } };
     }
     throw new ParseError(
-      `Unexpected "${tk.value || "end of file"}" inside block. Use body/add/cut/intersect, a property like color: #4c8dff, a modifier like shell(2), for, if or let.`,
+      `Unexpected "${tk.value || "end of file"}" inside block. Use body/add/cut/intersect, a property like color: #4c8dff, a modifier like shell(2) or fillet(1, edges: ...), cosmetic { }, for, if or let.`,
       tk.start,
       Math.max(tk.end, tk.start + 1),
     );
@@ -665,25 +709,29 @@ class Parser {
     }
     return base;
   }
+  /** The argument list of a call on callee, starting at "(". */
+  callTail(callee: Expr): Expr & { k: "call" } {
+    this.expect("op", "(");
+    const args: Arg[] = [];
+    while (!this.isOp(")")) {
+      const aStart = this.peek().start;
+      let name: string | undefined;
+      if ((this.is("ident") || this.is("kw")) && this.isOp(":", 1)) {
+        name = this.next().value;
+        this.next();
+      }
+      const value = this.expr();
+      args.push({ name, value, span: { start: aStart, end: this.prevEnd() } });
+      if (!this.eat("op", ",")) break;
+    }
+    this.expect("op", ")", '")" to close the call');
+    return { k: "call", callee, args, span: { start: callee.span.start, end: this.prevEnd() } };
+  }
   postfix(): Expr {
     let e = this.primary();
     for (;;) {
       if (this.isOp("(")) {
-        this.next();
-        const args: Arg[] = [];
-        while (!this.isOp(")")) {
-          const aStart = this.peek().start;
-          let name: string | undefined;
-          if ((this.is("ident") || this.is("kw")) && this.isOp(":", 1)) {
-            name = this.next().value;
-            this.next();
-          }
-          const value = this.expr();
-          args.push({ name, value, span: { start: aStart, end: this.prevEnd() } });
-          if (!this.eat("op", ",")) break;
-        }
-        this.expect("op", ")", '")" to close the call');
-        e = { k: "call", callee: e, args, span: { start: e.span.start, end: this.prevEnd() } };
+        e = this.callTail(e);
       } else if (this.isOp(".")) {
         this.next();
         const nameTk = this.peek();

@@ -2,9 +2,12 @@
 // builtin tables the evaluator uses so it cannot drift from the code.
 
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
+import { FEATURE_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../lang/modelling";
+import { SEL_PRESETS } from "../kernel/recipe";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
 import { processReference } from "../mfg/guide";
+import { DRAWING_DOCS, DRAWING_PROPS } from "../drawing/spec";
 import { FINISHES, MATERIAL_LIST } from "../library/materials";
 import { importsReference } from "./importTools";
 import { CONSTRAINTS } from "../sketch/evaluate";
@@ -22,9 +25,13 @@ const geoDocs: Record<string, string> = {
 };
 
 export function languageReference(): string {
-  const shapes = Object.values({ ...SHAPE_FNS, extrude: SKETCH_FNS.extrude, revolve: SKETCH_FNS.revolve })
-    .map((f) => `- ${f.doc ?? f.name}`)
-    .join("\n");
+  const docs = (fns: Record<string, { doc?: string; name: string }>, skip: string[] = []) =>
+    Object.entries(fns)
+      .filter(([k]) => !skip.includes(k))
+      .map(([, f]) => `- ${f.doc ?? f.name}`)
+      .join("\n");
+  // revolve() is listed once, with both forms, among the profile solids
+  const shapes = docs(SHAPE_FNS, ["revolve"]);
   const math = Object.values(MATH_FNS)
     .map((f) => `- ${f.doc ?? f.name}`)
     .join("\n");
@@ -120,21 +127,50 @@ part bracket {
   material: "PETG"            // one of ${materials}
   finish: "printed"           // optional surface finish for that material (see Materials and finishes)
   group: "Housing"            // groups parts in the parts panel
-  body box(40, 20, 5)         // first solid
-  add cylinder(d: 10, h: 12, at: (0, 0, 5))
+  body box(40, 20, 5, r: 2) as plate      // first solid, named so its edges can be picked
+  add cylinder(d: 10, h: 12, at: (0, 0, 5)) as boss
+  fillet(1.5, edges: boss.root)           // round where the boss meets the plate
   cut hole(M4, through: true, at: (12, 0, 5))
-  fillet(1, edges: "vertical")
   for x in [-12, 12] { cut hole(M3, depth: 6, at: (x, 0, 5)) }
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
+  cosmetic { chamfer(0.4, edges: boss.tip) }   // full-quality detail only
 }
 Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
-Order matters: shell/fillet/chamfer apply to the body built so far, so put them right after the body and before bosses and holes. A part is limited to 600 operations.
+Order matters: each modifier applies to the body as built so far. Shell right after the body (before bosses, ribs and holes). Fillet a joint right after adding the feature it rounds (fillet(r, edges: boss.root)); fillet outer edges before cutting holes that cross them. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
 ${shapes}
 
 ### Modifiers (inside a part)
 ${mods}
+
+## Detailed modelling
+
+### 2D profiles (flat outlines; combine with + and -, move(p, by:), rotate(p, angle))
+${docs(PROFILE_FNS)}
+
+### 3D paths (for sweep and pipe)
+${docs(PATH_FNS)}
+
+### Solids from profiles and sketches, threads, grips, lettering, ribs
+${docs({ ...SOLID_FNS, extrude: SKETCH_FNS.extrude, revolve: SKETCH_FNS.revolve })}
+
+### Ready-made features (use with add; each adds and cuts what it needs and rounds its own root)
+${docs(FEATURE_FNS)}
+
+### Naming features and picking edges
+Name any step with \`as\`: \`body box(80, 50, 30) as shell\`, \`add cylinder(d: 8, h: 10, at: p) as boss\`, \`cut hole(M3, through: true) as bore\`. Using the same name again (for example inside a for loop) adds to the same feature. A name then picks geometry by meaning, however the part changes later:
+- boss.root: edges where the feature meets the rest of the part (fillet these for strength)
+- boss.tip: sharp edges between two faces of the feature itself (the top rim of a boss)
+- boss.edges / boss.faces: all of its edges or faces; boss.convex / boss.concave: only outside or inside corners
+Presets: ${SEL_PRESETS.map((p) => `"${p}"`).join(", ")} ("convex" = sharp outside edges, "concave" = sharp inside corners, "sharp" = both; top/bottom = at the part's highest/lowest z).
+Selector functions (coordinates are the part's own, before its at:/rotate:):
+${docs(SELECT_FNS)}
+Combine: a list or + takes everything in either, - removes, both(a, b) keeps the overlap. Example: fillet(0.6, edges: shell.convex - shell.root).
+Use inspect_part to see a part's features and to test a selector before you rely on it.
+
+### Cosmetic detail
+cosmetic { ... } holds steps that only build in the full-quality pass (final meshes, renders, STEP export): small chamfers, edge breaks, lettering, decorative grooves. Fast builds (previews, interference and clearance checks, measurements) skip them, and if one fails it is left out with a warning instead of breaking the part. Threads and knurls are always detailed in the full-quality pass and plain cylinders in fast builds. A step outside cosmetic must not refer to a feature named inside it.
 
 ### Math and helpers
 ${math}
@@ -180,6 +216,7 @@ Component fields are world-space after placement (motor.holes is a list of world
 
 ${lib}
 
+${drawingReference()}
 ${importsReference()}
 
 ## Standard data
@@ -254,4 +291,28 @@ Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-print
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
 Things geometry cannot prove are reported as "needs analysis" until an analysis block covers them; heat and real printer tolerances are not analysed.
 `;
+}
+
+function drawingReference(): string {
+  const calls = Object.values(DRAWING_DOCS)
+    .map((d) => `- ${d}`)
+    .join("\n");
+  return `## Drawings
+Every design gets automatic engineering drawings: one for the whole design (views, overall sizes, parts list and balloons) and one per custom part (views, a section when it has hidden features, dimensions, hole callouts, title block). A drawing block in the source replaces the automatic drawing of the same target and is how drawings are changed:
+drawing housing_drawing {
+  title: "Housing"
+  of: housing
+  sheet: "A3"
+  scale: "1:2"
+  views: ["front", "top", "right", "iso"]
+  section("A", at: (0, 12, 0), normal: X, view: "front")
+  detail("B", view: "front", at: (30, 0, 30), r: 8, scale: 4)
+  dim((-20, 0, 0), (20, 0, 0), view: "top", tol: 0.05)
+  diameter((30, 0, 30), 16, view: "front", fit: "H7")
+  note("Print in PETG, 0.2 mm layers")
+}
+Properties: ${DRAWING_PROPS.join(", ")}. of names parts or components defined above (omit it for the whole design). Leave out sheet and scale to have them chosen. Dimensions, hole callouts and position dimensions are generated (auto_dims: false turns them off); a dim() or diameter() that repeats a generated one replaces it, which is how to add a tolerance or a fit. Positions are model coordinates in mm; views are first-angle (ISO) unless projection: "third".
+Calls inside a drawing block:
+${calls}
+Use view_drawing to look at a drawing and get its dimension list before changing it. When the user points at something on a drawing, their message names it (for example a dimension's text and view); change the drawing block, or the design itself when they ask for a different size.`;
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, type Effort } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, type Effort } from "../app/settings";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
 import { forgetApiKey, getApiKey, isRemembered, keyHint, subscribeKey } from "../persist/vault";
 import { storageEstimate } from "../persist/db";
@@ -133,6 +133,7 @@ function AiSettings() {
   const effort = EFFORTS.find((e) => e.value === s.effort)!;
   const server = useAccount((a) => a.status !== "none" && a.status !== "checking");
   const viaAccount = useAccount((a) => a.status === "signed-in" && a.info?.claude?.source === "account");
+  const designLabel = MODELS.find((m) => m.id === s.model)?.label ?? s.model;
   return (
     <>
       <Section title="API key">
@@ -140,7 +141,7 @@ function AiSettings() {
         {!server && <BrowserKey />}
       </Section>
 
-      <Section title="Model">
+      <Section title="Model for design work">
         <div role="radiogroup" aria-label="Model" style={{ display: "grid", gap: 6 }}>
           {MODELS.map((m) => (
             <button key={m.id} role="radio" aria-checked={s.model === m.id} className={`template-opt ${s.model === m.id ? "active" : ""}`} onClick={() => updateSettings({ model: m.id })}>
@@ -156,6 +157,37 @@ function AiSettings() {
             </button>
           ))}
         </div>
+      </Section>
+
+      <Section title="Cost">
+        <Row
+          t="Use the cheapest model that can do each turn"
+          d={
+            <>
+              Quick questions, thanks and look-ups (a dimension, a material, which checks fail) go to Claude Haiku 5.5, about 40 times cheaper per token, whenever that costs less overall. Anything that changes the design, the brief or the plan, any engineering judgment, the self-review and parallel agents stay on {designLabel}. If Haiku reaches for a change, Kerf hands the turn to {designLabel} before anything runs, and any quick answer can be asked again on {designLabel}.
+            </>
+          }
+        >
+          <Toggle on={s.routeQuick} onChange={(v) => updateSettings({ routeQuick: v })} label="Use the cheapest model that can do each turn" />
+        </Row>
+        <Row
+          t="Keep the conversation cached while you look"
+          d={
+            <>
+              Claude reads the conversation back from a cache that forgets it 5 minutes after the last request. While you look at the design, Kerf refreshes it for a small fraction of what sending it again costs, so your next message is cheaper. Refreshing pauses while Kerf is hidden, and stops after this long without you typing, using the view or sending a message, or once more refreshes would cost more than sending the conversation again. After a quick answer from Haiku, {designLabel}'s cache is refreshed once either way, as answering on {designLabel} would have done.
+            </>
+          }
+        >
+          <Segmented
+            id="keep-warm"
+            value={String(s.keepWarm)}
+            options={KEEP_WARM_MINUTES.map((m) => ({ value: String(m), label: m === 0 ? "Off" : m < 60 ? `${m} min` : `${m / 60} h` }))}
+            onChange={(v) => updateSettings({ keepWarm: Number(v) })}
+          />
+        </Row>
+        <Row t="Show cost per reply" d="A line under each reply with the model that answered, what the turn cost and what Kerf saved. Click it for the breakdown.">
+          <Toggle on={s.showCost} onChange={(v) => updateSettings({ showCost: v })} label="Show cost per reply" />
+        </Row>
       </Section>
 
       <Section title="Behaviour">
