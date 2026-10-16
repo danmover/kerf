@@ -3858,6 +3858,16 @@ a:hover {
 .mp-head .segmented button.active .seg-n {
   color: var(--text-3);
 }
+.mp-head .segmented button {
+  padding: 0 8px;
+}
+.mp-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  white-space: nowrap;
+}
 .mp-verdict {
   height: 22px;
   font-size: 11px;

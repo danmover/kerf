@@ -101,15 +101,17 @@ export function MachinePanel() {
             { value: "tests", label: <>Test plan{plan.length > 0 && <span className="seg-n">{plan.length}</span>}</>, title: "What to test before relying on the machine" },
           ]}
         />
-        <div className="grow" />
-        <span className={`chip mp-verdict ${verdict.cls}`} data-tip={checking ? "Geometry checks are still running, so this may change." : ready.headline}>
-          {checking && <span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }} />}
-          {verdict.word}
-        </span>
-        <button className="btn primary sm" onClick={() => void makePack()} disabled={busy} data-tip="Parts list, print files, STEP, wiring, firmware, calculations, checks and test plan in one zip">
-          {busy ? <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} /> : <Icon.Download size={13} />}
-          {busy ? "Preparing…" : "Download build pack"}
-        </button>
+        {/* the verdict and the download stay together, so a narrow panel wraps them as one */}
+        <div className="mp-actions">
+          <span className={`chip mp-verdict ${verdict.cls}`} data-tip={checking ? "Geometry checks are still running, so this may change." : ready.headline}>
+            {checking && <span className="spinner" style={{ width: 9, height: 9, borderWidth: 1.5 }} />}
+            {verdict.word}
+          </span>
+          <button className="btn primary sm" onClick={() => void makePack()} disabled={busy} data-tip="Download the parts list, print files, STEP, wiring, circuit boards, firmware, calculations, checks and test plan in one zip">
+            {busy ? <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} /> : <Icon.Download size={13} />}
+            {busy ? "Preparing…" : "Build pack"}
+          </button>
+        </div>
       </div>
       <div className="mp-body">
         {shown === "overview" && <Overview model={model} m={m} ready={ready} rows={rows} plan={plan} fw={fw} checking={checking} />}
