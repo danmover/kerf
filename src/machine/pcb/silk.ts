@@ -164,7 +164,7 @@ export function boardSilk(spec: BoardSpec): Silk {
         ];
         spots.forEach(([x, y], si) => {
           const box: BBox = [x - w / 2, y - h / 2, x + w / 2, y + h / 2];
-          const pen = fits(box, part.ref);
+          const pen = fits(box, side, part.ref);
           if (pen < 0) return;
           const score = pen + vi * 2 + si * 0.05 + (rot === (tall ? 90 : 0) ? 0 : 0.5);
           if (!best || score < best.score) {

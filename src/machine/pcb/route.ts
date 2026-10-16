@@ -422,7 +422,7 @@ class Router {
   }
 
   /** Grid nodes of one component: pad terminals on both layers and every node of its paths. */
-  private compNodes(n: RNet, comp: number, owner: Map<number, number>): number[] {
+  compNodes(n: RNet, comp: number, owner: Map<number, number>): number[] {
     const cm = this.comps(n);
     const out: number[] = [];
     for (const pi of n.pads) {
@@ -448,7 +448,7 @@ class Router {
    * A* from any source node to any target node. `win` limits the search to a
    * box of grid cells; `rip` lets it cross other nets' tracks and vias at a price.
    */
-  search(n: RNet, src: number[], dst: number[], win: [number, number, number, number], rip: boolean): Int32Array | null {
+  search(n: RNet, src: number[], dst: number[], win: [number, number, number, number], rip: boolean, owner?: Map<number, number>): Int32Array | null {
     const { NC, nx, G, par, seen, closed, tgt, dirIn, sinceVia, heap, hist, moveCost } = this;
     const pr = n.probe;
     const via = this.via;
@@ -485,10 +485,11 @@ class Router {
       const c = node % NC;
       const i = c % nx;
       const j = (c - i) / nx;
-      let g0 = 0;
+      // a track starting off a pad's centre pays for the stub back to it
+      let g0 = owner ? this.stubCost(node, owner) : 0;
       if (this.blockedDyn(pr, node, net)) {
         if (!rip) continue;
-        g0 = RIP_COST + hist[node];
+        g0 += RIP_COST + hist[node];
       }
       seen[node] = gen;
       G[node] = g0;
@@ -535,7 +536,8 @@ class Router {
           if (!rip) continue;
           extra = RIP_COST + hist[nn];
         }
-        const ng = gn + moveCost[L * 8 + d] + tc + extra;
+        let ng = gn + moveCost[L * 8 + d] + tc + extra;
+        if (owner && tgt[nn] === gen) ng += this.stubCost(nn, owner);
         if (seen[nn] !== gen || ng < G[nn]) {
           seen[nn] = gen;
           G[nn] = ng;
@@ -573,6 +575,15 @@ class Router {
     const rev: number[] = [];
     for (let k = found; k >= 0; k = par[k]) rev.push(k);
     return Int32Array.from(rev.reverse());
+  }
+
+  /** Length of the stub from a pad terminal to the pad's centre, in grid steps. */
+  private stubCost(node: number, owner: Map<number, number>): number {
+    const pi = owner.get(node);
+    if (pi === undefined) return 0;
+    const c = node % this.NC;
+    const p = this.pads[pi].p;
+    return Math.hypot((c % this.nx) * this.g - p.x, Math.floor(c / this.nx) * this.g - p.y) / this.g;
   }
 
   private pt(node: number): Pt {
@@ -809,9 +820,9 @@ export function routeBoard(spec: BoardSpec, opts: { maxMs?: number } = {}): Rout
       c.failed = true;
       continue;
     }
-    let nodes = R.search(n, src, dst, box(c, 5), false) ?? R.search(n, src, dst, whole, false);
+    let nodes = R.search(n, src, dst, box(c, 5), false, owner) ?? R.search(n, src, dst, whole, false, owner);
     if (!nodes) {
-      nodes = R.search(n, src, dst, box(c, 12), true) ?? R.search(n, src, dst, whole, true);
+      nodes = R.search(n, src, dst, box(c, 12), true, owner) ?? R.search(n, src, dst, whole, true, owner);
       if (!nodes) {
         c.failed = true;
         continue;
