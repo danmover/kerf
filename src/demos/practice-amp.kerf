@@ -358,6 +358,6 @@ require "Gain knob runs from clean to overdrive" for tone: pre.gain_span_db >= 2
 require "Bass, middle and treble each make an audible change" for tone: pre.bass_db >= 6 && pre.mid_db >= 3 && pre.treble_db >= 6
 require "Input keeps the pickups' treble" for tone: pre.input_kohm >= 500
 require "Clean stages don't clip before the drive stage" for tone: pre.headroom >= 1.2
-require "Tuner hears a quietly picked note" for tune: pre.tuner_pp >= 0.1
+require "Tuner hears a quietly picked note above its 137 mV gate" for tune: pre.tuner_pp >= 0.2
 require "Through-hole parts only, nothing finer than 2.54 mm" for build: kit.smd == 0 && kit.min_pitch >= 2.5
 require "Under 250 solder joints" for build: kit.joints <= 250

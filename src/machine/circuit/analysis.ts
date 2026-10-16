@@ -37,7 +37,16 @@ export function knobRoles(dc: DesignCircuit): Partial<Record<KnobRole, string>> 
 /** Ambient air inside a closed-ish cabinet, for junction temperatures. */
 const T_INSIDE = 40;
 
-const outProbe = (dc: DesignCircuit): Probe | undefined => (dc.output ? (dc.output.ref === "0" ? dc.output.node : [dc.output.node, dc.output.ref]) : undefined);
+/** The preamp's output as the solver probes it: the load's input, against its own ground. */
+export const outProbe = (dc: DesignCircuit): Probe | undefined => (dc.output ? (dc.output.ref === "0" ? dc.output.node : [dc.output.node, dc.output.ref]) : undefined);
+
+/** Solver nodes on a controller's analog inputs (the tuner's listening pin). */
+export function adcNodes(dc: DesignCircuit, m: MachineData): Node[] {
+  return m.components.flatMap((mc) => {
+    const p = catalogPart(mc.catalogId);
+    return p?.kind === "controller" ? p.pins.filter((x) => x.adc && !x.bus?.startsWith("i2c")).map((x) => dc.nodeOf.get(`${mc.name}.${x.id}`)).filter((n): n is Node => !!n && n !== "0") : [];
+  });
+}
 
 /**
  * Gain in dB from the guitar to the preamp's output at each frequency. Pass
@@ -58,7 +67,7 @@ function joins(e: Element, a: Node, b: Node): boolean {
   return (e.n[0] === a && e.n[1] === b) || (e.n[0] === b && e.n[1] === a);
 }
 
-interface Stage {
+export interface Stage {
   id: string;
   comp: string;
   label: string;
@@ -72,17 +81,9 @@ interface Stage {
   swing: [number, number];
 }
 
-function stages(dc: DesignCircuit, m: MachineData): Stage[] {
+export function stages(dc: DesignCircuit, m: MachineData): Stage[] {
   const els = dc.circuit.elements;
-  const adcNodes = new Set<Node>();
-  for (const mc of m.components) {
-    const p = catalogPart(mc.catalogId);
-    if (p?.kind !== "controller") continue;
-    for (const pin of p.pins) if (pin.adc) {
-      const n = dc.nodeOf.get(`${mc.name}.${pin.id}`);
-      if (n && n !== "0") adcNodes.add(n);
-    }
-  }
+  const adc = new Set<Node>(adcNodes(dc, m));
   const supplyNodes = new Set<Node>(["0"]);
   for (const e of els) if (e.k === "OA") (supplyNodes.add(e.n[3]), supplyNodes.add(e.n[4]));
   // a short walk through resistors and capacitors from a node: does it reach an analog input?
@@ -95,7 +96,7 @@ function stages(dc: DesignCircuit, m: MachineData): Stage[] {
         if (e.k !== "R" && e.k !== "C") continue;
         for (const [a, b] of [[e.n[0], e.n[1]], [e.n[1], e.n[0]]]) {
           if (front.has(a) && !seen.has(b) && !supplyNodes.has(b)) {
-            if (adcNodes.has(b)) return true;
+            if (adc.has(b)) return true;
             seen.add(b);
             next.add(b);
           }
@@ -232,10 +233,7 @@ function computeFigures(m: MachineData, pickup: number): PreampFigures {
   }
   // the tuner's input: a quiet low E, 20 mV peak
   let tunerPp = 0;
-  const adc = m.components.flatMap((mc) => {
-    const p = catalogPart(mc.catalogId);
-    return p?.kind === "controller" ? p.pins.filter((x) => x.adc).map((x) => base.nodeOf.get(`${mc.name}.${x.id}`)).filter((n): n is Node => !!n && n !== "0") : [];
-  });
+  const adc = adcNodes(base, m);
   if (adc.length) {
     const r = acTransfer(base.circuit, { input: base.input.id, out: adc[0], freqs: [82.4, 330], op });
     tunerPp = 2 * 0.02 * Math.min(...r.h.map((h) => Math.hypot(h.re, h.im)));
