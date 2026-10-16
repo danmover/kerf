@@ -35,6 +35,8 @@ let RF1 = 0;
 let RJ0 = 0;
 let RJ1 = 0;
 let RJ2 = 0;
+let REG_DT = 0;
+let REG_RAW = 0;
 
 function diodeEval(v: number, is: number, nvt: number, bv: number, ibv: number) {
   const z = v / nvt;
@@ -124,6 +126,8 @@ export class Devices {
   readonly rF: Float64Array;
   readonly rJ: Float64Array;
   readonly rJf: Float64Array;
+  /** regulators: unlimited output current (T − vo)/rout at v0 */
+  readonly rR: Float64Array;
 
   constructor(
     readonly cc: Compiled,
@@ -149,6 +153,7 @@ export class Devices {
     this.rF = new Float64Array(2 * nr);
     this.rJ = new Float64Array(3 * nr);
     this.rJf = new Float64Array(3 * nr);
+    this.rR = new Float64Array(nr);
     this.dS = cc.dio.slots;
     this.oS = cc.oa.slots;
     this.sS = cc.sw.slots;
@@ -204,6 +209,7 @@ export class Devices {
       const vi = x[reg.i[q]] - x[reg.g[q]];
       const vo = x[reg.o[q]] - x[reg.g[q]];
       this.evalREG(q, vi, vo);
+      this.rR[q] = REG_RAW;
       this.rV[2 * q] = vi;
       this.rV[2 * q + 1] = vo;
       this.rF[2 * q] = RF0;
@@ -330,10 +336,30 @@ export class Devices {
     }
     for (let q = 0; q < reg.el.length; q++) {
       const vi = x[reg.i[q]] - x[reg.g[q]];
-      const vo = x[reg.o[q]] - x[reg.g[q]];
-      this.evalREG(q, vi, vo);
+      let vo = x[reg.o[q]] - x[reg.g[q]];
       const q2 = 2 * q;
       const q3 = 3 * q;
+      // Between its current limits the regulator is linear over only 2·ilim·rout of output
+      // voltage. Linearised deep in a limit it looks like a current source, and Newton
+      // flings the supply and output far away (or into the opposite limit, forever). So,
+      // like a junction, it may only creep into its limit: a step leaving the linear band
+      // stops at its edge, each further step at most doubles the excess, and a leap from
+      // one limit to the other lands back on the target.
+      const ilim = reg.ilim[q];
+      const rout = reg.rout[q];
+      const target = this.regTarget(q, vi);
+      const r0 = this.rR[q];
+      const r1 = (target - vo) / rout;
+      const reach = Math.max(ilim, 2 * Math.abs(r0));
+      let r = r1;
+      if ((r0 > ilim && r1 < -ilim) || (r0 < -ilim && r1 > ilim)) r = 0;
+      else if (Math.abs(r1) > reach) r = Math.sign(r1) * reach;
+      if (r !== r1) {
+        vo = target - r * rout;
+        ok = false;
+      }
+      this.evalREG(q, vi, vo);
+      this.rR[q] = REG_RAW;
       if (ok) {
         const dvi = vi - this.rV[q2];
         const dvo = vo - this.rV[q2 + 1];
@@ -569,8 +595,9 @@ export class Devices {
     SW_GC = g * dlg * v01;
   }
 
-  /** Regulator q: output current toward min(vout, vin − dropout) through rout, limited to ilim. */
-  private evalREG(q: number, vi: number, vo: number) {
+  /** Regulator q: output current toward min(vout, vin − dropout) through rout, limited to ±ilim. */
+  /** Where regulator q wants its output: min(vout, vin − dropout), kept above 0, both corners smoothed. Sets REG_DT. */
+  private regTarget(q: number, vi: number): number {
     const { reg } = this.cc;
     const w2 = REG_SMOOTH * REG_SMOOTH;
     const A = reg.vout[q];
@@ -578,16 +605,29 @@ export class Devices {
     const D = A - Bv;
     const r = Math.sqrt(D * D + w2);
     const T = (A + Bv - r) / 2;
-    const dT = (1 + D / r) / 2;
     const r2 = Math.sqrt(T * T + w2);
-    const T2 = (T + r2) / 2;
-    const dT2 = (1 + T / r2) / 2;
+    REG_DT = ((1 + D / r) / 2) * ((1 + T / r2) / 2);
+    return (T + r2) / 2;
+  }
+
+  private evalREG(q: number, vi: number, vo: number) {
+    const { reg } = this.cc;
+    const T2 = this.regTarget(q, vi);
+    const dT = REG_DT;
     const ilim = reg.ilim[q];
     const rout = reg.rout[q];
-    const th = Math.tanh((T2 - vo) / rout / ilim);
-    const di = 1 - th * th;
-    RF0 = ilim * th;
-    RJ0 = (di * dT2 * dT) / rout;
+    // Current limit as a softplus corner rather than a tanh: past ilim the output
+    // keeps a little slope (about 1 % more current into a dead short), so Newton
+    // always knows which way to go instead of meeting a flat curve.
+    const raw = (T2 - vo) / rout;
+    REG_RAW = raw;
+    const sc = 0.01 * ilim;
+    const keep = 1 - Math.min(1e-3, (0.01 * ilim * rout) / Math.max(reg.vout[q], 1));
+    const zh = (raw - ilim) / sc;
+    const zl = (-ilim - raw) / sc;
+    RF0 = raw - keep * sc * (softplus(zh) - softplus(zl));
+    const di = 1 - keep * (sigmoid(zh) + sigmoid(zl));
+    RJ0 = (di * dT) / rout;
     RJ1 = -di / rout;
     if (vi > 0) {
       const e = Math.exp(-vi * vi);
