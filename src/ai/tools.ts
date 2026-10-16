@@ -12,6 +12,8 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
+import { PROCESSES } from "../mfg/profiles";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -127,6 +129,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  ...PROCESS_TOOL_DEFS,
 ];
 
 const EditInput = z.object({
@@ -174,6 +177,12 @@ export function modelSummary(m: Model | null): string {
     groups.set(k, arr);
   }
   lines.push("Parts by group: " + [...groups].map(([g, ns]) => `${g}: ${ns.join(", ")}`).join("; "));
+  const made = m.parts.filter((p) => p.kind === "part");
+  if (made.length) {
+    const how = made.filter((p) => p.process).map((p) => `${p.name}: ${PROCESSES[p.process!.id].short} in ${p.material}`);
+    const unset = made.filter((p) => !p.process).map((p) => p.name);
+    lines.push(`How parts are made: ${[...how, unset.length ? `no process set: ${unset.join(", ")}` : ""].filter(Boolean).join("; ")}`);
+  }
   if (m.requirements.length) {
     // geometry-based requirements are only resolved once the kernel has measured them
     const report = useDesign.getState().report;
@@ -195,12 +204,14 @@ export function modelSummary(m: Model | null): string {
   return lines.join("\n");
 }
 
-export function reportSummary(r: CheckReport | null, limit = 40): string {
+export function reportSummary(r: CheckReport | null, limit = 60): string {
   if (!r) return "Checks have not run yet.";
   const c = r.counts;
   const head = `Checks: ${c.pass} pass, ${c.fail} fail, ${c.warn} warn, ${c.pending} pending, ${c.info} info.`;
   const notable = r.items.filter((i) => i.status !== "pass");
-  const body = notable.slice(0, limit).map((i) => `  - [${i.status}] (${i.category}) ${i.title}: ${i.detail}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
+  const body = notable
+    .slice(0, limit)
+    .map((i) => `  - [${i.status}] (${i.category}) ${i.title}: ${i.detail}${i.fix ? ` Fix: ${i.fix}` : ""}${i.action ? ` One-click option: ${i.action.label} (${i.action.setting} on the part's process).` : ""}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
   const passed = r.items.filter((i) => i.status === "pass").map((i) => i.title);
   return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}` : ""].filter(Boolean).join("\n");
 }
@@ -357,6 +368,8 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       return { content: "", card: { title: p.data.question }, ask: { question: p.data.question, options: p.data.options } };
     }
   }
+  const processOutcome = await runProcessTool(name, input);
+  if (processOutcome) return processOutcome;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -379,4 +392,5 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
+  ...PROCESS_TOOL_TITLES,
 };

@@ -12,6 +12,7 @@ import type { CheckItem } from "../core/checks";
 import type { FixOption } from "../core/feasibility";
 import { fmtNum } from "../lang/values";
 import { useChatDraft } from "./chatDraft";
+import { CheckFix, ManufacturingCard } from "./ManufacturingCard";
 
 const CATEGORY_LABEL: Record<string, string> = {
   requirement: "Requirements",
@@ -19,6 +20,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   access: "Tool access",
   motion: "Motion",
   gears: "Gears",
+  process: "Manufacturing",
   build: "Build",
   info: "Needs analysis",
 };
@@ -79,6 +81,7 @@ export function ChecksPanel() {
       )}
 
       <ConflictCard />
+      <ManufacturingCard />
 
       <div style={{ opacity: stale ? 0.6 : 1, transition: "opacity .2s" }}>
         {groups.map(([cat, items]) => (
@@ -107,6 +110,7 @@ export function ChecksPanel() {
                       {i.level === "soft" && <span className="chip" style={{ marginLeft: 6, height: 16, fontSize: 9.5 }}>soft</span>}
                     </div>
                     <div className="detail">{i.detail}</div>
+                    {(i.fix || i.action) && <CheckFix item={i} expanded={focusCheck === i.id} />}
                   </div>
                   <div className="basis">{i.basis === "needs analysis" ? "analysis" : i.basis === "geometry" ? "geometry" : "params"}</div>
                 </motion.div>

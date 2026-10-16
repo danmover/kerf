@@ -13,6 +13,8 @@ import { assembleReport, buildChecksRequest, type CheckReport } from "./checks";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
+import { processProbes } from "../mfg/report";
+import type { ProcessResult } from "../mfg/types";
 
 export interface MeshEntry {
   preview?: MeshData;
@@ -38,6 +40,8 @@ export interface DesignState {
   reportRev: number;
   checksError: string;
   interferences: Interference[];
+  /** manufacturing-process check results by part id */
+  process: Record<string, ProcessResult>;
   conflict: Conflict | null;
   conflictState: "idle" | "solving" | "done" | "error";
   hold: string[];
@@ -62,6 +66,7 @@ export const useDesign = create<DesignState>(() => ({
   reportRev: 0,
   checksError: "",
   interferences: [],
+  process: {},
   conflict: null,
   conflictState: "idle",
   hold: [],
@@ -116,7 +121,7 @@ export function loadSource(src: string) {
   activeJobs = [];
   meshes.clear();
   kernel.evict([]);
-  set({ buildErrors: new Map(), report: null, interferences: [], conflict: null, conflictState: "idle", hold: [], checksError: "" });
+  set({ buildErrors: new Map(), report: null, interferences: [], process: {}, conflict: null, conflictState: "idle", hold: [], checksError: "" });
   bumpMeshes();
   setSource(src, { force: true });
 }
@@ -203,13 +208,26 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     checksError = e instanceof Error ? e.message : String(e);
   }
   if (get().rev !== rev) return;
+  // manufacturing-process checks (cached in the worker by geometry and rules)
+  const process: Record<string, ProcessResult> = {};
+  const probes = processProbes(model, builtHashes);
+  if (probes.length) {
+    try {
+      const results = await kernel.process(probes);
+      probes.forEach((p, i) => (process[p.id] = results[i]));
+    } catch (e) {
+      for (const p of probes) process[p.id] = { key: "", findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+    if (get().rev !== rev) return;
+  }
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])));
+  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])), process);
   set({
     report,
     reportRev: rev,
     checksError,
     interferences: result?.interferences ?? [],
+    process,
     stage: "refining",
     timings: { ...get().timings, checksMs: performance.now() - tChecks },
   });

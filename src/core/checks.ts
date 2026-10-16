@@ -9,8 +9,10 @@ import { frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
 import { centerDistance, densify, gearOutline, maxPenetration, tipDiameter } from "../library/gears";
 import { materialDensity } from "../library/standards";
 import { fmtNum } from "../lang/values";
+import { processItems } from "../mfg/report";
+import type { ProcessResult, SettingValue } from "../mfg/types";
 
-export type CheckCategory = "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "info";
+export type CheckCategory = "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -25,7 +27,14 @@ export interface CheckItem {
   margin?: number;
   /** how the result was established */
   basis: "geometry" | "parameters" | "needs analysis";
+  /** what to change, in plain words */
+  fix?: string;
+  /** a change the app can make in one click */
+  action?: CheckAction;
 }
+
+/** One-click fixes: for now, a setting of a part's manufacturing process (print upside down, add a setup). */
+export type CheckAction = { kind: "process-setting"; label: string; part: string; setting: string; value: SettingValue };
 
 export interface CheckReport {
   items: CheckItem[];
@@ -147,7 +156,7 @@ export function gearChecks(model: Model): CheckItem[] {
   return out;
 }
 
-export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>): CheckReport {
+export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>, process: Record<string, ProcessResult> | null = null): CheckReport {
   const t0 = performance.now();
   const items: CheckItem[] = [];
   const label = (id: string) => partsById.get(id)?.label ?? id;
@@ -221,6 +230,7 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
     }
   }
   items.push(...gearChecks(model));
+  items.push(...processItems(model, process));
 
   // things geometry cannot prove
   if (model.parts.some((p) => p.motion)) {

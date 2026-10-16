@@ -50,6 +50,7 @@ npm run typecheck
 - Every change runs the full pipeline: evaluate, build (only the parts that changed), check, then refine the meshes.
 - Checks cover requirements, solid interference, tool access to every screw, gear mesh and ratio, and motion.
 - When a change breaks a requirement, the conflict solver proposes the smallest parameter changes that fix it. You can hold parameters fixed, and it tells you when no fix exists.
+- Each custom part can say how it is made (`process: mfg.cnc_mill(tool_d: 3)`): FDM, SLA or SLS printing, CNC milling or turning, injection moulding, die casting, sheet metal or laser cutting. Kerf checks the part against that process's rules (walls, draft, undercuts, inside corners, tool reach, overhangs, bends), marks the problem faces on the model with a suggested fix, and can rank every process for a part. Claude designs to the chosen process from the start.
 
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
@@ -59,7 +60,7 @@ npm run typecheck
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
-Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two-stage 12:1 gear reducer (26 solids). Both pass every check. Each comes with suggested prompts for a substantial revision.
+Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two-stage 12:1 gear reducer (26 solids). Neither has a failing check. Each comes with suggested prompts for a substantial revision.
 
 ## Not in 0.1
 
@@ -78,6 +79,7 @@ src/lang/       Kerf language: lexer, parser, evaluator (no eval, step-limited)
 src/library/    Standard parts, thread and bearing tables, involute gears
 src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
+src/mfg/        Manufacturing processes: rules, materials, geometry analysis, findings
 src/ai/         Claude tools, system prompt, language reference, chat loop
 src/app/        Projects and history, settings, view state, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats

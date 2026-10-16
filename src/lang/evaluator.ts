@@ -10,6 +10,7 @@ import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import { mfgNamespace, partMaterial, toProcess } from "../mfg/spec";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -56,7 +57,7 @@ const LIB_ARGS: Record<string, string[]> = {
   dowel: ["d", "length"],
 };
 
-const PART_PROPS = ["color", "material", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
+const PART_PROPS = ["color", "material", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "label"];
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
@@ -123,6 +124,7 @@ class Evaluator {
     for (const [k, v] of Object.entries(MATH_FNS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);
     this.builtins.set("lib", libNamespace());
+    this.builtins.set("mfg", mfgNamespace());
   }
 
   ctx(): CallCtx {
@@ -654,6 +656,13 @@ class Evaluator {
     }
     if (motion) this.partMotion.set(s.name, motion);
     const recipe: PartRecipe = { base: state.base, ops: state.ops };
+    const processSpan = state.propSpans.process;
+    const process =
+      state.props.process === undefined || state.props.process === null
+        ? undefined
+        : toProcess(state.props.process, (msg) => {
+            throw new EvalError(msg, processSpan ?? s.span);
+          });
     this.parts.push({
       id: s.name,
       name: s.name,
@@ -661,7 +670,9 @@ class Evaluator {
       kind: "part",
       group: typeof state.props.group === "string" ? state.props.group : "Parts",
       color: typeof state.props.color === "string" ? state.props.color : DEFAULT_COLORS[this.colorIdx++ % DEFAULT_COLORS.length],
-      material: typeof state.props.material === "string" ? state.props.material : "PLA",
+      material: partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process),
+      process,
+      processSpan,
       recipe,
       hash: recipeHash(recipe),
       xf,

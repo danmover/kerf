@@ -104,6 +104,14 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
         }
         return;
       }
+      case "process": {
+        try {
+          post({ type: "process", jobId: msg.jobId, results: core.process(msg.probes) });
+        } catch (e) {
+          post({ type: "process-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
       case "evict":
         core.evict(msg.keep);
         return;

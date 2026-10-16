@@ -9,12 +9,13 @@ param wall      = 2.0mm  range 1.2 .. 4  "Wall and floor thickness"
 param corner_r  = 6mm    "Outer corner radius"
 param lid_t     = 2.4mm  "Lid plate thickness"
 param clearance = 1.5mm  "Gap between the board edge and the inner wall"
-param standoff  = 5mm    "Board height above the floor"
+param standoff  = 6mm    "Board height above the floor"
 
 let floor_t = wall
 let base_h  = height - lid_t
 let lid_screws = corners(width - 2 * corner_r, depth - 2 * corner_r)
 let boss_r  = corner_r - wall + 0.6
+let printed = mfg.fdm(layer: 0.2)   // both housing parts are FDM printed
 
 // ── Electronics (frozen board design) ──────────────────
 component pcb = lib.pcb(w: 70, d: 50, t: 1.6, hole_inset: 3.5, hole_d: 3.2) {
@@ -40,6 +41,7 @@ interface board_mount {
 part base {
   color: #4f7cff
   material: "PETG"
+  process: printed
   group: "Housing"
   body box(width, depth, base_h, r: corner_r)
   shell(wall, open: Z)
@@ -62,6 +64,7 @@ part base {
 part lid {
   color: #c9d4e3
   material: "PETG"
+  process: mfg.fdm(build: -Z)   // printed top face down
   group: "Housing"
   removable
   body box(width, depth, lid_t, at: (0, 0, base_h), r: corner_r)
@@ -90,6 +93,6 @@ component board_screws = lib.screw(M3, 6) { at: with_z(pcb.holes, pcb.top.z), ax
 require "Board fits across the width": width - 2 * wall - 2 * clearance >= pcb.w
 require "Board fits along the depth": depth - 2 * wall - 2 * clearance >= pcb.d
 require "Headroom above the tallest component": base_h - (floor_t + standoff + pcb.t + pcb.component_h) >= 2
-require "Printable walls (3 perimeters at 0.4 mm)": wall >= 1.2
+require "Printable walls (3 perimeters at 0.4 mm)": wall >= printed.min_wall
 require "Board clears the corner bosses": hypot(max(lid_screws[0].x - pcb.w / 2, 0), max(lid_screws[0].y - pcb.d / 2, 0)) - boss_r >= 0.8
 require "Lid clears the board components": min_distance(pcb, lid) >= 2

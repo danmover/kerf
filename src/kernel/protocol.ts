@@ -3,6 +3,7 @@
 import type { PartRecipe, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
+import type { ProcessProbe, ProcessResult } from "../mfg/types";
 
 export interface BuildItem {
   hash: string;
@@ -75,6 +76,7 @@ export type ToWorker =
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
   | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
+  | { type: "process"; jobId: number; probes: ProcessProbe[] }
   | { type: "evict"; keep: string[] };
 
 export type FromWorker =
@@ -86,4 +88,6 @@ export type FromWorker =
   | { type: "checks"; jobId: number; result: ChecksResult }
   | { type: "checks-error"; jobId: number; message: string }
   | { type: "exported"; jobId: number; data: ArrayBuffer }
-  | { type: "export-error"; jobId: number; message: string };
+  | { type: "export-error"; jobId: number; message: string }
+  | { type: "process"; jobId: number; results: ProcessResult[] }
+  | { type: "process-error"; jobId: number; message: string };

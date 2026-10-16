@@ -4,6 +4,7 @@ import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
+import type { ProcessSpec } from "../mfg/types";
 
 export interface Motion {
   origin: V3;
@@ -41,6 +42,10 @@ export interface EvalPart {
   group: string;
   color: string;
   material: string;
+  /** how the part is made (custom parts only; library components are bought) */
+  process?: ProcessSpec;
+  /** span of the part's process: property, for edits */
+  processSpan?: Span;
   recipe: PartRecipe;
   hash: string;
   xf: Xform[];

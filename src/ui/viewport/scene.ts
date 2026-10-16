@@ -396,6 +396,17 @@ export class SceneController {
     this.dirty = true;
   }
 
+  /** The group carrying a part's placement, explode offset and motion, for overlays that should move with it. */
+  partGroup(id: string): THREE.Group | undefined {
+    const obj = this.parts.get(id);
+    return obj && obj.removing === null ? obj.group : undefined;
+  }
+
+  /** Redraw on the next frame (after an overlay changes). */
+  requestRender() {
+    this.dirty = true;
+  }
+
   setInterferences(list: Interference[], focus: string | null) {
     for (const i of this.interferences) {
       this.interGroup.remove(i.obj);

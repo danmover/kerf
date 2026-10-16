@@ -63,6 +63,12 @@ export const MATERIALS: Record<string, { density: number; label: string }> = {
   Brass: { density: 8.5, label: "Brass" },
   FR4: { density: 1.85, label: "FR4" },
   POM: { density: 1.41, label: "POM (Delrin)" },
+  "Aluminum 5052": { density: 2.68, label: "Aluminum 5052 (sheet)" },
+  "Aluminum A380": { density: 2.74, label: "Aluminum A380 (die cast)" },
+  "Zamak 3": { density: 6.6, label: "Zamak 3 (zinc die cast)" },
+  Resin: { density: 1.18, label: "Photopolymer resin" },
+  Acrylic: { density: 1.19, label: "Acrylic (PMMA)" },
+  Plywood: { density: 0.68, label: "Birch plywood" },
 };
 
 export function materialDensity(name: string): number {

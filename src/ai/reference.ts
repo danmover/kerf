@@ -4,6 +4,7 @@
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { processReference } from "../mfg/guide";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -66,7 +67,7 @@ part bracket {
   for x in [-12, 12] { cut hole(M3, depth: 6, at: (x, 0, 5)) }
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
 }
-Part props: color, material, group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
+Part props: color, material, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
 Order matters: shell/fillet/chamfer apply to the body built so far, so put them right after the body and before bosses and holes. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
@@ -80,6 +81,8 @@ ${math}
 
 ### Geometric quantities (only inside require; resolved after the build)
 ${geo}
+
+${processReference()}
 
 ## Components
 component name = lib.kind(args) { at: point, axis: dir, ... }
@@ -100,6 +103,7 @@ Bearings for lib.bearing(code): ${bearings}
 - swept envelopes of rotating gears against static parts
 - gear meshing: same module, exact centre distance, face overlap, and tooth clearance through a rotation
 - build errors (a modelling step the kernel could not perform)
+- manufacturing: every part with a process: is checked against that process's rules on its exact geometry (walls by ray casting, draft and undercuts along the pull, tool reach per setup, inside corner radii, slots, overhangs and orientation, turning, sheet thickness and bends, flat profiles, holes, voids, machine size), plus whether its material suits the process
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
 Things geometry cannot prove (strength, torque, heat, tolerances on a real printer) are reported as "needs analysis".
 `;

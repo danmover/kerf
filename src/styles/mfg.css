@@ -1,0 +1,115 @@
+/* Manufacturing: the how-it's-made card and process fix rows in the checks panel. */
+
+.mfg-card {
+  margin: 12px 14px 4px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  padding: 10px 12px 8px;
+}
+.mfg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mfg-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.mfg-part + .mfg-part {
+  border-top: 1px solid rgba(31, 37, 51, 0.6);
+}
+.mfg-row {
+  display: grid;
+  grid-template-columns:
+    minmax(70px, 1fr) minmax(150px, 1.4fr) minmax(64px, auto)
+    auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+.mfg-name {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mfg-select {
+  height: 26px;
+  font-size: 12px;
+  padding: 0 6px;
+}
+.mfg-counts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.mfg-more {
+  margin-top: 4px;
+}
+.mfg-compare {
+  overflow: hidden;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+}
+.mfg-compare-title {
+  font-size: 11.5px;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+.mfg-option {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 4px;
+  border-radius: var(--radius-sm);
+}
+.mfg-option.current {
+  background: var(--accent-soft);
+}
+.mfg-option .title {
+  font-size: 12px;
+}
+.mfg-option .detail,
+.mfg-compare .detail {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mfg-fix {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: default;
+}
+.mfg-fix-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+  margin-right: 4px;
+}
+@media (max-width: 640px) {
+  .mfg-row {
+    grid-template-columns: 1fr auto;
+  }
+  .mfg-select {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+}

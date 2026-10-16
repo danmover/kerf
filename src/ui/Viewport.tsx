@@ -3,6 +3,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SceneController } from "./viewport/scene";
+import { ProcessOverlay } from "./viewport/processOverlay";
+import { useMfgView } from "./mfgView";
 import { meshes, useDesign } from "../core/engine";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
@@ -16,6 +18,9 @@ import { useChatDraft } from "./chatDraft";
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
   const ctl = useRef<SceneController | null>(null);
+  const mfgOverlay = useRef<ProcessOverlay | null>(null);
+  const processResults = useDesign((s) => s.process);
+  const showProcessIssues = useMfgView((s) => s.overlay);
   const model = useDesign((s) => s.model);
   const meshVersion = useDesign((s) => s.meshVersion);
   const interferences = useDesign((s) => s.interferences);
@@ -36,6 +41,7 @@ export function Viewport() {
       return;
     }
     ctl.current = c;
+    mfgOverlay.current = new ProcessOverlay(c);
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
       const s = useView.getState();
@@ -52,6 +58,8 @@ export function Viewport() {
     registerViewport({ capture: (o) => c.capture(o) });
     return () => {
       registerViewport(null);
+      mfgOverlay.current?.destroy();
+      mfgOverlay.current = null;
       c.dispose();
       ctl.current = null;
     };
@@ -83,6 +91,10 @@ export function Viewport() {
   useEffect(() => ctl.current?.setExplode(view.explode), [view.explode]);
   useEffect(() => ctl.current?.setMotion(view.playing, view.speed), [view.playing, view.speed]);
   useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
+  // after setParts above, so overlays attach to the current part groups
+  useEffect(() => {
+    if (model) mfgOverlay.current?.update(model.parts, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion);
+  }, [model, meshVersion, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion]);
   useEffect(() => {
     if (view.cameraRequest) ctl.current?.fit(view.cameraRequest.preset === "fit" ? "current" : view.cameraRequest.preset);
   }, [view.cameraRequest]);

@@ -4,6 +4,7 @@
 import type { MeshData } from "./build";
 import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, ToWorker } from "./protocol";
 import type { V3, Xform } from "./recipe";
+import type { ProcessProbe, ProcessResult } from "../mfg/types";
 
 export type KernelStatus = "loading" | "ready" | "error";
 
@@ -147,14 +148,16 @@ export class KernelClient {
         return;
       }
       case "checks":
-      case "exported": {
+      case "exported":
+      case "process": {
         const job = this.jobs.get(m.jobId);
-        if (job?.kind === "value") job.resolve(m.type === "checks" ? m.result : m.data);
+        if (job?.kind === "value") job.resolve(m.type === "checks" ? m.result : m.type === "process" ? m.results : m.data);
         this.jobs.delete(m.jobId);
         return;
       }
       case "checks-error":
-      case "export-error": {
+      case "export-error":
+      case "process-error": {
         const job = this.jobs.get(m.jobId);
         if (job?.kind === "value") job.reject(new Error(m.message));
         this.jobs.delete(m.jobId);
@@ -191,6 +194,11 @@ export class KernelClient {
 
   checks(req: ChecksRequest) {
     return this.value<ChecksResult>((jobId) => ({ type: "checks", jobId, req }));
+  }
+
+  /** Check built parts against manufacturing processes. */
+  process(probes: ProcessProbe[]) {
+    return this.value<ProcessResult[]>((jobId) => ({ type: "process", jobId, probes }));
   }
 
   exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]) {
