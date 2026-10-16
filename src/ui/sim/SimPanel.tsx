@@ -11,7 +11,7 @@ import { toast } from "../../app/ui";
 import { evaluateOnly, useDesign } from "../../core/engine";
 import type { Model } from "../../core/model";
 import { sendMessage } from "../../ai/chat";
-import { outcomesFor, runScenarioNow, setAutoRun, useSim, type SimRun } from "../../sim/runtime";
+import { estimateNote, outcomesFor, runScenarioNow, setAutoRun, useSim, type SimRun } from "../../sim/runtime";
 import type { ExpectOutcome } from "../../sim/expect";
 import type { ScenarioDef } from "../../sim/scenario";
 import type { VariantRun } from "../../sim/engine/run";
@@ -162,6 +162,7 @@ function Waiting({ run }: { run?: SimRun }) {
 
 function Verdict({ def, run }: { def: ScenarioDef; run?: SimRun }) {
   const variant = useSim((s) => s.variant);
+  const tests = useDesign((s) => s.model?.machine?.tests);
   const st = scenarioStatus(def, run);
   const outs = st.outs;
   const fails = outs.filter((o) => o.status === "fail").length;
@@ -228,6 +229,11 @@ function Verdict({ def, run }: { def: ScenarioDef; run?: SimRun }) {
                 ))}
               </div>
               <div className="d">{o ? (mine && variant !== "expected" ? `${VARIANT_LABEL[variant]} run: ${mine.detail}.` : o.detail) : <span className="mono">{e.text}</span>}</div>
+              {o?.estimate && (
+                <div className="d est">
+                  <Icon.Info size={11} /> {estimateNote(o, tests)}
+                </div>
+              )}
             </motion.div>
           );
         })}

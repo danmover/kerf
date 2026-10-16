@@ -42,6 +42,8 @@ export interface ExpectOutcome {
   detail: string;
   variants: VariantCheck[];
   margin?: number;
+  /** what in the expectation is an estimate rather than data, said plainly */
+  estimate?: string;
 }
 
 const FNS: Record<string, (...a: number[]) => number> = {

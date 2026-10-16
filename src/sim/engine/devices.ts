@@ -155,6 +155,8 @@ export class DCMotor {
   energy = 0;
   peakCurrent = 0;
   stalledFor = 0;
+  /** its heating is a guess from its mass: the catalog has no thermal data for it */
+  heatGuess = false;
   /** counts the encoder has crossed (quadrature), as a float */
   counts = 0;
   assumed: string[] = [];
@@ -183,6 +185,7 @@ export class DCMotor {
       // one thermal node for the whole motor, scaled from its mass: the winding runs hotter than this
       this.cth = mass * 0.45;
       this.rth = 12 * Math.sqrt(524 / mass);
+      this.heatGuess = true;
       this.assumed.push(`${name}: heating from a mass-based guess (${this.rth.toFixed(0)} K/W to the air, ${((this.cth * this.rth) / 60).toFixed(0)} min time constant); the winding heats faster than the can`);
     }
     this.temp = ambient;

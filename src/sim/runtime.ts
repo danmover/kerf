@@ -331,9 +331,31 @@ export function outcomesFor(def: ScenarioDef, result: RunResult | undefined): Ex
   const hit = byText.get(sig);
   if (hit) return hit;
   const runs = result.variants.map((v) => ({ variant: v.variant, results: v.results, error: v.error ? `${v.stop}: ${v.error}` : undefined }));
-  const out = result.error ? def.expects.map((e) => ({ label: e.label, level: e.level, status: "fail" as const, detail: result.error!, variants: [] })) : def.expects.map((e) => judge(e, runs, def.spec.world.kind));
+  const out = result.error
+    ? def.expects.map((e) => ({ label: e.label, level: e.level, status: "fail" as const, detail: result.error!, variants: [] }))
+    : def.expects.map((e) => {
+        const o: ExpectOutcome = judge(e, runs, def.spec.world.kind);
+        const estimate = estimateOf(e.text, result);
+        return estimate ? { ...o, estimate } : o;
+      });
   byText.set(sig, out);
   return out;
+}
+
+/** Temperatures of motors with no thermal data are a guess: say so wherever an expectation leans on them. */
+function estimateOf(text: string, r: RunResult): string | undefined {
+  const motors = (pick(r.variants)?.summary.motors ?? []).filter((m) => m.heatGuess && new RegExp(`\\b${m.name}\\.(max_)?temp\\b`).test(text));
+  if (!motors.length) return undefined;
+  const names = motors.map((m) => m.name);
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}` : names[0];
+  return `Estimated: there is no published thermal data for ${list}, so ${names.length > 1 ? "their" : "its"} heating is a guess from ${names.length > 1 ? "their" : "its"} mass.`;
+}
+
+/** The estimate note, pointing at the design's own physical test for it when there is one. */
+export function estimateNote(o: ExpectOutcome, tests?: { label: string }[]): string {
+  if (!o.estimate) return "";
+  const test = tests?.find((t) => /heat|temp|thermal/i.test(t.label));
+  return test ? `${o.estimate} The “${test.label}” test confirms it.` : `${o.estimate} Measure it on the bench before relying on it.`;
 }
 
 export const SIM_ITEM = /^sim:/;
@@ -375,7 +397,8 @@ export function simItems(items: CheckItem[], ctx: ReportContext): CheckItem[] {
     const outcomes = outcomesFor(def, run.result) ?? [];
     def.expects.forEach((e, i) => {
       const o = outcomes[i];
-      out.push({ ...base, id: id(e.label), status: o.status, title: `${def.label}: ${e.label}`, detail: o.detail, span: e.span, level: e.level, margin: o.margin });
+      const note = estimateNote(o, ctx.model.machine?.tests);
+      out.push({ ...base, id: id(e.label), status: o.status, title: `${def.label}: ${e.label}`, detail: note ? `${o.detail} ${note}` : o.detail, span: e.span, level: e.level, margin: o.margin });
     });
     out.push(...healthItems(def, run.result));
   }

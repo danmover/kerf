@@ -264,6 +264,11 @@ export class SandPit implements World {
       "Walls and the floor are rigid stops with extra drag, not contact forces. The rear screw sees the same sand as the front, though the front has loosened it.",
       "Each motor heats as one lump of metal, and buried in sand it sheds heat about half as well as in still air.",
     ];
+    const bore = Math.max(...robot.screws.map((x) => x.d));
+    if (robot.body.d < bore)
+      this.limits.push(
+        `The ${Math.round(robot.body.d)} mm body runs in the ${Math.round(bore)} mm hole the screw bores. The sand is taken to close onto it at full pressure, with no arching across the gap, so the drag on the body (which both pushing in and backing out have to beat) is probably on the high side.`,
+      );
     const kk = this.k;
     this.assumptions.push(
       `${variant} run: soil stress ×${kk.stress}, screw thrust ×${kk.thrust}, drift ×${kk.drift}, steering grip ${Math.round(kk.steer * 100)} %`,
@@ -390,7 +395,8 @@ export class SandPit implements World {
         this.entered.add(s.motor);
         this.events.push({ t, kind: "info", text: `${s.motor}'s screw is in the sand` });
       }
-      const face = s.face && noseIn;
+      // the nose only cuts a face while the screw drives forward: backing out, it pulls away from it
+      const face = s.face && noseIn && s.advance * w >= 0;
       let T = e * m.tSpin + (face ? m.tFace : 0);
       if (this.contact > 0 && e > 0) {
         // pushing on the far wall: the flights carry the push like a screw in a nut, and the nose grinds on the wall

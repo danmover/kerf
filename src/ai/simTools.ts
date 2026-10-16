@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { useDesign, whenChecked } from "../core/engine";
 import { openBranch } from "./plan";
-import { outcomesFor, pick, runScenarioNow, useSim, whenSimulated, type SimRun } from "../sim/runtime";
+import { estimateNote, outcomesFor, pick, runScenarioNow, useSim, whenSimulated, type SimRun } from "../sim/runtime";
 import type { ScenarioDef } from "../sim/scenario";
 import type { VariantRun } from "../sim/engine/run";
 import { VARIANTS, VARIANT_LABEL, type VariantName } from "../sim/worlds/common";
@@ -86,7 +86,7 @@ export function scenarioSummary(def: ScenarioDef, run: SimRun | undefined): stri
   if (r.error) return [...lines, `  Cannot run: ${r.error}`].join("\n");
   const outs = outcomesFor(def, r) ?? [];
   for (const o of outs) {
-    lines.push(`  [${o.status}] ${o.label}${o.level === "soft" ? " (soft)" : ""}: ${o.detail}`);
+    lines.push(`  [${o.status}] ${o.label}${o.level === "soft" ? " (soft)" : ""}: ${o.detail}${o.estimate ? ` ${estimateNote(o, useDesign.getState().model?.machine?.tests)}` : ""}`);
     const per = o.variants.map((v) => `${v.variant} ${v.ok === null ? "error" : v.ok ? "pass" : "fail"}`).join(", ");
     if (o.variants.length > 1) lines.push(`      runs: ${per}`);
   }

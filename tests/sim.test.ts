@@ -12,7 +12,7 @@ import { runSpec, pitStart } from "../src/sim/build";
 import { judge, checkRun } from "../src/sim/expect";
 import { fmtResult, resultInfo } from "../src/sim/results";
 import { SIM_TEMPLATES, templateSource } from "../src/sim/templates";
-import { outcomesFor, scenarioKey } from "../src/sim/runtime";
+import { estimateNote, outcomesFor, scenarioKey } from "../src/sim/runtime";
 import { matchSeries, valueAt } from "../src/sim/frames";
 import type { ScenarioDef } from "../src/sim/scenario";
 
@@ -205,5 +205,21 @@ describe("runs with the generated firmware", () => {
     expect(v.results.push_distance as number).toBeLessThan(500);
     expect(v.events.some((e) => e.kind === "goal" && /far wall/.test(e.text))).toBe(true);
     expect(v.scene.box?.max).toEqual([2000, 250, 5000]);
+    // the motors have no thermal data, so their temperatures say they are a guess and name the bench test
+    const heat = outcomesFor(def, r)!.find((o) => /°C/.test(o.label))!;
+    expect(heat.estimate).toMatch(/m_front/);
+    expect(estimateNote(heat, model.machine!.tests)).toMatch(/“Motor heat” test/);
+    expect(outcomesFor(def, r)!.find((o) => o.label === "Reaches the far wall")!.estimate).toBeUndefined();
+    expect(v.limits.some((l) => /runs in the 90 mm hole/.test(l))).toBe(true);
   }, 300_000);
+
+  it("keeps running while the firmware rests to cool, rather than calling it stopped", () => {
+    const def = model.scenarios!.find((s) => s.label === "Cross the pit")!;
+    // a low heat limit turns it back early, and it then rests part way through backing out
+    const r = runSpec({ ...def.spec, duration: 360, config: { MOTOR_HOT_K: 8 }, variants: ["expected"] }, model.machine!, model.name);
+    const v = r.variants[0];
+    expect(v.serial.some((l) => /resting until they cool/.test(l.text))).toBe(true);
+    expect(v.stop).toBe("duration");
+    expect(v.summary.state).toMatch(/^backing out/);
+  }, 120_000);
 });

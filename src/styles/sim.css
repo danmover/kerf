@@ -243,6 +243,14 @@
   line-height: 1.45;
   color: var(--text-3);
 }
+.sim-exp .d.est {
+  color: var(--warn);
+  opacity: 0.85;
+}
+.sim-exp .d.est svg {
+  vertical-align: -1px;
+  margin-right: 2px;
+}
 .sim-exp .per {
   display: flex;
   gap: 3px;

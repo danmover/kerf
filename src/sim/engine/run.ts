@@ -33,6 +33,9 @@ export interface RunOptions {
   seed?: number;
   /** stop once every motor has been still this long after moving, seconds */
   idleStop?: number;
+  /** how long everything may stay still while the firmware says it is still at work (resting to cool,
+   * waiting to retry), seconds */
+  restStop?: number;
   frameHz?: number;
   /** progress, 0..1, for each variant as it runs */
   onProgress?: (variant: VariantName, done: number) => void;
@@ -51,6 +54,8 @@ export interface MotorSummary {
   wh: number;
   /** highest share of its stall torque it ran at, averaged over a second */
   loadPeak: number;
+  /** its temperatures are a guess: no thermal data for the motor */
+  heatGuess?: boolean;
 }
 
 export interface RunSummary {
@@ -128,6 +133,11 @@ export function runScenario(opts: RunOptions): RunResult {
   return { firmware: info, variants: out };
 }
 
+/** the line firmware prints when it changes what it is doing */
+const STATE_LINE = /^state:\s*(.+)$/;
+/** states in which firmware with every motor still has nothing more to do */
+const SETTLED = /^(done|fault|finished|stopped|stop|idle|error|bench|waiting|ready|off)\b/i;
+
 function runVariant(opts: RunOptions, variant: VariantName, seed: number, files: Record<string, string>, mcuName: string, board: ReturnType<typeof boardForPart>): VariantRun {
   const wall0 = Date.now();
   const hal = new SimHal(board, { seed });
@@ -143,6 +153,12 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   let stop = "duration";
   let error: string | undefined;
   const idleStop = opts.idleStop ?? 10;
+  const restStop = Math.max(idleStop, opts.restStop ?? 600);
+  // nothing ends the run before the last text typed into the console
+  const lastTyped = Math.max(0, ...(opts.console ?? []).map((c) => c.t));
+  // the firmware's own word for what it is doing, from its latest "state: ..." line
+  let fwState = "";
+  let seen = 0;
   let moved = false;
   let stillSince = 0;
   let finishedAt = -1;
@@ -176,9 +192,18 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     if (anyMoving) {
       moved = true;
       stillSince = t;
-    } else if (moved && t - stillSince > idleStop) {
-      stop = "everything stopped";
-      hal.endCyc = 0;
+    } else if (moved && t - stillSince > idleStop && t > lastTyped) {
+      for (; seen < hal.serial.length; seen++) {
+        const l = hal.serial[seen];
+        const m = l.dir === "out" ? STATE_LINE.exec(l.text) : null;
+        if (m) fwState = m[1];
+      }
+      // firmware that says it is still at work is resting (cooling, about to retry), not finished
+      const working = fwState !== "" && !SETTLED.test(fwState);
+      if (!working || t - stillSince > restStop) {
+        stop = working ? `everything stopped (for ${Math.round(restStop / 60)} min, with the firmware still ${fwState.replace(/\s*\(.*$/, "")})` : "everything stopped";
+        hal.endCyc = 0;
+      }
     }
     if (finishedAt < 0 && world.finished(t)) finishedAt = t;
     if (finishedAt >= 0 && t - finishedAt > 2) {
@@ -223,7 +248,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   let state: string | undefined;
   for (const l of hal.serial) {
     if (l.dir !== "out") continue;
-    const m = /^state:\s*(.+)$/.exec(l.text);
+    const m = STATE_LINE.exec(l.text);
     if (m) {
       state = m[1];
       events.push({ t: l.t, kind: /fault|stuck|low|error/i.test(m[1]) ? "warn" : "info", text: `Firmware: ${m[1]}` });
@@ -244,7 +269,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     loopMax: (loopMax / board.fcpu) * 1000,
     isrLoad: hal.isrCycles / total,
     battery: bat ? { start: soc0 * 100, end: bat.soc * 100, minVolts: bat.minV, usedMah: bat.ah * 1000, peakAmps: plant.peakBatteryCurrent } : undefined,
-    motors: plant.motors.map((m) => ({ name: m.comp, peakAmps: m.m.peakCurrent, maxTemp: m.m.maxTemp, wh: m.m.energy / 3600, loadPeak: peakOf(frames, `${m.comp}.torque`) / (motorSpecs.get(m.comp) ?? 1) })),
+    motors: plant.motors.map((m) => ({ name: m.comp, peakAmps: m.m.peakCurrent, maxTemp: m.m.maxTemp, wh: m.m.energy / 3600, loadPeak: peakOf(frames, `${m.comp}.torque`) / (motorSpecs.get(m.comp) ?? 1), heatGuess: m.m.heatGuess || undefined })),
     eepromWrites: hal.eepromWrites,
     state,
   };
