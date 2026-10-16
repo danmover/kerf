@@ -30,8 +30,8 @@ describe("the rules", () => {
   });
 
   it("let a quick turn only read", () => {
-    for (const t of ["edit_design", "write_design", "update_brief", "update_plan", "ask_user", "build_subassemblies", "review_design", "explore_fixes", "run_analysis"]) expect(QUICK_TOOLS.has(t)).toBe(false);
-    for (const t of ["get_design", "run_checks", "capture_view", "measure", "catalog_lookup", "engineering_calc"]) expect(QUICK_TOOLS.has(t)).toBe(true);
+    for (const t of ["edit_design", "write_design", "update_brief", "update_plan", "ask_user", "build_subassemblies", "review_design", "explore_fixes", "run_analysis", "run_scenario"]) expect(QUICK_TOOLS.has(t)).toBe(false);
+    for (const t of ["get_design", "run_checks", "capture_view", "measure", "catalog_lookup", "engineering_calc", "scenario_results"]) expect(QUICK_TOOLS.has(t)).toBe(true);
   });
 });
 

@@ -1,9 +1,9 @@
 // The bottom dock. It opens on the overview (status, brief, the design at a
 // glance, the selected part and recent changes); the brief, checks, strength,
-// the build tab for machines, the parts list and the graph sit next to it,
-// and design.kerf sits at the end of the row
-// as the file behind it all, one click (or C) away. Features add a tab with
-// an entry in DOCK_TABS, the way they add left-panel tabs through LEFT_TABS.
+// build and simulate (for machines and scenarios), the parts list and the
+// graph sit next to it, and design.kerf sits at the end of the row as the
+// file behind it all, one click (or C) away. Features add a tab with an
+// entry in DOCK_TABS, the way they add left-panel tabs through LEFT_TABS.
 
 import type { ReactNode } from "react";
 import { motion } from "framer-motion";
@@ -20,6 +20,8 @@ import { Overview, OverviewGlyph } from "./Overview";
 import { BIcon } from "./briefIcons";
 import { briefData, openAssumptions } from "../core/brief";
 import { MachinePanel } from "./MachinePanel";
+import { SimPanel } from "./sim/SimPanel";
+import { useSim } from "../sim/runtime";
 import { Icon } from "./icons";
 import { lineCol } from "../lang/lexer";
 
@@ -76,12 +78,28 @@ function useBuildBadge() {
 
 const useIsMachine = () => useDesign((s) => !!s.model?.machine);
 
+function useSimBadge() {
+  const scenarios = useDesign((s) => s.model?.scenarios?.length ?? 0);
+  const fails = useDesign((s) => s.report?.items.filter((i) => i.category === "simulation" && i.status === "fail").length ?? 0);
+  if (!scenarios) return null;
+  return fails ? { count: fails, tone: "fail" as const } : { count: scenarios };
+}
+
+/** the simulate tab's icon turns into a spinner while a scenario runs */
+function SimIcon() {
+  const simulating = useSim((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
+  return simulating ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Flask size={13} />;
+}
+
+const useHasSims = () => useDesign((s) => !!s.model?.machine || !!s.model?.scenarios?.length);
+
 export const DOCK_TABS: DockTabDef[] = [
   { id: "overview", label: "overview", icon: <OverviewGlyph size={13} />, Body: Overview },
   { id: "brief", label: "brief", icon: <BIcon.Brief size={13} />, useBadge: useBriefBadge, Body: BriefPanel },
   { id: "checks", label: "checks", icon: <Icon.Shield size={13} />, useBadge: useChecksBadge, Body: ChecksPanel },
   { id: "analysis", label: "strength", icon: <StrengthIcon />, useBadge: useStrengthBadge, Body: AnalysisPanel },
   { id: "build", label: "build", icon: <Icon.Wrench size={13} />, useBadge: useBuildBadge, useShown: useIsMachine, Body: MachinePanel },
+  { id: "sim", label: "simulate", icon: <SimIcon />, useBadge: useSimBadge, useShown: useHasSims, Body: SimPanel },
   { id: "bom", label: "parts list", icon: <Icon.List size={13} />, Body: BomTable },
   { id: "graph", label: "graph", icon: <Icon.Graph size={13} />, Body: GraphView },
   { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, useBadge: useCodeBadge, Body: () => null, file: true },

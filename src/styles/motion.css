@@ -110,7 +110,12 @@
 
 /* design.kerf: the file behind the design, kept at the end of the tab row.
    When the row is short of room the other tabs scroll, so design.kerf stays
-   in view and the row never widens the page. */
+   in view and the row never widens the page. The centre column is pinned to
+   its own width too, or the full row's width would stretch the dock past the
+   chat panel. */
+.ws-center {
+  grid-template-columns: minmax(0, 1fr);
+}
 .dock-head > .tabs:not(.file-tabs) {
   flex: 0 1 auto;
   min-width: 0;

@@ -6,7 +6,7 @@ import type { Span } from "../lang/ast";
 
 export type ViewPreset = "iso" | "front" | "back" | "top" | "bottom" | "left" | "right";
 /** the built-in tabs; features can add more through DOCK_TABS in ui/Dock */
-export type DockTab = "overview" | "brief" | "code" | "checks" | "analysis" | "graph" | "bom" | "build" | (string & {});
+export type DockTab = "overview" | "brief" | "code" | "checks" | "analysis" | "graph" | "bom" | "build" | "sim" | (string & {});
 /** the built-in tabs; features can add more through LEFT_TABS in ui/LeftPanel */
 export type LeftTab = "structure" | "params" | "decisions" | "history" | (string & {});
 

@@ -133,6 +133,7 @@ const SCOPE: Record<string, string> = {
   motion: "motion",
   gears: "gears",
   analysis: "strength",
+  simulation: "simulations",
   process: "manufacturing",
   electrical: "wiring",
   engineering: "calculations",
