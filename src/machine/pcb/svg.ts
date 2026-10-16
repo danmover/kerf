@@ -13,7 +13,8 @@ const C = {
   bg: "#0b0f0d",
   mask: "#1d5c3a",
   edge: "#5f8f72",
-  copper: "#2d8552",
+  copper: "#38a062",
+  pour: "#2b8050",
   copperHi: "#9cf0b8",
   pad: "#d6d3c6",
   padHi: "#fff1a8",
@@ -53,7 +54,8 @@ export function boardSvg(b: RoutedBoard, opts: { side?: "top" | "bottom"; scale?
       .flatMap((p) => pourGroups(p.polys).flatMap((g) => g.map(ring)))
       .join("");
   const pours = hi ? pourPath(hi, true) : pourPath(undefined, false);
-  if (pours) out.push(`<path d="${pours}" fill="${C.copper}" fill-rule="evenodd"/>`);
+  // tracks a shade brighter than the pour so they read inside it
+  if (pours) out.push(`<path d="${pours}" fill="${C.pour}" fill-rule="evenodd"/>`);
   if (hi) {
     const mine = pourPath(hi, false);
     if (mine) out.push(`<path d="${mine}" fill="${C.copperHi}" fill-opacity="0.55" fill-rule="evenodd"/>`);

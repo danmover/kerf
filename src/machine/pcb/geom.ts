@@ -248,6 +248,42 @@ export function inRing(r: Pt[], x: number, y: number): boolean {
   return inside;
 }
 
+/** A ring with its edges sorted into horizontal bands, for quick point-in-ring tests on big pours. */
+export class RingIndex {
+  private readonly y0: number;
+  private readonly rows: number[][];
+  constructor(
+    readonly ring: Pt[],
+    private readonly band = 0.5,
+  ) {
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const [, y] of ring) {
+      y0 = Math.min(y0, y);
+      y1 = Math.max(y1, y);
+    }
+    this.y0 = y0;
+    this.rows = Array.from({ length: Math.max(1, Math.ceil((y1 - y0) / band) + 1) }, () => []);
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = Math.floor((Math.min(ring[i][1], ring[j][1]) - y0) / band);
+      const b = Math.floor((Math.max(ring[i][1], ring[j][1]) - y0) / band);
+      for (let k = a; k <= b; k++) this.rows[k].push(i);
+    }
+  }
+  contains(x: number, y: number): boolean {
+    const k = Math.floor((y - this.y0) / this.band);
+    if (k < 0 || k >= this.rows.length) return false;
+    const r = this.ring;
+    let inside = false;
+    for (const i of this.rows[k]) {
+      const [xi, yi] = r[i];
+      const [xj, yj] = r[i === 0 ? r.length - 1 : i - 1];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+}
+
 /** Uniform buckets over the board for "what is near here" queries. */
 export class Buckets<T> {
   readonly cells: T[][];

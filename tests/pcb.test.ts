@@ -5,8 +5,10 @@
 
 import { describe, expect, it } from "vitest";
 import { boardHash, boardSvg, checkPlacement, gerberFiles, placedPads, routeBoard, type BoardNet, type BoardSpec, type Footprint, type Pad, type PlacedPart, type RoutedBoard } from "../src/machine/pcb";
+import { inRing, ringArea } from "../src/machine/pcb/geom";
 import { boardSilk } from "../src/machine/pcb/silk";
 import { FONT_CHARS, textBox } from "../src/machine/pcb/font";
+import { boardDrc } from "../src/machine/pcb/drc";
 
 // ---------------------------------------------------------------- footprints
 
@@ -517,6 +519,58 @@ describe("circuit board: routing small cases", () => {
     expect([b.unrouted[0].a, b.unrouted[0].b].map((p) => `${p.ref}.${p.pin}`).sort()).toEqual(["J1.5", "J2.1"]);
     expect(b.stats.routed).toBe(b.stats.connections - 1);
     expect(b.drc.some((d) => d.kind === "unrouted" && d.nets?.includes("X"))).toBe(true);
+  });
+
+  it("rule-checks the real copper: shorts, clearance, edge, drills, pours", () => {
+    const spec = small(20, 10, [one("J1", 5.08, 5.08), one("J2", 15.24, 5.08), one("J3", 10, 8.5)], [
+      { name: "A", pins: [{ ref: "J1", pin: "1" }, { ref: "J2", pin: "1" }] },
+      { name: "B", pins: [{ ref: "J3", pin: "1" }] },
+    ]);
+    const b = routeBoard(spec);
+    expect(b.drc).toEqual([]);
+    const kinds = (extra: Partial<RoutedBoard>) => new Set(boardDrc({ ...b, ...extra }).map((d) => d.kind));
+    // a B track down through A's track, and a tiny via half off the board
+    const cross = kinds({ tracks: [...b.tracks, { net: "B", layer: "F", w: 0.4, pts: [[10, 8.5], [10, 2]] }], vias: [{ net: "B", x: 10, y: 0.3, pad: 0.6, drill: 0.2 }] });
+    expect(cross).toContain("short");
+    expect(cross).toContain("drill");
+    expect(cross).toContain("offboard");
+    // a B track running 0.2 mm from A's
+    expect(kinds({ tracks: [...b.tracks, { net: "B", layer: "F", w: 0.4, pts: [[7, 5.68], [13, 5.68]] }] })).toContain("clearance");
+    // the same track on the other layer is fine
+    expect(kinds({ tracks: [...b.tracks, { net: "B", layer: "B", w: 0.4, pts: [[7, 5.68], [13, 5.68]] }] }).size).toBe(0);
+    // A's track removed: unrouted
+    expect(kinds({ tracks: [] })).toContain("unrouted");
+    // a pour of B over A's track
+    const pour = { net: "B", layer: "F" as const, polys: [[[1, 1], [19, 1], [19, 9], [1, 9]] as [number, number][]] };
+    expect(kinds({ pours: [pour] })).toContain("short");
+  });
+
+  it("pours ground round other nets with thermal spokes on its own pads", () => {
+    const spec = small(30, 20, [one("J1", 5, 10), one("J2", 25, 10), one("J3", 15, 4), one("J4", 15, 16)], [
+      { name: "GND", pins: [{ ref: "J1", pin: "1" }, { ref: "J2", pin: "1" }], pour: true },
+      { name: "S", pins: [{ ref: "J3", pin: "1" }, { ref: "J4", pin: "1" }] },
+    ]);
+    const b = routeBoard(spec);
+    expect(b.unrouted).toEqual([]);
+    expect(b.drc).toEqual([]);
+    expect(b.pours.map((p) => p.layer).sort()).toEqual(["B", "F"]);
+    for (const p of b.pours) {
+      const [outline, ...holes] = p.polys;
+      // the outline runs counter-clockwise inside the edge keep-out, holes clockwise
+      expect(ringArea(outline)).toBeGreaterThan(400);
+      for (const h of holes) expect(ringArea(h)).toBeLessThan(0);
+      for (const [x, y] of outline) {
+        expect(x).toBeGreaterThanOrEqual(b.rules.edge);
+        expect(y).toBeLessThanOrEqual(20 - b.rules.edge);
+      }
+      // ground pads sit in a cleared ring the spokes cross: the pour doesn't cover the pad's centre...
+      for (const pad of placedPads(spec).filter((q) => q.net === "GND")) expect(inRing(outline, pad.x, pad.y) && !holes.some((h) => inRing(h, pad.x, pad.y))).toBe(false);
+      // ...but reaches into the pad along the spokes
+      const pad = placedPads(spec)[0];
+      expect(holes.some((h) => inRing(h, pad.x, pad.y))).toBe(true);
+      expect(inRing(outline, pad.x + 0.75, pad.y) && !holes.some((h) => inRing(h, pad.x + 0.75, pad.y))).toBe(true);
+      expect(inRing(outline, pad.x + 0.75, pad.y + 0.75) && !holes.some((h) => inRing(h, pad.x + 0.75, pad.y + 0.75))).toBe(false);
+    }
   });
 
   it("finds parts on top of each other and pins the footprint lacks", () => {

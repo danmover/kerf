@@ -79,7 +79,6 @@ interface Conn {
   b: number;
   len: number;
   queued: boolean;
-  failed: boolean;
 }
 
 interface Seg {
@@ -205,7 +204,6 @@ class Router {
   private heap = new Heap();
   private readonly viaGap: number;
   private readonly moveCost: Float64Array;
-  expansions = 0;
 
   constructor(
     readonly spec: BoardSpec,
@@ -349,7 +347,7 @@ class Router {
       let u = -1;
       for (let i = 0; i < P; i++) if (!inTree[i] && (u < 0 || best[i] < best[u])) u = i;
       inTree[u] = 1;
-      if (from[u] >= 0) n.conns.push({ net: n, a: n.pads[from[u]], b: n.pads[u], len: best[u], queued: false, failed: false });
+      if (from[u] >= 0) n.conns.push({ net: n, a: n.pads[from[u]], b: n.pads[u], len: best[u], queued: false });
       const pu = this.pads[n.pads[u]].p;
       for (let i = 0; i < P; i++) {
         if (inTree[i]) continue;
@@ -503,7 +501,6 @@ class Router {
       const node = heap.pop();
       if (closed[node] === gen) continue;
       closed[node] = gen;
-      this.expansions++;
       if (tgt[node] === gen) {
         found = node;
         break;
@@ -802,7 +799,6 @@ export function routeBoard(spec: BoardSpec, opts: { maxMs?: number } = {}): Rout
     return [Math.max(0, Math.min(ai, bi) - mc), Math.max(0, Math.min(aj, bj) - mc), Math.min(nx - 1, Math.max(ai, bi) + mc), Math.min(ny - 1, Math.max(aj, bj) + mc)];
   };
   const whole: [number, number, number, number] = [0, 0, nx - 1, ny - 1];
-  let rips = 0;
   for (let qi = 0; qi < queue.length; qi++) {
     if (now() - t0 > maxMs) break;
     const c = queue[qi];
@@ -816,23 +812,18 @@ export function routeBoard(spec: BoardSpec, opts: { maxMs?: number } = {}): Rout
     let src = R.compNodes(n, ca, owner);
     let dst = R.compNodes(n, cb, owner);
     if (src.length > dst.length) [src, dst] = [dst, src];
-    if (!src.length || !dst.length) {
-      c.failed = true;
-      continue;
-    }
+    if (!src.length || !dst.length) continue;
     let nodes = R.search(n, src, dst, box(c, 5), false, owner) ?? R.search(n, src, dst, whole, false, owner);
     if (!nodes) {
+      // the last fifth of the time only fits in what still fits, so a board that can't be finished ends settled
+      if (now() - t0 > maxMs * 0.8) continue;
       nodes = R.search(n, src, dst, box(c, 12), true, owner) ?? R.search(n, src, dst, whole, true, owner);
-      if (!nodes) {
-        c.failed = true;
-        continue;
-      }
-      const hit = R.victims(n, nodes);
+      // nothing gets through even over other nets' tracks: pads or the edge wall it in
+      if (!nodes) continue;
       const touched = new Set<RNet>();
-      for (const p of hit) {
+      for (const p of R.victims(n, nodes)) {
         R.remove(p);
         touched.add(p.net);
-        rips++;
       }
       for (const tn of touched) {
         R.prune(tn);
@@ -840,14 +831,12 @@ export function routeBoard(spec: BoardSpec, opts: { maxMs?: number } = {}): Rout
         for (const k of tn.conns)
           if (!k.queued && tc.pad.get(k.a) !== tc.pad.get(k.b)) {
             k.queued = true;
-            k.failed = false;
             queue.push(k);
           }
       }
     }
     R.commit(R.makePath(n, nodes, owner));
   }
-  const routeMs = now() - t0;
 
   // output
   const tracks: Track[] = [];
@@ -884,21 +873,18 @@ export function routeBoard(spec: BoardSpec, opts: { maxMs?: number } = {}): Rout
     }
   }
 
-  const partial = { spec, rules, tracks, vias };
-  const pours = makePours(partial);
+  const { pours, vias: stitches } = makePours({ spec, rules, tracks, vias });
+  vias.push(...stitches);
   const board: RoutedBoard = { spec, rules, tracks, vias, pours, unrouted, drc: [], stats: { connections: all.length, routed: 0, vias: vias.length, trackLength: 0, ms: 0 } };
   // a pour net the tracks didn't finish may still be joined by its pour
-  if (pours.length && unrouted.some((u) => spec.nets.find((n) => n.name === u.net)?.pour)) {
+  const poured = new Set(pours.map((p) => p.net));
+  if (unrouted.some((u) => poured.has(u.net))) {
     const joined = connectivity(board);
-    board.unrouted = unrouted.filter((u) => !joined.sameNode(u.net, u.a, u.b));
+    board.unrouted = unrouted.filter((u) => !(poured.has(u.net) && joined.sameNode(u.a, u.b)));
   }
   board.drc = boardDrc(board);
   let len = 0;
   for (const t of tracks) for (let k = 1; k < t.pts.length; k++) len += Math.hypot(t.pts[k][0] - t.pts[k - 1][0], t.pts[k][1] - t.pts[k - 1][1]);
   board.stats = { connections: all.length, routed: all.length - board.unrouted.length, vias: vias.length, trackLength: Math.round(len * 10) / 10, ms: Math.round(now() - t0) };
-  debugStats = { routeMs, rips, expansions: R.expansions };
   return board;
 }
-
-/** Numbers from the last routeBoard call, for tuning. */
-export let debugStats = { routeMs: 0, rips: 0, expansions: 0 };
