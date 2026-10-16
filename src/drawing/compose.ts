@@ -27,6 +27,8 @@ export interface ComposeInput {
   volumeOf?: (p: EvalPart) => number | undefined;
   /** ISO date for the title block */
   today?: string;
+  /** the design evaluated with some parameters changed, so dimensions can find the parameter that drives them */
+  reevaluate?: (overrides: Record<string, number>) => Model;
 }
 
 const GAP = 8;
@@ -53,7 +55,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     return exact ? pad(exact, 1) : boxExtents(plan.bbox, v.frame);
   });
   const xext: Ext[] = plan.views.map((v, i) => (v.kind === "detail" ? lext[i] : (edgeExtents(results[i]) ?? lext[i])));
-  const built = buildDims({ plan, model, spec, ext: xext, results, bboxOf: inp.bboxOf });
+  const built = buildDims({ plan, model, spec, ext: xext, results, bboxOf: inp.bboxOf, reevaluate: inp.reevaluate });
   const dims = built.dims;
   warnings.push(...built.warnings);
 

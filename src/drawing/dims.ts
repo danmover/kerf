@@ -4,9 +4,9 @@
 import type { EvalPart, Model } from "../core/model";
 import type { ViewResult } from "../kernel/drawing";
 import { vdot, vnorm, vsub, type V3 } from "../kernel/recipe";
-import { applyProbes, holeCallout, holeKey, partFeatures, type Feature } from "./features";
+import { applyProbes, holeCallout, holeKey, partFeatures, recipeSpan, type Feature } from "./features";
 import { arcPoints } from "./hatch";
-import { fmtDev, fmtNum, Ink, type Box, type SheetDim } from "./sheet";
+import { fmtDev, fmtNum, Ink, type Box, type Frame, type SheetDim } from "./sheet";
 import { fitLimits, generalClass, generalTolerance, type DrawingSpec } from "./spec";
 import { textWidth } from "./text";
 import { partExtent, toView, type BBoxOf, type DrawingPlan } from "./views";
@@ -129,6 +129,80 @@ export interface DimContext {
   ext: [number, number, number, number][];
   results: (ViewResult | undefined)[];
   bboxOf: BBoxOf;
+  /**
+   * The design evaluated again with some parameters changed. Dimensions use
+   * it to find the parameter that drives them; without it none are linked.
+   */
+  reevaluate?: (overrides: Record<string, number>) => Model;
+}
+
+// ---------- parameter links ----------
+
+type Parts = Map<string, EvalPart>;
+/** Works a dimension's value out again from the parts' recipes, so it can be checked on a changed design. */
+type Probe = (parts: Parts) => number | undefined;
+type ParamFor = (value: number, probe?: Probe) => string | undefined;
+
+/** how far a candidate parameter is moved to see whether a dimension follows it */
+const NUDGE = 0.37;
+const partsCache = new WeakMap<Model, Parts>();
+const nudgedCache = new WeakMap<Model, Map<string, Parts | null>>();
+const featCache = new WeakMap<EvalPart, Feature[]>();
+
+function partsOf(model: Model): Parts {
+  let out = partsCache.get(model);
+  if (!out) partsCache.set(model, (out = new Map(model.parts.map((p) => [p.id, p]))));
+  return out;
+}
+
+function featuresOf(p: EvalPart | undefined): Feature[] {
+  if (!p) return [];
+  let out = featCache.get(p);
+  if (!out) featCache.set(p, (out = partFeatures(p)));
+  return out;
+}
+
+/** The parts of the design with one parameter moved, or null if it doesn't evaluate. */
+function nudged(model: Model, name: string, value: number, reevaluate: NonNullable<DimContext["reevaluate"]>): Parts | null {
+  let byParam = nudgedCache.get(model);
+  if (!byParam) nudgedCache.set(model, (byParam = new Map()));
+  if (byParam.has(name)) return byParam.get(name)!;
+  let out: Parts | null = null;
+  try {
+    out = new Map(reevaluate({ [name]: value }).parts.map((p) => [p.id, p]));
+  } catch {
+    out = null;
+  }
+  byParam.set(name, out);
+  return out;
+}
+
+/** Material extent of some parts along a direction, from their recipes. */
+function spanOver(parts: Parts, ids: string[], dir: V3): [number, number] | undefined {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const id of ids) {
+    const p = parts.get(id);
+    const s = p && recipeSpan(p, dir);
+    if (!s) return undefined;
+    lo = Math.min(lo, s[0]);
+    hi = Math.max(hi, s[1]);
+  }
+  return ids.length ? [lo, hi] : undefined;
+}
+
+/** A feature's position in a view, followed through a re-evaluated design by its place in the recipe. */
+function trackFeature(partId: string, index: number, frame: Frame): (parts: Parts) => [number, number] | undefined {
+  return (parts) => {
+    const f = featuresOf(parts.get(partId))[index];
+    return f && "at" in f ? toView(f.at, frame) : undefined;
+  };
+}
+
+/** A centre seen end-on in a view, with how to find it again in a changed design. */
+interface Anchor {
+  c: [number, number];
+  at: (parts: Parts) => [number, number] | undefined;
 }
 
 /** All dimensions and callouts for a drawing, in view space. */
@@ -139,10 +213,23 @@ export function buildDims(ctx: DimContext): { dims: DimDef[]; warnings: string[]
   const cls = generalClass(spec.tolerance);
   const linkParams = paramsByPart(model);
   const partNames = [...new Set(plan.parts.map((p) => p.name))];
-  const paramFor = (value: number): string | undefined => {
+  // A dimension links to a parameter only when the parameter drives it one for
+  // one: equal in value, and moving the parameter moves the dimension by the
+  // same amount in a re-evaluated design. Sharing a value is not enough.
+  const paramFor: ParamFor = (value, probe) => {
+    const reevaluate = ctx.reevaluate;
+    if (!probe || !reevaluate) return undefined;
     const candidates = new Set<string>();
     for (const n of partNames) for (const p of linkParams.get(n) ?? []) candidates.add(p);
-    const hits = model.params.filter((p) => candidates.has(p.name) && typeof p.value === "number" && close(p.value, value) && !p.locked);
+    const same = model.params.filter((p) => candidates.has(p.name) && typeof p.value === "number" && close(p.value, value) && !p.locked);
+    if (!same.length) return undefined;
+    const base = probe(partsOf(model));
+    if (base === undefined) return undefined;
+    const hits = same.filter((p) => {
+      const parts = nudged(model, p.name, (p.value as number) + NUDGE, reevaluate);
+      const moved = parts ? probe(parts) : undefined;
+      return moved !== undefined && close(moved - base, NUDGE, 1e-3);
+    });
     return hits.length === 1 ? hits[0].name : undefined;
   };
   const general = (v: number) => (cls ? (generalTolerance(v, cls) ?? undefined) : undefined);
@@ -266,30 +353,34 @@ const AXES: { v: V3; name: string; word: string }[] = [
   { v: [0, 0, 1], name: "Z", word: "height" },
 ];
 
-function overallDims(ctx: DimContext, push: Push, paramFor: (v: number) => string | undefined, skip: Set<string>, what: string) {
+function overallDims(ctx: DimContext, push: Push, paramFor: ParamFor, skip: Set<string>, what: string, ids: string[]) {
   const views = principalViews(ctx.plan);
   for (const axis of AXES) {
     if (skip.has(axis.name)) continue;
+    const size: Probe = (parts) => {
+      const s = spanOver(parts, ids, axis.v);
+      return s && s[1] - s[0];
+    };
     for (const vi of views) {
       const f = ctx.plan.views[vi].frame;
       const [u0, v0, u1, v1] = ctx.ext[vi];
       const value = (lo: number, hi: number) => Math.round((hi - lo) * 1e4) / 1e4;
       if (Math.abs(vdot(f.x, axis.v)) > 0.999) {
         const val = value(u0, u1);
-        push({ view: vi, kind: "h", a: [u0, v0], b: [u1, v0], value: val, text: { main: fmtNum(val) }, side: "bottom", meta: { label: `Overall ${axis.word} (${axis.name}) of ${what}`, param: paramFor(val) } });
+        push({ view: vi, kind: "h", a: [u0, v0], b: [u1, v0], value: val, text: { main: fmtNum(val) }, side: "bottom", meta: { label: `Overall ${axis.word} (${axis.name}) of ${what}`, param: paramFor(val, size) } });
         break;
       }
       if (Math.abs(vdot(f.y, axis.v)) > 0.999) {
         const val = value(v0, v1);
-        push({ view: vi, kind: "v", a: [u1, v0], b: [u1, v1], value: val, text: { main: fmtNum(val) }, side: "right", meta: { label: `Overall ${axis.word} (${axis.name}) of ${what}`, param: paramFor(val) } });
+        push({ view: vi, kind: "v", a: [u1, v0], b: [u1, v1], value: val, text: { main: fmtNum(val) }, side: "right", meta: { label: `Overall ${axis.word} (${axis.name}) of ${what}`, param: paramFor(val, size) } });
         break;
       }
     }
   }
 }
 
-function assemblyDims(ctx: DimContext, push: Push, paramFor: (v: number) => string | undefined) {
-  overallDims(ctx, push, paramFor, new Set(), "the assembly");
+function assemblyDims(ctx: DimContext, push: Push, paramFor: ParamFor) {
+  overallDims(ctx, push, paramFor, new Set(), "the assembly", ctx.plan.parts.map((p) => p.id));
 }
 
 /** The first principal view that looks along a direction. */
@@ -298,7 +389,7 @@ function viewAlong(ctx: DimContext, dir: V3): number {
   return -1;
 }
 
-function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string | undefined, warnings: string[]) {
+function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: string[]) {
   const part = ctx.plan.parts[0];
   if (!part) return;
   const what = part.label;
@@ -314,15 +405,16 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
     // the profile gives a turned part's length; a gear keeps its face width
     for (const a of AXES) if (turned || Math.abs(vdot(a.v, vnorm(axisDir))) < 0.999) skip.add(a.name);
   }
-  overallDims(ctx, push, paramFor, skip, what);
+  overallDims(ctx, push, paramFor, skip, what, [part.id]);
 
   // per view: the groups of features seen end-on, for position dimensions; concentric groups merge
-  const anchors = new Map<number, [number, number][][]>();
-  const addGroup = (vi: number, centers: [number, number][]) => {
-    const list = anchors.get(vi) ?? [];
-    const same = (a: [number, number][], b: [number, number][]) => a.length === b.length && a.every((c) => b.some((d) => close(c[0], d[0], 0.01) && close(c[1], d[1], 0.01)));
-    if (!list.some((g) => same(g, centers))) list.push(centers);
-    anchors.set(vi, list);
+  const anchors = new Map<number, Anchor[][]>();
+  const addGroup = (vi: number, list: Feature[], centers: [number, number][]) => {
+    const groups = anchors.get(vi) ?? [];
+    const same = (a: Anchor[], b: [number, number][]) => a.length === b.length && a.every(({ c }) => b.some((d) => close(c[0], d[0], 0.01) && close(c[1], d[1], 0.01)));
+    const frame = ctx.plan.views[vi].frame;
+    if (!groups.some((g) => same(g, centers))) groups.push(list.map((f, k) => ({ c: centers[k], at: trackFeature(part.id, feats.indexOf(f), frame) })));
+    anchors.set(vi, groups);
   };
 
   // callouts are collected first so concentric ones can share a leader
@@ -349,7 +441,7 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
     if (!list[0].through && farSide(list[0].at, list[0].dir, list[0].depth, vi)) lines[0] += " FAR SIDE";
     const r = list[0].d / 2;
     callouts.push({ vi, centers, order: 0, size: list[0].d, lines, r, value: list[0].d, label: `${list.length > 1 ? `${list.length} holes` : "Hole"} Ø${fmtNum(list[0].d)} in ${what}` });
-    addGroup(vi, centers);
+    addGroup(vi, list, centers);
   }
 
   // cut and added cylinders: bores, seats and bosses
@@ -374,8 +466,13 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
       const depth = Math.min(start + f0.h, hi) - Math.max(start, lo);
       main += f0.through ? " THRU" : ` × ${fmtNum(depth, 1)} DEEP${farSide(f0.at, f0.dir, f0.h, vi) ? " FAR SIDE" : ""}`;
     } else main += " BOSS";
-    callouts.push({ vi, centers, order: f0.op === "cut" ? 1 : 2, size: f0.d, lines: [main], r: f0.d / 2, value: f0.d, label: `${f0.op === "add" ? "Boss" : "Bore"} Ø${fmtNum(f0.d)} in ${what}`, param: paramFor(f0.d) });
-    addGroup(vi, centers);
+    const i0 = feats.indexOf(f0);
+    const dia: Probe = (parts) => {
+      const f = featuresOf(parts.get(part.id))[i0];
+      return f?.t === "cyl" ? f.d : undefined;
+    };
+    callouts.push({ vi, centers, order: f0.op === "cut" ? 1 : 2, size: f0.d, lines: [main], r: f0.d / 2, value: f0.d, label: `${f0.op === "add" ? "Boss" : "Bore"} Ø${fmtNum(f0.d)} in ${what}`, param: paramFor(f0.d, dia) });
+    addGroup(vi, list, centers);
   }
 
   // slots and pockets
@@ -395,7 +492,7 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
     let main = isSlot ? `SLOT ${size}` : `${size} R${fmtNum(s.r)}`;
     main += s.through ? " THRU" : ` × ${fmtNum(s.depth, 1)} DEEP${farSide(s.at, s.dir, s.depth, vi) ? " FAR SIDE" : ""}`;
     callouts.push({ vi, centers, order: 1, size: Math.min(s.w, s.h), lines: [main], r: Math.min(s.w, s.h) / 2, value: s.w, label: `${isSlot ? "Slot" : "Pocket"} ${size} in ${what}` });
-    addGroup(vi, centers);
+    addGroup(vi, list, centers);
   }
 
   // one leader per set of concentric features: holes first, then bores by size, then bosses
@@ -416,7 +513,13 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
   for (const [vi, groups] of anchors) positionDims(ctx, vi, groups, push, paramFor, warnings, what);
 
   // turned profile: length and diameters on the side view
-  if (turned) turnedDims(ctx, turned, push, paramFor, what);
+  if (turned) {
+    const ti = feats.indexOf(turned);
+    turnedDims(ctx, turned, push, paramFor, what, (parts) => {
+      const f = featuresOf(parts.get(part.id))[ti];
+      return f?.t === "turned" ? f : undefined;
+    });
+  }
   if (part.gear && part.recipe.base?.t === "gear") gearDims(ctx, part, push, what);
 }
 
@@ -434,9 +537,13 @@ function repIndex(centers: [number, number][]): number {
  * the lower edge. Each feature group then gets its spacing or pattern pitch
  * and one dimension tying it to the datum.
  */
-function positionDims(ctx: DimContext, vi: number, groups: [number, number][][], push: Push, paramFor: (v: number) => string | undefined, warnings: string[], what: string) {
+function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], push: Push, paramFor: ParamFor, warnings: string[], what: string) {
   const [u0, v0, u1, v1] = ctx.ext[vi];
-  const centers = groups.flat();
+  const all = anchorGroups.flat();
+  const centers = all.map((a) => a.c);
+  const groups = anchorGroups.map((g) => g.map((a) => a.c));
+  const frame = ctx.plan.views[vi].frame;
+  const ids = ctx.plan.parts.slice(0, 1).map((p) => p.id);
   for (const axis of [0, 1] as const) {
     const lo = axis === 0 ? u0 : v0;
     const hi = axis === 0 ? u1 : v1;
@@ -457,6 +564,18 @@ function positionDims(ctx: DimContext, vi: number, groups: [number, number][][],
     };
     const made = new Set<string>();
     const out: [number, number, number, string, string][] = [];
+    /** where a dimension end lands in a changed design: on its feature, the origin, or the moved outline */
+    const dir = axis === 0 ? frame.x : frame.y;
+    const endIn = (val: number, parts: Parts): number | undefined => {
+      const on = all.find((x) => close(x.c[axis], val, 0.01));
+      if (on) return on.at(parts)?.[axis];
+      if (close(val, 0, 1e-6)) return 0;
+      if (!close(val, lo, 0.05) && !close(val, hi, 0.05)) return undefined;
+      const s0 = spanOver(partsOf(ctx.model), ids, dir);
+      const s1 = spanOver(parts, ids, dir);
+      if (!s0 || !s1) return undefined;
+      return close(val, lo, 0.05) ? val + s1[0] - s0[0] : val + s1[1] - s0[1];
+    };
     const mk = (a: number, b: number, value: number, text: string, label: string) => {
       const k = `${Math.min(a, b).toFixed(2)}|${Math.max(a, b).toFixed(2)}`;
       if (made.has(k) || value < 0.01) return;
@@ -517,7 +636,12 @@ function positionDims(ctx: DimContext, vi: number, groups: [number, number][][],
     for (const [a, b, value, text, label] of out) {
       const pa: [number, number] = axis === 0 ? [a, near(a)] : [near(a), a];
       const pb: [number, number] = axis === 0 ? [b, near(b)] : [near(b), b];
-      push({ view: vi, kind: axis === 0 ? "h" : "v", a: pa, b: pb, value, text: { main: text }, side: axis === 0 ? "bottom" : "right", meta: { label, param: paramFor(value) } });
+      const length: Probe = (parts) => {
+        const ea = endIn(a, parts);
+        const eb = endIn(b, parts);
+        return ea === undefined || eb === undefined ? undefined : Math.abs(eb - ea);
+      };
+      push({ view: vi, kind: axis === 0 ? "h" : "v", a: pa, b: pb, value, text: { main: text }, side: axis === 0 ? "bottom" : "right", meta: { label, param: paramFor(value, length) } });
     }
   }
 }
@@ -534,7 +658,7 @@ function evenlySpaced(vals: number[]): boolean {
   return d > 0.01;
 }
 
-function turnedDims(ctx: DimContext, f: Extract<Feature, { t: "turned" }>, push: Push, paramFor: (v: number) => string | undefined, what: string) {
+function turnedDims(ctx: DimContext, f: Extract<Feature, { t: "turned" }>, push: Push, paramFor: ParamFor, what: string, track: (parts: Parts) => Extract<Feature, { t: "turned" }> | undefined) {
   const axis = vnorm(f.dir);
   const vi = principalViews(ctx.plan).find((i) => Math.abs(vdot(ctx.plan.views[i].frame.x, axis)) > 0.999 || Math.abs(vdot(ctx.plan.views[i].frame.y, axis)) > 0.999);
   if (vi === undefined) return;
@@ -548,24 +672,32 @@ function turnedDims(ctx: DimContext, f: Extract<Feature, { t: "turned" }>, push:
   const a0 = along(zmin);
   const a1 = along(zmax);
   const len = zmax - zmin;
+  const length: Probe = (parts) => {
+    const zs2 = track(parts)?.pts.map((p) => p[1]);
+    return zs2?.length ? Math.max(...zs2) - Math.min(...zs2) : undefined;
+  };
   const perp: [number, number] = horizontal ? [0, -rmax] : [rmax, 0];
-  if (horizontal) push({ view: vi, kind: "h", a: [Math.min(a0[0], a1[0]), a0[1] + perp[1]], b: [Math.max(a0[0], a1[0]), a0[1] + perp[1]], value: len, text: { main: fmtNum(len) }, side: "bottom", meta: { label: `Overall length of ${what}`, param: paramFor(len) } });
-  else push({ view: vi, kind: "v", a: [a0[0] + perp[0], Math.min(a0[1], a1[1])], b: [a0[0] + perp[0], Math.max(a0[1], a1[1])], value: len, text: { main: fmtNum(len) }, side: "right", meta: { label: `Overall length of ${what}`, param: paramFor(len) } });
+  if (horizontal) push({ view: vi, kind: "h", a: [Math.min(a0[0], a1[0]), a0[1] + perp[1]], b: [Math.max(a0[0], a1[0]), a0[1] + perp[1]], value: len, text: { main: fmtNum(len) }, side: "bottom", meta: { label: `Overall length of ${what}`, param: paramFor(len, length) } });
+  else push({ view: vi, kind: "v", a: [a0[0] + perp[0], Math.min(a0[1], a1[1])], b: [a0[0] + perp[0], Math.max(a0[1], a1[1])], value: len, text: { main: fmtNum(len) }, side: "right", meta: { label: `Overall length of ${what}`, param: paramFor(len, length) } });
   // cylindrical runs: one diameter each, at the middle of the longest run
-  const runs = new Map<string, { r: number; z: number; len: number }>();
+  const runs = new Map<string, { r: number; z: number; len: number; i: number }>();
   for (let i = 0; i + 1 < f.pts.length; i++) {
     const [ra, za] = f.pts[i];
     const [rb, zb] = f.pts[i + 1];
     if (ra < 0.05 || !close(ra, rb, 1e-4) || close(za, zb, 1e-4)) continue;
     const k = ra.toFixed(3);
-    const run = { r: ra, z: (za + zb) / 2, len: Math.abs(zb - za) };
+    const run = { r: ra, z: (za + zb) / 2, len: Math.abs(zb - za), i };
     if (!runs.has(k) || runs.get(k)!.len < run.len) runs.set(k, run);
   }
   for (const run of [...runs.values()].sort((a, b) => b.len - a.len).slice(0, 4)) {
     const c = along(run.z);
     const a: [number, number] = horizontal ? [c[0], c[1] - run.r] : [c[0] - run.r, c[1]];
     const b: [number, number] = horizontal ? [c[0], c[1] + run.r] : [c[0] + run.r, c[1]];
-    push({ view: vi, kind: "inline", a, b, value: 2 * run.r, text: { main: `Ø${fmtNum(2 * run.r)}` }, meta: { label: `Diameter of ${what}`, param: paramFor(2 * run.r) } });
+    const dia: Probe = (parts) => {
+      const q = track(parts)?.pts[run.i];
+      return q && 2 * q[0];
+    };
+    push({ view: vi, kind: "inline", a, b, value: 2 * run.r, text: { main: `Ø${fmtNum(2 * run.r)}` }, meta: { label: `Diameter of ${what}`, param: paramFor(2 * run.r, dia) } });
   }
 }
 

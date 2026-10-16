@@ -35,14 +35,15 @@ function load(src: string) {
   for (const p of model.parts) core.build({ hash: p.hash, recipe: p.recipe, label: p.label });
   const bboxOf = (p: { hash: string }) => core.get(p.hash)?.bbox;
   const volumeOf = (p: { hash: string }) => core.get(p.hash)?.volume;
-  return { core, model, bboxOf, volumeOf };
+  return { core, model, bboxOf, volumeOf, src };
 }
 
 function draw(ctx: ReturnType<typeof load>, spec: DrawingSpec, model: Model = ctx.model): Sheet {
   const plan = planDrawing(spec, model, ctx.bboxOf);
   const results = new Map<string, ViewResult>();
   for (const v of plan.views) if (!results.has(v.key)) results.set(v.key, projectView(v.req, (p) => ctx.core.placed(p)));
-  return composeSheet({ plan, model, result: (k) => results.get(k), bboxOf: ctx.bboxOf, volumeOf: ctx.volumeOf, today: "2026-10-16" });
+  const reevaluate = (overrides: Record<string, number>) => evaluate(ctx.src, { overrides });
+  return composeSheet({ plan, model, result: (k) => results.get(k), bboxOf: ctx.bboxOf, volumeOf: ctx.volumeOf, today: "2026-10-16", reevaluate });
 }
 
 function save(name: string, sheet: Sheet) {
@@ -52,6 +53,7 @@ function save(name: string, sheet: Sheet) {
   writeFileSync(join(OUT, `${name}.dxf`), sheetToDxf(sheet));
 }
 
+const close = (a: number, b: number) => Math.abs(a - b) < 1e-6;
 const demo = (f: string) => readFileSync(join(__dirname, "../src/demos", f), "utf8");
 
 describe("automatic drawings", () => {
@@ -98,6 +100,40 @@ describe("automatic drawings", () => {
       if (spec.name === "auto:housing") expect(sheet.dims.some((d) => /Ø9 THRU/.test(d.text))).toBe(true);
     }
   }, 240_000);
+});
+
+describe("parameter links", () => {
+  const plate = (holes: string) => `design "Links"
+param w = 60mm
+param boss_h = 40mm
+param pitch = 40mm
+param boss_d = 12mm
+part plate {
+  body box(w, 50, 8)
+  add cylinder(d: boss_d, h: boss_h, at: (0, 15, 8))
+${holes}
+}
+`;
+
+  it("links a dimension to the parameter that drives it, not one that only shares its value", () => {
+    const ctx = load(plate("  cut hole(M4, through: true, at: (-pitch / 2, -10, 8))\n  cut hole(M4, through: true, at: (pitch / 2, -10, 8))"));
+    const sheet = draw(ctx, autoDrawings(ctx.model, ctx.bboxOf).find((s) => s.name === "auto:plate")!);
+    const spacing = sheet.dims.find((d) => /spacing \(horizontal\)/.test(d.label) && close(d.value, 40));
+    expect(spacing?.param).toBe("pitch");
+    expect(sheet.dims.find((d) => /Overall width/.test(d.label))?.param).toBe("w");
+    expect(sheet.dims.find((d) => /Boss Ø12/.test(d.label))?.param).toBe("boss_d");
+    // nothing measures boss_h one for one: the overall height is 8 + boss_h
+    expect(sheet.dims.some((d) => d.param === "boss_h")).toBe(false);
+  }, 60_000);
+
+  it("leaves a dimension unlinked when its value comes from a literal", () => {
+    // boss_h is the only 40 mm parameter here, which used to be enough for a link
+    const ctx = load(plate("  cut hole(M4, through: true, at: (-20, -10, 8))\n  cut hole(M4, through: true, at: (20, -10, 8))").replace("param pitch = 40mm\n", ""));
+    const sheet = draw(ctx, autoDrawings(ctx.model, ctx.bboxOf).find((s) => s.name === "auto:plate")!);
+    const spacing = sheet.dims.find((d) => /spacing \(horizontal\)/.test(d.label) && close(d.value, 40));
+    expect(spacing).toBeDefined();
+    expect(spacing!.param).toBeUndefined();
+  }, 60_000);
 });
 
 describe("drawing blocks", () => {

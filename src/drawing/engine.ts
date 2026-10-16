@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { meshes, useDesign } from "../core/engine";
 import type { EvalPart, Model } from "../core/model";
+import { evaluate } from "../lang/evaluator";
 import { kernel, KernelCrashed } from "../kernel/client";
 import type { ViewRequest, ViewResult } from "../kernel/drawing";
 import { composeSheet } from "./compose";
@@ -131,7 +132,9 @@ function partsSettled(plan: DrawingPlan): boolean {
 }
 
 function compose(plan: DrawingPlan, model: Model): Sheet {
-  return composeSheet({ plan, model, result: resultOf, bboxOf, volumeOf, today: today() });
+  const { source } = useDesign.getState();
+  const reevaluate = useDesign.getState().model === model ? (overrides: Record<string, number>) => evaluate(source, { overrides }) : undefined;
+  return composeSheet({ plan, model, result: resultOf, bboxOf, volumeOf, today: today(), reevaluate });
 }
 
 function today() {

@@ -4,7 +4,7 @@
 // are built from these rather than guessed from the projected lines.
 
 import type { EvalPart } from "../core/model";
-import { applyXforms, applyXformsToDir, vcross, vnorm, type ShapeRecipe, type V2, type V3, type Xform } from "../kernel/recipe";
+import { applyXforms, applyXformsToDir, vadd, vcross, vdot, vnorm, vscale, type ShapeRecipe, type V2, type V3, type Xform } from "../kernel/recipe";
 
 export type Feature =
   | {
@@ -99,6 +99,79 @@ export function partFeatures(p: EvalPart, extent?: Extent): Feature[] {
     else if (o.op === "shell") out.push({ t: "shell", part: p.id, wall: o.t, open: o.open });
   }
   return out;
+}
+
+/**
+ * Extent of a part's material along a direction worked out from its recipe
+ * (the base and added shapes), or undefined for shapes it can't size. It
+ * follows the recipe, not the kernel, so it can be worked out for a design
+ * evaluated with a parameter changed.
+ */
+export function recipeSpan(p: EvalPart, u: V3): [number, number] | undefined {
+  let lo = Infinity;
+  let hi = -Infinity;
+  let known = true;
+  const point = (q: V3) => {
+    const s = vdot(q, u);
+    lo = Math.min(lo, s);
+    hi = Math.max(hi, s);
+  };
+  /** a circle of radius r around c, square to axis a */
+  const disc = (c: V3, a: V3, r: number) => {
+    const s = vdot(c, u);
+    const k = r * Math.sqrt(Math.max(0, 1 - vdot(a, u) ** 2));
+    lo = Math.min(lo, s - k);
+    hi = Math.max(hi, s + k);
+  };
+  const pt = (q: V3, xf: Xform[]) => applyXforms(applyXforms(q, xf), p.xf);
+  const dr = (q: V3, xf: Xform[]) => vnorm(applyXformsToDir(applyXformsToDir(q, xf), p.xf));
+  const rod = (at: V3, dir: V3, h: number, r0: number, r1: number, xf: Xform[]) => {
+    const a = dr(dir, xf);
+    disc(pt(at, xf), a, r0);
+    disc(pt(vadd(at, vscale(vnorm(dir), h)), xf), a, r1);
+  };
+  const walk = (s: ShapeRecipe, xf: Xform[]) => {
+    switch (s.t) {
+      case "xform":
+        walk(s.shape, [...s.xf, ...xf]);
+        return;
+      case "union":
+        for (const c of s.shapes) walk(c, xf);
+        return;
+      case "box":
+        for (let i = 0; i < 8; i++) point(pt([s.at[0] + (i & 1 ? s.w : -s.w) / 2, s.at[1] + (i & 2 ? s.d : -s.d) / 2, s.at[2] + (i & 4 ? s.h : 0)], xf));
+        return;
+      case "cyl":
+        rod(s.at, s.dir, s.h, s.d / 2, s.d / 2, xf);
+        return;
+      case "tube":
+        rod(s.at, s.dir, s.h, s.od / 2, s.od / 2, xf);
+        return;
+      case "cone":
+        rod(s.at, s.dir, s.h, s.d1 / 2, s.d2 / 2, xf);
+        return;
+      case "gear":
+        rod(s.at, s.dir, s.w, (s.m * (s.z + 2)) / 2, (s.m * (s.z + 2)) / 2, xf);
+        return;
+      case "sphere": {
+        const c = vdot(pt(s.at, xf), u);
+        lo = Math.min(lo, c - s.d / 2);
+        hi = Math.max(hi, c + s.d / 2);
+        return;
+      }
+      case "revolve": {
+        const a = dr(s.dir, xf);
+        const n = vnorm(s.dir);
+        for (const [r, z] of s.pts) disc(pt(vadd(s.at, vscale(n, z)), xf), a, r);
+        return;
+      }
+      default:
+        known = false;
+    }
+  };
+  if (p.recipe.base) walk(p.recipe.base, []);
+  for (const o of p.recipe.ops) if (o.op === "add") walk(o.shape, []);
+  return known && lo <= hi ? [lo, hi] : undefined;
 }
 
 /**
