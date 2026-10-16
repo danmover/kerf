@@ -1,0 +1,171 @@
+design "Two-Stage Spur Reducer"
+note "12:1 reducer driven by a NEMA 17 stepper. Printed housing, off-the-shelf 625/688 bearings, POM gears."
+note "Assembly order: motor screws first (from inside), then shafts, bearings and gears, then the cover."
+
+// ── Requirements in numbers ────────────────────────────
+param target_ratio = 12      "Overall reduction (input : output)"
+param m1   = 1.0mm   "Module, stage 1"
+param z1   = 12      "Motor pinion teeth"
+param z2   = 48      "Stage 1 gear teeth"
+param m2   = 1.25mm  "Module, stage 2"
+param z3   = 12      "Stage 2 pinion teeth"
+param z4   = 36      "Output gear teeth"
+param fold = 90      "Angle of the output axis around the intermediate axis (degrees)"
+
+param wall      = 3mm    range 2 .. 5   "Housing wall"
+param gap       = 3mm    "Clearance from gear tips to the housing"
+param out_d     = 8mm    "Output shaft diameter"
+param mid_bearing = "625"  "Intermediate shaft bearings"
+param out_bearing = "688"  "Output shaft bearings (bore must match out_d)"
+param foot_px   = 110mm  locked  "Mounting hole spacing along X"
+param foot_py   = 16mm   locked  "Mounting hole spacing along Y"
+
+// ── Layout skeleton (X–Z plane, shafts along Y) ────────
+let cd1   = center_distance(m1, z1, z2)
+let cd2   = center_distance(m2, z3, z4)
+let p_mid = (cd1, 0)
+let p_out = p_mid + (cd2 * cos(fold), cd2 * sin(fold))
+
+// axial stack (Y): front wall | bearings | stage 1 | stage 2 | cover
+let y_a     = wall + 4        // stage 1 gear face
+let w1      = 6
+let y_b     = y_a + w1 + 1    // stage 2 gear face
+let w2      = 8
+let y_cover = y_b + w2 + 3    // cover inner face
+let cover_t = 5
+
+// ── Drive ──────────────────────────────────────────────
+component motor = lib.nema17(length: 40) {
+  at: (0, 0, 0)
+  axis: Y
+  spin: 1
+  group: "Drive"
+  locked
+}
+
+// ── Gear train ─────────────────────────────────────────
+component g1 = lib.spur_gear(m: m1, z: z1, width: w1, bore: motor.shaft_d) {
+  at: (0, y_a, 0), axis: Y
+  turns_with: motor
+}
+component g2 = lib.spur_gear(m: m1, z: z2, width: w1, bore: 5) {
+  at: (p_mid.x, y_a, p_mid.y), axis: Y
+  mesh: g1
+  removable
+}
+component g3 = lib.spur_gear(m: m2, z: z3, width: w2, bore: 5) {
+  at: (p_mid.x, y_b, p_mid.y), axis: Y
+  turns_with: g2
+}
+component g4 = lib.spur_gear(m: m2, z: z4, width: w2, bore: out_d) {
+  at: (p_out.x, y_b, p_out.y), axis: Y
+  mesh: g3
+  removable
+}
+
+// ── Shafts and bearings ────────────────────────────────
+part mid_shaft {
+  color: #c3c8cf
+  material: "Stainless 304"
+  group: "Shafts"
+  turns_with: g2
+  body revolve([(0, 0), (2.1, 0), (2.5, 0.4), (2.5, y_cover + 1.6), (2.1, y_cover + 2), (0, y_cover + 2)], at: (p_mid.x, 1, p_mid.y), dir: Y)
+}
+
+part out_shaft {
+  color: #c3c8cf
+  material: "Stainless 304"
+  group: "Shafts"
+  turns_with: g4
+  body revolve([(0, 0), (out_d / 2 - 0.4, 0), (out_d / 2, 0.4), (out_d / 2, y_cover + cover_t + 19.6), (out_d / 2 - 0.5, y_cover + cover_t + 20), (0, y_cover + cover_t + 20)], at: (p_out.x, 1, p_out.y), dir: Y)
+  // drive flat on the protruding end
+  cut box(10, 14, 4, at: (p_out.x, y_cover + cover_t + 12, p_out.y + out_d / 2 - 0.8))
+}
+
+component mid_front = lib.bearing(mid_bearing) { at: (p_mid.x, 1, p_mid.y), axis: Y }
+component mid_back  = lib.bearing(mid_bearing) { at: (p_mid.x, y_cover - 2, p_mid.y), axis: Y }
+component out_front = lib.bearing(out_bearing) { at: (p_out.x, 1, p_out.y), axis: Y }
+component out_back  = lib.bearing(out_bearing) { at: (p_out.x, y_cover - 2, p_out.y), axis: Y }
+
+// seats: a pocket per bearing with a 2.5 mm wall around it
+let seats = [[p_mid, mid_front.od], [p_out, out_front.od]]
+
+// ── Housing envelope from the gear layout ──────────────
+let screw_reach = 15.5 + 2.75
+let x_lo = min(-screw_reach, p_mid.x - g2.tip_d / 2, p_out.x - g4.tip_d / 2) - gap
+let x_hi = max(screw_reach, p_mid.x + g2.tip_d / 2, p_out.x + g4.tip_d / 2) + gap
+let z_lo = min(-screw_reach, p_mid.y - g2.tip_d / 2, p_out.y - g4.tip_d / 2) - gap
+let z_hi = max(screw_reach, p_mid.y + g2.tip_d / 2, p_out.y + g4.tip_d / 2) + gap
+let hx = (x_lo + x_hi) / 2
+let housing_w = x_hi - x_lo + 2 * wall
+let housing_h = z_hi - z_lo + 2 * wall
+let z_floor = z_lo - wall
+let cover_pts = [(x_lo + 4.5, z_lo + 4.5), (x_hi - 4.5, z_lo + 4.5), (x_hi - 4.5, z_hi - 4.5), (x_lo + 4.5, z_hi - 4.5)]
+
+part housing {
+  color: #3d7bfd
+  material: "PETG"
+  group: "Housing"
+  body box(housing_w, y_cover, housing_h, at: (hx, y_cover / 2, z_floor))
+  shell(wall, open: Y)
+
+  // mounting feet
+  add box(foot_px + 16, y_cover, 5, at: (hx, y_cover / 2, z_floor - 0.01), r: 4)
+  for sx in [-1, 1] {
+    for sy in [-1, 1] {
+      cut hole(M4, through: true, at: (hx + sx * foot_px / 2, y_cover / 2 + sy * foot_py / 2, z_floor + 6), dir: -Z)
+    }
+  }
+
+  // motor mount: pilot recess, shaft clearance and four M3 screws from inside
+  cut cylinder(d: motor.pilot_d + 0.4, h: 2.2, at: (0, -0.01, 0), dir: Y)
+  cut cylinder(d: 9, h: wall + 1, at: (0, 0, 0), dir: Y)
+  for h in motor.holes {
+    cut hole(M3, through: true, at: (h.x, wall + 1, h.z), dir: -Y)
+  }
+
+  // front bearing bosses
+  for s in seats {
+    add cylinder(d: s[1] + 5, h: 3.01, at: (s[0].x, wall - 0.01, s[0].y), dir: Y)
+    cut cylinder(d: s[1], h: 5.01, at: (s[0].x, 1, s[0].y), dir: Y)
+    cut cylinder(d: s[1] - 5, h: 2, at: (s[0].x, -0.5, s[0].y), dir: Y)
+  }
+
+  // cover screw bosses with inserts
+  for c in cover_pts {
+    add cylinder(d: 9, h: y_cover - wall + 0.01, at: (c.x, wall - 0.01, c.y), dir: Y)
+    cut hole(M3, fit: "insert", depth: 7, at: (c.x, y_cover, c.y), dir: -Y)
+  }
+}
+
+part cover {
+  color: #c9d4e3
+  material: "PETG"
+  group: "Housing"
+  removable
+  body box(housing_w, cover_t, housing_h, at: (hx, y_cover + cover_t / 2, z_floor))
+  for s in seats {
+    add cylinder(d: s[1] + 5, h: 2.01, at: (s[0].x, y_cover - 2, s[0].y), dir: Y)
+    cut cylinder(d: s[1], h: 5.03, at: (s[0].x, y_cover - 2.01, s[0].y), dir: Y)
+  }
+  cut cylinder(d: out_d + 2, h: cover_t + 1, at: (p_out.x, y_cover, p_out.y), dir: Y)
+  cut cylinder(d: 8, h: 2, at: (0, y_cover - 0.01, 0), dir: Y)
+  for c in cover_pts {
+    cut hole(M3, through: true, at: (c.x, y_cover + cover_t + 1, c.y), dir: -Y)
+  }
+}
+
+// ── Hardware ───────────────────────────────────────────
+component motor_screws = lib.screw(M3, 6) { at: with_y(motor.holes, wall), axis: -Y }
+component cover_inserts = lib.insert(M3) { at: [(cover_pts[0].x, y_cover, cover_pts[0].y), (cover_pts[1].x, y_cover, cover_pts[1].y), (cover_pts[2].x, y_cover, cover_pts[2].y), (cover_pts[3].x, y_cover, cover_pts[3].y)], axis: -Y }
+component cover_screws = lib.screw(M3, 10) { at: [(cover_pts[0].x, y_cover + cover_t, cover_pts[0].y), (cover_pts[1].x, y_cover + cover_t, cover_pts[1].y), (cover_pts[2].x, y_cover + cover_t, cover_pts[2].y), (cover_pts[3].x, y_cover + cover_t, cover_pts[3].y)], axis: -Y }
+
+// ── Requirements ───────────────────────────────────────
+require "Reduction matches the target (±2%)": abs(1 / abs(g4.speed) - target_ratio) <= target_ratio * 0.02
+require "Stage 1 gear clears the output shaft": cd2 - g2.tip_d / 2 - out_d / 2 >= 0.6
+require "Output gear clears the motor shaft": len(p_out) - g4.tip_d / 2 - motor.shaft_d / 2 >= 1
+require "Pinions have at least 10 teeth": min(z1, z3) >= 10
+require "Motor screws clear the bearing bosses": len(p_out - (15.5, 15.5)) - (out_front.od + 5) / 2 - M3.head_d / 2 >= 1
+require "Output bearings fit the output shaft": out_front.bore == out_d
+require "Intermediate bearings fit the 5 mm shaft": mid_front.bore == 5
+require "Printable walls": wall >= 2
