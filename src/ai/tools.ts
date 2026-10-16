@@ -12,6 +12,7 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { REVIEW_TOOL } from "./review/tool";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -127,6 +128,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  REVIEW_TOOL,
 ];
 
 const EditInput = z.object({
@@ -205,7 +207,7 @@ export function reportSummary(r: CheckReport | null, limit = 40): string {
   return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}` : ""].filter(Boolean).join("\n");
 }
 
-function numbered(src: string) {
+export function numbered(src: string) {
   const lines = src.split("\n");
   const w = String(lines.length).length;
   return lines.map((l, i) => `${String(i + 1).padStart(w, " ")}| ${l}`).join("\n");
@@ -379,4 +381,5 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
+  review_design: "Reviewing the design",
 };

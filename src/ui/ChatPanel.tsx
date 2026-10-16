@@ -14,6 +14,7 @@ import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
+import { ReviewCard } from "./ReviewCard";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -195,6 +196,8 @@ function Item({ it }: { it: ChatItem }) {
       );
     case "turn":
       return <TurnBar it={it} />;
+    case "review":
+      return <ReviewCard it={it} />;
   }
 }
 

@@ -12,6 +12,8 @@ export const MODELS = [
 
 export type ModelId = (typeof MODELS)[number]["id"];
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+/** off: only when Claude asks for one · auto: after substantial changes · always: after every change */
+export type SelfReview = "off" | "auto" | "always";
 
 export interface Settings {
   model: ModelId;
@@ -22,6 +24,10 @@ export interface Settings {
   edges: boolean;
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
+  /** when an independent reviewer checks Claude's changes before it reports back */
+  selfReview: SelfReview;
+  /** review rounds per reply: the first review plus re-checks after fixes */
+  reviewRounds: number;
   termsAccepted: string | null;
   onboarded: boolean;
 }
@@ -34,6 +40,8 @@ const DEFAULTS: Settings = {
   grid: true,
   edges: true,
   maxSteps: 16,
+  selfReview: "auto",
+  reviewRounds: 2,
   termsAccepted: null,
   onboarded: false,
 };
@@ -54,6 +62,8 @@ function load(): Settings {
     if (!MODELS.some((m) => m.id === out.model)) out.model = DEFAULTS.model;
     if (!["low", "medium", "high", "xhigh", "max"].includes(out.effort)) out.effort = DEFAULTS.effort;
     out.maxSteps = Math.min(40, Math.max(4, Math.round(out.maxSteps)));
+    if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
+    out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
     return out;
   } catch {
     return DEFAULTS;

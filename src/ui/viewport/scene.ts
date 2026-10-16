@@ -698,7 +698,7 @@ export class SceneController {
 
   // ---------- capture ----------
 
-  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; section?: "x" | "y" | "z"; mime?: string; quality?: number }): Promise<string> {
+  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number }): Promise<string> {
     const r = this.renderer;
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, w: this.container.clientWidth, h: this.container.clientHeight, display: this.display, section: this.section, pr: r.getPixelRatio() };
     // let pending reveal animations finish first
@@ -712,7 +712,16 @@ export class SceneController {
       r.setPixelRatio(1);
       r.setSize(opts.width, opts.height, false);
       this.camera.aspect = opts.width / opts.height;
-      const { pos, target } = this.framing(opts.view, this.camera.aspect);
+      let box: THREE.Box3 | undefined;
+      if (opts.frame === "focus" && opts.focus?.length) {
+        box = new THREE.Box3();
+        for (const id of opts.focus) {
+          const p = this.parts.get(id);
+          if (p && p.removing === null) box.expandByObject(p.group);
+        }
+        if (box.isEmpty()) box = undefined;
+      }
+      const { pos, target } = this.framing(opts.view, this.camera.aspect, box);
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
       this.camera.lookAt(target);

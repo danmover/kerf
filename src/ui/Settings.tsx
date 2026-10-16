@@ -159,6 +159,24 @@ function AiSettings() {
           </div>
         </Row>
       </Section>
+
+      <Section title="Self-review">
+        <Row t="Review Claude's work" d="Before Claude reports back, a separate reviewer looks at the design from every side, measures its details (sharp edges, hole lead-ins, inside corners, walls, overhangs) and checks it against what you asked for. Claude fixes what it finds. Each review is one more request, with images.">
+          <Segmented
+            id="self-review"
+            value={s.selfReview}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "auto", label: "Big changes" },
+              { value: "always", label: "Every change" },
+            ]}
+            onChange={(v) => updateSettings({ selfReview: v })}
+          />
+        </Row>
+        <Row t="Review rounds per reply" d="The first review plus re-checks after Claude fixes findings.">
+          <Segmented id="review-rounds" value={String(s.reviewRounds)} options={["1", "2", "3"].map((v) => ({ value: v, label: v }))} onChange={(v) => updateSettings({ reviewRounds: Number(v) })} />
+        </Row>
+      </Section>
       <div className="help">Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com.</div>
     </>
   );

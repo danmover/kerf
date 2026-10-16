@@ -2153,3 +2153,440 @@ a:hover {
 .vp-loading button {
   pointer-events: auto;
 }
+
+/* ---------- self-review card ---------- */
+
+.review-card {
+  border-radius: 10px;
+  border: 1px solid rgba(79, 209, 197, 0.32);
+  background: linear-gradient(180deg, rgba(79, 209, 197, 0.06), rgba(79, 209, 197, 0.01) 60%), var(--bg-2);
+  overflow: hidden;
+}
+.review-card.running {
+  border-color: rgba(79, 209, 197, 0.55);
+  box-shadow: 0 0 0 1px rgba(79, 209, 197, 0.1), 0 0 24px -8px rgba(79, 209, 197, 0.45);
+}
+.review-card.error {
+  border-color: rgba(255, 93, 108, 0.35);
+  background: var(--bg-2);
+}
+.review-card .tc-progress {
+  height: 2px;
+  margin: 2px -12px -12px;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+.rv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+}
+.rv-icon {
+  display: inline-grid;
+  color: var(--cyan);
+}
+.review-card.error .rv-icon {
+  color: var(--fail);
+}
+.rv-title {
+  font-weight: 500;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rv-round {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.rv-body {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.rv-error {
+  padding: 0 12px 11px 34px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.rv-summary {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.rv-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.rv-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-4);
+  transition: color 0.2s;
+}
+.rv-stage.done {
+  color: var(--text-3);
+}
+.rv-stage.now {
+  color: var(--text);
+}
+.rv-tick {
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--cyan);
+  flex: none;
+}
+.rv-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 0 0 rgba(79, 209, 197, 0.6);
+  animation: rv-pulse 1.4s var(--ease) infinite;
+}
+@keyframes rv-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(79, 209, 197, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 8px rgba(79, 209, 197, 0);
+  }
+}
+.rv-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 5px;
+}
+.rv-strip > img,
+.rv-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1024 / 704;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-0);
+}
+.rv-thumb {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  transition: border-color 0.15s, transform 0.15s var(--ease);
+}
+.rv-thumb:hover {
+  border-color: var(--cyan);
+  transform: translateY(-1px);
+}
+.rv-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.rv-thumb.closeup {
+  border-color: rgba(199, 146, 255, 0.5);
+}
+.rv-zoom {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: rgba(13, 16, 22, 0.85);
+  color: var(--violet);
+}
+.rv-sheet {
+  display: block;
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+}
+.rv-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  font-size: 12px;
+  color: var(--text-2);
+  text-align: left;
+}
+.rv-section-toggle:hover {
+  color: var(--text);
+}
+.rv-section-toggle .dim {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  margin-left: auto;
+}
+.rv-areas-mini {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 4px;
+}
+.rv-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pass);
+}
+.rv-dot.issues {
+  background: var(--warn);
+}
+.rv-dot.na {
+  background: var(--line-3);
+}
+.rv-areas {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rv-area {
+  display: grid;
+  grid-template-columns: 16px 128px 1fr;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11.5px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line);
+}
+.rv-area-icon {
+  display: inline-grid;
+  color: var(--pass);
+  transform: translateY(2px);
+}
+.rv-area.issues .rv-area-icon {
+  color: var(--warn);
+}
+.rv-area.na .rv-area-icon {
+  color: var(--text-4);
+}
+.rv-area-label {
+  color: var(--text-2);
+}
+.rv-area-note {
+  color: var(--text-3);
+}
+.rv-assumed {
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding-top: 4px;
+}
+.rv-assumed .mono,
+.rv-f-fix .mono,
+.rv-f-note .mono {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-4);
+  margin-right: 6px;
+}
+.rv-digest {
+  font-size: 10.5px;
+  color: var(--text-4);
+  padding-top: 2px;
+}
+.rv-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rv-group-head {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-4);
+  margin-top: 2px;
+}
+.rv-finding {
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  overflow: hidden;
+  border-left-width: 3px;
+}
+.rv-finding.sev-blocker {
+  border-left-color: var(--fail);
+}
+.rv-finding.sev-major {
+  border-left-color: var(--warn);
+}
+.rv-finding.sev-minor {
+  border-left-color: var(--line-3);
+}
+.rv-finding.done {
+  border-left-color: var(--pass);
+}
+.rv-finding.done .rv-f-title {
+  color: var(--text-3);
+}
+.rv-f-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: 0;
+  text-align: left;
+  font-size: 12px;
+}
+.rv-f-head:hover {
+  background: var(--bg-2);
+}
+.rv-sev {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex: none;
+}
+.rv-sev.blocker {
+  color: var(--fail);
+  background: var(--fail-soft);
+}
+.rv-sev.major {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+.rv-sev.minor {
+  color: var(--text-3);
+  background: var(--bg-3);
+}
+.rv-f-id {
+  font-size: 10.5px;
+  color: var(--text-4);
+  flex: none;
+}
+.rv-f-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+.rv-f-body {
+  overflow: hidden;
+  padding: 0 9px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.rv-f-body > :first-child {
+  padding-top: 2px;
+}
+.rv-f-body > :last-child {
+  padding-bottom: 8px;
+}
+.rv-f-fix,
+.rv-f-note {
+  margin-top: 5px;
+}
+.rv-f-fix span:last-child {
+  color: var(--text);
+}
+.rv-f-actions {
+  margin-top: 7px;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.part-chip {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.part-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.part-chip:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.rv-clean {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--pass);
+}
+.rv-foot {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+.rv-compare-box {
+  position: relative;
+  aspect-ratio: 1024 / 704;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  overflow: hidden;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+.rv-compare-box img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.rv-compare-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--cyan);
+  box-shadow: 0 0 10px rgba(79, 209, 197, 0.7);
+  pointer-events: none;
+}
+.rv-compare-tag {
+  position: absolute;
+  top: 6px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(13, 16, 22, 0.8);
+  color: var(--text-2);
+  pointer-events: none;
+}
+.rv-compare-tag.l {
+  left: 6px;
+}
+.rv-compare-tag.r {
+  right: 6px;
+}
+.rv-lightbox {
+  outline: none;
+}
+.rv-lightbox img {
+  display: block;
+  width: 100%;
+  background: var(--bg-0);
+}
+.rv-lb-why {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 16px 0;
+  font-size: 12.5px;
+  color: var(--violet);
+}
