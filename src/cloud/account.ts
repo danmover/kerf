@@ -126,7 +126,8 @@ export async function signIn(email: string, password: string) {
  */
 export async function signUp(email: string, password: string, name: string): Promise<"signed-in" | "email"> {
   const invite = get().info?.server.signup === "allowlist";
-  const r = await api<{ confirm?: string }>("POST", "/auth/signup", invite ? { email, name, termsVersion: TERMS_VERSION } : { email, password, name, termsVersion: TERMS_VERSION });
+  // on an invite-only server, the name and password come with the emailed link's last step
+  const r = await api<{ confirm?: string }>("POST", "/auth/signup", invite ? { email, termsVersion: TERMS_VERSION } : { email, password, name, termsVersion: TERMS_VERSION });
   if (r.confirm === "email") return "email";
   await afterSignIn();
   toast({ kind: "success", title: "Account created", detail: get().info?.server.mail ? "We sent you an email to confirm your address." : "Your projects and Claude key can now follow you to any device." });
@@ -134,8 +135,8 @@ export async function signUp(email: string, password: string, name: string): Pro
 }
 
 /** The last step of an invite-only sign-up: choose a password from the emailed link. */
-export async function finishSignUp(token: string, password: string) {
-  await api("POST", "/auth/finish-signup", { token, password });
+export async function finishSignUp(token: string, password: string, name: string) {
+  await api("POST", "/auth/finish-signup", { token, password, name, termsVersion: TERMS_VERSION });
   await afterSignIn();
   toast({ kind: "success", title: "Account created", detail: "Your email is confirmed, and your projects and Claude key can now follow you to any device." });
 }

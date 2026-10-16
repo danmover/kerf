@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { estimateInputTokens, MAX_CONCURRENT } from "../src/claude.js";
-import { client, setup, signedIn, sse, type FetchFn } from "./helpers.js";
+import { client, ORIGIN, setup, signedIn, sse, type FetchFn } from "./helpers.js";
 
 const KEY = "sk-ant-api03-" + "a".repeat(40) + "WXYZ";
 const SHARED = "sk-ant-api03-" + "s".repeat(40) + "SHRD";
 
+/** What the stand-in API counts any request's input as. */
+const COUNTED = 1500;
 const message = (model = "claude-sonnet-5-5") => ({ model, max_tokens: 1000, stream: true, messages: [{ role: "user", content: "hi" }] });
 
 /** A stand-in for api.anthropic.com. */
@@ -12,6 +14,7 @@ const anthropic: FetchFn = async (url, init) => {
   const key = (init.headers as Record<string, string>)["x-api-key"];
   if (key !== KEY && key !== SHARED) return new Response(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }), { status: 401, headers: { "content-type": "application/json" } });
   if (url.includes("/v1/models")) return new Response(JSON.stringify({ data: [{ id: "claude-opus-5-5" }] }), { status: 200, headers: { "content-type": "application/json" } });
+  if (url.endsWith("/v1/messages/count_tokens")) return new Response(JSON.stringify({ input_tokens: COUNTED }), { status: 200, headers: { "content-type": "application/json" } });
   const body = JSON.parse(String(init.body)) as { model: string };
   return sse([
     { type: "message_start", message: { id: "msg_1", model: body.model, usage: { input_tokens: 1200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 300, output_tokens: 1 } } },
@@ -206,7 +209,7 @@ describe("Claude proxy", () => {
     const res = await ann.post("/api/claude/v1/messages", big);
     expect(res.status).toBe(200);
     await res.text();
-    expect(JSON.parse(String(calls.at(-1)!.init.body)).max_tokens).toBe(10_000 - estimateInputTokens(big));
+    expect(JSON.parse(String(calls.at(-1)!.init.body)).max_tokens).toBe(10_000 - COUNTED);
     await new Promise((r) => setTimeout(r, 10));
     // 1200 in + 42 out + 300 cache writes + 5000/10 cache reads = 2042 used
     expect(deps.db.get<{ source: string; requests: number }>("SELECT source, requests FROM usage")).toMatchObject({ source: "shared", requests: 1 });
@@ -221,6 +224,18 @@ describe("Claude proxy", () => {
     const over = await ann.post("/api/claude/v1/messages", message());
     expect(over.status).toBe(429);
     expect(over.headers.get("retry-after")).toBeTruthy();
+  });
+
+  it("estimates a shared-key request's input when the API can't count it", async () => {
+    const noCount: FetchFn = async (url, init) => (url.endsWith("/count_tokens") ? new Response("{}", { status: 503 }) : anthropic(url, init));
+    const { app, calls, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example", KERF_SHARED_DAILY_TOKENS: "10000" }, noCount);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    const big = { ...message(), max_tokens: 50_000 };
+    const res = await ann.post("/api/claude/v1/messages", big);
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(JSON.parse(String(calls.at(-1)!.init.body)).max_tokens).toBe(10_000 - estimateInputTokens(big));
   });
 
   it("runs one shared-key request at a time, and only allowed models", async () => {
@@ -244,6 +259,87 @@ describe("Claude proxy", () => {
     const done = await first;
     expect(done.status).toBe(200);
     await done.text();
+  });
+
+  it("takes the shared key's one slot before a slow upload finishes", async () => {
+    const { app, mailer, calls } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example" }, anthropic);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    // each body arrives in two parts, 100 ms apart
+    const slow = () => {
+      const bytes = new TextEncoder().encode(JSON.stringify(message()));
+      const body = new ReadableStream<Uint8Array>({
+        async start(ctrl) {
+          ctrl.enqueue(bytes.slice(0, 10));
+          await new Promise((r) => setTimeout(r, 100));
+          ctrl.enqueue(bytes.slice(10));
+          ctrl.close();
+        },
+      });
+      const headers = { origin: ORIGIN, "x-kerf": "1", cookie: ann.cookie, "content-type": "application/json", "content-length": String(bytes.byteLength) };
+      return app.request(`${ORIGIN}/api/claude/v1/messages`, { method: "POST", headers, body, duplex: "half" } as RequestInit);
+    };
+    const results = await Promise.all([slow(), slow(), slow(), slow()]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 429, 429, 429]);
+    await Promise.all(results.map((r) => r.text()));
+    expect(calls.filter((c) => c.url.endsWith("/v1/messages"))).toHaveLength(1);
+  });
+
+  it("charges a shared-key answer in full when the browser leaves before its final usage", async () => {
+    // the answer streams up to the end of its text, then the browser goes away before the usage figures
+    const stalls: FetchFn = async (url, init) => {
+      if (!url.endsWith("/v1/messages")) return anthropic(url, init);
+      const enc = new TextEncoder();
+      const events = [
+        { type: "message_start", message: { id: "msg_1", model: "claude-sonnet-5-5", usage: { input_tokens: 1200, output_tokens: 1 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello" } },
+        { type: "content_block_stop", index: 0 },
+      ];
+      const body = new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          for (const e of events) ctrl.enqueue(enc.encode(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`));
+          init.signal?.addEventListener("abort", () => ctrl.error(new DOMException("aborted", "AbortError")));
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const { app, deps, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example" }, stalls);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    const stop = new AbortController();
+    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 5000 }, {}, stop.signal);
+    const reader = res.body!.getReader();
+    let seen = "";
+    while (!seen.includes("content_block_stop")) seen += new TextDecoder().decode((await reader.read()).value);
+    stop.abort();
+    await reader.cancel().catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 20));
+    // the input it reported, and all the output it was allowed
+    expect(deps.db.get("SELECT requests, input_tokens, output_tokens FROM usage")).toEqual({ requests: 1, input_tokens: 1200, output_tokens: 5000 });
+    // and the slot is free again
+    const next = await ann.post("/api/claude/v1/messages", message());
+    expect(next.status).toBe(200);
+  });
+
+  it("charges a shared-key request in full when the browser leaves before any answer", async () => {
+    let arrived!: () => void;
+    const reached = new Promise<void>((r) => (arrived = r));
+    const hangs: FetchFn = async (url, init) => {
+      if (!url.endsWith("/v1/messages")) return anthropic(url, init);
+      arrived();
+      return new Promise<Response>((_, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    };
+    const { app, deps, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example" }, hangs);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    const stop = new AbortController();
+    const pending = ann.post("/api/claude/v1/messages", { ...message(), stream: false, max_tokens: 3000 }, {}, stop.signal).catch(() => null);
+    await reached;
+    stop.abort();
+    await pending;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(deps.db.get("SELECT requests, input_tokens, output_tokens FROM usage")).toEqual({ requests: 1, input_tokens: COUNTED, output_tokens: 3000 });
   });
 
   it("records a request's usage once when the browser goes away mid-answer", async () => {

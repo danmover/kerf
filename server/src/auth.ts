@@ -88,9 +88,11 @@ export const requireUser: MiddlewareHandler<AppEnv> = async (c, next) => {
   await next();
 };
 
-function issueToken(deps: Deps, userId: string, kind: TokenKind) {
+/** A new emailed link. It replaces earlier ones, unless `keep` is set: then they stay usable until they expire. */
+function issueToken(deps: Deps, userId: string, kind: TokenKind, keep = false) {
   const token = randomToken(32);
-  deps.db.run("DELETE FROM tokens WHERE user_id = ? AND kind = ?", userId, kind);
+  if (keep) deps.db.run("DELETE FROM tokens WHERE user_id = ? AND kind = ? AND (used_at IS NOT NULL OR expires_at < ?)", userId, kind, Date.now());
+  else deps.db.run("DELETE FROM tokens WHERE user_id = ? AND kind = ?", userId, kind);
   deps.db.run("INSERT INTO tokens (hash, user_id, kind, expires_at) VALUES (?, ?, ?, ?)", sha256(token), userId, kind, Date.now() + TOKEN_TTL[kind]);
   return token;
 }
@@ -146,17 +148,18 @@ export function authRoutes(deps: Deps) {
    * claim an invited address, or a shared key that comes with it, without
    * its inbox.
    */
-  async function invite(c: Context<AppEnv>, body: { email: string; name?: string; termsVersion: string }) {
+  async function invite(c: Context<AppEnv>, body: { email: string }) {
     if (!deps.mailer.available) throw new HttpError(503, "no_mail", "This server can't send email, so it can't confirm new accounts. Ask whoever runs it to create yours.");
     const wait = limiter.hit(`signup-email:${body.email}`, 3, HOUR);
     if (wait) return tooMany(c, wait, "emails to this address");
     const existing = db.get<{ id: string; password_hash: string; email_verified_at: number | null }>("SELECT id, password_hash, email_verified_at FROM users WHERE email = ?", body.email);
     if (existing && (existing.password_hash || existing.email_verified_at)) throw new HttpError(409, "email_taken", "There is already an account with this email. Sign in, or reset the password if you forgot it.");
-    // a pending account has no password, so it can't be signed in to until the link is used
+    // A pending account has no password, so it can't be signed in to until the
+    // link is used. Its name and accepted terms are taken at that last step, from
+    // whoever holds the inbox, and asking again doesn't cancel links already sent.
     const id = existing?.id ?? newId("usr");
-    if (existing) db.run("UPDATE users SET name = ?, terms_version = ? WHERE id = ?", body.name ?? "", body.termsVersion, id);
-    else db.run("INSERT INTO users (id, email, name, password_hash, terms_version, created_at) VALUES (?, ?, ?, '', ?, ?)", id, body.email, body.name ?? "", body.termsVersion, Date.now());
-    const token = issueToken(deps, id, "signup");
+    if (!existing) db.run("INSERT INTO users (id, email, name, password_hash, terms_version, created_at) VALUES (?, ?, '', '', '', ?)", id, body.email, Date.now());
+    const token = issueToken(deps, id, "signup", true);
     try {
       await deps.mailer.send({ to: body.email, ...signupEmail(cfg.origin, token) });
     } catch (e) {
@@ -217,7 +220,9 @@ export function authRoutes(deps: Deps) {
 
   /** Sets the password from an emailed link: a reset, or the last step of an invite-only sign-up. */
   async function passwordFromLink(c: Context<AppEnv>, kind: "reset" | "signup") {
-    const body = z.object({ token: z.string().min(20).max(100), password }).parse(await c.req.json());
+    const body = z
+      .object({ token: z.string().min(20).max(100), password, name: z.string().trim().max(80).optional(), termsVersion: kind === "signup" ? z.string().min(1).max(40) : z.string().max(40).optional() })
+      .parse(await c.req.json());
     const wait = limiter.hit(`reset-use:${c.get("ip")}`, 20, HOUR);
     if (wait) return tooMany(c, wait, "attempts");
     const row = db.get<{ user_id: string }>("SELECT user_id FROM tokens WHERE hash = ? AND kind = ? AND used_at IS NULL AND expires_at > ?", sha256(body.token), kind, Date.now());
@@ -231,6 +236,11 @@ export function authRoutes(deps: Deps) {
     db.tx(() => {
       // the link proves the address, so it is confirmed too
       db.run("UPDATE users SET password_hash = ?, email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?", hash, Date.now(), user.id);
+      if (kind === "signup") {
+        db.run("UPDATE users SET name = ?, terms_version = ? WHERE id = ?", body.name ?? "", body.termsVersion!, user.id);
+        // other links sent for this sign-up have nothing left to do
+        db.run("DELETE FROM tokens WHERE user_id = ? AND kind = 'signup'", user.id);
+      }
       // a reset signs out every device
       db.run("DELETE FROM sessions WHERE user_id = ?", user.id);
     });

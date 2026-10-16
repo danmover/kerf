@@ -109,7 +109,7 @@ describe("accounts", () => {
   });
 
   it("makes an invited address prove itself before the account exists", async () => {
-    const { app, mailer } = setup({ KERF_SIGNUP: "allowlist", KERF_ALLOWED_EMAILS: "*@team.example" });
+    const { app, deps, mailer } = setup({ KERF_SIGNUP: "allowlist", KERF_ALLOWED_EMAILS: "*@team.example" });
     const c = client(app);
     // a password sent with the sign-up is ignored: it is chosen from the emailed link
     const res = await c.post("/api/auth/signup", { email: "ann@team.example", name: "Ann", password: PASSWORD, termsVersion: TERMS });
@@ -121,18 +121,20 @@ describe("accounts", () => {
     expect((await client(app).post("/api/auth/login", { email: "ann@team.example", password: PASSWORD })).status).toBe(401);
     expect((await client(app).post("/api/auth/login", { email: "ann@team.example", password: "" })).status).toBe(400);
 
-    // asking again sends a new link and retires the old one
-    expect((await client(app).post("/api/auth/signup", { email: "ann@team.example", name: "Ann", termsVersion: TERMS })).status).toBe(202);
+    // someone else asking again can't cancel the link already sent, or name the account
+    expect((await client(app).post("/api/auth/signup", { email: "ann@team.example", name: "Mallory", termsVersion: "old" })).status).toBe(202);
     const links = mailer.sent.filter((m) => m.to === "ann@team.example").map((m) => /#signup=([A-Za-z0-9_-]+)/.exec(m.text)![1]);
     expect(links).toHaveLength(2);
     expect(mailer.sent[0].text).toContain(`${ORIGIN}/#signup=`);
+    expect(deps.db.get("SELECT name, terms_version FROM users WHERE email = 'ann@team.example'")).toEqual({ name: "", terms_version: "" });
+    expect((await c.post("/api/auth/finish-signup", { token: links[0], password: "short", termsVersion: TERMS })).status).toBe(422);
     expect((await c.post("/api/auth/finish-signup", { token: links[0], password: PASSWORD })).status).toBe(400);
-    expect((await c.post("/api/auth/finish-signup", { token: links[1], password: "short" })).status).toBe(422);
-    expect((await c.post("/api/auth/finish-signup", { token: links[1], password: PASSWORD })).status).toBe(200);
-    expect((await c.json<{ user: unknown }>(await c.get("/api/session"))).user).toMatchObject({ email: "ann@team.example", name: "Ann", emailVerified: true });
+    expect((await c.post("/api/auth/finish-signup", { token: links[0], password: PASSWORD, name: "Ann", termsVersion: TERMS })).status).toBe(200);
+    expect((await c.json<{ user: unknown }>(await c.get("/api/session"))).user).toMatchObject({ email: "ann@team.example", name: "Ann", emailVerified: true, termsVersion: TERMS });
 
     // the link works once, and the address is now taken
-    expect((await client(app).post("/api/auth/finish-signup", { token: links[1], password: "another long passphrase" })).status).toBe(400);
+    expect((await client(app).post("/api/auth/finish-signup", { token: links[0], password: "another long passphrase", termsVersion: TERMS })).status).toBe(400);
+    expect((await client(app).post("/api/auth/finish-signup", { token: links[1], password: "another long passphrase", termsVersion: TERMS })).status).toBe(400);
     expect((await client(app).post("/api/auth/signup", { email: "ann@team.example", termsVersion: TERMS })).status).toBe(409);
     expect((await client(app).post("/api/auth/login", { email: "ann@team.example", password: PASSWORD })).status).toBe(200);
   });

@@ -66,6 +66,10 @@ interface Usage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** the input figures arrived (message_start) */
+  started?: boolean;
+  /** the final output figure arrived, so nothing is missing */
+  final?: boolean;
 }
 
 function readUsage(u: Record<string, unknown> | undefined, into: Usage) {
@@ -121,7 +125,11 @@ function meteredStream(body: ReadableStream<Uint8Array>, usage: Usage, done: () 
         if (ev.type === "message_start") {
           if (ev.message?.model) usage.model = ev.message.model;
           readUsage(ev.message?.usage, usage);
-        } else if (ev.type === "message_delta") readUsage(ev.usage, usage);
+          usage.started = true;
+        } else if (ev.type === "message_delta" && ev.usage) {
+          readUsage(ev.usage, usage);
+          usage.final = true;
+        }
       } catch {
         /* not JSON: ignore */
       }
@@ -168,8 +176,9 @@ const isServerTool = (t: unknown) => {
 };
 
 /**
- * A rough upper estimate of a request's input tokens: about 4 characters a
- * token for text, and a flat allowance for each image or document.
+ * A rough estimate of a request's input tokens: about 4 characters a token for
+ * text, and a flat allowance for each image or document. Used only when the
+ * API's token count isn't available.
  */
 export function estimateInputTokens(body: Record<string, unknown>): number {
   let chars = 0;
@@ -185,7 +194,7 @@ export function estimateInputTokens(body: Record<string, unknown>): number {
   return Math.ceil(chars / 4) + attachments * 2000;
 }
 
-function sanitize(deps: Deps, body: Record<string, unknown>, source: "account" | "shared", userTag: string, sharedLeft: number): string | null {
+function sanitize(deps: Deps, body: Record<string, unknown>, source: "account" | "shared", userTag: string): string | null {
   if (typeof body.model !== "string" || !/^claude-[a-z0-9.-]{1,80}$/.test(body.model)) return "Unknown model.";
   if (body.max_tokens !== undefined && (typeof body.max_tokens !== "number" || body.max_tokens < 1 || body.max_tokens > 128_000)) return "max_tokens is out of range.";
   // remote MCP servers and code containers are outside what Kerf does
@@ -195,16 +204,20 @@ function sanitize(deps: Deps, body: Record<string, unknown>, source: "account" |
     const models = deps.cfg.shared!.models;
     if (models.length && !models.includes(body.model)) return `The shared key on this server works with ${models.join(", ")}. Pick one of those in Settings → Claude, or add your own key.`;
     if (Array.isArray(body.tools) && body.tools.some(isServerTool)) return "Server-side tools are not available on the shared key.";
-    // beta features (including fallback to other models) stay off the operator's key
+    // fallback to other models stays off the operator's key
     delete body.fallbacks;
-    // keep the request inside what's left of today's allowance
-    const room = Math.min(SHARED_MAX_TOKENS, sharedLeft - estimateInputTokens(body));
-    if (room < 1024) return "There isn't enough of today's shared Claude allowance left for this request. It resets at midnight UTC, or add your own API key in Settings → Claude.";
-    if (body.max_tokens === undefined || (body.max_tokens as number) > room) body.max_tokens = room;
-    const thinking = body.thinking as { type?: string; budget_tokens?: number } | undefined;
-    if (thinking?.type === "enabled" && typeof thinking.budget_tokens === "number" && thinking.budget_tokens >= (body.max_tokens as number)) thinking.budget_tokens = Math.max(1024, (body.max_tokens as number) - 1);
   }
   body.metadata = { user_id: userTag };
+  return null;
+}
+
+/** Caps a shared-key request's output to what's left of today's allowance once its input is counted. */
+function fitShared(body: Record<string, unknown>, room: number): string | null {
+  room = Math.min(SHARED_MAX_TOKENS, room);
+  if (room < 1024) return "There isn't enough of today's shared Claude allowance left for this request. It resets at midnight UTC, or add your own API key in Settings → Claude.";
+  if (body.max_tokens === undefined || (body.max_tokens as number) > room) body.max_tokens = room;
+  const thinking = body.thinking as { type?: string; budget_tokens?: number } | undefined;
+  if (thinking?.type === "enabled" && typeof thinking.budget_tokens === "number" && thinking.budget_tokens >= (body.max_tokens as number)) thinking.budget_tokens = Math.max(1024, (body.max_tokens as number) - 1);
   return null;
 }
 
@@ -280,42 +293,8 @@ export function claudeRoutes(deps: Deps) {
       c.header("retry-after", "5");
       return anthropicError(c, 429, "rate_limit_error", "Too many Claude requests running at once on this account.");
     }
-
-    let body: string | undefined;
-    let model = "unknown";
-    if (method === "POST") {
-      const len = Number(c.req.header("content-length") ?? 0);
-      if (len > MAX_REQUEST_BYTES) return anthropicError(c, 413, "request_too_large", "This request is too large to send.");
-      const text = await c.req.text();
-      if (text.length > MAX_REQUEST_BYTES) return anthropicError(c, 413, "request_too_large", "This request is too large to send.");
-      let json: Record<string, unknown>;
-      try {
-        json = JSON.parse(text) as Record<string, unknown>;
-      } catch {
-        return anthropicError(c, 400, "invalid_request_error", "The request body is not JSON.");
-      }
-      if (!json || typeof json !== "object" || Array.isArray(json)) return anthropicError(c, 400, "invalid_request_error", "The request body must be an object.");
-      if (path === "/v1/messages") {
-        const sharedLeft = source === "shared" ? cfg.shared!.dailyTokens - sharedUsedToday(deps, user.id) : 0;
-        const problem = sanitize(deps, json, source, pseudonym(cfg.secretKey, user.id), sharedLeft);
-        if (problem) return anthropicError(c, 400, "invalid_request_error", problem);
-      }
-      if (typeof json.model === "string") model = json.model;
-      body = JSON.stringify(json);
-    }
-
-    const headers: Record<string, string> = { "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, accept: c.req.header("accept") ?? "application/json" };
-    const version = c.req.header("anthropic-version");
-    if (version && /^\d{4}-\d{2}-\d{2}$/.test(version)) headers["anthropic-version"] = version;
-    const beta = c.req.header("anthropic-beta");
-    if (beta && beta.length <= 500 && /^[A-Za-z0-9._,\s-]+$/.test(beta)) {
-      // on the shared key, only betas that change how a request is read, not what it costs
-      const kept = source === "account" ? beta : beta.split(",").map((b) => b.trim()).filter((b) => SHARED_BETAS.has(b)).join(",");
-      if (kept) headers["anthropic-beta"] = kept;
-    }
-    if (body !== undefined) headers["content-type"] = "application/json";
-
-    const search = new URL(c.req.url).search;
+    // the slot is taken before anything is awaited, so requests that arrive
+    // together (or upload slowly) can't all pass the check above
     inflight.set(user.id, (inflight.get(user.id) ?? 0) + 1);
     let released = false;
     const release = () => {
@@ -325,59 +304,147 @@ export function claudeRoutes(deps: Deps) {
       if (n <= 0) inflight.delete(user.id);
       else inflight.set(user.id, n);
     };
-
-    let upstream: Response;
+    let streaming = false;
     try {
-      upstream = await deps.fetch(`${cfg.anthropicBaseUrl}${path}${search.length < 300 ? search : ""}`, { method, headers, body, signal: c.req.raw.signal });
-    } catch (e) {
-      release();
-      if (c.req.raw.signal.aborted) return new Response(null, { status: 499 });
-      deps.log(`claude proxy: upstream unreachable: ${scrub(e instanceof Error ? e.message : String(e))}`);
-      return anthropicError(c, 502, "api_error", "The Kerf server could not reach the Claude API.");
-    }
+      const headers: Record<string, string> = { "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION };
+      const version = c.req.header("anthropic-version");
+      if (version && /^\d{4}-\d{2}-\d{2}$/.test(version)) headers["anthropic-version"] = version;
+      const beta = c.req.header("anthropic-beta");
+      if (beta && beta.length <= 500 && /^[A-Za-z0-9._,\s-]+$/.test(beta)) {
+        // on the shared key, only betas that change how a request is read, not what it costs
+        const kept = source === "account" ? beta : beta.split(",").map((b) => b.trim()).filter((b) => SHARED_BETAS.has(b)).join(",");
+        if (kept) headers["anthropic-beta"] = kept;
+      }
 
-    const out = new Headers();
-    for (const h of ["content-type", "request-id", "retry-after", "x-should-retry"]) {
-      const v = upstream.headers.get(h);
-      if (v) out.set(h, v);
-    }
-    for (const [k, v] of upstream.headers) if (k.startsWith("anthropic-ratelimit-")) out.set(k, v);
-    out.set("cache-control", "no-store");
-
-    const metered = method === "POST" && path === "/v1/messages" && upstream.ok;
-    const usage: Usage = { model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    // called when the stream ends, fails or the browser goes away; whichever comes first counts
-    let settled = false;
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      release();
-      if (metered) {
+      let body: string | undefined;
+      let model = "unknown";
+      // what a shared-key request may cost at most: charged in full if it ends without its final usage figures
+      const reserved = { input: 0, output: 0 };
+      if (method === "POST") {
+        const len = Number(c.req.header("content-length") ?? 0);
+        if (len > MAX_REQUEST_BYTES) return anthropicError(c, 413, "request_too_large", "This request is too large to send.");
+        const text = await c.req.text();
+        if (text.length > MAX_REQUEST_BYTES) return anthropicError(c, 413, "request_too_large", "This request is too large to send.");
+        let json: Record<string, unknown>;
         try {
-          recordUsage(deps, user.id, source, usage);
+          json = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          return anthropicError(c, 400, "invalid_request_error", "The request body is not JSON.");
+        }
+        if (!json || typeof json !== "object" || Array.isArray(json)) return anthropicError(c, 400, "invalid_request_error", "The request body must be an object.");
+        if (path === "/v1/messages") {
+          const problem = sanitize(deps, json, source, pseudonym(cfg.secretKey, user.id));
+          if (problem) return anthropicError(c, 400, "invalid_request_error", problem);
+          if (source === "shared") {
+            reserved.input = (await countInput(headers, json, c.req.raw.signal)) ?? estimateInputTokens(json);
+            const tooBig = fitShared(json, cfg.shared!.dailyTokens - sharedUsedToday(deps, user.id) - reserved.input);
+            if (tooBig) return anthropicError(c, 400, "invalid_request_error", tooBig);
+            reserved.output = json.max_tokens as number;
+          }
+        }
+        if (typeof json.model === "string") model = json.model;
+        body = JSON.stringify(json);
+        headers["content-type"] = "application/json";
+      }
+      headers.accept = c.req.header("accept") ?? "application/json";
+
+      const isMessage = method === "POST" && path === "/v1/messages";
+      const usage: Usage = { model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      const record = (charged: Usage) => {
+        try {
+          recordUsage(deps, user.id, source, charged);
         } catch (e) {
           deps.log(`usage not recorded: ${e instanceof Error ? e.message : e}`);
         }
-      }
-    };
+      };
+      /** On the shared key, a request that ends early is charged what it may have cost: Anthropic may have generated it all. */
+      const charged = (): Usage =>
+        source === "shared" && !usage.final
+          ? { ...usage, input: usage.started ? usage.input : reserved.input, output: Math.max(usage.output, reserved.output) }
+          : usage;
 
-    if (upstream.body && (upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
-      c.req.raw.signal.addEventListener("abort", settle, { once: true });
-      return new Response(meteredStream(upstream.body, usage, settle), { status: upstream.status, headers: out });
-    }
-    const text = await upstream.text().catch(() => "");
-    if (metered) {
+      const search = new URL(c.req.url).search;
+      let upstream: Response;
       try {
-        const j = JSON.parse(text) as { model?: string; usage?: Record<string, unknown> };
-        if (j.model) usage.model = j.model;
-        readUsage(j.usage, usage);
-      } catch {
-        /* no usage to read */
+        upstream = await deps.fetch(`${cfg.anthropicBaseUrl}${path}${search.length < 300 ? search : ""}`, { method, headers, body, signal: c.req.raw.signal });
+      } catch (e) {
+        if (c.req.raw.signal.aborted) {
+          // the request may have reached the API before the browser went away
+          if (isMessage && source === "shared") record(charged());
+          return new Response(null, { status: 499 });
+        }
+        deps.log(`claude proxy: upstream unreachable: ${scrub(e instanceof Error ? e.message : String(e))}`);
+        return anthropicError(c, 502, "api_error", "The Kerf server could not reach the Claude API.");
       }
+
+      const out = new Headers();
+      for (const h of ["content-type", "request-id", "retry-after", "x-should-retry"]) {
+        const v = upstream.headers.get(h);
+        if (v) out.set(h, v);
+      }
+      for (const [k, v] of upstream.headers) if (k.startsWith("anthropic-ratelimit-")) out.set(k, v);
+      out.set("cache-control", "no-store");
+
+      const metered = isMessage && upstream.ok;
+      // called when the answer ends, fails or the browser goes away; whichever comes first counts
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        release();
+        if (metered) record(charged());
+      };
+
+      if (upstream.body && (upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
+        if (c.req.raw.signal.aborted) {
+          // gone before the answer started: nobody will read or cancel the stream
+          void upstream.body.cancel().catch(() => undefined);
+          settle();
+          return new Response(null, { status: 499 });
+        }
+        streaming = true;
+        c.req.raw.signal.addEventListener("abort", settle, { once: true });
+        return new Response(meteredStream(upstream.body, usage, settle), { status: upstream.status, headers: out });
+      }
+      const text = await upstream.text().catch(() => "");
+      if (metered) {
+        try {
+          const j = JSON.parse(text) as { model?: string; usage?: Record<string, unknown> };
+          if (j.model) usage.model = j.model;
+          if (j.usage) {
+            readUsage(j.usage, usage);
+            usage.started = usage.final = true;
+          }
+        } catch {
+          /* no usage to read */
+        }
+      }
+      settle();
+      return new Response(scrub(text), { status: upstream.status, headers: out });
+    } finally {
+      // a streamed answer gives its slot back when it ends; everything else, now
+      if (!streaming) release();
     }
-    settle();
-    return new Response(scrub(text), { status: upstream.status, headers: out });
   });
+
+  /** A shared-key request's exact input tokens, from the API's free counting endpoint, or null if it can't say. */
+  async function countInput(headers: Record<string, string>, body: Record<string, unknown>, signal: AbortSignal): Promise<number | null> {
+    const counted: Record<string, unknown> = {};
+    for (const k of ["model", "messages", "system", "tools", "tool_choice", "thinking"]) if (body[k] !== undefined) counted[k] = body[k];
+    try {
+      const res = await deps.fetch(`${cfg.anthropicBaseUrl}/v1/messages/count_tokens`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(counted),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+      });
+      if (!res.ok) return null;
+      const n = ((await res.json()) as { input_tokens?: unknown }).input_tokens;
+      return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.ceil(n) : null;
+    } catch {
+      return null;
+    }
+  }
 
   return app;
 }

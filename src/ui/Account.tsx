@@ -149,7 +149,7 @@ export function AuthDialog() {
         await requestReset(email);
         setSent(true);
       } else if (mode === "reset") await resetPassword(auth?.token ?? "", password);
-      else if (mode === "finish") await finishSignUp(auth?.token ?? "", password);
+      else if (mode === "finish") await finishSignUp(auth?.token ?? "", password, name);
       setPassword("");
     } catch (err) {
       setError(errText(err));
@@ -188,7 +188,7 @@ export function AuthDialog() {
               </div>
             )}
 
-            {mode === "signup" && !noSignup && !sent && (
+            {((mode === "signup" && !invite && !noSignup) || mode === "finish") && (
               <Field label="Name (optional)">
                 {(id) => (
                   <input id={id} className="input" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" maxLength={80} />
@@ -241,7 +241,7 @@ export function AuthDialog() {
               </button>
             )}
 
-            {mode === "signup" && !noSignup && !sent && (
+            {((mode === "signup" && !noSignup && !sent) || mode === "finish") && (
               <p className="help" style={{ marginTop: 10 }}>
                 Creating an account means accepting the draft{" "}
                 <a href="#" onClick={(e) => (e.preventDefault(), closeAuth(), go({ name: "legal", doc: "terms", back: "home" }))}>
@@ -251,7 +251,7 @@ export function AuthDialog() {
                 <a href="#" onClick={(e) => (e.preventDefault(), closeAuth(), go({ name: "legal", doc: "privacy", back: "home" }))}>
                   Privacy notice
                 </a>
-                . {invite ? "You'll choose a password from the emailed link." : "Your password is stored only as a salted hash."}
+                . {mode === "signup" && invite ? "You'll choose a password from the emailed link." : "Your password is stored only as a salted hash."}
               </p>
             )}
 
@@ -321,6 +321,7 @@ export function SyncBadge() {
   const status = useAccount((s) => s.status);
   const id = useProject((s) => s.current?.id);
   const cloud = useSync((s) => (id ? s.cloud.includes(id) : false));
+  const refused = useSync((s) => (id ? s.refused[id] : undefined));
   const state = useSync((s) => s.state);
   useTick();
   const last = useSync((s) => s.lastSync);
@@ -329,6 +330,15 @@ export function SyncBadge() {
     return (
       <div className="save-state narrow-hide sync-badge" data-tip="This project is only in this browser. Add it to your account from its menu on the projects page.">
         <DeviceIcon size={12} /> this device
+      </div>
+    );
+  if (refused !== undefined)
+    return (
+      <div className="save-state narrow-hide sync-badge" data-tip={`${refused} This version stays in this browser, and Kerf tries again after your next change.`.trim()}>
+        <span style={{ display: "inline-flex", color: "var(--warn)" }}>
+          <CloudIcon size={13} />
+        </span>
+        not syncing
       </div>
     );
   const shown = status === "unreachable" ? "offline" : state;
@@ -345,10 +355,11 @@ export function SyncBadge() {
 /** A cloud mark on project cards that are kept in the account. */
 export function CloudTag({ id }: { id: string }) {
   const on = useSync((s) => s.cloud.includes(id));
+  const refused = useSync((s) => s.refused[id]);
   const signedIn = useAccount((s) => s.status === "signed-in" || s.status === "unreachable");
   if (!signedIn || !on) return null;
   return (
-    <span className="cloud-tag" data-tip="In your account">
+    <span className="cloud-tag" data-tip={refused === undefined ? "In your account" : `Not syncing. ${refused}`.trim()} style={refused === undefined ? undefined : { color: "var(--warn)" }}>
       <CloudIcon size={12} />
     </span>
   );

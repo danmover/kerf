@@ -40,6 +40,10 @@ interface ProjectMeta {
   adirty?: boolean;
   /** files the project uses weren't in the account yet when it arrived; when they were last looked for */
   filesPending?: number;
+  /** the server refused this version of the project (its updatedAt); it is tried again once it changes */
+  refused?: number;
+  /** what the server said when it refused it */
+  refusedWhy?: string;
 }
 
 interface Meta {
@@ -63,12 +67,14 @@ interface SyncUi {
   lastSync: number;
   /** ids of projects kept in the account */
   cloud: string[];
+  /** projects whose latest version the server refused, with what it said */
+  refused: Record<string, string>;
   /** projects in this browser that are not in the account and wait for a decision */
   waiting: number;
   autoUpload: boolean;
 }
 
-export const useSync = create<SyncUi>(() => ({ state: "off", message: "", lastSync: 0, cloud: [], waiting: 0, autoUpload: true }));
+export const useSync = create<SyncUi>(() => ({ state: "off", message: "", lastSync: 0, cloud: [], refused: {}, waiting: 0, autoUpload: true }));
 
 const KEY = "kerf.sync.v1";
 const CHUNK = 100;
@@ -105,7 +111,8 @@ const signedInId = () => {
 };
 
 function publish(waiting?: number) {
-  useSync.setState((s) => ({ cloud: Object.keys(meta.projects), autoUpload: meta.autoUpload, waiting: waiting ?? s.waiting }));
+  const refused = Object.fromEntries(Object.entries(meta.projects).flatMap(([id, m]) => (m.refused !== undefined ? [[id, m.refusedWhy ?? ""]] : [])));
+  useSync.setState((s) => ({ cloud: Object.keys(meta.projects), refused, autoUpload: meta.autoUpload, waiting: waiting ?? s.waiting }));
 }
 
 // ---------- one sync pass ----------
@@ -172,7 +179,7 @@ async function pass() {
             // edited here after another device deleted it: keep the work by bringing it back
             m.rev = r.rev;
             await markAllUnsynced(r.id);
-            await push(local, m);
+            await pushProject(local, m);
           } else await removeLocal(local, "deleted on another device");
         }
         delete meta.projects[r.id];
@@ -211,8 +218,9 @@ async function pass() {
         m.rev = 0;
         await markAllUnsynced(local.id);
       }
-      if (await isDirty(local, m)) await push(local, m);
-      await pushChat(local.id, m);
+      if (await isDirty(local, m)) await pushProject(local, m);
+      // a chat needs its project on the server first
+      if (m.rev > 0) await pushChat(local.id, m);
     }
     // forget projects that are gone from this browser
     for (const id of Object.keys(meta.projects)) if (!locals.has(id)) delete meta.projects[id];
@@ -247,6 +255,24 @@ async function markAllUnsynced(projectId: string) {
 }
 
 const wire = (v: VersionRecord): RemoteVersion => ({ id: v.id, ts: v.ts, author: v.author, message: v.message.slice(0, 2000), source: v.source });
+
+/**
+ * Sends one project. If the server refuses it (too large, or not valid), the
+ * other projects carry on: this one stays in this browser until it changes.
+ */
+async function pushProject(local: ProjectRecord, m: ProjectMeta) {
+  if (m.refused === local.updatedAt) return;
+  try {
+    await push(local, m);
+    m.refused = m.refusedWhy = undefined;
+  } catch (e) {
+    // a full account is about every project, so it stops the pass as before
+    if (!(e instanceof ApiError && (e.status === 400 || (e.status === 413 && e.code !== "quota")))) throw e;
+    m.refused = local.updatedAt;
+    m.refusedWhy = e.message;
+    toast({ kind: "warn", title: `“${local.name}” isn't syncing`, detail: `${e.message} It stays in this browser, and Kerf tries again after your next change to it. Your other projects keep syncing.` }, 12000);
+  }
+}
 
 /** The fields the server knows about; any others a project gains (such as imported files) travel as `extra`. */
 const CORE = new Set(["id", "name", "source", "template", "createdAt", "updatedAt", "thumbnail"]);
