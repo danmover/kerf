@@ -30,7 +30,10 @@ export interface Arg {
 export type Item =
   | { k: "prop"; name: string; value: Expr; span: Span }
   | { k: "flag"; name: string; span: Span }
-  | { k: "op"; op: "body" | "add" | "cut" | "intersect"; shape: Expr; span: Span }
+  /** `add <shape> as name` names the feature so its edges and faces can be picked later */
+  | { k: "op"; op: "body" | "add" | "cut" | "intersect"; shape: Expr; name?: string; nameSpan?: Span; span: Span }
+  /** detail that only builds in the full-quality pass */
+  | { k: "cosmetic"; body: Item[]; span: Span }
   | { k: "modifier"; call: Expr & { k: "call" }; span: Span }
   | { k: "for"; varName: string; iter: Expr; body: Item[]; span: Span }
   | { k: "if"; cond: Expr; then: Item[]; else?: Item[]; span: Span }
@@ -84,6 +87,7 @@ export type Stmt =
       nameSpan: Span;
     }
   | { k: "part"; name: string; items: Item[]; span: Span; nameSpan: Span }
+  | { k: "drawing"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | {
       k: "require";
       label: string;
@@ -93,6 +97,12 @@ export type Stmt =
       expr: Expr;
       span: Span;
     }
+  // machine statements: wiring, firmware and physical tests
+  | { k: "wire"; path: Expr[]; items: Item[]; span: Span }
+  | { k: "net"; name: string; pins: Expr[]; items: Item[]; span: Span; nameSpan: Span }
+  | { k: "firmware"; name: string; items: Item[]; span: Span; nameSpan: Span }
+  | { k: "test"; label: string; procedure: Expr; span: Span }
+  | { k: "buy"; label: string; items: Item[]; span: Span }
   | {
       k: "decision";
       name: string;
@@ -103,6 +113,45 @@ export type Stmt =
       nameSpan: Span;
       /** offset just after the opening brace */
       bodyStart: number;
+    }
+  | {
+      k: "sketch";
+      name: string;
+      items: SketchItem[];
+      span: Span;
+      nameSpan: Span;
+      /** offset of the closing brace, where new items are inserted */
+      bodyEnd: number;
+    }
+  | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span };
+
+/** Geometry declared in a sketch: points, lines, circles and arcs. */
+export type SketchEntityKind = "point" | "line" | "circle" | "arc";
+
+/** Statements inside a sketch block. */
+export type SketchItem =
+  | { k: "prop"; name: string; value: Expr; span: Span }
+  | { k: "let"; name: string; value: Expr; span: Span }
+  | { k: "flag"; name: string; span: Span }
+  | {
+      k: "entity";
+      kind: SketchEntityKind;
+      name: string;
+      construction: boolean;
+      /** point: [position]; line: [start, end]; circle: [center]; arc: [start, end, center] */
+      args: Expr[];
+      /** circle size as written: r: or d: */
+      size?: { which: "r" | "d"; value: Expr };
+      span: Span;
+      nameSpan: Span;
+    }
+  | {
+      k: "constraint";
+      name: string;
+      refs: Expr[];
+      value?: Expr;
+      span: Span;
+      nameSpan: Span;
     };
 
 /** One alternative of a decision: a label, an optional consequence and the parameter values it means. */
@@ -125,9 +174,14 @@ export function stmtName(s: Stmt): string | undefined {
     case "component":
     case "interface":
     case "part":
+    case "sketch":
+    case "drawing":
       return s.name;
     case "require":
+    case "analysis":
       return s.label;
+    case "net":
+    case "firmware":
     case "decision":
       return s.name;
     default:

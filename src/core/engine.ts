@@ -5,15 +5,18 @@
 import { create } from "zustand";
 import { parse } from "../lang/parser";
 import { evaluate } from "../lang/evaluator";
-import { kernel, type KernelStatus, type PartResult } from "../kernel/client";
+import { detailKernel, kernel, type KernelStatus, type PartResult } from "../kernel/client";
 import type { MeshData } from "../kernel/build";
 import type { Interference, ChecksResult } from "../kernel/protocol";
-import type { V3 } from "../kernel/recipe";
-import { assembleReport, buildChecksRequest, type CheckReport } from "./checks";
+import { hasDetail, type V3 } from "../kernel/recipe";
+import { assembleReport, buildChecksRequest, type CheckItem, type CheckReport } from "./checks";
+import { composeReport, registerReportPass, type ReportContext } from "./reportPasses";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
-import { importsLoaded, modelUsesImports, onImportsChanged, reloadImports } from "./imports";
+import { processProbes } from "../mfg/report";
+import type { ProcessResult } from "../mfg/types";
+import { detailImportsLoaded, importsLoaded, modelUsesImports, onImportsChanged, recipeUsesImport, reloadImports } from "./imports";
 import { evalImports } from "../lang/imports";
 
 export interface MeshEntry {
@@ -36,10 +39,14 @@ export interface DesignState {
   timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number };
   meshVersion: number;
   buildErrors: Map<string, string>;
+  /** problems in the detailed (full-quality) build, by geometry hash */
+  detailIssues: Map<string, string>;
   report: CheckReport | null;
   reportRev: number;
   checksError: string;
   interferences: Interference[];
+  /** manufacturing-process check results by part id */
+  process: Record<string, ProcessResult>;
   conflict: Conflict | null;
   conflictState: "idle" | "solving" | "done" | "error";
   hold: string[];
@@ -60,10 +67,12 @@ export const useDesign = create<DesignState>(() => ({
   timings: { evalMs: 0, buildMs: 0, checksMs: 0, built: 0, reused: 0 },
   meshVersion: 0,
   buildErrors: new Map(),
+  detailIssues: new Map(),
   report: null,
   reportRev: 0,
   checksError: "",
   interferences: [],
+  process: {},
   conflict: null,
   conflictState: "idle",
   hold: [],
@@ -76,7 +85,11 @@ const get = useDesign.getState;
 const set = useDesign.setState;
 
 let parsedCache: { src: string; parsed: ReturnType<typeof parse> } | null = null;
+/** the core report of the latest checks, before the passes in reportPasses add their items */
+let reportBase: { report: CheckReport; ctx: ReportContext } | null = null;
 let activeJobs: { cancel: () => void }[] = [];
+/** geometry hashes whose detailed build failed: not retried until the design is reloaded */
+const detailFailed = new Set<string>();
 let bumpScheduled = false;
 
 function bumpMeshes() {
@@ -113,6 +126,11 @@ export function startEngine() {
     setSource(source, { force: true });
   });
   kernel.start();
+  // the detail worker starts on first use; if it is restarted, request the detailed geometry again
+  detailKernel.onReset(() => {
+    const { source } = get();
+    if (source) setSource(source, { force: true });
+  });
 }
 
 function parseCached(src: string) {
@@ -127,8 +145,11 @@ export function loadSource(src: string) {
   for (const j of activeJobs) j.cancel();
   activeJobs = [];
   meshes.clear();
+  detailFailed.clear();
   kernel.evict([]);
-  set({ buildErrors: new Map(), report: null, interferences: [], conflict: null, conflictState: "idle", hold: [], checksError: "" });
+  reportBase = null;
+  detailKernel.evict([]);
+  set({ buildErrors: new Map(), detailIssues: new Map(), report: null, interferences: [], process: {}, conflict: null, conflictState: "idle", hold: [], checksError: "" });
   bumpMeshes();
   setSource(src, { force: true });
 }
@@ -220,37 +241,106 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     checksError = e instanceof Error ? e.message : String(e);
   }
   if (get().rev !== rev) return;
+  // manufacturing-process checks (cached in the worker by geometry and rules)
+  const process: Record<string, ProcessResult> = {};
+  const probes = processProbes(model, builtHashes);
+  if (probes.length) {
+    try {
+      const results = await kernel.process(probes);
+      probes.forEach((p, i) => (process[p.id] = results[i]));
+    } catch (e) {
+      for (const p of probes) process[p.id] = { key: "", findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+    if (get().rev !== rev) return;
+  }
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])), (h) => meshes.get(h));
+  const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h) });
+  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process };
+  reportBase = { report: base, ctx };
+  const report = composeReport(base, ctx);
   set({
     report,
     reportRev: rev,
     checksError,
     interferences: result?.interferences ?? [],
+    process,
     stage: "refining",
     timings: { ...get().timings, checksMs: performance.now() - tChecks },
   });
 
-  // refine: exact-tolerance meshes in the background
-  const refine = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview && !meshes.get(p.hash)?.final);
+  // refine: exact-tolerance meshes here; the detailed geometry (threads, knurls, cosmetic steps) in a worker of its
+  // own, so a slow detail build never holds up the next edit's preview and checks
+  const refine = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview && !meshes.get(p.hash)?.final && !detailFailed.has(p.hash));
   if (refine.length) {
-    const job = kernel.build(
-      refine.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
-      "final",
-      (r) => {
-        const prev = meshes.get(r.hash);
-        if (prev) {
-          prev.final = r.mesh;
-          bumpMeshes();
-        }
-      },
-      () => undefined,
-    );
-    activeJobs.push(job);
-    const r = await job.done;
-    if (r.cancelled || get().rev !== rev) return;
+    const issues = new Map(get().detailIssues);
+    const onPart = (r: PartResult) => {
+      const prev = meshes.get(r.hash);
+      if (prev) {
+        prev.final = r.mesh;
+        bumpMeshes();
+      }
+      if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
+      else issues.delete(r.hash);
+    };
+    const onError = (hash: string, message: string) => {
+      // the simple shape stays on screen; say what the detail pass could not do
+      detailFailed.add(hash);
+      issues.set(hash, `The detailed build failed, so the simple shape is shown: ${message}`);
+      // keep it even if this run is cut short: a detail worker that stalls is replaced, which cancels the run
+      set({ detailIssues: new Map(get().detailIssues).set(hash, issues.get(hash)!) });
+      refreshReport();
+    };
+    const item = (p: EvalPart) => ({ hash: p.hash, recipe: p.recipe, label: p.label });
+    const detailed = refine.filter((p) => hasDetail(p.recipe));
+    const plain = refine.filter((p) => !hasDetail(p.recipe));
+    // the detail worker needs the imported STEP files that detailed parts build on
+    if (detailed.some((p) => recipeUsesImport(p.recipe)) && detailKernel.status !== "error") {
+      await detailImportsLoaded();
+      if (get().rev !== rev) return;
+    }
+    const jobs: ReturnType<typeof kernel.build>[] = [];
+    if (plain.length) jobs.push(kernel.build(plain.map(item), "final", onPart, onError));
+    if (detailed.length && detailKernel.status === "error") {
+      for (const p of detailed) issues.set(p.hash, `The detailed build is unavailable, so the simple shape is shown: ${detailKernel.error}`);
+    } else if (detailed.length) {
+      detailKernel.start();
+      jobs.push(detailKernel.build(detailed.map(item), "final", onPart, onError));
+    }
+    activeJobs.push(...jobs);
+    const results = await Promise.all(jobs.map((j) => j.done));
+    if (results.some((r) => r.cancelled) || get().rev !== rev) return;
+    const live = new Set(byHash.keys());
+    for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);
+    set({ detailIssues: issues });
+    // the detail pass adds these to the report
+    refreshReport();
   }
   set({ stage: "done" });
+}
+
+/**
+ * Problems of the detailed (full-quality) build as warnings, for parts whose
+ * geometry has not changed since. A report pass, so it survives re-composing.
+ */
+export function detailItems(items: CheckItem[], model: Model, issues: Map<string, string>): CheckItem[] {
+  const out = items.filter((i) => !i.id.startsWith("detail:"));
+  const seen = new Set<string>();
+  for (const p of model.parts) {
+    const msg = issues.get(p.hash);
+    if (!msg || seen.has(p.hash)) continue;
+    seen.add(p.hash);
+    const same = model.parts.filter((q) => q.hash === p.hash).map((q) => q.id);
+    out.push({ id: `detail:${p.id}`, category: "build", status: "warn", title: `${p.label} detail`, detail: msg, parts: same, span: p.span, basis: "geometry" });
+  }
+  return out;
+}
+// isolated builds (sub-agents) have no detail pass of their own
+registerReportPass("detail", (items, ctx) => (ctx.live ? detailItems(items, ctx.model, get().detailIssues) : items), 30);
+
+/** Compose the latest report again, after a pass's inputs changed (an analysis finished, for example). */
+export function refreshReport() {
+  if (!reportBase || reportBase.ctx.rev !== get().reportRev) return;
+  set({ report: composeReport(reportBase.report, reportBase.ctx) });
 }
 
 /** Resolves once checks have run for the current revision (or a later one). */

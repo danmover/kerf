@@ -1,8 +1,10 @@
 // The 3D viewport: mounts the three.js scene and overlays its controls.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneController, type PhotoStatus } from "./viewport/scene";
+import { ProcessOverlay } from "./viewport/processOverlay";
+import { useMfgView } from "./mfgView";
 import { meshes, useDesign } from "../core/engine";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
@@ -19,10 +21,18 @@ import { Markup, toggleMarkup, useMarkup } from "./Markup";
 import { openSpot, closeSpot, useSpot } from "../app/spot";
 import { useGap, type Gap } from "./useGap";
 import { ImportFacts } from "./ImportsPanel";
+import { SketchLayer } from "./sketch/SketchPanels";
+import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
+import { T } from "./sketch/glyphs";
+import { ResultsLayer } from "./ResultsLayer";
+import { MeasureButton, MeasureTool, measuring } from "./viewport/Measure";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
   const ctl = useRef<SceneController | null>(null);
+  const mfgOverlay = useRef<ProcessOverlay | null>(null);
+  const processResults = useDesign((s) => s.process);
+  const showProcessIssues = useMfgView((s) => s.overlay);
   const model = useDesign((s) => s.model);
   const meshVersion = useDesign((s) => s.meshVersion);
   const interferences = useDesign((s) => s.interferences);
@@ -32,6 +42,10 @@ export function Viewport() {
   const view = useView();
   const settings = useSettings();
   const [webglError, setWebglError] = useState("");
+  const [scene, setScene] = useState<SceneController | null>(null);
+  const sketching = useSketch((s) => !!s.active || s.picking);
+  const inSketch = useSketch((s) => !!s.active);
+  const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
   const [photo, setPhoto] = useState<PhotoStatus>({ state: "off", samples: 0, max: 0 });
 
   useEffect(() => {
@@ -44,8 +58,10 @@ export function Viewport() {
       return;
     }
     ctl.current = c;
+    mfgOverlay.current = new ProcessOverlay(c);
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
+      if (measuring()) return;
       const s = useView.getState();
       if (!id) {
         closeSpot();
@@ -65,6 +81,9 @@ export function Viewport() {
     c.onTurntableStop = () => useView.setState({ turntable: false });
     c.onPhotoStatus = setPhoto;
     c.onContext = (hit) => {
+      // the right button pans in a sketch; the spot chat waits until it is closed
+      const sk = useSketch.getState();
+      if (sk.active || sk.picking) return;
       const part = hit && useDesign.getState().model?.parts.find((p) => p.id === hit.id);
       if (!hit || !part) return closeSpot();
       select([hit.id]);
@@ -81,8 +100,12 @@ export function Viewport() {
       snapshot: () => c.snapshot(),
       hitAt: (x, y) => c.hitAt(x, y),
     });
+    setScene(c);
     return () => {
+      setScene(null);
       registerViewport(null);
+      mfgOverlay.current?.destroy();
+      mfgOverlay.current = null;
       c.dispose();
       ctl.current = null;
     };
@@ -127,6 +150,10 @@ export function Viewport() {
     if (view.assemblyRequest) ctl.current?.playAssembly();
   }, [view.assemblyRequest]);
   useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
+  // after setParts above, so overlays attach to the current part groups
+  useEffect(() => {
+    if (model) mfgOverlay.current?.update(model.parts, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion);
+  }, [model, meshVersion, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion]);
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
   useEffect(() => {
@@ -139,9 +166,15 @@ export function Viewport() {
   const empty = model && model.parts.length === 0 && kernelStatus === "ready";
   const spotOpen = useSpot((s) => s.spot !== null);
   const marking = useMarkup((s) => s.on);
+  // a sketch takes the pointer, so the spot chat and view markup close while it lasts
+  useEffect(() => {
+    if (!sketching) return;
+    closeSpot();
+    toggleMarkup(false);
+  }, [sketching]);
 
   return (
-    <div className="viewport">
+    <div className={`viewport ${inSketch ? "sketching" : ""}`}>
       <div className="vp-mount" ref={mount} />
 
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
@@ -187,13 +220,17 @@ export function Viewport() {
         <button className={`icon-btn ${view.isolate ? "active" : ""}`} disabled={!view.selected.length && !view.isolate} onClick={() => useView.setState({ isolate: !view.isolate })} data-tip="Isolate selection (I)" aria-label="Isolate selection">
           <Icon.Target />
         </button>
+        <MeasureButton />
         <div className="sep" />
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
         <div className="sep" />
-        <button className={`icon-btn ${marking ? "active" : ""}`} onClick={() => toggleMarkup()} data-tip="Draw on the view for Claude (M)" aria-label="Draw on the view for Claude">
+        <button className={`icon-btn ${marking ? "active" : ""}`} disabled={sketching} onClick={() => toggleMarkup()} data-tip={sketching ? "Leave the sketch to draw on the view" : "Draw on the view for Claude (M)"} aria-label="Draw on the view for Claude">
           <Icon.Edit />
+        </button>
+        <button className={`icon-btn ${sketching ? "active" : ""}`} onClick={() => (sketching ? exitSketch() : startPicking())} data-tip={sketching ? "Leave the sketch" : "New sketch"} aria-label="Sketch">
+          <T.Sketch />
         </button>
         <div className="sep" />
         <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">
@@ -261,14 +298,19 @@ export function Viewport() {
       </AnimatePresence>
 
       <Hud stage={stage} parts={visibleParts} />
+      <MeasureTool host={measureHost} />
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
-      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
+      {scene && !inSketch && <ResultsLayer scene={scene} />}
+
+      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
       <SpotChat />
       <Markup />
 
-      {empty && (
+      {scene && <SketchLayer ctl={scene} />}
+
+      {empty && !sketching && (
         <div className="vp-empty">
           <motion.div className="card" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div style={{ display: "grid", placeItems: "center", marginBottom: 12, color: "var(--accent-2)" }}>
@@ -488,6 +530,14 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
         >
           <Icon.Sparkle size={13} /> Ask
         </button>
+        {parts.length === 1 &&
+          model?.sketches
+            .filter((sk) => sk.usedBy.includes(p.name))
+            .map((sk) => (
+              <button key={sk.name} className="btn sm" onClick={() => enterSketch(sk.name)} data-tip={`Edit the sketch ${p.name} is built from`}>
+                <T.Sketch size={13} /> {sk.name}
+              </button>
+            ))}
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
         Right-click a spot on the model to ask about it

@@ -11,6 +11,8 @@ import { Menu, MenuItem, timeAgo, useTick } from "../ui/common";
 import { useApiKey } from "../ui/ChatPanel";
 import { resetChat, useChat } from "../ai/chat";
 import type { ProjectRecord } from "../persist/db";
+import { AccountButton, CloudTag, UploadBanner, useCloudActions } from "../ui/Account";
+import { useAccount } from "../cloud/account";
 import { importStepFiles, isStepFile } from "../app/imports";
 import { cleanName } from "../kernel/stepText";
 
@@ -74,6 +76,7 @@ export function Home() {
           <button className="btn" onClick={() => fileRef.current?.click()}>
             <Icon.Upload size={14} /> Import
           </button>
+          <AccountButton />
           <button className="icon-btn" onClick={() => openSettings("app")} aria-label="Settings" data-tip="Settings">
             <Icon.Settings />
           </button>
@@ -86,7 +89,7 @@ export function Home() {
             <br />
             The checks keep it honest.
           </h1>
-          <p>Kerf is mechanical CAD where the AI does the modelling and you direct the design. Every change, by you or by Claude, edits one design file that is rebuilt as exact solids and checked for fit, interference, tool access and motion.</p>
+          <p>Kerf is mechanical CAD where the AI does the modelling and you direct the design. Every change, by you or by Claude, edits one design file that is rebuilt as exact solids and checked for fit, interference, tool access, motion and strength.</p>
         </motion.div>
 
         {save === "memory" && (
@@ -114,6 +117,7 @@ export function Home() {
         </div>
 
         <div className="section-label">Your projects</div>
+        <UploadBanner />
         {!loaded ? (
           <div className="row dim">
             <div className="spinner" /> Loading…
@@ -133,7 +137,7 @@ export function Home() {
 
         <footer className="row dim" style={{ marginTop: 50, fontSize: 12, flexWrap: "wrap", gap: 14 }}>
           <span>Kerf {__APP_VERSION__} · prototype</span>
-          <span>Projects are stored only in this browser.</span>
+          <StorageNote />
           <div className="grow" />
           <a href="#" onClick={(e) => (e.preventDefault(), go({ name: "legal", doc: "terms", back: "home" }))}>
             Terms
@@ -162,7 +166,13 @@ export function Home() {
   );
 }
 
+function StorageNote() {
+  const signedIn = useAccount((s) => s.status === "signed-in" || s.status === "unreachable");
+  return <span>{signedIn ? "Projects are saved in this browser and synced to your account." : "Projects are stored only in this browser."}</span>;
+}
+
 function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
+  const cloud = useCloudActions(p.id);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(p.name);
   const finish = () => {
@@ -173,6 +183,7 @@ function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
   return (
     <motion.div className="card clickable" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(0.03 * index, 0.3) }} onClick={() => !renaming && void openProject(p.id)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && !renaming && void openProject(p.id)}>
       <div className="thumb">{p.thumbnail ? <img src={p.thumbnail} alt="" /> : <TemplateArt id={p.template} />}</div>
+      <CloudTag id={p.id} />
       <div className="body">
         {renaming ? (
           <input className="input" autoFocus value={name} onClick={(e) => e.stopPropagation()} onChange={(e) => setName(e.target.value)} onBlur={finish} onKeyDown={(e) => (e.key === "Enter" ? finish() : e.key === "Escape" && (setName(p.name), setRenaming(false)))} aria-label="Project name" />
@@ -202,13 +213,18 @@ function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
               <MenuItem icon={<Icon.Download size={14} />} onClick={() => (close(), void exportProject(p.id))}>
                 Export project file
               </MenuItem>
+              {cloud && (
+                <MenuItem icon={<Icon.Upload size={14} />} onClick={() => (close(), void cloud.run())}>
+                  {cloud.label}
+                </MenuItem>
+              )}
               <div className="menu-sep" />
               <MenuItem
                 danger
                 icon={<Icon.Trash size={14} />}
                 onClick={async () => {
                   close();
-                  if (await confirmDialog({ title: `Delete “${p.name}”?`, body: "The design, its version history and its chat are removed from this browser. This cannot be undone. Export it first if you may need it.", confirm: "Delete project", danger: true })) {
+                  if (await confirmDialog({ title: `Delete “${p.name}”?`, body: `The design, its version history and its chat are removed from this browser${cloud?.inAccount ? " and from your account" : ""}. This cannot be undone. Export it first if you may need it.`, confirm: "Delete project", danger: true })) {
                     if (useChat.getState().projectId === p.id) resetChat();
                     await deleteProject(p.id);
                     toast({ kind: "success", title: "Project deleted" });
@@ -238,12 +254,110 @@ export function TemplateArt({ id }: { id: string }) {
         <rect x="30" y="18" width="150" height="88" rx="6" fill="none" stroke="#39445c" />
       </svg>
     );
+  if (id === "shelf")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <defs>
+          <linearGradient id="tpl-stress" x1="0" x2="1">
+            <stop offset="0" stopColor="#ff4d5e" />
+            <stop offset="0.3" stopColor="#ffd25e" />
+            <stop offset="0.65" stopColor="#3ddc97" />
+            <stop offset="1" stopColor="#3b6cff" />
+          </linearGradient>
+        </defs>
+        <path d="M46 12v98" stroke="#39445c" strokeWidth="2" />
+        {[20, 34, 48, 62, 76, 90, 104].map((y) => (
+          <path key={y} d={`M46 ${y}l-7 6`} stroke="#39445c" />
+        ))}
+        <rect x="48" y="22" width="8" height="78" fill="rgba(109,139,255,.12)" stroke={stroke} strokeWidth="1.2" />
+        <path d="M56 30h50L56 78z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.2" />
+        <motion.path
+          fill="url(#tpl-stress)"
+          stroke="none"
+          initial={{ d: "M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z" }}
+          animate={{ d: ["M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z", "M56 22 Q110 23 164 29 L164 37 Q110 31 56 30 Z", "M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z"] }}
+          transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
+        />
+        <path d="M56 22h108v8H56" fill="none" stroke="#8fa8ff" strokeOpacity="0.25" strokeDasharray="3 3" />
+        <motion.g animate={{ y: [0, 6, 0] }} transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}>
+          <path d="M150 2v14" stroke="#ffb454" strokeWidth="1.6" />
+          <path d="m146 12 4 5 4-5" fill="none" stroke="#ffb454" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </motion.g>
+      </svg>
+    );
+  if (id === "canister")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <motion.path d="M74 104V52q0-8 8-11h36q8 3 8 11v52q0 6-6 6H80q-6 0-6-6z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
+        <motion.g animate={{ y: [0, -6, 0] }} transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}>
+          <rect x="70" y="14" width="60" height="18" rx="3" fill="rgba(255,179,107,.12)" stroke="#ffb36b" strokeWidth="1.3" />
+          {Array.from({ length: 11 }, (_, i) => (
+            <line key={i} x1={75 + i * 5} y1="17" x2={75 + i * 5} y2="29" stroke="#ffb36b" strokeOpacity={0.5} />
+          ))}
+        </motion.g>
+        {[0, 1, 2].map((i) => (
+          <path key={i} d={`M84 ${36 + i * 4}l32 3`} stroke="#39445c" strokeWidth="1.2" />
+        ))}
+      </svg>
+    );
   if (id === "enclosure")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
         <motion.path d="M40 40 100 18l60 22v44l-60 22-60-22z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
         <path d="M40 40l60 22 60-22M100 62v44" fill="none" stroke="#39445c" />
         <motion.rect x="76" y="50" width="48" height="10" rx="2" fill="#3ddc97" opacity={0.6} animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ duration: 2.4, repeat: Infinity }} />
+      </svg>
+    );
+  if (id === "bracket")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <motion.path d="M62 20v76h84v-8H72a2 2 0 0 1-2-2V20z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
+        <path d="M72 64v20h20z" fill="none" stroke="#c792ff" strokeWidth="1.2" />
+        <motion.g animate={{ opacity: [0.35, 0.9, 0.35] }} transition={{ duration: 2.6, repeat: Infinity }}>
+          <path d="M62 106h84M62 102v8M146 102v8" stroke="#39445c" />
+          <text x="104" y="116" fill="#7f8aa3" fontSize="8" textAnchor="middle" fontFamily="monospace">base_len</text>
+        </motion.g>
+        <path d="M52 20v76M48 20h8M48 96h8" stroke="#39445c" />
+      </svg>
+    );
+  if (id === "sand-tunneller") {
+    // two screw sections either side of the body; the flights scroll as if turning
+    const flights = (x0: number, dir: number) => (
+      <g clipPath={`url(#tun-${x0})`}>
+        <motion.g animate={{ x: [0, 10 * dir] }} transition={{ duration: 0.9, repeat: Infinity, ease: "linear" }}>
+          {Array.from({ length: 8 }, (_, i) => (
+            <path key={i} d={`M${x0 - 10 + i * 10} 44l${6 * dir} 32`} stroke="#e8b84a" strokeWidth="2" strokeLinecap="round" />
+          ))}
+        </motion.g>
+      </g>
+    );
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <defs>
+          <clipPath id="tun-36"><rect x="36" y="40" width="44" height="40" /></clipPath>
+          <clipPath id="tun-122"><rect x="122" y="40" width="44" height="40" /></clipPath>
+        </defs>
+        {[[24, 30], [62, 22], [104, 34], [150, 24], [182, 38], [40, 94], [96, 100], [138, 92], [176, 98]].map(([cx, cy], i) => (
+          <circle key={i} cx={cx} cy={cy} r="1.6" fill="#39445c" />
+        ))}
+        <rect x="30" y="50" width="142" height="20" rx="4" fill="rgba(109,139,255,.10)" stroke={stroke} strokeWidth="1.3" />
+        <path d="M172 50l18 10-18 10" fill="none" stroke={stroke} strokeWidth="1.3" />
+        <rect x="84" y="50" width="34" height="20" fill="rgba(109,139,255,.22)" stroke="#39445c" />
+        {flights(36, 1)}
+        {flights(122, -1)}
+      </svg>
+    );
+  }
+  if (id === "printer")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <path d="M58 104V16h84v88" fill="none" stroke="#39445c" strokeWidth="2" />
+        <motion.g animate={{ y: [0, -16, 0] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}>
+          <path d="M50 58h100" stroke={stroke} strokeWidth="1.6" />
+          <motion.rect x="66" y="50" width="16" height="22" rx="2" fill="rgba(109,139,255,.18)" stroke={stroke} strokeWidth="1.3" animate={{ x: [0, 52, 0] }} transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }} />
+        </motion.g>
+        <motion.rect x="62" y="92" width="76" height="5" rx="1.5" fill="rgba(232,184,74,.35)" stroke="#e8b84a" strokeWidth="1" animate={{ x: [-10, 10, -10] }} transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }} />
+        <path d="M44 104h112" stroke="#39445c" strokeWidth="2" />
       </svg>
     );
   return (

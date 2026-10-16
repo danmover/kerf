@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-export const TERMS_VERSION = "2026-10-draft-1";
+export const TERMS_VERSION = "2026-10-draft-2";
 
 export const MODELS = [
   { id: "claude-opus-5-5", label: "Claude Opus 5.5", note: "Most capable. Best for whole designs and big revisions." },
@@ -35,6 +35,10 @@ export interface Settings {
   photoreal: boolean;
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
+  /** let Claude search the web and read pages (Anthropic's server tools) to find parts the catalog lacks */
+  webSearch: boolean;
+  /** someone who used Kerf before web search existed has yet to be told it is on and what it costs */
+  webNotice: boolean;
   /** when an independent reviewer checks Claude's changes before it reports back */
   selfReview: SelfReview;
   /** review rounds per reply: the first review plus re-checks after fixes */
@@ -57,7 +61,21 @@ export interface Settings {
   agentReview: boolean;
   /** extra geometry workers for agents' checks (0 = decide from the device) */
   agentWorkers: number;
+  /** let a cheaper model answer turns that only read the design (see ai/routing) */
+  routeQuick: boolean;
+  /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
+  keepWarm: number;
+  /** show what each reply cost and saved */
+  showCost: boolean;
+  /** version of these defaults the stored settings were last migrated to */
+  rev: number;
 }
+
+/** Steps per message: enough for Claude to design, wire and check a whole machine in one go. */
+export const DEFAULT_STEPS = 30;
+export const MIN_STEPS = 4;
+export const MAX_STEPS = 80;
+const SETTINGS_REV = 2;
 
 export type VoiceSend = "review" | "auto";
 
@@ -72,7 +90,9 @@ const DEFAULTS: Settings = {
   lightAngle: 0,
   quality: "balanced",
   photoreal: false,
-  maxSteps: 16,
+  maxSteps: DEFAULT_STEPS,
+  webSearch: true,
+  webNotice: false,
   selfReview: "auto",
   reviewRounds: 2,
   termsAccepted: null,
@@ -85,7 +105,14 @@ const DEFAULTS: Settings = {
   agentBudget: 5,
   agentReview: true,
   agentWorkers: 0,
+  routeQuick: true,
+  keepWarm: 30,
+  showCost: true,
+  rev: SETTINGS_REV,
 };
+
+/** keep-warm durations the settings offer, in minutes */
+export const KEEP_WARM_MINUTES = [0, 15, 30, 60];
 
 const KEY = "kerf.settings.v1";
 
@@ -102,7 +129,14 @@ function load(): Settings {
     }
     if (!MODELS.some((m) => m.id === out.model)) out.model = DEFAULTS.model;
     if (!["low", "medium", "high", "xhigh", "max"].includes(out.effort)) out.effort = DEFAULTS.effort;
-    out.maxSteps = Math.min(40, Math.max(4, Math.round(out.maxSteps)));
+    // settings saved before rev 2 had no rev; their untouched 16-step default becomes the new default
+    if (typeof v.rev !== "number" || v.rev < 2) {
+      if (v.maxSteps === undefined || v.maxSteps === 16) out.maxSteps = DEFAULT_STEPS;
+      // web search arrived switched on: tell them once, before it can cost them anything
+      if (v.webSearch === undefined) out.webNotice = true;
+    }
+    out.rev = SETTINGS_REV;
+    out.maxSteps = Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.round(Number.isFinite(out.maxSteps) ? out.maxSteps : DEFAULT_STEPS)));
     if (out.voiceSend !== "review" && out.voiceSend !== "auto") out.voiceSend = DEFAULTS.voiceSend;
     if (!/^([a-z]{2,3}(-[A-Za-z0-9]{2,8})*)?$/.test(out.voiceLang)) out.voiceLang = DEFAULTS.voiceLang;
     if (!LIGHTING_IDS.includes(out.lighting)) out.lighting = DEFAULTS.lighting;
@@ -114,6 +148,7 @@ function load(): Settings {
     out.agentWorkers = Math.min(4, Math.max(0, Math.round(out.agentWorkers)));
     if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
     out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
+    if (!KEEP_WARM_MINUTES.includes(out.keepWarm)) out.keepWarm = DEFAULTS.keepWarm;
     return out;
   } catch {
     return DEFAULTS;

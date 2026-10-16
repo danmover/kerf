@@ -1,0 +1,13 @@
+# keep the build context small and free of local data and secrets
+node_modules
+dist
+server/dist
+server/data
+.git
+.env
+.env.*
+*.local
+coverage
+test-results
+playwright-report
+scratch

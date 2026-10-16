@@ -15,6 +15,8 @@ import { PartsTab } from "./left/PartsTab";
 import { ParamsTab } from "./left/ParamsTab";
 import { HistoryTab, HistoryTools } from "./left/HistoryTab";
 import { Decisions } from "./DecisionsPanel";
+import { SketchesTab } from "./sketch/SketchesTab";
+import { T } from "./sketch/glyphs";
 import "../styles/left-panel.css";
 
 export interface LeftTabDef {
@@ -43,6 +45,10 @@ const DecisionsCount: FC = () => {
   return n ? <>{n}</> : null;
 };
 const DecisionsTab: FC<{ filter: string }> = () => <Decisions />;
+const SketchesCount: FC = () => {
+  const n = useDesign((s) => s.model?.sketches.length ?? 0);
+  return n ? <>{n}</> : null;
+};
 const HistoryCount: FC = () => {
   const n = useProject((s) => s.versions.length);
   return n > 1 ? <>{n}</> : null;
@@ -51,6 +57,7 @@ const HistoryCount: FC = () => {
 export const LEFT_TABS: LeftTabDef[] = [
   { id: "structure", label: "parts", icon: <Icon.Layers size={14} />, Count: PartsCount, filter: "Filter parts", Body: PartsTab },
   { id: "params", label: "params", icon: <Icon.Sliders size={14} />, Count: ParamsCount, filter: "Filter parameters", Body: ParamsTab },
+  { id: "sketches", label: "sketches", icon: <T.Sketch size={14} />, Count: SketchesCount, filter: "Filter sketches", Body: SketchesTab },
   { id: "decisions", label: "decisions", icon: <Icon.Fork size={14} />, Count: DecisionsCount, Body: DecisionsTab },
   { id: "history", label: "history", icon: <Icon.History size={14} />, Count: HistoryCount, Tools: HistoryTools, Body: HistoryTab },
 ];

@@ -7,6 +7,7 @@ import { useSettings, updateSettings, TERMS_VERSION, LIGHTING_IDS } from "./app/
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
 import { useView, requestCamera, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
+import { startAnalysisRuntime } from "./analysis/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
 import { Onboarding } from "./screens/Onboarding";
@@ -17,6 +18,9 @@ import { SettingsModal } from "./ui/Settings";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
+import { AuthDialog } from "./ui/Account";
+import { initAccount } from "./cloud/account";
+import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
 
 // each opened project brings its own conversation
@@ -55,6 +59,7 @@ export function App() {
           </div>
         )}
         <SettingsModal />
+        <AuthDialog />
         <ShortcutsModal />
         <ConfirmDialog />
         <Toasts />
@@ -76,7 +81,9 @@ function useBoot() {
   useEffect(() => {
     let live = true;
     startEngine();
-    void Promise.allSettled([loadRememberedKey(), refreshProjects()]).then(() => {
+    startAnalysisRuntime();
+    void Promise.allSettled([loadRememberedKey(), refreshProjects(), initAccount()]).then(() => {
+      startSync();
       if (!live) return;
       const s = useSettings.getState();
       go(!s.onboarded || s.termsAccepted !== TERMS_VERSION ? { name: "onboarding" } : { name: "home" });

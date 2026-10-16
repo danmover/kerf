@@ -6,10 +6,12 @@ import { useDesign } from "../core/engine";
 import { useProject, undo, redo, renameProject, closeProject } from "../app/project";
 import { openSettings, useUi } from "../app/ui";
 import { useView } from "../app/view";
-import { exportStep, exportStl, exportSource, exportBom, exportPng, exportProjectFile } from "../app/exports";
+import { exportStep, exportStl, exportSource, exportBom, exportPng, exportProjectFile, exportBuildPack } from "../app/exports";
 import { Logo } from "./Logo";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
+import { SyncBadge } from "./Account";
+import { exportAllDrawings } from "../drawing/export";
 
 export function TopBar() {
   const project = useProject((s) => s.current);
@@ -17,6 +19,7 @@ export function TopBar() {
   const undoN = useProject((s) => s.undo.length);
   const redoN = useProject((s) => s.redo.length);
   const selected = useView((s) => s.selected);
+  const machine = useDesign((s) => !!s.model?.machine);
   const [name, setName] = useState(project?.name ?? "");
   useEffect(() => setName(project?.name ?? ""), [project?.name]);
 
@@ -48,6 +51,7 @@ export function TopBar() {
         />
       </div>
       <SaveState state={save} />
+      <SyncBadge />
       <div className="grow" />
       <Pipeline />
       <div className="grow" />
@@ -74,6 +78,15 @@ export function TopBar() {
           };
           return (
             <>
+              {machine && (
+                <>
+                  <div className="menu-label">Build</div>
+                  <MenuItem icon={<Icon.Wrench size={14} />} onClick={run(exportBuildPack)} hint=".zip">
+                    Build pack: parts to firmware
+                  </MenuItem>
+                  <div className="menu-sep" />
+                </>
+              )}
               <div className="menu-label">Geometry</div>
               <MenuItem icon={<Icon.Cube size={14} />} onClick={run(() => exportStep(false))} hint=".step">
                 STEP assembly (exact)
@@ -86,6 +99,9 @@ export function TopBar() {
               </MenuItem>
               <MenuItem icon={<Icon.Target size={14} />} onClick={run(() => exportStep(true))} disabled={!selected.length} hint=".step">
                 STEP of selected parts
+              </MenuItem>
+              <MenuItem icon={<Icon.Doc size={14} />} onClick={run(exportAllDrawings)} hint=".pdf">
+                Engineering drawings
               </MenuItem>
               <div className="menu-sep" />
               <div className="menu-label">Project</div>

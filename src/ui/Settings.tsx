@@ -1,22 +1,24 @@
 // Settings: Claude connection, display preferences, local data and about.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, type Effort } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, MIN_STEPS, MAX_STEPS, type Effort } from "../app/settings";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
-import { forgetApiKey, isRemembered, keyHint } from "../persist/vault";
+import { forgetApiKey, getApiKey, isRemembered, keyHint, subscribeKey } from "../persist/vault";
 import { storageEstimate } from "../persist/db";
 import { resetChat } from "../ai/chat";
 import { KeyForm } from "../screens/Onboarding";
-import { useApiKey } from "./ChatPanel";
 import { Modal, Segmented, Toggle } from "./common";
 import { Icon } from "./icons";
 import { LogoMark } from "./Logo";
+import { AccountKeySection, AccountSettings, CloudIcon, signOutForClear } from "./Account";
+import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "Claude", icon: <Icon.Sparkle size={14} /> },
+  { id: "account", label: "Account", icon: <CloudIcon size={14} /> },
   { id: "voice", label: "Voice", icon: <Icon.Mic size={14} /> },
   { id: "app", label: "Display", icon: <Icon.Eye size={14} /> },
   { id: "data", label: "Data", icon: <Icon.Layers size={14} /> },
@@ -43,6 +45,7 @@ export function SettingsModal() {
         </nav>
         <div className="modal-body" style={{ maxHeight: "min(72vh, 720px)" }}>
           {shown === "ai" && <AiSettings />}
+          {shown === "account" && <AccountSettings />}
           {shown === "voice" && <VoiceSettings />}
           {shown === "app" && <AppSettings />}
           {shown === "data" && <DataSettings />}
@@ -84,52 +87,61 @@ const EFFORTS: { value: Effort; label: string; d: string }[] = [
   { value: "max", label: "max", d: "The most thorough. Slowest and most expensive." },
 ];
 
-function AiSettings() {
-  const key = useApiKey();
-  const s = useSettings();
+/** The key kept in this browser: in memory, or encrypted on this device if remembered. */
+function BrowserKey() {
+  const key = useSyncExternalStore(subscribeKey, getApiKey);
   const [replacing, setReplacing] = useState(false);
   useEffect(() => setReplacing(false), [key]);
+  return key && !replacing ? (
+    <div className="setting" style={{ alignItems: "center" }}>
+      <span className="dot pass" />
+      <div className="grow">
+        <div className="t">
+          Connected <span className="mono dim">{keyHint()}</span>
+        </div>
+        <div className="d">{isRemembered() ? "Remembered on this device, encrypted with a browser key that cannot be exported." : "Kept in memory only. You will be asked again after closing this tab."}</div>
+      </div>
+      <button className="btn" onClick={() => setReplacing(true)}>
+        Replace
+      </button>
+      <button
+        className="btn danger"
+        onClick={async () => {
+          if (await confirmDialog({ title: "Forget the API key?", body: "Kerf removes the key from memory and from this device. Chat stops working until you add a key again. Your designs are not affected.", confirm: "Forget key", danger: true })) {
+            await forgetApiKey();
+            toast({ kind: "success", title: "API key forgotten" });
+          }
+        }}
+      >
+        Forget
+      </button>
+    </div>
+  ) : (
+    <>
+      <KeyForm onSaved={() => toast({ kind: "success", title: "Claude connected", detail: "You can chat with Claude in the right panel of any project." })} compact={!!key} />
+      {replacing && (
+        <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => setReplacing(false)}>
+          Keep the current key
+        </button>
+      )}
+    </>
+  );
+}
+
+function AiSettings() {
+  const s = useSettings();
   const effort = EFFORTS.find((e) => e.value === s.effort)!;
+  const server = useAccount((a) => a.status !== "none" && a.status !== "checking");
+  const viaAccount = useAccount((a) => a.status === "signed-in" && a.info?.claude?.source === "account");
+  const designLabel = MODELS.find((m) => m.id === s.model)?.label ?? s.model;
   return (
     <>
       <Section title="API key">
-        {key && !replacing ? (
-          <div className="setting" style={{ alignItems: "center" }}>
-            <span className="dot pass" />
-            <div className="grow">
-              <div className="t">
-                Connected <span className="mono dim">{keyHint()}</span>
-              </div>
-              <div className="d">{isRemembered() ? "Remembered on this device, encrypted with a browser key that cannot be exported." : "Kept in memory only. You will be asked again after closing this tab."}</div>
-            </div>
-            <button className="btn" onClick={() => setReplacing(true)}>
-              Replace
-            </button>
-            <button
-              className="btn danger"
-              onClick={async () => {
-                if (await confirmDialog({ title: "Forget the API key?", body: "Kerf removes the key from memory and from this device. Chat stops working until you add a key again. Your designs are not affected.", confirm: "Forget key", danger: true })) {
-                  await forgetApiKey();
-                  toast({ kind: "success", title: "API key forgotten" });
-                }
-              }}
-            >
-              Forget
-            </button>
-          </div>
-        ) : (
-          <>
-            <KeyForm onSaved={() => toast({ kind: "success", title: "Claude connected", detail: "You can chat with Claude in the right panel of any project." })} compact={!!key} />
-            {replacing && (
-              <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => setReplacing(false)}>
-                Keep the current key
-              </button>
-            )}
-          </>
-        )}
+        <AccountKeySection browserForm={<BrowserKey />} />
+        {!server && <BrowserKey />}
       </Section>
 
-      <Section title="Model">
+      <Section title="Model for design work">
         <div role="radiogroup" aria-label="Model" style={{ display: "grid", gap: 6 }}>
           {MODELS.map((m) => (
             <button key={m.id} role="radio" aria-checked={s.model === m.id} className={`template-opt ${s.model === m.id ? "active" : ""}`} onClick={() => updateSettings({ model: m.id })}>
@@ -147,6 +159,37 @@ function AiSettings() {
         </div>
       </Section>
 
+      <Section title="Cost">
+        <Row
+          t="Use the cheapest model that can do each turn"
+          d={
+            <>
+              Quick questions, thanks and look-ups (a dimension, a material, which checks fail) go to Claude Haiku 5.5, about 40 times cheaper per token, whenever that costs less overall. Anything that changes the design, the brief or the plan, any engineering judgment, the self-review and parallel agents stay on {designLabel}. If Haiku reaches for a change, Kerf hands the turn to {designLabel} before anything runs, and any quick answer can be asked again on {designLabel}.
+            </>
+          }
+        >
+          <Toggle on={s.routeQuick} onChange={(v) => updateSettings({ routeQuick: v })} label="Use the cheapest model that can do each turn" />
+        </Row>
+        <Row
+          t="Keep the conversation cached while you look"
+          d={
+            <>
+              Claude reads the conversation back from a cache that forgets it 5 minutes after the last request. While you look at the design, Kerf refreshes it for a small fraction of what sending it again costs, so your next message is cheaper. Refreshing pauses while Kerf is hidden, and stops after this long without you typing, using the view or sending a message, or once more refreshes would cost more than sending the conversation again. After a quick answer from Haiku, {designLabel}'s cache is refreshed once either way, as answering on {designLabel} would have done.
+            </>
+          }
+        >
+          <Segmented
+            id="keep-warm"
+            value={String(s.keepWarm)}
+            options={KEEP_WARM_MINUTES.map((m) => ({ value: String(m), label: m === 0 ? "Off" : m < 60 ? `${m} min` : `${m / 60} h` }))}
+            onChange={(v) => updateSettings({ keepWarm: Number(v) })}
+          />
+        </Row>
+        <Row t="Show cost per reply" d="A line under each reply with the model that answered, what the turn cost and what Kerf saved. Click it for the breakdown.">
+          <Toggle on={s.showCost} onChange={(v) => updateSettings({ showCost: v })} label="Show cost per reply" />
+        </Row>
+      </Section>
+
       <Section title="Behaviour">
         <Row t="Effort" d={effort.d}>
           <Segmented id="effort" value={s.effort} options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))} onChange={(v) => updateSettings({ effort: v })} />
@@ -154,13 +197,19 @@ function AiSettings() {
         <Row t="Show Claude's reasoning" d="Shows a summary of Claude's thinking above each answer, collapsed by default.">
           <Toggle on={s.showThinking} onChange={(v) => updateSettings({ showThinking: v })} label="Show Claude's reasoning" />
         </Row>
-        <Row t="Steps per message" d="The most tool calls (edits, checks, views) Claude can make for one message before it stops and reports. Higher lets it finish bigger revisions; each step costs tokens.">
+        <Row t="Steps per message" d="The most rounds of tool calls (edits, checks, views, part lookups) Claude can make for one message before it stops and reports. Designing a whole machine takes about 20 to 40; each step costs tokens.">
           <div className="row" style={{ gap: 8, minWidth: 170 }}>
-            <input type="range" min={4} max={40} step={1} value={s.maxSteps} onChange={(e) => updateSettings({ maxSteps: Number(e.target.value) })} aria-label="Steps per message" style={{ flex: 1 }} />
+            <input type="range" min={MIN_STEPS} max={MAX_STEPS} step={1} value={s.maxSteps} onChange={(e) => updateSettings({ maxSteps: Number(e.target.value) })} aria-label="Steps per message" style={{ flex: 1 }} />
             <span className="mono" style={{ width: 22, textAlign: "right" }}>
               {s.maxSteps}
             </span>
           </div>
+        </Row>
+        <Row
+          t="Search the web for parts"
+          d="When the parts catalog has nothing suitable, Claude can search the web and read product pages to find a real part with a price and a link. Anthropic runs the searches and bills them to your API key ($10 per 1,000 searches at the time of writing, plus the tokens the pages use). Results come from the open web, so check a part before you buy it. A Kerf server's shared key doesn't offer web search, so there Claude uses the catalog only."
+        >
+          <Toggle on={s.webSearch} onChange={(v) => updateSettings({ webSearch: v, webNotice: false })} label="Search the web for parts" />
         </Row>
       </Section>
 
@@ -182,7 +231,7 @@ function AiSettings() {
         </Row>
       </Section>
       <AgentSettings />
-      <div className="help">Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com.</div>
+      <div className="help">{viaAccount ? "Usage is billed to the Anthropic account that owns the key, at its normal API rates. Requests go from this browser to your Kerf server, which adds the key and passes them to api.anthropic.com." : "Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com."}</div>
     </>
   );
 }
@@ -243,6 +292,7 @@ function DataSettings() {
       danger: true,
     });
     if (!ok) return;
+    await signOutForClear();
     resetChat();
     await forgetApiKey();
     await clearAllData();
@@ -319,6 +369,7 @@ function DataSettings() {
 
 function About() {
   const screen = useUi((s) => s.screen);
+  const server = useAccount((a) => a.status !== "none" && a.status !== "checking");
   const back = screen.name === "workspace" ? "workspace" : screen.name === "onboarding" ? "onboarding" : "home";
   const open = (doc: LegalDoc) => {
     closeSettings();
@@ -335,11 +386,20 @@ function About() {
       </div>
       <Section title="How Kerf handles your data">
         <ul className="muted" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, fontSize: 12.5 }}>
-          <li>There is no Kerf server or account. Designs, history and chats stay in this browser.</li>
-          <li>Chat messages, the design file and requested screenshots go directly to api.anthropic.com with your key, only when you send a message.</li>
+          {server ? (
+            <>
+              <li>This Kerf is served by a Kerf server. Without an account, designs, history and chats stay in this browser.</li>
+              <li>When you sign in, projects in your account, their history and chats are also stored on that server so they sync between devices. Your password is stored only as a salted hash.</li>
+              <li>A Claude key saved to your account is encrypted on the server and never sent back to a browser. Chat then goes through the server, which adds the key.</li>
+            </>
+          ) : (
+            <li>There is no Kerf server or account. Designs, history and chats stay in this browser.</li>
+          )}
+          <li>Chat messages, the design file and requested screenshots go to api.anthropic.com only when you send a message.</li>
           <li>Voice input is turned into text on this device when the browser can. Otherwise the browser's own speech service hears your audio, only if you allow it. Kerf never records or uploads audio.</li>
-          <li>Your key is kept in memory unless you choose to remember it, in which case it is encrypted with a browser key that cannot be exported.</li>
-          <li>A strict Content Security Policy allows network connections only to Kerf itself and api.anthropic.com. AI output is never rendered as HTML.</li>
+          <li>A key kept in this browser is held in memory unless you choose to remember it, in which case it is encrypted with a browser key that cannot be exported.</li>
+          <li>A strict Content Security Policy allows network connections only to Kerf itself{server ? " (and its server)" : ""} and api.anthropic.com. AI output is never rendered as HTML.</li>
+          <li>When web search is on, Anthropic's servers do the searching and page reading, not this browser. Links to sources open in a new tab only when you click them.</li>
           <li>Imported files are size-limited and validated before use.</li>
         </ul>
       </Section>

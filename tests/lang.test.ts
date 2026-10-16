@@ -40,7 +40,7 @@ describe("design language", () => {
   });
 
   it("lexes every token of the demos", () => {
-    for (const d of ["enclosure", "reducer", "blank"]) expect(() => lex(demo(d))).not.toThrow();
+    for (const d of ["enclosure", "reducer", "canister", "blank", "bracket", "shelf"]) expect(() => lex(demo(d))).not.toThrow();
   });
 });
 
@@ -84,6 +84,22 @@ describe("demo designs", () => {
     expect(Math.min(...ratios)).toBeCloseTo(1 / 12, 3);
   });
 
+  it("shelf bracket: evaluates cleanly with its stress analysis set up", () => {
+    const m = evaluate(demo("shelf"));
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.parts.map((p) => p.name)).toEqual(["bracket", "wall_screws", "wall_screws"]);
+    expect(m.requirements.filter((r) => r.status === "fail")).toEqual([]);
+    const a = m.analyses[0];
+    expect(a.kind).toBe("structural");
+    if (a.kind !== "structural") return;
+    expect(a.parts).toEqual(["bracket"]);
+    expect(a.supports).toHaveLength(3);
+    expect(a.supports[2].dir).toEqual([0, 1, 0]);
+    expect(a.loads[0]).toMatchObject({ t: "force", f: [0, 0, -8 * 9.81] });
+    expect(a.buildDir).toEqual([1, 0, 0]);
+    expect(a.printed).toBe(true);
+  });
+
   it("reducer: the 20:1 revision with a 10 mm shaft still satisfies every parameter requirement", () => {
     let src = demo("reducer");
     src = src.replace(/param target_ratio = 12/, "param target_ratio = 20").replace(/param z4\s+= 36/, (s: string) => s.replace("36", "60"));
@@ -92,10 +108,43 @@ describe("demo designs", () => {
     expect(m.requirements.find((r) => r.label.startsWith("Reduction matches"))?.status).toBe("pass");
   });
 
+  it("canister: evaluates cleanly with its parametric requirements met", () => {
+    const m = evaluate(demo("canister"));
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.parts.map((p) => p.id)).toEqual(["jar", "lid"]);
+    expect(m.parts.every((p) => p.detail)).toBe(true);
+    expect(m.requirements.filter((r) => r.status === "fail")).toEqual([]);
+  });
+
   it("identical parts share one geometry hash", () => {
     const m = evaluate(demo("enclosure"));
     const screws = m.parts.filter((p) => p.name === "lid_fasteners");
     expect(screws.length).toBe(4);
     expect(new Set(screws.map((p) => p.hash)).size).toBe(1);
+  });
+  it("lets a design's own names shadow built-in functions", () => {
+    // offset, ring, text, path and gusset are built-ins added after designs used these names
+    const m = evaluate(`design "shadow"
+param offset = 2
+let text = 3
+part ring {
+  body box(10 + offset, 10, text)
+}
+part path {
+  body cylinder(d: 6, h: offset * 2)
+}`);
+    expect(m.diagnostics.filter((d) => d.severity !== "warning")).toEqual([]);
+    expect(m.parts.map((p) => p.name)).toEqual(["ring", "path"]);
+    expect(m.params.find((p) => p.name === "offset")?.value).toBe(2);
+    // a user name is still defined once only
+    expect(evaluate(`design "twice"\nparam ring = 1\nparam ring = 2`).diagnostics[0]?.message).toMatch(/"ring" is already defined/);
+    // and the built-in keeps working where it is not shadowed
+    expect(evaluate(`design "builtin"\npart p {\n  body extrude(offset(rect(10, 10), 1), h: 2)\n}`).diagnostics.filter((d) => d.severity !== "warning")).toEqual([]);
+  });
+
+  it("bracket: its sketch named gusset evaluates beside the gusset() built-in", () => {
+    const m = evaluate(demo("bracket"));
+    expect(m.diagnostics.filter((d) => d.severity !== "warning")).toEqual([]);
+    expect(m.parts.length).toBeGreaterThan(0);
   });
 });

@@ -3,7 +3,7 @@
 // validated before it touches the design.
 
 import { z } from "zod";
-import { useDesign, whenChecked, solveWith, evaluateOnly } from "../core/engine";
+import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly } from "../core/engine";
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
 import { decisionsSummary } from "../core/decisions";
 import type { Model } from "../core/model";
@@ -11,8 +11,19 @@ import type { CheckReport } from "../core/checks";
 import { commitSource } from "../app/project";
 import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
-import { fmtNum } from "../lang/values";
+import { fmtNum, Obj, type Value } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { evaluate } from "../lang/evaluator";
+import { BEARINGS } from "../library/standards";
+import { CATALOG_KINDS, catalogPart, describePart, searchCatalog } from "../machine/catalog";
+import { CALC_FNS, isCalc } from "../machine/calcs";
+import { generateFirmware } from "../machine/firmware";
+import type { CatalogPart } from "../machine/types";
+import { calcParams } from "./reference";
+import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
+import { PROCESSES } from "../mfg/profiles";
+import { sheetFor, useDrawings } from "../drawing/engine";
+import { describeSheet, sheetToPng } from "../drawing/export";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
 import { REVIEW_TOOL } from "./review/tool";
@@ -20,6 +31,14 @@ import { useProject } from "../app/project";
 import { assetBlock } from "../persist/assets";
 import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssumptions, protectedBriefChanges, validId, writeBrief, type BriefData, type FieldKey } from "../core/brief";
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
+import { sketchStatusText } from "../sketch/evaluate";
+import type { EvalSketch } from "../sketch/types";
+import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
+import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict } from "../analysis/summary";
+import { evaluateSelector } from "../lang/evaluator";
+import { kernel } from "../kernel/client";
+import { inspectText } from "../kernel/inspectText";
+import { inverseXforms } from "../kernel/recipe";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -79,9 +98,20 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: "get_sketch",
+    description:
+      "Read one sketch as solved: its plane, every point's solved position and how free it still is, the curves, each constraint with its status (ok, redundant, conflict), and the closed regions of its profile. Sketch coordinates in the source are starting guesses; use this to see where things actually are, which points still need a dimension, and what the user is pointing at.",
+    input_schema: {
+      type: "object" as const,
+      properties: { name: { type: "string", description: "The sketch's name." } },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "run_checks",
     description:
-      "Wait for the geometry kernel to build the current design, then return every check: requirements with margins, solid interference, fastener tool access, gear meshing, swept motion envelopes and build errors.",
+      "Wait for the geometry kernel to build the current design, then return every check: requirements with margins, solid interference, fastener tool access, gear meshing, swept motion envelopes, build errors, and for machines the electrical rules, motor loads, the physical test plan and a summary of the generated firmware with its warnings.",
     input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
   },
   {
@@ -95,16 +125,94 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: "catalog_lookup",
+    description:
+      "Look up purchasable parts in Kerf's parts catalog. Give id for one part in full: specs, every pin with its electrical type and ratings, shape and fields, notes, the physical tests it usually needs, and where to buy it. Or search with query (for example \"15 A motor driver\", \"NEMA 17\", \"3S LiPo\") and/or kind: the best matches come back in full and the rest as one line each. With only kind, every part of that kind is listed in one line each. Call it before choosing or wiring a catalog part: only catalog parts have pins.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        id: { type: "string", description: "A catalog id, e.g. \"pololu_g2_18v17\"." },
+        query: { type: "string", description: "Words to search ids, names, makers, part numbers, summaries and specs." },
+        kind: { type: "string", enum: [...CATALOG_KINDS], description: "Only parts of this kind." },
+        limit: { type: "integer", minimum: 0, maximum: 12, description: "How many matches to return in full (default 3 for a query, 0 for a kind listing)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "run_analysis",
+    description:
+      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        label: { type: "string", description: "Run only the analysis with this label; default all." },
+        fine: { type: "boolean", description: "Re-run structural analyses at the fine resolution (slower, closer answer)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "engineering_calc",
+    description:
+      "Run one engineering calculator (calc.<name>) outside the design and get its full working: inputs, results, method, assumptions, confidence and what a physical test should confirm, plus every result field in base units. Use it to size a machine before choosing parts, to compare options, or to check a number; then record the calculation you rely on in the design as `let x = calc.<name>(...)`. Arguments are named, as in the language reference. Values: numbers in base units (mm, N, N·mm, MPa, V, A, W, s, g), or text with a unit such as \"9.5m\", \"10.8Nm\", \"32deg\", \"12kPa\"; true or false for flags; a catalog id (\"gobilda_5203_188\") or the name of a catalog component in the current design for motor, battery and actuator arguments; a bearing code (\"6808\") for bearing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", enum: Object.keys(CALC_FNS), description: "The calculator." },
+        args: {
+          type: "object",
+          description: "Named arguments, e.g. {\"depth\": \"9.5m\", \"box_w\": \"1m\"}.",
+          additionalProperties: { anyOf: [{ type: "number" }, { type: "string" }, { type: "boolean" }] },
+        },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "capture_view",
-    description: "Render the current model from a camera angle and return the image so you can look at it. Optionally highlight parts and cut a section.",
+    description:
+      "Render the current model from a camera angle and return the image so you can look at it. Optionally highlight parts, cut a section, or colour the model by a structural analysis result (with the deformed shape exaggerated, load arrows and support markers).",
     input_schema: {
       type: "object" as const,
       properties: {
         view: { type: "string", enum: [...VIEW_NAMES], description: "Camera direction. iso is a 3/4 view from the front right." },
         highlight: { type: "array", items: { type: "string" }, maxItems: 30, description: "Part or component names to emphasise; others are ghosted." },
         section: { type: "string", enum: ["x", "y", "z"], description: "Cut the model in half across this axis to see inside." },
+        results: { type: "string", enum: ["stress", "safety", "disp", "strain"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, or principal strain. Run run_analysis first." },
+        analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
       },
       required: ["view"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "inspect_part",
+    description:
+      "Look inside one built part before choosing fillets, chamfers, drafts or shells: its size, named features (from `add ... as name`) with how many faces and root/tip edges each has, and how many sharp convex and concave edges it has. Pass select to test a selector exactly as you would write it in the source (e.g. `boss.root`, `both(lid.edges, \"top\")`, `near((0, 12, 20), 1)`), and see what it picks; pass at (a world point, e.g. where the user clicked) to get the face and edge there and selectors that name them. Coordinates in results are in the part's own frame, the same frame its selectors use.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        part: { type: "string", description: "Part or component name (or instance id like screw#2)." },
+        select: { type: "string", description: "A selector expression to evaluate against the part." },
+        kind: { type: "string", enum: ["edges", "faces"], description: "What the selector picks (default edges; shell open and draft use faces)." },
+        at: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "A point in world coordinates to identify." },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+      },
+      required: ["part"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "view_drawing",
+    description:
+      "Look at an engineering drawing of the design: returns the sheet as an image and a list of its views, dimensions (with ids such as d3 and the parameter each one shows), notes and warnings. Without a name it shows the drawing the user has open, or the first one. Automatic drawings (names starting auto:) are generated from the model; the result includes a drawing block to start from when one needs changing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Drawing block name, auto:<part> for an automatic drawing, or a drawing title." },
+      },
       additionalProperties: false,
     },
   },
@@ -127,7 +235,7 @@ export const TOOL_DEFS = [
             temp: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "Service temperature range in °C: [lowest, highest]." },
             outdoor: { type: "boolean" },
             exposure: { type: "array", items: { type: "string" }, maxItems: 12, description: "What it is exposed to, e.g. sunlight, rain, humidity, oil, chemicals, food contact, dust, impacts, vibration." },
-            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded or another process." },
+            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded or another process, or a process with settings like mfg.fdm(layer: 0.2). It becomes the default process of every part." },
             material: { type: "string", description: "Preferred material for made parts." },
             quantity: { type: "integer", minimum: 1 },
             build_volume: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "Printer build volume in mm (X, Y, Z)." },
@@ -254,6 +362,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  ...PROCESS_TOOL_DEFS,
   BUILD_TOOL,
   REVIEW_TOOL,
   {
@@ -292,8 +401,23 @@ const EditInput = z.object({
 });
 const WriteInput = z.object({ summary: z.string().min(1).max(300), source: z.string().min(1).max(MAX_SOURCE_CHARS), unlock_ok: z.boolean().optional() });
 const FixInput = z.object({ hold: z.array(z.string().max(80)).max(50).optional() });
-const ViewInput = z.object({ view: z.enum(VIEW_NAMES), highlight: z.array(z.string().max(80)).max(30).optional(), section: z.enum(["x", "y", "z"]).optional() });
+const ViewInput = z.object({
+  view: z.enum(VIEW_NAMES),
+  highlight: z.array(z.string().max(80)).max(30).optional(),
+  section: z.enum(["x", "y", "z"]).optional(),
+  results: z.enum(["stress", "safety", "disp", "strain"]).optional(),
+  analysis: z.string().max(200).optional(),
+});
+const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional() });
+const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
+const InspectInput = z.object({
+  part: z.string().min(1).max(120),
+  select: z.string().max(2000).optional(),
+  kind: z.enum(["edges", "faces"]).optional(),
+  at: z.array(z.number().finite()).length(3).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
 const AskInput = z.object({
   title: z.string().max(80).optional(),
   question: z.string().min(1).max(500),
@@ -302,6 +426,12 @@ const AskInput = z.object({
     .min(2)
     .max(4)
     .refine((os) => new Set(os.map((o) => o.label)).size === os.length, "option labels must be different"),
+});
+
+const LookupInput = z.object({ id: z.string().max(80).optional(), query: z.string().max(200).optional(), kind: z.string().max(40).optional(), limit: z.number().int().min(0).max(12).optional() });
+const CalcInput = z.object({
+  name: z.string().min(1).max(60),
+  args: z.record(z.string().max(60), z.union([z.number(), z.string().max(200), z.boolean()])).optional(),
 });
 
 const Num = z.number().finite();
@@ -316,7 +446,7 @@ const BriefInput = z.object({
       temp: z.tuple([Num.min(-200).max(1500), Num.min(-200).max(1500)]),
       outdoor: z.boolean(),
       exposure: z.array(z.string().max(60)).max(12),
-      process: z.string().max(80),
+      process: z.string().max(200),
       material: z.string().max(80),
       quantity: z.number().int().min(1).max(10_000_000),
       build_volume: z.tuple([Num.positive(), Num.positive(), Num.positive()]),
@@ -541,6 +671,14 @@ export function modelSummary(m: Model | null): string {
     groups.set(k, arr);
   }
   lines.push("Parts by group: " + [...groups].map(([g, ns]) => `${g}: ${ns.join(", ")}`).join("; "));
+  const machine = machineSummary(m);
+  if (machine) lines.push(machine);
+  const made = m.parts.filter((p) => p.kind === "part");
+  if (made.length) {
+    const how = made.filter((p) => p.process).map((p) => `${p.name}: ${PROCESSES[p.process!.id].short} in ${p.material}${p.processInherited ? " (from the brief)" : ""}`);
+    const unset = made.filter((p) => !p.process).map((p) => p.name);
+    lines.push(`How parts are made: ${[...how, unset.length ? `no process set: ${unset.join(", ")}` : ""].filter(Boolean).join("; ")}`);
+  }
   const imports = importsSummary(m);
   if (imports) lines.push(imports);
   if (m.requirements.length) {
@@ -559,6 +697,11 @@ export function modelSummary(m: Model | null): string {
   }
   const decisions = decisionsSummary(m);
   if (decisions) lines.push(decisions);
+  if (m.sketches.length) lines.push("Sketches:\n" + m.sketches.map((sk) => `  - ${sk.name} on ${sk.planeText}: ${sketchStatusText(sk)}${sk.usedBy.length ? `; shapes ${sk.usedBy.join(", ")}` : "; not used by a part yet"}`).join("\n"));
+  if (m.analyses.length) {
+    const a = useAnalysis.getState();
+    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label))}`).join("\n"));
+  }
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
   const warns = m.diagnostics.filter((d) => d.severity === "warning");
@@ -577,14 +720,104 @@ export function briefSummary(): string {
   });
 }
 
-export function reportSummary(r: CheckReport | null, limit = 40): string {
+/** A sketch as solved, for get_sketch. */
+/** How many of each kind get_sketch lists before summarising the rest. */
+export const SKETCH_DETAIL_MAX = { points: 150, curves: 150, constraints: 200 };
+
+export function sketchDetail(sk: EvalSketch): string {
+  const f = (v: number) => fmtNum(v, 3);
+  const v3 = (v: number[]) => `(${v.map(f).join(", ")})`;
+  const lines = [`Sketch ${sk.name} on ${sk.planeText}: ${sketchStatusText(sk)}${sk.usedBy.length ? `; shapes ${sk.usedBy.join(", ")}` : ""}.`];
+  lines.push(`Plane: origin ${v3(sk.frame.o)}, sketch x → world ${v3(sk.frame.u)}, sketch y → world ${v3(sk.frame.v)}, normal ${v3(sk.frame.n)}.`);
+  if (sk.message) lines.push(`Problem: ${sk.message}`);
+  if (sk.profile.error) lines.push(`Profile problem: ${sk.profile.error.message}`);
+  if (sk.profile.open) lines.push(`Open curves: ${sk.profile.open.message}`);
+  const aliases = new Map<string, string[]>();
+  for (const [a, id] of Object.entries(sk.aliases)) aliases.set(id, [...(aliases.get(id) ?? []), a]);
+  const freeText = (p: EvalSketch["points"][number]) =>
+    p.status === "conflict" ? "in conflict" : p.freedom.kind === "fixed" ? "fixed" : p.freedom.kind === "defined" ? "defined" : p.freedom.kind === "line" ? `free along (${f(p.freedom.dir[0])}, ${f(p.freedom.dir[1])})` : "free";
+  // big sketches: list the first entries of each kind, and name the ones that still need attention
+  const list = <T,>(title: string, items: T[], max: number, text: (x: T) => string, attention: (x: T) => string | null) => {
+    lines.push(title);
+    for (const x of items.slice(0, max)) lines.push(`  ${text(x)}`);
+    if (items.length <= max) return;
+    const rest = items.slice(max).map(attention).filter((x): x is string => !!x);
+    lines.push(`  … ${items.length - max} more not listed${rest.length ? `; of those, these are not fully defined or have problems: ${rest.slice(0, 40).join(", ")}${rest.length > 40 ? ", …" : ""}` : ""}. Read the sketch block in the source for the rest.`);
+  };
+  const points = sk.points.filter((p) => p.id !== "x_axis.end" && p.id !== "y_axis.end");
+  list(
+    "Points (solved sketch coordinates):",
+    points,
+    SKETCH_DETAIL_MAX.points,
+    (p) => `${[p.id, ...(aliases.get(p.id) ?? [])].join(" = ")}: (${f(p.x)}, ${f(p.y)}) ${freeText(p)}${p.external ? ", projected from another sketch" : ""}`,
+    (p) => (p.status === "free" || p.status === "conflict" ? p.id : null),
+  );
+  const byId = new Map(sk.points.map((p) => [p.id, p]));
+  const at = (id: string) => byId.get(id)!;
+  list(
+    "Curves:",
+    sk.curves,
+    SKETCH_DETAIL_MAX.curves,
+    (c) => {
+      const extra = c.kind === "circle" ? ` r ${f(c.r ?? 0)}` : c.kind === "line" ? ` length ${f(Math.hypot(at(c.pts[1]).x - at(c.pts[0]).x, at(c.pts[1]).y - at(c.pts[0]).y))}` : "";
+      return `${c.construction ? "construction " : ""}${c.kind} ${c.id} [${c.pts.join(", ")}]${extra} ${c.status}${c.external ? " (reference)" : ""}`;
+    },
+    (c) => (c.status === "free" || c.status === "conflict" ? c.id : null),
+  );
+  if (sk.constraints.length) {
+    const text = (c: EvalSketch["constraints"][number]) => `${c.kind} ${c.args.join(", ")}${c.valueText ? ` = ${c.valueText}${c.value !== undefined && c.valueText.trim() !== String(c.value) ? ` (= ${f(c.value)})` : ""}` : ""}${c.status !== "ok" ? ` [${c.status}]` : ""}`;
+    list("Constraints:", sk.constraints, SKETCH_DETAIL_MAX.constraints, text, (c) => (c.status !== "ok" ? text(c) : null));
+  }
+  const regions = sk.profile.regions;
+  lines.push(regions.length ? `Profile: ${regions.length} closed region(s), ${regions.reduce((n, r) => n + r.holes.length, 0)} hole(s), area ${f(sk.profile.area)} mm².` : "Profile: no closed region yet.");
+  return lines.join("\n");
+}
+
+export function reportSummary(r: CheckReport | null, limit = 60): string {
   if (!r) return "Checks have not run yet.";
   const c = r.counts;
   const head = `Checks: ${c.pass} pass, ${c.fail} fail, ${c.warn} warn, ${c.pending} pending, ${c.info} info.`;
   const notable = r.items.filter((i) => i.status !== "pass");
-  const body = notable.slice(0, limit).map((i) => `  - [${i.status}] (${i.category}) ${i.title}: ${i.detail}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
+  // machine checks say how they were established: rules, calculation or a physical test still to do
+  const basis = (i: CheckReport["items"][number]) => (i.basis === "electrical rules" || i.basis === "calculation" || i.basis === "physical test" ? `; ${i.basis}` : "");
+  const body = notable
+    .slice(0, limit)
+    .map((i) => `  - [${i.status}] (${i.category}${basis(i)}) ${i.title}: ${i.detail}${i.fix ? ` Fix: ${i.fix}` : ""}${i.action ? ` One-click option: ${i.action.label} (${i.action.setting} on the part's process).` : ""}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
+  if (notable.length > limit) body.push(`  - … and ${notable.length - limit} more not shown (fix the ones above, then check again)`);
   const passed = r.items.filter((i) => i.status === "pass").map((i) => i.title);
-  return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}` : ""].filter(Boolean).join("\n");
+  return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}${passed.length > 60 ? `; … (${passed.length - 60} more)` : ""}` : ""].filter(Boolean).join("\n");
+}
+
+/** Purchased parts, wiring and calculations at a glance. */
+export function machineSummary(m: Model): string {
+  const mm = m.machine;
+  if (!mm) return "";
+  let cost = 0;
+  for (const c of mm.components) cost += (c.price ?? catalogPart(c.catalogId)?.price_usd ?? 0) * c.count;
+  for (const it of mm.items) cost += (it.price ?? 0) * it.qty;
+  const n = (k: number, one: string, many = one + "s") => `${k} ${k === 1 ? one : many}`;
+  const lines = [
+    `Machine: ${n(mm.components.reduce((s, c) => s + c.count, 0), "catalog part")}, ${n(mm.wires.length, "wire")}, ${n(mm.nets.length, "net")}, ${n(mm.calcs.length, "calculation")}, ${n(mm.firmware.length, "firmware block")}, ${n(mm.tests.length, "test")}, ${n(mm.items.length, "buy item")}; parts about $${Math.round(cost)}.`,
+  ];
+  if (mm.calcs.length) lines.push("Calculations: " + mm.calcs.map((c) => `${c.name} (${c.title}; ${c.confidence})`).join("; "));
+  return lines.join("\n");
+}
+
+/** What the firmware generators make of the design, and what they warn about. */
+export function firmwareSummary(m: Model | null): { text: string; warnings: number } {
+  const mm = m?.machine;
+  if (!m || !mm?.firmware.length) return { text: "", warnings: 0 };
+  try {
+    const outs = generateFirmware(mm, m.name);
+    const warnings = outs.reduce((s, o) => s + o.warnings.length, 0);
+    const lines = outs.map((o) => {
+      const head = `  - ${o.name} (board ${o.board || "?"}): ${o.target === "none" ? "no code generated" : o.target === "arduino" ? "Arduino sketch" : "Klipper config"}. ${o.summary}. ${o.files.length} file${o.files.length === 1 ? "" : "s"}, ${o.pinTable.length} wired signal${o.pinTable.length === 1 ? "" : "s"}.`;
+      return o.warnings.length ? `${head}\n    Warnings:\n${o.warnings.map((w) => `    * ${w}`).join("\n")}` : `${head} No warnings.`;
+    });
+    return { text: ["Firmware:", ...lines].join("\n"), warnings };
+  } catch (e) {
+    return { text: `Firmware: the generator failed (${e instanceof Error ? e.message : String(e)}).`, warnings: 1 };
+  }
 }
 
 export function numbered(src: string) {
@@ -697,16 +930,32 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       if (!p.success) return invalid(p.error);
       return applySource(p.data.source.replace(/\r\n/g, "\n"), p.data.summary, p.data.unlock_ok);
     }
+    case "get_sketch": {
+      const parsed = z.object({ name: z.string().min(1).max(200) }).strict().safeParse(input);
+      if (!parsed.success) return invalid(parsed.error);
+      const m = useDesign.getState().model;
+      const sk = m?.sketches.find((x) => x.name === parsed.data.name);
+      if (!sk) return { content: `There is no sketch named ${parsed.data.name}. Sketches: ${m?.sketches.map((x) => x.name).join(", ") || "none"}.`, isError: true, card: { title: `No sketch ${parsed.data.name}`, status: "error" } };
+      return { content: sketchDetail(sk), card: { title: `Read sketch ${sk.name}`, detail: sketchStatusText(sk), status: "done" } };
+    }
     case "run_checks": {
-      const s = await whenChecked();
+      let s = await whenChecked();
+      // detailed geometry (threads, knurls, cosmetic steps) builds after the checks; wait a little for it so its problems are seen
+      let refining = false;
+      if (s.model?.parts.some((p) => p.detail) && s.kernelStatus !== "error") {
+        await whenRefined(20_000);
+        s = useDesign.getState();
+        refining = s.stage !== "done";
+      }
       if (s.kernelStatus === "error") return { isError: true, content: `The geometry kernel is unavailable: ${s.kernelError}`, card: { title: "Geometry kernel unavailable", status: "error" } };
       const r = s.report;
       const c = r?.counts;
+      const fw = firmwareSummary(s.model);
       return {
-        content: `${modelSummary(s.model)}\n\n${reportSummary(r)}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
+        content: `${modelSummary(s.model)}\n\n${reportSummary(r)}${fw.text ? `\n${fw.text}` : ""}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${refining ? "\nThe detailed geometry (threads, knurls, cosmetic steps) is still building; its problems, if any, show in a later run_checks." : ""}${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
         card: {
           title: c ? (c.fail ? `${c.fail} check${c.fail > 1 ? "s" : ""} failing` : `All ${c.pass} checks pass`) : "Checks unavailable",
-          detail: c ? `${c.pass} pass · ${c.fail} fail · ${c.warn} warn` : undefined,
+          detail: c ? `${c.pass} pass · ${c.fail} fail · ${c.warn} warn${fw.warnings ? ` · ${fw.warnings} firmware warning${fw.warnings > 1 ? "s" : ""}` : ""}` : undefined,
           status: c && c.fail === 0 ? "done" : "error",
         },
       };
@@ -731,22 +980,95 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
         card: { title: conflict.infeasible ? "No parameter change resolves the conflict" : `Found ${conflict.options.length} way${conflict.options.length > 1 ? "s" : ""} to resolve the conflict`, detail: conflict.options.map((o) => o.summary).join("\n") || conflict.failing.map((f) => f.label).join(", ") },
       };
     }
+    case "run_analysis": {
+      const p = AnalysisInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      const s = await whenChecked();
+      if (s.kernelStatus === "error") return { isError: true, content: `The geometry kernel is unavailable: ${s.kernelError}`, card: { title: "Geometry kernel unavailable", status: "error" } };
+      const all = s.model?.analyses ?? [];
+      if (!all.length)
+        return {
+          isError: true,
+          content: "This design has no analysis block yet. Add one with edit_design (see Analysis blocks in the language reference), then call run_analysis.",
+          card: { title: "No analysis to run", status: "error" },
+        };
+      const targets = p.data.label ? all.filter((a) => a.label === p.data.label) : all;
+      if (!targets.length) return { isError: true, content: `No analysis is labelled "${p.data.label}". Analyses: ${all.map((a) => `"${a.label}"`).join(", ")}.`, card: { title: "Analysis not found", status: "error" } };
+      if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
+      await whenAnalyzed();
+      const st = useAnalysis.getState();
+      const text = targets.map((a) => (a.kind === "structural" ? structuralSummary(a, st.runs.get(a.label)) : drivetrainSummary(a, st.drivetrain.get(a.label)))).join("\n\n");
+      const verdicts = targets.map((a) => {
+        if (a.kind === "drivetrain") {
+          const r = st.drivetrain.get(a.label);
+          return !r || r.error || r.items.some((i) => i.status === "fail") ? "fail" : r.items.some((i) => i.status === "warn") ? "warn" : "pass";
+        }
+        const r = st.runs.get(a.label);
+        return r?.result && r.status === "done" ? structuralVerdict(a, r.result) : "fail";
+      });
+      const firstShown = targets.find((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
+      if (firstShown) showResults(firstShown.label);
+      const fails = verdicts.filter((v) => v === "fail").length;
+      let title: string;
+      if (targets.length === 1) {
+        const a = targets[0];
+        const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
+        title = r ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.safety, 1)})` : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
+      } else title = fails ? `${fails} of ${targets.length} analyses failing` : `All ${targets.length} analyses pass`;
+      return {
+        content: text + (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : ""),
+        card: { title, detail: verdicts.map((v, i) => `${targets[i].label}: ${v}`).join(" · "), status: fails ? "error" : "done" },
+      };
+    }
     case "capture_view": {
       const p = ViewInput.safeParse(input);
       if (!p.success) return invalid(p.error);
       const vp = viewport();
       if (!vp) return { isError: true, content: "The 3D view is not available right now.", card: { title: "View unavailable", status: "error" } };
       await whenChecked(30_000);
+      let resultNote = "";
+      if (p.data.results) {
+        await whenAnalyzed(60_000);
+        const st = useAnalysis.getState();
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
+        const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === st.shown) ?? specs[0];
+        if (!pick) return { isError: true, content: "No structural analysis has results to draw. Add an analysis block and call run_analysis first.", card: { title: "No results to show", status: "error" } };
+        if (p.data.analysis && pick.label !== p.data.analysis) resultNote = ` (no results for "${p.data.analysis}")`;
+        useAnalysis.setState({ field: p.data.results as ResultField });
+        showResults(pick.label);
+        // let the viewport attach the overlay before capturing
+        await new Promise((r) => setTimeout(r, 120));
+        const fieldText = { stress: "von Mises stress (blue low, red high)", safety: "factor of safety (red below 1, amber below the target, green to blue above)", disp: "deflection (blue none, red most)", strain: "principal strain (blue compression, red tension)" }[p.data.results];
+        resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed supports (spheres are rollers), rings mark hot spots`;
+      }
       const ids = expandNames(p.data.highlight ?? []);
-      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24 });
+      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results });
       const data = url.split(",")[1] ?? "";
       return {
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
-          { type: "text", text: `Rendered ${p.data.view} view${p.data.section ? `, sectioned across ${p.data.section}` : ""}${ids.length ? `, highlighting ${p.data.highlight!.join(", ")}` : ""}. Z is up; X is red, Y is green in the axis triad.` },
+          { type: "text", text: `Rendered ${p.data.view} view${p.data.section ? `, sectioned across ${p.data.section}` : ""}${ids.length ? `, highlighting ${p.data.highlight!.join(", ")}` : ""}${resultNote}. Z is up; X is red, Y is green in the axis triad.` },
         ],
-        card: { title: `Looked at the ${p.data.view} view`, image: url },
+        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : `Looked at the ${p.data.view} view`, image: url },
       };
+    }
+    case "view_drawing": {
+      const p = DrawingInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      try {
+        const sheet = await sheetFor(p.data.name ?? useDrawings.getState().active ?? undefined, { signal: ctx.signal });
+        const url = await sheetToPng(sheet, 1568);
+        return {
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: url.split(",")[1] ?? "" } },
+            { type: "text", text: describeSheet(sheet) },
+          ],
+          card: { title: `Looked at the ${sheet.title} drawing`, detail: `${sheet.size} · ${sheet.views.length} views · ${sheet.dims.length} dimensions`, image: url },
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { isError: true, content: msg, card: { title: "Drawing unavailable", detail: msg, status: "error" } };
+      }
     }
     case "update_brief": {
       const p = BriefInput.safeParse(input);
@@ -795,6 +1117,32 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       if (!block) return { content: `${about}\n${ref.file ? "The stored file is missing from this browser." : "This reference has no stored file."}${ref.url ? " Kerf cannot open web links for you; ask the user for what you need from it." : ""}`, card: { title: `Read reference “${ref.title}”` } };
       return { content: [{ type: "text", text: about }, block], card: { title: `Looked at “${ref.title}”` } };
     }
+    case "inspect_part": {
+      const p = InspectInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      const m = useDesign.getState().model;
+      const part = m?.parts.find((q) => q.id === p.data.part) ?? m?.parts.find((q) => q.name === p.data.part);
+      if (!m || !part) return { isError: true, content: `No part or component named "${p.data.part}". Parts: ${(m?.parts ?? []).slice(0, 60).map((q) => q.id).join(", ")}`, card: { title: "Part not found", detail: p.data.part, status: "error" } };
+      let sel;
+      if (p.data.select) {
+        const r = evaluateSelector(p.data.select, (part.features ?? []).map((f) => f.name), useDesign.getState().source);
+        if (!r.sel) return { isError: true, content: `The selector did not evaluate: ${r.error}`, card: { title: "Selector error", detail: r.error, status: "error" } };
+        sel = r.sel;
+      }
+      const at = p.data.at ? inverseXforms(p.data.at as V3, part.xf) : undefined;
+      try {
+        await kernel.ready();
+        const res = await kernel.inspectPart({ hash: part.hash, recipe: part.recipe, label: part.id, sel, selKind: p.data.kind, at, limit: p.data.limit });
+        const text = inspectText(part.id, res, p.data.select);
+        const cosmetic = (part.features ?? []).filter((f) => f.cosmetic).map((f) => f.name);
+        return {
+          content: text + (cosmetic.length ? `\nCosmetic features (only in detailed builds, not inspected here): ${cosmetic.join(", ")}` : ""),
+          card: { title: `Inspected ${part.id}`, detail: res.selection ? `${p.data.select} → ${res.selection.count} ${res.selection.kind}` : `${res.features.length} named features · ${res.edgeStats.convex + res.edgeStats.concave} sharp edges` },
+        };
+      } catch (e) {
+        return { isError: true, content: `Could not inspect ${part.id}: ${(e as Error).message}`, card: { title: "Inspection failed", status: "error" } };
+      }
+    }
     case "ask_user": {
       const p = AskInput.safeParse(input);
       if (!p.success) return invalid(p.error);
@@ -818,7 +1166,19 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       if (!p.success) return invalid(p.error);
       return { content: "Shown to the user as chips. A click sends that prompt as their next message.", card: { title: "Suggested next steps" }, suggest: p.data.suggestions };
     }
+    case "catalog_lookup": {
+      const p = LookupInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      return catalogLookup(p.data);
+    }
+    case "engineering_calc": {
+      const p = CalcInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      return engineeringCalc(p.data.name, p.data.args ?? {});
+    }
   }
+  const processOutcome = await runProcessTool(name, input);
+  if (processOutcome) return processOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
@@ -842,12 +1202,171 @@ export const TOOL_TITLES: Record<string, string> = {
   write_design: "Writing the design",
   run_checks: "Building and checking",
   explore_fixes: "Searching for fixes",
+  get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
+  view_drawing: "Looking at the drawing",
+  inspect_part: "Inspecting a part",
   update_brief: "Updating the brief",
   view_reference: "Looking at a reference",
+  run_analysis: "Running the analysis",
   ask_user: "Asking you",
+  catalog_lookup: "Looking up parts",
+  engineering_calc: "Calculating",
+  ...PROCESS_TOOL_TITLES,
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
   suggest_next_steps: "Suggesting next steps",
   ...IMPORT_TOOL_TITLES,
 };
+
+// ---------- parts catalog ----------
+
+const oneLine = (p: CatalogPart) => `${p.id} | ${p.name} | ${p.summary.split(/(?<=\.)\s+/).slice(0, 2).join(" ")}${p.price_usd ? ` | ~$${p.price_usd}` : ""}`;
+const usage = (p: CatalogPart) => `Use as: lib.${p.kind}("${p.id}"${p.cut_to_length ? ", length: <mm>" : ""}) or lib.part("${p.id}")`;
+
+export function catalogLookup(q: { id?: string; query?: string; kind?: string; limit?: number }): ToolOutcome {
+  if (q.id?.trim()) {
+    const id = q.id.trim();
+    const p = catalogPart(id);
+    if (!p) {
+      const near = searchCatalog(id.replace(/[_-]+/g, " "), undefined, 6);
+      return {
+        isError: true,
+        content: `No catalog part has the id "${id}".${near.length ? ` Closest matches:\n${near.map(oneLine).join("\n")}` : ""}`,
+        card: { title: `No catalog part "${id}"`, status: "error" },
+      };
+    }
+    return { content: `${usage(p)}\n${describePart(p)}`, card: { title: `Looked up ${p.name}`, detail: `${p.id} · ${p.kind}${p.price_usd ? ` · about $${p.price_usd}` : ""}` } };
+  }
+  const kind = q.kind?.trim() || undefined;
+  if (kind && !CATALOG_KINDS.includes(kind as CatalogPart["kind"])) {
+    return { isError: true, content: `"${kind}" is not a catalog kind. Kinds: ${CATALOG_KINDS.join(", ")}.`, card: { title: `Unknown part kind "${kind}"`, status: "error" } };
+  }
+  const query = q.query?.trim() ?? "";
+  if (!query && !kind) return { isError: true, content: "Give an id, a query or a kind.", card: { title: "Nothing to look up", status: "error" } };
+  const found = searchCatalog(query, kind, 40);
+  const what = [query && `"${query}"`, kind && `kind ${kind}`].filter(Boolean).join(", ");
+  if (!found.length) {
+    return {
+      content: `No catalog part matches ${what}. Kinds in the catalog: ${CATALOG_KINDS.join(", ")}. If the design needs a part the catalog lacks, search the web for a real product (maker, part number, price, product page) and add it as a buy item.`,
+      card: { title: `No catalog match for ${what}`, detail: "Not in the catalog" },
+    };
+  }
+  const full = Math.min(found.length, q.limit ?? (query ? 3 : 0));
+  const parts = [`${found.length} catalog part${found.length === 1 ? "" : "s"} match ${what}.`];
+  for (const p of found.slice(0, full)) parts.push(`${usage(p)}\n${describePart(p)}`);
+  if (found.length > full) parts.push(`${full ? "Other matches" : "Matches"} (look one up by id for its pins and specs):\n${found.slice(full).map(oneLine).join("\n")}`);
+  return { content: parts.join("\n\n---\n\n"), card: { title: `Searched the parts catalog: ${what}`, detail: found.slice(0, 6).map((p) => p.id).join(", ") + (found.length > 6 ? ", …" : "") } };
+}
+
+// ---------- engineering calculators ----------
+
+const num4 = (n: number) => (Number.isFinite(n) ? String(Number(n.toPrecision(4))) : String(n));
+
+function specFields(p: CatalogPart): Record<string, Value> {
+  const out: Record<string, Value> = {};
+  for (const [k, v] of Object.entries(p.specs)) out[k] = typeof v === "boolean" ? (v ? 1 : 0) : v;
+  return { ...out, catalog_id: p.id, price: p.price_usd ?? 0 };
+}
+
+/** Read one literal the way the language does (units, true/false, simple arithmetic). */
+function readLiteral(text: string): { value: Value } | { error: string } {
+  if (!text || /[\n\r{};]/.test(text)) return { error: "write one value, such as 9.5m or 10.8Nm" };
+  const m = evaluate(`param v = ${text}\n`, { skipGeometry: true });
+  const err = m.diagnostics.find((d) => d.severity === "error");
+  if (err) return { error: err.message };
+  const p = m.params.find((x) => x.name === "v");
+  return p ? { value: p.value } : { error: "not a value" };
+}
+
+/** A catalog part from an id, or from a component of that name in the current design. */
+function partFor(text: string): { part: CatalogPart; label: string; ref: string } | null {
+  const direct = catalogPart(text);
+  if (direct) return { part: direct, label: direct.name, ref: `<your lib.${direct.kind}("${direct.id}") component>` };
+  const mc = useDesign.getState().model?.machine?.components.find((c) => c.name === text);
+  const p = mc && catalogPart(mc.catalogId);
+  return p ? { part: p, label: text, ref: text } : null;
+}
+
+const COMPONENT_ARGS = new Set(["motor", "battery", "actuator"]);
+
+export function engineeringCalc(name: string, args: Record<string, number | string | boolean>): ToolOutcome {
+  const fn = CALC_FNS[name];
+  if (!fn) return { isError: true, content: `There is no calc.${name}. Calculators: ${Object.keys(CALC_FNS).join(", ")}.`, card: { title: `No calculator ${name}`, status: "error" } };
+  const accepts = calcParams(name);
+  const fail = (msg: string): ToolOutcome => ({ isError: true, content: `calc.${name}: ${msg}${accepts.length ? `\nIt accepts: ${accepts.join(", ")}. ${fn.doc ?? ""}` : ""}`, card: { title: `calc.${name} could not run`, detail: msg, status: "error" } });
+  const unknown = Object.keys(args).filter((k) => accepts.length && !accepts.includes(k));
+  if (unknown.length) return fail(`no argument${unknown.length > 1 ? "s" : ""} ${unknown.map((k) => `"${k}"`).join(", ")}`);
+
+  const named: Record<string, Value> = {};
+  const shown: string[] = [];
+  for (const [k, raw] of Object.entries(args)) {
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw)) return fail(`${k} must be a finite number`);
+      named[k] = raw;
+      shown.push(`${k}: ${raw}`);
+      continue;
+    }
+    if (typeof raw === "boolean") {
+      named[k] = raw;
+      shown.push(`${k}: ${raw}`);
+      continue;
+    }
+    const text = raw.trim();
+    const comp = partFor(text);
+    if (comp) {
+      named[k] = new Obj(specFields(comp.part), "component", comp.label);
+      shown.push(`${k}: ${comp.ref}`);
+      continue;
+    }
+    if (COMPONENT_ARGS.has(k)) return fail(`${k}: "${text}" is not a catalog id or a catalog component in the design`);
+    if (k === "bearing") {
+      if (!BEARINGS[text]) return fail(`unknown bearing "${text}". Codes: ${Object.keys(BEARINGS).join(", ")}`);
+      named[k] = text;
+      shown.push(`${k}: "${text}"`);
+      continue;
+    }
+    const lit = readLiteral(text);
+    if ("error" in lit) return fail(`could not read ${k}: "${text}" (${lit.error})`);
+    named[k] = lit.value;
+    shown.push(`${k}: ${text}`);
+  }
+
+  let result: Value;
+  try {
+    result = fn.call([], named, {
+      error: (msg: string) => {
+        throw new Error(msg);
+      },
+      geo: () => 0,
+    });
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+  if (!isCalc(result)) return fail("did not return a calculation");
+  const t = result.trace;
+  const line = (l: { label: string; value: number; unit: string; note?: string }) => `  - ${l.label}: ${num4(l.value)}${l.unit ? ` ${l.unit}` : ""}${l.note ? ` (${l.note})` : ""}`;
+  const fields = Object.entries(result.fields)
+    .map(([k, v]) => `${k} = ${typeof v === "number" ? num4(v) : typeof v === "string" ? JSON.stringify(v) : String(v)}`)
+    .join(", ");
+  const call = `calc.${name}(${shown.join(", ")})`;
+  const text = [
+    call,
+    `${t.title} (confidence: ${t.confidence})`,
+    "Inputs:",
+    ...t.inputs.map(line),
+    "Results:",
+    ...t.outputs.map(line),
+    "Method:",
+    ...t.method.map((m) => `  - ${m}`),
+    "Assumptions:",
+    ...t.assumptions.map((a) => `  - ${a}`),
+    t.verify ? `Confirm with a physical test: ${t.verify}` : "",
+    `Result fields in base units (mm, N, N·mm, MPa, V, A, W, s), for other calculations and the design: ${fields}`,
+    `To record it in the design: let <name> = ${call}`,
+  ].filter(Boolean);
+  return {
+    content: text.join("\n"),
+    card: { title: t.title, detail: t.outputs.slice(0, 3).map((l) => `${l.label.trim()} ${num4(l.value)}${l.unit ? ` ${l.unit}` : ""}`).join(" · ") },
+  };
+}

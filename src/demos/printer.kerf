@@ -1,0 +1,513 @@
+design "Kerf i3 220: bed-slinger 3D printer"
+note "A 220 × 220 × 250 mm FDM printer: 2040 V-slot frame, five MGN12H rails, GT2 belts on X and Y, two T8×8 lead screws on Z, a direct-drive BMG-style extruder on an E3D V6 and a BLTouch. A BIGTREETECH SKR Mini E3 V3 runs Klipper with a Raspberry Pi Zero 2 W as the host, powered by a Mean Well LRS-350-24."
+note "Every bought part is a catalog part with a buy link, and every printed part is drawn here with its holes taken from the parts it bolts to (motor faces, rail carriages, board holes, extrusion slots). The wiring, calculations, Klipper config and test plan are generated from this file."
+note "Layout: the bed slides in Y on two rails on a ladder base. Two 2040 uprights carry the Z rails; the X beam hangs off the two Z carriages, which also hold the lead screw nuts, the X motor (left) and the X idler (right). The toolhead sits in front of the X carriage."
+note "Choices: Z runs on rails instead of V-wheels, so nothing needs eccentric adjustment. Both Z motors share the SKR's one Z driver through its ZA/ZB headers, so the gantry has to be levelled by hand once (see the tests). The bed is fixed on silicone spacers with captive nuts and the BLTouch mesh handles flatness, so there are no knobs under the bed to hit the Y rails."
+note "Coordinates: X right, Y back, Z up, in millimetres. x = 0 is the bed centre, y = 0 the gantry, z = 0 the table. The model shows the machine at the printer position (show_x, show_y, show_z)."
+
+// ── Skeleton: build volume, frame and gantry stack ────────────────────
+param bed_x    = 220mm  "Printable X"
+param bed_y    = 220mm  "Printable Y"
+param bed_z    = 250mm  "Printable height"
+param show_x   = 110mm  range 0 .. 220  "Toolhead X shown, in printer coordinates (110 = bed centre)"
+param show_y   = 110mm  range 0 .. 220  "Bed Y shown, in printer coordinates"
+param show_z   = 40mm   range 0 .. 250  "Nozzle height shown"
+param v_max    = 300    "Fastest travel move (mm/s)"
+param accel    = 3000   "Acceleration on X and Y (mm/s²)"
+param v_print  = 120    "Print speed the hotend has to keep up with (mm/s)"
+param toolhead_g = 600  "Moving X mass in grams: carriage, hotend, extruder, pancake motor, fans, BLTouch, cables"
+param bed_g    = 1650   "Moving Y mass in grams: bed, steel sheet, bed carriage, rail blocks, spacers"
+param gantry_g = 1700   "Mass the Z screws lift in grams: X beam, X rail, X motor, toolhead, Z carriages"
+param foot_h   = 12mm   "Printed feet under the base"
+param up_x     = 150mm  "Upright centre line (the bed passes between the uprights)"
+param beam_x   = 80mm   "Y beam centre line"
+param rail_x   = 90mm   "Y rails on the outer slot of each Y beam"
+param lead_x   = 188mm  "Lead screws, outboard of the uprights"
+param lead_y   = -46mm  "Lead screws, in front of the uprights"
+param spacer_h = 17mm   "Silicone spacers between the bed carriage and the bed"
+
+// frame: a ladder of three 2040 cross members, two 2040 Y beams on top, two 2040 uprights
+let base_w   = 2 * up_x + 20              // cross members reach under the uprights
+let y_front  = -280                       // cross member centre lines
+let y_back   = 70
+let base_l   = (y_back + 20) - (y_front - 20)
+let z_cross  = foot_h                     // cross members sit on the feet
+let z_ybeam  = z_cross + 20               // Y beams sit on the cross members
+let z_yrail  = z_ybeam + 20               // Y rails sit on the Y beams
+let y_rail0  = -250                       // rear end of the Y rails is at y_rail0 + 300
+let up_l     = 480
+let z_up     = z_cross + 20               // uprights stand on the middle cross member
+let z_top    = z_up + up_l
+
+// gantry stack along Y, front of the upright to the nozzle
+let y_up_front   = -20                    // upright front face
+let y_zc_back    = -33                    // Z rail (8) + carriage block top (13 above the face)
+let y_zc_front   = -41                    // 8 mm Z carriage plate
+let y_beam_front = -61                    // 20 mm X beam
+let y_xc_back    = -74                    // X rail + carriage block
+let y_xc_front   = -82                    // 8 mm X carriage plate
+let y_noz        = -100                   // hotend axis
+let y_belt       = -69                    // X belt runs between the beam and the carriage plate
+
+// heights
+let z_carriage = z_yrail + 13             // top of the Y rail blocks
+let z_bed      = z_carriage + 6 + spacer_h  // underside of the heated bed
+let z_bed_top  = z_bed + 3
+let xc   = show_x - bed_x / 2             // nozzle X
+let yc   = y_noz - (show_y - bed_y / 2)   // bed centre Y
+let zn   = z_bed_top + show_z             // nozzle tip
+let h_top   = zn + 62                     // V6 mount top = extruder underside
+let h_clamp = h_top - 12.7                // V6 groove-mount collar bottom
+let z_xr = zn + 72                        // X rail centre line (near the extruder's centre of mass)
+let z_b  = z_xr - 10                      // X beam underside: the rail sits on the beam's lower slot
+let z_xp = z_b + 33.5                     // X belt centre: both runs pass above the rail block
+let z_zb = z_b + 63                       // Z carriage block centre, above the X beam
+let z_yb = 41.8                           // Y belt centre: low enough for the Y motor to pass under the bed carriage
+let x_xm = -200                           // X motor, outboard of the left lead screw
+let x_xi = 192                            // X idler
+let y_ym = -235                           // Y motor, ahead of the bed carriage's front stop
+let probe_top = zn + 44.6                 // BLTouch mount face: case bottom 8.3 mm above the nozzle (ANTCLABS)
+
+// ── Frame ─────────────────────────────────────────────────────────────
+component base_front = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, y_front, z_cross + 10), axis: X, rotate: 90 }
+component base_mid   = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, 0, z_cross + 10), axis: X, rotate: 90 }
+component base_back  = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, y_back, z_cross + 10), axis: X, rotate: 90 }
+component y_beams    = lib.extrusion("vslot_2040", length: base_l) { at: [(-beam_x, y_front - 20, z_ybeam + 10), (beam_x, y_front - 20, z_ybeam + 10)], axis: Y, rotate: 90 }
+component uprights   = lib.extrusion("vslot_2040", length: up_l) { at: [(-up_x, 0, z_up), (up_x, 0, z_up)], axis: Z }
+component top_bar    = lib.extrusion("vslot_2020", length: base_w) { at: (-base_w / 2, 0, z_top + 10), axis: X }
+note "Frame joints: corner brackets and M5 T-nuts throughout (see purchases). Square the base on a flat table before tightening, and check the uprights with a square both ways."
+
+part foot_fl { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (-140, y_front, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (-140, y_front + 10, 0), dir: Z) }
+part foot_fr { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (140, y_front, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (140, y_front + 10, 0), dir: Z) }
+part foot_ml { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (-140, 0, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (-140, 10, 0), dir: Z) }
+part foot_mr { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (140, 0, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (140, 10, 0), dir: Z) }
+part foot_bl { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (-140, y_back, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (-140, y_back + 10, 0), dir: Z) }
+part foot_br { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (140, y_back, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (140, y_back + 10, 0), dir: Z) }
+component foot_screws = lib.screw(M5, 12) { at: [(-140, y_front + 10, 5.4), (140, y_front + 10, 5.4), (-140, 10, 5.4), (140, 10, 5.4), (-140, y_back + 10, 5.4), (140, y_back + 10, 5.4)], axis: Z }
+
+// ── Y axis: bed on two rails, belt under the middle ───────────────────
+component y_rails  = lib.rail("mgn12h", length: 300, travel: yc - y_rail0) { at: [(-rail_x, y_rail0, z_yrail), (rail_x, y_rail0, z_yrail)], axis: Y }
+component bed      = lib.heated_bed("heated_bed_235_24v") { at: (0, yc, z_bed) }
+component y_motor  = lib.stepper("nema17_17hs4401") { at: (-17.5, y_ym, z_yb), axis: X, role: "y" }
+component y_pulley = lib.pulley("gt2_pulley_20t_5mm") { at: (-11.5, y_ym, z_yb), axis: X, role: "y" }
+component y_idler  = lib.pulley("gt2_idler_20t_5mm") { at: (-5, y_back, z_yb), axis: X }
+component y_stop   = lib.sensor("endstop_mech") { at: (-38, 58, 52), rotate: (90, 0, 0), role: "y endstop" }
+note "Y homes to the back: the fin under the bed carriage presses the Y switch when the nozzle is over the front edge of the bed (printer Y = 0)."
+
+part bed_carriage {
+  group: "Y axis"
+  material: "ABS"
+  color: #c8553d
+  body box(210, 190, 6, at: (0, yc, z_carriage), r: 6)
+  // lightening windows clear of the rail blocks, bed screws and belt clamp
+  for sx in [-1, 1] { for sy in [-1, 1] { cut rrect(w: 46, h: 30, r: 6, depth: 8, at: (sx * 40, yc + sy * 60, z_carriage - 1), dir: Z) } }
+  // M3 screws down into both rail carriages, heads recessed
+  for r in y_rails.all { for h in r.carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, h.y, z_carriage + 6), dir: -Z) } }
+  // bed screws (M4 countersunk from the top) with nyloc nuts captive underneath
+  for h in bed.holes {
+    cut hole(M4, through: true, at: (h.x, h.y, z_carriage + 6), dir: -Z)
+    cut cylinder(d: 8.4, h: 3.6, at: (h.x, h.y, z_carriage - 0.01))
+  }
+  // belt clamp tower: the upper belt run ends in this slot, pinched by two M3 screws
+  add box(16, 30, z_carriage - 39 + 0.01, at: (0, yc, 39))
+  cut box(8, 32, 2.6, at: (0, yc, z_yb + 5.4))
+  for sy in [-8, 8] { cut hole(M3, through: true, at: (8, yc + sy, z_yb + 6.7), dir: -X) }
+  // fin that presses the Y endstop at the back of travel
+  add box(16, 10, 15.01, at: (-34, yc + 35, z_carriage - 15))
+}
+
+part y_motor_mount {
+  group: "Y axis"
+  material: "PETG"
+  color: #3d7bfd
+  body box(60, 42, 6, at: (-10, -279, z_ybeam))              // plate on the front cross member
+  add box(37.5, 4.9, 18, at: (1.25, -257.45, z_cross + 2))     // flange on its back face
+  add box(5, 47.5, 43, at: (-15, -235.75, z_yb - 22.2))         // web the motor face bolts to
+  cut cylinder(d: 22.6, h: 2.5, at: (-17.51, y_ym, z_yb), dir: X)
+  cut cylinder(d: 8, h: 8, at: (-18, y_ym, z_yb), dir: X)
+  for h in y_motor.holes { cut hole(M3, through: true, at: (-12.5, h.y, h.z), dir: -X) }
+  cut hole(M5, cbore: true, through: true, at: (-30, -270, z_ybeam + 6), dir: -Z)
+  cut hole(M5, cbore: true, through: true, at: (10, -290, z_ybeam + 6), dir: -Z)
+  cut hole(M5, through: true, at: (5, -255.1, z_cross + 10), dir: -Y)
+}
+
+part y_idler_mount {
+  group: "Y axis"
+  material: "PETG"
+  color: #3d7bfd
+  body box(4, 24, 24, at: (-8, y_back, z_ybeam))               // cheeks either side of the idler
+  add box(4, 24, 24, at: (7.5, y_back, z_ybeam))
+  add box(19.5, 24, 3, at: (-0.25, y_back, z_ybeam + 21))       // bridge over the idler
+  add box(22, 24, 5, at: (-21, y_back, z_ybeam))               // feet on the back cross member
+  add box(22, 24, 5, at: (20.5, y_back, z_ybeam))
+  cut hole(M5, through: true, at: (-10.01, y_back, z_yb), dir: X)   // M5 axle
+  // slotted feet: slide the mount back to tension the Y belt
+  for sx in [-21, 20.5] { cut rrect(w: 5.5, h: 14, r: 2.7, depth: 7, at: (sx, y_back, z_ybeam + 6), dir: -Z) }
+}
+
+part y_stop_mount {
+  group: "Y axis"
+  material: "PETG"
+  color: #3d7bfd
+  body box(25, 20, 6, at: (-45.5, 64, z_ybeam))                // foot on the back cross member
+  add box(40, 4, 24, at: (-38, 60, z_ybeam + 6))               // plate behind the switch board
+  cut hole(M5, cbore: true, through: true, at: (-45.5, 60, z_ybeam + 6), dir: -Z)
+  for h in y_stop.holes { cut hole(M2_5, through: true, at: (h.x, 58, h.z), dir: Y) }
+}
+
+// ── Z axis: two rails on the uprights, two lead screws outboard ───────
+component z_rails    = lib.rail("mgn12h", length: 320, travel: z_zb - 180) { at: [(-up_x, y_up_front, 180), (up_x, y_up_front, 180)], axis: Z, rotate: 180 }
+component z_motors   = lib.stepper("nema17_17hs4401") { at: [(-lead_x, lead_y, 50), (lead_x, lead_y, 50)], axis: Z, role: "z" }
+component z_couplers = lib.coupler("coupler_5x8") { at: [(-lead_x, lead_y, 63), (lead_x, lead_y, 63)], axis: Z }
+component z_screws   = lib.lead_screw("lead_screw_t8x8", length: 350, travel: z_b - 20 - 76) { at: [(-lead_x, lead_y, 76), (lead_x, lead_y, 76)], axis: Z }
+component z_motor_screws = lib.screw(M3, 10) { at: with_z(z_motors.holes + z_motors.all[1].holes, 56), axis: -Z }
+note "Both Z motors run from the SKR's single Z driver (ZA and ZB headers in parallel). Turn one lead screw by hand to level the X beam before homing; Klipper cannot correct it with one driver."
+
+part z_motor_mount_l {
+  group: "Z axis"
+  material: "PETG"
+  color: #3d7bfd
+  let s = -1
+  body box(6, 86, 68, at: (s * (up_x + 13), -23, z_up))                // plate on the upright's outer face
+  add box(52, 48, 6, at: (s * 186, lead_y, 50))                         // shelf: the motor hangs under it
+  for gy in [-68, -24] { add box(40, 4, 14, at: (s * 186, gy, 56)) }    // stiffening ribs
+  cut cylinder(d: 22.6, h: 2.5, at: (s * lead_x, lead_y, 49.99))
+  cut cylinder(d: 12, h: 8, at: (s * lead_x, lead_y, 49))
+  for h in z_motors.all[0].holes { cut hole(M3, through: true, at: (h.x, h.y, 56), dir: -Z) }
+  for y in [-10, 10] { for z in [66, 88] { cut hole(M5, cbore: true, through: true, at: (s * (up_x + 16), y, z), dir: (-s, 0, 0)) } }
+}
+
+part z_motor_mount_r {
+  group: "Z axis"
+  material: "PETG"
+  color: #3d7bfd
+  let s = 1
+  body box(6, 86, 68, at: (s * (up_x + 13), -23, z_up))
+  add box(52, 48, 6, at: (s * 186, lead_y, 50))
+  for gy in [-68, -24] { add box(40, 4, 14, at: (s * 186, gy, 56)) }
+  cut cylinder(d: 22.6, h: 2.5, at: (s * lead_x, lead_y, 49.99))
+  cut cylinder(d: 12, h: 8, at: (s * lead_x, lead_y, 49))
+  for h in z_motors.all[1].holes { cut hole(M3, through: true, at: (h.x, h.y, 56), dir: -Z) }
+  for y in [-10, 10] { for z in [66, 88] { cut hole(M5, cbore: true, through: true, at: (s * (up_x + 16), y, z), dir: (-s, 0, 0)) } }
+}
+
+// ── X axis: beam on the Z carriages, rail on its front face ───────────
+component x_beam   = lib.extrusion("vslot_2040", length: 340) { at: (-170, (y_zc_front + y_beam_front) / 2, z_b + 20), axis: X }
+component x_rail   = lib.rail("mgn12h", length: 300, travel: xc + 150) { at: (-150, y_beam_front, z_xr), axis: X, rotate: 90 }
+component x_motor  = lib.stepper("nema17_17hs4401") { at: (x_xm, -86.5, z_xp), axis: Y, role: "x" }
+component x_pulley = lib.pulley("gt2_pulley_20t_5mm") { at: (x_xm, -80.5, z_xp), axis: Y, role: "x" }
+component x_idler  = lib.pulley("gt2_idler_20t_5mm") { at: (x_xi, -74, z_xp), axis: Y }
+component x_stop   = lib.sensor("endstop_mech") { at: (-150.1, -77.5, z_xr), rotate: (0, 90, 0), role: "x endstop" }
+
+// Z carriages: rail block + lead screw nut + X beam bolts, with the X motor mount (left) and X idler mount (right)
+part z_carriage_l {
+  group: "Z axis"
+  material: "PETG"
+  color: #2f6fe0
+  let s = -1
+  body box(53, 8, 95, at: (s * 154.5, (y_zc_back + y_zc_front) / 2, z_b - 5))
+  add box(26, 22, 8, at: (s * lead_x, lead_y, z_b - 5))                                  // nut tab
+  for h in z_rails.all[0].carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, y_zc_front, h.z), dir: Y) }
+  for bx in [134, 162] { for bz in [z_b + 10, z_b + 30] { cut hole(M5, through: true, at: (s * bx, y_zc_back, bz), dir: -Y) } }
+  cut cylinder(d: 10.5, h: 10, at: (s * lead_x, lead_y, z_b - 6))
+  for h in z_screws.all[0].nut_holes { cut hole(M3, through: true, at: (h.x, h.y, z_b + 3), dir: -Z) }
+  // X motor mount: rib off the front face with a window for the belt, and the motor plate
+  add box(9, 43.2, 75, at: (s * 176.5, -62.5, z_b + 10))
+  cut box(12, 12, 22, at: (s * 176.5, y_belt, z_xp - 11))
+  add box(44, 5, 46, at: (x_xm, -84, z_xp - 23))
+  cut cylinder(d: 22.6, h: 2.5, at: (x_xm, -86.51, z_xp), dir: Y)
+  cut cylinder(d: 8, h: 7, at: (x_xm, -87, z_xp), dir: Y)
+  for h in x_motor.holes { cut hole(M3, through: true, at: (h.x, -81.5, h.z), dir: -Y) }
+}
+
+part z_carriage_r {
+  group: "Z axis"
+  material: "PETG"
+  color: #2f6fe0
+  let s = 1
+  body box(53, 8, 95, at: (s * 154.5, (y_zc_back + y_zc_front) / 2, z_b - 5))
+  add box(26, 22, 8, at: (s * lead_x, lead_y, z_b - 5))
+  for h in z_rails.all[1].carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, y_zc_front, h.z), dir: Y) }
+  for bx in [134, 162] { for bz in [z_b + 10, z_b + 30] { cut hole(M5, through: true, at: (s * bx, y_zc_back, bz), dir: -Y) } }
+  cut cylinder(d: 10.5, h: 10, at: (s * lead_x, lead_y, z_b - 6))
+  for h in z_screws.all[1].nut_holes { cut hole(M3, through: true, at: (h.x, h.y, z_b + 3), dir: -Z) }
+  // X idler mount: rib with a belt window and two cheeks on an M5 axle
+  add box(9, 39.2, 75, at: (s * 176.5, -60.5, z_b + 10))
+  cut box(12, 12, 22, at: (s * 176.5, y_belt, z_xp - 11))
+  add box(30, 4, 20, at: (187, -78, z_xp - 10))
+  add box(21, 4, 20, at: (191.5, -60.5, z_xp - 10))
+  cut hole(M5, through: true, at: (x_xi, -80.01, z_xp), dir: Y)
+}
+note "X belt tension: loosen the idler's M5 axle nut, pull the belt through the carriage clamp by hand and pinch it; a GT2 belt this long should twang at about 110 Hz (phone tuner app)."
+
+part x_stop_mount {
+  group: "X axis"
+  material: "PETG"
+  color: #3d7bfd
+  body box(16, 8, 16, at: (-160, -65, z_xr - 8))                 // on the beam's lower slot, beyond the rail end
+  add box(4, 24.5, 34, at: (-152.1, -73.25, z_xr - 17))         // plate the switch board screws to, above the BLTouch arm
+  cut hole(M5, cbore: true, through: true, at: (-160, -69, z_xr), dir: Y)
+  for h in x_stop.holes { cut hole(M2_5, through: true, at: (-150.1, h.y, h.z), dir: -X) }
+}
+
+// ── Toolhead: direct drive, X carriage in front of the rail ───────────
+component hotend     = lib.hotend("e3d_v6_24v") { at: (xc, y_noz, zn), axis: Z, rotate: 180 }
+component e_motor    = lib.stepper("nema17_17hs08_1004s") { at: (xc + 6.2, -116.5 - 3, h_top + 23), axis: Y, role: "extruder" }
+component extruder   = lib.extruder("bmg_clone") { at: (xc + 6.2, -116.5, h_top + 23), axis: Y }
+component hotend_fan = lib.fan("fan_4010_24v") { at: (xc, -126, zn + 34.15), axis: Y, role: "hotend heatsink" }
+component part_fan   = lib.fan("blower_5015_24v") { at: (xc + 22, -110, zn + 33), rotate: (0, 90, 0), role: "part cooling" }
+component probe      = lib.sensor("bltouch") { at: (xc - 38, y_noz, probe_top), rotate: (180, 0, 0), role: "probe" }
+note "The heater block points left, toward the BLTouch, so the part-cooling duct on the right blows straight at the nozzle. The pancake motor keeps the toolhead near 600 g."
+note "Extruder: the pancake motor, a 3 mm printed plate and the BMG are one unit, held by the BMG's three long M3 screws (from its back face, through the plate, into the motor). The plate is part of the front hotend clamp, so two M3 × 25 screws hold the hotend, extruder and motor on the carriage and come off from the front."
+component clamp_screws = lib.screw(M3, 25) { at: [(xc - 14, -119.5, h_clamp + 9), (xc + 14, -119.5, h_clamp + 9)], axis: Y }
+
+part x_carriage {
+  group: "Toolhead"
+  material: "ABS"
+  color: #e07a2f
+  // plate on the rail carriage
+  body box(64, 8, z_xr + 36 - (zn + 44), at: (xc, (y_xc_back + y_xc_front) / 2, zn + 44), r: 3)
+  for h in x_rail.carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, y_xc_front, h.z), dir: Y) }
+  // belt clamps behind the plate: each belt end is pinched in its slot
+  for sx in [-1, 1] {
+    add box(8, 10.01, 17, at: (xc + sx * 28, y_belt, z_xr + 19))
+    cut box(9, 11, 2.8, at: (xc + sx * 28, y_belt, z_xp + 4.97))
+  }
+  // flag for the X endstop
+  add box(6, 4.01, 12, at: (xc - 29, -72, z_xr - 10))
+  // back half of the V6 groove-mount clamp; the extruder sits on top
+  add box(40, 18.01, 12.7, at: (xc, (y_xc_front + y_noz) / 2 + 0.005, h_clamp))
+  cut cylinder(d: 16.4, h: 3.01, at: (xc, y_noz, h_clamp - 0.01))
+  cut cylinder(d: 12.2, h: 6, at: (xc, y_noz, h_clamp + 3))
+  cut cylinder(d: 16.4, h: 3.71, at: (xc, y_noz, h_clamp + 9))
+  for sx in [-1, 1] { cut hole(M3, fit: "insert", depth: 7, at: (xc + sx * 14, y_noz, h_clamp + 9), dir: Y) }
+  // pockets for the heads of the BMG's motor screws, which stand proud of its back face
+  for h in e_motor.holes { cut cylinder(d: 7, h: 2.5, at: (h.x, y_xc_front - 0.01, h.z), dir: Y) }
+  // BLTouch arm
+  add box(31, 24.01, 5, at: (xc - 35.5, -94, probe_top))
+  for h in probe.holes { cut hole(M3, through: true, at: (h.x, h.y, probe_top + 5), dir: -Z) }
+  // 5015 blower bracket and duct to the nozzle
+  add box(18.01, 2.5, 33, at: (xc + 31.005, y_xc_front - 1.24, zn + 25))
+  add box(3, 48.5, 46, at: (xc + 38.51, -106.25, zn + 3))
+  for p in [(-128, zn + 13), (-92, zn + 53)] { cut hole(M3, through: true, at: (xc + 40, p.x, p.y), dir: -X) }
+  add box(31, 20, 4.5, at: (xc + 24.5, y_noz, zn + 3))
+  cut box(26, 14, 2.5, at: (xc + 21, y_noz, zn + 4))
+  cut box(12, 14, 2, at: (xc + 29.5, y_noz, zn + 6))
+}
+
+part extruder_mount {
+  group: "Toolhead"
+  material: "ABS"
+  color: #e07a2f
+  // front half of the V6 groove-mount clamp
+  body box(40, 12, 12.7, at: (xc, y_noz - 6, h_clamp))
+  cut cylinder(d: 16.4, h: 3.01, at: (xc, y_noz, h_clamp - 0.01))
+  cut cylinder(d: 12.2, h: 6, at: (xc, y_noz, h_clamp + 3))
+  cut cylinder(d: 16.4, h: 3.71, at: (xc, y_noz, h_clamp + 9))
+  // bridge forward over the heatsink fan to the 3 mm plate between the pancake motor and the BMG
+  add box(40, 7.51, h_top - (zn + 55), at: (xc, -115.745, zn + 55))
+  add box(42, 3, h_top + 46 - (zn + 60), at: (xc + 6.2, -118, zn + 60))
+  cut cylinder(d: 22.6, h: 2.5, at: (xc + 6.2, -119.51, h_top + 23), dir: Y)
+  cut cylinder(d: 8, h: 4, at: (xc + 6.2, -120, h_top + 23), dir: Y)
+  for h in e_motor.holes { cut hole(M3, through: true, at: (h.x, -116.5, h.z), dir: -Y) }
+  // the two clamp screws go into heat-set inserts in the carriage half
+  for sx in [-1, 1] { cut hole(M3, through: true, at: (xc + sx * 14, -119.5, h_clamp + 9), dir: Y) }
+  // heatsink fan plate
+  add box(42, 4, 42, at: (xc, y_noz - 14, zn + 12))
+  cut cylinder(d: 34, h: 6, at: (xc, y_noz - 11, hotend_fan.outlet.z), dir: -Y)
+  for h in hotend_fan.holes { cut hole(M3, fit: "tap", depth: 6, at: (h.x, -116, h.z), dir: Y) }
+}
+
+// ── Electronics: box on the left upright, supply on the right ─────────
+component skr   = lib.controller("skr_mini_e3_v3") { at: (-170, 82, 190), rotate: (90, 0, -90) }
+component pi    = lib.host("rpi_zero_2w") { at: (-170, 62, 132), rotate: (90, 0, -90) }
+component buck  = lib.regulator("buck_24v_5v_3a") { at: (-170, 122, 132), rotate: (90, 0, -90) }
+component board_fan = lib.fan("fan_4010_24v") { at: (-209, 89, 200), axis: X, role: "controller" }
+component psu   = lib.psu("lrs_350_24") { at: (165, 79.5, 217.5), rotate: (0, 90, 0) }
+component fuse  = lib.fuse("fuse_holder_atc") { at: (180, 113, 74.5), rotate: (0, 0, 90), rating: 15A }
+note "Mains enters through a fused, switched IEC inlet in the supply's terminal cover. The 24 V side has its own 15 A blade fuse right at the supply, sized for the 14 AWG lead to the board."
+
+part ebox {
+  group: "Electronics"
+  material: "PETG"
+  color: #2b3038
+  body box(36, 124, 124, at: (-178, 84, 108))
+  shell(3, open: -X)
+  add box(3, 40.01, 124, at: (-161.5, 2, 108))                       // flange on the upright's outer face
+  for y in [-10, 10] { for z in [130, 210] { cut hole(M5, through: true, at: (-163.01, y, z), dir: X) } }
+  // standoffs with heat-set inserts
+  for h in skr.holes { add cylinder(d: 7, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M3, fit: "insert", depth: 6, at: (-170, h.y, h.z), dir: X) }
+  for h in pi.holes { add cylinder(d: 6, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M2_5, fit: "insert", depth: 5, at: (-170, h.y, h.z), dir: X) }
+  add box(7.02, 24, 16, at: (-166.49, 122, 124))                      // pad for the buck module (foam tape)
+  // lid screw bosses and the cable slot in the floor
+  for p in [(27, 113), (141, 113), (27, 227), (141, 227)] {
+    add cylinder(d: 8, h: 33, at: (-163, p.x, p.y), dir: -X)
+    cut hole(M3, fit: "insert", depth: 8, at: (-196, p.x, p.y), dir: X)
+  }
+  cut box(20, 60, 10, at: (-180, 84, 104))
+}
+
+part ebox_lid {
+  group: "Electronics"
+  material: "PETG"
+  color: #3d4450
+  removable
+  body box(3, 124, 124, at: (-197.5, 84, 108))
+  cut cylinder(d: 37, h: 5, at: (-200, 89, 200), dir: X)
+  for h in board_fan.holes { cut hole(M3, through: true, at: (-199, h.y, h.z), dir: X) }
+  for p in [(27, 113), (141, 113), (27, 227), (141, 227)] { cut hole(M3, through: true, at: (-199, p.x, p.y), dir: X) }
+  for i in range(6) { cut rrect(w: 3, h: 40, r: 1.4, depth: 5, at: (-200, 110 + i * 6, 140), dir: X) }
+}
+
+part psu_mount {
+  group: "Electronics"
+  material: "PETG"
+  color: #2b3038
+  body box(5, 155, 171, at: (162.5, 59.5, 132))
+  cut box(7, 135, 131, at: (162.5, 59.5, 152))                   // window: a frame is enough
+  add box(5, 10, 58.01, at: (162.5, 132, 74))                      // leg down to the terminal cover
+  for y in [-10, 10] { for z in [141, 294] { cut hole(M5, cbore: true, through: true, at: (165, y, z), dir: -X) } }
+  for h in psu.holes { cut hole(M3, cbore: true, through: true, at: (160, h.y, h.z), dir: X) }
+  for z in [82, 100] { cut hole(M3, through: true, at: (160, 130, z), dir: X) }
+}
+
+part psu_cover {
+  group: "Electronics"
+  material: "PETG"
+  color: #2b3038
+  body box(30, 115, 38, at: (180, 79.5, 72))
+  shell(2.5, open: Z)
+  add box(4.5, 10, 34, at: (169.74, 130, 74))                       // boss for the two fixing screws
+  for z in [82, 100] { cut hole(M3, fit: "insert", depth: 7, at: (165, 130, z), dir: X) }
+  cut rrect(w: 47.5, h: 27.5, r: 1, depth: 5, at: (196, 70, 91), dir: -X)   // IEC C14 inlet with switch and fuse
+  cut cylinder(d: 12, h: 5, at: (164, 40, 86), dir: X)                     // 24 V cable out to the board
+}
+
+part spool_holder {
+  group: "Frame"
+  material: "PETG"
+  color: #3a3f47
+  body box(40, 40, 8, at: (0, 10, z_top + 20))
+  add box(20, 10, 80, at: (0, 25, z_top + 28))
+  add cylinder(d: 30, h: 80, at: (0, 20, z_top + 95), dir: Y)
+  add cylinder(d: 40, h: 3, at: (0, 100, z_top + 95), dir: Y)
+  for x in [-10, 10] { cut hole(M5, cbore: true, through: true, at: (x, 0, z_top + 28), dir: -Z) }
+}
+
+// ── Wiring ────────────────────────────────────────────────────────────
+// power: supply → 15 A fuse → board and the Pi's 5 V buck, one common ground
+let main_awg = 14     // the 24 V lead, trunk and ground; the fuse is sized to it
+wire psu.V_PLUS -> fuse.IN { gauge: main_awg, color: "red", label: "24 V from the supply" }
+net V24: fuse.OUT, skr.POWER, buck.IN_POS { gauge: main_awg, color: "red" }
+net GND: psu.V_MINUS, skr.POWER_GND, buck.IN_NEG, buck.OUT_NEG, pi.GND { gauge: main_awg, color: "black" }
+net V5: buck.OUT_POS, pi.V5 { gauge: 20, color: "red" }
+wire skr.USB -> pi.USB { label: "USB-C to micro-USB (OTG) data cable" }
+// motors
+wire skr.XM -> x_motor.PLUG
+wire skr.YM -> y_motor.PLUG
+wire skr.ZAM -> z_motors[0].PLUG
+wire skr.ZBM -> z_motors[1].PLUG
+wire skr.E0M -> e_motor.PLUG
+// heaters and thermistors
+wire skr.HE0 -> hotend.HEATER { gauge: 22 }
+wire skr.TH0 -> hotend.THERM
+wire skr.HB -> bed.HEATER { gauge: 16 }
+wire skr.THB -> bed.THERM
+// fans, endstops, probe
+wire skr.FAN0 -> part_fan.PLUG
+wire skr.FAN1 -> hotend_fan.PLUG
+wire skr.FAN2 -> board_fan.PLUG
+wire skr.XSTOP -> x_stop.PLUG
+wire skr.YSTOP -> y_stop.PLUG
+wire skr.PROBE -> probe.PLUG
+
+// ── Calculations ──────────────────────────────────────────────────────
+let x_axis = calc.stepper_axis(motor: x_motor, current: 0.9, voltage: 24, mass: toolhead_g, accel: accel, speed: v_max, travel_per_rev: x_pulley.mm_per_rev, friction: 5, efficiency: 0.9)
+let y_axis = calc.stepper_axis(motor: y_motor, current: 1.0, voltage: 24, mass: bed_g, accel: accel, speed: v_max, travel_per_rev: y_pulley.mm_per_rev, friction: 5, efficiency: 0.9)
+// each Z motor gets half of the shared driver's 1.0 A and lifts half the gantry
+let z_axis = calc.stepper_axis(motor: z_motors, current: 0.5, voltage: 24, mass: gantry_g / 2, accel: 100, speed: 10, travel_per_rev: z_screws.lead, friction: 5, efficiency: z_screws.efficiency, vertical: true)
+let z_lift = calc.lead_screw(lead: z_screws.lead, load: gantry_g / 2 * 9.81 / 1000, efficiency: z_screws.efficiency)
+let bed_heat = calc.heater_warmup(power: bed.power_w, mass: bed.mass_g + 250, c: 0.9, from: 25, to: 60)
+let hotend_heat = calc.heater_warmup(power: hotend.heater_w, mass: 15, c: 0.9, from: 25, to: 220, loss: 0.1)
+let melt = calc.print_speed(flow: hotend.max_flow_mm3_s, layer: 0.2, width: 0.45)
+// everything at once, as the wiring check counts it: both heaters at full power plus about 73 W for
+// the steppers while moving, the Pi through its buck, the board and the fans. That is 92 % of the
+// supply during the first heat-up, so the wiring check warns; once printing, the heaters cycle.
+let i_main = (bed.power_w + hotend.heater_w + 73) / 24
+let main_wire = calc.wire_gauge(current: i_main, length: 700, voltage: 24)
+let bed_wire = calc.wire_gauge(current: bed.power_w / 24, length: 900, voltage: 24)
+
+// ── Firmware ──────────────────────────────────────────────────────────
+let probe_dx = probe.center.x - hotend.nozzle.x
+let probe_dy = probe.center.y - hotend.nozzle.y
+firmware printer { board: skr, kinematics: "cartesian", x_size: bed_x, y_size: bed_y, z_size: bed_z, probe_x: probe_dx, probe_y: probe_dy, max_velocity: v_max, max_accel: accel, x_run_current: 0.9, y_run_current: 1.0, z_run_current: 1.0, e_run_current: 0.5 }
+
+// ── Tests before trusting it ──────────────────────────────────────────
+test "Mains wiring inspection": "Before the first power-up, have a competent person check the IEC inlet, fuse, switch, supply terminals and the earth wire to the frame and the supply's earth terminal; terminal cover on. Check the supply's 115/230 V switch matches your mains."
+test "24 V and 5 V rails": "Power up with only the supply and buck connected: measure 24.0 V at the board terminal and 5.0 to 5.2 V at the Pi's 5 V pin before plugging the boards in."
+test "Frame square": "Measure both base diagonals (equal within 1 mm) and check the uprights are square to the base in X and Y."
+test "Gantry level": "With the motors off, turn one lead screw until the X beam is the same height above the base at both ends (within 0.2 mm)."
+test "Motor directions and endstops": "STEPPER_BUZZ each motor, then QUERY_ENDSTOPS with each switch pressed and released. Home X and Y with a hand on the power switch; flip the dir_pin if an axis runs away from its switch."
+test "Belt tension": "Pluck the X and Y belts: about 110 Hz on a free span; equal on both sides of the Y carriage clamp."
+test "BLTouch and probe offset": "BLTOUCH_DEBUG COMMAND=pin_down and pin_up, then PROBE_ACCURACY: the range should be under 0.01 mm. Confirm the X offset with a pen mark: home, mark under the nozzle, move X by +38 (the probe sits 38 mm left of the nozzle) and check the pin lands on the mark."
+test "Heater PID and thermal safety": "PID_CALIBRATE HEATER=extruder TARGET=220 and HEATER=heater_bed TARGET=60, SAVE_CONFIG. Then pull the hotend thermistor plug briefly while heating: Klipper must shut down with a heater error."
+test "Bed MOSFET temperature": "Heat the bed to 100 °C for 10 minutes and check the board's bed MOSFET stays below about 80 °C with the board fan running."
+test "Extruder unit": "Before mounting it, check the BMG's pinion sits fully on the pancake motor's shaft through the 3 mm plate and the gears turn freely by hand; tighten the three long screws evenly."
+test "Extruder steps": "Mark 120 mm of filament, extrude 100 mm at 210 °C and measure what is left; correct rotation_distance."
+test "First layer": "Run PROBE_CALIBRATE with a sheet of paper, then print a single-layer 200 × 200 mm square at 0.2 mm: it should be even and slightly squashed everywhere."
+test "Dimensional check": "Print a 20 mm calibration cube: X, Y and Z within 0.1 mm."
+
+// ── Requirements ──────────────────────────────────────────────────────
+require "X motor has torque to spare" soft: x_axis.margin >= 2
+require "Y motor moves the bed with margin" soft: y_axis.margin >= 2
+require "Z motors lift the gantry with margin" soft: z_axis.margin >= 2
+require "Bed reaches 100 °C for PETG and ABS": bed_heat.max_temp >= 100
+require "Bed to 60 °C in under 5 minutes" soft: bed_heat.time <= 300
+require "Hotend reaches its 285 °C limit": hotend_heat.max_temp >= 285
+require "Hotend to 220 °C in under 4 minutes" soft: hotend_heat.time <= 240
+require "Hotend melts fast enough for the print speed": melt.speed >= v_print
+require "Supply covers everything heating at once": i_main <= psu.i_out
+require "Bed current within the SKR bed output (10 A)" soft: bed.power_w / 24 <= 10
+require "Main 24 V lead is thick enough": main_awg <= main_wire.awg
+require "Bed lead is thick enough": 16 <= bed_wire.awg
+require "Bed passes between the uprights": up_x - 10 - bed.w / 2 >= 15
+require "Y rails cover the bed travel": y_noz - bed_y / 2 - y_rails.block_l / 2 >= y_rail0 && y_noz + bed_y / 2 + y_rails.block_l / 2 <= y_rail0 + y_rails.length
+require "X rail covers the nozzle travel": -bed_x / 2 - x_rail.block_l / 2 >= -150 && bed_x / 2 + x_rail.block_l / 2 <= -150 + x_rail.length
+require "Z rails cover the full height": z_bed_top - 2 + (z_zb - zn) - z_rails.block_l / 2 >= 180 && z_bed_top + bed_z + (z_zb - zn) + z_rails.block_l / 2 <= 180 + z_rails.length
+require "Lead screws reach 10 mm past the nut at the top of travel": z_bed_top + bed_z + (z_b - zn) - 5 + 10 <= 76 + z_screws.length
+require "Gantry stays under the top bar": z_bed_top + bed_z + (z_b - zn) + 90 <= z_top
+require "Y belt clamp stays clear of the Y pulley": y_noz - bed_y / 2 - 15 - (y_ym + 8) >= 1.5
+require "Y motor passes under the bed carriage": z_carriage - (z_yb + y_motor.body / 2) >= 1.5
+require "Toolhead stays clear of the X motor at home": (-bed_x / 2 - 2) - 51 - (x_xm + x_motor.body / 2) >= 3
+require "BLTouch case 8.3 ± 0.7 mm above the nozzle": abs(probe_top - probe.h - zn - 8.3) <= 0.7
+require "Extruder outlet lines up with the hotend": len(extruder.filament_out - hotend.mount_top) <= 0.01
+require "Rail stack matches the catalog": y_zc_back == y_up_front - z_rails.block_h && y_xc_back == y_beam_front - x_rail.block_h
+require "X switch trips within 1 mm of X = 0": abs((-bed_x / 2 - 32) - (x_stop.bottom.x + x_stop.height)) <= 1
+require "Y switch trips within 1 mm of Y = 0": abs((y_noz + bed_y / 2 + 40) - (y_stop.bottom.y - y_stop.height)) <= 1
+require "Only the nozzle reaches the bed: the rest of the toolhead stays 2 mm above the tip": bbox_min(x_carriage, "z") - zn >= 2 && bbox_min(extruder_mount, "z") - zn >= 2 && bbox_min(part_fan, "z") - zn >= 2 && bbox_min(hotend_fan, "z") - zn >= 2
+
+// ── Purchases not drawn above ─────────────────────────────────────────
+buy "GT2 6 mm timing belt, 5 m" { qty: 1, price: 9, search: "GT2 6mm timing belt 5m" }
+buy "M3 socket head screw assortment (6 to 30 mm) with nuts" { qty: 1, price: 14, search: "M3 socket head cap screw assortment 304 stainless" }
+buy "M5 socket head screws 8, 10, 12 and 30 mm (50 of each)" { qty: 1, price: 16, search: "M5 socket head cap screw assortment" }
+buy "M5 drop-in T-nuts for 2020/2040 V-slot, 50 pcs" { qty: 2, price: 9, search: "M5 drop in T nut 2020 V slot 50pcs" }
+buy "2020 series corner brackets with screws, 20 pcs" { qty: 1, price: 13, search: "2020 corner bracket aluminum extrusion 20pcs" }
+buy "M2.5 screws and nuts for the switch boards and Pi" { qty: 1, price: 8, search: "M2.5 screw nut assortment" }
+buy "M3 × 40 socket head screws for the BMG and pancake motor, 10 pcs" { qty: 1, price: 4, search: "M3 x 40 socket head cap screw" }
+buy "M3 × 5.7 brass heat-set inserts, 100 pcs" { qty: 1, price: 10, search: "M3 heat set insert 5.7mm" }
+buy "M4 × 30 countersunk screws and nyloc nuts (bed)" { qty: 1, price: 6, search: "M4 x 30 countersunk screw nyloc nut" }
+buy "Silicone bed spacers 16 to 18 mm, 4 pcs" { qty: 1, price: 8, search: "silicone bed leveling spacer column ender 3" }
+buy "Magnetic PEI spring steel sheet 235 × 235 mm" { qty: 1, price: 25, search: "PEI spring steel sheet 235x235 magnetic base" }
+buy "IEC C14 inlet with switch and fuse holder, 5 A slow-blow fuse" { qty: 1, price: 8, search: "IEC 320 C14 inlet switch fuse module" }
+buy "IEC C13 mains cord" { qty: 1, price: 6, search: "IEC C13 power cord" }
+buy "18 AWG mains wire, earth wire and ring terminals" { qty: 1, price: 10, search: "18 AWG wire ring terminal kit" }
+buy "14 AWG silicone wire, red and black, 3 m each" { qty: 1, price: 12, search: "14 AWG silicone wire red black" }
+buy "22 AWG silicone wire set" { qty: 1, price: 12, search: "22 AWG silicone wire kit 6 colors" }
+buy "Bootlace ferrules with crimper" { qty: 1, price: 25, search: "ferrule crimping tool kit" }
+buy "15 A ATC blade fuses" { qty: 1, price: 5, search: "ATC blade fuse 15A" }
+buy "Stepper extension cables, 1 m, XH2.54 4-pin" { qty: 5, price: 3, search: "stepper motor cable 1m XH2.54 4 pin" }
+buy "USB-C to micro-USB OTG cable, 25 cm" { qty: 1, price: 6, search: "USB C to micro USB OTG cable short" }
+buy "microSD card 32 GB" { qty: 1, price: 8, search: "microSD 32GB" }
+buy "Cable chain 10 × 10 mm, 1 m, and spiral wrap" { qty: 1, price: 10, search: "10x10 cable drag chain 1m" }
+buy "PETG filament 1 kg for the frame parts" { qty: 1, price: 20, search: "PETG filament 1.75mm 1kg" }
+buy "ABS or ASA filament 0.5 kg for the toolhead and bed carriage" { qty: 1, price: 15, search: "ABS filament 1.75mm" }

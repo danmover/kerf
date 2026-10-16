@@ -1,0 +1,574 @@
+design "Sand Tunneller"
+note "A battery robot that screws itself sideways along the bottom of a sand pit, holding its heading and stopping on the far side. Arduino Nano brain, two goBILDA gearmotors, an Actuonix steering actuator, 3S LiPo."
+note "How it moves: two counter-rotating screw sections. The front screw (right-hand) pulls, the rear screw (left-hand) pushes, and their twisting cancels so the body does not roll. A vertical hinge behind the front screw steers left and right: the actuator slides a cam bar whose slanted slot pushes a pin on the front section sideways."
+note "Print: PETG for the structure (100% infill for the cam bar and hinge parts), TPU 95A for the hinge boot. Print the screws standing up with tree supports under the flights."
+note "Starting: from the hole in the end wall, push it in by the tail with the push cup on a 25 mm pole (a broom handle) until the rear screw is in the sand, about 300 mm. The front screw alone can't pull the body in; once both screws bite it digs on its own."
+note "Build order: front core with bearing 1, motor and plate, then into the front screw; boot and hinge; electronics on the shelves of the middle body; battery and rear driver in the rear body; rear core and screw last. Seal every gap with grease and tape: sand finds every hole."
+
+brief {
+  purpose: "Drill through a 2 m long sand pit along its bottom, under 5 m of sand, and come out the far wall"
+  setting: "Buried in dry sand at the bottom of a pit dug at ground level; starts from a hole in one end wall, pushed in by the tail until the rear screw is in the sand"
+  priorities: ["gets through", "steers straight", "uses parts you can buy"]
+  temp: 5C .. 35C assumed
+
+  process: "FDM print"
+  material: "PETG"
+  quantity: 1
+  build_volume: (220, 220, 250) assumed   // a printer at least 250 mm tall, like the Kerf i3 220: the cores and screws print standing up
+
+  use cross "Bores the 2 m along the bottom of the pit and comes out the far wall"
+  use steer "Holds its heading and can turn up to 5° either way to correct it"
+  use reserve "Carries enough battery to back out the whole way if it gets stuck"
+
+  given pit_l = 2m "Pit length the drill crosses, wall to wall"
+  given pit_depth = 5m "Depth of sand in the pit; the drill crosses at the bottom"
+  given pit_w = 0.5m "Pit width across the drill's path: up to about 0.6 m, the walls hold up enough sand for this drill"
+  given floor_gap = 100mm "Height of the drill's axis above the pit floor" assumed
+
+  assume "Dry, loose-poured play sand: about 1600 kg/m³ and a 32° friction angle"
+  assume "Rigid pit walls rough enough to carry some of the sand's weight (the walls hold up most of it)"
+}
+
+// ── The job, from the brief ─────────────────────────────
+let sand_depth = pit_depth - floor_gap      // sand above the drill's axis
+param sand_delta = 19deg    "Sand sliding on printed PETG: about 0.6 of the sand's 32° friction angle"
+
+// ── Screws ───────────────────────────────────────────────
+param flight_d   = 90mm     "Screw flight outside diameter (the hole it bores)"
+param shell_d    = 72mm     "Screw shell diameter (6810 bearings inside)"
+param pitch      = 40mm     "Flight pitch"
+param flight_t   = 3mm      "Flight thickness at the tip"
+param flight_root = 10mm    "Flight thickness at the shell (thick so it prints without supports on one side)"
+
+// ── Steering ─────────────────────────────────────────────
+param cam_slope  = 0.2      "Sideways pin movement per mm of actuator stroke"
+param steer_max  = 5.5      "Largest hinge angle either way (degrees); the slot ends stop it at about 5.7"
+
+// ── Skeleton: X points forward, the hinge pin is vertical at the origin ──
+let core_od = 50            // static cores ride in the 6810 bores
+let core_id = 44
+let bore = 65               // 6810 outside diameter = screw shell bore
+let body_od = 60
+let body_id = 54
+
+// front section, positions along X
+let fc_wall = 9             // front core end wall (9..13) behind the boot clamp
+let f0 = 18                 // rear end of the front screw: seal 18..26, lip 26..29
+let f_b1 = 29               // bearing 1 (7 wide)
+let f_col = 36              // collar in front of bearing 1 (forward thrust)
+let f_fl0 = 42              // flights start
+let front_flight_l = 176
+let f_motor = 212           // front motor face = rear face of the motor plate
+let f_col2 = f_motor + 8    // collar behind bearing 2 (backing-out thrust)
+let f_b2 = f_col2 + 4       // bearing 2
+let f_end = f_b2 + 7        // end of the front core (231)
+let f_shell_end = f_end + 6 // nose spigot 231..237 sits in the screw
+let nose_l = 58
+let nose_tip = f_shell_end + nose_l
+
+// middle bodies
+let a_front = -10           // front face of the middle body
+let a_end = -170            // middle body ends, its spigot runs to -182
+let b_end = -250            // rear face of the rear body
+
+// rear section mirrors the front, counting backwards from the rear body
+let r0 = b_end
+let r_shell0 = r0 - 4       // seal, lip, bearing 1 ...
+let r_b1 = r0 - 15
+let r_col = r0 - 22
+let r_fl0 = r0 - 26
+let rear_flight_l = 176
+let r_motor = r0 - 184      // rear motor face; the battery reaches into the core in front of the motor
+let r_col2 = r_motor - 8
+let r_b2 = r_col2 - 4
+let r_end = r_b2 - 7        // end of the rear core (-453)
+let r_shell_end = r_end - 6
+let tail_l = 40
+
+// the goBILDA hub's M4 pattern, turned 45° from the motor face screws so a key reaches both
+let hub_pts = [(0, 11.31), (11.31, 0), (0, -11.31), (-11.31, 0)]
+
+// steering linkage (actuator at mid stroke = hinge straight)
+let pin_x = 30              // follower pin on the front core: the lever arm
+let act_rear = -158         // actuator rear pivot
+let act_mid = 25            // stroke when straight
+let rod_end = act_rear + 97 + act_mid    // P16-P rod-end hole, -36
+let slot_half = 15          // pin travel along the slot either way
+let sd = normalize((1, -cam_slope, 0))
+let sn = (-sd.y, sd.x)
+
+// hinge stack (z): guide roof 5.5 | nut 6.3..9.5 | lug 9.5..14 | knuckle 14.3..18.3
+let lug_z = 9.5
+let lug_t = 4.5
+let kn_z = 14.3
+let kn_t = 4
+
+// shelves in the middle body
+let top_shelf = 12          // underside; boards sit on 13.5
+let bot_shelf = -24         // underside; boards sit on -22.5
+
+// ── Sizing (rough: tested in the barrel before the real run) ──
+let sand = calc.sand_stress(depth: sand_depth, box_w: pit_l, box_l: pit_w)
+let drag_l = f0 - r_shell0                  // static length between the screws: hinge, both bodies
+let front = calc.screw_burrow(d: flight_d, core_d: shell_d, length: front_flight_l, pitch: pitch, sigma_v: sand.sigma_v, sigma_h: sand.sigma_h, delta: sand_delta, face: true)
+let rear = calc.screw_burrow(d: flight_d, core_d: shell_d, length: rear_flight_l, pitch: pitch, sigma_v: sand.sigma_v, sigma_h: sand.sigma_h, delta: sand_delta, drag_length: drag_l, drag_d: body_od)
+// the same skin friction that drags on the static body stops it rolling with the screws
+let roll_hold = sand.sigma_mean * tan(sand_delta) * PI * body_od * drag_l * body_od / 2
+
+// ── Drive ────────────────────────────────────────────────
+component m_front = lib.gearmotor("gobilda_5203_188") {
+  at: (f_motor, 0, 0), axis: X
+  role: "front screw", load: front.torque
+  spin: 1
+  group: "Drive"
+}
+component m_rear = lib.gearmotor("gobilda_5203_188") {
+  at: (r_motor, 0, 0), axis: -X
+  role: "rear screw", load: rear.torque
+  spin: -1
+  group: "Drive"
+}
+component steer = lib.actuator("actuonix_p16p_50_256", travel: act_mid) {
+  at: (act_rear, 0, 0), axis: X
+  role: "steering hinge"
+  group: "Steering"
+}
+
+// ── Electronics: top shelf (brain), bottom shelf (power), rear body ──
+component ctrl = lib.controller("arduino_nano") { at: (-128, 0, top_shelf + 1.5) }
+component imu = lib.sensor("bno055") { at: (-86, 0, top_shelf + 1.5) }
+component drv_s = lib.motor_driver("tb6612fng") { at: (-58, 0, top_shelf + 1.5), role: "steering driver" }
+component drv_f = lib.motor_driver("pololu_g2_18v17") { at: (-40, 0, bot_shelf + 1.5), role: "front driver" }
+component reg = lib.regulator("d24v50f5") { at: (-68, 0, bot_shelf + 1.5) }
+component vsense = lib.sensor("voltage_sensor_25v") { at: (-95, 0, bot_shelf + 1.5) }
+component fuse = lib.fuse("fuse_holder_atc") { at: (-131, 11, -15.5), rotate: (90, 0, 0), rating: 15A }
+component xt = lib.connector("xt60_pair") { at: (-174, 0, -8) }
+component bat = lib.battery("lipo_3s_2200") { at: (a_end - 14 - 53, 0, -10.5) }
+component drv_r = lib.motor_driver("pololu_g2_18v17") { at: (-210, 0, 12.5), role: "rear driver" }
+
+// ── Operating point ──────────────────────────────────────
+let front_pt = calc.motor_point(motor: m_front, load: front.torque, voltage: bat.v_nom)
+let rear_pt = calc.motor_point(motor: m_rear, load: rear.torque, voltage: bat.v_nom)
+let advance = min(front_pt.rpm, rear_pt.rpm) / 60 * front.advance_per_rev     // mm/s
+let crossing_min = pit_l / advance / 60
+let give_up = 1.25 * pit_l / advance     // s: no breakthrough by then means it is turning in place, so it backs out
+// from the wall hole only the front screw is in the sand until the rear screw gets there (about drag_l in):
+// by then the body drags more than the front screw pulls, so it needs a push from behind
+let start_push = max(0, 1.3 * (front.resist + rear.resist) - front.thrust)     // N
+let run = calc.battery_runtime(battery: bat, current: front_pt.current + rear_pt.current + 0.4, peak: 2 * m_front.i_stall)
+let convey = calc.conveying(d: flight_d, core_d: shell_d, pitch: pitch, rpm: front_pt.rpm, fill: 0.45, body_d: shell_d, advance: advance)
+let steer_need = calc.hinge_steer(thrust: rear.thrust, angle: steer_max, front_length: nose_tip, d: flight_d, sigma_h: sand.sigma_h)
+let steer_have = calc.actuator_moment(actuator: steer, arm: pin_x, slope: cam_slope, friction: 0.2)
+let power_wire = calc.wire_gauge(current: front_pt.current + rear_pt.current + 1.4, length: 400, voltage: bat.v_nom)
+let main_awg = 14     // battery leads, the VBAT trunk and the power ground; the fuse is sized to it
+let thrust_life = calc.bearing_life(bearing: "6810", load: front.thrust, rpm: front_pt.rpm)
+
+// ── Front section ────────────────────────────────────────
+part front_core {
+  color: #5c6b7a
+  material: "PETG"
+  group: "Front"
+  process: mfg.fdm(build: -X)   // printed standing on end
+  body tube(od: core_od, id: core_id, h: f_end - fc_wall, at: (fc_wall, 0, 0), dir: X)
+  // end wall at the hinge, with the opening the guide and wires pass through
+  add cylinder(d: core_od, h: 4, at: (fc_wall, 0, 0), dir: X)
+  cut box(6, 28, 18.6, at: (fc_wall + 2, 0, -9.3))
+  cut cylinder(d: 12, h: 6, at: (fc_wall - 1, -17, 0), dir: X)
+  // hinge lugs, inside the middle body's knuckles
+  for s in [1, -1] {
+    let z0 = s > 0 ? lug_z : -lug_z - lug_t
+    add box(fc_wall + 0.5, 14, lug_t, at: ((fc_wall + 0.5) / 2, 0, z0))
+    add cylinder(d: 14, h: lug_t, at: (0, 0, z0), dir: Z)
+    cut hole(M4, depth: lug_t + 1, at: (0, 0, z0 + lug_t + 0.5), dir: -Z)
+  }
+  // thrust collars: forward thrust through bearing 1, backing-out thrust through bearing 2
+  add tube(od: 56, id: 49, h: 2, at: (f_col, 0, 0), dir: X)
+  add tube(od: 56, id: 49, h: 4, at: (f_col2, 0, 0), dir: X)
+  // bridge holding the follower pin, with a window for the cam bar and a wire hole
+  add cylinder(d: 45, h: 8, at: (pin_x - 4, 0, 0), dir: X)
+  cut box(10, 23.2, 9, at: (pin_x, 0, -4.5))
+  cut cylinder(d: 5, h: 40, at: (pin_x, 0, -20), dir: Z)
+  cut cylinder(d: 8, h: 10, at: (pin_x - 5, -17, 0), dir: X)
+  // motor plate screws
+  for s in [1, -1] {
+    cut hole(M3, depth: 4, at: (f_motor + 4, s * core_od / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+part front_plate {
+  color: #8a96a3
+  material: "PETG"
+  group: "Front"
+  process: mfg.fdm(build: -X)   // printed flat on its face
+  body cylinder(d: core_id - 0.2, h: 8, at: (f_motor, 0, 0), dir: X)
+  cut cylinder(d: 15, h: 2.5, at: (f_motor - 0.01, 0, 0), dir: X)
+  cut cylinder(d: 10, h: 9, at: (f_motor - 0.5, 0, 0), dir: X)
+  for h in m_front.holes {
+    cut hole(M4, depth: 9, at: (f_motor + 8, h.y, h.z), dir: -X)
+  }
+  for s in [1, -1] {
+    cut hole(M3, fit: "insert", depth: 6.5, at: (f_motor + 4, s * (core_id - 0.2) / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+part front_screw {
+  color: #e0a526
+  material: "PETG"
+  group: "Front"
+  process: mfg.fdm(build: X)   // printed standing up, with tree supports under the flights
+  spin: 1
+  axis: X
+  removable
+  // shell: seal bore, lip, bearing bore
+  body revolve([(32.5, 0), (shell_d / 2, 0), (shell_d / 2, f_shell_end - f0), (32.5, f_shell_end - f0), (32.5, 11), (27, 11), (27, 8), (32.5, 8)], at: (f0, 0, 0), dir: X)
+  add flight(d: flight_d, core_d: shell_d - 0.5, pitch: pitch, length: front_flight_l, t: flight_t, root_t: flight_root, at: (f_fl0, 0, 0), dir: X)
+  for s in [1, -1] {
+    cut hole(M3, depth: 5, at: (f_end + 3, s * shell_d / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+part nose {
+  color: #c98b12
+  material: "PETG"
+  group: "Front"
+  process: mfg.fdm(build: X)   // printed standing on its spigot, tip up
+  spin: 1
+  axis: X
+  removable
+  body tube(od: bore - 0.2, id: 36, h: 6, at: (f_end, 0, 0), dir: X)
+  add revolve([(0, 0), (shell_d / 2, 0), (4, nose_l - 6), (0, nose_l)], at: (f_shell_end, 0, 0), dir: X)
+  cut cylinder(d: 36, h: 8, at: (f_end - 0.01, 0, 0), dir: X)
+  for h in hub_pts {
+    cut cylinder(d: 4.5, h: 17, at: (f_end + 7.5, h.x, h.y), dir: X)
+    cut cylinder(d: 8, h: 40, at: (f_end + 24, h.x, h.y), dir: X)
+  }
+  for s in [1, -1] {
+    cut hole(M3, fit: "insert", depth: 6.5, at: (f_end + 3, s * (bore - 0.2) / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+component seal_f = lib.seal("seal_tc_50x65x8") { at: (f0, 0, 0), axis: X }
+component bearing_f1 = lib.bearing("6810") { at: (f_b1, 0, 0), axis: X }
+component bearing_f2 = lib.bearing("6810") { at: (f_b2, 0, 0), axis: X }
+component plate_screws_f = lib.screw(M4, 12) { at: [(f_motor + 8, m_front.holes[0].y, m_front.holes[0].z), (f_motor + 8, m_front.holes[1].y, m_front.holes[1].z), (f_motor + 8, m_front.holes[2].y, m_front.holes[2].z), (f_motor + 8, m_front.holes[3].y, m_front.holes[3].z)], axis: -X }
+component plate_ins_f1 = lib.insert(M3) { at: (f_motor + 4, (core_id - 0.2) / 2, 0), axis: -Y }
+component plate_ins_f2 = lib.insert(M3) { at: (f_motor + 4, -(core_id - 0.2) / 2, 0), axis: Y }
+component plate_scr_f1 = lib.screw(M3, 8) { at: (f_motor + 4, core_od / 2, 0), axis: -Y }
+component plate_scr_f2 = lib.screw(M3, 8) { at: (f_motor + 4, -core_od / 2, 0), axis: Y }
+component nose_ins_1 = lib.insert(M3) { at: (f_end + 3, (bore - 0.2) / 2, 0), axis: -Y }
+component nose_ins_2 = lib.insert(M3) { at: (f_end + 3, -(bore - 0.2) / 2, 0), axis: Y }
+component nose_scr_1 = lib.screw(M3, 8) { at: (f_end + 3, shell_d / 2, 0), axis: -Y }
+component nose_scr_2 = lib.screw(M3, 8) { at: (f_end + 3, -shell_d / 2, 0), axis: Y }
+component nose_hub_screws = lib.screw(M4, 20) { at: [(f_end + 24, hub_pts[0].x, hub_pts[0].y), (f_end + 24, hub_pts[1].x, hub_pts[1].y), (f_end + 24, hub_pts[2].x, hub_pts[2].y), (f_end + 24, hub_pts[3].x, hub_pts[3].y)], axis: -X }
+component follower = lib.dowel(d: 5, length: 40) { at: (pin_x, 0, -20), axis: Z }
+
+// ── Hinge and steering ───────────────────────────────────
+part cam_bar {
+  color: #d64545
+  material: "PETG"
+  group: "Steering"
+  // front bar with the slanted slot, at mid stroke
+  body box(pin_x + slot_half + 6 - (rod_end + 6), 16, 8, at: ((pin_x + slot_half + 6 + rod_end + 6) / 2, 0, -4))
+  // fork around the actuator rod end
+  add box(14, 16, 14, at: (rod_end - 1, 0, -7))
+  cut box(13, 9, 9, at: (rod_end - 2, 0, -4.5))
+  cut cylinder(d: 4, h: 16, at: (rod_end, 0, -8), dir: Z)
+  // the slot: the pin is pushed sideways by cam_slope mm per mm of stroke
+  let p1 = (pin_x - slot_half, cam_slope * slot_half)
+  let p2 = (pin_x + slot_half, -cam_slope * slot_half)
+  let w = 2.65
+  cut prism(points: [(p1.x + sn.x * w, p1.y + sn.y * w), (p2.x + sn.x * w, p2.y + sn.y * w), (p2.x - sn.x * w, p2.y - sn.y * w), (p1.x - sn.x * w, p1.y - sn.y * w)], h: 10, at: (0, 0, -5), dir: Z)
+  cut cylinder(d: 5.3, h: 10, at: (p1.x, p1.y, -5), dir: Z)
+  cut cylinder(d: 5.3, h: 10, at: (p2.x, p2.y, -5), dir: Z)
+}
+component clevis_pin = lib.dowel(d: 4, length: 14) { at: (rod_end, 0, -7), axis: Z }
+
+part boot {
+  color: #2a2d33
+  material: "TPU"
+  group: "Hinge"
+  process: mfg.fdm(build: X)   // printed standing up
+  removable
+  // bellows from the middle body (r 30) to the front core (r 25), held by two cable ties
+  body revolve([(30, 0), (30, 14), (32.5, 17), (29.5, 21), (32.5, 25), (29.5, 29), (31, 31), (25, 37), (25, 41.5), (26.8, 41.5), (26.8, 37.75), (33.38, 31.17), (31.75, 29), (34.75, 25), (31.75, 21), (34.79, 16.94), (31.8, 13.35), (31.8, 0)], at: (a_front - 14, 0, 0), dir: X)
+}
+
+component pivot_top = lib.screw(M4, 12) { at: (0, 0, kn_z + kn_t), axis: -Z }
+component pivot_bot = lib.screw(M4, 12) { at: (0, 0, -kn_z - kn_t), axis: Z }
+component pivot_nut_top = lib.nut(M4) { at: (0, 0, lug_z), axis: -Z }
+component pivot_nut_bot = lib.nut(M4) { at: (0, 0, -lug_z), axis: Z }
+
+// ── Middle body: hinge knuckles, cam guide, electronics shelves ──
+part body_a {
+  color: #3d7bfd
+  material: "PETG"
+  group: "Body"
+  process: mfg.fdm(build: X)   // printed standing up, so the shelves print as walls
+  body tube(od: body_od, id: body_id, h: a_front - a_end, at: (a_end, 0, 0), dir: X)
+  add cylinder(d: body_od, h: 4, at: (a_front - 4, 0, 0), dir: X)
+  // knuckles over and under the front core's lugs
+  for s in [1, -1] {
+    let z0 = s > 0 ? kn_z : -kn_z - kn_t
+    add box(10.5, 14, kn_t, at: (-5.25, 0, z0))
+    add cylinder(d: 14, h: kn_t, at: (0, 0, z0), dir: Z)
+    cut hole(M4, depth: kn_t + 1, at: (0, 0, z0 + kn_t + 0.5), dir: -Z)
+  }
+  // cam guide: a box channel through the hinge into the front core
+  add box(23 - (a_front - 4), 23, 17, at: ((23 + a_front - 4) / 2, 0, -8.5))
+  cut box(23 - (a_front - 4) + 2, 16.4, 8.4, at: ((23 + a_front - 4) / 2, 0, -4.2))
+  // clear the hinge nuts above and below the channel, keeping the side walls
+  cut box(34, 16.4, 4, at: (7, 0, 5.5))
+  cut box(34, 16.4, 4, at: (7, 0, -9.5))
+  // wires to the front motor
+  cut cylinder(d: 10, h: 6, at: (a_front - 5, -17, 0), dir: X)
+  // shelves
+  add box(a_front - 4 - (a_end + 4), 50, 1.5, at: ((a_front - 4 + a_end + 4) / 2, 0, top_shelf))
+  add box(a_front - 4 - (a_end + 4), 30, 1.5, at: ((a_front - 4 + a_end + 4) / 2, 0, bot_shelf))
+  for x in [-30, -150] {
+    for y in [19, -19] {
+      cut cylinder(d: 8, h: 4, at: (x, y, top_shelf - 1), dir: Z)
+    }
+  }
+  // actuator rear pivot: block under the top shelf, block with an insert on the bottom shelf
+  add box(12, 12, top_shelf - 8.1 + 0.5, at: (act_rear, 0, 8.1))
+  add box(12, 12, -8.1 - (bot_shelf + 1.5) + 0.5, at: (act_rear, 0, bot_shelf + 1))
+  cut hole(M4, depth: top_shelf + 1.5 - 8.1 + 0.5, at: (act_rear, 0, top_shelf + 1.5), dir: -Z)
+  cut hole(M4, fit: "insert", depth: 9, at: (act_rear, 0, -8.1), dir: -Z)
+  // access hole above the pivot screw (tape it shut)
+  cut cylinder(d: 8, h: 6, at: (act_rear, 0, 24.5), dir: Z)
+  // spigot into the rear body, with bosses for two heat-set inserts
+  add tube(od: body_id - 0.4, id: 49, h: 12.5, at: (a_end - 12, 0, 0), dir: X)
+  for s in [1, -1] {
+    add cylinder(d: 8, h: 8.2, at: (a_end - 6, s * 18.5, 0), dir: (0, s, 0))
+    cut hole(M3, fit: "insert", depth: 6.5, at: (a_end - 6, s * (body_id - 0.4) / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+component act_pivot = lib.screw(M4, 30) { at: (act_rear, 0, top_shelf + 1.5), axis: -Z }
+component act_insert = lib.insert(M4) { at: (act_rear, 0, -8.1), axis: -Z }
+
+// ── Rear body: battery and rear driver ───────────────────
+part body_b {
+  color: #2f63d6
+  material: "PETG"
+  group: "Body"
+  process: mfg.fdm(build: X)   // printed standing up
+  body tube(od: body_od, id: body_id, h: a_end - b_end, at: (b_end, 0, 0), dir: X)
+  // socket for the rear core
+  add tube(od: body_id + 0.5, id: core_od + 0.2, h: 12, at: (b_end, 0, 0), dir: X)
+  // battery floor and the shelf over it for the rear driver
+  add box(a_end - 12 - (b_end + 12) - 0.5, 50, 1.5, at: ((b_end + 12 + a_end - 12) / 2, 0, -12))
+  add box(50, 50, 1.5, at: (-210, 0, 11))
+  // radial screws: to the middle body's spigot and to the rear core
+  for s in [1, -1] {
+    cut hole(M3, depth: 4, at: (a_end - 6, s * body_od / 2, 0), dir: (0, -s, 0))
+    cut hole(M3, depth: 6, at: (b_end + 6, s * body_od / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+component joint_ab_ins_1 = lib.insert(M3) { at: (a_end - 6, (body_id - 0.4) / 2, 0), axis: -Y }
+component joint_ab_ins_2 = lib.insert(M3) { at: (a_end - 6, -(body_id - 0.4) / 2, 0), axis: Y }
+component joint_ab_scr_1 = lib.screw(M3, 8) { at: (a_end - 6, body_od / 2, 0), axis: -Y }
+component joint_ab_scr_2 = lib.screw(M3, 8) { at: (a_end - 6, -body_od / 2, 0), axis: Y }
+
+// ── Rear section ─────────────────────────────────────────
+part rear_core {
+  color: #5c6b7a
+  material: "PETG"
+  group: "Rear"
+  process: mfg.fdm(build: X)   // printed standing on end
+  body tube(od: core_od, id: core_id, h: b_end + 12 - r_end, at: (r_end, 0, 0), dir: X)
+  add tube(od: 56, id: 49, h: 2, at: (r_col - 2, 0, 0), dir: X)
+  add tube(od: 56, id: 49, h: 4, at: (r_b2, 0, 0), dir: X)
+  // the back of the battery rests on this floor
+  add box(b_end + 12 - (r_motor + 134 + 8), 40, 1.5, at: ((b_end + 12 + r_motor + 134 + 8) / 2, 0, -12))
+  for s in [1, -1] {
+    // inserts for the rear body's screws
+    add cylinder(d: 8, h: 7.4, at: (b_end + 6, s * 17.5, 0), dir: (0, s, 0))
+    cut hole(M3, fit: "insert", depth: 6.5, at: (b_end + 6, s * core_od / 2, 0), dir: (0, -s, 0))
+    // rear motor plate screws
+    cut hole(M3, depth: 4, at: (r_motor - 4, s * core_od / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+part rear_plate {
+  color: #8a96a3
+  material: "PETG"
+  group: "Rear"
+  process: mfg.fdm(build: X)   // printed flat on its face
+  body cylinder(d: core_id - 0.2, h: 8, at: (r_motor, 0, 0), dir: -X)
+  cut cylinder(d: 15, h: 2.5, at: (r_motor + 0.01, 0, 0), dir: -X)
+  cut cylinder(d: 10, h: 9, at: (r_motor + 0.5, 0, 0), dir: -X)
+  for h in m_rear.holes {
+    cut hole(M4, depth: 9, at: (r_motor - 8, h.y, h.z), dir: X)
+  }
+  for s in [1, -1] {
+    cut hole(M3, fit: "insert", depth: 6.5, at: (r_motor - 4, s * (core_id - 0.2) / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+part rear_screw {
+  color: #e0a526
+  material: "PETG"
+  group: "Rear"
+  process: mfg.fdm(build: -X)   // printed standing up, with tree supports under the flights
+  spin: -1
+  axis: X
+  removable
+  body revolve([(32.5, 0), (shell_d / 2, 0), (shell_d / 2, r_shell0 - r_shell_end), (32.5, r_shell0 - r_shell_end), (32.5, 11), (27, 11), (27, 8), (32.5, 8)], at: (r_shell0, 0, 0), dir: -X)
+  add flight(d: flight_d, core_d: shell_d - 0.5, pitch: pitch, length: rear_flight_l, t: flight_t, root_t: flight_root, at: (r_fl0, 0, 0), dir: -X, left: true)
+  for s in [1, -1] {
+    cut hole(M3, depth: 5, at: (r_end - 3, s * shell_d / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+part tail {
+  color: #c98b12
+  material: "PETG"
+  group: "Rear"
+  process: mfg.fdm(build: -X)   // printed standing on its spigot, tip up
+  spin: -1
+  axis: X
+  removable
+  body tube(od: bore - 0.2, id: 36, h: 6, at: (r_end, 0, 0), dir: -X)
+  add revolve([(0, 0), (shell_d / 2, 0), (4, tail_l - 6), (0, tail_l)], at: (r_shell_end, 0, 0), dir: -X)
+  cut cylinder(d: 36, h: 8, at: (r_end + 0.01, 0, 0), dir: -X)
+  for h in hub_pts {
+    cut cylinder(d: 4.5, h: 17, at: (r_end - 7.5, h.x, h.y), dir: -X)
+    cut cylinder(d: 8, h: 40, at: (r_end - 24, h.x, h.y), dir: -X)
+  }
+  for s in [1, -1] {
+    cut hole(M3, fit: "insert", depth: 6.5, at: (r_end - 3, s * (bore - 0.2) / 2, 0), dir: (0, -s, 0))
+  }
+}
+
+// ── Launch tool: push it in by the tail until the rear screw reaches the sand ──
+// The front screw alone can't pull the body in from the wall hole (see start_push).
+// A greased cone seat on a 25 mm pole: the tail turns inside it, the pole doesn't.
+let pole_d = 25
+let cup_a = 14              // the seat starts this far behind the tail's base
+let cup_gap = 1             // along the axis, for grease
+let cup_r0 = shell_d / 2 - (shell_d / 2 - 4) * (cup_a - cup_gap) / (tail_l - 6)
+part push_cup {
+  color: #6b7280
+  material: "PETG"
+  group: "Launch tool"
+  process: mfg.fdm(build: X)   // printed standing on the pole socket
+  removable                    // shown where it pushes; it comes off with the pole
+  body revolve([(cup_r0, cup_a), (30, cup_a), (30, 40), (17, 55), (17, 100), (pole_d / 2 + 0.25, 100), (pole_d / 2 + 0.25, 60), (0, 45), (0, tail_l + cup_gap), (4, tail_l - 6 + cup_gap)], at: (r_shell_end, 0, 0), dir: -X)
+}
+
+component seal_r = lib.seal("seal_tc_50x65x8") { at: (r_shell0, 0, 0), axis: -X }
+component bearing_r1 = lib.bearing("6810") { at: (r_b1, 0, 0), axis: -X }
+component bearing_r2 = lib.bearing("6810") { at: (r_b2, 0, 0), axis: -X }
+component joint_bc_ins_1 = lib.insert(M3) { at: (b_end + 6, core_od / 2, 0), axis: -Y }
+component joint_bc_ins_2 = lib.insert(M3) { at: (b_end + 6, -core_od / 2, 0), axis: Y }
+component joint_bc_scr_1 = lib.screw(M3, 10) { at: (b_end + 6, body_od / 2, 0), axis: -Y }
+component joint_bc_scr_2 = lib.screw(M3, 10) { at: (b_end + 6, -body_od / 2, 0), axis: Y }
+component plate_screws_r = lib.screw(M4, 12) { at: [(r_motor - 8, m_rear.holes[0].y, m_rear.holes[0].z), (r_motor - 8, m_rear.holes[1].y, m_rear.holes[1].z), (r_motor - 8, m_rear.holes[2].y, m_rear.holes[2].z), (r_motor - 8, m_rear.holes[3].y, m_rear.holes[3].z)], axis: X }
+component plate_ins_r1 = lib.insert(M3) { at: (r_motor - 4, (core_id - 0.2) / 2, 0), axis: -Y }
+component plate_ins_r2 = lib.insert(M3) { at: (r_motor - 4, -(core_id - 0.2) / 2, 0), axis: Y }
+component plate_scr_r1 = lib.screw(M3, 8) { at: (r_motor - 4, core_od / 2, 0), axis: -Y }
+component plate_scr_r2 = lib.screw(M3, 8) { at: (r_motor - 4, -core_od / 2, 0), axis: Y }
+component tail_ins_1 = lib.insert(M3) { at: (r_end - 3, (bore - 0.2) / 2, 0), axis: -Y }
+component tail_ins_2 = lib.insert(M3) { at: (r_end - 3, -(bore - 0.2) / 2, 0), axis: Y }
+component tail_scr_1 = lib.screw(M3, 8) { at: (r_end - 3, shell_d / 2, 0), axis: -Y }
+component tail_scr_2 = lib.screw(M3, 8) { at: (r_end - 3, -shell_d / 2, 0), axis: Y }
+component tail_hub_screws = lib.screw(M4, 20) { at: [(r_end - 24, hub_pts[0].x, hub_pts[0].y), (r_end - 24, hub_pts[1].x, hub_pts[1].y), (r_end - 24, hub_pts[2].x, hub_pts[2].y), (r_end - 24, hub_pts[3].x, hub_pts[3].y)], axis: X }
+
+// ── Wiring ───────────────────────────────────────────────
+// battery → XT60 (the power switch: plug in, then close the body) → fuse → everything
+wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: main_awg, color: "red", label: "battery +" }
+net VBAT: fuse.OUT, drv_f.VIN, drv_r.VIN, drv_s.VM, reg.VIN, vsense.VCC_IN { gauge: main_awg, color: "red" }
+wire bat.NEG -> xt.NEG_A { gauge: main_awg, color: "black", label: "battery −" }
+net GND_PWR: xt.NEG_B, drv_f.GND_PWR, drv_r.GND_PWR, reg.GND { gauge: main_awg, color: "black" }
+net GND: reg.GND, ctrl.GND, drv_f.GND, drv_r.GND, drv_s.GND, imu.GND, vsense.GND_IN, vsense.MINUS, m_front.ENC_GND, m_rear.ENC_GND, steer.FB_GND { gauge: 24, color: "black" }
+net V5: reg.VOUT, ctrl.V5, imu.VIN, drv_s.VCC, drv_s.STBY, m_front.ENC_VCC, m_rear.ENC_VCC, steer.FB_VCC { gauge: 24, color: "red" }
+// motors
+wire drv_f.OUTA -> m_front.M_PLUS { gauge: 16, color: "red", label: "front motor +" }
+wire drv_f.OUTB -> m_front.M_MINUS { gauge: 16, color: "black", label: "front motor −" }
+wire drv_r.OUTA -> m_rear.M_PLUS { gauge: 16, color: "red", label: "rear motor +" }
+wire drv_r.OUTB -> m_rear.M_MINUS { gauge: 16, color: "black", label: "rear motor −" }
+wire drv_s.AO1 -> steer.M_PLUS { gauge: 24, color: "red" }
+wire drv_s.AO2 -> steer.M_MINUS { gauge: 24, color: "black" }
+// control
+wire ctrl.D9 -> drv_f.PWM { gauge: 24, color: "orange" }
+wire ctrl.D8 -> drv_f.DIR { gauge: 24, color: "yellow" }
+wire ctrl.A0 -> drv_f.CS { gauge: 24, color: "white" }
+wire ctrl.D10 -> drv_r.PWM { gauge: 24, color: "orange" }
+wire ctrl.D7 -> drv_r.DIR { gauge: 24, color: "yellow" }
+wire ctrl.A1 -> drv_r.CS { gauge: 24, color: "white" }
+wire ctrl.D5 -> drv_s.PWMA { gauge: 24, color: "orange" }
+wire ctrl.D11 -> drv_s.AIN1 { gauge: 24, color: "yellow" }
+wire ctrl.D12 -> drv_s.AIN2 { gauge: 24, color: "green" }
+// feedback
+wire ctrl.D2 -> m_front.ENC_A { gauge: 24, color: "blue" }
+wire ctrl.D4 -> m_front.ENC_B { gauge: 24, color: "purple" }
+wire ctrl.D3 -> m_rear.ENC_A { gauge: 24, color: "blue" }
+wire ctrl.D6 -> m_rear.ENC_B { gauge: 24, color: "purple" }
+wire ctrl.A7 -> steer.FB { gauge: 24, color: "white" }
+wire ctrl.A6 -> vsense.S { gauge: 24, color: "green" }
+wire ctrl.A4 -> imu.SDA { gauge: 24, color: "blue" }
+wire ctrl.A5 -> imu.SCL { gauge: 24, color: "yellow" }
+
+// ── Firmware ─────────────────────────────────────────────
+firmware brain {
+  board: ctrl
+  behaviour: "Wait two minutes after power-up, then dig across the pit holding the starting heading. Back off and retry on stalls, and stop when the nose breaks out on the far side or the wall stops it. If neither happens by a quarter more than the expected time, or the motors get warm first, back out on the reserve until the rear screw runs free in the wall hole, then stop so it can be pulled out by the tail."
+  start_delay: 120s
+  run_distance: pit_l + 150mm
+  give_up_time: give_up
+  pitch: pitch
+  slip: 0.5
+  power: 0.8
+  steer_arm: pin_x
+  steer_slope: cam_slope
+  steer_max: steer_max
+  steer_mid: act_mid
+  // extending the actuator slides the slot forward and pushes the pin (ahead of the hinge) to +Y, so the
+  // nose turns anticlockwise seen from above, while the IMU heading grows clockwise
+  steer_sign: -1
+}
+
+// ── Checks only a test can make ──────────────────────────
+test "Bench run": "Power it on the bench with the screws in the air: each screw turns the right way (front clockwise seen from behind), the console shows both encoders counting and the steering moves both ways and holds the middle."
+test "Bucket dig": "Bury the front screw in a bucket of damp sand and run it at full power for 30 s: the motor current stays under 6 A and nothing slips on the motor shaft."
+test "Screw at depth": "Build a plywood box 0.4 m long, 0.3 m wide and 0.4 m tall with a 95 mm hole in one end. Put the front screw through the hole, fill the box with the same dry sand, lay a board on the sand and load it with about 180 kg of sandbags (roughly the 17 kPa at the bottom of the pit). Run it at full power: the motor current stays under 4 A, the robot pulls itself in at least 4 mm/s and nothing slips on the motor shaft. Repeat with the rear screw."
+test "Motor heat": "In the loaded box, run the front screw for 6 minutes, one crossing: the motor can stays below 60 °C. If it runs hotter, lower the firmware's POWER before the real pit."
+test "Trench run": "Dig a trench 2.5 m long in the same sand, lay the robot in the bottom and cover it with 0.3 m of sand. Let it run the full distance: it comes out within 100 mm of the line, the IMU roll on the console stays within ±15° and the firmware stops at breakthrough. If it rolls, glue a few 5 mm strips along the middle body so it grips the sand."
+test "Push start": "Build a board wall with a 95 mm hole across one end of the trench, sand behind it. Put the nose in the hole with the front screw in the sand, start it, and push the tail with the push cup on its pole: it should need no more than a firm push (about 120 N, like a loaded wheelbarrow) and keep digging on its own once the rear screw is in the sand, about 300 mm in."
+test "Steering in the trench": "In the trench, command 5° left then 5° right while advancing: the robot should curve visibly (more than 20 mm sideways over 0.5 m) and the actuator should reach its target without stalling."
+test "Sand seal": "After the runs, open the screws and check for sand inside the cores and past the seals. Regrease the seals and bearings."
+test "Battery soak": "Run the two box tests back to back for 12 minutes in all, the time of two crossings, with the other motor running free: the battery stays above 3.6 V per cell."
+
+// ── Also buy ─────────────────────────────────────────────
+buy "goBILDA 8 mm REX pattern mount hub" { qty: 2, price: 8, search: "goBILDA 1310 Series 8mm REX Bore Pattern Mount Hub" }
+buy "ATC blade fuse 15 A" { qty: 3, price: 1, search: "ATC blade fuse 15A" }
+buy "LiPo balance charger (3S)" { qty: 1, price: 35, search: "LiPo balance charger 3S XT60" }
+buy "LiPo fireproof charging bag" { qty: 1, price: 10, search: "LiPo safe charging bag" }
+buy "Silicone wire 14, 16 and 24 AWG" { qty: 1, price: 18, search: "silicone wire kit 14 16 24 AWG" }
+buy "Heat-shrink tubing kit" { qty: 1, price: 8, search: "heat shrink tubing kit" }
+buy "PETG filament 1 kg" { qty: 1, price: 22, search: "PETG filament 1.75mm 1kg" }
+buy "TPU 95A filament 0.5 kg" { qty: 1, price: 20, search: "TPU 95A filament 1.75mm" }
+buy "Cable ties 2.5 mm" { qty: 1, price: 5, search: "cable ties 2.5mm 100mm" }
+buy "Lithium grease (seals and bearings)" { qty: 1, price: 8, search: "white lithium grease tube" }
+buy "Medium threadlocker" { qty: 1, price: 7, search: "medium strength threadlocker blue" }
+buy "Double-sided foam tape (boards)" { qty: 1, price: 6, search: "double sided foam mounting tape" }
+buy "Play sand for the test box, 25 kg" { qty: 4, price: 8, search: "play sand 25kg" }
+buy "Woven sandbags for the box load" { qty: 8, price: 1, search: "woven polypropylene sandbags" }
+buy "Plywood 12 mm, 1200 × 600 mm (test box)" { qty: 1, price: 15, search: "12mm plywood sheet 1200x600" }
+buy "Push pole: broom handle or 25 mm dowel, 1.2 m" { qty: 1, price: 6, search: "25mm wooden dowel 1200mm" }
+
+// ── Requirements ─────────────────────────────────────────
+require "Screws push harder than the sand resists" for cross: front.thrust + rear.thrust >= 1.3 * (front.resist + rear.resist)
+require "One person can push it in from the wall until the rear screw bites" for cross: start_push <= 150N
+require "Front motor runs below half its stall torque" for cross: front_pt.load_fraction <= 0.5
+require "Rear motor runs below half its stall torque" for cross: rear_pt.load_fraction <= 0.5
+require "Battery lasts two crossings" for reserve: run.minutes >= 2 * crossing_min
+require "Battery covers giving up and backing out the whole way" for reserve: run.time >= 2 * give_up
+require "Body friction stops it rolling with the screws" for cross: roll_hold >= 3 * abs(front.torque - rear.torque)
+require "Steering has twice the moment it needs" for steer: steer_have.moment >= 2 * steer_need.moment
+require "Steering holds without power" for steer: steer_have.hold_moment >= steer_need.moment
+require "The slot ends stop the hinge just past the steering limit" for steer: atan(slot_half * cam_slope / pin_x) >= steer_max
+require "Main power wire is thick enough" for cross: power_wire.awg >= main_awg
+require "Flights can carry most of the sand the shell displaces" soft for cross: convey.ratio >= 0.5

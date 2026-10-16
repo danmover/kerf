@@ -93,6 +93,25 @@ export interface Hit {
 
 const tuple = (v: THREE.Vector3): [number, number, number] => [v.x, v.y, v.z];
 
+/**
+ * Something drawn on top of the model by another module (analysis results,
+ * for example). The scene owns the render loop; an overlay only adds its
+ * objects, says which parts it draws in their place, and animates on tick.
+ * Overlays are drawn after the accumulated image, lit by a simple rig, and
+ * hidden where the remaining opaque parts are in front of them.
+ */
+export interface SceneOverlay {
+  readonly object: THREE.Object3D;
+  /** part ids the overlay draws instead of the normal solids */
+  readonly replaces: ReadonlySet<string>;
+  /** advance animations; return true while more frames are needed */
+  tick?(now: number, dt: number): boolean;
+  /** the section planes in use, or null */
+  setClipping?(planes: THREE.Plane[] | null): void;
+  /** jump to the end state of any animation, for a still image */
+  still?(): void;
+}
+
 export interface DisplayState {
   hidden: Set<string>;
   selected: Set<string>;
@@ -224,6 +243,12 @@ export class SceneController {
   private swatchCache = new Map<string, string>();
   private disposed = false;
   private measure = new MeasureOverlay();
+  private overlays = new Set<SceneOverlay>();
+  /** parts drawn by an overlay instead of as solids */
+  private replaced = new Set<string>();
+  /** lights for lit overlays: the studio lighting only reaches the accumulated scene */
+  private overlayLights = new THREE.Group();
+  private overlayKey = new THREE.DirectionalLight(0xffffff, 2.2);
   debugReason = "";
   onHover: (id: string | null) => void = () => undefined;
   onPick: (id: string | null, additive: boolean) => void = () => undefined;
@@ -235,6 +260,7 @@ export class SceneController {
   onLightAngle: (deg: number) => void = () => undefined;
   /** the turntable stopped because the user took the camera */
   onTurntableStop: () => void = () => undefined;
+  private renderListeners = new Set<() => void>();
   /** until the user moves the camera, the first complete build re-frames the model */
   private autoFit = true;
 
@@ -298,6 +324,10 @@ export class SceneController {
     this.sectionFill.matrixAutoUpdate = false;
     this.overlay.add(this.sectionFill, this.sectionFrame);
     this.overlay.add(this.measure.group);
+    const hemi = new THREE.HemisphereLight(0xf2f5ff, 0x2a2f3a, 1.5);
+    hemi.position.set(0, 0, 1);
+    this.overlayLights.add(hemi, this.overlayKey);
+    this.overlay.add(this.overlayLights);
     this.buildTriad();
     this.applyLighting();
 
@@ -416,6 +446,7 @@ export class SceneController {
     this.keyDir.copy(dirFrom(p.key.az + this.render$.lightAngle, p.key.el));
     this.key.color.set(p.key.color);
     this.key.intensity = p.key.i;
+    this.overlayKey.position.copy(this.keyDir);
     this.groundMat.opacity = p.shadow;
     const look = this.pipe.look;
     look.exposure = p.exposure;
@@ -466,6 +497,87 @@ export class SceneController {
     this.turntable = on;
     this.controls.autoRotate = on;
     if (on) this.autoFit = false;
+  }
+
+  // ---------- hooks for 2D overlays (sketch editing) ----------
+
+  /** Call fn after each frame drawn to the canvas, so 2D overlays can follow the camera. Returns the way to stop. */
+  onRendered(fn: () => void): () => void {
+    this.renderListeners.add(fn);
+    // draw once more so a new overlay sees the camera as it is now, even if nothing moves again
+    this.needComposite = true;
+    return () => void this.renderListeners.delete(fn);
+  }
+
+  /** In sketch mode the left button belongs to the sketch tools: middle orbits, right pans. */
+  setSketchMode(on: boolean) {
+    this.controls.mouseButtons = on ? { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+  }
+
+  /** World point to pixels in the viewport; `front` is false behind the camera. */
+  toScreen(p: [number, number, number]): { x: number; y: number; front: boolean } {
+    const v = new THREE.Vector3(p[0], p[1], p[2]).project(this.camera);
+    return { x: ((v.x + 1) / 2) * this.container.clientWidth, y: ((1 - v.y) / 2) * this.container.clientHeight, front: v.z < 1 };
+  }
+
+  /** The ray through a pixel of the viewport. */
+  rayAt(x: number, y: number): { o: [number, number, number]; d: [number, number, number] } {
+    const ndc = new THREE.Vector2((x / Math.max(1, this.container.clientWidth)) * 2 - 1, -(y / Math.max(1, this.container.clientHeight)) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const { origin: o, direction: d } = this.raycaster.ray;
+    return { o: [o.x, o.y, o.z], d: [d.x, d.y, d.z] };
+  }
+
+  /** The part surface under a pixel: its point and outward normal, for sketching on a face. */
+  surfaceAt(x: number, y: number): { partId: string; point: [number, number, number]; normal: [number, number, number] } | null {
+    const ndc = new THREE.Vector2((x / Math.max(1, this.container.clientWidth)) * 2 - 1, -(y / Math.max(1, this.container.clientHeight)) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const meshes = [...this.parts.values()].filter((p) => p.group.visible && !p.removing).map((p) => p.mesh);
+    for (const h of this.raycaster.intersectObjects(meshes, false)) {
+      if (this.sectionAnim.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
+      if (!h.face) continue;
+      const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+      return { partId: h.object.userData.partId as string, point: [h.point.x, h.point.y, h.point.z], normal: [n.x, n.y, n.z] };
+    }
+    return null;
+  }
+
+  /** Turn to look straight at a plane (normal n toward the viewer, v pointing up). */
+  viewPlane(n: [number, number, number], v: [number, number, number], center: [number, number, number], radius: number) {
+    const dir = new THREE.Vector3(...n).normalize().addScaledVector(new THREE.Vector3(...v), -1e-4).normalize();
+    const fov = (this.camera.fov * Math.PI) / 180;
+    const dist = Math.max(radius, 5) / Math.sin(Math.min(fov, fov * this.camera.aspect) / 2);
+    const target = new THREE.Vector3(...center);
+    this.autoFit = false;
+    this.moveCamera(target.clone().addScaledVector(dir, dist * 1.1), target, 650);
+  }
+
+  /** Half the diagonal of the model's bounding box (for framing). */
+  modelRadius() {
+    return this.bounds.getSize(new THREE.Vector3()).length() / 2;
+  }
+
+  cameraState() {
+    return { pos: this.camera.position.toArray() as [number, number, number], target: this.controls.target.toArray() as [number, number, number] };
+  }
+
+  restoreCamera(s: { pos: [number, number, number]; target: [number, number, number] }) {
+    this.moveCamera(new THREE.Vector3(...s.pos), new THREE.Vector3(...s.target), 600);
+  }
+
+  /** Swing the camera to a position and target (at once with reduced motion). */
+  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
+    if (this.display.reduceMotion) {
+      this.camera.position.copy(pos);
+      this.controls.target.copy(target);
+      this.controls.update();
+      this.camAnim = null;
+    } else {
+      const fromOff = this.camera.position.clone().sub(this.controls.target);
+      const toOff = pos.clone().sub(target);
+      this.camAnim = { t0: performance.now(), dur, fromDir: fromOff.clone().normalize(), toDir: toOff.clone().normalize(), fromDist: fromOff.length(), toDist: toOff.length(), fromTarget: this.controls.target.clone(), toTarget: target.clone() };
+    }
+    this.changed = true;
   }
 
   // ---------- parts ----------
@@ -719,7 +831,7 @@ export class SceneController {
     const ghost = (focusSet && !focusSet.has(obj.id)) || (d.xray && !selected);
     obj.opacityTarget = ghost ? (d.xray ? 0.2 : 0.08) : 1;
     if (d.reduceMotion) obj.opacity = obj.opacityTarget;
-    const visible = !d.hidden.has(obj.id) && !p.hidden;
+    const visible = !d.hidden.has(obj.id) && !p.hidden && !this.replaced.has(obj.id);
     obj.group.visible = visible;
     obj.edges.visible = (d.edges && !this.photoLookOn) || selected || hovered;
     obj.mesh.layers.set(0);
@@ -804,7 +916,72 @@ export class SceneController {
     if (!s.on && this.display.reduceMotion) this.sectionAnim.on = false;
     this.placeSection();
     for (const obj of this.parts.values()) this.updateClipping(obj);
+    this.clipOverlays();
     this.changed = true;
+  }
+
+  // ---------- overlays ----------
+
+  addOverlay(o: SceneOverlay) {
+    this.overlays.add(o);
+    this.overlay.add(o.object);
+    this.syncOverlays();
+  }
+
+  removeOverlay(o: SceneOverlay) {
+    if (!this.overlays.delete(o)) return;
+    this.overlay.remove(o.object);
+    this.syncOverlays();
+  }
+
+  private syncOverlays() {
+    this.replaced = new Set([...this.overlays].flatMap((o) => [...o.replaces]));
+    // applyMaterial restarts the accumulation for parts that appear or disappear
+    for (const obj of this.parts.values()) this.applyMaterial(obj);
+    this.clipOverlays();
+    this.needComposite = true;
+  }
+
+  private clipOverlays() {
+    for (const o of this.overlays) o.setClipping?.(this.sectionAnim.on ? [this.sectionPlane] : null);
+  }
+
+  /** Redraw the overlays (the accumulated image of the model stays as it is). */
+  invalidate() {
+    this.needComposite = true;
+  }
+
+  /** A raycaster from the camera through a point on screen, in client coordinates. */
+  raycasterAt(clientX: number, clientY: number): THREE.Raycaster {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    const r = new THREE.Raycaster();
+    r.setFromCamera(ndc, this.camera);
+    return r;
+  }
+
+  /** The section plane while a section is on, so overlays can skip what it cuts away. */
+  activeSection(): THREE.Plane | null {
+    return this.sectionAnim.on ? this.sectionPlane : null;
+  }
+
+  /** Fill the depth buffer of the current target with the visible opaque parts, so overlays hide behind them. */
+  private overlayDepth() {
+    const r = this.renderer;
+    const cam = this.camera;
+    const prevMask = cam.layers.mask;
+    const prevClip = r.clippingPlanes;
+    const saveShadow = r.shadowMap.autoUpdate;
+    r.shadowMap.autoUpdate = false;
+    r.clearDepth();
+    r.clippingPlanes = this.sectionAnim.on ? [this.sectionPlane] : [];
+    this.scene.overrideMaterial = this.depthOnly;
+    cam.layers.set(L_OPAQUE);
+    r.render(this.scene, cam);
+    this.scene.overrideMaterial = null;
+    cam.layers.mask = prevMask;
+    r.clippingPlanes = prevClip;
+    r.shadowMap.autoUpdate = saveShadow;
   }
 
   private placeSection() {
@@ -865,6 +1042,23 @@ export class SceneController {
     this.changed = true;
   }
 
+  /** The group carrying a part's placement, explode offset and motion, for overlays that should move with it. */
+  partGroup(id: string): THREE.Group | undefined {
+    const obj = this.parts.get(id);
+    return obj && !obj.removing ? obj.group : undefined;
+  }
+
+  /** A part's clipping planes and opacity, so overlays cut and ghost with it. */
+  partLook(id: string): { planes: THREE.Plane[] | null; opacity: number } | undefined {
+    const obj = this.parts.get(id);
+    return obj ? { planes: obj.mat.clippingPlanes, opacity: obj.mat.opacity } : undefined;
+  }
+
+  /** Redraw on the next frame (after an overlay changes). */
+  requestRender() {
+    this.changed = true;
+  }
+
   setInterferences(list: Interference[], focus: string | null) {
     for (const i of this.interferences) {
       this.interGroup.remove(i.obj);
@@ -909,7 +1103,7 @@ export class SceneController {
   private computeBounds() {
     const box = new THREE.Box3();
     for (const obj of this.parts.values()) {
-      if (obj.removing || !obj.group.visible) continue;
+      if (obj.removing || (!obj.group.visible && !this.replaced.has(obj.id))) continue;
       const g = obj.mesh.geometry;
       if (!g.boundingBox) g.computeBoundingBox();
       box.union(g.boundingBox!.clone().applyMatrix4(obj.placement));
@@ -1035,7 +1229,9 @@ export class SceneController {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    const meshes = [...this.parts.values()].filter((p) => p.group.visible && !p.removing && p.opacityTarget > 0.5).map((p) => p.mesh);
+    // parts drawn by an overlay (analysis results) are hidden but still pickable
+    const pickable = (p: PartObj) => p.group.visible || (this.replaced.has(p.id) && !this.display.hidden.has(p.id) && !p.part.hidden);
+    const meshes = [...this.parts.values()].filter((p) => pickable(p) && !p.removing && p.opacityTarget > 0.5).map((p) => p.mesh);
     const hits = this.raycaster.intersectObjects(meshes, false);
     for (const h of hits) {
       if (this.sectionAnim.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
@@ -1133,6 +1329,7 @@ export class SceneController {
     } else if (!this.section.on && sa.on) {
       sa.on = false;
       for (const obj of this.parts.values()) this.updateClipping(obj);
+      this.clipOverlays();
       moving = true;
     }
     const fadeTarget = this.section.on ? 1 : 0;
@@ -1312,6 +1509,8 @@ export class SceneController {
       this.needComposite = true;
     }
     if (this.interferences.length) this.needComposite = true;
+    // overlays animate on top of the accumulated image without restarting it
+    for (const o of this.overlays) if (o.tick?.(now, dt)) this.needComposite = true;
 
     // under the photoreal view the interactive image is only a preview
     const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
@@ -1344,6 +1543,7 @@ export class SceneController {
     if (photo && this.photoMix > 0) this.pipe.photo(photo.texture, { mix: this.photoMix, samples: photo.samples, near: this.camera.near, far: this.camera.far });
     else this.pipe.photo(null);
     this.present(now);
+    for (const fn of this.renderListeners) fn();
   }
 
   // ---------- photoreal ----------
@@ -1448,6 +1648,7 @@ export class SceneController {
     }
     this.pipe.composite(null, { mask: true, selAmt: this.selAmt, selFill: this.selFill, hoverAmt: this.hoverAmt, time: now / 1000 });
     r.setRenderTarget(null);
+    if (this.overlays.size) this.overlayDepth();
     r.render(this.overlay, this.camera);
     // axis triad in the corner
     const s = 86;
@@ -1530,12 +1731,22 @@ export class SceneController {
   // ---------- capture ----------
 
   /** Render a finished, converged image of the model at any size, without touching the on-screen view. */
-  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number] }): Promise<string> {
-    const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim } };
+  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean }): Promise<string> {
+    const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim }, replaced: this.replaced };
+    // overlays (analysis results) are drawn unless the caller asks for the plain model
+    const showOverlays = opts.overlays !== false && this.overlays.size > 0;
+    const hideOverlays = !showOverlays && this.overlays.size > 0;
+    if (hideOverlays) {
+      for (const o of this.overlays) o.object.visible = false;
+      this.replaced = new Set();
+      for (const obj of this.parts.values()) this.applyMaterial(obj);
+    }
+    for (const o of this.overlays) o.still?.();
     const pipe = new RenderPipeline(this.renderer);
     Object.assign(pipe.look, this.pipe.look);
     pipe.setSize(opts.width, opts.height, 1);
-    const out = new THREE.WebGLRenderTarget(opts.width, opts.height, { type: THREE.UnsignedByteType, depthBuffer: false });
+    // lit overlays need depth to hide behind the parts in front of them
+    const out = new THREE.WebGLRenderTarget(opts.width, opts.height, { type: THREE.UnsignedByteType, depthBuffer: showOverlays });
     out.texture.colorSpace = THREE.SRGBColorSpace;
     // let pending reveal animations finish first
     for (const o of this.parts.values()) {
@@ -1578,12 +1789,14 @@ export class SceneController {
         this.sectionAnim = { t: 0.5, on: true, fade: 0 };
         this.placeSection();
         for (const o of this.parts.values()) this.updateClipping(o);
+        this.clipOverlays();
       }
       this.frameMatricesOnly();
       const n = opts.samples ?? Math.max(16, Math.min(96, this.pipe.maxSamples));
       for (let i = 0; i < n; i++) pipe.renderSample(this.scene, this.camera, (k) => this.placeKey(k));
       pipe.composite(out, { time: 0 });
       this.renderer.setRenderTarget(out);
+      if (showOverlays) this.overlayDepth();
       this.renderer.render(this.overlay, this.camera);
       const px = new Uint8Array(opts.width * opts.height * 4);
       this.renderer.readRenderTargetPixels(out, 0, 0, opts.width, opts.height, px);
@@ -1600,6 +1813,11 @@ export class SceneController {
       this.section = prev.section;
       this.sectionAnim = prev.sectionAnim;
       this.placeSection();
+      if (hideOverlays) {
+        for (const o of this.overlays) o.object.visible = true;
+        this.replaced = prev.replaced;
+      }
+      this.clipOverlays();
       this.setDisplay(prev.display);
       for (const o of this.parts.values()) {
         o.opacity = o.opacityTarget;

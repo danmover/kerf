@@ -1,0 +1,433 @@
+/* ---------- analysis results: viewport legend and probe ---------- */
+
+.res-legend {
+  right: 12px;
+  bottom: 12px;
+  width: 272px;
+  padding: 10px 12px 9px;
+}
+.res-legend-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.res-bar {
+  height: 10px;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 18px rgba(0, 0, 0, 0.4);
+}
+.res-ticks {
+  position: relative;
+  height: 16px;
+  margin: 3px 0 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-2);
+}
+.res-ticks span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.res-ticks span:first-child {
+  transform: none;
+}
+.res-ticks span:last-child {
+  transform: translateX(-100%);
+}
+.res-safety-key {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.res-safety-key span::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  margin-right: 4px;
+  background: currentColor;
+  vertical-align: 0;
+}
+.res-safety-key .fail {
+  color: var(--fail);
+}
+.res-safety-key .warn {
+  color: var(--warn);
+}
+.res-safety-key .pass {
+  color: var(--pass);
+}
+.res-meta {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.res-probe {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(10, 13, 19, 0.92);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.res-probe b {
+  color: var(--text);
+  font-weight: 500;
+}
+.res-probe span {
+  color: var(--text-3);
+  margin-left: 6px;
+}
+
+/* ---------- analysis panel (dock tab) ---------- */
+
+.an {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.an-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+  flex-wrap: wrap;
+  background: var(--bg-1);
+}
+.an-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+.an-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    color 0.15s;
+}
+.an-pick:hover {
+  color: var(--text);
+  border-color: var(--line-3);
+}
+.an-pick.active {
+  color: var(--text);
+  border-color: rgba(109, 139, 255, 0.55);
+  background: var(--accent-soft);
+}
+.an-pick .val {
+  color: var(--text-3);
+}
+.an-pick .val.fail {
+  color: var(--fail);
+}
+.an-pick .val.warn {
+  color: var(--warn);
+}
+.an-pick .val.pass {
+  color: var(--pass);
+}
+.an-ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+}
+.an-ctl .slider {
+  width: 90px;
+}
+.an-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+.an-toggle:hover {
+  color: var(--text);
+}
+.an-toggle.on {
+  color: var(--accent-2);
+  border-color: rgba(109, 139, 255, 0.45);
+  background: var(--accent-soft);
+}
+.an-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.an-stat {
+  position: relative;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  padding: 9px 11px 10px;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  overflow: hidden;
+}
+button.an-stat {
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    transform 0.15s var(--ease);
+}
+button.an-stat:hover {
+  border-color: var(--line-3);
+}
+button.an-stat.active {
+  border-color: rgba(109, 139, 255, 0.6);
+  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.12);
+}
+.an-stat .k {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.an-stat .v {
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 500;
+  color: var(--text);
+  margin-top: 3px;
+  letter-spacing: -0.01em;
+}
+.an-stat .v small {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-left: 4px;
+  font-weight: 400;
+}
+.an-stat .s {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+  line-height: 1.4;
+}
+.an-stat.fail .v {
+  color: var(--fail);
+}
+.an-stat.warn .v {
+  color: var(--warn);
+}
+.an-stat.pass .v {
+  color: var(--pass);
+}
+.an-stat .bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  opacity: 0.9;
+}
+.an-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (max-width: 900px) {
+  .an-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.an-box {
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  padding: 10px 12px;
+}
+.an-box + .an-box {
+  margin-top: 12px;
+}
+.an-box h4 {
+  margin: 0 0 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.an-setup {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.75;
+}
+.an-setup .tag {
+  display: inline-block;
+  min-width: 58px;
+  color: var(--text-4);
+}
+.an-note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.an-note + .an-note {
+  margin-top: 6px;
+}
+.an-note svg {
+  flex: none;
+  margin-top: 2px;
+}
+.an-progress {
+  height: 3px;
+  border-radius: 3px;
+  background: var(--bg-4);
+  overflow: hidden;
+  margin-top: 8px;
+}
+.an-progress > div {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+  box-shadow: 0 0 10px var(--accent-glow);
+  transition: width 0.25s var(--ease);
+}
+.an-spark {
+  display: block;
+  width: 100%;
+  height: 54px;
+}
+.an-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.an-table th {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  font-weight: 500;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.an-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(31, 37, 51, 0.6);
+  color: var(--text-2);
+  vertical-align: middle;
+}
+.an-table td.num {
+  font-family: var(--mono);
+  text-align: right;
+  white-space: nowrap;
+}
+.an-table th.num {
+  text-align: right;
+}
+.an-table tr:last-child td {
+  border-bottom: 0;
+}
+.an-meter {
+  position: relative;
+  width: 80px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-4);
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+}
+.an-meter > div {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+}
+.an-meter .goal {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 1.5px;
+  background: var(--text-2);
+}
+.an-empty {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .an-empty {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.an-code {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+  white-space: pre;
+  overflow: auto;
+}
+.an-code .kw {
+  color: var(--violet);
+}
+.an-code .fn {
+  color: var(--cyan);
+}
+.an-code .str {
+  color: #c3e88d;
+}
+.an-code .num {
+  color: #f78c6c;
+}
+.an-code .cm {
+  color: var(--text-4);
+}
