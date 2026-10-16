@@ -4,6 +4,7 @@ import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
+import type { DrawingSpec } from "../drawing/spec";
 
 export interface Motion {
   origin: V3;
@@ -101,5 +102,7 @@ export interface Model {
   blocks: { name: string; kind: string; span: Span; locked: boolean }[];
   /** geometric queries requested by requirements */
   geoQueries: GeoQuery[];
+  /** engineering drawings defined in the source */
+  drawings: DrawingSpec[];
   evalMs: number;
 }

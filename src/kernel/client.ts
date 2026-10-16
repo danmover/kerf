@@ -4,6 +4,7 @@
 import type { MeshData } from "./build";
 import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, ToWorker } from "./protocol";
 import type { V3, Xform } from "./recipe";
+import type { MeasureResult, PickRef, ViewRequest, ViewResult } from "./drawing";
 
 export type KernelStatus = "loading" | "ready" | "error";
 
@@ -147,14 +148,17 @@ export class KernelClient {
         return;
       }
       case "checks":
-      case "exported": {
+      case "exported":
+      case "projected":
+      case "measured": {
         const job = this.jobs.get(m.jobId);
-        if (job?.kind === "value") job.resolve(m.type === "checks" ? m.result : m.data);
+        if (job?.kind === "value") job.resolve(m.type === "exported" ? m.data : m.result);
         this.jobs.delete(m.jobId);
         return;
       }
       case "checks-error":
-      case "export-error": {
+      case "export-error":
+      case "job-error": {
         const job = this.jobs.get(m.jobId);
         if (job?.kind === "value") job.reject(new Error(m.message));
         this.jobs.delete(m.jobId);
@@ -195,6 +199,21 @@ export class KernelClient {
 
   exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]) {
     return this.value<ArrayBuffer>((jobId) => ({ type: "export-step", jobId, items }));
+  }
+
+  /** Hidden-line projection of placed solids for a drawing view. Runs after any builds and checks. */
+  project(req: ViewRequest) {
+    let id = 0;
+    const promise = this.value<ViewResult>((jobId) => {
+      id = jobId;
+      return { type: "project", jobId, req };
+    });
+    return { promise, cancel: () => this.post({ type: "cancel", jobId: id }) };
+  }
+
+  /** Exact properties of a picked face, edge or point, or the measurement between two of them. */
+  measure(a: PickRef, b?: PickRef) {
+    return this.value<MeasureResult>((jobId) => ({ type: "measure", jobId, req: { a, b } }));
   }
 
   evict(keep: string[]) {

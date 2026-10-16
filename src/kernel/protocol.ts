@@ -3,6 +3,7 @@
 import type { PartRecipe, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
+import type { MeasureResult, PickRef, ViewRequest, ViewResult } from "./drawing";
 
 export interface BuildItem {
   hash: string;
@@ -75,7 +76,9 @@ export type ToWorker =
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
   | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
-  | { type: "evict"; keep: string[] };
+  | { type: "evict"; keep: string[] }
+  | { type: "project"; jobId: number; req: ViewRequest }
+  | { type: "measure"; jobId: number; req: { a: PickRef; b?: PickRef } };
 
 export type FromWorker =
   | { type: "ready"; ms: number }
@@ -86,4 +89,7 @@ export type FromWorker =
   | { type: "checks"; jobId: number; result: ChecksResult }
   | { type: "checks-error"; jobId: number; message: string }
   | { type: "exported"; jobId: number; data: ArrayBuffer }
-  | { type: "export-error"; jobId: number; message: string };
+  | { type: "export-error"; jobId: number; message: string }
+  | { type: "projected"; jobId: number; result: ViewResult }
+  | { type: "measured"; jobId: number; result: MeasureResult }
+  | { type: "job-error"; jobId: number; message: string };

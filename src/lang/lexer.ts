@@ -47,6 +47,7 @@ export const KEYWORDS = new Set([
   "true",
   "false",
   "note",
+  "drawing",
 ]);
 
 /** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */

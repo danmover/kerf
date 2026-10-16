@@ -10,6 +10,7 @@ import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -107,6 +108,7 @@ class Evaluator {
   name = "Untitled design";
   notes: string[] = [];
   geoQueries: GeoQuery[] = [];
+  drawings: DrawingSpec[] = [];
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
@@ -157,7 +159,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -172,6 +174,7 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
+    if (s.k === "drawing") return undefined;
     return "name" in s && s.k !== "design" ? s.name : undefined;
   }
 
@@ -237,6 +240,9 @@ class Evaluator {
         return;
       case "require":
         this.requirement(s);
+        return;
+      case "drawing":
+        this.drawing(s);
         return;
     }
   }
@@ -745,6 +751,212 @@ class Evaluator {
     }
   }
 
+
+  // ---------------- drawings ----------------
+
+  drawing(s: Extract<Stmt, { k: "drawing" }>) {
+    const locked = s.items.some((i) => i.k === "flag" && i.name === "locked");
+    this.blocks.push({ name: s.name, kind: "drawing", span: s.span, locked });
+    if (this.drawings.some((d) => d.name === s.name)) throw new EvalError(`A drawing called "${s.name}" already exists`, s.nameSpan);
+    if (this.opts.skipGeometry) return;
+    const spec = defaultSpec(s.name, s.name.replace(/_/g, " "), []);
+    spec.auto = false;
+    spec.locked = locked;
+    spec.span = s.span;
+    spec.views = [];
+    let viewsProp: ViewKind[] | null = null;
+    const ctx = () => this.ctx();
+    const str = (v: Value, span: Span, what: string): string => {
+      if (typeof v === "string") return v;
+      if (typeof v === "number") return fmtNum(v, 4);
+      throw new EvalError(`${what} should be text in quotes, got ${typeName(v)}`, span);
+    };
+    const bool = (v: Value, span: Span, what: string): boolean => {
+      if (typeof v === "boolean") return v;
+      throw new EvalError(`${what} should be true or false`, span);
+    };
+    const viewKind = (v: Value, span: Span, what: string): ViewKind => {
+      const k = typeof v === "string" ? v.toLowerCase() : "";
+      if ((VIEW_KINDS as readonly string[]).includes(k)) return k as ViewKind;
+      throw new EvalError(`${what} should be one of ${VIEW_KINDS.map((x) => `"${x}"`).join(", ")}`, span);
+    };
+    const scale = (v: Value, span: Span): number => {
+      const n = typeof v === "number" || typeof v === "string" ? parseScale(v) : null;
+      if (n === null || n < 0.001 || n > 1000) throw new EvalError('scale should be a positive number such as 0.5, or text such as "1:2"', span);
+      return n;
+    };
+    const names = (v: Value, span: Span): string[] => {
+      const list = Array.isArray(v) ? v : [v];
+      return list.map((x) => {
+        const n = x instanceof Ref ? x.name : x instanceof Obj && (x.kind === "component" || x.kind === "part") ? String(x.fields.name) : typeof x === "string" ? x : null;
+        if (!n) throw new EvalError("of: should name parts or components, e.g. of: base or of: [base, lid]", span);
+        if (!this.parts.some((p) => p.name === n)) throw new EvalError(`of: "${n}" is not a part or component defined above this drawing`, span);
+        return n;
+      });
+    };
+    const walk = (items: Item[], scope: Scope, depth: number) => {
+      if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? s.span);
+      for (const it of items) {
+        switch (it.k) {
+          case "prop": {
+            if (!(DRAWING_PROPS as readonly string[]).includes(it.name)) throw new EvalError(`Unknown drawing property "${it.name}". Use: ${DRAWING_PROPS.join(", ")}`, it.span);
+            const v = this.expr(it.value, scope);
+            switch (it.name) {
+              case "title":
+                spec.title = str(v, it.span, "title");
+                break;
+              case "of":
+                spec.of = names(v, it.span);
+                break;
+              case "sheet": {
+                const t = str(v, it.span, "sheet");
+                const hit = SHEET_NAMES.find((n) => n.toLowerCase() === t.toLowerCase());
+                if (!hit) throw new EvalError(`sheet should be one of ${SHEET_NAMES.map((n) => `"${n}"`).join(", ")}`, it.span);
+                spec.sheet = hit as SheetSize;
+                break;
+              }
+              case "orientation": {
+                const t = str(v, it.span, "orientation");
+                if (t !== "landscape" && t !== "portrait") throw new EvalError('orientation should be "landscape" or "portrait"', it.span);
+                spec.orientation = t;
+                break;
+              }
+              case "scale":
+                spec.scale = scale(v, it.span);
+                break;
+              case "projection": {
+                const t = str(v, it.span, "projection");
+                if (t !== "first" && t !== "third") throw new EvalError('projection should be "first" (ISO) or "third" (ASME)', it.span);
+                spec.projection = t;
+                break;
+              }
+              case "hidden_lines":
+                spec.hidden = bool(v, it.span, "hidden_lines");
+                break;
+              case "auto_dims":
+                spec.autoDims = bool(v, it.span, "auto_dims");
+                break;
+              case "parts_list":
+                spec.partsList = bool(v, it.span, "parts_list");
+                break;
+              case "balloons":
+                spec.balloons = bool(v, it.span, "balloons");
+                break;
+              case "views": {
+                if (!Array.isArray(v)) throw new EvalError('views should be a list such as ["front", "top", "right", "iso"]', it.span);
+                viewsProp = v.map((x) => viewKind(x, it.span, "each view"));
+                break;
+              }
+              default:
+                (spec as unknown as Record<string, string>)[it.name] = str(v, it.span, it.name);
+            }
+            break;
+          }
+          case "flag":
+            if (it.name !== "locked") throw new EvalError(`Unknown flag "${it.name}". Drawings accept the flag locked.`, it.span);
+            break;
+          case "let":
+            scope.vars.set(it.name, this.expr(it.value, scope));
+            break;
+          case "for": {
+            const iter = this.expr(it.iter, scope);
+            const list = Array.isArray(iter) ? iter : iter instanceof Vec ? iter.v : null;
+            if (!list) throw new EvalError(`for ... in needs a list, got ${typeName(iter)}`, it.iter.span);
+            for (const v of list) {
+              const inner = new Scope(scope);
+              inner.vars.set(it.varName, v);
+              walk(it.body, inner, depth + 1);
+            }
+            break;
+          }
+          case "if": {
+            const c = this.expr(it.cond, scope);
+            if (truthy(c)) walk(it.then, new Scope(scope), depth + 1);
+            else if (it.else) walk(it.else, new Scope(scope), depth + 1);
+            break;
+          }
+          case "op":
+            throw new EvalError(`Drawings do not take ${it.op} shapes. Use view(), section(), detail(), dim(), diameter() and note().`, it.span);
+          case "modifier": {
+            const callee = it.call.callee;
+            const fname = callee.k === "ident" ? callee.name : "";
+            if (!(fname in DRAWING_CALLS)) throw new EvalError(`Drawings accept ${Object.keys(DRAWING_CALLS).map((k) => k + "()").join(", ")}`, it.span);
+            const pos: Value[] = [];
+            const named: Record<string, Value> = {};
+            for (const arg of it.call.args) {
+              const v = this.expr(arg.value, scope);
+              if (v instanceof Pending) throw new EvalError("Drawing positions cannot depend on measured geometry", arg.span);
+              if (arg.name) named[arg.name] = v;
+              else pos.push(v);
+            }
+            this.callSpan = it.call.span;
+            const a = new Args(fname, pos, named, ctx(), DRAWING_CALLS[fname]);
+            const optStr = (n: string) => (a.has(n) ? a.str(n) : undefined);
+            const at2 = (n: string): [number, number] | undefined => {
+              if (!a.has(n)) return undefined;
+              const p = a.vec3(n);
+              return [p[0], p[1]];
+            };
+            const tol = (): [number, number] | undefined => {
+              const v = a.value("tol");
+              if (v === undefined) return undefined;
+              if (typeof v === "number") return [Math.abs(v), -Math.abs(v)];
+              if (v instanceof Vec && v.v.length === 2) return [v.v[0], v.v[1]];
+              return ctx().error("tol should be a number for ± (tol: 0.1) or (upper, lower) such as tol: (0.1, -0.05)");
+            };
+            switch (fname) {
+              case "view":
+                spec.views.push({ kind: viewKind(a.value("kind") ?? null, it.call.span, "view()"), label: optStr("label"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined, hidden: a.has("hidden") ? a.bool("hidden") : undefined, at: at2("at") });
+                break;
+              case "section":
+                spec.sections.push({
+                  label: a.str("label"),
+                  at: a.vec3("at", [0, 0, 0]),
+                  normal: a.dir("normal"),
+                  view: a.has("view") ? viewKind(a.value("view")!, it.call.span, "section(view:)") : undefined,
+                  scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined,
+                });
+                break;
+              case "detail":
+                spec.details.push({ label: a.str("label"), view: a.str("view", "front"), at: a.vec3("at"), r: a.positive("r"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : 2 });
+                break;
+              case "dim":
+              case "diameter": {
+                const align = a.str("align", "auto");
+                if (!["auto", "h", "v", "aligned"].includes(align)) ctx().error('align should be "auto", "h", "v" or "aligned"');
+                spec.dims.push({
+                  kind: fname === "dim" ? "linear" : "diameter",
+                  a: a.vec3(fname === "dim" ? "a" : "at"),
+                  b: fname === "dim" ? a.vec3("b") : undefined,
+                  d: fname === "diameter" ? a.positive("d") : undefined,
+                  view: optStr("view"),
+                  align: align as "auto",
+                  offset: a.has("offset") ? a.num("offset") : undefined,
+                  tol: tol(),
+                  fit: optStr("fit"),
+                  text: optStr("text"),
+                  ref: a.bool("ref"),
+                  basic: a.bool("basic"),
+                  span: it.call.span,
+                });
+                break;
+              }
+              case "note":
+                spec.notes.push(a.str("text"));
+                break;
+            }
+            break;
+          }
+        }
+      }
+    };
+    walk(s.items, new Scope(), 0);
+    if (viewsProp) spec.views = [...(viewsProp as ViewKind[]).filter((k) => !spec.views.some((v) => v.kind === k)).map((kind) => ({ kind })), ...spec.views];
+    if (!spec.views.length && !spec.sections.length) spec.views = defaultSpec("", "", []).views;
+    if (spec.views.length + spec.sections.length + spec.details.length > 12) throw new EvalError("A drawing is limited to 12 views", s.span);
+    this.drawings.push(spec);
+  }
+
   // ---------------- requirements ----------------
 
   requirement(s: Extract<Stmt, { k: "require" }>) {
@@ -821,6 +1033,7 @@ class Evaluator {
       graph: { nodes, edges },
       blocks: this.blocks,
       geoQueries: dedupeGeo(this.geoQueries),
+      drawings: this.drawings,
       evalMs: 0,
     };
   }

@@ -20,7 +20,7 @@ export type ShapeRecipe =
   | { t: "rrect"; w: number; h: number; r: number; depth: number; at: V3; dir: V3; center: boolean }
   | { t: "revolve"; pts: V2[]; at: V3; dir: V3 }
   | { t: "gear"; m: number; z: number; w: number; bore: number; at: V3; dir: V3; phase: number; pa: number; backlash: number }
-  | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number }
+  | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number; thread?: string; fit?: string }
   | { t: "xform"; shape: ShapeRecipe; xf: Xform[] }
   | { t: "union"; shapes: ShapeRecipe[] };
 

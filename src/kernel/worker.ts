@@ -5,6 +5,7 @@ import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import * as R from "replicad";
 import { KernelCore } from "./core";
+import { measure, projectView } from "./drawing";
 import type { FromWorker, ToWorker } from "./protocol";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
@@ -30,9 +31,26 @@ function init() {
 
 const yieldToEvents = () => new Promise((r) => setTimeout(r, 0));
 
-let queue: Promise<void> = Promise.resolve();
-function enqueue(fn: () => Promise<void>) {
-  queue = queue.then(fn).catch(() => undefined);
+// builds, checks and exports run first; drawing projections wait behind them
+const urgent: (() => Promise<void>)[] = [];
+const background: (() => Promise<void>)[] = [];
+let pumping = false;
+function enqueue(fn: () => Promise<void>, later = false) {
+  (later ? background : urgent).push(fn);
+  void pump();
+}
+async function pump() {
+  if (pumping) return;
+  pumping = true;
+  while (urgent.length || background.length) {
+    const fn = urgent.shift() ?? background.shift()!;
+    try {
+      await fn();
+    } catch {
+      /* each job reports its own errors */
+    }
+  }
+  pumping = false;
 }
 
 self.onmessage = (ev: MessageEvent<ToWorker>) => {
@@ -48,6 +66,28 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
   enqueue(async () => {
     await init();
     switch (msg.type) {
+      case "project": {
+        if (cancelled.delete(msg.jobId)) {
+          post({ type: "job-error", jobId: msg.jobId, message: "cancelled" });
+          return;
+        }
+        try {
+          const result = projectView(msg.req, (p) => core.placed(p));
+          post({ type: "projected", jobId: msg.jobId, result });
+        } catch (e) {
+          post({ type: "job-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+      case "measure": {
+        try {
+          const result = measure(msg.req, (h) => core.get(h)?.shape);
+          post({ type: "measured", jobId: msg.jobId, result });
+        } catch (e) {
+          post({ type: "job-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
       case "build": {
         const t0 = performance.now();
         let built = 0;
@@ -69,11 +109,13 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
               normals: mesh.normals.slice(),
               indices: mesh.indices.slice(),
               edges: mesh.edges.slice(),
+              faceGroups: mesh.faceGroups?.slice(),
+              edgeGroups: mesh.edgeGroups?.slice(),
             };
-            post(
-              { type: "part", jobId: msg.jobId, hash: item.hash, quality: msg.quality, mesh: copy, volume: entry.volume, bbox: entry.bbox, ms: performance.now() - t },
-              [copy.positions.buffer, copy.normals.buffer, copy.indices.buffer, copy.edges.buffer],
-            );
+            const transfer: Transferable[] = [copy.positions.buffer, copy.normals.buffer, copy.indices.buffer, copy.edges.buffer];
+            if (copy.faceGroups) transfer.push(copy.faceGroups.buffer);
+            if (copy.edgeGroups) transfer.push(copy.edgeGroups.buffer);
+            post({ type: "part", jobId: msg.jobId, hash: item.hash, quality: msg.quality, mesh: copy, volume: entry.volume, bbox: entry.bbox, ms: performance.now() - t }, transfer);
           } catch (e) {
             post({ type: "part-error", jobId: msg.jobId, hash: item.hash, message: e instanceof Error ? e.message : String(e) });
           }
@@ -108,5 +150,5 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
         core.evict(msg.keep);
         return;
     }
-  });
+  }, msg.type === "project");
 };

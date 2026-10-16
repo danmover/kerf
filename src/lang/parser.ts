@@ -21,7 +21,7 @@ export class ParseError extends Error {
   }
 }
 
-const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note"]);
+const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "drawing"]);
 
 export function parse(src: string): { program: Program; diagnostics: Diagnostic[] } {
   let tokens: Token[];
@@ -112,7 +112,7 @@ class Parser {
     const tk = this.peek();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (param, let, component, interface, part, require) but found "${tk.value}"`,
+        `Expected a top-level statement (param, let, component, interface, part, require, drawing) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -197,6 +197,11 @@ class Parser {
         const items = this.block();
         return { k: "part", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
       }
+      case "drawing": {
+        const nameTk = this.expect("ident", undefined, "a drawing name");
+        const items = this.block();
+        return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+      }
       case "require": {
         const label = this.expect("str", undefined, "a requirement label in quotes").value;
         let level: "hard" | "soft" = "hard";
@@ -263,6 +268,14 @@ class Parser {
         case "locked":
           this.next();
           return { k: "flag", name: "locked", span: { start, end: this.prevEnd() } };
+        case "note":
+          // note("...") inside a drawing block
+          if (this.isOp("(", 1)) {
+            const kw = this.next();
+            const call = this.callTail({ k: "ident", name: "note", span: { start: kw.start, end: kw.end } });
+            return { k: "modifier", call, span: { start, end: this.prevEnd() } };
+          }
+          break;
       }
     }
     if (tk.kind === "ident") {
@@ -366,25 +379,29 @@ class Parser {
     }
     return base;
   }
+  /** The argument list of a call on callee, starting at "(". */
+  callTail(callee: Expr): Expr & { k: "call" } {
+    this.expect("op", "(");
+    const args: Arg[] = [];
+    while (!this.isOp(")")) {
+      const aStart = this.peek().start;
+      let name: string | undefined;
+      if ((this.is("ident") || this.is("kw")) && this.isOp(":", 1)) {
+        name = this.next().value;
+        this.next();
+      }
+      const value = this.expr();
+      args.push({ name, value, span: { start: aStart, end: this.prevEnd() } });
+      if (!this.eat("op", ",")) break;
+    }
+    this.expect("op", ")", '")" to close the call');
+    return { k: "call", callee, args, span: { start: callee.span.start, end: this.prevEnd() } };
+  }
   postfix(): Expr {
     let e = this.primary();
     for (;;) {
       if (this.isOp("(")) {
-        this.next();
-        const args: Arg[] = [];
-        while (!this.isOp(")")) {
-          const aStart = this.peek().start;
-          let name: string | undefined;
-          if ((this.is("ident") || this.is("kw")) && this.isOp(":", 1)) {
-            name = this.next().value;
-            this.next();
-          }
-          const value = this.expr();
-          args.push({ name, value, span: { start: aStart, end: this.prevEnd() } });
-          if (!this.eat("op", ",")) break;
-        }
-        this.expect("op", ")", '")" to close the call');
-        e = { k: "call", callee: e, args, span: { start: e.span.start, end: this.prevEnd() } };
+        e = this.callTail(e);
       } else if (this.isOp(".")) {
         this.next();
         const nameTk = this.peek();

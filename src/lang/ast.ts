@@ -68,6 +68,7 @@ export type Stmt =
       nameSpan: Span;
     }
   | { k: "part"; name: string; items: Item[]; span: Span; nameSpan: Span }
+  | { k: "drawing"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | {
       k: "require";
       label: string;
@@ -88,6 +89,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "component":
     case "interface":
     case "part":
+    case "drawing":
       return s.name;
     case "require":
       return s.label;
