@@ -68,6 +68,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["E"], "Toggle exploded view"],
       [["X"], "Toggle x-ray"],
       [["I"], "Isolate the selection"],
+      [["M"], "Draw on the view for Claude"],
       [["Space"], "Play or pause the mechanism"],
     ],
   },
@@ -80,6 +81,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["Click"], "Select a part"],
       [["⇧", "Click"], "Add to the selection"],
       [["Double-click"], "Zoom to a part (empty space fits all)"],
+      [["Right-click"], "Ask Claude about that spot"],
     ],
   },
   {

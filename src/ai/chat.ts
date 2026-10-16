@@ -18,7 +18,7 @@ import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type AskOption, type ToolOutcome } from "./tools";
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; ts: number; spot?: SpotRef }
+  | { kind: "user"; id: string; text: string; ts: number; spot?: SpotRef; image?: string }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number }
   | {
@@ -95,7 +95,13 @@ function persist() {
     const slimHistory = history.map(stripImages);
     const turns = items.filter((it) => it.kind === "turn" && it.shots);
     const keepShots = new Set(turns.slice(-12).map((it) => it.id));
-    const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it.kind === "turn" && it.shots && !keepShots.has(it.id) ? { ...it, shots: undefined } : it));
+    const marked = items.filter((it) => it.kind === "user" && it.image);
+    const keepMarks = new Set(marked.slice(-6).map((it) => it.id));
+    const slimItems = items
+      .slice(-400)
+      .map((it) =>
+        it.kind === "tool" && it.image ? { ...it, image: undefined } : it.kind === "turn" && it.shots && !keepShots.has(it.id) ? { ...it, shots: undefined } : it.kind === "user" && it.image && !keepMarks.has(it.id) ? { ...it, image: undefined } : it,
+      );
     void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"] }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, updatedAt: Date.now() }).catch(() => undefined);
   }, 400);
 }
@@ -125,6 +131,7 @@ function stripImages(m: BetaMessageParam): BetaMessageParam {
       if (b.type === "tool_result" && Array.isArray(b.content)) {
         return { ...b, content: b.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[image omitted from saved history]" } : c)) };
       }
+      if (b.type === "image") return { type: "text" as const, text: "[the user's marked-up view, omitted from saved history]" };
       return b;
     }),
   };
@@ -136,12 +143,16 @@ function trimImages() {
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     if (typeof m.content === "string") continue;
-    for (const b of m.content) {
+    for (let j = m.content.length - 1; j >= 0; j--) {
+      const b = m.content[j];
       if (b.type === "tool_result" && Array.isArray(b.content)) {
         if (b.content.some((c) => c.type === "image")) {
           seen++;
           if (seen > 2) b.content = b.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[earlier image removed to save context]" } : c));
         }
+      } else if (b.type === "image") {
+        seen++;
+        if (seen > 2) m.content[j] = { type: "text", text: "[an earlier marked-up view from the user, removed to save context]" };
       }
     }
   }
@@ -174,21 +185,22 @@ export function stop() {
  * the model (see app/spot); `id` names the chat item so the caller can follow
  * the replies.
  */
-export async function sendMessage(text: string, opts: { spot?: SpotRef; id?: string } = {}) {
+export async function sendMessage(text: string, opts: { spot?: SpotRef; id?: string; image?: { url: string; note: string } } = {}) {
   const t = text.trim();
   if (!t || get().busy) return;
   endPreview();
   const pending = get().pendingChoice;
-  push({ kind: "user", id: opts.id ?? nid(), text: t, ts: Date.now(), spot: opts.spot });
+  push({ kind: "user", id: opts.id ?? nid(), text: t, ts: Date.now(), spot: opts.spot, image: opts.image?.url });
   set({ lastUserText: t });
-  const said = opts.spot ? `<spot>${spotText(opts.spot)}</spot>\n${t}` : t;
+  const said = opts.spot ? `<spot>${spotText(opts.spot)}</spot>\n${t}` : opts.image ? `<markup>${opts.image.note}</markup>\n${t}` : t;
+  const pic: BetaContentBlockParam[] = opts.image ? [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: opts.image.url.split(",")[1] ?? "" } }] : [];
   if (pending) {
     // the user typed instead of picking: that answers the open question
     patch(pending.itemId, (it) => (it.kind === "choice" ? { ...it, chosen: "(answered in chat)" } : it));
     set({ pendingChoice: null });
-    addUser([...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${said}` }, { type: "text", text: contextNote() }]);
+    addUser([...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${said}` }, { type: "text", text: contextNote() }, ...pic]);
   } else {
-    addUser([{ type: "text", text: contextNote() }, { type: "text", text: said }]);
+    addUser([{ type: "text", text: contextNote() }, ...pic, { type: "text", text: said }]);
   }
   persist();
   await runLoop();

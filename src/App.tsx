@@ -17,6 +17,7 @@ import { SettingsModal } from "./ui/Settings";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
+import { toggleMarkup } from "./ui/Markup";
 
 // each opened project brings its own conversation
 onProjectOpen((p) => void loadChat(p.id));
@@ -159,6 +160,8 @@ function useShortcuts() {
           return useView.setState({ explode: v.explode > 0 ? 0 : 0.5 });
         case "x":
           return useView.setState({ xray: !v.xray });
+        case "m":
+          return toggleMarkup();
         case "i":
           if (v.selected.length || v.isolate) useView.setState({ isolate: !v.isolate });
           return;

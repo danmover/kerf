@@ -13,6 +13,7 @@ import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
 import { SpotChat } from "./SpotChat";
+import { Markup, toggleMarkup, useMarkup } from "./Markup";
 import { openSpot, closeSpot, useSpot } from "../app/spot";
 
 export function Viewport() {
@@ -60,7 +61,7 @@ export function Viewport() {
       select([hit.id]);
       openSpot({ partId: hit.id, label: part.label, local: hit.local, point: hit.point, normal: hit.normal });
     };
-    registerViewport({ capture: (o) => c.capture(o), bounds: () => c.modelBounds(), viewDir: () => c.viewDir(), anchor: (id, local) => c.anchor(id, local) });
+    registerViewport({ capture: (o) => c.capture(o), bounds: () => c.modelBounds(), viewDir: () => c.viewDir(), anchor: (id, local) => c.anchor(id, local), snapshot: () => c.snapshot(), hitAt: (x, y) => c.hitAt(x, y) });
     return () => {
       registerViewport(null);
       c.dispose();
@@ -103,6 +104,7 @@ export function Viewport() {
   const selectedParts = useMemo(() => (model ? model.parts.filter((p) => view.selected.includes(p.id)) : []), [model, view.selected]);
   const empty = model && model.parts.length === 0 && kernelStatus === "ready";
   const spotOpen = useSpot((s) => s.spot !== null);
+  const marking = useMarkup((s) => s.on);
 
   return (
     <div className="viewport">
@@ -154,6 +156,10 @@ export function Viewport() {
         <div className="sep" />
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
+        </button>
+        <div className="sep" />
+        <button className={`icon-btn ${marking ? "active" : ""}`} onClick={() => toggleMarkup()} data-tip="Draw on the view for Claude (M)" aria-label="Draw on the view for Claude">
+          <Icon.Edit />
         </button>
         <div className="sep" />
         <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">
@@ -210,6 +216,7 @@ export function Viewport() {
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
 
       <SpotChat />
+      <Markup />
 
       {empty && (
         <div className="vp-empty">

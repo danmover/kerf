@@ -178,6 +178,7 @@ function Item({ it }: { it: ChatItem }) {
               <Icon.Pin size={11} /> {spotLabel(it.spot)}
             </button>
           )}
+          {it.image && <img className="mark-img" src={it.image} alt="Your marked-up view" />}
           {it.text}
         </motion.div>
       );

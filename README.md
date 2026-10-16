@@ -38,8 +38,16 @@ npm run typecheck
 **Design with Claude**
 - Chat in the right panel with your own API key (Opus 5.5, Sonnet 5.5 or Haiku 5.5, with an effort setting).
 - Claude reads the design, edits it, reruns the checks, looks at rendered views of the model, and asks you when a choice is yours to make, as a card with options.
-- Each Claude turn ends with a summary bar showing what changed, with Review and one-click Revert.
 - Locked parameters and parts are protected: Claude's edits to them are refused unless you asked for that change.
+
+**Iterating on a design**
+- **Decisions you can see and change.** Choices that matter (fastening method, wall thickness, a gear split) are recorded in the design as `decision` blocks with the options, who chose and why. The Decisions tab lists them. Preview any option in 3D, see at once whether it breaks a requirement, switch to it, or drag its values to fine-tune. A manual edit that moves a decided value shows as "adjusted", with Keep and Restore.
+- **Questions you can try before answering.** When Claude asks, each option can be previewed in 3D with its checks, its values adjusted, and a note added for Claude. The answer is applied and recorded as a decision.
+- **Right-click to talk about a spot.** Right-click the model to open a small chat pinned to that place. Claude gets the part, the point and the face direction. Quick asks ("Make it thicker", "Add a hole here"), the values that shape that part, its decisions and failing checks are all in the same card, and the reply, any question and the change show there too.
+- **Draw on the view.** Press `M` (or the pen in the toolbar) to circle, point or scribble on the model and send it with a note. Claude gets the picture and the names of the parts under your marks.
+- **See what changed.** Each reply that edits the design gets a change card: a before/after picture you can wipe across, the parts that were added, reshaped, moved or removed (hover to highlight them in 3D), the values Claude set (drag to fine-tune them), a Before/After toggle in 3D, the diff and one-click Revert.
+- **Next steps.** Claude can offer two to four follow-ups as one-click chips under its reply.
+- **Previews never cost a version.** Previewing an option, an old version from History or the design before Claude's change shows it in 3D with a banner; `Esc` goes back. Hovering a parameter highlights the parts it shapes. A failing check offers "Ask Claude to fix".
 
 **The design itself**
 - One design file in the Kerf language: parameters with units, ranges and locks, derived values, interfaces, library components, custom parts built from solids with add, cut and intersect, loops, and requirements.
@@ -54,7 +62,7 @@ npm run typecheck
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
 - Code editor with highlighting, autocomplete and inline errors. Clicking a part jumps to its code.
-- Parameter panel with live-preview sliders, a structure tree, version history with diffs and restore, a dependency graph and a parts list.
+- Parameter panel with live-preview sliders, a structure tree, version history with diffs, previews and restore, a dependency graph and a parts list.
 - Projects save automatically in the browser. You can rename, duplicate, delete, import and back them up.
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
@@ -79,7 +87,7 @@ src/library/    Standard parts, thread and bearing tables, involute gears
 src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
 src/ai/         Claude tools, system prompt, language reference, chat loop
-src/app/        Projects and history, settings, view state, exports
+src/app/        Projects, history and previews, settings, view state, spots, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats
 src/ui/         Viewport (three.js), editor (CodeMirror), panels, chat, dialogs
 src/screens/    Onboarding, projects, workspace, legal pages
@@ -87,7 +95,7 @@ src/demos/      The example designs
 tests/          Vitest unit tests
 ```
 
-The design file is the single source of truth. Chat, sliders, the editor, restore and undo all produce a new version of that text. Parts are identified by a hash of their geometry recipe. A change rebuilds only parts whose recipe changed, and identical parts (eight inserts, four screws) are built once and instanced.
+The design file is the single source of truth. Chat, sliders, the editor, decisions, restore and undo all produce a new version of that text. A preview shows a temporary version in 3D without recording it; any edit made during a preview adopts it. Parts are identified by a hash of their geometry recipe. A change rebuilds only parts whose recipe changed, and identical parts (eight inserts, four screws) are built once and instanced.
 
 ## Security
 

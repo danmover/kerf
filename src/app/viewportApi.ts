@@ -29,6 +29,10 @@ export interface ViewportApi {
   viewDir(): Vec3;
   /** where a spot on a part shows, in pixels from the viewport's top left; null when off screen */
   anchor(partId: string, local?: Vec3): { x: number; y: number; front: boolean } | null;
+  /** the view exactly as it is on screen */
+  snapshot(): string;
+  /** the part (and spot on it) under a point in page coordinates */
+  hitAt(clientX: number, clientY: number): { id: string; local: Vec3; point: Vec3; normal: Vec3 } | null;
 }
 
 let api: ViewportApi | null = null;

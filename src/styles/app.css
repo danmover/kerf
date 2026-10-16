@@ -3135,3 +3135,74 @@ a:hover {
   text-overflow: ellipsis;
   flex: 1 1 auto;
 }
+
+/* ── mark up the view ─────────────────────────────────────────────── */
+.markup {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+}
+.markup-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+  box-shadow: inset 0 0 0 2px rgba(255, 180, 84, 0.55);
+}
+.markup-bar {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(13, 16, 23, 0.9);
+  border: 1px solid rgba(255, 180, 84, 0.45);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+  max-width: calc(100% - 24px);
+}
+.markup-bar.top {
+  top: 12px;
+}
+.markup-bar.bottom {
+  bottom: 18px;
+  width: min(560px, calc(100% - 24px));
+}
+.markup-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffd29a;
+  margin: 0 4px;
+  white-space: nowrap;
+}
+.markup-bar .seg {
+  display: flex;
+  gap: 2px;
+}
+.markup-bar input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: 13px var(--sans);
+  padding: 4px 6px;
+}
+.msg-user .mark-img {
+  display: block;
+  width: 100%;
+  max-width: 260px;
+  border-radius: 8px;
+  margin: 0 0 6px;
+  border: 1px solid #34437d;
+}

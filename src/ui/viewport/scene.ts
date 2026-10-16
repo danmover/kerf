@@ -591,6 +591,12 @@ export class SceneController {
     return { x: ((v.x + 1) / 2) * this.container.clientWidth, y: ((1 - v.y) / 2) * this.container.clientHeight, front };
   }
 
+  /** The view exactly as it is on screen, as a PNG data URL. */
+  snapshot(): string {
+    this.render();
+    return this.renderer.domElement.toDataURL("image/png");
+  }
+
   /** The model's bounds in assembly coordinates. */
   modelBounds(): [[number, number, number], [number, number, number]] {
     return [tuple(this.bounds.min), tuple(this.bounds.max)];
