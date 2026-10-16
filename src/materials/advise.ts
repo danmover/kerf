@@ -367,6 +367,16 @@ function boughtVolume(part: PartFacts, process: ProcessId | undefined): number |
   }
 }
 
+/** What the material for a made part costs, bought in the form its process uses (filament, bar stock, sheet...); material only. */
+export function stockCost(m: MaterialRecord, part: PartFacts, brief: BriefFacts | null): { cost: number; form: CostForm; perKg: number; process?: ProcessId } | null {
+  if (part.bought) return null;
+  const process = processFor(m, part, brief).process;
+  const price = pricePerKg(m, process);
+  const v = boughtVolume(part, process);
+  if (!price || v === undefined) return null;
+  return { cost: (v / 1e6) * m.density * price.price, form: price.form, perKg: price.price, process };
+}
+
 // ---------- one material ----------
 
 interface Shared {

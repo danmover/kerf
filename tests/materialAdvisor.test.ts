@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adviceText, adviseMaterials, needsFromName, type AnalysisFacts, type BriefFacts, type PartFacts } from "../src/materials/advise";
+import { adviceText, adviseMaterials, needsFromName, stockCost, type AnalysisFacts, type BriefFacts, type PartFacts } from "../src/materials/advise";
 import { MATERIAL_DB, materialRecord, pricePerKg } from "../src/library/materialDb";
 import { MATERIAL_LIST } from "../src/library/materials";
 import { MATERIAL_SERVICE } from "../src/library/materialService";
@@ -166,5 +166,10 @@ describe("material advisor", () => {
     // the stock block, not the finished part
     const stock = (65 * 45 * 35) / 1e6;
     expect(alu.cost).toBeCloseTo(stock * 2.7 * pricePerKg(materialRecord("Aluminum 6061")!, "cnc_mill")!.price, 6);
+    // the parts list prices the same stock
+    const listed = stockCost(materialRecord("Aluminum 6061")!, part({ process: "cnc_mill", material: "Aluminum 6061" }), null)!;
+    expect(listed.cost).toBeCloseTo(alu.cost!, 6);
+    expect(listed.form).toBe("stock");
+    expect(stockCost(materialRecord("PLA")!, part({ bought: true }), null)).toBeNull();
   });
 });

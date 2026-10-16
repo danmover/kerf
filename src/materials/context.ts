@@ -8,7 +8,8 @@ import { mechMaterial } from "../analysis/materials";
 import { materialDensity } from "../library/standards";
 import type { StructuralSpec } from "../analysis/spec";
 import { briefFacts } from "./brief";
-import { adviseMaterials, type Advice, type AnalysisFacts, type Need, type PartFacts } from "./advise";
+import { materialRecord } from "../library/materialDb";
+import { adviseMaterials, stockCost, type Advice, type AnalysisFacts, type Need, type PartFacts } from "./advise";
 
 export { briefFacts };
 
@@ -80,6 +81,14 @@ export function partFacts(model: Model, name: string): PartFacts | null {
     otherMass: b?.maxMass ? model.parts.filter((q) => q.name !== name && !q.hidden).reduce((s, q) => s + massOf(q), 0) : undefined,
     analysis: analysisFacts(model, name),
   };
+}
+
+/** The raw material for every copy of a made part, priced from the material database; null for bought parts and unknown materials. */
+export function partMaterialCost(model: Model, name: string) {
+  const part = partFacts(model, name);
+  const m = part ? materialRecord(part.material) : undefined;
+  const c = part && m ? stockCost(m, part, briefFacts(model.brief)) : null;
+  return c && part ? { ...c, count: part.count, material: m!.name } : null;
 }
 
 /** Rank materials for a part block of the current design, or for the design as a whole. */

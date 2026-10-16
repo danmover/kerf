@@ -7,6 +7,7 @@ import { materialDensity } from "../library/standards";
 import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { Icon } from "./icons";
+import { partMaterialCost } from "../materials/context";
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
@@ -51,14 +52,28 @@ export function BomTable() {
     return { mass, printed };
     // meshVersion: volumes arrive with meshes
   }, [model, meshVersion]);
+  // what the material for each made part costs, from the material database (not print or machine time)
+  const stock = useMemo(() => {
+    const out = new Map<string, { each: number; note: string }>();
+    if (!model) return out;
+    for (const r of rows) {
+      if (r.kind !== "Make" || out.has(r.item)) continue;
+      const c = partMaterialCost(model, r.item);
+      if (c && c.cost > 0) out.set(r.item, { each: c.cost / c.count, note: `${c.material} ${c.form === "stock" ? "bar or plate stock" : c.form} at ${money(c.perKg)}/kg. Material only, not print or machine time` });
+    }
+    return out;
+    // meshVersion: volumes arrive with meshes
+  }, [model, rows, meshVersion]);
   if (!model) return null;
   const priced = rows.some((r) => r.price !== undefined);
+  const stockTotal = rows.reduce((t, r) => t + (r.kind === "Make" ? (stock.get(r.item)?.each ?? 0) * r.qty : 0), 0);
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "auto" }}>
       <div className="row" style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)" }}>
         <span className="mono dim" style={{ fontSize: 11 }}>
           {rows.length} line items · {fmtNum(totals.mass, 0)} g total · {fmtNum(totals.printed, 0)} g printed
           {priced && ` · about ${money(cost.total)} to buy`}
+          {stockTotal > 0 && ` · about ${money(stockTotal)} of material for made parts`}
         </span>
         <div className="grow" />
         <button className="btn sm" onClick={() => download(bomCsv(model), safeFileName(model.name + " BOM", "csv"), "text/csv")}>
@@ -104,6 +119,10 @@ export function BomTable() {
                     </>
                   ) : r.kind === "Buy" ? (
                     <span className="dim">no price</span>
+                  ) : stock.has(r.item) ? (
+                    <span className="dim" data-tip={stock.get(r.item)!.note}>
+                      {money(stock.get(r.item)!.each * r.qty)} material
+                    </span>
                   ) : null}
                 </td>
                 <td>
