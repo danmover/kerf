@@ -90,9 +90,13 @@ export interface SheetDim {
   label: string;
   part?: string;
   box: Box;
-  /** model points the dimension measures between, when known */
+  /** model points the dimension measures between (a callout's centre in a) */
   a?: V3;
   b?: V3;
+  /** direction of a linear dimension on its view */
+  align?: "h" | "v" | "aligned";
+  /** an automatic dimension's id, for tol() in the drawing block */
+  id?: string;
 }
 
 export interface SheetPart {

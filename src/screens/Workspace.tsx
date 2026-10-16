@@ -14,6 +14,7 @@ import { viewport } from "../app/viewportApi";
 import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
+import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
@@ -40,9 +41,15 @@ export function Workspace() {
             <LeftPanel />
           </ErrorBoundary>
           <div className="center" ref={center} style={{ gridTemplateRows: dockOpen ? `1fr ${dock}px` : `1fr 37px`, position: "relative" }}>
-            <ErrorBoundary label="3D view">
-              <Viewport />
-            </ErrorBoundary>
+            <div className="center-stage">
+              <ErrorBoundary label="3D view">
+                <Viewport />
+              </ErrorBoundary>
+              <ErrorBoundary label="Drawings">
+                <DrawingView />
+                <DrawingSwitch />
+              </ErrorBoundary>
+            </div>
             {dockOpen && <Splitter dir="h" style={{ bottom: dock }} onDrag={(d) => setDock(dock - d)} onEnd={saveDock} />}
             <ErrorBoundary label="Editor">
               <Dock projectKey={project.id} />

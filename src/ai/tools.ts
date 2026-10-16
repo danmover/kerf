@@ -12,6 +12,8 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { sheetFor, useDrawings } from "../drawing/engine";
+import { describeSheet, sheetToPng } from "../drawing/export";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -100,6 +102,18 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: "view_drawing",
+    description:
+      "Look at an engineering drawing of the design: returns the sheet as an image and a list of its views, dimensions (with ids such as d3 and the parameter each one shows), notes and warnings. Without a name it shows the drawing the user has open, or the first one. Automatic drawings (names starting auto:) are generated from the model; the result includes a drawing block to start from when one needs changing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Drawing block name, auto:<part> for an automatic drawing, or a drawing title." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "ask_user",
     description:
       "Ask the user to decide between options (a tradeoff, a conflict, a missing dimension). Shows a choice card and ends your turn; the user's choice comes back as this tool's result. Use when the decision changes their goal or a visible outcome. Give 2 to 4 options, each with a one-line consequence, and mark the one you recommend.",
@@ -137,6 +151,7 @@ const EditInput = z.object({
 const WriteInput = z.object({ summary: z.string().min(1).max(300), source: z.string().min(1).max(MAX_SOURCE_CHARS), unlock_ok: z.boolean().optional() });
 const FixInput = z.object({ hold: z.array(z.string().max(80)).max(50).optional() });
 const ViewInput = z.object({ view: z.enum(VIEW_NAMES), highlight: z.array(z.string().max(80)).max(30).optional(), section: z.enum(["x", "y", "z"]).optional() });
+const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const AskInput = z.object({
   question: z.string().min(1).max(500),
   options: z.array(z.object({ label: z.string().min(1).max(80), consequence: z.string().max(300), recommended: z.boolean().optional() })).min(2).max(4),
@@ -351,6 +366,24 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
         card: { title: `Looked at the ${p.data.view} view`, image: url },
       };
     }
+    case "view_drawing": {
+      const p = DrawingInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      try {
+        const sheet = await sheetFor(p.data.name ?? useDrawings.getState().active ?? undefined);
+        const url = await sheetToPng(sheet, 1568);
+        return {
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: url.split(",")[1] ?? "" } },
+            { type: "text", text: describeSheet(sheet) },
+          ],
+          card: { title: `Looked at the ${sheet.title} drawing`, detail: `${sheet.size} · ${sheet.views.length} views · ${sheet.dims.length} dimensions`, image: url },
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { isError: true, content: msg, card: { title: "Drawing unavailable", detail: msg, status: "error" } };
+      }
+    }
     case "ask_user": {
       const p = AskInput.safeParse(input);
       if (!p.success) return invalid(p.error);
@@ -378,5 +411,6 @@ export const TOOL_TITLES: Record<string, string> = {
   run_checks: "Building and checking",
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
+  view_drawing: "Looking at the drawing",
   ask_user: "Asking you",
 };

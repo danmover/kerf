@@ -74,6 +74,14 @@ export interface DimSpec {
   span: Span;
 }
 
+export interface TolSpec {
+  /** an automatic dimension's id, such as "top:overall-width-x" */
+  id: string;
+  tol?: [number, number];
+  fit?: string;
+  span: Span;
+}
+
 export interface DrawingSpec {
   /** block name in the source, or "auto:<target>" for generated drawings */
   name: string;
@@ -100,6 +108,8 @@ export interface DrawingSpec {
   sections: SectionSpec[];
   details: DetailSpec[];
   dims: DimSpec[];
+  /** tolerances and fits for automatic dimensions, by the dimension's id */
+  tols: TolSpec[];
   notes: string[];
   locked: boolean;
   span?: Span;
@@ -121,6 +131,7 @@ export function defaultSpec(name: string, title: string, of: string[]): DrawingS
     sections: [],
     details: [],
     dims: [],
+    tols: [],
     notes: [],
     locked: false,
     auto: true,
@@ -283,6 +294,7 @@ export const DRAWING_CALLS: Record<string, string[]> = {
   detail: ["label", "view", "at", "r", "scale"],
   dim: ["a", "b", "view", "align", "offset", "tol", "fit", "text", "ref", "basic"],
   diameter: ["at", "d", "view", "tol", "fit", "text", "ref"],
+  tol: ["id", "tol", "fit"],
   note: ["text"],
 };
 
@@ -292,5 +304,6 @@ export const DRAWING_DOCS: Record<string, string> = {
   detail: 'detail("B", view: "front", at: (x, y, z), r: 6, scale: 4) — an enlarged circle of radius r (model mm) around a model point on another view.',
   dim: 'dim(a, b, view: "top", align: "h"|"v"|"aligned"|"auto", offset: 10, tol: 0.1 or (0.1, -0.05), fit: "H7", text: "…", ref: true, basic: true) — a linear dimension between two model points, shown on the named view (or the best one).',
   diameter: 'diameter(at, d, view: "top", tol:, fit: "H7", text:) — a diameter callout for a circle of diameter d centred at a model point, on a view that looks along its axis.',
+  tol: 'tol("top:overall-width-x", 0.1) or tol("front:4-holes-o3.4", fit: "H7") — a tolerance (± value or (upper, lower)) or ISO 286 fit for an automatic dimension, named by the id view_drawing lists. It follows the dimension when the design changes.',
   note: 'note("Break sharp edges 0.2 mm") — a numbered general note on the sheet.',
 };

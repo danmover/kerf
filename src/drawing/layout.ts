@@ -70,14 +70,21 @@ export function layoutSheet(items: LayoutItem[], area: Box, fixed: Box[], gap: n
     }
     const w = x - gap - area[0];
     const h = y - gap - area[1];
-    group = [area[0], area[1], area[0] + w, area[1] + h];
-    if (group[2] > area[2] + 1e-6 || group[3] > area[3] + 1e-6) return null;
-    if (fixed.some((f) => overlaps(f, group!))) return null;
+    if (area[0] + w > area[2] + 1e-6 || area[1] + h > area[3] + 1e-6) return null;
+    // the group's empty cells may hold the notes or the title block, so only
+    // its views have to keep clear of them; slide it until they do
+    const sx = area[2] - area[0] - w;
+    const sy = area[3] - area[1] - h;
+    const tries: [number, number][] = [[0, 0]];
+    for (const f of [0.25, 0.5, 0.75, 1]) tries.push([sx * f, 0], [0, sy * f], [sx * f, sy * f]);
+    const at = tries.find(([dx, dy]) => grid.every(({ it }) => !fixed.some((f) => overlaps(f, boxOf(it, [colX.get(it.grid![0])! + dx, rowY.get(it.grid![1])! + dy])))));
+    if (!at) return null;
+    group = [area[0] + at[0], area[1] + at[1], area[0] + at[0] + w, area[1] + at[1] + h];
     for (const { it, i } of grid) {
-      origins[i] = [colX.get(it.grid![0])!, rowY.get(it.grid![1])!];
+      origins[i] = [colX.get(it.grid![0])! + at[0], rowY.get(it.grid![1])! + at[1]];
       boxes[i] = boxOf(it, origins[i]);
+      occupied.push(boxes[i]);
     }
-    occupied.push(group);
   }
 
   // ---- views placed by hand

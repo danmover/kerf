@@ -174,7 +174,7 @@ function pageContent(sheet: Sheet): string {
 }
 
 /** A PDF with one page per sheet. */
-export function sheetsToPdf(sheets: Sheet[], title = "Drawing"): Uint8Array {
+export function sheetsToPdf(sheets: Sheet[], title = "Drawing"): Uint8Array<ArrayBuffer> {
   const objs: string[] = [];
   const add = (body: string) => {
     objs.push(body);

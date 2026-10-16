@@ -175,7 +175,21 @@ export function composeSheet(inp: ComposeInput): Sheet {
     // rows were assigned for this scale during layout; recompute so they match the final placement
     ink.key = `d${sheetDims.length}`;
     const box = inkDim(ink, d, placed, st);
-    sheetDims.push({ ...d.meta, view: d.view, value: d.value, text: dimLabel(d), box });
+    // model points for every dimension, so a drawing edit can write it out as dim() or diameter()
+    const f = plan.views[d.view].frame;
+    const depth = vdot([(plan.bbox[0][0] + plan.bbox[1][0]) / 2, (plan.bbox[0][1] + plan.bbox[1][1]) / 2, (plan.bbox[0][2] + plan.bbox[1][2]) / 2], f.dir);
+    const world = (p: [number, number]): V3 => [0, 1, 2].map((k) => round4(p[0] * f.x[k] + p[1] * f.y[k] + depth * f.dir[k])) as V3;
+    const centre = d.circle?.c ?? d.a;
+    sheetDims.push({
+      ...d.meta,
+      view: d.view,
+      value: d.value,
+      text: dimLabel(d),
+      box,
+      a: d.meta.a ?? world(d.kind === "callout" ? centre : d.a),
+      b: d.meta.b ?? (d.kind === "callout" ? undefined : world(d.b)),
+      align: d.kind === "h" || d.kind === "v" || d.kind === "aligned" ? d.kind : undefined,
+    });
   });
 
   // balloons
@@ -235,6 +249,8 @@ export function composeSheet(inp: ComposeInput): Sheet {
 }
 
 // ---------- layout inputs ----------
+
+const round4 = (n: number) => Math.round(n * 1e4) / 1e4 || 0;
 
 function pad(e: Ext, d: number): Ext {
   return [e[0] - d, e[1] - d, e[2] + d, e[3] + d];
@@ -820,7 +836,8 @@ function subtitle(spec: DrawingSpec, plan: DrawingPlan, model: Model): string {
 }
 
 function drawingNumber(spec: DrawingSpec): string {
-  const base = spec.name.replace(/^auto:/, "") === "assembly" ? "ASM" : spec.name.replace(/^auto:/, "");
+  const name = spec.name.replace(/^auto:/, "").replace(/_(drawing|dwg)(_\d+)?$/i, "$2");
+  const base = name === "assembly" ? "ASM" : name;
   return "KRF-" + base.toUpperCase().replace(/[^A-Z0-9]+/g, "-").slice(0, 20);
 }
 

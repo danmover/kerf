@@ -941,6 +941,13 @@ class Evaluator {
                 });
                 break;
               }
+              case "tol": {
+                const t = tol();
+                const fit = optStr("fit");
+                if (!t && !fit) ctx().error('tol() needs a tolerance or a fit, e.g. tol("top:overall-width-x", 0.1)');
+                spec.tols.push({ id: a.str("id"), tol: t, fit, span: it.call.span });
+                break;
+              }
               case "note":
                 spec.notes.push(a.str("text"));
                 break;

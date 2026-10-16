@@ -162,7 +162,100 @@ export function buildDims(ctx: DimContext): { dims: DimDef[]; warnings: string[]
     else partDims(ctx, push, paramFor, warnings);
   }
   explicitDims(ctx, push, warnings);
-  return { dims, warnings };
+  const out = mergeExplicit(dims);
+  assignIds(out, plan);
+  applyTols(out, spec.tols, warnings);
+  return { dims: out, warnings };
+}
+
+/** Readable ids for automatic dimensions, such as "top:overall-width-x", stable while the design changes. */
+function assignIds(dims: DimDef[], plan: DrawingPlan) {
+  const seen = new Map<string, number>();
+  for (const d of dims) {
+    if (!d.meta.auto) continue;
+    const label = d.meta.label.replace(/ (?:in|of) [^+]*?(?=\s*\+|$)/g, "");
+    const slug = label
+      .toLowerCase()
+      .replace(/ø/g, "o")
+      .replace(/[^a-z0-9.]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    const base = `${plan.views[d.view]?.name ?? "view"}:${slug}`;
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    d.meta.id = n > 1 ? `${base}-${n}` : base;
+  }
+}
+
+/** A tolerance or fit as dimension text: "±0.1", "+0.1/−0.05", "H7 (+0.015/0)". */
+function tolString(tol: [number, number] | undefined, fit: string | undefined): string {
+  if (fit) return `${fit}${tol ? ` (${fmtDev(tol[0])}/${fmtDev(tol[1])})` : ""}`;
+  if (!tol) return "";
+  return close(tol[0], -tol[1], 1e-9) ? `±${fmtDev(tol[0]).replace(/^[+−]/, "")}` : `${fmtDev(tol[0])}/${fmtDev(tol[1])}`;
+}
+
+/** Puts a tolerance after the diameter it belongs to in a callout's lines. */
+function tolInCallout(d: DimDef, dia: number, text: string) {
+  const s = fmtNum(dia);
+  const re = new RegExp(`Ø${s.replace(".", "\\.")}(?![\\d.])`);
+  if (re.test(d.text.main)) d.text = { ...d.text, main: d.text.main.replace(re, `Ø${s} ${text}`) };
+  else if (d.lines?.some((l) => re.test(l))) d.lines = d.lines.map((l) => l.replace(re, `Ø${s} ${text}`));
+  else d.text = { ...d.text, main: `${d.text.main} ${text}` };
+}
+
+/** tol() calls in the drawing block give automatic dimensions a tolerance or fit. */
+function applyTols(dims: DimDef[], tols: DrawingSpec["tols"], warnings: string[]) {
+  for (const t of tols) {
+    const d = dims.find((x) => x.meta.id === t.id);
+    if (!d) {
+      warnings.push(`tol("${t.id}"): there is no dimension with that id on this drawing`);
+      continue;
+    }
+    let tol = t.tol;
+    if (t.fit) {
+      const lim = fitLimits(t.fit, d.value);
+      if (lim) tol = [lim.upper, lim.lower];
+      else warnings.push(`Fit ${t.fit} is not in the ISO 286 table for ${fmtNum(d.value)} mm`);
+    }
+    if (d.kind === "callout") tolInCallout(d, d.value, tolString(tol, t.fit));
+    else if (t.fit) d.text = { ...d.text, suffix: t.fit, up: tol ? `(${fmtDev(tol[0])}` : undefined, lo: tol ? `${fmtDev(tol[1])})` : undefined };
+    else if (tol && close(tol[0], -tol[1], 1e-9)) d.text = { ...d.text, suffix: tolString(tol, undefined) };
+    else if (tol) d.text = { ...d.text, up: fmtDev(tol[0]), lo: fmtDev(tol[1]) };
+    d.meta = { ...d.meta, tol, fit: t.fit, general: undefined, span: t.span };
+  }
+}
+
+/**
+ * Dimensions written in the drawing block take over the automatic ones they
+ * repeat (keeping any parameter link), and a diameter on a called-out hole
+ * puts its fit or tolerance into that callout.
+ */
+function mergeExplicit(dims: DimDef[]): DimDef[] {
+  const drop = new Set<DimDef>();
+  for (const e of dims) {
+    if (e.meta.auto) continue;
+    if (e.kind === "callout" && e.meta.kind === "diameter") {
+      const dia = fmtNum(e.value);
+      const hit = dims.find((o) => o.meta.auto && o.kind === "callout" && o.view === e.view && (o.anchors ?? [o.circle?.c ?? o.a]).some((c) => close(c[0], e.a[0], 0.01) && close(c[1], e.a[1], 0.01)) && [o.text.main, ...(o.lines ?? [])].some((l) => l.includes(`Ø${dia}`)));
+      if (!hit) continue;
+      tolInCallout(hit, e.value, tolString(e.meta.tol, e.meta.fit));
+      hit.meta = { ...hit.meta, auto: false, span: e.meta.span, tol: e.meta.tol, fit: e.meta.fit, a: e.meta.a, general: undefined };
+      drop.add(e);
+      continue;
+    }
+    if (e.kind !== "h" && e.kind !== "v") continue;
+    const k = e.kind === "h" ? 0 : 1;
+    const lo = Math.min(e.a[k], e.b[k]);
+    const hi = Math.max(e.a[k], e.b[k]);
+    for (const o of dims) {
+      if (!o.meta.auto || o.view !== e.view || o.kind !== e.kind || drop.has(o)) continue;
+      if (close(Math.min(o.a[k], o.b[k]), lo, 0.01) && close(Math.max(o.a[k], o.b[k]), hi, 0.01)) {
+        drop.add(o);
+        e.meta = { ...e.meta, param: e.meta.param ?? o.meta.param, label: o.meta.label };
+        if (e.side === undefined || e.offset === undefined) e.side = o.side;
+      }
+    }
+  }
+  return dims.filter((d) => !drop.has(d));
 }
 
 type Push = (d: Omit<DimDef, "meta"> & { meta: Partial<DimDef["meta"]> & { label: string } }) => void;
@@ -235,6 +328,14 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
   // callouts are collected first so concentric ones can share a leader
   type Callout = { vi: number; centers: [number, number][]; order: number; size: number; lines: string[]; r: number; label: string; param?: string; value: number };
   const callouts: Callout[] = [];
+  // a blind cut that opens on the side of the part away from the view
+  const farSide = (at: V3, dir: V3, h: number, vi: number) => {
+    const v = ctx.plan.views[vi].frame.dir;
+    const [lo, hi] = extent(v);
+    const s0 = vdot(at, v);
+    const s1 = s0 + h * vdot(dir, v);
+    return Math.max(s0, s1) < hi - 0.02 && Math.min(s0, s1) <= lo + 0.02;
+  };
 
   // holes, grouped into "n×" callouts
   const groups = new Map<string, Extract<Feature, { t: "hole" }>[]>();
@@ -245,6 +346,7 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
     const frame = ctx.plan.views[vi].frame;
     const centers = list.map((h) => toView(h.at, frame));
     const lines = holeCallout(list[0], (n) => fmtNum(n, n < 10 ? 2 : 1));
+    if (!list[0].through && farSide(list[0].at, list[0].dir, list[0].depth, vi)) lines[0] += " FAR SIDE";
     const r = list[0].d / 2;
     callouts.push({ vi, centers, order: 0, size: list[0].d, lines, r, value: list[0].d, label: `${list.length > 1 ? `${list.length} holes` : "Hole"} Ø${fmtNum(list[0].d)} in ${what}` });
     addGroup(vi, centers);
@@ -270,7 +372,7 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
       const [lo, hi] = extent(f0.dir);
       const start = vdot(f0.at, f0.dir);
       const depth = Math.min(start + f0.h, hi) - Math.max(start, lo);
-      main += f0.through ? " THRU" : ` × ${fmtNum(depth, 1)} DEEP`;
+      main += f0.through ? " THRU" : ` × ${fmtNum(depth, 1)} DEEP${farSide(f0.at, f0.dir, f0.h, vi) ? " FAR SIDE" : ""}`;
     } else main += " BOSS";
     callouts.push({ vi, centers, order: f0.op === "cut" ? 1 : 2, size: f0.d, lines: [main], r: f0.d / 2, value: f0.d, label: `${f0.op === "add" ? "Boss" : "Bore"} Ø${fmtNum(f0.d)} in ${what}`, param: paramFor(f0.d) });
     addGroup(vi, centers);
@@ -291,7 +393,7 @@ function partDims(ctx: DimContext, push: Push, paramFor: (v: number) => string |
     const isSlot = close(s.r, Math.min(s.w, s.h) / 2, 0.05);
     const size = `${fmtNum(s.w)} × ${fmtNum(s.h)}`;
     let main = isSlot ? `SLOT ${size}` : `${size} R${fmtNum(s.r)}`;
-    main += s.through ? " THRU" : ` × ${fmtNum(s.depth, 1)} DEEP`;
+    main += s.through ? " THRU" : ` × ${fmtNum(s.depth, 1)} DEEP${farSide(s.at, s.dir, s.depth, vi) ? " FAR SIDE" : ""}`;
     callouts.push({ vi, centers, order: 1, size: Math.min(s.w, s.h), lines: [main], r: Math.min(s.w, s.h) / 2, value: s.w, label: `${isSlot ? "Slot" : "Pocket"} ${size} in ${what}` });
     addGroup(vi, centers);
   }

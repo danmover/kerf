@@ -17,6 +17,7 @@ import { autoDrawings, planDrawing } from "../src/drawing/views";
 import { sheetsToPdf, sheetToDxf, sheetToSvg } from "../src/drawing/render";
 import type { Sheet } from "../src/drawing/sheet";
 import type { DrawingSpec } from "../src/drawing/spec";
+import { ensureBlock, setBlockProp, setDimTolerance, specToSource } from "../src/drawing/source";
 
 const require = createRequire(import.meta.url);
 const OUT = process.env.DRAWING_OUT;
@@ -75,6 +76,10 @@ describe("automatic drawings", () => {
     // the lid screws are called out as a group
     const lid = draw(ctx, specs[2]);
     expect(lid.dims.some((d) => d.text.startsWith("4× Ø3.4 THRU"))).toBe(true);
+    // the vents go through the lid (the kernel measures no material behind
+    // them), and the screw clearance pockets open on the underside
+    expect(lid.dims.filter((d) => / DEEP/.test(d.text)).map((d) => d.text)).toEqual(["4× Ø3.4 THRU · M3 CLEARANCE · Ø10 × 2.1 DEEP FAR SIDE"]);
+    expect(lid.dims.map((d) => d.text)).toContain("7× 2.4 × 26 R1.1 THRU");
     const asm = draw(ctx, specs[0]);
     expect(asm.bom.length).toBeGreaterThan(3);
     expect(asm.scale).toBeGreaterThan(0);
@@ -90,6 +95,7 @@ describe("automatic drawings", () => {
       const sheet = draw(ctx, spec);
       save(`reducer-${spec.name.slice(5)}`, sheet);
       expect(sheet.pending).toBe(0);
+      if (spec.name === "auto:housing") expect(sheet.dims.some((d) => /Ø9 THRU/.test(d.text))).toBe(true);
     }
   }, 240_000);
 });
@@ -137,5 +143,61 @@ drawing plate_dwg {
     const dxf = sheetToDxf(sheet);
     expect(dxf.trimEnd().endsWith("EOF")).toBe(true);
     expect(dxf).toContain("%%c10");
+  }, 60_000);
+});
+
+describe("editing drawings from the sheet", () => {
+  it("keeps a tolerance on an automatic dimension when the design changes", () => {
+    const src = demo("enclosure.kerf");
+    const ctx = load(src);
+    const spec = autoDrawings(ctx.model, ctx.bboxOf).find((s) => s.name === "auto:base")!;
+    const sheet = draw(ctx, spec);
+    const width = sheet.dims.find((d) => d.param === "width")!;
+    expect(width.id).toMatch(/^top:/);
+    // the automatic drawing becomes a block, and the tolerance names the dimension
+    const block = ensureBlock(src, ctx.model, spec);
+    expect(block.name).toBe("base_drawing");
+    const viewName = sheet.views[width.view].name;
+    let next = setDimTolerance(block.src, block.name, width, viewName, { kind: "pm", t: 0.1 });
+    expect(next).toContain(`tol("${width.id}", 0.1)`);
+    next = setBlockProp(next, block.name, "revision", '"B"');
+
+    const ctx2 = load(next);
+    expect(ctx2.model.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const sheet2 = draw(ctx2, ctx2.model.drawings[0]);
+    expect(sheet2.warnings).toEqual([]);
+    expect(sheet2.spec.revision).toBe("B");
+    const w2 = sheet2.dims.find((d) => d.param === "width")!;
+    expect(w2.text).toBe("90 ±0.1");
+    expect(sheetToSvg(sheet2)).toContain("KRF-BASE<");
+
+    // a wider enclosure: the same dimension, still toleranced, and no stale copy
+    const wider = load(next.replace(/param width\s*=\s*90mm/, "param width = 95mm"));
+    const sheet3 = draw(wider, wider.model.drawings[0]);
+    save("enclosure-base-95", sheet3);
+    // five millimetres wider still fits the same sheet and scale
+    expect([sheet3.size, sheet3.scale]).toEqual([sheet2.size, sheet2.scale]);
+    const w3 = sheet3.dims.filter((d) => d.param === "width");
+    expect(w3.map((d) => d.text)).toEqual(["95 ±0.1"]);
+    expect(sheet3.dims.some((d) => d.text.startsWith("90"))).toBe(false);
+
+    // changing it edits the tol() line, and "general" removes it
+    const changed = setDimTolerance(next, block.name, w2, viewName, { kind: "limits", upper: 0.1, lower: -0.05 });
+    expect(changed).toContain(`tol("${width.id}", (0.1, -0.05))`);
+    expect(changed.match(/tol\(/g)?.length).toBe(1);
+    const removed = setDimTolerance(next, block.name, w2, viewName, { kind: "none" });
+    expect(removed).not.toContain("tol(");
+    expect(load(removed).model.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+  }, 120_000);
+
+  it("writes a drawing block that reads back as the same drawing", () => {
+    const ctx = load(demo("enclosure.kerf"));
+    const spec = autoDrawings(ctx.model, ctx.bboxOf).find((s) => s.name === "auto:lid")!;
+    const block = specToSource({ ...spec, tols: [{ id: "top:x", fit: "H7", span: { start: 0, end: 0 } }] }, "lid_drawing");
+    const back = load(`${demo("enclosure.kerf")}\n${block}\n`);
+    const d = back.model.drawings[0];
+    expect(d.of).toEqual(spec.of);
+    expect(d.views.map((v) => v.kind)).toEqual(spec.views.map((v) => v.kind));
+    expect(d.tols.map((t) => [t.id, t.fit])).toEqual([["top:x", "H7"]]);
   }, 60_000);
 });

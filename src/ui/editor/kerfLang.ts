@@ -8,10 +8,11 @@ import type { CompletionContext, CompletionResult, Completion } from "@codemirro
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
 import { LIBRARY } from "../../library/components";
+import { DRAWING_DOCS, DRAWING_PROPS } from "../../drawing/spec";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 
-const STATEMENTS = new Set(["design", "note", "param", "let", "component", "interface", "part", "require"]);
+const STATEMENTS = new Set(["design", "note", "param", "let", "component", "interface", "part", "require", "drawing"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
 const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS]);
 const CONSTS = new Set(["X", "Y", "Z", "ORIGIN", "PI", ...Object.keys(THREADS)]);
@@ -134,11 +135,14 @@ export function kerfCompletions(getModel: () => Model | null) {
     ...Object.values(MATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "math", apply: f.name + "(" })),
     ...Object.entries(modifierDocs).map(([k, d]) => ({ label: k, type: "function", info: d, detail: "modifier", apply: k + "(" })),
     ...GEO_FNS.map((g) => ({ label: g, type: "function", detail: "geometry", apply: g + "(" })),
+    ...Object.entries(DRAWING_DOCS)
+      .filter(([k]) => k !== "note")
+      .map(([k, d]) => ({ label: k, type: "function", info: d, detail: "drawing", apply: k + "(" })),
   ];
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
   const libItems: Completion[] = Object.entries(LIBRARY).map(([k, e]) => ({ label: k, type: "class", info: `${e.signature}\n\n${e.doc}`, detail: "library", apply: k + "(" }));
-  const props: Completion[] = ["color", "material", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at"].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 
   return (ctx: CompletionContext): CompletionResult | null => {
