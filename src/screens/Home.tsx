@@ -317,6 +317,25 @@ export function TemplateArt({ id }: { id: string }) {
       </svg>
     );
   }
+  if (id === "practice-amp")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <rect x="44" y="10" width="112" height="100" rx="5" fill="rgba(109,139,255,.06)" stroke="#39445c" strokeWidth="1.6" />
+        <rect x="50" y="16" width="100" height="20" rx="2" fill="rgba(109,139,255,.12)" stroke={stroke} strokeWidth="1.1" />
+        {[60, 72, 84, 96].map((x, i) => (
+          <motion.g key={x} animate={{ rotate: [0, 40 - i * 25, 0] }} transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut", delay: i * 0.2 }} style={{ originX: `${x}px`, originY: "26px" }}>
+            <circle cx={x} cy="26" r="4" fill="#10141c" stroke="#8fa8ff" strokeWidth="1" />
+            <path d={`M${x} 26v-3.4`} stroke="#dfe5f2" strokeWidth="1.2" />
+          </motion.g>
+        ))}
+        <rect x="112" y="20" width="32" height="12" rx="1" fill="#020304" stroke="#1d3e66" />
+        <text x="118" y="30" fill="#e9f6ff" fontSize="8" fontFamily="monospace">A</text>
+        <motion.path d="M134 23v7" stroke="#e9f6ff" strokeWidth="1.4" animate={{ x: [-6, 2, 0, 0] }} transition={{ duration: 3.2, repeat: Infinity, ease: "easeOut" }} />
+        <circle cx="100" cy="73" r="30" fill="none" stroke="#39445c" strokeWidth="1.2" />
+        <motion.circle cx="100" cy="73" r="22" fill="rgba(109,139,255,.10)" stroke={stroke} strokeWidth="1.3" animate={{ r: [21, 23.5, 21] }} transition={{ duration: 0.5, repeat: Infinity, ease: "easeInOut" }} />
+        <circle cx="100" cy="73" r="7" fill="rgba(199,146,255,.25)" stroke="#c792ff" strokeWidth="1.1" />
+      </svg>
+    );
   if (id === "printer")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
