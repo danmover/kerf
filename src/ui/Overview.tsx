@@ -10,7 +10,7 @@ import { useView, revealSpan } from "../app/view";
 import { useProject, previewSource, endPreview, restoreVersion } from "../app/project";
 import { useChat, sendMessage } from "../ai/chat";
 import { openSpot } from "../app/spot";
-import { attention, briefSummary, designStats, massText, sizeText, placedBox, type UseStatus } from "../app/designStats";
+import { attention, briefSummary, checkScope, designStats, massText, sizeText, placedBox, type UseStatus } from "../app/designStats";
 import { lineCol } from "../lang/lexer";
 import { diffStats } from "../core/sourceEdit";
 import { materialDef, FINISHES, resolveFinish } from "../library/materials";
@@ -140,7 +140,7 @@ function VerdictCard({ i }: { i: number }) {
     tone = "fail";
   } else {
     headline = `All ${counts.pass} checks pass`;
-    sub = counts.warn ? `${counts.warn} warning${counts.warn > 1 ? "s" : ""} to look at` : "Fit, interference, tool access and motion";
+    sub = counts.warn ? `${counts.warn} warning${counts.warn > 1 ? "s" : ""} to look at` : checkScope(report);
     tone = counts.warn ? "warn" : "pass";
   }
   const big = errors.length ? errors.length : counts.fail ? counts.fail : counts.pass;

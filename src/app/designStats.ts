@@ -125,6 +125,31 @@ export function attention(report: CheckReport | null, limit = 4): CheckItem[] {
     .slice(0, limit);
 }
 
+const SCOPE: Record<string, string> = {
+  brief: "the brief",
+  requirement: "requirements",
+  interference: "interference",
+  access: "tool access",
+  motion: "motion",
+  gears: "gears",
+  analysis: "strength",
+  process: "manufacturing",
+  electrical: "wiring",
+  engineering: "calculations",
+};
+
+/** What the checks cover, from the categories that ran: "Requirements, interference and tool access". */
+export function checkScope(report: CheckReport | null, limit = 4): string {
+  const present = new Set((report?.items ?? []).map((i) => i.category));
+  const names = Object.keys(SCOPE)
+    .filter((c) => present.has(c as CheckItem["category"]))
+    .map((c) => SCOPE[c]);
+  if (!names.length) return "";
+  const shown = names.length > limit ? [...names.slice(0, limit), `${names.length - limit} more`] : names;
+  const text = shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown[0];
+  return text[0].toUpperCase() + text.slice(1);
+}
+
 /** "92 × 70 × 34" with sensible precision. */
 export function sizeText(size: V3 | null): string {
   if (!size) return "—";

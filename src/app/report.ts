@@ -41,7 +41,12 @@ const CATEGORY: Record<string, string> = {
   access: "Tool access",
   motion: "Motion",
   gears: "Gears",
+  analysis: "Strength",
+  process: "Manufacturing",
   build: "Build",
+  electrical: "Wiring",
+  engineering: "Calculations",
+  testing: "Physical tests",
   info: "Needs analysis",
 };
 
@@ -158,7 +163,7 @@ ${
         .join("")}</tbody></table></section>`
     : ""
 }
-<footer>Made with Kerf ${esc(r.appVersion)}. Units: millimetres. Kerf's checks verify geometry and fit, not strength: test a part before you rely on it.</footer>
+<footer>Made with Kerf ${esc(r.appVersion)}. Units: millimetres. Strength checks are estimates from a simplified model: test a part before you rely on it.</footer>
 </div></body></html>
 `;
 }

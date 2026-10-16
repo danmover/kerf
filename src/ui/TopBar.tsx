@@ -58,7 +58,7 @@ export function TopBar() {
             size={Math.max(8, Math.min(40, name.length + 1))}
           />
           {versions > 0 && (
-            <button className="tb-ver narrow-hide" onClick={() => useView.setState({ leftTab: "history" })} data-tip={`${versions} version${versions === 1 ? "" : "s"}: open history`} aria-label={`${versions} versions, open history`}>
+            <button className="tb-ver narrow-hide" onClick={() => useView.setState({ leftTab: "history" })} data-tip={`${versions} version${versions === 1 ? "" : "s"}: open history`} aria-label={`${versions} version${versions === 1 ? "" : "s"}, open history`}>
               <span key={versions} className="tb-ver-n">
                 v{versions}
               </span>

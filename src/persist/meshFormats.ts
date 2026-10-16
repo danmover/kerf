@@ -198,6 +198,80 @@ export function writeObj(items: PlacedMesh[], mtlName: string, title: string): {
   return { obj: obj.join("\n") + "\n", mtl: mtl.join("\n") + "\n" };
 }
 
+/** Column-major 4×4 product a·b (apply b first). */
+export function mul4(a: number[], b: number[]): number[] {
+  const out = new Array(16).fill(0);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) for (let k = 0; k < 4; k++) out[c * 4 + r] += a[k * 4 + r] * b[c * 4 + k];
+  return out;
+}
+
+// the six ways to rest a part on an axis-aligned face: the face whose outward
+// normal is `dir` ends up facing down (-Z); all proper rotations, never mirrors
+const RESTS: { dir: [number, number, number]; m: number[] }[] = [
+  { dir: [0, 0, -1], m: IDENTITY },
+  { dir: [0, 0, 1], m: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1] },
+  { dir: [1, 0, 0], m: [0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1] },
+  { dir: [-1, 0, 0], m: [0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 1] },
+  { dir: [0, 1, 0], m: [1, 0, 0, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1] },
+  { dir: [0, -1, 0], m: [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1] },
+];
+
+/**
+ * How to turn a part so it prints lying down: onto its largest flat face
+ * among the six axis-aligned sides, and on a tie the side that leaves it
+ * lowest. Parts that are already down on their best face keep their pose.
+ * Returns a rotation (column-major 4×4) and the area resting on the bed.
+ */
+export function restingRotation(mesh: MeshData, tolerance = 0.02): { matrix: number[]; contact: number; height: number } {
+  const P = mesh.positions;
+  const I = mesh.indices;
+  let best = { matrix: IDENTITY, contact: -1, height: Infinity };
+  if (!P.length) return { matrix: IDENTITY, contact: 0, height: 0 };
+  for (const { dir, m } of RESTS) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < P.length; i += 3) {
+      const d = P[i] * dir[0] + P[i + 1] * dir[1] + P[i + 2] * dir[2];
+      if (d < lo) lo = d;
+      if (d > hi) hi = d;
+    }
+    // area of triangles lying in the extreme plane along `dir`
+    let contact = 0;
+    for (let t = 0; t < I.length; t += 3) {
+      const a = I[t] * 3;
+      const b = I[t + 1] * 3;
+      const c = I[t + 2] * 3;
+      const on = (k: number) => hi - (P[k] * dir[0] + P[k + 1] * dir[1] + P[k + 2] * dir[2]) <= tolerance;
+      if (!on(a) || !on(b) || !on(c)) continue;
+      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+      const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+      contact += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+    }
+    const height = hi - lo;
+    const better = contact > best.contact * 1.02 + 1e-6 || (contact >= best.contact * 0.98 && height < best.height - tolerance);
+    if (better) best = { matrix: m, contact, height };
+  }
+  return best;
+}
+
+/** Bounds of a mesh after a 4×4 transform. */
+export function transformedBounds(mesh: MeshData, m: number[]): { min: [number, number, number]; max: [number, number, number] } {
+  const { min, max } = meshBounds(mesh);
+  const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+  const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < 8; i++) {
+    const x = i & 1 ? max[0] : min[0];
+    const y = i & 2 ? max[1] : min[1];
+    const z = i & 4 ? max[2] : min[2];
+    const w = [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
+    for (let k = 0; k < 3; k++) {
+      lo[k] = Math.min(lo[k], w[k]);
+      hi[k] = Math.max(hi[k], w[k]);
+    }
+  }
+  return { min: lo, max: hi };
+}
+
 /**
  * Lay boxes out flat on a print bed, in rows, biggest first. Returns the
  * offset to add to each box's minimum corner so it sits on z = 0 at its spot.

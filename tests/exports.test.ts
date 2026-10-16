@@ -4,8 +4,8 @@ import { evaluate } from "../src/lang/evaluator";
 import type { MeshData } from "../src/kernel/build";
 import type { CheckItem, CheckReport } from "../src/core/checks";
 import { crc32, unzip, zip } from "../src/persist/zip";
-import { IDENTITY, layoutPlate, meshBounds, threeMfFiles, threeMfModel, translation, weld, writeObj, type PlacedMesh } from "../src/persist/meshFormats";
-import { attention, briefSummary, designStats, massText, sizeText } from "../src/app/designStats";
+import { IDENTITY, layoutPlate, meshBounds, mul4, restingRotation, threeMfFiles, threeMfModel, transformedBounds, translation, weld, writeObj, type PlacedMesh } from "../src/persist/meshFormats";
+import { attention, briefSummary, checkScope, designStats, massText, sizeText } from "../src/app/designStats";
 import { designReportHtml } from "../src/app/report";
 import { markSvg } from "../src/ui/logoGeometry";
 
@@ -193,6 +193,15 @@ describe("design stats", () => {
     expect(attention(null)).toEqual([]);
   });
 
+  it("says what the checks cover", () => {
+    const item = (category: CheckItem["category"]): CheckItem => ({ id: category, status: "pass", category, title: "", detail: "", basis: "geometry" });
+    const report = (cats: CheckItem["category"][]): CheckReport => ({ items: cats.map(item), counts: { pass: cats.length, fail: 0, warn: 0, pending: 0, info: 0 }, ms: 1 });
+    expect(checkScope(report(["motion", "interference", "requirement", "access"]))).toBe("Requirements, interference, tool access and motion");
+    expect(checkScope(report(["interference"]))).toBe("Interference");
+    expect(checkScope(report(["requirement", "interference", "access", "motion", "analysis", "process"]))).toBe("Requirements, interference, tool access, motion and 2 more");
+    expect(checkScope(null)).toBe("");
+  });
+
   it("writes sizes and masses the way people read them", () => {
     expect(sizeText([92.04, 70, 34.56])).toBe("92 × 70 × 34.6");
     expect(sizeText([120.4, 8, 0.25])).toBe("120 × 8 × 0.3");
@@ -242,5 +251,50 @@ describe("logo", () => {
     expect(a).toContain('width="40"');
     expect(a).toContain("url(#a-");
     expect(markSvg(40, 0.06, "b")).not.toContain("url(#a-");
+  });
+});
+
+describe("print plate orientation", () => {
+  /** an axis-aligned box mesh of size w × d × h, corner at the origin */
+  const box = (w: number, d: number, h: number): MeshData => {
+    const m = cube(1);
+    const positions = new Float32Array(m.positions.length);
+    for (let i = 0; i < positions.length; i += 3) positions.set([m.positions[i] * w, m.positions[i + 1] * d, m.positions[i + 2] * h], i);
+    return { ...m, positions };
+  };
+  const det3 = (m: number[]) => m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
+
+  it("lays a cover that was modelled standing up onto its big face", () => {
+    // 90 wide, 7 deep, 90 tall: stands on its edge as modelled
+    const cover = box(90, 7, 90);
+    const rest = restingRotation(cover);
+    const b = transformedBounds(cover, rest.matrix);
+    expect(b.max[2] - b.min[2]).toBeCloseTo(7);
+    expect(rest.contact).toBeCloseTo(90 * 90);
+    expect(det3(rest.matrix)).toBeCloseTo(1);
+  });
+
+  it("keeps a part that already lies on its best face as it is", () => {
+    expect(restingRotation(box(40, 30, 5)).matrix).toEqual(IDENTITY);
+    expect(restingRotation(cube()).matrix).toEqual(IDENTITY);
+  });
+
+  it("every resting pose is a proper rotation that puts the chosen face down", () => {
+    for (const [w, d, h] of [[5, 50, 60], [60, 5, 50], [50, 60, 5]]) {
+      const m = box(w, d, h);
+      const r = restingRotation(m);
+      expect(det3(r.matrix)).toBeCloseTo(1);
+      const b = transformedBounds(m, r.matrix);
+      expect(b.max[2] - b.min[2]).toBeCloseTo(5);
+    }
+  });
+
+  it("composes a placement after the rotation", () => {
+    const m = box(10, 2, 20);
+    const r = restingRotation(m).matrix;
+    const b = transformedBounds(m, r);
+    const placed = mul4(translation(100 - b.min[0], 50 - b.min[1], -b.min[2]), r);
+    const after = transformedBounds(m, placed);
+    expect(after.min.map((v) => Math.round(v * 1000) / 1000)).toEqual([100, 50, 0]);
   });
 });

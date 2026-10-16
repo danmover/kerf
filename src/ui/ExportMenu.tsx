@@ -55,7 +55,7 @@ function ExportPanel({ close }: { close: () => void }) {
       <div className="xp-head">
         <span className="xp-title">Export</span>
         {last && (
-          <button className="xp-again" onClick={() => go(last)} disabled={!hasParts && last.group !== "project"}>
+          <button className="xp-again" role="menuitem" onClick={() => go(last)} disabled={!hasParts && last.group !== "project"}>
             <Icon.Refresh size={12} /> Again: {last.label} <span className="xp-ext">{last.ext}</span>
           </button>
         )}

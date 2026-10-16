@@ -56,7 +56,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "usdz", group: "model", label: "USDZ for AR", detail: "Place it on your desk with an iPhone", ext: ".usdz", icon: "Orbit", selection: true, run: (o) => exportUsdz(o.selectionOnly) },
   { id: "obj", group: "model", label: "OBJ + materials", detail: "Renderers and mesh tools", ext: ".zip", icon: "Box", selection: true, run: (o) => exportObj(o.selectionOnly) },
 
-  { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, laid flat, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
+  { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, on its flattest side, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
   { id: "stl-parts", group: "print", label: "STL per part", detail: "One file per part, named with how many", ext: ".zip", icon: "Layers", selection: true, run: (o) => exportStlParts(o.selectionOnly) },
   { id: "stl", group: "print", label: "STL, one mesh", detail: "The whole assembly in place", ext: ".stl", icon: "Layers", selection: true, run: (o) => exportStl(o.selectionOnly) },
 

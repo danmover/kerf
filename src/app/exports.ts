@@ -1,5 +1,6 @@
 // Export actions shared by the top bar menu and keyboard shortcuts.
 
+import * as THREE from "three";
 import { kernel } from "../kernel/client";
 import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
@@ -15,7 +16,7 @@ import type { MeshData } from "../kernel/build";
 import { xformMatrix } from "../kernel/recipe";
 // as zipFiles, so it can sit beside the build pack's own zip() from machine/zip
 import { zip as zipFiles } from "../persist/zip";
-import { layoutPlate, meshBounds, threeMfFiles, translation, writeObj, type PlacedMesh } from "../persist/meshFormats";
+import { layoutPlate, mul4, restingRotation, threeMfFiles, transformedBounds, translation, writeObj, type PlacedMesh } from "../persist/meshFormats";
 import { briefData, processInfo } from "../core/brief";
 import { appearanceFor } from "../ui/viewport/render/appearance";
 import { markSvg } from "../ui/logoGeometry";
@@ -119,14 +120,19 @@ function uniqueMade(items: Placed[]) {
   return [...byHash.values()];
 }
 
-/** Every made part laid flat on one print plate, repeated as many times as the design uses it. */
+/** Every made part lying on its largest flat face on one print plate, repeated as many times as the design uses it. */
 export async function export3mfPlate(selectionOnly = false) {
   const items = await placedMeshes(selectionOnly, madePart);
   if (!items) return;
   const unique = uniqueMade(items);
   const brief = briefData(useDesign.getState().model?.brief);
   const bed = brief?.buildVolume ?? processInfo(brief?.process)?.volume ?? [220, 220, 250];
-  const copies = unique.flatMap((u) => Array.from({ length: u.qty }, () => ({ ...u, box: meshBounds(u.mesh) })));
+  // each part turned onto its largest flat face, so a cover lies down instead of standing on its edge
+  const copies = unique.flatMap((u) => {
+    const rest = restingRotation(u.mesh).matrix;
+    const box = transformedBounds(u.mesh, rest);
+    return Array.from({ length: u.qty }, () => ({ ...u, rest, box }));
+  });
   const spots = layoutPlate(
     copies.map((c) => ({ w: c.box.max[0] - c.box.min[0], d: c.box.max[1] - c.box.min[1] })),
     bed[0],
@@ -141,7 +147,7 @@ export async function export3mfPlate(selectionOnly = false) {
     color: c.part.color,
     material: c.part.material,
     mesh: c.mesh,
-    matrix: translation(ox + spots[i].x - c.box.min[0], oy + spots[i].y - c.box.min[1], -c.box.min[2]),
+    matrix: mul4(translation(ox + spots[i].x - c.box.min[0], oy + spots[i].y - c.box.min[1], -c.box.min[2]), c.rest),
   }));
   const data = await zipFiles(threeMfFiles(placed, baseName()));
   download(data, safeFileName(baseName() + " print plate" + suffix(selectionOnly), "3mf"), "model/3mf");
@@ -149,7 +155,7 @@ export async function export3mfPlate(selectionOnly = false) {
   toast(
     tooBig
       ? { kind: "warn", title: "Print plate exported, but it is bigger than the bed", detail: `${copies.length} parts need ${Math.round(extentX)} × ${Math.round(extentY)} mm. Split them across plates in your slicer.` }
-      : { kind: "success", title: "Print plate exported", detail: `${copies.length} part${copies.length === 1 ? "" : "s"} laid flat on a ${bed[0]} × ${bed[1]} mm bed, in their colours. Opens in PrusaSlicer, Bambu Studio, Cura and Orca.` },
+      : { kind: "success", title: "Print plate exported", detail: `${copies.length} part${copies.length === 1 ? "" : "s"}, each on its largest flat face, on a ${bed[0]} × ${bed[1]} mm bed in their colours. Opens in PrusaSlicer, Bambu Studio, Cura and Orca.` },
   );
 }
 
@@ -177,13 +183,12 @@ export async function exportObj(selectionOnly = false) {
 
 /** A three.js scene of the parts with their real materials, in metres and Y up as glTF and USD expect. */
 async function sceneOf(items: Placed[]) {
-  const THREE = await import("three");
   const root = new THREE.Group();
   root.name = baseName();
   root.rotation.x = -Math.PI / 2;
   root.scale.setScalar(0.001);
-  const geos = new Map<MeshData, import("three").BufferGeometry>();
-  const mats = new Map<string, InstanceType<typeof THREE.MeshPhysicalMaterial>>();
+  const geos = new Map<MeshData, THREE.BufferGeometry>();
+  const mats = new Map<string, THREE.MeshPhysicalMaterial>();
   for (const { part, mesh } of items) {
     let g = geos.get(mesh);
     if (!g) {
@@ -394,7 +399,7 @@ export async function exportViewSheet() {
     }
     g.font = "400 12px 'IBM Plex Mono', monospace";
     g.fillStyle = "#56607a";
-    g.fillText(`Made with Kerf ${__APP_VERSION__}. Millimetres, Z up. Checks verify geometry, not strength.`, pad, ch - pad + 4);
+    g.fillText(`Made with Kerf ${__APP_VERSION__}. Millimetres, Z up. Strength checks are estimates: test before you rely on a part.`, pad, ch - pad + 4);
     const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
     if (!blob) throw new Error("The browser could not encode the sheet");
     download(blob, safeFileName(baseName() + " views", "png"), "image/png");
