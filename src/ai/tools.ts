@@ -14,6 +14,7 @@ import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
+import { REVIEW_TOOL } from "./review/tool";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -131,6 +132,7 @@ export const TOOL_DEFS = [
     },
   },
   BUILD_TOOL,
+  REVIEW_TOOL,
 ];
 
 const EditInput = z.object({
@@ -209,7 +211,7 @@ export function reportSummary(r: CheckReport | null, limit = 40): string {
   return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}` : ""].filter(Boolean).join("\n");
 }
 
-function numbered(src: string) {
+export function numbered(src: string) {
   const lines = src.split("\n");
   const w = String(lines.length).length;
   return lines.map((l, i) => `${String(i + 1).padStart(w, " ")}| ${l}`).join("\n");
@@ -389,4 +391,5 @@ export const TOOL_TITLES: Record<string, string> = {
   capture_view: "Looking at the model",
   ask_user: "Asking you",
   build_subassemblies: "Building subassemblies in parallel",
+  review_design: "Reviewing the design",
 };

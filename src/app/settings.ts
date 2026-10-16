@@ -15,6 +15,8 @@ export const LIGHTING_IDS = ["studio", "showroom", "blueprint", "workshop", "day
 
 export type ModelId = (typeof MODELS)[number]["id"];
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+/** off: only when Claude asks for one · auto: after substantial changes · always: after every change */
+export type SelfReview = "off" | "auto" | "always";
 
 export interface Settings {
   model: ModelId;
@@ -31,6 +33,10 @@ export interface Settings {
   quality: "draft" | "balanced" | "high";
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
+  /** when an independent reviewer checks Claude's changes before it reports back */
+  selfReview: SelfReview;
+  /** review rounds per reply: the first review plus re-checks after fixes */
+  reviewRounds: number;
   termsAccepted: string | null;
   onboarded: boolean;
   /** the user allowed the browser's online speech service, for when the device cannot recognise speech itself */
@@ -64,6 +70,8 @@ const DEFAULTS: Settings = {
   lightAngle: 0,
   quality: "balanced",
   maxSteps: 16,
+  selfReview: "auto",
+  reviewRounds: 2,
   termsAccepted: null,
   onboarded: false,
   voiceOnline: false,
@@ -101,6 +109,8 @@ function load(): Settings {
     out.agentParallel = Math.min(8, Math.max(1, Math.round(out.agentParallel)));
     out.agentBudget = Math.min(100, Math.max(0.5, Number(out.agentBudget) || DEFAULTS.agentBudget));
     out.agentWorkers = Math.min(4, Math.max(0, Math.round(out.agentWorkers)));
+    if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
+    out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
     return out;
   } catch {
     return DEFAULTS;

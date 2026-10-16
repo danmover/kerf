@@ -14,6 +14,9 @@ import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type ToolOutcome } from "./tools";
 import { getAgentRun, isLive } from "../agents/progress";
 import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering } from "./plan";
+import { appDeps, currentBrief, designerReport, registerBriefProvider, ReviewError, ReviewInput, ReviewSession, runReview, type Finding, type ReviewProgress, type ReviewResult } from "./review";
+import { shrinkImage } from "./review/renders";
+import { isSubstantial } from "./review/gate";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; ts: number }
@@ -21,7 +24,20 @@ export type ChatItem =
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number }
   | { kind: "choice"; id: string; toolUseId: string; question: string; options: { label: string; consequence: string; recommended?: boolean }[]; chosen?: string }
   | { kind: "notice"; id: string; level: "error" | "warn" | "info"; title: string; detail?: string; action?: "settings" | "retry" | "continue" }
-  | { kind: "turn"; id: string; before: string; after: string; edits: number; reverted?: boolean };
+  | { kind: "turn"; id: string; before: string; after: string; edits: number; reverted?: boolean }
+  | {
+      kind: "review";
+      id: string;
+      /** run by Kerf after a substantial change, rather than asked for by Claude */
+      auto: boolean;
+      round: number;
+      status: "running" | "done" | "error";
+      progress?: { stage: ReviewProgress["stage"]; detail?: string; views: string[] };
+      result?: ReviewResult;
+      /** small contact sheet kept in saved history when the full renders are dropped */
+      thumb?: string;
+      error?: string;
+    };
 
 interface ChatState {
   projectId: string | null;
@@ -43,7 +59,10 @@ let lastEditedSource: string | null = null;
 let idn = 0;
 const nid = () => `c${Date.now().toString(36)}${(++idn).toString(36)}`;
 /** request features the selected model rejected this session */
-const unsupported = new Set<"effort" | "thinking" | "fallbacks">();
+const unsupported = new Set<"effort" | "thinking" | "fallbacks" | "binding">();
+
+const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 
 function patch(id: string, fn: (it: ChatItem) => ChatItem) {
   set((s) => ({ items: s.items.map((it) => (it.id === id ? fn(it) : it)) }));
@@ -59,7 +78,9 @@ export async function loadChat(projectId: string) {
   const rec = await db.getOne<db.ChatRecord>("chats", projectId).catch(() => undefined);
   history = (rec?.history as BetaMessageParam[]) ?? [];
   const savedPending = (rec as { pending?: ChatState["pendingChoice"] } | undefined)?.pending ?? null;
-  const items = ((rec?.items as ChatItem[]) ?? []).map((it) => (it.kind === "assistant" ? { ...it, streaming: false } : it.kind === "tool" && it.status === "running" ? { ...it, status: "error" as const, detail: "Interrupted" } : it));
+  const items = ((rec?.items as ChatItem[]) ?? []).map((it) =>
+    it.kind === "assistant" ? { ...it, streaming: false } : (it.kind === "tool" || it.kind === "review") && it.status === "running" ? { ...it, status: "error" as const, detail: "Interrupted", error: "Interrupted" } : it,
+  );
   lastEditedSource = null;
   // a choice card left open in a previous session is still answerable
   const open = savedPending && items.some((i) => i.id === savedPending.itemId && i.kind === "choice" && !i.chosen) ? savedPending : null;
@@ -76,7 +97,7 @@ function persist() {
     const { items, pendingChoice } = get();
     // keep stored history small: images are dropped, the text around them stays
     const slimHistory = history.map(stripImages);
-    const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it));
+    const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it.kind === "review" ? slimReview(it) : it));
     void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"]; plan: unknown }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, plan: planSnapshot(), updatedAt: Date.now() }).catch(() => undefined);
   }, 400);
 }
@@ -127,34 +148,86 @@ export function resetChat() {
   quietly(resetPlan);
 }
 
+const OMITTED = { type: "text" as const, text: "[image omitted from saved history]" };
 function stripImages(m: BetaMessageParam): BetaMessageParam {
   if (typeof m.content === "string") return m;
   return {
     ...m,
     content: m.content.map((b) => {
-      if (b.type === "tool_result" && Array.isArray(b.content)) {
-        return { ...b, content: b.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[image omitted from saved history]" } : c)) };
-      }
+      if (b.type === "image") return OMITTED;
+      if (b.type === "tool_result" && Array.isArray(b.content)) return { ...b, content: b.content.map((c) => (c.type === "image" ? OMITTED : c)) };
       return b;
     }),
   };
 }
 
-/** Keep the two most recent images in context; older ones become a short note. */
-function trimImages() {
-  let seen = 0;
-  for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i];
-    if (typeof m.content === "string") continue;
-    for (const b of m.content) {
-      if (b.type === "tool_result" && Array.isArray(b.content)) {
-        if (b.content.some((c) => c.type === "image")) {
-          seen++;
-          if (seen > 2) b.content = b.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[earlier image removed to save context]" } : c));
-        }
-      }
-    }
+/** Saved reviews keep their findings and a small contact sheet, not every full-size render. */
+function slimReview(it: Extract<ChatItem, { kind: "review" }>): ChatItem {
+  if (!it.result) return { ...it, progress: undefined };
+  return { ...it, progress: undefined, result: { ...it.result, views: it.result.views.map((v) => ({ ...v, image: "" })), sheet: "" } };
+}
+
+// Earlier turns are never edited once sent (images included): Claude's
+// thinking blocks are bound to the exact conversation that produced them, and
+// an edited history invalidates them. Images stay in context; they are cached.
+
+// ---------- self-review ----------
+
+/** The brief a review judges against: the user's own messages in this conversation. */
+function conversationBrief() {
+  const said = get()
+    .items.filter((i): i is Extract<ChatItem, { kind: "user" }> => i.kind === "user")
+    .map((i) => i.text.trim())
+    .filter(Boolean);
+  const model = useDesign.getState().model;
+  const notes = model?.notes.length ? `\nDesign notes: ${model.notes.join(" ")}` : "";
+  return { text: (said.length ? said.map((t, n) => `${n + 1}. ${t}`).join("\n") : "") + (model?.name ? `\nDesign name: ${model.name}` : "") + notes, from: "conversation" as const };
+}
+registerBriefProvider(conversationBrief);
+
+/** Keep every review card of this reply in step with the latest status of each finding. */
+function syncFindings(session: ReviewSession, itemIds: string[]) {
+  const latest = new Map(session.findings.map((f) => [f.id, f]));
+  const upd = (fs: Finding[]) => fs.map((f) => latest.get(f.id) ?? f);
+  for (const id of itemIds) patch(id, (it) => (it.kind === "review" && it.result ? { ...it, result: { ...it.result, findings: upd(it.result.findings), earlier: upd(it.result.earlier) } } : it));
+}
+
+/** Run one review round into the chat item itemId. Returns the result, or null when it could not run. */
+async function reviewInto(itemId: string, session: ReviewSession, itemIds: string[], auto: boolean, focus?: string): Promise<ReviewResult | { error: string }> {
+  const round = session.round + 1;
+  set((s) => ({ items: s.items.map((it) => (it.id === itemId ? { kind: "review", id: itemId, auto, round, status: "running", progress: { stage: "waiting", views: [] } } : it)) }));
+  itemIds.push(itemId);
+  try {
+    const result = await runReview(
+      {
+        brief: currentBrief(),
+        round,
+        earlier: session.carried(),
+        nextId: session.nextId,
+        focus,
+        signal: abort?.signal,
+        onProgress: (p) => patch(itemId, (it) => (it.kind === "review" ? { ...it, progress: { stage: p.stage, detail: p.detail, views: (p.views ?? []).map((v) => v.image) } } : it)),
+      },
+      appDeps(client),
+    );
+    session.add(result);
+    const thumb = result.sheet ? await shrinkImage(result.sheet, 480).catch(() => undefined) : undefined;
+    patch(itemId, (it) => (it.kind === "review" ? { ...it, status: "done", progress: undefined, result, thumb } : it));
+    syncFindings(session, itemIds);
+    persist();
+    return result;
+  } catch (e) {
+    const stopped = abort?.signal.aborted || (e instanceof Error && (e.name === "AbortError" || e instanceof Anthropic.APIUserAbortError));
+    const msg = stopped ? "Stopped" : e instanceof ReviewError ? e.message : e instanceof Anthropic.APIError ? cleanApiMessage(e.message) : e instanceof Error ? e.message : String(e);
+    patch(itemId, (it) => (it.kind === "review" ? { ...it, status: "error", progress: undefined, error: msg } : it));
+    if (stopped) throw e;
+    return { error: msg };
   }
+}
+
+function reviewContent(result: ReviewResult, text: string): ToolOutcome["content"] {
+  const data = result.sheet.split(",")[1];
+  return data ? [{ type: "text", text }, { type: "image", source: { type: "base64", media_type: "image/jpeg", data } }] : text;
 }
 
 // ---------- context ----------
@@ -246,12 +319,13 @@ async function runLoop() {
   const startSource = useDesign.getState().source;
   let edits = 0;
   const settings = useSettings.getState();
+  const session = new ReviewSession(settings.reviewRounds);
+  const reviewItems: string[] = [];
   const system = [{ type: "text" as const, text: systemPrompt(), cache_control: { type: "ephemeral" as const } }];
 
   try {
     for (let step = 0; step < settings.maxSteps; step++) {
       repairHistory();
-      trimImages();
       // rolling cache breakpoint on the newest user content
       const msgs = withCacheBreakpoint(history);
       const assistantId = nid();
@@ -265,12 +339,23 @@ async function runLoop() {
         tools: TOOL_DEFS,
         messages: msgs,
       };
-      if (!unsupported.has("thinking")) params.thinking = { type: "adaptive", display: settings.showThinking ? "summarized" : "omitted" };
+      const betas: string[] = [];
+      if (!unsupported.has("thinking")) {
+        const thinking: Record<string, unknown> = { type: "adaptive", display: settings.showThinking ? "summarized" : "omitted" };
+        // history is append-only, so earlier thinking stays valid; if a repaired
+        // turn ever breaks the prefix, drop the stale block instead of failing
+        if (!unsupported.has("binding")) {
+          thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
+          betas.push(BINDING_BETA);
+        }
+        params.thinking = thinking;
+      }
       if (!unsupported.has("effort")) params.output_config = { effort: settings.effort };
       if (!unsupported.has("fallbacks")) {
         params.fallbacks = "default";
-        params.betas = ["server-side-fallback-2026-07-01"];
+        betas.push(FALLBACK_BETA);
       }
+      if (betas.length) params.betas = betas;
 
       const final = await streamOnce(anthropic, params, assistantId, toolItems);
       const content = final.content as BetaContentBlock[];
@@ -292,6 +377,7 @@ async function runLoop() {
         if (cut) history.pop();
         break;
       }
+      if (final.stop_reason === "end_turn" && edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource))) continue;
       if (final.stop_reason !== "tool_use") break;
 
       const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
@@ -313,7 +399,7 @@ async function runLoop() {
         if (mirrored) mainActivityStart(itemId, TOOL_TITLES[u.name] ?? u.name);
         let outcome: ToolOutcome;
         try {
-          outcome = await runTool(u.name, u.input, { signal: abort.signal, toolUseId: u.id });
+          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems) : await runTool(u.name, u.input, { signal: abort.signal, toolUseId: u.id });
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
@@ -419,6 +505,45 @@ async function resumeWithSteering() {
   await runLoop();
 }
 
+/** Review Claude's own changes when it is about to finish without having had them reviewed. Returns true when Claude should continue. */
+async function autoReview(session: ReviewSession, reviewItems: string[], startSource: string): Promise<boolean> {
+  const mode = useSettings.getState().selfReview;
+  if (mode === "off" || !session.canReview || !getApiKey()) return false;
+  const now = useDesign.getState().source;
+  const base = session.lastSource ?? startSource;
+  if (now === base) return false;
+  // on "Big changes", small edits are reviewed only when they answer open findings
+  const answering = session.findings.some((f) => (f.status === "fixed" || f.status === "open" || f.status === "still_open") && f.severity !== "minor");
+  if (mode === "auto" && !answering && !isSubstantial(base, now)) return false;
+  const itemId = nid();
+  push({ kind: "review", id: itemId, auto: true, round: session.round + 1, status: "running", progress: { stage: "waiting", views: [] } });
+  const r = await reviewInto(itemId, session, reviewItems, true);
+  if ("error" in r) return false;
+  const text = designerReport(r, session.roundsLeft, true);
+  history.push({ role: "user", content: reviewContent(r, text) as BetaContentBlockParam[] });
+  persist();
+  // nothing to act on: the reply stands, and Claude knows about the review next turn
+  return r.verdict !== "pass";
+}
+
+/** Claude's review_design tool: record its answers to earlier findings, then run the next round. */
+async function reviewTool(input: unknown, itemId: string, session: ReviewSession, reviewItems: string[]): Promise<ToolOutcome> {
+  const p = ReviewInput.safeParse(input ?? {});
+  if (!p.success) return { isError: true, content: `Invalid tool input: ${p.error.issues.map((i) => i.message).join("; ")}`, card: { title: "Invalid review request", status: "error" } };
+  const unknown = session.respond(p.data.responses ?? []);
+  syncFindings(session, reviewItems);
+  if (!session.canReview) {
+    return {
+      content: `No review rounds left for this reply (${session.maxRounds} used). Tell the user which findings are still open and why.${unknown.length ? ` Unknown finding ids: ${unknown.join(", ")}.` : ""}`,
+      card: { title: "Review limit reached", detail: `${session.maxRounds} rounds per reply. You can change this in Settings.` },
+    };
+  }
+  const r = await reviewInto(itemId, session, reviewItems, false, p.data.focus);
+  if ("error" in r) return { isError: true, content: `The review could not run: ${r.error}`, card: { title: "Review could not run", detail: r.error, status: "error" } };
+  const text = designerReport(r, session.roundsLeft, false) + (unknown.length ? `\nNote: these finding ids were not recognised: ${unknown.join(", ")}.` : "");
+  return { content: reviewContent(r, text), card: { title: "Reviewed the design" } };
+}
+
 async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>, assistantId: string, toolItems: Map<number, string>) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -446,14 +571,34 @@ async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>,
       // a model that rejects an optional feature: drop it and retry once
       if (e instanceof Anthropic.BadRequestError) {
         const msg = (e.message || "").toLowerCase();
-        const feature = msg.includes("effort") || msg.includes("output_config") ? "effort" : msg.includes("thinking") ? "thinking" : msg.includes("fallback") || msg.includes("beta") ? "fallbacks" : null;
+        const feature = msg.includes("effort") || msg.includes("output_config")
+          ? "effort"
+          : msg.includes("block_binding") || msg.includes("thinking-binding")
+            ? "binding"
+            : msg.includes("thinking")
+              ? "thinking"
+              : msg.includes("fallback") || msg.includes("beta")
+                ? "fallbacks"
+                : null;
         if (feature && !unsupported.has(feature)) {
           unsupported.add(feature);
+          const dropBeta = (b: string) => {
+            const rest = ((params.betas as string[] | undefined) ?? []).filter((x) => x !== b);
+            if (rest.length) params.betas = rest;
+            else delete params.betas;
+          };
           if (feature === "effort") delete params.output_config;
-          if (feature === "thinking") delete params.thinking;
+          if (feature === "binding") {
+            delete (params.thinking as Record<string, unknown> | undefined)?.block_binding;
+            dropBeta(BINDING_BETA);
+          }
+          if (feature === "thinking") {
+            delete params.thinking;
+            dropBeta(BINDING_BETA);
+          }
           if (feature === "fallbacks") {
             delete params.fallbacks;
-            delete params.betas;
+            dropBeta(FALLBACK_BETA);
           }
           set((s) => ({ items: s.items.map((it) => (it.id === assistantId && it.kind === "assistant" ? { ...it, text: "", thinking: "" } : it)) }));
           continue;

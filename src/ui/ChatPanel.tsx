@@ -17,6 +17,7 @@ import { LogoMark } from "./Logo";
 import { MicButton, VoiceBar, VoiceNotice, useVoiceInput } from "./voice/VoiceInput";
 import { AgentRunCard } from "./agents/AgentRunCard";
 import { PlanPane } from "./PlanPane";
+import { ReviewCard } from "./ReviewCard";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -202,6 +203,8 @@ function Item({ it }: { it: ChatItem }) {
       );
     case "turn":
       return <TurnBar it={it} />;
+    case "review":
+      return <ReviewCard it={it} />;
   }
 }
 

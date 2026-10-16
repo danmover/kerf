@@ -107,6 +107,9 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
       case "evict":
         core.evict(msg.keep);
         return;
+      case "inspect":
+        post({ type: "inspected", jobId: msg.jobId, result: core.inspect(msg.hashes) });
+        return;
     }
   });
 };

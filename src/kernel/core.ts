@@ -6,6 +6,7 @@ import type { Shape3D } from "replicad";
 import { applyXf, bboxOf, buildPart, meshShape, type MeshData } from "./build";
 import { applyXforms, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
 import type { BuildItem, ChecksRequest, ChecksResult, Interference, PlacedItem } from "./protocol";
+import { inspectPart, type PartInspection } from "./inspect";
 import { geoKey, type GeoQuery } from "../lang/values";
 
 interface CacheEntry {
@@ -13,6 +14,7 @@ interface CacheEntry {
   volume: number;
   bbox: [V3, V3];
   meshes: Partial<Record<"preview" | "final", MeshData>>;
+  inspection?: PartInspection;
   used: number;
 }
 
@@ -53,6 +55,25 @@ export class KernelCore {
     if (!e) throw new Error("not built");
     if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality);
     return e.meshes[quality]!;
+  }
+
+  /** Inspect built parts for detail review; results are cached with the solid. */
+  inspect(hashes: string[]): Record<string, PartInspection | { error: string }> {
+    const out: Record<string, PartInspection | { error: string }> = {};
+    for (const h of hashes) {
+      const e = this.get(h);
+      if (!e) {
+        out[h] = { error: "not built" };
+        continue;
+      }
+      try {
+        e.inspection ??= inspectPart(e.shape, e.meshes.final ?? e.meshes.preview ?? this.mesh(h, "preview"));
+        out[h] = e.inspection;
+      } catch (err) {
+        out[h] = { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    return out;
   }
 
   evict(keep: string[]) {

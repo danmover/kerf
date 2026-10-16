@@ -8,6 +8,8 @@ export interface CaptureOptions {
   width: number;
   height: number;
   focus?: string[];
+  /** frame the focused parts instead of the whole model (for close-ups) */
+  frame?: "model" | "focus";
   section?: "x" | "y" | "z";
   mime?: "image/png" | "image/jpeg" | "image/webp";
   quality?: number;

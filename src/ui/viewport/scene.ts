@@ -1267,7 +1267,7 @@ export class SceneController {
   // ---------- capture ----------
 
   /** Render a finished, converged image of the model at any size, without touching the on-screen view. */
-  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number }): Promise<string> {
+  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number }): Promise<string> {
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim } };
     const pipe = new RenderPipeline(this.renderer);
     Object.assign(pipe.look, this.pipe.look);
@@ -1284,8 +1284,17 @@ export class SceneController {
     }
     try {
       this.camera.aspect = opts.width / opts.height;
-      const { pos, target } = this.framing(opts.view, this.camera.aspect);
-      this.camera.position.copy(pos);
+      let box: THREE.Box3 | undefined;
+      if (opts.frame === "focus" && opts.focus?.length) {
+        box = new THREE.Box3();
+        for (const id of opts.focus) {
+          const p = this.parts.get(id);
+          if (p && p.removing === null) box.expandByObject(p.group);
+        }
+        if (box.isEmpty()) box = undefined;
+      }
+      const { pos, target } = this.framing(opts.view, this.camera.aspect, box);
+      this.camera.position.copy(this.tighten(pos, target, box ?? this.bounds));
       this.controls.target.copy(target);
       this.camera.lookAt(target);
       this.camera.updateProjectionMatrix();
@@ -1299,7 +1308,10 @@ export class SceneController {
         }
       }
       if (opts.section) {
-        this.section = { on: true, axis: opts.section, t: 0.5, flip: false };
+        // cut away the half nearer the camera, so the cut face looks at it
+        const ax = opts.section === "x" ? 0 : opts.section === "y" ? 1 : 2;
+        const mid = (this.bounds.min.getComponent(ax) + this.bounds.max.getComponent(ax)) / 2;
+        this.section = { on: true, axis: opts.section, t: 0.5, flip: this.camera.position.getComponent(ax) < mid };
         this.sectionAnim = { t: 0.5, on: true, fade: 0 };
         this.placeSection();
         for (const o of this.parts.values()) this.updateClipping(o);
@@ -1334,6 +1346,31 @@ export class SceneController {
       this.controls.update();
       this.changed = true;
     }
+  }
+
+  /** Move the camera along its line of sight until the box's corners fill the frame (captures only). */
+  private tighten(pos: THREE.Vector3, target: THREE.Vector3, box: THREE.Box3): THREE.Vector3 {
+    if (box.isEmpty()) return pos;
+    const cam = this.camera;
+    const corners = Array.from({ length: 8 }, (_, i) => new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z));
+    const offset = pos.clone().sub(target);
+    const p = new THREE.Vector3();
+    for (let k = 0; k < 3; k++) {
+      cam.position.copy(target).add(offset);
+      cam.lookAt(target);
+      cam.updateMatrixWorld();
+      cam.updateProjectionMatrix();
+      let m = 0;
+      for (const c of corners) {
+        p.copy(c).project(cam);
+        // a corner behind the camera: back off
+        m = p.z > 1 ? 2 : Math.max(m, Math.abs(p.x), Math.abs(p.y));
+        if (m >= 2) break;
+      }
+      if (m <= 0 || Math.abs(m - 0.88) < 0.02) break;
+      offset.multiplyScalar(Math.min(2, Math.max(0.3, m / 0.88)));
+    }
+    return target.clone().add(offset);
   }
 
   /** update part matrices without advancing animations (for captures) */
