@@ -38,6 +38,7 @@ npm run typecheck
 **Design with Claude**
 - Chat in the right panel with your own API key (Opus 5.5, Sonnet 5.5 or Haiku 5.5, with an effort setting).
 - Claude reads the design, edits it, reruns the checks, looks at rendered views of the model, and asks you when a choice is yours to make, as a card with options.
+- Claude shows its plan as a live to-do tree above the chat and keeps it current as it works, with a pill in the 3D view for the step it is on. While it works you can rename, annotate, skip, reorder or add steps, or ask it to stop after one for your review. Your changes reach Claude after its current action, or at once with Apply now.
 - Each Claude turn ends with a summary bar showing what changed, with Review and one-click Revert.
 - Locked parameters and parts are protected: Claude's edits to them are refused unless you asked for that change.
 
