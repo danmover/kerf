@@ -1,0 +1,350 @@
+design "Practice Amp with Tuner"
+note "A 25 W guitar practice amp you can build at a kitchen table: one circuit board of through-hole parts, a ready-made class-D power amp board, a Jensen 10\" speaker in an open-back plywood cabinet, and a chromatic tuner on a small screen that listens to the guitar all the time."
+note "Sound: a JFET op-amp preamp with a gain stage that runs from clean to a warm overdrive (soft diode clipping in the feedback loop, like a classic overdrive pedal), then the Marshall bass, middle and treble tone stack, a recovery stage and the master volume. The circuit is simulated in Kerf: play the Sound section of the Build tab to hear it."
+note "Tuner: an Arduino Nano clone listens to the input buffer through its own filter, so it works at any gain and with the volume down. Turn the volume to zero to tune silently. Press TUNE to change the reference pitch (A = 440 Hz by default, 432 to 445)."
+note "Power: a sealed 24 V plug-in supply, so there is no mains wiring inside. A Schottky diode protects against a wrong-polarity adapter, a 7812 makes a quiet 12 V for the preamp and a 7805 runs the Nano and the screen."
+note "Build order: solder the board from the lowest parts up (resistors, diodes, small capacitors, sockets, terminals, regulators, electrolytics, pots and the display last). Cut and glue the cabinet, cover the speaker baffle, print the control panel. Fit the board to the panel with the pot nuts, wire the jacks, switch, amp board and speaker, then follow the tests."
+note "Coordinates: X right, Y back, Z up, in millimetres. The front of the cabinet is y = 0 and the floor is z = 0. The circuit board stands upright behind the control panel with its parts side facing the back."
+
+brief {
+  purpose: "A small guitar amp for practice at home that sounds good clean and overdriven, has a tuner built in, and is cheap and easy to build"
+  setting: "Bedroom or living room, played at conversation level up to loud practice; carried by one hand"
+  priorities: ["sounds great", "easy to build", "cheap parts"]
+  temp: 10C .. 35C assumed
+
+  quantity: 1
+
+  use tone "Clean to overdriven guitar tone with bass, middle and treble controls"
+  use loud "Loud enough to practise along with a drummer at low volume"
+  use tune "Shows the note and how far out of tune the guitar is, hands free"
+  use safe "No mains wiring inside the cabinet"
+  use build "One circuit board, through-hole parts only, wired with screw terminals"
+
+  given supply = 24 "Supply voltage from the plug-in adapter (V)"
+  given pickup = 0.3 "Loudest guitar signal at the input, peak volts (humbuckers dug in hard reach about 1 V)" assumed
+  given gain_amp = 26 "Gain of the class-D amp board in dB (the TPA3116 board's default jumpers)"
+
+  assume "The amp board's own volume knob is turned fully up"
+  assume "Guitar pickups: about 250 kΩ to 1 MΩ output impedance with the guitar's controls up"
+}
+
+// ── Circuit values ──────────────────────────────────────
+param gain_min = 4.7kOhm "Resistor in series with the gain pot: sets the gain at zero (about ×2)"
+param rec_gain = 5.7     "Recovery stage gain after the tone stack"
+
+// ── Cabinet ─────────────────────────────────────────────
+param cab_w = 400mm     "Cabinet width"
+param cab_h = 400mm     "Cabinet height"
+param cab_d = 230mm     "Cabinet depth"
+param ply   = 15mm      "Birch plywood thickness"
+param spk_z = 160mm     "Speaker centre height"
+param strip_z = 292mm   "Bottom of the control strip (top of the speaker baffle)"
+
+// control panel window in the strip, and the printed panel behind it
+let win_x0 = 105
+let win_x1 = 295
+let win_z0 = 308
+let win_z1 = 370
+let pan_x0 = 93
+let pan_x1 = 307
+let pan_z0 = 294
+let pan_z1 = 382
+let pan_t = 3
+let pan_y = ply                 // front face of the printed panel, behind the strip
+let board_y = pan_y + pan_t + 6.5   // underside of the circuit board: the pots' bodies fill the gap
+let knob_z = 326
+
+// ── Circuit board ───────────────────────────────────────
+// Upright behind the panel, parts side to the back. Board x runs right to left
+// seen from the front: board (x, y) is cabinet (275 - x, board_y, 296 + y).
+let bx = 275
+let bz = 296
+component pcb = lib.circuit_board(w: 150, d: 80, holes: [(4, 4), (146, 4), (146, 76), (4, 76)], title: "Practice Amp") {
+  at: (bx, board_y, bz), rotate: (90, 0, 180)
+}
+
+// input: tip pulled down so the jack doesn't pop, 47n coupling, 1M bias to the reference, RF stopper
+component j_in = lib.terminal("terminal_2p") { on: pcb, at: (145.5, 50), rotate: 90, role: "input" }
+component r_pd = lib.resistor("10M") { on: pcb, at: (137, 52), rotate: 90 }
+component c_in = lib.capacitor("47n", type: "film") { on: pcb, at: (138, 64) }
+component r_bias = lib.resistor("1M") { on: pcb, at: (145, 66), rotate: 90 }
+component r_stop = lib.resistor("2.2k") { on: pcb, at: (126, 63) }
+component c_rf = lib.capacitor("100p") { on: pcb, at: (114, 52), rotate: 90 }
+
+// U1A input buffer, U1B gain stage with soft clipping
+component u1 = lib.opamp("tl072") { on: pcb, at: (124, 50) }
+component c_u1 = lib.capacitor("100n", type: "ceramic") { on: pcb, at: (124, 59) }
+component gain = lib.pot("A500k") { on: pcb, at: (127, 30), side: "bottom" }
+component r_gmin = lib.resistor(gain_min) { on: pcb, at: (141, 40) }
+component r_gnd = lib.resistor("4.7k") { on: pcb, at: (112, 30), rotate: 90 }
+component c_gnd = lib.capacitor("330n", type: "film") { on: pcb, at: (117.5, 30), rotate: 90 }
+component d_clip1 = lib.diode("diode_1n4148") { on: pcb, at: (138, 30), rotate: 90 }
+component d_clip2 = lib.diode("diode_1n4148") { on: pcb, at: (141.5, 30), rotate: 270 }
+component c_fizz = lib.capacitor("100p") { on: pcb, at: (145.5, 30), rotate: 90 }
+
+// Marshall tone stack, referenced to the 6 V reference so no DC crosses the pots
+component c_treb = lib.capacitor("470p") { on: pcb, at: (63.5, 30), rotate: 90 }
+component r_slope = lib.resistor("33k") { on: pcb, at: (89.5, 30), rotate: 90 }
+component c_bass = lib.capacitor("22n", type: "film") { on: pcb, at: (86, 30), rotate: 90 }
+component c_mid = lib.capacitor("22n", type: "film") { on: pcb, at: (93, 30), rotate: 90 }
+component bass = lib.pot("A1M") { on: pcb, at: (101, 30), side: "bottom" }
+component mid = lib.pot("B25k") { on: pcb, at: (75, 30), side: "bottom" }
+component treble = lib.pot("A250k") { on: pcb, at: (49, 30), side: "bottom" }
+
+// U2A recovery stage, master volume
+component u2 = lib.opamp("tl072") { on: pcb, at: (64, 46) }
+component c_u2 = lib.capacitor("100n", type: "ceramic") { on: pcb, at: (64, 55) }
+component r_rf = lib.resistor("47k") { on: pcb, at: (55, 52), rotate: 90 }
+component c_rhf = lib.capacitor("470p") { on: pcb, at: (51.5, 52), rotate: 90 }
+component r_rg = lib.resistor("10k") { on: pcb, at: (40, 43) }
+component c_rg = lib.capacitor("10u", v: 16) { on: pcb, at: (27, 41) }
+component c_vol = lib.capacitor("10u", v: 16) { on: pcb, at: (37, 38) }
+component master = lib.pot("A10k") { on: pcb, at: (23, 30), side: "bottom" }
+component j_out = lib.terminal("terminal_2p") { on: pcb, at: (49, 6), role: "to amp" }
+
+// U2B tuner stage: gain 11 with a 1.6 kHz low-pass, re-biased to 2.5 V for the Nano's A0
+component r_tf = lib.resistor("100k") { on: pcb, at: (78, 40) }
+component c_tlp = lib.capacitor("1n") { on: pcb, at: (78, 44) }
+component r_tg = lib.resistor("10k") { on: pcb, at: (78, 48) }
+component c_tg = lib.capacitor("4.7u", v: 16) { on: pcb, at: (88, 47) }
+component c_tc = lib.capacitor("100n", type: "film") { on: pcb, at: (78, 53) }
+component r_tb1 = lib.resistor("100k") { on: pcb, at: (98, 41) }
+component r_tb2 = lib.resistor("100k") { on: pcb, at: (98, 45) }
+component r_ta = lib.resistor("10k") { on: pcb, at: (98, 49) }
+component c_ta = lib.capacitor("10n", type: "film") { on: pcb, at: (98, 54) }
+
+// tuner: Nano clone in sockets, OLED and TUNE button through the panel
+component nano = lib.controller("arduino_nano_clone") { on: pcb, at: (77, 70), role: "tuner" }
+component oled = lib.display("ssd1306_oled_096") { on: pcb, at: (35, 60), side: "bottom" }
+component tune = lib.switch("tact_6x6_17") { on: pcb, at: (11, 60), side: "bottom" }
+
+// 6 V reference for the single-supply op-amps
+component r_vr1 = lib.resistor("22k") { on: pcb, at: (125, 8) }
+component r_vr2 = lib.resistor("22k") { on: pcb, at: (125, 13) }
+component c_vr = lib.capacitor("100u", v: 16) { on: pcb, at: (139, 12) }
+
+// power: 24 V in, through the switch, reverse protection, 12 V preamp rail, 5 V logic rail
+component j_dc = lib.terminal("terminal_2p") { on: pcb, at: (13, 6), role: "24V in" }
+component j_sw = lib.terminal("terminal_2p") { on: pcb, at: (25, 6), role: "switch" }
+component j_amp = lib.terminal("terminal_2p") { on: pcb, at: (37, 6), role: "amp 24V" }
+component d_rev = lib.diode("diode_1n5822") { on: pcb, at: (21, 14.5) }
+component c_bulk = lib.capacitor("470u", v: 35) { on: pcb, at: (37, 18) }
+component c_v24 = lib.capacitor("100n", type: "ceramic") { on: pcb, at: (46, 12.5) }
+component reg12 = lib.regulator("l7812") { on: pcb, at: (49, 18.5) }
+component c_12 = lib.capacitor("10u", v: 25) { on: pcb, at: (58, 16) }
+component c_12b = lib.capacitor("47u", v: 25) { on: pcb, at: (125, 19) }
+component reg5 = lib.regulator("l7805") { on: pcb, at: (9, 30) }
+component c_5in = lib.capacitor("100n", type: "ceramic") { on: pcb, at: (9, 25) }
+component c_5 = lib.capacitor("10u", v: 16) { on: pcb, at: (9, 38) }
+
+// ── Copper on the board ─────────────────────────────────
+net GND: j_in.P2, r_pd.B, c_rf.B, u1.VNEG, c_u1.B, c_gnd.B, u2.VNEG, c_u2.B, c_rg.MINUS, master.CCW, j_out.P2, c_tg.MINUS, r_tb2.B, c_ta.B, nano.GND, oled.GND, tune.B, r_vr2.B, c_vr.MINUS, j_dc.P2, j_amp.P2, c_bulk.MINUS, c_v24.B, reg12.GND, c_12.MINUS, c_12b.MINUS, reg5.GND, c_5in.B, c_5.MINUS, gain.MT, bass.MT, mid.MT, treble.MT, master.MT
+net TIP: j_in.P1, r_pd.A, c_in.A
+net IN_BIAS: c_in.B, r_bias.A, r_stop.A
+net IN_P: r_stop.B, c_rf.A, u1.IN1P
+net BUF: u1.OUT1, u1.IN1N, u1.IN2P, u2.IN2P
+net DRIVE: u1.OUT2, r_gmin.A, d_clip1.A, d_clip2.K, c_fizz.A, c_treb.A, r_slope.A
+net GAIN_FB: u1.IN2N, gain.W, gain.CW, d_clip1.K, d_clip2.A, c_fizz.B, r_gnd.A
+net GAIN_R: r_gmin.B, gain.CCW
+net GAIN_LO: r_gnd.B, c_gnd.A
+net TS_A: r_slope.B, c_bass.A, c_mid.A
+net TS_TREB: c_treb.B, treble.CW
+net TS_B: c_bass.B, treble.CCW, bass.CCW
+net TS_C: c_mid.B, bass.W, bass.CW, mid.CCW
+net TONE: treble.W, u2.IN1P
+net REC_FB: u2.IN1N, r_rf.B, c_rhf.B, r_rg.A
+net REC_LO: r_rg.B, c_rg.PLUS
+net REC: u2.OUT1, r_rf.A, c_rhf.A, c_vol.PLUS
+net VOL: c_vol.MINUS, master.CW
+net AMP_IN: master.W, j_out.P1
+net TUN_FB: u2.IN2N, r_tf.B, c_tlp.B, r_tg.A
+net TUN_LO: r_tg.B, c_tg.PLUS
+net TUN: u2.OUT2, r_tf.A, c_tlp.A, c_tc.A
+net TUN_AC: c_tc.B, r_tb1.B, r_tb2.A, r_ta.A
+net ADC: r_ta.B, c_ta.A, nano.A0
+net VREF: r_vr1.B, r_vr2.A, c_vr.PLUS, r_bias.B, mid.W, mid.CW
+net SDA: nano.A4, oled.SDA
+net SCL: nano.A5, oled.SCL
+net TUNE_BTN: nano.D2, tune.A
+net V24_IN: j_dc.P1, j_sw.P1
+net V24_SW: j_sw.P2, d_rev.A
+net V24: d_rev.K, c_bulk.PLUS, c_v24.A, reg12.IN, j_amp.P1
+net V12: reg12.OUT, c_12.PLUS, c_12b.PLUS, reg5.IN, c_5in.A, r_vr1.A, u1.VPOS, c_u1.A, u2.VPOS, c_u2.A
+net V5: reg5.OUT, c_5.PLUS, nano.V5, oled.VCC, r_tb1.A
+
+// ── Front panel controls ────────────────────────────────
+// knobs push onto the pot shafts; the shaft ends 2 mm in front of the cabinet
+component knob_gain = lib.knob("knob_davies_1900h") { at: (gain.shaft_tip.x, gain.shaft_tip.y + 10, gain.shaft_tip.z), axis: -Y }
+component knob_bass = lib.knob("knob_davies_1900h") { at: (bass.shaft_tip.x, bass.shaft_tip.y + 10, bass.shaft_tip.z), axis: -Y }
+component knob_mid = lib.knob("knob_davies_1900h") { at: (mid.shaft_tip.x, mid.shaft_tip.y + 10, mid.shaft_tip.z), axis: -Y }
+component knob_treble = lib.knob("knob_davies_1900h") { at: (treble.shaft_tip.x, treble.shaft_tip.y + 10, treble.shaft_tip.z), axis: -Y }
+component knob_master = lib.knob("knob_davies_1900h") { at: (master.shaft_tip.x, master.shaft_tip.y + 10, master.shaft_tip.z), axis: -Y }
+component jack_in = lib.jack("jack_635_mono") { at: (115, pan_y, knob_z), axis: -Y, role: "guitar input" }
+component power_sw = lib.switch("toggle_spst") { at: (286, pan_y, knob_z), axis: -Y, role: "power" }
+
+// ── Power amp, speaker and supply ───────────────────────
+component amp = lib.amplifier("tpa3116_mono") { at: (285, 150, ply + 6) }
+component spk = lib.speaker("jensen_mod10_35") { at: (cab_w / 2, ply, spk_z), axis: -Y }
+component dc_in = lib.jack("dc_jack_panel") { at: (330, cab_d, 330), axis: Y, role: "24V in" }
+component psu = lib.psu("psu_24v_2a") { at: (330, cab_d + 150, 0) }
+
+// ── Cabinet: 15 mm birch plywood, glued and pinned ──────
+part left_side {
+  material: "Wood"
+  group: "Cabinet"
+  body box(ply, cab_d, cab_h, at: (ply / 2, cab_d / 2, 0))
+}
+part right_side {
+  material: "Wood"
+  group: "Cabinet"
+  body box(ply, cab_d, cab_h, at: (cab_w - ply / 2, cab_d / 2, 0))
+}
+part top_panel {
+  material: "Wood"
+  group: "Cabinet"
+  body box(cab_w - 2 * ply, cab_d, ply, at: (cab_w / 2, cab_d / 2, cab_h - ply))
+}
+part bottom_panel {
+  material: "Wood"
+  group: "Cabinet"
+  body box(cab_w - 2 * ply, cab_d, ply, at: (cab_w / 2, cab_d / 2, 0))
+}
+// the speaker baffle, covered in grille cloth wrapped round its edges
+part baffle {
+  material: "Wood"
+  color: #2b2a29
+  group: "Cabinet"
+  body box(cab_w - 2 * ply, ply, strip_z - ply, at: (cab_w / 2, ply / 2, ply))
+  cut cylinder(d: spk.cutout_d, h: ply + 2, at: (cab_w / 2, -1, spk_z), dir: Y)
+  // T-nuts pressed in from the front take the speaker bolts
+  for h in spk.holes {
+    cut cylinder(d: 7, h: ply + 2, at: (h.x, -1, h.z), dir: Y)
+  }
+}
+// the control strip above it, with the window the printed panel shows through
+part control_strip {
+  material: "Wood"
+  group: "Cabinet"
+  body box(cab_w - 2 * ply, ply, cab_h - ply - strip_z, at: (cab_w / 2, ply / 2, strip_z))
+  cut box(win_x1 - win_x0, ply + 2, win_z1 - win_z0, at: ((win_x0 + win_x1) / 2, ply / 2, win_z0))
+}
+// cleats behind the front: the baffle and the strip screw to them
+part cleat_left {
+  material: "Wood"
+  group: "Cabinet"
+  body box(ply, ply, cab_h - 2 * ply, at: (ply * 1.5, ply * 1.5, ply))
+}
+part cleat_right {
+  material: "Wood"
+  group: "Cabinet"
+  body box(ply, ply, cab_h - 2 * ply, at: (cab_w - ply * 1.5, ply * 1.5, ply))
+}
+// open back: an upper panel with the power socket and a lower rail
+part back_upper {
+  material: "Wood"
+  group: "Cabinet"
+  body box(cab_w - 2 * ply, ply, 130, at: (cab_w / 2, cab_d - ply / 2, cab_h - ply - 130))
+  cut cylinder(d: dc_in.hole_d, h: ply + 2, at: (330, cab_d - ply - 1, 330), dir: Y)
+  // counterbore from inside leaves a 3 mm wall for the socket's nut
+  cut cylinder(d: 20, h: ply - 3, at: (330, cab_d - ply - 0.01, 330), dir: Y)
+}
+part back_lower {
+  material: "Wood"
+  group: "Cabinet"
+  body box(cab_w - 2 * ply, ply, 80, at: (cab_w / 2, cab_d - ply / 2, ply))
+}
+
+// ── Printed control panel ───────────────────────────────
+// PETG, 3 mm, screwed to the back of the strip. The pots' bushings, the jack
+// and the switch go through it; the board hangs on four bosses.
+part front_panel {
+  material: "PETG"
+  color: #1d1f23
+  group: "Control panel"
+  body box(pan_x1 - pan_x0, pan_t, pan_z1 - pan_z0, at: ((pan_x0 + pan_x1) / 2, pan_y + pan_t / 2, pan_z0))
+  for p in [gain, bass, mid, treble, master] {
+    cut cylinder(d: p.panel_hole, h: pan_t + 2, at: (p.face.x, pan_y - 1, p.face.z), dir: Y)
+  }
+  cut cylinder(d: jack_in.hole_d, h: pan_t + 2, at: (115, pan_y - 1, knob_z), dir: Y)
+  cut cylinder(d: power_sw.hole_d, h: pan_t + 2, at: (286, pan_y - 1, knob_z), dir: Y)
+  cut box(24, pan_t + 2, 13, at: (oled.screen.x, pan_y + pan_t / 2, oled.screen.z - 6.5))
+  cut cylinder(d: tune.actuator_d + 1, h: pan_t + 2, at: (tune.actuator_top.x, pan_y - 1, tune.actuator_top.z), dir: Y)
+  // wood screws into the strip
+  for s in [(94, 301), (306, 301), (94, 375), (306, 375)] {
+    cut cylinder(d: 3.5, h: pan_t + 2, at: (s.x, pan_y - 1, s.y), dir: Y)
+  }
+  // bosses for the circuit board, with heat-set inserts
+  for h in pcb.holes {
+    add cylinder(d: 7, h: board_y - pan_y - pan_t, at: (h.x, pan_y + pan_t, h.z), dir: Y)
+    cut hole(M3, fit: "insert", depth: 6, at: (h.x, board_y, h.z), dir: -Y)
+  }
+}
+component board_inserts = lib.insert(M3) { at: [(pcb.holes[0].x, board_y, pcb.holes[0].z), (pcb.holes[1].x, board_y, pcb.holes[1].z), (pcb.holes[2].x, board_y, pcb.holes[2].z), (pcb.holes[3].x, board_y, pcb.holes[3].z)], axis: -Y }
+component board_screws = lib.screw(M3, 6) { at: [(pcb.holes[0].x, board_y + 1.6, pcb.holes[0].z), (pcb.holes[1].x, board_y + 1.6, pcb.holes[1].z), (pcb.holes[2].x, board_y + 1.6, pcb.holes[2].z), (pcb.holes[3].x, board_y + 1.6, pcb.holes[3].z)], axis: -Y }
+component speaker_bolts = lib.screw(M5, 25) { at: [(spk.holes[0].x, ply + 3, spk.holes[0].z), (spk.holes[1].x, ply + 3, spk.holes[1].z), (spk.holes[2].x, ply + 3, spk.holes[2].z), (spk.holes[3].x, ply + 3, spk.holes[3].z), (spk.holes[4].x, ply + 3, spk.holes[4].z), (spk.holes[5].x, ply + 3, spk.holes[5].z), (spk.holes[6].x, ply + 3, spk.holes[6].z), (spk.holes[7].x, ply + 3, spk.holes[7].z)], axis: -Y }
+
+// ── Wiring: cables from the board's screw terminals ─────
+wire psu.VPOS -> dc_in.PIN { gauge: 20, color: "red", label: "adapter plug" }
+wire psu.VNEG -> dc_in.SLEEVE { gauge: 20, color: "black", label: "adapter plug" }
+wire dc_in.PIN -> j_dc.P1 { gauge: 18, color: "red", label: "24 V in" }
+wire dc_in.SLEEVE -> j_dc.P2 { gauge: 18, color: "black", label: "0 V in" }
+wire j_sw.P1 -> power_sw.A { gauge: 18, color: "red", label: "power switch" }
+wire power_sw.B -> j_sw.P2 { gauge: 18, color: "red", label: "power switch" }
+wire j_amp.P1 -> amp.VCC { gauge: 18, color: "red", label: "amp 24 V" }
+wire j_amp.P2 -> amp.GND { gauge: 18, color: "black", label: "amp 0 V" }
+wire jack_in.TIP -> j_in.P1 { gauge: 24, color: "white", label: "guitar (shielded cable core)" }
+wire jack_in.SLEEVE -> j_in.P2 { gauge: 24, color: "black", label: "guitar (shield)" }
+wire j_out.P1 -> amp.IN { gauge: 24, color: "white", label: "line out (shielded cable core)" }
+wire j_out.P2 -> amp.IN_GND { gauge: 24, color: "black", label: "line out (shield)" }
+wire amp.OUT_P -> spk.PLUS { gauge: 18, color: "red", label: "speaker +" }
+wire amp.OUT_N -> spk.MINUS { gauge: 18, color: "black", label: "speaker −" }
+
+// ── Firmware ─────────────────────────────────────────────
+firmware tuner {
+  board: nano
+  app: "tuner"
+  behaviour: "Chromatic tuner: always shows the note and how many cents sharp or flat it is. TUNE steps the reference pitch; hold it at power-up to calibrate the clock."
+  ref_hz: 440
+}
+
+// ── Sound, loudness and the build, worked out from the design ──
+let pre = calc.preamp(pickup: pickup)
+let out = calc.amp_power(amp: amp, speaker: spk, supply: supply, gain: gain_amp)
+let kit = calc.board(board: pcb)
+
+// ── Checks only a test can make ──────────────────────────
+test "Power first, no chips": "Before fitting U1, U2 and the Nano, power the board from the adapter: 12 V (±0.5) on the 7812's output, 5 V on the 7805's, and 6 V (±0.3) on the reference (C15's + lead). Nothing gets warm."
+test "Op-amp bias": "Fit U1 and U2 with the power off. Power up: every op-amp output (pins 1 and 7) sits at 6 V ±0.5."
+test "First sound": "With the speaker connected and all knobs at noon, plug in a guitar: clean at gain 9 o'clock, overdriven past 2 o'clock, and the bass, middle and treble each change the sound. No hum with the guitar's volume down."
+test "Tuner": "Play the open strings: the screen shows E A D G B E. Against a clip-on tuner or a phone tuner app the needle agrees within 2 cents. It reads with the amp's volume at zero."
+test "Full volume": "Gain at 10 o'clock, all tone controls at noon, volume full up for 10 minutes: no rattles, the amp board's heatsink stays under 60 °C and the adapter stays under 50 °C."
+test "Polarity protection": "Briefly plug in a centre-negative adapter if you have one: nothing happens and nothing gets warm. The 1N5822 blocks it."
+
+// ── Also buy ─────────────────────────────────────────────
+buy "Birch plywood 15 mm, 1220 × 610 mm" { qty: 1, price: 45, search: "15mm birch plywood 1220x610" }
+buy "Speaker grille cloth, 0.5 m" { qty: 1, price: 12, search: "guitar amp speaker grille cloth black" }
+buy "M5 T-nuts" { qty: 8, price: 0.3, search: "M5 T-nut 4 prong" }
+buy "Wood screws No. 4 × 10 mm (panel)" { qty: 4, price: 0.05, search: "wood screw 3mm x 10mm countersunk" }
+buy "Wood screws 4 × 30 mm (baffle and strip to cleats)" { qty: 12, price: 0.05, search: "wood screw 4mm x 30mm" }
+buy "Nylon standoffs M3 × 6 mm with screws (amp board)" { qty: 4, price: 0.2, search: "M3 6mm nylon standoff screw kit" }
+buy "Wood glue" { qty: 1, price: 6, search: "PVA wood glue" }
+buy "Amp strap handle with screws" { qty: 1, price: 8, search: "guitar amp strap handle" }
+buy "Rubber feet 20 mm" { qty: 4, price: 0.5, search: "rubber feet 20mm screw on" }
+buy "Shielded audio cable, 1 m" { qty: 1, price: 2, search: "single core shielded audio cable" }
+buy "Hook-up wire 18 AWG red and black, 2 m each" { qty: 1, price: 6, search: "18 AWG stranded hook up wire red black" }
+buy "PETG filament 1 kg" { qty: 1, price: 22, search: "PETG filament 1.75mm 1kg black" }
+buy "Solder 0.8 mm, lead-free" { qty: 1, price: 8, search: "solder wire 0.8mm lead free rosin core" }
+buy "Mini-USB cable (to program the Nano)" { qty: 1, price: 3, search: "mini USB cable data" }
+
+// ── Requirements ─────────────────────────────────────────
+require "Loud enough to practise with a drummer" for loud: out.spl_1m >= 105
+require "Amp board runs from the supply's voltage" for safe: supply >= amp.v_min && supply <= amp.v_max
+require "Speaker handles the amp's full power" for loud: out.power_w <= spk.power_w
+require "Preamp drives the amp board to full power" for loud: pre.out_peak >= out.input_peak
+require "Gain knob runs from clean to overdrive" for tone: pre.gain_span_db >= 25
+require "Bass, middle and treble each make an audible change" for tone: pre.bass_db >= 6 && pre.mid_db >= 3 && pre.treble_db >= 6
+require "Input keeps the pickups' treble" for tone: pre.input_kohm >= 500
+require "Clean stages don't clip before the drive stage" for tone: pre.headroom >= 1.2
+require "Tuner hears a quietly picked note" for tune: pre.tuner_pp >= 0.1
+require "Through-hole parts only, nothing finer than 2.54 mm" for build: kit.smd == 0 && kit.min_pitch >= 2.5
+require "Under 250 solder joints" for build: kit.joints <= 250

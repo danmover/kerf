@@ -392,6 +392,7 @@ export const AUDIO: CatalogPart[] = [
     specs: { v_out: 24, i_out: 2, power_w: 48, plug: "5.5 × 2.1 mm centre positive" },
     pins: [pwrOut("VPOS", 24, 2, { label: "+24 V (centre)" }), gnd("VNEG", "0 V (sleeve)")],
     geom: { g: "brick", dims: { w: 100, d: 48, h: 32 }, color: "#1b1d21" },
+    sim: { k: "supply", pos: "VPOS", neg: "VNEG", v: 24, r: 0.15 },
     external: true,
     price_usd: 10,
     buy: [{ vendor: "Marketplace", search: "24V 2A power adapter 5.5x2.1mm center positive" }],

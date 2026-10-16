@@ -1,6 +1,7 @@
 // Runtime values for the Kerf evaluator.
 
 import type { ShapeRecipe, V3 } from "../kernel/recipe";
+import type { MachineData } from "../machine/types";
 
 export class Vec {
   constructor(public v: number[]) {}
@@ -58,6 +59,8 @@ export interface CallCtx {
   error(msg: string): never;
   /** Ask for a geometric quantity; returns the resolved number or a Pending marker. */
   geo(query: GeoQuery): number | Pending;
+  /** The machine as written so far (components, nets, wires above the call), for calculators that read the whole design. */
+  machine?(): MachineData;
 }
 
 export type GeoQuery =

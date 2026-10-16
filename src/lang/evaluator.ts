@@ -164,6 +164,7 @@ class Evaluator {
         if (typeof v === "number") return v;
         return new Pending([key]);
       },
+      machine: () => this.machine,
     };
   }
 

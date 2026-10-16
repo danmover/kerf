@@ -4,6 +4,7 @@
 import type { CheckItem } from "../core/checks";
 import { fmtNum } from "../lang/values";
 import { catalogPart } from "./catalog";
+import { circuitChecks } from "./circuit/analysis";
 import { electricalChecks } from "./erc";
 import type { MachineData } from "./types";
 
@@ -24,6 +25,7 @@ export function machineChecks(m: MachineData): CheckItem[] {
   const out: CheckItem[] = [];
   const current = motorCurrentFor(m);
   out.push(...electricalChecks(m, { motorCurrent: current }));
+  out.push(...circuitChecks(m));
 
   for (const mc of m.components) {
     const p = catalogPart(mc.catalogId);

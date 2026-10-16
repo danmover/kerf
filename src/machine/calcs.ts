@@ -7,7 +7,11 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, typeName, type CallCtx, type Value } from "../lang/values";
 import { BEARINGS } from "../library/standards";
-import type { CalcLine, CalcTrace } from "./types";
+import { catalogPart } from "./catalog";
+import { footprintFor } from "./catalog/footprints";
+import { PICKUP_OHMS } from "./circuit/netlist";
+import { preampFigures } from "./circuit/analysis";
+import type { CalcLine, CalcTrace, MachineData } from "./types";
 
 export type CalcBody = Omit<CalcTrace, "name" | "span">;
 
@@ -61,6 +65,12 @@ function calcFn(name: string, params: string[], doc: string, impl: (a: Args) => 
 function spec(v: Value | undefined, key: string, ctx: CallCtx, what: string): number {
   if (v instanceof Obj && typeof v.fields[key] === "number") return v.fields[key] as number;
   return ctx.error(`${what} should be a catalog component with "${key}" (got ${v === undefined ? "nothing" : typeName(v)})`);
+}
+/** The design so far, for calculators that read the whole circuit. */
+function machineOf(a: Args, fname: string): MachineData {
+  const m = a.ctx.machine?.();
+  if (!m) return a.ctx.error(`calc.${fname}() reads the design's circuit and can only be used in a design file`);
+  return m;
 }
 function compName(v: Value | undefined): string {
   if (v instanceof Obj) return String(v.fields.name ?? v.label ?? v.kind);
@@ -589,6 +599,132 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
           assumptions: ["Fill fraction for dry sand in a horizontal screw is a guess (0.3 to 0.5)"],
           confidence: "estimate",
           verify: "Watch the spoil behind the robot in the test barrel: if the nose stalls while the screws still turn, the flights are not clearing the face.",
+        },
+      };
+    },
+  ),
+
+  calcFn(
+    "amp_power",
+    ["amp", "speaker", "supply", "drop", "swing", "gain"],
+    "Clean output power of a bridged (BTL) class-D amp board into a speaker, and how loud that is. amp: an amplifier component; speaker: a speaker component; supply: V at the board (from the adapter); drop: V lost before the amp board (0.5, a Schottky protection diode); swing: fraction of the supply the output reaches before clipping (0.85); gain: the board's gain in dB if its jumpers are set differently from the catalog's. Returns power_w (W), spl_1m (dB SPL at 1 m), v_peak (V across the speaker), i_supply (A at full power), gain_db, input_peak (V at the amp input for full power).",
+    (a) => {
+      const amp = a.value("amp");
+      const spk = a.value("speaker");
+      const vs = a.positive("supply") - a.num("drop", 0.5);
+      const k = a.num("swing", 0.85);
+      const R = spec(spk, "impedance", a.ctx, "speaker:");
+      const sens = spec(spk, "sensitivity_db", a.ctx, "speaker:");
+      const eff = amp instanceof Obj && typeof amp.fields.efficiency === "number" ? (amp.fields.efficiency as number) : 0.88;
+      const gain = a.has("gain") ? a.num("gain", 26) : amp instanceof Obj && typeof amp.fields.gain_db === "number" ? (amp.fields.gain_db as number) : 26;
+      const vpk = k * vs;
+      const p = (vpk * vpk) / (2 * R);
+      // about 1 dB of power compression as the voice coil warms at full power
+      const spl = sens + 10 * Math.log10(p) - 1;
+      const isup = p / eff / vs + 0.03;
+      const inPk = vpk / 10 ** (gain / 20);
+      return {
+        fields: { power_w: p, spl_1m: spl, spl_2m: spl - 6, v_peak: vpk, i_supply: isup, gain_db: gain, input_peak: inPk },
+        trace: {
+          fn: "",
+          title: `Output power and loudness: ${compName(amp)} into ${compName(spk)}`,
+          inputs: [L("Supply at the amp board", vs, "V"), L("Speaker impedance", R, "Ω"), L("Speaker sensitivity (1 W, 1 m)", sens, "dB SPL"), L("Output swing before clipping", k * 100, "% of supply"), L("Amp board gain", gain, "dB")],
+          outputs: [L("Clean power", p, "W"), L("Loudness at 1 m", spl, "dB SPL"), L("Loudness at 2 m", spl - 6, "dB SPL"), L("Peak voltage on the speaker", vpk, "V"), L("Input for full power", inPk, "V peak"), L("Supply current at full power", isup, "A")],
+          method: ["A bridged output swings ±k·Vs across the speaker: P = (k·Vs)² / (2R)", "SPL = sensitivity + 10·log10(P) − 1 dB of power compression", "Supply current = P / efficiency / Vs + idle"],
+          assumptions: ["Sine wave at the clipping point; guitar peaks are about 10 dB above the average, so it sounds about as loud as a 25 W valve amp pushed hard", "On axis, in a room; the open back loses some bass but adds room sound", `Amp board efficiency ${Math.round(eff * 100)} %`],
+          confidence: "estimate",
+          verify: "Play at full volume for 10 minutes: no audible distortion beyond the preamp's, and the amp board stays under 60 °C.",
+        },
+      };
+    },
+  ),
+  calcFn(
+    "preamp",
+    ["pickup"],
+    "Simulates the design's preamp circuit (everything written above this line) from the guitar jack to the power amp's input. pickup: the guitar's peak output on a hard strum, V (0.3 for single coils, 0.5 to 1 for hot humbuckers). Returns gain_min_db and gain_max_db (1 kHz, gain knob at zero and full), gain_span_db, bass_db, mid_db and treble_db (how far each tone knob moves its band, end to end), input_kohm (input impedance), out_peak (V peak into the amp, clean, volume full), headroom (× before the first stage that must stay clean clips), and tuner_pp (V peak-to-peak at the tuner's analog input for a quiet note).",
+    (a) => {
+      const m = machineOf(a, "preamp");
+      const pickup = a.positive("pickup");
+      const f = preampFigures(m, pickup);
+      if (!f.ok) return a.ctx.error(f.message ?? "the preamp could not be simulated");
+      const span = f.gain_max_db - f.gain_min_db;
+      return {
+        fields: {
+          gain_min_db: f.gain_min_db,
+          gain_max_db: f.gain_max_db,
+          gain_span_db: span,
+          bass_db: f.bass_db,
+          mid_db: f.mid_db,
+          treble_db: f.treble_db,
+          input_kohm: f.input_kohm,
+          out_peak: f.out_peak,
+          headroom: f.headroom,
+          tuner_pp: f.tuner_pp,
+        },
+        trace: {
+          fn: "",
+          title: "Preamp, simulated from the circuit",
+          inputs: [L("Guitar peak on a hard strum", pickup, "V"), L("Pickup and cable resistance", PICKUP_OHMS / 1000, "kΩ"), L("Tone knobs for the gain figures", 50, "% (noon)")],
+          outputs: [
+            L("Gain, gain knob at zero", f.gain_min_db, "dB"),
+            L("Gain, gain knob full", f.gain_max_db, "dB"),
+            L("Bass knob range at 100 Hz", f.bass_db, "dB"),
+            L("Middle knob range at 600 Hz", f.mid_db, "dB"),
+            L("Treble knob range at 4 kHz", f.treble_db, "dB"),
+            L("Input impedance at 1 kHz", f.input_kohm, "kΩ"),
+            L("Clean output into the amp", f.out_peak, "V peak"),
+            L("Headroom of the stages that must stay clean", f.headroom, "×"),
+            L("Tuner input for a quiet note", f.tuner_pp, "V p-p"),
+            ...f.stages.map((st) => L(`${st.label} swing at full gain${st.clips ? " (meant to clip)" : st.sensing ? " (tuner)" : ""}`, st.use * 100, "% of its range")),
+          ],
+          method: [
+            "The design's parts and copper become a circuit: resistors, capacitors, diodes, op-amp channels, regulators and the power amp's input",
+            "DC operating point by Newton's method; gains and tone ranges by small-signal AC analysis at that point",
+            "Stage swing: 40 ms of a 196 Hz sine at the pickup level through the full non-linear circuit, gain and tone knobs full",
+          ],
+          assumptions: ["Pots follow their taper curve; knob ends are 1 % from the track ends", "Op-amps modelled with their datasheet gain, bandwidth and output swing", "The tuner figure is for a 20 mV note, a light pluck on single coils"],
+          confidence: "estimate",
+          verify: "Play through it at noon on every knob: no hum or fizz with the guitar volume off, and the gain knob sweeps from clean to crunch.",
+        },
+      };
+    },
+  ),
+  calcFn(
+    "board",
+    ["board"],
+    "How easy a circuit board is to solder: board: a circuit_board component. Returns parts, joints (solder joints), smd (surface-mount parts, 0 when all are through-hole), min_pitch (closest pin spacing on a part with three or more pins, mm), polarised (parts that must go in the right way round) and lines (different parts to buy).",
+    (a) => {
+      const m = machineOf(a, "board");
+      const b = a.value("board");
+      const name = b instanceof Obj ? b.label : undefined;
+      const def = m.boards.find((x) => x.name === name);
+      if (!def) return a.ctx.error(`board: should be a circuit_board component written above this line`);
+      let joints = 0;
+      let pitch = Infinity;
+      let polar = 0;
+      const lines = new Set<string>();
+      const comps = m.components.filter((c) => c.pcb?.board === def.name);
+      for (const mc of comps) {
+        const p = catalogPart(mc.catalogId);
+        const fp = p && footprintFor(p, { value: mc.value, taper: mc.taper, capType: mc.capType, vRating: mc.vRating });
+        if (!fp) continue;
+        joints += fp.pads.length;
+        // solder bridges happen along rows of pins; two-lead parts have their leads bent to fit
+        if (fp.pads.length >= 3) for (let i = 0; i < fp.pads.length; i++) for (let j = i + 1; j < fp.pads.length; j++) pitch = Math.min(pitch, Math.hypot(fp.pads[i].x - fp.pads[j].x, fp.pads[i].y - fp.pads[j].y));
+        if (fp.mark) polar++;
+        lines.add(`${mc.catalogId}|${mc.value ?? ""}|${mc.taper ?? ""}|${mc.vRating ?? ""}`);
+      }
+      const minPitch = Number.isFinite(pitch) ? pitch : 0;
+      return {
+        fields: { parts: comps.length, joints, smd: 0, min_pitch: minPitch, polarised: polar, lines: lines.size },
+        trace: {
+          fn: "",
+          title: `How easy ${def.title} is to solder`,
+          inputs: [L("Board", def.w * def.d, "mm²", `${def.w} × ${def.d} mm, 2 layers`)],
+          outputs: [L("Parts", comps.length, ""), L("Solder joints", joints, ""), L("Surface-mount parts", 0, ""), L("Closest pin spacing on a row of pins", minPitch, "mm"), L("Parts that go one way round", polar, ""), L("Different parts to buy", lines.size, "")],
+          method: ["Counted from each part's footprint: every pad is one joint"],
+          assumptions: ["Every footprint in the catalog is through-hole"],
+          confidence: "standard",
         },
       };
     },
