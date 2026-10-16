@@ -30,7 +30,8 @@ interface DrawingState {
   pending: number;
   /** the sheet item a popover is open on, by shape key ("d3", "v1", "tb") */
   selected: string | null;
-  theme: "blueprint" | "paper";
+  /** the sheet's colours; null follows the app theme (a dark sheet in dark, white paper in light) */
+  theme: "blueprint" | "paper" | null;
   /** sheet keys Claude was told about, highlighted until the drawing changes */
   asked: { name: string; key: string; text: string }[];
 }
@@ -42,7 +43,7 @@ export const useDrawings = create<DrawingState>(() => ({
   sheet: null,
   pending: 0,
   selected: null,
-  theme: "blueprint",
+  theme: null,
   asked: [],
 }));
 
@@ -225,7 +226,7 @@ export function selectSheetItem(key: string | null) {
   set({ selected: key });
 }
 
-export function setDrawingTheme(theme: DrawingState["theme"]) {
+export function setDrawingTheme(theme: "blueprint" | "paper") {
   set({ theme });
 }
 

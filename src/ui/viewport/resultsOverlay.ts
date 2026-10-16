@@ -10,6 +10,7 @@ import { safetyT, type ScaleMode } from "../../analysis/colormap";
 import type { ResultField } from "../../analysis/runtime";
 import type { SceneOverlay } from "./scene";
 import { fmtNum } from "../../lang/values";
+import type { Theme } from "../../app/theme";
 
 export interface OverlayConfig {
   field: ResultField;
@@ -26,9 +27,30 @@ export interface ProbeHit {
   point: THREE.Vector3;
 }
 
-const LOAD_COLOR = 0xffb454;
-const GRAVITY_COLOR = 0xc792ff;
-const SUPPORT_COLOR = 0x4fd1c5;
+// Marker and label colours. The light theme's backdrop is pale, so its markers
+// are deeper and its labels sit on white instead of near-black.
+const LOOK = {
+  dark: {
+    load: 0xffb454,
+    gravity: 0xc792ff,
+    support: 0x4fd1c5,
+    ghost: 0x8fa8ff,
+    ghostOpacity: 0.22,
+    spots: [0xffffff, 0xdde3f0],
+    pill: "rgba(10, 13, 19, 0.82)",
+    text: { load: "#ffb454", gravity: "#c792ff", support: "#4fd1c5", value: "#ffffff" },
+  },
+  light: {
+    load: 0xf08c1a,
+    gravity: 0x9358e0,
+    support: 0x13a194,
+    ghost: 0x4763e6,
+    ghostOpacity: 0.32,
+    spots: [0x141c30, 0x434c5f],
+    pill: "rgba(255, 255, 255, 0.9)",
+    text: { load: "#b45f00", gravity: "#7a3fcc", support: "#0b7f75", value: "#141924" },
+  },
+};
 const BANDS = 12;
 
 interface PartMesh {
@@ -59,7 +81,7 @@ export class ResultsOverlay implements SceneOverlay {
   readonly replaces: Set<string>;
   private parts: PartMesh[] = [];
   private material: THREE.MeshStandardMaterial;
-  private ghostMat = new THREE.LineBasicMaterial({ color: 0x8fa8ff, transparent: true, opacity: 0.22, depthWrite: false });
+  private ghostMat: THREE.LineBasicMaterial;
   private uniforms = { uScale: { value: 0 }, uMode: { value: 0 }, uBands: { value: BANDS } };
   private cfg: OverlayConfig = { field: "stress", scale: 1, animate: false, safetyTarget: 2 };
   private t0 = performance.now();
@@ -68,8 +90,14 @@ export class ResultsOverlay implements SceneOverlay {
   private spots: THREE.Sprite[] = [];
   private disposables: { dispose(): void }[] = [];
   private size: number;
+  private look: (typeof LOOK)["dark"];
 
-  constructor(private result: StructuralResult) {
+  constructor(
+    private result: StructuralResult,
+    theme: Theme = "dark",
+  ) {
+    this.look = LOOK[theme];
+    this.ghostMat = new THREE.LineBasicMaterial({ color: this.look.ghost, transparent: true, opacity: this.look.ghostOpacity, depthWrite: false });
     this.replaces = new Set(result.parts.map((p) => p.id));
     const lo = new THREE.Vector3(Infinity, Infinity, Infinity);
     const hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
@@ -254,7 +282,7 @@ export class ResultsOverlay implements SceneOverlay {
       if (!n) continue;
       const geo = sup.dir ? new THREE.SphereGeometry(mk * 0.45, 10, 8) : new THREE.ConeGeometry(mk * 0.5, mk, 10);
       if (!sup.dir) geo.translate(0, -mk / 2, 0); // tip at the origin
-      const mat = new THREE.MeshStandardMaterial({ color: SUPPORT_COLOR, emissive: SUPPORT_COLOR, emissiveIntensity: 0.35, roughness: 0.4 });
+      const mat = new THREE.MeshStandardMaterial({ color: this.look.support, emissive: this.look.support, emissiveIntensity: 0.35, roughness: 0.4 });
       const inst = new THREE.InstancedMesh(geo, mat, n);
       const m = new THREE.Matrix4();
       const q = new THREE.Quaternion();
@@ -276,7 +304,7 @@ export class ResultsOverlay implements SceneOverlay {
       const text = sup.dir ? `roller ${axisName(sup.dir)}` : "fixed";
       if (!supportLabels.has(text)) {
         supportLabels.add(text);
-        this.label(text, new THREE.Vector3(...sup.at), "#4fd1c5", 0.8, false, "left");
+        this.label(text, new THREE.Vector3(...sup.at), this.look.text.support, 0.8, false, "left");
       }
     }
     // loads: arrows that end on the loaded surface
@@ -290,9 +318,9 @@ export class ResultsOverlay implements SceneOverlay {
       if (v.lengthSq() < 1e-18) continue;
       const dir = v.clone().normalize();
       const len = s * 0.16;
-      this.arrow(at.clone().addScaledVector(dir, -len), dir, len, LOAD_COLOR);
+      this.arrow(at.clone().addScaledVector(dir, -len), dir, len, this.look.load);
       const text = ld.kind === "pressure" ? `${fmtNum(ld.magnitude / Math.max(ld.area, 1e-9), 3)} MPa · ${fmtNum(ld.magnitude, 1)} N` : `${fmtNum(ld.magnitude, 1)} N`;
-      this.label(text, at.clone().addScaledVector(dir, -len * 0.6), "#ffb454", 1);
+      this.label(text, at.clone().addScaledVector(dir, -len * 0.6), this.look.text.load, 1);
     }
     // self-weight gets an arrow only when it matters next to the other loads
     const applied = r.loads.reduce((sum, l) => sum + l.magnitude, 0);
@@ -302,13 +330,13 @@ export class ResultsOverlay implements SceneOverlay {
       if (v.lengthSq() > 0 && (applied === 0 || v.length() >= 0.05 * applied)) {
         const dir = v.clone().normalize();
         const len = s * 0.12;
-        this.arrow(at, dir, len, GRAVITY_COLOR);
-        this.label(`weight ${fmtNum(v.length(), 2)} N`, at.clone().addScaledVector(dir, len * 1.15), "#c792ff", 0.9);
+        this.arrow(at, dir, len, this.look.gravity);
+        this.label(`weight ${fmtNum(v.length(), 2)} N`, at.clone().addScaledVector(dir, len * 1.15), this.look.text.gravity, 0.9);
       }
     }
     // hot spots
     r.hotSpots.forEach((h, i) => {
-      const ring = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTexture(), color: i === 0 ? 0xffffff : 0xdde3f0, depthTest: false, transparent: true, sizeAttenuation: false }));
+      const ring = new THREE.Sprite(new THREE.SpriteMaterial({ map: ringTexture(), color: this.look.spots[i === 0 ? 0 : 1], depthTest: false, transparent: true, sizeAttenuation: false }));
       ring.position.set(...h.at);
       ring.userData.base = i === 0 ? 0.05 : 0.038;
       ring.renderOrder = 20;
@@ -328,12 +356,12 @@ export class ResultsOverlay implements SceneOverlay {
     }
     this.spotLabels = [];
     const r = this.result;
-    const add = (text: string, at: number[], color: string) => this.spotLabels.push(this.label(text, new THREE.Vector3(at[0], at[1], at[2]), color, 1, true));
+    const add = (text: string, at: number[]) => this.spotLabels.push(this.label(text, new THREE.Vector3(at[0], at[1], at[2]), this.look.text.value, 1, true));
     if (this.cfg.field === "stress") {
-      add(`peak ${fmtNum(r.maxStress.value, 1)} MPa`, r.maxStress.at, "#ffffff");
-    } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" ? " (layers)" : ""}`, r.minSafety.at, "#ffffff");
-    else if (this.cfg.field === "disp") add(`${fmtNum(r.maxDisp.value, 3)} mm`, r.maxDisp.at, "#ffffff");
-    else add(`${fmtNum(r.maxStrain.value * 100, 3)} % strain`, r.maxStrain.at, "#ffffff");
+      add(`peak ${fmtNum(r.maxStress.value, 1)} MPa`, r.maxStress.at);
+    } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" ? " (layers)" : ""}`, r.minSafety.at);
+    else if (this.cfg.field === "disp") add(`${fmtNum(r.maxDisp.value, 3)} mm`, r.maxDisp.at);
+    else add(`${fmtNum(r.maxStrain.value * 100, 3)} % strain`, r.maxStrain.at);
   }
 
   private arrow(from: THREE.Vector3, dir: THREE.Vector3, len: number, color: number) {
@@ -362,14 +390,14 @@ export class ResultsOverlay implements SceneOverlay {
     // the cone points along +Y: the counter-clockwise tangent at angle 0, then carried to the arc's end
     head.translate(rad, 0, 0);
     head.rotateZ(arc);
-    const mat = new THREE.MeshStandardMaterial({ color: LOAD_COLOR, emissive: LOAD_COLOR, emissiveIntensity: 0.45, roughness: 0.35 });
+    const mat = new THREE.MeshStandardMaterial({ color: this.look.load, emissive: this.look.load, emissiveIntensity: 0.45, roughness: 0.35 });
     const g = new THREE.Group();
     g.add(new THREE.Mesh(geo, mat), new THREE.Mesh(head, mat));
     g.position.copy(at);
     g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), ax);
     this.markers.add(g);
     this.disposables.push(geo, head, mat);
-    this.label(`${fmtNum(ld.magnitude / 1000, 3)} N·m`, at.clone().add(new THREE.Vector3(rad, rad, 0).applyQuaternion(g.quaternion)), "#ffb454", 1);
+    this.label(`${fmtNum(ld.magnitude / 1000, 3)} N·m`, at.clone().add(new THREE.Vector3(rad, rad, 0).applyQuaternion(g.quaternion)), this.look.text.load, 1);
   }
 
   /** a flat label that keeps its size on screen; it sits to the right of its point, or the left so support labels and result labels don't cover each other */
@@ -384,7 +412,7 @@ export class ResultsOverlay implements SceneOverlay {
     c.width = w;
     c.height = h;
     ctx.font = font;
-    ctx.fillStyle = "rgba(10, 13, 19, 0.82)";
+    ctx.fillStyle = this.look.pill;
     roundRect(ctx, 0.5, 0.5, w - 1, h - 1, 6 * dpr);
     ctx.fill();
     ctx.strokeStyle = color + "66";

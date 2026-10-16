@@ -18,24 +18,26 @@ import { PreviewBanner } from "../ui/PreviewBanner";
 import { PlanHud } from "../ui/PlanHud";
 import { RefViewer } from "../ui/RefViewer";
 import { SketchPad } from "../ui/SketchPad";
+import { useWorkspaceLayout } from "../app/layout";
 import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
 import { useDrawings } from "../drawing/engine";
 import "../styles/phone.css";
 
-export const PHONE_QUERY = "(max-width: 760px)";
+export { PHONE_QUERY } from "../app/layout";
 
-function subscribePhone(cb: () => void) {
+/** True on phone-sized screens. */
+export const usePhoneLayout = () => useWorkspaceLayout() === "phone";
+
+const LANDSCAPE_QUERY = "(orientation: landscape)";
+function subscribeLandscape(cb: () => void) {
   if (typeof matchMedia === "undefined") return () => {};
-  const mq = matchMedia(PHONE_QUERY);
+  const mq = matchMedia(LANDSCAPE_QUERY);
   mq.addEventListener("change", cb);
   return () => mq.removeEventListener("change", cb);
 }
-const isPhone = () => typeof matchMedia !== "undefined" && matchMedia(PHONE_QUERY).matches;
-
-/** True on phone-sized screens. */
-export function usePhoneLayout() {
-  return useSyncExternalStore(subscribePhone, isPhone, () => false);
-}
+const isLandscape = () => typeof matchMedia !== "undefined" && matchMedia(LANDSCAPE_QUERY).matches;
+/** A phone on its side: the 3D view and the panel sit side by side. */
+const useLandscape = () => useSyncExternalStore(subscribeLandscape, isLandscape, () => false);
 
 /** Follow the visible area, so the on-screen keyboard never covers the message box. */
 function useVisibleViewport() {
@@ -69,6 +71,7 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
   const listening = useVoice((s) => s.phase === "listening" || s.phase === "finishing");
   const fails = useDesign((s) => s.report?.counts.fail ?? 0);
   const errors = useDesign((s) => s.model?.diagnostics.some((d) => d.severity === "error") ?? false);
+  const landscape = useLandscape();
   // a drawing sheet needs more room than the 3D view
   const drawing = useDrawings((s) => s.open);
   useVisibleViewport();
@@ -89,7 +92,7 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
   ];
 
   return (
-    <div className="app phone">
+    <div className={`app phone ${landscape ? "landscape" : ""}`}>
       <TopBar />
       <div className="phone-ws">
         {save === "memory" && (

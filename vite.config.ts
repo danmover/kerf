@@ -3,6 +3,9 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 
+/** /api goes to a Kerf server when one is running (see server/README.md); without it Kerf runs on its own. */
+const API_PROXY = process.env.KERF_API ? { "/api": { target: process.env.KERF_API, changeOrigin: false } } : undefined;
+
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
 // The page may reach only its own files and the Claude API.
@@ -87,12 +90,16 @@ export default defineConfig({
   },
   server: {
     headers: { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" },
+    // `npm run dev:full` sets KERF_API so the app talks to a local Kerf server
+    proxy: API_PROXY,
   },
   preview: {
     cors: false,
+    proxy: API_PROXY,
   },
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts"],
+    include: ["tests/**/*.test.ts", "server/tests/**/*.test.ts"],
+    setupFiles: ["server/tests/setup.ts"],
   },
 });

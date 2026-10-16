@@ -1,7 +1,8 @@
 // Board preview as SVG, seen from one side the way the board will look: green
 // solder mask, copper showing through it a shade lighter, tinned pads, holes,
 // white silkscreen. Seen from the bottom the picture is mirrored left-right,
-// as it is when you turn the board over. Colours suit a dark UI.
+// as it is when you turn the board over. It is a picture of the real board, so
+// it looks the same on both themes and in the build pack.
 
 import { holeShape, placedHoles, placedPads } from "./board";
 import { bodyShape, padShape, shapeBox, type Pt, type Shape } from "./geom";

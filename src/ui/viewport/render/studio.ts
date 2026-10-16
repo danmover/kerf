@@ -40,6 +40,8 @@ export interface LightingPreset {
   vignette: number;
   /** a light background (UI chrome over it should switch to dark text) */
   light?: boolean;
+  /** the set in the light theme, for presets whose own set is dark: same lights, a pale backdrop */
+  lightSet?: Pick<LightingPreset, "backdrop" | "grid" | "edge" | "vignette" | "bloom" | "shadow">;
 }
 
 export const LIGHTING: LightingPreset[] = [
@@ -68,6 +70,14 @@ export const LIGHTING: LightingPreset[] = [
     edge: { color: "#05070a", alpha: 0.5 },
     bloom: 0.1,
     vignette: 0.28,
+    lightSet: {
+      backdrop: { top: "#f1f3f7", bottom: "#c8cdd7", glow: "#ffffff", glowAmt: 0.45 },
+      grid: { minor: "#cdd2dc", major: "#a9b2c2", alpha: 0.8 },
+      shadow: 0.42,
+      edge: { color: "#141924", alpha: 0.42 },
+      bloom: 0.04,
+      vignette: 0.1,
+    },
   },
   {
     id: "showroom",
@@ -113,6 +123,15 @@ export const LIGHTING: LightingPreset[] = [
     edge: { color: "#9fb2ff", alpha: 0.32 },
     bloom: 0.22,
     vignette: 0.32,
+    // a whiteprint: pale blue paper with blue rules
+    lightSet: {
+      backdrop: { top: "#eaf0fb", bottom: "#bccbe8", glow: "#ffffff", glowAmt: 0.4 },
+      grid: { minor: "#b6c6e6", major: "#7f98d0", alpha: 0.9 },
+      shadow: 0.45,
+      edge: { color: "#1b2a5e", alpha: 0.48 },
+      bloom: 0.06,
+      vignette: 0.12,
+    },
   },
   {
     id: "workshop",
@@ -134,6 +153,14 @@ export const LIGHTING: LightingPreset[] = [
     edge: { color: "#0a0806", alpha: 0.5 },
     bloom: 0.12,
     vignette: 0.32,
+    lightSet: {
+      backdrop: { top: "#f5f1ea", bottom: "#d5cbbb", glow: "#fffaf0", glowAmt: 0.4 },
+      grid: { minor: "#d9d0c2", major: "#b5a690", alpha: 0.8 },
+      shadow: 0.45,
+      edge: { color: "#241b12", alpha: 0.44 },
+      bloom: 0.05,
+      vignette: 0.14,
+    },
   },
   {
     id: "daylight",
@@ -154,7 +181,11 @@ export const LIGHTING: LightingPreset[] = [
   },
 ];
 
-export const lightingPreset = (id: string): LightingPreset => LIGHTING.find((l) => l.id === id) ?? LIGHTING[0];
+/** A lighting preset as shown in a theme: in the light theme a dark set swaps to its pale backdrop. */
+export function lightingPreset(id: string, theme: "dark" | "light" = "dark"): LightingPreset {
+  const p = LIGHTING.find((l) => l.id === id) ?? LIGHTING[0];
+  return theme === "light" && p.lightSet ? { ...p, ...p.lightSet, light: true } : p;
+}
 
 export const dirFrom = (azDeg: number, elDeg: number) => {
   const az = THREE.MathUtils.degToRad(azDeg);

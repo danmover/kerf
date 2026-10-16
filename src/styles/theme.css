@@ -1,0 +1,161 @@
+/* The light theme. Dark is Kerf's default (app.css :root); this file redefines
+   every colour token for light, so components only ever name tokens.
+   public/theme-boot.js sets data-theme before the first paint, and
+   app/theme.ts keeps it in step with Settings → Display → Theme. */
+
+:root[data-theme="light"] {
+  --bg-0: #e6e9ef;
+  --bg-1: #f5f6f9;
+  --bg-2: #ffffff;
+  --bg-3: #edf0f5;
+  --bg-4: #e2e6ee;
+  --line: #dce0e8;
+  --line-2: #cbd1dc;
+  --line-3: #aeb7c6;
+  --text: #141924;
+  --text-2: #434c5f;
+  --text-3: #687286;
+  --text-4: #8f97a8;
+  --accent: #4763e6;
+  --accent-2: #3450cf;
+  --accent-soft: rgba(71, 99, 230, 0.11);
+  --accent-glow: rgba(71, 99, 230, 0.3);
+  --cyan: #0c8d83;
+  --violet: #8a4fd8;
+  --pass: #10905b;
+  --pass-soft: rgba(16, 144, 91, 0.11);
+  --warn: #b87300;
+  --warn-soft: rgba(184, 115, 0, 0.12);
+  --fail: #dc3445;
+  --fail-soft: rgba(220, 52, 69, 0.1);
+  --info: #2479c2;
+  --shadow: 0 18px 44px rgba(28, 38, 64, 0.16), 0 2px 8px rgba(28, 38, 64, 0.08);
+  color-scheme: light;
+
+  --accent-rgb: 71 99 230;
+  --accent-2-rgb: 52 80 207;
+  --cyan-rgb: 12 141 131;
+  --violet-rgb: 138 79 216;
+  --pass-rgb: 16 144 91;
+  --warn-rgb: 184 115 0;
+  --fail-rgb: 220 52 69;
+  --info-rgb: 36 121 194;
+  --bg-0-rgb: 230 233 239;
+  --bg-1-rgb: 245 246 249;
+  --bg-2-rgb: 255 255 255;
+  --bg-3-rgb: 237 240 245;
+  --line-rgb: 220 224 232;
+  --text-rgb: 20 25 36;
+  --text-2-rgb: 67 76 95;
+  --ink-rgb: 20 28 48;
+  --shade-rgb: 52 62 92;
+  --accent-ink: #2a44c0;
+  --pass-ink: #0b7547;
+  --warn-ink: #8a5600;
+  --fail-ink: #b01f2f;
+  --info-ink: #1a5f9e;
+  --violet-ink: #6436b0;
+  --on-accent: #fff;
+  --accent-hi: #5874f0;
+  --accent-lo: #3d58d8;
+  --scrim: rgba(40, 48, 66, 0.3);
+  --glass: rgba(255, 255, 255, 0.9);
+  --tip-bg: #ffffff;
+}
+
+/* ---------- switching themes ----------
+   The new theme opens as a circle from the switch that was pressed (see
+   app/theme.ts), using the browser's view transitions where they exist. */
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-new(root) {
+  animation: theme-reveal 0.55s var(--ease) both;
+}
+@keyframes theme-reveal {
+  from {
+    clip-path: circle(0 at var(--theme-x, 50%) var(--theme-y, 50%));
+  }
+  to {
+    clip-path: circle(var(--theme-r, 150vmax) at var(--theme-x, 50%) var(--theme-y, 50%));
+  }
+}
+
+/* ---------- the light/dark switch ---------- */
+
+.theme-switch svg {
+  overflow: visible;
+}
+.theme-switch .ts-core,
+.theme-switch .ts-bite,
+.theme-switch .ts-rays {
+  transform-origin: 12px 12px;
+  transition: transform 0.55s var(--ease), opacity 0.35s var(--ease);
+}
+/* dark: a crescent moon */
+.theme-switch.dark .ts-rays {
+  opacity: 0;
+  transform: rotate(-60deg) scale(0.5);
+}
+.theme-switch.dark:hover .ts-core {
+  transform: rotate(-18deg);
+}
+/* light: the bite slides away and the rays turn out */
+.theme-switch.light .ts-core {
+  transform: scale(0.6);
+}
+.theme-switch.light .ts-bite {
+  transform: translate(9px, -9px);
+}
+.theme-switch.light:hover .ts-rays {
+  transform: rotate(45deg);
+}
+
+/* ---------- text straight on the 3D backdrop ----------
+   It follows the backdrop rather than the theme: Showroom and Daylight are
+   light sets even in the dark theme. */
+
+.viewport[data-backdrop="light"] .vp-hud {
+  --text-2: #2c3446;
+  --text-3: #586176;
+}
+.viewport[data-backdrop="dark"] .vp-hud {
+  --text-2: #a3adc2;
+  --text-3: #6c7791;
+}
+/* the measure tool's lines and hover marks */
+.viewport[data-backdrop="light"] .measure-svg {
+  --measure-hover: #4763e6;
+  --measure-line: #b87300;
+  --measure-line-rgb: 184 115 0;
+}
+
+/* ---------- the desk round a drawing sheet ----------
+   The sheet keeps its own colours (a dark sheet or white paper); only the
+   desk under it follows the theme. */
+
+:root[data-theme="light"] .dwg {
+  --dwg-glow: rgb(var(--accent-rgb) / 0.07);
+  --dwg-desk: #eceff4, #dde1e9;
+  --dwg-paper-desk: #dfe3ea, #cfd5df;
+  --dwg-shadow: rgb(var(--shade-rgb) / 0.28);
+}
+
+/* ---------- the guitar amp's Build sections ----------
+   The board picture, the knobs and the tuner's OLED keep their own colours;
+   the faceplate and the hovered part's text follow the theme. */
+
+:root[data-theme="light"] .snd {
+  --snd-plate: #f7f8fa, #e3e7ee;
+  --snd-plate-hi: rgba(255, 255, 255, 0.9);
+  --snd-tick: #a3aab8;
+  --snd-tick-major: #586176;
+  --snd-label: #2c3446;
+}
+:root[data-theme="light"] .bv {
+  --bv-hot-ink: var(--warn-ink);
+  --bv-hot-row: rgb(var(--warn-rgb) / 0.14);
+}

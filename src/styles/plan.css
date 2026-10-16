@@ -7,7 +7,7 @@
   display: flex;
   flex-direction: column;
   border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(16, 20, 28, 0.9), rgba(11, 14, 20, 0.6));
+  background: linear-gradient(180deg, rgb(var(--bg-2-rgb) / 0.9), rgb(var(--bg-1-rgb) / 0.6));
   position: relative;
   min-height: 0;
 }
@@ -44,7 +44,7 @@
   text-transform: uppercase;
   color: var(--accent-2);
   padding: 1px 5px;
-  border: 1px solid rgba(109, 139, 255, 0.35);
+  border: 1px solid rgb(var(--accent-rgb) / 0.35);
   border-radius: 4px;
   flex: none;
 }
@@ -139,7 +139,7 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 .ps.live > .ps-row {
-  background: linear-gradient(90deg, rgba(109, 139, 255, 0.13), rgba(109, 139, 255, 0.02));
+  background: linear-gradient(90deg, rgb(var(--accent-rgb) / 0.13), rgb(var(--accent-rgb) / 0.02));
 }
 .ps.live > .ps-row::before {
   content: "";
@@ -207,28 +207,28 @@
 }
 .ps-tag.you {
   color: var(--plan-you);
-  border-color: rgba(199, 146, 255, 0.35);
-  background: rgba(199, 146, 255, 0.06);
+  border-color: rgb(var(--violet-rgb) / 0.35);
+  background: rgb(var(--violet-rgb) / 0.06);
 }
 .ps-tag.agent {
   color: var(--cyan);
-  border-color: rgba(79, 209, 197, 0.35);
-  background: rgba(79, 209, 197, 0.06);
+  border-color: rgb(var(--cyan-rgb) / 0.35);
+  background: rgb(var(--cyan-rgb) / 0.06);
 }
 .ps-tag.pause,
 .ps-tag.warn {
   color: var(--warn);
-  border-color: rgba(245, 184, 75, 0.35);
+  border-color: rgb(var(--warn-rgb) / 0.35);
   background: var(--warn-soft);
 }
 .ps-tag.steer {
   color: var(--plan-you);
-  border-color: rgba(199, 146, 255, 0.45);
-  background: rgba(199, 146, 255, 0.1);
+  border-color: rgb(var(--violet-rgb) / 0.45);
+  background: rgb(var(--violet-rgb) / 0.1);
 }
 .ps-tag.steer.seen {
   color: var(--pass);
-  border-color: rgba(61, 220, 151, 0.35);
+  border-color: rgb(var(--pass-rgb) / 0.35);
   background: var(--pass-soft);
 }
 .ps-tag.diff {
@@ -276,7 +276,7 @@
   color: var(--bg-0);
 }
 .ps-mark.live {
-  border-color: rgba(109, 139, 255, 0.3);
+  border-color: rgb(var(--accent-rgb) / 0.3);
   color: var(--accent-2);
 }
 .ps-mark.live::after {
@@ -371,9 +371,9 @@
   margin: 2px 6px 4px 0;
   padding: 5px 7px;
   border-radius: 6px;
-  border: 1px solid rgba(199, 146, 255, 0.28);
-  background: rgba(199, 146, 255, 0.06);
-  color: #e6d4ff;
+  border: 1px solid rgb(var(--violet-rgb) / 0.28);
+  background: rgb(var(--violet-rgb) / 0.06);
+  color: var(--violet-ink);
   font-size: 11.5px;
   line-height: 1.45;
 }
@@ -451,7 +451,7 @@
   border-left: 1px solid var(--line-2);
 }
 .ps.live > .ps-children {
-  border-left-color: rgba(109, 139, 255, 0.35);
+  border-left-color: rgb(var(--accent-rgb) / 0.35);
 }
 .ps-fold {
   font-size: 10px;
@@ -480,12 +480,12 @@
   padding-right: 5px;
 }
 .ps-diff .ln.add {
-  background: rgba(61, 220, 151, 0.09);
-  color: #b5f5d6;
+  background: rgb(var(--pass-rgb) / 0.09);
+  color: var(--pass-ink);
 }
 .ps-diff .ln.del {
-  background: rgba(255, 93, 108, 0.09);
-  color: #ffc0c6;
+  background: rgb(var(--fail-rgb) / 0.09);
+  color: var(--fail-ink);
 }
 .ps-diff .ln.same {
   color: var(--text-3);
@@ -498,11 +498,11 @@
   font-size: 12px;
   padding: 4px 7px;
   border-radius: 6px;
-  border: 1px solid rgba(199, 146, 255, 0.55);
+  border: 1px solid rgb(var(--violet-rgb) / 0.55);
   background: var(--bg-0);
   color: var(--text);
   outline: none;
-  box-shadow: 0 0 0 3px rgba(199, 146, 255, 0.12);
+  box-shadow: 0 0 0 3px rgb(var(--violet-rgb) / 0.12);
   resize: none;
   font-family: var(--sans);
   line-height: 1.4;
@@ -531,7 +531,7 @@ textarea.ps-input {
 }
 .plan-add:hover {
   color: var(--plan-you);
-  border-color: rgba(199, 146, 255, 0.35);
+  border-color: rgb(var(--violet-rgb) / 0.35);
 }
 
 /* changes waiting for Claude, and the way to continue */
@@ -540,16 +540,16 @@ textarea.ps-input {
   align-items: center;
   gap: 8px;
   padding: 6px 10px 6px 12px;
-  border-top: 1px solid rgba(199, 146, 255, 0.25);
-  background: rgba(199, 146, 255, 0.07);
+  border-top: 1px solid rgb(var(--violet-rgb) / 0.25);
+  background: rgb(var(--violet-rgb) / 0.07);
   font-size: 11.5px;
   color: var(--text);
   overflow: hidden;
   flex: none;
 }
 .plan-steer.resume {
-  border-top-color: rgba(245, 184, 75, 0.25);
-  background: rgba(245, 184, 75, 0.06);
+  border-top-color: rgb(var(--warn-rgb) / 0.25);
+  background: rgb(var(--warn-rgb) / 0.06);
   color: var(--text-2);
 }
 .plan-steer.resume svg {
@@ -560,7 +560,7 @@ textarea.ps-input {
   height: 6px;
   border-radius: 50%;
   background: var(--plan-you);
-  box-shadow: 0 0 8px rgba(199, 146, 255, 0.8);
+  box-shadow: 0 0 8px rgb(var(--violet-rgb) / 0.8);
   animation: plan-pulse 1.2s ease-in-out infinite;
   flex: none;
 }
@@ -586,8 +586,8 @@ textarea.ps-input {
   max-width: min(560px, calc(100% - 40px));
   padding: 6px 12px 6px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(109, 139, 255, 0.4);
-  background: rgba(11, 14, 22, 0.86);
+  border: 1px solid rgb(var(--accent-rgb) / 0.4);
+  background: rgb(var(--bg-1-rgb) / 0.86);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow), 0 0 30px -12px var(--accent-glow);
   font-size: 12px;
@@ -595,7 +595,7 @@ textarea.ps-input {
   cursor: pointer;
 }
 .plan-hud:hover {
-  border-color: rgba(143, 168, 255, 0.7);
+  border-color: rgb(var(--accent-2-rgb) / 0.7);
 }
 .plan-hud .hud-step {
   font-family: var(--mono);
@@ -623,7 +623,7 @@ textarea.ps-input {
   margin-left: 2px;
 }
 .plan-hud.paused {
-  border-color: rgba(245, 184, 75, 0.45);
+  border-color: rgb(var(--warn-rgb) / 0.45);
   box-shadow: var(--shadow);
 }
 .plan-hud.paused .hud-step {
@@ -641,7 +641,7 @@ textarea.ps-input {
 }
 @keyframes plan-flash {
   0% {
-    background: rgba(199, 146, 255, 0.28);
+    background: rgb(var(--violet-rgb) / 0.28);
   }
   100% {
     background: transparent;

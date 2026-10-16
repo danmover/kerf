@@ -1,0 +1,39 @@
+# Fly.io settings for one Kerf server. Follow "Deploy to Fly.io" in
+# server/README.md: it covers the secrets to set first and why this must run
+# as a single machine (the database is SQLite on one volume).
+
+app = "kerf-change-me"      # your Fly app name
+primary_region = "lhr"      # the region nearest you: fly platform regions
+
+[env]
+  KERF_TRUST_PROXY = "fly"
+
+[[mounts]]
+  source = "kerf_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # stops when idle and starts on the next request, so it costs little when unused
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 100
+    hard_limit = 200
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    timeout = "5s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"

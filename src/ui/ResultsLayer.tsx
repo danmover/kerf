@@ -10,6 +10,7 @@ import type { StructuralResult } from "../analysis/fe/structural";
 import { gradientCss, safetyAt } from "../analysis/colormap";
 import { useDesign } from "../core/engine";
 import { useSettings } from "../app/settings";
+import { useTheme } from "../app/theme";
 import { fmtNum } from "../lang/values";
 import { Icon } from "./icons";
 import "../styles/analysis.css";
@@ -65,15 +66,17 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
   const animate = useAnalysis((s) => s.animate);
   const model = useDesign((s) => s.model);
   const reduceMotion = useSettings((s) => s.reduceMotion);
+  const theme = useTheme();
   const spec = model?.analyses.find((a) => a.label === shown && a.kind === "structural");
   const target = spec?.safety ?? 2;
   const result = run?.result;
   const ov = useRef<ResultsOverlay | null>(null);
   const [probe, setProbe] = useState<{ x: number; y: number; text: string; part: string } | null>(null);
 
+  // rebuilt on a theme change, as its markers and labels are drawn in the theme's colours
   useEffect(() => {
     if (!result) return;
-    const o = new ResultsOverlay(result);
+    const o = new ResultsOverlay(result, theme);
     ov.current = o;
     scene.addOverlay(o);
     return () => {
@@ -81,13 +84,13 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
       o.dispose();
       if (ov.current === o) ov.current = null;
     };
-  }, [result, scene]);
+  }, [result, scene, theme]);
 
   const scale = result ? deformScale(result, deform, trueScale) : 0;
   useEffect(() => {
     ov.current?.configure({ field, scale, animate: animate && !reduceMotion, safetyTarget: target });
     scene.invalidate();
-  }, [field, scale, animate, reduceMotion, target, result, scene]);
+  }, [field, scale, animate, reduceMotion, target, result, scene, theme]);
 
   // the value under the cursor
   useEffect(() => {

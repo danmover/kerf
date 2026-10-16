@@ -3,8 +3,15 @@
 
 import * as THREE from "three";
 import type { V3 } from "../../kernel/recipe";
+import { currentTheme } from "../../app/theme";
 
-const COLOR = new THREE.Color("#4fd1c5");
+// teal on the dark backdrop; the light theme's pale one needs a deeper teal
+const COLOR = { dark: new THREE.Color("#4fd1c5"), light: new THREE.Color("#0c8d83") };
+
+/** Keep an object on the theme's colour, checked as it draws, so a theme change shows at once. */
+function follow(o: THREE.Object3D, mat: THREE.LineDashedMaterial | THREE.MeshBasicMaterial) {
+  o.onBeforeRender = () => mat.color.copy(COLOR[currentTheme()]);
+}
 
 export class MeasureOverlay {
   readonly group = new THREE.Group();
@@ -16,14 +23,17 @@ export class MeasureOverlay {
     if (!m) return;
     const a = new THREE.Vector3(...m.a);
     const b = new THREE.Vector3(...m.b);
-    const mat = new THREE.LineDashedMaterial({ color: COLOR, dashSize: scale * 0.012, gapSize: scale * 0.008, depthTest: false, transparent: true });
+    const mat = new THREE.LineDashedMaterial({ color: COLOR[currentTheme()], dashSize: scale * 0.012, gapSize: scale * 0.008, depthTest: false, transparent: true });
     this.line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), mat);
     this.line.computeLineDistances();
     this.line.renderOrder = 20;
+    follow(this.line, mat);
     this.group.add(this.line);
     const r = Math.max(scale * 0.004, 0.15);
     for (const p of [a, b]) {
-      const dot = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshBasicMaterial({ color: COLOR, depthTest: false, transparent: true }));
+      const dotMat = new THREE.MeshBasicMaterial({ color: COLOR[currentTheme()], depthTest: false, transparent: true });
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), dotMat);
+      follow(dot, dotMat);
       dot.position.copy(p);
       dot.renderOrder = 21;
       this.dots.push(dot);

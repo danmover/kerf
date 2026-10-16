@@ -5,9 +5,13 @@
   inset: 0;
   display: flex;
   flex-direction: column;
+  /* drawn on the board picture, which looks the same on both themes */
   --bv-focus: #ffc93c;
   --bv-hot: #ffe08a;
   --bv-sel: var(--accent-2);
+  /* the hovered part as text and as a table row, on the theme's panels */
+  --bv-hot-ink: var(--bv-hot);
+  --bv-hot-row: rgba(255, 224, 138, 0.07);
 }
 .bv .bv-chip {
   gap: 6px;
@@ -45,7 +49,7 @@
 }
 .bv-shadow {
   position: absolute;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 14px 34px rgba(0, 0, 0, 0.55), 0 0 60px rgba(61, 220, 151, 0.04);
+  box-shadow: 0 0 0 1px rgb(var(--shade-rgb) / 0.55), 0 14px 34px rgb(var(--shade-rgb) / 0.55), 0 0 60px rgb(var(--pass-rgb) / 0.04);
   pointer-events: none;
 }
 .bv-svg,
@@ -87,19 +91,19 @@
   cursor: pointer;
 }
 .bv-hot {
-  fill: rgba(255, 224, 138, 0.12);
+  fill: rgba(255, 224, 138, 0.12); /* theme: same */
   stroke: var(--bv-hot);
   stroke-width: 1.5px;
   pointer-events: none;
 }
 .bv-sel {
-  fill: rgba(143, 168, 255, 0.1);
+  fill: rgb(var(--accent-2-rgb) / 0.1);
   stroke: var(--bv-sel);
   stroke-width: 1.75px;
   pointer-events: none;
 }
 .bv-focus-part {
-  fill: rgba(255, 93, 108, 0.1);
+  fill: rgb(var(--fail-rgb) / 0.1);
   stroke: var(--fail);
   stroke-width: 1.5px;
   stroke-dasharray: 4 3;
@@ -111,7 +115,7 @@
   pointer-events: none;
 }
 .bv-mark {
-  fill: rgba(255, 93, 108, 0.25);
+  fill: rgb(var(--fail-rgb) / 0.25);
   stroke: var(--fail);
   stroke-width: 1.5px;
   pointer-events: none;
@@ -165,21 +169,21 @@
   gap: 8px;
   max-width: calc(100% - 24px);
   padding: 5px 12px;
-  border: 1px solid rgba(109, 139, 255, 0.4);
+  border: 1px solid rgb(var(--accent-rgb) / 0.4);
   border-radius: 20px;
-  background: rgba(16, 20, 28, 0.92);
+  background: rgb(var(--bg-2-rgb) / 0.92);
   backdrop-filter: blur(6px);
   font-size: 11.5px;
   color: var(--text-2);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 6px 18px rgb(var(--shade-rgb) / 0.4);
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .bv-badge.fail {
-  border-color: rgba(255, 93, 108, 0.45);
-  color: #ffb3bb;
+  border-color: rgb(var(--fail-rgb) / 0.45);
+  color: var(--fail-ink);
 }
 .bv-hud {
   position: absolute;
@@ -194,7 +198,7 @@
   padding: 4px 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: rgba(11, 14, 20, 0.88);
+  background: rgb(var(--bg-1-rgb) / 0.88);
   backdrop-filter: blur(6px);
   font-size: 11.5px;
   color: var(--text-2);
@@ -204,7 +208,7 @@
   text-overflow: ellipsis;
 }
 .bv-hud b {
-  color: var(--bv-hot);
+  color: var(--bv-hot-ink);
   font-weight: 500;
 }
 .bv-hud .val {
@@ -362,10 +366,10 @@
   line-height: 1.35;
 }
 .bv-parts tbody tr.hot td {
-  background: rgba(255, 224, 138, 0.07);
+  background: var(--bv-hot-row);
 }
 .bv-parts tbody tr.hot td.ref {
-  color: var(--bv-hot);
+  color: var(--bv-hot-ink);
 }
 .bv-parts tbody tr.sel td {
   background: var(--accent-soft);

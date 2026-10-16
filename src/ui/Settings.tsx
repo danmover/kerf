@@ -1,22 +1,25 @@
 // Settings: Claude connection, display preferences, local data and about.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, MIN_STEPS, MAX_STEPS, type Effort } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, MIN_STEPS, MAX_STEPS, type Effort, type ThemePref } from "../app/settings";
+import { setTheme } from "../app/theme";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
-import { forgetApiKey, isRemembered, keyHint } from "../persist/vault";
+import { forgetApiKey, getApiKey, isRemembered, keyHint, subscribeKey } from "../persist/vault";
 import { storageEstimate } from "../persist/db";
 import { resetChat } from "../ai/chat";
 import { KeyForm } from "../screens/Onboarding";
-import { useApiKey } from "./ChatPanel";
 import { Modal, Segmented, Toggle } from "./common";
 import { Icon } from "./icons";
 import { LogoMark } from "./Logo";
+import { AccountKeySection, AccountSettings, CloudIcon, signOutForClear } from "./Account";
+import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "Claude", icon: <Icon.Sparkle size={14} /> },
+  { id: "account", label: "Account", icon: <CloudIcon size={14} /> },
   { id: "voice", label: "Voice", icon: <Icon.Mic size={14} /> },
   { id: "app", label: "Display", icon: <Icon.Eye size={14} /> },
   { id: "data", label: "Data", icon: <Icon.Layers size={14} /> },
@@ -43,6 +46,7 @@ export function SettingsModal() {
         </nav>
         <div className="modal-body" style={{ maxHeight: "min(72vh, 720px)" }}>
           {shown === "ai" && <AiSettings />}
+          {shown === "account" && <AccountSettings />}
           {shown === "voice" && <VoiceSettings />}
           {shown === "app" && <AppSettings />}
           {shown === "data" && <DataSettings />}
@@ -84,50 +88,58 @@ const EFFORTS: { value: Effort; label: string; d: string }[] = [
   { value: "max", label: "max", d: "The most thorough. Slowest and most expensive." },
 ];
 
-function AiSettings() {
-  const key = useApiKey();
-  const s = useSettings();
+/** The key kept in this browser: in memory, or encrypted on this device if remembered. */
+function BrowserKey() {
+  const key = useSyncExternalStore(subscribeKey, getApiKey);
   const [replacing, setReplacing] = useState(false);
   useEffect(() => setReplacing(false), [key]);
+  return key && !replacing ? (
+    <div className="setting" style={{ alignItems: "center" }}>
+      <span className="dot pass" />
+      <div className="grow">
+        <div className="t">
+          Connected <span className="mono dim">{keyHint()}</span>
+        </div>
+        <div className="d">{isRemembered() ? "Remembered on this device, encrypted with a browser key that cannot be exported." : "Kept in memory only. You will be asked again after closing this tab."}</div>
+      </div>
+      <button className="btn" onClick={() => setReplacing(true)}>
+        Replace
+      </button>
+      <button
+        className="btn danger"
+        onClick={async () => {
+          if (await confirmDialog({ title: "Forget the API key?", body: "Kerf removes the key from memory and from this device. Chat stops working until you add a key again. Your designs are not affected.", confirm: "Forget key", danger: true })) {
+            await forgetApiKey();
+            toast({ kind: "success", title: "API key forgotten" });
+          }
+        }}
+      >
+        Forget
+      </button>
+    </div>
+  ) : (
+    <>
+      <KeyForm onSaved={() => toast({ kind: "success", title: "Claude connected", detail: "You can chat with Claude in the right panel of any project." })} compact={!!key} />
+      {replacing && (
+        <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => setReplacing(false)}>
+          Keep the current key
+        </button>
+      )}
+    </>
+  );
+}
+
+function AiSettings() {
+  const s = useSettings();
   const effort = EFFORTS.find((e) => e.value === s.effort)!;
+  const server = useAccount((a) => a.status !== "none" && a.status !== "checking");
+  const viaAccount = useAccount((a) => a.status === "signed-in" && a.info?.claude?.source === "account");
   const designLabel = MODELS.find((m) => m.id === s.model)?.label ?? s.model;
   return (
     <>
       <Section title="API key">
-        {key && !replacing ? (
-          <div className="setting" style={{ alignItems: "center" }}>
-            <span className="dot pass" />
-            <div className="grow">
-              <div className="t">
-                Connected <span className="mono dim">{keyHint()}</span>
-              </div>
-              <div className="d">{isRemembered() ? "Remembered on this device, encrypted with a browser key that cannot be exported." : "Kept in memory only. You will be asked again after closing this tab."}</div>
-            </div>
-            <button className="btn" onClick={() => setReplacing(true)}>
-              Replace
-            </button>
-            <button
-              className="btn danger"
-              onClick={async () => {
-                if (await confirmDialog({ title: "Forget the API key?", body: "Kerf removes the key from memory and from this device. Chat stops working until you add a key again. Your designs are not affected.", confirm: "Forget key", danger: true })) {
-                  await forgetApiKey();
-                  toast({ kind: "success", title: "API key forgotten" });
-                }
-              }}
-            >
-              Forget
-            </button>
-          </div>
-        ) : (
-          <>
-            <KeyForm onSaved={() => toast({ kind: "success", title: "Claude connected", detail: "You can chat with Claude in the right panel of any project." })} compact={!!key} />
-            {replacing && (
-              <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => setReplacing(false)}>
-                Keep the current key
-              </button>
-            )}
-          </>
-        )}
+        <AccountKeySection browserForm={<BrowserKey />} />
+        {!server && <BrowserKey />}
       </Section>
 
       <Section title="Model for design work">
@@ -196,7 +208,7 @@ function AiSettings() {
         </Row>
         <Row
           t="Search the web for parts"
-          d="When the parts catalog has nothing suitable, Claude can search the web and read product pages to find a real part with a price and a link. Anthropic runs the searches and bills them to your API key ($10 per 1,000 searches at the time of writing, plus the tokens the pages use). Results come from the open web, so check a part before you buy it."
+          d="When the parts catalog has nothing suitable, Claude can search the web and read product pages to find a real part with a price and a link. Anthropic runs the searches and bills them to your API key ($10 per 1,000 searches at the time of writing, plus the tokens the pages use). Results come from the open web, so check a part before you buy it. A Kerf server's shared key doesn't offer web search, so there Claude uses the catalog only."
         >
           <Toggle on={s.webSearch} onChange={(v) => updateSettings({ webSearch: v, webNotice: false })} label="Search the web for parts" />
         </Row>
@@ -220,15 +232,27 @@ function AiSettings() {
         </Row>
       </Section>
       <AgentSettings />
-      <div className="help">Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com.</div>
+      <div className="help">{viaAccount ? "Usage is billed to the Anthropic account that owns the key, at its normal API rates. Requests go from this browser to your Kerf server, which adds the key and passes them to api.anthropic.com." : "Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com."}</div>
     </>
   );
 }
 
+const THEMES: { value: ThemePref; label: string; d: string }[] = [
+  { value: "dark", label: "Dark", d: "Kerf's default: a dark workspace that keeps the model the brightest thing on screen." },
+  { value: "light", label: "Light", d: "Light panels and a pale backdrop behind the model, for bright rooms and printing screenshots." },
+  { value: "system", label: "Match device", d: "Follows your device's light or dark setting, and changes when it does." },
+];
+
 function AppSettings() {
   const s = useSettings();
+  const theme = THEMES.find((t) => t.value === s.theme) ?? THEMES[0];
   return (
     <>
+      <Section title="Appearance">
+        <Row t="Theme" d={theme.d}>
+          <Segmented id="theme" value={s.theme} options={THEMES.map((t) => ({ value: t.value, label: t.label }))} onChange={(v) => setTheme(v)} />
+        </Row>
+      </Section>
       <Section title="Viewport">
         <Row t="Ground grid" d="A millimetre grid under the model.">
           <Toggle on={s.grid} onChange={(v) => updateSettings({ grid: v })} label="Ground grid" />
@@ -281,6 +305,7 @@ function DataSettings() {
       danger: true,
     });
     if (!ok) return;
+    await signOutForClear();
     resetChat();
     await forgetApiKey();
     await clearAllData();
@@ -357,6 +382,7 @@ function DataSettings() {
 
 function About() {
   const screen = useUi((s) => s.screen);
+  const server = useAccount((a) => a.status !== "none" && a.status !== "checking");
   const back = screen.name === "workspace" ? "workspace" : screen.name === "onboarding" ? "onboarding" : "home";
   const open = (doc: LegalDoc) => {
     closeSettings();
@@ -373,12 +399,20 @@ function About() {
       </div>
       <Section title="How Kerf handles your data">
         <ul className="muted" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, fontSize: 12.5 }}>
-          <li>There is no Kerf server or account. Designs, history and chats stay in this browser.</li>
-          <li>Chat messages, the design file and requested screenshots go directly to api.anthropic.com with your key, only when you send a message.</li>
+          {server ? (
+            <>
+              <li>This Kerf is served by a Kerf server. Without an account, designs, history and chats stay in this browser.</li>
+              <li>When you sign in, projects in your account, their history and chats are also stored on that server so they sync between devices. Your password is stored only as a salted hash.</li>
+              <li>A Claude key saved to your account is encrypted on the server and never sent back to a browser. Chat then goes through the server, which adds the key.</li>
+            </>
+          ) : (
+            <li>There is no Kerf server or account. Designs, history and chats stay in this browser.</li>
+          )}
+          <li>Chat messages, the design file and requested screenshots go to api.anthropic.com only when you send a message.</li>
           <li>Voice input is turned into text on this device when the browser can. Otherwise the browser's own speech service hears your audio, only if you allow it. Kerf never records or uploads audio.</li>
-          <li>Your key is kept in memory unless you choose to remember it, in which case it is encrypted with a browser key that cannot be exported.</li>
-          <li>A strict Content Security Policy allows network connections only to Kerf itself and api.anthropic.com. AI output is never rendered as HTML.</li>
-          <li>When web search is on, Anthropic's servers do the searching and page reading; this browser still talks only to api.anthropic.com. Links to sources open in a new tab only when you click them.</li>
+          <li>A key kept in this browser is held in memory unless you choose to remember it, in which case it is encrypted with a browser key that cannot be exported.</li>
+          <li>A strict Content Security Policy allows network connections only to Kerf itself{server ? " (and its server)" : ""} and api.anthropic.com. AI output is never rendered as HTML.</li>
+          <li>When web search is on, Anthropic's servers do the searching and page reading, not this browser. Links to sources open in a new tab only when you click them.</li>
           <li>Imported files are size-limited and validated before use.</li>
         </ul>
       </Section>
