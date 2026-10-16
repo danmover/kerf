@@ -1,11 +1,12 @@
 // Which materials suit which processes, plus the material-dependent numbers
-// the process rules need. Keyed by the names in library/materials
-// MATERIAL_LIST; other names are matched by family keywords (resin, acrylic,
-// plywood...).
+// the process rules need. Read from the material database
+// (library/materialDb) by the names written in designs; other names are
+// matched by family keywords (resin, acrylic, plywood...).
 
 import type { ProcessId } from "./types";
+import { MATERIAL_DB, type MaterialFamily as KnownFamily } from "../library/materialDb";
 
-export type MaterialFamily = "thermoplastic" | "resin" | "metal" | "composite" | "wood" | "unknown";
+export type MaterialFamily = KnownFamily | "unknown";
 
 export interface MaterialProcessInfo {
   family: MaterialFamily;
@@ -23,36 +24,22 @@ export interface MaterialProcessInfo {
 
 const METAL_PROCESSES: ProcessId[] = ["cnc_mill", "cnc_lathe", "sheet_metal", "laser_cut"];
 
-const TABLE: Record<string, MaterialProcessInfo> = {
-  PLA: { family: "thermoplastic", processes: ["fdm", "injection"], mouldWall: [0.8, 3.0], notes: { cnc_mill: "PLA melts and gums up cutters; machine POM, nylon or ABS instead" } },
-  PETG: { family: "thermoplastic", processes: ["fdm", "injection"], mouldWall: [1.0, 3.0] },
-  ABS: { family: "thermoplastic", processes: ["fdm", "injection", "cnc_mill", "cnc_lathe"], mouldWall: [1.2, 3.5] },
-  ASA: { family: "thermoplastic", processes: ["fdm", "injection"], mouldWall: [1.2, 3.5] },
-  Nylon: { family: "thermoplastic", processes: ["fdm", "sls", "injection", "cnc_mill", "cnc_lathe"], mouldWall: [0.8, 2.9] },
-  POM: { family: "thermoplastic", processes: ["cnc_mill", "cnc_lathe", "injection", "laser_cut"], mouldWall: [0.8, 3.0], laserMaxT: 10 },
-  "Aluminum 6061": {
-    family: "metal",
-    processes: METAL_PROCESSES,
-    bendFactor: 2,
-    laserMaxT: 12,
-    notes: {
-      die_cast: '6061 is a wrought alloy and is not die cast; use "Aluminum A380"',
-      sheet_metal: '6061-T6 cracks in tight bends; use "Aluminum 5052" for bent parts, or keep the inside bend radius at 2× the thickness or more',
+const TABLE: Record<string, MaterialProcessInfo> = Object.fromEntries(
+  MATERIAL_DB.map((m) => [
+    m.name,
+    {
+      family: m.family,
+      processes: m.processes,
+      ...(m.mouldWall ? { mouldWall: m.mouldWall } : {}),
+      ...(m.bendFactor !== undefined ? { bendFactor: m.bendFactor } : {}),
+      ...(m.laserMaxT !== undefined ? { laserMaxT: m.laserMaxT } : {}),
+      ...(m.processNotes ? { notes: m.processNotes } : {}),
     },
-  },
-  Steel: { family: "metal", processes: METAL_PROCESSES, bendFactor: 1, laserMaxT: 20 },
-  "Stainless 304": { family: "metal", processes: METAL_PROCESSES, bendFactor: 1, laserMaxT: 15 },
-  Brass: { family: "metal", processes: METAL_PROCESSES, bendFactor: 1, laserMaxT: 6 },
-  "Aluminum 5052": { family: "metal", processes: METAL_PROCESSES, bendFactor: 1, laserMaxT: 12 },
-  "Aluminum A380": { family: "metal", processes: ["die_cast", "cnc_mill"] },
-  "Zamak 3": { family: "metal", processes: ["die_cast"] },
-  Resin: { family: "resin", processes: ["sla"] },
-  Acrylic: { family: "thermoplastic", processes: ["laser_cut", "cnc_mill", "injection"], mouldWall: [0.6, 3.8], laserMaxT: 20 },
-  Wood: { family: "wood", processes: ["laser_cut", "cnc_mill"], laserMaxT: 9 },
-  "Aluminum 7075": { family: "metal", processes: ["cnc_mill", "cnc_lathe", "laser_cut"], laserMaxT: 12, notes: { sheet_metal: '7075 cracks when bent; use "Aluminum 5052" for bent parts' } },
-  "Carbon fiber": { family: "composite", processes: ["cnc_mill", "laser_cut"], notes: { laser_cut: "Cut carbon fiber plate by waterjet or CNC routing; a laser chars the resin and gives off toxic fumes" } },
-  FR4: { family: "composite", processes: ["cnc_mill"], notes: { laser_cut: "Laser cutting FR4 gives off toxic fumes and chars the edge; route it on a CNC" } },
-};
+  ]),
+);
+
+/** Materials only suggested when a part needs what they do (flexible, soft, conductive...), not as everyday choices. */
+const SPECIAL = new Set(MATERIAL_DB.filter((m) => m.special).map((m) => m.name));
 
 const KEYWORDS: [RegExp, MaterialProcessInfo][] = [
   [/resin/i, { family: "resin", processes: ["sla"] }],
@@ -67,8 +54,18 @@ const KEYWORDS: [RegExp, MaterialProcessInfo][] = [
   [/steel|copper|titanium/i, { family: "metal", processes: METAL_PROCESSES, bendFactor: 1, laserMaxT: 15 }],
 ];
 
+/** A polymer named with a fill or grade ("Wood PLA", "glass-filled nylon resin") is made like that polymer, not like wood or resin. */
+const POLYMERS: [RegExp, string][] = [
+  [/\bpla\b/i, "PLA"],
+  [/\bpetg\b/i, "PETG"],
+  [/\babs\b/i, "ABS"],
+  [/\basa\b/i, "ASA"],
+  [/\bnylon\b/i, "Nylon"],
+];
+
 export function materialInfo(name: string): MaterialProcessInfo {
-  if (TABLE[name]) return TABLE[name];
+  if (Object.hasOwn(TABLE, name)) return TABLE[name];
+  for (const [re, n] of POLYMERS) if (re.test(name) && Object.hasOwn(TABLE, n)) return TABLE[n];
   for (const [re, info] of KEYWORDS) if (re.test(name)) return info;
   return { family: "unknown", processes: [] };
 }
@@ -88,12 +85,12 @@ export function materialFit(material: string, process: ProcessId): { status: "pa
   if ((plastic && metalOnly.includes(process)) || (info.family === "metal" && plasticOnly.includes(process))) {
     return { status: "fail", detail: `${material} cannot be made this way. Pick a ${plastic ? "metal" : "plastic"} or another process.` };
   }
-  return { status: "warn", detail: `${material} is unusual for this process. Common choices: ${suggestMaterials(process).join(", ")}.` };
+  return { status: "warn", detail: `${material} is unusual for this process. Common choices: ${suggestMaterials(process).slice(0, 6).join(", ")}.` };
 }
 
 export function suggestMaterials(process: ProcessId): string[] {
   return Object.entries(TABLE)
-    .filter(([, i]) => i.processes.includes(process) && !i.notes?.[process])
+    .filter(([n, i]) => i.processes.includes(process) && !i.notes?.[process] && !SPECIAL.has(n))
     .map(([n]) => n);
 }
 

@@ -5,7 +5,8 @@ import { create } from "zustand";
 import type { Span } from "../lang/ast";
 
 export type ViewPreset = "iso" | "front" | "back" | "top" | "bottom" | "left" | "right";
-export type DockTab = "brief" | "code" | "checks" | "analysis" | "graph" | "bom" | "build";
+/** the built-in tabs; features can add more through DOCK_TABS in ui/Dock */
+export type DockTab = "overview" | "brief" | "code" | "checks" | "analysis" | "graph" | "bom" | "build" | "sim" | (string & {});
 /** the built-in tabs; features can add more through LEFT_TABS in ui/LeftPanel */
 export type LeftTab = "structure" | "params" | "decisions" | "history" | (string & {});
 
@@ -56,7 +57,7 @@ export const useView = create<ViewState>(() => ({
   assemblyRequest: 0,
   reveal: null,
   cameraRequest: null,
-  dockTab: "code",
+  dockTab: "overview",
   leftTab: "structure",
   dockOpen: true,
   decisionFocus: null,
@@ -73,4 +74,15 @@ export const resetView = () =>
 export const hoverParts = (ids: string[]) => {
   if (useView.getState().focusCheck) return;
   useView.setState({ focusParts: ids });
+};
+
+/** Swap the dock between design.kerf and the tab that was open before it (the C key). */
+let beforeCode: DockTab = "overview";
+useView.subscribe((s, prev) => {
+  if (prev.dockTab !== s.dockTab && prev.dockTab !== "code") beforeCode = prev.dockTab;
+});
+export const toggleCode = () => {
+  const v = useView.getState();
+  if (v.dockTab === "code" && v.dockOpen) useView.setState({ dockTab: beforeCode });
+  else useView.setState({ dockTab: "code", dockOpen: true });
 };

@@ -1,7 +1,7 @@
 // Shared UI primitives.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./icons";
 
@@ -81,25 +81,61 @@ export function Modal({ open, onClose, title, children, footer, width = 720, ico
   );
 }
 
-/** Dropdown menu anchored to a trigger; closes on outside click and Escape. */
+const menuItems = (root: HTMLElement | null) => [...(root?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+
+/** Arrow keys between menu items: up and down in order, left and right to the nearest item in the next column. */
+function menuKey(e: ReactKeyboardEvent<HTMLElement>) {
+  const items = menuItems(e.currentTarget);
+  if (!items.length) return;
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  let next: HTMLElement | undefined;
+  if (e.key === "ArrowDown") next = items[(at + 1) % items.length];
+  else if (e.key === "ArrowUp") next = items[(at - 1 + items.length) % items.length];
+  else if (e.key === "Home") next = items[0];
+  else if (e.key === "End") next = items[items.length - 1];
+  else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && at >= 0) {
+    const r = items[at].getBoundingClientRect();
+    const side = e.key === "ArrowRight" ? 1 : -1;
+    let best = Infinity;
+    for (const it of items) {
+      const q = it.getBoundingClientRect();
+      if ((q.left - r.left) * side < r.width / 2) continue;
+      const d = Math.abs(q.top - r.top) + Math.abs(q.left - r.left) / 4;
+      if (d < best) [best, next] = [d, it];
+    }
+  } else return;
+  e.preventDefault();
+  next?.focus();
+}
+
+/** Dropdown menu anchored to a trigger; closes on outside click and Escape. Focus moves into it on open and back to the trigger on close. */
 export function Menu({ trigger, children, align = "left", width }: { trigger: (open: boolean, toggle: () => void) => ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right"; width?: number }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  /** close, and give focus back to the trigger unless something else (a dialog, a field) has taken it */
+  const close = () => {
+    setOpen(false);
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body || menuRef.current?.contains(a)) ref.current?.querySelector<HTMLElement>("button, [tabindex]")?.focus();
+    });
+  };
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
   useLayoutEffect(() => {
     if (!open || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
-    const w = width ?? 240;
-    const left = align === "right" ? Math.max(8, r.right - w) : Math.min(window.innerWidth - w - 8, r.left);
-    setPos({ top: r.bottom + 6, left });
+    // wide menus shrink to fit a narrow window
+    const w = Math.min(width ?? 240, window.innerWidth - 16);
+    const left = align === "right" ? Math.max(8, r.right - w) : Math.max(8, Math.min(window.innerWidth - w - 8, r.left));
+    setPos({ top: r.bottom + 6, left, width: w });
   }, [open, align, width]);
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
     return () => {
@@ -107,6 +143,10 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
       window.removeEventListener("keydown", onKey);
     };
   }, [open]);
+  // into the menu as it opens, so arrow keys and Tab start inside it
+  useEffect(() => {
+    if (open && pos) menuItems(menuRef.current)[0]?.focus({ preventScroll: true });
+  }, [open, !!pos]);
   return (
     <div ref={ref} style={{ display: "inline-flex" }}>
       {trigger(open, () => setOpen((o) => !o))}
@@ -117,13 +157,14 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
               ref={menuRef}
               className="menu"
               role="menu"
-              style={{ position: "fixed", top: pos.top, left: pos.left, width: width ?? 240 }}
+              style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, maxHeight: `calc(100dvh - ${Math.round(pos.top) + 10}px)`, overflowY: "auto", transformOrigin: align === "right" ? "top right" : "top left" }}
               initial={{ opacity: 0, y: -6, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
+              onKeyDown={menuKey}
             >
-              {children(() => setOpen(false))}
+              {children(close)}
             </motion.div>
           )}
         </AnimatePresence>,

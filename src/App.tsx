@@ -5,9 +5,10 @@ import { useEffect, useState } from "react";
 import { useUi, go, toast } from "./app/ui";
 import { useSettings, updateSettings, TERMS_VERSION, LIGHTING_IDS } from "./app/settings";
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
-import { useView, requestCamera, type ViewPreset } from "./app/view";
+import { useView, requestCamera, toggleCode, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
 import { startAnalysisRuntime } from "./analysis/runtime";
+import { startSimRuntime } from "./sim/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
 import { Onboarding } from "./screens/Onboarding";
@@ -22,6 +23,7 @@ import { AuthDialog } from "./ui/Account";
 import { initAccount } from "./cloud/account";
 import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
+import { startMaterialChecks } from "./materials/runtime";
 import { useThemeSync } from "./app/theme";
 
 // each opened project brings its own conversation
@@ -83,7 +85,9 @@ function useBoot() {
   useEffect(() => {
     let live = true;
     startEngine();
+    startMaterialChecks();
     startAnalysisRuntime();
+    startSimRuntime();
     void Promise.allSettled([loadRememberedKey(), refreshProjects(), initAccount()]).then(() => {
       startSync();
       if (!live) return;
@@ -171,6 +175,8 @@ function useShortcuts() {
           return useView.setState({ xray: !v.xray });
         case "m":
           return toggleMarkup();
+        case "c":
+          return toggleCode();
         case "i":
           if (v.selected.length || v.isolate) useView.setState({ isolate: !v.isolate });
           return;

@@ -2059,15 +2059,6 @@ a:hover {
   }
 }
 
-.logo-word {
-  font-family: var(--mono);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  font-size: 14px;
-}
-.logo-word .slash {
-  color: var(--accent-2);
-}
 
 .legal-layer {
   position: fixed;

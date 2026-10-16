@@ -641,6 +641,22 @@ export class SceneController {
     this.moveCamera(new THREE.Vector3(...s.pos), new THREE.Vector3(...s.target), 600);
   }
 
+  /** Slide the camera and its target together (a camera that follows something). */
+  panBy(d: [number, number, number]) {
+    const v = new THREE.Vector3(...d);
+    if (this.camAnim) {
+      // mid-swing: move where it is swinging from and to
+      this.camAnim.fromTarget.add(v);
+      this.camAnim.toTarget.add(v);
+      this.changed = true;
+      return;
+    }
+    this.camera.position.add(v);
+    this.controls.target.add(v);
+    this.controls.update();
+    this.changed = true;
+  }
+
   /** Swing the camera to a position and target (at once with reduced motion). */
   private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
     if (this.display.reduceMotion) {
@@ -1269,8 +1285,8 @@ export class SceneController {
     return { pos: sphere.center.clone().add(dir.multiplyScalar(fit * 1.08)), target: sphere.center.clone() };
   }
 
-  fit(p: ViewPreset | "current" = "current", animate = true, box?: THREE.Box3) {
-    const { pos, target } = this.framing(p, this.camera.aspect, box);
+  fit(p: ViewPreset | "current" = "current", animate = true, box?: THREE.Box3, dir?: THREE.Vector3) {
+    const { pos, target } = this.framing(p, this.camera.aspect, box, dir);
     if (!animate || this.display.reduceMotion) {
       this.camera.position.copy(pos);
       this.controls.target.copy(target);

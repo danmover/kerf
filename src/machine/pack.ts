@@ -80,6 +80,7 @@ export const CATEGORY_LABEL: Record<string, string> = {
   build: "Build",
   electrical: "Wiring",
   engineering: "Calculations",
+  simulation: "Simulations",
   testing: "Physical tests",
   info: "Needs analysis",
 };
@@ -264,7 +265,7 @@ function isPrinted(p: EvalPart): boolean {
 }
 
 /** The build direction a printed part's process gives it (fdm or sla with build:), so the STL prints the way the checks assumed. */
-function buildDirection(p: EvalPart): [number, number, number] | undefined {
+export function buildDirection(p: EvalPart): [number, number, number] | undefined {
   const b = p.process && (p.process.id === "fdm" || p.process.id === "sla") ? p.process.settings.build : undefined;
   if (!Array.isArray(b) || typeof b[0] !== "number") return undefined;
   const [x, y, z] = b as [number, number, number];
@@ -434,8 +435,8 @@ export function madeParts(model: Model, meshFor?: (p: EvalPart) => MeshData | un
 
 const MATERIAL_NOTES: Record<string, string> = {
   pla: "PLA is stiff and easy to print, but softens above about 55 °C: keep it away from motors that run warm, heaters and direct sun.",
-  petg: "PETG is tougher than PLA and takes heat to about 75 °C: a good default for machine parts. Print at 230 to 250 °C with a little cooling.",
-  abs: "ABS takes heat to about 95 °C but warps: print it in an enclosure.",
+  petg: "PETG is tougher than PLA and takes heat to about 70 °C: a good default for machine parts. Print at 230 to 250 °C with a little cooling.",
+  abs: "ABS takes heat to about 90 °C but warps: print it in an enclosure.",
   asa: "ASA is like ABS with better UV resistance: print it in an enclosure.",
   nylon: "Nylon is tough and wears well. Dry the filament before printing and print it in an enclosure.",
   tpu: "TPU is flexible: print slowly with a direct-drive extruder.",

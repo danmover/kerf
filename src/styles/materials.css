@@ -1,0 +1,416 @@
+/* Material advisor: option cards, the comparison on the model, the chat card,
+   the picker's suggestions and the brief's hint. */
+
+/* ---------- verdict and grade colours ---------- */
+
+.mo-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-3);
+}
+.mo-dot.v-recommended {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.mo-dot.v-good {
+  background: var(--pass);
+}
+.mo-dot.v-possible {
+  background: var(--info);
+}
+.mo-dot.v-poor {
+  background: var(--warn);
+}
+.mo-dot.v-unsuitable {
+  background: var(--fail);
+}
+.g-good {
+  --g: var(--pass);
+}
+.g-ok {
+  --g: var(--text-2);
+}
+.g-poor {
+  --g: var(--warn);
+}
+.g-fail {
+  --g: var(--fail);
+  color: var(--fail);
+}
+.g-info {
+  --g: var(--text-3);
+}
+
+/* ---------- one option ---------- */
+
+.mo-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  transition: border-color 0.14s, background 0.14s, transform 0.14s var(--ease);
+}
+.mo-card:hover,
+.mo-card:focus-within {
+  border-color: var(--line-3);
+  background: var(--bg-3);
+}
+.mo-card.tile {
+  width: 200px;
+  flex: none;
+}
+.mo-card.tile:hover {
+  transform: translateY(-2px);
+}
+.mo-card.v-recommended {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2));
+  background: radial-gradient(140px 90px at 15% 0%, var(--accent-soft), transparent 70%), var(--bg-2);
+}
+.mo-card.v-unsuitable {
+  opacity: 0.8;
+}
+.mo-card.current::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: 10px;
+  border: 1px dashed var(--text-3);
+  pointer-events: none;
+}
+.mo-head {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+.mo-name {
+  font-weight: 600;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mo-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.mo-verdict {
+  color: var(--text-2);
+}
+.mo-verdict.v-recommended {
+  color: var(--accent-2);
+}
+.mo-verdict.v-good {
+  color: var(--pass);
+}
+.mo-verdict.v-poor {
+  color: var(--warn);
+}
+.mo-verdict.v-unsuitable {
+  color: var(--fail);
+}
+.mo-proc {
+  color: var(--text-3);
+}
+.mo-card.tile .mo-sub {
+  flex-wrap: nowrap;
+  margin-top: -2px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.mo-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+.mo-card.row .mo-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.mo-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--bg-1);
+  border-left: 2px solid var(--g, var(--line-2));
+  min-width: 0;
+}
+.mo-stat-l {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mo-stat-v {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mo-summary {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.mo-summary::first-letter {
+  text-transform: uppercase;
+}
+.mo-use {
+  flex: none;
+  align-self: flex-start;
+  padding: 3px 10px;
+}
+.mo-card.tile .mo-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mo-basis {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.mo-basis.inline {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mo-out {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+.mo-now {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+/* ---------- the chat card ---------- */
+
+.mo-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+}
+.mo-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.mo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mo-list-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 2px 0 6px;
+}
+
+/* ---------- the comparison on the model ---------- */
+
+.mo-compare {
+  left: 12px;
+  right: 284px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100% - 80px);
+}
+.mo-compare-head {
+  gap: 8px;
+  align-items: flex-start;
+}
+.mo-needs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(90deg, #000 92%, transparent); /* theme: same, an alpha mask */
+}
+.mo-needs .mat-chip {
+  flex: none;
+}
+.mo-needs .mat-chip {
+  padding: 2px 9px;
+  font-size: 11px;
+}
+.mo-row {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 6px;
+  scrollbar-width: thin;
+  align-items: stretch;
+}
+.mo-divider {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  border-left: 1px dashed var(--line-3);
+  margin-left: 4px;
+}
+.mo-divider span {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* ---------- in the material picker ---------- */
+
+.mat-tile {
+  position: relative;
+}
+.mat-tile-fit {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+}
+.mat-hero-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 7px;
+}
+.mat-hero-stats span {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+}
+.mat-hero-fit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-2);
+}
+.mat-compare-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--accent-2);
+  cursor: pointer;
+}
+.mat-compare-link:hover {
+  text-decoration: underline;
+}
+.mat-suggest {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mat-suggest-tile {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 8px 5px 5px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s, transform 0.12s var(--ease);
+}
+.mat-suggest-tile:hover,
+.mat-suggest-tile:focus-visible {
+  background: var(--bg-4);
+  transform: translateX(2px);
+}
+.mat-suggest-tile.v-recommended {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+.mat-suggest-tile.active {
+  background: var(--accent-soft);
+}
+.mat-suggest-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.mat-suggest-why {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mat-suggest-why::first-letter {
+  text-transform: uppercase;
+}
+
+/* ---------- in the brief ---------- */
+
+.mo-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mo-brief-weak {
+  color: var(--warn);
+}
+.mo-brief-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.mo-brief-picks .mat-chip {
+  padding: 2px 9px;
+  font-size: 11px;
+}
+
+/* phones: the comparison takes the width of the view */
+@media (max-width: 720px) {
+  .mo-compare {
+    right: 12px;
+  }
+  .mo-card.row .mo-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

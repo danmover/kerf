@@ -572,3 +572,27 @@ require "Steering holds without power" for steer: steer_have.hold_moment >= stee
 require "The slot ends stop the hinge just past the steering limit" for steer: atan(slot_half * cam_slope / pin_x) >= steer_max
 require "Main power wire is thick enough" for cross: power_wire.awg >= main_awg
 require "Flights can carry most of the sand the shell displaces" soft for cross: convey.ratio >= 0.5
+
+// ── Simulations: the pit from the brief, run with the real firmware ──
+// The robot as the simulation sees it: two screw sections either side of the hinge.
+let tunneller = sim.screw_tunneller(
+  screws: [
+    sim.screw(motor: m_front, d: flight_d, core: shell_d, pitch: pitch, from: f_fl0, length: front_flight_l, face: true),
+    sim.screw(motor: m_rear, d: flight_d, core: shell_d, pitch: pitch, from: r_fl0, length: rear_flight_l, dir: -X)
+  ],
+  delta: sand_delta, body: body_od, between: (r_shell0, f0), nose: nose_tip, tail: r_shell_end - tail_l,
+  hinge: sim.cam_hinge(actuator: steer, arm: pin_x, slope: cam_slope, mid: act_mid, stop: atan(slot_half * cam_slope / pin_x), extend: "left")
+)
+
+scenario "Cross the pit" for cross, steer, reserve {
+  // started from the hole in the near wall, pushed in by the tail (push cup on a pole) until the rear screw bites
+  world: sim.sand_pit(length: pit_l, width: pit_w, depth: pit_depth, axis: floor_gap, start: "wall", exit: flight_d + 200mm, push: 150N)
+  robot: tunneller
+  firmware: brain
+  duration: 20min
+  expect "Reaches the far wall": reached
+  expect "Comes out through the opening": through
+  expect "Arrives within 100 mm of the line": miss < 100mm
+  expect "Motors stay below 80 °C" soft: m_front.max_temp < 80C && m_rear.max_temp < 80C
+  expect "Battery left to back out": battery_left > 50%
+}

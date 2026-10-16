@@ -34,6 +34,9 @@ export const SOLVER_CSP = "default-src 'none'; script-src 'self'";
 /** The stress analysis worker is plain arithmetic on meshes: no eval, no network. */
 export const FEA_CSP = "default-src 'none'; script-src 'self'";
 
+/** The simulation worker runs the firmware as compiled closures on a virtual chip: no eval, no network. */
+export const SIM_CSP = "default-src 'none'; script-src 'self'";
+
 /** The photoreal view's BVH worker sorts triangles: no eval, no network. */
 export const BVH_CSP = "default-src 'none'; script-src 'self'";
 
@@ -61,6 +64,7 @@ function securityPolicy(): Plugin {
         if (/^\/assets\/worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", WORKER_CSP);
         else if (/^\/assets\/solver\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SOLVER_CSP);
         else if (/^\/assets\/fea\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FEA_CSP);
+        else if (/^\/assets\/sim\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SIM_CSP);
         else if (/^\/assets\/bvh\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", BVH_CSP);
         else if (path === "/" || path.endsWith(".html")) {
           res.setHeader("Content-Security-Policy", `${CSP}; frame-ancestors 'none'`);

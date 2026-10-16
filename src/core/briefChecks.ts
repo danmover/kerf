@@ -8,7 +8,10 @@ import type { CheckItem, CheckStatus } from "./checks";
 import type { Brief, EvalPart, Model } from "./model";
 import { xformMatrix, type V3, type Xform } from "../kernel/recipe";
 import { materialDensity } from "../library/standards";
-import { MATERIAL_SERVICE, HEAT_PICKS, SUNLIGHT_PICKS } from "../library/materialService";
+import { MATERIAL_SERVICE } from "../library/materialService";
+import { resolveFinish } from "../library/materials";
+import { adviseMaterials } from "../materials/advise";
+import { briefFacts } from "../materials/brief";
 import { loadText, processInfo } from "./brief";
 import { fmtNum } from "../lang/values";
 
@@ -108,6 +111,27 @@ export function briefChecks(model: Model, reqItems: CheckItem[], geom: GeomLooku
   return out;
 }
 
+/**
+ * A use's status from the checks that serve it. Requirements are linked here;
+ * later report passes (simulations) link their own items through the same call.
+ */
+export function useVerdict(id: string, linked: CheckItem[]): Pick<CheckItem, "status" | "detail" | "basis"> {
+  if (!linked.length) return { status: "warn", detail: `No check covers this use yet. Add a requirement or a scenario with “for ${id}”, or ask Claude to.`, basis: "parameters" };
+  const status = worst(linked.map((i) => (i.status === "info" ? "pass" : i.status)));
+  // failures first, and warnings (often only the pessimistic run of a simulation) counted apart from them
+  const fails = linked.filter((i) => i.status === "fail");
+  const warns = linked.filter((i) => i.status === "warn");
+  const counted = [fails.length ? `${fails.length} ${fails.length === 1 ? "fails" : "fail"}` : "", warns.length ? `${warns.length} ${warns.length === 1 ? "warns" : "warn"}` : ""].filter(Boolean).join(" and ");
+  const detail =
+    status === "pass"
+      ? `${linked.length === 1 ? "Its check passes" : `All ${linked.length} of its checks pass`}: ${linked.map((i) => i.title).join("; ")}`
+      : status === "pending"
+        ? `Measuring ${linked.filter((i) => i.status === "pending").length} of ${linked.length} checks`
+        : `${linked.length === 1 ? "Its check" : `Of its ${linked.length} checks, ${counted}`}${linked.length === 1 ? (fails.length ? " fails" : " warns") : ""}: ${[...fails, ...warns].map((i) => `${i.title} (${i.detail})`).join("; ")}`;
+  const basis = linked.some((i) => i.basis === "geometry") ? "geometry" : linked.some((i) => i.basis === "virtual test") ? "virtual test" : "parameters";
+  return { status, detail, basis };
+}
+
 /** Each use is covered by the requirements that name it; loads also need analysis. */
 function useChecks(b: Brief, model: Model, reqItems: CheckItem[]): CheckItem[] {
   const out: CheckItem[] = [];
@@ -116,19 +140,7 @@ function useChecks(b: Brief, model: Model, reqItems: CheckItem[]): CheckItem[] {
     const linked = reqItems.filter((i) => labels.includes(i.title));
     const parts = u.on ? model.parts.filter((p) => p.name === u.on).map((p) => p.id) : undefined;
     const base = { id: `use:${u.id}`, category: "brief" as const, title: u.text, parts, span: u.span, uses: [u.id] };
-    if (!linked.length) {
-      out.push({ ...base, status: "warn", detail: `No check covers this use yet. Add a requirement with “for ${u.id}”, or ask Claude to.`, basis: "parameters" });
-    } else {
-      const status = worst(linked.map((i) => i.status === "info" ? "pass" : i.status));
-      const bad = linked.filter((i) => i.status === "fail" || i.status === "warn");
-      const detail =
-        status === "pass"
-          ? `${linked.length === 1 ? "Its check passes" : `All ${linked.length} of its checks pass`}: ${linked.map((i) => i.title).join("; ")}`
-          : status === "pending"
-            ? `Measuring ${linked.filter((i) => i.status === "pending").length} of ${linked.length} checks`
-            : `${bad.length} of ${linked.length} checks ${bad.length === 1 ? "fails" : "fail"}: ${bad.map((i) => `${i.title} (${i.detail})`).join("; ")}`;
-      out.push({ ...base, status, detail, basis: linked.some((i) => i.basis === "geometry") ? "geometry" : "parameters" });
-    }
+    out.push({ ...base, ...useVerdict(u.id, linked) });
     if (u.load !== undefined) {
       out.push({
         id: `use-load:${u.id}`,
@@ -152,24 +164,31 @@ function materialChecks(b: Brief, model: Model): CheckItem[] {
   const wet = b.outdoor === true || b.exposure.some((e) => /rain|water|humid|wet|salt/i.test(e));
   const impact = b.exposure.some((e) => /impact|drop/i.test(e));
   const food = b.exposure.some((e) => /food/i.test(e));
+  const facts = briefFacts(b);
   for (const [mat, parts] of groups) {
     const svc = MATERIAL_SERVICE[mat];
     const ids = parts.map((p) => p.id);
     const span = parts[0].span;
+    // materials that do better on one condition, made the way these parts are, best overall first
+    let ranked: ReturnType<typeof adviseMaterials> | null = null;
+    const better = (key: string) => {
+      ranked ??= adviseMaterials({ brief: facts && { ...facts, process: parts[0].process?.id ?? facts.process } });
+      return ranked.options.filter((o) => o.name !== mat && !o.otherWay && o.verdict !== "unsuitable" && o.criteria.some((k) => k.key === key && k.grade === "good")).map((o) => o.name);
+    };
     if (b.temp) {
       const [lo, hi] = b.temp;
       const title = `${mat} handles ${fmtNum(lo, 1)} to ${fmtNum(hi, 1)} °C`;
       if (!svc) out.push({ id: `brief-temp:${mat}`, category: "brief", status: "info", title, detail: `No temperature data for ${mat}. Check its datasheet against the brief.`, parts: ids, span, basis: "parameters" });
       else {
-        const better = HEAT_PICKS.filter((m) => MATERIAL_SERVICE[m].maxC >= hi + 10 && m !== mat);
+        const hotter = hi > svc.maxC - 10 ? better("heat") : [];
         let status: CheckStatus = "pass";
         let detail = `${mat} is good to about ${svc.maxC} °C and stays tough down to ${svc.minC} °C (${names(parts)})`;
         if (hi > svc.maxC) {
           status = "fail";
-          detail = `${mat} softens around ${svc.maxC} °C, below the ${fmtNum(hi, 1)} °C in the brief (${names(parts)}).${better.length ? ` ${better.slice(0, 2).join(" or ")} would hold up.` : ""}`;
+          detail = `${mat} softens around ${svc.maxC} °C, below the ${fmtNum(hi, 1)} °C in the brief (${names(parts)}).${hotter.length ? ` ${hotter.slice(0, 2).join(" or ")} would hold up.` : ""}`;
         } else if (hi > svc.maxC - 10) {
           status = "warn";
-          detail = `${mat} softens around ${svc.maxC} °C, within 10 °C of the ${fmtNum(hi, 1)} °C in the brief. Loaded parts may creep.${better.length ? ` ${better[0]} leaves more margin.` : ""}`;
+          detail = `${mat} softens around ${svc.maxC} °C, within 10 °C of the ${fmtNum(hi, 1)} °C in the brief. Loaded parts may creep.${hotter.length ? ` ${hotter[0]} leaves more margin.` : ""}`;
         } else if (lo < svc.minC) {
           status = "warn";
           detail = `${mat} turns brittle below about ${svc.minC} °C, and the brief goes down to ${fmtNum(lo, 1)} °C (${names(parts)})`;
@@ -178,7 +197,7 @@ function materialChecks(b: Brief, model: Model): CheckItem[] {
       }
     }
     if (sun && svc) {
-      const better = SUNLIGHT_PICKS.filter((m) => m !== mat);
+      const sunny = svc.sunlight === "poor" ? better("sun") : [];
       out.push({
         id: `brief-sun:${mat}`,
         category: "brief",
@@ -186,7 +205,7 @@ function materialChecks(b: Brief, model: Model): CheckItem[] {
         title: `${mat} holds up in sunlight`,
         detail:
           svc.sunlight === "poor"
-            ? `${mat} fades and turns brittle in sunlight (${names(parts)}). ${better[0]} lasts longer outside.`
+            ? `${mat} fades and turns brittle in sunlight (${names(parts)}).${sunny.length ? ` ${sunny.slice(0, 2).join(" or ")} ${sunny.length > 1 ? "last" : "lasts"} longer outside.` : " Paint it or keep it shaded."}`
             : svc.sunlight === "fair"
               ? `${mat} is fair in sunlight; a UV-stable or dark colour lasts longer`
               : `${mat} resists sunlight well`,
@@ -195,8 +214,16 @@ function materialChecks(b: Brief, model: Model): CheckItem[] {
         basis: "parameters",
       });
     }
-    if (wet && svc?.wet) out.push({ id: `brief-wet:${mat}`, category: "brief", status: "warn", title: `${mat} copes with getting wet`, detail: `${svc.wet} (${names(parts)})`, parts: ids, span, basis: "parameters" });
-    if (impact && svc?.impact) out.push({ id: `brief-impact:${mat}`, category: "brief", status: "warn", title: `${mat} survives impacts`, detail: `${svc.impact} (${names(parts)}). PETG or ASA are tougher.`, parts: ids, span, basis: "parameters" });
+    if (wet && svc?.wet) {
+      // a coating that keeps water off the metal turns the warning into a note about keeping it intact
+      const coat = [...new Set(parts.map((p) => resolveFinish(p.material, p.finish)))];
+      const sealed = coat.length === 1 && ["anodized", "powder-coated", "zinc-plated"].includes(coat[0]);
+      out.push({ id: `brief-wet:${mat}`, category: "brief", status: sealed ? "pass" : "warn", title: `${mat} copes with getting wet`, detail: sealed ? `${svc.wet}; the ${coat[0].replace("-", " ")} finish protects it while it is intact (${names(parts)})` : `${svc.wet} (${names(parts)})`, parts: ids, span, basis: "parameters" });
+    }
+    if (impact && svc?.impact) {
+      const tough = better("impact");
+      out.push({ id: `brief-impact:${mat}`, category: "brief", status: "warn", title: `${mat} survives impacts`, detail: `${svc.impact} (${names(parts)}).${tough.length ? ` ${tough.slice(0, 2).join(" or ")} ${tough.length > 1 ? "are" : "is"} tougher.` : ""}`, parts: ids, span, basis: "parameters" });
+    }
   }
   if (food && processInfo(b.process)?.print) {
     out.push({ id: "brief-food", category: "brief", status: "warn", title: "Safe for food contact", detail: "Printed layer lines trap food and bacteria. Seal the surface with a food-safe coating, or keep printed parts away from food.", basis: "parameters" });

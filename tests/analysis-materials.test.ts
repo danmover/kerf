@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mechMaterial } from "../src/analysis/materials";
+import { materialInfo } from "../src/mfg/materials";
 
 describe("material strength data by name", () => {
   it("knows exact names and aliases", () => {
@@ -23,6 +24,21 @@ describe("material strength data by name", () => {
     const paper = mechMaterial("paper");
     expect(paper.assumed).toBe(true);
     expect(paper.note).toMatch(/rough guide/);
+  });
+
+  it("reads wood and resin as a fill or grade when the name also names a polymer", () => {
+    for (const n of ["Wood PLA", "PLA wood fill", "wood-filled PLA"]) {
+      expect(mechMaterial(n).name, n).toBe(mechMaterial("PLA").name);
+      expect(mechMaterial(n).printedByDefault, n).toBe(true);
+    }
+    expect(mechMaterial("Glass-filled nylon resin").name).toBe(mechMaterial("Nylon").name);
+    // on their own they still name the material
+    expect(mechMaterial("6 mm birch plywood").name).toBe(mechMaterial("Wood").name);
+    expect(mechMaterial("Grey resin").name).toBe(mechMaterial("Resin").name);
+    // and the process rules make them like the polymer
+    expect(materialInfo("Wood PLA").processes).toContain("fdm");
+    expect(materialInfo("Glass-filled nylon resin").family).toBe("thermoplastic");
+    expect(materialInfo("6 mm birch plywood").family).toBe("wood");
   });
 
   it("gives every aluminium grade in the material list its own data, and cast aluminium the weakest", () => {

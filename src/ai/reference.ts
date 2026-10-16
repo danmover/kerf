@@ -17,6 +17,8 @@ import { CONSTRAINTS } from "../sketch/evaluate";
 import { SKETCH_FNS } from "../sketch/fns";
 import { ANALYSIS_FNS } from "../analysis/lang";
 import { MECH } from "../analysis/materials";
+import { materialRecord } from "../library/materialDb";
+import { simulationReference } from "../sim/reference";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -233,7 +235,10 @@ export function languageReference(): string {
     .map(([k, b]) => `${k} (${b.bore}×${b.od}×${b.width})`)
     .join(", ");
   const materials = Object.keys(MATERIALS).map((m) => `"${m}"`).join(", ");
-  const materialTable = MATERIAL_LIST.map((m) => `"${m.name}" (${m.density} g/cm³): ${m.note} Finishes: ${m.finishes.map((f) => `"${f}"`).join(", ")} (default "${m.finishes[0]}").`).join("\n");
+  const materialTable = MATERIAL_LIST.map((m) => {
+    const r = materialRecord(m.name)!;
+    return `"${m.name}" (${m.density} g/cm³, to ${r.maxC} °C, E ${r.mech.E / 1000} GPa, yield ${r.mech.yield} MPa; made by ${r.processes.join(", ")}): ${m.note} Finishes: ${m.finishes.map((f) => `"${f}"`).join(", ")} (default "${m.finishes[0]}").`;
+  }).join("\n");
   const finishTable = Object.values(FINISHES)
     .map((f) => `"${f.id}": ${f.note}`)
     .join("; ");
@@ -243,6 +248,7 @@ export function languageReference(): string {
   const analysisFns = Object.values(ANALYSIS_FNS)
     .map((f) => `- ${f.doc ?? f.name}`)
     .join("\n");
+  const printedList = MATERIAL_LIST.filter((m) => m.printed).map((m) => m.name).join(", ").replace(/, ([^,]*)$/, " or $1");
   const mech = Object.entries(MECH)
     .map(([k, m]) => `${k}: E ${m.E / 1000} GPa, yield ${m.yield} MPa, fatigue ${m.fatigue} MPa${m.layerFactor < 1 ? `, layers ${Math.round(m.layerFactor * 100)} %` : ""}`)
     .join("; ");
@@ -465,7 +471,7 @@ analysis "Gearbox duty" {
   life: 2000h              // required running life (sets fatigue cycles and the bearing life target)
   safety: 1.5
 }
-Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
+Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins
@@ -476,11 +482,13 @@ Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-print
 - build errors (a modelling step the kernel could not perform)
 - every analysis block: structural strength (factor of safety) and stiffness, or the drivetrain's tooth, bearing and shaft checks
 - manufacturing: every part with a process: is checked against that process's rules on its exact geometry (walls by ray casting, draft and undercuts along the pull, tool reach per setup, inside corner radii, slots, overhangs and orientation, turning, sheet thickness and bends, flat profiles, holes, voids, machine size), plus whether its material suits the process
-- for machines: electrical rules, engineering loads and the physical test plan (see Machines below)
+- for machines: electrical rules, engineering loads and the physical test plan (see Machines below), and every scenario block's expectations from its simulated runs (see Simulations below)
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
 Things geometry cannot prove are reported as "needs analysis" until an analysis block or a machine calculation covers them; real printer tolerances are not analysed, and heat only by the machine calculators.
 
-${machineReference()}`;
+${machineReference()}
+
+${simulationReference()}`;
 }
 
 function drawingReference(): string {
