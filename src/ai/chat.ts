@@ -12,7 +12,7 @@ import { useView } from "../app/view";
 import { commitSource, useProject } from "../app/project";
 import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type ToolOutcome } from "./tools";
-import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering } from "./plan";
+import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering, anyBranchOpen } from "./plan";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; ts: number }
@@ -400,7 +400,8 @@ export async function applyPlanChangesNow() {
     await sendMessage(describeSteering(usePlan.getState()));
     return;
   }
-  if (!abort || redirect) return;
+  // sub-agents run inside the main loop's current action; they take their own changes at their next step
+  if (!abort || redirect || anyBranchOpen()) return;
   redirect = true;
   abort.abort();
 }
