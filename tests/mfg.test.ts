@@ -446,7 +446,8 @@ describe("process checks in the design", () => {
       expect(items.filter((i) => i.status === "fail")).toEqual([]);
       expect(items.some((i) => i.status === "pass")).toBe(true);
     }
-  });
+    // builds both demos in OpenCASCADE: about 3 s alone, more on a shared CI runner
+  }, 60_000);
 
   it("reports findings as checks with fixes and one-click options", () => {
     const { model, results } = check(`part t { process: "fdm" material: "PLA" body box(10, 10, 20) add box(50, 30, 5, at: (0, 0, 20)) }`);
