@@ -5,7 +5,7 @@ import { create } from "zustand";
 import type { Span } from "../lang/ast";
 
 export type ViewPreset = "iso" | "front" | "back" | "top" | "bottom" | "left" | "right";
-export type DockTab = "brief" | "code" | "checks" | "graph" | "bom" | "build";
+export type DockTab = "brief" | "code" | "checks" | "analysis" | "graph" | "bom" | "build";
 /** the built-in tabs; features can add more through LEFT_TABS in ui/LeftPanel */
 export type LeftTab = "structure" | "params" | "decisions" | "history" | (string & {});
 

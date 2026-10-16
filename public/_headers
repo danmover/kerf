@@ -22,3 +22,7 @@
 # The feasibility solver worker: plain code, no network.
 /assets/solver.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
+
+# The stress analysis worker: plain arithmetic on meshes, no network.
+/assets/fea.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'

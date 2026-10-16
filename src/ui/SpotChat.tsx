@@ -24,6 +24,8 @@ import { ValueField } from "./ValueField";
 import { useRealModel } from "./useRealModel";
 import { useStickToBottom } from "./useStickToBottom";
 import { Icon } from "./icons";
+import { enterSketch } from "./sketch/session";
+import { T } from "./sketch/glyphs";
 
 const QUICK: { label: string; prompt: string }[] = [
   { label: "Why is it like this?", prompt: "Why is this the way it is? Tell me what drives it." },
@@ -298,6 +300,15 @@ function SpotPopover({ spot }: { spot: Spot }) {
                 <Icon.Code size={12} /> Code
               </button>
             )}
+            {/* the selection card is hidden while the spot card is open, so the part's sketches are offered here */}
+            {part &&
+              (real ?? model)?.sketches
+                .filter((sk) => sk.usedBy.includes(part.name))
+                .map((sk) => (
+                  <button key={sk.name} className="btn sm ghost" onClick={() => enterSketch(sk.name)} data-tip={`Edit the sketch ${part.name} is built from`}>
+                    <T.Sketch size={12} /> {sk.name}
+                  </button>
+                ))}
             <div className="grow" />
             {mine && (
               <button className="btn sm ghost" onClick={() => document.getElementById("chat-input")?.focus()} data-tip="This conversation is also in the chat panel">

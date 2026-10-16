@@ -17,6 +17,16 @@ import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
 import { emptyMachine, type MachineData, type PinRef } from "../machine/types";
+import { suggest } from "./suggest";
+import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
+import { SOLVE_MS, budgetMs, type Budget } from "../sketch/solver";
+import { sketchFns } from "../sketch/fns";
+import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
+import type { EvalSketch } from "../sketch/types";
+import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
+import type { AnalysisSpec } from "../analysis/spec";
+import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromValue, toProcess } from "../mfg/spec";
+import { specToSource } from "../mfg/profiles";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -67,7 +77,7 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "finish", "label"];
 
 /** Fields of the brief block, by the type of value each takes. */
@@ -123,6 +133,12 @@ class Evaluator {
   params: EvalParam[] = [];
   reqs: EvalRequirement[] = [];
   decisions: EvalDecision[] = [];
+  sketches: EvalSketch[] = [];
+  /** sketch solving time shared by the whole evaluation (from its first sketch), so a huge file cannot freeze the page */
+  sketchBudget: Budget | undefined;
+  analyses: AnalysisSpec[] = [];
+  /** functions that win over other names in call position (analysis blocks) */
+  callOverride: Record<string, Fn> | null = null;
   diags: Diagnostic[] = [];
   blocks: Model["blocks"] = [];
   name = "Untitled design";
@@ -144,10 +160,18 @@ class Evaluator {
     for (const [k, v] of Object.entries(CONSTANTS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(threadConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(SHAPE_FNS)) this.builtins.set(k, v);
+    // after the other shape functions: extrude() and revolve() of a sketch, anything else falls through
+    const registered = (name: string) => {
+      const f = this.builtins.get(name);
+      return f instanceof Fn ? f : undefined;
+    };
+    for (const [k, v] of Object.entries(sketchFns(registered))) this.builtins.set(k, v);
+    for (const [k, v] of Object.entries(planeConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(MATH_FNS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);
     this.builtins.set("lib", libNamespace());
     this.builtins.set("calc", calcNamespace());
+    this.builtins.set("mfg", mfgNamespace());
   }
 
   ctx(): CallCtx {
@@ -155,6 +179,7 @@ class Evaluator {
       error: (msg: string): never => {
         throw new EvalError(msg, this.callSpan);
       },
+      warn: (msg: string) => this.diags.push({ message: msg, start: this.callSpan.start, end: Math.max(this.callSpan.end, this.callSpan.start + 1), severity: "warning" }),
       geo: (q: GeoQuery) => {
         const key = geoKey(q);
         this.stmtGeo.push(q);
@@ -182,7 +207,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -199,6 +224,7 @@ class Evaluator {
     if (s.k === "require") return `require:${s.label}`;
     if (s.k === "wire" || s.k === "net" || s.k === "firmware" || s.k === "test" || s.k === "buy") return undefined;
     // decisions record choices; nothing reads them, so they stay out of the dependency graph
+    if (s.k === "analysis") return `analysis:${s.label}`;
     return "name" in s && s.k !== "design" && s.k !== "decision" ? s.name : undefined;
   }
 
@@ -271,6 +297,12 @@ class Evaluator {
         return;
       case "decision":
         this.decision(s);
+        return;
+      case "sketch":
+        this.sketch(s);
+        return;
+      case "analysis":
+        this.analysis(s);
         return;
       case "wire":
       case "net":
@@ -410,6 +442,32 @@ class Evaluator {
     this.decisions.push(d);
   }
 
+  // ---------------- sketches ----------------
+
+  sketch(s: Extract<Stmt, { k: "sketch" }>) {
+    const locked = s.items.some((i) => i.k === "flag" && i.name === "locked");
+    this.blocks.push({ name: s.name, kind: "sketch", span: s.span, locked });
+    const host: SketchHost = {
+      src: this.src,
+      expr: (e, scope) => this.expr(e, scope as Scope),
+      newScope: () => new Scope(),
+      setVar: (scope, name, v) => (scope as Scope).vars.set(name, v),
+      fail: (msg, span) => {
+        throw new EvalError(msg, span);
+      },
+      diag: (message, span, severity) => this.diags.push({ message, start: span.start, end: Math.max(span.end, span.start + 1), severity }),
+      report: (e) => {
+        if (!(e instanceof EvalError)) return false;
+        this.diags.push({ message: e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
+        return true;
+      },
+      budget: (this.sketchBudget ??= budgetMs(4 * SOLVE_MS)),
+    };
+    const { value, sketch } = evaluateSketch(host, s);
+    this.define(s.name, "sketch", value, s.nameSpan);
+    this.sketches.push(sketch);
+  }
+
   // ---------------- expressions ----------------
 
   num(v: Value, span: Span, what = "value"): number {
@@ -463,6 +521,7 @@ class Evaluator {
         if (v instanceof Pending) return v;
         if (e.op === "!") return !truthy(v);
         if (typeof v === "number") return -v;
+        if (isPlane(v)) return flipPlane(v);
         if (v instanceof Vec) return new Vec(v.v.map((x) => -x));
         throw new EvalError(`Cannot negate ${typeName(v)}`, e.span);
       }
@@ -487,7 +546,8 @@ class Evaluator {
         throw new EvalError(`Cannot index ${typeName(o)}`, e.span);
       }
       case "call": {
-        const callee = this.expr(e.callee, scope);
+        const override = e.callee.k === "ident" ? this.callOverride?.[e.callee.name] : undefined;
+        const callee = override ?? this.expr(e.callee, scope);
         if (!(callee instanceof Fn)) throw new EvalError(`${show(callee)} is not a function`, e.callee.span);
         const pos: Value[] = [];
         const named: Record<string, Value> = {};
@@ -752,7 +812,7 @@ class Evaluator {
     const value = new Obj(fields0, "component", s.name);
 
     const gear: GearInfo | undefined = def.gear
-      ? { m: def.gear.m, z: def.gear.z, width: def.gear.width, pa: def.gear.pa, backlash: args.num("backlash", 0.05), center: at0, axis, phase, meshWith }
+      ? { m: def.gear.m, z: def.gear.z, width: def.gear.width, pa: def.gear.pa, bore: def.gear.bore, backlash: args.num("backlash", 0.05), center: at0, axis, phase, meshWith }
       : undefined;
     const info: CompInfo = { def, at: at0, axis, xf: xfs[0], motion, gear, value };
     this.define(s.name, "component", value, s.nameSpan, def.label);
@@ -809,6 +869,7 @@ class Evaluator {
           deps: [],
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
           gear: sd.suffix ? undefined : gear,
+          bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           fastener:
             def.fastener && !sd.suffix
               ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
@@ -915,6 +976,13 @@ class Evaluator {
     if (motion) this.partMotion.set(s.name, motion);
     this.checkMaterial(state.props, state.propSpans);
     const recipe: PartRecipe = { base: state.base, ops: state.ops };
+    const processSpan = state.propSpans.process;
+    const process =
+      state.props.process === undefined || state.props.process === null || state.props.process === false
+        ? undefined
+        : toProcess(state.props.process, (msg) => {
+            throw new EvalError(msg, processSpan ?? s.span);
+          });
     this.parts.push({
       id: s.name,
       name: s.name,
@@ -922,8 +990,12 @@ class Evaluator {
       kind: "part",
       group: typeof state.props.group === "string" ? state.props.group : "Parts",
       color: typeof state.props.color === "string" ? state.props.color : DEFAULT_COLORS[this.colorIdx++ % DEFAULT_COLORS.length],
-      material: typeof state.props.material === "string" ? state.props.material : "PLA",
+      material: partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process),
       finish: typeof state.props.finish === "string" ? state.props.finish : undefined,
+      process,
+      processSpan,
+      ...(state.props.process === false ? { processNone: true } : {}),
+      materialSpan: state.propSpans.material,
       recipe,
       hash: recipeHash(recipe),
       xf,
@@ -1036,7 +1108,17 @@ class Evaluator {
       case "field": {
         const n = it.name;
         if (it.to && n !== "temp") throw new EvalError(`Only temp takes a range (temp: -10C .. 40C)`, it.span);
-        if ((BRIEF_TEXT as readonly string[]).includes(n)) {
+        if (n === "process") {
+          // text, or a process value whose settings every part without its own process then takes
+          const v = this.expr(it.value, null);
+          if (v instanceof ProcessV) {
+            b.process = specToSource(v.spec);
+            b.processSpec = v.spec;
+          } else if (typeof v === "string") {
+            b.process = v;
+            b.processSpec = processFromValue(v) ?? undefined;
+          } else throw new EvalError(`process should be text like "FDM print", or a process like mfg.fdm(layer: 0.2)`, it.value.span);
+        } else if ((BRIEF_TEXT as readonly string[]).includes(n)) {
           (b as unknown as Record<string, string>)[n] = text(it.value, n);
         } else if ((BRIEF_LISTS as readonly string[]).includes(n)) {
           const v = this.expr(it.value, null);
@@ -1236,6 +1318,76 @@ class Evaluator {
     return { ok: truthy(v), detail: show(v) };
   }
 
+  // ---------------- analyses ----------------
+
+  analysis(s: Extract<Stmt, { k: "analysis" }>) {
+    this.blocks.push({ name: s.label, kind: "analysis", span: s.span, locked: s.items.some((i) => i.k === "flag" && i.name === "locked") });
+    if (this.analyses.some((a) => a.label === s.label)) throw new EvalError(`There is already an analysis called "${s.label}"`, s.labelSpan);
+    const props: AnalysisItem[] = [];
+    const flags: AnalysisItem[] = [];
+    const saved = this.callOverride;
+    this.callOverride = ANALYSIS_FNS;
+    try {
+      this.analysisItems(s.items, new Scope(), props, flags, 0);
+    } finally {
+      this.callOverride = saved;
+    }
+    const spec = buildAnalysis(s.label, props, flags, s.span, {
+      fail: (msg, span) => {
+        throw new EvalError(msg, span);
+      },
+      kindOf: (name) => {
+        const k = this.defKind.get(name);
+        if (k) this.current?.add(name);
+        return k;
+      },
+    });
+    // the parts it reads are dependencies, so the graph and incremental reruns see them
+    if (spec.kind === "structural") for (const p of spec.parts) if (this.defKind.has(p)) this.current?.add(p);
+    if (spec.kind === "drivetrain") {
+      const k = this.defKind.get(spec.drive);
+      if (k !== "component" && k !== "part") throw new EvalError(`drive: "${spec.drive}" is not a component or part`, s.span);
+      this.current?.add(spec.drive);
+    }
+    this.analyses.push(spec);
+  }
+
+  analysisItems(items: Item[], scope: Scope, props: AnalysisItem[], flags: AnalysisItem[], depth: number) {
+    if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? { start: 0, end: 0 });
+    for (const it of items) {
+      switch (it.k) {
+        case "prop":
+          props.push({ name: it.name, value: this.expr(it.value, scope), span: it.span });
+          break;
+        case "flag":
+          flags.push({ name: it.name, value: true, span: it.span });
+          break;
+        case "let":
+          scope.vars.set(it.name, this.expr(it.value, scope));
+          break;
+        case "for": {
+          const iter = this.expr(it.iter, scope);
+          const list = Array.isArray(iter) ? iter : iter instanceof Vec ? iter.v : null;
+          if (!list) throw new EvalError(`for ... in needs a list, got ${typeName(iter)}`, it.iter.span);
+          for (const v of list) {
+            const inner = new Scope(scope);
+            inner.vars.set(it.varName, v);
+            this.analysisItems(it.body, inner, props, flags, depth + 1);
+          }
+          break;
+        }
+        case "if": {
+          const c = this.expr(it.cond, scope);
+          if (truthy(c)) this.analysisItems(it.then, new Scope(scope), props, flags, depth + 1);
+          else if (it.else) this.analysisItems(it.else, new Scope(scope), props, flags, depth + 1);
+          break;
+        }
+        default:
+          throw new EvalError("An analysis block takes properties such as fix:, load:, safety:, flags such as gravity, and let, for and if.", it.span);
+      }
+    }
+  }
+
   // ---------------- output ----------------
 
   toModel(parseDiags: Diagnostic[]): Model {
@@ -1244,6 +1396,7 @@ class Evaluator {
     const edges: { from: string; to: string }[] = [];
     for (const [name, kind] of this.defKind) nodes.push({ id: name, kind, label: this.defLabel.get(name) ?? name });
     for (const r of this.reqs) nodes.push({ id: `require:${r.label}`, kind: "require", label: r.label });
+    for (const a of this.analyses) nodes.push({ id: `analysis:${a.label}`, kind: "analysis", label: a.label });
     for (const [id, set] of this.deps) for (const d of set) if (d !== id) edges.push({ from: d, to: id });
     const usedBy = new Map<string, string[]>();
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
@@ -1256,7 +1409,8 @@ class Evaluator {
       for (const o of d.options)
         for (const st of o.sets)
           if (!paramNames.has(st.param)) this.diags.push({ message: `Option "${o.label}" sets "${st.param}", which is not a parameter`, start: st.span.start, end: st.span.end, severity: "warning" });
-    return {
+    for (const sk of this.sketches) sk.usedBy = (usedBy.get(sk.name) ?? []).filter((n) => this.defKind.get(n) === "part");
+    const model: Model = {
       name: this.name,
       notes: this.notes,
       brief: this.brief,
@@ -1264,6 +1418,8 @@ class Evaluator {
       parts: this.parts,
       requirements: this.reqs,
       decisions: this.decisions,
+      sketches: this.sketches,
+      analyses: this.analyses,
       diagnostics: [...parseDiags, ...this.diags],
       graph: { nodes, edges },
       blocks: this.blocks,
@@ -1271,6 +1427,10 @@ class Evaluator {
       evalMs: 0,
       machine: hasMachine(this.machine) ? this.machine : undefined,
     };
+    // the brief's "how it's made" is the default for every custom part
+    const b = this.brief;
+    if (b) applyDefaultProcess(model, b.processSpec ?? null, { buildVolume: b.buildVolume, material: b.material });
+    return model;
   }
 }
 
@@ -1394,31 +1554,5 @@ function collectScope(s: Scope): string[] {
   return out;
 }
 
-export function suggest(name: string, options: string[]): string | undefined {
-  let best: string | undefined;
-  let bestD = Infinity;
-  for (const o of options) {
-    const d = levenshtein(name.toLowerCase(), o.toLowerCase());
-    if (d < bestD) {
-      bestD = d;
-      best = o;
-    }
-  }
-  return bestD <= Math.max(2, Math.floor(name.length / 3)) ? best : undefined;
-}
-
-function levenshtein(a: string, b: string): number {
-  const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const tmp = dp[j];
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-      prev = tmp;
-    }
-  }
-  return dp[b.length];
-}
-
+export { suggest };
 export type { V2 };

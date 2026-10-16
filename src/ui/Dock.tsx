@@ -6,6 +6,8 @@ import { useDesign } from "../core/engine";
 import { useView, type DockTab } from "../app/view";
 import { CodeEditor } from "./CodeEditor";
 import { ChecksPanel } from "./ChecksPanel";
+import { AnalysisPanel } from "./AnalysisPanel";
+import { useAnalysis } from "../analysis/runtime";
 import { GraphView } from "./GraphView";
 import { BomTable } from "./BomTable";
 import { BriefPanel } from "./BriefPanel";
@@ -24,6 +26,9 @@ export function Dock({ projectKey }: { projectKey: string }) {
   const errors = model?.diagnostics.filter((d) => d.severity === "error") ?? [];
   const fails = report?.counts.fail ?? 0;
   const buildFails = report?.items.filter((i) => i.status === "fail" && (i.category === "electrical" || i.category === "engineering")).length ?? 0;
+  const analyses = model?.analyses.length ?? 0;
+  const analysisFails = report?.items.filter((i) => i.category === "analysis" && i.status === "fail").length ?? 0;
+  const analysing = useAnalysis((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
   const set = (t: DockTab) => useView.setState({ dockTab: t, dockOpen: true });
   const briefFails = report?.items.filter((i) => i.category === "brief" && i.status === "fail").length ?? 0;
   const toConfirm = openAssumptions(briefData(model?.brief)).length;
@@ -31,6 +36,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
     { id: "brief", label: "brief", icon: <BIcon.Brief size={13} />, count: briefFails || toConfirm || undefined, bad: briefFails > 0, warn: !briefFails && toConfirm > 0 },
     { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, count: errors.length || undefined, bad: errors.length > 0 },
     { id: "checks", label: "checks", icon: <Icon.Shield size={13} />, count: report ? fails || report.counts.pass : undefined, bad: fails > 0 },
+    { id: "analysis", label: "strength", icon: analysing ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Stress size={13} />, count: analyses ? analysisFails || analyses : undefined, bad: analysisFails > 0 },
     { id: "graph", label: "graph", icon: <Icon.Graph size={13} /> },
     { id: "bom", label: "parts list", icon: <Icon.List size={13} /> },
   ];
@@ -67,6 +73,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
           </div>
           {tab === "brief" && <BriefPanel />}
           {tab === "checks" && <ChecksPanel />}
+          {tab === "analysis" && <AnalysisPanel />}
           {tab === "graph" && <GraphView />}
           {tab === "bom" && <BomTable />}
           {tab === "build" && <MachinePanel />}
