@@ -8,6 +8,7 @@ import { useProject, commitSource, restoreVersion, undo, redo } from "../app/pro
 import { setParamValue, toggleParamLock, lineDiff } from "../core/sourceEdit";
 import type { EvalParam, EvalPart } from "../core/model";
 import { Icon } from "./icons";
+import { Swatch } from "./MaterialPicker";
 import { Segmented, timeAgo, useTick, mod } from "./common";
 import { fmtNum } from "../lang/values";
 import type { VersionRecord } from "../persist/db";
@@ -152,7 +153,7 @@ function Structure() {
                         onMouseEnter={() => useView.setState({ hovered: r.ids[0] })}
                         onMouseLeave={() => useView.setState({ hovered: null })}
                       >
-                        <span className="swatch" style={{ background: r.part.color }} />
+                        <Swatch material={r.part.material} finish={r.part.finish} color={r.part.color} size={14} render={32} />
                         <span style={{ color: "var(--text-3)", display: "inline-grid" }}>{iconFor(r.part)}</span>
                         <span className="name">{r.label}</span>
                         {bad && <span className="dot fail" data-tip="Has a failing check" />}

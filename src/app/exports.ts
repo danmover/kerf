@@ -57,7 +57,7 @@ export function exportBom() {
 export async function exportPng() {
   const vp = viewport();
   if (!vp) return;
-  const url = await vp.capture({ view: "current", width: 1920, height: 1200, mime: "image/png" });
+  const url = await vp.capture({ view: "current", width: 1920, height: 1200, mime: "image/png", samples: 64 });
   const bin = atob(url.split(",")[1]);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);

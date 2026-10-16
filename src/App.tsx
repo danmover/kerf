@@ -3,7 +3,7 @@
 import { MotionConfig, motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { useUi, go, toast } from "./app/ui";
-import { useSettings, TERMS_VERSION } from "./app/settings";
+import { useSettings, updateSettings, TERMS_VERSION, LIGHTING_IDS } from "./app/settings";
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
 import { useView, requestCamera, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
@@ -162,6 +162,15 @@ function useShortcuts() {
         case "i":
           if (v.selected.length || v.isolate) useView.setState({ isolate: !v.isolate });
           return;
+        case "t":
+          return useView.setState({ turntable: !v.turntable });
+        case "a":
+          return useView.setState({ explode: v.explode > 0 ? v.explode : 0.5, assemblyRequest: v.assemblyRequest + 1 });
+        case "l": {
+          const ids = LIGHTING_IDS;
+          const cur = useSettings.getState().lighting;
+          return updateSettings({ lighting: ids[(ids.indexOf(cur) + (e.shiftKey ? ids.length - 1 : 1)) % ids.length] });
+        }
       }
     };
     window.addEventListener("keydown", onKey);

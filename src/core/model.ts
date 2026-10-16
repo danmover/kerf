@@ -41,6 +41,8 @@ export interface EvalPart {
   group: string;
   color: string;
   material: string;
+  /** surface finish; undefined means the material's default (see library/materials) */
+  finish?: string;
   recipe: PartRecipe;
   hash: string;
   xf: Xform[];

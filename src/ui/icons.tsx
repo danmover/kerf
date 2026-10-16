@@ -293,6 +293,33 @@ export const Icon = {
       <path d="M20 4v7h-7" />
     </I>
   ),
+  Sun: (p: P) => (
+    <I {...p}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </I>
+  ),
+  Material: (p: P) => (
+    <I {...p}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M7.5 9.5a5 5 0 0 1 4-3" />
+      <path d="M4 14.5c3 2 13 2 16 0" strokeOpacity={0.55} />
+    </I>
+  ),
+  Orbit: (p: P) => (
+    <I {...p}>
+      <ellipse cx="12" cy="12" rx="9.5" ry="4" />
+      <path d="m17.5 6.8 2.2 1.5-1.4 2.3" />
+      <rect x="9.5" y="7" width="5" height="9" rx="1" />
+    </I>
+  ),
+  Assemble: (p: P) => (
+    <I {...p}>
+      <rect x="8" y="12" width="8" height="8" rx="1" />
+      <path d="M12 2v6M9 5l3 3 3-3" />
+      <path d="M3 8h3M18 8h3" strokeOpacity={0.6} />
+    </I>
+  ),
   Wrench: (p: P) => (
     <I {...p}>
       <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" />
