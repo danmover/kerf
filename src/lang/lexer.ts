@@ -51,6 +51,8 @@ export const KEYWORDS = new Set([
   "decision",
   "sketch",
   "analysis",
+  "as",
+  "cosmetic",
 ]);
 
 /** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */

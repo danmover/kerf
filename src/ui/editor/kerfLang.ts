@@ -9,8 +9,10 @@ import type { CompletionContext, CompletionResult, Completion } from "@codemirro
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
 import { useImports } from "../../core/imports";
+import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../../lang/modelling";
 import { LIBRARY } from "../../library/components";
 import { PROCESSES, PROCESS_IDS } from "../../mfg/profiles";
+import { DRAWING_DOCS, DRAWING_PROPS } from "../../drawing/spec";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 import { BRIEF_FIELDS } from "../../lang/evaluator";
@@ -23,9 +25,11 @@ import "../../styles/syntax.css";
 const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision", "sketch", "analysis"]);
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
+// "drawing" starts a block only at the start of a line; elsewhere it is an ordinary name
+const LINE_KEYWORDS = new Set(["drawing"]);
 const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
-const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step", ...Object.keys(ANALYSIS_FNS)]);
+const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MODELLING_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step", ...Object.keys(ANALYSIS_FNS)]);
 /** Words that start a statement inside a sketch block. */
 const SKETCH_GEOMETRY = ["line", "circle", "arc", "point", "construction"];
 const SKETCH_WORDS = new Set([...SKETCH_GEOMETRY, ...Object.keys(CONSTRAINTS), "on", "dist", "dx", "dy"]);
@@ -74,6 +78,7 @@ const parser: StreamParser<St> = {
       if (w === "sketch") state.afterSketch = true;
       if (STATEMENTS.has(w)) return "keyword";
       if (BRIEF_ENTRIES.has(w) && !stream.string.slice(0, stream.start).trim() && stream.peek() === " ") return "keyword";
+      if (LINE_KEYWORDS.has(w) && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/, false)) return "keyword";
       if (BRIEF_FLAGS.has(w) && stream.peek() !== ":" && !stream.string.slice(stream.pos).trim()) return "controlKeyword";
       if (first && state.depth === state.sketchDepth && SKETCH_WORDS.has(w) && /^\s+[A-Za-z_(]/.test(stream.string.slice(stream.pos))) return "operatorKeyword";
       if (OPS_KW.has(w)) return "operatorKeyword";
@@ -190,13 +195,20 @@ export const kerfTheme = [
 /** Completions from the language tables plus names defined in the current model. */
 export function kerfCompletions(getModel: () => Model | null) {
   const fnCompletions: Completion[] = [
-    ...Object.values({ ...SHAPE_FNS, ...SKETCH_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "plane" ? "sketch plane" : "shape", apply: f.name + "(" })),
+    ...Object.values({ ...SHAPE_FNS, ...SOLID_FNS, ...SKETCH_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "plane" ? "sketch plane" : "shape", apply: f.name + "(" })),
+    ...Object.values(PROFILE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "profile", apply: f.name + "(" })),
+    ...Object.values(PATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "path", apply: f.name + "(" })),
+    ...Object.values(FEATURE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "feature", apply: f.name + "(" })),
+    ...Object.values(SELECT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "selection", apply: f.name + "(" })),
     ...Object.entries(CONSTRAINTS).map(([k, c]) => ({ label: k, type: "keyword", info: c.doc, detail: c.dim ? "sketch dimension" : "sketch relation" })),
     ...SKETCH_GEOMETRY.map((k) => ({ label: k, type: "keyword", detail: "sketch geometry" })),
     ...Object.values(MATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "math", apply: f.name + "(" })),
     ...Object.entries(modifierDocs).map(([k, d]) => ({ label: k, type: "function", info: d, detail: "modifier", apply: k + "(" })),
     ...GEO_FNS.map((g) => ({ label: g, type: "function", detail: "geometry", apply: g + "(" })),
     ...Object.values(ANALYSIS_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "analysis", apply: f.name + "(" })),
+    ...Object.entries(DRAWING_DOCS)
+      .filter(([k]) => k !== "note")
+      .map(([k, d]) => ({ label: k, type: "function", info: d, detail: "drawing", apply: k + "(" })),
   ];
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
@@ -204,7 +216,7 @@ export function kerfCompletions(getModel: () => Model | null) {
   const mfgItems: Completion[] = PROCESS_IDS.map((id) => ({ label: id, type: "class", info: `${PROCESSES[id].label}. ${PROCESSES[id].summary}\n\nSettings: ${PROCESSES[id].settings.map((s) => `${s.key}: ${s.doc}`).join("; ") || "none"}`, detail: "process", apply: id + "(" }));
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
-  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", "plane", "offset", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", "plane", "offset", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 

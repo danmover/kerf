@@ -1,7 +1,7 @@
 // The 3D viewport: mounts the three.js scene and overlays its controls.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneController } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
@@ -27,6 +27,7 @@ import { SketchLayer } from "./sketch/SketchPanels";
 import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
+import { MeasureButton, MeasureTool, measuring } from "./viewport/Measure";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -49,6 +50,7 @@ export function Viewport() {
   const [hold, setHold] = useState<{ x: number; y: number; n: number } | null>(null);
   const sketching = useSketch((s) => !!s.active || s.picking);
   const inSketch = useSketch((s) => !!s.active);
+  const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
 
   useEffect(() => {
     if (!mount.current) return;
@@ -63,6 +65,7 @@ export function Viewport() {
     mfgOverlay.current = new ProcessOverlay(c);
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
+      if (measuring()) return;
       const s = useView.getState();
       if (!id) {
         closeSpot();
@@ -220,6 +223,7 @@ export function Viewport() {
         <button className={`icon-btn ${view.isolate ? "active" : ""}`} disabled={!view.selected.length && !view.isolate} onClick={() => useView.setState({ isolate: !view.isolate })} data-tip="Isolate selection (I)" aria-label="Isolate selection">
           <Icon.Target />
         </button>
+        <MeasureButton />
         <div className="sep" />
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
@@ -294,6 +298,7 @@ export function Viewport() {
       </AnimatePresence>
 
       <Hud stage={stage} parts={visibleParts} />
+      <MeasureTool host={measureHost} />
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
 

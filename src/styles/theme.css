@@ -126,3 +126,20 @@
   --text-2: #a3adc2;
   --text-3: #6c7791;
 }
+/* the measure tool's lines and hover marks */
+.viewport[data-backdrop="light"] .measure-svg {
+  --measure-hover: #4763e6;
+  --measure-line: #b87300;
+  --measure-line-rgb: 184 115 0;
+}
+
+/* ---------- the desk round a drawing sheet ----------
+   The sheet keeps its own colours (a dark sheet or white paper); only the
+   desk under it follows the theme. */
+
+:root[data-theme="light"] .dwg {
+  --dwg-glow: rgb(var(--accent-rgb) / 0.07);
+  --dwg-desk: #eceff4, #dde1e9;
+  --dwg-paper-desk: #dfe3ea, #cfd5df;
+  --dwg-shadow: rgb(var(--shade-rgb) / 0.28);
+}

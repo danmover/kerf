@@ -3739,3 +3739,110 @@ a:hover {
   margin: 0 0 6px;
   border: 1px solid color-mix(in srgb, var(--accent-lo) 48%, var(--bg-2));
 }
+
+/* ---------- cost line under each reply ---------- */
+.cost-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin: -4px 0 2px;
+  font: 10.5px var(--mono);
+  color: var(--text-3);
+}
+.cost-sum {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 2px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: right;
+}
+.cost-sum:hover {
+  background: var(--bg-3);
+  color: var(--text-2);
+}
+.cost-sum > * + *::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--text-4);
+}
+.cost-sum > svg + *::before {
+  content: none;
+}
+.cost-sum > * {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.cost-sum > .cost-why {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cost-model {
+  color: var(--text-2);
+}
+.cost-saved {
+  color: var(--pass);
+}
+.cost-ask {
+  border: 1px solid rgb(var(--accent-rgb) / 0.38);
+  background: rgb(var(--accent-rgb) / 0.08);
+  color: var(--accent-2);
+  font: 10.5px var(--mono);
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.cost-ask:hover {
+  background: rgb(var(--accent-rgb) / 0.18);
+}
+.cost-break {
+  flex-basis: 100%;
+  overflow: hidden;
+}
+.cost-rows {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0 4px auto;
+  max-width: 340px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.cost-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.cost-row .mono {
+  color: var(--text);
+  min-width: 44px;
+  text-align: right;
+}
+.cost-note {
+  max-width: 340px;
+  margin-left: auto;
+  font: 11px/1.5 var(--sans);
+  color: var(--text-3);
+  text-align: right;
+}
+.chip.cost-total {
+  cursor: pointer;
+  font-family: var(--mono);
+}

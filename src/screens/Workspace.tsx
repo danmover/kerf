@@ -14,6 +14,7 @@ import { viewport } from "../app/viewportApi";
 import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
+import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
 import { PhoneWorkspace } from "./PhoneWorkspace";
 import { gridFor, useWindowSize, useWorkspaceLayout, type WorkspaceLayout } from "../app/layout";
 import { LeftRail } from "../ui/LeftRail";
@@ -73,9 +74,15 @@ export function Workspace() {
             <div className="plan-hud-anchor" style={{ bottom: dockOpen ? dock : 37 }}>
               <PlanHud />
             </div>
-            <ErrorBoundary label="3D view">
-              <Viewport />
-            </ErrorBoundary>
+            <div className="center-stage">
+              <ErrorBoundary label="3D view">
+                <Viewport />
+              </ErrorBoundary>
+              <ErrorBoundary label="Drawings">
+                <DrawingView />
+                <DrawingSwitch />
+              </ErrorBoundary>
+            </div>
             <PreviewBanner />
             {dockOpen && <Splitter dir="h" style={{ bottom: dock }} onDrag={(d) => setDock(dock - d)} onEnd={saveDock} />}
             <ErrorBoundary label="Editor">

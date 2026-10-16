@@ -19,6 +19,8 @@ import { PlanHud } from "../ui/PlanHud";
 import { RefViewer } from "../ui/RefViewer";
 import { SketchPad } from "../ui/SketchPad";
 import { useWorkspaceLayout } from "../app/layout";
+import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
+import { useDrawings } from "../drawing/engine";
 import "../styles/phone.css";
 
 export { PHONE_QUERY } from "../app/layout";
@@ -70,6 +72,8 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
   const fails = useDesign((s) => s.report?.counts.fail ?? 0);
   const errors = useDesign((s) => s.model?.diagnostics.some((d) => d.severity === "error") ?? false);
   const landscape = useLandscape();
+  // a drawing sheet needs more room than the 3D view
+  const drawing = useDrawings((s) => s.open);
   useVisibleViewport();
 
   // the code pane always shows its panel; the collapse control is for the desktop dock
@@ -96,12 +100,16 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
             <Icon.Alert size={14} /> This browser is not keeping data. Use Export → Project file to keep your work.
           </div>
         )}
-        <div className="phone-view">
+        <div className={`phone-view ${drawing ? "drawing" : ""}`}>
           <div className="plan-hud-anchor" style={{ bottom: 0 }}>
             <PlanHud />
           </div>
           <ErrorBoundary label="3D view">
             <Viewport />
+          </ErrorBoundary>
+          <ErrorBoundary label="Drawings">
+            <DrawingView />
+            <DrawingSwitch />
           </ErrorBoundary>
           <PreviewBanner />
         </div>

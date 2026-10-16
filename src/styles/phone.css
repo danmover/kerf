@@ -22,6 +22,52 @@
   min-height: 0;
   border-bottom: 1px solid var(--line);
 }
+/* drawings take the 3D view's place and more of the height */
+.phone-view.drawing {
+  height: clamp(240px, 62%, 640px);
+}
+.app.phone .dwg-switch {
+  top: auto;
+  bottom: 8px;
+  left: 8px;
+}
+.app.phone .dwg-toolbar {
+  top: 6px;
+  max-width: calc(100% - 12px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.app.phone .dwg-meta,
+.app.phone .dwg-hint {
+  display: none;
+}
+.app.phone .dwg-picker {
+  max-width: 150px;
+}
+.app.phone .dwg-warn {
+  bottom: 8px;
+  right: 8px;
+  max-width: calc(100% - 160px);
+}
+/* the item card becomes a sheet along the bottom, above the switch */
+.app.phone .dwg-card {
+  left: 8px !important;
+  right: 8px;
+  top: auto !important;
+  bottom: 44px;
+  width: auto;
+  max-height: calc(100% - 96px);
+  overflow-y: auto;
+}
+.app.phone .measure-card {
+  left: 8px;
+  right: 8px;
+  bottom: 44px;
+  width: auto;
+  max-height: calc(100% - 96px);
+  overflow-y: auto;
+}
+
 .phone-tabs {
   display: flex;
   flex: none;

@@ -123,7 +123,8 @@ function SpotPopover({ spot }: { spot: Spot }) {
   const thread = useMemo(() => {
     const first = items.findIndex((i) => i.id === spot.sent[0]);
     if (first < 0) return [] as ChatItem[];
-    return items.slice(first);
+    // the cost line stays in the chat panel
+    return items.slice(first).filter((i) => i.kind !== "cost");
   }, [items, spot.sent]);
   const mine = spot.sent.length > 0;
   const working = busy && mine && thread.length > 0;
