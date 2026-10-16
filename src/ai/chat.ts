@@ -1,10 +1,10 @@
 // The design assistant: a streaming tool-use loop against the Claude API,
-// run directly from the browser with the user's own API key.
+// run from the browser with the user's own API key (see client.ts for where requests go).
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaMessageParam, BetaContentBlockParam, BetaToolResultBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { create } from "zustand";
-import { getApiKey } from "../persist/vault";
+import { sessionEnded } from "../cloud/account";
 import * as db from "../persist/db";
 import { updateSettings, useSettings, type Settings } from "../app/settings";
 import { useDesign, evaluateOnly } from "../core/engine";
@@ -25,6 +25,7 @@ import { assetBlock } from "../persist/assets";
 import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type BriefData } from "../core/brief";
 import { isBuilding } from "../agents/orchestrator";
 import { toast } from "../app/ui";
+import { claudeClient, claudeRoute } from "./client";
 import { BINDING_BETA, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 import { MODELS, type Effort } from "../app/settings";
 import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, type Route, type TurnFacts } from "./routing";
@@ -172,7 +173,8 @@ onSpend((kind, model, cost, saved, u) => {
 });
 
 configureWarm({
-  client,
+  // the shared key runs one request at a time: a refresh would hold the slot a chat message needs
+  client: () => (claudeRoute() === "shared" ? null : client()),
   minutes: () => useSettings.getState().keepWarm,
   // a refresh is spend the design model alone would not have had; what it saves shows on the next request
   record: (model, u) => void recordSpend("warm", model, u, -costOf(model, u)),
@@ -760,11 +762,10 @@ export function chatHistory(): readonly BetaMessageParam[] {
   return history;
 }
 
+// a declaration, so configureWarm above can take it before this line runs
 function client() {
   if (clientFactory) return clientFactory();
-  const key = getApiKey();
-  if (!key) return null;
-  return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 10 * 60 * 1000 });
+  return claudeClient();
 }
 
 function systemBlocks() {
@@ -816,6 +817,7 @@ async function chooseRoute(anthropic: Anthropic, facts: TurnFacts | undefined, s
   if (rule) return designRoute(rule, "rule");
   if (!quickCanSave(s.model, lastPrompt || estimatePrompt(), Date.now() - quickTouched < QUICK_WARM_MS)) return designRoute(`a conversation this long costs less on ${modelLabel(s.model)}`, "rule");
   const r = await askRouter(anthropic, facts, signal);
+  if (r.unavailable) quickUnavailable = true;
   // the router is spend that running everything on the design model would not have had
   if (r.usage) recordSpend("router", r.model, r.usage, -costOf(r.model, r.usage));
   return r.quick ? { model: QUICK_MODEL, effort: QUICK_EFFORT, quick: true, why: r.why, by: "router" } : designRoute(r.why, "router");
@@ -851,9 +853,13 @@ interface LoopOptions {
 }
 
 
-/** The tools for one request: Kerf's own, plus Anthropic's web search and fetch when the user allows them. The same for every model. */
+/**
+ * The tools for one request: Kerf's own, plus Anthropic's web search and fetch
+ * when the user allows them. The same for every model. A Kerf server's shared
+ * key takes no server-side tools (its proxy refuses them), so they stay off there.
+ */
 export function requestTools(settings: Pick<Settings, "webSearch">): unknown[] {
-  return settings.webSearch && !webUnavailable ? [...TOOL_DEFS, ...webTools()] : [...TOOL_DEFS];
+  return settings.webSearch && !webUnavailable && claudeRoute() !== "shared" ? [...TOOL_DEFS, ...webTools()] : [...TOOL_DEFS];
 }
 
 /** What one response looks like in the chat while it streams. */
@@ -1281,7 +1287,7 @@ async function resumeWithSteering() {
 /** Review Claude's own changes when it is about to finish without having had them reviewed. Returns true when Claude should continue. */
 async function autoReview(session: ReviewSession, reviewItems: string[], startSource: string, stale: () => boolean): Promise<boolean> {
   const mode = useSettings.getState().selfReview;
-  if (mode === "off" || !session.canReview || !getApiKey()) return false;
+  if (mode === "off" || !session.canReview || !claudeRoute()) return false;
   const now = useDesign.getState().source;
   const base = session.lastSource ?? startSource;
   if (now === base) return false;
@@ -1579,6 +1585,11 @@ function markCache(out: BetaMessageParam[], i: number) {
 function handleError(e: unknown) {
   if (isAbort(e)) {
     push({ kind: "notice", id: nid(), level: "info", title: "Stopped" });
+    return;
+  }
+  if (e instanceof Anthropic.AuthenticationError && (e.error as { error?: unknown } | undefined)?.error === "signed_out") {
+    sessionEnded();
+    push({ kind: "notice", id: nid(), level: "error", title: "You were signed out of Kerf", detail: "Sign in again to keep using the Claude key on your account.", action: "settings" });
     return;
   }
   if (e instanceof Anthropic.AuthenticationError) {
