@@ -11,6 +11,7 @@ import { PROCESS_IDS, generalToleranceFor, resolveRules, specToSource } from "..
 import { materialFit } from "../src/mfg/materials";
 import { processGuideText, processReference } from "../src/mfg/guide";
 import { languageReference } from "../src/ai/reference";
+import { MODIFIER_PARAMS } from "../src/lang/builtins";
 import type { ProcessFinding, ProcessResult, ProcessSpec } from "../src/mfg/types";
 import type { Model } from "../src/core/model";
 
@@ -179,6 +180,22 @@ describe("process rules and guidance", () => {
     expect(g).toMatch(/\.min_wall = 1\.2/);
     for (const id of PROCESS_IDS) expect(processReference()).toContain(`mfg.${id}(`);
     expect(languageReference()).toContain("## Manufacturing processes");
+  });
+
+  it("names the draft, rib and fillet syntax once the language has them", () => {
+    const spec: ProcessSpec = { id: "injection", settings: { pull: [0, 1, 0], draft: 1.5 } };
+    expect(processGuideText(spec, "ABS")).toMatch(/no draft modifier yet/);
+    MODIFIER_PARAMS.draft = ["angle", "faces", "pull", "neutral"];
+    try {
+      const g = processGuideText(spec, "ABS");
+      expect(g).toContain("draft(1.5, faces: facing(X) + facing(-X) + facing(Z) + facing(-Z), pull: Y)");
+      expect(g).toContain("add rib(");
+      expect(g).toContain('fillet(r, edges: "concave")');
+      expect(processGuideText({ id: "die_cast", settings: {} })).toContain('faces: "vertical", pull: Z');
+      expect(processGuideText({ id: "cnc_mill", settings: {} })).toContain('both("vertical", "concave")');
+    } finally {
+      delete MODIFIER_PARAMS.draft;
+    }
   });
 
   it("gives drawings a general tolerance for each process", () => {

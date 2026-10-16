@@ -6,15 +6,34 @@
 import { MODIFIER_PARAMS } from "../lang/builtins";
 import { PROCESSES, PROCESS_IDS, axisName, fmt, generalToleranceFor, guideLines, resolveRules, ruleFields, specToSource } from "./profiles";
 import { defaultMaterial, materialFit, suggestMaterials } from "./materials";
-import type { ProcessId, ProcessSpec } from "./types";
+import type { ProcessId, ProcessSpec, Rules } from "./types";
 
-/** Whether the language can draft faces yet (the modelling-features work adds it). */
-const hasDraft = () => "draft" in MODIFIER_PARAMS;
+/**
+ * Whether the language has the richer modelling features yet: draft(), rib()
+ * and gusset(), and edge selections such as "concave" (they arrive together,
+ * so draft stands for all of them).
+ */
+const richModelling = () => "draft" in MODIFIER_PARAMS;
+
+/** The faces a pull slides along, as a selection in the language. */
+function draftFaces(pull: string): string {
+  const axis = pull.replace("-", "");
+  if (axis === "Z") return '"vertical"';
+  if (axis === "X" || axis === "Y") {
+    return ["X", "Y", "Z"]
+      .filter((a) => a !== axis)
+      .flatMap((a) => [`facing(${a})`, `facing(-${a})`])
+      .join(" + ");
+  }
+  return "the faces that run along the pull";
+}
 
 /** How to get each process's shapes out of the Kerf language as it stands. */
-function modellingTips(id: ProcessId): string[] {
-  const draft = hasDraft()
-    ? "Apply draft() to faces that run along the pull, before fillets."
+function modellingTips(id: ProcessId, rules: Rules): string[] {
+  const rich = richModelling();
+  const pull = rules.draft ? axisName(rules.draft.pull) : "Z";
+  const draft = rich
+    ? `Draft every face along the pull with draft(${fmt(rules.draft?.warn ?? 1)}, faces: ${draftFaces(pull)}, pull: ${pull}), before fillets. faces: takes any selection: "vertical" is every face parallel to Z, flat or round; facing(X) is flat faces only; a named feature's .faces picks its own.`
     : "Kerf has no draft modifier yet: build drafted round features with cone() and revolve(), and drafted straight walls as prism() profiles with the taper in the outline (extrude sideways with dir: X or Y). Where a face cannot be drafted, say so and leave the draft finding for the toolmaker.";
   switch (id) {
     case "fdm":
@@ -28,7 +47,9 @@ function modellingTips(id: ProcessId): string[] {
     case "cnc_mill":
       return [
         "Start from the stock block and cut pockets, slots and holes from the setup directions.",
-        'fillet(r, edges: "vertical") right after the body puts the tool radius in vertical inside corners; for cut pockets, use rrect() or slot() outlines with corner radius ≥ the tool radius instead of sharp boxes.',
+        rich
+          ? 'Give inside corners the tool radius: fillet(r, edges: both("vertical", "concave")) after cutting pockets from Z rounds only the corners a flat end mill leaves round, not the pocket floors. Pocket outlines drawn with rrect() or slot() at corner radius ≥ the tool radius work too.'
+          : 'fillet(r, edges: "vertical") right after the body puts the tool radius in vertical inside corners; for cut pockets, use rrect() or slot() outlines with corner radius ≥ the tool radius instead of sharp boxes.',
         "Keep features open to a setup direction; anything hidden needs another setup.",
       ];
     case "cnc_lathe":
@@ -36,9 +57,13 @@ function modellingTips(id: ProcessId): string[] {
     case "injection":
     case "die_cast":
       return [
-        "Hollow the part with shell(t, open: …) for one uniform wall, then add ribs about 0.6× the wall thick instead of thick sections.",
+        rich
+          ? "Hollow the part with shell(t, open: …) for one uniform wall (for a lofted shape use loft(…, wall: t), since shell fails on lofts). Instead of thick sections, add rib(from, to, t: …, h: …) about 0.5–0.7× the wall thick and add gusset(at, along: X, size: …, t: …) at bosses and corners."
+          : "Hollow the part with shell(t, open: …) for one uniform wall, then add ribs about 0.6× the wall thick instead of thick sections.",
         draft,
-        "fillet() inside corners to at least half the wall; make bosses as tube() with the wall of the part, joined by ribs.",
+        rich
+          ? 'fillet(r, edges: "concave") rounds inside corners to at least half the wall; make bosses as tube() with the wall of the part, joined by ribs.'
+          : "fillet() inside corners to at least half the wall; make bosses as tube() with the wall of the part, joined by ribs.",
         "Point holes and openings along the pull; side holes need side actions.",
       ];
     case "sheet_metal":
@@ -68,7 +93,7 @@ export function processGuideText(spec: ProcessSpec, material?: string): string {
     ...guideLines(rules).map((l) => `- ${l}`),
     "",
     "## Modelling it in Kerf",
-    ...modellingTips(spec.id).map((l) => `- ${l}`),
+    ...modellingTips(spec.id, rules).map((l) => `- ${l}`),
     "",
     "## Source",
     `process: ${specToSource(spec)}`,
