@@ -87,7 +87,7 @@ const BRIEF_LISTS = ["priorities", "exposure"] as const;
 const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as const;
 export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", "max_size", "max_mass"];
 /** extra properties of purchasable catalog parts */
-const MACHINE_PROPS = ["role", "load", "buy", "price"];
+const MACHINE_PROPS = ["role", "load", "buy", "price", "rating"];
 const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
@@ -400,6 +400,8 @@ class Evaluator {
       }
       case "buy": {
         const pr = this.machineProps(s.items, ["qty", "price", "url", "search"], "buy");
+        const url = str(pr.url);
+        if (url !== undefined && !/^https?:\/\//.test(url)) throw new EvalError('url: should be a web address in quotes, e.g. url: "https://www.pololu.com/product/713"', s.span);
         this.machine.items.push({ name: s.label, label: s.label, qty: numv(pr.qty) ?? 1, price: numv(pr.price), buyUrl: str(pr.url), search: str(pr.search) ?? s.label, span: s.span });
         return;
       }
@@ -949,6 +951,9 @@ class Evaluator {
         const price = props.price !== undefined ? this.num(props.price, propSpans.price, "price") : undefined;
         if (props.buy !== undefined && (typeof props.buy !== "string" || !/^https?:\/\//.test(props.buy))) throw new EvalError('buy: should be a web address in quotes, e.g. buy: "https://www.pololu.com/product/713"', propSpans.buy);
         if (props.role !== undefined && typeof props.role !== "string") throw new EvalError('role: should be text, e.g. role: "front screw"', propSpans.role);
+        if (props.rating !== undefined && cp.kind !== "fuse") throw new EvalError("rating: is a fuse's rating in amps; only fuses take it", propSpans.rating);
+        const rating = props.rating !== undefined ? this.num(props.rating, propSpans.rating, "rating (the fuse's rating, A)") : undefined;
+        if (rating !== undefined && !(rating > 0)) throw new EvalError("rating: should be a current above zero, like 15A", propSpans.rating);
         this.machine.components.push({
           name: s.name,
           catalogId: cp.id,
@@ -960,6 +965,7 @@ class Evaluator {
           length: def.catalog.length,
           buyUrl: typeof props.buy === "string" ? props.buy : undefined,
           price,
+          rating,
           span: s.span,
         });
       }
@@ -1436,7 +1442,9 @@ class Evaluator {
       else if (e.op === "<=" || e.op === "<") margin = rn - ln;
       else margin = -Math.abs(ln - rn);
       const ok = e.op === "==" ? Math.abs(ln - rn) < 1e-6 : e.op === ">" || e.op === "<" ? margin > 0 : margin >= -1e-9;
-      return { ok, margin, detail: `${fmtNum(ln)} ${sym} ${fmtNum(rn)}` };
+      // calculators stand in 1e12 for "no limit" (a self-locking slot holds any moment)
+      const shown = (n: number) => (Math.abs(n) >= 1e12 ? (n > 0 ? "∞" : "−∞") : fmtNum(n));
+      return { ok, margin, detail: `${shown(ln)} ${sym} ${shown(rn)}` };
     }
     const v = this.expr(e, scope);
     if (v instanceof Pending) return { ok: null, detail: "measuring…" };

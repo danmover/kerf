@@ -4,39 +4,50 @@
 import type { CheckItem } from "../core/checks";
 import { fmtNum } from "../lang/values";
 import { catalogPart } from "./catalog";
-import { electricalChecks } from "./erc";
+import { electricalChecks, motorSupplies } from "./erc";
 import type { MachineData } from "./types";
 
-/** Operating current of a DC gearmotor at its `load:` (rated voltage, linear model). */
-export function motorCurrentFor(m: MachineData): (comp: string) => number | undefined {
+/** How far a DC gearmotor's stall torque and current scale on its driver's supply (1 for its rated voltage or unknown). */
+function supplyScale(supplies: Map<string, number>, comp: string, specs: Record<string, unknown>): number {
+  const v = supplies.get(comp);
+  return v !== undefined && typeof specs.v_rated === "number" && specs.v_rated > 0 && typeof specs.t_stall === "number" ? v / specs.v_rated : 1;
+}
+
+/** Operating current of a DC gearmotor at its `load:`, on its driver's supply (linear model, as calc.motor_point). */
+export function motorCurrentFor(m: MachineData, supplies = motorSupplies(m)): (comp: string) => number | undefined {
   return (comp) => {
     const mc = m.components.find((c) => c.name === comp);
     const p = mc && catalogPart(mc.catalogId);
     if (!mc || !p || mc.load === undefined) return undefined;
     const s = p.specs;
     if (typeof s.t_stall !== "number" || typeof s.i_stall !== "number") return undefined;
+    const k = supplyScale(supplies, comp, s);
     const i0 = typeof s.i_free === "number" ? s.i_free : 0;
-    return i0 + (s.i_stall - i0) * Math.min(1, mc.load / s.t_stall);
+    return i0 + (s.i_stall * k - i0) * Math.min(1, mc.load / (s.t_stall * k));
   };
 }
 
 export function machineChecks(m: MachineData): CheckItem[] {
   const out: CheckItem[] = [];
-  const current = motorCurrentFor(m);
+  const supplies = motorSupplies(m);
+  const current = motorCurrentFor(m, supplies);
   out.push(...electricalChecks(m, { motorCurrent: current }));
 
   for (const mc of m.components) {
     const p = catalogPart(mc.catalogId);
     if (!p || mc.load === undefined) continue;
     const s = p.specs;
-    const stall = typeof s.t_stall === "number" ? s.t_stall : typeof s.t_hold === "number" ? s.t_hold : undefined;
+    // a DC motor's stall torque scales with the supply its driver gives it, as in calc.motor_point
+    const k = supplyScale(supplies, mc.name, s);
+    const stall = typeof s.t_stall === "number" ? s.t_stall * k : typeof s.t_hold === "number" ? s.t_hold : undefined;
     if (stall === undefined) continue;
+    const at = k !== 1 ? ` at ${fmtNum(supplies.get(mc.name)!, 1)} V` : "";
     const frac = mc.load / stall;
     const name = mc.role ? `${mc.name} (${mc.role})` : mc.name;
     const base = { category: "engineering" as const, parts: [mc.name], span: mc.span, basis: "calculation" as const };
-    if (frac >= 1) out.push({ ...base, id: `load:${mc.name}`, status: "fail", title: `${name} stalls`, detail: `Load ${fmtNum(mc.load / 1000, 2)} N·m is over its ${fmtNum(stall / 1000, 2)} N·m stall torque.`, margin: stall / mc.load });
-    else if (frac > 0.5) out.push({ ...base, id: `load:${mc.name}`, status: "warn", title: `${name} works hard`, detail: `Load is ${fmtNum(frac * 100, 0)} % of stall torque. Above about 50 % a brushed gearmotor overheats in continuous use.`, margin: stall / mc.load });
-    else out.push({ ...base, id: `load:${mc.name}`, status: "pass", title: `${name} torque`, detail: `Load ${fmtNum(mc.load / 1000, 2)} N·m is ${fmtNum(frac * 100, 0)} % of its ${fmtNum(stall / 1000, 2)} N·m stall torque${current(mc.name) !== undefined ? `, about ${fmtNum(current(mc.name)!, 1)} A` : ""}.`, margin: stall / mc.load });
+    if (frac >= 1) out.push({ ...base, id: `load:${mc.name}`, status: "fail", title: `${name} stalls`, detail: `Load ${fmtNum(mc.load / 1000, 2)} N·m is over its ${fmtNum(stall / 1000, 2)} N·m stall torque${at}.`, margin: stall / mc.load });
+    else if (frac > 0.5) out.push({ ...base, id: `load:${mc.name}`, status: "warn", title: `${name} works hard`, detail: `Load is ${fmtNum(frac * 100, 0)} % of stall torque${at}. Above about 50 % a brushed gearmotor overheats in continuous use.`, margin: stall / mc.load });
+    else out.push({ ...base, id: `load:${mc.name}`, status: "pass", title: `${name} torque`, detail: `Load ${fmtNum(mc.load / 1000, 2)} N·m is ${fmtNum(frac * 100, 0)} % of its ${fmtNum(stall / 1000, 2)} N·m stall torque${at}${current(mc.name) !== undefined ? `, about ${fmtNum(current(mc.name)!, 1)} A` : ""}.`, margin: stall / mc.load });
   }
 
   const rough = m.calcs.filter((c) => c.confidence === "rough");

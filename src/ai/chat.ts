@@ -6,7 +6,7 @@ import type { BetaContentBlock, BetaMessageParam, BetaContentBlockParam, BetaToo
 import { create } from "zustand";
 import { getApiKey } from "../persist/vault";
 import * as db from "../persist/db";
-import { useSettings, type Settings } from "../app/settings";
+import { updateSettings, useSettings, type Settings } from "../app/settings";
 import { useDesign, evaluateOnly } from "../core/engine";
 import { useView } from "../app/view";
 import { commitSource, useProject, endPreview } from "../app/project";
@@ -763,6 +763,11 @@ async function runLoop() {
   const before = shotOf(startSource);
   let edits = 0;
   const settings = useSettings.getState();
+  if (settings.webNotice) {
+    if (settings.webSearch)
+      push({ kind: "notice", id: nid(), level: "info", title: "Claude can now search the web for parts", detail: "When the parts catalog has nothing suitable, Claude may search the web and read product pages. Each search costs about $0.01 on your API key, plus the tokens the pages use. Turn it off in Settings → Claude → Search the web for parts.", action: "settings" });
+    updateSettings({ webNotice: false });
+  }
   const session = new ReviewSession(settings.reviewRounds);
   const reviewItems: string[] = [];
   const system = systemBlocks();

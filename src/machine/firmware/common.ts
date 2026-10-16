@@ -24,8 +24,28 @@ export function fwContext(m: MachineData, fw: FirmwareDef, designName: string): 
   const board = m.components.find((c) => c.name === fw.board);
   const boardPart = board && catalogPart(board.catalogId);
   if (!board || !boardPart) return `firmware ${fw.name}: board "${fw.board}" is not a catalog part`;
-  return { m, fw, nl: buildNetlist(m), board, boardPart, designName };
+  // the name is free text from the design (written by anyone, or by Claude): never let it start a new line
+  return { m, fw, nl: buildNetlist(m), board, boardPart, designName: oneLine(designName) };
 }
+
+/**
+ * Free text made safe to put on one line of generated code or config: control characters and line
+ * separators become spaces, and it is cut to a sensible length. Every name, label and text setting
+ * that reaches a generated file goes through this.
+ */
+export function oneLine(s: string, max = 120): string {
+  const t = s
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/** Text for the inside of a C string literal. */
+export const cString = (s: string) => oneLine(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\?/g, "\\?");
+
+/** Text for a C `//` comment: a trailing backslash would splice the next line into the comment. */
+export const cComment = (s: string) => oneLine(s).replace(/\\/g, "/").replace(/\?(?=\?)/g, "? ");
 
 /** The controller pin wired to `comp.pin`, if any. */
 export function ctrlPinFor(c: FwContext, comp: string, pin: string, index = 0): NetPin | undefined {
@@ -65,7 +85,7 @@ export function setting(fw: FirmwareDef, key: string, def: number | string | boo
   if (v === undefined) return def;
   if (typeof def === "number") return typeof v === "number" ? v : Number(v) || def;
   if (typeof def === "boolean") return typeof v === "boolean" ? v : v === "true" || v === 1;
-  return String(v);
+  return oneLine(String(v), 400);
 }
 
 export function cNum(n: number): string {
