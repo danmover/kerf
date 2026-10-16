@@ -57,10 +57,12 @@ export interface Hal {
   wireRead(addr: number, n: number, stop: boolean): number[];
 
   eeprom: Uint8Array;
-  /** an EEPROM byte was programmed (3.3 ms each) */
+  /** program an EEPROM byte: store it and spend the 3.3 ms it takes */
   eepromWrite(addr: number, v: number): void;
 
   servoPulse(pin: number, us: number | null): void;
+  /** pulseIn(): microseconds the pin stayed at state, 0 on timeout (polled when absent) */
+  pulseIn?(pin: number, state: number, timeoutUs: number): number;
 
   /** a mistake in the firmware the chip would not report (index out of range, divide by zero) */
   fault(msg: string, file: string, line: number): void;

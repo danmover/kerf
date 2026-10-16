@@ -179,7 +179,7 @@ export function converter(to: CType, from: CType | null): ((x: number) => number
       const same = from && from.k === "int" && from.bits === to.bits && from.signed === to.signed;
       if (same) return null;
       const narrowerSame = from && (from.k === "bool" || (from.k === "int" && (from.bits < to.bits ? from.signed === to.signed || !from.signed : false)));
-      if (narrowerSame && from!.k !== "float") return null;
+      if (narrowerSame) return null;
       const tr = fromFloat ? (x: number) => (Number.isFinite(x) ? Math.trunc(x) : 0) : null;
       let wrap: (x: number) => number;
       switch (to.bits) {
