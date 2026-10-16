@@ -2,7 +2,7 @@
 // (axis along +Z, or mouth facing +X for connectors). The evaluator places
 // the result and converts local fields to world coordinates.
 
-import type { PartRecipe, ShapeRecipe, V2, V3 } from "../kernel/recipe";
+import type { PartRecipe, ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/recipe";
 import { BEARINGS, THREADS, type ThreadSpec } from "./standards";
 import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
 
@@ -67,6 +67,11 @@ function hexPoints(af: number): V2[] {
   });
 }
 
+/** Nominal ISO metric thread for library hardware (no printing clearance). */
+function isoThread(t: { d: number; pitch: number }): ThreadSpec3 {
+  return { d: t.d, pitch: t.pitch, form: "iso", starts: 1, left: false, clearance: 0 };
+}
+
 export const LIBRARY: Record<string, LibEntry> = {
   bearing: {
     signature: 'lib.bearing("608") { at: (x, y, z), axis: Y }',
@@ -106,13 +111,16 @@ export const LIBRARY: Record<string, LibEntry> = {
     make(a) {
       const t = a.thread("size", "M3");
       const L = a.num("length", 10);
+      const b = 2 * t.d + 12;
       const socket = hexPoints(t.key);
       const recipe: PartRecipe = {
         base: { t: "cyl", d: t.head_d, h: t.head_h, at: [0, 0, -t.head_h], dir: ZP },
         ops: [
           { op: "fillet", r: Math.min(0.4, t.head_h * 0.15), edges: "bottom" },
           { op: "cut", shape: { t: "prism", pts: socket, h: t.head_h * 0.6, at: [0, 0, -t.head_h - 0.01], dir: ZP, rot: 0 } },
-          { op: "add", shape: { t: "cyl", d: t.tap, h: L, at: [0, 0, -0.01], dir: ZP } },
+          ...(L > b ? [{ op: "add" as const, shape: { t: "cyl" as const, d: t.tap, h: L - b + 0.01, at: [0, 0, -0.01] as V3, dir: ZP } }] : []),
+          // the thread length (b = 2d + 12, or the whole shank): a plain tap-size cylinder in checks, the real ISO thread in detail builds
+          { op: "add", shape: { t: "thread", spec: isoThread(t), length: L > b ? b : L + 0.01, at: [0, 0, L > b ? L - b : -0.01], dir: ZP, internal: false, lead: 0, fastD: t.tap } },
         ],
       };
       return {
@@ -138,7 +146,11 @@ export const LIBRARY: Record<string, LibEntry> = {
       const t = a.thread("size", "M3");
       const recipe: PartRecipe = {
         base: { t: "prism", pts: hexPoints(t.nut_af), h: t.nut_h, at: Z0, dir: ZP, rot: 0 },
-        ops: [{ op: "cut", shape: { t: "cyl", d: t.tap, h: t.nut_h + 0.2, at: [0, 0, -0.1], dir: ZP } }],
+        ops: [
+          // detailed builds break the corners on both faces; the hole is a plain tap-size bore in checks and the real ISO thread in detail
+          { op: "chamfer", r: Math.min(0.4, t.nut_af * 0.04), edges: { s: "or", a: ["top", "bottom"] }, cosmetic: true },
+          { op: "cut", shape: { t: "thread", spec: isoThread(t), length: t.nut_h + 0.2, at: [0, 0, -0.1], dir: ZP, internal: true, lead: 0, fastD: t.tap } },
+        ],
       };
       return {
         kind: "nut",

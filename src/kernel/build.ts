@@ -135,7 +135,7 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     case "revolve2":
       return revolveProfile2(r.p, r.f, r.angle);
     case "thread": {
-      const t = buildThread(r.spec, r.length, r.at, r.dir, r.internal, r.lead, detail);
+      const t = buildThread(r.spec, r.length, r.at, r.dir, r.internal, r.lead, detail, r.fastD);
       if (!r.bore) return t;
       return t.cut(R.makeCylinder(r.bore / 2, r.length + 0.2, vadd(r.at, vscale(r.dir, -0.1)), r.dir));
     }
@@ -181,9 +181,7 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
     if (op.cosmetic && !detail) return;
     const step = `step ${i + 2}`;
     try {
-      const t0 = performance.now();
       shape = applyOp(shape, op, detail, features, topoNow);
-      if ((globalThis as { __kerfProfile?: boolean }).__kerfProfile) console.log("op", i, opLabel(op), Math.round(performance.now() - t0));
     } catch (e) {
       const what = opLabel(op);
       if (op.cosmetic) {
@@ -254,10 +252,8 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
     }
     case "fillet":
     case "chamfer": {
-      const ts = performance.now();
       const t = topo();
       const idx = t.selectEdges(op.edges);
-      if ((globalThis as { __kerfProfile?: boolean }).__kerfProfile) console.log("  select", Math.round(performance.now() - ts), "faces", t.faces.length, "edges", t.edges.length, "picked", idx.size);
       if (!idx.size) throw new BuildError(`edges: ${describeSel(op.edges)} matched no edges`);
       const chosen = [...idx].map((i) => t.edges[i]);
       const byHash = new Map<number, R.Edge[]>();

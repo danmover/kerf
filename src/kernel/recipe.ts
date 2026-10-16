@@ -72,7 +72,7 @@ export type ShapeRecipe =
   | { t: "loft"; secs: { p: Profile; f: Frame }[]; ruled: boolean }
   | { t: "revolve2"; p: Profile; f: Frame; angle: number }
   /** a helical thread; detailed builds model the real form, fast builds a plain cylinder at the pitch diameter */
-  | { t: "thread"; spec: ThreadSpec3; length: number; at: V3; dir: V3; internal: boolean; lead: number; bore?: number }
+  | { t: "thread"; spec: ThreadSpec3; length: number; at: V3; dir: V3; internal: boolean; lead: number; bore?: number; fastD?: number }
   /** a knurled or ridged grip; fast builds use a plain cylinder */
   | { t: "knurl"; d: number; h: number; at: V3; dir: V3; count: number; depth: number; style: "straight" | "fluted" };
 
