@@ -19,6 +19,7 @@ import { drawingFor, openDrawings, useDrawings } from "../../drawing/engine";
 import { addBlockLine, ensureBlock } from "../../drawing/source";
 import { fmtNum } from "../../lang/values";
 import { useChatDraft } from "../chatDraft";
+import { useView } from "../../app/view";
 import { Icon } from "../icons";
 import "../drawing/drawing.css";
 
@@ -30,6 +31,10 @@ export interface MeasureHost {
   canvas: HTMLCanvasElement;
   camera: THREE.Camera;
   scene: THREE.Object3D;
+  /** the part the viewport itself would pick here (it knows what is ghosted or hidden) */
+  hit?: (clientX: number, clientY: number) => { id: string } | null;
+  /** the camera controls, which say when the view moves */
+  controls?: { addEventListener(type: "change", fn: () => void): void; removeEventListener(type: "change", fn: () => void): void };
 }
 
 interface Snap {
@@ -74,6 +79,18 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
   const [res, setRes] = useState<{ r?: PickMeasure; error?: string; busy: boolean } | null>(null);
   const [, setFrame] = useState(0);
   const job = useRef(0);
+  const picksRef = useRef<Snap[]>([]);
+
+  const setPicksNow = useCallback((next: Snap[]) => {
+    picksRef.current = next;
+    setPicks(next);
+  }, []);
+
+  const clear = useCallback(() => {
+    job.current++;
+    setPicksNow([]);
+    setRes(null);
+  }, [setPicksNow]);
 
   // the R key toggles the tool, Esc clears the picks and then leaves it
   useEffect(() => {
@@ -81,19 +98,13 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
       if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target) || useDrawings.getState().open) return;
       if (e.key === "r" || e.key === "R") toggleMeasure();
       else if (e.key === "Escape" && measuring()) {
-        if (picks.length) clear();
+        if (picksRef.current.length) clear();
         else toggleMeasure(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  });
-
-  const clear = useCallback(() => {
-    job.current++;
-    setPicks([]);
-    setRes(null);
-  }, []);
+  }, [clear]);
 
   useEffect(() => {
     if (!on) {
@@ -140,11 +151,10 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
       if (!down || e.button !== 0 || Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 5) return;
       const s = snapAt(h, e.clientX, e.clientY);
       if (!s) return;
-      setPicks((prev) => {
-        const next = prev.length >= 2 ? [s] : [...prev, s];
-        run(next);
-        return next;
-      });
+      const prev = picksRef.current;
+      const next = prev.length >= 2 ? [s] : [...prev, s];
+      setPicksNow(next);
+      run(next);
     };
     const leave = () => setHover(null);
     el.addEventListener("pointermove", move);
@@ -159,25 +169,33 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
       el.removeEventListener("pointerup", pu);
       el.removeEventListener("pointerleave", leave);
     };
-  }, [on, host, run]);
+  }, [on, host, run, setPicksNow]);
 
-  // follow the camera (and exploding or moving parts) while something is shown
+  // follow the camera, the viewport's size and parts easing apart while something is shown
   useEffect(() => {
     const h = host();
     if (!on || !h || !picks.length) return;
+    const bump = () => setFrame((f) => f + 1);
+    h.controls?.addEventListener("change", bump);
+    const ro = new ResizeObserver(bump);
+    ro.observe(h.canvas);
     let raf = 0;
-    let last = "";
+    let until = 0;
     const tick = () => {
-      const meshesById = partMeshes(h.scene);
-      const sig = [h.camera.matrixWorld.elements, ...picks.map((p) => meshesById.get(p.partId)?.matrixWorld.elements ?? [])].map((a) => Array.from(a).map((v) => v.toFixed(3)).join(",")).join("|") + `|${h.canvas.clientWidth}x${h.canvas.clientHeight}`;
-      if (sig !== last) {
-        last = sig;
-        setFrame((f) => f + 1);
-      }
-      raf = requestAnimationFrame(tick);
+      bump();
+      raf = performance.now() < until ? requestAnimationFrame(tick) : 0;
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    const unsub = useView.subscribe((s, p) => {
+      if (s.explode === p.explode && s.playing === p.playing) return;
+      until = performance.now() + (s.playing ? 60_000 : 1500);
+      if (!raf) raf = requestAnimationFrame(tick);
+    });
+    return () => {
+      h.controls?.removeEventListener("change", bump);
+      ro.disconnect();
+      unsub();
+      cancelAnimationFrame(raf);
+    };
   }, [on, host, picks]);
 
   const h = on ? host() : null;
@@ -267,7 +285,11 @@ function MeasureBody({ picks, res, nameOf, onClear }: { picks: Snap[]; res: { r?
             Δx {fmtNum(delta[0], 3)} · Δy {fmtNum(delta[1], 3)} · Δz {fmtNum(delta[2], 3)}
           </div>
         )}
-        {r.centerDistance !== undefined && <div>centres {fmtNum(r.centerDistance, 3)} mm apart</div>}
+        {r.centerDistance !== undefined && (
+          <div>
+            {r.a.axis && r.b.axis ? "axes" : "centres"} {fmtNum(r.centerDistance, 3)} mm apart
+          </div>
+        )}
         {r.angle !== undefined && <div>angle {r.angle < 1e-3 ? "0° (parallel)" : `${fmtNum(r.angle, 2)}°`}</div>}
       </div>
       <div className="row" style={{ marginTop: 8, gap: 6, flexWrap: "wrap" }}>
@@ -332,17 +354,8 @@ function details(e: EntityInfo): string[] {
 
 /** Model points for a dimension: centre to centre for holes and shafts, else the closest points. */
 function dimPoints(r: PickMeasure): [V3, V3] | null {
-  const A = r.a;
-  const B = r.b;
-  if (!B) return null;
-  if (A.center && B.center && A.axis && B.axis && A.kind === "face" && B.kind === "face" && r.centerDistance !== undefined) {
-    // parallel axes: the second centre moved along its axis level with the first
-    const ax = A.axis;
-    const d = B.center.map((v, i) => v - A.center![i]);
-    const along = d[0] * ax[0] + d[1] * ax[1] + d[2] * ax[2];
-    if (r.centerDistance < 1e-6) return null;
-    return [A.center, B.center.map((v, i) => v - ax[i] * along) as V3];
-  }
+  if (!r.b) return null;
+  if (r.c1 && r.c2 && (r.centerDistance ?? 0) > 1e-6) return [r.c1, r.c2];
   if (!r.p1 || !r.p2 || (r.distance ?? 0) < 1e-6) return null;
   return [r.p1, r.p2];
 }
@@ -400,7 +413,10 @@ function meshData(part: EvalPart, mesh: THREE.Mesh): MeshData | undefined {
 function snapAt(h: MeasureHost, x: number, y: number): Snap | null {
   const { rect, ndc } = toNdc(h, x, y);
   raycaster.setFromCamera(ndc, h.camera);
-  const list = [...partMeshes(h.scene).values()].filter(shown);
+  const byId = partMeshes(h.scene);
+  const target = h.hit ? h.hit(x, y) : undefined;
+  if (target === null) return null;
+  const list = target ? [byId.get(target.id)].filter((m): m is THREE.Mesh => !!m) : [...byId.values()].filter(shown);
   const hit = raycaster.intersectObjects(list, false).find((i) => {
     const m = (i.object as THREE.Mesh).material as THREE.Material;
     if (m.transparent && m.opacity <= 0.5) return false;

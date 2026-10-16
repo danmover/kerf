@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import opencascade from "replicad-opencascadejs";
 import * as R from "replicad";
 import { KernelCore } from "../src/kernel/core";
-import { measure, projectView, type Edge2 } from "../src/kernel/drawing";
+import { angleBetween, closestOnAxes, measure, projectView, type Edge2 } from "../src/kernel/drawing";
 import { evaluate } from "../src/lang/evaluator";
 
 const require = createRequire(import.meta.url);
@@ -127,5 +127,65 @@ describe("measuring", () => {
     const r = measure({ a: { hash: plate.hash, xf: plate.xf, kind: "face", id: 12345, point: [0, 0, 8] } }, (h) => core.get(h)?.shape);
     expect(r.a.type).toBe("plane");
     expect(Math.abs(r.a.normal![2])).toBeCloseTo(1, 6);
+  });
+});
+
+describe("measure angles and axes", () => {
+  const plane = (v: [number, number, number]) => ({ kind: "plane" as const, v });
+  const line = (v: [number, number, number]) => ({ kind: "line" as const, v });
+
+  it("gives a face and an edge square to it 90°, and an edge lying in it 0°", () => {
+    expect(angleBetween(plane([0, 0, 1]), line([0, 0, 1]))).toBeCloseTo(90, 9);
+    expect(angleBetween(plane([0, 0, 1]), line([1, 0, 0]))).toBeCloseTo(0, 9);
+    expect(angleBetween(line([1, 0, 0]), plane([0, 0, -1]))).toBeCloseTo(0, 9);
+    expect(angleBetween(plane([0, 0, 1]), plane([1, 0, 0]))).toBeCloseTo(90, 9);
+    expect(angleBetween(line([1, 0, 0]), line([1, 1, 0]))).toBeCloseTo(45, 9);
+    expect(angleBetween(null, line([1, 0, 0]))).toBeUndefined();
+  });
+
+  it("measures the real kernel angle between the top face and a vertical edge", () => {
+    const model = setup();
+    const plate = model.parts[0];
+    const solid = core.get(plate.hash)!.shape;
+    const top = solid.faces.find((f) => f.geomType === "PLANE" && Math.abs(f.center.z - 8) < 1e-6)!;
+    const vertical = solid.edges.find((e) => {
+      const a = e.startPoint;
+      const b = e.endPoint;
+      const ok = e.geomType === "LINE" && Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9;
+      a.delete();
+      b.delete();
+      return ok;
+    })!;
+    const along = solid.edges.find((e) => {
+      const a = e.startPoint;
+      const b = e.endPoint;
+      const ok = e.geomType === "LINE" && Math.abs(a.z - 8) < 1e-9 && Math.abs(b.z - 8) < 1e-9;
+      a.delete();
+      b.delete();
+      return ok;
+    })!;
+    const face = { hash: plate.hash, xf: plate.xf, kind: "face" as const, id: top.hashCode, point: [0, 10, 8] as [number, number, number] };
+    const edge = (id: number, point: [number, number, number]) => ({ hash: plate.hash, xf: plate.xf, kind: "edge" as const, id, point });
+    const v = vertical.startPoint;
+    const square = measure({ a: face, b: edge(vertical.hashCode, [v.x, v.y, 4]) }, (h) => core.get(h)?.shape);
+    v.delete();
+    expect(square.angle).toBeCloseTo(90, 6);
+    const s = along.startPoint;
+    const flat = measure({ a: face, b: edge(along.hashCode, [s.x, s.y, s.z]) }, (h) => core.get(h)?.shape);
+    s.delete();
+    expect(flat.angle).toBeCloseTo(0, 6);
+  });
+
+  it("measures perpendicular hole axes at their common perpendicular", () => {
+    const a = { kind: "face" as const, type: "cylinder", point: [0, 0, 0] as [number, number, number], center: [0, 0, 0] as [number, number, number], axis: [0, 0, 1] as [number, number, number] };
+    // an x-direction hole 12 mm higher and offset 5 mm in y, with its axis point far along x
+    const b = { kind: "face" as const, type: "cylinder", point: [0, 0, 0] as [number, number, number], center: [40, 5, 12] as [number, number, number], axis: [1, 0, 0] as [number, number, number] };
+    const [c1, c2] = closestOnAxes(a, b)!;
+    expect(Math.hypot(c2[0] - c1[0], c2[1] - c1[1], c2[2] - c1[2])).toBeCloseTo(5, 9);
+    expect(c1[2]).toBeCloseTo(12, 9);
+    expect(c2[0]).toBeCloseTo(0, 9);
+    // parallel axes: measured square to the axis, whatever point each axis was given at
+    const p = closestOnAxes(a, { ...b, center: [30, 40, 70], axis: [0, 0, -1] })!;
+    expect(Math.hypot(p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2])).toBeCloseTo(50, 9);
   });
 });

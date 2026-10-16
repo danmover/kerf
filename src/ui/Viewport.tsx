@@ -33,7 +33,7 @@ export function Viewport() {
   const view = useView();
   const settings = useSettings();
   const [webglError, setWebglError] = useState("");
-  const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene } : null), []);
+  const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
 
   useEffect(() => {
     if (!mount.current) return;

@@ -361,8 +361,67 @@ export interface PickMeasure {
   p2?: V3;
   /** angle between planes or lines, degrees */
   angle?: number;
-  /** distance between circle centres or parallel axes */
+  /** shortest distance between the axes (or centres) of round faces and edges */
   centerDistance?: number;
+  /** the closest points on those axes, for dimensioning centre to centre */
+  c1?: V3;
+  c2?: V3;
+}
+
+/** How an entity is oriented: a plane by its normal, a line (or a round face's axis) by its direction. */
+type Orientation = { kind: "plane" | "line"; v: V3 } | null;
+
+function direction(e: EntityInfo): Orientation {
+  if (e.kind === "face" && e.type === "plane" && e.normal) return { kind: "plane", v: e.normal };
+  if (e.kind === "face" && (e.type === "cylinder" || e.type === "cone") && e.axis) return { kind: "line", v: e.axis };
+  if (e.kind === "edge" && e.type === "line" && e.dir) return { kind: "line", v: e.dir };
+  return null;
+}
+
+/**
+ * The angle between two planes or two lines is the angle between their
+ * normals or directions; a line meets a plane at 90° less the angle to its
+ * normal. Always 0..90°.
+ */
+export function angleBetween(a: Orientation, b: Orientation): number | undefined {
+  if (!a || !b) return undefined;
+  const c = Math.min(1, Math.abs(vdot(vnorm(a.v), vnorm(b.v))));
+  const deg = (Math.acos(c) * 180) / Math.PI;
+  return a.kind === b.kind ? deg : 90 - deg;
+}
+
+/**
+ * Closest points between the axes of two round entities (cylinder and cone
+ * faces, circle edges) or their centres (spheres): parallel axes are measured
+ * square to the axis, skew or crossing axes at their common perpendicular.
+ */
+export function closestOnAxes(A: EntityInfo, B: EntityInfo): [V3, V3] | null {
+  if (!A.center || !B.center) return null;
+  const pa = A.center;
+  const pb = B.center;
+  const da = A.axis ? vnorm(A.axis) : null;
+  const db = B.axis ? vnorm(B.axis) : null;
+  const w: V3 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+  const at = (p: V3, d: V3, t: number): V3 => [p[0] + d[0] * t, p[1] + d[1] * t, p[2] + d[2] * t];
+  if (da && db) {
+    const n = vcross(da, db);
+    const nn = vdot(n, n);
+    if (nn < 1e-10) {
+      // parallel: B's axis point level with A's centre
+      return [pa, at(pb, da, -vdot(w, da))];
+    }
+    // closest points of two lines pa + s·da and pb + t·db
+    const b = vdot(da, db);
+    const d = vdot(da, w);
+    const e = vdot(db, w);
+    const den = 1 - b * b;
+    const sa = (d - b * e) / den;
+    const tb = (b * d - e) / den;
+    return [at(pa, da, sa), at(pb, db, tb)];
+  }
+  if (da) return [at(pa, da, vdot(w, da)), pb];
+  if (db) return [pa, at(pb, db, -vdot(w, db))];
+  return [pa, pb];
 }
 
 type GetShape = (hash: string) => Shape3D | undefined;
@@ -389,23 +448,13 @@ export function measure(req: { a: PickRef; b?: PickRef }, get: GetShape): PickMe
         p2.delete();
       }
       ds.delete();
-      const da = A.info.normal ?? A.info.dir ?? A.info.axis;
-      const db = B.info.normal ?? B.info.dir ?? B.info.axis;
-      if (da && db) {
-        const c = Math.min(1, Math.abs(vdot(vnorm(da), vnorm(db))));
-        out.angle = (Math.acos(c) * 180) / Math.PI;
-      }
-      if (A.info.center && B.info.center) {
-        const ca = A.info.center;
-        const cb = B.info.center;
-        const d: V3 = [cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]];
-        const axA = A.info.axis;
-        if (axA && B.info.axis && Math.abs(vdot(vnorm(axA), vnorm(B.info.axis))) > 0.9999 && A.info.kind === "face" && B.info.kind === "face") {
-          // parallel axes: perpendicular distance between them
-          const a = vnorm(axA);
-          const along = vdot(d, a);
-          out.centerDistance = Math.hypot(d[0] - a[0] * along, d[1] - a[1] * along, d[2] - a[2] * along);
-        } else out.centerDistance = Math.hypot(...d);
+      const angle = angleBetween(direction(A.info), direction(B.info));
+      if (angle !== undefined) out.angle = angle;
+      const axes = closestOnAxes(A.info, B.info);
+      if (axes) {
+        out.centerDistance = Math.hypot(axes[1][0] - axes[0][0], axes[1][1] - axes[0][1], axes[1][2] - axes[0][2]);
+        out.c1 = axes[0];
+        out.c2 = axes[1];
       }
       return out;
     } finally {
