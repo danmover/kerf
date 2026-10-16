@@ -1,0 +1,95 @@
+design "Sensor Hub Enclosure"
+note "Two-part PETG enclosure for a 70 × 50 mm sensor board with USB-C power. Lid screws into brass heat-set inserts."
+
+// ── Layout ─────────────────────────────────────────────
+param width     = 90mm   "Outer size along X"
+param depth     = 70mm   "Outer size along Y"
+param height    = 34mm   "Overall height with the lid on"
+param wall      = 2.0mm  range 1.2 .. 4  "Wall and floor thickness"
+param corner_r  = 6mm    "Outer corner radius"
+param lid_t     = 2.4mm  "Lid plate thickness"
+param clearance = 1.5mm  "Gap between the board edge and the inner wall"
+param standoff  = 5mm    "Board height above the floor"
+
+let floor_t = wall
+let base_h  = height - lid_t
+let lid_screws = corners(width - 2 * corner_r, depth - 2 * corner_r)
+let boss_r  = corner_r - wall + 0.6
+
+// ── Electronics (frozen board design) ──────────────────
+component pcb = lib.pcb(w: 70, d: 50, t: 1.6, hole_inset: 3.5, hole_d: 3.2) {
+  at: (0, 0, floor_t + standoff)
+  group: "Electronics"
+  locked
+}
+
+component usb = lib.usb_c() {
+  at: (pcb.w / 2 + 0.6, 8, pcb.top.z)
+  facing: X
+  group: "Electronics"
+  locked
+}
+
+interface board_mount {
+  screw  = M3
+  boss_d = 8
+  insert = M3.insert_l + 0.6
+}
+
+// ── Housing ────────────────────────────────────────────
+part base {
+  color: #4f7cff
+  material: "PETG"
+  group: "Housing"
+  body box(width, depth, base_h, r: corner_r)
+  shell(wall, open: Z)
+
+  // board standoffs with heat-set inserts
+  for h in pcb.holes {
+    add cylinder(d: board_mount.boss_d, h: standoff + 0.01, at: (h.x, h.y, floor_t - 0.01))
+    cut hole(board_mount.screw, fit: "insert", depth: board_mount.insert, at: (h.x, h.y, floor_t + standoff))
+  }
+
+  // lid screw bosses fused into the corners
+  for c in lid_screws {
+    add cylinder(d: 2 * boss_r, h: base_h - floor_t, at: (c.x, c.y, floor_t - 0.01))
+    cut hole(M3, fit: "insert", depth: 7, at: (c.x, c.y, base_h))
+  }
+
+  cut usb.opening
+}
+
+part lid {
+  color: #c9d4e3
+  material: "PETG"
+  group: "Housing"
+  removable
+  body box(width, depth, lid_t, at: (0, 0, base_h), r: corner_r)
+
+  // locating lip that sits inside the walls
+  add box(width - 2 * wall - 0.4, depth - 2 * wall - 0.4, 2, at: (0, 0, base_h - 2), r: corner_r - wall - 0.2)
+  cut box(width - 2 * wall - 3.6, depth - 2 * wall - 3.6, 2.1, at: (0, 0, base_h - 2.05), r: max(corner_r - wall - 1.8, 0.5))
+  for c in lid_screws {
+    cut cylinder(d: 2 * (corner_r - wall) + 2, h: 2.1, at: (c.x, c.y, base_h - 2.05))
+    cut hole(M3, through: true, at: (c.x, c.y, height + 1))
+  }
+
+  // ventilation slots
+  for i in range(7) {
+    cut rrect(w: 2.4, h: 26, r: 1.1, depth: lid_t + 2, at: (-18 + i * 6, 0, height + 1), dir: -Z)
+  }
+}
+
+// ── Hardware ───────────────────────────────────────────
+component lid_inserts = lib.insert(M3) { at: with_z(lid_screws, base_h), axis: -Z }
+component lid_fasteners = lib.screw(M3, 8) { at: with_z(lid_screws, height), axis: -Z }
+component board_inserts = lib.insert(M3) { at: with_z(pcb.holes, floor_t + standoff), axis: -Z }
+component board_screws = lib.screw(M3, 6) { at: with_z(pcb.holes, pcb.top.z), axis: -Z }
+
+// ── Requirements ───────────────────────────────────────
+require "Board fits across the width": width - 2 * wall - 2 * clearance >= pcb.w
+require "Board fits along the depth": depth - 2 * wall - 2 * clearance >= pcb.d
+require "Headroom above the tallest component": base_h - (floor_t + standoff + pcb.t + pcb.component_h) >= 2
+require "Printable walls (3 perimeters at 0.4 mm)": wall >= 1.2
+require "Board clears the corner bosses": hypot(max(lid_screws[0].x - pcb.w / 2, 0), max(lid_screws[0].y - pcb.d / 2, 0)) - boss_r >= 0.8
+require "Lid clears the board components": min_distance(pcb, lid) >= 2

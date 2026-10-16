@@ -1,0 +1,226 @@
+// Terms, privacy, acceptable use and open-source notices.
+// Every policy here is a DRAFT written for the prototype. It has not been
+// reviewed by a lawyer and must be before Kerf is offered to the public.
+
+import { motion } from "framer-motion";
+import type { ReactNode } from "react";
+import { go, useUi, type LegalDoc } from "../app/ui";
+import { useProject } from "../app/project";
+import { TERMS_VERSION } from "../app/settings";
+import { Logo } from "../ui/Logo";
+import { Icon } from "../ui/icons";
+
+const UPDATED = "16 October 2026";
+
+const DOCS: { id: LegalDoc; label: string }[] = [
+  { id: "terms", label: "Terms of Service" },
+  { id: "privacy", label: "Privacy notice" },
+  { id: "acceptable-use", label: "Acceptable use" },
+  { id: "licenses", label: "Open-source licences" },
+];
+
+export function Legal() {
+  const screen = useUi((s) => s.screen);
+  const hasProject = useProject((s) => !!s.current);
+  if (screen.name !== "legal") return null;
+  const back = screen.back === "workspace" && !hasProject ? "home" : screen.back;
+  const doc = screen.doc;
+  return (
+    <div className="screen">
+      <div className="backdrop-grid" />
+      <div className="legal">
+        <div className="row" style={{ gap: 12 }}>
+          <button className="btn ghost" onClick={() => go({ name: back } as never)}>
+            <Icon.Chevron size={14} style={{ transform: "rotate(180deg)" }} /> Back
+          </button>
+          <div className="grow" />
+          <Logo size={20} />
+        </div>
+        <nav className="row" style={{ gap: 6, marginTop: 18, flexWrap: "wrap" }} aria-label="Legal documents">
+          {DOCS.map((d) => (
+            <button key={d.id} className={`chip ${doc === d.id ? "accent" : ""}`} style={{ cursor: "pointer", height: 26, padding: "0 10px" }} onClick={() => go({ name: "legal", doc: d.id, back: screen.back })}>
+              {d.label}
+            </button>
+          ))}
+        </nav>
+        <motion.article key={doc} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }}>
+          {doc === "terms" && <Terms />}
+          {doc === "privacy" && <Privacy />}
+          {doc === "acceptable-use" && <AcceptableUse />}
+          {doc === "licenses" && <Licenses />}
+        </motion.article>
+      </div>
+    </div>
+  );
+}
+
+function Draft() {
+  return (
+    <div className="draft" role="note">
+      <Icon.Alert size={16} />
+      <div>
+        <b>Draft for the prototype. Not reviewed by a lawyer.</b> This text describes how the prototype actually behaves, but it has not had legal review and must be reviewed before Kerf is offered to anyone outside the team. Version {TERMS_VERSION}, last updated {UPDATED}.
+      </div>
+    </div>
+  );
+}
+
+function Doc({ title, children, draft = true }: { title: string; children: ReactNode; draft?: boolean }) {
+  return (
+    <>
+      <h1>{title}</h1>
+      {draft ? <Draft /> : <p className="dim">Last updated {UPDATED}.</p>}
+      {children}
+    </>
+  );
+}
+
+function Terms() {
+  return (
+    <Doc title="Terms of Service">
+      <h2>1. What Kerf is</h2>
+      <p>Kerf is a prototype design tool. It runs in your web browser, builds 3D models from a design file, checks them, and lets an AI model (Claude, by Anthropic) edit that design file when you ask it to. By using Kerf you agree to these terms.</p>
+      <h2>2. Prototype status</h2>
+      <p>Kerf is early software provided for evaluation. Features may change or be removed, and it may contain errors. Keep your own copies of anything important by exporting it.</p>
+      <h2>3. Your designs</h2>
+      <p>You own the designs you create. Kerf stores them only in your browser and does not receive a copy. You are responsible for backing them up; clearing your browser data deletes them.</p>
+      <h2>4. Engineering responsibility</h2>
+      <ul>
+        <li>The checks Kerf runs (interference, clearances, tool access, gear meshing, motion and your own requirements) are aids. They do not cover strength, fatigue, thermal behaviour, tolerances of a specific machine or material, or regulatory requirements.</li>
+        <li>AI output can be wrong even when it sounds confident. Review every change, inspect the geometry, and test physical parts before relying on them.</li>
+        <li>Do not use Kerf as the only basis for parts where failure could injure people or damage property.</li>
+      </ul>
+      <h2>5. Your Claude API key</h2>
+      <p>The AI features use your own Anthropic API key. Requests go directly from your browser to Anthropic, are billed to your Anthropic account, and are governed by Anthropic's own terms and usage policies as well as these. You are responsible for keeping your key secure and for usage made with it.</p>
+      <h2>6. Acceptable use</h2>
+      <p>You agree to follow the Acceptable use policy, including not using Kerf to design weapons or anything intended to cause harm.</p>
+      <h2>7. Third-party software</h2>
+      <p>Kerf includes open-source components under their own licences, listed on the Open-source licences page.</p>
+      <h2>8. No warranty</h2>
+      <p>To the extent the law allows, Kerf is provided "as is", without warranties of any kind, including fitness for a particular purpose, and the people who make it are not liable for losses arising from its use, including lost designs or the performance of manufactured parts.</p>
+      <h2>9. Changes</h2>
+      <p>If these terms change, Kerf will show the new version and ask you to accept it before you continue.</p>
+      <h2>10. Contact</h2>
+      <p>Contact details will be added before public launch.</p>
+    </Doc>
+  );
+}
+
+function Privacy() {
+  return (
+    <Doc title="Privacy notice">
+      <h2>The short version</h2>
+      <p>Kerf has no server and no accounts. Your designs, history, chats and settings stay in this browser. When you chat with Claude, your browser sends the conversation directly to Anthropic's API using your key. Kerf has no analytics, tracking or advertising.</p>
+      <h2>What is stored, and where</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Where it lives</th>
+            <th>How to remove it</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Designs, version history and thumbnails</td>
+            <td>IndexedDB in this browser</td>
+            <td>Delete the project, or Settings → Data → Clear all data</td>
+          </tr>
+          <tr>
+            <td>Chat history for each project</td>
+            <td>IndexedDB in this browser (screenshots sent to Claude are not kept)</td>
+            <td>Clear the chat, delete the project, or clear all data</td>
+          </tr>
+          <tr>
+            <td>Preferences (model, display options, terms version accepted)</td>
+            <td>localStorage in this browser</td>
+            <td>Clear all data</td>
+          </tr>
+          <tr>
+            <td>Claude API key</td>
+            <td>Memory only, by default. If you choose "Remember on this device", it is encrypted with a browser key that cannot be exported and stored in IndexedDB.</td>
+            <td>Settings → Claude → Forget key, or clear all data</td>
+          </tr>
+        </tbody>
+      </table>
+      <h2>What is sent to Anthropic</h2>
+      <p>Only when you send a chat message, Kerf sends Anthropic's API (api.anthropic.com): your message, the conversation so far in that project, the current design file, check results, and images of the 3D view that Claude asks for. Anthropic processes this under its own commercial terms and privacy policy. Kerf does not send anything to Anthropic, or anywhere else, until you chat.</p>
+      <h2>What is sent elsewhere</h2>
+      <p>Nothing. The 3D kernel, checks and exports run on your device. Fonts and code are bundled with the app. If Kerf is hosted on a web server, that server sees ordinary web requests for the app's files, as with any website.</p>
+      <h2>Security</h2>
+      <ul>
+        <li>The app sets a strict Content Security Policy that only allows network connections to its own files and to api.anthropic.com.</li>
+        <li>AI output is never rendered as HTML, and imported files are size-limited and validated before use.</li>
+        <li>Anyone with access to your unlocked computer and browser profile could use a remembered key. Do not remember the key on a shared computer.</li>
+      </ul>
+      <h2>Children</h2>
+      <p>Kerf is not directed at children under 13, and an Anthropic API account is required for the AI features.</p>
+      <h2>Changes</h2>
+      <p>If this notice changes in a way that affects your data, Kerf will tell you before you continue.</p>
+    </Doc>
+  );
+}
+
+function AcceptableUse() {
+  return (
+    <Doc title="Acceptable use policy">
+      <p>Use Kerf to design things responsibly. Do not use Kerf, or its AI features, to:</p>
+      <ul>
+        <li>design firearms, firearm components or accessories that convert or enhance them, explosives or their components, or any other weapon;</li>
+        <li>design anything intended to injure people or animals, damage property, or evade safety systems;</li>
+        <li>infringe someone else's intellectual property, such as copying a protected design you have no rights to;</li>
+        <li>break the law, or break Anthropic's usage policies when using the AI features;</li>
+        <li>try to extract your API key from other users, attack the app, or overload Anthropic's services.</li>
+      </ul>
+      <p>Claude may refuse requests that conflict with these rules or with Anthropic's policies.</p>
+    </Doc>
+  );
+}
+
+const LICENCES: { name: string; use: string; licence: string; url: string }[] = [
+  { name: "Open CASCADE Technology (via replicad-opencascadejs 1.1)", use: "Exact solid modelling kernel, compiled to WebAssembly", licence: "LGPL-2.1 with the OCCT exception", url: "https://dev.opencascade.org/resources/licensing" },
+  { name: "replicad 1.1", use: "JavaScript API over OpenCASCADE", licence: "MIT", url: "https://github.com/sgenoud/replicad" },
+  { name: "three.js 0.169", use: "3D viewport", licence: "MIT", url: "https://github.com/mrdoob/three.js" },
+  { name: "React 18 and React DOM", use: "User interface", licence: "MIT", url: "https://github.com/facebook/react" },
+  { name: "CodeMirror 6 and Lezer", use: "Code editor", licence: "MIT", url: "https://github.com/codemirror/dev" },
+  { name: "Anthropic TypeScript SDK", use: "Talking to the Claude API", licence: "MIT", url: "https://github.com/anthropics/anthropic-sdk-typescript" },
+  { name: "Zustand 5", use: "App state", licence: "MIT", url: "https://github.com/pmndrs/zustand" },
+  { name: "Framer Motion 11", use: "Animation", licence: "MIT", url: "https://github.com/motiondivision/motion" },
+  { name: "Zod 4", use: "Validating imported files and tool input", licence: "MIT", url: "https://github.com/colinhacks/zod" },
+  { name: "IBM Plex Sans and Mono", use: "Typefaces", licence: "SIL Open Font License 1.1", url: "https://github.com/IBM/plex" },
+];
+
+function Licenses() {
+  return (
+    <Doc title="Open-source licences" draft={false}>
+      <p>Kerf is built on these open-source projects. Thank you to their authors.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Used for</th>
+            <th>Licence</th>
+          </tr>
+        </thead>
+        <tbody>
+          {LICENCES.map((l) => (
+            <tr key={l.name}>
+              <td>
+                <a href={l.url} target="_blank" rel="noopener noreferrer">
+                  {l.name}
+                </a>
+              </td>
+              <td>{l.use}</td>
+              <td className="mono" style={{ fontSize: 11.5 }}>
+                {l.licence}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <h2>About the OpenCASCADE licence</h2>
+      <p>Open CASCADE Technology is distributed under the GNU Lesser General Public License 2.1 with an additional exception. Kerf loads it as a separate, unmodified WebAssembly module, so it can be replaced with another compatible build. Its source code is available from the Open CASCADE project and the replicad-opencascadejs package.</p>
+      <p>The full licence texts ship with each package in the app's dependencies.</p>
+    </Doc>
+  );
+}

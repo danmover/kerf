@@ -1,0 +1,23 @@
+# Security headers for static hosts that read this file (Netlify, Cloudflare Pages).
+# Keep in step with vite.config.ts. Paths do not overlap, so no policy is merged with another.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Cross-Origin-Opener-Policy: same-origin
+
+/
+  Content-Security-Policy: default-src 'self'; script-src 'self'; worker-src 'self'; connect-src 'self' https://api.anthropic.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Frame-Options: DENY
+
+/index.html
+  Content-Security-Policy: default-src 'self'; script-src 'self'; worker-src 'self'; connect-src 'self' https://api.anthropic.com; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  X-Frame-Options: DENY
+
+# The OpenCASCADE kernel worker: the only code allowed eval, and it has no network access beyond Kerf's own files.
+/assets/worker-*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; connect-src 'self'
+
+# The feasibility solver worker: plain code, no network.
+/assets/solver.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
