@@ -122,3 +122,31 @@ require "Lid clears the board components" for hold_board: min_distance(pcb, lid)
 require "Lid screws engage the inserts by 1.5 × their diameter" for service: 8 - lid_t >= 1.5 * M3.d
 // a USB-C plug's shell reaches about 6.5 mm past its overmould, which cannot pass through the opening
 require "USB-C plug can seat (port within 1 mm of the outside)" soft for power: width / 2 - usb.opening_center.x <= 1
+
+// ── Decisions ──────────────────────────────────────────
+decision lid_fastening "Lid fastening" {
+  chose: "M3 screws into heat-set inserts"
+  by: "claude"
+  why: "The lid can come off many times without wearing out plastic threads."
+  option "M3 screws into heat-set inserts" "Strong and re-openable; needs four brass inserts pressed in with a soldering iron."
+  option "Self-tapping screws" "No inserts, but the plastic threads wear after a few openings."
+  option "Snap-fit lid" "No hardware; the clips can crack in PETG if the lid is opened often."
+}
+
+decision wall_thickness "Wall thickness" {
+  chose: "2.0 mm"
+  by: "claude"
+  why: "Five perimeters at 0.4 mm: stiff enough for a hand-held PETG box without wasting print time."
+  option "1.6 mm" { wall: 1.6mm } "Lighter and quicker to print, but the corner posts grow and crowd the board."
+  option "2.0 mm" { wall: 2mm } "Balanced stiffness and print time."
+  option "2.4 mm" { wall: 2.4mm } "Stiffer and tougher if dropped; slower to print."
+}
+
+decision board_gap "Gap around the board" {
+  chose: "1.5 mm"
+  by: "claude"
+  why: "Leaves room for board tolerances and walls that print slightly thick."
+  option "1.0 mm" { clearance: 1mm } "Snug; needs a well-calibrated printer."
+  option "1.5 mm" { clearance: 1.5mm } "Room for typical printer and board tolerances."
+  option "2.5 mm" { clearance: 2.5mm } "Easy fit for a board with parts on its edges."
+}

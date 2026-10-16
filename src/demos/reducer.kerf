@@ -188,3 +188,31 @@ require "Motor screws clear the bearing bosses" for assemble: len(p_out - (15.5,
 require "Output bearings fit the output shaft" for assemble: out_front.bore == out_d
 require "Intermediate bearings fit the 5 mm shaft" for assemble: mid_front.bore == 5
 require "Printable walls" for printable: wall >= 2
+
+// ── Decisions ──────────────────────────────────────────
+decision ratio_split "How the 12:1 is split" {
+  chose: "4 × 3"
+  by: "claude"
+  why: "A larger first stage keeps the fast pinion small and quiet, and both pinions keep 12 teeth."
+  option "4 × 3" { z2: 48, z4: 36 } "Stage 1 is 12:48, stage 2 is 12:36."
+  option "3 × 4" { z2: 36, z4: 48 } "Smaller first gear; the output gear grows and the housing gets taller."
+  option "6 × 2" { z2: 72, z4: 24 } "Very large first gear; in this layout it runs into the output shaft."
+}
+
+decision output_shaft "Output shaft" {
+  chose: "8 mm on 688 bearings"
+  by: "claude"
+  why: "8 mm carries the output torque with margin, and 688 bearings are cheap and slim."
+  option "8 mm on 688 bearings" { out_d: 8mm, out_bearing: "688" } "Common size with plenty of margin."
+  option "8 mm on 608 bearings" { out_d: 8mm, out_bearing: "608" } "Skate bearings with twice the load rating; the seats are 6 mm larger."
+  option "6 mm on 626 bearings" { out_d: 6mm, out_bearing: "626" } "Smaller shaft and gear bore; less torque margin."
+}
+
+decision housing_wall "Housing wall" {
+  chose: "3 mm"
+  by: "claude"
+  why: "Carries the motor and the bearing loads with little flex in PETG."
+  option "2 mm" { wall: 2mm } "Lighter and faster to print; enough for light loads."
+  option "3 mm" { wall: 3mm } "Stiff mounting for the motor and bearings."
+  option "4 mm" { wall: 4mm } "Stiffer still; heavier and slower to print."
+}

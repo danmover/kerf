@@ -92,7 +92,26 @@ export type Stmt =
       uses: { name: string; span: Span }[];
       expr: Expr;
       span: Span;
+    }
+  | {
+      k: "decision";
+      name: string;
+      title: string;
+      props: { name: string; value: Expr; span: Span }[];
+      options: DecisionOptionNode[];
+      span: Span;
+      nameSpan: Span;
+      /** offset just after the opening brace */
+      bodyStart: number;
     };
+
+/** One alternative of a decision: a label, an optional consequence and the parameter values it means. */
+export interface DecisionOptionNode {
+  label: string;
+  note?: string;
+  sets: { param: string; value: Expr; span: Span }[];
+  span: Span;
+}
 
 export interface Program {
   stmts: Stmt[];
@@ -109,6 +128,8 @@ export function stmtName(s: Stmt): string | undefined {
       return s.name;
     case "require":
       return s.label;
+    case "decision":
+      return s.name;
     default:
       return undefined;
   }

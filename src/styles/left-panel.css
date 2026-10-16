@@ -1242,8 +1242,20 @@ body.lp-scrubbing * {
   right: 12px;
   opacity: 0;
 }
+.lp-ver-preview {
+  position: absolute;
+  top: 9px;
+  right: 38px;
+  opacity: 0;
+}
+.lp-ver-preview.on {
+  opacity: 1;
+  color: var(--accent);
+}
 .lp-ver:hover .lp-ver-restore,
-.lp-ver-restore:focus-visible {
+.lp-ver-restore:focus-visible,
+.lp-ver:hover .lp-ver-preview,
+.lp-ver-preview:focus-visible {
   opacity: 1;
 }
 .lp-ver-diff {

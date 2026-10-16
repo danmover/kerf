@@ -14,6 +14,9 @@ import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
 import { LightingMenu } from "./LightingMenu";
 import { MaterialButton } from "./MaterialPicker";
+import { SpotChat } from "./SpotChat";
+import { Markup, toggleMarkup, useMarkup } from "./Markup";
+import { openSpot, closeSpot, useSpot } from "../app/spot";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -41,7 +44,10 @@ export function Viewport() {
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
       const s = useView.getState();
-      if (!id) return select([]);
+      if (!id) {
+        closeSpot();
+        return select([]);
+      }
       if (additive) select(s.selected.includes(id) ? s.selected.filter((x) => x !== id) : [...s.selected, id]);
       else select([id]);
       const part = useDesign.getState().model?.parts.find((p) => p.id === id);
@@ -54,11 +60,22 @@ export function Viewport() {
     if (import.meta.env.DEV) (window as unknown as { __kerfViewport?: SceneController }).__kerfViewport = c;
     c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
     c.onTurntableStop = () => useView.setState({ turntable: false });
+    c.onContext = (hit) => {
+      const part = hit && useDesign.getState().model?.parts.find((p) => p.id === hit.id);
+      if (!hit || !part) return closeSpot();
+      select([hit.id]);
+      openSpot({ partId: hit.id, label: part.label, local: hit.local, point: hit.point, normal: hit.normal });
+    };
     registerViewport({
       capture: (o) => c.capture(o),
       swatch: (m, f, col, size) => c.swatch(m, f, col, size),
       preview: (ids, look) => c.setOverride(ids, look),
       materialMode: (on) => c.setMaterialMode(on),
+      bounds: () => c.modelBounds(),
+      viewDir: () => c.viewDir(),
+      anchor: (id, local) => c.anchor(id, local),
+      snapshot: () => c.snapshot(),
+      hitAt: (x, y) => c.hitAt(x, y),
     });
     return () => {
       registerViewport(null);
@@ -109,6 +126,8 @@ export function Viewport() {
   const visibleParts = model?.parts.length ?? 0;
   const selectedParts = useMemo(() => (model ? model.parts.filter((p) => view.selected.includes(p.id)) : []), [model, view.selected]);
   const empty = model && model.parts.length === 0 && kernelStatus === "ready";
+  const spotOpen = useSpot((s) => s.spot !== null);
+  const marking = useMarkup((s) => s.on);
 
   return (
     <div className="viewport">
@@ -160,6 +179,10 @@ export function Viewport() {
         <div className="sep" />
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
+        </button>
+        <div className="sep" />
+        <button className={`icon-btn ${marking ? "active" : ""}`} onClick={() => toggleMarkup()} data-tip="Draw on the view for Claude (M)" aria-label="Draw on the view for Claude">
+          <Icon.Edit />
         </button>
         <div className="sep" />
         <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">
@@ -225,7 +248,10 @@ export function Viewport() {
 
       <Hud stage={stage} parts={visibleParts} />
 
-      <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
+      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
+
+      <SpotChat />
+      <Markup />
 
       {empty && (
         <div className="vp-empty">
@@ -392,9 +418,16 @@ function SelectionCard({ ids }: { ids: string[] }) {
         <button className="btn sm" onClick={() => useView.setState((s) => ({ hiddenIds: [...new Set([...s.hiddenIds, ...ids])], selected: [] }))}>
           <Icon.EyeOff size={13} /> Hide
         </button>
-        <button className="btn sm" onClick={() => setDraft(`About ${parts.map((q) => q.id).join(", ")}: `)}>
+        <button
+          className="btn sm"
+          onClick={() => (parts.length === 1 ? openSpot({ partId: p.id, label: p.label }) : setDraft(`About ${parts.map((q) => q.id).join(", ")}: `))}
+          data-tip={parts.length === 1 ? "Ask Claude about this part, right here" : "Ask Claude about these parts"}
+        >
           <Icon.Sparkle size={13} /> Ask
         </button>
+      </div>
+      <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
+        Right-click a spot on the model to ask about it
       </div>
     </motion.div>
   );

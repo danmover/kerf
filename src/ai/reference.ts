@@ -57,6 +57,7 @@ component name = lib.kind(args) { props and flags }           // standard parts 
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
 require "Label" [hard|soft] [for use_id, ...]: condition      // checked every rebuild; hard by default; for links it to brief uses
 brief { ... }                                                 // the design brief, once, near the top (see below)
+decision name "Title" { ask, chose, by, why, option ... }      // a recorded design choice and its alternatives (below)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -139,6 +140,26 @@ Bearings for lib.bearing(code): ${bearings}
 material: sets density (mass, the parts list) and how the part renders. finish: sets the surface; leave it out to get the material's default. color: is the base colour (filament, anodizing or paint colour; for bare metals keep a realistic metal grey or the brass/copper tone). Library hardware already has realistic finishes (black-oxide screws, zinc-plated nuts, machined brass inserts).
 ${materialTable}
 Finish meanings: ${finishTable}.
+
+## Decisions
+A decision block records a design choice: what was asked, the alternatives, which was chosen, by whom and why. It does not change geometry; the parameters do. The app lists decisions in a Decisions panel where the user can preview another option live, switch to it in one click, or fine-tune the chosen values.
+decision lid_fastening "Lid fastening" {
+  ask: "How should the lid attach?"            // optional: the question as it was put
+  chose: "M3 screws into inserts"              // the label of the chosen option
+  by: "claude"                                 // "you" (the user) or "claude"
+  why: "Re-openable many times without wearing the plastic."
+  option "M3 screws into inserts" "Strong and re-openable; adds four inserts and screws."
+  option "Snap fit" "No hardware, but the clips wear after a few dozen openings."
+}
+decision wall_thickness "Wall thickness" {
+  chose: "2.0 mm"
+  by: "claude"
+  why: "Five perimeters at 0.4 mm: stiff enough for a hand-held box."
+  option "1.6 mm" { wall: 1.6mm } "Lighter and faster to print; flexes more."
+  option "2.0 mm" { wall: 2mm } "Balanced."
+  option "2.4 mm" { wall: 2.4mm } "Stiffer and heavier."
+}
+An option's { param: value } list names parameters only; switching to that option writes those values into the params. Options without values are structural (switching them needs a design change). The chosen option's values should match the params; the panel shows any difference as "adjusted".
 
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins

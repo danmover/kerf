@@ -10,7 +10,7 @@ import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
-import type { Brief, BriefUse, DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -110,6 +110,7 @@ class Evaluator {
   parts: EvalPart[] = [];
   params: EvalParam[] = [];
   reqs: EvalRequirement[] = [];
+  decisions: EvalDecision[] = [];
   diags: Diagnostic[] = [];
   blocks: Model["blocks"] = [];
   name = "Untitled design";
@@ -182,7 +183,8 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
-    return "name" in s && s.k !== "design" ? s.name : undefined;
+    // decisions record choices; nothing reads them, so they stay out of the dependency graph
+    return "name" in s && s.k !== "design" && s.k !== "decision" ? s.name : undefined;
   }
 
   stmt(s: Stmt) {
@@ -251,7 +253,53 @@ class Evaluator {
       case "require":
         this.requirement(s);
         return;
+      case "decision":
+        this.decision(s);
+        return;
     }
+  }
+
+  // ---------------- decisions ----------------
+
+  decision(s: Extract<Stmt, { k: "decision" }>) {
+    this.blocks.push({ name: s.name, kind: "decision", span: s.span, locked: false });
+    if (this.decisions.some((d) => d.name === s.name)) throw new EvalError(`Decision "${s.name}" is already defined`, s.nameSpan);
+    const d: EvalDecision = { name: s.name, title: s.title, options: [], span: s.span, bodyStart: s.bodyStart, props: {} };
+    const KNOWN = ["ask", "chose", "by", "why"] as const;
+    for (const p of s.props) {
+      if (!(KNOWN as readonly string[]).includes(p.name)) {
+        this.diags.push({ message: `Unknown decision field "${p.name}". Use ask, chose, by or why.`, start: p.span.start, end: p.span.end, severity: "warning" });
+        continue;
+      }
+      const v = this.expr(p.value, null);
+      if (typeof v !== "string") throw new EvalError(`Decision field "${p.name}" must be text in quotes`, p.value.span);
+      (d as unknown as Record<string, string>)[p.name] = v;
+      d.props[p.name] = { span: p.span, valueSpan: p.value.span };
+    }
+    for (const o of s.options) {
+      if (d.options.some((x) => x.label === o.label)) {
+        this.diags.push({ message: `Option "${o.label}" appears twice in decision "${s.name}"`, start: o.span.start, end: o.span.end, severity: "warning" });
+        continue;
+      }
+      const sets: EvalDecision["options"][number]["sets"] = [];
+      for (const st of o.sets) {
+        // one bad value should not hide the rest of the decision
+        try {
+          const v = this.expr(st.value, null);
+          if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") throw new EvalError(`Option value for "${st.param}" must be a number, text or true/false`, st.value.span);
+          sets.push({ param: st.param, value: v, span: st.span, valueSpan: st.value.span });
+        } catch (e) {
+          if (!(e instanceof EvalError)) throw e;
+          this.diags.push({ message: `In decision "${s.name}": ${e.message}`, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
+        }
+      }
+      d.options.push({ label: o.label, note: o.note, sets, span: o.span });
+    }
+    if (d.chose !== undefined && d.options.length && !d.options.some((o) => o.label === d.chose)) {
+      const sp = d.props.chose.valueSpan;
+      this.diags.push({ message: `Decision "${s.name}" chose "${d.chose}", which is not one of its options`, start: sp.start, end: sp.end, severity: "warning" });
+    }
+    this.decisions.push(d);
   }
 
   // ---------------- expressions ----------------
@@ -1025,6 +1073,12 @@ class Evaluator {
     for (const p of this.params) p.usedBy = usedBy.get(p.name) ?? [];
     for (const g of this.brief?.givens ?? []) g.usedBy = usedBy.get(g.name) ?? [];
     for (const p of this.parts) p.deps = [...(this.deps.get(p.name) ?? [])];
+    // an option may name only parameters (defined anywhere in the file)
+    const paramNames = new Set(this.params.map((p) => p.name));
+    for (const d of this.decisions)
+      for (const o of d.options)
+        for (const st of o.sets)
+          if (!paramNames.has(st.param)) this.diags.push({ message: `Option "${o.label}" sets "${st.param}", which is not a parameter`, start: st.span.start, end: st.span.end, severity: "warning" });
     return {
       name: this.name,
       notes: this.notes,
@@ -1032,6 +1086,7 @@ class Evaluator {
       params: this.params,
       parts: this.parts,
       requirements: this.reqs,
+      decisions: this.decisions,
       diagnostics: [...parseDiags, ...this.diags],
       graph: { nodes, edges },
       blocks: this.blocks,

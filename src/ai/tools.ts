@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { useDesign, whenChecked, solveWith, evaluateOnly } from "../core/engine";
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
+import { decisionsSummary } from "../core/decisions";
 import type { Model } from "../core/model";
 import type { CheckReport } from "../core/checks";
 import { commitSource } from "../app/project";
@@ -221,10 +222,11 @@ export const TOOL_DEFS = [
   {
     name: "ask_user",
     description:
-      "Ask the user to decide between options (a tradeoff, a conflict, a missing dimension). Shows a choice card and ends your turn; the user's choice comes back as this tool's result. Use when the decision changes their goal or a visible outcome. Give 2 to 4 options, each with a one-line consequence, and mark the one you recommend.",
+      "Ask the user to decide between options (a tradeoff, a conflict, a missing dimension). Shows a choice card and ends your turn; the user's choice comes back as this tool's result. Use when the decision changes their goal or a visible outcome. Give 2 to 4 options, each with a one-line consequence, and mark the one you recommend. When an option comes down to parameter values, give them in set: the user can then preview each option live in the 3D view with its checks, fine-tune the values, and Kerf applies them when they choose. Kerf records the answer as a decision block in the source.",
     input_schema: {
       type: "object" as const,
       properties: {
+        title: { type: "string", description: "Two to four words naming the decision for the decision log, e.g. 'Enclosure width'." },
         question: { type: "string", description: "The question, short and specific." },
         options: {
           type: "array",
@@ -236,6 +238,11 @@ export const TOOL_DEFS = [
               label: { type: "string", description: "Two to five words." },
               consequence: { type: "string", description: "What happens if chosen, one sentence." },
               recommended: { type: "boolean" },
+              set: {
+                type: "object",
+                description: "Parameter values this option means, by parameter name, in mm and degrees, e.g. {\"width\": 77, \"corner_r\": 5}. Only unlocked params. Leave out for options that need other changes.",
+                additionalProperties: { type: ["number", "string", "boolean"] },
+              },
             },
             required: ["label", "consequence"],
             additionalProperties: false,
@@ -248,6 +255,32 @@ export const TOOL_DEFS = [
   },
   BUILD_TOOL,
   REVIEW_TOOL,
+  {
+    name: "suggest_next_steps",
+    description:
+      "Offer the user two to four likely follow-ups as one-click chips under your reply: a refinement they will probably want, a check or view worth seeing, or the next part of the design. Each prompt is sent as the user's message when clicked, so write it in their voice and make it specific to this design. Call it once, in the same response as your final reply, after the text. It ends your turn. Skip it after a plain answer to a question.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        suggestions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 4,
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string", description: "Two to six words, e.g. 'Add a cable notch'." },
+              prompt: { type: "string", description: "The full message sent when clicked, e.g. 'Add a 10 × 6 mm cable notch to the back wall, centred.'" },
+            },
+            required: ["label", "prompt"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["suggestions"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const EditInput = z.object({
@@ -258,9 +291,15 @@ const EditInput = z.object({
 const WriteInput = z.object({ summary: z.string().min(1).max(300), source: z.string().min(1).max(MAX_SOURCE_CHARS), unlock_ok: z.boolean().optional() });
 const FixInput = z.object({ hold: z.array(z.string().max(80)).max(50).optional() });
 const ViewInput = z.object({ view: z.enum(VIEW_NAMES), highlight: z.array(z.string().max(80)).max(30).optional(), section: z.enum(["x", "y", "z"]).optional() });
+const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
 const AskInput = z.object({
+  title: z.string().max(80).optional(),
   question: z.string().min(1).max(500),
-  options: z.array(z.object({ label: z.string().min(1).max(80), consequence: z.string().max(300), recommended: z.boolean().optional() })).min(2).max(4),
+  options: z
+    .array(z.object({ label: z.string().min(1).max(80), consequence: z.string().max(300), recommended: z.boolean().optional(), set: SetInput.optional() }))
+    .min(2)
+    .max(4)
+    .refine((os) => new Set(os.map((o) => o.label)).size === os.length, "option labels must be different"),
 });
 
 const Num = z.number().finite();
@@ -456,13 +495,27 @@ export type ToolResultContent =
 
 type V3 = [number, number, number];
 
+const SuggestInput = z.object({
+  suggestions: z.array(z.object({ label: z.string().min(1).max(60), prompt: z.string().min(1).max(600) })).min(1).max(4),
+});
+
+export interface AskOption {
+  label: string;
+  consequence: string;
+  recommended?: boolean;
+  set?: Record<string, number | string | boolean>;
+}
+
+
 export interface ToolOutcome {
   content: ToolResultContent;
   isError?: boolean;
   /** what the chat shows on the tool card */
   card: { title: string; detail?: string; diff?: { before: string; after: string }; image?: string; status?: "done" | "error" };
   /** ends the turn and waits for the user */
-  ask?: { question: string; options: { label: string; consequence: string; recommended?: boolean }[] };
+  ask?: { title?: string; question: string; options: AskOption[] };
+  /** follow-ups to show as chips; ends the turn without another request */
+  suggest?: { label: string; prompt: string }[];
 }
 
 // ---------- summaries ----------
@@ -500,6 +553,8 @@ export function modelSummary(m: Model | null): string {
           .join("\n"),
     );
   }
+  const decisions = decisionsSummary(m);
+  if (decisions) lines.push(decisions);
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
   const warns = m.diagnostics.filter((d) => d.severity === "warning");
@@ -730,7 +785,25 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
     case "ask_user": {
       const p = AskInput.safeParse(input);
       if (!p.success) return invalid(p.error);
-      return { content: "", card: { title: p.data.question }, ask: { question: p.data.question, options: p.data.options } };
+      // option values must name unlocked parameters of the right type
+      const model = useDesign.getState().model;
+      const problems: string[] = [];
+      for (const o of p.data.options) {
+        for (const [k, v] of Object.entries(o.set ?? {})) {
+          const q = model?.params.find((x) => x.name === k);
+          if (!q) problems.push(`option "${o.label}" sets "${k}", which is not a parameter`);
+          else if (q.locked) problems.push(`option "${o.label}" sets "${k}", which the user locked`);
+          else if (typeof q.value !== typeof v) problems.push(`option "${o.label}" gives "${k}" a ${typeof v}, but it is a ${typeof q.value}`);
+        }
+        if (Object.keys(o.set ?? {}).length > 20) problems.push(`option "${o.label}" sets more than 20 parameters`);
+      }
+      if (problems.length) return { isError: true, content: `The question was not shown: ${problems.join("; ")}. Fix the option values (or leave set out for that option) and ask again.`, card: { title: "Question needs fixing", detail: problems[0], status: "error" } };
+      return { content: "", card: { title: p.data.question }, ask: { title: p.data.title, question: p.data.question, options: p.data.options } };
+    }
+    case "suggest_next_steps": {
+      const p = SuggestInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      return { content: "Shown to the user as chips. A click sends that prompt as their next message.", card: { title: "Suggested next steps" }, suggest: p.data.suggestions };
     }
   }
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
@@ -760,4 +833,5 @@ export const TOOL_TITLES: Record<string, string> = {
   ask_user: "Asking you",
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
+  suggest_next_steps: "Suggesting next steps",
 };

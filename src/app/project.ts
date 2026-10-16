@@ -17,6 +17,16 @@ import { forgetAllRuns, forgetRuns } from "../agents/progress";
 
 export type SaveState = "saved" | "saving" | "unsaved" | "error" | "memory";
 
+/** A temporary source shown in the viewport and checks without becoming a version. */
+export interface Preview {
+  key: string;
+  label: string;
+  /** makes the previewed source real; shown as Apply on the preview banner */
+  apply?: () => void;
+  /** no banner (live adjustment while dragging a value) */
+  quiet?: boolean;
+}
+
 interface ProjectState {
   projects: ProjectRecord[];
   loaded: boolean;
@@ -26,6 +36,7 @@ interface ProjectState {
   redo: string[];
   save: SaveState;
   saveError: string;
+  preview: Preview | null;
 }
 
 export const useProject = create<ProjectState>(() => ({
@@ -37,6 +48,7 @@ export const useProject = create<ProjectState>(() => ({
   redo: [],
   save: "saved",
   saveError: "",
+  preview: null,
 }));
 
 const get = useProject.getState;
@@ -45,6 +57,8 @@ const set = useProject.setState;
 /** last committed source and its model, the base for the next version's summary */
 let committed: { source: string; model: Model | null } = { source: "", model: null };
 let typingTimer: ReturnType<typeof setTimeout> | null = null;
+/** the real source while a preview is showing */
+let previewBase: string | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 const openListeners = new Set<(p: ProjectRecord) => void>();
 export const onProjectOpen = (fn: (p: ProjectRecord) => void) => {
@@ -81,7 +95,8 @@ export async function openProject(id: string) {
   const versions = await db.versionsFor(id);
   resetView();
   releaseAssetUrls();
-  set({ current: p, versions, undo: [], redo: [], save: db.persistent ? "saved" : "memory" });
+  previewBase = null;
+  set({ current: p, versions, undo: [], redo: [], save: db.persistent ? "saved" : "memory", preview: null });
   loadSource(p.source);
   committed = { source: p.source, model: useDesign.getState().model };
   // an empty design starts on its brief
@@ -91,6 +106,7 @@ export async function openProject(id: string) {
 }
 
 export async function closeProject() {
+  endPreview();
   await flushPending();
   set({ current: null, versions: [], undo: [], redo: [] });
   await refreshProjects();
@@ -109,7 +125,7 @@ async function saveNow() {
   saveTimer = null;
   const cur = get().current;
   if (!cur) return;
-  const source = useDesign.getState().source;
+  const source = previewBase ?? useDesign.getState().source;
   const updated: ProjectRecord = { ...cur, source, updatedAt: Date.now() };
   set({ current: updated, save: db.persistent ? "saving" : "memory" });
   try {
@@ -143,10 +159,13 @@ function summarise(model: Model | null, fallback: string) {
  * Used by the parameter panel, the AI, restore and the structure tree.
  */
 export function commitSource(source: string, author: VersionRecord["author"], message?: string, opts: { undoBase?: string } = {}) {
+  // a commit made while previewing builds on what was previewed; one undo goes back past both
+  const base = settlePreview();
+  if (base !== null && source === base) return setSource(base);
   if (typingTimer) commitTyping();
   if (source === committed.source && source === useDesign.getState().source) return useDesign.getState().model!;
   // a parallel build previews uncommitted states; undo goes back to before it started
-  const prev = opts.undoBase ?? useDesign.getState().source;
+  const prev = opts.undoBase ?? base ?? useDesign.getState().source;
   const model = setSource(source);
   set((s) => ({ undo: [...s.undo, prev].slice(-200), redo: [] }));
   void addVersion(author, message ?? summarise(model, "Edited design"), source);
@@ -166,6 +185,7 @@ function adoptDesignName(model: Model | null) {
 
 /** Live edit from the code editor: evaluate now, record a version once typing pauses. */
 export function typeSource(source: string) {
+  settlePreview();
   setSource(source);
   scheduleSave();
   if (typingTimer) clearTimeout(typingTimer);
@@ -184,6 +204,8 @@ function commitTyping() {
 }
 
 export function undo() {
+  // undo while previewing just ends the preview
+  if (previewBase !== null) return endPreview(), true;
   if (typingTimer) commitTyping();
   const { undo: u } = get();
   if (!u.length) return false;
@@ -197,6 +219,7 @@ export function undo() {
 }
 
 export function redo() {
+  if (previewBase !== null) return endPreview(), true;
   const { redo: r } = get();
   if (!r.length) return false;
   const next = r[r.length - 1];
@@ -212,6 +235,42 @@ export function restoreVersion(v: VersionRecord) {
   const when = new Date(v.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   commitSource(v.source, "you", `Restored the version from ${when}`);
   toast({ kind: "success", title: "Version restored", detail: "Undo brings back what you had before." });
+}
+
+// ---------- previews ----------
+
+/**
+ * Show another source in the viewport and checks without recording it. The
+ * first preview remembers the real source; later ones replace the shown one.
+ */
+export function previewSource(preview: Preview, source: string) {
+  if (typingTimer) commitTyping();
+  if (previewBase === null) previewBase = useDesign.getState().source;
+  set({ preview });
+  setSource(source);
+}
+
+/** Return to the real source. With a key, only that preview ends. */
+export function endPreview(key?: string) {
+  if (previewBase === null || (key && get().preview?.key !== key)) return;
+  const base = previewBase;
+  previewBase = null;
+  set({ preview: null });
+  setSource(base);
+}
+
+/** The real source, whether or not a preview is showing. */
+export function realSource(): string {
+  return previewBase ?? useDesign.getState().source;
+}
+
+/** Stop previewing and keep what is shown; returns the real source it replaced. */
+function settlePreview(): string | null {
+  if (previewBase === null) return null;
+  const base = previewBase;
+  previewBase = null;
+  set({ preview: null });
+  return base;
 }
 
 export async function flushPending() {

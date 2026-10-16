@@ -14,6 +14,10 @@ import { useProject } from "../app/project";
 import { useView } from "../app/view";
 import { useChat } from "../ai/chat";
 import { useVoice } from "../voice/voice";
+import { PreviewBanner } from "../ui/PreviewBanner";
+import { PlanHud } from "../ui/PlanHud";
+import { RefViewer } from "../ui/RefViewer";
+import { SketchPad } from "../ui/SketchPad";
 import "../styles/phone.css";
 
 export const PHONE_QUERY = "(max-width: 760px)";
@@ -90,9 +94,13 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
           </div>
         )}
         <div className="phone-view">
+          <div className="plan-hud-anchor" style={{ bottom: 0 }}>
+            <PlanHud />
+          </div>
           <ErrorBoundary label="3D view">
             <Viewport />
           </ErrorBoundary>
+          <PreviewBanner />
         </div>
         <nav className="phone-tabs" role="tablist" aria-label="Panels">
           {tabs.map((t) => (
@@ -121,6 +129,8 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
           </div>
         </div>
       </div>
+      <RefViewer />
+      <SketchPad />
     </div>
   );
 }

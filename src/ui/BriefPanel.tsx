@@ -330,7 +330,7 @@ function Intake({ hasParts }: { hasParts: boolean }) {
     const ask = hasParts
       ? "I started the brief. Fill in the rest from what this design already does and what I wrote (mark what you infer as assumed), link the existing requirements to the uses, then tell me what you assumed."
       : `Here is what I need${purpose.trim() ? `: ${purpose.trim()}` : ""}.${setting.trim() ? ` It is used ${setting.trim().replace(/^used\s+/i, "")}.` : ""}${process ? ` I will make it by ${process}.` : ""} Fill in the rest of the brief with sensible assumptions marked as assumed, then design it.`;
-    void sendMessage(ask, files);
+    void sendMessage(ask, { files });
   };
   const ready = !!purpose.trim() || files.length > 0;
 

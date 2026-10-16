@@ -2,9 +2,12 @@
 // who made it, how much it changed, its diff and a one-click restore.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useMemo, useState } from "react";
-import { useDesign } from "../../core/engine";
-import { useProject, restoreVersion, undo, redo } from "../../app/project";
+import { useEffect, useMemo, useState } from "react";
+import { useProject, restoreVersion, undo, redo, previewSource, endPreview } from "../../app/project";
+import { hoverParts } from "../../app/view";
+import { changesBetween } from "../../core/changes";
+import { useChat } from "../../ai/chat";
+import { useRealModel } from "../useRealModel";
 import { lineDiff, diffStats } from "../../core/sourceEdit";
 import type { VersionRecord } from "../../persist/db";
 import { Icon } from "../icons";
@@ -33,7 +36,8 @@ export function HistoryTools() {
 export function HistoryTab() {
   useTick();
   const versions = useProject((s) => s.versions);
-  const source = useDesign((s) => s.source);
+  // the real design, not a version being previewed
+  const { source } = useRealModel();
   const [open, setOpen] = useState<string | null>(null);
   const list = useMemo(() => [...versions].reverse(), [versions]);
   const currentId = list.find((v) => v.source === source)?.id;
@@ -78,6 +82,12 @@ function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; pr
   const stats = useMemo(() => (prev ? diffStats(prev.source, v.source) : null), [prev, v]);
   const diff = useMemo(() => (open ? lineDiff(prev?.source ?? "", v.source, 1) : []), [open, prev, v]);
   const hash = useMemo(() => shortHash(v.source), [v.source]);
+  const parts = useMemo(() => (open && prev ? changesBetween(prev.source, v.source).parts : []), [open, prev, v]);
+  const key = `version:${v.id}`;
+  const showing = useProject((s) => s.preview?.key === key);
+  // Claude edits the design on screen, so no previews while it works
+  const busy = useChat((s) => s.busy);
+  useEffect(() => () => endPreview(key), [key]);
   return (
     <div className={`lp-ver ${current ? "current" : ""} ${open ? "open" : ""} ${v.author}`}>
       <div className="lp-ver-rail" aria-hidden="true">
@@ -100,6 +110,19 @@ function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; pr
         </button>
         {current && <span className="lp-ver-now">current</span>}
         {!current && (
+          <button
+            className={`lp-icon-btn lp-ver-preview ${showing ? "on" : ""}`}
+            aria-pressed={showing}
+            disabled={busy && !showing}
+            onClick={() => (showing ? endPreview(key) : previewSource({ key, label: `Version: ${v.message}`, apply: () => restoreVersion(v) }, v.source))}
+            aria-label={showing ? "Stop previewing" : "Preview this version in 3D"}
+            data-tip={showing ? "Stop previewing" : "Show this version in the 3D view without restoring it"}
+            data-tip-pos="left"
+          >
+            {showing ? <Icon.EyeOff size={13} /> : <Icon.Eye size={13} />}
+          </button>
+        )}
+        {!current && (
           <button className="lp-icon-btn lp-ver-restore" onClick={() => restoreVersion(v)} aria-label="Restore this version" data-tip="Restore this version" data-tip-pos="left">
             <G.Restore size={13} />
           </button>
@@ -107,6 +130,16 @@ function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; pr
         <AnimatePresence initial={false}>
           {open && (
             <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }} style={{ overflow: "hidden" }}>
+              {parts.length > 0 && (
+                <div className="turn-parts" onMouseLeave={() => hoverParts([])}>
+                  {parts.slice(0, 8).map((c) => (
+                    <span key={c.id} className={`tp ${c.kind}`} onMouseEnter={() => hoverParts([c.id])}>
+                      <span className="m">{{ added: "+", removed: "−", changed: "~", moved: "→" }[c.kind]}</span>
+                      {c.label}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="diff lp-ver-diff">
                 {diff.length ? (
                   diff.map((l, i) => (

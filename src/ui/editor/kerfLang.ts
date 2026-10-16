@@ -12,7 +12,7 @@ import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 import { BRIEF_FIELDS } from "../../lang/evaluator";
 
-const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require"]);
+const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision"]);
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
 const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
@@ -57,6 +57,7 @@ const parser: StreamParser<St> = {
       if (OPS_KW.has(w)) return "operatorKeyword";
       if (KEYWORDS.has(w)) return w === "true" || w === "false" ? "bool" : "controlKeyword";
       if (w === "lib") return "namespace";
+      if (w === "option" && stream.match(/^\s*"/, false)) return "controlKeyword";
       if (CONSTS.has(w)) return "constant";
       if (stream.peek() === "(" && BUILTIN_FNS.has(w)) return "builtin";
       if (stream.peek() === ":") return "propertyName";
@@ -162,7 +163,7 @@ export function kerfCompletions(getModel: () => Model | null) {
     const defined: Completion[] = [];
     if (model) {
       for (const p of model.params) defined.push({ label: p.name, type: "variable", detail: `param = ${typeof p.value === "number" ? +p.value.toFixed(3) : String(p.value)}`, info: p.desc });
-      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require") defined.push({ label: b.name, type: b.kind === "let" || b.kind === "given" ? "variable" : "class", detail: b.kind });
+      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require" && b.kind !== "decision") defined.push({ label: b.name, type: b.kind === "let" || b.kind === "given" ? "variable" : "class", detail: b.kind });
       for (const u of model.brief?.uses ?? []) defined.push({ label: u.id, type: "constant", detail: "use", info: u.text });
     }
     return { from: word.from, options: [...defined, ...fnCompletions, ...consts, ...kw, ...props, ...briefProps, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };

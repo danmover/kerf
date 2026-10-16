@@ -48,6 +48,7 @@ export const KEYWORDS = new Set([
   "false",
   "note",
   "brief",
+  "decision",
 ]);
 
 /** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */

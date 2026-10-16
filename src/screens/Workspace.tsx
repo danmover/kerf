@@ -18,6 +18,7 @@ import { PhoneWorkspace, usePhoneLayout } from "./PhoneWorkspace";
 import { PlanHud } from "../ui/PlanHud";
 import { RefViewer } from "../ui/RefViewer";
 import { SketchPad } from "../ui/SketchPad";
+import { PreviewBanner } from "../ui/PreviewBanner";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
@@ -52,6 +53,7 @@ export function Workspace() {
             <ErrorBoundary label="3D view">
               <Viewport />
             </ErrorBoundary>
+            <PreviewBanner />
             {dockOpen && <Splitter dir="h" style={{ bottom: dock }} onDrag={(d) => setDock(dock - d)} onEnd={saveDock} />}
             <ErrorBoundary label="Editor">
               <Dock projectKey={project.id} />
@@ -110,7 +112,8 @@ function useThumbnails() {
     if (stage !== "done" || rev === last.current) return;
     const t = setTimeout(async () => {
       const vp = viewport();
-      if (!vp || useDesign.getState().rev !== rev) return;
+      // a preview is not the design: keep the thumbnail of the real one
+      if (!vp || useDesign.getState().rev !== rev || useProject.getState().preview) return;
       if (!useDesign.getState().model?.parts.length) return;
       try {
         const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12 });
