@@ -60,6 +60,7 @@ export type ShapeRecipe =
   | { t: "prism"; pts: V2[]; h: number; at: V3; dir: V3; rot: number }
   | { t: "rrect"; w: number; h: number; r: number; depth: number; at: V3; dir: V3; center: boolean }
   | { t: "revolve"; pts: V2[]; at: V3; dir: V3 }
+  | { t: "flight"; d: number; core_d: number; pitch: number; length: number; tip: number; root: number; at: V3; dir: V3; left: boolean }
   | { t: "gear"; m: number; z: number; w: number; bore: number; at: V3; dir: V3; phase: number; pa: number; backlash: number }
   | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number; lead?: number; thread?: ThreadSpec3; threadName?: string; fit?: string }
   | { t: "xform"; shape: ShapeRecipe; xf: Xform[] }

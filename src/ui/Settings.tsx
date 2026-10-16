@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, type Effort } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, MIN_STEPS, MAX_STEPS, type Effort } from "../app/settings";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
 import { forgetApiKey, isRemembered, keyHint } from "../persist/vault";
 import { storageEstimate } from "../persist/db";
@@ -186,13 +186,19 @@ function AiSettings() {
         <Row t="Show Claude's reasoning" d="Shows a summary of Claude's thinking above each answer, collapsed by default.">
           <Toggle on={s.showThinking} onChange={(v) => updateSettings({ showThinking: v })} label="Show Claude's reasoning" />
         </Row>
-        <Row t="Steps per message" d="The most tool calls (edits, checks, views) Claude can make for one message before it stops and reports. Higher lets it finish bigger revisions; each step costs tokens.">
+        <Row t="Steps per message" d="The most rounds of tool calls (edits, checks, views, part lookups) Claude can make for one message before it stops and reports. Designing a whole machine takes about 20 to 40; each step costs tokens.">
           <div className="row" style={{ gap: 8, minWidth: 170 }}>
-            <input type="range" min={4} max={40} step={1} value={s.maxSteps} onChange={(e) => updateSettings({ maxSteps: Number(e.target.value) })} aria-label="Steps per message" style={{ flex: 1 }} />
+            <input type="range" min={MIN_STEPS} max={MAX_STEPS} step={1} value={s.maxSteps} onChange={(e) => updateSettings({ maxSteps: Number(e.target.value) })} aria-label="Steps per message" style={{ flex: 1 }} />
             <span className="mono" style={{ width: 22, textAlign: "right" }}>
               {s.maxSteps}
             </span>
           </div>
+        </Row>
+        <Row
+          t="Search the web for parts"
+          d="When the parts catalog has nothing suitable, Claude can search the web and read product pages to find a real part with a price and a link. Anthropic runs the searches and bills them to your API key ($10 per 1,000 searches at the time of writing, plus the tokens the pages use). Results come from the open web, so check a part before you buy it."
+        >
+          <Toggle on={s.webSearch} onChange={(v) => updateSettings({ webSearch: v, webNotice: false })} label="Search the web for parts" />
         </Row>
       </Section>
 
@@ -372,6 +378,7 @@ function About() {
           <li>Voice input is turned into text on this device when the browser can. Otherwise the browser's own speech service hears your audio, only if you allow it. Kerf never records or uploads audio.</li>
           <li>Your key is kept in memory unless you choose to remember it, in which case it is encrypted with a browser key that cannot be exported.</li>
           <li>A strict Content Security Policy allows network connections only to Kerf itself and api.anthropic.com. AI output is never rendered as HTML.</li>
+          <li>When web search is on, Anthropic's servers do the searching and page reading; this browser still talks only to api.anthropic.com. Links to sources open in a new tab only when you click them.</li>
           <li>Imported files are size-limited and validated before use.</li>
         </ul>
       </Section>

@@ -33,6 +33,10 @@ export interface Settings {
   quality: "draft" | "balanced" | "high";
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
+  /** let Claude search the web and read pages (Anthropic's server tools) to find parts the catalog lacks */
+  webSearch: boolean;
+  /** someone who used Kerf before web search existed has yet to be told it is on and what it costs */
+  webNotice: boolean;
   /** when an independent reviewer checks Claude's changes before it reports back */
   selfReview: SelfReview;
   /** review rounds per reply: the first review plus re-checks after fixes */
@@ -61,7 +65,15 @@ export interface Settings {
   keepWarm: number;
   /** show what each reply cost and saved */
   showCost: boolean;
+  /** version of these defaults the stored settings were last migrated to */
+  rev: number;
 }
+
+/** Steps per message: enough for Claude to design, wire and check a whole machine in one go. */
+export const DEFAULT_STEPS = 30;
+export const MIN_STEPS = 4;
+export const MAX_STEPS = 80;
+const SETTINGS_REV = 2;
 
 export type VoiceSend = "review" | "auto";
 
@@ -75,7 +87,9 @@ const DEFAULTS: Settings = {
   lighting: "studio",
   lightAngle: 0,
   quality: "balanced",
-  maxSteps: 16,
+  maxSteps: DEFAULT_STEPS,
+  webSearch: true,
+  webNotice: false,
   selfReview: "auto",
   reviewRounds: 2,
   termsAccepted: null,
@@ -91,6 +105,7 @@ const DEFAULTS: Settings = {
   routeQuick: true,
   keepWarm: 30,
   showCost: true,
+  rev: SETTINGS_REV,
 };
 
 /** keep-warm durations the settings offer, in minutes */
@@ -111,7 +126,14 @@ function load(): Settings {
     }
     if (!MODELS.some((m) => m.id === out.model)) out.model = DEFAULTS.model;
     if (!["low", "medium", "high", "xhigh", "max"].includes(out.effort)) out.effort = DEFAULTS.effort;
-    out.maxSteps = Math.min(40, Math.max(4, Math.round(out.maxSteps)));
+    // settings saved before rev 2 had no rev; their untouched 16-step default becomes the new default
+    if (typeof v.rev !== "number" || v.rev < 2) {
+      if (v.maxSteps === undefined || v.maxSteps === 16) out.maxSteps = DEFAULT_STEPS;
+      // web search arrived switched on: tell them once, before it can cost them anything
+      if (v.webSearch === undefined) out.webNotice = true;
+    }
+    out.rev = SETTINGS_REV;
+    out.maxSteps = Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.round(Number.isFinite(out.maxSteps) ? out.maxSteps : DEFAULT_STEPS)));
     if (out.voiceSend !== "review" && out.voiceSend !== "auto") out.voiceSend = DEFAULTS.voiceSend;
     if (!/^([a-z]{2,3}(-[A-Za-z0-9]{2,8})*)?$/.test(out.voiceLang)) out.voiceLang = DEFAULTS.voiceLang;
     if (!LIGHTING_IDS.includes(out.lighting)) out.lighting = DEFAULTS.lighting;

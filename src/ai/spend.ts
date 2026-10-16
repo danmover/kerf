@@ -81,7 +81,8 @@ export const promptTokens = (u: Usage) => u.input_tokens + (u.cache_creation_inp
  */
 export function counterfactualCost(model: string, u: Usage): number {
   const cached = (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
-  return costOf(model, { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cache_read_input_tokens: cached });
+  // the design model would have made the same web searches
+  return costOf(model, { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cache_read_input_tokens: cached, server_tool_use: u.server_tool_use });
 }
 
 /**

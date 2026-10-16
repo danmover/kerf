@@ -4,7 +4,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fakeClaude, normalized, type Turn } from "./fakeClaude";
-import { bindingKey } from "../src/ai/history";
 
 const mem = vi.hoisted(() => ({
   store: new Map<string, unknown>(),
@@ -148,7 +147,8 @@ describe("thinking blocks stay valid", () => {
     await saved();
     const rec = mem.store.get("p1") as { history: { content: { type: string; text?: string }[] }[]; binding?: string; validBefore?: number };
     rec.history[0].content[1].text = "make a hook";
-    rec.binding = bindingKey([{ type: "text", text: mem.prompt }], mem.tools);
+    // the prompt and tools as sent, web search included
+    rec.binding = chat.currentBinding();
     rec.validBefore = rec.history.length;
     api.script.push({ text: "A hook." });
     await chat.loadChat("p1");

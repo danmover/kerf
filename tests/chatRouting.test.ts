@@ -87,7 +87,8 @@ describe("choosing a model for each turn", () => {
     expect(api.requests[0].output_config?.effort).toBe("medium");
     // the same conversation the design model would have seen
     expect(api.requests[0].system).toEqual([{ type: "text", text: "You design mechanical parts.", cache_control: { type: "ephemeral" } }]);
-    expect((api.requests[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["get_design", "run_checks", "edit_design"]);
+    // web search included: thinking blocks are bound to the tools, so every model gets the same list
+    expect((api.requests[0].tools as { name: string }[]).map((t) => t.name)).toEqual(["get_design", "run_checks", "edit_design", "web_search", "web_fetch"]);
     expect(mem.ran).toEqual(["get_design"]);
 
     const [cost] = costs();
@@ -167,6 +168,51 @@ describe("handing over to the design model", () => {
     // the design model continues after the read, as an append to the conversation
     expect(normalized(api.requests[2])).toBe(normalized(api.requests[1]));
     expect(api.dropped).toEqual([]);
+  });
+
+  it("lets the quick model search the web, and leaves its search out when it hands over for a change", async () => {
+    const search = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "M5 shaft collar" } };
+    const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", url: "https://www.example.com/collar", title: "M5 shaft collar", encrypted_content: "x", page_age: null }] };
+    useApi([{ raw: [search, found, { type: "tool_use", id: "toolu_q", name: "edit_design", input: {} }], stop: "tool_use", searches: 1 }, { text: "Added a collar." }], { route: "quick" });
+    await chat.sendMessage("how wide is the base?");
+    expect(errors()).toEqual([]);
+    expect(api.requests.map((r) => r.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
+    // the design model starts from the same conversation with the same tools; the quick model's search row goes with its answer
+    expect(normalized(api.requests[1])).toBe(normalized(api.requests[0]));
+    expect(items().some((i) => i.kind === "tool" && i.web)).toBe(false);
+    expect(replies().map((r) => r.text)).toEqual(["Added a collar."]);
+  });
+
+  it("resumes a quick model's paused search, then hands over without the paused turn", async () => {
+    const search = { type: "server_tool_use", id: "srvtoolu_2", name: "web_search", input: { query: "6808 bearing" } };
+    const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_2", content: [] };
+    useApi([{ raw: [search], stop: "pause_turn" }, { raw: [found, { type: "tool_use", id: "toolu_p", name: "edit_design", input: {} }], stop: "tool_use", searches: 1 }, { text: "Changed the bearing." }], { route: "quick" });
+    await chat.sendMessage("how wide is the base?");
+    expect(errors()).toEqual([]);
+    expect(api.requests.map((r) => r.model)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5", "claude-opus-5-5"]);
+    // the pause is resumed with the paused turn sent back and no new message
+    expect(api.requests[1].messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    // the design model answers the message afresh
+    expect(normalized(api.requests[2])).toBe(normalized(api.requests[0]));
+    expect(chat.chatHistory().map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(items().some((i) => i.kind === "tool" && i.web)).toBe(false);
+    expect(replies().map((r) => r.text)).toEqual(["Changed the bearing."]);
+    expect(api.dropped).toEqual([]);
+  });
+
+  it("counts web searches at $0.01 each in the cost under the reply", async () => {
+    const search = { type: "server_tool_use", id: "srvtoolu_3", name: "web_search", input: { query: "NEMA 17 price" } };
+    const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_3", content: [] };
+    useApi([{ raw: [search, found, { type: "text", text: "About $14." }], stop: "end_turn", searches: 2 }], { route: "quick" });
+    await chat.sendMessage("how wide is the base?");
+    const [cost] = costs();
+    const quick = cost.spend.byKind.quick![0];
+    // 2 searches are $0.02; the tokens add a fraction of a cent
+    expect(quick.cost).toBeGreaterThan(0.02);
+    expect(quick.cost).toBeLessThan(0.021);
+    // the design model would have searched too, so the saving is in the tokens alone
+    expect(cost.spend.saved).toBeGreaterThan(0);
+    expect(cost.spend.saved).toBeLessThan(0.001);
   });
 
   it("answers the quick question again on the design model when asked", async () => {

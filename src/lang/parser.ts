@@ -25,6 +25,9 @@ export class ParseError extends Error {
 
 const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "brief", "decision", "sketch", "analysis"]);
 
+/** Machine statements. They are contextual words, not keywords, so older designs can still use them as names. */
+const MACHINE_STMTS = new Set(["wire", "net", "firmware", "test", "buy"]);
+
 /** Entries inside `brief { ... }` that are not `field: value` pairs. Not keywords, so they stay usable as names elsewhere. */
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
 const SKETCH_ENTITIES = new Set<SketchEntityKind>(["point", "line", "circle", "arc"]);
@@ -122,7 +125,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.machineStmtAhead()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -138,6 +141,70 @@ class Parser {
     return this.is("ident", "drawing") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
   }
 
+  /** wire a.X -> b.Y, net NAME: ..., firmware NAME { }, test "label": ... */
+  machineStmtAhead(): boolean {
+    const tk = this.peek();
+    if (tk.kind !== "ident" || !MACHINE_STMTS.has(tk.value)) return false;
+    switch (tk.value) {
+      case "wire":
+        return this.is("ident", undefined, 1);
+      case "net":
+        return this.is("ident", undefined, 1) && this.isOp(":", 2);
+      case "firmware":
+        return this.is("ident", undefined, 1) && this.isOp("{", 2);
+      case "test":
+      case "buy":
+        return this.is("str", undefined, 1);
+    }
+    return false;
+  }
+
+  machineStmt(): Stmt {
+    const tk = this.next();
+    const start = tk.start;
+    switch (tk.value) {
+      case "wire": {
+        const path = [this.pinRef()];
+        this.expect("op", "->", '"->" between the two pins (wire ctrl.D5 -> driver.PWM)');
+        path.push(this.pinRef());
+        while (this.eat("op", "->")) path.push(this.pinRef());
+        const items = this.isOp("{") ? this.block() : [];
+        return { k: "wire", path, items, span: { start, end: this.prevEnd() } };
+      }
+      case "net": {
+        const nameTk = this.expect("ident");
+        this.expect("op", ":");
+        const pins = [this.pinRef()];
+        while (this.eat("op", ",")) pins.push(this.pinRef());
+        const items = this.isOp("{") ? this.block() : [];
+        return { k: "net", name: nameTk.value, pins, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+      }
+      case "firmware": {
+        const nameTk = this.expect("ident");
+        const items = this.block();
+        return { k: "firmware", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+      }
+      case "buy": {
+        const label = this.expect("str", undefined, "what to buy, in quotes").value;
+        const items = this.isOp("{") ? this.block() : [];
+        return { k: "buy", label, items, span: { start, end: this.prevEnd() } };
+      }
+      default: {
+        const label = this.expect("str", undefined, "a test label in quotes").value;
+        this.expect("op", ":");
+        const procedure = this.expr();
+        return { k: "test", label, procedure, span: { start, end: this.prevEnd() } };
+      }
+    }
+  }
+
+  /** component.PIN or component[2].PIN */
+  pinRef(): Expr {
+    const e = this.postfix();
+    if (e.k === "member" && (e.obj.k === "ident" || (e.obj.k === "index" && e.obj.obj.k === "ident"))) return e;
+    throw new ParseError("Expected a pin like ctrl.D5 or motor.M_PLUS", e.span.start, e.span.end);
+  }
+
   stmt(): Stmt {
     const tk = this.peek();
     if (this.atDrawing()) {
@@ -147,9 +214,10 @@ class Parser {
       const items = this.block();
       return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
+    if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, wire, net, firmware, test, buy) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );

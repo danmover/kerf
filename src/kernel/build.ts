@@ -113,6 +113,26 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       }
       return tool;
     }
+    case "flight": {
+      // helical screw flight: a radial trapezoid (root to tip) swept along a helix on the core
+      const rIn = Math.max(0.5, r.core_d / 2 - 0.6);
+      const rOut = r.d / 2;
+      const helix = R.makeHelix(r.pitch, r.length, rIn, [0, 0, 0], [0, 0, 1], r.left);
+      const profile = R.draw([rIn, -r.root / 2])
+        .lineTo([rOut, -r.tip / 2])
+        .lineTo([rOut, r.tip / 2])
+        .lineTo([rIn, r.root / 2])
+        .close()
+        .sketchOnPlane(new R.Plane([0, 0, 0], [1, 0, 0], [0, -1, 0]));
+      let s = R.genericSweep((profile as unknown as { wire: R.Wire }).wire, helix, { frenet: true }, false) as Shape3D;
+      const z: V3 = [0, 0, 1];
+      const c = vcross(z, r.dir);
+      const sin = Math.hypot(c[0], c[1], c[2]);
+      const cos = r.dir[2];
+      if (sin > 1e-9) s = s.rotate((Math.atan2(sin, cos) * 180) / Math.PI, [0, 0, 0], c);
+      else if (cos < 0) s = s.rotate(180, [0, 0, 0], [1, 0, 0]);
+      return s.translate(r.at);
+    }
     case "xform":
       return applyXf(buildShape(r.shape, detail), r.xf);
     case "union": {

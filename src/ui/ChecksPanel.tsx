@@ -30,6 +30,9 @@ const CATEGORY_LABEL: Record<string, string> = {
   analysis: "Strength",
   process: "Manufacturing",
   build: "Build",
+  electrical: "Wiring",
+  engineering: "Calculations",
+  testing: "Physical tests",
   info: "Needs analysis",
 };
 
@@ -39,6 +42,8 @@ const BASIS_LABEL: Record<string, string> = {
   parameters: "params",
   simulation: "fea",
   calculation: "calc",
+  "electrical rules": "wiring rules",
+  "physical test": "test",
 };
 
 /** The chat message behind "Ask Claude to fix": the check, its process and the suggested fix. */
