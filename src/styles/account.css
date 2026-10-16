@@ -8,9 +8,9 @@
   font-family: var(--mono);
   font-weight: 500;
   letter-spacing: 0.02em;
-  color: #fff;
-  background: radial-gradient(circle at 30% 25%, #8fa8ff, #5a76f0 60%, #4b3fbf);
-  box-shadow: 0 0 0 1px rgba(143, 168, 255, 0.35), 0 4px 14px -4px var(--accent-glow);
+  color: #fff; /* theme: same, white on the avatar */
+  background: radial-gradient(circle at 30% 25%, #8fa8ff, #5a76f0 60%, #4b3fbf); /* theme: same, the avatar */
+  box-shadow: 0 0 0 1px rgb(var(--accent-2-rgb) / 0.35), 0 4px 14px -4px var(--accent-glow);
 }
 
 .acct-chip {
@@ -172,7 +172,7 @@ button.link:hover {
   border-radius: 16px;
   color: var(--accent-2);
   background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px rgba(143, 168, 255, 0.25), 0 10px 30px -10px var(--accent-glow);
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-2-rgb) / 0.25), 0 10px 30px -10px var(--accent-glow);
 }
 .acct-benefits {
   list-style: none;
@@ -226,7 +226,7 @@ button.link:hover {
   margin-bottom: 4px;
   border-radius: var(--radius);
   border: 1px dashed var(--line-2);
-  background: repeating-linear-gradient(90deg, transparent 0 11px, rgba(255, 255, 255, 0.015) 11px 12px);
+  background: repeating-linear-gradient(90deg, transparent 0 11px, rgb(var(--ink-rgb) / 0.015) 11px 12px);
 }
 .sync-flow .node {
   display: inline-flex;
@@ -245,10 +245,10 @@ button.link:hover {
   overflow: hidden;
 }
 .sync-flow .wire.idle {
-  background: linear-gradient(90deg, rgba(61, 220, 151, 0.2), rgba(61, 220, 151, 0.6), rgba(61, 220, 151, 0.2));
+  background: linear-gradient(90deg, rgb(var(--pass-rgb) / 0.2), rgb(var(--pass-rgb) / 0.6), rgb(var(--pass-rgb) / 0.2));
 }
 .sync-flow .wire.error {
-  background: rgba(255, 93, 108, 0.45);
+  background: rgb(var(--fail-rgb) / 0.45);
 }
 .sync-flow .wire.offline {
   background: repeating-linear-gradient(90deg, var(--warn) 0 4px, transparent 4px 9px);
@@ -343,7 +343,7 @@ button.link:hover {
   background: var(--bg-2);
 }
 .danger-box {
-  border-color: rgba(255, 93, 108, 0.4);
+  border-color: rgb(var(--fail-rgb) / 0.4);
   background: var(--fail-soft);
 }
 
@@ -361,7 +361,7 @@ button.link:hover {
   height: 22px;
   border-radius: 6px;
   color: var(--accent-2);
-  background: rgba(11, 14, 20, 0.72);
+  background: rgb(var(--bg-1-rgb) / 0.72);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(4px);
 }
@@ -375,7 +375,7 @@ button.link:hover {
   padding: 10px 14px;
   margin-bottom: 12px;
   border-radius: var(--radius);
-  border: 1px solid rgba(109, 139, 255, 0.35);
+  border: 1px solid rgb(var(--accent-rgb) / 0.35);
   background: var(--accent-soft);
   font-size: 12.5px;
 }

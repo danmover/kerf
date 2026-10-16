@@ -18,7 +18,11 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 /** off: only when Claude asks for one · auto: after substantial changes · always: after every change */
 export type SelfReview = "off" | "auto" | "always";
 
+/** dark is the default; system follows the device's light or dark setting */
+export type ThemePref = "dark" | "light" | "system";
+
 export interface Settings {
+  theme: ThemePref;
   model: ModelId;
   effort: Effort;
   showThinking: boolean;
@@ -80,6 +84,7 @@ const SETTINGS_REV = 2;
 export type VoiceSend = "review" | "auto";
 
 const DEFAULTS: Settings = {
+  theme: "dark",
   model: "claude-opus-5-5",
   effort: "high",
   showThinking: true,
@@ -127,6 +132,7 @@ function load(): Settings {
       if (k in v && typeof v[k] === typeof DEFAULTS[k]) (out as Record<string, unknown>)[k] = v[k];
       if (k === "termsAccepted" && typeof v.termsAccepted === "string") out.termsAccepted = v.termsAccepted;
     }
+    if (!["dark", "light", "system"].includes(out.theme)) out.theme = DEFAULTS.theme;
     if (!MODELS.some((m) => m.id === out.model)) out.model = DEFAULTS.model;
     if (!["low", "medium", "high", "xhigh", "max"].includes(out.effort)) out.effort = DEFAULTS.effort;
     // settings saved before rev 2 had no rev; their untouched 16-step default becomes the new default

@@ -346,6 +346,12 @@ export const Icon = {
       <path d="M6 7v10M18 8c0 5-7 4-11 9.5" />
     </I>
   ),
+  PanelLeft: (p: P) => (
+    <I {...p}>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M9 4v16" />
+    </I>
+  ),
   Compare: (p: P) => (
     <I {...p}>
       <rect x="3" y="5" width="18" height="14" rx="2" />

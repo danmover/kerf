@@ -213,8 +213,8 @@ function RunProgress({ run, updating }: { run: StructuralRun; updating: boolean 
 
 function RunError({ spec, run }: { spec: StructuralSpec; run: StructuralRun }) {
   return (
-    <div className="an-box" style={{ marginBottom: 12, borderColor: "rgba(255, 93, 108, 0.4)", background: "var(--fail-soft)" }}>
-      <div className="an-note" style={{ color: "#ffc4ca" }}>
+    <div className="an-box" style={{ marginBottom: 12, borderColor: "rgb(var(--fail-rgb) / 0.4)", background: "var(--fail-soft)" }}>
+      <div className="an-note" style={{ color: "var(--fail-ink)" }}>
         <Icon.Alert size={15} />
         <div className="grow">
           <div style={{ fontWeight: 600, marginBottom: 2 }}>{run.setup ? "This set-up can't be solved as written" : "The analysis did not finish"}</div>
@@ -433,8 +433,8 @@ function DrivetrainView({ spec, result }: { spec: DrivetrainSpec; result?: Drive
   if (!result) return <div className="mono dim">Calculating…</div>;
   if (result.error)
     return (
-      <div className="an-box" style={{ borderColor: "rgba(255, 93, 108, 0.4)", background: "var(--fail-soft)" }}>
-        <div className="an-note" style={{ color: "#ffc4ca" }}>
+      <div className="an-box" style={{ borderColor: "rgb(var(--fail-rgb) / 0.4)", background: "var(--fail-soft)" }}>
+        <div className="an-note" style={{ color: "var(--fail-ink)" }}>
           <Icon.Alert size={15} />
           <span className="grow">{result.error}</span>
           <button className="btn sm" onClick={() => revealSpan(spec.span)}>

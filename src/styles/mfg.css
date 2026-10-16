@@ -22,7 +22,7 @@
   cursor: pointer;
 }
 .mfg-part + .mfg-part {
-  border-top: 1px solid rgba(31, 37, 51, 0.6);
+  border-top: 1px solid rgb(var(--line-rgb) / 0.6);
 }
 .mfg-row {
   display: grid;
