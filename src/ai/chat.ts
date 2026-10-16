@@ -5,6 +5,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaMessageParam, BetaContentBlockParam, BetaToolResultBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { create } from "zustand";
 import { getApiKey } from "../persist/vault";
+import { sessionEnded, useAccount } from "../cloud/account";
 import * as db from "../persist/db";
 import { useSettings } from "../app/settings";
 import { useDesign } from "../core/engine";
@@ -197,7 +198,13 @@ export function revertTurn(itemId: string) {
 }
 
 function client() {
+  // signed in to a Kerf server: the key on the account (or a shared one) is added by the server
+  const acct = useAccount.getState();
+  const via = acct.status === "signed-in" ? acct.info?.claude?.source : null;
   const key = getApiKey();
+  if (via === "account" || (via === "shared" && !key)) {
+    return new Anthropic({ apiKey: "kerf-account", baseURL: `${location.origin}/api/claude`, defaultHeaders: { "x-kerf": "1" }, dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 10 * 60 * 1000 });
+  }
   if (!key) return null;
   return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 10 * 60 * 1000 });
 }
@@ -412,6 +419,11 @@ function withCacheBreakpoint(h: BetaMessageParam[]): BetaMessageParam[] {
 function handleError(e: unknown) {
   if (e instanceof Anthropic.APIUserAbortError || (e instanceof Error && e.name === "AbortError")) {
     push({ kind: "notice", id: nid(), level: "info", title: "Stopped" });
+    return;
+  }
+  if (e instanceof Anthropic.AuthenticationError && (e.error as { error?: unknown } | undefined)?.error === "signed_out") {
+    sessionEnded();
+    push({ kind: "notice", id: nid(), level: "error", title: "You were signed out of Kerf", detail: "Sign in again to keep using the Claude key on your account.", action: "settings" });
     return;
   }
   if (e instanceof Anthropic.AuthenticationError) {

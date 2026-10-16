@@ -49,6 +49,11 @@ export const onProjectOpen = (fn: (p: ProjectRecord) => void) => {
   openListeners.add(fn);
   return () => openListeners.delete(fn);
 };
+const deleteListeners = new Set<(id: string) => void>();
+export const onProjectDeleted = (fn: (id: string) => void) => {
+  deleteListeners.add(fn);
+  return () => deleteListeners.delete(fn);
+};
 
 export async function refreshProjects() {
   const persistent = await db.ensureOpen();
@@ -240,7 +245,31 @@ export async function duplicateProject(id: string) {
 export async function deleteProject(id: string) {
   await db.deleteProjectData(id);
   if (get().current?.id === id) set({ current: null });
+  for (const l of deleteListeners) l(id);
   await refreshProjects();
+}
+
+/**
+ * The open project changed on another device (account sync). Shows the new
+ * design without recording a local edit; undo goes back to what was here.
+ * With no record, only the version list is reloaded.
+ */
+export function applyRemoteProject(p: ProjectRecord | null, id: string) {
+  const cur = get().current;
+  if (!cur || cur.id !== id) return;
+  if (p && !typingTimer) {
+    const prev = useDesign.getState().source;
+    set({ current: p });
+    if (p.source !== prev) {
+      const model = setSource(p.source);
+      committed = { source: p.source, model };
+      set((s) => ({ undo: [...s.undo, prev].slice(-200), redo: [] }));
+      toast({ kind: "info", title: "Updated from another device", detail: "Undo brings back what was here." }, 4000);
+    }
+  }
+  void db.versionsFor(id).then((versions) => {
+    if (get().current?.id === id) set({ versions });
+  });
 }
 
 export async function exportProject(id: string) {

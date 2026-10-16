@@ -10,6 +10,7 @@ import { exportStep, exportStl, exportSource, exportBom, exportPng, exportProjec
 import { Logo } from "./Logo";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
+import { SyncBadge } from "./Account";
 
 export function TopBar() {
   const project = useProject((s) => s.current);
@@ -48,6 +49,7 @@ export function TopBar() {
         />
       </div>
       <SaveState state={save} />
+      <SyncBadge />
       <div className="grow" />
       <Pipeline />
       <div className="grow" />
