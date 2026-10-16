@@ -140,6 +140,10 @@ ${analog}
 `,
     "avr/interrupt.h": AVR_INTERRUPT_H,
     "avr/io.h": AVR_IO_H,
+    "avr/cpufunc.h": `#pragma once
+#define _NOP() __asm__ __volatile__("nop")
+#define _MemoryBarrier() __asm__ __volatile__("" ::: "memory")
+`,
     "util/atomic.h": `#pragma once
 #define ATOMIC_RESTORESTATE 1
 #define ATOMIC_FORCEON 1

@@ -1,6 +1,6 @@
 // The ATmega328P's I/O registers as the firmware names them. The simulator
-// models the ADC's registers (free-running conversions and ISR(ADC_vect)) and
-// SREG's interrupt flag; any other register gets a clear "not modelled yet"
+// models the ADC's registers (free-running conversions and ISR(ADC_vect)), the
+// I2C clock (TWBR, TWSR's prescaler) and SREG's interrupt flag; any other register gets a clear "not modelled yet"
 // error rather than "not declared".
 
 /** Registers the board models, with their width in bits. */
@@ -13,6 +13,8 @@ export const MODELLED_REGISTERS: Record<string, 8 | 16> = {
   ADC: 16,
   ADCW: 16,
   DIDR0: 8,
+  TWBR: 8,
+  TWSR: 8,
   SREG: 8,
 };
 
@@ -25,7 +27,7 @@ export const AVR_REGISTERS = new Set([
 ]);
 
 export const UNMODELLED_REGISTER = (name: string, mcu: string) =>
-  `${name} is an ${mcu} register the simulator does not model yet. It models the ADC (ADMUX, ADCSRA, ADCSRB, ADCL, ADCH, ADC, DIDR0) and SREG; use the Arduino functions (digitalWrite, analogWrite, millis, attachInterrupt) for the rest`;
+  `${name} is an ${mcu} register the simulator does not model yet. It models the ADC (ADMUX, ADCSRA, ADCSRB, ADCL, ADCH, ADC, DIDR0), the I2C clock (TWBR, TWSR) and SREG; use the Arduino functions (digitalWrite, analogWrite, millis, attachInterrupt) for the rest`;
 
 /** Interrupt vectors the board runs when the firmware defines them with ISR(). */
 export const MODELLED_VECTORS = ["ADC_vect"];
@@ -66,6 +68,14 @@ export const AVR_IO_H = `#pragma once
 #define ADC2D 2
 #define ADC1D 1
 #define ADC0D 0
+/* TWSR */
+#define TWS7 7
+#define TWS6 6
+#define TWS5 5
+#define TWS4 4
+#define TWS3 3
+#define TWPS1 1
+#define TWPS0 0
 /* SREG */
 #define SREG_I 7
 `;

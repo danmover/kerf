@@ -152,6 +152,8 @@ export class SimHal implements Hal {
   // I2C
   private wireOn = false;
   private wireHz = 100_000;
+  /** TWBR and TWSR's prescaler bits, which set the I2C clock as on the chip: SCL = F_CPU / (16 + 2 × TWBR × 4^TWPS) */
+  private twi = { twbr: 72, twps: 0 };
 
   eeprom: Uint8Array;
   eepromWrites = 0;
@@ -497,6 +499,25 @@ export class SimHal implements Hal {
           (v) => (a.didr0 = v & 0x3f),
         );
         break;
+      case "TWBR":
+        r = r8(
+          () => this.twi.twbr,
+          (v) => {
+            this.twi.twbr = v & 0xff;
+            this.twiClock();
+          },
+        );
+        break;
+      // TWSR: the prescaler bits; the status bits read "no state" (0xF8), as between transfers
+      case "TWSR":
+        r = r8(
+          () => 0xf8 | this.twi.twps,
+          (v) => {
+            this.twi.twps = v & 3;
+            this.twiClock();
+          },
+        );
+        break;
       case "SREG":
         // only the global interrupt flag (bit 7) means anything here
         r = r8(
@@ -730,6 +751,12 @@ export class SimHal implements Hal {
 
   wireSetClock(hz: number): void {
     this.wireHz = Math.max(10_000, Math.min(1_000_000, hz));
+    // Wire.setClock() writes TWBR as the AVR core does
+    this.twi = { twbr: Math.max(0, Math.min(255, Math.floor((this.fcpu / this.wireHz - 16) / 2))), twps: 0 };
+  }
+
+  private twiClock() {
+    this.wireHz = Math.min(1_000_000, this.fcpu / (16 + 2 * this.twi.twbr * 4 ** this.twi.twps));
   }
 
   private wireTime(bytes: number) {

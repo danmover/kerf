@@ -7,6 +7,8 @@ import { CError, type Tok } from "./lex";
 
 const STORAGE = new Set(["static", "extern", "register", "inline", "volatile", "const", "constexpr", "auto", "__inline", "unsigned", "signed", "short", "long"]);
 const BASE = new Set(["int", "char", "float", "double", "void", "bool", "_Bool", "struct", "enum", "union"]);
+/** inline assembly keywords */
+const ASM = new Set(["asm", "__asm__", "__asm"]);
 
 export interface ParseOptions {
   T: Types;
@@ -25,6 +27,8 @@ class Parser {
   structs = new Map<string, Extract<CType, { k: "struct" }>>();
   enums = new Map<string, CType>();
   consts = new Map<string, { v: number; type: CType }>();
+  /** integer constants declared in the enclosing blocks, innermost last; null marks a variable or parameter that hides an outer one */
+  locals: Map<string, number | null>[] = [];
   globals: VarDecl[] = [];
   funcs = new Map<string, FuncDef>();
   ramStrings = 0;
@@ -109,7 +113,9 @@ class Parser {
         if (this.is("{")) {
           const prior = this.funcs.get(d.name);
           if (prior?.body) this.fail(`${d.name}() is defined twice`, start);
+          this.locals.push(new Map(fn.params.flatMap((q) => (q.name ? [[q.name, null] as const] : []))));
           fn.body = this.block();
+          this.locals.pop();
           this.funcs.set(d.name, fn);
           return;
         }
@@ -281,6 +287,25 @@ class Parser {
     return type;
   }
 
+  /** A const local's value when it is an integer constant expression (so it can size an array), else null. */
+  localConst(v: VarDecl): number | null {
+    const t = v.type.k === "enum" ? v.type.base : v.type;
+    if (!v.init || v.init.k === "init" || (t.k !== "int" && t.k !== "bool")) return null;
+    let n: number;
+    try {
+      n = this.constExpr(v.init);
+    } catch (e) {
+      if (e instanceof CError) return null;
+      throw e;
+    }
+    if (t.k === "bool") return +!!n;
+    if (t.bits === 64) return n;
+    if (t.bits === 32) return t.signed ? n | 0 : n >>> 0;
+    const m = 2 ** t.bits;
+    const u = ((n % m) + m) % m;
+    return t.signed && u >= m / 2 ? u - m : u;
+  }
+
   /** Evaluate an integer constant expression at parse time (enum values, array sizes). */
   constExpr(e: Expr): number {
     const ev = (x: Expr): number => {
@@ -288,6 +313,11 @@ class Parser {
         case "num":
           return x.v;
         case "id": {
+          for (let i = this.locals.length - 1; i >= 0; i--) {
+            const l = this.locals[i].get(x.name);
+            if (l === null) return this.fail(`${x.name} is not a constant`, x as unknown as Tok);
+            if (l !== undefined) return l;
+          }
           const c = this.consts.get(x.name);
           if (c) return c.v;
           const g = this.globals.find((g) => g.name === x.name && g.isConst && g.init);
@@ -423,10 +453,12 @@ class Parser {
     const pos = this.pos();
     this.expect("{");
     const body: Stmt[] = [];
+    this.locals.push(new Map());
     while (!this.eat("}")) {
       if (this.peek().k === "eof") this.fail("Missing } at the end of a block");
       body.push(this.stmt());
     }
+    this.locals.pop();
     return { k: "block", body, ...pos };
   }
 
@@ -440,6 +472,7 @@ class Parser {
         return { k: "empty", ...pos };
       }
     }
+    if (t.k === "id" && ASM.has(t.v)) return this.asmStmt();
     if (t.k === "id") {
       switch (t.v) {
         case "if": {
@@ -532,6 +565,47 @@ class Parser {
     return { k: "expr", e, ...pos };
   }
 
+  /**
+   * Inline assembly. The sketch runs as C++, not as AVR machine code, so only
+   * assembly with no effect beyond time is accepted: an empty barrier,
+   * asm volatile("" ::: "memory") (as avr-libc's cli() and sei() use), and nops.
+   */
+  asmStmt(): Stmt {
+    const start = this.next();
+    const pos = this.pos(start);
+    while (["volatile", "__volatile__", "__volatile", "inline", "goto"].some((q) => this.is(q))) this.next();
+    this.expect("(");
+    const bytes: number[] = [];
+    while (this.peek().k === "str") bytes.push(...(this.next().bytes ?? []));
+    // after the template: outputs, inputs and clobbers, separated by colons
+    let section = 0;
+    let operands = false;
+    for (let depth = 0; ; ) {
+      const t = this.next();
+      if (t.k === "eof") this.fail("Missing ) at the end of asm(...)", start);
+      if (t.k === "punc" && (t.v === ":" || t.v === "::")) {
+        section += t.v.length;
+        continue;
+      }
+      if (t.k === "punc" && t.v === ")" && depth === 0) break;
+      if (t.k === "punc" && t.v === "(") depth++;
+      if (t.k === "punc" && t.v === ")") depth--;
+      if (section === 1 || section === 2) operands = true;
+    }
+    this.expect(";");
+    const text = String.fromCharCode(...bytes);
+    const words = text.split(/[\s;]+/).filter(Boolean);
+    if (!operands && words.every((w) => w.toLowerCase() === "nop")) {
+      if (!words.length) return { k: "empty", ...pos };
+      const cycles: Expr = { k: "num", v: words.length, type: this.T.ulong, ...pos };
+      return { k: "expr", e: { k: "call", fn: { k: "id", name: "__builtin_avr_delay_cycles", ...pos }, args: [cycles], ...pos }, ...pos };
+    }
+    return this.fail(
+      `The simulator runs the sketch as C++, not as AVR machine code, so it cannot run inline assembly (asm("${text.trim().replace(/\s+/g, " ").slice(0, 40)}")). It accepts an empty barrier, asm volatile("" ::: "memory"), and nops; write the rest in C++`,
+      start,
+    );
+  }
+
   isStorageWord(v: string) {
     return STORAGE.has(v) || BASE.has(v);
   }
@@ -549,6 +623,7 @@ class Parser {
       if (this.eat("=")) v.init = this.initializer();
       else if (this.is("{")) v.init = this.initializer();
       v.type = this.completeArray(v.type, v.init);
+      this.locals[this.locals.length - 1]?.set(v.name, v.isConst ? this.localConst(v) : null);
       vars.push(v);
       if (!this.eat(",")) break;
     }

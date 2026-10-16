@@ -193,6 +193,93 @@ describe("other registers", () => {
   });
 });
 
+describe("the I2C clock from its registers", () => {
+  const timed = (clock: string) => `#include <Wire.h>
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  ${clock}
+  unsigned long t0 = micros();
+  Wire.beginTransmission(0x3C);
+  for (uint8_t i = 0; i < 16; i++) Wire.write(i);
+  Wire.endTransmission();
+  Serial.println(micros() - t0);
+  Serial.println(TWBR);
+  Serial.println(TWSR, HEX);
+}
+void loop() {}`;
+
+  it("runs at 100 kHz by default, and at 400 kHz from TWBR = 12 or Wire.setClock()", () => {
+    const slow = run(timed(""), 0.05);
+    const reg = run(timed("TWBR = 12;"), 0.05);
+    const lib = run(timed("Wire.setClock(400000);"), 0.05);
+    for (const r of [slow, reg, lib]) expect(r.faults).toEqual([]);
+    const us = (r: { out: string[] }) => Number(r.out[0]);
+    // 17 bytes of 9 clocks each, plus start and stop
+    expect(us(slow)).toBeGreaterThan(1500);
+    expect(us(reg) / us(slow)).toBeGreaterThan(0.22);
+    expect(us(reg) / us(slow)).toBeLessThan(0.3);
+    expect(Math.abs(us(lib) - us(reg))).toBeLessThan(20);
+    // Wire.setClock() writes TWBR as the AVR core does; TWSR reads "no state"
+    expect(slow.out.slice(1)).toEqual(["72", "F8"]);
+    expect(lib.out.slice(1)).toEqual(["12", "F8"]);
+  });
+});
+
+describe("C++ that real AVR sketches use", () => {
+  it("sizes an array from a const local, wrapped to its type", () => {
+    const { out, faults } = run(
+      `#define SAMPLES 512
+#define BLOCK 64
+void setup() {
+  Serial.begin(115200);
+  const uint8_t N_BLOCKS = SAMPLES / BLOCK;
+  uint16_t sums[N_BLOCKS];
+  const uint8_t WRAP = 300;
+  char tiny[WRAP];
+  Serial.println(sizeof(sums));
+  Serial.println(sizeof(tiny));
+  { const int N_BLOCKS = 3; long inner[N_BLOCKS]; Serial.println(sizeof(inner)); }
+}
+void loop() {}`,
+      0.01,
+    );
+    expect(faults).toEqual([]);
+    expect(out).toEqual(["16", "44", "12"]);
+  });
+
+  it("does not take a variable or a parameter as an array size", () => {
+    expect(() => run("void f(int n) { int a[n]; a[0] = 1; }\nvoid setup() { f(2); }\nvoid loop() {}", 0.01)).toThrow(/n is not a constant/);
+    expect(() => run("const int N = 4;\nvoid setup() { int N = analogRead(A0); int a[N]; a[0] = 1; }\nvoid loop() {}", 0.01)).toThrow(/N is not a constant/);
+  });
+
+  it("takes an empty asm barrier as a no-op and nops as cycles, and refuses other assembly", () => {
+    const { out, faults } = run(
+      `#include <avr/cpufunc.h>
+#define MEMORY_BARRIER() __asm__ __volatile__("" ::: "memory")
+void setup() {
+  Serial.begin(115200);
+  MEMORY_BARRIER();
+  _MemoryBarrier();
+  _NOP();
+  asm volatile("");
+  unsigned long a = micros();
+  for (int i = 0; i < 1000; i++) __asm__ __volatile__("nop\\n\\tnop\\n\\t" "nop\\n\\tnop");
+  unsigned long b = micros();
+  for (int i = 0; i < 1000; i++) MEMORY_BARRIER();
+  unsigned long c = micros();
+  Serial.println(b - a > c - b ? "nops take time" : "nops are free");
+}
+void loop() {}`,
+      0.05,
+    );
+    expect(faults).toEqual([]);
+    expect(out).toEqual(["nops take time"]);
+    expect(() => run('void setup() { asm volatile("cli"); }\nvoid loop() {}', 0.01)).toThrow(/cannot run inline assembly \(asm\("cli"\)\)/);
+    expect(() => run('uint8_t x;\nvoid setup() { asm volatile("" : "=r"(x)); }\nvoid loop() {}', 0.01)).toThrow(/cannot run inline assembly/);
+  });
+});
+
 describe("an SSD1306 OLED on the I2C bus", () => {
   const INIT = "0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40, 0x8D, 0x14, 0x20, 0x00, 0xA1, 0xC8, 0xDA, 0x12, 0x81, 0xCF, 0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6, 0xAF";
   const lit = (o: Ssd1306, x: number, y: number) => (o.image()[y * 16 + (x >> 3)] & (0x80 >> (x & 7))) !== 0;

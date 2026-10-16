@@ -531,6 +531,8 @@ const libFuncs: Record<string, LibFn> = {
   micros: def("micros", [], "ulong", 40, (_v, c) => c.hal.micros()),
   delay: def("delay", ["ulong"], "void", 20, ([ms], c) => c.hal.spend((ms * c.hal.fcpu) / 1000)),
   delayMicroseconds: def("delayMicroseconds", ["uint"], "void", 10, ([us], c) => c.hal.spend((us * c.hal.fcpu) / 1e6)),
+  // GCC's AVR builtin; nops in inline assembly come here too
+  __builtin_avr_delay_cycles: def("__builtin_avr_delay_cycles", ["ulong"], "void", 0, ([n], c) => c.hal.spend(n)),
   attachInterrupt: def("attachInterrupt", ["u8", "fn", "int"], "void", 60, ([n, fn, mode], c, pos) => {
     if (!fn) return c.fault("attachInterrupt() given no function", pos);
     c.hal.attachInterrupt(n, fn as FnRef, mode);
