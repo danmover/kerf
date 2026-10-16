@@ -200,6 +200,10 @@ export class SceneController {
   private photoMix = 0;
   private photoStatusKey = "";
   private photoStatusAt = 0;
+  /** the photoreal view's state as of the last frame */
+  private photoNow: PhotoStatus = { state: "off", samples: 0, max: 0 };
+  /** an export needs at least this photoreal quality while it runs */
+  private photoFloor: PhotoQuality | null = null;
   /** photoreal status changed (throttled) */
   onPhotoStatus: (s: PhotoStatus) => void = () => undefined;
   private photoLookOn = false;
@@ -499,7 +503,7 @@ export class SceneController {
       }
     }
     if (this.photo && prev.quality !== s.quality) {
-      this.photo.quality = PHOTO_QUALITY[s.quality](this.renderer.getPixelRatio());
+      this.photo.quality = this.photoQuality();
       this.photo.restart(performance.now());
     }
     if (prev.quality !== s.quality) {
@@ -1679,6 +1683,49 @@ export class SceneController {
     return null;
   }
 
+  /** The quality setting's photoreal quality, raised to an export's floor while one runs. */
+  private photoQuality(): PhotoQuality {
+    const q = PHOTO_QUALITY[this.render$.quality](this.renderer.getPixelRatio());
+    const f = this.photoFloor;
+    return f ? { maxSamples: Math.max(q.maxSamples, f.maxSamples), scale: Math.max(q.scale, f.scale), bounces: Math.max(q.bounces, f.bounces) } : q;
+  }
+
+  /** What the photoreal view is doing now. */
+  get photoStatus(): PhotoStatus {
+    return this.photoNow;
+  }
+
+  /** Why the photoreal view couldn't run now, or null when it could. */
+  photoBlocker(): string | null {
+    return this.photoBlocked();
+  }
+
+  /** An export needs at least this quality until it ends (null); the image starts again at the new quality. */
+  setPhotoFloor(q: PhotoQuality | null) {
+    this.photoFloor = q;
+    if (!this.photo) return;
+    this.photo.quality = this.photoQuality();
+    this.photo.restart(performance.now());
+  }
+
+  /** The finished photoreal image on screen, without the selection outline or the axis triad, as a PNG data URL; null until it has converged and fully shows. */
+  photoSnapshot(): string | null {
+    const photo = this.photo;
+    if (!photo || !photo.done || this.photoMix < 0.999) return null;
+    const r = this.renderer;
+    this.pipe.photo(photo.texture, { mix: this.photoMix, samples: photo.samples, near: this.camera.near, far: this.camera.far });
+    this.pipe.composite(null, { time: performance.now() / 1000 });
+    r.setRenderTarget(null);
+    if (this.overlays.size) {
+      this.overlayDepth();
+      r.render(this.overlay, this.camera);
+    }
+    // read back in the same task, before the browser clears the canvas; the next frame puts the outline and triad back
+    const url = r.domElement.toDataURL("image/png");
+    this.needComposite = true;
+    return url;
+  }
+
   /** Free the path tracer and its buffers. */
   private dropPhoto() {
     this.photoMix = 0;
@@ -1700,7 +1747,7 @@ export class SceneController {
         .then((m) => {
           if (this.disposed || !this.render$.photoreal || this.photo || this.photoError) return;
           this.photo = new m.PhotoRenderer(this.renderer, this.camera);
-          this.photo.quality = PHOTO_QUALITY[this.render$.quality](this.renderer.getPixelRatio());
+          this.photo.quality = this.photoQuality();
           this.changed = true;
         })
         .catch((e) => {
@@ -1764,6 +1811,7 @@ export class SceneController {
       const state = photo.done ? "done" : photo.preparing ? "preparing" : now - photo.changedAt <= PHOTO_DELAY ? "waiting" : "rendering";
       s = { state, samples, max };
     }
+    this.photoNow = s;
     const key = `${s.state}|${s.reason ?? ""}`;
     // state changes go out at once; sample counts at most a few times a second
     if (key === this.photoStatusKey && (now - this.photoStatusAt < 250 || s.state !== "rendering")) return;

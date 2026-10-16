@@ -14,6 +14,7 @@ import { zip } from "../machine/zip";
 import { exportProject, useProject } from "./project";
 import { useView } from "./view";
 import { viewport } from "./viewportApi";
+import { updateSettings, useSettings } from "./settings";
 import { toast, errorText, dismissToast } from "./ui";
 import { bomRows } from "../persist/files";
 import type { ViewPreset } from "./view";
@@ -368,6 +369,58 @@ export async function exportPngSized(width: number, height: number, label: strin
   const url = await vp.capture({ view: "current", width, height, mime: "image/png", samples: 64 });
   download(dataUrlBytes(url), safeFileName(`${baseName()} ${label}`, "png"), "image/png");
   toast({ kind: "success", title: "Image exported", detail: `${width} × ${height} pixels of the current view.` }, 3500);
+}
+
+/** The least the photoreal export waits for: every pixel traced, 512 samples (the quality setting can ask for more). */
+const PHOTO_EXPORT = { maxSamples: 512, scale: 1, bounces: 5 };
+
+/**
+ * The current view, path traced: the photoreal view runs (turned on for the
+ * export if it was off) until the path tracer has converged, then the image
+ * is saved at the view's size without the selection outline or axis triad.
+ * Pressing P or Cancel stops it. The panel greys it out while the photoreal
+ * view can't run (software graphics, section view, a sketch...).
+ */
+export async function exportPhotoreal() {
+  const vp = viewport();
+  if (!vp) return;
+  const wasOn = useSettings.getState().photoreal;
+  let cancelled = false;
+  const note = toast({ kind: "info", title: "Rendering a photoreal picture", detail: "Kerf saves it once the path tracer has converged. Keep the view still meanwhile.", action: { label: "Cancel", run: () => (cancelled = true) } }, 0);
+  if (!wasOn) updateSettings({ photoreal: true });
+  vp.photoFloor(PHOTO_EXPORT);
+  try {
+    let url: string | null = null;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 250));
+      // the project closed, P turned the view off, or Cancel
+      if (viewport() !== vp || cancelled || !useSettings.getState().photoreal) {
+        toast({ kind: "info", title: "Photoreal picture cancelled" }, 3000);
+        return;
+      }
+      const st = vp.photoStatus();
+      if (st.state === "paused") {
+        toast({ kind: "warn", title: "Photoreal picture stopped", detail: st.reason ?? "The photoreal view paused." }, 7000);
+        return;
+      }
+      if (st.state === "done" && (url = vp.photoSnapshot())) break;
+    }
+    const bytes = dataUrlBytes(url);
+    const size = pngSize(bytes);
+    download(bytes, safeFileName(`${baseName()} photoreal`, "png"), "image/png");
+    toast({ kind: "success", title: "Photoreal picture exported", detail: `${size ? `${size.w} × ${size.h} pixels, ` : ""}${vp.photoStatus().samples} samples a pixel.` }, 4000);
+  } finally {
+    dismissToast(note);
+    if (viewport() === vp) vp.photoFloor(null);
+    if (!wasOn) updateSettings({ photoreal: false });
+  }
+}
+
+/** A PNG's width and height, from its header. */
+function pngSize(png: Uint8Array): { w: number; h: number } | null {
+  if (png.length < 24 || png[0] !== 0x89 || png[1] !== 0x50) return null;
+  const v = new DataView(png.buffer, png.byteOffset);
+  return { w: v.getUint32(16), h: v.getUint32(20) };
 }
 
 /** Copy the current view to the clipboard, ready to paste into a chat, a doc or an email. */

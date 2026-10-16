@@ -126,7 +126,7 @@ npm run typecheck
 - Export from one panel in the top bar, grouped by what you want to do, with "Again" for the last one and "only the selected parts" where it applies:
   - 3D models: STEP (exact solids), glTF with materials (.glb) for Blender and the web, USDZ to place it in a room with an iPhone, and OBJ with a material library.
   - Printing: a 3MF print plate with every part to make turned to print on a flat face (as the build pack turns them), centred on the bed, in colour, one STL per part in a zip (named with how many to print), or one STL of the assembly.
-  - Images: the current view at 1920 × 1200 or 4K, a four-view sheet (iso, front, top, right) with the design's size, mass and check result, or copy the view to paste into a chat or email.
+  - Images: the current view at 1920 × 1200 or 4K, a photoreal picture (the view path traced until it is clean, at the view's size), a four-view sheet (iso, front, top, right) with the design's size, mass and check result, or copy the view to paste into a chat or email.
   - Documents: engineering drawings as PDF, a design report (brief, views, checks, driving values and parts list on one page that prints to PDF), the parts list as CSV and, for machines, the build pack.
   - The project file with history, and the design source.
 - Dark and light themes. Dark is the default; switch with the sun and moon button or in Settings → Display, where Match device follows your system. In the light theme the lighting presets with a dark set show a pale backdrop instead.

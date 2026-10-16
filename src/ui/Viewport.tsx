@@ -110,6 +110,10 @@ export function Viewport() {
       anchor: (id, local) => c.anchor(id, local),
       snapshot: () => c.snapshot(),
       hitAt: (x, y) => c.hitAt(x, y),
+      photoStatus: () => c.photoStatus,
+      photoBlocker: () => c.photoBlocker(),
+      photoFloor: (q) => c.setPhotoFloor(q),
+      photoSnapshot: () => c.photoSnapshot(),
     });
     setScene(c);
     return () => {
