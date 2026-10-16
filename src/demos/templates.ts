@@ -7,6 +7,7 @@ import bracket from "./bracket.kerf?raw";
 import shelf from "./shelf.kerf?raw";
 import tunneller from "./sand-tunneller.kerf?raw";
 import printer from "./printer.kerf?raw";
+import practiceAmp from "./practice-amp.kerf?raw";
 
 export interface Template {
   id: string;
@@ -103,6 +104,18 @@ export const TEMPLATES: Template[] = [
       "Why is the power supply at 92 % with everything heating, and what would you change?",
     ],
     stats: "96 parts · 28 requirements · Klipper",
+  },
+  {
+    id: "practice-amp",
+    name: "Practice Amp with Tuner",
+    tagline: "25 W guitar amp with clean-to-overdrive tone, a built-in tuner and one through-hole board: circuit you can hear, board layout, cabinet, parts list and firmware.",
+    source: practiceAmp,
+    prompts: [
+      "Give it more gain for heavier overdrive, and keep every stage before the clipping diodes clean",
+      "Swap the tone stack for a single tone knob and show me how the sound changes",
+      "Make it battery powered for busking and check how long it plays",
+    ],
+    stats: "266 parts · 12 requirements · tuner firmware",
   },
 ];
 

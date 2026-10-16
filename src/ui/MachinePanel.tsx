@@ -20,8 +20,11 @@ import type { CalcLine, CalcTrace, CatalogKind, MachineComponent, MachineData } 
 import { fmtNum } from "../lang/values";
 import { Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
+import { BoardView } from "./BoardView";
+import { SoundPanel } from "./SoundPanel";
+import { hasCircuit } from "../machine/circuit/netlist";
 
-type Section = "overview" | "wiring" | "calcs" | "firmware" | "tests";
+type Section = "overview" | "sound" | "board" | "wiring" | "calcs" | "firmware" | "tests";
 
 /** Remembered while the dock switches tabs. */
 const useBuildView = create<{ section: Section; wiring: "diagram" | "list"; file: string; openCalcs: string[] }>(() => ({ section: "overview", wiring: "diagram", file: "", openCalcs: [] }));
@@ -67,6 +70,10 @@ export function MachinePanel() {
   }
 
   const fwFiles = fw.reduce((n, f) => n + f.files.length, 0);
+  // an audio circuit gets a Sound section, a design with circuit boards a Board section
+  const sound = m.components.some((c) => catalogPart(c.catalogId)?.sim?.k === "input") && hasCircuit(m);
+  const boards = m.boards.length > 0;
+  const shown: Section = (section === "sound" && !sound) || (section === "board" && !boards) ? "overview" : section;
   const verdict = ready.level === "ready" ? { cls: "pass", word: "ready to build" } : ready.level === "review" ? { cls: "warn", word: "review first" } : { cls: "fail", word: "not ready" };
   const makePack = async () => {
     setBusy(true);
@@ -82,10 +89,12 @@ export function MachinePanel() {
       <div className="mp-head">
         <Segmented
           id="build-section"
-          value={section}
+          value={shown}
           onChange={go}
           options={[
             { value: "overview", label: "Overview" },
+            ...(sound ? [{ value: "sound" as const, label: "Sound", title: "The circuit simulated: turn the knobs, see the response and listen" }] : []),
+            ...(boards ? [{ value: "board" as const, label: <>Board{m.boards.length > 1 && <span className="seg-n">{m.boards.length}</span>}</>, title: "Circuit board layout, rule check and board house files" }] : []),
             { value: "wiring", label: <>Wiring{rows.length > 0 && <span className="seg-n">{rows.length}</span>}</>, title: "Wiring diagram and wire list" },
             { value: "calcs", label: <>Calculations{m.calcs.length > 0 && <span className="seg-n">{m.calcs.length}</span>}</>, title: "Engineering calculations with their working" },
             { value: "firmware", label: <>Firmware{fwFiles > 0 && <span className="seg-n">{fwFiles}</span>}</>, title: "Code generated to match the wiring" },
@@ -103,11 +112,13 @@ export function MachinePanel() {
         </button>
       </div>
       <div className="mp-body">
-        {section === "overview" && <Overview model={model} m={m} ready={ready} rows={rows} plan={plan} fw={fw} checking={checking} />}
-        {section === "wiring" && <Wiring model={model} m={m} rows={rows} items={items} name={name} />}
-        {section === "calcs" && <Calcs m={m} items={items} />}
-        {section === "firmware" && <Firmware fw={fw} />}
-        {section === "tests" && <Tests plan={plan} />}
+        {shown === "overview" && <Overview model={model} m={m} ready={ready} rows={rows} plan={plan} fw={fw} checking={checking} />}
+        {shown === "sound" && <SoundPanel m={m} />}
+        {shown === "board" && <BoardView model={model} m={m} items={items} />}
+        {shown === "wiring" && <Wiring model={model} m={m} rows={rows} items={items} name={name} />}
+        {shown === "calcs" && <Calcs m={m} items={items} />}
+        {shown === "firmware" && <Firmware fw={fw} />}
+        {shown === "tests" && <Tests plan={plan} />}
       </div>
     </div>
   );
