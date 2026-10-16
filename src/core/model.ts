@@ -5,6 +5,7 @@ import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
 import type { MachineData } from "../machine/types";
+import type { ScenarioDef } from "../sim/scenario";
 
 export interface Motion {
   origin: V3;
@@ -238,4 +239,6 @@ export interface Model {
   evalMs: number;
   /** purchased parts, wiring, calculations, firmware and tests (designs that use catalog parts) */
   machine?: MachineData;
+  /** simulated tests: a world, the machine in it, its firmware and what has to come true */
+  scenarios?: ScenarioDef[];
 }

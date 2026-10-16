@@ -1,7 +1,7 @@
 // Recursive-descent parser for the Kerf design language.
 // Recovers at statement boundaries so the editor can show several errors.
 
-import type { Arg, BriefItem, BriefProp, DecisionOptionNode, Expr, Item, Program, Span, Stmt } from "./ast";
+import type { Arg, BriefItem, BriefProp, DecisionOptionNode, Expr, Item, Program, ScenarioItem, Span, Stmt } from "./ast";
 import { lex, LexError, type Token } from "./lexer";
 
 export interface Diagnostic {
@@ -24,7 +24,7 @@ export class ParseError extends Error {
 const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "brief", "decision"]);
 
 /** Machine statements. They are contextual words, not keywords, so older designs can still use them as names. */
-const MACHINE_STMTS = new Set(["wire", "net", "firmware", "test", "buy"]);
+const MACHINE_STMTS = new Set(["wire", "net", "firmware", "test", "buy", "scenario"]);
 
 /** Entries inside `brief { ... }` that are not `field: value` pairs. Not keywords, so they stay usable as names elsewhere. */
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
@@ -134,6 +134,7 @@ class Parser {
         return this.is("ident", undefined, 1) && this.isOp("{", 2);
       case "test":
       case "buy":
+      case "scenario":
         return this.is("str", undefined, 1);
     }
     return false;
@@ -164,6 +165,8 @@ class Parser {
         const items = this.block();
         return { k: "firmware", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
       }
+      case "scenario":
+        return this.scenario(start);
       case "buy": {
         const label = this.expect("str", undefined, "what to buy, in quotes").value;
         const items = this.isOp("{") ? this.block() : [];
@@ -178,6 +181,62 @@ class Parser {
     }
   }
 
+  /** scenario "label" [for use, ...] { world: ..., expect "label" [soft]: expr, ... } */
+  scenario(start: number): Stmt {
+    const labelTk = this.expect("str", undefined, "a scenario name in quotes");
+    const uses: { name: string; span: Span }[] = [];
+    if (this.eat("kw", "for")) {
+      do {
+        const u = this.expect("ident", undefined, "the name of a use from the brief");
+        uses.push({ name: u.value, span: { start: u.start, end: u.end } });
+      } while (this.eat("op", ","));
+    }
+    const open = this.expect("op", "{");
+    const items: ScenarioItem[] = [];
+    while (!this.isOp("}")) {
+      if (this.is("eof")) throw new ParseError('Unclosed scenario block: missing "}"', open.start, open.end);
+      const from = this.i;
+      try {
+        items.push(this.scenarioItem());
+      } catch (e) {
+        if (!(e instanceof ParseError)) throw e;
+        this.diagnostics.push({ message: e.message, start: e.start, end: e.end, severity: "error" });
+        this.skipBriefEntry(from);
+      }
+      while (this.eat("op", ",") || this.eat("op", ";"));
+    }
+    this.expect("op", "}");
+    return { k: "scenario", label: labelTk.value, uses, items, span: { start, end: this.prevEnd() }, labelSpan: { start: labelTk.start, end: labelTk.end } };
+  }
+
+  scenarioItem(): ScenarioItem {
+    const tk = this.peek();
+    const start = tk.start;
+    if (tk.kind === "ident" && tk.value === "expect" && this.is("str", undefined, 1)) {
+      this.next();
+      const label = this.next().value;
+      let level: "hard" | "soft" = "hard";
+      if (this.eat("kw", "soft")) level = "soft";
+      else this.eat("kw", "hard");
+      this.expect("op", ":", '":" and what has to be true, e.g. expect "Gets through": through');
+      const expr = this.expr();
+      return { k: "expect", label, level, expr, span: { start, end: this.prevEnd() } };
+    }
+    if (this.eat("kw", "let")) {
+      const nameTk = this.expect("ident");
+      this.expect("op", "=");
+      const value = this.expr();
+      return { k: "let", name: nameTk.value, value, span: { start, end: this.prevEnd() } };
+    }
+    if ((tk.kind === "ident" || tk.kind === "kw") && this.isOp(":", 1)) {
+      this.next();
+      this.next();
+      const value = this.expr();
+      return { k: "prop", name: tk.value, value, span: { start, end: this.prevEnd() } };
+    }
+    throw new ParseError(`Expected a scenario entry such as world: sim.sand_pit(…), firmware: brain, or expect "…": …, but found "${tk.value || "end of file"}"`, tk.start, Math.max(tk.end, tk.start + 1));
+  }
+
   /** component.PIN or component[2].PIN */
   pinRef(): Expr {
     const e = this.postfix();
@@ -190,7 +249,7 @@ class Parser {
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, require, decision, wire, net, firmware, test, buy) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, require, decision, wire, net, firmware, test, buy, scenario) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );

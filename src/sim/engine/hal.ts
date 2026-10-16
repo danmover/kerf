@@ -445,10 +445,10 @@ export class SimHal implements Hal {
     for (const b of bytes) {
       // drop bytes already sent
       while (this.txHead < this.txEnds.length && this.txEnds[this.txHead] <= this.cyc) this.txHead++;
-      if (this.txEnds.length - this.txHead >= cap) {
-        // the transmit buffer is full: Serial.write waits for a byte to leave
+      // the transmit buffer is full: Serial.write waits for a byte to leave
+      while (this.txEnds.length - this.txHead >= cap) {
         this.spend(this.txEnds[this.txHead] - this.cyc);
-        continue;
+        while (this.txHead < this.txEnds.length && this.txEnds[this.txHead] <= this.cyc) this.txHead++;
       }
       const last = this.txEnds.length > this.txHead ? this.txEnds[this.txEnds.length - 1] : this.cyc;
       this.txEnds.push(Math.max(last, this.cyc) + bc);

@@ -99,6 +99,8 @@ export type Stmt =
   | { k: "firmware"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | { k: "test"; label: string; procedure: Expr; span: Span }
   | { k: "buy"; label: string; items: Item[]; span: Span }
+  // a simulated test: a world, the machine in it, its firmware and what has to come true
+  | { k: "scenario"; label: string; uses: { name: string; span: Span }[]; items: ScenarioItem[]; span: Span; labelSpan: Span }
   | {
       k: "decision";
       name: string;
@@ -110,6 +112,12 @@ export type Stmt =
       /** offset just after the opening brace */
       bodyStart: number;
     };
+
+/** Entries of a `scenario "label" { ... }` block: what to simulate and what has to come true. */
+export type ScenarioItem =
+  | { k: "prop"; name: string; value: Expr; span: Span }
+  | { k: "let"; name: string; value: Expr; span: Span }
+  | { k: "expect"; label: string; level: "hard" | "soft"; expr: Expr; span: Span };
 
 /** One alternative of a decision: a label, an optional consequence and the parameter values it means. */
 export interface DecisionOptionNode {
@@ -133,6 +141,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "part":
       return s.name;
     case "require":
+    case "scenario":
       return s.label;
     case "net":
     case "firmware":

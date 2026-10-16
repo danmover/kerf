@@ -17,6 +17,7 @@ import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
 import { emptyMachine, type MachineData, type PinRef } from "../machine/types";
+import { SCENARIO_PROPS, scenarioSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -136,6 +137,7 @@ class Evaluator {
   /** guards against runaway loops in source written by people or the AI */
   steps = 0;
   machine: MachineData = emptyMachine();
+  scenarios: ScenarioDef[] = [];
 
   constructor(
     private src: string,
@@ -148,6 +150,7 @@ class Evaluator {
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);
     this.builtins.set("lib", libNamespace());
     this.builtins.set("calc", calcNamespace());
+    this.builtins.set("sim", simNamespace());
   }
 
   ctx(): CallCtx {
@@ -197,6 +200,7 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
+    if (s.k === "scenario") return `scenario:${s.label}`;
     if (s.k === "wire" || s.k === "net" || s.k === "firmware" || s.k === "test" || s.k === "buy") return undefined;
     // decisions record choices; nothing reads them, so they stay out of the dependency graph
     return "name" in s && s.k !== "design" && s.k !== "decision" ? s.name : undefined;
@@ -271,6 +275,9 @@ class Evaluator {
         return;
       case "decision":
         this.decision(s);
+        return;
+      case "scenario":
+        this.scenario(s);
         return;
       case "wire":
       case "net":
@@ -365,6 +372,124 @@ class Evaluator {
         return;
       }
     }
+  }
+
+  // ---------------- scenarios ----------------
+
+  scenario(s: Extract<Stmt, { k: "scenario" }>) {
+    if (this.scenarios.some((x) => x.label === s.label)) throw new EvalError(`Scenario "${s.label}" is already defined`, s.labelSpan);
+    const scope = new Scope();
+    const values = new Map<string, Value>();
+    const spans = new Map<string, Span>();
+    let firmware: string | undefined;
+    const expects: ScenarioExpect[] = [];
+    for (const it of s.items) {
+      if (it.k === "let") {
+        scope.vars.set(it.name, this.expr(it.value, scope));
+        continue;
+      }
+      if (it.k === "expect") {
+        if (expects.some((e) => e.label === it.label)) throw new EvalError(`Expectation "${it.label}" appears twice in this scenario`, it.span);
+        expects.push({ label: it.label, level: it.level, expr: it.expr, text: this.src.slice(it.expr.span.start, it.expr.span.end), env: this.expectEnv(it.expr, scope), span: it.span });
+        continue;
+      }
+      if (!SCENARIO_PROPS.includes(it.name)) {
+        const sugg = suggest(it.name, SCENARIO_PROPS);
+        throw new EvalError(`Unknown scenario property "${it.name}"${sugg ? `. Did you mean "${sugg}"?` : `. Use: ${SCENARIO_PROPS.join(", ")}, or expect "…": …`}`, it.span);
+      }
+      spans.set(it.name, it.span);
+      if (it.name === "firmware") {
+        // a firmware block is named, not a value
+        const fwName = it.value.k === "ident" ? it.value.name : this.expr(it.value, scope);
+        if (typeof fwName !== "string") throw new EvalError("firmware: give the name of a firmware block, like firmware: brain", it.value.span);
+        if (!this.machine.firmware.some((f) => f.name === fwName)) {
+          const sugg = suggest(fwName, this.machine.firmware.map((f) => f.name));
+          throw new EvalError(`No firmware block "${fwName}"${sugg ? `. Did you mean "${sugg}"?` : this.machine.firmware.length ? `. Firmware blocks: ${this.machine.firmware.map((f) => f.name).join(", ")}` : ". Add a firmware block first."}`, it.value.span);
+        }
+        firmware = fwName;
+        continue;
+      }
+      values.set(it.name, this.expr(it.value, scope));
+    }
+    if (!this.machine.firmware.length) throw new EvalError("A scenario runs the design's firmware: add a firmware block for its controller first", s.labelSpan);
+    const imuX: Record<string, number> = {};
+    for (const [name, info] of this.comps) {
+      const part = info.def.catalog ? catalogPart(info.def.catalog.id) : undefined;
+      if (part && /^(bno055|mpu6050|imu)/.test(part.id)) imuX[name] = info.at[0];
+    }
+    const fail = (msg: string, span: Span): never => {
+      throw new EvalError(msg, span);
+    };
+    const spec = scenarioSpec(s.label, { get: (n) => values.get(n), span: (n) => spans.get(n) ?? s.labelSpan, firmware }, fail, imuX);
+    const uses = s.uses.map((u) => u.name);
+    for (const u of s.uses) {
+      if (this.brief && !this.brief.uses.some((b) => b.id === u.name)) {
+        const sugg = suggest(u.name, this.brief.uses.map((b) => b.id));
+        this.diags.push({ message: `The brief has no use "${u.name}"${sugg ? `. Did you mean "${sugg}"?` : ""}`, start: u.span.start, end: u.span.end, severity: "warning" });
+      }
+    }
+    if (!expects.length) this.diags.push({ message: `Scenario "${s.label}" has nothing to check: add expect "…": … lines, e.g. expect "Gets across": reached`, start: s.labelSpan.start, end: s.labelSpan.end, severity: "warning" });
+    this.scenarios.push({ label: s.label, uses, spec, expects, span: s.span, labelSpan: s.labelSpan });
+  }
+
+  /** Design values an expectation names, so it can be checked after the run without the evaluator. */
+  expectEnv(e: Expr, scope: Scope): Record<string, number | string | boolean> {
+    const env: Record<string, number | string | boolean> = {};
+    const prim = (v: Value | undefined) => (typeof v === "number" || typeof v === "string" || typeof v === "boolean" ? v : undefined);
+    const known = (name: string): Value | undefined => scope.get(name) ?? this.globals.get(name) ?? (this.builtins.has(name) ? this.builtins.get(name) : undefined);
+    const walk = (x: Expr) => {
+      switch (x.k) {
+        case "ident": {
+          const v = prim(known(x.name));
+          if (v !== undefined) {
+            env[x.name] = v;
+            if (this.globals.has(x.name)) this.current?.add(x.name);
+          }
+          return;
+        }
+        case "member":
+          if (x.obj.k === "ident") {
+            const base = known(x.obj.name);
+            if (base instanceof Obj) {
+              const v = prim(base.fields[x.name]);
+              if (v !== undefined) {
+                env[`${x.obj.name}.${x.name}`] = v;
+                if (this.globals.has(x.obj.name)) this.current?.add(x.obj.name);
+              }
+            }
+            return;
+          }
+          walk(x.obj);
+          return;
+        case "unary":
+          walk(x.arg);
+          return;
+        case "binary":
+          walk(x.left);
+          walk(x.right);
+          return;
+        case "ternary":
+          walk(x.cond);
+          walk(x.a);
+          walk(x.b);
+          return;
+        case "call":
+          for (const a of x.args) walk(a.value);
+          return;
+        case "list":
+        case "vec":
+          for (const i of x.items) walk(i);
+          return;
+        case "index":
+          walk(x.obj);
+          walk(x.index);
+          return;
+        default:
+          return;
+      }
+    };
+    walk(e);
+    return env;
   }
 
   // ---------------- decisions ----------------
@@ -1270,6 +1395,7 @@ class Evaluator {
       geoQueries: dedupeGeo(this.geoQueries),
       evalMs: 0,
       machine: hasMachine(this.machine) ? this.machine : undefined,
+      scenarios: this.scenarios,
     };
   }
 }

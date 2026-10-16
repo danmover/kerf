@@ -116,6 +116,8 @@ export class Plant implements PlantPort, PlantView {
   unsupported: string[] = [];
   /** seconds of plant time simulated */
   t = 0;
+  /** called after every step with the time at its end, seconds */
+  afterStep?: (t: number) => void;
 
   constructor(
     public machine: MachineData,
@@ -133,7 +135,10 @@ export class Plant implements PlantPort, PlantView {
       const pin = this.arduinoPin(np.pin.mcu);
       if (n && pin !== undefined) this.mcuPinOfNet.set(n.id, pin);
     }
-    for (const mc of machine.components) {
+    // drivers first, so each motor can find the channel that feeds it
+    const order = (k: string | undefined) => (k === "motor_driver" ? 0 : 1);
+    const comps = [...machine.components].sort((a, b) => order(catalogPart(a.catalogId)?.kind) - order(catalogPart(b.catalogId)?.kind));
+    for (const mc of comps) {
       const part = catalogPart(mc.catalogId);
       if (!part || mc.name === mcu) continue;
       switch (part.kind) {
@@ -210,6 +215,7 @@ export class Plant implements PlantPort, PlantView {
     }
     if (this.unsupported.length) this.notes.push(`Not simulated yet (they stay still): ${this.unsupported.join(", ")}.`);
     for (const b of this.batteries) this.assumptions.push(...b.b.assumed);
+    for (const m of this.motors) this.assumptions.push(...m.m.assumed);
     hal.plant = this;
     this.updateRails();
   }
@@ -548,6 +554,7 @@ export class Plant implements PlantPort, PlantView {
       this.events.push({ t, kind: "warn", text: `The ${this.board.name} browned out: its supply fell to ${this.mcuV.toFixed(1)} V` });
       this.hal.powerFail = "brownout";
     }
+    this.afterStep?.(t1 / fcpu);
   }
 
   private encoder(s: MotorSlot, c0: number, t0: number, t1: number) {

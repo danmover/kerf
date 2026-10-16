@@ -157,6 +157,7 @@ export class DCMotor {
   stalledFor = 0;
   /** counts the encoder has crossed (quadrature), as a float */
   counts = 0;
+  assumed: string[] = [];
   constructor(
     public name: string,
     public part: CatalogPart,
@@ -175,8 +176,15 @@ export class DCMotor {
     this.j = (0.02 * this.ke * this.kt) / this.r20;
     this.cpr = num(part, "encoder_cpr", 0);
     const mass = num(part, "mass_g", 300);
-    this.cth = mass * 0.45;
-    this.rth = 12 * Math.sqrt(524 / mass);
+    if (typeof part.specs.rth_k_per_w === "number" && typeof part.specs.tau_th_s === "number") {
+      this.rth = part.specs.rth_k_per_w;
+      this.cth = part.specs.tau_th_s / this.rth;
+    } else {
+      // one thermal node for the whole motor, scaled from its mass: the winding runs hotter than this
+      this.cth = mass * 0.45;
+      this.rth = 12 * Math.sqrt(524 / mass);
+      this.assumed.push(`${name}: heating from a mass-based guess (${this.rth.toFixed(0)} K/W to the air, ${((this.cth * this.rth) / 60).toFixed(0)} min time constant); the winding heats faster than the can`);
+    }
     this.temp = ambient;
     this.maxTemp = ambient;
   }
@@ -433,8 +441,9 @@ export class Bno055 implements I2CDevice {
     let heading = -(o.yaw - this.headingOffset) + (this.mode === 0x08 ? this.driftRate * minutes : 0) + n();
     heading = ((heading % 360) + 360) % 360;
     this.put16(0x1a, heading * scale);
-    this.put16(0x1c, (o.roll + n()) * scale);
-    this.put16(0x1e, (o.pitch + n()) * scale);
+    const wrap = (a: number) => ((((a + 180) % 360) + 360) % 360) - 180;
+    this.put16(0x1c, wrap(o.roll + n()) * scale);
+    this.put16(0x1e, wrap(o.pitch + n()) * scale);
     // gyro, degrees per second at 16 LSB
     this.put16(0x14, o.rate[0] * 16);
     this.put16(0x16, o.rate[1] * 16);
