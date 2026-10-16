@@ -18,7 +18,7 @@ export { checkCircuit } from "./check";
 // small-signal result. Transient steps use looser tolerances that are still
 // far below audibility (around −100 dB on a volt).
 const DC_TOL: Tol = { rel: 1e-6, absI: 1e-13, absV: 1e-9, jrel: 0, jabs: 0 };
-const TRAN_TOL: Tol = { rel: 1e-4, absI: 1e-10, absV: 1e-6, jrel: 1e-3, jabs: 1e-9 };
+const TRAN_TOL: Tol = { rel: 1e-4, absI: 1e-10, absV: 1e-6, jrel: 1e-2, jabs: 1e-9 };
 
 /** Conductance that pins a capacitor with a starting voltage while the transient's operating point is found. */
 const G_IC = 1e4;
@@ -393,10 +393,51 @@ function sampleAt(w: Float32Array | number[], t: number): number {
   return a + (b - a) * f;
 }
 
+/** 0th-order modified Bessel function, for the Kaiser window. */
+function bessel0(x: number): number {
+  let sum = 1;
+  let term = 1;
+  for (let k = 1; k < 50; k++) {
+    term *= (x / (2 * k)) * (x / (2 * k));
+    sum += term;
+    if (term < 1e-12 * sum) break;
+  }
+  return sum;
+}
+
+const DECIMATORS = new Map<number, Float64Array>();
+
+/**
+ * Low-pass for decimating by M: Kaiser-windowed sinc cut at half the output
+ * rate, flat to about 0.42·fs and about 90 dB down from 0.58·fs, the band that
+ * would otherwise alias back below 0.42·fs.
+ */
+function decimator(M: number): Float64Array {
+  let h = DECIMATORS.get(M);
+  if (h) return h;
+  const half = 18 * M;
+  const beta = 8.96;
+  const fc = 0.5 / M;
+  h = new Float64Array(2 * half + 1);
+  let sum = 0;
+  for (let j = -half; j <= half; j++) {
+    const x = 2 * fc * j;
+    const sinc = j === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+    const r = j / half;
+    const w = bessel0(beta * Math.sqrt(1 - r * r)) / bessel0(beta);
+    h[j + half] = sinc * w;
+    sum += sinc * w;
+  }
+  for (let j = 0; j < h.length; j++) h[j] /= sum;
+  DECIMATORS.set(M, h);
+  return h;
+}
+
 /**
  * Render a transient. The circuit sits at its operating point one sample
  * before the first output sample, and output sample k is the state at the
- * time of input sample k.
+ * time of input sample k. With oversampling, the probes are low-passed at
+ * half the sample rate (zero phase) before decimation.
  */
 export function transient(c: Circuit, o: TranOptions): TranResult {
   const samples = Math.max(0, Math.floor(o.samples));
@@ -526,16 +567,20 @@ export function transient(c: Circuit, o: TranOptions): TranResult {
       rhs.set(rhs0);
       dev.stampRhs(rhs);
       lu.solve(rhs, x);
-      if (!Number.isFinite(x[0]) || !Number.isFinite(x[n - 1])) return false;
+      let sum = 0;
+      for (let i = 0; i < n; i++) sum += x[i];
+      if (!Number.isFinite(sum)) return false;
       if (dev.update(x, TRAN_TOL)) return true;
     }
     return false;
   };
 
+  // past the last output sample (the decimation filter's look-ahead) the inputs hold their last value
+  let holdAfter = Infinity;
   const sources = (t: number) => {
     rhs0.set(src);
     for (let q = 0; q < waves.length; q++) {
-      const v = sampleAt(waves[q], t);
+      const v = sampleAt(waves[q], Math.min(t, holdAfter));
       rhs0[inRow[q]] += v;
       rhs0[inA[q]] -= v;
       rhs0[inB[q]] += v;
@@ -595,14 +640,50 @@ export function transient(c: Circuit, o: TranOptions): TranResult {
   };
 
   const np = probes.length;
-  const progressEvery = 4096;
-  for (let k = 0; k < samples; k++) {
-    for (let j = 0; j < M; j++) {
-      step(k - 1 + j * hSample, hSample, 0);
+  const pa = Int32Array.from(probes, (p) => p[0]);
+  const pb = Int32Array.from(probes, (p) => p[1]);
+  const progressEvery = 4096 * M;
+  if (M === 1) {
+    for (let k = 0; k < samples; k++) {
+      step(k - 1, 1, 0);
       if (broken) return { ok: false, out, nonConverged, message: `${broken} at ${((k / o.fs) * 1000).toFixed(2)} ms` };
+      for (let p = 0; p < np; p++) out[p][k] = xn[pa[p]] - xn[pb[p]];
+      if (o.onProgress && k % progressEvery === progressEvery - 1) o.onProgress((k + 1) / samples);
     }
-    for (let p = 0; p < np; p++) out[p][k] = xn[probes[p][0]] - xn[probes[p][1]];
-    if (o.onProgress && k % progressEvery === progressEvery - 1) o.onProgress((k + 1) / samples);
+  } else {
+    // Oversampled: band-limit the probes before keeping every M-th step, so the
+    // harmonics distortion makes above the output's Nyquist don't fold back down.
+    // The filter is zero-phase: output k is centred on the step that ends at sample k,
+    // and the run continues `half` steps past the end to fill its look-ahead.
+    const taps = decimator(M);
+    const L = taps.length;
+    const half = (L - 1) / 2;
+    const rings = probes.map(([a, b]) => new Float64Array(L).fill(xn[a] - xn[b]));
+    let pos = 0;
+    const total = samples * M + half;
+    holdAfter = samples - 1;
+    for (let s = 0; s < total; s++) {
+      step(-1 + s * hSample, hSample, 0);
+      if (broken) return { ok: false, out, nonConverged, message: `${broken} at ${(((s / M - 1) / o.fs) * 1000).toFixed(2)} ms` };
+      for (let p = 0; p < np; p++) rings[p][pos] = xn[pa[p]] - xn[pb[p]];
+      pos = pos + 1 === L ? 0 : pos + 1;
+      const e = s - half + 1;
+      if (e > 0 && e % M === 0) {
+        const k = e / M - 1;
+        if (k < samples) {
+          // the ring's oldest entry is at pos
+          for (let p = 0; p < np; p++) {
+            const r = rings[p];
+            let acc = 0;
+            let j = 0;
+            for (let q = pos; q < L; q++) acc += taps[j++] * r[q];
+            for (let q = 0; q < pos; q++) acc += taps[j++] * r[q];
+            out[p][k] = acc;
+          }
+        }
+      }
+      if (o.onProgress && s % progressEvery === progressEvery - 1) o.onProgress(Math.min(1, (s + 1) / total));
+    }
   }
   o.onProgress?.(1);
   const notes: string[] = [];
