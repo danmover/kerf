@@ -14,7 +14,7 @@ import { CALC_FNS } from "../src/machine/calcs";
 import { calcParams, languageReference, partsTable } from "../src/ai/reference";
 import { systemPrompt } from "../src/ai/prompt";
 import { TOOL_DEFS, catalogLookup, engineeringCalc, firmwareSummary, machineSummary, reportSummary, runTool } from "../src/ai/tools";
-import { webTools, webActivity, citedSources, isPausedTurn, echoContent, flattenServerTools, isWebToolError, safeUrl } from "../src/ai/web";
+import { webTools, webSearchFee, webActivity, citedSources, isPausedTurn, echoContent, flattenServerTools, isWebToolError, safeUrl } from "../src/ai/web";
 import { useChat, sendMessage, retryLast, clearChat, loadChat, setClientFactory, chatHistory, requestTools, type ChatItem } from "../src/ai/chat";
 import { useSettings } from "../src/app/settings";
 
@@ -205,12 +205,16 @@ const PAGE = { type: "web_fetch_result", url: "https://www.pololu.com/product/37
 const CITE = { type: "web_search_result_location", url: "https://www.pololu.com/product/3754", title: "Pololu G2 High-Power Motor Driver 18v17", cited_text: "Price $39.95", encrypted_index: "idx" };
 
 describe("web search helpers", () => {
-  it("uses dynamic filtering versions on Opus and Sonnet, basic ones on Haiku", () => {
-    const opus = webTools("claude-opus-5-5") as { type: string; max_uses?: number }[];
-    expect(opus.map((t) => t.type)).toEqual(["web_search_20260209", "web_fetch_20260209"]);
-    expect(opus.every((t) => t.max_uses === 8)).toBe(true);
-    expect((webTools("claude-sonnet-5-5") as { type: string }[]).map((t) => t.type)).toEqual(["web_search_20260209", "web_fetch_20260209"]);
-    expect((webTools("claude-haiku-5-5") as { type: string }[]).map((t) => t.type)).toEqual(["web_search_20250305", "web_fetch_20250910"]);
+  it("declares the basic versions, which every model takes, so a turn on a cheaper model sees the same tools", () => {
+    const tools = webTools() as { type: string; max_uses?: number }[];
+    expect(tools.map((t) => t.type)).toEqual(["web_search_20250305", "web_fetch_20250910"]);
+    expect(tools.every((t) => t.max_uses === 8)).toBe(true);
+  });
+
+  it("works out the web search fee from a response's usage", () => {
+    expect(webSearchFee({ server_tool_use: { web_search_requests: 3 } })).toBeCloseTo(0.03, 10);
+    expect(webSearchFee({ server_tool_use: null })).toBe(0);
+    expect(webSearchFee(undefined)).toBe(0);
   });
 
   it("describes searches, page reads and their errors", () => {
@@ -367,8 +371,8 @@ describe("chat loop", () => {
     expect(requests).toHaveLength(2);
     const tools = requests[0].tools;
     expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(["get_design", "catalog_lookup", "engineering_calc", "run_checks", "web_search", "web_fetch"]));
-    expect(tools.find((t) => t.name === "web_search")).toEqual({ type: "web_search_20260209", name: "web_search", max_uses: 8 });
-    expect(tools.find((t) => t.name === "web_fetch")).toMatchObject({ type: "web_fetch_20260209", name: "web_fetch", max_uses: 8, max_content_tokens: 20000 });
+    expect(tools.find((t) => t.name === "web_search")).toEqual({ type: "web_search_20250305", name: "web_search", max_uses: 8 });
+    expect(tools.find((t) => t.name === "web_fetch")).toMatchObject({ type: "web_fetch_20250910", name: "web_fetch", max_uses: 8, max_content_tokens: 20000 });
 
     // the resume sends the paused assistant turn back unchanged, with no new user message
     expect(requests[0].messages.map((m) => m.role)).toEqual(["user"]);
@@ -393,7 +397,7 @@ describe("chat loop", () => {
     expect(useChat.getState().busy).toBe(false);
   });
 
-  it("declares the basic web tools on Haiku and none when web search is off", async () => {
+  it("declares the same web tools on Haiku and none when web search is off", async () => {
     useSettings.setState({ model: "claude-haiku-5-5" });
     let requests = fakeClient([{ stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] }]);
     await sendMessage("hi");
@@ -405,7 +409,39 @@ describe("chat loop", () => {
     await sendMessage("hi");
     expect(requests[0].tools.some((t) => t.name === "web_search" || t.name === "web_fetch")).toBe(false);
     expect(requests[0].tools).toHaveLength(TOOL_DEFS.length);
-    expect(requestTools({ model: "claude-opus-5-5", webSearch: false })).toHaveLength(TOOL_DEFS.length);
+    expect(requestTools({ webSearch: false })).toHaveLength(TOOL_DEFS.length);
+  });
+
+  it("sends earlier web results as notes when web search is off, without rewriting the history", async () => {
+    let requests = fakeClient([
+      {
+        stop_reason: "end_turn",
+        content: [
+          { type: "server_tool_use", id: "srv_7", name: "web_search", input: { query: "motor driver" } },
+          { type: "web_search_tool_result", tool_use_id: "srv_7", content: [SEARCH_RESULT] },
+          { type: "text", text: "The G2 fits.", citations: [CITE] },
+        ],
+      },
+    ]);
+    await sendMessage("Find a driver");
+    useSettings.setState({ webSearch: false });
+    requests = fakeClient([
+      { error: badRequest("messages.1.content.0: server_tool_use blocks need the matching server tool in tools") },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "Still the G2." }] },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "Yes." }] },
+    ]);
+    await sendMessage("Which one again?");
+    expect(requests).toHaveLength(2);
+    const types = (r: (typeof requests)[number]) => (r.messages[1].content as Block[]).map((b) => b.type);
+    expect(types(requests[0])).toContain("server_tool_use");
+    expect(types(requests[1])).toEqual(["text", "text"]);
+    // the stored history still holds the search, so turning web search back on sends it as it was
+    expect((chatHistory()[1].content as Block[]).map((b) => b.type)).toEqual(["server_tool_use", "web_search_tool_result", "text"]);
+    // later requests keep sending notes without another failed request
+    await sendMessage("Thanks");
+    expect(requests).toHaveLength(3);
+    expect(types(requests[2])).toEqual(["text", "text"]);
+    useSettings.setState({ webSearch: true });
   });
 
   it("runs Kerf tools and sends their results back", async () => {
