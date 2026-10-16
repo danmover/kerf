@@ -80,6 +80,16 @@ export const BRIEFS: Brief[] = [
     minRequirements: 3,
   },
   {
+    id: "guitar-amp",
+    text: "A guitar amp that uses cheap components with the best sound quality, is easy to build, has an automatic tuner built in, and works in the app.",
+    reference: "practice-amp",
+    kinds: ["amplifier", "speaker", "controller", "display", "psu", "potentiometer", "jack"],
+    calcs: ["preamp", "amp_power", "board"],
+    firmware: "arduino",
+    minRequirements: 6,
+    givens: ["supply", "pickup"],
+  },
+  {
     id: "conveyor",
     text: "A 1 m benchtop belt conveyor that carries 5 kg parcels at 0.2 m/s and stops when a sensor sees a parcel at the end.",
     kinds: ["controller", "gearmotor", "motor_driver", "psu", "sensor"],

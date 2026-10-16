@@ -1893,16 +1893,21 @@ a:hover {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+    transition-delay: 0s !important;
   }
 }
+/* delays too: a staggered list (the export panel) would otherwise sit hidden until its last delay */
 .reduce-motion *,
 .reduce-motion *::before,
 .reduce-motion *::after {
   animation-duration: 0.001ms !important;
+  animation-delay: 0s !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.001ms !important;
+  transition-delay: 0s !important;
 }
 
 @media (max-width: 900px) {
@@ -3992,6 +3997,16 @@ a:hover {
 }
 .mp-head .segmented button.active .seg-n {
   color: var(--text-3);
+}
+.mp-head .segmented button {
+  padding: 0 8px;
+}
+.mp-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  white-space: nowrap;
 }
 .mp-verdict {
   height: 22px;

@@ -6,6 +6,7 @@
 import type { PartRecipe, ShapeRecipe, V2, V3 } from "../kernel/recipe";
 import type { CompSolid, LocalFields, Placement } from "../library/components";
 import type { CatalogPart } from "./types";
+import { footprintSolids } from "./catalog/footprints";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -547,6 +548,167 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
           points: { at: Z0, rear: Z0, rod_end: [0, 0, end] },
           dirs: { axis: ZP },
         },
+      };
+    }
+
+    // pcb_part: a part soldered to a circuit board, drawn from its footprint
+    // (catalog/footprints.ts). `at` is the footprint origin on the board's top face.
+    case "pcb_part": {
+      const fg = footprintSolids(p, {}, 1.6);
+      return { placement: "free", solids: fg.solids, fields: fg.fields };
+    }
+
+    // panel_jack: jack, socket or toggle through a panel hole. `at` is the
+    // centre of the hole on the panel's front face and `axis` points out of
+    // the front. bush_d/bush_l threaded bushing, nut_af/nut_t front nut,
+    // body_w × body_d × body_l behind a panel_t thick panel (default 3),
+    // hole_d the panel hole, lever_l/lever_d a toggle lever.
+    case "panel_jack": {
+      const pt = num(d, "panel_t", 3);
+      const bd = num(d, "bush_d", 9.5);
+      const nt = num(d, "nut_t", 2.4);
+      const af = num(d, "nut_af", 14);
+      const bw = num(d, "body_w", 13);
+      const bdd = num(d, "body_d", 15);
+      const bl = num(d, "body_l", 20);
+      const lever = num(d, "lever_l", 0);
+      const hex: V2[] = Array.from({ length: 6 }, (_, i) => {
+        const a = (Math.PI / 3) * i + Math.PI / 6;
+        const r = af / Math.sqrt(3);
+        return [r * Math.cos(a), r * Math.sin(a)] as V2;
+      });
+      const front: PartRecipe = {
+        base: { t: "prism", pts: hex, h: nt, at: Z0, dir: ZP, rot: 0 },
+        ops: [
+          { op: "add", shape: { t: "cyl", d: bd, h: pt + nt + 1, at: [0, 0, -pt], dir: ZP } },
+          { op: "cut", shape: { t: "cyl", d: Math.max(1, bd - (lever ? 3.4 : 2.8)), h: nt + 3, at: [0, 0, -1], dir: ZP } },
+        ],
+      };
+      const lugs: ShapeRecipe[] = [
+        { t: "box", w: 2.5, d: 0.4, h: 6, at: [-bw / 4, 0, -pt - bl - 5.5], r: 0 },
+        { t: "box", w: 2.5, d: 0.4, h: 6, at: [bw / 4, 0, -pt - bl - 5.5], r: 0 },
+      ];
+      const solids = [
+        solid("", p.name, { base: { t: "box", w: bw, d: bdd, h: bl, at: [0, 0, -pt - bl], r: 0.5 }, ops: [] }, g.color2 ?? DARK, "Nylon"),
+        solid("front", `${p.name} bushing and nut`, front, g.color ?? STEEL, "Stainless 304"),
+        solid("lugs", `${p.name} solder lugs`, { base: { t: "union", shapes: lugs }, ops: [] }, "#c9ced6", "Stainless 304"),
+      ];
+      if (lever) solids.push(solid("lever", `${p.name} lever`, { base: { t: "cone", d1: num(d, "lever_d", 2.6), d2: num(d, "lever_d", 2.6) * 0.75, h: lever, at: [0, 0, nt], dir: ZP }, ops: [] }, STEEL, "Stainless 304"));
+      return {
+        placement: "axis",
+        solids,
+        fields: {
+          scalars: { hole_d: num(d, "hole_d", bd + 0.2), panel_t: pt, body_l: bl, depth: pt + bl + 6 },
+          points: { at: Z0, front: Z0, back: [0, 0, -pt - bl], lug_a: [-bw / 4, 0, -pt - bl - 5], lug_b: [bw / 4, 0, -pt - bl - 5] },
+          dirs: { axis: ZP },
+        },
+      };
+    }
+
+    // speaker: a cone driver facing along `axis`; `at` is the centre of the
+    // front of its mounting flange (it sits against the back of the baffle).
+    // d frame diameter, cutout_d baffle hole, bolt_circle/holes/hole_d
+    // mounting holes, depth flange to back of magnet, magnet_d/magnet_h.
+    case "speaker": {
+      const D = num(d, "d", 259);
+      const cut = num(d, "cutout_d", 231);
+      const bc = num(d, "bolt_circle", 245);
+      const nh = num(d, "holes", 8);
+      const depth = num(d, "depth", 87);
+      const md = num(d, "magnet_d", 100);
+      const mh = num(d, "magnet_h", 17);
+      const holes = circlePts(nh, bc / 2, 22.5);
+      const zMag = -depth;
+      const zCone = zMag + mh + 14;
+      const coneH = -5 - zCone;
+      // flange and four basket arms from the flange to the magnet
+      const arm = (ang: number): ShapeRecipe => ({
+        t: "xform",
+        shape: { t: "prism", pts: [[-(cut / 2 - 4), -3], [-(cut / 2 - 12), -3], [-(md / 2 - 2), zMag + mh + 2], [-(md / 2 + 6), zMag + mh + 2]], h: 2.5, at: [0, -1.25, 0], dir: YP, rot: 0 },
+        xf: [{ op: "rotate", angle: ang, origin: Z0, axis: ZP }],
+      });
+      const frame: PartRecipe = {
+        base: { t: "tube", od: D, id: cut - 8, h: 3, at: [0, 0, -3], dir: ZP },
+        ops: [
+          ...holes.map((h) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: num(d, "hole_d", 6.5), h: 6, at: [h[0], h[1], -4] as V3, dir: ZP } })),
+          ...[45, 135, 225, 315].map((a) => ({ op: "add" as const, shape: arm(a) })),
+        ],
+      };
+      const cone: PartRecipe = {
+        base: { t: "cone", d1: 52, d2: cut - 14, h: coneH, at: [0, 0, zCone], dir: ZP },
+        ops: [
+          { op: "cut", shape: { t: "cone", d1: 50, d2: cut - 16, h: coneH, at: [0, 0, zCone + 1.6], dir: ZP } },
+          { op: "add", shape: { t: "tube", od: cut - 4, id: cut - 16, h: 2.5, at: [0, 0, -6], dir: ZP } },
+        ],
+      };
+      const cap: PartRecipe = { base: { t: "sphere", d: 70, at: [0, 0, zCone - 22] }, ops: [{ op: "cut", shape: { t: "cyl", d: 80, h: 40, at: [0, 0, zCone - 40 + 6], dir: ZP } }] };
+      const magnet: PartRecipe = {
+        base: { t: "cyl", d: md, h: mh, at: [0, 0, zMag + 3], dir: ZP },
+        ops: [
+          { op: "add", shape: { t: "cyl", d: md - 8, h: 3.02, at: [0, 0, zMag], dir: ZP } },
+          { op: "add", shape: { t: "cyl", d: md + 4, h: 3, at: [0, 0, zMag + 3 + mh - 0.01], dir: ZP } },
+        ],
+      };
+      const tabs: ShapeRecipe[] = [
+        { t: "box", w: 5, d: 1, h: 8, at: [cut / 2 - 26, 18, -22], r: 0 },
+        { t: "box", w: 5, d: 1, h: 8, at: [cut / 2 - 26, -18, -22], r: 0 },
+      ];
+      return {
+        placement: "axis",
+        solids: [
+          solid("", p.name, frame, g.color2 ?? "#3a3e45", "Steel"),
+          solid("cone", `${p.name} cone`, cone, g.color ?? "#2a2623", "Silicone"),
+          solid("cap", `${p.name} dust cap`, cap, "#1d1b19", "Silicone"),
+          solid("magnet", `${p.name} magnet`, magnet, "#4a4e55", "Steel"),
+          solid("tabs", `${p.name} terminals`, { base: { t: "union", shapes: tabs }, ops: [] }, "#c9a24b", "Brass"),
+        ],
+        fields: {
+          scalars: { d: D, cutout_d: cut, bolt_circle: bc, depth, magnet_d: md },
+          points: { at: Z0, front: Z0, back: [0, 0, zMag], center: [0, 0, zCone] },
+          pointLists: { holes },
+          dirs: { axis: ZP },
+        },
+      };
+    }
+
+    // knob: push-on knob on a shaft along `axis`; `at` is the centre of its
+    // underside. d body, skirt_d/skirt_h, h overall height.
+    case "knob": {
+      const kd = num(d, "d", 19);
+      const sd = num(d, "skirt_d", 23);
+      const sh = num(d, "skirt_h", 3);
+      const h = num(d, "h", 15);
+      const body: PartRecipe = {
+        base: { t: "cyl", d: sd, h: sh, at: Z0, dir: ZP },
+        ops: [
+          { op: "add", shape: { t: "cone", d1: kd, d2: kd * 0.9, h: h - sh, at: [0, 0, sh - 0.01], dir: ZP } },
+          { op: "cut", shape: { t: "cyl", d: 6.2, h: 11, at: [0, 0, -1], dir: ZP } },
+        ],
+      };
+      const pointer: ShapeRecipe[] = [
+        { t: "box", w: 1, d: kd * 0.45 - 1, h: 0.3, at: [0, (kd * 0.45) / 2 + 0.5, h - 0.05], r: 0 },
+        { t: "box", w: 1, d: (sd - kd) / 2 + 0.4, h: 0.3, at: [0, kd / 2 + (sd - kd) / 4, sh - 0.05], r: 0 },
+      ];
+      return {
+        placement: "axis",
+        solids: [solid("", p.name, body, g.color ?? BLACK, "ABS"), solid("pointer", `${p.name} pointer`, { base: { t: "union", shapes: pointer }, ops: [] }, g.color2 ?? "#f2f2f2", "PC", true)],
+        fields: { scalars: { d: kd, skirt_d: sd, h, bore: 10 }, points: { at: Z0, top: [0, 0, h] }, dirs: { axis: ZP } },
+      };
+    }
+
+    // brick: plug-in power supply lying flat, `at` the centre of its bottom
+    // face, cord leaving the +X end. w × d × h.
+    case "brick": {
+      const w = num(d, "w", 100);
+      const dd = num(d, "d", 48);
+      const h = num(d, "h", 32);
+      return {
+        placement: "free",
+        solids: [
+          solid("", p.name, { base: { t: "box", w, d: dd, h, at: Z0, r: 5 }, ops: [{ op: "cut", shape: { t: "box", w: w * 0.6, d: dd * 0.6, h: 1, at: [0, 0, h - 0.5], r: 2 } }] }, g.color ?? BLACK, "PC"),
+          solid("cord", `${p.name} cord`, { base: { t: "cyl", d: 4, h: 60, at: [w / 2 - 1, 0, h / 2], dir: XP }, ops: [{ op: "add", shape: { t: "cone", d1: 9, d2: 4.5, h: 12, at: [w / 2 - 1, 0, h / 2], dir: XP } }] }, BLACK, "Silicone"),
+        ],
+        fields: { scalars: { w, d: dd, h }, points: { top: [0, 0, h], bottom: Z0, cord_end: [w / 2 + 59, 0, h / 2] } },
       };
     }
 

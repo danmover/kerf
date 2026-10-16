@@ -9,6 +9,7 @@ import {
   export3mfPlate,
   exportBom,
   exportBuildPack,
+  exportGerbers,
   exportGlb,
   exportObj,
   exportPng,
@@ -67,6 +68,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "obj", group: "model", label: "OBJ + materials", detail: "Renderers and mesh tools", ext: ".zip", icon: "Box", selection: true, run: (o) => exportObj(o.selectionOnly) },
 
   { id: "build-pack", group: "print", label: "Build pack", detail: "Parts to buy and make, wiring, firmware and tests", ext: ".zip", icon: "Wrench", shown: () => !!useDesign.getState().model?.machine, run: () => exportBuildPack() },
+  { id: "gerbers", group: "print", label: "Circuit board Gerbers", detail: "Copper, mask, silkscreen and drill files for a board house", ext: ".zip", icon: "Chip", shown: () => !!useDesign.getState().model?.machine?.boards.length, run: () => exportGerbers() },
   { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, turned to print, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
   { id: "stl-parts", group: "print", label: "STL per part", detail: "One file per part, named with how many", ext: ".zip", icon: "Layers", selection: true, run: (o) => exportStlParts(o.selectionOnly) },
   { id: "stl", group: "print", label: "STL, one mesh", detail: "The whole assembly in place", ext: ".stl", icon: "Layers", selection: true, run: (o) => exportStl(o.selectionOnly) },

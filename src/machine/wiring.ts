@@ -185,9 +185,13 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     if (a.comp === b.comp && a.index === b.index && a.pin.through === b.pin.id) continue;
     add([a, b], { color: w.color, gauge: w.gauge, label: w.label });
   }
+  // a net joining pins on one circuit board is copper on that board, not a wire to make
+  const boardOf = new Map(m.components.filter((c) => c.pcb).map((c) => [c.name, c.pcb!.board]));
   for (const n of m.nets) {
     const seen = new Set<string>();
     const pins = n.pins.map(resolve).filter((p): p is NetPin => !!p && !seen.has(p.key) && !!seen.add(p.key));
+    const boards = new Set(pins.map((p) => boardOf.get(p.comp) ?? ""));
+    if (boards.size === 1 && !boards.has("")) continue;
     if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge });
   }
   return items;
@@ -435,8 +439,11 @@ export function wiringDiagram(m: MachineData, opts: { title?: string } = {}): Wi
     if (!part || !part.pins.length) continue;
     for (let i = 0; i < mc.count; i++) {
       const k = `${mc.name}[${i}]`;
-      if (mc.count > 1 && !usedPins.has(k)) continue;
-      const box: Box = { key: k, name: mc.count > 1 ? `${mc.name}[${i}]` : mc.name, role: mc.role, part, col: COLUMN_OF[part.kind] ?? 3, pins: [], partLines: wrap(part.name, 34, 2), x: 0, y: 0, w: 0, h: 0, bary: 0 };
+      // parts on a circuit board show only where a wire lands on them (its terminals)
+      if ((mc.count > 1 || mc.pcb) && !usedPins.has(k)) continue;
+      const board = mc.pcb && m.boards.find((b) => b.name === mc.pcb!.board);
+      const partLines = board ? [`${mc.ref ?? mc.name} on the ${board.title} board`, ...wrap(part.name, 34, 1)] : wrap(part.name, 34, 2);
+      const box: Box = { key: k, name: mc.count > 1 ? `${mc.name}[${i}]` : mc.name, role: mc.role, part, col: COLUMN_OF[part.kind] ?? 3, pins: [], partLines, x: 0, y: 0, w: 0, h: 0, bary: 0 };
       boxes.push(box);
       boxOf.set(k, box);
     }
@@ -453,6 +460,8 @@ export function wiringDiagram(m: MachineData, opts: { title?: string } = {}): Wi
     if (orig === 0) return "POWER";
     if (orig === 1) return "CONTROL";
     if (orig === 2) return kinds.has("sensor") ? "DRIVERS AND SENSORS" : "DRIVERS";
+    const motors = (["gearmotor", "stepper", "servo", "actuator", "hotend", "heated_bed", "fan"] as const).some((k) => kinds.has(k));
+    if (!motors) return kinds.has("sensor") ? "SENSORS, JACKS AND LOADS" : kinds.has("speaker") ? "JACKS, AMPLIFIERS AND SPEAKERS" : "JACKS AND LOADS";
     return kinds.has("sensor") ? "SENSORS, MOTORS AND LOADS" : "MOTORS AND LOADS";
   };
 
@@ -891,8 +900,12 @@ export function wiringDiagram(m: MachineData, opts: { title?: string } = {}): Wi
     ["Signal", WIRE_HEX.blue, 1.5],
     ["Cable", "cable", 5],
   ];
-  let lx = width - 24 - legend.length * 78 - 150;
-  const ly = opts.title ? 30 : 22;
+  // a narrow diagram has no room beside the subtitle: the legend goes on its own lines below it
+  const subW = opts.title ? textW(`Wiring diagram · ${boxes.length} parts · ${connections} wires · lines are coloured as the wire should be${signalGauge ? ` · signal wires are ${signalGauge} AWG unless marked` : ""}`, 11.5, false) : 0;
+  const stacked = !!opts.title && marginL + subW + 24 > width - 24 - 500;
+  const drop = stacked ? 44 : 0;
+  let lx = stacked ? marginL : width - 24 - legend.length * 78 - 150;
+  const ly = stacked ? 76 : opts.title ? 30 : 22;
   for (const [name, hex, w] of legend) {
     if (hex === "cable") head.push(`<path d="M${lx} ${ly}h22" stroke="#4b5563" stroke-width="${w}"/><path d="M${lx} ${ly}h22" stroke="#e5e7eb" stroke-width="1.6"/>`);
     else head.push(`<path d="M${lx} ${ly}h22" stroke="${hex}" stroke-width="${w}"/>`);
@@ -900,18 +913,21 @@ export function wiringDiagram(m: MachineData, opts: { title?: string } = {}): Wi
     lx += 78;
   }
   head.push(`<circle cx="${lx + 4}" cy="${ly}" r="2.8" fill="#212121"/><text x="${lx + 12}" y="${ly + 3.5}" font-family="${FONT}" font-size="10.5" fill="#333">joined</text>`);
-  head.push(`<text x="${width - 24}" y="${ly + 20}" text-anchor="end" font-family="${FONT}" font-size="10" fill="#666">Small numbers give the wire size in AWG. Rails along the top and bottom join every pin on them.</text>`);
+  head.push(`<text x="${stacked ? marginL : width - 24}" y="${ly + 20}" text-anchor="${stacked ? "start" : "end"}" font-family="${FONT}" font-size="10" fill="#666">Small numbers give the wire size in AWG. Rails along the top and bottom join every pin on them.</text>`);
+  const H = Math.ceil(height + drop);
 
   const svg = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.ceil(width)}" height="${Math.ceil(height)}" viewBox="0 0 ${Math.ceil(width)} ${Math.ceil(height)}" font-family="${FONT}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.ceil(width)}" height="${H}" viewBox="0 0 ${Math.ceil(width)} ${H}" font-family="${FONT}">`,
     `<rect width="100%" height="100%" fill="#ffffff"/>`,
     ...head,
+    drop ? `<g transform="translate(0 ${drop})">` : "<g>",
     ...colTitles,
     ...wiresSvg,
     ...boxSvg,
     ...dots,
     ...labels,
+    `</g>`,
     `</svg>`,
   ].join("\n");
-  return { svg, width: Math.ceil(width), height: Math.ceil(height), connections, parts: boxes.length };
+  return { svg, width: Math.ceil(width), height: H, connections, parts: boxes.length };
 }

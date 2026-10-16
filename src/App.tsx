@@ -8,6 +8,7 @@ import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } 
 import { useView, requestCamera, toggleCode, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
 import { startAnalysisRuntime } from "./analysis/runtime";
+import { startBoardRuntime } from "./machine/pcb/runtime";
 import { startSimRuntime } from "./sim/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
@@ -87,6 +88,7 @@ function useBoot() {
     startEngine();
     startMaterialChecks();
     startAnalysisRuntime();
+    startBoardRuntime();
     startSimRuntime();
     void Promise.allSettled([loadRememberedKey(), refreshProjects(), initAccount()]).then(() => {
       startSync();

@@ -143,3 +143,19 @@
   --dwg-paper-desk: #dfe3ea, #cfd5df;
   --dwg-shadow: rgb(var(--shade-rgb) / 0.28);
 }
+
+/* ---------- the guitar amp's Build sections ----------
+   The board picture, the knobs and the tuner's OLED keep their own colours;
+   the faceplate and the hovered part's text follow the theme. */
+
+:root[data-theme="light"] .snd {
+  --snd-plate: #f7f8fa, #e3e7ee;
+  --snd-plate-hi: rgba(255, 255, 255, 0.9);
+  --snd-tick: #a3aab8;
+  --snd-tick-major: #586176;
+  --snd-label: #2c3446;
+}
+:root[data-theme="light"] .bv {
+  --bv-hot-ink: var(--warn-ink);
+  --bv-hot-row: rgb(var(--warn-rgb) / 0.14);
+}

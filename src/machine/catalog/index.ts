@@ -2,10 +2,11 @@
 // where to buy them. Designs use them as lib.<kind>("id") components.
 
 import type { CatalogKind, CatalogPart } from "../types";
+import { AUDIO } from "./audio";
 import { ELECTRONICS } from "./electronics";
 import { MOTION } from "./motion";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...AUDIO];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 
@@ -30,11 +31,13 @@ export function searchCatalog(query: string, kind?: string, limit = 12): Catalog
       .map(([k, v]) => `${k} ${v}`)
       .join(" ")}`.toLowerCase();
     let score = 0;
-    for (const w of words) if (hay.includes(w)) score += p.id.includes(w) || p.name.toLowerCase().includes(w) ? 3 : 1;
-    return { p, score };
+    let hits = 0;
+    for (const w of words) if (hay.includes(w)) (score += p.id.includes(w) || p.name.toLowerCase().includes(w) ? 3 : 1), hits++;
+    return { p, score, hits };
   });
   return scored
-    .filter((s) => s.score > 0 || !words.length)
+    // most of the words have to match: "flux capacitor" is not a film capacitor
+    .filter((s) => (s.score > 0 && s.hits * 2 >= words.length) || !words.length)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((s) => s.p);
