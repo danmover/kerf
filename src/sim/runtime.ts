@@ -343,7 +343,9 @@ export function simItems(items: CheckItem[], ctx: ReportContext): CheckItem[] {
   let out = items.filter((i) => !SIM_ITEM.test(i.id));
   const defs = ctx.model.scenarios ?? [];
   if (!defs.length) return out;
-  if (ctx.live && scheduledModel !== ctx.model && !timer) schedule(ctx.model);
+  // the report can be re-composed for an older model while a newer one is still building: only the design's
+  // current model schedules runs, or an older one would drop scenarios added since
+  if (ctx.live && scheduledModel !== ctx.model && !timer && ctx.model === useDesign.getState().model) schedule(ctx.model);
   for (const def of defs) {
     const base = { category: "simulation" as const, basis: "virtual test" as const, uses: def.uses.length ? def.uses : undefined };
     const id = (s: string) => `sim:${def.label}:${s}`;
@@ -424,6 +426,7 @@ let started = false;
 export function startSimRuntime() {
   if (started) return;
   started = true;
+  if (import.meta.env?.DEV) (globalThis as { __kerfSim?: typeof useSim }).__kerfSim = useSim;
   registerReportPass("simulations", simItems, 30);
   useDesign.subscribe((s, prev) => {
     if (s.model && s.model !== prev.model && s.model !== scheduledModel) scheduleSoon(s.model);

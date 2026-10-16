@@ -42,8 +42,8 @@ export function scenarioStatus(def: ScenarioDef, run: SimRun | undefined): { sta
   const outs = outcomesFor(def, run.result) ?? [];
   const fails = outs.filter((o) => o.status === "fail").length;
   const warns = outs.filter((o) => o.status === "warn").length;
-  const pass = outs.length - fails - warns;
-  return { status: fails ? "fail" : warns ? "warn" : "pass", text: outs.length ? `${pass}/${outs.length}` : "ran", outs };
+  // a warning still holds in the expected run, so it counts as passing there
+  return { status: fails ? "fail" : warns ? "warn" : "pass", text: outs.length ? `${outs.length - fails}/${outs.length}` : "ran", outs };
 }
 
 const progressOf = (run?: SimRun) => {
@@ -54,8 +54,10 @@ const progressOf = (run?: SimRun) => {
 export function SimPanel() {
   const { model, defs, def, run, vrun } = useSelectedScenario();
   const runs = useSim((s) => s.runs);
+  const [adding, setAdding] = useState(false);
   if (!model) return <div className="an-body mono dim">Building the design…</div>;
   if (!defs.length || !def) return <EmptyState model={model} />;
+  if (adding) return <EmptyState model={model} onDone={() => setAdding(false)} />;
   return (
     <div className="sim">
       <div className="sim-head">
@@ -72,6 +74,9 @@ export function SimPanel() {
             </button>
           );
         })}
+        <button className="sim-pick" onClick={() => setAdding(true)} data-tip="Add another scenario">
+          <Icon.Plus size={12} /> new
+        </button>
         <div className="grow" />
         <HeadControls def={def} run={run} />
       </div>
@@ -175,7 +180,7 @@ function Verdict({ def, run }: { def: ScenarioDef; run?: SimRun }) {
           : fails
             ? `${fails} of ${outs.length} expectation${outs.length > 1 ? "s" : ""} fail${fails === 1 ? "s" : ""}`
             : warns
-              ? `Passes, ${warns} to look at`
+              ? `Passes in the expected run, ${warns} warning${warns > 1 ? "s" : ""}`
               : `All ${outs.length} expectations pass`;
   const variants = run?.result?.variants ?? [];
   const varStatus = (v: VariantName): Status => {
@@ -526,22 +531,37 @@ function Console({ v, t }: { v: VariantRun; t: number }) {
 
 // ---------- no scenario yet ----------
 
-function EmptyState({ model }: { model: Model }) {
+function EmptyState({ model, onDone }: { model: Model; onDone?: () => void }) {
   const [text, setText] = useState("");
+  const describe = () => {
+    void sendMessage(describePrompt(text));
+    setText("");
+    onDone?.();
+  };
   const add = (id: string) => {
     const t = SIM_TEMPLATES.find((x) => x.id === id)!;
     const r = templateSource(t, model);
     if (r.reason) return toast({ kind: "warn", title: t.title, detail: r.reason });
-    if (r.prompt) return void sendMessage(r.prompt);
+    if (r.prompt) {
+      void sendMessage(r.prompt);
+      return onDone?.();
+    }
     const { source } = useDesign.getState();
     const next = `${source.replace(/\s*$/, "")}\n\n${r.source}\n`;
     const err = evaluateOnly(next).diagnostics.find((d) => d.severity === "error" && !model.diagnostics.some((x) => x.message === d.message));
     if (err) return toast({ kind: "warn", title: "The scenario could not be added", detail: err.message });
     commitSource(next, "you", `Added the scenario "${t.title}"`);
+    useSim.setState({ selected: /^scenario "([^"]+)"/.exec(r.source ?? "")?.[1] ?? null, t: 0, playing: false });
+    onDone?.();
   };
   return (
     <div className="sim-empty">
-      <h3>Test the machine in a virtual world</h3>
+      {onDone && (
+        <button className="btn sm ghost" style={{ float: "right" }} onClick={onDone}>
+          <Icon.X size={12} /> back
+        </button>
+      )}
+      <h3>{onDone ? "Add a scenario" : "Test the machine in a virtual world"}</h3>
       <div className="muted" style={{ maxWidth: 680, fontSize: 12.5, lineHeight: 1.55 }}>
         A scenario runs this design's own firmware on a virtual copy of its controller, wired exactly as the design says, to simulated motors, drivers, sensors and battery, inside an environment: a sand pit, a bench, a hot room. Each runs three times, with pessimistic, expected and optimistic values, and what it has to achieve becomes checks.
       </div>
@@ -570,19 +590,13 @@ function EmptyState({ model }: { model: Model }) {
           placeholder="e.g. make sure it can drill through a 2 m long pit of sand, 5 m deep, starting from a hole in the wall and coming out the far side"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) {
-              void sendMessage(describePrompt(text));
-              setText("");
-            }
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim()) describe();
           }}
         />
         <button
           className="btn primary"
           disabled={!text.trim()}
-          onClick={() => {
-            void sendMessage(describePrompt(text));
-            setText("");
-          }}
+          onClick={describe}
         >
           <Icon.Sparkle size={13} /> Set it up
         </button>

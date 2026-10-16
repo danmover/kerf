@@ -22,7 +22,9 @@ import "../../styles/sim.css";
 
 type CameraMode = "near" | "whole" | "follow";
 
-const CAMERA_LABEL: Record<CameraMode, string> = { near: "pit bottom", whole: "whole pit", follow: "follow" };
+const CAMERA_LABEL: Record<CameraMode, string> = { follow: "follow", near: "side", whole: "whole pit" };
+/** from the open side of the cut-away, a little above and behind: the walls are never in the way */
+const SIDE = new THREE.Vector3(-0.32, -1, 0.42);
 
 export function SimLayer({ scene }: { scene: SceneController }) {
   const view = useSim((s) => s.view);
@@ -33,7 +35,7 @@ export function SimLayer({ scene }: { scene: SceneController }) {
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const ov = useRef<SimOverlay | null>(null);
   const saved = useRef<ReturnType<SceneController["cameraState"]> | null>(null);
-  const [camera, setCamera] = useState<CameraMode>("near");
+  const [camera, setCamera] = useState<CameraMode>("follow");
   const lastNose = useRef<THREE.Vector3 | null>(null);
   const shown = view && !!vrun && !!model;
   const end = vrun ? duration(vrun.frames) : 0;
@@ -64,7 +66,7 @@ export function SimLayer({ scene }: { scene: SceneController }) {
   useEffect(() => {
     if (!shown) return;
     saved.current = scene.cameraState();
-    setCamera("near");
+    setCamera("follow");
     return () => {
       if (saved.current) scene.restoreCamera(saved.current);
       saved.current = null;
@@ -75,14 +77,15 @@ export function SimLayer({ scene }: { scene: SceneController }) {
     const o = ov.current;
     if (!shown || !o) return;
     lastNose.current = null;
-    if (camera === "near") scene.fit("iso", true, o.frameBox());
-    else if (camera === "whole") scene.fit("iso", true, o.frameBox(true));
+    const side = hasBox ? SIDE : undefined;
+    if (camera === "near") scene.fit("iso", true, o.frameBox(), side);
+    else if (camera === "whole") scene.fit("iso", true, o.frameBox(true), side);
     else {
       const n = o.nose();
-      if (n) scene.fit("current", true, new THREE.Box3(n.clone().addScalar(-450), n.clone().addScalar(450)));
+      if (n) scene.fit("iso", true, new THREE.Box3(n.clone().add(new THREE.Vector3(-650, -150, -150)), n.clone().add(new THREE.Vector3(150, 150, 150))), side);
       lastNose.current = n;
     }
-  }, [camera, shown, scene]);
+  }, [camera, shown, scene, hasBox]);
 
   // time and playing go straight to the overlay
   useEffect(() => {
@@ -148,7 +151,7 @@ export function SimLayer({ scene }: { scene: SceneController }) {
       <Readouts v={vrun} t={t} label={def.label} stale={busy} />
       <AnimatePresence>
         {toast && (
-          <motion.div key={toast.key} className={`simv-event ${toast.e.kind}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}>
+          <motion.div key={toast.key} className={`simv-event ${toast.e.kind}`} initial={{ opacity: 0, y: 6, x: "-50%" }} animate={{ opacity: 1, y: 0, x: "-50%" }} exit={{ opacity: 0, y: -4, x: "-50%" }}>
             <span className="mono" style={{ color: "var(--text-3)", marginRight: 8 }}>
               {mmss(toast.e.t)}
             </span>
@@ -157,7 +160,7 @@ export function SimLayer({ scene }: { scene: SceneController }) {
           </motion.div>
         )}
       </AnimatePresence>
-      <motion.div className="simv-bar" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+      <motion.div className="simv-bar" initial={{ opacity: 0, y: 10, x: "-50%" }} animate={{ opacity: 1, y: 0, x: "-50%" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <Timeline v={vrun} compact />
         </div>
