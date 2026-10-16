@@ -3,6 +3,7 @@
 import type { PartRecipe, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
+import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { PartInspection } from "./inspect";
 import type { ImportMeta } from "./imports";
 import type { MeasureResult } from "./core";
@@ -78,6 +79,7 @@ export type ToWorker =
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
   | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
+  | { type: "process"; jobId: number; probes: ProcessProbe[] }
   | { type: "evict"; keep: string[] }
   | { type: "inspect"; jobId: number; hashes: string[] }
   /** read a STEP file and keep its bodies for "import" recipes; `analyse` false skips the hole search for a file analysed before */
@@ -95,6 +97,8 @@ export type FromWorker =
   | { type: "checks-error"; jobId: number; message: string }
   | { type: "exported"; jobId: number; data: ArrayBuffer }
   | { type: "export-error"; jobId: number; message: string }
+  | { type: "process"; jobId: number; results: ProcessResult[] }
+  | { type: "process-error"; jobId: number; message: string }
   | { type: "inspected"; jobId: number; result: Record<string, PartInspection | { error: string }> }
   | { type: "imported"; jobId: number; hash: string; meta: ImportMeta }
   | { type: "import-error"; jobId: number; hash: string; message: string }

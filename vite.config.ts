@@ -31,6 +31,9 @@ export const WORKER_CSP = "default-src 'self'; script-src 'self' 'unsafe-eval' '
 /** The feasibility solver worker only evaluates design source: no eval, no network. */
 export const SOLVER_CSP = "default-src 'none'; script-src 'self'";
 
+/** The stress analysis worker is plain arithmetic on meshes: no eval, no network. */
+export const FEA_CSP = "default-src 'none'; script-src 'self'";
+
 const COMMON_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
@@ -54,6 +57,7 @@ function securityPolicy(): Plugin {
         const path = (req.url ?? "/").split("?")[0];
         if (/^\/assets\/worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", WORKER_CSP);
         else if (/^\/assets\/solver\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SOLVER_CSP);
+        else if (/^\/assets\/fea\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FEA_CSP);
         else if (path === "/" || path.endsWith(".html")) {
           res.setHeader("Content-Security-Policy", `${CSP}; frame-ancestors 'none'`);
           res.setHeader("X-Frame-Options", "DENY");
