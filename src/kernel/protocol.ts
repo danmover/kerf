@@ -3,7 +3,10 @@
 import type { PartRecipe, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
-import type { MeasureResult, PickRef, ViewRequest, ViewResult } from "./drawing";
+import type { PickMeasure, PickRef, ViewRequest, ViewResult } from "./drawing";
+import type { PartInspection } from "./inspect";
+import type { ImportMeta } from "./imports";
+import type { MeasureResult } from "./core";
 
 export interface BuildItem {
   hash: string;
@@ -78,7 +81,12 @@ export type ToWorker =
   | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
   | { type: "evict"; keep: string[] }
   | { type: "project"; jobId: number; req: ViewRequest }
-  | { type: "measure"; jobId: number; req: { a: PickRef; b?: PickRef } };
+  | { type: "pick-measure"; jobId: number; req: { a: PickRef; b?: PickRef } }
+  | { type: "inspect"; jobId: number; hashes: string[] }
+  /** read a STEP file and keep its bodies for "import" recipes; `analyse` false skips the hole search for a file analysed before */
+  | { type: "import-step"; jobId: number; hash: string; file: string; data: ArrayBuffer; analyse: boolean }
+  | { type: "drop-import"; hash: string }
+  | { type: "measure"; jobId: number; a: { hash: string; xf: Xform[] }[]; b: { hash: string; xf: Xform[] }[] };
 
 export type FromWorker =
   | { type: "ready"; ms: number }
@@ -91,5 +99,10 @@ export type FromWorker =
   | { type: "exported"; jobId: number; data: ArrayBuffer }
   | { type: "export-error"; jobId: number; message: string }
   | { type: "projected"; jobId: number; result: ViewResult }
+  | { type: "pick-measured"; jobId: number; result: PickMeasure }
+  | { type: "job-error"; jobId: number; message: string }
+  | { type: "inspected"; jobId: number; result: Record<string, PartInspection | { error: string }> }
+  | { type: "imported"; jobId: number; hash: string; meta: ImportMeta }
+  | { type: "import-error"; jobId: number; hash: string; message: string }
   | { type: "measured"; jobId: number; result: MeasureResult }
-  | { type: "job-error"; jobId: number; message: string };
+  | { type: "measure-error"; jobId: number; message: string };

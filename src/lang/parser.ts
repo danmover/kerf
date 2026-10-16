@@ -1,7 +1,7 @@
 // Recursive-descent parser for the Kerf design language.
 // Recovers at statement boundaries so the editor can show several errors.
 
-import type { Arg, Expr, Item, Program, Span, Stmt } from "./ast";
+import type { Arg, BriefItem, BriefProp, DecisionOptionNode, Expr, Item, Program, Span, Stmt } from "./ast";
 import { lex, LexError, type Token } from "./lexer";
 
 export interface Diagnostic {
@@ -21,7 +21,10 @@ export class ParseError extends Error {
   }
 }
 
-const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "drawing"]);
+const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "brief", "decision"]);
+
+/** Entries inside `brief { ... }` that are not `field: value` pairs. Not keywords, so they stay usable as names elsewhere. */
+const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
 
 export function parse(src: string): { program: Program; diagnostics: Diagnostic[] } {
   let tokens: Token[];
@@ -34,7 +37,13 @@ export function parse(src: string): { program: Program; diagnostics: Diagnostic[
     throw e;
   }
   const p = new Parser(tokens);
-  return p.program();
+  try {
+    return p.program();
+  } catch (e) {
+    // deeply nested source overflows the recursive parser; report it instead of failing to open the design
+    if (e instanceof RangeError) return { program: { stmts: [] }, diagnostics: [{ message: "This source is nested too deeply to read. Flatten the deepest brackets or blocks.", start: 0, end: Math.min(src.length, 1), severity: "error" }] };
+    throw e;
+  }
 }
 
 class Parser {
@@ -97,7 +106,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && tk.kind === "kw" && TOP_LEVEL.has(tk.value) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -108,11 +117,23 @@ class Parser {
     return !prev || prev.line < this.peek().line;
   }
 
+  /** `drawing <name> {` starts a drawing block; elsewhere "drawing" is an ordinary name. */
+  atDrawing() {
+    return this.is("ident", "drawing") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
+  }
+
   stmt(): Stmt {
     const tk = this.peek();
+    if (this.atDrawing()) {
+      const start = tk.start;
+      this.next();
+      const nameTk = this.expect("ident", undefined, "a drawing name");
+      const items = this.block();
+      return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+    }
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (param, let, component, interface, part, require, drawing) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, require, decision, drawing) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -128,6 +149,8 @@ class Parser {
         const s = this.expect("str", undefined, "a note in quotes");
         return { k: "note", text: s.value, span: { start, end: this.prevEnd() } };
       }
+      case "brief":
+        return { k: "brief", items: this.briefBlock(), span: { start, end: this.prevEnd() } };
       case "param": {
         const nameTk = this.expect("ident");
         this.expect("op", "=");
@@ -197,22 +220,202 @@ class Parser {
         const items = this.block();
         return { k: "part", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
       }
-      case "drawing": {
-        const nameTk = this.expect("ident", undefined, "a drawing name");
-        const items = this.block();
-        return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
-      }
       case "require": {
         const label = this.expect("str", undefined, "a requirement label in quotes").value;
         let level: "hard" | "soft" = "hard";
         if (this.eat("kw", "soft")) level = "soft";
         else this.eat("kw", "hard");
+        const uses: { name: string; span: Span }[] = [];
+        if (this.eat("kw", "for")) {
+          do {
+            const u = this.expect("ident", undefined, "the name of a use from the brief");
+            uses.push({ name: u.value, span: { start: u.start, end: u.end } });
+          } while (this.eat("op", ","));
+        }
         this.expect("op", ":");
         const expr = this.expr();
-        return { k: "require", label, level, expr, span: { start, end: this.prevEnd() } };
+        return { k: "require", label, level, uses, expr, span: { start, end: this.prevEnd() } };
       }
+      case "decision":
+        return this.decision(start);
     }
     throw new ParseError("Unknown statement", tk.start, tk.end);
+  }
+
+  // ---- the brief ----
+
+  /** Parses `{ entries }`. A bad entry is reported and skipped so the rest of the brief still counts. */
+  briefBlock(): BriefItem[] {
+    const open = this.expect("op", "{");
+    const items: BriefItem[] = [];
+    while (!this.isOp("}")) {
+      if (this.is("eof")) throw new ParseError('Unclosed brief block: missing "}"', open.start, open.end);
+      const from = this.i;
+      try {
+        items.push(this.briefItem());
+      } catch (e) {
+        if (!(e instanceof ParseError)) throw e;
+        this.diagnostics.push({ message: e.message, start: e.start, end: e.end, severity: "error" });
+        this.skipBriefEntry(from);
+      }
+      while (this.eat("op", ",") || this.eat("op", ";"));
+    }
+    this.expect("op", "}");
+    return items;
+  }
+
+  /** After a bad entry: move to the next line inside the brief, or to its closing brace. */
+  skipBriefEntry(from: number) {
+    const line = this.t[from].line;
+    let depth = 0;
+    if (this.i === from) this.i++;
+    for (let j = from; j < this.i; j++) {
+      const tk = this.t[j];
+      if (tk.kind === "op" && tk.value === "{") depth++;
+      if (tk.kind === "op" && tk.value === "}") depth--;
+    }
+    while (!this.is("eof")) {
+      const tk = this.peek();
+      if (depth <= 0 && tk.kind === "op" && tk.value === "}") return;
+      if (depth <= 0 && tk.line > line) return;
+      if (tk.kind === "op" && tk.value === "{") depth++;
+      if (tk.kind === "op" && tk.value === "}") depth--;
+      this.i++;
+    }
+  }
+
+  /** A trailing flag word such as `assumed`, only when it sits on the same line as what it marks. */
+  sameLineFlag(word: string): boolean {
+    if (this.is("ident", word) && this.peek().line === this.t[this.i - 1]?.line) {
+      this.next();
+      return true;
+    }
+    return false;
+  }
+
+  briefItem(): BriefItem {
+    const tk = this.peek();
+    const start = tk.start;
+    if (tk.kind !== "ident" && tk.kind !== "kw") {
+      throw new ParseError(`Expected a brief entry such as purpose: "…", use, given, reference or assume, but found "${tk.value || "end of file"}"`, tk.start, Math.max(tk.end, tk.start + 1));
+    }
+    if (this.isOp(":", 1)) {
+      this.next();
+      this.next();
+      const value = this.expr();
+      let to: Expr | undefined;
+      if (this.eat("op", "..")) to = this.expr();
+      const assumed = this.sameLineFlag("assumed");
+      return { k: "field", name: tk.value, value, to, assumed, span: { start, end: this.prevEnd() }, nameSpan: { start: tk.start, end: tk.end } };
+    }
+    if (tk.kind === "ident" && BRIEF_ENTRIES.has(tk.value)) {
+      this.next();
+      switch (tk.value) {
+        case "use": {
+          const id = this.expect("ident", undefined, "a short name for the use, like hold_tube");
+          const text = this.expect("str", undefined, "what the design must do, in quotes").value;
+          const props = this.isOp("{") ? this.briefProps() : [];
+          const assumed = this.sameLineFlag("assumed");
+          return { k: "use", id: id.value, text, props, assumed, span: { start, end: this.prevEnd() }, idSpan: { start: id.start, end: id.end } };
+        }
+        case "given": {
+          const nameTk = this.expect("ident", undefined, "a name for the dimension, like tube_d");
+          this.expect("op", "=");
+          const vStart = this.peek().start;
+          const value = this.expr();
+          const valueSpan = { start: vStart, end: this.prevEnd() };
+          let desc: string | undefined;
+          if (this.is("str") && this.peek().line === this.t[this.i - 1].line) desc = this.next().value;
+          const assumed = this.sameLineFlag("assumed");
+          return { k: "given", name: nameTk.value, value, desc, assumed, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end }, valueSpan };
+        }
+        case "reference": {
+          const id = this.expect("ident", undefined, "a short name for the reference, like photo1");
+          const title = this.expect("str", undefined, "a title in quotes").value;
+          const props = this.isOp("{") ? this.briefProps() : [];
+          return { k: "reference", id: id.value, title, props, span: { start, end: this.prevEnd() }, idSpan: { start: id.start, end: id.end } };
+        }
+        case "assume": {
+          const text = this.expect("str", undefined, "the assumption in quotes").value;
+          const confirmed = this.sameLineFlag("confirmed");
+          return { k: "assume", text, confirmed, span: { start, end: this.prevEnd() } };
+        }
+      }
+    }
+    throw new ParseError(`Unknown brief entry "${tk.value}". Use a field such as purpose: "…", or use, given, reference or assume.`, tk.start, Math.max(tk.end, tk.start + 1));
+  }
+
+  briefProps(): BriefProp[] {
+    const open = this.expect("op", "{");
+    const props: BriefProp[] = [];
+    while (!this.isOp("}")) {
+      if (this.is("eof")) throw new ParseError('Unclosed "{" in the brief', open.start, open.end);
+      const f = this.peek();
+      if (f.kind !== "ident" && f.kind !== "kw") this.expect("ident", undefined, "a property name");
+      this.next();
+      this.expect("op", ":");
+      const value = this.expr();
+      props.push({ name: f.value, value, span: { start: f.start, end: this.prevEnd() } });
+      while (this.eat("op", ",") || this.eat("op", ";"));
+    }
+    this.expect("op", "}");
+    return props;
+  }
+
+  /**
+   * decision name "Title" {
+   *   ask: "..."  chose: "..."  by: "you"  why: "..."
+   *   option "Label" { param: value, ... } "What happens if chosen"
+   * }
+   */
+  decision(start: number): Stmt {
+    const nameTk = this.expect("ident", undefined, "a decision name, e.g. lid_fastening");
+    const title = this.expect("str", undefined, "a decision title in quotes").value;
+    const open = this.expect("op", "{");
+    const props: { name: string; value: Expr; span: Span }[] = [];
+    const options: DecisionOptionNode[] = [];
+    while (!this.isOp("}")) {
+      if (this.is("eof")) throw new ParseError("Unclosed decision block: missing \"}\"", open.start, open.end);
+      const tk = this.peek();
+      if (tk.kind === "ident" && tk.value === "option" && this.is("str", undefined, 1)) {
+        this.next();
+        const label = this.next().value;
+        let note: string | undefined;
+        const sets: { param: string; value: Expr; span: Span }[] = [];
+        let gotSets = false;
+        for (;;) {
+          if (this.is("str") && note === undefined) note = this.next().value;
+          else if (this.isOp("{") && !gotSets) {
+            gotSets = true;
+            this.next();
+            while (!this.isOp("}")) {
+              if (this.is("eof")) throw new ParseError("Unclosed option values: missing \"}\"", tk.start, tk.end);
+              const key = this.expect("ident", undefined, "a parameter name");
+              if (!this.eat("op", "=")) this.expect("op", ":", '":" or "="');
+              const value = this.expr();
+              sets.push({ param: key.value, value, span: { start: key.start, end: this.prevEnd() } });
+              while (this.eat("op", ",") || this.eat("op", ";"));
+            }
+            this.expect("op", "}");
+          } else break;
+        }
+        options.push({ label, note, sets, span: { start: tk.start, end: this.prevEnd() } });
+      } else if (tk.kind === "ident" && this.isOp(":", 1)) {
+        this.next();
+        this.next();
+        const value = this.expr();
+        props.push({ name: tk.value, value, span: { start: tk.start, end: this.prevEnd() } });
+      } else {
+        throw new ParseError(
+          `Unexpected "${tk.value || "end of file"}" inside decision. Use ask:, chose:, by:, why: or option "Label" { param: value } "consequence".`,
+          tk.start,
+          Math.max(tk.end, tk.start + 1),
+        );
+      }
+      while (this.eat("op", ",") || this.eat("op", ";"));
+    }
+    this.expect("op", "}");
+    return { k: "decision", name: nameTk.value, title, props, options, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end }, bodyStart: open.end };
   }
 
   block(): Item[] {

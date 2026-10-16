@@ -353,7 +353,7 @@ export interface EntityInfo {
   dir?: V3;
 }
 
-export interface MeasureResult {
+export interface PickMeasure {
   a: EntityInfo;
   b?: EntityInfo;
   distance?: number;
@@ -367,13 +367,13 @@ export interface MeasureResult {
 
 type GetShape = (hash: string) => Shape3D | undefined;
 
-export function measure(req: { a: PickRef; b?: PickRef }, get: GetShape): MeasureResult {
+export function measure(req: { a: PickRef; b?: PickRef }, get: GetShape): PickMeasure {
   const A = entity(req.a, get);
   try {
     if (!req.b) return { a: A.info };
     const B = entity(req.b, get);
     try {
-      const out: MeasureResult = { a: A.info, b: B.info };
+      const out: PickMeasure = { a: A.info, b: B.info };
       const O = oc();
       const ds = new O.BRepExtrema_DistShapeShape();
       ds.LoadS1(A.shape.wrapped);

@@ -3,8 +3,11 @@
 
 import type { MeshData } from "./build";
 import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, ToWorker } from "./protocol";
+import type { PartInspection } from "./inspect";
 import type { V3, Xform } from "./recipe";
-import type { MeasureResult, PickRef, ViewRequest, ViewResult } from "./drawing";
+import type { PickMeasure, PickRef, ViewRequest, ViewResult } from "./drawing";
+import type { ImportMeta } from "./imports";
+import type { MeasureResult } from "./core";
 
 export type KernelStatus = "loading" | "ready" | "error";
 
@@ -72,6 +75,17 @@ export class KernelClient {
     for (const l of this.resetListeners) l();
   }
 
+  /** Terminate the worker for good (extra workers that are no longer needed). */
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.status = "error";
+    this.error = "The geometry worker was closed.";
+    this.failAll(new Error(this.error));
+    this.listeners.clear();
+    this.resetListeners.clear();
+  }
+
   private crash(message: string) {
     this.restarts++;
     if (this.restarts > 3) {
@@ -113,8 +127,8 @@ export class KernelClient {
     return new Promise((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
   }
 
-  private post(m: ToWorker) {
-    this.worker?.postMessage(m);
+  private post(m: ToWorker, transfer: Transferable[] = []) {
+    this.worker?.postMessage(m, transfer);
   }
 
   private onMessage(m: FromWorker) {
@@ -150,15 +164,20 @@ export class KernelClient {
       case "checks":
       case "exported":
       case "projected":
+      case "pick-measured":
+      case "inspected":
+      case "imported":
       case "measured": {
         const job = this.jobs.get(m.jobId);
-        if (job?.kind === "value") job.resolve(m.type === "exported" ? m.data : m.result);
+        if (job?.kind === "value") job.resolve(m.type === "exported" ? m.data : m.type === "imported" ? m.meta : m.result);
         this.jobs.delete(m.jobId);
         return;
       }
       case "checks-error":
       case "export-error":
-      case "job-error": {
+      case "job-error":
+      case "import-error":
+      case "measure-error": {
         const job = this.jobs.get(m.jobId);
         if (job?.kind === "value") job.reject(new Error(m.message));
         this.jobs.delete(m.jobId);
@@ -185,11 +204,11 @@ export class KernelClient {
     };
   }
 
-  private value<T>(make: (jobId: number) => ToWorker): Promise<T> {
+  private value<T>(make: (jobId: number) => ToWorker, transfer: Transferable[] = []): Promise<T> {
     const jobId = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       this.jobs.set(jobId, { kind: "value", resolve: resolve as (v: unknown) => void, reject });
-      this.post(make(jobId));
+      this.post(make(jobId), transfer);
     });
   }
 
@@ -212,12 +231,31 @@ export class KernelClient {
   }
 
   /** Exact properties of a picked face, edge or point, or the measurement between two of them. */
-  measure(a: PickRef, b?: PickRef) {
-    return this.value<MeasureResult>((jobId) => ({ type: "measure", jobId, req: { a, b } }));
+  measurePick(a: PickRef, b?: PickRef) {
+    return this.value<PickMeasure>((jobId) => ({ type: "pick-measure", jobId, req: { a, b } }));
+  }
+
+  /** Detail inspection of built parts (sharp edges, support, walls), by geometry hash. */
+  inspect(hashes: string[]) {
+    return this.value<Record<string, PartInspection | { error: string }>>((jobId) => ({ type: "inspect", jobId, hashes }));
   }
 
   evict(keep: string[]) {
     this.post({ type: "evict", keep });
+  }
+
+  /** Load a STEP file into the kernel. The bytes are copied, so the caller keeps its own. */
+  importStep(hash: string, file: string, bytes: Uint8Array, analyse: boolean) {
+    const data = bytes.slice().buffer;
+    return this.value<ImportMeta>((jobId) => ({ type: "import-step", jobId, hash, file, data, analyse }), [data]);
+  }
+
+  dropImport(hash: string) {
+    this.post({ type: "drop-import", hash });
+  }
+
+  measure(a: { hash: string; xf: Xform[] }[], b: { hash: string; xf: Xform[] }[]) {
+    return this.value<MeasureResult>((jobId) => ({ type: "measure", jobId, a, b }));
   }
 }
 

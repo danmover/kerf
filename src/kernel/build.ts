@@ -109,6 +109,61 @@ export function buildShape(r: ShapeRecipe): Shape3D {
       for (let i = 1; i < shapes.length; i++) out = out.fuse(shapes[i]);
       return out;
     }
+    case "import": {
+      const file = imported.get(r.asset);
+      if (!file) throw new BuildError("The imported STEP file is not loaded yet.");
+      if (r.body < 0) {
+        file.whole ??= R.makeCompound(file.bodies) as unknown as Shape3D;
+        return file.whole.clone();
+      }
+      const body = file.bodies[r.body];
+      if (!body) throw new BuildError(`The imported file has no body ${r.body + 1} (it has ${file.bodies.length}).`);
+      // a new handle on the same geometry: the cache may free it without touching the registry
+      return body.clone();
+    }
+  }
+}
+
+// ---------- imported STEP files ----------
+
+interface LoadedImport {
+  bodies: Shape3D[];
+  faceColors: (string[] | null)[];
+  whole?: Shape3D;
+}
+
+/** Bodies of imported files by content hash, loaded once per kernel. */
+const imported = new Map<string, LoadedImport>();
+
+export function registerImport(hash: string, bodies: Shape3D[], faceColors: (string[] | null)[]) {
+  dropImport(hash);
+  imported.set(hash, { bodies, faceColors });
+}
+
+export function dropImport(hash: string) {
+  const f = imported.get(hash);
+  if (!f) return;
+  for (const b of f.bodies) freeShape(b);
+  freeShape(f.whole);
+  imported.delete(hash);
+}
+
+export const hasImport = (hash: string) => imported.has(hash);
+
+/** Per-face colours for a part that is exactly one imported body (moved, not modified). */
+export function importFaceColors(p: PartRecipe): string[] | null {
+  if (p.ops.length || !p.base) return null;
+  let r: ShapeRecipe = p.base;
+  while (r.t === "xform") r = r.shape;
+  if (r.t !== "import" || r.body < 0) return null;
+  return imported.get(r.asset)?.faceColors[r.body] ?? null;
+}
+
+function freeShape(s: { delete?: () => void } | undefined) {
+  try {
+    s?.delete?.();
+  } catch {
+    /* already freed */
   }
 }
 
@@ -204,13 +259,15 @@ export interface MeshData {
   faceGroups?: Int32Array;
   /** (first point, point count, edge id) per B-rep edge, for picking edges */
   edgeGroups?: Int32Array;
+  /** per-vertex RGB, only for imported bodies whose faces have their own colours */
+  colors?: Uint8Array;
 }
 
-export function meshShape(shape: Shape3D, quality: "preview" | "final"): MeshData {
+export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColors?: string[] | null): MeshData {
   const opts = quality === "preview" ? { tolerance: 0.25, angularTolerance: 25 } : { tolerance: 0.03, angularTolerance: 10 };
   const m = shape.mesh(opts);
   const e = shape.meshEdges(opts);
-  return {
+  const out: MeshData = {
     positions: new Float32Array(m.vertices),
     normals: new Float32Array(m.normals),
     indices: new Uint32Array(m.triangles),
@@ -218,6 +275,44 @@ export function meshShape(shape: Shape3D, quality: "preview" | "final"): MeshDat
     faceGroups: new Int32Array(m.faceGroups.flatMap((g) => [g.start, g.count, g.faceId])),
     edgeGroups: new Int32Array(e.edgeGroups.flatMap((g) => [g.start, g.count, g.edgeId])),
   };
+  if (faceColors?.length) out.colors = vertexColors(shape, m, faceColors);
+  return out;
+}
+
+/** Colour each face's vertices. Mesh face groups are keyed by face hash; faces are matched to the explorer order the colours use. */
+function vertexColors(shape: Shape3D, m: { triangles: number[]; vertices: number[]; faceGroups: { start: number; count: number; faceId: number }[] }, faceColors: string[]): Uint8Array {
+  const oc = R.getOC() as unknown as OCFaces;
+  const index = new Map<number, number>();
+  const ex = new oc.TopExp_Explorer(shape.wrapped, oc.TopAbs_ShapeEnum.TopAbs_FACE, oc.TopAbs_ShapeEnum.TopAbs_SHAPE);
+  for (let i = 0; ex.More(); ex.Next(), i++) {
+    const h = oc.ReplicadShapeHasher.HashCode(ex.Current(), R.HASH_CODE_MAX);
+    if (!index.has(h)) index.set(h, i);
+  }
+  ex.delete();
+  const rgb = faceColors.map(hexRgb);
+  const fallback = rgb[0] ?? [154, 163, 173];
+  const colors = new Uint8Array(m.vertices.length);
+  m.faceGroups.forEach((g, gi) => {
+    const c = rgb[index.get(g.faceId) ?? gi] ?? fallback;
+    for (let t = g.start; t < g.start + g.count; t++) {
+      const v = m.triangles[t] * 3;
+      colors[v] = c[0];
+      colors[v + 1] = c[1];
+      colors[v + 2] = c[2];
+    }
+  });
+  return colors;
+}
+
+interface OCFaces {
+  TopExp_Explorer: new (s: unknown, a: unknown, b: unknown) => { More(): boolean; Next(): void; Current(): unknown; delete(): void };
+  TopAbs_ShapeEnum: { TopAbs_FACE: unknown; TopAbs_SHAPE: unknown };
+  ReplicadShapeHasher: { HashCode(s: unknown, max: number): number };
+}
+
+function hexRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace("#", "").slice(0, 6), 16);
+  return Number.isFinite(n) ? [(n >> 16) & 255, (n >> 8) & 255, n & 255] : [154, 163, 173];
 }
 
 export function bboxOf(shape: Shape3D): [V3, V3] {

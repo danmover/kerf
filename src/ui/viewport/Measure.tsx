@@ -12,7 +12,7 @@ import { meshes, useDesign } from "../../core/engine";
 import type { EvalPart } from "../../core/model";
 import { commitSource } from "../../app/project";
 import { kernel } from "../../kernel/client";
-import type { EntityInfo, MeasureResult, PickRef } from "../../kernel/drawing";
+import type { EntityInfo, PickMeasure, PickRef } from "../../kernel/drawing";
 import type { MeshData } from "../../kernel/build";
 import { xformMatrix, type V3 } from "../../kernel/recipe";
 import { drawingFor, openDrawings, useDrawings } from "../../drawing/engine";
@@ -71,7 +71,7 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
   const model = useDesign((s) => s.model);
   const [hover, setHover] = useState<Snap | null>(null);
   const [picks, setPicks] = useState<Snap[]>([]);
-  const [res, setRes] = useState<{ r?: MeasureResult; error?: string; busy: boolean } | null>(null);
+  const [res, setRes] = useState<{ r?: PickMeasure; error?: string; busy: boolean } | null>(null);
   const [, setFrame] = useState(0);
   const job = useRef(0);
 
@@ -110,7 +110,7 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
     if (refs.some((r) => !r)) return;
     const n = ++job.current;
     setRes({ busy: true });
-    kernel.measure(refs[0]!, refs[1] ?? undefined).then(
+    kernel.measurePick(refs[0]!, refs[1] ?? undefined).then(
       (r) => n === job.current && setRes({ r, busy: false }),
       (e: unknown) => n === job.current && setRes({ error: e instanceof Error ? e.message : String(e), busy: false }),
     );
@@ -216,7 +216,7 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
   );
 }
 
-function MeasureBody({ picks, res, nameOf, onClear }: { picks: Snap[]; res: { r?: MeasureResult; error?: string; busy: boolean } | null; nameOf: (s: Snap) => string; onClear: () => void }) {
+function MeasureBody({ picks, res, nameOf, onClear }: { picks: Snap[]; res: { r?: PickMeasure; error?: string; busy: boolean } | null; nameOf: (s: Snap) => string; onClear: () => void }) {
   const setDraft = useChatDraft((s) => s.set);
   if (!picks.length) return <div className="sub">Click a face, edge or corner. Click a second one to measure between them. Esc clears.</div>;
   if (res?.error) return <div style={{ color: "var(--fail)", fontSize: 12 }}>{res.error}</div>;
@@ -331,7 +331,7 @@ function details(e: EntityInfo): string[] {
 // ---------- onto a drawing ----------
 
 /** Model points for a dimension: centre to centre for holes and shafts, else the closest points. */
-function dimPoints(r: MeasureResult): [V3, V3] | null {
+function dimPoints(r: PickMeasure): [V3, V3] | null {
   const A = r.a;
   const B = r.b;
   if (!B) return null;
@@ -488,7 +488,7 @@ function pickRef(s: Snap, part: EvalPart | undefined): PickRef | null {
 
 // ---------- overlay ----------
 
-function drawOverlay(h: MeasureHost, hover: Snap | null, picks: Snap[], r: MeasureResult | undefined) {
+function drawOverlay(h: MeasureHost, hover: Snap | null, picks: Snap[], r: PickMeasure | undefined) {
   const rect = h.canvas.getBoundingClientRect();
   // the overlay covers the viewport the canvas sits in
   const parent = h.canvas.closest(".viewport")?.getBoundingClientRect() ?? rect;

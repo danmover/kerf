@@ -15,18 +15,27 @@ import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
+import { PhoneWorkspace, usePhoneLayout } from "./PhoneWorkspace";
+import { PlanHud } from "../ui/PlanHud";
+import { RefViewer } from "../ui/RefViewer";
+import { SketchPad } from "../ui/SketchPad";
+import { PreviewBanner } from "../ui/PreviewBanner";
+import { StepDropOverlay, useStepDrop } from "../ui/ImportsPanel";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
   const save = useProject((s) => s.save);
-  const [left, setLeft, saveLeft] = usePersistentNumber("kerf.layout.left", 272, 220, 460);
+  const [left, setLeft, saveLeft] = usePersistentNumber("kerf.layout.left", 300, 220, 460);
   const [right, setRight, saveRight] = usePersistentNumber("kerf.layout.right", 384, 320, 620);
   const [dock, setDock, saveDock] = usePersistentNumber("kerf.layout.dock", 300, 140, 900);
   const dockOpen = useView((s) => s.dockOpen);
   const center = useRef<HTMLDivElement>(null);
+  const phone = usePhoneLayout();
+  const drop = useStepDrop();
   useThumbnails();
 
   if (!project) return null;
+  if (phone) return <PhoneWorkspace projectKey={project.id} />;
   return (
     <div className="app">
       <TopBar />
@@ -36,11 +45,15 @@ export function Workspace() {
             <Icon.Alert size={14} /> This browser is blocking local storage, so projects will not be kept after you close the tab. Use Export → Project file to keep your work.
           </div>
         )}
-        <div className="workspace" style={{ gridTemplateColumns: `${left}px 1fr ${right}px`, flex: 1 }}>
+        <div className="workspace" style={{ gridTemplateColumns: `${left}px 1fr ${right}px`, flex: 1 }} {...drop.handlers}>
+          <StepDropOverlay show={drop.over} />
           <ErrorBoundary label="Model panel">
             <LeftPanel />
           </ErrorBoundary>
           <div className="center" ref={center} style={{ gridTemplateRows: dockOpen ? `1fr ${dock}px` : `1fr 37px`, position: "relative" }}>
+            <div className="plan-hud-anchor" style={{ bottom: dockOpen ? dock : 37 }}>
+              <PlanHud />
+            </div>
             <div className="center-stage">
               <ErrorBoundary label="3D view">
                 <Viewport />
@@ -50,6 +63,7 @@ export function Workspace() {
                 <DrawingSwitch />
               </ErrorBoundary>
             </div>
+            <PreviewBanner />
             {dockOpen && <Splitter dir="h" style={{ bottom: dock }} onDrag={(d) => setDock(dock - d)} onEnd={saveDock} />}
             <ErrorBoundary label="Editor">
               <Dock projectKey={project.id} />
@@ -63,6 +77,8 @@ export function Workspace() {
         </div>
       </div>
       <StatusBar />
+      <RefViewer />
+      <SketchPad />
     </div>
   );
 }
@@ -106,10 +122,11 @@ function useThumbnails() {
     if (stage !== "done" || rev === last.current) return;
     const t = setTimeout(async () => {
       const vp = viewport();
-      if (!vp || useDesign.getState().rev !== rev) return;
+      // a preview is not the design: keep the thumbnail of the real one
+      if (!vp || useDesign.getState().rev !== rev || useProject.getState().preview) return;
       if (!useDesign.getState().model?.parts.length) return;
       try {
-        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82 });
+        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12 });
         last.current = rev;
         await saveThumbnail(url);
       } catch {

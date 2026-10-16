@@ -3,6 +3,7 @@
 
 import type { EvalParam, Model } from "./model";
 import { fmtNum } from "../lang/values";
+import { parse } from "../lang/parser";
 
 const KEEP_UNITS = new Set(["", "mm", "deg", "g", "N", "rpm"]);
 const BASE_UNIT: Record<string, string> = { cm: "mm", m: "mm", in: "mm", rad: "deg", kg: "g", Nm: "Nm", "%": "" };
@@ -175,4 +176,62 @@ export function toggleParamLock(src: string, p: EvalParam): string {
     return src.slice(0, p.span.start) + next + src.slice(p.span.end);
   }
   return src.slice(0, p.span.end) + " locked" + src.slice(p.span.end);
+}
+
+/**
+ * Set top-level properties on a part or component block, keeping the
+ * block's formatting. Values are source text (`"PETG"`, `#4f7cff`); null
+ * removes the property. Returns the source unchanged if the block is missing.
+ */
+export function setBlockProps(src: string, blockName: string, props: Record<string, string | null>): string {
+  const { program } = parse(src);
+  const stmt = program.stmts.find((s) => (s.k === "part" || s.k === "component") && s.name === blockName);
+  if (!stmt || (stmt.k !== "part" && stmt.k !== "component")) return src;
+  const edits: { start: number; end: number; text: string }[] = [];
+  const missing: [string, string][] = [];
+  for (const [name, value] of Object.entries(props)) {
+    const it = stmt.items.find((i) => i.k === "prop" && i.name === name);
+    if (it && it.k === "prop") {
+      if (value === null) edits.push(removal(src, it.span.start, it.span.end));
+      else edits.push({ start: it.value.span.start, end: it.value.span.end, text: value });
+    } else if (value !== null) missing.push([name, value]);
+  }
+  if (missing.length) {
+    const headEnd = stmt.k === "component" ? stmt.call.span.end : stmt.nameSpan.end;
+    const open = src.indexOf("{", headEnd);
+    const hasBlock = open >= 0 && open < stmt.span.end;
+    if (!hasBlock) {
+      edits.push({ start: headEnd, end: headEnd, text: ` { ${missing.map(([n, v]) => `${n}: ${v}`).join(", ")} }` });
+    } else {
+      const body = src.slice(open + 1, stmt.span.end - 1);
+      if (body.includes("\n")) {
+        const first = stmt.items[0];
+        const lineStart = src.lastIndexOf("\n", (first?.span.start ?? open) - 1) + 1;
+        const indent = first ? /^[ \t]*/.exec(src.slice(lineStart))![0] : /^[ \t]*/.exec(src.slice(src.lastIndexOf("\n", stmt.span.start - 1) + 1))![0] + "  ";
+        edits.push({ start: open + 1, end: open + 1, text: missing.map(([n, v]) => `\n${indent}${n}: ${v}`).join("") });
+      } else {
+        const empty = body.trim() === "";
+        edits.push({ start: open + 1, end: open + 1, text: " " + missing.map(([n, v]) => `${n}: ${v}`).join(", ") + (empty ? " " : ",") });
+      }
+    }
+  }
+  edits.sort((a, b) => b.start - a.start);
+  let out = src;
+  for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return out;
+}
+
+/** The text range to delete for one property: its whole line, or the item and its separating comma. */
+function removal(src: string, start: number, end: number) {
+  const ls = src.lastIndexOf("\n", start - 1) + 1;
+  let le = src.indexOf("\n", end);
+  if (le < 0) le = src.length;
+  const before = src.slice(ls, start);
+  const after = src.slice(end, le);
+  if (before.trim() === "" && /^\s*,?\s*(\/\/.*)?$/.test(after) && !after.includes("//")) return { start: ls, end: Math.min(src.length, le + 1), text: "" };
+  const trail = /^\s*,\s*/.exec(src.slice(end));
+  if (trail) return { start, end: end + trail[0].length, text: "" };
+  const lead = /,\s*$/.exec(src.slice(ls, start));
+  if (lead) return { start: start - lead[0].length, end, text: "" };
+  return { start, end, text: "" };
 }

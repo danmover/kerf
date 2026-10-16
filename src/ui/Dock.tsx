@@ -1,4 +1,4 @@
-// The bottom dock: source code, checks, dependency graph and parts list.
+// The bottom dock: the brief, source code, checks, dependency graph and parts list.
 
 import { motion } from "framer-motion";
 import { useDesign } from "../core/engine";
@@ -7,6 +7,9 @@ import { CodeEditor } from "./CodeEditor";
 import { ChecksPanel } from "./ChecksPanel";
 import { GraphView } from "./GraphView";
 import { BomTable } from "./BomTable";
+import { BriefPanel } from "./BriefPanel";
+import { BIcon } from "./briefIcons";
+import { briefData, openAssumptions } from "../core/brief";
 import { Icon } from "./icons";
 import { lineCol } from "../lang/lexer";
 
@@ -19,7 +22,10 @@ export function Dock({ projectKey }: { projectKey: string }) {
   const errors = model?.diagnostics.filter((d) => d.severity === "error") ?? [];
   const fails = report?.counts.fail ?? 0;
   const set = (t: DockTab) => useView.setState({ dockTab: t, dockOpen: true });
-  const tabs: { id: DockTab; label: string; icon: JSX.Element; count?: number; bad?: boolean }[] = [
+  const briefFails = report?.items.filter((i) => i.category === "brief" && i.status === "fail").length ?? 0;
+  const toConfirm = openAssumptions(briefData(model?.brief)).length;
+  const tabs: { id: DockTab; label: string; icon: JSX.Element; count?: number; bad?: boolean; warn?: boolean }[] = [
+    { id: "brief", label: "brief", icon: <BIcon.Brief size={13} />, count: briefFails || toConfirm || undefined, bad: briefFails > 0, warn: !briefFails && toConfirm > 0 },
     { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, count: errors.length || undefined, bad: errors.length > 0 },
     { id: "checks", label: "checks", icon: <Icon.Shield size={13} />, count: report ? fails || report.counts.pass : undefined, bad: fails > 0 },
     { id: "graph", label: "graph", icon: <Icon.Graph size={13} /> },
@@ -33,7 +39,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
             <button key={t.id} role="tab" aria-selected={tab === t.id} className={`tab ${tab === t.id && open ? "active" : ""}`} onClick={() => (tab === t.id && open ? useView.setState({ dockOpen: false }) : set(t.id))}>
               {t.icon}
               {t.label}
-              {t.count !== undefined && <span className={`count ${t.bad ? "fail" : ""}`}>{t.count}</span>}
+              {t.count !== undefined && <span className={`count ${t.bad ? "fail" : t.warn ? "warn" : ""}`}>{t.count}</span>}
               {tab === t.id && open && <motion.div layoutId="dock-tab" className="tab-line" />}
             </button>
           ))}
@@ -55,6 +61,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
           <div style={{ display: tab === "code" ? "block" : "none", position: "absolute", inset: 0 }}>
             <CodeEditor key={projectKey} />
           </div>
+          {tab === "brief" && <BriefPanel />}
           {tab === "checks" && <ChecksPanel />}
           {tab === "graph" && <GraphView />}
           {tab === "bom" && <BomTable />}
