@@ -81,20 +81,22 @@ npm run typecheck
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
-Four complete examples ship with it: a sensor-hub enclosure (21 solids), a two-stage 12:1 gear reducer (26 solids), a sand tunnelling robot (90 solids) and a 3D printer (96 solids). All pass every hard check. The enclosure and reducer carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
+Four complete examples ship with it: a sensor-hub enclosure (21 solids), a two-stage 12:1 gear reducer (26 solids), a sand tunnelling robot (90 solids) and a 3D printer (96 solids). All pass every hard check. The enclosure, the reducer and the tunneller carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
 
 ## Complete machines from a brief
 
-Type what the machine has to do, for example "a drill powered by an Arduino that drives forwards and turns, and passes through a metre of sand in a 10 m tall box". Claude designs the whole machine, not just the shape:
+Type what the machine has to do, for example "a drill powered by an Arduino that drives forwards and turns, and gets through a 2 m long sand pit along the bottom, under 5 m of sand". Claude designs the whole machine, not just the shape:
 
 - **Real parts.** A catalog of purchasable parts with their dimensions, pins and ratings: Arduino and ESP32 boards, motor and stepper drivers, goBILDA gearmotors, NEMA 17 steppers, actuators, batteries, power supplies, regulators, fuses, connectors, sensors, hot ends, heated beds, extrusions, rails, lead screws, pulleys and seals. Each part links to where to buy it. With web search on (Settings → Claude), Claude checks current prices and stock with the Claude API's web search and web fetch, and cites the pages.
-- **Sizing calculations.** `calc.` functions Claude and you can call from the design: soil pressure in a sand box (Janssen), screw burrowing torque and thrust, motor operating point, battery runtime, screw conveying, hinge steering moment, actuator force through a cam slot, wire gauge and bearing life. Each shows its inputs, method, assumptions and how far to trust it, and requirements can use the results.
+- **Sizing calculations.** `calc.` functions Claude and you can call from the design: soil pressure in a sand box or pit (Janssen), screw burrowing torque and thrust, motor operating point, battery runtime, screw conveying, hinge steering moment, actuator force through a cam slot, stepper axis torque and speed, lead screw drive, heater warm-up, print speed, wire gauge and bearing life. Each shows its inputs, method, assumptions and how far to trust it, and requirements can use the results.
 - **Wiring.** `wire` and `net` statements connect component pins. An electrical rules check catches wrong voltages, overloaded pins and supplies, missing grounds, motors on logic pins, encoders on non-interrupt pins and undersized wire.
 - **Firmware.** A `firmware` block generates an Arduino sketch whose pin map comes from the wiring (with a serial console to test every motor and sensor, and an autonomous run mode for the tunneller), or a Klipper `printer.cfg` for 3D printer boards.
 - **Build pack.** The Build tab says whether the machine is ready to order and build, then downloads a zip: STL files oriented for printing, STEP, the parts list with buy links and prices, a cut list, a wiring diagram and wire list, the firmware, the calculations, the check results, an assembly order and a test plan.
 - **Honest about what is proven.** Geometry, wiring and the arithmetic are checked by Kerf. Anything that depends on the real world (how sand behaves, how a print holds up, motor heating) is marked as an estimate and goes in the test plan with what to measure and what counts as a pass.
 
-`src/machine/briefs.ts` holds a benchmark of briefs, each with what a complete answer must contain, and a scorer that reports what a design is missing. The tunneller answers the first brief completely.
+The numbers in the request go into the design's brief, and the sizing reads them from there. The tunneller's brief holds the pit as givens (`pit_l = 2m`, `pit_depth = 5m`, and `pit_w = 0.5m`, which is marked as assumed) and ties each requirement to a use with `for`: cross, steer and reserve. Change a given and the checks show what has to change. For example, in a 1 m wide pit the walls carry less of the sand. The motors then run above half their stall torque and the battery no longer covers two crossings, so those three checks fail until the design changes.
+
+`src/machine/briefs.ts` holds a benchmark of briefs, each with what a complete answer must contain, and a scorer that reports what a design is missing. A brief that gives numbers also requires them to be written into the design's brief, with a requirement for every use. The tunneller answers both drill briefs completely.
 
 ## Not in 0.1
 

@@ -56,10 +56,10 @@ export const TEMPLATES: Template[] = [
   {
     id: "sand-tunneller",
     name: "Sand Tunneller",
-    tagline: "Arduino robot that screws itself through 1 m of sand and steers: parts list, wiring, firmware and test plan.",
+    tagline: "Arduino robot that screws itself 2 m along the bottom of a 5 m deep sand pit and steers: brief, parts list, wiring, firmware and test plan.",
     source: tunneller,
     prompts: [
-      "Make it cross 2 m of sand instead of 1 m and check the battery still lasts",
+      "Make the pit 1 m wide and change the drill until every check passes again",
       "Use a bigger battery and update the wiring, the runtime and the parts list",
       "Why does the steering push the hinge through a slanted slot instead of directly?",
     ],
