@@ -20,7 +20,7 @@ brief {
 
   given pit_l = 2m "Pit length the drill crosses, wall to wall"
   given pit_depth = 5m "Depth of sand in the pit; the drill crosses at the bottom"
-  given pit_w = 0.5m "Pit width across the drill's path: up to about 0.6 m, the walls hold up enough sand for this drill" assumed
+  given pit_w = 0.5m "Pit width across the drill's path: up to about 0.6 m, the walls hold up enough sand for this drill"
   given floor_gap = 100mm "Height of the drill's axis above the pit floor" assumed
 
   assume "Dry, loose-poured play sand: about 1600 kg/m³ and a 32° friction angle"
