@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneController } from "./viewport/scene";
+import { SceneController, type PhotoStatus } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, useDesign } from "../core/engine";
@@ -46,6 +46,7 @@ export function Viewport() {
   const sketching = useSketch((s) => !!s.active || s.picking);
   const inSketch = useSketch((s) => !!s.active);
   const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
+  const [photo, setPhoto] = useState<PhotoStatus>({ state: "off", samples: 0, max: 0 });
 
   useEffect(() => {
     if (!mount.current) return;
@@ -78,6 +79,7 @@ export function Viewport() {
     if (import.meta.env.DEV) (window as unknown as { __kerfViewport?: SceneController }).__kerfViewport = c;
     c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
     c.onTurntableStop = () => useView.setState({ turntable: false });
+    c.onPhotoStatus = setPhoto;
     c.onContext = (hit) => {
       // the right button pans in a sketch; the spot chat waits until it is closed
       const sk = useSketch.getState();
@@ -110,8 +112,13 @@ export function Viewport() {
   }, []);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality });
-  }, [settings.lighting, settings.lightAngle, settings.quality]);
+    ctl.current?.setRenderSettings({
+      lighting: settings.lighting,
+      lightAngle: settings.lightAngle,
+      quality: settings.quality,
+      photoreal: settings.photoreal,
+    });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal]);
 
   useEffect(() => {
     if (model) ctl.current?.setParts(model.parts, meshes);
@@ -234,6 +241,9 @@ export function Viewport() {
         </button>
         <div className="sep" />
         <LightingMenu />
+        <button className={`icon-btn ${settings.photoreal ? "active" : ""}`} onClick={() => updateSettings({ photoreal: !settings.photoreal })} data-tip="Photoreal view (P)" aria-label="Photoreal view" aria-pressed={settings.photoreal}>
+          <Icon.Aperture />
+        </button>
         <button className={`icon-btn ${view.turntable ? "active" : ""}`} disabled={!visibleParts} onClick={() => useView.setState({ turntable: !view.turntable })} data-tip="Turntable (T)" aria-label="Turntable">
           <Icon.Orbit />
         </button>
@@ -289,6 +299,7 @@ export function Viewport() {
 
       <Hud stage={stage} parts={visibleParts} />
       <MeasureTool host={measureHost} />
+      <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
 
@@ -399,6 +410,45 @@ function Hud({ stage, parts }: { stage: string; parts: number }) {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+const PHOTO_LABEL: Record<PhotoStatus["state"], string> = {
+  off: "",
+  paused: "Photoreal is paused",
+  waiting: "Photoreal",
+  preparing: "Preparing the photoreal view",
+  rendering: "Photoreal",
+  done: "Photoreal",
+};
+
+/** Progress of the path traced view, bottom right of the viewport (the plan pill has the centre). */
+function PhotoPill({ s }: { s: PhotoStatus }) {
+  const p = s.max ? Math.min(1, s.samples / s.max) : 0;
+  const label = (s.state === "paused" && s.reason) || PHOTO_LABEL[s.state];
+  return (
+    <motion.div className={`vp-photo ${s.state}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }} role="status" aria-live="polite">
+      {s.state === "preparing" ? <span className="spinner sm" /> : <Icon.Aperture size={13} />}
+      <span>{label}</span>
+      {(s.state === "rendering" || s.state === "waiting" || s.state === "done") && (
+        <>
+          <span className="vp-photo-bar">
+            <span style={{ transform: `scaleX(${p})` }} />
+          </span>
+          <span className="mono">
+            {s.state === "done" ? (
+              <>
+                {s.max} <Icon.Check size={11} />
+              </>
+            ) : (
+              <>
+                {s.samples}/{s.max}
+              </>
+            )}
+          </span>
+        </>
+      )}
+    </motion.div>
   );
 }
 

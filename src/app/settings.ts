@@ -31,6 +31,8 @@ export interface Settings {
   lightAngle: number;
   /** viewport render quality: draft renders one pass; balanced and high refine while the view is still */
   quality: "draft" | "balanced" | "high";
+  /** photoreal view: path traces the scene while the camera is still */
+  photoreal: boolean;
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
   /** when an independent reviewer checks Claude's changes before it reports back */
@@ -75,6 +77,7 @@ const DEFAULTS: Settings = {
   lighting: "studio",
   lightAngle: 0,
   quality: "balanced",
+  photoreal: false,
   maxSteps: 16,
   selfReview: "auto",
   reviewRounds: 2,

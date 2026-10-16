@@ -169,6 +169,8 @@ function useShortcuts() {
           return;
         case "t":
           return useView.setState({ turntable: !v.turntable });
+        case "p":
+          return updateSettings({ photoreal: !useSettings.getState().photoreal });
         case "a":
           // the parts fly in from an exploded start and end assembled
           return useView.setState({ explode: 0, assemblyRequest: v.assemblyRequest + 1 });
