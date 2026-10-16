@@ -155,6 +155,8 @@ function load(): Settings {
     if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
     out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
     if (!KEEP_WARM_MINUTES.includes(out.keepWarm)) out.keepWarm = DEFAULTS.keepWarm;
+    // the photoreal view starts off on every load: a GPU that hangs while path tracing must not be sent back into it
+    out.photoreal = false;
     return out;
   } catch {
     return DEFAULTS;

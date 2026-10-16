@@ -662,6 +662,13 @@ export class RenderPipeline {
     this.bloomFresh = false;
   }
 
+  /** Free the photoreal buffers (about 24 bytes a pixel) once the photoreal view is off. */
+  releasePhoto() {
+    this.photo(null);
+    for (const rt of this.photoRTs) rt.dispose();
+    this.photoRTs = [];
+  }
+
   /** Copy a texture to a target (used to keep the last frame for crossfades). */
   copy(src: THREE.Texture, target: THREE.WebGLRenderTarget | null) {
     this.copyMat.uniforms.tSrc.value = src;

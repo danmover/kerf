@@ -316,6 +316,12 @@ export class StudioEnvironments {
     return rt.texture;
   }
 
+  /** Free the path tracer's cubes once the photoreal view is off. */
+  releaseCubes() {
+    for (const rt of this.cubes.values()) rt.dispose();
+    this.cubes.clear();
+  }
+
   dispose() {
     for (const rt of this.cache.values()) rt.dispose();
     for (const rt of this.cubes.values()) rt.dispose();

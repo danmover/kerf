@@ -28,6 +28,8 @@ const HOVER = new THREE.Color("#a9bcff");
 const L_OPAQUE = 1;
 const L_SEL = 2;
 const L_HOVER = 3;
+/** process marks, drawn again over the photoreal image (which has none of its own) */
+const L_MARKS = 4;
 
 interface GeoEntry {
   mesh: THREE.BufferGeometry;
@@ -158,6 +160,21 @@ const PHOTO_PREVIEW = 8;
 const PHOTO_DELAY = 250;
 /** samples by which the path traced image has fully replaced the interactive one */
 const PHOTO_TAKEOVER = 12;
+/** longest the trace waits for a model to finish building, ms: detail builds can take a while, but one that stalls must not hold it for good */
+const PHOTO_SETTLE_MAX = 60_000;
+
+/** The GPU is emulated on the CPU: fine for the interactive view, far too slow to path trace. */
+function softwareRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
+  try {
+    // for testing in a headless browser: localStorage["kerf.photoreal.software"] = "allow"
+    if (localStorage.getItem("kerf.photoreal.software") === "allow") return false;
+  } catch {
+    /* storage blocked */
+  }
+  const info = gl.getExtension("WEBGL_debug_renderer_info");
+  const name = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER) ?? "");
+  return /swiftshader|llvmpipe|softpipe|lavapipe|software|basic render/i.test(name);
+}
 
 /** Temporary look shown while hovering a material in the picker. */
 export interface AppearanceOverride {
@@ -191,6 +208,14 @@ export class SceneController {
   /** the path tracer's code is loading (it is only fetched when first used) */
   private photoLoading = false;
   private photoError = "";
+  /** the GPU is emulated in software (SwiftShader, llvmpipe): far too slow to path trace */
+  private softwareGL = false;
+  private sketching = false;
+  /** process issues are marked on the parts; the traced image has no marks of its own */
+  private processMarks = false;
+  /** when the model started building again (ms), or null once it has settled */
+  private settlingSince: number | null = null;
+  private photoHeld = false;
   private root = new THREE.Group();
   private overlay = new THREE.Scene();
   private interGroup = new THREE.Group();
@@ -282,6 +307,13 @@ export class SceneController {
     this.renderer.autoClear = false;
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.classList.add("vp-canvas");
+    this.softwareGL = softwareRenderer(this.renderer.getContext());
+    // a GPU that resets mid-trace must not be sent straight back into it
+    this.renderer.domElement.addEventListener("webglcontextlost", () => {
+      if (!this.photo && !this.photoLoading) return;
+      this.photoError = "The graphics card reset during the photoreal render, so it stopped";
+      this.dropPhoto();
+    });
     this.pipe = new RenderPipeline(this.renderer);
     this.pipe.look.selColor.copy(ACCENT);
     this.pipe.look.hoverColor.copy(HOVER);
@@ -462,9 +494,7 @@ export class SceneController {
     if (prev.photoreal !== s.photoreal) {
       if (!s.photoreal) {
         // free the path tracer's buffers and scene copy; turning it back on rebuilds them
-        this.photoMix = 0;
-        this.photo?.dispose();
-        this.photo = null;
+        this.dropPhoto();
         this.photoError = "";
       }
     }
@@ -556,6 +586,7 @@ export class SceneController {
 
   /** In sketch mode the left button belongs to the sketch tools: middle orbits, right pans. */
   setSketchMode(on: boolean) {
+    this.sketching = on;
     this.controls.mouseButtons = on ? { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
   }
 
@@ -1532,11 +1563,14 @@ export class SceneController {
       this.maskDirty = true;
       restarted = true;
     }
-    const photo = this.photoActive();
-    if (photo && (restarted || !photo.samples)) {
+    let photo = this.photoActive();
+    // while the model builds, the trace waits for its final meshes instead of restarting on each
+    const held = !!photo && this.settlingSince !== null && now - this.settlingSince < PHOTO_SETTLE_MAX;
+    if (photo && !held && (restarted || !photo.samples || this.photoHeld)) {
       const parts = this.photoParts();
       photo.sync(parts, this.photoStage(parts), now);
     }
+    this.photoHeld = held;
     if (this.maskDirty) {
       this.renderMask();
       this.maskDirty = false;
@@ -1567,13 +1601,20 @@ export class SceneController {
     }
     // anything that moves restarts the photo image, so waiting on the restart covers motion too
     let traced = false;
-    if (photo && now - photo.changedAt > PHOTO_DELAY && this.pipe.samples >= 1) {
+    if (photo && !held && now - photo.changedAt > PHOTO_DELAY && this.pipe.samples >= 1) {
       // the last frame's length sizes the tracer's tiles, when tracing was all that frame did
       if (photo.render(this.traceOnly ? frameMs : undefined)) this.needComposite = true;
       traced = true;
+      if (photo.failed) {
+        console.warn("Photoreal: the path tracing shader did not compile on this GPU");
+        this.photoError = "The photoreal view doesn't run on this graphics card";
+        this.dropPhoto();
+        photo = null;
+        this.needComposite = true;
+      }
     }
     // the path traced image takes over as its noise clears, and leaves at once when anything moves
-    const mixTarget = photo && photo.samples >= 2 ? Math.min(1, (photo.samples - 1) / PHOTO_TAKEOVER) : 0;
+    const mixTarget = photo && !held && photo.samples >= 2 ? Math.min(1, (photo.samples - 1) / PHOTO_TAKEOVER) : 0;
     if (!mixTarget) {
       if (this.photoMix) this.needComposite = true;
       this.photoMix = 0;
@@ -1581,7 +1622,7 @@ export class SceneController {
       this.photoMix = this.display.reduceMotion ? mixTarget : Math.min(mixTarget, this.photoMix + dt * 4);
       this.needComposite = true;
     }
-    this.reportPhoto(photo, now);
+    this.reportPhoto(photo, held, now);
     this.traceOnly = traced && !rastered && !this.needComposite;
     if (!this.needComposite) return;
     this.needComposite = false;
@@ -1593,15 +1634,46 @@ export class SceneController {
 
   // ---------- photoreal ----------
 
+  /** the layer ProcessOverlay puts its marks on as well */
+  readonly markLayer = L_MARKS;
+
+  /** Process issues are marked on the model: they are drawn over the photoreal image too. */
+  setProcessMarks(on: boolean) {
+    if (on !== this.processMarks) this.needComposite = true;
+    this.processMarks = on;
+  }
+
+  /** The model is being built, checked or refined. Photoreal waits for the final meshes rather than restarting on each. */
+  setModelSettling(on: boolean) {
+    if (on === (this.settlingSince !== null)) return;
+    this.settlingSince = on ? performance.now() : null;
+    if (!on) this.changed = true;
+  }
+
   /** Why the photoreal view can't run right now, as a line for the status pill. */
   private photoBlocked(): string | null {
     const d = this.display;
     if (this.photoError) return this.photoError;
+    if (this.softwareGL) return "Photoreal needs hardware graphics, and this browser draws in software";
+    if (this.sketching) return "Photoreal pauses while you sketch";
     if (this.section.on) return "Photoreal pauses in section view";
     if (d.xray) return "Photoreal pauses in x-ray";
     if (d.focus.size || (d.isolate && d.selected.size)) return "Photoreal pauses while parts are isolated";
     if (!this.parts.size) return "Nothing to render yet";
     return null;
+  }
+
+  /** Free the path tracer and its buffers. */
+  private dropPhoto() {
+    this.photoMix = 0;
+    try {
+      this.photo?.dispose();
+    } catch (e) {
+      console.warn("Photoreal: freeing the path tracer failed", e);
+    }
+    this.photo = null;
+    this.pipe.releasePhoto();
+    this.envs.releaseCubes();
   }
 
   private photoActive(): PhotoRenderer | null {
@@ -1610,7 +1682,7 @@ export class SceneController {
       this.photoLoading = true;
       import("./render/photoreal")
         .then((m) => {
-          if (this.disposed || !this.render$.photoreal || this.photo) return;
+          if (this.disposed || !this.render$.photoreal || this.photo || this.photoError) return;
           this.photo = new m.PhotoRenderer(this.renderer, this.camera);
           this.photo.quality = PHOTO_QUALITY[this.render$.quality](this.renderer.getPixelRatio());
           this.changed = true;
@@ -1661,16 +1733,19 @@ export class SceneController {
     };
   }
 
-  private reportPhoto(photo: PhotoRenderer | null, now: number) {
+  private reportPhoto(photo: PhotoRenderer | null, held: boolean, now: number) {
     let s: PhotoStatus;
     if (!this.render$.photoreal) s = { state: "off", samples: 0, max: 0 };
     else if (!photo) {
       const reason = this.photoBlocked();
       s = reason ? { state: "paused", reason, samples: 0, max: 0 } : { state: "preparing", samples: 0, max: 0 };
+    } else if (held) {
+      s = { state: "waiting", reason: "Photoreal starts when the model finishes building", samples: 0, max: photo.quality.maxSamples };
     } else {
       const max = photo.quality.maxSamples;
       const samples = Math.floor(photo.samples);
-      const state = photo.done ? "done" : photo.compiling ? "preparing" : now - photo.changedAt <= PHOTO_DELAY ? "waiting" : "rendering";
+      // "preparing" goes out before the first trace, so it is on screen while the shader compiles
+      const state = photo.done ? "done" : photo.preparing ? "preparing" : now - photo.changedAt <= PHOTO_DELAY ? "waiting" : "rendering";
       s = { state, samples, max };
     }
     const key = `${s.state}|${s.reason ?? ""}`;
@@ -1693,7 +1768,19 @@ export class SceneController {
     }
     this.pipe.composite(null, { mask: true, selAmt: this.selAmt, selFill: this.selFill, hoverAmt: this.hoverAmt, time: now / 1000 });
     r.setRenderTarget(null);
-    if (this.overlays.size) this.overlayDepth();
+    const marks = this.processMarks && this.photoMix > 0;
+    if (this.overlays.size || marks) this.overlayDepth();
+    if (marks) {
+      // the path traced image covers the process marks drawn in the interactive pass: draw them over it
+      const cam = this.camera;
+      const prevMask = cam.layers.mask;
+      const saveShadow = r.shadowMap.autoUpdate;
+      r.shadowMap.autoUpdate = false;
+      cam.layers.set(L_MARKS);
+      r.render(this.scene, cam);
+      cam.layers.mask = prevMask;
+      r.shadowMap.autoUpdate = saveShadow;
+    }
     r.render(this.overlay, this.camera);
     // axis triad in the corner
     const s = 86;
@@ -1805,6 +1892,12 @@ export class SceneController {
       for (const obj of this.parts.values()) this.applyMaterial(obj);
     }
     for (const o of this.overlays) o.still?.();
+    // captures are the interactive view, CAD edges and grid included (the next frame puts the photoreal look back)
+    if (this.photoLookOn) {
+      this.photoLookOn = false;
+      for (const obj of this.parts.values()) this.applyMaterial(obj);
+      this.grid.visible = this.display.grid;
+    }
     const pipe = new RenderPipeline(this.renderer);
     Object.assign(pipe.look, this.pipe.look);
     pipe.setSize(opts.width, opts.height, 1);

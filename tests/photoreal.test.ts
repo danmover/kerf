@@ -1,7 +1,7 @@
 import * as THREE from "three";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { appearanceFor, Detail } from "../src/ui/viewport/render/appearance";
-import { detailMaps, ROUGH_MAP_MEAN } from "../src/ui/viewport/render/detailTextures";
+import { detailMaps, releaseDetailMaps, ROUGH_MAP_MEAN } from "../src/ui/viewport/render/detailTextures";
 import { boxProjected, photoMaterial } from "../src/ui/viewport/render/photoreal";
 
 function frames(g: THREE.BufferGeometry) {
@@ -79,5 +79,31 @@ describe("photoreal materials", () => {
 
     const metal = appearanceFor("Aluminum 6061", "brushed", "#c4c8ce");
     expect(photoMaterial(metal).mat.metalness).toBe(1);
+  });
+});
+
+describe("photoreal recovery", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("starts off after a reload, so a GPU that hung in the path tracer isn't sent back in", async () => {
+    vi.stubGlobal("localStorage", { getItem: () => JSON.stringify({ photoreal: true, quality: "high" }), setItem: () => undefined, removeItem: () => undefined });
+    vi.resetModules();
+    const s = (await import("../src/app/settings")).useSettings.getState();
+    expect(s.photoreal).toBe(false);
+    expect(s.quality).toBe("high");
+  });
+
+  it("frees the detail maps' GPU copies and keeps the baked data for next time", () => {
+    const m = detailMaps(Detail.Grain)!;
+    let freed = 0;
+    m.normal.addEventListener("dispose", () => freed++);
+    m.rough.addEventListener("dispose", () => freed++);
+    releaseDetailMaps();
+    expect(freed).toBe(2);
+    expect(detailMaps(Detail.Grain)).toBe(m);
+    expect(m.normal.image.data.length).toBe(256 * 256 * 4);
   });
 });

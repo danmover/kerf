@@ -266,3 +266,13 @@ export function detailMaps(kind: Detail): DetailMaps | null {
 
 /** Mean of the roughness map, so material roughness can be lifted to keep its average. */
 export const ROUGH_MAP_MEAN = 0.91;
+
+/** Free the maps' GPU copies; the baked data stays, and uploads again on next use. */
+export function releaseDetailMaps() {
+  for (const m of cache.values()) {
+    if (!m) continue;
+    m.normal.dispose();
+    m.rough.dispose();
+    m.color?.dispose();
+  }
+}

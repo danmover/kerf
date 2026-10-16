@@ -10,11 +10,15 @@
 //   photoreal view sits on the same set as the interactive one;
 // - surface detail as baked maps on millimetre UVs (detailTextures.ts);
 // - the key light as a circular area light the size of the preset's light.
+//
+// The scene's BVH is built in a worker, so a big model doesn't stall the app.
 
 import * as THREE from "three";
-import { ShapedAreaLight, WebGLPathTracer } from "three-gpu-pathtracer";
+import { MeshBVH, type MeshBVHOptions } from "three-mesh-bvh";
+import { PathTracingSceneGenerator, ShapedAreaLight, WebGLPathTracer, type BVHWorker } from "three-gpu-pathtracer";
+import { RenderTarget2DArray } from "three-gpu-pathtracer/src/uniforms/RenderTarget2DArray.js";
 import { Detail, type Appearance } from "./appearance";
-import { detailMaps, ROUGH_MAP_MEAN } from "./detailTextures";
+import { detailMaps, releaseDetailMaps, ROUGH_MAP_MEAN } from "./detailTextures";
 
 export interface PhotoPart {
   id: string;
@@ -241,6 +245,78 @@ export function photoMaterial(a: Appearance): { mat: THREE.MeshPhysicalMaterial;
   return { mat: m, tile };
 }
 
+/** The library's private parts that Kerf patches, sizes and frees. */
+interface Internals {
+  isCompiling: boolean;
+  _pathTracer: {
+    material: THREE.ShaderMaterial;
+    _blendQuad: { material: THREE.ShaderMaterial };
+    _primaryTarget: THREE.WebGLRenderTarget;
+    _blendTargets: THREE.WebGLRenderTarget[];
+    dispose(): void;
+  };
+  _lowResPathTracer: { dispose(): void };
+  _quad: { dispose(): void; material: THREE.Material };
+  _generator: PathTracingSceneGenerator;
+  _colorBackground?: THREE.Texture | null;
+  _internalBackground?: THREE.Texture | null;
+}
+
+/**
+ * three-mesh-bvh's BVH worker, bundled as Kerf's own so it loads the same way
+ * in development and in the build. Same messages as GenerateMeshBVHWorker.
+ */
+class BVHBuilder implements BVHWorker {
+  private worker: Worker | null = new Worker(new URL("./bvh.worker.ts", import.meta.url), { type: "module", name: "kerf-bvh" });
+
+  generate(geometry: THREE.BufferGeometry, options: MeshBVHOptions = {}): Promise<MeshBVH> {
+    const w = this.worker;
+    if (!w) return Promise.reject(new Error("the BVH worker is closed"));
+    return new Promise((resolve, reject) => {
+      w.onerror = (e) => reject(new Error(e.message || "the BVH worker could not start"));
+      w.onmessage = ({ data }) => {
+        if (data.error) {
+          w.onmessage = null;
+          reject(data.error instanceof Error ? data.error : new Error(String(data.error)));
+          return;
+        }
+        // progress reports carry no tree
+        if (!data.serialized) return;
+        w.onmessage = null;
+        const bvh = MeshBVH.deserialize(data.serialized, geometry, { setIndex: false });
+        // the arrays went to the worker and back: put the returned ones in place
+        (geometry.getAttribute("position") as THREE.BufferAttribute).array = data.position;
+        const index = data.serialized.index as Uint32Array | Uint16Array | undefined;
+        if (index) {
+          if (geometry.index) geometry.index.array = index;
+          else geometry.setIndex(new THREE.BufferAttribute(index, 1, false));
+        }
+        geometry.boundingBox = bvh.getBoundingBox(new THREE.Box3());
+        resolve(bvh);
+      };
+      const index = geometry.index ? geometry.index.array : null;
+      const position = geometry.getAttribute("position").array;
+      const transfer = [position.buffer as ArrayBuffer];
+      if (index) transfer.push(index.buffer as ArrayBuffer);
+      w.postMessage({ index, position, options: { ...options, onProgress: null, includedProgressCallback: false, groups: [...geometry.groups] } }, transfer);
+    });
+  }
+
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+  }
+}
+
+/** Free whatever a path tracing uniform holds on the GPU: a texture, or a struct of them. */
+function disposeUniform(v: unknown) {
+  if (!v || typeof v !== "object") return;
+  if (v instanceof THREE.Texture) return v.dispose();
+  const o = v as { dispose?: () => void };
+  if (typeof o.dispose === "function") o.dispose();
+  for (const x of Object.values(o)) if (x instanceof THREE.Texture) x.dispose();
+}
+
 function signature(parts: PhotoPart[], st: PhotoStage) {
   const out: string[] = [];
   for (const p of parts) out.push(p.id, p.geoKey, p.look.key, ...Array.from(p.matrix.elements, (e) => e.toFixed(4)));
@@ -272,6 +348,13 @@ export class PhotoRenderer {
   private lastQuat = new THREE.Quaternion();
   private lastProj = new THREE.Matrix4();
   private linearOk: boolean;
+  private builder: BVHBuilder | null = null;
+  /** the material's texture arrays: render targets, which only free with the target itself */
+  private arrays: RenderTarget2DArray[];
+  /** the BVH is being built in the worker */
+  private building = false;
+  /** a sample has been traced, so the shader is compiled */
+  private warm = false;
   /** when the scene or camera last changed (ms) */
   changedAt = 0;
   quality: PhotoQuality = { maxSamples: 512, scale: 1, bounces: 5 };
@@ -294,9 +377,15 @@ export class PhotoRenderer {
     this.pt.filterGlossyFactor = 0.5;
     this.pt.textureSize.set(256, 256);
     this.linearOk = renderer.extensions.has("OES_texture_float_linear");
+    try {
+      this.builder = new BVHBuilder();
+      this.pt.setBVHWorker(this.builder);
+    } catch (e) {
+      console.warn("Photoreal: no BVH worker, building on the main thread", e);
+    }
 
     // patch the shadow catcher into the path tracing shader
-    const m = (this.pt as unknown as { _pathTracer: { material: THREE.ShaderMaterial } })._pathTracer.material;
+    const m = this.inner._pathTracer.material;
     const matte = /if \( material\.matte && state\.firstRay \) \{\s*gl_FragColor = vec4\( 0\.0 \);\s*break;\s*\}/;
     const patched = matte.test(m.fragmentShader) && /void main\(\s*\)\s*\{/.test(m.fragmentShader);
     this.catcherMissing = !patched;
@@ -307,11 +396,16 @@ export class PhotoRenderer {
     frag = frag.replace(/gl_FragColor\.a \*= opacity;/, "gl_FragColor.a *= opacity;\nif ( kerfBad( gl_FragColor ) ) discard;");
     m.fragmentShader = frag.replace(/void main\(\s*\)\s*\{/, `uniform float kerfShadow;\n${KERF_BAD}\nvoid main() {`);
     m.uniforms.kerfShadow = this.shadow;
+    // the library keeps only the textures of these targets, so they could never be freed: own them here
+    // (the ones it made are replaced before anything is drawn into them)
+    this.arrays = [new RenderTarget2DArray(), new RenderTarget2DArray(360, 180, { type: THREE.HalfFloatType, wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping })];
+    m.uniforms.textures.value = this.arrays[0].texture;
+    m.uniforms.iesProfiles.value = this.arrays[1].texture;
     m.defines.KERF_SHADOW_RAYS = 4;
     m.needsUpdate = true;
     // the library's alpha blend divides by the summed alpha, which a faint
     // shadow can round to zero: blend only where there is real coverage
-    const blend = (this.pt as unknown as { _pathTracer: { _blendQuad: { material: THREE.ShaderMaterial } } })._pathTracer._blendQuad.material;
+    const blend = this.inner._pathTracer._blendQuad.material;
     blend.fragmentShader = blend.fragmentShader.replace(/if \( color1\.a != 0\.0 \|\| color2\.a != 0\.0 \)/, "if ( totalAlpha > 1e-6 )");
     blend.needsUpdate = true;
 
@@ -322,6 +416,10 @@ export class PhotoRenderer {
     this.scene.add(this.parts, this.catcher, this.light);
   }
 
+  private get inner() {
+    return this.pt as unknown as Internals;
+  }
+
   get samples() {
     return this.pt.samples;
   }
@@ -330,8 +428,16 @@ export class PhotoRenderer {
     return this.pt.samples >= this.quality.maxSamples;
   }
 
-  get compiling() {
-    return (this.pt as unknown as { isCompiling: boolean }).isCompiling;
+  /** Building the scene or compiling the shader: there is nothing to show yet. */
+  get preparing() {
+    return this.building || !this.warm || this.inner.isCompiling;
+  }
+
+  /** The path tracing shader failed to compile or link on this GPU. */
+  get failed() {
+    if (!this.warm) return false;
+    const props = this.renderer.properties.get(this.inner._pathTracer.material) as { currentProgram?: { diagnostics?: { runnable: boolean } } };
+    return props.currentProgram?.diagnostics?.runnable === false;
   }
 
   get texture() {
@@ -390,9 +496,31 @@ export class PhotoRenderer {
     const pt = this.pt;
     pt.renderScale = this.quality.scale;
     pt.bounces = this.quality.bounces;
+    // a scene that changes mid-build is built again once this one lands
+    if (this.building) return false;
     if (this.needScene) {
+      // setScene brings the materials, lights, environment and camera up to date too
+      this.needScene = this.needStage = this.needCamera = this.needMaterials = false;
+      if (this.builder) {
+        this.building = true;
+        pt.setSceneAsync(this.scene, this.camera)
+          .then(
+            () => this.linearTargets(),
+            (e) => {
+              console.warn("Photoreal: the BVH worker failed, building on the main thread", e);
+              this.builder?.dispose();
+              this.builder = null;
+              // the failed build left the generator holding a broken promise and arrays sent to the worker
+              this.inner._generator = new PathTracingSceneGenerator();
+              this.needScene = true;
+            },
+          )
+          .finally(() => {
+            this.building = false;
+          });
+        return false;
+      }
       pt.setScene(this.scene, this.camera);
-      this.needScene = this.needStage = this.needCamera = false;
       this.linearTargets();
     }
     if (this.needStage) {
@@ -414,6 +542,7 @@ export class PhotoRenderer {
     const before = Math.floor(pt.samples + 1e-6);
     pt.renderSample();
     this.renderer.setRenderTarget(null);
+    if (pt.samples > 0) this.warm = true;
     return Math.floor(pt.samples + 1e-6) !== before;
   }
 
@@ -481,7 +610,7 @@ export class PhotoRenderer {
   private linearTargets() {
     // a path tracer at less than full size is upscaled in the composite: filter it
     if (!this.linearOk) return;
-    const inner = (this.pt as unknown as { _pathTracer: { _primaryTarget: THREE.WebGLRenderTarget; _blendTargets: THREE.WebGLRenderTarget[] } })._pathTracer;
+    const inner = this.inner._pathTracer;
     for (const rt of [inner._primaryTarget, ...inner._blendTargets]) {
       rt.texture.minFilter = THREE.LinearFilter;
       rt.texture.magFilter = THREE.LinearFilter;
@@ -491,6 +620,7 @@ export class PhotoRenderer {
   private rebuild(parts: PhotoPart[], st: PhotoStage) {
     this.parts.clear();
     const usedGeos = new Set<string>();
+    const usedMats = new Set<string>();
     for (const p of parts) {
       let m = this.mats.get(p.look.key);
       if (!m) {
@@ -498,6 +628,7 @@ export class PhotoRenderer {
         m = { ...pm, look: p.look, bump: pm.mat.normalScale.x, fade: 1 };
         this.mats.set(p.look.key, m);
       }
+      usedMats.add(p.look.key);
       const gk = `${p.geoKey}|${m.tile.toFixed(5)}`;
       let g = this.geos.get(gk);
       if (!g) {
@@ -514,6 +645,11 @@ export class PhotoRenderer {
       if (!usedGeos.has(k)) {
         g.dispose();
         this.geos.delete(k);
+      }
+    for (const [k, m] of this.mats)
+      if (!usedMats.has(k)) {
+        m.mat.dispose();
+        this.mats.delete(k);
       }
     this.catcher.visible = !st.below;
     if (st.below) this.catcher.removeFromParent();
@@ -546,14 +682,31 @@ export class PhotoRenderer {
     this.light.updateMatrixWorld();
   }
 
+  /** Free everything this view put on the GPU. */
   dispose() {
-    // the library's own dispose() trips over a missing quad in this version
-    const inner = (this.pt as unknown as { _pathTracer: { dispose(): void } })._pathTracer;
-    inner.dispose();
+    // the library's own dispose() trips over a missing quad in this version,
+    // and leaves the scene's data textures behind: free it all here
+    const inner = this.inner;
+    const tracer = inner._pathTracer.material;
+    inner._pathTracer.dispose();
+    for (const u of Object.values(tracer.uniforms)) disposeUniform(u.value);
+    for (const a of this.arrays) a.dispose();
+    tracer.dispose();
+    inner._pathTracer._blendQuad.material.dispose();
+    inner._lowResPathTracer.dispose();
+    inner._quad.dispose();
+    inner._quad.material.dispose();
+    inner._colorBackground?.dispose();
+    inner._internalBackground?.dispose();
+    this.builder?.dispose();
+    this.builder = null;
     for (const g of this.geos.values()) g.dispose();
     for (const m of this.mats.values()) m.mat.dispose();
+    this.geos.clear();
+    this.mats.clear();
     this.catcher.geometry.dispose();
     this.catcher.material.dispose();
+    releaseDetailMaps();
   }
 }
 
