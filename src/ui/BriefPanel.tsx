@@ -330,7 +330,7 @@ function Intake({ hasParts }: { hasParts: boolean }) {
     const ask = hasParts
       ? "I started the brief. Fill in the rest from what this design already does and what I wrote (mark what you infer as assumed), link the existing requirements to the uses, then tell me what you assumed."
       : `Here is what I need${purpose.trim() ? `: ${purpose.trim()}` : ""}.${setting.trim() ? ` It is used ${setting.trim().replace(/^used\s+/i, "")}.` : ""}${process ? ` I will make it by ${process}.` : ""} Fill in the rest of the brief with sensible assumptions marked as assumed, then design it.`;
-    void sendMessage(ask, { files });
+    void sendMessage(ask, { files, design: true });
   };
   const ready = !!purpose.trim() || files.length > 0;
 
@@ -463,7 +463,7 @@ function ChangeBar({ data }: { data: BriefData }) {
         You changed the brief: {changes.slice(0, 3).join("; ")}
         {changes.length > 3 ? ` and ${changes.length - 3} more` : ""}.
       </span>
-      <button className="btn sm primary" onClick={() => void sendMessage("I changed the brief. Update the design to match, and tell me what you changed.")}>
+      <button className="btn sm primary" onClick={() => void sendMessage("I changed the brief. Update the design to match, and tell me what you changed.", { design: true })}>
         <Icon.Sparkle size={13} /> Update the design
       </button>
     </motion.div>

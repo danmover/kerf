@@ -3,7 +3,7 @@
 // hands their analysis to the evaluator.
 
 import { create } from "zustand";
-import { kernel } from "../kernel/client";
+import { detailKernel, kernel } from "../kernel/client";
 import { IMPORT_META_VERSION, importTable, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import type { PartRecipe, ShapeRecipe } from "../kernel/recipe";
 import { setEvalImports } from "../lang/imports";
@@ -29,6 +29,10 @@ const get = useImports.getState;
 const bytes = new Map<string, Uint8Array>();
 /** Loads into the current kernel, by hash. */
 const loads = new Map<string, Promise<void>>();
+/** Loads into the detail kernel (detailed builds and STEP export), by hash. It starts on first use, so files go in then. */
+const detailLoads = new Map<string, Promise<void>>();
+// a restarted detail worker has lost every file
+detailKernel.onReset(() => detailLoads.clear());
 const listeners = new Set<(list: ProjectImport[], reason: "analysed" | "loaded") => void>();
 
 /** Called when stored analysis changed (the project should save it) or a file finished loading (the design should rebuild). */
@@ -61,6 +65,11 @@ export function setImports(list: ProjectImport[]) {
     loads.delete(h);
     bytes.delete(h);
   }
+  for (const h of [...detailLoads.keys()]) {
+    if (keep.has(h)) continue;
+    detailKernel.dropImport(h);
+    detailLoads.delete(h);
+  }
   const status = Object.fromEntries(Object.entries(get().status).filter(([h]) => keep.has(h)));
   useImports.setState({ list, status });
   publish(list);
@@ -78,6 +87,7 @@ export function forgetBytes(hash: string) {
   bytes.delete(hash);
   loads.delete(hash);
   kernel.dropImport(hash);
+  if (detailLoads.delete(hash)) detailKernel.dropImport(hash);
 }
 
 export function importBytes(hash: string): Uint8Array | undefined {
@@ -136,6 +146,34 @@ export async function importsLoaded(): Promise<void> {
   await Promise.all(get().list.map((i) => loads.get(i.hash) ?? ensureLoaded(i)));
 }
 
+/**
+ * Give the detail kernel every listed file before it builds or exports parts
+ * that place them. Starts the detail worker if it is not running.
+ */
+export async function detailImportsLoaded(): Promise<void> {
+  await importsLoaded();
+  if (detailKernel.status === "error") return;
+  detailKernel.start();
+  await Promise.all(
+    get().list.map((i) => {
+      const running = detailLoads.get(i.hash);
+      if (running) return running;
+      const data = bytes.get(i.hash);
+      if (!data) return Promise.resolve();
+      const job = detailKernel
+        .ready()
+        .then(() => detailKernel.importStep(i.hash, i.file, data, false))
+        .then(
+          () => undefined,
+          // the build or export that needs it reports the missing body; try again next time
+          () => void detailLoads.delete(i.hash),
+        );
+      detailLoads.set(i.hash, job);
+      return job;
+    }),
+  );
+}
+
 /** The kernel restarted: everything it held is gone, so load the files again. */
 export function reloadImports() {
   loads.clear();
@@ -150,6 +188,8 @@ function shapeUsesImport(r: ShapeRecipe): boolean {
       return shapeUsesImport(r.shape);
     case "union":
       return r.shapes.some(shapeUsesImport);
+    case "diff":
+      return shapeUsesImport(r.a) || r.b.some(shapeUsesImport);
     default:
       return false;
   }

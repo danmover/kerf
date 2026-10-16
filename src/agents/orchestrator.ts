@@ -17,6 +17,7 @@ import type { ToolOutcome } from "../ai/tools";
 import { composeSections, definedNames, INTEGRATION, LAYOUT, mergeByRegion, newSection, ownerAt, splitSections, withMeta, type Section, type Sectioned } from "./sections";
 import { checkPlan, sectionOrder, type SubPlan } from "./plan";
 import { addUsage, emptyTally, estimateRun, fmtUsd, roughTokens, type Tally } from "./pricing";
+import { recordSpend } from "../ai/spend";
 import { kickoffMessage, subagentSystemPrompt } from "./prompts";
 import { runAgent, SUBAGENT_TOOLS, type AgentEnd, type Workspace } from "./subagent";
 import { defaultWorkers, pool } from "./isolated";
@@ -381,6 +382,7 @@ async function startAgent(l: Live, id: string, anthropic: Anthropic, system: str
         },
         updateStep: (sid, p) => patchBranch(id, (b) => ({ ...b, steps: b.steps.map((s) => (s.id === sid ? { ...s, ...p } : s)) })),
         usage: (model, u) => {
+          recordSpend("agents", model, u);
           const t = addUsage(l.tally.get(id) ?? emptyTally(), model, u);
           l.tally.set(id, t);
           const total = [...l.tally.values()].reduce((a, x) => a + x.cost, 0);

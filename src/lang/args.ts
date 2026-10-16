@@ -1,8 +1,8 @@
 // Argument helper for builtin functions: positional + named args with
 // type checks and clear errors listing what a function accepts.
 
-import type { V2, V3 } from "../kernel/recipe";
-import { Fn, Obj, Pending, ShapeV, typeName, Vec, type CallCtx, type Value } from "./values";
+import type { Path3, Profile, V2, V3 } from "../kernel/recipe";
+import { Fn, Obj, PathV, Pending, ProfileV, ShapeV, typeName, Vec, type CallCtx, type Value } from "./values";
 import { THREADS, type ThreadSpec } from "../library/standards";
 
 export class Args {
@@ -84,6 +84,7 @@ export class Args {
   points2(name: string): V2[] {
     const v = this.raw(name);
     if (!Array.isArray(v)) this.ctx.error(`${this.fname}(): "${name}" should be a list of points like [(0, 0), (10, 0), (10, 5)]`);
+    this.ctx.tick?.(v.length);
     return v.map((p, i) => {
       if (p instanceof Vec) return [p.x, p.y] as V2;
       return this.ctx.error(`${this.fname}(): point ${i + 1} of "${name}" is ${typeName(p)}, expected (x, y)`);
@@ -92,6 +93,28 @@ export class Args {
   thread(name: string, def?: string): ThreadSpec {
     const v = this.raw(name);
     return toThread(v ?? def, this.ctx, `${this.fname}(): "${name}"`);
+  }
+  points3(name: string): V3[] {
+    const v = this.raw(name);
+    if (!Array.isArray(v)) this.ctx.error(`${this.fname}(): "${name}" should be a list of points like [(0, 0, 0), (0, 0, 20), (30, 0, 20)]`);
+    this.ctx.tick?.(v.length);
+    return v.map((p, i) => toV3(p, this.ctx, `${this.fname}(): point ${i + 1} of "${name}"`));
+  }
+  profile(name: string): Profile {
+    const v = this.raw(name);
+    if (v instanceof ProfileV) return v.recipe;
+    return this.ctx.error(`${this.fname}(): "${name}" should be a profile such as circle(10), rect(20, 10) or polygon([...]), got ${v === undefined ? "nothing" : typeName(v)}`);
+  }
+  path(name: string): Path3 {
+    const v = this.raw(name);
+    if (v instanceof PathV) return v.recipe;
+    return this.ctx.error(`${this.fname}(): "${name}" should be a path such as path([...], r: 5) or spline_path([...]), got ${v === undefined ? "nothing" : typeName(v)}`);
+  }
+  /** One of a fixed set of words. */
+  oneOf<T extends string>(name: string, options: readonly T[], def: T): T {
+    const s = this.str(name, def);
+    if (!(options as readonly string[]).includes(s)) this.ctx.error(`${this.fname}(): "${name}" must be ${options.map((o) => `"${o}"`).join(", ")} (got "${s}")`);
+    return s as T;
   }
   shape(name: string): ShapeV {
     const v = this.raw(name);
