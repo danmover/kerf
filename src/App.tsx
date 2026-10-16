@@ -19,6 +19,7 @@ import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
 import { toggleMarkup } from "./ui/Markup";
+import { startMaterialChecks } from "./materials/runtime";
 
 // each opened project brings its own conversation
 onProjectOpen((p) => void loadChat(p.id));
@@ -77,6 +78,7 @@ function useBoot() {
   useEffect(() => {
     let live = true;
     startEngine();
+    startMaterialChecks();
     startAnalysisRuntime();
     void Promise.allSettled([loadRememberedKey(), refreshProjects()]).then(() => {
       if (!live) return;

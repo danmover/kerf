@@ -40,6 +40,7 @@ export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   // the parts catalog and the sizing calculators answer questions without touching the design
   "catalog_lookup",
   "engineering_calc",
+  "compare_materials",
 ]);
 
 /** A turn that needs more steps than this was not a quick one. */

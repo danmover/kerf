@@ -9,6 +9,7 @@ import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, SelV, ShapeV, Vec, typeNam
 import { SEL_PRESETS, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
 import { threadDepth, threadTurnsError } from "../kernel/threadMath";
 import { THREADS, parseThreadName } from "../library/standards";
+import { materialRecord } from "../library/materialDb";
 
 const Z: V3 = [0, 0, 1];
 const prof = (p: Profile) => new ProfileV(p);
@@ -664,20 +665,8 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
 
 // ---------- ready-made features ----------
 
-/** Allowable bending strain for a snap fit used a few times, by material. */
-const SNAP_STRAIN: Record<string, number> = {
-  PLA: 0.015,
-  PETG: 0.025,
-  ABS: 0.025,
-  ASA: 0.025,
-  Nylon: 0.04,
-  POM: 0.05,
-  "Aluminum 6061": 0.004,
-  Steel: 0.002,
-  "Stainless 304": 0.002,
-  Brass: 0.002,
-};
-export const allowableStrain = (material: string) => SNAP_STRAIN[material] ?? 0.02;
+/** Allowable bending strain for a snap fit used a few times, from the material database. */
+export const allowableStrain = (material: string) => materialRecord(material)?.snapStrain ?? 0.02;
 
 export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
   def(
