@@ -12,6 +12,7 @@ import { useView } from "../app/view";
 import { commitSource } from "../app/project";
 import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type ToolOutcome } from "./tools";
+import { BINDING_BETA, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; ts: number }
@@ -36,12 +37,20 @@ const get = useChat.getState;
 const set = useChat.setState;
 
 let history: BetaMessageParam[] = [];
+/**
+ * What the last request sent: the system prompt and tools, and a fingerprint
+ * of each message. The next request must only append to it, or the thinking
+ * blocks after the first changed message are rejected (see ./history).
+ */
+let sent: { binding: string; keys: string[] } | null = null;
+/** Bumped whenever the open conversation is replaced, so a run still in flight stops touching it. */
+let conv = 0;
 let abort: AbortController | null = null;
 let lastEditedSource: string | null = null;
 let idn = 0;
 const nid = () => `c${Date.now().toString(36)}${(++idn).toString(36)}`;
 /** request features the selected model rejected this session */
-const unsupported = new Set<"effort" | "thinking" | "fallbacks">();
+const unsupported = new Set<"effort" | "thinking" | "fallbacks" | "binding">();
 
 function patch(id: string, fn: (it: ChatItem) => ChatItem) {
   set((s) => ({ items: s.items.map((it) => (it.id === id ? fn(it) : it)) }));
@@ -54,8 +63,15 @@ function push(it: ChatItem) {
 
 export async function loadChat(projectId: string) {
   abort?.abort();
+  const token = ++conv;
   const rec = await db.getOne<db.ChatRecord>("chats", projectId).catch(() => undefined);
+  if (token !== conv) return; // another project was opened meanwhile
   history = (rec?.history as BetaMessageParam[]) ?? [];
+  // thinking blocks saved under an older Kerf, or after messages Claude saw differently, can't be sent again
+  const binding = currentBinding();
+  const removed = prepareSaved(history, rec ?? {}, binding);
+  if (removed) console.info(`[kerf] Reopened chat: left out ${removed} earlier thinking block(s) that no longer match this conversation.`);
+  sent = { binding, keys: messageKeys(history) };
   const savedPending = (rec as { pending?: ChatState["pendingChoice"] } | undefined)?.pending ?? null;
   const items = ((rec?.items as ChatItem[]) ?? []).map((it) => (it.kind === "assistant" ? { ...it, streaming: false } : it.kind === "tool" && it.status === "running" ? { ...it, status: "error" as const, detail: "Interrupted" } : it));
   lastEditedSource = null;
@@ -71,16 +87,19 @@ function persist() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const { items, pendingChoice } = get();
-    // keep stored history small: images are dropped, the text around them stays
-    const slimHistory = history.map(stripImages);
+    // keep stored history small: images are dropped, the text around them stays,
+    // and the record notes from where thinking blocks no longer match what Claude saw
+    const { history: slimHistory, validBefore } = forSaving(history, sent?.keys ?? null);
     const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it));
-    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"] }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, updatedAt: Date.now() }).catch(() => undefined);
+    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"] }>("chats", { projectId, items: slimItems, history: slimHistory, binding: sent?.binding, validBefore, pending: pendingChoice, updatedAt: Date.now() }).catch(() => undefined);
   }, 400);
 }
 
 export async function clearChat() {
   abort?.abort();
+  conv++;
   history = [];
+  sent = null;
   set({ items: [], busy: false, pendingChoice: null });
   const { projectId } = get();
   if (projectId) await db.remove("chats", projectId).catch(() => undefined);
@@ -89,40 +108,12 @@ export async function clearChat() {
 /** Drop the open chat entirely (closing all data, or deleting its project). */
 export function resetChat() {
   abort?.abort();
+  conv++;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
   history = [];
+  sent = null;
   set({ projectId: null, items: [], busy: false, pendingChoice: null });
-}
-
-function stripImages(m: BetaMessageParam): BetaMessageParam {
-  if (typeof m.content === "string") return m;
-  return {
-    ...m,
-    content: m.content.map((b) => {
-      if (b.type === "tool_result" && Array.isArray(b.content)) {
-        return { ...b, content: b.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[image omitted from saved history]" } : c)) };
-      }
-      return b;
-    }),
-  };
-}
-
-/** Keep the two most recent images in context; older ones become a short note. */
-function trimImages() {
-  let seen = 0;
-  for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i];
-    if (typeof m.content === "string") continue;
-    for (const b of m.content) {
-      if (b.type === "tool_result" && Array.isArray(b.content)) {
-        if (b.content.some((c) => c.type === "image")) {
-          seen++;
-          if (seen > 2) b.content = b.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[earlier image removed to save context]" } : c));
-        }
-      }
-    }
-  }
 }
 
 // ---------- context ----------
@@ -202,6 +193,15 @@ function client() {
   return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 10 * 60 * 1000 });
 }
 
+function systemBlocks() {
+  return [{ type: "text" as const, text: systemPrompt(), cache_control: { type: "ephemeral" as const } }];
+}
+
+/** The system prompt and tools this build of Kerf sends; thinking blocks made under different ones can't be sent back. */
+function currentBinding() {
+  return bindingKey(systemBlocks(), TOOL_DEFS);
+}
+
 async function runLoop() {
   const anthropic = client();
   if (!anthropic) {
@@ -209,40 +209,32 @@ async function runLoop() {
     persist();
     return;
   }
-  abort = new AbortController();
+  // this run belongs to the conversation open now; if the user opens another
+  // project or clears the chat, it stops without touching the new one
+  const h = history;
+  const myConv = conv;
+  const gone = () => conv !== myConv || history !== h;
+  const ac = new AbortController();
+  abort = ac;
   set({ busy: true });
   const startSource = useDesign.getState().source;
   let edits = 0;
   const settings = useSettings.getState();
-  const system = [{ type: "text" as const, text: systemPrompt(), cache_control: { type: "ephemeral" as const } }];
+  const system = systemBlocks();
+  const binding = bindingKey(system, TOOL_DEFS);
 
   try {
     for (let step = 0; step < settings.maxSteps; step++) {
-      repairHistory();
-      trimImages();
-      // rolling cache breakpoint on the newest user content
-      const msgs = withCacheBreakpoint(history);
+      repairHistory(h);
       const assistantId = nid();
       push({ kind: "assistant", id: assistantId, text: "", thinking: "", streaming: true });
       const toolItems = new Map<number, string>();
 
-      const params: Record<string, unknown> = {
-        model: settings.model,
-        max_tokens: 32000,
-        system,
-        tools: TOOL_DEFS,
-        messages: msgs,
-      };
-      if (!unsupported.has("thinking")) params.thinking = { type: "adaptive", display: settings.showThinking ? "summarized" : "omitted" };
-      if (!unsupported.has("effort")) params.output_config = { effort: settings.effort };
-      if (!unsupported.has("fallbacks")) {
-        params.fallbacks = "default";
-        params.betas = ["server-side-fallback-2026-07-01"];
-      }
-
-      const final = await streamOnce(anthropic, params, assistantId, toolItems);
+      const final = await streamOnce(anthropic, () => buildRequest(h, system, binding, settings), h, ac.signal, assistantId, toolItems);
+      if (gone()) return;
       const content = final.content as BetaContentBlock[];
-      history.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
+      h.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
+      reportDroppedThinking(final.input_transformations);
 
       const fb = content.find((b) => (b as { type: string }).type === "fallback") as { to?: { model?: string } } | undefined;
       patch(assistantId, (it) => (it.kind === "assistant" ? { ...it, streaming: false, model: final.model, note: fb?.to?.model ? `Answered by ${fb.to.model} (server-side fallback)` : undefined } : it));
@@ -257,7 +249,7 @@ async function runLoop() {
       if (final.stop_reason === "max_tokens") {
         const cut = content.some((b) => b.type === "tool_use");
         push({ kind: "notice", id: nid(), level: "warn", title: "The response hit its length limit", detail: cut ? "The last step was cut off before it could run. Ask Claude to continue in smaller steps." : "Ask Claude to continue." });
-        if (cut) history.pop();
+        if (cut) h.pop();
         break;
       }
       if (final.stop_reason !== "tool_use") break;
@@ -266,7 +258,7 @@ async function runLoop() {
       const results: BetaToolResultBlockParam[] = [];
       let ask: { toolUseId: string; outcome: ToolOutcome } | null = null;
       for (const u of uses) {
-        if (abort.signal.aborted) break;
+        if (ac.signal.aborted) break;
         const itemId = [...toolItems.entries()].find(([, id]) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)?.[1] ?? nid();
         if (!get().items.some((i) => i.id === itemId)) push({ kind: "tool", id: itemId, toolUseId: u.id, name: u.name, status: "running", title: TOOL_TITLES[u.name] ?? u.name });
         else patch(itemId, (it) => (it.kind === "tool" ? { ...it, status: "running", title: TOOL_TITLES[u.name] ?? u.name } : it));
@@ -276,6 +268,7 @@ async function runLoop() {
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
+        if (gone()) return;
         if (outcome.ask) {
           set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
           ask = { toolUseId: u.id, outcome };
@@ -294,11 +287,11 @@ async function runLoop() {
         );
         results.push({ type: "tool_result", tool_use_id: u.id, content: outcome.content as BetaToolResultBlockParam["content"], is_error: outcome.isError || undefined });
       }
-      if (abort.signal.aborted) {
+      if (ac.signal.aborted) {
         // every tool_use needs a result before the next request
         for (const u of uses) if (!results.some((r) => r.tool_use_id === u.id) && u.id !== ask?.toolUseId) results.push({ type: "tool_result", tool_use_id: u.id, content: "Stopped by the user before this ran.", is_error: true });
         if (ask) results.push({ type: "tool_result", tool_use_id: ask.toolUseId, content: "Stopped by the user.", is_error: true });
-        history.push({ role: "user", content: results });
+        h.push({ role: "user", content: results });
         break;
       }
       if (ask) {
@@ -308,34 +301,102 @@ async function runLoop() {
         set({ pendingChoice: { toolUseId: ask.toolUseId, itemId: cid, results } });
         break;
       }
-      history.push({ role: "user", content: results });
+      h.push({ role: "user", content: results });
       persist();
       if (step === settings.maxSteps - 1) {
         push({ kind: "notice", id: nid(), level: "info", title: `Paused after ${settings.maxSteps} steps`, detail: "Say “continue” to let Claude keep going. You can raise the limit in Settings." });
-        history.push({ role: "assistant", content: [{ type: "text", text: "(Paused at the step limit.)" }] });
+        h.push({ role: "assistant", content: [{ type: "text", text: "(Paused at the step limit.)" }] });
       }
     }
   } catch (e) {
+    if (gone()) return;
     handleError(e);
     // leave history ending with the user turn so retry can resend it
-    if (history.length && history[history.length - 1].role === "assistant") {
-      const last = history[history.length - 1];
+    if (h.length && h[h.length - 1].role === "assistant") {
+      const last = h[h.length - 1];
       const hasTool = typeof last.content !== "string" && last.content.some((b) => b.type === "tool_use");
-      if (hasTool) history.pop();
+      if (hasTool) h.pop();
     }
   } finally {
-    set((s) => ({ busy: false, items: s.items.map((it) => (it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it.kind === "tool" && it.status === "running" ? { ...it, status: "error" as const, detail: "Stopped" } : it)) }));
-    const after = useDesign.getState().source;
-    if (edits && after !== startSource) push({ kind: "turn", id: nid(), before: startSource, after, edits });
-    abort = null;
-    persist();
+    if (!gone()) {
+      set((s) => ({ busy: false, items: s.items.map((it) => (it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it.kind === "tool" && it.status === "running" ? { ...it, status: "error" as const, detail: "Stopped" } : it)) }));
+      const after = useDesign.getState().source;
+      if (edits && after !== startSource) push({ kind: "turn", id: nid(), before: startSource, after, edits });
+      persist();
+    }
+    if (abort === ac) abort = null;
   }
 }
 
-async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>, assistantId: string, toolItems: Map<number, string>) {
-  for (let attempt = 0; attempt < 3; attempt++) {
+/**
+ * The next request. The history must only have grown since the last request:
+ * if an earlier message, the system prompt or the tools changed, the thinking
+ * blocks from that point on are removed first, because Claude rejects them.
+ */
+function buildRequest(h: BetaMessageParam[], system: ReturnType<typeof systemBlocks>, binding: string, settings: ReturnType<typeof useSettings.getState>): Record<string, unknown> {
+  let keys = messageKeys(h);
+  if (sent) {
+    const at = sent.binding !== binding ? 0 : firstEdit(sent.keys, keys);
+    if (at >= 0 && hasThinking(h, at)) {
+      const n = stripThinking(h, at);
+      keys = messageKeys(h);
+      console.warn(`[kerf] ${at === 0 && sent.binding !== binding ? "The system prompt or tools changed" : `Chat message ${at} changed`} since the last request; left out ${n} thinking block(s) from there on.`);
+    }
+  }
+  sent = { binding, keys };
+
+  const params: Record<string, unknown> = {
+    model: settings.model,
+    max_tokens: 32000,
+    system,
+    tools: TOOL_DEFS,
+    // rolling cache breakpoint on the newest user content
+    messages: withCacheBreakpoint(h),
+  };
+  const betas: string[] = [];
+  if (!unsupported.has("thinking")) {
+    const thinking: Record<string, unknown> = { type: "adaptive", display: settings.showThinking ? "summarized" : "omitted" };
+    // a block that still doesn't match is dropped by the API instead of failing the request
+    if (!unsupported.has("binding")) {
+      thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
+      betas.push(BINDING_BETA);
+    }
+    params.thinking = thinking;
+  }
+  if (!unsupported.has("effort")) params.output_config = { effort: settings.effort };
+  if (!unsupported.has("fallbacks")) {
+    params.fallbacks = "default";
+    betas.push("server-side-fallback-2026-07-01");
+  }
+  if (betas.length) params.betas = betas;
+  return params;
+}
+
+/** Thinking blocks the API dropped mean the history changed in a way buildRequest missed: worth knowing about. */
+function reportDroppedThinking(list: readonly { type: string; path?: string; reason?: string }[] | null | undefined) {
+  const dropped = (list ?? []).filter((t) => t.type === "thinking_dropped");
+  if (!dropped.length) return;
+  const changed = dropped.filter((t) => t.reason === "prefix_binding_mismatch");
+  // model_binding_mismatch is expected after switching models in Settings
+  if (changed.length) console.warn(`[kerf] Claude dropped ${changed.length} thinking block(s) whose conversation changed, first at ${changed[0].path}.`);
+  else console.info(`[kerf] Claude left out ${dropped.length} thinking block(s) from another model.`);
+}
+
+/** Which optional request feature a 400 is about, if the selected model rejected one. */
+function rejectedFeature(msg: string): "effort" | "thinking" | "fallbacks" | "binding" | null {
+  if (msg.includes("block_binding") || msg.includes("thinking-binding")) return "binding";
+  if (msg.includes("effort") || msg.includes("output_config")) return "effort";
+  if (msg.includes("fallback")) return "fallbacks";
+  if (msg.includes("thinking")) return "thinking";
+  if (msg.includes("beta")) return !unsupported.has("binding") ? "binding" : "fallbacks";
+  return null;
+}
+
+async function streamOnce(anthropic: Anthropic, build: () => Record<string, unknown>, h: BetaMessageParam[], signal: AbortSignal, assistantId: string, toolItems: Map<number, string>) {
+  let strippedOnce = false;
+  for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      const stream = anthropic.beta.messages.stream(params as never, { signal: abort!.signal });
+      const stream = anthropic.beta.messages.stream(build() as never, { signal });
       stream.on("streamEvent", (ev) => {
         if (ev.type === "content_block_start") {
           const b = ev.content_block as { type: string; id?: string; name?: string };
@@ -356,19 +417,31 @@ async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>,
       });
       return await stream.finalMessage();
     } catch (e) {
-      // a model that rejects an optional feature: drop it and retry once
       if (e instanceof Anthropic.BadRequestError) {
-        const msg = (e.message || "").toLowerCase();
-        const feature = msg.includes("effort") || msg.includes("output_config") ? "effort" : msg.includes("thinking") ? "thinking" : msg.includes("fallback") || msg.includes("beta") ? "fallbacks" : null;
-        if (feature && !unsupported.has(feature)) {
-          unsupported.add(feature);
-          if (feature === "effort") delete params.output_config;
-          if (feature === "thinking") delete params.thinking;
-          if (feature === "fallbacks") {
-            delete params.fallbacks;
-            delete params.betas;
+        const msg = e.message || "";
+        let retry = false;
+        if (isThinkingSignatureError(msg)) {
+          // a thinking block that no longer belongs to this conversation: send the
+          // history without thinking once (text and tool calls stay), then carry on
+          if (!strippedOnce && hasThinking(h)) {
+            strippedOnce = true;
+            const n = stripThinking(h);
+            console.warn(`[kerf] Claude rejected an earlier thinking block; resent the chat without ${n} thinking block(s).`);
+            retry = true;
           }
-          set((s) => ({ items: s.items.map((it) => (it.id === assistantId && it.kind === "assistant" ? { ...it, text: "", thinking: "" } : it)) }));
+        } else {
+          // a model that rejects an optional feature: drop it and retry
+          const feature = rejectedFeature(msg.toLowerCase());
+          if (feature && !unsupported.has(feature)) {
+            unsupported.add(feature);
+            retry = true;
+          }
+        }
+        if (retry) {
+          // clear whatever streamed before the error, including tool cards
+          const partial = new Set(toolItems.values());
+          toolItems.clear();
+          set((s) => ({ items: s.items.filter((it) => !partial.has(it.id)).map((it) => (it.id === assistantId && it.kind === "assistant" ? { ...it, text: "", thinking: "" } : it)) }));
           continue;
         }
       }
@@ -379,20 +452,20 @@ async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>,
 }
 
 /** Every tool_use needs a matching tool_result in the next user turn; patch any gap left by a crash or reload. */
-function repairHistory() {
-  for (let i = 0; i < history.length; i++) {
-    const m = history[i];
+function repairHistory(h: BetaMessageParam[]) {
+  for (let i = 0; i < h.length; i++) {
+    const m = h[i];
     if (m.role !== "assistant" || typeof m.content === "string") continue;
     const uses = m.content.filter((b) => b.type === "tool_use") as { id: string }[];
     if (!uses.length) continue;
-    const next = history[i + 1];
+    const next = h[i + 1];
     const have = new Set(next && next.role === "user" && typeof next.content !== "string" ? next.content.filter((b) => b.type === "tool_result").map((b) => (b as BetaToolResultBlockParam).tool_use_id) : []);
     const missing: BetaToolResultBlockParam[] = uses.filter((u) => !have.has(u.id)).map((u) => ({ type: "tool_result", tool_use_id: u.id, content: "This step was interrupted and did not run.", is_error: true }));
     if (!missing.length) continue;
     if (next && next.role === "user") {
       const content = typeof next.content === "string" ? [{ type: "text" as const, text: next.content }] : next.content;
-      history[i + 1] = { ...next, content: [...missing, ...content] };
-    } else history.splice(i + 1, 0, { role: "user", content: missing });
+      h[i + 1] = { ...next, content: [...missing, ...content] };
+    } else h.splice(i + 1, 0, { role: "user", content: missing });
   }
 }
 
@@ -449,7 +522,7 @@ function handleError(e: unknown) {
 
 function cleanApiMessage(m: string) {
   // never echo anything that looks like a key back into the UI
-  return m.replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…").slice(0, 400);
+  return m.replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…").slice(0, 800);
 }
 
 export async function testKey(key: string): Promise<{ ok: boolean; message: string }> {

@@ -26,6 +26,9 @@ export interface ChatRecord {
   /** display items and API history, both JSON-safe */
   items: unknown[];
   history: unknown[];
+  /** what the saved thinking blocks were made with; see src/ai/history.ts */
+  binding?: string;
+  validBefore?: number;
   updatedAt: number;
 }
 
