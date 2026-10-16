@@ -236,6 +236,7 @@ export function checkRun(ex: Pick<ScenarioExpect, "expr" | "env" | "text">, resu
 function notRecordedWhy(name: string, results: Record<string, V>): string {
   if (name === "time_to_wall" || name.startsWith("miss")) return `it never reached the far wall (${fmtResult(results.remaining as number, "mm")} short)`;
   if (name === "time_out") return "the front screw never came out of the far side";
+  if (name.startsWith("push_")) return "the pit has no helper pushing (add push: 150N to sim.sand_pit)";
   if (name.startsWith("battery_")) return "the design has no battery the simulation can follow";
   return "the run did not get that far";
 }
@@ -254,7 +255,6 @@ export function judge(ex: Pick<ScenarioExpect, "label" | "level" | "expr" | "env
   if (broken) return { ...out, status: "fail", detail: `Cannot check this: ${broken.detail}` };
   const others = variants.filter((v) => v !== base);
   const label = (v: VariantCheck) => VARIANT_LABEL[v.variant].toLowerCase();
-  void cap;
   const lead = `${label(base)} run: ${base.detail}.`;
   if (base.ok) {
     const bad = others.filter((v) => !v.ok);
@@ -265,4 +265,3 @@ export function judge(ex: Pick<ScenarioExpect, "label" | "level" | "expr" | "env
   return { ...out, status: ex.level === "soft" ? "warn" : "fail", detail: `${lead}${good.length ? ` It passes only in the ${good.map(label).join(" and ")} run.` : ""}` };
 }
 
-const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);

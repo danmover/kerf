@@ -582,7 +582,8 @@ let tunneller = sim.screw_tunneller(
 )
 
 scenario "Cross the pit" for cross, steer, reserve {
-  world: sim.sand_pit(length: pit_l, width: pit_w, depth: pit_depth, axis: floor_gap, start: "wall", exit: flight_d + 200mm)
+  // started from the hole in the near wall, pushed in by the tail (push cup on a pole) until the rear screw bites
+  world: sim.sand_pit(length: pit_l, width: pit_w, depth: pit_depth, axis: floor_gap, start: "wall", exit: flight_d + 200mm, push: 150N)
   robot: tunneller
   firmware: brain
   duration: 20min

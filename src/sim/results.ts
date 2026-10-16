@@ -55,6 +55,8 @@ export const WORLD_RESULTS: Record<string, Record<string, ResultInfo>> = {
     stuck_time: { unit: "s", doc: "time spent stuck (the screws turning, nothing moving)" },
     time_to_wall: { unit: "s", doc: "when the nose reached the far wall (only when it did)" },
     time_out: { unit: "s", doc: "when the front screw came out of the far side (only when it did)" },
+    push_peak: { unit: "N", doc: "the hardest the helper had to push the tail (only with push: on the pit)" },
+    push_distance: { unit: "mm", doc: "how far the helper pushed it in (only with push: on the pit)" },
     "<motor>.thrust": { unit: "N", doc: "screw thrust at the end" },
   },
   bench: {

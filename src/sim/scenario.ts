@@ -88,8 +88,8 @@ const signOf = (v: Value | undefined, ctx: CallCtx, what: string, def: number): 
 const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   simFn(
     "sand_pit",
-    ["length", "width", "depth", "axis", "density", "phi", "wall_phi", "start", "exit", "ambient"],
-    "A box of dry sand the machine burrows across along its bottom. length: wall to wall along the path; width: across it; depth: sand above the floor; axis: the machine's axis above the floor (100 mm); density: g/cm³ (1.6); phi: friction angle (32deg); wall_phi: sand on the walls (2/3 phi); start: \"buried\" (laid on the floor against the near wall), \"wall\" (its rear section in a hole in the near wall, the front in the sand) or a distance in from the near wall; exit: diameter of the opening in the far wall it has to come out through (leave out for a solid wall); ambient: sand temperature (15C).",
+    ["length", "width", "depth", "axis", "density", "phi", "wall_phi", "start", "exit", "ambient", "push", "push_to"],
+    "A box of dry sand the machine burrows across along its bottom. length: wall to wall along the path; width: across it; depth: sand above the floor; axis: the machine's axis above the floor (100 mm); density: g/cm³ (1.6); phi: friction angle (32deg); wall_phi: sand on the walls (2/3 phi); start: \"buried\" (laid on the floor against the near wall), \"wall\" (its rear section in a hole in the near wall, the front in the sand) or a distance in from the near wall; exit: diameter of the opening in the far wall it has to come out through (leave out for a solid wall); ambient: sand temperature (15C); push: the most a helper pushes the tail with to get it started from the wall (leave out for no help; 150N is a firm push); push_to: how far they push it in (until every screw is in the sand when left out).",
     (a) => {
       const phi = a.num("phi", 32);
       const st = a.value("start");
@@ -108,6 +108,8 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
         start,
         exitD: a.num("exit", 0),
         ambient: a.num("ambient", 15),
+        push: a.num("push", 0),
+        pushTo: a.num("push_to", 0),
       };
       return new SimSpec("world", { kind: "sand_pit", pit }, "sand pit");
     },

@@ -32,6 +32,10 @@ export interface SandPitSpec {
   exitD: number;
   /** sand temperature, °C */
   ambient: number;
+  /** the most a helper pushes the tail with to get it started, N (0: no help) */
+  push?: number;
+  /** how far the helper pushes it in, mm of travel (0: until every screw is in the sand) */
+  pushTo?: number;
 }
 
 export interface ScrewSpec {
@@ -214,6 +218,11 @@ export class SandPit implements World {
   private slipN = 0;
   private entered = new Set<string>();
   private exitedAt: number | undefined;
+  /** the helper's push on the tail now, its peak and how far they pushed, N and mm */
+  private pushF = 0;
+  private pushPeak = 0;
+  private pushDist = 0;
+  private pushing: boolean;
 
   constructor(
     public pit: SandPitSpec,
@@ -238,6 +247,7 @@ export class SandPit implements World {
     this.py = 0;
     this.pz = pit.axis;
     this.actPos = robot.hinge?.mid ?? 0;
+    this.pushing = (pit.push ?? 0) > 0;
     this.noseStart = this.px + robot.nose - this.h;
     this.noseMax = this.noseStart;
     for (const s of robot.screws) {
@@ -462,6 +472,34 @@ export class SandPit implements World {
       }
       v = (lo + hi) / 2;
     }
+    // a helper pushing the tail from the launch hole: when the screws alone go slower than half their
+    // own pace, they push (up to their most) to keep it at that pace, until the screws are in the sand
+    this.pushF = 0;
+    if (this.pushing && !this.blocked) {
+      const pace = 0.5 * Math.max(0, ...mech.filter((x) => x.e > 0).map((x) => x.vNut));
+      if (pace > 0.2 && v < pace) {
+        const most = this.pit.push ?? 0;
+        if (thrustAt(pace) + most >= rFwd) v = pace;
+        else if (f0 + most > rFwd) {
+          let lo = 0;
+          let hi = pace;
+          for (let i = 0; i < 32; i++) {
+            const mid = (lo + hi) / 2;
+            if (thrustAt(mid) + most > rFwd) lo = mid;
+            else hi = mid;
+          }
+          v = (lo + hi) / 2;
+        }
+        this.pushF = clamp(rFwd - thrustAt(v), 0, most);
+        this.pushPeak = Math.max(this.pushPeak, this.pushF);
+      }
+      this.pushDist += Math.max(0, v) * dt;
+      const done = (this.pit.pushTo ?? 0) > 0 ? this.pushDist >= (this.pit.pushTo ?? 0) : this.robot.screws.every((x) => (this.eng.get(x.motor) ?? 0) > 0.5);
+      if (done) {
+        this.pushing = false;
+        this.events.push({ t, kind: "info", text: `Pushed in by hand for ${Math.round(this.pushDist)} mm, at most ${Math.round(this.pushPeak)} N: digging on its own from here` });
+      }
+    }
     this.resistF = v > 0 ? rFwd : v < 0 ? rBack : Math.min(Math.abs(f0), rFwd);
     this.thrustNet = f0;
     // each screw's thrust and slip at this speed
@@ -613,6 +651,7 @@ export class SandPit implements World {
       "pit.roll_rate": this.rho * R2D,
       "pit.wall_push": this.contact,
       "pit.stress": this.sigmaV * 1000,
+      "pit.push": this.pushF,
       "nose.x": nose[0],
       "nose.y": nose[1],
       "nose.z": nose[2],
@@ -659,6 +698,10 @@ export class SandPit implements World {
       floor: this.floorTouch,
       stuck_time: this.stuckTotal,
     };
+    if ((this.pit.push ?? 0) > 0) {
+      r.push_peak = this.pushPeak;
+      r.push_distance = this.pushDist;
+    }
     // how far off the line it arrived means something only once it arrived
     if (this.missAt) {
       r.miss = Math.hypot(this.missAt.y, this.missAt.z);

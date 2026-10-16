@@ -45,6 +45,7 @@ const PIT: Record<string, { label: string; unit: string }> = {
   roll_rate: { label: "roll rate", unit: "°/s" },
   wall_push: { label: "pressing on a wall", unit: "N" },
   stress: { label: "sand stress at the robot", unit: "kPa" },
+  push: { label: "helper's push on the tail", unit: "N" },
 };
 
 export function channelInfo(name: string): ChannelInfo {
