@@ -40,7 +40,7 @@ describe("design language", () => {
   });
 
   it("lexes every token of the demos", () => {
-    for (const d of ["enclosure", "reducer", "blank"]) expect(() => lex(demo(d))).not.toThrow();
+    for (const d of ["enclosure", "reducer", "canister", "blank"]) expect(() => lex(demo(d))).not.toThrow();
   });
 });
 
@@ -68,6 +68,14 @@ describe("demo designs", () => {
     const m = evaluate(src);
     expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
     expect(m.requirements.find((r) => r.label.startsWith("Reduction matches"))?.status).toBe("pass");
+  });
+
+  it("canister: evaluates cleanly with its parametric requirements met", () => {
+    const m = evaluate(demo("canister"));
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.parts.map((p) => p.id)).toEqual(["jar", "lid"]);
+    expect(m.parts.every((p) => p.detail)).toBe(true);
+    expect(m.requirements.filter((r) => r.status === "fail")).toEqual([]);
   });
 
   it("identical parts share one geometry hash", () => {

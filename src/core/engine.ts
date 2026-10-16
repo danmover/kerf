@@ -5,10 +5,10 @@
 import { create } from "zustand";
 import { parse } from "../lang/parser";
 import { evaluate } from "../lang/evaluator";
-import { kernel, type KernelStatus, type PartResult } from "../kernel/client";
+import { detailKernel, kernel, type KernelStatus, type PartResult } from "../kernel/client";
 import type { MeshData } from "../kernel/build";
 import type { Interference, ChecksResult } from "../kernel/protocol";
-import type { V3 } from "../kernel/recipe";
+import { hasDetail, type V3 } from "../kernel/recipe";
 import { assembleReport, buildChecksRequest, type CheckReport } from "./checks";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
@@ -78,6 +78,8 @@ const set = useDesign.setState;
 
 let parsedCache: { src: string; parsed: ReturnType<typeof parse> } | null = null;
 let activeJobs: { cancel: () => void }[] = [];
+/** geometry hashes whose detailed build failed: not retried until the design is reloaded */
+const detailFailed = new Set<string>();
 let bumpScheduled = false;
 
 function bumpMeshes() {
@@ -104,6 +106,11 @@ export function startEngine() {
     if (source) setSource(source, { force: true });
   });
   kernel.start();
+  // the detail worker starts on first use; if it is restarted, request the detailed geometry again
+  detailKernel.onReset(() => {
+    const { source } = get();
+    if (source) setSource(source, { force: true });
+  });
 }
 
 function parseCached(src: string) {
@@ -118,7 +125,9 @@ export function loadSource(src: string) {
   for (const j of activeJobs) j.cancel();
   activeJobs = [];
   meshes.clear();
+  detailFailed.clear();
   kernel.evict([]);
+  detailKernel.evict([]);
   set({ buildErrors: new Map(), report: null, interferences: [], conflict: null, conflictState: "idle", hold: [], checksError: "" });
   bumpMeshes();
   setSource(src, { force: true });
@@ -218,30 +227,39 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     timings: { ...get().timings, checksMs: performance.now() - tChecks },
   });
 
-  // refine: exact-tolerance meshes, and the detailed geometry (threads, knurls, cosmetic steps), in the background
-  const refine = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview && !meshes.get(p.hash)?.final);
+  // refine: exact-tolerance meshes here; the detailed geometry (threads, knurls, cosmetic steps) in a worker of its
+  // own, so a slow detail build never holds up the next edit's preview and checks
+  const refine = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview && !meshes.get(p.hash)?.final && !detailFailed.has(p.hash));
   if (refine.length) {
     const issues = new Map(get().detailIssues);
-    const job = kernel.build(
-      refine.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
-      "final",
-      (r) => {
-        const prev = meshes.get(r.hash);
-        if (prev) {
-          prev.final = r.mesh;
-          bumpMeshes();
-        }
-        if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
-        else issues.delete(r.hash);
-      },
-      (hash, message) => {
-        // the simple shape stays on screen; say what the detail pass could not do
-        issues.set(hash, `The detailed build failed, so the simple shape is shown: ${message}`);
-      },
-    );
-    activeJobs.push(job);
-    const r = await job.done;
-    if (r.cancelled || get().rev !== rev) return;
+    const onPart = (r: PartResult) => {
+      const prev = meshes.get(r.hash);
+      if (prev) {
+        prev.final = r.mesh;
+        bumpMeshes();
+      }
+      if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
+      else issues.delete(r.hash);
+    };
+    const onError = (hash: string, message: string) => {
+      // the simple shape stays on screen; say what the detail pass could not do
+      detailFailed.add(hash);
+      issues.set(hash, `The detailed build failed, so the simple shape is shown: ${message}`);
+    };
+    const item = (p: EvalPart) => ({ hash: p.hash, recipe: p.recipe, label: p.label });
+    const detailed = refine.filter((p) => hasDetail(p.recipe));
+    const plain = refine.filter((p) => !hasDetail(p.recipe));
+    const jobs: ReturnType<typeof kernel.build>[] = [];
+    if (plain.length) jobs.push(kernel.build(plain.map(item), "final", onPart, onError));
+    if (detailed.length && detailKernel.status === "error") {
+      for (const p of detailed) issues.set(p.hash, `The detailed build is unavailable, so the simple shape is shown: ${detailKernel.error}`);
+    } else if (detailed.length) {
+      detailKernel.start();
+      jobs.push(detailKernel.build(detailed.map(item), "final", onPart, onError));
+    }
+    activeJobs.push(...jobs);
+    const results = await Promise.all(jobs.map((j) => j.done));
+    if (results.some((r) => r.cancelled) || get().rev !== rev) return;
     const live = new Set(byHash.keys());
     for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);
     const report = get().report;

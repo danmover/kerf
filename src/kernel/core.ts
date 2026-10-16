@@ -3,9 +3,9 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { applyXf, bboxOf, buildPartFull, meshShape, type MeshData } from "./build";
+import { applyXf, bboxOf, buildPartFull, meshShape, solidVolume, type MeshData } from "./build";
 import { applyXforms, hasDetail, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
-import type { BuildItem, ChecksRequest, ChecksResult, InspectRequest, InspectResult, Interference, PlacedItem } from "./protocol";
+import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, InspectRequest, InspectResult, Interference, PlacedItem } from "./protocol";
 import { geoKey, type GeoQuery } from "../lang/values";
 import { inspectShape } from "./inspect";
 import type { FeatureTools } from "./topology";
@@ -65,7 +65,7 @@ export class KernelCore {
     const { shape, warnings, features } = buildPartFull(item.recipe, { detail });
     let volume = 0;
     try {
-      volume = R.measureVolume(shape);
+      volume = solidVolume(shape);
     } catch {
       volume = 0;
     }
@@ -286,12 +286,12 @@ export class KernelCore {
     }
   }
 
-  exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]): Blob {
+  exportStep(items: ExportItem[]): Blob {
     // the detailed solid when it has been built (real threads, cosmetic detail), else the fast one
     const shapes = items.map((it) => {
-      const d = this.detailCache.get(it.hash);
-      const shape = d ? applyXf(d.shape.clone(), it.xf) : this.placed(it).shape.clone();
-      return { shape, name: it.name, color: it.color };
+      const e = it.recipe ? this.build({ hash: it.hash, recipe: it.recipe, label: it.name }, "final") : (this.detailCache.get(it.hash) ?? this.get(it.hash));
+      if (!e) throw new Error("not built: " + it.name);
+      return { shape: applyXf(e.shape.clone(), it.xf), name: it.name, color: it.color };
     });
     return R.exportSTEP(shapes);
   }

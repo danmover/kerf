@@ -3,6 +3,7 @@
 import enclosure from "./enclosure.kerf?raw";
 import reducer from "./reducer.kerf?raw";
 import blank from "./blank.kerf?raw";
+import canister from "./canister.kerf?raw";
 
 export interface Template {
   id: string;
@@ -50,6 +51,18 @@ export const TEMPLATES: Template[] = [
       "Why are two of the gears marked removable?",
     ],
     stats: "26 parts · 8 requirements",
+  },
+  {
+    id: "canister",
+    name: "Screw-Top Canister",
+    tagline: "Printed jar and knurled lid with real two-start threads, an O-ring seal and raised lettering.",
+    source: canister,
+    prompts: [
+      "Make the canister 120 mm tall and 80 mm wide, keeping the same thread fit",
+      "Change the lid lettering to COFFEE and engrave it instead of raising it",
+      "Add a drip ridge below the thread and round the jar's shoulder more",
+    ],
+    stats: "2 parts · 4 requirements",
   },
 ];
 

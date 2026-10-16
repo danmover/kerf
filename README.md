@@ -46,6 +46,13 @@ npm run typecheck
 - Requirements can be numeric (`require "Board fits": inner_w - pcb.w >= 2`) or measured on the real geometry (`min_distance(pcb, lid) >= 2`).
 - Standard hardware library: ISO 4762 screws, nuts and heat-set inserts (M2 to M6), deep-groove bearings (623 to 6801), involute spur gears, a NEMA 17 stepper, a PCB, a USB-C connector, generic connectors and dowels.
 
+**Detailed modelling**
+- 2D profiles (`outline` with arcs and splines, `curve`, `rounded`, `offset`, `text`, and `+`/`-` between them) turned into solids with `extrude` (twist, taper), `revolve`, `sweep`/`pipe` along paths and helices, and `loft` (hollow with `wall:`).
+- Real helical threads (`thread()`, ISO, trapezoid, square and buttress, multi-start, left-hand, threaded tubes) and threaded holes (`hole(M5, fit: "thread")`); knurls, draft, embossed and engraved lettering, O-ring grooves, ribs and gussets.
+- Ready-made features that size themselves: `screw_boss` (insert, tapped or threaded, with gussets) and `snap_hook`, whose bending strain is checked against the material.
+- Name what you add (`add ... as boss`) and round or break edges by meaning: `fillet(1.5, edges: boss.root)`, `both(base.edges, "vertical")`, `near()`, `facing()`. Claude can inspect a part's features and test a selection before using it.
+- `cosmetic { }` steps (edge breaks, lettering) and real threads and knurls appear in the detailed build, which runs in a second kernel worker; checks use the simple shape, so editing stays fast. Library screws and nuts show real ISO threads.
+
 **Checking**
 - Every change runs the full pipeline: evaluate, build (only the parts that changed), check, then refine the meshes.
 - Checks cover requirements, solid interference, tool access to every screw, gear mesh and ratio, and motion.
@@ -59,12 +66,12 @@ npm run typecheck
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
-Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two-stage 12:1 gear reducer (26 solids). Both pass every check. Each comes with suggested prompts for a substantial revision.
+Three complete examples ship with it: a sensor-hub enclosure (21 solids), a two-stage 12:1 gear reducer (26 solids) and a screw-top canister with real, phased two-start threads, a knurled lid and an O-ring seal. All pass every check. Each comes with suggested prompts for a substantial revision.
 
 ## Not in 0.1
 
 - **Sketch and direct modelling tools.** Manual editing today is through parameters and the design file, not 2D sketches with constraints or push and pull on faces.
-- **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds it. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
+- **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds the geometry that checks use. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
 - **Engineering analysis.** No stress, deflection or thermal analysis, and no tolerance stack-ups. The checks are geometric.
 - **Drawings and measurement.** No 2D drawings or interactive measuring tool yet.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
@@ -76,7 +83,7 @@ Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two
 ```
 src/lang/       Kerf language: lexer, parser, evaluator (no eval, step-limited)
 src/library/    Standard parts, thread and bearing tables, involute gears
-src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
+src/kernel/     OpenCASCADE (WebAssembly) in Web Workers (fast builds and checks; detailed builds and STEP); content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
 src/ai/         Claude tools, system prompt, language reference, chat loop
 src/app/        Projects and history, settings, view state, exports

@@ -4,6 +4,15 @@ import type { PartRecipe, Sel, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
 
+export interface ExportItem {
+  hash: string;
+  xf: Xform[];
+  name: string;
+  color: string;
+  /** lets the worker build the part if it has not yet */
+  recipe?: PartRecipe;
+}
+
 export interface BuildItem {
   hash: string;
   recipe: PartRecipe;
@@ -115,7 +124,7 @@ export type ToWorker =
   | { type: "build"; jobId: number; items: BuildItem[]; quality: "preview" | "final" }
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
-  | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
+  | { type: "export-step"; jobId: number; items: ExportItem[] }
   | { type: "inspect"; jobId: number; req: InspectRequest }
   | { type: "evict"; keep: string[] };
 

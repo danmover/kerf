@@ -3,7 +3,7 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { frameFor, rotateAbout, vadd, vcross, vscale, type OpenSpec, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
+import { frameFor, rotateAbout, vadd, vcross, vnorm, vscale, type OpenSpec, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
 import { gearOutline } from "../library/gears";
 import { extrudeProfile, loftProfiles, revolveProfile2, sweepProfile } from "./profiles";
 import { buildKnurl, buildThread } from "./threads";
@@ -229,7 +229,10 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
         else features.set(op.name, { name: op.name, kind: op.op, tools: [tool] });
       }
       if (op.op === "add") return shape.fuse(tool);
-      if (op.op === "cut") return shape.cut(tool);
+      if (op.op === "cut") {
+        const env = detail ? threadEnvelope(op.shape) : null;
+        return env ? cutWithin(shape, tool, env) : shape.cut(tool);
+      }
       return shape.intersect(tool) as Shape3D;
     }
     case "shell": {
@@ -274,6 +277,111 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       const plane = new R.Plane(op.neutral, frameFor(op.pull).u, op.pull);
       return shape.draft(op.angle, (f) => f.inList(faces), plane);
     }
+  }
+}
+
+interface Envelope {
+  at: V3;
+  dir: V3;
+  rad: number;
+  len: number;
+}
+
+/** A cylinder that holds a thread-cutting tool, or null for other tools. */
+function threadEnvelope(r: ShapeRecipe): Envelope | null {
+  const t = r.t === "thread" && r.internal ? { spec: r.spec, length: r.length, extra: 0 } : r.t === "hole" && r.thread ? { spec: r.thread, length: r.depth, extra: r.cbore ? r.cbore[0] / 2 : 0 } : null;
+  if (!t || (r.t !== "thread" && r.t !== "hole")) return null;
+  const n = vnorm(r.dir);
+  return { at: vadd(r.at, vscale(n, -0.2)), dir: n, rad: Math.max(t.spec.d / 2 + t.spec.clearance + 0.35, t.extra + 0.3), len: t.length + 0.4 };
+}
+
+/**
+ * Cut a thread tool out of a shape. A helical face's bounding box covers the whole hole, so cutting one from a
+ * part with many faces around the hole (a knurled cap) intersects every one of them: half a minute. Instead the
+ * part is split along a cylinder that holds the tool, only the small inside piece is threaded, and the two pieces
+ * are sewn back together without the faces they share. Falls back to the plain cut if that does not give a
+ * valid solid of the right volume.
+ */
+function cutWithin(shape: Shape3D, tool: Shape3D, env: Envelope): Shape3D {
+  const cyl = R.makeCylinder(env.rad, env.len, env.at, env.dir);
+  try {
+    const inside = shape.intersect(cyl) as Shape3D;
+    if (solidVolume(inside) < 1e-9) return shape;
+    const outside = shape.cut(cyl);
+    const threaded = inside.cut(tool);
+    const vOut = solidVolume(outside);
+    if (vOut < 1e-9) return threaded;
+    const want = vOut + solidVolume(threaded);
+    const sewn = sewPieces([outside, threaded], (f) => onEnvelope(f, env));
+    if (sewn && Math.abs(solidVolume(sewn) - want) <= 1e-4 * want) return sewn;
+  } catch {
+    // fall through to the plain cut
+  }
+  return shape.cut(tool);
+}
+
+/** Is this face part of the envelope cylinder's side or end discs? */
+function onEnvelope(f: R.Face, env: Envelope): boolean {
+  const local = (p: { x: number; y: number; z: number }) => {
+    const v: V3 = [p.x - env.at[0], p.y - env.at[1], p.z - env.at[2]];
+    const ax = v[0] * env.dir[0] + v[1] * env.dir[1] + v[2] * env.dir[2];
+    return { ax, rad: Math.hypot(v[0] - ax * env.dir[0], v[1] - ax * env.dir[1], v[2] - ax * env.dir[2]) };
+  };
+  const pts = f.edges.flatMap((e) => [e.startPoint, e.pointAt(0.5)].map(local));
+  if (!pts.length) return false;
+  const tol = 1e-5;
+  if (f.geomType === "CYLINDRE") {
+    const mid = local(f.pointOnSurface(0.5, 0.5));
+    return Math.abs(mid.rad - env.rad) < tol && pts.every((p) => Math.abs(p.rad - env.rad) < tol);
+  }
+  if (f.geomType !== "PLANE") return false;
+  const end = Math.abs(pts[0].ax) < tol ? 0 : Math.abs(pts[0].ax - env.len) < tol ? env.len : null;
+  return end !== null && pts.every((p) => Math.abs(p.ax - end) < tol && p.rad < env.rad + tol);
+}
+
+/** One solid from pieces that touch along shared faces: their other faces sewn into a closed shell. */
+function sewPieces(pieces: Shape3D[], shared: (f: R.Face) => boolean): Shape3D | null {
+  const oc = R.getOC();
+  const sew = new oc.BRepBuilderAPI_Sewing(1e-5, true, true, true, false);
+  const fixer = new oc.ShapeFix_Solid();
+  const faces: R.Face[] = [];
+  try {
+    for (const piece of pieces)
+      for (const f of piece.faces) {
+        if (shared(f)) f.delete();
+        else faces.push(f);
+      }
+    for (const f of faces) sew.Add(f.wrapped);
+    sew.Perform();
+    const sewed = sew.SewedShape();
+    if (sewed.ShapeType() !== oc.TopAbs_ShapeEnum.TopAbs_SHELL) return null;
+    const solid = R.cast(fixer.SolidFromShell(oc.TopoDS.Shell(sewed)));
+    if (!(solid instanceof R.Solid)) return null;
+    const check = new oc.BRepCheck_Analyzer(solid.wrapped, true, false);
+    const ok = check.IsValid();
+    check.delete();
+    return ok ? solid.simplify() : null;
+  } finally {
+    for (const f of faces) f.delete();
+    sew.delete();
+    fixer.delete();
+  }
+}
+
+/**
+ * Volume of a solid. OpenCASCADE's default integration is off by several percent on helical thread faces;
+ * the adaptive (Gauss-Kronrod) one is accurate and about as fast.
+ */
+export function solidVolume(s: Shape3D): number {
+  const oc = R.getOC();
+  const props = new oc.GProp_GProps();
+  try {
+    oc.BRepGProp.VolumePropertiesGK(s.wrapped, props, 1e-5, false, true, false, false, false);
+    return props.Mass();
+  } catch {
+    return R.measureVolume(s);
+  } finally {
+    props.delete();
   }
 }
 

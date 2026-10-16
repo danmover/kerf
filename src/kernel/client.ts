@@ -2,8 +2,8 @@
 // recovery when the worker dies (for example after OpenCASCADE runs out of memory).
 
 import type { MeshData } from "./build";
-import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, InspectRequest, InspectResult, ToWorker } from "./protocol";
-import type { V3, Xform } from "./recipe";
+import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, FromWorker, InspectRequest, InspectResult, ToWorker } from "./protocol";
+import type { V3 } from "./recipe";
 
 export type KernelStatus = "loading" | "ready" | "error";
 
@@ -49,12 +49,14 @@ export class KernelClient {
   error = "";
   restarts = 0;
 
+  constructor(private readonly name = "kerf-kernel") {}
+
   start() {
     if (this.worker) return;
     this.status = "loading";
     this.error = "";
     this.emit();
-    const w = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: "kerf-kernel" });
+    const w = new Worker(new URL("./worker.ts", import.meta.url), { type: "module", name: this.name });
     w.onmessage = (ev: MessageEvent<FromWorker>) => this.onMessage(ev.data);
     w.onerror = (ev) => {
       ev.preventDefault();
@@ -173,8 +175,11 @@ export class KernelClient {
     const done = new Promise<{ ms: number; built: number; cached: number; cancelled: boolean }>((resolve) => {
       job = { kind: "build", onPart, onError, resolve, cancelled: false };
     });
-    this.jobs.set(jobId, job);
-    this.post({ type: "build", jobId, items, quality });
+    if (this.status === "error") job.resolve({ ms: 0, built: 0, cached: 0, cancelled: true });
+    else {
+      this.jobs.set(jobId, job);
+      this.post({ type: "build", jobId, items, quality });
+    }
     return {
       jobId,
       done,
@@ -197,7 +202,8 @@ export class KernelClient {
     return this.value<ChecksResult>((jobId) => ({ type: "checks", jobId, req }));
   }
 
-  exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]) {
+  /** STEP of placed parts; parts given with a recipe are built (in detail) if this worker does not have them yet. */
+  exportStep(items: ExportItem[]) {
     return this.value<ArrayBuffer>((jobId) => ({ type: "export-step", jobId, items }));
   }
 
@@ -211,4 +217,7 @@ export class KernelClient {
   }
 }
 
+/** Fast builds, checks, measurements and previews. */
 export const kernel = new KernelClient();
+/** Detailed builds (real threads, knurls, cosmetic steps) and STEP export, so they never queue ahead of a preview. */
+export const detailKernel = new KernelClient("kerf-detail");

@@ -116,6 +116,7 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
       }
       case "export-step": {
         try {
+          for (const it of msg.items) if (it.recipe) await ensureFonts(fontsIn(it.recipe));
           const blob = core.exportStep(msg.items);
           const data = await blob.arrayBuffer();
           post({ type: "exported", jobId: msg.jobId, data }, [data]);
