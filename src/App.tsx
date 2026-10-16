@@ -18,6 +18,9 @@ import { SettingsModal } from "./ui/Settings";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
+import { AuthDialog } from "./ui/Account";
+import { initAccount } from "./cloud/account";
+import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
 
 // each opened project brings its own conversation
@@ -56,6 +59,7 @@ export function App() {
           </div>
         )}
         <SettingsModal />
+        <AuthDialog />
         <ShortcutsModal />
         <ConfirmDialog />
         <Toasts />
@@ -78,7 +82,8 @@ function useBoot() {
     let live = true;
     startEngine();
     startAnalysisRuntime();
-    void Promise.allSettled([loadRememberedKey(), refreshProjects()]).then(() => {
+    void Promise.allSettled([loadRememberedKey(), refreshProjects(), initAccount()]).then(() => {
+      startSync();
       if (!live) return;
       const s = useSettings.getState();
       go(!s.onboarded || s.termsAccepted !== TERMS_VERSION ? { name: "onboarding" } : { name: "home" });

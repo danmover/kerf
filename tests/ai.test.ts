@@ -17,6 +17,7 @@ import { TOOL_DEFS, catalogLookup, engineeringCalc, firmwareSummary, machineSumm
 import { webTools, webSearchFee, webActivity, citedSources, isPausedTurn, echoContent, flattenServerTools, isWebToolError, safeUrl } from "../src/ai/web";
 import { useChat, sendMessage, retryLast, clearChat, loadChat, setClientFactory, chatHistory, requestTools, type ChatItem } from "../src/ai/chat";
 import { useSettings } from "../src/app/settings";
+import { useAccount } from "../src/cloud/account";
 
 // ---------- reference and prompt ----------
 
@@ -410,6 +411,17 @@ describe("chat loop", () => {
     expect(requests[0].tools.some((t) => t.name === "web_search" || t.name === "web_fetch")).toBe(false);
     expect(requests[0].tools).toHaveLength(TOOL_DEFS.length);
     expect(requestTools({ webSearch: false })).toHaveLength(TOOL_DEFS.length);
+  });
+
+  it("leaves web tools off on a Kerf server's shared key, which refuses server-side tools", () => {
+    expect(requestTools({ webSearch: true })).toHaveLength(TOOL_DEFS.length + 2);
+    const before = useAccount.getState();
+    useAccount.setState({ status: "signed-in", info: { claude: { source: "shared" } } } as never);
+    try {
+      expect(requestTools({ webSearch: true })).toHaveLength(TOOL_DEFS.length);
+    } finally {
+      useAccount.setState(before, true);
+    }
   });
 
   it("sends earlier web results as notes when web search is off, without rewriting the history", async () => {

@@ -9,6 +9,7 @@ import { DiffView } from "./DiffView";
 import { openSpot, spotLabel } from "../app/spot";
 import { safeUrl, domainOf } from "../ai/web";
 import { getApiKey, subscribeKey } from "../persist/vault";
+import { useAccount } from "../cloud/account";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
 import { useProject } from "../app/project";
@@ -29,8 +30,11 @@ import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Atta
 import { useStickToBottom } from "./useStickToBottom";
 import { CostLine, fmtCost, useChatSpend } from "./CostLine";
 
+/** The browser's key, or "account" when chat goes through a Kerf server that holds the key. */
 export function useApiKey() {
-  return useSyncExternalStore(subscribeKey, getApiKey);
+  const key = useSyncExternalStore(subscribeKey, getApiKey);
+  const viaAccount = useAccount((s) => s.status === "signed-in" && !!s.info?.claude?.source);
+  return key ?? (viaAccount ? "account" : null);
 }
 
 export function ChatPanel() {

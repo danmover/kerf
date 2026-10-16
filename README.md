@@ -4,11 +4,11 @@ Mechanical CAD where Claude does the modelling and you direct the design.
 
 You describe a part or a mechanism, give the dimensions and constraints that matter, and Claude writes it as a parametric design. Kerf builds exact solids with OpenCASCADE, checks them for fit, interference, screw access, gear meshing, motion and strength, and shows you the result. You can then ask for changes, scrub parameter values, or edit the design file by hand. All three edit the same source, with full version history and undo.
 
-This is version 0.1, a working prototype: every screen and button works, and it runs entirely in the browser.
+This is version 0.1, a working prototype: every screen and button works, and it runs entirely in the browser. An optional Kerf server adds accounts, so projects sync between devices and the Claude key can live on the account instead of in the browser.
 
 ## Run it
 
-You need Node 20.19 or newer.
+You need Node 22.13 or newer. The app on its own also runs on Node 20.19; the server and its tests need 22.13.
 
 ```bash
 npm install
@@ -25,6 +25,16 @@ npm run preview      # http://localhost:4173
 The build in `dist/` is a static site. Any static host works. `public/_headers` sets the security headers on Netlify and Cloudflare Pages; on other hosts, copy those headers into the host's config.
 
 Chatting with Claude needs an Anthropic API key from the [Claude Console](https://platform.claude.com/). Kerf asks for it during first-run setup, or later under Settings → Claude. Everything else works without a key.
+
+### With accounts
+
+```bash
+npm run dev:full     # the app and the Kerf server together, on http://localhost:5173
+```
+
+This adds sign-in, project sync and the option to keep the Claude key on your account. In development, account emails are printed in the terminal. To host Kerf with accounts, use the `Dockerfile` (one container serves the app and the server). [server/README.md](server/README.md) covers configuration, deploying to Fly.io or any Docker host, admin commands and backups.
+
+Without the server, nothing changes: the static build works on its own, and Settings → Account says so.
 
 ### Checks
 
@@ -110,6 +120,7 @@ npm run typecheck
 - A model panel with three tabs. Parts lists every part grouped as the design groups it, says what each one is, and follows the viewport selection. Params lists the driving values under the design's own section headings: drag a value sideways to scrub it, click to type, or open it for a slider, the parts it moves and the checks it feeds. History shows every version with who made it, a diff, a 3D preview and one-click restore.
 - A dependency graph and a parts list in the bottom dock.
 - Projects save automatically in the browser. You can rename, duplicate, delete, import and back them up.
+- With a Kerf server: an account, sync of projects, history, chats, imported STEP files and reference images between browsers (offline edits merge when you reconnect, and the other device's version stays in history), the Claude key kept encrypted on the account, a usage chart, signed-in devices, recent security activity, and a download of everything in the account.
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
@@ -138,7 +149,7 @@ The Simulation thread runs the generated firmware against the pit. Its first run
 - **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds the geometry that checks use (a second one makes the detailed build). Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
 - **More analysis.** The stress solver is linear elastic on a voxel grid: no contact between parts, buckling, large deflection, creep, vibration or thermal analysis, and features smaller than a grid cell are smoothed over. Drivetrain checks leave out tooth pitting, wear and heat. There are no tolerance stack-ups yet. The machine sizing calculations are first-pass hand formulas with their assumptions listed. Treat results as a design guide and test parts that matter.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
-- **Accounts and sharing.** No server, sign-in, sync or collaboration. A hosted version would need a server-side key proxy, rate limits and billing.
+- **Sharing and collaboration.** Accounts sync your own projects between your devices. Sharing a project with someone else, editing together, and billing for a hosted service are not there yet.
 - A larger hardware library, a light theme, and a tablet layout. The phone layout covers the 3D view, chat, model panel, code and settings.
 
 ## How it works
@@ -156,10 +167,12 @@ src/machine/    Parts catalog, calculators, wiring rules, firmware generators, b
 src/ai/         Claude tools, system prompt, language reference, chat loop, web search
 src/app/        Projects, history and previews, settings, view state, spots, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats
+src/cloud/      Account state, server API client, project sync
 src/ui/         Viewport (three.js and Kerf's render pipeline in ui/viewport/render), sketch editor, code editor (CodeMirror), panels, chat, dialogs
 src/screens/    Onboarding, projects, workspace, legal pages
 src/demos/      The example designs
 tests/          Vitest unit tests
+server/         The optional Kerf server (Hono, SQLite): accounts, sync, Claude proxy
 ```
 
 The stress solver meshes the parts' surface triangles into a box-fitted voxel grid (8-node hexahedra with incompatible modes, so thin walls bend correctly) and solves with conjugate gradients preconditioned by geometric multigrid. A 30,000-element model solves in about a second. The tests compare it with beam theory: a steel cantilever's tip deflection comes out 0.4 % from the textbook value. The renderer only sees results through a small overlay hook, so the solver and the viewport can change independently.
@@ -168,7 +181,8 @@ The design file is the single source of truth. Chat, sliders, the editor, decisi
 
 ## Security
 
-- **No server.** Designs, history, chats, reference files and settings stay in the browser (IndexedDB and localStorage). Chat messages go straight from the browser to `api.anthropic.com`.
+- **No server by default.** Designs, history, chats, reference files and settings stay in the browser (IndexedDB and localStorage). Chat messages go straight from the browser to `api.anthropic.com`.
+- **With a Kerf server.** Passwords are hashed with scrypt. Sessions are HttpOnly, Secure, SameSite=Strict cookies, and only their hashes are stored. Sign-ins are rate-limited, and requests from other origins are refused. A key saved to an account is encrypted with AES-256-GCM, and the server adds it to Claude requests, so it never returns to a browser. The browser then talks only to its own server. Details are in [server/README.md](server/README.md#security).
 - **API key.** By default the key is held in memory only. If you choose "Remember on this device", it is encrypted with a non-exportable AES-GCM key generated by the browser before it is stored. It never appears in logs or error messages, and it is never written to the repository.
 - **Voice input.** The microphone is allowed only on Kerf's own page (`Permissions-Policy: microphone=(self)`) and only while you are talking. Kerf uses the browser's speech recognition and never records or uploads audio itself. It prefers on-device recognition; the browser's online speech service (Google, Apple or Microsoft) is used only after you allow it, because the page's CSP cannot govern the browser's own services.
 - **Content Security Policy.** The page can load only its own files and connect only to itself and `api.anthropic.com`, with no `eval`. The OpenCASCADE worker is the only code allowed `eval` (its Emscripten bindings need it), and its own policy gives it no network access beyond Kerf's files. The conflict solver and stress analysis workers get no network access at all. Framing, plugins, forms and base-URL changes are blocked.
@@ -179,4 +193,4 @@ The design file is the single source of truth. Chat, sliders, the editor, decisi
 
 The Terms of Service, Privacy notice and Acceptable use policy in the app are **drafts that need legal review before launch**. They are marked as drafts on every page.
 
-Kerf uses Open CASCADE Technology (LGPL 2.1 with the OCCT exception) through `replicad-opencascadejs`, loaded as a separate, replaceable WebAssembly module. The other dependencies are MIT-licensed, and the IBM Plex fonts use the SIL Open Font License. See the in-app Open-source licences page.
+Kerf uses Open CASCADE Technology (LGPL 2.1 with the OCCT exception) through `replicad-opencascadejs`, loaded as a separate, replaceable WebAssembly module. The other dependencies are MIT-licensed (Nodemailer, in the server, is MIT-0), SQLite is public domain, and the IBM Plex fonts use the SIL Open Font License. See the in-app Open-source licences page.

@@ -11,6 +11,8 @@ import { Menu, MenuItem, timeAgo, useTick } from "../ui/common";
 import { useApiKey } from "../ui/ChatPanel";
 import { resetChat, useChat } from "../ai/chat";
 import type { ProjectRecord } from "../persist/db";
+import { AccountButton, CloudTag, UploadBanner, useCloudActions } from "../ui/Account";
+import { useAccount } from "../cloud/account";
 import { importStepFiles, isStepFile } from "../app/imports";
 import { cleanName } from "../kernel/stepText";
 
@@ -74,6 +76,7 @@ export function Home() {
           <button className="btn" onClick={() => fileRef.current?.click()}>
             <Icon.Upload size={14} /> Import
           </button>
+          <AccountButton />
           <button className="icon-btn" onClick={() => openSettings("app")} aria-label="Settings" data-tip="Settings">
             <Icon.Settings />
           </button>
@@ -114,6 +117,7 @@ export function Home() {
         </div>
 
         <div className="section-label">Your projects</div>
+        <UploadBanner />
         {!loaded ? (
           <div className="row dim">
             <div className="spinner" /> Loading…
@@ -133,7 +137,7 @@ export function Home() {
 
         <footer className="row dim" style={{ marginTop: 50, fontSize: 12, flexWrap: "wrap", gap: 14 }}>
           <span>Kerf {__APP_VERSION__} · prototype</span>
-          <span>Projects are stored only in this browser.</span>
+          <StorageNote />
           <div className="grow" />
           <a href="#" onClick={(e) => (e.preventDefault(), go({ name: "legal", doc: "terms", back: "home" }))}>
             Terms
@@ -162,7 +166,13 @@ export function Home() {
   );
 }
 
+function StorageNote() {
+  const signedIn = useAccount((s) => s.status === "signed-in" || s.status === "unreachable");
+  return <span>{signedIn ? "Projects are saved in this browser and synced to your account." : "Projects are stored only in this browser."}</span>;
+}
+
 function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
+  const cloud = useCloudActions(p.id);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState(p.name);
   const finish = () => {
@@ -173,6 +183,7 @@ function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
   return (
     <motion.div className="card clickable" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(0.03 * index, 0.3) }} onClick={() => !renaming && void openProject(p.id)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && !renaming && void openProject(p.id)}>
       <div className="thumb">{p.thumbnail ? <img src={p.thumbnail} alt="" /> : <TemplateArt id={p.template} />}</div>
+      <CloudTag id={p.id} />
       <div className="body">
         {renaming ? (
           <input className="input" autoFocus value={name} onClick={(e) => e.stopPropagation()} onChange={(e) => setName(e.target.value)} onBlur={finish} onKeyDown={(e) => (e.key === "Enter" ? finish() : e.key === "Escape" && (setName(p.name), setRenaming(false)))} aria-label="Project name" />
@@ -202,13 +213,18 @@ function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
               <MenuItem icon={<Icon.Download size={14} />} onClick={() => (close(), void exportProject(p.id))}>
                 Export project file
               </MenuItem>
+              {cloud && (
+                <MenuItem icon={<Icon.Upload size={14} />} onClick={() => (close(), void cloud.run())}>
+                  {cloud.label}
+                </MenuItem>
+              )}
               <div className="menu-sep" />
               <MenuItem
                 danger
                 icon={<Icon.Trash size={14} />}
                 onClick={async () => {
                   close();
-                  if (await confirmDialog({ title: `Delete “${p.name}”?`, body: "The design, its version history and its chat are removed from this browser. This cannot be undone. Export it first if you may need it.", confirm: "Delete project", danger: true })) {
+                  if (await confirmDialog({ title: `Delete “${p.name}”?`, body: `The design, its version history and its chat are removed from this browser${cloud?.inAccount ? " and from your account" : ""}. This cannot be undone. Export it first if you may need it.`, confirm: "Delete project", danger: true })) {
                     if (useChat.getState().projectId === p.id) resetChat();
                     await deleteProject(p.id);
                     toast({ kind: "success", title: "Project deleted" });

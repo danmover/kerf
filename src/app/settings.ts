@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-export const TERMS_VERSION = "2026-10-draft-1";
+export const TERMS_VERSION = "2026-10-draft-2";
 
 export const MODELS = [
   { id: "claude-opus-5-5", label: "Claude Opus 5.5", note: "Most capable. Best for whole designs and big revisions." },
