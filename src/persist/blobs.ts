@@ -22,8 +22,26 @@ export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 export async function gunzip(bytes: Uint8Array, maxBytes = 200 * 1024 * 1024): Promise<Uint8Array> {
-  const out = await pipe(bytes, new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>);
-  if (out.byteLength > maxBytes) throw new Error("A stored file is larger than Kerf allows once unpacked.");
+  // read chunk by chunk and give up at the limit, so a small crafted file cannot unpack into gigabytes
+  const reader = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("A stored file is larger than Kerf allows once unpacked.");
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
   return out;
 }
 

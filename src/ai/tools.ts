@@ -610,6 +610,15 @@ function lockedChanges(before: string, after: string): string[] {
     const textB = other ? after.slice(other.span.start, other.span.end) : "";
     if (textA !== textB) out.push(`${blk.kind} ${blk.name}`);
   }
+  // a locked part must also keep its shape and place when a parameter it uses changes
+  for (const p of a.parts) {
+    if (!p.locked) continue;
+    const owner = `${p.kind} ${p.name}`;
+    if (out.includes(owner)) continue;
+    const q = b.parts.find((x) => x.id === p.id);
+    const how = !q ? "removes it" : q.hash !== p.hash ? "changes its shape" : JSON.stringify(q.xf) !== JSON.stringify(p.xf) ? "moves it" : "";
+    if (how) out.push(`${owner} (the edit ${how})`);
+  }
   // what the user stated in the brief is held like a lock
   for (const c of protectedBriefChanges(briefData(a.brief), briefData(b.brief))) out.push(`the brief's ${c}`);
   return out;

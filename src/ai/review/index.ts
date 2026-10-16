@@ -146,7 +146,8 @@ export async function runReview(req: ReviewRequest, deps: ReviewDeps): Promise<R
   const s = out.submission;
   const earlier: Finding[] = req.earlier.map((f) => {
     const v = s.earlier.find((e) => e.id.trim().toUpperCase() === f.id);
-    if (!v) return f;
+    // the designer's "fixed" or "declined" stands only once a reviewer has looked at it
+    if (!v) return f.status === "fixed" || f.status === "declined" ? { ...f, status: "still_open", note: f.note || "Not confirmed by this review round." } : f;
     return { ...f, status: v.status === "resolved" ? "verified" : v.status === "accepted" ? "accepted" : "still_open", note: v.note || f.note };
   });
   const findings: Finding[] = s.findings.slice(0, 8).map((x, i) => ({

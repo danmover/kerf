@@ -195,7 +195,9 @@ export type AgentEnd =
   | { status: "failed"; summary: string; fatal?: boolean }
   | { status: "stopped"; summary: string };
 
-const unsupported = new Set<"effort" | "thinking" | "fallbacks">();
+const unsupported = new Set<"effort" | "thinking" | "binding" | "fallbacks">();
+const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 
 export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHooks): Promise<AgentEnd> {
   const history: BetaMessageParam[] = [{ role: "user", content: [{ type: "text", text: cfg.kickoff }] }];
@@ -216,12 +218,22 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
       tools: SUBAGENT_TOOLS,
       messages: withCacheBreakpoint(history),
     };
-    if (!unsupported.has("thinking")) params.thinking = { type: "adaptive", display: "summarized" };
+    const betas: string[] = [];
+    if (!unsupported.has("thinking")) {
+      const thinking: Record<string, unknown> = { type: "adaptive", display: "summarized" };
+      // trimImages edits earlier turns, which would invalidate their thinking: drop those blocks instead of failing
+      if (!unsupported.has("binding")) {
+        thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
+        betas.push(BINDING_BETA);
+      }
+      params.thinking = thinking;
+    }
     if (!unsupported.has("effort")) params.output_config = { effort: cfg.effort };
     if (!unsupported.has("fallbacks")) {
       params.fallbacks = "default";
-      params.betas = ["server-side-fallback-2026-07-01"];
+      betas.push(FALLBACK_BETA);
     }
+    if (betas.length) params.betas = betas;
 
     hooks.activity("Thinking");
     let final: Awaited<ReturnType<typeof streamOnce>>;
@@ -313,14 +325,26 @@ async function streamOnce(cfg: AgentConfig, params: Record<string, unknown>, hoo
     } catch (e) {
       if (e instanceof Anthropic.BadRequestError) {
         const msg = (e.message || "").toLowerCase();
-        const feature = msg.includes("effort") || msg.includes("output_config") ? "effort" : msg.includes("thinking") ? "thinking" : msg.includes("fallback") || msg.includes("beta") ? "fallbacks" : null;
+        const feature = msg.includes("effort") || msg.includes("output_config") ? "effort" : msg.includes("block_binding") || msg.includes("thinking-binding") ? "binding" : msg.includes("thinking") ? "thinking" : msg.includes("fallback") || msg.includes("beta") ? "fallbacks" : null;
         if (feature && !unsupported.has(feature)) {
           unsupported.add(feature);
+          const dropBeta = (b: string) => {
+            const rest = ((params.betas as string[] | undefined) ?? []).filter((x) => x !== b);
+            if (rest.length) params.betas = rest;
+            else delete params.betas;
+          };
           if (feature === "effort") delete params.output_config;
-          if (feature === "thinking") delete params.thinking;
+          if (feature === "binding") {
+            delete (params.thinking as Record<string, unknown> | undefined)?.block_binding;
+            dropBeta(BINDING_BETA);
+          }
+          if (feature === "thinking") {
+            delete params.thinking;
+            dropBeta(BINDING_BETA);
+          }
           if (feature === "fallbacks") {
             delete params.fallbacks;
-            delete params.betas;
+            dropBeta(FALLBACK_BETA);
           }
           continue;
         }

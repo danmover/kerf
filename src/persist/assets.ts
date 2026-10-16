@@ -166,18 +166,26 @@ export async function exportAssets(projectId: string, texts: string[]): Promise<
 export async function importAssets(projectId: string, assets: PortableAsset[]) {
   for (const p of assets) {
     const bytes = Uint8Array.from(atob(p.data), (c) => c.charCodeAt(0));
-    const data = new Blob([bytes], { type: p.mime });
+    let data = new Blob([bytes], { type: p.mime });
+    let mime = p.mime;
     let thumb: Blob | undefined;
     let width: number | undefined;
     let height: number | undefined;
     if (p.kind === "image") {
       const bmp = await decode(data).catch(() => null);
       if (!bmp) continue;
-      width = bmp.width;
-      height = bmp.height;
-      thumb = (await render(bmp, THUMB_EDGE, 0.8)).blob;
-      bmp.close();
+      try {
+        // stored like an added image (JPEG at Claude's size), since that is how it is sent
+        const full = await render(bmp, MAX_EDGE, 0.88);
+        data = full.blob;
+        mime = "image/jpeg";
+        width = full.width;
+        height = full.height;
+        thumb = (await render(bmp, THUMB_EDGE, 0.8)).blob;
+      } finally {
+        bmp.close();
+      }
     } else if (!(await isPdf(data))) continue;
-    await db.put<AssetRecord>("assets", { key: `${projectId}:${p.id}`, id: p.id, projectId, kind: p.kind, mime: p.mime, name: p.name, size: data.size, width, height, data, thumb, createdAt: Date.now() });
+    await db.put<AssetRecord>("assets", { key: `${projectId}:${p.id}`, id: p.id, projectId, kind: p.kind, mime, name: p.name, size: data.size, width, height, data, thumb, createdAt: Date.now() });
   }
 }

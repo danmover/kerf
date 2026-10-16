@@ -3,6 +3,7 @@
 // (some private-browsing modes), and the UI warns that work will not persist.
 
 import type { ProjectImport } from "../kernel/imports";
+import { dismissToast, toast } from "../app/ui";
 
 export interface ProjectRecord {
   id: string;
@@ -105,19 +106,22 @@ function open(): Promise<IDBDatabase | null> {
       }
       if (!db.objectStoreNames.contains("blobs")) db.createObjectStore("blobs", { keyPath: "hash" });
     };
+    let blocked = 0;
     req.onsuccess = () => {
+      if (blocked) dismissToast(blocked);
       // let a newer Kerf in another tab upgrade the database instead of being blocked by this one
-      req.result.onversionchange = () => req.result.close();
+      req.result.onversionchange = () => {
+        req.result.close();
+        toast({ kind: "warn", title: "Kerf was updated in another tab", detail: "Reload this tab to keep working. Changes made here from now on are not saved." }, 0);
+      };
       resolve(req.result);
     };
     req.onerror = () => {
       persistent = false;
       resolve(null);
     };
-    req.onblocked = () => {
-      persistent = false;
-      resolve(null);
-    };
+    // an older Kerf tab still has the database open: wait for it rather than run without saving
+    req.onblocked = () => (blocked = toast({ kind: "warn", title: "Close other Kerf tabs to finish updating", detail: "Another tab is running an older version of Kerf. Your projects open here as soon as it is closed or reloaded." }, 0));
   });
   return dbPromise;
 }

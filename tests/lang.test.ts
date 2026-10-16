@@ -44,6 +44,23 @@ describe("design language", () => {
   });
 });
 
+describe("limits on hostile source", () => {
+  it("counts loop iterations toward the step limit, even with an empty body", () => {
+    const loops = 'design "x"\npart p {\n  body box(1, 1, 1)\n  for a in range(2000) {\n    for b in range(2000) {\n    }\n  }\n}';
+    const t0 = performance.now();
+    const m = evaluate(loops);
+    expect(performance.now() - t0).toBeLessThan(5000);
+    expect(m.diagnostics.some((d) => /too large to evaluate/.test(d.message))).toBe(true);
+  });
+
+  it("reports deeply nested source instead of throwing", () => {
+    const deep = `design "x"\nparam a = ${"(".repeat(20000)}1${")".repeat(20000)}`;
+    const r = parse(deep);
+    expect(r.diagnostics.some((d) => /nested too deeply/.test(d.message))).toBe(true);
+    expect(() => evaluate(deep)).not.toThrow();
+  });
+});
+
 describe("demo designs", () => {
   it("enclosure: evaluates cleanly with its requirements met", () => {
     const m = evaluate(demo("enclosure"));

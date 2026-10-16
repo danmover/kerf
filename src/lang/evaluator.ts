@@ -329,8 +329,14 @@ class Evaluator {
     throw new EvalError(`"${name}" is not defined${sugg ? `. Did you mean "${sugg}"?` : ". Definitions must come before they are used."}`, span);
   }
 
+  /** count work toward the step limit; loops and list joins count by size, so an empty loop body still costs */
+  tick(n: number, span: Span) {
+    this.steps += n;
+    if (this.steps > 2_000_000) throw new EvalError("This design is too large to evaluate (over 2 million steps). Reduce loop sizes.", span);
+  }
+
   expr(e: Expr, scope: Scope | null): Value {
-    if (++this.steps > 2_000_000) throw new EvalError("This design is too large to evaluate (over 2 million steps). Reduce loop sizes.", e.span);
+    this.tick(1, e.span);
     switch (e.k) {
       case "num":
         return e.v;
@@ -474,7 +480,11 @@ class Evaluator {
     }
     if (typeof l === "number" && r instanceof Vec && op === "*") return new Vec(r.v.map((x) => x * l));
     if (op === "+" && (typeof l === "string" || typeof r === "string")) return show(l).replace(/^"|"$/g, "") + show(r).replace(/^"|"$/g, "");
-    if (op === "+" && Array.isArray(l) && Array.isArray(r)) return [...l, ...r];
+    if (op === "+" && Array.isArray(l) && Array.isArray(r)) {
+      if (l.length + r.length > 100_000) throw new EvalError("Lists are limited to 100,000 items", span);
+      this.tick(l.length + r.length, span);
+      return [...l, ...r];
+    }
     throw new EvalError(`Cannot apply "${op}" to ${typeName(l)} and ${typeName(r)}`, span);
   }
 
@@ -853,6 +863,7 @@ class Evaluator {
           const list = Array.isArray(iter) ? iter : iter instanceof Vec ? iter.v : null;
           if (!list) throw new EvalError(`for ... in needs a list, got ${typeName(iter)}`, it.iter.span);
           for (const v of list) {
+            this.tick(1, it.iter.span);
             const inner = new Scope(scope);
             inner.vars.set(it.varName, v);
             this.items(it.body, inner, st, depth + 1);

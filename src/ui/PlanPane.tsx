@@ -116,9 +116,10 @@ export function PlanPane() {
             <span className="steer-dot" />
             <span className="grow">
               {waiting.length} change{waiting.length > 1 ? "s" : ""} for Claude
-              <span className="dim"> · {busy ? (scoped.main ? "picked up after the current action" : "each agent picks up its own at its next step") : "sent with your next message"}</span>
+              <span className="dim"> · {busy ? (scoped.main ? "picked up after the current action" : "each agent picks up its own at its next step") : asking ? "sent with your answer" : "sent with your next message"}</span>
             </span>
-            {(!busy || (scoped.main > 0 && !agentsRunning)) && (
+            {/* with a question open, the changes go along with the answer; sending them now would answer it */}
+            {((!busy && !asking) || (busy && scoped.main > 0 && !agentsRunning)) && (
               <button className="btn sm" onClick={() => void applyPlanChangesNow()} data-tip={busy ? "Stop the current response and continue with your changes" : "Send your changes to Claude now"}>
                 {busy ? "Apply now" : "Send now"}
               </button>

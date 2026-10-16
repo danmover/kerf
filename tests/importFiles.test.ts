@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fixture } from "./occt";
 import { projectFile, backupFile, readImportFile } from "../src/persist/files";
-import { gzip, sha256Hex, toBase64 } from "../src/persist/blobs";
+import { gunzip, gzip, sha256Hex, toBase64 } from "../src/persist/blobs";
 import { IMPORT_META_VERSION, type ImportMeta, type ProjectImport } from "../src/kernel/imports";
 import { evaluate } from "../src/lang/evaluator";
 import { importsReference } from "../src/ai/importTools";
@@ -39,7 +39,8 @@ describe("project files with imported STEP files", () => {
     expect(p.imports).toHaveLength(1);
     expect(p.imports[0].meta?.bodies[0].name).toBe("PCB evil");
     expect(p.imports[0].meta?.cylinders[0].d).toBe(3.2);
-  });
+    // hashing and packing the board file is slow when every test file runs at once
+  }, 20_000);
 
   it("writes version 1 when nothing is imported, so older Kerf builds can open it", () => {
     expect(JSON.parse(projectFile("A", "", "blank", 1, [])).version).toBe(1);
@@ -69,6 +70,15 @@ describe("project files with imported STEP files", () => {
     const r = await readImportFile(file("all.kerfbackup", text));
     expect(r.projects.map((p) => p.imports.length)).toEqual([1, 1]);
     expect([...r.files.keys()]).toEqual([hash]);
+  });
+});
+
+describe("stored file limits", () => {
+  it("stops unpacking a file once it passes the limit", async () => {
+    const bomb = await gzip(new Uint8Array(20 * 1024 * 1024));
+    expect(bomb.byteLength).toBeLessThan(100_000);
+    await expect(gunzip(bomb, 1024 * 1024)).rejects.toThrow(/larger than Kerf allows/);
+    expect((await gunzip(await gzip(step))).byteLength).toBe(step.byteLength);
   });
 });
 

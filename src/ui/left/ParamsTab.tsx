@@ -10,7 +10,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { create } from "zustand";
 import { useDesign, setSource } from "../../core/engine";
 import { useView, revealSpan, select } from "../../app/view";
-import { commitSource, useProject } from "../../app/project";
+import { commitSource, endComparison, useProject } from "../../app/project";
 import { setParamValue, toggleParamLock } from "../../core/sourceEdit";
 import type { EvalParam, Model } from "../../core/model";
 import type { CheckItem } from "../../core/checks";
@@ -79,6 +79,8 @@ const local = { name: "", t: 0 };
 function useParamEdit(name: string) {
   const base = useRef<string | null>(null);
   const find = () => {
+    // a "before" comparison is for looking; editing a value goes back to the real design first
+    endComparison();
     const { source, model } = useDesign.getState();
     return { source, cur: model?.params.find((q) => q.name === name) };
   };
@@ -89,6 +91,7 @@ function useParamEdit(name: string) {
   };
   const api = {
     begin() {
+      endComparison();
       base.current = useDesign.getState().source;
       // a release outside the control still records the change
       window.addEventListener("pointerup", () => api.end(), { once: true });
@@ -294,6 +297,14 @@ function ValueControl({ p, edit, unitSuffix, scale }: { p: EvalParam; edit: Edit
   const [typing, setTyping] = useState<string | null>(null);
   const [scrubbing, setScrubbing] = useState(false);
   const drag = useRef<{ x: number; v: number; moved: boolean; last: number; raf: number } | null>(null);
+  // a row that goes away mid-drag (Claude renamed or removed the parameter) must not leave the page unselectable
+  useEffect(
+    () => () => {
+      if (drag.current) cancelAnimationFrame(drag.current.raf);
+      document.body.classList.remove("lp-scrubbing");
+    },
+    [],
+  );
 
   if (typeof p.value === "boolean")
     return <button className={`toggle lp-ptoggle ${p.value ? "on" : ""}`} role="switch" aria-checked={p.value} disabled={p.locked} onClick={() => edit.commit(!p.value)} aria-label={p.name} />;
@@ -388,6 +399,7 @@ function ValueControl({ p, edit, unitSuffix, scale }: { p: EvalParam; edit: Edit
       }}
       onPointerCancel={() => {
         if (drag.current?.moved) {
+          cancelAnimationFrame(drag.current.raf);
           edit.end();
           setScrubbing(false);
           document.body.classList.remove("lp-scrubbing");

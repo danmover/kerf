@@ -1998,6 +1998,11 @@ a:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+.mat-button[aria-disabled="true"] {
+  cursor: default;
+  border-color: var(--line-2);
+  background: var(--bg-2);
+}
 .mat-name {
   display: block;
   font-weight: 600;

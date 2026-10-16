@@ -248,8 +248,10 @@ function ConflictCard() {
 function FixPreviewButton({ index, label, source, apply }: { index: number; label: string; source: () => string; apply: () => void }) {
   const key = `fix:${index}`;
   const showing = useProject((s) => s.preview?.key === key);
+  // while Claude works it edits the real design, so a preview would only flash
+  const busy = useChat((s) => s.busy);
   return (
-    <button className={`btn sm ${showing ? "" : "ghost"}`} aria-pressed={showing} onClick={() => (showing ? endPreview(key) : previewSource({ key, label: `Fix: ${label}`, apply }, source()))}>
+    <button className={`btn sm ${showing ? "" : "ghost"}`} aria-pressed={showing} disabled={busy && !showing} onClick={() => (showing ? endPreview(key) : previewSource({ key, label: `Fix: ${label}`, apply }, source()))}>
       <Icon.Eye size={12} /> {showing ? "Stop" : "Preview"}
     </button>
   );

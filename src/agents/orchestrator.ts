@@ -9,7 +9,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey } from "../persist/vault";
 import { useSettings, type Effort } from "../app/settings";
 import { setSource, useDesign, whenChecked } from "../core/engine";
-import { commitSource, onProjectOpen, useProject } from "../app/project";
+import { commitSource, onProjectOpen, setUndoGuard, useProject } from "../app/project";
 import { viewport } from "../app/viewportApi";
 import { requestCamera } from "../app/view";
 import type { CheckItem } from "../core/checks";
@@ -68,6 +68,9 @@ export const agentModel = () => {
 export function isBuilding() {
   return !!live;
 }
+
+// the live preview is not on the undo stack, so an undo mid-build would make the merge drop the agents' work
+setUndoGuard(() => (live ? "Undo waits for the parallel build. Stop it from its card first if you need to undo now." : null));
 
 // ---------- the lead assistant's tool ----------
 

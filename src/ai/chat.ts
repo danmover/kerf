@@ -22,6 +22,8 @@ import { shrinkImage } from "./review/renders";
 import { isSubstantial } from "./review/gate";
 import { assetBlock } from "../persist/assets";
 import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type BriefData } from "../core/brief";
+import { isBuilding } from "../agents/orchestrator";
+import { toast } from "../app/ui";
 
 /** A file the user attached to a message; it is also kept as a reference in the brief. */
 export interface ChatFile {
@@ -87,6 +89,8 @@ const set = useChat.setState;
 
 let history: BetaMessageParam[] = [];
 let abort: AbortController | null = null;
+/** bumped whenever the chat leaves its project or is cleared, so a loop still finishing leaves the new state alone */
+let gen = 0;
 let lastEditedSource: string | null = null;
 let idn = 0;
 const nid = () => `c${Date.now().toString(36)}${(++idn).toString(36)}`;
@@ -106,7 +110,8 @@ function push(it: ChatItem) {
 // ---------- persistence ----------
 
 export async function loadChat(projectId: string) {
-  abort?.abort();
+  stopLoop();
+  flushPersist();
   const rec = await db.getOne<db.ChatRecord>("chats", projectId).catch(() => undefined);
   history = (rec?.history as BetaMessageParam[]) ?? [];
   const savedPending = (rec as { pending?: ChatState["pendingChoice"] } | undefined)?.pending ?? null;
@@ -122,14 +127,16 @@ export async function loadChat(projectId: string) {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingSave: (() => void) | null = null;
 function persist() {
-  const { projectId } = get();
+  // what is saved is taken now, so a save that lands after the chat moves to another project still writes this one
+  const { projectId, items, pendingChoice, briefSeen } = get();
   if (!projectId) return;
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const { items, pendingChoice, briefSeen } = get();
+  const saved = history.slice();
+  const plan = planSnapshot();
+  pendingSave = () => {
     // keep stored history small: images are dropped, the text around them stays
-    const slimHistory = history.map(stripImages);
+    const slimHistory = saved.map(stripImages);
     const turns = items.filter((it) => it.kind === "turn" && it.shots);
     const keepShots = new Set(turns.slice(-12).map((it) => it.id));
     const marked = items.filter((it) => it.kind === "user" && it.image);
@@ -139,9 +146,43 @@ function persist() {
       .map((it) =>
         it.kind === "tool" && it.image ? { ...it, image: undefined } : it.kind === "review" ? slimReview(it) : it.kind === "turn" && it.shots && !keepShots.has(it.id) ? { ...it, shots: undefined } : it.kind === "user" && it.image && !keepMarks.has(it.id) ? { ...it, image: undefined } : it,
       );
-    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"]; plan: unknown; briefSeen: string | null }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, plan: planSnapshot(), briefSeen, updatedAt: Date.now() }).catch(() => undefined);
-  }, 400);
+    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"]; plan: unknown; briefSeen: string | null }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, plan, briefSeen, updatedAt: Date.now() }).catch(() => undefined);
+  };
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushPersist, 400);
 }
+
+function flushPersist() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  const save = pendingSave;
+  pendingSave = null;
+  save?.();
+}
+
+function dropPendingSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  pendingSave = null;
+}
+
+/** Stop the running loop for good; whatever it was doing no longer reaches this chat. */
+function stopLoop() {
+  if (get().busy) persist();
+  gen++;
+  redirect = false;
+  abort?.abort();
+  abort = null;
+  if (get().busy) set({ busy: false });
+}
+
+// leaving a project stops Claude's work on it
+useProject.subscribe((s, prev) => {
+  const left = prev.current?.id;
+  if (!left || s.current?.id === left || get().projectId !== left) return;
+  stopLoop();
+  flushPersist();
+});
 
 // the plan is saved with the conversation it belongs to
 let planQuiet = false;
@@ -171,7 +212,8 @@ function steering(): { type: "text"; text: string }[] {
 }
 
 export async function clearChat() {
-  abort?.abort();
+  stopLoop();
+  dropPendingSave();
   history = [];
   set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
@@ -181,9 +223,8 @@ export async function clearChat() {
 
 /** Drop the open chat entirely (closing all data, or deleting its project). */
 export function resetChat() {
-  abort?.abort();
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = null;
+  stopLoop();
+  dropPendingSave();
   history = [];
   set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
@@ -205,10 +246,59 @@ function stripImages(m: BetaMessageParam): BetaMessageParam {
   };
 }
 
+// History is append-only (see below), but a long session would otherwise send
+// every render and attachment with each request, and a request has a size and
+// image limit. Past HEAVY_MAX pictures and files, the oldest give way to a note
+// until HEAVY_KEEP remain; the thinking binding drops any thinking this
+// invalidates. Trimming in batches keeps the cached prefix stable in between.
+const HEAVY_MAX = 30;
+const HEAVY_KEEP = 20;
+const HEAVY_BYTES = 18_000_000;
+const DROPPED = "[older image or file dropped to keep the conversation small; an attached reference can be seen again with view_reference]";
+const heavySize = (c: unknown) => (c as { source?: { data?: string } }).source?.data?.length ?? 0;
+
+function capHeavy() {
+  const found: { m: number; b: number; c: number; size: number }[] = [];
+  history.forEach((msg, m) => {
+    if (typeof msg.content === "string") return;
+    msg.content.forEach((b, bi) => {
+      if (b.type === "tool_result" && Array.isArray(b.content)) b.content.forEach((c, ci) => heavy(c) && found.push({ m, b: bi, c: ci, size: heavySize(c) }));
+      else if (heavy(b)) found.push({ m, b: bi, c: -1, size: heavySize(b) });
+    });
+  });
+  if (found.length <= HEAVY_MAX && found.reduce((n, f) => n + f.size, 0) <= HEAVY_BYTES) return;
+  // the newest turn keeps everything it carries; older ones keep their newest pictures while they fit
+  const newest = history.length - 1;
+  const drop = new Map<number, Set<string>>();
+  let kept = 0;
+  let bytes = 0;
+  for (let i = found.length - 1; i >= 0; i--) {
+    const f = found[i];
+    if (f.m === newest || (kept < HEAVY_KEEP && bytes + f.size <= HEAVY_BYTES / 2)) {
+      kept++;
+      bytes += f.size;
+      continue;
+    }
+    if (!drop.has(f.m)) drop.set(f.m, new Set());
+    drop.get(f.m)!.add(`${f.b}:${f.c}`);
+  }
+  for (const [m, keys] of drop) {
+    const msg = history[m];
+    if (typeof msg.content === "string") continue;
+    history[m] = {
+      ...msg,
+      content: msg.content.map((b, bi) => {
+        if (b.type === "tool_result" && Array.isArray(b.content)) return { ...b, content: b.content.map((c, ci) => (keys.has(`${bi}:${ci}`) ? { type: "text" as const, text: DROPPED } : c)) };
+        return keys.has(`${bi}:-1`) ? { type: "text" as const, text: DROPPED } : b;
+      }),
+    };
+  }
+}
+
 /** Saved reviews keep their findings and a small contact sheet, not every full-size render. */
 function slimReview(it: Extract<ChatItem, { kind: "review" }>): ChatItem {
   if (!it.result) return { ...it, progress: undefined };
-  return { ...it, progress: undefined, result: { ...it.result, views: it.result.views.map((v) => ({ ...v, image: "" })), sheet: "" } };
+  return { ...it, progress: undefined, result: { ...it.result, views: it.result.views.map((v) => ({ ...v, image: "" })), sheet: "", source: "" } };
 }
 
 // Earlier turns are never edited once sent (images included): Claude's
@@ -331,13 +421,22 @@ function addReferences(files: ChatFile[]): ChatFile[] {
   return out;
 }
 
+/** base64 characters of attachments one message may carry; a request over about 32 MB fails */
+const MESSAGE_FILE_CHARS = 20_000_000;
+
 async function fileBlocks(files: ChatFile[]): Promise<BetaContentBlockParam[]> {
   const projectId = useProject.getState().current?.id;
   const out: BetaContentBlockParam[] = [];
   if (!projectId) return out;
+  let chars = 0;
   for (const f of files) {
     const block = await assetBlock(projectId, f.asset, f.name);
     if (!block) continue;
+    chars += block.source.data.length;
+    if (chars > MESSAGE_FILE_CHARS) {
+      out.push({ type: "text", text: `(“${f.name}” is attached but not shown here: this message's files pass the size one request can carry.${f.ref ? ` It is saved as reference ${f.ref}; view_reference shows it.` : ""})` });
+      continue;
+    }
     out.push({ type: "text", text: `Attached ${f.kind === "pdf" ? "PDF" : "image"}${f.ref ? `, saved as reference ${f.ref} in the brief` : ""} (“${f.name}”):` });
     out.push(block as BetaContentBlockParam);
   }
@@ -348,6 +447,8 @@ async function fileBlocks(files: ChatFile[]): Promise<BetaContentBlockParam[]> {
 // ---------- the loop ----------
 
 export function stop() {
+  // a stop wins over a pending "apply plan changes now"
+  redirect = false;
   abort?.abort();
 }
 
@@ -360,6 +461,11 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
   const t = text.trim();
   const attached = opts.files ?? [];
   if ((!t && !attached.length) || get().busy) return;
+  // a revision started from a build card is still writing the design; an edit from chat now would be merged away
+  if (isBuilding()) {
+    toast({ kind: "info", title: "The parallel build is still running", detail: "Send this once it finishes, or stop the build from its card." });
+    return;
+  }
   endPreview();
   const pending = get().pendingChoice;
   const files = addReferences(attached);
@@ -470,6 +576,7 @@ function answerText(label: string, option: AskOption, r: ReturnType<typeof recor
 
 export async function retryLast() {
   if (get().busy) return;
+  endPreview();
   // drop a dangling user turn that never got an answer, then resend it
   const last = history[history.length - 1];
   if (last?.role === "user") {
@@ -501,7 +608,10 @@ async function runLoop() {
     persist();
     return;
   }
-  abort = new AbortController();
+  const ac = new AbortController();
+  abort = ac;
+  const g = gen;
+  const stale = () => g !== gen;
   set({ busy: true });
   const startSource = useDesign.getState().source;
   // a picture of the design as it was, for the change card (none if the design moves on first)
@@ -514,7 +624,9 @@ async function runLoop() {
 
   try {
     for (let step = 0; step < settings.maxSteps; step++) {
+      if (stale()) return;
       repairHistory();
+      capHeavy();
       // rolling cache breakpoint on the newest user content
       const msgs = withCacheBreakpoint(history);
       const assistantId = nid();
@@ -546,7 +658,8 @@ async function runLoop() {
       }
       if (betas.length) params.betas = betas;
 
-      const final = await streamOnce(anthropic, params, assistantId, toolItems);
+      const final = await streamOnce(anthropic, params, assistantId, toolItems, ac.signal);
+      if (stale()) return;
       const content = final.content as BetaContentBlock[];
       history.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
 
@@ -566,16 +679,16 @@ async function runLoop() {
         if (cut) history.pop();
         break;
       }
-      if (final.stop_reason === "end_turn" && edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource))) continue;
+      if (final.stop_reason === "end_turn" && edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale))) continue;
       if (final.stop_reason !== "tool_use") break;
 
       const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
       const results: BetaToolResultBlockParam[] = [];
       let ask: { toolUseId: string; outcome: ToolOutcome } | null = null;
       let pausedAfter: string | null = null;
-      let offered = false;
+      let offered: string | null = null;
       for (const u of uses) {
-        if (abort.signal.aborted) break;
+        if (ac.signal.aborted) break;
         if (pausedAfter) {
           // the user asked to review once that step was done: nothing after it runs
           set((s) => ({ items: s.items.filter((i) => !(i.kind === "tool" && i.toolUseId === u.id)) }));
@@ -589,12 +702,16 @@ async function runLoop() {
         if (mirrored) mainActivityStart(itemId, TOOL_TITLES[u.name] ?? u.name);
         // the change card's "before" picture is taken before the first edit lands
         if (!edits && (u.name === "edit_design" || u.name === "write_design" || u.name === "build_subassemblies")) await Promise.race([before, new Promise((r) => setTimeout(r, 4000))]);
+        if (stale()) return;
+        // Claude reads and edits the real design, never one the user is previewing
+        endPreview();
         let outcome: ToolOutcome;
         try {
-          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems) : await runTool(u.name, u.input, { signal: abort.signal, toolUseId: u.id });
+          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems) : await runTool(u.name, u.input, { signal: ac.signal, toolUseId: u.id });
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
+        if (stale()) return;
         if (mirrored) mainActivityEnd(itemId, outcome.isError ? "error" : "done", outcome.ask ? "Asked you" : outcome.card.title);
         else if (u.name === "update_plan") pausedAfter = takePauseHit();
         if (outcome.ask) {
@@ -604,8 +721,8 @@ async function runLoop() {
         }
         if (outcome.suggest) {
           set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
-          push({ kind: "suggest", id: nid(), options: outcome.suggest });
-          offered = true;
+          offered = nid();
+          push({ kind: "suggest", id: offered, options: outcome.suggest });
           results.push({ type: "tool_result", tool_use_id: u.id, content: outcome.content as BetaToolResultBlockParam["content"] });
           continue;
         }
@@ -622,7 +739,7 @@ async function runLoop() {
         );
         results.push({ type: "tool_result", tool_use_id: u.id, content: outcome.content as BetaToolResultBlockParam["content"], is_error: outcome.isError || undefined });
       }
-      if (abort.signal.aborted) {
+      if (ac.signal.aborted) {
         // every tool_use needs a result before the next request
         const why = redirect ? "Not run: the user interrupted to change the plan; their changes follow." : "Stopped by the user before this ran.";
         for (const u of uses) if (!results.some((r) => r.tool_use_id === u.id) && u.id !== ask?.toolUseId) results.push({ type: "tool_result", tool_use_id: u.id, content: why, is_error: true });
@@ -646,13 +763,21 @@ async function runLoop() {
         break;
       }
       // offering next steps closes the turn; the results wait for the user's next message
-      if (offered && uses.every((u) => u.name === "suggest_next_steps")) break;
+      if (offered && uses.every((u) => u.name === "suggest_next_steps")) {
+        // this is where the turn ends, so Claude's changes are reviewed here; the chips go if Claude has more to do
+        const more = edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale));
+        if (!more) break;
+        const chips = offered;
+        set((st) => ({ items: st.items.filter((i) => i.id !== chips) }));
+        continue;
+      }
       if (step === settings.maxSteps - 1) {
         push({ kind: "notice", id: nid(), level: "info", title: `Paused after ${settings.maxSteps} steps`, detail: "Say “continue” to let Claude keep going. You can raise the limit in Settings." });
         history.push({ role: "assistant", content: [{ type: "text", text: "(Paused at the step limit.)" }] });
       }
     }
   } catch (e) {
+    if (stale()) return;
     if (!(redirect && isAbort(e))) handleError(e);
     // leave history ending with the user turn so retry can resend it
     if (history.length && history[history.length - 1].role === "assistant") {
@@ -661,6 +786,15 @@ async function runLoop() {
       if (hasTool) history.pop();
     }
   } finally {
+    if (!stale()) finishLoop();
+  }
+  if (stale()) return;
+  if (redirect) {
+    redirect = false;
+    await resumeWithSteering();
+  }
+
+  function finishLoop() {
     set((s) => ({ busy: false, items: s.items.map((it) => (it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it.kind === "tool" && it.status === "running" ? { ...it, status: "error" as const, detail: "Stopped" } : it)) }));
     const after = useDesign.getState().source;
     if (edits && after !== startSource) {
@@ -674,13 +808,9 @@ async function runLoop() {
     }
     // Claude has now seen the brief as it stands
     set({ briefSeen: briefKey(currentBrief()) });
-    abort = null;
+    if (abort === ac) abort = null;
     settleActivity();
     persist();
-  }
-  if (redirect) {
-    redirect = false;
-    await resumeWithSteering();
   }
 }
 
@@ -716,7 +846,7 @@ async function resumeWithSteering() {
 }
 
 /** Review Claude's own changes when it is about to finish without having had them reviewed. Returns true when Claude should continue. */
-async function autoReview(session: ReviewSession, reviewItems: string[], startSource: string): Promise<boolean> {
+async function autoReview(session: ReviewSession, reviewItems: string[], startSource: string, stale: () => boolean): Promise<boolean> {
   const mode = useSettings.getState().selfReview;
   if (mode === "off" || !session.canReview || !getApiKey()) return false;
   const now = useDesign.getState().source;
@@ -728,9 +858,13 @@ async function autoReview(session: ReviewSession, reviewItems: string[], startSo
   const itemId = nid();
   push({ kind: "review", id: itemId, auto: true, round: session.round + 1, status: "running", progress: { stage: "waiting", views: [] } });
   const r = await reviewInto(itemId, session, reviewItems, true);
-  if ("error" in r) return false;
+  if (stale() || "error" in r) return false;
   const text = designerReport(r, session.roundsLeft, true);
-  history.push({ role: "user", content: reviewContent(r, text) as BetaContentBlockParam[] });
+  // after a suggest_next_steps turn the history ends with its results, so the review joins that user turn
+  const content = reviewContent(r, text) as BetaContentBlockParam[];
+  const last = history[history.length - 1];
+  if (last?.role === "user" && typeof last.content !== "string") history[history.length - 1] = { ...last, content: [...last.content, ...content] };
+  else history.push({ role: "user", content });
   persist();
   // nothing to act on: the reply stands, and Claude knows about the review next turn
   return r.verdict !== "pass";
@@ -754,10 +888,10 @@ async function reviewTool(input: unknown, itemId: string, session: ReviewSession
   return { content: reviewContent(r, text), card: { title: "Reviewed the design" } };
 }
 
-async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>, assistantId: string, toolItems: Map<number, string>) {
+async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>, assistantId: string, toolItems: Map<number, string>, signal: AbortSignal) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const stream = anthropic.beta.messages.stream(params as never, { signal: abort!.signal });
+      const stream = anthropic.beta.messages.stream(params as never, { signal });
       stream.on("streamEvent", (ev) => {
         if (ev.type === "content_block_start") {
           const b = ev.content_block as { type: string; id?: string; name?: string };
@@ -824,6 +958,13 @@ async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>,
 function repairHistory() {
   for (let i = 0; i < history.length; i++) {
     const m = history[i];
+    // a tool result needs its tool_use in the turn just before; one without it (from a turn that was cut off) fails every request
+    if (m.role === "user" && typeof m.content !== "string" && m.content.some((b) => b.type === "tool_result")) {
+      const prev = history[i - 1];
+      const ids = new Set(prev?.role === "assistant" && typeof prev.content !== "string" ? prev.content.filter((b) => b.type === "tool_use").map((b) => (b as { id: string }).id) : []);
+      const content = m.content.filter((b) => b.type !== "tool_result" || ids.has((b as BetaToolResultBlockParam).tool_use_id));
+      if (content.length !== m.content.length) history[i] = { ...m, content: content.length ? content : [{ type: "text", text: "(An interrupted step was dropped here.)" }] };
+    }
     if (m.role !== "assistant" || typeof m.content === "string") continue;
     const uses = m.content.filter((b) => b.type === "tool_use") as { id: string }[];
     if (!uses.length) continue;
@@ -875,6 +1016,11 @@ function handleError(e: unknown) {
   }
   if (e instanceof Anthropic.APIError) {
     const status = e.status;
+    // a file the API cannot take (too large, damaged, a protected PDF) would fail every retry: drop it from the turn
+    if ((status === 400 || status === 413) && /image|document|pdf|too large|request_too_large|media/i.test(e.message) && dropLastFiles()) {
+      push({ kind: "notice", id: nid(), level: "warn", title: "Claude could not read an attached file", detail: `${cleanApiMessage(e.message)} The file was taken out of this message; Retry sends the rest.`, action: "retry" });
+      return;
+    }
     const overloaded = status === 529 || /overloaded/i.test(e.message);
     push({
       kind: "notice",
@@ -887,6 +1033,15 @@ function handleError(e: unknown) {
     return;
   }
   push({ kind: "notice", id: nid(), level: "error", title: "Something went wrong", detail: e instanceof Error ? e.message : String(e), action: "retry" });
+}
+
+/** Replace pictures and files in the newest user turn with a note. Returns false when it had none. */
+function dropLastFiles() {
+  const i = history.length - 1;
+  const last = history[i];
+  if (!last || last.role !== "user" || typeof last.content === "string" || !last.content.some((b) => heavy(b) || (b.type === "tool_result" && Array.isArray(b.content) && b.content.some(heavy)))) return false;
+  history[i] = { ...last, content: last.content.map((b) => (heavy(b) ? { type: "text" as const, text: FILE_NOTE } : b.type === "tool_result" && Array.isArray(b.content) ? { ...b, content: b.content.map((c) => (heavy(c) ? OMITTED : c)) } : b)) };
+  return true;
 }
 
 function cleanApiMessage(m: string) {

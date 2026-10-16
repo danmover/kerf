@@ -232,7 +232,7 @@ export function Viewport() {
                     <span className="field-label" style={{ margin: 0 }}>
                       Explode
                     </span>
-                    <button className="btn sm ghost" onClick={() => useView.setState((s) => ({ assemblyRequest: s.assemblyRequest + 1 }))} data-tip="Watch the parts go together in design order (A)">
+                    <button className="btn sm ghost" onClick={() => useView.setState((s) => ({ explode: 0, assemblyRequest: s.assemblyRequest + 1 }))} data-tip="Watch the parts go together in design order (A)">
                       <Icon.Assemble size={13} /> Play assembly
                     </button>
                   </div>

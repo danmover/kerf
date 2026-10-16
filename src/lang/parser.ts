@@ -37,7 +37,13 @@ export function parse(src: string): { program: Program; diagnostics: Diagnostic[
     throw e;
   }
   const p = new Parser(tokens);
-  return p.program();
+  try {
+    return p.program();
+  } catch (e) {
+    // deeply nested source overflows the recursive parser; report it instead of failing to open the design
+    if (e instanceof RangeError) return { program: { stmts: [] }, diagnostics: [{ message: "This source is nested too deeply to read. Flatten the deepest brackets or blocks.", start: 0, end: Math.min(src.length, 1), severity: "error" }] };
+    throw e;
+  }
 }
 
 class Parser {

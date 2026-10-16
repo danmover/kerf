@@ -168,7 +168,8 @@ function useShortcuts() {
         case "t":
           return useView.setState({ turntable: !v.turntable });
         case "a":
-          return useView.setState({ explode: v.explode > 0 ? v.explode : 0.5, assemblyRequest: v.assemblyRequest + 1 });
+          // the parts fly in from an exploded start and end assembled
+          return useView.setState({ explode: 0, assemblyRequest: v.assemblyRequest + 1 });
         case "l": {
           const ids = LIGHTING_IDS;
           const cur = useSettings.getState().lighting;

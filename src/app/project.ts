@@ -228,9 +228,21 @@ function commitTyping() {
   adoptDesignName(model);
 }
 
+/** Something that undo and redo must wait for, such as a parallel build writing the design; returns why. */
+let undoGuard: () => string | null = () => null;
+export function setUndoGuard(fn: () => string | null) {
+  undoGuard = fn;
+}
+function undoBlocked() {
+  const why = undoGuard();
+  if (why) toast({ kind: "info", title: why });
+  return !!why;
+}
+
 export function undo() {
   // undo while previewing just ends the preview
   if (previewBase !== null) return endPreview(), true;
+  if (undoBlocked()) return false;
   if (typingTimer) commitTyping();
   const { undo: u } = get();
   if (!u.length) return false;
@@ -245,6 +257,7 @@ export function undo() {
 
 export function redo() {
   if (previewBase !== null) return endPreview(), true;
+  if (undoBlocked()) return false;
   const { redo: r } = get();
   if (!r.length) return false;
   const next = r[r.length - 1];
@@ -282,6 +295,12 @@ export function endPreview(key?: string) {
   previewBase = null;
   set({ preview: null });
   setSource(base);
+}
+
+/** End a preview that is only for looking (comparing with before), so an edit builds on the real design. */
+export function endComparison() {
+  const p = get().preview;
+  if (p && !p.apply && !p.quiet) endPreview();
 }
 
 /** The real source, whether or not a preview is showing. */
