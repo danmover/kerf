@@ -4,6 +4,8 @@ import { kernel } from "../kernel/client";
 import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
 import { buildPack } from "../machine/pack";
+import { boardSpecs } from "../machine/boards";
+import { routeFor } from "../machine/pcb/runtime";
 import { zip } from "../machine/zip";
 import { exportProject, useProject } from "./project";
 import { useView } from "./view";
@@ -79,7 +81,12 @@ async function makeBuildPack() {
       }
     }
     const name = baseName();
-    const files = buildPack(model, report, { name, step, meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
+    // the board runtime's finished routes; a board still routing is routed by the pack itself (about a second)
+    const boards = boardSpecs(model.machine).flatMap(({ spec }) => {
+      const r = routeFor(spec);
+      return r.status === "done" ? [r.board] : [];
+    });
+    const files = buildPack(model, report, { name, step, boards, meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
     const folder = `${packName(name)} build pack`;
     const data = zip(files.map((f) => ({ path: `${folder}/${f.path}`, data: f.data })));
     download(data, `${folder}.zip`, "application/zip");
