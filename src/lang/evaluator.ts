@@ -12,7 +12,7 @@ import { meshPhase } from "../library/gears";
 import { suggest } from "./suggest";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
 import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
-import { SKETCH_FNS } from "../sketch/fns";
+import { sketchFns } from "../sketch/fns";
 import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 
@@ -126,7 +126,12 @@ class Evaluator {
     for (const [k, v] of Object.entries(CONSTANTS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(threadConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(SHAPE_FNS)) this.builtins.set(k, v);
-    for (const [k, v] of Object.entries(SKETCH_FNS)) this.builtins.set(k, v);
+    // after the other shape functions: extrude() and revolve() of a sketch, anything else falls through
+    const registered = (name: string) => {
+      const f = this.builtins.get(name);
+      return f instanceof Fn ? f : undefined;
+    };
+    for (const [k, v] of Object.entries(sketchFns(registered))) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(planeConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(MATH_FNS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);

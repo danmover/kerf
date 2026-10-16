@@ -10,6 +10,8 @@ import { firstConflict, solveSketch, type SketchDef } from "../src/sketch/solver
 import { buildProfile } from "../src/sketch/regions";
 import type { EvalSketch } from "../src/sketch/types";
 import { languageReference } from "../src/ai/reference";
+import { sketchFns } from "../src/sketch/fns";
+import { Fn, type CallCtx } from "../src/lang/values";
 import { CONSTRAINTS } from "../src/sketch/evaluate";
 
 const RECT = `
@@ -329,6 +331,17 @@ describe("sketches in a design", () => {
   it("refuses to revolve a profile that crosses its axis", () => {
     const m = evaluate(`sketch s {\n  circle c = (0, 0), r: 5\n}\npart p { body revolve(s, axis: s.y_axis) }`);
     expect(m.diagnostics.some((d) => /crosses the axis/.test(d.message))).toBe(true);
+  });
+
+  it("passes extrude and revolve of anything but a sketch to the functions registered before", () => {
+    const seen: unknown[] = [];
+    const other = new Fn("extrude", (pos) => (seen.push(pos[0]), 1), "extrude(profile, h) — another profile type.");
+    const fns = sketchFns((name) => (name === "extrude" ? other : undefined));
+    const ctx = { error: (m: string): never => { throw new Error(m); } } as unknown as CallCtx;
+    expect(fns.extrude.call(["not a sketch", 5], {}, ctx)).toBe(1);
+    expect(seen).toEqual(["not a sketch"]);
+    expect(fns.extrude.doc).toMatch(/^extrude\(profile, h\) — another profile type\. Or extrude\(sketch/);
+    expect(() => sketchFns(() => undefined).extrude.call(["not a sketch", 5], {}, ctx)).toThrow(/give it a sketch|should be a sketch/);
   });
 
   it("keeps the point-list revolve working", () => {
