@@ -68,7 +68,7 @@
   overflow-y: auto;
 }
 
-.phone-tabs {.phone-tabs {
+.phone-tabs {
   display: flex;
   flex: none;
   gap: 2px;
