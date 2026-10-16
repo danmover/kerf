@@ -61,7 +61,14 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
       const partners = visible.filter((q) => q.gear && (q.gear.meshWith === p.name || g.meshWith === q.name)).map((q) => q.id);
       return { id: p.id, at: g.center, axis: g.axis, d: tipDiameter(g.m, g.z) + 0.2, length: g.width, exclude: partners };
     });
-  return { placed, queries: model.geoQueries, access, envelopes, ignorePairs: [] };
+  // leads of parts soldered to a Kerf circuit board pass through its (undrawn) holes
+  const ignorePairs: [string, string][] = [];
+  const onBoard = new Map((model.machine?.components ?? []).filter((c) => c.pcb).map((c) => [c.name, c.pcb!.board]));
+  for (const p of visible) {
+    const board = onBoard.get(p.name);
+    if (board && /\.(leads|pins|legs|headerpins)$/.test(p.id)) ignorePairs.push([p.id, board]);
+  }
+  return { placed, queries: model.geoQueries, access, envelopes, ignorePairs };
 }
 
 /** Pure-JS gear checks: module match, centre distance, face overlap, tooth clearance through a rotation. */

@@ -589,9 +589,9 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         { t: "box", w: 2.5, d: 0.4, h: 6, at: [bw / 4, 0, -pt - bl - 5.5], r: 0 },
       ];
       const solids = [
-        solid("", p.name, { base: { t: "box", w: bw, d: bdd, h: bl, at: [0, 0, -pt - bl], r: 0.5 }, ops: [] }, g.color2 ?? DARK, "PBT"),
-        solid("front", `${p.name} bushing and nut`, front, g.color ?? STEEL, "Nickel-plated brass"),
-        solid("lugs", `${p.name} solder lugs`, { base: { t: "union", shapes: lugs }, ops: [] }, "#c9ced6", "Tin"),
+        solid("", p.name, { base: { t: "box", w: bw, d: bdd, h: bl, at: [0, 0, -pt - bl], r: 0.5 }, ops: [] }, g.color2 ?? DARK, "Nylon"),
+        solid("front", `${p.name} bushing and nut`, front, g.color ?? STEEL, "Stainless 304"),
+        solid("lugs", `${p.name} solder lugs`, { base: { t: "union", shapes: lugs }, ops: [] }, "#c9ced6", "Stainless 304"),
       ];
       if (lever) solids.push(solid("lever", `${p.name} lever`, { base: { t: "cone", d1: num(d, "lever_d", 2.6), d2: num(d, "lever_d", 2.6) * 0.75, h: lever, at: [0, 0, nt], dir: ZP }, ops: [] }, STEEL, "Stainless 304"));
       return {
@@ -657,9 +657,9 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         placement: "axis",
         solids: [
           solid("", p.name, frame, g.color2 ?? "#3a3e45", "Steel"),
-          solid("cone", `${p.name} cone`, cone, g.color ?? "#2a2623", "Paper"),
-          solid("cap", `${p.name} dust cap`, cap, "#1d1b19", "Paper"),
-          solid("magnet", `${p.name} magnet`, magnet, "#4a4e55", "Ferrite"),
+          solid("cone", `${p.name} cone`, cone, g.color ?? "#2a2623", "Silicone"),
+          solid("cap", `${p.name} dust cap`, cap, "#1d1b19", "Silicone"),
+          solid("magnet", `${p.name} magnet`, magnet, "#4a4e55", "Steel"),
           solid("tabs", `${p.name} terminals`, { base: { t: "union", shapes: tabs }, ops: [] }, "#c9a24b", "Brass"),
         ],
         fields: {
@@ -682,7 +682,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         base: { t: "cyl", d: sd, h: sh, at: Z0, dir: ZP },
         ops: [
           { op: "add", shape: { t: "cone", d1: kd, d2: kd * 0.9, h: h - sh, at: [0, 0, sh - 0.01], dir: ZP } },
-          { op: "cut", shape: { t: "cyl", d: 6, h: 11, at: [0, 0, -1], dir: ZP } },
+          { op: "cut", shape: { t: "cyl", d: 6.2, h: 11, at: [0, 0, -1], dir: ZP } },
         ],
       };
       const pointer: ShapeRecipe[] = [
@@ -691,8 +691,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       ];
       return {
         placement: "axis",
-        solids: [solid("", p.name, body, g.color ?? BLACK, "ABS"), solid("pointer", `${p.name} pointer`, { base: { t: "union", shapes: pointer }, ops: [] }, g.color2 ?? "#f2f2f2", "Paint", true)],
-        fields: { scalars: { d: kd, skirt_d: sd, h }, points: { at: Z0, top: [0, 0, h] }, dirs: { axis: ZP } },
+        solids: [solid("", p.name, body, g.color ?? BLACK, "ABS"), solid("pointer", `${p.name} pointer`, { base: { t: "union", shapes: pointer }, ops: [] }, g.color2 ?? "#f2f2f2", "PC", true)],
+        fields: { scalars: { d: kd, skirt_d: sd, h, bore: 10 }, points: { at: Z0, top: [0, 0, h] }, dirs: { axis: ZP } },
       };
     }
 
@@ -706,7 +706,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         placement: "free",
         solids: [
           solid("", p.name, { base: { t: "box", w, d: dd, h, at: Z0, r: 5 }, ops: [{ op: "cut", shape: { t: "box", w: w * 0.6, d: dd * 0.6, h: 1, at: [0, 0, h - 0.5], r: 2 } }] }, g.color ?? BLACK, "PC"),
-          solid("cord", `${p.name} cord`, { base: { t: "cyl", d: 4, h: 60, at: [w / 2 - 1, 0, h / 2], dir: XP }, ops: [{ op: "add", shape: { t: "cone", d1: 9, d2: 4.5, h: 12, at: [w / 2 - 1, 0, h / 2], dir: XP } }] }, BLACK, "PVC"),
+          solid("cord", `${p.name} cord`, { base: { t: "cyl", d: 4, h: 60, at: [w / 2 - 1, 0, h / 2], dir: XP }, ops: [{ op: "add", shape: { t: "cone", d1: 9, d2: 4.5, h: 12, at: [w / 2 - 1, 0, h / 2], dir: XP } }] }, BLACK, "Silicone"),
         ],
         fields: { scalars: { w, d: dd, h }, points: { top: [0, 0, h], bottom: Z0, cord_end: [w / 2 + 59, 0, h / 2] } },
       };

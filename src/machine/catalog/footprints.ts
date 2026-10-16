@@ -202,14 +202,14 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
       const isRes = part.kind === "resistor";
       // metal film resistors have fatter end caps
       if (isRes) for (const x0 of [-L / 2, L / 2 - 1.5]) body.push({ t: "cyl", d: s.body_d * 1.12, h: 1.5, at: [x0, 0, zc], dir: XP });
-      out.push(solid("", name, body, s.color, isRes ? "Epoxy" : "Glass"));
+      out.push(solid("", name, body, s.color, isRes ? "ABS" : "Acrylic"));
       const lead: ShapeRecipe[] = [];
       for (const x of [-half, half]) {
         lead.push(leadUp(x, 0, t, zc));
         const x1 = x < 0 ? -L / 2 : L / 2;
         lead.push({ t: "cyl", d: 0.6, h: Math.abs(x1 - x) + 0.3, at: [Math.min(x, x1) - 0.15, 0, zc], dir: XP });
       }
-      out.push(solid("leads", `${name} leads`, lead, TIN, "Tin"));
+      out.push(solid("leads", `${name} leads`, lead, TIN, "Stainless 304"));
       if (isRes && v.value) {
         // colour bands, bunched toward the first pin, tolerance band apart at the other end
         const bands = resistorBands(v.value);
@@ -223,11 +223,11 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
         let i = 0;
         for (const [hex, e] of byColor) {
           const d = (e.xs[0] === xs[0] || e.xs[0] === xs[4]) ? s.body_d * 1.14 : s.body_d + 0.08;
-          out.push(solid(`band${i++}`, `${name} ${e.name} band`, e.xs.map((x) => ({ t: "cyl", d, h: 0.45, at: [x - 0.225, 0, zc], dir: XP }) as ShapeRecipe), hex, "Paint"));
+          out.push(solid(`band${i++}`, `${name} ${e.name} band`, e.xs.map((x) => ({ t: "cyl", d, h: 0.45, at: [x - 0.225, 0, zc], dir: XP }) as ShapeRecipe), hex, "PC"));
         }
       } else if (s.band) {
         const sign = s.band === s.pins[0] ? -1 : 1;
-        out.push(solid("band", `${name} cathode band`, [{ t: "cyl", d: s.body_d + 0.06, h: 0.6, at: [sign * (L / 2 - 0.4) - 0.3, 0, zc], dir: XP }], s.band_color ?? "#d9d9d9", "Paint"));
+        out.push(solid("band", `${name} cathode band`, [{ t: "cyl", d: s.body_d + 0.06, h: 0.6, at: [sign * (L / 2 - 0.4) - 0.3, 0, zc], dir: XP }], s.band_color ?? "#d9d9d9", "PC"));
       }
       fields.scalars!.body_l = L;
       break;
@@ -235,12 +235,12 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
     case "radial": {
       const z = radialSize(s, v);
       const lift = 0.5;
-      out.push(solid("", name, [{ t: "cyl", d: z.d, h: z.h, at: [0, 0, lift], dir: ZP }], s.color, "PVC sleeve"));
-      out.push(solid("top", `${name} can top`, [{ t: "cyl", d: z.d - 0.5, h: 0.2, at: [0, 0, lift + z.h], dir: ZP }], STEEL, "Aluminum 1100"));
+      out.push(solid("", name, [{ t: "cyl", d: z.d, h: z.h, at: [0, 0, lift], dir: ZP }], s.color, "PC"));
+      out.push(solid("top", `${name} can top`, [{ t: "cyl", d: z.d - 0.5, h: 0.2, at: [0, 0, lift + z.h], dir: ZP }], STEEL, "Aluminum 6061"));
       // the minus stripe on the sleeve
       const minusX = s.plus === s.pins[0] ? 1 : -1;
-      out.push(solid("stripe", `${name} minus stripe`, [{ t: "box", w: 0.3, d: z.d * 0.38, h: z.h * 0.92, at: [minusX * (z.d / 2 - 0.1), 0, lift + z.h * 0.04], r: 0 }], "#c8ced8", "Paint"));
-      out.push(solid("leads", `${name} leads`, leads(lift), TIN, "Tin"));
+      out.push(solid("stripe", `${name} minus stripe`, [{ t: "box", w: 0.3, d: z.d * 0.38, h: z.h * 0.92, at: [minusX * (z.d / 2 - 0.1), 0, lift + z.h * 0.04], r: 0 }], "#c8ced8", "PC"));
+      out.push(solid("leads", `${name} leads`, leads(lift), TIN, "Stainless 304"));
       fields.scalars!.d = z.d;
       fields.scalars!.h = z.h;
       break;
@@ -249,8 +249,8 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
       const z = boxSize(s, v);
       const lift = 0.3;
       const ceramic = v.capType === "ceramic" || part.kind !== "capacitor";
-      out.push(solid("", name, [{ t: "box", w: z.w, d: z.t, h: z.h, at: [0, 0, lift], r: ceramic ? Math.min(z.t / 2 - 0.05, 1.2) : 0.4 }], s.color, ceramic ? "Ceramic" : "Epoxy"));
-      out.push(solid("leads", `${name} leads`, leads(lift + 0.5, 0.5), TIN, "Tin"));
+      out.push(solid("", name, [{ t: "box", w: z.w, d: z.t, h: z.h, at: [0, 0, lift], r: ceramic ? Math.min(z.t / 2 - 0.05, 1.2) : 0.4 }], s.color, ceramic ? "ABS" : "ABS"));
+      out.push(solid("leads", `${name} leads`, leads(lift + 0.5, 0.5), TIN, "Stainless 304"));
       break;
     }
     case "dip": {
@@ -264,7 +264,7 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
           suffix: "socket",
           label: `${name} socket`,
           color: "#202329",
-          material: "PBT",
+          material: "Nylon",
           recipe: { base: { t: "box", w: sw, d: sl, h: 3.4, at: [0, 0, 0], r: 0.2 }, ops: [{ op: "cut", shape: { t: "box", w: s.row - 3.4, d: sl - 3, h: 5, at: [0, 0, -1], r: 0 } }] },
         });
       }
@@ -272,7 +272,7 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
         suffix: "",
         label: name,
         color: BLACK,
-        material: "Epoxy",
+        material: "ABS",
         recipe: { base: { t: "box", w: 6.35, d: len + 0.15, h: 3.3, at: [0, 0, chipZ], r: 0 }, ops: [{ op: "cut", shape: { t: "cyl", d: 1.6, h: 1.4, at: [0, len / 2 + 0.07, chipZ + 2.1], dir: ZP } }] },
       });
       const legs: ShapeRecipe[] = [];
@@ -281,7 +281,7 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
         legs.push(flatLead(x, y, t, chipZ + 1.2, 0.3, 0.5));
         legs.push({ t: "box", w: Math.abs(x) - 3.175 + 0.1, d: 0.5, h: 0.3, at: [Math.sign(x) * (3.175 + (Math.abs(x) - 3.175) / 2), y, chipZ + 1.2], r: 0 });
       }
-      out.push(solid("legs", `${name} pins`, legs, TIN, "Tin"));
+      out.push(solid("legs", `${name} pins`, legs, TIN, "Stainless 304"));
       break;
     }
     case "inline": {
@@ -290,7 +290,7 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
       const xs = s.pins.map((_, k) => x0 + k * s.pitch);
       if (s.style === "to220") {
         const L = TO220_BODY.lift;
-        out.push(solid("", name, [{ t: "box", w: 10, d: TO220_BODY.tab - TO220_BODY.y0, h: 9.2, at: [0, (TO220_BODY.y0 + TO220_BODY.tab) / 2, L], r: 0 }], BLACK, "Epoxy"));
+        out.push(solid("", name, [{ t: "box", w: 10, d: TO220_BODY.tab - TO220_BODY.y0, h: 9.2, at: [0, (TO220_BODY.y0 + TO220_BODY.tab) / 2, L], r: 0 }], BLACK, "ABS"));
         out.push({
           suffix: "tab",
           label: `${name} tab`,
@@ -298,11 +298,11 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
           material: "Copper",
           recipe: { base: { t: "box", w: 10.2, d: TO220_BODY.y1 - TO220_BODY.tab, h: 15.9, at: [0, (TO220_BODY.tab + TO220_BODY.y1) / 2, L], r: 0 }, ops: [{ op: "cut", shape: { t: "cyl", d: 3.7, h: 4, at: [0, TO220_BODY.tab - 1, L + 15.9 - 2.8], dir: YP } }] },
         });
-        out.push(solid("leads", `${name} leads`, xs.map((x) => flatLead(x, 0, t, L + 0.5, 0.8, 0.5)), TIN, "Tin"));
+        out.push(solid("leads", `${name} leads`, xs.map((x) => flatLead(x, 0, t, L + 0.5, 0.8, 0.5)), TIN, "Stainless 304"));
         fields.points!.tab_hole = [0, TO220_BODY.y1, L + 15.9 - 2.8];
       } else if (s.style === "to92") {
-        out.push({ suffix: "", label: name, color: BLACK, material: "Epoxy", recipe: { base: { t: "cyl", d: 4.8, h: 4.6, at: [0, 0.6, 3], dir: ZP }, ops: [{ op: "cut", shape: { t: "box", w: 6, d: 3, h: 6, at: [0, -2.3, 2.5], r: 0 } }] } });
-        out.push(solid("leads", `${name} leads`, xs.map((x) => flatLead(x, 0, t, 3.2, 0.45, 0.4)), TIN, "Tin"));
+        out.push({ suffix: "", label: name, color: BLACK, material: "ABS", recipe: { base: { t: "cyl", d: 4.8, h: 4.6, at: [0, 0.6, 3], dir: ZP }, ops: [{ op: "cut", shape: { t: "box", w: 6, d: 3, h: 6, at: [0, -2.3, 2.5], r: 0 } }] } });
+        out.push(solid("leads", `${name} leads`, xs.map((x) => flatLead(x, 0, t, 3.2, 0.45, 0.4)), TIN, "Stainless 304"));
       } else if (s.style === "terminal") {
         const w = n * s.pitch;
         const ops: PartRecipe["ops"] = [];
@@ -312,12 +312,12 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
         }
         out.push({ suffix: "", label: name, color: part.geom.color ?? "#2c6fd1", material: "Nylon", recipe: { base: { t: "box", w: w - 0.1, d: 7.6, h: 10, at: [0, 0, 0], r: 0.3 }, ops } });
         out.push(solid("screws", `${name} screws`, xs.map((x) => ({ t: "cyl", d: 3.4, h: 2.6, at: [x, 0.6, 10 - 3.2], dir: ZP }) as ShapeRecipe), STEEL, "Steel"));
-        out.push(solid("leads", `${name} leads`, xs.map((x) => flatLead(x, 0, t, 1, 1.0, 0.6)), TIN, "Tin"));
+        out.push(solid("leads", `${name} leads`, xs.map((x) => flatLead(x, 0, t, 1, 1.0, 0.6)), TIN, "Stainless 304"));
         fields.points!.entry = [0, -3.8, 3.8];
       } else {
         const female = s.style === "header_f";
         const h = female ? 8.5 : 2.5;
-        out.push({ suffix: "", label: name, color: BLACK, material: "PBT", recipe: { base: { t: "box", w: n * 2.54, d: 2.54, h, at: [0, 0, 0], r: 0 }, ops: female ? xs.map((x) => ({ op: "cut" as const, shape: { t: "box" as const, w: 1, d: 1, h: 3, at: [x, 0, h - 2.5] as V3, r: 0 } })) : [] } });
+        out.push({ suffix: "", label: name, color: BLACK, material: "Nylon", recipe: { base: { t: "box", w: n * 2.54, d: 2.54, h, at: [0, 0, 0], r: 0 }, ops: female ? xs.map((x) => ({ op: "cut" as const, shape: { t: "box" as const, w: 1, d: 1, h: 3, at: [x, 0, h - 2.5] as V3, r: 0 } })) : [] } });
         out.push(solid("pins", `${name} pins`, xs.map((x) => flatLead(x, 0, t, female ? 1 : 8.5, 0.64, 0.64)), GOLD, "Brass"));
       }
       break;
@@ -326,13 +326,13 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
       const P = POT9;
       const bw = P.body.x1 - P.body.x0;
       const bc = (P.body.x0 + P.body.x1) / 2;
-      out.push(solid("", name, [{ t: "box", w: bw, d: P.body.y1 - P.body.y0, h: 2.8, at: [bc, 0, 0], r: 0 }], "#23272e", "PBT"));
+      out.push(solid("", name, [{ t: "box", w: bw, d: P.body.y1 - P.body.y0, h: 2.8, at: [bc, 0, 0], r: 0 }], "#23272e", "Nylon"));
       out.push(solid("case", `${name} case`, [{ t: "box", w: bw, d: P.body.y1 - P.body.y0, h: P.body_h - 2.8, at: [bc, 0, 2.8], r: 0 }, { t: "cyl", d: P.bush_d, h: P.bush_l, at: [0, 0, P.body_h], dir: ZP }], STEEL, "Steel"));
       out.push({ suffix: "shaft", label: `${name} shaft`, color: "#d4d8de", material: "Aluminum 6061", moving: true, recipe: { base: { t: "cyl", d: P.shaft_d, h: P.shaft_l, at: [0, 0, P.body_h + P.bush_l], dir: ZP }, ops: [{ op: "cut", shape: { t: "box", w: 0.8, d: P.shaft_d + 1, h: 8, at: [0, 0, P.body_h + P.bush_l + P.shaft_l - 7.9], r: 0 } }] } });
       const pins: ShapeRecipe[] = Object.values(P.pins).map(([x, y]) => flatLead(x, y, t, 1.2, 0.8, 0.4));
       for (const [x, y] of P.pins ? Object.values(P.pins) : []) pins.push({ t: "box", w: Math.abs(x - P.body.x0) + 0.4, d: 0.8, h: 0.4, at: [(x + P.body.x0) / 2, y, 0.9], r: 0 });
       for (const [x, y] of P.tabs) pins.push(flatLead(x, y, t, 2.8, 1.6, 0.5));
-      out.push(solid("pins", `${name} pins`, pins, TIN, "Tin"));
+      out.push(solid("pins", `${name} pins`, pins, TIN, "Stainless 304"));
       fields.points = {
         ...fields.points,
         face: [0, 0, P.body_h],
@@ -358,7 +358,7 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
           strips.push({ t: "box", w: hi - lo, d: 2.54, h: s.lift > 4 ? s.lift : 2.5, at: [(lo + hi) / 2, y, 0], r: 0 });
           for (const x of xs) pins.push(flatLead(x, y, t, s.lift + (g.dims.t ?? 1.6) + (s.lift > 4 ? 0 : 0.8), 0.64, 0.64));
         }
-        out.push(solid("header", `${name} header`, strips, BLACK, "PBT"));
+        out.push(solid("header", `${name} header`, strips, BLACK, "Nylon"));
         out.push(solid("headerpins", `${name} header pins`, pins, GOLD, "Brass"));
         const top = s.lift + (g.dims.t ?? 1.6);
         fields.points!.module_top = [0, 0, top];
@@ -366,13 +366,13 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
         fields.scalars!.lift = s.lift;
       } else {
         const d = g.dims;
-        out.push(solid("", name, [{ t: "box", w: d.w ?? 6, d: d.d ?? 6, h: d.h ?? 3.5, at: [0, 0, 0], r: 0.2 }], g.color ?? BLACK, "PBT"));
+        out.push(solid("", name, [{ t: "box", w: d.w ?? 6, d: d.d ?? 6, h: d.h ?? 3.5, at: [0, 0, 0], r: 0.2 }], g.color ?? BLACK, "Nylon"));
         if (d.cyl_d && d.cyl_h) {
           out.push(solid("actuator", `${name} actuator`, [{ t: "cyl", d: d.cyl_d, h: d.cyl_h - (d.h ?? 3.5), at: [0, 0, d.h ?? 3.5], dir: ZP }], g.color2 ?? "#3a3f47", "POM"));
           fields.points!.actuator_top = [0, 0, d.cyl_h];
           fields.scalars!.actuator_d = d.cyl_d;
         }
-        out.push(solid("leads", `${name} leads`, fp.pads.map((p) => flatLead(p.x, p.y, t, 0.6, 0.7, 0.4)), TIN, "Tin"));
+        out.push(solid("leads", `${name} leads`, fp.pads.map((p) => flatLead(p.x, p.y, t, 0.6, 0.7, 0.4)), TIN, "Stainless 304"));
       }
       break;
     }
