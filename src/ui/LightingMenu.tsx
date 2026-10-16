@@ -12,6 +12,12 @@ const QUALITY: { value: Settings["quality"]; label: string; note: string }[] = [
   { value: "high", label: "High", note: "Four times the refinement and sharper shadow maps. Best for screenshots." },
 ];
 
+const PHOTO_NOTE: Record<Settings["quality"], string> = {
+  draft: "Traces real light bounces, reflections and soft shadows once the view is still. Draft stops at 96 samples at half resolution.",
+  balanced: "Traces real light bounces, reflections, glass and soft shadows once the view is still, refining up to 512 samples.",
+  high: "Traces real light bounces, reflections, glass and soft shadows once the view is still, refining up to 2048 samples with 8 bounces.",
+};
+
 const chip = (l: LightingPreset) => `radial-gradient(60px 40px at 50% 30%, ${l.backdrop.glow}55, transparent 70%), linear-gradient(180deg, ${l.backdrop.top}, ${l.backdrop.bottom})`;
 const ball = (l: LightingPreset) => `radial-gradient(circle at 32% 28%, #ffffff 0, ${l.key.color} 9%, ${l.light ? "#b9c0cc" : "#7a8294"} 32%, ${l.light ? "#5d6573" : "#262b36"} 72%, ${l.backdrop.bottom} 100%)`;
 
@@ -60,6 +66,13 @@ export function LightingMenu() {
             <Segmented id="vp-quality" value={s.quality} options={QUALITY.map((q) => ({ value: q.value, label: q.label }))} onChange={(quality) => updateSettings({ quality })} />
           </div>
           <div className="light-note">{QUALITY.find((q) => q.value === s.quality)?.note}</div>
+          <div className="menu-label">Photoreal</div>
+          <button role="switch" aria-checked={s.photoreal} className={`photo-switch ${s.photoreal ? "on" : ""}`} onClick={() => updateSettings({ photoreal: !s.photoreal })}>
+            <Icon.Aperture size={15} />
+            <span className="grow">Path traced view (P)</span>
+            <span className={`toggle ${s.photoreal ? "on" : ""}`} />
+          </button>
+          <div className="light-note">{PHOTO_NOTE[s.quality]}</div>
         </div>
       )}
     </Menu>

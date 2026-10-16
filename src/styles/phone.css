@@ -150,6 +150,28 @@
 .app.phone .vp-selection {
   display: none;
 }
+/* the toolbar scrolls on a phone: lighting and photoreal move up beside the camera buttons so they stay on screen */
+.app.phone .vp-toolbar > * {
+  order: 1;
+}
+.app.phone .vp-toolbar > :nth-child(-n + 2),
+.app.phone .vp-toolbar > .vp-look {
+  order: 0;
+}
+.app.phone .vp-look {
+  margin-left: 3px;
+  padding-left: 5px;
+  border-left: 1px solid var(--line-2);
+}
+/* the stats line has the bottom corner on a phone: the photoreal pill goes under the toolbar */
+.app.phone .vp-photo {
+  top: 56px;
+  bottom: auto;
+  right: 8px;
+}
+.app.phone .vp-photo-bar {
+  display: none;
+}
 
 /* chat: touch-sized controls, and 16px text so phones don't zoom into the box */
 .app.phone .chat-feed {

@@ -280,6 +280,68 @@ void main() {
   gl_FragColor = uTransparent > 0.5 ? vec4(srgb, a) : vec4(srgb, 1.0);
 }`;
 
+// Edge-aware à-trous filter for a path traced image with few samples:
+// neighbours count less the more their colour, coverage or depth differs.
+const DENOISE_FRAG = /* glsl */ `
+uniform sampler2D tSrc;
+uniform sampler2D tDepth;
+uniform vec2 uTexel;
+uniform float uStep;
+uniform float uSigma;
+uniform float uNear;
+uniform float uFar;
+varying vec2 vUv;
+float linDepth(vec2 uv) {
+  float z = texture2D(tDepth, uv).x * 2.0 - 1.0;
+  return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
+}
+vec3 squash(vec4 c) {
+  vec3 h = c.a > 1e-4 ? max(c.rgb, 0.0) / c.a : vec3(0.0);
+  return h / (1.0 + h);
+}
+float b3(int i) { return i == 0 ? 0.375 : (i == 1 ? 0.25 : 0.0625); }
+void main() {
+  vec4 c0 = texture2D(tSrc, vUv);
+  vec3 s0 = squash(c0);
+  float z0 = linDepth(vUv);
+  vec4 sum = vec4(0.0);
+  float wsum = 0.0;
+  for (int j = -2; j <= 2; j++) {
+    for (int i = -2; i <= 2; i++) {
+      vec2 uv = vUv + vec2(float(i), float(j)) * uStep * uTexel;
+      vec4 c = texture2D(tSrc, uv);
+      vec3 d = squash(c) - s0;
+      float z = linDepth(uv);
+      float w = b3(i < 0 ? -i : i) * b3(j < 0 ? -j : j)
+        * exp(-dot(d, d) / (uSigma * uSigma))
+        * exp(-abs(c.a - c0.a) * 6.0)
+        * exp(-abs(z - z0) / (0.015 * z0 + 0.05));
+      sum += c * w;
+      wsum += w;
+    }
+  }
+  gl_FragColor = sum / max(wsum, 1e-6);
+}`;
+
+const PHOTO_MIX_FRAG = /* glsl */ `
+uniform sampler2D tAccum;
+uniform sampler2D tRaw;
+uniform sampler2D tClean;
+uniform float uMix;
+uniform float uClean;
+varying vec2 vUv;
+// NaN or infinite, checked on the bits: compilers may fold isnan() away
+bool bad(vec4 c) {
+  uvec4 e = floatBitsToUint(c) & 0x7f800000u;
+  return any(equal(e, uvec4(0x7f800000u)));
+}
+void main() {
+  vec4 pt = mix(texture2D(tRaw, vUv), texture2D(tClean, vUv), uClean);
+  // one bad value here would spread across the screen through the bloom
+  if (bad(pt)) pt = vec4(0.0);
+  gl_FragColor = mix(texture2D(tAccum, vUv), pt, uMix);
+}`;
+
 const COPY_FRAG = /* glsl */ `
 uniform sampler2D tSrc;
 varying vec2 vUv;
@@ -318,6 +380,11 @@ export class RenderPipeline {
   private downMat = mat(DOWN_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
   private upMat = mat(UP_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } }, { blending: THREE.AdditiveBlending, transparent: true });
   private copyMat = mat(COPY_FRAG, { tSrc: { value: null } });
+  private denoiseMat = mat(DENOISE_FRAG, { tSrc: { value: null }, tDepth: { value: null }, uTexel: { value: new THREE.Vector2() }, uStep: { value: 1 }, uSigma: { value: 0.2 }, uNear: { value: 1 }, uFar: { value: 1000 } });
+  private photoMixMat = mat(PHOTO_MIX_FRAG, { tAccum: { value: null }, tRaw: { value: null }, tClean: { value: null }, uMix: { value: 0 }, uClean: { value: 0 } });
+  /** path traced image, denoise ping-pong and the blend that composite() shows */
+  private photoRTs: THREE.WebGLRenderTarget[] = [];
+  private photoSrc: THREE.Texture | null = null;
   readonly compMat = mat(COMPOSITE_FRAG, {
     tAccum: { value: null },
     tBloom: { value: null },
@@ -393,6 +460,7 @@ export class RenderPipeline {
     this.accum[0].setSize(w, h);
     this.accum[1].setSize(w, h);
     this.maskRT.setSize(w, h);
+    for (const rt of this.photoRTs) rt.setSize(w, h);
     let bw = w;
     let bh = h;
     for (const rt of this.bloomRTs) {
@@ -496,7 +564,7 @@ export class RenderPipeline {
 
   private updateBloom() {
     if (this.bloomFresh) return;
-    const src = this.accumTexture;
+    const src = this.photoSrc ?? this.accumTexture;
     const rts = this.bloomRTs;
     const p = this.preMat.uniforms;
     p.tSrc.value = src;
@@ -526,7 +594,7 @@ export class RenderPipeline {
     const useBloom = look.bloom > 0.001;
     if (useBloom) this.updateBloom();
     const u = this.compMat.uniforms;
-    u.tAccum.value = this.accumTexture;
+    u.tAccum.value = this.photoSrc ?? this.accumTexture;
     u.tBloom.value = useBloom ? this.bloomRTs[0].texture : this.black;
     u.tMask.value = opts.mask ? this.maskRT.texture : this.black;
     u.uMask.value = opts.mask ? 1 : 0;
@@ -549,6 +617,58 @@ export class RenderPipeline {
     this.pass(this.compMat, target);
   }
 
+  /**
+   * Show a path traced image (premultiplied HDR, like the accumulation) in
+   * place of the accumulation, `mix` of the way. While it has few samples it
+   * is denoised, guided by the last interactive sample's depth.
+   */
+  photo(src: THREE.Texture | null, opts: { mix: number; samples: number; near: number; far: number } = { mix: 0, samples: 0, near: 1, far: 1000 }) {
+    if (!src || opts.mix <= 0.001) {
+      if (this.photoSrc) this.bloomFresh = false;
+      this.photoSrc = null;
+      return;
+    }
+    if (!this.photoRTs.length)
+      for (let i = 0; i < 3; i++) this.photoRTs.push(new THREE.WebGLRenderTarget(this.width, this.height, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter }));
+    const [a, b, out] = this.photoRTs;
+    const clean = Math.min(1, Math.max(0, 1 - opts.samples / 128));
+    let cleanTex = src;
+    if (clean > 0.01) {
+      const d = this.denoiseMat.uniforms;
+      d.tDepth.value = this.sampleRT.depthTexture;
+      d.uTexel.value.set(1 / this.width, 1 / this.height);
+      d.uNear.value = opts.near;
+      d.uFar.value = opts.far;
+      d.uSigma.value = 0.04 + 0.5 / Math.sqrt(Math.max(1, opts.samples));
+      let from = src;
+      const steps = [1, 2, 4];
+      for (let i = 0; i < steps.length; i++) {
+        const to = i % 2 ? b : a;
+        d.tSrc.value = from;
+        d.uStep.value = steps[i];
+        this.pass(this.denoiseMat, to);
+        from = to.texture;
+      }
+      cleanTex = from;
+    }
+    const m = this.photoMixMat.uniforms;
+    m.tAccum.value = this.accumTexture;
+    m.tRaw.value = src;
+    m.tClean.value = cleanTex;
+    m.uMix.value = opts.mix;
+    m.uClean.value = clean;
+    this.pass(this.photoMixMat, out);
+    this.photoSrc = out.texture;
+    this.bloomFresh = false;
+  }
+
+  /** Free the photoreal buffers (about 24 bytes a pixel) once the photoreal view is off. */
+  releasePhoto() {
+    this.photo(null);
+    for (const rt of this.photoRTs) rt.dispose();
+    this.photoRTs = [];
+  }
+
   /** Copy a texture to a target (used to keep the last frame for crossfades). */
   copy(src: THREE.Texture, target: THREE.WebGLRenderTarget | null) {
     this.copyMat.uniforms.tSrc.value = src;
@@ -557,8 +677,8 @@ export class RenderPipeline {
 
   dispose() {
     this.sampleRT.depthTexture?.dispose();
-    for (const rt of [this.sampleRT, this.aoRT, this.aoBlurRT, ...this.accum, this.maskRT, ...this.bloomRTs]) rt.dispose();
-    for (const m of [this.aoMat, this.blurMat, this.accumMat, this.preMat, this.downMat, this.upMat, this.copyMat, this.compMat]) m.dispose();
+    for (const rt of [this.sampleRT, this.aoRT, this.aoBlurRT, ...this.accum, this.maskRT, ...this.bloomRTs, ...this.photoRTs]) rt.dispose();
+    for (const m of [this.aoMat, this.blurMat, this.accumMat, this.preMat, this.downMat, this.upMat, this.copyMat, this.compMat, this.denoiseMat, this.photoMixMat]) m.dispose();
     this.quad.dispose();
     this.black.dispose();
   }

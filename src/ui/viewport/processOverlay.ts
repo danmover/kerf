@@ -13,6 +13,8 @@ interface Host {
   /** the part's current clipping planes and opacity */
   partLook(id: string): { planes: THREE.Plane[] | null; opacity: number } | undefined;
   requestRender(): void;
+  /** a layer the marks also go on, so the host can draw them again over a path traced image */
+  markLayer?: number;
 }
 
 interface Drawn {
@@ -35,6 +37,11 @@ export class ProcessOverlay {
   private pulse = 1;
 
   constructor(private host: Host) {}
+
+  /** how many findings are marked on the model */
+  get size() {
+    return this.drawn.size;
+  }
 
   update(parts: EvalPart[], results: Record<string, ProcessResult>, focus: string | null, showAll: boolean, reduceMotion: boolean) {
     const want = new Map<string, { part: string; finding: ProcessFinding; emphasis: boolean }>();
@@ -140,6 +147,8 @@ export class ProcessOverlay {
       mats.push(m);
       geos.push(g);
     }
+    const layer = this.host.markLayer;
+    if (layer !== undefined) obj.traverse((o) => o.layers.enable(layer));
     group.add(obj);
     return { key, group, obj, mats, geos, emphasis };
   }
