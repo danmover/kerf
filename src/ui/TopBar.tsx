@@ -11,6 +11,7 @@ import { Logo } from "./Logo";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
 import { ThemeSwitch } from "./ThemeSwitch";
+import { SyncBadge } from "./Account";
 import { exportAllDrawings } from "../drawing/export";
 
 export function TopBar() {
@@ -51,6 +52,7 @@ export function TopBar() {
         />
       </div>
       <SaveState state={save} />
+      <SyncBadge />
       <div className="grow" />
       <Pipeline />
       <div className="grow" />
