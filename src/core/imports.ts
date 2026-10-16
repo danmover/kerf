@@ -136,6 +136,15 @@ export async function importsLoaded(): Promise<void> {
   await Promise.all(get().list.map((i) => loads.get(i.hash) ?? ensureLoaded(i)));
 }
 
+/** Files this browser didn't have may have arrived (from the account): try those again. */
+export function retryMissingImports() {
+  for (const i of get().list) {
+    if (get().status[i.hash]?.state !== "missing") continue;
+    loads.delete(i.hash);
+    void ensureLoaded(i);
+  }
+}
+
 /** The kernel restarted: everything it held is gone, so load the files again. */
 export function reloadImports() {
   loads.clear();

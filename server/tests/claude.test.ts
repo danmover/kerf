@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateInputTokens } from "../src/claude.js";
+import { estimateInputTokens, MAX_CONCURRENT } from "../src/claude.js";
 import { client, setup, signedIn, sse, type FetchFn } from "./helpers.js";
 
 const KEY = "sk-ant-api03-" + "a".repeat(40) + "WXYZ";
@@ -141,7 +141,7 @@ describe("Claude proxy", () => {
     const { app } = setup({}, slow);
     const c = await signedIn(app);
     await c.put("/api/claude/key", { key: KEY });
-    const running = Array.from({ length: 4 }, () => c.post("/api/claude/v1/messages", message()));
+    const running = Array.from({ length: MAX_CONCURRENT }, () => c.post("/api/claude/v1/messages", message()));
     await new Promise((r) => setTimeout(r, 20));
     const fifth = await c.post("/api/claude/v1/messages", message());
     expect(fifth.status).toBe(429);
@@ -173,13 +173,16 @@ describe("Claude proxy", () => {
 
     // server-side tools are refused on the shared key
     expect((await ann.post("/api/claude/v1/messages", { ...message(), tools: [{ type: "web_search_20250305", name: "web_search" }] })).status).toBe(400);
-    // betas and fallback to other models stay off it
-    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 100_000, fallbacks: "default" }, { "anthropic-beta": "server-side-fallback-2026-07-01" });
+    // fallback to other models stays off it, and so do betas, apart from the one that keeps chat history valid
+    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 100_000, fallbacks: "default" }, { "anthropic-beta": "thinking-binding-controls-2026-08-01,server-side-fallback-2026-07-01" });
     expect(res.status).toBe(200);
     await res.text();
     const sent = calls.at(-1)!;
     expect((sent.init.headers as Record<string, string>)["x-api-key"]).toBe(SHARED);
-    expect((sent.init.headers as Record<string, string>)["anthropic-beta"]).toBeUndefined();
+    expect((sent.init.headers as Record<string, string>)["anthropic-beta"]).toBe("thinking-binding-controls-2026-08-01");
+    const bare = await ann.post("/api/claude/v1/messages", message(), { "anthropic-beta": "server-side-fallback-2026-07-01" });
+    await bare.text();
+    expect((calls.at(-1)!.init.headers as Record<string, string>)["anthropic-beta"]).toBeUndefined();
     const body = JSON.parse(String(sent.init.body));
     expect(body.max_tokens).toBe(64_000);
     expect(body.fallbacks).toBeUndefined();

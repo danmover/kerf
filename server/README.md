@@ -3,7 +3,7 @@
 An optional server that adds accounts to Kerf. Without it, Kerf runs entirely in the browser exactly as before. With it, people can:
 
 - sign in, and confirm or reset their password by email;
-- sync projects, version history and chats between browsers, with offline edits merged when they reconnect;
+- sync projects, version history, chats and the files projects use (imported STEP files, reference photos and PDFs) between browsers, with offline edits merged when they reconnect;
 - keep their Claude API key on their account instead of in the browser. The server stores it encrypted and adds it to Claude requests, so the key never comes back to any browser.
 
 It is one Node.js process with a SQLite database. It serves the built app and the API from the same origin, so the app's strict Content Security Policy doesn't change.
@@ -48,7 +48,7 @@ Everything is set with environment variables. With `NODE_ENV=production`, the se
 | `PORT`, `HOST` | `8787` and `127.0.0.1`, or `8080` and `0.0.0.0` in production | Where the server listens. |
 | `KERF_SHARED_ANTHROPIC_KEY` | none | Optional. A Claude key you pay for, which listed accounts may use when they haven't added their own. It is off unless this variable and the next are both set. |
 | `KERF_SHARED_CLAUDE_EMAILS` | none | Who may use the shared key, in the same format as `KERF_ALLOWED_EMAILS`. An account must also have confirmed its email address. |
-| `KERF_SHARED_DAILY_TOKENS` | `1000000` | Each account's daily allowance on the shared key. Input, output and cache writes count in full, and cache reads count a tenth. Each account runs one request at a time on the shared key, and each request's output is capped at 64k tokens or what's left of the allowance, whichever is less. So a day's use can pass the allowance by at most one request's estimated input. Server-side tools (web search, code execution), beta features and fallback to other models are off on the shared key. |
+| `KERF_SHARED_DAILY_TOKENS` | `1000000` | Each account's daily allowance on the shared key. Input, output and cache writes count in full, and cache reads count a tenth. Each account runs one request at a time on the shared key, and each request's output is capped at 64k tokens or what's left of the allowance, whichever is less. So a day's use can pass the allowance by at most one request's estimated input. Server-side tools (web search, code execution), fallback to other models and beta features are off on the shared key, apart from the beta Kerf's chat uses to keep its saved history valid. |
 | `KERF_SHARED_MODELS` | any Claude model | Optional. Comma-separated model IDs the shared key may use, such as `claude-sonnet-5-5, claude-haiku-5-5`. |
 
 ## Deploy to Fly.io
@@ -140,10 +140,10 @@ Everything is in one file, `kerf.db`, on the data volume. `kerf-admin backup /da
 - **Invitations.** On an invite-only server, nobody can claim an invited address without its inbox: the password is chosen from the emailed link. The shared Claude key, if any, works only for confirmed addresses.
 - **Sessions.** Each session is a random token in a `__Host-` cookie that is HttpOnly, Secure and SameSite=Strict. Only a hash of the token is stored. A session ends after 30 days unused, or 90 days at most. Changing or resetting the password signs out the other devices.
 - **Cross-site requests.** Every request that changes something must come from `KERF_ORIGIN` and carry an `x-kerf` header, so other sites can't act for a signed-in user.
-- **Claude keys.** Saved keys are encrypted with AES-256-GCM, bound to the account, and checked with Anthropic before they are saved. Only the last 4 characters are ever shown back. The proxy forwards only the four Claude endpoints Kerf uses. It drops every browser header, and it replaces the user ID with a pseudonym. It limits each account to 60 requests a minute and 4 at a time, and records token counts but never message content.
-- **Projects.** Projects are checked and size-limited: 300k characters of source, 300 versions per project, and 500 MB per account. Writes use revision numbers, so a stale device can never overwrite newer work; its edits are merged instead.
+- **Claude keys.** Saved keys are encrypted with AES-256-GCM, bound to the account, and checked with Anthropic before they are saved. Only the last 4 characters are ever shown back. The proxy forwards only the four Claude endpoints Kerf uses. It drops every browser header, and it replaces the user ID with a pseudonym. It limits each account to 120 requests a minute and 10 at a time (enough for parallel sub-assembly agents), or one at a time on a shared key, and records token counts but never message content.
+- **Projects.** Projects are checked and size-limited: 300k characters of source, 300 versions per project, and 500 MB per account. The files projects use are stored once per account under the SHA-256 of their contents, up to 64 MB each, and a browser checks that hash before it uses a file it downloads. Writes use revision numbers, so a stale device can never overwrite newer work; its edits are merged instead.
 - **Headers.** Every API response is `no-store`, with a `default-src 'none'` CSP. The app gets the same headers as `public/_headers`, plus HSTS.
-- **Housekeeping.** Once a day, the server removes expired sessions and email links, invite-only sign-ups never finished after 7 days, deleted-project markers older than 90 days, and usage counts older than about 13 months.
+- **Housekeeping.** Once a day, the server removes expired sessions and email links, invite-only sign-ups never finished after 7 days, stored files no project has used for a day, deleted-project markers older than 90 days, and usage counts older than about 13 months.
 
 The rate limits are kept in memory. That is right for one instance; a deployment with several instances would need a shared store.
 
@@ -157,7 +157,8 @@ src/config.ts       environment variables
 src/db.ts           SQLite schema and migrations
 src/auth.ts         sign-up, sign-in, sessions, email links
 src/account.ts      profile, password, devices, activity, usage, delete
-src/projects.ts     project sync API
+src/projects.ts     project sync API and the account download
+src/files.ts        files projects use (STEP imports, reference images)
 src/claude.ts       Claude key storage and the proxy
 src/housekeeping.ts daily clean-up
 src/security.ts     origin check, rate limiter, headers

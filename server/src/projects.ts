@@ -14,7 +14,7 @@ export const LIMITS = {
   sourceChars: 300_000,
   thumbnailChars: 400_000,
   chatChars: 4_000_000,
-  extraChars: 256_000,
+  extraChars: 4_000_000,
   versionsPerProject: 300,
   versionsPerRequest: 100,
   projectsPerUser: 2000,
@@ -118,21 +118,56 @@ export function projectRoutes(deps: Deps) {
     });
   });
 
-  // a portable backup of every project, in the same format as the app's own backup file
+  // a portable backup of every project, in the same format as the app's own
+  // backup file, with the STEP files and reference images the projects use.
+  // It is streamed a project at a time, since files can make it large.
   app.get("/export", (c) => {
     const user = c.get("user");
-    const rows = db.all<ProjectRow>("SELECT * FROM projects WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC", user.id);
-    const projects = rows.map((p) => ({
-      format: "kerf-project",
-      version: 1,
-      name: p.name,
-      source: p.source,
-      template: p.template,
-      createdAt: p.created_at,
-      versions: db.all<{ ts: number; author: string; message: string; source: string }>("SELECT ts, author, message, source FROM versions WHERE user_id = ? AND project_id = ? ORDER BY ts", user.id, p.id),
-    }));
+    const rows = db.all<{ id: string }>("SELECT id FROM projects WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC", user.id);
+    const file = (hash: unknown) =>
+      typeof hash === "string" && /^[a-f0-9]{64}$/.test(hash) ? db.get<{ encoding: string; data: Uint8Array }>("SELECT encoding, data FROM files WHERE user_id = ? AND hash = ?", user.id, hash) : undefined;
+    const importHashes = new Set<string>();
+    function* pieces(): Generator<string> {
+      yield `{"format":"kerf-backup","version":2,"exportedAt":${Date.now()},"projects":[`;
+      let first = true;
+      for (const r of rows) {
+        const p = get(user.id, r.id);
+        if (!p) continue;
+        const extra = JSON.parse(p.extra || "{}") as { imports?: { hash?: unknown }[]; assets?: { id: string; kind: string; mime: string; name: string; hash: unknown }[] };
+        const imports = Array.isArray(extra.imports) ? extra.imports.filter((i) => file(i?.hash)) : [];
+        for (const i of imports) importHashes.add(i.hash as string);
+        const assets = (Array.isArray(extra.assets) ? extra.assets : []).flatMap((a) => {
+          const f = file(a?.hash);
+          // reference files are stored as they are: a JPEG or PDF is already compressed
+          return f && f.encoding === "raw" ? [{ id: a.id, kind: a.kind, mime: a.mime, name: a.name, data: Buffer.from(f.data).toString("base64") }] : [];
+        });
+        const versions = db.all<{ ts: number; author: string; message: string; source: string }>("SELECT ts, author, message, source FROM versions WHERE user_id = ? AND project_id = ? ORDER BY ts", user.id, p.id);
+        const out = { format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.created_at, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}) };
+        yield (first ? "" : ",") + JSON.stringify(out);
+        first = false;
+      }
+      yield `],"importFiles":[`;
+      first = true;
+      for (const hash of importHashes) {
+        const f = file(hash);
+        if (!f) continue;
+        yield (first ? "" : ",") + JSON.stringify({ hash, encoding: f.encoding, data: Buffer.from(f.data).toString("base64") });
+        first = false;
+      }
+      yield "]}";
+    }
+    const it = pieces();
+    const enc = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      pull(ctrl) {
+        const next = it.next();
+        if (next.done) ctrl.close();
+        else ctrl.enqueue(enc.encode(next.value));
+      },
+    });
+    c.header("Content-Type", "application/json; charset=utf-8");
     c.header("Content-Disposition", `attachment; filename="kerf-account-${new Date().toISOString().slice(0, 10)}.kerfbackup"`);
-    return c.json({ format: "kerf-backup", version: 1, exportedAt: Date.now(), projects });
+    return c.body(body);
   });
 
   app.get("/:id", (c) => {

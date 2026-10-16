@@ -1,16 +1,21 @@
 // Keeps this browser's projects in step with the signed-in account.
 //
 // The browser stays the working copy: Kerf saves to IndexedDB as before and
-// works offline. This module pushes changed projects, their new versions and
-// chats to the server, and pulls what other devices changed. When two devices
+// works offline. This module pushes changed projects, their new versions,
+// chats and the files they use (imported STEP files, reference images) to the
+// server, and pulls what other devices changed. When two devices
 // edit the same project, the device that is pushing keeps its design as the
 // current one and the other device's design is kept in the version history, so
 // nothing is lost.
 
 import { create } from "zustand";
 import * as db from "../persist/db";
-import type { ProjectRecord, VersionRecord, ChatRecord } from "../persist/db";
-import { api, ApiError, type RemoteProject, type RemoteProjectSummary, type RemoteVersion } from "./api";
+import type { AssetRecord, BlobRecord, ProjectRecord, VersionRecord, ChatRecord } from "../persist/db";
+import { collectUnusedBlobs, gunzip, sha256Hex } from "../persist/blobs";
+import { onAssetAdded } from "../persist/assets";
+import type { ProjectImport } from "../kernel/imports";
+import { retryMissingImports } from "../core/imports";
+import { api, ApiError, getFile, putFile, type RemoteProject, type RemoteProjectSummary, type RemoteVersion, type StoredFile } from "./api";
 import { onAccount, sessionEnded, useAccount } from "./account";
 import { applyRemoteProject, closeProject, onProjectDeleted, onProjectOpen, refreshProjects, useProject } from "../app/project";
 import { loadChat, resetChat, useChat } from "../ai/chat";
@@ -31,6 +36,10 @@ interface ProjectMeta {
   vdirty?: boolean;
   /** a hash of the design as last sent or received, to tell real remote edits from thumbnail updates */
   src?: string;
+  /** a reference file was added here and the account's list of them needs sending */
+  adirty?: boolean;
+  /** files the project uses weren't in the account yet when it arrived; when they were last looked for */
+  filesPending?: number;
 }
 
 interface Meta {
@@ -184,6 +193,7 @@ async function pass() {
     }
 
     locals = new Map((await db.getAll<ProjectRecord>("projects")).map((p) => [p.id, p]));
+    for (const [id, m] of Object.entries(meta.projects)) if (m.filesPending && locals.has(id) && Date.now() - m.filesPending > FILE_RETRY) await retryFiles(id, m);
     const onServer = new Set(remote.filter((r) => !r.deletedAt).map((r) => r.id));
     let waiting = 0;
     for (const local of locals.values()) {
@@ -227,9 +237,9 @@ function editedHere(local: ProjectRecord, m: ProjectMeta) {
   return local.updatedAt !== m.at || m.rev === 0 || !!m.vdirty;
 }
 
-/** Anything to send, including a new thumbnail. */
+/** Anything to send, including a new thumbnail or reference file. */
 async function isDirty(local: ProjectRecord, m: ProjectMeta) {
-  return editedHere(local, m) || thumbSig(local.thumbnail) !== m.thumb;
+  return editedHere(local, m) || thumbSig(local.thumbnail) !== m.thumb || !!m.adirty;
 }
 
 async function markAllUnsynced(projectId: string) {
@@ -243,8 +253,20 @@ const CORE = new Set(["id", "name", "source", "template", "createdAt", "updatedA
 const extraOf = (p: ProjectRecord): Record<string, unknown> => Object.fromEntries(Object.entries(p).filter(([k, v]) => !CORE.has(k) && v !== undefined));
 
 async function push(local: ProjectRecord, m: ProjectMeta, depth = 0): Promise<void> {
+  // a reference file added while this runs is sent by the next pass
+  const filesAdded = !!m.adirty;
+  m.adirty = false;
+  try {
+    await pushOnce(local, m, depth, filesAdded);
+  } catch (e) {
+    if (filesAdded) m.adirty = true;
+    throw e;
+  }
+}
+
+async function pushOnce(local: ProjectRecord, m: ProjectMeta, depth: number, filesAdded: boolean): Promise<void> {
   const pending = ((await db.versionsFor(local.id)) as SyncedVersion[]).filter((v) => !v.synced);
-  const headChanged = m.rev === 0 || local.updatedAt !== m.at || thumbSig(local.thumbnail) !== m.thumb;
+  const headChanged = m.rev === 0 || local.updatedAt !== m.at || thumbSig(local.thumbnail) !== m.thumb || filesAdded;
   if (!headChanged && !pending.length) {
     m.vdirty = false;
     return;
@@ -253,9 +275,11 @@ async function push(local: ProjectRecord, m: ProjectMeta, depth = 0): Promise<vo
   const chunks: SyncedVersion[][] = [];
   for (let i = 0; i < pending.length; i += CHUNK) chunks.push(pending.slice(i, i + CHUNK));
   if (!chunks.length) chunks.push([]);
+  // the files go first, so a device that sees the new revision can fetch them
+  const assets = await sendFiles(local);
   for (let i = 0; i < chunks.length; i++) {
     const body: Record<string, unknown> = { baseRev: rev, versions: chunks[i].map(wire) };
-    if (i === 0) Object.assign(body, { name: local.name, source: local.source, template: local.template, createdAt: local.createdAt, updatedAt: local.updatedAt, thumbnail: local.thumbnail ?? null, extra: extraOf(local) });
+    if (i === 0) Object.assign(body, { name: local.name, source: local.source, template: local.template, createdAt: local.createdAt, updatedAt: local.updatedAt, thumbnail: local.thumbnail ?? null, extra: { ...extraOf(local), ...(assets.length ? { assets } : {}) } });
     try {
       rev = (await api<{ rev: number }>("PUT", `/projects/${encodeURIComponent(local.id)}`, body)).rev;
     } catch (e) {
@@ -290,6 +314,8 @@ async function merge(local: ProjectRecord, m: ProjectMeta, depth = 0) {
   }
   const have = new Set((await db.versionsFor(local.id)).map((v) => v.id));
   for (const v of versions) if (!have.has(v.id)) await db.put("versions", { ...v, projectId: local.id, synced: true });
+  // reference files added there stay with the project (this device's list is sent next)
+  if (!(await fetchFiles(local.id, [], filesOf(project.extra).assets))) m.filesPending = Date.now();
   // the other device really changed the design (not just its thumbnail or name)
   const changedThere = project.source !== local.source && srcHash(project.source) !== m.src;
   if (changedThere && !versions.some((v) => v.source === project.source)) {
@@ -310,6 +336,9 @@ async function download(id: string, local: ProjectRecord | null) {
   const have = new Set((await db.versionsFor(id)).map((v) => v.id));
   for (const v of versions) if (!have.has(v.id)) await db.put("versions", { ...v, projectId: id, synced: true });
   await pruneVersions(id);
+  // the files first, so the design builds with them when it opens
+  const files = filesOf(project.extra);
+  const complete = await fetchFiles(id, files.imports, files.assets);
 
   // an edit may have landed here while this was downloading; the next pass merges it
   const now = await db.getOne<ProjectRecord>("projects", id);
@@ -317,10 +346,11 @@ async function download(id: string, local: ProjectRecord | null) {
     again = true;
     return;
   }
-  const rec = { ...(project.extra ?? {}), id, name: project.name, source: project.source, template: project.template, createdAt: project.createdAt, updatedAt: project.updatedAt } as ProjectRecord;
+  const { assets: _list, ...fields } = project.extra ?? {};
+  const rec = { ...fields, id, name: project.name, source: project.source, template: project.template, createdAt: project.createdAt, updatedAt: project.updatedAt } as ProjectRecord;
   if (project.thumbnail) rec.thumbnail = project.thumbnail;
   await db.put("projects", rec);
-  meta.projects[id] = { rev: project.rev, at: rec.updatedAt, thumb: thumbSig(rec.thumbnail), chatAt: m?.chatAt ?? 0, src: srcHash(rec.source) };
+  meta.projects[id] = { rev: project.rev, at: rec.updatedAt, thumb: thumbSig(rec.thumbnail), chatAt: m?.chatAt ?? 0, src: srcHash(rec.source), adirty: m?.adirty, filesPending: complete ? undefined : Date.now() };
   changedHere = true;
   if (useProject.getState().current?.id === id) applyRemoteProject(rec, id);
 }
@@ -337,7 +367,138 @@ async function removeLocal(local: ProjectRecord, why: string) {
   }
   if (useChat.getState().projectId === local.id) resetChat();
   await db.deleteProjectData(local.id);
+  // imported files no other project here uses go too
+  await collectUnusedBlobs().catch(() => 0);
   changedHere = true;
+}
+
+// ---------- files: imported STEP files and reference images ----------
+
+/** How often to look again for files another device hasn't sent yet. */
+const FILE_RETRY = 5 * 60_000;
+
+/** A reference image or PDF as the account lists it with the project; its bytes and thumbnail are stored files. */
+interface SyncedAsset {
+  id: string;
+  kind: "image" | "pdf";
+  mime: string;
+  name: string;
+  size: number;
+  width?: number;
+  height?: number;
+  createdAt: number;
+  hash: string;
+  thumb?: string;
+}
+
+const HASH = /^[a-f0-9]{64}$/;
+const MIMES = new Set(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
+const validAsset = (a: SyncedAsset) =>
+  !!a && typeof a === "object" && /^ast_[a-z0-9]{4,32}$/.test(a.id) && (a.kind === "image" || a.kind === "pdf") && MIMES.has(a.mime) && (a.kind === "pdf") === (a.mime === "application/pdf") && typeof a.name === "string" && HASH.test(a.hash) && (a.thumb === undefined || HASH.test(a.thumb));
+
+/** The files a project's account record says it uses. */
+function filesOf(extra: Record<string, unknown> | undefined): { imports: ProjectImport[]; assets: SyncedAsset[] } {
+  const imports = Array.isArray(extra?.imports) ? (extra.imports as ProjectImport[]).filter((i) => i && typeof i === "object" && HASH.test(i.hash)) : [];
+  const assets = Array.isArray(extra?.assets) ? (extra.assets as SyncedAsset[]).filter(validAsset) : [];
+  return { imports, assets };
+}
+
+// hashing a reference file once per session is enough: its contents never change
+const assetHashes = new Map<string, string>();
+async function hashOf(a: AssetRecord, variant: "data" | "thumb", blob: Blob) {
+  const key = `${a.key}:${variant}:${a.createdAt}:${blob.size}`;
+  let h = assetHashes.get(key);
+  if (!h) assetHashes.set(key, (h = await sha256Hex(new Uint8Array(await blob.arrayBuffer()))));
+  return h;
+}
+
+const rawFile = async (b: Blob): Promise<StoredFile> => ({ data: new Uint8Array(await b.arrayBuffer()), encoding: "raw", size: b.size });
+
+/** Sends the files a project uses that the account doesn't have yet, and returns its list of reference files. */
+async function sendFiles(local: ProjectRecord): Promise<SyncedAsset[]> {
+  const sources = new Map<string, () => Promise<StoredFile | null>>();
+  for (const i of local.imports ?? []) {
+    sources.set(i.hash, async () => {
+      const b = await db.getOne<BlobRecord>("blobs", i.hash);
+      return b ? { data: new Uint8Array(b.data), encoding: b.encoding, size: b.size } : null;
+    });
+  }
+  const assets: SyncedAsset[] = [];
+  for (const a of await db.assetsFor(local.id)) {
+    const hash = await hashOf(a, "data", a.data);
+    const thumb = a.thumb ? await hashOf(a, "thumb", a.thumb) : undefined;
+    assets.push({ id: a.id, kind: a.kind, mime: a.mime, name: a.name, size: a.size, width: a.width, height: a.height, createdAt: a.createdAt, hash, ...(thumb ? { thumb } : {}) });
+    sources.set(hash, () => rawFile(a.data));
+    if (a.thumb && thumb) sources.set(thumb, () => rawFile(a.thumb!));
+  }
+  const hashes = [...sources.keys()];
+  for (let i = 0; i < hashes.length; i += 500) {
+    const { missing } = await api<{ missing: string[] }>("POST", "/files/missing", { hashes: hashes.slice(i, i + 500) });
+    for (const h of missing) {
+      const f = await sources.get(h)?.();
+      if (f?.data.byteLength) await putFile(h, f);
+    }
+  }
+  return assets;
+}
+
+/** A file from the account, checked against its name (the SHA-256 of what it holds). */
+async function fetchChecked(hash: string): Promise<StoredFile | null> {
+  const f = await getFile(hash);
+  if (!f) return null;
+  try {
+    const bytes = f.encoding === "gzip" ? await gunzip(f.data) : f.data;
+    return (await sha256Hex(bytes)) === hash ? { ...f, size: bytes.byteLength } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Fetches the files a project uses that this browser doesn't have. False when the account didn't have them all. */
+async function fetchFiles(projectId: string, imports: ProjectImport[], assets: SyncedAsset[]): Promise<boolean> {
+  let complete = true;
+  for (const i of imports) {
+    if (await db.getOne<BlobRecord>("blobs", i.hash)) continue;
+    const f = await fetchChecked(i.hash);
+    if (!f) {
+      complete = false;
+      continue;
+    }
+    await db.put<BlobRecord>("blobs", { hash: i.hash, data: f.data.slice().buffer, encoding: f.encoding, size: f.size, createdAt: Date.now() });
+  }
+  const have = new Set((await db.assetsFor(projectId)).map((a) => a.id));
+  for (const a of assets) {
+    if (have.has(a.id)) continue;
+    const f = await fetchChecked(a.hash);
+    if (!f) {
+      complete = false;
+      continue;
+    }
+    const data = new Blob([f.data as BlobPart], { type: a.mime });
+    const t = a.thumb ? await fetchChecked(a.thumb) : null;
+    const thumb = t ? new Blob([t.data as BlobPart], { type: "image/jpeg" }) : a.kind === "image" ? data : undefined;
+    const rec: AssetRecord = { key: `${projectId}:${a.id}`, id: a.id, projectId, kind: a.kind, mime: a.mime, name: a.name.slice(0, 160), size: data.size, data, createdAt: a.createdAt };
+    if (typeof a.width === "number" && typeof a.height === "number") Object.assign(rec, { width: a.width, height: a.height });
+    if (thumb) rec.thumb = thumb;
+    await db.put<AssetRecord>("assets", rec);
+  }
+  return complete;
+}
+
+/** Looks again for files another device hadn't sent when the project arrived. */
+async function retryFiles(id: string, m: ProjectMeta) {
+  let project: RemoteProject;
+  try {
+    ({ project } = await api<{ project: RemoteProject }>("GET", `/projects/${encodeURIComponent(id)}?since=${m.rev}`));
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+    m.filesPending = undefined;
+    return;
+  }
+  if (project.deletedAt) return;
+  const files = filesOf(project.extra);
+  m.filesPending = (await fetchFiles(id, files.imports, files.assets)) ? undefined : Date.now();
+  if (!m.filesPending && useProject.getState().current?.id === id) retryMissingImports();
 }
 
 // ---------- chats ----------
@@ -440,7 +601,7 @@ export function startSync() {
         for (const p of all) {
           const m = meta.projects[p.id];
           if (!m) continue;
-          if (editedHere(p, m)) kept.push(p.name);
+          if (editedHere(p, m) || m.adirty) kept.push(p.name);
           else await removeLocal_(p);
         }
         await refreshProjects();
@@ -451,6 +612,15 @@ export function startSync() {
       useSync.setState({ state: "off", message: "" });
       if (kept.length) toast({ kind: "warn", title: `Kept ${kept.length} project${kept.length > 1 ? "s" : ""} on this device`, detail: `${kept.join(", ")} had changes that hadn't reached your account yet. ${kept.length > 1 ? "They are" : "It is"} now only in this browser.` }, 12000);
     },
+  });
+
+  // a reference file added to a project in the account is sent with it
+  onAssetAdded((id) => {
+    const m = meta.projects[id];
+    if (!m) return;
+    m.adirty = true;
+    saveMeta();
+    syncSoon(1500);
   });
 
   // a deleted cloud project is deleted from the account too

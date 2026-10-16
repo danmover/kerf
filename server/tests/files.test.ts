@@ -48,7 +48,7 @@ describe("project files", () => {
     // left alone when a push doesn't mention it
     await c.put("/api/projects/prj_a", { baseRev: 1, source: "t" });
     expect((await c.json<{ project: { extra: unknown } }>(await c.get("/api/projects/prj_a"))).project.extra).toEqual(extra);
-    expect((await c.put("/api/projects/prj_a", { baseRev: 2, extra: { big: "x".repeat(300_000) } })).status).toBe(400);
+    expect((await c.put("/api/projects/prj_a", { baseRev: 2, extra: { big: "x".repeat(4_000_001) } })).status).toBe(400);
   });
 
   it("removes files no project uses any more", async () => {

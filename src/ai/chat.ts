@@ -1,11 +1,10 @@
 // The design assistant: a streaming tool-use loop against the Claude API,
-// run directly from the browser with the user's own API key.
+// run from the browser with the user's own API key (see client.ts for where requests go).
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaMessageParam, BetaContentBlockParam, BetaToolResultBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { create } from "zustand";
-import { getApiKey } from "../persist/vault";
-import { sessionEnded, useAccount } from "../cloud/account";
+import { sessionEnded } from "../cloud/account";
 import * as db from "../persist/db";
 import { useSettings } from "../app/settings";
 import { useDesign, evaluateOnly } from "../core/engine";
@@ -25,6 +24,7 @@ import { assetBlock } from "../persist/assets";
 import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type BriefData } from "../core/brief";
 import { isBuilding } from "../agents/orchestrator";
 import { toast } from "../app/ui";
+import { claudeClient, claudeRoute } from "./client";
 import { BINDING_BETA, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 
 /** A file the user attached to a message; it is also kept as a reference in the brief. */
@@ -617,17 +617,7 @@ export function revertTurn(itemId: string) {
   persist();
 }
 
-function client() {
-  // signed in to a Kerf server: the key on the account (or a shared one) is added by the server
-  const acct = useAccount.getState();
-  const via = acct.status === "signed-in" ? acct.info?.claude?.source : null;
-  const key = getApiKey();
-  if (via === "account" || (via === "shared" && !key)) {
-    return new Anthropic({ apiKey: "kerf-account", baseURL: `${location.origin}/api/claude`, defaultHeaders: { "x-kerf": "1" }, dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 10 * 60 * 1000 });
-  }
-  if (!key) return null;
-  return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, maxRetries: 2, timeout: 10 * 60 * 1000 });
-}
+const client = () => claudeClient();
 
 function systemBlocks() {
   return [{ type: "text" as const, text: systemPrompt(), cache_control: { type: "ephemeral" as const } }];
@@ -860,7 +850,7 @@ async function resumeWithSteering() {
 /** Review Claude's own changes when it is about to finish without having had them reviewed. Returns true when Claude should continue. */
 async function autoReview(session: ReviewSession, reviewItems: string[], startSource: string, stale: () => boolean): Promise<boolean> {
   const mode = useSettings.getState().selfReview;
-  if (mode === "off" || !session.canReview || !getApiKey()) return false;
+  if (mode === "off" || !session.canReview || !claudeRoute()) return false;
   const now = useDesign.getState().source;
   const base = session.lastSource ?? startSource;
   if (now === base) return false;

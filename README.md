@@ -88,7 +88,7 @@ npm run typecheck
 - A model panel with three tabs. Parts lists every part grouped as the design groups it, says what each one is, and follows the viewport selection. Params lists the driving values under the design's own section headings: drag a value sideways to scrub it, click to type, or open it for a slider, the parts it moves and the checks it feeds. History shows every version with who made it, a diff, a 3D preview and one-click restore.
 - A dependency graph and a parts list in the bottom dock.
 - Projects save automatically in the browser. You can rename, duplicate, delete, import and back them up.
-- With a Kerf server: an account, sync of projects, history and chats between browsers (offline edits merge when you reconnect, and the other device's version stays in history), the Claude key kept encrypted on the account, a usage chart, signed-in devices, recent security activity, and a download of everything in the account.
+- With a Kerf server: an account, sync of projects, history, chats, imported STEP files and reference images between browsers (offline edits merge when you reconnect, and the other device's version stays in history), the Claude key kept encrypted on the account, a usage chart, signed-in devices, recent security activity, and a download of everything in the account.
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 

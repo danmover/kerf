@@ -372,6 +372,9 @@ export function applyRemoteProject(p: ProjectRecord | null, id: string) {
   if (p && !typingTimer) {
     const prev = useDesign.getState().source;
     set({ current: p });
+    // files imported on the other device (their bytes arrived with the project)
+    const names = (l?: ProjectImport[]) => (l ?? []).map((i) => `${i.name}:${i.hash}`).join("|");
+    if (names(p.imports) !== names(cur.imports)) setImports(p.imports ?? []);
     if (p.source !== prev) {
       const model = setSource(p.source);
       committed = { source: p.source, model };

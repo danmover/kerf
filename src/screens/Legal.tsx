@@ -181,8 +181,8 @@ function Privacy() {
             <td>Settings → Account → Delete account</td>
           </tr>
           <tr>
-            <td>Projects you add to your account, with thumbnails, up to 300 versions of history each, and their chats</td>
-            <td>Until you delete them. A small marker that a project was deleted is kept for 90 days so your other devices remove it too.</td>
+            <td>Projects you add to your account, with thumbnails, up to 300 versions of history each, their chats, and the files they use (imported STEP files, reference photos and PDFs)</td>
+            <td>Until you delete them. A small marker that a project was deleted is kept for 90 days so your other devices remove it too. A file no project uses any more is removed after a day.</td>
             <td>Delete the project, or delete the account</td>
           </tr>
           <tr>

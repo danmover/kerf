@@ -11,9 +11,12 @@ import { pseudonym, seal, unseal } from "./crypto.js";
 import { HttpError, type AppEnv, type Deps, type User } from "./types.js";
 
 export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
-const MAX_CONCURRENT = 4;
+/** Requests one account can run at once: parallel sub-assembly agents use up to 8, plus chat and self-review. */
+export const MAX_CONCURRENT = 10;
 /** On the shared key one request runs at a time, so a day's spending can pass the budget by one request at most. */
 const MAX_CONCURRENT_SHARED = 1;
+/** Betas the shared key passes on: Kerf's chat keeps its thinking blocks valid with this one. */
+const SHARED_BETAS = new Set(["thinking-binding-controls-2026-08-01"]);
 const SHARED_MAX_TOKENS = 64_000;
 const ANTHROPIC_VERSION = "2023-06-01";
 
@@ -268,7 +271,7 @@ export function claudeRoutes(deps: Deps) {
     }
     if (!key) return anthropicError(c, 400, "invalid_request_error", "There is no Claude API key on your Kerf account. Add one in Settings → Claude.");
 
-    const wait = deps.limiter.hit(`claude:${user.id}`, 60, 60 * 1000);
+    const wait = deps.limiter.hit(`claude:${user.id}`, 120, 60 * 1000);
     if (wait) {
       c.header("retry-after", String(wait));
       return anthropicError(c, 429, "rate_limit_error", "Too many Claude requests from this account. Wait a moment.");
@@ -305,7 +308,11 @@ export function claudeRoutes(deps: Deps) {
     const version = c.req.header("anthropic-version");
     if (version && /^\d{4}-\d{2}-\d{2}$/.test(version)) headers["anthropic-version"] = version;
     const beta = c.req.header("anthropic-beta");
-    if (source === "account" && beta && beta.length <= 500 && /^[A-Za-z0-9._,\s-]+$/.test(beta)) headers["anthropic-beta"] = beta;
+    if (beta && beta.length <= 500 && /^[A-Za-z0-9._,\s-]+$/.test(beta)) {
+      // on the shared key, only betas that change how a request is read, not what it costs
+      const kept = source === "account" ? beta : beta.split(",").map((b) => b.trim()).filter((b) => SHARED_BETAS.has(b)).join(",");
+      if (kept) headers["anthropic-beta"] = kept;
+    }
     if (body !== undefined) headers["content-type"] = "application/json";
 
     const search = new URL(c.req.url).search;

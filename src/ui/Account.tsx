@@ -1059,7 +1059,7 @@ function DataSection() {
       <div className="setting">
         <div className="grow">
           <div className="t">Download everything</div>
-          <div className="d">One .kerfbackup file with every project in your account and its history. Import it into any copy of Kerf.</div>
+          <div className="d">One .kerfbackup file with every project in your account, its history, and the STEP files and reference images it uses. Import it into any copy of Kerf.</div>
         </div>
         <a className="btn" href="/api/projects/export" download>
           <Icon.Download size={14} /> Download

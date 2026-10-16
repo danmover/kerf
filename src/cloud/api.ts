@@ -15,27 +15,57 @@ export class ApiError extends Error {
 
 export const isOffline = (e: unknown) => e instanceof ApiError && e.status === 0;
 
-export async function api<T = Record<string, unknown>>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown, opts: { signal?: AbortSignal } = {}): Promise<T> {
-  let res: Response;
+async function send(path: string, init: RequestInit): Promise<Response> {
   try {
-    res = await fetch(`/api${path}`, {
-      method,
-      credentials: "same-origin",
-      headers: body === undefined ? { "x-kerf": "1" } : { "x-kerf": "1", "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: opts.signal,
-    });
+    return await fetch(`/api${path}`, { credentials: "same-origin", ...init });
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") throw e;
     throw new ApiError(0, "offline", navigator.onLine ? "Could not reach the Kerf server." : "You appear to be offline.");
   }
+}
+
+async function failure(res: Response): Promise<ApiError> {
+  const json = (res.headers.get("content-type") ?? "").includes("application/json") ? ((await res.json().catch(() => ({}))) as Record<string, unknown>) : {};
+  const message = typeof json.message === "string" ? json.message : res.status >= 500 ? "The Kerf server had a problem. Try again." : `The request failed (${res.status}).`;
+  return new ApiError(res.status, typeof json.error === "string" ? json.error : "http_error", message, json);
+}
+
+export async function api<T = Record<string, unknown>>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown, opts: { signal?: AbortSignal } = {}): Promise<T> {
+  const res = await send(path, {
+    method,
+    headers: body === undefined ? { "x-kerf": "1" } : { "x-kerf": "1", "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: opts.signal,
+  });
+  if (!res.ok) throw await failure(res);
   const type = res.headers.get("content-type") ?? "";
-  const json = type.includes("application/json") ? ((await res.json().catch(() => ({}))) as Record<string, unknown>) : {};
-  if (!res.ok) {
-    const message = typeof json.message === "string" ? json.message : res.status >= 500 ? "The Kerf server had a problem. Try again." : `The request failed (${res.status}).`;
-    throw new ApiError(res.status, typeof json.error === "string" ? json.error : "http_error", message, json);
-  }
-  return json as T;
+  return (type.includes("application/json") ? await res.json().catch(() => ({})) : {}) as T;
+}
+
+/** A file stored in the account, as the browser stores it: possibly gzipped, with its unpacked size. */
+export interface StoredFile {
+  data: Uint8Array;
+  encoding: "gzip" | "raw";
+  size: number;
+}
+
+/** Stores a file in the account under the SHA-256 of its contents. */
+export async function putFile(hash: string, file: StoredFile): Promise<void> {
+  const res = await send(`/files/${hash}`, {
+    method: "PUT",
+    headers: { "x-kerf": "1", "content-type": "application/octet-stream", "x-kerf-encoding": file.encoding, "x-kerf-size": String(file.size) },
+    body: file.data as BodyInit,
+  });
+  if (!res.ok) throw await failure(res);
+}
+
+/** A file from the account, or null when the account doesn't have it (yet). */
+export async function getFile(hash: string): Promise<StoredFile | null> {
+  const res = await send(`/files/${hash}`, { headers: { "x-kerf": "1" } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await failure(res);
+  const encoding = res.headers.get("x-kerf-encoding") === "gzip" ? "gzip" : "raw";
+  return { data: new Uint8Array(await res.arrayBuffer()), encoding, size: Number(res.headers.get("x-kerf-size")) || 0 };
 }
 
 // ---------- shapes the server returns ----------
