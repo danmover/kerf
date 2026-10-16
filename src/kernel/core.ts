@@ -8,6 +8,8 @@ import { applyXforms, recipeHash, stableStringify, vadd, vscale, type V3, type X
 import type { BuildItem, ChecksRequest, ChecksResult, Interference, PlacedItem } from "./protocol";
 import { inspectPart, type PartInspection } from "./inspect";
 import { geoKey, type GeoQuery } from "../lang/values";
+import { ProcessAnalyzer } from "../mfg/analyzer";
+import type { ProcessProbe, ProcessResult } from "../mfg/types";
 
 interface CacheEntry {
   shape: Shape3D;
@@ -31,6 +33,7 @@ export class KernelCore {
   private cache = new Map<string, CacheEntry>();
   private placedCache = new Map<string, { shape: Shape3D; bbox: [V3, V3]; used: number }>();
   private tick = 0;
+  private processes = new ProcessAnalyzer();
   maxEntries = 400;
 
   has(hash: string) {
@@ -87,6 +90,7 @@ export class KernelCore {
 
   evict(keep: string[]) {
     const k = new Set(keep);
+    this.processes.evict(k);
     for (const [h, e] of this.cache) {
       if (!k.has(h)) {
         safeDelete(e.shape);
@@ -277,6 +281,11 @@ export class KernelCore {
         return best;
       }
     }
+  }
+
+  /** Manufacturing-process checks of built parts (see src/mfg). */
+  process(probes: ProcessProbe[]): ProcessResult[] {
+    return probes.map((p) => this.processes.run(p, this.get(p.hash)));
   }
 
   /** Smallest distance between two groups of placed solids, with the closest points. */

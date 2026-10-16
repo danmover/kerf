@@ -49,6 +49,8 @@ export const KEYWORDS = new Set([
   "note",
   "brief",
   "decision",
+  "sketch",
+  "analysis",
 ]);
 
 /** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */
@@ -67,9 +69,23 @@ export const UNITS: Record<string, number> = {
   Nm: 1000,
   // degrees Celsius, for the brief's service temperatures
   C: 1,
+  // structural analysis: force in N, torque in N·mm, stress and pressure in MPa (N/mm²), time in hours
+  kN: 1000,
+  lbf: 4.448222,
+  // weight of a kilogram, so 5kgf is 49 N (kg itself is a mass, in grams)
+  kgf: 9.80665,
+  Nmm: 1,
+  MPa: 1,
+  GPa: 1000,
+  kPa: 0.001,
+  bar: 0.1,
+  psi: 0.00689476,
+  h: 1,
+  hr: 1,
 };
 
 const OPS = [
+  "->",
   "..",
   "==",
   "!=",
