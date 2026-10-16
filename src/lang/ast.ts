@@ -30,7 +30,10 @@ export interface Arg {
 export type Item =
   | { k: "prop"; name: string; value: Expr; span: Span }
   | { k: "flag"; name: string; span: Span }
-  | { k: "op"; op: "body" | "add" | "cut" | "intersect"; shape: Expr; span: Span }
+  /** `add <shape> as name` names the feature so its edges and faces can be picked later */
+  | { k: "op"; op: "body" | "add" | "cut" | "intersect"; shape: Expr; name?: string; nameSpan?: Span; span: Span }
+  /** detail that only builds in the full-quality pass */
+  | { k: "cosmetic"; body: Item[]; span: Span }
   | { k: "modifier"; call: Expr & { k: "call" }; span: Span }
   | { k: "for"; varName: string; iter: Expr; body: Item[]; span: Span }
   | { k: "if"; cond: Expr; then: Item[]; else?: Item[]; span: Span }

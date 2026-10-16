@@ -1,6 +1,6 @@
 // Messages between the UI thread and the geometry kernel worker.
 
-import type { PartRecipe, V3, Xform } from "./recipe";
+import type { PartRecipe, Sel, V3, Xform } from "./recipe";
 import type { MeshData } from "./build";
 import type { GeoQuery } from "../lang/values";
 
@@ -69,21 +69,65 @@ export interface ChecksResult {
   pairsTested: number;
 }
 
+export interface InspectRequest {
+  hash: string;
+  recipe: PartRecipe;
+  label: string;
+  /** an edge or face selection to list */
+  sel?: Sel;
+  selKind?: "edges" | "faces";
+  /** a point in the part's own coordinates: report the face and edge there */
+  at?: V3;
+  /** most items to list */
+  limit?: number;
+}
+
+export interface InspectEdge {
+  kind: string;
+  length: number;
+  mid: V3;
+  radius?: number;
+  convexity: string;
+  features: string[];
+}
+
+export interface InspectFace {
+  kind: string;
+  center: V3;
+  normal?: V3;
+  features: string[];
+}
+
+export interface InspectResult {
+  bbox: [V3, V3];
+  volume: number;
+  faces: number;
+  edges: number;
+  features: { name: string; kind: string; faces: number; root: number; tip: number }[];
+  edgeStats: { convex: number; concave: number; smooth: number };
+  selection?: { kind: "edges" | "faces"; count: number; edges?: InspectEdge[]; faces?: InspectFace[] };
+  pick?: { edge?: InspectEdge & { distance: number }; face?: InspectFace & { distance: number }; selectors: string[] };
+  ms: number;
+}
+
 export type ToWorker =
   | { type: "init" }
   | { type: "build"; jobId: number; items: BuildItem[]; quality: "preview" | "final" }
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
   | { type: "export-step"; jobId: number; items: { hash: string; xf: Xform[]; name: string; color: string }[] }
+  | { type: "inspect"; jobId: number; req: InspectRequest }
   | { type: "evict"; keep: string[] };
 
 export type FromWorker =
   | { type: "ready"; ms: number }
   | { type: "init-error"; message: string }
-  | { type: "part"; jobId: number; hash: string; quality: "preview" | "final"; mesh: MeshData; volume: number; bbox: [V3, V3]; ms: number }
+  | { type: "part"; jobId: number; hash: string; quality: "preview" | "final"; mesh: MeshData; volume: number; bbox: [V3, V3]; ms: number; warnings?: string[] }
   | { type: "part-error"; jobId: number; hash: string; message: string }
   | { type: "built"; jobId: number; ms: number; built: number; cached: number }
   | { type: "checks"; jobId: number; result: ChecksResult }
   | { type: "checks-error"; jobId: number; message: string }
   | { type: "exported"; jobId: number; data: ArrayBuffer }
-  | { type: "export-error"; jobId: number; message: string };
+  | { type: "export-error"; jobId: number; message: string }
+  | { type: "inspected"; jobId: number; result: InspectResult }
+  | { type: "inspect-error"; jobId: number; message: string };

@@ -8,7 +8,48 @@ export type V2 = [number, number];
 
 export type Xform =
   | { op: "rotate"; angle: number; origin: V3; axis: V3 }
-  | { op: "translate"; v: V3 };
+  | { op: "translate"; v: V3 }
+  | { op: "mirror"; origin: V3; normal: V3 };
+
+/**
+ * A closed 2D outline in a plane. Profiles are drawn in (u, v) coordinates
+ * and placed in 3D by the shape that uses them (extrude, sweep, loft, revolve).
+ */
+export type Profile =
+  | { t: "circle"; d: number; c: V2 }
+  | { t: "ellipse"; w: number; h: number; c: V2 }
+  | { t: "rect"; w: number; h: number; r: number; c: V2 }
+  | { t: "poly"; pts: V2[]; r: number }
+  | { t: "slot2"; a: V2; b: V2; w: number }
+  | { t: "text"; text: string; size: number; font: FontName; align: "left" | "center" | "right"; c: V2 }
+  /** a closed path of lines, three-point arcs and smooth spline runs; solved sketches use this form */
+  | { t: "path2"; start: V2; segs: Seg2[] }
+  | { t: "offset"; p: Profile; d: number }
+  | { t: "fillet2"; p: Profile; r: number }
+  | { t: "union2"; ps: Profile[] }
+  | { t: "diff2"; a: Profile; b: Profile[] }
+  | { t: "common2"; a: Profile; b: Profile }
+  | { t: "place2"; p: Profile; rot: number; by: V2; mirror?: boolean };
+
+export type Seg2 = { s: "line"; to: V2 } | { s: "arc"; via: V2; to: V2 } | { s: "spline"; to: V2 };
+
+export type FontName = "sans" | "mono";
+
+/** A 3D curve for sweeps. */
+export type Path3 =
+  | { t: "poly"; pts: V3[]; r: number }
+  | { t: "spline"; pts: V3[] }
+  | { t: "helix"; pitch: number; h: number; d: number; at: V3; dir: V3; left: boolean }
+  | { t: "arc3"; a: V3; b: V3; c: V3 };
+
+/** A placed profile: origin o, in-plane x axis u, normal n (v = n × u). */
+export interface Frame {
+  o: V3;
+  u: V3;
+  n: V3;
+}
+
+export type ThreadForm = "iso" | "trapezoid" | "square" | "buttress";
 
 export type ShapeRecipe =
   | { t: "box"; w: number; d: number; h: number; at: V3; r: number }
@@ -20,20 +61,137 @@ export type ShapeRecipe =
   | { t: "rrect"; w: number; h: number; r: number; depth: number; at: V3; dir: V3; center: boolean }
   | { t: "revolve"; pts: V2[]; at: V3; dir: V3 }
   | { t: "gear"; m: number; z: number; w: number; bore: number; at: V3; dir: V3; phase: number; pa: number; backlash: number }
-  | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number }
+  | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number; lead?: number; thread?: ThreadSpec3 }
   | { t: "xform"; shape: ShapeRecipe; xf: Xform[] }
-  | { t: "union"; shapes: ShapeRecipe[] };
+  | { t: "union"; shapes: ShapeRecipe[] }
+  /** a profile pushed along n by h; twist turns it (degrees over h), scale shrinks or grows the far end */
+  | { t: "extrude"; p: Profile; h: number; f: Frame; twist: number; scale: number }
+  | { t: "sweep"; p: Profile; path: Path3; rot: number; frenet: boolean }
+  | { t: "loft"; secs: { p: Profile; f: Frame }[]; ruled: boolean }
+  | { t: "revolve2"; p: Profile; f: Frame; angle: number }
+  /** a helical thread; detailed builds model the real form, fast builds a plain cylinder at the pitch diameter */
+  | { t: "thread"; spec: ThreadSpec3; length: number; at: V3; dir: V3; internal: boolean; lead: number }
+  /** a knurled or ridged grip; fast builds use a plain cylinder */
+  | { t: "knurl"; d: number; h: number; at: V3; dir: V3; count: number; depth: number; style: "straight" | "fluted" };
 
+export interface ThreadSpec3 {
+  /** nominal (major) diameter */
+  d: number;
+  pitch: number;
+  form: ThreadForm;
+  starts: number;
+  left: boolean;
+  /** radial clearance per side: external threads shrink, internal grow */
+  clearance: number;
+}
+
+/** Fixed names for edge or face sets. */
+export type SelPreset = "all" | "top" | "bottom" | "vertical" | "horizontal" | "convex" | "concave" | "sharp";
+export const SEL_PRESETS: SelPreset[] = ["all", "top", "bottom", "vertical", "horizontal", "convex", "concave", "sharp"];
+
+/**
+ * Edge or face selection, resolved by the kernel against the shape at the
+ * moment the modifier runs. Feature names refer to `add ... as name` (or
+ * body/cut/intersect) earlier in the same part.
+ */
+export type Sel =
+  | SelPreset
+  | { s: "feat"; f: string; part: "faces" | "edges" | "root" | "tip" }
+  | { s: "between"; a: string; b: string }
+  | { s: "near"; p: V3; r: number }
+  | { s: "plane"; n: V3; d: number }
+  | { s: "along"; d: V3 }
+  | { s: "facing"; d: V3 }
+  | { s: "circle"; d: number }
+  | { s: "box"; lo: V3; hi: V3 }
+  | { s: "or"; a: Sel[] }
+  | { s: "and"; a: Sel[] }
+  | { s: "minus"; a: Sel; b: Sel };
+
+/** @deprecated kept for older recipes; any Sel works */
 export type EdgeSel = "vertical" | "top" | "bottom" | "all";
 
-export type PartOp =
-  | { op: "add" | "cut" | "intersect"; shape: ShapeRecipe }
-  | { op: "shell"; t: number; open: V3 }
-  | { op: "fillet" | "chamfer"; r: number; edges: EdgeSel };
+/** A face to leave open when shelling: the outermost face in a direction, or a face selection. */
+export type OpenSpec = { dir: V3 } | { sel: Sel };
+
+export type PartOp = (
+  | { op: "add" | "cut" | "intersect"; shape: ShapeRecipe; name?: string }
+  | { op: "shell"; t: number; open: V3 | OpenSpec[] }
+  | { op: "fillet" | "chamfer"; r: number | V2; edges: Sel }
+  | { op: "draft"; angle: number; faces: Sel; pull: V3; neutral: V3 }
+) & {
+  /** cosmetic detail: skipped in fast builds, and dropped (with a warning) if it fails */
+  cosmetic?: boolean;
+};
 
 export interface PartRecipe {
   base: ShapeRecipe | null;
+  /** feature name of the body (`body ... as name`) */
+  baseName?: string;
   ops: PartOp[];
+}
+
+/** True when a fast build and a detailed build of this recipe differ. */
+export function hasDetail(p: PartRecipe): boolean {
+  if (p.base && shapeHasDetail(p.base)) return true;
+  return p.ops.some((o) => o.cosmetic || ("shape" in o && shapeHasDetail(o.shape)));
+}
+
+export function shapeHasDetail(r: ShapeRecipe): boolean {
+  switch (r.t) {
+    case "thread":
+    case "knurl":
+      return true;
+    case "hole":
+      return !!r.thread;
+    case "xform":
+      return shapeHasDetail(r.shape);
+    case "union":
+      return r.shapes.some(shapeHasDetail);
+    default:
+      return false;
+  }
+}
+
+/** Fonts a recipe needs loaded before it can be built. */
+export function fontsIn(p: PartRecipe): FontName[] {
+  const out = new Set<FontName>();
+  const prof = (q: Profile): void => {
+    switch (q.t) {
+      case "text":
+        out.add(q.font);
+        return;
+      case "offset":
+      case "fillet2":
+      case "place2":
+        return prof(q.p);
+      case "union2":
+        return q.ps.forEach(prof);
+      case "diff2":
+        prof(q.a);
+        return q.b.forEach(prof);
+      case "common2":
+        prof(q.a);
+        return prof(q.b);
+    }
+  };
+  const shape = (r: ShapeRecipe): void => {
+    switch (r.t) {
+      case "extrude":
+      case "sweep":
+      case "revolve2":
+        return prof(r.p);
+      case "loft":
+        return r.secs.forEach((s) => prof(s.p));
+      case "xform":
+        return shape(r.shape);
+      case "union":
+        return r.shapes.forEach(shape);
+    }
+  };
+  if (p.base) shape(p.base);
+  for (const o of p.ops) if ("shape" in o) shape(o.shape);
+  return [...out];
 }
 
 // ---------- small vector math shared by evaluator, kernel and viewer ----------
@@ -64,6 +222,20 @@ export function frameFor(dirIn: V3): { u: V3; v: V3; n: V3 } {
   return { u, v: vcross(n, u), n };
 }
 
+/** Placement frame for a profile at `at`, facing `dir`, spun by `rot` degrees about dir. */
+export function frameAt(at: V3, dir: V3, rot = 0): Frame {
+  const { u, v, n } = frameFor(dir);
+  if (!rot) return { o: at, u, n };
+  const a = (rot * Math.PI) / 180;
+  return { o: at, u: vadd(vscale(u, Math.cos(a)), vscale(v, Math.sin(a))), n };
+}
+
+/** World point of profile coordinates (x, y) in a frame. */
+export function framePoint(f: Frame, x: number, y: number): V3 {
+  const v = vcross(f.n, f.u);
+  return vadd(f.o, vadd(vscale(f.u, x), vscale(v, y)));
+}
+
 /** Rotate point p about an axis through origin by angle (degrees), right-handed. */
 export function rotateAbout(p: V3, origin: V3, axis: V3, angleDeg: number): V3 {
   const k = vnorm(axis);
@@ -85,22 +257,33 @@ export function applyXforms(p: V3, xf: Xform[]): V3 {
   let q = p;
   for (const x of xf) {
     if (x.op === "translate") q = vadd(q, x.v);
-    else q = rotateAbout(q, x.origin, x.axis, x.angle);
+    else if (x.op === "rotate") q = rotateAbout(q, x.origin, x.axis, x.angle);
+    else q = reflect(q, x.origin, x.normal);
   }
   return q;
 }
 
 export function applyXformsToDir(d: V3, xf: Xform[]): V3 {
   let q = d;
-  for (const x of xf) if (x.op === "rotate") q = rotateAbout(q, [0, 0, 0], x.axis, x.angle);
+  for (const x of xf) {
+    if (x.op === "rotate") q = rotateAbout(q, [0, 0, 0], x.axis, x.angle);
+    else if (x.op === "mirror") q = reflect(q, [0, 0, 0], x.normal);
+  }
   return q;
+}
+
+/** Mirror point p through the plane with the given origin and normal. */
+export function reflect(p: V3, origin: V3, normal: V3): V3 {
+  const n = vnorm(normal);
+  const k = 2 * vdot(vsub(p, origin), n);
+  return vsub(p, vscale(n, k));
 }
 
 /** Column-major 4x4 matrix (three.js layout) for a transform chain. */
 export function xformMatrix(xf: Xform[]): number[] {
   let m = identity();
   for (const x of xf) {
-    const step = x.op === "translate" ? translation(x.v) : rotationAbout(x.origin, x.axis, x.angle);
+    const step = x.op === "translate" ? translation(x.v) : x.op === "rotate" ? rotationAbout(x.origin, x.axis, x.angle) : reflection(x.origin, x.normal);
     m = mul(step, m);
   }
   return m;
@@ -125,6 +308,11 @@ function rotationAbout(o: V3, axis: V3, angleDeg: number): number[] {
     t * x * z + s * y, t * y * z - s * x, t * z * z + c, 0,
     0, 0, 0, 1,
   ];
+  return mul(translation(o), mul(r, translation([-o[0], -o[1], -o[2]])));
+}
+function reflection(o: V3, normal: V3): number[] {
+  const [x, y, z] = vnorm(normal);
+  const r = [1 - 2 * x * x, -2 * x * y, -2 * x * z, 0, -2 * x * y, 1 - 2 * y * y, -2 * y * z, 0, -2 * x * z, -2 * y * z, 1 - 2 * z * z, 0, 0, 0, 0, 1];
   return mul(translation(o), mul(r, translation([-o[0], -o[1], -o[2]])));
 }
 export function mul(a: number[], b: number[]): number[] {

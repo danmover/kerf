@@ -2,7 +2,7 @@
 // recovery when the worker dies (for example after OpenCASCADE runs out of memory).
 
 import type { MeshData } from "./build";
-import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, ToWorker } from "./protocol";
+import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, InspectRequest, InspectResult, ToWorker } from "./protocol";
 import type { V3, Xform } from "./recipe";
 
 export type KernelStatus = "loading" | "ready" | "error";
@@ -14,6 +14,8 @@ export interface PartResult {
   volume: number;
   bbox: [V3, V3];
   ms: number;
+  /** cosmetic detail that could not be built */
+  warnings?: string[];
 }
 
 interface BuildJob {
@@ -132,7 +134,7 @@ export class KernelClient {
         return;
       case "part": {
         const job = this.jobs.get(m.jobId);
-        if (job?.kind === "build" && !job.cancelled) job.onPart({ hash: m.hash, quality: m.quality, mesh: m.mesh, volume: m.volume, bbox: m.bbox, ms: m.ms });
+        if (job?.kind === "build" && !job.cancelled) job.onPart({ hash: m.hash, quality: m.quality, mesh: m.mesh, volume: m.volume, bbox: m.bbox, ms: m.ms, warnings: m.warnings });
         return;
       }
       case "part-error": {
@@ -147,14 +149,16 @@ export class KernelClient {
         return;
       }
       case "checks":
-      case "exported": {
+      case "exported":
+      case "inspected": {
         const job = this.jobs.get(m.jobId);
-        if (job?.kind === "value") job.resolve(m.type === "checks" ? m.result : m.data);
+        if (job?.kind === "value") job.resolve(m.type === "exported" ? m.data : m.result);
         this.jobs.delete(m.jobId);
         return;
       }
       case "checks-error":
-      case "export-error": {
+      case "export-error":
+      case "inspect-error": {
         const job = this.jobs.get(m.jobId);
         if (job?.kind === "value") job.reject(new Error(m.message));
         this.jobs.delete(m.jobId);
@@ -195,6 +199,11 @@ export class KernelClient {
 
   exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]) {
     return this.value<ArrayBuffer>((jobId) => ({ type: "export-step", jobId, items }));
+  }
+
+  /** Named features, sharp edges and selection matches of one part (in its own coordinates). */
+  inspect(req: InspectRequest) {
+    return this.value<InspectResult>((jobId) => ({ type: "inspect", jobId, req }));
   }
 
   evict(keep: string[]) {

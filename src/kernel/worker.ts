@@ -6,6 +6,25 @@ import wasmUrl from "replicad-opencascadejs/wasm?url";
 import * as R from "replicad";
 import { KernelCore } from "./core";
 import type { FromWorker, ToWorker } from "./protocol";
+import { fontsIn, type FontName } from "./recipe";
+import { fontLoaded, loadFontData } from "./profiles";
+import sansUrl from "@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff?url";
+import monoUrl from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff?url";
+
+const FONT_URLS: Record<FontName, string> = { sans: sansUrl, mono: monoUrl };
+
+/** Text profiles need their font loaded before the (synchronous) build. */
+async function ensureFonts(names: FontName[]) {
+  for (const n of names) {
+    if (fontLoaded(n)) continue;
+    try {
+      const res = await fetch(FONT_URLS[n]);
+      await loadFontData(n, await res.arrayBuffer());
+    } catch {
+      /* the build reports the missing font */
+    }
+  }
+}
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 const core = new KernelCore();
@@ -61,7 +80,8 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
           try {
             if (core.has(item.hash)) cached++;
             else built++;
-            const entry = core.build(item);
+            await ensureFonts(fontsIn(item.recipe));
+            const entry = core.build(item, msg.quality);
             const mesh = core.mesh(item.hash, msg.quality);
             // copy so the cached mesh stays usable for later requests
             const copy = {
@@ -71,7 +91,7 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
               edges: mesh.edges.slice(),
             };
             post(
-              { type: "part", jobId: msg.jobId, hash: item.hash, quality: msg.quality, mesh: copy, volume: entry.volume, bbox: entry.bbox, ms: performance.now() - t },
+              { type: "part", jobId: msg.jobId, hash: item.hash, quality: msg.quality, mesh: copy, volume: entry.volume, bbox: entry.bbox, ms: performance.now() - t, warnings: entry.warnings.length ? entry.warnings : undefined },
               [copy.positions.buffer, copy.normals.buffer, copy.indices.buffer, copy.edges.buffer],
             );
           } catch (e) {
@@ -101,6 +121,15 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
           post({ type: "exported", jobId: msg.jobId, data }, [data]);
         } catch (e) {
           post({ type: "export-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+      case "inspect": {
+        try {
+          await ensureFonts(fontsIn(msg.req.recipe));
+          post({ type: "inspected", jobId: msg.jobId, result: core.inspect(msg.req) });
+        } catch (e) {
+          post({ type: "inspect-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
         }
         return;
       }

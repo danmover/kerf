@@ -3,8 +3,11 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { frameFor, rotateAbout, vadd, vcross, vscale, type EdgeSel, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
+import { frameFor, rotateAbout, vadd, vcross, vscale, type OpenSpec, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
 import { gearOutline } from "../library/gears";
+import { extrudeProfile, loftProfiles, revolveProfile2, sweepProfile } from "./profiles";
+import { buildKnurl, buildThread } from "./threads";
+import { describeSel, Topo, type FeatureTools } from "./topology";
 
 export class BuildError extends Error {}
 
@@ -35,7 +38,11 @@ function revolveProfile(pts: V2[], at: V3, dir: V3): Shape3D {
   return sketch.revolve(n, { origin: at }) as Shape3D;
 }
 
-export function buildShape(r: ShapeRecipe): Shape3D {
+/**
+ * Build one solid. `detail` is false for fast builds: threads and knurls are
+ * then plain cylinders, which is what checks and previews use.
+ */
+export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
   switch (r.t) {
     case "box": {
       const d = r.r > 1e-6 ? R.drawRoundedRectangle(r.w, r.d, r.r) : R.drawRectangle(r.w, r.d);
@@ -82,6 +89,11 @@ export function buildShape(r: ShapeRecipe): Shape3D {
       return g;
     }
     case "hole": {
+      if (r.thread) {
+        let tool = buildThread(r.thread, r.depth, r.at, r.dir, true, r.lead ?? 0, detail);
+        if (r.cbore) tool = tool.fuse(R.makeCylinder(r.cbore[0] / 2, r.cbore[1] + 0.05, vadd(r.at, vscale(r.dir, -0.05)), r.dir));
+        return tool;
+      }
       const start = vadd(r.at, vscale(r.dir, -0.05));
       let tool: Shape3D = R.makeCylinder(r.d / 2, r.depth + 0.05, start, r.dir);
       if (r.cbore) tool = tool.fuse(R.makeCylinder(r.cbore[0] / 2, r.cbore[1] + 0.05, start, r.dir));
@@ -102,13 +114,25 @@ export function buildShape(r: ShapeRecipe): Shape3D {
       return tool;
     }
     case "xform":
-      return applyXf(buildShape(r.shape), r.xf);
+      return applyXf(buildShape(r.shape, detail), r.xf);
     case "union": {
-      const shapes = r.shapes.map(buildShape);
+      const shapes = r.shapes.map((x) => buildShape(x, detail));
       let out = shapes[0];
       for (let i = 1; i < shapes.length; i++) out = out.fuse(shapes[i]);
       return out;
     }
+    case "extrude":
+      return extrudeProfile(r.p, r.h, r.f, r.twist, r.scale);
+    case "sweep":
+      return sweepProfile(r.p, r.path, r.rot, r.frenet);
+    case "loft":
+      return loftProfiles(r.secs, r.ruled);
+    case "revolve2":
+      return revolveProfile2(r.p, r.f, r.angle);
+    case "thread":
+      return buildThread(r.spec, r.length, r.at, r.dir, r.internal, r.lead, detail);
+    case "knurl":
+      return buildKnurl(r.d, r.h, r.at, r.dir, r.count, r.depth, r.style, detail);
   }
 }
 
@@ -117,76 +141,132 @@ export function applyXf(s: Shape3D, xf: Xform[]): Shape3D {
   for (const x of xf) {
     if (x.op === "translate") {
       if (x.v[0] || x.v[1] || x.v[2]) out = out.translate(x.v);
-    } else if (Math.abs(x.angle) > 1e-9) out = out.rotate(x.angle, x.origin, x.axis);
+    } else if (x.op === "rotate") {
+      if (Math.abs(x.angle) > 1e-9) out = out.rotate(x.angle, x.origin, x.axis);
+    } else out = out.mirror(new R.Plane(x.origin, frameFor(x.normal).u, x.normal), x.origin);
   }
   return out;
 }
 
-function planeOf(open: V3): { plane: "XY" | "YZ" | "XZ"; axis: 0 | 1 | 2 } {
-  const ax = [Math.abs(open[0]), Math.abs(open[1]), Math.abs(open[2])];
-  if (ax[2] >= ax[0] && ax[2] >= ax[1]) return { plane: "XY", axis: 2 };
-  if (ax[0] >= ax[1]) return { plane: "YZ", axis: 0 };
-  return { plane: "XZ", axis: 1 };
+export interface PartBuild {
+  shape: Shape3D;
+  /** cosmetic steps that failed and were left out */
+  warnings: string[];
+  features: Map<string, FeatureTools>;
 }
 
-function edgeFilter(shape: Shape3D, sel: EdgeSel) {
-  const [min, max] = shape.boundingBox.bounds;
-  switch (sel) {
-    case "vertical":
-      return (e: R.EdgeFinder) => e.inDirection("Z");
-    case "top":
-      return (e: R.EdgeFinder) => e.inPlane("XY", [0, 0, max[2]]);
-    case "bottom":
-      return (e: R.EdgeFinder) => e.inPlane("XY", [0, 0, min[2]]);
-    case "all":
-      return undefined;
-  }
+export function buildPart(p: PartRecipe, opts: { detail?: boolean } = {}): Shape3D {
+  return buildPartFull(p, opts).shape;
 }
 
-export function buildPart(p: PartRecipe): Shape3D {
+/** Build a part step by step, keeping named feature tools for edge and face selection. */
+export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): PartBuild {
+  const detail = !!opts.detail;
   if (!p.base) throw new BuildError("Part has no body");
-  let shape = buildShape(p.base);
+  const features = new Map<string, FeatureTools>();
+  const warnings: string[] = [];
+  let shape = buildShape(p.base, detail);
+  if (p.baseName) features.set(p.baseName, { name: p.baseName, kind: "body", tools: [shape] });
+  let topo: Topo | null = null;
+  const topoNow = () => (topo && topo.shape === shape ? topo : (topo?.dispose(), (topo = new Topo(shape, features))));
   p.ops.forEach((op, i) => {
+    if (op.cosmetic && !detail) return;
     const step = `step ${i + 2}`;
     try {
-      switch (op.op) {
-        case "add":
-          shape = shape.fuse(buildShape(op.shape));
-          break;
-        case "cut":
-          shape = shape.cut(buildShape(op.shape));
-          break;
-        case "intersect":
-          shape = shape.intersect(buildShape(op.shape)) as Shape3D;
-          break;
-        case "shell": {
-          const { plane, axis } = planeOf(op.open);
-          const [min, max] = shape.boundingBox.bounds;
-          const origin: V3 = [0, 0, 0];
-          origin[axis] = op.open[axis] >= 0 ? max[axis] : min[axis];
-          // pass a point: a numeric offset runs along each named plane's own normal (XZ points to -Y)
-          shape = shape.shell(op.t, (f) => f.inPlane(plane, origin));
-          break;
-        }
-        case "fillet":
-        case "chamfer": {
-          const filter = edgeFilter(shape, op.edges);
-          shape = op.op === "fillet" ? shape.fillet(op.r, filter) : shape.chamfer(op.r, filter);
-          break;
-        }
-      }
+      shape = applyOp(shape, op, detail, features, topoNow);
     } catch (e) {
-      const what = op.op === "shell" ? `shell(${op.t})` : op.op === "fillet" || op.op === "chamfer" ? `${op.op}(${op.r}, edges: "${op.edges}")` : `${op.op} ${(op as { shape: ShapeRecipe }).shape.t}`;
+      const what = opLabel(op);
+      if (op.cosmetic) {
+        warnings.push(`${what} (${step}) was left out: ${errMsg(e)}`);
+        return;
+      }
       const hint =
         op.op === "fillet" || op.op === "chamfer"
-          ? " Try a smaller radius, or apply it right after the body before cutting features."
+          ? " Try a smaller radius, pick fewer edges, or round the edges before cutting features that cross them."
           : op.op === "shell"
             ? " Shell needs a simple body; apply it before adding bosses or cutting holes."
-            : "";
+            : op.op === "draft"
+              ? " Draft planar or cylindrical faces before rounding their edges, and keep the angle small."
+              : "";
       throw new BuildError(`The kernel could not apply ${what} (${step}): ${errMsg(e)}.${hint}`);
     }
   });
-  return shape;
+  (topo as Topo | null)?.dispose();
+  return { shape, warnings, features };
+}
+
+function opLabel(op: PartOp): string {
+  switch (op.op) {
+    case "shell":
+      return `shell(${op.t})`;
+    case "fillet":
+    case "chamfer":
+      return `${op.op}(${Array.isArray(op.r) ? `(${op.r.join(", ")})` : op.r}, edges: ${describeSel(op.edges)})`;
+    case "draft":
+      return `draft(${op.angle}, faces: ${describeSel(op.faces)})`;
+    default:
+      return `${op.op} ${op.shape.t}${op.name ? ` as ${op.name}` : ""}`;
+  }
+}
+
+function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<string, FeatureTools>, topo: () => Topo): Shape3D {
+  switch (op.op) {
+    case "add":
+    case "cut":
+    case "intersect": {
+      const tool = buildShape(op.shape, detail);
+      if (op.name) {
+        const f = features.get(op.name);
+        if (f) f.tools.push(tool);
+        else features.set(op.name, { name: op.name, kind: op.op, tools: [tool] });
+      }
+      if (op.op === "add") return shape.fuse(tool);
+      if (op.op === "cut") return shape.cut(tool);
+      return shape.intersect(tool) as Shape3D;
+    }
+    case "shell": {
+      const t = topo();
+      const specs: OpenSpec[] = Array.isArray(op.open) && typeof op.open[0] === "number" ? [{ dir: op.open as V3 }] : (op.open as OpenSpec[]);
+      const picked = new Set<number>();
+      for (const sp of specs) {
+        if ("dir" in sp) {
+          const f = t.outermostFace(sp.dir);
+          if (f === undefined) throw new BuildError(`no flat face points along (${sp.dir.map((x) => Math.round(x * 100) / 100).join(", ")}) to leave open`);
+          picked.add(f);
+        } else {
+          const fs = t.selectFaces(sp.sel);
+          if (!fs.size) throw new BuildError(`the open faces ${describeSel(sp.sel)} matched nothing`);
+          fs.forEach((f) => picked.add(f));
+        }
+      }
+      const faces = [...picked].map((i) => t.faces[i]);
+      return shape.shell(op.t, (f) => f.inList(faces));
+    }
+    case "fillet":
+    case "chamfer": {
+      const t = topo();
+      const idx = t.selectEdges(op.edges);
+      if (!idx.size) throw new BuildError(`edges: ${describeSel(op.edges)} matched no edges`);
+      const chosen = [...idx].map((i) => t.edges[i]);
+      const byHash = new Map<number, R.Edge[]>();
+      for (const e of chosen) byHash.set(e.hashCode, [...(byHash.get(e.hashCode) ?? []), e]);
+      const has = (e: R.Edge) => !!byHash.get(e.hashCode)?.some((x) => x.isSame(e));
+      if (op.op === "fillet") {
+        const r = op.r;
+        return shape.fillet((e) => (has(e) ? r : null));
+      }
+      const r = Array.isArray(op.r) ? op.r[0] : op.r;
+      return shape.chamfer((e) => (has(e) ? r : null));
+    }
+    case "draft": {
+      const t = topo();
+      const idx = t.selectFaces(op.faces);
+      if (!idx.size) throw new BuildError(`faces: ${describeSel(op.faces)} matched no faces`);
+      const faces = [...idx].map((i) => t.faces[i]);
+      const plane = new R.Plane(op.neutral, frameFor(op.pull).u, op.pull);
+      return shape.draft(op.angle, (f) => f.inList(faces), plane);
+    }
+  }
 }
 
 function errMsg(e: unknown): string {

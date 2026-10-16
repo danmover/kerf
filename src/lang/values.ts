@@ -1,6 +1,6 @@
 // Runtime values for the Kerf evaluator.
 
-import type { ShapeRecipe, V3 } from "../kernel/recipe";
+import type { Path3, Profile, Sel, ShapeRecipe, V3 } from "../kernel/recipe";
 
 export class Vec {
   constructor(public v: number[]) {}
@@ -30,6 +30,29 @@ export class ShapeV {
   constructor(public recipe: ShapeRecipe) {}
 }
 
+/** A closed 2D outline: circle(), rect(), polygon(), text(), offset() ... */
+export class ProfileV {
+  constructor(public recipe: Profile) {}
+}
+
+/** A 3D curve for sweep() and pipe(). */
+export class PathV {
+  constructor(public recipe: Path3) {}
+}
+
+/** A set of edges or faces, picked when the modifier using it runs. */
+export class SelV {
+  constructor(public sel: Sel) {}
+}
+
+/** A named feature inside a part (`add ... as boss`): boss.root, boss.edges, boss.faces ... */
+export class FeatRef {
+  constructor(
+    public name: string,
+    public op: string,
+  ) {}
+}
+
 export class Fn {
   constructor(
     public name: string,
@@ -51,7 +74,7 @@ export class Pending {
   constructor(public keys: string[]) {}
 }
 
-export type Value = number | string | boolean | Vec | Obj | ShapeV | Fn | Ref | Pending | Value[] | null;
+export type Value = number | string | boolean | Vec | Obj | ShapeV | ProfileV | PathV | SelV | FeatRef | Fn | Ref | Pending | Value[] | null;
 
 export interface CallCtx {
   /** Raise an evaluation error attached to the current call site. */
@@ -84,6 +107,10 @@ export function typeName(v: Value): string {
   if (v instanceof Vec) return v.v.length === 2 ? "2D vector" : "vector";
   if (v instanceof Obj) return v.kind;
   if (v instanceof ShapeV) return "shape";
+  if (v instanceof ProfileV) return "profile";
+  if (v instanceof PathV) return "path";
+  if (v instanceof SelV) return "selection";
+  if (v instanceof FeatRef) return "feature";
   if (v instanceof Fn) return "function";
   if (v instanceof Ref) return v.what;
   if (v instanceof Pending) return "pending geometry value";
@@ -105,6 +132,10 @@ export function show(v: Value): string {
   if (v instanceof Vec) return "(" + v.v.map((n) => fmtNum(n, 3)).join(", ") + ")";
   if (v instanceof Obj) return v.label ?? v.kind;
   if (v instanceof ShapeV) return `shape:${v.recipe.t}`;
+  if (v instanceof ProfileV) return `profile:${v.recipe.t}`;
+  if (v instanceof PathV) return `path:${v.recipe.t}`;
+  if (v instanceof SelV) return "selection";
+  if (v instanceof FeatRef) return `feature ${v.name}`;
   if (v instanceof Fn) return `${v.name}()`;
   if (v instanceof Ref) return v.name;
   return "…";

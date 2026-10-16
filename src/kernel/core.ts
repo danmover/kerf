@@ -3,10 +3,12 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { applyXf, bboxOf, buildPart, meshShape, type MeshData } from "./build";
-import { applyXforms, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
-import type { BuildItem, ChecksRequest, ChecksResult, Interference, PlacedItem } from "./protocol";
+import { applyXf, bboxOf, buildPartFull, meshShape, type MeshData } from "./build";
+import { applyXforms, hasDetail, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
+import type { BuildItem, ChecksRequest, ChecksResult, InspectRequest, InspectResult, Interference, PlacedItem } from "./protocol";
 import { geoKey, type GeoQuery } from "../lang/values";
+import { inspectShape } from "./inspect";
+import type { FeatureTools } from "./topology";
 
 interface CacheEntry {
   shape: Shape3D;
@@ -14,10 +16,16 @@ interface CacheEntry {
   bbox: [V3, V3];
   meshes: Partial<Record<"preview" | "final", MeshData>>;
   used: number;
+  features: Map<string, FeatureTools>;
+  /** cosmetic steps that could not be built */
+  warnings: string[];
 }
 
 export class KernelCore {
+  /** fast builds: what checks, measurements and previews use */
   private cache = new Map<string, CacheEntry>();
+  /** detailed builds (threads, knurls, cosmetic steps) for final meshes and STEP export */
+  private detailCache = new Map<string, CacheEntry>();
   private placedCache = new Map<string, { shape: Shape3D; bbox: [V3, V3]; used: number }>();
   private tick = 0;
   maxEntries = 400;
@@ -32,27 +40,49 @@ export class KernelCore {
     return e;
   }
 
-  build(item: BuildItem): CacheEntry {
+  /** Build a part. Final quality builds the detailed version when the recipe has detail. */
+  build(item: BuildItem, quality: "preview" | "final" = "preview"): CacheEntry {
+    if (quality === "final" && hasDetail(item.recipe)) {
+      const hit = this.detailCache.get(item.hash);
+      if (hit) {
+        hit.used = ++this.tick;
+        return hit;
+      }
+      const entry = this.make(item, true);
+      this.detailCache.set(item.hash, entry);
+      this.trim();
+      return entry;
+    }
     const hit = this.get(item.hash);
     if (hit) return hit;
-    const shape = buildPart(item.recipe);
+    const entry = this.make(item, false);
+    this.cache.set(item.hash, entry);
+    this.trim();
+    return entry;
+  }
+
+  private make(item: BuildItem, detail: boolean): CacheEntry {
+    const { shape, warnings, features } = buildPartFull(item.recipe, { detail });
     let volume = 0;
     try {
       volume = R.measureVolume(shape);
     } catch {
       volume = 0;
     }
-    const entry: CacheEntry = { shape, volume, bbox: bboxOf(shape), meshes: {}, used: ++this.tick };
-    this.cache.set(item.hash, entry);
-    this.trim();
-    return entry;
+    return { shape, volume, bbox: bboxOf(shape), meshes: {}, used: ++this.tick, features, warnings };
   }
 
   mesh(hash: string, quality: "preview" | "final"): MeshData {
-    const e = this.get(hash);
+    const e = (quality === "final" ? this.detailCache.get(hash) : undefined) ?? this.get(hash);
     if (!e) throw new Error("not built");
     if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality);
     return e.meshes[quality]!;
+  }
+
+  /** Describe a built part: named features, sharp edges, and what a selector picks. */
+  inspect(req: InspectRequest): InspectResult {
+    const e = this.build({ hash: req.hash, recipe: req.recipe, label: req.label });
+    return inspectShape(e.shape, e.features, req, e.volume);
   }
 
   evict(keep: string[]) {
@@ -61,6 +91,12 @@ export class KernelCore {
       if (!k.has(h)) {
         safeDelete(e.shape);
         this.cache.delete(h);
+      }
+    }
+    for (const [h, e] of this.detailCache) {
+      if (!k.has(h)) {
+        safeDelete(e.shape);
+        this.detailCache.delete(h);
       }
     }
     for (const [key, p] of this.placedCache) {
@@ -72,11 +108,13 @@ export class KernelCore {
   }
 
   private trim() {
-    if (this.cache.size <= this.maxEntries) return;
-    const sorted = [...this.cache.entries()].sort((a, b) => a[1].used - b[1].used);
-    for (const [h, e] of sorted.slice(0, this.cache.size - this.maxEntries)) {
-      safeDelete(e.shape);
-      this.cache.delete(h);
+    for (const map of [this.cache, this.detailCache]) {
+      if (map.size <= this.maxEntries) continue;
+      const sorted = [...map.entries()].sort((a, b) => a[1].used - b[1].used);
+      for (const [h, e] of sorted.slice(0, map.size - this.maxEntries)) {
+        safeDelete(e.shape);
+        map.delete(h);
+      }
     }
   }
 
@@ -249,7 +287,12 @@ export class KernelCore {
   }
 
   exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]): Blob {
-    const shapes = items.map((it) => ({ shape: this.placed(it).shape.clone(), name: it.name, color: it.color }));
+    // the detailed solid when it has been built (real threads, cosmetic detail), else the fast one
+    const shapes = items.map((it) => {
+      const d = this.detailCache.get(it.hash);
+      const shape = d ? applyXf(d.shape.clone(), it.xf) : this.placed(it).shape.clone();
+      return { shape, name: it.name, color: it.color };
+    });
     return R.exportSTEP(shapes);
   }
 }
