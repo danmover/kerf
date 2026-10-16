@@ -280,7 +280,14 @@ describe("sand tunneller", () => {
     // a hot motor rests on the way out, and the rest doesn't count towards the time limits
     expect(ino).toContain('motors hot: resting until they cool');
     expect(ino).toContain("now - t0 - pausedMs");
-    // the roll guard acts in a quarter second and only clears under half the limit
+    // backing out ends when the rear screw runs free in the wall hole, not on the turn count (a slipping
+    // screw turns without moving the body), and a rest that doesn't cool the motors ends the run
+    expect(config).toMatch(/#define REAR_FREE_A\s+0\.75\b/);
+    expect(config).toMatch(/#define MAX_REST_S\s+1200\b/);
+    expect(ino).toContain('"rear screw out of the sand: pull it out by the tail"');
+    expect(ino).not.toContain("backed out to the start");
+    expect(ino).toContain("now - coolSince > MAX_REST_S * 1000UL");
+        // the roll guard acts in a quarter second and only clears under half the limit
     expect(ino).toContain("now - rollSince > 250");
     expect(ino).toContain("fabs(roll) < ROLL_LIMIT_DEG * 0.5f");
   });

@@ -294,6 +294,9 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     MOTOR_HOT_K: setting(c.fw, "motor_hot_rise", 60),
     MOTOR_COOLING: setting(c.fw, "motor_cooling", 0.5),
     GIVE_UP_S: setting(c.fw, "give_up_time", 0),
+    MAX_REST_S: setting(c.fw, "max_rest_time", 1200),
+    // a screw turning in air draws little more than the motor's free current
+    REAR_FREE_A: setting(c.fw, "rear_free_current", rear ? Math.round(Math.max(0.3, 3 * Number(rear.part.specs.i_free ?? 0.2)) * 100) / 100 : 0.6),
   };
 
   // ---- pins.h ----
@@ -368,6 +371,8 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     C.push("// Motor heating (estimated from the current: check the can temperature on the bench)");
     C.push(`#define MOTOR_HOT_K      ${cNum(S.MOTOR_HOT_K)}      // estimated rise above the surroundings that is too hot: rest. Digging turns back at 3/4 of it`);
     C.push(`#define MOTOR_COOLING    ${cNum(S.MOTOR_COOLING)}     // share of free-air cooling the motor gets where it runs (buried in sand: a guess)`);
+    C.push(`#define MAX_REST_S       ${cNum(S.MAX_REST_S)}    // a rest that has not cooled the motors by then ends the run`);
+    C.push(`#define REAR_FREE_A      ${cNum(S.REAR_FREE_A)}    // backing out, the rear motor below this for 2 s: its screw is out of the sand`);
     C.push("");
     C.push("// Steering and roll");
     C.push(`#define HEADING_KP       ${cNum(S.HEADING_KP)}     // degrees of hinge per degree of heading error`);
@@ -727,7 +732,7 @@ void actCalibrate() { Serial.println(F("Servo steering: nothing to calibrate. Se
   L.push('const char *stateName[] = { "waiting", "digging", "backing off", "backing out", "done", "fault", "bench" };');
   L.push(`State state = ${a.tunneller ? "WAITING" : "BENCH"};`);
   L.push('const char *reason = "";');
-  L.push("unsigned long t0, stateSince, stallSince, quietSince, rollSince, lastLog, testUntil, digMs, refAt, lowSince, coolSince, pausedMs, nudgeUntil;");
+  L.push("unsigned long t0, stateSince, stallSince, quietSince, rollSince, lastLog, testUntil, digMs, refAt, lowSince, coolSince, pausedMs, nudgeUntil, freeSince;");
   L.push("float distance = 0, targetYaw = 0, headingI = 0, digAmps = 0, lastProgress = 0;");
   L.push("uint8_t retries = 0;");
   L.push("bool stopped = false;");
@@ -780,7 +785,7 @@ bool batteryPresent() {
 }
 void startRun(const char *why) {
   t0 = millis(); targetYaw = yaw; headingI = 0; distance = 0; lastProgress = 0; retries = 0; digAmps = 0; rollSince = 0; quietSince = 0;
-  refAt = 0; lowSince = 0; coolSince = 0; pausedMs = 0;
+  refAt = 0; lowSince = 0; coolSince = 0; pausedMs = 0; freeSince = 0;
   encAtStart = ${fe >= 0 ? `encRead(${fe})` : "0"};
   logClear();
   setState(${a.tunneller ? "DIGGING" : "BENCH"}, why);
@@ -788,7 +793,7 @@ void startRun(const char *why) {
 // back out the way it came: for at most as long as it dug, nudging forward when it sticks
 void startRetreat(const char *why) {
   stopAll(); delay(300);
-  digMs = millis() - t0; retries = 0; nudgeUntil = 0; stallSince = 0;
+  digMs = millis() - t0; retries = 0; nudgeUntil = 0; stallSince = 0; freeSince = 0;
   retreatBest = ${fe >= 0 ? `encRead(${fe})` : "0"};
   setState(RETREAT, why);
 }`);
@@ -922,6 +927,8 @@ void setup() {
     const fr = front ? `${front.key}_IDX` : "0";
     const frontEnc = front ? encs.indexOf(front) : -1;
     const rr = rear ? `${rear.key}_IDX` : "-1";
+    // the rear screw running free on the way out is how the firmware knows it has left the sand
+    const rearFree = !!rear && !!rear.pins.cs;
     loopBody.push(`
   if (state != BENCH && state != DONE && state != FAULT) {
     if (batteryLow()) { stopAll(); setState(FAULT, "battery low"); }
@@ -1004,8 +1011,9 @@ void setup() {
 
     case RETREAT: {
       // back out the way it came, straight, for at most as long as it dug. If the motors get too hot it
-      // rests until they cool, and the rest counts towards neither time limit.
+      // rests until they cool (for up to MAX_REST_S), and the rest counts towards neither time limit.
       if (coolSince) {
+        if (now - coolSince > MAX_REST_S * 1000UL) { setState(FAULT, "motors still hot after a long rest: pull it out by the tail, or dig it out"); break; }
         if (hottest() > MOTOR_HOT_K * 0.6f) break;
         stateSince += now - coolSince; pausedMs += now - coolSince; coolSince = 0;
         Serial.println(F("motors cooled: backing out again"));
@@ -1020,9 +1028,18 @@ void setup() {
       motorWrite(motors[${fr}], -(int)(POWER * 255));
       ${rear ? `motorWrite(motors[${rr}], -(int)(POWER * 255));` : ""}
       ${
+        rearFree
+          ? `// the rear screw spinning free means it is out of the sand, back in the hole in the wall: the tail is in
+      // reach. The turn count can't tell, because a screw that slips turns without moving the body.
+      if (now - stateSince > 2000 && now > nudgeUntil + 1500 && motors[${rr}].amps >= 0 && motors[${rr}].amps < REAR_FREE_A) {
+        if (!freeSince) freeSince = now;
+        else if (now - freeSince > 2000) { stopAll(); setState(DONE, "rear screw out of the sand: pull it out by the tail"); break; }
+      } else freeSince = 0;`
+          : ""
+      }
+      ${
         frontEnc >= 0
-          ? `if (encRead(${frontEnc}) <= encAtStart) { stopAll(); setState(DONE, "backed out to the start"); break; }
-      if (retreatBest - encRead(${frontEnc}) > encCountsPerRev[${frontEnc}] * 50.0f / PITCH_MM) { retreatBest = encRead(${frontEnc}); retries = 0; }`
+          ? `${rearFree ? "" : `if (encRead(${frontEnc}) <= encAtStart) { stopAll(); setState(DONE, "turned back as far as it dug: check it is out, or pull it by the tail"); break; }\n      `}if (retreatBest - encRead(${frontEnc}) > encCountsPerRev[${frontEnc}] * 50.0f / PITCH_MM) { retreatBest = encRead(${frontEnc}); retries = 0; }`
           : ""
       }
       if (now - stateSince > digMs) { stopAll(); setState(FAULT, "backed out for as long as it dug: dig it out from the start wall"); break; }
@@ -1086,7 +1103,7 @@ function arduinoReadme(a: {
   const L: string[] = [];
   L.push(`# ${c.fw.name}: firmware for ${c.designName}`, "");
   L.push(`Generated by Kerf from the design's wiring for **${c.board.name}** (${c.boardPart.name}). Every pin in \`pins.h\` comes from a wire in the design, so if you change the wiring, export again.`, "");
-  L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, and backs off when it stalls. It stops when the front motor's load drops as the nose breaks through, or when the far wall stops it. Screw turns only estimate the distance (screws turning in place count too), so if neither happens by twice the expected distance or the give-up time, it backs out on the reserve. It also estimates each motor's heating from its current and backs out when they get warm without a breakthrough, resting on the way out if they get hot. It stops if the body rolls, and logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
+  L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, and backs off when it stalls. It stops when the front motor's load drops as the nose breaks through, or when the far wall stops it. Screw turns only estimate the distance (screws turning in place count too), so if neither happens by twice the expected distance or the give-up time, it backs out on the reserve. It also estimates each motor's heating from its current and backs out when they get warm without a breakthrough, resting on the way out if they get hot. Backing out stops when the rear motor runs free: its screw is out of the sand and the tail can be reached from the wall hole, so pull it out by the tail. It stops if the body rolls, and logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
   if (a.warnings.length) {
     L.push("## Fix before uploading", "");
     for (const w of a.warnings) L.push(`- ${w}`);
