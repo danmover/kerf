@@ -9,6 +9,7 @@ import { useView, revealSpan, select } from "../../app/view";
 import type { EvalPart } from "../../core/model";
 import { fmtNum } from "../../lang/values";
 import { Icon } from "../icons";
+import { Swatch } from "../MaterialPicker";
 import { G } from "./glyphs";
 import { describePart } from "./insights";
 import { Highlight, CodeSample } from "./bits";
@@ -222,7 +223,7 @@ function PartRow({ r, filter, delay, selected, hidden, fails }: { r: Row; filter
       onMouseEnter={() => useView.setState({ hovered: r.ids[0] })}
       onMouseLeave={() => useView.setState({ hovered: null })}
     >
-      <span className="lp-swatch" style={{ background: r.part.color }} />
+      <Swatch material={r.part.material} finish={r.part.finish} color={r.part.color} size={14} render={32} />
       <span className="lp-kind">{kindIcon(r.part)}</span>
       <span className="lp-row-text" title={tip}>
         <span className="lp-row-name">

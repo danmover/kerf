@@ -4,6 +4,7 @@
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { FINISHES, MATERIAL_LIST } from "../library/materials";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -35,6 +36,10 @@ export function languageReference(): string {
     .map(([k, b]) => `${k} (${b.bore}×${b.od}×${b.width})`)
     .join(", ");
   const materials = Object.keys(MATERIALS).map((m) => `"${m}"`).join(", ");
+  const materialTable = MATERIAL_LIST.map((m) => `"${m.name}" (${m.density} g/cm³): ${m.note} Finishes: ${m.finishes.map((f) => `"${f}"`).join(", ")} (default "${m.finishes[0]}").`).join("\n");
+  const finishTable = Object.values(FINISHES)
+    .map((f) => `"${f.id}": ${f.note}`)
+    .join("; ");
 
   return `# Kerf design language (.kerf)
 
@@ -58,6 +63,7 @@ Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vector
 part bracket {
   color: #4f7cff
   material: "PETG"            // one of ${materials}
+  finish: "printed"           // optional surface finish for that material (see Materials and finishes)
   group: "Housing"            // groups parts in the parts panel
   body box(40, 20, 5)         // first solid
   add cylinder(d: 10, h: 12, at: (0, 0, 5))
@@ -66,7 +72,7 @@ part bracket {
   for x in [-12, 12] { cut hole(M3, depth: 6, at: (x, 0, 5)) }
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
 }
-Part props: color, material, group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
+Part props: color, material, finish, group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
 Order matters: shell/fillet/chamfer apply to the body built so far, so put them right after the body and before bosses and holes. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
@@ -83,7 +89,7 @@ ${geo}
 
 ## Components
 component name = lib.kind(args) { at: point, axis: dir, ... }
-Props: at (a point, or a LIST of points to make a pattern of identical instances: name#1..n; use name.all[i] or name.count), axis (orientation for axial parts), facing (horizontal direction for connectors), rotate, spin (drives the mechanism: spin: 1), mesh (gears: mesh with another spur_gear; the phase and speed are computed so teeth interleave), turns_with (locks to another component's rotation, e.g. a gear on a motor shaft), color, group, material, label. Flags: locked, hidden, removable.
+Props: at (a point, or a LIST of points to make a pattern of identical instances: name#1..n; use name.all[i] or name.count), axis (orientation for axial parts), facing (horizontal direction for connectors), rotate, spin (drives the mechanism: spin: 1), mesh (gears: mesh with another spur_gear; the phase and speed are computed so teeth interleave), turns_with (locks to another component's rotation, e.g. a gear on a motor shaft), color, group, material, finish, label. Flags: locked, hidden, removable.
 Component fields are world-space after placement (motor.holes is a list of world points). Moving components get .speed (rotation ratio relative to the driver). Pattern components expose fields of the first instance plus .all and .count; shape fields (like usb.opening) become lists so \`cut usb.opening\` works.
 
 ${lib}
@@ -92,6 +98,11 @@ ${lib}
 Threads (use M3 etc. directly as values: M3.clearance, M3.tap, M3.head_d, or pass M3 to hole() and lib.screw()):
 ${threads}
 Bearings for lib.bearing(code): ${bearings}
+
+## Materials and finishes
+material: sets density (mass, the parts list) and how the part renders. finish: sets the surface; leave it out to get the material's default. color: is the base colour (filament, anodizing or paint colour; for bare metals keep a realistic metal grey or the brass/copper tone). Library hardware already has realistic finishes (black-oxide screws, zinc-plated nuts, machined brass inserts).
+${materialTable}
+Finish meanings: ${finishTable}.
 
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins

@@ -9,6 +9,7 @@ import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
+import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
 
 export interface EvalOptions {
@@ -56,8 +57,8 @@ const LIB_ARGS: Record<string, string[]> = {
   dowel: ["d", "length"],
 };
 
-const PART_PROPS = ["color", "material", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
-const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "label"];
+const PART_PROPS = ["color", "material", "finish", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
+const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "finish", "label"];
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
 
@@ -442,8 +443,9 @@ class Evaluator {
       } else if (it.k === "flag") {
         if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". Components accept locked, hidden and removable.`, it.span);
         flags.add(it.name);
-      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, color:, group:) and flags (locked, hidden, removable)", it.span);
+      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, color:, group:, material:, finish:) and flags (locked, hidden, removable)", it.span);
     }
+    this.checkMaterial(props, propSpans);
     this.blocks.push({ name: s.name, kind: "component", span: s.span, locked: flags.has("locked") });
     const ctx = this.ctx();
     // `at` may be a single point or a list of points (a pattern of identical components)
@@ -570,6 +572,7 @@ class Evaluator {
           group,
           color: (!sd.suffix && color) || sd.color,
           material: (typeof props.material === "string" && !sd.suffix ? props.material : undefined) ?? sd.material,
+          finish: (typeof props.finish === "string" && !sd.suffix ? props.finish : undefined) ?? (typeof props.material === "string" && !sd.suffix ? undefined : sd.finish),
           recipe: sd.recipe,
           hash: recipeHash(sd.recipe),
           xf,
@@ -596,6 +599,27 @@ class Evaluator {
       if (c) return c;
     }
     throw new EvalError(`${what}: expected a component name`, span);
+  }
+
+  /** Warn about material and finish names Kerf does not know, with the closest match. */
+  checkMaterial(props: Record<string, Value>, spans: Record<string, Span>) {
+    const material = props.material;
+    if (props.material !== undefined && typeof material !== "string") throw new EvalError('material: expected a name in quotes, like "PETG"', spans.material);
+    if (props.finish !== undefined && typeof props.finish !== "string") throw new EvalError('finish: expected a name in quotes, like "anodized"', spans.finish);
+    const def = typeof material === "string" ? materialDef(material) : undefined;
+    if (typeof material === "string" && !def) {
+      const sugg = suggest(material, MATERIAL_LIST.map((m) => m.name));
+      this.diags.push({ message: `Unknown material "${material}"${sugg ? `. Did you mean "${sugg}"?` : ""} Mass uses 1.2 g/cm³ and it draws as a plain plastic.`, start: spans.material.start, end: spans.material.end, severity: "warning" });
+    }
+    const finish = props.finish;
+    if (typeof finish === "string") {
+      const allowed = def ? def.finishes : Object.keys(FINISHES);
+      if (!allowed.includes(finish)) {
+        const sugg = suggest(finish, allowed);
+        const what = def ? `${def.name} can be ${allowed.map((f) => `"${f}"`).join(", ")}` : `Finishes: ${allowed.join(", ")}`;
+        this.diags.push({ message: `Finish "${finish}" does not apply here${sugg ? `. Did you mean "${sugg}"?` : "."} ${what}.`, start: spans.finish.start, end: spans.finish.end, severity: "warning" });
+      }
+    }
   }
 
   motionOf(v: Value, span: Span): Motion | undefined {
@@ -653,6 +677,7 @@ class Evaluator {
       motion = { origin, axis, ratio };
     }
     if (motion) this.partMotion.set(s.name, motion);
+    this.checkMaterial(state.props, state.propSpans);
     const recipe: PartRecipe = { base: state.base, ops: state.ops };
     this.parts.push({
       id: s.name,
@@ -662,6 +687,7 @@ class Evaluator {
       group: typeof state.props.group === "string" ? state.props.group : "Parts",
       color: typeof state.props.color === "string" ? state.props.color : DEFAULT_COLORS[this.colorIdx++ % DEFAULT_COLORS.length],
       material: typeof state.props.material === "string" ? state.props.material : "PLA",
+      finish: typeof state.props.finish === "string" ? state.props.finish : undefined,
       recipe,
       hash: recipeHash(recipe),
       xf,

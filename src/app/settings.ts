@@ -10,6 +10,9 @@ export const MODELS = [
   { id: "claude-haiku-5-5", label: "Claude Haiku 5.5", note: "Fastest and cheapest. Good for small changes." },
 ] as const;
 
+/** Lighting presets the viewport offers; kept here so settings stay free of three.js. */
+export const LIGHTING_IDS = ["studio", "showroom", "blueprint", "workshop", "daylight"];
+
 export type ModelId = (typeof MODELS)[number]["id"];
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -20,6 +23,12 @@ export interface Settings {
   reduceMotion: boolean;
   grid: boolean;
   edges: boolean;
+  /** viewport lighting preset (see ui/viewport/render/studio) */
+  lighting: string;
+  /** how far the lighting is turned about the vertical axis, degrees */
+  lightAngle: number;
+  /** viewport render quality: draft renders one pass; balanced and high refine while the view is still */
+  quality: "draft" | "balanced" | "high";
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
   termsAccepted: string | null;
@@ -41,6 +50,9 @@ const DEFAULTS: Settings = {
   reduceMotion: false,
   grid: true,
   edges: true,
+  lighting: "studio",
+  lightAngle: 0,
+  quality: "balanced",
   maxSteps: 16,
   termsAccepted: null,
   onboarded: false,
@@ -67,6 +79,9 @@ function load(): Settings {
     out.maxSteps = Math.min(40, Math.max(4, Math.round(out.maxSteps)));
     if (out.voiceSend !== "review" && out.voiceSend !== "auto") out.voiceSend = DEFAULTS.voiceSend;
     if (!/^([a-z]{2,3}(-[A-Za-z0-9]{2,8})*)?$/.test(out.voiceLang)) out.voiceLang = DEFAULTS.voiceLang;
+    if (!LIGHTING_IDS.includes(out.lighting)) out.lighting = DEFAULTS.lighting;
+    if (!["draft", "balanced", "high"].includes(out.quality)) out.quality = DEFAULTS.quality;
+    out.lightAngle = Number.isFinite(out.lightAngle) ? ((Math.round(out.lightAngle) % 360) + 360) % 360 : 0;
     return out;
   } catch {
     return DEFAULTS;

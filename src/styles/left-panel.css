@@ -581,6 +581,13 @@
   background: transparent !important;
   box-shadow: inset 0 0 0 1.5px var(--line-3);
 }
+.lp-row .mat-ball {
+  flex: none;
+}
+.lp-row.is-hidden .mat-ball {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
 .lp-row.is-failing .lp-row-name {
   color: #ffb3bb;
 }

@@ -8,6 +8,7 @@ import type { ChecksRequest, ChecksResult, PlacedItem } from "../kernel/protocol
 import { frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
 import { centerDistance, densify, gearOutline, maxPenetration, tipDiameter } from "../library/gears";
 import { materialDensity } from "../library/standards";
+import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 
 export type CheckCategory = "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "info";
@@ -226,7 +227,7 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
   if (model.parts.some((p) => p.motion)) {
     items.push({ id: "analysis:loads", category: "info", status: "info", title: "Torque, tooth strength and wear", detail: "Not verified by geometry. Check gear tooth bending stress and bearing loads for the expected torque, then test a printed prototype.", basis: "needs analysis" });
   }
-  if (model.parts.some((p) => p.material === "PETG" || p.material === "PLA" || p.material === "ABS" || p.material === "ASA")) {
+  if (model.parts.some((p) => p.kind === "part" && isPrinted(p.material))) {
     items.push({ id: "analysis:print", category: "info", status: "info", title: "Print tolerances", detail: "Hole and boss fits assume a calibrated printer (±0.15 mm). Print a fit test before a full build.", basis: "needs analysis" });
   }
 

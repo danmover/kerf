@@ -12,6 +12,8 @@ import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
+import { LightingMenu } from "./LightingMenu";
+import { MaterialButton } from "./MaterialPicker";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -49,13 +51,25 @@ export function Viewport() {
       if (id) c.focusOn([id]);
       else c.fit("current");
     };
-    registerViewport({ capture: (o) => c.capture(o) });
+    if (import.meta.env.DEV) (window as unknown as { __kerfViewport?: SceneController }).__kerfViewport = c;
+    c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
+    c.onTurntableStop = () => useView.setState({ turntable: false });
+    registerViewport({
+      capture: (o) => c.capture(o),
+      swatch: (m, f, col, size) => c.swatch(m, f, col, size),
+      preview: (ids, look) => c.setOverride(ids, look),
+      materialMode: (on) => c.setMaterialMode(on),
+    });
     return () => {
       registerViewport(null);
       c.dispose();
       ctl.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality });
+  }, [settings.lighting, settings.lightAngle, settings.quality]);
 
   useEffect(() => {
     if (model) ctl.current?.setParts(model.parts, meshes);
@@ -82,6 +96,10 @@ export function Viewport() {
   useEffect(() => ctl.current?.setSection(view.section), [view.section, model]);
   useEffect(() => ctl.current?.setExplode(view.explode), [view.explode]);
   useEffect(() => ctl.current?.setMotion(view.playing, view.speed), [view.playing, view.speed]);
+  useEffect(() => ctl.current?.setTurntable(view.turntable), [view.turntable]);
+  useEffect(() => {
+    if (view.assemblyRequest) ctl.current?.playAssembly();
+  }, [view.assemblyRequest]);
   useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
   useEffect(() => {
     if (view.cameraRequest) ctl.current?.fit(view.cameraRequest.preset === "fit" ? "current" : view.cameraRequest.preset);
@@ -150,6 +168,11 @@ export function Viewport() {
         <button className={`icon-btn ${settings.edges ? "active" : ""}`} onClick={() => updateSettings({ edges: !settings.edges })} data-tip="Edges" aria-label="Edges">
           <Icon.Box />
         </button>
+        <div className="sep" />
+        <LightingMenu />
+        <button className={`icon-btn ${view.turntable ? "active" : ""}`} disabled={!visibleParts} onClick={() => useView.setState({ turntable: !view.turntable })} data-tip="Turntable (T)" aria-label="Turntable">
+          <Icon.Orbit />
+        </button>
       </div>
 
       <AnimatePresence>
@@ -178,7 +201,14 @@ export function Viewport() {
               )}
               {view.explode > 0 && (
                 <div>
-                  <span className="field-label">Explode</span>
+                  <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
+                    <span className="field-label" style={{ margin: 0 }}>
+                      Explode
+                    </span>
+                    <button className="btn sm ghost" onClick={() => useView.setState((s) => ({ assemblyRequest: s.assemblyRequest + 1 }))} data-tip="Watch the parts go together in design order (A)">
+                      <Icon.Assemble size={13} /> Play assembly
+                    </button>
+                  </div>
                   <Range value={view.explode} onChange={(explode) => useView.setState({ explode: Math.max(0.001, explode) })} label="Explode amount" />
                 </div>
               )}
@@ -328,7 +358,7 @@ function SelectionCard({ ids }: { ids: string[] }) {
               id <span style={{ color: "var(--text-2)" }}>{p.id}</span> · {p.kind === "component" ? `lib.${p.libKind}` : "part"}
             </div>
             <div>
-              {p.material} · {p.group}
+              {p.group}
               {p.locked ? " · locked" : ""}
               {p.removable ? " · removable" : ""}
             </div>
@@ -344,6 +374,7 @@ function SelectionCard({ ids }: { ids: string[] }) {
         </div>
         {p.motion && parts.length === 1 && <div>turns at {fmtNum(Math.abs(p.motion.ratio), 3)}× the input</div>}
       </div>
+      <MaterialButton parts={parts} />
       {issues.length > 0 && (
         <div style={{ marginTop: 8 }}>
           {issues.slice(0, 3).map((i) => (

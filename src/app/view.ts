@@ -25,6 +25,10 @@ interface ViewState {
   explode: number;
   playing: boolean;
   speed: number;
+  /** slow turntable orbit for presenting the model */
+  turntable: boolean;
+  /** request the viewport to play the assembly animation */
+  assemblyRequest: number;
   /** request the editor to reveal a span */
   reveal: { span: Span; nonce: number } | null;
   /** request the viewport to move the camera */
@@ -46,6 +50,8 @@ export const useView = create<ViewState>(() => ({
   explode: 0,
   playing: false,
   speed: 1,
+  turntable: false,
+  assemblyRequest: 0,
   reveal: null,
   cameraRequest: null,
   dockTab: "code",
@@ -58,4 +64,4 @@ export const revealSpan = (span: Span) => useView.setState({ reveal: { span, non
 export const requestCamera = (preset: ViewPreset | "fit") => useView.setState({ cameraRequest: { preset, nonce: ++nonce } });
 export const select = (ids: string[]) => useView.setState({ selected: ids });
 export const resetView = () =>
-  useView.setState({ selected: [], hovered: null, focusParts: [], focusCheck: null, hiddenIds: [], isolate: false, xray: false, section: { on: false, axis: "x", t: 0.5, flip: false }, explode: 0, playing: false });
+  useView.setState({ selected: [], hovered: null, focusParts: [], focusCheck: null, hiddenIds: [], isolate: false, xray: false, section: { on: false, axis: "x", t: 0.5, flip: false }, explode: 0, playing: false, turntable: false });

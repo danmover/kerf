@@ -55,6 +55,9 @@ npm run typecheck
 
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
+- Kerf's own renderer on WebGL: soft area-light shadows, ambient occlusion, clean anti-aliased edges and gentle bloom that refine when the view is still. Five studio lighting presets, a turnable key light (Alt-drag), and draft/balanced/high quality.
+- Realistic materials and finishes (printed layer lines, brushed and machined metal, anodizing, carbon weave, wood grain, clear plastics). Pick them from a material picker that previews on the model as you hover, or write `material:` and `finish:` in the design.
+- Animations: parts sweep in when built, dissolve and re-form when they change, spring apart when exploded, assemble in order, and turn on a turntable (T). The camera glides between views.
 - Code editor with highlighting, autocomplete and inline errors. Clicking a part jumps to its code.
 - A model panel with three tabs. Parts lists every part grouped as the design groups it, says what each one is, and follows the viewport selection. Params lists the driving values under the design's own section headings: drag a value sideways to scrub it, click to type, or open it for a slider, the parts it moves and the checks it feeds. History shows every version with who made it, a diff and one-click restore.
 - A dependency graph and a parts list in the bottom dock.
@@ -84,7 +87,7 @@ src/core/       Pipeline (engine), checks, conflict solver (separate worker), so
 src/ai/         Claude tools, system prompt, language reference, chat loop
 src/app/        Projects and history, settings, view state, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats
-src/ui/         Viewport (three.js), editor (CodeMirror), panels, chat, dialogs
+src/ui/         Viewport (three.js and Kerf's render pipeline in ui/viewport/render), editor (CodeMirror), panels, chat, dialogs
 src/screens/    Onboarding, projects, workspace, legal pages
 src/demos/      The example designs
 tests/          Vitest unit tests

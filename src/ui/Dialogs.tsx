@@ -70,6 +70,9 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["X"], "Toggle x-ray"],
       [["I"], "Isolate the selection"],
       [["Space"], "Play or pause the mechanism"],
+      [["A"], "Play the assembly animation"],
+      [["T"], "Turntable"],
+      [["L"], "Next lighting (Shift+L: previous)"],
     ],
   },
   {
@@ -78,6 +81,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["Left drag"], "Orbit"],
       [["Right drag"], "Pan"],
       [["Wheel"], "Zoom"],
+      [["Alt", "drag"], "Turn the lighting"],
       [["Click"], "Select a part"],
       [["⇧", "Click"], "Add to the selection"],
       [["Double-click"], "Zoom to a part (empty space fits all)"],

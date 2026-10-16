@@ -341,7 +341,7 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       if (!vp) return { isError: true, content: "The 3D view is not available right now.", card: { title: "View unavailable", status: "error" } };
       await whenChecked(30_000);
       const ids = expandNames(p.data.highlight ?? []);
-      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85 });
+      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24 });
       const data = url.split(",")[1] ?? "";
       return {
         content: [
