@@ -18,12 +18,14 @@
 // Build: g++ -std=gnu++17 -O2 -I tests/fixtures/arduino -DKERF_SKETCH='"/path/X.ino"' harness.cpp
 // Run:   harness --signal s.u8 --ms 3000 [--channel 0] [--button 2] [--press 1000:1100]...
 //                 [--snap 1500]... [--no-oled] [--eeprom-in f] [--eeprom-out f]
-//                 [--cycles-per-pair 26] [--overhead-cycles 120000]
+//                 [--cycles-per-pair 26] [--overhead-cycles 120000] [--trace]
 // Output: "S <ms> <serial line>"       a line the sketch printed
 //         "F <ms>" then 64 rows of '#'/'.'   the OLED at a --snap time
 //         "I <name> <value>"           facts about the run (I2C overflows, timing, ...)
+//         "C <sample>"                 with --trace: a capture starts at this sample of the signal
 
 // System headers first: the mock Arduino.h defines abs() as a macro.
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -65,6 +67,7 @@ static bool adcRunning = false;
 static uint64_t nextConvUs = 0;
 static bool captureEnded = false;              // the ISR stopped the ADC: a buffer is waiting
 static uint64_t captures = 0, wrongSetup = 0;
+static bool traceCaptures = false;             // --trace: print where each capture starts
 
 extern "C" void kerf_isr_adc(void);
 static void advanceTo(uint64_t t);
@@ -126,6 +129,7 @@ static void onAdcsra(KerfReg8 &r, uint8_t before) {
     workPairs = 0;
     adcRunning = true;
     nextConvUs = (simUs / CONV_US + 1) * CONV_US;
+    if (traceCaptures) printf("C %llu\n", (unsigned long long)(nextConvUs / CONV_US));   // first sample's index
   }
   (void)before;
 }
@@ -404,6 +408,7 @@ int main(int argc, char **argv) {
     }
     else if (a == "--snap") { snaps.push_back(strtoull(v, nullptr, 10)); i++; }
     else if (a == "--no-oled") oledPresent = false;
+    else if (a == "--trace") traceCaptures = true;
     else if (a == "--oled-addr") { oledAddr = (uint8_t)strtol(v, nullptr, 0); i++; }
     else if (a == "--eeprom-in") { eeIn = v; i++; }
     else if (a == "--eeprom-out") { eeOut = v; i++; }

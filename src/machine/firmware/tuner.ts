@@ -104,17 +104,23 @@ export function tunerSketch(o: TunerOptions): TunerFirmware {
     "//  1. The ADC runs free at 16 MHz / 128 / 13 = 9615.4 samples per second and",
     "//     its interrupt stores 1024 8-bit samples (106 ms) in a buffer.",
     "//  2. Gate: quiet buffers are skipped. If a pluck starts inside the buffer, only",
-    "//     what follows its attack is used.",
+    "//     what follows its attack is used; if that is under 90 ms the buffer is",
+    "//     dropped at once and the next one, all after the pluck, is used instead.",
     "//  3. Coarse period: YIN's normalised difference function on every second",
-    "//     sample, lags for 57..800 Hz. The first dip nearly as deep as the deepest",
-    "//     is the period, which avoids octave errors from strong harmonics.",
-    "//  4. Fine period: the full-rate difference function around one period, then",
-    "//     around the largest multiple of it that fits in the buffer (up to ~55",
-    "//     periods for high notes). A parabola through the lowest three points",
-    "//     places the dip to a fraction of a sample; dividing by the multiple makes",
-    "//     the period that many times more precise: better than 1 cent.",
-    "//  Worst case about 30 ms of AVR time per buffer, so a new reading appears",
-    "//  about 7 times a second.",
+    "//     sample, lags for 57..800 Hz. The first dip that is deep, or nearly as deep",
+    "//     as the deepest, is the period, which avoids octave errors from strong",
+    "//     harmonics.",
+    "//  4. The buffer is smoothed (a moving average of a sixth of the period, twice):",
+    "//     the high partials of a stiff string run sharp and would pull the pitch up.",
+    "//  5. Fine period: the full-rate difference function around one period, then",
+    "//     around a multiple of it two thirds of the buffer long (up to ~45 periods",
+    "//     for high notes). A parabola through the lowest three points places the",
+    "//     dip to a fraction of a sample; dividing by the multiple makes the period",
+    "//     that many times more precise.",
+    "//  6. While a note rings, the buffers' periods are averaged, each weighted by",
+    "//     how precise it is; a new pluck or a change of more than 4 cents starts over.",
+    "//  At most about 50 ms of AVR time per buffer: a reading about 7 times a second,",
+    "//  the first within 0.3 s of the pluck.",
     "",
     "#include <Arduino.h>",
     "#include <Wire.h>",
@@ -196,28 +202,36 @@ const uint16_t N_SAMPLES = 1024;                 // one buffer: 106 ms of sound
 const uint8_t SIGNAL_CHANNEL = SIGNAL_PIN - A0;  // ADC input number of the signal pin
 
 // Loudness gate, as peak-to-peak in 8-bit ADC counts (19.5 mV each)
-const uint8_t BLOCK = 64;              // samples per block for the gate and pluck detection
+const uint8_t BLOCK = 64;              // samples per block for the gate and pluck detection (6.7 ms)
+const uint8_t PLUCK_PP = 6;            // a pluck: 3 blocks swing at least this much (0.12 V) and over twice the 3 before
 const uint8_t GATE_START_PP = 7;       // to start showing a note (0.14 V peak to peak)
 const uint8_t GATE_KEEP_PP = 4;        // to keep following it as it fades
-const uint16_t MIN_SPAN = 448;         // fewest samples worth analysing after a pluck (47 ms)
+const uint8_t ATTACK = 32;             // also skipped after the block a pluck is found in: the pick's noise (3 ms)
+const uint16_t MIN_SPAN = 864;         // fewer samples after a pluck: drop the buffer, take the next whole (90 ms)
 
 // Coarse search, in steps of 2 samples (4807.7 Hz)
 const uint8_t LAG_MIN = 6;             // 801 Hz
 const uint8_t LAG_MAX = 84;            // 57 Hz: 7-string low B tuned down a little
 const uint8_t COARSE_WIN = 128;        // sample pairs per lag (27 ms)
 const uint16_t YIN_REJECT = 1229;      // 0.30 in 1/4096: no dip this deep means no steady pitch
-const uint16_t YIN_SPREAD = 123;       // 0.03: dips this close to the deepest count as deep
+const uint16_t YIN_DEEP = 410;         // 0.10: a dip this deep is the period (YIN's threshold)
+const uint16_t YIN_SPREAD = 123;       // 0.03: ... and so is one this close to the deepest
 const uint8_t MAX_DIPS = 12;
 
 // Fine search
-const uint16_t FINE_MIN_WIN = 256;     // samples compared at the longest lag
-const uint16_t FINE_MAX_WIN = 512;
+const uint8_t SMOOTH_DIV = 6;          // moving average of a sixth of the period ...
+const uint8_t SMOOTH_PASSES = 2;       // ... twice: harmonics 1-5 pass, the 6th and up are gone or 1/n^2 down
+const uint16_t FINE_MIN_WIN = 96;      // fewest samples compared at a multiple of the period
+const uint16_t FINE_MAX_WIN = 512;     // most samples compared
 const float MIN_HZ = 50.0f, MAX_HZ = 1000.0f;
+
+// Readings of a steady note are averaged, each weighted by how precise it is
+const float AVERAGE_KEEP = 0.65f;      // share of the past kept per buffer (about 0.4 s memory)
+const float SAME_NOTE = 1.002313f;     // 4 cents: a bigger change starts a new average
 
 // Display
 const uint16_t HOLD_MS = 1000;         // keep showing a note this long after it fades
-const float SMOOTHING = 0.5f;          // needle: share of each new reading (about 0.25 s to settle)
-const float NEW_NOTE_CENTS = 15.0f;    // a jump bigger than this moves the needle at once
+const float SMOOTHING = 0.5f;          // needle: share of each new reading of a steady note
 const float IN_TUNE_CENTS = 2.0f;      // within this: the note box lights up
 const uint16_t REF_SHOW_MS = 1500;     // how long a new reference is shown
 const uint16_t CAL_SHOW_MS = 2500;     // how long a calibration result is shown
@@ -253,7 +267,10 @@ const char NOTE_NAMES[] PROGMEM = "C C#D D#E F F#G G#A A#B ";
 uint8_t samples[N_SAMPLES];            // filled by the ADC interrupt, analysed by loop()
 volatile uint16_t sampleCount = 0;
 volatile bool captureDone = false;
-uint8_t lastBlockPP = 0;               // loudness at the end of the previous buffer
+uint8_t recentPP[3];                   // peak to peak of the three blocks before the last two
+uint8_t lastLo[2] = {128, 128}, lastHi[2] = {128, 128};   // range of the last two blocks ([0]: the last)
+uint8_t pluckHold = 0;                 // blocks before another pluck can be found
+bool pluckPending = false;             // the last buffer was dropped for a pluck late in it
 
 uint8_t refIndex = DEFAULT_REF;
 int32_t calPpm = 0;                    // clock correction, parts per million (+ = clock runs fast)
@@ -264,6 +281,7 @@ uint32_t lastReadingMs = 0;
 int8_t noteMidi = 69;                  // MIDI number of the shown note: 69 = A4
 float noteCents = 0;                   // smoothed, for the needle
 float noteHz = 0;                      // latest frequency
+float avgPeriod = 0, avgWeight = 0;    // running average of the period of the note sounding
 uint32_t idlePrintMs = 0;
 
 float recentHz[CAL_READINGS];          // last readings before calibration, uncorrected
@@ -304,7 +322,7 @@ void startCapture() {
 
 // ---------------- pitch ----------------
 // Sum of (p[i] - q[i])^2 over n pairs: the inner loop of everything. 8-bit
-// samples, one 8x8-bit multiply and a 32-bit sum, about 20-26 AVR cycles a pair.
+// samples, one 8x8-bit multiply and a 32-bit sum: 18-27 AVR cycles a pair.
 static uint32_t sqDiff(const uint8_t *p, const uint8_t *q, uint16_t n) {
   TUNER_WORK(n);
   uint32_t s = 0;
@@ -334,42 +352,100 @@ static uint32_t sqDiff2(const uint8_t *p, const uint8_t *q, uint8_t n) {
   return s;
 }
 
-// Where to start analysing: after the attack of a pluck if one starts in this
-// buffer (its noisy first milliseconds and the note before it would blur the
-// period), else at the start. Also gives how loud the rest is, peak to peak.
-static uint16_t findStart(uint8_t *loudness) {
+// Which part of the buffer to analyse, [start, end). It starts after the
+// attack of a pluck if one starts in this buffer (its noisy first milliseconds
+// and the note before it would blur the period), else at the start. A pluck
+// is three blocks (192 samples: longer than the lowest note's period) that
+// swing much more than the three blocks before them. Whole periods, because a
+// soft note picked near the bridge is a narrow spike once a period, so one
+// block can miss it and look silent, as can the flat top of a hard note
+// clipped at the rails. Analysis starts ATTACK samples after the block the
+// pluck is found in. Quiet stretches at either end (a note muted inside the
+// buffer, or one that crept in without a clear pluck) are left out too: the
+// fading part would pull the period. Also gives how loud the part is (peak to
+// peak) and its middle value. The last blocks' figures carry over to the next
+// buffer.
+static uint16_t findSpan(uint16_t *end, uint8_t *loudness, uint8_t *middle) {
+  const uint8_t N_BLOCKS = N_SAMPLES / BLOCK;
+  uint8_t pp[N_BLOCKS];
   uint16_t start = 0;
-  uint8_t lo = 255, hi = 0, before = lastBlockPP;
-  for (uint16_t b = 0; b < N_SAMPLES; b += BLOCK) {
-    const uint8_t *p = samples + b;
+  uint8_t lo = 255, hi = 0;
+  for (uint8_t k = 0; k < N_BLOCKS; k++) {
+    const uint8_t *p = samples + k * BLOCK;
     uint8_t bl = 255, bh = 0;
     for (uint8_t i = 0; i < BLOCK; i++) {
       uint8_t v = p[i];
       if (v < bl) bl = v;
       if (v > bh) bh = v;
     }
-    uint8_t pp = bh - bl;
-    if (pp >= GATE_START_PP && pp > 2 * before + 4) {   // much louder than just before: a pluck
-      start = b + BLOCK;
+    pp[k] = bh - bl;
+    uint8_t lo3 = bl, hi3 = bh;
+    for (uint8_t j = 0; j < 2; j++) {
+      if (lastLo[j] < lo3) lo3 = lastLo[j];
+      if (lastHi[j] > hi3) hi3 = lastHi[j];
+    }
+    uint8_t now = hi3 - lo3;
+    uint8_t before = recentPP[0] > recentPP[1] ? recentPP[0] : recentPP[1];
+    if (recentPP[2] > before) before = recentPP[2];
+    bool pluck = !pluckHold && now >= PLUCK_PP && now > 2 * before + 3;
+    if (pluckHold) pluckHold--;
+    if (pluck) {
+      start = (k + 1) * BLOCK + ATTACK;
+      pluckHold = 2;
       lo = 255;
       hi = 0;
-    } else if (b >= start) {
+    } else if (k * BLOCK >= start) {
       if (bl < lo) lo = bl;
       if (bh > hi) hi = bh;
     }
-    before = pp;
+    recentPP[2] = recentPP[1];
+    recentPP[1] = recentPP[0];
+    recentPP[0] = lastHi[1] - lastLo[1];
+    lastLo[1] = lastLo[0];
+    lastHi[1] = lastHi[0];
+    lastLo[0] = bl;
+    lastHi[0] = bh;
   }
-  lastBlockPP = before;
-  *loudness = hi >= lo ? hi - lo : 0;
+  uint8_t loud = hi >= lo ? hi - lo : 0;
+  *end = N_SAMPLES;
+  if (loud >= GATE_KEEP_PP) {
+    uint8_t quiet = loud / 3;
+    uint8_t first = (start + BLOCK - 1) / BLOCK, last = N_BLOCKS;   // whole blocks of the part
+    for (; first + 3 <= last; first++) {                            // quiet at the start
+      uint8_t w = pp[first] > pp[first + 1] ? pp[first] : pp[first + 1];
+      if (pp[first + 2] > w) w = pp[first + 2];
+      if (w > quiet) break;
+      start = (first + 1) * BLOCK;
+    }
+    for (uint8_t k = first; k + 3 <= last; k++) {                   // quiet from somewhere on
+      uint8_t w = pp[k] > pp[k + 1] ? pp[k] : pp[k + 1];
+      if (pp[k + 2] > w) w = pp[k + 2];
+      if (w <= quiet) {
+        *end = k * BLOCK;
+        break;
+      }
+    }
+  }
+  *loudness = loud;
+  *middle = (uint8_t)((lo + hi + 1) / 2);
   return start;
+}
+
+// YIN's normalised difference d * lag / total in 1/4096 (1.0 = 4096), capped.
+static uint16_t cmnd(uint32_t d, float lag, uint32_t total) {
+  if (!total) return 4096;
+  float r = (float)d * lag * 4096.0f / (float)total;
+  return r < 65535.0f ? (uint16_t)r : 65535;
 }
 
 // Coarse period with YIN (de Cheveigne and Kawahara, 2002) on every second
 // sample: d(lag) = sum of (x[i] - x[i + lag])^2, divided by its mean over all
-// shorter lags. That is about 1 for noise and near 0 at the period. The answer
-// is the first dip nearly as deep as the deepest: strong harmonics make dips at
-// fractions of the period that are never as deep, and multiples of the period
-// come later. Returns the lag in steps of 2 samples, or 0 for no pitch.
+// shorter lags. That is about 1 for noise and near 0 at the period. Each dip
+// is also measured at the odd lags either side (stride 2 from an odd offset),
+// so a period that falls between two even lags still shows its true depth.
+// The answer is the first dip that is deep (YIN_DEEP) or nearly as deep as the
+// deepest: strong harmonics make shallower dips at fractions of the period,
+// and multiples of it come later. Returns the full-rate lag, or 0 for no pitch.
 static uint8_t coarseLag(const uint8_t *x, uint16_t len) {
   uint16_t room = len / 2 - LAG_MAX - 1;
   uint8_t win = room > COARSE_WIN ? COARSE_WIN : (uint8_t)room;
@@ -377,37 +453,78 @@ static uint8_t coarseLag(const uint8_t *x, uint16_t len) {
   uint16_t dipDepth[MAX_DIPS];
   uint8_t dips = 0, bestLag = 0;
   uint16_t best = YIN_REJECT, prev = 0xFFFF, prev2 = 0xFFFF;
-  uint32_t total = 0;
+  uint32_t total = 0, prevTotal = 0;
   for (uint8_t lag = 1; lag <= LAG_MAX; lag++) {
     uint32_t d = sqDiff2(x, x + 2 * lag, win);
     total += d;
-    uint16_t c = 4096;                                  // 1.0 in 1/4096
-    if (total) {
-      float r = (float)d * lag * 4096.0f / (float)total;
-      c = r < 65535.0f ? (uint16_t)r : 65535;
-    }
+    uint16_t c = cmnd(d, lag, total);
     // the previous lag is a dip if it is lower than both its neighbours
     if (lag - 1 >= LAG_MIN && prev < prev2 && prev <= c && prev < YIN_REJECT) {
+      uint8_t t = lag - 1, at = 2 * t;
+      uint16_t depth = prev;
+      for (int8_t side = -1; side <= 1; side += 2) {
+        uint16_t h = cmnd(sqDiff2(x, x + 2 * t + side, win), t + 0.5f * side, prevTotal);
+        if (h < depth) {
+          depth = h;
+          at = 2 * t + side;
+        }
+      }
       if (dips < MAX_DIPS) {
-        dipLag[dips] = lag - 1;
-        dipDepth[dips] = prev;
+        dipLag[dips] = at;
+        dipDepth[dips] = depth;
         dips++;
       }
-      if (prev < best) {
-        best = prev;
-        bestLag = lag - 1;
+      if (depth < best) {
+        best = depth;
+        bestLag = at;
       }
     }
-    if (bestLag && lag > 2 * bestLag + 4) break;        // past the octave below the deepest dip
+    if (bestLag && lag > bestLag + 4) break;            // past the octave below the deepest dip
     prev2 = prev;
     prev = c;
+    prevTotal = total;
   }
   if (!bestLag) return 0;
   uint16_t limit = best * 3;
   if (limit < best + YIN_SPREAD) limit = best + YIN_SPREAD;
+  if (limit < YIN_DEEP) limit = YIN_DEEP;
   for (uint8_t i = 0; i < dips; i++)
     if (dipDepth[i] <= limit) return dipLag[i];
   return bestLag;
+}
+
+// Smooths x[0..len) in place: a moving average of m samples, twice. With m
+// about a sixth of the period it keeps the first five harmonics and removes
+// the higher ones, which on a stiff string run sharp (inharmonicity) and would
+// pull the reading up. First the signal is scaled about its middle to fill the
+// 8-bit range, so the averages of a soft note keep their detail. Only 8x8-bit
+// multiplies, which the AVR does in 2 cycles. Returns the new length.
+static uint16_t smooth(uint8_t *x, uint16_t len, uint8_t m, uint8_t loudness, uint8_t middle) {
+  uint8_t gain = 224 / (loudness + 2);
+  if (gain > 32) gain = 32;
+  if (gain > 1) {
+    for (uint16_t i = 0; i < len; i++) {
+      int16_t y = 128 + (int16_t)(int8_t)(x[i] - middle) * gain;
+      x[i] = y < 0 ? 0 : (y > 255 ? 255 : (uint8_t)y);
+    }
+    TUNER_WORK(len + len / 2);                          // up to 40 cycles a sample: 1.5 pairs' worth
+  }
+  const uint8_t r = (uint8_t)((256 + m / 2) / m);       // 1 / m in 1/256 (m is 2..28)
+  for (uint8_t pass = 0; pass < SMOOTH_PASSES; pass++) {
+    uint16_t sum = 0;
+    for (uint8_t i = 0; i < m; i++) sum += x[i];
+    uint16_t out = len - m + 1;
+    for (uint16_t i = 0; i < out; i++) {
+      // sum * r / 256 from two 8x8-bit products
+      uint16_t y = (uint16_t)(uint8_t)(sum >> 8) * r + (((uint16_t)(uint8_t)sum * r) >> 8);
+      uint8_t old = x[i];
+      x[i] = y > 255 ? 255 : (uint8_t)y;
+      if (i + m < len) sum += x[i + m] - old;
+    }
+    TUNER_WORK(out * 5 / 2);                            // up to 65 cycles a sample: 2.5 pairs' worth
+    len = out;
+  }
+  return len;
 }
 
 // The lag where the full-rate difference dips near guess, with a fraction
@@ -437,44 +554,76 @@ static float dipNear(const uint8_t *x, uint16_t len, uint16_t guess, uint16_t wi
   return 0;
 }
 
-// Fine period: the dip near one period, then near a multiple k of it that
-// still leaves FINE_MIN_WIN samples to compare. The dip's position is about
-// as precise at any lag, so dividing by k makes the period k times more
-// precise. k grows at most 6x per step so each guess lands near the dip.
-static float finePeriod(const uint8_t *x, uint16_t len, uint16_t guess) {
+// Fine period: the dip near one period, then near a multiple k of it. The
+// dip's position is about as precise at any lag, so dividing by k makes the
+// period k times more precise; but a longer lag leaves fewer samples to
+// compare. The error goes as 1 / (lag^2 * window), least with the lag at two
+// thirds of the samples. k grows at most 6x per step so each guess lands near
+// the dip. precision: set to lag^2 * window of the last dip.
+static float finePeriod(const uint8_t *x, uint16_t len, uint16_t guess, float *precision) {
+  if (len < guess + FINE_MIN_WIN + 12) return 0;
   const uint16_t maxLag = len - FINE_MIN_WIN - 12;
+  const float bestLag = (len - 12) * (2.0f / 3.0f);
   uint16_t win = len - guess - 12;
   if (win > FINE_MAX_WIN) win = FINE_MAX_WIN;
   float period = dipNear(x, len, guess, win);
   if (period <= 0) return 0;
+  float lagUsed = period;
+  uint16_t winUsed = win;
   uint8_t k = 1;
   for (;;) {
     uint8_t kMax = (uint8_t)(maxLag / period);
-    if (kMax <= k) break;
-    uint8_t kNext = kMax < 6 * k ? kMax : 6 * k;
+    uint8_t kWant = (uint8_t)(bestLag / period + 0.5f);
+    if (kWant > kMax) kWant = kMax;
+    if (kWant <= k) break;
+    uint8_t kNext = kWant < 6 * k ? kWant : 6 * k;
     uint16_t lag = (uint16_t)(kNext * period + 0.5f);
     win = len - lag - 12;
     if (win > FINE_MAX_WIN) win = FINE_MAX_WIN;
     float at = dipNear(x, len, lag, win);
     if (at <= 0) break;
     period = at / kNext;
+    lagUsed = at;
+    winUsed = win;
     k = kNext;
   }
+  *precision = lagUsed * lagUsed * winUsed;
   return period;
 }
 
-// Period of the note in the buffer, in samples (with a fraction), or 0 if
-// there is no clear note. following: a note is on show, so a quieter signal
-// is still worth measuring as it fades.
-static float measurePeriod(bool following) {
-  uint8_t loudness;
-  uint16_t start = findStart(&loudness);
-  uint16_t len = N_SAMPLES - start;
-  if (len < MIN_SPAN || loudness < (following ? GATE_KEEP_PP : GATE_START_PP)) return 0;
-  const uint8_t *x = samples + start;
+// One buffer's measurement.
+struct Pitch {
+  float period;                        // samples, with a fraction
+  float weight;                        // how far to trust it: grows with loudness^2, lag^2, window
+  bool plucked;                        // a pluck started in this buffer
+};
+
+// Measures the note in the buffer; false if there is no clear note.
+// following: a note is on show, so a quieter signal is still worth measuring.
+// A pluck late in the buffer leaves too little to measure well: the buffer is
+// dropped at once and the next one, all after the pluck, is taken instead.
+static bool measure(Pitch &p, bool following) {
+  bool pending = pluckPending;
+  pluckPending = false;
+  uint8_t loudness, middle;
+  uint16_t end;
+  uint16_t start = findSpan(&end, &loudness, &middle);
+  uint16_t len = end - start;
+  if (len < MIN_SPAN) {
+    if (end == N_SAMPLES) pluckPending = true;       // a note began late in this buffer
+    return false;                                    // (or it ended early in it)
+  }
+  if (loudness < (following || pending ? GATE_KEEP_PP : GATE_START_PP)) return false;
+  uint8_t *x = samples + start;
   uint8_t lag = coarseLag(x, len);
-  if (!lag) return 0;
-  return finePeriod(x, len, 2 * lag);
+  if (!lag) return false;
+  uint8_t m = (lag + SMOOTH_DIV / 2) / SMOOTH_DIV;
+  if (m > 1) len = smooth(x, len, m, loudness, middle);
+  float precision = 0;
+  p.period = finePeriod(x, len, lag, &precision);
+  p.weight = (float)loudness * loudness * precision;
+  p.plucked = start > 0 || pending;
+  return p.period > 0;
 }
 
 // log2 without the maths library: halve or double into [0.71, 1.41), then
@@ -572,7 +721,20 @@ static void printReading(int8_t midi, float cents, float hz) {
   Serial.println(line);
 }
 
-static void onReading(float rawHz, uint32_t now) {
+static void onPitch(const Pitch &p, uint32_t now) {
+  // Average the period over the buffers of a steady note, each weighted by its
+  // precision, forgetting the past at AVERAGE_KEEP per buffer. A pluck or a
+  // change of more than 4 cents starts again, so new notes and bends show at once.
+  float ratio = avgWeight > 0 ? p.period / avgPeriod : 0;
+  bool same = noteOn && !p.plucked && ratio > 1.0f / SAME_NOTE && ratio < SAME_NOTE;
+  if (same) {
+    avgWeight = avgWeight * AVERAGE_KEEP + p.weight;
+    avgPeriod += (p.period - avgPeriod) * (p.weight / avgWeight);
+  } else {
+    avgPeriod = p.period;
+    avgWeight = p.weight;
+  }
+  float rawHz = SAMPLE_HZ / avgPeriod;
   if (rawHz < MIN_HZ || rawHz > MAX_HZ) return;
   recentHz[recentNext] = rawHz;        // kept uncorrected, for calibration
   recentMs[recentNext] = now;
@@ -584,9 +746,8 @@ static void onReading(float rawHz, uint32_t now) {
   float cents = (semis - n) * 100.0f;
   int8_t midi = 69 + n;
 
-  float jump = cents - noteCents;
-  if (jump < 0) jump = -jump;
-  if (!noteOn || midi != noteMidi || jump > NEW_NOTE_CENTS) noteCents = cents;   // new note: no lag
+  // the needle: smoothed while the note holds steady, moved at once when the average starts over
+  if (!same || midi != noteMidi) noteCents = cents;
   else noteCents += SMOOTHING * (cents - noteCents);
   noteMidi = midi;
   noteHz = hz;
@@ -807,7 +968,7 @@ bool redrawAll = true;
 
 static View currentView() {
   View v;
-  v.screen = message != SCREEN_IDLE ? message : (noteOn ? SCREEN_NOTE : SCREEN_IDLE);
+  v.screen = message != SCREEN_IDLE ? message : (uint8_t)(noteOn ? SCREEN_NOTE : SCREEN_IDLE);
   v.refIndex = refIndex;
   v.calPpm = calPpm;
   float c = noteCents < -50 ? -50 : (noteCents > 50 ? 50 : noteCents);
@@ -971,10 +1132,11 @@ void loop() {
 
   if (captureDone) {
     MEMORY_BARRIER();                                // the interrupt has finished writing samples[]
-    float period = measurePeriod(noteOn);
+    Pitch p;
+    bool heard = measure(p, noteOn);
     startCapture();                                  // the next 106 ms fill while we report and draw
     now = millis();
-    if (period > 0) onReading(SAMPLE_HZ / period, now);
+    if (heard) onPitch(p, now);
   }
 
   if (noteOn && now - lastReadingMs > HOLD_MS) {     // faded out: back to the idle screen
@@ -1091,12 +1253,13 @@ function tunerReadme(a: {
   L.push("To undo it, hold the button while switching the amp on.", "");
   L.push("## How it works", "");
   L.push(`- The ADC samples ${a.adc} (ADC channel ${a.adcChannel}) at 9615 samples per second, 1024 at a time (106 ms), with the 5 V supply as the reference. An 8-bit sample is 19.5 mV.`);
-  L.push("- Quiet buffers are skipped (below 0.14 V peak to peak for a new note, 0.08 V while one is fading). If a pluck starts inside a buffer, only the part after its attack is used.");
-  L.push("- A YIN difference function on every second sample finds the period roughly and avoids octave mistakes. The period is then measured at full rate at the largest multiple of the period that fits in the buffer, which makes it precise to a fraction of a cent.");
+  L.push("- Quiet buffers are skipped (below 0.14 V peak to peak for a new note, 0.08 V while one is fading). If a pluck starts inside a buffer, only the part after its attack is used, and if less than 90 ms of the buffer is left it is dropped and the next one is used whole.");
+  L.push("- A YIN difference function on every second sample finds the period roughly and avoids octave mistakes. The buffer is then smoothed to the first few harmonics (the higher partials of a real string run sharp) and the period is measured at full rate at a multiple of the period two thirds of the buffer long, which makes it precise to a fraction of a cent.");
+  L.push("- While a note rings, the measurements of successive buffers are averaged, the more precise ones counting more. A new pluck, or a change of more than 4 cents, starts a new average, so bends and peg turns show at once.");
   L.push("- A note stays on the display for 1 s after it fades, then the idle screen returns. The needle is smoothed so it does not jitter, but a new note moves it at once.");
   L.push("- If the OLED does not answer, the tuner carries on and prints its readings over Serial. It looks for the display again every 3 s.", "");
   L.push("## What is checked and what is not", "");
-  L.push("- Kerf's tests compile the sketch for the ATmega328P with clang and run it on the host against simulated hardware: a free-running ADC fed with synthesized guitar notes (inharmonic strings, pick attack, the op-amp's gain and 720 Hz low-pass, clipping and 8-bit steps), the button, EEPROM and an SSD1306 decoded pixel by pixel. They check the note and cents of every string at several offsets, soft and hard, the time to the first reading, silence and noise, decay, a bend, the reference button and calibration.");
+  L.push("- Kerf's tests compile the sketch for the ATmega328P with clang and run it on the host against simulated hardware: a free-running ADC fed with synthesized guitar notes (inharmonic strings, pick attack, the op-amp's gain and 720 Hz low-pass, clipping and 8-bit steps), the button, EEPROM and an SSD1306 decoded pixel by pixel. They check the note and cents of every string at several offsets, soft and hard, the time to the first reading, silence and noise, decay, a bend, the reference button and calibration. In them every reading is within 1 cent and the first comes within 0.3 s of the pluck, except very soft notes (0.1 V at the input) on the three lowest strings: there the 8-bit samples hold too little detail, and a reading can be up to 2 cents off, mostly sharp, in the first second.");
   L.push("- It has not run on a real Nano. Signs it works: the idle screen appears at power-up, and the Serial Monitor prints the readings. If the readings are steady but a few cents off from a trusted tuner, calibrate.");
   return L.join("\n") + "\n";
 }
