@@ -9,7 +9,12 @@ import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
+import { suggest } from "./suggest";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
+import { SKETCH_FNS } from "../sketch/fns";
+import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
+import type { EvalSketch } from "../sketch/types";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -102,6 +107,7 @@ class Evaluator {
   parts: EvalPart[] = [];
   params: EvalParam[] = [];
   reqs: EvalRequirement[] = [];
+  sketches: EvalSketch[] = [];
   diags: Diagnostic[] = [];
   blocks: Model["blocks"] = [];
   name = "Untitled design";
@@ -120,6 +126,8 @@ class Evaluator {
     for (const [k, v] of Object.entries(CONSTANTS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(threadConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(SHAPE_FNS)) this.builtins.set(k, v);
+    for (const [k, v] of Object.entries(SKETCH_FNS)) this.builtins.set(k, v);
+    for (const [k, v] of Object.entries(planeConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(MATH_FNS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);
     this.builtins.set("lib", libNamespace());
@@ -238,7 +246,35 @@ class Evaluator {
       case "require":
         this.requirement(s);
         return;
+      case "sketch":
+        this.sketch(s);
+        return;
     }
+  }
+
+  // ---------------- sketches ----------------
+
+  sketch(s: Extract<Stmt, { k: "sketch" }>) {
+    const locked = s.items.some((i) => i.k === "flag" && i.name === "locked");
+    this.blocks.push({ name: s.name, kind: "sketch", span: s.span, locked });
+    const host: SketchHost = {
+      src: this.src,
+      expr: (e, scope) => this.expr(e, scope as Scope),
+      newScope: () => new Scope(),
+      setVar: (scope, name, v) => (scope as Scope).vars.set(name, v),
+      fail: (msg, span) => {
+        throw new EvalError(msg, span);
+      },
+      diag: (message, span, severity) => this.diags.push({ message, start: span.start, end: Math.max(span.end, span.start + 1), severity }),
+      report: (e) => {
+        if (!(e instanceof EvalError)) return false;
+        this.diags.push({ message: e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
+        return true;
+      },
+    };
+    const { value, sketch } = evaluateSketch(host, s);
+    this.define(s.name, "sketch", value, s.nameSpan);
+    this.sketches.push(sketch);
   }
 
   // ---------------- expressions ----------------
@@ -287,6 +323,7 @@ class Evaluator {
         if (v instanceof Pending) return v;
         if (e.op === "!") return !truthy(v);
         if (typeof v === "number") return -v;
+        if (isPlane(v)) return flipPlane(v);
         if (v instanceof Vec) return new Vec(v.v.map((x) => -x));
         throw new EvalError(`Cannot negate ${typeName(v)}`, e.span);
       }
@@ -811,12 +848,14 @@ class Evaluator {
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
     for (const p of this.params) p.usedBy = usedBy.get(p.name) ?? [];
     for (const p of this.parts) p.deps = [...(this.deps.get(p.name) ?? [])];
+    for (const sk of this.sketches) sk.usedBy = (usedBy.get(sk.name) ?? []).filter((n) => this.defKind.get(n) === "part");
     return {
       name: this.name,
       notes: this.notes,
       params: this.params,
       parts: this.parts,
       requirements: this.reqs,
+      sketches: this.sketches,
       diagnostics: [...parseDiags, ...this.diags],
       graph: { nodes, edges },
       blocks: this.blocks,
@@ -940,31 +979,5 @@ function collectScope(s: Scope): string[] {
   return out;
 }
 
-export function suggest(name: string, options: string[]): string | undefined {
-  let best: string | undefined;
-  let bestD = Infinity;
-  for (const o of options) {
-    const d = levenshtein(name.toLowerCase(), o.toLowerCase());
-    if (d < bestD) {
-      bestD = d;
-      best = o;
-    }
-  }
-  return bestD <= Math.max(2, Math.floor(name.length / 3)) ? best : undefined;
-}
-
-function levenshtein(a: string, b: string): number {
-  const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const tmp = dp[j];
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-      prev = tmp;
-    }
-  }
-  return dp[b.length];
-}
-
+export { suggest };
 export type { V2 };

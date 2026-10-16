@@ -11,6 +11,7 @@ const KIND_COLOR: Record<DepNode["kind"], string> = {
   param: "#ffcb6b",
   let: "#7cc4ff",
   interface: "#4fd1c5",
+  sketch: "#f78c6c",
   component: "#c792ff",
   part: "#6d8bff",
   require: "#3ddc97",
@@ -49,7 +50,7 @@ function layout(m: Model) {
   for (const n of m.graph.nodes) if (n.kind === "require") depth.set(n.id, maxD + 1);
   const cols = new Map<number, DepNode[]>();
   for (const n of m.graph.nodes) cols.set(depth.get(n.id)!, [...(cols.get(depth.get(n.id)!) ?? []), n]);
-  const order: DepNode["kind"][] = ["param", "interface", "let", "component", "part", "require"];
+  const order: DepNode["kind"][] = ["param", "interface", "let", "sketch", "component", "part", "require"];
   const laid = new Map<string, Laid>();
   let maxRows = 0;
   for (const [c, list] of [...cols.entries()].sort((a, b) => a[0] - b[0])) {

@@ -1,7 +1,7 @@
 // Recursive-descent parser for the Kerf design language.
 // Recovers at statement boundaries so the editor can show several errors.
 
-import type { Arg, Expr, Item, Program, Span, Stmt } from "./ast";
+import type { Arg, Expr, Item, Program, SketchEntityKind, SketchItem, Span, Stmt } from "./ast";
 import { lex, LexError, type Token } from "./lexer";
 
 export interface Diagnostic {
@@ -21,7 +21,8 @@ export class ParseError extends Error {
   }
 }
 
-const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note"]);
+const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "sketch"]);
+const SKETCH_ENTITIES = new Set<SketchEntityKind>(["point", "line", "circle", "arc"]);
 
 export function parse(src: string): { program: Program; diagnostics: Diagnostic[] } {
   let tokens: Token[];
@@ -112,7 +113,7 @@ class Parser {
     const tk = this.peek();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (param, let, component, interface, part, require) but found "${tk.value}"`,
+        `Expected a top-level statement (param, let, component, interface, part, sketch, require) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -196,6 +197,18 @@ class Parser {
         const nameTk = this.expect("ident");
         const items = this.block();
         return { k: "part", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+      }
+      case "sketch": {
+        const nameTk = this.expect("ident");
+        const open = this.expect("op", "{");
+        const items: SketchItem[] = [];
+        while (!this.isOp("}")) {
+          if (this.is("eof")) throw new ParseError('Unclosed sketch: missing "}"', open.start, open.end);
+          items.push(this.sketchItem());
+          while (this.eat("op", ";"));
+        }
+        const close = this.expect("op", "}");
+        return { k: "sketch", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end }, bodyEnd: close.start };
       }
       case "require": {
         const label = this.expect("str", undefined, "a requirement label in quotes").value;
@@ -285,6 +298,90 @@ class Parser {
       tk.start,
       Math.max(tk.end, tk.start + 1),
     );
+  }
+
+  /**
+   * One statement inside a sketch block:
+   *   plane: XY                         property
+   *   let r = 4                         local value
+   *   [construction] point|line|circle|arc name = ...
+   *   horizontal l1, l3                 constraint (names are checked by the evaluator)
+   *   length l1 = width                 dimension
+   */
+  sketchItem(): SketchItem {
+    const tk = this.peek();
+    const start = tk.start;
+    if (tk.kind === "kw" && tk.value === "let") {
+      this.next();
+      const name = this.expect("ident").value;
+      this.expect("op", "=");
+      const value = this.expr();
+      return { k: "let", name, value, span: { start, end: this.prevEnd() } };
+    }
+    if (tk.kind === "kw" && tk.value === "locked") {
+      this.next();
+      return { k: "flag", name: "locked", span: { start, end: this.prevEnd() } };
+    }
+    if (tk.kind !== "ident") {
+      throw new ParseError(
+        `Unexpected "${tk.value || "end of file"}" inside sketch. Use point, line, circle or arc to add geometry, a constraint like horizontal l1, a dimension like length l1 = 20, or a property like plane: XY.`,
+        tk.start,
+        Math.max(tk.end, tk.start + 1),
+      );
+    }
+    if (this.isOp(":", 1)) {
+      this.next();
+      this.next();
+      const value = this.expr();
+      return { k: "prop", name: tk.value, value, span: { start, end: this.prevEnd() } };
+    }
+    let construction = false;
+    let kindTk = tk;
+    if (tk.value === "construction" && this.is("ident", undefined, 1)) {
+      construction = true;
+      this.next();
+      kindTk = this.peek();
+    }
+    if (SKETCH_ENTITIES.has(kindTk.value as SketchEntityKind) && this.is("ident", undefined, 1) && this.isOp("=", 2)) {
+      this.next();
+      const kind = kindTk.value as SketchEntityKind;
+      const nameTk = this.next();
+      this.next(); // "="
+      const args: Expr[] = [];
+      let size: { which: "r" | "d"; value: Expr } | undefined;
+      if (kind === "point") args.push(this.expr());
+      else if (kind === "line" || kind === "arc") {
+        args.push(this.expr());
+        this.expect("op", "->", `"->" between the ${kind}'s start and end`);
+        args.push(this.expr());
+        if (kind === "arc") {
+          this.expect("op", ",", '", center: ..." after the arc\'s end point');
+          const c = this.expect("ident", undefined, "center:");
+          if (c.value !== "center") throw new ParseError(`Expected "center:" but found "${c.value}"`, c.start, c.end);
+          this.expect("op", ":");
+          args.push(this.expr());
+        }
+      } else {
+        args.push(this.expr());
+        this.expect("op", ",", '", r: ..." or ", d: ..." after the circle\'s center');
+        const w = this.expect("ident", undefined, "r: or d:");
+        if (w.value !== "r" && w.value !== "d") throw new ParseError(`Expected "r:" (radius) or "d:" (diameter) but found "${w.value}"`, w.start, w.end);
+        this.expect("op", ":");
+        size = { which: w.value, value: this.expr() };
+      }
+      return { k: "entity", kind, name: nameTk.value, construction, args, size, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+    }
+    if (construction) throw new ParseError('"construction" must be followed by point, line, circle or arc', tk.start, tk.end);
+    // constraint or dimension: name ref, ref [= value]
+    this.next();
+    const refs: Expr[] = [];
+    if (!this.atLineStart() && !this.isOp("}") && !this.isOp("=")) {
+      refs.push(this.expr());
+      while (this.eat("op", ",")) refs.push(this.expr());
+    }
+    let value: Expr | undefined;
+    if (this.eat("op", "=")) value = this.expr();
+    return { k: "constraint", name: tk.value, refs, value, span: { start, end: this.prevEnd() }, nameSpan: { start: tk.start, end: tk.end } };
   }
 
   // ---- expressions ----

@@ -47,6 +47,7 @@ export const KEYWORDS = new Set([
   "true",
   "false",
   "note",
+  "sketch",
 ]);
 
 /** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */
@@ -66,6 +67,7 @@ export const UNITS: Record<string, number> = {
 };
 
 const OPS = [
+  "->",
   "..",
   "==",
   "!=",

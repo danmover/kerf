@@ -22,7 +22,20 @@ export type ShapeRecipe =
   | { t: "gear"; m: number; z: number; w: number; bore: number; at: V3; dir: V3; phase: number; pa: number; backlash: number }
   | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number }
   | { t: "xform"; shape: ShapeRecipe; xf: Xform[] }
-  | { t: "union"; shapes: ShapeRecipe[] };
+  | { t: "union"; shapes: ShapeRecipe[] }
+  /** sketch profile pushed along the plane normal from `start` to `start + h` */
+  | { t: "sk_extrude"; o: V3; u: V3; n: V3; regions: ProfileRegion[]; h: number; start: number }
+  /** sketch profile turned about an axis in the sketch plane (point, direction in sketch coordinates) */
+  | { t: "sk_revolve"; o: V3; u: V3; n: V3; regions: ProfileRegion[]; axis: [V2, V2]; angle: number };
+
+/** One piece of a closed sketch loop, in sketch-plane coordinates. Arcs pass through m. */
+export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number };
+
+/** A face to build: one outer loop (counter-clockwise) and the holes inside it. */
+export interface ProfileRegion {
+  outer: Seg2[];
+  holes: Seg2[][];
+}
 
 export type EdgeSel = "vertical" | "top" | "bottom" | "all";
 
