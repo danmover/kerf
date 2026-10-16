@@ -43,6 +43,23 @@ interface PartObj {
   removing: number | null;
 }
 
+/**
+ * Something drawn on top of the model by another module (analysis results,
+ * for example). The scene owns the render loop; an overlay only adds its
+ * objects, says which parts it draws in their place, and animates on tick.
+ */
+export interface SceneOverlay {
+  readonly object: THREE.Object3D;
+  /** part ids the overlay draws instead of the normal solids */
+  readonly replaces: ReadonlySet<string>;
+  /** advance animations; return true while more frames are needed */
+  tick?(now: number, dt: number): boolean;
+  /** the section planes in use, or null */
+  setClipping?(planes: THREE.Plane[] | null): void;
+  /** jump to the end state of any animation, for a still image */
+  still?(): void;
+}
+
 export interface DisplayState {
   hidden: Set<string>;
   selected: Set<string>;
@@ -88,6 +105,8 @@ export class SceneController {
   private focusCheck: string | null = null;
   private ro: ResizeObserver;
   private raycaster = new THREE.Raycaster();
+  private overlays = new Set<SceneOverlay>();
+  private replaced = new Set<string>();
   onHover: (id: string | null) => void = () => undefined;
   onPick: (id: string | null, additive: boolean) => void = () => undefined;
   onDoublePick: (id: string | null) => void = () => undefined;
@@ -340,7 +359,7 @@ export class SceneController {
     obj.edgeMat.color.set(selected ? ACCENT : hovered ? HOVER : 0x06080c);
     obj.edgeMat.opacity = selected || hovered ? 0.95 : ghost ? 0.12 : 0.55;
     obj.edges.visible = d.edges || selected || hovered;
-    obj.group.visible = !d.hidden.has(obj.id) && !p.hidden;
+    obj.group.visible = !d.hidden.has(obj.id) && !p.hidden && !this.replaced.has(obj.id);
     this.updateClipping(obj);
   }
 
@@ -372,7 +391,48 @@ export class SceneController {
     this.section = { ...s };
     this.placeSection();
     for (const obj of this.parts.values()) this.updateClipping(obj);
+    for (const o of this.overlays) o.setClipping?.(this.section.on ? [this.sectionPlane] : null);
     this.dirty = true;
+  }
+
+  // ---------- overlays ----------
+
+  addOverlay(o: SceneOverlay) {
+    this.overlays.add(o);
+    this.scene.add(o.object);
+    this.syncOverlays();
+  }
+
+  removeOverlay(o: SceneOverlay) {
+    if (!this.overlays.delete(o)) return;
+    this.scene.remove(o.object);
+    this.syncOverlays();
+  }
+
+  private syncOverlays() {
+    this.replaced = new Set([...this.overlays].flatMap((o) => [...o.replaces]));
+    for (const obj of this.parts.values()) this.applyMaterial(obj);
+    for (const o of this.overlays) o.setClipping?.(this.section.on ? [this.sectionPlane] : null);
+    this.dirty = true;
+  }
+
+  /** request a redraw */
+  invalidate() {
+    this.dirty = true;
+  }
+
+  /** a ray from the camera through a point on screen */
+  rayAt(clientX: number, clientY: number): THREE.Raycaster {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    const r = new THREE.Raycaster();
+    r.setFromCamera(ndc, this.camera);
+    return r;
+  }
+
+  /** the section plane while a section is on, so overlays can skip what it cuts away */
+  activeSection(): THREE.Plane | null {
+    return this.section.on ? this.sectionPlane : null;
   }
 
   private placeSection() {
@@ -432,7 +492,7 @@ export class SceneController {
   private computeBounds() {
     const box = new THREE.Box3();
     for (const obj of this.parts.values()) {
-      if (obj.removing !== null || !obj.group.visible) continue;
+      if (obj.removing !== null || (!obj.group.visible && !this.replaced.has(obj.id))) continue;
       const g = obj.mesh.geometry;
       if (!g.boundingBox) g.computeBoundingBox();
       box.union(g.boundingBox!.clone().applyMatrix4(obj.placement));
@@ -635,6 +695,8 @@ export class SceneController {
       obj.group.matrixWorldNeedsUpdate = true;
     }
 
+    for (const o of this.overlays) if (o.tick?.(now, dt)) active = true;
+
     if (this.interferences.length) {
       const pulse = 0.55 + 0.35 * Math.sin(now / 220);
       for (const i of this.interferences) {
@@ -698,9 +760,17 @@ export class SceneController {
 
   // ---------- capture ----------
 
-  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; section?: "x" | "y" | "z"; mime?: string; quality?: number }): Promise<string> {
+  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; section?: "x" | "y" | "z"; mime?: string; quality?: number; overlays?: boolean }): Promise<string> {
     const r = this.renderer;
-    const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, w: this.container.clientWidth, h: this.container.clientHeight, display: this.display, section: this.section, pr: r.getPixelRatio() };
+    const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, w: this.container.clientWidth, h: this.container.clientHeight, display: this.display, section: this.section, pr: r.getPixelRatio(), replaced: this.replaced };
+    // overlays are drawn unless the caller asks for the plain model
+    const hideOverlays = opts.overlays === false && this.overlays.size > 0;
+    if (hideOverlays) {
+      for (const o of this.overlays) o.object.visible = false;
+      this.replaced = new Set();
+      for (const obj of this.parts.values()) this.applyMaterial(obj);
+    }
+    for (const o of this.overlays) o.still?.();
     // let pending reveal animations finish first
     for (const o of this.parts.values()) {
       if (o.reveal) {
@@ -727,6 +797,10 @@ export class SceneController {
       r.render(this.scene, this.camera);
       return r.domElement.toDataURL(opts.mime ?? "image/png", opts.quality ?? 0.9);
     } finally {
+      if (hideOverlays) {
+        for (const o of this.overlays) o.object.visible = true;
+        this.replaced = prev.replaced;
+      }
       this.scene.background = null;
       r.setClearColor(0x000000, 0);
       r.setPixelRatio(prev.pr);

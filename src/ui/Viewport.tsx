@@ -12,6 +12,7 @@ import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
+import { ResultsLayer } from "./ResultsLayer";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -25,6 +26,7 @@ export function Viewport() {
   const view = useView();
   const settings = useSettings();
   const [webglError, setWebglError] = useState("");
+  const [scene, setScene] = useState<SceneController | null>(null);
 
   useEffect(() => {
     if (!mount.current) return;
@@ -36,6 +38,7 @@ export function Viewport() {
       return;
     }
     ctl.current = c;
+    setScene(c);
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
       const s = useView.getState();
@@ -52,6 +55,7 @@ export function Viewport() {
     registerViewport({ capture: (o) => c.capture(o) });
     return () => {
       registerViewport(null);
+      setScene(null);
       c.dispose();
       ctl.current = null;
     };
@@ -194,6 +198,8 @@ export function Viewport() {
       </AnimatePresence>
 
       <Hud stage={stage} parts={visibleParts} />
+
+      {scene && <ResultsLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
 

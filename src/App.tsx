@@ -7,6 +7,7 @@ import { useSettings, TERMS_VERSION } from "./app/settings";
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
 import { useView, requestCamera, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
+import { startAnalysisRuntime } from "./analysis/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
 import { Onboarding } from "./screens/Onboarding";
@@ -75,6 +76,7 @@ function useBoot() {
   useEffect(() => {
     let live = true;
     startEngine();
+    startAnalysisRuntime();
     void Promise.allSettled([loadRememberedKey(), refreshProjects()]).then(() => {
       if (!live) return;
       const s = useSettings.getState();

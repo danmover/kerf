@@ -33,7 +33,8 @@ export interface CompDef {
   solids: CompSolid[];
   fields: LocalFields;
   fastener?: { headTop: V3; outward: V3; key: number; headD: number; size: string };
-  gear?: { m: number; z: number; width: number; pa: number };
+  gear?: { m: number; z: number; width: number; pa: number; bore: number };
+  bearing?: { code: string; bore: number; od: number; width: number; dynamicLoadN: number };
   bom: { description: string; standard?: string };
 }
 
@@ -95,6 +96,7 @@ export const LIBRARY: Record<string, LibEntry> = {
           points: { at: Z0, end: [0, 0, b.width], center: [0, 0, b.width / 2] },
           dirs: { axis: ZP },
         },
+        bearing: { code, bore: b.bore, od: b.od, width: b.width, dynamicLoadN: b.dynamicLoadN },
         bom: { description: `Deep groove ball bearing ${code} (${b.bore}x${b.od}x${b.width})`, standard: "ISO 15" },
       };
     },
@@ -205,7 +207,7 @@ export const LIBRARY: Record<string, LibEntry> = {
           points: { at: Z0, center: [0, 0, w / 2], end: [0, 0, w + hubL] },
           dirs: { axis: ZP },
         },
-        gear: { m, z, width: w, pa },
+        gear: { m, z, width: w, pa, bore },
         bom: { description: `Spur gear module ${m}, ${z} teeth, ${w} mm face` },
       };
     },

@@ -74,7 +74,8 @@ export type Stmt =
       level: "hard" | "soft";
       expr: Expr;
       span: Span;
-    };
+    }
+  | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span };
 
 export interface Program {
   stmts: Stmt[];
@@ -90,6 +91,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "part":
       return s.name;
     case "require":
+    case "analysis":
       return s.label;
     default:
       return undefined;

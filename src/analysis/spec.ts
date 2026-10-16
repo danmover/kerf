@@ -24,8 +24,8 @@ export type LoadSpec =
   | { t: "force"; region: RegionSpec; f: V3 }
   /** pressure in MPa pushing into the region's surface */
   | { t: "pressure"; region: RegionSpec; p: number }
-  /** torque in N·mm about an axis through a point */
-  | { t: "torque"; region: RegionSpec; torque: number; axis: V3; at: V3 };
+  /** torque in N·mm about an axis through a point (default: the centre of the loaded surface) */
+  | { t: "torque"; region: RegionSpec; torque: number; axis: V3; at?: V3 };
 
 export type Resolution = "draft" | "standard" | "fine" | { h: number };
 

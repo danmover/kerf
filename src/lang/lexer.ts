@@ -47,6 +47,7 @@ export const KEYWORDS = new Set([
   "true",
   "false",
   "note",
+  "analysis",
 ]);
 
 /** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */
@@ -63,6 +64,17 @@ export const UNITS: Record<string, number> = {
   rpm: 1,
   N: 1,
   Nm: 1000,
+  // structural analysis: force in N, torque in N·mm, stress and pressure in MPa (N/mm²), time in hours
+  kN: 1000,
+  lbf: 4.448222,
+  Nmm: 1,
+  MPa: 1,
+  GPa: 1000,
+  kPa: 0.001,
+  bar: 0.1,
+  psi: 0.00689476,
+  h: 1,
+  hr: 1,
 };
 
 const OPS = [

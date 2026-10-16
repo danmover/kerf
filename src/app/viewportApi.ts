@@ -11,6 +11,8 @@ export interface CaptureOptions {
   section?: "x" | "y" | "z";
   mime?: "image/png" | "image/jpeg" | "image/webp";
   quality?: number;
+  /** draw overlays such as analysis results (default true) */
+  overlays?: boolean;
 }
 
 export interface ViewportApi {

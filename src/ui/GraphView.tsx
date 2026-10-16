@@ -14,6 +14,7 @@ const KIND_COLOR: Record<DepNode["kind"], string> = {
   component: "#c792ff",
   part: "#6d8bff",
   require: "#3ddc97",
+  analysis: "#ff9e64",
 };
 const W = 168;
 const H = 30;

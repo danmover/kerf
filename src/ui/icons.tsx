@@ -298,6 +298,16 @@ export const Icon = {
       <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" />
     </I>
   ),
+  /** a beam fixed at a wall, bending under a load */
+  Stress: (p: P) => (
+    <I {...p}>
+      <path d="M3 4v16" />
+      <path d="M3 10c6.5 0 12 1.2 17 4.6" />
+      <path d="M3 14c6 0 10.5 1 14.5 3.6" />
+      <path d="M19 3v6.5" />
+      <path d="m16.8 7.4 2.2 2.2 2.2-2.2" />
+    </I>
+  ),
 };
 
 export function StatusIcon({ status }: { status: "pass" | "fail" | "warn" | "pending" | "info" }) {

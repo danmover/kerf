@@ -21,7 +21,7 @@ export class ParseError extends Error {
   }
 }
 
-const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note"]);
+const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "analysis"]);
 
 export function parse(src: string): { program: Program; diagnostics: Diagnostic[] } {
   let tokens: Token[];
@@ -112,7 +112,7 @@ class Parser {
     const tk = this.peek();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (param, let, component, interface, part, require) but found "${tk.value}"`,
+        `Expected a top-level statement (param, let, component, interface, part, require, analysis) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -205,6 +205,11 @@ class Parser {
         this.expect("op", ":");
         const expr = this.expr();
         return { k: "require", label, level, expr, span: { start, end: this.prevEnd() } };
+      }
+      case "analysis": {
+        const labelTk = this.expect("str", undefined, 'an analysis name in quotes, like analysis "Shelf load" { ... }');
+        const items = this.block();
+        return { k: "analysis", label: labelTk.value, items, span: { start, end: this.prevEnd() }, labelSpan: { start: labelTk.start, end: labelTk.end } };
       }
     }
     throw new ParseError("Unknown statement", tk.start, tk.end);

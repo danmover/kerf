@@ -4,6 +4,8 @@
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { ANALYSIS_FNS } from "../analysis/lang";
+import { MECH } from "../analysis/materials";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -35,6 +37,12 @@ export function languageReference(): string {
     .map(([k, b]) => `${k} (${b.bore}×${b.od}×${b.width})`)
     .join(", ");
   const materials = Object.keys(MATERIALS).map((m) => `"${m}"`).join(", ");
+  const analysisFns = Object.values(ANALYSIS_FNS)
+    .map((f) => `- ${f.doc ?? f.name}`)
+    .join("\n");
+  const mech = Object.entries(MECH)
+    .map(([k, m]) => `${k}: E ${m.E / 1000} GPa, yield ${m.yield} MPa, fatigue ${m.fatigue} MPa${m.layerFactor < 1 ? `, layers ${Math.round(m.layerFactor * 100)} %` : ""}`)
+    .join("; ");
 
   return `# Kerf design language (.kerf)
 
@@ -51,6 +59,7 @@ interface name { field = expr, ... }                          // named contract 
 component name = lib.kind(args) { props and flags }           // standard parts from the library
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
 require "Label" [hard|soft]: condition                         // checked every rebuild; hard by default
+analysis "Label" { props }                                     // a strength analysis or drivetrain duty, re-run after every change (see Analysis blocks)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -93,6 +102,36 @@ Threads (use M3 etc. directly as values: M3.clearance, M3.tap, M3.head_d, or pas
 ${threads}
 Bearings for lib.bearing(code): ${bearings}
 
+## Analysis blocks
+A structural analysis says how parts are held and what loads them. After every build the app solves a finite-element model of the named parts (bonded where they touch) and adds strength and stiffness checks.
+analysis "Shelf load" {
+  parts: [bracket, gusset]                  // optional: defaults to the parts that face() names
+  fix: face(bracket, -Y)                    // held in every direction (screwed or glued to the wall)
+  fix: zone(at: hole_pos, d: M4.clearance + 2, axis: Z, length: 5)   // a bolt hole: the bore surface
+  fix: roller(face(bracket, -Z), Z)         // only stops movement along Z (resting on a surface)
+  load: force(face(bracket, +Z), (0, 0, -shelf_kg * 9.81N))   // total force spread over the region
+  load: pressure(face(lid, +Z), 0.02MPa)
+  load: torque(zone(at: hub_pos, d: 8, axis: Z, length: 6), 0.5Nm, axis: Z)
+  gravity                                   // self-weight; or accel: (0, 0, -3) for 3 g
+  material: "PETG"                          // optional: overrides the parts' material
+  printed                                   // FDM part: layer bonds are weaker; build: Z gives the stacking direction (default Z)
+  cycles: 1e5                               // repeated loading: judged against fatigue strength
+  safety: 2                                 // required lowest factor of safety (default 2)
+  max_deflection: 0.5mm                     // optional stiffness limit
+  resolution: "standard"                    // "draft" ~8k elements, "standard" ~30k (default), "fine" ~110k, or a cell size like 0.6mm
+}
+fix: and load: may repeat or take lists. Units: N, kN, lbf, Nm, Nmm, MPa, kPa, bar, psi, GPa. Inside an analysis block these functions exist:
+${analysisFns}
+A drivetrain analysis gives a gear train's duty instead; the app checks tooth bending (Lewis), bearing L10 life and shaft torsion for every gear and bearing the driver turns:
+analysis "Gearbox duty" {
+  drive: motor_gear        // the component that drives the train
+  torque: 0.3Nm            // input torque
+  speed: 3000rpm           // input speed
+  life: 2000h              // required running life (sets fatigue cycles and the bearing life target)
+  safety: 1.5
+}
+Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
+
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins
 - exact solid interference between every pair of nearby parts (OpenCASCADE booleans); parts of one multi-solid component are not checked against each other; gears are checked by tooth geometry instead
@@ -100,7 +139,8 @@ Bearings for lib.bearing(code): ${bearings}
 - swept envelopes of rotating gears against static parts
 - gear meshing: same module, exact centre distance, face overlap, and tooth clearance through a rotation
 - build errors (a modelling step the kernel could not perform)
+- every analysis block: structural strength (factor of safety) and stiffness, or the drivetrain's tooth, bearing and shaft checks
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
-Things geometry cannot prove (strength, torque, heat, tolerances on a real printer) are reported as "needs analysis".
+Things geometry cannot prove are reported as "needs analysis" until an analysis block covers them; heat and real printer tolerances are not analysed.
 `;
 }

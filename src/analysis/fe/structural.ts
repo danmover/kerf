@@ -81,7 +81,8 @@ export interface StructuralResult {
   equilibrium: number;
   mass: number;
   volume: number;
-  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number }[];
+  /** at: centroid of the loaded surface (a torque's centre for torques); vector: net force; axis: a torque's axis */
+  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3 }[];
   supports: { region: string; dir?: V3; at: V3; nodes: number; reaction: V3; markers: Float32Array }[];
   gravity: { vector: V3; at: V3 } | null;
   parts: PartField[];
@@ -465,11 +466,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       });
     } else {
       const ax = norm(ld.axis);
+      const at = ld.at ?? c;
       let denom = 0;
       const tang: V3[] = [];
       sel.nodes.forEach((n, s) => {
         const p = nodePos(n);
-        const v: V3 = [p[0] - ld.at[0], p[1] - ld.at[1], p[2] - ld.at[2]];
+        const v: V3 = [p[0] - at[0], p[1] - at[1], p[2] - at[2]];
         const along = dot(v, ax);
         const rp: V3 = [v[0] - along * ax[0], v[1] - along * ax[1], v[2] - along * ax[2]];
         const t: V3 = [ax[1] * rp[2] - ax[2] * rp[1], ax[2] * rp[0] - ax[0] * rp[2], ax[0] * rp[1] - ax[1] * rp[0]];
@@ -486,7 +488,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         }
       });
     }
-    loadInfo.push({ kind: ld.t, region: describeRegion(ld.region), at: c, vector: R, magnitude: ld.t === "torque" ? Math.abs(ld.torque) : Math.hypot(...R), area: sel.area, nodes: sel.nodes.length });
+    if (ld.t === "torque") loadInfo.push({ kind: ld.t, region: describeRegion(ld.region), at: ld.at ?? c, vector: R, magnitude: Math.abs(ld.torque), area: sel.area, nodes: sel.nodes.length, axis: norm(ld.torque < 0 ? [-ld.axis[0], -ld.axis[1], -ld.axis[2]] : ld.axis) });
+    else loadInfo.push({ kind: ld.t, region: describeRegion(ld.region), at: c, vector: R, magnitude: Math.hypot(...R), area: sel.area, nodes: sel.nodes.length });
   });
 
   // ---------- materials ----------

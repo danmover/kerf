@@ -10,6 +10,8 @@ import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
+import type { AnalysisSpec } from "../analysis/spec";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -102,6 +104,9 @@ class Evaluator {
   parts: EvalPart[] = [];
   params: EvalParam[] = [];
   reqs: EvalRequirement[] = [];
+  analyses: AnalysisSpec[] = [];
+  /** functions that win over other names in call position (analysis blocks) */
+  callOverride: Record<string, Fn> | null = null;
   diags: Diagnostic[] = [];
   blocks: Model["blocks"] = [];
   name = "Untitled design";
@@ -157,7 +162,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -172,6 +177,7 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
+    if (s.k === "analysis") return `analysis:${s.label}`;
     return "name" in s && s.k !== "design" ? s.name : undefined;
   }
 
@@ -237,6 +243,9 @@ class Evaluator {
         return;
       case "require":
         this.requirement(s);
+        return;
+      case "analysis":
+        this.analysis(s);
         return;
     }
   }
@@ -311,7 +320,8 @@ class Evaluator {
         throw new EvalError(`Cannot index ${typeName(o)}`, e.span);
       }
       case "call": {
-        const callee = this.expr(e.callee, scope);
+        const override = e.callee.k === "ident" ? this.callOverride?.[e.callee.name] : undefined;
+        const callee = override ?? this.expr(e.callee, scope);
         if (!(callee instanceof Fn)) throw new EvalError(`${show(callee)} is not a function`, e.callee.span);
         const pos: Value[] = [];
         const named: Record<string, Value> = {};
@@ -546,7 +556,7 @@ class Evaluator {
     const value = new Obj(fields0, "component", s.name);
 
     const gear: GearInfo | undefined = def.gear
-      ? { m: def.gear.m, z: def.gear.z, width: def.gear.width, pa: def.gear.pa, backlash: args.num("backlash", 0.05), center: at0, axis, phase, meshWith }
+      ? { m: def.gear.m, z: def.gear.z, width: def.gear.width, pa: def.gear.pa, bore: def.gear.bore, backlash: args.num("backlash", 0.05), center: at0, axis, phase, meshWith }
       : undefined;
     const info: CompInfo = { def, at: at0, axis, xf: xfs[0], motion, gear, value };
     this.define(s.name, "component", value, s.nameSpan, def.label);
@@ -580,6 +590,7 @@ class Evaluator {
           deps: [],
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
           gear: sd.suffix ? undefined : gear,
+          bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           fastener:
             def.fastener && !sd.suffix
               ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
@@ -799,6 +810,76 @@ class Evaluator {
     return { ok: truthy(v), detail: show(v) };
   }
 
+  // ---------------- analyses ----------------
+
+  analysis(s: Extract<Stmt, { k: "analysis" }>) {
+    this.blocks.push({ name: s.label, kind: "analysis", span: s.span, locked: s.items.some((i) => i.k === "flag" && i.name === "locked") });
+    if (this.analyses.some((a) => a.label === s.label)) throw new EvalError(`There is already an analysis called "${s.label}"`, s.labelSpan);
+    const props: AnalysisItem[] = [];
+    const flags: AnalysisItem[] = [];
+    const saved = this.callOverride;
+    this.callOverride = ANALYSIS_FNS;
+    try {
+      this.analysisItems(s.items, new Scope(), props, flags, 0);
+    } finally {
+      this.callOverride = saved;
+    }
+    const spec = buildAnalysis(s.label, props, flags, s.span, {
+      fail: (msg, span) => {
+        throw new EvalError(msg, span);
+      },
+      kindOf: (name) => {
+        const k = this.defKind.get(name);
+        if (k) this.current?.add(name);
+        return k;
+      },
+    });
+    // the parts it reads are dependencies, so the graph and incremental reruns see them
+    if (spec.kind === "structural") for (const p of spec.parts) if (this.defKind.has(p)) this.current?.add(p);
+    if (spec.kind === "drivetrain") {
+      const k = this.defKind.get(spec.drive);
+      if (k !== "component" && k !== "part") throw new EvalError(`drive: "${spec.drive}" is not a component or part`, s.span);
+      this.current?.add(spec.drive);
+    }
+    this.analyses.push(spec);
+  }
+
+  analysisItems(items: Item[], scope: Scope, props: AnalysisItem[], flags: AnalysisItem[], depth: number) {
+    if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? { start: 0, end: 0 });
+    for (const it of items) {
+      switch (it.k) {
+        case "prop":
+          props.push({ name: it.name, value: this.expr(it.value, scope), span: it.span });
+          break;
+        case "flag":
+          flags.push({ name: it.name, value: true, span: it.span });
+          break;
+        case "let":
+          scope.vars.set(it.name, this.expr(it.value, scope));
+          break;
+        case "for": {
+          const iter = this.expr(it.iter, scope);
+          const list = Array.isArray(iter) ? iter : iter instanceof Vec ? iter.v : null;
+          if (!list) throw new EvalError(`for ... in needs a list, got ${typeName(iter)}`, it.iter.span);
+          for (const v of list) {
+            const inner = new Scope(scope);
+            inner.vars.set(it.varName, v);
+            this.analysisItems(it.body, inner, props, flags, depth + 1);
+          }
+          break;
+        }
+        case "if": {
+          const c = this.expr(it.cond, scope);
+          if (truthy(c)) this.analysisItems(it.then, new Scope(scope), props, flags, depth + 1);
+          else if (it.else) this.analysisItems(it.else, new Scope(scope), props, flags, depth + 1);
+          break;
+        }
+        default:
+          throw new EvalError("An analysis block takes properties such as fix:, load:, safety:, flags such as gravity, and let, for and if.", it.span);
+      }
+    }
+  }
+
   // ---------------- output ----------------
 
   toModel(parseDiags: Diagnostic[]): Model {
@@ -806,6 +887,7 @@ class Evaluator {
     const edges: { from: string; to: string }[] = [];
     for (const [name, kind] of this.defKind) nodes.push({ id: name, kind, label: this.defLabel.get(name) ?? name });
     for (const r of this.reqs) nodes.push({ id: `require:${r.label}`, kind: "require", label: r.label });
+    for (const a of this.analyses) nodes.push({ id: `analysis:${a.label}`, kind: "analysis", label: a.label });
     for (const [id, set] of this.deps) for (const d of set) if (d !== id) edges.push({ from: d, to: id });
     const usedBy = new Map<string, string[]>();
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
@@ -817,6 +899,7 @@ class Evaluator {
       params: this.params,
       parts: this.parts,
       requirements: this.reqs,
+      analyses: this.analyses,
       diagnostics: [...parseDiags, ...this.diags],
       graph: { nodes, edges },
       blocks: this.blocks,
