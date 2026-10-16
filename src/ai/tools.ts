@@ -13,6 +13,7 @@ import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
+import { PLAN_TOOL, runPlanTool } from "./planTool";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -20,6 +21,7 @@ z.config({ jitless: true });
 export const VIEW_NAMES = ["iso", "front", "back", "top", "bottom", "left", "right"] as const;
 
 export const TOOL_DEFS = [
+  PLAN_TOOL,
   {
     name: "get_design",
     description:
@@ -281,6 +283,8 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
   switch (name) {
     case "build_subassemblies":
       return runBuildTool(input, ctx);
+    case "update_plan":
+      return runPlanTool(input);
     case "get_design": {
       const { source, model, report } = useDesign.getState();
       return {
@@ -376,6 +380,7 @@ function invalid(e: z.ZodError): ToolOutcome {
 }
 
 export const TOOL_TITLES: Record<string, string> = {
+  update_plan: "Updating the plan",
   get_design: "Reading the design",
   edit_design: "Editing the design",
   write_design: "Writing the design",

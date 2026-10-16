@@ -15,6 +15,7 @@ import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
 import { AgentRunCard } from "./agents/AgentRunCard";
+import { PlanPane } from "./PlanPane";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -104,6 +105,7 @@ export function ChatPanel() {
       </div>
 
       <div className="chat">
+        <PlanPane />
         <div
           className="chat-feed"
           ref={feed}
@@ -114,9 +116,7 @@ export function ChatPanel() {
           aria-live="polite"
         >
           {!items.length && <Welcome hasKey={!!key} />}
-          {items.map((it) => (
-            <Item key={it.id} it={it} />
-          ))}
+          {items.map((it) => (it.kind === "tool" && it.name === "update_plan" ? null : <Item key={it.id} it={it} />))}
         </div>
         <Composer busy={busy} hasKey={!!key} />
       </div>
@@ -188,6 +188,11 @@ function Item({ it }: { it: ChatItem }) {
               {it.action === "retry" && (
                 <button className="btn sm" onClick={() => void retryLast()}>
                   <Icon.Refresh size={13} /> Try again
+                </button>
+              )}
+              {it.action === "continue" && (
+                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.")}>
+                  <Icon.Play size={11} /> Continue
                 </button>
               )}
             </div>

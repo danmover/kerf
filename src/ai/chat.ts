@@ -9,16 +9,17 @@ import * as db from "../persist/db";
 import { useSettings } from "../app/settings";
 import { useDesign } from "../core/engine";
 import { useView } from "../app/view";
-import { commitSource } from "../app/project";
+import { commitSource, useProject } from "../app/project";
 import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type ToolOutcome } from "./tools";
+import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering } from "./plan";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; ts: number }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number }
   | { kind: "choice"; id: string; toolUseId: string; question: string; options: { label: string; consequence: string; recommended?: boolean }[]; chosen?: string }
-  | { kind: "notice"; id: string; level: "error" | "warn" | "info"; title: string; detail?: string; action?: "settings" | "retry" }
+  | { kind: "notice"; id: string; level: "error" | "warn" | "info"; title: string; detail?: string; action?: "settings" | "retry" | "continue" }
   | { kind: "turn"; id: string; before: string; after: string; edits: number; reverted?: boolean };
 
 interface ChatState {
@@ -62,6 +63,7 @@ export async function loadChat(projectId: string) {
   // a choice card left open in a previous session is still answerable
   const open = savedPending && items.some((i) => i.id === savedPending.itemId && i.kind === "choice" && !i.chosen) ? savedPending : null;
   set({ projectId, items, busy: false, pendingChoice: open });
+  quietly(() => loadPlan((rec as { plan?: unknown } | undefined)?.plan));
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -74,14 +76,42 @@ function persist() {
     // keep stored history small: images are dropped, the text around them stays
     const slimHistory = history.map(stripImages);
     const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it));
-    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"] }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, updatedAt: Date.now() }).catch(() => undefined);
+    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"]; plan: unknown }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, plan: planSnapshot(), updatedAt: Date.now() }).catch(() => undefined);
   }, 400);
+}
+
+// the plan is saved with the conversation it belongs to
+let planQuiet = false;
+function quietly(fn: () => void) {
+  planQuiet = true;
+  try {
+    fn();
+  } finally {
+    planQuiet = false;
+  }
+}
+usePlan.subscribe(() => {
+  if (!planQuiet) persist();
+});
+
+// a change the user makes to the design while Claude works reaches Claude like a plan change
+useProject.subscribe((s, prev) => {
+  const v = s.versions[s.versions.length - 1];
+  if (!v || v === prev.versions[prev.versions.length - 1] || s.current?.id !== prev.current?.id) return;
+  if (v.author === "you" && get().busy) noteDesignEdit(v.message);
+});
+
+/** The user's plan changes since the last tool boundary, as a text block for the next request. */
+function steering(): { type: "text"; text: string }[] {
+  const text = takeMainSteering();
+  return text ? [{ type: "text", text }] : [];
 }
 
 export async function clearChat() {
   abort?.abort();
   history = [];
   set({ items: [], busy: false, pendingChoice: null });
+  quietly(resetPlan);
   const { projectId } = get();
   if (projectId) await db.remove("chats", projectId).catch(() => undefined);
 }
@@ -93,6 +123,7 @@ export function resetChat() {
   saveTimer = null;
   history = [];
   set({ projectId: null, items: [], busy: false, pendingChoice: null });
+  quietly(resetPlan);
 }
 
 function stripImages(m: BetaMessageParam): BetaMessageParam {
@@ -157,9 +188,9 @@ export async function sendMessage(text: string) {
     // the user typed instead of picking: that answers the open question
     patch(pending.itemId, (it) => (it.kind === "choice" ? { ...it, chosen: "(answered in chat)" } : it));
     set({ pendingChoice: null });
-    history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${t}` }, { type: "text", text: contextNote() }] });
+    history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${t}` }, { type: "text", text: contextNote() }, ...steering()] });
   } else {
-    history.push({ role: "user", content: [{ type: "text", text: contextNote() }, { type: "text", text: t }] });
+    history.push({ role: "user", content: [{ type: "text", text: contextNote() }, ...steering(), { type: "text", text: t }] });
   }
   persist();
   await runLoop();
@@ -171,7 +202,7 @@ export async function choose(itemId: string, label: string) {
   patch(itemId, (it) => (it.kind === "choice" ? { ...it, chosen: label } : it));
   set({ pendingChoice: null });
   push({ kind: "user", id: nid(), text: label, ts: Date.now() });
-  history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user chose: ${label}` }, { type: "text", text: contextNote() }] });
+  history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user chose: ${label}` }, { type: "text", text: contextNote() }, ...steering()] });
   persist();
   await runLoop();
 }
@@ -265,17 +296,28 @@ async function runLoop() {
       const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
       const results: BetaToolResultBlockParam[] = [];
       let ask: { toolUseId: string; outcome: ToolOutcome } | null = null;
+      let pausedAfter: string | null = null;
       for (const u of uses) {
         if (abort.signal.aborted) break;
+        if (pausedAfter) {
+          // the user asked to review once that step was done: nothing after it runs
+          set((s) => ({ items: s.items.filter((i) => !(i.kind === "tool" && i.toolUseId === u.id)) }));
+          results.push({ type: "tool_result", tool_use_id: u.id, content: `Not run: the user asked to pause for review after “${pausedAfter}”. Wait for them.`, is_error: true });
+          continue;
+        }
         const itemId = [...toolItems.entries()].find(([, id]) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)?.[1] ?? nid();
         if (!get().items.some((i) => i.id === itemId)) push({ kind: "tool", id: itemId, toolUseId: u.id, name: u.name, status: "running", title: TOOL_TITLES[u.name] ?? u.name });
         else patch(itemId, (it) => (it.kind === "tool" ? { ...it, status: "running", title: TOOL_TITLES[u.name] ?? u.name } : it));
+        const mirrored = u.name !== "update_plan";
+        if (mirrored) mainActivityStart(itemId, TOOL_TITLES[u.name] ?? u.name);
         let outcome: ToolOutcome;
         try {
           outcome = await runTool(u.name, u.input, { signal: abort.signal, toolUseId: u.id });
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
+        if (mirrored) mainActivityEnd(itemId, outcome.isError ? "error" : "done", outcome.ask ? "Asked you" : outcome.card.title);
+        else pausedAfter = takePauseHit();
         if (outcome.ask) {
           set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
           ask = { toolUseId: u.id, outcome };
@@ -296,8 +338,9 @@ async function runLoop() {
       }
       if (abort.signal.aborted) {
         // every tool_use needs a result before the next request
-        for (const u of uses) if (!results.some((r) => r.tool_use_id === u.id) && u.id !== ask?.toolUseId) results.push({ type: "tool_result", tool_use_id: u.id, content: "Stopped by the user before this ran.", is_error: true });
-        if (ask) results.push({ type: "tool_result", tool_use_id: ask.toolUseId, content: "Stopped by the user.", is_error: true });
+        const why = redirect ? "Not run: the user interrupted to change the plan; their changes follow." : "Stopped by the user before this ran.";
+        for (const u of uses) if (!results.some((r) => r.tool_use_id === u.id) && u.id !== ask?.toolUseId) results.push({ type: "tool_result", tool_use_id: u.id, content: why, is_error: true });
+        if (ask) results.push({ type: "tool_result", tool_use_id: ask.toolUseId, content: redirect ? why : "Stopped by the user.", is_error: true });
         history.push({ role: "user", content: results });
         break;
       }
@@ -308,15 +351,21 @@ async function runLoop() {
         set({ pendingChoice: { toolUseId: ask.toolUseId, itemId: cid, results } });
         break;
       }
-      history.push({ role: "user", content: results });
+      history.push({ role: "user", content: [...results, ...steering()] });
       persist();
+      pausedAfter ??= takePauseHit();
+      if (pausedAfter) {
+        push({ kind: "notice", id: nid(), level: "info", title: `Paused after “${pausedAfter}”`, detail: "You asked to review here. Look it over, change the plan if you like, then continue.", action: "continue" });
+        history.push({ role: "assistant", content: [{ type: "text", text: `(Paused for the user's review after “${pausedAfter}”, as they asked.)` }] });
+        break;
+      }
       if (step === settings.maxSteps - 1) {
         push({ kind: "notice", id: nid(), level: "info", title: `Paused after ${settings.maxSteps} steps`, detail: "Say “continue” to let Claude keep going. You can raise the limit in Settings." });
         history.push({ role: "assistant", content: [{ type: "text", text: "(Paused at the step limit.)" }] });
       }
     }
   } catch (e) {
-    handleError(e);
+    if (!(redirect && isAbort(e))) handleError(e);
     // leave history ending with the user turn so retry can resend it
     if (history.length && history[history.length - 1].role === "assistant") {
       const last = history[history.length - 1];
@@ -328,8 +377,43 @@ async function runLoop() {
     const after = useDesign.getState().source;
     if (edits && after !== startSource) push({ kind: "turn", id: nid(), before: startSource, after, edits });
     abort = null;
+    settleActivity();
     persist();
   }
+  if (redirect) {
+    redirect = false;
+    await resumeWithSteering();
+  }
+}
+
+let redirect = false;
+const isAbort = (e: unknown) => e instanceof Anthropic.APIUserAbortError || (e instanceof Error && e.name === "AbortError");
+
+/**
+ * Apply the user's plan changes now instead of at the next tool boundary:
+ * stop the response in progress and continue with the changes. When Claude
+ * is idle, the changes go as a message of their own.
+ */
+export async function applyPlanChangesNow() {
+  if (!pendingSteering(usePlan.getState()).length) return;
+  if (!get().busy) {
+    await sendMessage(describeSteering(usePlan.getState()));
+    return;
+  }
+  if (!abort || redirect) return;
+  redirect = true;
+  abort.abort();
+}
+
+async function resumeWithSteering() {
+  const blocks = steering();
+  if (!blocks.length) return;
+  push({ kind: "notice", id: nid(), level: "info", title: "Interrupted to apply your plan changes" });
+  const last = history[history.length - 1];
+  if (last?.role === "user" && typeof last.content !== "string") history[history.length - 1] = { ...last, content: [...last.content, ...blocks] };
+  else history.push({ role: "user", content: [{ type: "text", text: contextNote() }, ...blocks] });
+  persist();
+  await runLoop();
 }
 
 async function streamOnce(anthropic: Anthropic, params: Record<string, unknown>, assistantId: string, toolItems: Map<number, string>) {
@@ -410,7 +494,7 @@ function withCacheBreakpoint(h: BetaMessageParam[]): BetaMessageParam[] {
 }
 
 function handleError(e: unknown) {
-  if (e instanceof Anthropic.APIUserAbortError || (e instanceof Error && e.name === "AbortError")) {
+  if (isAbort(e)) {
     push({ kind: "notice", id: nid(), level: "info", title: "Stopped" });
     return;
   }
