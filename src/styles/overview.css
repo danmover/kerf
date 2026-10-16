@@ -469,9 +469,10 @@
   box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.08), 0 10px 30px -18px var(--accent-glow);
   animation-name: ov-in-sel;
 }
+/* you asked for this card, so it never starts invisible */
 @keyframes ov-in-sel {
   from {
-    opacity: 0;
+    opacity: 0.4;
     transform: translateY(10px) scale(0.97);
   }
 }
@@ -556,20 +557,19 @@
   left: 0;
   right: 0;
   bottom: 0;
-  height: 22px;
-  background: linear-gradient(180deg, transparent, #080a0f 85%);
+  height: 26px;
+  background: linear-gradient(180deg, transparent, #080a0f 70%);
   pointer-events: none;
 }
 .ov-code-more {
   position: absolute;
   z-index: 1;
   right: 6px;
-  top: 6px;
+  bottom: 4px;
   font-size: 9.5px;
   line-height: 16px;
-  color: var(--text-4);
-  padding: 0 6px 0 14px;
-  background: linear-gradient(90deg, transparent, #080a0f 12px);
+  color: var(--text-3);
+  padding: 0 4px;
 }
 .ov-code::after {
   content: "";
