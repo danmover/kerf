@@ -8,7 +8,7 @@ import { Obj, SketchLineObj, SketchObj, Vec, fmtNum, typeName, type Value } from
 import { suggest } from "../lang/suggest";
 import type { V2, V3 } from "../kernel/recipe";
 import { stableStringify, vscale, vadd } from "../kernel/recipe";
-import { buildProfile, sampleSeg } from "./regions";
+import { buildProfile, sampleSeg, type CornerSpec } from "./regions";
 import { firstConflict, solveSketch, type ConsKind, type DefConstraint, type SketchDef, type SolveResult } from "./solver";
 import { PLANES, frameOf, isPlane, planeValue, toWorld } from "./planes";
 import type { EvalSketch, Frame, SkConstraint, SkCurve, SkPoint, SkStatus } from "./types";
@@ -51,6 +51,8 @@ export const CONSTRAINTS: Record<string, { dim: boolean; doc: string }> = {
   radius: { dim: true, doc: "radius c = r — circle or arc" },
   diameter: { dim: true, doc: "diameter c = d — circle or arc" },
   angle: { dim: true, doc: "angle l1, l2 = θ — counter-clockwise from l1 to l2, in degrees" },
+  fillet: { dim: true, doc: "fillet l1, l2 = r — rounds the profile corner where two lines meet (or fillet p, l3.end, … = r at corner points). Dimensions still measure to the sharp corner." },
+  chamfer: { dim: true, doc: "chamfer l1, l2 = d — cuts the corner where two lines meet, d back along each line (or chamfer p, … = d)" },
 };
 const ALIASES: Record<string, string> = { on: "coincident", dist: "distance", dx: "hdistance", dy: "vdistance", colinear: "collinear", perpendicular_to: "perpendicular" };
 
@@ -104,6 +106,8 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
 
   const points: SkPoint[] = [];
   const pointIdx = new Map<string, number>();
+  /** names of shared points: when l2 starts at l1.end, "l2.start" means "l1.end" */
+  const alias = new Map<string, string>();
   const ents = new Map<string, Ent>();
   const curves: SkCurve[] = [];
   const defCons: DefConstraint[] = [];
@@ -143,13 +147,17 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     const path = refPath(e);
     if (path) {
       const ent = ents.get(path);
-      if (ent?.kind === "point") return ent.id;
-      if (pointIdx.has(path)) return path;
+      const id = ent?.kind === "point" ? ent.id : pointIdx.has(path) ? path : alias.get(path);
+      if (id) {
+        // l2.start names the shared point too
+        alias.set(`${owner}.${role}`, id);
+        return id;
+      }
       if (ent) host.fail(`${path} is a ${ent.kind}; ${owner}'s ${role} needs a point`, e.span);
     }
     const [x, y] = vec2(e, `${owner}'s ${role}`);
     const id = `${owner}.${role}`;
-    addPoint({ id, x, y, implicit: true, owner, coordSpan: e.span, literal: isLiteral(e) });
+    addPoint({ id, x, y, implicit: true, owner, coordSpan: e.span, literal: isLiteral(e), written: [x, y] });
     return id;
   };
 
@@ -159,6 +167,8 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
   };
 
   const constraintItems: Extract<SketchItem, { k: "constraint" }>[] = [];
+  /** fillets and chamfers: applied to the profile after solving, so dimensions keep measuring to sharp corners */
+  const cornerReqs: { src: number; kind: "fillet" | "chamfer"; r: number; pts?: string[]; lines?: [Extract<Ent, { kind: "line" }>, Extract<Ent, { kind: "line" }>] }[] = [];
 
   for (const it of s.items) {
     // a mistake in one statement is reported and skipped; the rest of the sketch still solves
@@ -207,7 +217,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
         const argSpans = it.args.map((a) => a.span);
         if (it.kind === "point") {
           const [x, y] = vec2(it.args[0], `point ${it.name}`);
-          addPoint({ id: it.name, x, y, implicit: false, coordSpan: it.args[0].span, literal: isLiteral(it.args[0]), span: it.span });
+          addPoint({ id: it.name, x, y, implicit: false, coordSpan: it.args[0].span, literal: isLiteral(it.args[0]), span: it.span, written: [x, y] });
           ents.set(it.name, { kind: "point", id: it.name });
           if (it.construction) host.diag(`Points are always reference geometry; "construction" has no effect here`, it.span, "warning");
           break;
@@ -227,7 +237,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
           if (!(r > 0)) host.fail(`circle ${it.name} needs a size greater than 0`, it.size!.value.span);
           radii.set(it.name, r);
           ents.set(it.name, { kind: "circle", id: it.name, c });
-          curves.push({ id: it.name, kind: "circle", construction: it.construction, pts: [c], r, status: "free", span: it.span, argSpans, sizeSpan: it.size!.value.span, sizeWhich: it.size!.which, sizeLiteral: isLiteral(it.size!.value) });
+          curves.push({ id: it.name, kind: "circle", construction: it.construction, pts: [c], r, status: "free", span: it.span, argSpans, sizeSpan: it.size!.value.span, sizeWhich: it.size!.which, sizeLiteral: isLiteral(it.size!.value), writtenR: r });
           break;
         }
         const a = pointArg(it.args[0], it.name, "start");
@@ -251,8 +261,9 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     const ent = ents.get(path!);
     if (ent) return ent;
     if (pointIdx.has(path!)) return { kind: "point", id: path! };
+    if (alias.has(path!)) return { kind: "point", id: alias.get(path!)! };
     // members of curves: l1.start, c1.center
-    const all = [...ents.keys(), ...pointIdx.keys()];
+    const all = [...ents.keys(), ...pointIdx.keys(), ...alias.keys()];
     const sg = suggest(path!, all);
     return host.fail(`"${path}" is not geometry in sketch ${s.name}${sg ? `. Did you mean "${sg}"?` : ". Geometry must be declared before constraints use it."}`, e.span);
   };
@@ -425,12 +436,20 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
         add("angle", [line(E[0]).id, line(E[1]).id], value);
         break;
       }
+      case "fillet":
+      case "chamfer": {
+        if (!(value! > 0)) bad(`the ${name === "fillet" ? "radius" : "distance"} must be greater than 0`);
+        if (E.length === 2 && E[0].kind === "line" && E[1].kind === "line") cornerReqs.push({ src: index, kind: name, r: value!, lines: [E[0], E[1]] });
+        else cornerReqs.push({ src: index, kind: name, r: value!, pts: E.map((e) => point(e).id) });
+        break;
+      }
     }
     cons.push({
       index,
       kind: name,
       args: it.refs.map((r) => src.slice(r.span.start, r.span.end)),
       ids: E.map((e) => e.id),
+      argSpans: it.refs.map((r) => r.span),
       value,
       valueText: it.value ? src.slice(it.value.span.start, it.value.span.end) : undefined,
       span: it.span,
@@ -503,12 +522,30 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
   // ---- profile ----
   const P = (id: string): V2 => res.points[id];
   const solid = curves.filter((c) => !c.construction);
+  const corners: CornerSpec[] = [];
+  for (const q of cornerReqs) {
+    if (q.pts) for (const at of q.pts) corners.push({ at, r: q.r, kind: q.kind, src: q.src });
+    else {
+      // the end the two lines share (by name, or by position after solving)
+      const [l1, l2] = q.lines!;
+      let best: { at: string; d: number } | null = null;
+      for (const a of [l1.a, l1.b])
+        for (const b of [l2.a, l2.b]) {
+          const d = Math.hypot(P(a)[0] - P(b)[0], P(a)[1] - P(b)[1]);
+          if (!best || d < best.d) best = { at: a, d };
+        }
+      if (best && best.d < 1e-5) corners.push({ at: best.at, r: q.r, kind: q.kind, src: q.src });
+      else host.diag(`${q.kind}: ${l1.id} and ${l2.id} do not meet at a corner`, cons[q.src].span, "error");
+    }
+  }
   const profile = buildProfile(
     res.points,
     solid.filter((c) => c.kind === "line").map((c) => ({ id: c.id, a: c.pts[0], b: c.pts[1] })),
     solid.filter((c) => c.kind === "arc").map((c) => ({ id: c.id, a: c.pts[0], b: c.pts[1], c: c.pts[2] })),
     solid.filter((c) => c.kind === "circle").map((c) => ({ id: c.id, c: c.pts[0], r: c.r! })),
+    corners,
   );
+  for (const issue of profile.cornerIssues) host.diag(issue.message, cons[issue.src].span, "error");
 
   // ---- frame and language value ----
   const o0: V3 = originOverride ?? frame.o;
@@ -581,6 +618,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     message,
     redundant: cons.filter((c) => c.status === "redundant").length,
     profile,
+    aliases: Object.fromEntries(alias),
     def,
     usedBy: [],
   };

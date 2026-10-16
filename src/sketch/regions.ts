@@ -31,6 +31,15 @@ export interface Loop {
   poly: V2[];
 }
 
+/** A rounded (fillet) or cut (chamfer) corner where two profile lines meet. */
+export interface CornerSpec {
+  at: string;
+  r: number;
+  kind: "fillet" | "chamfer";
+  /** the statement it came from */
+  src: number;
+}
+
 export interface Profile {
   regions: ProfileRegion[];
   /** loops as polygons, outer boundaries first, for display */
@@ -38,12 +47,16 @@ export interface Profile {
   area: number;
   loops: number;
   error?: { message: string; refs: string[] };
+  /** corners that were rounded or cut, for display */
+  corners: { src: number; at: string; seg: Seg2 }[];
+  /** corner statements that could not be applied */
+  cornerIssues: { src: number; message: string }[];
 }
 
 const EPS = 1e-5;
 
-export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], arcs: ProfileArc[], circles: ProfileCircle[]): Profile {
-  const empty: Profile = { regions: [], fills: [], area: 0, loops: 0 };
+export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], arcs: ProfileArc[], circles: ProfileCircle[], cornerSpecs: CornerSpec[] = []): Profile {
+  const empty: Profile = { regions: [], fills: [], area: 0, loops: 0, corners: [], cornerIssues: [] };
   // merge points that sit on top of each other into one node
   const ids = Object.keys(points);
   const node = new Map<string, string>();
@@ -97,16 +110,26 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
   // walk the loops
   const loops: Loop[] = [];
   const seen = new Set<string>();
+  const corners: Profile["corners"] = [];
+  const cornerIssues: Profile["cornerIssues"] = [];
+  const pending = new Map<string, CornerSpec>();
+  for (const c of cornerSpecs) {
+    const n = N(c.at);
+    if (pending.has(n)) cornerIssues.push({ src: c.src, message: `The corner at ${c.at} is already rounded by an earlier statement` });
+    else pending.set(n, c);
+  }
   for (const e0 of edges) {
     if (seen.has(e0.id)) continue;
     const segs: Seg2[] = [];
     const curves: string[] = [];
+    const starts: string[] = [];
     const start = e0.a;
     let cur = e0;
     let from = e0.a;
     for (let guard = 0; guard <= edges.length; guard++) {
       seen.add(cur.id);
       curves.push(cur.id);
+      starts.push(from);
       const to = cur.a === from ? cur.b : cur.a;
       const pa = pos(points, from, node);
       const pb = pos(points, to, node);
@@ -121,8 +144,11 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
       from = to;
       cur = next;
     }
-    loops.push(makeLoop(segs, curves));
+    const rounded = applyCorners(segs, curves, starts, pending, corners, cornerIssues);
+    if ("error" in rounded) return { ...empty, cornerIssues, error: rounded.error };
+    loops.push(makeLoop(rounded.segs, rounded.curves));
   }
+  for (const c of pending.values()) cornerIssues.push({ src: c.src, message: `There is no profile corner at ${c.at} to ${c.kind === "fillet" ? "round" : "chamfer"}` });
   for (const c of circles) {
     if (!(c.r > 1e-9)) return { ...empty, error: { message: `Circle ${c.id} has no size`, refs: [c.id] } };
     loops.push(makeLoop([{ k: "c", c: points[c.c], r: c.r }], [c.id]));
@@ -169,8 +195,85 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
     fills.push({ outer: outer.poly, holes: hs.map((h) => h.poly) });
     area += Math.abs(L.area) - holes.reduce((s, h) => s + Math.abs(h.area), 0);
   });
-  return { regions, fills, area, loops: loops.length };
+  return { regions, fills, area, loops: loops.length, corners, cornerIssues };
 }
+
+/** Round or cut the corners of one loop. Consumes the specs it uses from `pending`. */
+function applyCorners(
+  segs: Seg2[],
+  curves: string[],
+  starts: string[],
+  pending: Map<string, CornerSpec>,
+  out: Profile["corners"],
+  issues: Profile["cornerIssues"],
+): { segs: Seg2[]; curves: string[] } | { error: { message: string; refs: string[] } } {
+  const n = segs.length;
+  const work = segs.map((s) => (s.k === "l" ? { k: "l" as const, a: [...s.a] as V2, b: [...s.b] as V2 } : s));
+  const insertAfter = new Map<number, { seg: Seg2; id: string }>();
+  for (let i = 0; i < n; i++) {
+    const spec = pending.get(starts[i]);
+    if (!spec) continue;
+    pending.delete(starts[i]);
+    const prevI = (i - 1 + n) % n;
+    const prev = work[prevI];
+    const next = work[i];
+    if (prev.k !== "l" || next.k !== "l" || prevI === i) {
+      issues.push({ src: spec.src, message: `${spec.kind === "fillet" ? "Fillets" : "Chamfers"} join two lines; the corner at ${spec.at} joins ${curves[prevI]} and ${curves[i]}` });
+      continue;
+    }
+    const P = next.a;
+    const u1 = unit([prev.a[0] - P[0], prev.a[1] - P[1]]);
+    const u2 = unit([next.b[0] - P[0], next.b[1] - P[1]]);
+    const cos = Math.max(-1, Math.min(1, u1[0] * u2[0] + u1[1] * u2[1]));
+    const theta = Math.acos(cos);
+    if (theta > Math.PI - 1e-6) {
+      issues.push({ src: spec.src, message: `${curves[prevI]} and ${curves[i]} are in line at ${spec.at}; there is no corner to ${spec.kind === "fillet" ? "round" : "chamfer"}` });
+      continue;
+    }
+    const t = spec.kind === "fillet" ? spec.r / Math.tan(theta / 2) : spec.r;
+    const T1: V2 = [P[0] + u1[0] * t, P[1] + u1[1] * t];
+    const T2: V2 = [P[0] + u2[0] * t, P[1] + u2[1] * t];
+    prev.b = T1;
+    next.a = T2;
+    let seg: Seg2;
+    if (spec.kind === "fillet") {
+      const bis = unit([u1[0] + u2[0], u1[1] + u2[1]]);
+      const dc = spec.r / Math.sin(theta / 2);
+      seg = { k: "a", a: T1, b: T2, m: [P[0] + bis[0] * (dc - spec.r), P[1] + bis[1] * (dc - spec.r)] };
+    } else seg = { k: "l", a: T1, b: T2 };
+    insertAfter.set(prevI, { seg, id: `${spec.kind}@${spec.at}` });
+    out.push({ src: spec.src, at: spec.at, seg });
+  }
+  // a line shortened from both ends must keep some length, pointing the same way
+  for (let i = 0; i < n; i++) {
+    const w = work[i];
+    const o = segs[i];
+    if (w.k !== "l" || o.k !== "l") continue;
+    const dot = (w.b[0] - w.a[0]) * (o.b[0] - o.a[0]) + (w.b[1] - w.a[1]) * (o.b[1] - o.a[1]);
+    if (dot < 1e-9) {
+      const len = Math.hypot(o.b[0] - o.a[0], o.b[1] - o.a[1]);
+      return { error: { message: `The rounded corners on ${curves[i]} need more than its ${fmtLen(len)} mm. Use a smaller radius or a longer line.`, refs: [curves[i]] } };
+    }
+  }
+  const outSegs: Seg2[] = [];
+  const outCurves: string[] = [];
+  for (let i = 0; i < n; i++) {
+    outSegs.push(work[i]);
+    outCurves.push(curves[i]);
+    const ins = insertAfter.get(i);
+    if (ins) {
+      outSegs.push(ins.seg);
+      outCurves.push(ins.id);
+    }
+  }
+  return { segs: outSegs, curves: outCurves };
+}
+
+const unit = (v: V2): V2 => {
+  const l = Math.hypot(v[0], v[1]) || 1;
+  return [v[0] / l, v[1] / l];
+};
+const fmtLen = (x: number) => String(Math.round(x * 100) / 100);
 
 function pos(points: Record<string, V2>, nodeId: string, node: Map<string, string>): V2 {
   // the node id is one of the merged point ids; every member shares its position

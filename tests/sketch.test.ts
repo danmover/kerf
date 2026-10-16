@@ -324,6 +324,20 @@ describe("sketches in a design", () => {
     expect(m.parts[0].recipe.base?.t).toBe("revolve");
   });
 
+  it("rounds and cuts profile corners while dimensions keep their sharp corners", () => {
+    const one = sketchOf(design(RECT.replace("length l2 = h", "length l2 = h\n  fillet l1, l2 = 5")));
+    expect(pt(one, "l1.end")).toEqual([40, 0]);
+    expect(one.profile.corners.length).toBe(1);
+    expect(one.profile.area).toBeCloseTo(1000 - (25 - (Math.PI * 25) / 4), 6);
+    const all = sketchOf(design(RECT.replace("length l2 = h", "length l2 = h\n  chamfer l1.start, l1.end, l2.end, l3.end = 2")));
+    expect(all.profile.area).toBeCloseTo(1000 - 4 * 2, 6);
+  });
+
+  it("explains a fillet that is too big for its lines", () => {
+    const m = evaluate(design(RECT.replace("length l2 = h", "length l2 = h\n  fillet l2.start, l2.end = 14")));
+    expect(m.sketches[0].profile.error?.message).toMatch(/smaller radius/);
+  });
+
   it("does not rebuild a part when an unrelated sketch changes", () => {
     const a = evaluate(design(RECT + `\nsketch other {\n  circle c = (0, 0), r: 3\n}\npart plate { body extrude(base, 5) }`));
     const b = evaluate(design(RECT + `\nsketch other {\n  circle c = (0, 0), r: 4\n}\npart plate { body extrude(base, 5) }`));
@@ -363,6 +377,14 @@ sketch prof {
 part plate { body extrude(plate_sk, 5) }
 part ring { body revolve(prof, axis: prof.y_axis) }
 part slab { body extrude(prof, 10, symmetric: true) }
+sketch rounded {
+  line l1 = (0, 0) -> (20, 0)
+  line l2 = l1.end -> (20, 10)
+  line l3 = l2.end -> (0, 10)
+  line l4 = l3.end -> l1.start
+  fillet l1.start, l1.end, l2.end, l3.end = 2
+}
+part pad { body extrude(rounded, 3) }
 part cutaway {
   body box(50, 30, 10, at: (20, 12.5, -2))
   cut extrude(plate_sk, 1, through: true)
@@ -372,6 +394,7 @@ part cutaway {
     // Pappus: area × path of the centroid (x = 10)
     expect(v.ring).toBeCloseTo(profArea * 2 * Math.PI * 10, 2);
     expect(v.slab).toBeCloseTo(profArea * 10, 3);
+    expect(v.pad).toBeCloseTo((200 - 4 * (4 - Math.PI)) * 3, 3);
     // the cut leaves the frame around the plate plus the plug where the hole was
     expect(v.cutaway).toBeCloseTo(50 * 30 * 10 - (1000 - Math.PI * 16) * 10, 2);
   });

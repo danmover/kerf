@@ -4,6 +4,7 @@
 import type { Span } from "../lang/ast";
 import type { ProfileRegion, V2, V3 } from "../kernel/recipe";
 import type { PointFreedom, SketchDef } from "./solver";
+import type { Profile } from "./regions";
 
 /** A sketch plane: origin and right-handed axes (u across, v up, n out of the plane). */
 export interface Frame {
@@ -29,6 +30,8 @@ export interface SkPoint {
   /** where its coordinates are written, and whether they are plain numbers the editor may rewrite */
   coordSpan?: Span;
   literal: boolean;
+  /** the coordinates as written, before solving */
+  written?: V2;
   /** the declaring statement, for named points */
   span?: Span;
 }
@@ -49,6 +52,8 @@ export interface SkCurve {
   sizeSpan?: Span;
   sizeWhich?: "r" | "d";
   sizeLiteral?: boolean;
+  /** radius as written, before solving */
+  writtenR?: number;
 }
 
 export interface SkConstraint {
@@ -59,6 +64,7 @@ export interface SkConstraint {
   args: string[];
   /** resolved entity ids per argument */
   ids: string[];
+  argSpans: Span[];
   value?: number;
   valueText?: string;
   span: Span;
@@ -89,7 +95,9 @@ export interface EvalSketch {
   /** what went wrong solving, in plain words */
   message?: string;
   redundant: number;
-  profile: { regions: ProfileRegion[]; fills: { outer: V2[]; holes: V2[][] }[]; area: number; loops: number; error?: { message: string; refs: string[] } };
+  profile: Profile;
+  /** other names of shared points: "l2.start" → "l1.end" */
+  aliases: Record<string, string>;
   /** the solver input, so the editor can re-solve while dragging */
   def: SketchDef;
   /** parts whose geometry uses this sketch */
