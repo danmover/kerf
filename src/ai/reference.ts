@@ -17,6 +17,7 @@ import { CONSTRAINTS } from "../sketch/evaluate";
 import { SKETCH_FNS } from "../sketch/fns";
 import { ANALYSIS_FNS } from "../analysis/lang";
 import { MECH } from "../analysis/materials";
+import { simulationReference } from "../sim/reference";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -479,11 +480,13 @@ Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-print
 - build errors (a modelling step the kernel could not perform)
 - every analysis block: structural strength (factor of safety) and stiffness, or the drivetrain's tooth, bearing and shaft checks
 - manufacturing: every part with a process: is checked against that process's rules on its exact geometry (walls by ray casting, draft and undercuts along the pull, tool reach per setup, inside corner radii, slots, overhangs and orientation, turning, sheet thickness and bends, flat profiles, holes, voids, machine size), plus whether its material suits the process
-- for machines: electrical rules, engineering loads and the physical test plan (see Machines below)
+- for machines: electrical rules, engineering loads and the physical test plan (see Machines below), and every scenario block's expectations from its simulated runs (see Simulations below)
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
 Things geometry cannot prove are reported as "needs analysis" until an analysis block or a machine calculation covers them; real printer tolerances are not analysed, and heat only by the machine calculators.
 
-${machineReference()}`;
+${machineReference()}
+
+${simulationReference()}`;
 }
 
 function drawingReference(): string {

@@ -40,6 +40,8 @@ export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   // the parts catalog and the sizing calculators answer questions without touching the design
   "catalog_lookup",
   "engineering_calc",
+  // a finished simulation's results, events and console (run_scenario starts minutes of work, so it hands over)
+  "scenario_results",
 ]);
 
 /** A turn that needs more steps than this was not a quick one. */
