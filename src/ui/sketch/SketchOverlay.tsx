@@ -5,9 +5,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SceneController } from "../viewport/scene";
-import { useDesign } from "../../core/engine";
+import { setSource, useDesign } from "../../core/engine";
 import type { V2 } from "../../kernel/recipe";
-import { solveSketch } from "../../sketch/solver";
+import { budgetMs, solveSketch } from "../../sketch/solver";
 import { buildProfile } from "../../sketch/regions";
 import { addStatements, consId, deleteSelection, dimensionFor, fmt, fmtPt, nextName, setConstraintValue, suggestionsFor, takenNames, toggleConstruction, writePositions } from "../../sketch/edits";
 import type { EvalSketch, SkConstraint } from "../../sketch/types";
@@ -27,7 +27,7 @@ type Draft =
   | { t: "dim"; first: string }
   | { t: "box"; from: Px; to: Px; additive: boolean }
   | { t: "drag"; ids: string[]; circle?: string; from: V2; base: Positions; moved: boolean }
-  | { t: "scrub"; index: number; fromX: number; start: number; moved: boolean; step: number; angle: boolean };
+  | { t: "scrub"; index: number; fromX: number; start: number; moved: boolean; step: number; angle: boolean; base: string };
 
 const HIDDEN_POINTS = new Set(["x_axis.end", "y_axis.end"]);
 
@@ -151,6 +151,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       if (e.button !== 0) return;
       pointerUp(e);
     };
+    const onCancel = () => pointerCancel();
     const onDbl = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
       if (t.closest(".sk-ui, .vp-toolbar, .vp-float")) return;
@@ -161,6 +162,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     host.addEventListener("pointerdown", onDown, true);
     host.addEventListener("pointermove", onMove, true);
     host.addEventListener("pointerup", onUp, true);
+    host.addEventListener("pointercancel", onCancel, true);
     host.addEventListener("dblclick", onDbl, true);
     const onLeave = () => setCursor(null);
     host.addEventListener("pointerleave", onLeave);
@@ -169,6 +171,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       host.removeEventListener("pointerdown", onDown, true);
       host.removeEventListener("pointermove", onMove, true);
       host.removeEventListener("pointerup", onUp, true);
+      host.removeEventListener("pointercancel", onCancel, true);
       host.removeEventListener("dblclick", onDbl, true);
     };
     // handlers read the latest state through `state`
@@ -218,7 +221,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         const literal = /^-?\d+(\.\d+)?$/.test((c.valueText ?? "").trim());
         if (literal) {
           const scale = state.current.proj!.scale();
-          setDraft({ t: "scrub", index, fromX: px.x, start: c.value ?? 0, moved: false, step: c.kind === "angle" ? 0.5 : niceStep(scale * 1.5), angle: c.kind === "angle" });
+          setDraft({ t: "scrub", index, fromX: px.x, start: c.value ?? 0, moved: false, step: c.kind === "angle" ? 0.5 : niceStep(scale * 1.5), angle: c.kind === "angle", base: useDesign.getState().source });
         } else useSketch.setState({ editDim: index });
         setSelection([`#${index}`]);
         return;
@@ -301,7 +304,25 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     return snap;
   }
 
-  let moveRaf = 0;
+  // drags and scrubs solve at most once per frame; releasing runs what is still waiting
+  const frame = useRef<{ id: number; run: () => void } | null>(null);
+  const perFrame = (run: () => void) => {
+    if (frame.current) cancelAnimationFrame(frame.current.id);
+    const f = { id: 0, run };
+    f.id = requestAnimationFrame(() => {
+      if (frame.current === f) frame.current = null;
+      run();
+    });
+    frame.current = f;
+  };
+  const flushFrame = (run = true) => {
+    const f = frame.current;
+    if (!f) return;
+    cancelAnimationFrame(f.id);
+    frame.current = null;
+    if (run) f.run();
+  };
+
   function pointerMove(e: PointerEvent) {
     const px = local(e);
     const { draft, sk, s } = state.current;
@@ -317,8 +338,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       const c = sk.constraints.find((q) => q.index === draft.index);
       if (!c) return;
       if (!draft.moved) setDraft({ ...draft, moved: true });
-      cancelAnimationFrame(moveRaf);
-      moveRaf = requestAnimationFrame(() => {
+      perFrame(() => {
         const cur = activeSketch();
         const cc = cur?.constraints.find((q) => q.index === draft.index);
         if (!cc || (cc.kind !== "angle" && v <= 0)) return;
@@ -336,7 +356,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       const anchor = draft.ids.length ? draft.base[draft.ids[0]] : undefined;
       const want = add(anchor ?? draft.from, sub(raw, draft.from));
       const d = anchor ? sub([roundTo(want[0], step), roundTo(want[1], step)], anchor) : sub(raw, draft.from);
-      useSketch.setState({ live: dragSolve(sk, draft, d, raw, step) });
+      perFrame(() => useSketch.setState({ live: dragSolve(sk, draft, d, raw, step) }));
       return;
     }
     const hover = s.tool === "select" || s.tool === "dimension" ? hitTest(px) : null;
@@ -346,6 +366,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
   }
 
   function pointerUp(e: PointerEvent) {
+    flushFrame();
     const { draft, sk } = state.current;
     if (!sk || !draft) return;
     if (draft.t === "box") {
@@ -359,8 +380,13 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       setDraft(null);
       if (!draft.moved) useSketch.setState({ editDim: draft.index });
       else {
-        // record the scrub as one version
-        commitSource(useDesign.getState().source, "you", `Sketch ${sk.name}: changed a dimension`);
+        // record the scrub as one version: put the start back, then commit the result from it
+        const final = useDesign.getState().source;
+        const c = activeSketch()?.constraints.find((q) => q.index === draft.index);
+        if (final !== draft.base) {
+          setSource(draft.base);
+          commitSource(final, "you", `Sketch ${sk.name}: ${c ? `${c.kind} ${c.args.join(", ")} = ${c.valueText ?? fmt(c.value ?? 0)}` : "changed a dimension"}`);
+        }
       }
       return;
     }
@@ -379,6 +405,18 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       }
       useSketch.setState({ live: null });
       void e;
+    }
+  }
+
+  /** The browser took the pointer away (a touch scroll, a system gesture): drop drags and scrubs. */
+  function pointerCancel() {
+    flushFrame(false);
+    const { draft } = state.current;
+    if (!draft) return;
+    if (draft.t === "scrub" && draft.moved && useDesign.getState().source !== draft.base) setSource(draft.base);
+    if (draft.t === "drag" || draft.t === "scrub" || draft.t === "box") {
+      setDraft(null);
+      useSketch.setState({ live: null });
     }
   }
 
@@ -949,7 +987,8 @@ function dragSolve(sk: EvalSketch, draft: Extract<Draft, { t: "drag" }>, d: V2, 
     }),
     circles: sk.def.circles.map((c) => (c.id === draft.circle ? { ...c, r: Math.max(step, roundTo(dist(raw, base[sk.curves.find((q) => q.id === c.id)!.pts[0]]), step)) } : { ...c, r: sk.curves.find((q) => q.id === c.id)?.r ?? c.r })),
   };
-  const res = solveSketch(def, { heavy: draft.circle ? [draft.circle] : draft.ids, analyse: false, maxIter: 40 });
+  // one solve per frame, cut short on huge sketches so the pointer keeps up
+  const res = solveSketch(def, { heavy: draft.circle ? [draft.circle] : draft.ids, analyse: false, maxIter: 40, budget: budgetMs(40) });
   return { points: res.points, radii: res.radii, ok: res.ok };
 }
 

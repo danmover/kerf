@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluate } from "../src/lang/evaluator";
-import { addFeature, addSketch, addStatements, deleteSelection, renameSketch, setConstraintValue, suggestionsFor, toggleConstruction, writePositions, consId } from "../src/sketch/edits";
+import { addFeature, addSketch, addStatements, deleteSelection, setConstraintValue, suggestionsFor, toggleConstruction, writePositions, consId } from "../src/sketch/edits";
 
 const base = `design "t"
 param w = 40
@@ -36,6 +36,13 @@ describe("sketch edits", () => {
     expect(m2.diagnostics).toEqual([]);
     expect(m2.sketches.map((x) => x.name)).toEqual(["s", "sketch1"]);
     expect(m2.sketches[1].frame.o).toEqual([0, -4, 0]);
+  });
+
+  it("adds a new sketch above the comments over the first part", () => {
+    const src = base.replace("part p {", "// ---- parts ----\n\n// the plate\npart p {");
+    const r = addSketch(src, evaluate(src), { plane: "XY" });
+    expect(r.src).toContain("}\n\n// ---- parts ----\n\n// the plate\npart p {");
+    expect(r.src.indexOf("sketch sketch1")).toBeLessThan(r.src.indexOf("// ---- parts"));
   });
 
   it("adds geometry and constraints in the right places", () => {
@@ -82,6 +89,42 @@ describe("sketch edits", () => {
     expect(evaluate(out).diagnostics.filter((d) => d.severity === "error" && !/profile/.test(d.message))).toEqual([]);
   });
 
+  it("keeps a trailing comment on its line when adding geometry", () => {
+    const src = base.replace("line l4 = l3.end -> l1.start", "line l4 = l3.end -> l1.start // left wall");
+    const out = addStatements(src, sk(src).sk, { geometry: ["circle c1 = (20, 10), d: 6"] });
+    expect(out).toContain("  line l4 = l3.end -> l1.start // left wall\n  circle c1 = (20, 10), d: 6\n");
+  });
+
+  it("keeps constraints written on a shared point when a line is deleted", () => {
+    const src = base.replace("  length l1 = w\n", "  length l1 = w\n  point q = (55, 0)\n  distance l2.start, q = 15\n  vdistance l1.end, q = 0\n");
+    const { sk: s } = sk(src);
+    const out = deleteSelection(src, s, ["l1"]);
+    expect(out).toContain("distance l2.start, q = 15");
+    // written with the deleted line's name: renamed to the line that now owns the point
+    expect(out).toContain("vdistance l2.start, q = 0");
+    expect(out).not.toContain("l1.end");
+    // the outline is open now, but nothing conflicts
+    expect(evaluate(out).sketches[0].solved).toBe(true);
+  });
+
+  it("shares a deleted line's end between the lines that met there", () => {
+    const src = base.replace("  horizontal l1, l3", "  line l5 = l1.end -> (60, 10)\n  horizontal l1, l3");
+    const out = deleteSelection(src, sk(src).sk, ["l1"]);
+    expect(out).toContain("line l2 = (40, 0) -> (40, 20)");
+    expect(out).toContain("line l5 = l2.start -> (60, 10)");
+  });
+
+  it("deletes one of several statements on a line with its separator", () => {
+    const src = base.replace("  horizontal l1, l3\n  vertical l2, l4\n", "  vertical l2, l4; horizontal l1, l3\n");
+    const { sk: s } = sk(src);
+    const first = deleteSelection(src, s, [`#${s.constraints.find((c) => c.kind === "vertical")!.index}`]);
+    expect(first).toContain("\n  horizontal l1, l3\n");
+    const last = deleteSelection(src, s, [`#${s.constraints.find((c) => c.kind === "horizontal")!.index}`]);
+    expect(last).toContain("\n  vertical l2, l4\n");
+    // a leading ; left by hand still parses
+    expect(evaluate(base.replace("  horizontal l1, l3", "  ; horizontal l1, l3")).sketches).toHaveLength(1);
+  });
+
   it("deletes a constraint by its index", () => {
     const { sk: s } = sk(base);
     const len = s.constraints.find((c) => c.kind === "length")!;
@@ -124,15 +167,6 @@ describe("sketch edits", () => {
     const pts = suggestionsFor(s, ["l1.start", "l2.end"]).map((x) => x.stmt);
     expect(pts).toContain("distance l1.start, l2.end = 44.721");
     expect(pts).toContain("hdistance l1.start, l2.end = 40");
-  });
-
-  it("renames a sketch and its uses but not matching field names", () => {
-    const src = base + `let s2 = s.area\nlet other = p\n`;
-    const out = renameSketch(src, sk(src).sk, "plate");
-    expect(out).toContain("sketch plate {");
-    expect(out).toContain("extrude(plate, 5)");
-    expect(out).toContain("let s2 = plate.area");
-    expect(evaluate(out).diagnostics).toEqual([]);
   });
 
   it("extrudes a sketch into a new part with its depth as a parameter", () => {

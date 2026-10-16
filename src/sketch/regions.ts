@@ -176,16 +176,24 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
   }
   if (!loops.length) return empty;
 
-  // crossings
+  // crossings, and loops that touch (a solid there would be zero thickness)
+  const tol = loops.map((L) => Math.max(1e-4, sag(L)));
   for (let i = 0; i < loops.length; i++) {
     const self = selfCrossing(loops[i]);
     if (self) return { ...empty, loops: loops.length, error: { message: `The loop through ${loops[i].curves.join(", ")} crosses itself near ${fmt(self)}`, refs: loops[i].curves } };
+    if (Math.abs(loops[i].area) < 1e-6) return { ...empty, loops: loops.length, error: { message: `The loop through ${loops[i].curves.join(", ")} encloses no area: its curves lie on top of each other`, refs: loops[i].curves } };
     for (let j = 0; j < i; j++) {
       const hit = loopsCross(loops[i], loops[j]);
       if (hit) {
         const a = nearestCurve(loops[i], hit);
         const b = nearestCurve(loops[j], hit);
         return { ...empty, loops: loops.length, error: { message: `${a} crosses ${b} near ${fmt(hit)}. Profiles can sit inside each other but must not overlap.`, refs: [a, b] } };
+      }
+      const touch = loopsTouch(loops[i], loops[j], Math.max(tol[i], tol[j]));
+      if (touch) {
+        const a = nearestCurve(loops[i], touch);
+        const b = nearestCurve(loops[j], touch);
+        return { ...empty, loops: loops.length, error: { message: `${a} touches ${b} near ${fmt(touch)}. Leave a gap between them, or join them into one outline.`, refs: [a, b] } };
       }
     }
   }
@@ -446,6 +454,33 @@ function loopsCross(A: Loop, B: Loop): V2 | null {
     for (let j = 0; j < Q.length; j++) {
       const hit = segCross(a, b, Q[j], Q[(j + 1) % Q.length]);
       if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** How far an arc's polygon can sit inside the true arc (arcs are sampled every 3° or less). */
+function sag(L: Loop): number {
+  let s = 0;
+  for (const g of L.segs) if (g.k !== "l") s = Math.max(s, (g.k === "c" ? g.r : arcGeometry(g).r) * (1 - Math.cos((1.5 * Math.PI) / 180)));
+  return s;
+}
+
+/** A point where two loops (already known not to cross) come within tol of each other. */
+function loopsTouch(A: Loop, B: Loop, tol: number): V2 | null {
+  const ba = bbox(A.poly);
+  const bb = bbox(B.poly);
+  if (ba.x1 + tol < bb.x0 || bb.x1 + tol < ba.x0 || ba.y1 + tol < bb.y0 || bb.y1 + tol < ba.y0) return null;
+  const P = A.poly;
+  const Q = B.poly;
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i];
+    const b = P[(i + 1) % P.length];
+    for (let j = 0; j < Q.length; j++) {
+      const c = Q[j];
+      const d = Q[(j + 1) % Q.length];
+      if (distToSeg(c, a, b) <= tol) return c;
+      if (distToSeg(a, c, d) <= tol) return a;
     }
   }
   return null;

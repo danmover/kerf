@@ -202,10 +202,11 @@ class Parser {
         const nameTk = this.expect("ident");
         const open = this.expect("op", "{");
         const items: SketchItem[] = [];
-        while (!this.isOp("}")) {
+        for (;;) {
+          while (this.eat("op", ";"));
+          if (this.isOp("}")) break;
           if (this.is("eof")) throw new ParseError('Unclosed sketch: missing "}"', open.start, open.end);
           items.push(this.sketchItem());
-          while (this.eat("op", ";"));
         }
         const close = this.expect("op", "}");
         return { k: "sketch", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end }, bodyEnd: close.start };

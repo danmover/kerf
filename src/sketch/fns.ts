@@ -20,6 +20,7 @@ function profileOf(v: Value | undefined, ctx: CallCtx, fname: string): SketchGeo
   const g = v.geom;
   if (g.profileError) ctx.error(`${fname}(): sketch ${g.name} has no usable profile: ${g.profileError}`);
   if (!g.regions.length) ctx.error(`${fname}(): sketch ${g.name} has no closed profile yet. Join the outline so every line end meets another, or add a circle.`);
+  if (!g.solved) ctx.warn?.(`${fname}(): sketch ${g.name} is not solved, so this uses its outline as drawn. Fix the sketch's constraints first.`);
   return g;
 }
 
@@ -92,6 +93,7 @@ const plane = new Fn(
     const origin = a.vec3("origin", [0, 0, 0]);
     const normal = a.dir("normal", [0, 0, 1]);
     const x = a.has("x") ? a.vec3("x") : undefined;
+    if (![...origin, ...normal, ...(x ?? [])].every(Number.isFinite)) ctx.error("plane(): origin, normal and x must be finite");
     try {
       return planeValue(makeFrame(origin, normal, x), "plane");
     } catch (e) {

@@ -6,10 +6,11 @@ import * as R from "replicad";
 import { parse } from "../src/lang/parser";
 import { evaluate } from "../src/lang/evaluator";
 import { buildPart } from "../src/kernel/build";
-import { firstConflict, solveSketch, type SketchDef } from "../src/sketch/solver";
+import { MAX_UNKNOWNS, firstConflict, solveSketch, type SketchDef } from "../src/sketch/solver";
 import { buildProfile } from "../src/sketch/regions";
 import type { EvalSketch } from "../src/sketch/types";
 import { languageReference } from "../src/ai/reference";
+import { SKETCH_DETAIL_MAX, sketchDetail } from "../src/ai/tools";
 import { sketchFns } from "../src/sketch/fns";
 import { Fn, type CallCtx } from "../src/lang/values";
 import { CONSTRAINTS } from "../src/sketch/evaluate";
@@ -184,6 +185,59 @@ describe("constraint solver", () => {
     expect(r.points.b[0]).toBeCloseTo(30, 6);
     expect(r.points.d[1]).toBeCloseTo(20, 6);
   });
+
+  // a closed staircase of 2·steps + 2 lines, every line horizontal or vertical and dimensioned
+  const stairs = (steps: number) => {
+    const out: string[] = [];
+    const cons: string[] = [];
+    let x = 0;
+    let y = 0;
+    let k = 0;
+    const add = (nx: number, ny: number, hv: string, len?: number) => {
+      k++;
+      out.push(`  line l${k} = ${k === 1 ? "(0, 0)" : `l${k - 1}.end`} -> (${nx}, ${ny})`);
+      cons.push(`  ${hv} l${k}`, ...(len ? [`  length l${k} = ${len}`] : []));
+      x = nx;
+      y = ny;
+    };
+    for (let i = 0; i < steps; i++) add(x + 5, y, "horizontal", 5), add(x, y + 3, "vertical", 3);
+    add(x, 0, "vertical");
+    out.push(`  line l${k + 1} = l${k}.end -> l1.start`);
+    cons.push(`  horizontal l${k + 1}`, "  coincident l1.start, origin");
+    return `sketch s {\n${out.join("\n")}\n${cons.join("\n")}\n}`;
+  };
+
+  it("solves and analyses a large connected sketch quickly", () => {
+    const src = design(stairs(140), "");
+    const t = performance.now();
+    const sk = sketchOf(src);
+    expect(performance.now() - t).toBeLessThan(1500);
+    expect(sk.solved).toBe(true);
+    expect(sk.dof).toBe(0);
+    // dragging a fully defined corner gives up fast instead of iterating to the limit
+    const mid = sk.def.points[140];
+    const t2 = performance.now();
+    const r = solveSketch({ ...sk.def, points: sk.def.points.map((p) => (p.id === mid.id ? { ...p, x: p.x + 2 } : p)) }, { heavy: [mid.id], analyse: false, maxIter: 40 });
+    expect(performance.now() - t2).toBeLessThan(500);
+    expect(r.points[mid.id][0]).toBeCloseTo(sk.points.find((p) => p.id === mid.id)!.x, 6);
+  });
+
+  it("refuses a connected sketch over the size limit and draws it as written", () => {
+    const m = evaluate(design(stairs(MAX_UNKNOWNS / 4 + 2), ""));
+    const sk = m.sketches[0];
+    expect(sk.solved).toBe(false);
+    expect(sk.tooBig).toBe(true);
+    expect(sk.message).toMatch(/too big to solve/);
+    expect(m.diagnostics.map((d) => d.message)).toContain(sk.message);
+    expect(sk.profile.regions).toHaveLength(1);
+  });
+
+  it("stops when its time runs out", () => {
+    const def = rect([{ kind: "distance", refs: ["a", "c"], value: 3, src: 4 }, { kind: "length", refs: ["l1"], value: 9, src: 5 }]);
+    const r = solveSketch(def, { budget: { until: 0 } });
+    expect(r.outOfTime).toBe(true);
+    expect(firstConflict(def, { until: 0 })).toBeNull();
+  });
 });
 
 describe("profiles", () => {
@@ -229,6 +283,18 @@ describe("profiles", () => {
     ];
     const pr = buildProfile(P, bow, [], []);
     expect(pr.error?.message).toMatch(/cross/);
+  });
+
+  it("rejects loops that touch or enclose nothing", () => {
+    // a hole tangent to the outline, and one a hair inside it
+    expect(buildProfile(P, square, [], [{ id: "c1", c: "o", r: 5 }]).error?.message).toMatch(/c1 touches l\d/);
+    expect(buildProfile(P, square, [], [{ id: "c1", c: "o", r: 4.99999 }]).error?.message).toMatch(/touches/);
+    const slit = [
+      { id: "s1", a: "a", b: "b" },
+      { id: "s2", a: "b", b: "a" },
+    ];
+    expect(buildProfile(P, slit, [], []).error?.message).toMatch(/no area/);
+    expect(buildProfile(P, square, [], [{ id: "c1", c: "o", r: 4 }]).error).toBeUndefined();
   });
 
   it("treats an island inside a hole as its own region", () => {
@@ -316,6 +382,17 @@ describe("sketches in a design", () => {
     const m = evaluate(design(RECT.replace("length l2 = h", "length l2 = h\n  parallel l1, l3")));
     expect(m.sketches[0].constraints.find((c) => c.kind === "parallel")?.status).toBe("redundant");
     expect(m.diagnostics.some((d) => d.severity === "warning" && /Already implied/.test(d.message))).toBe(true);
+  });
+
+  it("rejects coordinates that are not finite", () => {
+    const m = evaluate(design(RECT.replace("(40, 0)", "(1e400, 0)")));
+    expect(m.diagnostics.some((d) => /finite/.test(d.message))).toBe(true);
+    expect(evaluate(design(RECT.replace("{", "{\n  offset: 1e400"))).diagnostics.some((d) => /offset/.test(d.message))).toBe(true);
+  });
+
+  it("warns when a part is made from a sketch that does not solve", () => {
+    const m = evaluate(design(RECT.replace("length l2 = h", "length l2 = h\n  length l4 = 99") + "\npart p {\n  body extrude(base, 5)\n}\n"));
+    expect(m.diagnostics.some((d) => d.severity === "warning" && /not solved/.test(d.message))).toBe(true);
   });
 
   it("rejects geometry used before it is declared", () => {
@@ -469,6 +546,27 @@ describe("sketches for the assistant", () => {
     expect(ref).toContain("## Sketches");
     for (const c of Object.values(CONSTRAINTS)) expect(ref).toContain(c.doc);
     expect(ref).toMatch(/extrude\(sketch, h/);
+  });
+
+  it("teaches Claude with a sketch example that solves", () => {
+    const ref = languageReference();
+    const start = ref.indexOf("sketch side {");
+    const block = ref.slice(start, ref.indexOf("\n}\n", start) + 2);
+    const m = evaluate(design(block, "param base_len = 50"));
+    expect(m.diagnostics).toEqual([]);
+    const sk = m.sketches[0];
+    expect(sk.dof).toBe(0);
+    expect(sk.profile.regions).toHaveLength(1);
+    expect(sk.profile.regions[0].holes).toHaveLength(1);
+    expect(sk.profile.corners).toHaveLength(1);
+  });
+
+  it("lists a big sketch for Claude in a bounded way", () => {
+    const circles = Array.from({ length: 400 }, (_, i) => `  circle c${i + 1} = (${(i % 20) * 10}, ${Math.floor(i / 20) * 10}), d: 4`).join("\n");
+    const sk = sketchOf(design(`sketch holes {\n${circles}\n  diameter c1 = 4\n}`, ""));
+    const text = sketchDetail(sk);
+    expect(text.split("\n").length).toBeLessThan(SKETCH_DETAIL_MAX.points + SKETCH_DETAIL_MAX.curves + 20);
+    expect(text).toMatch(/more not listed; of those, these are not fully defined/);
   });
 
   it("keeps the bracket template valid and fully defined", () => {

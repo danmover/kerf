@@ -92,15 +92,23 @@ A sketch is a constrained 2D outline on a plane; extrude() or revolve() turns it
 sketch side {
   plane: XZ                    // XY (top, x→X y→Y), XZ (front, x→X y→Z), YZ (right, x→Y y→Z); -XY etc. flips; or ${SKETCH_FNS.plane.doc}
   offset: 5                    // moves the plane along its normal
-  line l1 = (0, 0) -> (60, 0)
-  line l2 = l1.end -> (60, 5)  // l1.end shares the point: the outline is connected
-  arc a1 = l2.end -> (50, 15), center: (50, 5)   // counter-clockwise from start to end
-  circle c1 = (30, 20), d: 8   // or r:
-  point p = (10, 10)
-  construction line axis = (0, -5) -> (0, 40)    // guides only, not part of the profile
-  horizontal l1
+  line l1 = (0, 0) -> (50, 0)
+  arc a1 = l1.end -> (50, 20), center: (50, 10)   // counter-clockwise from start to end; l1.end shares the point, so the outline is connected
+  line l2 = a1.end -> (0, 20)
+  line l3 = l2.end -> l1.start  // back to the start: a closed loop
+  circle c1 = a1.center, d: 8  // or r:; the size is a starting guess until a dimension holds it
+  point p = (0, 10)
+  construction line centre = p -> a1.center   // guides only, not part of the profile
+  coincident l1.start, origin
+  horizontal l1, l2
+  vertical l3
+  tangent l1, a1
+  tangent a1, l2
   length l1 = base_len         // dimensions take any expression; params make them sliders
-  fillet l1, l2 = 2            // rounds the corner in the profile; dimensions still measure to the sharp corner
+  length l3 = 20
+  diameter c1 = 8
+  midpoint p, l3
+  fillet l3, l1 = 2            // rounds the corner in the profile; dimensions still measure to the sharp corner
 }
 Every sketch has origin, x_axis and y_axis (fixed). Coordinates are starting guesses: the solver moves points as little as possible to satisfy the constraints, so write them close to the intended shape. Refer to points as l1.start, l1.end, a1.center, c1.center or named points. Geometry of an earlier sketch can be referenced (side.l3.end, side.l3); it is projected onto this sketch's plane as a fixed reference, so this sketch follows it.
 Constraints and dimensions (refs are names, the value after = is any expression):

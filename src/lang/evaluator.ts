@@ -12,6 +12,7 @@ import { meshPhase } from "../library/gears";
 import { suggest } from "./suggest";
 import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
 import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
+import { SOLVE_MS, budgetMs, type Budget } from "../sketch/solver";
 import { sketchFns } from "../sketch/fns";
 import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
@@ -108,6 +109,8 @@ class Evaluator {
   params: EvalParam[] = [];
   reqs: EvalRequirement[] = [];
   sketches: EvalSketch[] = [];
+  /** sketch solving time shared by the whole evaluation (from its first sketch), so a huge file cannot freeze the page */
+  sketchBudget: Budget | undefined;
   diags: Diagnostic[] = [];
   blocks: Model["blocks"] = [];
   name = "Untitled design";
@@ -143,6 +146,7 @@ class Evaluator {
       error: (msg: string): never => {
         throw new EvalError(msg, this.callSpan);
       },
+      warn: (msg: string) => this.diags.push({ message: msg, start: this.callSpan.start, end: Math.max(this.callSpan.end, this.callSpan.start + 1), severity: "warning" }),
       geo: (q: GeoQuery) => {
         const key = geoKey(q);
         this.stmtGeo.push(q);
@@ -276,6 +280,7 @@ class Evaluator {
         this.diags.push({ message: e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         return true;
       },
+      budget: (this.sketchBudget ??= budgetMs(4 * SOLVE_MS)),
     };
     const { value, sketch } = evaluateSketch(host, s);
     this.define(s.name, "sketch", value, s.nameSpan);

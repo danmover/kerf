@@ -52,7 +52,7 @@ function SketchHeader({ sk, ctl }: { sk: EvalSketch; ctl: SceneController }) {
   const state = empty ? "free" : !sk.solved ? "conflict" : sk.dof === 0 ? "defined" : "free";
   const usedBy = sk.usedBy;
   const regions = sk.profile.regions.length;
-  const short = empty ? "empty" : !sk.solved ? "conflict" : sk.dof === 0 ? "fully defined" : `${sk.dof} free`;
+  const short = empty ? "empty" : sk.tooBig ? "too big to solve" : !sk.solved ? "conflict" : sk.dof === 0 ? "fully defined" : `${sk.dof} free`;
   const shape = empty ? "pick a tool on the left" : sk.profile.error ? "profile problem" : regions ? `${regions > 1 ? `${regions} regions · ` : ""}${fmt(Math.round(sk.profile.area * 10) / 10)} mm²` : "open outline";
   return (
     <motion.div className="sk-ui sk-header vp-float" style={{ x: "-50%" }} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
