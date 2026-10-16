@@ -206,6 +206,15 @@ describe("branches for sub-agents", () => {
     expect(takePauseHit()).toBeNull();
   });
 
+  it("shows a branch waiting its turn, then running", () => {
+    const b = openBranch({ title: "Gear train", agent: "gear_train", id: "gear_train" });
+    b.setStatus("todo", "Waits for the housing");
+    expect(findStep(usePlan.getState(), b.id)).toMatchObject({ status: "todo", detail: "Waits for the housing" });
+    b.setStatus("doing");
+    expect(findStep(usePlan.getState(), b.id)?.status).toBe("doing");
+    expect(findStep(usePlan.getState(), b.id)?.startedAt).toBeDefined();
+  });
+
   it("knows when the user skipped the whole branch", () => {
     const b = openBranch({ title: "Review", agent: "review", kind: "review" });
     expect(b.skipped).toBe(false);

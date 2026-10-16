@@ -643,6 +643,8 @@ export interface PlanBranch {
   endLog(logId: string, status: "done" | "error", title?: string): void;
   /** One short line on the branch root, e.g. tokens and cost. */
   setMeta(meta: string): void;
+  /** The branch's own state while it is open: todo (queued or waiting on another branch), doing, or blocked. */
+  setStatus(status: "todo" | "doing" | "blocked", detail?: string): void;
   /** The user's changes to this branch since the last call, formatted for the agent's next tool result; null if none. */
   takeSteering(): string | null;
   /** True once the user has skipped the whole branch: the agent should stop and report. */
@@ -696,6 +698,9 @@ export function openBranch(opts: { title: string; agent: string; under?: string;
     },
     setMeta(meta) {
       change((p) => patchStep(p, id, { meta: clip(meta, 80) }));
+    },
+    setStatus(status, detail) {
+      change((p) => patchStep(p, id, { status, detail: detail !== undefined ? clip(detail, LIMITS.detail) : undefined }));
     },
     takeSteering() {
       const r = takeSteering(getPlan(), id, isOpen);
