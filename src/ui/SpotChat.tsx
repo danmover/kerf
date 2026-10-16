@@ -101,6 +101,8 @@ function SpotPopover({ spot }: { spot: Spot }) {
   }, [spot.partId, spot.local]);
 
   useEffect(() => {
+    // on a touch screen the keyboard would cover the card before it is read
+    if (matchMedia("(pointer: coarse)").matches) return;
     requestAnimationFrame(() => input.current?.focus());
   }, []);
   useEffect(() => () => endPreview(previewKey), [previewKey]);

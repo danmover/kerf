@@ -13,15 +13,20 @@
   inset: 0;
   z-index: 8;
   overflow: hidden;
+  /* the desk round the sheet; the light theme's is in styles/theme.css */
+  --dwg-glow: rgba(80, 104, 200, 0.1);
+  --dwg-desk: #0c1018, #080a0f;
+  --dwg-paper-desk: #2a2f3a, #20242d;
+  --dwg-shadow: rgba(0, 0, 0, 0.55);
   background:
-    radial-gradient(1100px 640px at 60% 0%, rgba(80, 104, 200, 0.1), transparent 60%),
-    linear-gradient(180deg, #0c1018 0%, #080a0f 100%);
+    radial-gradient(1100px 640px at 60% 0%, var(--dwg-glow), transparent 60%),
+    linear-gradient(180deg, var(--dwg-desk));
   --sheet-hot: #8fa8ff;
   --sheet-sel: #4fd1c5;
   --sheet-asked: #c792ff;
 }
 .dwg.paper {
-  background: linear-gradient(180deg, #2a2f3a 0%, #20242d 100%);
+  background: linear-gradient(180deg, var(--dwg-paper-desk));
   --sheet-hot: #2f5bff;
   --sheet-sel: #0f9f8f;
   --sheet-asked: #8a3ffc;
@@ -39,7 +44,7 @@
   cursor: grabbing;
 }
 .dwg-sheet-shadow {
-  filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.55));
+  filter: drop-shadow(0 18px 40px var(--dwg-shadow));
 }
 .dwg-svg text {
   font-family: Helvetica, Arial, "Liberation Sans", sans-serif;
@@ -72,7 +77,7 @@
   cursor: default;
 }
 .dwg-hit.view:hover {
-  fill: rgba(109, 139, 255, 0.035);
+  fill: rgb(var(--accent-rgb) / 0.035);
 }
 .dwg-hit.part {
   fill: none;
@@ -93,7 +98,7 @@
   fill: var(--sheet-asked);
 }
 .dwg-pin text {
-  fill: #fff;
+  fill: #fff; /* theme: same, white on the pin */
   font-weight: bold;
 }
 
@@ -107,7 +112,7 @@
   gap: 2px;
   padding: 3px;
   border-radius: 10px;
-  background: rgba(13, 16, 23, 0.84);
+  background: rgb(var(--bg-1-rgb) / 0.84);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
@@ -199,8 +204,8 @@
   max-width: 340px;
   font-size: 11.5px;
   color: var(--warn);
-  background: rgba(13, 16, 23, 0.86);
-  border: 1px solid rgba(245, 184, 75, 0.35);
+  background: rgb(var(--bg-1-rgb) / 0.86);
+  border: 1px solid rgb(var(--warn-rgb) / 0.35);
   border-radius: 8px;
   padding: 7px 10px;
 }
@@ -210,7 +215,7 @@
   z-index: 7;
   width: 312px;
   border-radius: 12px;
-  background: rgba(13, 16, 23, 0.94);
+  background: rgb(var(--bg-1-rgb) / 0.94);
   border: 1px solid var(--line-2);
   backdrop-filter: blur(12px);
   box-shadow: var(--shadow);
@@ -283,7 +288,7 @@
   color: var(--text);
 }
 .dwg-card .tolbtn.on {
-  border-color: rgba(109, 139, 255, 0.55);
+  border-color: rgb(var(--accent-rgb) / 0.55);
   background: var(--accent-soft);
   color: var(--accent-2);
 }
@@ -307,7 +312,7 @@
 }
 .dwg-ask textarea:focus {
   outline: none;
-  border-color: rgba(109, 139, 255, 0.6);
+  border-color: rgb(var(--accent-rgb) / 0.6);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .dwg-chips {
@@ -326,7 +331,7 @@
   font-size: 11px;
 }
 .dwg-chips button:hover {
-  border-color: rgba(109, 139, 255, 0.5);
+  border-color: rgb(var(--accent-rgb) / 0.5);
   color: var(--text);
 }
 .dwg-sent {
@@ -372,56 +377,62 @@
   z-index: 4;
   overflow: visible;
 }
+.measure-svg {
+  /* on a pale backdrop these change, in styles/theme.css */
+  --measure-hover: #9fb2ff;
+  --measure-line: #ffd479;
+  --measure-line-rgb: 255 212 121;
+}
 .measure-svg path {
   stroke-linejoin: round;
   stroke-linecap: round;
 }
 .measure-hover.face path {
-  fill: rgba(143, 168, 255, 0.22);
+  fill: rgb(var(--accent-2-rgb) / 0.22);
   stroke: none;
 }
 .measure-pick.face path {
-  fill: rgba(79, 209, 197, 0.26);
+  fill: rgb(var(--cyan-rgb) / 0.26);
   stroke: none;
 }
 .measure-hover.edge path,
 .measure-hover.vertex path {
   fill: none;
-  stroke: #9fb2ff;
+  stroke: var(--measure-hover);
   stroke-width: 3;
 }
 .measure-pick.edge path,
 .measure-pick.vertex path {
   fill: none;
-  stroke: #4fd1c5;
+  stroke: var(--cyan);
   stroke-width: 3;
 }
 .measure-hover circle,
 .measure-hover rect {
-  fill: #0b0e14;
-  stroke: #9fb2ff;
+  fill: var(--bg-1);
+  stroke: var(--measure-hover);
   stroke-width: 1.6;
 }
 .measure-pick circle,
 .measure-pick rect {
-  fill: #4fd1c5;
-  stroke: #0b0e14;
+  fill: var(--cyan);
+  stroke: var(--bg-1);
   stroke-width: 1.2;
 }
 .measure-line line {
-  stroke: #ffd479;
+  stroke: var(--measure-line);
   stroke-width: 1.6;
   stroke-dasharray: 5 3;
 }
 .measure-line circle {
-  fill: #ffd479;
+  fill: var(--measure-line);
 }
 .measure-line rect {
-  fill: rgba(13, 16, 23, 0.92);
-  stroke: rgba(255, 212, 121, 0.6);
+  fill: rgb(var(--bg-1-rgb) / 0.92);
+  stroke: rgb(var(--measure-line-rgb) / 0.6);
 }
 .measure-line text {
-  fill: #ffe7b0;
+  fill: var(--warn-ink);
   font-family: var(--mono);
   font-size: 12px;
   text-anchor: middle;

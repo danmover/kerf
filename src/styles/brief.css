@@ -16,7 +16,7 @@
   margin-bottom: 12px;
   border: 1px solid var(--line-2);
   border-radius: var(--radius);
-  background: linear-gradient(180deg, var(--bg-2), rgba(16, 20, 28, 0.6));
+  background: linear-gradient(180deg, var(--bg-2), rgb(var(--bg-2-rgb) / 0.6));
   padding: 10px 12px 12px;
   transition:
     border-color 0.15s,
@@ -26,7 +26,7 @@
 .brief-intake.drop-over,
 .composer-box.drop-over {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.18);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.18);
 }
 .brief-card-head {
   display: flex;
@@ -136,7 +136,7 @@
   flex: none;
 }
 .assumed-chip:hover {
-  background: rgba(245, 184, 75, 0.22);
+  background: rgb(var(--warn-rgb) / 0.22);
 }
 .chip.priority {
   padding-right: 3px;
@@ -215,7 +215,7 @@
   padding: 1px 4px;
   margin-left: -5px;
   outline: none;
-  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.16);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.16);
   width: 100%;
   resize: none;
   color: var(--text);
@@ -252,14 +252,14 @@
   position: sticky;
   top: -12px;
   z-index: 3;
-  box-shadow: 0 8px 18px -10px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 8px 18px -10px rgb(var(--shade-rgb) / 0.7);
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 10px 8px 12px;
   margin-bottom: 10px;
   border-radius: 9px;
-  border: 1px solid rgba(109, 139, 255, 0.4);
+  border: 1px solid rgb(var(--accent-rgb) / 0.4);
   background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--bg-1);
   font-size: 12.5px;
   color: var(--text);
@@ -267,8 +267,8 @@
 .brief-confirm {
   margin-top: 12px;
   border-radius: var(--radius);
-  border: 1px solid rgba(245, 184, 75, 0.35);
-  background: linear-gradient(180deg, rgba(245, 184, 75, 0.07), rgba(245, 184, 75, 0.02));
+  border: 1px solid rgb(var(--warn-rgb) / 0.35);
+  background: linear-gradient(180deg, rgb(var(--warn-rgb) / 0.07), rgb(var(--warn-rgb) / 0.02));
   padding: 10px 12px;
 }
 .confirm-list {
@@ -297,7 +297,7 @@
   display: flex;
   gap: 10px;
   padding: 7px 0;
-  border-bottom: 1px solid rgba(31, 37, 51, 0.7);
+  border-bottom: 1px solid rgb(var(--line-rgb) / 0.7);
 }
 .use-row:last-child {
   border-bottom: 0;
@@ -343,12 +343,12 @@
   align-items: center;
   gap: 6px;
   padding: 4px 0;
-  border-bottom: 1px solid rgba(31, 37, 51, 0.7);
+  border-bottom: 1px solid rgb(var(--line-rgb) / 0.7);
   font-size: 12.5px;
   min-width: 0;
 }
 .given-name {
-  color: #ff9e64;
+  color: var(--syn-op);
   font-size: 12px;
 }
 .given-value {
@@ -425,7 +425,7 @@
 .ref-stage {
   display: grid;
   place-items: center;
-  background: repeating-conic-gradient(#0e121a 0% 25%, #0b0e14 0% 50%) 50% / 24px 24px;
+  background: repeating-conic-gradient(color-mix(in srgb, var(--bg-2) 60%, var(--bg-1)) 0% 25%, var(--bg-1) 0% 50%) 50% / 24px 24px;
   border-right: 1px solid var(--line);
   min-height: 0;
   overflow: hidden;
@@ -452,7 +452,7 @@
   border: 1px solid var(--line-2);
   border-radius: 12px;
   padding: 14px 16px;
-  background: radial-gradient(800px 240px at 0% 0%, rgba(109, 139, 255, 0.1), transparent 70%), var(--bg-2);
+  background: radial-gradient(800px 240px at 0% 0%, rgb(var(--accent-rgb) / 0.1), transparent 70%), var(--bg-2);
   transition:
     border-color 0.15s,
     box-shadow 0.2s;
@@ -526,7 +526,7 @@
   margin-bottom: 6px;
 }
 .msg-files .ref-thumb {
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: rgb(var(--ink-rgb) / 0.18);
 }
 
 /* sketch pad */
@@ -570,7 +570,7 @@
   width: 100%;
   aspect-ratio: 3 / 2;
   border-radius: 8px;
-  background: #fff;
+  background: #fff; /* theme: same, a sheet of paper */
   touch-action: none;
   cursor: crosshair;
 }
@@ -581,9 +581,9 @@
   position: absolute;
   min-width: 180px;
   height: 28px;
-  border: 1px dashed #6d8bff;
+  border: 1px dashed var(--accent);
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.95); /* theme: same, on the white sketch pad */
   font-size: 15px;
   padding: 0 6px;
   outline: none;

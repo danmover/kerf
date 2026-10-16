@@ -6,17 +6,19 @@ import { useMemo, useState } from "react";
 import { useDesign } from "../core/engine";
 import { revealSpan, select } from "../app/view";
 import type { DepNode, Model } from "../core/model";
+import "../styles/syntax.css";
 
+// theme tokens, set as styles: SVG colour attributes do not take var()
 const KIND_COLOR: Record<DepNode["kind"], string> = {
-  param: "#ffcb6b",
-  given: "#ff9e64",
-  let: "#7cc4ff",
-  interface: "#4fd1c5",
-  sketch: "#f78c6c",
-  component: "#c792ff",
-  part: "#6d8bff",
-  require: "#3ddc97",
-  analysis: "#ff7eb6",
+  param: "var(--syn-number)",
+  given: "var(--syn-op)",
+  let: "var(--info)",
+  interface: "var(--cyan)",
+  sketch: "var(--syn-constant)",
+  component: "var(--violet)",
+  part: "var(--accent)",
+  require: "var(--pass)",
+  analysis: "var(--graph-analysis)",
 };
 const W = 168;
 const H = 30;
@@ -109,7 +111,7 @@ export function GraphView() {
       <svg width={g.width} height={g.height} style={{ display: "block" }}>
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-            <path d="M0 0 10 5 0 10z" fill="#39445c" />
+            <path d="M0 0 10 5 0 10z" style={{ fill: "var(--line-3)" }} />
           </marker>
         </defs>
         {g.edges.map((e, i) => {
@@ -127,7 +129,7 @@ export function GraphView() {
         {[...g.laid.values()].map(({ node, x, y }, i) => {
           const color = KIND_COLOR[node.kind];
           const req = node.kind === "require" ? model.requirements.find((r) => `require:${r.label}` === node.id) : null;
-          const status = req ? (req.status === "pass" ? "#3ddc97" : req.status === "fail" ? "#ff5d6c" : "#6d8bff") : null;
+          const status = req ? (req.status === "pass" ? "var(--pass)" : req.status === "fail" ? "var(--fail)" : "var(--accent)") : null;
           const dim = related && !related.has(node.id);
           return (
             <motion.g
@@ -141,12 +143,12 @@ export function GraphView() {
               onClick={() => open(node)}
               style={{ cursor: "pointer" }}
             >
-              <rect x={x} y={y} width={W} height={H} rx={7} fill="#121722" stroke={hot === node.id ? color : "#2a3245"} />
-              <rect x={x} y={y + 7} width={3} height={H - 14} rx={1.5} fill={status ?? color} />
-              <text x={x + 12} y={y + 12.5} fill="#6c7791" fontSize={8.5} fontFamily="IBM Plex Mono" letterSpacing="0.08em">
+              <rect x={x} y={y} width={W} height={H} rx={7} style={{ fill: "var(--graph-card)", stroke: hot === node.id ? color : "var(--line-2)" }} />
+              <rect x={x} y={y + 7} width={3} height={H - 14} rx={1.5} style={{ fill: status ?? color }} />
+              <text x={x + 12} y={y + 12.5} style={{ fill: "var(--text-3)" }} fontSize={8.5} fontFamily="IBM Plex Mono" letterSpacing="0.08em">
                 {node.kind.toUpperCase()}
               </text>
-              <text x={x + 12} y={y + 24} fill="#dfe5f2" fontSize={11} fontFamily="IBM Plex Mono">
+              <text x={x + 12} y={y + 24} style={{ fill: "var(--text)" }} fontSize={11} fontFamily="IBM Plex Mono">
                 {truncate(node.kind === "require" || node.kind === "analysis" ? node.label : node.id, 22)}
               </text>
             </motion.g>

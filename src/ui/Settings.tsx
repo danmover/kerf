@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, MIN_STEPS, MAX_STEPS, type Effort } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, MIN_STEPS, MAX_STEPS, type Effort, type ThemePref } from "../app/settings";
+import { setTheme } from "../app/theme";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
 import { forgetApiKey, getApiKey, isRemembered, keyHint, subscribeKey } from "../persist/vault";
 import { storageEstimate } from "../persist/db";
@@ -236,10 +237,22 @@ function AiSettings() {
   );
 }
 
+const THEMES: { value: ThemePref; label: string; d: string }[] = [
+  { value: "dark", label: "Dark", d: "Kerf's default: a dark workspace that keeps the model the brightest thing on screen." },
+  { value: "light", label: "Light", d: "Light panels and a pale backdrop behind the model, for bright rooms and printing screenshots." },
+  { value: "system", label: "Match device", d: "Follows your device's light or dark setting, and changes when it does." },
+];
+
 function AppSettings() {
   const s = useSettings();
+  const theme = THEMES.find((t) => t.value === s.theme) ?? THEMES[0];
   return (
     <>
+      <Section title="Appearance">
+        <Row t="Theme" d={theme.d}>
+          <Segmented id="theme" value={s.theme} options={THEMES.map((t) => ({ value: t.value, label: t.label }))} onChange={(v) => setTheme(v)} />
+        </Row>
+      </Section>
       <Section title="Viewport">
         <Row t="Ground grid" d="A millimetre grid under the model.">
           <Toggle on={s.grid} onChange={(v) => updateSettings({ grid: v })} label="Ground grid" />

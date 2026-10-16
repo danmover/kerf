@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { client, ORIGIN, PASSWORD, setup, signedIn, TERMS } from "./helpers.js";
 
-describe("accounts", () => {
+// each sign-up or sign-in runs scrypt (32 MiB, about 0.3 s); a busy machine needs more than the 5 s default
+describe("accounts", { timeout: 30_000 }, () => {
   it("signs up, reports the session, and signs out", async () => {
     const { app } = setup();
     const c = client(app);

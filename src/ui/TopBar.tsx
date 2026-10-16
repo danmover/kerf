@@ -10,6 +10,7 @@ import { exportStep, exportStl, exportSource, exportBom, exportPng, exportProjec
 import { Logo } from "./Logo";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
+import { ThemeSwitch } from "./ThemeSwitch";
 import { SyncBadge } from "./Account";
 import { exportAllDrawings } from "../drawing/export";
 
@@ -124,6 +125,7 @@ export function TopBar() {
       <button className="icon-btn" onClick={() => useUi.setState({ shortcutsOpen: true })} data-tip="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
         <Icon.Keyboard />
       </button>
+      <ThemeSwitch />
       <button className="icon-btn" onClick={() => openSettings("ai")} data-tip="Settings" aria-label="Settings">
         <Icon.Settings />
       </button>
@@ -136,7 +138,7 @@ function SaveState({ state }: { state: string }) {
   const color = state === "error" ? "var(--fail)" : state === "memory" ? "var(--warn)" : state === "saved" ? "var(--pass)" : "var(--accent-2)";
   return (
     <div className="save-state narrow-hide" data-tip={state === "memory" ? "This browser is not allowing storage, so work is lost when the tab closes. Export to keep it." : "Saved in this browser automatically"}>
-      <span className="dot" style={{ background: color, boxShadow: state === "saved" ? "0 0 6px rgba(61,220,151,.5)" : undefined }} />
+      <span className="dot" style={{ background: color, boxShadow: state === "saved" ? "0 0 6px rgb(var(--pass-rgb) / 0.5)" : undefined }} />
       {label}
     </div>
   );
