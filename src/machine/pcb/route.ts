@@ -822,6 +822,11 @@ export function routeBoard(spec: BoardSpec, opts: { maxMs?: number } = {}): Rout
     }
     let nodes = R.search(n, src, dst, box(c, 5), false, owner) ?? R.search(n, src, dst, whole, false, owner);
     if (!nodes) {
+      // the last fifth of the time only fits in what still fits, so a board that can't be finished ends settled
+      if (now() - t0 > maxMs * 0.8) {
+        c.failed = true;
+        continue;
+      }
       nodes = R.search(n, src, dst, box(c, 12), true, owner) ?? R.search(n, src, dst, whole, true, owner);
       if (!nodes) {
         c.failed = true;
@@ -884,8 +889,8 @@ export function routeBoard(spec: BoardSpec, opts: { maxMs?: number } = {}): Rout
     }
   }
 
-  const partial = { spec, rules, tracks, vias };
-  const pours = makePours(partial);
+  const { pours, vias: stitches } = makePours({ spec, rules, tracks, vias });
+  vias.push(...stitches);
   const board: RoutedBoard = { spec, rules, tracks, vias, pours, unrouted, drc: [], stats: { connections: all.length, routed: 0, vias: vias.length, trackLength: 0, ms: 0 } };
   // a pour net the tracks didn't finish may still be joined by its pour
   if (pours.length && unrouted.some((u) => spec.nets.find((n) => n.name === u.net)?.pour)) {

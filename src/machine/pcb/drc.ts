@@ -5,7 +5,7 @@
 // actually joined by copper.
 
 import { MIN_HOLE_GAP, drillProblems, holeShape, mm, placedHoles, placedPads, type PlacedPad } from "./board";
-import { Buckets, capsule, circle, grow, inRing, padShape, shapeBox, shapeEdgeDist, shapeGap, type BBox, type Pt, type Shape } from "./geom";
+import { Buckets, RingIndex, capsule, circle, grow, padShape, shapeBox, shapeEdgeDist, shapeGap, type BBox, type Pt, type Shape } from "./geom";
 import { pourGroups, ringBox } from "./pour";
 import type { DrcItem, RoutedBoard } from "./types";
 
@@ -30,7 +30,7 @@ interface Obj {
 interface PourGroup {
   net: string;
   layer: number;
-  rings: Pt[][];
+  rings: RingIndex[];
   box: BBox;
 }
 
@@ -57,7 +57,7 @@ function collect(b: RoutedBoard): Copper {
   for (const p of b.pours)
     for (const rings of pourGroups(p.polys)) {
       const gi = pours.length;
-      pours.push({ net: p.net, layer: LAYER[p.layer], rings, box: ringBox(rings[0]) });
+      pours.push({ net: p.net, layer: LAYER[p.layer], rings: rings.map((r) => new RingIndex(r)), box: ringBox(rings[0]) });
       for (const r of rings)
         for (let k = 0; k < r.length; k++) {
           const [ax, ay] = r[k];
@@ -72,8 +72,8 @@ function collect(b: RoutedBoard): Copper {
 
 function inPour(g: PourGroup, x: number, y: number): boolean {
   if (x < g.box[0] || x > g.box[2] || y < g.box[1] || y > g.box[3]) return false;
-  if (!inRing(g.rings[0], x, y)) return false;
-  for (let k = 1; k < g.rings.length; k++) if (inRing(g.rings[k], x, y)) return false;
+  if (!g.rings[0].contains(x, y)) return false;
+  for (let k = 1; k < g.rings.length; k++) if (g.rings[k].contains(x, y)) return false;
   return true;
 }
 
