@@ -54,6 +54,10 @@ export interface EvalPart {
   gear?: GearInfo;
   fastener?: FastenerInfo;
   bom?: { description: string; standard?: string };
+  /** named features (`add ... as name`), for selectors and inspection */
+  features?: { name: string; kind: string; cosmetic: boolean }[];
+  /** detailed builds differ from fast ones (threads, knurls, cosmetic steps) */
+  detail?: boolean;
 }
 
 export interface EvalParam {

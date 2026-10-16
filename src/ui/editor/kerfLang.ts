@@ -7,13 +7,14 @@ import { EditorView } from "@codemirror/view";
 import type { CompletionContext, CompletionResult, Completion } from "@codemirror/autocomplete";
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
+import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../../lang/modelling";
 import { LIBRARY } from "../../library/components";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 
 const STATEMENTS = new Set(["design", "note", "param", "let", "component", "interface", "part", "require"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
-const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS]);
+const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MODELLING_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS]);
 const CONSTS = new Set(["X", "Y", "Z", "ORIGIN", "PI", ...Object.keys(THREADS)]);
 
 interface St {
@@ -130,7 +131,11 @@ export const kerfTheme = EditorView.theme(
 /** Completions from the language tables plus names defined in the current model. */
 export function kerfCompletions(getModel: () => Model | null) {
   const fnCompletions: Completion[] = [
-    ...Object.values(SHAPE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "shape", apply: f.name + "(" })),
+    ...Object.values({ ...SHAPE_FNS, ...SOLID_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "shape", apply: f.name + "(" })),
+    ...Object.values(PROFILE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "profile", apply: f.name + "(" })),
+    ...Object.values(PATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "path", apply: f.name + "(" })),
+    ...Object.values(FEATURE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "feature", apply: f.name + "(" })),
+    ...Object.values(SELECT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "selection", apply: f.name + "(" })),
     ...Object.values(MATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "math", apply: f.name + "(" })),
     ...Object.entries(modifierDocs).map(([k, d]) => ({ label: k, type: "function", info: d, detail: "modifier", apply: k + "(" })),
     ...GEO_FNS.map((g) => ({ label: g, type: "function", detail: "geometry", apply: g + "(" })),

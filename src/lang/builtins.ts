@@ -1,8 +1,8 @@
 // Builtin functions and constants for the Kerf language.
 
 import { Args } from "./args";
-import { Fn, Obj, Pending, Ref, ShapeV, Vec, typeName, type CallCtx, type Value } from "./values";
-import type { EdgeSel, ShapeRecipe, V2, V3 } from "../kernel/recipe";
+import { Fn, Obj, Pending, ProfileV, Ref, ShapeV, Vec, typeName, type CallCtx, type Value } from "./values";
+import type { ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/recipe";
 import { THREADS } from "../library/standards";
 import { centerDistance } from "../library/gears";
 import { LIBRARY } from "../library/components";
@@ -12,7 +12,7 @@ const Z: V3 = [0, 0, 1];
 
 type Impl = (a: Args) => Value;
 
-function def(name: string, params: string[], impl: Impl, doc: string): [string, Fn] {
+export function def(name: string, params: string[], impl: Impl, doc: string): [string, Fn] {
   return [
     name,
     new Fn(
@@ -34,18 +34,21 @@ function listOf(v: Value, ctx: CallCtx, what: string): Value[] {
   return ctx.error(`${what} should be a list`);
 }
 
-/** Thread-aware hole diameter: hole(M3, fit: "clearance" | "close" | "tap" | "insert") */
-function holeDiameter(a: Args): { d: number; thread?: (typeof THREADS)[string] } {
+/** Thread-aware hole diameter: hole(M3, fit: "clearance" | "close" | "tap" | "insert" | "thread") */
+function holeDiameter(a: Args): { d: number; thread?: (typeof THREADS)[string]; tapped?: ThreadSpec3 } {
   const v = a.value("d");
-  if (typeof v === "number") return { d: v };
+  if (typeof v === "number") {
+    if (a.has("fit")) a.ctx.error('hole(): fit: needs a thread size, e.g. hole(M4, fit: "thread", depth: 8)');
+    return { d: v };
+  }
   const t = a.thread("d");
   const fit = a.str("fit", "clearance");
+  if (fit === "thread") return { d: t.d, thread: t, tapped: { d: t.d, pitch: t.pitch, form: "iso", starts: 1, left: false, clearance: 0.1 } };
+  if (fit === "insert" && !t.insert_d) a.ctx.error(`hole(): there is no common heat-set insert for ${t.name}; use fit: "thread" (a real threaded hole) or "tap"`);
   const d = fit === "tap" ? t.tap : fit === "close" ? t.close : fit === "insert" ? t.insert_d : fit === "clearance" ? t.clearance : NaN;
-  if (Number.isNaN(d)) a.ctx.error(`hole(): fit must be "clearance", "close", "tap" or "insert" (got "${fit}")`);
+  if (Number.isNaN(d)) a.ctx.error(`hole(): fit must be "clearance", "close", "tap", "insert" or "thread" (got "${fit}")`);
   return { d, thread: t };
 }
-
-const EDGE_SELS: EdgeSel[] = ["vertical", "top", "bottom", "all"];
 
 export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
   def(
@@ -135,10 +138,11 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "hole",
-    ["d", "depth", "at", "dir", "through", "fit", "cbore", "csink"],
+    ["d", "depth", "at", "dir", "through", "fit", "cbore", "csink", "lead"],
     (a) => {
-      const { d, thread } = holeDiameter(a);
+      const { d, thread, tapped } = holeDiameter(a);
       const through = a.bool("through");
+      if (tapped && through) a.ctx.error('hole(): a threaded hole needs depth: (how deep the thread goes) instead of through: true');
       const depth = through ? 2000 : a.positive("depth");
       let cbore: V2 | undefined;
       const cb = a.value("cbore");
@@ -153,9 +157,18 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
         if (!thread) return a.ctx.error("hole(): csink: true needs a thread size");
         csink = thread.d * 2;
       } else if (typeof cs === "number") csink = cs;
-      return new ShapeV({ t: "hole", d, depth, at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", [0, 0, -1]), cbore, csink });
+      const at = a.vec3("at", [0, 0, 0]);
+      const dir = a.dir("dir", [0, 0, -1]);
+      if (tapped) {
+        if (csink) a.ctx.error("hole(): a threaded hole has its own entry chamfer (lead:); leave out csink");
+        const lead = a.num("lead", 0.5 * tapped.pitch);
+        if (lead < 0) a.ctx.error("hole(): lead must be 0 or more");
+        return new ShapeV({ t: "hole", d, depth, at, dir, cbore, thread: tapped, lead });
+      }
+      if (a.has("lead")) a.ctx.error('hole(): lead: is the entry chamfer of a threaded hole (fit: "thread")');
+      return new ShapeV({ t: "hole", d, depth, at, dir, cbore, csink });
     },
-    'hole(d or M3, depth:, at:, dir: -Z, through: false, fit: "clearance"|"close"|"tap"|"insert", cbore: true|(d, depth), csink: true|d) — a cutting tool: use with `cut`. `at` is the entry point on the surface, dir points into the material.',
+    'hole(d or M3, depth:, at:, dir: -Z, through: false, fit: "clearance"|"close"|"tap"|"insert"|"thread", cbore: true|(d, depth), csink: true|d, lead:) — a cutting tool: use with `cut`. `at` is the entry point on the surface, dir points into the material. fit: "thread" cuts a real ISO thread (detail builds; lead: is its entry chamfer, default half a pitch).',
   ),
   def(
     "gear",
@@ -167,14 +180,32 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
   def(
     "move",
     ["shape", "by"],
-    (a) => new ShapeV({ t: "xform", shape: a.shape("shape").recipe, xf: [{ op: "translate", v: a.vec3("by") }] }),
-    "move(shape, by: (dx, dy, dz))",
+    (a) => {
+      const by = a.vec3("by");
+      const p = a.value("shape");
+      if (p instanceof ProfileV) return new ProfileV({ t: "place2", p: p.recipe, rot: 0, by: [by[0], by[1]] });
+      return new ShapeV({ t: "xform", shape: a.shape("shape").recipe, xf: [{ op: "translate", v: by }] });
+    },
+    "move(shape or profile, by: (dx, dy, dz))",
   ),
   def(
     "rotate",
     ["shape", "angle", "axis", "origin"],
-    (a) => new ShapeV({ t: "xform", shape: a.shape("shape").recipe, xf: [{ op: "rotate", angle: a.num("angle"), axis: a.dir("axis", Z), origin: a.vec3("origin", [0, 0, 0]) }] }),
-    "rotate(shape, angle (deg), axis: Z, origin: (0, 0, 0))",
+    (a) => {
+      const p = a.value("shape");
+      if (p instanceof ProfileV) {
+        if (a.has("axis")) a.ctx.error("rotate(): a profile turns in its own plane; leave out axis");
+        const o = a.vec3("origin", [0, 0, 0]);
+        const rot = a.num("angle");
+        if (!o[0] && !o[1]) return new ProfileV({ t: "place2", p: p.recipe, rot, by: [0, 0] });
+        const c = Math.cos((rot * Math.PI) / 180);
+        const s = Math.sin((rot * Math.PI) / 180);
+        // turn about o: rotate about (0, 0), then move o back to where the rotation put it
+        return new ProfileV({ t: "place2", p: p.recipe, rot, by: [o[0] - (o[0] * c - o[1] * s), o[1] - (o[0] * s + o[1] * c)] });
+      }
+      return new ShapeV({ t: "xform", shape: a.shape("shape").recipe, xf: [{ op: "rotate", angle: a.num("angle"), axis: a.dir("axis", Z), origin: a.vec3("origin", [0, 0, 0]) }] });
+    },
+    "rotate(shape or profile, angle (deg), axis: Z, origin: (0, 0, 0)) — profiles turn in their own plane about origin (x, y).",
   ),
   def(
     "union",
@@ -190,21 +221,19 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
 ]);
 
-/** Modifiers usable as statements inside a part: shell(), fillet(), chamfer(). */
+/** Modifiers usable as statements inside a part: shell(), fillet(), chamfer(), draft(). */
 export const MODIFIER_PARAMS: Record<string, string[]> = {
   shell: ["t", "open"],
   fillet: ["r", "edges"],
   chamfer: ["r", "edges"],
+  draft: ["angle", "faces", "pull", "neutral"],
 };
 export const modifierDocs: Record<string, string> = {
-  shell: "shell(t, open: Z) — hollow the body to wall thickness t, removing the outermost face in direction `open` (Z = open top, -Z = open bottom).",
-  fillet: 'fillet(r, edges: "vertical"|"top"|"bottom"|"all") — round edges of the current body. Apply before cutting features.',
-  chamfer: 'chamfer(r, edges: "vertical"|"top"|"bottom"|"all") — bevel edges of the current body.',
+  shell: "shell(t, open: Z) — hollow the body to wall thickness t, leaving open the outermost flat face looking along `open` (Z = open top). open also takes a face selection or a list, e.g. open: [Z, facing(-Y)].",
+  fillet: 'fillet(r, edges: "all") — round edges of the body as it is at this step. edges: a preset ("all", "top", "bottom", "vertical", "horizontal", "convex", "concave", "sharp"), a named feature (boss.root, boss.tip, boss.edges), a selector (near(), in_plane(), along(), facing(), circles(), inside(), between()), or a list. Combine with + and -.',
+  chamfer: 'chamfer(r, edges: "all") — bevel edges, picked the same way as fillet.',
+  draft: 'draft(angle, faces: "vertical", pull: Z, neutral: (0, 0, 0)) — tilt faces by angle (degrees) so the part releases from a mould pulled along `pull`; faces stay put on the neutral plane through `neutral`. Draft before filleting.',
 };
-export function edgeSel(v: string, ctx: CallCtx): EdgeSel {
-  if ((EDGE_SELS as string[]).includes(v)) return v as EdgeSel;
-  return ctx.error(`edges must be one of ${EDGE_SELS.map((e) => `"${e}"`).join(", ")}`);
-}
 
 const pt = (x: number, y: number, z = 0) => new Vec([x, y, z]);
 

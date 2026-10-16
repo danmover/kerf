@@ -34,6 +34,8 @@ export interface DesignState {
   timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number };
   meshVersion: number;
   buildErrors: Map<string, string>;
+  /** problems in the detailed (full-quality) build, by geometry hash */
+  detailIssues: Map<string, string>;
   report: CheckReport | null;
   reportRev: number;
   checksError: string;
@@ -58,6 +60,7 @@ export const useDesign = create<DesignState>(() => ({
   timings: { evalMs: 0, buildMs: 0, checksMs: 0, built: 0, reused: 0 },
   meshVersion: 0,
   buildErrors: new Map(),
+  detailIssues: new Map(),
   report: null,
   reportRev: 0,
   checksError: "",
@@ -204,7 +207,8 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   if (get().rev !== rev) return;
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])));
+  // detail problems found earlier still apply to parts whose geometry has not changed
+  const report = withDetailIssues(assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p]))), model, get().detailIssues);
   set({
     report,
     reportRev: rev,
@@ -214,9 +218,10 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     timings: { ...get().timings, checksMs: performance.now() - tChecks },
   });
 
-  // refine: exact-tolerance meshes in the background
+  // refine: exact-tolerance meshes, and the detailed geometry (threads, knurls, cosmetic steps), in the background
   const refine = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview && !meshes.get(p.hash)?.final);
   if (refine.length) {
+    const issues = new Map(get().detailIssues);
     const job = kernel.build(
       refine.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
       "final",
@@ -226,14 +231,39 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
           prev.final = r.mesh;
           bumpMeshes();
         }
+        if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
+        else issues.delete(r.hash);
       },
-      () => undefined,
+      (hash, message) => {
+        // the simple shape stays on screen; say what the detail pass could not do
+        issues.set(hash, `The detailed build failed, so the simple shape is shown: ${message}`);
+      },
     );
     activeJobs.push(job);
     const r = await job.done;
     if (r.cancelled || get().rev !== rev) return;
+    const live = new Set(byHash.keys());
+    for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);
+    const report = get().report;
+    set({ detailIssues: issues, report: report && withDetailIssues(report, model, issues) });
   }
   set({ stage: "done" });
+}
+
+/** Add the detail pass's problems to a report as warnings. */
+export function withDetailIssues(report: CheckReport, model: Model, issues: Map<string, string>): CheckReport {
+  const items = report.items.filter((i) => !i.id.startsWith("detail:"));
+  const seen = new Set<string>();
+  for (const p of model.parts) {
+    const msg = issues.get(p.hash);
+    if (!msg || seen.has(p.hash)) continue;
+    seen.add(p.hash);
+    const same = model.parts.filter((q) => q.hash === p.hash).map((q) => q.id);
+    items.push({ id: `detail:${p.id}`, category: "build", status: "warn", title: `${p.label} detail`, detail: msg, parts: same, span: p.span, basis: "geometry" });
+  }
+  const counts = { pass: 0, fail: 0, warn: 0, pending: 0, info: 0 };
+  for (const i of items) counts[i.status]++;
+  return { ...report, items, counts };
 }
 
 /** Resolves once checks have run for the current revision (or a later one). */

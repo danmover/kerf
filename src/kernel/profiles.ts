@@ -6,6 +6,7 @@ import * as R from "replicad";
 import type { Shape3D } from "replicad";
 import { framePoint, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type FontName, type Frame, type Path3, type Profile, type V2, type V3 } from "./recipe";
 
+
 export class ProfileError extends Error {}
 
 // ---------- fonts ----------
@@ -35,13 +36,6 @@ export function drawProfile(p: Profile): R.Drawing {
       const d = polyline(p.pts);
       return p.r > 1e-6 ? d.fillet(p.r) : d;
     }
-    case "slot2": {
-      const dx = p.b[0] - p.a[0];
-      const dy = p.b[1] - p.a[1];
-      const len = Math.hypot(dx, dy);
-      const d = R.drawRoundedRectangle(len + p.w, p.w, p.w / 2 - 1e-3);
-      return d.rotate((Math.atan2(dy, dx) * 180) / Math.PI).translate((p.a[0] + p.b[0]) / 2, (p.a[1] + p.b[1]) / 2);
-    }
     case "text": {
       if (!loadedFonts.has(p.font)) throw new ProfileError(`The "${p.font}" font is not loaded yet`);
       const d = R.drawText(p.text, { fontSize: p.size, fontFamily: p.font });
@@ -57,7 +51,7 @@ export function drawProfile(p: Profile): R.Drawing {
       for (const s of p.segs) {
         if (s.s === "line") pen = pen.lineTo(s.to);
         else if (s.s === "arc") pen = pen.threePointsArcTo(s.to, s.via);
-        else pen = pen.smoothSplineTo(s.to);
+        else pen = pen.cubicBezierCurveTo(s.to, s.c1, s.c2);
         last = s.to;
       }
       const closed = Math.hypot(last[0] - p.start[0], last[1] - p.start[1]) < 1e-6;
@@ -237,12 +231,104 @@ export function sweepProfile(p: Profile, path: Path3, rot: number, frenet: boole
 }
 
 export function loftProfiles(secs: { p: Profile; f: Frame }[], ruled: boolean): Shape3D {
-  const wires = secs.map((s, i) => {
+  let wires = secs.map((s, i) => {
     const regions = profileRegions(s.p, s.f);
     if (regions.length !== 1 || regions[0].inner.length) throw new ProfileError(`loft(): section ${i + 1} must be a single outline without holes`);
     return regions[0].outer;
   });
-  return R.loft(wires, { ruled });
+  if (!ruled) wires = matchedSections(wires, secs.map((s) => s.f)) ?? wires;
+  const solid = R.loft(wires, { ruled });
+  // lofts can come out inside out (negative volume), which breaks shell and booleans
+  if (R.measureVolume(solid) < 0) return R.cast(solid.wrapped.Reversed()) as Shape3D;
+  return solid;
+}
+
+/**
+ * Rebuild loft sections as single smooth curves sampled at the same angles
+ * around their centres, so the skin is one surface with no twist and no seams
+ * between unlike outlines (circle to rounded square). Returns null when an
+ * outline is not star-shaped around its centre, and the plain wires are used.
+ */
+function matchedSections(wires: R.Wire[], frames: Frame[]): R.Wire[] | null {
+  const N = 96;
+  const M = 360;
+  const local = (k: number, q: V3): V2 => {
+    const f = frames[k];
+    const p = vsub(q, f.o);
+    return [vdot(p, f.u), vdot(p, vcross(f.n, f.u))];
+  };
+  // exact circles stay as they are (things added on a loft's end then meet it exactly);
+  // the other sections are sampled starting at the same angle and running the same way
+  const circle = wires.map((w) => w.edges.length === 1 && String(w.edges[0].geomType) === "CIRCLE");
+  if (circle.every(Boolean)) return null;
+  let start = 0;
+  let sense = 1;
+  const c0 = circle.indexOf(true);
+  if (c0 >= 0) {
+    const w = wires[c0];
+    const ctr = local(c0, w.edges[0].pointAt(0.5).toTuple() as V3);
+    const a = local(c0, w.pointAt(0).toTuple() as V3);
+    const b = local(c0, w.pointAt(0.25).toTuple() as V3);
+    // the centre is halfway between opposite points of the circle
+    const cx = (a[0] + ctr[0]) / 2;
+    const cy = (a[1] + ctr[1]) / 2;
+    start = Math.atan2(a[1] - cy, a[0] - cx);
+    const turn = Math.atan2(b[1] - cy, b[0] - cx) - start;
+    sense = Math.sin(turn) >= 0 ? 1 : -1;
+  }
+  const out: R.Wire[] = [];
+  for (let k = 0; k < wires.length; k++) {
+    const w = wires[k];
+    if (circle[k]) {
+      out.push(w);
+      continue;
+    }
+    const f = frames[k];
+    const v = vcross(f.n, f.u);
+    // dense polyline of the outline in the section's (u, v) plane
+    const poly: V2[] = [];
+    for (let i = 0; i < M; i++) poly.push(local(k, w.pointAt(i / M).toTuple() as V3));
+    let cx = 0;
+    let cy = 0;
+    let area = 0;
+    for (let i = 0; i < M; i++) {
+      const [x0, y0] = poly[i];
+      const [x1, y1] = poly[(i + 1) % M];
+      const c = x0 * y1 - x1 * y0;
+      area += c;
+      cx += (x0 + x1) * c;
+      cy += (y0 + y1) * c;
+    }
+    if (Math.abs(area) < 1e-9) return null;
+    cx /= 3 * area;
+    cy /= 3 * area;
+    const pts: V3[] = [];
+    for (let j = 0; j < N; j++) {
+      const th = start + (sense * 2 * Math.PI * j) / N;
+      const dx = Math.cos(th);
+      const dy = Math.sin(th);
+      // the ray from the centre must cross the outline exactly once
+      const hits: number[] = [];
+      for (let i = 0; i < M; i++) {
+        const [ax, ay] = poly[i];
+        const [bx, by] = poly[(i + 1) % M];
+        const ex = bx - ax;
+        const ey = by - ay;
+        const den = dx * ey - dy * ex;
+        if (Math.abs(den) < 1e-12) continue;
+        const t = ((ax - cx) * ey - (ay - cy) * ex) / den;
+        const sgm = ((ax - cx) * dy - (ay - cy) * dx) / den;
+        // a ray through a polyline vertex touches both segments there: count it once
+        if (t > 1e-9 && sgm >= -1e-9 && sgm <= 1 + 1e-9 && !hits.some((h) => Math.abs(h - t) < 1e-6)) hits.push(t);
+      }
+      if (hits.length !== 1) return null;
+      const r = hits[0];
+      pts.push(vadd(f.o, vadd(vscale(f.u, cx + r * dx), vscale(v, cy + r * dy))));
+    }
+    pts.push(pts[0]);
+    out.push(R.assembleWire([R.makeBSplineApproximation(pts, { tolerance: 0.01, degMax: 3, degMin: 3, smoothing: null })]));
+  }
+  return out;
 }
 
 export { framePoint };

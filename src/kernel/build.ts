@@ -121,6 +121,11 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       for (let i = 1; i < shapes.length; i++) out = out.fuse(shapes[i]);
       return out;
     }
+    case "diff": {
+      let out = buildShape(r.a, detail);
+      for (const b of r.b) out = out.cut(buildShape(b, detail));
+      return out;
+    }
     case "extrude":
       return extrudeProfile(r.p, r.h, r.f, r.twist, r.scale);
     case "sweep":
@@ -129,8 +134,11 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       return loftProfiles(r.secs, r.ruled);
     case "revolve2":
       return revolveProfile2(r.p, r.f, r.angle);
-    case "thread":
-      return buildThread(r.spec, r.length, r.at, r.dir, r.internal, r.lead, detail);
+    case "thread": {
+      const t = buildThread(r.spec, r.length, r.at, r.dir, r.internal, r.lead, detail);
+      if (!r.bore) return t;
+      return t.cut(R.makeCylinder(r.bore / 2, r.length + 0.2, vadd(r.at, vscale(r.dir, -0.1)), r.dir));
+    }
     case "knurl":
       return buildKnurl(r.d, r.h, r.at, r.dir, r.count, r.depth, r.style, detail);
   }
@@ -173,7 +181,9 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
     if (op.cosmetic && !detail) return;
     const step = `step ${i + 2}`;
     try {
+      const t0 = performance.now();
       shape = applyOp(shape, op, detail, features, topoNow);
+      if ((globalThis as { __kerfProfile?: boolean }).__kerfProfile) console.log("op", i, opLabel(op), Math.round(performance.now() - t0));
     } catch (e) {
       const what = opLabel(op);
       if (op.cosmetic) {
@@ -244,8 +254,10 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
     }
     case "fillet":
     case "chamfer": {
+      const ts = performance.now();
       const t = topo();
       const idx = t.selectEdges(op.edges);
+      if ((globalThis as { __kerfProfile?: boolean }).__kerfProfile) console.log("  select", Math.round(performance.now() - ts), "faces", t.faces.length, "edges", t.edges.length, "picked", idx.size);
       if (!idx.size) throw new BuildError(`edges: ${describeSel(op.edges)} matched no edges`);
       const chosen = [...idx].map((i) => t.edges[i]);
       const byHash = new Map<number, R.Edge[]>();
@@ -272,6 +284,8 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
 function errMsg(e: unknown): string {
   if (e instanceof Error) return e.message || e.name;
   if (typeof e === "number") return `OpenCASCADE error ${e}`;
+  // OpenCASCADE failures arrive as bare WebAssembly exceptions with no text
+  if (typeof WebAssembly !== "undefined" && "Exception" in WebAssembly && e instanceof (WebAssembly as unknown as { Exception: new () => object }).Exception) return "OpenCASCADE could not compute it";
   return String(e);
 }
 

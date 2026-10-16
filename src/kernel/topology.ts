@@ -26,11 +26,11 @@ export interface EdgeInfo {
   b: V3;
   tangent: V3;
   kind: string;
-  length: number;
+  readonly length: number;
   /** radius for circular edges */
   radius?: number;
   faces: number[];
-  convexity: Convexity;
+  readonly convexity: Convexity;
 }
 
 interface FaceSample {
@@ -44,6 +44,34 @@ interface FaceSample {
 }
 
 const TOL = 1e-3;
+
+interface ToolFace {
+  face: R.Face;
+  box: [V3, V3];
+  kind: string;
+  plane?: { n: V3; d: number };
+}
+
+/** Plane equation n·p = d of a planar face (the sign of n is not meaningful). */
+function planeOfFace(f: R.Face): { n: V3; d: number } | undefined {
+  if (String(f.geomType) !== "PLANE") return undefined;
+  const oc = R.getOC();
+  const ad = new oc.BRepAdaptor_Surface(f.wrapped, false);
+  try {
+    const pl = ad.Plane();
+    const ax = pl.Axis();
+    const dir = ax.Direction();
+    const loc = pl.Location();
+    const n: V3 = [dir.X(), dir.Y(), dir.Z()];
+    const p: V3 = [loc.X(), loc.Y(), loc.Z()];
+    for (const o of [pl, ax, dir, loc]) o.delete();
+    return { n, d: vdot(n, p) };
+  } catch {
+    return undefined;
+  } finally {
+    ad.delete();
+  }
+}
 
 function tuple(v: R.Vector): V3 {
   const t = v.toTuple();
@@ -76,8 +104,9 @@ export class Topo {
   private samples: (FaceSample | undefined)[] = [];
   private infos: (EdgeInfo | undefined)[] = [];
   private adjacency: number[][] | null = null;
-  private meshed = false;
-  private featureFaces = new Map<string, Set<number>>();
+  private featureFaces = new Map<string, Map<number, boolean>>();
+  private toolCache = new Map<string, ToolFace[]>();
+  private quick: ({ kind: string; box: [V3, V3]; plane?: { n: V3; d: number } } | undefined)[] = [];
   private dist = new R.DistanceTool();
 
   constructor(
@@ -97,18 +126,17 @@ export class Topo {
     }
   }
 
-  private ensureMesh() {
-    if (this.meshed) return;
-    this.meshed = true;
-    // the same tolerances as preview meshes, so the display can reuse this triangulation
-    R.getOC().ReplicadMeshExtractor.mesh(this.shape.wrapped, 0.25, (25 * Math.PI) / 180);
+  /** Triangulate one face (the same tolerances as preview meshes, so a later display mesh reuses it). */
+  private ensureMesh(f: R.Face) {
+    const m = new (R.getOC().BRepMesh_IncrementalMesh)(f.wrapped, 0.25, false, (25 * Math.PI) / 180, false);
+    m.delete();
   }
 
   face(i: number): FaceSample {
     const hit = this.samples[i];
     if (hit) return hit;
-    this.ensureMesh();
     const f = this.faces[i];
+    this.ensureMesh(f);
     const tri = f.triangulation();
     const pts: V3[] = [];
     const normals: V3[] = [];
@@ -129,8 +157,10 @@ export class Topo {
       cents.push(...cands.slice(0, 400).map((c) => c.c));
       // the largest triangles spread across the face
       cands.sort((a, b) => b.area - a.area);
-      for (const c of cands.slice(0, 7)) {
-        pts.push(this.project(f, c.c));
+      // centroids of flat triangles already lie on a plane; curved faces need them moved onto the surface
+      const flat = String(f.geomType) === "PLANE";
+      for (const c of cands.slice(0, 5)) {
+        pts.push(flat ? c.c : this.project(f, c.c));
         normals.push(c.n);
       }
     }
@@ -186,10 +216,33 @@ export class Topo {
     let radius: number | undefined;
     if (kind === "CIRCLE") radius = circumradius(a, tuple(e.pointAt(1 / 3)), tuple(e.pointAt(2 / 3)));
     const faces = this.adj()[i];
-    const info: EdgeInfo = { a, m, b, tangent, kind, length: e.length, radius, faces, convexity: "open" };
-    info.convexity = this.convexity(info);
+    // length and convexity are slower to work out, so they wait until asked for
+    let conv: Convexity | undefined;
+    let len: number | undefined;
+    const convexity = (info: EdgeInfo) => this.convexity(info);
+    const info: EdgeInfo = {
+      a,
+      m,
+      b,
+      tangent,
+      kind,
+      get length() {
+        return (len ??= e.length);
+      },
+      radius,
+      faces,
+      get convexity() {
+        return (conv ??= convexity(info));
+      },
+    };
     this.infos[i] = info;
     return info;
+  }
+
+  /** A seam joins a face to itself (the line down the side of a cylinder). */
+  isSeam(i: number): boolean {
+    const fs = this.adj()[i];
+    return fs.length >= 2 && new Set(fs).size === 1;
   }
 
   private convexity(e: EdgeInfo): Convexity {
@@ -245,46 +298,87 @@ export class Topo {
     return best;
   }
 
-  /** Faces of the shape that lie on the named feature's tool surfaces. */
-  featureFaceSet(name: string): Set<number> {
-    const hit = this.featureFaces.get(name);
+  /** Tool faces of a feature with their boxes and surface types, prepared once. */
+  private toolFaces(name: string): ToolFace[] {
+    const hit = this.toolCache.get(name);
     if (hit) return hit;
     const feat = this.features.get(name);
     if (!feat) throw new SelectionError(`no feature named "${name}" in this part (name one with: add ... as ${name})`);
-    const out = new Set<number>();
-    for (const tool of feat.tools) {
-      const tb = boxOf(tool);
-      const tfaces = R.makeCompound(tool.faces);
-      this.faces.forEach((_, fi) => {
-        if (out.has(fi)) return;
-        const s = this.face(fi);
-        if (!boxesTouch(s.box, tb, TOL * 10)) return;
-        const probe = s.pts;
-        let on = 0;
-        for (const p of probe) {
-          if (!inBox(p, tb, TOL * 10)) continue;
+    const out = feat.tools.flatMap((t) => t.faces.map((face): ToolFace => ({ face, box: boxOf(face), kind: String(face.geomType), plane: planeOfFace(face) })));
+    this.toolCache.set(name, out);
+    return out;
+  }
+
+  private faceInfo(fi: number): { kind: string; box: [V3, V3]; plane?: { n: V3; d: number } } {
+    const hit = this.quick[fi];
+    if (hit) return hit;
+    const f = this.faces[fi];
+    const kind = String(f.geomType);
+    const q = { kind, box: boxOf(f), plane: planeOfFace(f) };
+    this.quick[fi] = q;
+    return q;
+  }
+
+  /** Does face fi lie on the named feature's tool surfaces? (majority of its sample points) */
+  onFeature(name: string, fi: number): boolean {
+    let memo = this.featureFaces.get(name);
+    if (!memo) this.featureFaces.set(name, (memo = new Map()));
+    const hit = memo.get(fi);
+    if (hit !== undefined) return hit;
+    const tf = this.toolFaces(name);
+    const q = this.faceInfo(fi);
+    let result = false;
+    // booleans keep the tools' surfaces, so a face can only lie on a tool face of the same type (and the same plane)
+    const near = tf.filter((t) => {
+      if (t.kind !== q.kind || !boxesTouch(q.box, t.box, TOL * 10)) return false;
+      if (q.plane && t.plane) return Math.abs(vdot(q.plane.n, t.plane.n)) > 1 - 1e-6 && Math.abs(q.plane.d - Math.sign(vdot(q.plane.n, t.plane.n)) * t.plane.d) < TOL;
+      return true;
+    });
+    if (near.length) {
+      const probe = this.face(fi).pts;
+      const need = Math.floor(probe.length / 2) + 1;
+      let on = 0;
+      for (let k = 0; k < probe.length; k++) {
+        const p = probe[k];
+        const cands = near.filter((t) => inBox(p, t.box, TOL * 10));
+        if (cands.length) {
           const v = R.makeVertex(p);
-          const d = this.dist.distanceBetween(v, tfaces);
+          for (const t of cands) {
+            if (this.dist.distanceBetween(v, t.face) < TOL) {
+              on++;
+              break;
+            }
+          }
           v.delete();
-          if (d < TOL) on++;
         }
-        if (on * 2 > probe.length) out.add(fi);
-      });
-      tfaces.delete();
+        if (on >= need) break;
+        if (on + (probe.length - k - 1) < need) break;
+      }
+      result = on >= need;
     }
-    this.featureFaces.set(name, out);
+    memo.set(fi, result);
+    return result;
+  }
+
+  /** Faces of the shape that lie on the named feature's tool surfaces. */
+  featureFaceSet(name: string): Set<number> {
+    const out = new Set<number>();
+    this.faces.forEach((_, fi) => {
+      if (this.onFeature(name, fi)) out.add(fi);
+    });
     return out;
   }
 
   /** Which named features a face belongs to. */
   featuresOfFace(fi: number): string[] {
-    return [...this.features.keys()].filter((n) => this.featureFaceSet(n).has(fi));
+    return [...this.features.keys()].filter((n) => this.onFeature(n, fi));
   }
 
   // ---------- selection ----------
 
-  selectEdges(sel: Sel): Set<number> {
-    const all = this.edges.map((_, i) => i);
+  /** Edges a selector picks; `cand` limits the search to edges already picked by a cheaper selector. */
+  selectEdges(sel: Sel, cand?: Set<number>): Set<number> {
+    const all = cand ? [...cand] : this.edges.map((_, i) => i);
     const pick = (f: (i: number) => boolean) => new Set(all.filter(f));
     const sharp = (i: number) => {
       const c = this.edge(i).convexity;
@@ -294,13 +388,13 @@ export class Topo {
       const [lo, hi] = this.box;
       switch (sel) {
         case "all":
-          return pick((i) => this.edge(i).convexity !== "seam");
+          return pick((i) => !this.isSeam(i));
         case "vertical":
           return pick((i) => this.edge(i).kind === "LINE" && Math.abs(this.edge(i).tangent[2]) > 0.999);
         case "horizontal":
           return pick((i) => {
             const e = this.edge(i);
-            return Math.abs(e.a[2] - e.b[2]) < TOL && Math.abs(e.m[2] - e.a[2]) < TOL && e.convexity !== "seam";
+            return Math.abs(e.a[2] - e.b[2]) < TOL && Math.abs(e.m[2] - e.a[2]) < TOL && !this.isSeam(i);
           });
         case "top":
           return pick((i) => [this.edge(i).a, this.edge(i).m, this.edge(i).b].every((p) => Math.abs(p[2] - hi[2]) < TOL));
@@ -316,28 +410,26 @@ export class Topo {
     }
     switch (sel.s) {
       case "feat": {
-        const ff = this.featureFaceSet(sel.f);
         return pick((i) => {
-          const fs = [...new Set(this.edge(i).faces)];
-          const n = fs.filter((f) => ff.has(f)).length;
+          const fs = [...new Set(this.adj()[i])];
+          const n = fs.filter((f) => this.onFeature(sel.f, f)).length;
           if (sel.part === "root") return n === 1 && fs.length === 2;
-          if (sel.part === "tip") return n === 2 && this.edge(i).convexity !== "seam" && this.edge(i).convexity !== "smooth";
-          return n >= 1 && this.edge(i).convexity !== "seam";
+          if (sel.part === "tip") return n === 2 && !this.isSeam(i) && this.edge(i).convexity !== "smooth";
+          return n >= 1 && !this.isSeam(i);
         });
       }
       case "between": {
-        const fa = this.featureFaceSet(sel.a);
-        const fb = this.featureFaceSet(sel.b);
+        const on = (n: string, f: number) => this.onFeature(n, f);
         return pick((i) => {
-          const fs = [...new Set(this.edge(i).faces)];
-          return fs.length === 2 && ((fa.has(fs[0]) && fb.has(fs[1])) || (fa.has(fs[1]) && fb.has(fs[0])));
+          const fs = [...new Set(this.adj()[i])];
+          return fs.length === 2 && ((on(sel.a, fs[0]) && on(sel.b, fs[1])) || (on(sel.a, fs[1]) && on(sel.b, fs[0])));
         });
       }
       case "near": {
         const v = R.makeVertex(sel.p);
         const out = pick((i) => {
           const e = this.edge(i);
-          if (e.convexity === "seam") return false;
+          if (this.isSeam(i)) return false;
           const eb = boxOfPts([e.a, e.m, e.b]);
           if (!inBox(sel.p, eb, sel.r + e.length)) return false;
           return this.dist.distanceBetween(v, this.edges[i]) <= sel.r + TOL;
@@ -349,7 +441,7 @@ export class Topo {
         const n = vnorm(sel.n);
         return pick((i) => {
           const e = this.edge(i);
-          return [e.a, e.m, e.b].every((p) => Math.abs(vdot(p, n) - sel.d) < TOL) && e.convexity !== "seam";
+          return [e.a, e.m, e.b].every((p) => Math.abs(vdot(p, n) - sel.d) < TOL) && !this.isSeam(i);
         });
       }
       case "along": {
@@ -358,7 +450,7 @@ export class Topo {
       }
       case "facing": {
         const ff = this.selectFaces(sel);
-        return pick((i) => this.edge(i).faces.some((f) => ff.has(f)) && this.edge(i).convexity !== "seam");
+        return pick((i) => this.edge(i).faces.some((f) => ff.has(f)) && !this.isSeam(i));
       }
       case "circle":
         return pick((i) => {
@@ -366,23 +458,21 @@ export class Topo {
           return e.kind === "CIRCLE" && (sel.d <= 0 || Math.abs((e.radius ?? 0) * 2 - sel.d) < 0.01);
         });
       case "box":
-        return pick((i) => [this.edge(i).a, this.edge(i).m, this.edge(i).b].every((p) => inBox(p, [sel.lo, sel.hi], TOL)) && this.edge(i).convexity !== "seam");
+        return pick((i) => [this.edge(i).a, this.edge(i).m, this.edge(i).b].every((p) => inBox(p, [sel.lo, sel.hi], TOL)) && !this.isSeam(i));
       case "or": {
         const out = new Set<number>();
-        for (const s of sel.a) for (const i of this.selectEdges(s)) out.add(i);
+        for (const s of sel.a) for (const i of this.selectEdges(s, cand)) out.add(i);
         return out;
       }
       case "and": {
-        let out: number[] | null = null;
-        for (const s of sel.a) {
-          const next = this.selectEdges(s);
-          out = out === null ? [...next] : out.filter((i: number) => next.has(i));
-        }
-        return new Set(out ?? []);
+        // cheap geometric tests first, so feature lookups only run on what is left
+        let out = cand;
+        for (const s of [...sel.a].sort((x, y) => selCost(x) - selCost(y))) out = this.selectEdges(s, out);
+        return out ?? new Set();
       }
       case "minus": {
-        const a = this.selectEdges(sel.a);
-        const b = this.selectEdges(sel.b);
+        const a = this.selectEdges(sel.a, cand);
+        const b = this.selectEdges(sel.b, a);
         return new Set([...a].filter((i) => !b.has(i)));
       }
     }
@@ -421,10 +511,9 @@ export class Topo {
     }
     switch (sel.s) {
       case "feat": {
-        const ff = this.featureFaceSet(sel.f);
-        if (sel.part === "faces" || sel.part === "edges") return new Set(ff);
+        if (sel.part === "faces" || sel.part === "edges") return pick((i) => this.onFeature(sel.f, i));
         const es = this.selectEdges(sel);
-        return pick((i) => ff.has(i) && [...es].some((e) => this.edge(e).faces.includes(i)));
+        return pick((i) => this.onFeature(sel.f, i) && [...es].some((e) => this.edge(e).faces.includes(i)));
       }
       case "between": {
         const es = this.selectEdges(sel);
@@ -538,6 +627,28 @@ function circumradius(a: V3, b: V3, c: V3): number {
   return (ab * bc * ca) / (4 * area);
 }
 
+/** Rough cost of evaluating a selector: feature membership needs distance queries. */
+function selCost(sel: Sel): number {
+  // convexity needs samples of both faces at every edge, so it is the slowest test
+  if (typeof sel === "string") return sel === "convex" || sel === "concave" || sel === "sharp" ? 20 : 0;
+  switch (sel.s) {
+    case "feat":
+    case "between":
+      return 10;
+    case "near":
+      return 2;
+    case "facing":
+      return 3;
+    case "or":
+    case "and":
+      return Math.max(...sel.a.map(selCost));
+    case "minus":
+      return selCost(sel.a) + selCost(sel.b);
+    default:
+      return 1;
+  }
+}
+
 /** Human-readable description of a selector, for messages. */
 export function describeSel(sel: Sel): string {
   if (typeof sel === "string") return `"${sel}"`;
@@ -562,7 +673,7 @@ export function describeSel(sel: Sel): string {
     case "or":
       return sel.a.map(describeSel).join(" + ");
     case "and":
-      return sel.a.map(describeSel).join(" & ");
+      return `both(${sel.a.map(describeSel).join(", ")})`;
     case "minus":
       return `${describeSel(sel.a)} - ${describeSel(sel.b)}`;
   }

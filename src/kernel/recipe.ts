@@ -20,18 +20,18 @@ export type Profile =
   | { t: "ellipse"; w: number; h: number; c: V2 }
   | { t: "rect"; w: number; h: number; r: number; c: V2 }
   | { t: "poly"; pts: V2[]; r: number }
-  | { t: "slot2"; a: V2; b: V2; w: number }
   | { t: "text"; text: string; size: number; font: FontName; align: "left" | "center" | "right"; c: V2 }
-  /** a closed path of lines, three-point arcs and smooth spline runs; solved sketches use this form */
-  | { t: "path2"; start: V2; segs: Seg2[] }
+  /** a closed path of lines, three-point arcs and cubic Bézier curves */
+  | { t: "path2"; start: V2; segs: ProfileSeg[] }
   | { t: "offset"; p: Profile; d: number }
   | { t: "fillet2"; p: Profile; r: number }
   | { t: "union2"; ps: Profile[] }
   | { t: "diff2"; a: Profile; b: Profile[] }
   | { t: "common2"; a: Profile; b: Profile }
-  | { t: "place2"; p: Profile; rot: number; by: V2; mirror?: boolean };
+  /** rotate by rot degrees about the origin, then move by `by` */
+  | { t: "place2"; p: Profile; rot: number; by: V2 };
 
-export type Seg2 = { s: "line"; to: V2 } | { s: "arc"; via: V2; to: V2 } | { s: "spline"; to: V2 };
+export type ProfileSeg = { s: "line"; to: V2 } | { s: "arc"; via: V2; to: V2 } | { s: "bezier"; c1: V2; c2: V2; to: V2 };
 
 export type FontName = "sans" | "mono";
 
@@ -64,13 +64,15 @@ export type ShapeRecipe =
   | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number; lead?: number; thread?: ThreadSpec3 }
   | { t: "xform"; shape: ShapeRecipe; xf: Xform[] }
   | { t: "union"; shapes: ShapeRecipe[] }
+  /** a with every b removed (hollow lofts) */
+  | { t: "diff"; a: ShapeRecipe; b: ShapeRecipe[] }
   /** a profile pushed along n by h; twist turns it (degrees over h), scale shrinks or grows the far end */
   | { t: "extrude"; p: Profile; h: number; f: Frame; twist: number; scale: number }
   | { t: "sweep"; p: Profile; path: Path3; rot: number; frenet: boolean }
   | { t: "loft"; secs: { p: Profile; f: Frame }[]; ruled: boolean }
   | { t: "revolve2"; p: Profile; f: Frame; angle: number }
   /** a helical thread; detailed builds model the real form, fast builds a plain cylinder at the pitch diameter */
-  | { t: "thread"; spec: ThreadSpec3; length: number; at: V3; dir: V3; internal: boolean; lead: number }
+  | { t: "thread"; spec: ThreadSpec3; length: number; at: V3; dir: V3; internal: boolean; lead: number; bore?: number }
   /** a knurled or ridged grip; fast builds use a plain cylinder */
   | { t: "knurl"; d: number; h: number; at: V3; dir: V3; count: number; depth: number; style: "straight" | "fluted" };
 
@@ -148,6 +150,8 @@ export function shapeHasDetail(r: ShapeRecipe): boolean {
       return shapeHasDetail(r.shape);
     case "union":
       return r.shapes.some(shapeHasDetail);
+    case "diff":
+      return shapeHasDetail(r.a) || r.b.some(shapeHasDetail);
     default:
       return false;
   }
@@ -187,6 +191,9 @@ export function fontsIn(p: PartRecipe): FontName[] {
         return shape(r.shape);
       case "union":
         return r.shapes.forEach(shape);
+      case "diff":
+        shape(r.a);
+        return r.b.forEach(shape);
     }
   };
   if (p.base) shape(p.base);
@@ -268,6 +275,18 @@ export function applyXformsToDir(d: V3, xf: Xform[]): V3 {
   for (const x of xf) {
     if (x.op === "rotate") q = rotateAbout(q, [0, 0, 0], x.axis, x.angle);
     else if (x.op === "mirror") q = reflect(q, [0, 0, 0], x.normal);
+  }
+  return q;
+}
+
+/** Undo a transform chain: a world point back into the part's own coordinates. */
+export function inverseXforms(p: V3, xf: Xform[]): V3 {
+  let q = p;
+  for (let i = xf.length - 1; i >= 0; i--) {
+    const x = xf[i];
+    if (x.op === "translate") q = vsub(q, x.v);
+    else if (x.op === "rotate") q = rotateAbout(q, x.origin, x.axis, -x.angle);
+    else q = reflect(q, x.origin, x.normal);
   }
   return q;
 }

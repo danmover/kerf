@@ -53,6 +53,21 @@ export class FeatRef {
   ) {}
 }
 
+/** One step of a ready-made feature: material added or removed, or its own edges rounded. */
+export type FeatStep = { op: "add" | "cut"; shape: ShapeRecipe } | { op: "fillet" | "chamfer"; r: number; part: "root" | "tip" };
+
+/** A ready-made feature (screw_boss, snap_hook): adds and cuts in one `add` statement. */
+export class FeatureV {
+  constructor(
+    public kind: string,
+    public steps: FeatStep[],
+    /** readable values: hole_d, strain ... */
+    public info: Record<string, Value>,
+    /** bending strain at full deflection, checked against the part's material */
+    public strain?: number,
+  ) {}
+}
+
 export class Fn {
   constructor(
     public name: string,
@@ -74,7 +89,7 @@ export class Pending {
   constructor(public keys: string[]) {}
 }
 
-export type Value = number | string | boolean | Vec | Obj | ShapeV | ProfileV | PathV | SelV | FeatRef | Fn | Ref | Pending | Value[] | null;
+export type Value = number | string | boolean | Vec | Obj | ShapeV | ProfileV | PathV | SelV | FeatRef | FeatureV | Fn | Ref | Pending | Value[] | null;
 
 export interface CallCtx {
   /** Raise an evaluation error attached to the current call site. */
@@ -110,7 +125,8 @@ export function typeName(v: Value): string {
   if (v instanceof ProfileV) return "profile";
   if (v instanceof PathV) return "path";
   if (v instanceof SelV) return "selection";
-  if (v instanceof FeatRef) return "feature";
+  if (v instanceof FeatRef) return "named feature";
+  if (v instanceof FeatureV) return "feature";
   if (v instanceof Fn) return "function";
   if (v instanceof Ref) return v.what;
   if (v instanceof Pending) return "pending geometry value";
@@ -136,6 +152,7 @@ export function show(v: Value): string {
   if (v instanceof PathV) return `path:${v.recipe.t}`;
   if (v instanceof SelV) return "selection";
   if (v instanceof FeatRef) return `feature ${v.name}`;
+  if (v instanceof FeatureV) return `${v.kind}(…)`;
   if (v instanceof Fn) return `${v.name}()`;
   if (v instanceof Ref) return v.name;
   return "…";

@@ -9,6 +9,8 @@ export interface Diagnostic {
   start: number;
   end: number;
   severity: "error" | "warning";
+  /** a design-rule warning, shown as a check with this title */
+  rule?: string;
 }
 
 export class ParseError extends Error {
@@ -35,6 +37,19 @@ export function parse(src: string): { program: Program; diagnostics: Diagnostic[
   }
   const p = new Parser(tokens);
   return p.program();
+}
+
+/** Parse a single expression (a selector typed into a tool, for example). */
+export function parseExpression(src: string): { expr?: Expr; error?: string } {
+  try {
+    const p = new Parser(lex(src));
+    const expr = p.expr();
+    if (!p.is("eof")) return { error: `Unexpected "${p.peek().value}" after the expression` };
+    return { expr };
+  } catch (e) {
+    if (e instanceof ParseError || e instanceof LexError) return { error: e.message };
+    throw e;
+  }
 }
 
 class Parser {

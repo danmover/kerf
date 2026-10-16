@@ -1,0 +1,818 @@
+// Modelling vocabulary for detailed parts: 2D profiles, 3D paths, extrude,
+// sweep, loft and revolve of profiles, real threads, knurls, raised and cut
+// text, ribs and gussets, ready-made features (screw bosses, snap hooks,
+// O-ring grooves) and the edge and face selectors that fillets use.
+
+import { Args, toV3 } from "./args";
+import { def, SHAPE_FNS } from "./builtins";
+import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
+import { SEL_PRESETS, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
+import { threadDepth } from "../kernel/threadMath";
+import { THREADS, parseThreadName } from "../library/standards";
+
+const Z: V3 = [0, 0, 1];
+const prof = (p: Profile) => new ProfileV(p);
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+function at2(a: Args, name = "at"): V2 {
+  const v = a.vec3(name, [0, 0, 0]);
+  return [v[0], v[1]];
+}
+
+function pt2(v: Value, ctx: CallCtx, what: string): V2 {
+  if (v instanceof Vec && v.v.length >= 2) return [v.x, v.y];
+  return ctx.error(`${what} should be a point like (x, y), got ${typeName(v)}`);
+}
+
+// ---------- 2D profiles ----------
+
+/** Rough 2D bounds of a profile; null when unknown (text). */
+export function profileBounds(p: Profile): [V2, V2] | null {
+  const fromPts = (pts: V2[]): [V2, V2] => [
+    [Math.min(...pts.map((q) => q[0])), Math.min(...pts.map((q) => q[1]))],
+    [Math.max(...pts.map((q) => q[0])), Math.max(...pts.map((q) => q[1]))],
+  ];
+  switch (p.t) {
+    case "circle":
+      return fromPts([
+        [p.c[0] - p.d / 2, p.c[1] - p.d / 2],
+        [p.c[0] + p.d / 2, p.c[1] + p.d / 2],
+      ]);
+    case "ellipse":
+    case "rect":
+      return fromPts([
+        [p.c[0] - p.w / 2, p.c[1] - p.h / 2],
+        [p.c[0] + p.w / 2, p.c[1] + p.h / 2],
+      ]);
+    case "poly":
+      return fromPts(p.pts);
+    case "text":
+      return null;
+    case "path2":
+      return fromPts([p.start, ...p.segs.flatMap((s) => (s.s === "arc" ? [s.via, s.to] : s.s === "bezier" ? [s.c1, s.c2, s.to] : [s.to]))]);
+    case "offset": {
+      const b = profileBounds(p.p);
+      const d = Math.max(0, p.d);
+      return b && fromPts([
+        [b[0][0] - d, b[0][1] - d],
+        [b[1][0] + d, b[1][1] + d],
+      ]);
+    }
+    case "fillet2":
+      return profileBounds(p.p);
+    case "union2": {
+      const bs = p.ps.map(profileBounds);
+      if (bs.some((b) => !b)) return null;
+      return fromPts(bs.flatMap((b) => b!));
+    }
+    case "diff2":
+    case "common2":
+      return profileBounds(p.a);
+    case "place2": {
+      const b = profileBounds(p.p);
+      if (!b) return null;
+      const c = Math.cos((p.rot * Math.PI) / 180);
+      const s = Math.sin((p.rot * Math.PI) / 180);
+      const corners: V2[] = [b[0], [b[1][0], b[0][1]], b[1], [b[0][0], b[1][1]]];
+      return fromPts(corners.map(([x, y]) => [x * c - y * s + p.by[0], x * s + y * c + p.by[1]]));
+    }
+  }
+}
+
+/** Cubic Bézier segments of a Catmull-Rom curve through pts (closed: back to the first point). */
+function catmullRom(pts: V2[], closed: boolean, before?: V2, after?: V2): ProfileSeg[] {
+  const n = pts.length;
+  const at = (i: number): V2 => {
+    if (closed) return pts[((i % n) + n) % n];
+    if (i < 0) return before ?? pts[0];
+    if (i >= n) return after ?? pts[n - 1];
+    return pts[i];
+  };
+  const segs: ProfileSeg[] = [];
+  const count = closed ? n : n - 1;
+  for (let i = 0; i < count; i++) {
+    const p0 = at(i - 1);
+    const p1 = at(i);
+    const p2 = at(i + 1);
+    const p3 = at(i + 2);
+    segs.push({
+      s: "bezier",
+      c1: [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6],
+      c2: [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6],
+      to: p2,
+    });
+  }
+  return segs;
+}
+
+export const PROFILE_FNS: Record<string, Fn> = Object.fromEntries([
+  def(
+    "circle",
+    ["d", "at", "r"],
+    (a) => prof({ t: "circle", d: a.has("r") ? a.positive("r") * 2 : a.positive("d"), c: at2(a) }),
+    "circle(d, at: (0, 0)) — 2D circle profile (or r:). Profiles are flat outlines for extrude, revolve, sweep, loft, emboss and engrave.",
+  ),
+  def("ellipse", ["w", "h", "at"], (a) => prof({ t: "ellipse", w: a.positive("w"), h: a.positive("h"), c: at2(a) }), "ellipse(w, h, at: (0, 0)) — 2D ellipse profile."),
+  def(
+    "rect",
+    ["w", "h", "r", "at"],
+    (a) => {
+      const w = a.positive("w");
+      const h = a.positive("h");
+      const r = a.num("r", 0);
+      if (r < 0 || r > Math.min(w, h) / 2 + 1e-9) a.ctx.error(`rect(): corner radius r=${r} must be between 0 and half the smaller side (${Math.min(w, h) / 2})`);
+      return prof({ t: "rect", w, h, r, c: at2(a) });
+    },
+    "rect(w, h, r: 0, at: (0, 0)) — rectangle profile centred on `at`; r rounds the corners (r = h/2 makes an obround slot).",
+  ),
+  def(
+    "polygon",
+    ["points", "r"],
+    (a) => {
+      const pts = a.points2("points");
+      if (pts.length < 3) a.ctx.error("polygon(): needs at least 3 points");
+      const r = a.num("r", 0);
+      if (r < 0) a.ctx.error("polygon(): r must be 0 or more");
+      return prof({ t: "poly", pts, r });
+    },
+    "polygon(points: [(x, y), ...], r: 0) — closed outline through the points; r rounds every corner.",
+  ),
+  def(
+    "ngon",
+    ["n", "d", "af", "at", "rot"],
+    (a) => {
+      const n = Math.round(a.num("n"));
+      if (n < 3 || n > 64) a.ctx.error("ngon(): n must be 3..64");
+      const d = a.has("af") ? a.positive("af") / Math.cos(Math.PI / n) : a.positive("d");
+      const c = at2(a);
+      const rot = a.num("rot", 0);
+      const pts: V2[] = Array.from({ length: n }, (_, i) => {
+        const t = ((rot + (360 * i) / n) * Math.PI) / 180;
+        return [c[0] + (d / 2) * Math.cos(t), c[1] + (d / 2) * Math.sin(t)];
+      });
+      return prof({ t: "poly", pts, r: 0 });
+    },
+    "ngon(n, d, af:, at: (0, 0), rot: 0) — regular polygon with corner diameter d, or across-flats af (a hex nut pocket is ngon(6, af: 5.5 + 0.3)).",
+  ),
+  def(
+    "ring",
+    ["od", "id", "at"],
+    (a) => {
+      const od = a.positive("od");
+      const id = a.positive("id");
+      if (id >= od) a.ctx.error(`ring(): id (${id}) must be smaller than od (${od})`);
+      const c = at2(a);
+      return prof({ t: "diff2", a: { t: "circle", d: od, c }, b: [{ t: "circle", d: id, c }] });
+    },
+    "ring(od, id, at: (0, 0)) — annulus profile.",
+  ),
+  def(
+    "outline",
+    ["items"],
+    (a) => {
+      const items = a.value("items");
+      if (!Array.isArray(items) || items.length < 3) return a.ctx.error("outline(): needs a list of at least 3 items: a start point, then points (straight lines), arc_to(...) and spline_to(...)");
+      const first = items[0];
+      if (!(first instanceof Vec)) return a.ctx.error("outline(): the first item must be the start point (x, y)");
+      const start = pt2(first, a.ctx, "outline() start");
+      type Step = { k: "line" | "spline"; to: V2 } | { k: "arc"; to: V2; via: V2 };
+      const steps: Step[] = items.slice(1).map((it, i) => {
+        if (it instanceof Vec) return { k: "line", to: pt2(it, a.ctx, `outline() item ${i + 2}`) };
+        if (it instanceof Obj && it.kind === "arc_to") return { k: "arc", to: pt2(it.fields.to, a.ctx, "arc_to()"), via: pt2(it.fields.via, a.ctx, "arc_to() via") };
+        if (it instanceof Obj && it.kind === "spline_to") return { k: "spline", to: pt2(it.fields.to, a.ctx, "spline_to()") };
+        return a.ctx.error(`outline(): item ${i + 2} is ${typeName(it)}; use a point (x, y), arc_to((x, y), via: (x, y)) or spline_to((x, y))`);
+      });
+      const segs: ProfileSeg[] = [];
+      let prev = start;
+      let beforePrev: V2 | undefined;
+      for (let i = 0; i < steps.length; ) {
+        const s = steps[i];
+        if (s.k === "line") {
+          segs.push({ s: "line", to: s.to });
+        } else if (s.k === "arc") {
+          segs.push({ s: "arc", via: s.via, to: s.to });
+        } else {
+          // a run of spline_to points becomes one smooth curve
+          const run: V2[] = [prev];
+          while (i < steps.length && steps[i].k === "spline") run.push(steps[i++].to);
+          const after = i < steps.length ? steps[i].to : start;
+          segs.push(...catmullRom(run, false, beforePrev, after));
+          beforePrev = run[run.length - 2];
+          prev = run[run.length - 1];
+          continue;
+        }
+        beforePrev = prev;
+        prev = s.to;
+        i++;
+      }
+      return prof({ t: "path2", start, segs });
+    },
+    "outline([start, (x, y), arc_to((x, y), via: (x, y)), spline_to((x, y)), ...]) — closed outline: plain points are straight lines, arc_to bends through `via`, consecutive spline_to points make one smooth curve. It closes back to the start with a straight line.",
+  ),
+  def("arc_to", ["to", "via"], (a) => new Obj({ to: new Vec(a.vec3("to")), via: new Vec(a.vec3("via")) }, "arc_to", "arc_to"), "arc_to((x, y), via: (x, y)) — an arc through `via` inside outline()."),
+  def("spline_to", ["to"], (a) => new Obj({ to: new Vec(a.vec3("to")) }, "spline_to", "spline_to"), "spline_to((x, y)) — a smooth curve point inside outline()."),
+  def(
+    "curve",
+    ["points"],
+    (a) => {
+      const pts = a.points2("points");
+      if (pts.length < 3) a.ctx.error("curve(): needs at least 3 points");
+      return prof({ t: "path2", start: pts[0], segs: catmullRom(pts, true) });
+    },
+    "curve(points: [(x, y), ...]) — smooth closed curve through every point (organic shapes, handles, cams).",
+  ),
+  def(
+    "text",
+    ["text", "size", "font", "align", "at"],
+    (a) => {
+      const text = a.str("text");
+      if (!text.trim()) a.ctx.error("text(): the text is empty");
+      if (text.length > 200) a.ctx.error("text(): at most 200 characters");
+      return prof({ t: "text", text, size: a.positive("size", 5), font: a.oneOf("font", ["sans", "mono"] as const, "sans"), align: a.oneOf("align", ["left", "center", "right"] as const, "center"), c: at2(a) });
+    },
+    'text("LABEL", size: 5, font: "sans"|"mono", align: "center"|"left"|"right", at: (0, 0)) — letters as a profile; size is the cap height of the em box in mm. Use with emboss() or engrave().',
+  ),
+  def(
+    "offset",
+    ["profile", "d"],
+    (a) => {
+      const d = a.num("d");
+      if (Math.abs(d) < 1e-6) a.ctx.error("offset(): d must not be 0");
+      return prof({ t: "offset", p: a.profile("profile"), d });
+    },
+    "offset(profile, d) — grows the outline by d (shrinks when negative), rounding outside corners. Good for walls: offset(p, 2) - p.",
+  ),
+  def("rounded", ["profile", "r"], (a) => prof({ t: "fillet2", p: a.profile("profile"), r: a.positive("r") }), "rounded(profile, r) — rounds every corner of a profile."),
+  def("overlap", ["a", "b"], (a) => prof({ t: "common2", a: a.profile("a"), b: a.profile("b") }), "overlap(a, b) — the area two profiles share. Combine profiles with + (union) and - (cut)."),
+]);
+
+// ---------- 3D paths ----------
+
+export const PATH_FNS: Record<string, Fn> = Object.fromEntries([
+  def(
+    "path",
+    ["points", "r"],
+    (a) => {
+      const pts = a.points3("points");
+      if (pts.length < 2) a.ctx.error("path(): needs at least 2 points");
+      const r = a.num("r", 0);
+      if (r < 0) a.ctx.error("path(): r must be 0 or more");
+      return new PathV({ t: "poly", pts, r });
+    },
+    "path(points: [(x, y, z), ...], r: 0) — straight runs through 3D points, with every bend rounded to radius r (tubes, wires, handles).",
+  ),
+  def(
+    "spline_path",
+    ["points"],
+    (a) => {
+      const pts = a.points3("points");
+      if (pts.length < 2) a.ctx.error("spline_path(): needs at least 2 points");
+      return new PathV({ t: "spline", pts });
+    },
+    "spline_path(points: [(x, y, z), ...]) — a smooth 3D curve through the points.",
+  ),
+  def(
+    "helix",
+    ["d", "pitch", "h", "at", "dir", "left"],
+    (a) => new PathV({ t: "helix", d: a.positive("d"), pitch: a.positive("pitch"), h: a.positive("h"), at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", Z), left: a.bool("left") }),
+    "helix(d, pitch, h, at:, dir: Z, left: false) — a helix of diameter d (springs, coils, spiral ramps).",
+  ),
+  def(
+    "arc_path",
+    ["a", "via", "b"],
+    (a) => {
+      const p = a.vec3("a");
+      const m = a.vec3("via");
+      const q = a.vec3("b");
+      if (vlen(vcross(vsub(m, p), vsub(q, p))) < 1e-6) a.ctx.error("arc_path(): the three points are in a line");
+      return new PathV({ t: "arc3", a: p, b: m, c: q });
+    },
+    "arc_path(a, via, b) — a circular arc from a through via to b.",
+  ),
+]);
+
+// ---------- threads ----------
+
+const FORMS = ["iso", "trapezoid", "square", "buttress"] as const;
+
+function threadSpec(a: Args): { spec: ThreadSpec3; name: string } {
+  const v = a.value("size");
+  let d: number | undefined;
+  let pitch: number | undefined;
+  let name = "";
+  if (v instanceof Obj && v.kind === "thread") {
+    d = Number(v.fields.d);
+    pitch = Number(v.fields.pitch);
+    name = String(v.fields.name);
+  } else if (typeof v === "string") {
+    const t = parseThreadName(v);
+    if (!t) return a.ctx.error(`${a.fname}(): "${v}" is not a thread size I know. Use M8, M8x1, 1/4-20, #10-24, or d: with pitch:`);
+    d = t.d;
+    pitch = t.pitch;
+    name = t.name;
+  } else if (typeof v === "number") d = v;
+  else if (v === undefined && a.has("d")) d = a.positive("d");
+  else if (v !== undefined) return a.ctx.error(`${a.fname}(): size should be a thread like M8 or "M8x1", or a diameter, got ${typeName(v)}`);
+  if (d === undefined) return a.ctx.error(`${a.fname}(): give a size like M8, or d: with pitch:`);
+  if (!(d > 0)) return a.ctx.error(`${a.fname}(): the diameter must be greater than 0`);
+  if (a.has("pitch")) pitch = a.positive("pitch");
+  if (!pitch) return a.ctx.error(`${a.fname}(): give pitch: for a ${r2(d)} mm thread`);
+  const form = a.oneOf("form", FORMS, "iso") as ThreadForm;
+  const starts = Math.round(a.num("starts", 1));
+  if (starts < 1 || starts > 8) a.ctx.error(`${a.fname}(): starts must be 1..8`);
+  const clearance = a.num("clearance", 0.1);
+  if (clearance < 0 || clearance > pitch * 0.25) a.ctx.error(`${a.fname}(): clearance must be between 0 and ${r2(pitch * 0.25)} mm (a quarter of the pitch)`);
+  if (2 * threadDepth(form, pitch) > d * 0.8) a.ctx.error(`${a.fname}(): a ${pitch} mm pitch is too coarse for a ${r2(d)} mm diameter`);
+  return { spec: { d, pitch, form, starts, left: a.bool("left"), clearance }, name: name || `${r2(d)} × ${pitch}` };
+}
+
+/** Internal thread spec for hole(M4, fit: "thread"). */
+export function holeThread(t: { d: number; pitch: number }, clearance = 0.1): ThreadSpec3 {
+  return { d: t.d, pitch: t.pitch, form: "iso", starts: 1, left: false, clearance };
+}
+
+// ---------- shapes from profiles and paths ----------
+
+/** Frame for a profile drawn on a face at `at` that faces `facing` (text reads correctly from outside). */
+function faceFrame(at: V3, facing: V3, rot: number): Frame {
+  return frameAt(at, facing, rot);
+}
+
+function shiftFrame(f: Frame, d: number): Frame {
+  return { ...f, o: vadd(f.o, vscale(f.n, d)) };
+}
+
+const pointRevolve = SHAPE_FNS.revolve;
+
+export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
+  def(
+    "extrude",
+    ["profile", "h", "at", "dir", "rot", "twist", "scale", "symmetric"],
+    (a) => {
+      const p = a.profile("profile");
+      const h = a.positive("h");
+      const dir = a.dir("dir", Z);
+      let f = frameAt(a.vec3("at", [0, 0, 0]), dir, a.num("rot", 0));
+      if (a.bool("symmetric")) f = shiftFrame(f, -h / 2);
+      const scale = a.num("scale", 1);
+      if (!(scale > 0)) a.ctx.error("extrude(): scale must be greater than 0");
+      return new ShapeV({ t: "extrude", p, h, f, twist: a.num("twist", 0), scale });
+    },
+    "extrude(profile, h, at: (0, 0, 0), dir: Z, rot: 0, twist: 0, scale: 1, symmetric: false) — pushes a profile h along dir. The profile's (x, y) map to X, Y for dir Z; for a horizontal dir, y is up. twist turns it (degrees over h); scale shrinks the far end (tapered bosses, nozzles).",
+  ),
+  [
+    "revolve",
+    new Fn(
+      "revolve",
+      (pos, named, ctx) => {
+        const first = pos[0] ?? named.profile;
+        if (!(first instanceof ProfileV)) return pointRevolve.call(pos, named, ctx);
+        const a = new Args("revolve", pos, named, ctx, ["profile", "at", "axis", "angle", "rot", "dir"]);
+        const p = a.profile("profile");
+        const axis = a.has("dir") ? a.dir("dir") : a.dir("axis", Z);
+        const b = profileBounds(p);
+        if (b && b[0][0] < -1e-6) ctx.error(`revolve(): the profile reaches x = ${r2(b[0][0])}. x is the distance from the axis, so keep every x at 0 or more.`);
+        const angle = a.num("angle", 360);
+        if (!(angle > 0 && angle <= 360)) ctx.error(`revolve(): angle must be between 0 and 360 degrees (got ${angle})`);
+        return new ShapeV({ t: "revolve2", p, f: frameAt(a.vec3("at", [0, 0, 0]), axis, a.num("rot", 0)), angle });
+      },
+      `${pointRevolve.doc ?? ""} Or revolve(profile, at:, axis: Z, angle: 360, rot: 0) — spins a 2D profile whose x is the radius and y the height along the axis (bottles, knobs, pulleys).`,
+    ),
+  ],
+  def(
+    "sweep",
+    ["profile", "path", "rot"],
+    (a) => new ShapeV({ t: "sweep", p: a.profile("profile"), path: a.path("path"), rot: a.num("rot", 0), frenet: false }),
+    "sweep(profile, path, rot: 0) — moves a profile along a 3D path, kept square to it. The profile's (0, 0) rides on the path. Handles, hoses, cable guides, springs (with helix).",
+  ),
+  def(
+    "pipe",
+    ["path", "d", "id"],
+    (a) => {
+      const d = a.positive("d");
+      const id = a.num("id", 0);
+      if (id < 0 || id >= d) a.ctx.error(`pipe(): id must be between 0 and d (${d})`);
+      const p: Profile = id > 0 ? { t: "diff2", a: { t: "circle", d, c: [0, 0] }, b: [{ t: "circle", d: id, c: [0, 0] }] } : { t: "circle", d, c: [0, 0] };
+      return new ShapeV({ t: "sweep", p, path: a.path("path"), rot: 0, frenet: false });
+    },
+    "pipe(path, d, id: 0) — round bar or tube along a path (id > 0 makes it hollow).",
+  ),
+  def(
+    "section",
+    ["profile", "at", "dir", "rot"],
+    (a) => new Obj({ profile: new ProfileV(a.profile("profile")), at: new Vec(a.vec3("at", [0, 0, 0])), dir: new Vec(a.dir("dir", Z)), rot: a.num("rot", 0) }, "section", "section"),
+    "section(profile, at:, dir: Z, rot: 0) — a placed profile for loft().",
+  ),
+  def(
+    "loft",
+    ["sections", "heights", "at", "dir", "ruled", "wall", "open"],
+    (a) => {
+      const list = a.value("sections");
+      if (!Array.isArray(list) || list.length < 2) return a.ctx.error("loft(): needs a list of at least 2 profiles or section(...)s");
+      const dir = a.dir("dir", Z);
+      const base = a.vec3("at", [0, 0, 0]);
+      const hsV = a.value("heights");
+      const hs: number[] | null = Array.isArray(hsV) ? hsV.map((h, i) => (typeof h === "number" ? h : a.ctx.error(`loft(): heights[${i}] should be a number`))) : null;
+      const secs = list.map((s, i) => {
+        if (s instanceof Obj && s.kind === "section") {
+          const p = (s.fields.profile as ProfileV).recipe;
+          return { p, f: frameAt(toV3(s.fields.at, a.ctx, "section at"), vnorm(toV3(s.fields.dir, a.ctx, "section dir")), Number(s.fields.rot) || 0) };
+        }
+        if (s instanceof ProfileV) {
+          if (!hs || hs.length !== list.length) return a.ctx.error("loft(): plain profiles need heights: [h1, h2, ...], one per profile, measured along dir from at");
+          return { p: s.recipe, f: frameAt(vadd(base, vscale(dir, hs[i])), dir) };
+        }
+        return a.ctx.error(`loft(): item ${i + 1} is ${typeName(s)}; use a profile (with heights:) or section(profile, at:, dir:)`);
+      });
+      for (let i = 1; i < secs.length; i++) {
+        if (vlen(vsub(secs[i].f.o, secs[i - 1].f.o)) < 1e-6) a.ctx.error(`loft(): sections ${i} and ${i + 1} are at the same place`);
+      }
+      const ruled = a.bool("ruled");
+      const outer: ShapeRecipe = { t: "loft", secs, ruled };
+      if (!a.has("wall")) {
+        if (a.has("open")) a.ctx.error("loft(): open: goes with wall:");
+        return new ShapeV(outer);
+      }
+      // a hollow loft: the same sections shrunk by the wall, cut out of the solid one
+      const wall = a.positive("wall");
+      if (!hs || list.some((s) => !(s instanceof ProfileV))) return a.ctx.error("loft(): wall: needs plain profiles with heights:");
+      for (let i = 1; i < hs.length; i++) if (hs[i] <= hs[i - 1]) a.ctx.error("loft(): with wall:, heights must increase");
+      const open = a.oneOf("open", ["end", "start", "both", "none"] as const, "end");
+      const openStart = open === "start" || open === "both";
+      const openEnd = open === "end" || open === "both";
+      const ih = [...hs];
+      if (!openStart) ih[0] += wall;
+      if (!openEnd) ih[ih.length - 1] -= wall;
+      if (ih[ih.length - 1] - ih[0] < wall) a.ctx.error("loft(): the loft is too short for this wall");
+      const innerP = secs.map((s): Profile => ({ t: "offset", p: s.p, d: -wall }));
+      const at = (h: number) => frameAt(vadd(base, vscale(dir, h)), dir);
+      const innerSecs = innerP.map((p, i) => ({ p, f: at(Math.min(Math.max(ih[i], ih[0]), ih[ih.length - 1])) }));
+      // open ends: the inner skin ends flush with the outer one, so the cut opens that end
+      const cuts: ShapeRecipe[] = [{ t: "loft", secs: innerSecs, ruled }];
+      return new ShapeV({ t: "diff", a: outer, b: cuts });
+    },
+    'loft([p1, p2, p3], heights: [0, 30, 60], at:, dir: Z, ruled: false, wall:, open: "end"|"start"|"both"|"none") — a smooth skin through profiles stacked along dir (bottles, nozzles, ducts, square-to-round transitions). wall: t makes it hollow with that wall (measured across each section), open at the far end by default; prefer it to shell() for lofts. For tilted sections pass section(profile, at:, dir:) items instead.',
+  ),
+  def(
+    "thread",
+    ["size", "length", "at", "dir", "pitch", "form", "starts", "left", "clearance", "internal", "lead", "d", "bore"],
+    (a) => {
+      const { spec } = threadSpec(a);
+      const length = a.positive("length");
+      if (length / spec.pitch > 400) a.ctx.error("thread(): at most 400 turns; shorten the thread");
+      const internal = a.bool("internal");
+      const lead = internal ? a.num("lead", 0.5 * spec.pitch) : 0;
+      if (lead < 0) a.ctx.error("thread(): lead must be 0 or more");
+      const r: ShapeRecipe = { t: "thread", spec, length, at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", Z), internal, lead };
+      if (a.has("bore")) {
+        if (internal) a.ctx.error("thread(): bore: hollows an external thread; an internal thread is already a hole");
+        const bore = a.positive("bore");
+        const root = spec.d - 2 * threadDepth(spec.form, spec.pitch) - 2 * spec.clearance;
+        if (bore > root - 0.8) a.ctx.error(`thread(): bore ${bore} leaves under 0.4 mm of wall under a ${r2(root)} mm thread root`);
+        r.bore = bore;
+      }
+      return new ShapeV(r);
+    },
+    'thread(M8, length, at:, dir: Z, pitch:, form: "iso"|"trapezoid"|"square"|"buttress", starts: 1, left: false, clearance: 0.1, internal: false, bore:) — a real helical thread. External: a threaded rod from at along dir (add it); bore: d makes it a threaded tube (bottle necks). internal: true makes the tool for a threaded hole (cut it). Sizes: M8, "M8x1", "1/4-20", or d: 40, pitch: 4 for jar lids. clearance is the radial play per side (0 for machined parts). Detail builds show the real form; fast builds a plain cylinder.',
+  ),
+  def(
+    "knurl",
+    ["d", "h", "at", "dir", "count", "depth", "style"],
+    (a) => {
+      const d = a.positive("d");
+      const depth = a.positive("depth", 0.5);
+      if (depth > d / 4) a.ctx.error(`knurl(): depth must be at most a quarter of d (${r2(d / 4)})`);
+      const count = Math.round(a.num("count", Math.max(8, Math.round((Math.PI * d) / 1.6))));
+      if (count < 3 || count > 360) a.ctx.error("knurl(): count must be 3..360");
+      return new ShapeV({ t: "knurl", d, h: a.positive("h"), at: a.vec3("at", [0, 0, 0]), dir: a.dir("dir", Z), count, depth, style: a.oneOf("style", ["straight", "fluted"] as const, "straight") });
+    },
+    'knurl(d, h, at:, dir: Z, count:, depth: 0.5, style: "straight"|"fluted") — a ridged grip cylinder (caps, knobs, thumb wheels). straight: sharp V ridges; fluted: rounded scallops. Add it in place of a plain cylinder.',
+  ),
+  def(
+    "emboss",
+    ["profile", "at", "facing", "h", "rot"],
+    (a) => {
+      const h = a.positive("h", 0.6);
+      const f = shiftFrame(faceFrame(a.vec3("at", [0, 0, 0]), a.dir("facing", Z), a.num("rot", 0)), -0.05);
+      return new ShapeV({ t: "extrude", p: a.profile("profile"), h: h + 0.05, f, twist: 0, scale: 1 });
+    },
+    "emboss(profile, at:, facing: Z, h: 0.6, rot: 0) — raised lettering or a logo standing h out of a flat face. `at` is the centre on the face and `facing` the way the face looks; it reads correctly from outside. Use with add.",
+  ),
+  def(
+    "engrave",
+    ["profile", "at", "facing", "depth", "rot"],
+    (a) => {
+      const depth = a.positive("depth", 0.6);
+      const f = shiftFrame(faceFrame(a.vec3("at", [0, 0, 0]), a.dir("facing", Z), a.num("rot", 0)), -depth);
+      return new ShapeV({ t: "extrude", p: a.profile("profile"), h: depth + 0.05, f, twist: 0, scale: 1 });
+    },
+    "engrave(profile, at:, facing: Z, depth: 0.6, rot: 0) — the tool for lettering cut depth into a flat face (same placement as emboss). Use with cut.",
+  ),
+  def(
+    "mirror",
+    ["shape", "normal", "at"],
+    (a) => new ShapeV({ t: "xform", shape: a.shape("shape").recipe, xf: [{ op: "mirror", origin: a.vec3("at", [0, 0, 0]), normal: a.dir("normal", [1, 0, 0]) }] }),
+    "mirror(shape, normal: X, at: (0, 0, 0)) — mirrored copy across the plane through `at` square to normal. Add both for symmetric features: add [s, mirror(s, X)].",
+  ),
+  def(
+    "rib",
+    ["from", "to", "t", "h", "up"],
+    (a) => {
+      const p = a.vec3("from");
+      const q = a.vec3("to");
+      const L = vlen(vsub(q, p));
+      if (L < 1e-6) a.ctx.error("rib(): from and to are the same point");
+      const u = vnorm(vsub(q, p));
+      const upIn = a.dir("up", Z);
+      const vRaw = vsub(upIn, vscale(u, vdot(upIn, u)));
+      if (vlen(vRaw) < 1e-6) a.ctx.error("rib(): up must not run along the rib");
+      const n = vnorm(vcross(u, vnorm(vRaw)));
+      const t = a.positive("t");
+      const h = a.positive("h");
+      const f: Frame = { o: vsub(p, vscale(n, t / 2)), u, n };
+      return new ShapeV({
+        t: "extrude",
+        p: {
+          t: "poly",
+          pts: [
+            [0, 0],
+            [L, 0],
+            [L, h],
+            [0, h],
+          ],
+          r: 0,
+        },
+        h: t,
+        f,
+        twist: 0,
+        scale: 1,
+      });
+    },
+    "rib(from, to, t, h, up: Z) — a stiffening wall t thick standing h tall on the line from → to (put from/to on the floor). Ribs are usually 0.5–0.7 × the wall thickness.",
+  ),
+  def(
+    "gusset",
+    ["at", "along", "up", "size", "t"],
+    (a) => {
+      const at = a.vec3("at");
+      const u = a.dir("along", [1, 0, 0]);
+      const upIn = a.dir("up", Z);
+      const vRaw = vsub(upIn, vscale(u, vdot(upIn, u)));
+      if (vlen(vRaw) < 1e-6) a.ctx.error("gusset(): up must not be parallel to along");
+      const n = vnorm(vcross(u, vnorm(vRaw)));
+      const sz = a.value("size");
+      const [w, h] = typeof sz === "number" ? [sz, sz] : sz instanceof Vec ? [sz.x, sz.y] : a.ctx.error("gusset(): size should be a number or (along, up)");
+      if (!(w > 0 && h > 0)) a.ctx.error("gusset(): size must be greater than 0");
+      const t = a.positive("t");
+      return new ShapeV({
+        t: "extrude",
+        p: {
+          t: "poly",
+          pts: [
+            [0, 0],
+            [w, 0],
+            [0, h],
+          ],
+          r: 0,
+        },
+        h: t,
+        f: { o: vsub(at, vscale(n, t / 2)), u, n },
+        twist: 0,
+        scale: 1,
+      });
+    },
+    "gusset(at, along: X, up: Z, size: 8 or (along, up), t:) — a triangular brace in the inside corner at `at` between a face running along `along` and one rising along `up`.",
+  ),
+  def(
+    "oring_groove",
+    ["d", "cs", "at", "dir", "type", "squeeze"],
+    (a) => {
+      const d = a.positive("d");
+      const cs = a.positive("cs", 2);
+      const type = a.oneOf("type", ["face", "rod", "bore"] as const, "face");
+      const squeeze = a.num("squeeze", type === "face" ? 0.25 : 0.2);
+      if (squeeze < 0.05 || squeeze > 0.4) a.ctx.error("oring_groove(): squeeze must be 0.05..0.4 (0.25 is typical)");
+      const depth = cs * (1 - squeeze);
+      const width = 1.4 * cs;
+      const at = a.vec3("at", [0, 0, 0]);
+      const dir = a.dir("dir", type === "face" ? [0, 0, -1] : Z);
+      if (type === "face") {
+        if (d - width < 0.5) a.ctx.error("oring_groove(): d is too small for this cross-section");
+        return new ShapeV({ t: "tube", od: d + width, id: d - width, h: depth + 0.05, at: vadd(at, vscale(dir, -0.05)), dir });
+      }
+      const start = vadd(at, vscale(dir, -width / 2));
+      if (type === "rod") {
+        if (d - 2 * depth < 0.5) a.ctx.error("oring_groove(): the rod is too thin for this cross-section");
+        return new ShapeV({ t: "tube", od: d + 2, id: d - 2 * depth, h: width, at: start, dir });
+      }
+      return new ShapeV({ t: "tube", od: d + 2 * depth, id: Math.max(0.2, d - 2), h: width, at: start, dir });
+    },
+    'oring_groove(d, cs: 2, at:, dir:, type: "face"|"rod"|"bore", squeeze:) — the cutting tool for an O-ring gland sized from the cord cross-section cs (depth cs × (1 − squeeze), width 1.4 cs). face: d is the groove centre diameter on a flat face, dir points into the material; rod: a groove around a shaft of diameter d, centred at at along the axis dir; bore: a groove inside a hole of diameter d. Use with cut.',
+  ),
+]);
+
+// ---------- ready-made features ----------
+
+/** Allowable bending strain for a snap fit used a few times, by material. */
+const SNAP_STRAIN: Record<string, number> = {
+  PLA: 0.015,
+  PETG: 0.025,
+  ABS: 0.025,
+  ASA: 0.025,
+  Nylon: 0.04,
+  POM: 0.05,
+  "Aluminum 6061": 0.004,
+  Steel: 0.002,
+  "Stainless 304": 0.002,
+  Brass: 0.002,
+};
+export const allowableStrain = (material: string) => SNAP_STRAIN[material] ?? 0.02;
+
+export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
+  def(
+    "screw_boss",
+    ["at", "size", "h", "d", "fit", "depth", "dir", "root_r", "gussets", "t"],
+    (a) => {
+      const sizeV = a.value("size");
+      if (!(sizeV instanceof Obj && sizeV.kind === "thread")) a.ctx.error(`screw_boss(): size should be a thread like M3 (available: ${Object.keys(THREADS).join(", ")})`);
+      const t = THREADS[String((sizeV as Obj).fields.key)];
+      const fit = a.oneOf("fit", ["insert", "tap", "clearance", "thread"] as const, t.insert_d > 0 ? "insert" : "tap");
+      if (fit === "insert" && !t.insert_d) a.ctx.error(`screw_boss(): there is no common heat-set insert for ${t.name}; use fit: "tap" or "thread"`);
+      const holeD = fit === "insert" ? t.insert_d : fit === "tap" ? t.tap : fit === "clearance" ? t.clearance : t.d;
+      const h = a.positive("h");
+      const d = a.positive("d", r2(Math.max(holeD * 2, holeD + 3.2)));
+      if (d < holeD + 1.6) a.ctx.error(`screw_boss(): d=${d} leaves a wall under 0.8 mm around the ${r2(holeD)} mm hole`);
+      const depth = Math.min(h, a.positive("depth", fit === "insert" ? t.insert_l + 1 : h));
+      const at = a.vec3("at");
+      const dir = a.dir("dir", Z);
+      const top = vadd(at, vscale(dir, h));
+      const steps: FeatStep[] = [{ op: "add", shape: { t: "cyl", d, h, at, dir } }];
+      const ng = Math.round(a.num("gussets", 0));
+      if (ng < 0 || ng > 8) a.ctx.error("screw_boss(): gussets must be 0..8");
+      if (ng > 0) {
+        const gt = a.positive("t", r2(Math.max(1, (d - holeD) / 2)));
+        const fr = frameAt(at, dir);
+        const v = vcross(fr.n, fr.u);
+        for (let i = 0; i < ng; i++) {
+          const ang = (2 * Math.PI * i) / ng;
+          const out = vadd(vscale(fr.u, Math.cos(ang)), vscale(v, Math.sin(ang)));
+          const n = vcross(out, dir);
+          const reach = d * 0.6;
+          steps.push({
+            op: "add",
+            shape: {
+              t: "extrude",
+              p: {
+                t: "poly",
+                pts: [
+                  [d / 2 - 0.2, 0],
+                  [d / 2 + reach, 0],
+                  [d / 2 - 0.2, h * 0.7],
+                ],
+                r: 0,
+              },
+              h: gt,
+              f: { o: vsub(at, vscale(n, gt / 2)), u: out, n },
+              twist: 0,
+              scale: 1,
+            },
+          });
+        }
+      }
+      if (fit === "thread") steps.push({ op: "cut", shape: { t: "hole", d: t.d, depth, at: top, dir: vscale(dir, -1), thread: holeThread(t), lead: 0.5 * t.pitch } });
+      else steps.push({ op: "cut", shape: { t: "hole", d: holeD, depth, at: top, dir: vscale(dir, -1), csink: holeD + 0.8 } });
+      const rr = a.num("root_r", 0.5);
+      if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
+      return new FeatureV("screw_boss", steps, { hole_d: holeD, d, h, depth, top: new Vec(top) });
+    },
+    'screw_boss(at, size: M3, h, d:, fit: "insert"|"tap"|"clearance"|"thread", depth:, dir: Z, root_r: 0.5, gussets: 0, t:) — a screw post standing h tall on the floor point `at`: the boss, a hole sized for a heat-set insert (default when one exists) or a self-tapping screw, an entry chamfer, a filleted root and optional gussets. Use with add (it adds and cuts).',
+  ),
+  def(
+    "snap_hook",
+    ["at", "length", "t", "w", "catch", "dir", "facing", "angle", "root_r"],
+    (a) => {
+      const at = a.vec3("at");
+      const L = a.positive("length");
+      const t = a.positive("t");
+      const w = a.positive("w");
+      const y = a.positive("catch", 1);
+      const dir = a.dir("dir", Z);
+      const fIn = a.dir("facing", [1, 0, 0]);
+      const uRaw = vsub(fIn, vscale(dir, vdot(fIn, dir)));
+      if (vlen(uRaw) < 1e-6) a.ctx.error("snap_hook(): facing must be across the hook, not along dir");
+      const u = vnorm(uRaw);
+      const n = vcross(u, dir);
+      const ang = a.num("angle", 30);
+      if (ang < 10 || ang > 60) a.ctx.error("snap_hook(): angle (the lead-in slope from the hook's axis) must be 10..60 degrees");
+      const land = Math.max(0.2, 0.25 * y);
+      const tipX = Math.min(0.4 * t, t);
+      const slope = (t / 2 + y - (-t / 2 + tipX)) / Math.tan((ang * Math.PI) / 180);
+      const pts: V2[] = [
+        [-t / 2, 0],
+        [t / 2, 0],
+        [t / 2, L],
+        [t / 2 + y, L],
+        [t / 2 + y, L + land],
+        [-t / 2 + tipX, L + land + slope],
+        [-t / 2, L + land + slope],
+      ];
+      const steps: FeatStep[] = [{ op: "add", shape: { t: "extrude", p: { t: "poly", pts, r: 0 }, h: w, f: { o: vsub(at, vscale(n, w / 2)), u, n }, twist: 0, scale: 1 } }];
+      const rr = a.num("root_r", r2(t / 2));
+      if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
+      // Bayer cantilever: strain = 1.5 y t / L² for a beam of constant section
+      const strain = (1.5 * y * t) / (L * L);
+      return new FeatureV("snap_hook", steps, { strain, deflection: y, length: L, tip: new Vec(vadd(at, vscale(dir, L + land + slope))) }, strain);
+    },
+    "snap_hook(at, length, t, w, catch: 1, dir: Z, facing: X, angle: 30, root_r: t/2) — a cantilever snap-fit hook rising from `at` (the centre of its root) along dir, t thick (toward facing), w wide, with a catch lip `catch` mm deep on the facing side and a lead-in slope. Its bending strain (1.5·catch·t/length²) is checked against the part's material; .strain gives the value. Use with add.",
+  ),
+]);
+
+// ---------- edge and face selectors ----------
+
+export function isSelPreset(s: string): s is SelPreset {
+  return (SEL_PRESETS as string[]).includes(s);
+}
+
+/** Turn a language value into an edge/face selector. */
+export function toSel(v: Value | undefined, ctx: CallCtx, what: string): Sel {
+  if (v instanceof SelV) return v.sel;
+  if (v instanceof FeatRef) return { s: "feat", f: v.name, part: "edges" };
+  if (typeof v === "string") {
+    if (isSelPreset(v)) return v;
+    return ctx.error(`${what}: "${v}" is not a selection. Use ${SEL_PRESETS.map((p) => `"${p}"`).join(", ")}, a named feature (boss.root, boss.edges), or near(), in_plane(), along(), facing(), circles(), inside(), between()`);
+  }
+  if (Array.isArray(v)) {
+    if (!v.length) return ctx.error(`${what}: the list is empty`);
+    return v.length === 1 ? toSel(v[0], ctx, what) : { s: "or", a: v.map((x) => toSel(x, ctx, what)) };
+  }
+  return ctx.error(`${what} should be a selection such as "top", boss.root or near((x, y, z)), got ${v === undefined ? "nothing" : typeName(v)}`);
+}
+
+/** True for values that take part in selector arithmetic (+ and -). */
+export function isSelValue(v: Value): boolean {
+  return v instanceof SelV || v instanceof FeatRef;
+}
+
+/** Feature names a selector refers to. */
+export function selFeatures(sel: Sel): string[] {
+  if (typeof sel === "string") return [];
+  switch (sel.s) {
+    case "feat":
+      return [sel.f];
+    case "between":
+      return [sel.a, sel.b];
+    case "or":
+    case "and":
+      return sel.a.flatMap(selFeatures);
+    case "minus":
+      return [...selFeatures(sel.a), ...selFeatures(sel.b)];
+    default:
+      return [];
+  }
+}
+
+function featName(v: Value | undefined, ctx: CallCtx, what: string): string {
+  if (v instanceof FeatRef) return v.name;
+  return ctx.error(`${what} should be a named feature (from add ... as name), got ${v === undefined ? "nothing" : typeName(v)}`);
+}
+
+const sel = (s: Sel) => new SelV(s);
+
+export const SELECT_FNS: Record<string, Fn> = Object.fromEntries([
+  def("near", ["point", "r"], (a) => sel({ s: "near", p: a.vec3("point"), r: a.positive("r", 1) }), "near((x, y, z), r: 1) — edges (or faces) within r of a point in the part's own coordinates."),
+  def("in_plane", ["normal", "offset"], (a) => sel({ s: "plane", n: a.dir("normal"), d: a.num("offset", 0) }), "in_plane(Z, 10) — edges or faces lying in the plane normal·p = offset (here z = 10)."),
+  def("along", ["dir"], (a) => sel({ s: "along", d: a.dir("dir") }), "along(X) — straight edges running along a direction (faces: those parallel to it)."),
+  def("facing", ["dir"], (a) => sel({ s: "facing", d: a.dir("dir") }), "facing(-Y) — flat faces looking that way (for edges: the edges around them)."),
+  def("circles", ["d"], (a) => sel({ s: "circle", d: a.num("d", 0) }), "circles(d: 0) — circular edges (hole and boss rims) of diameter d, or all of them."),
+  def(
+    "inside",
+    ["lo", "hi"],
+    (a) => {
+      const p = a.vec3("lo");
+      const q = a.vec3("hi");
+      return sel({ s: "box", lo: [Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.min(p[2], q[2])], hi: [Math.max(p[0], q[0]), Math.max(p[1], q[1]), Math.max(p[2], q[2])] });
+    },
+    "inside((x0, y0, z0), (x1, y1, z1)) — edges or faces entirely inside a box.",
+  ),
+  def("between", ["a", "b"], (a) => sel({ s: "between", a: featName(a.value("a"), a.ctx, "between() a"), b: featName(a.value("b"), a.ctx, "between() b") }), "between(a, b) — the edges where two named features meet."),
+  def(
+    "both",
+    ["a", "b", "c"],
+    (a) => sel({ s: "and", a: ["a", "b", "c"].filter((k) => a.has(k)).map((k) => toSel(a.value(k), a.ctx, `both() ${k}`)) }),
+    "both(a, b) — only what both selections pick, e.g. both(lid.edges, \"top\").",
+  ),
+]);
+
+/** Members of a named feature: boss.root, boss.tip, boss.edges, boss.faces. */
+export function featMember(f: FeatRef, name: string): Value | undefined {
+  if (name === "root" || name === "tip" || name === "edges" || name === "faces") return new SelV({ s: "feat", f: f.name, part: name });
+  if (name === "convex" || name === "concave") return new SelV({ s: "and", a: [{ s: "feat", f: f.name, part: "edges" }, name] });
+  return undefined;
+}
+
+export function selMember(s: SelV, name: string): Value | undefined {
+  if (name === "convex" || name === "concave") return new SelV({ s: "and", a: [s.sel, name] });
+  return undefined;
+}
+
+export const MODELLING_FNS: Record<string, Fn> = { ...PROFILE_FNS, ...PATH_FNS, ...SOLID_FNS, ...FEATURE_FNS, ...SELECT_FNS };
