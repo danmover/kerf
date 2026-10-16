@@ -44,6 +44,9 @@ export interface BoardBuild {
   error?: string;
 }
 
+/** Longest a board may take to route here, on the main thread, when the background route is not ready: unrouted connections past it go in PROBLEMS.txt. */
+const PACK_ROUTE_MS = 3000;
+
 /**
  * Every board of the design, routed: a finished route handed in (matched by
  * the copper hash, with the current spec swapped in for the silkscreen), else
@@ -55,7 +58,7 @@ export function routeBoards(m: MachineData, given: RoutedBoard[] = []): BoardBui
     const hit = byHash.get(boardHash(spec));
     if (hit) return { def, spec, routed: { ...hit, spec } };
     try {
-      return { def, spec, routed: routeBoard(spec) };
+      return { def, spec, routed: routeBoard(spec, { maxMs: PACK_ROUTE_MS }) };
     } catch (e) {
       return { def, spec, error: e instanceof Error ? e.message : String(e) };
     }

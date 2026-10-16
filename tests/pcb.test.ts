@@ -430,6 +430,21 @@ describe("circuit board: the guitar amp", () => {
     for (const s of ["2", "1.6 mm", "HASL lead-free", "1 oz", "Guitar-Amp.GTL", "tented"]) expect(readme).toContain(s);
   });
 
+  it("keeps the board's name from breaking out of Gerber and drill comments", () => {
+    const b = amp();
+    const files = gerberFiles({ ...b, spec: { ...b.spec, name: "Preamp *v2* 100%\nG01*X0Y0D01*" } });
+    for (const f of files.filter((f) => /\.(G[TBK][LSOK]|DRL)$/.test(f.path))) {
+      const lines = f.content.split("\n");
+      expect(lines.filter((l) => l.includes("Preamp")), f.path).toHaveLength(1);
+      expect(lines.some((l) => l.startsWith("G01*X0Y0")), f.path).toBe(false);
+      if (f.path.endsWith(".DRL")) expect(parseDrill(f.content, W, H).errors, f.path).toEqual([]);
+      else {
+        expect(lines[0], f.path).toMatch(/^G04 [^*%]*\*$/);
+        expect(parseGerber(f.content, W, H).errors, f.path).toEqual([]);
+      }
+    }
+  });
+
   it("drills a hole for every pad and via", () => {
     const b = amp();
     const files = gerberFiles(b);

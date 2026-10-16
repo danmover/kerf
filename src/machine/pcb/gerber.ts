@@ -19,16 +19,22 @@ export const MASK_EXPAND = 0.05;
 const fmtCoord = (v: number) => Math.round(v * 1e6).toString();
 const fmtDim = (v: number) => (Math.round(v * 1e6) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, ".0");
 
+/** A design's text made safe for a Gerber or drill comment: `*` and `%` end Gerber commands, and a line break would start a new one. */
+export const commentText = (s: string) => s.replace(/[*%]|[^\x20-\x7e]/g, " ");
+
 class Gerber {
   private apertures = new Map<string, number>();
   private defs: string[] = [];
   private body: string[] = [];
   private current = -1;
+  private readonly title: string;
   constructor(
-    private readonly title: string,
+    title: string,
     private readonly fn: string,
     private readonly polarity = "Positive",
-  ) {}
+  ) {
+    this.title = commentText(title);
+  }
   ap(kind: "C" | "R" | "O", ...dims: number[]): number {
     const key = `${kind},${dims.map(fmtDim).join("X")}`;
     let d = this.apertures.get(key);
@@ -181,7 +187,7 @@ function excellon(hits: DrillHit[], plated: boolean, title: string): string {
     t.hits.push(h);
   }
   tools.sort((a, b) => a.d - b.d || Number(a.slot) - Number(b.slot));
-  const lines = ["M48", `; ${title}`, "; FORMAT={-:-/ absolute / metric / decimal}", `; #@! TF.FileFunction,${plated ? "Plated,1,2,PTH" : "NonPlated,1,2,NPTH"}`, "FMAT,2", "METRIC"];
+  const lines = ["M48", `; ${commentText(title)}`, "; FORMAT={-:-/ absolute / metric / decimal}", `; #@! TF.FileFunction,${plated ? "Plated,1,2,PTH" : "NonPlated,1,2,NPTH"}`, "FMAT,2", "METRIC"];
   tools.forEach((t, i) => lines.push(`T${i + 1}C${fmtDrill(t.d)}`));
   lines.push("%", "G90", "G05");
   tools.forEach((t, i) => {
