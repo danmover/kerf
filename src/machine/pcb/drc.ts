@@ -131,7 +131,7 @@ export function connectivity(b: RoutedBoard, cu: Copper = collect(b)) {
     uf,
     padObj,
     /** whether two pins of a net are joined by copper */
-    sameNode(_net: string, a: { ref: string; pin: string }, c: { ref: string; pin: string }) {
+    sameNode(a: { ref: string; pin: string }, c: { ref: string; pin: string }) {
       const pa = padObj.get(`${a.ref}\u0000${a.pin}`) ?? [];
       const pc = padObj.get(`${c.ref}\u0000${c.pin}`) ?? [];
       return pa.some((x) => pc.some((y) => uf.find(x) === uf.find(y)));
