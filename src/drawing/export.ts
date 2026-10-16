@@ -77,6 +77,10 @@ export async function sheetToPng(sheet: Sheet, width = 1600): Promise<string> {
 }
 
 /** What is on a sheet, with dimension ids, for the assistant. */
+// keeps the assistant's tool result a sensible size on a busy assembly sheet
+const MAX_DIM_LINES = 150;
+const MAX_DESCRIPTION = 16_000;
+
 export function describeSheet(sheet: Sheet): string {
   const model = useDesign.getState().model;
   const lines = [`Drawing "${sheet.title}" (${sheet.name}${sheet.auto ? ", automatic" : ", drawing block in the source"}): ${sheet.size} ${sheet.orientation}, scale ${scaleText(sheet.scale)}.`];
@@ -84,6 +88,10 @@ export function describeSheet(sheet: Sheet): string {
   if (sheet.dims.length) {
     lines.push('Dimensions and callouts (key [view] description = text, then the id tol("id", …) takes for an automatic one):');
     for (const [i, d] of sheet.dims.entries()) {
+      if (i === MAX_DIM_LINES) {
+        lines.push(`  … and ${sheet.dims.length - i} more (d${i} to d${sheet.dims.length - 1}); the image shows them all`);
+        break;
+      }
       const tol = d.tol ? ` tol ${d.tol[0]}/${d.tol[1]}` : d.general ? ` (general ±${d.general})` : "";
       lines.push(`  d${i} [${sheet.views[d.view]?.name ?? "?"}] ${d.label} = ${d.text}${tol}${d.param ? ` → param ${d.param}` : ""}${d.auto ? (d.id ? ` id "${d.id}"` : "") : " (from the drawing block)"}`);
     }
@@ -93,5 +101,6 @@ export function describeSheet(sheet: Sheet): string {
   if (sheet.warnings.length) lines.push(`Warnings: ${sheet.warnings.join("; ")}`);
   const spec = drawingSpecs(model).find((s) => s.name === sheet.name);
   if (spec?.auto && model) lines.push(`This drawing is generated automatically. To change it, add a drawing block to the end of the source and edit that; for example:\n${specToSource(spec, blockNameFor(spec, model))}`);
-  return lines.join("\n");
+  const text = lines.join("\n");
+  return text.length > MAX_DESCRIPTION ? `${text.slice(0, MAX_DESCRIPTION)}\n… (cut to ${MAX_DESCRIPTION} characters)` : text;
 }

@@ -6,7 +6,7 @@
 import { create } from "zustand";
 import { meshes, useDesign } from "../core/engine";
 import type { EvalPart, Model } from "../core/model";
-import { kernel } from "../kernel/client";
+import { kernel, KernelCrashed } from "../kernel/client";
 import type { ViewRequest, ViewResult } from "../kernel/drawing";
 import { composeSheet } from "./compose";
 import type { Sheet } from "./sheet";
@@ -50,29 +50,62 @@ const set = useDrawings.setState;
 
 // ---------- projections ----------
 
-const results = new Map<string, ViewResult | Error>();
+/** finished projections by view key; a key covers the parts' geometry, so these stay valid */
+const results = new Map<string, ViewResult>();
+/**
+ * Views that failed, or were drawn without parts the kernel had dropped.
+ * They are shown but kept only until the design changes, then tried again.
+ */
+const transient = new Map<string, ViewResult | Error>();
 const inflight = new Map<string, { promise: Promise<void>; cancel: () => void }>();
+/** view keys a waiting export or the assistant still needs, so switching sheets doesn't cancel them */
+const pinned = new Map<string, number>();
+/** bumped when the kernel restarts, so answers from the old worker are dropped */
+let generation = 0;
 const MAX_RESULTS = 96;
 
-function remember(key: string, r: ViewResult | Error) {
+function remember(key: string, r: ViewResult) {
   results.delete(key);
   results.set(key, r);
   while (results.size > MAX_RESULTS) results.delete(results.keys().next().value!);
 }
 
-function project(key: string, req: ViewRequest): Promise<void> {
+const resultOf = (key: string) => results.get(key) ?? transient.get(key);
+
+/** A cancel or a kernel restart says nothing about the view, so neither is kept. */
+const interrupted = (e: unknown) => e instanceof KernelCrashed || (e instanceof Error && e.message === "cancelled");
+
+function project(key: string, req: ViewRequest, parts: EvalPart[]): Promise<void> {
   const running = inflight.get(key);
   if (running) return running.promise;
-  const job = kernel.project(req);
-  const promise = job.promise
-    .then((r) => remember(key, r))
-    .catch((e: unknown) => remember(key, e instanceof Error ? e : new Error(String(e))))
-    .finally(() => {
-      inflight.delete(key);
+  const gen = generation;
+  let job = kernel.project(req);
+  const entry = { promise: Promise.resolve(), cancel: () => job.cancel() };
+  entry.promise = (async () => {
+    try {
+      let r = await job.promise;
+      if (r.missing?.length && gen === generation) {
+        // the kernel dropped some solids (a cache trim): build them again and project once more
+        const hashes = new Set(r.missing.map((i) => req.items[i]?.hash));
+        const todo = [...new Map(parts.filter((p) => hashes.has(p.hash)).map((p) => [p.hash, p])).values()];
+        await kernel.build(todo.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })), "preview", () => undefined, () => undefined).done;
+        if (gen !== generation) return;
+        job = kernel.project(req);
+        r = await job.promise;
+      }
+      if (gen !== generation) return;
+      if (r.missing?.length) transient.set(key, r);
+      else remember(key, r);
+    } catch (e) {
+      if (gen !== generation || interrupted(e)) return;
+      transient.set(key, e instanceof Error ? e : new Error(String(e)));
+    } finally {
+      if (inflight.get(key) === entry) inflight.delete(key);
       schedule();
-    });
-  inflight.set(key, { promise, cancel: job.cancel });
-  return promise;
+    }
+  })();
+  inflight.set(key, entry);
+  return entry.promise;
 }
 
 const bboxOf = (p: EvalPart) => meshes.get(p.hash)?.bbox;
@@ -98,7 +131,7 @@ function partsSettled(plan: DrawingPlan): boolean {
 }
 
 function compose(plan: DrawingPlan, model: Model): Sheet {
-  return composeSheet({ plan, model, result: (k) => results.get(k), bboxOf, volumeOf, today: today() });
+  return composeSheet({ plan, model, result: resultOf, bboxOf, volumeOf, today: today() });
 }
 
 function today() {
@@ -111,9 +144,9 @@ function request(plan: DrawingPlan): string[] {
   if (!partsSettled(plan)) return plan.views.map((v) => v.key);
   const waiting: string[] = [];
   for (const v of plan.views) {
-    if (v.synthetic || results.has(v.key)) continue;
+    if (v.synthetic || resultOf(v.key)) continue;
     waiting.push(v.key);
-    void project(v.key, v.req);
+    void project(v.key, v.req, plan.parts);
   }
   return waiting;
 }
@@ -142,7 +175,7 @@ function refresh() {
   const plan = planDrawing(spec, model, bboxOf);
   // views of other drawings or older revisions are no longer needed
   const keys = new Set(plan.views.map((v) => v.key));
-  for (const [k, job] of inflight) if (!keys.has(k)) job.cancel();
+  for (const [k, job] of inflight) if (!keys.has(k) && !pinned.has(k)) job.cancel();
   const waiting = request(plan);
   const sheet = compose(plan, model);
   const prev = get().sheet;
@@ -156,12 +189,15 @@ function start() {
   started = true;
   let last = useDesign.getState();
   useDesign.subscribe((s) => {
+    if (s.model !== last.model || s.buildErrors !== last.buildErrors) transient.clear();
     if (s.model !== last.model || s.meshVersion !== last.meshVersion || s.buildErrors !== last.buildErrors) schedule();
     if (s.model !== last.model) set({ asked: [] });
     last = s;
   });
   kernel.onReset(() => {
+    generation++;
     results.clear();
+    transient.clear();
     inflight.clear();
     schedule();
   });
@@ -196,26 +232,47 @@ export function markAsked(name: string, key: string, text: string) {
 
 /**
  * A finished sheet for a drawing (all views projected), for exports and the
- * assistant. Waits for the parts to build first.
+ * assistant. Waits for the parts to build first; the signal stops the wait.
  */
-export async function sheetFor(name?: string, timeoutMs = 90_000): Promise<Sheet> {
+export async function sheetFor(name?: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Sheet> {
   start();
+  const { timeoutMs = 90_000, signal } = opts;
   const t0 = Date.now();
-  for (;;) {
-    const { model, stage } = useDesign.getState();
-    if (!model) throw new Error("There is no design yet");
-    const specs = drawingSpecs(model);
-    const spec = name ? specs.find((s) => s.name === name || s.title.toLowerCase() === name.toLowerCase() || s.name === `auto:${name}`) : specs[0];
-    if (!spec) throw new Error(`There is no drawing called "${name}". Drawings: ${specs.map((s) => s.name).join(", ") || "none"}`);
-    const plan = planDrawing(spec, model, bboxOf);
-    if (partsSettled(plan) && stage !== "evaluating") {
-      const waiting = request(plan);
-      await Promise.all(waiting.map((k) => inflight.get(k)?.promise));
-      // a newer revision may have arrived while waiting
-      if (useDesign.getState().model === model) return compose(planDrawing(spec, model, bboxOf), model);
+  const stopped = new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("Stopped")), { once: true }));
+  stopped.catch(() => undefined);
+  const until = <T,>(p: Promise<T>) => (signal ? Promise.race([p, stopped]) : p);
+  const held: string[] = [];
+  const hold = (keys: string[]) => {
+    for (const k of keys) {
+      pinned.set(k, (pinned.get(k) ?? 0) + 1);
+      held.push(k);
     }
-    if (Date.now() - t0 > timeoutMs) throw new Error("The drawing's parts did not finish building in time");
-    await new Promise((r) => setTimeout(r, 150));
+  };
+  try {
+    for (;;) {
+      if (signal?.aborted) throw new Error("Stopped");
+      const { model, stage } = useDesign.getState();
+      if (!model) throw new Error("There is no design yet");
+      const specs = drawingSpecs(model);
+      const spec = name ? specs.find((s) => s.name === name || s.title.toLowerCase() === name.toLowerCase() || s.name === `auto:${name}`) : specs[0];
+      if (!spec) throw new Error(`There is no drawing called "${name}". Drawings: ${specs.map((s) => s.name).join(", ") || "none"}`);
+      const plan = planDrawing(spec, model, bboxOf);
+      if (partsSettled(plan) && stage !== "evaluating") {
+        const waiting = request(plan);
+        hold(waiting);
+        await until(Promise.all(waiting.map((k) => inflight.get(k)?.promise)));
+        // a newer revision may have arrived, or a view been interrupted, while waiting
+        if (useDesign.getState().model === model && request(plan).length === 0) return compose(planDrawing(spec, model, bboxOf), model);
+      }
+      if (Date.now() - t0 > timeoutMs) throw new Error("The drawing's parts did not finish building in time");
+      await until(new Promise((r) => setTimeout(r, 150)));
+    }
+  } finally {
+    for (const k of held) {
+      const n = (pinned.get(k) ?? 1) - 1;
+      if (n > 0) pinned.set(k, n);
+      else pinned.delete(k);
+    }
   }
 }
 

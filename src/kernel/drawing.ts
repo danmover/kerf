@@ -50,6 +50,8 @@ export interface ViewResult {
   hatch: { part: number; loops: number[][] }[];
   /** material length along each probe segment */
   probes?: number[];
+  /** items whose solid the kernel no longer holds (evicted or not built yet), left out of the view */
+  missing?: number[];
   ms: number;
 }
 
@@ -75,12 +77,14 @@ export function projectView(req: ViewRequest, placed: Placed): ViewResult {
   const shapes: { part: number; shape: AnyShape; temp: boolean }[] = [];
   const hatch: ViewResult["hatch"] = [];
   let probes: number[] | undefined;
+  const missing: number[] = [];
 
   req.items.forEach((it, part) => {
     let w: Shape3D;
     try {
       w = placed(it).shape;
     } catch {
+      missing.push(part);
       return;
     }
     if (part === 0 && req.probes?.length) probes = req.probes.map((s) => materialAlong(w, s.a, s.b));
@@ -99,21 +103,29 @@ export function projectView(req: ViewRequest, placed: Placed): ViewResult {
     }
     const plane = new R.Plane(req.section.at, null, [-n[0], -n[1], -n[2]]);
     let kept: Shape3D | null = null;
+    // cutPlane leaves the cached solid as it is and returns a new one
     try {
-      kept = w.clone().cutPlane(plane) as Shape3D | null;
+      kept = w.cutPlane(plane) as Shape3D | null;
     } catch {
       kept = null;
     }
-    if (!kept) return;
+    if (!kept) {
+      free(plane);
+      return;
+    }
     shapes.push({ part, shape: kept, temp: true });
     try {
       const faces = new R.FaceFinder().inPlane(plane).find(kept);
       const loops: number[][] = [];
-      for (const f of faces) loops.push(...faceLoops(f as Face, xAxis, yAxis));
+      for (const f of faces) {
+        loops.push(...faceLoops(f as Face, xAxis, yAxis));
+        free(f);
+      }
       if (loops.length) hatch.push({ part, loops });
     } catch {
       /* no cut faces: the plane missed the part */
     }
+    free(plane);
   });
 
   const edges: Edge2[] = [];
@@ -157,7 +169,7 @@ export function projectView(req: ViewRequest, placed: Placed): ViewResult {
     free(camera);
   }
   for (const s of shapes) if (s.temp) free(s.shape);
-  return { edges, hatch, probes, ms: performance.now() - t0 };
+  return { edges, hatch, probes, missing: missing.length ? missing : undefined, ms: performance.now() - t0 };
 }
 
 /** Length of solid material along a segment: the common of the solid and a line edge. */

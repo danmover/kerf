@@ -767,7 +767,7 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       const p = DrawingInput.safeParse(input ?? {});
       if (!p.success) return invalid(p.error);
       try {
-        const sheet = await sheetFor(p.data.name ?? useDrawings.getState().active ?? undefined);
+        const sheet = await sheetFor(p.data.name ?? useDrawings.getState().active ?? undefined, { signal: ctx.signal });
         const url = await sheetToPng(sheet, 1568);
         return {
           content: [
