@@ -7,6 +7,8 @@ import { detailImportsLoaded, recipeUsesImport } from "../core/imports";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
 import { buildDirection, buildPack, orientForPrint } from "../machine/pack";
 import { boardSpecs } from "../machine/boards";
+import { boardProblems, gerberZip, routeBoards } from "../machine/boardPack";
+import { safeName } from "../machine/pcb/gerber";
 import { routeFor } from "../machine/pcb/runtime";
 import { zip } from "../machine/zip";
 import { exportProject, useProject } from "./project";
@@ -121,6 +123,31 @@ async function makeBuildPack() {
   } finally {
     dismissToast(t);
   }
+}
+
+/** Every circuit board's Gerber and drill files, zipped for a board house: the Board view's download, for all boards at once. */
+export async function exportGerbers() {
+  const m = useDesign.getState().model?.machine;
+  if (!m?.boards.length) {
+    toast({ kind: "warn", title: "No circuit board in this design", detail: "Gerbers come from a board block's routed copper." });
+    return;
+  }
+  // the board runtime's finished routes; a board still routing is routed here, as the build pack does
+  const done = boardSpecs(m).flatMap(({ spec }) => {
+    const r = routeFor(spec);
+    return r.status === "done" ? [r.board] : [];
+  });
+  const built = routeBoards(m, done);
+  const ok = built.flatMap((b) => (b.routed ? [{ spec: b.spec, routed: b.routed }] : []));
+  if (!ok.length) throw new Error(built[0]?.error ?? "No board could be routed.");
+  const files = ok.map((b) => ({ path: `${safeName(b.spec.name)}-gerbers.zip`, data: gerberZip(b.routed) }));
+  if (files.length === 1) download(files[0].data, files[0].path, "application/zip");
+  else download(zip(files), safeFileName(baseName() + " gerbers", "zip"), "application/zip");
+  const problems = ok.reduce((n, b) => n + boardProblems(b.spec, b.routed).length, 0);
+  const failed = built.length - ok.length;
+  if (problems || failed)
+    toast({ kind: "warn", title: "Gerbers downloaded, with problems", detail: `${problems ? `${problems} board problem${problems === 1 ? "" : "s"} to fix before ordering (the Board view lists them).` : ""}${failed ? ` ${failed} board${failed === 1 ? "" : "s"} could not be routed and ${failed === 1 ? "was" : "were"} left out.` : ""}`.trim() }, 9000);
+  else toast({ kind: "success", title: "Gerbers downloaded", detail: "Upload each board's zip as it is to JLCPCB, PCBWay or another board house. The README inside lists the options to pick." }, 7000);
 }
 
 export function exportSource() {
