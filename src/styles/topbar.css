@@ -643,6 +643,26 @@
   border: 1px solid var(--line);
 }
 
+/* narrower windows: the rail keeps its diamonds and verdict but drops the
+   step names, then the "~/projects/" crumb goes, so nothing scrolls sideways */
+@media (max-width: 1180px) {
+  .rail-label {
+    display: none;
+  }
+  .rail-stage {
+    padding: 0 2px;
+  }
+  .rail-link {
+    width: 10px;
+  }
+}
+@media (max-width: 1040px) {
+  .tb-crumb,
+  .tb-slash {
+    display: none;
+  }
+}
+
 @media (max-width: 760px) {
   .xp-grid {
     grid-template-columns: 1fr;

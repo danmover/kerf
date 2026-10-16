@@ -159,7 +159,7 @@ function Pipeline() {
             <span key={s.id} className="rail-step">
               <span className={`rail-stage ${done ? "done" : active ? "active" : ""}`}>
                 <span className="rail-node" />
-                {s.label}
+                <span className="rail-label">{s.label}</span>
                 {s.id === "building" && active && progress.total > 0 && (
                   <span className="rail-count">
                     {progress.done}/{progress.total}

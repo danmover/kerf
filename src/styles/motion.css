@@ -305,3 +305,11 @@
 .statusbar .dot.pending {
   animation: pulse 1.2s ease-in-out infinite;
 }
+
+/* a narrow chat panel: the model chip drops its "· auto" note before the
+   clear and settings buttons get pushed past the edge */
+@container (max-width: 340px) {
+  .panel-right .panel-head .chip .dim {
+    display: none;
+  }
+}
