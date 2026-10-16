@@ -274,6 +274,8 @@ export interface MachineComponent {
   length?: number;
   buyUrl?: string;
   price?: number;
+  /** a fuse's rating in A (component prop `rating:`), in place of the catalog's */
+  rating?: number;
   /** resistance (Ω), capacitance (F) or pot resistance (Ω) */
   value?: number;
   /** the value as written: "10k", "100n", "A500k" */

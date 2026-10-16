@@ -1,6 +1,6 @@
 // Runtime values for the Kerf evaluator.
 
-import type { ShapeRecipe, V2, V3 } from "../kernel/recipe";
+import type { Path3, Profile, Sel, ShapeRecipe, V2, V3 } from "../kernel/recipe";
 import type { MachineData } from "../machine/types";
 import type { SketchGeom } from "../sketch/types";
 
@@ -30,6 +30,44 @@ export class Obj {
 
 export class ShapeV {
   constructor(public recipe: ShapeRecipe) {}
+}
+
+/** A closed 2D outline: circle(), rect(), polygon(), text(), offset() ... */
+export class ProfileV {
+  constructor(public recipe: Profile) {}
+}
+
+/** A 3D curve for sweep() and pipe(). */
+export class PathV {
+  constructor(public recipe: Path3) {}
+}
+
+/** A set of edges or faces, picked when the modifier using it runs. */
+export class SelV {
+  constructor(public sel: Sel) {}
+}
+
+/** A named feature inside a part (`add ... as boss`): boss.root, boss.edges, boss.faces ... */
+export class FeatRef {
+  constructor(
+    public name: string,
+    public op: string,
+  ) {}
+}
+
+/** One step of a ready-made feature: material added or removed, or its own edges rounded. */
+export type FeatStep = { op: "add" | "cut"; shape: ShapeRecipe } | { op: "fillet" | "chamfer"; r: number; part: "root" | "tip" };
+
+/** A ready-made feature (screw_boss, snap_hook): adds and cuts in one `add` statement. */
+export class FeatureV {
+  constructor(
+    public kind: string,
+    public steps: FeatStep[],
+    /** readable values: hole_d, strain ... */
+    public info: Record<string, Value>,
+    /** bending strain at full deflection, checked against the part's material */
+    public strain?: number,
+  ) {}
 }
 
 export class Fn {
@@ -77,7 +115,7 @@ export class Pending {
   constructor(public keys: string[]) {}
 }
 
-export type Value = number | string | boolean | Vec | Obj | ShapeV | Fn | Ref | Pending | Value[] | null;
+export type Value = number | string | boolean | Vec | Obj | ShapeV | ProfileV | PathV | SelV | FeatRef | FeatureV | Fn | Ref | Pending | Value[] | null;
 
 export interface CallCtx {
   /** Raise an evaluation error attached to the current call site. */
@@ -88,6 +126,8 @@ export interface CallCtx {
   geo(query: GeoQuery): number | Pending;
   /** The machine as written so far (components, nets, wires above the call), for calculators that read the whole design. */
   machine?(): MachineData;
+  /** Count n steps of list-sized work against the evaluation budget. */
+  tick?(n: number): void;
 }
 
 export type GeoQuery =
@@ -114,6 +154,11 @@ export function typeName(v: Value): string {
   if (v instanceof Vec) return v.v.length === 2 ? "2D vector" : "vector";
   if (v instanceof Obj) return v.kind;
   if (v instanceof ShapeV) return "shape";
+  if (v instanceof ProfileV) return "profile";
+  if (v instanceof PathV) return "path";
+  if (v instanceof SelV) return "selection";
+  if (v instanceof FeatRef) return "named feature";
+  if (v instanceof FeatureV) return "feature";
   if (v instanceof Fn) return "function";
   if (v instanceof Ref) return v.what;
   if (v instanceof Pending) return "pending geometry value";
@@ -135,6 +180,11 @@ export function show(v: Value): string {
   if (v instanceof Vec) return "(" + v.v.map((n) => fmtNum(n, 3)).join(", ") + ")";
   if (v instanceof Obj) return v.label ?? v.kind;
   if (v instanceof ShapeV) return `shape:${v.recipe.t}`;
+  if (v instanceof ProfileV) return `profile:${v.recipe.t}`;
+  if (v instanceof PathV) return `path:${v.recipe.t}`;
+  if (v instanceof SelV) return "selection";
+  if (v instanceof FeatRef) return `feature ${v.name}`;
+  if (v instanceof FeatureV) return `${v.kind}(…)`;
   if (v instanceof Fn) return `${v.name}()`;
   if (v instanceof Ref) return v.name;
   return "…";

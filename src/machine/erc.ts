@@ -20,10 +20,24 @@ export interface NetPin {
   mc: MachineComponent;
 }
 
+/** One wire run between two pins: a `wire` hop, or a branch of a `net` statement (a bus from its first pin). */
+export interface NetSeg {
+  a: NetPin;
+  b: NetPin;
+  gauge?: number;
+  span: Span;
+  label?: string;
+  /** the `net` statement this branch belongs to: its branches form one bus */
+  bus?: number;
+}
+
 export interface Net {
   id: number;
   name?: string;
   pins: NetPin[];
+  /** the wire runs on this net, each with its own gauge */
+  segs: NetSeg[];
+  /** the thinnest gauge on the net (largest AWG number) */
   gauge?: number;
   spans: Span[];
   /** volts on the net when something supplies it */
@@ -77,35 +91,33 @@ export function buildNetlist(m: MachineData): Netlist {
   const uf = new UF();
   const touched = new Set<string>();
   const cables: Netlist["cables"] = [];
-  const gauges = new Map<string, number>();
+  const segs: NetSeg[] = [];
   const spans = new Map<string, Span[]>();
   const names = new Map<string, string>();
-  const join = (a: NetPin, b: NetPin, span: Span, gauge?: number) => {
+  // gauges are kept per wire run: a net's runs can differ, and the thinnest one is what can overheat
+  const join = (seg: NetSeg) => {
+    const { a, b } = seg;
     touched.add(a.key);
     touched.add(b.key);
     if (a.pin.type === "port" || b.pin.type === "port") {
-      cables.push({ a, b, span });
+      cables.push({ a, b, span: seg.span });
       return;
     }
     uf.union(a.key, b.key);
-    const r = uf.find(a.key);
-    if (gauge) gauges.set(r, Math.min(gauges.get(r) ?? 99, gauge));
-    spans.set(a.key, [...(spans.get(a.key) ?? []), span]);
+    segs.push(seg);
+    spans.set(a.key, [...(spans.get(a.key) ?? []), seg.span]);
   };
   for (const w of m.wires) {
     const a = resolve(w.a);
     const b = resolve(w.b);
-    if (a && b) join(a, b, w.span, w.gauge);
+    if (a && b) join({ a, b, gauge: w.gauge, span: w.span, label: w.label });
   }
-  for (const n of m.nets) {
+  m.nets.forEach((n, bus) => {
     const ps = n.pins.map(resolve).filter((x): x is NetPin => !!x);
     for (const p of ps) touched.add(p.key);
-    for (let i = 1; i < ps.length; i++) join(ps[0], ps[i], n.span, n.gauge);
-    if (ps[0]) {
-      names.set(ps[0].key, n.name);
-      if (n.gauge) gauges.set(ps[0].key + "#g", n.gauge);
-    }
-  }
+    for (let i = 1; i < ps.length; i++) join({ a: ps[0], b: ps[i], gauge: n.gauge, span: n.span, label: n.name, bus });
+    if (ps[0]) names.set(ps[0].key, n.name);
+  });
   // passive parts (fuses, switches, connector pairs) conduct between their paired terminals
   for (const np of all.values()) {
     if (np.pin.type === "passive" && np.pin.through && touched.has(np.key)) {
@@ -122,12 +134,16 @@ export function buildNetlist(m: MachineData): Netlist {
   const nets: Net[] = [];
   const netOf = new Map<string, Net>();
   let id = 0;
-  for (const [root, pins] of groups) {
+  for (const pins of groups.values()) {
     const nm = pins.map((p) => names.get(p.key)).find(Boolean);
-    const g = Math.min(gauges.get(root) ?? 99, ...pins.map((p) => gauges.get(p.key + "#g") ?? 99));
-    const net: Net = { id: id++, name: nm, pins, gauge: g < 99 ? g : undefined, spans: pins.flatMap((p) => spans.get(p.key) ?? []) };
+    const net: Net = { id: id++, name: nm, pins, segs: [], spans: pins.flatMap((p) => spans.get(p.key) ?? []) };
     nets.push(net);
     for (const p of pins) netOf.set(p.key, net);
+  }
+  for (const sg of segs) netOf.get(sg.a.key)?.segs.push(sg);
+  for (const n of nets) {
+    const g = Math.max(0, ...n.segs.map((sg) => sg.gauge ?? 0));
+    if (g > 0) n.gauge = g;
   }
   void comps;
   return { nets, netOf, cables, pinsOf };
@@ -362,6 +378,20 @@ function motorChecks(c: Ctx, motorCurrent?: (comp: string) => number | undefined
   }
 }
 
+/** The supply each driven motor sees: its driver's motor-supply voltage, by component name. */
+export function motorSupplies(m: MachineData): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!m.wires.length && !m.nets.length) return out;
+  const c: Ctx = { nl: buildNetlist(m), out: [], m };
+  for (const n of c.nl.nets) {
+    const d = n.pins.find((p) => p.pin.type === "motor_out");
+    const v = d && driverSupply(c, d);
+    if (v === undefined) continue;
+    for (const mp of n.pins) if (mp.pin.type === "motor" && !out.has(mp.comp)) out.set(mp.comp, v);
+  }
+  return out;
+}
+
 function driverSupply(c: Ctx, d: NetPin): number | undefined {
   // the driver's motor-supply input: the pwr_in with the widest range
   const ins = d.part.pins.filter((p) => p.type === "pwr_in").sort((a, b) => (b.vmax ?? 0) - (a.vmax ?? 0));
@@ -572,13 +602,142 @@ function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
     const name = netLabel(n);
     if (pct > 1) item(c, `budget:${n.id}`, "fail", `${who(src)} overloaded`, `Everything on ${name} draws about ${fmtNum(a, 2)} A; ${src.part.name} supplies ${fmtNum(src.pin.imax)} A.`, [src.comp], n.spans[0]);
     else item(c, `budget:${n.id}`, pct > 0.8 ? "warn" : "pass", `Power budget: ${name}`, `About ${fmtNum(a, 2)} A of ${fmtNum(src.pin.imax)} A available from ${who(src)} (${fmtNum(pct * 100, 0)} %).`, [src.comp], n.spans[0]);
-    if (n.gauge !== undefined) {
-      const amp = awgAmpacity(n.gauge);
-      if (a > amp) item(c, `gauge:${n.id}`, "fail", `${name} wire too thin`, `${fmtNum(n.gauge)} AWG carries about ${fmtNum(amp)} A; this net carries about ${fmtNum(a, 1)} A.`, [src.comp], n.spans[0]);
-    } else if (a > 3) {
-      item(c, `gauge:${n.id}`, "warn", `Wire size for ${name}`, `This net carries about ${fmtNum(a, 1)} A: give it a gauge (gauge: 16) so the parts list and wiring diagram say what wire to use.`, [src.comp], n.spans[0]);
+  }
+  wireChecks(c, load, downstream, motorCurrent);
+}
+
+const isSupplyPart = (p: NetPin) => p.part.kind === "battery" || p.part.kind === "psu";
+const segName = (sg: NetSeg) => (sg.label && !sg.bus ? sg.label : `${sg.label ? `${sg.label}: ` : ""}${who(sg.a)} → ${who(sg.b)}`);
+
+/**
+ * Every wire run against the current it carries, and every fuse against the wires it protects. Power,
+ * motor and ground nets each have a source side (the supply, the driver output, the battery's negative);
+ * a run carries what is on its far side. A `net` statement is a bus: each of its runs carries the bus total.
+ */
+function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) => number, motorCurrent?: (comp: string) => number | undefined) {
+  // a motor lead carries the motor's working current, and at least what it can draw continuously (half stall)
+  const leadA = (mp: NetPin) => Math.max(motorCurrent?.(mp.comp) ?? Number(mp.part.specs.i_free ?? 0.2), 0.5 * Number(mp.part.specs.i_stall ?? 0));
+  const wired = (p: NetPin) => c.nl.netOf.has(p.key);
+  const siblings = (p: NetPin) => (c.nl.pinsOf.get(p.comp) ?? []).filter((q) => q.index === p.index);
+  // what a part draws from its supplies, which its power ground returns
+  const supplyOf = (p: NetPin) =>
+    siblings(p)
+      .filter((q) => wired(q) && (q.pin.type === "pwr_in" || (q.pin.type === "pwr_rail" && supplies(c.nl.netOf.get(q.key)!).length > 0)))
+      .reduce((a, q) => a + (q.pin.draw ?? 0) + downstream(q), 0);
+  // a part with several grounds returns its supply current through its power ground (GND_PWR, V−), else its first
+  const powerGround = (p: NetPin) => {
+    const gs = siblings(p).filter((q) => q.pin.type === "gnd" && wired(q));
+    return gs.find((q) => /pwr|power|minus|neg|mot/i.test(`${q.pin.id} ${q.pin.label ?? ""}`)) ?? gs[0];
+  };
+  const pinLoad = (p: NetPin, n: Net): number => {
+    switch (p.pin.type) {
+      case "pwr_in":
+        return (p.pin.draw ?? 0) + downstream(p);
+      case "pwr_rail":
+        return supplies(n).length ? (p.pin.draw ?? 0) + downstream(p) : 0;
+      case "motor":
+        return leadA(p);
+      case "gnd":
+        return !isSupplyPart(p) && powerGround(p)?.key === p.key ? supplyOf(p) : 0;
+      default:
+        return 0;
     }
-    // the ground return carries the same current
-    void 0;
+  };
+  const sourcesFor = (n: Net): NetPin[] => {
+    const s = sourcesOf(n);
+    if (s.length) return s;
+    const outs = n.pins.filter((p) => p.pin.type === "motor_out");
+    if (outs.length) return outs;
+    return n.pins.filter((p) => p.pin.type === "gnd" && isSupplyPart(p));
+  };
+  // pins joined through a fuse, switch or mated connector
+  const links = (n: Net) =>
+    n.pins.flatMap((p) => {
+      if (p.pin.type !== "passive" || !p.pin.through) return [];
+      const o = c.nl.netOf.get(key(p.comp, p.index, p.pin.through)) === n ? n.pins.find((q) => q.comp === p.comp && q.index === p.index && q.pin.id === p.pin.through) : undefined;
+      return o && p.key < o.key ? [{ a: p, b: o }] : [];
+    });
+  // pins reached from `from` without crossing the skipped run or link
+  const reach = (n: Net, from: NetPin[], skip?: { a: NetPin; b: NetPin }) => {
+    const same = (e: { a: NetPin; b: NetPin }) => !!skip && e.a.key === skip.a.key && e.b.key === skip.b.key;
+    const edges = [...n.segs, ...links(n)].filter((e) => e !== skip && !same(e));
+    const seen = new Set(from.map((p) => p.key));
+    const todo = [...from];
+    while (todo.length) {
+      const p = todo.pop()!;
+      for (const e of edges) {
+        const q = e.a.key === p.key ? e.b : e.b.key === p.key ? e.a : undefined;
+        if (q && !seen.has(q.key)) {
+          seen.add(q.key);
+          todo.push(q);
+        }
+      }
+    }
+    return seen;
+  };
+
+  for (const n of c.nl.nets) {
+    const src = sourcesFor(n);
+    if (!src.length) continue;
+    const isPower = sourcesOf(n).length > 0;
+    const total = isPower ? load(n) : n.pins.reduce((a, p) => a + pinLoad(p, n), 0);
+    const srcKeys = new Set(src.map((p) => p.key));
+    const busA = new Map<number, number>();
+    const current = (sg: NetSeg): number => {
+      if (sg.bus !== undefined) {
+        if (!busA.has(sg.bus)) {
+          const pins = n.segs.filter((x) => x.bus === sg.bus).flatMap((x) => [x.a, x.b]);
+          const uniq = [...new Map(pins.map((p) => [p.key, p])).values()];
+          busA.set(sg.bus, Math.min(total, uniq.filter((p) => !srcKeys.has(p.key)).reduce((a, p) => a + pinLoad(p, n), 0)));
+        }
+        return busA.get(sg.bus)!;
+      }
+      const near = reach(n, src, sg);
+      const far = n.pins.filter((p) => !near.has(p.key));
+      // in a loop (or with sources on both sides) the run could carry it all
+      if (!far.length || far.some((p) => srcKeys.has(p.key))) return total;
+      return far.reduce((a, p) => a + pinLoad(p, n), 0);
+    };
+    let unsized = 0;
+    n.segs.forEach((sg, i) => {
+      const a = current(sg);
+      if (sg.gauge === undefined) {
+        if (a > 3) unsized = Math.max(unsized, a);
+        return;
+      }
+      const amp = awgAmpacity(sg.gauge);
+      if (a > amp) item(c, `gauge:${n.id}:${i}`, "fail", `${segName(sg)}: wire too thin`, `${fmtNum(sg.gauge)} AWG carries about ${fmtNum(amp)} A; this run carries about ${fmtNum(a, 1)} A${n.pins.some((p) => p.pin.type === "gnd") ? " (the ground return carries what the parts on it draw)" : ""}. Use thicker wire.`, [sg.a.comp, sg.b.comp], sg.span);
+    });
+    if (unsized) item(c, `gauge:${n.id}`, "warn", `Wire size for ${netLabel(n)}`, `This net carries about ${fmtNum(unsized, 1)} A: give its wires a gauge (gauge: 16) so the parts list and wiring diagram say what wire to use.`, [src[0].comp], n.spans[0]);
+  }
+
+  // a fuse must blow before the thinnest wire after it overheats, and must not blow in normal use
+  for (const f of c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "fuse")) {
+    const part = catalogPart(f.catalogId)!;
+    const rating = f.rating ?? Number(part.specs.rating_a ?? 0);
+    for (let i = 0; i < f.count; i++) {
+      const pins = c.nl.pinsOf.get(f.name)?.filter((p) => p.index === i && p.pin.type === "passive" && p.pin.through) ?? [];
+      const n = pins[0] && c.nl.netOf.get(pins[0].key);
+      if (!n || pins.length < 2 || !rating) continue;
+      const link = links(n).find((l) => l.a.comp === f.name && l.a.index === i);
+      const src = sourcesFor(n);
+      const fromSrc = reach(n, src, link);
+      // the side the supply doesn't reach without going through the fuse is what it protects
+      const out = pins.find((p) => !fromSrc.has(p.key)) ?? pins.find((p) => p.pin.id === "OUT") ?? pins[1];
+      const side = reach(n, [out], link);
+      const after = n.segs.filter((sg) => side.has(sg.a.key) && side.has(sg.b.key) && sg.gauge !== undefined);
+      const fname = `${f.name}${f.count > 1 ? `[${i}]` : ""}`;
+      const thinnest = after.sort((x, y) => y.gauge! - x.gauge!)[0];
+      const through = n.pins.filter((p) => side.has(p.key)).reduce((a, p) => a + pinLoad(p, n), 0);
+      if (thinnest && rating > awgAmpacity(thinnest.gauge!)) {
+        const amp = awgAmpacity(thinnest.gauge!);
+        item(c, `fuse-wire:${fname}`, "fail", `${fname} too big for its wires`, `The ${fmtNum(rating)} A fuse protects ${segName(thinnest)}, ${fmtNum(thinnest.gauge!)} AWG, which carries about ${fmtNum(amp)} A: a short or a stall could overheat that wire without blowing the fuse. Use a fuse of ${fmtNum(amp)} A or less (rating: ${fmtNum(amp)}A), or thicker wire.`, [f.name, thinnest.a.comp, thinnest.b.comp], f.span);
+      } else if (thinnest) {
+        item(c, `fuse-wire:${fname}`, "pass", `${fname} sized to its wires`, `The ${fmtNum(rating)} A fuse is no more than the thinnest wire after it can carry (${fmtNum(thinnest.gauge!)} AWG, about ${fmtNum(awgAmpacity(thinnest.gauge!))} A).`, [f.name], f.span);
+      }
+      // blade fuses carry 110 % of their rating for 100 hours (SAE J1284) and lose a little in a warm box
+      if (through > rating) item(c, `fuse-load:${fname}`, "fail", `${fname} blows in normal use`, `About ${fmtNum(through, 1)} A flows through the ${fmtNum(rating)} A fuse when everything runs.`, [f.name], f.span);
+      else if (through > rating * 0.9) item(c, `fuse-load:${fname}`, "warn", `${fname} close to its rating`, `About ${fmtNum(through, 1)} A flows through the ${fmtNum(rating)} A fuse when everything runs: in a warm box it may blow on a long run.`, [f.name], f.span);
+    }
   }
 }

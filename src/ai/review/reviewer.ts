@@ -6,6 +6,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaContentBlockParam, BetaMessageParam, BetaToolResultBlockParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { z } from "zod";
 import { reviewerPrompt } from "./prompt";
+import { recordSpend } from "../spend";
+import type { Usage } from "../../agents/pricing";
 import { AREAS, type Brief, type Finding, type ReviewProgress, type ReviewUsage, type ReviewView } from "./types";
 
 // no generated code: the page CSP forbids eval
@@ -198,6 +200,7 @@ export async function callReviewer(i: ReviewerInput): Promise<ReviewerOutput> {
       params.betas = ["server-side-fallback-2026-07-01"];
     }
     const final = await streamWithRetry(i.client, params, i.signal);
+    recordSpend("review", final.model, final.usage as unknown as Usage);
     usage.calls++;
     usage.input += (final.usage.input_tokens ?? 0) + (final.usage.cache_creation_input_tokens ?? 0) + (final.usage.cache_read_input_tokens ?? 0);
     usage.output += final.usage.output_tokens ?? 0;

@@ -51,6 +51,8 @@ export const KEYWORDS = new Set([
   "decision",
   "sketch",
   "analysis",
+  "as",
+  "cosmetic",
 ]);
 
 /**

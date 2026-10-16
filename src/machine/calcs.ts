@@ -381,7 +381,7 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
   calcFn(
     "battery_runtime",
     ["battery", "current", "usable", "peak"],
-    "Battery runtime. battery: catalog battery component; current: average draw (A); usable: fraction of capacity to use (0.8); peak: highest draw (A). Returns minutes, c_rate and peak_ok.",
+    "Battery runtime. battery: catalog battery component; current: average draw (A); usable: fraction of capacity to use (0.8); peak: highest draw (A). Returns minutes, time (s, to compare with times like 12min), c_rate and peak_ok.",
     (a) => {
       const b = a.value("battery");
       const ctx = a.ctx;
@@ -392,7 +392,7 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
       const peak = a.num("peak", I);
       const minutes = ((cap * use) / I) * 60;
       return {
-        fields: { minutes, c_rate: I / cap, peak_ok: peak <= icont },
+        fields: { minutes, time: minutes * 60, c_rate: I / cap, peak_ok: peak <= icont },
         trace: {
           fn: "",
           title: `${compName(b)}: runtime`,
@@ -409,29 +409,31 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
   calcFn(
     "wire_gauge",
     ["current", "length", "voltage", "max_drop"],
-    "Smallest copper wire (AWG) for a current. current: A; length: one-way run (mm); voltage: supply (V); max_drop: allowed voltage drop fraction (0.03). Returns awg, drop (V), drop_pct.",
+    "Smallest copper wire (AWG) for a current. current: A; length: one-way run (mm); voltage: supply (V); max_drop: allowed voltage drop fraction (0.03). Returns awg, drop (V), drop_pct and fits (false when even 10 AWG is not enough: then awg is 10 and the run needs thicker or parallel wire).",
     (a) => {
       const I = a.positive("current");
       const len = a.num("length", 500) / 1000;
       const V = a.num("voltage", 12);
       const maxDrop = a.num("max_drop", 0.03);
       let pick = AWG[AWG.length - 1];
+      let fits = false;
       for (const row of AWG) {
         const drop = row[1] * len * 2 * I;
         if (row[2] >= I && drop / V <= maxDrop) {
           pick = row;
+          fits = true;
           break;
         }
       }
       const drop = pick[1] * len * 2 * I;
       return {
-        fields: { awg: pick[0], drop, drop_pct: drop / V },
+        fields: { awg: pick[0], drop, drop_pct: drop / V, fits },
         trace: {
           fn: "",
           title: `Wire size for ${sig(I)} A`,
           inputs: [L("Current", I, "A"), L("One-way length", len * 1000, "mm"), L("Supply", V, "V")],
           outputs: [L("Wire size", pick[0], "AWG"), L("Voltage drop there and back", drop, "V"), L("Drop", (drop / V) * 100, "%")],
-          method: ["Pick the thinnest wire whose chassis ampacity ≥ I and whose 2·R·L·I drop ≤ the limit"],
+          method: ["Pick the thinnest wire whose chassis ampacity ≥ I and whose 2·R·L·I drop ≤ the limit", ...(fits ? [] : [`Nothing up to 10 AWG (30 A) fits ${sig(I)} A over ${sig(len * 1000)} mm: use thicker wire, parallel runs or a shorter run`])],
           assumptions: ["Copper, chassis wiring in free air, PVC or silicone insulation"],
           confidence: "standard",
         },
@@ -442,7 +444,7 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
   calcFn(
     "bearing_life",
     ["bearing", "load", "rpm"],
-    "L10 bearing life. bearing: a lib.bearing component or code like \"6808\"; load: equivalent radial load (N); rpm. Returns hours and c_ratio.",
+    "L10 bearing life. bearing: a lib.bearing component or code like \"6808\"; load: equivalent radial load (N); rpm. Returns hours, time (s, to compare with times like 2000h) and c_ratio.",
     (a) => {
       const bv = a.value("bearing");
       const code = typeof bv === "string" ? bv : bv instanceof Obj ? String(bv.fields.code ?? "") : "";
@@ -453,7 +455,7 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
       const L10 = Math.pow(b.dynamicLoadN / P, 3);
       const hours = (L10 * 1e6) / (60 * n);
       return {
-        fields: { hours, c_ratio: b.dynamicLoadN / P },
+        fields: { hours, time: hours * 3600, c_ratio: b.dynamicLoadN / P },
         trace: {
           fn: "",
           title: `Bearing ${code}: life`,

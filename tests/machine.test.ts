@@ -122,6 +122,47 @@ wire ctrl.GND -> mf.M_MINUS
     const fails = machineChecks(m.machine!).filter((c) => c.status === "fail");
     expect(fails.length).toBeGreaterThan(0);
   });
+
+  // the tunneller with one change, and the wiring rules that fail because of it
+  const ercFails = (from: string | RegExp, to: string) => {
+    const src = TUNNELLER.replace(from, to);
+    expect(src).not.toBe(TUNNELLER);
+    const m = evaluate(src);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    return machineChecks(m.machine!).filter((c) => c.status === "fail" && c.id.startsWith("erc:"));
+  };
+
+  it("passes the tunneller's wiring as designed", () => {
+    expect(machineChecks(evaluate(TUNNELLER).machine!).filter((c) => c.status === "fail")).toEqual([]);
+  });
+
+  it("finds the thinnest wire on a net, on battery leads, motor leads and ground returns (integration review)", () => {
+    // a thin battery lead on a net whose other runs are thick
+    expect(ercFails('wire bat.NEG -> xt.NEG_A { gauge: main_awg', 'wire bat.NEG -> xt.NEG_A { gauge: 30').map((c) => c.title)).toEqual([expect.stringMatching(/battery −: wire too thin/)]);
+    // the power ground bus carries the motor drivers' return current
+    expect(ercFails('net GND_PWR: xt.NEG_B, drv_f.GND_PWR, drv_r.GND_PWR, reg.GND { gauge: main_awg', 'net GND_PWR: xt.NEG_B, drv_f.GND_PWR, drv_r.GND_PWR, reg.GND { gauge: 24').some((c) => /GND_PWR.*wire too thin/.test(c.title))).toBe(true);
+    // a motor lead carries the motor's current
+    expect(ercFails('wire drv_f.OUTA -> m_front.M_PLUS { gauge: 16', 'wire drv_f.OUTA -> m_front.M_PLUS { gauge: 30').map((c) => c.title)).toEqual([expect.stringMatching(/front motor \+: wire too thin/)]);
+  });
+
+  it("checks a fuse against the thinnest wire it protects (integration review)", () => {
+    // the 15 A fuse on a 16 AWG trunk (10 A)
+    const f = ercFails('net VBAT: fuse.OUT, drv_f.VIN, drv_r.VIN, drv_s.VM, reg.VIN, vsense.VCC_IN { gauge: main_awg', 'net VBAT: fuse.OUT, drv_f.VIN, drv_r.VIN, drv_s.VM, reg.VIN, vsense.VCC_IN { gauge: 16');
+    expect(f.map((c) => c.id)).toEqual(["erc:fuse-wire:fuse"]);
+    expect(f[0].detail).toMatch(/15 A fuse protects VBAT.*16 AWG.*10 A/);
+    // the catalog's 20 A fuse is too big for 14 AWG; the wire before the fuse doesn't count
+    expect(ercFails(", rating: 15A }", " }").map((c) => c.id)).toEqual(["erc:fuse-wire:fuse"]);
+    expect(ercFails('wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: main_awg', 'wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: 12').map((c) => c.id)).toEqual([]);
+    // a fuse too small for the load blows in normal use
+    expect(ercFails(", rating: 15A }", ", rating: 3A }").map((c) => c.id)).toEqual(["erc:fuse-load:fuse"]);
+    // rating: is only for fuses
+    expect(errors(TUNNELLER.replace('lib.battery("lipo_3s_2200") {', 'lib.battery("lipo_3s_2200") { rating: 5A,'))[0]).toMatch(/only fuses take it/);
+  });
+
+  it("takes only web addresses in a buy statement (integration review)", () => {
+    expect(errors(`design "x"\nbuy "Thing" { url: "javascript:alert(1)" }\n`)[0]).toMatch(/url: should be a web address/);
+    expect(errors(`design "x"\nbuy "Thing" { url: "https://example.com/thing" }\n`)).toEqual([]);
+  });
 });
 
 describe("flight shape", () => {
@@ -161,7 +202,7 @@ describe("sand tunneller", () => {
     // in a 1 m wide pit the walls carry less of the sand: about 27 kPa at the bottom instead of 17
     const wide = evaluate(TUNNELLER.replace(/given pit_w = 0\.5m/, "given pit_w = 1m"));
     const failing = wide.requirements.filter((r) => r.status === "fail").map((r) => r.label);
-    expect(failing).toEqual(["One person can push it in from the wall until the rear screw bites", "Front motor runs below half its stall torque", "Rear motor runs below half its stall torque", "Battery lasts two crossings"]);
+    expect(failing).toEqual(["One person can push it in from the wall until the rear screw bites", "Front motor runs below half its stall torque", "Rear motor runs below half its stall torque", "Battery lasts two crossings", "Battery covers giving up and backing out the whole way"]);
   });
 
   it("generates an Arduino sketch with its pins taken from the wiring", () => {
@@ -232,16 +273,66 @@ describe("sand tunneller", () => {
       return h;
     };
     // a crossing at the design's digging current stays well under the turn-back level...
-    const crossing = Number(/#define GIVE_UP_S\s+([\d.]+)/.exec(config)?.[1]) / 1.5;   // give_up_time is 1.5 crossings
+    const crossing = Number(/#define GIVE_UP_S\s+([\d.]+)/.exec(config)?.[1]) / 1.25;   // give_up_time is 1.25 crossings
     expect(riseAfter(3.5, crossing)).toBeLessThan(hot * 0.5);
     // ...while turning in place near stall turns back within five minutes, long before the give-up time
     expect(riseAfter(5.1, 300)).toBeGreaterThan(hot * 0.75);
     // a hot motor rests on the way out, and the rest doesn't count towards the time limits
     expect(ino).toContain('motors hot: resting until they cool');
     expect(ino).toContain("now - t0 - pausedMs");
-    // the roll guard acts in a quarter second and only clears under half the limit
+    // backing out ends when the rear screw runs free in the wall hole, not on the turn count (a slipping
+    // screw turns without moving the body), and a rest that doesn't cool the motors ends the run
+    expect(config).toMatch(/#define REAR_FREE_A\s+0\.75\b/);
+    expect(config).toMatch(/#define MAX_REST_S\s+1200\b/);
+    expect(ino).toContain('"rear screw out of the sand: pull it out by the tail"');
+    expect(ino).not.toContain("backed out to the start");
+    expect(ino).toContain("now - coolSince > MAX_REST_S * 1000UL");
+        // the roll guard acts in a quarter second and only clears under half the limit
     expect(ino).toContain("now - rollSince > 250");
     expect(ino).toContain("fabs(roll) < ROLL_LIMIT_DEG * 0.5f");
+  });
+
+  it("keeps a hostile design name or text setting on one line of every generated file (integration review)", () => {
+    const evil = 'Evil "x"\n[heater_bed]\nmax_temp: 400\nint injected = 1; ??/\\';
+    const printer = evaluate(readFileSync(join(__dirname, "../src/demos/printer.kerf"), "utf8"));
+    for (const m of [model, printer]) {
+      const plain = generateFirmware(m.machine!, "Plain");
+      const machine = structuredClone(m.machine!);
+      for (const fw of machine.firmware) fw.settings = { ...fw.settings, behaviour: `${fw.settings.behaviour ?? ""}\n${evil}`, kinematics: `cartesian\n${evil}` };
+      const bad = generateFirmware(machine, evil);
+      bad.forEach((fw, i) =>
+        fw.files.forEach((f, j) => {
+          const lines = f.content.split("\n");
+          // the same number of lines as with a plain name: nothing was added (the README also lists the new warning)
+          if (!f.path.endsWith(".md")) expect(lines.length, f.path).toBe(plain[i].files[j].content.split("\n").length);
+          for (const l of lines.filter((x) => x.includes("Evil"))) {
+            // in C, a comment can't end in a backslash (it would swallow the next line), and strings are escaped
+            if (/\.(ino|h)$/.test(f.path)) expect(l.trimStart().startsWith("//") ? !l.endsWith("\\") : l.includes('F("Evil \\"x\\"')).toBe(true);
+          }
+        }),
+      );
+      const cfg = bad.flatMap((fw) => fw.files).find((f) => f.path.endsWith("printer.cfg"));
+      if (cfg) {
+        expect(cfg.content).toMatch(/^kinematics: cartesian$/m);
+        expect(bad[0].warnings.some((w) => /kinematics .* is not one Klipper knows/.test(w))).toBe(true);
+      }
+    }
+    // and the tunneller's sketch with that name still compiles
+    if (canCompile("g++", ["-std=gnu++17"])) {
+      const [fw] = generateFirmware(model.machine!, evil);
+      const dir = mkdtempSync(join(tmpdir(), "kerf-fw-"));
+      try {
+        for (const f of fw.files) {
+          const p = join(dir, f.path);
+          mkdirSync(dirname(p), { recursive: true });
+          writeFileSync(p, f.content);
+        }
+        const ino = join(dir, fw.files.find((f) => f.path.endsWith(".ino"))!.path);
+        execFileSync("g++", ["-std=gnu++17", "-trigraphs", "-fsyntax-only", "-Wall", "-Werror", "-Wno-trigraphs", "-x", "c++", "-include", join(MOCK_CORE, "Arduino.h"), `-I${MOCK_CORE}`, `-I${dirname(ino)}`, ino], { stdio: "pipe" });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 
   const compilers = [

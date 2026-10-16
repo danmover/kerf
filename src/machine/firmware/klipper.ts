@@ -30,6 +30,9 @@ const parseMcu = (s: string | undefined): Record<string, string> => {
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
+/** Klipper's kinematics names: a firmware setting must be one of these. */
+const KINEMATICS = ["cartesian", "corexy", "corexz", "hybrid_corexy", "hybrid_corexz", "delta", "deltesian", "rotary_delta", "polar", "winch", "none"];
+
 export function klipperConfig(c: FwContext): KlipperResult {
   const warnings: string[] = [];
   const board = c.board.name;
@@ -146,7 +149,10 @@ export function klipperConfig(c: FwContext): KlipperResult {
   L.push("restart_method: command");
   L.push("");
   L.push("[printer]");
-  L.push(`kinematics: ${setting(c.fw, "kinematics", "cartesian")}`);
+  // a text setting goes into the config as is, so only Klipper's own kinematics names are taken
+  const kin = setting(c.fw, "kinematics", "cartesian");
+  if (!KINEMATICS.includes(kin)) warnings.push(`kinematics "${kin}" is not one Klipper knows (${KINEMATICS.join(", ")}): using cartesian.`);
+  L.push(`kinematics: ${KINEMATICS.includes(kin) ? kin : "cartesian"}`);
   L.push(`max_velocity: ${cNum(setting(c.fw, "max_velocity", 300))}`);
   L.push(`max_accel: ${cNum(setting(c.fw, "max_accel", 3000))}`);
   L.push("max_z_velocity: 5");

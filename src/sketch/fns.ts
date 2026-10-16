@@ -8,6 +8,7 @@
 import { Args } from "../lang/args";
 import { Fn, ShapeV, SketchLineObj, SketchObj, typeName, type CallCtx, type Value } from "../lang/values";
 import { SHAPE_FNS } from "../lang/builtins";
+import { MODELLING_FNS } from "../lang/modelling";
 import type { V2 } from "../kernel/recipe";
 import { makeFrame, planeValue } from "./planes";
 import type { SketchGeom } from "./types";
@@ -108,5 +109,5 @@ export function sketchFns(before: (name: string) => Fn | undefined): Record<stri
   return { extrude: extrudeOf(before("extrude")), revolve: revolveOf(before("revolve")), plane };
 }
 
-/** Over the basic shape functions, for documentation and completion. */
-export const SKETCH_FNS: Record<string, Fn> = sketchFns((name) => SHAPE_FNS[name]);
+/** Over the profile and basic shape functions (as the evaluator layers them), for documentation and completion. */
+export const SKETCH_FNS: Record<string, Fn> = sketchFns((name) => MODELLING_FNS[name] ?? SHAPE_FNS[name]);

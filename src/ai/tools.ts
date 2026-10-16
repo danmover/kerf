@@ -3,7 +3,7 @@
 // validated before it touches the design.
 
 import { z } from "zod";
-import { useDesign, whenChecked, solveWith, evaluateOnly } from "../core/engine";
+import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly } from "../core/engine";
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
 import { decisionsSummary } from "../core/decisions";
 import type { Model } from "../core/model";
@@ -22,6 +22,8 @@ import type { CatalogPart } from "../machine/types";
 import { calcParams } from "./reference";
 import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
 import { PROCESSES } from "../mfg/profiles";
+import { sheetFor, useDrawings } from "../drawing/engine";
+import { describeSheet, sheetToPng } from "../drawing/export";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
 import { REVIEW_TOOL } from "./review/tool";
@@ -33,6 +35,10 @@ import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
 import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
 import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict } from "../analysis/summary";
+import { evaluateSelector } from "../lang/evaluator";
+import { kernel } from "../kernel/client";
+import { inspectText } from "../kernel/inspectText";
+import { inverseXforms } from "../kernel/recipe";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -178,6 +184,35 @@ export const TOOL_DEFS = [
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
       },
       required: ["view"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "inspect_part",
+    description:
+      "Look inside one built part before choosing fillets, chamfers, drafts or shells: its size, named features (from `add ... as name`) with how many faces and root/tip edges each has, and how many sharp convex and concave edges it has. Pass select to test a selector exactly as you would write it in the source (e.g. `boss.root`, `both(lid.edges, \"top\")`, `near((0, 12, 20), 1)`), and see what it picks; pass at (a world point, e.g. where the user clicked) to get the face and edge there and selectors that name them. Coordinates in results are in the part's own frame, the same frame its selectors use.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        part: { type: "string", description: "Part or component name (or instance id like screw#2)." },
+        select: { type: "string", description: "A selector expression to evaluate against the part." },
+        kind: { type: "string", enum: ["edges", "faces"], description: "What the selector picks (default edges; shell open and draft use faces)." },
+        at: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "A point in world coordinates to identify." },
+        limit: { type: "integer", minimum: 1, maximum: 100 },
+      },
+      required: ["part"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "view_drawing",
+    description:
+      "Look at an engineering drawing of the design: returns the sheet as an image and a list of its views, dimensions (with ids such as d3 and the parameter each one shows), notes and warnings. Without a name it shows the drawing the user has open, or the first one. Automatic drawings (names starting auto:) are generated from the model; the result includes a drawing block to start from when one needs changing.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string", description: "Drawing block name, auto:<part> for an automatic drawing, or a drawing title." },
+      },
       additionalProperties: false,
     },
   },
@@ -374,7 +409,15 @@ const ViewInput = z.object({
   analysis: z.string().max(200).optional(),
 });
 const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional() });
+const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
+const InspectInput = z.object({
+  part: z.string().min(1).max(120),
+  select: z.string().max(2000).optional(),
+  kind: z.enum(["edges", "faces"]).optional(),
+  at: z.array(z.number().finite()).length(3).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
 const AskInput = z.object({
   title: z.string().max(80).optional(),
   question: z.string().min(1).max(500),
@@ -896,13 +939,20 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       return { content: sketchDetail(sk), card: { title: `Read sketch ${sk.name}`, detail: sketchStatusText(sk), status: "done" } };
     }
     case "run_checks": {
-      const s = await whenChecked();
+      let s = await whenChecked();
+      // detailed geometry (threads, knurls, cosmetic steps) builds after the checks; wait a little for it so its problems are seen
+      let refining = false;
+      if (s.model?.parts.some((p) => p.detail) && s.kernelStatus !== "error") {
+        await whenRefined(20_000);
+        s = useDesign.getState();
+        refining = s.stage !== "done";
+      }
       if (s.kernelStatus === "error") return { isError: true, content: `The geometry kernel is unavailable: ${s.kernelError}`, card: { title: "Geometry kernel unavailable", status: "error" } };
       const r = s.report;
       const c = r?.counts;
       const fw = firmwareSummary(s.model);
       return {
-        content: `${modelSummary(s.model)}\n\n${reportSummary(r)}${fw.text ? `\n${fw.text}` : ""}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
+        content: `${modelSummary(s.model)}\n\n${reportSummary(r)}${fw.text ? `\n${fw.text}` : ""}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${refining ? "\nThe detailed geometry (threads, knurls, cosmetic steps) is still building; its problems, if any, show in a later run_checks." : ""}${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
         card: {
           title: c ? (c.fail ? `${c.fail} check${c.fail > 1 ? "s" : ""} failing` : `All ${c.pass} checks pass`) : "Checks unavailable",
           detail: c ? `${c.pass} pass · ${c.fail} fail · ${c.warn} warn${fw.warnings ? ` · ${fw.warnings} firmware warning${fw.warnings > 1 ? "s" : ""}` : ""}` : undefined,
@@ -1002,6 +1052,24 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
         card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : `Looked at the ${p.data.view} view`, image: url },
       };
     }
+    case "view_drawing": {
+      const p = DrawingInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      try {
+        const sheet = await sheetFor(p.data.name ?? useDrawings.getState().active ?? undefined, { signal: ctx.signal });
+        const url = await sheetToPng(sheet, 1568);
+        return {
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/png", data: url.split(",")[1] ?? "" } },
+            { type: "text", text: describeSheet(sheet) },
+          ],
+          card: { title: `Looked at the ${sheet.title} drawing`, detail: `${sheet.size} · ${sheet.views.length} views · ${sheet.dims.length} dimensions`, image: url },
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return { isError: true, content: msg, card: { title: "Drawing unavailable", detail: msg, status: "error" } };
+      }
+    }
     case "update_brief": {
       const p = BriefInput.safeParse(input);
       if (!p.success) return invalid(p.error);
@@ -1048,6 +1116,32 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       const block = ref.file && projectId ? await assetBlock(projectId, ref.file, ref.title) : null;
       if (!block) return { content: `${about}\n${ref.file ? "The stored file is missing from this browser." : "This reference has no stored file."}${ref.url ? " Kerf cannot open web links for you; ask the user for what you need from it." : ""}`, card: { title: `Read reference “${ref.title}”` } };
       return { content: [{ type: "text", text: about }, block], card: { title: `Looked at “${ref.title}”` } };
+    }
+    case "inspect_part": {
+      const p = InspectInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      const m = useDesign.getState().model;
+      const part = m?.parts.find((q) => q.id === p.data.part) ?? m?.parts.find((q) => q.name === p.data.part);
+      if (!m || !part) return { isError: true, content: `No part or component named "${p.data.part}". Parts: ${(m?.parts ?? []).slice(0, 60).map((q) => q.id).join(", ")}`, card: { title: "Part not found", detail: p.data.part, status: "error" } };
+      let sel;
+      if (p.data.select) {
+        const r = evaluateSelector(p.data.select, (part.features ?? []).map((f) => f.name), useDesign.getState().source);
+        if (!r.sel) return { isError: true, content: `The selector did not evaluate: ${r.error}`, card: { title: "Selector error", detail: r.error, status: "error" } };
+        sel = r.sel;
+      }
+      const at = p.data.at ? inverseXforms(p.data.at as V3, part.xf) : undefined;
+      try {
+        await kernel.ready();
+        const res = await kernel.inspectPart({ hash: part.hash, recipe: part.recipe, label: part.id, sel, selKind: p.data.kind, at, limit: p.data.limit });
+        const text = inspectText(part.id, res, p.data.select);
+        const cosmetic = (part.features ?? []).filter((f) => f.cosmetic).map((f) => f.name);
+        return {
+          content: text + (cosmetic.length ? `\nCosmetic features (only in detailed builds, not inspected here): ${cosmetic.join(", ")}` : ""),
+          card: { title: `Inspected ${part.id}`, detail: res.selection ? `${p.data.select} → ${res.selection.count} ${res.selection.kind}` : `${res.features.length} named features · ${res.edgeStats.convex + res.edgeStats.concave} sharp edges` },
+        };
+      } catch (e) {
+        return { isError: true, content: `Could not inspect ${part.id}: ${(e as Error).message}`, card: { title: "Inspection failed", status: "error" } };
+      }
     }
     case "ask_user": {
       const p = AskInput.safeParse(input);
@@ -1110,6 +1204,8 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
+  view_drawing: "Looking at the drawing",
+  inspect_part: "Inspecting a part",
   update_brief: "Updating the brief",
   view_reference: "Looking at a reference",
   run_analysis: "Running the analysis",

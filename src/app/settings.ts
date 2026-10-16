@@ -35,6 +35,8 @@ export interface Settings {
   maxSteps: number;
   /** let Claude search the web and read pages (Anthropic's server tools) to find parts the catalog lacks */
   webSearch: boolean;
+  /** someone who used Kerf before web search existed has yet to be told it is on and what it costs */
+  webNotice: boolean;
   /** when an independent reviewer checks Claude's changes before it reports back */
   selfReview: SelfReview;
   /** review rounds per reply: the first review plus re-checks after fixes */
@@ -57,6 +59,12 @@ export interface Settings {
   agentReview: boolean;
   /** extra geometry workers for agents' checks (0 = decide from the device) */
   agentWorkers: number;
+  /** let a cheaper model answer turns that only read the design (see ai/routing) */
+  routeQuick: boolean;
+  /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
+  keepWarm: number;
+  /** show what each reply cost and saved */
+  showCost: boolean;
   /** version of these defaults the stored settings were last migrated to */
   rev: number;
 }
@@ -81,6 +89,7 @@ const DEFAULTS: Settings = {
   quality: "balanced",
   maxSteps: DEFAULT_STEPS,
   webSearch: true,
+  webNotice: false,
   selfReview: "auto",
   reviewRounds: 2,
   termsAccepted: null,
@@ -93,8 +102,14 @@ const DEFAULTS: Settings = {
   agentBudget: 5,
   agentReview: true,
   agentWorkers: 0,
+  routeQuick: true,
+  keepWarm: 30,
+  showCost: true,
   rev: SETTINGS_REV,
 };
+
+/** keep-warm durations the settings offer, in minutes */
+export const KEEP_WARM_MINUTES = [0, 15, 30, 60];
 
 const KEY = "kerf.settings.v1";
 
@@ -114,6 +129,8 @@ function load(): Settings {
     // settings saved before rev 2 had no rev; their untouched 16-step default becomes the new default
     if (typeof v.rev !== "number" || v.rev < 2) {
       if (v.maxSteps === undefined || v.maxSteps === 16) out.maxSteps = DEFAULT_STEPS;
+      // web search arrived switched on: tell them once, before it can cost them anything
+      if (v.webSearch === undefined) out.webNotice = true;
     }
     out.rev = SETTINGS_REV;
     out.maxSteps = Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.round(Number.isFinite(out.maxSteps) ? out.maxSteps : DEFAULT_STEPS)));
@@ -128,6 +145,7 @@ function load(): Settings {
     out.agentWorkers = Math.min(4, Math.max(0, Math.round(out.agentWorkers)));
     if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
     out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
+    if (!KEEP_WARM_MINUTES.includes(out.keepWarm)) out.keepWarm = DEFAULTS.keepWarm;
     return out;
   } catch {
     return DEFAULTS;

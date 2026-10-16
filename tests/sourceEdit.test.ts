@@ -23,6 +23,21 @@ describe("source edits", () => {
     expect(evaluate(out).params.find((x) => x.name === "width")!.value).toBeCloseTo(77.5);
   });
 
+  it("writes a value back in the unit the parameter uses, so repeated edits don't grow it (integration review)", () => {
+    for (const [text, unit] of [["2000h", "h"], ["2000hr", "hr"], ["5min", "min"], ["2.2Ah", "Ah"], ["12Nm", "Nm"], ["250ms", "ms"], ["3A", "A"], ["60C", "C"]]) {
+      let src = `design "t"\nparam x = ${text}\n`;
+      const value = evaluate(src).params.find((q) => q.name === "x")!.value as number;
+      // three edits that keep the value: the text and the value stay put
+      for (let i = 0; i < 3; i++) src = setParamValue(src, evaluate(src).params.find((q) => q.name === "x")!, value);
+      expect(src, text).toContain(`param x = ${text}`);
+      expect(evaluate(src).params.find((q) => q.name === "x")!.value).toBeCloseTo(value);
+      expect(src.endsWith(`${unit}\n`)).toBe(true);
+    }
+    // a unit that is rewritten in its base unit keeps its value
+    const src = setParamValue(`design "t"\nparam d = 2m\n`, evaluate(`design "t"\nparam d = 2m\n`).params[0], 2500);
+    expect(src).toContain("param d = 2500mm");
+  });
+
   it("locks and unlocks a parameter", () => {
     const p = evaluate(SRC).params.find((x) => x.name === "n")!;
     const locked = toggleParamLock(SRC, p);
