@@ -122,6 +122,13 @@ function pdfString(s: string): string {
   return out + ")";
 }
 
+/** A PDF text string for the document info: UTF-16BE with a byte order mark, in hex. */
+function pdfTextString(s: string): string {
+  let hex = "FEFF";
+  for (let i = 0; i < s.length; i++) hex += s.charCodeAt(i).toString(16).toUpperCase().padStart(4, "0");
+  return `<${hex}>`;
+}
+
 const f3 = (n: number) => {
   const v = Math.round(n * 1000) / 1000;
   return Object.is(v, -0) ? "0" : String(v);
@@ -135,7 +142,9 @@ function pageContent(sheet: Sheet): string {
   const byPen = new Map<Pen, Shape[]>();
   for (const s of sheet.shapes) {
     if (s.t === "text") continue;
-    byPen.set(s.pen, [...(byPen.get(s.pen) ?? []), s]);
+    const list = byPen.get(s.pen);
+    if (list) list.push(s);
+    else byPen.set(s.pen, [s]);
   }
   const order: Pen[] = ["hatch", "thin", "center", "phantom", "cutting", "hidden", "frame", "visible", "border", "fill"];
   for (const pen of order) {
@@ -192,7 +201,7 @@ export function sheetsToPdf(sheets: Sheet[], title = "Drawing"): Uint8Array<Arra
   }
   objs[catalog - 1] = `<< /Type /Catalog /Pages ${pagesId} 0 R >>`;
   objs[pagesId - 1] = `<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(" ")}] /Count ${kids.length} >>`;
-  const info = add(`<< /Title ${pdfString(title)} /Producer (Kerf) >>`);
+  const info = add(`<< /Title ${pdfTextString(title)} /Producer (Kerf) >>`);
   let pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
   const offsets: number[] = [];
   objs.forEach((o, i) => {
@@ -223,17 +232,24 @@ const DXF_LTYPES: Record<string, { desc: string; pattern: number[] }> = {
 
 const LAYER_LTYPE: Record<string, string> = { HIDDEN: "DASHED", CENTER: "CENTER", CUTTING: "CENTER", PHANTOM: "PHANTOM" };
 
-function dxfText(s: string): string {
+/**
+ * DXF text in plain ASCII: the drawing symbols as their %% codes, minus
+ * signs and dashes as hyphens, and anything else outside ASCII as a
+ * \U+XXXX escape, so the file reads the same whatever code page opens it.
+ */
+export function dxfText(s: string): string {
   let out = "";
   for (const ch of s) {
-    if (ch === "Ø") out += "%%c";
+    const c = ch.codePointAt(0)!;
+    if (ch === "Ø" || ch === "⌀") out += "%%c";
     else if (ch === "±") out += "%%p";
     else if (ch === "°") out += "%%d";
     else if (ch === "%") out += "%%%";
-    else {
-      const c = ch.charCodeAt(0);
-      out += c >= 32 && c <= 126 ? ch : c >= 0xa0 && c <= 0xff ? ch : ch === "−" || ch === "–" ? "-" : ch === "×" ? "x" : ch === "…" ? "..." : "?";
-    }
+    else if (ch === "−" || ch === "–") out += "-";
+    else if (ch === "…") out += "...";
+    else if (c >= 32 && c <= 126) out += ch;
+    else if (c > 0xffff || c < 32) out += "?";
+    else out += `\\U+${c.toString(16).toUpperCase().padStart(4, "0")}`;
   }
   return out;
 }

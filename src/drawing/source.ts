@@ -3,6 +3,7 @@
 // plain source edit that the editor, undo, history and the assistant all see.
 
 import type { Model } from "../core/model";
+import { lex, type Token } from "../lang/lexer";
 import type { V3 } from "../kernel/recipe";
 import type { SheetDim } from "./sheet";
 import type { DrawingSpec } from "./spec";
@@ -54,25 +55,33 @@ export function ensureBlock(src: string, model: Model, spec: DrawingSpec): { src
   return { src: `${src}${sep}${specToSource(spec, name)}\n`, name, created: true };
 }
 
-/** Start and end offsets of a drawing block in the source, found by name. */
+/**
+ * Start and end offsets of a drawing block in the source, found by name with
+ * the language's own lexer, so braces in strings and comments don't count.
+ * The start is the beginning of the block's line. Null when the block isn't
+ * there or the source doesn't lex.
+ */
 export function blockRange(src: string, name: string): { start: number; end: number } | null {
-  const re = new RegExp(`(^|\\n)[ \\t]*drawing[ \\t]+${name}[ \\t]*\\{`, "g");
-  const m = re.exec(src);
-  if (!m) return null;
-  const start = m.index + (m[1] ? 1 : 0);
-  let depth = 0;
-  let inStr = false;
-  for (let i = src.indexOf("{", start); i < src.length; i++) {
-    const c = src[i];
-    if (inStr) {
-      if (c === "\\") i++;
-      else if (c === '"') inStr = false;
-      continue;
+  let tokens: Token[];
+  try {
+    tokens = lex(src);
+  } catch {
+    return null;
+  }
+  for (let i = 0; i + 2 < tokens.length; i++) {
+    const [kw, id, open] = [tokens[i], tokens[i + 1], tokens[i + 2]];
+    if (kw.kind !== "ident" || kw.value !== "drawing" || id.kind !== "ident" || id.value !== name || open.kind !== "op" || open.value !== "{") continue;
+    // a drawing block starts its line, as the parser requires
+    const lineStart = src.lastIndexOf("\n", kw.start - 1) + 1;
+    if (src.slice(lineStart, kw.start).trim()) continue;
+    let depth = 0;
+    for (let k = i + 2; k < tokens.length; k++) {
+      const t = tokens[k];
+      if (t.kind !== "op") continue;
+      if (t.value === "{") depth++;
+      else if (t.value === "}" && --depth === 0) return { start: lineStart, end: t.end };
     }
-    if (c === '"') inStr = true;
-    else if (c === "/" && src[i + 1] === "/") i = src.indexOf("\n", i) < 0 ? src.length : src.indexOf("\n", i) - 1;
-    else if (c === "{") depth++;
-    else if (c === "}" && --depth === 0) return { start, end: i + 1 };
+    return null;
   }
   return null;
 }

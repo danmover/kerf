@@ -14,10 +14,10 @@ import { evaluate } from "../src/lang/evaluator";
 import type { Model } from "../src/core/model";
 import { composeSheet } from "../src/drawing/compose";
 import { autoDrawings, planDrawing } from "../src/drawing/views";
-import { sheetsToPdf, sheetToDxf, sheetToSvg } from "../src/drawing/render";
+import { dxfText, sheetsToPdf, sheetToDxf, sheetToSvg } from "../src/drawing/render";
 import type { Sheet } from "../src/drawing/sheet";
 import type { DrawingSpec } from "../src/drawing/spec";
-import { ensureBlock, setBlockProp, setDimTolerance, specToSource } from "../src/drawing/source";
+import { addBlockLine, blockRange, ensureBlock, setBlockProp, setDimTolerance, specToSource } from "../src/drawing/source";
 
 const require = createRequire(import.meta.url);
 const OUT = process.env.DRAWING_OUT;
@@ -179,6 +179,12 @@ drawing plate_dwg {
     const dxf = sheetToDxf(sheet);
     expect(dxf.trimEnd().endsWith("EOF")).toBe(true);
     expect(dxf).toContain("%%c10");
+    // the whole file stays ASCII, with other characters escaped
+    expect(/^[\x09\x0a\x0d\x20-\x7e]*$/.test(dxf)).toBe(true);
+    expect(dxfText("4× Ø3.4 ±0.1 −0.05 Größe")).toBe("4\\U+00D7 %%c3.4 %%p0.1 -0.05 Gr\\U+00F6\\U+00DFe");
+    // the document title is UTF-16 with a byte order mark
+    const titled = new TextDecoder("latin1").decode(sheetsToPdf([sheet], "Größe ×"));
+    expect(titled).toContain("/Title <FEFF0047007200F600DF0065002000D7>");
   }, 60_000);
 });
 
@@ -236,4 +242,32 @@ describe("editing drawings from the sheet", () => {
     expect(d.views.map((v) => v.kind)).toEqual(spec.views.map((v) => v.kind));
     expect(d.tols.map((t) => [t.id, t.fit])).toEqual([["top:x", "H7"]]);
   }, 60_000);
+});
+
+describe("finding drawing blocks in the source", () => {
+  const src = `param drawing = 3mm
+// drawing plate_dwg { is only a comment here
+drawing plate_dwg {
+  title: "Plate { and } braces"
+  /* TODO: } check the fits */
+  views: ["front"] // } not the end either
+}
+part after { body box(10, 10, drawing) }
+`;
+
+  it("skips braces in strings and comments", () => {
+    const r = blockRange(src, "plate_dwg")!;
+    expect(src.slice(r.start, r.end).startsWith("drawing plate_dwg {\n  title")).toBe(true);
+    expect(src.slice(r.start, r.end).endsWith('// } not the end either\n}')).toBe(true);
+    const next = addBlockLine(src, "plate_dwg", 'note("Deburr")');
+    expect(next).toContain('// } not the end either\n  note("Deburr")\n}\npart after');
+    expect(evaluate(next).drawings[0].notes).toContain("Deburr");
+  });
+
+  it("still parses a parameter called drawing", () => {
+    const model = evaluate(src);
+    expect(model.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(model.params.find((p) => p.name === "drawing")?.value).toBeCloseTo(3, 9);
+    expect(model.drawings.map((d) => d.name)).toEqual(["plate_dwg"]);
+  });
 });
