@@ -15,6 +15,7 @@ import { checkIsolated } from "./isolated";
 import type { Usage } from "./pricing";
 import type { AgentStep } from "./progress";
 import { STEP_STATUSES, type StepInput } from "../ai/plan";
+import { BINDING_BETA, hasThinking, isThinkingSignatureError, stripThinking } from "../ai/history";
 
 z.config({ jitless: true });
 
@@ -197,7 +198,6 @@ export type AgentEnd =
 
 const unsupported = new Set<"effort" | "thinking" | "binding" | "fallbacks">();
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
-const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 
 export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHooks): Promise<AgentEnd> {
   const history: BetaMessageParam[] = [{ role: "user", content: [{ type: "text", text: cfg.kickoff }] }];
@@ -208,8 +208,8 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
   for (let step = 0; step < cfg.maxSteps; step++) {
     if (cfg.signal.aborted) return { status: "stopped", summary: lastText || "Stopped before finishing." };
     if (!hooks.budgetOk()) return { status: "stopped", summary: lastText || "Stopped at the run's spending cap." };
+    // the history only ever grows: Claude's thinking blocks are bound to every message before them
     deliver(history, hooks.takeSteering());
-    trimImages(history);
 
     const params: Record<string, unknown> = {
       model: cfg.model,
@@ -221,7 +221,7 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
     const betas: string[] = [];
     if (!unsupported.has("thinking")) {
       const thinking: Record<string, unknown> = { type: "adaptive", display: "summarized" };
-      // trimImages edits earlier turns, which would invalidate their thinking: drop those blocks instead of failing
+      // a block that no longer matches its conversation is dropped instead of failing the request
       if (!unsupported.has("binding")) {
         thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
         betas.push(BINDING_BETA);
@@ -238,7 +238,7 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
     hooks.activity("Thinking");
     let final: Awaited<ReturnType<typeof streamOnce>>;
     try {
-      final = await streamOnce(cfg, params, hooks, () => {
+      final = await streamOnce(cfg, params, history, hooks, () => {
         if (!signalled) {
           signalled = true;
           hooks.firstEvent();
@@ -301,7 +301,8 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
   return { status: "stopped", summary: lastText || `Stopped after ${cfg.maxSteps} steps without finishing.` };
 }
 
-async function streamOnce(cfg: AgentConfig, params: Record<string, unknown>, hooks: AgentHooks, onFirst: () => void) {
+async function streamOnce(cfg: AgentConfig, params: Record<string, unknown>, history: BetaMessageParam[], hooks: AgentHooks, onFirst: () => void) {
+  let strippedOnce = false;
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       const stream = cfg.anthropic.beta.messages.stream(params as never, { signal: cfg.signal });
@@ -323,7 +324,15 @@ async function streamOnce(cfg: AgentConfig, params: Record<string, unknown>, hoo
       });
       return await stream.finalMessage();
     } catch (e) {
-      if (e instanceof Anthropic.BadRequestError) {
+      if (e instanceof Anthropic.BadRequestError && isThinkingSignatureError(e.message || "")) {
+        // a thinking block that no longer belongs to this conversation: resend once without thinking
+        if (!strippedOnce && hasThinking(history)) {
+          strippedOnce = true;
+          stripThinking(history);
+          params.messages = withCacheBreakpoint(history);
+          continue;
+        }
+      } else if (e instanceof Anthropic.BadRequestError) {
         const msg = (e.message || "").toLowerCase();
         const feature = msg.includes("effort") || msg.includes("output_config") ? "effort" : msg.includes("block_binding") || msg.includes("thinking-binding") ? "binding" : msg.includes("thinking") ? "thinking" : msg.includes("fallback") || msg.includes("beta") ? "fallbacks" : null;
         if (feature && !unsupported.has(feature)) {
@@ -549,21 +558,6 @@ function deliver(history: BetaMessageParam[], text: string | null) {
   const last = history[history.length - 1];
   if (last.role === "user" && typeof last.content !== "string") last.content = [...last.content, { type: "text", text }];
   else history.push({ role: "user", content: [{ type: "text", text }] });
-}
-
-/** Keep the two most recent images; older ones become a short note. */
-function trimImages(history: BetaMessageParam[]) {
-  let seen = 0;
-  for (let i = history.length - 1; i >= 0; i--) {
-    const m = history[i];
-    if (typeof m.content === "string") continue;
-    for (const b of m.content) {
-      if (b.type === "tool_result" && Array.isArray(b.content) && b.content.some((c) => c.type === "image")) {
-        seen++;
-        if (seen > 2) b.content = b.content.map((c) => (c.type === "image" ? { type: "text" as const, text: "[earlier image removed to save context]" } : c));
-      }
-    }
-  }
 }
 
 function withCacheBreakpoint(h: BetaMessageParam[]): BetaMessageParam[] {
