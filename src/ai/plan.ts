@@ -574,15 +574,25 @@ export function loadPlan(saved: unknown) {
     ...emptyPlan(),
     ...p,
     pauseHit: null,
-    steps: p.steps.map((s) => ({
-      ...s,
-      // no branch agent survives a reload
-      ...(s.kind !== "step" && (s.status === "doing" || s.status === "todo") ? { status: "blocked" as const, detail: "Interrupted when the page closed." } : s.owner !== MAIN && s.status === "doing" ? { status: "blocked" as const } : {}),
-      notes: s.notes ?? [],
-      activity: (s.activity ?? []).map((a) => (a.status === "running" ? { ...a, status: "error" as const, title: `${a.title} (interrupted)` } : a)),
-    })),
+    steps: p.steps.map((s) => {
+      const activity = (s.activity ?? []).map((a) => (a.status === "running" ? { ...a, status: "error" as const, title: `${a.title} (interrupted)` } : a));
+      const step = { ...s, notes: s.notes ?? [], activity };
+      // a sub-agent does not survive the page: its unfinished branch stops where it was
+      const cut = s.owner !== MAIN && (s.status === "doing" || (s.kind !== "step" && s.status === "todo"));
+      return cut ? { ...step, status: "blocked" as const, detail: s.kind !== "step" ? "Interrupted when the page closed." : s.detail } : step;
+    }),
     steering: p.steering ?? [],
   });
+}
+
+/** True while any sub-agent branch is running. Interrupting the main loop then would stop the agents too. */
+export const anyBranchOpen = () => openBranches.size > 0;
+
+/** Waiting changes for the main loop, and for open branches (their agents pick those up themselves). */
+export function pendingByScope(plan: Plan) {
+  const waiting = pendingSteering(plan);
+  const main = waiting.filter((w) => steerScope(plan, w, isOpen) === MAIN).length;
+  return { main, branches: waiting.length - main };
 }
 export const resetPlan = () => {
   openBranches.clear();
@@ -649,10 +659,10 @@ export interface PlanBranch {
   endLog(logId: string, status: "done" | "error", title?: string): void;
   /** One short line on the branch root, e.g. tokens and cost. */
   setMeta(meta: string): void;
-  /** The parts the whole branch works on, lit up when its root is hovered. */
-  setParts(parts: string[]): void;
   /** The branch's own state while it is open: todo (queued or waiting on another branch), doing, or blocked. */
   setStatus(status: "todo" | "doing" | "blocked", detail?: string): void;
+  /** The parts this branch owns, lit on hover, once they exist. */
+  setParts(parts: string[]): void;
   /** The user's changes to this branch since the last call, formatted for the agent's next tool result; null if none. */
   takeSteering(): string | null;
   /** True once the user has skipped the whole branch: the agent should stop and report. */
@@ -708,7 +718,7 @@ export function openBranch(opts: { title: string; agent: string; under?: string;
       change((p) => patchStep(p, id, { meta: clip(meta, 80) }));
     },
     setParts(parts) {
-      change((p) => patchStep(p, id, { parts: parts.slice(0, 60) }));
+      change((p) => patchStep(p, id, { parts: parts.slice(0, 200) }));
     },
     setStatus(status, detail) {
       change((p) => patchStep(p, id, { status, detail: detail !== undefined ? clip(detail, LIMITS.detail) : undefined }));

@@ -9,6 +9,8 @@ import {
   planTree,
   progress,
   pendingSteering,
+  pendingByScope,
+  anyBranchOpen,
   userRename,
   userNote,
   userRemoveNote,
@@ -47,6 +49,9 @@ export function PlanPane() {
   const tree = useMemo(() => planTree(plan), [plan]);
   const pr = useMemo(() => progress(plan), [plan]);
   const waiting = pendingSteering(plan);
+  const scoped = pendingByScope(plan);
+  // interrupting while sub-agents run would stop them, so their changes wait for their next step
+  const agentsRunning = anyBranchOpen();
   const [adding, setAdding] = useState(false);
   // durations and "Claude has it" tags change by the second only while something is happening
   const recent = plan.steering.some((w) => !w.delivered || Date.now() - w.delivered < 7000);
@@ -111,11 +116,13 @@ export function PlanPane() {
             <span className="steer-dot" />
             <span className="grow">
               {waiting.length} change{waiting.length > 1 ? "s" : ""} for Claude
-              <span className="dim"> · {busy ? "picked up after the current action" : "sent with your next message"}</span>
+              <span className="dim"> · {busy ? (scoped.main ? "picked up after the current action" : "each agent picks up its own at its next step") : "sent with your next message"}</span>
             </span>
-            <button className="btn sm" onClick={() => void applyPlanChangesNow()} data-tip={busy ? "Stop the current response and continue with your changes" : "Send your changes to Claude now"}>
-              {busy ? "Apply now" : "Send now"}
-            </button>
+            {(!busy || (scoped.main > 0 && !agentsRunning)) && (
+              <button className="btn sm" onClick={() => void applyPlanChangesNow()} data-tip={busy ? "Stop the current response and continue with your changes" : "Send your changes to Claude now"}>
+                {busy ? "Apply now" : "Send now"}
+              </button>
+            )}
           </motion.div>
         ) : (
           !busy &&

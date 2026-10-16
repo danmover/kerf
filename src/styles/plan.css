@@ -310,15 +310,21 @@
   color: var(--text-4);
 }
 
-/* actions appear on hover or keyboard focus */
+/* actions appear on hover or keyboard focus, floating over the row's right
+   end so showing them never reflows the tree (a row that rewraps on blur
+   would move whatever the pointer is pressing) */
 .ps-actions {
+  position: absolute;
+  top: 3px;
+  right: 4px;
   display: flex;
   gap: 1px;
-  flex: none;
+  padding-left: 14px;
+  border-radius: 0 6px 6px 0;
+  background: linear-gradient(90deg, transparent, var(--bg-3) 12px);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s;
-  margin: -1px -2px 0 0;
 }
 .ps-row:hover > .ps-actions,
 .ps-row:focus-within > .ps-actions {
@@ -327,7 +333,7 @@
 }
 .ps-row:hover > .ps-time,
 .ps-row:focus-within > .ps-time {
-  display: none;
+  visibility: hidden;
 }
 .ps-act {
   width: 21px;
