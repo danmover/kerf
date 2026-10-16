@@ -122,7 +122,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atShot()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -138,18 +138,25 @@ class Parser {
     return this.is("ident", "drawing") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
   }
 
+  /** `shot <name> {` starts a product shot block; elsewhere "shot" is an ordinary name. */
+  atShot() {
+    // a shot may be called cut or body: the name can be a keyword
+    return this.is("ident", "shot") && (this.is("ident", undefined, 1) || this.is("kw", undefined, 1)) && this.is("op", "{", 2);
+  }
+
   stmt(): Stmt {
     const tk = this.peek();
-    if (this.atDrawing()) {
+    if (this.atDrawing() || this.atShot()) {
       const start = tk.start;
+      const kind = this.atDrawing() ? "drawing" : "shot";
       this.next();
-      const nameTk = this.expect("ident", undefined, "a drawing name");
+      const nameTk = kind === "shot" && this.is("kw") ? this.next() : this.expect("ident", undefined, `a ${kind} name`);
       const items = this.block();
-      return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+      return { k: kind, name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, shot) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -515,6 +522,13 @@ class Parser {
           this.next();
           return { k: "flag", name: "locked", span: { start, end: this.prevEnd() } };
         case "note":
+          // note: "..." inside a shot block
+          if (this.isOp(":", 1)) {
+            this.next();
+            this.next();
+            const value = this.expr();
+            return { k: "prop", name: "note", value, span: { start, end: this.prevEnd() } };
+          }
           // note("...") inside a drawing block
           if (this.isOp("(", 1)) {
             const kw = this.next();

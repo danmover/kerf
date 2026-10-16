@@ -25,6 +25,8 @@ import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
 import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
+import { evalShot, finishShots } from "../shots/evaluate";
+import type { ShotSpec } from "../shots/spec";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -181,6 +183,7 @@ class Evaluator {
   brief: Brief | null = null;
   geoQueries: GeoQuery[] = [];
   drawings: DrawingSpec[] = [];
+  shots: ShotSpec[] = [];
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
@@ -244,7 +247,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "shot" ? `In shot "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -259,7 +262,7 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
-    if (s.k === "drawing") return undefined;
+    if (s.k === "drawing" || s.k === "shot") return undefined;
     // decisions record choices; nothing reads them, so they stay out of the dependency graph
     if (s.k === "analysis") return `analysis:${s.label}`;
     return "name" in s && s.k !== "design" && s.k !== "decision" ? s.name : undefined;
@@ -334,6 +337,24 @@ class Evaluator {
       case "drawing":
         this.drawing(s);
         return;
+      case "shot": {
+        const locked = s.items.some((i) => i.k === "flag" && i.name === "locked");
+        this.blocks.push({ name: s.name, kind: "shot", span: s.span, locked });
+        if (this.shots.some((d) => d.name === s.name)) throw new EvalError(`A shot called "${s.name}" already exists`, s.nameSpan);
+        this.shots.push(
+          evalShot(s, {
+            expr: (e, scope) => this.expr(e, scope as Scope | null),
+            scope: (parent) => new Scope(parent as Scope | undefined),
+            setVar: (scope, name, v) => (scope as Scope).vars.set(name, v),
+            warn: (msg, span) => this.diags.push({ message: `In shot "${s.name}": ${msg}`, start: span.start, end: Math.max(span.end, span.start + 1), severity: "warning" }),
+            ctx: (span) => {
+              this.callSpan = span;
+              return this.ctx();
+            },
+          }),
+        );
+        return;
+      }
       case "decision":
         this.decision(s);
         return;
@@ -1712,8 +1733,11 @@ class Evaluator {
       blocks: this.blocks,
       geoQueries: dedupeGeo(this.geoQueries),
       drawings: this.drawings,
+      shots: this.shots,
       evalMs: 0,
     };
+    // shots may name parts defined below them; names that don't exist become flags on the shot
+    finishShots(model, (msg, span) => model.diagnostics.push({ message: msg, start: span.start, end: Math.max(span.end, span.start + 1), severity: "warning" }));
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;
     if (b) applyDefaultProcess(model, b.processSpec ?? null, { buildVolume: b.buildVolume, material: b.material });

@@ -1,6 +1,7 @@
 // The Kerf language reference given to Claude, generated from the same
 // builtin tables the evaluator uses so it cannot drift from the code.
 
+import { shotReference } from "../shots/docs";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { FEATURE_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../lang/modelling";
 import { SEL_PRESETS } from "../kernel/recipe";
@@ -217,6 +218,8 @@ Component fields are world-space after placement (motor.holes is a list of world
 ${lib}
 
 ${drawingReference()}
+
+${shotReference()}
 ${importsReference()}
 
 ## Standard data

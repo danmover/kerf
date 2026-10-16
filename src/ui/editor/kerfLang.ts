@@ -12,6 +12,8 @@ import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FN
 import { LIBRARY } from "../../library/components";
 import { PROCESSES, PROCESS_IDS } from "../../mfg/profiles";
 import { DRAWING_DOCS, DRAWING_PROPS } from "../../drawing/spec";
+import { SHOT_PROPS } from "../../shots/spec";
+import { SHOT_DOCS } from "../../shots/docs";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 import { BRIEF_FIELDS } from "../../lang/evaluator";
@@ -22,8 +24,8 @@ import { ANALYSIS_FNS, DRIVETRAIN_PROPS, STRUCTURAL_PROPS } from "../../analysis
 const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision", "sketch", "analysis"]);
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
-// "drawing" starts a block only at the start of a line; elsewhere it is an ordinary name
-const LINE_KEYWORDS = new Set(["drawing"]);
+// "drawing" and "shot" start a block only at the start of a line; elsewhere they are ordinary names
+const LINE_KEYWORDS = new Set(["drawing", "shot"]);
 const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
 const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MODELLING_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step", ...Object.keys(ANALYSIS_FNS)]);
@@ -187,6 +189,7 @@ export function kerfCompletions(getModel: () => Model | null) {
     ...Object.entries(DRAWING_DOCS)
       .filter(([k]) => k !== "note")
       .map(([k, d]) => ({ label: k, type: "function", info: d, detail: "drawing", apply: k + "(" })),
+    { label: "callout", type: "function", info: SHOT_DOCS.callout, detail: "shot", apply: "callout(" },
   ];
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
@@ -194,7 +197,7 @@ export function kerfCompletions(getModel: () => Model | null) {
   const mfgItems: Completion[] = PROCESS_IDS.map((id) => ({ label: id, type: "class", info: `${PROCESSES[id].label}. ${PROCESSES[id].summary}\n\nSettings: ${PROCESSES[id].settings.map((s) => `${s.key}: ${s.doc}`).join("; ") || "none"}`, detail: "process", apply: id + "(" }));
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
-  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", "plane", "offset", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", "plane", "offset", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...DRAWING_PROPS, ...SHOT_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 

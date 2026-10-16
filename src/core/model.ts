@@ -8,6 +8,7 @@ import type { EvalSketch } from "../sketch/types";
 import type { AnalysisSpec } from "../analysis/spec";
 import type { ProcessSpec } from "../mfg/types";
 import type { DrawingSpec } from "../drawing/spec";
+import type { ShotSpec } from "../shots/spec";
 
 export interface Motion {
   origin: V3;
@@ -277,5 +278,7 @@ export interface Model {
   geoQueries: GeoQuery[];
   /** engineering drawings defined in the source */
   drawings: DrawingSpec[];
+  /** product shots defined in the source */
+  shots: ShotSpec[];
   evalMs: number;
 }

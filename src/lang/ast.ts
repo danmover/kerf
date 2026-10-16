@@ -88,6 +88,8 @@ export type Stmt =
     }
   | { k: "part"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | { k: "drawing"; name: string; items: Item[]; span: Span; nameSpan: Span }
+  /** a product shot: camera, lighting, set and motion for a rendered image or animation */
+  | { k: "shot"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | {
       k: "require";
       label: string;
@@ -170,6 +172,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "part":
     case "sketch":
     case "drawing":
+    case "shot":
       return s.name;
     case "require":
     case "analysis":
