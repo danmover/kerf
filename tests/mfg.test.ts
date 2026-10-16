@@ -266,20 +266,17 @@ describe("process rules and guidance", () => {
     expect(languageReference()).toContain("## Manufacturing processes");
   });
 
-  it("names the draft, rib and fillet syntax once the language has them", () => {
+  it("names the draft, rib and fillet syntax now that the language has them", () => {
+    // draft(), rib(), gusset() and named selections arrived with detailed modelling (#17)
+    expect(MODIFIER_PARAMS.draft).toEqual(["angle", "faces", "pull", "neutral"]);
     const spec: ProcessSpec = { id: "injection", settings: { pull: [0, 1, 0], draft: 1.5 } };
-    expect(processGuideText(spec, "ABS")).toMatch(/no draft modifier yet/);
-    MODIFIER_PARAMS.draft = ["angle", "faces", "pull", "neutral"];
-    try {
-      const g = processGuideText(spec, "ABS");
-      expect(g).toContain("draft(1.5, faces: facing(X) + facing(-X) + facing(Z) + facing(-Z), pull: Y)");
-      expect(g).toContain("add rib(");
-      expect(g).toContain('fillet(r, edges: "concave")');
-      expect(processGuideText({ id: "die_cast", settings: {} })).toContain('faces: "vertical", pull: Z');
-      expect(processGuideText({ id: "cnc_mill", settings: {} })).toContain('both("vertical", "concave")');
-    } finally {
-      delete MODIFIER_PARAMS.draft;
-    }
+    const g = processGuideText(spec, "ABS");
+    expect(g).not.toMatch(/no draft modifier yet/);
+    expect(g).toContain("draft(1.5, faces: facing(X) + facing(-X) + facing(Z) + facing(-Z), pull: Y)");
+    expect(g).toContain("add rib(");
+    expect(g).toContain('fillet(r, edges: "concave")');
+    expect(processGuideText({ id: "die_cast", settings: {} })).toContain('faces: "vertical", pull: Z');
+    expect(processGuideText({ id: "cnc_mill", settings: {} })).toContain('both("vertical", "concave")');
   });
 
   it("gives drawings a general tolerance for each process", () => {

@@ -1,0 +1,91 @@
+design "Screw-Top Canister"
+note "Printed PETG storage jar with a knurled screw-on lid that seals on an O-ring. The neck carries a real two-start trapezoid thread; the lid's thread is phased to mesh with it."
+
+brief {
+  purpose: "Store dry goods on a kitchen shelf in a jar whose lid screws down onto an O-ring seal"
+  setting: "Indoors on a shelf or counter, opened by hand most days"
+  priorities: ["easy to open", "airtight", "print time"]
+
+  temp: 5C .. 40C
+  outdoor: false
+
+  process: "FDM print"
+  material: "PETG"
+  quantity: 2 assumed
+
+  use seal "The lid screws down and squeezes the O-ring so the jar is airtight"
+  use open_by_hand "The lid turns on and off by hand without binding" { cycles: 1000 } assumed
+  use printable "Jar and lid print on a hobby FDM printer" assumed
+
+  assume "A 2 mm nitrile O-ring cord, joined into a ring"
+}
+
+// ── Layout ─────────────────────────────────────────────
+param body_d   = 72mm   "Outer diameter of the jar and lid"
+param body_h   = 96mm   "Height of the jar to the top of the neck"
+param wall     = 2.2mm  range 1.6 .. 4  "Wall and floor thickness"
+param pitch    = 3mm    "Thread pitch"
+param thread_l = 10mm   "Length of the neck thread"
+param fit      = 0.2mm  "Radial play per side between the printed threads"
+param cord     = 2mm    "O-ring cord thickness"
+
+let base_r   = 6                          // rounding where the floor meets the side
+let neck_d   = body_d - 6                 // thread major diameter
+let root_r   = neck_d / 2 - pitch / 2 - fit
+let neck_r   = root_r - 0.4               // neck tube under the thread root
+let neck_z   = body_h - thread_l          // where the thread starts
+let shoulder = neck_z - 12                // top of the straight side
+let bore     = 2 * (neck_r - wall)
+
+let grip_depth = 0.6
+let lid_top  = 3                          // lid plate thickness
+let lid_h    = thread_l + 1.5 + lid_top
+let lid_z    = body_h + 0.3 - (lid_h - lid_top)   // lid seated, O-ring squeezed
+// start the lid's thread a whole number of leads from the neck's, so the two mesh
+let lead     = 2 * pitch
+let phase    = neck_z + floor((lid_z - neck_z) / lead) * lead - lid_z
+
+// ── Jar ────────────────────────────────────────────────
+part jar {
+  color: #7fb7ff
+  material: "PETG"
+  group: "Canister"
+  body revolve(outline([
+    (0, 0),
+    (body_d / 2 - base_r, 0),
+    arc_to((body_d / 2, base_r), via: (body_d / 2 - base_r * 0.2929, base_r * 0.2929)),
+    (body_d / 2, shoulder),
+    spline_to((body_d / 2 - 3, shoulder + 7)),
+    spline_to((neck_r, neck_z - 1)),
+    (neck_r, neck_z),
+    (0, neck_z),
+  ])) as shell_body
+  shell(wall, open: Z)
+  add thread(d: neck_d, pitch: pitch, starts: 2, form: "trapezoid", length: thread_l, at: (0, 0, neck_z), clearance: fit, bore: bore) as neck
+  cosmetic {
+    cut engrave(text("PETG 0.2 FIT", size: 4, font: "mono"), at: (0, 0, 0), facing: -Z, depth: 0.4)
+  }
+}
+
+// ── Lid ────────────────────────────────────────────────
+part lid {
+  color: #ffb36b
+  material: "PETG"
+  group: "Canister"
+  removable
+  body cylinder(d: body_d - 2 * grip_depth, h: lid_top, at: (0, 0, lid_h - lid_top)) as cap
+  add knurl(d: body_d, h: lid_h - lid_top, count: 60, depth: grip_depth, style: "fluted") as grip
+  fillet(1.6, edges: cap.tip)
+  cut thread(d: neck_d, pitch: pitch, starts: 2, form: "trapezoid", length: lid_h - lid_top - phase, at: (0, 0, phase), internal: true, clearance: fit, lead: 0) as inner
+  cut oring_groove(d: 2 * neck_r - wall, cs: cord, at: (0, 0, lid_h - lid_top), dir: Z, type: "face") as seal
+  cosmetic {
+    add emboss(text("TEA", size: 12), at: (0, 0, lid_h), facing: Z, h: 0.8)
+  }
+  at: (0, 0, lid_z)
+}
+
+// ── Requirements ───────────────────────────────────────
+require "Lid skirt is thick enough to print" for printable: body_d / 2 - grip_depth - (neck_d / 2 + fit) >= wall
+require "Threads engage at least three turns" for seal, open_by_hand: thread_l / pitch >= 3
+require "Neck wall under the thread" for printable: neck_r - bore / 2 >= wall
+require "Lid clears the jar" for open_by_hand: min_distance(jar, lid) >= 0.15

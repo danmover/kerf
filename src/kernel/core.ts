@@ -3,13 +3,15 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { applyXf, bboxOf, buildPart, importFaceColors, meshShape, type MeshData } from "./build";
-import { applyXforms, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
-import type { BuildItem, ChecksRequest, ChecksResult, Interference, PlacedItem } from "./protocol";
-import { inspectPart, type PartInspection } from "./inspect";
+import { applyXf, bboxOf, buildPartFull, importFaceColors, meshShape, solidVolume, type MeshData } from "./build";
+import { applyXforms, hasDetail, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
+import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, InspectRequest, InspectResult, Interference, PlacedItem } from "./protocol";
+import { inspectPart as inspectForReview, type PartInspection } from "./inspect";
+import { inspectShape } from "./selectInspect";
 import { geoKey, type GeoQuery } from "../lang/values";
 import { ProcessAnalyzer } from "../mfg/analyzer";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
+import type { FeatureTools } from "./topology";
 
 interface CacheEntry {
   shape: Shape3D;
@@ -20,6 +22,9 @@ interface CacheEntry {
   /** colours of each face, for imported bodies that carry them */
   faceColors: string[] | null;
   used: number;
+  features: Map<string, FeatureTools>;
+  /** cosmetic steps that could not be built */
+  warnings: string[];
 }
 
 export interface MeasureResult {
@@ -30,7 +35,10 @@ export interface MeasureResult {
 }
 
 export class KernelCore {
+  /** fast builds: what checks, measurements and previews use */
   private cache = new Map<string, CacheEntry>();
+  /** detailed builds (threads, knurls, cosmetic steps) for final meshes and STEP export */
+  private detailCache = new Map<string, CacheEntry>();
   private placedCache = new Map<string, { shape: Shape3D; bbox: [V3, V3]; used: number }>();
   private tick = 0;
   private processes = new ProcessAnalyzer();
@@ -46,24 +54,40 @@ export class KernelCore {
     return e;
   }
 
-  build(item: BuildItem): CacheEntry {
+  /** Build a part. Final quality builds the detailed version when the recipe has detail. */
+  build(item: BuildItem, quality: "preview" | "final" = "preview"): CacheEntry {
+    if (quality === "final" && hasDetail(item.recipe)) {
+      const hit = this.detailCache.get(item.hash);
+      if (hit) {
+        hit.used = ++this.tick;
+        return hit;
+      }
+      const entry = this.make(item, true);
+      this.detailCache.set(item.hash, entry);
+      this.trim();
+      return entry;
+    }
     const hit = this.get(item.hash);
     if (hit) return hit;
-    const shape = buildPart(item.recipe);
-    let volume = 0;
-    try {
-      volume = R.measureVolume(shape);
-    } catch {
-      volume = 0;
-    }
-    const entry: CacheEntry = { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), used: ++this.tick };
+    const entry = this.make(item, false);
     this.cache.set(item.hash, entry);
     this.trim();
     return entry;
   }
 
+  private make(item: BuildItem, detail: boolean): CacheEntry {
+    const { shape, warnings, features } = buildPartFull(item.recipe, { detail });
+    let volume = 0;
+    try {
+      volume = solidVolume(shape);
+    } catch {
+      volume = 0;
+    }
+    return { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), used: ++this.tick, features, warnings };
+  }
+
   mesh(hash: string, quality: "preview" | "final"): MeshData {
-    const e = this.get(hash);
+    const e = (quality === "final" ? this.detailCache.get(hash) : undefined) ?? this.get(hash);
     if (!e) throw new Error("not built");
     if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors);
     return e.meshes[quality]!;
@@ -79,13 +103,19 @@ export class KernelCore {
         continue;
       }
       try {
-        e.inspection ??= inspectPart(e.shape, e.meshes.final ?? e.meshes.preview ?? this.mesh(h, "preview"));
+        e.inspection ??= inspectForReview(e.shape, e.meshes.final ?? e.meshes.preview ?? this.mesh(h, "preview"));
         out[h] = e.inspection;
       } catch (err) {
         out[h] = { error: err instanceof Error ? err.message : String(err) };
       }
     }
     return out;
+  }
+
+  /** Describe a built part for inspect_part: named features, sharp edges, and what a selector picks. */
+  inspectPart(req: InspectRequest): InspectResult {
+    const e = this.build({ hash: req.hash, recipe: req.recipe, label: req.label });
+    return inspectShape(e.shape, e.features, req, e.volume);
   }
 
   evict(keep: string[]) {
@@ -97,6 +127,12 @@ export class KernelCore {
         this.cache.delete(h);
       }
     }
+    for (const [h, e] of this.detailCache) {
+      if (!k.has(h)) {
+        safeDelete(e.shape);
+        this.detailCache.delete(h);
+      }
+    }
     for (const [key, p] of this.placedCache) {
       if (!k.has(key.split("|")[0])) {
         safeDelete(p.shape);
@@ -106,11 +142,13 @@ export class KernelCore {
   }
 
   private trim() {
-    if (this.cache.size <= this.maxEntries) return;
-    const sorted = [...this.cache.entries()].sort((a, b) => a[1].used - b[1].used);
-    for (const [h, e] of sorted.slice(0, this.cache.size - this.maxEntries)) {
-      safeDelete(e.shape);
-      this.cache.delete(h);
+    for (const map of [this.cache, this.detailCache]) {
+      if (map.size <= this.maxEntries) continue;
+      const sorted = [...map.entries()].sort((a, b) => a[1].used - b[1].used);
+      for (const [h, e] of sorted.slice(0, map.size - this.maxEntries)) {
+        safeDelete(e.shape);
+        map.delete(h);
+      }
     }
   }
 
@@ -320,8 +358,13 @@ export class KernelCore {
     return best;
   }
 
-  exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]): Blob {
-    const shapes = items.map((it) => ({ shape: this.placed(it).shape.clone(), name: it.name, color: it.color }));
+  exportStep(items: ExportItem[]): Blob {
+    // the detailed solid when it has been built (real threads, cosmetic detail), else the fast one
+    const shapes = items.map((it) => {
+      const e = it.recipe ? this.build({ hash: it.hash, recipe: it.recipe, label: it.name }, it.fast ? "preview" : "final") : (this.detailCache.get(it.hash) ?? this.get(it.hash));
+      if (!e) throw new Error("not built: " + it.name);
+      return { shape: applyXf(e.shape.clone(), it.xf), name: it.name, color: it.color };
+    });
     return R.exportSTEP(shapes);
   }
 }

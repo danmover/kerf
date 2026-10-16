@@ -7,6 +7,7 @@ import type { GeoQuery } from "../lang/values";
 import type { EvalSketch } from "../sketch/types";
 import type { AnalysisSpec } from "../analysis/spec";
 import type { ProcessSpec } from "../mfg/types";
+import type { DrawingSpec } from "../drawing/spec";
 
 export interface Motion {
   origin: V3;
@@ -85,6 +86,10 @@ export interface EvalPart {
   bearing?: BearingInfo;
   fastener?: FastenerInfo;
   bom?: { description: string; standard?: string };
+  /** named features (`add ... as name`), for selectors and inspection */
+  features?: { name: string; kind: string; cosmetic: boolean }[];
+  /** detailed builds differ from fast ones (threads, knurls, cosmetic steps) */
+  detail?: boolean;
   /** set for bodies of an imported STEP file */
   imported?: ImportedBody;
 }
@@ -270,5 +275,7 @@ export interface Model {
   blocks: { name: string; kind: string; span: Span; locked: boolean }[];
   /** geometric queries requested by requirements */
   geoQueries: GeoQuery[];
+  /** engineering drawings defined in the source */
+  drawings: DrawingSpec[];
   evalMs: number;
 }

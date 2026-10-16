@@ -2,14 +2,15 @@
 // components with geometry recipes, requirement results and a dependency graph.
 
 import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
-import { parse, type Diagnostic } from "./parser";
-import { Fn, Obj, Pending, Ref, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
-import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, edgeSel, geoFns, libNamespace, threadConstants } from "./builtins";
+import { parse, parseExpression, type Diagnostic } from "./parser";
+import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
+import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
+import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
 import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
 import type { ImportRef, ImportTable } from "../kernel/imports";
-import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
+import { frameFor, hasDetail, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
@@ -23,6 +24,7 @@ import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang
 import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
+import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -95,12 +97,51 @@ interface CompInfo {
   value: Obj;
 }
 
+interface PartState {
+  base: ShapeRecipe | null;
+  baseName?: string;
+  ops: PartOp[];
+  props: Record<string, Value>;
+  propSpans: Record<string, Span>;
+  flags: Set<string>;
+  /** the part's top scope, where `as` names live */
+  root: Scope;
+  /** inside a cosmetic { } block */
+  cosmetic: boolean;
+  feats: Map<string, { kind: string; cosmetic: boolean }>;
+  /** counters for unnamed ready-made features (screw_boss#1) */
+  auto: Map<string, number>;
+  strain: { strain: number; span: Span }[];
+}
+
 class Scope {
   vars = new Map<string, Value>();
   constructor(public parent?: Scope) {}
   get(name: string): Value | undefined {
     if (this.vars.has(name)) return this.vars.get(name);
     return this.parent?.get(name);
+  }
+}
+
+/**
+ * Evaluate a selector written as text (`boss.root`, `near((0, 0, 10))`,
+ * `"top" + circles(3)`) for a part with the given feature names, seeing the params and lets of the design source.
+ */
+export function evaluateSelector(text: string, features: string[], design?: string): { sel?: Sel; error?: string } {
+  const parsed = parseExpression(text);
+  if (!parsed.expr) return { error: parsed.error };
+  const ev = new Evaluator(design ?? text, {});
+  // the design's params and lets, so near((0, 0, wall), 1) can use them
+  if (design) ev.run(parse(design).program);
+  const scope = new Scope();
+  for (const f of features) scope.vars.set(f, new FeatRef(f, "feature"));
+  try {
+    const v = ev.expr(parsed.expr, scope);
+    ev.callSpan = parsed.expr.span;
+    return { sel: toSel(v, ev.ctx(), "the selection") };
+  } catch (e) {
+    if (e instanceof EvalError || e instanceof Error) return { error: e.message };
+    throw e;
   }
 }
 
@@ -139,6 +180,7 @@ class Evaluator {
   notes: string[] = [];
   brief: Brief | null = null;
   geoQueries: GeoQuery[] = [];
+  drawings: DrawingSpec[] = [];
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
@@ -153,6 +195,7 @@ class Evaluator {
     for (const [k, v] of Object.entries(CONSTANTS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(threadConstants())) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(SHAPE_FNS)) this.builtins.set(k, v);
+    for (const [k, v] of Object.entries(MODELLING_FNS)) this.builtins.set(k, v);
     // after the other shape functions: extrude() and revolve() of a sketch, anything else falls through
     const registered = (name: string) => {
       const f = this.builtins.get(name);
@@ -179,12 +222,14 @@ class Evaluator {
         if (typeof v === "number") return v;
         return new Pending([key]);
       },
+      tick: (n: number) => this.tick(n, this.callSpan),
     };
   }
 
   define(name: string, kind: DepNode["kind"], value: Value, span: Span, label?: string) {
     if (this.globals.has(name)) throw new EvalError(`"${name}" is already defined`, span);
-    if (this.builtins.has(name)) throw new EvalError(`"${name}" is a built-in name; choose another name`, span);
+    // a design's own names shadow built-in ones (lookup reads globals first), so designs written before a
+    // built-in of the same name was added keep working
     this.globals.set(name, value);
     this.defKind.set(name, kind);
     this.defLabel.set(name, label ?? name);
@@ -199,7 +244,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -214,6 +259,7 @@ class Evaluator {
 
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
+    if (s.k === "drawing") return undefined;
     // decisions record choices; nothing reads them, so they stay out of the dependency graph
     if (s.k === "analysis") return `analysis:${s.label}`;
     return "name" in s && s.k !== "design" && s.k !== "decision" ? s.name : undefined;
@@ -284,6 +330,9 @@ class Evaluator {
         return;
       case "require":
         this.requirement(s);
+        return;
+      case "drawing":
+        this.drawing(s);
         return;
       case "decision":
         this.decision(s);
@@ -485,6 +534,20 @@ class Evaluator {
       if (name === "last") return o[o.length - 1] ?? null;
       throw new EvalError(`A list has length, first and last, not "${name}"`, span);
     }
+    if (o instanceof FeatRef) {
+      const m = featMember(o, name);
+      if (m !== undefined) return m;
+      throw new EvalError(`Feature "${o.name}" has root, tip, edges, faces, convex and concave, not "${name}"`, span);
+    }
+    if (o instanceof SelV) {
+      const m = selMember(o, name);
+      if (m !== undefined) return m;
+      throw new EvalError(`A selection has convex and concave, not "${name}"`, span);
+    }
+    if (o instanceof FeatureV) {
+      if (name in o.info) return o.info[name];
+      throw new EvalError(`${o.kind}() has ${Object.keys(o.info).join(", ")}, not "${name}"`, span);
+    }
     if (o instanceof Obj) {
       if (name in o.fields) return o.fields[name];
       const sugg = suggest(name, Object.keys(o.fields));
@@ -539,6 +602,32 @@ class Evaluator {
       return new Vec(l.v.map((x) => (op === "*" ? x * r : x / r)));
     }
     if (typeof l === "number" && r instanceof Vec && op === "*") return new Vec(r.v.map((x) => x * l));
+    if (l instanceof ProfileV && r instanceof ProfileV && (op === "+" || op === "-")) {
+      // a chain of additions copies the list each time: count it so long chains hit the step budget
+      if (op === "+") {
+        const ps = [...(l.recipe.t === "union2" ? l.recipe.ps : [l.recipe]), r.recipe];
+        this.tick(ps.length, span);
+        return new ProfileV({ t: "union2", ps });
+      }
+      const b = l.recipe.t === "diff2" ? [...l.recipe.b, r.recipe] : [r.recipe];
+      this.tick(b.length, span);
+      return new ProfileV(l.recipe.t === "diff2" ? { t: "diff2", a: l.recipe.a, b } : { t: "diff2", a: l.recipe, b });
+    }
+    if ((isSelValue(l) || isSelValue(r)) && (op === "+" || op === "-")) {
+      const ctx = this.ctx();
+      const saved = this.callSpan;
+      this.callSpan = span;
+      try {
+        const a = toSel(l, ctx, "the left side");
+        const b = toSel(r, ctx, "the right side");
+        if (op === "-") return new SelV({ s: "minus", a, b });
+        const any = [...(typeof a !== "string" && a.s === "or" ? a.a : [a]), b];
+        this.tick(any.length, span);
+        return new SelV({ s: "or", a: any });
+      } finally {
+        this.callSpan = saved;
+      }
+    }
     if (op === "+" && (typeof l === "string" || typeof r === "string")) return show(l).replace(/^"|"$/g, "") + show(r).replace(/^"|"$/g, "");
     if (op === "+" && Array.isArray(l) && Array.isArray(r)) {
       if (l.length + r.length > 100_000) throw new EvalError("Lists are limited to 100,000 items", span);
@@ -810,14 +899,19 @@ class Evaluator {
   // ---------------- parts ----------------
 
   part(s: Extract<Stmt, { k: "part" }>) {
-    const state: { base: ShapeRecipe | null; ops: PartOp[]; props: Record<string, Value>; propSpans: Record<string, Span>; flags: Set<string> } = {
+    const scope = new Scope();
+    const state: PartState = {
       base: null,
       ops: [],
       props: {},
       propSpans: {},
       flags: new Set(),
+      root: scope,
+      cosmetic: false,
+      feats: new Map(),
+      auto: new Map(),
+      strain: [],
     };
-    const scope = new Scope();
     const lockedFlag = s.items.some((i) => i.k === "flag" && i.name === "locked");
     this.blocks.push({ name: s.name, kind: "part", span: s.span, locked: lockedFlag });
     // define the name first so other statements can refer to it even if geometry fails
@@ -847,7 +941,6 @@ class Evaluator {
     }
     if (motion) this.partMotion.set(s.name, motion);
     this.checkMaterial(state.props, state.propSpans);
-    const recipe: PartRecipe = { base: state.base, ops: state.ops };
     const processSpan = state.propSpans.process;
     const process =
       state.props.process === undefined || state.props.process === null || state.props.process === false
@@ -855,6 +948,21 @@ class Evaluator {
         : toProcess(state.props.process, (msg) => {
             throw new EvalError(msg, processSpan ?? s.span);
           });
+    const material = partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process);
+    const limit = allowableStrain(material);
+    for (const c of state.strain) {
+      if (c.strain > limit) {
+        this.diags.push({
+          message: `In part "${s.name}": this snap hook bends ${fmtNum(c.strain * 100, 1)}% at full deflection, more than the ~${fmtNum(limit * 100, 1)}% ${material} takes without cracking or creeping. Make it longer (strain falls with length²), thinner, or give it a shallower catch.`,
+          start: c.span.start,
+          end: c.span.end,
+          severity: "warning",
+          rule: `${s.name} snap hook strain`,
+        });
+      }
+    }
+    const recipe: PartRecipe = { base: state.base, ops: state.ops };
+    if (state.baseName) recipe.baseName = state.baseName;
     this.parts.push({
       id: s.name,
       name: s.name,
@@ -862,7 +970,7 @@ class Evaluator {
       kind: "part",
       group: typeof state.props.group === "string" ? state.props.group : "Parts",
       color: typeof state.props.color === "string" ? state.props.color : DEFAULT_COLORS[this.colorIdx++ % DEFAULT_COLORS.length],
-      material: partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process),
+      material,
       finish: typeof state.props.finish === "string" ? state.props.finish : undefined,
       process,
       processSpan,
@@ -877,14 +985,45 @@ class Evaluator {
       span: s.span,
       deps: [],
       motion,
+      features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
+      detail: hasDetail(recipe),
     });
   }
 
-  items(items: Item[], scope: Scope, st: { base: ShapeRecipe | null; ops: PartOp[]; props: Record<string, Value>; propSpans: Record<string, Span>; flags: Set<string> }, depth: number) {
+  /** Register `as name` for an operation; returns the feature name to put in the recipe. */
+  nameFeature(st: PartState, name: string, kind: string, span: Span): string {
+    const prev = st.feats.get(name);
+    if (prev) {
+      // the same name again (often in a loop) adds more tools to the same feature
+      if (!st.cosmetic) prev.cosmetic = false;
+      return name;
+    }
+    if (this.globals.has(name) || this.builtins.has(name)) throw new EvalError(`"${name}" is already defined outside this part; give the feature another name`, span);
+    if (st.root.vars.has(name)) throw new EvalError(`"${name}" is already used in this part`, span);
+    st.feats.set(name, { kind, cosmetic: st.cosmetic });
+    st.root.vars.set(name, new FeatRef(name, kind));
+    return name;
+  }
+
+  /** Feature names a non-cosmetic step may not rely on (they are missing from fast builds). */
+  checkSelFeatures(st: PartState, sel: Sel, span: Span) {
+    if (st.cosmetic) return;
+    for (const f of selFeatures(sel)) {
+      if (st.feats.get(f)?.cosmetic) throw new EvalError(`"${f}" is cosmetic detail, so it is missing from fast builds. Move this step into the cosmetic { } block too.`, span);
+    }
+  }
+
+  pushOp(st: PartState, op: PartOp, span: Span) {
+    st.ops.push(st.cosmetic ? { ...op, cosmetic: true } : op);
+    if (st.ops.length > 600) throw new EvalError("A part is limited to 600 operations", span);
+  }
+
+  items(items: Item[], scope: Scope, st: PartState, depth: number) {
     if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? { start: 0, end: 0 });
     for (const it of items) {
       switch (it.k) {
         case "prop": {
+          if (st.cosmetic) throw new EvalError("Properties belong outside the cosmetic { } block", it.span);
           if (!PART_PROPS.includes(it.name)) throw new EvalError(`Unknown part property "${it.name}". Use: ${PART_PROPS.join(", ")}`, it.span);
           st.props[it.name] = this.expr(it.value, scope);
           st.propSpans[it.name] = it.span;
@@ -898,23 +1037,57 @@ class Evaluator {
           scope.vars.set(it.name, this.expr(it.value, scope));
           break;
         case "op": {
-          const shapes = flattenShapes(this.expr(it.shape, scope), it.shape.span);
+          const v = this.expr(it.shape, scope);
+          const feats = flattenFeatures(v);
+          if (feats) {
+            if (it.op !== "add") throw new EvalError(`${feats[0].kind}() adds and cuts on its own: write add ${feats[0].kind}(...)`, it.span);
+            if (!st.base) throw new EvalError(`${feats[0].kind}() needs a body to stand on; start the part with body ...`, it.span);
+            for (const f of feats) {
+              let name: string;
+              if (it.name) name = this.nameFeature(st, it.name, f.kind, it.nameSpan ?? it.span);
+              else {
+                const k = (st.auto.get(f.kind) ?? 0) + 1;
+                st.auto.set(f.kind, k);
+                name = `${f.kind}#${k}`;
+                st.feats.set(name, { kind: f.kind, cosmetic: st.cosmetic });
+              }
+              for (const step of f.steps) {
+                if ("shape" in step) this.pushOp(st, { op: step.op, shape: step.shape, name }, it.span);
+                else st.ops.push({ op: step.op, r: step.r, edges: { s: "feat", f: name, part: step.part }, cosmetic: true });
+              }
+              if (f.strain !== undefined) st.strain.push({ strain: f.strain, span: it.shape.span });
+            }
+            break;
+          }
+          const shapes = flattenShapes(v, it.shape.span);
+          if (it.op === "body" && st.cosmetic) throw new EvalError("The body cannot be cosmetic; put body before the cosmetic { } block", it.span);
           for (const sh of shapes) {
             if (it.op === "body" || (it.op === "add" && !st.base)) {
-              if (!st.base) st.base = sh.recipe;
-              else st.ops.push({ op: "add", shape: sh.recipe });
+              if (!st.base) {
+                st.base = sh.recipe;
+                if (it.name) st.baseName = this.nameFeature(st, it.name, "body", it.nameSpan ?? it.span);
+              } else this.pushOp(st, { op: "add", shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, "add", it.nameSpan ?? it.span) }, it.span);
             } else {
               if (!st.base) throw new EvalError(`"${it.op}" needs a body first (start the part with body ...)`, it.span);
-              st.ops.push({ op: it.op, shape: sh.recipe });
+              this.pushOp(st, { op: it.op, shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, it.op, it.nameSpan ?? it.span) }, it.span);
             }
           }
-          if (st.ops.length > 600) throw new EvalError("A part is limited to 600 operations", it.span);
+          break;
+        }
+        case "cosmetic": {
+          if (st.cosmetic) throw new EvalError("cosmetic { } blocks do not nest", it.span);
+          st.cosmetic = true;
+          try {
+            this.items(it.body, new Scope(scope), st, depth + 1);
+          } finally {
+            st.cosmetic = false;
+          }
           break;
         }
         case "modifier": {
           const callee = it.call.callee;
           if (callee.k !== "ident" || !(callee.name in MODIFIER_PARAMS)) {
-            throw new EvalError("Only shell(), fillet() and chamfer() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
+            throw new EvalError("Only shell(), fillet(), chamfer() and draft() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
           }
           if (!st.base) throw new EvalError(`${callee.name}() needs a body first`, it.span);
           const pos: Value[] = [];
@@ -925,9 +1098,35 @@ class Evaluator {
             else pos.push(v);
           }
           this.callSpan = it.call.span;
-          const a = new Args(callee.name, pos, named, this.ctx(), MODIFIER_PARAMS[callee.name]);
-          if (callee.name === "shell") st.ops.push({ op: "shell", t: a.positive("t"), open: a.dir("open", [0, 0, 1]) });
-          else st.ops.push({ op: callee.name as "fillet" | "chamfer", r: a.positive("r"), edges: edgeSel(a.str("edges", "all"), this.ctx()) });
+          const ctx = this.ctx();
+          const a = new Args(callee.name, pos, named, ctx, MODIFIER_PARAMS[callee.name]);
+          if (callee.name === "shell") {
+            const t = a.positive("t");
+            const openV = a.value("open");
+            let open: PartOp & { op: "shell" } extends { open: infer O } ? O : never;
+            if (openV === undefined) open = [0, 0, 1];
+            else if (openV instanceof Vec) open = a.dir("open");
+            else {
+              const list = Array.isArray(openV) ? openV : [openV];
+              open = list.map((o, i): OpenSpec => {
+                if (o instanceof Vec) return { dir: vnorm(o.v3()) };
+                const sel = toSel(o, ctx, `shell(): open item ${i + 1}`);
+                this.checkSelFeatures(st, sel, it.call.span);
+                return { sel };
+              });
+            }
+            this.pushOp(st, { op: "shell", t, open }, it.span);
+          } else if (callee.name === "draft") {
+            const angle = a.num("angle");
+            if (Math.abs(angle) < 1e-6 || Math.abs(angle) > 30) ctx.error("draft(): angle must be between 0 and 30 degrees (1–3° is typical)");
+            const faces = toSel(a.value("faces") ?? "vertical", ctx, "draft(): faces");
+            this.checkSelFeatures(st, faces, it.call.span);
+            this.pushOp(st, { op: "draft", angle, faces, pull: a.dir("pull", [0, 0, 1]), neutral: a.vec3("neutral", [0, 0, 0]) }, it.span);
+          } else {
+            const edges = toSel(a.value("edges") ?? "all", ctx, `${callee.name}(): edges`);
+            this.checkSelFeatures(st, edges, it.call.span);
+            this.pushOp(st, { op: callee.name as "fillet" | "chamfer", r: a.positive("r"), edges }, it.span);
+          }
           break;
         }
         case "for": {
@@ -950,6 +1149,222 @@ class Evaluator {
         }
       }
     }
+  }
+
+  // ---------------- drawings ----------------
+
+  drawing(s: Extract<Stmt, { k: "drawing" }>) {
+    const locked = s.items.some((i) => i.k === "flag" && i.name === "locked");
+    this.blocks.push({ name: s.name, kind: "drawing", span: s.span, locked });
+    if (this.drawings.some((d) => d.name === s.name)) throw new EvalError(`A drawing called "${s.name}" already exists`, s.nameSpan);
+    if (this.opts.skipGeometry) return;
+    const spec = defaultSpec(s.name, s.name.replace(/_/g, " "), []);
+    spec.auto = false;
+    spec.locked = locked;
+    spec.span = s.span;
+    spec.views = [];
+    let viewsProp: ViewKind[] | null = null;
+    const ctx = () => this.ctx();
+    const str = (v: Value, span: Span, what: string): string => {
+      if (typeof v === "string") return v;
+      if (typeof v === "number") return fmtNum(v, 4);
+      throw new EvalError(`${what} should be text in quotes, got ${typeName(v)}`, span);
+    };
+    const bool = (v: Value, span: Span, what: string): boolean => {
+      if (typeof v === "boolean") return v;
+      throw new EvalError(`${what} should be true or false`, span);
+    };
+    const viewKind = (v: Value, span: Span, what: string): ViewKind => {
+      const k = typeof v === "string" ? v.toLowerCase() : "";
+      if ((VIEW_KINDS as readonly string[]).includes(k)) return k as ViewKind;
+      throw new EvalError(`${what} should be one of ${VIEW_KINDS.map((x) => `"${x}"`).join(", ")}`, span);
+    };
+    const scale = (v: Value, span: Span): number => {
+      const n = typeof v === "number" || typeof v === "string" ? parseScale(v) : null;
+      if (n === null || n < 0.001 || n > 1000) throw new EvalError('scale should be a positive number such as 0.5, or text such as "1:2"', span);
+      return n;
+    };
+    const names = (v: Value, span: Span): string[] => {
+      const list = Array.isArray(v) ? v : [v];
+      return list.map((x) => {
+        const n = x instanceof Ref ? x.name : x instanceof Obj && (x.kind === "component" || x.kind === "part") ? String(x.fields.name) : typeof x === "string" ? x : null;
+        if (!n) throw new EvalError("of: should name parts or components, e.g. of: base or of: [base, lid]", span);
+        if (!this.parts.some((p) => p.name === n)) throw new EvalError(`of: "${n}" is not a part or component defined above this drawing`, span);
+        return n;
+      });
+    };
+    const walk = (items: Item[], scope: Scope, depth: number) => {
+      if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? s.span);
+      for (const it of items) {
+        switch (it.k) {
+          case "prop": {
+            if (!(DRAWING_PROPS as readonly string[]).includes(it.name)) throw new EvalError(`Unknown drawing property "${it.name}". Use: ${DRAWING_PROPS.join(", ")}`, it.span);
+            const v = this.expr(it.value, scope);
+            switch (it.name) {
+              case "title":
+                spec.title = str(v, it.span, "title");
+                break;
+              case "of":
+                spec.of = names(v, it.span);
+                break;
+              case "sheet": {
+                const t = str(v, it.span, "sheet");
+                const hit = SHEET_NAMES.find((n) => n.toLowerCase() === t.toLowerCase());
+                if (!hit) throw new EvalError(`sheet should be one of ${SHEET_NAMES.map((n) => `"${n}"`).join(", ")}`, it.span);
+                spec.sheet = hit as SheetSize;
+                break;
+              }
+              case "orientation": {
+                const t = str(v, it.span, "orientation");
+                if (t !== "landscape" && t !== "portrait") throw new EvalError('orientation should be "landscape" or "portrait"', it.span);
+                spec.orientation = t;
+                break;
+              }
+              case "scale":
+                spec.scale = scale(v, it.span);
+                break;
+              case "projection": {
+                const t = str(v, it.span, "projection");
+                if (t !== "first" && t !== "third") throw new EvalError('projection should be "first" (ISO) or "third" (ASME)', it.span);
+                spec.projection = t;
+                break;
+              }
+              case "hidden_lines":
+                spec.hidden = bool(v, it.span, "hidden_lines");
+                break;
+              case "auto_dims":
+                spec.autoDims = bool(v, it.span, "auto_dims");
+                break;
+              case "parts_list":
+                spec.partsList = bool(v, it.span, "parts_list");
+                break;
+              case "balloons":
+                spec.balloons = bool(v, it.span, "balloons");
+                break;
+              case "views": {
+                if (!Array.isArray(v)) throw new EvalError('views should be a list such as ["front", "top", "right", "iso"]', it.span);
+                viewsProp = v.map((x) => viewKind(x, it.span, "each view"));
+                break;
+              }
+              case "tolerance":
+                spec.tolerance = str(v, it.span, "tolerance");
+                spec.toleranceSet = true;
+                break;
+              default:
+                (spec as unknown as Record<string, string>)[it.name] = str(v, it.span, it.name);
+            }
+            break;
+          }
+          case "flag":
+            if (it.name !== "locked") throw new EvalError(`Unknown flag "${it.name}". Drawings accept the flag locked.`, it.span);
+            break;
+          case "let":
+            scope.vars.set(it.name, this.expr(it.value, scope));
+            break;
+          case "for": {
+            const iter = this.expr(it.iter, scope);
+            const list = Array.isArray(iter) ? iter : iter instanceof Vec ? iter.v : null;
+            if (!list) throw new EvalError(`for ... in needs a list, got ${typeName(iter)}`, it.iter.span);
+            for (const v of list) {
+              const inner = new Scope(scope);
+              inner.vars.set(it.varName, v);
+              walk(it.body, inner, depth + 1);
+            }
+            break;
+          }
+          case "if": {
+            const c = this.expr(it.cond, scope);
+            if (truthy(c)) walk(it.then, new Scope(scope), depth + 1);
+            else if (it.else) walk(it.else, new Scope(scope), depth + 1);
+            break;
+          }
+          case "op":
+            throw new EvalError(`Drawings do not take ${it.op} shapes. Use view(), section(), detail(), dim(), diameter() and note().`, it.span);
+          case "modifier": {
+            const callee = it.call.callee;
+            const fname = callee.k === "ident" ? callee.name : "";
+            if (!(fname in DRAWING_CALLS)) throw new EvalError(`Drawings accept ${Object.keys(DRAWING_CALLS).map((k) => k + "()").join(", ")}`, it.span);
+            const pos: Value[] = [];
+            const named: Record<string, Value> = {};
+            for (const arg of it.call.args) {
+              const v = this.expr(arg.value, scope);
+              if (v instanceof Pending) throw new EvalError("Drawing positions cannot depend on measured geometry", arg.span);
+              if (arg.name) named[arg.name] = v;
+              else pos.push(v);
+            }
+            this.callSpan = it.call.span;
+            const a = new Args(fname, pos, named, ctx(), DRAWING_CALLS[fname]);
+            const optStr = (n: string) => (a.has(n) ? a.str(n) : undefined);
+            const at2 = (n: string): [number, number] | undefined => {
+              if (!a.has(n)) return undefined;
+              const p = a.vec3(n);
+              return [p[0], p[1]];
+            };
+            const tol = (): [number, number] | undefined => {
+              const v = a.value("tol");
+              if (v === undefined) return undefined;
+              if (typeof v === "number") return [Math.abs(v), -Math.abs(v)];
+              if (v instanceof Vec && v.v.length === 2) return [v.v[0], v.v[1]];
+              return ctx().error("tol should be a number for ± (tol: 0.1) or (upper, lower) such as tol: (0.1, -0.05)");
+            };
+            switch (fname) {
+              case "view":
+                spec.views.push({ kind: viewKind(a.value("kind") ?? null, it.call.span, "view()"), label: optStr("label"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined, hidden: a.has("hidden") ? a.bool("hidden") : undefined, at: at2("at") });
+                break;
+              case "section":
+                spec.sections.push({
+                  label: a.str("label"),
+                  at: a.vec3("at", [0, 0, 0]),
+                  normal: a.dir("normal"),
+                  view: a.has("view") ? viewKind(a.value("view")!, it.call.span, "section(view:)") : undefined,
+                  scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined,
+                });
+                break;
+              case "detail":
+                spec.details.push({ label: a.str("label"), view: a.str("view", "front"), at: a.vec3("at"), r: a.positive("r"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : 2 });
+                break;
+              case "dim":
+              case "diameter": {
+                const align = a.str("align", "auto");
+                if (!["auto", "h", "v", "aligned"].includes(align)) ctx().error('align should be "auto", "h", "v" or "aligned"');
+                spec.dims.push({
+                  kind: fname === "dim" ? "linear" : "diameter",
+                  a: a.vec3(fname === "dim" ? "a" : "at"),
+                  b: fname === "dim" ? a.vec3("b") : undefined,
+                  d: fname === "diameter" ? a.positive("d") : undefined,
+                  view: optStr("view"),
+                  align: align as "auto",
+                  offset: a.has("offset") ? a.num("offset") : undefined,
+                  tol: tol(),
+                  fit: optStr("fit"),
+                  text: optStr("text"),
+                  ref: a.bool("ref"),
+                  basic: a.bool("basic"),
+                  span: it.call.span,
+                });
+                break;
+              }
+              case "tol": {
+                const t = tol();
+                const fit = optStr("fit");
+                if (!t && !fit) ctx().error('tol() needs a tolerance or a fit, e.g. tol("top:overall-width-x", 0.1)');
+                spec.tols.push({ id: a.str("id"), tol: t, fit, span: it.call.span });
+                break;
+              }
+              case "note":
+                spec.notes.push(a.str("text"));
+                break;
+            }
+            break;
+          }
+        }
+      }
+    };
+    walk(s.items, new Scope(), 0);
+    if (viewsProp) spec.views = [...(viewsProp as ViewKind[]).filter((k) => !spec.views.some((v) => v.kind === k)).map((kind) => ({ kind })), ...spec.views];
+    if (!spec.views.length && !spec.sections.length) spec.views = defaultSpec("", "", []).views;
+    if (spec.views.length + spec.sections.length + spec.details.length > 12) throw new EvalError("A drawing is limited to 12 views", s.span);
+    this.drawings.push(spec);
   }
 
   // ---------------- the brief ----------------
@@ -1296,6 +1711,7 @@ class Evaluator {
       graph: { nodes, edges },
       blocks: this.blocks,
       geoQueries: dedupeGeo(this.geoQueries),
+      drawings: this.drawings,
       evalMs: 0,
     };
     // the brief's "how it's made" is the default for every custom part
@@ -1320,9 +1736,17 @@ function mergePending(l: Value, r: Value): Pending {
   return new Pending(keys);
 }
 
+/** The ready-made features in a value (a feature or a list of them), or null when it holds none. */
+function flattenFeatures(v: Value): FeatureV[] | null {
+  if (v instanceof FeatureV) return [v];
+  if (Array.isArray(v) && v.length && v.every((x) => x instanceof FeatureV)) return v as FeatureV[];
+  return null;
+}
+
 function flattenShapes(v: Value, span: Span): ShapeV[] {
   if (v instanceof ShapeV) return [v];
   if (Array.isArray(v)) return v.flatMap((x) => flattenShapes(x, span));
+  if (v instanceof ProfileV) throw new EvalError("This is a flat profile; turn it into a solid with extrude(), revolve(), sweep(), loft(), emboss() or engrave()", span);
   throw new EvalError(`Expected a shape (box, cylinder, hole, ...) but got ${typeName(v)}`, span);
 }
 

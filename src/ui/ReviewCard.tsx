@@ -237,7 +237,7 @@ function FindingRow({ f }: { f: Finding }) {
               ))}
               <span className="grow" />
               {actionable && (
-                <button className="btn sm" onClick={() => void sendMessage(`Please fix review finding ${f.id} (${f.title}). Suggested fix: ${f.fix}`)}>
+                <button className="btn sm" onClick={() => void sendMessage(`Please fix review finding ${f.id} (${f.title}). Suggested fix: ${f.fix}`, { design: true })}>
                   <Icon.Wrench size={12} /> Ask Claude to fix
                 </button>
               )}
