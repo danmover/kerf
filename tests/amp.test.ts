@@ -10,6 +10,7 @@ import { evaluate } from "../src/lang/evaluator";
 import { designCircuit } from "../src/machine/circuit/netlist";
 import { adcNodes, circuitChecks, preampFigures, responseDb, stageSwing } from "../src/machine/circuit/analysis";
 import { dcOperatingPoint, transient } from "../src/machine/circuit/solver";
+import { simulateCircuit } from "../src/machine/circuit/simulate";
 import { boardSpecs } from "../src/machine/boards";
 import { checkPlacement, routeBoard } from "../src/machine/pcb";
 import { generateFirmware } from "../src/machine/firmware";
@@ -121,6 +122,37 @@ describe("Practice Amp circuit", () => {
       expect(rd.note + rd.octave, STRINGS[i].name).toBe(STRINGS[i].name);
       expect(Math.abs(rd.cents - cents), STRINGS[i].name).toBeLessThan(1);
     }
+  });
+});
+
+describe("circuit hook for scenarios", () => {
+  it("plays a signal through the design and returns the nets a controller reads", () => {
+    const fs = 32000;
+    const wave = stringNote(STRINGS[1].hz, 0, fs, 0.12, 0.1);
+    const dc = designCircuit(m);
+    const direct = transient(dc.circuit, { fs, samples: wave.length, inputs: { guitar: wave }, probes: ["ADC"], oversample: 2 });
+    const r = simulateCircuit(m, { inputs: { fs, samples: { guitar: wave } }, probes: ["ADC", "jack_in.TIP"] });
+    expect(r.ok, r.message).toBe(true);
+    expect(r.fs).toBe(fs);
+    expect(r.nets).toEqual(expect.arrayContaining(["ADC", "TIP", "V5", "V12"]));
+    expect(r.probes.ADC.length).toBe(wave.length);
+    let diff = 0;
+    for (let k = 0; k < wave.length; k++) diff = Math.max(diff, Math.abs(r.probes.ADC[k] - direct.out[0][k]));
+    expect(diff).toBeLessThan(1e-3);
+    // the tuner's input rests at mid-scale of the Nano's 5 V ADC and carries the string
+    let lo = Infinity, hi = -Infinity;
+    for (const v of r.probes.ADC.subarray(fs * 0.05)) (lo = Math.min(lo, v)), (hi = Math.max(hi, v));
+    expect((lo + hi) / 2).toBeGreaterThan(1.5);
+    expect((lo + hi) / 2).toBeLessThan(3.5);
+    expect(hi - lo).toBeGreaterThan(0.2);
+  });
+
+  it("takes functions of time by the input jack's name, and names what it cannot find", () => {
+    const r = simulateCircuit(m, { inputs: { jack_in: (t) => 0.05 * Math.sin(2 * Math.PI * 220 * t) }, fs: 16000, duration: 0.02, probes: ["AMP_IN"] });
+    expect(r.ok, r.message).toBe(true);
+    expect(r.probes.AMP_IN.length).toBe(320);
+    expect(simulateCircuit(m, { inputs: { mic: () => 0 }, duration: 0.01, probes: ["ADC"] }).message).toMatch(/No circuit input called "mic"/);
+    expect(simulateCircuit(m, { inputs: { guitar: () => 0 }, duration: 0.01, probes: ["NOPE"] }).message).toMatch(/No net called "NOPE".*ADC/);
   });
 });
 
