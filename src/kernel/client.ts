@@ -5,6 +5,7 @@ import type { MeshData } from "./build";
 import type { BuildItem, ChecksRequest, ChecksResult, FromWorker, ToWorker } from "./protocol";
 import type { PartInspection } from "./inspect";
 import type { V3, Xform } from "./recipe";
+import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { ImportMeta } from "./imports";
 import type { MeasureResult } from "./core";
 
@@ -162,16 +163,18 @@ export class KernelClient {
       }
       case "checks":
       case "exported":
+      case "process":
       case "inspected":
       case "imported":
       case "measured": {
         const job = this.jobs.get(m.jobId);
-        if (job?.kind === "value") job.resolve(m.type === "exported" ? m.data : m.type === "imported" ? m.meta : m.result);
+        if (job?.kind === "value") job.resolve(m.type === "exported" ? m.data : m.type === "imported" ? m.meta : m.type === "process" ? m.results : m.result);
         this.jobs.delete(m.jobId);
         return;
       }
       case "checks-error":
       case "export-error":
+      case "process-error":
       case "import-error":
       case "measure-error": {
         const job = this.jobs.get(m.jobId);
@@ -210,6 +213,11 @@ export class KernelClient {
 
   checks(req: ChecksRequest) {
     return this.value<ChecksResult>((jobId) => ({ type: "checks", jobId, req }));
+  }
+
+  /** Check built parts against manufacturing processes. */
+  process(probes: ProcessProbe[]) {
+    return this.value<ProcessResult[]>((jobId) => ({ type: "process", jobId, probes }));
   }
 
   exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]) {

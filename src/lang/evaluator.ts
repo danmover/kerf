@@ -21,6 +21,8 @@ import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
 import type { AnalysisSpec } from "../analysis/spec";
+import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromValue, toProcess } from "../mfg/spec";
+import { specToSource } from "../mfg/profiles";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -71,7 +73,7 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "finish", "label"];
 
 /** Fields of the brief block, by the type of value each takes. */
@@ -161,6 +163,7 @@ class Evaluator {
     for (const [k, v] of Object.entries(MATH_FNS)) this.builtins.set(k, v);
     for (const [k, v] of Object.entries(geoFns())) this.builtins.set(k, v);
     this.builtins.set("lib", libNamespace());
+    this.builtins.set("mfg", mfgNamespace());
   }
 
   ctx(): CallCtx {
@@ -845,6 +848,13 @@ class Evaluator {
     if (motion) this.partMotion.set(s.name, motion);
     this.checkMaterial(state.props, state.propSpans);
     const recipe: PartRecipe = { base: state.base, ops: state.ops };
+    const processSpan = state.propSpans.process;
+    const process =
+      state.props.process === undefined || state.props.process === null || state.props.process === false
+        ? undefined
+        : toProcess(state.props.process, (msg) => {
+            throw new EvalError(msg, processSpan ?? s.span);
+          });
     this.parts.push({
       id: s.name,
       name: s.name,
@@ -852,8 +862,12 @@ class Evaluator {
       kind: "part",
       group: typeof state.props.group === "string" ? state.props.group : "Parts",
       color: typeof state.props.color === "string" ? state.props.color : DEFAULT_COLORS[this.colorIdx++ % DEFAULT_COLORS.length],
-      material: typeof state.props.material === "string" ? state.props.material : "PLA",
+      material: partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process),
       finish: typeof state.props.finish === "string" ? state.props.finish : undefined,
+      process,
+      processSpan,
+      ...(state.props.process === false ? { processNone: true } : {}),
+      materialSpan: state.propSpans.material,
       recipe,
       hash: recipeHash(recipe),
       xf,
@@ -966,7 +980,17 @@ class Evaluator {
       case "field": {
         const n = it.name;
         if (it.to && n !== "temp") throw new EvalError(`Only temp takes a range (temp: -10C .. 40C)`, it.span);
-        if ((BRIEF_TEXT as readonly string[]).includes(n)) {
+        if (n === "process") {
+          // text, or a process value whose settings every part without its own process then takes
+          const v = this.expr(it.value, null);
+          if (v instanceof ProcessV) {
+            b.process = specToSource(v.spec);
+            b.processSpec = v.spec;
+          } else if (typeof v === "string") {
+            b.process = v;
+            b.processSpec = processFromValue(v) ?? undefined;
+          } else throw new EvalError(`process should be text like "FDM print", or a process like mfg.fdm(layer: 0.2)`, it.value.span);
+        } else if ((BRIEF_TEXT as readonly string[]).includes(n)) {
           (b as unknown as Record<string, string>)[n] = text(it.value, n);
         } else if ((BRIEF_LISTS as readonly string[]).includes(n)) {
           const v = this.expr(it.value, null);
@@ -1258,7 +1282,7 @@ class Evaluator {
         for (const st of o.sets)
           if (!paramNames.has(st.param)) this.diags.push({ message: `Option "${o.label}" sets "${st.param}", which is not a parameter`, start: st.span.start, end: st.span.end, severity: "warning" });
     for (const sk of this.sketches) sk.usedBy = (usedBy.get(sk.name) ?? []).filter((n) => this.defKind.get(n) === "part");
-    return {
+    const model: Model = {
       name: this.name,
       notes: this.notes,
       brief: this.brief,
@@ -1274,6 +1298,10 @@ class Evaluator {
       geoQueries: dedupeGeo(this.geoQueries),
       evalMs: 0,
     };
+    // the brief's "how it's made" is the default for every custom part
+    const b = this.brief;
+    if (b) applyDefaultProcess(model, b.processSpec ?? null, { buildVolume: b.buildVolume, material: b.material });
+    return model;
   }
 }
 

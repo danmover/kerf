@@ -4,6 +4,7 @@
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { processReference } from "../mfg/guide";
 import { FINISHES, MATERIAL_LIST } from "../library/materials";
 import { importsReference } from "./importTools";
 import { CONSTRAINTS } from "../sketch/evaluate";
@@ -88,10 +89,10 @@ brief {
   outdoor: true
   exposure: ["sunlight", "rain", "vibration"]
 
-  process: "FDM print"                   // FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded
+  process: "FDM print"                   // the default process of every part; text, or a value like mfg.fdm(layer: 0.2)
   material: "PETG"
   quantity: 2
-  build_volume: (220, 220, 250)          // printer bed, mm; defaults by process when missing
+  build_volume: (220, 220, 250)          // printer bed, mm; the bed of every printed part
 
   max_size: (80, 60, 50)                 // the whole design must fit in this box, mm
   max_mass: 60g
@@ -108,9 +109,10 @@ brief {
   assume "Rider weight is not carried by this part"
   assume "Printed with 4 walls" confirmed
 }
-A trailing assumed marks what Claude estimated; the user confirms it. Fields: purpose, setting, look (text), priorities, exposure (lists of text), temp (range with C), outdoor (true/false), process, material (text), quantity (integer), build_volume, max_size (three sizes in mm), max_mass (mass). use id "text" { load (force in N, or a mass in kg or g read as its weight), dir (direction: X, -Z or a vector), on (part or component name), cycles, note }. given name = value ["description"] defines a fixed name the design reads like a locked param (bar_d above). reference id "title" { file (an attached file id), url, notes }. Unknown fields are kept and warned about.
+A trailing assumed marks what Claude estimated; the user confirms it. Fields: purpose, setting, look (text), priorities, exposure (lists of text), temp (range with C), outdoor (true/false), process (text or an mfg.* process), material (text), quantity (integer), build_volume, max_size (three sizes in mm), max_mass (mass). use id "text" { load (force in N, or a mass in kg or g read as its weight), dir (direction: X, -Z or a vector), on (part or component name), cycles, note }. given name = value ["description"] defines a fixed name the design reads like a locked param (bar_d above). reference id "title" { file (an attached file id), url, notes }. Unknown fields are kept and warned about.
+The brief's process is the default for every custom part with no process of its own, unless the part's own material cannot be made that way (a steel shaft in a printed design); parts naming no material take the brief's material. Put process: on a part only where it differs.
 Requirements link to uses with for: require "Clamp grips the bar" for hold_light: clamp_gap < bar_d.
-Brief checks the app adds: uses no requirement covers, loads that need strength analysis, the material against the temperature range, sunlight, wet and impact exposure and the process, food contact on printed parts, printed parts against the build volume, the whole design against max_size and max_mass, and givens nothing uses.
+Brief checks the app adds: uses no requirement covers, loads that need strength analysis, the material against the temperature range, sunlight, wet and impact exposure, food contact on printed parts, the whole design against max_size and max_mass, and givens nothing uses.
 
 ## Part blocks
 part bracket {
@@ -125,7 +127,7 @@ part bracket {
   for x in [-12, 12] { cut hole(M3, depth: 6, at: (x, 0, 5)) }
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
 }
-Part props: color, material, finish, group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
+Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
 Order matters: shell/fillet/chamfer apply to the body built so far, so put them right after the body and before bosses and holes. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
@@ -168,6 +170,8 @@ Constraints and dimensions (refs are names, the value after = is any expression)
 ${constraints}
 A good sketch is fully defined (0 degrees of freedom): every point is fixed by constraints, usually by dimensions driven from params plus horizontal/vertical/coincident relations and one point tied to the origin. Redundant constraints are warned about; conflicting ones fail and name the culprit. A closed profile is one or more non-crossing loops; inner loops become holes. Sketch values expose .area, .plane, .normal and each named entity in world coordinates (side.l1.mid, side.c1.center), so other statements can position things from a sketch.
 Use sketches for profiles that are awkward to build from primitives (bent plates, cams, levers, gussets, custom outlines, turned parts) and whenever the user wants to edit a profile by hand. Primitives are still fine for plain boxes, cylinders and holes.
+
+${processReference()}
 
 ## Components
 component name = lib.kind(args) { at: point, axis: dir, ... }
@@ -246,6 +250,7 @@ Strength data: ${mech}. Parts in PLA, PETG, ABS, ASA or Nylon count as FDM-print
 - gear meshing: same module, exact centre distance, face overlap, and tooth clearance through a rotation
 - build errors (a modelling step the kernel could not perform)
 - every analysis block: structural strength (factor of safety) and stiffness, or the drivetrain's tooth, bearing and shaft checks
+- manufacturing: every part with a process: is checked against that process's rules on its exact geometry (walls by ray casting, draft and undercuts along the pull, tool reach per setup, inside corner radii, slots, overhangs and orientation, turning, sheet thickness and bends, flat profiles, holes, voids, machine size), plus whether its material suits the process
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
 Things geometry cannot prove are reported as "needs analysis" until an analysis block covers them; heat and real printer tolerances are not analysed.
 `;

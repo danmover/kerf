@@ -6,6 +6,7 @@ import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
 import type { EvalSketch } from "../sketch/types";
 import type { AnalysisSpec } from "../analysis/spec";
+import type { ProcessSpec } from "../mfg/types";
 
 export interface Motion {
   origin: V3;
@@ -56,6 +57,18 @@ export interface EvalPart {
   group: string;
   color: string;
   material: string;
+  /** how the part is made (custom parts only; library components are bought) */
+  process?: ProcessSpec;
+  /** span of the part's process: property, for edits */
+  processSpan?: Span;
+  /** the process came from a design-wide default (applyDefaultProcess), not from the part */
+  processInherited?: boolean;
+  /** process: false: bought or made by hand, so the brief's process does not apply */
+  processNone?: boolean;
+  /** process settings filled in from design-wide defaults; left out when the process is written back */
+  processDefaults?: string[];
+  /** span of the part's material: property, when it names one */
+  materialSpan?: Span;
   /** surface finish; undefined means the material's default (see library/materials) */
   finish?: string;
   recipe: PartRecipe;
@@ -217,7 +230,10 @@ export interface Brief {
   temp?: [number, number];
   outdoor?: boolean;
   exposure: string[];
+  /** as written: text, or process source like mfg.fdm(layer: 0.2) */
   process?: string;
+  /** the process parts default to, when Kerf has rules for it */
+  processSpec?: ProcessSpec;
   material?: string;
   quantity?: number;
   buildVolume?: V3;

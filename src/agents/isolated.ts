@@ -111,8 +111,8 @@ export async function checkIsolated(src: string, onStage?: (s: string) => void, 
       error = e instanceof Error ? e.message : String(e);
     }
     const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-    const base = assembleReport(model, geoModel, result, buildErrors, new Map(model.parts.map((p) => [p.id, p])));
-    const report = composeReport(base, { model, live: false, rev: 0, buildErrors });
+    const base = assembleReport(model, { geoModel, kernel: result, buildErrors });
+    const report = composeReport(base, { model, live: false, rev: 0, buildErrors, process: null });
     return { model: geoModel ?? model, report, error, worker: index, built: built.size, ms: performance.now() - t0 };
   } finally {
     pool.release(client);

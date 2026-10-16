@@ -989,6 +989,23 @@ export class SceneController {
     this.changed = true;
   }
 
+  /** The group carrying a part's placement, explode offset and motion, for overlays that should move with it. */
+  partGroup(id: string): THREE.Group | undefined {
+    const obj = this.parts.get(id);
+    return obj && !obj.removing ? obj.group : undefined;
+  }
+
+  /** A part's clipping planes and opacity, so overlays cut and ghost with it. */
+  partLook(id: string): { planes: THREE.Plane[] | null; opacity: number } | undefined {
+    const obj = this.parts.get(id);
+    return obj ? { planes: obj.mat.clippingPlanes, opacity: obj.mat.opacity } : undefined;
+  }
+
+  /** Redraw on the next frame (after an overlay changes). */
+  requestRender() {
+    this.changed = true;
+  }
+
   setInterferences(list: Interference[], focus: string | null) {
     for (const i of this.interferences) {
       this.interGroup.remove(i.obj);

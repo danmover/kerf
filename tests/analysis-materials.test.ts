@@ -25,6 +25,13 @@ describe("material strength data by name", () => {
     expect(paper.note).toMatch(/rough guide/);
   });
 
+  it("gives every aluminium grade in the material list its own data, and cast aluminium the weakest", () => {
+    expect(mechMaterial("Aluminum 5052").yield).toBeLessThan(mechMaterial("Aluminum 6061").yield);
+    expect(mechMaterial("Aluminum A380").name).toBe("Aluminum A380 (die cast)");
+    expect(mechMaterial("Aluminum 7075").name).toBe("Aluminum 7075-T6");
+    expect(mechMaterial("Die cast aluminium").name).toBe("Aluminum A380 (die cast)");
+  });
+
   it("never treats object built-ins as materials", () => {
     expect(mechMaterial("constructor").assumed).toBe(true);
     expect(mechMaterial("toString").assumed).toBe(true);

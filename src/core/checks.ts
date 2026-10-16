@@ -11,8 +11,9 @@ import { materialDensity } from "../library/standards";
 import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { briefChecks, type GeomLookup } from "./briefChecks";
+import type { SettingValue } from "../mfg/types";
 
-export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "analysis" | "info";
+export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "analysis" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -29,7 +30,14 @@ export interface CheckItem {
   uses?: string[];
   /** how the result was established: simulation is the finite-element solver, calculation a textbook formula */
   basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "calculation";
+  /** what to change, in plain words */
+  fix?: string;
+  /** a change the app can make in one click */
+  action?: CheckAction;
 }
+
+/** One-click fixes: for now, a setting of a part's manufacturing process (print upside down, add a setup). */
+export type CheckAction = { kind: "process-setting"; label: string; part: string; setting: string; value: SettingValue };
 
 export interface CheckReport {
   items: CheckItem[];
@@ -151,7 +159,25 @@ export function gearChecks(model: Model): CheckItem[] {
   return out;
 }
 
-export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>, geom: GeomLookup = () => undefined): CheckReport {
+/** What the core checks are worked out from, besides the model. */
+export interface ReportInputs {
+  /** the model evaluated again with the kernel's geometric query results */
+  geoModel?: Model | null;
+  kernel?: ChecksResult | null;
+  buildErrors?: Map<string, string>;
+  /** defaults to the model's parts */
+  partsById?: Map<string, EvalPart>;
+  /** meshes by geometry hash, for the brief's size checks */
+  geom?: GeomLookup;
+}
+
+/**
+ * The core checks. Checks from other modules (manufacturing processes,
+ * analyses) are added afterwards by the passes in reportPasses.
+ */
+export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckReport {
+  const { geoModel = null, kernel = null, buildErrors = new Map<string, string>(), geom = () => undefined } = inputs;
+  const partsById = inputs.partsById ?? new Map(model.parts.map((p) => [p.id, p]));
   const t0 = performance.now();
   const items: CheckItem[] = [];
   const label = (id: string) => partsById.get(id)?.label ?? id;

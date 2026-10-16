@@ -13,6 +13,8 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
+import { PROCESSES } from "../mfg/profiles";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
 import { REVIEW_TOOL } from "./review/tool";
@@ -158,7 +160,7 @@ export const TOOL_DEFS = [
             temp: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "Service temperature range in °C: [lowest, highest]." },
             outdoor: { type: "boolean" },
             exposure: { type: "array", items: { type: "string" }, maxItems: 12, description: "What it is exposed to, e.g. sunlight, rain, humidity, oil, chemicals, food contact, dust, impacts, vibration." },
-            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded or another process." },
+            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded or another process, or a process with settings like mfg.fdm(layer: 0.2). It becomes the default process of every part." },
             material: { type: "string", description: "Preferred material for made parts." },
             quantity: { type: "integer", minimum: 1 },
             build_volume: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "Printer build volume in mm (X, Y, Z)." },
@@ -285,6 +287,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  ...PROCESS_TOOL_DEFS,
   BUILD_TOOL,
   REVIEW_TOOL,
   {
@@ -354,7 +357,7 @@ const BriefInput = z.object({
       temp: z.tuple([Num.min(-200).max(1500), Num.min(-200).max(1500)]),
       outdoor: z.boolean(),
       exposure: z.array(z.string().max(60)).max(12),
-      process: z.string().max(80),
+      process: z.string().max(200),
       material: z.string().max(80),
       quantity: z.number().int().min(1).max(10_000_000),
       build_volume: z.tuple([Num.positive(), Num.positive(), Num.positive()]),
@@ -579,6 +582,12 @@ export function modelSummary(m: Model | null): string {
     groups.set(k, arr);
   }
   lines.push("Parts by group: " + [...groups].map(([g, ns]) => `${g}: ${ns.join(", ")}`).join("; "));
+  const made = m.parts.filter((p) => p.kind === "part");
+  if (made.length) {
+    const how = made.filter((p) => p.process).map((p) => `${p.name}: ${PROCESSES[p.process!.id].short} in ${p.material}${p.processInherited ? " (from the brief)" : ""}`);
+    const unset = made.filter((p) => !p.process).map((p) => p.name);
+    lines.push(`How parts are made: ${[...how, unset.length ? `no process set: ${unset.join(", ")}` : ""].filter(Boolean).join("; ")}`);
+  }
   const imports = importsSummary(m);
   if (imports) lines.push(imports);
   if (m.requirements.length) {
@@ -673,12 +682,14 @@ export function sketchDetail(sk: EvalSketch): string {
   return lines.join("\n");
 }
 
-export function reportSummary(r: CheckReport | null, limit = 40): string {
+export function reportSummary(r: CheckReport | null, limit = 60): string {
   if (!r) return "Checks have not run yet.";
   const c = r.counts;
   const head = `Checks: ${c.pass} pass, ${c.fail} fail, ${c.warn} warn, ${c.pending} pending, ${c.info} info.`;
   const notable = r.items.filter((i) => i.status !== "pass");
-  const body = notable.slice(0, limit).map((i) => `  - [${i.status}] (${i.category}) ${i.title}: ${i.detail}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
+  const body = notable
+    .slice(0, limit)
+    .map((i) => `  - [${i.status}] (${i.category}) ${i.title}: ${i.detail}${i.fix ? ` Fix: ${i.fix}` : ""}${i.action ? ` One-click option: ${i.action.label} (${i.action.setting} on the part's process).` : ""}${i.parts?.length ? ` [parts: ${i.parts.join(", ")}]` : ""}`);
   const passed = r.items.filter((i) => i.status === "pass").map((i) => i.title);
   return [head, ...body, passed.length ? `Passing: ${passed.slice(0, 60).join("; ")}` : ""].filter(Boolean).join("\n");
 }
@@ -978,6 +989,8 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       return { content: "Shown to the user as chips. A click sends that prompt as their next message.", card: { title: "Suggested next steps" }, suggest: p.data.suggestions };
     }
   }
+  const processOutcome = await runProcessTool(name, input);
+  if (processOutcome) return processOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
@@ -1007,6 +1020,7 @@ export const TOOL_TITLES: Record<string, string> = {
   view_reference: "Looking at a reference",
   run_analysis: "Running the analysis",
   ask_user: "Asking you",
+  ...PROCESS_TOOL_TITLES,
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
   suggest_next_steps: "Suggesting next steps",

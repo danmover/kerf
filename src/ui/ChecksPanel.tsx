@@ -9,9 +9,12 @@ import { setParamValue } from "../core/sourceEdit";
 import { StatusIcon, Icon } from "./icons";
 import { Segmented } from "./common";
 import type { CheckItem } from "../core/checks";
+import type { Model } from "../core/model";
+import { PROCESSES } from "../mfg/profiles";
 import type { FixOption } from "../core/feasibility";
 import { fmtNum } from "../lang/values";
 import { useChatDraft } from "./chatDraft";
+import { CheckFix, FixAction, ManufacturingCard } from "./ManufacturingCard";
 import { useChat, sendMessage } from "../ai/chat";
 import { openSpot } from "../app/spot";
 import { useApiKey } from "./ChatPanel";
@@ -25,6 +28,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   motion: "Motion",
   gears: "Gears",
   analysis: "Strength",
+  process: "Manufacturing",
   build: "Build",
   info: "Needs analysis",
 };
@@ -36,6 +40,13 @@ const BASIS_LABEL: Record<string, string> = {
   simulation: "fea",
   calculation: "calc",
 };
+
+/** The chat message behind "Ask Claude to fix": the check, its process and the suggested fix. */
+function fixRequest(i: CheckItem, model: Model | null) {
+  const part = i.category === "process" ? model?.parts.find((p) => p.id === i.parts?.[0]) : undefined;
+  const how = part?.process ? ` for ${PROCESSES[part.process.id].label}` : "";
+  return `Fix this ${i.status === "fail" ? "failing check" : "warning"}${how}: ${i.title} (${i.detail}).${i.fix ? ` Suggested fix: ${i.fix}` : ""}`;
+}
 
 export function ChecksPanel() {
   const report = useDesign((s) => s.report);
@@ -99,6 +110,7 @@ export function ChecksPanel() {
       )}
 
       <ConflictCard />
+      <ManufacturingCard />
 
       <div style={{ opacity: stale ? 0.6 : 1, transition: "opacity .2s" }}>
         {groups.map(([cat, items]) => (
@@ -127,6 +139,7 @@ export function ChecksPanel() {
                       {i.level === "soft" && <span className="chip" style={{ marginLeft: 6, height: 16, fontSize: 9.5 }}>soft</span>}
                     </div>
                     <div className="detail">{i.detail}</div>
+                    {i.fix && <CheckFix item={i} />}
                     {i.category === "requirement" && i.uses && (
                       <div className="row" style={{ gap: 4, marginTop: 3, flexWrap: "wrap" }}>
                         {i.uses.map((u) => (
@@ -136,15 +149,20 @@ export function ChecksPanel() {
                         ))}
                       </div>
                     )}
-                    {focusCheck === i.id && (i.status === "fail" || i.status === "warn") && hasKey && (
-                      <div className="row" style={{ gap: 4, marginTop: 6 }} onClick={(e) => e.stopPropagation()}>
-                        <button className="btn sm" disabled={busy} onClick={() => void sendMessage(`Fix this ${i.status === "fail" ? "failing check" : "warning"}: ${i.title} (${i.detail}).`)}>
-                          <Icon.Sparkle size={12} /> Ask Claude to fix
-                        </button>
-                        {i.parts?.[0] && model?.parts.some((p) => p.id === i.parts![0]) && (
-                          <button className="btn sm ghost" onClick={() => openSpot({ partId: i.parts![0], label: model.parts.find((p) => p.id === i.parts![0])!.label })}>
-                            <Icon.Pin size={12} /> Talk about it
-                          </button>
+                    {focusCheck === i.id && (i.action || ((i.status === "fail" || i.status === "warn") && hasKey)) && (
+                      <div className="row" style={{ gap: 4, marginTop: 6, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
+                        {i.action && <FixAction action={i.action} />}
+                        {(i.status === "fail" || i.status === "warn") && hasKey && (
+                          <>
+                            <button className="btn sm" disabled={busy} onClick={() => void sendMessage(fixRequest(i, model))}>
+                              <Icon.Sparkle size={12} /> Ask Claude to fix
+                            </button>
+                            {i.parts?.[0] && model?.parts.some((p) => p.id === i.parts![0]) && (
+                              <button className="btn sm ghost" onClick={() => openSpot({ partId: i.parts![0], label: model.parts.find((p) => p.id === i.parts![0])!.label })}>
+                                <Icon.Pin size={12} /> Talk about it
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     )}
