@@ -326,6 +326,10 @@ export interface NetDef {
   pins: PinRef[];
   gauge?: number;
   color?: string;
+  /** copper track width on a circuit board, mm */
+  width?: number;
+  /** fill the board's free copper with this net (true), or never pour it (false) */
+  pour?: boolean;
   span: Span;
 }
 
