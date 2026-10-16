@@ -1181,7 +1181,7 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
   }
   const processOutcome = await runProcessTool(name, input);
   if (processOutcome) return processOutcome;
-  const simOutcome = await runSimTool(name, input);
+  const simOutcome = await runSimTool(name, input, ctx);
   if (simOutcome) return simOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;

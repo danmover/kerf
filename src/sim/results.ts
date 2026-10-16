@@ -66,8 +66,8 @@ export const WORLD_RESULTS: Record<string, Record<string, ResultInfo>> = {
 
 /** The info for a result name, matching `<motor>` style patterns. */
 export function resultInfo(name: string, world?: string): ResultInfo | undefined {
-  const tables = [...(world && WORLD_RESULTS[world] ? [WORLD_RESULTS[world]] : []), COMMON_RESULTS];
-  for (const t of tables) if (t[name]) return t[name];
+  const tables = [...(world && Object.hasOwn(WORLD_RESULTS, world) ? [WORLD_RESULTS[world]] : []), COMMON_RESULTS];
+  for (const t of tables) if (Object.hasOwn(t, name)) return t[name];
   const dot = name.indexOf(".");
   if (dot < 0) return undefined;
   const field = name.slice(dot + 1);

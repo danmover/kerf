@@ -33,11 +33,11 @@ export function preprocess(main: string, opts: PreOptions): Tok[] {
   let expansions = 0;
 
   const readFile = (name: string, system: boolean, from: Tok | null): { text: string; file: string } => {
-    if (!system && name in opts.files) return { text: opts.files[name], file: name };
+    const has = (o: Record<string, string>, k: string) => Object.hasOwn(o, k) && typeof o[k] === "string";
+    if (!system && has(opts.files, name)) return { text: opts.files[name], file: name };
     const base = name.split("/").pop()!;
-    if (!system && base in opts.files) return { text: opts.files[base], file: base };
-    if (name in opts.system) return { text: opts.system[name], file: `<${name}>` };
-    if (!system && name in opts.system) return { text: opts.system[name], file: `<${name}>` };
+    if (!system && has(opts.files, base)) return { text: opts.files[base], file: base };
+    if (has(opts.system, name)) return { text: opts.system[name], file: `<${name}>` };
     throw new CError(`The simulator has no ${system ? "library header" : "file"} "${name}". It runs the Arduino core with Wire, EEPROM and Servo.`, from?.file ?? name, from?.line ?? 0);
   };
 

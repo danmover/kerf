@@ -71,13 +71,16 @@ interface Ctx {
   read: Map<string, { value: V; unit?: ResultUnit }>;
 }
 
+/** a value of the run's own, not something an object inherits (constructor, valueOf) */
+const own = (o: Record<string, V>, name: string) => Object.hasOwn(o, name) && ["number", "string", "boolean"].includes(typeof o[name]);
+
 function lookup(name: string, c: Ctx): V {
-  if (name in c.results) {
+  if (own(c.results, name)) {
     const value = c.results[name];
     c.read.set(name, { value, unit: resultInfo(name, c.world)?.unit });
     return value;
   }
-  if (name in c.env) return c.env[name];
+  if (own(c.env, name)) return c.env[name];
   // a documented result this run did not produce is a failed expectation, not a mistake in it
   if (resultInfo(name, c.world)) throw new NotRecorded(name);
   const sugg = suggest(name, knownNames(c.results, c.world));

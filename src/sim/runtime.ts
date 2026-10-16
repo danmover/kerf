@@ -10,6 +10,7 @@
 
 import { create } from "zustand";
 import { refreshReport, useDesign } from "../core/engine";
+import { useProject } from "../app/project";
 import type { CheckItem } from "../core/checks";
 import { useVerdict } from "../core/briefChecks";
 import { registerReportPass, type ReportContext } from "../core/reportPasses";
@@ -109,12 +110,36 @@ export function scenarioKey(spec: ScenarioSpec, machine: MachineData | undefined
 }
 
 const CACHE_MAX = 16;
-const cache = new Map<string, RunResult>();
+/** a long run's frames are large (a 4 h run is about 47 MB a variant), so the cache is also capped by size */
+const CACHE_BYTES = 160 * 2 ** 20;
+const cache = new Map<string, { r: RunResult; bytes: number }>();
+let cacheBytes = 0;
+
+/** Roughly how much memory a result holds: its frames, screens and logs. */
+export function resultBytes(r: RunResult): number {
+  let n = 0;
+  for (const v of r.variants) {
+    n += v.frames.t.byteLength;
+    for (const s of Object.values(v.frames.series)) n += s.byteLength;
+    for (const d of v.displays ?? []) n += d.frames.length * (d.w * d.h) / 8 + 32 * d.frames.length;
+    n += v.serial.length * 64 + v.events.length * 96;
+  }
+  return n;
+}
 
 function remember(key: string, r: RunResult) {
+  const old = cache.get(key);
+  if (old) cacheBytes -= old.bytes;
   cache.delete(key);
-  cache.set(key, r);
-  while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value!);
+  const bytes = resultBytes(r);
+  cache.set(key, { r, bytes });
+  cacheBytes += bytes;
+  // the newest result always stays, whatever its size
+  while (cache.size > 1 && (cache.size > CACHE_MAX || cacheBytes > CACHE_BYTES)) {
+    const [k, e] = cache.entries().next().value!;
+    cache.delete(k);
+    cacheBytes -= e.bytes;
+  }
 }
 
 // ---------- workers ----------
@@ -272,7 +297,7 @@ function schedule(model: Model, force?: string) {
     const key = scenarioKey(def.spec, model.machine, model.name);
     const run = runs.get(def.label);
     if (run && run.key === key && force !== def.label && run.status !== "idle") continue;
-    const hit = cache.get(key);
+    const hit = cache.get(key)?.r;
     if (hit && force !== def.label) {
       cancel(def.label);
       runs.set(def.label, { label: def.label, key, status: "done", progress: {}, result: hit, stale: false, startedAt: performance.now(), ms: 0 });
@@ -371,9 +396,11 @@ export function simItems(items: CheckItem[], ctx: ReportContext): CheckItem[] {
   for (const def of defs) {
     const base = { category: "simulation" as const, basis: "virtual test" as const, uses: def.uses.length ? def.uses : undefined };
     const id = (s: string) => `sim:${def.label}:${s}`;
+    // expectations get their own id space, so one labelled "run" or "faults" can't collide with the run's health checks
+    const eid = (label: string) => id(`expect:${label}`);
     const each = (status: CheckItem["status"], detail: string): CheckItem[] =>
       def.expects.length
-        ? def.expects.map((e) => ({ ...base, id: id(e.label), status, title: `${def.label}: ${e.label}`, detail, span: e.span, level: e.level }))
+        ? def.expects.map((e) => ({ ...base, id: eid(e.label), status, title: `${def.label}: ${e.label}`, detail, span: e.span, level: e.level }))
         : [{ ...base, id: id("run"), status, title: `Simulation: ${def.label}`, detail, span: def.labelSpan }];
     if (!ctx.live) {
       out.push(...each("info", "The simulation runs once this work is merged into the design."));
@@ -398,7 +425,7 @@ export function simItems(items: CheckItem[], ctx: ReportContext): CheckItem[] {
     def.expects.forEach((e, i) => {
       const o = outcomes[i];
       const note = estimateNote(o, ctx.model.machine?.tests);
-      out.push({ ...base, id: id(e.label), status: o.status, title: `${def.label}: ${e.label}`, detail: note ? `${o.detail} ${note}` : o.detail, span: e.span, level: e.level, margin: o.margin });
+      out.push({ ...base, id: eid(e.label), status: o.status, title: `${def.label}: ${e.label}`, detail: note ? `${o.detail} ${note}` : o.detail, span: e.span, level: e.level, margin: o.margin });
     });
     out.push(...healthItems(def, run.result));
   }
@@ -445,13 +472,33 @@ function foldUses(items: CheckItem[]): CheckItem[] {
 
 let started = false;
 
+/**
+ * Stop every run and forget what the panel and playback were showing, when a
+ * project is closed or another one opened. The cache stays: it is keyed by
+ * the inputs, so reopening a project shows its results at once.
+ */
+export function resetSim() {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  queue = [];
+  partial.clear();
+  for (const s of [...slots]) if (s.job) kill(s);
+  scheduledModel = null;
+  sSet({ runs: new Map(), selected: null, view: false, playing: false, t: 0 });
+}
+
 /** Hook the runtime to the design engine: runs follow model changes, and the report pass adds their results. */
 export function startSimRuntime() {
   if (started) return;
   started = true;
   if (import.meta.env?.DEV) (globalThis as { __kerfSim?: typeof useSim }).__kerfSim = useSim;
   registerReportPass("simulations", simItems, 30);
+  // closing a project leaves its model loaded, so follow the project itself too
+  useProject.subscribe((s, prev) => {
+    if (s.current?.id !== prev.current?.id) resetSim();
+  });
   useDesign.subscribe((s, prev) => {
+    if (!useProject.getState().current) return;
     if (s.model && s.model !== prev.model && s.model !== scheduledModel) scheduleSoon(s.model);
   });
   const m = useDesign.getState().model;
@@ -459,8 +506,8 @@ export function startSimRuntime() {
   refreshReport();
 }
 
-/** Resolves when every scenario of the current design has a result or an error (or the wait times out). */
-export function whenSimulated(timeoutMs = 600_000, labels?: string[]): Promise<void> {
+/** Resolves when every scenario of the current design has a result or an error (or the wait times out, or is aborted). */
+export function whenSimulated(timeoutMs = 600_000, labels?: string[], signal?: AbortSignal): Promise<void> {
   const done = () => {
     const m = useDesign.getState().model;
     if (!m) return false;
@@ -468,17 +515,19 @@ export function whenSimulated(timeoutMs = 600_000, labels?: string[]): Promise<v
     return (m.scenarios ?? []).every((d) => (labels && !labels.includes(d.label)) || ["done", "error", "idle"].includes(sGet().runs.get(d.label)?.status ?? ""));
   };
   return new Promise((resolve) => {
-    if (done()) return resolve();
+    if (done() || signal?.aborted) return resolve();
     const finish = () => {
       clearTimeout(t);
       u1();
       u2();
+      signal?.removeEventListener("abort", finish);
       resolve();
     };
     const check = () => done() && finish();
     const u1 = useSim.subscribe(check);
     const u2 = useDesign.subscribe(check);
     const t = setTimeout(finish, timeoutMs);
+    signal?.addEventListener("abort", finish);
   });
 }
 

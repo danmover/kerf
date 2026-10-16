@@ -16,7 +16,8 @@ self.onmessage = (ev: MessageEvent<SimRequest>) => {
       variants: [variant],
       onProgress: (_v, frac) => {
         const t = performance.now();
-        if (t - last < 100 && frac < 1) return;
+        // a few updates a second is enough for a progress bar, and keeps the UI thread free
+        if (t - last < 300 && frac < 1) return;
         last = t;
         post({ id, type: "progress", frac });
       },

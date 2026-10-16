@@ -49,6 +49,8 @@ const ADATE = 0x20;
 const ADIF = 0x10;
 const ADIE = 0x08;
 const ADC_PRESCALE = [2, 2, 4, 8, 16, 32, 64, 128];
+/** an interrupt handler running longer than this (seconds of chip time) is taken to be stuck */
+const ISR_HANG_S = 0.1;
 
 /** A binary heap of pin changes ordered by time. */
 class PinEvents {
@@ -135,6 +137,11 @@ export class SimHal implements Hal {
   intEnabled = true;
   private inIsr = false;
   private servicing = false;
+  /** when the running interrupt handler started, and how long it may run before it counts as hung */
+  private isrStart = 0;
+  private get isrHang() {
+    return Math.round(this.fcpu * ISR_HANG_S);
+  }
   isrCount = 0;
   isrCycles = 0;
 
@@ -204,9 +211,13 @@ export class SimHal implements Hal {
   // ---------- the world's turn ----------
 
   service(): void {
+    if (this.inIsr && this.cyc >= this.isrStart + this.isrHang) {
+      this.fault(`An interrupt handler ran for ${ISR_HANG_S * 1000} ms without returning, so on the chip nothing else would run. A loop in it is probably waiting for something only the main loop or another interrupt changes`, "firmware", 0);
+      throw new Halt("an interrupt handler never returned");
+    }
     if (this.servicing) {
-      // an interrupt handler is running inside service(): the world waits for it
-      this.nextEvt = Infinity;
+      // an interrupt handler is running inside service(): the world waits for it, but not for ever
+      this.nextEvt = this.inIsr ? this.isrStart + this.isrHang : Infinity;
       return;
     }
     this.servicing = true;
@@ -252,7 +263,7 @@ export class SimHal implements Hal {
     } finally {
       this.servicing = false;
     }
-    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.adc.done, this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity);
+    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.adc.done, this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity, this.inIsr ? this.isrStart + this.isrHang : Infinity);
   }
 
   spend(cycles: number): void {
@@ -297,6 +308,8 @@ export class SimHal implements Hal {
     if (!fn) return;
     const c0 = this.cyc;
     this.inIsr = true;
+    this.isrStart = c0;
+    this.nextEvt = Math.min(this.nextEvt, c0 + this.isrHang);
     const was = this.intEnabled;
     this.intEnabled = false;
     // entry: vector, register saves and the core's dispatch through the attached pointer
@@ -616,6 +629,8 @@ export class SimHal implements Hal {
     this.adc.adcsra &= ~ADIF;
     const c0 = this.cyc;
     this.inIsr = true;
+    this.isrStart = c0;
+    this.nextEvt = Math.min(this.nextEvt, c0 + this.isrHang);
     const was = this.intEnabled;
     this.intEnabled = false;
     // the vector jump and the handler's register saves; then the restores and reti
@@ -694,9 +709,14 @@ export class SimHal implements Hal {
     if (this.outLine.length > 400) this.pushLine();
   }
 
+  /** every line the firmware prints, including those past the log's cap */
+  onLine?: (text: string) => void;
+
   private pushLine() {
-    if (this.serial.length < 20000) this.serial.push({ t: this.outLineT, dir: "out", text: String.fromCharCode(...this.outLine) });
+    const text = String.fromCharCode(...this.outLine);
+    if (this.serial.length < 20000) this.serial.push({ t: this.outLineT, dir: "out", text });
     this.outLine = [];
+    this.onLine?.(text);
   }
 
   /** flush a partial last line into the log */

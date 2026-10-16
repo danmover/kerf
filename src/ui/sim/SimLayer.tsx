@@ -251,7 +251,8 @@ function Readouts({ v, t, label, stale }: { v: VariantRun; t: number; label: str
           <div className="simv-meter">
             <div style={{ width: `${Number.isFinite(share) ? share * 100 : 0}%` }} />
           </div>
-          <Row k="off the line" v={`${n(at("pit.offset"))} mm`} />
+          {/* the same measure as the run's miss: sideways and up or down together */}
+          <Row k="off the line" v={`${n(Math.hypot(at("pit.offset"), at("pit.height") || 0))} mm · ${n(at("pit.offset"))} sideways`} />
           <Row k="heading · hinge" v={`${n(at("pit.heading"), 1)}° · ${n(at("pit.hinge"), 1)}°`} />
           <Row k="speed" v={`${n(at("pit.speed"), 2)} mm/s`} />
         </>

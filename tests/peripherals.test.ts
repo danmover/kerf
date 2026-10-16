@@ -185,6 +185,23 @@ describe("other registers", () => {
     expect(out).toEqual(["off", "on"]);
   });
 
+  it("stops a run whose interrupt handler never returns, instead of spinning", () => {
+    const { hal, faults } = run(
+      `volatile bool go = false;
+ISR(ADC_vect) { while (!go) { } }
+void setup() {
+  ADMUX = _BV(REFS0);
+  ADCSRA = _BV(ADEN) | _BV(ADIE) | 7;
+  sei();
+}
+// the handler waits for a flag the main loop only sets once the conversion is over
+void loop() { go = false; ADCSRA |= _BV(ADSC); delay(5); go = true; }`,
+      5,
+    );
+    expect(faults.some((f) => /interrupt handler ran for 100 ms without returning/.test(f))).toBe(true);
+    expect(hal.time).toBeLessThan(0.2);
+  });
+
   it("names a register it does not model instead of calling it undeclared", () => {
     expect(() => run("void setup() { TCCR1A = 0; }\nvoid loop() {}", 0.01)).toThrow(CError);
     expect(() => run("void setup() { TCCR1A = 0; }\nvoid loop() {}", 0.01)).toThrow(/TCCR1A is an ATmega328P register the simulator does not model yet/);

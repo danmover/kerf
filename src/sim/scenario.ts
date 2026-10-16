@@ -296,7 +296,7 @@ export function scenarioSpec(label: string, p: ScenarioProps, fail: (msg: string
     ws = { kind: "sand_pit", pit: (w as unknown as { pit: Omit<SandPitSpec, "start"> & { start: PitStart } }).pit, robot: { ...rest, imus } };
   } else ws = w as WorldSpec;
   const duration = num(p, "duration", 600, fail);
-  if (duration <= 0 || duration > 4 * 3600) fail("duration: between 1 s and 4 h of simulated time", p.span("duration"));
+  if (duration <= 0 || duration > 4 * 3600) fail("duration: more than 0 s and at most 4 h of simulated time", p.span("duration"));
   const consoleV = p.get("console");
   const consoleList: { t: number; text: string }[] = [];
   if (consoleV !== undefined) {

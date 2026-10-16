@@ -142,7 +142,7 @@ function planBranch(defs: ScenarioDef[]) {
   };
 }
 
-export async function runSimTool(name: string, input: unknown): Promise<ToolOutcome | null> {
+export async function runSimTool(name: string, input: unknown, ctx: { signal?: AbortSignal } = {}): Promise<ToolOutcome | null> {
   if (name === "run_scenario") {
     const p = RunInput.safeParse(input ?? {});
     if (!p.success) return invalid(p.error);
@@ -162,7 +162,11 @@ export async function runSimTool(name: string, input: unknown): Promise<ToolOutc
       if (!st || st === "idle" || st === "error") runScenarioNow(d.label);
     }
     const tree = planBranch(defs);
-    await whenSimulated(900_000, defs.map((d) => d.label));
+    await whenSimulated(900_000, defs.map((d) => d.label), ctx.signal);
+    if (ctx.signal?.aborted) {
+      tree.finish("blocked", "Stopped");
+      return { isError: true, content: "Stopped waiting for the simulation: the user pressed Stop. The runs carry on in the Simulate tab.", card: { title: "Simulation wait stopped", status: "error" } };
+    }
     const runs = useSim.getState().runs;
     const text = defs.map((d) => scenarioSummary(d, runs.get(d.label))).join("\n\n");
     let fails = 0;

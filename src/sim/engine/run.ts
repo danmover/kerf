@@ -170,7 +170,10 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   const lastTyped = Math.max(0, ...(opts.console ?? []).map((c) => c.t));
   // the firmware's own word for what it is doing, from its latest "state: ..." line
   let fwState = "";
-  let seen = 0;
+  hal.onLine = (text) => {
+    const m = STATE_LINE.exec(text);
+    if (m) fwState = m[1];
+  };
   let moved = false;
   let stillSince = 0;
   let finishedAt = -1;
@@ -205,11 +208,6 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
       moved = true;
       stillSince = t;
     } else if (moved && t - stillSince > idleStop && t > lastTyped) {
-      for (; seen < hal.serial.length; seen++) {
-        const l = hal.serial[seen];
-        const m = l.dir === "out" ? STATE_LINE.exec(l.text) : null;
-        if (m) fwState = m[1];
-      }
       // firmware that says it is still at work is resting (cooling, about to retry), not finished
       const working = fwState !== "" && !SETTLED.test(fwState);
       if (!working || t - stillSince > restStop) {

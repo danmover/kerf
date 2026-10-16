@@ -12,7 +12,9 @@ import { runSpec, pitStart } from "../src/sim/build";
 import { judge, checkRun } from "../src/sim/expect";
 import { fmtResult, resultInfo } from "../src/sim/results";
 import { SIM_TEMPLATES, templateSource } from "../src/sim/templates";
-import { estimateNote, outcomesFor, scenarioKey } from "../src/sim/runtime";
+import { estimateNote, outcomesFor, resetSim, scenarioKey, useSim } from "../src/sim/runtime";
+import { useVerdict } from "../src/core/briefChecks";
+import type { CheckItem } from "../src/core/checks";
 import { matchSeries, valueAt } from "../src/sim/frames";
 import type { ScenarioDef } from "../src/sim/scenario";
 
@@ -72,6 +74,25 @@ describe("scenario blocks", () => {
   });
 });
 
+describe("project changes and brief uses", () => {
+  it("forgets what the panel and playback showed when the project changes", () => {
+    useSim.setState({ runs: new Map([["Cross the pit", { label: "Cross the pit", key: "k", status: "done", progress: {}, stale: false, startedAt: 0 }]]), selected: "Cross the pit", view: true, playing: true, t: 42 });
+    resetSim();
+    const s = useSim.getState();
+    expect([s.runs.size, s.selected, s.view, s.playing, s.t]).toEqual([0, null, false, false, 0]);
+  });
+
+  it("counts warnings apart from failures in a brief use", () => {
+    const item = (title: string, status: CheckItem["status"]) => ({ id: title, title, status, detail: "why", category: "simulation", basis: "virtual test" }) as CheckItem;
+    const warned = useVerdict("cross", [item("Reaches", "warn"), item("Through", "warn"), item("Battery", "pass")]);
+    expect(warned.status).toBe("warn");
+    expect(warned.detail).toMatch(/^Of its 3 checks, 2 warn: Reaches \(why\); Through \(why\)$/);
+    const failed = useVerdict("cross", [item("Reaches", "warn"), item("Battery", "fail"), item("Heat", "pass")]);
+    expect(failed.detail).toMatch(/^Of its 3 checks, 1 fails and 1 warns: Battery \(why\); Reaches \(why\)$/);
+    expect(useVerdict("cross", [item("Reaches", "fail")]).detail).toBe("Its check fails: Reaches (why)");
+  });
+});
+
 describe("expectations", () => {
   const def = scenario(
     `scenario "Judge" { world: sim.bench() duration: 1min
@@ -113,6 +134,19 @@ describe("expectations", () => {
     expect(c.ok).toBeNull();
     expect(c.detail).toMatch(/not a result of this run/);
     expect(judge(typo, [run("expected", { "m_front.max_temp": 40 })], "sand_pit").status).toBe("fail");
+  });
+
+  it("does not read what every object inherits as a result", () => {
+    const [ctor, valueOf] = scenario(
+      `scenario "Inherited" { world: sim.bench() duration: 1min
+        expect "Ctor": constructor
+        expect "Value": valueOf }`,
+    ).expects;
+    for (const e of [ctor, valueOf]) {
+      const c = checkRun(e, { reached: true }, "sand_pit");
+      expect(c.ok).toBeNull();
+      expect(c.detail).toMatch(/not a result of this run/);
+    }
   });
 
   it("knows result units, including per-motor results", () => {
