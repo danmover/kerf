@@ -99,6 +99,15 @@ part shell { body cylinder(d: 60, h: 200) }
     expect(missing).toEqual(["Buys the parts the brief needs", "Sizes the machine with calculations", "Wires the electronics", "Writes the firmware", "States and meets requirements", "Plans physical tests"]);
     expect(score.score).toBe(2);
   });
+
+  it("want the job written into a brief when the request gives its numbers", () => {
+    const pit = BRIEFS.find((b) => b.id === "sand-pit")!;
+    const line = (src: string) => scoreBrief(pit, evaluate(src)).lines.find((l) => l.label === "Writes the job into the brief");
+    expect(line(`design "x"\npart a { body box(1, 1, 1) }\n`)).toMatchObject({ ok: false, detail: "no brief block" });
+    const brief = `design "x"\nbrief {\n  use cross "Crosses the pit"\n  given pit_l = 2m "Pit length"\n  given pit_depth = 5m "Sand depth"\n}\nlet run = pit_l + pit_depth\n`;
+    expect(line(brief)).toMatchObject({ ok: false, detail: "no requirement for cross" });
+    expect(line(brief + `require "Long enough" for cross: run > 1m\n`)).toMatchObject({ ok: true });
+  });
 });
 
 describe("wiring rules", () => {
@@ -145,6 +154,16 @@ describe("sand tunneller", () => {
     expect(bad.map((c) => `${c.title}: ${c.detail}`)).toEqual([]);
   });
 
+  it("sizes itself from the pit in its brief, so a wider pit fails the motor and battery checks", () => {
+    expect(model.brief?.givens.map((g) => g.name)).toEqual(["pit_l", "pit_depth", "pit_w", "floor_gap"]);
+    const uses = model.brief!.uses.map((u) => u.id);
+    for (const u of uses) expect(model.requirements.some((r) => r.uses.includes(u))).toBe(true);
+    // in a 1 m wide pit the walls carry less of the sand: about 27 kPa at the bottom instead of 17
+    const wide = evaluate(TUNNELLER.replace(/given pit_w = 0\.5m/, "given pit_w = 1m"));
+    const failing = wide.requirements.filter((r) => r.status === "fail").map((r) => r.label);
+    expect(failing).toEqual(["Front motor runs below half its stall torque", "Rear motor runs below half its stall torque", "Battery lasts two crossings"]);
+  });
+
   it("generates an Arduino sketch with its pins taken from the wiring", () => {
     const [fw] = generateFirmware(model.machine!, model.name ?? "design");
     expect(fw.target).toBe("arduino");
@@ -182,8 +201,10 @@ describe("sand tunneller", () => {
     const r = await fullCheck(TUNNELLER);
     expect([...r.buildErrors.values()]).toEqual([]);
     expect(problems(r.report, ["fail", "warn"])).toEqual([]);
-    // it answers dan's brief completely
-    const score = scoreBrief(BRIEFS.find((b) => b.id === "sand-drill")!, r.model, r.report.items);
-    expect(score.lines.filter((l) => !l.ok)).toEqual([]);
+    // it answers both of dan's drill briefs completely
+    for (const id of ["sand-drill", "sand-pit"]) {
+      const score = scoreBrief(BRIEFS.find((b) => b.id === id)!, r.model, r.report.items);
+      expect(score.lines.filter((l) => !l.ok)).toEqual([]);
+    }
   }, 900000);
 });
