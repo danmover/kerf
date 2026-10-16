@@ -19,8 +19,11 @@ describe("drivetrain checks", () => {
     const m = evaluate(reducer + `\nanalysis "Duty" {\n  drive: motor\n  torque: 0.4Nm\n  speed: 600rpm\n  life: 2000h\n  safety: 1.5\n}\n`);
     expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
     const spec = m.analyses.find((a) => a.label === "Duty") as DrivetrainSpec;
+    // times are seconds in the language (2000h = 7.2 million); the drivetrain gets hours
+    expect(spec.life).toBe(2000);
     const r = runDrivetrain(m, spec);
     expect(r.error).toBeUndefined();
+    expect(r.items.some((i) => i.title.startsWith("Bearing life") && /target 2,?000 h/.test(i.detail))).toBe(true);
     expect(r.meshes).toHaveLength(2);
     // stage 1: 0.4 N·m on a 12-tooth m1 pinion (6 mm pitch radius) → 66.7 N at the teeth
     const s1 = r.meshes.find((x) => x.driven === "g2")!;

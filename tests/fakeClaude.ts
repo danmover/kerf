@@ -3,7 +3,11 @@
 // prompt, the tools and every message before it, and sending it back after any
 // of those changed is a 400 (or, with drop_block, a reported drop).
 
-export type Turn = { tool: string; input?: Record<string, unknown> } | { text: string };
+export type Turn =
+  | { tool: string; input?: Record<string, unknown> }
+  | { text: string }
+  /** content blocks as given (web searches and their results, text, tool calls), with the stop reason and the searches billed */
+  | { raw: { type: string; [k: string]: unknown }[]; stop: string; searches?: number };
 
 interface Options {
   /** answer like a model that rejects thinking.block_binding */
@@ -100,7 +104,15 @@ export function fakeClaude(script: Turn[], opts: Options = {}) {
       { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature } },
       { type: "content_block_stop", index: 0 },
     ];
-    if ("tool" in turn) {
+    if ("raw" in turn) {
+      turn.raw.forEach((b, j) => {
+        const index = j + 1;
+        if (b.type === "text") events.push({ type: "content_block_start", index, content_block: { type: "text", text: "" } }, { type: "content_block_delta", index, delta: { type: "text_delta", text: b.text } });
+        else if (b.type === "tool_use") events.push({ type: "content_block_start", index, content_block: { ...b, input: {} } }, { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(b.input ?? {}) } });
+        else events.push({ type: "content_block_start", index, content_block: b });
+        events.push({ type: "content_block_stop", index });
+      });
+    } else if ("tool" in turn) {
       events.push(
         { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: `toolu_${id}`, name: turn.tool, input: {} } },
         { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify(turn.input ?? {}) } },
@@ -113,7 +125,9 @@ export function fakeClaude(script: Turn[], opts: Options = {}) {
         { type: "content_block_stop", index: 1 },
       );
     }
-    events.push({ type: "message_delta", delta: { stop_reason: "tool" in turn ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 20 } }, { type: "message_stop" });
+    const stop = "raw" in turn ? turn.stop : "tool" in turn ? "tool_use" : "end_turn";
+    const searches = "raw" in turn && turn.searches ? { server_tool_use: { web_search_requests: turn.searches } } : {};
+    events.push({ type: "message_delta", delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 20, ...searches } }, { type: "message_stop" });
     const sse = events.map((e) => `event: ${(e as { type: string }).type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
     return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream", "request-id": `req_${id}` } });
   }

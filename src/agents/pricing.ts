@@ -3,6 +3,7 @@
 // tokens at Anthropic's standard API rates (October 2026).
 
 import type { Effort } from "../app/settings";
+import { webSearchFee } from "../ai/web";
 
 export interface Price {
   input: number;
@@ -30,6 +31,8 @@ export interface Usage {
   output_tokens: number;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  /** web searches are billed per search on top of the tokens */
+  server_tool_use?: { web_search_requests?: number | null } | null;
 }
 
 export interface Tally {
@@ -59,7 +62,7 @@ export function costOf(model: string, u: Usage): number {
   const write = u.cache_creation_input_tokens ?? 0;
   const read = u.cache_read_input_tokens ?? 0;
   const p = priceFor(model, u.input_tokens + write + read);
-  return (u.input_tokens * p.input + u.output_tokens * p.output + write * p.cacheWrite + read * p.cacheRead) / 1e6;
+  return (u.input_tokens * p.input + u.output_tokens * p.output + write * p.cacheWrite + read * p.cacheRead) / 1e6 + webSearchFee(u);
 }
 
 export function addUsage(t: Tally, model: string, u: Usage): Tally {

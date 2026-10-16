@@ -192,7 +192,9 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     if (torque === undefined) fail('A drivetrain analysis needs torque: (the input torque, e.g. torque: 0.4Nm)', span);
     const speed = num("speed", 0);
     if (speed === undefined) fail("A drivetrain analysis needs speed: (the input speed, e.g. speed: 3000rpm)", span);
-    return { kind: "drivetrain", label, drive, torque, speed, life: num("life", 0), safety, span };
+    // times are in seconds in the language (2000h = 7.2e6); the drivetrain works in hours
+    const life = num("life", 0);
+    return { kind: "drivetrain", label, drive, torque, speed, life: life === undefined ? undefined : life / 3600, safety, span };
   }
 
   // ---- structural ----
