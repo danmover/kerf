@@ -1,0 +1,158 @@
+/* ---------- imported STEP files ---------- */
+
+.imports {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+.imports-head {
+  cursor: default;
+}
+.imports-count {
+  color: var(--text-4);
+}
+.imports-add {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 7px;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-family: var(--sans);
+}
+.imports-empty {
+  margin: 2px 8px 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-3);
+  border-radius: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.import-row {
+  border-radius: 6px;
+  margin-bottom: 2px;
+}
+.imports .tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-2);
+  position: relative;
+  user-select: none;
+}
+.imports .tree-row:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.imports .tree-row .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.imports .tree-row .meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+.imports .tree-row .row-actions {
+  display: flex;
+  gap: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.imports .tree-row:hover .row-actions,
+.imports .tree-row:focus-within .row-actions {
+  opacity: 1;
+}
+.import-row.selected > .tree-row {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.import-row .import-state {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  color: var(--cyan);
+}
+.import-row .import-state.error,
+.import-row .import-state.missing {
+  color: var(--fail);
+}
+.import-facts {
+  padding: 0 8px 6px 32px;
+  margin-top: -3px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+  line-height: 1.5;
+}
+.import-error {
+  color: #ffb3bb;
+  font-family: var(--sans);
+  font-size: 11.5px;
+}
+.import-warn {
+  color: var(--warn);
+  cursor: help;
+}
+.spinner.tiny {
+  width: 11px;
+  height: 11px;
+  border-width: 1.5px;
+}
+
+.gap-readout {
+  margin-top: 4px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: rgba(79, 209, 197, 0.1);
+  color: var(--cyan);
+}
+.gap-readout b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.step-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(7, 9, 13, 0.55);
+  backdrop-filter: blur(3px);
+  outline: 2px dashed var(--accent);
+  outline-offset: -10px;
+  pointer-events: none;
+}
+.step-drop-card {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 22px 28px;
+  border-radius: 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+  color: var(--accent-2);
+  max-width: 360px;
+  text-align: center;
+}
+.step-drop-title {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+.step-drop-sub {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.5;
+}
