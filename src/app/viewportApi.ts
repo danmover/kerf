@@ -27,6 +27,14 @@ export interface CaptureOptions {
   overlays?: boolean;
 }
 
+/** What the photoreal view is doing (ui/viewport/scene's PhotoStatus). */
+export interface PhotoState {
+  state: "off" | "paused" | "waiting" | "preparing" | "rendering" | "done";
+  reason?: string;
+  samples: number;
+  max: number;
+}
+
 export interface ViewportApi {
   capture(opts: CaptureOptions): Promise<string>;
   /** a rendered ball of a material under the current lighting (data URL, transparent background) */
@@ -45,6 +53,14 @@ export interface ViewportApi {
   snapshot(): string;
   /** the part (and spot on it) under a point in page coordinates */
   hitAt(clientX: number, clientY: number): { id: string; local: Vec3; point: Vec3; normal: Vec3 } | null;
+  /** what the photoreal view is doing */
+  photoStatus(): PhotoState;
+  /** why the photoreal view couldn't run now (software graphics, section view, ...), or null */
+  photoBlocker(): string | null;
+  /** an export needs at least this photoreal quality until it ends (null) */
+  photoFloor(q: { maxSamples: number; scale: number; bounces: number } | null): void;
+  /** the finished photoreal image on screen, without the selection outline or axis triad; null until it has converged */
+  photoSnapshot(): string | null;
 }
 
 let api: ViewportApi | null = null;

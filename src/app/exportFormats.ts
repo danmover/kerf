@@ -12,6 +12,7 @@ import {
   exportGerbers,
   exportGlb,
   exportObj,
+  exportPhotoreal,
   exportPng,
   exportPngSized,
   exportProjectFile,
@@ -25,6 +26,7 @@ import {
 } from "./exports";
 import { errorText, toast } from "./ui";
 import { useDesign } from "../core/engine";
+import { viewport } from "./viewportApi";
 import { exportDrawingsPdf } from "../drawing/export";
 
 async function exportDrawings() {
@@ -75,6 +77,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
 
   { id: "png", group: "image", label: "Picture of this view", detail: "1920 × 1200, fully refined", ext: ".png", icon: "Eye", run: () => exportPng() },
   { id: "png-4k", group: "image", label: "4K picture", detail: "3840 × 2400 for print and slides", ext: ".png", icon: "Eye", run: () => exportPngSized(3840, 2400, "4K") },
+  { id: "photoreal", group: "image", label: "Photoreal picture", detail: "Path traced until clean, at the view's size", ext: ".png", icon: "Aperture", unavailable: () => viewport()?.photoBlocker() ?? null, run: () => exportPhotoreal() },
   { id: "sheet", group: "image", label: "Four-view sheet", detail: "Iso, front, top and right on one image", ext: ".png", icon: "Grid", run: () => exportViewSheet() },
   { id: "copy", group: "image", label: "Copy view", detail: "Paste into a chat, doc or email", ext: "clipboard", icon: "Copy", run: () => copyViewImage() },
 
