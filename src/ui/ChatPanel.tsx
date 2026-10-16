@@ -2,19 +2,31 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useChat, sendMessage, stop, choose, retryLast, revertTurn, clearChat, type ChatItem } from "../ai/chat";
+import { useChat, sendMessage, stop, retryLast, clearChat, type ChatItem } from "../ai/chat";
+import { ChoiceCard } from "./ChoiceCard";
+import { ChangeCard } from "./ChangeCard";
+import { DiffView } from "./DiffView";
+import { openSpot, spotLabel } from "../app/spot";
 import { safeUrl, domainOf } from "../ai/web";
 import { getApiKey, subscribeKey } from "../persist/vault";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
 import { useProject } from "../app/project";
 import { templateById, TEMPLATES } from "../demos/templates";
-import { lineDiff, diffStats } from "../core/sourceEdit";
+import { diffStats } from "../core/sourceEdit";
+import { useDesign } from "../core/engine";
+import { useView, select } from "../app/view";
 import { Markdown } from "./Markdown";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
+import { MicButton, VoiceBar, VoiceNotice, useVoiceInput } from "./voice/VoiceInput";
+import { AgentRunCard } from "./agents/AgentRunCard";
+import { PlanPane } from "./PlanPane";
+import { ReviewCard } from "./ReviewCard";
+import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Attachments";
+import { useStickToBottom } from "./useStickToBottom";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -25,7 +37,8 @@ export function ChatPanel() {
   const busy = useChat((s) => s.busy);
   const key = useApiKey();
   const feed = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
+  const lastUser = useMemo(() => [...items].reverse().find((i) => i.kind === "user")?.id, [items]);
+  const stick = useStickToBottom(feed, lastUser);
   const settings = useSettings();
   const model = MODELS.find((m) => m.id === settings.model)!;
 
@@ -104,19 +117,11 @@ export function ChatPanel() {
       </div>
 
       <div className="chat">
-        <div
-          className="chat-feed"
-          ref={feed}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-          }}
-          aria-live="polite"
-        >
+        <PlanPane />
+        <div className="chat-feed" ref={feed} aria-live="polite">
           {!items.length && <Welcome hasKey={!!key} />}
-          {items.map((it) => (
-            <Item key={it.id} it={it} />
-          ))}
+          {items.map((it) => (it.kind === "tool" && it.name === "update_plan" ? null : <Item key={it.id} it={it} />))}
+          <Suggestions items={items} busy={busy} />
         </div>
         <Composer busy={busy} hasKey={!!key} />
       </div>
@@ -164,13 +169,29 @@ function Item({ it }: { it: ChatItem }) {
     case "user":
       return (
         <motion.div className="msg-user" initial={{ opacity: 0, y: 6, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }}>
+          <MessageFiles files={it.files} />
+          {it.spot && (
+            <button
+              className="spot-chip"
+              onClick={() => {
+                if (useDesign.getState().model?.parts.some((p) => p.id === it.spot!.partId)) {
+                  select([it.spot!.partId]);
+                  openSpot(it.spot!);
+                }
+              }}
+              data-tip="The spot this is about. Click to show it."
+            >
+              <Icon.Pin size={11} /> {spotLabel(it.spot)}
+            </button>
+          )}
+          {it.image && <img className="mark-img" src={it.image} alt="Your marked-up view" />}
           {it.text}
         </motion.div>
       );
     case "assistant":
       return <AssistantMsg it={it} />;
     case "tool":
-      return <ToolCard it={it} />;
+      return it.name === "build_subassemblies" ? <AgentRunCard toolUseId={it.toolUseId} fallback={<ToolCard it={it} />} /> : <ToolCard it={it} />;
     case "choice":
       return <ChoiceCard it={it} />;
     case "notice":
@@ -190,13 +211,50 @@ function Item({ it }: { it: ChatItem }) {
                   <Icon.Refresh size={13} /> Try again
                 </button>
               )}
+              {it.action === "continue" && (
+                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.")}>
+                  <Icon.Play size={11} /> Continue
+                </button>
+              )}
             </div>
           )}
         </motion.div>
       );
     case "turn":
-      return <TurnBar it={it} />;
+      return <ChangeCard it={it} />;
+    case "review":
+      return <ReviewCard it={it} />;
+    case "suggest":
+      return null;
   }
+}
+
+/** Claude's suggested follow-ups, as chips after its latest reply until the user sends something. */
+function Suggestions({ items, busy }: { items: ChatItem[]; busy: boolean }) {
+  let last: Extract<ChatItem, { kind: "suggest" }> | null = null;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user" || it.kind === "choice") break;
+    if (it.kind === "suggest") {
+      last = it;
+      break;
+    }
+  }
+  if (!last || busy) return null;
+  return <SuggestionChips options={last.options} />;
+}
+
+export function SuggestionChips({ options, onSend }: { options: { label: string; prompt: string }[]; onSend?: (prompt: string) => void }) {
+  return (
+    <motion.div className="suggest" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}>
+      <span className="mono dim">next</span>
+      {options.map((o, i) => (
+        <motion.button key={o.label} className="suggest-chip" initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.05 * i }} onClick={() => (onSend ? onSend(o.prompt) : void sendMessage(o.prompt))} data-tip={o.prompt} data-tip-pos="top">
+          <Icon.Sparkle size={11} /> {o.label}
+        </motion.button>
+      ))}
+    </motion.div>
+  );
 }
 
 function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) {
@@ -299,85 +357,15 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
   );
 }
 
-function DiffView({ before, after }: { before: string; after: string }) {
-  const lines = useMemo(() => lineDiff(before, after, 2), [before, after]);
-  return (
-    <div className="diff">
-      {lines.map((l, i) => (
-        <div key={i} className={`ln ${l.kind}`}>
-          <span className="n">{l.b ?? l.a ?? ""}</span>
-          <span>{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
-          <span>{l.text}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ChoiceCard({ it }: { it: Extract<ChatItem, { kind: "choice" }> }) {
-  const pending = useChat((s) => s.pendingChoice);
-  const busy = useChat((s) => s.busy);
-  const live = pending?.itemId === it.id && !busy;
-  return (
-    <motion.div className="choice-card" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-      <div className="row" style={{ marginBottom: 4, color: "var(--violet)" }}>
-        <Icon.Sparkle size={13} />
-        <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".08em" }}>
-          YOUR DECISION
-        </span>
-      </div>
-      <div className="q">{it.question}</div>
-      {it.options.map((o) => (
-        <button key={o.label} className={`choice-opt ${it.chosen === o.label ? "chosen" : ""}`} disabled={!live} onClick={() => void choose(it.id, o.label)}>
-          <div className="l">
-            {o.label}
-            {o.recommended && <span className="chip accent">recommended</span>}
-          </div>
-          <div className="c">{o.consequence}</div>
-        </button>
-      ))}
-      {live && (
-        <div className="dim" style={{ fontSize: 11.5, marginTop: 8 }}>
-          Or type a different answer below.
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
-function TurnBar({ it }: { it: Extract<ChatItem, { kind: "turn" }> }) {
-  const [open, setOpen] = useState(false);
-  const stats = useMemo(() => diffStats(it.before, it.after), [it.before, it.after]);
-  return (
-    <div>
-      <div className="turn-bar">
-        <Icon.Edit size={12} />
-        <span className="grow">
-          {it.reverted ? "Reverted" : `Changed the design in ${it.edits} edit${it.edits > 1 ? "s" : ""}`} · <span style={{ color: "var(--pass)" }}>+{stats.added}</span> <span style={{ color: "var(--fail)" }}>−{stats.removed}</span>
-        </span>
-        <button className="btn sm ghost" onClick={() => setOpen((o) => !o)}>
-          {open ? "Hide" : "Review"}
-        </button>
-        {!it.reverted && (
-          <button className="btn sm ghost" onClick={() => revertTurn(it.id)} data-tip="Put the design back as it was before this reply">
-            <Icon.Undo size={12} /> Revert
-          </button>
-        )}
-      </div>
-      {open && (
-        <div style={{ marginTop: 6, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line-2)" }}>
-          <DiffView before={it.before} after={it.after} />
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
   const draft = useChatDraft();
   const pending = useChat((s) => s.pendingChoice);
+  const att = useAttachments();
+  const selected = useView((s) => s.selected);
+  const model = useDesign((s) => s.model);
+  const about = useMemo(() => [...new Set(selected.map((id) => model?.parts.find((p) => p.id === id)?.name).filter((n): n is string => !!n))], [selected, model]);
   useEffect(() => {
     if (draft.nonce) {
       setText(draft.text);
@@ -393,20 +381,51 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
     el.style.height = "auto";
     el.style.height = Math.min(200, el.scrollHeight) + "px";
   }, [text]);
+  const canSend = (!!text.trim() || att.files.length > 0) && !att.loading;
   const send = () => {
-    if (!text.trim() || busy) return;
-    void sendMessage(text);
+    if (!canSend || busy) return;
+    void sendMessage(text, { files: att.files });
     setText("");
+    att.clear();
   };
+  const voice = useVoiceInput({ text, setText, send, canSend: !busy, input: ta });
   return (
     <div className="composer">
-      <div className="composer-box">
+      <VoiceNotice />
+      <AnimatePresence initial={false}>
+        {about.length > 0 && (
+          <motion.div className="about-row" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
+            <Icon.Target size={12} />
+            <span className="mono">about</span>
+            {about.slice(0, 4).map((n) => (
+              <span key={n} className="chip accent">
+                {n}
+              </span>
+            ))}
+            {about.length > 4 && <span className="chip">+{about.length - 4}</span>}
+            <button className="icon-btn sm" onClick={() => select([])} aria-label="Clear the selection" data-tip="Clear the selection">
+              <Icon.X size={11} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <div className={`composer-box ${att.over ? "drop-over" : ""}`} {...att.bind}>
+        <PendingFiles att={att} />
         <textarea
           ref={ta}
           value={text}
+          readOnly={voice.live}
           rows={2}
           maxLength={20000}
-          placeholder={pending ? "Pick an option above, or answer here…" : hasKey ? "Describe a part, a change or a question…" : "Add your API key in settings to chat with Claude"}
+          placeholder={
+            pending
+              ? "Pick an option above, or answer here…"
+              : !hasKey
+                ? "Add your API key in settings to chat with Claude"
+                : about.length
+                  ? `What should change about ${about.length === 1 ? about[0] : "the selected parts"}?`
+                  : "Describe a part, a change or a question… (right-click the model to ask about a spot)"
+          }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -418,20 +437,23 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
           id="chat-input"
         />
         <div className="row">
+          <AttachButton att={att} disabled={!hasKey} />
           <span className="mono dim" style={{ fontSize: 10.5 }}>
             {busy ? <span className="shimmer-text">Claude is working</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
           </span>
           <div className="grow" />
+          <MicButton voice={voice} />
           {busy ? (
             <button className="btn sm danger" onClick={stop} aria-label="Stop">
               <Icon.Stop size={12} /> Stop
             </button>
           ) : (
-            <button className="btn sm primary" onClick={send} disabled={!text.trim()} aria-label="Send">
+            <button className="btn sm primary" onClick={send} disabled={!canSend} aria-label="Send">
               <Icon.Send size={13} />
             </button>
           )}
         </div>
+        <VoiceBar voice={voice} />
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 6, textAlign: "center" }}>
         Claude can make mistakes. Checks verify geometry, not strength. Test before you rely on a part.

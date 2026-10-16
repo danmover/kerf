@@ -14,7 +14,7 @@ import { CALC_FNS } from "../src/machine/calcs";
 import { calcParams, languageReference, partsTable } from "../src/ai/reference";
 import { systemPrompt } from "../src/ai/prompt";
 import { TOOL_DEFS, catalogLookup, engineeringCalc, firmwareSummary, machineSummary, reportSummary, runTool } from "../src/ai/tools";
-import { webTools, webActivity, citedSources, isPausedTurn, stripThinking, echoContent, flattenServerTools, isThinkingBindingError, isWebToolError, safeUrl } from "../src/ai/web";
+import { webTools, webActivity, citedSources, isPausedTurn, echoContent, flattenServerTools, isWebToolError, safeUrl } from "../src/ai/web";
 import { useChat, sendMessage, retryLast, clearChat, loadChat, setClientFactory, chatHistory, requestTools, type ChatItem } from "../src/ai/chat";
 import { useSettings } from "../src/app/settings";
 
@@ -248,18 +248,9 @@ describe("web search helpers", () => {
     expect(safeUrl("ftp://x")).toBeNull();
   });
 
-  it("recognises a paused turn and strips thinking for a resend", () => {
+  it("recognises a paused turn and a key that cannot use web search", () => {
     expect(isPausedTurn({ role: "assistant", content: [{ type: "server_tool_use", id: "s", name: "web_search", input: {} }] })).toBe(true);
     expect(isPausedTurn({ role: "assistant", content: [{ type: "text", text: "done" }] })).toBe(false);
-    const { history, removed } = stripThinking([
-      { role: "user", content: "hi" },
-      { role: "assistant", content: [{ type: "thinking", thinking: "t", signature: "s" }, { type: "text", text: "a" }] },
-      { role: "assistant", content: [{ type: "redacted_thinking", data: "d" }] },
-    ]);
-    expect(removed).toBe(2);
-    expect(history[1].content).toEqual([{ type: "text", text: "a" }]);
-    expect(history[2].content).toEqual([{ type: "text", text: "(no text)" }]);
-    expect(isThinkingBindingError('400 {"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: Invalid `signature` in `thinking` block"}}')).toBe(true);
     expect(isWebToolError("tools.12: web_search is not enabled for this organization")).toBe(true);
     expect(isWebToolError("messages: text is required")).toBe(false);
   });

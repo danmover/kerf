@@ -39,7 +39,7 @@ export const TEMPLATES: Template[] = [
       "Add a second row of vent slots and check the lid still clears the board",
       "Switch the lid screws to M2.5 and update the bosses",
     ],
-    stats: "21 parts · 6 requirements",
+    stats: "21 parts · 8 requirements",
   },
   {
     id: "reducer",

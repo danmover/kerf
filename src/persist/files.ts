@@ -7,12 +7,18 @@ import { xformMatrix, type Xform } from "../kernel/recipe";
 import type { EvalPart, Model } from "../core/model";
 import { catalogPart, searchLinks, shopLinks, type ShopLink } from "../machine/catalog";
 import type { CatalogPart } from "../machine/types";
+import { IMPORT_META_VERSION, MAX_BODIES, MAX_STEP_BYTES, type ImportMeta, type ProjectImport } from "../kernel/imports";
+import { cleanName } from "../kernel/stepText";
+import { fromBase64, gunzip, sha256Hex } from "./blobs";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
 
-export const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
-export const MAX_BACKUP_BYTES = 50 * 1024 * 1024;
+/** a plain .kerf source file */
+export const MAX_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
+/** a project file, which can carry the brief's reference photos and PDFs and imported STEP files */
+export const MAX_IMPORT_BYTES = 150 * 1024 * 1024;
+export const MAX_BACKUP_BYTES = 400 * 1024 * 1024;
 export const MAX_SOURCE_CHARS = 300_000;
 
 const cleanText = (s: string, max: number) =>
@@ -27,23 +33,84 @@ const VersionSchema = z.object({
   source: z.string().max(MAX_SOURCE_CHARS),
 });
 
+// a reference photo, sketch or PDF from the brief
+const AssetSchema = z
+  .object({
+    id: z.string().regex(/^ast_[a-z0-9]{4,32}$/),
+    kind: z.enum(["image", "pdf"]),
+    mime: z.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"]),
+    name: z.string().max(200),
+    data: z.string().max(15_000_000).regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  })
+  .refine((a) => (a.kind === "pdf") === (a.mime === "application/pdf"), "kind and mime disagree");
+
+const num = z.number().finite();
+const V3S = z.tuple([num, num, num]);
+const BoxS = z.tuple([V3S, V3S]);
+const HashS = z.string().regex(/^[0-9a-f]{64}$/);
+
+// what the kernel measured; checked like everything else in the file, and recomputed when it does not fit
+const ImportMetaSchema = z.object({
+  version: z.number().int(),
+  file: z.string().max(300),
+  bytes: z.number().int().nonnegative(),
+  title: z.string().max(300),
+  bodies: z
+    .array(
+      z.object({
+        name: z.string().max(300),
+        product: z.string().max(300),
+        kind: z.enum(["solid", "shell", "faces"]),
+        color: z.string().regex(/^#[0-9a-f]{6}$/i).optional(),
+        faceColors: z.boolean().optional(),
+        volume: num,
+        area: num,
+        faces: z.number().int().nonnegative(),
+        bbox: BoxS,
+        center: V3S,
+      }),
+    )
+    .max(MAX_BODIES),
+  cylinders: z.array(z.object({ body: z.number().int().nonnegative(), d: num, hole: z.boolean(), start: V3S, end: V3S, sweep: num })).max(4000),
+  bbox: BoxS,
+  warnings: z.array(z.string().max(400)).max(20),
+  ms: num,
+});
+
+const ImportSchema = z.object({
+  name: z.string().min(1).max(120),
+  hash: HashS,
+  file: z.string().max(300),
+  size: z.number().int().nonnegative(),
+  addedAt: num.optional(),
+  meta: ImportMetaSchema.nullable().optional(),
+});
+
+// an imported STEP file's stored bytes as base64: a little over 4/3 of the largest STEP file
+const ImportFileSchema = z.object({ hash: HashS, encoding: z.enum(["gzip", "raw"]), data: z.string().max(Math.ceil((MAX_STEP_BYTES * 4) / 3) + 16) });
+type ImportFileEntry = z.infer<typeof ImportFileSchema>;
+
 const ProjectFileSchema = z.object({
   format: z.literal("kerf-project"),
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   name: z.string().min(1).max(200),
   source: z.string().max(MAX_SOURCE_CHARS),
   template: z.string().max(60).optional(),
   createdAt: z.number().finite().optional(),
   versions: z.array(VersionSchema).max(300).optional(),
+  assets: z.array(AssetSchema).max(300).optional(),
+  imports: z.array(ImportSchema).max(60).optional(),
+  importFiles: z.array(ImportFileSchema).max(60).optional(),
 });
 
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
 
 const BackupSchema = z.object({
   format: z.literal("kerf-backup"),
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
   exportedAt: z.number().finite().optional(),
   projects: z.array(ProjectFileSchema).max(500),
+  importFiles: z.array(ImportFileSchema).max(1000).optional(),
 });
 
 export interface ImportedProject {
@@ -51,14 +118,70 @@ export interface ImportedProject {
   source: string;
   template: string;
   versions: z.infer<typeof VersionSchema>[];
+  assets: z.infer<typeof AssetSchema>[];
+  imports: ProjectImport[];
 }
 
-const cleanProject = (p: ProjectFile): ImportedProject => ({
-  name: cleanText(p.name, 120),
-  source: cleanText(p.source, MAX_SOURCE_CHARS),
-  template: p.template ?? "imported",
-  versions: (p.versions ?? []).map((v) => ({ ...v, message: cleanText(v.message, 500), source: cleanText(v.source, MAX_SOURCE_CHARS) })),
-});
+/** What reading a file produced: projects, the bytes of the STEP files they import, and anything that was dropped. */
+export interface ImportResult {
+  projects: ImportedProject[];
+  /** STEP file bytes by hash */
+  files: Map<string, Uint8Array>;
+  warnings: string[];
+}
+
+const cleanMeta = (m: z.infer<typeof ImportMetaSchema> | null | undefined): ImportMeta | null => {
+  if (!m || m.version !== IMPORT_META_VERSION || m.cylinders.some((c) => c.body >= m.bodies.length)) return null;
+  return {
+    ...m,
+    file: cleanName(m.file, 200),
+    title: cleanName(m.title),
+    bodies: m.bodies.map((b) => ({ ...b, name: cleanName(b.name, 120), product: cleanName(b.product) })),
+    warnings: m.warnings.map((w) => cleanText(w, 300)),
+  };
+};
+
+const cleanProject = (p: ProjectFile, files: Map<string, Uint8Array>, warnings: string[]): ImportedProject => {
+  const seen = new Set<string>();
+  const imports: ProjectImport[] = [];
+  for (const i of p.imports ?? []) {
+    const name = cleanName(i.name, 60);
+    if (!name || seen.has(name)) continue;
+    if (!files.has(i.hash)) {
+      warnings.push(`“${name}” in “${cleanText(p.name, 120)}” is missing its STEP file and was left out.`);
+      continue;
+    }
+    seen.add(name);
+    imports.push({ name, hash: i.hash, file: cleanName(i.file, 200), size: files.get(i.hash)!.byteLength, addedAt: i.addedAt ?? Date.now(), meta: cleanMeta(i.meta) });
+  }
+  return {
+    name: cleanText(p.name, 120),
+    source: cleanText(p.source, MAX_SOURCE_CHARS),
+    template: p.template ?? "imported",
+    versions: (p.versions ?? []).map((v) => ({ ...v, message: cleanText(v.message, 500), source: cleanText(v.source, MAX_SOURCE_CHARS) })),
+    assets: (p.assets ?? []).map((a) => ({ ...a, name: cleanText(a.name, 160) })),
+    imports,
+  };
+};
+
+/** Unpack embedded STEP files, keeping only ones whose bytes match their hash and look like STEP. */
+async function readImportFiles(list: ImportFileEntry[], warnings: string[]): Promise<Map<string, Uint8Array>> {
+  const out = new Map<string, Uint8Array>();
+  for (const a of list) {
+    if (out.has(a.hash)) continue;
+    try {
+      const packed = fromBase64(a.data);
+      const bytes = a.encoding === "gzip" ? await gunzip(packed, MAX_STEP_BYTES) : packed;
+      if (bytes.byteLength > MAX_STEP_BYTES) throw new Error("too large");
+      if (!/ISO-10303-21\s*;/.test(new TextDecoder("latin1").decode(bytes.subarray(0, 2048)))) throw new Error("not STEP");
+      if ((await sha256Hex(bytes)) !== a.hash) throw new Error("hash mismatch");
+      out.set(a.hash, bytes);
+    } catch {
+      warnings.push("An embedded STEP file was damaged and was left out.");
+    }
+  }
+  return out;
+}
 
 const describeIssue = (e: z.ZodError) => {
   const issue = e.issues[0];
@@ -67,6 +190,11 @@ const describeIssue = (e: z.ZodError) => {
 
 /** Reads a .kerf source file, a .kerfproj project or a Kerf backup into one or more projects. */
 export async function readImport(file: File): Promise<ImportedProject[]> {
+  return (await readImportFile(file)).projects;
+}
+
+/** Like readImport, with the embedded STEP files and what had to be left out. */
+export async function readImportFile(file: File): Promise<ImportResult> {
   if (file.size > MAX_BACKUP_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB, which is larger than any Kerf file.`);
   const text = await file.text();
   const base = file.name.replace(/\.(kerf|kerfproj|kerfbackup|json|txt)$/i, "") || "Imported design";
@@ -83,26 +211,52 @@ export async function readImport(file: File): Promise<ImportedProject[]> {
       const parsed = BackupSchema.safeParse(json);
       if (!parsed.success) throw new Error(`This Kerf backup is damaged (${describeIssue(parsed.error)}).`);
       if (!parsed.data.projects.length) throw new Error("This backup has no projects in it.");
-      return parsed.data.projects.map(cleanProject);
+      const warnings: string[] = [];
+      const files = await readImportFiles([...(parsed.data.importFiles ?? []), ...parsed.data.projects.flatMap((p) => p.importFiles ?? [])], warnings);
+      return { projects: parsed.data.projects.map((p) => cleanProject(p, files, warnings)), files, warnings };
     }
-    if (file.size > MAX_IMPORT_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports project files up to 5 MB.`);
+    if (file.size > MAX_IMPORT_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports project files up to ${MAX_IMPORT_BYTES / 1024 / 1024} MB.`);
     const parsed = ProjectFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`This is not a Kerf project file (${describeIssue(parsed.error)}).`);
-    return [cleanProject(parsed.data)];
+    const warnings: string[] = [];
+    const files = await readImportFiles(parsed.data.importFiles ?? [], warnings);
+    return { projects: [cleanProject(parsed.data, files, warnings)], files, warnings };
   }
-  if (file.size > MAX_IMPORT_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports source files up to 5 MB.`);
+  if (file.size > MAX_SOURCE_FILE_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports source files up to 5 MB.`);
   if (text.length > MAX_SOURCE_CHARS) throw new Error("That source file is longer than Kerf supports (300,000 characters).");
   if (/[\u0000]/.test(text)) throw new Error("That file is binary, not Kerf source. Import a .kerf or .kerfproj file.");
-  return [{ name: cleanText(base, 120), source: cleanText(text, MAX_SOURCE_CHARS), template: "imported", versions: [] }];
+  return { projects: [{ name: cleanText(base, 120), source: cleanText(text, MAX_SOURCE_CHARS), template: "imported", versions: [], assets: [], imports: [] }], files: new Map(), warnings: [] };
 }
 
-export function projectFile(name: string, source: string, template: string, createdAt: number, versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string }[]): string {
-  const f: ProjectFile = { format: "kerf-project", version: 1, name, source, template, createdAt, versions };
+/** An imported STEP file's stored bytes, ready for a project file or backup. */
+export interface PackedFile {
+  hash: string;
+  encoding: "gzip" | "raw";
+  data: string;
+}
+
+/** Extra content for a project file: brief references, and imported STEP files with their bytes. */
+export interface ProjectFileExtras {
+  assets?: ProjectFile["assets"];
+  imports?: ProjectImport[];
+  importFiles?: PackedFile[];
+}
+
+export function projectFile(
+  name: string,
+  source: string,
+  template: string,
+  createdAt: number,
+  versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string }[],
+  { assets = [], imports = [], importFiles = [] }: ProjectFileExtras = {},
+): string {
+  // version 1 stays readable by older Kerf builds when nothing is imported
+  const f: ProjectFile = { format: "kerf-project", version: imports.length ? 2 : 1, name, source, template, createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports, importFiles } : {}) };
   return JSON.stringify(f, null, 1);
 }
 
-export function backupFile(projects: ProjectFile[]): string {
-  return JSON.stringify({ format: "kerf-backup", version: 1, exportedAt: Date.now(), projects }, null, 1);
+export function backupFile(projects: ProjectFile[], importFiles: PackedFile[] = []): string {
+  return JSON.stringify(importFiles.length ? { format: "kerf-backup", version: 2, exportedAt: Date.now(), projects, importFiles } : { format: "kerf-backup", version: 1, exportedAt: Date.now(), projects }, null, 1);
 }
 
 export function safeFileName(name: string, ext: string) {
@@ -220,7 +374,7 @@ export function bomRows(model: Model): BomRow[] {
     // a bought catalog part's material is only its colour in the model; stock cut to length keeps it
     const material = cp && !cp.cut_to_length ? "" : p.material;
     if (row) row.qty++;
-    else rows.set(key, { qty: 1, item: p.kind === "part" ? p.name : (cp?.kind ?? p.libKind ?? p.name), description, standard: p.bom?.standard ?? "", material, kind, price, priceNote, link, links, catalogId: cp?.id, length: p.bom?.length });
+    else rows.set(key, { qty: 1, item: p.kind === "part" ? p.name : p.imported ? p.imported.file : (cp?.kind ?? p.libKind ?? p.name), description, standard: p.bom?.standard ?? "", material, kind, price, priceNote, link, links, catalogId: cp?.id, length: p.bom?.length });
   }
   for (const it of model.machine?.items ?? []) {
     const links: ShopLink[] = [...(it.buyUrl ? [{ vendor: "Design link", url: it.buyUrl, direct: true }] : []), ...searchLinks(it.search ?? it.label)];

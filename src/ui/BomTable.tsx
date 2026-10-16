@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useDesign, meshes } from "../core/engine";
 import { bomRows, bomCsv, bomTotal, download, safeFileName, type BomRow } from "../persist/files";
 import { materialDensity } from "../library/standards";
+import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { Icon } from "./icons";
 
@@ -45,7 +46,7 @@ export function BomTable() {
       const v = meshes.get(p.hash)?.volume ?? 0;
       const g = (v / 1000) * materialDensity(p.material);
       mass += g;
-      if (p.kind === "part" && ["PLA", "PETG", "ABS", "ASA", "Nylon"].includes(p.material)) printed += g;
+      if (p.kind === "part" && isPrinted(p.material)) printed += g;
     }
     return { mass, printed };
     // meshVersion: volumes arrive with meshes

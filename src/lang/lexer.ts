@@ -47,6 +47,8 @@ export const KEYWORDS = new Set([
   "true",
   "false",
   "note",
+  "brief",
+  "decision",
 ]);
 
 /**
@@ -94,6 +96,8 @@ export const UNITS: Record<string, number> = {
   Hz: 1,
   kHz: 1000,
   degC: 1,
+  // degrees Celsius, for the brief's service temperatures
+  C: 1,
 };
 
 const OPS = [

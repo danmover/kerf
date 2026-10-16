@@ -12,9 +12,12 @@ import { useApiKey } from "./ChatPanel";
 import { Modal, Segmented, Toggle } from "./common";
 import { Icon } from "./icons";
 import { LogoMark } from "./Logo";
+import { VoiceSettings } from "./voice/VoiceSettings";
+import { AgentSettings } from "./agents/AgentSettings";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "Claude", icon: <Icon.Sparkle size={14} /> },
+  { id: "voice", label: "Voice", icon: <Icon.Mic size={14} /> },
   { id: "app", label: "Display", icon: <Icon.Eye size={14} /> },
   { id: "data", label: "Data", icon: <Icon.Layers size={14} /> },
   { id: "about", label: "About", icon: <Icon.Info size={14} /> },
@@ -40,6 +43,7 @@ export function SettingsModal() {
         </nav>
         <div className="modal-body" style={{ maxHeight: "min(72vh, 720px)" }}>
           {shown === "ai" && <AiSettings />}
+          {shown === "voice" && <VoiceSettings />}
           {shown === "app" && <AppSettings />}
           {shown === "data" && <DataSettings />}
           {shown === "about" && <About />}
@@ -165,6 +169,25 @@ function AiSettings() {
           <Toggle on={s.webSearch} onChange={(v) => updateSettings({ webSearch: v })} label="Search the web for parts" />
         </Row>
       </Section>
+
+      <Section title="Self-review">
+        <Row t="Review Claude's work" d="Before Claude reports back, a separate reviewer looks at the design from every side, measures its details (sharp edges, hole lead-ins, inside corners, walls, overhangs) and checks it against what you asked for. Claude fixes what it finds. Each review is one more request, with images.">
+          <Segmented
+            id="self-review"
+            value={s.selfReview}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "auto", label: "Big changes" },
+              { value: "always", label: "Every change" },
+            ]}
+            onChange={(v) => updateSettings({ selfReview: v })}
+          />
+        </Row>
+        <Row t="Review rounds per reply" d="The first review plus re-checks after Claude fixes findings.">
+          <Segmented id="review-rounds" value={String(s.reviewRounds)} options={["1", "2", "3"].map((v) => ({ value: v, label: v }))} onChange={(v) => updateSettings({ reviewRounds: Number(v) })} />
+        </Row>
+      </Section>
+      <AgentSettings />
       <div className="help">Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com.</div>
     </>
   );
@@ -320,6 +343,7 @@ function About() {
         <ul className="muted" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, fontSize: 12.5 }}>
           <li>There is no Kerf server or account. Designs, history and chats stay in this browser.</li>
           <li>Chat messages, the design file and requested screenshots go directly to api.anthropic.com with your key, only when you send a message.</li>
+          <li>Voice input is turned into text on this device when the browser can. Otherwise the browser's own speech service hears your audio, only if you allow it. Kerf never records or uploads audio.</li>
           <li>Your key is kept in memory unless you choose to remember it, in which case it is encrypted with a browser key that cannot be exported.</li>
           <li>A strict Content Security Policy allows network connections only to Kerf itself and api.anthropic.com. AI output is never rendered as HTML.</li>
           <li>When web search is on, Anthropic's servers do the searching and page reading; this browser still talks only to api.anthropic.com. Links to sources open in a new tab only when you click them.</li>

@@ -13,6 +13,8 @@ import { assembleReport, buildChecksRequest, type CheckReport } from "./checks";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
+import { importsLoaded, modelUsesImports, onImportsChanged, reloadImports } from "./imports";
+import { evalImports } from "../lang/imports";
 
 export interface MeshEntry {
   preview?: MeshData;
@@ -97,8 +99,18 @@ export function startEngine() {
     meshes.clear();
     set({ buildErrors: new Map() });
     bumpMeshes();
+    reloadImports();
     const { source } = get();
     if (source) setSource(source, { force: true });
+  });
+  // an imported file finished loading or was analysed: designs that place it evaluate and build again
+  onImportsChanged((_list, reason) => {
+    const { source, model, buildErrors } = get();
+    if (!source || !(/\bstep\s*\(/.test(source) || (model && modelUsesImports(model)))) return;
+    // a plain load is already awaited by the pipeline; only a failed build needs another go
+    if (reason === "loaded" && !buildErrors.size) return;
+    set({ buildErrors: new Map() });
+    setSource(source, { force: true });
   });
   kernel.start();
 }
@@ -157,6 +169,11 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     return;
   }
   if (get().rev !== rev) return;
+  // imported bodies need their file in the kernel before anything that uses them is built
+  if (modelUsesImports(model)) {
+    await importsLoaded();
+    if (get().rev !== rev) return;
+  }
 
   const byHash = uniqueParts(model);
   const errors = get().buildErrors;
@@ -204,7 +221,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   if (get().rev !== rev) return;
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])));
+  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])), (h) => meshes.get(h));
   set({
     report,
     reportRev: rev,
@@ -311,7 +328,7 @@ class SolverChannel {
     this.busy = true;
     return new Promise((resolve) => {
       this.waiter = (conflict, error) => resolve({ conflict, error });
-      this.w!.postMessage({ id, src, hold } satisfies SolveRequest);
+      this.w!.postMessage({ id, src, hold, imports: evalImports() } satisfies SolveRequest);
     });
   }
 }

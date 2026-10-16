@@ -204,28 +204,6 @@ export function isPausedTurn(m: BetaMessageParam | undefined): boolean {
   return m.content[m.content.length - 1].type === "server_tool_use";
 }
 
-/**
- * Thinking blocks are bound to the exact conversation that produced them. When
- * the history had to change (a trimmed image, web search switched on or off),
- * the API rejects them; dropping every thinking block is the documented recovery.
- */
-export function stripThinking(history: BetaMessageParam[]): { history: BetaMessageParam[]; removed: number } {
-  let removed = 0;
-  const out = history.map((m) => {
-    if (m.role !== "assistant" || typeof m.content === "string") return m;
-    const kept = m.content.filter((b) => b.type !== "thinking" && b.type !== "redacted_thinking");
-    removed += m.content.length - kept.length;
-    if (kept.length === m.content.length) return m;
-    return { ...m, content: kept.length ? kept : [{ type: "text" as const, text: "(no text)" }] };
-  });
-  return { history: out, removed };
-}
-
-/** The API's message when replayed thinking blocks no longer match the conversation. */
-export function isThinkingBindingError(message: string): boolean {
-  return /bound to a different conversation|invalid `?signature`? in `?thinking`? block/i.test(message);
-}
-
 /** The API's message when this organisation or model cannot use the web tools declared in the request. */
 export function isWebToolError(message: string): boolean {
   return /web_search|web_fetch|web search|web fetch/i.test(message) && /not (enabled|available|supported|allowed|permitted)|disabled|does not match|unknown|unrecognized|unsupported|invalid|tools\.\d+|organi[sz]ation|permission/i.test(message);

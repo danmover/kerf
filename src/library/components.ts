@@ -15,6 +15,8 @@ export interface CompSolid {
   recipe: PartRecipe;
   color: string;
   material: string;
+  /** surface finish id from library/materials (the material default if omitted) */
+  finish?: string;
   /** solid rotates with the component's motion (e.g. a motor shaft) */
   moving?: boolean;
 }
@@ -100,7 +102,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "bearing",
         label: `Bearing ${code}`,
         placement: "axis",
-        solids: [{ suffix: "", label: `Bearing ${code}`, recipe, color: "#a7adb6", material: "Steel" }],
+        solids: [{ suffix: "", label: `Bearing ${code}`, recipe, color: "#c4c9d0", material: "Steel", finish: "machined" }],
         fields: {
           scalars: { bore: b.bore, od: b.od, width: b.width, code, load_n: b.dynamicLoadN },
           points: { at: Z0, end: [0, 0, b.width], center: [0, 0, b.width / 2] },
@@ -130,7 +132,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "screw",
         label: `${t.name}×${L} SHCS`,
         placement: "axis",
-        solids: [{ suffix: "", label: `${t.name}×${L}`, recipe, color: DARK_STEEL, material: "Steel" }],
+        solids: [{ suffix: "", label: `${t.name}×${L}`, recipe, color: DARK_STEEL, material: "Steel", finish: "black-oxide" }],
         fields: {
           scalars: { length: L, size: t.name, head_d: t.head_d, head_h: t.head_h },
           points: { seat: Z0, tip: [0, 0, L], head_top: [0, 0, -t.head_h] },
@@ -155,7 +157,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "nut",
         label: `${t.name} nut`,
         placement: "axis",
-        solids: [{ suffix: "", label: `${t.name} nut`, recipe, color: STEEL, material: "Steel" }],
+        solids: [{ suffix: "", label: `${t.name} nut`, recipe, color: "#c9d1dc", material: "Steel", finish: "zinc-plated" }],
         fields: { scalars: { af: t.nut_af, height: t.nut_h }, points: { at: Z0, end: [0, 0, t.nut_h] }, dirs: { axis: ZP } },
         bom: { description: `Hex nut ${t.name}`, standard: "ISO 4032" },
       };
@@ -177,7 +179,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "insert",
         label: `${t.name} heat-set insert`,
         placement: "axis",
-        solids: [{ suffix: "", label: `${t.name} insert`, recipe, color: BRASS, material: "Brass" }],
+        solids: [{ suffix: "", label: `${t.name} insert`, recipe, color: BRASS, material: "Brass", finish: "machined" }],
         fields: { scalars: { length: t.insert_l, od }, points: { at: Z0, bottom: [0, 0, t.insert_l] }, dirs: { axis: ZP } },
         bom: { description: `Heat-set insert ${t.name}×${t.insert_l}` },
       };
@@ -210,7 +212,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "spur_gear",
         label: `Spur gear m${m} z${z}`,
         placement: "axis",
-        solids: [{ suffix: "", label: `Gear z${z}`, recipe, color: "#d9dde3", material: "POM" }],
+        solids: [{ suffix: "", label: `Gear z${z}`, recipe, color: "#ecebe6", material: "POM", finish: "machined" }],
         fields: {
           scalars: { m, z, pitch_d: pitchDiameter(m, z), tip_d: tipDiameter(m, z), root_d: rootDiameter(m, z), width: w, bore, hub_l: hubL },
           points: { at: Z0, center: [0, 0, w / 2], end: [0, 0, w + hubL] },
@@ -250,8 +252,8 @@ export const LIBRARY: Record<string, LibEntry> = {
         label: "NEMA 17 stepper",
         placement: "axis",
         solids: [
-          { suffix: "", label: "NEMA 17 body", recipe: body, color: "#2a2e35", material: "Steel" },
-          { suffix: "shaft", label: "Motor shaft", recipe: shaft, color: "#c3c8cf", material: "Stainless 304", moving: true },
+          { suffix: "", label: "NEMA 17 body", recipe: body, color: "#2a2e35", material: "Steel", finish: "powder-coated" },
+          { suffix: "shaft", label: "Motor shaft", recipe: shaft, color: "#c3c8cf", material: "Stainless 304", finish: "polished", moving: true },
         ],
         fields: {
           scalars: { length: L, body: s, hole_spacing: 31, pilot_d: 22, pilot_h: 2, shaft_d: 5, shaft_len: 24 },
@@ -299,8 +301,8 @@ export const LIBRARY: Record<string, LibEntry> = {
         label: `PCB ${w}×${d}`,
         placement: "free",
         solids: [
-          { suffix: "", label: `PCB ${w}×${d}`, recipe: board, color: "#1d6b4b", material: "FR4" },
-          { suffix: "parts", label: "PCB components", recipe: comps, color: "#20242b", material: "FR4" },
+          { suffix: "", label: `PCB ${w}×${d}`, recipe: board, color: "#1d6b4b", material: "FR4", finish: "solder-mask" },
+          { suffix: "parts", label: "PCB components", recipe: comps, color: "#20242b", material: "FR4", finish: "matte" },
         ],
         fields: {
           scalars: { w, d, t, hole_d: hd, component_h: 8.5 },
@@ -337,7 +339,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "usb_c",
         label: "USB-C receptacle",
         placement: "facing",
-        solids: [{ suffix: "", label: "USB-C", recipe, color: "#c0c5cc", material: "Stainless 304" }],
+        solids: [{ suffix: "", label: "USB-C", recipe, color: "#c0c5cc", material: "Stainless 304", finish: "brushed" }],
         fields: {
           scalars: { opening_w: ow, opening_h: oh, body_h: bh },
           points: { opening_center: [0, 0, bh / 2], at: Z0 },
@@ -363,7 +365,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "connector",
         label: "Connector",
         placement: "facing",
-        solids: [{ suffix: "", label: "Connector", recipe, color: "#2c3038", material: "ABS" }],
+        solids: [{ suffix: "", label: "Connector", recipe, color: "#2c3038", material: "ABS", finish: "gloss" }],
         fields: {
           scalars: { opening_w: ow, opening_h: oh, w, h, d },
           points: { opening_center: [0, 0, h / 2], at: Z0 },
@@ -386,7 +388,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "dowel",
         label: `Dowel ${d}×${L}`,
         placement: "axis",
-        solids: [{ suffix: "", label: `Dowel ${d}×${L}`, recipe, color: STEEL, material: "Steel" }],
+        solids: [{ suffix: "", label: `Dowel ${d}×${L}`, recipe, color: STEEL, material: "Steel", finish: "polished" }],
         fields: { scalars: { d, length: L }, points: { at: Z0, tip: [0, 0, L] }, dirs: { axis: ZP } },
         bom: { description: `Dowel pin ${d}×${L}`, standard: "ISO 8734" },
       };

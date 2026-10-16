@@ -2,6 +2,9 @@
 // nothing is uploaded. Falls back to memory when IndexedDB is unavailable
 // (some private-browsing modes), and the UI warns that work will not persist.
 
+import type { ProjectImport } from "../kernel/imports";
+import { dismissToast, toast } from "../app/ui";
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -10,6 +13,17 @@ export interface ProjectRecord {
   createdAt: number;
   updatedAt: number;
   thumbnail?: string;
+  /** STEP files imported into the project; their bytes are in the blobs store */
+  imports?: ProjectImport[];
+}
+
+/** Bytes of an imported file, shared by every project that imports the same file. */
+export interface BlobRecord {
+  hash: string;
+  data: ArrayBuffer;
+  encoding: "gzip" | "raw";
+  size: number;
+  createdAt: number;
 }
 
 export interface VersionRecord {
@@ -21,19 +35,39 @@ export interface VersionRecord {
   source: string;
 }
 
+/** A file the user added to a project, such as a reference photo, sketch or datasheet. */
+export interface AssetRecord {
+  /** projectId + ":" + id, so a copied project keeps the ids its source refers to */
+  key: string;
+  id: string;
+  projectId: string;
+  kind: "image" | "pdf";
+  mime: string;
+  name: string;
+  size: number;
+  width?: number;
+  height?: number;
+  data: Blob;
+  thumb?: Blob;
+  createdAt: number;
+}
+
 export interface ChatRecord {
   projectId: string;
   /** display items and API history, both JSON-safe */
   items: unknown[];
   history: unknown[];
+  /** what the saved thinking blocks were made with; see src/ai/history.ts */
+  binding?: string;
+  validBefore?: number;
   updatedAt: number;
 }
 
 const DB_NAME = "kerf";
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 const MAX_VERSIONS = 300;
 
-type StoreName = "projects" | "versions" | "chats" | "vault";
+type StoreName = "projects" | "versions" | "chats" | "vault" | "assets" | "blobs";
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 export let persistent = true;
@@ -43,6 +77,8 @@ const memory: Record<StoreName, Map<string, unknown>> = {
   versions: new Map(),
   chats: new Map(),
   vault: new Map(),
+  assets: new Map(),
+  blobs: new Map(),
 };
 
 function open(): Promise<IDBDatabase | null> {
@@ -65,23 +101,37 @@ function open(): Promise<IDBDatabase | null> {
       }
       if (!db.objectStoreNames.contains("chats")) db.createObjectStore("chats", { keyPath: "projectId" });
       if (!db.objectStoreNames.contains("vault")) db.createObjectStore("vault", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("assets") || req.transaction!.objectStore("assets").keyPath !== "key") {
+        // a pre-release STEP import build kept file bytes in "assets"; those now live in "blobs"
+        if (db.objectStoreNames.contains("assets")) db.deleteObjectStore("assets");
+        const a = db.createObjectStore("assets", { keyPath: "key" });
+        a.createIndex("projectId", "projectId");
+      }
+      if (!db.objectStoreNames.contains("blobs")) db.createObjectStore("blobs", { keyPath: "hash" });
     };
-    req.onsuccess = () => resolve(req.result);
+    let blocked = 0;
+    req.onsuccess = () => {
+      if (blocked) dismissToast(blocked);
+      // let a newer Kerf in another tab upgrade the database instead of being blocked by this one
+      req.result.onversionchange = () => {
+        req.result.close();
+        toast({ kind: "warn", title: "Kerf was updated in another tab", detail: "Reload this tab to keep working. Changes made here from now on are not saved." }, 0);
+      };
+      resolve(req.result);
+    };
     req.onerror = () => {
       persistent = false;
       resolve(null);
     };
-    req.onblocked = () => {
-      persistent = false;
-      resolve(null);
-    };
+    // an older Kerf tab still has the database open: wait for it rather than run without saving
+    req.onblocked = () => (blocked = toast({ kind: "warn", title: "Close other Kerf tabs to finish updating", detail: "Another tab is running an older version of Kerf. Your projects open here as soon as it is closed or reloaded." }, 0));
   });
   return dbPromise;
 }
 
 function keyOf(store: StoreName, v: unknown): string {
   const r = v as Record<string, string>;
-  return store === "chats" ? r.projectId : r.id;
+  return store === "chats" ? r.projectId : store === "assets" ? r.key : store === "blobs" ? r.hash : r.id;
 }
 
 async function tx<T>(store: StoreName, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
@@ -143,8 +193,15 @@ export async function addVersion(v: VersionRecord): Promise<void> {
   }
 }
 
+export async function assetsFor(projectId: string): Promise<AssetRecord[]> {
+  const db = await open();
+  if (!db) return [...(memory.assets.values() as Iterable<AssetRecord>)].filter((a) => a.projectId === projectId);
+  return ((await tx<AssetRecord[]>("assets", "readonly", (s) => s.index("projectId").getAll(projectId) as IDBRequest<AssetRecord[]>)) ?? []) as AssetRecord[];
+}
+
 export async function deleteProjectData(projectId: string): Promise<void> {
   for (const v of await versionsFor(projectId)) await remove("versions", v.id);
+  for (const a of await assetsFor(projectId)) await remove("assets", a.key);
   await remove("chats", projectId);
   await remove("projects", projectId);
 }
@@ -155,7 +212,14 @@ export async function clearEverything(): Promise<void> {
     for (const m of Object.values(memory)) m.clear();
     return;
   }
-  for (const store of ["projects", "versions", "chats", "vault"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
+  for (const store of ["projects", "versions", "chats", "vault", "assets", "blobs"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
+}
+
+/** Hashes of every stored import file (keys only, so large files are not read). */
+export async function blobKeys(): Promise<string[]> {
+  const db = await open();
+  if (!db) return [...memory.blobs.keys()];
+  return (((await tx<IDBValidKey[]>("blobs", "readonly", (s) => s.getAllKeys())) ?? []) as string[]).map(String);
 }
 
 export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {

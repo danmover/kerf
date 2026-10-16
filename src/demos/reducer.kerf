@@ -2,6 +2,24 @@ design "Two-Stage Spur Reducer"
 note "12:1 reducer driven by a NEMA 17 stepper. Printed housing, off-the-shelf 625/688 bearings, POM gears."
 note "Assembly order: motor screws first (from inside), then shafts, bearings and gears, then the cover."
 
+brief {
+  purpose: "Gear a NEMA 17 stepper down 12:1 to drive a slow output shaft"
+  setting: "Bench-top mechanism, bolted to a base plate through its two feet"
+  priorities: ["precision", "easy assembly", "quiet"]
+
+  temp: 10C .. 40C assumed
+  outdoor: false
+
+  process: "FDM print"
+  material: "PETG"
+  quantity: 1
+
+  use reduce "Turns the output once for every 12 motor turns"
+  use run_clear "Gears turn without rubbing on the shafts or each other"
+  use assemble "Goes together with a hex key in the order in the notes, using stock 625 and 688 bearings"
+  use printable "Housing and cover print on a hobby FDM printer" assumed
+}
+
 // ── Requirements in numbers ────────────────────────────
 param target_ratio = 12      "Overall reduction (input : output)"
 param m1   = 1.0mm   "Module, stage 1"
@@ -12,6 +30,7 @@ param z3   = 12      "Stage 2 pinion teeth"
 param z4   = 36      "Output gear teeth"
 param fold = 90      "Angle of the output axis around the intermediate axis (degrees)"
 
+// ── Housing, shafts and mounting ───────────────────────
 param wall      = 3mm    range 2 .. 5   "Housing wall"
 param gap       = 3mm    "Clearance from gear tips to the housing"
 param out_d     = 8mm    "Output shaft diameter"
@@ -161,11 +180,39 @@ component cover_inserts = lib.insert(M3) { at: [(cover_pts[0].x, y_cover, cover_
 component cover_screws = lib.screw(M3, 10) { at: [(cover_pts[0].x, y_cover + cover_t, cover_pts[0].y), (cover_pts[1].x, y_cover + cover_t, cover_pts[1].y), (cover_pts[2].x, y_cover + cover_t, cover_pts[2].y), (cover_pts[3].x, y_cover + cover_t, cover_pts[3].y)], axis: -Y }
 
 // ── Requirements ───────────────────────────────────────
-require "Reduction matches the target (±2%)": abs(1 / abs(g4.speed) - target_ratio) <= target_ratio * 0.02
-require "Stage 1 gear clears the output shaft": cd2 - g2.tip_d / 2 - out_d / 2 >= 0.6
-require "Output gear clears the motor shaft": len(p_out) - g4.tip_d / 2 - motor.shaft_d / 2 >= 1
-require "Pinions have at least 10 teeth": min(z1, z3) >= 10
-require "Motor screws clear the bearing bosses": len(p_out - (15.5, 15.5)) - (out_front.od + 5) / 2 - M3.head_d / 2 >= 1
-require "Output bearings fit the output shaft": out_front.bore == out_d
-require "Intermediate bearings fit the 5 mm shaft": mid_front.bore == 5
-require "Printable walls": wall >= 2
+require "Reduction matches the target (±2%)" for reduce: abs(1 / abs(g4.speed) - target_ratio) <= target_ratio * 0.02
+require "Stage 1 gear clears the output shaft" for run_clear: cd2 - g2.tip_d / 2 - out_d / 2 >= 0.6
+require "Output gear clears the motor shaft" for run_clear: len(p_out) - g4.tip_d / 2 - motor.shaft_d / 2 >= 1
+require "Pinions have at least 10 teeth" for reduce, run_clear: min(z1, z3) >= 10
+require "Motor screws clear the bearing bosses" for assemble: len(p_out - (15.5, 15.5)) - (out_front.od + 5) / 2 - M3.head_d / 2 >= 1
+require "Output bearings fit the output shaft" for assemble: out_front.bore == out_d
+require "Intermediate bearings fit the 5 mm shaft" for assemble: mid_front.bore == 5
+require "Printable walls" for printable: wall >= 2
+
+// ── Decisions ──────────────────────────────────────────
+decision ratio_split "How the 12:1 is split" {
+  chose: "4 × 3"
+  by: "claude"
+  why: "A larger first stage keeps the fast pinion small and quiet, and both pinions keep 12 teeth."
+  option "4 × 3" { z2: 48, z4: 36 } "Stage 1 is 12:48, stage 2 is 12:36."
+  option "3 × 4" { z2: 36, z4: 48 } "Smaller first gear; the output gear grows and the housing gets taller."
+  option "6 × 2" { z2: 72, z4: 24 } "Very large first gear; in this layout it runs into the output shaft."
+}
+
+decision output_shaft "Output shaft" {
+  chose: "8 mm on 688 bearings"
+  by: "claude"
+  why: "8 mm carries the output torque with margin, and 688 bearings are cheap and slim."
+  option "8 mm on 688 bearings" { out_d: 8mm, out_bearing: "688" } "Common size with plenty of margin."
+  option "8 mm on 608 bearings" { out_d: 8mm, out_bearing: "608" } "Skate bearings with twice the load rating; the seats are 6 mm larger."
+  option "6 mm on 626 bearings" { out_d: 6mm, out_bearing: "626" } "Smaller shaft and gear bore; less torque margin."
+}
+
+decision housing_wall "Housing wall" {
+  chose: "3 mm"
+  by: "claude"
+  why: "Carries the motor and the bearing loads with little flex in PETG."
+  option "2 mm" { wall: 2mm } "Lighter and faster to print; enough for light loads."
+  option "3 mm" { wall: 3mm } "Stiff mounting for the motor and bearings."
+  option "4 mm" { wall: 4mm } "Stiffer still; heavier and slower to print."
+}
