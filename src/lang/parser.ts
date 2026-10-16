@@ -1,7 +1,7 @@
 // Recursive-descent parser for the Kerf design language.
 // Recovers at statement boundaries so the editor can show several errors.
 
-import type { Arg, Expr, Item, Program, Span, Stmt } from "./ast";
+import type { Arg, DecisionOptionNode, Expr, Item, Program, Span, Stmt } from "./ast";
 import { lex, LexError, type Token } from "./lexer";
 
 export interface Diagnostic {
@@ -21,7 +21,7 @@ export class ParseError extends Error {
   }
 }
 
-const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note"]);
+const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "part", "require", "note", "decision"]);
 
 export function parse(src: string): { program: Program; diagnostics: Diagnostic[] } {
   let tokens: Token[];
@@ -112,7 +112,7 @@ class Parser {
     const tk = this.peek();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (param, let, component, interface, part, require) but found "${tk.value}"`,
+        `Expected a top-level statement (param, let, component, interface, part, require, decision) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -206,8 +206,66 @@ class Parser {
         const expr = this.expr();
         return { k: "require", label, level, expr, span: { start, end: this.prevEnd() } };
       }
+      case "decision":
+        return this.decision(start);
     }
     throw new ParseError("Unknown statement", tk.start, tk.end);
+  }
+
+  /**
+   * decision name "Title" {
+   *   ask: "..."  chose: "..."  by: "you"  why: "..."
+   *   option "Label" { param: value, ... } "What happens if chosen"
+   * }
+   */
+  decision(start: number): Stmt {
+    const nameTk = this.expect("ident", undefined, "a decision name, e.g. lid_fastening");
+    const title = this.expect("str", undefined, "a decision title in quotes").value;
+    const open = this.expect("op", "{");
+    const props: { name: string; value: Expr; span: Span }[] = [];
+    const options: DecisionOptionNode[] = [];
+    while (!this.isOp("}")) {
+      if (this.is("eof")) throw new ParseError("Unclosed decision block: missing \"}\"", open.start, open.end);
+      const tk = this.peek();
+      if (tk.kind === "ident" && tk.value === "option" && this.is("str", undefined, 1)) {
+        this.next();
+        const label = this.next().value;
+        let note: string | undefined;
+        const sets: { param: string; value: Expr; span: Span }[] = [];
+        let gotSets = false;
+        for (;;) {
+          if (this.is("str") && note === undefined) note = this.next().value;
+          else if (this.isOp("{") && !gotSets) {
+            gotSets = true;
+            this.next();
+            while (!this.isOp("}")) {
+              if (this.is("eof")) throw new ParseError("Unclosed option values: missing \"}\"", tk.start, tk.end);
+              const key = this.expect("ident", undefined, "a parameter name");
+              if (!this.eat("op", "=")) this.expect("op", ":", '":" or "="');
+              const value = this.expr();
+              sets.push({ param: key.value, value, span: { start: key.start, end: this.prevEnd() } });
+              while (this.eat("op", ",") || this.eat("op", ";"));
+            }
+            this.expect("op", "}");
+          } else break;
+        }
+        options.push({ label, note, sets, span: { start: tk.start, end: this.prevEnd() } });
+      } else if (tk.kind === "ident" && this.isOp(":", 1)) {
+        this.next();
+        this.next();
+        const value = this.expr();
+        props.push({ name: tk.value, value, span: { start: tk.start, end: this.prevEnd() } });
+      } else {
+        throw new ParseError(
+          `Unexpected "${tk.value || "end of file"}" inside decision. Use ask:, chose:, by:, why: or option "Label" { param: value } "consequence".`,
+          tk.start,
+          Math.max(tk.end, tk.start + 1),
+        );
+      }
+      while (this.eat("op", ",") || this.eat("op", ";"));
+    }
+    this.expect("op", "}");
+    return { k: "decision", name: nameTk.value, title, props, options, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end }, bodyStart: open.end };
   }
 
   block(): Item[] {

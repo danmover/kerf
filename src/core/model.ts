@@ -82,6 +82,40 @@ export interface EvalRequirement {
   geo: GeoQuery[];
 }
 
+export interface DecisionSet {
+  param: string;
+  value: number | string | boolean;
+  /** source span of `param: value` inside the option */
+  span: Span;
+  valueSpan: Span;
+}
+
+export interface DecisionOption {
+  label: string;
+  /** what happens if chosen */
+  note?: string;
+  /** parameter values this option means; empty for a structural choice */
+  sets: DecisionSet[];
+  span: Span;
+}
+
+/** A recorded design decision: the question, the alternatives and what was chosen, by whom and why. */
+export interface EvalDecision {
+  name: string;
+  title: string;
+  ask?: string;
+  chose?: string;
+  /** "you" for the user, "claude" for the assistant */
+  by?: string;
+  why?: string;
+  options: DecisionOption[];
+  span: Span;
+  /** offset just after the opening brace, where new fields go */
+  bodyStart: number;
+  /** spans of the fields (ask, chose, by, why) and their values, for targeted edits */
+  props: Record<string, { span: Span; valueSpan: Span }>;
+}
+
 export interface DepNode {
   id: string;
   kind: "param" | "let" | "interface" | "component" | "part" | "require";
@@ -94,6 +128,7 @@ export interface Model {
   params: EvalParam[];
   parts: EvalPart[];
   requirements: EvalRequirement[];
+  decisions: EvalDecision[];
   diagnostics: Diagnostic[];
   /** dependency graph: edges from a definition to what reads it */
   graph: { nodes: DepNode[]; edges: { from: string; to: string }[] };

@@ -1,4 +1,4 @@
-// Left panel: model structure, parameters and version history.
+// Left panel: model structure, parameters, design decisions and version history.
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -8,6 +8,7 @@ import { useProject, commitSource, restoreVersion, undo, redo } from "../app/pro
 import { setParamValue, toggleParamLock, lineDiff } from "../core/sourceEdit";
 import type { EvalParam, EvalPart } from "../core/model";
 import { Icon } from "./icons";
+import { Decisions } from "./DecisionsPanel";
 import { Segmented, timeAgo, useTick, mod } from "./common";
 import { fmtNum } from "../lang/values";
 import type { VersionRecord } from "../persist/db";
@@ -23,15 +24,17 @@ export function LeftPanel() {
           value={tab}
           onChange={(t) => useView.setState({ leftTab: t })}
           options={[
-            { value: "structure", label: "structure" },
-            { value: "params", label: `params${model ? " " + model.params.length : ""}` },
-            { value: "history", label: "history" },
+            { value: "structure", label: "tree", title: "Model structure" },
+            { value: "params", label: <>params{model ? <sup>{model.params.length}</sup> : null}</>, title: "Parameters" },
+            { value: "decisions", label: <>decisions{model?.decisions.length ? <sup>{model.decisions.length}</sup> : null}</>, title: "Design decisions" },
+            { value: "history", label: "history", title: "Version history" },
           ]}
         />
       </div>
       <div className="panel-body">
         {tab === "structure" && <Structure />}
         {tab === "params" && <Params />}
+        {tab === "decisions" && <Decisions />}
         {tab === "history" && <History />}
       </div>
     </div>

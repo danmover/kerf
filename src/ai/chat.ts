@@ -7,17 +7,33 @@ import { create } from "zustand";
 import { getApiKey } from "../persist/vault";
 import * as db from "../persist/db";
 import { useSettings } from "../app/settings";
-import { useDesign } from "../core/engine";
+import { useDesign, evaluateOnly } from "../core/engine";
 import { useView } from "../app/view";
-import { commitSource } from "../app/project";
+import { commitSource, endPreview } from "../app/project";
+import { paramEdits, upsertDecision, applySpanEdits, type SetMap } from "../core/decisions";
+import { fmtNum } from "../lang/values";
 import { systemPrompt } from "./prompt";
-import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type ToolOutcome } from "./tools";
+import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type AskOption, type ToolOutcome } from "./tools";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; ts: number }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number }
-  | { kind: "choice"; id: string; toolUseId: string; question: string; options: { label: string; consequence: string; recommended?: boolean }[]; chosen?: string }
+  | {
+      kind: "choice";
+      id: string;
+      toolUseId: string;
+      title?: string;
+      question: string;
+      options: AskOption[];
+      chosen?: string;
+      /** the option's values as applied, after any the user adjusted */
+      values?: SetMap;
+      /** what the user added for Claude when choosing */
+      note?: string;
+      /** the decision block that records the answer */
+      decision?: string;
+    }
   | { kind: "notice"; id: string; level: "error" | "warn" | "info"; title: string; detail?: string; action?: "settings" | "retry" }
   | { kind: "turn"; id: string; before: string; after: string; edits: number; reverted?: boolean };
 
@@ -150,6 +166,7 @@ export function stop() {
 export async function sendMessage(text: string) {
   const t = text.trim();
   if (!t || get().busy) return;
+  endPreview();
   const pending = get().pendingChoice;
   push({ kind: "user", id: nid(), text: t, ts: Date.now() });
   set({ lastUserText: t });
@@ -165,15 +182,79 @@ export async function sendMessage(text: string) {
   await runLoop();
 }
 
-export async function choose(itemId: string, label: string) {
+/**
+ * Answer an open choice card. Values the user adjusted and a note for Claude
+ * can come with it. The option's parameter values are applied at once and the
+ * answer is recorded as a decision block, so Claude continues from there.
+ */
+export async function choose(itemId: string, label: string, opts: { values?: SetMap; note?: string } = {}) {
   const pending = get().pendingChoice;
   if (!pending || pending.itemId !== itemId || get().busy) return;
-  patch(itemId, (it) => (it.kind === "choice" ? { ...it, chosen: label } : it));
+  const item = get().items.find((i) => i.id === itemId);
+  const option = item?.kind === "choice" ? item.options.find((o) => o.label === label) : undefined;
+  if (!item || item.kind !== "choice" || !option) return;
+  endPreview();
+  const note = opts.note?.trim() || undefined;
+  let recorded: ReturnType<typeof recordChoice> | null = null;
+  try {
+    recorded = recordChoice(item, option, opts.values);
+  } catch {
+    /* the answer still goes to Claude; it can record the decision itself */
+  }
+  patch(itemId, (it) => (it.kind === "choice" ? { ...it, chosen: label, values: recorded?.values, note, decision: recorded?.name } : it));
   set({ pendingChoice: null });
-  push({ kind: "user", id: nid(), text: label, ts: Date.now() });
-  history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user chose: ${label}` }, { type: "text", text: contextNote() }] });
+  const tweaks = recorded?.adjusted.length ? ` (${recorded.adjusted.map((a) => `${a.param} ${fmtValue(a.to)}`).join(", ")})` : "";
+  push({ kind: "user", id: nid(), text: `${label}${tweaks}${note ? `\n${note}` : ""}`, ts: Date.now() });
+  history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: answerText(label, option, recorded, note) }, { type: "text", text: contextNote() }] });
   persist();
   await runLoop();
+}
+
+const fmtValue = (v: number | string | boolean) => (typeof v === "number" ? fmtNum(v, 3) : String(v));
+
+/** Apply the chosen option's values and write (or update) its decision block, as one version. */
+function recordChoice(item: Extract<ChatItem, { kind: "choice" }>, option: AskOption, adjustedValues?: SetMap) {
+  const set0 = option.set ?? {};
+  const values: SetMap = {};
+  for (const k of Object.keys(set0)) values[k] = adjustedValues?.[k] ?? set0[k];
+  const adjusted = Object.keys(set0)
+    .filter((k) => adjustedValues?.[k] !== undefined && adjustedValues[k] !== set0[k])
+    .map((k) => ({ param: k, from: set0[k], to: values[k] }));
+  const { source, model } = useDesign.getState();
+  if (!model) throw new Error("No design");
+  const pe = paramEdits(model, values);
+  const withVals = applySpanEdits(source, pe.edits);
+  const m2 = evaluateOnly(withVals);
+  const title = item.title?.trim() || shortTitle(item.question);
+  const same = m2.decisions.find((d) => d.title.toLowerCase() === title.toLowerCase());
+  const { src, name } = upsertDecision(withVals, m2, {
+    name: same?.name,
+    title,
+    ask: item.question,
+    chose: option.label,
+    by: "you",
+    options: item.options.map((o) => ({ label: o.label, note: o.consequence, set: o.label === option.label ? values : o.set })),
+  });
+  commitSource(src, "you", `Decided: ${option.label}${adjusted.length ? ` (${adjusted.map((a) => `${a.param} ${fmtValue(a.to)}`).join(", ")})` : ""}`);
+  return { name, values: Object.keys(values).length ? values : undefined, adjusted, applied: pe.changed, missing: pe.missing };
+}
+
+function shortTitle(question: string) {
+  const words = question.replace(/[?.!]+$/, "").split(/\s+/);
+  return words.length > 6 ? words.slice(0, 6).join(" ") + "…" : words.join(" ");
+}
+
+function answerText(label: string, option: AskOption, r: ReturnType<typeof recordChoice> | null, note?: string) {
+  const lines = [`The user chose: ${label}`];
+  if (r?.adjusted.length) lines.push(`They adjusted its values before choosing: ${r.adjusted.map((a) => `${a.param} ${fmtValue(a.from)} → ${fmtValue(a.to)}`).join(", ")}.`);
+  if (note) lines.push(`They added: ${note}`);
+  if (r) {
+    const applied = r.applied.length ? `Kerf has already applied the option's values (${r.applied.map((c) => `${c.param} = ${fmtValue(c.to)}`).join(", ")}) and recorded` : "Kerf recorded";
+    lines.push(`${applied} the answer as \`decision ${r.name}\` in the source. The source changed, so call get_design before your next edit.`);
+    if (r.missing.length) lines.push(`These option values were not applied because the parameters no longer exist: ${r.missing.join(", ")}.`);
+    lines.push(option.set && Object.keys(option.set).length ? "Make any other changes this option needs, then run_checks and report." : "Carry out this choice, then run_checks and report.");
+  } else lines.push("Carry out this choice, then run_checks and report.");
+  return lines.join("\n");
 }
 
 export async function retryLast() {
@@ -304,7 +385,7 @@ async function runLoop() {
       if (ask) {
         // the answer to ask_user arrives with the user's next action, together with these results
         const cid = nid();
-        push({ kind: "choice", id: cid, toolUseId: ask.toolUseId, question: ask.outcome.ask!.question, options: ask.outcome.ask!.options });
+        push({ kind: "choice", id: cid, toolUseId: ask.toolUseId, title: ask.outcome.ask!.title, question: ask.outcome.ask!.question, options: ask.outcome.ask!.options });
         set({ pendingChoice: { toolUseId: ask.toolUseId, itemId: cid, results } });
         break;
       }

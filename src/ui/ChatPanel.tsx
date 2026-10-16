@@ -2,13 +2,21 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useChat, sendMessage, stop, choose, retryLast, revertTurn, clearChat, type ChatItem } from "../ai/chat";
+import { useChat, sendMessage, stop, retryLast, revertTurn, clearChat, type ChatItem } from "../ai/chat";
+import { ChoiceCard } from "./ChoiceCard";
 import { getApiKey, subscribeKey } from "../persist/vault";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
 import { useProject } from "../app/project";
 import { templateById, TEMPLATES } from "../demos/templates";
 import { lineDiff, diffStats } from "../core/sourceEdit";
+import { evaluateOnly, useDesign } from "../core/engine";
+import { paramUnit, sameValue, withValues } from "../core/decisions";
+import { commitSource, endPreview, previewSource, realSource } from "../app/project";
+import { useView, select } from "../app/view";
+import { fmtNum } from "../lang/values";
+import { useRealModel } from "./useRealModel";
+import { ValueField } from "./ValueField";
 import { Markdown } from "./Markdown";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
@@ -281,47 +289,42 @@ function DiffView({ before, after }: { before: string; after: string }) {
   );
 }
 
-function ChoiceCard({ it }: { it: Extract<ChatItem, { kind: "choice" }> }) {
-  const pending = useChat((s) => s.pendingChoice);
-  const busy = useChat((s) => s.busy);
-  const live = pending?.itemId === it.id && !busy;
-  return (
-    <motion.div className="choice-card" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
-      <div className="row" style={{ marginBottom: 4, color: "var(--violet)" }}>
-        <Icon.Sparkle size={13} />
-        <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".08em" }}>
-          YOUR DECISION
-        </span>
-      </div>
-      <div className="q">{it.question}</div>
-      {it.options.map((o) => (
-        <button key={o.label} className={`choice-opt ${it.chosen === o.label ? "chosen" : ""}`} disabled={!live} onClick={() => void choose(it.id, o.label)}>
-          <div className="l">
-            {o.label}
-            {o.recommended && <span className="chip accent">recommended</span>}
-          </div>
-          <div className="c">{o.consequence}</div>
-        </button>
-      ))}
-      {live && (
-        <div className="dim" style={{ fontSize: 11.5, marginTop: 8 }}>
-          Or type a different answer below.
-        </div>
-      )}
-    </motion.div>
-  );
-}
-
 function TurnBar({ it }: { it: Extract<ChatItem, { kind: "turn" }> }) {
   const [open, setOpen] = useState(false);
   const stats = useMemo(() => diffStats(it.before, it.after), [it.before, it.after]);
+  const changes = useMemo(() => paramChanges(it.before, it.after), [it.before, it.after]);
+  const key = `turn:${it.id}`;
+  const comparing = useProject((s) => s.preview?.key === key);
+  const busy = useChat((s) => s.busy);
+  const { model: real } = useRealModel();
+  useEffect(() => () => endPreview(key), [key]);
+
+  // fine-tune a value Claude changed, without another round trip
+  const tweak = (name: string, v: number | string | boolean, commit: boolean) => {
+    const src = realSource();
+    const next = withValues(src, evaluateOnly(src), { [name]: v });
+    if (commit) commitSource(next, "you", `Set ${name} to ${typeof v === "number" ? fmtNum(v, 3) : String(v)} after Claude's change`);
+    else previewSource({ key: `tweak:${it.id}`, label: name, quiet: true }, next);
+  };
+
   return (
-    <div>
+    <div className="turn">
       <div className="turn-bar">
         <Icon.Edit size={12} />
         <span className="grow">
           {it.reverted ? "Reverted" : `Changed the design in ${it.edits} edit${it.edits > 1 ? "s" : ""}`} · <span style={{ color: "var(--pass)" }}>+{stats.added}</span> <span style={{ color: "var(--fail)" }}>−{stats.removed}</span>
         </span>
+        {!it.reverted && (
+          <button
+            className={`btn sm ${comparing ? "" : "ghost"}`}
+            disabled={busy}
+            aria-pressed={comparing}
+            onClick={() => (comparing ? endPreview(key) : previewSource({ key, label: "Before Claude's change" }, it.before))}
+            data-tip="Show the design as it was before this reply"
+          >
+            <Icon.Compare size={12} /> {comparing ? "After" : "Before"}
+          </button>
+        )}
         <button className="btn sm ghost" onClick={() => setOpen((o) => !o)}>
           {open ? "Hide" : "Review"}
         </button>
@@ -331,6 +334,29 @@ function TurnBar({ it }: { it: Extract<ChatItem, { kind: "turn" }> }) {
           </button>
         )}
       </div>
+      {!it.reverted && changes.length > 0 && (
+        <div className="turn-chips">
+          <span className="mono dim tc-label" data-tip="Drag a name or type a value to fine-tune it">
+            tweak
+          </span>
+          {changes.map((c) => {
+            const cur = real?.params.find((p) => p.name === c.name);
+            return (
+              <ValueField
+                key={c.name}
+                name={c.name}
+                from={c.from}
+                value={cur?.value ?? c.to}
+                unit={paramUnit(real, c.name)}
+                accent={!!cur && !sameValue(cur.value, c.to)}
+                disabled={!cur || cur.locked || busy}
+                onLive={(v) => tweak(c.name, v, false)}
+                onCommit={(v) => tweak(c.name, v, true)}
+              />
+            );
+          })}
+        </div>
+      )}
       {open && (
         <div style={{ marginTop: 6, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line-2)" }}>
           <DiffView before={it.before} after={it.after} />
@@ -340,11 +366,27 @@ function TurnBar({ it }: { it: Extract<ChatItem, { kind: "turn" }> }) {
   );
 }
 
+/** Parameters whose values differ between two versions of the source. */
+function paramChanges(before: string, after: string) {
+  const a = evaluateOnly(before);
+  const b = evaluateOnly(after);
+  const out: { name: string; from?: number | string | boolean; to: number | string | boolean }[] = [];
+  for (const p of b.params) {
+    const q = a.params.find((x) => x.name === p.name);
+    if (!q) out.push({ name: p.name, to: p.value });
+    else if (!sameValue(q.value, p.value)) out.push({ name: p.name, from: q.value, to: p.value });
+  }
+  return out.slice(0, 8);
+}
+
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
   const draft = useChatDraft();
   const pending = useChat((s) => s.pendingChoice);
+  const selected = useView((s) => s.selected);
+  const model = useDesign((s) => s.model);
+  const about = useMemo(() => [...new Set(selected.map((id) => model?.parts.find((p) => p.id === id)?.name).filter((n): n is string => !!n))], [selected, model]);
   useEffect(() => {
     if (draft.nonce) {
       setText(draft.text);
@@ -367,13 +409,38 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
   };
   return (
     <div className="composer">
+      <AnimatePresence initial={false}>
+        {about.length > 0 && (
+          <motion.div className="about-row" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}>
+            <Icon.Target size={12} />
+            <span className="mono">about</span>
+            {about.slice(0, 4).map((n) => (
+              <span key={n} className="chip accent">
+                {n}
+              </span>
+            ))}
+            {about.length > 4 && <span className="chip">+{about.length - 4}</span>}
+            <button className="icon-btn sm" onClick={() => select([])} aria-label="Clear the selection" data-tip="Clear the selection">
+              <Icon.X size={11} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <div className="composer-box">
         <textarea
           ref={ta}
           value={text}
           rows={2}
           maxLength={20000}
-          placeholder={pending ? "Pick an option above, or answer here…" : hasKey ? "Describe a part, a change or a question…" : "Add your API key in settings to chat with Claude"}
+          placeholder={
+            pending
+              ? "Pick an option above, or answer here…"
+              : !hasKey
+                ? "Add your API key in settings to chat with Claude"
+                : about.length
+                  ? `What should change about ${about.length === 1 ? about[0] : "the selected parts"}?`
+                  : "Describe a part, a change or a question… (select parts in 3D to point at them)"
+          }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {

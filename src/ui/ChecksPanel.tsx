@@ -2,9 +2,9 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo, useState } from "react";
-import { useDesign, setHold } from "../core/engine";
+import { useDesign, setHold, evaluateOnly } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
-import { commitSource } from "../app/project";
+import { commitSource, endPreview, previewSource, realSource, useProject } from "../app/project";
 import { setParamValue } from "../core/sourceEdit";
 import { StatusIcon, Icon } from "./icons";
 import { Segmented } from "./common";
@@ -128,7 +128,6 @@ function ConflictCard() {
   const conflict = useDesign((s) => s.conflict);
   const state = useDesign((s) => s.conflictState);
   const hold = useDesign((s) => s.hold);
-  const model = useDesign((s) => s.model);
   const setDraft = useChatDraft((s) => s.set);
   if (state === "idle") return null;
   if (state === "solving" && !conflict)
@@ -140,21 +139,24 @@ function ConflictCard() {
       </div>
     );
   if (!conflict) return null;
-  const apply = (o: FixOption) => {
-    const { source } = useDesign.getState();
+  const fixedSource = (o: FixOption) => {
+    // always from the real design, even while a fix is being previewed
+    const source = realSource();
+    const m = evaluateOnly(source);
     let src = source;
     // apply from the end of the file backwards so spans stay valid
     const changes = [...o.changes].sort((a, b) => {
-      const pa = model!.params.find((p) => p.name === a.param)!.valueSpan.start;
-      const pb = model!.params.find((p) => p.name === b.param)!.valueSpan.start;
+      const pa = m.params.find((p) => p.name === a.param)?.valueSpan.start ?? 0;
+      const pb = m.params.find((p) => p.name === b.param)?.valueSpan.start ?? 0;
       return pb - pa;
     });
     for (const c of changes) {
-      const p = model!.params.find((q) => q.name === c.param);
+      const p = m.params.find((q) => q.name === c.param);
       if (p) src = setParamValue(src, p, c.to);
     }
-    commitSource(src, "you", `Applied fix: ${o.summary}`);
+    return src;
   };
+  const apply = (o: FixOption) => commitSource(fixedSource(o), "you", `Applied fix: ${o.summary}`);
   const toggleHold = (name: string) => setHold(hold.includes(name) ? hold.filter((h) => h !== name) : [...hold, name]);
   const candidates = [...new Set([...conflict.adjustable, ...hold])];
   return (
@@ -186,6 +188,7 @@ function ConflictCard() {
                 </span>
               ))}
             </span>
+            <FixPreviewButton index={i} label={o.summary} source={() => fixedSource(o)} apply={() => apply(o)} />
             <button className="btn sm primary" onClick={() => apply(o)}>
               Apply
             </button>
@@ -210,5 +213,16 @@ function ConflictCard() {
         <Icon.Sparkle size={13} /> Ask Claude for other options
       </button>
     </motion.div>
+  );
+}
+
+/** Show a proposed fix in the 3D view before applying it. */
+function FixPreviewButton({ index, label, source, apply }: { index: number; label: string; source: () => string; apply: () => void }) {
+  const key = `fix:${index}`;
+  const showing = useProject((s) => s.preview?.key === key);
+  return (
+    <button className={`btn sm ${showing ? "" : "ghost"}`} aria-pressed={showing} onClick={() => (showing ? endPreview(key) : previewSource({ key, label: `Fix: ${label}`, apply }, source()))}>
+      <Icon.Eye size={12} /> {showing ? "Stop" : "Preview"}
+    </button>
   );
 }

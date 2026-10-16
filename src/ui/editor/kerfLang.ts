@@ -11,7 +11,7 @@ import { LIBRARY } from "../../library/components";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 
-const STATEMENTS = new Set(["design", "note", "param", "let", "component", "interface", "part", "require"]);
+const STATEMENTS = new Set(["design", "note", "param", "let", "component", "interface", "part", "require", "decision"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
 const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS]);
 const CONSTS = new Set(["X", "Y", "Z", "ORIGIN", "PI", ...Object.keys(THREADS)]);
@@ -51,6 +51,7 @@ const parser: StreamParser<St> = {
       if (OPS_KW.has(w)) return "operatorKeyword";
       if (KEYWORDS.has(w)) return w === "true" || w === "false" ? "bool" : "controlKeyword";
       if (w === "lib") return "namespace";
+      if (w === "option" && stream.match(/^\s*"/, false)) return "controlKeyword";
       if (CONSTS.has(w)) return "constant";
       if (stream.peek() === "(" && BUILTIN_FNS.has(w)) return "builtin";
       if (stream.peek() === ":") return "propertyName";
@@ -155,7 +156,7 @@ export function kerfCompletions(getModel: () => Model | null) {
     const defined: Completion[] = [];
     if (model) {
       for (const p of model.params) defined.push({ label: p.name, type: "variable", detail: `param = ${typeof p.value === "number" ? +p.value.toFixed(3) : String(p.value)}`, info: p.desc });
-      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require") defined.push({ label: b.name, type: b.kind === "let" ? "variable" : "class", detail: b.kind });
+      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require" && b.kind !== "decision") defined.push({ label: b.name, type: b.kind === "let" ? "variable" : "class", detail: b.kind });
     }
     return { from: word.from, options: [...defined, ...fnCompletions, ...consts, ...kw, ...props, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
   };

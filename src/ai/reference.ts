@@ -51,6 +51,7 @@ interface name { field = expr, ... }                          // named contract 
 component name = lib.kind(args) { props and flags }           // standard parts from the library
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
 require "Label" [hard|soft]: condition                         // checked every rebuild; hard by default
+decision name "Title" { ask, chose, by, why, option ... }      // a recorded design choice and its alternatives (below)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -92,6 +93,26 @@ ${lib}
 Threads (use M3 etc. directly as values: M3.clearance, M3.tap, M3.head_d, or pass M3 to hole() and lib.screw()):
 ${threads}
 Bearings for lib.bearing(code): ${bearings}
+
+## Decisions
+A decision block records a design choice: what was asked, the alternatives, which was chosen, by whom and why. It does not change geometry; the parameters do. The app lists decisions in a Decisions panel where the user can preview another option live, switch to it in one click, or fine-tune the chosen values.
+decision lid_fastening "Lid fastening" {
+  ask: "How should the lid attach?"            // optional: the question as it was put
+  chose: "M3 screws into inserts"              // the label of the chosen option
+  by: "claude"                                 // "you" (the user) or "claude"
+  why: "Re-openable many times without wearing the plastic."
+  option "M3 screws into inserts" "Strong and re-openable; adds four inserts and screws."
+  option "Snap fit" "No hardware, but the clips wear after a few dozen openings."
+}
+decision wall_thickness "Wall thickness" {
+  chose: "2.0 mm"
+  by: "claude"
+  why: "Five perimeters at 0.4 mm: stiff enough for a hand-held box."
+  option "1.6 mm" { wall: 1.6mm } "Lighter and faster to print; flexes more."
+  option "2.0 mm" { wall: 2mm } "Balanced."
+  option "2.4 mm" { wall: 2.4mm } "Stiffer and heavier."
+}
+An option's { param: value } list names parameters only; switching to that option writes those values into the params. Options without values are structural (switching them needs a design change). The chosen option's values should match the params; the panel shows any difference as "adjusted".
 
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins
