@@ -20,7 +20,7 @@ export function AgentSettings() {
           <div className="t">Agents' model</div>
           <div className="d">For large assemblies Claude can have one agent build each subassembly at the same time. A cheaper model lowers the cost of each run.</div>
         </div>
-        <select className="input" value={s.agentModel} onChange={(e) => updateSettings({ agentModel: e.target.value })} aria-label="Model for parallel agents" style={{ height: 30, minWidth: 150 }}>
+        <select className="select" value={s.agentModel} onChange={(e) => updateSettings({ agentModel: e.target.value })} aria-label="Model for parallel agents" style={{ height: 30, width: 170, flex: "none" }}>
           <option value="same">Same as chat</option>
           {MODELS.map((m) => (
             <option key={m.id} value={m.id}>
@@ -45,7 +45,7 @@ export function AgentSettings() {
           $
           <input
             className="input"
-            style={{ width: 70, height: 30 }}
+            style={{ width: 70, height: 30, flex: "none" }}
             inputMode="decimal"
             value={budget}
             aria-label="Spending cap per run in dollars"

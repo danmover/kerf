@@ -11,6 +11,7 @@ import { useSettings, type Effort } from "../app/settings";
 import { setSource, useDesign, whenChecked } from "../core/engine";
 import { commitSource, onProjectOpen, useProject } from "../app/project";
 import { viewport } from "../app/viewportApi";
+import { requestCamera } from "../app/view";
 import type { CheckItem } from "../core/checks";
 import type { ToolOutcome } from "../ai/tools";
 import { composeSections, definedNames, INTEGRATION, LAYOUT, mergeByRegion, newSection, ownerAt, splitSections, withMeta, type Section, type Sectioned } from "./sections";
@@ -35,6 +36,8 @@ interface Live {
   runId: string;
   projectId: string;
   startSource: string;
+  /** parts in the design when the run started */
+  startParts: number;
   doc: Sectioned;
   /** ids of sections agents write in this run */
   planIds: string[];
@@ -205,6 +208,7 @@ async function run(tree: AgentRunTree, doc: Sectioned, startSource: string, sign
     runId: tree.runId,
     projectId: tree.projectId,
     startSource,
+    startParts: useDesign.getState().model?.parts.length ?? 0,
     doc,
     planIds: tree.branches.map((b) => b.id),
     previewTail: false,
@@ -533,8 +537,11 @@ async function integrate(l: Live): Promise<ToolOutcome> {
   const changed = sameProject && final !== l.startSource;
   if (changed) {
     const names = done.map((b) => b.title).join(", ");
-    const msg = tree0.mode === "revise" ? `${tree0.branches[0].title}: ${firstLine(tree0.branches[0].summary ?? "revised")}` : `${stopped ? "Parallel build stopped" : "Parallel build"}: ${names || "no subassemblies finished"}`;
+    const asked = tree0.branches[0].notes[0]?.text;
+    const msg = tree0.mode === "revise" ? `${tree0.branches[0].title}: ${firstLine(asked ?? tree0.branches[0].summary ?? "revised")}` : `${stopped ? "Parallel build stopped" : "Parallel build"}: ${names || "no subassemblies finished"}`;
     commitSource(final, "claude", msg.slice(0, 200), { undoBase: l.startSource });
+    // the viewer framed the first preview, which held only the first finished parts
+    if (!l.startParts) requestCamera("fit");
   }
 
   let report = useDesign.getState().report;

@@ -406,11 +406,23 @@ function Results({ run }: { run: AgentRunTree }) {
         </div>
       )}
       {revisionRuns.map((r) => (
-        <div key={r.runId} className="ar-revision">
-          <RunView run={r} />
-        </div>
+        <Revision key={r.runId} run={r} />
       ))}
     </>
+  );
+}
+
+function Revision({ run }: { run: AgentRunTree }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const startedLive = useRef(isLive(run));
+  // a revision asked for from a row opens below it, often out of view
+  useEffect(() => {
+    if (startedLive.current) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, []);
+  return (
+    <div ref={ref} className="ar-revision">
+      <RunView run={run} />
+    </div>
   );
 }
 
