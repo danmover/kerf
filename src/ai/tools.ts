@@ -12,6 +12,7 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
 
 // no generated code: the page CSP forbids eval
@@ -129,6 +130,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  BUILD_TOOL,
 ];
 
 const EditInput = z.object({
@@ -277,8 +279,10 @@ function applySource(next: string, summary: string, unlockOk: boolean | undefine
 
 // ---------- handlers ----------
 
-export async function runTool(name: string, input: unknown): Promise<ToolOutcome> {
+export async function runTool(name: string, input: unknown, ctx: { signal?: AbortSignal; toolUseId?: string } = {}): Promise<ToolOutcome> {
   switch (name) {
+    case "build_subassemblies":
+      return runBuildTool(input, ctx);
     case "update_plan":
       return runPlanTool(input);
     case "get_design": {
@@ -384,4 +388,5 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
+  build_subassemblies: "Building subassemblies in parallel",
 };

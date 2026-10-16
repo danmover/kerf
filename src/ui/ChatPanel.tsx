@@ -15,6 +15,7 @@ import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
 import { MicButton, VoiceBar, VoiceNotice, useVoiceInput } from "./voice/VoiceInput";
+import { AgentRunCard } from "./agents/AgentRunCard";
 import { PlanPane } from "./PlanPane";
 
 export function useApiKey() {
@@ -170,7 +171,7 @@ function Item({ it }: { it: ChatItem }) {
     case "assistant":
       return <AssistantMsg it={it} />;
     case "tool":
-      return <ToolCard it={it} />;
+      return it.name === "build_subassemblies" ? <AgentRunCard toolUseId={it.toolUseId} fallback={<ToolCard it={it} />} /> : <ToolCard it={it} />;
     case "choice":
       return <ChoiceCard it={it} />;
     case "notice":

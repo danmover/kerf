@@ -71,6 +71,17 @@ export class KernelClient {
     for (const l of this.resetListeners) l();
   }
 
+  /** Terminate the worker for good (extra workers that are no longer needed). */
+  dispose() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.status = "error";
+    this.error = "The geometry worker was closed.";
+    this.failAll(new Error(this.error));
+    this.listeners.clear();
+    this.resetListeners.clear();
+  }
+
   private crash(message: string) {
     this.restarts++;
     if (this.restarts > 3) {

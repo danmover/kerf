@@ -12,6 +12,7 @@ import { templateById } from "../demos/templates";
 import { backupFile, download, projectFile, readImport, safeFileName, type ProjectFile } from "../persist/files";
 import { go, toast, errorText } from "./ui";
 import { resetView } from "./view";
+import { forgetAllRuns, forgetRuns } from "../agents/progress";
 
 export type SaveState = "saved" | "saving" | "unsaved" | "error" | "memory";
 
@@ -137,10 +138,11 @@ function summarise(model: Model | null, fallback: string) {
  * Apply a whole new source as one undoable change with a version entry.
  * Used by the parameter panel, the AI, restore and the structure tree.
  */
-export function commitSource(source: string, author: VersionRecord["author"], message?: string) {
+export function commitSource(source: string, author: VersionRecord["author"], message?: string, opts: { undoBase?: string } = {}) {
   if (typingTimer) commitTyping();
   if (source === committed.source && source === useDesign.getState().source) return useDesign.getState().model!;
-  const prev = useDesign.getState().source;
+  // a parallel build previews uncommitted states; undo goes back to before it started
+  const prev = opts.undoBase ?? useDesign.getState().source;
   const model = setSource(source);
   set((s) => ({ undo: [...s.undo, prev].slice(-200), redo: [] }));
   void addVersion(author, message ?? summarise(model, "Edited design"), source);
@@ -239,6 +241,7 @@ export async function duplicateProject(id: string) {
 
 export async function deleteProject(id: string) {
   await db.deleteProjectData(id);
+  forgetRuns(id);
   if (get().current?.id === id) set({ current: null });
   await refreshProjects();
 }
@@ -301,5 +304,6 @@ export async function saveThumbnail(dataUrl: string) {
 
 export async function clearAllData() {
   await db.clearEverything();
+  forgetAllRuns();
   set({ projects: [], current: null, versions: [], undo: [], redo: [] });
 }

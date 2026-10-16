@@ -39,6 +39,16 @@ export interface Settings {
   voiceSend: VoiceSend;
   /** speech language as a BCP 47 tag; empty means the browser's language */
   voiceLang: string;
+  /** parallel subassembly agents: model ("same" follows the chat model) */
+  agentModel: string;
+  /** how many agents may call Claude at once */
+  agentParallel: number;
+  /** spending cap per parallel build, in US dollars */
+  agentBudget: number;
+  /** show the plan and its cost before agents start */
+  agentReview: boolean;
+  /** extra geometry workers for agents' checks (0 = decide from the device) */
+  agentWorkers: number;
 }
 
 export type VoiceSend = "review" | "auto";
@@ -59,6 +69,11 @@ const DEFAULTS: Settings = {
   voiceOnline: false,
   voiceSend: "review",
   voiceLang: "",
+  agentModel: "same",
+  agentParallel: 4,
+  agentBudget: 5,
+  agentReview: true,
+  agentWorkers: 0,
 };
 
 const KEY = "kerf.settings.v1";
@@ -82,6 +97,10 @@ function load(): Settings {
     if (!LIGHTING_IDS.includes(out.lighting)) out.lighting = DEFAULTS.lighting;
     if (!["draft", "balanced", "high"].includes(out.quality)) out.quality = DEFAULTS.quality;
     out.lightAngle = Number.isFinite(out.lightAngle) ? ((Math.round(out.lightAngle) % 360) + 360) % 360 : 0;
+    if (out.agentModel !== "same" && !MODELS.some((m) => m.id === out.agentModel)) out.agentModel = "same";
+    out.agentParallel = Math.min(8, Math.max(1, Math.round(out.agentParallel)));
+    out.agentBudget = Math.min(100, Math.max(0.5, Number(out.agentBudget) || DEFAULTS.agentBudget));
+    out.agentWorkers = Math.min(4, Math.max(0, Math.round(out.agentWorkers)));
     return out;
   } catch {
     return DEFAULTS;

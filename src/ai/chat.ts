@@ -12,6 +12,7 @@ import { useView } from "../app/view";
 import { commitSource, useProject } from "../app/project";
 import { systemPrompt } from "./prompt";
 import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type ToolOutcome } from "./tools";
+import { getAgentRun, isLive } from "../agents/progress";
 import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering } from "./plan";
 
 export type ChatItem =
@@ -312,7 +313,7 @@ async function runLoop() {
         if (mirrored) mainActivityStart(itemId, TOOL_TITLES[u.name] ?? u.name);
         let outcome: ToolOutcome;
         try {
-          outcome = await runTool(u.name, u.input);
+          outcome = await runTool(u.name, u.input, { signal: abort.signal, toolUseId: u.id });
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
@@ -323,7 +324,7 @@ async function runLoop() {
           ask = { toolUseId: u.id, outcome };
           continue;
         }
-        if (u.name === "edit_design" || u.name === "write_design") {
+        if (u.name === "edit_design" || u.name === "write_design" || u.name === "build_subassemblies") {
           if (!outcome.isError) {
             edits++;
             lastEditedSource = useDesign.getState().source;
@@ -396,6 +397,8 @@ const isAbort = (e: unknown) => e instanceof Anthropic.APIUserAbortError || (e i
  */
 export async function applyPlanChangesNow() {
   if (!pendingSteering(usePlan.getState()).length) return;
+  // parallel agents take changes on their branches at their next step; interrupting would stop them all
+  if (isLive(getAgentRun())) return;
   if (!get().busy) {
     await sendMessage(describeSteering(usePlan.getState()));
     return;
