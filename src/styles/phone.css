@@ -1,0 +1,219 @@
+/* The workspace on a phone: 3D view on top, one panel below, big touch targets. */
+
+.app.phone {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: var(--app-top, 0px);
+  height: var(--app-h, 100dvh);
+  grid-template-rows: 46px 1fr;
+}
+
+.phone-ws {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.phone-view {
+  position: relative;
+  flex: none;
+  height: clamp(140px, 36%, 420px);
+  display: grid;
+  min-height: 0;
+  border-bottom: 1px solid var(--line);
+}
+.phone-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.phone-tabs button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.phone-tabs button.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.phone-tabs .dot {
+  width: 6px;
+  height: 6px;
+}
+.phone-pane {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.phone-slot {
+  position: absolute;
+  inset: 0;
+  bottom: env(safe-area-inset-bottom, 0px);
+  display: flex;
+  flex-direction: column;
+}
+.phone-slot[hidden] {
+  display: none;
+}
+.phone-slot > .panel,
+.phone-slot > .dock {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+}
+
+/* top bar: keep the project name, undo, export and settings */
+.app.phone .topbar {
+  gap: 4px;
+  padding: 0 6px;
+}
+.app.phone .topbar .sep,
+.app.phone .topbar .crumbs .link,
+.app.phone .topbar [aria-label="Keyboard shortcuts"] {
+  display: none;
+}
+.app.phone .topbar .crumbs {
+  flex: 1;
+  min-width: 0;
+}
+.app.phone .project-name {
+  max-width: none;
+  width: 100%;
+}
+
+/* the 3D view's floating controls fit a narrow screen */
+.app.phone .vp-toolbar {
+  max-width: calc(100% - 12px);
+  overflow-x: auto;
+  scrollbar-width: none;
+  top: 6px;
+}
+.app.phone .vp-selection {
+  display: none;
+}
+
+/* chat: touch-sized controls, and 16px text so phones don't zoom into the box */
+.app.phone .chat-feed {
+  padding: 12px 12px 8px;
+}
+.app.phone .composer {
+  padding: 8px;
+}
+.app.phone .composer textarea {
+  font-size: 16px;
+  min-height: 44px;
+}
+.app.phone .composer-box > .row > .mono {
+  display: none;
+}
+.app.phone .composer > .dim {
+  display: none;
+}
+.app.phone .composer-box > .row .btn.sm {
+  height: 40px;
+  min-width: 44px;
+  border-radius: 10px;
+}
+.app.phone .mic-btn {
+  width: 52px;
+  height: 40px;
+  border-radius: 10px;
+}
+.app.phone .mic-btn svg {
+  width: 20px;
+  height: 20px;
+}
+.app.phone .voice-bar {
+  min-height: 48px;
+  gap: 10px;
+  padding: 4px 5px 4px 12px;
+}
+.app.phone .voice-bar .btn {
+  height: 38px;
+  min-width: 44px;
+  font-size: 13px;
+}
+.app.phone .vb-time {
+  display: none;
+}
+.app.phone .voice-level {
+  height: 24px;
+}
+.app.phone .voice-level span {
+  height: 24px;
+  width: 3.5px;
+}
+.app.phone .vn-inner .btn {
+  min-height: 40px;
+}
+.app.phone .vp-hud {
+  top: auto !important;
+  bottom: 8px !important;
+  left: auto !important;
+  right: 10px;
+  text-align: right;
+}
+
+/* hover tips get in the way after a tap */
+.app.phone [data-tip]:hover::after {
+  display: none;
+}
+
+/* dialogs on a phone: full width, settings sections as a row of tabs */
+@media (max-width: 760px) {
+  .overlay {
+    padding: 8px;
+  }
+  .modal {
+    max-height: calc(var(--app-h, 100dvh) - 16px);
+  }
+  .settings-grid {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+  .settings-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    scrollbar-width: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 6px;
+  }
+  .settings-nav button {
+    flex: none;
+    padding: 8px 10px;
+  }
+  .setting {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .setting .select {
+    width: 100% !important;
+  }
+}
+
+/* the code pane's tabs scroll sideways instead of wrapping */
+.app.phone .dock-head .tabs {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.app.phone .dock-head .tab {
+  white-space: nowrap;
+  flex: none;
+}
+.app.phone .dock-head > .icon-btn {
+  display: none;
+}

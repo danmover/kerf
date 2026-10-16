@@ -1,0 +1,583 @@
+/* Parallel build card in the chat. */
+
+.agent-run {
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: linear-gradient(180deg, rgba(79, 209, 197, 0.06), rgba(79, 209, 197, 0) 120px), var(--bg-2);
+  overflow: hidden;
+}
+.agent-run.review {
+  border-color: rgba(79, 209, 197, 0.45);
+  box-shadow: 0 0 0 1px rgba(79, 209, 197, 0.08), 0 0 26px -12px rgba(79, 209, 197, 0.6);
+}
+.agent-run.running,
+.agent-run.integrating {
+  border-color: rgba(109, 139, 255, 0.45);
+  box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.12), 0 0 22px -8px var(--accent-glow);
+}
+.agent-run.failed {
+  border-color: rgba(255, 93, 108, 0.35);
+}
+
+.ar-head {
+  padding: 10px 12px 8px;
+}
+.ar-kicker {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--cyan);
+  white-space: nowrap;
+  min-width: 0;
+}
+.ar-kicker > * {
+  flex: none;
+}
+.ar-kicker > .grow {
+  flex: 1;
+}
+.ar-kicker > .ar-state {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0;
+  color: var(--text-3);
+  padding-left: 7px;
+  border-left: 1px solid var(--line-2);
+}
+.ar-state.running,
+.ar-state.integrating {
+  color: var(--accent-2);
+}
+.ar-state.done {
+  color: var(--pass);
+}
+.ar-state.failed {
+  color: var(--fail);
+}
+.ar-cost {
+  letter-spacing: 0;
+  color: var(--text);
+  font-size: 11px;
+}
+.ar-stop {
+  flex: none;
+  height: 22px;
+  padding: 0 7px;
+  margin: -3px -4px -3px 0;
+  font-weight: 400;
+  color: var(--fail);
+}
+.ar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.ar-title > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ar-meta {
+  font-weight: 400;
+  font-size: 10.5px;
+  flex: none;
+}
+.ar-goal {
+  padding: 0 12px 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ar-budget {
+  position: relative;
+  height: 3px;
+  margin-top: 8px;
+  border-radius: 3px;
+  background: var(--bg-4);
+  overflow: hidden;
+}
+.ar-budget-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--cyan), var(--accent));
+}
+.ar-budget-fill.hot {
+  background: linear-gradient(90deg, var(--warn), var(--fail));
+}
+.ar-budget-est {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--text-3);
+  opacity: 0.6;
+}
+
+/* waves: which agents run together */
+.ar-waves {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 12px 10px;
+  overflow-x: auto;
+  border-top: 1px dashed var(--line-2);
+  border-bottom: 1px dashed var(--line-2);
+  background: rgba(0, 0, 0, 0.14);
+}
+.ar-wave-wrap {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.ar-wave {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ar-link {
+  flex: none;
+}
+.ar-link path {
+  stroke: var(--line-3);
+  stroke-width: 1.4;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ar-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 21px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
+}
+.ar-node.layout {
+  color: var(--cyan);
+  border-style: dashed;
+}
+.ar-glyph {
+  font-size: 9px;
+}
+.ar-node.running {
+  color: var(--text);
+  border-color: rgba(109, 139, 255, 0.55);
+  box-shadow: 0 0 12px -4px var(--accent-glow);
+}
+.ar-node.done {
+  color: var(--text);
+  border-color: rgba(61, 220, 151, 0.4);
+}
+.ar-node.failed {
+  border-color: rgba(255, 93, 108, 0.45);
+}
+.ar-node.skipped,
+.ar-node.stopped {
+  opacity: 0.55;
+}
+
+.ar-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-4);
+  box-sizing: border-box;
+}
+.ar-dot.waiting {
+  background: transparent;
+  border: 1.5px solid var(--warn);
+}
+.ar-dot.running {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.ar-dot.done {
+  background: var(--pass);
+  box-shadow: 0 0 7px rgba(61, 220, 151, 0.55);
+}
+.ar-dot.failed {
+  background: var(--fail);
+}
+.ar-dot.stopped,
+.ar-dot.skipped {
+  background: transparent;
+  border: 1.5px solid var(--text-4);
+}
+
+/* branches */
+.ar-branches {
+  display: flex;
+  flex-direction: column;
+}
+.ar-branch {
+  border-top: 1px solid var(--line);
+  padding: 7px 12px;
+}
+.ar-branches .ar-branch:first-child {
+  border-top: 0;
+}
+.ar-branch.off {
+  opacity: 0.45;
+}
+.ar-branch.open {
+  background: rgba(255, 255, 255, 0.015);
+}
+.ar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ar-row.clickable {
+  cursor: pointer;
+}
+.ar-bname {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.ar-activity {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.ar-bcost {
+  font-size: 10.5px;
+}
+.ar-progress {
+  height: 2px;
+  margin: 6px -12px -7px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+.ar-id {
+  font-size: 10.5px;
+}
+.ar-name {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 2px 5px;
+  margin-left: -5px;
+  font-weight: 500;
+}
+.ar-name:hover,
+.ar-name:focus {
+  border-color: var(--line-2);
+  background: var(--bg-1);
+  outline: none;
+}
+.ar-check {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid var(--line-3);
+  background: var(--bg-1);
+  color: var(--bg-0);
+}
+.ar-check.on {
+  background: var(--cyan);
+  border-color: var(--cyan);
+}
+.ar-brief {
+  margin: 4px 0 0 24px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  cursor: text;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ar-brief.small {
+  margin: 6px 0 4px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  cursor: default;
+  -webkit-line-clamp: 4;
+}
+.ar-brief-edit {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 5px 0 0 24px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line-3);
+  background: var(--bg-1);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: none;
+}
+.ar-brief-edit:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+.ar-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 2px 24px;
+}
+.ar-summary {
+  margin: 5px 0 0 15px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+.ar-summary.clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ar-detail {
+  overflow: hidden;
+  padding-left: 15px;
+}
+.ar-steps {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  border-left: 1px solid var(--line-2);
+}
+.ar-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 3px 0 3px 9px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  position: relative;
+}
+.ar-steps li > svg,
+.ar-steps li > .spinner {
+  margin-top: 2px;
+  flex: none;
+}
+.ar-steps li.done > svg {
+  color: var(--pass);
+}
+.ar-steps li.error > svg {
+  color: var(--fail);
+}
+.ar-step-detail {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  max-height: 64px;
+  overflow: hidden;
+}
+.ar-request,
+.ar-note {
+  margin: 5px 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.ar-request {
+  border: 1px solid rgba(109, 139, 255, 0.3);
+  background: var(--accent-soft);
+}
+.ar-note {
+  border: 1px solid rgba(199, 146, 255, 0.3);
+  background: rgba(199, 146, 255, 0.07);
+}
+.ar-request .mono,
+.ar-note .mono {
+  font-size: 10.5px;
+  color: var(--text-3);
+  margin-right: 4px;
+}
+.ar-tools {
+  margin: 4px 0;
+}
+.ar-input {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+.ar-input input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  font-size: 12px;
+}
+.ar-input input:focus {
+  outline: none;
+  border-color: var(--violet);
+}
+
+/* review footer */
+.ar-foot {
+  padding: 9px 12px 11px;
+  border-top: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.12);
+}
+.ar-warn {
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  color: var(--warn);
+}
+.ar-warn svg {
+  vertical-align: -1px;
+}
+.ar-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+.ar-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.ar-opt select,
+.ar-money {
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  color: var(--text);
+  font-size: 11.5px;
+}
+.ar-opt select {
+  padding: 0 4px;
+}
+.ar-money {
+  display: inline-flex;
+  align-items: center;
+  padding-left: 7px;
+  font-family: var(--mono);
+}
+.ar-money input {
+  width: 46px;
+  border: 0;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 0 4px;
+}
+.ar-money input:focus {
+  outline: none;
+}
+.ar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ar-actions .btn.primary {
+  background: linear-gradient(180deg, #5fd9cd, #3fb7ab);
+  border-color: #3fb7ab;
+  color: #04201d;
+}
+.ar-fine {
+  font-size: 10.5px;
+}
+
+/* results */
+.ar-merge,
+.ar-integrated,
+.ar-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.ar-notice {
+  color: var(--text-2);
+  background: var(--warn-soft);
+}
+.ar-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  flex: 1;
+}
+.ar-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+}
+.ar-issue {
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.ar-issue.fail {
+  border-color: rgba(255, 93, 108, 0.35);
+}
+.ar-issue.request {
+  border-color: rgba(109, 139, 255, 0.35);
+}
+.ar-issue-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 3px;
+  font-weight: 500;
+}
+.ar-issue-head .btn {
+  height: 22px;
+  padding: 0 7px;
+}
+.ar-revision {
+  padding: 0 10px 10px;
+}
+.ar-revision .agent-run {
+  border-radius: 8px;
+}
+.ar-hover {
+  min-width: 0;
+}

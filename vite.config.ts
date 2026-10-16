@@ -34,7 +34,8 @@ export const SOLVER_CSP = "default-src 'none'; script-src 'self'";
 const COMMON_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
-  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+  // the microphone is for voice input, and only on Kerf's own page
+  "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), payment=(), usb=()",
   "Cross-Origin-Opener-Policy": "same-origin",
 };
 

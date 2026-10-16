@@ -21,7 +21,7 @@ export interface ConfirmRequest {
   resolve: (ok: boolean) => void;
 }
 
-export type SettingsTab = "ai" | "account" | "app" | "data" | "about";
+export type SettingsTab = "ai" | "account" | "voice" | "app" | "data" | "about";
 
 interface UiState {
   screen: Screen;

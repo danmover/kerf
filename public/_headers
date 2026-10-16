@@ -1,9 +1,10 @@
 # Security headers for static hosts that read this file (Netlify, Cloudflare Pages).
 # Keep in step with vite.config.ts. Paths do not overlap, so no policy is merged with another.
+# The microphone is allowed on Kerf's own page only, for voice input.
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
-  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Permissions-Policy: camera=(), microphone=(self), geolocation=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin
 
 /
