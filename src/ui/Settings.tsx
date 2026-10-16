@@ -166,7 +166,7 @@ function AiSettings() {
           t="Search the web for parts"
           d="When the parts catalog has nothing suitable, Claude can search the web and read product pages to find a real part with a price and a link. Anthropic runs the searches and bills them to your API key ($10 per 1,000 searches at the time of writing, plus the tokens the pages use). Results come from the open web, so check a part before you buy it."
         >
-          <Toggle on={s.webSearch} onChange={(v) => updateSettings({ webSearch: v })} label="Search the web for parts" />
+          <Toggle on={s.webSearch} onChange={(v) => updateSettings({ webSearch: v, webNotice: false })} label="Search the web for parts" />
         </Row>
       </Section>
 

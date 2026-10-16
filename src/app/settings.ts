@@ -35,6 +35,8 @@ export interface Settings {
   maxSteps: number;
   /** let Claude search the web and read pages (Anthropic's server tools) to find parts the catalog lacks */
   webSearch: boolean;
+  /** someone who used Kerf before web search existed has yet to be told it is on and what it costs */
+  webNotice: boolean;
   /** when an independent reviewer checks Claude's changes before it reports back */
   selfReview: SelfReview;
   /** review rounds per reply: the first review plus re-checks after fixes */
@@ -81,6 +83,7 @@ const DEFAULTS: Settings = {
   quality: "balanced",
   maxSteps: DEFAULT_STEPS,
   webSearch: true,
+  webNotice: false,
   selfReview: "auto",
   reviewRounds: 2,
   termsAccepted: null,
@@ -114,6 +117,8 @@ function load(): Settings {
     // settings saved before rev 2 had no rev; their untouched 16-step default becomes the new default
     if (typeof v.rev !== "number" || v.rev < 2) {
       if (v.maxSteps === undefined || v.maxSteps === 16) out.maxSteps = DEFAULT_STEPS;
+      // web search arrived switched on: tell them once, before it can cost them anything
+      if (v.webSearch === undefined) out.webNotice = true;
     }
     out.rev = SETTINGS_REV;
     out.maxSteps = Math.min(MAX_STEPS, Math.max(MIN_STEPS, Math.round(Number.isFinite(out.maxSteps) ? out.maxSteps : DEFAULT_STEPS)));

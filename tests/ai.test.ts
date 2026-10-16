@@ -548,6 +548,19 @@ describe("chat loop", () => {
     await clearChat();
   });
 
+  it("shows the web search cost notice once, before the first reply (integration review)", async () => {
+    useSettings.setState({ webNotice: true });
+    fakeClient([{ stop_reason: "end_turn", content: [{ type: "text", text: "Hello." }] }]);
+    await sendMessage("hi");
+    expect(of("notice")).toHaveLength(1);
+    expect(of("notice")[0]).toMatchObject({ level: "info", title: "Claude can now search the web for parts", action: "settings" });
+    expect(of("notice")[0].detail).toMatch(/\$0\.01 on your API key.*Settings → Claude/);
+    expect(useSettings.getState().webNotice).toBe(false);
+    fakeClient([{ stop_reason: "end_turn", content: [{ type: "text", text: "Again." }] }]);
+    await sendMessage("again");
+    expect(of("notice")).toHaveLength(1);
+  });
+
   // last: it switches web search off for the rest of this module's session
   it("carries on without web search when the key cannot use it", async () => {
     const requests = fakeClient([{ error: badRequest("tools.13: web_search is not enabled for this organization") }, { stop_reason: "end_turn", content: [{ type: "text", text: "Using the catalog." }] }]);
@@ -587,5 +600,11 @@ describe("settings", () => {
     expect((await withStored({ maxSteps: 16, rev: 2 })).maxSteps).toBe(16);
     expect((await withStored({ maxSteps: 500, rev: 2 })).maxSteps).toBe(80);
     expect((await withStored({ maxSteps: 30, webSearch: false, rev: 2 })).webSearch).toBe(false);
+  });
+
+  it("tells someone who used Kerf before web search, once, what it costs (integration review)", async () => {
+    expect((await withStored({ maxSteps: 16 })).webNotice).toBe(true);
+    expect((await withStored({ maxSteps: 30, webSearch: true, rev: 2 })).webNotice).toBe(false);
+    expect((await withStored({ maxSteps: 30, webSearch: true, webNotice: false, rev: 2 })).webNotice).toBe(false);
   });
 });
