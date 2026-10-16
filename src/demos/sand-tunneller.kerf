@@ -512,7 +512,7 @@ wire ctrl.A5 -> imu.SCL { gauge: 24, color: "yellow" }
 // ── Firmware ─────────────────────────────────────────────
 firmware brain {
   board: ctrl
-  behaviour: "Wait two minutes after power-up, then dig across the pit holding the starting heading. Back off and retry on stalls, and stop when the nose breaks out on the far side or the wall stops it. If neither happens by half again the expected time, back out on the reserve."
+  behaviour: "Wait two minutes after power-up, then dig across the pit holding the starting heading. Back off and retry on stalls, and stop when the nose breaks out on the far side or the wall stops it. If neither happens by half again the expected time, or the motors get warm first, back out on the reserve."
   start_delay: 120s
   run_distance: pit_l + 150mm
   give_up_time: 1.5 * pit_l / advance
