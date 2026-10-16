@@ -31,6 +31,21 @@ describe("imports", () => {
     await expect(readImport(file("bin.kerf", "abc\u0000def"))).rejects.toThrow(/binary/);
   });
 
+  it("reads reference files carried by a project file", async () => {
+    const asset = { id: "ast_abc123", kind: "image", mime: "image/jpeg", name: "tube.jpg", data: "AAEC" };
+    const proj = { format: "kerf-project", version: 1, name: "Bracket", source: "", assets: [asset] };
+    const [p] = await readImport(file("b.kerfproj", JSON.stringify(proj)));
+    expect(p.assets).toEqual([asset]);
+  });
+
+  it("rejects reference files that are not what they claim", async () => {
+    const proj = (a: object) => JSON.stringify({ format: "kerf-project", version: 1, name: "x", source: "", assets: [{ id: "ast_abc123", kind: "image", mime: "image/jpeg", name: "a", data: "AAEC", ...a }] });
+    await expect(readImport(file("a.kerfproj", proj({ mime: "text/html" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("a.kerfproj", proj({ kind: "pdf" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("a.kerfproj", proj({ id: "../../etc" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("a.kerfproj", proj({ data: "<script>" })))).rejects.toThrow(/not a Kerf project/);
+  });
+
   it("strips control characters from names", async () => {
     const [p] = await readImport(file("p.kerfproj", JSON.stringify({ format: "kerf-project", version: 1, name: "Evil\u0007Name\u001b[31m", source: "" })));
     expect(p.name).toBe("EvilName[31m");

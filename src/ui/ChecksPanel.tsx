@@ -14,6 +14,7 @@ import { fmtNum } from "../lang/values";
 import { useChatDraft } from "./chatDraft";
 
 const CATEGORY_LABEL: Record<string, string> = {
+  brief: "Brief",
   requirement: "Requirements",
   interference: "Interference",
   access: "Tool access",
@@ -107,6 +108,15 @@ export function ChecksPanel() {
                       {i.level === "soft" && <span className="chip" style={{ marginLeft: 6, height: 16, fontSize: 9.5 }}>soft</span>}
                     </div>
                     <div className="detail">{i.detail}</div>
+                    {i.category === "requirement" && i.uses && (
+                      <div className="row" style={{ gap: 4, marginTop: 3, flexWrap: "wrap" }}>
+                        {i.uses.map((u) => (
+                          <span key={u} className="chip" style={{ height: 16, fontSize: 9.5 }} title="Brief use this requirement checks">
+                            for {u}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="basis">{i.basis === "needs analysis" ? "analysis" : i.basis === "geometry" ? "geometry" : "params"}</div>
                 </motion.div>

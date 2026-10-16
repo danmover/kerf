@@ -32,7 +32,7 @@ const nameOf = (s: ViewSpec) => (s.section ? `section-${s.section}` : s.view);
 export async function captureViews(capture: Capture, ids: string[] | undefined, onView?: (v: ReviewView) => void, specs = REVIEW_VIEWS): Promise<ReviewView[]> {
   const out: ReviewView[] = [];
   for (const s of specs) {
-    const image = await capture({ view: s.view, width: VIEW_W, height: VIEW_H, section: s.section, focus: ids, frame: ids?.length ? "focus" : "model", mime: "image/jpeg", quality: 0.85 });
+    const image = await capture({ view: s.view, width: VIEW_W, height: VIEW_H, section: s.section, focus: ids, frame: ids?.length ? "focus" : "model", mime: "image/jpeg", quality: 0.85, samples: 24 });
     const v = { name: nameOf(s), label: s.label, image };
     out.push(v);
     onView?.(v);
@@ -43,7 +43,7 @@ export async function captureViews(capture: Capture, ids: string[] | undefined, 
 }
 
 export async function captureCloseup(capture: Capture, ids: string[], view: ViewPreset, section: "x" | "y" | "z" | undefined, why: string, parts: string[]): Promise<ReviewView> {
-  const image = await capture({ view, width: VIEW_W, height: VIEW_H, section, focus: ids, frame: "focus", mime: "image/jpeg", quality: 0.88 });
+  const image = await capture({ view, width: VIEW_W, height: VIEW_H, section, focus: ids, frame: "focus", mime: "image/jpeg", quality: 0.88, samples: 24 });
   const from = view === "iso" ? "3/4 view" : `from the ${view}`;
   return { name: `closeup-${view}${section ? `-${section}` : ""}`, label: `Close-up of ${parts.join(", ")}, ${from}${section ? `, cut across ${section.toUpperCase()}` : ""}`, image, closeup: { parts, why } };
 }

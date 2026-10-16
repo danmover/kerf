@@ -1,7 +1,7 @@
 // Evaluates a parsed Kerf program into a Model: parameters, placed parts and
 // components with geometry recipes, requirement results and a dependency graph.
 
-import type { Expr, Item, Program, Span, Stmt } from "./ast";
+import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
 import { parse, type Diagnostic } from "./parser";
 import { Fn, Obj, Pending, Ref, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, edgeSel, geoFns, libNamespace, threadConstants } from "./builtins";
@@ -10,7 +10,7 @@ import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { frameFor, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type PartOp, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
-import type { DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import type { Brief, BriefUse, DepNode, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -60,6 +60,13 @@ const LIB_ARGS: Record<string, string[]> = {
 const PART_PROPS = ["color", "material", "finish", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "finish", "label"];
 
+/** Fields of the brief block, by the type of value each takes. */
+const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as const;
+const BRIEF_LISTS = ["priorities", "exposure"] as const;
+const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as const;
+export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", "max_size", "max_mass"];
+const GRAVITY = 9.81;
+
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
 
 interface CompInfo {
@@ -107,10 +114,12 @@ class Evaluator {
   blocks: Model["blocks"] = [];
   name = "Untitled design";
   notes: string[] = [];
+  brief: Brief | null = null;
   geoQueries: GeoQuery[] = [];
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
+  reqStmts: Extract<Stmt, { k: "require" }>[] = [];
   /** guards against runaway loops in source written by people or the AI */
   steps = 0;
 
@@ -183,6 +192,9 @@ class Evaluator {
         return;
       case "note":
         this.notes.push(s.text);
+        return;
+      case "brief":
+        this.briefBlock(s);
         return;
       case "param": {
         this.blocks.push({ name: s.name, kind: "param", span: s.span, locked: s.locked });
@@ -771,23 +783,197 @@ class Evaluator {
     }
   }
 
+  // ---------------- the brief ----------------
+
+  briefBlock(s: Extract<Stmt, { k: "brief" }>) {
+    if (this.brief) throw new EvalError("A design has one brief. Merge the two brief blocks into one.", { start: s.span.start, end: s.span.start + 5 });
+    const b: Brief = { span: s.span, priorities: [], exposure: [], assumed: [], uses: [], givens: [], refs: [], assumptions: [], extra: [] };
+    this.brief = b;
+    // one bad entry should not hide the rest of the brief
+    for (const it of s.items) {
+      try {
+        this.briefItem(b, it);
+      } catch (e) {
+        if (!(e instanceof EvalError)) throw e;
+        this.diags.push({ message: `In the brief: ${e.message}`, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
+      }
+    }
+  }
+
+  briefItem(b: Brief, it: BriefItem) {
+    const text = (e: Expr, what: string) => {
+      const v = this.expr(e, null);
+      if (typeof v !== "string") throw new EvalError(`${what} should be text in quotes`, e.span);
+      return v;
+    };
+    const number = (e: Expr, what: string) => this.num(this.expr(e, null), e.span, what);
+    switch (it.k) {
+      case "field": {
+        const n = it.name;
+        if (it.to && n !== "temp") throw new EvalError(`Only temp takes a range (temp: -10C .. 40C)`, it.span);
+        if ((BRIEF_TEXT as readonly string[]).includes(n)) {
+          (b as unknown as Record<string, string>)[n] = text(it.value, n);
+        } else if ((BRIEF_LISTS as readonly string[]).includes(n)) {
+          const v = this.expr(it.value, null);
+          const list = Array.isArray(v) ? v : [v];
+          if (!list.every((x) => typeof x === "string")) throw new EvalError(`${n} should be a list of text, like ["sunlight", "rain"]`, it.value.span);
+          b[n as "priorities" | "exposure"] = list as string[];
+        } else if (n === "temp") {
+          let lo: number;
+          let hi: number;
+          if (it.to) {
+            lo = number(it.value, "the lowest temperature");
+            hi = number(it.to, "the highest temperature");
+          } else {
+            const v = this.expr(it.value, null);
+            if (!(v instanceof Vec) || v.v.length !== 2) throw new EvalError("temp should be a range in °C, like temp: -10C .. 40C", it.value.span);
+            [lo, hi] = v.v;
+          }
+          if (lo > hi) throw new EvalError("temp: the lowest temperature comes first", it.span);
+          b.temp = [lo, hi];
+        } else if (n === "outdoor") {
+          const v = this.expr(it.value, null);
+          if (typeof v !== "boolean") throw new EvalError("outdoor should be true or false", it.value.span);
+          b.outdoor = v;
+        } else if (n === "quantity") {
+          const q = number(it.value, "quantity");
+          if (!(q >= 1) || Math.round(q) !== q) throw new EvalError("quantity should be a whole number of 1 or more", it.value.span);
+          b.quantity = q;
+        } else if (n in BRIEF_VECTORS) {
+          const v = this.expr(it.value, null);
+          if (!(v instanceof Vec) || v.v.length !== 3 || v.v.some((x) => !(x > 0))) throw new EvalError(`${n} should be three positive sizes in mm, like (220, 220, 250)`, it.value.span);
+          b[BRIEF_VECTORS[n as keyof typeof BRIEF_VECTORS]] = v.v3();
+        } else if (n === "max_mass") {
+          const m = number(it.value, "max_mass");
+          if (!(m > 0)) throw new EvalError("max_mass should be a positive mass, like 60g", it.value.span);
+          b.maxMass = m;
+        } else {
+          b.extra.push({ name: n, text: this.src.slice(it.value.span.start, (it.to ?? it.value).span.end), span: it.span });
+          this.diags.push({ message: `The brief has no field "${n}". Known fields: ${BRIEF_FIELDS.join(", ")}.`, start: it.nameSpan.start, end: it.nameSpan.end, severity: "warning" });
+          return;
+        }
+        if (it.assumed) b.assumed.push(n);
+        return;
+      }
+      case "use": {
+        if (b.uses.some((u) => u.id === it.id)) throw new EvalError(`The brief already has a use named "${it.id}"`, it.idSpan);
+        const u: BriefUse = { id: it.id, text: it.text, assumed: it.assumed, span: it.span };
+        for (const p of it.props) this.useProp(u, p);
+        b.uses.push(u);
+        return;
+      }
+      case "given": {
+        this.blocks.push({ name: it.name, kind: "given", span: it.span, locked: false });
+        const v = this.expr(it.value, null);
+        if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") {
+          throw new EvalError(`Given "${it.name}" must be a number, text or true/false (got ${typeName(v)})`, it.valueSpan);
+        }
+        this.define(it.name, "given", v, it.nameSpan);
+        b.givens.push({ name: it.name, value: v, text: this.src.slice(it.valueSpan.start, it.valueSpan.end), desc: it.desc, assumed: it.assumed, span: it.span, valueSpan: it.valueSpan, usedBy: [] });
+        return;
+      }
+      case "reference": {
+        if (b.refs.some((r) => r.id === it.id)) throw new EvalError(`The brief already has a reference named "${it.id}"`, it.idSpan);
+        const r: Brief["refs"][number] = { id: it.id, title: it.title, span: it.span };
+        for (const p of it.props) {
+          if (p.name === "file") {
+            const f = text(p.value, "file");
+            if (!/^ast_[a-z0-9]{4,32}$/.test(f)) throw new EvalError(`file should be a stored file id like "ast_k3j9x2"`, p.value.span);
+            r.file = f;
+          } else if (p.name === "url") {
+            const url = text(p.value, "url");
+            if (!/^https?:\/\/\S+$/i.test(url)) throw new EvalError("url should start with https:// or http://", p.value.span);
+            r.url = url;
+          } else if (p.name === "notes") r.notes = text(p.value, "notes");
+          else this.diags.push({ message: `A reference takes file, url and notes, not "${p.name}"`, start: p.span.start, end: p.span.end, severity: "warning" });
+        }
+        b.refs.push(r);
+        return;
+      }
+      case "assume":
+        b.assumptions.push({ text: it.text, confirmed: it.confirmed, span: it.span });
+        return;
+    }
+  }
+
+  useProp(u: BriefUse, p: BriefProp) {
+    switch (p.name) {
+      case "load": {
+        const v = this.num(this.expr(p.value, null), p.value.span, "load");
+        // a mass hanging from the part ("2kg") becomes its weight in newtons
+        const unit = p.value.k === "num" ? p.value.unit : undefined;
+        u.load = unit === "kg" || unit === "g" ? (v / 1000) * GRAVITY : v;
+        if (!(u.load > 0)) throw new EvalError("load should be a positive force, like 30N or 2kg", p.value.span);
+        return;
+      }
+      case "dir": {
+        const v = this.expr(p.value, null);
+        if (!(v instanceof Vec)) throw new EvalError("dir should be a direction such as -Z or (0, 1, 0)", p.value.span);
+        const d = v.v3();
+        if (Math.hypot(...d) < 1e-9) throw new EvalError("dir cannot be zero", p.value.span);
+        // +0 turns the -0 of a negated axis into a plain 0
+        u.dir = vnorm(d).map((x) => x + 0) as V3;
+        return;
+      }
+      case "on":
+        // a part name, written bare or in quotes; checked once every part is known
+        if (p.value.k === "ident") u.on = p.value.name;
+        else u.on = String(this.expr(p.value, null));
+        return;
+      case "cycles": {
+        const c = this.num(this.expr(p.value, null), p.value.span, "cycles");
+        if (!(c >= 1)) throw new EvalError("cycles should be 1 or more", p.value.span);
+        u.cycles = Math.round(c);
+        return;
+      }
+      case "note": {
+        const v = this.expr(p.value, null);
+        if (typeof v !== "string") throw new EvalError("note should be text in quotes", p.value.span);
+        u.note = v;
+        return;
+      }
+    }
+    this.diags.push({ message: `A use takes load, dir, on, cycles and note, not "${p.name}"`, start: p.span.start, end: p.span.end, severity: "warning" });
+  }
+
+  /** Links that can only be checked once the whole design is known. */
+  briefLinks() {
+    const b = this.brief;
+    const uses = new Set(b?.uses.map((u) => u.id) ?? []);
+    for (const s of this.reqStmts) {
+      for (const u of s.uses) {
+        if (uses.has(u.name)) continue;
+        const sugg = suggest(u.name, [...uses]);
+        const msg = b ? `The brief has no use named "${u.name}"${sugg ? `. Did you mean "${sugg}"?` : ""}` : `"for ${u.name}" refers to the brief, but this design has no brief`;
+        this.diags.push({ message: msg, start: u.span.start, end: u.span.end, severity: "warning" });
+      }
+    }
+    if (!b) return;
+    const names = new Set(this.parts.map((p) => p.name));
+    for (const u of b.uses) {
+      if (u.on && !names.has(u.on)) this.diags.push({ message: `Use "${u.id}" acts on "${u.on}", which is not a part or component in this design`, start: u.span.start, end: u.span.end, severity: "warning" });
+    }
+  }
+
   // ---------------- requirements ----------------
 
   requirement(s: Extract<Stmt, { k: "require" }>) {
     this.blocks.push({ name: s.label, kind: "require", span: s.span, locked: false });
+    this.reqStmts.push(s);
     const label = s.label;
     let res: { ok: boolean | null; margin?: number; detail: string };
     try {
       res = this.condition(s.expr, null);
     } catch (e) {
       if (!(e instanceof EvalError)) throw e;
-      this.reqs.push({ label, level: s.level, status: "error", detail: e.message, span: s.span, deps: [...(this.current ?? [])], geo: [...this.stmtGeo] });
+      this.reqs.push({ label, level: s.level, uses: s.uses.map((u) => u.name), status: "error", detail: e.message, span: s.span, deps: [...(this.current ?? [])], geo: [...this.stmtGeo] });
       throw e;
     }
     this.geoQueries.push(...this.stmtGeo);
     this.reqs.push({
       label,
       level: s.level,
+      uses: s.uses.map((u) => u.name),
       status: res.ok === null ? "pending" : res.ok ? "pass" : "fail",
       margin: res.margin,
       detail: res.detail,
@@ -828,6 +1014,7 @@ class Evaluator {
   // ---------------- output ----------------
 
   toModel(parseDiags: Diagnostic[]): Model {
+    this.briefLinks();
     const nodes: DepNode[] = [];
     const edges: { from: string; to: string }[] = [];
     for (const [name, kind] of this.defKind) nodes.push({ id: name, kind, label: this.defLabel.get(name) ?? name });
@@ -836,10 +1023,12 @@ class Evaluator {
     const usedBy = new Map<string, string[]>();
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
     for (const p of this.params) p.usedBy = usedBy.get(p.name) ?? [];
+    for (const g of this.brief?.givens ?? []) g.usedBy = usedBy.get(g.name) ?? [];
     for (const p of this.parts) p.deps = [...(this.deps.get(p.name) ?? [])];
     return {
       name: this.name,
       notes: this.notes,
+      brief: this.brief,
       params: this.params,
       parts: this.parts,
       requirements: this.reqs,

@@ -9,8 +9,9 @@ import type { EvalPart, Model } from "../core/model";
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
 
-export const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
-export const MAX_BACKUP_BYTES = 50 * 1024 * 1024;
+// project files can carry reference photos and PDFs from the brief
+export const MAX_IMPORT_BYTES = 40 * 1024 * 1024;
+export const MAX_BACKUP_BYTES = 200 * 1024 * 1024;
 export const MAX_SOURCE_CHARS = 300_000;
 
 const cleanText = (s: string, max: number) =>
@@ -25,6 +26,16 @@ const VersionSchema = z.object({
   source: z.string().max(MAX_SOURCE_CHARS),
 });
 
+const AssetSchema = z
+  .object({
+    id: z.string().regex(/^ast_[a-z0-9]{4,32}$/),
+    kind: z.enum(["image", "pdf"]),
+    mime: z.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"]),
+    name: z.string().max(200),
+    data: z.string().max(15_000_000).regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  })
+  .refine((a) => (a.kind === "pdf") === (a.mime === "application/pdf"), "kind and mime disagree");
+
 const ProjectFileSchema = z.object({
   format: z.literal("kerf-project"),
   version: z.literal(1),
@@ -33,6 +44,7 @@ const ProjectFileSchema = z.object({
   template: z.string().max(60).optional(),
   createdAt: z.number().finite().optional(),
   versions: z.array(VersionSchema).max(300).optional(),
+  assets: z.array(AssetSchema).max(300).optional(),
 });
 
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
@@ -49,6 +61,7 @@ export interface ImportedProject {
   source: string;
   template: string;
   versions: z.infer<typeof VersionSchema>[];
+  assets: z.infer<typeof AssetSchema>[];
 }
 
 const cleanProject = (p: ProjectFile): ImportedProject => ({
@@ -56,6 +69,7 @@ const cleanProject = (p: ProjectFile): ImportedProject => ({
   source: cleanText(p.source, MAX_SOURCE_CHARS),
   template: p.template ?? "imported",
   versions: (p.versions ?? []).map((v) => ({ ...v, message: cleanText(v.message, 500), source: cleanText(v.source, MAX_SOURCE_CHARS) })),
+  assets: (p.assets ?? []).map((a) => ({ ...a, name: cleanText(a.name, 160) })),
 });
 
 const describeIssue = (e: z.ZodError) => {
@@ -83,19 +97,19 @@ export async function readImport(file: File): Promise<ImportedProject[]> {
       if (!parsed.data.projects.length) throw new Error("This backup has no projects in it.");
       return parsed.data.projects.map(cleanProject);
     }
-    if (file.size > MAX_IMPORT_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports project files up to 5 MB.`);
+    if (file.size > MAX_IMPORT_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports project files up to 40 MB.`);
     const parsed = ProjectFileSchema.safeParse(json);
     if (!parsed.success) throw new Error(`This is not a Kerf project file (${describeIssue(parsed.error)}).`);
     return [cleanProject(parsed.data)];
   }
-  if (file.size > MAX_IMPORT_BYTES) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports source files up to 5 MB.`);
+  if (file.size > 5 * 1024 * 1024) throw new Error(`That file is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports source files up to 5 MB.`);
   if (text.length > MAX_SOURCE_CHARS) throw new Error("That source file is longer than Kerf supports (300,000 characters).");
   if (/[\u0000]/.test(text)) throw new Error("That file is binary, not Kerf source. Import a .kerf or .kerfproj file.");
-  return [{ name: cleanText(base, 120), source: cleanText(text, MAX_SOURCE_CHARS), template: "imported", versions: [] }];
+  return [{ name: cleanText(base, 120), source: cleanText(text, MAX_SOURCE_CHARS), template: "imported", versions: [], assets: [] }];
 }
 
-export function projectFile(name: string, source: string, template: string, createdAt: number, versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string }[]): string {
-  const f: ProjectFile = { format: "kerf-project", version: 1, name, source, template, createdAt, versions };
+export function projectFile(name: string, source: string, template: string, createdAt: number, versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string }[], assets?: ProjectFile["assets"]): string {
+  const f: ProjectFile = { format: "kerf-project", version: 1, name, source, template, createdAt, versions, ...(assets?.length ? { assets } : {}) };
   return JSON.stringify(f, null, 1);
 }
 

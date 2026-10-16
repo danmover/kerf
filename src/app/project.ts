@@ -10,8 +10,9 @@ import { describeChange } from "../core/sourceEdit";
 import type { Model } from "../core/model";
 import { templateById } from "../demos/templates";
 import { backupFile, download, projectFile, readImport, safeFileName, type ProjectFile } from "../persist/files";
+import { copyAssets, exportAssets, importAssets, releaseAssetUrls } from "../persist/assets";
 import { go, toast, errorText } from "./ui";
-import { resetView } from "./view";
+import { resetView, useView } from "./view";
 import { forgetAllRuns, forgetRuns } from "../agents/progress";
 
 export type SaveState = "saved" | "saving" | "unsaved" | "error" | "memory";
@@ -79,9 +80,12 @@ export async function openProject(id: string) {
   }
   const versions = await db.versionsFor(id);
   resetView();
+  releaseAssetUrls();
   set({ current: p, versions, undo: [], redo: [], save: db.persistent ? "saved" : "memory" });
   loadSource(p.source);
   committed = { source: p.source, model: useDesign.getState().model };
+  // an empty design starts on its brief
+  if (!committed.model?.parts.length) useView.setState({ dockTab: "brief", dockOpen: true });
   for (const l of openListeners) l(p);
   go({ name: "workspace" });
 }
@@ -234,6 +238,7 @@ export async function duplicateProject(id: string) {
   const p = await db.getOne<ProjectRecord>("projects", id);
   if (!p) return;
   const copy = await createProject(p.template, `${p.name} copy`, p.source);
+  await copyAssets(p.id, copy.id);
   if (p.thumbnail) await db.put("projects", { ...copy, thumbnail: p.thumbnail });
   await refreshProjects();
   toast({ kind: "success", title: "Project duplicated" });
@@ -251,7 +256,8 @@ export async function exportProject(id: string) {
   const p = await db.getOne<ProjectRecord>("projects", id);
   if (!p) return;
   const versions = (await db.versionsFor(id)).map((v) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source }));
-  download(projectFile(p.name, p.source, p.template, p.createdAt, versions), safeFileName(p.name, "kerfproj"), "application/json");
+  const assets = await exportAssets(id, [p.source, ...versions.map((v) => v.source)]);
+  download(projectFile(p.name, p.source, p.template, p.createdAt, versions, assets), safeFileName(p.name, "kerfproj"), "application/json");
 }
 
 /** Imports a file; returns the project to open when the file held exactly one. */
@@ -263,6 +269,7 @@ export async function importProject(file: File): Promise<ProjectRecord | null> {
       last = await createProject("imported", imp.name, imp.source);
       if (imp.template !== "imported") await db.put("projects", { ...last, template: imp.template });
       for (const v of imp.versions) await db.addVersion({ id: db.newId("ver"), projectId: last.id, ts: v.ts, author: v.author, message: v.message, source: v.source });
+      await importAssets(last.id, imp.assets);
     }
     await refreshProjects();
     if (imported.length === 1) {
@@ -285,7 +292,8 @@ export async function exportAllProjects() {
   const files: ProjectFile[] = [];
   for (const p of projects) {
     const versions = (await db.versionsFor(p.id)).map((v) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source }));
-    files.push({ format: "kerf-project", version: 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions });
+    const assets = await exportAssets(p.id, [p.source, ...versions.map((v) => v.source)]);
+    files.push({ format: "kerf-project", version: 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions, ...(assets.length ? { assets } : {}) });
   }
   const stamp = new Date().toISOString().slice(0, 10);
   download(backupFile(files), `kerf-backup-${stamp}.kerfbackup`, "application/json");

@@ -1,6 +1,32 @@
 design "Sensor Hub Enclosure"
 note "Two-part PETG enclosure for a 70 × 50 mm sensor board with USB-C power. Lid screws into brass heat-set inserts."
 
+brief {
+  purpose: "Protect a 70 × 50 mm sensor board on a desk or shelf, powered over USB-C"
+  setting: "Indoors at home or in an office. The lid comes off with a screwdriver to service the board."
+  priorities: ["easy assembly", "print time", "looks"]
+  look: "Rounded corners, two colours" assumed
+
+  temp: 5C .. 40C
+  outdoor: false
+
+  process: "FDM print"
+  material: "PETG"
+  quantity: 5 assumed
+
+  max_size: (100, 80, 40)
+
+  use hold_board "Holds the board on screws, clear of the walls, bosses and lid"
+  use power "A standard USB-C cable plugs in with the lid on"
+  use service "The lid comes off for servicing without wearing out the threads" { cycles: 50 } assumed
+  use printable "Prints on a hobby FDM printer without supports" assumed
+
+  given board_w = 70mm "Sensor board width, from the board drawing"
+  given board_d = 50mm "Sensor board depth, from the board drawing"
+
+  assume "The tallest board component is no higher than the library default"
+}
+
 // ── Layout ─────────────────────────────────────────────
 param width     = 90mm   "Outer size along X"
 param depth     = 70mm   "Outer size along Y"
@@ -17,7 +43,7 @@ let lid_screws = corners(width - 2 * corner_r, depth - 2 * corner_r)
 let boss_r  = corner_r - wall + 0.6
 
 // ── Electronics (frozen board design) ──────────────────
-component pcb = lib.pcb(w: 70, d: 50, t: 1.6, hole_inset: 3.5, hole_d: 3.2) {
+component pcb = lib.pcb(w: board_w, d: board_d, t: 1.6, hole_inset: 3.5, hole_d: 3.2) {
   at: (0, 0, floor_t + standoff)
   group: "Electronics"
   locked
@@ -87,9 +113,12 @@ component board_inserts = lib.insert(M3) { at: with_z(pcb.holes, floor_t + stand
 component board_screws = lib.screw(M3, 6) { at: with_z(pcb.holes, pcb.top.z), axis: -Z }
 
 // ── Requirements ───────────────────────────────────────
-require "Board fits across the width": width - 2 * wall - 2 * clearance >= pcb.w
-require "Board fits along the depth": depth - 2 * wall - 2 * clearance >= pcb.d
-require "Headroom above the tallest component": base_h - (floor_t + standoff + pcb.t + pcb.component_h) >= 2
-require "Printable walls (3 perimeters at 0.4 mm)": wall >= 1.2
-require "Board clears the corner bosses": hypot(max(lid_screws[0].x - pcb.w / 2, 0), max(lid_screws[0].y - pcb.d / 2, 0)) - boss_r >= 0.8
-require "Lid clears the board components": min_distance(pcb, lid) >= 2
+require "Board fits across the width" for hold_board: width - 2 * wall - 2 * clearance >= pcb.w
+require "Board fits along the depth" for hold_board: depth - 2 * wall - 2 * clearance >= pcb.d
+require "Headroom above the tallest component" for hold_board: base_h - (floor_t + standoff + pcb.t + pcb.component_h) >= 2
+require "Printable walls (3 perimeters at 0.4 mm)" for printable: wall >= 1.2
+require "Board clears the corner bosses" for hold_board: hypot(max(lid_screws[0].x - pcb.w / 2, 0), max(lid_screws[0].y - pcb.d / 2, 0)) - boss_r >= 0.8
+require "Lid clears the board components" for hold_board: min_distance(pcb, lid) >= 2
+require "Lid screws engage the inserts by 1.5 × their diameter" for service: 8 - lid_t >= 1.5 * M3.d
+// a USB-C plug's shell reaches about 6.5 mm past its overmould, which cannot pass through the opening
+require "USB-C plug can seat (port within 1 mm of the outside)" soft for power: width / 2 - usb.opening_center.x <= 1

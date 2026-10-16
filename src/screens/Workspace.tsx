@@ -16,6 +16,8 @@ import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { PhoneWorkspace, usePhoneLayout } from "./PhoneWorkspace";
 import { PlanHud } from "../ui/PlanHud";
+import { RefViewer } from "../ui/RefViewer";
+import { SketchPad } from "../ui/SketchPad";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
@@ -63,6 +65,8 @@ export function Workspace() {
         </div>
       </div>
       <StatusBar />
+      <RefViewer />
+      <SketchPad />
     </div>
   );
 }

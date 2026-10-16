@@ -11,15 +11,26 @@ import { useDesign } from "../core/engine";
 import { useView } from "../app/view";
 import { commitSource, useProject } from "../app/project";
 import { systemPrompt } from "./prompt";
-import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, type ToolOutcome } from "./tools";
+import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, briefSummary, type ToolOutcome } from "./tools";
 import { getAgentRun, isLive } from "../agents/progress";
 import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering } from "./plan";
-import { appDeps, currentBrief, designerReport, registerBriefProvider, ReviewError, ReviewInput, ReviewSession, runReview, type Finding, type ReviewProgress, type ReviewResult } from "./review";
+import { appDeps, currentBrief as reviewBrief, designerReport, registerBriefProvider, ReviewError, ReviewInput, ReviewSession, runReview, type Finding, type ReviewProgress, type ReviewResult } from "./review";
 import { shrinkImage } from "./review/renders";
 import { isSubstantial } from "./review/gate";
+import { assetBlock } from "../persist/assets";
+import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type BriefData } from "../core/brief";
+
+/** A file the user attached to a message; it is also kept as a reference in the brief. */
+export interface ChatFile {
+  asset: string;
+  kind: "image" | "pdf";
+  name: string;
+  /** reference id in the brief */
+  ref?: string;
+}
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; ts: number }
+  | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[] }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number }
   | { kind: "choice"; id: string; toolUseId: string; question: string; options: { label: string; consequence: string; recommended?: boolean }[]; chosen?: string }
@@ -46,9 +57,11 @@ interface ChatState {
   /** a choice card waiting for the user, with the results of tools that ran beside it */
   pendingChoice: { toolUseId: string; itemId: string; results: BetaToolResultBlockParam[] } | null;
   lastUserText: string;
+  /** the brief as Claude last saw it (JSON), so the next turn can say what the user changed */
+  briefSeen: string | null;
 }
 
-export const useChat = create<ChatState>(() => ({ projectId: null, items: [], busy: false, pendingChoice: null, lastUserText: "" }));
+export const useChat = create<ChatState>(() => ({ projectId: null, items: [], busy: false, pendingChoice: null, lastUserText: "", briefSeen: null }));
 
 const get = useChat.getState;
 const set = useChat.setState;
@@ -78,13 +91,14 @@ export async function loadChat(projectId: string) {
   const rec = await db.getOne<db.ChatRecord>("chats", projectId).catch(() => undefined);
   history = (rec?.history as BetaMessageParam[]) ?? [];
   const savedPending = (rec as { pending?: ChatState["pendingChoice"] } | undefined)?.pending ?? null;
+  const briefSeen = (rec as { briefSeen?: string | null } | undefined)?.briefSeen ?? null;
   const items = ((rec?.items as ChatItem[]) ?? []).map((it) =>
     it.kind === "assistant" ? { ...it, streaming: false } : (it.kind === "tool" || it.kind === "review") && it.status === "running" ? { ...it, status: "error" as const, detail: "Interrupted", error: "Interrupted" } : it,
   );
   lastEditedSource = null;
   // a choice card left open in a previous session is still answerable
   const open = savedPending && items.some((i) => i.id === savedPending.itemId && i.kind === "choice" && !i.chosen) ? savedPending : null;
-  set({ projectId, items, busy: false, pendingChoice: open });
+  set({ projectId, items, busy: false, pendingChoice: open, briefSeen });
   quietly(() => loadPlan((rec as { plan?: unknown } | undefined)?.plan));
 }
 
@@ -94,11 +108,11 @@ function persist() {
   if (!projectId) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const { items, pendingChoice } = get();
+    const { items, pendingChoice, briefSeen } = get();
     // keep stored history small: images are dropped, the text around them stays
     const slimHistory = history.map(stripImages);
     const slimItems = items.slice(-400).map((it) => (it.kind === "tool" && it.image ? { ...it, image: undefined } : it.kind === "review" ? slimReview(it) : it));
-    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"]; plan: unknown }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, plan: planSnapshot(), updatedAt: Date.now() }).catch(() => undefined);
+    void db.put<db.ChatRecord & { pending: ChatState["pendingChoice"]; plan: unknown; briefSeen: string | null }>("chats", { projectId, items: slimItems, history: slimHistory, pending: pendingChoice, plan: planSnapshot(), briefSeen, updatedAt: Date.now() }).catch(() => undefined);
   }, 400);
 }
 
@@ -132,7 +146,7 @@ function steering(): { type: "text"; text: string }[] {
 export async function clearChat() {
   abort?.abort();
   history = [];
-  set({ items: [], busy: false, pendingChoice: null });
+  set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
   const { projectId } = get();
   if (projectId) await db.remove("chats", projectId).catch(() => undefined);
@@ -144,18 +158,21 @@ export function resetChat() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = null;
   history = [];
-  set({ projectId: null, items: [], busy: false, pendingChoice: null });
+  set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
 }
 
 const OMITTED = { type: "text" as const, text: "[image omitted from saved history]" };
+const heavy = (c: { type: string }) => c.type === "image" || c.type === "document";
+const FILE_NOTE = "[image or file not kept in saved history; an attached reference can be seen again with view_reference]";
+
 function stripImages(m: BetaMessageParam): BetaMessageParam {
   if (typeof m.content === "string") return m;
   return {
     ...m,
     content: m.content.map((b) => {
-      if (b.type === "image") return OMITTED;
-      if (b.type === "tool_result" && Array.isArray(b.content)) return { ...b, content: b.content.map((c) => (c.type === "image" ? OMITTED : c)) };
+      if (b.type === "tool_result" && Array.isArray(b.content)) return { ...b, content: b.content.map((c) => (heavy(c) ? OMITTED : c)) };
+      if (heavy(b)) return { type: "text" as const, text: FILE_NOTE };
       return b;
     }),
   };
@@ -173,7 +190,7 @@ function slimReview(it: Extract<ChatItem, { kind: "review" }>): ChatItem {
 
 // ---------- self-review ----------
 
-/** The brief a review judges against: the user's own messages in this conversation. */
+/** The brief a review judges against: the project brief when there is one, plus the user's own messages in this conversation. */
 function conversationBrief() {
   const said = get()
     .items.filter((i): i is Extract<ChatItem, { kind: "user" }> => i.kind === "user")
@@ -181,7 +198,10 @@ function conversationBrief() {
     .filter(Boolean);
   const model = useDesign.getState().model;
   const notes = model?.notes.length ? `\nDesign notes: ${model.notes.join(" ")}` : "";
-  return { text: (said.length ? said.map((t, n) => `${n + 1}. ${t}`).join("\n") : "") + (model?.name ? `\nDesign name: ${model.name}` : "") + notes, from: "conversation" as const };
+  const conversation = (said.length ? said.map((t, n) => `${n + 1}. ${t}`).join("\n") : "") + (model?.name ? `\nDesign name: ${model.name}` : "") + notes;
+  const project = briefSummary();
+  if (!project) return { text: conversation, from: "conversation" as const };
+  return { text: `${project}${conversation ? `\n\nWhat the user said in this conversation:\n${conversation}` : ""}`, from: "project" as const };
 }
 registerBriefProvider(conversationBrief);
 
@@ -200,7 +220,7 @@ async function reviewInto(itemId: string, session: ReviewSession, itemIds: strin
   try {
     const result = await runReview(
       {
-        brief: currentBrief(),
+        brief: reviewBrief(),
         round,
         earlier: session.carried(),
         nextId: session.nextId,
@@ -232,12 +252,24 @@ function reviewContent(result: ReviewResult, text: string): ToolOutcome["content
 
 // ---------- context ----------
 
+const currentBrief = (): BriefData | null => briefData(useDesign.getState().model?.brief);
+export const briefKey = (d: BriefData | null) => (d ? JSON.stringify(d) : "");
+
 function contextNote(): string {
   const { model, report, source } = useDesign.getState();
   const { selected } = useView.getState();
+  const seen = get().briefSeen;
+  const now = currentBrief();
+  let changed = "";
+  if (seen !== null && seen !== briefKey(now)) {
+    const list = briefChanges(seen ? (JSON.parse(seen) as BriefData) : null, now);
+    if (list.length) changed = `The user edited the brief since your last turn: ${list.join("; ")}. Check the design still serves the brief and update it where it no longer does.`;
+  }
   const lines = [
     `<context>`,
     modelSummary(model),
+    briefSummary(),
+    changed,
     reportSummary(report, 12),
     selected.length ? `The user has selected: ${selected.slice(0, 20).join(", ")}` : "",
     lastEditedSource !== null && lastEditedSource !== source ? "The source changed since your last edit (the user edited it). Call get_design before editing." : "",
@@ -246,25 +278,73 @@ function contextNote(): string {
   return lines.filter(Boolean).join("\n");
 }
 
+/** Add attached files to the brief as references (one version), returning each file's reference id. */
+function addReferences(files: ChatFile[]): ChatFile[] {
+  const { source, model } = useDesign.getState();
+  if (!files.length || briefHasErrors(source, model)) return files;
+  const d = currentBrief() ?? emptyBrief();
+  const out: ChatFile[] = [];
+  let added = 0;
+  for (const f of files) {
+    const existing = d.refs.find((r) => r.file === f.asset);
+    if (existing) {
+      out.push({ ...f, ref: existing.id });
+      continue;
+    }
+    const base = f.kind === "pdf" ? "doc" : /^sketch/i.test(f.name) ? "sketch" : "photo";
+    let n = 1;
+    while (d.refs.some((r) => r.id === `${base}${n}`)) n++;
+    const id = `${base}${n}`;
+    const title = f.name.replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[_-]+/g, " ").trim() || (f.kind === "pdf" ? "PDF" : "Image");
+    d.refs.push({ id, title, file: f.asset });
+    out.push({ ...f, ref: id });
+    added++;
+  }
+  if (added) commitSource(writeBrief(source, model, d), "you", `Added ${added} reference${added > 1 ? "s" : ""} from chat`);
+  return out;
+}
+
+async function fileBlocks(files: ChatFile[]): Promise<BetaContentBlockParam[]> {
+  const projectId = useProject.getState().current?.id;
+  const out: BetaContentBlockParam[] = [];
+  if (!projectId) return out;
+  for (const f of files) {
+    const block = await assetBlock(projectId, f.asset, f.name);
+    if (!block) continue;
+    out.push({ type: "text", text: `Attached ${f.kind === "pdf" ? "PDF" : "image"}${f.ref ? `, saved as reference ${f.ref} in the brief` : ""} (“${f.name}”):` });
+    out.push(block as BetaContentBlockParam);
+  }
+  return out;
+}
+
+
 // ---------- the loop ----------
 
 export function stop() {
   abort?.abort();
 }
 
-export async function sendMessage(text: string) {
+export async function sendMessage(text: string, attached: ChatFile[] = []) {
   const t = text.trim();
-  if (!t || get().busy) return;
+  if ((!t && !attached.length) || get().busy) return;
   const pending = get().pendingChoice;
-  push({ kind: "user", id: nid(), text: t, ts: Date.now() });
-  set({ lastUserText: t });
+  const files = addReferences(attached);
+  push({ kind: "user", id: nid(), text: t, ts: Date.now(), files: files.length ? files : undefined });
+  set({ lastUserText: t, busy: true });
+  let blocks: BetaContentBlockParam[] = [];
+  try {
+    blocks = await fileBlocks(files);
+  } finally {
+    set({ busy: false });
+  }
+  const said = t || "(See the attached reference.)";
   if (pending) {
     // the user typed instead of picking: that answers the open question
     patch(pending.itemId, (it) => (it.kind === "choice" ? { ...it, chosen: "(answered in chat)" } : it));
     set({ pendingChoice: null });
-    history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${t}` }, { type: "text", text: contextNote() }, ...steering()] });
+    history.push({ role: "user", content: [...pending.results, { type: "tool_result", tool_use_id: pending.toolUseId, content: `The user did not pick an option and wrote instead: ${said}` }, ...blocks, { type: "text", text: contextNote() }, ...steering()] });
   } else {
-    history.push({ role: "user", content: [{ type: "text", text: contextNote() }, ...steering(), { type: "text", text: t }] });
+    history.push({ role: "user", content: [{ type: "text", text: contextNote() }, ...steering(), ...blocks, { type: "text", text: said }] });
   }
   persist();
   await runLoop();
@@ -410,7 +490,7 @@ async function runLoop() {
           ask = { toolUseId: u.id, outcome };
           continue;
         }
-        if (u.name === "edit_design" || u.name === "write_design" || u.name === "build_subassemblies") {
+        if (u.name === "edit_design" || u.name === "write_design" || u.name === "build_subassemblies" || u.name === "update_brief") {
           if (!outcome.isError) {
             edits++;
             lastEditedSource = useDesign.getState().source;
@@ -463,6 +543,8 @@ async function runLoop() {
     set((s) => ({ busy: false, items: s.items.map((it) => (it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it.kind === "tool" && it.status === "running" ? { ...it, status: "error" as const, detail: "Stopped" } : it)) }));
     const after = useDesign.getState().source;
     if (edits && after !== startSource) push({ kind: "turn", id: nid(), before: startSource, after, edits });
+    // Claude has now seen the brief as it stands
+    set({ briefSeen: briefKey(currentBrief()) });
     abort = null;
     settleActivity();
     persist();

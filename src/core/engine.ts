@@ -204,7 +204,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   if (get().rev !== rev) return;
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])));
+  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])), (h) => meshes.get(h));
   set({
     report,
     reportRev: rev,

@@ -21,6 +21,23 @@ export interface VersionRecord {
   source: string;
 }
 
+/** A file the user added to a project, such as a reference photo, sketch or datasheet. */
+export interface AssetRecord {
+  /** projectId + ":" + id, so a copied project keeps the ids its source refers to */
+  key: string;
+  id: string;
+  projectId: string;
+  kind: "image" | "pdf";
+  mime: string;
+  name: string;
+  size: number;
+  width?: number;
+  height?: number;
+  data: Blob;
+  thumb?: Blob;
+  createdAt: number;
+}
+
 export interface ChatRecord {
   projectId: string;
   /** display items and API history, both JSON-safe */
@@ -30,10 +47,10 @@ export interface ChatRecord {
 }
 
 const DB_NAME = "kerf";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const MAX_VERSIONS = 300;
 
-type StoreName = "projects" | "versions" | "chats" | "vault";
+type StoreName = "projects" | "versions" | "chats" | "vault" | "assets";
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 export let persistent = true;
@@ -43,6 +60,7 @@ const memory: Record<StoreName, Map<string, unknown>> = {
   versions: new Map(),
   chats: new Map(),
   vault: new Map(),
+  assets: new Map(),
 };
 
 function open(): Promise<IDBDatabase | null> {
@@ -65,6 +83,10 @@ function open(): Promise<IDBDatabase | null> {
       }
       if (!db.objectStoreNames.contains("chats")) db.createObjectStore("chats", { keyPath: "projectId" });
       if (!db.objectStoreNames.contains("vault")) db.createObjectStore("vault", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("assets")) {
+        const a = db.createObjectStore("assets", { keyPath: "key" });
+        a.createIndex("projectId", "projectId");
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => {
@@ -81,7 +103,7 @@ function open(): Promise<IDBDatabase | null> {
 
 function keyOf(store: StoreName, v: unknown): string {
   const r = v as Record<string, string>;
-  return store === "chats" ? r.projectId : r.id;
+  return store === "chats" ? r.projectId : store === "assets" ? r.key : r.id;
 }
 
 async function tx<T>(store: StoreName, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
@@ -143,8 +165,15 @@ export async function addVersion(v: VersionRecord): Promise<void> {
   }
 }
 
+export async function assetsFor(projectId: string): Promise<AssetRecord[]> {
+  const db = await open();
+  if (!db) return [...(memory.assets.values() as Iterable<AssetRecord>)].filter((a) => a.projectId === projectId);
+  return ((await tx<AssetRecord[]>("assets", "readonly", (s) => s.index("projectId").getAll(projectId) as IDBRequest<AssetRecord[]>)) ?? []) as AssetRecord[];
+}
+
 export async function deleteProjectData(projectId: string): Promise<void> {
   for (const v of await versionsFor(projectId)) await remove("versions", v.id);
+  for (const a of await assetsFor(projectId)) await remove("assets", a.key);
   await remove("chats", projectId);
   await remove("projects", projectId);
 }
@@ -155,7 +184,7 @@ export async function clearEverything(): Promise<void> {
     for (const m of Object.values(memory)) m.clear();
     return;
   }
-  for (const store of ["projects", "versions", "chats", "vault"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
+  for (const store of ["projects", "versions", "chats", "vault", "assets"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
 }
 
 export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {
