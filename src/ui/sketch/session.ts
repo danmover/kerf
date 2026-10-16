@@ -4,8 +4,8 @@
 // chat, code, panels and the sketch editor).
 
 import { create } from "zustand";
-import { commitSource, endComparison, typeSource } from "../../app/project";
-import { useDesign } from "../../core/engine";
+import { commitSource, endComparison } from "../../app/project";
+import { setSource, useDesign } from "../../core/engine";
 import { evaluate } from "../../lang/evaluator";
 import type { V2 } from "../../kernel/recipe";
 import { addSketch, writePositions } from "../../sketch/edits";
@@ -108,7 +108,8 @@ export function createSketch(plane: string, offset?: number, origin?: string) {
 /**
  * Apply an edit to the open sketch and commit it as one undoable change.
  * When the edited sketch still solves, solved positions are written back to
- * plain-number coordinates so the text matches the drawing.
+ * plain-number coordinates so the text matches the drawing. With `live`,
+ * the edit is only previewed (no version); the caller commits at the end.
  */
 export function editSketch(fn: (src: string, sk: EvalSketch) => string, message: string, opts: { live?: boolean; name?: string } = {}): EvalSketch | null {
   const name = opts.name ?? useSketch.getState().active;
@@ -120,6 +121,6 @@ export function editSketch(fn: (src: string, sk: EvalSketch) => string, message:
   const m2 = evaluate(next);
   const sk2 = m2.sketches.find((s) => s.name === name);
   if (sk2?.solved) next = writePositions(next, sk2);
-  const m3 = opts.live ? (typeSource(next), useDesign.getState().model) : commitSource(next, "you", `Sketch ${name}: ${message}`);
+  const m3 = opts.live ? setSource(next) : commitSource(next, "you", `Sketch ${name}: ${message}`);
   return m3?.sketches.find((s) => s.name === name) ?? null;
 }

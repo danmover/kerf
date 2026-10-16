@@ -96,6 +96,8 @@ export interface EvalSketch {
   constraints: SkConstraint[];
   dof: number;
   solved: boolean;
+  /** the solver gave up because the sketch is too large or slow (message says which); the geometry is as written */
+  tooBig?: boolean;
   /** what went wrong solving, in plain words */
   message?: string;
   redundant: number;

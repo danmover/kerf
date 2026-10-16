@@ -592,6 +592,9 @@ export function briefSummary(): string {
 }
 
 /** A sketch as solved, for get_sketch. */
+/** How many of each kind get_sketch lists before summarising the rest. */
+export const SKETCH_DETAIL_MAX = { points: 150, curves: 150, constraints: 200 };
+
 export function sketchDetail(sk: EvalSketch): string {
   const f = (v: number) => fmtNum(v, 3);
   const v3 = (v: number[]) => `(${v.map(f).join(", ")})`;
@@ -604,21 +607,37 @@ export function sketchDetail(sk: EvalSketch): string {
   for (const [a, id] of Object.entries(sk.aliases)) aliases.set(id, [...(aliases.get(id) ?? []), a]);
   const freeText = (p: EvalSketch["points"][number]) =>
     p.status === "conflict" ? "in conflict" : p.freedom.kind === "fixed" ? "fixed" : p.freedom.kind === "defined" ? "defined" : p.freedom.kind === "line" ? `free along (${f(p.freedom.dir[0])}, ${f(p.freedom.dir[1])})` : "free";
-  lines.push("Points (solved sketch coordinates):");
-  for (const p of sk.points) {
-    if (p.id === "x_axis.end" || p.id === "y_axis.end") continue;
-    const names = [p.id, ...(aliases.get(p.id) ?? [])].join(" = ");
-    lines.push(`  ${names}: (${f(p.x)}, ${f(p.y)}) ${freeText(p)}${p.external ? ", projected from another sketch" : ""}`);
-  }
-  const at = (id: string) => sk.points.find((p) => p.id === id)!;
-  lines.push("Curves:");
-  for (const c of sk.curves) {
-    const extra = c.kind === "circle" ? ` r ${f(c.r ?? 0)}` : c.kind === "line" ? ` length ${f(Math.hypot(at(c.pts[1]).x - at(c.pts[0]).x, at(c.pts[1]).y - at(c.pts[0]).y))}` : "";
-    lines.push(`  ${c.construction ? "construction " : ""}${c.kind} ${c.id} [${c.pts.join(", ")}]${extra} ${c.status}${c.external ? " (reference)" : ""}`);
-  }
+  // big sketches: list the first entries of each kind, and name the ones that still need attention
+  const list = <T,>(title: string, items: T[], max: number, text: (x: T) => string, attention: (x: T) => string | null) => {
+    lines.push(title);
+    for (const x of items.slice(0, max)) lines.push(`  ${text(x)}`);
+    if (items.length <= max) return;
+    const rest = items.slice(max).map(attention).filter((x): x is string => !!x);
+    lines.push(`  … ${items.length - max} more not listed${rest.length ? `; of those, these are not fully defined or have problems: ${rest.slice(0, 40).join(", ")}${rest.length > 40 ? ", …" : ""}` : ""}. Read the sketch block in the source for the rest.`);
+  };
+  const points = sk.points.filter((p) => p.id !== "x_axis.end" && p.id !== "y_axis.end");
+  list(
+    "Points (solved sketch coordinates):",
+    points,
+    SKETCH_DETAIL_MAX.points,
+    (p) => `${[p.id, ...(aliases.get(p.id) ?? [])].join(" = ")}: (${f(p.x)}, ${f(p.y)}) ${freeText(p)}${p.external ? ", projected from another sketch" : ""}`,
+    (p) => (p.status === "free" || p.status === "conflict" ? p.id : null),
+  );
+  const byId = new Map(sk.points.map((p) => [p.id, p]));
+  const at = (id: string) => byId.get(id)!;
+  list(
+    "Curves:",
+    sk.curves,
+    SKETCH_DETAIL_MAX.curves,
+    (c) => {
+      const extra = c.kind === "circle" ? ` r ${f(c.r ?? 0)}` : c.kind === "line" ? ` length ${f(Math.hypot(at(c.pts[1]).x - at(c.pts[0]).x, at(c.pts[1]).y - at(c.pts[0]).y))}` : "";
+      return `${c.construction ? "construction " : ""}${c.kind} ${c.id} [${c.pts.join(", ")}]${extra} ${c.status}${c.external ? " (reference)" : ""}`;
+    },
+    (c) => (c.status === "free" || c.status === "conflict" ? c.id : null),
+  );
   if (sk.constraints.length) {
-    lines.push("Constraints:");
-    for (const c of sk.constraints) lines.push(`  ${c.kind} ${c.args.join(", ")}${c.valueText ? ` = ${c.valueText}${c.value !== undefined && c.valueText.trim() !== String(c.value) ? ` (= ${f(c.value)})` : ""}` : ""}${c.status !== "ok" ? ` [${c.status}]` : ""}`);
+    const text = (c: EvalSketch["constraints"][number]) => `${c.kind} ${c.args.join(", ")}${c.valueText ? ` = ${c.valueText}${c.value !== undefined && c.valueText.trim() !== String(c.value) ? ` (= ${f(c.value)})` : ""}` : ""}${c.status !== "ok" ? ` [${c.status}]` : ""}`;
+    list("Constraints:", sk.constraints, SKETCH_DETAIL_MAX.constraints, text, (c) => (c.status !== "ok" ? text(c) : null));
   }
   const regions = sk.profile.regions;
   lines.push(regions.length ? `Profile: ${regions.length} closed region(s), ${regions.reduce((n, r) => n + r.holes.length, 0)} hole(s), area ${f(sk.profile.area)} mm².` : "Profile: no closed region yet.");

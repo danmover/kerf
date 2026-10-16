@@ -9,7 +9,7 @@ import { suggest } from "../lang/suggest";
 import type { V2, V3 } from "../kernel/recipe";
 import { stableStringify, vscale, vadd } from "../kernel/recipe";
 import { buildProfile, sampleSeg, type CornerSpec } from "./regions";
-import { firstConflict, solveSketch, type ConsKind, type DefConstraint, type SketchDef, type SolveResult } from "./solver";
+import { MAX_UNKNOWNS, SOLVE_MS, budgetMs, firstConflict, solveSketch, type Budget, type ConsKind, type DefConstraint, type SketchDef, type SolveResult } from "./solver";
 import { PLANES, frameOf, isPlane, planeValue, toLocal, toWorld } from "./planes";
 import type { EvalSketch, Frame, SkConstraint, SkCurve, SkPoint, SkStatus } from "./types";
 
@@ -23,6 +23,8 @@ export interface SketchHost {
   diag(msg: string, span: Span, severity: "error" | "warning"): void;
   /** report an error thrown by fail() as a diagnostic; false when it is something else */
   report(e: unknown): boolean;
+  /** solver time allowance shared by every sketch in one evaluation */
+  budget?: Budget;
 }
 
 /** Names every sketch has: the fixed origin and the two axes through it. */
@@ -62,19 +64,31 @@ type Ent =
   | { kind: "circle"; id: string; c: string }
   | { kind: "arc"; id: string; c: string; a: string; b: string };
 
-const solveCache = new Map<string, SolveResult>();
-function cachedSolve(def: SketchDef): SolveResult {
+const solveCache = new Map<string, { res: SolveResult; culprit: number | null }>();
+/**
+ * Solves (and, when it fails, finds the first conflicting constraint) once
+ * per distinct sketch. Each sketch has SOLVE_MS, within what is left of the
+ * evaluation's shared allowance; a sketch cut short only because earlier
+ * sketches used that up is tried again next time.
+ */
+function cachedSolve(def: SketchDef, shared: Budget | undefined): { res: SolveResult; culprit: number | null } {
   const key = stableStringify(def);
-  const hit = solveCache.get(key);
-  if (hit) {
+  const cached = solveCache.get(key);
+  if (cached) {
     solveCache.delete(key);
-    solveCache.set(key, hit);
-    return hit;
+    solveCache.set(key, cached);
+    return cached;
   }
-  const r = solveSketch(def);
-  solveCache.set(key, r);
-  if (solveCache.size > 300) solveCache.delete(solveCache.keys().next().value!);
-  return r;
+  const own = budgetMs(SOLVE_MS);
+  const starved = !!shared && shared.until < own.until;
+  const budget = starved ? shared! : own;
+  const res = solveSketch(def, { budget });
+  const hit = { res, culprit: res.ok || res.tooBig || res.outOfTime ? null : firstConflict(def, budget) };
+  if (!(starved && performance.now() > budget.until)) {
+    solveCache.set(key, hit);
+    if (solveCache.size > 300) solveCache.delete(solveCache.keys().next().value!);
+  }
+  return hit;
 }
 
 /** True when an expression is plain numbers, so the editor may rewrite it. */
@@ -137,6 +151,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     const v = host.expr(e, scope);
     if (v instanceof Vec) {
       if (v.v.length === 3 && Math.abs(v.v[2]) > 1e-9) host.fail(`${what}: sketch points are 2D (x, y) in the sketch plane`, e.span);
+      if (!v.v.every(Number.isFinite)) host.fail(`${what}: coordinates must be finite numbers`, e.span);
       return [v.v[0] ?? 0, v.v[1] ?? 0];
     }
     return host.fail(`${what} should be a point like (10, 5) or the name of a sketch point, got ${typeName(v)}`, e.span);
@@ -167,7 +182,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
       }
       return id;
     };
-    if (v instanceof Vec) return { kind: "point", id: extPoint(path, v) };
+    if (v instanceof Vec) return v.v.every(Number.isFinite) ? { kind: "point", id: extPoint(path, v) } : null;
     if (v instanceof Obj && v.fields.start instanceof Vec && v.fields.end instanceof Vec && v.kind === "sketch line") {
       if (!ents.has(path)) {
         const a = extPoint(`${path}.start`, v.fields.start);
@@ -231,10 +246,10 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
           frame = frameOf(v as Obj);
           planeText = src.slice(it.value.span.start, it.value.span.end);
         } else if (it.name === "offset") {
-          if (typeof v !== "number") host.fail(`offset: should be a distance along the plane's normal, got ${typeName(v)}`, it.value.span);
+          if (typeof v !== "number" || !Number.isFinite(v)) host.fail(`offset: should be a distance along the plane's normal, got ${typeof v === "number" ? v : typeName(v)}`, it.value.span);
           offset = v as number;
         } else {
-          if (!(v instanceof Vec)) host.fail(`origin: should be a 3D point, got ${typeName(v)}`, it.value.span);
+          if (!(v instanceof Vec) || !v.v.every(Number.isFinite)) host.fail(`origin: should be a 3D point with finite coordinates, got ${typeName(v)}`, it.value.span);
           const o = (v as Vec).v;
           originOverride = [o[0] ?? 0, o[1] ?? 0, o[2] ?? 0];
         }
@@ -514,14 +529,20 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     constraints: defCons,
   };
   let res: SolveResult;
+  let culprit: number | null;
   try {
-    res = cachedSolve(def);
+    ({ res, culprit } = cachedSolve(def, host.budget));
   } catch (e) {
     return host.fail(`Sketch ${s.name} could not be set up: ${(e as Error).message}`, s.nameSpan);
   }
   let message: string | undefined;
-  if (!res.ok) {
-    const culprit = firstConflict(def);
+  const tooBig = !!(res.tooBig || res.outOfTime);
+  if (tooBig) {
+    message = res.tooBig
+      ? `Sketch ${s.name} is too big to solve: ${res.tooBig} unknowns are tied together by its constraints, and the limit is ${MAX_UNKNOWNS} (about ${MAX_UNKNOWNS / 2} points). It is drawn as written. Split it into smaller sketches.`
+      : `Sketch ${s.name} took too long to solve and is drawn as written. Split it into smaller sketches, or remove constraints.`;
+    host.diag(message, s.nameSpan, "error");
+  } else if (!res.ok) {
     const srcIdx = culprit !== null ? defCons[culprit].src : res.unsatisfied.map((k) => defCons[k]?.src).find((x) => x !== undefined);
     const others = [...new Set(res.unsatisfied.map((k) => defCons[k]?.src).filter((x): x is number => x !== undefined && x !== srcIdx))];
     const text = (i: number) => src.slice(cons[i].span.start, cons[i].span.end).trim();
@@ -657,6 +678,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     constraints: cons,
     dof: res.dof,
     solved: res.ok,
+    tooBig: tooBig || undefined,
     message,
     redundant: cons.filter((c) => c.status === "redundant").length,
     profile,
@@ -670,7 +692,8 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
 /** One-line status for summaries: "fully defined, 1 profile" or "3 degrees of freedom left". */
 export function sketchStatusText(sk: EvalSketch): string {
   const parts: string[] = [];
-  if (!sk.solved) parts.push("constraints conflict");
+  if (sk.tooBig) parts.push("too big to solve, drawn as written");
+  else if (!sk.solved) parts.push("constraints conflict");
   else if (sk.dof === 0) parts.push("fully defined");
   else parts.push(`${sk.dof} degree${sk.dof === 1 ? "" : "s"} of freedom left`);
   if (sk.redundant) parts.push(`${sk.redundant} redundant constraint${sk.redundant > 1 ? "s" : ""}`);

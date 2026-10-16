@@ -81,6 +81,8 @@ export type Value = number | string | boolean | Vec | Obj | ShapeV | Fn | Ref | 
 export interface CallCtx {
   /** Raise an evaluation error attached to the current call site. */
   error(msg: string): never;
+  /** Report a warning at the current call site; the call carries on. */
+  warn?(msg: string): void;
   /** Ask for a geometric quantity; returns the resolved number or a Pending marker. */
   geo(query: GeoQuery): number | Pending;
 }

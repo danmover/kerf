@@ -6,7 +6,6 @@
 
 import type { Span } from "../lang/ast";
 import { fmtNum } from "../lang/values";
-import { lex } from "../lang/lexer";
 import { evaluate } from "../lang/evaluator";
 import type { Model } from "../core/model";
 import type { V2 } from "../kernel/recipe";
@@ -43,7 +42,19 @@ function lineSpan(src: string, span: Span): Span {
   const before = src.slice(ls, span.start);
   const after = src.slice(span.end, le).replace(/^\s*;?/, "");
   if (/^\s*$/.test(before) && (/^\s*$/.test(after) || /^\s*\/\//.test(after))) return { start: ls === 0 ? 0 : ls - 1, end: le };
+  // one of several statements on a line: take its ; separator with it
+  const tail = /^[ \t]*;[ \t]*/.exec(src.slice(span.end, le));
+  if (tail) return { start: span.start, end: span.end + tail[0].length };
+  const head = /[ \t]*;[ \t]*$/.exec(before);
+  if (head) return { start: span.start - head[0].length, end: span.end };
   return span;
+}
+
+/** Past the rest of the line when only a ; or a comment follows, so a trailing comment stays with its statement. */
+function lineEnd(src: string, at: number): number {
+  let le = src.indexOf("\n", at);
+  if (le < 0) le = src.length;
+  return /^[ \t;]*(\/\/.*)?$/.test(src.slice(at, le)) ? le : at;
 }
 
 // ---------------- names ----------------
@@ -77,30 +88,19 @@ export function addSketch(src: string, model: Model | null, opts: { name?: strin
   const text = `sketch ${name} {\n${body.join("\n")}\n}\n`;
   const firstPart = model?.blocks.filter((b) => b.kind === "part").sort((a, b) => a.span.start - b.span.start)[0];
   if (firstPart) {
-    const at = src.lastIndexOf("\n", firstPart.span.start - 1) + 1;
+    // above the comments over the part (its note, or a section heading), so they stay with it
+    let at = src.lastIndexOf("\n", firstPart.span.start - 1) + 1;
+    for (let line = at; line > 0; ) {
+      const start = src.lastIndexOf("\n", line - 2) + 1;
+      const ln = src.slice(start, line - 1);
+      if (/^\s*\/\//.test(ln)) at = start;
+      else if (!/^\s*$/.test(ln)) break;
+      line = start;
+    }
     return { src: src.slice(0, at) + text + "\n" + src.slice(at), name };
   }
   const trimmed = src.replace(/\s*$/, "");
   return { src: (trimmed ? trimmed + "\n\n" : "") + text, name };
-}
-
-/** Change a sketch's plane property, adding it when missing. */
-export function setPlane(src: string, sk: EvalSketch, plane: string, offset?: number): string {
-  const body = src.slice(sk.span.start, sk.bodyEnd);
-  const changes: Change[] = [];
-  const re = /^([ \t]*)plane:[^\n]*$/m;
-  const m = re.exec(body);
-  if (m) changes.push({ from: sk.span.start + m.index, to: sk.span.start + m.index + m[0].length, insert: `${m[1]}plane: ${plane}` });
-  else changes.push({ from: src.indexOf("{", sk.nameSpan.end) + 1, to: src.indexOf("{", sk.nameSpan.end) + 1, insert: `\n${sk.indent}plane: ${plane}` });
-  if (offset !== undefined) {
-    const om = /^([ \t]*)offset:[^\n]*$/m.exec(body);
-    if (om) changes.push({ from: sk.span.start + om.index, to: sk.span.start + om.index + om[0].length, insert: offset ? `${om[1]}offset: ${fmt(offset)}` : "" });
-    else if (offset) {
-      const at = m ? sk.span.start + m.index + m[0].length : src.indexOf("{", sk.nameSpan.end) + 1;
-      changes.push({ from: at, to: at, insert: `\n${sk.indent}offset: ${fmt(offset)}` });
-    }
-  }
-  return apply(src, changes);
 }
 
 // ---------------- adding statements ----------------
@@ -115,7 +115,7 @@ function bodyInsertAt(src: string, sk: EvalSketch): number {
 export function addStatements(src: string, sk: EvalSketch, add: { geometry?: string[]; constraints?: string[] }): string {
   const end = bodyInsertAt(src, sk);
   const lines = (ls: string[] = []) => ls.map((l) => `\n${sk.indent}${l}`).join("");
-  const gAt = Math.min(sk.entityEnd, end);
+  const gAt = Math.min(lineEnd(src, sk.entityEnd), end);
   if (gAt === end) return src.slice(0, end) + lines(add.geometry) + lines(add.constraints) + src.slice(end);
   return src.slice(0, gAt) + lines(add.geometry) + src.slice(gAt, end) + lines(add.constraints) + src.slice(end);
 }
@@ -150,6 +150,8 @@ export function writePositions(src: string, sk: EvalSketch, positions: Record<st
 /** Selection ids: geometry ids (l1, c2, p1, l1.end) and constraint indices as "#3". */
 export const consId = (c: SkConstraint) => `#${c.index}`;
 
+const END_NAMES: Record<SkCurve["kind"], string[]> = { line: ["start", "end"], arc: ["start", "end", "center"], circle: ["center"] };
+
 const LIST_KINDS: Record<string, number> = { fix: 1, parallel: 2, equal: 2, horizontal: 1, vertical: 1, fillet: 1, chamfer: 1 };
 
 export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): string {
@@ -172,25 +174,34 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
   };
   for (const c of sk.curves) if (removedCurves.has(c.id)) removeStmt(c.span);
   for (const p of sk.points) if (removedPoints.has(p.id) && !p.implicit && p.span) removeStmt(p.span);
-  // curves that start or end at a removed point keep their position as plain coordinates
+  // a removed point that kept curves start, end or are centred at lives on: the first of them
+  // takes it over as plain coordinates, and the others share it under that curve's name
+  const survivor = new Map<string, string>();
   for (const c of sk.curves) {
-    if (removedCurves.has(c.id)) continue;
+    if (removedCurves.has(c.id) || c.external) continue;
     c.pts.forEach((pid, k) => {
       if (!removedPoints.has(pid) || !c.argSpans[k]) return;
       const p = P(pid);
-      changes.push({ from: c.argSpans[k].start, to: c.argSpans[k].end, insert: fmtPt([p.x, p.y]) });
+      const owner = survivor.get(pid);
+      changes.push({ from: c.argSpans[k].start, to: c.argSpans[k].end, insert: owner ?? fmtPt([p.x, p.y]) });
+      if (!owner) survivor.set(pid, `${c.id}.${END_NAMES[c.kind][k]}`);
     });
   }
-  const gone = (id: string) => removedCurves.has(id) || removedPoints.has(id);
+  // constraints are judged by the names they are written with: "l2.start" still exists after l1 (whose end it shares) is deleted
+  const writtenGone = (name: string) => removedCurves.has(name.split(".")[0]) || removedPoints.has(name);
   for (const c of sk.constraints) {
     if (removedCons.has(c.index)) {
       removeStmt(c.span);
       continue;
     }
-    const hit = c.ids.map(gone);
-    if (!hit.some(Boolean)) continue;
+    const args = c.args.map((a, i) => (writtenGone(a) ? (survivor.get(c.ids[i]) ?? null) : a));
+    const hit = args.map((a) => a === null);
+    if (!hit.some(Boolean)) {
+      args.forEach((a, i) => a !== c.args[i] && c.argSpans[i] && changes.push({ from: c.argSpans[i].start, to: c.argSpans[i].end, insert: a! }));
+      continue;
+    }
     const min = LIST_KINDS[c.kind];
-    const keep = c.args.filter((_, i) => !hit[i]);
+    const keep = args.filter((a): a is string => a !== null);
     const pointsOnly = (c.kind === "horizontal" || c.kind === "vertical") && c.ids.length === 2 && c.ids.every((id) => sk.points.some((p) => p.id === id));
     const lineFillet = (c.kind === "fillet" || c.kind === "chamfer") && c.ids.every((id) => sk.curves.some((q) => q.id === id));
     if (min !== undefined && keep.length >= min && !pointsOnly && !lineFillet) {
@@ -232,37 +243,6 @@ export function setConstraintValue(src: string, c: SkConstraint, value: number |
   if (!c.valueSpan) return src;
   const text = typeof value === "number" ? fmt(value) : value.trim();
   return src.slice(0, c.valueSpan.start) + text + src.slice(c.valueSpan.end);
-}
-
-export function setCircleSize(src: string, c: SkCurve, value: number | string, which: "r" | "d" = c.sizeWhich ?? "d"): string {
-  if (!c.sizeSpan) return src;
-  const text = typeof value === "number" ? fmt(value) : value.trim();
-  // the label (r: / d:) sits just before the value
-  const head = src.slice(c.span.start, c.sizeSpan.start);
-  const m = /\b([rd])\s*:\s*$/.exec(head);
-  if (m && m[1] !== which) {
-    const labelAt = c.span.start + m.index;
-    return src.slice(0, labelAt) + `${which}: ${text}` + src.slice(c.sizeSpan.end);
-  }
-  return src.slice(0, c.sizeSpan.start) + text + src.slice(c.sizeSpan.end);
-}
-
-/** Rename a sketch and every reference to it (not field names that happen to match). */
-export function renameSketch(src: string, sk: EvalSketch, name: string): string {
-  let toks: ReturnType<typeof lex>;
-  try {
-    toks = lex(src);
-  } catch {
-    return src;
-  }
-  const changes: Change[] = [];
-  toks.forEach((t, i) => {
-    if (t.kind !== "ident" || t.value !== sk.name) return;
-    const prev = toks[i - 1];
-    if (prev && prev.kind === "op" && prev.value === ".") return;
-    changes.push({ from: t.start, to: t.end, insert: name });
-  });
-  return apply(src, changes);
 }
 
 // ---------------- what can be done with a selection ----------------
