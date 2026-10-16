@@ -161,7 +161,7 @@ describe("sand tunneller", () => {
     // in a 1 m wide pit the walls carry less of the sand: about 27 kPa at the bottom instead of 17
     const wide = evaluate(TUNNELLER.replace(/given pit_w = 0\.5m/, "given pit_w = 1m"));
     const failing = wide.requirements.filter((r) => r.status === "fail").map((r) => r.label);
-    expect(failing).toEqual(["Front motor runs below half its stall torque", "Rear motor runs below half its stall torque", "Battery lasts two crossings"]);
+    expect(failing).toEqual(["One person can push it in from the wall until the rear screw bites", "Front motor runs below half its stall torque", "Rear motor runs below half its stall torque", "Battery lasts two crossings"]);
   });
 
   it("generates an Arduino sketch with its pins taken from the wiring", () => {
@@ -173,6 +173,75 @@ describe("sand tunneller", () => {
     expect(ino.content).toContain("void setup()");
     expect(config.content).toMatch(/#define STEER_SLOPE\s+0\.2f/);
     expect(fw.pinTable.length).toBeGreaterThan(10);
+  });
+
+  it("steers the right way and knows when it is through, stuck or rolling (found by the pit simulation)", () => {
+    const [fw] = generateFirmware(model.machine!, model.name ?? "design");
+    const ino = fw.files.find((f) => f.path.endsWith(".ino"))!.content;
+    const config = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    // extending the actuator turns the nose anticlockwise, while the heading grows clockwise
+    expect(config).toMatch(/#define STEER_SIGN\s+-1\b/);
+    // breakthrough reads the front motor only: the rear screw keeps digging
+    expect(ino).toContain("frontAmps < digAmps * BREAK_FRAC");
+    expect(ino).not.toMatch(/amps < digAmps \* BREAK_FRAC/);
+    // turning in place: no breakthrough by twice the distance or the give-up time, so it backs out
+    expect(config).toMatch(/#define GIVE_UP_MM\s+4300/);
+    const giveUp = Number(/#define GIVE_UP_S\s+([\d.]+)/.exec(config)?.[1]);
+    expect(giveUp).toBeGreaterThan(400);
+    expect(giveUp).toBeLessThan(700);
+    expect(ino).toContain("case RETREAT:");
+    // the turn count alone ends a run only when there is no current reading to see breakthrough
+    expect(ino).toContain('if (frontAmps < 0 && distance >= RUN_DISTANCE_MM)');
+    expect(ino).toContain("ROLL_LIMIT_DEG");
+    // a design without steer_sign keeps +1
+    const plain = evaluate(TUNNELLER.replace(/\n  steer_sign: -1\n/, "\n"));
+    const plainConfig = generateFirmware(plain.machine!, "design")[0].files.find((f) => f.path.endsWith("config.h"))!.content;
+    expect(plainConfig).toMatch(/#define STEER_SIGN\s+1\b/);
+  });
+
+  it("reads the G2's true current, keeps a steady breakthrough reference and watches motor heat (found by the pit simulation)", () => {
+    const [fw] = generateFirmware(model.machine!, model.name ?? "design");
+    const ino = fw.files.find((f) => f.path.endsWith(".ino"))!.content;
+    const config = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    // the G2 reads 0 V in the PWM off-time: those samples are skipped, not averaged in (that read 20 % low at POWER 0.8)
+    expect(ino).toContain("if (m.csDriveOnly && m.cmd != 0 && v < m.csOffset * 0.5f) return -2;");
+    const table = ino.slice(ino.indexOf("Motor motors[] = {"), ino.indexOf("const uint8_t N_MOTORS"));
+    const rows = table.split("\n").filter((l) => l.trim().startsWith("{"));
+    const front = rows.find((l) => /m_front/.test(l))!;
+    const steer = rows.find((l) => /steer/.test(l))!;
+    expect(front).toMatch(/, true, /);
+    expect(steer).toMatch(/, false, /);
+    // the reference is a slow average that a falling current can't drag down (it followed the drop and never fired)
+    expect(ino).not.toContain("digAmps * 0.995f");
+    expect(ino).toContain("now - refAt >= 100");
+    expect(ino).toContain("(0.1f / DIG_REF_S)");
+    expect(config).toMatch(/#define DIG_HOLD_S\s+60/);
+    // heating: the front motor's numbers come from its catalog entry
+    const nums = front.slice(front.indexOf("_FWD")).match(/-?[\d.]+f/g)!.map((n) => parseFloat(n));
+    const [r, c, rth] = nums;
+    expect(r).toBeCloseTo(12 / 9.2, 3);
+    expect(c).toBeCloseTo(524 * 0.45, 1);
+    expect(rth).toBeCloseTo(12, 1);
+    const hot = Number(/#define MOTOR_HOT_K\s+([\d.]+)/.exec(config)?.[1]);
+    const cooling = Number(/#define MOTOR_COOLING\s+([\d.]+)/.exec(config)?.[1]);
+    expect(ino).toContain("hottest() > MOTOR_HOT_K * 0.75f");
+    // the firmware's own heat model, step for step
+    const riseAfter = (amps: number, seconds: number) => {
+      let h = 0;
+      for (let t = 0; t < seconds; t += 0.2) h += (0.2 * (amps * amps * r * (1 + 0.0039 * h) - (h * cooling) / rth)) / c;
+      return h;
+    };
+    // a crossing at the design's digging current stays well under the turn-back level...
+    const crossing = Number(/#define GIVE_UP_S\s+([\d.]+)/.exec(config)?.[1]) / 1.5;   // give_up_time is 1.5 crossings
+    expect(riseAfter(3.5, crossing)).toBeLessThan(hot * 0.5);
+    // ...while turning in place near stall turns back within five minutes, long before the give-up time
+    expect(riseAfter(5.1, 300)).toBeGreaterThan(hot * 0.75);
+    // a hot motor rests on the way out, and the rest doesn't count towards the time limits
+    expect(ino).toContain('motors hot: resting until they cool');
+    expect(ino).toContain("now - t0 - pausedMs");
+    // the roll guard acts in a quarter second and only clears under half the limit
+    expect(ino).toContain("now - rollSince > 250");
+    expect(ino).toContain("fabs(roll) < ROLL_LIMIT_DEG * 0.5f");
   });
 
   const compilers = [

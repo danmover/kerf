@@ -91,7 +91,7 @@ export const TEMPLATES: Template[] = [
       "Use a bigger battery and update the wiring, the runtime and the parts list",
       "Why does the steering push the hinge through a slanted slot instead of directly?",
     ],
-    stats: "90 parts · 10 requirements · firmware",
+    stats: "91 parts · 11 requirements · firmware",
   },
   {
     id: "printer",
