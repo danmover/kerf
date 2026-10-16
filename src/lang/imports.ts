@@ -10,9 +10,12 @@ import { Fn, Obj, ShapeV, Vec, type Value } from "./values";
 
 /** Imports the evaluator uses when a call does not pass its own (set by the engine and the solver worker). */
 let current: ImportTable = {};
+/** names of imports whose analysis is still running */
+let pending = new Set<string>();
 
-export function setEvalImports(table: ImportTable) {
+export function setEvalImports(table: ImportTable, reading: string[] = []) {
   current = table;
+  pending = new Set(reading);
 }
 
 export function evalImports(): ImportTable {
@@ -46,6 +49,7 @@ export function findImport(table: ImportTable, name: string): ImportRef | undefi
 }
 
 export function missingImportMessage(table: ImportTable, name: string): string {
+  if (pending.has(name)) return `The STEP file "${name}" is still being read. The design updates when it is ready.`;
   const names = Object.keys(table);
   if (!names.length) return `No STEP file named "${name}" is imported. Import one from the Structure panel (Imported files), or drop a .step file on the 3D view.`;
   return `No STEP file named "${name}" is imported. Imported files: ${names.map((n) => `"${n}"`).join(", ")}.`;

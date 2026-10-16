@@ -11,6 +11,7 @@ import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
 import { xformMatrix } from "../../kernel/recipe";
 import type { ViewPreset } from "../../app/view";
+import { MeasureOverlay } from "./measure";
 
 const METALS = new Set(["Steel", "Stainless 304", "Aluminum 6061", "Brass"]);
 const ACCENT = new THREE.Color("#6d8bff");
@@ -88,6 +89,7 @@ export class SceneController {
   private focusCheck: string | null = null;
   private ro: ResizeObserver;
   private raycaster = new THREE.Raycaster();
+  private measure = new MeasureOverlay();
   onHover: (id: string | null) => void = () => undefined;
   onPick: (id: string | null, additive: boolean) => void = () => undefined;
   onDoublePick: (id: string | null) => void = () => undefined;
@@ -147,7 +149,7 @@ export class SceneController {
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
 
-    this.scene.add(this.root, this.interGroup);
+    this.scene.add(this.root, this.interGroup, this.measure.group);
     this.buildTriad();
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -186,6 +188,7 @@ export class SceneController {
     this.ro.disconnect();
     this.controls.dispose();
     for (const p of this.parts.values()) this.disposePart(p, true);
+    this.measure.clear();
     for (const g of this.geos.values()) {
       g.mesh.dispose();
       g.edges.dispose();
@@ -246,6 +249,8 @@ export class SceneController {
       mesh.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
       mesh.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
       mesh.setIndex(new THREE.BufferAttribute(data.indices, 1));
+      // imported bodies whose faces carry their own colours
+      if (data.colors) mesh.setAttribute("color", new THREE.BufferAttribute(data.colors, 3, true));
       mesh.computeBoundingBox();
       mesh.computeBoundingSphere();
       const edges = new THREE.BufferGeometry();
@@ -325,7 +330,12 @@ export class SceneController {
   private applyMaterial(obj: PartObj) {
     const d = this.display;
     const p = obj.part;
-    obj.mat.color.set(p.color);
+    const faceColors = !!p.imported?.faceColors && !!obj.mesh.geometry.getAttribute("color");
+    if (obj.mat.vertexColors !== faceColors) {
+      obj.mat.vertexColors = faceColors;
+      obj.mat.needsUpdate = true;
+    }
+    obj.mat.color.set(faceColors ? 0xffffff : p.color);
     const selected = d.selected.has(obj.id);
     const hovered = d.hovered === obj.id;
     const focusSet = d.focus.size ? d.focus : d.isolate && d.selected.size ? d.selected : null;
@@ -417,6 +427,14 @@ export class SceneController {
       this.interferences.push({ obj, id: `int:${it.a}|${it.b}` });
     }
     this.updateInterferenceLook();
+    this.dirty = true;
+  }
+
+  /** Show the closest points between two parts (null hides the line). */
+  setMeasure(m: { a: [number, number, number]; b: [number, number, number] } | null) {
+    const size = new THREE.Vector3();
+    this.bounds.getSize(size);
+    this.measure.set(m, Math.max(size.x, size.y, size.z, 20));
     this.dirty = true;
   }
 

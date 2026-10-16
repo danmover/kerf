@@ -5,7 +5,7 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { IMPORT_META_VERSION, type ImportBody, type ImportCylinder, type ImportMeta } from "./imports";
+import { IMPORT_META_VERSION, MAX_BODIES, type ImportBody, type ImportCylinder, type ImportMeta } from "./imports";
 import { cleanName, stepStructure, type StepStructure } from "./stepText";
 import type { V3 } from "./recipe";
 
@@ -14,8 +14,7 @@ type OC = any;
 
 export class StepReadError extends Error {}
 
-/** More bodies than this are merged into one so the viewer and checks stay responsive. */
-export const MAX_BODIES = 1500;
+export { MAX_BODIES };
 
 export interface LoadedStep {
   bodies: Shape3D[];

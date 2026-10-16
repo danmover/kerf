@@ -2,6 +2,8 @@
 // nothing is uploaded. Falls back to memory when IndexedDB is unavailable
 // (some private-browsing modes), and the UI warns that work will not persist.
 
+import type { ProjectImport } from "../kernel/imports";
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -10,6 +12,17 @@ export interface ProjectRecord {
   createdAt: number;
   updatedAt: number;
   thumbnail?: string;
+  /** STEP files imported into the project; their bytes are in the assets store */
+  imports?: ProjectImport[];
+}
+
+/** Bytes of an imported file, shared by every project that imports the same file. */
+export interface AssetRecord {
+  hash: string;
+  data: ArrayBuffer;
+  encoding: "gzip" | "raw";
+  size: number;
+  createdAt: number;
 }
 
 export interface VersionRecord {
@@ -30,10 +43,10 @@ export interface ChatRecord {
 }
 
 const DB_NAME = "kerf";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const MAX_VERSIONS = 300;
 
-type StoreName = "projects" | "versions" | "chats" | "vault";
+type StoreName = "projects" | "versions" | "chats" | "vault" | "assets";
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 export let persistent = true;
@@ -43,6 +56,7 @@ const memory: Record<StoreName, Map<string, unknown>> = {
   versions: new Map(),
   chats: new Map(),
   vault: new Map(),
+  assets: new Map(),
 };
 
 function open(): Promise<IDBDatabase | null> {
@@ -65,8 +79,13 @@ function open(): Promise<IDBDatabase | null> {
       }
       if (!db.objectStoreNames.contains("chats")) db.createObjectStore("chats", { keyPath: "projectId" });
       if (!db.objectStoreNames.contains("vault")) db.createObjectStore("vault", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("assets")) db.createObjectStore("assets", { keyPath: "hash" });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      // let a newer Kerf in another tab upgrade the database instead of being blocked by this one
+      req.result.onversionchange = () => req.result.close();
+      resolve(req.result);
+    };
     req.onerror = () => {
       persistent = false;
       resolve(null);
@@ -81,7 +100,7 @@ function open(): Promise<IDBDatabase | null> {
 
 function keyOf(store: StoreName, v: unknown): string {
   const r = v as Record<string, string>;
-  return store === "chats" ? r.projectId : r.id;
+  return store === "chats" ? r.projectId : store === "assets" ? r.hash : r.id;
 }
 
 async function tx<T>(store: StoreName, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
@@ -155,7 +174,14 @@ export async function clearEverything(): Promise<void> {
     for (const m of Object.values(memory)) m.clear();
     return;
   }
-  for (const store of ["projects", "versions", "chats", "vault"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
+  for (const store of ["projects", "versions", "chats", "vault", "assets"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
+}
+
+/** Hashes of every stored asset (keys only, so large files are not read). */
+export async function assetKeys(): Promise<string[]> {
+  const db = await open();
+  if (!db) return [...memory.assets.keys()];
+  return (((await tx<IDBValidKey[]>("assets", "readonly", (s) => s.getAllKeys())) ?? []) as string[]).map(String);
 }
 
 export async function storageEstimate(): Promise<{ usage: number; quota: number } | null> {

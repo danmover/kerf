@@ -12,6 +12,8 @@ import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
+import { useGap, type Gap } from "./useGap";
+import { ImportFacts } from "./ImportsPanel";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -83,6 +85,8 @@ export function Viewport() {
   useEffect(() => ctl.current?.setExplode(view.explode), [view.explode]);
   useEffect(() => ctl.current?.setMotion(view.playing, view.speed), [view.playing, view.speed]);
   useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
+  const gap = useGap(view.selected);
+  useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
   useEffect(() => {
     if (view.cameraRequest) ctl.current?.fit(view.cameraRequest.preset === "fit" ? "current" : view.cameraRequest.preset);
   }, [view.cameraRequest]);
@@ -195,7 +199,7 @@ export function Viewport() {
 
       <Hud stage={stage} parts={visibleParts} />
 
-      <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
+      <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
       {empty && (
         <div className="vp-empty">
@@ -300,7 +304,7 @@ function Hud({ stage, parts }: { stage: string; parts: number }) {
   );
 }
 
-function SelectionCard({ ids }: { ids: string[] }) {
+function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
   const model = useDesign((s) => s.model);
   const report = useDesign((s) => s.report);
   const parts = model?.parts.filter((p) => ids.includes(p.id)) ?? [];
@@ -310,6 +314,8 @@ function SelectionCard({ ids }: { ids: string[] }) {
   const entry = meshes.get(p.hash);
   const vol = parts.reduce((s, q) => s + (meshes.get(q.hash)?.volume ?? 0), 0);
   const mass = parts.reduce((s, q) => s + ((meshes.get(q.hash)?.volume ?? 0) / 1000) * materialDensity(q.material), 0);
+  // an imported part has no material until the design gives it one
+  const massKnown = parts.every((q) => q.material);
   const issues = report?.items.filter((i) => (i.status === "fail" || i.status === "warn") && i.parts?.some((x) => ids.includes(x))) ?? [];
   const size = entry ? entry.bbox[1].map((v, i) => v - entry.bbox[0][i]) : null;
   return (
@@ -325,10 +331,11 @@ function SelectionCard({ ids }: { ids: string[] }) {
         {parts.length === 1 && (
           <>
             <div>
-              id <span style={{ color: "var(--text-2)" }}>{p.id}</span> · {p.kind === "component" ? `lib.${p.libKind}` : "part"}
+              id <span style={{ color: "var(--text-2)" }}>{p.id}</span> · {p.imported ? `step("${p.imported.file}")` : p.kind === "component" ? `lib.${p.libKind}` : "part"}
             </div>
+            {p.imported && <ImportFacts part={p} />}
             <div>
-              {p.material} · {p.group}
+              {p.material || "no material set"} · {p.group}
               {p.locked ? " · locked" : ""}
               {p.removable ? " · removable" : ""}
             </div>
@@ -340,8 +347,14 @@ function SelectionCard({ ids }: { ids: string[] }) {
           </>
         )}
         <div>
-          {fmtNum(vol / 1000, 2)} cm³ · {fmtNum(mass, 1)} g
+          {fmtNum(vol / 1000, 2)} cm³{massKnown ? ` · ${fmtNum(mass, 1)} g` : ""}
         </div>
+        {gap && (
+          <div className="gap-readout" data-tip="Smallest distance between the two, from the exact geometry">
+            gap <b>{gap.distance < 1e-4 ? "0" : fmtNum(gap.distance, 3)} mm</b>
+            {gap.distance < 1e-4 ? " · touching or overlapping" : ` · Δ ${gap.b.map((v, k) => fmtNum(Math.abs(v - gap.a[k]), 2)).join(", ")}`}
+          </div>
+        )}
         {p.motion && parts.length === 1 && <div>turns at {fmtNum(Math.abs(p.motion.ratio), 3)}× the input</div>}
       </div>
       {issues.length > 0 && (
@@ -361,7 +374,7 @@ function SelectionCard({ ids }: { ids: string[] }) {
         <button className="btn sm" onClick={() => useView.setState((s) => ({ hiddenIds: [...new Set([...s.hiddenIds, ...ids])], selected: [] }))}>
           <Icon.EyeOff size={13} /> Hide
         </button>
-        <button className="btn sm" onClick={() => setDraft(`About ${parts.map((q) => q.id).join(", ")}: `)}>
+        <button className="btn sm" onClick={() => setDraft(`About ${parts.map((q) => q.id).join(", ")}${gap ? ` (gap ${fmtNum(gap.distance, 2)} mm)` : ""}: `)}>
           <Icon.Sparkle size={13} /> Ask
         </button>
       </div>

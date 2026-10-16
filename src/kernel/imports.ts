@@ -11,6 +11,9 @@ export const IMPORT_META_VERSION = 1;
 /** Largest STEP file Kerf reads. Bigger files exhaust the browser's memory for OpenCASCADE. */
 export const MAX_STEP_BYTES = 60 * 1024 * 1024;
 
+/** More bodies than this are merged into one so the viewer and checks stay responsive. */
+export const MAX_BODIES = 1500;
+
 export interface ImportBody {
   /** display name: instance path and body, e.g. "J1 › shell" */
   name: string;
@@ -75,3 +78,24 @@ export function mountingHoles(meta: ImportMeta, minD = 1.5, maxD = 40) {
 
 export const vmin = (a: V3, b: V3): V3 => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])];
 export const vmax = (a: V3, b: V3): V3 => [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
+
+/** An imported file as a project stores it. The bytes live in the asset store under `hash`. */
+export interface ProjectImport {
+  /** name designs use in step("name"), unique in the project */
+  name: string;
+  /** SHA-256 of the file's bytes */
+  hash: string;
+  /** original file name */
+  file: string;
+  size: number;
+  addedAt: number;
+  /** analysis by the kernel; null until the file has been read on this device */
+  meta: ImportMeta | null;
+}
+
+/** The evaluator's view of a project's imports: only files that have been analysed. */
+export function importTable(list: ProjectImport[]): ImportTable {
+  const t: ImportTable = {};
+  for (const i of list) if (i.meta) t[i.name] = { name: i.name, hash: i.hash, meta: i.meta };
+  return t;
+}

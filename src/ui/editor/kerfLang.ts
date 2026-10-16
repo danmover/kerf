@@ -7,13 +7,14 @@ import { EditorView } from "@codemirror/view";
 import type { CompletionContext, CompletionResult, Completion } from "@codemirror/autocomplete";
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
+import { useImports } from "../../core/imports";
 import { LIBRARY } from "../../library/components";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 
 const STATEMENTS = new Set(["design", "note", "param", "let", "component", "interface", "part", "require"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
-const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS]);
+const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step"]);
 const CONSTS = new Set(["X", "Y", "Z", "ORIGIN", "PI", ...Object.keys(THREADS)]);
 
 interface St {
@@ -157,6 +158,8 @@ export function kerfCompletions(getModel: () => Model | null) {
       for (const p of model.params) defined.push({ label: p.name, type: "variable", detail: `param = ${typeof p.value === "number" ? +p.value.toFixed(3) : String(p.value)}`, info: p.desc });
       for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require") defined.push({ label: b.name, type: b.kind === "let" ? "variable" : "class", detail: b.kind });
     }
-    return { from: word.from, options: [...defined, ...fnCompletions, ...consts, ...kw, ...props, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
+    // imported STEP files place like library components
+    const imports: Completion[] = useImports.getState().list.map((i) => ({ label: `step(${JSON.stringify(i.name)})`, type: "class", detail: "imported STEP", info: i.file, apply: `step(${JSON.stringify(i.name)})` }));
+    return { from: word.from, options: [...defined, ...imports, ...fnCompletions, ...consts, ...kw, ...props, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
   };
 }

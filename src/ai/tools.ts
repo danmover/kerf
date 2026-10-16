@@ -12,6 +12,7 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -127,6 +128,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  ...IMPORT_TOOL_DEFS,
 ];
 
 const EditInput = z.object({
@@ -174,6 +176,8 @@ export function modelSummary(m: Model | null): string {
     groups.set(k, arr);
   }
   lines.push("Parts by group: " + [...groups].map(([g, ns]) => `${g}: ${ns.join(", ")}`).join("; "));
+  const imports = importsSummary(m);
+  if (imports) lines.push(imports);
   if (m.requirements.length) {
     // geometry-based requirements are only resolved once the kernel has measured them
     const report = useDesign.getState().report;
@@ -357,6 +361,8 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       return { content: "", card: { title: p.data.question }, ask: { question: p.data.question, options: p.data.options } };
     }
   }
+  const imported = await runImportTool(name, input);
+  if (imported) return imported;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -379,4 +385,5 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
+  ...IMPORT_TOOL_TITLES,
 };

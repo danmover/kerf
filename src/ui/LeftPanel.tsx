@@ -11,6 +11,7 @@ import { Icon } from "./icons";
 import { Segmented, timeAgo, useTick, mod } from "./common";
 import { fmtNum } from "../lang/values";
 import type { VersionRecord } from "../persist/db";
+import { ImportsSection } from "./ImportsPanel";
 
 export function LeftPanel() {
   const tab = useView((s) => s.leftTab);
@@ -62,6 +63,8 @@ function iconFor(p: EvalPart) {
     case "usb_c":
     case "connector":
       return <Icon.Chip size={13} />;
+    case "step":
+      return <Icon.Upload size={13} />;
     default:
       return <Icon.Cube size={13} />;
   }
@@ -96,9 +99,12 @@ function Structure() {
   if (!model) return null;
   if (!model.parts.length)
     return (
-      <div className="empty-state" style={{ margin: 12 }}>
-        No parts yet. Ask Claude to design something, or add a <span className="mono">part</span> in the code editor.
-      </div>
+      <>
+        <div className="empty-state" style={{ margin: 12 }}>
+          No parts yet. Ask Claude to design something, or add a <span className="mono">part</span> in the code editor.
+        </div>
+        <ImportsSection />
+      </>
     );
 
   return (
@@ -203,6 +209,7 @@ function Structure() {
           <Icon.Eye size={13} /> Show {hiddenIds.length} hidden
         </button>
       )}
+      <ImportsSection />
     </div>
   );
 }
