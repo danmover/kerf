@@ -33,7 +33,7 @@ export function createApp(deps: Deps) {
     if (err instanceof ZodError) {
       const issue = err.issues[0];
       const field = issue?.path.join(".");
-      return c.json({ error: "invalid", message: issue?.message && !/^(Invalid|Expected|Too)/.test(issue.message) ? issue.message : `Check the ${field || "request"} field.` }, 400);
+      return c.json({ error: "invalid", message: issue?.message && !/^(Invalid|Expected|Too (big|small):|Unrecognized)/.test(issue.message) ? issue.message : `Check the ${field || "request"} field.` }, 400);
     }
     if (err instanceof SyntaxError) return c.json({ error: "invalid", message: "The request body is not valid JSON." }, 400);
     deps.log(`error on ${c.req.method} ${c.req.path}: ${(err instanceof Error ? err.stack ?? err.message : String(err)).replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…")}`);

@@ -32,6 +32,8 @@ interface ProjectMeta {
   thumb: string;
   /** the chat's updatedAt that was last sent or received */
   chatAt: number;
+  /** the server refused the chat last time it was sent (the user has been told) */
+  chatRefused?: boolean;
   /** new versions may be waiting to be sent */
   vdirty?: boolean;
   /** a hash of the design as last sent or received, to tell real remote edits from thumbnail updates */
@@ -193,7 +195,7 @@ async function pass() {
       if (!m) m = meta.projects[r.id] = { rev: 0, at: -1, thumb: "", chatAt: 0 };
       if (r.rev > m.rev) {
         // a new thumbnail alone doesn't count as an edit: the other device's design wins
-        if (editedHere(local, m)) await merge(local, m);
+        if (editedHere(local, m)) await pushProject(local, m, true);
         else await download(r.id, local);
       }
       if (r.chatUpdatedAt && r.chatUpdatedAt > meta.projects[r.id]!.chatAt) await pullChat(r.id, meta.projects[r.id]!);
@@ -220,7 +222,7 @@ async function pass() {
       }
       if (await isDirty(local, m)) await pushProject(local, m);
       // a chat needs its project on the server first
-      if (m.rev > 0) await pushChat(local.id, m);
+      if (m.rev > 0) await pushChat(local, m);
     }
     // forget projects that are gone from this browser
     for (const id of Object.keys(meta.projects)) if (!locals.has(id)) delete meta.projects[id];
@@ -256,21 +258,25 @@ async function markAllUnsynced(projectId: string) {
 
 const wire = (v: VersionRecord): RemoteVersion => ({ id: v.id, ts: v.ts, author: v.author, message: v.message.slice(0, 2000), source: v.source });
 
+/** The server won't take this as it is (too large, or not valid); a full account is about every project, so it isn't one of these. */
+const refusal = (e: unknown): e is ApiError => e instanceof ApiError && (e.status === 400 || (e.status === 413 && e.code !== "quota"));
+
 /**
- * Sends one project. If the server refuses it (too large, or not valid), the
- * other projects carry on: this one stays in this browser until it changes.
+ * Sends one project, or merges it with a newer revision from another device
+ * and sends the result. If the server refuses it, the other projects carry on:
+ * this one stays in this browser until it changes.
  */
-async function pushProject(local: ProjectRecord, m: ProjectMeta) {
-  if (m.refused === local.updatedAt) return;
+async function pushProject(local: ProjectRecord, m: ProjectMeta, mergeFirst = false) {
+  // a refused version isn't sent again, but another device's changes are still taken in
+  if (!mergeFirst && m.refused === local.updatedAt) return;
   try {
-    await push(local, m);
+    await (mergeFirst ? merge(local, m) : push(local, m));
     m.refused = m.refusedWhy = undefined;
   } catch (e) {
-    // a full account is about every project, so it stops the pass as before
-    if (!(e instanceof ApiError && (e.status === 400 || (e.status === 413 && e.code !== "quota")))) throw e;
+    if (!refusal(e)) throw e;
+    if (m.refused !== local.updatedAt) toast({ kind: "warn", title: `“${local.name}” isn't syncing`, detail: `${e.message} It stays in this browser, and Kerf tries again after your next change to it. Your other projects keep syncing.` }, 12000);
     m.refused = local.updatedAt;
     m.refusedWhy = e.message;
-    toast({ kind: "warn", title: `“${local.name}” isn't syncing`, detail: `${e.message} It stays in this browser, and Kerf tries again after your next change to it. Your other projects keep syncing.` }, 12000);
   }
 }
 
@@ -531,7 +537,8 @@ async function retryFiles(id: string, m: ProjectMeta) {
 
 const chatBusy = (id: string) => useChat.getState().projectId === id && (useChat.getState().busy || !!useChat.getState().pendingChoice);
 
-async function pushChat(id: string, m: ProjectMeta) {
+async function pushChat(project: ProjectRecord, m: ProjectMeta) {
+  const id = project.id;
   if (chatBusy(id)) return;
   const rec = await db.getOne<ChatRecord>("chats", id);
   if (!rec || rec.updatedAt <= m.chatAt) return;
@@ -540,9 +547,13 @@ async function pushChat(id: string, m: ProjectMeta) {
   try {
     const r = await api<{ updatedAt: number }>("PUT", `/projects/${encodeURIComponent(id)}/chat`, { updatedAt, data });
     m.chatAt = r.updatedAt;
+    m.chatRefused = undefined;
   } catch (e) {
-    if (e instanceof ApiError && (e.status === 413 || e.status === 400)) m.chatAt = rec.updatedAt;
-    else throw e;
+    if (!refusal(e)) throw e;
+    // not sent again until the chat changes; said once, not after every message
+    m.chatAt = rec.updatedAt;
+    if (!m.chatRefused) toast({ kind: "warn", title: `The chat in “${project.name}” isn't syncing`, detail: `${e.message} It stays in this browser. The design itself keeps syncing.` }, 12000);
+    m.chatRefused = true;
   }
 }
 

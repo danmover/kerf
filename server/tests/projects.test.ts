@@ -42,6 +42,17 @@ describe("cloud projects", () => {
     expect((await c.put("/api/projects/prj_a", { baseRev: 0, name: "A", source: "x" })).status).toBe(409);
   });
 
+  it("says what is wrong with a project it refuses", async () => {
+    const { app } = setup();
+    const c = await signedIn(app);
+    const big = await c.put("/api/projects/prj_a", { baseRev: 0, name: "A", source: "one", extra: { meta: "x".repeat(4_000_001) } });
+    expect(big.status).toBe(400);
+    expect((await c.json<{ message: string }>(big)).message).toBe("Too much project data.");
+    // Zod's own wording is replaced with the field's name
+    const long = await c.put("/api/projects/prj_a", { baseRev: 0, name: "A", source: "x".repeat(300_001) });
+    expect((await c.json<{ message: string }>(long)).message).toBe("Check the source field.");
+  });
+
   it("never duplicates a version sent twice", async () => {
     const { app } = setup();
     const c = await signedIn(app);
