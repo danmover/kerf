@@ -6,6 +6,7 @@ import type { PartRecipe, ShapeRecipe, V2, V3 } from "../kernel/recipe";
 import { BEARINGS, THREADS, type ThreadSpec } from "./standards";
 import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
 import { MACHINE_LIBRARY } from "../machine/library";
+import type { Footprint } from "../machine/pcb/types";
 
 export type Placement = "axis" | "facing" | "free";
 
@@ -40,6 +41,20 @@ export interface CompDef {
   bom: { description: string; standard?: string; catalogId?: string; length?: number };
   /** catalog-backed purchasable part */
   catalog?: { id: string; length?: number; travel?: number };
+  /** soldered to a circuit board (place it with on: board): footprint, value and reference prefix */
+  board?: {
+    footprint: Footprint;
+    value?: number;
+    valueText?: string;
+    taper?: "A" | "B";
+    capType?: "film" | "ceramic" | "electrolytic";
+    vRating?: number;
+    refPrefix: string;
+    /** a module's shape when plugged into a board (on its headers), when it differs from its free-standing shape */
+    mounted?: () => { solids: CompSolid[]; fields: LocalFields };
+  };
+  /** a circuit board designed in Kerf (lib.circuit_board): the frame parts are placed in */
+  circuitBoard?: { w: number; d: number; t: number; corner: number; holes: { x: number; y: number; d: number }[]; title: string };
 }
 
 export interface LibArgs {

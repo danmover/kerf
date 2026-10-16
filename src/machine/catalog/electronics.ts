@@ -3,7 +3,7 @@
 // `source`). Parts marked generic are commodity modules sold by many
 // sellers; their numbers are typical listing values and vary.
 
-import type { CatalogPart, PinDef } from "../types";
+import type { CatalogPart, FootprintSpec, PinDef } from "../types";
 import { avrPins, gnd, input, motorOut, port, pwrIn, pwrOut, rail } from "./pins";
 
 // ---------------- controllers ----------------
@@ -38,6 +38,25 @@ const nanoPins: PinDef[] = [
   pwrOut("V3V3", 3.3, 0.05, { label: "3.3V" }),
   gnd(),
 ];
+
+// Nano header positions seen from the top with the USB end at −x: the digital
+// row (D12 … D1/TX) along +y, the analog row (D13, 3V3, AREF, A0 … VIN) along −y.
+// Pin 1 is D1/TX and pin 30 VIN, both at the end away from the USB socket.
+const NANO_TOP = ["D12", "D11", "D10", "D9", "D8", "D7", "D6", "D5", "D4", "D3", "D2", "GND", "RST", "D0", "D1"];
+const NANO_BOTTOM = ["D13", "V3V3", "AREF", "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "V5", "RST", "GND", "VIN"];
+const nanoFootprint: FootprintSpec = {
+  k: "pads",
+  pads: [
+    ...NANO_TOP.map((pin, i) => ({ pin, num: String(15 - i), x: -17.78 + i * 2.54, y: 7.62 })),
+    ...NANO_BOTTOM.map((pin, i) => ({ pin, num: String(16 + i), x: -17.78 + i * 2.54, y: -7.62 })),
+  ],
+  drill: 1.0,
+  pad: 1.7,
+  square: "1",
+  // plugged into 8.5 mm female headers so it can be lifted out to reprogram or replace
+  lift: 8.5,
+};
+const nanoExtras = [{ label: "Female header 1 × 15, 2.54 mm (Nano socket)", qty: 2, price_usd: 0.2, search: "female header 1x15 2.54mm" }];
 
 function esp32Pins(): PinDef[] {
   const out: PinDef[] = [];
@@ -263,9 +282,42 @@ export const ELECTRONICS: CatalogPart[] = [
         { kind: "header", x: 0, y: -7.6, w: 38, d: 2.5, h: 2.5 },
       ],
     },
+    footprint: nanoFootprint,
+    extras: nanoExtras,
     price_usd: 24.9,
     buy: [{ vendor: "Arduino Store", url: "https://store.arduino.cc/products/arduino-nano" }, { vendor: "Marketplace", search: "Arduino Nano V3 ATmega328P" }],
     source: "https://docs.arduino.cc/hardware/nano/",
+  },
+  {
+    id: "arduino_nano_clone",
+    kind: "controller",
+    name: "Nano V3 compatible (ATmega328P, CH340 USB)",
+    generic: true,
+    summary: "Low-cost Arduino Nano compatible: same pins, size and code, CH340 USB chip. For boards where a $25 Nano is overkill.",
+    specs: { mcu: "ATmega328P", logic_v: 5, clock_mhz: 16, flash_kb: 32, digital: 14, pwm: 6, analog: 8, vin_min: 7, vin_max: 12, platform: "arduino", fqbn: "arduino:avr:nano:cpu=atmega328old", pio_board: "nanoatmega328" },
+    pins: nanoPins,
+    geom: {
+      g: "board",
+      dims: { w: 43.18, d: 17.78, t: 1.6 },
+      holes: [
+        [-20.32, -7.62],
+        [-20.32, 7.62],
+        [20.32, -7.62],
+        [20.32, 7.62],
+      ],
+      hole_d: 1.78,
+      color: "#1b4f9c",
+      features: [
+        { kind: "usb", x: -20.5, y: 0, w: 9, d: 7.5, h: 4 },
+        { kind: "chip", x: 4, y: 0, w: 7, d: 7, h: 1.2 },
+        { kind: "chip", x: -10, y: 0, w: 5, d: 4, h: 1.2 },
+      ],
+    },
+    footprint: nanoFootprint,
+    extras: nanoExtras,
+    price_usd: 4.5,
+    buy: [{ vendor: "Marketplace", search: "Nano V3.0 ATmega328P CH340 soldered headers" }],
+    notes: ["Most clones need the CH340 USB driver on Windows and the \"ATmega328P (Old Bootloader)\" processor setting in the Arduino IDE; if an upload fails, try the other bootloader setting.", "Buy one with the headers already soldered."],
   },
   {
     id: "arduino_mega",

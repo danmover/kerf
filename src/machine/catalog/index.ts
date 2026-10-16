@@ -2,10 +2,11 @@
 // where to buy them. Designs use them as lib.<kind>("id") components.
 
 import type { CatalogKind, CatalogPart } from "../types";
+import { AUDIO } from "./audio";
 import { ELECTRONICS } from "./electronics";
 import { MOTION } from "./motion";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...AUDIO];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 
