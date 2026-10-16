@@ -4,6 +4,8 @@
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { CONSTRAINTS } from "../sketch/evaluate";
+import { SKETCH_FNS } from "../sketch/fns";
 
 const geoDocs: Record<string, string> = {
   min_distance: "min_distance(a, b) — smallest gap in mm between the built solids of two parts or components (0 when touching). Resolved by the kernel after the build.",
@@ -15,7 +17,7 @@ const geoDocs: Record<string, string> = {
 };
 
 export function languageReference(): string {
-  const shapes = Object.values(SHAPE_FNS)
+  const shapes = Object.values({ ...SHAPE_FNS, extrude: SKETCH_FNS.extrude, revolve: SKETCH_FNS.revolve })
     .map((f) => `- ${f.doc ?? f.name}`)
     .join("\n");
   const math = Object.values(MATH_FNS)
@@ -35,6 +37,9 @@ export function languageReference(): string {
     .map(([k, b]) => `${k} (${b.bore}×${b.od}×${b.width})`)
     .join(", ");
   const materials = Object.keys(MATERIALS).map((m) => `"${m}"`).join(", ");
+  const constraints = Object.values(CONSTRAINTS)
+    .map((c) => `- ${c.doc}`)
+    .join("\n");
 
   return `# Kerf design language (.kerf)
 
@@ -46,6 +51,7 @@ Units: millimetres and degrees. Literals may carry units (2cm, 0.5in, 1.5rad) wh
 design "Name"
 note "Free text shown to the user"
 param name = expr [range lo .. hi] ["description"] [locked]   // tunable inputs; locked means the user froze it
+sketch name { plane, geometry, constraints }                  // constrained 2D profile (see Sketches)
 let name = expr                                              // derived values: layout skeleton, positions, lists of points
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
 component name = lib.kind(args) { props and flags }           // standard parts from the library
@@ -80,6 +86,27 @@ ${math}
 
 ### Geometric quantities (only inside require; resolved after the build)
 ${geo}
+
+## Sketches
+A sketch is a constrained 2D outline on a plane; extrude() or revolve() turns its closed profile into a solid. Users draw and edit sketches by hand in the sketch editor, and those edits change the same text, so write sketches the way a careful CAD user would: fully defined, dimensioned from parameters.
+sketch side {
+  plane: XZ                    // XY (top, x→X y→Y), XZ (front, x→X y→Z), YZ (right, x→Y y→Z); -XY etc. flips; or ${SKETCH_FNS.plane.doc}
+  offset: 5                    // moves the plane along its normal
+  line l1 = (0, 0) -> (60, 0)
+  line l2 = l1.end -> (60, 5)  // l1.end shares the point: the outline is connected
+  arc a1 = l2.end -> (50, 15), center: (50, 5)   // counter-clockwise from start to end
+  circle c1 = (30, 20), d: 8   // or r:
+  point p = (10, 10)
+  construction line axis = (0, -5) -> (0, 40)    // guides only, not part of the profile
+  horizontal l1
+  length l1 = base_len         // dimensions take any expression; params make them sliders
+  fillet l1, l2 = 2            // rounds the corner in the profile; dimensions still measure to the sharp corner
+}
+Every sketch has origin, x_axis and y_axis (fixed). Coordinates are starting guesses: the solver moves points as little as possible to satisfy the constraints, so write them close to the intended shape. Refer to points as l1.start, l1.end, a1.center, c1.center or named points. Geometry of an earlier sketch can be referenced (side.l3.end, side.l3); it is projected onto this sketch's plane as a fixed reference, so this sketch follows it.
+Constraints and dimensions (refs are names, the value after = is any expression):
+${constraints}
+A good sketch is fully defined (0 degrees of freedom): every point is fixed by constraints, usually by dimensions driven from params plus horizontal/vertical/coincident relations and one point tied to the origin. Redundant constraints are warned about; conflicting ones fail and name the culprit. A closed profile is one or more non-crossing loops; inner loops become holes. Sketch values expose .area, .plane, .normal and each named entity in world coordinates (side.l1.mid, side.c1.center), so other statements can position things from a sketch.
+Use sketches for profiles that are awkward to build from primitives (bent plates, cams, levers, gussets, custom outlines, turned parts) and whenever the user wants to edit a profile by hand. Primitives are still fine for plain boxes, cylinders and holes.
 
 ## Components
 component name = lib.kind(args) { at: point, axis: dir, ... }

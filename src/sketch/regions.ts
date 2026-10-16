@@ -47,6 +47,8 @@ export interface Profile {
   area: number;
   loops: number;
   error?: { message: string; refs: string[] };
+  /** curves left out because they do not belong to a closed loop (only when other loops are closed) */
+  open?: { message: string; refs: string[] };
   /** corners that were rounded or cut, for display */
   corners: { src: number; at: string; seg: Seg2 }[];
   /** corner statements that could not be applied */
@@ -95,14 +97,33 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
     if (N(a.a) === N(a.b)) return { ...empty, error: { message: `Arc ${a.id} starts and ends at the same point; use a circle for a full round`, refs: [a.id] } };
     edges.push({ id: a.id, a: N(a.a), b: N(a.b), arc: a });
   }
-  const at = new Map<string, Edge[]>();
-  for (const e of edges) {
-    at.set(e.a, [...(at.get(e.a) ?? []), e]);
-    at.set(e.b, [...(at.get(e.b) ?? []), e]);
+  let at = new Map<string, Edge[]>();
+  const link = () => {
+    at = new Map();
+    for (const e of edges) {
+      at.set(e.a, [...(at.get(e.a) ?? []), e]);
+      at.set(e.b, [...(at.get(e.b) ?? []), e]);
+    }
+  };
+  link();
+  // curves with a loose end are not part of any loop: leave them out when something else closes
+  const firstOpen = [...at].find(([, list]) => list.length === 1);
+  const openIds: string[] = [];
+  for (let dangling = firstOpen; dangling; ) {
+    const e = dangling[1][0];
+    openIds.push(e.id);
+    edges.splice(edges.indexOf(e), 1);
+    link();
+    dangling = [...at].find(([, list]) => list.length === 1);
+  }
+  let open: Profile["open"];
+  if (firstOpen) {
+    const [n, list] = firstOpen;
+    const msg = `The profile is open at ${n}: only ${list[0].id} ends there. Close the loop, or make the curve construction geometry.`;
+    if (!edges.length && !circles.length) return { ...empty, error: { message: msg, refs: [n, list[0].id] } };
+    open = { message: `${openIds.join(", ")} ${openIds.length > 1 ? "are" : "is"} not part of a closed loop and ${openIds.length > 1 ? "are" : "is"} left out of the profile.`, refs: openIds };
   }
   for (const [n, list] of at) {
-    if (list.length === 1)
-      return { ...empty, error: { message: `The profile is open at ${n}: only ${list[0].id} ends there. Close the loop, or make the curve construction geometry.`, refs: [n, list[0].id] } };
     if (list.length > 2)
       return { ...empty, error: { message: `${list.length} curves meet at ${n} (${list.map((e) => e.id).join(", ")}). A profile needs simple loops; make the extra curves construction geometry.`, refs: [n, ...list.map((e) => e.id)] } };
   }
@@ -195,7 +216,7 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
     fills.push({ outer: outer.poly, holes: hs.map((h) => h.poly) });
     area += Math.abs(L.area) - holes.reduce((s, h) => s + Math.abs(h.area), 0);
   });
-  return { regions, fills, area, loops: loops.length, corners, cornerIssues };
+  return { regions, fills, area, loops: loops.length, corners, cornerIssues, open };
 }
 
 /** Round or cut the corners of one loop. Consumes the specs it uses from `pending`. */

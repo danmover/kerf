@@ -13,8 +13,9 @@ import { addStatements, consId, deleteSelection, dimensionFor, fmt, fmtPt, nextN
 import type { EvalSketch, SkConstraint } from "../../sketch/types";
 import { activeSketch, editSketch, exitSketch, flash, setSelection, setTool, useSketch, type LiveSolve } from "./session";
 import { Projector, add, arcPoints, ccwThrough, circlePoints, circleThrough, closestOnSeg, curvePoints, dist, len, mul, niceStep, positionsOf, pxDist, radiusOf, roundTo, snapAt, sub, type Positions, type Px, type Snap } from "./geom";
-import { layoutDims, layoutGlyphs, type DimGfx } from "./dims";
+import { labelWidth, layoutDims, layoutGlyphs, type DimGfx } from "./dims";
 import { commitSource } from "../../app/project";
+import { useView } from "../../app/view";
 import { evaluate } from "../../lang/evaluator";
 
 type Draft =
@@ -61,21 +62,24 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     if (s.active && model && !sk) exitSketch();
   }, [s.active, model, sk]);
 
-  // the camera turns to face the sketch on entry and goes back on exit
-  const saved = useRef<ReturnType<SceneController["cameraState"]> | null>(null);
+  // on entry the parts turn see-through and the camera faces the sketch; both go back on exit
   const enteredFor = useRef<string | null>(null);
   useEffect(() => {
+    const camera = ctl.cameraState();
+    const xray = useView.getState().xray;
+    useView.setState({ xray: true });
+    return () => {
+      enteredFor.current = null;
+      ctl.restoreCamera(camera);
+      useView.setState({ xray });
+    };
+  }, [ctl]);
+  useEffect(() => {
     if (sk && enteredFor.current !== sk.name) {
-      if (!enteredFor.current) saved.current = ctl.cameraState();
       enteredFor.current = sk.name;
       faceSketch(ctl, sk);
     }
-    if (!s.active && enteredFor.current) {
-      enteredFor.current = null;
-      if (saved.current) ctl.restoreCamera(saved.current);
-      saved.current = null;
-    }
-  }, [sk, s.active, ctl]);
+  }, [sk, ctl]);
 
   useEffect(() => {
     ctl.setSketchMode(!!s.active);
@@ -325,10 +329,14 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     if (draft?.t === "drag") {
       const raw = sketchAt(px);
       if (!raw) return;
-      const d = sub(raw, draft.from);
       if (!draft.moved && pxDist(state.current.proj!.S(raw), state.current.proj!.S(draft.from)) < 3) return;
       if (!draft.moved) setDraft({ ...draft, moved: true });
-      useSketch.setState({ live: dragSolve(sk, draft, d, raw) });
+      // the grabbed point lands on round numbers for the zoom level, so moved coordinates stay tidy
+      const step = niceStep(state.current.proj!.scale(raw));
+      const anchor = draft.ids.length ? draft.base[draft.ids[0]] : undefined;
+      const want = add(anchor ?? draft.from, sub(raw, draft.from));
+      const d = anchor ? sub([roundTo(want[0], step), roundTo(want[1], step)], anchor) : sub(raw, draft.from);
+      useSketch.setState({ live: dragSolve(sk, draft, d, raw, step) });
       return;
     }
     const hover = s.tool === "select" || s.tool === "dimension" ? hitTest(px) : null;
@@ -502,6 +510,8 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       `${cp}arc ${a2} = ${l2}.end -> ${l1}.start, center: ${arg(a)}`,
     ];
     const cons = [`tangent ${l1}, ${a1}`, `tangent ${a1}, ${l2}`, `tangent ${l2}, ${a2}`, `tangent ${a2}, ${l1}`, `equal ${a1}, ${a2}`, ...extras(a, `${a2}.center`), ...extras(b, `${a1}.center`)];
+    const way = hv(a.p, b.p);
+    if (way) cons.push(`${way === "h" ? "horizontal" : "vertical"} ${l1}`);
     editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added slot ${l1}, ${a1}, ${l2}, ${a2}`);
   }
 
@@ -687,7 +697,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
 
 function Dim({ d, selected, editing, onHover }: { d: DimGfx; selected: boolean; editing: boolean; onHover: (on: boolean) => void }) {
   const path = (pts: Px[]) => pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join("");
-  const w = Math.max(28, d.text.length * 7 + 12);
+  const w = labelWidth(d.text);
   return (
     <g className={`sk-dim st-${d.status} ${d.driven ? "driven" : ""} ${selected ? "selected" : ""}`}>
       {d.lines.map((l, i) => (
@@ -905,6 +915,13 @@ export function sketchCenter(sk: EvalSketch, P: Positions): V2 {
 
 export function faceSketch(ctl: SceneController, sk: EvalSketch) {
   const P = positionsOf(sk);
+  const drawn = sk.points.filter((p) => !HIDDEN_POINTS.has(p.id) && p.id !== "origin");
+  if (!drawn.length) {
+    // nothing drawn yet: show the plane with the model around it for reference
+    const f = sk.frame;
+    ctl.viewPlane(f.n, f.v, f.o, Math.max(30, Math.min(ctl.modelRadius() * 0.9, 400)));
+    return;
+  }
   const pts = sk.points.filter((p) => !HIDDEN_POINTS.has(p.id)).map((p) => P[p.id]);
   for (const c of sk.curves) if (c.kind === "circle") {
     const ctr = P[c.pts[0]];
@@ -913,13 +930,14 @@ export function faceSketch(ctl: SceneController, sk: EvalSketch) {
   const xs = pts.map((p) => p[0]);
   const ys = pts.map((p) => p[1]);
   const c: V2 = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
-  const r = Math.max(30, Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * 0.7);
+  // fill a bit over half the view, leaving room around it for dimensions and the panels
+  const r = Math.max(20, (Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2) * 1.5);
   const f = sk.frame;
   const w: [number, number, number] = [f.o[0] + f.u[0] * c[0] + f.v[0] * c[1], f.o[1] + f.u[1] * c[0] + f.v[1] * c[1], f.o[2] + f.u[2] * c[0] + f.v[2] * c[1]];
   ctl.viewPlane(f.n, f.v, w, r);
 }
 
-function dragSolve(sk: EvalSketch, draft: Extract<Draft, { t: "drag" }>, d: V2, raw: V2): LiveSolve {
+function dragSolve(sk: EvalSketch, draft: Extract<Draft, { t: "drag" }>, d: V2, raw: V2, step: number): LiveSolve {
   const base = draft.base;
   const moved = new Set(draft.ids);
   const def = {
@@ -929,7 +947,7 @@ function dragSolve(sk: EvalSketch, draft: Extract<Draft, { t: "drag" }>, d: V2, 
       const q = moved.has(p.id) ? add(b, d) : b;
       return { ...p, x: q[0], y: q[1] };
     }),
-    circles: sk.def.circles.map((c) => (c.id === draft.circle ? { ...c, r: Math.max(1e-3, dist(raw, base[sk.curves.find((q) => q.id === c.id)!.pts[0]])) } : { ...c, r: sk.curves.find((q) => q.id === c.id)?.r ?? c.r })),
+    circles: sk.def.circles.map((c) => (c.id === draft.circle ? { ...c, r: Math.max(step, roundTo(dist(raw, base[sk.curves.find((q) => q.id === c.id)!.pts[0]]), step)) } : { ...c, r: sk.curves.find((q) => q.id === c.id)?.r ?? c.r })),
   };
   const res = solveSketch(def, { heavy: draft.circle ? [draft.circle] : draft.ids, analyse: false, maxIter: 40 });
   return { points: res.points, radii: res.radii, ok: res.ok };

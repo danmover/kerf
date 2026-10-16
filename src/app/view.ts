@@ -6,7 +6,7 @@ import type { Span } from "../lang/ast";
 
 export type ViewPreset = "iso" | "front" | "back" | "top" | "bottom" | "left" | "right";
 export type DockTab = "code" | "checks" | "graph" | "bom";
-export type LeftTab = "structure" | "params" | "sketches" | "history";
+export type LeftTab = "structure" | "params" | "history";
 
 interface ViewState {
   /** selected part ids (instances) */

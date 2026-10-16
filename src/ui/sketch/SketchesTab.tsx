@@ -2,8 +2,10 @@
 // built from it. Click one to edit it in the viewport.
 //
 // Shaped as a left-panel tab body (`{ filter }`) so it can be registered as
-// its own tab in the panel's tab list.
+// its own tab in the panel's tab list. Until then it sits under the parts as
+// a collapsible section.
 
+import { useState } from "react";
 import { useDesign } from "../../core/engine";
 import { commitSource } from "../../app/project";
 import { revealSpan } from "../../app/view";
@@ -70,6 +72,26 @@ export function SketchesTab({ filter = "" }: { filter?: string }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** The sketches as a collapsible group under the parts tree. */
+export function SketchesSection() {
+  const n = useDesign((s) => s.model?.sketches.length ?? 0);
+  const hasModel = useDesign((s) => !!s.model);
+  const [open, setOpen] = useState(true);
+  if (!hasModel) return null;
+  return (
+    <div className="tree sk-section">
+      <div className="tree-group-head" onClick={() => setOpen(!open)}>
+        <span style={{ transform: open ? "rotate(90deg)" : "rotate(0)", display: "inline-grid", transition: "transform .15s" }}>
+          <Icon.Chevron size={11} />
+        </span>
+        Sketches
+        <span style={{ marginLeft: "auto" }}>{n || ""}</span>
+      </div>
+      {open && <SketchesTab />}
     </div>
   );
 }

@@ -248,6 +248,11 @@ export class SceneController {
     this.dirty = true;
   }
 
+  /** Half the diagonal of the model's bounding box (for framing). */
+  modelRadius() {
+    return this.bounds.getSize(new THREE.Vector3()).length() / 2;
+  }
+
   cameraState() {
     return { pos: this.camera.position.toArray() as [number, number, number], target: this.controls.target.toArray() as [number, number, number] };
   }

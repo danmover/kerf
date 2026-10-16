@@ -675,6 +675,7 @@ export function sketchStatusText(sk: EvalSketch): string {
   else parts.push(`${sk.dof} degree${sk.dof === 1 ? "" : "s"} of freedom left`);
   if (sk.redundant) parts.push(`${sk.redundant} redundant constraint${sk.redundant > 1 ? "s" : ""}`);
   if (sk.profile.error) parts.push(`profile problem: ${sk.profile.error.message}`);
+  else if (sk.profile.open) parts.push(`${sk.profile.open.refs.length} open curve${sk.profile.open.refs.length > 1 ? "s" : ""} left out`);
   else if (sk.profile.regions.length) parts.push(`${sk.profile.regions.length} closed region${sk.profile.regions.length > 1 ? "s" : ""}, area ${fmtNum(sk.profile.area, 1)} mm²`);
   else parts.push("no closed profile yet");
   return parts.join(", ");

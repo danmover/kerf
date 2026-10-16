@@ -23,6 +23,33 @@ export interface DimGfx {
 }
 
 const OFF = 24;
+
+/** Width of a dimension label box for its text. */
+export const labelWidth = (text: string) => Math.max(28, text.length * 7 + 12);
+
+/** Push overlapping labels apart, away from the sketch centre, with a dashed leader back to the dimension. */
+function declutter(dims: DimGfx[], center: Px) {
+  const placed: { x: number; y: number; w: number }[] = [];
+  const hits = (x: number, y: number, w: number) => placed.some((r) => Math.abs(r.x - x) < (r.w + w) / 2 + 3 && Math.abs(r.y - y) < 21);
+  for (const d of dims) {
+    const w = labelWidth(d.text);
+    const from = d.label;
+    let at = from;
+    if (hits(at.x, at.y, w)) {
+      const away = pnorm(pv(from, center));
+      const dir = Math.hypot(away.x, away.y) > 0.5 ? away : { x: 0, y: 1 };
+      // try sliding out along the outward direction, then sideways
+      const tries: Px[] = [];
+      for (let k = 1; k <= 8; k++) tries.push(pa(from, { x: dir.x * 12 * k, y: dir.y * 12 * k }), pa(from, { x: 0, y: 21 * k }), pa(from, { x: 0, y: -21 * k }));
+      at = tries.find((t) => !hits(t.x, t.y, w)) ?? at;
+      if (at !== from) {
+        d.dashed.push([from, at]);
+        d.label = at;
+      }
+    }
+    placed.push({ x: at.x, y: at.y, w });
+  }
+}
 const pv = (a: Px, b: Px): Px => ({ x: a.x - b.x, y: a.y - b.y });
 const pa = (a: Px, b: Px): Px => ({ x: a.x + b.x, y: a.y + b.y });
 const pm = (a: Px, k: number): Px => ({ x: a.x * k, y: a.y * k });
@@ -41,7 +68,7 @@ export function valueText(c: SkConstraint): { text: string; driven: boolean } {
   const num = `${fmtNum(v, deg ? 1 : 2)}${deg ? "°" : ""}`;
   const prefix = c.kind === "diameter" ? "⌀" : c.kind === "radius" || c.kind === "fillet" ? "R" : c.kind === "chamfer" ? "C" : "";
   if (lit || !c.valueText) return { text: prefix + num, driven: false };
-  return { text: `${prefix}${c.valueText.trim()} = ${num}`, driven: true };
+  return { text: `${c.valueText.trim()} = ${prefix}${num}`, driven: true };
 }
 
 export function layoutDims(sk: EvalSketch, P: Positions, radii: Record<string, number>, proj: Projector, center: V2): DimGfx[] {
@@ -228,6 +255,7 @@ export function layoutDims(sk: EvalSketch, P: Positions, radii: Record<string, n
       /* geometry mid-edit: skip this dimension */
     }
   }
+  declutter(out, sc);
   return out;
 }
 

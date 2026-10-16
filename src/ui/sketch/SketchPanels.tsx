@@ -48,30 +48,39 @@ export function SketchLayer({ ctl }: { ctl: SceneController }) {
 
 function SketchHeader({ sk, ctl }: { sk: EvalSketch; ctl: SceneController }) {
   const feature = useSketch((s) => s.feature);
-  const state = !sk.solved ? "conflict" : sk.dof === 0 ? "defined" : "free";
+  const empty = !sk.curves.some((c) => !c.external) && !sk.points.some((p) => !p.implicit);
+  const state = empty ? "free" : !sk.solved ? "conflict" : sk.dof === 0 ? "defined" : "free";
   const usedBy = sk.usedBy;
+  const regions = sk.profile.regions.length;
+  const short = empty ? "empty" : !sk.solved ? "conflict" : sk.dof === 0 ? "fully defined" : `${sk.dof} free`;
+  const shape = empty ? "pick a tool on the left" : sk.profile.error ? "profile problem" : regions ? `${regions > 1 ? `${regions} regions · ` : ""}${fmt(Math.round(sk.profile.area * 10) / 10)} mm²` : "open outline";
   return (
-    <motion.div className="sk-ui sk-header vp-float" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-      <div className="row" style={{ gap: 8 }}>
+    <motion.div className="sk-ui sk-header vp-float" style={{ x: "-50%" }} initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+      <div className="row sk-header-row">
         <span className="sk-badge">
           <T.Pencil size={13} /> sketch
         </span>
         <b className="mono">{sk.name}</b>
-        <span className="mono muted">on {sk.planeText}</span>
+        <span className="mono muted">{sk.planeText}</span>
+        <span className={`sk-state st-${state}`} data-tip={`${sketchStatusText(sk)}${state === "free" ? ". Blue points can still move: drag them, or add dimensions and relations." : ""}`}>
+          <span className="dot" />
+          {short} · {shape}
+        </span>
+        {usedBy.length > 0 && (
+          <span className="sk-usedby mono" data-tip={`Edits rebuild ${usedBy.join(", ")} live`}>
+            → {usedBy.join(", ")}
+          </span>
+        )}
         <div className="grow" />
-        <button className="btn sm ghost" onClick={() => faceSketch(ctl, sk)} data-tip="Look straight at the sketch (N)">
-          <T.Normal size={13} />
+        <button className="icon-btn sm" onClick={() => faceSketch(ctl, sk)} data-tip="Look straight at the sketch (N)" aria-label="Look at the sketch">
+          <T.Normal size={14} />
         </button>
-        <button className={`btn sm ${feature ? "primary" : ""}`} onClick={() => useSketch.setState({ feature: !feature })} disabled={!sk.profile.regions.length} data-tip={sk.profile.regions.length ? "Extrude or revolve this sketch" : "Close the outline first"}>
+        <button className={`btn sm ${feature ? "primary" : ""}`} onClick={() => useSketch.setState({ feature: !feature })} disabled={!regions} data-tip={regions ? "Extrude or revolve this sketch" : "Close the outline first"}>
           <Icon.Box size={13} /> Make solid
         </button>
         <button className="btn sm primary" onClick={exitSketch} data-tip="Finish editing (Enter)">
           <Icon.Check size={13} /> Done
         </button>
-      </div>
-      <div className={`sk-state st-${state}`}>
-        <span className="dot" />
-        <span>{sketchStatusText(sk)}</span>
       </div>
       {sk.message && (
         <div className="sk-problem">
@@ -90,11 +99,7 @@ function SketchHeader({ sk, ctl }: { sk: EvalSketch; ctl: SceneController }) {
         </div>
       )}
       {!sk.message && sk.profile.error && <div className="sk-problem warn">{sk.profile.error.message}</div>}
-      {usedBy.length > 0 && (
-        <div className="sk-usedby mono">
-          shapes {usedBy.join(", ")} · changes rebuild {usedBy.length > 1 ? "them" : "it"} live
-        </div>
-      )}
+      {!sk.message && !sk.profile.error && sk.profile.open && <div className="sk-problem note">{sk.profile.open.message}</div>}
     </motion.div>
   );
 }

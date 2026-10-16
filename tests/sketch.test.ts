@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import opencascade from "replicad-opencascadejs";
 import * as R from "replicad";
@@ -8,6 +9,8 @@ import { buildPart } from "../src/kernel/build";
 import { firstConflict, solveSketch, type SketchDef } from "../src/sketch/solver";
 import { buildProfile } from "../src/sketch/regions";
 import type { EvalSketch } from "../src/sketch/types";
+import { languageReference } from "../src/ai/reference";
+import { CONSTRAINTS } from "../src/sketch/evaluate";
 
 const RECT = `
 sketch base {
@@ -203,6 +206,16 @@ describe("profiles", () => {
     expect(pr.regions.length).toBe(0);
     expect(pr.error?.message).toMatch(/open/);
     expect(pr.error?.refs.length).toBeGreaterThan(0);
+  });
+
+  it("leaves out loose curves when another loop is closed", () => {
+    const pts = { ...P, e: [20, 0], f: [20, 10] } as Record<string, [number, number]>;
+    // a tail hanging off a corner, and a separate open chain
+    const pr = buildProfile(pts, [...square, { id: "t1", a: "c", b: "f" }, { id: "t2", a: "e", b: "b" }], [], []);
+    expect(pr.error).toBeUndefined();
+    expect(pr.regions.length).toBe(1);
+    expect(pr.area).toBeCloseTo(100, 9);
+    expect(pr.open?.refs.sort()).toEqual(["t1", "t2"]);
   });
 
   it("rejects a profile that crosses itself", () => {
@@ -434,5 +447,28 @@ part cutaway {
     expect(v.pad).toBeCloseTo((200 - 4 * (4 - Math.PI)) * 3, 3);
     // the cut leaves the frame around the plate plus the plug where the hole was
     expect(v.cutaway).toBeCloseTo(50 * 30 * 10 - (1000 - Math.PI * 16) * 10, 2);
+  });
+});
+
+describe("sketches for the assistant", () => {
+  it("documents every sketch statement in the language reference", () => {
+    const ref = languageReference();
+    expect(ref).toContain("## Sketches");
+    for (const c of Object.values(CONSTRAINTS)) expect(ref).toContain(c.doc);
+    expect(ref).toMatch(/extrude\(sketch, h/);
+  });
+
+  it("keeps the bracket template valid and fully defined", () => {
+    const src = readFileSync(new URL("../src/demos/bracket.kerf", import.meta.url), "utf8");
+    const m = evaluate(src);
+    expect(m.diagnostics).toEqual([]);
+    expect(m.sketches.map((s) => [s.name, s.dof, s.solved])).toEqual([
+      ["side", 0, true],
+      ["gusset", 0, true],
+      ["mount_holes", 0, true],
+      ["bore", 0, true],
+      ["bushing_profile", 0, true],
+    ]);
+    expect(m.parts.map((p) => p.name)).toEqual(["bracket", "bushing"]);
   });
 });

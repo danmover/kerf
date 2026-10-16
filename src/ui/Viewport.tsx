@@ -30,6 +30,7 @@ export function Viewport() {
   const [webglError, setWebglError] = useState("");
   const [scene, setScene] = useState<SceneController | null>(null);
   const sketching = useSketch((s) => !!s.active || s.picking);
+  const inSketch = useSketch((s) => !!s.active);
 
   useEffect(() => {
     if (!mount.current) return;
@@ -100,7 +101,7 @@ export function Viewport() {
   const empty = model && model.parts.length === 0 && kernelStatus === "ready";
 
   return (
-    <div className="viewport">
+    <div className={`viewport ${inSketch ? "sketching" : ""}`}>
       <div className="vp-mount" ref={mount} />
 
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
@@ -210,7 +211,7 @@ export function Viewport() {
 
       {scene && <SketchLayer ctl={scene} />}
 
-      {empty && (
+      {empty && !sketching && (
         <div className="vp-empty">
           <motion.div className="card" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div style={{ display: "grid", placeItems: "center", marginBottom: 12, color: "var(--accent-2)" }}>

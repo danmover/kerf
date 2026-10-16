@@ -12,6 +12,8 @@ import { viewport } from "../app/viewportApi";
 import { MAX_SOURCE_CHARS } from "../persist/files";
 import { fmtNum } from "../lang/values";
 import { lineCol } from "../lang/lexer";
+import { sketchStatusText } from "../sketch/evaluate";
+import type { EvalSketch } from "../sketch/types";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -66,6 +68,17 @@ export const TOOL_DEFS = [
         unlock_ok: { type: "boolean", description: "Set true only when the user explicitly asked to change locked items." },
       },
       required: ["summary", "source"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_sketch",
+    description:
+      "Read one sketch as solved: its plane, every point's solved position and how free it still is, the curves, each constraint with its status (ok, redundant, conflict), and the closed regions of its profile. Sketch coordinates in the source are starting guesses; use this to see where things actually are, which points still need a dimension, and what the user is pointing at.",
+    input_schema: {
+      type: "object" as const,
+      properties: { name: { type: "string", description: "The sketch's name." } },
+      required: ["name"],
       additionalProperties: false,
     },
   },
@@ -188,10 +201,45 @@ export function modelSummary(m: Model | null): string {
           .join("\n"),
     );
   }
+  if (m.sketches.length) lines.push("Sketches:\n" + m.sketches.map((sk) => `  - ${sk.name} on ${sk.planeText}: ${sketchStatusText(sk)}${sk.usedBy.length ? `; shapes ${sk.usedBy.join(", ")}` : "; not used by a part yet"}`).join("\n"));
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
   const warns = m.diagnostics.filter((d) => d.severity === "warning");
   if (warns.length) lines.push("Warnings:\n" + warns.map((d) => `  - ${d.message}`).join("\n"));
+  return lines.join("\n");
+}
+
+/** A sketch as solved, for get_sketch. */
+export function sketchDetail(sk: EvalSketch): string {
+  const f = (v: number) => fmtNum(v, 3);
+  const v3 = (v: number[]) => `(${v.map(f).join(", ")})`;
+  const lines = [`Sketch ${sk.name} on ${sk.planeText}: ${sketchStatusText(sk)}${sk.usedBy.length ? `; shapes ${sk.usedBy.join(", ")}` : ""}.`];
+  lines.push(`Plane: origin ${v3(sk.frame.o)}, sketch x → world ${v3(sk.frame.u)}, sketch y → world ${v3(sk.frame.v)}, normal ${v3(sk.frame.n)}.`);
+  if (sk.message) lines.push(`Problem: ${sk.message}`);
+  if (sk.profile.error) lines.push(`Profile problem: ${sk.profile.error.message}`);
+  if (sk.profile.open) lines.push(`Open curves: ${sk.profile.open.message}`);
+  const aliases = new Map<string, string[]>();
+  for (const [a, id] of Object.entries(sk.aliases)) aliases.set(id, [...(aliases.get(id) ?? []), a]);
+  const freeText = (p: EvalSketch["points"][number]) =>
+    p.status === "conflict" ? "in conflict" : p.freedom.kind === "fixed" ? "fixed" : p.freedom.kind === "defined" ? "defined" : p.freedom.kind === "line" ? `free along (${f(p.freedom.dir[0])}, ${f(p.freedom.dir[1])})` : "free";
+  lines.push("Points (solved sketch coordinates):");
+  for (const p of sk.points) {
+    if (p.id === "x_axis.end" || p.id === "y_axis.end") continue;
+    const names = [p.id, ...(aliases.get(p.id) ?? [])].join(" = ");
+    lines.push(`  ${names}: (${f(p.x)}, ${f(p.y)}) ${freeText(p)}${p.external ? ", projected from another sketch" : ""}`);
+  }
+  const at = (id: string) => sk.points.find((p) => p.id === id)!;
+  lines.push("Curves:");
+  for (const c of sk.curves) {
+    const extra = c.kind === "circle" ? ` r ${f(c.r ?? 0)}` : c.kind === "line" ? ` length ${f(Math.hypot(at(c.pts[1]).x - at(c.pts[0]).x, at(c.pts[1]).y - at(c.pts[0]).y))}` : "";
+    lines.push(`  ${c.construction ? "construction " : ""}${c.kind} ${c.id} [${c.pts.join(", ")}]${extra} ${c.status}${c.external ? " (reference)" : ""}`);
+  }
+  if (sk.constraints.length) {
+    lines.push("Constraints:");
+    for (const c of sk.constraints) lines.push(`  ${c.kind} ${c.args.join(", ")}${c.valueText ? ` = ${c.valueText}${c.value !== undefined && c.valueText.trim() !== String(c.value) ? ` (= ${f(c.value)})` : ""}` : ""}${c.status !== "ok" ? ` [${c.status}]` : ""}`);
+  }
+  const regions = sk.profile.regions;
+  lines.push(regions.length ? `Profile: ${regions.length} closed region(s), ${regions.reduce((n, r) => n + r.holes.length, 0)} hole(s), area ${f(sk.profile.area)} mm².` : "Profile: no closed region yet.");
   return lines.join("\n");
 }
 
@@ -300,6 +348,14 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       if (!p.success) return invalid(p.error);
       return applySource(p.data.source.replace(/\r\n/g, "\n"), p.data.summary, p.data.unlock_ok);
     }
+    case "get_sketch": {
+      const parsed = z.object({ name: z.string().min(1).max(200) }).strict().safeParse(input);
+      if (!parsed.success) return invalid(parsed.error);
+      const m = useDesign.getState().model;
+      const sk = m?.sketches.find((x) => x.name === parsed.data.name);
+      if (!sk) return { content: `There is no sketch named ${parsed.data.name}. Sketches: ${m?.sketches.map((x) => x.name).join(", ") || "none"}.`, isError: true, card: { title: `No sketch ${parsed.data.name}`, status: "error" } };
+      return { content: sketchDetail(sk), card: { title: `Read sketch ${sk.name}`, detail: sketchStatusText(sk), status: "done" } };
+    }
     case "run_checks": {
       const s = await whenChecked();
       if (s.kernelStatus === "error") return { isError: true, content: `The geometry kernel is unavailable: ${s.kernelError}`, card: { title: "Geometry kernel unavailable", status: "error" } };
@@ -377,6 +433,7 @@ export const TOOL_TITLES: Record<string, string> = {
   write_design: "Writing the design",
   run_checks: "Building and checking",
   explore_fixes: "Searching for fixes",
+  get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
   ask_user: "Asking you",
 };

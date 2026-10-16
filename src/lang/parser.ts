@@ -537,7 +537,8 @@ class Parser {
             return { k: "vec", items, span: { start: tk.start, end: this.prevEnd() } };
           }
           this.expect("op", ")");
-          return first;
+          // the span covers the parentheses, so the source text of a grouped expression reads whole
+          return { ...first, span: { start: tk.start, end: this.prevEnd() } };
         }
         if (tk.value === "[") {
           this.next();

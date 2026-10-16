@@ -350,13 +350,17 @@ export function suggestionsFor(sk: EvalSketch, ids: string[]): Suggestion[] {
   const d = (label: string, kind: string, refs: string, value: number, key?: string) => out.push({ label, kind, stmt: `${kind} ${refs} = ${fmt(value)}`, dimension: true, key });
   if (!E.length) return out;
 
+  // what the sketch already says, so relations that hold already are not offered again
+  const has = (kind: string, ...xs: string[]) => sk.constraints.some((c) => c.kind === kind && xs.every((x) => c.ids.includes(x)));
+  const orient = (id: string) => (id === "x_axis" || has("horizontal", id) ? "h" : id === "y_axis" || has("vertical", id) ? "v" : null);
+
   if (all("line")) {
     const ends = E.map((e) => lineEnds(sk, e.id));
     const dirs = ends.map(([a, b]) => unitv(sub(b, a)));
     const flatness = dirs.map((u) => Math.abs(u[1]));
     // offer the orientation each line is closest to first
     const hFirst = flatness.reduce((s, f) => s + f, 0) / flatness.length < Math.SQRT1_2;
-    const real = E.filter((e) => e.id !== "x_axis" && e.id !== "y_axis");
+    const real = E.filter((e) => e.id !== "x_axis" && e.id !== "y_axis" && !orient(e.id) && !e.c?.external);
     if (real.length) {
       const h = () => g("Horizontal", "horizontal", `horizontal ${real.map((e) => e.id).join(", ")}`, "h");
       const v = () => g("Vertical", "vertical", `vertical ${real.map((e) => e.id).join(", ")}`, "v");
@@ -368,19 +372,24 @@ export function suggestionsFor(sk: EvalSketch, ids: string[]): Suggestion[] {
         h();
       }
     }
-    if (E.length === 1 && real.length) {
+    const own = E.length === 1 && E[0].id !== "x_axis" && E[0].id !== "y_axis" && !E[0].c?.external;
+    if (own) {
       const [a, b] = ends[0];
-      d("Length", "length", E[0].id, Math.hypot(...sub(b, a)), "d");
+      if (!has("length", E[0].id)) d("Length", "length", E[0].id, Math.hypot(...sub(b, a)), "d");
       g("Fix", "fix", `fix ${E[0].id}`, "f");
     }
     if (E.length >= 2) {
       const par = Math.abs(cross(dirs[0], dirs[1])) < 0.05;
-      g("Parallel", "parallel", `parallel ${names}`, "p");
+      const o = E.map((e) => orient(e.id));
+      const sameWay = o.every((x) => x && x === o[0]);
+      // one horizontal and one vertical: already perpendicular, never parallel
+      const crossed = o.includes("h") && o.includes("v");
+      if (!sameWay && !crossed && !has("parallel", ...E.map((e) => e.id))) g("Parallel", "parallel", `parallel ${names}`, "p");
       if (E.length === 2) {
-        g("Perpendicular", "perpendicular", `perpendicular ${names}`, "l");
-        g("Collinear", "collinear", `collinear ${names}`);
+        if (!crossed && !has("perpendicular", E[0].id, E[1].id)) g("Perpendicular", "perpendicular", `perpendicular ${names}`, "l");
+        if (!crossed && !has("collinear", E[0].id, E[1].id)) g("Collinear", "collinear", `collinear ${names}`);
       }
-      g("Equal", "equal", `equal ${names}`, "e");
+      if (!has("equal", ...E.map((e) => e.id))) g("Equal", "equal", `equal ${names}`, "e");
       if (E.length === 2) {
         if (par) d("Distance", "distance", names, pointLineDist(ends[1][0], ends[0]), "d");
         let phi = (Math.atan2(cross(dirs[0], dirs[1]), dot(dirs[0], dirs[1])) * 180) / Math.PI;

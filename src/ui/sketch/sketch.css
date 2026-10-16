@@ -341,10 +341,25 @@
   pointer-events: all;
 }
 .sk-header {
-  left: 12px;
-  top: 12px;
-  width: min(440px, calc(100% - 24px));
+  left: 50%;
+  top: 10px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px 6px 10px !important;
   z-index: 6;
+}
+.sk-header-row {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sk-header .sk-state,
+.sk-header .sk-usedby {
+  margin: 0;
+  white-space: nowrap;
+}
+/* the sketch header takes the view toolbar's place */
+.viewport.sketching .vp-toolbar {
+  display: none;
 }
 .sk-pick-card {
   left: 50%;
@@ -407,6 +422,13 @@
   color: #ffe1a6;
   background: var(--warn-soft);
 }
+.sk-problem.note {
+  color: var(--text-2);
+  background: var(--bg-3);
+}
+.sk-header .sk-problem {
+  max-width: 560px;
+}
 .sk-usedby {
   margin-top: 6px;
   font-size: 10.5px;
@@ -432,7 +454,8 @@
 }
 .sk-hint {
   position: absolute;
-  bottom: 104px;
+  bottom: 12px;
+  pointer-events: none;
   left: 50%;
   max-width: min(640px, calc(100% - 140px));
   padding: 6px 12px;
@@ -450,7 +473,7 @@
 }
 .sk-side {
   right: 12px;
-  top: 12px;
+  top: 64px;
   width: 280px;
   max-height: calc(100% - 140px);
   overflow: auto;
@@ -581,4 +604,9 @@
 }
 .sk-item .state.st-conflict .dot {
   background: var(--fail);
+}
+
+/* the sketches group under the parts tree */
+.sk-section .sk-list {
+  padding: 2px 8px 10px;
 }

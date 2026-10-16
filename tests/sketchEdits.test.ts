@@ -109,10 +109,18 @@ describe("sketch edits", () => {
   it("suggests relations and dimensions for a selection", () => {
     const { sk: s } = sk(base);
     const one = suggestionsFor(s, ["l2"]).map((x) => x.stmt);
-    expect(one[0]).toBe("vertical l2");
     expect(one).toContain("length l2 = 20");
+    // l2 is already vertical and l1 already has a length: neither is offered again
+    expect(one.some((x) => x.startsWith("vertical") || x.startsWith("horizontal"))).toBe(false);
+    expect(suggestionsFor(s, ["l1"]).some((x) => x.kind === "length")).toBe(false);
     const corner = suggestionsFor(s, ["l1", "l2"]).map((x) => x.kind);
-    expect(corner).toEqual(expect.arrayContaining(["parallel", "perpendicular", "equal", "fillet", "chamfer"]));
+    expect(corner).toEqual(expect.arrayContaining(["equal", "fillet", "chamfer"]));
+    // a horizontal and a vertical line are perpendicular already, and cannot be parallel
+    expect(corner).not.toContain("perpendicular");
+    expect(corner).not.toContain("parallel");
+    const free = sk(base.replace("  horizontal l1, l3\n  vertical l2, l4\n", "")).sk;
+    expect(suggestionsFor(free, ["l2"])[0].stmt).toBe("vertical l2");
+    expect(suggestionsFor(free, ["l1", "l2"]).map((x) => x.kind)).toEqual(expect.arrayContaining(["parallel", "perpendicular"]));
     const pts = suggestionsFor(s, ["l1.start", "l2.end"]).map((x) => x.stmt);
     expect(pts).toContain("distance l1.start, l2.end = 44.721");
     expect(pts).toContain("hdistance l1.start, l2.end = 40");
