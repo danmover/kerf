@@ -14,13 +14,14 @@ import type { Model } from "../../core/model";
 import { BRIEF_FIELDS } from "../../lang/evaluator";
 import { CONSTRAINTS } from "../../sketch/evaluate";
 import { SKETCH_FNS } from "../../sketch/fns";
+import { ANALYSIS_FNS, DRIVETRAIN_PROPS, STRUCTURAL_PROPS } from "../../analysis/lang";
 
-const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision", "sketch"]);
+const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision", "sketch", "analysis"]);
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
 const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
-const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step"]);
+const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step", ...Object.keys(ANALYSIS_FNS)]);
 /** Words that start a statement inside a sketch block. */
 const SKETCH_GEOMETRY = ["line", "circle", "arc", "point", "construction"];
 const SKETCH_WORDS = new Set([...SKETCH_GEOMETRY, ...Object.keys(CONSTRAINTS), "on", "dist", "dx", "dy"]);
@@ -171,11 +172,12 @@ export function kerfCompletions(getModel: () => Model | null) {
     ...Object.values(MATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "math", apply: f.name + "(" })),
     ...Object.entries(modifierDocs).map(([k, d]) => ({ label: k, type: "function", info: d, detail: "modifier", apply: k + "(" })),
     ...GEO_FNS.map((g) => ({ label: g, type: "function", detail: "geometry", apply: g + "(" })),
+    ...Object.values(ANALYSIS_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "analysis", apply: f.name + "(" })),
   ];
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
   const libItems: Completion[] = Object.entries(LIBRARY).map(([k, e]) => ({ label: k, type: "class", info: `${e.signature}\n\n${e.doc}`, detail: "library", apply: k + "(" }));
-  const props: Completion[] = ["color", "material", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", "plane", "offset"].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", "plane", "offset", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 

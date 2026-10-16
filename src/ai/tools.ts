@@ -22,6 +22,8 @@ import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssump
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
+import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
+import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict } from "../analysis/summary";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -108,14 +110,30 @@ export const TOOL_DEFS = [
     },
   },
   {
+    name: "run_analysis",
+    description:
+      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        label: { type: "string", description: "Run only the analysis with this label; default all." },
+        fine: { type: "boolean", description: "Re-run structural analyses at the fine resolution (slower, closer answer)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "capture_view",
-    description: "Render the current model from a camera angle and return the image so you can look at it. Optionally highlight parts and cut a section.",
+    description:
+      "Render the current model from a camera angle and return the image so you can look at it. Optionally highlight parts, cut a section, or colour the model by a structural analysis result (with the deformed shape exaggerated, load arrows and support markers).",
     input_schema: {
       type: "object" as const,
       properties: {
         view: { type: "string", enum: [...VIEW_NAMES], description: "Camera direction. iso is a 3/4 view from the front right." },
         highlight: { type: "array", items: { type: "string" }, maxItems: 30, description: "Part or component names to emphasise; others are ghosted." },
         section: { type: "string", enum: ["x", "y", "z"], description: "Cut the model in half across this axis to see inside." },
+        results: { type: "string", enum: ["stress", "safety", "disp", "strain"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, or principal strain. Run run_analysis first." },
+        analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
       },
       required: ["view"],
       additionalProperties: false,
@@ -305,7 +323,14 @@ const EditInput = z.object({
 });
 const WriteInput = z.object({ summary: z.string().min(1).max(300), source: z.string().min(1).max(MAX_SOURCE_CHARS), unlock_ok: z.boolean().optional() });
 const FixInput = z.object({ hold: z.array(z.string().max(80)).max(50).optional() });
-const ViewInput = z.object({ view: z.enum(VIEW_NAMES), highlight: z.array(z.string().max(80)).max(30).optional(), section: z.enum(["x", "y", "z"]).optional() });
+const ViewInput = z.object({
+  view: z.enum(VIEW_NAMES),
+  highlight: z.array(z.string().max(80)).max(30).optional(),
+  section: z.enum(["x", "y", "z"]).optional(),
+  results: z.enum(["stress", "safety", "disp", "strain"]).optional(),
+  analysis: z.string().max(200).optional(),
+});
+const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
 const AskInput = z.object({
   title: z.string().max(80).optional(),
@@ -573,6 +598,10 @@ export function modelSummary(m: Model | null): string {
   const decisions = decisionsSummary(m);
   if (decisions) lines.push(decisions);
   if (m.sketches.length) lines.push("Sketches:\n" + m.sketches.map((sk) => `  - ${sk.name} on ${sk.planeText}: ${sketchStatusText(sk)}${sk.usedBy.length ? `; shapes ${sk.usedBy.join(", ")}` : "; not used by a part yet"}`).join("\n"));
+  if (m.analyses.length) {
+    const a = useAnalysis.getState();
+    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label))}`).join("\n"));
+  }
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
   const warns = m.diagnostics.filter((d) => d.severity === "warning");
@@ -806,21 +835,76 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
         card: { title: conflict.infeasible ? "No parameter change resolves the conflict" : `Found ${conflict.options.length} way${conflict.options.length > 1 ? "s" : ""} to resolve the conflict`, detail: conflict.options.map((o) => o.summary).join("\n") || conflict.failing.map((f) => f.label).join(", ") },
       };
     }
+    case "run_analysis": {
+      const p = AnalysisInput.safeParse(input ?? {});
+      if (!p.success) return invalid(p.error);
+      const s = await whenChecked();
+      if (s.kernelStatus === "error") return { isError: true, content: `The geometry kernel is unavailable: ${s.kernelError}`, card: { title: "Geometry kernel unavailable", status: "error" } };
+      const all = s.model?.analyses ?? [];
+      if (!all.length)
+        return {
+          isError: true,
+          content: "This design has no analysis block yet. Add one with edit_design (see Analysis blocks in the language reference), then call run_analysis.",
+          card: { title: "No analysis to run", status: "error" },
+        };
+      const targets = p.data.label ? all.filter((a) => a.label === p.data.label) : all;
+      if (!targets.length) return { isError: true, content: `No analysis is labelled "${p.data.label}". Analyses: ${all.map((a) => `"${a.label}"`).join(", ")}.`, card: { title: "Analysis not found", status: "error" } };
+      if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
+      await whenAnalyzed();
+      const st = useAnalysis.getState();
+      const text = targets.map((a) => (a.kind === "structural" ? structuralSummary(a, st.runs.get(a.label)) : drivetrainSummary(a, st.drivetrain.get(a.label)))).join("\n\n");
+      const verdicts = targets.map((a) => {
+        if (a.kind === "drivetrain") {
+          const r = st.drivetrain.get(a.label);
+          return !r || r.error || r.items.some((i) => i.status === "fail") ? "fail" : r.items.some((i) => i.status === "warn") ? "warn" : "pass";
+        }
+        const r = st.runs.get(a.label);
+        return r?.result && r.status === "done" ? structuralVerdict(a, r.result) : "fail";
+      });
+      const firstShown = targets.find((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
+      if (firstShown) showResults(firstShown.label);
+      const fails = verdicts.filter((v) => v === "fail").length;
+      let title: string;
+      if (targets.length === 1) {
+        const a = targets[0];
+        const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
+        title = r ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.safety, 1)})` : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
+      } else title = fails ? `${fails} of ${targets.length} analyses failing` : `All ${targets.length} analyses pass`;
+      return {
+        content: text + (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : ""),
+        card: { title, detail: verdicts.map((v, i) => `${targets[i].label}: ${v}`).join(" · "), status: fails ? "error" : "done" },
+      };
+    }
     case "capture_view": {
       const p = ViewInput.safeParse(input);
       if (!p.success) return invalid(p.error);
       const vp = viewport();
       if (!vp) return { isError: true, content: "The 3D view is not available right now.", card: { title: "View unavailable", status: "error" } };
       await whenChecked(30_000);
+      let resultNote = "";
+      if (p.data.results) {
+        await whenAnalyzed(60_000);
+        const st = useAnalysis.getState();
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
+        const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === st.shown) ?? specs[0];
+        if (!pick) return { isError: true, content: "No structural analysis has results to draw. Add an analysis block and call run_analysis first.", card: { title: "No results to show", status: "error" } };
+        if (p.data.analysis && pick.label !== p.data.analysis) resultNote = ` (no results for "${p.data.analysis}")`;
+        useAnalysis.setState({ field: p.data.results as ResultField });
+        showResults(pick.label);
+        // let the viewport attach the overlay before capturing
+        await new Promise((r) => setTimeout(r, 120));
+        const fieldText = { stress: "von Mises stress (blue low, red high)", safety: "factor of safety (red below 1, amber below the target, green to blue above)", disp: "deflection (blue none, red most)", strain: "principal strain (blue compression, red tension)" }[p.data.results];
+        resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed supports (spheres are rollers), rings mark hot spots`;
+      }
       const ids = expandNames(p.data.highlight ?? []);
-      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24 });
+      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results });
       const data = url.split(",")[1] ?? "";
       return {
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
-          { type: "text", text: `Rendered ${p.data.view} view${p.data.section ? `, sectioned across ${p.data.section}` : ""}${ids.length ? `, highlighting ${p.data.highlight!.join(", ")}` : ""}. Z is up; X is red, Y is green in the axis triad.` },
+          { type: "text", text: `Rendered ${p.data.view} view${p.data.section ? `, sectioned across ${p.data.section}` : ""}${ids.length ? `, highlighting ${p.data.highlight!.join(", ")}` : ""}${resultNote}. Z is up; X is red, Y is green in the axis triad.` },
         ],
-        card: { title: `Looked at the ${p.data.view} view`, image: url },
+        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : `Looked at the ${p.data.view} view`, image: url },
       };
     }
     case "update_brief": {
@@ -921,6 +1005,7 @@ export const TOOL_TITLES: Record<string, string> = {
   capture_view: "Looking at the model",
   update_brief: "Updating the brief",
   view_reference: "Looking at a reference",
+  run_analysis: "Running the analysis",
   ask_user: "Asking you",
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",

@@ -5,6 +5,7 @@ import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
 import type { EvalSketch } from "../sketch/types";
+import type { AnalysisSpec } from "../analysis/spec";
 
 export interface Motion {
   origin: V3;
@@ -23,6 +24,19 @@ export interface GearInfo {
   axis: V3;
   phase: number; // degrees, in frameFor(axis)
   meshWith?: string; // component name of the gear it meshes with
+  bore?: number; // shaft hole diameter (0 or missing: none)
+}
+
+export interface BearingInfo {
+  code: string;
+  bore: number;
+  od: number;
+  width: number;
+  /** basic dynamic load rating C, N */
+  dynamicLoadN: number;
+  /** global centre and axis */
+  center: V3;
+  axis: V3;
 }
 
 export interface FastenerInfo {
@@ -55,6 +69,7 @@ export interface EvalPart {
   deps: string[];
   motion?: Motion;
   gear?: GearInfo;
+  bearing?: BearingInfo;
   fastener?: FastenerInfo;
   bom?: { description: string; standard?: string };
   /** set for bodies of an imported STEP file */
@@ -139,7 +154,7 @@ export interface EvalDecision {
 
 export interface DepNode {
   id: string;
-  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "require";
+  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "require" | "analysis";
   label: string;
 }
 
@@ -230,6 +245,8 @@ export interface Model {
   decisions: EvalDecision[];
   /** 2D constrained sketches, solved, with what the sketch editor needs */
   sketches: EvalSketch[];
+  /** stress and drivetrain analyses declared with analysis blocks */
+  analyses: AnalysisSpec[];
   diagnostics: Diagnostic[];
   /** dependency graph: edges from a definition to what reads it */
   graph: { nodes: DepNode[]; edges: { from: string; to: string }[] };

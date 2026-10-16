@@ -10,6 +10,7 @@ import type { MeshData } from "../kernel/build";
 import type { Interference, ChecksResult } from "../kernel/protocol";
 import type { V3 } from "../kernel/recipe";
 import { assembleReport, buildChecksRequest, type CheckReport } from "./checks";
+import { composeReport, type ReportContext } from "./reportPasses";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
@@ -76,6 +77,8 @@ const get = useDesign.getState;
 const set = useDesign.setState;
 
 let parsedCache: { src: string; parsed: ReturnType<typeof parse> } | null = null;
+/** the core report of the latest checks, before the passes in reportPasses add their items */
+let reportBase: { report: CheckReport; ctx: ReportContext } | null = null;
 let activeJobs: { cancel: () => void }[] = [];
 let bumpScheduled = false;
 
@@ -128,6 +131,7 @@ export function loadSource(src: string) {
   activeJobs = [];
   meshes.clear();
   kernel.evict([]);
+  reportBase = null;
   set({ buildErrors: new Map(), report: null, interferences: [], conflict: null, conflictState: "idle", hold: [], checksError: "" });
   bumpMeshes();
   setSource(src, { force: true });
@@ -221,7 +225,10 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   if (get().rev !== rev) return;
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])), (h) => meshes.get(h));
+  const base = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])), (h) => meshes.get(h));
+  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors };
+  reportBase = { report: base, ctx };
+  const report = composeReport(base, ctx);
   set({
     report,
     reportRev: rev,
@@ -251,6 +258,12 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     if (r.cancelled || get().rev !== rev) return;
   }
   set({ stage: "done" });
+}
+
+/** Compose the latest report again, after a pass's inputs changed (an analysis finished, for example). */
+export function refreshReport() {
+  if (!reportBase || reportBase.ctx.rev !== get().reportRev) return;
+  set({ report: composeReport(reportBase.report, reportBase.ctx) });
 }
 
 /** Resolves once checks have run for the current revision (or a later one). */

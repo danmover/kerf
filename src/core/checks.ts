@@ -12,7 +12,7 @@ import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { briefChecks, type GeomLookup } from "./briefChecks";
 
-export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "info";
+export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "analysis" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -27,8 +27,8 @@ export interface CheckItem {
   margin?: number;
   /** brief uses this check serves */
   uses?: string[];
-  /** how the result was established */
-  basis: "geometry" | "parameters" | "needs analysis";
+  /** how the result was established: simulation is the finite-element solver, calculation a textbook formula */
+  basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "calculation";
 }
 
 export interface CheckReport {
@@ -229,17 +229,22 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
 
   // things geometry cannot prove
   if (model.parts.some((p) => p.motion)) {
-    items.push({ id: "analysis:loads", category: "info", status: "info", title: "Torque, tooth strength and wear", detail: "Not verified by geometry. Check gear tooth bending stress and bearing loads for the expected torque, then test a printed prototype.", basis: "needs analysis" });
+    items.push({ id: "analysis:loads", category: "info", status: "info", title: "Torque, tooth strength and wear", detail: "Not verified yet. Add an analysis block with drive:, torque: and speed: (or ask Claude to) to check tooth bending, bearing life and shaft torsion, then test a printed prototype.", basis: "needs analysis" });
   }
   if (model.parts.some((p) => p.kind === "part" && isPrinted(p.material))) {
     items.push({ id: "analysis:print", category: "info", status: "info", title: "Print tolerances", detail: "Hole and boss fits assume a calibrated printer (±0.15 mm). Print a fit test before a full build.", basis: "needs analysis" });
   }
 
+  return finishReport(items, performance.now() - t0 + (kernel?.ms ?? 0));
+}
+
+/** Order items by status and count them (also used when analysis results are merged in later). */
+export function finishReport(items: CheckItem[], ms: number): CheckReport {
   const order: Record<CheckStatus, number> = { fail: 0, warn: 1, pending: 2, pass: 3, info: 4 };
   items.sort((a, b) => order[a.status] - order[b.status]);
   const counts: Record<CheckStatus, number> = { pass: 0, fail: 0, warn: 0, pending: 0, info: 0 };
   for (const i of items) counts[i.status]++;
-  return { items, counts, ms: performance.now() - t0 + (kernel?.ms ?? 0) };
+  return { items, counts, ms };
 }
 
 function mapReq(s: ReqStatus, level: "hard" | "soft"): CheckStatus {

@@ -5,8 +5,8 @@ import type { EvalParam, Model } from "./model";
 import { fmtNum } from "../lang/values";
 import { parse } from "../lang/parser";
 
-const KEEP_UNITS = new Set(["", "mm", "deg", "g", "N", "rpm"]);
-const BASE_UNIT: Record<string, string> = { cm: "mm", m: "mm", in: "mm", rad: "deg", kg: "g", Nm: "Nm", "%": "" };
+const KEEP_UNITS = new Set(["", "mm", "deg", "g", "N", "rpm", "MPa", "Nmm", "h", "hr"]);
+const BASE_UNIT: Record<string, string> = { cm: "mm", m: "mm", in: "mm", rad: "deg", kg: "g", Nm: "Nm", "%": "", kN: "N", lbf: "N", kgf: "N", GPa: "MPa", kPa: "MPa", bar: "MPa", psi: "MPa" };
 
 export function formatParamValue(p: EvalParam, value: number | string | boolean): string {
   if (typeof value === "string") return JSON.stringify(value);

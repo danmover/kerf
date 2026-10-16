@@ -40,7 +40,7 @@ describe("design language", () => {
   });
 
   it("lexes every token of the demos", () => {
-    for (const d of ["enclosure", "reducer", "blank"]) expect(() => lex(demo(d))).not.toThrow();
+    for (const d of ["enclosure", "reducer", "blank", "bracket", "shelf"]) expect(() => lex(demo(d))).not.toThrow();
   });
 });
 
@@ -82,6 +82,22 @@ describe("demo designs", () => {
     expect(m.brief?.uses.every((u) => m.requirements.some((r) => r.uses.includes(u.id)))).toBe(true);
     const ratios = m.parts.filter((p) => p.motion?.ratio).map((p) => Math.abs(p.motion!.ratio));
     expect(Math.min(...ratios)).toBeCloseTo(1 / 12, 3);
+  });
+
+  it("shelf bracket: evaluates cleanly with its stress analysis set up", () => {
+    const m = evaluate(demo("shelf"));
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.parts.map((p) => p.name)).toEqual(["bracket", "wall_screws", "wall_screws"]);
+    expect(m.requirements.filter((r) => r.status === "fail")).toEqual([]);
+    const a = m.analyses[0];
+    expect(a.kind).toBe("structural");
+    if (a.kind !== "structural") return;
+    expect(a.parts).toEqual(["bracket"]);
+    expect(a.supports).toHaveLength(3);
+    expect(a.supports[2].dir).toEqual([0, 1, 0]);
+    expect(a.loads[0]).toMatchObject({ t: "force", f: [0, 0, -8 * 9.81] });
+    expect(a.buildDir).toEqual([1, 0, 0]);
+    expect(a.printed).toBe(true);
   });
 
   it("reducer: the 20:1 revision with a 10 mm shaft still satisfies every parameter requirement", () => {

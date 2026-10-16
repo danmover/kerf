@@ -7,6 +7,7 @@ import { parse } from "../lang/parser";
 import { evaluate } from "../lang/evaluator";
 import { KernelClient } from "../kernel/client";
 import { assembleReport, buildChecksRequest, type CheckReport } from "../core/checks";
+import { composeReport } from "../core/reportPasses";
 import type { ChecksResult } from "../kernel/protocol";
 import type { EvalPart, Model } from "../core/model";
 
@@ -110,7 +111,8 @@ export async function checkIsolated(src: string, onStage?: (s: string) => void, 
       error = e instanceof Error ? e.message : String(e);
     }
     const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-    const report = assembleReport(model, geoModel, result, buildErrors, new Map(model.parts.map((p) => [p.id, p])));
+    const base = assembleReport(model, geoModel, result, buildErrors, new Map(model.parts.map((p) => [p.id, p])));
+    const report = composeReport(base, { model, live: false, rev: 0, buildErrors });
     return { model: geoModel ?? model, report, error, worker: index, built: built.size, ms: performance.now() - t0 };
   } finally {
     pool.release(client);

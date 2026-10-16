@@ -1,0 +1,42 @@
+// Checks that other modules add to the report after the core checks, such as
+// analysis results that arrive while the design sits still. The engine keeps
+// the core report and composes every pass over it here, in one place, so a
+// pass never rewrites another's output and late results re-compose the report
+// instead of chasing it with setState.
+
+import { finishReport, type CheckItem, type CheckReport } from "./checks";
+import type { Model } from "./model";
+
+export interface ReportContext {
+  /** the model the core report was built from */
+  model: Model;
+  /** the design engine's own report; false for a sub-agent's isolated build */
+  live: boolean;
+  /** engine revision of the report (0 when not live) */
+  rev: number;
+  buildErrors: Map<string, string>;
+}
+
+/** Takes the items so far and returns them with this pass's items added (or some removed). */
+export type ReportPass = (items: CheckItem[], ctx: ReportContext) => CheckItem[];
+
+const passes: { id: string; order: number; run: ReportPass }[] = [];
+
+/** Add (or replace) a pass. Lower `order` runs first. Returns the way to remove it. */
+export function registerReportPass(id: string, run: ReportPass, order = 0): () => void {
+  const at = passes.findIndex((p) => p.id === id);
+  if (at >= 0) passes.splice(at, 1);
+  passes.push({ id, order, run });
+  passes.sort((a, b) => a.order - b.order);
+  return () => {
+    const i = passes.findIndex((p) => p.run === run);
+    if (i >= 0) passes.splice(i, 1);
+  };
+}
+
+/** The core report with every pass applied. Fields other than the items and counts are kept. */
+export function composeReport(base: CheckReport, ctx: ReportContext): CheckReport {
+  let items = [...base.items];
+  for (const p of passes) items = p.run(items, ctx);
+  return { ...base, ...finishReport(items, base.ms) };
+}

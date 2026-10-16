@@ -1,5 +1,5 @@
 design "Two-Stage Spur Reducer"
-note "12:1 reducer driven by a NEMA 17 stepper. Printed housing, off-the-shelf 625/688 bearings, POM gears."
+note "12:1 reducer driven by a NEMA 17 stepper. Printed housing, off-the-shelf 625/688 bearings, POM gears. Rated for a light duty (see the analysis at the end)."
 note "Assembly order: motor screws first (from inside), then shafts, bearings and gears, then the cover."
 
 brief {
@@ -215,4 +215,15 @@ decision housing_wall "Housing wall" {
   option "2 mm" { wall: 2mm } "Lighter and faster to print; enough for light loads."
   option "3 mm" { wall: 3mm } "Stiff mounting for the motor and bearings."
   option "4 mm" { wall: 4mm } "Stiffer still; heavier and slower to print."
+}
+
+// ── Duty ───────────────────────────────────────────────
+// A light duty the POM gears pass. At the motor's full 0.4 N·m the
+// 12-tooth stage 2 pinion would fail in bending: change torque: to see it.
+analysis "Light duty" {
+  drive: motor
+  torque: 0.08Nm
+  speed: 300rpm
+  life: 1000h
+  safety: 1.5
 }

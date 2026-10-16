@@ -15,6 +15,7 @@ import { useChatDraft } from "./chatDraft";
 import { useChat, sendMessage } from "../ai/chat";
 import { openSpot } from "../app/spot";
 import { useApiKey } from "./ChatPanel";
+import { openAnalysis } from "./AnalysisPanel";
 
 const CATEGORY_LABEL: Record<string, string> = {
   brief: "Brief",
@@ -23,8 +24,17 @@ const CATEGORY_LABEL: Record<string, string> = {
   access: "Tool access",
   motion: "Motion",
   gears: "Gears",
+  analysis: "Strength",
   build: "Build",
   info: "Needs analysis",
+};
+
+const BASIS_LABEL: Record<string, string> = {
+  "needs analysis": "analysis",
+  geometry: "geometry",
+  parameters: "params",
+  simulation: "fea",
+  calculation: "calc",
 };
 
 export function ChecksPanel() {
@@ -51,6 +61,9 @@ export function ChecksPanel() {
     const same = focusCheck === i.id;
     useView.setState({ focusCheck: same ? null : i.id, focusParts: same ? [] : i.parts ?? [] });
     if (!same && i.span) revealSpan(i.span);
+    // a stress result opens on the model
+    const fea = /^fea:(.*):(strength|stiffness|notes)$/.exec(i.id);
+    if (!same && fea) openAnalysis(fea[1]);
   };
 
   return (
@@ -136,7 +149,7 @@ export function ChecksPanel() {
                       </div>
                     )}
                   </div>
-                  <div className="basis">{i.basis === "needs analysis" ? "analysis" : i.basis === "geometry" ? "geometry" : "params"}</div>
+                  <div className="basis">{BASIS_LABEL[i.basis] ?? i.basis}</div>
                 </motion.div>
               ))}
             </AnimatePresence>
