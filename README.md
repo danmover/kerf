@@ -51,6 +51,13 @@ npm run typecheck
 - Checks cover requirements, solid interference, tool access to every screw, gear mesh and ratio, and motion.
 - When a change breaks a requirement, the conflict solver proposes the smallest parameter changes that fix it. You can hold parameters fixed, and it tells you when no fix exists.
 
+**Drawings and measuring**
+- Every part and the assembly get an engineering drawing automatically: first-angle ISO views, a section through the main features, an isometric view, dimensions with hole and slot callouts, general tolerances (ISO 2768), a title block and, for the assembly, balloons and a parts list. Sheet size and scale are chosen to fit.
+- Drawings update with the design. Click any dimension, view, part or the title block to change it (a parameter, a tolerance or fit, title fields, hidden lines) or to ask Claude about it. Changes are written into a `drawing` block in the design file, so undo, history and Claude see them, and tolerances stay with their dimension when the design changes.
+- Claude can look at a drawing and edit it like the rest of the design.
+- Export drawings as PDF (all sheets), SVG or DXF.
+- Measure in the 3D view (press `R`): click a face, edge or corner for its exact size, and a second one for the distance, angle and centre distance between them. A measurement can be added to the part's drawing as a dimension.
+
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
 - Code editor with highlighting, autocomplete and inline errors. Clicking a part jumps to its code.
@@ -66,7 +73,6 @@ Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two
 - **Sketch and direct modelling tools.** Manual editing today is through parameters and the design file, not 2D sketches with constraints or push and pull on faces.
 - **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds it. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
 - **Engineering analysis.** No stress, deflection or thermal analysis, and no tolerance stack-ups. The checks are geometric.
-- **Drawings and measurement.** No 2D drawings or interactive measuring tool yet.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
 - **Accounts and sharing.** No server, sign-in, sync or collaboration. A hosted version would need a server-side key proxy, rate limits and billing.
 - A larger hardware library, a light theme, and a layout for phones and tablets.
@@ -78,6 +84,7 @@ src/lang/       Kerf language: lexer, parser, evaluator (no eval, step-limited)
 src/library/    Standard parts, thread and bearing tables, involute gears
 src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
+src/drawing/    Engineering drawings: view planning, dimensions, sheet layout, PDF/SVG/DXF
 src/ai/         Claude tools, system prompt, language reference, chat loop
 src/app/        Projects and history, settings, view state, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats

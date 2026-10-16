@@ -1,7 +1,7 @@
 // The 3D viewport: mounts the three.js scene and overlays its controls.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneController } from "./viewport/scene";
 import { meshes, useDesign } from "../core/engine";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
@@ -12,6 +12,7 @@ import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
+import { MeasureButton, MeasureTool, measuring } from "./viewport/Measure";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -25,6 +26,7 @@ export function Viewport() {
   const view = useView();
   const settings = useSettings();
   const [webglError, setWebglError] = useState("");
+  const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene } : null), []);
 
   useEffect(() => {
     if (!mount.current) return;
@@ -38,6 +40,7 @@ export function Viewport() {
     ctl.current = c;
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
+      if (measuring()) return;
       const s = useView.getState();
       if (!id) return select([]);
       if (additive) select(s.selected.includes(id) ? s.selected.filter((x) => x !== id) : [...s.selected, id]);
@@ -139,6 +142,7 @@ export function Viewport() {
         <button className={`icon-btn ${view.isolate ? "active" : ""}`} disabled={!view.selected.length && !view.isolate} onClick={() => useView.setState({ isolate: !view.isolate })} data-tip="Isolate selection (I)" aria-label="Isolate selection">
           <Icon.Target />
         </button>
+        <MeasureButton />
         <div className="sep" />
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
@@ -194,6 +198,7 @@ export function Viewport() {
       </AnimatePresence>
 
       <Hud stage={stage} parts={visibleParts} />
+      <MeasureTool host={measureHost} />
 
       <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
 

@@ -109,6 +109,18 @@ describe("measuring", () => {
     expect(two.angle).toBeCloseTo(0, 6);
   });
 
+  it("names faces and edges in the mesh by the ids measuring looks up", () => {
+    const model = setup();
+    const solid = core.get(model.parts[0].hash)!.shape;
+    const m = solid.mesh({ tolerance: 0.25, angularTolerance: 25 });
+    const e = solid.meshEdges({ tolerance: 0.25, angularTolerance: 25 });
+    const faces = new Set(solid.faces.map((f) => f.hashCode));
+    const edges = new Set(solid.edges.map((x) => x.hashCode));
+    expect(m.faceGroups.length).toBe(faces.size);
+    expect(m.faceGroups.every((g) => faces.has(g.faceId))).toBe(true);
+    expect(e.edgeGroups.every((g) => edges.has(g.edgeId))).toBe(true);
+  });
+
   it("falls back to the nearest face when the id is stale", () => {
     const model = setup();
     const plate = model.parts[0];

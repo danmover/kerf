@@ -84,6 +84,13 @@ export function drawingSpecs(model: Model | null): DrawingSpec[] {
   return [...model.drawings, ...autoDrawings(model, bboxOf)];
 }
 
+/** The drawing that shows these parts: a part's own drawing, or the assembly's for several. */
+export function drawingFor(model: Model, partNames: string[]): DrawingSpec | undefined {
+  const specs = drawingSpecs(model);
+  if (partNames.length === 1) return specs.find((s) => s.of.length === 1 && s.of[0] === partNames[0]);
+  return specs.find((s) => !s.of.length) ?? specs.find((s) => partNames.every((n) => s.of.includes(n)));
+}
+
 /** The parts are built (or failed) so their views can be projected. */
 function partsSettled(plan: DrawingPlan): boolean {
   const errors = useDesign.getState().buildErrors;
