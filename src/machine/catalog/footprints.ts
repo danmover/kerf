@@ -257,6 +257,14 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
       const n = s.pins.length;
       const len = (n / 2) * 2.54;
       const chipZ = s.socket ? 3.9 : 0.8;
+      // the chip first: a component's first solid carries its parts-list entry
+      out.push({
+        suffix: "",
+        label: name,
+        color: BLACK,
+        material: "ABS",
+        recipe: { base: { t: "box", w: 6.35, d: len + 0.15, h: 3.3, at: [0, 0, chipZ], r: 0 }, ops: [{ op: "cut", shape: { t: "cyl", d: 1.6, h: 1.4, at: [0, len / 2 + 0.07, chipZ + 2.1], dir: ZP } }] },
+      });
       if (s.socket) {
         const sw = s.row + 2.6;
         const sl = len + 1.8;
@@ -268,13 +276,6 @@ export function footprintSolids(part: CatalogPart, v: PartValue, t: number, modu
           recipe: { base: { t: "box", w: sw, d: sl, h: 3.4, at: [0, 0, 0], r: 0.2 }, ops: [{ op: "cut", shape: { t: "box", w: s.row - 3.4, d: sl - 3, h: 5, at: [0, 0, -1], r: 0 } }] },
         });
       }
-      out.push({
-        suffix: "",
-        label: name,
-        color: BLACK,
-        material: "ABS",
-        recipe: { base: { t: "box", w: 6.35, d: len + 0.15, h: 3.3, at: [0, 0, chipZ], r: 0 }, ops: [{ op: "cut", shape: { t: "cyl", d: 1.6, h: 1.4, at: [0, len / 2 + 0.07, chipZ + 2.1], dir: ZP } }] },
-      });
       const legs: ShapeRecipe[] = [];
       for (let k = 0; k < n; k++) {
         const [x, y] = dipPos(n, s.row, k);

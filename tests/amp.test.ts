@@ -18,6 +18,7 @@ import { wireList } from "../src/machine/wiring";
 import { BRIEFS, scoreBrief } from "../src/machine/briefs";
 import { guitarTake, stringNote, STRINGS } from "../src/machine/audio/guitar";
 import { ADC_RATE, adcCodes, noteOf, tunerReading, yin } from "../src/machine/audio/pitch";
+import { bomRows } from "../src/persist/files";
 import { fullCheck, problems } from "./helpers/fullcheck";
 
 const AMP = readFileSync(join(__dirname, "../src/demos/practice-amp.kerf"), "utf8");
@@ -205,5 +206,9 @@ describe("Practice Amp with geometry", () => {
     expect([...r.buildErrors.values()]).toEqual([]);
     const score = scoreBrief(BRIEFS.find((b) => b.id === "guitar-amp")!, r.model, r.report.items);
     expect(score.lines.filter((l) => !l.ok)).toEqual([]);
+    // every bought electronic part is in the parts list once per instance, priced; its socket or pins are not extra lines
+    const bom = bomRows(r.model);
+    expect(bom.find((b) => b.catalogId === "tl072")).toMatchObject({ qty: 2, price: 0.4 });
+    expect(bom.filter((b) => b.kind === "Buy" && !b.catalogId && b.item !== "item").map((b) => b.description)).not.toContainEqual(expect.stringMatching(/TL072|socket|pins|tab/));
   });
 });
