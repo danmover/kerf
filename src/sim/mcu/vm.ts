@@ -15,6 +15,13 @@ export interface FnRef {
   call: (args: unknown[]) => unknown;
 }
 
+/** A memory-mapped I/O register: reads and writes go to the peripheral. */
+export interface IoRegister {
+  bits: 8 | 16;
+  read(): number;
+  write(v: number): void;
+}
+
 export interface Hal {
   /** CPU clock in Hz */
   fcpu: number;
@@ -63,6 +70,9 @@ export interface Hal {
   servoPulse(pin: number, us: number | null): void;
   /** pulseIn(): microseconds the pin stayed at state, 0 on timeout (polled when absent) */
   pulseIn?(pin: number, state: number, timeoutUs: number): number;
+
+  /** an I/O register by name (ADCSRA, SREG), when the board models it */
+  register?(name: string): IoRegister | undefined;
 
   /** a mistake in the firmware the chip would not report (index out of range, divide by zero) */
   fault(msg: string, file: string, line: number): void;

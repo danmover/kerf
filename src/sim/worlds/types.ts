@@ -91,6 +91,8 @@ export interface World {
   orientation(comp: string): Orientation;
   /** distance a range sensor sees, mm */
   range?(comp: string): number;
+  /** signals the world puts on nets (by name or "component.PIN"): volts at a time in seconds */
+  drives?(): { on: string; v: (t: number) => number }[];
   /** ambient temperature, °C, and how well motors shed heat here (1 = still air) */
   thermal(): { ambient: number; cooling: number };
   /** numbers to record each frame (pose, contact forces, progress) */

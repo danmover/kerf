@@ -17,6 +17,7 @@ import { VARIANTS } from "../../sim/worlds/common";
 import { fmtNum } from "../../lang/values";
 import { Icon } from "../icons";
 import { Timeline } from "./SimPanel";
+import { DisplayView } from "./DisplayView";
 import { EVENT_KIND_LABEL, mmss, useSelectedScenario } from "./simUi";
 import "../../styles/sim.css";
 
@@ -259,6 +260,12 @@ function Readouts({ v, t, label, stale }: { v: VariantRun; t: number; label: str
         <Row key={m} k={m} v={`${n(at(`${m}.rpm`))} rpm · ${n(at(`${m}.amps`), 1)} A · ${n(at(`${m}.temp`))} °C`} />
       ))}
       {battery && <Row k={battery} v={`${n(at(`${battery}.soc`))} % · ${n(at(`${battery}.volts`), 1)} V`} />}
+      {v.displays?.map((d) => (
+        <div key={d.name} className="simv-screen">
+          <span>{d.name}</span>
+          <DisplayView d={d} t={t} scale={212 / d.w} />
+        </div>
+      ))}
     </motion.div>
   );
 }

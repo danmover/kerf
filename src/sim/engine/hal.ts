@@ -5,7 +5,8 @@
 // moment and interrupt handlers see the pin levels of that instant).
 
 import type { Board } from "../mcu/board";
-import { Halt, type FnRef, type Hal } from "../mcu/vm";
+import { Halt, type FnRef, type Hal, type IoRegister } from "../mcu/vm";
+import { MODELLED_VECTORS } from "../mcu/registers";
 
 /** What the board needs from the electrical plant around it. */
 export interface PlantPort {
@@ -40,6 +41,14 @@ export interface SerialLine {
 
 /** pin modes as the AVR has them */
 const Mode = { INPUT: 0, OUTPUT: 1, PULLUP: 2 } as const;
+
+// ADCSRA bits
+const ADEN = 0x80;
+const ADSC = 0x40;
+const ADATE = 0x20;
+const ADIF = 0x10;
+const ADIE = 0x08;
+const ADC_PRESCALE = [2, 2, 4, 8, 16, 32, 64, 128];
 
 /** A binary heap of pin changes ordered by time. */
 class PinEvents {
@@ -155,6 +164,14 @@ export class SimHal implements Hal {
   private rng: () => number;
   private analogRef = 1;
 
+  /** interrupt handlers the firmware defines with ISR(), by vector name */
+  vectors = new Map<string, FnRef>();
+  // the ADC as its registers drive it: `done` is the cycle the conversion under way completes
+  private adc = { admux: 0, adcsra: 0, adcsrb: 0, adcl: 0, adch: 0, didr0: 0, done: Infinity, first: true, pending: false };
+  private regs = new Map<string, IoRegister>();
+  /** conversions the ADC finished through its registers */
+  adcConversions = 0;
+
   constructor(
     public board: Board,
     opts: { seed?: number; eeprom?: Uint8Array } = {},
@@ -203,6 +220,11 @@ export class SimHal implements Hal {
           this.applyPin(pin, level);
           continue;
         }
+        const ta = this.adc.done;
+        if (ta <= this.cyc && ta <= this.nextStep && ta <= te) {
+          this.adcComplete();
+          continue;
+        }
         if (this.cyc >= this.nextStep) {
           const t0 = this.nextStep;
           this.nextStep += this.stepCycles;
@@ -217,13 +239,18 @@ export class SimHal implements Hal {
             this.runIsr(k);
             continue;
           }
+          if (this.adc.pending) {
+            this.adc.pending = false;
+            this.runAdcVector();
+            continue;
+          }
         }
         break;
       }
     } finally {
       this.servicing = false;
     }
-    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity);
+    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.adc.done, this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity);
   }
 
   spend(cycles: number): void {
@@ -344,6 +371,8 @@ export class SimHal implements Hal {
   }
 
   analogRead(pin: number): number {
+    if (this.adc.done < Infinity && this.adc.adcsra & ADATE)
+      this.fault("analogRead() while the ADC runs free from its registers: on the chip it rewrites ADMUX under the interrupt, and both get the wrong channel's readings", "firmware", 0);
     const ch = pin >= this.board.analog[0] ? pin - this.board.analog[0] : pin;
     const p = this.board.analog[ch];
     if (p === undefined) {
@@ -406,7 +435,179 @@ export class SimHal implements Hal {
 
   setInterrupts(on: boolean): void {
     this.intEnabled = on;
-    if (on && !this.inIsr && this.irqPending.some(Boolean)) this.nextEvt = this.cyc;
+    if (on && !this.inIsr && (this.irqPending.some(Boolean) || this.adc.pending)) this.nextEvt = this.cyc;
+  }
+
+  // ---------- I/O registers: the ADC and SREG ----------
+
+  /** Take the firmware's ISR() handlers: the ones this board runs, and a fault for each it never would. */
+  bindVectors(fw: { fnNames: string[]; call(name: string): unknown }) {
+    for (const n of fw.fnNames.filter((x) => /_vect$/.test(x))) {
+      if (MODELLED_VECTORS.includes(n)) this.vectors.set(n, { fnName: n, call: () => fw.call(n) });
+      else this.fault(`ISR(${n}) never runs: the simulator runs ISR(ADC_vect) and attachInterrupt() handlers, not ${n.slice(0, -5).replace(/_/g, " ")} interrupts yet`, "firmware", 0);
+    }
+  }
+
+  register(name: string): IoRegister | undefined {
+    const known = this.regs.get(name);
+    if (known) return known;
+    const a = this.adc;
+    const r8 = (read: () => number, write: (v: number) => void): IoRegister => ({ bits: 8, read, write });
+    const word = () => a.adcl | (a.adch << 8);
+    let r: IoRegister | undefined;
+    switch (name) {
+      case "ADMUX":
+        r = r8(
+          () => a.admux,
+          (v) => (a.admux = v & 0xef),
+        );
+        break;
+      case "ADCSRA":
+        r = r8(
+          () => a.adcsra,
+          (v) => this.writeAdcsra(v),
+        );
+        break;
+      case "ADCSRB":
+        r = r8(
+          () => a.adcsrb,
+          (v) => (a.adcsrb = v & 0x47),
+        );
+        break;
+      // the data registers are read-only: writes do nothing, as on the chip
+      case "ADCL":
+        r = r8(
+          () => a.adcl,
+          () => undefined,
+        );
+        break;
+      case "ADCH":
+        r = r8(
+          () => a.adch,
+          () => undefined,
+        );
+        break;
+      case "ADC":
+      case "ADCW":
+        r = { bits: 16, read: word, write: () => undefined };
+        break;
+      case "DIDR0":
+        r = r8(
+          () => a.didr0,
+          (v) => (a.didr0 = v & 0x3f),
+        );
+        break;
+      case "SREG":
+        // only the global interrupt flag (bit 7) means anything here
+        r = r8(
+          () => (this.intEnabled ? 0x80 : 0),
+          (v) => this.setInterrupts((v & 0x80) !== 0),
+        );
+        break;
+    }
+    if (r) this.regs.set(name, r);
+    return r;
+  }
+
+  private writeAdcsra(v: number) {
+    const a = this.adc;
+    const was = a.adcsra;
+    // writing a one to ADIF clears it; writing a zero leaves it as it is
+    let nv = (v & ~(ADIF | ADSC)) | (was & ADIF);
+    if (v & ADIF) nv &= ~ADIF;
+    if (!(nv & ADEN)) {
+      // turning the ADC off stops a conversion under way
+      a.done = Infinity;
+      a.first = true;
+    } else if (v & ADSC && a.done === Infinity) {
+      if ((nv & ADATE) && (a.adcsrb & 7) !== 0)
+        this.fault(`ADCSRB selects auto-trigger source ${a.adcsrb & 7}: the simulator runs the ADC free running (ADTS = 0) or one conversion at a time, not triggered by timers or the comparator`, "firmware", 0);
+      const ps = ADC_PRESCALE[nv & 7];
+      if (this.fcpu / ps > 1_000_000) this.fault(`The ADC clock is ${Math.round(this.fcpu / ps / 1000)} kHz (prescaler ${ps}): above 1 MHz its readings are unreliable; the datasheet wants 50–200 kHz for full resolution`, "firmware", 0);
+      // the first conversion after the ADC is turned on takes 25 ADC clocks, the rest 13
+      a.done = this.cyc + (a.first ? 25 : 13) * ps;
+      a.first = false;
+      if (a.done < this.nextEvt) this.nextEvt = a.done;
+    }
+    if (a.done < Infinity) nv |= ADSC;
+    a.adcsra = nv;
+    if (nv & ADIF && nv & ADIE && !(was & ADIE)) this.raiseAdc();
+  }
+
+  /** a conversion finishes: the sample taken 1.5 ADC clocks after it started goes into ADCH:ADCL */
+  private adcComplete() {
+    const a = this.adc;
+    const ps = ADC_PRESCALE[a.adcsra & 7];
+    const at = a.done - 11.5 * ps;
+    a.adcl = 0;
+    a.adch = 0;
+    const counts = this.convert(a.admux & 0x0f, (a.admux >> 6) & 3, at);
+    if (a.admux & 0x20) {
+      a.adch = counts >> 2;
+      a.adcl = (counts & 3) << 6;
+    } else {
+      a.adcl = counts & 0xff;
+      a.adch = counts >> 8;
+    }
+    a.adcsra |= ADIF;
+    this.adcConversions++;
+    // free running: the next conversion starts as this one ends
+    if (a.adcsra & ADATE && (a.adcsrb & 7) === 0 && a.adcsra & ADEN) a.done += 13 * ps;
+    else {
+      a.done = Infinity;
+      a.adcsra &= ~ADSC;
+    }
+    if (a.adcsra & ADIE) this.raiseAdc();
+  }
+
+  private raiseAdc() {
+    if (!this.vectors.has("ADC_vect")) {
+      this.fault("ADIE is set but there is no ISR(ADC_vect): on the chip the first finished conversion jumps to the reset vector", "firmware", 0);
+      return;
+    }
+    this.adc.pending = true;
+  }
+
+  private convert(mux: number, refs: number, at: number): number {
+    const max = (1 << this.board.adcBits) - 1;
+    const avcc = this.plant?.vref() ?? this.board.adcRefV;
+    if (refs === 0) this.fault("ADMUX selects the AREF pin as the ADC reference (REFS1:0 = 00), and nothing drives AREF: set REFS0 to measure against AVcc", "firmware", 0);
+    if (refs === 2) this.fault("ADMUX sets REFS1:0 = 10, which is reserved on the ATmega328P", "firmware", 0);
+    const vref = refs === 3 ? 1.1 : avcc;
+    let v: number | undefined;
+    if (mux === 14) v = 1.1;
+    else if (mux === 15) v = 0;
+    else if (mux === 8) v = 0.314;
+    else if (mux < this.board.analog.length) v = this.plant?.analogVolts(this.board.analog[mux], at);
+    else {
+      this.fault(`ADMUX selects ADC channel ${mux}, which the ${this.board.name} does not have`, "firmware", 0);
+      v = 0;
+    }
+    if (v === undefined) return Math.floor(200 + this.rng() * 300);
+    const noise = (this.rng() + this.rng() - 1) * 0.7;
+    return Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+  }
+
+  /** ISR(ADC_vect): the hardware clears ADIF as the handler starts */
+  private runAdcVector() {
+    const fn = this.vectors.get("ADC_vect");
+    if (!fn) return;
+    this.adc.adcsra &= ~ADIF;
+    const c0 = this.cyc;
+    this.inIsr = true;
+    const was = this.intEnabled;
+    this.intEnabled = false;
+    // the vector jump and the handler's register saves; then the restores and reti
+    this.cyc += 24;
+    try {
+      fn.call([]);
+    } finally {
+      this.cyc += 20;
+      this.inIsr = false;
+      this.intEnabled = was;
+      this.isrCount++;
+      this.isrCycles += this.cyc - c0;
+    }
   }
 
   millis(): number {

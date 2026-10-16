@@ -518,3 +518,161 @@ export class Mpu6050 implements I2CDevice {
     this.put16be(0x47, (o.rate[2] + this.bias[2]) * gFs);
   }
 }
+
+/** What a display showed from a moment on: one bit a pixel, rows of w/8 bytes, most significant bit leftmost. */
+export interface DisplayFrame {
+  t: number;
+  px: Uint8Array;
+}
+
+/** command bytes that take parameters, and how many */
+const SSD1306_ARGS: Record<number, number> = { 0x81: 1, 0x20: 1, 0x21: 2, 0x22: 2, 0xa8: 1, 0xd3: 1, 0xd5: 1, 0xd9: 1, 0xda: 1, 0xdb: 1, 0x8d: 1, 0x26: 6, 0x27: 6, 0x29: 5, 0x2a: 5, 0xa3: 2 };
+/** keep at most this many frames: past it, every other one goes and the gap between frames doubles */
+const DISPLAY_FRAMES_MAX = 3000;
+
+/**
+ * Solomon SSD1306 OLED controller on I2C: the command set the usual drivers
+ * send (Adafruit, U8g2, hand-rolled), its display RAM in all three addressing
+ * modes, and what the panel shows, recorded as frames over time.
+ */
+export class Ssd1306 implements I2CDevice {
+  ram: Uint8Array;
+  pages: number;
+  on = false;
+  inverted = false;
+  allOn = false;
+  contrast = 0x7f;
+  chargePump = false;
+  segRemap = false;
+  comReverse = false;
+  startLine = 0;
+  frames: DisplayFrame[] = [];
+  /** told about set-up mistakes the panel would show as a dark screen */
+  warn?: (msg: string) => void;
+  private mode = 2;
+  private col = 0;
+  private page = 0;
+  private colStart = 0;
+  private colEnd: number;
+  private pageStart = 0;
+  private pageEnd: number;
+  private cmd: number[] = [];
+  private dirty = true;
+  private lastSnap = -Infinity;
+  private gap = 0.05;
+  constructor(
+    public name: string,
+    public w: number,
+    public h: number,
+    private fcpu: number,
+  ) {
+    this.pages = h / 8;
+    this.ram = new Uint8Array(w * this.pages);
+    this.colEnd = w - 1;
+    this.pageEnd = this.pages - 1;
+  }
+  write(bytes: number[]) {
+    let i = 0;
+    while (i < bytes.length) {
+      const control = bytes[i++];
+      const data = (control & 0x40) !== 0;
+      // Co = 1: one byte, then another control byte; Co = 0: the rest of the message
+      const end = control & 0x80 ? Math.min(bytes.length, i + 1) : bytes.length;
+      for (; i < end; i++) {
+        if (data) this.data(bytes[i]);
+        else this.command(bytes[i]);
+      }
+    }
+    this.dirty = true;
+  }
+  read(n: number): number[] {
+    // the status byte: bit 6 set while the display is off
+    return new Array(n).fill(this.on ? 0 : 0x40);
+  }
+  private command(b: number) {
+    // a command's parameters arrive as the bytes after it
+    if (this.cmd.length) {
+      this.cmd.push(b);
+      if (this.cmd.length > SSD1306_ARGS[this.cmd[0]]) {
+        this.apply(this.cmd);
+        this.cmd = [];
+      }
+      return;
+    }
+    if (SSD1306_ARGS[b]) this.cmd = [b];
+    else this.apply([b]);
+  }
+  private apply([c, a = 0, b = 0]: number[]) {
+    if (c === 0xae) this.on = false;
+    else if (c === 0xaf) {
+      this.on = true;
+      if (!this.chargePump) this.warn?.(`${this.name} was switched on with its charge pump off, so the panel stays dark: send 0x8D, 0x14 before 0xAF`);
+    }
+    else if (c === 0xa4 || c === 0xa5) this.allOn = c === 0xa5;
+    else if (c === 0xa6 || c === 0xa7) this.inverted = c === 0xa7;
+    else if (c === 0xa0 || c === 0xa1) this.segRemap = c === 0xa1;
+    else if (c === 0xc0 || c === 0xc8) this.comReverse = c === 0xc8;
+    else if (c >= 0x40 && c <= 0x7f) this.startLine = c & 0x3f;
+    else if (c >= 0xb0 && c <= 0xb7) this.page = (c & 7) % this.pages;
+    else if (c <= 0x0f) this.col = (this.col & 0xf0) | c;
+    else if (c >= 0x10 && c <= 0x1f) this.col = ((c & 0x0f) << 4) | (this.col & 0x0f);
+    else if (c === 0x81) this.contrast = a;
+    else if (c === 0x8d) this.chargePump = (a & 0x04) !== 0;
+    else if (c === 0x20) this.mode = a & 3;
+    else if (c === 0x21) {
+      this.colStart = this.col = a & 0x7f;
+      this.colEnd = b & 0x7f;
+    } else if (c === 0x22) {
+      this.pageStart = this.page = (a & 7) % this.pages;
+      this.pageEnd = (b & 7) % this.pages;
+    }
+  }
+  private data(b: number) {
+    if (this.col < this.w) this.ram[this.page * this.w + this.col] = b;
+    if (this.mode === 2) {
+      // page addressing: along the page, wrapping to its start
+      this.col = this.col >= this.w - 1 ? 0 : this.col + 1;
+    } else if (this.mode === 0) {
+      if (++this.col > this.colEnd) {
+        this.col = this.colStart;
+        if (++this.page > this.pageEnd) this.page = this.pageStart;
+      }
+    } else if (++this.page > this.pageEnd) {
+      this.page = this.pageStart;
+      if (++this.col > this.colEnd) this.col = this.colStart;
+    }
+  }
+  /** The panel as seen, upright with the usual A1/C8 set-up: one bit a pixel. */
+  image(): Uint8Array {
+    const { w, h } = this;
+    const out = new Uint8Array((w * h) / 8);
+    if (!this.on || !this.chargePump) return out;
+    for (let y = 0; y < h; y++) {
+      const row = (((this.comReverse ? y : h - 1 - y) + this.startLine) % h) | 0;
+      const p = row >> 3;
+      const bit = 1 << (row & 7);
+      for (let x = 0; x < w; x++) {
+        const col = this.segRemap ? x : w - 1 - x;
+        let lit = this.allOn || (this.ram[p * w + col] & bit) !== 0;
+        if (this.inverted) lit = !lit;
+        if (lit) out[y * (w >> 3) + (x >> 3)] |= 0x80 >> (x & 7);
+      }
+    }
+    return out;
+  }
+  /** Called as time passes: record what changed, at most every `gap` seconds (`final`: at the end of the run). */
+  tick(cyc: number, final = false) {
+    const t = cyc / this.fcpu;
+    if (!this.dirty || (!final && t - this.lastSnap < this.gap)) return;
+    this.dirty = false;
+    this.lastSnap = t;
+    const px = this.image();
+    const last = this.frames[this.frames.length - 1];
+    if (last && last.px.every((v, i) => v === px[i])) return;
+    this.frames.push({ t, px });
+    if (this.frames.length > DISPLAY_FRAMES_MAX) {
+      this.frames = this.frames.filter((_f, i) => i % 2 === 0);
+      this.gap *= 2;
+    }
+  }
+}

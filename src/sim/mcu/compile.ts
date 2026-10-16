@@ -9,6 +9,7 @@ import {
   BOOL,
   common,
   converter,
+  intType,
   isArith,
   isIntegral,
   promote,
@@ -23,6 +24,7 @@ import { CError } from "./lex";
 import type { C, Ctx, Ev, Frame, LV } from "./ir";
 import { LIB_FUNCS, LIB_OBJECTS, LIB_CLASSES, newClassInstance, newLibState, resetLibState } from "./lib";
 import { castView, needsView } from "./mem";
+import { AVR_REGISTERS, UNMODELLED_REGISTER } from "./registers";
 import type { FnRef, Hal, Ptr } from "./vm";
 import { Halt } from "./vm";
 
@@ -78,6 +80,8 @@ export interface Firmware {
   /** call a firmware function by name (setup, loop, an interrupt handler) */
   call(name: string, args?: unknown[]): unknown;
   has(name: string): boolean;
+  /** the functions the firmware defines (with a body) */
+  fnNames: string[];
   /** value of a global variable for the timeline (numbers, or text for char pointers) */
   read(name: string): number | string | undefined;
   globals: Map<string, GlobalInfo>;
@@ -171,6 +175,7 @@ class Compiler {
         return self.invoke(fo, args as Frame);
       },
       has: (name) => !!this.fns.get(name)?.body,
+      fnNames: [...this.fns.values()].filter((f) => f.body).map((f) => f.name),
       read: (name) => this.readGlobal(name),
       globals: this.globalsInfo,
       staticRam: this.staticRam,
@@ -790,6 +795,7 @@ class Compiler {
     if (name === "NULL") return { t: { k: "ptr", to: VOID }, ev: () => null, cost: 0, cv: 0, pos: e };
     const s = this.lookup(name);
     if (!s) {
+      if (AVR_REGISTERS.has(name)) return this.ioRegister(name, e);
       const asValue = LIB_OBJECTS[name]?.["@value"];
       if (asValue) return asValue([], this.ctx, e);
       if (LIB_OBJECTS[name]) return this.fail(`${name} is a library object; call one of its functions, like ${name}.begin()`, e);
@@ -803,7 +809,10 @@ class Compiler {
     }
     const slot = s.slot;
     const t = s.t;
-    const loadCost = CYC.load * Math.max(1, sizeOf(strip(t), this.T.abi) / 2);
+    // an array, struct or object named here is used through its address (indexing, a member, decay to a
+    // pointer): only a value is loaded in full
+    const st = strip(t);
+    const loadCost = st.k === "arr" || st.k === "struct" || st.k === "class" ? CYC.load : CYC.load * Math.max(1, sizeOf(st, this.T.abi) / 2);
     if (s.k === "g") {
       const G = this.G;
       const lv: LV = {
@@ -837,6 +846,21 @@ class Compiler {
       ptr: (f) => ({ m: f, i: slot }),
     };
     return { t, ev: lv.get, lv, cost: loadCost, pos: e };
+  }
+
+  /** A register of the chip's peripherals (ADCSRA, SREG): every read and write goes to the board. */
+  ioRegister(name: string, e: Pos): C {
+    const r = this.hal.register?.(name);
+    if (!r) return this.fail(UNMODELLED_REGISTER(name, "ATmega328P"), e);
+    const t = intType(r.bits, false, r.bits === 8 ? "uint8_t" : "uint16_t");
+    const mask = r.bits === 8 ? 0xff : 0xffff;
+    const cell = new Proxy([] as unknown[], {
+      get: (_t, k) => (k === "length" ? 1 : k === "0" ? r.read() : undefined),
+      set: (_t, k, v) => (k === "0" && r.write(Number(v) & mask), true),
+    });
+    const lv: LV = { get: () => r.read(), set: (_f, v) => r.write(Number(v) & mask), ptr: () => ({ m: cell, i: 0 }) };
+    // lds / sts: two cycles each way
+    return { t, ev: lv.get, lv, cost: 2 * (r.bits / 8), pos: e };
   }
 
   binary(op: string, a0: C, b0: C, pos: Pos): C {

@@ -9,6 +9,7 @@ import type { MachineData } from "../../machine/types";
 import { catalogPart } from "../../machine/catalog";
 import type { MotorLoad, Orientation, PlantView, SceneSpec, World, WorldEvent } from "./types";
 import type { VariantName } from "./common";
+import { describeSignal, signalFn, type SignalSpec } from "./signals";
 
 export interface BenchSpec {
   /** load on each motor, N·mm (defaults to the component's `load:`) */
@@ -22,6 +23,8 @@ export interface BenchSpec {
   /** what range sensors see, mm */
   range: number;
   ambient: number;
+  /** test signals on nets (a plucked note into a tuner's input) */
+  signals?: SignalSpec[];
 }
 
 const K: Record<VariantName, number> = { pessimistic: 1.3, expected: 1, optimistic: 0.7 };
@@ -51,6 +54,11 @@ export class Bench implements World {
       if (!(mc.name in spec.loads) && mc.load === undefined && spec.loadFactor) this.assumptions.push(`${mc.name}: no load: given, so it runs free`);
     }
     this.assumptions.push(spec.loadFactor ? `${variant} run: motor loads ×${+(spec.loadFactor * K[variant]).toFixed(2)} of the design load` : "Motors run free (no load)");
+    for (const s of spec.signals ?? []) this.assumptions.push(`Signal on ${describeSignal(s)}, the same in all three runs`);
+  }
+
+  drives() {
+    return (this.spec.signals ?? []).map((s) => ({ on: s.on, v: signalFn(s) }));
   }
 
   motorLoad(comp: string): MotorLoad {

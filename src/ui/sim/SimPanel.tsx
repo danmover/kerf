@@ -24,6 +24,7 @@ import { fmtNum } from "../../lang/values";
 import { Icon, StatusIcon } from "../icons";
 import { useChatDraft } from "../chatDraft";
 import { Plot } from "./Plot";
+import { DisplayView } from "./DisplayView";
 import { mmss, seek, useSelectedScenario } from "./simUi";
 import "../../styles/sim.css";
 
@@ -484,6 +485,18 @@ function Happenings({ v }: { v: VariantRun }) {
   const t = useSim((s) => s.t);
   return (
     <>
+      {v.displays?.map((d) => (
+        <div key={d.name} className="sim-screen">
+          <div className="sim-h">
+            {d.name}
+            <span className="grow" />
+            <span className="mono" style={{ fontSize: 10, color: "var(--text-4)", textTransform: "none", letterSpacing: 0 }}>
+              {d.w} × {d.h} at {mmss(t)}
+            </span>
+          </div>
+          <DisplayView d={d} t={t} scale={2} />
+        </div>
+      ))}
       <div className="sim-tabs" role="tablist">
         <button role="tab" aria-selected={tab === "events"} className={tab === "events" ? "on" : ""} onClick={() => setTab("events")}>
           events {v.events.length}

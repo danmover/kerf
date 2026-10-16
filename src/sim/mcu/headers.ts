@@ -4,6 +4,7 @@
 // functions behind them live in lib.ts.
 
 import type { Board } from "./board";
+import { AVR_INTERRUPT_H, AVR_IO_H } from "./registers";
 
 export function systemHeaders(b: Board): Record<string, string> {
   const analog = b.analog.map((p, i) => `#define A${i} ${p}`).join("\n");
@@ -17,6 +18,8 @@ export function systemHeaders(b: Board): Record<string, string> {
 #include <string.h>
 #include <math.h>
 #include <avr/pgmspace.h>
+#include <avr/io.h>
+#include <avr/interrupt.h>
 
 #define HIGH 0x1
 #define LOW  0x0
@@ -135,8 +138,8 @@ ${analog}
 #define LONG_MAX 2147483647L
 #define ULONG_MAX 4294967295UL
 `,
-    "avr/interrupt.h": empty,
-    "avr/io.h": empty,
+    "avr/interrupt.h": AVR_INTERRUPT_H,
+    "avr/io.h": AVR_IO_H,
     "util/atomic.h": `#pragma once
 #define ATOMIC_RESTORESTATE 1
 #define ATOMIC_FORCEON 1

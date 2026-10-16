@@ -11,6 +11,9 @@ import { generateFirmware } from "../../machine/firmware";
 import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
 import { Plant } from "./plant";
 import { SimHal, type SerialLine, type SimFault } from "./hal";
+import type { DisplayFrame } from "./devices";
+
+export type { DisplayFrame };
 import type { SceneSpec, World, WorldEvent } from "../worlds/types";
 import { rngFrom, VARIANTS, type VariantName } from "../worlds/common";
 
@@ -91,6 +94,15 @@ export interface VariantRun {
   assumptions: string[];
   notes: string[];
   limits: string[];
+  /** what each display showed over the run */
+  displays: DisplayRun[];
+}
+
+export interface DisplayRun {
+  name: string;
+  w: number;
+  h: number;
+  frames: DisplayFrame[];
 }
 
 export interface RunResult {
@@ -217,6 +229,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   let loopMax = 0;
   try {
     fwRef = loadFirmware(files, board, hal);
+    hal.bindVectors(fwRef.fw);
     watch = watchList(fwRef.fw.globals as Map<string, { t: { k: string } }>);
     fwRef.fw.reset();
     fwRef.fw.call("setup");
@@ -311,6 +324,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results,
     summary,
     scene: world.scene(),
+    displays: plant.displays.map((d) => (d.tick(hal.cyc, true), { name: d.name, w: d.w, h: d.h, frames: d.frames })),
     assumptions: [...plant.assumptions, ...(world.assumptions ?? [])],
     notes,
     limits: [...world.limits, "The firmware runs as compiled C++ on a cycle-counted virtual chip, not as the real AVR machine code: timing is close but not exact.", "Electrical: average-voltage motor models, no wiring resistance or electrical noise."],

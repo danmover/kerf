@@ -9,7 +9,7 @@ import { buildNetlist, type Net, type NetPin, type Netlist } from "../../machine
 import { catalogPart } from "../../machine/catalog";
 import type { CatalogPart, MachineComponent, MachineData } from "../../machine/types";
 import type { Board } from "../mcu/board";
-import { Actuator, Battery, Bno055, DCMotor, Mpu6050, Regulator, Servo, quadrature, type ImuNoise } from "./devices";
+import { Actuator, Battery, Bno055, DCMotor, Mpu6050, Regulator, Servo, Ssd1306, quadrature, type ImuNoise } from "./devices";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
@@ -102,6 +102,8 @@ export class Plant implements PlantPort, PlantView {
   servos: ServoSlot[] = [];
   i2cDevs = new Map<number, { dev: I2CDevice & { ready?(t: number): boolean }; vcc?: Net; comp: string }>();
   analogSrc = new Map<number, (t: number) => number | undefined>();
+  /** OLED panels on the I2C bus, with what they showed over the run */
+  displays: Ssd1306[] = [];
   netV = new Map<number, number>();
   /** volts the microcontroller runs from */
   mcuV = 5;
@@ -141,6 +143,10 @@ export class Plant implements PlantPort, PlantView {
     for (const mc of comps) {
       const part = catalogPart(mc.catalogId);
       if (!part || mc.name === mcu) continue;
+      if (part.specs.driver === "SSD1306" && part.specs.iface === "i2c") {
+        this.display(mc, part);
+        continue;
+      }
       switch (part.kind) {
         case "battery":
           this.batteries.push({ b: new Battery(mc.name, part, opts.soc ?? 1), net: this.netOf(mc.name, "POS") });
@@ -212,6 +218,22 @@ export class Plant implements PlantPort, PlantView {
         const vcc = s.fbVcc ? (this.netV.get(s.fbVcc.id) ?? 0) : 0;
         return (s.a.pos / s.a.stroke) * vcc;
       });
+    }
+    // test signals from the world, onto the analog inputs their nets reach
+    for (const d of world.drives?.() ?? []) {
+      const dot = d.on.indexOf(".");
+      const n = dot > 0 ? this.netOf(d.on.slice(0, dot), d.on.slice(dot + 1)) : this.net.nets.find((x) => x.name === d.on);
+      if (!n) {
+        this.notes.push(`The signal on ${d.on} goes nowhere: there is no net called ${d.on}${dot > 0 ? " (or that pin is not wired)" : ""}.`);
+        continue;
+      }
+      const pin = this.mcuPinOfNet.get(n.id);
+      if (pin === undefined || !this.board.analog.includes(pin)) {
+        this.notes.push(`The signal on ${d.on} does not reach an analog input of the ${this.board.name}, so the firmware cannot read it.`);
+        continue;
+      }
+      const fcpu = this.board.fcpu;
+      this.analogSrc.set(pin, (t) => d.v(t / fcpu));
     }
     if (this.unsupported.length) this.notes.push(`Not simulated yet (they stay still): ${this.unsupported.join(", ")}.`);
     for (const b of this.batteries) this.assumptions.push(...b.b.assumed);
@@ -350,6 +372,24 @@ export class Plant implements PlantPort, PlantView {
       });
       return;
     }
+  }
+
+  private display(mc: MachineComponent, part: CatalogPart) {
+    const sda = this.mcuPinFor(mc.name, "SDA");
+    const scl = this.mcuPinFor(mc.name, "SCL");
+    if (sda !== this.board.sda || scl !== this.board.scl) {
+      if (sda >= 0 || scl >= 0) this.notes.push(`${mc.name}: SDA and SCL must go to ${this.board.name} pins A4 and A5 for Wire; it is not on the bus.`);
+      return;
+    }
+    const d = new Ssd1306(mc.name, Number(part.specs.w_px ?? 128), Number(part.specs.h_px ?? 64), this.board.fcpu);
+    const said = new Set<string>();
+    d.warn = (text) => {
+      if (said.has(text)) return;
+      said.add(text);
+      this.events.push({ t: this.t, kind: "warn", text });
+    };
+    this.displays.push(d);
+    this.i2cDevs.set(parseInt(String(part.specs.i2c_addr ?? "0x3C"), 16), { dev: d, vcc: this.netOf(mc.name, "VCC"), comp: mc.name });
   }
 
   // ---------- PlantPort ----------
@@ -554,6 +594,7 @@ export class Plant implements PlantPort, PlantView {
       this.events.push({ t, kind: "warn", text: `The ${this.board.name} browned out: its supply fell to ${this.mcuV.toFixed(1)} V` });
       this.hal.powerFail = "brownout";
     }
+    for (const d of this.displays) d.tick(t1);
     this.afterStep?.(t1 / fcpu);
   }
 

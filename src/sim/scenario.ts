@@ -8,13 +8,14 @@ import { Args } from "../lang/args";
 import type { Expr, Span } from "../lang/ast";
 import { Fn, Obj, Vec, typeName, type CallCtx, type Value } from "../lang/values";
 import type { BenchSpec } from "./worlds/bench";
+import { noteHz, type SignalShape, type SignalSpec } from "./worlds/signals";
 import type { HingeSpec, SandPitSpec, ScrewSpec, TunnellerSpec } from "./worlds/sandPit";
 import { VARIANTS, type VariantName } from "./worlds/common";
 
 /** A world or machine description made by a sim.* function. */
 export class SimSpec extends Obj {
   constructor(
-    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config",
+    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal",
     public data: unknown,
     label: string,
   ) {
@@ -116,12 +117,45 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   simFn(
     "bench",
-    ["load", "force", "range", "ambient"],
-    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. Use it for power-up, battery runtime, overload and hot-room tests. load: share of the design load (1; 0 runs the motors free, 1.5 is a 50 % overload); force: push on each linear actuator's rod (0 N); range: what a distance sensor sees (1 m); ambient: room temperature (20C).",
-    (a) => {
+    ["load", "force", "range", "ambient", "signals"],
+    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. Use it for power-up, battery runtime, overload and hot-room tests. load: share of the design load (1; 0 runs the motors free, 1.5 is a 50 % overload); force: push on each linear actuator's rod (0 N); range: what a distance sensor sees (1 m); ambient: room temperature (20C); signals: a sim.signal(...) or a list of them, test signals on nets that reach the controller's analog inputs.",
+    (a, ctx) => {
       const load = a.num("load", 1);
       if (load < 0) a.ctx.error("sim.bench(): load is a share of the design load, 0 or more");
-      return new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: load, forces: {}, force: a.num("force", 0), range: a.positive("range", 1000), ambient: a.num("ambient", 20) } }, "bench");
+      const sv = a.value("signals");
+      const list = sv === undefined ? [] : Array.isArray(sv) ? sv : [sv];
+      const signals = list.map((v, i) => (v instanceof SimSpec && v.what === "signal" ? (v.data as SignalSpec) : ctx.error(`sim.bench(): signal ${i + 1} is ${typeName(v)}, not sim.signal(...)`)));
+      return new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: load, forces: {}, force: a.num("force", 0), range: a.positive("range", 1000), ambient: a.num("ambient", 20), signals } }, "bench");
+    },
+  ),
+  simFn(
+    "signal",
+    ["on", "note", "f", "cents", "shape", "amplitude", "offset", "start", "every", "decay"],
+    'A test signal on a net that reaches one of the controller\'s analog inputs, for sim.bench(signals: ...). on: the net\'s name ("TUNER_IN") or "component.PIN"; note: a note name ("E2", "A4", "C#3") or f: its frequency; cents: how far off the note it is (+ sharp); shape: "pluck" (a plucked string, the default with a note), "sine" (the default with f) or "square"; amplitude: peak volts either side of the offset (0.5V); offset: the volts it sits at (2.5V); start: when it starts, seconds after power-up (1s); every: seconds between plucks (3s; 0 plucks once); decay: seconds for a pluck to fade to 37 % (1.5s).',
+    (a, ctx) => {
+      const on = a.str("on");
+      const note = a.value("note");
+      let f = a.num("f", 0);
+      if (note !== undefined) {
+        if (typeof note !== "string" || !Number.isFinite(noteHz(note))) return ctx.error(`sim.signal(): note should be a note name like "E2", "A4" or "C#3"`);
+        f = noteHz(note);
+      }
+      if (!(f > 0)) return ctx.error("sim.signal(): give a note (\"E2\") or a frequency (f: 82.41Hz)");
+      f *= 2 ** (a.num("cents", 0) / 1200);
+      const shape = a.str("shape", note !== undefined ? "pluck" : "sine");
+      if (shape !== "pluck" && shape !== "sine" && shape !== "square") return ctx.error('sim.signal(): shape should be "pluck", "sine" or "square"');
+      const spec: SignalSpec = {
+        on,
+        shape: shape as SignalShape,
+        f,
+        note: typeof note === "string" ? note : undefined,
+        amplitude: a.num("amplitude", 0.5),
+        offset: a.num("offset", 2.5),
+        start: a.num("start", 1),
+        every: a.num("every", shape === "pluck" ? 3 : 0),
+        decay: a.positive("decay", 1.5),
+      };
+      return new SimSpec("signal", spec, `signal on ${on}`);
     },
   ),
   simFn(
