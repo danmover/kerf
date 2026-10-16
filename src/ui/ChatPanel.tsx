@@ -239,7 +239,7 @@ function Item({ it }: { it: ChatItem }) {
                 </button>
               )}
               {it.action === "continue" && (
-                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.")}>
+                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.", { design: true })}>
                   <Icon.Play size={11} /> Continue
                 </button>
               )}
@@ -355,6 +355,7 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
 }
 
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
+  const routing = useChat((s) => s.routing);
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
   const draft = useChatDraft();
@@ -436,7 +437,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
         <div className="row">
           <AttachButton att={att} disabled={!hasKey} />
           <span className="mono dim" style={{ fontSize: 10.5 }}>
-            {busy ? <span className="shimmer-text">Claude is working</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
+            {busy ? <span className="shimmer-text">{routing ? "Choosing a model" : "Claude is working"}</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
           </span>
           <div className="grow" />
           <MicButton voice={voice} />

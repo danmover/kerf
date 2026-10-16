@@ -27,7 +27,7 @@ import { toast } from "../app/ui";
 import { BINDING_BETA, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 import { MODELS, type Effort } from "../app/settings";
 import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, type Route, type TurnFacts } from "./routing";
-import { addToTurn, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
+import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
 import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm } from "./keepWarm";
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
 
@@ -106,9 +106,11 @@ interface ChatState {
   lastUserText: string;
   /** the brief as Claude last saw it (JSON), so the next turn can say what the user changed */
   briefSeen: string | null;
+  /** deciding which model answers the message just sent */
+  routing: boolean;
 }
 
-export const useChat = create<ChatState>(() => ({ projectId: null, items: [], busy: false, pendingChoice: null, lastUserText: "", briefSeen: null }));
+export const useChat = create<ChatState>(() => ({ projectId: null, items: [], busy: false, pendingChoice: null, lastUserText: "", briefSeen: null, routing: false }));
 
 const get = useChat.getState;
 const set = useChat.setState;
@@ -166,6 +168,13 @@ configureWarm({
   minutes: () => useSettings.getState().keepWarm,
   // a refresh is spend the design model alone would not have had; what it saves shows on the next request
   record: (model, u) => void recordSpend("warm", model, u, -costOf(model, u)),
+  // after a change of model, effort or thinking display in Settings, the next request is not the one kept warm
+  stale: (p) => {
+    const s = useSettings.getState();
+    const effort = (p.output_config as { effort?: string } | undefined)?.effort;
+    const display = (p.thinking as { display?: string } | undefined)?.display;
+    return p.model !== s.model || (effort !== undefined && effort !== s.effort) || (display !== undefined && display !== (s.showThinking ? "summarized" : "omitted"));
+  },
 });
 
 // ---------- persistence ----------
@@ -241,6 +250,7 @@ function stopLoop() {
   stopWarm();
   lastPrompt = 0;
   quickTouched = 0;
+  lastBreak.clear();
   if (get().busy) persist();
   gen++;
   redirect = false;
@@ -536,7 +546,7 @@ export function stop() {
  * brief. With a spot, the message is about that place on the model (see
  * app/spot); `id` names the chat item so the caller can follow the replies.
  */
-export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: { url: string; note: string } } = {}) {
+export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: { url: string; note: string }; design?: boolean } = {}) {
   const t = text.trim();
   const attached = opts.files ?? [];
   if ((!t && !attached.length) || get().busy) return;
@@ -571,6 +581,8 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
   }
   persist();
   await runLoop({
+    // a change asked for from one of Kerf's panels, not typed: always design work
+    route: opts.design ? designRoute("a change asked for from a panel", "rule") : undefined,
     facts: {
       text: t,
       lastReply,
@@ -823,13 +835,20 @@ async function runLoop(opts: LoopOptions = {}) {
   const historyStart = history.length;
   // what this turn costs, from every request made while it runs (the router, reviews and agents included)
   const box = { spend: emptyTurn() };
-  if (opts.replaces) box.spend = addToTurn(box.spend, "escalated", opts.replaces.route.model, opts.replaces.spend.cost, -opts.replaces.spend.cost);
+  if (opts.replaces) box.spend = carryOver(box.spend, opts.replaces.spend);
   turnBox = box;
   let route: Route = opts.route ?? designRoute();
   let routeNote: TurnRoute | null = opts.replaces ? { ...opts.replaces.route, escalated: { to: route.model, why: "you asked for it" } } : null;
 
   try {
-    if (!opts.route) route = await chooseRoute(anthropic, opts.facts, ac.signal);
+    if (!opts.route) {
+      set({ routing: true });
+      try {
+        route = await chooseRoute(anthropic, opts.facts, ac.signal);
+      } finally {
+        set({ routing: false });
+      }
+    }
     if (stale()) return;
     routeNote ??= { model: route.model, quick: route.quick, why: route.why, by: route.by };
     for (let step = 0; step < settings.maxSteps; step++) {
@@ -1063,7 +1082,7 @@ const isAbort = (e: unknown) => e instanceof Anthropic.APIUserAbortError || (e i
 export async function applyPlanChangesNow() {
   if (!pendingSteering(usePlan.getState()).length) return;
   if (!get().busy) {
-    await sendMessage(describeSteering(usePlan.getState()));
+    await sendMessage(describeSteering(usePlan.getState()), { design: true });
     return;
   }
   // sub-agents run inside the main loop's current action; they take their own changes at their next step
@@ -1152,9 +1171,9 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, binding: string, 
     max_tokens: 32000,
     system,
     tools: TOOL_DEFS,
-    // rolling cache breakpoint on the newest user content
-    messages: withCacheBreakpoint(history),
+    messages: withCacheBreakpoint(history, lastBreak.get(route.model)),
   };
+  lastBreak.set(route.model, history.length - 1);
   const off = unsupported(route.model);
   const betas: string[] = [];
   if (!off.has("thinking")) {
@@ -1315,17 +1334,32 @@ function repairHistory() {
   }
 }
 
-function withCacheBreakpoint(h: BetaMessageParam[]): BetaMessageParam[] {
+/** per model, the message the last request's rolling cache breakpoint was on */
+const lastBreak = new Map<string, number>();
+
+/**
+ * A rolling cache breakpoint on the newest user content, and another where
+ * the previous request to the same model put it. The API looks back at most
+ * 20 blocks from a breakpoint for a cached prefix, so a turn that added more
+ * since (a quick turn with many reads in between, many parallel tool calls)
+ * would otherwise miss the whole conversation.
+ */
+function withCacheBreakpoint(h: BetaMessageParam[], prev?: number): BetaMessageParam[] {
   if (!h.length) return h;
   const out = h.slice();
-  const last = out[out.length - 1];
-  if (last.role === "user" && typeof last.content !== "string" && last.content.length) {
-    const blocks = last.content.slice();
-    const lb = blocks[blocks.length - 1];
-    if (lb.type === "text" || lb.type === "tool_result") blocks[blocks.length - 1] = { ...lb, cache_control: { type: "ephemeral" } } as BetaContentBlockParam;
-    out[out.length - 1] = { ...last, content: blocks };
-  }
+  markCache(out, out.length - 1);
+  if (prev !== undefined && prev < out.length - 1) markCache(out, prev);
   return out;
+}
+
+function markCache(out: BetaMessageParam[], i: number) {
+  const m = out[i];
+  if (m.role !== "user" || typeof m.content === "string" || !m.content.length) return;
+  const blocks = m.content.slice();
+  const lb = blocks[blocks.length - 1];
+  if (lb.type !== "text" && lb.type !== "tool_result") return;
+  blocks[blocks.length - 1] = { ...lb, cache_control: { type: "ephemeral" } } as BetaContentBlockParam;
+  out[i] = { ...m, content: blocks };
 }
 
 function handleError(e: unknown) {

@@ -163,7 +163,7 @@ function AiSettings() {
           t="Keep the conversation cached while you look"
           d={
             <>
-              Claude reads the conversation back from a cache that forgets it 5 minutes after the last request. While you look at the design, Kerf refreshes it for a small fraction of what sending it again costs, so your next message is cheaper. Refreshing stops after this long without a new message. After a quick answer from Haiku, {designLabel}'s cache is refreshed once either way, as answering on {designLabel} would have done.
+              Claude reads the conversation back from a cache that forgets it 5 minutes after the last request. While you look at the design, Kerf refreshes it for a small fraction of what sending it again costs, so your next message is cheaper. Refreshing pauses while Kerf is hidden, and stops after this long without you typing, using the view or sending a message, or once more refreshes would cost more than sending the conversation again. After a quick answer from Haiku, {designLabel}'s cache is refreshed once either way, as answering on {designLabel} would have done.
             </>
           }
         >

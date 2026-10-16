@@ -43,9 +43,15 @@ export interface Tally {
 
 export const emptyTally = (): Tally => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, requests: 0, cost: 0 });
 
+const unpriced = new Set<string>();
+
 export function priceFor(model: string, promptTokens = 0): Price {
   const id = Object.keys(PRICES).find((k) => model === k || model.startsWith(k + "-")) ?? "";
   if (id === "claude-haiku-5-5" && promptTokens > 100_000) return HAIKU_LONG;
+  if (!PRICES[id] && model && !unpriced.has(model)) {
+    unpriced.add(model);
+    console.warn(`[kerf] No price for ${model}; costs for it are counted at Opus 5.5 rates.`);
+  }
   return PRICES[id] ?? PRICES["claude-opus-5-5"];
 }
 

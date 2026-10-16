@@ -40,11 +40,11 @@ export interface TurnSpend {
 
 export const emptyTurn = (): TurnSpend => ({ cost: 0, saved: 0, byKind: {}, cacheRead: 0, output: 0 });
 
-export function addToTurn(t: TurnSpend, kind: SpendKind, model: string, cost: number, saved: number, u?: Usage): TurnSpend {
+export function addToTurn(t: TurnSpend, kind: SpendKind, model: string, cost: number, saved: number, u?: Usage, requests = 1): TurnSpend {
   const lines = (t.byKind[kind] ?? []).slice();
   const at = lines.findIndex((l) => l.model === model);
-  if (at >= 0) lines[at] = { model, cost: lines[at].cost + cost, requests: lines[at].requests + 1 };
-  else lines.push({ model, cost, requests: 1 });
+  if (at >= 0) lines[at] = { model, cost: lines[at].cost + cost, requests: lines[at].requests + requests };
+  else lines.push({ model, cost, requests });
   return {
     cost: t.cost + cost,
     saved: t.saved + saved,
@@ -52,6 +52,19 @@ export function addToTurn(t: TurnSpend, kind: SpendKind, model: string, cost: nu
     cacheRead: t.cacheRead + (u?.cache_read_input_tokens ?? 0),
     output: t.output + (u?.output_tokens ?? 0),
   };
+}
+
+/**
+ * Carry a turn that is being answered again into the new one. What it spent
+ * bought nothing, so all of it counts against the saving: keeping the cache
+ * warm stays as it was, everything else shows as handed over.
+ */
+export function carryOver(t: TurnSpend, from: TurnSpend): TurnSpend {
+  let out = t;
+  for (const [kind, lines] of Object.entries(from.byKind) as [SpendKind, SpendLine[]][]) {
+    for (const l of lines) out = addToTurn(out, kind === "warm" ? "warm" : "escalated", l.model, l.cost, -l.cost, undefined, l.requests);
+  }
+  return { ...out, cacheRead: out.cacheRead + from.cacheRead, output: out.output + from.output };
 }
 
 /** Every token of a request's prompt, cached or not. */

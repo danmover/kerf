@@ -4,7 +4,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { askRouter, QUICK_TOOLS, quickCanSave, routerRequest, ruleReason, type TurnFacts } from "../src/ai/routing";
-import { addToTurn, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, warmSaving } from "../src/ai/spend";
+import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, warmSaving } from "../src/ai/spend";
 import { costOf } from "../src/agents/pricing";
 
 const facts = (text: string, more: Partial<TurnFacts> = {}): TurnFacts => ({ text, lastReply: "", hasFiles: false, pointsAtModel: false, answersChoice: false, steering: false, parts: 3, ...more });
@@ -108,6 +108,21 @@ describe("spend", () => {
     expect(t.byKind.router).toHaveLength(1);
     expect(t.cacheRead).toBe(500);
     expect(t.output).toBe(100);
+  });
+
+  it("carries a quick turn answered again as spend that bought nothing", () => {
+    let quick = emptyTurn();
+    quick = addToTurn(quick, "router", "claude-haiku-5-5", 0.0001, -0.0001);
+    quick = addToTurn(quick, "quick", "claude-haiku-5-5", 0.003, 0.01, { input_tokens: 10, cache_read_input_tokens: 900, output_tokens: 50 });
+    quick = addToTurn(quick, "quick", "claude-haiku-5-5", 0.002, 0.008);
+    quick = addToTurn(quick, "warm", "claude-opus-5-5", 0.004, -0.004);
+    const t = carryOver(emptyTurn(), quick);
+    expect(t.cost).toBeCloseTo(quick.cost, 10);
+    expect(t.saved).toBeCloseTo(-quick.cost, 10);
+    expect(t.byKind.warm).toEqual([{ model: "claude-opus-5-5", cost: 0.004, requests: 1 }]);
+    expect(t.byKind.escalated).toEqual([{ model: "claude-haiku-5-5", cost: expect.closeTo(0.0051, 10), requests: 3 }]);
+    expect(t.byKind.quick).toBeUndefined();
+    expect(t.cacheRead).toBe(900);
   });
 
   it("tells every listener about each request", () => {

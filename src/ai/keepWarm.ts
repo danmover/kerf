@@ -7,9 +7,11 @@
 // conversation again. So while the chat is idle, a few seconds before the
 // entry would expire, Kerf re-sends the last design-model request with
 // max_tokens: 0. That only reads the cache (no output, nothing appended to the
-// conversation) and restarts the 5-minute timer. It stops after the minutes
-// set in Settings without a new message, when a refresh finds the entry gone,
-// or when the chat moves on.
+// conversation) and restarts the 5-minute timer. It pauses while the page is
+// hidden, and stops after the minutes set in Settings without the user typing,
+// using the viewport or sending a message; after as many refreshes as one
+// fresh cache write would cost; when a refresh finds the entry gone; when the
+// model or effort in Settings changes; or when the chat moves on.
 //
 // A turn answered by the quick model would have refreshed the entry had the
 // design model answered it, so after a quick turn the entry is refreshed
@@ -17,7 +19,7 @@
 // paying to write the conversation again.
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { Usage } from "../agents/pricing";
+import { priceFor, type Usage } from "../agents/pricing";
 import { promptTokens, warmSaving } from "./spend";
 
 export const CACHE_TTL_MS = 5 * 60_000;
@@ -48,6 +50,10 @@ export interface WarmDeps {
   minutes: () => number;
   /** a refresh request finished */
   record: (model: string, u: Usage) => void;
+  /** the request no longer matches what the next one will send (the model or effort changed in Settings) */
+  stale?: (params: Record<string, unknown>) => boolean;
+  /** the page is hidden (another tab, a minimised window) */
+  hidden?: () => boolean;
   now?: () => number;
 }
 
@@ -56,15 +62,46 @@ let target: Target | null = null;
 let lastActivity = 0;
 /** when the last quick-model request started */
 let lastQuick = 0;
+/** when the user last typed, clicked or scrolled anywhere in Kerf */
+let lastPresence = 0;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let inflight: AbortController | null = null;
 /** the API rejected a refresh this session (an unsupported request shape) */
 let rejected = false;
 
 const now = () => deps?.now?.() ?? Date.now();
+const isHidden = () => deps?.hidden?.() ?? (typeof document !== "undefined" && document.hidden);
+const alive = (t: Target) => now() - t.touched < CACHE_TTL_MS;
+
+let listening = false;
 
 export function configureWarm(d: WarmDeps) {
   deps = d;
+  if (listening || typeof document === "undefined") return;
+  listening = true;
+  // typing in the editor or chat and using the viewport count as someone being there
+  for (const type of ["keydown", "pointerdown", "wheel"]) document.addEventListener(type, () => notePresence(), { capture: true, passive: true });
+  document.addEventListener("visibilitychange", () => (document.hidden ? undefined : pageShown()));
+  window.addEventListener("pagehide", pageHidden);
+}
+
+/** The user did something in Kerf: keep-warm counts its idle time from here. */
+export function notePresence() {
+  lastPresence = now();
+  if (target && !timer && alive(target)) schedule();
+}
+
+/** The page went away (closed, or into the back-forward cache): no refreshes while it is gone. */
+export function pageHidden() {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  inflight?.abort();
+  inflight = null;
+}
+
+/** The page is visible again: carry on if the entry is still there. */
+export function pageShown() {
+  notePresence();
 }
 
 /**
@@ -112,6 +149,7 @@ export function stopWarm() {
   clearTarget();
   lastActivity = 0;
   lastQuick = 0;
+  lastPresence = 0;
 }
 
 function clearTarget() {
@@ -129,17 +167,28 @@ function schedule() {
   timer = setTimeout(() => void refresh(), Math.max(1000, target.touched + REFRESH_AFTER_MS - now()));
 }
 
+/** Refreshes in one idle stretch that together cost about what writing the entry again would. */
+export function maxRefreshes(model: string, prompt: number) {
+  const p = priceFor(model, prompt);
+  return Math.max(0, Math.floor(p.cacheWrite / p.cacheRead) - 1);
+}
+
 async function refresh() {
   timer = null;
   const t = target;
   if (!t || !deps || rejected) return;
+  // nobody is looking; seeing the page again picks up from here (pageShown)
+  if (isHidden()) return;
+  if (deps.stale?.(t.params)) return clearTarget();
   const at = now();
   const minutes = deps.minutes();
   // a quick turn since the entry was last touched: the design model answering it would have touched it
   const quickSince = lastQuick > t.touched;
-  if (!quickSince && (minutes <= 0 || at - lastActivity > minutes * 60_000)) return;
+  if (!quickSince && (minutes <= 0 || at - Math.max(lastActivity, lastPresence) > minutes * 60_000)) return;
   if (at - t.touched >= CACHE_TTL_MS) return; // already gone: a refresh would only pay to write it again
-  // not finished yet (a long generation) or too small to matter: look again later
+  // more refreshes would cost more than the next message writing the entry again
+  if (t.refreshes >= maxRefreshes(t.model, t.prompt)) return;
+  // too small to be worth it (a prompt of 0 means the request is still running: a long generation can outlive the entry, so refresh it)
   if (t.prompt && t.prompt < MIN_PROMPT_TOKENS) return;
   const client = deps.client();
   if (!client) return;
@@ -151,8 +200,9 @@ async function refresh() {
     const u = (res as unknown as { usage: Usage }).usage;
     deps.record(t.model, u);
     if (target !== t) return;
-    // the entry had gone: stop rather than keep paying to write one nobody may read
-    if (!u.cache_read_input_tokens) return clearTarget();
+    // the entry had gone, wholly or mostly: stop rather than keep paying to write one nobody may read
+    const read = u.cache_read_input_tokens ?? 0;
+    if (!read || (u.cache_creation_input_tokens ?? 0) > read) return clearTarget();
     t.touched = at;
     t.refreshes++;
     if (!t.prompt) t.prompt = promptTokens(u);

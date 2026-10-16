@@ -52,7 +52,7 @@ export function CostLine({ it }: { it: CostItem }) {
 
   return (
     <motion.div className="cost-line" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      <button className="cost-sum" onClick={() => setOpen((o) => !o)} aria-expanded={open} data-tip={routeTip(it)} data-tip-pos="top">
+      <button className="cost-sum" onClick={() => setOpen((o) => !o)} aria-expanded={open} data-tip={routeTip(it)} data-tip-pos="left">
         {r.quick && <Icon.Sparkle size={10} />}
         <span className="cost-model">
           {modelLabel(r.model)}

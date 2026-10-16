@@ -158,7 +158,7 @@ export interface RouterAnswer {
 /** Ask the quick model whether a turn is quick. Any failure, refusal or timeout means design. */
 export async function askRouter(client: Anthropic, f: TurnFacts, signal?: AbortSignal): Promise<RouterAnswer> {
   try {
-    const res = await client.beta.messages.create(routerRequest(f) as never, { signal, timeout: 8000, maxRetries: 0 });
+    const res = await client.beta.messages.create(routerRequest(f) as never, { signal, timeout: 5000, maxRetries: 0 });
     const msg = res as unknown as { model: string; stop_reason: string; usage: Usage; content: { type: string; text?: string }[] };
     const text = msg.content.find((b) => b.type === "text")?.text ?? "";
     const p = msg.stop_reason === "end_turn" ? Verdict.safeParse(safeJson(text)) : null;

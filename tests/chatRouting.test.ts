@@ -218,3 +218,27 @@ describe("what a quick answer would cost", () => {
     expect(api.requests.map((r) => r.model)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5"]);
   });
 });
+
+describe("keeping the design model's cache", () => {
+  it("sends changes asked for from Kerf's panels straight to the design model", async () => {
+    useApi([{ text: "Updated." }], { route: "quick" });
+    await chat.sendMessage("I changed the brief. Update the design to match, and tell me what you changed.", { design: true });
+    expect(api.routerRequests).toHaveLength(0);
+    expect(api.requests[0].model).toBe("claude-opus-5-5");
+    expect(chat.useChat.getState().routing).toBe(false);
+  });
+
+  it("marks where the design model's last request ended, so many quick reads in between don't lose its cache", async () => {
+    const marks = (b: (typeof api.requests)[number]) => b.messages.flatMap((m, i) => (typeof m.content !== "string" && m.content.some((c) => "cache_control" in c) ? [i] : []));
+    useApi([{ text: "Thicker now." }, { tool: "get_design" }, { tool: "run_checks" }, { tool: "get_design" }, { text: "40 mm." }, { text: "Thinner now." }], { route: "quick" });
+    await chat.sendMessage("make the base thicker");
+    await chat.sendMessage("how wide is the base?");
+    await chat.sendMessage("make it thinner again");
+    const [first, ...rest] = api.requests;
+    const last = rest.at(-1)!;
+    expect(rest.map((r) => r.model)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5", "claude-haiku-5-5", "claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(marks(first)).toEqual([first.messages.length - 1]);
+    expect(marks(last)).toEqual([first.messages.length - 1, last.messages.length - 1]);
+    expect(api.dropped).toEqual([]);
+  });
+});
