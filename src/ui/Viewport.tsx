@@ -28,7 +28,7 @@ import { SketchLayer } from "./sketch/SketchPanels";
 import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
-import { MeasureButton, MeasureTool, measuring } from "./viewport/Measure";
+import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { SimLayer } from "./sim/SimLayer";
 
 export function Viewport() {
