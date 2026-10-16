@@ -1,0 +1,298 @@
+/* The Kerf mark and wordmark (ui/Logo.tsx). */
+
+.kerf-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.kerf-mark {
+  --split: 0.06;
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  overflow: visible;
+  flex: none;
+}
+.kerf-mark .km-a,
+.kerf-mark .km-b {
+  transition: transform 0.5s var(--spring);
+}
+.kerf-mark .km-a {
+  transform: translate(calc(var(--split) * -13.5px), calc(var(--split) * 7.8px));
+}
+.kerf-mark .km-b {
+  transform: translate(calc(var(--split) * 13.5px), calc(var(--split) * -7.8px));
+}
+.kerf-mark .km-rim {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 0.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.kerf-mark .km-glow {
+  opacity: 0.85;
+  transition: opacity 0.3s;
+}
+.kerf-mark .km-laser {
+  fill: none;
+  stroke: #fff6d8;
+  stroke-width: 1.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  opacity: 0;
+}
+.kerf-mark .km-laser-glow {
+  stroke: #ffb35c;
+  stroke-width: 3;
+}
+
+/* hover: the halves part a little further and the cut brightens */
+.kerf-mark:hover,
+.brand-btn:hover .kerf-mark,
+.kerf-logo:hover .kerf-mark {
+  --split: 0.15;
+}
+.kerf-mark:hover .km-glow,
+.brand-btn:hover .kerf-mark .km-glow,
+.kerf-logo:hover .kerf-mark .km-glow {
+  opacity: 1;
+}
+
+/* first show: rise, laser the cut, part the halves */
+.kerf-mark.intro .km-body {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: km-rise 0.55s var(--ease) backwards;
+}
+.kerf-mark.intro .km-a {
+  animation: km-join 0.55s 0.62s var(--spring) backwards;
+}
+.kerf-mark.intro .km-b {
+  animation: km-join 0.55s 0.62s var(--spring) backwards;
+}
+.kerf-mark.intro .km-cut {
+  animation: km-fade-in 0.4s 0.6s ease-out backwards;
+}
+.kerf-mark.intro .km-laser {
+  animation: km-laser 1.15s 0.22s ease-in-out both;
+}
+@keyframes km-rise {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.86);
+  }
+}
+@keyframes km-join {
+  from {
+    transform: translate(0, 0);
+  }
+}
+@keyframes km-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes km-laser {
+  0% {
+    opacity: 1;
+    stroke-dashoffset: 1;
+  }
+  45% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+/* rebuilding: the cut breathes like a hot blade */
+.kerf-mark.busy .km-glow {
+  animation: km-pulse 0.9s ease-in-out infinite;
+}
+.kerf-mark.busy .km-laser {
+  animation: km-busy-laser 1.4s ease-in-out infinite;
+}
+@keyframes km-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes km-busy-laser {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: 1;
+  }
+  40% {
+    opacity: 0.9;
+  }
+  70% {
+    opacity: 0.9;
+    stroke-dashoffset: 0;
+  }
+  100% {
+    opacity: 0;
+    stroke-dashoffset: 0;
+  }
+}
+
+.logo-word {
+  font-family: var(--mono);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-size: 14px;
+  line-height: 1;
+  background: linear-gradient(180deg, #f4f6ff 10%, #aebcff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  display: inline-flex;
+  align-items: baseline;
+}
+.logo-word .slash {
+  background: linear-gradient(180deg, #ffe08a, #ff8a4c 55%, #ff3d7f);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  margin-left: 1px;
+  display: inline-block;
+  transform: skewX(-6deg);
+}
+.logo-word.intro {
+  animation: kw-in 0.5s 0.15s var(--ease) backwards;
+}
+.logo-word.intro .slash {
+  animation: kw-slash 0.5s 0.7s var(--ease) backwards;
+}
+@keyframes kw-in {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+    filter: blur(3px);
+  }
+}
+@keyframes kw-slash {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) skewX(-6deg);
+  }
+}
+
+/* the home button in the top bar: the mark in a dark tile with a soft inner light */
+.brand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 34px;
+  padding: 0 10px 0 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  transition: background 0.2s, border-color 0.2s;
+}
+.brand-btn:hover {
+  background: rgba(109, 139, 255, 0.07);
+  border-color: rgba(143, 168, 255, 0.14);
+}
+.brand-tile {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background:
+    radial-gradient(18px 14px at 70% 22%, rgba(255, 138, 76, 0.18), transparent 70%),
+    radial-gradient(26px 20px at 30% 80%, rgba(109, 139, 255, 0.28), transparent 70%),
+    linear-gradient(160deg, #161c2b, #0b0e16);
+  box-shadow:
+    inset 0 0 0 1px rgba(143, 168, 255, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 4px 14px -6px rgba(109, 139, 255, 0.5);
+}
+
+/* idle (the home page): the block floats, and every few seconds the blade
+   passes again and the halves breathe apart */
+.kerf-mark.idle {
+  animation: km-float 6s ease-in-out infinite;
+}
+.kerf-mark.idle .km-a {
+  animation:
+    km-join 0.55s 0.62s var(--spring) backwards,
+    km-breathe-a 6s 2s ease-in-out infinite;
+}
+.kerf-mark.idle .km-b {
+  animation:
+    km-join 0.55s 0.62s var(--spring) backwards,
+    km-breathe-b 6s 2s ease-in-out infinite;
+}
+.kerf-mark.idle .km-laser {
+  animation:
+    km-laser 1.15s 0.22s ease-in-out both,
+    km-busy-laser 6s 4.6s ease-in-out infinite;
+}
+@keyframes km-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+@keyframes km-breathe-a {
+  0%,
+  100% {
+    transform: translate(calc(var(--split) * -13.5px), calc(var(--split) * 7.8px));
+  }
+  50% {
+    transform: translate(calc(var(--split) * -27px), calc(var(--split) * 15.6px));
+  }
+}
+@keyframes km-breathe-b {
+  0%,
+  100% {
+    transform: translate(calc(var(--split) * 13.5px), calc(var(--split) * -7.8px));
+  }
+  50% {
+    transform: translate(calc(var(--split) * 27px), calc(var(--split) * -15.6px));
+  }
+}
+
+.hero {
+  position: relative;
+}
+.hero-mark {
+  position: absolute;
+  right: 24px;
+  top: -34px;
+  width: 168px;
+  height: 168px;
+  pointer-events: none;
+}
+.hero-mark::before {
+  content: "";
+  position: absolute;
+  inset: -40px;
+  background:
+    radial-gradient(closest-side at 62% 40%, rgba(255, 138, 76, 0.16), transparent 70%),
+    radial-gradient(closest-side at 40% 62%, rgba(109, 139, 255, 0.3), transparent 75%);
+  filter: blur(8px);
+  animation: m-fade 1.2s 0.4s ease-out backwards;
+}
+.hero-mark .kerf-mark {
+  position: relative;
+  filter: drop-shadow(0 24px 30px rgba(0, 0, 0, 0.55));
+}
+@media (max-width: 1000px) {
+  .hero-mark {
+    display: none;
+  }
+}

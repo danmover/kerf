@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useUi, go, toast } from "./app/ui";
 import { useSettings, updateSettings, TERMS_VERSION, LIGHTING_IDS } from "./app/settings";
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
-import { useView, requestCamera, type ViewPreset } from "./app/view";
+import { useView, requestCamera, toggleCode, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
@@ -162,6 +162,8 @@ function useShortcuts() {
           return useView.setState({ xray: !v.xray });
         case "m":
           return toggleMarkup();
+        case "c":
+          return toggleCode();
         case "i":
           if (v.selected.length || v.isolate) useView.setState({ isolate: !v.isolate });
           return;

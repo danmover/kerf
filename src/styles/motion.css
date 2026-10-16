@@ -1,0 +1,286 @@
+/* App-wide motion: how the workspace arrives, how panes change, and how
+   controls answer a press. CSS only, so it stays smooth while the kernel
+   keeps the main thread busy. Reduced motion (the OS setting or Kerf's own)
+   turns it all off through the rules in app.css. */
+
+:root {
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ---------- the workspace arrives: frame first, then panels slide in ---------- */
+
+.app > .topbar {
+  animation: m-drop 0.5s var(--out) backwards;
+}
+.workspace > .panel-left {
+  animation: m-from-left 0.6s 0.06s var(--out) backwards;
+}
+.workspace > .panel-right {
+  animation: m-from-right 0.6s 0.1s var(--out) backwards;
+}
+.workspace > .center > .dock {
+  animation: m-rise 0.6s 0.14s var(--out) backwards;
+}
+.workspace > .center > .viewport {
+  animation: m-fade 0.8s 0.05s ease-out backwards;
+}
+.app > .statusbar {
+  animation: m-fade 0.6s 0.25s ease-out backwards;
+}
+.app.phone .phone-tabs {
+  animation: m-rise 0.5s 0.1s var(--out) backwards;
+}
+.app.phone .phone-pane {
+  animation: m-fade 0.5s 0.15s ease-out backwards;
+}
+@keyframes m-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+@keyframes m-from-left {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+}
+@keyframes m-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+}
+@keyframes m-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+@keyframes m-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---------- the dock: panes cross-fade, counts pop ---------- */
+
+.dock-pane {
+  position: absolute;
+  inset: 0;
+  animation: m-pane 0.32s var(--out);
+}
+.dock-file.shown {
+  animation: m-pane 0.32s var(--out);
+}
+/* starts half-visible, so a busy frame never leaves the pane blank */
+@keyframes m-pane {
+  from {
+    opacity: 0.5;
+    transform: translateY(6px);
+  }
+}
+.tab .count {
+  display: inline-block;
+  animation: m-pop 0.4s var(--spring);
+}
+.tab .count.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+@keyframes m-pop {
+  from {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+}
+.tab > svg {
+  transition: transform 0.25s var(--spring), color 0.15s;
+}
+.tab:hover > svg {
+  transform: translateY(-1px) scale(1.08);
+}
+.tab.active > svg {
+  color: var(--accent-2);
+}
+.tab-line {
+  background: linear-gradient(90deg, var(--accent), var(--violet)) !important;
+}
+
+/* design.kerf: the file behind the design, kept at the end of the tab row */
+.file-tabs {
+  margin-right: 2px;
+}
+.tab.file-tab {
+  margin: 6px 0;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px dashed var(--line-2);
+  color: var(--text-3);
+  transition: color 0.15s, border-color 0.2s, background 0.2s;
+}
+.tab.file-tab:hover {
+  border-color: var(--line-3);
+  background: var(--bg-2);
+}
+.tab.file-tab.active {
+  border-style: solid;
+  border-color: rgba(143, 168, 255, 0.35);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.tab.file-tab .tab-line {
+  display: none;
+}
+.dock-error {
+  color: #ff9aa4 !important;
+  align-self: center;
+  animation: m-pop 0.35s var(--out);
+}
+
+/* ---------- controls answer a press ---------- */
+
+.btn,
+.icon-btn {
+  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.2s, transform 0.18s var(--spring);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.88);
+}
+.icon-btn > svg {
+  transition: transform 0.25s var(--spring);
+}
+.icon-btn:hover:not(:disabled) > svg {
+  transform: scale(1.08);
+}
+.icon-btn.active {
+  box-shadow: 0 0 12px -4px var(--accent-glow);
+}
+.btn.primary {
+  position: relative;
+  overflow: hidden;
+}
+.btn.primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.25) 50%, transparent 70%);
+  transform: translateX(-120%);
+  pointer-events: none;
+}
+.btn.primary:hover::after {
+  transform: translateX(120%);
+  transition: transform 0.7s var(--out);
+}
+
+/* the 3D view's toolbar floats in and its buttons light up when on */
+.vp-toolbar {
+  animation: m-toolbar 0.55s 0.25s var(--out) backwards;
+}
+@keyframes m-toolbar {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+}
+.vp-toolbar .icon-btn.active > svg {
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+
+/* menus open from their button */
+.menu {
+  transform-origin: top right;
+}
+.menu-item {
+  transition: background 0.12s, padding-left 0.18s var(--out);
+}
+.menu-item:hover:not(:disabled) {
+  padding-left: 12px;
+}
+
+/* toasts carry a bar of light in their own colour */
+.toast {
+  position: relative;
+  overflow: hidden;
+}
+.toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.toast.success::before {
+  background: var(--pass);
+  box-shadow: 0 0 10px rgba(61, 220, 151, 0.6);
+}
+.toast.error::before {
+  background: var(--fail);
+  box-shadow: 0 0 10px rgba(255, 93, 108, 0.6);
+}
+.toast.warn::before {
+  background: var(--warn);
+  box-shadow: 0 0 10px rgba(245, 184, 75, 0.5);
+}
+.toast.info::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-2), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: tb-beam-sweep 1.2s var(--ease) infinite;
+}
+
+/* project cards: the picture eases in on hover */
+.card .thumb img {
+  transition: transform 0.6s var(--out), filter 0.3s;
+}
+.card.clickable:hover .thumb img {
+  transform: scale(1.04);
+}
+.card.clickable::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(400px 160px at var(--mx, 50%) 0%, rgba(143, 168, 255, 0.1), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+.card.clickable:hover::after {
+  opacity: 1;
+}
+
+/* hover tips slide a little as they appear */
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    translate: 0 -3px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+/* splitters glow while dragged */
+.splitter.dragging {
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+
+/* the status bar's kernel light breathes while it works */
+.statusbar .dot.pending {
+  animation: pulse 1.2s ease-in-out infinite;
+}

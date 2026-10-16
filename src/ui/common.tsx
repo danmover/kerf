@@ -86,13 +86,14 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
   useLayoutEffect(() => {
     if (!open || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
-    const w = width ?? 240;
-    const left = align === "right" ? Math.max(8, r.right - w) : Math.min(window.innerWidth - w - 8, r.left);
-    setPos({ top: r.bottom + 6, left });
+    // wide menus shrink to fit a narrow window
+    const w = Math.min(width ?? 240, window.innerWidth - 16);
+    const left = align === "right" ? Math.max(8, r.right - w) : Math.max(8, Math.min(window.innerWidth - w - 8, r.left));
+    setPos({ top: r.bottom + 6, left, width: w });
   }, [open, align, width]);
   useEffect(() => {
     if (!open) return;
@@ -117,7 +118,7 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
               ref={menuRef}
               className="menu"
               role="menu"
-              style={{ position: "fixed", top: pos.top, left: pos.left, width: width ?? 240 }}
+              style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, maxHeight: `calc(100dvh - ${Math.round(pos.top) + 10}px)`, overflowY: "auto", transformOrigin: align === "right" ? "top right" : "top left" }}
               initial={{ opacity: 0, y: -6, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -4 }}

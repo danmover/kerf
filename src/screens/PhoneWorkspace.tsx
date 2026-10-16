@@ -18,6 +18,7 @@ import { PreviewBanner } from "../ui/PreviewBanner";
 import { PlanHud } from "../ui/PlanHud";
 import { RefViewer } from "../ui/RefViewer";
 import { SketchPad } from "../ui/SketchPad";
+import { OverviewGlyph } from "../ui/Overview";
 import "../styles/phone.css";
 
 export const PHONE_QUERY = "(max-width: 760px)";
@@ -69,7 +70,7 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
   const errors = useDesign((s) => s.model?.diagnostics.some((d) => d.severity === "error") ?? false);
   useVisibleViewport();
 
-  // the code pane always shows its panel; the collapse control is for the desktop dock
+  // the overview pane always shows its panel; the collapse control is for the desktop dock
   useEffect(() => {
     if (pane === "code") useView.setState({ dockOpen: true });
   }, [pane]);
@@ -81,7 +82,7 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
   const tabs: { id: Pane; label: string; icon: JSX.Element; badge?: JSX.Element }[] = [
     { id: "chat", label: "Chat", icon: <Icon.Sparkle size={14} />, badge: busy ? <span className="dot pending" /> : listening ? <span className="dot fail" /> : undefined },
     { id: "model", label: "Model", icon: <Icon.Layers size={14} /> },
-    { id: "code", label: "Code & checks", icon: <Icon.Code size={14} />, badge: fails || errors ? <span className="dot fail" /> : undefined },
+    { id: "code", label: "Overview", icon: <OverviewGlyph size={14} />, badge: fails || errors ? <span className="dot fail" /> : undefined },
   ];
 
   return (
