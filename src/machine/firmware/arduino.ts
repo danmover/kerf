@@ -267,6 +267,9 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     LOW_CELL_V: setting(c.fw, "low_cell", 3.4),
     LOG_S: setting(c.fw, "log_interval", 5),
     BREAK_FRAC: setting(c.fw, "breakthrough_current", 0.5),
+    STEER_SIGN: setting(c.fw, "steer_sign", 1) < 0 ? -1 : 1,
+    ROLL_LIMIT_DEG: setting(c.fw, "roll_limit", 60),
+    GIVE_UP_S: setting(c.fw, "give_up_time", 0),
   };
 
   // ---- pins.h ----
@@ -320,7 +323,9 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
   if (tunneller) {
     C.push("// Run");
     C.push(`#define START_DELAY_S    ${cNum(S.START_DELAY_S)}      // time to close the hatch and step back`);
-    C.push(`#define RUN_DISTANCE_MM  ${cNum(S.RUN_DISTANCE_MM)}    // stop after this far (estimated from screw turns)`);
+    C.push(`#define RUN_DISTANCE_MM  ${cNum(S.RUN_DISTANCE_MM)}    // expected distance to the far side (estimated from screw turns)`);
+    C.push(`#define GIVE_UP_MM       ${cNum(2 * S.RUN_DISTANCE_MM)}    // no breakthrough after twice that: probably turning in place, so back out`);
+    C.push(`#define GIVE_UP_S        ${cNum(S.GIVE_UP_S)}    // or after this long digging (0: no time limit)`);
     C.push(`#define MAX_RUN_S        ${cNum(S.MAX_RUN_S)}    // hard stop`);
     C.push(`#define POWER            ${cNum(S.POWER)}     // 0..1 of full PWM while digging`);
     C.push(`#define PITCH_MM         ${cNum(S.PITCH_MM)}      // screw flight pitch`);
@@ -331,7 +336,8 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     C.push(`#define STALL_MS         ${cNum(S.STALL_MS)}`);
     C.push(`#define BACKOFF_MS       ${cNum(S.BACKOFF_MS)}    // reverse this long, then dig again`);
     C.push(`#define MAX_RETRIES      ${cNum(S.MAX_RETRIES)}      // give up after this many stalls without progress`);
-    C.push(`#define BREAK_FRAC       ${cNum(S.BREAK_FRAC)}     // current falls below this share of the digging average at breakthrough`);
+    C.push(`#define BREAK_FRAC       ${cNum(S.BREAK_FRAC)}     // front motor current falls below this share of its digging average at breakthrough`);
+    C.push(`#define ROLL_LIMIT_DEG   ${cNum(S.ROLL_LIMIT_DEG)}      // the body rolling past this means the screws no longer balance: stop`);
     C.push("");
     C.push("// Steering and roll");
     C.push(`#define HEADING_KP       ${cNum(S.HEADING_KP)}     // degrees of hinge per degree of heading error`);
@@ -343,7 +349,7 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
   }
   if (tunneller || steer || steerServo) {
     C.push(`#define STEER_MAX_DEG    ${cNum(S.STEER_MAX_DEG)}`);
-    C.push("#define STEER_SIGN       1       // flip if a positive steer angle turns the nose the wrong way");
+    C.push(`#define STEER_SIGN       ${S.STEER_SIGN === 1 ? " 1" : "-1"}      // +1 when extending the steering turns the nose clockwise seen from above, the way the IMU heading grows; -1 when it turns it anticlockwise`);
     C.push("");
   }
   if (steer) {
@@ -680,11 +686,11 @@ void actCalibrate() { Serial.println(F("Servo steering: nothing to calibrate. Se
 
   // state
   L.push("// ---------------- state ----------------");
-  L.push("enum State : uint8_t { WAITING, DIGGING, BACKING, DONE, FAULT, BENCH };");
-  L.push('const char *stateName[] = { "waiting", "digging", "backing off", "done", "fault", "bench" };');
+  L.push("enum State : uint8_t { WAITING, DIGGING, BACKING, RETREAT, DONE, FAULT, BENCH };");
+  L.push('const char *stateName[] = { "waiting", "digging", "backing off", "backing out", "done", "fault", "bench" };');
   L.push(`State state = ${a.tunneller ? "WAITING" : "BENCH"};`);
   L.push('const char *reason = "";');
-  L.push("unsigned long t0, stateSince, stallSince, quietSince, lastLog, testUntil;");
+  L.push("unsigned long t0, stateSince, stallSince, quietSince, rollSince, lastLog, testUntil, digMs;");
   L.push("float distance = 0, targetYaw = 0, headingI = 0, digAmps = 0, lastProgress = 0;");
   L.push("uint8_t retries = 0;");
   L.push("bool stopped = false;");
@@ -716,7 +722,7 @@ void logDump() {
     LogRec r; EEPROM.get(LOG_BASE + i * sizeof(LogRec), r);
     Serial.print(r.t); Serial.print(','); Serial.print(r.distMm); Serial.print(','); Serial.print(r.yaw); Serial.print(',');
     Serial.print(r.roll); Serial.print(','); Serial.print(r.pitch); Serial.print(','); Serial.print(r.ampsX10 / 10.0f, 1); Serial.print(',');
-    Serial.print(r.vbatX10 / 10.0f, 1); Serial.print(','); Serial.println(stateName[r.st < 6 ? r.st : 4]);
+    Serial.print(r.vbatX10 / 10.0f, 1); Serial.print(','); Serial.println(stateName[r.st < 7 ? r.st : 5]);
   }
 }
 #else
@@ -736,7 +742,7 @@ bool batteryPresent() {
 #endif
 }
 void startRun(const char *why) {
-  t0 = millis(); targetYaw = yaw; headingI = 0; distance = 0; lastProgress = 0; retries = 0; digAmps = 0;
+  t0 = millis(); targetYaw = yaw; headingI = 0; distance = 0; lastProgress = 0; retries = 0; digAmps = 0; rollSince = 0; quietSince = 0;
   encAtStart = ${fe >= 0 ? `encRead(${fe})` : "0"};
   logClear();
   setState(${a.tunneller ? "DIGGING" : "BENCH"}, why);
@@ -875,8 +881,21 @@ void setup() {
     case DIGGING: {
       // distance from screw turns, less slip
       ${frontEnc >= 0 ? `distance = (encRead(${frontEnc}) - encAtStart) / encCountsPerRev[${frontEnc}] * PITCH_MM * (1 - SLIP);` : "// no encoder on the front motor: the run ends on the time limit or at breakthrough"}
-      if (distance >= RUN_DISTANCE_MM) { stopAll(); setState(DONE, "distance reached"); break; }
+      // The turn count is only an estimate: screws turning in place in loose sand count too. With a current
+      // reading on the front motor the run ends at breakthrough or the far wall; with neither by GIVE_UP_MM
+      // (or GIVE_UP_S), it is probably turning in place, so it backs out on the reserve.
+      float frontAmps = motors[${fr}].amps;
+      if (frontAmps < 0 && distance >= RUN_DISTANCE_MM) { stopAll(); setState(DONE, "distance reached"); break; }
+      if (distance >= GIVE_UP_MM || (GIVE_UP_S > 0 && (now - t0) / 1000 > GIVE_UP_S)) {
+        stopAll(); delay(300); digMs = now - t0;
+        setState(RETREAT, "no breakthrough: probably turning in place, backing out");
+        break;
+      }
       if (distance - lastProgress > 50) { lastProgress = distance; retries = 0; }
+
+      // the screws balance each other's twist; a body that keeps rolling means one is no longer biting
+      if (imuOk && fabs(roll) > ROLL_LIMIT_DEG) { if (!rollSince) rollSince = now; else if (now - rollSince > 2000) { stopAll(); setState(FAULT, "body rolling: the screws no longer balance"); break; } }
+      else rollSince = 0;
 
       // heading hold: steer the hinge towards the start heading
       float err = imuOk ? wrap180(targetYaw - yaw) : 0;
@@ -902,12 +921,26 @@ void setup() {
         break;
       }
 
-      // breakthrough: past most of the way and the load drops away
-      if (now - stateSince > 3000 && amps > 0) digAmps = digAmps <= 0 ? amps : digAmps * 0.995f + amps * 0.005f;
-      if (distance > RUN_DISTANCE_MM * 0.7f && digAmps > 0 && amps >= 0 && amps < digAmps * BREAK_FRAC) {
+      // breakthrough: the front screw comes out and its load drops away (the rear screw is still digging,
+      // so only the front motor's current tells). Stop both: the rear screw alone would twist the body.
+      // The turn count reads low when the sand slips less than SLIP, so this starts checking early.
+      if (now - stateSince > 3000 && frontAmps > 0) digAmps = digAmps <= 0 ? frontAmps : digAmps * 0.995f + frontAmps * 0.005f;
+      if (distance > RUN_DISTANCE_MM * 0.4f && digAmps > 0 && frontAmps >= 0 && frontAmps < digAmps * BREAK_FRAC) {
         if (!quietSince) quietSince = now;
         else if (now - quietSince > 1500) { stopAll(); setState(DONE, "broke through"); }
       } else quietSince = 0;
+      break;
+    }
+
+    case RETREAT: {
+      // back out the way it came, straight, for at most as long as it dug
+      steerTo(0);
+      motorWrite(motors[${fr}], -(int)(POWER * 255));
+      ${rear ? `motorWrite(motors[${rr}], -(int)(POWER * 255));` : ""}
+      ${frontEnc >= 0 ? `if (encRead(${frontEnc}) <= encAtStart) { stopAll(); setState(DONE, "backed out to the start"); break; }` : ""}
+      if (now - stateSince > digMs) { stopAll(); setState(FAULT, "backed out for as long as it dug: dig it out from the start wall"); break; }
+      if (maxAmps() > STALL_A) { if (!stallSince) stallSince = now; } else stallSince = 0;
+      if (stallSince && now - stallSince > STALL_MS * 3) { stallSince = 0; stopAll(); setState(FAULT, "stuck backing out"); }
       break;
     }
 
@@ -927,7 +960,7 @@ void setup() {
   }
   loopBody.push(`  if (now - lastLog >= LOG_INTERVAL_MS) {
     lastLog = now;
-    if (state == DIGGING || state == BACKING) logNow();
+    if (state == DIGGING || state == BACKING || state == RETREAT) logNow();
     if (state != BENCH && state != DONE && state != FAULT) printStatus();
   }
 }`);
@@ -961,7 +994,7 @@ function arduinoReadme(a: {
   const L: string[] = [];
   L.push(`# ${c.fw.name}: firmware for ${c.designName}`, "");
   L.push(`Generated by Kerf from the design's wiring for **${c.board.name}** (${c.boardPart.name}). Every pin in \`pins.h\` comes from a wire in the design, so if you change the wiring, export again.`, "");
-  L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, backs off when it stalls, and stops when it has gone the set distance or feels the load drop at breakthrough. It logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
+  L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, and backs off when it stalls. It stops when the front motor's load drops as the nose breaks through, or when the far wall stops it. Screw turns only estimate the distance (screws turning in place count too), so if neither happens by twice the expected distance or the give-up time, it backs out on the reserve. It stops if the body keeps rolling, and logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
   if (a.warnings.length) {
     L.push("## Fix before uploading", "");
     for (const w of a.warnings) L.push(`- ${w}`);
@@ -988,7 +1021,7 @@ function arduinoReadme(a: {
     "Battery on, everything clear of hands. `m 0 80`: the motor should turn slowly for 2 seconds. Repeat for each motor. If one turns the wrong way, flip its `_FWD` in config.h rather than swapping wires.",
     ...(a.outs.some((o) => o.encA) ? ["`e`, turn each output shaft one full turn by hand, `e` again: the count should change by about the counts per turn in config (half the maker's figure, since only channel A edges are counted). If it goes down when the motor runs forward, swap ENC_A and ENC_B in the design."] : []),
     ...(a.steer ? ["`k` runs the steering actuator to both ends and prints the potentiometer readings: copy them into config.h. Then `t 0`, `t 5`, `t -5` and check the hinge angle with a protractor."] : []),
-    ...(a.imu ? ["`i` and turn the robot by hand: yaw should change by the angle you turn it, roll by the angle you twist it. Set STEER_SIGN so `t` with a positive angle turns the nose towards a positive yaw change."] : []),
+    ...(a.imu ? ["`i` and turn the robot by hand: yaw should change by the angle you turn it, roll by the angle you twist it. `t 5` should turn the nose clockwise seen from above, the way yaw grows; if it turns it the other way, flip STEER_SIGN (or set steer_sign in the design's firmware block)."] : []),
     ...(a.vsense ? ["`s` and compare the battery voltage with a multimeter: it should agree within 0.2 V."] : []),
     ...(a.tunneller ? ["Run in a bucket of sand first with `g`: watch the currents in `s`. Set STALL_A just above the highest normal digging current.", "After a run, `l` prints the log; paste it into a spreadsheet to see distance, heading and current over time."] : []),
   ];
