@@ -14,6 +14,7 @@ import { viewport } from "../app/viewportApi";
 import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
+import { PhoneWorkspace, usePhoneLayout } from "./PhoneWorkspace";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
@@ -23,9 +24,11 @@ export function Workspace() {
   const [dock, setDock, saveDock] = usePersistentNumber("kerf.layout.dock", 300, 140, 900);
   const dockOpen = useView((s) => s.dockOpen);
   const center = useRef<HTMLDivElement>(null);
+  const phone = usePhoneLayout();
   useThumbnails();
 
   if (!project) return null;
+  if (phone) return <PhoneWorkspace projectKey={project.id} />;
   return (
     <div className="app">
       <TopBar />

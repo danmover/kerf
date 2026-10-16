@@ -49,6 +49,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
     group: "General",
     items: [
       [[mod, "K"], "Focus the chat"],
+      [["V"], "Talk to Claude (Enter finishes, Esc cancels)"],
       [[mod, "Z"], "Undo"],
       [[mod, "⇧", "Z"], "Redo"],
       [[mod, "S"], "Save now (Kerf also saves automatically)"],

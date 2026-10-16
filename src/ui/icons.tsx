@@ -166,6 +166,18 @@ export const Icon = {
       <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />
     </I>
   ),
+  Mic: (p: P) => (
+    <I {...p}>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+    </I>
+  ),
+  MicOff: (p: P) => (
+    <I {...p}>
+      <path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 4.6 2.5" />
+      <path d="M18.5 11a6.5 6.5 0 0 1-1 3.4M5.5 11a6.5 6.5 0 0 0 10.2 5.4M12 17.5V21M8.5 21h7M3 3l18 18" />
+    </I>
+  ),
   Sparkle: (p: P) => (
     <I {...p}>
       <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.5 2.5M15.2 15.2l2.5 2.5M6.3 17.7l2.5-2.5M15.2 8.8l2.5-2.5" />

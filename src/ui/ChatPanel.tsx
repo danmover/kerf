@@ -14,6 +14,7 @@ import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
+import { MicButton, VoiceBar, VoiceNotice, useVoiceInput } from "./voice/VoiceInput";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -365,12 +366,15 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
     void sendMessage(text);
     setText("");
   };
+  const voice = useVoiceInput({ text, setText, send, canSend: !busy, input: ta });
   return (
     <div className="composer">
+      <VoiceNotice />
       <div className="composer-box">
         <textarea
           ref={ta}
           value={text}
+          readOnly={voice.live}
           rows={2}
           maxLength={20000}
           placeholder={pending ? "Pick an option above, or answer here…" : hasKey ? "Describe a part, a change or a question…" : "Add your API key in settings to chat with Claude"}
@@ -389,6 +393,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
             {busy ? <span className="shimmer-text">Claude is working</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
           </span>
           <div className="grow" />
+          <MicButton voice={voice} />
           {busy ? (
             <button className="btn sm danger" onClick={stop} aria-label="Stop">
               <Icon.Stop size={12} /> Stop
@@ -399,6 +404,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
             </button>
           )}
         </div>
+        <VoiceBar voice={voice} />
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 6, textAlign: "center" }}>
         Claude can make mistakes. Checks verify geometry, not strength. Test before you rely on a part.

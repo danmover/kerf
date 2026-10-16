@@ -1,0 +1,229 @@
+/* Voice input: the mic button, the listening bar and the privacy cards. */
+
+.composer-box {
+  position: relative;
+}
+.composer-box:has(.voice-bar.live) {
+  border-color: rgba(255, 93, 108, 0.55);
+  box-shadow: 0 0 0 3px rgba(255, 93, 108, 0.1), 0 0 30px -12px rgba(255, 93, 108, 0.5);
+}
+.composer-box:has(.voice-bar) > .row {
+  visibility: hidden;
+}
+.composer-box textarea[readonly] {
+  caret-color: transparent;
+}
+
+.mic-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--bg-3);
+  color: var(--text-2);
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.2s;
+  flex: none;
+}
+.mic-btn:hover {
+  background: var(--bg-4);
+  border-color: var(--line-3);
+  color: var(--text);
+}
+.mic-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.mic-btn.live {
+  color: #fff;
+  background: linear-gradient(180deg, #ff7381, #e5485a);
+  border-color: #ff8a96;
+  box-shadow: 0 0 0 3px rgba(255, 93, 108, 0.16), 0 0 22px -4px rgba(255, 93, 108, 0.65);
+}
+.mic-ring {
+  position: absolute;
+  inset: -3px;
+  border-radius: 9px;
+  border: 2px solid rgba(255, 93, 108, 0.6);
+  animation: mic-ring 1.5s var(--ease) infinite;
+  pointer-events: none;
+}
+@keyframes mic-ring {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+/* sits over the hint row at the bottom of the message box */
+.voice-bar {
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  bottom: 4px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 3px 4px 3px 10px;
+  border-radius: 9px;
+  background: rgba(14, 17, 25, 0.97);
+  border: 1px solid rgba(255, 93, 108, 0.3);
+  box-shadow: 0 -10px 24px -14px rgba(255, 93, 108, 0.45);
+}
+.voice-bar.sending {
+  border-color: rgba(109, 139, 255, 0.4);
+  box-shadow: 0 -10px 24px -14px var(--accent-glow);
+}
+.vb-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.vb-state {
+  color: var(--text);
+  font-weight: 500;
+}
+.vb-where {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.vb-where.device {
+  color: var(--pass);
+  border-color: rgba(61, 220, 151, 0.35);
+  background: var(--pass-soft);
+}
+.vb-where.online {
+  color: var(--warn);
+  border-color: rgba(245, 184, 75, 0.35);
+  background: var(--warn-soft);
+}
+.vb-time {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.voice-level {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 20px;
+  flex: none;
+}
+.voice-level span {
+  width: 3px;
+  height: 20px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #ff9aa4, #ff5d6c);
+  transform: scaleY(0.3);
+  transform-origin: center;
+  transition: background 0.3s;
+}
+.voice-level.calm span {
+  background: var(--text-4);
+}
+.vb-countdown {
+  width: 46px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-4);
+  overflow: hidden;
+  flex: none;
+}
+.vb-countdown > div {
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left;
+}
+
+.voice-notice {
+  overflow: hidden;
+}
+.vn-inner {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  font-size: 12.5px;
+}
+.voice-notice.offer .vn-inner {
+  border-color: rgba(109, 139, 255, 0.4);
+  background: #11172a;
+}
+.voice-notice.error .vn-inner {
+  border-color: rgba(255, 93, 108, 0.4);
+  background: var(--fail-soft);
+}
+.voice-notice.error.soft .vn-inner {
+  border-color: var(--line-2);
+  background: var(--bg-2);
+}
+.vn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.vn-inner p {
+  margin: 6px 0 0;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.vn-inner p b {
+  color: var(--text);
+  font-weight: 500;
+}
+.vn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.vn-actions .btn {
+  white-space: normal;
+  height: auto;
+  min-height: 30px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+p.vn-alt {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 8px;
+}
+.vn-foot {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--text-4);
+  font-size: 11.5px;
+}
+.link-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent-2);
+  font: inherit;
+  cursor: pointer;
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
