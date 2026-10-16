@@ -16,6 +16,7 @@
 /* ---------- tabs ---------- */
 
 .lp-tabs {
+  container-type: inline-size;
   height: 40px;
   display: flex;
   align-items: stretch;
@@ -47,6 +48,16 @@
 }
 .lp-tab.active {
   color: var(--text);
+}
+/* when the tabs don't fit with every label, the others show their icon and count, and the open tab its label */
+@container (max-width: 420px) {
+  .lp-tab:not(.active) .lp-tab-label {
+    display: none;
+  }
+  .lp-tab.active {
+    flex: 0 0 auto;
+    padding: 0 10px;
+  }
 }
 .lp-tab:focus-visible {
   outline-offset: -4px;

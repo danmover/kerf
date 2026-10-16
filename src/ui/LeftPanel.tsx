@@ -79,7 +79,7 @@ export function LeftPanel() {
         {LEFT_TABS.map((t) => {
           const on = t.id === tab.id;
           return (
-            <button key={t.id} role="tab" id={`lp-tab-${t.id}`} aria-selected={on} aria-controls="lp-body" className={`lp-tab ${on ? "active" : ""}`} onClick={() => useView.setState({ leftTab: t.id })}>
+            <button key={t.id} role="tab" id={`lp-tab-${t.id}`} aria-selected={on} aria-controls="lp-body" className={`lp-tab ${on ? "active" : ""}`} aria-label={t.label} data-tip={on ? undefined : t.label} onClick={() => useView.setState({ leftTab: t.id })}>
               <span className="lp-tab-icon">{t.icon}</span>
               <span className="lp-tab-label">{t.label}</span>
               {t.Count && (
