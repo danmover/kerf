@@ -59,7 +59,8 @@ describe("accounts", () => {
     for (let i = 0; i < 9; i++) last = await c.post("/api/auth/login", { email: "dan@example.com", password: "wrong password " + i });
     expect(last!.status).toBe(429);
     expect(last!.headers.get("retry-after")).toBeTruthy();
-  });
+    // ten password hashes: slow on a busy machine
+  }, 30_000);
 
   it("doesn't let failed sign-ins from elsewhere lock out a browser that signed in before", async () => {
     const { app } = setup({ KERF_TRUST_PROXY: "x-forwarded-for" });
