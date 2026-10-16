@@ -257,7 +257,7 @@ function computeFigures(m: MachineData, pickup: number): PreampFigures {
 
 // ---------------------------------------------------------------- checks
 
-const item = (id: string, status: CheckItem["status"], title: string, detail: string, parts: string[], span?: MachineComponent["span"]): CheckItem => ({ id: `circuit:${id}`, category: "electrical", status, title, detail, parts, span, basis: "calculation" });
+const item = (id: string, status: CheckItem["status"], title: string, detail: string, parts: string[], span?: MachineComponent["span"]): CheckItem => ({ id: `circuit:${id}`, category: "electrical", status, title, detail, parts, span, basis: "simulation" });
 
 /** The circuit's operating point against every part's ratings. */
 export function circuitChecks(m: MachineData): CheckItem[] {

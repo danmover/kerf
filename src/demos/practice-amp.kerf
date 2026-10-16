@@ -11,6 +11,7 @@ brief {
   setting: "Bedroom or living room, played at conversation level up to loud practice; carried by one hand"
   priorities: ["sounds great", "easy to build", "cheap parts"]
   temp: 10C .. 35C assumed
+  process: "FDM print"
 
   quantity: 1
 
@@ -191,27 +192,32 @@ component psu = lib.psu("psu_24v_2a") { at: (330, cab_d + 150, 0) }
 // ── Cabinet: 15 mm birch plywood, glued and pinned ──────
 part left_side {
   material: "Wood"
+  process: mfg.cnc_mill(setups: [X, -X])
   group: "Cabinet"
   body box(ply, cab_d, cab_h, at: (ply / 2, cab_d / 2, 0))
 }
 part right_side {
   material: "Wood"
+  process: mfg.cnc_mill(setups: [X, -X])
   group: "Cabinet"
   body box(ply, cab_d, cab_h, at: (cab_w - ply / 2, cab_d / 2, 0))
 }
 part top_panel {
   material: "Wood"
+  process: mfg.cnc_mill()
   group: "Cabinet"
   body box(cab_w - 2 * ply, cab_d, ply, at: (cab_w / 2, cab_d / 2, cab_h - ply))
 }
 part bottom_panel {
   material: "Wood"
+  process: mfg.cnc_mill()
   group: "Cabinet"
   body box(cab_w - 2 * ply, cab_d, ply, at: (cab_w / 2, cab_d / 2, 0))
 }
 // the speaker baffle, covered in grille cloth wrapped round its edges
 part baffle {
   material: "Wood"
+  process: mfg.cnc_mill(setups: [Y, -Y])
   color: #2b2a29
   group: "Cabinet"
   body box(cab_w - 2 * ply, ply, strip_z - ply, at: (cab_w / 2, ply / 2, ply))
@@ -224,24 +230,29 @@ part baffle {
 // the control strip above it, with the window the printed panel shows through
 part control_strip {
   material: "Wood"
+  process: mfg.cnc_mill(setups: [Y, -Y])
   group: "Cabinet"
   body box(cab_w - 2 * ply, ply, cab_h - ply - strip_z, at: (cab_w / 2, ply / 2, strip_z))
-  cut box(win_x1 - win_x0, ply + 2, win_z1 - win_z0, at: ((win_x0 + win_x1) / 2, ply / 2, win_z0))
+  // rounded corners, so a 6 mm router bit or a jigsaw can cut it
+  cut rotate(box(win_x1 - win_x0, win_z1 - win_z0, ply + 2, at: ((win_x0 + win_x1) / 2, -(win_z0 + win_z1) / 2, -1), r: 4), -90, axis: X)
 }
 // cleats behind the front: the baffle and the strip screw to them
 part cleat_left {
   material: "Wood"
+  process: mfg.cnc_mill()
   group: "Cabinet"
   body box(ply, ply, cab_h - 2 * ply, at: (ply * 1.5, ply * 1.5, ply))
 }
 part cleat_right {
   material: "Wood"
+  process: mfg.cnc_mill()
   group: "Cabinet"
   body box(ply, ply, cab_h - 2 * ply, at: (cab_w - ply * 1.5, ply * 1.5, ply))
 }
 // open back: an upper panel with the power socket and a lower rail
 part back_upper {
   material: "Wood"
+  process: mfg.cnc_mill(setups: [Y, -Y])
   group: "Cabinet"
   body box(cab_w - 2 * ply, ply, 130, at: (cab_w / 2, cab_d - ply / 2, cab_h - ply - 130))
   cut cylinder(d: dc_in.hole_d, h: ply + 2, at: (330, cab_d - ply - 1, 330), dir: Y)
@@ -250,6 +261,7 @@ part back_upper {
 }
 part back_lower {
   material: "Wood"
+  process: mfg.cnc_mill(setups: [Y, -Y])
   group: "Cabinet"
   body box(cab_w - 2 * ply, ply, 80, at: (cab_w / 2, cab_d - ply / 2, ply))
 }
@@ -259,6 +271,7 @@ part back_lower {
 // and the switch go through it; the board hangs on four bosses.
 part front_panel {
   material: "PETG"
+  process: mfg.fdm(build: Y)   // printed face down: the bosses grow up off the back
   color: #1d1f23
   group: "Control panel"
   body box(pan_x1 - pan_x0, pan_t, pan_z1 - pan_z0, at: ((pan_x0 + pan_x1) / 2, pan_y + pan_t / 2, pan_z0))

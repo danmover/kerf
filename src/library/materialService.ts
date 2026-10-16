@@ -29,6 +29,7 @@ export const MATERIAL_SERVICE: Record<string, MaterialService> = {
   Steel: { maxC: 350, minC: -40, sunlight: "good", wet: "Plain steel rusts unless it is plated, painted or oiled", processes: ["cnc", "sheet", "laser"] },
   "Stainless 304": { maxC: 400, minC: -100, sunlight: "good", processes: ["cnc", "sheet", "laser"] },
   Brass: { maxC: 200, minC: -100, sunlight: "good", processes: ["cnc"] },
+  Wood: { maxC: 60, minC: -40, sunlight: "fair", wet: "Plywood swells and its glue lines weaken when wet: seal or paint it", processes: ["cnc", "laser"] },
   FR4: { maxC: 130, minC: -50, sunlight: "fair", processes: ["cnc", "laser"] },
 };
 

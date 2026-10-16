@@ -8,6 +8,7 @@ import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } 
 import { useView, requestCamera, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
 import { startAnalysisRuntime } from "./analysis/runtime";
+import { startBoardRuntime } from "./machine/pcb/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
 import { Onboarding } from "./screens/Onboarding";
@@ -78,6 +79,7 @@ function useBoot() {
     let live = true;
     startEngine();
     startAnalysisRuntime();
+    startBoardRuntime();
     void Promise.allSettled([loadRememberedKey(), refreshProjects()]).then(() => {
       if (!live) return;
       const s = useSettings.getState();

@@ -29,7 +29,7 @@ export interface CheckItem {
   margin?: number;
   /** brief uses this check serves */
   uses?: string[];
-  /** how the result was established: simulation is the finite-element solver, calculation a textbook formula, electrical rules the wiring check, physical test a test still to do */
+  /** how the result was established: simulation is the finite-element or circuit solver, calculation a textbook formula, electrical rules the wiring check, physical test a test still to do */
   basis: "geometry" | "parameters" | "needs analysis" | "simulation" | "calculation" | "electrical rules" | "physical test";
   /** what to change, in plain words */
   fix?: string;
