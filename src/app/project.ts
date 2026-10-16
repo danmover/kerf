@@ -9,8 +9,11 @@ import { loadSource, setSource, useDesign } from "../core/engine";
 import { describeChange } from "../core/sourceEdit";
 import type { Model } from "../core/model";
 import { templateById } from "../demos/templates";
-import { backupFile, download, projectFile, readImport, safeFileName, type ProjectFile } from "../persist/files";
+import { backupFile, download, projectFile, readImportFile, safeFileName, type PackedFile, type ProjectFile } from "../persist/files";
 import { copyAssets, exportAssets, importAssets, releaseAssetUrls } from "../persist/assets";
+import { collectUnusedBlobs, getPackedBlob, putBlob, toBase64 } from "../persist/blobs";
+import { onImportsChanged, setImports } from "../core/imports";
+import type { ProjectImport } from "../kernel/imports";
 import { go, toast, errorText } from "./ui";
 import { resetView, useView } from "./view";
 import { forgetAllRuns, forgetRuns } from "../agents/progress";
@@ -72,12 +75,13 @@ export async function refreshProjects() {
   set({ projects, loaded: true, save: persistent ? get().save : "memory" });
 }
 
-export async function createProject(templateId: string, name?: string, source?: string): Promise<ProjectRecord> {
+export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[]): Promise<ProjectRecord> {
   const t = templateById(templateId);
   const src = source ?? t?.source ?? "";
   const now = Date.now();
   const nameFromSrc = /design\s+"([^"]{1,120})"/.exec(src)?.[1];
   const p: ProjectRecord = { id: db.newId("prj"), name: name ?? (templateId === "blank" ? "Untitled design" : nameFromSrc ?? t?.name ?? "Untitled design"), source: src, template: templateId, createdAt: now, updatedAt: now };
+  if (imports?.length) p.imports = imports;
   await db.put("projects", p);
   await db.addVersion({ id: db.newId("ver"), projectId: p.id, ts: now, author: "system", message: t ? `Created from “${t.name}”` : "Created", source: src });
   await refreshProjects();
@@ -97,6 +101,8 @@ export async function openProject(id: string) {
   releaseAssetUrls();
   previewBase = null;
   set({ current: p, versions, undo: [], redo: [], save: db.persistent ? "saved" : "memory", preview: null });
+  // the evaluator needs the imported files' analysis before it reads the source
+  setImports(p.imports ?? []);
   loadSource(p.source);
   committed = { source: p.source, model: useDesign.getState().model };
   // an empty design starts on its brief
@@ -109,9 +115,28 @@ export async function closeProject() {
   endPreview();
   await flushPending();
   set({ current: null, versions: [], undo: [], redo: [] });
+  setImports([]);
   await refreshProjects();
   go({ name: "home" });
 }
+
+/** Change the open project's imported files and save the record. */
+export async function setProjectImports(imports: ProjectImport[]) {
+  const cur = get().current;
+  if (!cur) return;
+  set({ current: { ...cur, imports } });
+  setImports(imports);
+  await flushPending();
+  await saveNow();
+}
+
+// analysis computed on this device (for a file from a project file or an older Kerf) is stored with the project
+onImportsChanged((list, reason) => {
+  const cur = get().current;
+  if (reason !== "analysed" || !cur) return;
+  set({ current: { ...cur, imports: list } });
+  scheduleSave();
+});
 
 function scheduleSave() {
   const cur = get().current;
@@ -296,7 +321,7 @@ export async function duplicateProject(id: string) {
   await flushPending();
   const p = await db.getOne<ProjectRecord>("projects", id);
   if (!p) return;
-  const copy = await createProject(p.template, `${p.name} copy`, p.source);
+  const copy = await createProject(p.template, `${p.name} copy`, p.source, p.imports);
   await copyAssets(p.id, copy.id);
   if (p.thumbnail) await db.put("projects", { ...copy, thumbnail: p.thumbnail });
   await refreshProjects();
@@ -307,7 +332,23 @@ export async function deleteProject(id: string) {
   await db.deleteProjectData(id);
   forgetRuns(id);
   if (get().current?.id === id) set({ current: null });
+  await collectUnusedBlobs().catch(() => 0);
   await refreshProjects();
+}
+
+/** Stored bytes of the files a set of projects import, for project files and backups. */
+async function packImportFiles(imports: ProjectImport[]): Promise<{ files: PackedFile[]; missing: string[] }> {
+  const files: PackedFile[] = [];
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const i of imports) {
+    if (seen.has(i.hash)) continue;
+    seen.add(i.hash);
+    const a = await getPackedBlob(i.hash);
+    if (a) files.push({ hash: i.hash, encoding: a.encoding, data: toBase64(a.data) });
+    else missing.push(i.file);
+  }
+  return { files, missing };
 }
 
 export async function exportProject(id: string) {
@@ -316,16 +357,22 @@ export async function exportProject(id: string) {
   if (!p) return;
   const versions = (await db.versionsFor(id)).map((v) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source }));
   const assets = await exportAssets(id, [p.source, ...versions.map((v) => v.source)]);
-  download(projectFile(p.name, p.source, p.template, p.createdAt, versions, assets), safeFileName(p.name, "kerfproj"), "application/json");
+  const imports = p.imports ?? [];
+  const { files, missing } = await packImportFiles(imports);
+  const kept = imports.filter((i) => files.some((a) => a.hash === i.hash));
+  download(projectFile(p.name, p.source, p.template, p.createdAt, versions, { assets, imports: kept, importFiles: files }), safeFileName(p.name, "kerfproj"), "application/json");
+  if (missing.length) toast({ kind: "warn", title: "Some imported files were left out", detail: `This browser does not have ${missing.join(", ")}.` }, 9000);
 }
 
 /** Imports a file; returns the project to open when the file held exactly one. */
 export async function importProject(file: File): Promise<ProjectRecord | null> {
   try {
-    const imported = await readImport(file);
+    const { projects: imported, files, warnings } = await readImportFile(file);
+    for (const [hash, data] of files) await putBlob(hash, data);
+    if (warnings.length) toast({ kind: "warn", title: "Part of the file could not be used", detail: [...new Set(warnings)].slice(0, 3).join(" ") }, 9000);
     let last: ProjectRecord | null = null;
     for (const imp of imported) {
-      last = await createProject("imported", imp.name, imp.source);
+      last = await createProject("imported", imp.name, imp.source, imp.imports);
       if (imp.template !== "imported") await db.put("projects", { ...last, template: imp.template });
       for (const v of imp.versions) await db.addVersion({ id: db.newId("ver"), projectId: last.id, ts: v.ts, author: v.author, message: v.message, source: v.source });
       await importAssets(last.id, imp.assets);
@@ -349,13 +396,16 @@ export async function exportAllProjects() {
   const projects = await db.getAll<ProjectRecord>("projects");
   if (!projects.length) return toast({ kind: "warn", title: "No projects to back up" });
   const files: ProjectFile[] = [];
+  const { files: importFiles } = await packImportFiles(projects.flatMap((p) => p.imports ?? []));
+  const have = new Set(importFiles.map((a) => a.hash));
   for (const p of projects) {
     const versions = (await db.versionsFor(p.id)).map((v) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source }));
     const assets = await exportAssets(p.id, [p.source, ...versions.map((v) => v.source)]);
-    files.push({ format: "kerf-project", version: 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions, ...(assets.length ? { assets } : {}) });
+    const imports = (p.imports ?? []).filter((i) => have.has(i.hash));
+    files.push({ format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}) });
   }
   const stamp = new Date().toISOString().slice(0, 10);
-  download(backupFile(files), `kerf-backup-${stamp}.kerfbackup`, "application/json");
+  download(backupFile(files, importFiles), `kerf-backup-${stamp}.kerfbackup`, "application/json");
   toast({ kind: "success", title: "Backup downloaded", detail: `${files.length} project${files.length > 1 ? "s" : ""} with their history. Import the file on any browser to restore them.` });
 }
 
@@ -372,5 +422,6 @@ export async function saveThumbnail(dataUrl: string) {
 export async function clearAllData() {
   await db.clearEverything();
   forgetAllRuns();
+  setImports([]);
   set({ projects: [], current: null, versions: [], undo: [], redo: [] });
 }

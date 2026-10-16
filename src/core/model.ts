@@ -56,6 +56,22 @@ export interface EvalPart {
   gear?: GearInfo;
   fastener?: FastenerInfo;
   bom?: { description: string; standard?: string };
+  /** set for bodies of an imported STEP file */
+  imported?: ImportedBody;
+}
+
+export interface ImportedBody {
+  /** content hash of the file */
+  asset: string;
+  /** the import's name in the project */
+  file: string;
+  /** body index in the file */
+  body: number;
+  bodyName: string;
+  /** surfaces ("shell", "faces") have no volume and are left out of interference checks */
+  kind: "solid" | "shell" | "faces";
+  /** the body's faces carry their own colours (and no color: override is set) */
+  faceColors: boolean;
 }
 
 export interface EvalParam {

@@ -25,7 +25,7 @@ describe("imports", () => {
 
   it("rejects malformed and hostile files", async () => {
     await expect(readImport(file("x.json", "{not json"))).rejects.toThrow(/could not be read/);
-    await expect(readImport(file("x.json", JSON.stringify({ format: "kerf-project", version: 2, name: "x", source: "" })))).rejects.toThrow(/not a Kerf project/);
+    await expect(readImport(file("x.json", JSON.stringify({ format: "kerf-project", version: 3, name: "x", source: "" })))).rejects.toThrow(/not a Kerf project/);
     await expect(readImport(file("x.json", JSON.stringify({ format: "kerf-project", version: 1, name: "x", source: "", versions: [{ ts: 1, author: "admin", message: "", source: "" }] })))).rejects.toThrow();
     await expect(readImport(file("big.kerf", "a".repeat(MAX_SOURCE_CHARS + 1)))).rejects.toThrow(/longer/);
     await expect(readImport(file("bin.kerf", "abc\u0000def"))).rejects.toThrow(/binary/);

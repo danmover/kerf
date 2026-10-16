@@ -19,6 +19,7 @@ import { REVIEW_TOOL } from "./review/tool";
 import { useProject } from "../app/project";
 import { assetBlock } from "../persist/assets";
 import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssumptions, protectedBriefChanges, validId, writeBrief, type BriefData, type FieldKey } from "../core/brief";
+import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -281,6 +282,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  ...IMPORT_TOOL_DEFS,
 ];
 
 const EditInput = z.object({
@@ -539,6 +541,8 @@ export function modelSummary(m: Model | null): string {
     groups.set(k, arr);
   }
   lines.push("Parts by group: " + [...groups].map(([g, ns]) => `${g}: ${ns.join(", ")}`).join("; "));
+  const imports = importsSummary(m);
+  if (imports) lines.push(imports);
   if (m.requirements.length) {
     // geometry-based requirements are only resolved once the kernel has measured them
     const report = useDesign.getState().report;
@@ -806,6 +810,8 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       return { content: "Shown to the user as chips. A click sends that prompt as their next message.", card: { title: "Suggested next steps" }, suggest: p.data.suggestions };
     }
   }
+  const imported = await runImportTool(name, input);
+  if (imported) return imported;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -834,4 +840,5 @@ export const TOOL_TITLES: Record<string, string> = {
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
   suggest_next_steps: "Suggesting next steps",
+  ...IMPORT_TOOL_TITLES,
 };

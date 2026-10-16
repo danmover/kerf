@@ -19,6 +19,7 @@ import { PlanHud } from "../ui/PlanHud";
 import { RefViewer } from "../ui/RefViewer";
 import { SketchPad } from "../ui/SketchPad";
 import { PreviewBanner } from "../ui/PreviewBanner";
+import { StepDropOverlay, useStepDrop } from "../ui/ImportsPanel";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
@@ -29,6 +30,7 @@ export function Workspace() {
   const dockOpen = useView((s) => s.dockOpen);
   const center = useRef<HTMLDivElement>(null);
   const phone = usePhoneLayout();
+  const drop = useStepDrop();
   useThumbnails();
 
   if (!project) return null;
@@ -42,7 +44,8 @@ export function Workspace() {
             <Icon.Alert size={14} /> This browser is blocking local storage, so projects will not be kept after you close the tab. Use Export → Project file to keep your work.
           </div>
         )}
-        <div className="workspace" style={{ gridTemplateColumns: `${left}px 1fr ${right}px`, flex: 1 }}>
+        <div className="workspace" style={{ gridTemplateColumns: `${left}px 1fr ${right}px`, flex: 1 }} {...drop.handlers}>
+          <StepDropOverlay show={drop.over} />
           <ErrorBoundary label="Model panel">
             <LeftPanel />
           </ErrorBoundary>

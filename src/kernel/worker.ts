@@ -5,6 +5,8 @@ import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
 import * as R from "replicad";
 import { KernelCore } from "./core";
+import { dropImport, registerImport } from "./build";
+import { readStep } from "./stepImport";
 import type { FromWorker, ToWorker } from "./protocol";
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
@@ -69,11 +71,11 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
               normals: mesh.normals.slice(),
               indices: mesh.indices.slice(),
               edges: mesh.edges.slice(),
+              colors: mesh.colors?.slice(),
             };
-            post(
-              { type: "part", jobId: msg.jobId, hash: item.hash, quality: msg.quality, mesh: copy, volume: entry.volume, bbox: entry.bbox, ms: performance.now() - t },
-              [copy.positions.buffer, copy.normals.buffer, copy.indices.buffer, copy.edges.buffer],
-            );
+            const transfer: Transferable[] = [copy.positions.buffer, copy.normals.buffer, copy.indices.buffer, copy.edges.buffer];
+            if (copy.colors) transfer.push(copy.colors.buffer);
+            post({ type: "part", jobId: msg.jobId, hash: item.hash, quality: msg.quality, mesh: copy, volume: entry.volume, bbox: entry.bbox, ms: performance.now() - t }, transfer);
           } catch (e) {
             post({ type: "part-error", jobId: msg.jobId, hash: item.hash, message: e instanceof Error ? e.message : String(e) });
           }
@@ -110,6 +112,27 @@ self.onmessage = (ev: MessageEvent<ToWorker>) => {
       case "inspect":
         post({ type: "inspected", jobId: msg.jobId, result: core.inspect(msg.hashes) });
         return;
+      case "import-step": {
+        try {
+          const loaded = readStep(new Uint8Array(msg.data), msg.file, { analyse: msg.analyse, hash: msg.hash });
+          registerImport(msg.hash, loaded.bodies, loaded.faceColors);
+          post({ type: "imported", jobId: msg.jobId, hash: msg.hash, meta: loaded.meta });
+        } catch (e) {
+          post({ type: "import-error", jobId: msg.jobId, hash: msg.hash, message: e instanceof Error ? e.message : typeof e === "number" ? `OpenCASCADE error ${e}` : String(e) });
+        }
+        return;
+      }
+      case "drop-import":
+        dropImport(msg.hash);
+        return;
+      case "measure": {
+        try {
+          post({ type: "measured", jobId: msg.jobId, result: core.measure(msg.a, msg.b) });
+        } catch (e) {
+          post({ type: "measure-error", jobId: msg.jobId, message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
     }
   });
 };

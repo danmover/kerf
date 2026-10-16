@@ -8,6 +8,7 @@ import type { ChatFile } from "../ai/chat";
 import { addAsset, ACCEPT } from "../persist/assets";
 import type { AssetRecord } from "../persist/db";
 import { useProject } from "../app/project";
+import { importStepFiles, isStepFile } from "../app/imports";
 import { toast, errorText } from "../app/ui";
 import { Menu, MenuItem } from "./common";
 import { Icon } from "./icons";
@@ -29,7 +30,11 @@ export async function storeFiles(files: File[]): Promise<AssetRecord[]> {
   const projectId = useProject.getState().current?.id;
   if (!projectId) return [];
   const out: AssetRecord[] = [];
+  // a STEP file dropped here is a part to design around, not a picture: import it as one
+  const steps = files.filter(isStepFile);
+  if (steps.length) void importStepFiles(steps);
   for (const f of files) {
+    if (isStepFile(f)) continue;
     try {
       out.push(await addAsset(projectId, f, f.name || (f.type === "application/pdf" ? "document.pdf" : "pasted image.png")));
     } catch (e) {

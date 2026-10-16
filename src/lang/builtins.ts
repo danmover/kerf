@@ -394,6 +394,8 @@ export function geoFns(): Record<string, Fn> {
   const refName = (v: Value | undefined, a: Args, what: string): string => {
     if (v instanceof Ref) return v.name;
     if (v instanceof Obj && (v.kind === "component" || v.kind === "part") && typeof v.fields.name === "string") return v.fields.name;
+    // one body of an imported file is measured on its own
+    if (v instanceof Obj && v.kind === "body" && typeof v.fields.id === "string") return v.fields.id;
     return a.ctx.error(`${a.fname}(): ${what} should be a part or component name`);
   };
   const axisArg = (a: Args): "x" | "y" | "z" => {

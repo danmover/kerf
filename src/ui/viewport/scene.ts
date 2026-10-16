@@ -16,6 +16,7 @@ import { appearanceFor, type Appearance } from "./render/appearance";
 import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, type PartUniforms } from "./render/partShader";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
+import { MeasureOverlay } from "./measure";
 
 const ACCENT = new THREE.Color("#6d8bff");
 const HOVER = new THREE.Color("#a9bcff");
@@ -184,6 +185,7 @@ export class SceneController {
   private lightDrag: { x: number; angle: number } | null = null;
   private swatchCache = new Map<string, string>();
   private disposed = false;
+  private measure = new MeasureOverlay();
   debugReason = "";
   onHover: (id: string | null) => void = () => undefined;
   onPick: (id: string | null, additive: boolean) => void = () => undefined;
@@ -257,6 +259,7 @@ export class SceneController {
     this.sectionFrame.matrixAutoUpdate = false;
     this.sectionFill.matrixAutoUpdate = false;
     this.overlay.add(this.sectionFill, this.sectionFrame);
+    this.overlay.add(this.measure.group);
     this.buildTriad();
     this.applyLighting();
 
@@ -325,6 +328,7 @@ export class SceneController {
     this.controls.dispose();
     for (const p of [...this.parts.values()]) this.disposePart(p);
     for (const g of [...this.ghosts]) this.disposeGhost(g);
+    this.measure.clear();
     for (const g of this.geos.values()) {
       g.mesh.dispose();
       g.edges.dispose();
@@ -478,6 +482,8 @@ export class SceneController {
       mesh.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
       mesh.setAttribute("normal", new THREE.BufferAttribute(data.normals, 3));
       mesh.setIndex(new THREE.BufferAttribute(data.indices, 1));
+      // imported bodies whose faces carry their own colours
+      if (data.colors) mesh.setAttribute("color", new THREE.BufferAttribute(data.colors, 3, true));
       mesh.computeBoundingBox();
       mesh.computeBoundingSphere();
       const edges = new THREE.BufferGeometry();
@@ -644,11 +650,15 @@ export class SceneController {
     const d = this.display;
     const p = obj.part;
     const look = this.lookFor(p);
-    if (look !== obj.look) {
-      const transmissive = (look.transmission > 0) !== (obj.look.transmission > 0);
+    // imported bodies whose faces carry their own colours keep them, except while a material is previewed
+    const faceColors = !!p.imported?.faceColors && !!obj.mesh.geometry.getAttribute("color") && !this.overrides.has(p.id);
+    if (look !== obj.look || obj.mat.vertexColors !== faceColors) {
+      const recompile = (look.transmission > 0) !== (obj.look.transmission > 0) || obj.mat.vertexColors !== faceColors;
       obj.look = look;
       applyAppearance(obj.mat, obj.u, look);
-      if (transmissive) obj.mat.needsUpdate = true;
+      obj.mat.vertexColors = faceColors;
+      if (faceColors) obj.mat.color.set(0xffffff);
+      if (recompile) obj.mat.needsUpdate = true;
       this.changed = true;
     }
     const selected = d.selected.has(obj.id);
@@ -823,6 +833,14 @@ export class SceneController {
       this.interferences.push({ obj, id: `int:${it.a}|${it.b}` });
     }
     this.updateInterferenceLook();
+    this.needComposite = true;
+  }
+
+  /** Show the closest points between two parts (null hides the line). */
+  setMeasure(m: { a: [number, number, number]; b: [number, number, number] } | null) {
+    const size = new THREE.Vector3();
+    this.bounds.getSize(size);
+    this.measure.set(m, Math.max(size.x, size.y, size.z, 20));
     this.needComposite = true;
   }
 

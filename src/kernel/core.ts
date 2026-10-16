@@ -3,7 +3,7 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { applyXf, bboxOf, buildPart, meshShape, type MeshData } from "./build";
+import { applyXf, bboxOf, buildPart, importFaceColors, meshShape, type MeshData } from "./build";
 import { applyXforms, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
 import type { BuildItem, ChecksRequest, ChecksResult, Interference, PlacedItem } from "./protocol";
 import { inspectPart, type PartInspection } from "./inspect";
@@ -15,7 +15,16 @@ interface CacheEntry {
   bbox: [V3, V3];
   meshes: Partial<Record<"preview" | "final", MeshData>>;
   inspection?: PartInspection;
+  /** colours of each face, for imported bodies that carry them */
+  faceColors: string[] | null;
   used: number;
+}
+
+export interface MeasureResult {
+  distance: number;
+  /** closest points on each side (equal when the shapes touch or overlap) */
+  a: V3;
+  b: V3;
 }
 
 export class KernelCore {
@@ -44,7 +53,7 @@ export class KernelCore {
     } catch {
       volume = 0;
     }
-    const entry: CacheEntry = { shape, volume, bbox: bboxOf(shape), meshes: {}, used: ++this.tick };
+    const entry: CacheEntry = { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), used: ++this.tick };
     this.cache.set(item.hash, entry);
     this.trim();
     return entry;
@@ -53,7 +62,7 @@ export class KernelCore {
   mesh(hash: string, quality: "preview" | "final"): MeshData {
     const e = this.get(hash);
     if (!e) throw new Error("not built");
-    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality);
+    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors);
     return e.meshes[quality]!;
   }
 
@@ -174,7 +183,8 @@ export class KernelCore {
     // geometric queries for requirements
     const geo: Record<string, number> = {};
     const geoErrors: Record<string, string> = {};
-    const byName = (name: string) => list.filter((w) => w.item.name === name);
+    // a name matches every solid of a part or component; an id matches one solid (a body of an imported file)
+    const byName = (name: string) => list.filter((w) => w.item.name === name || w.item.id === name);
     for (const q of req.queries) {
       const key = geoKey(q);
       try {
@@ -269,10 +279,63 @@ export class KernelCore {
     }
   }
 
+  /** Smallest distance between two groups of placed solids, with the closest points. */
+  measure(a: { hash: string; xf: Xform[] }[], b: { hash: string; xf: Xform[] }[]): MeasureResult {
+    const A = a.filter((p) => this.cache.has(p.hash)).map((p) => this.placed(p));
+    const B = b.filter((p) => this.cache.has(p.hash)).map((p) => this.placed(p));
+    if (!A.length || !B.length) throw new Error("Both sides need built geometry to measure.");
+    const oc = R.getOC() as unknown as OCDist;
+    let best: MeasureResult | null = null;
+    for (const x of A)
+      for (const y of B) {
+        if (best && boxGap(x.bbox, y.bbox) > best.distance) continue;
+        const tool = new oc.BRepExtrema_DistShapeShape();
+        try {
+          tool.LoadS1(x.shape.wrapped);
+          tool.LoadS2(y.shape.wrapped);
+          tool.Perform();
+          if (!tool.IsDone() || tool.NbSolution() < 1) continue;
+          const d = tool.Value();
+          if (!best || d < best.distance) {
+            const p = tool.PointOnShape1(1);
+            const q = tool.PointOnShape2(1);
+            best = { distance: d, a: [p.X(), p.Y(), p.Z()], b: [q.X(), q.Y(), q.Z()] };
+            p.delete();
+            q.delete();
+          }
+        } finally {
+          tool.delete();
+        }
+      }
+    if (!best) throw new Error("The kernel could not measure between these parts.");
+    return best;
+  }
+
   exportStep(items: { hash: string; xf: Xform[]; name: string; color: string }[]): Blob {
     const shapes = items.map((it) => ({ shape: this.placed(it).shape.clone(), name: it.name, color: it.color }));
     return R.exportSTEP(shapes);
   }
+}
+
+interface OCPoint {
+  X(): number;
+  Y(): number;
+  Z(): number;
+  delete(): void;
+}
+
+interface OCDist {
+  BRepExtrema_DistShapeShape: new () => {
+    LoadS1(s: unknown): void;
+    LoadS2(s: unknown): void;
+    Perform(): boolean;
+    IsDone(): boolean;
+    NbSolution(): number;
+    Value(): number;
+    PointOnShape1(n: number): OCPoint;
+    PointOnShape2(n: number): OCPoint;
+    delete(): void;
+  };
 }
 
 function safeDelete(s: { delete?: () => void } | undefined) {

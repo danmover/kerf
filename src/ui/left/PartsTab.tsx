@@ -13,6 +13,7 @@ import { Swatch } from "../MaterialPicker";
 import { G } from "./glyphs";
 import { describePart } from "./insights";
 import { Highlight, CodeSample } from "./bits";
+import { ImportsSection } from "../ImportsPanel";
 
 interface Row {
   name: string;
@@ -36,6 +37,8 @@ function kindIcon(p: EvalPart) {
     case "usb_c":
     case "connector":
       return <Icon.Chip size={13} />;
+    case "step":
+      return <Icon.Upload size={13} />;
     default:
       return <Icon.Cube size={13} />;
   }
@@ -173,6 +176,7 @@ export function PartsTab({ filter }: { filter: string }) {
           </section>
         );
       })}
+      {!filter && <ImportsSection />}
     </div>
   );
 }
