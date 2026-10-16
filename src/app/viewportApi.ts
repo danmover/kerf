@@ -23,6 +23,8 @@ export interface CaptureOptions {
   box?: Box;
   /** look from this direction instead of the preset's */
   dir?: Vec3;
+  /** draw overlays such as analysis results (default true) */
+  overlays?: boolean;
 }
 
 export interface ViewportApi {

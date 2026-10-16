@@ -96,6 +96,8 @@ let history: BetaMessageParam[] = [];
  * blocks after the first changed message are rejected (see ./history).
  */
 let sent: { binding: string; keys: string[] } | null = null;
+/** The API said a request without the web tools can't carry earlier web results: send them as notes (the history keeps them). */
+let flatServer = false;
 let abort: AbortController | null = null;
 /** bumped whenever the chat leaves its project or is cleared, so a loop still finishing leaves the new state alone */
 let gen = 0;
@@ -130,6 +132,7 @@ export async function loadChat(projectId: string) {
   const removed = prepareSaved(history, rec ?? {}, binding);
   if (removed) console.info(`[kerf] Reopened chat: left out ${removed} earlier thinking block(s) that no longer match this conversation.`);
   sent = { binding, keys: messageKeys(history) };
+  flatServer = false;
   const savedPending = (rec as { pending?: ChatState["pendingChoice"] } | undefined)?.pending ?? null;
   const briefSeen = (rec as { briefSeen?: string | null } | undefined)?.briefSeen ?? null;
   const items = ((rec?.items as ChatItem[]) ?? []).map((it) =>
@@ -234,6 +237,7 @@ export async function clearChat() {
   dropPendingSave();
   history = [];
   sent = null;
+  flatServer = false;
   set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
   const { projectId } = get();
@@ -246,6 +250,7 @@ export function resetChat() {
   dropPendingSave();
   history = [];
   sent = null;
+  flatServer = false;
   set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
 }
@@ -661,9 +666,9 @@ export function currentBinding() {
   return bindingKey(systemBlocks(), requestTools(useSettings.getState()));
 }
 
-/** The tools for one request: Kerf's own, plus Anthropic's web search and fetch when the user allows them. */
-export function requestTools(settings: Pick<Settings, "model" | "webSearch">): unknown[] {
-  return settings.webSearch && !unsupported.has("web") ? [...TOOL_DEFS, ...webTools(settings.model)] : [...TOOL_DEFS];
+/** The tools for one request: Kerf's own, plus Anthropic's web search and fetch when the user allows them. The same for every model. */
+export function requestTools(settings: Pick<Settings, "webSearch">): unknown[] {
+  return settings.webSearch && !unsupported.has("web") ? [...TOOL_DEFS, ...webTools()] : [...TOOL_DEFS];
 }
 
 /** What one response looks like in the chat while it streams. */
@@ -1049,12 +1054,15 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, settings: ReturnT
   // web search can switch off mid-run (a key that cannot use it), which changes the tools
   const tools = requestTools(settings);
   const binding = bindingKey(system, tools);
-  let keys = messageKeys(history);
+  // earlier web results go as plain notes when this request can't carry them; a copy, so the history itself only grows
+  const hasWeb = (tools as { type?: string }[]).some((t) => typeof t.type === "string" && /^web_(search|fetch)_/.test(t.type));
+  const messages = () => (flatServer && !hasWeb ? flattenServerTools(history).history : history);
+  let keys = messageKeys(messages());
   if (sent) {
     const at = sent.binding !== binding ? 0 : firstEdit(sent.keys, keys);
     if (at >= 0 && hasThinking(history, at)) {
       const n = stripThinking(history, at);
-      keys = messageKeys(history);
+      keys = messageKeys(messages());
       console.warn(`[kerf] ${at === 0 && sent.binding !== binding ? "The system prompt or tools changed" : `Chat message ${at} changed`} since the last request; left out ${n} thinking block(s) from there on.`);
     }
   }
@@ -1066,7 +1074,7 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, settings: ReturnT
     system,
     tools,
     // rolling cache breakpoint on the newest user content
-    messages: withCacheBreakpoint(history),
+    messages: withCacheBreakpoint(messages()),
   };
   const betas: string[] = [];
   if (!unsupported.has("thinking")) {
@@ -1109,7 +1117,6 @@ function rejectedFeature(msg: string): "effort" | "thinking" | "fallbacks" | "bi
 
 async function streamOnce(anthropic: Anthropic, build: () => Record<string, unknown>, live: Live, carried: unknown[], signal: AbortSignal) {
   let strippedOnce = false;
-  let flattened = false;
   for (let attempt = 0; attempt < 7; attempt++) {
     const params = build();
     try {
@@ -1165,12 +1172,10 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
           unsupported.add("web");
           push({ kind: "notice", id: nid(), level: "info", title: "Web search is not available with this key or model", detail: "Claude carries on with the parts catalog. An organisation admin can allow web search in the Claude Console." });
           retry = true;
-        } else if (!hasWeb && !flattened && isServerBlockError(msg)) {
-          // earlier web results the request can no longer carry: keep them as plain notes
-          const f = flattenServerTools(history);
-          if (f.changed) {
-            flattened = true;
-            history = f.history;
+        } else if (!hasWeb && !flatServer && isServerBlockError(msg)) {
+          // earlier web results the request can no longer carry: send them as plain notes from now on
+          if (flattenServerTools(history).changed) {
+            flatServer = true;
             retry = true;
           }
         } else {

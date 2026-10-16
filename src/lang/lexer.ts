@@ -49,6 +49,8 @@ export const KEYWORDS = new Set([
   "note",
   "brief",
   "decision",
+  "sketch",
+  "analysis",
 ]);
 
 /**
@@ -98,6 +100,13 @@ export const UNITS: Record<string, number> = {
   degC: 1,
   // degrees Celsius, for the brief's service temperatures
   C: 1,
+  // structural analysis: force in N, torque in N·mm, stress and pressure in MPa (N/mm²); time stays in seconds
+  lbf: 4.448222,
+  // weight of a kilogram, so 5kgf is 49 N (kg itself is a mass, in grams)
+  kgf: 9.80665,
+  bar: 0.1,
+  psi: 0.00689476,
+  hr: 3600,
 };
 
 const OPS = [

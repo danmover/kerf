@@ -1,14 +1,15 @@
 // Checks that come from the brief: each use is covered by requirements, the
-// materials suit the temperatures, sunlight and wet conditions it names,
-// printed parts fit the printer, and the whole design stays inside its size
-// and mass limits.
+// materials suit the temperatures, sunlight and wet conditions it names, and
+// the whole design stays inside its size and mass limits. The brief's process
+// and build volume become each part's process (mfg/spec applyDefaultProcess),
+// so the manufacturing checks cover the printer bed and material choice.
 
 import type { CheckItem, CheckStatus } from "./checks";
 import type { Brief, EvalPart, Model } from "./model";
 import { xformMatrix, type V3, type Xform } from "../kernel/recipe";
 import { materialDensity } from "../library/standards";
 import { MATERIAL_SERVICE, HEAT_PICKS, SUNLIGHT_PICKS } from "../library/materialService";
-import { loadText, processInfo, processKind } from "./brief";
+import { loadText, processInfo } from "./brief";
 import { fmtNum } from "../lang/values";
 
 export interface PartGeom {
@@ -82,15 +83,6 @@ export function assemblyStats(model: Model, geom: GeomLookup): AssemblyStats {
 
 const made = (model: Model) => model.parts.filter((p) => p.kind === "part" && !p.hidden);
 
-/** Parts the brief's process makes: those in a material it can work. The rest (a steel shaft in a printed design) are bought or made another way. */
-function madeByProcess(b: Brief, model: Model): EvalPart[] {
-  const kind = processKind(b.process);
-  return made(model).filter((p) => {
-    const svc = MATERIAL_SERVICE[p.material];
-    return !kind || kind === "other" || !svc || svc.processes.includes(kind);
-  });
-}
-
 function byMaterial(parts: EvalPart[]) {
   const m = new Map<string, EvalPart[]>();
   for (const p of parts) m.set(p.material, [...(m.get(p.material) ?? []), p]);
@@ -107,7 +99,6 @@ export function briefChecks(model: Model, reqItems: CheckItem[], geom: GeomLooku
   const span = b.span;
   out.push(...useChecks(b, model, reqItems));
   out.push(...materialChecks(b, model));
-  out.push(...buildVolumeChecks(b, model, geom));
   out.push(...limitChecks(b, model, geom));
   for (const g of b.givens) {
     if (g.usedBy.length) continue;
@@ -161,7 +152,6 @@ function materialChecks(b: Brief, model: Model): CheckItem[] {
   const wet = b.outdoor === true || b.exposure.some((e) => /rain|water|humid|wet|salt/i.test(e));
   const impact = b.exposure.some((e) => /impact|drop/i.test(e));
   const food = b.exposure.some((e) => /food/i.test(e));
-  const kind = processKind(b.process);
   for (const [mat, parts] of groups) {
     const svc = MATERIAL_SERVICE[mat];
     const ids = parts.map((p) => p.id);
@@ -208,42 +198,8 @@ function materialChecks(b: Brief, model: Model): CheckItem[] {
     if (wet && svc?.wet) out.push({ id: `brief-wet:${mat}`, category: "brief", status: "warn", title: `${mat} copes with getting wet`, detail: `${svc.wet} (${names(parts)})`, parts: ids, span, basis: "parameters" });
     if (impact && svc?.impact) out.push({ id: `brief-impact:${mat}`, category: "brief", status: "warn", title: `${mat} survives impacts`, detail: `${svc.impact} (${names(parts)}). PETG or ASA are tougher.`, parts: ids, span, basis: "parameters" });
   }
-  // the brief's own material and process should go together; parts in other materials are taken as bought or made another way
-  const svc = b.material ? MATERIAL_SERVICE[b.material] : undefined;
-  if (kind && kind !== "other" && svc && !svc.processes.includes(kind)) {
-    const label = processInfo(b.process)?.label ?? b.process ?? "";
-    out.push({ id: `brief-process:${b.material}`, category: "brief", status: "warn", title: `${b.material} suits ${label}`, detail: `${b.material} is not usually made by ${label.toLowerCase()}. Change the material or the process in the brief.`, basis: "parameters" });
-  }
   if (food && processInfo(b.process)?.print) {
     out.push({ id: "brief-food", category: "brief", status: "warn", title: "Safe for food contact", detail: "Printed layer lines trap food and bacteria. Seal the surface with a food-safe coating, or keep printed parts away from food.", basis: "parameters" });
-  }
-  return out;
-}
-
-function buildVolumeChecks(b: Brief, model: Model, geom: GeomLookup): CheckItem[] {
-  const proc = processInfo(b.process);
-  if (!proc?.print) return [];
-  const vol = b.buildVolume ?? proc.volume!;
-  const assumed = !b.buildVolume;
-  const sortedVol = [...vol].sort((x, y) => x - y);
-  const out: CheckItem[] = [];
-  const seen = new Set<string>();
-  let measured = 0;
-  for (const p of madeByProcess(b, model)) {
-    if (seen.has(p.hash)) continue;
-    seen.add(p.hash);
-    const g = geom(p.hash);
-    if (!g) continue;
-    measured++;
-    const dims = [0, 1, 2].map((k) => g.bbox[1][k] - g.bbox[0][k]).sort((x, y) => x - y);
-    // any axis-aligned orientation on the bed counts
-    const margin = Math.min(...dims.map((d, k) => sortedVol[k] - d));
-    if (margin < 0) {
-      out.push({ id: `brief-bed:${p.name}`, category: "brief", status: "fail", title: `${p.label} fits the printer`, detail: `${dims.map(mm).join(" × ")} mm does not fit a ${vol.map(mm).join(" × ")} mm build volume in any orientation. Split it, or set your printer's build_volume in the brief.`, parts: [p.id], span: p.span, margin, basis: "geometry" });
-    }
-  }
-  if (measured && !out.length) {
-    out.push({ id: "brief-bed", category: "brief", status: "pass", title: "Printed parts fit the printer", detail: `Every printed part fits a ${vol.map(mm).join(" × ")} mm build volume${assumed ? " (a typical printer; set build_volume in the brief for yours)" : ""}`, basis: "geometry" });
   }
   return out;
 }

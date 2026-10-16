@@ -55,7 +55,7 @@ const fmtPos = (v: number[]) => `(${v.map((x) => fmtNum(Math.round(x * 10) / 10)
 /** The check items to report: the live report when there is one, else the checks that need no geometry kernel. */
 export function checkItems(model: Model, report: CheckReport | null): CheckItem[] {
   if (report) return report.items;
-  return assembleReport(model, null, null, new Map(), new Map(model.parts.map((p) => [p.id, p]))).items;
+  return assembleReport(model).items;
 }
 
 const CATEGORY_NOUN: Record<string, [string, string]> = {
@@ -259,10 +259,17 @@ const PRINT_PROCESSES = ["fdm", "sla", "sls"];
 
 /** Printed when the part names a printing process, or, without one, when its material is a filament. */
 function isPrinted(p: EvalPart): boolean {
-  // the manufacturing-process work gives parts a `process`; read it when it is there
-  const process = (p as EvalPart & { process?: { id?: string } }).process?.id;
-  if (process) return PRINT_PROCESSES.includes(process);
+  if (p.process) return PRINT_PROCESSES.includes(p.process.id);
   return PRINTABLE.some((m) => m.toLowerCase() === p.material.toLowerCase());
+}
+
+/** The build direction a printed part's process gives it (fdm or sla with build:), so the STL prints the way the checks assumed. */
+function buildDirection(p: EvalPart): [number, number, number] | undefined {
+  const b = p.process && (p.process.id === "fdm" || p.process.id === "sla") ? p.process.settings.build : undefined;
+  if (!Array.isArray(b) || typeof b[0] !== "number") return undefined;
+  const [x, y, z] = b as [number, number, number];
+  const l = Math.hypot(x, y, z);
+  return l > 1e-9 ? [x / l, y / l, z / l] : undefined;
 }
 
 export interface MadePart {
@@ -309,8 +316,11 @@ const DIR_WORDS: [number[], string][] = [
   [[0, -1, 0], "the −Y side in the design"],
 ];
 
-/** Lays a mesh on its largest flat face that it can rest on (unless the modelled bottom is nearly as good). */
-export function orientForPrint(mesh: MeshData): { positions: Float32Array; indices: Uint32Array; size: [number, number, number]; volume: number; face: string; faceArea: number } {
+/**
+ * Lays a mesh on its largest flat face that it can rest on (unless the modelled bottom is nearly as good).
+ * With a build direction (the part's process build:), it lays the mesh so layers stack that way instead.
+ */
+export function orientForPrint(mesh: MeshData, build?: [number, number, number]): { positions: Float32Array; indices: Uint32Array; size: [number, number, number]; volume: number; face: string; faceArea: number } {
   const P = mesh.positions;
   const I = mesh.indices;
   const nTri = I.length / 3;
@@ -360,6 +370,10 @@ export function orientForPrint(mesh: MeshData): { positions: Float32Array; indic
   }
   // keep the modelled orientation when it is nearly as good: designers often model printed parts the way they print
   if (asModelled >= best.area * 0.9) best = { n: down, area: asModelled };
+  if (build) {
+    const n: [number, number, number] = [-build[0], -build[1], -build[2]];
+    best = { n, area: restArea(n) };
+  }
   const R = rotationTo(best.n, down);
   const out = new Float32Array(P.length);
   const lo = [Infinity, Infinity, Infinity];
@@ -406,7 +420,7 @@ export function madeParts(model: Model, meshFor?: (p: EvalPart) => MeshData | un
     same.set(key, mp);
     const mesh = meshFor?.(p);
     if (mesh && mesh.indices.length) {
-      const o = printable ? orientForPrint(mesh) : { ...orientForPrint(mesh), face: "" };
+      const o = printable ? orientForPrint(mesh, buildDirection(p)) : { ...orientForPrint(mesh), face: "" };
       mp.stl = writeStl([{ mesh: { positions: o.positions, indices: o.indices, normals: new Float32Array(0), edges: new Float32Array(0) }, xf: [] }], `Kerf: ${p.name}`);
       mp.size = o.size;
       mp.volume = o.volume;

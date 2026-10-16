@@ -11,25 +11,25 @@ export const WEB_MAX_USES = 8;
 export const WEB_FETCH_MAX_TOKENS = 20000;
 
 /**
- * Current Opus and Sonnet models take the _20260209 versions (dynamic
- * filtering: Claude filters results with code before they reach its context).
- * Haiku and older models take the basic versions.
+ * The basic versions, for every model. Opus and Sonnet also take the
+ * _20260209 versions (dynamic filtering), but Haiku does not, and a turn
+ * routed to a cheaper model must see the same tools as the design model:
+ * thinking blocks are bound to the tool list, and results from one version
+ * can't be read back under the other.
  */
-export function supportsDynamicFiltering(model: string): boolean {
-  return /^claude-(opus-5|opus-4-[678]|sonnet-5|sonnet-4-6|fable-5|mythos-5)/.test(model);
-}
-
-export function webTools(model: string): BetaToolUnion[] {
-  if (supportsDynamicFiltering(model)) {
-    return [
-      { type: "web_search_20260209", name: "web_search", max_uses: WEB_MAX_USES },
-      { type: "web_fetch_20260209", name: "web_fetch", max_uses: WEB_MAX_USES, max_content_tokens: WEB_FETCH_MAX_TOKENS },
-    ];
-  }
+export function webTools(): BetaToolUnion[] {
   return [
     { type: "web_search_20250305", name: "web_search", max_uses: WEB_MAX_USES },
     { type: "web_fetch_20250910", name: "web_fetch", max_uses: WEB_MAX_USES, max_content_tokens: WEB_FETCH_MAX_TOKENS },
   ];
+}
+
+/** US dollars per web search; page fetches cost only their tokens. */
+export const WEB_SEARCH_FEE = 0.01;
+
+/** The web search fee for one response, from its usage (server_tool_use.web_search_requests). */
+export function webSearchFee(usage: { server_tool_use?: { web_search_requests?: number | null } | null } | null | undefined): number {
+  return (usage?.server_tool_use?.web_search_requests ?? 0) * WEB_SEARCH_FEE;
 }
 
 export const WEB_TOOL_NAMES = ["web_search", "web_fetch"] as const;
@@ -245,7 +245,8 @@ export function echoContent<T extends { type: string }>(content: readonly T[]): 
 /**
  * Turns every server tool call in the history into a short text note and drops
  * web citations, for a request that cannot carry those blocks (web search was
- * switched off or is not available). What Claude found stays readable.
+ * switched off or is not available). What Claude found stays readable. It
+ * returns a copy, for one request: the stored history keeps the blocks.
  */
 export function flattenServerTools(history: BetaMessageParam[]): { history: BetaMessageParam[]; changed: number } {
   let changed = 0;

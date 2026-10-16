@@ -456,7 +456,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
         <VoiceBar voice={voice} />
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 6, textAlign: "center" }}>
-        Claude can make mistakes. Checks verify geometry, not strength. Test before you rely on a part.
+        Claude can make mistakes. Strength checks are estimates from a simplified model. Test before you rely on a part.
       </div>
     </div>
   );

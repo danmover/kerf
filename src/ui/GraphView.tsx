@@ -12,9 +12,11 @@ const KIND_COLOR: Record<DepNode["kind"], string> = {
   given: "#ff9e64",
   let: "#7cc4ff",
   interface: "#4fd1c5",
+  sketch: "#f78c6c",
   component: "#c792ff",
   part: "#6d8bff",
   require: "#3ddc97",
+  analysis: "#ff7eb6",
 };
 const W = 168;
 const H = 30;
@@ -45,12 +47,12 @@ function layout(m: Model) {
     return v;
   };
   for (const n of m.graph.nodes) d(n.id);
-  // requirements always in the last column
+  // requirements and analyses always in the last column
   const maxD = Math.max(0, ...[...depth.values()]);
-  for (const n of m.graph.nodes) if (n.kind === "require") depth.set(n.id, maxD + 1);
+  for (const n of m.graph.nodes) if (n.kind === "require" || n.kind === "analysis") depth.set(n.id, maxD + 1);
   const cols = new Map<number, DepNode[]>();
   for (const n of m.graph.nodes) cols.set(depth.get(n.id)!, [...(cols.get(depth.get(n.id)!) ?? []), n]);
-  const order: DepNode["kind"][] = ["given", "param", "interface", "let", "component", "part", "require"];
+  const order: DepNode["kind"][] = ["given", "param", "interface", "let", "sketch", "component", "part", "require", "analysis"];
   const laid = new Map<string, Laid>();
   let maxRows = 0;
   for (const [c, list] of [...cols.entries()].sort((a, b) => a[0] - b[0])) {
@@ -94,7 +96,7 @@ export function GraphView() {
     );
 
   const open = (n: DepNode) => {
-    const name = n.kind === "require" ? null : n.id;
+    const name = n.kind === "require" ? null : n.kind === "analysis" ? n.label : n.id;
     const block = model.blocks.find((b) => b.name === name);
     const req = model.requirements.find((r) => `require:${r.label}` === n.id);
     const span = block?.span ?? req?.span;
@@ -145,7 +147,7 @@ export function GraphView() {
                 {node.kind.toUpperCase()}
               </text>
               <text x={x + 12} y={y + 24} fill="#dfe5f2" fontSize={11} fontFamily="IBM Plex Mono">
-                {truncate(node.kind === "require" ? node.label : node.id, 22)}
+                {truncate(node.kind === "require" || node.kind === "analysis" ? node.label : node.id, 22)}
               </text>
             </motion.g>
           );
