@@ -234,6 +234,18 @@ export function TemplateArt({ id }: { id: string }) {
         <motion.rect x="76" y="50" width="48" height="10" rx="2" fill="#3ddc97" opacity={0.6} animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ duration: 2.4, repeat: Infinity }} />
       </svg>
     );
+  if (id === "bracket")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <motion.path d="M62 20v76h84v-8H72a2 2 0 0 1-2-2V20z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
+        <path d="M72 64v20h20z" fill="none" stroke="#c792ff" strokeWidth="1.2" />
+        <motion.g animate={{ opacity: [0.35, 0.9, 0.35] }} transition={{ duration: 2.6, repeat: Infinity }}>
+          <path d="M62 106h84M62 102v8M146 102v8" stroke="#39445c" />
+          <text x="104" y="116" fill="#7f8aa3" fontSize="8" textAnchor="middle" fontFamily="monospace">base_len</text>
+        </motion.g>
+        <path d="M52 20v76M48 20h8M48 96h8" stroke="#39445c" />
+      </svg>
+    );
   return (
     <svg viewBox="0 0 200 120" width="70%" height="70%">
       <motion.rect x="60" y="25" width="80" height="70" rx="6" fill="none" stroke="#39445c" strokeDasharray="6 5" animate={{ strokeDashoffset: [0, -22] }} transition={{ duration: 1.6, repeat: Infinity, ease: "linear" }} />

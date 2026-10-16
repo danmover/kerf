@@ -11,6 +11,7 @@ import { Icon } from "./icons";
 import { Segmented, timeAgo, useTick, mod } from "./common";
 import { fmtNum } from "../lang/values";
 import type { VersionRecord } from "../persist/db";
+import { SketchesTab } from "./sketch/SketchesTab";
 
 export function LeftPanel() {
   const tab = useView((s) => s.leftTab);
@@ -25,6 +26,7 @@ export function LeftPanel() {
           options={[
             { value: "structure", label: "structure" },
             { value: "params", label: `params${model ? " " + model.params.length : ""}` },
+            { value: "sketches", label: `sketches${model?.sketches.length ? " " + model.sketches.length : ""}` },
             { value: "history", label: "history" },
           ]}
         />
@@ -32,6 +34,7 @@ export function LeftPanel() {
       <div className="panel-body">
         {tab === "structure" && <Structure />}
         {tab === "params" && <Params />}
+        {tab === "sketches" && <SketchesTab />}
         {tab === "history" && <History />}
       </div>
     </div>

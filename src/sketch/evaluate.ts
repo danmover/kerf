@@ -10,7 +10,7 @@ import type { V2, V3 } from "../kernel/recipe";
 import { stableStringify, vscale, vadd } from "../kernel/recipe";
 import { buildProfile, sampleSeg, type CornerSpec } from "./regions";
 import { firstConflict, solveSketch, type ConsKind, type DefConstraint, type SketchDef, type SolveResult } from "./solver";
-import { PLANES, frameOf, isPlane, planeValue, toWorld } from "./planes";
+import { PLANES, frameOf, isPlane, planeValue, toLocal, toWorld } from "./planes";
 import type { EvalSketch, Frame, SkConstraint, SkCurve, SkPoint, SkStatus } from "./types";
 
 export interface SketchHost {
@@ -142,11 +142,50 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     return host.fail(`${what} should be a point like (10, 5) or the name of a sketch point, got ${typeName(v)}`, e.span);
   };
 
+  /** This sketch's plane as placed so far (props come first in a sketch). */
+  const placed = (): Frame => ({ ...frame, o: vadd(originOverride ?? frame.o, vscale(frame.n, offset)) });
+  /**
+   * Geometry of an earlier sketch, named like side.l3.end or side.l3: projected
+   * onto this plane as fixed reference geometry, so this sketch follows it.
+   */
+  const external = (e: Expr, path: string): Ent | null => {
+    const root = path.split(".")[0];
+    if (!path.includes(".") || ents.has(root) || pointIdx.has(root) || root === s.name) return null;
+    let v: Value;
+    try {
+      v = host.expr(e, scope);
+    } catch {
+      return null;
+    }
+    const f = placed();
+    const proj = (w: Vec): V2 => toLocal(f, [w.v[0] ?? 0, w.v[1] ?? 0, w.v[2] ?? 0]);
+    const extPoint = (id: string, w: Vec) => {
+      if (!pointIdx.has(id)) {
+        const [x, y] = proj(w);
+        addPoint({ id, x, y, implicit: true, literal: false, external: true });
+        fixedIds.add(id);
+      }
+      return id;
+    };
+    if (v instanceof Vec) return { kind: "point", id: extPoint(path, v) };
+    if (v instanceof Obj && v.fields.start instanceof Vec && v.fields.end instanceof Vec && v.kind === "sketch line") {
+      if (!ents.has(path)) {
+        const a = extPoint(`${path}.start`, v.fields.start);
+        const b = extPoint(`${path}.end`, v.fields.end);
+        ents.set(path, { kind: "line", id: path, a, b });
+        curves.push({ id: path, kind: "line", construction: true, external: true, pts: [a, b], status: "fixed", span: e.span, argSpans: [] });
+      }
+      return ents.get(path)!;
+    }
+    if (v instanceof Obj && (v.kind === "sketch circle" || v.kind === "sketch arc")) host.fail(`To use ${path} here, refer to one of its points: ${path}.center${v.kind === "sketch arc" ? `, ${path}.start or ${path}.end` : ""}`, e.span);
+    return null;
+  };
+
   /** A point argument: the name of a sketch point, or coordinates that make a new point owned by the curve. */
   const pointArg = (e: Expr, owner: string, role: string): string => {
     const path = refPath(e);
     if (path) {
-      const ent = ents.get(path);
+      const ent = ents.get(path) ?? external(e, path) ?? undefined;
       const id = ent?.kind === "point" ? ent.id : pointIdx.has(path) ? path : alias.get(path);
       if (id) {
         // l2.start names the shared point too
@@ -262,6 +301,8 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     if (ent) return ent;
     if (pointIdx.has(path!)) return { kind: "point", id: path! };
     if (alias.has(path!)) return { kind: "point", id: alias.get(path!)! };
+    const ext = external(e, path!);
+    if (ext) return ext;
     // members of curves: l1.start, c1.center
     const all = [...ents.keys(), ...pointIdx.keys(), ...alias.keys()];
     const sg = suggest(path!, all);
@@ -574,6 +615,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
   const lines: Record<string, [V2, V2]> = { x_axis: [[0, 0], [1, 0]], y_axis: [[0, 0], [0, 1]] };
   for (const p of points) if (!p.implicit) fields[p.id] = W([p.x, p.y]);
   for (const c of curves) {
+    if (c.external) continue;
     if (c.kind === "line") {
       const a = P(c.pts[0]);
       const b = P(c.pts[1]);

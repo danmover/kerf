@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluate } from "../src/lang/evaluator";
-import { addSketch, addStatements, deleteSelection, renameSketch, setConstraintValue, suggestionsFor, toggleConstruction, writePositions, consId } from "../src/sketch/edits";
+import { addFeature, addSketch, addStatements, deleteSelection, renameSketch, setConstraintValue, suggestionsFor, toggleConstruction, writePositions, consId } from "../src/sketch/edits";
 
 const base = `design "t"
 param w = 40
@@ -125,5 +125,37 @@ describe("sketch edits", () => {
     expect(out).toContain("extrude(plate, 5)");
     expect(out).toContain("let s2 = plate.area");
     expect(evaluate(out).diagnostics).toEqual([]);
+  });
+
+  it("extrudes a sketch into a new part with its depth as a parameter", () => {
+    const src = base.replace("part p {\n  body extrude(s, 5)\n}\n", "");
+    const r = addFeature(src, sk(src).sk, { kind: "extrude", op: "new", depth: 12, param: true });
+    expect(r.part).toBe("s_part");
+    expect(r.param).toBe("s_depth");
+    expect(r.src).toMatch(/param s_depth = 12 range .* "Depth of s"/);
+    expect(r.src).toContain("body extrude(s, s_depth)");
+    const m = evaluate(r.src);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.parts.map((x) => x.name)).toEqual(["s_part"]);
+    expect(m.sketches[0].usedBy).toEqual(["s_part"]);
+  });
+
+  it("cuts a later sketch through an existing part, moving the sketch above it", () => {
+    const src = base + `\nsketch vent {\n  plane: XY\n  circle c = (20, 10), d: 6\n}\n`;
+    const r = addFeature(src, sk(src, "vent").sk, { kind: "extrude", op: "cut", part: "p", through: true });
+    expect(r.src.indexOf("sketch vent")).toBeLessThan(r.src.indexOf("part p"));
+    expect(r.src).toMatch(/body extrude\(s, 5\)\n  cut extrude\(vent, through: true\)\n\}/);
+    const m = evaluate(r.src);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.sketches.find((x) => x.name === "vent")?.usedBy).toEqual(["p"]);
+  });
+
+  it("revolves about a sketch line and writes a partial angle", () => {
+    const src = `design "t"\nsketch r {\n  plane: XZ\n  construction line ax = (0, -5) -> (0, 30)\n  line a = (5, 0) -> (12, 0)\n  line b = a.end -> (12, 20)\n  line c = b.end -> (5, 20)\n  line d = c.end -> a.start\n}\n`;
+    const r = addFeature(src, sk(src, "r").sk, { kind: "revolve", op: "new", axis: "ax", angle: 180 });
+    expect(r.src).toContain("body revolve(r, axis: r.ax, angle: 180)");
+    const m = evaluate(r.src);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.parts.length).toBe(1);
   });
 });

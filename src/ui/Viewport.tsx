@@ -12,6 +12,9 @@ import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { useChatDraft } from "./chatDraft";
+import { SketchLayer } from "./sketch/SketchPanels";
+import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
+import { T } from "./sketch/glyphs";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -25,6 +28,8 @@ export function Viewport() {
   const view = useView();
   const settings = useSettings();
   const [webglError, setWebglError] = useState("");
+  const [scene, setScene] = useState<SceneController | null>(null);
+  const sketching = useSketch((s) => !!s.active || s.picking);
 
   useEffect(() => {
     if (!mount.current) return;
@@ -50,7 +55,9 @@ export function Viewport() {
       else c.fit("current");
     };
     registerViewport({ capture: (o) => c.capture(o) });
+    setScene(c);
     return () => {
+      setScene(null);
       registerViewport(null);
       c.dispose();
       ctl.current = null;
@@ -144,6 +151,10 @@ export function Viewport() {
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
         <div className="sep" />
+        <button className={`icon-btn ${sketching ? "active" : ""}`} onClick={() => (sketching ? exitSketch() : startPicking())} data-tip={sketching ? "Leave the sketch" : "New sketch"} aria-label="Sketch">
+          <T.Pencil />
+        </button>
+        <div className="sep" />
         <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">
           <Icon.Grid />
         </button>
@@ -195,7 +206,9 @@ export function Viewport() {
 
       <Hud stage={stage} parts={visibleParts} />
 
-      <AnimatePresence>{selectedParts.length > 0 && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
+      <AnimatePresence>{selectedParts.length > 0 && !sketching && <SelectionCard key="sel" ids={view.selected} />}</AnimatePresence>
+
+      {scene && <SketchLayer ctl={scene} />}
 
       {empty && (
         <div className="vp-empty">
@@ -364,6 +377,14 @@ function SelectionCard({ ids }: { ids: string[] }) {
         <button className="btn sm" onClick={() => setDraft(`About ${parts.map((q) => q.id).join(", ")}: `)}>
           <Icon.Sparkle size={13} /> Ask
         </button>
+        {parts.length === 1 &&
+          model?.sketches
+            .filter((sk) => sk.usedBy.includes(p.name))
+            .map((sk) => (
+              <button key={sk.name} className="btn sm" onClick={() => enterSketch(sk.name)} data-tip={`Edit the sketch ${p.name} is built from`}>
+                <T.Pencil size={13} /> {sk.name}
+              </button>
+            ))}
       </div>
     </motion.div>
   );

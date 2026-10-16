@@ -92,6 +92,8 @@ export class SceneController {
   onPick: (id: string | null, additive: boolean) => void = () => undefined;
   onDoublePick: (id: string | null) => void = () => undefined;
   onFirstFrame: () => void = () => undefined;
+  /** called after each rendered frame, so 2D overlays (the sketch editor) can follow the camera */
+  onRendered: () => void = () => undefined;
   /** until the user moves the camera, the first complete build re-frames the model */
   private autoFit = true;
 
@@ -192,6 +194,67 @@ export class SceneController {
     }
     this.renderer.dispose();
     this.renderer.domElement.remove();
+  }
+
+  // ---------- hooks for 2D overlays (sketch editing) ----------
+
+  /** In sketch mode the left button belongs to the sketch tools: middle orbits, right pans. */
+  setSketchMode(on: boolean) {
+    this.controls.mouseButtons = on ? { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    this.dirty = true;
+  }
+
+  /** World point to pixels in the viewport; `front` is false behind the camera. */
+  toScreen(p: [number, number, number]): { x: number; y: number; front: boolean } {
+    const v = new THREE.Vector3(p[0], p[1], p[2]).project(this.camera);
+    return { x: ((v.x + 1) / 2) * this.container.clientWidth, y: ((1 - v.y) / 2) * this.container.clientHeight, front: v.z < 1 };
+  }
+
+  /** The ray through a pixel of the viewport. */
+  rayAt(x: number, y: number): { o: [number, number, number]; d: [number, number, number] } {
+    const ndc = new THREE.Vector2((x / Math.max(1, this.container.clientWidth)) * 2 - 1, -(y / Math.max(1, this.container.clientHeight)) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const { origin: o, direction: d } = this.raycaster.ray;
+    return { o: [o.x, o.y, o.z], d: [d.x, d.y, d.z] };
+  }
+
+  /** The part surface under a pixel: its point and outward normal, for sketching on a face. */
+  surfaceAt(x: number, y: number): { partId: string; point: [number, number, number]; normal: [number, number, number] } | null {
+    const ndc = new THREE.Vector2((x / Math.max(1, this.container.clientWidth)) * 2 - 1, -(y / Math.max(1, this.container.clientHeight)) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const meshes = [...this.parts.values()].filter((p) => p.group.visible && p.removing === null).map((p) => p.mesh);
+    for (const h of this.raycaster.intersectObjects(meshes, false)) {
+      if (this.section.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
+      if (!h.face) continue;
+      const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+      return { partId: h.object.userData.partId as string, point: [h.point.x, h.point.y, h.point.z], normal: [n.x, n.y, n.z] };
+    }
+    return null;
+  }
+
+  /** Turn to look straight at a plane (normal n toward the viewer, v pointing up). */
+  viewPlane(n: [number, number, number], v: [number, number, number], center: [number, number, number], radius: number) {
+    const dir = new THREE.Vector3(...n).normalize().addScaledVector(new THREE.Vector3(...v), -1e-4).normalize();
+    const fov = (this.camera.fov * Math.PI) / 180;
+    const dist = Math.max(radius, 5) / Math.sin(Math.min(fov, fov * this.camera.aspect) / 2);
+    const target = new THREE.Vector3(...center);
+    this.autoFit = false;
+    const pos = target.clone().addScaledVector(dir, dist * 1.1);
+    if (this.display.reduceMotion) {
+      this.camera.position.copy(pos);
+      this.controls.target.copy(target);
+      this.controls.update();
+    } else this.camAnim = { t0: performance.now(), dur: 650, fromPos: this.camera.position.clone(), toPos: pos, fromTarget: this.controls.target.clone(), toTarget: target };
+    this.dirty = true;
+  }
+
+  cameraState() {
+    return { pos: this.camera.position.toArray() as [number, number, number], target: this.controls.target.toArray() as [number, number, number] };
+  }
+
+  restoreCamera(s: { pos: [number, number, number]; target: [number, number, number] }) {
+    this.camAnim = { t0: performance.now(), dur: this.display.reduceMotion ? 1 : 600, fromPos: this.camera.position.clone(), toPos: new THREE.Vector3(...s.pos), fromTarget: this.controls.target.clone(), toTarget: new THREE.Vector3(...s.target) };
+    this.dirty = true;
   }
 
   // ---------- parts ----------
@@ -648,6 +711,7 @@ export class SceneController {
     if (!this.dirty) return;
     this.dirty = false;
     this.render();
+    this.onRendered();
   }
 
   private render() {

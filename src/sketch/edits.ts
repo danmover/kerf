@@ -7,6 +7,7 @@
 import type { Span } from "../lang/ast";
 import { fmtNum } from "../lang/values";
 import { lex } from "../lang/lexer";
+import { evaluate } from "../lang/evaluator";
 import type { Model } from "../core/model";
 import type { V2 } from "../kernel/recipe";
 import { SKETCH_RESERVED } from "./evaluate";
@@ -152,7 +153,8 @@ export const consId = (c: SkConstraint) => `#${c.index}`;
 const LIST_KINDS: Record<string, number> = { fix: 1, parallel: 2, equal: 2, horizontal: 1, vertical: 1, fillet: 1, chamfer: 1 };
 
 export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): string {
-  const removedCurves = new Set(sel.filter((id) => sk.curves.some((c) => c.id === id)));
+  // geometry projected from another sketch is edited there, not here
+  const removedCurves = new Set(sel.filter((id) => sk.curves.some((c) => c.id === id && !c.external)));
   const removedCons = new Set(sel.filter((id) => id.startsWith("#")).map((id) => Number(id.slice(1))));
   const removedPoints = new Set<string>();
   for (const id of sel) {
@@ -212,7 +214,7 @@ export function deleteSketch(src: string, sk: EvalSketch): string {
 
 export function toggleConstruction(src: string, sk: EvalSketch, ids: string[]): string {
   const changes: Change[] = [];
-  const curves = sk.curves.filter((c) => ids.includes(c.id));
+  const curves = sk.curves.filter((c) => ids.includes(c.id) && !c.external);
   // all become construction unless all already are
   const make = !curves.every((c) => c.construction);
   for (const c of curves) {
@@ -457,4 +459,93 @@ export function suggestionsFor(sk: EvalSketch, ids: string[]): Suggestion[] {
 export function dimensionFor(sk: EvalSketch, ids: string[]): Suggestion | null {
   const s = suggestionsFor(sk, ids).filter((x) => x.dimension && x.kind !== "fillet" && x.kind !== "chamfer");
   return s[0] ?? null;
+}
+
+// ---------------- features ----------------
+
+export interface FeatureSpec {
+  kind: "extrude" | "revolve";
+  /** a new part, or added to / cut from an existing one */
+  op: "new" | "add" | "cut";
+  part?: string;
+  depth?: number;
+  reverse?: boolean;
+  symmetric?: boolean;
+  through?: boolean;
+  /** revolve: a line of the sketch */
+  axis?: string;
+  angle?: number;
+  /** keep the depth as a named parameter (shows up as a slider) */
+  param?: boolean;
+}
+
+function freeName(model: Model, base: string): string {
+  const used = new Set(model.blocks.map((b) => b.name));
+  if (!used.has(base)) return base;
+  for (let i = 2; ; i++) if (!used.has(`${base}${i}`)) return `${base}${i}`;
+}
+
+/** Make a solid from a sketch: a new part, or a boss or cut on an existing part. */
+export function addFeature(src: string, sk: EvalSketch, spec: FeatureSpec): { src: string; part: string; param?: string } {
+  let out = src;
+  let model = evaluate(out);
+  const target = spec.op !== "new" ? model.blocks.find((b) => b.kind === "part" && b.name === spec.part) : undefined;
+  if (spec.op !== "new" && !target) throw new Error(`There is no part named ${spec.part}`);
+  // the sketch must be defined before the part that uses it
+  if (target && sk.span.start > target.span.start) {
+    const s = lineSpan(out, sk.span);
+    const text = out.slice(sk.span.start, sk.span.end);
+    out = out.slice(0, s.start) + out.slice(s.end);
+    const at = out.lastIndexOf("\n", target.span.start - 1) + 1;
+    out = out.slice(0, at) + text + "\n\n" + out.slice(at);
+    model = evaluate(out);
+  }
+  let depthText = spec.depth !== undefined ? fmt(spec.depth) : "10";
+  let param: string | undefined;
+  if (spec.kind === "extrude" && !spec.through && spec.param && spec.depth !== undefined) {
+    param = freeName(model, `${sk.name}_depth`);
+    const d = spec.depth;
+    const line = `param ${param} = ${fmt(d)} range ${fmt(Math.max(0.1, Math.round((d / 10) * 10) / 10))}..${fmt(Math.max(d * 5, 20))} "${spec.op === "cut" ? "Cut depth" : "Depth"} of ${sk.name}"`;
+    const params = model.blocks.filter((b) => b.kind === "param").sort((a, b) => b.span.end - a.span.end);
+    const sketchNow = model.sketches.find((s) => s.name === sk.name)!;
+    if (params.length) {
+      const end = params[0].span.end;
+      out = out.slice(0, end) + "\n" + line + out.slice(end);
+    } else {
+      const at = out.lastIndexOf("\n", sketchNow.span.start - 1) + 1;
+      out = out.slice(0, at) + line + "\n\n" + out.slice(at);
+    }
+    depthText = param;
+    model = evaluate(out);
+  }
+  const extras: string[] = [];
+  let expr: string;
+  if (spec.kind === "extrude") {
+    if (spec.through) expr = `extrude(${sk.name}, through: true)`;
+    else {
+      if (spec.symmetric) extras.push("symmetric: true");
+      else if (spec.reverse) extras.push("reverse: true");
+      expr = `extrude(${sk.name}, ${depthText}${extras.map((e) => ", " + e).join("")})`;
+    }
+  } else {
+    if (spec.axis) extras.push(`axis: ${sk.name}.${spec.axis}`);
+    if (spec.angle !== undefined && Math.abs(spec.angle - 360) > 1e-9) extras.push(`angle: ${fmt(spec.angle)}`);
+    expr = `revolve(${sk.name}${extras.map((e) => ", " + e).join("")})`;
+  }
+  if (spec.op === "new") {
+    const sketchNow = model.sketches.find((s) => s.name === sk.name)!;
+    const part = freeName(model, /^sketch\d+$/.test(sk.name) ? sk.name.replace("sketch", "part") : `${sk.name}_part`);
+    let at = out.indexOf("\n", sketchNow.span.end);
+    if (at < 0) at = out.length;
+    out = out.slice(0, at) + `\n\npart ${part} {\n  body ${expr}\n}` + out.slice(at);
+    return { src: out, part, param };
+  }
+  const blk = model.blocks.find((b) => b.kind === "part" && b.name === spec.part)!;
+  const close = out.lastIndexOf("}", blk.span.end);
+  let p = close;
+  while (p > 0 && /\s/.test(out[p - 1])) p--;
+  const body = out.slice(blk.span.start, close);
+  const indent = /\n([ \t]+)\S/.exec(body)?.[1] ?? "  ";
+  out = out.slice(0, p) + `\n${indent}${spec.op} ${expr}` + out.slice(p);
+  return { src: out, part: spec.part!, param };
 }

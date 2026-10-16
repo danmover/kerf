@@ -3,6 +3,7 @@
 import enclosure from "./enclosure.kerf?raw";
 import reducer from "./reducer.kerf?raw";
 import blank from "./blank.kerf?raw";
+import bracket from "./bracket.kerf?raw";
 
 export interface Template {
   id: string;
@@ -50,6 +51,18 @@ export const TEMPLATES: Template[] = [
       "Why are two of the gears marked removable?",
     ],
     stats: "26 parts · 8 requirements",
+  },
+  {
+    id: "bracket",
+    name: "Shaft Support Bracket",
+    tagline: "Bent-plate bracket and flanged bushing, built from five constrained sketches you can edit by hand.",
+    source: bracket,
+    prompts: [
+      "Make the foot 80 mm long and add a third mounting hole between the other two",
+      "Round the top corners of the upright with a 2 mm fillet",
+      "Make the gusset reach two thirds of the way up the upright",
+    ],
+    stats: "2 parts · 5 sketches · 2 requirements",
   },
 ];
 

@@ -34,6 +34,8 @@ export interface SkPoint {
   written?: V2;
   /** the declaring statement, for named points */
   span?: Span;
+  /** projected from another sketch (side.l3.end): fixed reference, not editable here */
+  external?: boolean;
 }
 
 export interface SkCurve {
@@ -54,6 +56,8 @@ export interface SkCurve {
   sizeLiteral?: boolean;
   /** radius as written, before solving */
   writtenR?: number;
+  /** a line projected from another sketch (side.l3): reference only */
+  external?: boolean;
 }
 
 export interface SkConstraint {

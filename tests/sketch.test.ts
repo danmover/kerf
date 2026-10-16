@@ -338,6 +338,43 @@ describe("sketches in a design", () => {
     expect(m.sketches[0].profile.error?.message).toMatch(/smaller radius/);
   });
 
+  it("follows geometry projected from an earlier sketch", () => {
+    const tab = (w: number) =>
+      sketchOf(
+        design(RECT + `\nsketch tab {\n  line t1 = base.l2.end -> (50, 25)\n  line t2 = t1.end -> (50, 0)\n  line t3 = t2.end -> base.l1.end\n  horizontal t1, t3\n  vertical t2\n  hdistance t1.start, t1.end = 10\n}`, `param w = ${w}\nparam h = 25`),
+        "tab",
+      );
+    const a = tab(40);
+    expect(a.dof).toBe(0);
+    expect(pt(a, "t1.end")).toEqual([50, 25]);
+    expect(a.curves.some((c) => c.external)).toBe(false);
+    const b = tab(60);
+    expect(pt(b, "t1.end")).toEqual([70, 25]);
+    expect(b.points.find((p) => p.id === "base.l2.end")?.external).toBe(true);
+  });
+
+  it("projects references from a sketch on another plane", () => {
+    const sk = sketchOf(
+      design(`sketch side {\n  plane: XZ\n  point tip = (12, 30)\n  fix tip\n}\nsketch top {\n  plane: XY\n  circle c = (0, 0), d: 4\n  coincident c.center, side.tip\n  diameter c = 4\n}`),
+      "top",
+    );
+    // XZ x maps to world X; the projection onto XY drops the height
+    expect(pt(sk, "c.center")).toEqual([12, 0]);
+    expect(sk.dof).toBe(0);
+  });
+
+  it("projects another sketch's line for a point-on-line relation", () => {
+    const sk = sketchOf(design(RECT + `\nsketch s2 {\n  point p = (10, 30)\n  coincident p, base.l3\n  hdistance origin, p = 10\n}`), "s2");
+    expect(pt(sk, "p")).toEqual([10, 25]);
+    const ext = sk.curves.find((c) => c.id === "base.l3");
+    expect(ext?.external && ext.construction).toBe(true);
+  });
+
+  it("asks for a circle's centre when another sketch's circle is used as a point", () => {
+    const m = evaluate(design(`sketch a {\n  circle c = (0, 0), r: 3\n}\nsketch b {\n  point p = (1, 1)\n  coincident p, a.c\n}`));
+    expect(m.diagnostics.map((d) => d.message).join("\n")).toMatch(/a\.c\.center/);
+  });
+
   it("does not rebuild a part when an unrelated sketch changes", () => {
     const a = evaluate(design(RECT + `\nsketch other {\n  circle c = (0, 0), r: 3\n}\npart plate { body extrude(base, 5) }`));
     const b = evaluate(design(RECT + `\nsketch other {\n  circle c = (0, 0), r: 4\n}\npart plate { body extrude(base, 5) }`));
