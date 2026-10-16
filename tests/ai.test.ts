@@ -192,7 +192,7 @@ describe("machine summaries", () => {
   });
 
   it("includes machine checks with how each was established", () => {
-    const r = reportSummary(assembleReport(m, null, null, new Map(), new Map()));
+    const r = reportSummary(assembleReport(m));
     expect(r).toMatch(/^Checks: \d+ pass/);
     expect(r).toMatch(/; (electrical rules|calculation|physical test)\)/);
   });

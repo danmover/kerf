@@ -119,7 +119,7 @@ function useThumbnails() {
       if (!vp || useDesign.getState().rev !== rev || useProject.getState().preview) return;
       if (!useDesign.getState().model?.parts.length) return;
       try {
-        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12 });
+        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12, overlays: false });
         last.current = rev;
         await saveThumbnail(url);
       } catch {

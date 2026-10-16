@@ -10,9 +10,12 @@ import type { MeshData } from "../kernel/build";
 import type { Interference, ChecksResult } from "../kernel/protocol";
 import type { V3 } from "../kernel/recipe";
 import { assembleReport, buildChecksRequest, type CheckReport } from "./checks";
+import { composeReport, type ReportContext } from "./reportPasses";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
+import { processProbes } from "../mfg/report";
+import type { ProcessResult } from "../mfg/types";
 import { importsLoaded, modelUsesImports, onImportsChanged, reloadImports } from "./imports";
 import { evalImports } from "../lang/imports";
 
@@ -40,6 +43,8 @@ export interface DesignState {
   reportRev: number;
   checksError: string;
   interferences: Interference[];
+  /** manufacturing-process check results by part id */
+  process: Record<string, ProcessResult>;
   conflict: Conflict | null;
   conflictState: "idle" | "solving" | "done" | "error";
   hold: string[];
@@ -64,6 +69,7 @@ export const useDesign = create<DesignState>(() => ({
   reportRev: 0,
   checksError: "",
   interferences: [],
+  process: {},
   conflict: null,
   conflictState: "idle",
   hold: [],
@@ -76,6 +82,8 @@ const get = useDesign.getState;
 const set = useDesign.setState;
 
 let parsedCache: { src: string; parsed: ReturnType<typeof parse> } | null = null;
+/** the core report of the latest checks, before the passes in reportPasses add their items */
+let reportBase: { report: CheckReport; ctx: ReportContext } | null = null;
 let activeJobs: { cancel: () => void }[] = [];
 let bumpScheduled = false;
 
@@ -128,7 +136,8 @@ export function loadSource(src: string) {
   activeJobs = [];
   meshes.clear();
   kernel.evict([]);
-  set({ buildErrors: new Map(), report: null, interferences: [], conflict: null, conflictState: "idle", hold: [], checksError: "" });
+  reportBase = null;
+  set({ buildErrors: new Map(), report: null, interferences: [], process: {}, conflict: null, conflictState: "idle", hold: [], checksError: "" });
   bumpMeshes();
   setSource(src, { force: true });
 }
@@ -220,13 +229,29 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     checksError = e instanceof Error ? e.message : String(e);
   }
   if (get().rev !== rev) return;
+  // manufacturing-process checks (cached in the worker by geometry and rules)
+  const process: Record<string, ProcessResult> = {};
+  const probes = processProbes(model, builtHashes);
+  if (probes.length) {
+    try {
+      const results = await kernel.process(probes);
+      probes.forEach((p, i) => (process[p.id] = results[i]));
+    } catch (e) {
+      for (const p of probes) process[p.id] = { key: "", findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: e instanceof Error ? e.message : String(e) };
+    }
+    if (get().rev !== rev) return;
+  }
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const report = assembleReport(model, geoModel, result, get().buildErrors, new Map(model.parts.map((p) => [p.id, p])), (h) => meshes.get(h));
+  const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h) });
+  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process };
+  reportBase = { report: base, ctx };
+  const report = composeReport(base, ctx);
   set({
     report,
     reportRev: rev,
     checksError,
     interferences: result?.interferences ?? [],
+    process,
     stage: "refining",
     timings: { ...get().timings, checksMs: performance.now() - tChecks },
   });
@@ -251,6 +276,12 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     if (r.cancelled || get().rev !== rev) return;
   }
   set({ stage: "done" });
+}
+
+/** Compose the latest report again, after a pass's inputs changed (an analysis finished, for example). */
+export function refreshReport() {
+  if (!reportBase || reportBase.ctx.rev !== get().reportRev) return;
+  set({ report: composeReport(reportBase.report, reportBase.ctx) });
 }
 
 /** Resolves once checks have run for the current revision (or a later one). */

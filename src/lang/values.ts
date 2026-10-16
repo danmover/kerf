@@ -1,6 +1,7 @@
 // Runtime values for the Kerf evaluator.
 
-import type { ShapeRecipe, V3 } from "../kernel/recipe";
+import type { ShapeRecipe, V2, V3 } from "../kernel/recipe";
+import type { SketchGeom } from "../sketch/types";
 
 export class Vec {
   constructor(public v: number[]) {}
@@ -38,6 +39,30 @@ export class Fn {
   ) {}
 }
 
+/** A solved sketch. Its fields are world-space points and curves; the profile feeds extrude() and revolve(). */
+export class SketchObj extends Obj {
+  constructor(
+    fields: Record<string, Value>,
+    label: string,
+    public geom: SketchGeom,
+  ) {
+    super(fields, "sketch", label);
+  }
+}
+
+/** A line of a sketch, usable as a revolve axis. */
+export class SketchLineObj extends Obj {
+  constructor(
+    fields: Record<string, Value>,
+    label: string,
+    public sketch: string,
+    public a: V2,
+    public b: V2,
+  ) {
+    super(fields, "sketch line", label);
+  }
+}
+
 /** Reference to a part or a component by name (used by geometric requirement functions). */
 export class Ref {
   constructor(
@@ -56,6 +81,8 @@ export type Value = number | string | boolean | Vec | Obj | ShapeV | Fn | Ref | 
 export interface CallCtx {
   /** Raise an evaluation error attached to the current call site. */
   error(msg: string): never;
+  /** Report a warning at the current call site; the call carries on. */
+  warn?(msg: string): void;
   /** Ask for a geometric quantity; returns the resolved number or a Pending marker. */
   geo(query: GeoQuery): number | Pending;
 }

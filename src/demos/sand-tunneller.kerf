@@ -13,6 +13,7 @@ brief {
   process: "FDM print"
   material: "PETG"
   quantity: 1
+  build_volume: (220, 220, 250) assumed   // a printer at least 250 mm tall, like the Kerf i3 220: the cores and screws print standing up
 
   use cross "Bores the 2 m along the bottom of the pit and comes out the far wall"
   use steer "Holds its heading and can turn up to 5° either way to correct it"
@@ -161,6 +162,7 @@ part front_core {
   color: #5c6b7a
   material: "PETG"
   group: "Front"
+  process: mfg.fdm(build: -X)   // printed standing on end
   body tube(od: core_od, id: core_id, h: f_end - fc_wall, at: (fc_wall, 0, 0), dir: X)
   // end wall at the hinge, with the opening the guide and wires pass through
   add cylinder(d: core_od, h: 4, at: (fc_wall, 0, 0), dir: X)
@@ -191,6 +193,7 @@ part front_plate {
   color: #8a96a3
   material: "PETG"
   group: "Front"
+  process: mfg.fdm(build: -X)   // printed flat on its face
   body cylinder(d: core_id - 0.2, h: 8, at: (f_motor, 0, 0), dir: X)
   cut cylinder(d: 15, h: 2.5, at: (f_motor - 0.01, 0, 0), dir: X)
   cut cylinder(d: 10, h: 9, at: (f_motor - 0.5, 0, 0), dir: X)
@@ -206,6 +209,7 @@ part front_screw {
   color: #e0a526
   material: "PETG"
   group: "Front"
+  process: mfg.fdm(build: X)   // printed standing up, with tree supports under the flights
   spin: 1
   axis: X
   removable
@@ -221,6 +225,7 @@ part nose {
   color: #c98b12
   material: "PETG"
   group: "Front"
+  process: mfg.fdm(build: X)   // printed standing on its spigot, tip up
   spin: 1
   axis: X
   removable
@@ -276,6 +281,7 @@ part boot {
   color: #2a2d33
   material: "TPU"
   group: "Hinge"
+  process: mfg.fdm(build: X)   // printed standing up
   removable
   // bellows from the middle body (r 30) to the front core (r 25), held by two cable ties
   body revolve([(30, 0), (30, 14), (32.5, 17), (29.5, 21), (32.5, 25), (29.5, 29), (31, 31), (25, 37), (25, 41.5), (26.8, 41.5), (26.8, 37.75), (33.38, 31.17), (31.75, 29), (34.75, 25), (31.75, 21), (34.79, 16.94), (31.8, 13.35), (31.8, 0)], at: (a_front - 14, 0, 0), dir: X)
@@ -291,6 +297,7 @@ part body_a {
   color: #3d7bfd
   material: "PETG"
   group: "Body"
+  process: mfg.fdm(build: X)   // printed standing up, so the shelves print as walls
   body tube(od: body_od, id: body_id, h: a_front - a_end, at: (a_end, 0, 0), dir: X)
   add cylinder(d: body_od, h: 4, at: (a_front - 4, 0, 0), dir: X)
   // knuckles over and under the front core's lugs
@@ -339,6 +346,7 @@ part body_b {
   color: #2f63d6
   material: "PETG"
   group: "Body"
+  process: mfg.fdm(build: X)   // printed standing up
   body tube(od: body_od, id: body_id, h: a_end - b_end, at: (b_end, 0, 0), dir: X)
   // socket for the rear core
   add tube(od: body_id + 0.5, id: core_od + 0.2, h: 12, at: (b_end, 0, 0), dir: X)
@@ -362,6 +370,7 @@ part rear_core {
   color: #5c6b7a
   material: "PETG"
   group: "Rear"
+  process: mfg.fdm(build: X)   // printed standing on end
   body tube(od: core_od, id: core_id, h: b_end + 12 - r_end, at: (r_end, 0, 0), dir: X)
   add tube(od: 56, id: 49, h: 2, at: (r_col - 2, 0, 0), dir: X)
   add tube(od: 56, id: 49, h: 4, at: (r_b2, 0, 0), dir: X)
@@ -380,6 +389,7 @@ part rear_plate {
   color: #8a96a3
   material: "PETG"
   group: "Rear"
+  process: mfg.fdm(build: X)   // printed flat on its face
   body cylinder(d: core_id - 0.2, h: 8, at: (r_motor, 0, 0), dir: -X)
   cut cylinder(d: 15, h: 2.5, at: (r_motor + 0.01, 0, 0), dir: -X)
   cut cylinder(d: 10, h: 9, at: (r_motor + 0.5, 0, 0), dir: -X)
@@ -395,6 +405,7 @@ part rear_screw {
   color: #e0a526
   material: "PETG"
   group: "Rear"
+  process: mfg.fdm(build: -X)   // printed standing up, with tree supports under the flights
   spin: -1
   axis: X
   removable
@@ -409,6 +420,7 @@ part tail {
   color: #c98b12
   material: "PETG"
   group: "Rear"
+  process: mfg.fdm(build: -X)   // printed standing on its spigot, tip up
   spin: -1
   axis: X
   removable

@@ -363,6 +363,25 @@ describe("build pack", () => {
     const plate = orientForPrint(mesh("motor_mount"));
     expect(plate.size[2]).toBeCloseTo(5, 3);
     expect(plate.face).toMatch(/points down/);
+    // a build direction from the part's process wins: the duct stands up again, layers along +Z of the design
+    const standing = orientForPrint(mesh("fan_duct"), [0, 0, 1]);
+    expect(standing.size[2]).toBeCloseTo(40, 3);
+    expect(standing.face).toMatch(/points down/);
+  }, 120000);
+
+  it("lays each tunneller part the way its process says it prints", async () => {
+    await initKernel();
+    const m = evaluate(TUNNEL);
+    const meshes = new Map<string, MeshData>();
+    const made = madeParts(m, (p) => {
+      if (!meshes.has(p.hash)) meshes.set(p.hash, meshShape(buildPart(p.recipe), "preview"));
+      return meshes.get(p.hash);
+    });
+    const screw = made.find((p) => p.part.name === "front_screw")!;
+    // printed standing up along the screw's axis, which is X in the design
+    expect(screw.orientation).toMatch(/−X side/);
+    expect(screw.size![2]).toBeGreaterThan(200);
+    expect(made.find((p) => p.part.name === "rear_screw")!.orientation).toMatch(/\+X side/);
   }, 120000);
 
   it("contains everything for the printer, with real STL files", async () => {

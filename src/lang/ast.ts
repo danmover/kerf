@@ -111,6 +111,45 @@ export type Stmt =
       nameSpan: Span;
       /** offset just after the opening brace */
       bodyStart: number;
+    }
+  | {
+      k: "sketch";
+      name: string;
+      items: SketchItem[];
+      span: Span;
+      nameSpan: Span;
+      /** offset of the closing brace, where new items are inserted */
+      bodyEnd: number;
+    }
+  | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span };
+
+/** Geometry declared in a sketch: points, lines, circles and arcs. */
+export type SketchEntityKind = "point" | "line" | "circle" | "arc";
+
+/** Statements inside a sketch block. */
+export type SketchItem =
+  | { k: "prop"; name: string; value: Expr; span: Span }
+  | { k: "let"; name: string; value: Expr; span: Span }
+  | { k: "flag"; name: string; span: Span }
+  | {
+      k: "entity";
+      kind: SketchEntityKind;
+      name: string;
+      construction: boolean;
+      /** point: [position]; line: [start, end]; circle: [center]; arc: [start, end, center] */
+      args: Expr[];
+      /** circle size as written: r: or d: */
+      size?: { which: "r" | "d"; value: Expr };
+      span: Span;
+      nameSpan: Span;
+    }
+  | {
+      k: "constraint";
+      name: string;
+      refs: Expr[];
+      value?: Expr;
+      span: Span;
+      nameSpan: Span;
     };
 
 /** Entries of a `scenario "label" { ... }` block: what to simulate and what has to come true. */
@@ -139,9 +178,11 @@ export function stmtName(s: Stmt): string | undefined {
     case "component":
     case "interface":
     case "part":
+    case "sketch":
       return s.name;
     case "require":
     case "scenario":
+    case "analysis":
       return s.label;
     case "net":
     case "firmware":
