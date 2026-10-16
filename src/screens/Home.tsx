@@ -269,6 +269,21 @@ export function TemplateArt({ id }: { id: string }) {
         </motion.g>
       </svg>
     );
+  if (id === "canister")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <motion.path d="M74 104V52q0-8 8-11h36q8 3 8 11v52q0 6-6 6H80q-6 0-6-6z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
+        <motion.g animate={{ y: [0, -6, 0] }} transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}>
+          <rect x="70" y="14" width="60" height="18" rx="3" fill="rgba(255,179,107,.12)" stroke="#ffb36b" strokeWidth="1.3" />
+          {Array.from({ length: 11 }, (_, i) => (
+            <line key={i} x1={75 + i * 5} y1="17" x2={75 + i * 5} y2="29" stroke="#ffb36b" strokeOpacity={0.5} />
+          ))}
+        </motion.g>
+        {[0, 1, 2].map((i) => (
+          <path key={i} d={`M84 ${36 + i * 4}l32 3`} stroke="#39445c" strokeWidth="1.2" />
+        ))}
+      </svg>
+    );
   if (id === "enclosure")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">

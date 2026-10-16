@@ -161,7 +161,7 @@ export function ChecksPanel() {
                         {i.action && <FixAction action={i.action} />}
                         {(i.status === "fail" || i.status === "warn") && hasKey && (
                           <>
-                            <button className="btn sm" disabled={busy} onClick={() => void sendMessage(fixRequest(i, model))}>
+                            <button className="btn sm" disabled={busy} onClick={() => void sendMessage(fixRequest(i, model), { design: true })}>
                               <Icon.Sparkle size={12} /> Ask Claude to fix
                             </button>
                             {i.parts?.[0] && model?.parts.some((p) => p.id === i.parts![0]) && (

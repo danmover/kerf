@@ -27,6 +27,7 @@ import { PlanPane } from "./PlanPane";
 import { ReviewCard } from "./ReviewCard";
 import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Attachments";
 import { useStickToBottom } from "./useStickToBottom";
+import { CostLine, fmtCost, useChatSpend } from "./CostLine";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -41,6 +42,8 @@ export function ChatPanel() {
   const stick = useStickToBottom(feed, lastUser);
   const settings = useSettings();
   const model = MODELS.find((m) => m.id === settings.model)!;
+  const spend = useChatSpend();
+  const routes = settings.routeQuick && !settings.model.startsWith("claude-haiku");
 
   useLayoutEffect(() => {
     const el = feed.current;
@@ -57,7 +60,8 @@ export function ChatPanel() {
           width={290}
           trigger={(open, toggle) => (
             <button className={`chip ${open ? "accent" : ""}`} style={{ cursor: "pointer" }} onClick={toggle} aria-label="Choose model">
-              {model.label.replace("Claude ", "")} · {settings.effort} <Icon.ChevronDown size={11} />
+              {model.label.replace("Claude ", "")} · {settings.effort}
+              {routes && <span className="dim"> · auto</span>} <Icon.ChevronDown size={11} />
             </button>
           )}
         >
@@ -96,10 +100,34 @@ export function ChatPanel() {
                   {e}
                 </MenuItem>
               ))}
+              <div className="menu-sep" />
+              <MenuItem
+                icon={settings.routeQuick ? <Icon.Check size={14} /> : undefined}
+                onClick={() => {
+                  updateSettings({ routeQuick: !settings.routeQuick });
+                  close();
+                }}
+              >
+                <div>
+                  <div>Quick questions on Haiku 5.5</div>
+                  <div className="dim" style={{ fontSize: 11 }}>
+                    Anything that changes the design stays on {model.label.replace("Claude ", "")}.
+                  </div>
+                </div>
+              </MenuItem>
             </>
           )}
         </Menu>
         <div className="grow" />
+        {settings.showCost && spend.cost > 0 && (
+          <button
+            className="chip cost-total"
+            onClick={() => openSettings("ai")}
+            data-tip={`This conversation so far: ${fmtCost(spend.cost)}${spend.saved >= 0.001 ? `, at least ${fmtCost(spend.saved)} less than running it all on the design model with no keep-warm` : ""}. Click for cost settings.`}
+          >
+            {fmtCost(spend.cost)}
+          </button>
+        )}
         <button
           className="icon-btn sm"
           disabled={!items.length || busy}
@@ -212,7 +240,7 @@ function Item({ it }: { it: ChatItem }) {
                 </button>
               )}
               {it.action === "continue" && (
-                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.")}>
+                <button className="btn sm" onClick={() => void sendMessage("Continue with the plan.", { design: true })}>
                   <Icon.Play size={11} /> Continue
                 </button>
               )}
@@ -226,6 +254,8 @@ function Item({ it }: { it: ChatItem }) {
       return <ReviewCard it={it} />;
     case "suggest":
       return null;
+    case "cost":
+      return <CostLine it={it} />;
   }
 }
 
@@ -358,6 +388,7 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
 }
 
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
+  const routing = useChat((s) => s.routing);
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
   const draft = useChatDraft();
@@ -439,7 +470,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
         <div className="row">
           <AttachButton att={att} disabled={!hasKey} />
           <span className="mono dim" style={{ fontSize: 10.5 }}>
-            {busy ? <span className="shimmer-text">Claude is working</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
+            {busy ? <span className="shimmer-text">{routing ? "Choosing a model" : "Claude is working"}</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
           </span>
           <div className="grow" />
           <MicButton voice={voice} />

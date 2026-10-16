@@ -5,6 +5,7 @@ import reducer from "./reducer.kerf?raw";
 import blank from "./blank.kerf?raw";
 import bracket from "./bracket.kerf?raw";
 import shelf from "./shelf.kerf?raw";
+import canister from "./canister.kerf?raw";
 import tunneller from "./sand-tunneller.kerf?raw";
 import printer from "./printer.kerf?raw";
 
@@ -79,6 +80,18 @@ export const TEMPLATES: Template[] = [
       "Make the gusset reach two thirds of the way up the upright",
     ],
     stats: "2 parts · 5 sketches · 2 requirements",
+  },
+  {
+    id: "canister",
+    name: "Screw-Top Canister",
+    tagline: "Printed jar and knurled lid with real two-start threads, an O-ring seal and raised lettering.",
+    source: canister,
+    prompts: [
+      "Make the canister 120 mm tall and 80 mm wide, keeping the same thread fit",
+      "Change the lid lettering to COFFEE and engrave it instead of raising it",
+      "Add a drip ridge below the thread and round the jar's shoulder more",
+    ],
+    stats: "2 parts · 4 requirements",
   },
   {
     id: "sand-tunneller",

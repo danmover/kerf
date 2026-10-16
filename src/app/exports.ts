@@ -1,7 +1,8 @@
 // Export actions shared by the top bar menu and keyboard shortcuts.
 
-import { kernel } from "../kernel/client";
+import { detailKernel, kernel } from "../kernel/client";
 import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
+import { detailImportsLoaded, recipeUsesImport } from "../core/imports";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
 import { buildPack } from "../machine/pack";
 import { zip } from "../machine/zip";
@@ -19,16 +20,25 @@ function visibleParts(selectionOnly: boolean) {
 
 const baseName = () => useProject.getState().current?.name ?? useDesign.getState().model?.name ?? "design";
 
+/** Exact STEP of placed parts, with their full detail; the STEP export and the build pack share it. */
+async function stepOf(parts: ReturnType<typeof visibleParts>) {
+  await whenRefined();
+  const items = parts.filter((p) => meshes.has(p.hash)).map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color, recipe: p.recipe }));
+  // the detail worker holds the real threads and cosmetic detail; the main one builds them if it has to
+  if (detailKernel.status !== "error") detailKernel.start();
+  // imported STEP bodies are exported from the detail worker too, so it needs the files
+  if (detailKernel.status !== "error" && parts.some((p) => p.imported || recipeUsesImport(p.recipe))) await detailImportsLoaded();
+  return { data: await (detailKernel.status === "error" ? kernel : detailKernel).exportStep(items), count: items.length };
+}
+
 export async function exportStep(selectionOnly = false) {
   const parts = visibleParts(selectionOnly);
   if (!parts.length) return toast({ kind: "warn", title: "Nothing to export", detail: selectionOnly ? "Select one or more parts first." : "The design has no visible parts." });
   const t = toast({ kind: "info", title: "Preparing STEP…", detail: "Exporting exact B-rep solids from the kernel." }, 0);
   try {
-    await whenChecked();
-    const items = parts.filter((p) => meshes.has(p.hash)).map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color }));
-    const data = await kernel.exportStep(items);
+    const { data, count } = await stepOf(parts);
     download(data, safeFileName(baseName() + (selectionOnly ? " selection" : ""), "step"), "application/step");
-    toast({ kind: "success", title: "STEP exported", detail: `${items.length} solids in millimetres, ready for other CAD tools.` });
+    toast({ kind: "success", title: "STEP exported", detail: `${count} solids in millimetres, ready for other CAD tools.` });
   } catch (e) {
     toast({ kind: "error", title: "STEP export failed", detail: errorText(e) }, 9000);
   } finally {
@@ -73,7 +83,7 @@ async function makeBuildPack() {
     let stepNote = "";
     if (parts.length) {
       try {
-        step = await kernel.exportStep(parts.map((p) => ({ hash: p.hash, xf: p.xf, name: p.id, color: p.color })));
+        step = (await stepOf(parts)).data;
       } catch (e) {
         stepNote = ` The STEP file was left out: ${errorText(e)}`;
       }

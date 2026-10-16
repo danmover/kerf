@@ -73,6 +73,13 @@ npm run typecheck
 - Make solid: extrude (new part, add to or cut from an existing one, through all, either or both directions, depth kept as a slider parameter) or revolve about a sketch line.
 - Every action is a text edit of the design file, so undo, history and Claude all work on sketches too. Claude can read a sketch as solved with `get_sketch`.
 
+**Detailed modelling**
+- 2D profiles (`outline` with arcs and splines, `curve`, `rounded`, `offset`, `text`, and `+`/`-` between them) turned into solids with `extrude` (twist, taper), `revolve`, `sweep`/`pipe` along paths and helices, and `loft` (hollow with `wall:`).
+- Real helical threads (`thread()`, ISO, trapezoid, square and buttress, multi-start, left-hand, threaded tubes) and threaded holes (`hole(M5, fit: "thread")`); knurls, draft, embossed and engraved lettering, O-ring grooves, ribs and gussets.
+- Ready-made features that size themselves: `screw_boss` (insert, tapped or threaded, with gussets) and `snap_hook`, whose bending strain is checked against the material.
+- Name what you add (`add ... as boss`) and round or break edges by meaning: `fillet(1.5, edges: boss.root)`, `both(base.edges, "vertical")`, `near()`, `facing()`. Claude can inspect a part's features and test a selection before using it.
+- `cosmetic { }` steps (edge breaks, lettering) and real threads and knurls appear in the detailed build, which runs in a second kernel worker; checks use the simple shape, so editing stays fast. Library screws and nuts show real ISO threads.
+
 **Checking**
 - Every change runs the full pipeline: evaluate, build (only the parts that changed), check, then refine the meshes.
 - Checks cover requirements, solid interference, tool access to every screw, gear mesh and ratio, and motion.
@@ -87,6 +94,13 @@ npm run typecheck
 - Gear trains get a drivetrain block (`drive:`, `torque:`, `speed:`, `life:`) that checks tooth bending (Lewis), bearing L10 life and shaft torsion for every gear and bearing the driver turns.
 - Claude sets analyses up from the part's intended use, runs them, looks at the results, strengthens weak spots and reports before-and-after numbers.
 
+**Drawings and measuring**
+- Every part and the assembly get an engineering drawing automatically: first-angle ISO views, a section through the main features, an isometric view, dimensions with hole and slot callouts, general tolerances (ISO 2768), a title block and, for the assembly, balloons and a parts list. Sheet size and scale are chosen to fit.
+- Drawings update with the design. Click any dimension, view, part or the title block to change it (a parameter, a tolerance or fit, title fields, hidden lines) or to ask Claude about it. Changes are written into a `drawing` block in the design file, so undo, history and Claude see them, and tolerances stay with their dimension when the design changes.
+- Claude can look at a drawing and edit it like the rest of the design.
+- Export drawings as PDF (all sheets), SVG or DXF.
+- Measure in the 3D view (press `R`): click a face, edge or corner for its exact size, and a second one for the distance, angle and centre distance between them. A measurement can be added to the part's drawing as a dimension.
+
 **Working in the app**
 - 3D viewport with selection, section view, exploded view, x-ray, isolate, mechanism playback and camera presets.
 - Kerf's own renderer on WebGL: soft area-light shadows, ambient occlusion, clean anti-aliased edges and gentle bloom that refine when the view is still. Five studio lighting presets, a turnable key light (Alt-drag), and draft/balanced/high quality.
@@ -99,7 +113,7 @@ npm run typecheck
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
-Six complete examples ship with it: a sensor-hub enclosure (21 solids), a printed wall-shelf bracket with a stress analysis (3 solids), a two-stage 12:1 gear reducer with a drivetrain duty (26 solids), a shaft support bracket built entirely from five constrained sketches, a sand tunnelling robot (91 solids) and a 3D printer (96 solids). All pass every hard check, and the enclosure, the reducer and the tunneller carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
+Seven complete examples ship with it: a sensor-hub enclosure (21 solids), a printed wall-shelf bracket with a stress analysis (3 solids), a two-stage 12:1 gear reducer with a drivetrain duty (26 solids), a shaft support bracket built entirely from five constrained sketches, a screw-top canister with real, phased two-start threads, a knurled lid and an O-ring seal, a sand tunnelling robot (91 solids) and a 3D printer (96 solids). All pass every hard check, and the enclosure, the reducer, the canister and the tunneller carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
 
 ## Complete machines from a brief
 
@@ -121,9 +135,8 @@ The Simulation thread runs the generated firmware against the pit. Its first run
 ## Not in 0.1
 
 - **Direct modelling.** Push and pull on faces, and sketching on curved faces, are not there yet; profiles come from sketches on flat planes.
-- **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds it. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
+- **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds the geometry that checks use (a second one makes the detailed build). Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
 - **More analysis.** The stress solver is linear elastic on a voxel grid: no contact between parts, buckling, large deflection, creep, vibration or thermal analysis, and features smaller than a grid cell are smoothed over. Drivetrain checks leave out tooth pitting, wear and heat. There are no tolerance stack-ups yet. The machine sizing calculations are first-pass hand formulas with their assumptions listed. Treat results as a design guide and test parts that matter.
-- **Drawings and measurement.** No 2D drawings or interactive measuring tool yet.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
 - **Accounts and sharing.** No server, sign-in, sync or collaboration. A hosted version would need a server-side key proxy, rate limits and billing.
 - A larger hardware library, a light theme, and a tablet layout. The phone layout covers the 3D view, chat, model panel, code and settings.
@@ -134,10 +147,11 @@ The Simulation thread runs the generated firmware against the pit. Its first run
 src/lang/       Kerf language: lexer, parser, evaluator (no eval, step-limited)
 src/sketch/     Sketch evaluation, constraint solver, profiles, and the text edits the sketch editor makes
 src/library/    Standard parts, thread and bearing tables, involute gears
-src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
+src/kernel/     OpenCASCADE (WebAssembly) in Web Workers (fast builds and checks; detailed builds and STEP); content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
 src/analysis/   Stress solver (voxel hex8 FEA, multigrid CG, separate worker), drivetrain checks, analysis blocks
 src/mfg/        Manufacturing processes: rules, materials, geometry analysis, findings
+src/drawing/    Engineering drawings: view planning, dimensions, sheet layout, PDF/SVG/DXF
 src/machine/    Parts catalog, calculators, wiring rules, firmware generators, build pack
 src/ai/         Claude tools, system prompt, language reference, chat loop, web search
 src/app/        Projects, history and previews, settings, view state, spots, exports

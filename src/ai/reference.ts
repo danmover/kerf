@@ -2,12 +2,15 @@
 // builtin tables the evaluator uses so it cannot drift from the code.
 
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
+import { FEATURE_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../lang/modelling";
+import { SEL_PRESETS } from "../kernel/recipe";
 import { UNITS } from "../lang/lexer";
 import { LIBRARY } from "../library/components";
 import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
 import { CALC_FNS, CALC_PARAMS } from "../machine/calcs";
 import { CATALOG, CATALOG_KINDS, catalogOfKind } from "../machine/catalog";
 import { processReference } from "../mfg/guide";
+import { DRAWING_DOCS, DRAWING_PROPS } from "../drawing/spec";
 import { FINISHES, MATERIAL_LIST } from "../library/materials";
 import { importsReference } from "./importTools";
 import { CONSTRAINTS } from "../sketch/evaluate";
@@ -182,7 +185,7 @@ Kerf generates the code from the wiring, so every pin number matches the harness
 Arduino boards: behaviour text that mentions tunnel, burrow, sand, drill, dig or bore (with DC motors on drivers) gives the autonomous tunnelling program; anything else gives the bench program (a serial console that drives each motor and reads each sensor). Both include the console. The generator finds:
 - DC motors and actuators through the driver channel their M_PLUS/M_MINUS are wired to (control schemes: pwm_dir, rpwm_lpwm, in1_in2_en, in1_in2_pwm, in1_in2_pwm_both); the front and rear motors by name or role (front/nose/head, rear/back/tail); the steering actuator or servo by steer or hinge. Driver current-sense pins wired to analog pins give stall detection.
 - encoders (ENC_A on an interrupt pin, ENC_B), actuator position feedback (FB on an analog pin), servos (SIG; on AVR boards the Servo library disables PWM on pins 9 and 10), a BNO055 or MPU-6050 on the I2C pins, battery voltage through voltage_sensor_25v.S, and the battery's cell count.
-- settings (default): start_delay (10 s), run_distance (1100 mm), max_run_time (3600 s), power (0.8 of full PWM), pitch (40 mm screw pitch), slip (0.5), stall_current (80 % of the front motor's stall current, A), stall_time (0.6 s), backoff_time (1.5 s), max_retries (8), breakthrough_current (0.5 of the front motor's digging average), give_up_time (0 s = none: back out if there is no breakthrough by then; it also backs out at twice run_distance by the turn count), roll_limit (60 deg: stop if the body rolls past it), motor_hot_rise (60 K: estimated motor rise above its surroundings that is too hot; digging backs out at 3/4 of it without a breakthrough), motor_cooling (0.5: share of free-air cooling the motors get where they run), heading_kp (1.5), heading_ki (0.05), steer_max (8 deg), steer_sign (1 when extending the steering turns the nose clockwise seen from above, the way the IMU heading grows; -1 when anticlockwise), steer_arm (40 mm, hinge pin to where the actuator or cam pushes), steer_slope (1: sideways movement per mm of stroke; the slot slope for a cam), steer_deadband (0.4 mm of actuator position error ignored), steer_mid (half the actuator stroke, mm), roll_kp (0.01), roll_trim_max (0.25), low_cell (3.4 V per cell), log_interval (5 s).
+- settings (default): start_delay (10 s), run_distance (1100 mm), max_run_time (3600 s), power (0.8 of full PWM), pitch (40 mm screw pitch), slip (0.5), stall_current (80 % of the front motor's stall current, A), stall_time (0.6 s), backoff_time (1.5 s), max_retries (8), breakthrough_current (0.5 of the front motor's digging average), give_up_time (0 s = none: back out if there is no breakthrough by then; it also backs out at twice run_distance by the turn count), roll_limit (60 deg: stop if the body rolls past it), motor_hot_rise (60 K: estimated motor rise above its surroundings that is too hot; digging backs out at 3/4 of it without a breakthrough), motor_cooling (0.5: share of free-air cooling the motors get where they run), max_rest_time (1200 s: a rest on the way out that hasn't cooled the motors by then ends the run), rear_free_current (3 × the rear motor's free current, A: backing out stops once the rear motor stays below it for 2 s, because its screw is out of the sand), heading_kp (1.5), heading_ki (0.05), steer_max (8 deg), steer_sign (1 when extending the steering turns the nose clockwise seen from above, the way the IMU heading grows; -1 when anticlockwise), steer_arm (40 mm, hinge pin to where the actuator or cam pushes), steer_slope (1: sideways movement per mm of stroke; the slot slope for a cam), steer_deadband (0.4 mm of actuator position error ignored), steer_mid (half the actuator stroke, mm), roll_kp (0.01), roll_trim_max (0.25), low_cell (3.4 V per cell), log_interval (5 s).
 Klipper boards: axes come from the board port each stepper is cabled to (X…, Y…, Z…, E…) or the stepper's role ("x", "y", "z", "extruder"); hotend and bed heaters and thermistors from their heater2 and therm2 cables (a heated_bed part is the bed); fans by role or port label (part/blower, hotend/heatsink, controller/electronics); endstops from XSTOP/YSTOP/ZSTOP; a probe5 cable makes the probe the Z endstop. Rotation distances come from GT2 pulleys (role "x"/"y"), the lead screw and the extruder.
 - settings (default): x_size (220), y_size (220), z_size (250) in mm; kinematics ("cartesian"); max_velocity (300 mm/s); max_accel (3000 mm/s²); x_rotation_distance, y_rotation_distance (from the pulley, else 40), z_rotation_distance (the lead screw's lead, else 8), e_rotation_distance (the extruder's, else 22.68); x_run_current, y_run_current, z_run_current, e_run_current (A, from the motor rating and the driver limit); probe_x, probe_y (probe offset from the nozzle, -40 and -10 mm).
 Firmware warnings (for example a motor whose driver pins are not wired) come back from run_checks.
@@ -205,9 +208,13 @@ Write a space before a name after a number (2 * width, not 2width).
 }
 
 export function languageReference(): string {
-  const shapes = Object.values({ ...SHAPE_FNS, extrude: SKETCH_FNS.extrude, revolve: SKETCH_FNS.revolve })
-    .map((f) => `- ${f.doc ?? f.name}`)
-    .join("\n");
+  const docs = (fns: Record<string, { doc?: string; name: string }>, skip: string[] = []) =>
+    Object.entries(fns)
+      .filter(([k]) => !skip.includes(k))
+      .map(([, f]) => `- ${f.doc ?? f.name}`)
+      .join("\n");
+  // revolve() is listed once, with both forms, among the profile solids
+  const shapes = docs(SHAPE_FNS, ["revolve"]);
   const math = Object.values(MATH_FNS)
     .map((f) => `- ${f.doc ?? f.name}`)
     .join("\n");
@@ -309,21 +316,50 @@ part bracket {
   material: "PETG"            // one of ${materials}
   finish: "printed"           // optional surface finish for that material (see Materials and finishes)
   group: "Housing"            // groups parts in the parts panel
-  body box(40, 20, 5)         // first solid
-  add cylinder(d: 10, h: 12, at: (0, 0, 5))
+  body box(40, 20, 5, r: 2) as plate      // first solid, named so its edges can be picked
+  add cylinder(d: 10, h: 12, at: (0, 0, 5)) as boss
+  fillet(1.5, edges: boss.root)           // round where the boss meets the plate
   cut hole(M4, through: true, at: (12, 0, 5))
-  fillet(1, edges: "vertical")
   for x in [-12, 12] { cut hole(M3, depth: 6, at: (x, 0, 5)) }
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
+  cosmetic { chamfer(0.4, edges: boss.tip) }   // full-quality detail only
 }
 Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
-Order matters: shell/fillet/chamfer apply to the body built so far, so put them right after the body and before bosses and holes. A part is limited to 600 operations.
+Order matters: each modifier applies to the body as built so far. Shell right after the body (before bosses, ribs and holes). Fillet a joint right after adding the feature it rounds (fillet(r, edges: boss.root)); fillet outer edges before cutting holes that cross them. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
 ${shapes}
 
 ### Modifiers (inside a part)
 ${mods}
+
+## Detailed modelling
+
+### 2D profiles (flat outlines; combine with + and -, move(p, by:), rotate(p, angle))
+${docs(PROFILE_FNS)}
+
+### 3D paths (for sweep and pipe)
+${docs(PATH_FNS)}
+
+### Solids from profiles and sketches, threads, grips, lettering, ribs
+${docs({ ...SOLID_FNS, extrude: SKETCH_FNS.extrude, revolve: SKETCH_FNS.revolve })}
+
+### Ready-made features (use with add; each adds and cuts what it needs and rounds its own root)
+${docs(FEATURE_FNS)}
+
+### Naming features and picking edges
+Name any step with \`as\`: \`body box(80, 50, 30) as shell\`, \`add cylinder(d: 8, h: 10, at: p) as boss\`, \`cut hole(M3, through: true) as bore\`. Using the same name again (for example inside a for loop) adds to the same feature. A name then picks geometry by meaning, however the part changes later:
+- boss.root: edges where the feature meets the rest of the part (fillet these for strength)
+- boss.tip: sharp edges between two faces of the feature itself (the top rim of a boss)
+- boss.edges / boss.faces: all of its edges or faces; boss.convex / boss.concave: only outside or inside corners
+Presets: ${SEL_PRESETS.map((p) => `"${p}"`).join(", ")} ("convex" = sharp outside edges, "concave" = sharp inside corners, "sharp" = both; top/bottom = at the part's highest/lowest z).
+Selector functions (coordinates are the part's own, before its at:/rotate:):
+${docs(SELECT_FNS)}
+Combine: a list or + takes everything in either, - removes, both(a, b) keeps the overlap. Example: fillet(0.6, edges: shell.convex - shell.root).
+Use inspect_part to see a part's features and to test a selector before you rely on it.
+
+### Cosmetic detail
+cosmetic { ... } holds steps that only build in the full-quality pass (final meshes, renders, STEP export): small chamfers, edge breaks, lettering, decorative grooves. Fast builds (previews, interference and clearance checks, measurements) skip them, and if one fails it is left out with a warning instead of breaking the part. Threads and knurls are always detailed in the full-quality pass and plain cylinders in fast builds. A step outside cosmetic must not refer to a feature named inside it.
 
 ### Math and helpers
 ${math}
@@ -369,6 +405,7 @@ Component fields are world-space after placement (motor.holes is a list of world
 
 ${lib}
 
+${drawingReference()}
 ${importsReference()}
 
 ## Standard data
@@ -447,4 +484,28 @@ Things geometry cannot prove are reported as "needs analysis" until an analysis 
 ${machineReference()}
 
 ${simulationReference()}`;
+}
+
+function drawingReference(): string {
+  const calls = Object.values(DRAWING_DOCS)
+    .map((d) => `- ${d}`)
+    .join("\n");
+  return `## Drawings
+Every design gets automatic engineering drawings: one for the whole design (views, overall sizes, parts list and balloons) and one per custom part (views, a section when it has hidden features, dimensions, hole callouts, title block). A drawing block in the source replaces the automatic drawing of the same target and is how drawings are changed:
+drawing housing_drawing {
+  title: "Housing"
+  of: housing
+  sheet: "A3"
+  scale: "1:2"
+  views: ["front", "top", "right", "iso"]
+  section("A", at: (0, 12, 0), normal: X, view: "front")
+  detail("B", view: "front", at: (30, 0, 30), r: 8, scale: 4)
+  dim((-20, 0, 0), (20, 0, 0), view: "top", tol: 0.05)
+  diameter((30, 0, 30), 16, view: "front", fit: "H7")
+  note("Print in PETG, 0.2 mm layers")
+}
+Properties: ${DRAWING_PROPS.join(", ")}. of names parts or components defined above (omit it for the whole design). Leave out sheet and scale to have them chosen. Dimensions, hole callouts and position dimensions are generated (auto_dims: false turns them off); a dim() or diameter() that repeats a generated one replaces it, which is how to add a tolerance or a fit. Positions are model coordinates in mm; views are first-angle (ISO) unless projection: "third".
+Calls inside a drawing block:
+${calls}
+Use view_drawing to look at a drawing and get its dimension list before changing it. When the user points at something on a drawing, their message names it (for example a dimension's text and view); change the drawing block, or the design itself when they ask for a different size.`;
 }

@@ -185,8 +185,9 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
 
   // source errors: a statement that fails to evaluate drops out of the model, so say so loudly
   model.diagnostics.forEach((d, i) => {
-    if (d.severity !== "error") return;
-    items.push({ id: `diag:${i}`, category: "build", status: "fail", title: "Design source error", detail: d.message, span: { start: d.start, end: d.end }, basis: "parameters" });
+    if (d.severity === "error") items.push({ id: `diag:${i}`, category: "build", status: "fail", title: "Design source error", detail: d.message, span: { start: d.start, end: d.end }, basis: "parameters" });
+    // design-rule warnings from evaluation (a snap hook bent past its material's limit)
+    else if (d.severity === "warning" && d.rule) items.push({ id: `diag:${i}`, category: "build", status: "warn", title: d.rule, detail: d.message, span: { start: d.start, end: d.end }, basis: "parameters" });
   });
 
   // build errors

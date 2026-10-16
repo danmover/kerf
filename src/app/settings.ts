@@ -59,6 +59,12 @@ export interface Settings {
   agentReview: boolean;
   /** extra geometry workers for agents' checks (0 = decide from the device) */
   agentWorkers: number;
+  /** let a cheaper model answer turns that only read the design (see ai/routing) */
+  routeQuick: boolean;
+  /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
+  keepWarm: number;
+  /** show what each reply cost and saved */
+  showCost: boolean;
   /** version of these defaults the stored settings were last migrated to */
   rev: number;
 }
@@ -96,8 +102,14 @@ const DEFAULTS: Settings = {
   agentBudget: 5,
   agentReview: true,
   agentWorkers: 0,
+  routeQuick: true,
+  keepWarm: 30,
+  showCost: true,
   rev: SETTINGS_REV,
 };
+
+/** keep-warm durations the settings offer, in minutes */
+export const KEEP_WARM_MINUTES = [0, 15, 30, 60];
 
 const KEY = "kerf.settings.v1";
 
@@ -133,6 +145,7 @@ function load(): Settings {
     out.agentWorkers = Math.min(4, Math.max(0, Math.round(out.agentWorkers)));
     if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
     out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
+    if (!KEEP_WARM_MINUTES.includes(out.keepWarm)) out.keepWarm = DEFAULTS.keepWarm;
     return out;
   } catch {
     return DEFAULTS;

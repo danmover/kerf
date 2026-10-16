@@ -10,6 +10,7 @@ import { exportStep, exportStl, exportSource, exportBom, exportPng, exportProjec
 import { Logo } from "./Logo";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
+import { exportAllDrawings } from "../drawing/export";
 
 export function TopBar() {
   const project = useProject((s) => s.current);
@@ -96,6 +97,9 @@ export function TopBar() {
               </MenuItem>
               <MenuItem icon={<Icon.Target size={14} />} onClick={run(() => exportStep(true))} disabled={!selected.length} hint=".step">
                 STEP of selected parts
+              </MenuItem>
+              <MenuItem icon={<Icon.Doc size={14} />} onClick={run(exportAllDrawings)} hint=".pdf">
+                Engineering drawings
               </MenuItem>
               <div className="menu-sep" />
               <div className="menu-label">Project</div>
