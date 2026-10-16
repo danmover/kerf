@@ -171,7 +171,7 @@ require "Intermediate bearings fit the 5 mm shaft": mid_front.bore == 5
 require "Printable walls": wall >= 2
 
 // ── Duty ───────────────────────────────────────────────
-// A light duty the printed POM gears pass. At the motor's full 0.4 N·m the
+// A light duty the POM gears pass. At the motor's full 0.4 N·m the
 // 12-tooth stage 2 pinion would fail in bending: change torque: to see it.
 analysis "Light duty" {
   drive: motor

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FeaError, runStructural, type FeaPart, type StructuralInput, type StructuralResult } from "../src/analysis/fe/structural";
+import { FeaError, MAX_ELEMENTS, runStructural, sizeGrid, type FeaPart, type StructuralInput, type StructuralResult } from "../src/analysis/fe/structural";
 import type { TriMesh, V3 } from "../src/analysis/fe/voxel";
 import { mechMaterial, allowableStress } from "../src/analysis/materials";
 
@@ -211,5 +211,62 @@ describe("structural analysis", () => {
     expect(rel(r.maxDisp.value, tip)).toBeLessThan(0.05);
     // σ = M·c/I = 5·100·1/I at mid-span
     expect(rel(at(r, "stress", [100, 25, 2]), (5 * 100 * 1) / I)).toBeLessThan(0.08);
+  });
+
+  it("finds the lowest safety factor away from supports and loads, wherever it is", () => {
+    // PLA root fixed at the wall, steel outboard: the overall lowest sits on the wall, and the
+    // lowest a short way off is still in the PLA, at the material's own yield strength
+    const r = runStructural(
+      base({
+        parts: [part("root", [0, 0, 0], [40, 10, 10], 0), part("tip", [40, 0, 0], [100, 10, 10], 1)],
+        materials: [mechMaterial("PLA"), mechMaterial("Steel")],
+        supports: [{ region: { t: "face", part: "root", dir: [-1, 0, 0] } }],
+        loads: [{ t: "force", region: { t: "face", part: "tip", dir: [1, 0, 0] }, f: [0, 0, -20] }],
+      }),
+    );
+    const m = r.minSafety;
+    expect(m.nearBoundary).toBe(true);
+    expect(m.away).not.toBeNull();
+    const away = m.away!;
+    expect(away.material).toBe("PLA");
+    expect(away.mode).toBe("yield");
+    expect(away.value).toBeGreaterThanOrEqual(m.value);
+    // beam theory where it was found: σ = 6·F·(L − x) / (b·h²)
+    const sigma = (6 * 20 * (100 - away.at[0])) / (10 * 100);
+    expect(rel(away.value, 45 / sigma)).toBeLessThan(0.2);
+    // nothing well clear of the wall and the loaded end is lower
+    for (let pi = 0; pi < r.parts.length; pi++) {
+      const f = r.parts[pi];
+      for (let v = 0; v < f.positions.length / 3; v++) {
+        const x = f.positions[3 * v];
+        if (x > 10 && x < 90) expect(f.safety[v]).toBeGreaterThan(away.value * 0.97);
+      }
+    }
+  });
+});
+
+describe("analysis size limits", () => {
+  it("rejects element sizes below the minimum before meshing", () => {
+    expect(() => runStructural(base({ h: 1e-323 }))).toThrow(FeaError);
+    expect(() => runStructural(base({ h: 0.05 }))).toThrow(/at least 0\.1 mm/);
+    expect(() => runStructural(base({ h: NaN }))).toThrow(/at least 0\.1 mm/);
+  });
+
+  it("enlarges a tiny explicit element size to stay within the element limit", () => {
+    // 0.3 mm cells in a solid 100 mm block would be 37 million elements
+    const { cells, raised } = sizeGrid([100, 100, 100], 1e6, 30_000, 0.3);
+    const n = cells![0] * cells![1] * cells![2];
+    expect(raised).toBe(true);
+    expect(n).toBeLessThanOrEqual(MAX_ELEMENTS);
+    expect(n).toBeGreaterThan(0.6 * MAX_ELEMENTS);
+  });
+
+  it("stretches cells on a large thin plate rather than go over the limit", () => {
+    const { cells } = sizeGrid([1000, 1000, 0.5], 5e5, 30_000, 0.2);
+    expect(cells![0] * cells![1] * cells![2]).toBeLessThanOrEqual(MAX_ELEMENTS);
+  });
+
+  it("keeps an explicit element size that fits", () => {
+    expect(sizeGrid([100, 10, 10], 1e4, 30_000, 1)).toEqual({ cells: [100, 10, 10], raised: false });
   });
 });

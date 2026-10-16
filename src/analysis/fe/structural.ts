@@ -7,7 +7,7 @@ import { CORNERS, principal, vonMises, elementMatrices } from "./element";
 import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg } from "./solver";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
 import type { LoadSpec, RegionSpec, SupportSpec } from "../spec";
-import { describeRegion } from "../spec";
+import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
 
 export class FeaError extends Error {}
@@ -73,7 +73,8 @@ export interface StructuralResult {
   maxDisp: Located;
   maxStress: Located & { nearBoundary: boolean; away: Located | null };
   maxStrain: Located;
-  minSafety: Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string };
+  /** lowest safety factor; away: the lowest a short way from supports and loads, when the overall lowest sits on one */
+  minSafety: SafetyAt & { nearBoundary: boolean; away: SafetyAt | null };
   layer: Located | null;
   hotSpots: { at: V3; stress: number; safety: number }[];
   applied: V3;
@@ -91,10 +92,14 @@ export interface StructuralResult {
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
 }
 
+export type SafetyAt = Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string };
+
 export type Progress = (stage: string, frac: number, info?: { iter?: number; residual?: number }) => void;
 
 const FILL_MIN = 0.12;
 const MAX_CELLS = 3_500_000;
+/** solid elements, about three times the "fine" target: beyond this memory and time grow past what a browser tab should spend */
+export const MAX_ELEMENTS = 350_000;
 const G0 = 9.80665;
 
 const FACE_CORNERS = [
@@ -122,6 +127,38 @@ const norm = (a: V3): V3 => {
 const fmt = (n: number, d = 2) => String(Math.round(n * 10 ** d) / 10 ** d);
 const fmtP = (p: V3) => `(${p.map((v) => fmt(v, 1)).join(", ")})`;
 
+/**
+ * Cells per axis for the analysis grid. Cells fit the bounding box exactly, thin directions get
+ * smaller cells within about 3:1 of the others, and the grid and its solid elements stay within
+ * MAX_CELLS and MAX_ELEMENTS by enlarging cells (and, for very thin parts, stretching them further).
+ * cells is null when even that cannot bring the model within limits.
+ */
+export function sizeGrid(ext: V3, volume: number, target: number, h?: number): { cells: V3 | null; raised: boolean } {
+  const asked = h ?? Math.cbrt(Math.max(volume, 1e-9) / Math.max(target, 100));
+  const fit = (h0: number, aspect: number): V3 => {
+    const c = ext.map((e) => Math.max(1, Math.round(e / h0)));
+    const small = Math.min(...ext.map((e, d) => e / c[d]));
+    for (let d = 0; d < 3; d++) c[d] = Math.max(c[d], Math.ceil(ext[d] / (aspect * small) - 1e-9));
+    return c as V3;
+  };
+  const count = (c: V3) => c[0] * c[1] * c[2];
+  const active = (c: V3) => (volume * count(c)) / (ext[0] * ext[1] * ext[2]);
+  let h0 = asked;
+  let aspect = 3;
+  let cells = fit(h0, aspect);
+  if (!h) while (active(cells) > 4 * target && aspect < 40) cells = fit(h0, (aspect *= 1.5));
+  const over = () => count(cells) > MAX_CELLS || active(cells) > MAX_ELEMENTS;
+  if (over()) {
+    // size directly from the worse of the two ratios, then nudge for rounding (bounded)
+    h0 *= Math.cbrt(Math.max(count(cells) / MAX_CELLS, active(cells) / MAX_ELEMENTS));
+    cells = fit(h0, aspect);
+    for (let k = 0; k < 40 && over(); k++) cells = fit((h0 *= 1.05), aspect);
+    // a thin part: the cell shape limit keeps the count up, so let cells stretch further
+    for (let k = 0; k < 40 && over() && aspect < 200; k++) cells = fit(h0, (aspect *= 1.25));
+  }
+  return { cells: over() ? null : cells, raised: h0 > asked * 1.01 };
+}
+
 export function runStructural(inp: StructuralInput, progress: Progress = () => undefined): StructuralResult {
   const t0 = now();
   const warnings: string[] = [];
@@ -139,26 +176,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (!ext.every((e) => Number.isFinite(e) && e > 0)) throw new FeaError("The analysed parts have no usable geometry.");
   const diag = Math.hypot(...ext);
   const volume = meshes.reduce((s, m) => s + meshVolume(m), 0);
-  const asked = inp.h ?? Math.cbrt(Math.max(volume, 1e-9) / Math.max(inp.target, 100));
-  const fit = (h0: number, aspect: number): V3 => {
-    const c = ext.map((e) => Math.max(1, Math.round(e / h0)));
-    const small = Math.min(...ext.map((e, d) => e / c[d]));
-    for (let d = 0; d < 3; d++) c[d] = Math.max(c[d], Math.ceil(ext[d] / (aspect * small) - 1e-9));
-    return c as V3;
-  };
-  const count = (c: V3) => c[0] * c[1] * c[2];
-  const activeEstimate = (c: V3) => (volume * count(c)) / (ext[0] * ext[1] * ext[2]);
-  let h0 = asked;
-  let aspect = 3;
-  let cellsN = fit(h0, aspect);
-  if (!inp.h) while (activeEstimate(cellsN) > 4 * inp.target && aspect < 40) cellsN = fit(h0, (aspect *= 1.5));
-  while (count(cellsN) > MAX_CELLS) cellsN = fit((h0 *= 1.08), aspect);
+  if (inp.h !== undefined && !(Number.isFinite(inp.h) && inp.h >= MIN_ELEMENT_SIZE)) throw new FeaError(`resolution: the element size must be at least ${MIN_ELEMENT_SIZE} mm.`);
+  const { cells: cellsN, raised } = sizeGrid(ext, volume, inp.target, inp.h);
+  if (!cellsN) throw new FeaError("These parts are too large and thin to analyse in one go here. Analyse fewer parts at once, or the thin part on its own.");
   const hv: V3 = [ext[0] / cellsN[0], ext[1] / cellsN[1], ext[2] / cellsN[2]];
   const [hx, hy, hz] = hv;
   const hmax = Math.max(...hv);
   /** nominal element size, for messages */
   const h = Math.cbrt(hx * hy * hz);
-  if (inp.h && h0 > asked * 1.01) warnings.push(`Element size raised from ${fmt(asked)} mm to ${fmt(h)} mm to keep the model within memory.`);
+  if (raised) warnings.push(`${inp.h ? `Element size raised from ${fmt(inp.h)} mm to ${fmt(h)} mm` : `Elements enlarged to ${fmt(h)} mm`} to keep the model within memory (about ${MAX_ELEMENTS.toLocaleString("en")} elements at most).`);
   if (hmax / Math.min(...hv) > 4.5) warnings.push(`Elements are stretched up to ${fmt(hmax / Math.min(...hv), 0)}:1 to fit a thin part; stresses are less reliable than usual.`);
   const plan = coarseningPlan(cellsN, hv);
   const [nx, ny, nz] = plan.padded;
@@ -549,7 +575,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     maxIter: 300,
     onIter: (it, rel) => progress("Solving", 0.3 + 0.6 * Math.min(1, Math.log(rel) / Math.log(tol)), { iter: it, residual: rel }),
   });
-  if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
+  if (stats.residual > UNRELIABLE_RESIDUAL) warnings.push(`The solver did not converge (relative residual ${stats.residual.toExponential(1)} after ${stats.iterations} iterations), so these numbers are unreliable. Check that supports hold every part, or try another resolution.`);
+  else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
   const tSolve = now();
   progress("Recovering stresses", 0.92);
 
@@ -692,6 +719,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     iE = -1,
     iF = -1,
     iA = -1,
+    iFA = -1,
     iL = -1;
   let dMax = 0;
   for (let n = 0; n < nn; n++) {
@@ -705,6 +733,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     if (iE < 0 || Math.abs(strainN[n]) > Math.abs(strainN[iE])) iE = n;
     if (iF < 0 || sfN[n] < sfN[iF]) iF = n;
     if (!nearBC[n] && (iA < 0 || vm[n] > vm[iA])) iA = n;
+    if (!nearBC[n] && (iFA < 0 || sfN[n] < sfN[iFA])) iFA = n;
     if (inp.printed && (iL < 0 || layerN[n] > layerN[iL])) iL = n;
   }
 
@@ -823,7 +852,20 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (Math.hypot(...applied) > 0 && equilibrium > 0.02) warnings.push(`Reactions balance the loads only to ${fmt(equilibrium * 100, 1)}%.`);
 
   const pos = (n: number): V3 => (n >= 0 ? nodePos(n) : [0, 0, 0]);
-  const minSafetyMat = iF >= 0 ? nodeMat[iF] : mainMat;
+  const safetyAt = (n: number): SafetyAt => {
+    const mi = n >= 0 ? nodeMat[n] : mainMat;
+    const layers = n >= 0 && sfMode[n] === 1;
+    return {
+      value: n >= 0 ? sfN[n] : Infinity,
+      at: pos(n),
+      mode: layers ? "layers" : allow[mi].basis,
+      allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1),
+      material: inp.materials[mi].name,
+    };
+  };
+  const safetyNearBC = iF >= 0 && !!nearBC[iF];
+  if (iF >= 0 && sfMode[iF] !== 1 && allow[nodeMat[iF]].basis === "fatigue")
+    warnings.push("Fatigue strengths are for polished test pieces. Rough, printed or machined surfaces, notches and threads lower them, often by half, so keep a generous margin.");
   const tEnd = now();
   progress("Done", 1);
   return {
@@ -833,13 +875,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     maxDisp: { value: dMax, at: pos(iD) },
     maxStress: { value: iS >= 0 ? vm[iS] : 0, at: pos(iS), nearBoundary: iS >= 0 && !!nearBC[iS], away: iA >= 0 ? { value: vm[iA], at: pos(iA) } : null },
     maxStrain: { value: iE >= 0 ? strainN[iE] : 0, at: pos(iE) },
-    minSafety: {
-      value: iF >= 0 ? sfN[iF] : Infinity,
-      at: pos(iF),
-      mode: iF >= 0 && sfMode[iF] === 1 ? "layers" : allow[minSafetyMat].basis,
-      allowable: allow[minSafetyMat].value * (iF >= 0 && sfMode[iF] === 1 ? inp.materials[minSafetyMat].layerFactor : 1),
-      material: inp.materials[minSafetyMat].name,
-    },
+    minSafety: { ...safetyAt(iF), nearBoundary: safetyNearBC, away: safetyNearBC && iFA >= 0 ? safetyAt(iFA) : null },
     layer: inp.printed && iL >= 0 ? { value: layerN[iL], at: pos(iL) } : null,
     hotSpots: spots.map((n) => ({ at: nodePos(n), stress: vm[n], safety: sfN[n] })),
     applied,

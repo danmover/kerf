@@ -67,6 +67,8 @@ export const UNITS: Record<string, number> = {
   // structural analysis: force in N, torque in N·mm, stress and pressure in MPa (N/mm²), time in hours
   kN: 1000,
   lbf: 4.448222,
+  // weight of a kilogram, so 5kgf is 49 N (kg itself is a mass, in grams)
+  kgf: 9.80665,
   Nmm: 1,
   MPa: 1,
   GPa: 1000,

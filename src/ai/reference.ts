@@ -120,7 +120,7 @@ analysis "Shelf load" {
   max_deflection: 0.5mm                     // optional stiffness limit
   resolution: "standard"                    // "draft" ~8k elements, "standard" ~30k (default), "fine" ~110k, or a cell size like 0.6mm
 }
-fix: and load: may repeat or take lists. Units: N, kN, lbf, Nm, Nmm, MPa, kPa, bar, psi, GPa. Inside an analysis block these functions exist:
+fix: and load: may repeat or take lists. Units: N, kN, lbf, kgf (weight of a kilogram: 5kgf = 49 N; kg is a mass in grams, so never kg × 9.81N), Nm, Nmm, MPa, kPa, bar, psi, GPa. Inside an analysis block these functions exist:
 ${analysisFns}
 A drivetrain analysis gives a gear train's duty instead; the app checks tooth bending (Lewis), bearing L10 life and shaft torsion for every gear and bearing the driver turns:
 analysis "Gearbox duty" {

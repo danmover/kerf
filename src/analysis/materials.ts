@@ -43,6 +43,7 @@ export const MECH: Record<string, MechMaterial> = {
   "Aluminum 6061": M({ name: "Aluminum 6061-T6", E: 68900, nu: 0.33, density: 2.7, yield: 276, uts: 310, fatigue: 96, elongation: 12, layerFactor: 1, printedByDefault: false }),
   Steel: M({ name: "Steel (mild, S275)", E: 200000, nu: 0.29, density: 7.85, yield: 275, uts: 430, fatigue: 190, elongation: 20, layerFactor: 1, printedByDefault: false }),
   "Stainless 304": M({ name: "Stainless 304", E: 193000, nu: 0.29, density: 8.0, yield: 215, uts: 505, fatigue: 210, elongation: 40, layerFactor: 1, printedByDefault: false }),
+  "Stainless 316": M({ name: "Stainless 316", E: 193000, nu: 0.3, density: 8.0, yield: 205, uts: 515, fatigue: 205, elongation: 40, layerFactor: 1, printedByDefault: false }),
   Brass: M({ name: "Brass C360", E: 97000, nu: 0.31, density: 8.5, yield: 124, uts: 338, fatigue: 97, elongation: 25, layerFactor: 1, printedByDefault: false }),
   FR4: M({ name: "FR4", E: 20000, nu: 0.14, density: 1.85, yield: 250, uts: 300, fatigue: 90, elongation: 2, layerFactor: 1, printedByDefault: false, note: "In-plane values; much weaker through the thickness." }),
 };
@@ -76,21 +77,35 @@ const ALIASES: Record<string, string> = {
   "stainless steel": "Stainless 304",
   "stainless 304": "Stainless 304",
   "304": "Stainless 304",
+  "stainless 316": "Stainless 316",
+  "stainless steel 316": "Stainless 316",
+  "316": "Stainless 316",
+  "316l": "Stainless 316",
   brass: "Brass",
   fr4: "FR4",
   "fr-4": "FR4",
 };
 
+// longest first, so on a tie in strength the most specific name wins
+const LOOSE = Object.keys(ALIASES).sort((a, b) => b.length - a.length);
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** Properties for a material name; unknown names fall back to PLA and are marked assumed. */
 export function mechMaterial(name: string | undefined): MechMaterial {
   const raw = (name ?? "").trim();
-  if (MECH[raw]) return MECH[raw];
+  if (Object.hasOwn(MECH, raw)) return MECH[raw];
   const key = raw.toLowerCase();
-  const alias = ALIASES[key];
-  if (alias) return MECH[alias];
-  // loose match: "Brushed aluminium", "Anodised aluminum 6061", "Stainless steel 316"...
-  for (const [k, v] of Object.entries(ALIASES)) if (k.length > 3 && key.includes(k)) return MECH[v];
-  return { ...MECH.PLA, name: raw || "unknown", assumed: true, note: `No strength data for "${raw || "this material"}"; PLA values assumed.` };
+  if (Object.hasOwn(ALIASES, key)) return MECH[ALIASES[key]];
+  // loose match: "Brushed aluminium", "Black ABS", "316 stainless"... Short aliases (abs, pla, 304)
+  // only count as whole words, so "pa" does not match inside "paper". When several names match
+  // ("Stainless steel 316" holds steel, stainless and 316) the weakest wins, so the check errs safe.
+  let best: MechMaterial | null = null;
+  for (const k of LOOSE) {
+    const hit = k.length > 3 ? key.includes(k) : new RegExp(`(^|[^a-z0-9])${escape(k)}($|[^a-z0-9])`).test(key);
+    if (hit && (!best || MECH[ALIASES[k]].yield < best.yield)) best = MECH[ALIASES[k]];
+  }
+  if (best) return best;
+  return { ...MECH.PLA, name: raw || "unknown", assumed: true, note: `No strength data for "${raw || "this material"}"; PLA values assumed, so treat the result as a rough guide.` };
 }
 
 /**

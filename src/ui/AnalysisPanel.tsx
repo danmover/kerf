@@ -5,7 +5,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import { useDesign } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
-import { useAnalysis, showResults, runFine, safetyAway, modeText, type StructuralRun, type ResultField } from "../analysis/runtime";
+import { useAnalysis, showResults, runFine, type StructuralRun, type ResultField } from "../analysis/runtime";
+import { modeText, safetyAway, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec } from "../analysis/spec";
 import type { StructuralResult } from "../analysis/fe/structural";
 import type { DrivetrainResult } from "../analysis/drivetrain";
@@ -27,7 +28,7 @@ const v3 = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
 export function openAnalysis(label: string) {
   useView.setState({ dockTab: "analysis", dockOpen: true });
   useAnalysis.setState({ selected: label });
-  if (useAnalysis.getState().runs[label]?.result) showResults(label);
+  if (useAnalysis.getState().runs.get(label)?.result) showResults(label);
 }
 
 export function AnalysisPanel() {
@@ -45,18 +46,18 @@ export function AnalysisPanel() {
     <div className="an">
       <div className="an-head">
         {specs.map((a) => (
-          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs[a.label]} dt={drivetrain[a.label]} />
+          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} />
         ))}
         <div className="grow" />
-        {spec?.kind === "structural" && <FineButton spec={spec} run={runs[spec.label]} />}
-        {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs[spec.label] : undefined} dt={spec.kind === "drivetrain" ? drivetrain[spec.label] : undefined} />}
-        {spec?.kind === "structural" && <StructuralControls spec={spec} run={runs[spec.label]} />}
+        {spec?.kind === "structural" && <FineButton spec={spec} run={runs.get(spec.label)} />}
+        {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} />}
+        {spec?.kind === "structural" && <StructuralControls spec={spec} run={runs.get(spec.label)} />}
       </div>
       <div className="an-body">
         <AnimatePresence mode="wait" initial={false}>
           <motion.div key={spec?.label} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
-            {spec?.kind === "structural" && <StructuralView spec={spec} run={runs[spec.label]} />}
-            {spec?.kind === "drivetrain" && <DrivetrainView spec={spec} result={drivetrain[spec.label]} />}
+            {spec?.kind === "structural" && <StructuralView spec={spec} run={runs.get(spec.label)} />}
+            {spec?.kind === "drivetrain" && <DrivetrainView spec={spec} result={drivetrain.get(spec.label)} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -75,7 +76,7 @@ function Pick({ spec, active, run, dt }: { spec: AnalysisSpec; active: boolean; 
       val = "error";
     } else if (run?.result && run.status === "done") {
       const sf = run.result.minSafety.value;
-      status = sfStatus(sf, spec.safety);
+      status = structuralVerdict(spec, run.result);
       val = `SF ${sfText(sf)}`;
     } else val = run ? `${Math.round((run.frac ?? 0) * 100)}%` : "";
   } else if (dt) {
@@ -236,7 +237,7 @@ function ResultCards({ spec, r }: { spec: StructuralSpec; r: StructuralResult })
   };
   const on = (f: ResultField) => shown === spec.label && field === f;
   const sf = r.minSafety.value;
-  const st = sfStatus(sf, spec.safety);
+  const st = strengthVerdict(spec, r).status;
   const away = safetyAway(r);
   const dispStatus: Status | "" = spec.maxDeflection === undefined ? "" : r.maxDisp.value <= spec.maxDeflection ? "pass" : "fail";
   const sfBar = safetyColor(safetyT(sf, spec.safety)).map((c) => Math.round(c * 255)).join(",");
@@ -251,7 +252,7 @@ function ResultCards({ spec, r }: { spec: StructuralSpec; r: StructuralResult })
         </div>
         <div className="s">
           against {modeText(r, spec.cycles)}
-          {away !== null && ` · ${sfText(away)} a short way from the support or load`}
+          {away && ` · ${sfText(away.value)} a short way from the support or load`}
         </div>
         <div className="bar" style={{ background: `rgb(${sfBar})` }} />
       </button>

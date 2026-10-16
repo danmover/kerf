@@ -597,7 +597,9 @@ export class SceneController {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    const meshes = [...this.parts.values()].filter((p) => p.group.visible && p.removing === null && p.mat.opacity > 0.5).map((p) => p.mesh);
+    // parts drawn by an overlay (analysis results) are hidden but still pickable
+    const pickable = (p: PartObj) => p.group.visible || (this.replaced.has(p.id) && !this.display.hidden.has(p.id) && !p.part.hidden);
+    const meshes = [...this.parts.values()].filter((p) => pickable(p) && p.removing === null && p.mat.opacity > 0.5).map((p) => p.mesh);
     const hits = this.raycaster.intersectObjects(meshes, false);
     for (const h of hits) {
       if (this.section.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;

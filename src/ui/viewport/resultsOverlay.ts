@@ -127,6 +127,7 @@ export class ResultsOverlay implements SceneOverlay {
     this.uniforms.uMode.value = cfg.field === "safety" ? 1 : cfg.field === "strain" ? 2 : 0;
     if (fieldChanged || !this.filled) this.fill();
     this.uniforms.uScale.value = cfg.animate ? this.uniforms.uScale.value : cfg.scale;
+    if (!cfg.animate) for (const s of this.spots) s.scale.setScalar(s.userData.base);
     for (const p of this.parts) p.ghost.visible = cfg.scale > 0;
     this.placeSpotLabels();
   }
@@ -162,10 +163,12 @@ export class ResultsOverlay implements SceneOverlay {
       this.uniforms.uScale.value = this.cfg.scale;
       active = true;
     }
-    // hot spot rings breathe
-    const pulse = 1 + 0.18 * Math.sin(now / 260);
-    for (const s of this.spots) s.scale.setScalar(s.userData.base * pulse);
-    if (this.spots.length) active = true;
+    // hot spot rings breathe, only while animation is on (it is off with reduced motion)
+    if (this.cfg.animate && this.spots.length) {
+      const pulse = 1 + 0.18 * Math.sin(now / 260);
+      for (const s of this.spots) s.scale.setScalar(s.userData.base * pulse);
+      active = true;
+    }
     return active;
   }
 

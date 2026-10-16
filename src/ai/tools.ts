@@ -215,7 +215,7 @@ export function modelSummary(m: Model | null): string {
   }
   if (m.analyses.length) {
     const a = useAnalysis.getState();
-    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs[x.label], a.drivetrain[x.label])}`).join("\n"));
+    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label))}`).join("\n"));
   }
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
@@ -377,25 +377,25 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
         };
       const targets = p.data.label ? all.filter((a) => a.label === p.data.label) : all;
       if (!targets.length) return { isError: true, content: `No analysis is labelled "${p.data.label}". Analyses: ${all.map((a) => `"${a.label}"`).join(", ")}.`, card: { title: "Analysis not found", status: "error" } };
-      if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs[a.label]?.fine) runFine(a.label);
+      if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
       await whenAnalyzed();
       const st = useAnalysis.getState();
-      const text = targets.map((a) => (a.kind === "structural" ? structuralSummary(a, st.runs[a.label]) : drivetrainSummary(a, st.drivetrain[a.label]))).join("\n\n");
+      const text = targets.map((a) => (a.kind === "structural" ? structuralSummary(a, st.runs.get(a.label)) : drivetrainSummary(a, st.drivetrain.get(a.label)))).join("\n\n");
       const verdicts = targets.map((a) => {
         if (a.kind === "drivetrain") {
-          const r = st.drivetrain[a.label];
+          const r = st.drivetrain.get(a.label);
           return !r || r.error || r.items.some((i) => i.status === "fail") ? "fail" : r.items.some((i) => i.status === "warn") ? "warn" : "pass";
         }
-        const r = st.runs[a.label];
+        const r = st.runs.get(a.label);
         return r?.result && r.status === "done" ? structuralVerdict(a, r.result) : "fail";
       });
-      const firstShown = targets.find((a) => a.kind === "structural" && st.runs[a.label]?.result);
+      const firstShown = targets.find((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
       if (firstShown) showResults(firstShown.label);
       const fails = verdicts.filter((v) => v === "fail").length;
       let title: string;
       if (targets.length === 1) {
         const a = targets[0];
-        const r = a.kind === "structural" ? st.runs[a.label]?.result : undefined;
+        const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
         title = r ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.safety, 1)})` : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
       } else title = fails ? `${fails} of ${targets.length} analyses failing` : `All ${targets.length} analyses pass`;
       return {
@@ -413,7 +413,7 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
       if (p.data.results) {
         await whenAnalyzed(60_000);
         const st = useAnalysis.getState();
-        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs[a.label]?.result);
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
         const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === st.shown) ?? specs[0];
         if (!pick) return { isError: true, content: "No structural analysis has results to draw. Add an analysis block and call run_analysis first.", card: { title: "No results to show", status: "error" } };
         if (p.data.analysis && pick.label !== p.data.analysis) resultNote = ` (no results for "${p.data.analysis}")`;
@@ -422,7 +422,7 @@ export async function runTool(name: string, input: unknown): Promise<ToolOutcome
         // let the viewport attach the overlay before capturing
         await new Promise((r) => setTimeout(r, 120));
         const fieldText = { stress: "von Mises stress (blue low, red high)", safety: "factor of safety (red below 1, amber below the target, green to blue above)", disp: "deflection (blue none, red most)", strain: "principal strain (blue compression, red tension)" }[p.data.results];
-        resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed supports (spheres are rollers), pulsing rings mark hot spots`;
+        resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed supports (spheres are rollers), rings mark hot spots`;
       }
       const ids = expandNames(p.data.highlight ?? []);
       const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, overlays: !!p.data.results });

@@ -22,7 +22,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
   const fails = report?.counts.fail ?? 0;
   const analyses = model?.analyses.length ?? 0;
   const analysisFails = report?.items.filter((i) => i.category === "analysis" && i.status === "fail").length ?? 0;
-  const analysing = useAnalysis((s) => Object.values(s.runs).some((r) => r.status === "running" || r.status === "waiting"));
+  const analysing = useAnalysis((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
   const set = (t: DockTab) => useView.setState({ dockTab: t, dockOpen: true });
   const tabs: { id: DockTab; label: string; icon: JSX.Element; count?: number; bad?: boolean }[] = [
     { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, count: errors.length || undefined, bad: errors.length > 0 },

@@ -54,7 +54,7 @@ describe("analysis blocks", () => {
   });
 
   it("converts force, torque, pressure and time units", () => {
-    const m = evaluate(`design "u"\nparam a = 2kN\nparam b = 3Nm\nparam c = 1bar\nparam d = 100psi\nparam e = 2GPa\nparam f = 5000h\nparam g = 10lbf`);
+    const m = evaluate(`design "u"\nparam a = 2kN\nparam b = 3Nm\nparam c = 1bar\nparam d = 100psi\nparam e = 2GPa\nparam f = 5000h\nparam g = 10lbf\nparam h = 5kgf\nparam k = 5 * 9.81N`);
     const v = Object.fromEntries(m.params.map((p) => [p.name, p.value as number]));
     expect(v.a).toBe(2000);
     expect(v.b).toBe(3000);
@@ -63,6 +63,9 @@ describe("analysis blocks", () => {
     expect(v.e).toBe(2000);
     expect(v.f).toBe(5000);
     expect(v.g).toBeCloseTo(44.48, 2);
+    // the weight of 5 kg, written either way
+    expect(v.h).toBeCloseTo(49.03, 2);
+    expect(v.k).toBeCloseTo(49.05, 2);
   });
 
   it("lets analysis functions coexist with parameters of the same name", () => {
@@ -93,6 +96,10 @@ describe("analysis blocks", () => {
     expect(errors(bracket + `analysis "a" {\n  fix: plate\n  load: force(face(arm, +Y), (0, 0, -1))\n}`)[0]).toMatch(/fix: should be a region/);
     expect(errors(bracket + `analysis "a" {\n  fix: face(plate, -Y)\n  load: force(face(arm, +Y), (0, 0, -1))\n}\nanalysis "a" {\n  fix: face(plate, -Y)\n  load: force(face(arm, +Y), (0, 0, -1))\n}`)[0]).toMatch(/already an analysis called "a"/);
     expect(errors(bracket + `analysis "a" {\n  fix: face(plate, -Y)\n  load: force(face(arm, +Y), (0, 0, -1))\n  speed: 100rpm\n}`)[0]).toMatch(/belongs to a drivetrain analysis/);
+    expect(errors(bracket + `analysis "a" {\n  fix: face(plate, -Y)\n  load: force(face(arm, +Y), (0, 0, -1))\n  resolution: 0.05mm\n}`)[0]).toMatch(/at least 0\.1mm/);
+    expect(errors(bracket + `analysis "a" {\n  fix: face(plate, -Y)\n  load: force(face(arm, +Y), (0, 0, -1))\n  resolution: 0.1mm\n}`)).toEqual([]);
+    const many = Array.from({ length: 201 }, (_, i) => `  fix: zone(at: (${(i % 60) - 30}, 0, 0), r: 0.5)`).join("\n");
+    expect(errors(bracket + `analysis "a" {\n${many}\n  load: force(face(arm, +Y), (0, 0, -1))\n}`)[0]).toMatch(/at most 200 supports and loads/);
   });
 
   it("describes a drivetrain duty", () => {

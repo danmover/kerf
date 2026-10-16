@@ -14,6 +14,7 @@ import { mechMaterial, type MechMaterial } from "./materials";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, StructuralInput, StructuralResult } from "./fe/structural";
+import { modeText, stiffnessVerdict, strengthVerdict } from "./summary";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
 export type ResultField = "stress" | "safety" | "disp" | "strain";
@@ -42,8 +43,9 @@ export interface StructuralRun {
 }
 
 interface AnalysisState {
-  runs: Record<string, StructuralRun>;
-  drivetrain: Record<string, DrivetrainResult>;
+  /** keyed by analysis label (labels are the user's text, so a Map rather than an object) */
+  runs: Map<string, StructuralRun>;
+  drivetrain: Map<string, DrivetrainResult>;
   /** analysis whose results are drawn on the model */
   shown: string | null;
   /** analysis open in the analysis tab */
@@ -58,8 +60,8 @@ interface AnalysisState {
 }
 
 export const useAnalysis = create<AnalysisState>(() => ({
-  runs: {},
-  drivetrain: {},
+  runs: new Map(),
+  drivetrain: new Map(),
   shown: null,
   selected: null,
   field: "stress",
@@ -83,12 +85,33 @@ let worker: Worker | null = null;
 let current: Job | null = null;
 let queue: Job[] = [];
 let nextId = 0;
+let deadline: ReturnType<typeof setTimeout> | null = null;
+/** a run that takes longer than this is stopped, so one runaway analysis cannot hold up the others */
+export const RUN_TIME_LIMIT_MS = 180_000;
 const fineWanted = new Map<string, string>(); // label -> base key the fine run was asked for
 
 function patchRun(label: string, patch: Partial<StructuralRun>) {
-  const r = aGet().runs[label];
+  const r = aGet().runs.get(label);
   if (!r) return;
-  aSet({ runs: { ...aGet().runs, [label]: { ...r, ...patch } } });
+  aSet({ runs: new Map(aGet().runs).set(label, { ...r, ...patch }) });
+}
+
+/** Stop the worker and whatever it is running. */
+function stopWorker() {
+  if (deadline) clearTimeout(deadline);
+  deadline = null;
+  worker?.terminate();
+  worker = null;
+  current = null;
+}
+
+/** The current run ended without a result: drop any older result too, since it no longer matches the design. */
+function failCurrent(error: string, setup = false) {
+  const job = current;
+  stopWorker();
+  if (job) patchRun(job.label, { status: "error", error, setup, result: undefined, stale: false });
+  remerge();
+  pump();
 }
 
 function ensureWorker(): Worker {
@@ -99,27 +122,23 @@ function ensureWorker(): Worker {
     if (!current || msg.id !== current.id) return;
     const { label } = current;
     if (msg.type === "progress") {
-      const r = aGet().runs[label];
+      const r = aGet().runs.get(label);
       if (!r) return;
       const trace = msg.iter !== undefined && msg.residual !== undefined ? [...r.trace.slice(0, msg.iter - 1), msg.residual] : r.trace;
       patchRun(label, { stage: msg.stage, frac: msg.frac, iter: msg.iter, residual: msg.residual, trace });
       return;
     }
+    if (msg.type === "error") return failCurrent(msg.message, !!msg.setup);
+    if (deadline) clearTimeout(deadline);
+    deadline = null;
     current = null;
-    if (msg.type === "done") patchRun(label, { status: "done", result: msg.result, stale: false, error: undefined, setup: undefined, frac: 1, stage: "Done", trace: msg.result.solve.history });
-    else patchRun(label, { status: "error", error: msg.message, setup: msg.setup, stale: false, result: msg.setup ? undefined : aGet().runs[label]?.result });
+    patchRun(label, { status: "done", result: msg.result, stale: false, error: undefined, setup: undefined, frac: 1, stage: "Done", trace: msg.result.solve.history });
     remerge();
     pump();
   };
   w.onerror = (ev) => {
     ev.preventDefault();
-    const job = current;
-    current = null;
-    w.terminate();
-    worker = null;
-    if (job) patchRun(job.label, { status: "error", error: "The analysis stopped unexpectedly, most likely out of memory. Try a coarser resolution: \"draft\".", setup: false });
-    remerge();
-    pump();
+    failCurrent('The analysis stopped unexpectedly, most likely out of memory. Try a coarser resolution: "draft".');
   };
   worker = w;
   return w;
@@ -132,26 +151,23 @@ function pump() {
   patchRun(job.label, { status: "running", startedAt: performance.now(), stage: "Meshing", frac: 0, trace: [] });
   const transfer = job.input.parts.flatMap((p) => [p.mesh.positions.buffer, p.mesh.indices.buffer, ...(p.normals ? [p.normals.buffer] : [])]) as ArrayBuffer[];
   ensureWorker().postMessage({ id: job.id, input: job.input } satisfies FeaRequest, transfer);
+  deadline = setTimeout(() => {
+    if (current === job) failCurrent(`The analysis took longer than ${RUN_TIME_LIMIT_MS / 60_000} minutes and was stopped. Try a coarser resolution, such as "draft", or analyse fewer parts at once.`);
+  }, RUN_TIME_LIMIT_MS);
 }
 
 function cancel(label: string) {
   queue = queue.filter((j) => j.label !== label);
-  if (current?.label === label) {
-    worker?.terminate();
-    worker = null;
-    current = null;
-  }
+  if (current?.label === label) stopWorker();
 }
 
 // ---------- preparing a run ----------
 
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
-function prepare(model: Model, spec: StructuralSpec, fine: boolean, buildErrors: Map<string, string>): { key: string; input?: StructuralInput; error?: string } | null {
-  const parts = model.parts.filter((p) => spec.parts.includes(p.name));
-  const key = inputKey(spec, parts, fine);
-  if (!parts.length) return { key, error: `None of ${spec.parts.join(", ")} has geometry to analyse.` };
+function prepare(spec: StructuralSpec, parts: EvalPart[], fine: boolean, buildErrors: Map<string, string>): { input?: StructuralInput; error?: string } | null {
+  if (!parts.length) return { error: `None of ${spec.parts.join(", ")} has geometry to analyse.` };
   const broken = parts.find((p) => buildErrors.has(p.hash));
-  if (broken) return { key, error: `${broken.label} did not build, so it cannot be analysed yet.` };
+  if (broken) return { error: `${broken.label} did not build, so it cannot be analysed yet.` };
   const fea: FeaPart[] = [];
   const mats: MechMaterial[] = [];
   const matIndex = new Map<string, number>();
@@ -203,7 +219,7 @@ function prepare(model: Model, spec: StructuralSpec, fine: boolean, buildErrors:
     safety: spec.safety,
     maxDeflection: spec.maxDeflection,
   };
-  return { key, input };
+  return { input };
 }
 
 function inputKey(spec: StructuralSpec, parts: EvalPart[], fine: boolean): string {
@@ -224,32 +240,33 @@ function schedule(state: DesignState) {
   scheduledRev = state.reportRev;
   const specs = model.analyses.filter((a): a is StructuralSpec => a.kind === "structural");
   const labels = new Set(specs.map((s) => s.label));
-  const runs = { ...aGet().runs };
+  const runs = new Map(aGet().runs);
   let shown = aGet().shown;
-  for (const label of Object.keys(runs)) {
+  for (const label of runs.keys()) {
     if (labels.has(label)) continue;
     cancel(label);
-    delete runs[label];
+    runs.delete(label);
     if (shown === label) shown = null;
   }
   for (const spec of specs) {
-    const prevFine = fineWanted.get(spec.label);
-    const probe = prepare(model, spec, false, state.buildErrors);
-    if (!probe) continue;
+    // compare input keys first: meshes are only copied into world space when something changed
+    const parts = model.parts.filter((p) => spec.parts.includes(p.name));
+    const plainKey = inputKey(spec, parts, false);
     // a fine run stays fine until the inputs change
-    const fine = prevFine !== undefined && prevFine === baseKey(probe.key);
+    const fine = fineWanted.get(spec.label) === baseKey(plainKey);
     if (!fine) fineWanted.delete(spec.label);
-    const prep = fine ? prepare(model, spec, true, state.buildErrors) : probe;
+    const key = fine ? inputKey(spec, parts, true) : plainKey;
+    const run = runs.get(spec.label);
+    if (run && run.key === key) continue;
+    const prep = prepare(spec, parts, fine, state.buildErrors);
     if (!prep) continue;
-    const run = runs[spec.label];
-    if (run && run.key === prep.key) continue;
     cancel(spec.label);
     const resolution = fine ? "fine" : typeof spec.resolution === "string" ? spec.resolution : `${fmtNum(spec.resolution.h)} mm`;
-    const base: StructuralRun = { label: spec.label, key: prep.key, fine, status: "waiting", stage: "Waiting", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() };
-    if (prep.error) runs[spec.label] = { ...base, status: "error", error: prep.error, setup: true, result: undefined, stale: false };
+    const base: StructuralRun = { label: spec.label, key, fine, status: "waiting", stage: "Waiting", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() };
+    if (prep.error) runs.set(spec.label, { ...base, status: "error", error: prep.error, setup: true, result: undefined, stale: false });
     else {
-      runs[spec.label] = base;
-      queue.push({ id: ++nextId, label: spec.label, key: prep.key, input: prep.input! });
+      runs.set(spec.label, base);
+      queue.push({ id: ++nextId, label: spec.label, key, input: prep.input! });
     }
   }
   aSet({ runs, shown });
@@ -258,12 +275,12 @@ function schedule(state: DesignState) {
 
 /** Re-run one analysis at the fine resolution. */
 export function runFine(label: string) {
-  const run = aGet().runs[label];
+  const run = aGet().runs.get(label);
   if (!run) return;
   fineWanted.set(label, baseKey(run.key));
   const s = useDesign.getState();
   // force a fresh key comparison
-  aSet({ runs: { ...aGet().runs, [label]: { ...run, key: "" } } });
+  aSet({ runs: new Map(aGet().runs).set(label, { ...run, key: "" }) });
   schedule(s);
   remerge();
 }
@@ -272,12 +289,12 @@ export function runFine(label: string) {
 
 const ANALYSIS_ITEM = /^(fea|drive):/;
 const merged = new WeakSet<CheckReport>();
-let drivetrainCache: { model: Model; results: Record<string, DrivetrainResult> } | null = null;
+let drivetrainCache: { model: Model; results: Map<string, DrivetrainResult> } | null = null;
 
-function drivetrainResults(model: Model): Record<string, DrivetrainResult> {
+function drivetrainResults(model: Model): Map<string, DrivetrainResult> {
   if (drivetrainCache?.model === model) return drivetrainCache.results;
-  const results: Record<string, DrivetrainResult> = {};
-  for (const a of model.analyses) if (a.kind === "drivetrain") results[a.label] = runDrivetrain(model, a as DrivetrainSpec);
+  const results = new Map<string, DrivetrainResult>();
+  for (const a of model.analyses) if (a.kind === "drivetrain") results.set(a.label, runDrivetrain(model, a as DrivetrainSpec));
   drivetrainCache = { model, results };
   aSet({ drivetrain: results });
   return results;
@@ -286,9 +303,9 @@ function drivetrainResults(model: Model): Record<string, DrivetrainResult> {
 export function withAnalyses(report: CheckReport, model: Model): CheckReport {
   let items = report.items.filter((i) => !ANALYSIS_ITEM.test(i.id));
   const dt = drivetrainResults(model);
-  if (Object.keys(dt).length) items = items.filter((i) => i.id !== "analysis:loads");
-  for (const r of Object.values(dt)) items.push(...r.items);
-  for (const a of model.analyses) if (a.kind === "structural") items.push(...structuralItems(a, aGet().runs[a.label], model));
+  if (dt.size) items = items.filter((i) => i.id !== "analysis:loads");
+  for (const r of dt.values()) items.push(...r.items);
+  for (const a of model.analyses) if (a.kind === "structural") items.push(...structuralItems(a, aGet().runs.get(a.label), model));
   const out = finishReport(items, report.ms);
   merged.add(out);
   return out;
@@ -300,20 +317,6 @@ function remerge() {
 }
 
 const fmtP = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
-
-export function modeText(r: StructuralResult, cycles?: number): string {
-  const m = r.minSafety;
-  if (m.mode === "layers") return `strength between print layers of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
-  if (m.mode === "fatigue") return `fatigue strength of ${m.material} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
-  return `yield strength of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
-}
-
-/** Safety factor judged a short way from an idealised support or load point, when the peak sits right on one. */
-export function safetyAway(r: StructuralResult): number | null {
-  const away = r.maxStress.away;
-  if (!r.maxStress.nearBoundary || !away || away.value <= 0) return null;
-  return r.minSafety.value * (r.maxStress.value / away.value);
-}
 
 function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, model: Model): CheckItem[] {
   const parts = model.parts.filter((p) => spec.parts.includes(p.name)).map((p) => p.id);
@@ -328,13 +331,7 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const r = run.result;
   const out: CheckItem[] = [];
   const sf = r.minSafety.value;
-  const away = safetyAway(r);
-  let status: CheckItem["status"] = sf >= spec.safety ? "pass" : sf >= 1 ? "warn" : "fail";
-  let note = "";
-  if (status !== "pass" && away !== null && away >= spec.safety) {
-    status = "warn";
-    note = ` The peak sits right at a support or load, where the idealised fixing exaggerates stress; a short way off the safety factor is ${fmtNum(away, 2)}. Check how that area is really held.`;
-  }
+  const { status, note } = strengthVerdict(spec, r);
   out.push({
     ...base,
     id: id("strength"),
@@ -347,14 +344,14 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
       note,
   });
   if (spec.maxDeflection !== undefined) {
-    const ok = r.maxDisp.value <= spec.maxDeflection;
+    const status = stiffnessVerdict(spec, r)!;
     out.push({
       ...base,
       id: id("stiffness"),
-      status: ok ? "pass" : "fail",
+      status,
       margin: spec.maxDeflection - r.maxDisp.value,
       title: `Stiffness: ${spec.label}`,
-      detail: `Largest deflection ${fmtNum(r.maxDisp.value, 3)} mm at ${fmtP(r.maxDisp.at)}, limit ${fmtNum(spec.maxDeflection, 3)} mm.`,
+      detail: `Largest deflection ${fmtNum(r.maxDisp.value, 3)} mm at ${fmtP(r.maxDisp.at)}, limit ${fmtNum(spec.maxDeflection, 3)} mm.${status === "warn" ? " The result is in doubt; the strength check says why." : ""}`,
     });
   }
   if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
@@ -384,7 +381,7 @@ export function whenAnalyzed(timeoutMs = 180_000): Promise<void> {
     const d = useDesign.getState();
     if (!d.model || d.reportRev < d.rev) return false;
     if (scheduledRev < d.reportRev) return false;
-    return d.model.analyses.every((a) => a.kind !== "structural" || ["done", "error"].includes(aGet().runs[a.label]?.status ?? ""));
+    return d.model.analyses.every((a) => a.kind !== "structural" || ["done", "error"].includes(aGet().runs.get(a.label)?.status ?? ""));
   };
   return new Promise((resolve) => {
     if (done()) return resolve();

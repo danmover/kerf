@@ -21,7 +21,11 @@ import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
 import type { AnalysisSpec, LoadSpec, RegionSpec, Resolution, SupportSpec, V3 } from "./spec";
-import { mechMaterial } from "./materials";
+import { MECH, mechMaterial } from "./materials";
+import { MIN_ELEMENT_SIZE } from "./spec";
+
+/** supports plus loads in one analysis: each one is a pass over the model's surface */
+export const MAX_BOUNDARY_ITEMS = 200;
 
 export const STRUCTURAL_PROPS = ["parts", "part", "material", "fix", "load", "gravity", "accel", "printed", "build", "cycles", "safety", "max_deflection", "resolution"];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
@@ -247,6 +251,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   let accel: V3 | undefined;
   if (accelP) accel = vec(accelP, "accel: (in g)");
   else if (gravityOn) accel = [0, 0, -1];
+  if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
   if (!supports.length) fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point.', span);
   if (!loads.length && !accel) fail("Add load: force(...), pressure(...) or torque(...), or gravity, so there is something to analyse.", span);
 
@@ -255,7 +260,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   if (matP) {
     if (typeof matP.value !== "string") fail("material: should be a material name in quotes", matP.span);
     material = matP.value;
-    if (mechMaterial(material).assumed) fail(`material: no strength data for "${material}". Known: PLA, PETG, ABS, ASA, Nylon, POM, Aluminum 6061, Steel, Stainless 304, Brass, FR4.`, matP.span);
+    if (mechMaterial(material).assumed) fail(`material: no strength data for "${material}". Known: ${Object.keys(MECH).join(", ")}.`, matP.span);
   }
 
   const buildP = one("build");
@@ -266,7 +271,8 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   let resolution: Resolution = "standard";
   if (resP) {
     if (resP.value === "draft" || resP.value === "standard" || resP.value === "fine") resolution = resP.value;
-    else if (typeof resP.value === "number" && resP.value > 0) resolution = { h: resP.value };
+    else if (typeof resP.value === "number" && resP.value >= MIN_ELEMENT_SIZE) resolution = { h: resP.value };
+    else if (typeof resP.value === "number") fail(`resolution: the element size must be at least ${MIN_ELEMENT_SIZE}mm`, resP.span);
     else fail('resolution: should be "draft", "standard", "fine" or an element size like 0.8mm', resP.span);
   }
   const cycles = num("cycles", 0);

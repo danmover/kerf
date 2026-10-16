@@ -70,6 +70,12 @@ export interface DrivetrainSpec {
 
 export type AnalysisSpec = StructuralSpec | DrivetrainSpec;
 
+/** the smallest element size accepted from resolution:, in mm */
+export const MIN_ELEMENT_SIZE = 0.1;
+
+/** above this relative residual a solve is not trusted to pass or fail anything */
+export const UNRELIABLE_RESIDUAL = 1e-3;
+
 export const RESOLUTION_TARGET: Record<"draft" | "standard" | "fine", number> = {
   draft: 8_000,
   standard: 30_000,

@@ -1,9 +1,9 @@
 // Plain-text summaries of analysis results for the design assistant.
 
 import { fmtNum } from "../lang/values";
-import type { StructuralResult } from "./fe/structural";
+import type { SafetyAt, StructuralResult } from "./fe/structural";
 import type { DrivetrainResult } from "./drivetrain";
-import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec } from "./spec";
+import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec } from "./spec";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
 export interface RunLike {
@@ -17,28 +17,62 @@ export interface RunLike {
 const p3 = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
 const sf = (v: number) => (!Number.isFinite(v) || v >= 100 ? "over 100" : fmtNum(v, 2));
 
-/** Lowest safety factor a short way off a support or load, when the peak sits right on one. */
-function awaySafety(r: StructuralResult): number | null {
-  const a = r.maxStress.away;
-  if (!r.maxStress.nearBoundary || !a || a.value <= 0) return null;
-  return r.minSafety.value * (r.maxStress.value / a.value);
+type Verdict = "pass" | "warn" | "fail";
+
+/** What a safety factor is judged against; the overall lowest one unless another is given. */
+export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.minSafety): string {
+  if (m.mode === "layers") return `strength between print layers of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
+  if (m.mode === "fatigue") return `fatigue strength of ${m.material} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
+  return `yield strength of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
 }
 
-function basisText(r: StructuralResult, cycles?: number): string {
-  const m = r.minSafety;
-  if (m.mode === "layers") return `the strength between print layers of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
-  if (m.mode === "fatigue") return `the fatigue strength of ${m.material} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
-  return `the yield strength of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
+/** The lowest safety factor a short way from idealised supports and loads, when the overall lowest sits right on one. */
+export function safetyAway(r: StructuralResult): SafetyAt | null {
+  return r.minSafety.nearBoundary ? r.minSafety.away : null;
+}
+
+/** Reasons not to trust a result to pass: materials without strength data, or a solve that did not converge. */
+export function doubts(r: StructuralResult): { assumed: string[]; unreliable: boolean } {
+  return { assumed: [...new Set(r.materials.filter((m) => m.assumed).map((m) => m.name))], unreliable: r.solve.residual > UNRELIABLE_RESIDUAL };
+}
+
+/**
+ * Strength verdict from the lowest safety factor. A low value right at a support or load is only a
+ * warning when the part passes a short way off. Doubtful results never pass, and an unconverged
+ * solve fails nothing either.
+ */
+export function strengthVerdict(spec: StructuralSpec, r: StructuralResult): { status: Verdict; note: string } {
+  const s = r.minSafety.value;
+  let status: Verdict = s >= spec.safety ? "pass" : s >= 1 ? "warn" : "fail";
+  let note = "";
+  const away = safetyAway(r);
+  if (status !== "pass" && away && away.value >= spec.safety) {
+    status = "warn";
+    note += ` The lowest value sits right at a support or load, where the idealised fixing exaggerates stress; a short way off the lowest safety factor is ${sf(away.value)} at ${p3(away.at)}, against the ${modeText(r, spec.cycles, away)}. Check how that area is really held.`;
+  }
+  const d = doubts(r);
+  if (d.unreliable) {
+    status = "warn";
+    note += ` The solver did not converge (relative residual ${r.solve.residual.toExponential(1)}), so this is neither a pass nor a fail.`;
+  } else if (d.assumed.length && status === "pass") {
+    status = "warn";
+    note += ` There is no strength data for ${d.assumed.join(", ")}, so PLA values were assumed; set a known material to get a real pass.`;
+  }
+  return { status, note };
+}
+
+/** Deflection against max_deflection:, null when there is no limit. Same doubts as for strength. */
+export function stiffnessVerdict(spec: StructuralSpec, r: StructuralResult): Verdict | null {
+  if (spec.maxDeflection === undefined) return null;
+  const ok = r.maxDisp.value <= spec.maxDeflection;
+  const d = doubts(r);
+  return d.unreliable || (ok && d.assumed.length) ? "warn" : ok ? "pass" : "fail";
 }
 
 /** Pass, warn or fail for a structural result, the same way the checks judge it. */
-export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): "pass" | "warn" | "fail" {
-  const s = r.minSafety.value;
-  const strength = s >= spec.safety ? "pass" : s >= 1 ? "warn" : "fail";
-  const away = awaySafety(r);
-  const judged = strength !== "pass" && away !== null && away >= spec.safety ? "warn" : strength;
-  if (spec.maxDeflection !== undefined && r.maxDisp.value > spec.maxDeflection) return "fail";
-  return judged;
+export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Verdict {
+  const all = [strengthVerdict(spec, r).status, stiffnessVerdict(spec, r) ?? "pass"];
+  return all.includes("fail") ? "fail" : all.includes("warn") ? "warn" : "pass";
 }
 
 export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined): string {
@@ -53,14 +87,11 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   const lines = [
     `${head}: ${structuralVerdict(spec, r).toUpperCase()}.`,
     `Model: ${mats}${printed ? `, printed with layers stacked along ${p3(spec.buildDir)}` : ""}; ${run.resolution} resolution, ${r.mesh.elements.toLocaleString("en")} elements of ${r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm; solved in ${fmtNum(r.solve.ms.total / 1000, 1)} s (${r.solve.converged ? "converged" : "NOT fully converged"} in ${r.solve.iterations} iterations).`,
-    `Lowest safety factor ${sf(r.minSafety.value)} at ${p3(r.minSafety.at)}, judged against ${basisText(r, spec.cycles)}; target ${fmtNum(spec.safety, 2)}.`,
+    `Lowest safety factor ${sf(r.minSafety.value)} at ${p3(r.minSafety.at)}, judged against the ${modeText(r, spec.cycles)}; target ${fmtNum(spec.safety, 2)}.${strengthVerdict(spec, r).note}`,
   ];
-  const away = awaySafety(r);
   lines.push(
     `Peak von Mises stress ${fmtNum(r.maxStress.value, 2)} MPa near ${p3(r.maxStress.at)}.` +
-      (away !== null && r.maxStress.away
-        ? ` The peak sits right at a support or load, where the idealised fixing exaggerates stress; a short way off it is ${fmtNum(r.maxStress.away.value, 2)} MPa (safety factor ${sf(away)}).`
-        : ""),
+      (r.maxStress.nearBoundary && r.maxStress.away ? ` It sits right at a support or load; a short way off the peak is ${fmtNum(r.maxStress.away.value, 2)} MPa.` : ""),
   );
   lines.push(`Largest deflection ${fmtNum(r.maxDisp.value, 4)} mm at ${p3(r.maxDisp.at)}${spec.maxDeflection !== undefined ? ` (limit ${fmtNum(spec.maxDeflection, 3)} mm: ${r.maxDisp.value <= spec.maxDeflection ? "passes" : "FAILS"})` : ""}.`);
   lines.push(`Largest principal strain ${fmtNum(Math.abs(r.maxStrain.value) * 100, 4)} % (${fmtNum(Math.abs(r.maxStrain.value) * 1e6, 0)} microstrain). Mass ${fmtNum(r.mass, 2)} g.`);

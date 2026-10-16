@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { runStructural, type StructuralInput } from "../src/analysis/fe/structural";
 import type { TriMesh, V3 } from "../src/analysis/fe/voxel";
 import { mechMaterial } from "../src/analysis/materials";
-import { structuralSummary, structuralVerdict, analysisLine } from "../src/analysis/summary";
+import { structuralSummary, structuralVerdict, strengthVerdict, stiffnessVerdict, analysisLine } from "../src/analysis/summary";
 import type { StructuralSpec } from "../src/analysis/spec";
 
 function box(lo: V3, hi: V3): TriMesh {
@@ -63,5 +63,38 @@ describe("analysis summaries for the assistant", () => {
   it("reports set-up errors as something to fix", () => {
     const text = structuralSummary(spec, { status: "error", error: "Nothing holds the part along Z.", setup: true, resolution: "draft" });
     expect(text).toMatch(/cannot be solved as written\. Nothing holds the part along Z\. Fix the analysis block/);
+  });
+});
+
+describe("verdicts that should not pass", () => {
+  const r = runStructural({ ...input, maxDeflection: undefined });
+  const free = { ...spec, maxDeflection: undefined };
+
+  it("passes a known material that converged", () => {
+    expect(strengthVerdict(free, r).status).toBe("pass");
+  });
+
+  it("caps an assumed material at a warning", () => {
+    const assumed = { ...r, materials: r.materials.map((m) => ({ ...m, assumed: true, name: "Oak" })) };
+    const v = strengthVerdict(free, assumed);
+    expect(v.status).toBe("warn");
+    expect(v.note).toMatch(/no strength data for Oak/);
+    expect(structuralVerdict(free, assumed)).toBe("warn");
+  });
+
+  it("neither passes nor fails an unconverged solve", () => {
+    const loose = { ...r, solve: { ...r.solve, residual: 0.05 } };
+    expect(strengthVerdict(free, loose).status).toBe("warn");
+    expect(stiffnessVerdict({ ...spec, maxDeflection: 0.001 }, loose)).toBe("warn");
+    expect(structuralVerdict({ ...spec, maxDeflection: 0.001 }, loose)).toBe("warn");
+  });
+
+  it("only softens a low safety factor at a support when it holds a short way off", () => {
+    const low = { ...r.minSafety, value: 0.8 };
+    const atWall = { ...r, minSafety: { ...low, nearBoundary: true, away: { ...low, value: 3, at: [20, 5, 5] as [number, number, number] } } };
+    expect(strengthVerdict(free, atWall).status).toBe("warn");
+    expect(strengthVerdict(free, atWall).note).toMatch(/a short way off the lowest safety factor is 3/);
+    const weakOff = { ...atWall, minSafety: { ...atWall.minSafety, away: { ...low, value: 1.2 } } };
+    expect(strengthVerdict(free, weakOff).status).toBe("fail");
   });
 });

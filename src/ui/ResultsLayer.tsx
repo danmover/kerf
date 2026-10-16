@@ -23,8 +23,16 @@ export const FIELD_INFO: Record<ResultField, { label: string; short: string; uni
 
 export const FIELDS: ResultField[] = ["stress", "safety", "disp", "strain"];
 
-/** Diagonal of the analysed parts. */
+const sizes = new WeakMap<StructuralResult, number>();
+
+/** Diagonal of the analysed parts (worked out once per result: it walks every vertex). */
 export function resultSize(r: StructuralResult): number {
+  let d = sizes.get(r);
+  if (d === undefined) sizes.set(r, (d = diagonal(r)));
+  return d;
+}
+
+function diagonal(r: StructuralResult): number {
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
   for (const p of r.parts)
@@ -50,7 +58,7 @@ export function deformScale(r: StructuralResult, deform: number, trueScale: bool
 
 export function ResultsLayer({ scene }: { scene: SceneController }) {
   const shown = useAnalysis((s) => s.shown);
-  const run = useAnalysis((s) => (s.shown ? s.runs[s.shown] : undefined));
+  const run = useAnalysis((s) => (s.shown ? s.runs.get(s.shown) : undefined));
   const field = useAnalysis((s) => s.field);
   const deform = useAnalysis((s) => s.deform);
   const trueScale = useAnalysis((s) => s.trueScale);
