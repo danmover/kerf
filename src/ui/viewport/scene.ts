@@ -513,6 +513,16 @@ export class SceneController {
     this.moveCamera(new THREE.Vector3(...s.pos), new THREE.Vector3(...s.target), 600);
   }
 
+  /** Slide the camera and its target together (a camera that follows something). */
+  panBy(d: [number, number, number]) {
+    if (this.camAnim) return;
+    const v = new THREE.Vector3(...d);
+    this.camera.position.add(v);
+    this.controls.target.add(v);
+    this.controls.update();
+    this.changed = true;
+  }
+
   /** Swing the camera to a position and target (at once with reduced motion). */
   private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
     if (this.display.reduceMotion) {

@@ -79,6 +79,8 @@ export class SimOverlay implements SceneOverlay {
   private trail: { mesh: THREE.Mesh; rings: number; samples: number[]; seg: number } | null = null;
   private grains: { pts: THREE.Points; data: Float32Array; motor: string; from: number; to: number; r: number; turn: number; body: Body }[] = [];
   private playing = false;
+  /** the design's own extent, for a bench under it and framing */
+  private modelBox = new THREE.Box3();
 
   constructor(
     private spec: SceneSpec,
@@ -87,6 +89,13 @@ export class SimOverlay implements SceneOverlay {
     screws: { motor: string; from: number; to: number; d: number; turn: number }[] = [],
   ) {
     this.replaces = new Set(parts.map((p) => p.id));
+    for (const p of parts) {
+      const e = meshes.get(p.hash);
+      if (!e || p.hidden) continue;
+      const box = new THREE.Box3(new THREE.Vector3(...e.bbox[0]), new THREE.Vector3(...e.bbox[1]));
+      this.modelBox.union(box.applyMatrix4(new THREE.Matrix4().fromArray(xformMatrix(p.xf))));
+    }
+    if (this.modelBox.isEmpty()) this.modelBox.set(new THREE.Vector3(-100, -100, 0), new THREE.Vector3(100, 100, 100));
     this.buildWorld();
     this.buildBodies(parts, meshes);
     this.buildParticles(screws);
@@ -103,9 +112,11 @@ export class SimOverlay implements SceneOverlay {
     const b = this.spec.box;
     if (!b) {
       // a bench: a table top under the machine
-      const z = this.spec.floor ?? 0;
-      const top = new THREE.Mesh(this.keep(new THREE.BoxGeometry(1400, 900, 30)), this.keep(new THREE.MeshStandardMaterial({ color: 0x3a3f4a, roughness: 0.85 })));
-      top.position.set(0, 0, z - 120);
+      const mb = this.modelBox;
+      const size = mb.getSize(new THREE.Vector3());
+      const c = mb.getCenter(new THREE.Vector3());
+      const top = new THREE.Mesh(this.keep(new THREE.BoxGeometry(size.x * 1.6 + 300, size.y * 1.6 + 300, 30)), this.keep(new THREE.MeshStandardMaterial({ color: 0x3a3f4a, roughness: 0.85 })));
+      top.position.set(c.x, c.y, mb.min.z - 15.5);
       this.object.add(top);
       return;
     }
@@ -395,7 +406,7 @@ export class SimOverlay implements SceneOverlay {
   /** The box the camera frames: the bottom of the pit around the path, or the bench. */
   frameBox(whole = false): THREE.Box3 {
     const b = this.spec.box;
-    if (!b) return new THREE.Box3(new THREE.Vector3(-600, -400, -150), new THREE.Vector3(600, 400, 300));
+    if (!b) return this.modelBox.clone().expandByScalar(Math.max(40, this.modelBox.getSize(new THREE.Vector3()).length() * 0.15));
     if (whole) return new THREE.Box3(new THREE.Vector3(...b.min), new THREE.Vector3(...b.max));
     const zTop = Math.min(b.max[2], (this.spec.target?.at[2] ?? 100) + 500);
     return new THREE.Box3(new THREE.Vector3(b.min[0] - 150, b.min[1], b.min[2]), new THREE.Vector3(b.max[0] + 150, b.max[1], zTop));

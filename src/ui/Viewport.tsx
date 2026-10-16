@@ -25,6 +25,7 @@ import { SketchLayer } from "./sketch/SketchPanels";
 import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
+import { SimLayer } from "./sim/SimLayer";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -286,6 +287,7 @@ export function Viewport() {
       <Hud stage={stage} parts={visibleParts} />
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
+      {scene && !inSketch && <SimLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
