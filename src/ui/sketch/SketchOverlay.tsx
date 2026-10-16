@@ -639,6 +639,8 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       faceSketch(ctl, sk);
       return true;
     }
+    // view markup (M) takes the pointer, so it stays off while sketching
+    if (key === "m") return true;
     return false;
   }
 
@@ -788,7 +790,7 @@ function DimEditor({ sk, index, dims }: { sk: EvalSketch; index: number; dims: D
       setErr(after[after.length - 1].message);
       return;
     }
-    editSketch((src, cur) => setConstraintValue(src, cur.constraints.find((q) => q.index === index) ?? c, t), `${c.kind} = ${t}`);
+    editSketch((src, cur) => setConstraintValue(src, cur.constraints.find((q) => q.index === index) ?? c, t), `${c.kind} ${c.args.join(", ")} = ${t}`);
     useSketch.setState({ editDim: null });
   };
   return (
