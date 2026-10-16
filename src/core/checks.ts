@@ -8,11 +8,13 @@ import type { ChecksRequest, ChecksResult, PlacedItem } from "../kernel/protocol
 import { frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
 import { centerDistance, densify, gearOutline, maxPenetration, tipDiameter } from "../library/gears";
 import { materialDensity } from "../library/standards";
+import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
+import { briefChecks, type GeomLookup } from "./briefChecks";
 import { processItems } from "../mfg/report";
 import type { ProcessResult, SettingValue } from "../mfg/types";
 
-export type CheckCategory = "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "info";
+export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "build" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -25,6 +27,8 @@ export interface CheckItem {
   span?: Span;
   level?: "hard" | "soft";
   margin?: number;
+  /** brief uses this check serves */
+  uses?: string[];
   /** how the result was established */
   basis: "geometry" | "parameters" | "needs analysis";
   /** what to change, in plain words */
@@ -53,7 +57,7 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
     removable: p.removable,
     moving: !!p.motion,
     density: materialDensity(p.material),
-    noInterference: !!p.gear,
+    noInterference: !!p.gear || (!!p.imported && p.imported.kind !== "solid"),
   }));
   const access = visible
     .filter((p) => p.fastener)
@@ -156,7 +160,7 @@ export function gearChecks(model: Model): CheckItem[] {
   return out;
 }
 
-export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>, process: Record<string, ProcessResult> | null = null): CheckReport {
+export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>, geom: GeomLookup = () => undefined, process: Record<string, ProcessResult> | null = null): CheckReport {
   const t0 = performance.now();
   const items: CheckItem[] = [];
   const label = (id: string) => partsById.get(id)?.label ?? id;
@@ -182,8 +186,9 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
       const errs = r.geo.map((q) => kernel.geoErrors[keyOf(q)]).filter(Boolean);
       if (errs.length) detail = errs.join("; ");
     }
-    items.push({ id: `req:${r.label}`, category: "requirement", status, title: r.label, detail, span: r.span, level: r.level, margin: r.margin, basis: r.geo.length ? "geometry" : "parameters" });
+    items.push({ id: `req:${r.label}`, category: "requirement", status, title: r.label, detail, span: r.span, level: r.level, margin: r.margin, uses: r.uses.length ? r.uses : undefined, basis: r.geo.length ? "geometry" : "parameters" });
   }
+  items.push(...briefChecks(model, items.filter((i) => i.category === "requirement"), geom));
 
   if (kernel) {
     for (const i of kernel.interferences) {
@@ -236,7 +241,7 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
   if (model.parts.some((p) => p.motion)) {
     items.push({ id: "analysis:loads", category: "info", status: "info", title: "Torque, tooth strength and wear", detail: "Not verified by geometry. Check gear tooth bending stress and bearing loads for the expected torque, then test a printed prototype.", basis: "needs analysis" });
   }
-  if (model.parts.some((p) => p.material === "PETG" || p.material === "PLA" || p.material === "ABS" || p.material === "ASA")) {
+  if (model.parts.some((p) => p.kind === "part" && isPrinted(p.material))) {
     items.push({ id: "analysis:print", category: "info", status: "info", title: "Print tolerances", detail: "Hole and boss fits assume a calibrated printer (±0.15 mm). Print a fit test before a full build.", basis: "needs analysis" });
   }
 

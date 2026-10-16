@@ -15,9 +15,8 @@ import { setPartProcess, withSetting } from "../mfg/edit";
 import { ownProcess } from "../mfg/spec";
 import { compareProcesses, type ProcessOption } from "../mfg/compare";
 import type { ProcessId } from "../mfg/types";
-import { StatusIcon, Icon } from "./icons";
+import { StatusIcon } from "./icons";
 import { Toggle } from "./common";
-import { useChatDraft } from "./chatDraft";
 import { useMfgView } from "./mfgView";
 import "../styles/mfg.css";
 
@@ -25,7 +24,8 @@ const ROWS = 6;
 
 function setProcess(part: EvalPart, id: ProcessId | null) {
   const { source } = useDesign.getState();
-  const spec = id ? (part.process?.id === id ? ownProcess(part)! : { id, settings: {} }) : null;
+  // a part that only follows the brief's process opts out with process: false
+  const spec = id ? (part.process?.id === id ? ownProcess(part)! : { id, settings: {} }) : part.processInherited ? false : null;
   const next = setPartProcess(source, part, spec);
   if (next !== source) commitSource(next, "you", id ? `${part.label} made by ${PROCESSES[id].label}` : `${part.label}: no process`);
 }
@@ -75,9 +75,9 @@ function PartRow({ part, summary, error, comparing, onCompare }: { part: EvalPar
   return (
     <div className="mfg-part">
       <div className="mfg-row">
-        <span className="mfg-name" title={part.processInherited ? `${part.name}: uses the design's default process` : part.name}>
+        <span className="mfg-name" title={part.processInherited ? `${part.name}: made the way the brief says` : part.name}>
           {part.label}
-          {part.processInherited && <span className="muted"> · default</span>}
+          {part.processInherited && <span className="muted"> · from brief</span>}
         </span>
         <select className="select mfg-select" value={part.process?.id ?? ""} onChange={(e) => setProcess(part, (e.target.value || null) as ProcessId | null)} aria-label={`How ${part.label} is made`}>
           <option value="">Not chosen</option>
@@ -171,31 +171,21 @@ function applyAction(a: CheckAction) {
   }
 }
 
-/** Fix line under a process check: the suggestion, and once focused a one-click option and a hand-off to Claude. */
-export function CheckFix({ item, expanded }: { item: CheckItem; expanded: boolean }) {
-  const setDraft = useChatDraft((s) => s.set);
-  const part = useDesign((s) => s.model?.parts.find((p) => p.id === item.parts?.[0]));
-  if (!item.fix && !item.action) return null;
-  const how = part?.process ? PROCESSES[part.process.id].label : "its process";
+/** Fix line under a process check. The one-click option (FixAction) and "Ask Claude to fix" sit in the checks row below it. */
+export function CheckFix({ item }: { item: CheckItem }) {
+  if (!item.fix) return null;
   return (
-    <div className="mfg-fix" onClick={(e) => expanded && e.stopPropagation()}>
-      {item.fix && (
-        <div>
-          <span className="mfg-fix-label">Fix</span> {item.fix}
-        </div>
-      )}
-      {expanded && (
-        <div className="row" style={{ gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-          {item.action && (
-            <button className="btn sm primary" onClick={() => applyAction(item.action!)}>
-              {item.action.label}
-            </button>
-          )}
-          <button className="btn sm ghost" onClick={() => setDraft(`Fix "${item.title}" for ${how}. ${item.detail}${item.fix ? ` Suggested fix: ${item.fix}` : ""}`)}>
-            <Icon.Sparkle size={13} /> Ask Claude to fix it
-          </button>
-        </div>
-      )}
+    <div className="mfg-fix">
+      <span className="mfg-fix-label">Fix</span> {item.fix}
     </div>
+  );
+}
+
+/** One-click fix for a process check, such as switching a setting or support. */
+export function FixAction({ action }: { action: CheckAction }) {
+  return (
+    <button className="btn sm primary" onClick={() => applyAction(action)}>
+      {action.label}
+    </button>
   );
 }

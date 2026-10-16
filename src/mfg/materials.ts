@@ -1,6 +1,7 @@
 // Which materials suit which processes, plus the material-dependent numbers
-// the process rules need. Keyed by the names in library/standards MATERIALS;
-// other names are matched by family keywords (resin, acrylic, plywood...).
+// the process rules need. Keyed by the names in library/materials
+// MATERIAL_LIST; other names are matched by family keywords (resin, acrylic,
+// plywood...).
 
 import type { ProcessId } from "./types";
 
@@ -47,7 +48,9 @@ const TABLE: Record<string, MaterialProcessInfo> = {
   "Zamak 3": { family: "metal", processes: ["die_cast"] },
   Resin: { family: "resin", processes: ["sla"] },
   Acrylic: { family: "thermoplastic", processes: ["laser_cut", "cnc_mill", "injection"], mouldWall: [0.6, 3.8], laserMaxT: 20 },
-  Plywood: { family: "wood", processes: ["laser_cut", "cnc_mill"], laserMaxT: 9 },
+  Wood: { family: "wood", processes: ["laser_cut", "cnc_mill"], laserMaxT: 9 },
+  "Aluminum 7075": { family: "metal", processes: ["cnc_mill", "cnc_lathe", "laser_cut"], laserMaxT: 12, notes: { sheet_metal: '7075 cracks when bent; use "Aluminum 5052" for bent parts' } },
+  "Carbon fiber": { family: "composite", processes: ["cnc_mill", "laser_cut"], notes: { laser_cut: "Cut carbon fiber plate by waterjet or CNC routing; a laser chars the resin and gives off toxic fumes" } },
   FR4: { family: "composite", processes: ["cnc_mill"], notes: { laser_cut: "Laser cutting FR4 gives off toxic fumes and chars the edge; route it on a CNC" } },
 };
 

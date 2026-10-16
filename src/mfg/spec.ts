@@ -4,7 +4,7 @@
 
 import { Fn, Obj, Vec, typeName, type CallCtx, type Value } from "../lang/values";
 import { MAX_DIRECTIONS, PROCESSES, PROCESS_IDS, isProcessId, resolveRules, ruleFields, resolvedSettings, sanitizeSettings, uniqueDirs, type SettingDef } from "./profiles";
-import { defaultMaterial } from "./materials";
+import { defaultMaterial, materialInfo } from "./materials";
 import type { ProcessId, ProcessSpec, SettingValue } from "./types";
 import type { V3 } from "../kernel/recipe";
 import type { EvalPart, Model } from "../core/model";
@@ -173,6 +173,9 @@ const UNSUPPORTED = [
 export function processFromText(text: string): ProcessId | null {
   const raw = text.trim().toLowerCase();
   if (isProcessId(raw)) return raw;
+  // process source written as text, as in the brief: mfg.cnc_lathe(...)
+  const src = /^mfg\.([a-z_]+)\b/.exec(raw);
+  if (src && isProcessId(src[1])) return src[1];
   const s = ` ${raw
     .replace(/[_\-/]+/g, " ")
     .replace(/[^a-z0-9 ]+/g, " ")
@@ -198,18 +201,25 @@ export function partMaterial(material: string | undefined, spec: ProcessSpec | u
 }
 
 /**
- * Design-wide defaults, for the project brief's "how it's made": custom parts
- * that name no process get this one (marked processInherited), and take its
- * usual material unless they name their own. A build volume becomes the bed
- * of every printing process that does not set one, explicit or inherited.
+ * Design-wide defaults from the project brief's "how it's made". Custom parts
+ * that name no process get the brief's (marked processInherited), unless
+ * they say process: false or their own material cannot be made that way: a
+ * steel shaft in a printed design is bought or made another way. Parts that name neither a material
+ * nor a process of their own take the brief's material, or else the
+ * process's usual one. A build volume becomes the bed of every printing
+ * process that does not set one, explicit or inherited.
  */
-export function applyDefaultProcess(model: Model, spec: ProcessSpec | null, opts: { buildVolume?: V3 } = {}): void {
+export function applyDefaultProcess(model: Model, spec: ProcessSpec | null, opts: { buildVolume?: V3; material?: string } = {}): void {
   for (const p of model.parts) {
-    if (p.kind !== "part") continue;
-    if (!p.process && spec) {
+    if (p.kind !== "part" || p.processNone) continue;
+    const own = !!p.process;
+    if (!own && spec && (!p.materialSpan || suits(p.material, spec.id))) {
       p.process = { ...spec, settings: { ...spec.settings } };
       p.processInherited = true;
-      if (!p.materialSpan) p.material = partMaterial(undefined, p.process);
+    }
+    if (!own && !p.materialSpan) {
+      const m = p.process ? (p.process.material ?? opts.material ?? defaultMaterial(p.process.id)) : opts.material;
+      if (m) p.material = m;
     }
     const bedless = p.process && PROCESSES[p.process.id].settings.some((s) => s.key === "bed") && p.process.settings.bed === undefined;
     if (bedless && opts.buildVolume) {
@@ -217,6 +227,12 @@ export function applyDefaultProcess(model: Model, spec: ProcessSpec | null, opts
       p.processDefaults = [...(p.processDefaults ?? []), "bed"];
     }
   }
+}
+
+/** Whether a part's own material can be made by a process (unknown materials get the benefit of the doubt). */
+function suits(material: string, id: ProcessId): boolean {
+  const info = materialInfo(material);
+  return info.family === "unknown" || info.processes.includes(id);
 }
 
 /** The part's process as its own source states it: without settings filled in from design-wide defaults. */

@@ -7,14 +7,19 @@ import { EditorView } from "@codemirror/view";
 import type { CompletionContext, CompletionResult, Completion } from "@codemirror/autocomplete";
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
+import { useImports } from "../../core/imports";
 import { LIBRARY } from "../../library/components";
 import { PROCESSES, PROCESS_IDS } from "../../mfg/profiles";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
+import { BRIEF_FIELDS } from "../../lang/evaluator";
 
-const STATEMENTS = new Set(["design", "note", "param", "let", "component", "interface", "part", "require"]);
+const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision"]);
+// brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
+const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
+const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
-const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS]);
+const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step"]);
 const CONSTS = new Set(["X", "Y", "Z", "ORIGIN", "PI", ...Object.keys(THREADS)]);
 
 interface St {
@@ -49,10 +54,13 @@ const parser: StreamParser<St> = {
     if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
       const w = stream.current();
       if (STATEMENTS.has(w)) return "keyword";
+      if (BRIEF_ENTRIES.has(w) && !stream.string.slice(0, stream.start).trim() && stream.peek() === " ") return "keyword";
+      if (BRIEF_FLAGS.has(w) && stream.peek() !== ":" && !stream.string.slice(stream.pos).trim()) return "controlKeyword";
       if (OPS_KW.has(w)) return "operatorKeyword";
       if (KEYWORDS.has(w)) return w === "true" || w === "false" ? "bool" : "controlKeyword";
       if (w === "mfg") return "namespace";
       if (w === "lib") return "namespace";
+      if (w === "option" && stream.match(/^\s*"/, false)) return "controlKeyword";
       if (CONSTS.has(w)) return "constant";
       if (stream.peek() === "(" && BUILTIN_FNS.has(w)) return "builtin";
       if (stream.peek() === ":") return "propertyName";
@@ -144,6 +152,7 @@ export function kerfCompletions(getModel: () => Model | null) {
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
   const props: Completion[] = ["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at"].map((p) => ({ label: p + ":", type: "property" }));
+  const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 
   return (ctx: CompletionContext): CompletionResult | null => {
@@ -166,8 +175,11 @@ export function kerfCompletions(getModel: () => Model | null) {
     const defined: Completion[] = [];
     if (model) {
       for (const p of model.params) defined.push({ label: p.name, type: "variable", detail: `param = ${typeof p.value === "number" ? +p.value.toFixed(3) : String(p.value)}`, info: p.desc });
-      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require") defined.push({ label: b.name, type: b.kind === "let" ? "variable" : "class", detail: b.kind });
+      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require" && b.kind !== "decision") defined.push({ label: b.name, type: b.kind === "let" || b.kind === "given" ? "variable" : "class", detail: b.kind });
+      for (const u of model.brief?.uses ?? []) defined.push({ label: u.id, type: "constant", detail: "use", info: u.text });
     }
-    return { from: word.from, options: [...defined, ...fnCompletions, ...consts, ...kw, ...props, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
+    // imported STEP files place like library components
+    const imports: Completion[] = useImports.getState().list.map((i) => ({ label: `step(${JSON.stringify(i.name)})`, type: "class", detail: "imported STEP", info: i.file, apply: `step(${JSON.stringify(i.name)})` }));
+    return { from: word.from, options: [...defined, ...imports, ...fnCompletions, ...consts, ...kw, ...props, ...briefProps, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
   };
 }

@@ -11,6 +11,8 @@ import { Menu, MenuItem, timeAgo, useTick } from "../ui/common";
 import { useApiKey } from "../ui/ChatPanel";
 import { resetChat, useChat } from "../ai/chat";
 import type { ProjectRecord } from "../persist/db";
+import { importStepFiles, isStepFile } from "../app/imports";
+import { cleanName } from "../kernel/stepText";
 
 export function Home() {
   useTick();
@@ -28,6 +30,16 @@ export function Home() {
   const onFiles = async (files: FileList | null) => {
     const f = files?.[0];
     if (!f) return;
+    // a STEP file starts a new design around that part
+    const steps = [...(files ?? [])].filter(isStepFile);
+    if (steps.length) {
+      const part = cleanName(steps[0].name.replace(/\.(step|stp|p21)$/i, ""), 60).replace(/["\\]/g, "") || "imported part";
+      const src = `design "Around ${part}"\nnote "Describe what to design around ${part} in the chat, or write it here."\n`;
+      const p = await createProject("blank", part, src);
+      await openProject(p.id);
+      await importStepFiles(steps);
+      return;
+    }
     const p = await importProject(f);
     if (p) await openProject(p.id);
   };
@@ -65,7 +77,7 @@ export function Home() {
           <button className="icon-btn" onClick={() => openSettings("app")} aria-label="Settings" data-tip="Settings">
             <Icon.Settings />
           </button>
-          <input ref={fileRef} type="file" accept=".kerf,.kerfproj,.kerfbackup,.json,.txt" hidden onChange={(e) => void onFiles(e.target.files).finally(() => (e.target.value = ""))} />
+          <input ref={fileRef} type="file" accept=".kerf,.kerfproj,.kerfbackup,.json,.txt,.step,.stp" hidden onChange={(e) => void onFiles(e.target.files).finally(() => (e.target.value = ""))} />
         </div>
 
         <motion.div className="hero" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>

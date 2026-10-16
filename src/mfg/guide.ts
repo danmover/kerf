@@ -108,7 +108,7 @@ export function processGuideText(spec: ProcessSpec, material?: string): string {
 /** The working method, for the assistant's system prompt. */
 export function processPromptSection(): string {
   return `## Design for manufacture
-Every custom part is made somehow, and its design has to suit that process. Set it on each part with process: (see "Manufacturing processes" in the language reference). Choose from the brief: quantity, material, accuracy, budget, and what the user owns (such as a 3D printer). When the brief does not say, pick the sensible default (FDM printing for prototypes and one-offs, CNC milling for precise metal parts, sheet metal for metal brackets and covers, injection moulding only for thousands of plastic parts) and say which you chose.
+Every custom part is made somehow, and its design has to suit that process. The brief's process is every part's default; set process: on a part (see "Manufacturing processes" in the language reference) only where it is made differently. Choose from the brief: quantity, material, accuracy, budget, and what the user owns (such as a 3D printer). When the brief does not say, pick the sensible default (FDM printing for prototypes and one-offs, CNC milling for precise metal parts, sheet metal for metal brackets and covers, injection moulding only for thousands of plastic parts) and say which you chose.
 1. Design to the process from the start. Before modelling a part, call process_guide for its process and material and follow those rules while you model: wall thickness, draft along the pull, inside radii no tighter than the tool, hole sizes, bend radii, print orientation and overhangs.
 2. When parts share a process, put it in a let (let printed = mfg.fdm(layer: 0.2)) and drive dimensions from its numbers with requirements, for example require "Printable wall": wall >= printed.min_wall. The feasibility solver then keeps them valid when other dimensions change.
 3. run_checks reports process findings in the "process" category, each with the faces it flags on the model and a suggested fix. Fix failures before you finish. Some findings offer a one-click option, which is a setting on the part's process (for example build: -Z to print upside down). Warnings are judgement calls: fix the cheap ones and explain the rest.
@@ -129,6 +129,6 @@ part bracket {
   ...
 }
 A part's process sets the rules it is checked against (part props: process). All settings are named and optional; directions are in the part's own frame before at/rotate. material: inside the call is used when the part names none; with neither, the part gets the process's usual material. Library components are bought, so they take no process. A process value can live in a let and be shared; its fields give the rule numbers for requirements: .min_wall, .max_wall, .draft, .min_inner_r, .tool_d, .max_overhang, .min_hole, .tolerance (and .t, .bend_r for sheet when t is set), plus every setting by name.
-Plain names also work: process: "injection", "laser_cut", "sheet_metal"…
+Plain names also work: process: "injection", "laser_cut", "sheet_metal"… The project brief's process is the default for parts with none; process: false marks a part that is bought or made by hand, so it is not checked.
 ${rows}`;
 }

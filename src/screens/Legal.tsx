@@ -110,7 +110,7 @@ function Privacy() {
   return (
     <Doc title="Privacy notice">
       <h2>The short version</h2>
-      <p>Kerf has no server and no accounts. Your designs, history, chats and settings stay in this browser. When you chat with Claude, your browser sends the conversation directly to Anthropic's API using your key. Kerf has no analytics, tracking or advertising.</p>
+      <p>Kerf has no server and no accounts. Your designs, history, chats and settings stay in this browser. When you chat with Claude, your browser sends the conversation directly to Anthropic's API using your key. If you talk to Claude with voice input, your speech is turned into text on your device when the browser can; otherwise your browser's own speech service hears it, and only if you allow that. Kerf has no analytics, tracking or advertising.</p>
       <h2>What is stored, and where</h2>
       <table>
         <thead>
@@ -132,9 +132,14 @@ function Privacy() {
             <td>Clear the chat, delete the project, or clear all data</td>
           </tr>
           <tr>
-            <td>Preferences (model, display options, terms version accepted)</td>
+            <td>Preferences (model, display and voice options, terms version accepted)</td>
             <td>localStorage in this browser</td>
             <td>Clear all data</td>
+          </tr>
+          <tr>
+            <td>Voice audio</td>
+            <td>Not recorded or kept. The browser turns speech into text, and Kerf keeps only the words, in the message box.</td>
+            <td>Nothing to remove</td>
           </tr>
           <tr>
             <td>Claude API key</td>
@@ -145,11 +150,25 @@ function Privacy() {
       </table>
       <h2>What is sent to Anthropic</h2>
       <p>Only when you send a chat message, Kerf sends Anthropic's API (api.anthropic.com): your message, the conversation so far in that project, the current design file, check results, and images of the 3D view that Claude asks for. Anthropic processes this under its own commercial terms and privacy policy. Kerf does not send anything to Anthropic, or anywhere else, until you chat.</p>
+      <h2>Voice input</h2>
+      <p>The microphone is off until you tap the mic button or press V. Kerf uses your browser's built-in speech recognition and never records, stores or uploads audio itself.</p>
+      <ul>
+        <li>
+          <b>On your device, when possible.</b> If your browser can recognise speech on the device (for example recent Chrome on Windows, Mac and Linux, after a one-time language download of around 60 MB), Kerf uses that, and your audio does not leave your device.
+        </li>
+        <li>
+          <b>Your browser's online speech service, only if you allow it.</b> Otherwise, and only after you agree, your browser sends your audio to its maker's speech service while the microphone is on, and gets the text back: Google for Chrome, Apple for Safari and every browser on iPhone and iPad, and Microsoft for Edge. That company processes the audio under its own privacy policy, not this one. You can withdraw your permission at any time in Settings → Voice.
+        </li>
+        <li>The microphone turns off when you pause, after two minutes, or when you switch away from Kerf. While it is on, Kerf shows where your speech is being turned into text.</li>
+        <li>The words go to Anthropic only when you send the message, exactly like typed text.</li>
+      </ul>
+      <p>Kerf's Content Security Policy controls the connections Kerf itself makes. It cannot govern the browser's own speech service, which is why Kerf asks before using it.</p>
       <h2>What is sent elsewhere</h2>
-      <p>Nothing. The 3D kernel, checks and exports run on your device. Fonts and code are bundled with the app. If Kerf is hosted on a web server, that server sees ordinary web requests for the app's files, as with any website.</p>
+      <p>Nothing else. The 3D kernel, checks and exports run on your device. Fonts and code are bundled with the app. If Kerf is hosted on a web server, that server sees ordinary web requests for the app's files, as with any website.</p>
       <h2>Security</h2>
       <ul>
         <li>The app sets a strict Content Security Policy that only allows network connections to its own files and to api.anthropic.com.</li>
+        <li>Only Kerf's own page may use the microphone, and only for voice input. Your browser asks for your permission the first time.</li>
         <li>AI output is never rendered as HTML, and imported files are size-limited and validated before use.</li>
         <li>Anyone with access to your unlocked computer and browser profile could use a remembered key. Do not remember the key on a shared computer.</li>
       </ul>

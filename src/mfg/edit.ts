@@ -6,8 +6,8 @@ import { PROCESSES, specToSource } from "./profiles";
 import type { ProcessSpec, SettingValue } from "./types";
 
 /** Replace the part's process: property, insert one, or remove it (spec null). */
-export function setPartProcess(src: string, part: Pick<EvalPart, "span" | "processSpan">, spec: ProcessSpec | null): string {
-  const text = spec ? `process: ${specToSource(spec)}` : "";
+export function setPartProcess(src: string, part: Pick<EvalPart, "span" | "processSpan">, spec: ProcessSpec | null | false): string {
+  const text = spec ? `process: ${specToSource(spec)}` : spec === false ? "process: false" : "";
   const ps = part.processSpan;
   if (ps) {
     if (text) return src.slice(0, ps.start) + text + src.slice(ps.end);

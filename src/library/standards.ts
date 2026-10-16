@@ -1,6 +1,8 @@
 // Standard hardware data: ISO metric threads / socket head cap screws,
 // deep-groove ball bearings and common materials.
 
+import { MATERIAL_LIST } from "./materials";
+
 export interface ThreadSpec {
   name: string;
   d: number; // nominal
@@ -50,26 +52,8 @@ export const BEARINGS: Record<string, BearingSpec> = {
   "6801": { code: "6801", bore: 12, od: 21, width: 5, dynamicLoadN: 1740 },
 };
 
-/** Density in g/cm^3 */
-export const MATERIALS: Record<string, { density: number; label: string }> = {
-  PLA: { density: 1.24, label: "PLA" },
-  PETG: { density: 1.27, label: "PETG" },
-  ABS: { density: 1.04, label: "ABS" },
-  ASA: { density: 1.07, label: "ASA" },
-  Nylon: { density: 1.14, label: "Nylon PA12" },
-  "Aluminum 6061": { density: 2.7, label: "Aluminum 6061" },
-  Steel: { density: 7.85, label: "Steel" },
-  "Stainless 304": { density: 8.0, label: "Stainless 304" },
-  Brass: { density: 8.5, label: "Brass" },
-  FR4: { density: 1.85, label: "FR4" },
-  POM: { density: 1.41, label: "POM (Delrin)" },
-  "Aluminum 5052": { density: 2.68, label: "Aluminum 5052 (sheet)" },
-  "Aluminum A380": { density: 2.74, label: "Aluminum A380 (die cast)" },
-  "Zamak 3": { density: 6.6, label: "Zamak 3 (zinc die cast)" },
-  Resin: { density: 1.18, label: "Photopolymer resin" },
-  Acrylic: { density: 1.19, label: "Acrylic (PMMA)" },
-  Plywood: { density: 0.68, label: "Birch plywood" },
-};
+/** Density in g/cm^3, keyed by the material name used in design files. */
+export const MATERIALS: Record<string, { density: number; label: string }> = Object.fromEntries(MATERIAL_LIST.map((m) => [m.name, { density: m.density, label: m.label }]));
 
 export function materialDensity(name: string): number {
   return MATERIALS[name]?.density ?? 1.2;

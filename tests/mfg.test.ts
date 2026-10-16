@@ -14,6 +14,7 @@ import { languageReference } from "../src/ai/reference";
 import { MODIFIER_PARAMS } from "../src/lang/builtins";
 import type { ProcessFinding, ProcessResult, ProcessSpec } from "../src/mfg/types";
 import type { Model } from "../src/core/model";
+import { briefData, isProcessSource, processKind, serializeBrief } from "../src/core/brief";
 
 const demo = (name: string) => readFileSync(new URL(`../src/demos/${name}.kerf`, import.meta.url), "utf8");
 
@@ -140,14 +141,72 @@ part d { body box(10, 10, 10) process: mfg.fdm(build: -Z) }
     expect(by.a.process).toEqual({ id: "sla", settings: { bed: [120, 70, 150] } });
     expect(by.a.processInherited).toBe(true);
     expect(by.a.material).toBe("Resin");
+    // PETG is not a resin: that part is made another way
     expect(by.b.material).toBe("PETG");
+    expect(by.b.process).toBeUndefined();
     expect(by.c.process).toEqual({ id: "cnc_mill", settings: { tool_d: 2 } });
     expect(by.c.processInherited).toBeUndefined();
     expect(by.d.process?.settings.bed).toEqual([120, 70, 150]);
     expect(resolveRules(by.d.process!, by.d.material).envelope?.size).toEqual([120, 70, 150]);
     // written back without the default, so the part's source keeps following the brief
     expect(ownProcess(by.d)).toEqual({ id: "fdm", settings: { build: [0, 0, -1] } });
-    expect(processProbes(m, new Set(m.parts.map((p) => p.hash))).map((p) => p.id)).toEqual(["a", "b", "c", "d"]);
+    expect(processProbes(m, new Set(m.parts.map((p) => p.hash))).map((p) => p.id)).toEqual(["a", "c", "d"]);
+  });
+
+  it("comes from the brief, with its material and build volume", () => {
+    const m = evaluate(`design "x"
+brief {
+  process: "FDM print"
+  material: "PETG"
+  build_volume: (180, 180, 180)
+}
+part cap { body box(10, 10, 2) }
+part holder { body box(10, 10, 10) material: "PLA" }
+part pin { body cylinder(d: 4, h: 400) material: "Steel" }
+part plate { body box(50, 50, 3) process: mfg.laser_cut() }
+part shim { body box(5, 5, 1) process: false }
+`);
+    expect(m.diagnostics).toEqual([]);
+    const by = Object.fromEntries(m.parts.map((p) => [p.name, p]));
+    expect(m.brief?.processSpec).toEqual({ id: "fdm", settings: {} });
+    expect(by.cap.process).toEqual({ id: "fdm", settings: { bed: [180, 180, 180] } });
+    expect(by.cap.processInherited).toBe(true);
+    expect(by.cap.material).toBe("PETG");
+    expect(by.holder.process?.id).toBe("fdm");
+    expect(by.holder.material).toBe("PLA");
+    // a steel pin is bought or cut, not printed
+    expect(by.pin.process).toBeUndefined();
+    expect(by.plate.process).toEqual({ id: "laser_cut", settings: {} });
+    expect(by.plate.material).toBe("Aluminum 6061");
+    // opted out: bought or made by hand
+    expect(by.shim.process).toBeUndefined();
+    expect(by.shim.processNone).toBe(true);
+    const cap = "part cap { body box(10, 10, 2) }";
+    expect(setPartProcess(cap, evaluate(cap).parts[0], false)).toBe("part cap { process: false body box(10, 10, 2) }");
+  });
+
+  it("reads a process value in the brief and writes it back as code", () => {
+    const src = `design "x"
+brief {
+  process: mfg.fdm(layer: 0.28, bed: (200, 200, 180), material: "ASA")
+}
+part a { body box(10, 10, 10) }
+`;
+    const m = evaluate(src);
+    expect(m.diagnostics).toEqual([]);
+    expect(m.brief?.process).toBe('mfg.fdm(layer: 0.28, bed: (200, 200, 180), material: "ASA")');
+    expect(m.parts[0].process).toEqual({ id: "fdm", settings: { layer: 0.28, bed: [200, 200, 180] }, material: "ASA" });
+    expect(m.parts[0].material).toBe("ASA");
+    expect(processKind(m.brief?.process)).toBe("fdm");
+    const again = serializeBrief(briefData(m.brief)!);
+    expect(again).toContain('  process: mfg.fdm(layer: 0.28, bed: (200, 200, 180), material: "ASA")\n');
+    // anything that is not plain process source stays text
+    expect(isProcessSource("mfg.fdm(layer: 0.2) }\npart x {")).toBe(false);
+    expect(isProcessSource('mfg.fdm(material: "a)')).toBe(false);
+    expect(isProcessSource("mfg.fdm(bed: (1, 2, 3]))")).toBe(false);
+    expect(isProcessSource("mfg.fdm() // x")).toBe(false);
+    expect(processKind("vacuum cast")).toBe("other");
+    expect(processKind("CNC machined")).toBe("cnc");
   });
 });
 
