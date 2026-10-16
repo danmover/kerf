@@ -26,6 +26,8 @@ export interface ProcessDef {
   summary: string;
   /** typical general tolerance, ± mm */
   tolerance: number;
+  /** ISO 2768 general tolerance class for drawings, where the standard fits the process */
+  iso2768?: "f" | "m" | "c" | "v";
   /** what you send to the maker */
   output: string;
   /** when this process is the right choice */
@@ -87,6 +89,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     family: "subtractive",
     summary: "Cut from solid stock with rotating end mills, one setup per side.",
     tolerance: 0.1,
+    iso2768: "m",
     output: "STEP plus a drawing for toleranced features and threads",
     bestFor: "precise metal and engineering-plastic parts in low to mid volumes",
     settings: [
@@ -103,6 +106,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     family: "subtractive",
     summary: "Spun in a chuck and cut with a fixed tool. Round parts: shafts, spacers, pins, knobs.",
     tolerance: 0.05,
+    iso2768: "m",
     output: "STEP plus a drawing for diameters, fits and threads",
     bestFor: "shafts, bushings, spacers and anything round",
     settings: [
@@ -151,6 +155,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     family: "sheet",
     summary: "Flat sheet laser cut or punched, then bent on a press brake.",
     tolerance: 0.2,
+    iso2768: "m",
     output: "STEP plus a flat pattern DXF and bend table",
     bestFor: "brackets, enclosures, chassis and covers in metal",
     settings: [
@@ -165,6 +170,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     family: "sheet",
     summary: "A 2D profile cut through flat plate. No bends, pockets or bevels.",
     tolerance: 0.15,
+    iso2768: "m",
     output: "DXF of the outline at 1:1, plus the plate thickness",
     bestFor: "flat plates, gussets, spacers and panels in metal, acrylic or wood",
     settings: [
@@ -307,6 +313,16 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
       };
     }
   }
+}
+
+/**
+ * The general tolerance a drawing's title block states for this process:
+ * an ISO 2768 class for machined, cut and bent parts, otherwise the
+ * process's typical tolerance. For the engineering drawings.
+ */
+export function generalToleranceFor(spec: ProcessSpec): string {
+  const def = PROCESSES[spec.id];
+  return def.iso2768 ? `ISO 2768-${def.iso2768}` : `±${fmt(def.tolerance)} UNLESS STATED`;
 }
 
 export function fmt(n: number, d = 2): string {

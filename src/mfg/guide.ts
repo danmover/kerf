@@ -4,7 +4,7 @@
 // checks use, so the advice and the checks cannot drift apart.
 
 import { MODIFIER_PARAMS } from "../lang/builtins";
-import { PROCESSES, PROCESS_IDS, axisName, fmt, guideLines, resolveRules, ruleFields, specToSource } from "./profiles";
+import { PROCESSES, PROCESS_IDS, axisName, fmt, generalToleranceFor, guideLines, resolveRules, ruleFields, specToSource } from "./profiles";
 import { defaultMaterial, materialFit, suggestMaterials } from "./materials";
 import type { ProcessId, ProcessSpec } from "./types";
 
@@ -61,7 +61,7 @@ export function processGuideText(spec: ProcessSpec, material?: string): string {
   const lines = [
     `# ${def.label}`,
     def.summary,
-    `Best for: ${def.bestFor}. Typical tolerance ±${fmt(def.tolerance)} mm. The maker needs: ${def.output}.`,
+    `Best for: ${def.bestFor}. Typical tolerance ±${fmt(def.tolerance)} mm (drawings state ${generalToleranceFor(spec)}). The maker needs: ${def.output}.`,
     `Material ${mat}: ${fit.detail}${fit.status === "pass" ? "" : ` (${fit.status})`}. Usual materials: ${suggestMaterials(spec.id).join(", ") || "see supplier"}.`,
     "",
     "## Rules the part is checked against",

@@ -7,7 +7,7 @@ import { evaluate } from "../src/lang/evaluator";
 import { applyDefaultProcess, ownProcess, processFromText, processFromValue } from "../src/mfg/spec";
 import { setPartProcess, withSetting } from "../src/mfg/edit";
 import { compareProbes, findingFor, findingId, parseFindingId, processItems, processProbes, summarize } from "../src/mfg/report";
-import { PROCESS_IDS, resolveRules, specToSource } from "../src/mfg/profiles";
+import { PROCESS_IDS, generalToleranceFor, resolveRules, specToSource } from "../src/mfg/profiles";
 import { materialFit } from "../src/mfg/materials";
 import { processGuideText, processReference } from "../src/mfg/guide";
 import { languageReference } from "../src/ai/reference";
@@ -179,6 +179,13 @@ describe("process rules and guidance", () => {
     expect(g).toMatch(/\.min_wall = 1\.2/);
     for (const id of PROCESS_IDS) expect(processReference()).toContain(`mfg.${id}(`);
     expect(languageReference()).toContain("## Manufacturing processes");
+  });
+
+  it("gives drawings a general tolerance for each process", () => {
+    expect(generalToleranceFor({ id: "cnc_mill", settings: {} })).toBe("ISO 2768-m");
+    expect(generalToleranceFor({ id: "laser_cut", settings: {} })).toBe("ISO 2768-m");
+    expect(generalToleranceFor({ id: "fdm", settings: {} })).toBe("±0.3 UNLESS STATED");
+    expect(generalToleranceFor({ id: "injection", settings: {} })).toBe("±0.1 UNLESS STATED");
   });
 });
 
