@@ -12,6 +12,7 @@ param z3   = 12      "Stage 2 pinion teeth"
 param z4   = 36      "Output gear teeth"
 param fold = 90      "Angle of the output axis around the intermediate axis (degrees)"
 
+// ── Housing, shafts and mounting ───────────────────────
 param wall      = 3mm    range 2 .. 5   "Housing wall"
 param gap       = 3mm    "Clearance from gear tips to the housing"
 param out_d     = 8mm    "Output shaft diameter"

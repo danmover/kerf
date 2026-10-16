@@ -18,7 +18,7 @@ import { ErrorBoundary } from "../ui/ErrorBoundary";
 export function Workspace() {
   const project = useProject((s) => s.current);
   const save = useProject((s) => s.save);
-  const [left, setLeft, saveLeft] = usePersistentNumber("kerf.layout.left", 272, 220, 460);
+  const [left, setLeft, saveLeft] = usePersistentNumber("kerf.layout.left", 300, 220, 460);
   const [right, setRight, saveRight] = usePersistentNumber("kerf.layout.right", 384, 320, 620);
   const [dock, setDock, saveDock] = usePersistentNumber("kerf.layout.dock", 300, 140, 900);
   const dockOpen = useView((s) => s.dockOpen);
