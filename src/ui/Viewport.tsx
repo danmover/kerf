@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneController } from "./viewport/scene";
+import { SceneController, type PhotoStatus } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, useDesign } from "../core/engine";
@@ -53,6 +53,7 @@ export function Viewport() {
   const sketching = useSketch((s) => !!s.active || s.picking);
   const inSketch = useSketch((s) => !!s.active);
   const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
+  const [photo, setPhoto] = useState<PhotoStatus>({ state: "off", samples: 0, max: 0 });
 
   useEffect(() => {
     if (!mount.current) return;
@@ -85,6 +86,7 @@ export function Viewport() {
     if (import.meta.env.DEV) (window as unknown as { __kerfViewport?: SceneController }).__kerfViewport = c;
     c.onLightAngle = (deg) => updateSettings({ lightAngle: deg });
     c.onTurntableStop = () => useView.setState({ turntable: false });
+    c.onPhotoStatus = setPhoto;
     c.onHold = (at) => {
       const r = mount.current?.getBoundingClientRect();
       setHold(at && r ? { x: at.x - r.left, y: at.y - r.top, n: Date.now() } : null);
@@ -121,8 +123,8 @@ export function Viewport() {
   }, []);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, theme });
-  }, [settings.lighting, settings.lightAngle, settings.quality, theme]);
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme]);
 
   useEffect(() => {
     if (model) ctl.current?.setParts(model.parts, meshes);
@@ -130,6 +132,7 @@ export function Viewport() {
 
   useEffect(() => {
     if (stage === "refining" || stage === "done") ctl.current?.settle();
+    ctl.current?.setModelSettling(stage !== "idle" && stage !== "done");
   }, [stage]);
 
   useEffect(() => {
@@ -157,6 +160,7 @@ export function Viewport() {
   // after setParts above, so overlays attach to the current part groups
   useEffect(() => {
     if (model) mfgOverlay.current?.update(model.parts, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion);
+    ctl.current?.setProcessMarks(!!mfgOverlay.current?.size);
   }, [model, meshVersion, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion]);
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
@@ -165,6 +169,8 @@ export function Viewport() {
   }, [view.cameraRequest]);
 
   const hasMotion = !!model?.parts.some((p) => p.motion && p.motion.ratio);
+  // the photoreal look hides the grid and CAD edges while it runs
+  const photoLook = photo.state !== "off" && photo.state !== "paused";
   const visibleParts = model?.parts.length ?? 0;
   const selectedParts = useMemo(() => (model ? model.parts.filter((p) => view.selected.includes(p.id)) : []), [model, view.selected]);
   const empty = model && model.parts.length === 0 && kernelStatus === "ready";
@@ -238,14 +244,19 @@ export function Viewport() {
           <T.Sketch />
         </button>
         <div className="sep" />
-        <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">
+        <button className={`icon-btn ${settings.grid && !photoLook ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip={photoLook ? "Grid (hidden in the photoreal view)" : "Grid"} aria-label="Grid">
           <Icon.Grid />
         </button>
-        <button className={`icon-btn ${settings.edges ? "active" : ""}`} onClick={() => updateSettings({ edges: !settings.edges })} data-tip="Edges" aria-label="Edges">
+        <button className={`icon-btn ${settings.edges && !photoLook ? "active" : ""}`} onClick={() => updateSettings({ edges: !settings.edges })} data-tip={photoLook ? "Edges (hidden in the photoreal view)" : "Edges"} aria-label="Edges">
           <Icon.Box />
         </button>
         <div className="sep" />
-        <LightingMenu />
+        <div className="vp-look">
+          <LightingMenu />
+          <button className={`icon-btn vp-photo-btn ${settings.photoreal ? "active" : ""}`} onClick={() => updateSettings({ photoreal: !settings.photoreal })} data-tip="Photoreal view (P)" aria-label="Photoreal view" aria-pressed={settings.photoreal}>
+            <Icon.Aperture />
+          </button>
+        </div>
         <button className={`icon-btn ${view.turntable ? "active" : ""}`} disabled={!visibleParts} onClick={() => useView.setState({ turntable: !view.turntable })} data-tip="Turntable (T)" aria-label="Turntable">
           <Icon.Orbit />
         </button>
@@ -301,6 +312,7 @@ export function Viewport() {
 
       <Hud stage={stage} parts={visibleParts} />
       <MeasureTool host={measureHost} />
+      <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
       {scene && !inSketch && <SimLayer scene={scene} />}
@@ -413,6 +425,54 @@ function Hud({ stage, parts }: { stage: string; parts: number }) {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+const PHOTO_LABEL: Record<PhotoStatus["state"], string> = {
+  off: "",
+  paused: "Photoreal is paused",
+  waiting: "Photoreal",
+  preparing: "Preparing the photoreal view",
+  rendering: "Photoreal",
+  done: "Photoreal",
+};
+/** read after the label, so a screen reader hears each change of state (the sample count is not read) */
+const PHOTO_SPOKEN: Partial<Record<PhotoStatus["state"], string>> = {
+  waiting: ", waiting for the view to hold still",
+  rendering: ", rendering",
+  done: ", finished",
+};
+
+/** Progress of the path traced view, bottom right of the viewport (the plan pill has the centre). */
+function PhotoPill({ s }: { s: PhotoStatus }) {
+  const p = s.max ? Math.min(1, s.samples / s.max) : 0;
+  const label = s.reason || PHOTO_LABEL[s.state];
+  return (
+    <motion.div className={`vp-photo ${s.state}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}>
+      {s.state === "preparing" ? <span className="spinner sm" aria-hidden /> : <Icon.Aperture size={13} />}
+      <span role="status">
+        {label}
+        {!s.reason && PHOTO_SPOKEN[s.state] && <span className="sr-only">{PHOTO_SPOKEN[s.state]}</span>}
+      </span>
+      {!s.reason && (s.state === "rendering" || s.state === "waiting" || s.state === "done") && (
+        <span className="vp-photo-count" aria-hidden>
+          <span className="vp-photo-bar">
+            <span style={{ transform: `scaleX(${p})` }} />
+          </span>
+          <span className="mono">
+            {s.state === "done" ? (
+              <>
+                {s.max} <Icon.Check size={11} />
+              </>
+            ) : (
+              <>
+                {s.samples}/{s.max}
+              </>
+            )}
+          </span>
+        </span>
+      )}
+    </motion.div>
   );
 }
 

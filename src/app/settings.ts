@@ -35,6 +35,8 @@ export interface Settings {
   lightAngle: number;
   /** viewport render quality: draft renders one pass; balanced and high refine while the view is still */
   quality: "draft" | "balanced" | "high";
+  /** photoreal view: path traces the scene while the camera is still */
+  photoreal: boolean;
   /** maximum Claude tool-loop iterations per message */
   maxSteps: number;
   /** let Claude search the web and read pages (Anthropic's server tools) to find parts the catalog lacks */
@@ -92,6 +94,7 @@ const DEFAULTS: Settings = {
   lighting: "studio",
   lightAngle: 0,
   quality: "balanced",
+  photoreal: false,
   maxSteps: DEFAULT_STEPS,
   webSearch: true,
   webNotice: false,
@@ -152,6 +155,8 @@ function load(): Settings {
     if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
     out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
     if (!KEEP_WARM_MINUTES.includes(out.keepWarm)) out.keepWarm = DEFAULTS.keepWarm;
+    // the photoreal view starts off on every load: a GPU that hangs while path tracing must not be sent back into it
+    out.photoreal = false;
     return out;
   } catch {
     return DEFAULTS;
