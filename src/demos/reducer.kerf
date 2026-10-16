@@ -2,6 +2,24 @@ design "Two-Stage Spur Reducer"
 note "12:1 reducer driven by a NEMA 17 stepper. Printed housing, off-the-shelf 625/688 bearings, POM gears."
 note "Assembly order: motor screws first (from inside), then shafts, bearings and gears, then the cover."
 
+brief {
+  purpose: "Gear a NEMA 17 stepper down 12:1 to drive a slow output shaft"
+  setting: "Bench-top mechanism, bolted to a base plate through its two feet"
+  priorities: ["precision", "easy assembly", "quiet"]
+
+  temp: 10C .. 40C assumed
+  outdoor: false
+
+  process: "FDM print"
+  material: "PETG"
+  quantity: 1
+
+  use reduce "Turns the output once for every 12 motor turns"
+  use run_clear "Gears turn without rubbing on the shafts or each other"
+  use assemble "Goes together with a hex key in the order in the notes, using stock 625 and 688 bearings"
+  use printable "Housing and cover print on a hobby FDM printer" assumed
+}
+
 // ── Requirements in numbers ────────────────────────────
 param target_ratio = 12      "Overall reduction (input : output)"
 param m1   = 1.0mm   "Module, stage 1"
@@ -161,11 +179,11 @@ component cover_inserts = lib.insert(M3) { at: [(cover_pts[0].x, y_cover, cover_
 component cover_screws = lib.screw(M3, 10) { at: [(cover_pts[0].x, y_cover + cover_t, cover_pts[0].y), (cover_pts[1].x, y_cover + cover_t, cover_pts[1].y), (cover_pts[2].x, y_cover + cover_t, cover_pts[2].y), (cover_pts[3].x, y_cover + cover_t, cover_pts[3].y)], axis: -Y }
 
 // ── Requirements ───────────────────────────────────────
-require "Reduction matches the target (±2%)": abs(1 / abs(g4.speed) - target_ratio) <= target_ratio * 0.02
-require "Stage 1 gear clears the output shaft": cd2 - g2.tip_d / 2 - out_d / 2 >= 0.6
-require "Output gear clears the motor shaft": len(p_out) - g4.tip_d / 2 - motor.shaft_d / 2 >= 1
-require "Pinions have at least 10 teeth": min(z1, z3) >= 10
-require "Motor screws clear the bearing bosses": len(p_out - (15.5, 15.5)) - (out_front.od + 5) / 2 - M3.head_d / 2 >= 1
-require "Output bearings fit the output shaft": out_front.bore == out_d
-require "Intermediate bearings fit the 5 mm shaft": mid_front.bore == 5
-require "Printable walls": wall >= 2
+require "Reduction matches the target (±2%)" for reduce: abs(1 / abs(g4.speed) - target_ratio) <= target_ratio * 0.02
+require "Stage 1 gear clears the output shaft" for run_clear: cd2 - g2.tip_d / 2 - out_d / 2 >= 0.6
+require "Output gear clears the motor shaft" for run_clear: len(p_out) - g4.tip_d / 2 - motor.shaft_d / 2 >= 1
+require "Pinions have at least 10 teeth" for reduce, run_clear: min(z1, z3) >= 10
+require "Motor screws clear the bearing bosses" for assemble: len(p_out - (15.5, 15.5)) - (out_front.od + 5) / 2 - M3.head_d / 2 >= 1
+require "Output bearings fit the output shaft" for assemble: out_front.bore == out_d
+require "Intermediate bearings fit the 5 mm shaft" for assemble: mid_front.bore == 5
+require "Printable walls" for printable: wall >= 2

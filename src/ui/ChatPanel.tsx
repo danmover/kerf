@@ -14,6 +14,7 @@ import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
 import { useChatDraft } from "./chatDraft";
 import { LogoMark } from "./Logo";
+import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Attachments";
 
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
@@ -163,6 +164,7 @@ function Item({ it }: { it: ChatItem }) {
     case "user":
       return (
         <motion.div className="msg-user" initial={{ opacity: 0, y: 6, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }}>
+          <MessageFiles files={it.files} />
           {it.text}
         </motion.div>
       );
@@ -345,6 +347,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
   const ta = useRef<HTMLTextAreaElement>(null);
   const draft = useChatDraft();
   const pending = useChat((s) => s.pendingChoice);
+  const att = useAttachments();
   useEffect(() => {
     if (draft.nonce) {
       setText(draft.text);
@@ -360,14 +363,17 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
     el.style.height = "auto";
     el.style.height = Math.min(200, el.scrollHeight) + "px";
   }, [text]);
+  const canSend = (!!text.trim() || att.files.length > 0) && !att.loading;
   const send = () => {
-    if (!text.trim() || busy) return;
-    void sendMessage(text);
+    if (!canSend || busy) return;
+    void sendMessage(text, att.files);
     setText("");
+    att.clear();
   };
   return (
     <div className="composer">
-      <div className="composer-box">
+      <div className={`composer-box ${att.over ? "drop-over" : ""}`} {...att.bind}>
+        <PendingFiles att={att} />
         <textarea
           ref={ta}
           value={text}
@@ -385,6 +391,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
           id="chat-input"
         />
         <div className="row">
+          <AttachButton att={att} disabled={!hasKey} />
           <span className="mono dim" style={{ fontSize: 10.5 }}>
             {busy ? <span className="shimmer-text">Claude is working</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
           </span>
@@ -394,7 +401,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
               <Icon.Stop size={12} /> Stop
             </button>
           ) : (
-            <button className="btn sm primary" onClick={send} disabled={!text.trim()} aria-label="Send">
+            <button className="btn sm primary" onClick={send} disabled={!canSend} aria-label="Send">
               <Icon.Send size={13} />
             </button>
           )}

@@ -36,8 +36,24 @@ export type Item =
   | { k: "if"; cond: Expr; then: Item[]; else?: Item[]; span: Span }
   | { k: "let"; name: string; value: Expr; span: Span };
 
+/** A `name: value` pair inside a brief entry's braces, e.g. `{ load: 30N, dir: -Z }`. */
+export interface BriefProp {
+  name: string;
+  value: Expr;
+  span: Span;
+}
+
+/** Entries of the `brief { ... }` block: what the design is for and what it must survive. */
+export type BriefItem =
+  | { k: "field"; name: string; value: Expr; to?: Expr; assumed: boolean; span: Span; nameSpan: Span }
+  | { k: "use"; id: string; text: string; props: BriefProp[]; assumed: boolean; span: Span; idSpan: Span }
+  | { k: "given"; name: string; value: Expr; desc?: string; assumed: boolean; span: Span; nameSpan: Span; valueSpan: Span }
+  | { k: "reference"; id: string; title: string; props: BriefProp[]; span: Span; idSpan: Span }
+  | { k: "assume"; text: string; confirmed: boolean; span: Span };
+
 export type Stmt =
   | { k: "design"; name: string; span: Span }
+  | { k: "brief"; items: BriefItem[]; span: Span }
   | { k: "note"; text: string; span: Span }
   | {
       k: "param";
@@ -72,6 +88,8 @@ export type Stmt =
       k: "require";
       label: string;
       level: "hard" | "soft";
+      /** brief uses this requirement checks (`require "..." for hold_tube: ...`) */
+      uses: { name: string; span: Span }[];
       expr: Expr;
       span: Span;
     };

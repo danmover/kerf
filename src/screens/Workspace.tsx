@@ -14,6 +14,8 @@ import { viewport } from "../app/viewportApi";
 import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
+import { RefViewer } from "../ui/RefViewer";
+import { SketchPad } from "../ui/SketchPad";
 
 export function Workspace() {
   const project = useProject((s) => s.current);
@@ -56,6 +58,8 @@ export function Workspace() {
         </div>
       </div>
       <StatusBar />
+      <RefViewer />
+      <SketchPad />
     </div>
   );
 }

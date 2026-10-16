@@ -40,7 +40,7 @@ export function languageReference(): string {
 
 A design is one text file. It is the single source of truth: the app evaluates it, builds exact B-rep solids with OpenCASCADE, runs checks and renders the result. Every manual edit and every AI edit is an edit to this text.
 
-Units: millimetres and degrees. Literals may carry units (2cm, 0.5in, 1.5rad) which convert to mm/deg. World axes: X right, Y back, Z up. Constants X, Y, Z are unit vectors; ORIGIN is (0, 0, 0). Points are (x, y) or (x, y, z) with fields .x .y .z. Lists use [a, b, c] and index with [i] (0-based). Comments: // and /* */. Colors: #4f7cff.
+Units: millimetres and degrees. Literals may carry units (2cm, 0.5in, 1.5rad) which convert to mm/deg; 10N, 2kg, 50g and 40C are also read (forces in N, masses in g, temperatures in °C). World axes: X right, Y back, Z up. Constants X, Y, Z are unit vectors; ORIGIN is (0, 0, 0). Points are (x, y) or (x, y, z) with fields .x .y .z. Lists use [a, b, c] and index with [i] (0-based). Comments: // and /* */. Colors: #4f7cff.
 
 ## Statements (top level, evaluated in order; a name must be defined before it is used)
 design "Name"
@@ -50,9 +50,45 @@ let name = expr                                              // derived values: 
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
 component name = lib.kind(args) { props and flags }           // standard parts from the library
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
-require "Label" [hard|soft]: condition                         // checked every rebuild; hard by default
+require "Label" [hard|soft] [for use_id, ...]: condition      // checked every rebuild; hard by default; for links it to brief uses
+brief { ... }                                                 // the design brief, once, near the top (see below)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
+
+## The brief
+brief {
+  purpose: "Hold a 25 mm handlebar light on a bike"
+  setting: "Clamped to the handlebar, removed weekly"
+  priorities: ["strength", "print time"]
+  look: "Matte black, rounded edges" assumed
+
+  temp: -10C .. 45C                      // service temperature in °C, lowest first
+  outdoor: true
+  exposure: ["sunlight", "rain", "vibration"]
+
+  process: "FDM print"                   // FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded
+  material: "PETG"
+  quantity: 2
+  build_volume: (220, 220, 250)          // printer bed, mm; defaults by process when missing
+
+  max_size: (80, 60, 50)                 // the whole design must fit in this box, mm
+  max_mass: 60g
+
+  use hold_light "Holds a 150 g light over rough roads" { load: 15N, dir: -Z, on: mount, cycles: 100000 }
+  use swap "Comes off without tools" assumed
+
+  given bar_d = 25.4mm "Handlebar diameter, measured"
+  given light_w = 32mm "Light body width, read from photo1" assumed
+
+  reference photo1 "Light from the side" { file: "ast_ab12cd", notes: "Mount rail 32 mm wide" }
+  reference datasheet "Light manual" { url: "https://example.com/light.pdf" }
+
+  assume "Rider weight is not carried by this part"
+  assume "Printed with 4 walls" confirmed
+}
+A trailing assumed marks what Claude estimated; the user confirms it. Fields: purpose, setting, look (text), priorities, exposure (lists of text), temp (range with C), outdoor (true/false), process, material (text), quantity (integer), build_volume, max_size (three sizes in mm), max_mass (mass). use id "text" { load (force in N, or a mass in kg or g read as its weight), dir (direction: X, -Z or a vector), on (part or component name), cycles, note }. given name = value ["description"] defines a fixed name the design reads like a locked param (bar_d above). reference id "title" { file (an attached file id), url, notes }. Unknown fields are kept and warned about.
+Requirements link to uses with for: require "Clamp grips the bar" for hold_light: clamp_gap < bar_d.
+Brief checks the app adds: uses no requirement covers, loads that need strength analysis, the material against the temperature range, sunlight, wet and impact exposure and the process, food contact on printed parts, printed parts against the build volume, the whole design against max_size and max_mass, and givens nothing uses.
 
 ## Part blocks
 part bracket {

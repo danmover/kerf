@@ -74,6 +74,8 @@ export type ReqStatus = "pass" | "fail" | "pending" | "error";
 export interface EvalRequirement {
   label: string;
   level: "hard" | "soft";
+  /** brief uses this requirement checks */
+  uses: string[];
   status: ReqStatus;
   margin?: number;
   detail: string;
@@ -84,13 +86,91 @@ export interface EvalRequirement {
 
 export interface DepNode {
   id: string;
-  kind: "param" | "let" | "interface" | "component" | "part" | "require";
+  kind: "param" | "given" | "let" | "interface" | "component" | "part" | "require";
   label: string;
+}
+
+// ---------- the brief ----------
+
+/** Something the design must do or survive. Each use should be covered by requirements (`require ... for <id>`). */
+export interface BriefUse {
+  id: string;
+  text: string;
+  /** recorded by Claude without the user saying so */
+  assumed: boolean;
+  /** force in newtons */
+  load?: number;
+  /** unit vector the load acts along */
+  dir?: V3;
+  /** part or component the load acts on */
+  on?: string;
+  /** how many times it happens over the design's life */
+  cycles?: number;
+  note?: string;
+  span: Span;
+}
+
+/** A fact about the world the design has to fit, such as the tube diameter. Available to the design as a fixed name. */
+export interface BriefGiven {
+  name: string;
+  value: number | string | boolean;
+  /** value expression as written */
+  text: string;
+  desc?: string;
+  assumed: boolean;
+  span: Span;
+  valueSpan: Span;
+  usedBy: string[];
+}
+
+export interface BriefRef {
+  id: string;
+  title: string;
+  /** stored file (image or PDF) in this project's assets */
+  file?: string;
+  url?: string;
+  notes?: string;
+  span: Span;
+}
+
+export interface BriefAssumption {
+  text: string;
+  confirmed: boolean;
+  span: Span;
+}
+
+export interface Brief {
+  span: Span;
+  purpose?: string;
+  setting?: string;
+  look?: string;
+  priorities: string[];
+  /** service temperature range in °C */
+  temp?: [number, number];
+  outdoor?: boolean;
+  exposure: string[];
+  process?: string;
+  material?: string;
+  quantity?: number;
+  buildVolume?: V3;
+  maxSize?: V3;
+  /** grams */
+  maxMass?: number;
+  /** source names of fields Claude assumed */
+  assumed: string[];
+  uses: BriefUse[];
+  givens: BriefGiven[];
+  refs: BriefRef[];
+  assumptions: BriefAssumption[];
+  /** fields this version of Kerf does not know, kept as written */
+  extra: { name: string; text: string; span: Span }[];
 }
 
 export interface Model {
   name: string;
   notes: string[];
+  /** what the design is for; null when the source has no brief block */
+  brief: Brief | null;
   params: EvalParam[];
   parts: EvalPart[];
   requirements: EvalRequirement[];

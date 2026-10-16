@@ -49,8 +49,12 @@ describe("demo designs", () => {
     const m = evaluate(demo("enclosure"));
     expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
     expect(m.parts).toHaveLength(21);
-    expect(m.requirements).toHaveLength(6);
-    expect(m.requirements.filter((r) => r.status === "fail")).toEqual([]);
+    expect(m.requirements).toHaveLength(8);
+    expect(m.requirements.filter((r) => r.level === "hard" && r.status === "fail")).toEqual([]);
+    // the brief's power use catches a real problem: the port sits too deep behind the wall for a standard plug
+    expect(m.requirements.filter((r) => r.status === "fail").map((r) => r.label)).toEqual(["USB-C plug can seat (port within 1 mm of the outside)"]);
+    expect(m.brief?.uses.every((u) => m.requirements.some((r) => r.uses.includes(u.id)))).toBe(true);
+    expect(m.brief?.givens.every((g) => g.usedBy.length)).toBe(true);
   });
 
   it("reducer: evaluates cleanly, meshes at 12:1 and drives the output", () => {
@@ -58,6 +62,7 @@ describe("demo designs", () => {
     expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
     expect(m.parts).toHaveLength(26);
     expect(m.requirements.filter((r) => r.status === "fail")).toEqual([]);
+    expect(m.brief?.uses.every((u) => m.requirements.some((r) => r.uses.includes(u.id)))).toBe(true);
     const ratios = m.parts.filter((p) => p.motion?.ratio).map((p) => Math.abs(p.motion!.ratio));
     expect(Math.min(...ratios)).toBeCloseTo(1 / 12, 3);
   });

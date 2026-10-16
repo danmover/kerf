@@ -9,8 +9,9 @@ import { frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
 import { centerDistance, densify, gearOutline, maxPenetration, tipDiameter } from "../library/gears";
 import { materialDensity } from "../library/standards";
 import { fmtNum } from "../lang/values";
+import { briefChecks, type GeomLookup } from "./briefChecks";
 
-export type CheckCategory = "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "info";
+export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "build" | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
@@ -23,6 +24,8 @@ export interface CheckItem {
   span?: Span;
   level?: "hard" | "soft";
   margin?: number;
+  /** brief uses this check serves */
+  uses?: string[];
   /** how the result was established */
   basis: "geometry" | "parameters" | "needs analysis";
 }
@@ -147,7 +150,7 @@ export function gearChecks(model: Model): CheckItem[] {
   return out;
 }
 
-export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>): CheckReport {
+export function assembleReport(model: Model, geoModel: Model | null, kernel: ChecksResult | null, buildErrors: Map<string, string>, partsById: Map<string, EvalPart>, geom: GeomLookup = () => undefined): CheckReport {
   const t0 = performance.now();
   const items: CheckItem[] = [];
   const label = (id: string) => partsById.get(id)?.label ?? id;
@@ -173,8 +176,9 @@ export function assembleReport(model: Model, geoModel: Model | null, kernel: Che
       const errs = r.geo.map((q) => kernel.geoErrors[keyOf(q)]).filter(Boolean);
       if (errs.length) detail = errs.join("; ");
     }
-    items.push({ id: `req:${r.label}`, category: "requirement", status, title: r.label, detail, span: r.span, level: r.level, margin: r.margin, basis: r.geo.length ? "geometry" : "parameters" });
+    items.push({ id: `req:${r.label}`, category: "requirement", status, title: r.label, detail, span: r.span, level: r.level, margin: r.margin, uses: r.uses.length ? r.uses : undefined, basis: r.geo.length ? "geometry" : "parameters" });
   }
+  items.push(...briefChecks(model, items.filter((i) => i.category === "requirement"), geom));
 
   if (kernel) {
     for (const i of kernel.interferences) {

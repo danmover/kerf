@@ -47,6 +47,7 @@ export const KEYWORDS = new Set([
   "true",
   "false",
   "note",
+  "brief",
 ]);
 
 /** Unit suffix -> multiplier into base units (mm for length, degrees for angles). */
@@ -63,6 +64,8 @@ export const UNITS: Record<string, number> = {
   rpm: 1,
   N: 1,
   Nm: 1000,
+  // degrees Celsius, for the brief's service temperatures
+  C: 1,
 };
 
 const OPS = [
