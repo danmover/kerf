@@ -12,29 +12,43 @@ import { LIBRARY } from "../../library/components";
 import { THREADS, MATERIALS } from "../../library/standards";
 import type { Model } from "../../core/model";
 import { BRIEF_FIELDS } from "../../lang/evaluator";
+import { CONSTRAINTS } from "../../sketch/evaluate";
+import { SKETCH_FNS } from "../../sketch/fns";
 
-const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision"]);
+const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision", "sketch"]);
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
 const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
-const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step"]);
+const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step"]);
+/** Words that start a statement inside a sketch block. */
+const SKETCH_GEOMETRY = ["line", "circle", "arc", "point", "construction"];
+const SKETCH_WORDS = new Set([...SKETCH_GEOMETRY, ...Object.keys(CONSTRAINTS), "on", "dist", "dx", "dy"]);
 const CONSTS = new Set(["X", "Y", "Z", "ORIGIN", "PI", ...Object.keys(THREADS)]);
 
 interface St {
   inComment: boolean;
+  /** brace depth, and the depth inside the sketch block being read (sketch statements are coloured there) */
+  depth: number;
+  sketchDepth: number;
+  afterSketch: boolean;
+  /** no token yet on this line */
+  lineStart: boolean;
 }
 
 const parser: StreamParser<St> = {
   name: "kerf",
-  startState: () => ({ inComment: false }),
+  startState: () => ({ inComment: false, depth: 0, sketchDepth: -1, afterSketch: false, lineStart: true }),
   token(stream, state) {
+    if (stream.sol()) state.lineStart = true;
+    const first = state.lineStart;
     if (state.inComment) {
       if (stream.match(/^.*?\*\//)) state.inComment = false;
       else stream.skipToEnd();
       return "comment";
     }
     if (stream.eatSpace()) return null;
+    state.lineStart = false;
     if (stream.match("//")) {
       stream.skipToEnd();
       return "comment";
@@ -52,9 +66,11 @@ const parser: StreamParser<St> = {
     }
     if (stream.match(/^[A-Za-z_][A-Za-z0-9_]*/)) {
       const w = stream.current();
+      if (w === "sketch") state.afterSketch = true;
       if (STATEMENTS.has(w)) return "keyword";
       if (BRIEF_ENTRIES.has(w) && !stream.string.slice(0, stream.start).trim() && stream.peek() === " ") return "keyword";
       if (BRIEF_FLAGS.has(w) && stream.peek() !== ":" && !stream.string.slice(stream.pos).trim()) return "controlKeyword";
+      if (first && state.depth === state.sketchDepth && SKETCH_WORDS.has(w) && /^\s+[A-Za-z_(]/.test(stream.string.slice(stream.pos))) return "operatorKeyword";
       if (OPS_KW.has(w)) return "operatorKeyword";
       if (KEYWORDS.has(w)) return w === "true" || w === "false" ? "bool" : "controlKeyword";
       if (w === "lib") return "namespace";
@@ -65,7 +81,18 @@ const parser: StreamParser<St> = {
       return "variableName";
     }
     if (stream.match(/^(\.\.|==|!=|<=|>=|&&|\|\||[-+*/^<>=!?:])/)) return "operator";
-    if (stream.match(/^[{}()[\],;.]/)) return "punctuation";
+    if (stream.match(/^[{}()[\],;.]/)) {
+      const c = stream.current();
+      if (c === "{") {
+        state.depth++;
+        if (state.afterSketch) state.sketchDepth = state.depth;
+        state.afterSketch = false;
+      } else if (c === "}") {
+        if (state.depth === state.sketchDepth) state.sketchDepth = -1;
+        state.depth = Math.max(0, state.depth - 1);
+      }
+      return "punctuation";
+    }
     stream.next();
     return null;
   },
@@ -138,7 +165,9 @@ export const kerfTheme = EditorView.theme(
 /** Completions from the language tables plus names defined in the current model. */
 export function kerfCompletions(getModel: () => Model | null) {
   const fnCompletions: Completion[] = [
-    ...Object.values(SHAPE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "shape", apply: f.name + "(" })),
+    ...Object.values({ ...SHAPE_FNS, ...SKETCH_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "plane" ? "sketch plane" : "shape", apply: f.name + "(" })),
+    ...Object.entries(CONSTRAINTS).map(([k, c]) => ({ label: k, type: "keyword", info: c.doc, detail: c.dim ? "sketch dimension" : "sketch relation" })),
+    ...SKETCH_GEOMETRY.map((k) => ({ label: k, type: "keyword", detail: "sketch geometry" })),
     ...Object.values(MATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "math", apply: f.name + "(" })),
     ...Object.entries(modifierDocs).map(([k, d]) => ({ label: k, type: "function", info: d, detail: "modifier", apply: k + "(" })),
     ...GEO_FNS.map((g) => ({ label: g, type: "function", detail: "geometry", apply: g + "(" })),
@@ -146,7 +175,7 @@ export function kerfCompletions(getModel: () => Model | null) {
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
   const libItems: Completion[] = Object.entries(LIBRARY).map(([k, e]) => ({ label: k, type: "class", info: `${e.signature}\n\n${e.doc}`, detail: "library", apply: k + "(" }));
-  const props: Completion[] = ["color", "material", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at"].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = ["color", "material", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "label", "axis_at", "plane", "offset"].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 

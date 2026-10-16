@@ -64,6 +64,15 @@ npm run typecheck
 - Requirements can be numeric (`require "Board fits": inner_w - pcb.w >= 2`) or measured on the real geometry (`min_distance(pcb, lid) >= 2`).
 - Standard hardware library: ISO 4762 screws, nuts and heat-set inserts (M2 to M6), deep-groove bearings (623 to 6801), involute spur gears, a NEMA 17 stepper, a PCB, a USB-C connector, generic connectors and dowels.
 
+**Sketches**
+- Constrained 2D sketches on the XY, XZ or YZ plane, an offset or custom plane, or a flat face of a part (pencil button in the viewport, or the Sketches list under the parts).
+- Draw lines, rectangles, circles, arcs, slots and points. Snapping to points, midpoints, curves and the axes adds the matching relation, and nearly horizontal or vertical lines become exactly so. Type a length, `w,h` or a diameter while drawing for an exact size.
+- Click geometry to get the relations and dimensions that fit it (with keyboard shortcuts), plus construction, delete and "Ask Claude". Dimensions are edited in place, accept formulas such as `base_len - 2 * wall`, and can be scrubbed by dragging their label.
+- Drag points and curves while the solver keeps every constraint holding. Free points show which way they can still move, the header counts the remaining degrees of freedom, and a conflicting constraint is named with a one-click fix.
+- Fillets and chamfers on profile corners, and references to an earlier sketch's geometry (`side.l3.end`) so one profile follows another.
+- Make solid: extrude (new part, add to or cut from an existing one, through all, either or both directions, depth kept as a slider parameter) or revolve about a sketch line.
+- Every action is a text edit of the design file, so undo, history and Claude all work on sketches too. Claude can read a sketch as solved with `get_sketch`.
+
 **Checking**
 - Every change runs the full pipeline: evaluate, build (only the parts that changed), check, then refine the meshes.
 - Checks cover requirements, solid interference, tool access to every screw, gear mesh and ratio, and motion.
@@ -81,11 +90,11 @@ npm run typecheck
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
-Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two-stage 12:1 gear reducer (26 solids). Both pass every hard check and carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
+Three complete examples ship with it: a sensor-hub enclosure (21 solids), a two-stage 12:1 gear reducer (26 solids) and a shaft support bracket built entirely from five constrained sketches. All pass every hard check, and the enclosure and reducer carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
 
 ## Not in 0.1
 
-- **Sketch and direct modelling tools.** Manual editing today is through parameters and the design file, not 2D sketches with constraints or push and pull on faces.
+- **Direct modelling.** Push and pull on faces, and sketching on curved faces, are not there yet; profiles come from sketches on flat planes.
 - **Parallel generation.** One Claude conversation designs the whole assembly, and one kernel worker builds it. Parallel sub-agents per subassembly and a multi-worker kernel are the next step for large assemblies.
 - **Engineering analysis.** No stress, deflection or thermal analysis, and no tolerance stack-ups. The checks are geometric.
 - **Drawings and measurement.** No 2D drawings or interactive measuring tool yet.
@@ -97,13 +106,14 @@ Two complete examples ship with it: a sensor-hub enclosure (21 solids) and a two
 
 ```
 src/lang/       Kerf language: lexer, parser, evaluator (no eval, step-limited)
+src/sketch/     Sketch evaluation, constraint solver, profiles, and the text edits the sketch editor makes
 src/library/    Standard parts, thread and bearing tables, involute gears
 src/kernel/     OpenCASCADE (WebAssembly) in a Web Worker; content-hashed build cache
 src/core/       Pipeline (engine), checks, conflict solver (separate worker), source edits
 src/ai/         Claude tools, system prompt, language reference, chat loop
 src/app/        Projects, history and previews, settings, view state, spots, exports
 src/persist/    IndexedDB storage, encrypted key vault, import and export formats
-src/ui/         Viewport (three.js and Kerf's render pipeline in ui/viewport/render), editor (CodeMirror), panels, chat, dialogs
+src/ui/         Viewport (three.js and Kerf's render pipeline in ui/viewport/render), sketch editor, code editor (CodeMirror), panels, chat, dialogs
 src/screens/    Onboarding, projects, workspace, legal pages
 src/demos/      The example designs
 tests/          Vitest unit tests

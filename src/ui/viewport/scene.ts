@@ -197,6 +197,7 @@ export class SceneController {
   onLightAngle: (deg: number) => void = () => undefined;
   /** the turntable stopped because the user took the camera */
   onTurntableStop: () => void = () => undefined;
+  private renderListeners = new Set<() => void>();
   /** until the user moves the camera, the first complete build re-frames the model */
   private autoFit = true;
 
@@ -414,6 +415,85 @@ export class SceneController {
     this.turntable = on;
     this.controls.autoRotate = on;
     if (on) this.autoFit = false;
+  }
+
+  // ---------- hooks for 2D overlays (sketch editing) ----------
+
+  /** Call fn after each frame drawn to the canvas, so 2D overlays can follow the camera. Returns the way to stop. */
+  onRendered(fn: () => void): () => void {
+    this.renderListeners.add(fn);
+    return () => void this.renderListeners.delete(fn);
+  }
+
+  /** In sketch mode the left button belongs to the sketch tools: middle orbits, right pans. */
+  setSketchMode(on: boolean) {
+    this.controls.mouseButtons = on ? { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+  }
+
+  /** World point to pixels in the viewport; `front` is false behind the camera. */
+  toScreen(p: [number, number, number]): { x: number; y: number; front: boolean } {
+    const v = new THREE.Vector3(p[0], p[1], p[2]).project(this.camera);
+    return { x: ((v.x + 1) / 2) * this.container.clientWidth, y: ((1 - v.y) / 2) * this.container.clientHeight, front: v.z < 1 };
+  }
+
+  /** The ray through a pixel of the viewport. */
+  rayAt(x: number, y: number): { o: [number, number, number]; d: [number, number, number] } {
+    const ndc = new THREE.Vector2((x / Math.max(1, this.container.clientWidth)) * 2 - 1, -(y / Math.max(1, this.container.clientHeight)) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const { origin: o, direction: d } = this.raycaster.ray;
+    return { o: [o.x, o.y, o.z], d: [d.x, d.y, d.z] };
+  }
+
+  /** The part surface under a pixel: its point and outward normal, for sketching on a face. */
+  surfaceAt(x: number, y: number): { partId: string; point: [number, number, number]; normal: [number, number, number] } | null {
+    const ndc = new THREE.Vector2((x / Math.max(1, this.container.clientWidth)) * 2 - 1, -(y / Math.max(1, this.container.clientHeight)) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const meshes = [...this.parts.values()].filter((p) => p.group.visible && !p.removing).map((p) => p.mesh);
+    for (const h of this.raycaster.intersectObjects(meshes, false)) {
+      if (this.sectionAnim.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
+      if (!h.face) continue;
+      const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
+      return { partId: h.object.userData.partId as string, point: [h.point.x, h.point.y, h.point.z], normal: [n.x, n.y, n.z] };
+    }
+    return null;
+  }
+
+  /** Turn to look straight at a plane (normal n toward the viewer, v pointing up). */
+  viewPlane(n: [number, number, number], v: [number, number, number], center: [number, number, number], radius: number) {
+    const dir = new THREE.Vector3(...n).normalize().addScaledVector(new THREE.Vector3(...v), -1e-4).normalize();
+    const fov = (this.camera.fov * Math.PI) / 180;
+    const dist = Math.max(radius, 5) / Math.sin(Math.min(fov, fov * this.camera.aspect) / 2);
+    const target = new THREE.Vector3(...center);
+    this.autoFit = false;
+    this.moveCamera(target.clone().addScaledVector(dir, dist * 1.1), target, 650);
+  }
+
+  /** Half the diagonal of the model's bounding box (for framing). */
+  modelRadius() {
+    return this.bounds.getSize(new THREE.Vector3()).length() / 2;
+  }
+
+  cameraState() {
+    return { pos: this.camera.position.toArray() as [number, number, number], target: this.controls.target.toArray() as [number, number, number] };
+  }
+
+  restoreCamera(s: { pos: [number, number, number]; target: [number, number, number] }) {
+    this.moveCamera(new THREE.Vector3(...s.pos), new THREE.Vector3(...s.target), 600);
+  }
+
+  /** Swing the camera to a position and target (at once with reduced motion). */
+  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
+    if (this.display.reduceMotion) {
+      this.camera.position.copy(pos);
+      this.controls.target.copy(target);
+      this.controls.update();
+      this.camAnim = null;
+    } else {
+      const fromOff = this.camera.position.clone().sub(this.controls.target);
+      const toOff = pos.clone().sub(target);
+      this.camAnim = { t0: performance.now(), dur, fromDir: fromOff.clone().normalize(), toDir: toOff.clone().normalize(), fromDist: fromOff.length(), toDist: toOff.length(), fromTarget: this.controls.target.clone(), toTarget: target.clone() };
+    }
+    this.changed = true;
   }
 
   // ---------- parts ----------
@@ -1008,7 +1088,7 @@ export class SceneController {
    */
   anchor(id: string, local?: [number, number, number]): { x: number; y: number; front: boolean } | null {
     const obj = this.parts.get(id);
-    if (!obj || obj.removing !== null) return null;
+    if (!obj || obj.removing) return null;
     const v = (local ? new THREE.Vector3(...local) : obj.center.clone()).applyMatrix4(obj.mesh.matrixWorld);
     const front = v.clone().sub(this.camera.position).dot(this.camera.getWorldDirection(new THREE.Vector3())) > 0;
     v.project(this.camera);
@@ -1251,6 +1331,7 @@ export class SceneController {
     if (!this.needComposite) return;
     this.needComposite = false;
     this.present(now);
+    for (const fn of this.renderListeners) fn();
   }
 
   /** Composite the accumulated image to the canvas, then overlays and the axis triad. */
@@ -1369,7 +1450,7 @@ export class SceneController {
         box = new THREE.Box3();
         for (const id of opts.focus) {
           const p = this.parts.get(id);
-          if (p && p.removing === null) box.expandByObject(p.group);
+          if (p && !p.removing) box.expandByObject(p.group);
         }
         if (box.isEmpty()) box = undefined;
       }

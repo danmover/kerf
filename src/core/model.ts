@@ -4,6 +4,7 @@ import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
+import type { EvalSketch } from "../sketch/types";
 
 export interface Motion {
   origin: V3;
@@ -138,7 +139,7 @@ export interface EvalDecision {
 
 export interface DepNode {
   id: string;
-  kind: "param" | "given" | "let" | "interface" | "component" | "part" | "require";
+  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "require";
   label: string;
 }
 
@@ -227,6 +228,8 @@ export interface Model {
   parts: EvalPart[];
   requirements: EvalRequirement[];
   decisions: EvalDecision[];
+  /** 2D constrained sketches, solved, with what the sketch editor needs */
+  sketches: EvalSketch[];
   diagnostics: Diagnostic[];
   /** dependency graph: edges from a definition to what reads it */
   graph: { nodes: DepNode[]; edges: { from: string; to: string }[] };

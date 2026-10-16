@@ -19,6 +19,9 @@ import { Markup, toggleMarkup, useMarkup } from "./Markup";
 import { openSpot, closeSpot, useSpot } from "../app/spot";
 import { useGap, type Gap } from "./useGap";
 import { ImportFacts } from "./ImportsPanel";
+import { SketchLayer } from "./sketch/SketchPanels";
+import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
+import { T } from "./sketch/glyphs";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -32,6 +35,9 @@ export function Viewport() {
   const view = useView();
   const settings = useSettings();
   const [webglError, setWebglError] = useState("");
+  const [scene, setScene] = useState<SceneController | null>(null);
+  const sketching = useSketch((s) => !!s.active || s.picking);
+  const inSketch = useSketch((s) => !!s.active);
 
   useEffect(() => {
     if (!mount.current) return;
@@ -79,7 +85,9 @@ export function Viewport() {
       snapshot: () => c.snapshot(),
       hitAt: (x, y) => c.hitAt(x, y),
     });
+    setScene(c);
     return () => {
+      setScene(null);
       registerViewport(null);
       c.dispose();
       ctl.current = null;
@@ -134,7 +142,7 @@ export function Viewport() {
   const marking = useMarkup((s) => s.on);
 
   return (
-    <div className="viewport">
+    <div className={`viewport ${inSketch ? "sketching" : ""}`}>
       <div className="vp-mount" ref={mount} />
 
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
@@ -187,6 +195,9 @@ export function Viewport() {
         <div className="sep" />
         <button className={`icon-btn ${marking ? "active" : ""}`} onClick={() => toggleMarkup()} data-tip="Draw on the view for Claude (M)" aria-label="Draw on the view for Claude">
           <Icon.Edit />
+        </button>
+        <button className={`icon-btn ${sketching ? "active" : ""}`} onClick={() => (sketching ? exitSketch() : startPicking())} data-tip={sketching ? "Leave the sketch" : "New sketch"} aria-label="Sketch">
+          <T.Pencil />
         </button>
         <div className="sep" />
         <button className={`icon-btn ${settings.grid ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip="Grid" aria-label="Grid">
@@ -252,12 +263,14 @@ export function Viewport() {
 
       <Hud stage={stage} parts={visibleParts} />
 
-      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
+      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
       <SpotChat />
       <Markup />
 
-      {empty && (
+      {scene && <SketchLayer ctl={scene} />}
+
+      {empty && !sketching && (
         <div className="vp-empty">
           <motion.div className="card" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div style={{ display: "grid", placeItems: "center", marginBottom: 12, color: "var(--accent-2)" }}>
@@ -438,6 +451,14 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
         >
           <Icon.Sparkle size={13} /> Ask
         </button>
+        {parts.length === 1 &&
+          model?.sketches
+            .filter((sk) => sk.usedBy.includes(p.name))
+            .map((sk) => (
+              <button key={sk.name} className="btn sm" onClick={() => enterSketch(sk.name)} data-tip={`Edit the sketch ${p.name} is built from`}>
+                <T.Pencil size={13} /> {sk.name}
+              </button>
+            ))}
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
         Right-click a spot on the model to ask about it
