@@ -490,7 +490,7 @@ export function assemblyGuide(def: BoardDef, spec: BoardSpec, parts: BoardPart[]
 // ---------------------------------------------------------------- files
 
 /** The Gerber and drill files in one zip, as board houses ask for them. */
-export function gerberZip(b: RoutedBoard, date?: Date): Uint8Array {
+export function gerberZip(b: RoutedBoard, date?: Date): Uint8Array<ArrayBuffer> {
   return zip(
     gerberFiles(b).map((f) => ({ path: f.path, data: f.content })),
     date,
