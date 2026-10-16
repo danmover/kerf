@@ -146,7 +146,16 @@ export function commitSource(source: string, author: VersionRecord["author"], me
   void addVersion(author, message ?? summarise(model, "Edited design"), source);
   committed = { source, model };
   scheduleSave();
+  adoptDesignName(model);
   return model;
+}
+
+/** A project still called "Untitled design" takes the name the design gives itself. */
+function adoptDesignName(model: Model | null) {
+  const cur = get().current;
+  const name = model?.name?.trim();
+  if (!cur || !name || cur.name !== "Untitled design" || name === cur.name) return;
+  void renameProject(cur.id, name);
 }
 
 /** Live edit from the code editor: evaluate now, record a version once typing pauses. */
@@ -165,6 +174,7 @@ function commitTyping() {
   set((s) => ({ undo: [...s.undo, committed.source].slice(-200), redo: [] }));
   void addVersion("you", summarise(model, "Edited source"), source);
   committed = { source, model };
+  adoptDesignName(model);
 }
 
 export function undo() {
