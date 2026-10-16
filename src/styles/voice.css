@@ -4,8 +4,8 @@
   position: relative;
 }
 .composer-box:has(.voice-bar.live) {
-  border-color: rgba(255, 93, 108, 0.55);
-  box-shadow: 0 0 0 3px rgba(255, 93, 108, 0.1), 0 0 30px -12px rgba(255, 93, 108, 0.5);
+  border-color: rgb(var(--fail-rgb) / 0.55);
+  box-shadow: 0 0 0 3px rgb(var(--fail-rgb) / 0.1), 0 0 30px -12px rgb(var(--fail-rgb) / 0.5);
 }
 .composer-box:has(.voice-bar) > .row {
   visibility: hidden;
@@ -37,16 +37,16 @@
   cursor: default;
 }
 .mic-btn.live {
-  color: #fff;
-  background: linear-gradient(180deg, #ff7381, #e5485a);
-  border-color: #ff8a96;
-  box-shadow: 0 0 0 3px rgba(255, 93, 108, 0.16), 0 0 22px -4px rgba(255, 93, 108, 0.65);
+  color: #fff; /* theme: same, white on the red button */
+  background: linear-gradient(180deg, color-mix(in srgb, var(--fail), #fff 15%), color-mix(in srgb, var(--fail), #000 10%)); /* theme: same, --fail lit and shaded */
+  border-color: color-mix(in srgb, var(--fail) 50%, var(--fail-ink));
+  box-shadow: 0 0 0 3px rgb(var(--fail-rgb) / 0.16), 0 0 22px -4px rgb(var(--fail-rgb) / 0.65);
 }
 .mic-ring {
   position: absolute;
   inset: -3px;
   border-radius: 9px;
-  border: 2px solid rgba(255, 93, 108, 0.6);
+  border: 2px solid rgb(var(--fail-rgb) / 0.6);
   animation: mic-ring 1.5s var(--ease) infinite;
   pointer-events: none;
 }
@@ -74,12 +74,12 @@
   min-height: 34px;
   padding: 3px 4px 3px 10px;
   border-radius: 9px;
-  background: rgba(14, 17, 25, 0.97);
-  border: 1px solid rgba(255, 93, 108, 0.3);
-  box-shadow: 0 -10px 24px -14px rgba(255, 93, 108, 0.45);
+  background: rgb(var(--bg-2-rgb) / 0.97);
+  border: 1px solid rgb(var(--fail-rgb) / 0.3);
+  box-shadow: 0 -10px 24px -14px rgb(var(--fail-rgb) / 0.45);
 }
 .voice-bar.sending {
-  border-color: rgba(109, 139, 255, 0.4);
+  border-color: rgb(var(--accent-rgb) / 0.4);
   box-shadow: 0 -10px 24px -14px var(--accent-glow);
 }
 .vb-text {
@@ -108,12 +108,12 @@
 }
 .vb-where.device {
   color: var(--pass);
-  border-color: rgba(61, 220, 151, 0.35);
+  border-color: rgb(var(--pass-rgb) / 0.35);
   background: var(--pass-soft);
 }
 .vb-where.online {
   color: var(--warn);
-  border-color: rgba(245, 184, 75, 0.35);
+  border-color: rgb(var(--warn-rgb) / 0.35);
   background: var(--warn-soft);
 }
 .vb-time {
@@ -131,7 +131,7 @@
   width: 3px;
   height: 20px;
   border-radius: 2px;
-  background: linear-gradient(180deg, #ff9aa4, #ff5d6c);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--fail) 30%, var(--fail-ink)), var(--fail));
   transform: scaleY(0.3);
   transform-origin: center;
   transition: background 0.3s;
@@ -165,11 +165,11 @@
   font-size: 12.5px;
 }
 .voice-notice.offer .vn-inner {
-  border-color: rgba(109, 139, 255, 0.4);
-  background: #11172a;
+  border-color: rgb(var(--accent-rgb) / 0.4);
+  background: color-mix(in srgb, var(--accent-lo) 9%, var(--bg-1));
 }
 .voice-notice.error .vn-inner {
-  border-color: rgba(255, 93, 108, 0.4);
+  border-color: rgb(var(--fail-rgb) / 0.4);
   background: var(--fail-soft);
 }
 .voice-notice.error.soft .vn-inner {

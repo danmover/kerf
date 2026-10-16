@@ -13,6 +13,7 @@ import { resetChat, useChat } from "../ai/chat";
 import type { ProjectRecord } from "../persist/db";
 import { importStepFiles, isStepFile } from "../app/imports";
 import { cleanName } from "../kernel/stepText";
+import { ThemeSwitch } from "../ui/ThemeSwitch";
 
 export function Home() {
   useTick();
@@ -74,6 +75,7 @@ export function Home() {
           <button className="btn" onClick={() => fileRef.current?.click()}>
             <Icon.Upload size={14} /> Import
           </button>
+          <ThemeSwitch />
           <button className="icon-btn" onClick={() => openSettings("app")} aria-label="Settings" data-tip="Settings">
             <Icon.Settings />
           </button>
@@ -90,7 +92,7 @@ export function Home() {
         </motion.div>
 
         {save === "memory" && (
-          <div className="banner" style={{ borderRadius: 10, border: "1px solid rgba(245,184,75,.35)", marginBottom: 10 }}>
+          <div className="banner" style={{ borderRadius: 10, border: "1px solid rgb(var(--warn-rgb) / 0.35)", marginBottom: 10 }}>
             <Icon.Alert size={14} /> This browser is blocking local storage. Projects last only until you close the tab.
           </div>
         )}
@@ -227,21 +229,26 @@ function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
 
 /** Small animated line drawings for templates without a thumbnail. */
 export function TemplateArt({ id }: { id: string }) {
-  const stroke = "#6d8bff";
+  // theme tokens, set as styles: SVG colour attributes do not take var()
+  const accent = { stroke: "var(--accent)" };
+  const violet = { stroke: "var(--violet)" };
+  const line = { stroke: "var(--line-3)" };
+  const tint = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})` });
   if (id === "reducer")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
-        <motion.circle cx="80" cy="62" r="34" fill="none" stroke={stroke} strokeWidth="1.3" strokeDasharray="5 3" animate={{ rotate: -360 }} transition={{ duration: 18, repeat: Infinity, ease: "linear" }} style={{ originX: "80px", originY: "62px" }} />
-        <motion.circle cx="131" cy="62" r="17" fill="none" stroke="#c792ff" strokeWidth="1.3" strokeDasharray="4 3" animate={{ rotate: 360 }} transition={{ duration: 9, repeat: Infinity, ease: "linear" }} style={{ originX: "131px", originY: "62px" }} />
-        <circle cx="80" cy="62" r="4" fill={stroke} />
-        <circle cx="131" cy="62" r="3" fill="#c792ff" />
-        <rect x="30" y="18" width="150" height="88" rx="6" fill="none" stroke="#39445c" />
+        <motion.circle cx="80" cy="62" r="34" fill="none" strokeWidth="1.3" strokeDasharray="5 3" animate={{ rotate: -360 }} transition={{ duration: 18, repeat: Infinity, ease: "linear" }} style={{ ...accent, originX: "80px", originY: "62px" }} />
+        <motion.circle cx="131" cy="62" r="17" fill="none" strokeWidth="1.3" strokeDasharray="4 3" animate={{ rotate: 360 }} transition={{ duration: 9, repeat: Infinity, ease: "linear" }} style={{ ...violet, originX: "131px", originY: "62px" }} />
+        <circle cx="80" cy="62" r="4" style={{ fill: "var(--accent)" }} />
+        <circle cx="131" cy="62" r="3" style={{ fill: "var(--violet)" }} />
+        <rect x="30" y="18" width="150" height="88" rx="6" fill="none" style={line} />
       </svg>
     );
   if (id === "shelf")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
         <defs>
+          {/* a stress colour scale: the same on both themes */}
           <linearGradient id="tpl-stress" x1="0" x2="1">
             <stop offset="0" stopColor="#ff4d5e" />
             <stop offset="0.3" stopColor="#ffd25e" />
@@ -249,12 +256,12 @@ export function TemplateArt({ id }: { id: string }) {
             <stop offset="1" stopColor="#3b6cff" />
           </linearGradient>
         </defs>
-        <path d="M46 12v98" stroke="#39445c" strokeWidth="2" />
+        <path d="M46 12v98" style={line} strokeWidth="2" />
         {[20, 34, 48, 62, 76, 90, 104].map((y) => (
-          <path key={y} d={`M46 ${y}l-7 6`} stroke="#39445c" />
+          <path key={y} d={`M46 ${y}l-7 6`} style={line} />
         ))}
-        <rect x="48" y="22" width="8" height="78" fill="rgba(109,139,255,.12)" stroke={stroke} strokeWidth="1.2" />
-        <path d="M56 30h50L56 78z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.2" />
+        <rect x="48" y="22" width="8" height="78" style={tint(0.12)} strokeWidth="1.2" />
+        <path d="M56 30h50L56 78z" style={tint(0.08)} strokeWidth="1.2" />
         <motion.path
           fill="url(#tpl-stress)"
           stroke="none"
@@ -262,37 +269,37 @@ export function TemplateArt({ id }: { id: string }) {
           animate={{ d: ["M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z", "M56 22 Q110 23 164 29 L164 37 Q110 31 56 30 Z", "M56 22 Q110 22 164 22 L164 30 Q110 30 56 30 Z"] }}
           transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
         />
-        <path d="M56 22h108v8H56" fill="none" stroke="#8fa8ff" strokeOpacity="0.25" strokeDasharray="3 3" />
+        <path d="M56 22h108v8H56" fill="none" style={{ stroke: "var(--accent-2)" }} strokeOpacity="0.25" strokeDasharray="3 3" />
         <motion.g animate={{ y: [0, 6, 0] }} transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}>
-          <path d="M150 2v14" stroke="#ffb454" strokeWidth="1.6" />
-          <path d="m146 12 4 5 4-5" fill="none" stroke="#ffb454" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M150 2v14" style={{ stroke: "var(--warn)" }} strokeWidth="1.6" />
+          <path d="m146 12 4 5 4-5" fill="none" style={{ stroke: "var(--warn)" }} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
         </motion.g>
       </svg>
     );
   if (id === "enclosure")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
-        <motion.path d="M40 40 100 18l60 22v44l-60 22-60-22z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
-        <path d="M40 40l60 22 60-22M100 62v44" fill="none" stroke="#39445c" />
-        <motion.rect x="76" y="50" width="48" height="10" rx="2" fill="#3ddc97" opacity={0.6} animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ duration: 2.4, repeat: Infinity }} />
+        <motion.path d="M40 40 100 18l60 22v44l-60 22-60-22z" style={tint(0.08)} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
+        <path d="M40 40l60 22 60-22M100 62v44" fill="none" style={line} />
+        <motion.rect x="76" y="50" width="48" height="10" rx="2" style={{ fill: "var(--pass)" }} opacity={0.6} animate={{ opacity: [0.3, 0.7, 0.3] }} transition={{ duration: 2.4, repeat: Infinity }} />
       </svg>
     );
   if (id === "bracket")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
-        <motion.path d="M62 20v76h84v-8H72a2 2 0 0 1-2-2V20z" fill="rgba(109,139,255,.08)" stroke={stroke} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
-        <path d="M72 64v20h20z" fill="none" stroke="#c792ff" strokeWidth="1.2" />
+        <motion.path d="M62 20v76h84v-8H72a2 2 0 0 1-2-2V20z" style={tint(0.08)} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.4 }} />
+        <path d="M72 64v20h20z" fill="none" style={violet} strokeWidth="1.2" />
         <motion.g animate={{ opacity: [0.35, 0.9, 0.35] }} transition={{ duration: 2.6, repeat: Infinity }}>
-          <path d="M62 106h84M62 102v8M146 102v8" stroke="#39445c" />
-          <text x="104" y="116" fill="#7f8aa3" fontSize="8" textAnchor="middle" fontFamily="monospace">base_len</text>
+          <path d="M62 106h84M62 102v8M146 102v8" style={line} />
+          <text x="104" y="116" style={{ fill: "var(--text-3)" }} fontSize="8" textAnchor="middle" fontFamily="monospace">base_len</text>
         </motion.g>
-        <path d="M52 20v76M48 20h8M48 96h8" stroke="#39445c" />
+        <path d="M52 20v76M48 20h8M48 96h8" style={line} />
       </svg>
     );
   return (
     <svg viewBox="0 0 200 120" width="70%" height="70%">
-      <motion.rect x="60" y="25" width="80" height="70" rx="6" fill="none" stroke="#39445c" strokeDasharray="6 5" animate={{ strokeDashoffset: [0, -22] }} transition={{ duration: 1.6, repeat: Infinity, ease: "linear" }} />
-      <path d="M100 48v24M88 60h24" stroke={stroke} strokeWidth="1.6" strokeLinecap="round" />
+      <motion.rect x="60" y="25" width="80" height="70" rx="6" fill="none" style={line} strokeDasharray="6 5" animate={{ strokeDashoffset: [0, -22] }} transition={{ duration: 1.6, repeat: Infinity, ease: "linear" }} />
+      <path d="M100 48v24M88 60h24" style={accent} strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }

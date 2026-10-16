@@ -52,7 +52,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
         </div>
         <div className="grow" />
         {tab === "code" && errors[0] && (
-          <button className="btn ghost sm" style={{ color: "#ff9aa4", alignSelf: "center" }} onClick={() => useView.setState({ reveal: { span: { start: errors[0].start, end: errors[0].end }, nonce: Date.now() } })}>
+          <button className="btn ghost sm" style={{ color: "var(--fail-ink)", alignSelf: "center" }} onClick={() => useView.setState({ reveal: { span: { start: errors[0].start, end: errors[0].end }, nonce: Date.now() } })}>
             <Icon.Alert size={13} /> line {lineCol(source, errors[0].start).line}: {errors[0].message.slice(0, 70)}
           </button>
         )}

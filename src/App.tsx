@@ -19,6 +19,7 @@ import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
 import { toggleMarkup } from "./ui/Markup";
+import { useThemeSync } from "./app/theme";
 
 // each opened project brings its own conversation
 onProjectOpen((p) => void loadChat(p.id));
@@ -28,6 +29,7 @@ export function App() {
   const screen = useUi((s) => s.screen);
   const hasProject = useProject((s) => !!s.current);
   const reduceMotion = useSettings((s) => s.reduceMotion);
+  useThemeSync();
   useShortcuts();
   useUnloadGuard();
 

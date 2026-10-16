@@ -3,7 +3,8 @@
 
 import { StreamLanguage, HighlightStyle, syntaxHighlighting, type StreamParser } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
-import { EditorView } from "@codemirror/view";
+import { StateEffect, StateField } from "@codemirror/state";
+import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { CompletionContext, CompletionResult, Completion } from "@codemirror/autocomplete";
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
@@ -16,6 +17,8 @@ import { BRIEF_FIELDS } from "../../lang/evaluator";
 import { CONSTRAINTS } from "../../sketch/evaluate";
 import { SKETCH_FNS } from "../../sketch/fns";
 import { ANALYSIS_FNS, DRIVETRAIN_PROPS, STRUCTURAL_PROPS } from "../../analysis/lang";
+import { currentTheme } from "../../app/theme";
+import "../../styles/syntax.css";
 
 const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision", "sketch", "analysis"]);
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
@@ -114,56 +117,75 @@ const parser: StreamParser<St> = {
 
 export const kerfLanguage = StreamLanguage.define(parser);
 
+// colours are tokens from styles/syntax.css, so they follow the light and dark themes
 const highlight = HighlightStyle.define([
-  { tag: t.keyword, color: "#c792ff", fontWeight: "500" },
-  { tag: t.operatorKeyword, color: "#ff9e64", fontWeight: "500" },
-  { tag: t.controlKeyword, color: "#c792ff" },
-  { tag: t.comment, color: "#5c6680", fontStyle: "italic" },
-  { tag: t.string, color: "#a5e075" },
-  { tag: t.number, color: "#ffcb6b" },
-  { tag: t.unit, color: "#ffcb6b" },
-  { tag: t.color, color: "#ff8fb1" },
-  { tag: t.bool, color: "#ff9e64" },
-  { tag: t.function(t.standard(t.variableName)), color: "#7cc4ff" },
-  { tag: t.constant(t.variableName), color: "#f78c6c" },
-  { tag: t.namespace, color: "#4fd1c5" },
-  { tag: t.propertyName, color: "#89ddff" },
-  { tag: t.variableName, color: "#d6deeb" },
-  { tag: t.operator, color: "#89ddff" },
-  { tag: t.punctuation, color: "#7f8aa3" },
+  { tag: t.keyword, color: "var(--syn-keyword)", fontWeight: "500" },
+  { tag: t.operatorKeyword, color: "var(--syn-op)", fontWeight: "500" },
+  { tag: t.controlKeyword, color: "var(--syn-keyword)" },
+  { tag: t.comment, color: "var(--syn-comment)", fontStyle: "italic" },
+  { tag: t.string, color: "var(--syn-string)" },
+  { tag: t.number, color: "var(--syn-number)" },
+  { tag: t.unit, color: "var(--syn-number)" },
+  { tag: t.color, color: "var(--syn-color)" },
+  { tag: t.bool, color: "var(--syn-op)" },
+  { tag: t.function(t.standard(t.variableName)), color: "var(--syn-builtin)" },
+  { tag: t.constant(t.variableName), color: "var(--syn-constant)" },
+  { tag: t.namespace, color: "var(--syn-namespace)" },
+  { tag: t.propertyName, color: "var(--syn-property)" },
+  { tag: t.variableName, color: "var(--syn-name)" },
+  { tag: t.operator, color: "var(--syn-property)" },
+  { tag: t.punctuation, color: "var(--syn-punct)" },
 ]);
 
 export const kerfHighlight = syntaxHighlighting(highlight);
 
-export const kerfTheme = EditorView.theme(
-  {
-    "&": { color: "#d6deeb", backgroundColor: "transparent", height: "100%", fontSize: "12.5px" },
+// CodeMirror draws what the theme below leaves out (tooltip text, the current
+// search match) by its own light or dark set, so keep its dark flag on the app's theme.
+const setDark = StateEffect.define<boolean>();
+const darkFlag = StateField.define<boolean>({
+  create: () => currentTheme() === "dark",
+  update: (dark, tr) => tr.effects.reduce((d, e) => (e.is(setDark) ? e.value : d), dark),
+  provide: (f) => EditorView.darkTheme.from(f),
+});
+const followTheme = ViewPlugin.define((view) => {
+  const watch = new MutationObserver(() => {
+    const dark = currentTheme() === "dark";
+    if (view.state.field(darkFlag) !== dark) view.dispatch({ effects: setDark.of(dark) });
+  });
+  watch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  return { destroy: () => watch.disconnect() };
+});
+
+export const kerfTheme = [
+  EditorView.theme({
+    "&": { color: "var(--syn-name)", backgroundColor: "transparent", height: "100%", fontSize: "12.5px" },
     ".cm-scroller": { fontFamily: "'IBM Plex Mono', ui-monospace, monospace", lineHeight: "1.62" },
-    ".cm-content": { caretColor: "#8fa8ff", padding: "8px 0" },
-    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#8fa8ff", borderLeftWidth: "2px" },
-    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": { backgroundColor: "rgba(109,139,255,0.28) !important" },
-    ".cm-gutters": { backgroundColor: "transparent", color: "#3e475c", border: "none", paddingRight: "6px" },
-    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "#8fa8ff" },
-    ".cm-activeLine": { backgroundColor: "rgba(109,139,255,0.06)" },
-    ".cm-foldPlaceholder": { backgroundColor: "#1b2030", border: "none", color: "#8fa8ff" },
-    ".cm-tooltip": { backgroundColor: "#141824", border: "1px solid #2a3142", borderRadius: "8px", boxShadow: "0 12px 32px rgba(0,0,0,.45)" },
-    ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "rgba(109,139,255,0.22)", color: "#fff" },
+    ".cm-content": { caretColor: "var(--accent-2)", padding: "8px 0" },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent-2)", borderLeftWidth: "2px" },
+    "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": { backgroundColor: "rgb(var(--accent-rgb) / 0.28) !important" },
+    ".cm-gutters": { backgroundColor: "transparent", color: "var(--code-gutter)", border: "none", paddingRight: "6px" },
+    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--accent-2)" },
+    ".cm-activeLine": { backgroundColor: "rgb(var(--accent-rgb) / 0.06)" },
+    ".cm-foldPlaceholder": { backgroundColor: "var(--code-raised)", border: "none", color: "var(--accent-2)" },
+    ".cm-tooltip": { backgroundColor: "var(--code-tip)", border: "1px solid var(--code-edge)", borderRadius: "8px", boxShadow: "var(--code-tip-shadow)" },
+    ".cm-tooltip-autocomplete > ul > li[aria-selected]": { backgroundColor: "rgb(var(--accent-rgb) / 0.22)", color: "rgb(var(--ink-rgb))" },
     ".cm-tooltip-autocomplete > ul": { fontFamily: "'IBM Plex Mono', monospace", fontSize: "12px", maxHeight: "260px" },
-    ".cm-completionDetail": { color: "#7f8aa3", fontStyle: "normal", marginLeft: "8px" },
+    ".cm-completionDetail": { color: "var(--syn-punct)", fontStyle: "normal", marginLeft: "8px" },
     ".cm-completionInfo": { maxWidth: "380px", padding: "8px 10px", fontFamily: "'IBM Plex Sans', sans-serif", fontSize: "12px", lineHeight: "1.5" },
     ".cm-diagnostic": { fontFamily: "'IBM Plex Sans', sans-serif", fontSize: "12px", padding: "6px 10px" },
-    ".cm-diagnostic-error": { borderLeft: "3px solid #ff5d6c" },
-    ".cm-diagnostic-warning": { borderLeft: "3px solid #f5b84b" },
-    ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy #ff5d6c", textUnderlineOffset: "3px" },
-    ".cm-lintRange-warning": { backgroundImage: "none", textDecoration: "underline wavy #f5b84b", textUnderlineOffset: "3px" },
-    ".cm-searchMatch": { backgroundColor: "rgba(255,203,107,0.25)", outline: "1px solid rgba(255,203,107,0.5)" },
-    ".cm-panels": { backgroundColor: "#11141d", color: "#d6deeb", borderTop: "1px solid #232938" },
+    ".cm-diagnostic-error": { borderLeft: "3px solid var(--fail)" },
+    ".cm-diagnostic-warning": { borderLeft: "3px solid var(--warn)" },
+    ".cm-lintRange-error": { backgroundImage: "none", textDecoration: "underline wavy var(--fail)", textUnderlineOffset: "3px" },
+    ".cm-lintRange-warning": { backgroundImage: "none", textDecoration: "underline wavy var(--warn)", textUnderlineOffset: "3px" },
+    ".cm-searchMatch": { backgroundColor: "rgb(var(--code-find-rgb) / 0.25)", outline: "1px solid rgb(var(--code-find-rgb) / 0.5)" },
+    ".cm-panels": { backgroundColor: "var(--code-panel)", color: "var(--syn-name)", borderTop: "1px solid var(--code-panel-line)" },
     ".cm-panel input, .cm-panel button": { fontFamily: "inherit" },
-    ".cm-textfield": { backgroundColor: "#0b0e15", border: "1px solid #2a3142", borderRadius: "4px", color: "#d6deeb" },
-    ".cm-button": { backgroundImage: "none", backgroundColor: "#1b2030", border: "1px solid #2a3142", borderRadius: "4px", color: "#d6deeb" },
-  },
-  { dark: true },
-);
+    ".cm-textfield": { backgroundColor: "var(--code-field)", border: "1px solid var(--code-edge)", borderRadius: "4px", color: "var(--syn-name)" },
+    ".cm-button": { backgroundImage: "none", backgroundColor: "var(--code-raised)", border: "1px solid var(--code-edge)", borderRadius: "4px", color: "var(--syn-name)" },
+  }),
+  darkFlag,
+  followTheme,
+];
 
 /** Completions from the language tables plus names defined in the current model. */
 export function kerfCompletions(getModel: () => Model | null) {

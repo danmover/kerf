@@ -135,7 +135,7 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
 
 export function MenuItem({ icon, children, hint, onClick, disabled, danger }: { icon?: ReactNode; children: ReactNode; hint?: string; onClick: () => void; disabled?: boolean; danger?: boolean }) {
   return (
-    <button className="menu-item" role="menuitem" onClick={onClick} disabled={disabled} style={danger ? { color: "#ff9aa4" } : undefined}>
+    <button className="menu-item" role="menuitem" onClick={onClick} disabled={disabled} style={danger ? { color: "var(--fail-ink)" } : undefined}>
       <span style={{ width: 16, display: "inline-grid", color: "var(--text-3)" }}>{icon}</span>
       <span>{children}</span>
       {hint && <span className="hint">{hint}</span>}
@@ -174,6 +174,9 @@ export function useTick(ms = 30000) {
 
 export function Splitter({ dir, onDrag, style, onEnd }: { dir: "v" | "h"; onDrag: (delta: number) => void; style?: React.CSSProperties; onEnd?: () => void }) {
   const [drag, setDrag] = useState(false);
+  // the handlers change as the size they move changes: a drag calls the current ones
+  const handlers = useRef({ onDrag, onEnd });
+  handlers.current = { onDrag, onEnd };
   return (
     <div
       className={`splitter ${dir} ${drag ? "dragging" : ""}`}
@@ -187,17 +190,19 @@ export function Splitter({ dir, onDrag, style, onEnd }: { dir: "v" | "h"; onDrag
         let last = dir === "v" ? e.clientX : e.clientY;
         const move = (ev: PointerEvent) => {
           const cur = dir === "v" ? ev.clientX : ev.clientY;
-          onDrag(cur - last);
+          handlers.current.onDrag(cur - last);
           last = cur;
         };
         const up = () => {
           setDrag(false);
           window.removeEventListener("pointermove", move);
           window.removeEventListener("pointerup", up);
-          onEnd?.();
+          window.removeEventListener("pointercancel", up);
+          handlers.current.onEnd?.();
         };
         window.addEventListener("pointermove", move);
         window.addEventListener("pointerup", up);
+        window.addEventListener("pointercancel", up);
       }}
     />
   );
@@ -213,10 +218,13 @@ export function usePersistentNumber(key: string, initial: number, min: number, m
       return initial;
     }
   });
-  const set = (n: number) => setV(Math.min(max, Math.max(min, n)));
+  // persist reads the latest value: a drag's end handler was made when the drag began
+  const latest = useRef(v);
+  latest.current = v;
+  const set = (n: number) => setV((latest.current = Math.min(max, Math.max(min, n))));
   const persist = () => {
     try {
-      localStorage.setItem(key, String(Math.round(v)));
+      localStorage.setItem(key, String(Math.round(latest.current)));
     } catch {
       /* ignore */
     }

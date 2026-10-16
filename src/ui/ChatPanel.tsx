@@ -27,6 +27,9 @@ import { ReviewCard } from "./ReviewCard";
 import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Attachments";
 import { useStickToBottom } from "./useStickToBottom";
 
+/** A touch screen has no right click: there, pressing and holding the model opens the spot chat. */
+const touchScreen = typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
+
 export function useApiKey() {
   return useSyncExternalStore(subscribeKey, getApiKey);
 }
@@ -391,7 +394,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
                 ? "Add your API key in settings to chat with Claude"
                 : about.length
                   ? `What should change about ${about.length === 1 ? about[0] : "the selected parts"}?`
-                  : "Describe a part, a change or a question… (right-click the model to ask about a spot)"
+                  : `Describe a part, a change or a question… (${touchScreen ? "press and hold" : "right-click"} the model to ask about a spot)`
           }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {

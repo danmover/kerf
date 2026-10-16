@@ -41,7 +41,8 @@ npm run typecheck
 - Claude shows its plan as a live to-do tree above the chat and keeps it current as it works, with a pill in the 3D view for the step it is on. While it works you can rename, annotate, skip, reorder or add steps, or ask it to stop after one for your review. Your changes reach Claude after its current action, or at once with Apply now.
 - Each Claude turn ends with a summary bar showing what changed, with Review and one-click Revert.
 - Talk instead of typing: tap the mic (or press `V`) and say the change. Speech is turned into text on your device when the browser can; the browser's online speech service is used only if you allow it. You can review the words before sending, or have them sent when you stop talking.
-- On a phone, the workspace shows the 3D view on top and the chat below, with Model and Code & checks one tap away.
+- On a phone, the workspace shows the 3D view on top and the chat below, with Model and Code & checks one tap away. Turn the phone on its side and the 3D view and the panel sit side by side.
+- On a tablet held upright, the 3D view runs across the top with the model panel and the chat side by side below it. Held sideways, the model panel folds into a rail of tabs so the 3D view keeps its room; tap a tab to open it. Splitters have finger-sized grips, and pressing and holding the model opens the spot chat.
 - Locked parameters and parts are protected: Claude's edits to them are refused unless you asked for that change.
 
 **The brief**
@@ -53,7 +54,7 @@ npm run typecheck
 **Iterating on a design**
 - **Decisions you can see and change.** Choices that matter (fastening method, wall thickness, a gear split) are recorded in the design as `decision` blocks with the options, who chose and why. The Decisions tab lists them. Preview any option in 3D, see at once whether it breaks a requirement, switch to it, or drag its values to fine-tune. A manual edit that moves a decided value shows as "adjusted", with Keep and Restore.
 - **Questions you can try before answering.** When Claude asks, each option can be previewed in 3D with its checks, its values adjusted, and a note added for Claude. The answer is applied and recorded as a decision.
-- **Right-click to talk about a spot.** Right-click the model to open a small chat pinned to that place. Claude gets the part, the point and the face direction. Quick asks ("Make it thicker", "Add a hole here"), the values that shape that part, its decisions and failing checks are all in the same card, and the reply, any question and the change show there too.
+- **Right-click to talk about a spot.** Right-click the model (or press and hold it on a touch screen) to open a small chat pinned to that place. Claude gets the part, the point and the face direction. Quick asks ("Make it thicker", "Add a hole here"), the values that shape that part, its decisions and failing checks are all in the same card, and the reply, any question and the change show there too.
 - **Draw on the view.** Press `M` (or the pen in the toolbar) to circle, point or scribble on the model and send it with a note. Claude gets the picture and the names of the parts under your marks.
 - **See what changed.** Each reply that edits the design gets a change card: a before/after picture you can wipe across, the parts that were added, reshaped, moved or removed (hover to highlight them in 3D), the values Claude set (drag to fine-tune them), a Before/After toggle in 3D, the diff and one-click Revert.
 - **Next steps.** Claude can offer two to four follow-ups as one-click chips under its reply.
@@ -97,6 +98,7 @@ npm run typecheck
 - A dependency graph and a parts list in the bottom dock.
 - Projects save automatically in the browser. You can rename, duplicate, delete, import and back them up.
 - Exports: STEP (exact), STL (whole model or selection), PNG, bill of materials CSV, the design source and a project file with history.
+- Dark and light themes. Dark is the default; switch with the sun and moon button or in Settings → Display, where Match device follows your system. In the light theme the lighting presets with a dark set show a pale backdrop instead.
 - First-run setup, settings, keyboard shortcuts (press `?`), and draft Terms, Privacy and Acceptable use pages.
 
 Four complete examples ship with it: a sensor-hub enclosure (21 solids), a printed wall-shelf bracket with a stress analysis (3 solids), a two-stage 12:1 gear reducer with a drivetrain duty (26 solids) and a shaft support bracket built entirely from five constrained sketches. All pass every hard check, and the enclosure and reducer carry a brief. The enclosure's brief flags a real problem as a soft warning: its USB-C port sits 9.4 mm behind the outside wall, too deep for a standard plug to seat. Each comes with suggested prompts for a substantial revision.
@@ -109,7 +111,7 @@ Four complete examples ship with it: a sensor-hub enclosure (21 solids), a print
 - **Drawings and measurement.** No 2D drawings or interactive measuring tool yet.
 - **Importing geometry.** STEP or STL files cannot be brought in as references.
 - **Accounts and sharing.** No server, sign-in, sync or collaboration. A hosted version would need a server-side key proxy, rate limits and billing.
-- A larger hardware library, a light theme, and a tablet layout. The phone layout covers the 3D view, chat, model panel, code and settings.
+- A larger hardware library.
 
 ## How it works
 
@@ -129,6 +131,8 @@ src/screens/    Onboarding, projects, workspace, legal pages
 src/demos/      The example designs
 tests/          Vitest unit tests
 ```
+
+Styles name colour tokens rather than colours: the dark theme's are at the top of `src/styles/app.css` and the light theme's in `src/styles/theme.css`. `node scripts/theme-colors.mjs` lists any raw colour left in the CSS, and `--fix` moves the ones that match a token onto it. The workspace picks its layout (phone, tablet upright, tablet sideways or desktop) in `src/app/layout.ts`.
 
 The stress solver meshes the parts' surface triangles into a box-fitted voxel grid (8-node hexahedra with incompatible modes, so thin walls bend correctly) and solves with conjugate gradients preconditioned by geometric multigrid. A 30,000-element model solves in about a second. The tests compare it with beam theory: a steel cantilever's tip deflection comes out 0.4 % from the textbook value. The renderer only sees results through a small overlay hook, so the solver and the viewport can change independently.
 

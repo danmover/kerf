@@ -7,7 +7,7 @@
   pointer-events: none;
 }
 .sk-layer.on {
-  background: radial-gradient(1400px 900px at 50% 40%, rgba(8, 10, 15, 0.42), rgba(8, 10, 15, 0.62));
+  background: radial-gradient(1400px 900px at 50% 40%, rgb(var(--bg-0-rgb) / 0.42), rgb(var(--bg-0-rgb) / 0.62));
 }
 .sk-layer.on.tool-select {
   cursor: default;
@@ -24,21 +24,21 @@
 
 /* grid on the sketch plane */
 .sk-grid line {
-  stroke: rgba(130, 150, 200, 0.09);
+  stroke: rgb(var(--text-2-rgb) / 0.09);
   stroke-width: 1;
 }
 .sk-grid line.major {
-  stroke: rgba(130, 150, 200, 0.17);
+  stroke: rgb(var(--text-2-rgb) / 0.17);
 }
 .sk-grid line.axis-x {
-  stroke: rgba(255, 93, 108, 0.45);
+  stroke: rgb(var(--fail-rgb) / 0.45);
 }
 .sk-grid line.axis-y {
-  stroke: rgba(61, 220, 151, 0.45);
+  stroke: rgb(var(--pass-rgb) / 0.45);
 }
 
 .sk-fill {
-  fill: rgba(109, 139, 255, 0.11);
+  fill: rgb(var(--accent-rgb) / 0.11);
   stroke: none;
   transition: fill 0.2s var(--ease);
 }
@@ -52,30 +52,30 @@
   transition: stroke 0.15s var(--ease), stroke-width 0.15s var(--ease);
 }
 .sk-curve.st-free {
-  stroke: #7cc4ff;
+  stroke: var(--info);
 }
 .sk-curve.st-defined,
 .sk-curve.st-fixed {
-  stroke: #e9eef8;
+  stroke: var(--text);
 }
 .sk-curve.st-conflict {
   stroke: var(--fail);
 }
 .sk-curve.construction {
-  stroke: #f5b84b;
+  stroke: var(--warn);
   stroke-width: 1.4;
   stroke-dasharray: 6 4;
   opacity: 0.85;
 }
 .sk-curve.external {
   /* projected from another sketch: a fixed reference */
-  stroke: #c792ea;
+  stroke: var(--violet);
   stroke-width: 1.4;
   stroke-dasharray: 2 4;
   opacity: 0.9;
 }
 .sk-curve.hover {
-  stroke: #b7c6ff;
+  stroke: color-mix(in srgb, var(--accent-2) 60%, var(--accent-ink));
   stroke-width: 3;
 }
 .sk-curve.selected {
@@ -90,7 +90,7 @@
 }
 .sk-corner {
   fill: none;
-  stroke: #e9eef8;
+  stroke: var(--text);
   stroke-width: 2;
   opacity: 0.9;
 }
@@ -107,23 +107,23 @@
   transition: r 0.15s var(--ease);
 }
 .sk-point.st-free circle {
-  fill: #0b0e14;
-  stroke: #7cc4ff;
+  fill: var(--bg-1);
+  stroke: var(--info);
 }
 .sk-point.st-defined circle {
-  fill: #e9eef8;
-  stroke: #e9eef8;
+  fill: var(--text);
+  stroke: var(--text);
 }
 .sk-point.st-fixed rect,
 .sk-point.origin rect {
-  fill: #c9d2e3;
-  stroke: #0b0e14;
+  fill: color-mix(in srgb, var(--text) 60%, var(--text-2));
+  stroke: var(--bg-1);
 }
 .sk-point.origin rect {
-  fill: #ff9aa4;
+  fill: color-mix(in srgb, var(--fail) 30%, var(--fail-ink));
 }
 .sk-point.external rect {
-  fill: #c792ea;
+  fill: var(--violet);
 }
 .sk-point.st-conflict circle {
   fill: var(--fail);
@@ -131,23 +131,23 @@
 }
 .sk-point.hover circle {
   r: 5;
-  stroke: #b7c6ff;
+  stroke: color-mix(in srgb, var(--accent-2) 60%, var(--accent-ink));
 }
 .sk-point.selected circle,
 .sk-point.selected rect {
   fill: var(--accent);
-  stroke: #fff;
+  stroke: #fff; /* theme: same, a ring round the point */
   filter: drop-shadow(0 0 4px var(--accent-glow));
 }
 .sk-point.problem circle {
   r: 6;
   fill: var(--fail);
-  stroke: #fff;
+  stroke: #fff; /* theme: same, a ring round the point */
   animation: sk-pulse 1.2s ease-in-out infinite;
 }
 .sk-free-arrow path {
-  stroke: rgba(124, 196, 255, 0.75);
-  fill: rgba(124, 196, 255, 0.75);
+  stroke: rgb(var(--info-rgb) / 0.75);
+  fill: rgb(var(--info-rgb) / 0.75);
   stroke-width: 1.2;
 }
 
@@ -157,11 +157,11 @@
   cursor: pointer;
 }
 .sk-glyph rect {
-  fill: rgba(16, 20, 28, 0.92);
-  stroke: rgba(160, 175, 210, 0.35);
+  fill: rgb(var(--bg-2-rgb) / 0.92);
+  stroke: rgb(var(--text-2-rgb) / 0.35);
 }
 .sk-glyph text {
-  fill: #b9c4dc;
+  fill: color-mix(in srgb, var(--text) 40%, var(--text-2));
   font-size: 9.5px;
   text-anchor: middle;
   dominant-baseline: middle;
@@ -170,7 +170,7 @@
 .sk-glyph:hover rect,
 .sk-glyph.selected rect {
   stroke: var(--accent);
-  fill: rgba(30, 40, 70, 0.95);
+  fill: color-mix(in srgb, var(--accent) 16%, var(--bg-2));
 }
 .sk-glyph.st-redundant rect,
 .sk-glyph.st-involved rect {
@@ -178,17 +178,17 @@
 }
 .sk-glyph.st-conflict rect {
   stroke: var(--fail);
-  fill: rgba(60, 16, 24, 0.95);
+  fill: color-mix(in srgb, var(--fail) 20%, var(--bg-1));
 }
 
 /* dimensions */
 .sk-dim path {
-  stroke: #8f9ab2;
+  stroke: color-mix(in srgb, var(--text-2) 60%, var(--text-3));
   stroke-width: 1;
   fill: none;
 }
 .sk-dim path.arrow {
-  fill: #8f9ab2;
+  fill: color-mix(in srgb, var(--text-2) 60%, var(--text-3));
   stroke: none;
 }
 .sk-dim path.dash {
@@ -202,11 +202,11 @@
   cursor: pointer;
 }
 .sk-dim-label rect {
-  fill: rgba(13, 16, 23, 0.94);
-  stroke: rgba(160, 175, 210, 0.3);
+  fill: rgb(var(--bg-1-rgb) / 0.94);
+  stroke: rgb(var(--text-2-rgb) / 0.3);
 }
 .sk-dim-label text {
-  fill: #e3e9f6;
+  fill: var(--text);
   font-size: 11px;
   text-anchor: middle;
   dominant-baseline: middle;
@@ -215,19 +215,19 @@
   fill: var(--violet);
 }
 .sk-dim.driven path {
-  stroke: rgba(199, 146, 255, 0.6);
+  stroke: rgb(var(--violet-rgb) / 0.6);
 }
 .sk-dim.driven path.arrow {
-  fill: rgba(199, 146, 255, 0.6);
+  fill: rgb(var(--violet-rgb) / 0.6);
 }
 .sk-dim-label:hover rect,
 .sk-dim.selected .sk-dim-label rect {
   stroke: var(--accent);
-  fill: rgba(28, 36, 62, 0.96);
+  fill: color-mix(in srgb, var(--accent) 13%, var(--bg-2));
 }
 .sk-dim.st-conflict .sk-dim-label rect {
   stroke: var(--fail);
-  fill: rgba(60, 16, 24, 0.95);
+  fill: color-mix(in srgb, var(--fail) 20%, var(--bg-1));
 }
 .sk-dim.st-conflict path {
   stroke: var(--fail);
@@ -259,12 +259,12 @@
   white-space: nowrap;
   font-size: 10.5px;
   color: var(--text-3);
-  background: rgba(13, 16, 23, 0.9);
+  background: rgb(var(--bg-1-rgb) / 0.9);
   padding: 2px 6px;
   border-radius: 5px;
 }
 .sk-dim-hint.err {
-  color: #ffb3bb;
+  color: var(--fail-ink);
   white-space: normal;
   width: 240px;
 }
@@ -272,7 +272,7 @@
 /* drafting */
 .sk-draft {
   fill: none;
-  stroke: #9fb2ff;
+  stroke: color-mix(in srgb, var(--accent-2) 85%, var(--accent-ink));
   stroke-width: 1.6;
   stroke-dasharray: 2 0;
 }
@@ -281,32 +281,32 @@
   opacity: 0.7;
 }
 .sk-guide {
-  stroke: rgba(245, 184, 75, 0.6);
+  stroke: rgb(var(--warn-rgb) / 0.6);
   stroke-width: 1;
   stroke-dasharray: 3 4;
 }
 .sk-snap {
   fill: none;
-  stroke: #9fb2ff;
+  stroke: color-mix(in srgb, var(--accent-2) 85%, var(--accent-ink));
   stroke-width: 1.4;
 }
 .sk-snap.hit {
-  stroke: #f5b84b;
+  stroke: var(--warn);
   stroke-width: 2;
 }
 .sk-readout rect {
-  fill: rgba(13, 16, 23, 0.92);
-  stroke: rgba(160, 175, 210, 0.3);
+  fill: rgb(var(--bg-1-rgb) / 0.92);
+  stroke: rgb(var(--text-2-rgb) / 0.3);
 }
 .sk-readout text {
-  fill: #dfe5f2;
+  fill: var(--text);
   font-size: 11px;
   dominant-baseline: middle;
 }
 .sk-box {
   position: absolute;
   border: 1px solid var(--accent);
-  background: rgba(109, 139, 255, 0.08);
+  background: rgb(var(--accent-rgb) / 0.08);
   border-radius: 2px;
 }
 
@@ -315,24 +315,24 @@
   cursor: pointer;
 }
 .sk-plane path {
-  fill: rgba(109, 139, 255, 0.07);
-  stroke: rgba(143, 168, 255, 0.55);
+  fill: rgb(var(--accent-rgb) / 0.07);
+  stroke: rgb(var(--accent-2-rgb) / 0.55);
   stroke-width: 1.2;
   transition: fill 0.15s var(--ease);
 }
 .sk-plane text {
-  fill: rgba(200, 212, 240, 0.75);
+  fill: rgb(var(--text-rgb) / 0.75);
   font-size: 11px;
   text-anchor: middle;
   dominant-baseline: middle;
 }
 .sk-plane.hover path {
-  fill: rgba(109, 139, 255, 0.24);
+  fill: rgb(var(--accent-rgb) / 0.24);
   stroke: var(--accent-2);
   stroke-width: 2;
 }
 .sk-plane.face path {
-  fill: rgba(245, 184, 75, 0.25);
+  fill: rgb(var(--warn-rgb) / 0.25);
   stroke: var(--warn);
 }
 
@@ -393,16 +393,16 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #7cc4ff;
-  box-shadow: 0 0 8px rgba(124, 196, 255, 0.7);
+  background: var(--info);
+  box-shadow: 0 0 8px rgb(var(--info-rgb) / 0.7);
 }
 .sk-state.st-defined .dot {
   background: var(--pass);
-  box-shadow: 0 0 8px rgba(61, 220, 151, 0.7);
+  box-shadow: 0 0 8px rgb(var(--pass-rgb) / 0.7);
 }
 .sk-state.st-conflict .dot {
   background: var(--fail);
-  box-shadow: 0 0 8px rgba(255, 93, 108, 0.7);
+  box-shadow: 0 0 8px rgb(var(--fail-rgb) / 0.7);
 }
 .sk-problem {
   display: flex;
@@ -412,14 +412,14 @@
   padding: 6px 8px;
   border-radius: 6px;
   font-size: 11.5px;
-  color: #ffc2c8;
+  color: var(--fail-ink);
   background: var(--fail-soft);
 }
 .sk-problem span {
   flex: 1;
 }
 .sk-problem.warn {
-  color: #ffe1a6;
+  color: var(--warn-ink);
   background: var(--warn-soft);
 }
 .sk-problem.note {
@@ -460,7 +460,7 @@
   max-width: min(640px, calc(100% - 140px));
   padding: 6px 12px;
   border-radius: 8px;
-  background: rgba(13, 16, 23, 0.85);
+  background: rgb(var(--bg-1-rgb) / 0.85);
   border: 1px solid var(--line-2);
   color: var(--text-2);
   font-size: 12px;
@@ -468,8 +468,8 @@
   text-align: center;
 }
 .sk-hint.flash {
-  color: #ffe1a6;
-  border-color: rgba(245, 184, 75, 0.45);
+  color: var(--warn-ink);
+  border-color: rgb(var(--warn-rgb) / 0.45);
 }
 .sk-side {
   right: 12px;
@@ -484,7 +484,7 @@
   line-height: 1.7;
 }
 .sk-st.st-free {
-  color: #7cc4ff;
+  color: var(--info);
 }
 .sk-st.st-defined,
 .sk-st.st-fixed {
@@ -597,7 +597,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #7cc4ff;
+  background: var(--info);
 }
 .sk-item .state.st-defined .dot {
   background: var(--pass);

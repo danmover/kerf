@@ -2,8 +2,9 @@
 
 import { Menu, Segmented } from "./common";
 import { Icon } from "./icons";
-import { LIGHTING, type LightingPreset } from "./viewport/render/studio";
+import { LIGHTING, lightingPreset, type LightingPreset } from "./viewport/render/studio";
 import { useSettings, updateSettings, type Settings } from "../app/settings";
+import { useTheme } from "../app/theme";
 
 const QUALITY: { value: Settings["quality"]; label: string; note: string }[] = [
   { value: "draft", label: "Draft", note: "One pass per frame. Fastest on older laptops." },
@@ -16,7 +17,10 @@ const ball = (l: LightingPreset) => `radial-gradient(circle at 32% 28%, #ffffff 
 
 export function LightingMenu() {
   const s = useSettings();
-  const cur = LIGHTING.find((l) => l.id === s.lighting) ?? LIGHTING[0];
+  // the tiles show each set as it looks in this theme
+  const theme = useTheme();
+  const sets = LIGHTING.map((l) => lightingPreset(l.id, theme));
+  const cur = sets.find((l) => l.id === s.lighting) ?? sets[0];
   return (
     <Menu
       width={300}
@@ -30,7 +34,7 @@ export function LightingMenu() {
         <div className="lighting-menu">
           <div className="menu-label">Lighting</div>
           <div className="light-grid" role="radiogroup" aria-label="Lighting">
-            {LIGHTING.map((l) => (
+            {sets.map((l) => (
               <button key={l.id} role="radio" aria-checked={s.lighting === l.id} className={`light-tile ${s.lighting === l.id ? "active" : ""}`} onClick={() => updateSettings({ lighting: l.id })} data-tip={l.note}>
                 <span className="light-chip" style={{ background: chip(l) }}>
                   <span className="light-ball" style={{ background: ball(l) }} />
