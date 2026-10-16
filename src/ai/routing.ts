@@ -153,6 +153,8 @@ export interface RouterAnswer {
   why: string;
   model: string;
   usage?: Usage;
+  /** this key can't use the quick model (the API or a Kerf server said so) */
+  unavailable?: boolean;
 }
 
 /** Ask the quick model whether a turn is quick. Any failure, refusal or timeout means design. */
@@ -166,7 +168,8 @@ export async function askRouter(client: Anthropic, f: TurnFacts, signal?: AbortS
     return { quick: p.data.route === "quick", why: shortWhy(p.data.reason), model: msg.model, usage: msg.usage };
   } catch (e) {
     if (signal?.aborted) throw e;
-    return { quick: false, why: "the router did not answer", model: QUICK_MODEL };
+    const unavailable = e instanceof Anthropic.PermissionDeniedError || e instanceof Anthropic.NotFoundError;
+    return { quick: false, why: "the router did not answer", model: QUICK_MODEL, unavailable };
   }
 }
 

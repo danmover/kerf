@@ -166,7 +166,8 @@ onSpend((kind, model, cost, saved, u) => {
 });
 
 configureWarm({
-  client,
+  // the shared key runs one request at a time: a refresh would hold the slot a chat message needs
+  client: () => (claudeRoute() === "shared" ? null : client()),
   minutes: () => useSettings.getState().keepWarm,
   // a refresh is spend the design model alone would not have had; what it saves shows on the next request
   record: (model, u) => void recordSpend("warm", model, u, -costOf(model, u)),
@@ -779,6 +780,7 @@ async function chooseRoute(anthropic: Anthropic, facts: TurnFacts | undefined, s
   if (rule) return designRoute(rule, "rule");
   if (!quickCanSave(s.model, lastPrompt || estimatePrompt(), Date.now() - quickTouched < QUICK_WARM_MS)) return designRoute(`a conversation this long costs less on ${modelLabel(s.model)}`, "rule");
   const r = await askRouter(anthropic, facts, signal);
+  if (r.unavailable) quickUnavailable = true;
   // the router is spend that running everything on the design model would not have had
   if (r.usage) recordSpend("router", r.model, r.usage, -costOf(r.model, r.usage));
   return r.quick ? { model: QUICK_MODEL, effort: QUICK_EFFORT, quick: true, why: r.why, by: "router" } : designRoute(r.why, "router");

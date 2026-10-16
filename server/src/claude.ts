@@ -18,6 +18,12 @@ const MAX_CONCURRENT_SHARED = 1;
 /** Betas the shared key passes on: Kerf's chat keeps its thinking blocks valid with this one. */
 const SHARED_BETAS = new Set(["thinking-binding-controls-2026-08-01"]);
 const SHARED_MAX_TOKENS = 64_000;
+/**
+ * A generous ceiling on how many tokens a model writes per second. A cancelled
+ * stream stops generating, so one that ends early is charged no more than this
+ * for the time it ran (and never more than its max_tokens).
+ */
+const MAX_OUTPUT_RATE = 400;
 const ANTHROPIC_VERSION = "2023-06-01";
 
 /** Same rules as the browser's check in src/persist/vault.ts. */
@@ -70,6 +76,8 @@ interface Usage {
   started?: boolean;
   /** the final output figure arrived, so nothing is missing */
   final?: boolean;
+  /** a rough count of the output streamed so far, from the deltas' text */
+  seen?: number;
 }
 
 function readUsage(u: Record<string, unknown> | undefined, into: Usage) {
@@ -121,8 +129,13 @@ function meteredStream(body: ReadableStream<Uint8Array>, usage: Usage, done: () 
       buf = buf.slice(i + 1);
       if (!line.startsWith("data:")) continue;
       try {
-        const ev = JSON.parse(line.slice(5)) as { type?: string; message?: { model?: string; usage?: Record<string, unknown> }; usage?: Record<string, unknown> };
-        if (ev.type === "message_start") {
+        const ev = JSON.parse(line.slice(5)) as { type?: string; message?: { model?: string; usage?: Record<string, unknown> }; usage?: Record<string, unknown>; delta?: Record<string, unknown> };
+        if (ev.type === "content_block_delta" && ev.delta) {
+          let chars = 0;
+          for (const k of ["text", "thinking", "partial_json"]) if (typeof ev.delta[k] === "string") chars += (ev.delta[k] as string).length;
+          // about 3 characters a token, rounded up: a count that errs high
+          usage.seen = (usage.seen ?? 0) + Math.ceil(chars / 3);
+        } else if (ev.type === "message_start") {
           if (ev.message?.model) usage.model = ev.message.model;
           readUsage(ev.message?.usage, usage);
           usage.started = true;
@@ -194,15 +207,15 @@ export function estimateInputTokens(body: Record<string, unknown>): number {
   return Math.ceil(chars / 4) + attachments * 2000;
 }
 
-function sanitize(deps: Deps, body: Record<string, unknown>, source: "account" | "shared", userTag: string): string | null {
+function sanitize(body: Record<string, unknown>, source: "account" | "shared", userTag: string): string | null {
   if (typeof body.model !== "string" || !/^claude-[a-z0-9.-]{1,80}$/.test(body.model)) return "Unknown model.";
-  if (body.max_tokens !== undefined && (typeof body.max_tokens !== "number" || body.max_tokens < 1 || body.max_tokens > 128_000)) return "max_tokens is out of range.";
+  // 0 asks for no output: keep-warm's refresh, which only reads the prompt cache
+  const least = body.stream === true ? 1 : 0;
+  if (body.max_tokens !== undefined && (typeof body.max_tokens !== "number" || !Number.isInteger(body.max_tokens) || body.max_tokens < least || body.max_tokens > 128_000)) return "max_tokens is out of range.";
   // remote MCP servers and code containers are outside what Kerf does
   delete body.mcp_servers;
   delete body.container;
   if (source === "shared") {
-    const models = deps.cfg.shared!.models;
-    if (models.length && !models.includes(body.model)) return `The shared key on this server works with ${models.join(", ")}. Pick one of those in Settings → Claude, or add your own key.`;
     if (Array.isArray(body.tools) && body.tools.some(isServerTool)) return "Server-side tools are not available on the shared key.";
     // fallback to other models stays off the operator's key
     delete body.fallbacks;
@@ -213,6 +226,8 @@ function sanitize(deps: Deps, body: Record<string, unknown>, source: "account" |
 
 /** Caps a shared-key request's output to what's left of today's allowance once its input is counted. */
 function fitShared(body: Record<string, unknown>, room: number): string | null {
+  // no output: only the input is charged, and that is already counted in room
+  if (body.max_tokens === 0) return room < 0 ? "There isn't enough of today's shared Claude allowance left for this request. It resets at midnight UTC, or add your own API key in Settings → Claude." : null;
   room = Math.min(SHARED_MAX_TOKENS, room);
   if (room < 1024) return "There isn't enough of today's shared Claude allowance left for this request. It resets at midnight UTC, or add your own API key in Settings → Claude.";
   if (body.max_tokens === undefined || (body.max_tokens as number) > room) body.max_tokens = room;
@@ -320,6 +335,7 @@ export function claudeRoutes(deps: Deps) {
       let model = "unknown";
       // what a shared-key request may cost at most: charged in full if it ends without its final usage figures
       const reserved = { input: 0, output: 0 };
+      let streamed = false;
       if (method === "POST") {
         const len = Number(c.req.header("content-length") ?? 0);
         if (len > MAX_REQUEST_BYTES) return anthropicError(c, 413, "request_too_large", "This request is too large to send.");
@@ -332,8 +348,13 @@ export function claudeRoutes(deps: Deps) {
           return anthropicError(c, 400, "invalid_request_error", "The request body is not JSON.");
         }
         if (!json || typeof json !== "object" || Array.isArray(json)) return anthropicError(c, 400, "invalid_request_error", "The request body must be an object.");
+        if (source === "shared" && typeof json.model === "string") {
+          // 403, like the API for a model a key can't use, so Kerf stops asking for it this session
+          const models = cfg.shared!.models;
+          if (models.length && !models.includes(json.model)) return anthropicError(c, 403, "permission_error", `The shared key on this server works with ${models.join(", ")}. Pick one of those in Settings → Claude, or add your own key.`);
+        }
         if (path === "/v1/messages") {
-          const problem = sanitize(deps, json, source, pseudonym(cfg.secretKey, user.id));
+          const problem = sanitize(json, source, pseudonym(cfg.secretKey, user.id));
           if (problem) return anthropicError(c, 400, "invalid_request_error", problem);
           if (source === "shared") {
             reserved.input = (await countInput(headers, json, c.req.raw.signal)) ?? estimateInputTokens(json);
@@ -343,6 +364,7 @@ export function claudeRoutes(deps: Deps) {
           }
         }
         if (typeof json.model === "string") model = json.model;
+        streamed = json.stream === true;
         body = JSON.stringify(json);
         headers["content-type"] = "application/json";
       }
@@ -357,14 +379,25 @@ export function claudeRoutes(deps: Deps) {
           deps.log(`usage not recorded: ${e instanceof Error ? e.message : e}`);
         }
       };
-      /** On the shared key, a request that ends early is charged what it may have cost: Anthropic may have generated it all. */
-      const charged = (): Usage =>
-        source === "shared" && !usage.final
-          ? { ...usage, input: usage.started ? usage.input : reserved.input, output: Math.max(usage.output, reserved.output) }
-          : usage;
+      let sentAt = 0;
+      /**
+       * On the shared key, a request that ends before its final usage figures is
+       * charged what it may have cost. A stream stops generating when it is
+       * cancelled or fails, so it pays for what a fast model could have written
+       * in the time it ran; a plain request may run on after the browser leaves,
+       * so it pays its whole allowance.
+       */
+      const charged = (): Usage => {
+        if (source !== "shared" || usage.final) return usage;
+        const ran = streamed ? Math.ceil(((Date.now() - sentAt) / 1000) * MAX_OUTPUT_RATE) : reserved.output;
+        return { ...usage, input: usage.started ? usage.input : reserved.input, output: Math.max(usage.output, Math.min(reserved.output, Math.max(usage.seen ?? 0, ran))) };
+      };
 
+      // gone while the request was being read or counted: nothing reached the API
+      if (c.req.raw.signal.aborted) return new Response(null, { status: 499 });
       const search = new URL(c.req.url).search;
       let upstream: Response;
+      sentAt = Date.now();
       try {
         upstream = await deps.fetch(`${cfg.anthropicBaseUrl}${path}${search.length < 300 ? search : ""}`, { method, headers, body, signal: c.req.raw.signal });
       } catch (e) {

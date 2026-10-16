@@ -248,8 +248,9 @@ describe("Claude proxy", () => {
     const { app, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example", KERF_SHARED_MODELS: "claude-sonnet-5-5, claude-haiku-5-5" }, slow);
     const ann = await signedIn(app, "ann@team.example");
     await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    // 403, as the API answers for a model a key can't use, so Kerf stops routing to it
     const opus = await ann.post("/api/claude/v1/messages", message("claude-opus-5-5"));
-    expect(opus.status).toBe(400);
+    expect(opus.status).toBe(403);
     expect(((await opus.json()) as { error: { message: string } }).error.message).toMatch(/claude-sonnet-5-5, claude-haiku-5-5/);
 
     const first = ann.post("/api/claude/v1/messages", message());
@@ -285,8 +286,8 @@ describe("Claude proxy", () => {
     expect(calls.filter((c) => c.url.endsWith("/v1/messages"))).toHaveLength(1);
   });
 
-  it("charges a shared-key answer in full when the browser leaves before its final usage", async () => {
-    // the answer streams up to the end of its text, then the browser goes away before the usage figures
+  it("charges a stream that ends early for what it could have written in the time it ran", async () => {
+    // the answer streams up to the end of its text, then the browser goes away (Stop) before the usage figures
     const stalls: FetchFn = async (url, init) => {
       if (!url.endsWith("/v1/messages")) return anthropic(url, init);
       const enc = new TextEncoder();
@@ -308,18 +309,92 @@ describe("Claude proxy", () => {
     const ann = await signedIn(app, "ann@team.example");
     await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
     const stop = new AbortController();
-    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 5000 }, {}, stop.signal);
+    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 20_000 }, {}, stop.signal);
     const reader = res.body!.getReader();
     let seen = "";
     while (!seen.includes("content_block_stop")) seen += new TextDecoder().decode((await reader.read()).value);
+    await new Promise((r) => setTimeout(r, 500));
     stop.abort();
     await reader.cancel().catch(() => undefined);
     await new Promise((r) => setTimeout(r, 20));
-    // the input it reported, and all the output it was allowed
-    expect(deps.db.get("SELECT requests, input_tokens, output_tokens FROM usage")).toEqual({ requests: 1, input_tokens: 1200, output_tokens: 5000 });
+    // the input it reported, and the output a fast model could have written in the half second or so it ran: not all 20,000 it was allowed
+    const u = deps.db.get<{ requests: number; input_tokens: number; output_tokens: number }>("SELECT requests, input_tokens, output_tokens FROM usage")!;
+    expect(u).toMatchObject({ requests: 1, input_tokens: 1200 });
+    expect(u.output_tokens).toBeGreaterThanOrEqual(200);
+    expect(u.output_tokens).toBeLessThan(5000);
     // and the slot is free again
     const next = await ann.post("/api/claude/v1/messages", message());
     expect(next.status).toBe(200);
+  });
+
+  it("charges a stream the API ends with an error for the output it sent", async () => {
+    const overloaded: FetchFn = async (url, init) => {
+      if (!url.endsWith("/v1/messages")) return anthropic(url, init);
+      return sse([
+        { type: "message_start", message: { id: "msg_1", model: "claude-sonnet-5-5", usage: { input_tokens: 1200, output_tokens: 1 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        // 3,000 characters: counted as 1,000 tokens
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x".repeat(3000) } },
+        { type: "error", error: { type: "overloaded_error", message: "Overloaded" } },
+      ]);
+    };
+    const { app, deps, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example" }, overloaded);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    const res = await ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 20_000 });
+    await res.text();
+    await new Promise((r) => setTimeout(r, 20));
+    const u = deps.db.get<{ input_tokens: number; output_tokens: number }>("SELECT input_tokens, output_tokens FROM usage")!;
+    expect(u.input_tokens).toBe(1200);
+    expect(u.output_tokens).toBeGreaterThanOrEqual(1000);
+    expect(u.output_tokens).toBeLessThan(5000);
+  });
+
+  it("charges nothing when the browser leaves before the request is sent", async () => {
+    let counting!: () => void;
+    const started = new Promise<void>((r) => (counting = r));
+    // the token count hangs, so the browser leaves while it runs
+    let first = true;
+    const slowCount: FetchFn = async (url, init) => {
+      if (!url.endsWith("/count_tokens") || !first) return anthropic(url, init);
+      first = false;
+      counting();
+      return new Promise<Response>((_, reject) => init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    };
+    const { app, deps, mailer, calls } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example" }, slowCount);
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent[0].text)![1] });
+    const stop = new AbortController();
+    const pending = ann.post("/api/claude/v1/messages", { ...message(), max_tokens: 4000 }, {}, stop.signal).catch(() => null);
+    await started;
+    stop.abort();
+    await pending;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls.filter((c) => c.url.endsWith("/v1/messages"))).toHaveLength(0);
+    expect(deps.db.all("SELECT * FROM usage")).toEqual([]);
+    // and the slot is free again
+    expect((await ann.post("/api/claude/v1/messages", message())).status).not.toBe(429);
+  });
+
+  it("lets keep-warm's no-output refresh through", async () => {
+    const { app, calls, mailer } = setup({ KERF_SHARED_ANTHROPIC_KEY: SHARED, KERF_SHARED_CLAUDE_EMAILS: "ann@team.example", KERF_SHARED_DAILY_TOKENS: "10000" }, anthropic);
+    const refresh = { ...message(), stream: false, max_tokens: 0 };
+    const dan = await signedIn(app);
+    await dan.put("/api/claude/key", { key: KEY });
+    const own = await dan.post("/api/claude/v1/messages", refresh);
+    expect(own.status).toBe(200);
+    await own.text();
+    expect(JSON.parse(String(calls.at(-1)!.init.body)).max_tokens).toBe(0);
+    // a stream has to ask for some output
+    expect((await dan.post("/api/claude/v1/messages", { ...message(), max_tokens: 0 })).status).toBe(400);
+
+    // on the shared key too, without the minimum a request with output needs
+    const ann = await signedIn(app, "ann@team.example");
+    await ann.post("/api/auth/verify", { token: /#verify=([A-Za-z0-9_-]+)/.exec(mailer.sent.find((m) => m.to === "ann@team.example")!.text)![1] });
+    const shared = await ann.post("/api/claude/v1/messages", refresh);
+    expect(shared.status).toBe(200);
+    await shared.text();
+    expect(JSON.parse(String(calls.at(-1)!.init.body)).max_tokens).toBe(0);
   });
 
   it("charges a shared-key request in full when the browser leaves before any answer", async () => {
