@@ -212,7 +212,7 @@ describe("checks from the brief", () => {
 
   it("covers each use with its requirements", () => {
     const m = evaluate(BRACKET);
-    const report = assembleReport(m, null, null, new Map(), new Map(m.parts.map((p) => [p.id, p])), (h) => geom(h, m));
+    const report = assembleReport(m, { geom: (h) => geom(h, m) });
     const byId = (id: string) => report.items.find((i) => i.id === id)!;
     expect(byId("use:hold_tube").status).toBe("pass");
     expect(byId("use:hold_tube").detail).toMatch(/All 2 of its checks pass/);
@@ -238,12 +238,11 @@ describe("checks from the brief", () => {
     expect(items2.find((i) => i.id === "brief-sun:ASA")?.status).toBe("pass");
   });
 
-  it("checks size, mass and the printer bed", () => {
+  it("checks size and mass", () => {
     const m = evaluate(BRACKET);
     const items = briefChecks(m, [], (h) => geom(h, m));
     expect(items.find((i) => i.id === "brief-size")).toMatchObject({ status: "pass", detail: "Now 33 × 30 × 56.5 mm" });
     expect(items.find((i) => i.id === "brief-mass")?.status).toBe("pass");
-    expect(items.find((i) => i.id === "brief-bed")?.status).toBe("pass");
     const small = evaluate(BRACKET.replace("max_size: (80, 60, 70)", "max_size: (80, 60, 50)").replace("max_mass: 0.2kg", "max_mass: 50g"));
     const items2 = briefChecks(small, [], (h) => geom(h, small));
     expect(items2.find((i) => i.id === "brief-size")).toMatchObject({ status: "fail" });
@@ -267,14 +266,14 @@ describe("checks from the brief", () => {
     expect(m.brief!.maxMass).toBe(60);
   });
 
-  it("checks the process only against parts it makes", () => {
-    const src = BRACKET.replace('material: "PLA"', 'material: "PETG"').replace("part holder {", 'part pin {\n  material: "Steel"\n  body cylinder(d: 4, h: 400)\n}\npart holder {');
+  it("hands the process to the parts it makes", () => {
+    const src = BRACKET.replace("part holder {", 'part pin {\n  material: "Steel"\n  body cylinder(d: 4, h: 400)\n}\npart holder {');
     const m = evaluate(src);
+    // the printer bed and material fit are manufacturing checks on each part now
+    expect(m.parts.find((p) => p.name === "holder")?.process?.id).toBe("fdm");
+    // a 400 mm steel pin is bought or cut, not printed
+    expect(m.parts.find((p) => p.name === "pin")?.process).toBeUndefined();
     const items = briefChecks(m, [], (h) => geom(h, m));
-    // a 400 mm steel pin is bought or cut, not printed: no process warning and no bed failure for it
-    expect(items.some((i) => i.id.startsWith("brief-process"))).toBe(false);
-    expect(items.some((i) => i.id === "brief-bed:pin")).toBe(false);
-    const steel = evaluate(BRACKET.replace('material: "PETG" assumed', 'material: "Steel"'));
-    expect(briefChecks(steel, [], (h) => geom(h, steel)).find((i) => i.id === "brief-process:Steel")?.status).toBe("warn");
+    expect(items.some((i) => i.id.startsWith("brief-process") || i.id.startsWith("brief-bed"))).toBe(false);
   });
 });

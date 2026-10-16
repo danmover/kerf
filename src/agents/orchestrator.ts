@@ -458,7 +458,7 @@ function workspace(l: Live, id: string): Workspace {
       const vp = viewport();
       if (!vp) return { text: "The 3D view is not available right now." };
       const ids = partsOf(useDesign.getState().source, id);
-      const url = await vp.capture({ view, width: 1024, height: 704, focus: ids, section, mime: "image/jpeg", quality: 0.85, samples: 24 });
+      const url = await vp.capture({ view, width: 1024, height: 704, focus: ids, section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: false });
       const note = l.userEdited ? " The user is editing the design, so this may not show your latest changes." : "";
       return { image: url.split(",")[1] ?? "", text: `Rendered the ${view} view of the assembled model${section ? `, sectioned across ${section}` : ""}, with your ${ids.length} solid(s) highlighted and other parts ghosted. Other subassemblies may still be in progress. Z is up.${note}` };
     },

@@ -1,0 +1,57 @@
+design "Wall Shelf Bracket"
+note "3D-printed PETG bracket for a wall shelf, held by two M4 screws. The analysis block below checks it under the shelf's load after every change."
+note "Printed on its side (layers stacked along X) so the bending stress in the arm and the wall plate runs along the layers, not across them."
+
+// ── Size ───────────────────────────────────────────────
+param arm_len  = 150mm  range 80 .. 250  "How far the arm reaches out from the wall"
+param height   = 120mm  range 60 .. 200  "Wall plate height"
+param width    = 30mm   range 16 .. 60   "Bracket width"
+param t        = 8mm    range 3 .. 12    "Plate and arm thickness"
+param gusset   = 100mm  range 30 .. 140  "Gusset leg length"
+param gusset_t = 6mm    range 3 .. 10    "Gusset thickness"
+
+// ── Duty ───────────────────────────────────────────────
+param load_kg  = 8      range 1 .. 40    "Load on this bracket in kg: its share of the shelf and what sits on it"
+
+let screw    = M4
+let screw_x  = width / 2 - 6               // screws sit either side of the gusset
+let screw_z  = height / 2
+let screws   = [(-screw_x, t, screw_z), (screw_x, t, screw_z)]
+
+part bracket {
+  color: #4f7cff
+  material: "PETG"
+  group: "Bracket"
+  body box(width, t, height, at: (0, t / 2, 0))                      // wall plate
+  add box(width, arm_len, t, at: (0, arm_len / 2, height - t))       // arm
+  add prism(points: [(t - 0.01, height - t + 0.01), (t + gusset, height - t + 0.01), (t - 0.01, height - t - gusset)], h: gusset_t, at: (-gusset_t / 2, 0, 0), dir: X)
+  for s in screws {
+    cut hole(screw, through: true, at: s, dir: -Y)
+  }
+}
+
+component wall_screws = lib.screw(screw, 30) {
+  at: screws
+  axis: -Y
+  group: "Hardware"
+}
+
+analysis "Shelf load" {
+  parts: [bracket]
+  // the screws clamp the plate to the wall; under the load the plate pivots on its bottom edge
+  fix: zone(at: (-screw_x, 0, screw_z), d: screw.head_d + 2, axis: Y, length: t)
+  fix: zone(at: (screw_x, 0, screw_z), d: screw.head_d + 2, axis: Y, length: t)
+  fix: roller(zone(at: (0, 0, 8), size: (width + 2, 2, 16)), Y)
+  // the shelf board rests on the top of the arm
+  load: force(face(bracket, +Z), (0, 0, -load_kg * 9.81N))
+  gravity
+  printed
+  build: X
+  safety: 2.5
+  max_deflection: 1mm
+}
+
+require "Screw heads clear the gusset": screw_x - screw.head_d / 2 - gusset_t / 2 >= 1
+require "Screw heads clear the arm": height - t - (screw_z + screw.head_d / 2) >= 5
+require "Gusset fits under the arm": gusset <= arm_len - 10 && gusset <= height - t - 10
+require "Printable walls": min(t, gusset_t) >= 3

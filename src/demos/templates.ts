@@ -3,6 +3,8 @@
 import enclosure from "./enclosure.kerf?raw";
 import reducer from "./reducer.kerf?raw";
 import blank from "./blank.kerf?raw";
+import bracket from "./bracket.kerf?raw";
+import shelf from "./shelf.kerf?raw";
 
 export interface Template {
   id: string;
@@ -40,6 +42,18 @@ export const TEMPLATES: Template[] = [
     stats: "21 parts · 8 requirements",
   },
   {
+    id: "shelf",
+    name: "Wall Shelf Bracket",
+    tagline: "Printed PETG bracket on two M4 screws, with a stress analysis under the shelf's load.",
+    source: shelf,
+    prompts: [
+      "Can this bracket hold 15 kg? Make it strong enough if not, with as little extra plastic as possible",
+      "Show me where the bracket is most stressed and explain why",
+      "Make the arm 200 mm long and keep the safety factor above 2.5",
+    ],
+    stats: "3 parts · stress analysis",
+  },
+  {
     id: "reducer",
     name: "Two-Stage Spur Reducer",
     tagline: "12:1 gearbox on a NEMA 17 stepper with bearings, shafts and a printed housing.",
@@ -47,9 +61,22 @@ export const TEMPLATES: Template[] = [
     prompts: [
       "Change the reduction to 20:1 with a 10 mm output shaft and keep the mounting feet where they are",
       "Make the housing walls 4 mm and show me what changes",
+      "Can this gearbox take the motor's full 0.4 N·m? Strengthen it if not",
       "Why are two of the gears marked removable?",
     ],
     stats: "26 parts · 8 requirements",
+  },
+  {
+    id: "bracket",
+    name: "Shaft Support Bracket",
+    tagline: "Bent-plate bracket and flanged bushing, built from five constrained sketches you can edit by hand.",
+    source: bracket,
+    prompts: [
+      "Make the foot 80 mm long and add a third mounting hole between the other two",
+      "Round the top corners of the upright with a 2 mm fillet",
+      "Make the gusset reach two thirds of the way up the upright",
+    ],
+    stats: "2 parts · 5 sketches · 2 requirements",
   },
 ];
 

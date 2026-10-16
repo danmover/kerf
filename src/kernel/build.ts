@@ -3,7 +3,7 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { frameFor, rotateAbout, vadd, vcross, vscale, type EdgeSel, type PartRecipe, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
+import { frameFor, rotateAbout, vadd, vcross, vscale, type EdgeSel, type PartRecipe, type ProfileRegion, type Seg2, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
 import { gearOutline } from "../library/gears";
 
 export class BuildError extends Error {}
@@ -109,6 +109,18 @@ export function buildShape(r: ShapeRecipe): Shape3D {
       for (let i = 1; i < shapes.length; i++) out = out.fuse(shapes[i]);
       return out;
     }
+    case "sk_extrude": {
+      const plane = planeFor(vadd(r.o, vscale(r.n, r.start)), r.u, r.n);
+      return fuseAll(r.regions.map((reg) => regionSketch(plane, reg).extrude(r.h) as Shape3D));
+    }
+    case "sk_revolve": {
+      const plane = planeFor(r.o, r.u, r.n);
+      const v = vcross(r.n, r.u);
+      const [p, d] = r.axis;
+      const origin = vadd(r.o, vadd(vscale(r.u, p[0]), vscale(v, p[1])));
+      const dir = vadd(vscale(r.u, d[0]), vscale(v, d[1]));
+      return fuseAll(r.regions.map((reg) => regionSketch(plane, reg).revolve(dir, { origin, angle: r.angle }) as Shape3D));
+    }
     case "import": {
       const file = imported.get(r.asset);
       if (!file) throw new BuildError("The imported STEP file is not loaded yet.");
@@ -165,6 +177,39 @@ function freeShape(s: { delete?: () => void } | undefined) {
   } catch {
     /* already freed */
   }
+}
+
+function fuseAll(shapes: Shape3D[]): Shape3D {
+  if (!shapes.length) throw new BuildError("The sketch has no closed profile");
+  let out = shapes[0];
+  for (let i = 1; i < shapes.length; i++) out = out.fuse(shapes[i]);
+  return out;
+}
+
+/** A closed sketch loop as a wire on the plane. */
+function loopSketch(plane: R.Plane, segs: Seg2[]): R.Sketch {
+  if (segs.length === 1 && segs[0].k === "c") {
+    const { c, r } = segs[0];
+    return new R.Sketcher(plane.clone())
+      .movePointerTo([c[0] + r, c[1]])
+      .threePointsArcTo([c[0] - r, c[1]], [c[0], c[1] + r])
+      .threePointsArcTo([c[0] + r, c[1]], [c[0], c[1] - r])
+      .close();
+  }
+  const first = segs[0];
+  if (first.k === "c") throw new BuildError("A circle must be a loop on its own");
+  let pen = new R.Sketcher(plane.clone()).movePointerTo(first.a);
+  for (const s of segs) {
+    if (s.k === "l") pen = pen.lineTo(s.b);
+    else if (s.k === "a") pen = pen.threePointsArcTo(s.b, s.m);
+  }
+  return pen.close();
+}
+
+function regionSketch(plane: R.Plane, reg: ProfileRegion) {
+  const outer = loopSketch(plane, reg.outer);
+  if (!reg.holes.length) return outer;
+  return new R.CompoundSketch([outer, ...reg.holes.map((h) => loopSketch(plane, h))]);
 }
 
 export function applyXf(s: Shape3D, xf: Xform[]): Shape3D {
