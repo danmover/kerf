@@ -159,7 +159,8 @@
 .wr-travel {
   position: absolute;
   left: 12px;
-  bottom: 96px;
+  /* above the viewport's solids/eval/build line (bottom: 104px) */
+  bottom: 132px;
   z-index: 4;
   display: flex;
   align-items: center;
