@@ -338,6 +338,14 @@ export const Icon = {
       <path d="M3 8h3M18 8h3" strokeOpacity={0.6} />
     </I>
   ),
+  Plug: (p: P) => (
+    <I {...p}>
+      <path d="M9 2v4M15 2v4" />
+      <rect x="6" y="6" width="12" height="6" rx="1.5" />
+      <path d="M9 12v2a3 3 0 0 0 6 0v-2" />
+      <path d="M12 17v2c0 1.7-1.3 3-3 3H7" />
+    </I>
+  ),
   Fork: (p: P) => (
     <I {...p}>
       <circle cx="6" cy="5" r="2" />
