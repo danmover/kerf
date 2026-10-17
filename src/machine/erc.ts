@@ -526,7 +526,8 @@ function protection(c: Ctx) {
   }
 }
 
-function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
+/** What each net and each powered pin carries: the current budget behind the supply and wire checks. */
+function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
   const memo = new Map<number, number>();
   const visiting = new Set<number>();
   // current drawn out of a net by everything connected to it
@@ -592,6 +593,40 @@ function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
     }
     return a;
   };
+  return { load, downstream };
+}
+
+/**
+ * Current out of each part's supply outputs (A) and the volts on its main
+ * power input, by component name and instance, from the same budget as the
+ * supply and wire checks (for heat: what regulators, supplies and batteries pass).
+ */
+export function supplyFacts(m: MachineData, motorCurrent?: (comp: string) => number | undefined): { out: (comp: string, index?: number) => number; vin: (comp: string, index?: number) => number | undefined } {
+  const c: Ctx = { nl: buildNetlist(m), out: [], m };
+  const { load } = loadModel(c, motorCurrent);
+  const pins = (comp: string, index: number) => (c.nl.pinsOf.get(comp) ?? []).filter((p) => p.index === index);
+  return {
+    out: (comp, index = 0) => {
+      const seen = new Set<number>();
+      let a = 0;
+      for (const p of pins(comp, index)) {
+        const n = p.pin.type === "pwr_out" ? c.nl.netOf.get(p.key) : undefined;
+        if (!n || seen.has(n.id)) continue;
+        seen.add(n.id);
+        a += load(n);
+      }
+      return a;
+    },
+    vin: (comp, index = 0) => {
+      const main = pins(comp, index).filter((p) => p.pin.type === "pwr_in").sort((x, y) => (y.pin.vmax ?? 0) - (x.pin.vmax ?? 0))[0];
+      const n = main && c.nl.netOf.get(main.key);
+      return n ? netVoltage(n) : undefined;
+    },
+  };
+}
+
+function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
+  const { load, downstream } = loadModel(c, motorCurrent);
   for (const n of c.nl.nets) {
     const src = sourcesOf(n)[0];
     if (!src || src.pin.imax === undefined) continue;
