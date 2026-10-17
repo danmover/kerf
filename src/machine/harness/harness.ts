@@ -187,6 +187,8 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
   for (const comp of parts) {
     const it = inst.get(comp)!;
     const part = catalogPart(it.catalogId)!;
+    // a bought board's own 3D model draws its connectors (ui/viewport/boards)
+    if (part.geom.g === "board") continue;
     for (const pin of part.pins) {
       const spec = plugFor(part, pin.id);
       if (!spec?.socket) continue;

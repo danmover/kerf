@@ -12,6 +12,7 @@
 
 import type { V3 } from "../../kernel/recipe";
 import type { CatalogPart, PinDef } from "../types";
+import { pinSpots } from "../boards3d/pins";
 
 export type PlugKind =
   /** JST XH 2.50 mm: printer board headers, stepper and fan leads */
@@ -284,6 +285,9 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): P
   const n = part.pins.length;
   switch (part.geom.g) {
     case "board": {
+      // on the header pin or terminal contact drawn on the board, when it has them
+      const spot = pinSpots(part).get(pinId);
+      if (spot) return { kind: spot.kind, at: spot.at, out: spot.out, row: spot.row, ways: 1 };
       const w = num(d, "w", 50);
       const dd = num(d, "d", 30);
       const t = num(d, "t", 1.6);

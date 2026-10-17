@@ -76,6 +76,34 @@ interface PartObj {
   opacityTarget: number;
   /** last state that affects the rendered image (for resetting the accumulation) */
   sig: string;
+  decor: Decor | null;
+}
+
+/** Detail drawn with a part in its own frame: a bought circuit board's components, copper and silkscreen. */
+export interface PartDecoration {
+  readonly object: THREE.Object3D;
+  /** parts it draws in full, hidden (but still pickable) while it is shown: a board's coarse component boxes */
+  readonly hides?: readonly string[];
+  /** free what belongs to this one decoration (shared geometry and textures stay with its maker) */
+  dispose(): void;
+}
+
+/**
+ * Makes decorations: `key` names the decoration a part gets (null for none), so
+ * it is made again only when that changes. `make` may return null while it is
+ * still building one; the part keeps its old decoration and is asked again on
+ * the next redecorate().
+ */
+export interface Decorator {
+  key(part: EvalPart): string | null;
+  make(part: EvalPart): PartDecoration | null;
+}
+
+interface Decor {
+  d: PartDecoration;
+  key: string;
+  meshes: THREE.Mesh[];
+  mats: THREE.Material[];
 }
 
 /** The previous geometry of a rebuilt part, dissolving away. */
@@ -307,6 +335,10 @@ export class SceneController {
   private overlays = new Set<SceneOverlay>();
   /** parts drawn by an overlay instead of as solids */
   private replaced = new Set<string>();
+  private decorator: Decorator | null = null;
+  private decorHiddenDirty = false;
+  /** parts a decoration draws in full */
+  private decorHidden = new Set<string>();
   /** parts an overlay shows faded */
   private ghosted = new Map<string, number>();
   /** lights for lit overlays: the studio lighting only reaches the accumulated scene */
@@ -781,9 +813,11 @@ export class SceneController {
       obj.part = part;
       obj.hash = part.hash;
       obj.placement.fromArray(xformMatrix(part.xf));
+      this.decorate(obj);
       this.applyMaterial(obj);
       if (isNewGeometry) this.seenHashByPart.set(part.id, part.hash);
     }
+    if (this.decorHiddenDirty) this.syncOverlays();
     for (const [id, obj] of this.parts) {
       if (want.has(id) || obj.removing) continue;
       if (!motion) this.disposePart(obj);
@@ -792,6 +826,7 @@ export class SceneController {
         obj.reveal = null;
         obj.dissolve = { t0: now, dur: 420, out: true };
         obj.mesh.castShadow = false;
+        if (obj.decor) obj.decor.d.object.visible = false;
       }
     }
     this.computeBounds();
@@ -892,6 +927,7 @@ export class SceneController {
       opacity: 1,
       opacityTarget: 1,
       sig: "",
+      decor: null,
     };
   }
 
@@ -918,6 +954,7 @@ export class SceneController {
   }
 
   private disposePart(obj: PartObj) {
+    this.undecorate(obj);
     this.root.remove(obj.group);
     this.retire(obj.mat);
     obj.cap$.mat.dispose();
@@ -1015,6 +1052,7 @@ export class SceneController {
       if (selected) obj.mesh.layers.enable(L_SEL);
       if (hovered && !selected) obj.mesh.layers.enable(L_HOVER);
     }
+    if (obj.decor) for (const m of obj.decor.meshes) m.layers.mask = obj.mesh.layers.mask;
     this.applyOpacity(obj);
     this.updateClipping(obj);
     const sig = `${visible}|${obj.opacityTarget}|${obj.edges.visible}`;
@@ -1034,6 +1072,18 @@ export class SceneController {
     obj.mat.opacity = o;
     obj.mat.depthWrite = !transparent;
     obj.mesh.castShadow = !transparent && !obj.removing;
+    if (obj.decor) {
+      for (const mat of obj.decor.mats) {
+        const t = transparent || !!mat.userData.decal;
+        if (mat.transparent !== t) {
+          mat.transparent = t;
+          mat.needsUpdate = true;
+        }
+        mat.opacity = o;
+        mat.depthWrite = !t;
+      }
+      for (const m of obj.decor.meshes) m.castShadow = !transparent && !obj.removing && m.userData.shadow !== false;
+    }
     obj.edgeMat.opacity = this.preset.edge.alpha * (transparent ? Math.min(1, o * 1.4) : 1);
   }
 
@@ -1044,6 +1094,7 @@ export class SceneController {
     const changed = (obj.mat.clippingPlanes?.length ?? 0) !== planes.length;
     obj.mat.clippingPlanes = planes.length ? planes : null;
     obj.edgeMat.clippingPlanes = planes.length ? planes : null;
+    if (obj.decor) for (const mat of obj.decor.mats) mat.clippingPlanes = planes.length ? planes : null;
     obj.cap$.mat.clippingPlanes = planes.length ? planes : null;
     obj.cap.visible = (this.sectionAnim.on || !!obj.reveal) && obj.opacity >= 0.999;
     obj.cap$.uGlowAmt.value = obj.reveal ? 1 : 0;
@@ -1114,8 +1165,63 @@ export class SceneController {
     this.syncOverlays();
   }
 
+  // ---------- decorations ----------
+
+  /** Draw extra detail with the parts the decorator knows (null for none). */
+  setDecorator(d: Decorator | null) {
+    this.decorator = d;
+    this.redecorate();
+  }
+
+  /** Ask the decorator again for every part, after what it draws from has changed. */
+  redecorate() {
+    for (const obj of this.parts.values()) if (!obj.removing) this.decorate(obj);
+    this.syncOverlays();
+    this.changed = true;
+  }
+
+  private decorate(obj: PartObj) {
+    const key = this.decorator?.key(obj.part) ?? null;
+    if ((obj.decor?.key ?? null) === key) return;
+    if (key === null) return this.undecorate(obj);
+    // not ready yet: keep showing the one it has until the new one is
+    const d = this.decorator!.make(obj.part);
+    if (!d) return;
+    this.undecorate(obj);
+    const meshes: THREE.Mesh[] = [];
+    const mats = new Set<THREE.Material>();
+    d.object.traverse((o) => {
+      if (!(o as THREE.Mesh).isMesh) return;
+      const m = o as THREE.Mesh;
+      m.userData.partId = obj.id;
+      meshes.push(m);
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+        mat.userData.decal ??= mat.transparent;
+        mats.add(mat);
+      }
+    });
+    obj.group.add(d.object);
+    obj.decor = { d, key, meshes, mats: [...mats] };
+    for (const id of d.hides ?? []) this.decorHidden.add(id);
+    this.decorHiddenDirty ||= !!d.hides?.length;
+  }
+
+  private undecorate(obj: PartObj) {
+    const dc = obj.decor;
+    if (!dc) return;
+    obj.group.remove(dc.d.object);
+    dc.d.dispose();
+    obj.decor = null;
+    if (dc.d.hides?.length) {
+      this.decorHidden = new Set([...this.parts.values()].flatMap((p) => [...(p.decor?.d.hides ?? [])]));
+      this.decorHiddenDirty = true;
+    }
+    this.changed = true;
+  }
+
   private syncOverlays() {
-    this.replaced = new Set([...this.overlays].flatMap((o) => [...o.replaces]));
+    this.decorHiddenDirty = false;
+    this.replaced = new Set([...[...this.overlays].flatMap((o) => [...o.replaces]), ...this.decorHidden]);
     this.ghosted = new Map([...this.overlays].flatMap((o) => [...(o.ghosts ?? [])]));
     // applyMaterial restarts the accumulation for parts that appear or disappear
     for (const obj of this.parts.values()) this.applyMaterial(obj);
@@ -1872,6 +1978,11 @@ export class SceneController {
     for (const o of this.parts.values()) {
       if (o.removing || !o.group.visible || o.opacityTarget < 1) continue;
       out.push({ id: o.id, geoKey: o.geoKey, geometry: o.mesh.geometry, matrix: o.mesh.matrixWorld, look: o.look });
+      o.decor?.meshes.forEach((m, i) => {
+        if (!m.visible) return;
+        const mat = Array.isArray(m.material) ? m.material[0] : m.material;
+        out.push({ id: `${o.id}~${i}`, geoKey: m.geometry.uuid, geometry: m.geometry, matrix: m.matrixWorld, look: o.look, material: mat });
+      });
     }
     return out;
   }

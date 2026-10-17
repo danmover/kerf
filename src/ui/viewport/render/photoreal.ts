@@ -27,6 +27,8 @@ export interface PhotoPart {
   geometry: THREE.BufferGeometry;
   matrix: THREE.Matrix4;
   look: Appearance;
+  /** drawn with this material as it is (a decoration's textured or vertex-coloured surfaces) instead of one made from the look */
+  material?: THREE.Material;
 }
 
 export interface PhotoStage {
@@ -321,7 +323,7 @@ function disposeUniform(v: unknown) {
 
 function signature(parts: PhotoPart[], st: PhotoStage) {
   const out: string[] = [];
-  for (const p of parts) out.push(p.id, p.geoKey, p.look.key, ...Array.from(p.matrix.elements, (e) => e.toFixed(4)));
+  for (const p of parts) out.push(p.id, p.geoKey, p.material?.uuid ?? p.look.key, ...Array.from(p.matrix.elements, (e) => e.toFixed(4)));
   out.push(st.floorZ.toFixed(3), String(st.below));
   return out.join("|");
 }
@@ -669,6 +671,13 @@ export class PhotoRenderer {
     const usedGeos = new Set<string>();
     const usedMats = new Set<string>();
     for (const p of parts) {
+      if (p.material) {
+        const mesh = new THREE.Mesh(p.geometry, p.material);
+        mesh.matrixAutoUpdate = false;
+        mesh.matrix.copy(p.matrix);
+        this.parts.add(mesh);
+        continue;
+      }
       let m = this.mats.get(p.look.key);
       if (!m) {
         const pm = photoMaterial(p.look);
