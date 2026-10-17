@@ -44,6 +44,7 @@ const CATEGORY: Record<string, string> = {
   analysis: "Strength",
   simulation: "Simulations",
   process: "Manufacturing",
+  assembly: "Assembly",
   build: "Build",
   electrical: "Wiring",
   engineering: "Calculations",

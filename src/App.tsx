@@ -25,6 +25,7 @@ import { initAccount } from "./cloud/account";
 import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
 import { startMaterialChecks } from "./materials/runtime";
+import { startAssemblyChecks } from "./mfg/dfaRuntime";
 import { useThemeSync } from "./app/theme";
 
 // each opened project brings its own conversation
@@ -87,6 +88,7 @@ function useBoot() {
     let live = true;
     startEngine();
     startMaterialChecks();
+    startAssemblyChecks();
     startAnalysisRuntime();
     startBoardRuntime();
     startSimRuntime();
