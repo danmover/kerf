@@ -16,6 +16,7 @@ import { AccountKeySection, AccountSettings, CloudIcon, signOutForClear } from "
 import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
+import { desktop, graphicsCard, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "Claude", icon: <Icon.Sparkle size={14} /> },
@@ -261,6 +262,7 @@ function AppSettings() {
           <Toggle on={s.edges} onChange={(v) => updateSettings({ edges: v })} label="Edge lines" />
         </Row>
       </Section>
+      <GraphicsSettings />
       <Section title="Motion">
         <Row t="Reduce motion" d="Turns off interface animations and the build-in reveal of new parts. Mechanism playback still works when you press play.">
           <Toggle on={s.reduceMotion} onChange={(v) => updateSettings({ reduceMotion: v })} label="Reduce motion" />
@@ -270,6 +272,47 @@ function AppSettings() {
         <Icon.Refresh size={14} /> Reset preferences
       </button>
     </>
+  );
+}
+
+const BACKENDS: Record<GraphicsBackend, { label: string; d: string }> = {
+  auto: { label: "Auto", d: "Chromium's choice, which is Direct3D 11 on Windows. The safest option." },
+  d3d11: { label: "Direct3D 11", d: "The same as Auto on Windows." },
+  vulkan: { label: "Vulkan", d: "Another route to the card, which may get the photoreal view started faster. Switch back if anything looks wrong." },
+  gl: { label: "OpenGL", d: "An older route to the graphics card, for drivers that misbehave with the others." },
+};
+
+/** The graphics card in use, and in the desktop app, how Kerf talks to it. */
+function GraphicsSettings() {
+  const app = desktop();
+  const [info, setInfo] = useState<DesktopInfo | null>(null);
+  const [card] = useState(graphicsCard);
+  useEffect(() => {
+    void app?.info().then(setInfo);
+  }, [app]);
+  const choose = async (b: GraphicsBackend) => {
+    await app?.setGraphics(b);
+    setInfo((i) => i && { ...i, graphics: b });
+  };
+  return (
+    <Section title="Graphics">
+      <Row t="Graphics card" d={app ? "The card Kerf draws with." : "The card this browser draws with. If it isn't your fastest one, the Kerf desktop app always uses the fast card."}>
+        <span className="chip mono">{card}</span>
+      </Row>
+      {info && info.backends.length > 1 && (
+        <Row t="Graphics backend" d={BACKENDS[info.graphics].d}>
+          <Segmented id="graphics-backend" value={info.graphics} options={info.backends.map((b) => ({ value: b, label: BACKENDS[b].label }))} onChange={(v) => void choose(v)} />
+        </Row>
+      )}
+      {info && info.graphics !== info.running && (
+        <Row t="Restart to switch" d={`Kerf is using ${BACKENDS[info.running].label} until it restarts. Your work is saved.`}>
+          <button className="btn primary sm" onClick={() => void app?.relaunch()}>
+            <Icon.Refresh size={13} /> Restart Kerf
+          </button>
+        </Row>
+      )}
+      {info && <Row t="Desktop app" d={`Kerf ${info.version} · Electron ${info.electron} · Chromium ${info.chrome}`} />}
+    </Section>
   );
 }
 

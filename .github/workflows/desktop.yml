@@ -1,0 +1,104 @@
+name: Desktop app
+
+# Builds the Windows installer, starts the packaged app to check it opens a
+# design and passes its checks, and publishes the installer to GitHub Releases:
+#   - pull requests that touch the desktop app: build and test, installer kept as an artifact
+#   - main, when package.json has a version with no release yet: build, test and release v<version>
+#   - Run workflow (manual): build and test main, and put the installer on v<version>'s release
+# Windows runners cost double minutes, so other changes don't trigger it.
+
+on:
+  pull_request:
+    paths: [desktop/**, scripts/build-desktop.mjs, .github/workflows/desktop.yml]
+  push:
+    branches: [main]
+    paths: [package.json, desktop/**, scripts/build-desktop.mjs, .github/workflows/desktop.yml]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Put the installer on the release for package.json's version
+        type: boolean
+        default: true
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  # a release run on main finishes even when another push follows it
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Decide whether to release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          WANT: ${{ inputs.publish }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          publish=false
+          if [ "$EVENT" = workflow_dispatch ]; then publish=$WANT
+          elif [ "$EVENT" = push ] && ! gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then publish=true; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Version $version, publish: $publish"
+
+  windows:
+    name: Windows installer
+    needs: plan
+    if: github.event_name != 'push' || needs.plan.outputs.publish == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/build-desktop.mjs
+      - run: npx electron-builder --config desktop/electron-builder.yml --win --publish never
+      - name: Open a design in the packaged app
+        shell: bash
+        env:
+          KERF_SMOKE_SHOT: smoke.png
+          KERF_SMOKE_OUT: smoke.json
+        run: |
+          status=0
+          ./release/win-unpacked/Kerf.exe --smoke-test || status=$?
+          cat smoke.json || echo "no result written"
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kerf-windows-${{ needs.plan.outputs.version }}
+          path: |
+            release/Kerf-Setup-*.exe
+            smoke.png
+            smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Publish to GitHub Releases
+        if: needs.plan.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.plan.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/Kerf-Setup-*.exe --clobber
+          else
+            gh release create "$TAG" release/Kerf-Setup-*.exe --target "$GITHUB_SHA" --title "Kerf $TAG" --generate-notes \
+              --notes "Download **Kerf-Setup-${TAG#v}.exe** below and run it. It installs for your Windows user only, with no administrator prompt, and adds Kerf to the Start menu and desktop. The installer isn't code-signed yet, so Windows may say it protected your PC: choose **More info**, then **Run anyway**."
+          fi

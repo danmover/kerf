@@ -5,7 +5,8 @@ import { useSettings, updateSettings, type VoiceSend } from "../../app/settings"
 import { go, closeSettings, useUi } from "../../app/ui";
 import { checkOnDevice, downloadSpeechModel, useVoice, voiceLang } from "../../voice/voice";
 import type { OnDevice } from "../../voice/recognizer";
-import { providerName, serviceName } from "../../voice/text";
+import { desktopDictationHint, providerName, serviceName } from "../../voice/text";
+import { desktop } from "../../app/desktop";
 import { Segmented, Toggle } from "../common";
 import { Icon } from "../icons";
 
@@ -56,7 +57,9 @@ export function VoiceSettings() {
                   : status === "downloadable" || status === "downloading"
                     ? "On this device, after a download"
                     : status === "none"
-                      ? "This browser has no voice input"
+                      ? desktop()
+                        ? "The desktop app has no voice input yet"
+                        : "This browser has no voice input"
                       : status === "unavailable"
                         ? "This browser can't do it on the device"
                         : "Checking…"}
@@ -67,7 +70,9 @@ export function VoiceSettings() {
                 : status === "downloadable" || status === "downloading"
                   ? `Your browser can turn ${languageName(lang)} speech into text on this device after a one-time download of around 60 MB.`
                   : status === "none"
-                    ? "Use the dictation key on your keyboard to talk into the message box. Chrome, Edge and Safari have voice input built in."
+                    ? desktop()
+                      ? desktopDictationHint(/Windows/.test(navigator.userAgent))
+                      : "Use the dictation key on your keyboard to talk into the message box. Chrome, Edge and Safari have voice input built in."
                     : status === "unavailable"
                       ? `Voice input needs ${service} in this browser. Allow it below, or use the dictation key on your keyboard.`
                       : ""}
