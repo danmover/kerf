@@ -86,7 +86,7 @@ function DesignTierCard({ t, i, plans }: { t: DesignTier; i: number; plans: Manu
   ] as const;
   const max = Math.max(1e-9, t.each);
   return (
-    <motion.div className={`mk-tier-card ${t.brief ? "brief" : ""}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ type: "spring", stiffness: 420, damping: 34, delay: i * 0.04 }}>
+    <motion.div className={`mk-tier-card ${t.brief ? "is-brief" : ""}`} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ type: "spring", stiffness: 420, damping: 34, delay: i * 0.04 }}>
       <div className="mk-tier-head">
         <span className="mk-tier-label">{t.label}</span>
         {t.brief && <span className="mk-tag">brief</span>}
@@ -104,9 +104,17 @@ function DesignTierCard({ t, i, plans }: { t: DesignTier; i: number; plans: Manu
       <div className="mk-split" role="img" aria-label={parts.map(([k, v]) => `${k} ${money(v)}`).join(", ")}>
         {parts.map(([k, v]) =>
           v > 0 ? (
-            <div key={k} className={`mk-split-seg k-${k}`} style={{ flexGrow: v / max }} data-tip={`${k}: ${money(v)} per design`}>
-              <span>{k}</span>
-            </div>
+            <div key={k} className={`mk-split-seg k-${k}`} style={{ flexGrow: v / max }} data-tip={`${k}: ${money(v)} per design`} />
+          ) : null,
+        )}
+      </div>
+      <div className="mk-split-key">
+        {parts.map(([k, v]) =>
+          v > 0 ? (
+            <span key={k}>
+              <i className={`k-${k}`} />
+              {k} {money(v)}
+            </span>
           ) : null,
         )}
       </div>

@@ -7,7 +7,7 @@
 // Which processes count is set here, in Settings, or in the brief.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDesign } from "../../core/engine";
 import { useView } from "../../app/view";
 import { useSettings, updateSettings } from "../../app/settings";
@@ -15,6 +15,7 @@ import { PROCESSES } from "../../mfg/profiles";
 import { fmtDays, fmtHours, type CostEstimate } from "../../mfg/cost";
 import { madeBlocks, type PlannedPart } from "../../mfg/plan";
 import type { ManufacturingPlan, Route, TierPlan } from "../../mfg/advisor";
+import type { ProcessId } from "../../mfg/types";
 import { money } from "../../materials/advise";
 import { Swatch } from "../MaterialPicker";
 import { Icon, StatusIcon } from "../icons";
@@ -32,6 +33,7 @@ export function MakePanel() {
   const [scope, setScope] = useState<string>("design");
   const [editing, setEditing] = useState(false);
   const { access, fromBrief } = useAccess();
+  const body = useRef<HTMLDivElement>(null);
 
   // a made part picked on the model opens its plan
   useEffect(() => {
@@ -67,13 +69,17 @@ export function MakePanel() {
           ))}
         </div>
         <div className="grow" />
-        <button className={`btn sm ghost mk-access-btn ${editing ? "active" : ""}`} onClick={() => setEditing(!editing)} aria-expanded={editing} data-tip={fromBrief ? "This design's brief sets which processes it can use" : "Your usual processes, from Settings"}>
+        <button className={`btn sm ghost mk-access-btn ${editing ? "active" : ""}`} onClick={() => {
+            setEditing(!editing);
+            body.current?.scrollTo({ top: 0, behavior: "smooth" });
+          }}
+          aria-expanded={editing} data-tip={fromBrief ? "This design's brief sets which processes it can use" : "Your usual processes, from Settings"}>
           <Icon.Factory size={13} />
           Processes: {accessSummary(access)}
           {fromBrief && <span className="mk-tag">brief</span>}
         </button>
       </div>
-      <div className="mk-body">
+      <div className="mk-body" ref={body}>
         <AnimatePresence initial={false}>
           {editing && (
             <motion.div className="mk-access" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.18 }}>
@@ -108,7 +114,10 @@ function LabourField() {
 
 function PartView({ block }: { block: string }) {
   const { data, busy, error } = usePartPlan(block);
-  const [hovered, setHovered] = useState<Route | null>(null);
+  // hover by process, so a replanned part keeps showing the same route
+  const [hoverId, setHoverId] = useState<ProcessId | null>(null);
+  const hovered = data?.plan.routes.find((r) => r.process === hoverId) ?? null;
+  const setHovered = (r: Route | null) => setHoverId(r?.process ?? null);
   const [tier, setTier] = useState<number | null>(null);
 
   // the model shows the hovered route's material and issues; leaving clears it
@@ -167,7 +176,7 @@ function TierCard({ plan, t, ti, block, active, onPick, onHover }: { plan: Manuf
   if (t.cheapest && t.cheapest !== r) alts.push(["Cheapest", t.cheapest]);
   if (t.best && t.best !== r && t.best !== t.cheapest) alts.push(["Best quality", t.best]);
   return (
-    <motion.div layout="position" className={`mk-tier-card ${active ? "active" : ""} ${t.brief ? "brief" : ""}`} onClick={onPick} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ type: "spring", stiffness: 420, damping: 34, delay: ti * 0.04 }}>
+    <motion.div layout="position" className={`mk-tier-card ${active ? "active" : ""} ${t.brief ? "is-brief" : ""}`} onClick={onPick} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ type: "spring", stiffness: 420, damping: 34, delay: ti * 0.04 }}>
       <div className="mk-tier-head">
         <span className="mk-tier-label">{t.label}</span>
         {t.brief && <span className="mk-tag">brief</span>}
@@ -181,7 +190,7 @@ function TierCard({ plan, t, ti, block, active, onPick, onHover }: { plan: Manuf
               <div className="mk-pick-proc">{PROCESSES[r.process].label}</div>
               <div className="mk-pick-mat">
                 {r.materialLabel}
-                {r.access === "own" && <span className="mk-tag own">yours</span>}
+                {c.access === "own" ? <span className="mk-tag own">yours</span> : r.access === "own" ? <span className="mk-tag" data-tip="Too many for your own machine in good time, so a shop makes them">ordered</span> : null}
               </div>
             </div>
           </div>
@@ -207,11 +216,11 @@ function TierCard({ plan, t, ti, block, active, onPick, onHover }: { plan: Manuf
       {alts.map(([label, a]) => (
         <div key={label} className="mk-alt" onMouseEnter={() => onHover(a)} onMouseLeave={() => onHover(null)}>
           <span className="mk-alt-l">{label}</span>
+          <b>{money(a.costs[ti]!.unit)}</b>
+          <UseButton block={block} r={a} small />
           <span className="mk-alt-r" title={`${PROCESSES[a.process].label} in ${a.materialLabel}`}>
             {PROCESSES[a.process].short} · {a.materialLabel}
           </span>
-          <b>{money(a.costs[ti]!.unit)}</b>
-          <UseButton block={block} r={a} small />
         </div>
       ))}
       {t.hints.map((h) => (

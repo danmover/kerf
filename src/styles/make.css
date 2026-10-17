@@ -38,7 +38,8 @@
 .mk-body {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 12px;
 }
 .mk-note {
@@ -358,10 +359,10 @@
 }
 .mk-alt {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 6px;
-  padding: 3px 2px;
+  column-gap: 6px;
+  padding: 4px 4px;
   border-radius: 6px;
   font-size: 11.5px;
 }
@@ -376,6 +377,7 @@
   color: var(--text-3);
 }
 .mk-alt-r {
+  grid-column: 1 / -1;
   color: var(--text-2);
   white-space: nowrap;
   overflow: hidden;
@@ -479,10 +481,10 @@
   font-family: var(--mono);
   font-size: 9.5px;
 }
-.mk-tier.brief line {
+.mk-tier.is-brief line {
   stroke: rgb(var(--accent-rgb) / 0.5);
 }
-.mk-tier.brief text {
+.mk-tier.is-brief text {
   fill: var(--accent-ink);
 }
 .mk-cross line {
@@ -517,6 +519,10 @@
   align-items: center;
   gap: 6px;
 }
+.mk-tip-a {
+  color: var(--text-3);
+  font-size: 10.5px;
+}
 .mk-tip-row b {
   font-family: var(--mono);
   font-weight: 500;
@@ -550,6 +556,7 @@
 /* tables of routes and parts */
 .mk-routes {
   margin-bottom: 12px;
+  overflow-x: auto;
 }
 .mk-table {
   width: 100%;
@@ -756,7 +763,7 @@
 .mk-split {
   display: flex;
   gap: 2px;
-  height: 18px;
+  height: 8px;
   margin: 4px 0 2px;
   border-radius: 4px;
   overflow: hidden;
@@ -764,21 +771,31 @@
 .mk-split-seg {
   flex-basis: 0;
   min-width: 4px;
-  display: flex;
-  align-items: center;
-  padding: 0 5px;
-  overflow: hidden;
-  font-family: var(--mono);
-  font-size: 9.5px;
-  color: var(--text);
-  white-space: nowrap;
 }
+.mk-split-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-2);
+}
+.mk-split-key i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+.mk-split-key i.k-made,
 .mk-split-seg.k-made {
   background: rgb(var(--accent-rgb) / 0.32);
 }
+.mk-split-key i.k-bought,
 .mk-split-seg.k-bought {
   background: rgb(var(--cyan-rgb) / 0.28);
 }
+.mk-split-key i.k-assembly,
 .mk-split-seg.k-assembly {
   background: rgb(var(--violet-rgb) / 0.28);
 }
@@ -862,9 +879,10 @@
   font-size: 10.5px;
   color: var(--text-3);
   line-height: 1.35;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .mk-asm-time {
   display: flex;
@@ -874,7 +892,7 @@
 }
 .mk-asm-line {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 54px;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 72px;
   align-items: center;
   gap: 8px;
   font-size: 11.5px;
@@ -903,6 +921,7 @@
   background: rgb(var(--violet-rgb) / 0.7);
 }
 .mk-asm-v {
+  white-space: nowrap;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text);

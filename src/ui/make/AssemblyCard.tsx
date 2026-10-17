@@ -28,7 +28,7 @@ export function AssemblyCard() {
   if (!r || !r.counts.items || !model) return null;
   const findings = r.findings.filter((f) => f.id !== "dfa:summary" && f.status !== "pass");
   const passes = r.findings.filter((f) => f.status === "pass");
-  const max = Math.max(1, ...r.time.lines.map((l) => l.seconds * l.count));
+  const max = Math.max(1, ...r.time.lines.map((l) => l.seconds));
   return (
     <div className="mk-asm">
       <div className="mk-h">Putting it together</div>
@@ -46,9 +46,9 @@ export function AssemblyCard() {
                 {l.label} <span className="mk-why-in">×{l.count}</span>
               </span>
               <span className="mk-asm-bar">
-                <motion.span initial={{ width: 0 }} animate={{ width: `${((l.seconds * l.count) / max) * 100}%` }} transition={{ delay: i * 0.04, duration: 0.35 }} />
+                <motion.span initial={{ width: 0 }} animate={{ width: `${(l.seconds / max) * 100}%` }} transition={{ delay: i * 0.04, duration: 0.35 }} />
               </span>
-              <span className="mk-asm-v">{fmtTime(l.seconds * l.count)}</span>
+              <span className="mk-asm-v">{fmtTime(l.seconds)}</span>
             </div>
           ))}
         </div>

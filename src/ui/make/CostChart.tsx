@@ -5,11 +5,11 @@
 // shows.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { estimateCost } from "../../mfg/cost";
 import { withStats } from "../../mfg/geometry";
 import { PROCESSES } from "../../mfg/profiles";
 import { money } from "../../materials/advise";
-import type { ManufacturingPlan, Route } from "../../mfg/advisor";
+import { routeCost, type ManufacturingPlan, type Route } from "../../mfg/advisor";
+import type { CostEstimate } from "../../mfg/cost";
 import type { PlannedPart } from "../../mfg/plan";
 
 /** Categorical slots, fixed order (validated for colour-blind separation in both themes: see styles/make.css). */
@@ -83,16 +83,16 @@ export function CostChart({ planned, hovered, onHoverRoute }: { planned: Planned
     return [...new Set(out)].sort((a, b) => a - b);
   }, [qHi, plan]);
 
-  /** unit cost of a route at a number of parts */
-  const unitOf = useMemo(() => {
-    const cache = new Map<Route, (q: number) => number | null>();
+  /** a route's estimate at a number of parts */
+  const costOf = useMemo(() => {
+    const cache = new Map<Route, (q: number) => CostEstimate | null>();
     return (r: Route) => {
       let f = cache.get(r);
       if (!f) {
         const g = withStats(plan.geometry, fits[r.process]);
-        const memo = new Map<number, number | null>();
+        const memo = new Map<number, CostEstimate | null>();
         f = (q: number) => {
-          if (!memo.has(q)) memo.set(q, estimateCost(r.process, r.material, g, q, { access: r.access === "none" ? "order" : r.access, labour: plan.labour })?.unit ?? null);
+          if (!memo.has(q)) memo.set(q, routeCost(r.process, r.material, g, q, r.access, plan.labour));
           return memo.get(q)!;
         };
         cache.set(r, f);
@@ -100,8 +100,9 @@ export function CostChart({ planned, hovered, onHoverRoute }: { planned: Planned
       return f;
     };
   }, [plan, fits]);
+  const unitOf = (r: Route) => (q: number) => costOf(r)(q)?.unit ?? null;
 
-  const lines = useMemo(() => series.map((s) => ({ ...s, pts: qtys.map((q) => [q, unitOf(s.route)(q)] as const).filter((p): p is readonly [number, number] => p[1] !== null && p[1] > 0) })), [series, qtys, unitOf]);
+  const lines = useMemo(() => series.map((s) => ({ ...s, pts: qtys.map((q) => [q, unitOf(s.route)(q)] as const).filter((p): p is readonly [number, number] => p[1] !== null && p[1] > 0) })), [series, qtys, costOf]);
 
   const [yLo, yHi] = useMemo(() => {
     let lo = Infinity;
@@ -133,7 +134,13 @@ export function CostChart({ planned, hovered, onHoverRoute }: { planned: Planned
     return out;
   }, [lines, w, yLo, yHi]);
 
-  const reading = at === null ? null : lines.map((l) => ({ l, v: unitOf(l.route)(at) })).filter((r): r is { l: (typeof lines)[number]; v: number } => r.v !== null).sort((a, b) => a.v - b.v);
+  const reading =
+    at === null
+      ? null
+      : lines
+          .map((l) => ({ l, c: costOf(l.route)(at) }))
+          .filter((r): r is { l: (typeof lines)[number]; c: CostEstimate } => r.c !== null)
+          .sort((a, b) => a.c.unit - b.c.unit);
 
   const move = (e: React.PointerEvent<SVGRectElement>) => {
     const r = e.currentTarget.ownerSVGElement!.getBoundingClientRect();
@@ -176,7 +183,7 @@ export function CostChart({ planned, hovered, onHoverRoute }: { planned: Planned
             </text>
           ))}
           {plan.tiers.map((t) => (
-            <g key={t.qty} className={`mk-tier ${t.brief ? "brief" : ""}`}>
+            <g key={t.qty} className={`mk-tier ${t.brief ? "is-brief" : ""}`}>
               <line x1={x(t.parts)} x2={x(t.parts)} y1={PAD.t - 4} y2={PAD.t + ih} />
               <text x={x(t.parts) + 3} y={PAD.t - 6}>
                 {t.label.toLowerCase()}
@@ -198,7 +205,7 @@ export function CostChart({ planned, hovered, onHoverRoute }: { planned: Planned
             <g className="mk-cross">
               <line x1={x(at)} x2={x(at)} y1={PAD.t} y2={PAD.t + ih} />
               {reading.map((r) => (
-                <circle key={r.l.route.process} cx={x(at)} cy={y(r.v)} r={4} fill={r.l.color} className="mk-dot" />
+                <circle key={r.l.route.process} cx={x(at)} cy={y(r.c.unit)} r={4} fill={r.l.color} className="mk-dot" />
               ))}
             </g>
           )}
@@ -213,8 +220,11 @@ export function CostChart({ planned, hovered, onHoverRoute }: { planned: Planned
               <svg width="12" height="8" aria-hidden="true">
                 <line x1="1" y1="4" x2="11" y2="4" stroke={r.l.color} strokeWidth="2" strokeLinecap="round" />
               </svg>
-              <span>{PROCESSES[r.l.route.process].short}</span>
-              <b>{money(r.v)}</b>
+              <span>
+                {PROCESSES[r.l.route.process].short}
+                {r.l.route.access === "own" && <span className="mk-tip-a">{r.c.access === "own" ? " yours" : " ordered"}</span>}
+              </span>
+              <b>{money(r.c.unit)}</b>
             </div>
           ))}
         </div>

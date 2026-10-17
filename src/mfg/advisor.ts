@@ -175,8 +175,11 @@ function weights(b: BriefFacts | null): Weights {
   return w;
 }
 
-/** How good a part the route makes: the material for the use, then precision and surface. */
-const quality = (r: Route) => 0.6 * r.materialScore + 0.25 * precisionScore(r.tolerance) + 0.15 * surfaceOf(r.process)[1];
+/** How good a part the route makes: the material for the use, precision and surface, weighed as the brief's priorities say. */
+function quality(r: Route, w: Weights): number {
+  const k = [w.material, Math.max(0.6, w.precision), Math.max(0.6, w.looks)];
+  return (k[0] * r.materialScore + k[1] * precisionScore(r.tolerance) + k[2] * surfaceOf(r.process)[1]) / (k[0] + k[1] + k[2]);
+}
 
 // ---------- the plan ----------
 
@@ -225,6 +228,22 @@ function pickMaterial(req: PlanRequest, p: ProcessId): MaterialOption | null {
   return [...usable].sort((a, b) => lead(b) - lead(a))[0];
 }
 
+/**
+ * The cost of a route at a quantity. A process you own is made on your
+ * machine, unless the batch would tie it up for over a month and a shop with
+ * several machines would take less than half as long.
+ */
+export function routeCost(p: ProcessId, material: string, g: CostGeometry, n: number, access: Access, labour?: number): CostEstimate | null {
+  if (access !== "own") return estimateCost(p, material, g, n, { access: "order", labour });
+  const mine = estimateCost(p, material, g, n, { access: "own", labour });
+  if (!mine || mine.days[1] <= 30) return mine;
+  const shop = estimateCost(p, material, g, n, { access: "order", labour });
+  return shop && shop.days[1] < mine.days[1] / 2 ? shop : mine;
+}
+
+/** Lead times past two months count against a route, more the longer they get. */
+const leadPenalty = (days: number) => (days <= 60 ? 1 : Math.max(0.5, 1 - 0.15 * Math.log2(days / 60)));
+
 export function planManufacturing(req: PlanRequest): ManufacturingPlan {
   const part = req.part;
   const w = weights(req.brief);
@@ -240,7 +259,7 @@ export function planManufacturing(req: PlanRequest): ManufacturingPlan {
     const fit = summary ? { fail: summary.fail, warn: summary.warn, issues: summary.issues } : null;
     const material = option?.name ?? req.part.material;
     const g = withStats(req.geometry, fitResult);
-    const costs = tierParts.map((n) => (option ? estimateCost(p, material, g, n, { access: access === "none" ? "order" : access, labour: req.labour }) : null));
+    const costs = tierParts.map((n) => (option ? routeCost(p, material, g, n, access, req.labour) : null));
     const [surface] = surfaceOf(p);
     const status: RouteStatus = !option ? "no-material" : access === "none" ? "unavailable" : fit && fit.fail ? "needs-changes" : "ok";
     routes.push({
@@ -289,7 +308,8 @@ export function planManufacturing(req: PlanRequest): ManufacturingPlan {
       const total = parts.reduce((s, [k]) => s + k, 0);
       let score = parts.reduce((s, [k, v]) => s + k * v, 0) / total;
       // your own machine: no shipping, no waiting on a shop
-      if (r.access === "own") score += 0.04;
+      if (c.access === "own") score += 0.04;
+      score *= leadPenalty(c.days[1]);
       r.scores[ti] = Math.max(0, Math.min(1, score));
     }
   });
@@ -303,11 +323,13 @@ export function planManufacturing(req: PlanRequest): ManufacturingPlan {
     const ok = pickable.filter((r) => r.costs[ti]);
     const by = (list: Route[], f: (r: Route) => number) => [...list].sort((a, b) => f(b) - f(a))[0];
     const recommended = by(ok, (r) => r.scores[ti]);
-    const cheapest = by(ok, (r) => -(r.costs[ti]!.unit));
+    // the cheapest way that still makes a fair part: a weak material only when nothing else is cheaper
+    const fair = ok.filter((r) => r.materialVerdict !== "poor");
+    const cheapest = by(fair.length ? fair : ok, (r) => -(r.costs[ti]!.unit));
     // the best part money buys, within reach of the recommended route's cost
     const unit = recommended?.costs[ti]?.unit ?? Infinity;
     const premium = ok.filter((r) => r.costs[ti]!.unit <= Math.max(5 * unit, unit + 50));
-    const best = by(premium, quality);
+    const best = by(premium, (r) => quality(r, w));
     return { ...t, parts: tierParts[ti], recommended, cheapest, best, hints: hints(routes, ti, recommended, tierParts[ti]) };
   });
 
@@ -378,7 +400,7 @@ function bands(usable: Route[], req: PlanRequest, count: number): Band[] {
   if (!usable.length) return [];
   const unitOf = (r: Route) => {
     const g = withStats(req.geometry, req.fits[r.process]);
-    return (n: number) => estimateCost(r.process, r.material, g, n, { access: r.access, labour: req.labour })?.unit ?? Infinity;
+    return (n: number) => routeCost(r.process, r.material, g, n, r.access, req.labour)?.unit ?? Infinity;
   };
   const fns = new Map(usable.map((r) => [r, unitOf(r)]));
   const lo = 1;
@@ -414,7 +436,7 @@ export function planText(plan: ManufacturingPlan): string {
       if (!r) return null;
       const ti = plan.tiers.indexOf(t);
       const c = r.costs[ti]!;
-      return `${tag}: ${PROCESSES[r.process].label} in ${r.materialLabel}${r.access === "own" ? " (your own machine)" : ""} ≈ ${money(c.unit)} each (${money(c.range[0])}–${money(c.range[1])}), ${money(c.total)} total${c.tooling ? ` incl. ${money(c.tooling)} tooling` : ""}, ${fmtDays(c.days)}`;
+      return `${tag}: ${PROCESSES[r.process].label} in ${r.materialLabel}${c.access === "own" ? " (your own machine)" : r.access === "own" ? " (ordered: too many for your own machine)" : ""} ≈ ${money(c.unit)} each (${money(c.range[0])}–${money(c.range[1])}), ${money(c.total)} total${c.tooling ? ` incl. ${money(c.tooling)} tooling` : ""}, ${fmtDays(c.days)}`;
     };
     const picks = [pick(t.recommended, "recommended")];
     if (t.cheapest && t.cheapest !== t.recommended) picks.push(pick(t.cheapest, "cheapest"));
