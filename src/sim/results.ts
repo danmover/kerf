@@ -92,6 +92,9 @@ export const WORLD_RESULTS: Record<string, Record<string, ResultInfo>> = {
     y_load: { unit: "share", doc: "the same for Y" },
     z_load: { unit: "share", doc: "the same for Z" },
     extruder_load: { unit: "share", doc: "the same for the extruder motor (the melt pushes back near the hotend's flow limit)" },
+    ringing: { unit: "mm", doc: "most the X or Y belt let the nozzle ring after a change of speed while printing (ghosting), from lib.belt" },
+    ringing_hz: { unit: "count", doc: "lowest frequency the X or Y axis rings at on its belt, Hz (what an input shaper would tune to)" },
+    belt_slack: { unit: "N", doc: "slackest the X or Y belt's slack side got at peak pull (below 0 it went slack)" },
   },
 };
 

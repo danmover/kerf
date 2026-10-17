@@ -273,7 +273,7 @@ function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
     world === "sand_pit"
       ? ["progress", "miss", "speed", "slip", "heading_max", "battery_left"]
       : world === "printer"
-        ? ["firmware", "print_time", "heat_time", "layer_shifts", "under_extrusion", "hotend_error", "first_layer_error", "flow_peak", "psu_peak", "x_load", "y_load", "z_load"]
+        ? ["firmware", "print_time", "heat_time", "layer_shifts", "under_extrusion", "hotend_error", "first_layer_error", "ringing", "belt_slack", "flow_peak", "psu_peak", "x_load", "y_load", "z_load"]
         : ["time", "battery_left", "battery_peak_amps", "faults"];
   if (world === "printer") return <PrinterStats v={v} pick={pick} />;
   const motors = v.summary.motors;
@@ -349,8 +349,8 @@ function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
 /** A print's key numbers: no chip RAM or motor heat to show, just how the print went. */
 function PrinterStats({ v, pick }: { v: VariantRun; pick: string[] }) {
   const r = v.results;
-  const bad = (k: string) => (k === "layer_shifts" && Number(r[k]) > 0) || (k === "under_extrusion" && Number(r[k]) > 0.05) || (k.endsWith("_load") && Number(r[k]) > 1) || (k === "first_layer_error" && Number(r[k]) > 0.1);
-  const warn = (k: string) => (k.endsWith("_load") && Number(r[k]) > 0.7) || (k === "hotend_error" && Number(r[k]) > 5) || (k === "first_layer_error" && Number(r[k]) > 0.05);
+  const bad = (k: string) => (k === "layer_shifts" && Number(r[k]) > 0) || (k === "under_extrusion" && Number(r[k]) > 0.05) || (k.endsWith("_load") && Number(r[k]) > 1) || (k === "first_layer_error" && Number(r[k]) > 0.1) || (k === "belt_slack" && Number(r[k]) < 0);
+  const warn = (k: string) => (k.endsWith("_load") && Number(r[k]) > 0.7) || (k === "hotend_error" && Number(r[k]) > 5) || (k === "first_layer_error" && Number(r[k]) > 0.05) || (k === "ringing" && Number(r[k]) > 0.05);
   return (
     <>
       <div className="sim-h" style={{ marginTop: 12 }}>

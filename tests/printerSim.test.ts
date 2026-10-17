@@ -162,6 +162,33 @@ describe("printing through Klipper", () => {
   });
 });
 
+describe("belts in the printer", () => {
+  it("rings the bed and carriage on their lib.belt stiffness, and keeps both belts taut on the cube", () => {
+    const v = run({ world: world() }).variants[0];
+    expect(v.results.ringing).toBeGreaterThan(0.005);
+    expect(v.results.ringing).toBeLessThan(0.2);
+    // the bed is the heavy end: the Y belt's figure in the Build tab
+    expect(v.results.ringing_hz).toBeGreaterThan(20);
+    expect(v.results.ringing_hz).toBeLessThan(80);
+    expect(v.results.belt_slack).toBeGreaterThan(0);
+    expect(v.assumptions.some((a) => /^Y belt: \d+ N\/mm/.test(a))).toBe(true);
+    expect(v.limits.join(" ")).not.toMatch(/rigid/);
+  });
+
+  it("warns when a belt is too loose for the acceleration", () => {
+    const loose = evaluate(SRC.replace(/param y_tension = 15N/, "param y_tension = 5N"));
+    const v = runPrinter({ machine: loose.machine!, designName: loose.name, duration: 4 * 3600, variants: ["expected"], world: world() }).variants[0];
+    expect(v.results.belt_slack).toBeLessThan(0);
+    expect(v.events.some((e) => e.kind === "warn" && /Y belt goes slack/.test(e.text))).toBe(true);
+  });
+
+  it("treats the belts as rigid in a design without lib.belt", () => {
+    const v = runPrinter({ machine: { ...machine, belts: [] }, designName: model.name, duration: 4 * 3600, variants: ["expected"], world: world() }).variants[0];
+    expect(v.results.ringing).toBeUndefined();
+    expect(v.limits.join(" ")).toMatch(/rigid/);
+  });
+});
+
 describe("Marlin and RepRapFirmware", () => {
   it("prints the cube through Marlin on the same board, from its Configuration.h", () => {
     const r = run({ world: world({ flavor: "marlin" }) });

@@ -7,6 +7,7 @@
 
 import { catalogPart } from "../../machine/catalog";
 import { fwContext } from "../../machine/firmware/common";
+import { beltTitle } from "../../machine/belts";
 import { boardFlavors, devName, fullSteps, printerFacts, type PrinterAxis, type PrinterFacts, type PrinterFlavor } from "../../machine/firmware/printer";
 import type { CalcTrace, CatalogPart, FirmwareDef, MachineData } from "../../machine/types";
 import type { AxisE } from "./config";
@@ -36,6 +37,22 @@ export interface AxisPhys {
   vertical: boolean;
   /** where the load came from */
   from: string;
+  /** the timing belt that drives it (lib.belt with this axis's role, or on its motor) */
+  belt?: AxisBelt;
+}
+
+/** What the sim needs from a lib.belt: it is no longer rigid. */
+export interface AxisBelt {
+  name: string;
+  title: string;
+  /** stiffness at the carriage with the motor in series, at the softest place on the travel, N/mm */
+  k: number;
+  /** installation tension, N, and the share of the pull the slack side gives up (1 for an open belt at the end of its travel, 0.5 for a loop) */
+  tension: number;
+  share: number;
+  /** tooth pitch, mm, and the pull the teeth in mesh carry before they ride over, N */
+  pitch: number;
+  teAllowed: number;
 }
 
 export interface HeaterPhys {
@@ -130,6 +147,10 @@ export function printerPhys(m: MachineData, fw: FirmwareDef, designName: string)
       assumptions.push(`${LABEL[ax]} axis: no calc.stepper_axis(...) for ${comp}, so Kerf assumed ${mass} kg moving and 5 N of friction.`);
     }
     const mmPerRev = pa === "extruder" ? f.rot.extruder.v / f.gearRatio : f.rot[pa].v;
+    const bd = pa === "x" || pa === "y" ? m.belts.find((b) => b.role?.toLowerCase() === pa) ?? m.belts.find((b) => b.motor?.name === comp) : undefined;
+    const k = bd?.figures.kTotalMin ?? bd?.figures.kMin;
+    const belt: AxisBelt | undefined = bd && k ? { name: bd.name, title: beltTitle(bd), k, tension: bd.tension, share: bd.open ? 1 : 0.5, pitch: bd.belt.pitch, teAllowed: bd.figures.teAllowed ?? bd.belt.teMax } : undefined;
+    if (belt) assumptions.push(`${belt.title}: ${belt.k.toFixed(0)} N/mm at its softest with the motor, ${belt.tension.toFixed(0)} N of tension, from ${bd!.name}.`);
     axes[ax] = {
       axis: ax,
       label: LABEL[ax],
@@ -147,6 +168,7 @@ export function printerPhys(m: MachineData, fw: FirmwareDef, designName: string)
       efficiency,
       vertical,
       from,
+      belt,
     };
   }
 

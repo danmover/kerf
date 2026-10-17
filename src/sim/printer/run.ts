@@ -231,6 +231,11 @@ function runVariant(opts: PrinterRunOptions, variant: VariantName, seed: number,
   let heatWait = 0;
   let shifts = 0;
   let maxShift = 0;
+  // the X and Y belts: the most the carriage rings after a change of speed while printing, mm, and the slackest the belt's slack side gets, N
+  let ringPeak = 0;
+  let beltSlack = Infinity;
+  let slackWarned = false;
+  let ringWarned = false;
   let askedVol = 0;
   let laidVol = 0;
   let flowPeak = 0;
@@ -426,6 +431,36 @@ function runVariant(opts: PrinterRunOptions, variant: VariantName, seed: number,
       }
       loadPeak[a.axis] = Math.max(loadPeak[a.axis] ?? 0, worst);
       loadFrame[a.axis] = Math.max(loadFrame[a.axis] ?? 0, worst);
+      // ---- the belt: it stretches under the pull, rings, and can go slack or jump a tooth ----
+      const b = a.belt;
+      if (b && aax > 0 && ph.accelT + ph.decelT > 0) {
+        const ax = a.axis as Axis3;
+        const pull = (mass * aax) / 1000 + fr;
+        const slack = b.tension - b.share * pull;
+        beltSlack = Math.min(beltSlack, slack);
+        // the mass on the belt's spring rings at ω = √(k/m) after each step in acceleration, by a/ω²
+        const w2 = (b.k * 1000) / Math.max(mass, 1e-3);
+        const ring = aax / w2;
+        if (m.d[3] > 0 && m.kin) {
+          ringPeak = Math.max(ringPeak, ring);
+          if (ring > 0.05 && !ringWarned) {
+            ringWarned = true;
+            const hz = Math.sqrt(w2) / (2 * Math.PI);
+            event("warn", `Ringing: the ${b.title} lets ${ax === "y" ? "the bed" : "the carriage"} ring at ${hz.toFixed(0)} Hz, about ${(ring * 1000).toFixed(0)} µm of ghosting after each corner (first at ${m.tag.file}:${m.tag.line}); an input shaper tuned to ${hz.toFixed(0)} Hz or less acceleration would cut it`);
+          }
+        }
+        if (slack < 0 && !slackWarned) {
+          slackWarned = true;
+          event("warn", `The ${b.title} goes slack: a ${pull.toFixed(0)} N pull beats its ${b.tension.toFixed(0)} N tension, so ${a.label} has backlash while it speeds up and slows down (first at ${m.tag.file}:${m.tag.line})`);
+        }
+        if (pull > b.teAllowed) {
+          // the teeth in mesh ride over the pulley: the axis is a pitch out from here on
+          shift[ax] -= Math.sign(m.d[i]) * b.pitch;
+          shifts++;
+          maxShift = Math.max(maxShift, Math.hypot(shift.x, shift.y));
+          if (shifts <= 20) event("stall", `The ${b.title} jumped a tooth (${pull.toFixed(0)} N pull, ${b.teAllowed.toFixed(0)} N on the teeth in mesh): a ${b.pitch} mm layer shift at ${m.tag.file}:${m.tag.line}`);
+        }
+      }
     }
     // ---- extrusion: what the hotend can melt at its temperature ----
     const de = m.d[3];
@@ -554,6 +589,12 @@ function runVariant(opts: PrinterRunOptions, variant: VariantName, seed: number,
     pressure_advance: pa,
   };
   for (const a of axes) results[`${a.axis === "e" ? "extruder" : a.axis}_load`] = loadPeak[a.axis] ?? 0;
+  const belted = axes.filter((a) => a.belt);
+  if (belted.length) {
+    results.ringing = ringPeak;
+    results.ringing_hz = Math.min(...belted.map((a) => Math.sqrt((a.belt!.k * 1000) / Math.max(a.mass * vf.mass, 1e-3)) / (2 * Math.PI)));
+    results.belt_slack = Number.isFinite(beltSlack) ? beltSlack : Math.min(...belted.map((a) => a.belt!.tension));
+  }
   if (phys.psu && psuPeak > phys.psu.watts) event("warn", `The power supply is overloaded: ${psuPeak.toFixed(0)} W from a ${phys.psu.watts} W supply`);
   if (!mesh && setup.probe && first.max > 0.1) notes.push("The print did not probe a bed mesh, so the first layer follows the bed's real shape uncorrected.");
   events.sort((a, b) => a.t - b.t);
@@ -573,7 +614,9 @@ function runVariant(opts: PrinterRunOptions, variant: VariantName, seed: number,
     "Moves are planned as plain trapezoids: no input shaping, S-curves or step timing, and no frame resonance.",
     "Skipped steps use the torque-speed model of calc.stepper_axis: real motors also lose steps to resonance.",
     "The melt rate follows the hotend's rated flow and its temperature; pressure advance is read but corner bulges are not modelled.",
-    "Belts are rigid in this model.",
+    belted.length
+      ? `${belted.map((a) => a.belt!.title).join(" and ")}: each rings from its softest stiffness (belt and motor) and the moving mass, undamped and with no input shaping, so ringing is the worst case; slack uses the share of the pull the belt's checks use.`
+      : "Belts are rigid in this model: the design has no lib.belt for X or Y.",
   ];
   assumptions.push(
     `Room at ${ambient.toFixed(0)} °C; ${material} filament.`,
