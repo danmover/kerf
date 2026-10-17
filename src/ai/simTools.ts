@@ -205,7 +205,7 @@ export async function runSimTool(name: string, input: unknown, ctx: { signal?: A
       const lines = v.serial.filter((l) => l.t >= from && l.t <= to);
       content = lines.length ? lines.slice(0, 200).map((l) => `${mmss(l.t)} ${l.dir === "in" ? "> " : ""}${l.text}`).join("\n") + (lines.length > 200 ? `\n… ${lines.length - 200} more lines (narrow from/to)` : "") : "Nothing on the console in that time.";
     } else {
-      const want = p.data.series?.length ? p.data.series : world === "sand_pit" ? ["pit.progress", "pit.offset", "pit.heading", "pit.hinge", "*.amps"] : ["*.rpm", "*.amps", "*.temp"];
+      const want = p.data.series?.length ? p.data.series : world === "sand_pit" ? ["pit.progress", "pit.offset", "pit.heading", "pit.hinge", "*.amps"] : world === "printer" ? ["hotend.temp", "hotend.target", "bed.temp", "print.flow", "*.load"] : ["*.rpm", "*.amps", "*.temp"];
       const names = [...new Set(want.flatMap((w) => matchSeries(v.frames, w)))].slice(0, 10);
       if (!names.length) content = `No series match ${want.join(", ")}. Recorded: ${Object.keys(v.frames.series).slice(0, 80).join(", ")}`;
       else {

@@ -1,0 +1,414 @@
+// The built-in test prints: the G-code is read back with a small parser and
+// checked the way a firmware would meet it (heated and homed before it
+// extrudes, inside the bed, retracted on long travels) and the way a slicer
+// would have made it (layers one layer height apart, closed wall loops at
+// the right size, infill inside the walls, a continuous spiral in vase mode).
+
+import { describe, expect, it } from "vitest";
+import { TEST_SHAPES, testPrintDefaults, testPrintGcode, type PrinterTarget, type TestPrintSpec } from "../src/sim/printer/testPrint";
+
+type V3 = [number, number, number];
+
+interface Move {
+  line: number;
+  from: V3;
+  to: V3;
+  /** E in this move (relative extrusion) */
+  e: number;
+  /** mm/min in force for this move */
+  f: number;
+  xy: boolean;
+  /** has a Z word */
+  zw: boolean;
+  type: string;
+  /** index of the ;LAYER_CHANGE block it is in, -1 before the first */
+  layer: number;
+}
+
+interface Parsed {
+  moves: Move[];
+  layers: { z: number; height: number }[];
+  commands: { word: string; line: number; text: string }[];
+}
+
+/** Just enough of a G-code reader for these checks: G0/G1 in absolute XYZ, relative E, slicer comments. */
+function parse(gcode: string): Parsed {
+  const moves: Move[] = [];
+  const layers: Parsed["layers"] = [];
+  const commands: Parsed["commands"] = [];
+  let pos: V3 = [NaN, NaN, NaN];
+  let f = NaN;
+  let type = "";
+  gcode.split("\n").forEach((raw, line) => {
+    const cut = raw.indexOf(";");
+    const code = (cut < 0 ? raw : raw.slice(0, cut)).trim();
+    const comment = cut < 0 ? "" : raw.slice(cut + 1).trim();
+    if (!code) {
+      if (comment === "LAYER_CHANGE") layers.push({ z: NaN, height: NaN });
+      else if (comment.startsWith("Z:")) layers[layers.length - 1].z = Number(comment.slice(2));
+      else if (comment.startsWith("HEIGHT:")) layers[layers.length - 1].height = Number(comment.slice(7));
+      else if (comment.startsWith("TYPE:")) type = comment.slice(5);
+      return;
+    }
+    const words = code.split(/\s+/);
+    const word = words[0].toUpperCase();
+    commands.push({ word, line, text: code });
+    if (word === "G28") pos = [NaN, NaN, NaN];
+    if (word !== "G0" && word !== "G1") return;
+    const p: Record<string, number> = {};
+    for (const w of words.slice(1)) p[w[0].toUpperCase()] = Number(w.slice(1));
+    const to: V3 = [p.X ?? pos[0], p.Y ?? pos[1], p.Z ?? pos[2]];
+    if (p.F !== undefined) f = p.F;
+    moves.push({ line, from: pos, to, e: p.E ?? 0, f, xy: p.X !== undefined || p.Y !== undefined, zw: p.Z !== undefined, type, layer: layers.length - 1 });
+    pos = to;
+  });
+  return { moves, layers, commands };
+}
+
+const extruding = (m: Move) => m.xy && m.e > 0;
+const firstLine = (p: Parsed, test: (c: Parsed["commands"][number]) => boolean) => p.commands.find(test)?.line ?? Infinity;
+
+/** Runs of extruding moves of one feature with no travel, layer change or other feature between. */
+function runs(p: Parsed, types: string[]): Move[][] {
+  const out: Move[][] = [];
+  let cur: Move[] = [];
+  let last: Move | undefined;
+  for (const m of p.moves) {
+    const ext = extruding(m) && types.includes(m.type);
+    if (ext && last && extruding(last) && last.type === m.type && last.layer === m.layer && cur.length) cur.push(m);
+    else if (ext) {
+      if (cur.length) out.push(cur);
+      cur = [m];
+    }
+    if (!ext && m.xy && cur.length) {
+      out.push(cur);
+      cur = [];
+    }
+    last = m;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+const BED = { x: 220, y: 220, z: 250 };
+const target = (flavor: PrinterTarget["flavor"], startMacro = false, probe = true): PrinterTarget => ({
+  flavor,
+  startMacro,
+  probe,
+  size: BED,
+  nozzle: 0.4,
+  filament: 1.75,
+});
+const TARGETS: [string, PrinterTarget][] = [
+  ["Klipper with START_PRINT", target("klipper", true)],
+  ["Klipper without the macro", target("klipper")],
+  ["Marlin", target("marlin")],
+  ["RepRapFirmware", target("reprapfirmware")],
+];
+const spec = (shape: TestPrintSpec["shape"], more: Partial<TestPrintSpec> = {}): TestPrintSpec => ({ ...testPrintDefaults(shape), ...more });
+const C = [110, 110];
+const W = 0.45;
+const W1 = 0.48;
+
+describe("test print G-code", () => {
+  it("makes the default 20 mm cube like a slicer would, quickly", () => {
+    testPrintGcode(spec("cube"), target("marlin"));
+    const t0 = performance.now();
+    const r = testPrintGcode(spec("cube"), target("marlin"));
+    const ms = performance.now() - t0;
+    expect(r.title).toBe("20 mm calibration cube in PLA, 0.2 mm layers, 2 walls, 15 % infill");
+    expect(r.layers).toBe(100);
+    // 2 walls, 15 % infill and 4 + 4 solid layers: about 3 cm³ of plastic, 1.3 m of 1.75 mm filament
+    expect(r.filament).toBeGreaterThan(1100);
+    expect(r.filament).toBeLessThan(1500);
+    expect(r.moves).toBeGreaterThan(2000);
+    expect(r.moves).toBeLessThan(6000);
+    expect(ms).toBeLessThan(100);
+    expect(r.gcode).toContain("; generated by Kerf test print");
+    expect(r.gcode).toContain("; filament_diameter = 1.75");
+    expect(r.gcode).toMatch(/^G90/m);
+    expect(r.gcode).toMatch(/^M83/m);
+    expect(r.gcode).toMatch(/^G21/m);
+    expect(r.gcode).not.toMatch(/^M82/m);
+    expect(r.gcode).toContain(`; total layers count = 100`);
+  });
+
+  describe.each(TARGETS)("cube on %s", (_name, t) => {
+    const r = testPrintGcode(spec("cube"), t);
+    const p = parse(r.gcode);
+    const macro = t.flavor === "klipper" && t.startMacro;
+
+    it("goes up one layer height per layer", () => {
+      expect(p.layers.length).toBe(r.layers);
+      expect(p.layers[0].z).toBeCloseTo(0.2, 6);
+      for (let i = 1; i < p.layers.length; i++) {
+        expect(p.layers[i].z - p.layers[i - 1].z).toBeCloseTo(0.2, 6);
+        expect(p.layers[i].height).toBeCloseTo(0.2, 6);
+      }
+      for (const m of p.moves.filter(extruding).filter((m) => m.layer >= 0)) expect(m.to[2]).toBeCloseTo(p.layers[m.layer].z, 6);
+      // each layer moves Z with a plain G1 Z at 720 mm/min
+      for (let i = 0; i < p.layers.length; i++) {
+        const z = p.moves.find((m) => m.layer === i && !m.xy && m.zw);
+        expect(z?.to[2]).toBeCloseTo(p.layers[i].z, 6);
+        expect(z?.f).toBe(720);
+      }
+    });
+
+    it("extrudes what it reports", () => {
+      const total = p.moves.reduce((s, m) => s + m.e, 0);
+      expect(Math.abs(total - r.filament) / r.filament).toBeLessThan(0.01);
+      expect(p.moves.filter(extruding).length).toBe(r.moves);
+    });
+
+    it("stays inside the printable volume", () => {
+      for (const m of p.moves) {
+        const [x, y, z] = m.to;
+        if (!Number.isNaN(x)) expect(x >= 0 && x <= BED.x, `X ${x} on line ${m.line}`).toBe(true);
+        if (!Number.isNaN(y)) expect(y >= 0 && y <= BED.y, `Y ${y} on line ${m.line}`).toBe(true);
+        if (!Number.isNaN(z)) expect(z >= 0 && z <= BED.z, `Z ${z} on line ${m.line}`).toBe(true);
+      }
+    });
+
+    it("heats and homes before it extrudes", () => {
+      const firstExtrude = p.moves.find((m) => m.e > 0)!.line;
+      const hot = firstLine(p, (c) => c.word === "M109" || c.word === "START_PRINT");
+      expect(hot).toBeLessThan(firstExtrude);
+      if (macro) {
+        expect(p.commands.some((c) => c.text.startsWith("START_PRINT BED_TEMP=60 EXTRUDER_TEMP=210"))).toBe(true);
+        expect(p.commands.at(-1)?.word === "END_PRINT" || p.commands.some((c) => c.word === "END_PRINT")).toBe(true);
+        expect(p.commands.some((c) => ["G28", "M109", "M190", "M104", "M140"].includes(c.word))).toBe(false);
+      } else {
+        expect(firstLine(p, (c) => c.word === "G28")).toBeLessThan(firstExtrude);
+        expect(firstLine(p, (c) => c.text === "M190 S60")).toBeLessThan(firstLine(p, (c) => c.word === "M109"));
+        const mesh = t.flavor === "klipper" ? "BED_MESH_CALIBRATE" : "G29";
+        const at = firstLine(p, (c) => c.word === mesh);
+        expect(at).toBeGreaterThan(firstLine(p, (c) => c.word === "G28"));
+        expect(at).toBeLessThan(firstExtrude);
+        expect(p.commands.some((c) => c.word === "START_PRINT" || c.word === "END_PRINT")).toBe(false);
+        // the end code cools, parks and lets the motors go
+        const tail = p.commands.slice(-5).map((c) => c.text);
+        expect(tail).toEqual(["G1 X0 Y220 F9000", "M104 S0", "M140 S0", "M107", "M84"]);
+      }
+      if (t.flavor === "reprapfirmware") {
+        const heat = firstLine(p, (c) => ["M104", "M109", "M140", "M190", "G10"].includes(c.word));
+        expect(firstLine(p, (c) => c.word === "T0")).toBeLessThan(Math.min(heat, firstExtrude));
+      } else expect(p.commands.some((c) => c.word === "T0")).toBe(false);
+    });
+
+    it("retracts before every long travel", () => {
+      let retracted = false;
+      for (const m of p.moves) {
+        if (!m.xy && m.e < 0) retracted = true;
+        else if (!m.xy && m.e > 0) retracted = false;
+        else if (m.xy && m.e === 0 && m.layer >= 0 && !Number.isNaN(m.from[0])) {
+          const d = Math.hypot(m.to[0] - m.from[0], m.to[1] - m.from[1]);
+          if (d > 2) expect(retracted, `travel of ${d.toFixed(2)} mm on line ${m.line}`).toBe(true);
+        } else if (extruding(m) && m.layer >= 0) expect(retracted, `extruding while retracted on line ${m.line}`).toBe(false);
+      }
+      expect(r.gcode).toMatch(/^G1 E-0\.8 F2100$/m);
+      expect(r.gcode).toMatch(/^G1 E0\.8 F2100$/m);
+    });
+
+    it("writes numbers like a slicer", () => {
+      expect(r.gcode).not.toMatch(/-0(\.0*)?(?![.\d])/);
+      for (const m of r.gcode.matchAll(/ ([XYZEF])(-?\d+(?:\.(\d+))?)/g)) {
+        const places = m[3]?.length ?? 0;
+        expect(places).toBeLessThanOrEqual(m[1] === "E" ? 5 : m[1] === "F" ? 0 : 3);
+      }
+    });
+  });
+
+  it("closes every wall loop at its seam, inner walls first", () => {
+    for (const shape of ["cube", "cylinder", "box", "first_layer"] as const) {
+      const p = parse(testPrintGcode(spec(shape), target("marlin")).gcode);
+      const loops = runs(p, ["Perimeter", "External perimeter", "Skirt"]);
+      expect(loops.length).toBeGreaterThan(0);
+      for (const l of loops) {
+        expect(l[0].from[0]).toBeCloseTo(l.at(-1)!.to[0], 6);
+        expect(l[0].from[1]).toBeCloseTo(l.at(-1)!.to[1], 6);
+      }
+      // per layer: the inner walls, then the outer one
+      for (let i = 0; i < p.layers.length; i++) {
+        const types = loops.filter((l) => l[0].layer === i && l[0].type !== "Skirt").map((l) => l[0].type);
+        expect(types).toEqual(["Perimeter", "External perimeter"]);
+      }
+    }
+  });
+
+  it("keeps the cube's walls on its 20 mm outline, with sharp corners", () => {
+    const p = parse(testPrintGcode(spec("cube"), target("marlin")).gcode);
+    const walls = runs(p, ["External perimeter"]);
+    expect(walls.length).toBe(100);
+    for (const l of walls) {
+      const w = l[0].layer === 0 ? W1 : W;
+      expect(l.length).toBe(4);
+      for (const m of l) expect(Math.max(Math.abs(m.to[0] - C[0]), Math.abs(m.to[1] - C[1]))).toBeCloseTo(10 - w / 2, 3);
+    }
+    // nothing but the skirt and the prime line lies outside the walls' outer edge
+    for (const m of p.moves.filter(extruding).filter((m) => m.type !== "Skirt" && m.type !== "Custom")) {
+      const w = m.layer === 0 ? W1 : W;
+      expect(Math.max(Math.abs(m.to[0] - C[0]), Math.abs(m.to[1] - C[1])) + w / 2).toBeLessThanOrEqual(10 + 1e-3);
+    }
+    // the skirt is one loop 3 mm out on the first layer
+    const skirt = runs(p, ["Skirt"]);
+    expect(skirt.length).toBe(1);
+    expect(skirt[0][0].layer).toBe(0);
+    for (const m of skirt[0]) {
+      const out = Math.hypot(Math.max(Math.abs(m.to[0] - C[0]) - 10, 0), Math.max(Math.abs(m.to[1] - C[1]) - 10, 0));
+      expect(Math.abs(out - (3 + W1 / 2))).toBeLessThan(0.002);
+    }
+  });
+
+  it("puts infill inside the innermost wall, solid at the bottom and top, sparse between", () => {
+    for (const shape of ["cube", "cylinder"] as const) {
+      const r = testPrintGcode(spec(shape), target("marlin"));
+      const p = parse(r.gcode);
+      const dist = (x: number, y: number) => (shape === "cube" ? Math.max(Math.abs(x - C[0]), Math.abs(y - C[1])) : Math.hypot(x - C[0], y - C[1]));
+      const walls = runs(p, ["Perimeter"]);
+      for (let i = 0; i < r.layers; i++) {
+        const inner = Math.min(...walls.filter((l) => l[0].layer === i).flatMap((l) => l.map((m) => dist(m.to[0], m.to[1]))));
+        const fill = p.moves.filter((m) => m.layer === i && extruding(m) && m.type.endsWith("infill"));
+        expect(fill.length).toBeGreaterThan(0);
+        for (const m of fill) {
+          expect(dist(m.from[0], m.from[1])).toBeLessThan(inner);
+          expect(dist(m.to[0], m.to[1])).toBeLessThan(inner);
+        }
+        const solid = i < 4 || i >= r.layers - 4;
+        expect(new Set(fill.map((m) => m.type))).toEqual(new Set([solid ? "Solid infill" : "Internal infill"]));
+      }
+    }
+  });
+
+  it("lays infill at +45° and −45° on alternate layers", () => {
+    const p = parse(testPrintGcode(spec("cube"), target("marlin")).gcode);
+    for (const layer of [10, 11]) {
+      const lines = p.moves.filter((m) => m.layer === layer && m.type === "Internal infill" && extruding(m));
+      const long = lines.filter((m) => Math.hypot(m.to[0] - m.from[0], m.to[1] - m.from[1]) > 6);
+      expect(long.length).toBeGreaterThan(2);
+      for (const m of long) {
+        const slope = (m.to[1] - m.from[1]) / (m.to[0] - m.from[0]);
+        expect(slope).toBeCloseTo(layer % 2 === 0 ? 1 : -1, 2);
+      }
+    }
+  });
+
+  it("draws the cylinder's walls as many short segments on the circle", () => {
+    const p = parse(testPrintGcode(spec("cylinder"), target("klipper", true)).gcode);
+    const walls = runs(p, ["External perimeter"]);
+    expect(walls.length).toBe(100);
+    for (const l of walls) {
+      const w = l[0].layer === 0 ? W1 : W;
+      expect(l.length).toBeGreaterThan(60);
+      for (const m of l) {
+        expect(Math.abs(Math.hypot(m.to[0] - C[0], m.to[1] - C[1]) - (10 - w / 2))).toBeLessThan(0.002);
+        const seg = Math.hypot(m.to[0] - m.from[0], m.to[1] - m.from[1]);
+        expect(seg).toBeGreaterThan(0.5);
+        expect(seg).toBeLessThan(1);
+      }
+    }
+  });
+
+  it("spirals the vase-mode cylinder up without a break after its solid bottom", () => {
+    const r = testPrintGcode(spec("cylinder", { vase: true }), target("marlin"));
+    const p = parse(r.gcode);
+    expect(r.layers).toBe(100);
+    const spiral = p.moves.filter((m) => m.layer >= 4 && m.xy);
+    const last = spiral.length - 1 - [...spiral].reverse().findIndex(extruding);
+    const body = spiral.slice(spiral.findIndex(extruding), last + 1);
+    expect(body.length).toBeGreaterThan(96 * 80);
+    // one unbroken run of extrusion, Z rising all the way
+    expect(body.every((m) => extruding(m) && m.type === "External perimeter")).toBe(true);
+    expect(body[0].from[2]).toBeCloseTo(p.layers[3].z, 6);
+    expect(body.at(-1)!.to[2]).toBeCloseTo(p.layers.at(-1)!.z, 6);
+    for (const m of body) {
+      expect(m.to[2]).toBeGreaterThan(m.from[2]);
+      expect(Math.abs(Math.hypot(m.to[0] - C[0], m.to[1] - C[1]) - (10 - W / 2))).toBeLessThan(0.002);
+    }
+    // and no separate Z moves, infill or top in the spiral part
+    const end = body.at(-1)!.line;
+    expect(p.moves.some((m) => m.layer >= 4 && m.line < end && !m.xy && m.zw)).toBe(false);
+    expect(p.moves.some((m) => m.layer >= 4 && m.type.endsWith("infill") && extruding(m))).toBe(false);
+    expect(p.moves.some((m) => m.layer < 4 && m.type === "Solid infill" && extruding(m))).toBe(true);
+    const total = p.moves.reduce((s, m) => s + m.e, 0);
+    expect(Math.abs(total - r.filament) / r.filament).toBeLessThan(0.01);
+  });
+
+  it("prints the first-layer square as exactly one layer", () => {
+    const r = testPrintGcode(spec("first_layer"), target("reprapfirmware"));
+    const p = parse(r.gcode);
+    expect(r.layers).toBe(1);
+    expect(p.layers.length).toBe(1);
+    expect(new Set(p.moves.filter(extruding).map((m) => m.type))).toEqual(new Set(["Custom", "Skirt", "Perimeter", "External perimeter", "Solid infill"]));
+    // every extrusion at the first-layer speed
+    expect(new Set(p.moves.filter((m) => extruding(m) && m.layer === 0).map((m) => m.f))).toEqual(new Set([25 * 60]));
+    // the part fan never comes on
+    expect(r.gcode).not.toMatch(/^M106/m);
+  });
+
+  it("leaves the box hollow above its solid bottom, with no top", () => {
+    const r = testPrintGcode(spec("box"), target("marlin"));
+    const p = parse(r.gcode);
+    expect(r.layers).toBe(200);
+    expect(p.moves.some((m) => m.layer >= 4 && m.type.endsWith("infill") && extruding(m))).toBe(false);
+    for (let i = 0; i < 4; i++) expect(p.moves.some((m) => m.layer === i && m.type === "Solid infill" && extruding(m))).toBe(true);
+    expect(runs(p, ["External perimeter"]).length).toBe(200);
+  });
+
+  it("runs the part fan and retracts for the material", () => {
+    for (const [material, fan, retract] of [
+      ["PLA", "M106 S255", "0.8"],
+      ["PETG", "M106 S77", "1"],
+      ["ABS", "M106 S0", "0.8"],
+    ] as const) {
+      const r = testPrintGcode({ ...testPrintDefaults("cube", material), material }, target("marlin"));
+      const p = parse(r.gcode);
+      const fanAt = firstLine(p, (c) => c.word === "M106");
+      expect(p.commands.find((c) => c.word === "M106")?.text).toBe(fan);
+      expect(p.moves.find((m) => m.line > fanAt)!.layer).toBe(1);
+      expect(firstLine(p, (c) => c.word === "M107")).toBeLessThan(p.moves.find((m) => m.e > 0)!.line);
+      expect(r.gcode).toContain(`G1 E-${retract} F2100`);
+      const temps = { PLA: [210, 60], PETG: [240, 80], ABS: [250, 100] }[material];
+      expect(r.gcode).toContain(`M109 S${temps[0]}`);
+      expect(r.gcode).toContain(`M190 S${temps[1]}`);
+    }
+  });
+
+  it("runs each feature at its speed", () => {
+    const p = parse(testPrintGcode(spec("cube", { speed: 50 }), target("marlin")).gcode);
+    const feeds = (layer: number, type: string) => new Set(p.moves.filter((m) => m.layer === layer && m.type === type && extruding(m)).map((m) => m.f));
+    expect(feeds(0, "External perimeter")).toEqual(new Set([1500]));
+    expect(feeds(50, "Perimeter")).toEqual(new Set([3000]));
+    expect(feeds(50, "External perimeter")).toEqual(new Set([1800]));
+    expect(feeds(50, "Internal infill")).toEqual(new Set([3000]));
+    expect(feeds(99, "Solid infill")).toEqual(new Set([2400]));
+    expect(new Set(p.moves.filter((m) => m.layer >= 0 && m.xy && m.e === 0).map((m) => m.f))).toEqual(new Set([9000]));
+  });
+
+  it("mixes defaults under what the user gave", () => {
+    for (const shape of Object.keys(TEST_SHAPES) as (keyof typeof TEST_SHAPES)[]) {
+      const d = testPrintDefaults(shape);
+      expect(d).toMatchObject({ shape, layer: 0.2, walls: 2, solid: 4, firstSpeed: 25, travel: 150, material: "PLA" });
+      expect(TEST_SHAPES[shape].length).toBeGreaterThan(20);
+    }
+    expect(testPrintDefaults("box").infill).toBe(0);
+    expect(testPrintDefaults("cube").infill).toBe(0.15);
+    const r = testPrintGcode(spec("cube", { size: 30, height: 10, firstLayer: 0.3, walls: 3, infill: 20 }), target("klipper"));
+    expect(r.title).toBe("30 × 30 × 10 mm block in PLA, 0.2 mm layers, 3 walls, 20 % infill");
+    expect(r.layers).toBe(50);
+    const p = parse(r.gcode);
+    expect(p.layers[0].z).toBeCloseTo(0.3, 6);
+    expect(p.layers[1].z).toBeCloseTo(0.5, 6);
+  });
+
+  it("refuses what will not fit or print", () => {
+    expect(() => testPrintGcode(spec("first_layer", { size: 230 }), target("marlin"))).toThrow(/outside the 220 × 220 mm bed/);
+    expect(() => testPrintGcode(spec("cube", { center: [5, 110] }), target("marlin"))).toThrow(/outside/);
+    expect(() => testPrintGcode(spec("cube", { height: 300 }), target("marlin"))).toThrow(/taller/);
+    expect(() => testPrintGcode(spec("cube", { layer: 0.5 }), target("marlin"))).toThrow(/too thick/);
+    expect(() => testPrintGcode(spec("first_layer", { vase: true }), target("marlin"))).toThrow(/vase/);
+  });
+
+  it("is deterministic", () => {
+    expect(testPrintGcode(spec("cylinder"), target("klipper", true)).gcode).toBe(testPrintGcode(spec("cylinder"), target("klipper", true)).gcode);
+  });
+});

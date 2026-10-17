@@ -26,6 +26,7 @@ self.onmessage = (ev: MessageEvent<SimRequest>) => {
     for (const v of result.variants) {
       buffers.push(v.frames.t.buffer as ArrayBuffer);
       for (const s of Object.values(v.frames.series)) buffers.push(s.buffer as ArrayBuffer);
+      if (v.print) for (const a of [v.print.t, v.print.x, v.print.y, v.print.z, v.print.a]) buffers.push(a.buffer as ArrayBuffer);
     }
     post({ id, type: "done", result }, buffers);
   } catch (e) {

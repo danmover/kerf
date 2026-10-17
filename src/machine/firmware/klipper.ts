@@ -3,9 +3,9 @@
 // in the design. Mechanics (rotation distances, travel) come from the parts.
 
 import { catalogPart } from "../catalog";
-import type { NetPin } from "../erc";
-import type { CatalogPart, MachineComponent } from "../types";
+import type { MachineComponent } from "../types";
 import { type FwContext, type GenFile, cNum, setting } from "./common";
+import { type Link, KINEMATICS, PID_START, PRINTER_AXES, devName, endstopFor, parseMcu, printerFacts, r2 } from "./printer";
 
 export interface KlipperResult {
   files: GenFile[];
@@ -13,128 +13,17 @@ export interface KlipperResult {
   pinTable: { signal: string; pin: string; wire: string }[];
 }
 
-interface Link {
-  port: NetPin;
-  dev: NetPin;
-}
-
-const parseMcu = (s: string | undefined): Record<string, string> => {
-  const out: Record<string, string> = {};
-  for (const kv of (s ?? "").split(",")) {
-    const [k, v] = kv.split("=");
-    if (k && v !== undefined) out[k.trim()] = v.trim();
-    else if (k) out.pin = k.trim();
-  }
-  return out;
-};
-
-const r2 = (n: number) => Math.round(n * 100) / 100;
-
-/** Klipper's kinematics names: a firmware setting must be one of these. */
-const KINEMATICS = ["cartesian", "corexy", "corexz", "hybrid_corexy", "hybrid_corexz", "delta", "deltesian", "rotary_delta", "polar", "winch", "none"];
+/** A number with at least one decimal, as Klipper's sample configs write them (5.0, 0.04). */
+const cNum1 = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : cNum(n));
 
 export function klipperConfig(c: FwContext): KlipperResult {
-  const warnings: string[] = [];
-  const board = c.board.name;
-  const links: Link[] = [];
-  for (const cab of c.nl.cables) {
-    if (cab.a.comp === board) links.push({ port: cab.a, dev: cab.b });
-    else if (cab.b.comp === board) links.push({ port: cab.b, dev: cab.a });
-  }
+  const f = printerFacts(c);
+  const { board, steppers, size, rot, hotHeater, hotTherm, bedHeater, bedTherm, hotPart, bedPart, probe, probeX, probeY, host } = f;
+  const warnings = f.warnings;
   const pinTable: KlipperResult["pinTable"] = [];
-  const devName = (l: Link) => `${l.dev.comp}${l.dev.mc.count > 1 ? `[${l.dev.index}]` : ""}`;
   const record = (signal: string, l: Link, pin: string) => pinTable.push({ signal, pin: `${board}.${l.port.pin.id} (${pin})`, wire: `${devName(l)}.${l.dev.pin.id}` });
-  const ofPort = (kind: string) => links.filter((l) => l.port.pin.port === kind);
-  const roleText = (mc: MachineComponent) => `${mc.name} ${mc.role ?? ""}`.toLowerCase();
-  const compsOf = (kind: string) => c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === kind);
-  const specNum = (p: CatalogPart | undefined, k: string) => (p && typeof p.specs[k] === "number" ? (p.specs[k] as number) : undefined);
-
-  // ---- axes from stepper ports ----
-  const axisOf = (l: Link): string | undefined => {
-    const id = l.port.pin.id.toUpperCase();
-    if (/^X/.test(id)) return "x";
-    if (/^Y/.test(id)) return "y";
-    if (/^Z/.test(id)) return "z";
-    if (/^E/.test(id)) return "extruder";
-    const t = roleText(l.dev.mc);
-    if (/extru/.test(t)) return "extruder";
-    const m = t.match(/\b([xyz])\b/);
-    return m?.[1];
-  };
-  const steppers = new Map<string, Link[]>();
-  for (const l of ofPort("stepper4")) {
-    const ax = axisOf(l);
-    if (!ax) {
-      warnings.push(`${devName(l)} is on ${board}.${l.port.pin.id} but Kerf cannot tell which axis it drives: give it role: "x", "y", "z" or "extruder".`);
-      continue;
-    }
-    steppers.set(ax, [...(steppers.get(ax) ?? []), l]);
-  }
-  for (const ax of ["x", "y", "z", "extruder"]) if (!steppers.has(ax)) warnings.push(`No ${ax === "extruder" ? "extruder" : ax.toUpperCase()} stepper is cabled to ${board}: that section is left out.`);
-
-  // ---- mechanics ----
-  const size = {
-    x: setting(c.fw, "x_size", 220),
-    y: setting(c.fw, "y_size", 220),
-    z: setting(c.fw, "z_size", 250),
-  };
-  const pulleys = compsOf("pulley").filter((p) => specNum(catalogPart(p.catalogId), "mm_per_rev"));
-  const pulleyFor = (ax: string) => pulleys.find((p) => new RegExp(`\\b${ax}\\b`).test(roleText(p))) ?? pulleys[0];
-  const screw = compsOf("lead_screw")[0];
-  const extruderComp = compsOf("extruder")[0];
-  const extruderPart = extruderComp && catalogPart(extruderComp.catalogId);
-  const rot: Record<string, { v: number; why: string; gear?: string }> = {};
-  for (const ax of ["x", "y"]) {
-    const p = pulleyFor(ax);
-    const v = setting(c.fw, `${ax}_rotation_distance`, p ? specNum(catalogPart(p.catalogId), "mm_per_rev")! : 40);
-    rot[ax] = { v, why: p ? `${p.name}: ${catalogPart(p.catalogId)?.specs.teeth} teeth × 2 mm GT2 pitch` : "assumed GT2 20-tooth pulley" };
-  }
-  const lead = screw ? specNum(catalogPart(screw.catalogId), "lead") : undefined;
-  rot.z = { v: setting(c.fw, "z_rotation_distance", lead ?? 8), why: screw ? `${screw.name}: ${lead} mm lead` : "assumed T8×8 lead screw" };
-  rot.extruder = {
-    v: setting(c.fw, "e_rotation_distance", specNum(extruderPart, "rotation_distance") ?? 22.68),
-    gear: extruderPart && typeof extruderPart.specs.gear_ratio === "string" ? extruderPart.specs.gear_ratio : undefined,
-    why: extruderPart ? `${extruderComp!.name} (${extruderPart.name}): calibrate by extruding 100 mm` : "assumed BMG-style drive: calibrate by extruding 100 mm",
-  };
-
-  // ---- run currents ----
-  const runCurrent = (ax: string, ls: Link[]) => {
-    const motor = catalogPart(ls[0].dev.mc.catalogId);
-    const rated = specNum(motor, "i_rated") ?? 1;
-    const portMax = ls[0].port.pin.imax ?? 1.4;
-    const parallel = new Set(ls.map((l) => parseMcu(l.port.pin.mcu).step)).size < ls.length;
-    const share = ax === "extruder" ? 0.5 : 0.7;
-    const want = setting(c.fw, `${ax === "extruder" ? "e" : ax}_run_current`, r2(Math.min(rated * share * (parallel ? ls.length : 1), portMax)));
-    return { want, parallel, rated, portMax };
-  };
-
-  // ---- heaters, thermistors, fans, endstops, probe ----
-  const heaters = ofPort("heater2");
-  const therms = ofPort("therm2");
-  const isBed = (l: Link) => catalogPart(l.dev.mc.catalogId)?.kind === "heated_bed";
-  const hotHeater = heaters.find((l) => !isBed(l));
-  const bedHeater = heaters.find(isBed);
-  const hotTherm = therms.find((l) => !isBed(l));
-  const bedTherm = therms.find(isBed);
-  const hotPart = hotHeater ? catalogPart(hotHeater.dev.mc.catalogId) : undefined;
-  const bedPart = bedHeater ? catalogPart(bedHeater.dev.mc.catalogId) : undefined;
-  const fans = ofPort("fan2");
-  const fanRole = (l: Link): "part" | "hotend" | "controller" => {
-    const t = `${roleText(l.dev.mc)} ${l.dev.part.id}`;
-    if (/part|blower|print/.test(t)) return "part";
-    if (/hotend|heatsink|heat ?break/.test(t)) return "hotend";
-    if (/controller|electronics|board|case/.test(t)) return "controller";
-    const pl = (l.port.pin.label ?? "").toLowerCase();
-    return pl.includes("part") ? "part" : pl.includes("hotend") ? "hotend" : "controller";
-  };
-  const endstops = ofPort("endstop3");
-  const probe = ofPort("probe5")[0];
-  const endstopFor = (ax: string) => endstops.find((l) => l.port.pin.id.toUpperCase().startsWith(ax.toUpperCase()));
-  const probeX = setting(c.fw, "probe_x", -40);
-  const probeY = setting(c.fw, "probe_y", -10);
 
   const L: string[] = [];
-  const host = compsOf("host")[0];
   L.push(`# printer.cfg for "${c.designName}", generated by Kerf from the design's wiring.`);
   L.push(`# Board: ${board} (${c.boardPart.name})${host ? `, host: ${host.name} (${catalogPart(host.catalogId)?.name})` : ""}.`);
   L.push("# Pins come from the board's Klipper reference config; each section names the device it is cabled to.");
@@ -157,11 +46,11 @@ export function klipperConfig(c: FwContext): KlipperResult {
   L.push(`max_accel: ${cNum(setting(c.fw, "max_accel", 3000))}`);
   L.push("max_z_velocity: 5");
   L.push("max_z_accel: 100");
-  L.push("square_corner_velocity: 5.0");
+  L.push(`square_corner_velocity: ${cNum1(setting(c.fw, "square_corner_velocity", 5))}`);
   L.push("");
 
   const tmc: string[] = [];
-  for (const ax of ["x", "y", "z", "extruder"]) {
+  for (const ax of PRINTER_AXES) {
     const ls = steppers.get(ax);
     if (!ls?.length) continue;
     const pins = parseMcu(ls[0].port.pin.mcu);
@@ -178,8 +67,8 @@ export function klipperConfig(c: FwContext): KlipperResult {
     if (r.gear) L.push(`gear_ratio: ${r.gear}`);
     ls.forEach((l) => record(`${sec} motor`, l, `step ${pins.step}`));
     if (ax === "extruder") {
-      L.push("nozzle_diameter: " + cNum(specNum(hotPart, "nozzle") ?? 0.4));
-      L.push("filament_diameter: " + cNum(specNum(extruderPart, "filament") ?? specNum(hotPart, "filament") ?? 1.75));
+      L.push("nozzle_diameter: " + cNum(f.nozzle));
+      L.push("filament_diameter: " + cNum(f.filament));
       L.push("max_extrude_only_distance: 100.0");
       if (hotHeater && hotTherm) {
         const hp = parseMcu(hotHeater.port.pin.mcu).pin;
@@ -190,14 +79,13 @@ export function klipperConfig(c: FwContext): KlipperResult {
         L.push(`sensor_type: ${(hotPart?.specs.klipper_sensor as string) ?? "EPCOS 100K B57560G104F"}   # check the thermistor your hotend shipped with`);
         L.push(`sensor_pin: ${tp}`);
         L.push("control: pid   # CALIBRATE: PID_CALIBRATE HEATER=extruder TARGET=210");
-        L.push("pid_Kp: 21.527", "pid_Ki: 1.063", "pid_Kd: 108.982");
-        const tmax = specNum(hotPart, "max_temp_c") ?? 260;
-        L.push("min_temp: 0", `max_temp: ${cNum(Math.min(tmax - 10, 275))}`, "min_extrude_temp: 170");
-        L.push("pressure_advance: 0.0   # CALIBRATE: Klipper's pressure advance tuning tower");
+        L.push(`pid_Kp: ${PID_START.hotend.kp}`, `pid_Ki: ${PID_START.hotend.ki}`, `pid_Kd: ${PID_START.hotend.kd}`);
+        L.push("min_temp: 0", `max_temp: ${cNum(Math.min(f.hotMax - 10, 275))}`, "min_extrude_temp: 170");
+        L.push(`pressure_advance: ${cNum1(setting(c.fw, "pressure_advance", 0))}   # CALIBRATE: Klipper's pressure advance tuning tower`);
       } else warnings.push("The hotend heater and thermistor must both be cabled to the board for the [extruder] section.");
     } else {
       const max = size[ax as "x" | "y" | "z"];
-      const es = endstopFor(ax);
+      const es = endstopFor(f, ax);
       if (ax === "z" && probe) {
         L.push("endstop_pin: probe:z_virtual_endstop", "position_min: -2");
       } else if (es) {
@@ -215,7 +103,7 @@ export function klipperConfig(c: FwContext): KlipperResult {
     }
     L.push("");
     if (pins.uart) {
-      const rc = runCurrent(ax, ls);
+      const rc = f.current[ax]!;
       tmc.push(`[tmc2209 ${sec}]`);
       tmc.push(`uart_pin: ${pins.uart}`, `tx_pin: ${pins.tx}`, `uart_address: ${pins.addr}`);
       const each = rc.parallel ? r2(rc.want / ls.length) : rc.want;
@@ -235,19 +123,18 @@ export function klipperConfig(c: FwContext): KlipperResult {
     record("bed thermistor", bedTherm, tp);
     L.push("[heater_bed]", `# ${devName(bedHeater)} (${bedPart?.name})`);
     L.push(`heater_pin: ${hp}`, `sensor_type: ${(bedPart?.specs.klipper_sensor as string) ?? "EPCOS 100K B57560G104F"}`, `sensor_pin: ${tp}`);
-    L.push("control: pid   # CALIBRATE: PID_CALIBRATE HEATER=heater_bed TARGET=60", "pid_Kp: 54.027", "pid_Ki: 0.770", "pid_Kd: 948.182");
-    L.push("min_temp: 0", `max_temp: ${cNum((specNum(bedPart, "max_temp_c") ?? 110) + 5)}`, "");
+    L.push("control: pid   # CALIBRATE: PID_CALIBRATE HEATER=heater_bed TARGET=60", `pid_Kp: ${PID_START.bed.kp}`, `pid_Ki: ${PID_START.bed.ki.toFixed(3)}`, `pid_Kd: ${PID_START.bed.kd}`);
+    L.push("min_temp: 0", `max_temp: ${cNum(f.bedMax + 5)}`, "");
   } else if (bedHeater || bedTherm) warnings.push("The bed heater and its thermistor must both be cabled to the board.");
 
-  for (const f of fans) {
-    const p = parseMcu(f.port.pin.mcu).pin;
-    const role = fanRole(f);
-    record(`${role} fan`, f, p);
-    if (role === "part") L.push("[fan]", `# ${devName(f)} (${f.dev.part.name}): part cooling`, `pin: ${p}`, "");
-    else if (role === "hotend") L.push("[heater_fan hotend_fan]", `# ${devName(f)} (${f.dev.part.name}): must run whenever the hotend is warm`, `pin: ${p}`, "heater: extruder", "heater_temp: 50.0", "");
-    else L.push("[controller_fan controller_fan]", `# ${devName(f)} (${f.dev.part.name}): cools the stepper drivers`, `pin: ${p}`, "");
+  for (const { link: fl, role } of f.fans) {
+    const p = parseMcu(fl.port.pin.mcu).pin;
+    record(`${role} fan`, fl, p);
+    if (role === "part") L.push("[fan]", `# ${devName(fl)} (${fl.dev.part.name}): part cooling`, `pin: ${p}`, "");
+    else if (role === "hotend") L.push("[heater_fan hotend_fan]", `# ${devName(fl)} (${fl.dev.part.name}): must run whenever the hotend is warm`, `pin: ${p}`, "heater: extruder", "heater_temp: 50.0", "");
+    else L.push("[controller_fan controller_fan]", `# ${devName(fl)} (${fl.dev.part.name}): cools the stepper drivers`, `pin: ${p}`, "");
   }
-  if (!fans.some((f) => fanRole(f) === "hotend") && hotHeater) warnings.push("No hotend heatsink fan is cabled: an all-metal hotend jams (heat creep) without one.");
+  if (!f.fans.some((x) => x.role === "hotend") && hotHeater) warnings.push("No hotend heatsink fan is cabled: an all-metal hotend jams (heat creep) without one.");
 
   if (probe) {
     const pp = parseMcu(probe.port.pin.mcu);
