@@ -350,6 +350,9 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const hd = num(d, "hub_d", 13);
       const hl = num(d, "hub_l", 7);
       const bore = num(d, "bore", 5);
+      // smooth idlers: the belt runs on contact_d; toothed pulleys are drawn to just inside their tooth tips
+      const contact = num(d, "contact_d", 0);
+      const groove = contact > 0 ? contact / 2 : pd / 2 - 0.4;
       const r = (x: number) => x / 2;
       const pts: V2[] = [
         [r(bore), 0],
@@ -357,8 +360,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         [r(hd), hl],
         [r(od), hl],
         [r(od), hl + 1],
-        [r(pd) - 0.4, hl + 1],
-        [r(pd) - 0.4, hl + 1 + w],
+        [groove, hl + 1],
+        [groove, hl + 1 + w],
         [r(od), hl + 1 + w],
         [r(od), hl + 2 + w],
         [r(bore), hl + 2 + w],
@@ -367,7 +370,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         placement: "axis",
         solids: [solid("", p.name, { base: { t: "revolve", pts, at: Z0, dir: ZP }, ops: [] }, g.color ?? ALU, "Aluminum 6061", true)],
         fields: {
-          scalars: { pd, od, width: hl + 2 + w, bore, belt_z: hl + 1 + w / 2 },
+          scalars: { pd, od, width: hl + 2 + w, bore, belt_z: hl + 1 + w / 2, groove_w: w, ...(contact > 0 ? { contact_d: contact } : {}) },
           points: { at: Z0, belt_center: [0, 0, hl + 1 + w / 2], end: [0, 0, hl + 2 + w] },
           dirs: { axis: ZP },
         },
@@ -711,6 +714,10 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         fields: { scalars: { w, d: dd, h }, points: { top: [0, 0, h], bottom: Z0, cord_end: [w / 2 + 59, 0, h / 2] } },
       };
     }
+
+    // belt: laid out from its path by lib.belt (machine/belts.ts), never from the catalog alone
+    case "belt":
+      throw new Error(`${p.name} follows the pulleys it runs round: use lib.belt("${p.id}", path: [...])`);
 
     // plate: heated bed or build plate. w × d × t, `at` is the bottom centre;
     // holes from `holes`.

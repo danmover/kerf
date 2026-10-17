@@ -18,6 +18,8 @@ param v_print  = 120    "Print speed the hotend has to keep up with (mm/s)"
 param toolhead_g = 600  "Moving X mass in grams: carriage, hotend, extruder, pancake motor, fans, BLTouch, cables"
 param bed_g    = 1650   "Moving Y mass in grams: bed, steel sheet, bed carriage, rail blocks, spacers"
 param gantry_g = 1700   "Mass the Z screws lift in grams: X beam, X rail, X motor, toolhead, Z carriages"
+param x_tension = 15N  range 5 .. 35  "X belt installation tension (a 6 mm GT2 belt wants 8 to 25 N)"
+param y_tension = 15N  range 5 .. 35  "Y belt installation tension"
 param foot_h   = 12mm   "Printed feet under the base"
 param up_x     = 150mm  "Upright centre line (the bed passes between the uprights)"
 param beam_x   = 80mm   "Y beam centre line"
@@ -91,6 +93,8 @@ component bed      = lib.heated_bed("heated_bed_235_24v") { at: (0, yc, z_bed) }
 component y_motor  = lib.stepper("nema17_17hs4401") { at: (-17.5, y_ym, z_yb), axis: X, role: "y" }
 component y_pulley = lib.pulley("gt2_pulley_20t_5mm") { at: (-11.5, y_ym, z_yb), axis: X, role: "y" }
 component y_idler  = lib.pulley("gt2_idler_20t_5mm") { at: (-5, y_back, z_yb), axis: X }
+// both ends of the Y belt are pinched in the bed carriage's clamp tower, 6 mm apart
+component belt_y   = lib.belt("gt2_6mm", path: [(0, yc - 3, z_yb + y_pulley.pd / 2), y_pulley, y_idler, (0, yc + 3, z_yb + y_pulley.pd / 2)], tension: y_tension, mass: bed_g, accel: accel, friction: 5N) { role: "y" }
 component y_stop   = lib.sensor("endstop_mech") { at: (-38, 58, 52), rotate: (90, 0, 0), role: "y endstop" }
 note "Y homes to the back: the fin under the bed carriage presses the Y switch when the nozzle is over the front edge of the bed (printer Y = 0)."
 
@@ -197,7 +201,9 @@ component x_rail   = lib.rail("mgn12h", length: 300, travel: xc + 150) { at: (-1
 component x_motor  = lib.stepper("nema17_17hs4401") { at: (x_xm, -86.5, z_xp), axis: Y, role: "x" }
 component x_pulley = lib.pulley("gt2_pulley_20t_5mm") { at: (x_xm, -80.5, z_xp), axis: Y, role: "x" }
 component x_idler  = lib.pulley("gt2_idler_20t_5mm") { at: (x_xi, -74, z_xp), axis: Y }
-component x_stop   = lib.sensor("endstop_mech") { at: (-150.1, -77.5, z_xr), rotate: (0, 90, 0), role: "x endstop" }
+// the X belt's ends run through the carriage's two clamps, on the upper run
+component belt_x   = lib.belt("gt2_6mm", path: [(xc - 24, y_belt, z_xp + x_pulley.pd / 2), x_pulley, x_idler, (xc + 24, y_belt, z_xp + x_pulley.pd / 2)], tension: x_tension, mass: toolhead_g, accel: accel, friction: 5N) { role: "x" }
+component x_stop   = lib.sensor("endstop_mech") { at: (-150.1, -81.5, z_xr), rotate: (0, 90, 0), role: "x endstop" }
 
 // Z carriages: rail block + lead screw nut + X beam bolts, with the X motor mount (left) and X idler mount (right)
 part z_carriage_l {
@@ -238,14 +244,14 @@ part z_carriage_r {
   add box(21, 4, 20, at: (191.5, -60.5, z_xp - 10))
   cut hole(M5, through: true, at: (x_xi, -80.01, z_xp), dir: Y)
 }
-note "X belt tension: loosen the idler's M5 axle nut, pull the belt through the carriage clamp by hand and pinch it; a GT2 belt this long should twang at about 110 Hz (phone tuner app)."
+note "X belt tension: loosen the idler's M5 axle nut, pull the belt through the carriage clamp by hand and pinch it, then pluck it and tune to the frequency in the test plan (phone tuner app). Change x_tension and the belt checks, frequency and cut length follow."
 
 part x_stop_mount {
   group: "X axis"
   material: "PETG"
   color: #3d7bfd
   body box(16, 8, 16, at: (-160, -65, z_xr - 8))                 // on the beam's lower slot, beyond the rail end
-  add box(4, 24.5, 34, at: (-152.1, -73.25, z_xr - 17))         // plate the switch board screws to, above the BLTouch arm
+  add box(4, 28.5, 32, at: (-152.1, -75.25, z_xr - 17))         // plate the switch board screws to, above the BLTouch arm and below the X belt
   cut hole(M5, cbore: true, through: true, at: (-160, -69, z_xr), dir: Y)
   for h in x_stop.holes { cut hole(M2_5, through: true, at: (-150.1, h.y, h.z), dir: -X) }
 }
@@ -274,7 +280,7 @@ part x_carriage {
     cut box(9, 11, 2.8, at: (xc + sx * 28, y_belt, z_xp + 4.97))
   }
   // flag for the X endstop
-  add box(6, 4.01, 12, at: (xc - 29, -72, z_xr - 10))
+  add box(6, 10, 12, at: (xc - 29, -75, z_xr - 10))
   // back half of the V6 groove-mount clamp; the extruder sits on top
   add box(40, 18.01, 12.7, at: (xc, (y_xc_front + y_noz) / 2 + 0.005, h_clamp))
   cut cylinder(d: 16.4, h: 3.01, at: (xc, y_noz, h_clamp - 0.01))
@@ -448,7 +454,6 @@ test "24 V and 5 V rails": "Power up with only the supply and buck connected: me
 test "Frame square": "Measure both base diagonals (equal within 1 mm) and check the uprights are square to the base in X and Y."
 test "Gantry level": "With the motors off, turn one lead screw until the X beam is the same height above the base at both ends (within 0.2 mm)."
 test "Motor directions and endstops": "STEPPER_BUZZ each motor, then QUERY_ENDSTOPS with each switch pressed and released. Home X and Y with a hand on the power switch; flip the dir_pin if an axis runs away from its switch."
-test "Belt tension": "Pluck the X and Y belts: about 110 Hz on a free span; equal on both sides of the Y carriage clamp."
 test "BLTouch and probe offset": "BLTOUCH_DEBUG COMMAND=pin_down and pin_up, then PROBE_ACCURACY: the range should be under 0.01 mm. Confirm the X offset with a pen mark: home, mark under the nozzle, move X by +38 (the probe sits 38 mm left of the nozzle) and check the pin lands on the mark."
 test "Heater PID and thermal safety": "PID_CALIBRATE HEATER=extruder TARGET=220 and HEATER=heater_bed TARGET=60, SAVE_CONFIG. Then pull the hotend thermistor plug briefly while heating: Klipper must shut down with a heater error."
 test "Bed MOSFET temperature": "Heat the bed to 100 °C for 10 minutes and check the board's bed MOSFET stays below about 80 °C with the board fan running."
@@ -487,7 +492,6 @@ require "Y switch trips within 1 mm of Y = 0": abs((y_noz + bed_y / 2 + 40) - (y
 require "Only the nozzle reaches the bed: the rest of the toolhead stays 2 mm above the tip": bbox_min(x_carriage, "z") - zn >= 2 && bbox_min(extruder_mount, "z") - zn >= 2 && bbox_min(part_fan, "z") - zn >= 2 && bbox_min(hotend_fan, "z") - zn >= 2
 
 // ── Purchases not drawn above ─────────────────────────────────────────
-buy "GT2 6 mm timing belt, 5 m" { qty: 1, price: 9, search: "GT2 6mm timing belt 5m" }
 buy "M3 socket head screw assortment (6 to 30 mm) with nuts" { qty: 1, price: 14, search: "M3 socket head cap screw assortment 304 stainless" }
 buy "M5 socket head screws 8, 10, 12 and 30 mm (50 of each)" { qty: 1, price: 16, search: "M5 socket head cap screw assortment" }
 buy "M5 drop-in T-nuts for 2020/2040 V-slot, 50 pcs" { qty: 2, price: 9, search: "M5 drop in T nut 2020 V slot 50pcs" }

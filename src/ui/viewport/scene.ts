@@ -180,6 +180,8 @@ const PHOTO_DELAY = 250;
 const PHOTO_TAKEOVER = 12;
 /** longest the trace waits for a model to finish building, ms: detail builds can take a while, but one that stalls must not hold it for good */
 const PHOTO_SETTLE_MAX = 60_000;
+/** how long a path tracer turned off is kept ready (its shader compiled, its scene built), ms: turning photoreal back on meanwhile starts tracing at once */
+const PHOTO_KEEP = 60_000;
 
 /** The GPU is emulated on the CPU: fine for the interactive view, far too slow to path trace. */
 function softwareRenderer(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
@@ -230,6 +232,8 @@ export class SceneController {
   /** the path tracer's code is loading (it is only fetched when first used) */
   private photoLoading = false;
   private photoError = "";
+  /** when photoreal was last turned off (ms): the path tracer is freed a while later */
+  private photoOffAt = 0;
   /** the GPU is emulated in software (SwiftShader, llvmpipe): far too slow to path trace */
   private softwareGL = false;
   private sketching = false;
@@ -340,10 +344,13 @@ export class SceneController {
     this.softwareGL = softwareRenderer(this.renderer.getContext());
     // a GPU that resets mid-trace must not be sent straight back into it
     this.renderer.domElement.addEventListener("webglcontextlost", () => {
-      if (!this.photo && !this.photoLoading) return;
-      this.photoError = "The graphics card reset during the photoreal render, so it stopped";
-      this.dropPhoto();
+      if (this.render$.photoreal && (this.photo || this.photoLoading)) this.photoError = "The graphics card reset during the photoreal render, so it stopped";
+      // a path tracer kept ready while photoreal is off goes too
+      if (this.photo) this.dropPhoto();
     });
+    // three.js gets the context back and uploads meshes and textures again, but
+    // what was drawn into render targets is gone: draw the lighting again
+    this.renderer.domElement.addEventListener("webglcontextrestored", () => this.contextRestored());
     this.pipe = new RenderPipeline(this.renderer);
     this.pipe.look.selColor.copy(ACCENT);
     this.pipe.look.hoverColor.copy(HOVER);
@@ -549,8 +556,10 @@ export class SceneController {
     if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle || prev.theme !== s.theme) this.applyLighting();
     if (prev.photoreal !== s.photoreal) {
       if (!s.photoreal) {
-        // free the path tracer's buffers and scene copy; turning it back on rebuilds them
-        this.dropPhoto();
+        // the image buffers go now; the compiled shader and scene copy are freed a minute later,
+        // so a quick off and on doesn't compile and build it all again (on Windows a compile
+        // takes many seconds), and nothing is freed while the GPU or the worker still uses it
+        this.parkPhoto();
         this.photoError = "";
       }
     }
@@ -565,6 +574,13 @@ export class SceneController {
       this.key.shadow.map = null;
     }
     this.changed = true;
+  }
+
+  /** The graphics card reset and three.js has a new context: the environment maps were drawn into the old one. */
+  private contextRestored() {
+    this.envs.forget();
+    this.applyLighting();
+    this.maskDirty = true;
   }
 
   private applyLighting() {
@@ -1663,6 +1679,7 @@ export class SceneController {
       this.maskDirty = true;
       restarted = true;
     }
+    if (this.photo && !this.render$.photoreal && now - this.photoOffAt > PHOTO_KEEP && !this.photo.busy) this.dropPhoto();
     let photo = this.photoActive();
     // while the model builds, the trace waits for its final meshes instead of restarting on each
     const held = !!photo && this.settlingSince !== null && now - this.settlingSince < PHOTO_SETTLE_MAX;
@@ -1804,6 +1821,14 @@ export class SceneController {
     const url = r.domElement.toDataURL("image/png");
     this.needComposite = true;
     return url;
+  }
+
+  /** Photoreal is off: free the image buffers, and keep the path tracer ready for a while (see PHOTO_KEEP). */
+  private parkPhoto() {
+    this.photoMix = 0;
+    this.photoOffAt = performance.now();
+    this.photo?.releaseImage();
+    this.pipe.releasePhoto();
   }
 
   /** Free the path tracer and its buffers. */

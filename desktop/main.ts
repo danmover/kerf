@@ -26,6 +26,10 @@ protocol.registerSchemesAsPrivileged([
 ]);
 // on a laptop with two graphics chips, use the fast one
 app.commandLine.appendSwitch("force_high_performance_gpu");
+// after a graphics card reset (a long photoreal trace can trip Windows' GPU
+// timeout) Chromium would block WebGL for the page until Kerf restarts; let the
+// 3D view get its context back instead
+app.disableDomainBlockingFor3DAPIs();
 if (settings.graphics !== "auto") app.commandLine.appendSwitch("use-angle", settings.graphics);
 // CI machines have no graphics card: draw in software there rather than fail
 if (SMOKE) app.commandLine.appendSwitch("enable-unsafe-swiftshader");
