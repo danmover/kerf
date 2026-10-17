@@ -1,6 +1,8 @@
 // The 3D wiring in the viewport: owns the wiring overlay while it is shown,
 // keeps its cable routes current, and draws the card for the picked cable
-// with a tag at each of its plugs, so you can see what plugs into what.
+// with a tag at each of its plugs, so you can see what plugs into what. On a
+// machine whose parts move, it can run the axes through their travel so the
+// cables can be watched flexing in their drag chains and loops.
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -8,9 +10,10 @@ import type { SceneController } from "./viewport/scene";
 import { WiringOverlay, type WireHit } from "./viewport/wiring/overlay";
 import { meshes, useDesign } from "../core/engine";
 import { select } from "../app/view";
-import { useHarness, updateHarness } from "../machine/harness/runtime";
+import { useHarness, updateHarness, wireRun } from "../machine/harness/runtime";
 import { PLUG_NAME } from "../machine/harness/plugs";
-import { leadLength, type HarnessWire, type PlugEnd } from "../machine/harness/harness";
+import type { HarnessWire, PlugEnd } from "../machine/harness/harness";
+import { travelOffsets, type TravelPlan } from "../machine/harness/travel";
 import { cutLength } from "../machine/wiring";
 import { useWiringView } from "./wiringView";
 import { useChatDraft } from "./chatDraft";
@@ -21,12 +24,15 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
   const on = useWiringView((s) => s.on);
   const picked = useWiringView((s) => s.picked);
   const hovered = useWiringView((s) => s.hovered);
+  const link = useWiringView((s) => s.link);
+  const travel = useWiringView((s) => s.travel);
   const model = useDesign((s) => s.model);
   const stage = useDesign((s) => s.stage);
   const meshVersion = useDesign((s) => s.meshVersion);
   const harness = useHarness((s) => s.harness);
   const routes = useHarness((s) => s.routes);
   const status = useHarness((s) => s.status);
+  const plan = useHarness((s) => s.plan);
   const ov = useRef<WiringOverlay | null>(null);
   const [drawn, setDrawn] = useState(0);
   const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
@@ -36,9 +42,9 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
     const o = new WiringOverlay(scene);
     o.onPick = (hit: WireHit | null) => {
       if (hit) select([]);
-      useWiringView.setState({ picked: hit?.wire ?? null, end: hit?.end ?? null });
+      useWiringView.setState({ picked: hit?.wire || null, end: hit?.end ?? null, link: hit?.link ?? null });
     };
-    o.onHover = (hit: WireHit | null) => useWiringView.setState({ hovered: hit?.wire ?? null });
+    o.onHover = (hit: WireHit | null) => useWiringView.setState({ hovered: hit?.wire || null });
     ov.current = o;
     scene.addOverlay(o);
     return () => {
@@ -59,14 +65,20 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
   useEffect(() => {
     const o = ov.current;
     if (!o || !harness || !model) return;
-    o.set(harness, routes, model.parts, (p) => meshes.get(p.hash)?.bbox);
+    o.set(harness, routes, model.parts, (p) => meshes.get(p.hash)?.bbox, plan);
     scene.overlaysChanged();
     setDrawn((n) => n + 1);
     // the model is read when the harness changes, not on every model update in between
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [harness, routes, on, scene]);
+  }, [harness, routes, plan, on, scene]);
 
-  useEffect(() => ov.current?.setFocus(picked, hovered), [picked, hovered, drawn]);
+  useEffect(() => ov.current?.setFocus(picked, hovered, link), [picked, hovered, link, drawn]);
+
+  // a picked chain or loop that is gone is let go, and so is the travel run without one
+  useEffect(() => {
+    if (link && !plan?.links.some((l) => l.id === link)) useWiringView.setState({ link: null });
+    if (!plan?.links.length && travel) useWiringView.setState({ travel: false });
+  }, [link, plan, travel]);
 
   // a picked cable that is gone from the design (an edit removed it) is let go
   useEffect(() => {
@@ -92,12 +104,21 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
 
   const wire = picked ? harness?.wires.find((w) => w.id === picked) : undefined;
   const hover = hovered && hovered !== picked ? harness?.wires.find((w) => w.id === hovered) : undefined;
-  const route = wire ? routes?.get(wire.id) : undefined;
-  // plug to plug: the routed run plus the lead out of each plug
-  const run = wire && route && !route.straight ? route.length + 2 * leadLength(wire) : undefined;
+  // plug to plug: the routed runs, the lead out of each end, and any run inside a chain or loop
+  const run = wire && routes ? wireRun(wire.id) : undefined;
+  const flexOf = wire && plan ? plan.links.filter((l) => l.wires.includes(wire.id)) : [];
   if (!on) return null;
   return (
     <>
+      {travel && plan && <TravelRun scene={scene} plan={plan} />}
+      {plan && plan.links.length > 0 && (status === "done" || routes) && (
+        <div className="wr-travel">
+          <button className={`btn sm${travel ? " on" : ""}`} onClick={() => useWiringView.setState({ travel: !travel })} data-tip="Move the axes end to end and watch the cables flex">
+            {travel ? <Icon.Pause size={13} /> : <Icon.Play size={13} />} {travel ? "Stop" : "Move through travel"}
+          </button>
+          <span className="wr-axes mono" id="wr-axes" />
+        </div>
+      )}
       {wire && <EndTags scene={scene} overlay={ov} wire={wire} />}
       {hover && tip && (
         <div className="wr-tip" style={{ left: tip.x + 14, top: tip.y + 12 }}>
@@ -105,7 +126,8 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
         </div>
       )}
       <AnimatePresence>
-        {wire && <WireCard key="card" wire={wire} run={run} onClose={() => useWiringView.setState({ picked: null, end: null })} />}
+        {wire && <WireCard key="card" wire={wire} run={run} flex={flexOf.map((l) => l.label)} onClose={() => useWiringView.setState({ picked: null, end: null })} />}
+        {!wire && link && plan && <LinkCard key="link" plan={plan} id={link} onClose={() => useWiringView.setState({ link: null })} />}
       </AnimatePresence>
       <AnimatePresence>
         {(status === "routing" && !routes) || status === "error" ? (
@@ -161,7 +183,75 @@ function EndTags({ scene, overlay, wire }: { scene: SceneController; overlay: Re
   );
 }
 
-function WireCard({ wire, run, onClose }: { wire: HarnessWire; run?: number; onClose: () => void }) {
+/** Runs the axes back and forth through their whole travel, each at its own pace, while it is mounted. */
+function TravelRun({ scene, plan }: { scene: SceneController; plan: TravelPlan }) {
+  useEffect(() => {
+    const t0 = performance.now();
+    // different periods, so the axes reach every combination of their ends in turn
+    const period = [3.6, 4.7, 6.1];
+    let raf = 0;
+    let shown = "";
+    const step = () => {
+      const t = (performance.now() - t0) / 1000;
+      const at = [0, 1, 2].map((k) => {
+        const [a, b] = plan.axes.range[k];
+        if (!plan.axes.on[k] || b <= a) return plan.axes.s0[k];
+        // start where the design shows it and swing end to end
+        const mid = (a + b) / 2;
+        const half = (b - a) / 2;
+        const ph = Math.asin(Math.max(-1, Math.min(1, (plan.axes.s0[k] - mid) / half)));
+        return mid + half * Math.sin(ph + (t * Math.PI * 2) / period[k]);
+      }) as [number, number, number];
+      scene.setPose(travelOffsets(plan, at));
+      const text = ["X", "Y", "Z"].filter((_, k) => plan.axes.on[k]).map((n) => `${n} ${Math.round(at["XYZ".indexOf(n)])}`).join("  ");
+      if (text !== shown) {
+        shown = text;
+        const el = document.getElementById("wr-axes");
+        if (el) el.textContent = text + " mm";
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => {
+      cancelAnimationFrame(raf);
+      scene.setPose(null);
+      const el = document.getElementById("wr-axes");
+      if (el) el.textContent = "";
+    };
+  }, [scene, plan]);
+  return null;
+}
+
+/** A drag chain or loop: what it is, what it carries, and how it fares through travel. */
+function LinkCard({ plan, id, onClose }: { plan: TravelPlan; id: string; onClose: () => void }) {
+  const l = plan.links.find((x) => x.id === id);
+  const check = plan.checks.find((c) => c.link === id);
+  if (!l) return null;
+  const carrier = plan.carriers.find((c) => c.id === l.child);
+  return (
+    <motion.div className="vp-float wr-card" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 12 }} transition={{ type: "spring", stiffness: 420, damping: 36 }}>
+      <div className="row" style={{ marginBottom: 8, gap: 8 }}>
+        <div className="grow wr-title">
+          {l.label} <span className="dim">· {carrier?.label}</span>
+        </div>
+        <button className="icon-btn sm" onClick={onClose} aria-label="Close">
+          <Icon.X size={14} />
+        </button>
+      </div>
+      <div className="wr-facts mono">
+        <div>{l.chain ? `${l.chain.inner[0]} × ${l.chain.inner[1]} mm chain, ${Math.round(l.L)} mm, ${Math.round(l.L / l.chain.pitch)} links, R${Math.round(l.R)}` : `spiral-wrapped loop, ${Math.round(l.L)} mm`}</div>
+        <div>carries {l.wires.join(", ")}</div>
+      </div>
+      {check && (
+        <div className={`wr-note wr-check ${check.status}`}>
+          {check.status === "pass" ? <Icon.Check size={12} /> : <Icon.Alert size={12} />} {check.detail}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+function WireCard({ wire, run, flex, onClose }: { wire: HarnessWire; run?: number; flex: string[]; onClose: () => void }) {
   const setDraft = useChatDraft((s) => s.set);
   const r = wire.row;
   const title = r.cable ?? (r.label || `${r.kind === "ground" ? "Ground" : r.kind === "power" ? "Power" : r.kind === "motor" ? "Motor" : "Signal"} wire`);
@@ -208,6 +298,7 @@ function WireCard({ wire, run, onClose }: { wire: HarnessWire; run?: number; onC
           </div>
         )}
         {wire.wires.length > 1 && <div>{wire.wires.map((w) => w.name).join(", ")}</div>}
+        {flex.length > 0 && <div>moves through the {flex.join(" and ")}</div>}
         {run !== undefined ? (
           <div>
             cut {cutLength(run)} mm<span className="dim"> · runs {Math.round(run)} mm plug to plug</span>
