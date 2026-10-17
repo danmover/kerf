@@ -30,6 +30,15 @@ export const COMMON_RESULTS: Record<string, ResultInfo> = {
   "<motor>.max_temp": { unit: "C", doc: "hottest the motor winding got" },
   "<motor>.load": { unit: "share", doc: "highest one-second average torque as a share of the motor's stall torque" },
   "<actuator>.travel": { unit: "mm", doc: "total rod travel of a linear actuator" },
+  "<motor>.stall_time": { unit: "s", doc: "time the motor was driven hard with its shaft not turning (held in a stall)" },
+  fuse_blown: { unit: "yes/no", doc: "a fuse blew during the run" },
+  driver_overheated: { unit: "yes/no", doc: "a motor driver shut down for overheating at some point" },
+  still_at_end: { unit: "yes/no", doc: "every motor and actuator was stopped and drawing no current at the end" },
+  fault_time: { unit: "s", doc: "when the first fault happened (only in runs with faults:)" },
+  fault_stopped: { unit: "yes/no", doc: "everything came to a stop after the fault and stayed stopped (only with faults:)" },
+  fault_stop_time: { unit: "s", doc: "how long after the fault everything stopped for good (only when it did)" },
+  fault_noticed: { unit: "yes/no", doc: "the firmware said something about it after the fault: a state change or a warning on the console (only with faults:)" },
+  fault_reaction: { unit: "s", doc: "how long after the fault the firmware first said so (only when it did)" },
   "fw.<name>": { unit: "count", doc: "a firmware global variable at the end of the run" },
 };
 

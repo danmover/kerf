@@ -509,7 +509,17 @@ class Evaluator {
     const fail = (msg: string, span: Span): never => {
       throw new EvalError(msg, span);
     };
-    const spec = scenarioSpec(s.label, { get: (n) => values.get(n), span: (n) => spans.get(n) ?? s.labelSpan, firmware }, fail, imuX);
+    const likeV = values.get("like");
+    let base: ScenarioDef | undefined;
+    if (likeV !== undefined) {
+      if (typeof likeV !== "string") throw new EvalError('like: give the name of a scenario above this one, in quotes, like like: "Cross the pit"', spans.get("like")!);
+      base = this.scenarios.find((x) => x.label === likeV);
+      if (!base) {
+        const sugg = suggest(likeV, this.scenarios.map((x) => x.label));
+        throw new EvalError(`No scenario "${likeV}" above this one${sugg ? `. Did you mean "${sugg}"?` : this.scenarios.length ? `. Scenarios: ${this.scenarios.map((x) => `"${x.label}"`).join(", ")}` : ""}`, spans.get("like")!);
+      }
+    }
+    const spec = scenarioSpec(s.label, { get: (n) => values.get(n), span: (n) => spans.get(n) ?? s.labelSpan, firmware }, fail, imuX, { base: base?.spec, machine: this.machine });
     const uses = s.uses.map((u) => u.name);
     for (const u of s.uses) {
       if (this.brief && !this.brief.uses.some((b) => b.id === u.name)) {

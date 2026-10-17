@@ -48,6 +48,7 @@ export function runSpec(spec: ScenarioSpec, machine: MachineData, designName: st
     console: spec.console,
     config: spec.config,
     soc: spec.charge,
+    faults: spec.faults,
     variants: opts.variants ?? spec.variants,
     seed: spec.seed,
     onProgress: opts.onProgress,

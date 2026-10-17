@@ -5,6 +5,7 @@
 
 import type { Model } from "../core/model";
 import { catalogPart } from "../machine/catalog";
+import type { ScenarioDef } from "./scenario";
 
 export interface SimTemplate {
   id: string;
@@ -16,6 +17,8 @@ export interface SimTemplate {
   prompt?: (m: Model) => string;
   /** why it does not apply to this design, if it does not */
   unavailable?: (m: Model) => string | null;
+  /** fault tests sit in their own row of the gallery */
+  group?: "faults";
 }
 
 const fmtS = (s: number) => (s % 60 === 0 ? `${s / 60}min` : `${Math.round(s)}s`);
@@ -53,6 +56,118 @@ function bench(m: Model, label: string, world: string, duration: number, expects
   const fw = firmwareOf(m)!;
   return [`scenario "${freeLabel(m, label)}" {`, `  world: ${world}`, `  firmware: ${fw.name}`, `  duration: ${fmtS(duration)}`, ...expects.map((e) => `  ${e}`), "}"].join("\n");
 }
+
+// ---------- fault tests ----------
+
+const partsOf = (m: Model, kind: string) => (m.machine?.components ?? []).filter((c) => catalogPart(c.catalogId)?.kind === kind);
+const wired = (m: Model, comp: string, pin: string) =>
+  (m.machine?.wires ?? []).some((w) => (w.a.comp === comp && w.a.pin === pin) || (w.b.comp === comp && w.b.pin === pin)) || (m.machine?.nets ?? []).some((n) => n.pins.some((p) => p.comp === comp && p.pin === pin));
+
+/** The scenario a fault test repeats with something going wrong: the design's first one that has no faults of its own. */
+function baseScenario(m: Model): ScenarioDef | undefined {
+  return (m.scenarios ?? []).find((s) => !s.spec.faults?.length);
+}
+
+/** When the fault happens: a minute into the job, once the firmware's start delay is over. */
+function faultAt(m: Model, base?: ScenarioDef): number {
+  const cfg = base?.spec.config.START_DELAY_S;
+  const delay = typeof cfg === "number" ? cfg : startDelay(m);
+  const at = delay + 60;
+  return base ? Math.min(at, Math.round(base.spec.duration / 2)) : at;
+}
+
+/** A fault scenario: like the design's own scenario when it has one, else on the bench. */
+function faultScenario(m: Model, label: string, faults: string, expects: string[], opts: { all?: boolean; extra?: string[] } = {}): string {
+  const base = baseScenario(m);
+  const head = base
+    ? [`  like: "${base.label}"`]
+    : [`  world: sim.bench()`, `  firmware: ${firmwareOf(m)!.name}`, `  duration: ${fmtS(Math.max(180, Math.ceil((faultAt(m) + 120) / 60) * 60))}`];
+  return [`scenario "${freeLabel(m, label)}" {`, ...head, ...(faults ? [`  faults: ${faults}`] : []), ...(opts.extra ?? []).map((x) => `  ${x}`), ...(opts.all ? [] : ['  variants: "expected"']), ...expects.map((e) => `  ${e}`), "}"].join("\n");
+}
+
+const at = (s: number) => fmtS(s);
+/** the motor a fault test picks: the one doing the main work (named front or first), else the first */
+const mainMotor = (m: Model) => {
+  const ms = partsOf(m, "gearmotor");
+  return ms.find((c) => /front|main|drive/i.test(`${c.name} ${c.role ?? ""}`)) ?? ms[0];
+};
+
+const FAULT_TEMPLATES: SimTemplate[] = [
+  {
+    id: "fault_jam",
+    group: "faults",
+    title: "A motor jams",
+    blurb: "The main motor locks solid a minute into the job. The firmware should notice, stop driving into it and end up stopped, with no fuse blown and nothing cooked.",
+    unavailable: (m) => needsFirmware(m) ?? (mainMotor(m) ? null : "The design has no gearmotor to jam."),
+    source: (m) => {
+      const n = mainMotor(m)!.name;
+      return faultScenario(m, `${n} jams`, `sim.jam(${n}, at: ${at(faultAt(m, baseScenario(m)))})`, [
+        'expect "Notices the jam": fault_noticed',
+        'expect "Ends stopped": fault_stopped && still_at_end',
+        `expect "${n} stays below 80 °C" soft: ${n}.max_temp < 80C`,
+        'expect "No fuse blows" soft: fuse_blown == false',
+      ]);
+    },
+  },
+  {
+    id: "fault_wire",
+    group: "faults",
+    title: "A wire comes loose",
+    blurb: "The main motor's encoder wire comes off mid-job (its power wire, with no encoder). The firmware should notice and stop safely rather than drive blind.",
+    unavailable: (m) => needsFirmware(m) ?? (mainMotor(m) ? null : "The design has no motor wiring to loosen."),
+    source: (m) => {
+      const n = mainMotor(m)!.name;
+      const pin = wired(m, n, "ENC_A") ? "ENC_A" : "M_PLUS";
+      return faultScenario(m, `${n} ${pin === "ENC_A" ? "encoder" : "power"} wire loose`, `sim.loose("${n}.${pin}", at: ${at(faultAt(m, baseScenario(m)))})`, [
+        'expect "Notices the loose wire": fault_noticed',
+        'expect "Ends stopped" soft: still_at_end',
+      ]);
+    },
+  },
+  {
+    id: "fault_sensor",
+    group: "faults",
+    title: "A sensor stops answering",
+    blurb: "The IMU (or the first sensor) is unplugged mid-job. See whether the firmware notices and does something sensible without it.",
+    unavailable: (m) => needsFirmware(m) ?? (partsOf(m, "sensor").length ? null : "The design has no sensor to lose."),
+    source: (m) => {
+      const ss = partsOf(m, "sensor");
+      const s = ss.find((c) => /imu|bno|mpu/i.test(`${c.name} ${c.catalogId}`)) ?? ss[0];
+      return faultScenario(m, `${s.name} stops answering`, `sim.unplug(${s.name}, at: ${at(faultAt(m, baseScenario(m)))})`, [
+        `expect "Notices ${s.name} is gone" soft: fault_noticed`,
+        'expect "Ends stopped": still_at_end',
+        'expect "No fuse blows" soft: fuse_blown == false',
+      ]);
+    },
+  },
+  {
+    id: "fault_flat",
+    group: "faults",
+    title: "Battery nearly flat",
+    blurb: "Start the job with 15 % charge. The firmware should stop on its low-battery limit before the cells are run flat, and leave the motors off.",
+    unavailable: (m) => needsFirmware(m) ?? (hasBattery(m) ? null : "The design has no battery to run down."),
+    source: (m) =>
+      faultScenario(m, "Battery nearly flat", "", ['expect "Stops before the battery is flat": battery_left > 3%', 'expect "Ends stopped": still_at_end', 'expect "Battery voltage holds up" soft: battery_min_volts > 0.8 * BAT.v_nom'], { extra: ["charge: 15%"] }).replace(
+        /BAT\.v_nom/g,
+        `${partsOf(m, "battery")[0]?.name ?? "bat"}.v_nom`,
+      ),
+  },
+  {
+    id: "fault_old_battery",
+    group: "faults",
+    title: "Old battery",
+    blurb: "The same job at the end of the battery's life: 80 % of its capacity and 1.5 times its internal resistance. Everything the job has to achieve should still hold.",
+    unavailable: (m) => needsFirmware(m) ?? (hasBattery(m) ? null : "The design has no battery to age."),
+    source: (m) => {
+      const bat = partsOf(m, "battery")[0].name;
+      const base = baseScenario(m);
+      const expects = base?.expects.length
+        ? base.expects.map((e) => `expect "${e.label}"${e.level === "soft" ? " soft" : ""}: ${e.text}`)
+        : ['expect "Charge to spare at the end": battery_left > 20%', 'expect "No firmware mistakes": faults == 0'];
+      return faultScenario(m, "Old battery", `sim.aged(${bat}, capacity: 80%, resistance: 1.5)`, expects, { all: true });
+    },
+  },
+];
 
 export const SIM_TEMPLATES: SimTemplate[] = [
   {
@@ -106,6 +221,7 @@ export const SIM_TEMPLATES: SimTemplate[] = [
       return `Add a sand pit scenario that tests whether this machine gets across the pit, with expectations for reaching the far wall, arriving near the line, motor temperatures and battery left.${sizes} Then run it and tell me what it shows.`;
     },
   },
+  ...FAULT_TEMPLATES,
 ];
 
 /** The scenario source a template writes for this design, or why it cannot. */

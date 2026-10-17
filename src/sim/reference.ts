@@ -30,8 +30,19 @@ scenario "Cross the pit" for cross, steer {
   expect "Arrives near the line": miss < target
   expect "Motors stay cool" soft: m_front.max_temp < 80C && m_rear.max_temp < 80C
 }
-Entries: world (required), robot (required for a sand pit), firmware, duration, console, config, variants, charge, seed, let, expect "label" [soft|hard]: expression. An expression reads the run's results by name (below) and any design value; shares are fractions (write 30%), times in seconds (write 5min, 10ms), temperatures in °C (80C). It can use + - * / ^ < <= > >= == != && || ! ?: and abs, min, max, sqrt, round, floor, ceil. A result that a run did not record (miss when it never reached the far wall) fails the expectation. A design needs a firmware block for an Arduino controller to be simulated; Klipper printers cannot be simulated yet.
+Entries: like, world (required unless like: gives it), robot (required for a sand pit), faults, firmware, duration, console, config, variants, charge, seed, let, expect "label" [soft|hard]: expression. An expression reads the run's results by name (below) and any design value; shares are fractions (write 30%), times in seconds (write 5min, 10ms), temperatures in °C (80C). It can use + - * / ^ < <= > >= == != && || ! ?: and abs, min, max, sqrt, round, floor, ceil. A result that a run did not record (miss when it never reached the far wall) fails the expectation. A design needs a firmware block for an Arduino controller to be simulated; Klipper printers cannot be simulated yet.
 Put robot descriptions that several scenarios share in a let at the top level (let tunneller = sim.screw_tunneller(...)), then write robot: tunneller.
+
+Fault tests: what happens when something goes wrong. like: "Other scenario" takes that scenario's world, machine, firmware, duration, console, config, variants, charge and seed (it must be above), and the scenario changes only what it writes itself; its expectations are its own. faults: lists what goes wrong and when, against the real firmware:
+scenario "Front screw jams" {
+  like: "Cross the pit"
+  faults: [sim.jam(m_front, at: 3min)]                 // also sim.unplug(imu, at: …), sim.loose("m_front.ENC_A", at: …, until: …, flicker: true), sim.stuck(imu, at: …), sim.aged(bat, capacity: 80%, resistance: 1.5)
+  variants: "expected"                                 // one run is usually enough for a fault
+  expect "Notices the jam": fault_noticed
+  expect "Ends stopped": fault_stopped && still_at_end
+  expect "No fuse blows" soft: fuse_blown == false
+}
+Put the fault after the firmware's start delay, while the machine is working. A good fault test asks for a safe outcome (it notices, stops or backs out, nothing overheats or blows), not for the job to finish. When one fails, say what the firmware did wrong in plain words and propose the firmware or wiring change.
 
 Worlds and machines:
 ${fns}
@@ -39,7 +50,7 @@ ${fns}
 Results by name:
 ${resultDocs()}
 
-What simulations leave out: worlds are reduced-order models (a few state variables and calibrated formulas, not particles or finite elements). Soil is uniform and dry; steering grip and drift are estimates the three runs bracket. Motors heat as one lump; electrical models use average voltages without wiring resistance or noise. The firmware runs as compiled C++ on a cycle-counted virtual chip, not as AVR machine code. Say so when reporting results, and keep the physical tests: a simulation narrows down what to test, it does not replace the test.
+What simulations leave out: worlds are reduced-order models (a few state variables and calibrated formulas, not particles or finite elements). Soil is uniform and dry; steering grip and drift are estimates the three runs bracket. Motors heat as one lump; electrical models use average voltages without wiring resistance or noise. A loose wire is an open circuit (a flickering one opens and closes at random), not a short. The firmware runs as compiled C++ on a cycle-counted virtual chip, not as AVR machine code. Say so when reporting results, and keep the physical tests: a simulation narrows down what to test, it does not replace the test.
 To set up a scenario from a user's words: pick the world that matches (sand_pit for burrowing through sand, bench for power-up, battery runtime, overload and hot-room tests, and bench with signals: [sim.signal(on: "NET", note: "E2")] for firmware that listens to a signal, like a tuner or a level meter), take sizes from the brief's givens, describe the machine from the design's own parameters (not copied numbers), write expectations that match the brief's uses, add it with edit_design, then call run_scenario. If no world matches what the user describes, say which part Kerf cannot simulate yet and set up the closest test instead.
 `;
 }

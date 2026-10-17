@@ -4,7 +4,7 @@
 // offers ready-made tests and a box to describe one in plain words.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { commitSource } from "../../app/project";
 import { revealSpan } from "../../app/view";
 import { toast } from "../../app/ui";
@@ -584,22 +584,31 @@ function EmptyState({ model, onDone }: { model: Model; onDone?: () => void }) {
       <div className="muted" style={{ maxWidth: 680, fontSize: 12.5, lineHeight: 1.55 }}>
         A scenario runs this design's own firmware on a virtual copy of its controller, wired exactly as the design says, to simulated motors, drivers, sensors and battery, inside an environment: a sand pit, a bench, a hot room. Each runs three times, with pessimistic, expected and optimistic values, and what it has to achieve becomes checks.
       </div>
-      <div className="sim-gallery">
-        {SIM_TEMPLATES.map((t) => {
-          const why = t.unavailable?.(model) ?? null;
-          return (
-            <button key={t.id} className="sim-card" disabled={!!why} onClick={() => add(t.id)}>
-              <div className="t">
-                {t.id === "sand_pit" ? <Icon.Sparkle size={13} /> : <Icon.Play size={13} />}
-                {t.title}
-                <span className="tag">{t.prompt ? "Claude sets it up" : "add"}</span>
-              </div>
-              <div className="b">{t.blurb}</div>
-              {why && <div className="why">{why}</div>}
-            </button>
-          );
-        })}
-      </div>
+      {([undefined, "faults"] as const).map((group) => (
+        <Fragment key={group ?? "tests"}>
+          {group && (
+            <div className="sim-h" style={{ marginTop: 16 }}>
+              What if something goes wrong
+            </div>
+          )}
+          <div className="sim-gallery">
+            {SIM_TEMPLATES.filter((t) => t.group === group).map((t) => {
+              const why = t.unavailable?.(model) ?? null;
+              return (
+                <button key={t.id} className="sim-card" disabled={!!why} onClick={() => add(t.id)}>
+                  <div className="t">
+                    {t.id === "sand_pit" ? <Icon.Sparkle size={13} /> : <Icon.Play size={13} />}
+                    {t.title}
+                    <span className="tag">{t.prompt ? "Claude sets it up" : "add"}</span>
+                  </div>
+                  <div className="b">{t.blurb}</div>
+                  {why && <div className="why">{why}</div>}
+                </button>
+              );
+            })}
+          </div>
+        </Fragment>
+      ))}
       <div className="sim-h" style={{ marginTop: 16 }}>
         Or describe the test
       </div>
