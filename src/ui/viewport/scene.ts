@@ -102,6 +102,11 @@ export interface Hit {
 
 const tuple = (v: THREE.Vector3): [number, number, number] => [v.x, v.y, v.z];
 
+/** Something an overlay draws under the pointer, and how far along the ray it is. */
+export interface OverlayHit {
+  distance: number;
+}
+
 /**
  * Something drawn on top of the model by another module (analysis results,
  * for example). The scene owns the render loop; an overlay only adds its
@@ -119,6 +124,14 @@ export interface SceneOverlay {
   setClipping?(planes: THREE.Plane[] | null): void;
   /** jump to the end state of any animation, for a still image */
   still?(): void;
+  /** parts shown faded while the overlay is on (covers over what it draws), with their opacity; they can't be picked */
+  readonly ghosts?: ReadonlyMap<string, number>;
+  /** what the overlay draws along a ray, so a click or hover there goes to it rather than to a part behind */
+  hitTest?(ray: THREE.Raycaster): OverlayHit | null;
+  /** a click on the overlay's hit, or null for a click anywhere else */
+  pick?(hit: OverlayHit | null, additive: boolean): void;
+  /** the pointer is over the overlay's hit, or null when it is not */
+  hover?(hit: OverlayHit | null): void;
 }
 
 export interface DisplayState {
@@ -294,6 +307,8 @@ export class SceneController {
   private overlays = new Set<SceneOverlay>();
   /** parts drawn by an overlay instead of as solids */
   private replaced = new Set<string>();
+  /** parts an overlay shows faded */
+  private ghosted = new Map<string, number>();
   /** lights for lit overlays: the studio lighting only reaches the accumulated scene */
   private overlayLights = new THREE.Group();
   private overlayKey = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -461,7 +476,13 @@ export class SceneController {
         return;
       }
       const still = down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 5;
-      if (still && e.button === 0) this.onPick(this.pick(e), e.shiftKey || e.metaKey || e.ctrlKey);
+      if (still && e.button === 0) {
+        const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+        const part = this.rayHit(e.clientX, e.clientY);
+        const over = this.overlayHit(e.clientX, e.clientY, part?.distance);
+        for (const o of this.overlays) o.pick?.(over?.o === o ? over.hit : null, additive);
+        if (!over) this.onPick(part?.object.userData.partId ?? null, additive);
+      }
       else if (still && e.button === 2) this.onContext(this.hitAt(e.clientX, e.clientY), e.clientX, e.clientY);
       down = null;
     });
@@ -475,12 +496,20 @@ export class SceneController {
       if (e.buttons) return;
       if (!pending)
         requestAnimationFrame(() => {
-          if (pending) this.onHover(this.pick(pending));
+          if (pending) {
+            const part = this.rayHit(pending.clientX, pending.clientY);
+            const over = this.overlayHit(pending.clientX, pending.clientY, part?.distance);
+            for (const o of this.overlays) o.hover?.(over?.o === o ? over.hit : null);
+            this.onHover(over ? null : (part?.object.userData.partId ?? null));
+          }
           pending = null;
         });
       pending = e;
     });
-    el.addEventListener("pointerleave", () => this.onHover(null));
+    el.addEventListener("pointerleave", () => {
+      for (const o of this.overlays) o.hover?.(null);
+      this.onHover(null);
+    });
     el.addEventListener("dblclick", (e) => this.onDoublePick(this.pick(e)));
 
     const loop = () => {
@@ -975,7 +1004,7 @@ export class SceneController {
     const hovered = d.hovered === obj.id;
     const focusSet = d.focus.size ? d.focus : d.isolate && d.selected.size ? d.selected : null;
     const ghost = (focusSet && !focusSet.has(obj.id)) || (d.xray && !selected);
-    obj.opacityTarget = ghost ? (d.xray ? 0.2 : 0.08) : 1;
+    obj.opacityTarget = ghost ? (d.xray ? 0.2 : 0.08) : (this.ghosted.get(obj.id) ?? 1);
     if (d.reduceMotion) obj.opacity = obj.opacityTarget;
     const visible = !d.hidden.has(obj.id) && !p.hidden && !this.replaced.has(obj.id);
     obj.group.visible = visible;
@@ -1080,8 +1109,14 @@ export class SceneController {
     this.syncOverlays();
   }
 
+  /** An overlay changed which parts it replaces or fades. */
+  overlaysChanged() {
+    this.syncOverlays();
+  }
+
   private syncOverlays() {
     this.replaced = new Set([...this.overlays].flatMap((o) => [...o.replaces]));
+    this.ghosted = new Map([...this.overlays].flatMap((o) => [...(o.ghosts ?? [])]));
     // applyMaterial restarts the accumulation for parts that appear or disappear
     for (const obj of this.parts.values()) this.applyMaterial(obj);
     this.clipOverlays();
@@ -1384,6 +1419,17 @@ export class SceneController {
       if (h.object.userData.partId) return h;
     }
     return null;
+  }
+
+  /** The nearest overlay hit in front of a part hit `before` mm along the ray, if any. */
+  private overlayHit(clientX: number, clientY: number, before = Infinity): { o: SceneOverlay; hit: OverlayHit } | null {
+    let best: { o: SceneOverlay; hit: OverlayHit } | null = null;
+    for (const o of this.overlays) {
+      if (!o.hitTest || !o.object.visible) continue;
+      const hit = o.hitTest(this.raycasterAt(clientX, clientY));
+      if (hit && hit.distance < before && (!best || hit.distance < best.hit.distance)) best = { o, hit };
+    }
+    return best;
   }
 
   /** The part and spot under a screen position. */
