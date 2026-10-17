@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runStructural, type FeaPart, type StructuralInput } from "../src/analysis/fe/structural";
+import { halfSineShock, runStructural, type FeaPart, type StructuralInput } from "../src/analysis/fe/structural";
 import { boxMesh, type V3 } from "../src/analysis/fe/voxel";
 import { mechMaterial } from "../src/analysis/materials";
 import { dynamicItems, vibrationVerdict } from "../src/analysis/dynamics";
@@ -65,7 +65,7 @@ describe("natural frequencies", () => {
 });
 
 describe("drops", () => {
-  it("scales a 1 g landing to the peak deceleration of the fall", () => {
+  it("works out the impact pulse and how hard the parts feel it", () => {
     const block = part("block", [0, 0, 0], [40, 40, 20]);
     const inp = (height: number, floor: { name: string; E?: number; soft?: number }) =>
       base({
@@ -79,16 +79,29 @@ describe("drops", () => {
     // 250 g of steel: weight about 2.5 N
     expect(hard.weight).toBeCloseTo(0.25 * 9.80665, 1);
     expect(hard.speed).toBeCloseTo(Math.sqrt(2 * 9.80665), 2);
-    expect(hard.g).toBeGreaterThan(100);
-    expect(soft.g).toBeLessThan(hard.g / 5);
+    // a half-sine bounce on the contact spring: peak g = v √(k / m) / g, lasting π √(m / k)
+    const m = hard.weight / 9806.65; // tonnes
+    expect(rel(hard.g, (hard.speed * 1000 * Math.sqrt(hard.contactStiffness / m)) / 9806.65)).toBeLessThan(1e-9);
+    expect(rel(hard.pulseMs, Math.PI * Math.sqrt(m / hard.contactStiffness) * 1000)).toBeLessThan(1e-9);
     expect(hard.force).toBeCloseTo(hard.g * hard.weight, 3);
-    // energy balance: W h = ½ F² (1/k_body + 1/k_floor)
-    const lhs = hard.weight * 1000;
-    const rhs = 0.5 * hard.force ** 2 * (1 / hard.bodyStiffness + 1 / hard.floorStiffness);
-    expect(rel(rhs, lhs)).toBeLessThan(1e-6);
+    expect(soft.g).toBeLessThan(hard.g / 5);
+    // a solid steel block flexes far faster than the pulse, so it feels the full deceleration
+    expect(hard.bodyHz).toBeGreaterThan(5000);
+    expect(hard.amplification).toBeGreaterThan(0.9);
+    expect(hard.felt).toBeCloseTo(hard.g * hard.amplification, 6);
     // twice the height: √2 times the deceleration
     const higher = runStructural(inp(2000, { name: "concrete", E: 30000 })).drop!;
     expect(rel(higher.g, hard.g * Math.SQRT2)).toBeLessThan(1e-6);
+  });
+
+  it("follows the shock response spectrum of a half-sine pulse", () => {
+    expect(halfSineShock(0.01)).toBeCloseTo(0.04, 3);
+    expect(halfSineShock(0.5)).toBeCloseTo(Math.PI / 2, 2);
+    const peak = Math.max(...[0.6, 0.7, 0.8, 0.9, 1].map(halfSineShock));
+    expect(peak).toBeGreaterThan(1.7);
+    expect(peak).toBeLessThan(1.8);
+    expect(halfSineShock(20)).toBeGreaterThan(0.99);
+    expect(halfSineShock(20)).toBeLessThan(1.1);
   });
 
   it("works out how far a tall box falls when it tips over", () => {

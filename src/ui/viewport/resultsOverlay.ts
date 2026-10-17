@@ -18,6 +18,8 @@ export interface OverlayConfig {
   scale: number;
   animate: boolean;
   safetyTarget: number;
+  /** a natural frequency's mode shape to draw swinging (index into result.modal.modes), instead of the static result */
+  mode?: number | null;
 }
 
 export interface ProbeHit {
@@ -149,9 +151,32 @@ export class ResultsOverlay implements SceneOverlay {
     this.configure(this.cfg);
   }
 
+  /** the mode shape drawn, when there is one for every part */
+  private modeShown(cfg = this.cfg): number | null {
+    const m = cfg.mode;
+    return m !== null && m !== undefined && this.result.parts.every((p) => p.modes?.[m]) ? m : null;
+  }
+
+  /** how far a mode shape swings: about 6% of the model's size (shapes are scaled so their largest movement is 1) */
+  private get modeAmp() {
+    return 0.06 * this.size;
+  }
+
   configure(cfg: OverlayConfig) {
-    const fieldChanged = cfg.field !== this.cfg.field || cfg.safetyTarget !== this.cfg.safetyTarget;
+    const mode = this.modeShown(cfg);
+    const modeChanged = mode !== this.modeShown();
+    const fieldChanged = cfg.field !== this.cfg.field || cfg.safetyTarget !== this.cfg.safetyTarget || modeChanged;
     this.cfg = cfg;
+    if (modeChanged || !this.filled)
+      for (const p of this.parts) p.mesh.geometry.setAttribute("aDisp", new THREE.BufferAttribute(mode !== null ? this.result.parts[p.index].modes![mode] : this.result.parts[p.index].disp, 3));
+    if (mode !== null) {
+      this.uniforms.uMode.value = 0;
+      if (fieldChanged || !this.filled) this.fill();
+      this.uniforms.uScale.value = cfg.animate ? this.uniforms.uScale.value : this.modeAmp;
+      for (const p of this.parts) p.ghost.visible = true;
+      this.placeSpotLabels();
+      return;
+    }
     this.uniforms.uMode.value = cfg.field === "safety" ? 1 : cfg.field === "strain" ? 2 : 0;
     if (fieldChanged || !this.filled) this.fill();
     this.uniforms.uScale.value = cfg.animate ? this.uniforms.uScale.value : cfg.scale;
@@ -166,11 +191,18 @@ export class ResultsOverlay implements SceneOverlay {
     this.filled = true;
     const r = this.result;
     const [lo, hi] = fieldRange(r, this.cfg.field);
+    const mode = this.modeShown();
     for (const p of this.parts) {
       const f = r.parts[p.index];
       const out = p.tAttr.array as Float32Array;
+      const shape = mode !== null ? f.modes![mode] : null;
       for (let v = 0; v < out.length; v++) {
         let t: number;
+        if (shape) {
+          // coloured by how far each point swings in the mode
+          out[v] = Math.min(1, Math.hypot(shape[3 * v], shape[3 * v + 1], shape[3 * v + 2]));
+          continue;
+        }
         if (this.cfg.field === "safety") t = safetyT(f.safety[v], this.cfg.safetyTarget);
         else if (this.cfg.field === "disp") t = Math.hypot(f.disp[3 * v], f.disp[3 * v + 1], f.disp[3 * v + 2]) / hi;
         else if (this.cfg.field === "strain") t = 0.5 + (0.5 * f.strain[v]) / hi;
@@ -183,7 +215,12 @@ export class ResultsOverlay implements SceneOverlay {
 
   tick(now: number): boolean {
     let active = false;
-    if (this.cfg.animate && this.cfg.scale > 0) {
+    if (this.modeShown() !== null) {
+      // a mode swings both ways about the rest shape
+      const target = this.cfg.animate ? this.modeAmp * Math.sin(((now - this.t0) / 1400) * Math.PI * 2) : this.modeAmp;
+      active = this.cfg.animate || this.uniforms.uScale.value !== target;
+      this.uniforms.uScale.value = target;
+    } else if (this.cfg.animate && this.cfg.scale > 0) {
       const k = 0.5 - 0.5 * Math.cos(((now - this.t0) / 2400) * Math.PI * 2);
       this.uniforms.uScale.value = this.cfg.scale * k;
       active = true;
@@ -201,7 +238,7 @@ export class ResultsOverlay implements SceneOverlay {
   }
 
   still() {
-    this.uniforms.uScale.value = this.cfg.scale;
+    this.uniforms.uScale.value = this.modeShown() !== null ? this.modeAmp : this.cfg.scale;
     for (const s of this.spots) s.scale.setScalar(s.userData.base);
   }
 
@@ -214,6 +251,8 @@ export class ResultsOverlay implements SceneOverlay {
 
   /** The field value under a ray, interpolated inside the triangle hit. */
   probe(ray: THREE.Raycaster, section: THREE.Plane | null): ProbeHit | null {
+    // a mode shape has no values of its own to read, only a shape
+    if (this.modeShown() !== null) return null;
     const hits = ray.intersectObjects(
       this.parts.map((p) => p.mesh),
       false,
@@ -357,7 +396,11 @@ export class ResultsOverlay implements SceneOverlay {
     this.spotLabels = [];
     const r = this.result;
     const add = (text: string, at: number[]) => this.spotLabels.push(this.label(text, new THREE.Vector3(at[0], at[1], at[2]), this.look.text.value, 1, true));
-    if (this.cfg.field === "stress") {
+    const mode = this.modeShown();
+    if (mode !== null) {
+      const m = r.modal!.modes[mode];
+      add(`moves most here · ${fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz`, m.peak.at);
+    } else if (this.cfg.field === "stress") {
       add(`peak ${fmtNum(r.maxStress.value, 1)} MPa`, r.maxStress.at);
     } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" ? " (layers)" : ""}`, r.minSafety.at);
     else if (this.cfg.field === "disp") add(`${fmtNum(r.maxDisp.value, 3)} mm`, r.maxDisp.at);

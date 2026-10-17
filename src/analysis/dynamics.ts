@@ -79,10 +79,11 @@ export function vibrationVerdict(spec: StructuralSpec, r: StructuralResult): Ver
   return v;
 }
 
-export function vibrationText(spec: StructuralSpec, r: StructuralResult): { title: string; detail: string; fix?: string } {
+/** detail: the frequencies and what they mean; notes: the same without the list of frequencies (for views that list them). */
+export function vibrationText(spec: StructuralSpec, r: StructuralResult): { title: string; detail: string; notes: string; fix?: string } {
   const m = r.modal!;
   const list = m.modes.map((md, i) => `${i + 1}) ${hz(md.freq)}, ${modeWords(md)}`).join("; ");
-  let detail = `Natural frequencies: ${list}. Moving mass ${fmtNum(m.mass, 0)} g.`;
+  let detail = `Moving mass ${fmtNum(m.mass, 0)} g.`;
   const hits = resonances(spec, r);
   const ex = spec.modal?.excite ?? [];
   if (ex.length) {
@@ -109,11 +110,22 @@ export function vibrationText(spec: StructuralSpec, r: StructuralResult): { titl
     const want = h.source.hi * Math.SQRT2;
     fix = `Stiffen it where mode ${h.index + 1} moves most, near ${p3(h.mode.peak.at)} (a brace, gusset or deeper section), to lift ${hz(h.mode.freq)} above about ${hz(want)}; or keep ${h.source.label} away from ${hz(h.mode.freq)}.`;
   } else if (spec.modal?.ringing && ringing(r, spec.modal.ringing).some((g) => g.amp > RINGING_VISIBLE)) fix = "Stiffen the frame against sway (diagonal braces, a stiffer gantry), lower the acceleration, or let the firmware cancel the ringing (input shaping).";
-  return { title: `Vibration: ${spec.label}: first mode ${hz(m.modes[0]?.freq ?? 0)}`, detail, fix };
+  return { title: `Vibration: ${spec.label}: first mode ${hz(m.modes[0]?.freq ?? 0)}`, detail: `Natural frequencies: ${list}. ${detail}`, notes: detail, fix };
 }
 
+/** Where it lands the plastic or metal is crushed a little; judged a short way off, like a support. */
+const crushed = (r: StructuralResult) => (r.minSafety.nearBoundary && r.minSafety.away && r.minSafety.value < 1 ? r.minSafety.away : null);
+
+/**
+ * A drop is judged a short way from the spot that lands when the lowest safety factor sits right on it:
+ * a dent or scuff there is what a drop does, not a break. Doubts about the solve still hold it back.
+ */
 export function dropVerdict(spec: StructuralSpec, r: StructuralResult, strength: Verdict): Verdict {
-  return r.drop && r.drop.g === 0 ? "pass" : strength;
+  if (!r.drop || r.drop.g === 0) return "pass";
+  const away = r.minSafety.nearBoundary ? r.minSafety.away : null;
+  if (!away) return strength;
+  const v: Verdict = away.value >= spec.safety ? (r.minSafety.value < 1 ? "warn" : "pass") : away.value >= 1 ? "warn" : "fail";
+  return strength === "warn" && v === "pass" ? "warn" : v;
 }
 
 /** The part that takes the highest stress. */
@@ -135,11 +147,16 @@ export function dropText(spec: StructuralSpec, r: StructuralResult): string {
   const d = r.drop!;
   if (d.g === 0) return d.tip ? "It is too low and wide to tip over that way: its centre of mass stays inside its base." : "No fall height, so nothing happens.";
   const how = d.tip ? `Tips over onto its ${p3(d.dir)} side (its centre of mass falls ${fmtNum(d.height, 0)} mm)` : `Falls ${fmtNum(d.height / 1000, 2)} m`;
-  const stop = d.force > 0 ? (2 * (d.energy * 1000)) / d.force : 0; // mm of give in body and floor
-  let text = `${how} onto ${d.floor} at ${fmtNum(d.speed, 1)} m/s and stops within about ${fmtNum(stop, 2)} mm: peak deceleration ${fmtNum(d.g, 0)} g, a force of ${fmtNum(d.force, 0)} N on the side that lands (${fmtNum(d.contact.area, 0)} mm² of contact near ${p3(d.contact.at)}).`;
+  let text = `${how} onto ${d.floor} at ${fmtNum(d.speed, 1)} m/s. The impact lasts about ${fmtNum(d.pulseMs, d.pulseMs < 1 ? 2 : 1)} ms with ${fmtNum(d.squash, 3)} mm of give: peak deceleration ${fmtNum(d.g, 0)} g, ${fmtNum(d.force, 0)} N where it lands (${fmtNum(d.contact.area, 0)} mm² of contact near ${p3(d.contact.at)}).`;
+  const sway = Number.isFinite(d.bodyHz) ? `The parts flex at about ${hz(d.bodyHz)} under this load` : "The parts barely flex under this load";
+  if (d.amplification < 0.8) text += ` ${sway}, slower than the impact, so it is over before they flex fully: they feel about ${fmtNum(d.felt, 0)} g.`;
+  else if (d.amplification <= 1.2) text += ` ${sway}, fast enough to feel the full ${fmtNum(d.felt, 0)} g.`;
+  else text += ` ${sway}, about as long as the impact lasts, which adds to it: they feel about ${fmtNum(d.felt, 0)} g.`;
   const part = worstPart(r);
-  text += ` The worst stress is ${fmtNum(r.maxStress.value, 1)} MPa${part ? ` in ${part}` : ""} near ${p3(r.maxStress.at)}, safety factor ${fmtNum(Math.min(r.minSafety.value, 99), 2)}.`;
-  if (spec.masses?.length) text += ` Carried masses push with ${spec.masses.map((m) => `${fmtNum((m.grams / 1000) * 9.80665 * d.g, 0)} N (${fmtNum(m.grams, 0)} g)`).join(", ")} on what holds them.`;
+  const dent = crushed(r);
+  if (dent) text += ` Right where it lands it is crushed a little (a scuff or small dent, which a drop always leaves); a short way off the lowest safety factor is ${fmtNum(Math.min(dent.value, 99), 2)} at ${p3(dent.at)}.`;
+  else text += ` The worst stress is ${fmtNum(r.maxStress.value, 1)} MPa${part ? ` in ${part}` : ""} near ${p3(r.maxStress.at)}, safety factor ${fmtNum(Math.min(r.minSafety.value, 99), 2)}.`;
+  if (spec.masses?.length) text += ` Carried masses push with ${spec.masses.map((m) => `${fmtNum((m.grams / 1000) * 9.80665 * d.felt, 0)} N (${fmtNum(m.grams, 0)} g)`).join(", ")} on what holds them.`;
   return text;
 }
 
@@ -158,10 +175,10 @@ export function dynamicItems(spec: StructuralSpec, r: StructuralResult, base: Pi
       category: "knocks",
       id: id("drop"),
       status,
-      margin: r.minSafety.value - spec.safety,
+      margin: (r.minSafety.nearBoundary && r.minSafety.away ? r.minSafety.away : r.minSafety).value - spec.safety,
       title: `${r.drop.tip ? "Tip-over" : "Drop"}: ${spec.label}`,
       detail: dropText(spec, r) + strength.note,
-      fix: status === "pass" ? undefined : `Thicken or round the area near ${p3(r.maxStress.at)}, add a rib, or soften the landing (rubber feet, a bumper on the side that hits first).`,
+      fix: status === "pass" ? undefined : `Thicken or round the area near ${p3((crushed(r) ?? r.minSafety).at)}, add a rib, or soften the landing (rubber feet, a bumper on the side that hits first).`,
     });
   }
   return out;

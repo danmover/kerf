@@ -81,20 +81,52 @@ export interface DropResult {
   /** fall height used (worked out for a tip-over), mm */
   height: number;
   tip: boolean;
+  /** the way it moves into the floor (for an edge or corner, from the centre of mass through the point that lands) */
   dir: V3;
   floor: string;
-  /** peak deceleration in g, peak force in N, impact speed in m/s, energy in J */
+  /** peak deceleration of the whole body in g, peak contact force in N, impact speed in m/s, energy in J */
   g: number;
   force: number;
   speed: number;
   energy: number;
-  /** total weight in N and how stiff the body and the floor contact are, N/mm */
+  /** how long the impact lasts, ms, and how far the contact gives, mm */
+  pulseMs: number;
+  squash: number;
+  /** the parts' own lowest frequency for this load (Rayleigh, from the 1 g shape), Hz, and how they answer the pulse: */
+  bodyHz: number;
+  /** below 1 the impact is over before they can flex fully; up to about 1.8 when it lasts about as long as their swing */
+  amplification: number;
+  /** the g the parts are loaded with: g × amplification */
+  felt: number;
+  /** total weight in N and the contact's stiffness, N/mm */
   weight: number;
-  bodyStiffness: number;
-  floorStiffness: number;
+  contactStiffness: number;
   contact: { at: V3; area: number };
   /** centre of mass */
   com: V3;
+}
+
+/**
+ * Peak response of an undamped oscillator to a half-sine pulse, relative to the same acceleration held
+ * still (the shock response spectrum), for a pulse lasting tau of the oscillator's periods. About 4·tau
+ * for short pulses, peaking near 1.77 at tau ≈ 0.8 and settling to 1 for long ones.
+ */
+export function halfSineShock(tau: number): number {
+  if (!(tau > 0)) return 0;
+  let beta = 1 / (2 * tau);
+  if (Math.abs(1 - beta) < 1e-6) beta = 1 - 1e-6;
+  // during the pulse, with a(t) = sin(Ωt), ω = 1: x(t) = (sin Ωt − β sin t) / (1 − β²), Ω = β
+  const td = Math.PI / beta;
+  const k = 1 / (1 - beta * beta);
+  let peak = 0;
+  for (let i = 1; i <= 400; i++) {
+    const t = (td * i) / 400;
+    peak = Math.max(peak, Math.abs(k * (Math.sin(beta * t) - beta * Math.sin(t))));
+  }
+  // afterwards it swings freely with the amplitude it has when the pulse ends
+  const x = k * (Math.sin(beta * td) - beta * Math.sin(td));
+  const v = k * (beta * Math.cos(beta * td) - beta * Math.cos(td));
+  return Math.max(peak, Math.hypot(x, v));
 }
 
 export interface PartField {
@@ -613,9 +645,31 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const nu = inp.materials[mainMat].nu;
   if (new Set(inp.materials.map((m) => m.nu)).size > 1 && matCount.filter((c) => c > 0).length > 1) warnings.push("Mixed materials share one Poisson's ratio in this model; stiffness and stress are still per material.");
 
+  // an edge or corner drop decelerates along the line from the centre of mass through the point that
+  // lands (how drop tests set up a corner drop); otherwise the held patch would have to stop it turning
+  let dropDir: V3 | undefined;
+  if (inp.drop && !inp.drop.tip && inp.drop.dir.filter((x) => Math.abs(x) > 1e-6).length > 1) {
+    let c: V3 = [0, 0, 0];
+    let mt = 0;
+    const add = (m: number, p: V3) => {
+      c = [c[0] + m * p[0], c[1] + m * p[1], c[2] + m * p[2]];
+      mt += m;
+    };
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const p = nodePos(elemNode0(e));
+      add(fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6, [p[0] + hx / 2, p[1] + hy / 2, p[2] + hz / 2]);
+    }
+    for (let n = 0; n < nn; n++) if (extra[n]) add(extra[n], nodePos(n));
+    const at = supportInfo[0].at;
+    const com: V3 = [c[0] / mt, c[1] / mt, c[2] / mt];
+    const d: V3 = [at[0] - com[0], at[1] - com[1], at[2] - com[2]];
+    const l = Math.hypot(...d);
+    if (l > 1e-9 && dot(d, norm(inp.drop.dir)) > 0) dropDir = [d[0] / l, d[1] / l, d[2] / l];
+  }
   let gravity: StructuralResult["gravity"] = null;
   if (inp.accel && Math.hypot(...inp.accel) > 0) {
-    const a = inp.accel;
+    const a = dropDir ?? inp.accel;
     let c: V3 = [0, 0, 0];
     let mtot = 0;
     for (let e = 0; e < ne; e++) {
@@ -657,12 +711,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const tSetup = now();
 
   // ---------- natural frequencies ----------
-  let modal: ModalResult | undefined;
-  let shapes: Float64Array[] = [];
-  if (inp.modes) {
-    progress("Finding natural frequencies", 0.25);
-    const tm = now();
-    // lumped mass in tonnes per dof: each element's mass shared by its eight corners, plus carried masses
+  /** lumped mass in tonnes per node: each element's mass shared by its eight corners, plus carried masses */
+  const lumpedMass = () => {
     const nodeMass = new Float64Array(nn);
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
@@ -670,10 +720,19 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const n0 = elemNode0(e);
       for (let q = 0; q < 8; q++) nodeMass[n0 + off[q]] += m;
     }
+    for (let n = 0; n < nn; n++) nodeMass[n] += extra[n] * 1e-3;
+    return nodeMass;
+  };
+  let modal: ModalResult | undefined;
+  let shapes: Float64Array[] = [];
+  if (inp.modes) {
+    progress("Finding natural frequencies", 0.25);
+    const tm = now();
+    const nodeMass = lumpedMass();
     const mvec = new Float64Array(3 * nn);
     const mtot: V3 = [0, 0, 0];
     for (let n = 0; n < nn; n++) {
-      const m = nodeMass[n] + extra[n] * 1e-3;
+      const m = nodeMass[n];
       for (let d = 0; d < 3; d++)
         if (fine.free[3 * n + d]) {
           mvec[3 * n + d] = m;
@@ -704,7 +763,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       };
     });
     if (!sol.converged) warnings.push(`The frequency solver stopped at a residual of ${sol.residual.toExponential(1)}; frequencies may be off by a few percent.`);
-    modal = { modes, mass: (mtot[0] + mtot[1] + mtot[2]) * 1000 / 3, iterations: sol.iterations, residual: sol.residual, converged: sol.converged, ms: now() - tm };
+    modal = { modes, mass: ((mtot[0] + mtot[1] + mtot[2]) * 1e6) / 3, iterations: sol.iterations, residual: sol.residual, converged: sol.converged, ms: now() - tm };
   }
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
@@ -717,7 +776,11 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
   const tSolve = now();
 
-  // ---------- drop: scale the 1 g solution to the peak deceleration ----------
+  // ---------- drop: the impact pulse, and how the parts answer it ----------
+  // The body hits the floor through the contact's stiffness: a half-sine pulse whose peak and length
+  // follow from the impact speed. The parts flex like their 1 g shape at their own frequency (Rayleigh),
+  // so a pulse shorter than their swing loads them less than its peak, and one about as long loads them
+  // more (the shock response spectrum). The 1 g solution is scaled by the g they feel.
   let dropResult: DropResult | undefined;
   if (inp.drop && gravity) {
     const dr = inp.drop;
@@ -735,36 +798,69 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
       height = Math.max(0, com[2] - lo[2] - (reach - dot(com, side)));
     }
-    let U1 = 0;
-    for (let i = 0; i < u.length; i++) U1 += fs[i] * u[i];
-    U1 *= 0.5;
+    // the parts' frequency in this shape: ω² = fᵀu / Σ m|u|² (N·mm over t·mm²)
+    const nodeMass = lumpedMass();
+    let fu = 0,
+      mu2 = 0;
+    for (let i = 0; i < u.length; i++) fu += fs[i] * u[i];
+    for (let n = 0; n < nn; n++) if (nodeMass[n]) mu2 += nodeMass[n] * (u[3 * n] ** 2 + u[3 * n + 1] ** 2 + u[3 * n + 2] ** 2);
+    const wb = mu2 > 0 && fu > 0 ? Math.sqrt(fu / mu2) : Infinity;
+    // the contact: a flat punch of the landing patch's area pressed into the floor, with the body's own
+    // material at the patch (plastics give far more than a concrete floor does)
     const contact = supportSel[0];
     const area = Math.max(contact.area, hx * hy * 0.25);
-    const kf = dr.floor.soft !== undefined ? Math.max(20, dr.floor.soft * area) : (2 * (dr.floor.E ?? 30000)) / (1 - 0.04) * Math.sqrt(area / Math.PI);
-    // energy: W h = G² (U₁ + W² / 2k_floor), with the body and the floor contact acting as springs in series
-    const G = height > 0 && U1 > 0 ? Math.sqrt((W * height) / (U1 + (W * W) / (2 * kf))) : 0;
-    for (let i = 0; i < u.length; i++) {
-      u[i] *= G;
-      f[i] *= G;
+    const at = supportInfo[0].at;
+    let near = -1,
+      best = Infinity;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const p = nodePos(elemNode0(e));
+      const d2 = (p[0] + hx / 2 - at[0]) ** 2 + (p[1] + hy / 2 - at[1]) ** 2 + (p[2] + hz / 2 - at[2]) ** 2;
+      if (d2 < best) {
+        best = d2;
+        near = e;
+      }
     }
-    for (let d = 0; d < 3; d++) applied[d] *= G;
-    gravity.vector = [gravity.vector[0] * G, gravity.vector[1] * G, gravity.vector[2] * G];
+    const bm = inp.materials[near >= 0 ? matOf(near) : mainMat];
+    const punch = (Estar: number) => 2 * Estar * Math.sqrt(area / Math.PI);
+    const bodyC = (1 - bm.nu * bm.nu) / bm.E;
+    const kc =
+      dr.floor.soft !== undefined
+        ? 1 / (1 / Math.max(20, dr.floor.soft * area) + 1 / punch(1 / bodyC))
+        : punch(1 / (bodyC + (1 - 0.2 * 0.2) / (dr.floor.E ?? 30000)));
+    const M = W / (G0 * 1000); // tonnes
+    const wc = Math.sqrt(kc / M);
+    const v = Math.sqrt(2 * G0 * 1000 * height); // mm/s
+    const G = height > 0 ? (v * wc) / (G0 * 1000) : 0;
+    const td = Math.PI / wc;
+    const amp = Number.isFinite(wb) ? halfSineShock((td * wb) / (2 * Math.PI)) : 1;
+    const felt = G * amp;
+    for (let i = 0; i < u.length; i++) {
+      u[i] *= felt;
+      f[i] *= felt;
+    }
+    for (let d = 0; d < 3; d++) applied[d] *= felt;
+    gravity.vector = [gravity.vector[0] * felt, gravity.vector[1] * felt, gravity.vector[2] * felt];
     dropResult = {
       height,
       tip: !!dr.tip,
-      dir: norm(dr.dir),
+      dir: norm(dropDir ?? dr.dir),
       floor: dr.floor.name,
       g: G,
       force: G * W,
-      speed: Math.sqrt(2 * G0 * (height / 1000)),
+      speed: v / 1000,
       energy: (W * height) / 1000,
+      pulseMs: td * 1000,
+      squash: wc > 0 ? v / wc : 0,
+      bodyHz: wb / (2 * Math.PI),
+      amplification: amp,
+      felt,
       weight: W,
-      bodyStiffness: U1 > 0 ? (W * W) / (2 * U1) : Infinity,
-      floorStiffness: kf,
-      contact: { at: supportInfo[0].at, area: contact.area },
+      contactStiffness: kc,
+      contact: { at, area: contact.area },
       com,
     };
-    if (G > 0 && G < 1) warnings.push("The landing is soft enough that the drop barely loads the parts.");
+    if (felt > 0 && felt < 1) warnings.push("The landing is soft enough that the drop barely loads the parts.");
   }
   progress("Recovering stresses", 0.92);
 

@@ -75,6 +75,15 @@ component base_back  = lib.extrusion("vslot_2040", length: base_w) { at: (-base_
 component y_beams    = lib.extrusion("vslot_2040", length: base_l) { at: [(-beam_x, y_front - 20, z_ybeam + 10), (beam_x, y_front - 20, z_ybeam + 10)], axis: Y, rotate: 90 }
 component uprights   = lib.extrusion("vslot_2040", length: up_l) { at: [(-up_x, 0, z_up), (up_x, 0, z_up)], axis: Z }
 component top_bar    = lib.extrusion("vslot_2020", length: base_w) { at: (-base_w / 2, 0, z_top + 10), axis: X }
+
+// how the frame sways after each move: the X gantry rides on the uprights, and every move at accel sets it ringing
+analysis "Frame sway" {
+  parts: [uprights, top_bar]
+  fix: face(uprights, -Z)
+  carries: mass(zone(at: (0, 0, z_b + 20), size: (2 * up_x + 60, 80, 60)), gantry_g)
+  modes: 4
+  ringing: accel
+}
 note "Frame joints: corner brackets and M5 T-nuts throughout (see purchases). Square the base on a flat table before tightening, and check the uprights with a square both ways."
 
 part foot_fl { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (-140, y_front, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (-140, y_front + 10, 0), dir: Z) }

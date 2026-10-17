@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { evaluate } from "../src/lang/evaluator";
 import { springChecks } from "../src/analysis/springs/report";
 import { springCalc, springRate } from "../src/library/springs";
+import { hotSoakChecks } from "../src/analysis/hotSoak";
 
 const checks = (src: string) => {
   const m = evaluate(`design "t"\n${src}`);
@@ -90,5 +91,34 @@ part bad_lid {
     expect(pp.status).toBe("pass");
     expect(pla.status).toBe("fail");
     expect(pla.fix).toMatch(/PP or TPU/);
+  });
+
+  it("loosens a preloaded latch left in a hot car, and asks for a car's temperatures", () => {
+    const clip = (mat: string, temp: string, setting = "On a desk") =>
+      hotSoakChecks(
+        checks(`brief {
+  purpose: "A clip-on cover"
+  setting: "${setting}"
+  temp: ${temp}
+}
+part clip {
+  material: "${mat}"
+  process: mfg.fdm(build: Y)
+  body box(30, 20, 3)
+  add snap_hook(at: (0, 0, 3), length: 14, t: 1.6, w: 6, catch: 1.2, retain: 45, preload: 0.4) as hook
+}`).m,
+      );
+    // PLA softens at about 52 °C: held bent at 40 °C it relaxes
+    const pla = clip("PLA", "0C .. 40C");
+    expect(pla).toHaveLength(0);
+    const hot = clip("PLA", "0C .. 50C");
+    expect(hot[0].status).toBe("warn");
+    expect(hot[0].title).toMatch(/hook loosens at 50 °C/);
+    expect(hot[0].fix).toMatch(/preload: 0/);
+    expect(clip("PC", "0C .. 50C").map((i) => i.status)).toEqual(["pass"]);
+    // the brief says car, but stops at 40 °C
+    const car = clip("PETG", "0C .. 40C", "Clipped to a car dashboard");
+    expect(car.map((i) => i.id)).toEqual(["knocks:hot-car"]);
+    expect(car[0].fix).toMatch(/temp: -20C \.\. 70C/);
   });
 });

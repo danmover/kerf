@@ -60,6 +60,8 @@ interface AnalysisState {
   trueScale: boolean;
   /** oscillate between the unloaded and loaded shape */
   animate: boolean;
+  /** natural frequency whose mode shape is drawn on the model (index), null: the static result (or the first mode when there is nothing else) */
+  mode: number | null;
 }
 
 export const useAnalysis = create<AnalysisState>(() => ({
@@ -71,6 +73,7 @@ export const useAnalysis = create<AnalysisState>(() => ({
   deform: 1,
   trueScale: false,
   animate: true,
+  mode: null,
 }));
 
 const aGet = useAnalysis.getState;
@@ -415,5 +418,6 @@ export function whenAnalyzed(timeoutMs = 180_000): Promise<void> {
 
 /** Choose which analysis is drawn on the model (null hides results). */
 export function showResults(label: string | null) {
+  if (label !== aGet().shown) aSet({ mode: null });
   aSet({ shown: label });
 }

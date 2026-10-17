@@ -431,3 +431,17 @@ button.an-stat.active {
 .an-code .cm {
   color: var(--text-4);
 }
+/* natural frequencies: picking a row swings that mode on the model */
+.an-mode:hover td {
+  background: rgb(var(--line-rgb) / 0.35);
+}
+.an-mode.active td {
+  background: var(--accent-soft);
+  color: var(--text-1);
+}
+.an-table td.fail {
+  color: var(--fail-ink);
+}
+.an-table td.warn {
+  color: var(--warn-ink);
+}

@@ -41,18 +41,42 @@ const dotv = (a: Float64Array, b: Float64Array) => {
  */
 export function lowestModes(H: Hierarchy, mass: Float64Array, k: number, opts: { tol?: number; maxIter?: number; onIter?: (it: number, res: number) => void } = {}): ModalSolve {
   const L = H.levels[0];
-  const n = mass.length;
+  const full = mass.length;
   const free = L.free;
-  const tol = opts.tol ?? 1e-4;
+  // work on the free dofs only: the grid's empty cells and held dofs are most of it, and the dense
+  // Rayleigh-Ritz algebra would otherwise run over all of them
+  let nf = 0;
+  for (let i = 0; i < full; i++) if (free[i]) nf++;
+  const idx = new Int32Array(nf);
+  for (let i = 0, j = 0; i < full; i++) if (free[i]) idx[j++] = i;
+  const n = nf;
+  const mc = new Float64Array(n);
+  for (let i = 0; i < n; i++) mc[i] = mass[idx[i]];
+  const fx = new Float64Array(full);
+  const fy = new Float64Array(full);
+  const scatter = (x: Float64Array) => {
+    fx.fill(0);
+    for (let i = 0; i < n; i++) fx[idx[i]] = x[i];
+  };
+  const gather = (y: Float64Array) => {
+    for (let i = 0; i < n; i++) y[i] = fy[idx[i]];
+  };
+  // eigenvalues converge as the square of the residual, so 1e-3 already gives frequencies to about 1e-6
+  const tol = opts.tol ?? 1e-3;
   const maxIter = opts.maxIter ?? 120;
   const m = k + Math.min(4, Math.max(2, Math.ceil(k / 2)));
-  const A = (x: Float64Array, y: Float64Array) => applyK(L, x, y);
+  const A = (x: Float64Array, y: Float64Array) => {
+    scatter(x);
+    applyK(L, fx, fy);
+    gather(y);
+  };
   const M = (x: Float64Array, y: Float64Array) => {
-    for (let i = 0; i < n; i++) y[i] = mass[i] * x[i];
+    for (let i = 0; i < n; i++) y[i] = mc[i] * x[i];
   };
   const T = (r: Float64Array, z: Float64Array) => {
-    precondition(H, r, z);
-    for (let i = 0; i < n; i++) if (!free[i]) z[i] = 0;
+    scatter(r);
+    precondition(H, fx, fy);
+    gather(z);
   };
 
   // start from random vectors; the preconditioner smooths them toward low modes at once
@@ -60,7 +84,7 @@ export function lowestModes(H: Hierarchy, mass: Float64Array, k: number, opts: {
   let X: Float64Array[] = [];
   for (let j = 0; j < m; j++) {
     const v = new Float64Array(n);
-    for (let i = 0; i < n; i++) if (free[i]) v[i] = r0();
+    for (let i = 0; i < n; i++) v[i] = r0();
     const z = new Float64Array(n);
     T(v, z);
     X.push(z);
@@ -243,11 +267,11 @@ export function lowestModes(H: Hierarchy, mass: Float64Array, k: number, opts: {
     AP = newAP;
     MP = newMP;
   }
-  // M-normalise the wanted modes
+  // M-normalise the wanted modes, back on the whole grid
   const shapes = X.slice(0, k).map((x, j) => {
     const s = 1 / Math.sqrt(Math.max(dotv(x, MX[j]), 1e-300));
-    const v = new Float64Array(n);
-    for (let i = 0; i < n; i++) v[i] = x[i] * s;
+    const v = new Float64Array(full);
+    for (let i = 0; i < n; i++) v[idx[i]] = x[i] * s;
     return v;
   });
   return { lambda: theta.slice(0, k), shapes, iterations: Math.min(it, maxIter), residual: worst, converged: worst < tol * 10 };

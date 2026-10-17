@@ -3,7 +3,7 @@
 import { fmtNum } from "../lang/values";
 import type { SafetyAt, StructuralResult } from "./fe/structural";
 import type { DrivetrainResult } from "./drivetrain";
-import { dropText, vibrationText, vibrationVerdict } from "./dynamics";
+import { dropText, dropVerdict, vibrationText, vibrationVerdict } from "./dynamics";
 import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec } from "./spec";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
@@ -76,6 +76,7 @@ const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length &
 /** Pass, warn or fail for a structural result, the same way the checks judge it. */
 export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Verdict {
   if (modalOnly(spec)) return vibrationVerdict(spec, r);
+  if (spec.drop) return dropVerdict(spec, r, strengthVerdict(spec, r).status);
   const all = [strengthVerdict(spec, r).status, stiffnessVerdict(spec, r) ?? "pass", vibrationVerdict(spec, r)];
   return all.includes("fail") ? "fail" : all.includes("warn") ? "warn" : "pass";
 }
