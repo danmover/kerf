@@ -17,6 +17,7 @@ import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, StructuralInput, StructuralResult } from "./fe/structural";
 import { modeText, stiffnessVerdict, strengthVerdict } from "./summary";
+import { dynamicItems } from "./dynamics";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
 export type ResultField = "stress" | "safety" | "disp" | "strain";
@@ -220,6 +221,9 @@ function prepare(spec: StructuralSpec, parts: EvalPart[], fine: boolean, buildEr
     cycles: spec.cycles,
     safety: spec.safety,
     maxDeflection: spec.maxDeflection,
+    masses: spec.masses,
+    modes: spec.modal?.modes,
+    drop: spec.drop,
   };
   return { input };
 }
@@ -329,16 +333,24 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const parts = model.parts.filter((p) => spec.parts.includes(p.name)).map((p) => p.id);
   const base = { category: "analysis" as const, basis: "simulation" as const, span: spec.span, parts };
   const id = (s: string) => `fea:${spec.label}:${s}`;
+  const what = spec.modal ? "vibration" : spec.drop ? "drop" : "stress";
+  const category = spec.modal ? ("vibration" as const) : spec.drop ? ("knocks" as const) : ("analysis" as const);
   if (!run || run.status === "waiting" || run.status === "running") {
-    return [{ ...base, id: id("strength"), status: "pending", title: `Strength: ${spec.label}`, detail: run?.result ? "Re-running the stress analysis for the latest change…" : "Running the stress analysis…" }];
+    return [{ ...base, category, id: id("strength"), status: "pending", title: `${spec.modal ? "Vibration" : spec.drop ? "Drop" : "Strength"}: ${spec.label}`, detail: run?.result ? `Re-running the ${what} analysis for the latest change…` : `Running the ${what} analysis…` }];
   }
   if (run.status === "error" || !run.result) {
-    return [{ ...base, id: id("setup"), status: "fail", title: `Stress analysis: ${spec.label}`, detail: run.error ?? "The analysis did not finish." }];
+    return [{ ...base, category, id: id("setup"), status: "fail", title: `${what[0].toUpperCase()}${what.slice(1)} analysis: ${spec.label}`, detail: run.error ?? "The analysis did not finish." }];
   }
   const r = run.result;
   const out: CheckItem[] = [];
   const sf = r.minSafety.value;
   const { status, note } = strengthVerdict(spec, r);
+  out.push(...dynamicItems(spec, r, base, { status, note }));
+  // modal and drop analyses report through their own items; a static strength line only when there are loads
+  if (spec.drop || (spec.modal && !spec.loads.length && !spec.accel)) {
+    if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
+    return out;
+  }
   out.push({
     ...base,
     id: id("strength"),

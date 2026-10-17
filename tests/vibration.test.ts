@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { runStructural, type FeaPart, type StructuralInput } from "../src/analysis/fe/structural";
 import { boxMesh, type V3 } from "../src/analysis/fe/voxel";
 import { mechMaterial } from "../src/analysis/materials";
+import { dynamicItems, vibrationVerdict } from "../src/analysis/dynamics";
+import type { StructuralSpec } from "../src/analysis/spec";
+import { evaluate } from "../src/lang/evaluator";
 
 function part(name: string, lo: V3, hi: V3): FeaPart {
   return { id: name, name, mesh: boxMesh(lo, hi), material: 0 };
@@ -96,5 +99,77 @@ describe("drops", () => {
     // its centre drops from 50 mm up to 10 mm (half its width) once on its side
     expect(r.height).toBeCloseTo(40, 0);
     expect(r.tip).toBe(true);
+  });
+});
+
+describe("in the design language", () => {
+  const frame = `
+part frame {
+  material: "Aluminum 6061"
+  body box(100, 10, 10, at: (50, 0, 0))
+}
+`;
+  const spec = (block: string) => {
+    const m = evaluate(frame + block);
+    expect(m.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    return m.analyses[0] as StructuralSpec;
+  };
+  const error = (block: string) => evaluate(frame + block).diagnostics.find((d) => d.severity === "error")?.message ?? "";
+
+  it("reads natural frequency set-ups", () => {
+    const s = spec(`analysis "Shake" {
+  fix: face(frame, -X)
+  carries: mass(face(frame, +X), 350g)
+  excite: [spin(1500rpm, name: "fan"), band(20Hz, 60Hz), 120Hz, spin(600rpm, to: 3000rpm)]
+  ringing: 3000
+}`);
+    expect(s.parts).toEqual(["frame"]);
+    expect(s.modal).toEqual({
+      modes: 6,
+      damping: 0.02,
+      ringing: 3000,
+      excite: [
+        { lo: 25, hi: 25, label: "fan" },
+        { lo: 20, hi: 60, label: "20–60 Hz" },
+        { lo: 120, hi: 120, label: "120 Hz" },
+        { lo: 10, hi: 50, label: "600–3000 rpm" },
+      ],
+    });
+    expect(s.masses).toEqual([{ region: { t: "face", part: "frame", dir: [1, 0, 0] }, grams: 350 }]);
+    expect(s.resolution).toBe("draft");
+  });
+
+  it("reads drops and tip-overs, held only by the floor", () => {
+    const d = spec(`analysis "Table drop" {
+  parts: [frame]
+  drop: 0.8m
+  onto: "wood"
+}`);
+    expect(d.drop).toEqual({ height: 800, tip: false, dir: [0, 0, -1], floor: { name: "a wooden floor or table", E: 10000 } });
+    expect(d.supports).toEqual([{ region: { t: "extreme", dir: [0, 0, -1] } }]);
+    expect(d.accel).toEqual([0, 0, -1]);
+    expect(d.safety).toBe(1.5);
+    const t = spec(`analysis "Knocked over" {
+  parts: [frame]
+  tip: +Y
+}`);
+    expect(t.drop).toMatchObject({ tip: true, dir: [0, 1, 0], floor: { name: "concrete" } });
+    expect(error(`analysis "x" {\n  parts: [frame]\n  drop: 1m\n  fix: face(frame, -X)\n}`)).toMatch(/leave out fix/);
+    expect(error(`analysis "x" {\n  parts: [frame]\n  tip: -Z\n}`)).toMatch(/sideways/);
+    expect(error(`analysis "x" {\n  parts: [frame]\n  drop: 1m\n  onto: "lava"\n}`)).toMatch(/"concrete"/);
+  });
+
+  it("fails a mode that a motor speed runs through and passes once it is stiffened", () => {
+    const run = (side: number) => runStructural(base({ parts: [part("beam", [0, 0, 0], [100, side, side])], modes: 4 }));
+    const s = spec(`analysis "Shake" {\n  fix: face(frame, -X)\n  excite: [spin(30000rpm, to: 54000rpm, name: "spindle")]\n}`);
+    // the 10 mm square cantilever bends at about 815 Hz, inside 500–900 Hz
+    const soft = run(10);
+    expect(vibrationVerdict(s, soft)).toBe("fail");
+    const items = dynamicItems(s, soft, { basis: "simulation", span: s.span, parts: [] }, { status: "pass", note: "" });
+    expect(items[0].category).toBe("vibration");
+    expect(items[0].detail).toMatch(/spindle runs right through mode 1/);
+    expect(items[0].fix).toMatch(/Stiffen/);
+    // a 25 mm square beam lifts it to about 2 kHz, well clear of the spindle
+    expect(vibrationVerdict(s, run(25))).toBe("pass");
   });
 });

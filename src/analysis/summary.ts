@@ -3,6 +3,7 @@
 import { fmtNum } from "../lang/values";
 import type { SafetyAt, StructuralResult } from "./fe/structural";
 import type { DrivetrainResult } from "./drivetrain";
+import { dropText, vibrationText, vibrationVerdict } from "./dynamics";
 import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec } from "./spec";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
@@ -69,9 +70,13 @@ export function stiffnessVerdict(spec: StructuralSpec, r: StructuralResult): Ver
   return d.unreliable || (ok && d.assumed.length) ? "warn" : ok ? "pass" : "fail";
 }
 
+/** Only natural frequencies: no loads, so no stresses to judge. */
+const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length && !spec.accel;
+
 /** Pass, warn or fail for a structural result, the same way the checks judge it. */
 export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Verdict {
-  const all = [strengthVerdict(spec, r).status, stiffnessVerdict(spec, r) ?? "pass"];
+  if (modalOnly(spec)) return vibrationVerdict(spec, r);
+  const all = [strengthVerdict(spec, r).status, stiffnessVerdict(spec, r) ?? "pass", vibrationVerdict(spec, r)];
   return all.includes("fail") ? "fail" : all.includes("warn") ? "warn" : "pass";
 }
 
@@ -87,8 +92,21 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   const lines = [
     `${head}: ${structuralVerdict(spec, r).toUpperCase()}.`,
     `Model: ${mats}${printed ? `, printed with layers stacked along ${p3(spec.buildDir)}` : ""}; ${run.resolution} resolution, ${r.mesh.elements.toLocaleString("en")} elements of ${r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm; solved in ${fmtNum(r.solve.ms.total / 1000, 1)} s (${r.solve.converged ? "converged" : "NOT fully converged"} in ${r.solve.iterations} iterations).`,
-    `Lowest safety factor ${sf(r.minSafety.value)} at ${p3(r.minSafety.at)}, judged against the ${modeText(r, spec.cycles)}; target ${fmtNum(spec.safety, 2)}.${strengthVerdict(spec, r).note}`,
   ];
+  if (spec.masses?.length) lines.push(`Carried masses: ${spec.masses.map((m) => `${fmtNum(m.grams, 0)} g on ${describeRegion(m.region)}`).join("; ")}.`);
+  if (r.modal) {
+    const t = vibrationText(spec, r);
+    lines.push(`${t.detail}${t.fix ? ` Fix: ${t.fix}` : ""}`);
+  }
+  if (r.drop) lines.push(dropText(spec, r));
+  if (modalOnly(spec)) {
+    lines.push("Supports: " + spec.supports.map((s) => describeRegion(s.region)).join("; ") + ".");
+    if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
+    return lines.join("\n");
+  }
+  lines.push(
+    `Lowest safety factor ${sf(r.minSafety.value)} at ${p3(r.minSafety.at)}, judged against the ${modeText(r, spec.cycles)}; target ${fmtNum(spec.safety, 2)}.${strengthVerdict(spec, r).note}`,
+  );
   lines.push(
     `Peak von Mises stress ${fmtNum(r.maxStress.value, 2)} MPa near ${p3(r.maxStress.at)}.` +
       (r.maxStress.nearBoundary && r.maxStress.away ? ` It sits right at a support or load; a short way off the peak is ${fmtNum(r.maxStress.away.value, 2)} MPa.` : ""),
@@ -115,7 +133,7 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
           .join("; ") +
         ".",
     );
-  if (r.gravity) lines.push(`Body load: ${p3(spec.accel ?? [0, 0, -1])} g on ${fmtNum(r.mass, 1)} g of material.`);
+  if (r.gravity && !r.drop) lines.push(`Body load: ${p3(spec.accel ?? [0, 0, -1])} g on ${fmtNum(r.mass, 1)} g of material.`);
   lines.push(`Reactions balance the loads to within ${r.equilibrium < 1e-3 ? "0.1" : fmtNum(r.equilibrium * 100, 2)} %.`);
   if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
   return lines.join("\n");
@@ -140,10 +158,15 @@ export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: D
     const state = !dt ? "not calculated" : dt.error ? `error: ${dt.error}` : `${dt.items.filter((i) => i.status === "fail").length} failing of ${dt.items.length} checks`;
     return `"${spec.label}" drivetrain (${spec.drive}, ${fmtNum(spec.torque / 1000, 3)} N·m at ${fmtNum(spec.speed, 0)} rpm): ${state}`;
   }
-  const setup = `${spec.parts.join(", ")}; ${spec.supports.length} support(s), ${spec.loads.length} load(s)${spec.accel ? ", body load" : ""}; safety target ${fmtNum(spec.safety, 2)}`;
+  const setup = spec.drop
+    ? `${spec.parts.join(", ")}; ${spec.drop.tip ? `tips over toward ${p3(spec.drop.dir)}` : `falls ${fmtNum((spec.drop.height ?? 0) / 1000, 2)} m`} onto ${spec.drop.floor.name}; safety target ${fmtNum(spec.safety, 2)}`
+    : modalOnly(spec)
+      ? `${spec.parts.join(", ")}; natural frequencies${spec.modal!.excite.length ? ` against ${spec.modal!.excite.map((e) => e.label).join(", ")}` : ""}`
+      : `${spec.parts.join(", ")}; ${spec.supports.length} support(s), ${spec.loads.length} load(s)${spec.accel ? ", body load" : ""}; safety target ${fmtNum(spec.safety, 2)}`;
   let state = "not run yet";
   if (run?.status === "running" || run?.status === "waiting") state = "running";
   else if (run?.status === "error") state = `error: ${run.error ?? "did not finish"}`;
-  else if (run?.result) state = `${structuralVerdict(spec, run.result)}, safety ${sf(run.result.minSafety.value)}, peak ${fmtNum(run.result.maxStress.value, 1)} MPa, deflection ${fmtNum(run.result.maxDisp.value, 3)} mm`;
+  else if (run?.result && modalOnly(spec)) state = `${structuralVerdict(spec, run.result)}, first mode ${fmtNum(run.result.modal?.modes[0]?.freq ?? 0, 1)} Hz`;
+  else if (run?.result) state = `${structuralVerdict(spec, run.result)}${run.result.drop ? `, ${fmtNum(run.result.drop.g, 0)} g on landing` : ""}${run.result.modal ? `, first mode ${fmtNum(run.result.modal.modes[0]?.freq ?? 0, 1)} Hz` : ""}, safety ${sf(run.result.minSafety.value)}, peak ${fmtNum(run.result.maxStress.value, 1)} MPa, deflection ${fmtNum(run.result.maxDisp.value, 3)} mm`;
   return `"${spec.label}" structural (${setup}): ${state}`;
 }
