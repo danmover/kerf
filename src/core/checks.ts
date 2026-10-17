@@ -14,7 +14,26 @@ import { briefChecks, type GeomLookup } from "./briefChecks";
 import { machineChecks } from "../machine/checks";
 import type { SettingValue } from "../mfg/types";
 
-export type CheckCategory = "brief" | "requirement" | "interference" | "access" | "motion" | "gears" | "process" | "assembly" | "build" | "analysis" | "simulation" | "electrical" | "engineering" | "testing" | "info";
+export type CheckCategory =
+  | "brief"
+  | "requirement"
+  | "interference"
+  | "access"
+  | "motion"
+  | "gears"
+  | "process"
+  | "assembly"
+  | "build"
+  | "analysis"
+  | "simulation"
+  | "electrical"
+  | "engineering"
+  | "testing"
+  | "fit"
+  | "vibration"
+  | "knocks"
+  | "springs"
+  | "info";
 export type CheckStatus = "pass" | "fail" | "warn" | "pending" | "info";
 
 export interface CheckItem {
