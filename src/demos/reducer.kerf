@@ -231,3 +231,14 @@ analysis "Light duty" {
   life: 1000h
   safety: 1.5
 }
+
+// ── Simulation: the gear train as rigid bodies ─────────
+// The parts that spin: and mesh: turn on their own shafts in their bearings,
+// with masses from their shapes; the motor's shaft is turned at the duty speed.
+scenario "Spins up to speed" for reduce {
+  mechanism: sim.mechanism(sim.turn(motor, speed: [(0s, 0rpm), (0.5s, 300rpm)]))
+  duration: 3s
+  variants: ["expected"]
+  expect "Output turns 12:1": abs(abs(motor.turns / g4.turns) - target_ratio) < target_ratio * 0.02
+  expect "Output reaches 25 rpm": g4.max_rpm > 24rpm
+}

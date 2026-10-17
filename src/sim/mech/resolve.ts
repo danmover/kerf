@@ -194,6 +194,8 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   // ---- bodies: the joints' members, then the design's own turning parts, the rest is the frame
   const groups: Group[] = [];
   const bodyOf = new Map<string, string>();
+  // the built parts on a moving body (a component's fixed half, like a motor's body, stays on the frame)
+  const taken = new Set<string>();
   const itemJoints = spec.items.filter((i): i is MechJointItem => ["pivot", "slider", "ball", "weld", "free"].includes(i.k));
   for (const j of itemJoints) {
     const g: Group = { id: j.name, members: j.what, parts: [], joint: j };
@@ -203,14 +205,16 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       if (!ps?.length) fail(`${j.name}: there is no built part or component called ${m}`);
       bodyOf.set(m, g.id);
       g.parts.push(...ps!);
+      for (const p of ps!) taken.add(p.id);
     }
     groups.push(g);
   }
+  const explicit = new Set(bodyOf.keys());
   const named = new Set(spec.items.flatMap((i) => ("name" in i ? [i.name] : [])));
   if (spec.auto) {
     const lines = new Map<string, Group>();
     for (const p of parts) {
-      if (!p.motion || bodyOf.has(p.name) || !p.motion.ratio) continue;
+      if (!p.motion || explicit.has(p.name) || !p.motion.ratio) continue;
       const a = unit(p.motion.axis);
       const o = p.motion.origin;
       // the axis line through the origin: its closest point to the design origin
@@ -229,12 +233,13 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
         g.joint!.what.push(p.name);
       }
       g.parts.push(p);
-      bodyOf.set(p.name, g.id);
+      taken.add(p.id);
+      if (!bodyOf.has(p.name)) bodyOf.set(p.name, g.id);
     }
     const autos = [...lines.values()];
     if (autos.length) notes.push(`Turning on their own shafts (from spin:/mesh:): ${autos.map((g) => g.members.join(" + ")).join("; ")}`);
   }
-  const frameParts = parts.filter((p) => !bodyOf.has(p.name));
+  const frameParts = parts.filter((p) => !taken.has(p.id));
   const bodyIdOf = (name: string | null, what: string): string => {
     if (name === null || name === FRAME) return FRAME;
     const b = bodyOf.get(name) ?? (groups.some((g) => g.id === name) ? name : undefined);
@@ -397,9 +402,14 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
         // a bearing on the axis (on either body) sets the friction; else a plain bushing
         const onBody = on === FRAME ? frameParts : (groups.find((x) => x.id === on)?.parts ?? []);
         const brg = [...g.parts, ...onBody].find((p) => p.bearing && Math.abs(dot(unit(p.bearing.axis), ax)) > 0.99 && len(cross(sub(SI(p.bearing.center), atM), ax)) < 0.002);
+        // or a bought part turning in itself, like a motor's shaft in its body
+        const own = brg ? undefined : g.parts.find((p) => p.kind === "component" && onBody.some((q) => q.kind === "component" && q.name === p.name));
         if (brg?.bearing) {
           mj.frictionPerLoad = 0.0015 * (brg.bearing.bore / 2000);
           mj.assumed!.push(`${j.name}: turns in ${brg.name} (${brg.bearing.code}), rolling friction 0.0015`);
+        } else if (own) {
+          mj.frictionPerLoad = 0.0015 * 0.0025;
+          mj.assumed!.push(`${j.name}: turns in ${own.name}'s own bearings, rolling friction 0.0015`);
         } else {
           mj.frictionPerLoad = 0.15 * 0.004;
           mj.friction = 0.002;
