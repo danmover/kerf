@@ -11,6 +11,8 @@ import type { BenchSpec } from "./worlds/bench";
 import { noteHz, type SignalShape, type SignalSpec } from "./worlds/signals";
 import type { HingeSpec, SandPitSpec, ScrewSpec, TunnellerSpec } from "./worlds/sandPit";
 import { VARIANTS, type VariantName } from "./worlds/common";
+import { catalogPart } from "../machine/catalog";
+import type { MachineData } from "../machine/types";
 import { flavorOf, PRINTER_FLAVORS } from "../machine/firmware/printer";
 import type { PrinterWorldSpec } from "./printer/run";
 import { TEST_SHAPES, type PrintMaterial, type TestPrintSpec, type TestShape } from "./printer/testPrint";
@@ -20,7 +22,7 @@ import type { MechModel } from "./mech/model";
 /** A world or machine description made by a sim.* function. */
 export class SimSpec extends Obj {
   constructor(
-    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "print",
+    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "fault" | "print" | "measured",
     public data: unknown,
     label: string,
   ) {
@@ -29,6 +31,31 @@ export class SimSpec extends Obj {
 }
 
 export type PitStart = number | "wall" | "buried";
+
+/**
+ * Something going wrong during a run, to see how the machine copes: a motor
+ * or actuator jams, a part is unplugged, one wire comes loose, a sensor
+ * freezes, or the battery is an old one.
+ */
+export type FaultKind = "jam" | "unplug" | "loose" | "stuck" | "aged";
+
+export interface FaultSpec {
+  kind: FaultKind;
+  /** a component name, or "component.PIN" for one loose wire */
+  target: string;
+  /** seconds after power-up */
+  at: number;
+  /** when it clears, seconds after power-up (it lasts to the end when left out) */
+  until?: number;
+  /** a loose wire that keeps making and losing contact */
+  flicker?: boolean;
+  /** an old battery: the share of its capacity it still has */
+  capacity?: number;
+  /** an old battery: how many times its new internal resistance */
+  resistance?: number;
+}
+
+export const FAULT_WORDS: Record<FaultKind, string> = { jam: "jams", unplug: "is unplugged", loose: "comes loose", stuck: "freezes", aged: "is an old one" };
 
 export type WorldSpec =
   | { kind: "sand_pit"; pit: Omit<SandPitSpec, "start"> & { start: PitStart }; robot: TunnellerSpec }
@@ -57,6 +84,8 @@ export interface ScenarioSpec {
   /** battery charge at the start, 0..1 */
   charge: number;
   seed: number;
+  /** things that go wrong during the run (left out when nothing does) */
+  faults?: FaultSpec[];
 }
 
 export interface ScenarioExpect {
@@ -79,7 +108,7 @@ export interface ScenarioDef {
   labelSpan: Span;
 }
 
-export const SCENARIO_PROPS = ["world", "robot", "mechanism", "firmware", "duration", "console", "config", "variants", "charge", "seed"];
+export const SCENARIO_PROPS = ["like", "world", "robot", "mechanism", "firmware", "duration", "console", "config", "variants", "charge", "seed", "faults"];
 
 // ---------- the sim namespace ----------
 
@@ -245,6 +274,47 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
     },
   ),
   simFn(
+    "jam",
+    ["part", "at", "until"],
+    "A gearmotor or linear actuator jams: it locks solid whichever way it is driven. part: the motor or actuator; at: when, seconds after power-up; until: when it frees again (it stays jammed when left out). For scenario faults: [...].",
+    (a, ctx) => fault("jam", compName(a.value("part"), ctx, "sim.jam(): part"), a),
+  ),
+  simFn(
+    "unplug",
+    ["part", "at", "until"],
+    "A part comes unplugged: every wire to it is cut. part: any component but the controller (a sensor stops answering, a motor or actuator goes limp, a driver's outputs go off, a battery cuts the power); at: when; until: when it is plugged back in.",
+    (a, ctx) => fault("unplug", compName(a.value("part"), ctx, "sim.unplug(): part"), a),
+  ),
+  simFn(
+    "loose",
+    ["wire", "at", "until", "flicker"],
+    'One wire comes loose. wire: the pin at either end, "component.PIN" like "m_front.ENC_A" or "brain.D5"; at: when; until: when it is pushed back on; flicker: true for a wire that keeps making and losing contact (every 0.05 to 1 s).',
+    (a, ctx) => {
+      const w = a.value("wire");
+      const target = w instanceof Obj && w.kind === "component" ? String(w.fields.name) : typeof w === "string" ? w : ctx.error('sim.loose(): wire should be "component.PIN", like "m_front.ENC_A"');
+      if (typeof w === "string" && !/^[A-Za-z_]\w*\.[A-Za-z0-9_+-]+$/.test(w)) ctx.error(`sim.loose(): "${w}" should be "component.PIN", like "m_front.ENC_A"`);
+      return fault(typeof w === "string" ? "loose" : "unplug", target, a, a.bool("flicker", false));
+    },
+  ),
+  simFn(
+    "stuck",
+    ["part", "at", "until"],
+    "A sensor freezes: it keeps answering, but with the reading it had at that moment. part: an IMU, distance or voltage sensor, an actuator (its position feedback) or a gearmotor (its encoder stops counting); at: when; until: when it recovers.",
+    (a, ctx) => fault("stuck", compName(a.value("part"), ctx, "sim.stuck(): part"), a),
+  ),
+  simFn(
+    "aged",
+    ["part", "capacity", "resistance"],
+    "An old battery, for the whole run: part: the battery; capacity: the share of its new capacity it still holds (80% is the usual end of life); resistance: how many times its new internal resistance (1.5).",
+    (a, ctx) => {
+      const capacity = a.num("capacity", 0.8);
+      const resistance = a.num("resistance", 1.5);
+      if (!(capacity > 0 && capacity <= 1)) ctx.error("sim.aged(): capacity is the share it still holds, like 80%");
+      if (!(resistance >= 1)) ctx.error("sim.aged(): resistance is how many times its new resistance, 1 or more, like 1.5");
+      return new SimSpec("fault", { kind: "aged", target: compName(a.value("part"), ctx, "sim.aged(): part"), at: 0, capacity, resistance } satisfies FaultSpec, "old battery");
+    },
+  ),
+  simFn(
     "printer",
     ["print", "gcode", "flavor", "material", "ambient"],
     'A 3D printer printing: the firmware block\'s generated config (Klipper, Marlin or RepRapFirmware) runs the G-code through that firmware\'s own planner, heater control and safety checks, driving the printer the design describes (its motors, moving masses, heaters, hotend melt rate and power supply). print: a sim.test_print(...) to slice for this printer, or gcode: G-code text to run; flavor: run a different firmware than the block\'s own, "klipper", "marlin" or "reprapfirmware" (the board must run it); material: "PLA", "PETG" or "ABS" for gcode: (PLA); ambient: room temperature (20C). Change firmware settings for one run with config: sim.config(MAX_ACCEL: 6000).',
@@ -297,6 +367,15 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   simFn("type", ["text", "at"], 'Text typed into the serial console during the run. text: what to type (a newline is added); at: when, seconds after power-up.', (a) => new SimSpec("type", { t: a.num("at", 1), text: a.str("text") }, "console input")),
 ]);
 
+function fault(kind: FaultKind, target: string, a: Args, flicker = false): SimSpec {
+  const at = a.num("at", 0);
+  if (at < 0) a.ctx.error(`${a.fname}(): at is a time after power-up, like 1min`);
+  const until = a.has("until") ? a.num("until") : undefined;
+  if (until !== undefined && until <= at) a.ctx.error(`${a.fname}(): until must be later than at`);
+  const f: FaultSpec = { kind, target, at, ...(until !== undefined ? { until } : {}), ...(flicker ? { flicker } : {}) };
+  return new SimSpec("fault", f, `${target} ${FAULT_WORDS[kind]}`);
+}
+
 const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
 
 function hinge(a: Args, ctx: CallCtx, slope: number, friction: number): SimSpec {
@@ -324,7 +403,23 @@ const CONFIG_FN = new Fn(
   "Firmware settings to change for this run only. Arduino: #define values in config.h, e.g. sim.config(STEER_SIGN: -1, POWER: 0.7). Printers: the firmware block's settings in capitals, e.g. sim.config(MAX_ACCEL: 6000, SQUARE_CORNER_VELOCITY: 8, X_RUN_CURRENT: 1.1). Use it to try a fix before changing the firmware block.",
 );
 
-const SIM_ENTRIES: [string, Fn][] = [...Object.entries(SIM_FNS), ["config", CONFIG_FN], ["mechanism", MECHANISM_FN], ["floor", FLOOR_FN], ...MECH_FNS];
+/** sim.measured(name: value, ...): numbers measured on the real part, for its `measured:` property. */
+const MEASURED_FN = new Fn(
+  "sim.measured",
+  (pos, named, ctx) => {
+    if (pos.length) ctx.error("sim.measured() takes named values only, like sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm)");
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(named)) {
+      if (typeof v !== "number" || !(v > 0)) ctx.error(`sim.measured(): ${k} should be a measured value above zero, like 0.31A`);
+      out[k] = v as number;
+    }
+    if (!Object.keys(out).length) ctx.error("sim.measured() needs at least one value, like sim.measured(i_free: 0.31A)");
+    return new SimSpec("measured", out, "measured values");
+  },
+  "Values measured on the real part, for a component's measured: property, e.g. measured: sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm). The simulation uses them in place of the catalog's; the checks keep the maker's ratings. Gearmotors: i_free, i_stall, rpm_free, t_stall (at rated voltage). Batteries: r_int (whole pack, Ohm or mOhm), capacity (mAh). The Calibrate panel in the Simulation tab fits them from a bench test.",
+);
+
+const SIM_ENTRIES: [string, Fn][] = [...Object.entries(SIM_FNS), ["config", CONFIG_FN], ["measured", MEASURED_FN], ["mechanism", MECHANISM_FN], ["floor", FLOOR_FN], ...MECH_FNS];
 export const SIM_DOCS: Record<string, string> = Object.fromEntries(SIM_ENTRIES.map(([k, f]) => [k, f.doc ?? ""]));
 
 export function simNamespace(): Obj {
@@ -345,39 +440,81 @@ export interface ScenarioProps {
  * Builds the run spec from a scenario's evaluated properties. `fail` raises
  * an error at a property; `imuX` gives the design X of each IMU component.
  */
-export function scenarioSpec(label: string, p: ScenarioProps, fail: (msg: string, span: Span) => never, imuX: Record<string, number>): ScenarioSpec {
+export function scenarioSpec(
+  label: string,
+  p: ScenarioProps,
+  fail: (msg: string, span: Span) => never,
+  imuX: Record<string, number>,
+  opts: { base?: ScenarioSpec; machine?: MachineData } = {},
+): ScenarioSpec {
+  const { base, machine } = opts;
+  // like: another scenario takes everything this one leaves out from it
+  const inherit = <K extends keyof ScenarioSpec>(name: string, key: K, own: () => ScenarioSpec[K]): ScenarioSpec[K] => (base && p.get(name) === undefined ? base[key] : own());
   const mv = p.get("mechanism");
   if (mv !== undefined && !(mv instanceof MechSpecValue)) return fail(`mechanism: should be sim.mechanism(sim.pivot(...), ...), not ${typeName(mv)}`, p.span("mechanism"));
-  const mechanism = mv instanceof MechSpecValue ? mv.spec : undefined;
   let world = p.get("world");
-  if (world === undefined && mechanism) world = mechanism.base === "free" ? new FloorValue({ surface: "concrete", grip: 0.8, roll: 0.015, slope: 0, uphill: [1, 0, 0], ambient: 20, blocks: [] }) : new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: 1, forces: {}, force: 0, range: 1000, ambient: 20, signals: [] } }, "bench");
-  if (world === undefined) return fail(`Scenario "${label}" needs a world, like world: sim.sand_pit(length: 2m, width: 0.5m, depth: 5m), world: sim.bench() or world: sim.printer(print: sim.test_print("cube"))`, p.span("world"));
+  const robot = p.get("robot");
+  let mechanism: MechSpec | undefined;
   let ws: WorldSpec;
-  if (world instanceof FloorValue) {
-    if (!mechanism) return fail("A floor needs the machine on it: mechanism: sim.mechanism(...), with its wheels, tracks or feet", p.span("world"));
-    ws = { kind: "floor", floor: world.spec };
-  } else if (!(world instanceof SimSpec && world.what === "world")) return fail(`world: should be sim.sand_pit(...), sim.bench(...), sim.floor(...) or sim.printer(...), not ${typeName(world)}`, p.span("world"));
-  else if ((world.data as { kind: string }).kind === "sand_pit") {
-    if (mechanism) return fail("A sand pit simulates its own machine: leave out mechanism:, or use sim.bench() or sim.floor()", p.span("mechanism"));
-    const w = world.data as { kind: string };
-    const robot = p.get("robot");
-    if (!(robot instanceof SimSpec && robot.what === "robot")) return fail("A sand pit needs the machine in it: robot: sim.screw_tunneller(...)", p.span(robot === undefined ? "world" : "robot"));
-    const r = robot.data as TunnellerSpec & { imuOn?: string };
-    const h = r.hinge?.x ?? 0;
-    const imus: Record<string, number> = {};
-    for (const [name, x] of Object.entries(imuX)) imus[name] = r.imuOn === "front" ? h + 1 : r.imuOn === "rear" ? h - 1 : x;
-    const { imuOn: _drop, ...rest } = r;
-    void _drop;
-    ws = { kind: "sand_pit", pit: (w as unknown as { pit: Omit<SandPitSpec, "start"> & { start: PitStart } }).pit, robot: { ...rest, imus } };
+  if (world === undefined && mv === undefined && base) {
+    if (robot !== undefined) return fail("robot: goes with a world: give the world too, or leave robot: out to keep the one from like:", p.span("robot"));
+    ws = base.world;
+    mechanism = base.mechanism;
   } else {
-    ws = world.data as WorldSpec;
-    if (ws.kind === "printer" && mechanism) return fail("A printer scenario simulates the printer itself: leave out mechanism:, or use sim.bench()", p.span("mechanism"));
+    mechanism = mv instanceof MechSpecValue ? mv.spec : undefined;
+    if (world === undefined && mechanism) world = mechanism.base === "free" ? new FloorValue({ surface: "concrete", grip: 0.8, roll: 0.015, slope: 0, uphill: [1, 0, 0], ambient: 20, blocks: [] }) : new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: 1, forces: {}, force: 0, range: 1000, ambient: 20, signals: [] } }, "bench");
+    if (world === undefined) return fail(`Scenario "${label}" needs a world, like world: sim.sand_pit(length: 2m, width: 0.5m, depth: 5m), world: sim.bench() or world: sim.printer(print: sim.test_print("cube"))`, p.span("world"));
+    if (world instanceof FloorValue) {
+      if (!mechanism) return fail("A floor needs the machine on it: mechanism: sim.mechanism(...), with its wheels, tracks or feet", p.span("world"));
+      ws = { kind: "floor", floor: world.spec };
+    } else if (!(world instanceof SimSpec && world.what === "world")) return fail(`world: should be sim.sand_pit(...), sim.bench(...), sim.floor(...) or sim.printer(...), not ${typeName(world)}`, p.span("world"));
+    else if ((world.data as { kind: string }).kind === "sand_pit") {
+      if (mechanism) return fail("A sand pit simulates its own machine: leave out mechanism:, or use sim.bench() or sim.floor()", p.span("mechanism"));
+      const pit = (world.data as unknown as { pit: Omit<SandPitSpec, "start"> & { start: PitStart } }).pit;
+      if (robot === undefined && base?.world.kind === "sand_pit") ws = { kind: "sand_pit", pit, robot: base.world.robot };
+      else {
+        if (!(robot instanceof SimSpec && robot.what === "robot")) return fail("A sand pit needs the machine in it: robot: sim.screw_tunneller(...)", p.span(robot === undefined ? "world" : "robot"));
+        const r = robot.data as TunnellerSpec & { imuOn?: string };
+        const h = r.hinge?.x ?? 0;
+        const imus: Record<string, number> = {};
+        for (const [name, x] of Object.entries(imuX)) imus[name] = r.imuOn === "front" ? h + 1 : r.imuOn === "rear" ? h - 1 : x;
+        const { imuOn: _drop, ...rest } = r;
+        void _drop;
+        ws = { kind: "sand_pit", pit, robot: { ...rest, imus } };
+      }
+    } else {
+      ws = world.data as WorldSpec;
+      if (ws.kind === "printer" && mechanism) return fail("A printer scenario simulates the printer itself: leave out mechanism:, or use sim.bench()", p.span("mechanism"));
+    }
   }
-  const physicsOnly = !!mechanism && (p.firmware === "none" || !p.hasFirmware);
-  if (p.firmware === "none" && !mechanism) fail("firmware: none runs only a mechanism: add mechanism: sim.mechanism(...)", p.span("firmware"));
+  // firmware: none (or a design without firmware) runs a mechanism alone; like: keeps the other scenario's choice
+  const fw = p.firmware ?? (base ? (base.physicsOnly && !base.firmware ? "none" : base.firmware) : undefined);
+  const physicsOnly = !!mechanism && (fw === "none" || !p.hasFirmware);
+  if (fw === "none" && !mechanism) fail("firmware: none runs only a mechanism: add mechanism: sim.mechanism(...)", p.span("firmware"));
+  return {
+    label,
+    world: ws,
+    firmware: fw === "none" ? undefined : fw,
+    physicsOnly: physicsOnly || undefined,
+    mechanism,
+    duration: inherit("duration", "duration", () => duration(p, fail, ws.kind, physicsOnly)),
+    console: inherit("console", "console", () => consoleOf(p, fail)),
+    config: inherit("config", "config", () => configOf(p, fail)),
+    variants: inherit("variants", "variants", () => variantsOf(p, fail)),
+    charge: inherit("charge", "charge", () => chargeOf(p, fail)),
+    seed: inherit("seed", "seed", () => Math.round(num(p, "seed", 1, fail))),
+    faults: faultList(p, fail, machine),
+  };
+}
+
+function duration(p: ScenarioProps, fail: (msg: string, span: Span) => never, world: WorldSpec["kind"], physicsOnly: boolean): number {
   // a print can take hours, a mechanism on its own ten seconds; anything else ten minutes unless it says
-  const duration = num(p, "duration", ws.kind === "printer" ? 4 * 3600 : physicsOnly ? 10 : 600, fail);
-  if (duration <= 0 || duration > 4 * 3600) fail("duration: more than 0 s and at most 4 h of simulated time", p.span("duration"));
+  const d = num(p, "duration", world === "printer" ? 4 * 3600 : physicsOnly ? 10 : 600, fail);
+  if (d <= 0 || d > 4 * 3600) fail("duration: more than 0 s and at most 4 h of simulated time", p.span("duration"));
+  return d;
+}
+
+function consoleOf(p: ScenarioProps, fail: (msg: string, span: Span) => never): { t: number; text: string }[] {
   const consoleV = p.get("console");
   const consoleList: { t: number; text: string }[] = [];
   if (consoleV !== undefined) {
@@ -388,8 +525,16 @@ export function scenarioSpec(label: string, p: ScenarioProps, fail: (msg: string
       else fail('console: should be a list of sim.type("g", at: 2s)', p.span("console"));
     }
   }
+  return consoleList;
+}
+
+function configOf(p: ScenarioProps, fail: (msg: string, span: Span) => never): Record<string, number | string> {
   const cfg = p.get("config");
   if (cfg !== undefined && !(cfg instanceof SimSpec && cfg.what === "config")) fail("config: should be sim.config(NAME: value, ...)", p.span("config"));
+  return cfg instanceof SimSpec ? (cfg.data as Record<string, number | string>) : {};
+}
+
+function variantsOf(p: ScenarioProps, fail: (msg: string, span: Span) => never): VariantName[] {
   const vs = p.get("variants");
   let variants: VariantName[] = [...VARIANTS];
   if (vs !== undefined) {
@@ -397,21 +542,54 @@ export function scenarioSpec(label: string, p: ScenarioProps, fail: (msg: string
     variants = list.map((v) => (typeof v === "string" && (VARIANTS as string[]).includes(v) ? (v as VariantName) : fail(`variants: each should be one of ${VARIANTS.map((x) => `"${x}"`).join(", ")}`, p.span("variants"))));
     if (!variants.length) fail("variants: give at least one", p.span("variants"));
   }
+  return variants;
+}
+
+function chargeOf(p: ScenarioProps, fail: (msg: string, span: Span) => never): number {
   const charge = num(p, "charge", 1, fail);
   if (charge <= 0 || charge > 1) fail("charge: the battery's charge at the start, like 100% or 60%", p.span("charge"));
-  return {
-    label,
-    world: ws,
-    firmware: p.firmware === "none" ? undefined : p.firmware,
-    physicsOnly: physicsOnly || undefined,
-    mechanism,
-    duration,
-    console: consoleList,
-    config: cfg instanceof SimSpec ? (cfg.data as Record<string, number | string>) : {},
-    variants,
-    charge,
-    seed: Math.round(num(p, "seed", 1, fail)),
-  };
+  return charge;
+}
+
+/** Kinds of part each fault can happen to. */
+const FAULT_KINDS: Record<FaultKind, (k: string) => boolean> = {
+  jam: (k) => k === "gearmotor" || k === "actuator",
+  unplug: (k) => k !== "controller",
+  loose: () => true,
+  stuck: (k) => k === "sensor" || k === "actuator" || k === "gearmotor",
+  aged: (k) => k === "battery",
+};
+
+const FAULT_PARTS: Record<FaultKind, string> = {
+  jam: "a gearmotor or linear actuator",
+  unplug: "any part but the controller",
+  loose: "any part",
+  stuck: "a sensor, an actuator or a gearmotor with an encoder",
+  aged: "a battery",
+};
+
+/** The faults: list, checked against the design's parts and their pins. */
+function faultList(p: ScenarioProps, fail: (msg: string, span: Span) => never, machine?: MachineData): FaultSpec[] | undefined {
+  const v = p.get("faults");
+  if (v === undefined) return undefined;
+  const items = Array.isArray(v) ? v : [v];
+  const out: FaultSpec[] = [];
+  for (const it of items) {
+    if (!(it instanceof SimSpec && it.what === "fault")) return fail("faults: should be a list of sim.jam(...), sim.unplug(...), sim.loose(...), sim.stuck(...) or sim.aged(...)", p.span("faults"));
+    const f = it.data as FaultSpec;
+    if (machine) {
+      const [comp, pin] = f.target.split(".");
+      const mc = machine.components.find((c) => c.name === comp);
+      if (!mc) return fail(`faults: ${comp} is not a part of the machine`, p.span("faults"));
+      if (!FAULT_KINDS[f.kind](mc.kind)) return fail(`faults: sim.${f.kind}() is for ${FAULT_PARTS[f.kind]}, and ${comp} is a ${mc.kind.replace(/_/g, " ")}`, p.span("faults"));
+      if (pin !== undefined) {
+        const pins = catalogPart(mc.catalogId)?.pins ?? [];
+        if (!pins.some((x) => x.id === pin)) return fail(`faults: ${comp} has no pin ${pin}${pins.length ? `. Its pins: ${pins.map((x) => x.id).join(", ")}` : ""}`, p.span("faults"));
+      }
+    }
+    out.push(f);
+  }
+  return out.length ? out : undefined;
 }
 
 function num(p: ScenarioProps, name: string, def: number, fail: (msg: string, span: Span) => never): number {

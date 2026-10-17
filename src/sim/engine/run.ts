@@ -6,7 +6,7 @@
 // console, and the results the scenario's expectations read.
 
 import type { MachineData } from "../../machine/types";
-import { catalogPart } from "../../machine/catalog";
+import { measuredPart } from "../../machine/measured";
 import { generateFirmware } from "../../machine/firmware";
 import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
 import { Plant } from "./plant";
@@ -17,6 +17,8 @@ import type { PrintTrace } from "../printer/run";
 export type { DisplayFrame };
 import type { SceneSpec, World, WorldEvent } from "../worlds/types";
 import { rngFrom, VARIANTS, type VariantName } from "../worlds/common";
+import type { FaultSpec } from "../scenario";
+import { copingResults, FaultInjector } from "./faults";
 
 export interface RunOptions {
   machine: MachineData;
@@ -33,6 +35,8 @@ export interface RunOptions {
   config?: Record<string, number | string>;
   /** battery state of charge at the start, 0..1 */
   soc?: number;
+  /** things that go wrong during the run */
+  faults?: FaultSpec[];
   variants?: VariantName[];
   seed?: number;
   /** stop once every motor has been still this long after moving, seconds */
@@ -156,9 +160,12 @@ const SETTLED = /^(done|fault|finished|stopped|stop|idle|error|bench|waiting|rea
 function runVariant(opts: RunOptions, variant: VariantName, seed: number, files: Record<string, string>, mcuName: string, board: ReturnType<typeof boardForPart>): VariantRun {
   const wall0 = Date.now();
   const hal = new SimHal(board, { seed });
-  const world = opts.world(variant, seed);
+  const inj = opts.faults?.length ? new FaultInjector(opts.faults, rngFrom(seed * 131 + 3)) : undefined;
+  const world0 = opts.world(variant, seed);
+  const world = (inj ? inj.wrap(world0) : world0) as typeof world0;
   const rng = rngFrom(seed * 31 + 7);
   const plant = new Plant(opts.machine, mcuName, board, hal, world, { soc: opts.soc ?? 1, rng });
+  inj?.attach(plant);
   const frameDt = 1 / (opts.frameHz ?? 10);
   const cols: Record<string, number[]> = {};
   const times: number[] = [];
@@ -180,7 +187,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   let moved = false;
   let stillSince = 0;
   let finishedAt = -1;
-  const motorSpecs = new Map(plant.motors.map((m) => [m.comp, Number(catalogPart(m.mc.catalogId)?.specs.t_stall ?? 1000) / 1000]));
+  const motorSpecs = new Map(plant.motors.map((m) => [m.comp, Number(measuredPart(m.mc)?.specs.t_stall ?? 1000) / 1000]));
   const soc0 = plant.batteries[0]?.b.soc ?? 0;
 
   let fwRef: ReturnType<typeof loadFirmware> | null = null;
@@ -201,6 +208,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   };
 
   plant.afterStep = (t) => {
+    inj?.step(t);
     if (t >= nextFrame) {
       record(t);
       nextFrame += frameDt;
@@ -258,7 +266,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   record(hal.time);
 
   // events from the world, the plant, the firmware's own state messages and its faults
-  const events: WorldEvent[] = [...world.events, ...plant.events];
+  const events: WorldEvent[] = [...world.events, ...plant.events, ...(inj?.events ?? [])];
   let state: string | undefined;
   for (const l of hal.serial) {
     if (l.dir !== "out") continue;
@@ -308,11 +316,12 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results[`${m.name}.load`] = m.loadPeak;
   }
   for (const a of plant.acts) results[`${a.comp}.travel`] = a.a.travel;
+  Object.assign(results, copingResults(frames, hal.serial, plant, inj));
   if (fwRef) for (const g of watch) {
     const v = fwRef.fw.read(g);
     if (typeof v === "number") results[`fw.${g}`] = v;
   }
-  const notes = [...plant.notes];
+  const notes = [...plant.notes, ...(inj?.notes ?? [])];
   if (hal.serial.length > 4000) notes.push(`The serial log kept the first 4000 of ${hal.serial.length} lines.`);
   return {
     variant,

@@ -4,7 +4,7 @@
 // offers ready-made tests and a box to describe one in plain words.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { commitSource } from "../../app/project";
 import { revealSpan } from "../../app/view";
 import { toast } from "../../app/ui";
@@ -21,11 +21,13 @@ import { FLAVOR_NAME } from "../../machine/firmware/printer";
 import { matchSeries } from "../../sim/frames";
 import { fmtResult, resultInfo } from "../../sim/results";
 import { SIM_TEMPLATES, describePrompt, templateSource } from "../../sim/templates";
+import { calibrateUnavailable } from "../../sim/calibrate";
 import { fmtNum } from "../../lang/values";
 import { Icon, StatusIcon } from "../icons";
 import { useChatDraft } from "../chatDraft";
 import { Plot } from "./Plot";
 import { DisplayView } from "./DisplayView";
+import { Calibrate } from "./Calibrate";
 import { mmss, seek, useSelectedScenario } from "./simUi";
 import "../../styles/sim.css";
 
@@ -57,9 +59,11 @@ export function SimPanel() {
   const { model, defs, def, run, vrun } = useSelectedScenario();
   const runs = useSim((s) => s.runs);
   const [adding, setAdding] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
   if (!model) return <div className="an-body mono dim">Building the design…</div>;
-  if (!defs.length || !def) return <EmptyState model={model} />;
-  if (adding) return <EmptyState model={model} onDone={() => setAdding(false)} />;
+  if (calibrating) return <Calibrate model={model} onDone={() => setCalibrating(false)} />;
+  if (!defs.length || !def) return <EmptyState model={model} onCalibrate={() => setCalibrating(true)} />;
+  if (adding) return <EmptyState model={model} onDone={() => setAdding(false)} onCalibrate={() => setCalibrating(true)} />;
   return (
     <div className="sim">
       <div className="sim-head">
@@ -79,6 +83,11 @@ export function SimPanel() {
         <button className="sim-pick" onClick={() => setAdding(true)} data-tip="Add another scenario">
           <Icon.Plus size={12} /> new
         </button>
+        {!calibrateUnavailable(model) && (
+          <button className="sim-pick" onClick={() => setCalibrating(true)} data-tip="Measure the real motors and battery with a bench test, and simulate with those numbers">
+            <Icon.Sliders size={12} /> calibrate
+          </button>
+        )}
         <div className="grow" />
         <HeadControls def={def} run={run} />
       </div>
@@ -611,7 +620,7 @@ function Console({ v, t }: { v: VariantRun; t: number }) {
 
 // ---------- no scenario yet ----------
 
-function EmptyState({ model, onDone }: { model: Model; onDone?: () => void }) {
+function EmptyState({ model, onDone, onCalibrate }: { model: Model; onDone?: () => void; onCalibrate: () => void }) {
   const [text, setText] = useState("");
   const describe = () => {
     void sendMessage(describePrompt(text));
@@ -645,22 +654,51 @@ function EmptyState({ model, onDone }: { model: Model; onDone?: () => void }) {
       <div className="muted" style={{ maxWidth: 680, fontSize: 12.5, lineHeight: 1.55 }}>
         A scenario runs this design's own firmware on a virtual copy of its controller, wired exactly as the design says, to simulated motors, drivers, sensors and battery, inside an environment: a sand pit, a bench, a hot room. A 3D printer prints a test part through its own firmware (Klipper, Marlin or RepRapFirmware). Each runs three times, with pessimistic, expected and optimistic values, and what it has to achieve becomes checks.
       </div>
-      <div className="sim-gallery">
-        {SIM_TEMPLATES.filter((t) => !t.hidden?.(model)).map((t) => {
-          const why = t.unavailable?.(model) ?? null;
-          return (
-            <button key={t.id} className="sim-card" disabled={!!why} onClick={() => add(t.id)}>
-              <div className="t">
-                {t.id === "sand_pit" ? <Icon.Sparkle size={13} /> : <Icon.Play size={13} />}
-                {t.title}
-                <span className="tag">{t.prompt ? "Claude sets it up" : "add"}</span>
+      {([undefined, "faults"] as const).map((group) => {
+        const shown = SIM_TEMPLATES.filter((t) => t.group === group && !t.hidden?.(model));
+        return shown.length > 0 && (
+          <Fragment key={group ?? "tests"}>
+            {group && (
+              <div className="sim-h" style={{ marginTop: 16 }}>
+                What if something goes wrong
               </div>
-              <div className="b">{t.blurb}</div>
-              {why && <div className="why">{why}</div>}
+            )}
+            <div className="sim-gallery">
+              {shown.map((t) => {
+                const why = t.unavailable?.(model) ?? null;
+                return (
+                  <button key={t.id} className="sim-card" disabled={!!why} onClick={() => add(t.id)}>
+                    <div className="t">
+                      {t.id === "sand_pit" ? <Icon.Sparkle size={13} /> : <Icon.Play size={13} />}
+                      {t.title}
+                      <span className="tag">{t.prompt ? "Claude sets it up" : "add"}</span>
+                    </div>
+                    <div className="b">{t.blurb}</div>
+                    {why && <div className="why">{why}</div>}
+                  </button>
+                );
+              })}
+            </div>
+          </Fragment>
+        );
+      })}
+      {!calibrateUnavailable(model) && (
+        <>
+          <div className="sim-h" style={{ marginTop: 16 }}>
+            Built it already?
+          </div>
+          <div className="sim-gallery">
+            <button className="sim-card" onClick={onCalibrate}>
+              <div className="t">
+                <Icon.Sliders size={13} />
+                Calibrate from the real machine
+                <span className="tag">bench test</span>
+              </div>
+              <div className="b">Run a short bench test on the real machine and paste what it prints. Kerf measures each motor and the battery, and every simulation uses those numbers from then on.</div>
             </button>
-          );
-        })}
-      </div>
+          </div>
+        </>
+      )}
       <div className="sim-h" style={{ marginTop: 16 }}>
         Or describe the test
       </div>

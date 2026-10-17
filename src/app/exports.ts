@@ -29,6 +29,7 @@ import { appearanceFor } from "../ui/viewport/render/appearance";
 import { markSvg } from "../ui/logoGeometry";
 import { briefSummary, designStats, massText, sizeText } from "./designStats";
 import { designReportHtml } from "./report";
+import { simUse } from "../machine/runtime";
 import { routeNow } from "../machine/harness/runtime";
 
 function visibleParts(selectionOnly: boolean) {
@@ -116,7 +117,7 @@ async function makeBuildPack() {
     });
     // cut lengths measured along the 3D cable routes, the same ones the wiring view draws
     const routed = await routeNow(model);
-    const files = buildPack(model, report, { name, step, boards, routed, meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
+    const files = buildPack(model, report, { name, step, boards, routed, use: simUse(model), meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
     const folder = `${packName(name)} build pack`;
     const data = zip(files.map((f) => ({ path: `${folder}/${f.path}`, data: f.data })));
     download(data, `${folder}.zip`, "application/zip");

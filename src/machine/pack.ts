@@ -16,6 +16,7 @@ import { boardPackFiles, boardWord, routeBoards, type BoardFolder } from "./boar
 import { buildNetlist, netLabel } from "./erc";
 import { generateFirmware, type FirmwareOutput } from "./firmware";
 import type { RoutedBoard } from "./pcb";
+import { serviceMd, servicePlan, type UseFacts } from "./service";
 import type { CalcLine, CalcTrace, CatalogKind, CatalogPart, MachineData } from "./types";
 import { componentPositions, csvCell, wireList, wiresCsv, wiringDiagram, type WireRow } from "./wiring";
 
@@ -35,6 +36,8 @@ export interface PackOptions {
   firmware?: FirmwareOutput[];
   /** finished routes of the design's circuit boards (the app's board runtime has them); boards without one are routed here */
   boards?: RoutedBoard[];
+  /** what the machine's simulated job measured, for the service lives in runs */
+  use?: UseFacts;
   /** each wire's run along its routed 3D cable by wire id (the app's harness runtime has them), for the cut lengths */
   routed?: Map<string, number>;
   date?: Date;
@@ -907,6 +910,7 @@ function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readines
     [/^calculations\.md$/, "The engineering calculations with their inputs, methods and assumptions."],
     [/^checks\.md$/, "Every check Kerf ran on the design, grouped by kind."],
     [/^test_plan\.md$/, "Physical tests, with what to measure and when it passes."],
+    [/^service\.md$/, "What wears out and when, and the maintenance schedule."],
     [/^assembly\.md$/, "Step-by-step build guide, from the first part to the first test."],
   ];
   const shown = new Set<string>();
@@ -969,6 +973,8 @@ export function buildPack(model: Model, report: CheckReport | null, opts: PackOp
   if (m.calcs.length) add("calculations.md", calculationsMd(m.calcs, name));
   add("checks.md", checksMd(items, name));
   add("test_plan.md", testPlanMd(plan, name));
+  const service = servicePlan(model, opts.use);
+  if (service.items.length) add("service.md", serviceMd(service, name));
   add("assembly.md", assemblyMd(model, name, { made, cuts, rows, fw, plan, ready, boards: boards.folders }));
   const paths = ["README.md", ...files.map((f) => f.path)];
   files.unshift({ path: "README.md", data: readmeMd(model, name, date, { ready, rows, made, cuts, fw, plan, items, files: paths, step: !!opts.step, boards: boards.folders }) });

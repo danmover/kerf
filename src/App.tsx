@@ -27,6 +27,7 @@ import { toggleMarkup } from "./ui/Markup";
 import { toggleWiring } from "./ui/wiringView";
 import { startMaterialChecks } from "./materials/runtime";
 import { startAssemblyChecks } from "./mfg/dfaRuntime";
+import { startHeatAndWearChecks } from "./machine/runtime";
 import { useThemeSync } from "./app/theme";
 
 // each opened project brings its own conversation
@@ -90,6 +91,7 @@ function useBoot() {
     startEngine();
     startMaterialChecks();
     startAssemblyChecks();
+    startHeatAndWearChecks();
     startAnalysisRuntime();
     startBoardRuntime();
     startSimRuntime();

@@ -7,13 +7,14 @@
 
 import { buildNetlist, type Net, type NetPin, type Netlist } from "../../machine/erc";
 import { catalogPart } from "../../machine/catalog";
+import { measuredPart } from "../../machine/measured";
 import type { CatalogPart, MachineComponent, MachineData } from "../../machine/types";
 import type { Board } from "../mcu/board";
 import { Actuator, Battery, Bno055, DCMotor, Mpu6050, Regulator, Servo, Ssd1306, quadrature, type ImuNoise } from "./devices";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
-type Src = { kind: "mcu"; pin: number } | { kind: "high" } | { kind: "low" } | { kind: "none"; def: number };
+export type Src = { kind: "mcu"; pin: number } | { kind: "high" } | { kind: "low" } | { kind: "none"; def: number };
 
 interface Channel {
   comp: string;
@@ -73,7 +74,7 @@ interface FuseSlot {
   blown: boolean;
 }
 
-const SCHEMES: Record<string, Record<string, Record<string, string[]>>> = {
+export const SCHEMES: Record<string, Record<string, Record<string, string[]>>> = {
   pwm_dir: { A: { pwm: ["PWM", "PWM1"], dir: ["DIR", "DIR1"], en: ["SLP", "EN"] }, B: { pwm: ["PWM2"], dir: ["DIR2"] } },
   in1_in2_pwm: { A: { in1: ["AIN1"], in2: ["AIN2"], pwm: ["PWMA"], en: ["STBY"] }, B: { in1: ["BIN1"], in2: ["BIN2"], pwm: ["PWMB"], en: ["STBY"] } },
   in1_in2_en: { A: { in1: ["IN1"], in2: ["IN2"], pwm: ["ENA"] }, B: { in1: ["IN3"], in2: ["IN4"], pwm: ["ENB"] } },
@@ -141,7 +142,7 @@ export class Plant implements PlantPort, PlantView {
     const order = (k: string | undefined) => (k === "motor_driver" ? 0 : 1);
     const comps = [...machine.components].sort((a, b) => order(catalogPart(a.catalogId)?.kind) - order(catalogPart(b.catalogId)?.kind));
     for (const mc of comps) {
-      const part = catalogPart(mc.catalogId);
+      const part = measuredPart(mc);
       if (!part || mc.name === mcu) continue;
       if (part.specs.driver === "SSD1306" && part.specs.iface === "i2c") {
         this.display(mc, part);
@@ -238,6 +239,7 @@ export class Plant implements PlantPort, PlantView {
     if (this.unsupported.length) this.notes.push(`Not simulated yet (they stay still): ${this.unsupported.join(", ")}.`);
     for (const b of this.batteries) this.assumptions.push(...b.b.assumed);
     for (const m of this.motors) this.assumptions.push(...m.m.assumed);
+    for (const mc of machine.components) if (mc.measured) this.assumptions.push(`${mc.name}: measured on the real part (${Object.entries(mc.measured).map(([k, v]) => `${k} ${Number(v.toPrecision(3))}`).join(", ")}), in place of the catalog's numbers`);
     hal.plant = this;
     this.updateRails();
   }
@@ -520,6 +522,10 @@ export class Plant implements PlantPort, PlantView {
     const vinv = vin ? this.netV.get(vin.id) : undefined;
     if (v5v !== undefined && v5v > 0.5) {
       this.mcuV = v5v;
+      this.mcuSupply = "5 V pin";
+    } else if (v5 && this.regs.some((g) => g.vout?.id === v5.id)) {
+      // fed by a regulator that has lost its input: the board goes dark with it
+      this.mcuV = v5v ?? 0;
       this.mcuSupply = "5 V pin";
     } else if (vinv !== undefined) {
       this.mcuV = vinv >= 7 ? 5 : Math.max(0, vinv - 1.5);

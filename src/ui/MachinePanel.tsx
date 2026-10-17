@@ -26,8 +26,11 @@ import { BoardView } from "./BoardView";
 import { SoundPanel } from "./SoundPanel";
 import { Belts } from "./BeltsView";
 import { hasCircuit } from "../machine/circuit/netlist";
+import { servicePlanFor } from "../machine/runtime";
+import { intervalText, lifeText, schedule, type ServicePlan } from "../machine/service";
+import { useSim } from "../sim/runtime";
 
-type Section = "overview" | "sound" | "board" | "belts" | "wiring" | "calcs" | "firmware" | "tests";
+type Section = "overview" | "sound" | "board" | "belts" | "wiring" | "calcs" | "firmware" | "tests" | "service";
 
 /** Remembered while the dock switches tabs. */
 const useBuildView = create<{ section: Section; wiring: "diagram" | "list"; file: string; openCalcs: string[] }>(() => ({ section: "overview", wiring: "diagram", file: "", openCalcs: [] }));
@@ -75,6 +78,9 @@ export function MachinePanel() {
     [model, m, routes, routeStatus],
   );
   const fw = useMemo(() => (model && m ? generateFirmware(m, model.name || name) : []), [model, m, name]);
+  // lives count runs of the machine's job once its simulation has run
+  const simRuns = useSim((s) => s.runs);
+  const service = useMemo(() => (model && m ? servicePlanFor(model) : null), [model, m, simRuns]);
 
   if (!model || !m || !ready) {
     return (
@@ -118,6 +124,7 @@ export function MachinePanel() {
             { value: "calcs", label: <>Calculations{m.calcs.length > 0 && <span className="seg-n">{m.calcs.length}</span>}</>, title: "Engineering calculations with their working" },
             { value: "firmware", label: <>Firmware{fwFiles > 0 && <span className="seg-n">{fwFiles}</span>}</>, title: "Code generated to match the wiring" },
             { value: "tests", label: <>Test plan{plan.length > 0 && <span className="seg-n">{plan.length}</span>}</>, title: "What to test before relying on the machine" },
+            ...(service?.items.length ? [{ value: "service" as const, label: <>Service<span className="seg-n">{service.items.length}</span></>, title: "What wears out and when, and the maintenance schedule" }] : []),
           ]}
         />
         {/* the verdict and the download stay together, so a narrow panel wraps them as one */}
@@ -141,6 +148,7 @@ export function MachinePanel() {
         {shown === "calcs" && <Calcs m={m} items={items} />}
         {shown === "firmware" && <Firmware fw={fw} />}
         {shown === "tests" && <Tests plan={plan} />}
+        {shown === "service" && service && <Service plan={service} model={model} />}
       </div>
     </div>
   );
@@ -1063,6 +1071,65 @@ function Tests({ plan }: { plan: PlanItem[] }) {
           </ol>
         </>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- service
+
+const SURE: Record<string, string> = { standard: "a standard formula", estimate: "an estimate", rough: "a rough figure" };
+
+function Service({ plan, model }: { plan: ServicePlan; model: Model }) {
+  const jobs = schedule(plan);
+  return (
+    <div className="mp-pad" style={{ maxWidth: 980 }}>
+      <div className="dim" style={{ fontSize: 12, marginBottom: 10 }}>
+        Lives are hours of running at the design's loads
+        {plan.use ? (
+          <>
+            , and runs of <b>{plan.use.label}</b> ({fmtNum(plan.use.hours * 60, 0)} min each{plan.use.measured ? ", as simulated" : ""})
+          </>
+        ) : null}
+        . Typical figures for these kinds of parts: real ones vary{plan.dirty ? ", and sand and dust shorten them" : ""}.
+      </div>
+      <div className="mp-h">
+        What wears <span className="dim">{plan.items.length}</span>
+      </div>
+      <table className="bom mp-wear">
+        <thead>
+          <tr>
+            <th>Part</th>
+            <th>What wears</th>
+            <th>Life</th>
+            <th>How it was worked out</th>
+          </tr>
+        </thead>
+        <tbody>
+          {plan.items.map((x) => (
+            <tr key={x.id} onClick={() => x.parts.length && select(model.parts.filter((p) => x.parts.includes(p.id) || x.parts.includes(p.name)).map((p) => p.id))} style={{ cursor: x.parts.length ? "pointer" : undefined }}>
+              <td className="mono">{x.label}</td>
+              <td>{x.what}</td>
+              <td>{lifeText(plan, x)}</td>
+              <td className="dim" data-tip={`This is ${SURE[x.confidence]}.${x.replace ? ` Replace with ${x.replace}.` : ""}`}>
+                {x.basis}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mp-h" style={{ marginTop: 14 }}>
+        Maintenance schedule
+      </div>
+      {jobs.map((g) => (
+        <div key={g.every} style={{ marginBottom: 10 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>{intervalText(plan, g.every)}</div>
+          <ul className="mp-steps" style={{ margin: 0, paddingLeft: 18 }}>
+            {g.tasks.map((t, i) => (
+              <li key={i}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 }
