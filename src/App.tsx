@@ -26,7 +26,7 @@ import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
 import { startMaterialChecks } from "./materials/runtime";
 import { startAssemblyChecks } from "./mfg/dfaRuntime";
-import { startHeatChecks } from "./machine/heatRuntime";
+import { startHeatAndWearChecks } from "./machine/runtime";
 import { useThemeSync } from "./app/theme";
 
 // each opened project brings its own conversation
@@ -90,7 +90,7 @@ function useBoot() {
     startEngine();
     startMaterialChecks();
     startAssemblyChecks();
-    startHeatChecks();
+    startHeatAndWearChecks();
     startAnalysisRuntime();
     startBoardRuntime();
     startSimRuntime();

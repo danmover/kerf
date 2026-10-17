@@ -29,6 +29,7 @@ import { appearanceFor } from "../ui/viewport/render/appearance";
 import { markSvg } from "../ui/logoGeometry";
 import { briefSummary, designStats, massText, sizeText } from "./designStats";
 import { designReportHtml } from "./report";
+import { simUse } from "../machine/runtime";
 
 function visibleParts(selectionOnly: boolean) {
   const { model } = useDesign.getState();
@@ -113,7 +114,7 @@ async function makeBuildPack() {
       const r = routeFor(spec);
       return r.status === "done" ? [r.board] : [];
     });
-    const files = buildPack(model, report, { name, step, boards, meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
+    const files = buildPack(model, report, { name, step, boards, use: simUse(model), meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
     const folder = `${packName(name)} build pack`;
     const data = zip(files.map((f) => ({ path: `${folder}/${f.path}`, data: f.data })));
     download(data, `${folder}.zip`, "application/zip");
