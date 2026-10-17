@@ -8,6 +8,7 @@ import { finishReport, type CheckItem, type CheckReport } from "./checks";
 import type { Model } from "./model";
 import { processItems } from "../mfg/report";
 import { fitItems } from "../analysis/fits/report";
+import { springItems } from "../analysis/springs/report";
 import type { ProcessResult } from "../mfg/types";
 
 export interface ReportContext {
@@ -29,6 +30,7 @@ const passes: { id: string; order: number; run: ReportPass }[] = [
   // stateless passes live here; modules with state of their own (the analysis runtime) register theirs
   { id: "process", order: 10, run: (items, ctx) => [...items, ...processItems(ctx.model, ctx.process, ctx.buildErrors)] },
   { id: "fits", order: 12, run: fitItems },
+  { id: "springs", order: 13, run: springItems },
 ];
 
 /** Add (or replace) a pass. Lower `order` runs first. Returns the way to remove it. */

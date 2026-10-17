@@ -43,6 +43,51 @@ export interface BearingInfo {
   axis: V3;
 }
 
+/** A part of a part that is meant to bend: a snap hook's arm or a flexure blade (in the part's own frame). */
+export interface FlexInfo {
+  kind: "snap" | "flexure";
+  /** feature name (`as` name, or snap_hook#1) */
+  name: string;
+  /** centre of the root, along which the arm rises */
+  at: V3;
+  dir: V3;
+  /** the way the catch (or the blade's thickness) faces */
+  facing: V3;
+  length: number;
+  t: number;
+  w: number;
+  /** snap: catch depth (how far the arm bends to pass); flexure: tip travel, mm */
+  deflection: number;
+  /** flexure: bend angle of a living hinge, degrees (instead of travel) */
+  angle?: number;
+  /** snap: lead-in slope from the arm's axis, degrees */
+  leadIn?: number;
+  /** snap: slope of the catch face, degrees (90: square, does not let go) */
+  retain?: number;
+  /** snap: how far the arm stays bent once latched, mm (0: it just touches) */
+  preload?: number;
+  /** times it bends in its life */
+  cycles?: number;
+  span: Span;
+}
+
+/** A coil spring's design (lib.spring), in world space. */
+export interface SpringInfo {
+  /** wire diameter, outside diameter, free length, installed length and shortest working length, mm */
+  d: number;
+  od: number;
+  free: number;
+  installed: number;
+  working: number;
+  /** active coils */
+  coils: number;
+  ends: "closed-ground" | "closed" | "plain";
+  /** compressions in its life */
+  cycles: number;
+  center: V3;
+  axis: V3;
+}
+
 export interface FastenerInfo {
   headTop: V3;
   outward: V3;
@@ -87,6 +132,9 @@ export interface EvalPart {
   gear?: GearInfo;
   bearing?: BearingInfo;
   fastener?: FastenerInfo;
+  /** snap hooks and flexures in this part */
+  flex?: FlexInfo[];
+  spring?: SpringInfo;
   bom?: { description: string; standard?: string; catalogId?: string; length?: number };
   /** named features (`add ... as name`), for selectors and inspection */
   features?: { name: string; kind: string; cosmetic: boolean }[];

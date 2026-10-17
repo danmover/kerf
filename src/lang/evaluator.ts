@@ -13,7 +13,7 @@ import type { ImportRef, ImportTable } from "../kernel/imports";
 import { frameFor, hasDetail, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
-import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, GearInfo, Model, Motion } from "../core/model";
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
@@ -121,6 +121,7 @@ interface PartState {
   /** counters for unnamed ready-made features (screw_boss#1) */
   auto: Map<string, number>;
   strain: { strain: number; span: Span }[];
+  flex: FlexInfo[];
 }
 
 class Scope {
@@ -1150,6 +1151,7 @@ class Evaluator {
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
           gear: sd.suffix ? undefined : gear,
           bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
+          spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
           fastener:
             def.fastener && !sd.suffix
               ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
@@ -1243,6 +1245,7 @@ class Evaluator {
       feats: new Map(),
       auto: new Map(),
       strain: [],
+      flex: [],
     };
     const lockedFlag = s.items.some((i) => i.k === "flag" && i.name === "locked");
     this.blocks.push({ name: s.name, kind: "part", span: s.span, locked: lockedFlag });
@@ -1319,6 +1322,7 @@ class Evaluator {
       motion,
       features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
       detail: hasDetail(recipe),
+      ...(state.flex.length ? { flex: state.flex } : {}),
     });
   }
 
@@ -1388,6 +1392,7 @@ class Evaluator {
                 else st.ops.push({ op: step.op, r: step.r, edges: { s: "feat", f: name, part: step.part }, cosmetic: true });
               }
               if (f.strain !== undefined) st.strain.push({ strain: f.strain, span: it.shape.span });
+              if (f.flex) st.flex.push({ ...f.flex, name, span: it.shape.span });
             }
             break;
           }
@@ -2110,6 +2115,7 @@ function groupFor(kind: string): string {
     case "nut":
     case "insert":
     case "dowel":
+    case "spring":
       return "Hardware";
     case "bearing":
       return "Bearings";
