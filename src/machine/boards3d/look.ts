@@ -1,0 +1,336 @@
+// How each bought circuit board looks, for drawing it in detail: the solder
+// mask and silkscreen colours, the plating, what is printed on it and on its
+// chips, what each coarse feature box of its catalog geometry really is, and
+// the parts the catalog geometry leaves out (a Pi Zero's ports, an Arduino's
+// reset button). Boards not listed here get a look from their features' sizes.
+
+/** What a board feature is drawn as. */
+export type Look =
+  // chips
+  | "qfp"
+  | "qfn"
+  | "soic"
+  | "dip"
+  | "power"
+  | "can"
+  | "drivers"
+  | "mosfets"
+  // pin rows
+  | "header_m"
+  | "header_f"
+  | "header_down"
+  | "box_header"
+  | "fpc"
+  // connectors
+  | "terminal"
+  | "usb_c"
+  | "usb_micro"
+  | "usb_mini"
+  | "usb_b"
+  | "usb_a"
+  | "hdmi_mini"
+  | "barrel"
+  | "jack35"
+  | "sdcard"
+  // everything else
+  | "heatsink"
+  | "elcap"
+  | "inductor"
+  | "drum"
+  | "trimpot"
+  | "button"
+  | "crystal"
+  | "wroom"
+  | "transducer"
+  | "microswitch"
+  | "oled";
+
+/** A part drawn on a board that its catalog geometry has no feature for. */
+export interface Extra {
+  look: Look;
+  x: number;
+  y: number;
+  w: number;
+  d: number;
+  h: number;
+  mark?: string;
+}
+
+export interface BoardStyle {
+  /** solder mask colour */
+  mask: string;
+  /** silkscreen colour */
+  silk: string;
+  /** pad plating: hot-air levelled solder, or gold */
+  finish: "hasl" | "enig";
+  /** printed on the board, largest first */
+  title?: string[];
+  /** laser marking on the chips, in feature order (lines split with \n) */
+  marks?: string[];
+  /** what each feature of the catalog geometry is, in order; null leaves it out */
+  looks?: (Look | null)[];
+  extras?: Extra[];
+  /** screw terminal body colour */
+  terminal?: string;
+  /** heatsink colour */
+  heatsink?: string;
+  /** female headers on top (Arduino Uno and Mega) */
+  female?: boolean;
+  /** draw the headers and terminals of the board's plug table (harness/plugs.ts); false when an extra already draws them */
+  sockets?: boolean;
+  /** how many small surface-mount parts, relative to the usual for its size */
+  smd?: number;
+}
+
+const GREEN = "#1f5e3a";
+const BLUE = "#1d4f9c";
+const RED = "#a8251d";
+const BLACK = "#16181b";
+const WHITE_SILK = "#f1f1ea";
+
+export const DEFAULT_STYLE: BoardStyle = { mask: GREEN, silk: WHITE_SILK, finish: "hasl" };
+
+/** Looks by catalog id. */
+export const BOARD_STYLES: Record<string, BoardStyle> = {
+  skr_mini_e3_v3: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["BIGTREETECH", "SKR MINI E3 V3.0"],
+    marks: ["STM32G0B1\nRET6"],
+    // the header and terminal rows are the plug table's sockets; the "heatsink" is the row of on-board drivers
+    looks: [null, null, "qfp", "drivers", "usb_c"],
+    extras: [
+      { look: "sdcard", x: 45.5, y: -14, w: 14, d: 14.5, h: 1.9 },
+      { look: "button", x: 40, y: 2, w: 6, d: 3.5, h: 2.5 },
+      { look: "crystal", x: 14, y: 4, w: 3.2, d: 2.5, h: 0.8 },
+    ],
+    smd: 1.2,
+  },
+  rpi_zero_2w: {
+    mask: GREEN,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["Raspberry Pi Zero 2 W", "(C) Raspberry Pi 2021"],
+    marks: ["RP3A0-AU\nRASPBERRY PI"],
+    looks: ["can", "sdcard"],
+    extras: [
+      // the 40-pin header, pin 1 at the -X end; its pins line up with the plug table
+      { look: "header_m", x: 0, y: 11.5, w: 50.8, d: 5.08, h: 8.5 },
+      { look: "hdmi_mini", x: -20.1, y: -11.6, w: 11.2, d: 7.5, h: 3.2 },
+      { look: "usb_micro", x: 8.9, y: -12.4, w: 8, d: 5.6, h: 2.8 },
+      { look: "usb_micro", x: 21.5, y: -12.4, w: 8, d: 5.6, h: 2.8 },
+      { look: "fpc", x: 30, y: 0, w: 4, d: 17, h: 1.4 },
+    ],
+    sockets: false,
+    smd: 1.3,
+  },
+  buck_24v_5v_3a: {
+    mask: BLUE,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["DC-DC 24V-5V 3A"],
+    marks: ["220"],
+    looks: ["inductor", "usb_a"],
+    extras: [
+      { look: "soic", x: -8, y: -6.5, w: 5, d: 6, h: 1.5, mark: "MP1584\nEN" },
+      { look: "elcap", x: -9.5, y: 6.5, w: 6.3, d: 6.3, h: 7 },
+    ],
+  },
+  endstop_mech: {
+    mask: RED,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["Mech Endstop v1.2"],
+    looks: ["microswitch"],
+    smd: 0.6,
+  },
+  arduino_nano: {
+    mask: BLUE,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["NANO V3.0"],
+    marks: ["ATMEGA328P\nAU 2214"],
+    looks: ["usb_mini", "qfp", "header_down", "header_down"],
+    extras: [
+      { look: "button", x: -2, y: 0, w: 3, d: 6, h: 2.5 },
+      { look: "crystal", x: 12, y: 3.5, w: 3.2, d: 2.5, h: 0.8 },
+    ],
+  },
+  arduino_nano_clone: {
+    mask: "#1b4f9c",
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["NANO V3.0"],
+    marks: ["ATMEGA328P\nAU 2231", "CH340C"],
+    looks: ["usb_mini", "qfp", "soic"],
+    extras: [
+      { look: "header_down", x: 0, y: 7.62, w: 38.1, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 0, y: -7.62, w: 38.1, d: 2.54, h: 2.5 },
+      { look: "button", x: -2.5, y: 4, w: 3, d: 6, h: 2.5 },
+      { look: "crystal", x: 12, y: 3.5, w: 3.2, d: 2.5, h: 0.8 },
+    ],
+  },
+  arduino_uno: {
+    mask: "#00787c",
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["UNO"],
+    marks: ["ATMEGA328P-PU"],
+    looks: ["usb_b", "barrel", "header_f", "header_f", "dip"],
+    female: true,
+    extras: [
+      { look: "button", x: -28, y: 22, w: 6, d: 6, h: 4 },
+      { look: "box_header", x: 31, y: -9.7, w: 7.6, d: 5.1, h: 8.5 },
+      { look: "qfn", x: -20, y: 8, w: 5, d: 5, h: 1, mark: "ATMEGA\n16U2" },
+      { look: "crystal", x: 0, y: -2, w: 11.4, d: 4.7, h: 3.5 },
+    ],
+  },
+  arduino_mega: {
+    mask: "#00787c",
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["MEGA 2560"],
+    marks: ["ATMEGA2560\n16AU"],
+    looks: ["usb_b", "barrel", "header_f", "header_f", "header_f", "qfp"],
+    female: true,
+  },
+  esp32_devkitc: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["ESP32-DevKitC"],
+    marks: ["ESP32-WROOM-32E"],
+    looks: ["wroom", "usb_micro", "header_down", "header_down"],
+    extras: [
+      { look: "button", x: -21, y: 8, w: 3.5, d: 3, h: 1.6 },
+      { look: "button", x: -21, y: -8, w: 3.5, d: 3, h: 1.6 },
+      { look: "qfn", x: -13, y: 0, w: 5, d: 5, h: 0.9, mark: "CP2102N" },
+    ],
+  },
+  rpi_pico: {
+    mask: GREEN,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["Raspberry Pi Pico", "(C) 2020"],
+    marks: ["RP2-B2\n21/24"],
+    looks: ["usb_micro", "qfn"],
+    extras: [
+      { look: "soic", x: 12, y: 0, w: 5.3, d: 5.3, h: 1.6, mark: "W25Q16JV" },
+      { look: "button", x: -13, y: 4, w: 3.5, d: 6, h: 3.5 },
+      { look: "crystal", x: 6, y: -6, w: 3.2, d: 2.5, h: 0.8 },
+      // the castellated edge pins, with pin headers soldered under them
+      { look: "header_down", x: 0, y: 8.89, w: 50.8, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 0, y: -8.89, w: 50.8, d: 2.54, h: 2.5 },
+    ],
+  },
+  l298n: {
+    mask: RED,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["L298N"],
+    looks: ["heatsink", "terminal"],
+    terminal: "#2a62c9",
+    extras: [
+      { look: "elcap", x: -15, y: -10, w: 8, d: 8, h: 11 },
+      { look: "header_m", x: 13, y: -18, w: 15.2, d: 2.54, h: 8.5 },
+    ],
+  },
+  tb6612fng: {
+    mask: RED,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["TB6612FNG"],
+    marks: ["TB6612\nFNG"],
+    looks: ["soic", "header_down", "header_down"],
+  },
+  bts7960: { mask: "#1f3a7a", silk: WHITE_SILK, finish: "hasl", title: ["BTS7960"], looks: ["heatsink", "terminal", "header_m"], terminal: "#2a62c9" },
+  cytron_mdd10a: { mask: BLACK, silk: WHITE_SILK, finish: "hasl", title: ["CYTRON", "MDD10A"], looks: ["terminal", "mosfets", "mosfets"] },
+  cytron_md10c: { mask: BLACK, silk: WHITE_SILK, finish: "hasl", title: ["CYTRON", "MD10C"], looks: ["terminal", "mosfets"] },
+  pololu_g2_18v17: {
+    mask: "#1f3f99",
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["G2 18v17"],
+    looks: ["mosfets", "terminal"],
+    terminal: "#2c6e49",
+    extras: [
+      { look: "qfn", x: 11.5, y: 2, w: 4, d: 4, h: 0.9, mark: "MP6530" },
+      // the logic pins along the far end
+      { look: "header_m", x: 15.2, y: 0, w: 2.54, d: 17.78, h: 8.5 },
+    ],
+  },
+  drv8833: {
+    mask: "#3d2a73",
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["DRV8833"],
+    marks: ["DRV8833"],
+    looks: ["qfn"],
+    extras: [
+      { look: "header_down", x: 0, y: 5.08, w: 17.78, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 0, y: -5.08, w: 17.78, d: 2.54, h: 2.5 },
+    ],
+  },
+  a4988: { mask: GREEN, silk: WHITE_SILK, finish: "hasl", title: ["A4988"], marks: ["A4988\nSETT"], looks: ["qfn", "header_down", "header_down"], extras: [{ look: "trimpot", x: 3, y: -7, w: 3.8, d: 3.6, h: 1.8 }] },
+  drv8825: { mask: "#3d2a73", silk: WHITE_SILK, finish: "enig", title: ["DRV8825"], marks: ["DRV8825"], looks: ["qfn", "header_down", "header_down"], extras: [{ look: "trimpot", x: 3, y: -7, w: 3.8, d: 3.6, h: 1.8 }] },
+  tmc2209: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["TMC2209 V1.3"],
+    looks: ["heatsink"],
+    heatsink: "#5b2a86",
+    // a StepStick: two rows of eight pins pointing down into the carrier board
+    extras: [
+      { look: "header_down", x: -6.35, y: 0, w: 2.54, d: 20.32, h: 2.5 },
+      { look: "header_down", x: 6.35, y: 0, w: 2.54, d: 20.32, h: 2.5 },
+    ],
+  },
+  lm2596: { mask: BLUE, silk: WHITE_SILK, finish: "hasl", title: ["LM2596 DC-DC"], marks: ["LM2596S\n-ADJ"], looks: ["elcap", "power", "drum"], extras: [{ look: "trimpot", x: 12, y: -7, w: 9.5, d: 4.8, h: 10 }] },
+  d24v50f5: { mask: "#1d4f9c", silk: WHITE_SILK, finish: "enig", title: ["D24V50F5"], marks: ["4R7"], looks: ["inductor"], extras: [{ look: "header_m", x: 1, y: -8.8, w: 12.7, d: 2.54, h: 8.5 }] },
+  mpu6050: { mask: BLUE, silk: WHITE_SILK, finish: "hasl", title: ["GY-521"], marks: ["MPU-6050"], looks: ["qfn", "header_m"] },
+  bno055: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["BNO055", "9-DOF"],
+    marks: ["BNO055"],
+    looks: ["qfn"],
+    extras: [{ look: "header_m", x: 0, y: -8.5, w: 17.8, d: 2.54, h: 8.5 }],
+  },
+  voltage_sensor_25v: {
+    mask: RED,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["Voltage Sensor"],
+    looks: ["terminal"],
+    terminal: "#2a62c9",
+    extras: [{ look: "header_m", x: -11, y: 0, w: 2.54, d: 7.62, h: 8.5 }],
+  },
+  hc_sr04: {
+    mask: BLUE,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["HC-SR04"],
+    looks: ["transducer", "transducer"],
+    extras: [
+      { look: "crystal", x: 0, y: 6, w: 11.4, d: 4.7, h: 3.5 },
+      { look: "header_m", x: 0, y: -8, w: 10.2, d: 2.54, h: 8.5 },
+    ],
+  },
+  ssd1306_oled_096: { mask: BLUE, silk: WHITE_SILK, finish: "hasl", looks: ["oled"], extras: [{ look: "header_m", x: 0, y: 12, w: 10.2, d: 2.54, h: 8.5 }] },
+  tpa3116_mono: {
+    mask: "#1f4a8a",
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["XH-M542", "TPA3116D2 MONO"],
+    looks: ["heatsink", "terminal", "terminal", "terminal", "elcap", "elcap", "jack35"],
+    terminal: "#2c6e49",
+    heatsink: "#1d1f22",
+    extras: [
+      { look: "inductor", x: -20, y: -4.5, w: 8, d: 8, h: 5, mark: "220" },
+      { look: "inductor", x: -20, y: 5.5, w: 8, d: 8, h: 5, mark: "220" },
+    ],
+  },
+};

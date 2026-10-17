@@ -32,11 +32,13 @@ import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { SimLayer } from "./sim/SimLayer";
 import { WiringLayer } from "./WiringLayer";
 import { toggleWiring, useWiringView } from "./wiringView";
+import { BoardDecorator } from "./viewport/boards/decorate";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
   const ctl = useRef<SceneController | null>(null);
   const mfgOverlay = useRef<ProcessOverlay | null>(null);
+  const boardDecor = useRef<BoardDecorator | null>(null);
   const processResults = useDesign((s) => s.process);
   const showProcessIssues = useMfgView((s) => s.overlay);
   const processPreview = useMfgView((s) => s.preview);
@@ -70,6 +72,11 @@ export function Viewport() {
       return;
     }
     ctl.current = c;
+    // circuit boards drawn in full: mask, copper, silkscreen and the parts on them
+    const boards = new BoardDecorator(() => c.redecorate());
+    boardDecor.current = boards;
+    boards.setModel(useDesign.getState().model);
+    c.setDecorator(boards);
     mfgOverlay.current = new ProcessOverlay(c);
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
@@ -127,6 +134,8 @@ export function Viewport() {
       mfgOverlay.current?.destroy();
       mfgOverlay.current = null;
       c.dispose();
+      boards.dispose();
+      boardDecor.current = null;
       ctl.current = null;
     };
   }, []);
@@ -136,6 +145,7 @@ export function Viewport() {
   }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme]);
 
   useEffect(() => {
+    boardDecor.current?.setModel(model);
     if (model) ctl.current?.setParts(model.parts, meshes);
   }, [model, meshVersion]);
 
