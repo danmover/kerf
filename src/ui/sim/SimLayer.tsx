@@ -66,6 +66,12 @@ export function SimLayer({ scene }: { scene: SceneController }) {
 
   // entering the simulation frames it; leaving puts the camera back
   const hasBox = !!vrun?.scene.box;
+  // a mechanism moves fast: play it at real speed (or slower) unless someone already picked a speed
+  const mechanism = !!vrun?.scene.bodies.some((b) => b.parts);
+  useEffect(() => {
+    if (shown && mechanism && useSim.getState().speed === 10) useSim.setState({ speed: 1 });
+  }, [shown, mechanism]);
+
   useEffect(() => {
     if (!shown) return;
     saved.current = scene.cameraState();
@@ -85,9 +91,10 @@ export function SimLayer({ scene }: { scene: SceneController }) {
     else if (camera === "whole") scene.fit("iso", true, o.frameBox(true), side);
     else {
       const n = o.nose();
-      // a burrowing machine trails behind its nose; a printer's nozzle sits over the print
-      const back = o instanceof PrinterOverlay ? new THREE.Vector3(-120, -120, -120) : new THREE.Vector3(-650, -150, -150);
-      if (n) scene.fit("iso", true, new THREE.Box3(n.clone().add(back), n.clone().add(new THREE.Vector3(150, 150, 150).setLength(o instanceof PrinterOverlay ? 208 : 260))), side);
+      // a printer's nozzle sits over the print; a burrowing machine trails behind its nose; a mechanism stays in view
+      if (n && o instanceof PrinterOverlay) scene.fit("iso", true, new THREE.Box3(n.clone().add(new THREE.Vector3(-120, -120, -120)), n.clone().add(new THREE.Vector3(120, 120, 120))), side);
+      else if (n && o instanceof SimOverlay) scene.fit("iso", true, o.followBox(n), side);
+      else scene.fit("iso", true, o.frameBox(), side);
       lastNose.current = n;
     }
   }, [camera, shown, scene, hasBox]);
@@ -226,6 +233,15 @@ function Readouts({ v, t, label, stale }: { v: VariantRun; t: number; label: str
     return s;
   }, [v, t]);
   const motors = v.summary.motors.map((m) => m.name);
+  // a mechanism's joints: the first few, by their recorded angle or stroke
+  const joints = useMemo(() => {
+    if (!v.scene.bodies.some((b) => b.parts)) return [];
+    const names = Object.keys(v.frames.series);
+    return names
+      .flatMap((k) => (k.endsWith(".torque") && names.includes(k.replace(/\.torque$/, ".angle")) ? [{ name: k.slice(0, -7), lin: false }] : k.endsWith(".force") && names.includes(k.replace(/\.force$/, ".speed")) ? [{ name: k.slice(0, -6), lin: true }] : []))
+      .filter((j) => !motors.includes(j.name))
+      .slice(0, 5);
+  }, [v, motors]);
   const battery = Object.keys(f.series).find((n) => n.endsWith(".soc"))?.slice(0, -4);
   const pit = v.scene.box;
   const progress = at("pit.progress");
@@ -264,6 +280,9 @@ function Readouts({ v, t, label, stale }: { v: VariantRun; t: number; label: str
       {motors.map((m) => (
         <Row key={m} k={m} v={`${n(at(`${m}.rpm`))} rpm · ${n(at(`${m}.amps`), 1)} A · ${n(at(`${m}.temp`))} °C`} />
       ))}
+      {joints.map((j) =>
+        j.lin ? <Row key={j.name} k={j.name} v={`${n(at(`${j.name}.pos`), 1)} mm · ${n(at(`${j.name}.force`), 1)} N`} /> : <Row key={j.name} k={j.name} v={`${n(at(`${j.name}.angle`), 1)}° · ${n(at(`${j.name}.rpm`))} rpm · ${n(at(`${j.name}.torque`), 2)} N·m`} />,
+      )}
       {battery && <Row k={battery} v={`${n(at(`${battery}.soc`))} % · ${n(at(`${battery}.volts`), 1)} V`} />}
       {v.displays?.map((d) => (
         <div key={d.name} className="simv-screen">

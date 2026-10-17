@@ -26,6 +26,16 @@ const FIELD: Record<string, { label: string; unit: string }> = {
   py: { label: "y", unit: "mm" },
   pz: { label: "z", unit: "mm" },
   yaw: { label: "heading", unit: "°" },
+  speed: { label: "speed", unit: "mm/s" },
+  length: { label: "length", unit: "mm" },
+  gap: { label: "off the cam", unit: "mm" },
+  slip_speed: { label: "slip", unit: "mm/s" },
+  power: { label: "power", unit: "W" },
+  tilt: { label: "tilt", unit: "°" },
+  qw: { label: "turn (w)", unit: "" },
+  qx: { label: "turn (x)", unit: "" },
+  qy: { label: "turn (y)", unit: "" },
+  qz: { label: "turn (z)", unit: "" },
   pitch: { label: "pitch", unit: "°" },
   roll: { label: "roll", unit: "°" },
 };
@@ -86,4 +96,5 @@ export const DEFAULT_PLOTS: Record<string, string[][]> = {
   sand_pit: [["pit.progress"], ["pit.offset"], ["pit.heading", "pit.hinge"], ["*.amps"], ["*.temp"]],
   bench: [["*.rpm"], ["*.amps"], ["*.temp"]],
   printer: [["hotend.temp", "hotend.target"], ["bed.temp", "bed.target"], ["print.flow"], ["*.load"], ["psu.watts"]],
+  floor: [["frame.px", "frame.py"], ["*.rpm"], ["*.amps"], ["frame.tilt"]],
 };
