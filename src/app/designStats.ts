@@ -135,6 +135,7 @@ const SCOPE: Record<string, string> = {
   analysis: "strength",
   simulation: "simulations",
   process: "manufacturing",
+  assembly: "assembly",
   electrical: "wiring",
   engineering: "calculations",
 };
