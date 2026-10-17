@@ -121,7 +121,7 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     (a) => {
       const r = region(a.value("where"), a);
       const axis = clean(a.dir("axis", r.t === "cyl" ? r.axis : [0, 0, 1]));
-      const at = a.has("at") ? a.vec3("at") : r.t === "face" ? undefined : r.at;
+      const at = a.has("at") ? a.vec3("at") : r.t === "face" || r.t === "extreme" ? undefined : r.at;
       return wrap(LOAD, { t: "torque", region: r, torque: a.num("t"), axis, at } satisfies LoadSpec, "torque");
     },
     "torque(region, 2Nm, axis: Z, at: (0, 0, 0)) → a twisting load about an axis through a point (default: the zone's centre, or the face's centre), shared over the region in proportion to the distance from the axis. Positive is counter-clockwise looking down the axis.",

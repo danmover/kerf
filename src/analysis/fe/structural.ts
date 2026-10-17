@@ -5,8 +5,10 @@
 
 import { CORNERS, principal, vonMises, elementMatrices } from "./element";
 import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg } from "./solver";
+import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
-import type { LoadSpec, RegionSpec, SupportSpec } from "../spec";
+import type { FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
+import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
 
@@ -43,6 +45,56 @@ export interface StructuralInput {
   maxDeflection?: number;
   /** relative residual for the solve */
   tol?: number;
+  /** masses the parts carry that are not modelled as solids */
+  masses?: MassSpec[];
+  /** find this many natural frequencies and mode shapes */
+  modes?: number;
+  /**
+   * A drop: accel is 1 g along dir and the support is the side that lands; the result is scaled to the
+   * peak deceleration the fall's energy gives against the body's and the floor's stiffness.
+   */
+  drop?: { height?: number; tip?: boolean; dir: V3; floor: FloorSpec };
+}
+
+export interface ModeResult {
+  /** natural frequency, Hz */
+  freq: number;
+  /** share of the moving mass that takes part along X, Y and Z (effective modal mass) */
+  share: V3;
+  /** participation factor along X, Y and Z (displacement of the largest-moving point per unit base acceleration × ω²) */
+  gamma: V3;
+  /** the largest-moving point and its shape amplitude (M-normalised shape, mm per √t) */
+  peak: Located;
+}
+
+export interface ModalResult {
+  modes: ModeResult[];
+  /** moving mass, kg */
+  mass: number;
+  iterations: number;
+  residual: number;
+  converged: boolean;
+  ms: number;
+}
+
+export interface DropResult {
+  /** fall height used (worked out for a tip-over), mm */
+  height: number;
+  tip: boolean;
+  dir: V3;
+  floor: string;
+  /** peak deceleration in g, peak force in N, impact speed in m/s, energy in J */
+  g: number;
+  force: number;
+  speed: number;
+  energy: number;
+  /** total weight in N and how stiff the body and the floor contact are, N/mm */
+  weight: number;
+  bodyStiffness: number;
+  floorStiffness: number;
+  contact: { at: V3; area: number };
+  /** centre of mass */
+  com: V3;
 }
 
 export interface PartField {
@@ -59,6 +111,8 @@ export interface PartField {
   strain: Float32Array;
   /** per vertex: factor of safety */
   safety: Float32Array;
+  /** per mode: the mode shape at each vertex (xyz), scaled so the largest movement is 1 */
+  modes?: Float32Array[];
 }
 
 export interface Located {
@@ -90,6 +144,8 @@ export interface StructuralResult {
   ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
+  modal?: ModalResult;
+  drop?: DropResult;
 }
 
 export type SafetyAt = Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string };
@@ -164,7 +220,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const warnings: string[] = [];
   if (!inp.parts.length) throw new FeaError("Nothing to analyse: the analysis names no parts with built geometry.");
   if (!inp.supports.length) throw new FeaError("The analysis has no supports. Add fix: to say how the part is held, for example fix: face(bracket, -Y).");
-  if (!inp.loads.length && !inp.accel) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+  if (!inp.loads.length && !inp.accel && !inp.modes) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
 
   // ---------- grid ----------
   // Cells fit the bounding box exactly (their size differs slightly per axis), so the outer faces of
@@ -318,10 +374,21 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         const P = inp.parts[pi].mesh.positions;
         for (let v = 0; v < P.length; v += 3) maxProj = Math.max(maxProj, P[v] * dir[0] + P[v + 1] * dir[1] + P[v + 2] * dir[2]);
       }
+    } else if (r.t === "extreme") {
+      // what lands first: every analysed part's surface within reach of the furthest point along dir
+      dir = norm(r.dir);
+      const flat = Math.max(Math.abs(dir[0]), Math.abs(dir[1]), Math.abs(dir[2])) > 0.999;
+      faceTol = flat ? 0.5 * (Math.abs(dir[0]) * hx + Math.abs(dir[1]) * hy + Math.abs(dir[2]) * hz) : 1.5 * hmax;
+      maxProj = -Infinity;
+      for (const p of inp.parts) {
+        const P = p.mesh.positions;
+        for (let v = 0; v < P.length; v += 3) maxProj = Math.max(maxProj, P[v] * dir[0] + P[v + 1] * dir[1] + P[v + 2] * dir[2]);
+      }
     } else if (r.t === "cyl") axis = norm(r.axis);
     const inside = (p: V3): boolean => {
       switch (r.t) {
         case "face":
+        case "extreme":
           return dot(p, dir) >= maxProj - faceTol;
         case "sphere":
           return Math.hypot(p[0] - r.at[0], p[1] - r.at[1], p[2] - r.at[2]) <= r.r + pad;
@@ -345,6 +412,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       if (partSet && !partSet.has(owner[e])) continue;
       const nrm = FACE_NORMAL[d];
       if (r.t === "face" && dot(nrm, dir) <= 0.5) continue;
+      if (r.t === "extreme" && dot(nrm, dir) <= 0.2) continue;
       const n0 = elemNode0(e);
       for (const a of FACE_CORNERS[d]) {
         const n = n0 + off[a];
@@ -530,6 +598,17 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     solidVolume += v;
     mass += (v / 1000) * inp.materials[matOf(e)].density;
   }
+  // ---------- carried masses (kg per node) ----------
+  const extra = new Float64Array(nn);
+  let extraKg = 0;
+  (inp.masses ?? []).forEach((ms, i) => {
+    const sel = select(ms.region);
+    if (!sel.nodes.length) throw new FeaError(`Mass ${i + 1} (${fmt(ms.grams, 0)} g on ${describeRegion(ms.region)}) does not touch the part's surface. Move the zone onto the part.`);
+    const tot = sel.w.reduce((a, b) => a + b, 0) || 1;
+    sel.nodes.forEach((n, q) => (extra[n] += (ms.grams / 1000) * (sel.w[q] / tot)));
+    extraKg += ms.grams / 1000;
+  });
+  mass += extraKg * 1000;
   const mainMat = matCount.indexOf(Math.max(...matCount));
   const nu = inp.materials[mainMat].nu;
   if (new Set(inp.materials.map((m) => m.nu)).size > 1 && matCount.filter((c) => c > 0).length > 1) warnings.push("Mixed materials share one Poisson's ratio in this model; stiffness and stress are still per material.");
@@ -551,6 +630,14 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       c = [c[0] + m * (p[0] + hx / 2), c[1] + m * (p[1] + hy / 2), c[2] + m * (p[2] + hz / 2)];
       mtot += m;
     }
+    for (let n = 0; n < nn; n++) {
+      const m = extra[n];
+      if (!m) continue;
+      for (let d = 0; d < 3; d++) f[3 * n + d] += m * a[d] * G0;
+      const p = nodePos(n);
+      c = [c[0] + m * p[0], c[1] + m * p[1], c[2] + m * p[2]];
+      mtot += m;
+    }
     gravity = { vector: [mtot * a[0] * G0, mtot * a[1] * G0, mtot * a[2] * G0], at: [c[0] / mtot, c[1] / mtot, c[2] / mtot] };
   }
   const applied: V3 = [0, 0, 0];
@@ -568,6 +655,57 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const fs = Float64Array.from(f);
   for (let i = 0; i < fs.length; i++) if (!fine.free[i]) fs[i] = 0;
   const tSetup = now();
+
+  // ---------- natural frequencies ----------
+  let modal: ModalResult | undefined;
+  let shapes: Float64Array[] = [];
+  if (inp.modes) {
+    progress("Finding natural frequencies", 0.25);
+    const tm = now();
+    // lumped mass in tonnes per dof: each element's mass shared by its eight corners, plus carried masses
+    const nodeMass = new Float64Array(nn);
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const m = (fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-9) / 8;
+      const n0 = elemNode0(e);
+      for (let q = 0; q < 8; q++) nodeMass[n0 + off[q]] += m;
+    }
+    const mvec = new Float64Array(3 * nn);
+    const mtot: V3 = [0, 0, 0];
+    for (let n = 0; n < nn; n++) {
+      const m = nodeMass[n] + extra[n] * 1e-3;
+      for (let d = 0; d < 3; d++)
+        if (fine.free[3 * n + d]) {
+          mvec[3 * n + d] = m;
+          mtot[d] += m;
+        }
+    }
+    const k = Math.max(1, Math.min(12, Math.round(inp.modes)));
+    const sol = lowestModes(H, mvec, k, { onIter: (it, res) => progress("Finding natural frequencies", 0.25 + 0.6 * Math.min(1, it / 60), { iter: it, residual: res }) });
+    shapes = sol.shapes;
+    const modes: ModeResult[] = sol.lambda.map((lam, j) => {
+      const phi = sol.shapes[j];
+      const gamma: V3 = [0, 0, 0];
+      let peak = 0,
+        peakN = 0;
+      for (let n = 0; n < nn; n++) {
+        for (let d = 0; d < 3; d++) gamma[d] += phi[3 * n + d] * mvec[3 * n + d];
+        const a = Math.hypot(phi[3 * n], phi[3 * n + 1], phi[3 * n + 2]);
+        if (a > peak) {
+          peak = a;
+          peakN = n;
+        }
+      }
+      return {
+        freq: Math.sqrt(Math.max(lam, 0)) / (2 * Math.PI),
+        share: gamma.map((g, d) => (mtot[d] > 0 ? (g * g) / mtot[d] : 0)) as V3,
+        gamma,
+        peak: { value: peak, at: nodePos(peakN) },
+      };
+    });
+    if (!sol.converged) warnings.push(`The frequency solver stopped at a residual of ${sol.residual.toExponential(1)}; frequencies may be off by a few percent.`);
+    modal = { modes, mass: (mtot[0] + mtot[1] + mtot[2]) * 1000 / 3, iterations: sol.iterations, residual: sol.residual, converged: sol.converged, ms: now() - tm };
+  }
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
   const { u, stats } = pcg(H, fs, {
@@ -578,6 +716,56 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (stats.residual > UNRELIABLE_RESIDUAL) warnings.push(`The solver did not converge (relative residual ${stats.residual.toExponential(1)} after ${stats.iterations} iterations), so these numbers are unreliable. Check that supports hold every part, or try another resolution.`);
   else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
   const tSolve = now();
+
+  // ---------- drop: scale the 1 g solution to the peak deceleration ----------
+  let dropResult: DropResult | undefined;
+  if (inp.drop && gravity) {
+    const dr = inp.drop;
+    const W = Math.hypot(...gravity.vector);
+    const com = gravity.at;
+    let height = dr.height ?? 0;
+    if (dr.tip) {
+      // it pivots on its bottom edge and lands on the side it falls toward: the centre of mass drops from
+      // its height above the base to its distance from that side
+      const side = norm(dr.dir);
+      let reach = -Infinity;
+      for (const p of inp.parts) {
+        const P = p.mesh.positions;
+        for (let v = 0; v < P.length; v += 3) reach = Math.max(reach, P[v] * side[0] + P[v + 1] * side[1] + P[v + 2] * side[2]);
+      }
+      height = Math.max(0, com[2] - lo[2] - (reach - dot(com, side)));
+    }
+    let U1 = 0;
+    for (let i = 0; i < u.length; i++) U1 += fs[i] * u[i];
+    U1 *= 0.5;
+    const contact = supportSel[0];
+    const area = Math.max(contact.area, hx * hy * 0.25);
+    const kf = dr.floor.soft !== undefined ? Math.max(20, dr.floor.soft * area) : (2 * (dr.floor.E ?? 30000)) / (1 - 0.04) * Math.sqrt(area / Math.PI);
+    // energy: W h = G² (U₁ + W² / 2k_floor), with the body and the floor contact acting as springs in series
+    const G = height > 0 && U1 > 0 ? Math.sqrt((W * height) / (U1 + (W * W) / (2 * kf))) : 0;
+    for (let i = 0; i < u.length; i++) {
+      u[i] *= G;
+      f[i] *= G;
+    }
+    for (let d = 0; d < 3; d++) applied[d] *= G;
+    gravity.vector = [gravity.vector[0] * G, gravity.vector[1] * G, gravity.vector[2] * G];
+    dropResult = {
+      height,
+      tip: !!dr.tip,
+      dir: norm(dr.dir),
+      floor: dr.floor.name,
+      g: G,
+      force: G * W,
+      speed: Math.sqrt(2 * G0 * (height / 1000)),
+      energy: (W * height) / 1000,
+      weight: W,
+      bodyStiffness: U1 > 0 ? (W * W) / (2 * U1) : Infinity,
+      floorStiffness: kf,
+      contact: { at: supportInfo[0].at, area: contact.area },
+      com,
+    };
+    if (G > 0 && G < 1) warnings.push("The landing is soft enough that the drop barely loads the parts.");
+  }
   progress("Recovering stresses", 0.92);
 
   // reactions: full K·u at held dofs
@@ -833,6 +1021,54 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
     return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety };
   });
+  // mode shapes on the CAD surface, each scaled so its largest movement is 1
+  if (shapes.length) {
+    const sampleVec = (vec: Float64Array, x: number, y: number, z: number, out: Float64Array) => {
+      const fx = (x - origin[0]) / hx,
+        fy = (y - origin[1]) / hy,
+        fz = (z - origin[2]) / hz;
+      const i = clampI(Math.floor(fx), 0, nx - 1),
+        j = clampI(Math.floor(fy), 0, ny - 1),
+        k = clampI(Math.floor(fz), 0, nz - 1);
+      const tx = clamp01(fx - i),
+        ty = clamp01(fy - j),
+        tz = clamp01(fz - k);
+      const n0 = i + NX * (j + NY * k);
+      out.fill(0);
+      let wsum = 0;
+      for (let a = 0; a < 8; a++) {
+        const n = n0 + off[a];
+        if (!(nodeW[n] > 0)) continue;
+        const w = (a & 1 ? tx : 1 - tx) * (a & 2 ? ty : 1 - ty) * (a & 4 ? tz : 1 - tz) + 1e-9;
+        out[0] += w * vec[3 * n];
+        out[1] += w * vec[3 * n + 1];
+        out[2] += w * vec[3 * n + 2];
+        wsum += w;
+      }
+      if (wsum > 0) for (let q = 0; q < 3; q++) out[q] /= wsum;
+    };
+    const t3 = new Float64Array(3);
+    shapes.forEach((vec, mi) => {
+      const per = parts.map((pf) => {
+        const P = pf.positions;
+        const out = new Float32Array(P.length);
+        for (let v = 0; v < P.length; v += 3) {
+          sampleVec(vec, P[v], P[v + 1], P[v + 2], t3);
+          out[v] = t3[0];
+          out[v + 1] = t3[1];
+          out[v + 2] = t3[2];
+        }
+        return out;
+      });
+      let mx = 0;
+      for (const a of per) for (let v = 0; v < a.length; v += 3) mx = Math.max(mx, Math.hypot(a[v], a[v + 1], a[v + 2]));
+      const sc = mx > 0 ? 1 / mx : 0;
+      per.forEach((a, pi) => {
+        for (let v = 0; v < a.length; v++) a[v] *= sc;
+        (parts[pi].modes ??= [])[mi] = a;
+      });
+    });
+  }
   // the node maxima are the reported values; keep the colour scale consistent with them
   ranges.stress[1] = Math.max(ranges.stress[1], vm[iS]);
   ranges.disp[1] = Math.max(ranges.disp[1], dMax);
@@ -890,6 +1126,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     ranges,
     warnings,
     materials: inp.materials.map((m, i) => ({ name: m.name, E: m.E, yield: m.yield, allowable: allow[i].value, basis: allow[i].basis, layerFactor: m.layerFactor, assumed: !!m.assumed })),
+    modal,
+    drop: dropResult,
   };
 
   // ----- helpers that need the closure -----
@@ -953,49 +1191,6 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
     }
   }
-}
-
-function jacobiEigen(Ain: Float64Array, n: number): { values: number[]; vectors: Float64Array } {
-  const A = Float64Array.from(Ain);
-  const V = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) V[i * n + i] = 1;
-  for (let sweep = 0; sweep < 60; sweep++) {
-    let off = 0;
-    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += A[p * n + q] ** 2;
-    if (off < 1e-30) break;
-    for (let p = 0; p < n; p++)
-      for (let q = p + 1; q < n; q++) {
-        const apq = A[p * n + q];
-        if (Math.abs(apq) < 1e-300) continue;
-        const theta = (A[q * n + q] - A[p * n + p]) / (2 * apq);
-        const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
-        const cs = 1 / Math.sqrt(t * t + 1),
-          sn = t * cs;
-        for (let k = 0; k < n; k++) {
-          const akp = A[k * n + p],
-            akq = A[k * n + q];
-          A[k * n + p] = cs * akp - sn * akq;
-          A[k * n + q] = sn * akp + cs * akq;
-        }
-        for (let k = 0; k < n; k++) {
-          const apk = A[p * n + k],
-            aqk = A[q * n + k];
-          A[p * n + k] = cs * apk - sn * aqk;
-          A[q * n + k] = sn * apk + cs * aqk;
-        }
-        for (let k = 0; k < n; k++) {
-          const vkp = V[k * n + p],
-            vkq = V[k * n + q];
-          V[k * n + p] = cs * vkp - sn * vkq;
-          V[k * n + q] = sn * vkp + cs * vkq;
-        }
-      }
-  }
-  const values = Array.from({ length: n }, (_, i) => A[i * n + i]);
-  // eigenvector i is column i of V; return them as rows
-  const vectors = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) for (let k = 0; k < n; k++) vectors[i * n + k] = V[k * n + i];
-  return { values, vectors };
 }
 
 const clampI = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);

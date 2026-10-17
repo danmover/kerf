@@ -495,6 +495,11 @@ function vcycle(H: Hierarchy, l: number, r: Float64Array, out: Float64Array) {
   }
 }
 
+/** out ≈ K⁻¹ r by one V-cycle on the fine level: the preconditioner, for other iterative solvers (the modal one). */
+export function precondition(H: Hierarchy, r: Float64Array, out: Float64Array) {
+  vcycle(H, 0, r, out);
+}
+
 export interface SolveStats {
   iterations: number;
   residual: number;
