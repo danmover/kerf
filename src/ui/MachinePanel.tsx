@@ -22,9 +22,10 @@ import { Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { BoardView } from "./BoardView";
 import { SoundPanel } from "./SoundPanel";
+import { Belts } from "./BeltsView";
 import { hasCircuit } from "../machine/circuit/netlist";
 
-type Section = "overview" | "sound" | "board" | "wiring" | "calcs" | "firmware" | "tests";
+type Section = "overview" | "sound" | "board" | "belts" | "wiring" | "calcs" | "firmware" | "tests";
 
 /** Remembered while the dock switches tabs. */
 const useBuildView = create<{ section: Section; wiring: "diagram" | "list"; file: string; openCalcs: string[] }>(() => ({ section: "overview", wiring: "diagram", file: "", openCalcs: [] }));
@@ -73,7 +74,8 @@ export function MachinePanel() {
   // an audio circuit gets a Sound section, a design with circuit boards a Board section
   const sound = m.components.some((c) => catalogPart(c.catalogId)?.sim?.k === "input") && hasCircuit(m);
   const boards = m.boards.length > 0;
-  const shown: Section = (section === "sound" && !sound) || (section === "board" && !boards) ? "overview" : section;
+  const belts = m.belts.length > 0;
+  const shown: Section = (section === "sound" && !sound) || (section === "board" && !boards) || (section === "belts" && !belts) ? "overview" : section;
   const verdict = ready.level === "ready" ? { cls: "pass", word: "ready to build" } : ready.level === "review" ? { cls: "warn", word: "review first" } : { cls: "fail", word: "not ready" };
   const makePack = async () => {
     setBusy(true);
@@ -95,6 +97,7 @@ export function MachinePanel() {
             { value: "overview", label: "Overview" },
             ...(sound ? [{ value: "sound" as const, label: "Sound", title: "The circuit simulated: turn the knobs, see the response and listen" }] : []),
             ...(boards ? [{ value: "board" as const, label: <>Board{m.boards.length > 1 && <span className="seg-n">{m.boards.length}</span>}</>, title: "Circuit board layout, rule check and board house files" }] : []),
+            ...(belts ? [{ value: "belts" as const, label: <>Belts{m.belts.length > 1 && <span className="seg-n">{m.belts.length}</span>}</>, title: "Timing belts: path, tension, pluck notes and stiffness" }] : []),
             { value: "wiring", label: <>Wiring{rows.length > 0 && <span className="seg-n">{rows.length}</span>}</>, title: "Wiring diagram and wire list" },
             { value: "calcs", label: <>Calculations{m.calcs.length > 0 && <span className="seg-n">{m.calcs.length}</span>}</>, title: "Engineering calculations with their working" },
             { value: "firmware", label: <>Firmware{fwFiles > 0 && <span className="seg-n">{fwFiles}</span>}</>, title: "Code generated to match the wiring" },
@@ -117,6 +120,7 @@ export function MachinePanel() {
         {shown === "overview" && <Overview model={model} m={m} ready={ready} rows={rows} plan={plan} fw={fw} checking={checking} />}
         {shown === "sound" && <SoundPanel m={m} />}
         {shown === "board" && <BoardView model={model} m={m} items={items} />}
+        {shown === "belts" && <Belts model={model} m={m} />}
         {shown === "wiring" && <Wiring model={model} m={m} rows={rows} items={items} name={name} />}
         {shown === "calcs" && <Calcs m={m} items={items} />}
         {shown === "firmware" && <Firmware fw={fw} />}

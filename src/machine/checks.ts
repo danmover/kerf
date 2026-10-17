@@ -8,6 +8,7 @@ import { placementItems } from "./boardChecks";
 import { circuitChecks } from "./circuit/analysis";
 import { electricalChecks, motorSupplies } from "./erc";
 import type { MachineData } from "./types";
+import { beltChecks } from "./belts";
 
 /** How far a DC gearmotor's stall torque and current scale on its driver's supply (1 for its rated voltage or unknown). */
 function supplyScale(supplies: Map<string, number>, comp: string, specs: Record<string, unknown>): number {
@@ -36,6 +37,7 @@ export function machineChecks(m: MachineData): CheckItem[] {
   out.push(...electricalChecks(m, { motorCurrent: current }));
   out.push(...circuitChecks(m));
   out.push(...placementItems(m));
+  for (const b of m.belts) out.push(...beltChecks(b));
 
   for (const mc of m.components) {
     const p = catalogPart(mc.catalogId);

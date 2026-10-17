@@ -10,6 +10,7 @@ import { xformMatrix } from "../kernel/recipe";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { bomRows, bomTotal, writeStl, type BomRow } from "../persist/files";
+import { beltTest } from "./belts";
 import { catalogPart } from "./catalog";
 import { boardPackFiles, boardWord, routeBoards, type BoardFolder } from "./boardPack";
 import { buildNetlist, netLabel } from "./erc";
@@ -191,6 +192,11 @@ export function testPlan(m: MachineData): PlanItem[] {
   for (const { part, comps } of byPart.values()) {
     for (const t of part.tests ?? []) out.push({ title: `${listJoin(comps)}: ${part.name}`, source: "part", ...splitTest(t), parts: comps, required: true });
   }
+  // belt tension is set by ear (or tuner) during assembly, from the frequency the belt calculation gives
+  for (const b of m.belts) {
+    const t = beltTest(b);
+    if (t) out.push({ title: t.title, source: "calculation", steps: t.steps, pass: t.pass, parts: [b.name], required: true });
+  }
   for (const c of m.calcs) {
     if (!c.verify) continue;
     const s = splitTest(c.verify);
@@ -245,6 +251,10 @@ export function cutList(model: Model): CutGroup[] {
         }
       g.stockCount = bars.length;
       g.note = `Plan: ${plural(g.stockCount, "bar")} of ${g.stockLength} mm if you cut them yourself (${SAW_KERF} mm allowed per saw cut). Most shops will also cut to these lengths for a small fee.`;
+    } else if (g.part.kind === "belt") {
+      const total = g.cuts.reduce((n, c) => n + c.length * c.qty, 0);
+      const metres = Math.ceil(total / 1000);
+      g.note = `Belt is sold by the metre: ${metres} m covers ${g.cuts.length === 1 && g.cuts[0].qty === 1 ? "it" : "every piece"}, and a ${metres <= 5 ? 5 : 10} m roll leaves a spare. Cut after fitting one end, at the length the tension gives, not before.`;
     } else {
       g.note = `Order each piece at its length, or the next standard length up and cut it down${g.part.kind === "lead_screw" ? " (keep the machined end if it has one)" : ""}.`;
     }

@@ -185,6 +185,8 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     }
     case "knurl":
       return buildKnurl(r.d, r.h, r.at, r.dir, r.count, r.depth, r.style, detail);
+    case "lod":
+      return buildShape(detail ? r.detail : r.fast, detail);
   }
 }
 
