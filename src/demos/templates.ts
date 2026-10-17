@@ -116,7 +116,7 @@ export const TEMPLATES: Template[] = [
       "Give each Z motor its own driver so the gantry levels itself, and update the wiring and Klipper config",
       "Why is the power supply at 92 % with everything heating, and what would you change?",
     ],
-    stats: "96 parts · 28 requirements · Klipper",
+    stats: "98 parts · 28 requirements · Klipper",
   },
   {
     id: "practice-amp",

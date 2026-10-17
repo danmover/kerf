@@ -43,6 +43,8 @@ export interface WireRow {
   colorSuggested: boolean;
   /** cut length in mm: the distance between the parts plus slack, when positions are known */
   lengthMm?: number;
+  /** lengthMm was measured along the cable's route in the 3D wiring, not estimated from the parts' positions */
+  lengthRouted?: boolean;
   /** the net has a name in the design; otherwise `net` is the controller pin or the wire's label */
   named: boolean;
   /** the design's own label for the wire */
@@ -222,15 +224,22 @@ function estimateLength(a: NetPin, b: NetPin, pos?: Map<string, V3[]>): number |
   if (!pa || !pb) return undefined;
   // routed along the frame rather than in a straight line, plus slack for the ends and a service loop
   const run = Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) + Math.abs(pa[2] - pb[2]);
-  return Math.ceil((run + SLACK_MM) / 50) * 50;
+  return cutLength(run);
 }
+
+/** The length to cut for a run of this many mm: slack for the ends and a service loop, rounded up to 50 mm. */
+export const cutLength = (runMm: number) => Math.ceil((runMm + SLACK_MM) / 50) * 50;
 
 const end = (p: NetPin): WireEnd => ({ comp: instName(p), index: p.index, pin: p.pin.id, label: pinText(p), part: p.part.name });
 
 const KIND_ORDER: Record<WireKind, number> = { ground: 0, signal: 1, motor: 2, cable: 3, power: 4 };
 
-/** Every physical wire to make, in build order: ground first, power last. Nets are wired as a star from their supply pin. */
-export function wireList(m: MachineData, positions?: Map<string, V3[]>): WireRow[] {
+/**
+ * Every physical wire to make, in build order: ground first, power last. Nets are wired as a star from their supply pin.
+ * `routed` holds each wire's run along its 3D cable route by wire id, when the cables have been routed; those lengths
+ * replace the estimates, so the wire list, the build pack and the 3D wiring agree.
+ */
+export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?: Map<string, number>): WireRow[] {
   const nl = buildNetlist(m);
   const items = buildItems(m, nl);
   const rows: (Omit<WireRow, "id"> & { order: number })[] = [];
@@ -266,7 +275,11 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>): WireRow
     }
   });
   rows.sort((x, y) => x.order - y.order);
-  return rows.map(({ order: _o, ...r }, i) => ({ id: `W${i + 1}`, ...r }));
+  return rows.map(({ order: _o, ...r }, i) => {
+    const id = `W${i + 1}`;
+    const run = routed?.get(id);
+    return run === undefined ? { id, ...r } : { id, ...r, lengthMm: cutLength(run), lengthRouted: true };
+  });
 }
 
 export function csvCell(v: string | number | undefined): string {

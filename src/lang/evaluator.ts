@@ -15,9 +15,10 @@ import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
 import { CalcObj, calcNamespace } from "../machine/calcs";
-import { catalogPart } from "../machine/catalog";
+import { catalogOfKind, catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
-import { emptyMachine, type MachineComponent, type MachineData, type PinRef } from "../machine/types";
+import { emptyMachine, type BeltDef, type MachineComponent, type MachineData, type PinRef } from "../machine/types";
+import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
 import { MEASURED } from "../machine/measured";
 import { suggest } from "./suggest";
@@ -973,6 +974,7 @@ class Evaluator {
       has: (n) => args.has(n),
     };
     let def: CompDef;
+    let belt: BeltDef | undefined;
     let imported: { ref: ImportRef; origin: ImportOrigin } | undefined;
     if (key === "step") {
       const table = this.opts.imports ?? evalImports();
@@ -984,6 +986,12 @@ class Evaluator {
       if (!ref.meta.bodies.length) throw new EvalError(`"${ref.name}" has no geometry Kerf could read`, s.call.span);
       imported = { ref, origin };
       def = importDef(ref, origin);
+    } else if (key === "belt") {
+      const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "on", "side", "load"].find((k) => props[k] !== undefined);
+      if (placed) throw new EvalError(`A belt follows its path: leave out ${placed}:`, propSpans[placed]);
+      const made = this.belt(s, args);
+      def = made.def;
+      belt = made.belt;
     } else {
       try {
         def = entry!.make(libArgs, phase);
@@ -1127,6 +1135,12 @@ class Evaluator {
           span: s.span,
         });
         const mc = this.machine.components[this.machine.components.length - 1];
+        if (belt) {
+          belt.role = mc.role;
+          belt.label = mc.label;
+          this.machine.belts.push(belt);
+          this.machine.calcs.push({ ...beltTrace(belt), name: s.name, span: s.span });
+        }
         if (onBoard && def.board) {
           if (mc.ref && this.machine.components.some((o) => o !== mc && o.ref === mc.ref)) throw new EvalError(`ref: "${mc.ref}" is already used`, propSpans.ref);
           if (!mc.ref) this.pendingRefs.push({ mc, prefix: def.board.refPrefix });
@@ -1206,6 +1220,161 @@ class Evaluator {
       used.add(mc.ref);
       next.set(prefix, n + 1);
     }
+  }
+
+  /** lib.belt: resolve the path to pulleys and clamp points, lay it out, draw it and work out what tension does. */
+  belt(s: Extract<Stmt, { k: "component" }>, args: Args): { def: CompDef; belt: BeltDef } {
+    const ctx = this.ctx();
+    const id = args.str("id");
+    const part = catalogPart(id);
+    if (!part || part.kind !== "belt") throw new EvalError(`"${id}" is not a belt. Belts: ${catalogOfKind("belt").map((p) => p.id).join(", ")}`, s.call.span);
+    const spec = beltSpec(part);
+    const argSpan = (name: string) => s.call.args.find((a) => a.name === name)?.span ?? s.call.span;
+    const pathV = args.value("path");
+    if (!Array.isArray(pathV)) throw new EvalError('lib.belt() needs path: the pulleys in the order the belt meets them, like path: [clamp_a, motor_pulley, idler, clamp_b]', argSpan("path"));
+    const outsideV = args.value("outside");
+    if (outsideV !== undefined && !Array.isArray(outsideV)) throw new EvalError("outside: should be a list of the idlers the belt's back runs on, like outside: [tensioner]", argSpan("outside"));
+    const nameOf = (v: Obj) => String(v.fields.name) + (typeof v.fields.index === "number" ? `[${v.fields.index}]` : "");
+    const outside = new Set((outsideV ?? []).map((v) => (v instanceof Obj && v.kind === "component" ? nameOf(v) : "")));
+    const num = (v: Value | undefined) => (typeof v === "number" ? v : undefined);
+    const nodes: BeltIn[] = pathV.map((v, i) => {
+      if (v instanceof Obj && v.kind === "component") {
+        const name = nameOf(v);
+        if (typeof v.fields.count === "number") throw new EvalError(`path: "${name}" is a pattern of ${v.fields.count}: pick one, like ${name}.all[0]`, argSpan("path"));
+        this.current?.add(String(v.fields.name));
+        const f = v.fields;
+        const vec = (k: string) => (f[k] instanceof Vec ? toV3(f[k], ctx, k) : undefined);
+        const cp = typeof f.catalog_id === "string" ? catalogPart(f.catalog_id) : undefined;
+        if (f.kind === "bearing") {
+          // a plain bearing as a smooth idler: the belt runs on its outer ring
+          const c = vec("center");
+          const axis = vec("axis");
+          if (!c || !axis) throw new EvalError(`path: bearing "${name}" has no position`, argSpan("path"));
+          return { k: "pulley", name, c, axis, pd: num(f.od) ?? 10, smooth: true, contactD: num(f.od) ?? 10, grooveW: num(f.width), driver: false, outside: outside.has(name), label: `${String(f.code)} bearing` } satisfies PulleyIn;
+        }
+        if (cp?.kind !== "pulley") throw new EvalError(`path: "${name}" is not a pulley. Belts run on lib.pulley components (or a lib.bearing as a smooth idler): put a pulley on ${name}'s shaft and use that`, argSpan("path"));
+        const c = vec("belt_center");
+        const axis = vec("axis");
+        if (!c || !axis) throw new EvalError(`path: pulley "${name}" has no belt centre`, argSpan("path"));
+        const smooth = cp.specs.smooth === true;
+        const teeth = num(cp.specs.teeth as Value);
+        const pitch = num(cp.specs.pitch as Value);
+        if (!smooth && pitch !== undefined && Math.abs(pitch - spec.pitch) > 1e-6) throw new EvalError(`path: ${name} is a ${pitch} mm pitch pulley and the belt is ${spec.pitch} mm pitch`, argSpan("path"));
+        return {
+          k: "pulley",
+          name,
+          c,
+          axis,
+          pd: num(f.pd) ?? 12.73,
+          teeth,
+          smooth,
+          contactD: num(f.contact_d) ?? num(f.pd) ?? 12,
+          grooveW: num(f.groove_w),
+          beltW: num(cp.specs.belt_w as Value),
+          driver: typeof cp.specs.mm_per_rev === "number",
+          outside: outside.has(name),
+          label: smooth ? "smooth idler" : `${teeth ?? ""}-tooth ${typeof cp.specs.mm_per_rev === "number" ? "pulley" : "idler"}`,
+        } satisfies PulleyIn;
+      }
+      if (!(v instanceof Vec)) throw new EvalError(`path: item ${i + 1} should be a pulley component or a clamp point like (x, y, z), got ${typeName(v)}`, argSpan("path"));
+      return { k: "point", p: toV3(v, ctx, `path: item ${i + 1}`) };
+    });
+    for (const o of outside) if (!nodes.some((nd) => nd.k === "pulley" && nd.name === o)) throw new EvalError(`outside: ${o || "each item"} should be one of the pulleys in path:`, argSpan("outside"));
+
+    let layout;
+    try {
+      layout = layoutBelt(nodes, spec);
+    } catch (e) {
+      if (e instanceof BeltError) throw new EvalError(e.message, argSpan("path"));
+      throw e;
+    }
+    if (spec.closed && layout.open) throw new EvalError(`${part.name} is an endless loop: give it pulleys only, or use an open belt such as "gt2_6mm" with clamp points at both ends`, argSpan("path"));
+    if (!spec.closed && !layout.open) throw new EvalError(`${part.name} is bought by the metre and clamped at both ends: a closed path needs an endless belt such as "gt2_6mm_loop"`, argSpan("path"));
+
+    // the drive pulley and the motor it sits on
+    let drive: number | undefined;
+    const driveV = args.value("drive");
+    if (driveV !== undefined) {
+      const dn = driveV instanceof Obj && driveV.kind === "component" ? nameOf(driveV) : "";
+      drive = layout.nodes.findIndex((nd) => nd.kind === "pulley" && nd.name === dn);
+      if (drive < 0) throw new EvalError("drive: should be one of the toothed pulleys in path:", argSpan("drive"));
+      if (layout.nodes[drive].smooth) throw new EvalError(`drive: ${dn} is a smooth idler and cannot drive a timing belt`, argSpan("drive"));
+    }
+    const tensionV = args.value("tension");
+    if (tensionV !== undefined && !(typeof tensionV === "number" && tensionV > 0 && tensionV <= 500)) throw new EvalError("tension: the installation tension in newtons, like tension: 15N", argSpan("tension"));
+    const loadArg = (k: string, what: string) => {
+      const v = args.value(k);
+      if (v === undefined) return undefined;
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new EvalError(`${k}: ${what}`, argSpan(k));
+      return v;
+    };
+    const load = {
+      mass: loadArg("mass", "the moving mass in grams, like mass: 600 or 0.6kg"),
+      accel: loadArg("accel", "the acceleration in mm/s², like accel: 3000"),
+      friction: loadArg("friction", "steady friction in newtons, like friction: 5N"),
+      torque: loadArg("torque", "torque at the drive pulley in N·mm, like torque: 0.4Nm"),
+      force: loadArg("force", "the peak pull in newtons, like force: 20N"),
+    };
+    if ((load.mass === undefined) !== (load.accel === undefined) && load.force === undefined && load.torque === undefined) throw new EvalError("Give both mass: and accel: (what the belt moves and how hard)", argSpan(load.mass === undefined ? "accel" : "mass"));
+    drive ??= drivePulley(layout);
+    const dIn = drive !== undefined ? layout.inputs[drive] : undefined;
+    // the motor the drive pulley sits on: its shaft axis runs through the pulley
+    let motor: MotorIn | undefined;
+    for (const info of dIn ? this.comps.values() : []) {
+      const cp = info.def.catalog ? catalogPart(info.def.catalog.id) : undefined;
+      if (!cp || (cp.kind !== "stepper" && cp.kind !== "gearmotor")) continue;
+      const insts = Array.isArray(info.value.fields.all) ? (info.value.fields.all as Obj[]) : [info.value];
+      for (const inst of insts) {
+        const face = inst.fields.face instanceof Vec ? toV3(inst.fields.face, ctx, "face") : undefined;
+        const axis = inst.fields.axis instanceof Vec ? toV3(inst.fields.axis, ctx, "axis") : undefined;
+        if (!face || !axis) continue;
+        const m: MotorIn = { name: nameOf(inst), label: cp.name, face, axis, holdNmm: cp.kind === "stepper" ? num(cp.specs.t_hold as Value) : undefined, stepDeg: num(cp.specs.step_deg as Value), radialN: num(cp.specs.radial_n as Value), radialAt: num(cp.specs.radial_at as Value) };
+        if (onShaft(m, dIn!)) motor ??= m;
+      }
+      if (motor) break;
+    }
+    const a = analyseBelt(layout, spec, { tension: num(tensionV), load, drive, motor });
+
+    const tensionArg = s.call.args.find((x) => x.name === "tension");
+    const tensionParam = tensionArg?.value.k === "ident" && this.params.some((p) => p.name === (tensionArg.value as { name: string }).name) ? (tensionArg.value as { name: string }).name : undefined;
+    const label = part.name;
+    const bd: BeltDef = {
+      name: s.name,
+      catalogId: part.id,
+      label,
+      open: layout.open,
+      length: Math.round(layout.length * 1000) / 1000,
+      cutLength: a.cutLength,
+      stockLength: a.stockLength,
+      teeth: a.teeth,
+      tension: a.tension,
+      tensionAssumed: a.tensionAssumed,
+      tensionSpan: tensionArg?.value.span,
+      tensionParam,
+      belt: { pitch: spec.pitch, width: spec.width, core: spec.core, mass: spec.mass, ea: spec.ea, teMax: spec.teMax, tMin: spec.tMin, tMax: spec.tMax, minTeeth: spec.minTeeth, stock: spec.stock },
+      plane: { o: layout.o, u: layout.u, v: layout.v, n: layout.n },
+      nodes: layout.nodes,
+      spans: a.spans,
+      pieces: layout.pieces.map((p) => (p.k === "line" ? { k: "line", a: p.a, b: p.b } : { k: "arc", c: p.c, r: p.r, a0: p.a0, sweep: p.sweep })),
+      drive: a.drive !== undefined ? layout.nodes[a.drive].name : undefined,
+      motor: motor && dIn ? { name: motor.name, label: motor.label, holdNmm: motor.holdNmm, stepDeg: motor.stepDeg, radialN: motor.radialN, radialAt: motor.radialAt, lever: Math.round(motorLever(motor, dIn) * 10) / 10 } : undefined,
+      load: a.load,
+      figures: a.figures,
+      span: s.span,
+    };
+    const recipe = beltRecipe(layout, spec);
+    const ends: Record<string, V3> = layout.open ? { start: layout.spans[0].a3, end: layout.spans[layout.spans.length - 1].b3 } : {};
+    const desc = layout.open ? `${part.name}, cut to ${bd.cutLength} mm` : `${part.name}, ${bd.stockLength} mm loop (${Math.round((bd.stockLength ?? 0) / spec.pitch)} teeth)`;
+    const def: CompDef = {
+      kind: "belt",
+      label,
+      placement: "free",
+      solids: [{ suffix: "", label: `${s.name} (${layout.open ? `${bd.cutLength} mm` : `${bd.stockLength} mm loop`})`, recipe, color: part.geom.color ?? "#1b1d21", material: part.geom.material ?? "Neoprene", finish: "matte" }],
+      fields: { scalars: beltFields(bd), points: ends, dirs: { normal: layout.n } },
+      bom: { description: desc, standard: part.mpn ? `${part.maker ?? ""} ${part.mpn}`.trim() : undefined, catalogId: part.id, length: layout.open ? bd.cutLength : undefined },
+      catalog: { id: part.id, length: layout.open ? bd.cutLength : undefined },
+    };
+    return { def, belt: bd };
   }
 
   compRef(v: Value, span: Span, what: string): CompInfo {

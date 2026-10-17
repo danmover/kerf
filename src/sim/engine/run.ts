@@ -12,6 +12,7 @@ import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
 import { Plant } from "./plant";
 import { SimHal, type SerialLine, type SimFault } from "./hal";
 import type { DisplayFrame } from "./devices";
+import type { PrintTrace } from "../printer/run";
 
 export type { DisplayFrame };
 import type { SceneSpec, World, WorldEvent } from "../worlds/types";
@@ -100,6 +101,8 @@ export interface VariantRun {
   limits: string[];
   /** what each display showed over the run */
   displays: DisplayRun[];
+  /** a printer run: every move as it really happened */
+  print?: PrintTrace;
 }
 
 export interface DisplayRun {

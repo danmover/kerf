@@ -30,6 +30,8 @@ import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { SimLayer } from "./sim/SimLayer";
+import { WiringLayer } from "./WiringLayer";
+import { toggleWiring, useWiringView } from "./wiringView";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -55,6 +57,8 @@ export function Viewport() {
   const inSketch = useSketch((s) => !!s.active);
   const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
   const [photo, setPhoto] = useState<PhotoStatus>({ state: "off", samples: 0, max: 0 });
+  const wiring = useWiringView((s) => s.on);
+  const hasWires = !!model?.machine && model.machine.wires.length + model.machine.nets.length > 0;
 
   useEffect(() => {
     if (!mount.current) return;
@@ -238,6 +242,11 @@ export function Viewport() {
           <Icon.Target />
         </button>
         <MeasureButton />
+        {hasWires && (
+          <button className={`icon-btn ${wiring ? "active" : ""}`} onClick={() => toggleWiring()} data-tip="Wiring: every cable and plug (W)" aria-label="Wiring" aria-pressed={wiring}>
+            <Icon.Plug />
+          </button>
+        )}
         <div className="sep" />
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
@@ -322,6 +331,7 @@ export function Viewport() {
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
       {scene && !inSketch && <SimLayer scene={scene} />}
+      {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 

@@ -13,11 +13,14 @@ import type { HingeSpec, SandPitSpec, ScrewSpec, TunnellerSpec } from "./worlds/
 import { VARIANTS, type VariantName } from "./worlds/common";
 import { catalogPart } from "../machine/catalog";
 import type { MachineData } from "../machine/types";
+import { flavorOf, PRINTER_FLAVORS } from "../machine/firmware/printer";
+import type { PrinterWorldSpec } from "./printer/run";
+import { TEST_SHAPES, type PrintMaterial, type TestPrintSpec, type TestShape } from "./printer/testPrint";
 
 /** A world or machine description made by a sim.* function. */
 export class SimSpec extends Obj {
   constructor(
-    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "fault" | "measured",
+    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "fault" | "print" | "measured",
     public data: unknown,
     label: string,
   ) {
@@ -54,7 +57,8 @@ export const FAULT_WORDS: Record<FaultKind, string> = { jam: "jams", unplug: "is
 
 export type WorldSpec =
   | { kind: "sand_pit"; pit: Omit<SandPitSpec, "start"> & { start: PitStart }; robot: TunnellerSpec }
-  | { kind: "bench"; bench: BenchSpec };
+  | { kind: "bench"; bench: BenchSpec }
+  | { kind: "printer"; printer: PrinterWorldSpec };
 
 /** Everything a run needs (the expectations are checked afterwards, on the main thread). */
 export interface ScenarioSpec {
@@ -301,6 +305,56 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
       return new SimSpec("fault", { kind: "aged", target: compName(a.value("part"), ctx, "sim.aged(): part"), at: 0, capacity, resistance } satisfies FaultSpec, "old battery");
     },
   ),
+  simFn(
+    "printer",
+    ["print", "gcode", "flavor", "material", "ambient"],
+    'A 3D printer printing: the firmware block\'s generated config (Klipper, Marlin or RepRapFirmware) runs the G-code through that firmware\'s own planner, heater control and safety checks, driving the printer the design describes (its motors, moving masses, heaters, hotend melt rate and power supply). print: a sim.test_print(...) to slice for this printer, or gcode: G-code text to run; flavor: run a different firmware than the block\'s own, "klipper", "marlin" or "reprapfirmware" (the board must run it); material: "PLA", "PETG" or "ABS" for gcode: (PLA); ambient: room temperature (20C). Change firmware settings for one run with config: sim.config(MAX_ACCEL: 6000).',
+    (a, ctx) => {
+      const pv = a.value("print");
+      const gcode = a.has("gcode") ? a.str("gcode") : undefined;
+      if (pv !== undefined && !(pv instanceof SimSpec && pv.what === "print")) return ctx.error(`sim.printer(): print should be sim.test_print(...), not ${typeName(pv)}`);
+      if (pv === undefined && gcode === undefined) return ctx.error('sim.printer(): give it something to print: print: sim.test_print("cube") or gcode: "G28 ..."');
+      const fl = a.has("flavor") ? a.str("flavor") : undefined;
+      const flavor = fl === undefined ? undefined : flavorOf(fl);
+      if (fl !== undefined && !flavor) return ctx.error(`sim.printer(): flavor should be one of ${PRINTER_FLAVORS.map((f) => `"${f}"`).join(", ")}`);
+      const material = a.str("material", "PLA").toUpperCase();
+      if (!MATERIALS.includes(material as PrintMaterial)) return ctx.error(`sim.printer(): material should be ${MATERIALS.map((m) => `"${m}"`).join(", ")}`);
+      const spec: PrinterWorldSpec = { test: pv instanceof SimSpec ? (pv.data as PrinterWorldSpec["test"]) : undefined, gcode, flavor, material: material as PrintMaterial, ambient: a.num("ambient", 20) };
+      return new SimSpec("world", { kind: "printer", printer: spec }, "printer");
+    },
+  ),
+  simFn(
+    "test_print",
+    ["shape", "size", "height", "layer", "first_layer", "walls", "infill", "solid", "speed", "first_speed", "travel", "material", "hotend", "bed", "vase"],
+    `A test print Kerf slices for the printer, with the start and end G-code its firmware expects. shape: ${Object.entries(TEST_SHAPES).map(([k, v]) => `"${k}" (${v.replace(/\.$/, "")})`).join("; ")}. size: cube edge, cylinder diameter, square or box side (20 mm; first_layer 50 mm; box 40 mm); height; layer: layer height (0.2 mm); first_layer: its height; walls (2); infill: sparse infill share (15%); solid: solid layers top and bottom (4); speed: walls and infill (PLA 60 mm/s); first_speed (25 mm/s); travel (150 mm/s); material: "PLA", "PETG" or "ABS"; hotend, bed: temperatures (from the material); vase: one spiral wall.`,
+    (a, ctx) => {
+      const shape = a.str("shape", "cube");
+      if (!Object.hasOwn(TEST_SHAPES, shape)) return ctx.error(`sim.test_print(): shape should be ${Object.keys(TEST_SHAPES).map((k) => `"${k}"`).join(", ")}`);
+      const out: Partial<TestPrintSpec> & { shape: TestShape } = { shape: shape as TestShape };
+      const n = (k: string, to: keyof TestPrintSpec) => {
+        if (a.has(k)) (out as Record<string, unknown>)[to] = a.positive(k);
+      };
+      n("size", "size");
+      n("height", "height");
+      n("layer", "layer");
+      n("first_layer", "firstLayer");
+      n("speed", "speed");
+      n("first_speed", "firstSpeed");
+      n("travel", "travel");
+      n("hotend", "hotend");
+      n("bed", "bed");
+      if (a.has("walls")) out.walls = Math.round(a.positive("walls"));
+      if (a.has("solid")) out.solid = Math.round(a.num("solid"));
+      if (a.has("infill")) out.infill = a.num("infill");
+      if (a.has("vase")) out.vase = a.bool("vase");
+      if (a.has("material")) {
+        const m = a.str("material").toUpperCase();
+        if (!MATERIALS.includes(m as PrintMaterial)) return ctx.error(`sim.test_print(): material should be ${MATERIALS.map((x) => `"${x}"`).join(", ")}`);
+        out.material = m as PrintMaterial;
+      }
+      return new SimSpec("print", out, `test print: ${shape}`);
+    },
+  ),
   simFn("type", ["text", "at"], 'Text typed into the serial console during the run. text: what to type (a newline is added); at: when, seconds after power-up.', (a) => new SimSpec("type", { t: a.num("at", 1), text: a.str("text") }, "console input")),
 ]);
 
@@ -312,6 +366,8 @@ function fault(kind: FaultKind, target: string, a: Args, flicker = false): SimSp
   const f: FaultSpec = { kind, target, at, ...(until !== undefined ? { until } : {}), ...(flicker ? { flicker } : {}) };
   return new SimSpec("fault", f, `${target} ${FAULT_WORDS[kind]}`);
 }
+
+const MATERIALS: PrintMaterial[] = ["PLA", "PETG", "ABS"];
 
 function hinge(a: Args, ctx: CallCtx, slope: number, friction: number): SimSpec {
   const actuator = compName(a.value("actuator"), ctx, `${a.fname}(): actuator`);
@@ -328,14 +384,14 @@ const CONFIG_FN = new Fn(
     if (pos.length) ctx.error("sim.config() takes named values only, like sim.config(STEER_SIGN: -1)");
     const out: Record<string, number | string> = {};
     for (const [k, v] of Object.entries(named)) {
-      if (!/^[A-Z_][A-Z0-9_]*$/.test(k)) ctx.error(`sim.config(): "${k}" is not a firmware setting name (they are in capitals, like POWER)`);
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(k)) ctx.error(`sim.config(): "${k}" is not a firmware setting name (they are in capitals, like POWER or MAX_ACCEL)`);
       if (typeof v === "number" || typeof v === "string") out[k] = v;
       else if (typeof v === "boolean") out[k] = v ? 1 : 0;
       else ctx.error(`sim.config(): ${k} should be a number or text`);
     }
     return new SimSpec("config", out, "firmware settings");
   },
-  "Firmware settings (#define values in config.h) to change for this run only, e.g. sim.config(STEER_SIGN: -1, POWER: 0.7). Use it to try a fix before changing the firmware block.",
+  "Firmware settings to change for this run only. Arduino: #define values in config.h, e.g. sim.config(STEER_SIGN: -1, POWER: 0.7). Printers: the firmware block's settings in capitals, e.g. sim.config(MAX_ACCEL: 6000, SQUARE_CORNER_VELOCITY: 8, X_RUN_CURRENT: 1.1). Use it to try a fix before changing the firmware block.",
 );
 
 /** sim.measured(name: value, ...): numbers measured on the real part, for its `measured:` property. */
@@ -390,8 +446,8 @@ export function scenarioSpec(
     if (robot !== undefined) return fail("robot: goes with a world: give the world too, or leave robot: out to keep the one from like:", p.span("robot"));
     ws = base.world;
   } else {
-    if (world === undefined) return fail(`Scenario "${label}" needs a world, like world: sim.sand_pit(length: 2m, width: 0.5m, depth: 5m) or world: sim.bench()`, p.span("world"));
-    if (!(world instanceof SimSpec && world.what === "world")) return fail(`world: should be sim.sand_pit(...) or sim.bench(...), not ${typeName(world)}`, p.span("world"));
+    if (world === undefined) return fail(`Scenario "${label}" needs a world, like world: sim.sand_pit(length: 2m, width: 0.5m, depth: 5m), world: sim.bench() or world: sim.printer(print: sim.test_print("cube"))`, p.span("world"));
+    if (!(world instanceof SimSpec && world.what === "world")) return fail(`world: should be sim.sand_pit(...), sim.bench(...) or sim.printer(...), not ${typeName(world)}`, p.span("world"));
     const w = world.data as { kind: string };
     if (w.kind === "sand_pit") {
       const pit = (w as unknown as { pit: Omit<SandPitSpec, "start"> & { start: PitStart } }).pit;
@@ -412,7 +468,7 @@ export function scenarioSpec(
     label,
     world: ws,
     firmware: p.firmware ?? base?.firmware,
-    duration: inherit("duration", "duration", () => duration(p, fail)),
+    duration: inherit("duration", "duration", () => duration(p, fail, ws.kind)),
     console: inherit("console", "console", () => consoleOf(p, fail)),
     config: inherit("config", "config", () => configOf(p, fail)),
     variants: inherit("variants", "variants", () => variantsOf(p, fail)),
@@ -422,8 +478,9 @@ export function scenarioSpec(
   };
 }
 
-function duration(p: ScenarioProps, fail: (msg: string, span: Span) => never): number {
-  const d = num(p, "duration", 600, fail);
+function duration(p: ScenarioProps, fail: (msg: string, span: Span) => never, world: WorldSpec["kind"]): number {
+  // a print can take hours; anything else ten minutes unless it says
+  const d = num(p, "duration", world === "printer" ? 4 * 3600 : 600, fail);
   if (d <= 0 || d > 4 * 3600) fail("duration: more than 0 s and at most 4 h of simulated time", p.span("duration"));
   return d;
 }

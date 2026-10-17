@@ -37,6 +37,7 @@ const GROUPS: Record<CatalogKind, string> = {
   linear_bearing: "Motion",
   lead_screw: "Motion",
   pulley: "Motion",
+  belt: "Motion",
   coupler: "Motion",
   seal: "Seals",
   resistor: "Circuit board",
@@ -71,7 +72,8 @@ const KIND_DOC: Partial<Record<CatalogKind, string>> = {
   rail: "Linear rail along `axis`, rail underside at `at`, carriage up along local Y. Args: length (required), travel (carriage position). Fields: carriage_top, carriage_holes, end.",
   rod: "Round bar along `axis`, `at` is one end. Args: length (required).",
   lead_screw: "Screw along `axis`, `at` is one end. Args: length (required), travel (nut position). Fields: nut_face, nut_bottom, nut_holes, end.",
-  pulley: "Pulley on `axis`, `at` is the hub-side face. Fields: belt_center, end, pd.",
+  pulley: "Pulley on `axis`, `at` is the hub-side face. Fields: belt_center, end, pd, groove_w (contact_d for smooth idlers).",
+  belt: "Timing belt round pulleys: see Belts below. No at: or axis: (the path places it).",
   coupler: "Shaft coupler along `axis`, `at` is the bore1 end. Fields: end, center.",
   hotend: "`at` is the nozzle tip, `axis` points up toward the mount. Fields: nozzle, mount_top, groove, sink_center.",
   extruder: "Filament drive bolted to a NEMA 17 face: `at` is the motor-side face centre, `axis` is the motor axis. Fields: filament_in, filament_out, top.",
@@ -339,6 +341,21 @@ const VALUED: Record<string, LibEntry> = {
   },
 };
 
+/** lib.belt: placed by its path, so the evaluator lays it out (machine/belts.ts) instead of make(). */
+const BELT: LibEntry = {
+  signature: 'lib.belt("gt2_6mm", path: [clamp_a, motor_pulley, idler, clamp_b], tension: 15N, mass: 600, accel: 3000) { role: "x" }',
+  doc: `Timing belt round its pulleys. path: the pulleys in the order the belt meets them, starting and ending at the two clamp points for an open belt (a carriage axis), or pulleys only for a closed loop; pulleys are lib.pulley components or lib.bearing used as a smooth idler. outside: [idler]: idlers the belt's back runs on. tension: installation tension (N). Load: mass (g) and accel (mm/s²) of what it moves, plus friction (N); or torque (N·mm at the drive pulley). drive: the driving pulley (default: the first pulley with a travel per turn). Ids: ${catalogOfKind("belt")
+    .map((p) => p.id)
+    .join(", ")}.`,
+  positional: ["id"],
+  params: ["id", "path", "outside", "tension", "mass", "accel", "friction", "torque", "force", "drive"],
+  group: "Motion",
+  machine: true,
+  make() {
+    throw new Error("lib.belt is laid out from its path");
+  },
+};
+
 export const MACHINE_LIBRARY: Record<string, LibEntry> = {
   part: {
     signature: 'lib.part("id") { at: (x, y, z) }',
@@ -351,6 +368,7 @@ export const MACHINE_LIBRARY: Record<string, LibEntry> = {
     },
   },
   ...Object.fromEntries(CATALOG_KINDS.map((k) => [k, kindEntry(k)])),
+  belt: BELT,
   ...VALUED,
   potentiometer: VALUED.pot,
 };

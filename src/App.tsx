@@ -24,6 +24,7 @@ import { AuthDialog } from "./ui/Account";
 import { initAccount } from "./cloud/account";
 import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
+import { toggleWiring } from "./ui/wiringView";
 import { startMaterialChecks } from "./materials/runtime";
 import { startAssemblyChecks } from "./mfg/dfaRuntime";
 import { startHeatAndWearChecks } from "./machine/runtime";
@@ -179,6 +180,8 @@ function useShortcuts() {
           return useView.setState({ explode: v.explode > 0 ? 0 : 0.5 });
         case "x":
           return useView.setState({ xray: !v.xray });
+        case "w":
+          return toggleWiring();
         case "m":
           return toggleMarkup();
         case "c":
