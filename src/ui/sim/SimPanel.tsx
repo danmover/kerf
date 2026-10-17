@@ -17,6 +17,7 @@ import type { ScenarioDef } from "../../sim/scenario";
 import type { VariantRun } from "../../sim/engine/run";
 import { VARIANTS, VARIANT_LABEL, type VariantName } from "../../sim/worlds/common";
 import { DEFAULT_PLOTS, channelInfo } from "../../sim/channels";
+import { FLAVOR_NAME } from "../../machine/firmware/printer";
 import { matchSeries } from "../../sim/frames";
 import { fmtResult, resultInfo } from "../../sim/results";
 import { SIM_TEMPLATES, describePrompt, templateSource } from "../../sim/templates";
@@ -255,6 +256,11 @@ function worldText(def: ScenarioDef): string {
     const p = w.pit;
     return `Sand pit ${fmtNum(p.length / 1000, 2)} m × ${fmtNum(p.width / 1000, 2)} m, ${fmtNum(p.depth / 1000, 2)} m deep${p.exitD ? `, ${fmtNum(p.exitD, 0)} mm exit` : ""}`;
   }
+  if (w.kind === "printer") {
+    const p = w.printer;
+    const what = p.test ? `a ${p.test.shape.replace("_", " ")} test print` : "G-code";
+    return `Printing ${what} in ${p.test?.material ?? p.material}${p.flavor ? ` on ${FLAVOR_NAME[p.flavor]}` : ""}${p.ambient !== 20 ? `, ${fmtNum(p.ambient, 0)} °C room` : ""}`;
+  }
   return `On the bench${w.bench.loadFactor !== 1 ? `, ${w.bench.loadFactor ? `${fmtNum(w.bench.loadFactor * 100, 0)} % load` : "motors free"}` : ""}${w.bench.ambient !== 20 ? `, ${fmtNum(w.bench.ambient, 0)} °C` : ""}`;
 }
 
@@ -263,7 +269,13 @@ function worldText(def: ScenarioDef): string {
 function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
   const world = def.spec.world.kind;
   const r = v.results;
-  const pick = world === "sand_pit" ? ["progress", "miss", "speed", "slip", "heading_max", "battery_left"] : ["time", "battery_left", "battery_peak_amps", "faults"];
+  const pick =
+    world === "sand_pit"
+      ? ["progress", "miss", "speed", "slip", "heading_max", "battery_left"]
+      : world === "printer"
+        ? ["firmware", "print_time", "heat_time", "layer_shifts", "under_extrusion", "hotend_error", "first_layer_error", "flow_peak", "psu_peak", "x_load", "y_load", "z_load"]
+        : ["time", "battery_left", "battery_peak_amps", "faults"];
+  if (world === "printer") return <PrinterStats v={v} pick={pick} />;
   const motors = v.summary.motors;
   const hottest = motors.reduce<{ name: string; t: number } | null>((a, m) => (!a || m.maxTemp > a.t ? { name: m.name, t: m.maxTemp } : a), null);
   const peak = motors.reduce<{ name: string; a: number } | null>((a, m) => (!a || m.peakAmps > a.a ? { name: m.name, a: m.peakAmps } : a), null);
@@ -329,6 +341,41 @@ function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
             <small>ms max</small>
           </div>
         </div>
+      </div>
+    </>
+  );
+}
+
+/** A print's key numbers: no chip RAM or motor heat to show, just how the print went. */
+function PrinterStats({ v, pick }: { v: VariantRun; pick: string[] }) {
+  const r = v.results;
+  const bad = (k: string) => (k === "layer_shifts" && Number(r[k]) > 0) || (k === "under_extrusion" && Number(r[k]) > 0.05) || (k.endsWith("_load") && Number(r[k]) > 1) || (k === "first_layer_error" && Number(r[k]) > 0.1);
+  const warn = (k: string) => (k.endsWith("_load") && Number(r[k]) > 0.7) || (k === "hotend_error" && Number(r[k]) > 5) || (k === "first_layer_error" && Number(r[k]) > 0.05);
+  return (
+    <>
+      <div className="sim-h" style={{ marginTop: 12 }}>
+        {VARIANT_LABEL[v.variant]} run<span className="grow" />
+        <span style={{ textTransform: "none", letterSpacing: 0 }}>
+          {mmss(v.summary.time)} · {v.stop}
+        </span>
+      </div>
+      <div className="sim-stats">
+        {pick
+          .filter((k) => r[k] !== undefined)
+          .map((k) => {
+            const info = resultInfo(k, "printer");
+            const text = fmtResult(r[k], info?.unit);
+            const [num, ...rest] = text.split(" ");
+            return (
+              <div key={k} className={`sim-stat ${bad(k) ? "fail" : warn(k) ? "warn" : ""}`} title={info?.doc}>
+                <div className="k">{k.replace(/_/g, " ")}</div>
+                <div className="v">
+                  {num}
+                  {rest.length > 0 && <small>{rest.join(" ")}</small>}
+                </div>
+              </div>
+            );
+          })}
       </div>
     </>
   );
@@ -582,10 +629,10 @@ function EmptyState({ model, onDone }: { model: Model; onDone?: () => void }) {
       )}
       <h3>{onDone ? "Add a scenario" : "Test the machine in a virtual world"}</h3>
       <div className="muted" style={{ maxWidth: 680, fontSize: 12.5, lineHeight: 1.55 }}>
-        A scenario runs this design's own firmware on a virtual copy of its controller, wired exactly as the design says, to simulated motors, drivers, sensors and battery, inside an environment: a sand pit, a bench, a hot room. Each runs three times, with pessimistic, expected and optimistic values, and what it has to achieve becomes checks.
+        A scenario runs this design's own firmware on a virtual copy of its controller, wired exactly as the design says, to simulated motors, drivers, sensors and battery, inside an environment: a sand pit, a bench, a hot room. A 3D printer prints a test part through its own firmware (Klipper, Marlin or RepRapFirmware). Each runs three times, with pessimistic, expected and optimistic values, and what it has to achieve becomes checks.
       </div>
       <div className="sim-gallery">
-        {SIM_TEMPLATES.map((t) => {
+        {SIM_TEMPLATES.filter((t) => !t.hidden?.(model)).map((t) => {
           const why = t.unavailable?.(model) ?? null;
           return (
             <button key={t.id} className="sim-card" disabled={!!why} onClick={() => add(t.id)}>

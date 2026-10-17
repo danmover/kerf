@@ -122,6 +122,7 @@ export function resultBytes(r: RunResult): number {
     n += v.frames.t.byteLength;
     for (const s of Object.values(v.frames.series)) n += s.byteLength;
     for (const d of v.displays ?? []) n += d.frames.length * (d.w * d.h) / 8 + 32 * d.frames.length;
+    if (v.print) n += v.print.t.byteLength * 5;
     n += v.serial.length * 64 + v.events.length * 96;
   }
   return n;

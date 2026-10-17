@@ -795,7 +795,7 @@ function Calcs({ m, items }: { m: MachineData; items: CheckItem[] }) {
 
 // ---------------------------------------------------------------- firmware
 
-const TARGET_WORD: Record<FirmwareOutput["target"], string> = { arduino: "Arduino", klipper: "Klipper", none: "not generated" };
+const TARGET_WORD: Record<FirmwareOutput["target"], string> = { arduino: "Arduino", klipper: "Klipper", marlin: "Marlin", reprapfirmware: "RepRapFirmware", none: "not generated" };
 
 /** Light highlighting: comments, preprocessor lines, strings and section headers. */
 function highlight(line: string, ext: string): ReactNode {

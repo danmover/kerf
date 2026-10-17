@@ -5,6 +5,7 @@
 
 import type { Model } from "../core/model";
 import { catalogPart } from "../machine/catalog";
+import { boardFlavors, flavorOf, FLAVOR_NAME, type PrinterFlavor } from "../machine/firmware/printer";
 
 export interface SimTemplate {
   id: string;
@@ -16,6 +17,8 @@ export interface SimTemplate {
   prompt?: (m: Model) => string;
   /** why it does not apply to this design, if it does not */
   unavailable?: (m: Model) => string | null;
+  /** left out of the gallery for this design (printer tests on a robot, robot tests on a printer) */
+  hidden?: (m: Model) => boolean;
 }
 
 const fmtS = (s: number) => (s % 60 === 0 ? `${s / 60}min` : `${Math.round(s)}s`);
@@ -31,8 +34,29 @@ function firmwareOf(m: Model) {
 function needsFirmware(m: Model): string | null {
   if (!m.machine) return "Simulations run a machine's firmware: add a controller, its wiring and a firmware block first.";
   if (!m.machine.firmware.length) return "Add a firmware block for the controller first.";
-  if (!firmwareOf(m)) return "Kerf can simulate Arduino firmware; this design's firmware is for a board it cannot simulate yet (Klipper).";
+  if (!firmwareOf(m)) return "Kerf can simulate Arduino firmware and 3D printer firmware (Klipper, Marlin, RepRapFirmware); this design's controller is neither.";
   return null;
+}
+
+/** The firmware block of a 3D printer board, and the firmwares that board runs. */
+function printerOf(m: Model): { name: string; flavor: PrinterFlavor; flavors: PrinterFlavor[] } | undefined {
+  for (const f of m.machine?.firmware ?? []) {
+    const board = m.machine?.components.find((c) => c.name === f.board);
+    const part = catalogPart(board?.catalogId ?? "");
+    const flavors = part ? boardFlavors(part) : [];
+    if (!flavors.length) continue;
+    const want = flavorOf(String(f.settings.flavor ?? ""));
+    return { name: f.name, flavor: want && flavors.includes(want) ? want : flavors[0], flavors };
+  }
+  return undefined;
+}
+
+const isPrinter = (m: Model) => !!printerOf(m);
+const needsPrinter = (m: Model) => (printerOf(m) ? null : "This test is for 3D printers: add a printer controller board (SKR, Duet) and its firmware block.");
+
+function printer(m: Model, label: string, world: string, expects: string[]): string {
+  const p = printerOf(m)!;
+  return [`scenario "${freeLabel(m, label)}" {`, `  world: ${world}`, `  firmware: ${p.name}`, ...expects.map((e) => `  ${e}`), "}"].join("\n");
 }
 
 const motors = (m: Model) => (m.machine?.components ?? []).filter((c) => catalogPart(c.catalogId)?.kind === "gearmotor").map((c) => c.name);
@@ -57,6 +81,7 @@ function bench(m: Model, label: string, world: string, duration: number, expects
 export const SIM_TEMPLATES: SimTemplate[] = [
   {
     id: "power_up",
+    hidden: isPrinter,
     title: "Power-up on the bench",
     blurb: "Power it with the motors free: the firmware starts, every motor turns, nothing is mis-wired, RAM and loop time have room.",
     unavailable: needsFirmware,
@@ -70,6 +95,7 @@ export const SIM_TEMPLATES: SimTemplate[] = [
   },
   {
     id: "runtime",
+    hidden: isPrinter,
     title: "Battery runtime",
     blurb: "A full job at the design load: the battery lasts with charge to spare and its voltage holds up under load.",
     unavailable: (m) => needsFirmware(m) ?? (hasBattery(m) ? null : "The design has no battery to follow."),
@@ -78,6 +104,7 @@ export const SIM_TEMPLATES: SimTemplate[] = [
   },
   {
     id: "hot_room",
+    hidden: isPrinter,
     title: "Hot room",
     blurb: "The same job at 40 °C: motors and drivers shed less heat, so check the windings stay cool enough.",
     unavailable: needsFirmware,
@@ -85,6 +112,7 @@ export const SIM_TEMPLATES: SimTemplate[] = [
   },
   {
     id: "overload",
+    hidden: isPrinter,
     title: "50 % overload",
     blurb: "Half as much load again on every motor: it keeps working, the battery copes with the current, nothing overheats.",
     unavailable: needsFirmware,
@@ -96,7 +124,63 @@ export const SIM_TEMPLATES: SimTemplate[] = [
       ]).replace(/bat\.v_nom/g, (m.machine?.components.find((c) => catalogPart(c.catalogId)?.kind === "battery")?.name ?? "bat") + ".v_nom"),
   },
   {
+    id: "print_cube",
+    title: "Calibration cube print",
+    blurb: "Slice a 20 mm cube for this printer and print it through its own firmware: homing, heating, bed mesh, every move and the heaters, with layer shifts, under-extrusion and the first layer checked.",
+    hidden: (m) => !isPrinter(m),
+    unavailable: needsPrinter,
+    source: (m) =>
+      printer(m, "Calibration cube print", 'sim.printer(print: sim.test_print("cube"))', [
+        'expect "The print finishes": finished',
+        'expect "No layer shifts": layer_shifts == 0',
+        'expect "No under-extrusion": under_extrusion < 2%',
+        'expect "Hotend holds its temperature" soft: hotend_error < 5C',
+        'expect "First layer within 0.1 mm" soft: first_layer_error < 0.1mm',
+      ]),
+  },
+  {
+    id: "print_fast",
+    title: "Fast cylinder print",
+    blurb: "A cylinder of short segments at 150 mm/s: works the firmware's cornering and lookahead, the motors' torque at speed and the hotend's melt rate.",
+    hidden: (m) => !isPrinter(m),
+    unavailable: needsPrinter,
+    source: (m) =>
+      printer(m, "Fast cylinder print", 'sim.printer(print: sim.test_print("cylinder", speed: 150, travel: 250))', [
+        'expect "The print finishes": finished',
+        'expect "No layer shifts": layer_shifts == 0',
+        'expect "The hotend keeps up" soft: under_extrusion < 5%',
+        'expect "Motors have torque to spare" soft: x_load < 70% && y_load < 70%',
+      ]),
+  },
+  {
+    id: "print_first_layer",
+    title: "First layer",
+    blurb: "One layer over a 50 mm square: the bed's real shape against the probed mesh and the probe offset, so you see where the nozzle scrapes or the plastic will not stick.",
+    hidden: (m) => !isPrinter(m),
+    unavailable: needsPrinter,
+    source: (m) =>
+      printer(m, "First layer", 'sim.printer(print: sim.test_print("first_layer", size: 100))', [
+        'expect "Even first layer": first_layer_error < 0.1mm',
+        'expect "The nozzle does not scrape": first_layer_squashed < 5%',
+        'expect "The first layer sticks" soft: first_layer_loose < 5%',
+      ]),
+  },
+  {
+    id: "print_firmwares",
+    title: "Same print on each firmware",
+    blurb: "The cube on every firmware this board runs, each from its own generated config: compare print time, cornering, heater control and safety checks.",
+    hidden: (m) => !isPrinter(m),
+    unavailable: (m) => needsPrinter(m) ?? (printerOf(m)!.flavors.length > 1 ? null : `${FLAVOR_NAME[printerOf(m)!.flavor]} is the only firmware this board runs: pick a board that also runs others to compare.`),
+    source: (m) =>
+      printerOf(m)!
+        .flavors.map((fl) =>
+          printer(m, `Cube on ${FLAVOR_NAME[fl]}`, `sim.printer(print: sim.test_print("cube"), flavor: "${fl}")`, ['expect "The print finishes": finished', 'expect "No layer shifts": layer_shifts == 0', 'expect "Hotend holds its temperature" soft: hotend_error < 5C']),
+        )
+        .join("\n\n"),
+  },
+  {
     id: "sand_pit",
+    hidden: isPrinter,
     title: "Sand pit crossing",
     blurb: "Burrow through a box of sand: Janssen stress at depth, screw thrust and slip, steering, walls and an exit opening. Claude describes the machine from the design.",
     unavailable: needsFirmware,
