@@ -11,7 +11,8 @@ import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type Structural
 import type { StructuralResult } from "../analysis/fe/structural";
 import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
-import { FIELD_INFO, FIELDS, autoDeform } from "./ResultsLayer";
+import { FIELD_INFO, FIELDS, autoDeform, shownMode } from "./ResultsLayer";
+import { dropVerdict, modeWords, resonances, vibrationText, vibrationVerdict } from "../analysis/dynamics";
 import { Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { useChatDraft } from "./chatDraft";
@@ -75,9 +76,9 @@ function Pick({ spec, active, run, dt }: { spec: AnalysisSpec; active: boolean; 
       status = "fail";
       val = "error";
     } else if (run?.result && run.status === "done") {
-      const sf = run.result.minSafety.value;
-      status = structuralVerdict(spec, run.result);
-      val = `SF ${sfText(sf)}`;
+      const r = run.result;
+      status = structuralVerdict(spec, r);
+      val = r.drop ? `${fmtNum(r.drop.g, 0)} g · SF ${sfText(r.minSafety.value)}` : r.modal && !(r.maxDisp.value > 0) ? `${fmtNum(r.modal.modes[0]?.freq ?? 0, 0)} Hz` : `SF ${sfText(r.minSafety.value)}`;
     } else val = run ? `${Math.round((run.frac ?? 0) * 100)}%` : "";
   } else if (dt) {
     const fails = dt.items.filter((i) => i.status === "fail").length;
@@ -172,7 +173,9 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
     <>
       {busy && <RunProgress run={run!} updating={!!r} />}
       {run?.status === "error" && <RunError spec={spec} run={run} />}
-      {r && <ResultCards spec={spec} r={r} />}
+      {r?.modal && <ModesBox spec={spec} r={r} />}
+      {r?.drop && <DropBox spec={spec} r={r} />}
+      {r && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
       <div className="an-cols">
         <div>
           <SetupBox spec={spec} r={r} run={run} />
@@ -183,6 +186,92 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
         </div>
       </div>
     </>
+  );
+}
+
+/** Natural frequencies: one row per mode; picking one swings its shape on the model. */
+function ModesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const picked = useAnalysis((s) => s.mode);
+  const shown = useAnalysis((s) => s.shown);
+  const active = shown === spec.label ? shownMode(r, picked) : null;
+  const hits = resonances(spec, r);
+  const text = vibrationText(spec, r);
+  const status = vibrationVerdict(spec, r);
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <StatusIcon status={status} />
+        <b>Natural frequencies</b>
+        <span className="dim mono">
+          {[spec.modal?.excite.length ? `against ${spec.modal.excite.map((e) => e.label).join(", ")}` : "", spec.modal?.ringing ? `ringing after ${fmtNum(spec.modal.ringing, 0)} mm/s² moves` : ""].filter(Boolean).join(" · ") || "nothing set to shake it (excite:)"}
+        </span>
+      </div>
+      <table className="an-table">
+        <tbody>
+          {r.modal!.modes.map((m, i) => {
+            const hit = hits.find((h) => h.index === i);
+            return (
+              <tr
+                key={i}
+                className={`an-mode ${active === i ? "active" : ""}`}
+                onClick={() => {
+                  showResults(spec.label);
+                  useAnalysis.setState({ mode: i });
+                }}
+                style={{ cursor: "pointer" }}
+                aria-pressed={active === i}
+              >
+                <td className="mono">{i + 1}</td>
+                <td className="mono">{fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz</td>
+                <td>{modeWords(m)}</td>
+                <td className={hit ? hit.status : "dim"}>{hit ? `${hit.source.label}: ${hit.status === "fail" ? "resonates" : "close"}` : ""}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="an-note" style={{ marginTop: 8 }}>
+        {text.notes}
+      </div>
+      {text.fix && <div className="an-note">{text.fix}</div>}
+    </div>
+  );
+}
+
+function DropBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const d = r.drop!;
+  const status = dropVerdict(spec, r, strengthVerdict(spec, r).status);
+  return (
+    <div className="an-grid" style={{ marginBottom: 12 }}>
+      <div className={`an-stat ${status}`}>
+        <div className="k">{d.tip ? "Tip-over" : "Fall"}</div>
+        <div className="v">
+          {d.tip ? fmtNum(d.height, 0) : fmtNum(d.height / 1000, 2)}
+          <small>{d.tip ? "mm the centre falls" : "m"}</small>
+        </div>
+        <div className="s">
+          onto {d.floor} at {fmtNum(d.speed, 1)} m/s
+        </div>
+      </div>
+      <div className={`an-stat ${status}`}>
+        <div className="k">Peak deceleration</div>
+        <div className="v">
+          {fmtNum(d.g, 0)}
+          <small>g</small>
+        </div>
+        <div className="s">
+          {fmtNum(d.force, 0)} N where it lands, over {fmtNum(d.pulseMs, d.pulseMs < 1 ? 2 : 1)} ms
+        </div>
+      </div>
+      <div className={`an-stat ${status}`}>
+        <div className="k">The parts feel</div>
+        <div className="v">
+          {fmtNum(d.felt, 0)}
+          <small>g</small>
+        </div>
+        <div className="s">{Number.isFinite(d.bodyHz) ? `they flex at ${fmtNum(d.bodyHz, 0)} Hz · ×${fmtNum(d.amplification, 2)}` : "they barely flex"}</div>
+      </div>
+    </div>
   );
 }
 

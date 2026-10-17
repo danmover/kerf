@@ -58,6 +58,8 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "overhang", kind: "number", def: 45, doc: "steepest unsupported overhang, degrees from vertical" },
       { key: "supports", kind: "bool", def: true, doc: "support material allowed (false makes overhangs failures)" },
       { key: "bed", kind: "size", def: [250, 210, 210], doc: "build volume (x, y, z), mm" },
+      { key: "hole_comp", kind: "number", def: 0, doc: "slicer X-Y hole compensation, mm: holes print this much larger in radius" },
+      { key: "shrink_comp", kind: "bool", def: false, doc: "slicer scales the part up to cancel the plastic's shrink as it cools (filament shrinkage setting)" },
     ],
   },
   sla: {

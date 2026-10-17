@@ -5,8 +5,10 @@
 
 import { CORNERS, principal, vonMises, elementMatrices } from "./element";
 import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg } from "./solver";
+import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
-import type { LoadSpec, RegionSpec, SupportSpec } from "../spec";
+import type { FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
+import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
 
@@ -43,6 +45,88 @@ export interface StructuralInput {
   maxDeflection?: number;
   /** relative residual for the solve */
   tol?: number;
+  /** masses the parts carry that are not modelled as solids */
+  masses?: MassSpec[];
+  /** find this many natural frequencies and mode shapes */
+  modes?: number;
+  /**
+   * A drop: accel is 1 g along dir and the support is the side that lands; the result is scaled to the
+   * peak deceleration the fall's energy gives against the body's and the floor's stiffness.
+   */
+  drop?: { height?: number; tip?: boolean; dir: V3; floor: FloorSpec };
+}
+
+export interface ModeResult {
+  /** natural frequency, Hz */
+  freq: number;
+  /** share of the moving mass that takes part along X, Y and Z (effective modal mass) */
+  share: V3;
+  /** participation factor along X, Y and Z (displacement of the largest-moving point per unit base acceleration × ω²) */
+  gamma: V3;
+  /** the largest-moving point and its shape amplitude (M-normalised shape, mm per √t) */
+  peak: Located;
+}
+
+export interface ModalResult {
+  modes: ModeResult[];
+  /** moving mass, kg */
+  mass: number;
+  iterations: number;
+  residual: number;
+  converged: boolean;
+  ms: number;
+}
+
+export interface DropResult {
+  /** fall height used (worked out for a tip-over), mm */
+  height: number;
+  tip: boolean;
+  /** the way it moves into the floor (for an edge or corner, from the centre of mass through the point that lands) */
+  dir: V3;
+  floor: string;
+  /** peak deceleration of the whole body in g, peak contact force in N, impact speed in m/s, energy in J */
+  g: number;
+  force: number;
+  speed: number;
+  energy: number;
+  /** how long the impact lasts, ms, and how far the contact gives, mm */
+  pulseMs: number;
+  squash: number;
+  /** the parts' own lowest frequency for this load (Rayleigh, from the 1 g shape), Hz, and how they answer the pulse: */
+  bodyHz: number;
+  /** below 1 the impact is over before they can flex fully; up to about 1.8 when it lasts about as long as their swing */
+  amplification: number;
+  /** the g the parts are loaded with: g × amplification */
+  felt: number;
+  /** total weight in N and the contact's stiffness, N/mm */
+  weight: number;
+  contactStiffness: number;
+  contact: { at: V3; area: number };
+  /** centre of mass */
+  com: V3;
+}
+
+/**
+ * Peak response of an undamped oscillator to a half-sine pulse, relative to the same acceleration held
+ * still (the shock response spectrum), for a pulse lasting tau of the oscillator's periods. About 4·tau
+ * for short pulses, peaking near 1.77 at tau ≈ 0.8 and settling to 1 for long ones.
+ */
+export function halfSineShock(tau: number): number {
+  if (!(tau > 0)) return 0;
+  let beta = 1 / (2 * tau);
+  if (Math.abs(1 - beta) < 1e-6) beta = 1 - 1e-6;
+  // during the pulse, with a(t) = sin(Ωt), ω = 1: x(t) = (sin Ωt − β sin t) / (1 − β²), Ω = β
+  const td = Math.PI / beta;
+  const k = 1 / (1 - beta * beta);
+  let peak = 0;
+  for (let i = 1; i <= 400; i++) {
+    const t = (td * i) / 400;
+    peak = Math.max(peak, Math.abs(k * (Math.sin(beta * t) - beta * Math.sin(t))));
+  }
+  // afterwards it swings freely with the amplitude it has when the pulse ends
+  const x = k * (Math.sin(beta * td) - beta * Math.sin(td));
+  const v = k * (beta * Math.cos(beta * td) - beta * Math.cos(td));
+  return Math.max(peak, Math.hypot(x, v));
 }
 
 export interface PartField {
@@ -59,6 +143,8 @@ export interface PartField {
   strain: Float32Array;
   /** per vertex: factor of safety */
   safety: Float32Array;
+  /** per mode: the mode shape at each vertex (xyz), scaled so the largest movement is 1 */
+  modes?: Float32Array[];
 }
 
 export interface Located {
@@ -90,6 +176,8 @@ export interface StructuralResult {
   ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
+  modal?: ModalResult;
+  drop?: DropResult;
 }
 
 export type SafetyAt = Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string };
@@ -164,7 +252,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const warnings: string[] = [];
   if (!inp.parts.length) throw new FeaError("Nothing to analyse: the analysis names no parts with built geometry.");
   if (!inp.supports.length) throw new FeaError("The analysis has no supports. Add fix: to say how the part is held, for example fix: face(bracket, -Y).");
-  if (!inp.loads.length && !inp.accel) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+  if (!inp.loads.length && !inp.accel && !inp.modes) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
 
   // ---------- grid ----------
   // Cells fit the bounding box exactly (their size differs slightly per axis), so the outer faces of
@@ -318,10 +406,21 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         const P = inp.parts[pi].mesh.positions;
         for (let v = 0; v < P.length; v += 3) maxProj = Math.max(maxProj, P[v] * dir[0] + P[v + 1] * dir[1] + P[v + 2] * dir[2]);
       }
+    } else if (r.t === "extreme") {
+      // what lands first: every analysed part's surface within reach of the furthest point along dir
+      dir = norm(r.dir);
+      const flat = Math.max(Math.abs(dir[0]), Math.abs(dir[1]), Math.abs(dir[2])) > 0.999;
+      faceTol = flat ? 0.5 * (Math.abs(dir[0]) * hx + Math.abs(dir[1]) * hy + Math.abs(dir[2]) * hz) : 1.5 * hmax;
+      maxProj = -Infinity;
+      for (const p of inp.parts) {
+        const P = p.mesh.positions;
+        for (let v = 0; v < P.length; v += 3) maxProj = Math.max(maxProj, P[v] * dir[0] + P[v + 1] * dir[1] + P[v + 2] * dir[2]);
+      }
     } else if (r.t === "cyl") axis = norm(r.axis);
     const inside = (p: V3): boolean => {
       switch (r.t) {
         case "face":
+        case "extreme":
           return dot(p, dir) >= maxProj - faceTol;
         case "sphere":
           return Math.hypot(p[0] - r.at[0], p[1] - r.at[1], p[2] - r.at[2]) <= r.r + pad;
@@ -345,6 +444,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       if (partSet && !partSet.has(owner[e])) continue;
       const nrm = FACE_NORMAL[d];
       if (r.t === "face" && dot(nrm, dir) <= 0.5) continue;
+      if (r.t === "extreme" && dot(nrm, dir) <= 0.2) continue;
       const n0 = elemNode0(e);
       for (const a of FACE_CORNERS[d]) {
         const n = n0 + off[a];
@@ -530,13 +630,46 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     solidVolume += v;
     mass += (v / 1000) * inp.materials[matOf(e)].density;
   }
+  // ---------- carried masses (kg per node) ----------
+  const extra = new Float64Array(nn);
+  let extraKg = 0;
+  (inp.masses ?? []).forEach((ms, i) => {
+    const sel = select(ms.region);
+    if (!sel.nodes.length) throw new FeaError(`Mass ${i + 1} (${fmt(ms.grams, 0)} g on ${describeRegion(ms.region)}) does not touch the part's surface. Move the zone onto the part.`);
+    const tot = sel.w.reduce((a, b) => a + b, 0) || 1;
+    sel.nodes.forEach((n, q) => (extra[n] += (ms.grams / 1000) * (sel.w[q] / tot)));
+    extraKg += ms.grams / 1000;
+  });
+  mass += extraKg * 1000;
   const mainMat = matCount.indexOf(Math.max(...matCount));
   const nu = inp.materials[mainMat].nu;
   if (new Set(inp.materials.map((m) => m.nu)).size > 1 && matCount.filter((c) => c > 0).length > 1) warnings.push("Mixed materials share one Poisson's ratio in this model; stiffness and stress are still per material.");
 
+  // an edge or corner drop decelerates along the line from the centre of mass through the point that
+  // lands (how drop tests set up a corner drop); otherwise the held patch would have to stop it turning
+  let dropDir: V3 | undefined;
+  if (inp.drop && !inp.drop.tip && inp.drop.dir.filter((x) => Math.abs(x) > 1e-6).length > 1) {
+    let c: V3 = [0, 0, 0];
+    let mt = 0;
+    const add = (m: number, p: V3) => {
+      c = [c[0] + m * p[0], c[1] + m * p[1], c[2] + m * p[2]];
+      mt += m;
+    };
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const p = nodePos(elemNode0(e));
+      add(fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6, [p[0] + hx / 2, p[1] + hy / 2, p[2] + hz / 2]);
+    }
+    for (let n = 0; n < nn; n++) if (extra[n]) add(extra[n], nodePos(n));
+    const at = supportInfo[0].at;
+    const com: V3 = [c[0] / mt, c[1] / mt, c[2] / mt];
+    const d: V3 = [at[0] - com[0], at[1] - com[1], at[2] - com[2]];
+    const l = Math.hypot(...d);
+    if (l > 1e-9 && dot(d, norm(inp.drop.dir)) > 0) dropDir = [d[0] / l, d[1] / l, d[2] / l];
+  }
   let gravity: StructuralResult["gravity"] = null;
   if (inp.accel && Math.hypot(...inp.accel) > 0) {
-    const a = inp.accel;
+    const a = dropDir ?? inp.accel;
     let c: V3 = [0, 0, 0];
     let mtot = 0;
     for (let e = 0; e < ne; e++) {
@@ -549,6 +682,14 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
       const p = nodePos(n0);
       c = [c[0] + m * (p[0] + hx / 2), c[1] + m * (p[1] + hy / 2), c[2] + m * (p[2] + hz / 2)];
+      mtot += m;
+    }
+    for (let n = 0; n < nn; n++) {
+      const m = extra[n];
+      if (!m) continue;
+      for (let d = 0; d < 3; d++) f[3 * n + d] += m * a[d] * G0;
+      const p = nodePos(n);
+      c = [c[0] + m * p[0], c[1] + m * p[1], c[2] + m * p[2]];
       mtot += m;
     }
     gravity = { vector: [mtot * a[0] * G0, mtot * a[1] * G0, mtot * a[2] * G0], at: [c[0] / mtot, c[1] / mtot, c[2] / mtot] };
@@ -568,6 +709,62 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const fs = Float64Array.from(f);
   for (let i = 0; i < fs.length; i++) if (!fine.free[i]) fs[i] = 0;
   const tSetup = now();
+
+  // ---------- natural frequencies ----------
+  /** lumped mass in tonnes per node: each element's mass shared by its eight corners, plus carried masses */
+  const lumpedMass = () => {
+    const nodeMass = new Float64Array(nn);
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const m = (fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-9) / 8;
+      const n0 = elemNode0(e);
+      for (let q = 0; q < 8; q++) nodeMass[n0 + off[q]] += m;
+    }
+    for (let n = 0; n < nn; n++) nodeMass[n] += extra[n] * 1e-3;
+    return nodeMass;
+  };
+  let modal: ModalResult | undefined;
+  let shapes: Float64Array[] = [];
+  if (inp.modes) {
+    progress("Finding natural frequencies", 0.25);
+    const tm = now();
+    const nodeMass = lumpedMass();
+    const mvec = new Float64Array(3 * nn);
+    const mtot: V3 = [0, 0, 0];
+    for (let n = 0; n < nn; n++) {
+      const m = nodeMass[n];
+      for (let d = 0; d < 3; d++)
+        if (fine.free[3 * n + d]) {
+          mvec[3 * n + d] = m;
+          mtot[d] += m;
+        }
+    }
+    const k = Math.max(1, Math.min(12, Math.round(inp.modes)));
+    const sol = lowestModes(H, mvec, k, { onIter: (it, res) => progress("Finding natural frequencies", 0.25 + 0.6 * Math.min(1, it / 60), { iter: it, residual: res }) });
+    shapes = sol.shapes;
+    const modes: ModeResult[] = sol.lambda.map((lam, j) => {
+      const phi = sol.shapes[j];
+      const gamma: V3 = [0, 0, 0];
+      let peak = 0,
+        peakN = 0;
+      for (let n = 0; n < nn; n++) {
+        for (let d = 0; d < 3; d++) gamma[d] += phi[3 * n + d] * mvec[3 * n + d];
+        const a = Math.hypot(phi[3 * n], phi[3 * n + 1], phi[3 * n + 2]);
+        if (a > peak) {
+          peak = a;
+          peakN = n;
+        }
+      }
+      return {
+        freq: Math.sqrt(Math.max(lam, 0)) / (2 * Math.PI),
+        share: gamma.map((g, d) => (mtot[d] > 0 ? (g * g) / mtot[d] : 0)) as V3,
+        gamma,
+        peak: { value: peak, at: nodePos(peakN) },
+      };
+    });
+    if (!sol.converged) warnings.push(`The frequency solver stopped at a residual of ${sol.residual.toExponential(1)}; frequencies may be off by a few percent.`);
+    modal = { modes, mass: ((mtot[0] + mtot[1] + mtot[2]) * 1e6) / 3, iterations: sol.iterations, residual: sol.residual, converged: sol.converged, ms: now() - tm };
+  }
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
   const { u, stats } = pcg(H, fs, {
@@ -578,6 +775,93 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (stats.residual > UNRELIABLE_RESIDUAL) warnings.push(`The solver did not converge (relative residual ${stats.residual.toExponential(1)} after ${stats.iterations} iterations), so these numbers are unreliable. Check that supports hold every part, or try another resolution.`);
   else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
   const tSolve = now();
+
+  // ---------- drop: the impact pulse, and how the parts answer it ----------
+  // The body hits the floor through the contact's stiffness: a half-sine pulse whose peak and length
+  // follow from the impact speed. The parts flex like their 1 g shape at their own frequency (Rayleigh),
+  // so a pulse shorter than their swing loads them less than its peak, and one about as long loads them
+  // more (the shock response spectrum). The 1 g solution is scaled by the g they feel.
+  let dropResult: DropResult | undefined;
+  if (inp.drop && gravity) {
+    const dr = inp.drop;
+    const W = Math.hypot(...gravity.vector);
+    const com = gravity.at;
+    let height = dr.height ?? 0;
+    if (dr.tip) {
+      // it pivots on its bottom edge and lands on the side it falls toward: the centre of mass drops from
+      // its height above the base to its distance from that side
+      const side = norm(dr.dir);
+      let reach = -Infinity;
+      for (const p of inp.parts) {
+        const P = p.mesh.positions;
+        for (let v = 0; v < P.length; v += 3) reach = Math.max(reach, P[v] * side[0] + P[v + 1] * side[1] + P[v + 2] * side[2]);
+      }
+      height = Math.max(0, com[2] - lo[2] - (reach - dot(com, side)));
+    }
+    // the parts' frequency in this shape: ω² = fᵀu / Σ m|u|² (N·mm over t·mm²)
+    const nodeMass = lumpedMass();
+    let fu = 0,
+      mu2 = 0;
+    for (let i = 0; i < u.length; i++) fu += fs[i] * u[i];
+    for (let n = 0; n < nn; n++) if (nodeMass[n]) mu2 += nodeMass[n] * (u[3 * n] ** 2 + u[3 * n + 1] ** 2 + u[3 * n + 2] ** 2);
+    const wb = mu2 > 0 && fu > 0 ? Math.sqrt(fu / mu2) : Infinity;
+    // the contact: a flat punch of the landing patch's area pressed into the floor, with the body's own
+    // material at the patch (plastics give far more than a concrete floor does)
+    const contact = supportSel[0];
+    const area = Math.max(contact.area, hx * hy * 0.25);
+    const at = supportInfo[0].at;
+    let near = -1,
+      best = Infinity;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const p = nodePos(elemNode0(e));
+      const d2 = (p[0] + hx / 2 - at[0]) ** 2 + (p[1] + hy / 2 - at[1]) ** 2 + (p[2] + hz / 2 - at[2]) ** 2;
+      if (d2 < best) {
+        best = d2;
+        near = e;
+      }
+    }
+    const bm = inp.materials[near >= 0 ? matOf(near) : mainMat];
+    const punch = (Estar: number) => 2 * Estar * Math.sqrt(area / Math.PI);
+    const bodyC = (1 - bm.nu * bm.nu) / bm.E;
+    const kc =
+      dr.floor.soft !== undefined
+        ? 1 / (1 / Math.max(20, dr.floor.soft * area) + 1 / punch(1 / bodyC))
+        : punch(1 / (bodyC + (1 - 0.2 * 0.2) / (dr.floor.E ?? 30000)));
+    const M = W / (G0 * 1000); // tonnes
+    const wc = Math.sqrt(kc / M);
+    const v = Math.sqrt(2 * G0 * 1000 * height); // mm/s
+    const G = height > 0 ? (v * wc) / (G0 * 1000) : 0;
+    const td = Math.PI / wc;
+    const amp = Number.isFinite(wb) ? halfSineShock((td * wb) / (2 * Math.PI)) : 1;
+    const felt = G * amp;
+    for (let i = 0; i < u.length; i++) {
+      u[i] *= felt;
+      f[i] *= felt;
+    }
+    for (let d = 0; d < 3; d++) applied[d] *= felt;
+    gravity.vector = [gravity.vector[0] * felt, gravity.vector[1] * felt, gravity.vector[2] * felt];
+    dropResult = {
+      height,
+      tip: !!dr.tip,
+      dir: norm(dropDir ?? dr.dir),
+      floor: dr.floor.name,
+      g: G,
+      force: G * W,
+      speed: v / 1000,
+      energy: (W * height) / 1000,
+      pulseMs: td * 1000,
+      squash: wc > 0 ? v / wc : 0,
+      bodyHz: wb / (2 * Math.PI),
+      amplification: amp,
+      felt,
+      weight: W,
+      contactStiffness: kc,
+      contact: { at, area: contact.area },
+      com,
+    };
+    if (felt > 0 && felt < 1) warnings.push("The landing is soft enough that the drop barely loads the parts.");
+  }
   progress("Recovering stresses", 0.92);
 
   // reactions: full K·u at held dofs
@@ -833,6 +1117,54 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
     return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety };
   });
+  // mode shapes on the CAD surface, each scaled so its largest movement is 1
+  if (shapes.length) {
+    const sampleVec = (vec: Float64Array, x: number, y: number, z: number, out: Float64Array) => {
+      const fx = (x - origin[0]) / hx,
+        fy = (y - origin[1]) / hy,
+        fz = (z - origin[2]) / hz;
+      const i = clampI(Math.floor(fx), 0, nx - 1),
+        j = clampI(Math.floor(fy), 0, ny - 1),
+        k = clampI(Math.floor(fz), 0, nz - 1);
+      const tx = clamp01(fx - i),
+        ty = clamp01(fy - j),
+        tz = clamp01(fz - k);
+      const n0 = i + NX * (j + NY * k);
+      out.fill(0);
+      let wsum = 0;
+      for (let a = 0; a < 8; a++) {
+        const n = n0 + off[a];
+        if (!(nodeW[n] > 0)) continue;
+        const w = (a & 1 ? tx : 1 - tx) * (a & 2 ? ty : 1 - ty) * (a & 4 ? tz : 1 - tz) + 1e-9;
+        out[0] += w * vec[3 * n];
+        out[1] += w * vec[3 * n + 1];
+        out[2] += w * vec[3 * n + 2];
+        wsum += w;
+      }
+      if (wsum > 0) for (let q = 0; q < 3; q++) out[q] /= wsum;
+    };
+    const t3 = new Float64Array(3);
+    shapes.forEach((vec, mi) => {
+      const per = parts.map((pf) => {
+        const P = pf.positions;
+        const out = new Float32Array(P.length);
+        for (let v = 0; v < P.length; v += 3) {
+          sampleVec(vec, P[v], P[v + 1], P[v + 2], t3);
+          out[v] = t3[0];
+          out[v + 1] = t3[1];
+          out[v + 2] = t3[2];
+        }
+        return out;
+      });
+      let mx = 0;
+      for (const a of per) for (let v = 0; v < a.length; v += 3) mx = Math.max(mx, Math.hypot(a[v], a[v + 1], a[v + 2]));
+      const sc = mx > 0 ? 1 / mx : 0;
+      per.forEach((a, pi) => {
+        for (let v = 0; v < a.length; v++) a[v] *= sc;
+        (parts[pi].modes ??= [])[mi] = a;
+      });
+    });
+  }
   // the node maxima are the reported values; keep the colour scale consistent with them
   ranges.stress[1] = Math.max(ranges.stress[1], vm[iS]);
   ranges.disp[1] = Math.max(ranges.disp[1], dMax);
@@ -890,6 +1222,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     ranges,
     warnings,
     materials: inp.materials.map((m, i) => ({ name: m.name, E: m.E, yield: m.yield, allowable: allow[i].value, basis: allow[i].basis, layerFactor: m.layerFactor, assumed: !!m.assumed })),
+    modal,
+    drop: dropResult,
   };
 
   // ----- helpers that need the closure -----
@@ -953,49 +1287,6 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
     }
   }
-}
-
-function jacobiEigen(Ain: Float64Array, n: number): { values: number[]; vectors: Float64Array } {
-  const A = Float64Array.from(Ain);
-  const V = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) V[i * n + i] = 1;
-  for (let sweep = 0; sweep < 60; sweep++) {
-    let off = 0;
-    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += A[p * n + q] ** 2;
-    if (off < 1e-30) break;
-    for (let p = 0; p < n; p++)
-      for (let q = p + 1; q < n; q++) {
-        const apq = A[p * n + q];
-        if (Math.abs(apq) < 1e-300) continue;
-        const theta = (A[q * n + q] - A[p * n + p]) / (2 * apq);
-        const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
-        const cs = 1 / Math.sqrt(t * t + 1),
-          sn = t * cs;
-        for (let k = 0; k < n; k++) {
-          const akp = A[k * n + p],
-            akq = A[k * n + q];
-          A[k * n + p] = cs * akp - sn * akq;
-          A[k * n + q] = sn * akp + cs * akq;
-        }
-        for (let k = 0; k < n; k++) {
-          const apk = A[p * n + k],
-            aqk = A[q * n + k];
-          A[p * n + k] = cs * apk - sn * aqk;
-          A[q * n + k] = sn * apk + cs * aqk;
-        }
-        for (let k = 0; k < n; k++) {
-          const vkp = V[k * n + p],
-            vkq = V[k * n + q];
-          V[k * n + p] = cs * vkp - sn * vkq;
-          V[k * n + q] = sn * vkp + cs * vkq;
-        }
-      }
-  }
-  const values = Array.from({ length: n }, (_, i) => A[i * n + i]);
-  // eigenvector i is column i of V; return them as rows
-  const vectors = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) for (let k = 0; k < n; k++) vectors[i * n + k] = V[k * n + i];
-  return { values, vectors };
 }
 
 const clampI = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);

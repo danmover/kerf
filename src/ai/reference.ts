@@ -481,6 +481,26 @@ analysis "Gearbox duty" {
   life: 2000h              // required running life (sets fatigue cycles and the bearing life target)
   safety: 1.5
 }
+Natural frequencies (vibration) use the same block with modes:, excite: or ringing:. Without load: or gravity it only finds frequencies (at "draft" resolution by default):
+analysis "Frame shake" {
+  parts: [frame, motor_mount]
+  fix: face(frame, -Z)
+  carries: mass(face(motor_mount, +Z), 450g)   // a mass the parts carry that is not drawn as a solid (also adds weight with gravity and force in drops)
+  excite: [spin(1500rpm, name: "drill"), spin(600rpm, to: 3000rpm), band(20Hz, 60Hz, name: "road"), 50Hz]   // what shakes it
+  ringing: accel                               // printers and gantries: X/Y move acceleration in mm/s²; checks ringing after each move
+  modes: 6                                     // how many frequencies (default 6, up to 12)
+  damping: 0.02                                // fraction of critical damping (default 0.02)
+}
+A mode that moves 5 % or more of the mass fails when a running speed or band covers it (±10 %) and warns within a factor of √2; ringing over 0.02 mm warns. The result names where each mode moves most: stiffen there (a brace, gusset, deeper section) or move the speed.
+Drops, knocks and tip-overs are held only by the floor they land on (no fix:, load:, gravity or excite:):
+analysis "Desk drop" {
+  parts: [case, lid]
+  drop: 0.75m             // fall height
+  onto: "wood"            // concrete (default), tile, steel, wood, carpet, grass
+  impact: (1, 1, -1)      // the way it moves into the floor: a bottom corner here; default -Z lands flat
+}
+analysis "Knocked over" { parts: [tower]  tip: +X }   // tips over its bottom edge onto its +X side; the fall height comes from the shape
+The result gives the impact speed, how long the impact lasts, the peak g, the g the parts feel (a short impact loads flexible parts less, one about as long as their swing loads them more) and the stresses. A dent right where it lands is not counted as breaking. Safety defaults to 1.5 for drops.
 Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
 ## Checks the app runs automatically
@@ -490,11 +510,14 @@ Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default;
 - swept envelopes of rotating gears against static parts
 - gear meshing: same module, exact centre distance, face overlap, and tooth clearance through a rotation
 - build errors (a modelling step the kernel could not perform)
-- every analysis block: structural strength (factor of safety) and stiffness, or the drivetrain's tooth, bearing and shaft checks
+- every analysis block: structural strength (factor of safety) and stiffness, natural frequencies against what shakes it, drops and tip-overs, or the drivetrain's tooth, bearing and shaft checks
+- real-world fit: every hole with a shaft, pin, bearing, dowel or screw in it, every gear mesh and every screw pattern is simulated as made a few thousand times: printed holes come out small and printed parts shrink as they cool (by material, process settings and orientation), bought parts sit anywhere in their standard tolerance band (ISO 492 bearings, ISO 286 dowels and shafts, 6g screws), sizes a drawing calls with fit: or tol: are held, all at the brief's temperatures. Outcomes: won't fit, cracks (a plastic hub split by a press fit), creeps, slips, loose, binds (gears whose backlash the fits eat up), misaligned (screw patterns). Fix with the size the check names (a 5 mm dowel in PETG wants a hole of about 5.2 mm), gear backlash:, the fdm settings hole_comp: and shrink_comp: when the user's slicer uses them, or a drawing tolerance for machined parts
+- springs and clips: every lib.spring (rate, preload, stress, coil bind, buckling, fatigue, surge frequency), every snap_hook (strain with the print's layers, push-in and pull-out force, whether it stays tight or rattles once latched given real part scatter) and every flexure (stiffness, force or torque, strain over its cycles)
+- hot soak: when the brief goes above 45 °C, latches held bent near their plastic's softening point and batteries past their limits; a brief that says car or vehicle but stops short of 60 °C gets a reminder
 - manufacturing: every part with a process: is checked against that process's rules on its exact geometry (walls by ray casting, draft and undercuts along the pull, tool reach per setup, inside corner radii, slots, overhangs and orientation, turning, sheet thickness and bends, flat profiles, holes, voids, machine size), plus whether its material suits the process
 - for machines: electrical rules, engineering loads and the physical test plan (see Machines below), and every scenario block's expectations from its simulated runs (see Simulations below)
 Hard parametric requirements also feed a feasibility solver: when they cannot all hold, it searches the unlocked parameters for the smallest changes that satisfy every hard requirement.
-Things geometry cannot prove are reported as "needs analysis" until an analysis block or a machine calculation covers them; real printer tolerances are not analysed, and heat only by the machine calculators.
+Things geometry cannot prove are reported as "needs analysis" until an analysis block or a machine calculation covers them; heat is checked through the brief's temperatures (materials, fits, latches, batteries) and by the machine calculators.
 
 ${machineReference()}
 
