@@ -250,6 +250,8 @@ interface Internals {
   isCompiling: boolean;
   _pathTracer: {
     material: THREE.ShaderMaterial;
+    compileMaterial(): Promise<unknown>;
+    _fsQuad: { _mesh: THREE.Mesh };
     _blendQuad: { material: THREE.ShaderMaterial };
     _primaryTarget: THREE.WebGLRenderTarget;
     _blendTargets: THREE.WebGLRenderTarget[];
@@ -353,6 +355,10 @@ export class PhotoRenderer {
   private arrays: RenderTarget2DArray[];
   /** the BVH is being built in the worker */
   private building = false;
+  /** path tracing shaders compiling in the background */
+  private compiling = 0;
+  /** the image buffers were freed while the view was off: the next sync starts the image again */
+  private released = false;
   /** a sample has been traced, so the shader is compiled */
   private warm = false;
   /** when the scene or camera last changed (ms) */
@@ -384,8 +390,27 @@ export class PhotoRenderer {
       console.warn("Photoreal: no BVH worker, building on the main thread", e);
     }
 
+    // The path tracing shader is huge, and with Direct3D (Windows) one compile
+    // takes many seconds. Left alone, the library compiled it three times
+    // (here, then once for each define its first sample changes), all as the
+    // canvas variant with sRGB output, so the first tile, drawn into a float
+    // target, compiled a fourth on the spot and froze the app. Compile it
+    // once, in the background, as the variant the trace draws with.
+    const inner = this.inner._pathTracer;
+    inner.compileMaterial = () => {
+      const prev = renderer.getRenderTarget();
+      renderer.setRenderTarget(inner._primaryTarget);
+      const done = renderer.compileAsync(inner._fsQuad._mesh, camera);
+      renderer.setRenderTarget(prev);
+      this.compiling++;
+      void done.then(() => this.compiling--);
+      return done;
+    };
+
     // patch the shadow catcher into the path tracing shader
-    const m = this.inner._pathTracer.material;
+    const m = inner.material;
+    // the values the first sample would set (no depth of field, fog or background map), so it doesn't recompile
+    Object.assign(m.defines, { FEATURE_DOF: 0, FEATURE_FOG: 0, FEATURE_BACKGROUND_MAP: 0 });
     const matte = /if \( material\.matte && state\.firstRay \) \{\s*gl_FragColor = vec4\( 0\.0 \);\s*break;\s*\}/;
     const patched = matte.test(m.fragmentShader) && /void main\(\s*\)\s*\{/.test(m.fragmentShader);
     this.catcherMissing = !patched;
@@ -433,6 +458,15 @@ export class PhotoRenderer {
     return this.building || !this.warm || this.inner.isCompiling;
   }
 
+  /**
+   * A shader is compiling or the scene is being built. Freeing the view now
+   * would pull its program and buffers out from under the GPU and the worker,
+   * so wait until it is idle.
+   */
+  get busy() {
+    return this.building || this.compiling > 0;
+  }
+
   /** The path tracing shader failed to compile or link on this GPU. */
   get failed() {
     if (!this.warm) return false;
@@ -450,9 +484,22 @@ export class PhotoRenderer {
     this.pt.reset();
   }
 
+  /**
+   * Free the image buffers (about 48 bytes a pixel) while the view is off.
+   * The compiled shader and the scene stay, so turning the view back on
+   * starts tracing at once; the next sync starts the image again.
+   */
+  releaseImage() {
+    const inner = this.inner._pathTracer;
+    for (const rt of [inner._primaryTarget, ...inner._blendTargets]) rt.dispose();
+    this.pt.reset();
+    this.released = true;
+  }
+
   /** Bring the path traced scene up to date; returns true when it had to restart. */
   sync(parts: PhotoPart[], st: PhotoStage, now: number): boolean {
-    let restart = false;
+    let restart = this.released;
+    this.released = false;
     const sig = signature(parts, st);
     if (sig !== this.sig) {
       this.sig = sig;
