@@ -114,6 +114,26 @@ function skrMiniE3V3Pins(): PinDef[] {
   ];
 }
 
+// Duet 3 Mini 5+ ports, named as on the board (DRIVER_0, OUT_0, TEMP_0, IO_5).
+// The mcu strings carry RepRapFirmware's names for them: driver numbers for
+// M584, ports for M950 / M308 / M574 / M558. The limits are from Duet3D's
+// hardware overview: drivers 2.0 A peak (1.4 A RMS), OUT_0 15 A (fused),
+// OUT_1/OUT_2 5 A (the overview also says 6 A: the lower one is used), fan
+// outputs 2 A each from VIN.
+function duet3Mini5PlusPins(): PinDef[] {
+  const out: PinDef[] = [pwrIn("POWER", 11, 25, { label: "VIN", vabs: 25, draw: 0.15, note: "12 V or 24 V main input (11 to 25 V)" }), gnd("POWER_GND", "VIN GND")];
+  for (let d = 0; d < 5; d++) out.push(port(`DRIVER_${d}`, "stepper4", "source", { label: `Driver ${d}`, imax: 1.4, ipeak: 2.0, mcu: `driver=${d}`, note: "Onboard TMC2209: up to 2.0 A peak (1.4 A RMS)" }));
+  out.push(port("OUT_0", "heater2", "source", { label: "OUT_0 (bed heater)", imax: 15, mcu: "out0", note: "High-current output, own 15 A fuse" }));
+  out.push(port("OUT_1", "heater2", "source", { label: "OUT_1 (hotend heater)", imax: 5, mcu: "out1" }));
+  out.push(port("OUT_2", "heater2", "source", { label: "OUT_2 (heater)", imax: 5, mcu: "out2" }));
+  for (let t = 0; t < 3; t++) out.push(port(`TEMP_${t}`, "therm2", "source", { label: `TEMP_${t} (thermistor)`, mcu: `temp${t}` }));
+  for (let n = 3; n <= 6; n++) out.push(port(`OUT_${n}`, "fan2", "source", { label: `OUT_${n} (fan)`, imax: 2, mcu: `out${n}`, note: "PWM fan output: the jumper picks VIN (2 A) or the onboard 12 V (800 mA for all four)" }));
+  for (const n of [0, 1, 2, 4, 5, 6]) out.push(port(`IO_${n}`, "endstop3", "source", { label: `IO_${n} (endstop)`, mcu: `io${n}.in`, note: n >= 5 ? "Input only, for a switch" : undefined }));
+  out.push(port("IO_3", "probe5", "source", { label: "IO_3 (BLTouch / Z probe)", mcu: "sensor=io3.in,control=io3.out", note: "io3.out is PWM-capable: Duet3D's BLTouch guide uses it for the servo signal" }));
+  out.push(port("USB", "usb", "source", { label: "USB to a computer (terminal, firmware updates)" }));
+  return out;
+}
+
 // ---------------- motor drivers ----------------
 
 const l298nPins: PinDef[] = [
@@ -410,7 +430,7 @@ export const ELECTRONICS: CatalogPart[] = [
     name: "BIGTREETECH SKR Mini E3 V3.0",
     maker: "BIGTREETECH",
     summary: "32-bit 3D printer board (STM32G0B1) with four TMC2209 drivers, hotend and bed heater outputs, 3 fans, endstops and a BLTouch port. 12 or 24 V.",
-    specs: { mcu: "STM32G0B1RET6", logic_v: 3.3, drivers: 4, driver: "TMC2209", platform: "klipper", klipper_mcu: "stm32g0b1", vin_min: 12, vin_max: 24 },
+    specs: { mcu: "STM32G0B1RET6", logic_v: 3.3, drivers: 4, driver: "TMC2209", driver_rsense: 0.11, platform: "klipper", firmware: "klipper, marlin", klipper_mcu: "stm32g0b1", marlin_board: "BOARD_BTT_SKR_MINI_E3_V3_0", marlin_env: "STM32G0B1RE_btt", vin_min: 12, vin_max: 24 },
     pins: skrMiniE3V3Pins(),
     geom: {
       g: "board",
@@ -436,10 +456,46 @@ export const ELECTRONICS: CatalogPart[] = [
     buy: [{ vendor: "BIGTREETECH", url: "https://biqu.equipment/products/bigtreetech-skr-mini-e3-v2-0-32-bit-control-board-for-ender-3" }, { vendor: "Marketplace", search: "BIGTREETECH SKR Mini E3 V3.0" }],
     source: "https://github.com/bigtreetech/BIGTREETECH-SKR-mini-E3",
     notes: [
-      "Runs Klipper (needs a Linux host such as a Raspberry Pi) or Marlin.",
+      "Runs Klipper (needs a Linux host such as a Raspberry Pi) or Marlin (on its own): set flavor in the firmware block. Not RepRapFirmware.",
       "Some boards ship with the STM32G0B0 chip instead of G0B1: pick the chip printed on yours in Klipper's menuconfig.",
       "BTT publishes no driver current limit. Its 0.11 Ω sense resistors cap the TMC2209s at about 1.77 A RMS; keep run_current at or below 1.0 A without a fan on the drivers.",
       "One 20 A input fuse covers everything: bed, hotend, motors and fans together.",
+    ],
+  },
+  {
+    id: "duet3_mini5plus",
+    kind: "controller",
+    name: "Duet 3 Mini 5+ (WiFi)",
+    maker: "Duet3D",
+    summary: "32-bit 3D printer board (ATSAME54) running RepRapFirmware: five TMC2209 drivers, bed and two hotend heater outputs, 4 fan outputs, 3 thermistor inputs, 7 IO ports, Wi-Fi web interface. 12 or 24 V.",
+    specs: { mcu: "ATSAME54P20A", logic_v: 3.3, clock_mhz: 120, drivers: 5, driver: "TMC2209", platform: "reprapfirmware", firmware: "reprapfirmware", vin_min: 11, vin_max: 25 },
+    pins: duet3Mini5PlusPins(),
+    geom: {
+      g: "board",
+      // Duet 2 WiFi footprint (Duet3D: same outline and mounting holes): 123 × 100 mm, holes 4 mm in from the edges
+      dims: { w: 123, d: 100, t: 1.6 },
+      holes: [
+        [-57.5, -46],
+        [57.5, -46],
+        [-57.5, 46],
+        [57.5, 46],
+      ],
+      hole_d: 4,
+      features: [
+        { kind: "terminal", x: -40, y: -42, w: 40, d: 10, h: 12 },
+        { kind: "header", x: 20, y: 42, w: 70, d: 7, h: 9 },
+        { kind: "chip", x: 0, y: 0, w: 14, d: 14, h: 1.5 },
+        { kind: "usb", x: 58, y: 10, w: 9, d: 8, h: 3.5 },
+      ],
+    },
+    price_usd: 149.8,
+    buy: [{ vendor: "Duet3D", url: "https://www.duet3d.com/Duet3Mini5plus" }, { vendor: "Marketplace", search: "Duet 3 Mini 5+ WiFi" }],
+    source: "https://docs.duet3d.com/Duet3D_hardware/Duet_3_family/Duet_3_Mini_5+_Hardware_Overview",
+    notes: [
+      "Runs RepRapFirmware 3 on its own (no host computer): set it up from the Duet Web Control page over Wi-Fi.",
+      "Ports are named as on the board: DRIVER_0 to DRIVER_4 for motors, OUT_0 (bed), OUT_1 and OUT_2 (heaters), OUT_3 to OUT_6 (fans), TEMP_0 to TEMP_2, IO_0 to IO_6 (IO_3 here takes the BLTouch).",
+      "Fan outputs come in pairs with a voltage jumper: VIN for fans of the supply voltage, 12 V for 12 V fans (800 mA for all of them).",
+      "Some resellers list the Mini 5+ as end of life: check stock before building around it.",
     ],
   },
   {

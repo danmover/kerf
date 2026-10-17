@@ -3,6 +3,7 @@
 
 import type { MachineData } from "../machine/types";
 import { runScenario, type RunResult } from "./engine/run";
+import { runPrinter } from "./printer/run";
 import type { ScenarioSpec } from "./scenario";
 import { Bench } from "./worlds/bench";
 import { SandPit, type TunnellerSpec } from "./worlds/sandPit";
@@ -34,11 +35,14 @@ export function worldFor(spec: ScenarioSpec, machine: MachineData): (variant: Va
       return world;
     };
   }
+  if (w.kind === "printer") throw new Error("a printer scenario runs through runPrinter");
   return (variant) => new Bench(machine, w.bench, variant);
 }
 
 /** Run a scenario's variants (all of them, or the ones given) in this thread. */
 export function runSpec(spec: ScenarioSpec, machine: MachineData, designName: string, opts: { variants?: VariantName[]; onProgress?: (variant: VariantName, done: number) => void } = {}): RunResult {
+  if (spec.world.kind === "printer")
+    return runPrinter({ machine, designName, firmware: spec.firmware, world: spec.world.printer, duration: spec.duration, config: spec.config, variants: opts.variants ?? spec.variants, seed: spec.seed, onProgress: opts.onProgress });
   return runScenario({
     machine,
     designName,

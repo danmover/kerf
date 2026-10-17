@@ -48,7 +48,27 @@ const PIT: Record<string, { label: string; unit: string }> = {
   push: { label: "helper's push on the tail", unit: "N" },
 };
 
+/** A printer run's series. */
+const PRINTER: Record<string, { label: string; unit: string; group: string }> = {
+  "nozzle.x": { label: "nozzle x", unit: "mm", group: "Toolhead" },
+  "nozzle.y": { label: "nozzle y", unit: "mm", group: "Toolhead" },
+  "nozzle.z": { label: "nozzle z", unit: "mm", group: "Toolhead" },
+  "print.speed": { label: "move speed", unit: "mm/s", group: "Toolhead" },
+  "print.flow": { label: "plastic flow", unit: "mm³/s", group: "Extrusion" },
+  "print.under": { label: "under-extrusion", unit: "%", group: "Extrusion" },
+  "hotend.temp": { label: "hotend temperature", unit: "°C", group: "Heaters" },
+  "hotend.target": { label: "hotend target", unit: "°C", group: "Heaters" },
+  "hotend.power": { label: "hotend heater", unit: "%", group: "Heaters" },
+  "bed.temp": { label: "bed temperature", unit: "°C", group: "Heaters" },
+  "bed.target": { label: "bed target", unit: "°C", group: "Heaters" },
+  "bed.power": { label: "bed heater", unit: "%", group: "Heaters" },
+  "fan.part": { label: "part fan", unit: "%", group: "Heaters" },
+  "psu.watts": { label: "power drawn", unit: "W", group: "Power" },
+};
+
 export function channelInfo(name: string): ChannelInfo {
+  if (PRINTER[name]) return PRINTER[name];
+  if (/^(x|y|z|extruder)\.load$/.test(name)) return { label: `${name.split(".")[0]} motor torque used`, unit: "%", group: "Motors" };
   const dot = name.indexOf(".");
   const thing = dot < 0 ? name : name.slice(0, dot);
   const field = dot < 0 ? "" : name.slice(dot + 1);
@@ -65,4 +85,5 @@ export function channelInfo(name: string): ChannelInfo {
 export const DEFAULT_PLOTS: Record<string, string[][]> = {
   sand_pit: [["pit.progress"], ["pit.offset"], ["pit.heading", "pit.hinge"], ["*.amps"], ["*.temp"]],
   bench: [["*.rpm"], ["*.amps"], ["*.temp"]],
+  printer: [["hotend.temp", "hotend.target"], ["bed.temp", "bed.target"], ["print.flow"], ["*.load"], ["psu.watts"]],
 };
