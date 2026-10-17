@@ -336,20 +336,25 @@ function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
             </div>
           </div>
         )}
-        <div className={`sim-stat ${v.summary.ram.used / v.summary.ram.total > 0.85 ? "warn" : ""}`} title="Globals plus the deepest stack">
-          <div className="k">ram</div>
-          <div className="v">
-            {v.summary.ram.used}
-            <small>/ {v.summary.ram.total} B</small>
-          </div>
-        </div>
-        <div className="sim-stat" title="Longest single pass of loop()">
-          <div className="k">loop()</div>
-          <div className="v">
-            {fmtNum(v.summary.loopMax, 2)}
-            <small>ms max</small>
-          </div>
-        </div>
+        {/* a mechanism run without firmware has no chip to report on */}
+        {v.summary.ram.total > 0 && (
+          <>
+            <div className={`sim-stat ${v.summary.ram.used / v.summary.ram.total > 0.85 ? "warn" : ""}`} title="Globals plus the deepest stack">
+              <div className="k">ram</div>
+              <div className="v">
+                {v.summary.ram.used}
+                <small>/ {v.summary.ram.total} B</small>
+              </div>
+            </div>
+            <div className="sim-stat" title="Longest single pass of loop()">
+              <div className="k">loop()</div>
+              <div className="v">
+                {fmtNum(v.summary.loopMax, 2)}
+                <small>ms max</small>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </>
   );
