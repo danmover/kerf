@@ -4,7 +4,20 @@
 
 import type { V3 } from "../kernel/recipe";
 
-export type ProcessId = "fdm" | "sla" | "sls" | "cnc_mill" | "cnc_lathe" | "injection" | "die_cast" | "sheet_metal" | "laser_cut";
+export type ProcessId =
+  | "fdm"
+  | "sla"
+  | "sls"
+  | "metal_print"
+  | "cnc_mill"
+  | "cnc_lathe"
+  | "injection"
+  | "vacuum_cast"
+  | "die_cast"
+  | "sand_cast"
+  | "investment_cast"
+  | "sheet_metal"
+  | "laser_cut";
 
 export type SettingValue = number | boolean | V3 | V3[];
 
@@ -30,10 +43,17 @@ export interface Rules {
   wall?: { fail: number; warn: number; max?: number; thickRatio?: number; why: string };
   /** faces nearly parallel to the pull direction need this much draft (degrees) */
   draft?: { pull: V3; warn: number; fail: number };
-  /** every face must be reachable along one of these directions (mould halves, machining setups) */
-  reach?: { dirs: V3[]; severity: Severity | "info"; what: "mould" | "setup" };
-  /** down-facing surfaces steeper than max (degrees from vertical) need support */
-  overhang?: { build: V3; max: number; severity: Severity; bridgeR: number };
+  /**
+   * every face must be reachable along one of these directions (mould halves, machining setups).
+   * relief: what frees an undercut when they are allowed (severity "info"), e.g. "side actions" or "sand cores"
+   */
+  reach?: { dirs: V3[]; severity: Severity | "info"; what: "mould" | "setup"; relief?: string };
+  /**
+   * down-facing surfaces steeper than max (degrees from vertical) need support.
+   * bridgeR: horizontal holes up to this radius arch over without support;
+   * span: flat ceilings up to this wide bridge without support (default 10 mm)
+   */
+  overhang?: { build: V3; max: number; severity: Severity; bridgeR: number; span?: number };
   /** the part should sit on a flat face */
   bedContact?: { build: V3 };
   /**

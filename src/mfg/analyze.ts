@@ -8,7 +8,7 @@ import { TriBVH } from "./bvh";
 import { triCentroid, triNormal, type AnalysisMesh, type FaceInfo } from "./brep";
 import { axisName, fmt } from "./profiles";
 import { isMetal } from "./materials";
-import type { Alternative, ProcessFinding, ProcessStats, Rules } from "./types";
+import type { Alternative, ProcessFinding, ProcessId, ProcessStats, Rules } from "./types";
 import type { V3 } from "../kernel/recipe";
 
 const AXES: V3[] = [
@@ -348,7 +348,7 @@ export function analyzeSolid(solid: AnalysisMesh | Ctx, rules: Rules, opts: Anal
 
   if (rules.envelope) findings.push(envelope(c, rules.envelope));
   if (rules.wall && !rules.sheet && !rules.profile) findings.push(...walls(c, rules, stats));
-  if (rules.draft && rules.reach) findings.push(...mould(c, rules));
+  if (rules.reach?.what === "mould") findings.push(...mould(c, rules));
   else if (rules.reach) findings.push(...setups(c, rules));
   if (rules.innerRadius) findings.push(...insideCorners(c, rules, stats));
   if (rules.gap) findings.push(...gaps(c, rules));
@@ -407,6 +407,19 @@ function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
 
 // ---------------- walls ----------------
 
+/** What goes wrong at a knife edge, by process (machining and cutting otherwise). */
+const KNIFE_EDGE: Partial<Record<ProcessId, string>> = {
+  fdm: "It prints ragged or not at all",
+  sla: "It prints ragged or not at all",
+  sls: "It prints ragged or not at all",
+  metal_print: "It prints ragged or not at all",
+  injection: "It fills poorly and the tool edge wears",
+  die_cast: "It fills poorly and the tool edge wears",
+  vacuum_cast: "It fills poorly and tears out of the silicone mould",
+  sand_cast: "The metal freezes before it fills it, and the sand there crumbles",
+  investment_cast: "The metal freezes before it fills it",
+};
+
 function walls(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
   const w = rules.wall!;
   const th = c.thickness();
@@ -432,7 +445,7 @@ function walls(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
       rule: "knife-edge",
       status: "warn",
       title: "Knife edges",
-      detail: `${mm2(edges.area)} tapers to a sharp edge thinner than ${fmt(w.fail)} mm where features meet at a shallow angle. ${rules.process === "fdm" || rules.process === "sla" || rules.process === "sls" ? "It prints ragged or not at all" : rules.process === "injection" || rules.process === "die_cast" ? "It fills poorly and the tool edge wears" : "It bends or burrs when cut"}.`,
+      detail: `${mm2(edges.area)} tapers to a sharp edge thinner than ${fmt(w.fail)} mm where features meet at a shallow angle. ${KNIFE_EDGE[rules.process] ?? "It bends or burrs when cut"}.`,
       fix: `Trim the sliver, let the features meet at a right angle, or blend it with a radius so the material is at least ${fmt(w.warn)} mm across.`,
       value: 0,
       limit: w.fail,
@@ -524,9 +537,11 @@ function taperedFaces(c: Ctx, th: Float64Array, warn: number, fail: number): Set
 
 // ---------------- moulding: draft and undercuts ----------------
 
+/** Undercuts against the mould's pull, and draft on the faces along it when the process needs draft. */
 function mould(c: Ctx, rules: Rules): ProcessFinding[] {
   const out: ProcessFinding[] = [];
-  const pull = rules.draft!.pull;
+  const reach = rules.reach!;
+  const pull = rules.draft?.pull ?? reach.dirs[0];
   const up = c.clear(pull);
   const down = c.clear([-pull[0], -pull[1], -pull[2]]);
   const { tn } = c;
@@ -546,45 +561,52 @@ function mould(c: Ctx, rules: Rules): ProcessFinding[] {
     const b = down[s] ? Math.asin(Math.max(-1, Math.min(1, -np))) / DEG : -Infinity;
     draftOf[s] = Math.max(a, b);
   }
-  const d = rules.draft!;
-  const failM = c.marks((s) => draftOf[s] < d.fail - 1e-6);
-  const warnM = c.marks((s) => draftOf[s] < d.warn - 1e-6);
-  const flaggedFaces = new Set<number>();
-  let worst = Infinity;
-  for (let s = 0; s < c.samples.length; s++) {
-    if (draftOf[s] < d.warn - 1e-6) {
-      flaggedFaces.add(c.m.faceOf[c.samples[s]]);
-      worst = Math.min(worst, draftOf[s]);
+  const pullName = axisName(pull);
+  const d = rules.draft;
+  if (d) {
+    const failM = c.marks((s) => draftOf[s] < d.fail - 1e-6);
+    const warnM = c.marks((s) => draftOf[s] < d.warn - 1e-6);
+    const flaggedFaces = new Set<number>();
+    let worst = Infinity;
+    for (let s = 0; s < c.samples.length; s++) {
+      if (draftOf[s] < d.warn - 1e-6) {
+        flaggedFaces.add(c.m.faceOf[c.samples[s]]);
+        worst = Math.min(worst, draftOf[s]);
+      }
+    }
+    if (warnM.area > 0.5) {
+      const status = failM.area > 0.5 ? "fail" : "warn";
+      out.push({
+        rule: "draft",
+        status,
+        title: worst < -0.25 ? "Negative draft" : worst < 0.1 ? "No draft on side faces" : `Draft under ${fmt(d.warn)}°`,
+        detail: `${plural(flaggedFaces.size, "face")} along the pull ${pullName} ${worst < 0.1 && worst > -0.25 ? (flaggedFaces.size === 1 ? "is straight" : "are straight") : `${flaggedFaces.size === 1 ? "has" : "have"} as little as ${fmt(worst, 2)}°`} (${mm2(warnM.area)}). ${rules.process === "sand_cast" ? "Without draft the pattern tears the sand as it is drawn out of the mould." : "Without draft the part drags and scuffs coming out of the mould."}`,
+        fix: `Taper these faces by at least ${fmt(d.warn)}° so they open toward the side they release to${rules.process === "injection" ? "; textured faces need 3° or more" : rules.process === "sand_cast" ? "; otherwise the patternmaker adds draft, which moves these faces" : ""}.`,
+        value: worst,
+        limit: d.warn,
+        marks: warnM.marks,
+      });
+    } else {
+      out.push({ rule: "draft", status: "pass", title: `Draft at least ${fmt(d.warn)}°`, detail: `Every side face tapers along the pull ${pullName}` });
     }
   }
-  const pullName = axisName(pull);
-  if (warnM.area > 0.5) {
-    const status = failM.area > 0.5 ? "fail" : "warn";
-    out.push({
-      rule: "draft",
-      status,
-      title: worst < -0.25 ? "Negative draft" : worst < 0.1 ? "No draft on side faces" : `Draft under ${fmt(d.warn)}°`,
-      detail: `${plural(flaggedFaces.size, "face")} along the pull ${pullName} ${worst < 0.1 && worst > -0.25 ? (flaggedFaces.size === 1 ? "is straight" : "are straight") : `${flaggedFaces.size === 1 ? "has" : "have"} as little as ${fmt(worst, 2)}°`} (${mm2(warnM.area)}). Without draft the part drags and scuffs coming out of the mould.`,
-      fix: `Taper these faces by at least ${fmt(d.warn)}° so they open toward the side they release to${rules.process === "injection" ? "; textured faces need 3° or more" : ""}.`,
-      value: worst,
-      limit: d.warn,
-      marks: warnM.marks,
-    });
-  } else {
-    out.push({ rule: "draft", status: "pass", title: `Draft at least ${fmt(d.warn)}°`, detail: `Every side face tapers along the pull ${pullName}` });
-  }
   const uc = c.marks((s) => undercut[s] === 1);
-  const reach = rules.reach!;
   if (uc.area > 0.5) {
     const alt = bestPull(c, pull, uc.area);
+    // side actions in a steel mould, or cores in a sand or wax mould
+    const relief = reach.relief ?? "side actions";
+    const cost = reach.relief ? "cost" : "tool cost";
     out.push({
       rule: "undercut",
       status: reach.severity === "info" ? "info" : reach.severity,
       title: "Undercuts",
-      detail: `${mm2(uc.area)} of surface is hidden from both mould halves (pull ${pullName})${reach.severity === "info" ? " and needs side actions, which you've allowed; each adds tool cost" : ". The part would lock in the mould"}.`,
-      fix: alt
-        ? `${alt.detail} Otherwise open these features to the pull direction, or allow side actions.`
-        : "Open these features to the pull direction (through-holes along the pull, open-sided clips), or allow side actions or lifters at extra tool cost.",
+      detail: `${mm2(uc.area)} of surface is hidden from both mould halves (pull ${pullName})${reach.severity === "info" ? ` and needs ${relief}, which you've allowed; each adds ${cost}` : ". The part would lock in the mould"}.`,
+      fix:
+        reach.severity === "info"
+          ? `${alt ? `${alt.detail} ` : ""}Opening these features to the pull direction would save the ${relief} and their cost.`
+          : alt
+            ? `${alt.detail} Otherwise open these features to the pull direction, or allow ${relief}.`
+            : `Open these features to the pull direction (through-holes along the pull, open-sided clips), or allow ${reach.relief ?? "side actions or lifters"} at extra ${cost}.`,
       marks: uc.marks,
       alt,
     });
@@ -809,11 +831,14 @@ function gaps(c: Ctx, rules: Rules): ProcessFinding[] {
 /** Downward faces this close to the bed (mm) need no support. */
 const NEAR_BED = 0.5;
 
-function overhangArea(c: Ctx, b: V3, maxDeg: number, bridgeR: number, flag?: Uint8Array): { area: number; contact: number; bridged: number } {
+/** Flat ceilings up to this wide (mm) bridge without support, unless the process says otherwise. */
+const BRIDGE_SPAN = 10;
+
+function overhangArea(c: Ctx, b: V3, o: NonNullable<Rules["overhang"]>, flag?: Uint8Array): { area: number; contact: number; bridged: number } {
   const { tn, tc, m } = c;
   let minB = Infinity;
   for (let i = 0; i < m.pos.length; i += 3) minB = Math.min(minB, m.pos[i] * b[0] + m.pos[i + 1] * b[1] + m.pos[i + 2] * b[2]);
-  const sinMax = Math.sin(maxDeg * DEG);
+  const sinMax = Math.sin(o.max * DEG);
   const bridgeFace = new Map<number, boolean>();
   let area = 0;
   let contact = 0;
@@ -831,7 +856,7 @@ function overhangArea(c: Ctx, b: V3, maxDeg: number, bridgeR: number, flag?: Uin
     const fi = m.faceOf[t];
     let ok = bridgeFace.get(fi);
     if (ok === undefined) {
-      ok = bridgeable(c, m.faces[fi], b, bridgeR);
+      ok = bridgeable(c, m.faces[fi], b, o.bridgeR, o.span ?? BRIDGE_SPAN);
       bridgeFace.set(fi, ok);
     }
     if (ok) {
@@ -845,9 +870,9 @@ function overhangArea(c: Ctx, b: V3, maxDeg: number, bridgeR: number, flag?: Uin
 }
 
 /** Faces a printer can bridge or arch over without support: small horizontal holes, short flat spans. */
-function bridgeable(c: Ctx, f: FaceInfo, b: V3, bridgeR: number): boolean {
+function bridgeable(c: Ctx, f: FaceInfo, b: V3, bridgeR: number, span: number): boolean {
   if (f.type === "CYLINDRE" && f.concave && f.radius !== undefined && f.radius <= bridgeR && f.axis && Math.abs(dot(f.axis.d, b)) < 0.05) return true;
-  if (f.type === "PLANE" && f.normal && -dot(f.normal, b) > 0.999) return minWidth(c, f, b) <= 10;
+  if (f.type === "PLANE" && f.normal && -dot(f.normal, b) > 0.999) return minWidth(c, f, b) <= span;
   return false;
 }
 
@@ -883,12 +908,12 @@ function norm(v: V3): V3 {
 function overhangs(c: Ctx, rules: Rules): ProcessFinding[] {
   const o = rules.overhang!;
   const flag = new Uint8Array(c.n);
-  const cur = overhangArea(c, o.build, o.max, o.bridgeR, flag);
+  const cur = overhangArea(c, o.build, o, flag);
   const out: ProcessFinding[] = [];
   // the best of the six axis orientations: least support, then most bed contact
   let best: { b: V3; area: number; contact: number } | null = null;
   for (const b of AXES) {
-    const r = sameDir(b, o.build) ? cur : overhangArea(c, b, o.max, o.bridgeR);
+    const r = sameDir(b, o.build) ? cur : overhangArea(c, b, o);
     if (!best || r.area < best.area - 1 || (Math.abs(r.area - best.area) <= 1 && r.contact > best.contact)) best = { b, area: r.area, contact: r.contact };
   }
   const better = best && !sameDir(best.b, o.build) && cur.area > 20 && best.area < cur.area * 0.6 && best.contact > 0;
@@ -906,7 +931,7 @@ function overhangs(c: Ctx, rules: Rules): ProcessFinding[] {
       rule: "overhang",
       status: o.severity,
       title: o.severity === "fail" ? "Overhangs without support" : "Needs support material",
-      detail: `${mm2(cur.area)} of downward surface is steeper than ${fmt(o.max)}° from vertical (build direction ${axisName(o.build)}). Supports leave rough marks and add print time.`,
+      detail: `${mm2(cur.area)} of downward surface is steeper than ${fmt(o.max)}° from vertical (build direction ${axisName(o.build)}). ${rules.process === "metal_print" ? "Metal supports are cut or machined away afterwards and leave rough marks." : "Supports leave rough marks and add print time."}`,
       fix: alt
         ? `${alt.detail} Or chamfer ledges at 45° and use teardrop holes.`
         : "Chamfer the undersides of ledges to 45°, turn wide flat ceilings into 45° roofs, or split the part so each piece prints flat side down.",

@@ -130,7 +130,7 @@ export interface ManufacturingPlan {
 // ---------- process qualities ----------
 
 /** What each process leaves and how it compares on looks (0..1), for parts whose looks matter. */
-const SURFACE: Record<string, [string, number]> = {
+const SURFACE: Record<ProcessId, [string, number]> = {
   fdm: ["visible layer lines", 0.45],
   sla: ["smooth, fine detail", 0.9],
   sls: ["grainy matte", 0.6],

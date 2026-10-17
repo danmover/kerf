@@ -285,16 +285,35 @@ export function slugId(text: string, taken: Iterable<string>, fallback = "use"):
 
 // ---------- processes and vocabulary ----------
 
-export type ProcessKind = "fdm" | "resin" | "sls" | "cnc" | "laser" | "sheet" | "molding" | "other";
+export type ProcessKind =
+  | "fdm"
+  | "resin"
+  | "sls"
+  | "metal_print"
+  | "cnc"
+  | "laser"
+  | "sheet"
+  | "molding"
+  | "vacuum_cast"
+  | "die_cast"
+  | "sand_cast"
+  | "investment_cast"
+  | "other";
 
+/** The brief's process choices. Each label reads back as its process (processFromText), so the picker and the checks agree. */
 export const PROCESSES: { kind: ProcessKind; label: string; print?: boolean; volume?: V3 }[] = [
   { kind: "fdm", label: "FDM print", print: true, volume: [220, 220, 250] },
   { kind: "resin", label: "Resin print", print: true, volume: [200, 120, 200] },
   { kind: "sls", label: "SLS print", print: true, volume: [300, 300, 300] },
+  { kind: "metal_print", label: "Metal 3D print", print: true, volume: [250, 250, 300] },
   { kind: "cnc", label: "CNC machined" },
   { kind: "laser", label: "Laser cut" },
   { kind: "sheet", label: "Sheet metal" },
   { kind: "molding", label: "Injection moulded" },
+  { kind: "vacuum_cast", label: "Vacuum cast" },
+  { kind: "die_cast", label: "Die cast" },
+  { kind: "sand_cast", label: "Sand cast" },
+  { kind: "investment_cast", label: "Investment cast" },
   { kind: "other", label: "Other" },
 ];
 
@@ -302,12 +321,16 @@ const KINDS: Record<ProcessId, ProcessKind> = {
   fdm: "fdm",
   sla: "resin",
   sls: "sls",
+  metal_print: "metal_print",
   cnc_mill: "cnc",
   cnc_lathe: "cnc",
   laser_cut: "laser",
   sheet_metal: "sheet",
   injection: "molding",
-  die_cast: "molding",
+  vacuum_cast: "vacuum_cast",
+  die_cast: "die_cast",
+  sand_cast: "sand_cast",
+  investment_cast: "investment_cast",
 };
 
 /** Reads loose process names ("3D printed in PETG", "machined") as a process kind, with the same reading the manufacturing checks use. */

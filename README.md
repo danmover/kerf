@@ -95,7 +95,7 @@ npm run typecheck
 - Every change runs the full pipeline: evaluate, build (only the parts that changed), check, then refine the meshes.
 - Checks cover requirements, solid interference, tool access to every screw, gear mesh and ratio, and motion.
 - When a change breaks a requirement, the conflict solver proposes the smallest parameter changes that fix it. You can hold parameters fixed, and it tells you when no fix exists.
-- Each custom part can say how it is made (`process: mfg.cnc_mill(tool_d: 3)`): FDM, SLA or SLS printing, CNC milling or turning, injection moulding, die casting, sheet metal or laser cutting. Kerf checks the part against that process's rules (walls, draft, undercuts, inside corners, tool reach, overhangs, bends), marks the problem faces on the model with a suggested fix, and can rank every process for a part. Claude designs to the chosen process from the start.
+- Each custom part can say how it is made (`process: mfg.cnc_mill(tool_d: 3)`): FDM, SLA, SLS or metal (DMLS/SLM) printing, CNC milling or turning, injection moulding, vacuum casting, die, sand or investment casting, sheet metal or laser cutting. Kerf checks the part against that process's rules (walls, draft, undercuts, inside corners, tool reach, overhangs, bends), marks the problem faces on the model with a suggested fix, and can rank every process for a part. Claude designs to the chosen process from the start.
 
 **Strength analysis**
 - An `analysis` block in the design says how parts are held (`fix: face(bracket, -Y)`, bolt-hole zones, rollers) and what loads them (forces, pressures, torques, gravity). After every change Kerf re-runs it in a background worker and adds strength and stiffness checks.

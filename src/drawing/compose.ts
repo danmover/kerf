@@ -802,7 +802,7 @@ function bomLines(parts: EvalPart[]): BomLine[] {
 
 function defaultNotes(spec: DrawingSpec, plan: DrawingPlan): string[] {
   const out = ["ALL DIMENSIONS IN MILLIMETRES."];
-  if (/2768/.test(spec.tolerance)) out.push(`UNLESS OTHERWISE STATED, TOLERANCES TO ${spec.tolerance.toUpperCase()}.`);
+  if (/2768|8062/.test(spec.tolerance)) out.push(`UNLESS OTHERWISE STATED, TOLERANCES TO ${spec.tolerance.toUpperCase()}.`);
   else if (spec.tolerance) out.push(`GENERAL TOLERANCES: ${spec.tolerance.toUpperCase()}.`);
   if (!plan.assembly && plan.parts.some((p) => p.kind === "part")) out.push("REMOVE BURRS AND BREAK SHARP EDGES.");
   return [...out, ...spec.notes.map((n) => n.toUpperCase())];

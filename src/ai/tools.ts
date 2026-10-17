@@ -241,7 +241,7 @@ export const TOOL_DEFS = [
             temp: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "Service temperature range in °C: [lowest, highest]." },
             outdoor: { type: "boolean" },
             exposure: { type: "array", items: { type: "string" }, maxItems: 12, description: "What it is exposed to, e.g. sunlight, rain, humidity, oil, chemicals, food contact, dust, impacts, vibration." },
-            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded or another process, or a process with settings like mfg.fdm(layer: 0.2). It becomes the default process of every part." },
+            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, Metal 3D print, CNC machined, Laser cut, Sheet metal, Injection moulded, Vacuum cast, Die cast, Sand cast, Investment cast or another process, or a process with settings like mfg.fdm(layer: 0.2). It becomes the default process of every part." },
             material: { type: "string", description: "Preferred material for made parts." },
             quantity: { type: "integer", minimum: 1 },
             build_volume: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "Printer build volume in mm (X, Y, Z)." },

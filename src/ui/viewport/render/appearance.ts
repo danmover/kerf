@@ -112,6 +112,9 @@ const TWEAKS: Record<string, (l: Look, finish: string) => Partial<Look>> = {
   TPU: () => ({ roughness: 0.64, sheen: 0.3, sheenRoughness: 0.6 }),
   POM: (l) => ({ roughness: l.roughness * 0.9, sheen: 0.2, sheenRoughness: 0.4 }),
   Titanium: (l, f) => (f === "bead-blasted" ? { roughness: 0.46 } : {}),
+  // as-cast iron and as-printed metal are duller and grainier than a blasted machined face
+  "Cast iron": (l, f) => (f === "bead-blasted" ? { roughness: 0.64, detailAmp: 0.005 } : {}),
+  AlSi10Mg: (l, f) => (f === "bead-blasted" ? { roughness: 0.58, detailAmp: 0.004 } : {}),
   "Carbon fiber": (l, f) =>
     f === "gloss"
       ? { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.04, detail: Detail.Weave, detailAmp: 0.02, detailScale: 3, roughVar: 0.18, tintAmt: 0.45 }

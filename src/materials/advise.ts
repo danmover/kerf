@@ -172,10 +172,14 @@ const PROCESS_LABEL: Record<ProcessId, string> = {
   fdm: "FDM printing",
   sla: "resin printing",
   sls: "SLS printing",
+  metal_print: "metal printing",
   cnc_mill: "CNC milling",
   cnc_lathe: "CNC turning",
   injection: "injection moulding",
+  vacuum_cast: "vacuum casting",
   die_cast: "die casting",
+  sand_cast: "sand casting",
+  investment_cast: "investment casting",
   sheet_metal: "sheet metal",
   laser_cut: "laser cutting",
 };
@@ -280,6 +284,8 @@ function plateLike(bbox: [V3, V3] | undefined, m: MaterialRecord): boolean {
 const TOOLED: ProcessId[] = ["injection", "die_cast"];
 /** Moulds and dies pay for themselves from about this many parts. */
 const TOOLING_QTY = 500;
+/** Processes whose materials are bought for them alone: a material made mainly this way (A380, A356, AlSi10Mg, casting polyurethane) is only compared for parts made that way. */
+const SPECIALIST: ProcessId[] = ["die_cast", "sand_cast", "investment_cast", "vacuum_cast", "metal_print"];
 
 /** The process the part (or the design) is meant to be made by. */
 const homeProcess = (part: PartFacts | undefined, brief: BriefFacts | null): ProcessId | undefined => (part?.bought ? undefined : (part?.process ?? brief?.process));
@@ -317,8 +323,12 @@ const PROCESS_FINISH: Partial<Record<ProcessId, string[]>> = {
   fdm: ["printed", "matte"],
   sla: ["matte", "gloss"],
   sls: ["matte"],
+  metal_print: ["bead-blasted", "machined", "polished"],
   injection: ["gloss", "satin", "matte", "textured"],
+  vacuum_cast: ["matte", "satin", "textured", "gloss"],
   die_cast: ["bead-blasted", "powder-coated"],
+  sand_cast: ["bead-blasted", "powder-coated", "machined"],
+  investment_cast: ["bead-blasted", "polished", "machined"],
   cnc_mill: ["machined", "bead-blasted", "brushed"],
   cnc_lathe: ["machined", "polished", "brushed"],
   sheet_metal: ["brushed", "bead-blasted", "powder-coated"],
@@ -347,7 +357,7 @@ export function colorFor(m: MaterialRecord, current: { material: string; color: 
   return m.color;
 }
 
-/** Material actually bought for the part: printed parts use what they weigh, machined ones the stock block, cut ones the sheet, moulded ones a little extra for runners. */
+/** Material actually bought for the part: printed parts use what they weigh, machined ones the stock block, cut ones the sheet, moulded and cast ones a little extra for runners and gates. */
 function boughtVolume(part: PartFacts, process: ProcessId | undefined): number | undefined {
   if (part.volume === undefined) return undefined;
   if (!part.bbox || !process) return part.volume;
@@ -361,6 +371,9 @@ function boughtVolume(part: PartFacts, process: ProcessId | undefined): number |
       return d[0] * d[1] * d[2] * 1.2 * part.count;
     case "injection":
     case "die_cast":
+    case "vacuum_cast":
+    case "sand_cast":
+    case "investment_cast":
       return part.volume * 1.1;
     default:
       return part.volume;
@@ -722,9 +735,11 @@ export function adviseMaterials(req: AdviceRequest): Advice {
     if (req.candidates?.length) return req.candidates.includes(m.name) || m.name === part?.material;
     if (m.name === part?.material || m.name === req.brief?.material) return true;
     if (m.special) return wantSpecial(m);
-    // castings only for parts made by the thousand, or already cast
-    if (m.processes.every((p) => p === "die_cast")) return (req.brief?.quantity ?? 1) >= 500 || part?.process === "die_cast";
-    if (m.name === "Aluminum A380") return (req.brief?.quantity ?? 1) >= 500 || part?.process === "die_cast";
+    // casting alloys, casting resins and printing powders only for parts already made that way; die-cast alloys also by the thousand
+    if (SPECIALIST.includes(m.processes[0])) {
+      const home = homeProcess(part, req.brief);
+      return (!!home && SPECIALIST.includes(home) && m.processes.includes(home)) || (m.processes.includes("die_cast") && (req.brief?.quantity ?? 1) >= TOOLING_QTY);
+    }
     return true;
   });
 

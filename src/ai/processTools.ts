@@ -47,7 +47,7 @@ export const PROCESS_TOOL_DEFS = [
       type: "object" as const,
       properties: {
         part: { type: "string", description: "Part name as in the source." },
-        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: 9, description: "Limit the comparison to these processes." },
+        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: PROCESS_IDS.length, description: "Limit the comparison to these processes." },
       },
       required: ["part"],
       additionalProperties: false,
@@ -62,7 +62,7 @@ export const PROCESS_TOOL_DEFS = [
       properties: {
         part: { type: "string", description: "Part name as in the source. Leave out to plan the whole design." },
         quantities: { type: "array", items: { type: "integer", minimum: 1, maximum: 10000000 }, maxItems: 5, description: "Numbers of designs to plan for, e.g. [1, 20, 2000]. Defaults to 1, 50 and 5000, plus the brief's quantity." },
-        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: 16, description: "Only consider these processes." },
+        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: PROCESS_IDS.length, description: "Only consider these processes." },
       },
       additionalProperties: false,
     },
@@ -79,8 +79,8 @@ export const PROCESS_TOOL_TITLES: Record<string, string> = { process_guide: "Rea
 
 const ProcessIdSchema = z.string().refine((s) => !!processFromText(s), { message: `use one of ${PROCESS_IDS.join(", ")}` });
 const GuideInput = z.object({ process: ProcessIdSchema, material: z.string().max(80).optional(), settings: z.record(z.string(), z.unknown()).optional() });
-const CompareInput = z.object({ part: z.string().min(1).max(120), processes: z.array(ProcessIdSchema).max(9).optional() });
-const PlanInput = z.object({ part: z.string().min(1).max(120).optional(), quantities: z.array(z.number().int().min(1).max(1e7)).max(5).optional(), processes: z.array(ProcessIdSchema).max(16).optional() });
+const CompareInput = z.object({ part: z.string().min(1).max(120), processes: z.array(ProcessIdSchema).max(PROCESS_IDS.length).optional() });
+const PlanInput = z.object({ part: z.string().min(1).max(120).optional(), quantities: z.array(z.number().int().min(1).max(1e7)).max(5).optional(), processes: z.array(ProcessIdSchema).max(PROCESS_IDS.length).optional() });
 
 /** A name for a number of designs. */
 const tierName = (qty: number) => (qty === 1 ? "Prototype" : qty <= 200 ? "Small batch" : qty <= 2000 ? "Batch" : "Production");

@@ -111,7 +111,7 @@ function laserSpeed(m: MaterialRecord | undefined, t: number): number {
 }
 
 /** Each process's typical uncertainty: how far a real quote may land below and above the estimate. */
-const SPREAD: Record<string, [number, number]> = {
+const SPREAD: Record<ProcessId, [number, number]> = {
   fdm: [0.6, 1.6],
   sla: [0.6, 1.8],
   sls: [0.6, 1.7],
@@ -163,8 +163,7 @@ function makeIt(process: ProcessId, g: CostGeometry, m: MaterialRecord | undefin
   const wall = g.wall && g.wall > 0 ? g.wall : Math.min(8, Math.max(0.8, (2 * V) / A));
   const mach = machinability(m);
   const undercuts = g.undercuts ?? 0;
-  // compared as text until every process id is in the union
-  switch (process as string) {
+  switch (process) {
     case "fdm": {
       // three perimeters of a 0.4 mm nozzle all round, 20 % infill inside, a little support
       const shell = Math.min(V, A * 1.2);
@@ -295,21 +294,23 @@ function makeIt(process: ProcessId, g: CostGeometry, m: MaterialRecord | undefin
       };
     }
     case "sand_cast": {
-      // a wooden or printed pattern lasts a few hundred moulds; a metal match plate thousands
+      // a wooden or printed pattern lasts a few hundred moulds; a metal match plate thousands, on a moulding machine
       const plate = qty > 300;
       const life = plate ? 5000 : 300;
       const one = (350 + 0.4 * boxCm3 + 250 * undercuts) * (plate ? 2.5 : 1);
       const tools = Math.max(1, Math.ceil(qty / life));
+      const poured = kgOf(V * 1.7);
       return {
         setup: own ? 50 : 120,
         tooling: { cost: one * tools, note: `${tools > 1 ? `${tools} × ` : ""}${plate ? "metal match-plate pattern" : "wood or printed pattern"}${undercuts ? ` with ${undercuts} sand core box${undercuts > 1 ? "es" : ""}` : ""}`, days: [5, 10] },
         hours: 0.05,
         rate: 40,
-        handsOn: 24 + 0.002 * boxCm3,
+        // ramming a mould by hand, or a machine-moulded flask
+        handsOn: plate ? 3 + 0.0005 * boxCm3 : 12 + 0.002 * boxCm3,
         // risers and gates: about 60 % of the metal poured ends up in the part
-        kg: kgOf(V * 1.7),
-        extra: { label: "Melting and fettling", amount: 8 + (A / 100) * 0.05 + kgOf(V * 1.7) * 1 },
-        minEach: own ? 0 : 15,
+        kg: poured,
+        extra: { label: "Melting and fettling", amount: 2 + poured * 2 + (A / 100) * 0.005 },
+        minEach: own || plate ? 0 : 15,
         days: [10, 20],
         notes: ["Rough sand surface, about ±1 mm. Faces that seal, locate or carry bearings need machining afterwards (not included)."],
       };
@@ -324,9 +325,10 @@ function makeIt(process: ProcessId, g: CostGeometry, m: MaterialRecord | undefin
         tooling: useDie ? { cost: die, note: "aluminium wax-injection die", days: [20, 30] } : undefined,
         hours: 0.05,
         rate: 40,
-        handsOn: 16 + cm3 * 0.1,
+        // gating wax trees and cutting parts off them; a die makes the waxes quicker to handle
+        handsOn: useDie ? 6 + cm3 * 0.03 : 12 + cm3 * 0.06,
         kg: kgOf(V * 1.5),
-        extra: { label: useDie ? "Ceramic shell and finishing" : "Printed pattern, shell and finishing", amount: (useDie ? 0 : printed) + 6 + (A / 100) * 0.03 },
+        extra: { label: useDie ? "Ceramic shell and finishing" : "Printed pattern, shell and finishing", amount: (useDie ? 0 : printed) + 6 + (A / 100) * 0.004 },
         minEach: own ? 0 : 20,
         days: [15, 30],
         notes: useDie ? [] : ["Each part starts as a 3D-printed pattern, so there is no die to pay for."],
@@ -351,10 +353,12 @@ function makeIt(process: ProcessId, g: CostGeometry, m: MaterialRecord | undefin
     }
     case "metal_print": {
       const support = 0.25 * V;
+      // cm³ an hour per part, with a build plate shared by several parts: aluminium melts quickest
+      const speed = /alum|alsi/i.test(m?.name ?? "") ? 25 : /titan/i.test(m?.name ?? "") ? 10 : 12;
       return {
         setup: own ? 60 : 180,
-        hours: 0.4 + (V + support) / 1000 / 9 + depth / 300,
-        rate: own ? 45 : 90,
+        hours: 0.2 + (V + support) / 1000 / speed + depth / 600,
+        rate: own ? 40 : 70,
         handsOn: 30,
         kg: kgOf((V + support) * 1.05),
         extra: { label: "Stress relief", amount: 4 },
