@@ -34,6 +34,8 @@ export interface PackOptions {
   firmware?: FirmwareOutput[];
   /** finished routes of the design's circuit boards (the app's board runtime has them); boards without one are routed here */
   boards?: RoutedBoard[];
+  /** each wire's run along its routed 3D cable by wire id (the app's harness runtime has them), for the cut lengths */
+  routed?: Map<string, number>;
   date?: Date;
 }
 
@@ -932,7 +934,7 @@ export function buildPack(model: Model, report: CheckReport | null, opts: PackOp
   const items = checkItems(model, report);
   const plan = testPlan(m);
   const ready = readiness(model, items, plan);
-  const rows = wireList(m, componentPositions(model));
+  const rows = wireList(m, componentPositions(model), opts.routed);
   const made = madeParts(model, opts.meshFor);
   const cuts = cutList(model);
   const fw = opts.firmware ?? generateFirmware(m, model.name || name);

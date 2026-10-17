@@ -10,6 +10,8 @@ import { useProject } from "../app/project";
 import { exportBuildPack } from "../app/exports";
 import { toast } from "../app/ui";
 import { checkItems, cutList, madeParts, readiness, testPlan, type PlanItem, type Readiness } from "../machine/pack";
+import { showWire } from "./wiringView";
+import { routedRuns, updateHarness, useHarness } from "../machine/harness/runtime";
 import { componentPositions, wireList, wiresCsv, wiringDiagram, wireHex, type WireEnd, type WireKind, type WireRow } from "../machine/wiring";
 import { generateFirmware, type FirmwareOutput } from "../machine/firmware";
 import { catalogPart, shopLinks } from "../machine/catalog";
@@ -41,7 +43,6 @@ function partIds(model: Model, comp: string, index?: number): string[] {
     .map((p) => p.id);
 }
 
-const endIds = (model: Model, e: WireEnd) => partIds(model, e.comp.replace(/\[\d+\]$/, ""), e.comp.endsWith("]") ? e.index : undefined);
 
 export function MachinePanel() {
   const model = useDesign((s) => s.model);
@@ -56,7 +57,22 @@ export function MachinePanel() {
   const items = useMemo(() => (model ? checkItems(model, report) : []), [model, report]);
   const plan = useMemo(() => (m ? testPlan(m) : []), [m]);
   const ready = useMemo(() => (model ? readiness(model, items, plan) : null), [model, items, plan]);
-  const rows = useMemo(() => (model && m ? wireList(m, componentPositions(model)) : []), [model, m]);
+  // cut lengths come from the 3D cable routes once they are routed (in a worker, about half a second)
+  const stage = useDesign((s) => s.stage);
+  const meshVersion = useDesign((s) => s.meshVersion);
+  const routes = useHarness((s) => s.routes);
+  const routeStatus = useHarness((s) => s.status);
+  useEffect(() => {
+    if (!model?.machine || (stage !== "done" && stage !== "refining")) return;
+    const t = setTimeout(() => updateHarness(model), 300);
+    return () => clearTimeout(t);
+  }, [model, stage, meshVersion]);
+  const rows = useMemo(
+    () => (model && m ? wireList(m, componentPositions(model), routedRuns(model)) : []),
+    // the routes are read through routedRuns
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [model, m, routes, routeStatus],
+  );
   const fw = useMemo(() => (model && m ? generateFirmware(m, model.name || name) : []), [model, m, name]);
 
   if (!model || !m || !ready) {
@@ -600,7 +616,7 @@ function WireTable({ model, rows }: { model: Model; rows: WireRow[] }) {
     }
     const notes = [r.label ? `Label: ${r.label}` : "", r.note ?? ""].filter(Boolean).join(" ");
     out.push(
-      <tr key={r.id} onClick={() => select([...new Set([...endIds(model, r.from), ...endIds(model, r.to)])])} style={{ cursor: "pointer" }}>
+      <tr key={r.id} onClick={() => showWire(r.id)} style={{ cursor: "pointer" }} data-tip="Show this cable in the 3D view">
         <td className="mono" style={{ color: "var(--text)" }}>
           {r.id}
         </td>
@@ -624,7 +640,7 @@ function WireTable({ model, rows }: { model: Model; rows: WireRow[] }) {
             </>
           )}
         </td>
-        <td className="mono" style={{ textAlign: "right" }}>
+        <td className="mono" style={{ textAlign: "right" }} data-tip={r.lengthMm === undefined ? undefined : r.lengthRouted ? "Measured along the cable's route in the 3D wiring, plus 150 mm for the ends and a service loop" : "Estimated from where the parts are; measured along the 3D route once the cables are routed"}>
           {r.lengthMm !== undefined ? `${r.lengthMm} mm` : ""}
         </td>
         <td className="note">{notes}</td>
