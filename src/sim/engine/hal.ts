@@ -245,6 +245,11 @@ export class SimHal implements Hal {
           this.deliverSerial();
           continue;
         }
+        // console bytes that have arrived: into the receive buffer now, or the wait for them never ends
+        if (this.rxQueue.length && this.rxQueue[0].t <= this.cyc) {
+          this.deliverSerial();
+          continue;
+        }
         if (this.intEnabled && !this.inIsr) {
           const k = this.irqPending.indexOf(true);
           if (k >= 0) {

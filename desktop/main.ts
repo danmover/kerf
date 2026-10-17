@@ -161,7 +161,17 @@ function lockDown() {
     if (permission === "media") return done(isOurs(wc.getURL()) && !(details as { mediaTypes?: string[] }).mediaTypes?.includes("video"));
     done(allowed.has(permission) && isOurs(wc.getURL()));
   });
-  session.defaultSession.setPermissionCheckHandler((wc, permission) => !!wc && isOurs(wc.getURL()) && (allowed.has(permission) || permission === "media"));
+  session.defaultSession.setPermissionCheckHandler((wc, permission) => !!wc && isOurs(wc.getURL()) && (allowed.has(permission) || permission === "media" || permission === "serial"));
+  // a USB serial port for the Calibrate panel's bench test: the one the person picks
+  session.defaultSession.on("select-serial-port", (e, ports, wc, pick) => {
+    e.preventDefault();
+    if (!isOurs(wc.getURL()) || !ports.length) return pick("");
+    if (ports.length === 1) return pick(ports[0].portId);
+    const names = ports.map((p) => p.displayName || p.portName || p.portId);
+    const win = BrowserWindow.fromWebContents(wc);
+    const opts = { type: "question" as const, title: "Kerf", message: "Which port is the machine's controller on?", buttons: [...names, "Cancel"], cancelId: names.length, noLink: true };
+    void (win ? dialog.showMessageBox(win, opts) : dialog.showMessageBox(opts)).then(({ response }) => pick(ports[response]?.portId ?? ""));
+  });
 }
 
 // ---------- the bridge to Settings → Desktop ----------

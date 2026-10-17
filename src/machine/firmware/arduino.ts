@@ -836,6 +836,53 @@ float hottest() { float h = 0; for (uint8_t i = 0; i < N_MOTORS; i++) if (motors
 }`);
   L.push("");
 
+  // bench test: measurements Kerf fits the simulation to (Simulation tab, Calibrate)
+  const benchOuts = outs.filter((o) => o.kind === "dc");
+  L.push("// ---------------- bench test ----------------");
+  L.push("// Runs each motor with the machine held still and off the ground, and prints \"cal\" lines:");
+  L.push("// the current in its first milliseconds (before it turns) gives the winding resistance, then");
+  L.push("// its free speed and current at full power. Paste the output into Kerf's Calibrate panel.");
+  L.push(`const uint8_t N_BENCH = ${benchOuts.length};`);
+  L.push(`const uint8_t benchMotor[${Math.max(1, benchOuts.length)}] = { ${benchOuts.length ? benchOuts.map((o) => `${o.key}_IDX`).join(", ") : "0"} };`);
+  L.push(`const int8_t benchEnc[${Math.max(1, benchOuts.length)}] = { ${benchOuts.length ? benchOuts.map((o) => encs.indexOf(o)).join(", ") : "-1"} };`);
+  L.push(encs.length ? "float encCpr(int8_t e) { return e >= 0 ? encCountsPerRev[e] : 0; }" : "float encCpr(int8_t) { return 0; }");
+  L.push(`float avgBattery() { float s = 0; uint8_t k = 0; for (uint8_t j = 0; j < 20; j++) { float v = readBattery(); if (v > 0) { s += v; k++; } delay(2); } return k ? s / k : -1; }
+void benchTest() {
+  stopped = true; stopAll(); setState(${a.tunneller ? "DONE" : "BENCH"}, "bench test");
+  Serial.println(F("cal start: hold the machine still with every motor free to turn"));
+  delay(1000);
+  Serial.print(F("cal rest vbat=")); Serial.println(avgBattery(), 3);
+  for (uint8_t b = 0; b < N_BENCH; b++) {
+    Motor &m = motors[benchMotor[b]];
+    // inrush: before the rotor moves only the winding resistance limits the current
+    motorWrite(m, 255);
+    unsigned long t0 = micros();
+    float peak = -1;
+    while (micros() - t0 < 4000UL) { float a = readAmps(m); if (a > peak) peak = a; }
+    float vPeak = readBattery();
+    delay(1500);
+    // free running at full power
+    int8_t e = benchEnc[b];
+    long c0 = e >= 0 ? encRead(e) : 0;
+    float sa = 0, sv = 0;
+    uint16_t na = 0, nv = 0;
+    unsigned long t1 = millis();
+    while (millis() - t1 < 1000UL) { float a = readAmps(m); if (a >= 0) { sa += a; na++; } float v = readBattery(); if (v > 0) { sv += v; nv++; } delay(5); }
+    float secs = (millis() - t1) / 1000.0f;
+    long c1 = e >= 0 ? encRead(e) : 0;
+    motorWrite(m, 0);
+    Serial.print(F("cal ")); Serial.print(m.name);
+    Serial.print(F(" peak_amps=")); Serial.print(peak, 2);
+    Serial.print(F(" peak_vbat=")); Serial.print(vPeak, 3);
+    Serial.print(F(" free_amps=")); Serial.print(na ? sa / na : -1.0f, 3);
+    Serial.print(F(" free_rpm=")); Serial.print(e >= 0 && encCpr(e) > 0 ? fabs((float)(c1 - c0)) / encCpr(e) / secs * 60.0f : -1.0f, 2);
+    Serial.print(F(" free_vbat=")); Serial.println(nv ? sv / nv : -1.0f, 3);
+    delay(1500);
+  }
+  Serial.println(F("cal end"));
+}
+`);
+
   // console
   L.push(`// ---------------- serial console ----------------
 void help() {
@@ -852,6 +899,7 @@ void help() {
   Serial.println(F("  z            zero the heading here"));
   Serial.println(F("  l            print the run log as CSV"));
   Serial.println(F("  c            clear the run log"));
+  Serial.println(F("  b            bench test for Kerf's Calibrate panel (hold the machine still)"));
   for (uint8_t i = 0; i < N_MOTORS; i++) { Serial.print(F("  motor ")); Serial.print(i); Serial.print(F(" = ")); Serial.println(motors[i].name); }
 }
 
@@ -878,6 +926,7 @@ void command(char *s) {
     case 'z': targetYaw = yaw; headingI = 0; Serial.println(F("Heading zeroed")); break;
     case 'l': logDump(); break;
     case 'c': logClear(); Serial.println(F("Log cleared")); break;
+    case 'b': benchTest(); break;
     default: if (cmd) Serial.println(F("? (h for help)"));
   }
 }
@@ -1127,7 +1176,7 @@ function arduinoReadme(a: {
   L.push("## Console", "", "Type a command and press Enter:", "");
   L.push("| Command | Does |", "|---|---|");
   L.push("| `h` | help |", "| `s` | status: state, distance, heading, roll, pitch, motor commands and currents, battery |", "| `g` | start now |", "| `x` | stop everything |");
-  L.push("| `m <n> <pwm>` | run motor n at -255..255 for 2 seconds |", "| `t <deg>` | steer to an angle |", "| `k` | calibrate the steering actuator's ends |", "| `e` | encoder counts |", "| `i` | IMU readings for 5 seconds |", "| `z` | zero the heading |", "| `l` | print the run log as CSV |", "| `c` | clear the log |");
+  L.push("| `m <n> <pwm>` | run motor n at -255..255 for 2 seconds |", "| `t <deg>` | steer to an angle |", "| `k` | calibrate the steering actuator's ends |", "| `e` | encoder counts |", "| `i` | IMU readings for 5 seconds |", "| `z` | zero the heading |", "| `l` | print the run log as CSV |", "| `c` | clear the log |", "| `b` | bench test for Kerf's Calibrate panel (machine held still, motors free to turn) |");
   L.push("");
   a.outs.forEach((o, i) => L.push(`Motor ${i} is **${o.label}** (${o.part.name}).`));
   L.push("");
@@ -1141,6 +1190,9 @@ function arduinoReadme(a: {
     ...(a.vsense ? ["`s` and compare the battery voltage with a multimeter: it should agree within 0.2 V."] : []),
     ...(a.outs.some((o) => o.csDriveOnly && o.pins.cs)
       ? ["Check the current reading: run a motor against a load at part power (`m <n> 150`) and compare `s` with your bench supply's ammeter; they should agree within 10 %. Wire the driver's CS straight to its pin with no capacitor: the firmware skips the samples taken in the PWM off-time, when this driver's CS reads 0 V."]
+      : []),
+    ...(a.outs.some((o) => o.kind === "dc")
+      ? ["Calibrate the simulation: prop the machine up so every motor turns freely, `b`, and paste what it prints into the Calibrate panel in Kerf's Simulate tab (or connect it over USB there). Kerf measures each motor and the battery and simulates with those numbers from then on."]
       : []),
     ...(a.tunneller ? ["Run in a bucket of sand first with `g`: watch the currents in `s`. Set STALL_A just above the highest normal digging current.", "After a long bucket run, feel the motor cans: `s` shows each motor's estimated rise (+K). If the cans are hotter than that suggests, lower MOTOR_COOLING.", "After a run, `l` prints the log; paste it into a spreadsheet to see distance, heading and current over time."] : []),
   ];

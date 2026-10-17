@@ -44,6 +44,8 @@ scenario "Front screw jams" {
 }
 Put the fault after the firmware's start delay, while the machine is working. A good fault test asks for a safe outcome (it notices, stops or backs out, nothing overheats or blows), not for the job to finish. When one fails, say what the firmware did wrong in plain words and propose the firmware or wiring change.
 
+Calibration: once the machine is built, the simulation can run on the real parts' numbers. The Arduino firmware Kerf writes has a bench test (console command b, motors free to turn, machine held still) that prints "cal" lines; the Calibrate panel in the Simulate tab fits them and writes measured: sim.measured(...) on each gearmotor and the battery. A component with measured: is simulated with those values in place of the catalog's, while the checks keep the maker's ratings. When a user quotes measured numbers (a stall current, a free speed), set measured: on that component with edit_design and run the scenarios again; for a whole bench test log, point them to the Calibrate panel, which fits it.
+
 Worlds and machines:
 ${fns}
 

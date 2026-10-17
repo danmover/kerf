@@ -20,11 +20,13 @@ import { DEFAULT_PLOTS, channelInfo } from "../../sim/channels";
 import { matchSeries } from "../../sim/frames";
 import { fmtResult, resultInfo } from "../../sim/results";
 import { SIM_TEMPLATES, describePrompt, templateSource } from "../../sim/templates";
+import { calibrateUnavailable } from "../../sim/calibrate";
 import { fmtNum } from "../../lang/values";
 import { Icon, StatusIcon } from "../icons";
 import { useChatDraft } from "../chatDraft";
 import { Plot } from "./Plot";
 import { DisplayView } from "./DisplayView";
+import { Calibrate } from "./Calibrate";
 import { mmss, seek, useSelectedScenario } from "./simUi";
 import "../../styles/sim.css";
 
@@ -56,9 +58,11 @@ export function SimPanel() {
   const { model, defs, def, run, vrun } = useSelectedScenario();
   const runs = useSim((s) => s.runs);
   const [adding, setAdding] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
   if (!model) return <div className="an-body mono dim">Building the design…</div>;
-  if (!defs.length || !def) return <EmptyState model={model} />;
-  if (adding) return <EmptyState model={model} onDone={() => setAdding(false)} />;
+  if (calibrating) return <Calibrate model={model} onDone={() => setCalibrating(false)} />;
+  if (!defs.length || !def) return <EmptyState model={model} onCalibrate={() => setCalibrating(true)} />;
+  if (adding) return <EmptyState model={model} onDone={() => setAdding(false)} onCalibrate={() => setCalibrating(true)} />;
   return (
     <div className="sim">
       <div className="sim-head">
@@ -78,6 +82,11 @@ export function SimPanel() {
         <button className="sim-pick" onClick={() => setAdding(true)} data-tip="Add another scenario">
           <Icon.Plus size={12} /> new
         </button>
+        {!calibrateUnavailable(model) && (
+          <button className="sim-pick" onClick={() => setCalibrating(true)} data-tip="Measure the real motors and battery with a bench test, and simulate with those numbers">
+            <Icon.Sliders size={12} /> calibrate
+          </button>
+        )}
         <div className="grow" />
         <HeadControls def={def} run={run} />
       </div>
@@ -550,7 +559,7 @@ function Console({ v, t }: { v: VariantRun; t: number }) {
 
 // ---------- no scenario yet ----------
 
-function EmptyState({ model, onDone }: { model: Model; onDone?: () => void }) {
+function EmptyState({ model, onDone, onCalibrate }: { model: Model; onDone?: () => void; onCalibrate: () => void }) {
   const [text, setText] = useState("");
   const describe = () => {
     void sendMessage(describePrompt(text));
@@ -609,6 +618,23 @@ function EmptyState({ model, onDone }: { model: Model; onDone?: () => void }) {
           </div>
         </Fragment>
       ))}
+      {!calibrateUnavailable(model) && (
+        <>
+          <div className="sim-h" style={{ marginTop: 16 }}>
+            Built it already?
+          </div>
+          <div className="sim-gallery">
+            <button className="sim-card" onClick={onCalibrate}>
+              <div className="t">
+                <Icon.Sliders size={13} />
+                Calibrate from the real machine
+                <span className="tag">bench test</span>
+              </div>
+              <div className="b">Run a short bench test on the real machine and paste what it prints. Kerf measures each motor and the battery, and every simulation uses those numbers from then on.</div>
+            </button>
+          </div>
+        </>
+      )}
       <div className="sim-h" style={{ marginTop: 16 }}>
         Or describe the test
       </div>

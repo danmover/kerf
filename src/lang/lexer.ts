@@ -88,6 +88,7 @@ export const UNITS: Record<string, number> = {
   mAh: 1,
   Ohm: 1,
   kOhm: 1000,
+  mOhm: 0.001,
   mH: 1,
   MPa: 1,
   kPa: 0.001,

@@ -17,7 +17,7 @@ import type { MachineData } from "../machine/types";
 /** A world or machine description made by a sim.* function. */
 export class SimSpec extends Obj {
   constructor(
-    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "fault",
+    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "fault" | "measured",
     public data: unknown,
     label: string,
   ) {
@@ -338,11 +338,27 @@ const CONFIG_FN = new Fn(
   "Firmware settings (#define values in config.h) to change for this run only, e.g. sim.config(STEER_SIGN: -1, POWER: 0.7). Use it to try a fix before changing the firmware block.",
 );
 
-const SIM_ENTRIES: [string, Fn][] = [...Object.entries(SIM_FNS), ["config", CONFIG_FN]];
+/** sim.measured(name: value, ...): numbers measured on the real part, for its `measured:` property. */
+const MEASURED_FN = new Fn(
+  "sim.measured",
+  (pos, named, ctx) => {
+    if (pos.length) ctx.error("sim.measured() takes named values only, like sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm)");
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(named)) {
+      if (typeof v !== "number" || !(v > 0)) ctx.error(`sim.measured(): ${k} should be a measured value above zero, like 0.31A`);
+      out[k] = v as number;
+    }
+    if (!Object.keys(out).length) ctx.error("sim.measured() needs at least one value, like sim.measured(i_free: 0.31A)");
+    return new SimSpec("measured", out, "measured values");
+  },
+  "Values measured on the real part, for a component's measured: property, e.g. measured: sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm). The simulation uses them in place of the catalog's; the checks keep the maker's ratings. Gearmotors: i_free, i_stall, rpm_free, t_stall (at rated voltage). Batteries: r_int (whole pack, Ohm or mOhm), capacity (mAh). The Calibrate panel in the Simulation tab fits them from a bench test.",
+);
+
+const SIM_ENTRIES: [string, Fn][] = [...Object.entries(SIM_FNS), ["config", CONFIG_FN], ["measured", MEASURED_FN]];
 export const SIM_DOCS: Record<string, string> = Object.fromEntries(SIM_ENTRIES.map(([k, f]) => [k, f.doc ?? ""]));
 
 export function simNamespace(): Obj {
-  return new Obj({ ...SIM_FNS, config: CONFIG_FN }, "simulations", "sim");
+  return new Obj({ ...SIM_FNS, config: CONFIG_FN, measured: MEASURED_FN }, "simulations", "sim");
 }
 
 // ---------- scenario props to a spec ----------

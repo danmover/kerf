@@ -23,7 +23,8 @@ export interface SimTemplate {
 
 const fmtS = (s: number) => (s % 60 === 0 ? `${s / 60}min` : `${Math.round(s)}s`);
 
-function firmwareOf(m: Model) {
+/** The design's Arduino firmware: the one the simulation can run. */
+export function firmwareOf(m: Model) {
   const fw = m.machine?.firmware ?? [];
   return fw.find((f) => {
     const board = m.machine?.components.find((c) => c.name === f.board);

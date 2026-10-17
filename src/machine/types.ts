@@ -289,6 +289,8 @@ export interface MachineComponent {
   pcb?: { board: string; x: number; y: number; rot: number; side: "top" | "bottom" };
   /** reference designator on the board (R1, C4, U2) */
   ref?: string;
+  /** catalog specs replaced by values measured on the real part (`measured: sim.measured(...)`), for the simulation */
+  measured?: Record<string, number>;
   span: Span;
 }
 

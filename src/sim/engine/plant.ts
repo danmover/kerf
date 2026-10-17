@@ -7,6 +7,7 @@
 
 import { buildNetlist, type Net, type NetPin, type Netlist } from "../../machine/erc";
 import { catalogPart } from "../../machine/catalog";
+import { measuredPart } from "../../machine/measured";
 import type { CatalogPart, MachineComponent, MachineData } from "../../machine/types";
 import type { Board } from "../mcu/board";
 import { Actuator, Battery, Bno055, DCMotor, Mpu6050, Regulator, Servo, Ssd1306, quadrature, type ImuNoise } from "./devices";
@@ -141,7 +142,7 @@ export class Plant implements PlantPort, PlantView {
     const order = (k: string | undefined) => (k === "motor_driver" ? 0 : 1);
     const comps = [...machine.components].sort((a, b) => order(catalogPart(a.catalogId)?.kind) - order(catalogPart(b.catalogId)?.kind));
     for (const mc of comps) {
-      const part = catalogPart(mc.catalogId);
+      const part = measuredPart(mc);
       if (!part || mc.name === mcu) continue;
       if (part.specs.driver === "SSD1306" && part.specs.iface === "i2c") {
         this.display(mc, part);
@@ -238,6 +239,7 @@ export class Plant implements PlantPort, PlantView {
     if (this.unsupported.length) this.notes.push(`Not simulated yet (they stay still): ${this.unsupported.join(", ")}.`);
     for (const b of this.batteries) this.assumptions.push(...b.b.assumed);
     for (const m of this.motors) this.assumptions.push(...m.m.assumed);
+    for (const mc of machine.components) if (mc.measured) this.assumptions.push(`${mc.name}: measured on the real part (${Object.entries(mc.measured).map(([k, v]) => `${k} ${Number(v.toPrecision(3))}`).join(", ")}), in place of the catalog's numbers`);
     hal.plant = this;
     this.updateRails();
   }

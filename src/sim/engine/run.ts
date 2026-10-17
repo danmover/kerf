@@ -6,7 +6,7 @@
 // console, and the results the scenario's expectations read.
 
 import type { MachineData } from "../../machine/types";
-import { catalogPart } from "../../machine/catalog";
+import { measuredPart } from "../../machine/measured";
 import { generateFirmware } from "../../machine/firmware";
 import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
 import { Plant } from "./plant";
@@ -184,7 +184,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   let moved = false;
   let stillSince = 0;
   let finishedAt = -1;
-  const motorSpecs = new Map(plant.motors.map((m) => [m.comp, Number(catalogPart(m.mc.catalogId)?.specs.t_stall ?? 1000) / 1000]));
+  const motorSpecs = new Map(plant.motors.map((m) => [m.comp, Number(measuredPart(m.mc)?.specs.t_stall ?? 1000) / 1000]));
   const soc0 = plant.batteries[0]?.b.soc ?? 0;
 
   let fwRef: ReturnType<typeof loadFirmware> | null = null;

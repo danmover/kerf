@@ -18,7 +18,8 @@ import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
 import { emptyMachine, type MachineComponent, type MachineData, type PinRef } from "../machine/types";
-import { SCENARIO_PROPS, scenarioSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
+import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
+import { MEASURED } from "../machine/measured";
 import { suggest } from "./suggest";
 import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
 import { SOLVE_MS, budgetMs, type Budget } from "../sketch/solver";
@@ -91,7 +92,7 @@ const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as co
 const BRIEF_PROCESS_LISTS = { workshop: "workshop", can_order: "canOrder" } as const;
 export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", ...Object.keys(BRIEF_PROCESS_LISTS), "max_size", "max_mass"];
 /** extra properties of purchasable catalog parts */
-const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref"];
+const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref", "measured"];
 const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
@@ -1090,6 +1091,19 @@ class Evaluator {
         if (props.rating !== undefined && cp.kind !== "fuse") throw new EvalError("rating: is a fuse's rating in amps; only fuses take it", propSpans.rating);
         const rating = props.rating !== undefined ? this.num(props.rating, propSpans.rating, "rating (the fuse's rating, A)") : undefined;
         if (rating !== undefined && !(rating > 0)) throw new EvalError("rating: should be a current above zero, like 15A", propSpans.rating);
+        let measured: Record<string, number> | undefined;
+        if (props.measured !== undefined) {
+          const mv = props.measured;
+          if (!(mv instanceof SimSpec) || mv.what !== "measured") throw new EvalError("measured: should be sim.measured(...), like measured: sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm)", propSpans.measured);
+          const keys = MEASURED[cp.kind];
+          if (!keys) throw new EvalError(`measured: works on gearmotors and batteries; ${s.name} is a ${cp.kind.replace(/_/g, " ")}`, propSpans.measured);
+          measured = {};
+          for (const [k, x] of Object.entries(mv.data as Record<string, number>)) {
+            const f = keys[k];
+            if (!f) throw new EvalError(`sim.measured(): ${k} is not measured on a ${cp.kind}. Use ${Object.keys(keys).join(", ")}`, propSpans.measured);
+            measured[f.spec] = f.toSpec ? f.toSpec(x, cp.specs) : x;
+          }
+        }
         this.machine.components.push({
           name: s.name,
           catalogId: cp.id,
@@ -1109,6 +1123,7 @@ class Evaluator {
           vRating: def.board?.vRating,
           pcb: onBoard ? { board: onBoard.board, x: onBoard.x, y: onBoard.y, rot: onBoard.rot, side: onBoard.side } : undefined,
           ref: typeof props.ref === "string" ? props.ref : undefined,
+          measured,
           span: s.span,
         });
         const mc = this.machine.components[this.machine.components.length - 1];
