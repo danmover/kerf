@@ -322,6 +322,12 @@ export class StudioEnvironments {
     this.cubes.clear();
   }
 
+  /** The WebGL context was lost and restored: the maps went with the old one, so drop them (there is nothing left to free) and draw them again when asked. */
+  forget() {
+    this.cache.clear();
+    this.cubes.clear();
+  }
+
   dispose() {
     for (const rt of this.cache.values()) rt.dispose();
     for (const rt of this.cubes.values()) rt.dispose();
