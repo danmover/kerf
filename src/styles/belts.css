@@ -1,0 +1,155 @@
+/* Build tab → Belts: one card per timing belt */
+.belts {
+  display: grid;
+  gap: 14px;
+}
+.belt-card {
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--pass);
+  border-radius: 8px;
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.belt-card.warn {
+  border-left-color: var(--warn);
+}
+.belt-card.fail {
+  border-left-color: var(--fail);
+}
+.belt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 4px;
+}
+.belt-head .status-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.belt-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+}
+.belt-title .name {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.belt-title .mono {
+  font-size: 11px;
+}
+.belt-title:hover .name {
+  color: var(--accent-2);
+}
+.belt-kind {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.belt-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 260px;
+  font-family: var(--mono);
+}
+.belt-line {
+  fill: none;
+  stroke: var(--text-2);
+  stroke-width: 2.2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.belt-span {
+  font-size: 10.5px;
+  fill: var(--text-3);
+}
+.belt-span .hz {
+  fill: var(--accent-2);
+}
+.belt-clamp {
+  fill: var(--bg-2);
+  stroke: var(--text-2);
+  stroke-width: 1.4;
+}
+.belt-node {
+  cursor: pointer;
+}
+.belt-node circle {
+  fill: var(--bg-2);
+  stroke: var(--line-3);
+  stroke-width: 1.4;
+}
+.belt-node circle.hub {
+  fill: var(--line-3);
+  stroke: none;
+}
+.belt-node.drive circle:not(.hub) {
+  stroke: var(--accent);
+  fill: var(--accent-soft);
+}
+.belt-node:hover circle:not(.hub) {
+  stroke: var(--accent-2);
+}
+.belt-node text {
+  font-size: 10.5px;
+  fill: var(--text-2);
+}
+.belt-tension {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 4px 12px 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.belt-tension input[type="range"] {
+  flex: 1 1 160px;
+  min-width: 120px;
+  accent-color: var(--accent);
+  /* the band the belt maker recommends, under the slider */
+  background: linear-gradient(to right, transparent var(--lo), var(--pass-soft) var(--lo), var(--pass-soft) var(--hi), transparent var(--hi));
+  border-radius: 4px;
+}
+.belt-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.belt-field input {
+  width: 52px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+}
+.belt-note {
+  font-size: 11px;
+}
+.belt-figs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 6px;
+  padding: 0 12px 10px;
+}
+.belt-fig.warn .v {
+  color: var(--warn);
+}
+.belt-checks {
+  border-top: 1px solid var(--line);
+}
