@@ -159,6 +159,8 @@ export class RatioLink implements Constraint {
     /** lost motion at b, in b's units */
     slack: number,
     public efficiency: number,
+    /** stretch in the link (a belt), N·m/rad or N/m at b; rigid when left out */
+    public stiffness = 0,
   ) {
     this.play = new Play(slack);
   }
@@ -166,7 +168,11 @@ export class RatioLink implements Constraint {
     const r = this.b.axisTerms(this.row.reset(), 1);
     this.a.axisTerms(r, -this.ratio);
     r.track = true;
-    this.play.limit(r, s, dt);
+    if (this.stiffness > 0) {
+      // lightly damped (5 % of critical for what the link moves), stretched by how far b has slipped behind
+      const K = r.inverseMass();
+      r.spring(this.stiffness, K > 0 ? 0.1 * Math.sqrt(this.stiffness / K) : 0, this.play.s, dt);
+    } else this.play.limit(r, s, dt);
     emit(r);
     if (this.efficiency < 1) emit(this.b.axisTerms(this.loss.reset(), 1).friction(0, r, 1 - this.efficiency));
   }

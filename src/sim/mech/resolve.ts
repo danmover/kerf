@@ -10,6 +10,7 @@ import type { EvalPart, Model } from "../../core/model";
 import type { MeshEntry } from "../../core/engine";
 import { applyXforms, type Xform } from "../../kernel/recipe";
 import { catalogPart } from "../../machine/catalog";
+import type { BeltDef, BeltNode } from "../../machine/types";
 import { MATERIALS, materialDensity } from "../../library/standards";
 import type { ScenarioSpec } from "../scenario";
 import type { MechItem, MechJointItem, MechSpec } from "./lang";
@@ -493,6 +494,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       const jb = joints.find((x) => x.body === bodyOf.get(g.meshWith!));
       if (ja?.kind === "pivot" && jb?.kind === "pivot" && ja !== jb) addGears(`${p.name}-${g.meshWith}`, p.name, g.meshWith, undefined, 0.98);
     }
+  if (spec.auto) for (const b of model.machine?.belts ?? []) beltLinks(b, joints, bodyOf, bodyById, links, notes);
 
   for (const it of spec.items) {
     switch (it.k) {
@@ -728,3 +730,68 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
 function fmtMass(g: number): string {
   return g >= 1000 ? `${(g / 1000).toFixed(g >= 10000 ? 1 : 2)} kg` : `${g.toFixed(g >= 100 ? 0 : 1)} g`;
 }
+
+/**
+ * A timing belt (lib.belt) on the mechanism's joints. A closed loop links each pulley on a pivot to the
+ * driving one; an open belt drives the slider its clamped ends ride on. Each link is as stiff as the belt
+ * between the two: both sides stretch against each other, EA over each side's length, so the driven side
+ * lags and rings under load the way a real belt does. Pulleys on no joint (idlers on the frame) only guide it.
+ */
+function beltLinks(b: BeltDef, joints: MechJoint[], bodyOf: Map<string, string>, bodyById: Map<string, MechBody>, links: MechLink[], notes: string[]) {
+  const n = b.plane.n;
+  const pivotOf = (nd: BeltNode) => {
+    if (nd.kind !== "pulley" || !bodyOf.has(nd.name)) return undefined;
+    const j = joints.find((x) => x.body === bodyOf.get(nd.name));
+    return j?.kind === "pivot" && Math.abs(dot(unit(n), j.axis)) > 0.99 ? j : undefined;
+  };
+  const on = b.nodes.map(pivotOf);
+  let d = b.drive ? b.nodes.findIndex((x) => x.name === b.drive && on[b.nodes.indexOf(x)]) : -1;
+  if (d < 0) d = on.findIndex((j) => !!j);
+  if (d < 0) return;
+  const na = b.nodes[d];
+  const ja = on[d]!;
+  // a pulley's turn about its joint axis per metre of belt: the belt turns round it one way or the other (dir)
+  const perM = (nd: BeltNode, j: MechJoint) => (nd.dir * Math.sign(dot(n, j.axis))) / (nd.r / 1000);
+  const ea = b.belt.ea;
+  const mesh = (nd: BeltNode) => (nd.r * nd.wrap * Math.PI) / 180;
+  const spanFrom = new Map(b.spans.map((s) => [s.from, s]));
+  // belt length forward from the middle of one node's wrap to the middle of another's, mm
+  const forward = (i: number, k: number) => {
+    let l = mesh(b.nodes[i]) / 2 + mesh(b.nodes[k]) / 2;
+    for (let j = i; j !== k; j = (j + 1) % b.nodes.length) {
+      l += spanFrom.get(b.nodes[j].name)?.length ?? 0;
+      if (j !== i) l += mesh(b.nodes[j]);
+    }
+    return l;
+  };
+  const added: string[] = [];
+  if (!b.open) {
+    const driven = b.nodes.map((nd, i) => ({ nd, i, j: on[i] })).filter((x) => x.j && x.i !== d && x.j !== ja);
+    for (const { nd, i, j } of driven) {
+      const la = Math.max(1, forward(d, i));
+      const lb = Math.max(1, b.length - la);
+      const kLin = ea / (la / 1000) + ea / (lb / 1000);
+      const name = driven.length > 1 ? `${b.name}_${nd.name}` : b.name;
+      const ratio = perM(nd, j!) / perM(na, ja);
+      // N·m per radian at the driven pulley
+      links.push({ kind: "ratio", name, a: ja.name, b: j!.name, ratio, slack: 0, efficiency: 0.98, stiffness: kLin * (nd.r / 1000) ** 2 });
+      added.push(`${nd.name} at ${Math.abs(1 / ratio).toFixed(2)}:1, ${fmtK(kLin)}`);
+    }
+  } else {
+    // the belt's ends are clamped to a carriage: it moves with the belt at its start clamp
+    const first = spanFrom.get("start");
+    if (!first) return;
+    const along = unit(sub(first.b3, first.a3));
+    const clamp = SI(first.a3);
+    const distTo = (j: MechJoint) => Math.min(...(bodyById.get(j.body)?.boxes ?? []).map((x) => Math.max(0, len(sub(clamp, x.c)) - len(x.h))), Infinity);
+    const sliders = joints.filter((j) => j.kind === "slider" && Math.abs(dot(j.axis, along)) > 0.95).sort((p, q) => distTo(p) - distTo(q));
+    const js = sliders[0];
+    if (!js || distTo(js) > 0.05) return;
+    const kLin = (b.figures.kShown ?? (4 * ea) / Math.max(1, b.length)) * 1000;
+    links.push({ kind: "ratio", name: b.name, a: ja.name, b: js.name, ratio: dot(along, js.axis) / perM(na, ja), slack: 0, efficiency: 0.98, stiffness: kLin });
+    added.push(`${js.name} ${(((2 * Math.PI) / Math.abs(perM(na, ja))) * 1000).toFixed(0)} mm a turn, ${fmtK(kLin)}`);
+  }
+  if (added.length) notes.push(`${b.name}: ${b.open ? "drives" : "turns"} ${added.join("; ")} from ${na.name} (belt stretch from EA ${Math.round(ea)} N; teeth never skip)`);
+}
+
+const fmtK = (k: number) => `${(k / 1000).toFixed(0)} N/mm of belt`;

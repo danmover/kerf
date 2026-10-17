@@ -60,7 +60,7 @@ export type MechLink =
   | { kind: "gears"; name: string; a: string; b: string; ca: V3; cb: V3; ra: number; backlash: number; efficiency: number }
   | { kind: "rack"; name: string; pinion: string; rack: string; p: V3; dir: V3; backlash: number; efficiency: number }
   | { kind: "thread"; name: string; screw: string; follower: string; point: V3; k: number; backlash: number; frictionArm: number; what: "lead screw" | "ball screw" | "worm" }
-  | { kind: "ratio"; name: string; a: string; b: string; ratio: number; slack: number; efficiency: number }
+  | { kind: "ratio"; name: string; a: string; b: string; ratio: number; slack: number; efficiency: number; /** a belt's stretch: N·m/rad or N/m at b (rigid when left out) */ stiffness?: number }
   | { kind: "cam"; name: string; cam: string; follower: string; lift: number[]; phase: number; grooved: boolean }
   | { kind: "clutch"; name: string; a?: string; b: string; torque: number; oneWay: boolean; engaged?: Schedule };
 
