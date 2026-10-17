@@ -805,3 +805,149 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* design for assembly */
+.mk-asm {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  margin-bottom: 12px;
+}
+.mk-asm-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+@media (max-width: 900px) {
+  .mk-asm-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.mk-asm-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.mk-asm-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.mk-asm-stat .k {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+}
+.mk-asm-stat .v {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.mk-asm-stat .v.pass {
+  color: var(--pass-ink);
+}
+.mk-asm-stat .v.warn {
+  color: var(--warn-ink);
+}
+.mk-asm-stat .s {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mk-asm-time {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  justify-content: center;
+}
+.mk-asm-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.mk-asm-l {
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mk-why-in {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+.mk-asm-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.mk-asm-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: rgb(var(--violet-rgb) / 0.7);
+}
+.mk-asm-v {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  text-align: right;
+}
+.mk-asm-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+.mk-asm-f {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  outline: none;
+  cursor: default;
+  transition: border-color 0.15s;
+}
+.mk-asm-f:hover,
+.mk-asm-f:focus-visible {
+  border-color: rgb(var(--accent-rgb) / 0.5);
+}
+.mk-asm-f .status-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  margin-top: 2px;
+}
+.mk-asm-ft {
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 500;
+}
+.mk-asm-fd {
+  font-size: 11.5px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+.mk-asm-fx {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.4;
+  margin-top: 2px;
+}

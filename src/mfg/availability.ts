@@ -45,12 +45,14 @@ export interface AvailabilitySource {
 /**
  * What this project can use: the brief's workshop: list replaces the processes
  * the user owns, its can_order: list replaces the ones they can order, and
- * either one left out comes from Settings. Owning a process wins over ordering it.
+ * either one left out comes from Settings (where a process you own can also be
+ * ordered). Owning a process wins over ordering it.
  */
 export function availability(brief: AvailabilitySource | null | undefined, saved: Partial<Record<string, Access>> | undefined): { access: Availability; fromBrief: boolean } {
   const base = fullAccess(saved);
   const own = brief?.workshop ? new Set(processList(brief.workshop)) : new Set(PROCESS_IDS.filter((id) => base[id] === "own"));
-  const order = brief?.canOrder ? new Set(processList(brief.canOrder)) : new Set(PROCESS_IDS.filter((id) => base[id] === "order"));
+  // a process you own at home can still be ordered when this design's workshop is somewhere else
+  const order = brief?.canOrder ? new Set(processList(brief.canOrder)) : new Set(PROCESS_IDS.filter((id) => base[id] !== "none"));
   const access = {} as Availability;
   for (const id of PROCESS_IDS) access[id] = own.has(id) ? "own" : order.has(id) ? "order" : "none";
   return { access, fromBrief: !!(brief?.workshop || brief?.canOrder) };

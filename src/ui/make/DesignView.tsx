@@ -57,6 +57,7 @@ export function DesignView({ onPart }: { onPart: (block: string) => void }) {
           <DesignTierCard key={t.qty} t={t} i={i} plans={plans} />
         ))}
       </div>
+      <AssemblyCard />
       <PartsGrid plans={plans} totals={totals} onPart={onPart} />
       {data.skipped.length > 0 && (
         <div className="mk-fine">
@@ -68,7 +69,6 @@ export function DesignView({ onPart }: { onPart: (block: string) => void }) {
           ))}
         </div>
       )}
-      <AssemblyCard />
     </div>
   );
 }

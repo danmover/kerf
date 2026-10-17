@@ -13,6 +13,8 @@ import { availabilityText } from "../mfg/availability";
 import { money } from "../materials/advise";
 import { bomRows, bomTotal } from "../persist/files";
 import { useSettings } from "../app/settings";
+import { dfaFor } from "../mfg/dfaRuntime";
+import { dfaText, fmtTime } from "../mfg/dfa";
 import type { ProcessId, ProcessSpec, SettingValue } from "../mfg/types";
 import type { V3 } from "../kernel/recipe";
 import type { ToolOutcome } from "./tools";
@@ -65,9 +67,15 @@ export const PROCESS_TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "review_assembly",
+    description:
+      "Design for assembly review of the whole design (Boothroyd–Dewhurst): how many parts, bought parts and fasteners it has against the theoretical minimum, the estimated hand assembly time per unit and what it is spent on, the DFA index, the fastener sizes, the directions parts go in from, parts that could be combined, loose nuts and washers, and joints held by many screws. Use when the user asks about assembly, part count, fasteners or build time, and before simplifying a design.",
+    input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
+  },
 ];
 
-export const PROCESS_TOOL_TITLES: Record<string, string> = { process_guide: "Reading the process rules", compare_processes: "Comparing processes", plan_manufacturing: "Planning how to make it" };
+export const PROCESS_TOOL_TITLES: Record<string, string> = { process_guide: "Reading the process rules", compare_processes: "Comparing processes", plan_manufacturing: "Planning how to make it", review_assembly: "Reviewing the assembly" };
 
 const ProcessIdSchema = z.string().refine((s) => !!processFromText(s), { message: `use one of ${PROCESS_IDS.join(", ")}` });
 const GuideInput = z.object({ process: ProcessIdSchema, material: z.string().max(80).optional(), settings: z.record(z.string(), z.unknown()).optional() });
@@ -218,6 +226,15 @@ export async function runProcessTool(name: string, input: unknown): Promise<Tool
       return {
         content: [designText(plans, totals, extras), design.skipped.length ? `Not planned: ${design.skipped.map((x) => `${x.label} (${x.why})`).join("; ")}` : "", `Picks by part (designs→process): ${per.join("; ")}`, avail, "Call plan_manufacturing with a part for its full comparison. Costs are estimates for comparing, not quotes."].filter(Boolean).join("\n"),
         card: { title: `Planned how to make the design`, detail: totals.map((t) => `${t.label}: ${money(t.each)} per design`).join("\n") },
+      };
+    }
+    case "review_assembly": {
+      const s = await whenChecked();
+      if (!s.model) return err("There is no design yet.", "No design");
+      const r = dfaFor(s.model, s.buildErrors);
+      return {
+        content: dfaText(r),
+        card: { title: "Reviewed the assembly", detail: r.counts.items ? `${r.counts.items} items, minimum ${r.minimumParts}\nabout ${fmtTime(r.time.seconds)} to assemble` : "nothing to assemble yet" },
       };
     }
   }

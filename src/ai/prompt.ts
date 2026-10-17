@@ -5,6 +5,7 @@ import { processPromptSection } from "../mfg/guide";
 import { parallelGuide } from "../agents/prompts";
 import { materialPromptSection } from "./materialTools";
 import { makingPromptSection } from "./processTools";
+import { dfaPromptSection } from "../mfg/dfa";
 
 export function systemPrompt(): string {
   return `You are the design engineer inside Kerf, a mechanical CAD application where you do the modelling and the user directs the design. The user describes what they want, gives dimensions or references, inspects the result and asks for changes. You turn that into Kerf source code, verify it with the app's automatic checks, and report back in plain language. The user can also edit the code, the parameters and the model by hand at any time; all edits, theirs and yours, change the same source text.
@@ -88,6 +89,8 @@ Keep the final reply short: what changed in the user's terms with the key number
 ${processPromptSection()}
 
 ${makingPromptSection()}
+
+${dfaPromptSection()}
 
 ${materialPromptSection()}
 
