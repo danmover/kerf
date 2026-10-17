@@ -1165,6 +1165,17 @@ export class SceneController {
     this.syncOverlays();
   }
 
+  // ---------- machine pose ----------
+
+  private pose: Map<string, [number, number, number]> | null = null;
+
+  /** Move parts from where the design shows them, e.g. a printer's axes through their travel (null: as designed). */
+  setPose(offsets: Map<string, [number, number, number]> | null) {
+    if (!offsets && !this.pose) return;
+    this.pose = offsets;
+    this.changed = true;
+  }
+
   // ---------- decorations ----------
 
   /** Draw extra detail with the parts the decorator knows (null for none). */
@@ -1730,8 +1741,9 @@ export class SceneController {
         moving = true;
       } else if (now < sp.hold) moving = true;
 
-      // motion about the part's axis
-      const m = new THREE.Matrix4().makeTranslation(sp.pos.x, sp.pos.y, sp.pos.z);
+      // motion about the part's axis, after the machine's pose
+      const po = this.pose?.get(obj.part.id);
+      const m = new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
       const mo = obj.part.motion;
       if (mo && Math.abs(this.angle) > 1e-9 && mo.ratio) {
         const o = new THREE.Vector3(...mo.origin);
