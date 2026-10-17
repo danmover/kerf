@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adviceText, adviseMaterials, needsFromName, stockCost, type AnalysisFacts, type BriefFacts, type PartFacts } from "../src/materials/advise";
+import { adviceText, adviseMaterials, money, needsFromName, stockCost, type AnalysisFacts, type BriefFacts, type PartFacts } from "../src/materials/advise";
 import { MATERIAL_DB, materialRecord, pricePerKg } from "../src/library/materialDb";
 import { MATERIAL_LIST } from "../src/library/materials";
 import { MATERIAL_SERVICE } from "../src/library/materialService";
@@ -171,5 +171,11 @@ describe("material advisor", () => {
     expect(listed.cost).toBeCloseTo(alu.cost!, 6);
     expect(listed.form).toBe("stock");
     expect(stockCost(materialRecord("PLA")!, part({ bought: true }), null)).toBeNull();
+  });
+});
+
+describe("money", () => {
+  it("groups thousands, so batch totals read at a glance", () => {
+    expect([money(0.85), money(21.34), money(923), money(84039.4), money(3996472)]).toEqual(["85¢", "$21.34", "$923", "$84,039", "$3,996,472"]);
   });
 });

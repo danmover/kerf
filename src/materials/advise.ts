@@ -251,7 +251,8 @@ export function needsFromName(name: string): Need[] {
 const n0 = (v: number) => fmtNum(v, 0);
 const n1 = (v: number) => fmtNum(v, Math.abs(v) < 10 ? 1 : 0);
 const gpa = (mpa: number) => (mpa >= 1000 ? `${fmtNum(mpa / 1000, mpa >= 10000 ? 0 : 1)} GPa` : `${n0(mpa)} MPa`);
-export const money = (usd: number) => (usd >= 100 ? `$${n0(usd)}` : usd >= 1 ? `$${usd.toFixed(2)}` : `${n0(usd * 100)}¢`);
+// thousands grouped: the make tab's batch totals run to $84,039
+export const money = (usd: number) => (usd >= 100 ? `$${Math.round(usd).toLocaleString("en-US")}` : usd >= 1 ? `$${usd.toFixed(2)}` : `${n0(usd * 100)}¢`);
 export const grams = (g: number) => (g >= 1000 ? `${fmtNum(g / 1000, 2)} kg` : `${fmtNum(g, g < 10 ? 1 : 0)} g`);
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 const SCORE: Record<Grade, number> = { good: 1, ok: 0.65, poor: 0.25, fail: 0, info: 0 };
