@@ -12,6 +12,8 @@ import { geoKey, type GeoQuery } from "../lang/values";
 import { ProcessAnalyzer } from "../mfg/analyzer";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { FeatureTools } from "./topology";
+import type { TriBVH } from "../mfg/bvh";
+import { apart, closedSurface, placeSurface } from "./apart";
 
 interface CacheEntry {
   shape: Shape3D;
@@ -27,6 +29,23 @@ interface CacheEntry {
   warnings: string[];
 }
 
+/** A solid placed in the world for the checks. */
+interface World {
+  item: PlacedItem;
+  shape: Shape3D;
+  bbox: [V3, V3];
+  volume: number;
+  /** the placed-solid cache key: geometry hash and placement */
+  key: string;
+}
+
+/** How much two placed solids overlap; the centre and mesh only when it counts as an interference. */
+interface PairResult {
+  volume: number;
+  center?: V3;
+  mesh?: MeshData;
+}
+
 export interface MeasureResult {
   distance: number;
   /** closest points on each side (equal when the shapes touch or overlap) */
@@ -39,7 +58,9 @@ export class KernelCore {
   private cache = new Map<string, CacheEntry>();
   /** detailed builds (threads, knurls, cosmetic steps) for final meshes and STEP export */
   private detailCache = new Map<string, CacheEntry>();
-  private placedCache = new Map<string, { shape: Shape3D; bbox: [V3, V3]; used: number }>();
+  private placedCache = new Map<string, { shape: Shape3D; bbox: [V3, V3]; used: number; key: string }>();
+  /** overlaps of placed pairs, kept across checks so an edit re-tests only the pairs it moved or changed */
+  private pairs = new Map<string, PairResult>();
   private tick = 0;
   private processes = new ProcessAnalyzer();
   maxEntries = 400;
@@ -139,6 +160,7 @@ export class KernelCore {
         this.placedCache.delete(key);
       }
     }
+    for (const key of this.pairs.keys()) if (key.split("#").some((pk) => !k.has(pk.split("|")[0]))) this.pairs.delete(key);
   }
 
   private trim() {
@@ -162,7 +184,7 @@ export class KernelCore {
     const e = this.get(p.hash);
     if (!e) throw new Error("not built: " + p.hash);
     const shape = applyXf(e.shape.clone(), p.xf);
-    const entry = { shape, bbox: worldBox(e.bbox, p.xf), used: ++this.tick };
+    const entry = { shape, bbox: worldBox(e.bbox, p.xf), used: ++this.tick, key };
     this.placedCache.set(key, entry);
     if (this.placedCache.size > 1200) {
       const sorted = [...this.placedCache.entries()].sort((a, b) => a[1].used - b[1].used);
@@ -177,15 +199,30 @@ export class KernelCore {
   checks(req: ChecksRequest): ChecksResult {
     const t0 = performance.now();
     const placed = req.placed.filter((p) => this.cache.has(p.hash));
-    const world = new Map<string, { item: PlacedItem; shape: Shape3D; bbox: [V3, V3]; volume: number }>();
+    const world = new Map<string, World>();
     for (const p of placed) {
       const w = this.placed(p);
-      world.set(p.id, { item: p, shape: w.shape, bbox: w.bbox, volume: this.cache.get(p.hash)!.volume });
+      world.set(p.id, { item: p, shape: w.shape, bbox: w.bbox, volume: this.cache.get(p.hash)!.volume, key: w.key });
     }
     const ignore = new Set(req.ignorePairs.map(([a, b]) => pairKey(a, b)));
     const interferences: Interference[] = [];
     let pairsTested = 0;
     const list = [...world.values()];
+    // each part's closed surface mesh, placed, made when a pair first needs it
+    const surfaces = new Map<string, TriBVH | null>();
+    const surfaceOf = (w: World) => {
+      let s = surfaces.get(w.item.id);
+      if (s === undefined) {
+        try {
+          const closed = closedSurface(this.mesh(w.item.hash, "preview"));
+          s = closed && placeSurface(closed, w.item.xf);
+        } catch {
+          s = null;
+        }
+        surfaces.set(w.item.id, s);
+      }
+      return s;
+    };
     for (let i = 0; i < list.length; i++) {
       for (let j = i + 1; j < list.length; j++) {
         const A = list[i];
@@ -196,30 +233,19 @@ export class KernelCore {
         // parts of the same multi-solid component never interfere with themselves
         if (A.item.id.split(".")[0] === B.item.id.split(".")[0]) continue;
         pairsTested++;
-        try {
-          const inter = A.shape.intersect(B.shape) as Shape3D;
-          let vol = 0;
-          try {
-            vol = R.measureVolume(inter);
-          } catch {
-            vol = 0;
-          }
-          const threshold = Math.max(0.5, 1e-4 * Math.min(A.volume || 1, B.volume || 1));
-          if (vol > threshold) {
-            const bb = bboxOf(inter);
-            let mesh: MeshData | undefined;
-            try {
-              mesh = meshShape(inter, "preview");
-            } catch {
-              mesh = undefined;
-            }
-            interferences.push({ a: A.item.id, b: B.item.id, volume: vol, center: mid(bb), mesh });
-          }
-          safeDelete(inter);
-        } catch {
-          // boolean failed: fall back to treating overlapping boxes as a warning-free pass
-        }
+        const threshold = Math.max(0.5, 1e-4 * Math.min(A.volume || 1, B.volume || 1));
+        const key = A.key < B.key ? `${A.key}#${B.key}` : `${B.key}#${A.key}`;
+        const r = this.pairs.get(key) ?? this.overlap(A, B, threshold, surfaceOf);
+        // most recently used last, so trimming drops the pairs of old edits first
+        this.pairs.delete(key);
+        this.pairs.set(key, r);
+        // a copy of the mesh: the worker hands it over to the page, and the kept one stays here
+        if (r.volume > threshold && r.center) interferences.push({ a: A.item.id, b: B.item.id, volume: r.volume, center: r.center, mesh: r.mesh && copyMesh(r.mesh) });
       }
+    }
+    for (const key of this.pairs.keys()) {
+      if (this.pairs.size <= 5000) break;
+      this.pairs.delete(key);
     }
 
     // geometric queries for requirements
@@ -285,7 +311,37 @@ export class KernelCore {
     return { interferences, geo, geoErrors, access, envelopes, ms: performance.now() - t0, pairsTested };
   }
 
-  private geoQuery(q: GeoQuery, byName: (n: string) => { item: PlacedItem; shape: Shape3D; bbox: [V3, V3]; volume: number }[]): number {
+  /** How much two placed solids overlap: exactly, unless their meshes show they are well apart. */
+  private overlap(A: World, B: World, threshold: number, surfaceOf: (w: World) => TriBVH | null): PairResult {
+    const sa = surfaceOf(A);
+    const sb = sa && surfaceOf(B);
+    if (sa && sb && apart(sa, sb)) return { volume: 0 };
+    try {
+      const inter = A.shape.intersect(B.shape) as Shape3D;
+      let volume = 0;
+      try {
+        volume = R.measureVolume(inter);
+      } catch {
+        volume = 0;
+      }
+      const out: PairResult = { volume };
+      if (volume > threshold) {
+        out.center = mid(bboxOf(inter));
+        try {
+          out.mesh = meshShape(inter, "preview");
+        } catch {
+          out.mesh = undefined;
+        }
+      }
+      safeDelete(inter);
+      return out;
+    } catch {
+      // boolean failed: fall back to treating overlapping boxes as a warning-free pass
+      return { volume: 0 };
+    }
+  }
+
+  private geoQuery(q: GeoQuery, byName: (n: string) => World[]): number {
     const A = byName(q.a);
     if (!A.length) throw new Error(`"${q.a}" has no built geometry`);
     switch (q.q) {
@@ -414,6 +470,18 @@ function boxGap(a: [V3, V3], b: [V3, V3]) {
     s += d * d;
   }
   return Math.sqrt(s);
+}
+
+function copyMesh(m: MeshData): MeshData {
+  return {
+    positions: m.positions.slice(),
+    normals: m.normals.slice(),
+    indices: m.indices.slice(),
+    edges: m.edges.slice(),
+    faceGroups: m.faceGroups?.slice(),
+    edgeGroups: m.edgeGroups?.slice(),
+    colors: m.colors?.slice(),
+  };
 }
 
 function mid(b: [V3, V3]): V3 {

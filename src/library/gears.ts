@@ -87,12 +87,41 @@ export function meshPhase(thetaDeg: number, driverPhaseDeg: number, zDriver: num
 
 export function pointInPolygon(p: V2, poly: V2[]): boolean {
   let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i];
-    const [xj, yj] = poly[j];
-    if (yi > p[1] !== yj > p[1] && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
-  }
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) if (crosses(p, poly[i], poly[j])) inside = !inside;
   return inside;
+}
+
+/** Whether a ray from p towards +x crosses the edge between corners i and j (the even-odd rule). */
+function crosses(p: V2, [xi, yi]: V2, [xj, yj]: V2): boolean {
+  return yi > p[1] !== yj > p[1] && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi;
+}
+
+/**
+ * pointInPolygon for many points against one polygon. The edges are sorted
+ * into horizontal bands first, so each point meets only the edges level with
+ * it, the only ones its ray can cross: the same answers, many times faster.
+ */
+function insideTest(poly: V2[]): (p: V2) => boolean {
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (const [, y] of poly) {
+    y0 = Math.min(y0, y);
+    y1 = Math.max(y1, y);
+  }
+  const n = Math.max(1, poly.length >> 2);
+  const h = (y1 - y0) / n || 1;
+  const band = (y: number) => Math.min(n - 1, Math.max(0, Math.floor((y - y0) / h)));
+  const bands: number[][] = Array.from({ length: n }, () => []);
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const lo = band(Math.min(poly[i][1], poly[j][1]));
+    const hi = band(Math.max(poly[i][1], poly[j][1]));
+    for (let k = lo; k <= hi; k++) bands[k].push(i);
+  }
+  return (p) => {
+    let inside = false;
+    for (const i of bands[band(p[1])]) if (crosses(p, poly[i], poly[i ? i - 1 : poly.length - 1])) inside = !inside;
+    return inside;
+  };
 }
 
 function distToSegment(p: V2, a: V2, b: V2): number {
@@ -107,9 +136,26 @@ function distToSegment(p: V2, a: V2, b: V2): number {
 /** Largest depth by which any vertex of A lies inside B (0 when clear). */
 export function maxPenetration(a: V2[], b: V2[]): number {
   let worst = 0;
-  // quick reject by radius
+  // quick reject by radius: a point outside the circle through B's farthest corner cannot be inside B,
+  // which for two meshing gears leaves only the few teeth in mesh for the full test
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [x, y] of b) {
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
+  }
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  let r2 = 0;
+  for (const [x, y] of b) r2 = Math.max(r2, (x - cx) ** 2 + (y - cy) ** 2);
+  const inB = insideTest(b);
   for (const p of a) {
-    if (!pointInPolygon(p, b)) continue;
+    if ((p[0] - cx) ** 2 + (p[1] - cy) ** 2 > r2) continue;
+    if (!inB(p)) continue;
     let d = Infinity;
     for (let i = 0, j = b.length - 1; i < b.length; j = i++) d = Math.min(d, distToSegment(p, b[j], b[i]));
     worst = Math.max(worst, d);

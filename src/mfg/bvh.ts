@@ -1,5 +1,6 @@
 // Bounding-volume hierarchy over a triangle mesh for fast ray casts: wall
 // thickness, gap widths and reachability are all measured by shooting rays.
+// The interference check also asks two of them whether their meshes come close.
 
 export interface Hit {
   t: number;
@@ -240,9 +241,40 @@ export class TriBVH {
     return Math.sqrt(best2);
   }
 
-  /** Inside test by counting crossings along a fixed skew ray. */
-  contains(x: number, y: number, z: number): boolean {
-    const d = [0.5773, 0.5774, 0.5772];
+  /** Whether any triangle of this mesh comes within `gap` of a triangle of `other` (both in the same frame). */
+  near(other: TriBVH, gap: number): boolean {
+    if (!this.count || !other.count) return false;
+    const A = this.bounds;
+    const B = other.bounds;
+    const g2 = gap * gap;
+    // pairs of nodes, one from each tree, whose boxes come within the gap
+    const stack: number[] = [0, 0];
+    while (stack.length) {
+      const j = stack.pop()!;
+      const i = stack.pop()!;
+      let d2 = 0;
+      for (let k = 0; k < 3; k++) {
+        const d = Math.max(0, A[i * 6 + k] - B[j * 6 + 3 + k], B[j * 6 + k] - A[i * 6 + 3 + k]);
+        d2 += d * d;
+      }
+      if (d2 > g2) continue;
+      const leafA = this.left[i] < 0;
+      const leafB = other.left[j] < 0;
+      if (leafA && leafB) {
+        for (let s = this.start[i], e = s + this.len[i]; s < e; s++)
+          for (let t = other.start[j], f = t + other.len[j]; t < f; t++) if (trianglesWithin(this.tris, this.order[s] * 9, other.tris, other.order[t] * 9, gap)) return true;
+      } else if (leafB || (!leafA && boxSize(A, i) >= boxSize(B, j))) {
+        // open the bigger box
+        stack.push(this.left[i], j, this.right[i], j);
+      } else {
+        stack.push(i, other.left[j], i, other.right[j]);
+      }
+    }
+    return false;
+  }
+
+  /** Inside test by counting crossings along a skew ray (in direction d). */
+  contains(x: number, y: number, z: number, d: readonly number[] = [0.5773, 0.5774, 0.5772]): boolean {
     let crossings = 0;
     let t = 0;
     for (let guard = 0; guard < 64; guard++) {
@@ -310,4 +342,112 @@ export function pointTriDist2(T: ArrayLike<number>, o: number, px: number, py: n
   const v = vb * denom;
   const w = vc * denom;
   return sq(apx - abx * v - acx * w, apy - aby * v - acy * w, apz - abz * v - acz * w);
+}
+
+/** Sum of a node box's sides, to choose which of two boxes to open first. */
+function boxSize(b: Float64Array, n: number): number {
+  return b[n * 6 + 3] - b[n * 6] + (b[n * 6 + 4] - b[n * 6 + 1]) + (b[n * 6 + 5] - b[n * 6 + 2]);
+}
+
+/**
+ * Whether triangles T[o..o+9] and U[p..p+9] come within `gap` of each other.
+ * Apart, the closest points are a corner and a face or two edges; touching or
+ * crossing, an edge of one meets the other or two edges meet.
+ */
+export function trianglesWithin(T: ArrayLike<number>, o: number, U: ArrayLike<number>, p: number, gap: number): boolean {
+  // boxes first: most pairs that get here are still apart
+  for (let k = 0; k < 3; k++) {
+    const t0 = Math.min(T[o + k], T[o + 3 + k], T[o + 6 + k]);
+    const t1 = Math.max(T[o + k], T[o + 3 + k], T[o + 6 + k]);
+    const u0 = Math.min(U[p + k], U[p + 3 + k], U[p + 6 + k]);
+    const u1 = Math.max(U[p + k], U[p + 3 + k], U[p + 6 + k]);
+    if (u0 - t1 > gap || t0 - u1 > gap) return false;
+  }
+  const g2 = gap * gap;
+  for (let c = 0; c < 9; c += 3) {
+    if (pointTriDist2(U, p, T[o + c], T[o + c + 1], T[o + c + 2]) <= g2) return true;
+    if (pointTriDist2(T, o, U[p + c], U[p + c + 1], U[p + c + 2]) <= g2) return true;
+  }
+  for (let a = 0; a < 9; a += 3) {
+    const a2 = (a + 3) % 9;
+    for (let b = 0; b < 9; b += 3) if (segmentDist2(T, o + a, o + a2, U, p + b, p + (b + 3) % 9) <= g2) return true;
+    if (segmentCrosses(T, o + a, o + a2, U, p) || segmentCrosses(U, p + a, p + a2, T, o)) return true;
+  }
+  return false;
+}
+
+/** Squared distance between segments S[i]→S[j] and R[k]→R[l] (Ericson, Real-Time Collision Detection 5.1.9). */
+function segmentDist2(S: ArrayLike<number>, i: number, j: number, R: ArrayLike<number>, k: number, l: number): number {
+  const d1x = S[j] - S[i],
+    d1y = S[j + 1] - S[i + 1],
+    d1z = S[j + 2] - S[i + 2];
+  const d2x = R[l] - R[k],
+    d2y = R[l + 1] - R[k + 1],
+    d2z = R[l + 2] - R[k + 2];
+  const rx = S[i] - R[k],
+    ry = S[i + 1] - R[k + 1],
+    rz = S[i + 2] - R[k + 2];
+  const a = d1x * d1x + d1y * d1y + d1z * d1z;
+  const e = d2x * d2x + d2y * d2y + d2z * d2z;
+  const f = d2x * rx + d2y * ry + d2z * rz;
+  const clamp = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+  let s = 0;
+  let t = 0;
+  if (a <= 1e-18 && e <= 1e-18) {
+    // both are points
+  } else if (a <= 1e-18) {
+    t = clamp(f / e);
+  } else {
+    const c = d1x * rx + d1y * ry + d1z * rz;
+    if (e <= 1e-18) s = clamp(-c / a);
+    else {
+      const b = d1x * d2x + d1y * d2y + d1z * d2z;
+      const denom = a * e - b * b;
+      s = denom > 0 ? clamp((b * f - c * e) / denom) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0;
+        s = clamp(-c / a);
+      } else if (t > 1) {
+        t = 1;
+        s = clamp((b - c) / a);
+      }
+    }
+  }
+  const x = rx + d1x * s - d2x * t,
+    y = ry + d1y * s - d2y * t,
+    z = rz + d1z * s - d2z * t;
+  return x * x + y * y + z * z;
+}
+
+/** Whether segment S[i]→S[j] passes through triangle T[o..o+9] (Möller–Trumbore, limited to the segment). */
+function segmentCrosses(S: ArrayLike<number>, i: number, j: number, T: ArrayLike<number>, o: number): boolean {
+  const dx = S[j] - S[i],
+    dy = S[j + 1] - S[i + 1],
+    dz = S[j + 2] - S[i + 2];
+  const e1x = T[o + 3] - T[o],
+    e1y = T[o + 4] - T[o + 1],
+    e1z = T[o + 5] - T[o + 2];
+  const e2x = T[o + 6] - T[o],
+    e2y = T[o + 7] - T[o + 1],
+    e2z = T[o + 8] - T[o + 2];
+  const px = dy * e2z - dz * e2y,
+    py = dz * e2x - dx * e2z,
+    pz = dx * e2y - dy * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  // parallel: any contact is edge on edge or corner on face, which the distance tests catch
+  if (Math.abs(det) < 1e-14) return false;
+  const inv = 1 / det;
+  const sx = S[i] - T[o],
+    sy = S[i + 1] - T[o + 1],
+    sz = S[i + 2] - T[o + 2];
+  const u = (sx * px + sy * py + sz * pz) * inv;
+  if (u < 0 || u > 1) return false;
+  const qx = sy * e1z - sz * e1y,
+    qy = sz * e1x - sx * e1z,
+    qz = sx * e1y - sy * e1x;
+  const v = (dx * qx + dy * qy + dz * qz) * inv;
+  if (v < 0 || u + v > 1) return false;
+  const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+  return t >= 0 && t <= 1;
 }
