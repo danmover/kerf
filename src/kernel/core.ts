@@ -12,8 +12,7 @@ import { geoKey, type GeoQuery } from "../lang/values";
 import { ProcessAnalyzer } from "../mfg/analyzer";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { FeatureTools } from "./topology";
-import type { TriBVH } from "../mfg/bvh";
-import { apart, closedSurface, placeSurface } from "./apart";
+import { apart, closedSurface, placeSurface, type PlacedSurface } from "./apart";
 
 interface CacheEntry {
   shape: Shape3D;
@@ -209,7 +208,7 @@ export class KernelCore {
     let pairsTested = 0;
     const list = [...world.values()];
     // each part's closed surface mesh, placed, made when a pair first needs it
-    const surfaces = new Map<string, TriBVH | null>();
+    const surfaces = new Map<string, PlacedSurface | null>();
     const surfaceOf = (w: World) => {
       let s = surfaces.get(w.item.id);
       if (s === undefined) {
@@ -312,7 +311,7 @@ export class KernelCore {
   }
 
   /** How much two placed solids overlap: exactly, unless their meshes show they are well apart. */
-  private overlap(A: World, B: World, threshold: number, surfaceOf: (w: World) => TriBVH | null): PairResult {
+  private overlap(A: World, B: World, threshold: number, surfaceOf: (w: World) => PlacedSurface | null): PairResult {
     const sa = surfaceOf(A);
     const sb = sa && surfaceOf(B);
     if (sa && sb && apart(sa, sb)) return { volume: 0 };

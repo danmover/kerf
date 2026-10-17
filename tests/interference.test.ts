@@ -55,6 +55,23 @@ describe("mesh proof that two solids are apart", () => {
     expect(apart(outer, inner)).toBe(false);
     expect(apart(inner, outer)).toBe(false);
   });
+
+  it("does not call a part apart when only one of its pieces is inside the other", () => {
+    const outer = placed(boxMesh([0, 0, 0], [10, 10, 10]));
+    const clear = boxMesh([20, 0, 0], [22, 2, 2]);
+    const buried = boxMesh([4, 4, 4], [6, 6, 6]);
+    // one part made of two separate boxes, the clear one first
+    const offset = clear.positions.length / 3;
+    const both: MeshData = {
+      positions: new Float32Array([...clear.positions, ...buried.positions]),
+      normals: new Float32Array(clear.positions.length + buried.positions.length),
+      indices: new Uint32Array([...clear.indices, ...[...buried.indices].map((i) => i + offset)]),
+      edges: new Float32Array(0),
+    };
+    expect(closedSurface(both)!.pieces).toHaveLength(2);
+    expect(apart(outer, placed(both))).toBe(false);
+    expect(apart(outer, placed(clear))).toBe(true);
+  });
 });
 
 describe("interference check", () => {
