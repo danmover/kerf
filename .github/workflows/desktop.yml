@@ -2,10 +2,13 @@ name: Desktop app
 
 # Builds the Windows installer, starts the packaged app to check it opens a
 # design and passes its checks, and publishes the installer to GitHub Releases:
-#   - pull requests that touch the desktop app: build and test, installer kept as an artifact
+#   - pull requests that touch the desktop app: build and test, installer put on the
+#     "Kerf desktop preview" draft release (only people who can push see drafts)
 #   - main, when package.json has a version with no release yet: build, test and release v<version>
 #   - Run workflow (manual): build and test main, and put the installer on v<version>'s release
 # Windows runners cost double minutes, so other changes don't trigger it.
+# Installers go on releases rather than workflow artifacts: release files don't count
+# against the account's Actions storage, which a 100 MB installer per run soon fills.
 
 on:
   pull_request:
@@ -81,14 +84,27 @@ jobs:
           exit $status
       - uses: actions/upload-artifact@v4
         if: always()
+        # the test result is a convenience; a full storage quota mustn't fail the build
+        continue-on-error: true
         with:
-          name: kerf-windows-${{ needs.plan.outputs.version }}
+          name: kerf-windows-smoke-${{ needs.plan.outputs.version }}
           path: |
-            release/Kerf-Setup-*.exe
             smoke.png
             smoke.json
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
+      - name: Put the test build on the preview release
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # one draft release holds the newest pull request build; drafts have no tag until published
+          gh release delete desktop-preview --yes >/dev/null 2>&1 || true
+          gh release create desktop-preview release/Kerf-Setup-*.exe --draft --prerelease --target "$SHA" --title "Kerf desktop preview" \
+            --notes "Test build of pull request #$PR at ${SHA:0:7}, not a release. The installer isn't code-signed yet, so Windows may say it protected your PC: choose **More info**, then **Run anyway**."
       - name: Publish to GitHub Releases
         if: needs.plan.outputs.publish == 'true'
         shell: bash

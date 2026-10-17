@@ -43,7 +43,7 @@ npm run desktop:dist  # builds the installer for this platform into release/
 
 On Windows, PowerShell may block `npm`; use `npm.cmd` instead. `node scripts/build-desktop.mjs` stages the app in `.desktop/app`, and `desktop/electron-builder.yml` packages it.
 
-**Releases.** The Desktop app workflow builds the Windows installer, starts the packaged app to check it opens a design and passes its checks, and publishes it. Pull requests that change `desktop/` get the installer as a workflow artifact. A merge to `main` whose `package.json` version has no release yet publishes `v<version>`, so bumping the version is how to cut a release. Run workflow on the Actions tab rebuilds `main` and replaces the installer on the current version's release.
+**Releases.** The Desktop app workflow builds the Windows installer, starts the packaged app to check it opens a design and passes its checks, and publishes it. Pull requests that change `desktop/` put their installer on the **Kerf desktop preview** draft release, which only people who can push to the repository see. A merge to `main` whose `package.json` version has no release yet publishes `v<version>`, so bumping the version is how to cut a release. Run workflow on the Actions tab rebuilds `main` and replaces the installer on the current version's release.
 
 ### With accounts
 
