@@ -843,7 +843,7 @@ export function firmwareSummary(m: Model | null): { text: string; warnings: numb
     const outs = generateFirmware(mm, m.name);
     const warnings = outs.reduce((s, o) => s + o.warnings.length, 0);
     const lines = outs.map((o) => {
-      const head = `  - ${o.name} (board ${o.board || "?"}): ${o.target === "none" ? "no code generated" : o.target === "arduino" ? "Arduino sketch" : "Klipper config"}. ${o.summary}. ${o.files.length} file${o.files.length === 1 ? "" : "s"}, ${o.pinTable.length} wired signal${o.pinTable.length === 1 ? "" : "s"}.`;
+      const head = `  - ${o.name} (board ${o.board || "?"}): ${o.target === "none" ? "no code generated" : o.target === "arduino" ? "Arduino sketch" : o.target === "marlin" ? "Marlin config" : o.target === "reprapfirmware" ? "RepRapFirmware config" : "Klipper config"}. ${o.summary}. ${o.files.length} file${o.files.length === 1 ? "" : "s"}, ${o.pinTable.length} wired signal${o.pinTable.length === 1 ? "" : "s"}.`;
       return o.warnings.length ? `${head}\n    Warnings:\n${o.warnings.map((w) => `    * ${w}`).join("\n")}` : `${head} No warnings.`;
     });
     return { text: ["Firmware:", ...lines].join("\n"), warnings };

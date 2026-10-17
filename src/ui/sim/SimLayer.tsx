@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type { SceneController } from "../viewport/scene";
 import { SimOverlay } from "../viewport/simOverlay";
+import { PrinterOverlay, posePrinter } from "../viewport/printerOverlay";
 import { meshes, useDesign } from "../../core/engine";
 import { useSettings } from "../../app/settings";
 import { useSim } from "../../sim/runtime";
@@ -34,7 +35,7 @@ export function SimLayer({ scene }: { scene: SceneController }) {
   const { model, def, run, vrun, variant } = useSelectedScenario();
   const meshVersion = useDesign((s) => s.meshVersion);
   const reduceMotion = useSettings((s) => s.reduceMotion);
-  const ov = useRef<SimOverlay | null>(null);
+  const ov = useRef<SimOverlay | PrinterOverlay | null>(null);
   const saved = useRef<ReturnType<SceneController["cameraState"]> | null>(null);
   const [camera, setCamera] = useState<CameraMode>("follow");
   const lastNose = useRef<THREE.Vector3 | null>(null);
@@ -48,7 +49,8 @@ export function SimLayer({ scene }: { scene: SceneController }) {
   // the overlay: rebuilt when the run, the variant or the design's parts change
   useEffect(() => {
     if (!shown || !vrun || !model) return;
-    const o = new SimOverlay(vrun.scene, model.parts, meshes, screws);
+    // a print plays back on the printer's own parts, posed from its show_x, show_y and show_z
+    const o = vrun.print ? new PrinterOverlay(model.parts, meshes, posePrinter(useDesign.getState().source, model), vrun.print) : new SimOverlay(vrun.scene, model.parts, meshes, screws);
     o.setFrames(vrun.frames);
     o.setTime(useSim.getState().t);
     o.setPlaying(useSim.getState().playing && !reduceMotion);
@@ -83,7 +85,9 @@ export function SimLayer({ scene }: { scene: SceneController }) {
     else if (camera === "whole") scene.fit("iso", true, o.frameBox(true), side);
     else {
       const n = o.nose();
-      if (n) scene.fit("iso", true, new THREE.Box3(n.clone().add(new THREE.Vector3(-650, -150, -150)), n.clone().add(new THREE.Vector3(150, 150, 150))), side);
+      // a burrowing machine trails behind its nose; a printer's nozzle sits over the print
+      const back = o instanceof PrinterOverlay ? new THREE.Vector3(-120, -120, -120) : new THREE.Vector3(-650, -150, -150);
+      if (n) scene.fit("iso", true, new THREE.Box3(n.clone().add(back), n.clone().add(new THREE.Vector3(150, 150, 150).setLength(o instanceof PrinterOverlay ? 208 : 260))), side);
       lastNose.current = n;
     }
   }, [camera, shown, scene, hasBox]);
@@ -176,7 +180,7 @@ export function SimLayer({ scene }: { scene: SceneController }) {
           <select value={camera} onChange={(e) => setCamera(e.target.value as CameraMode)} aria-label="Camera">
             {(Object.keys(CAMERA_LABEL) as CameraMode[]).map((c) => (
               <option key={c} value={c}>
-                {CAMERA_LABEL[c]}
+                {vrun.print && c === "whole" ? "whole printer" : CAMERA_LABEL[c]}
               </option>
             ))}
           </select>

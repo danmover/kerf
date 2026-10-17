@@ -105,6 +105,7 @@ export type CatalogKind =
   | "linear_bearing"
   | "lead_screw"
   | "pulley"
+  | "belt"
   | "coupler"
   | "seal"
   // circuit-board parts and audio
@@ -135,6 +136,7 @@ export type GeomClass =
   | "rod"
   | "lead_screw"
   | "pulley"
+  | "belt"
   | "coupler"
   | "linear_bearing"
   | "hotend"
@@ -383,6 +385,117 @@ export interface BuyItem {
   span: Span;
 }
 
+/** A pulley or clamp end on a belt's path, laid out in the belt's plane. */
+export interface BeltNode {
+  /** component name (pulleys), or "start" / "end" for the clamped ends of an open belt */
+  name: string;
+  kind: "pulley" | "clamp";
+  /** centre in the belt plane (u, v), mm */
+  c: [number, number];
+  /** pitch-line radius round it (0 for a clamp) */
+  r: number;
+  /** the way the belt turns round it: 1 counter-clockwise in (u, v), -1 clockwise */
+  dir: 1 | -1;
+  /** wrapped on the belt's back (an outside idler) */
+  outside: boolean;
+  smooth: boolean;
+  teeth?: number;
+  /** belt contact angle, degrees */
+  wrap: number;
+  /** teeth engaged with a toothed pulley */
+  teethInMesh?: number;
+  /** distance of its belt centre from the belt plane, mm */
+  offset: number;
+  /** angle between its axis and the plane normal, degrees */
+  tilt: number;
+  /** width of its belt groove (between flanges) and the belt width it is made for */
+  grooveW?: number;
+  beltW?: number;
+  /** what it is, for messages: "20-tooth pulley", "smooth idler", "625 bearing", "clamp" */
+  label: string;
+}
+
+/** A free span of belt between two nodes. */
+export interface BeltSpan {
+  from: string;
+  to: string;
+  a: [number, number];
+  b: [number, number];
+  /** world end points */
+  a3: [number, number, number];
+  b3: [number, number, number];
+  length: number;
+  /** pluck frequency at the installed tension, Hz */
+  hz: number;
+}
+
+/** One piece of the belt's pitch line in the belt plane, for diagrams. */
+export type BeltPiece = { k: "line"; a: [number, number]; b: [number, number] } | { k: "arc"; c: [number, number]; r: number; a0: number; sweep: number };
+
+/** A timing belt (lib.belt): its layout, tension and what that does. */
+export interface BeltDef {
+  name: string;
+  catalogId: string;
+  label: string;
+  role?: string;
+  open: boolean;
+  /** pitch length round the path, mm */
+  length: number;
+  /** open belts: length to cut, allowing for stretch and clamp tails */
+  cutLength?: number;
+  /** closed loops: the stock loop length and tooth count that fit */
+  stockLength?: number;
+  teeth?: number;
+  /** installation tension, N */
+  tension: number;
+  tensionAssumed: boolean;
+  /** where the tension is written, and the parameter it comes from, so the app can edit it */
+  tensionSpan?: Span;
+  tensionParam?: string;
+  belt: { pitch: number; width: number; core: string; mass: number; ea: number; teMax: number; tMin: number; tMax: number; minTeeth: number; stock?: number[] };
+  plane: { o: [number, number, number]; u: [number, number, number]; v: [number, number, number]; n: [number, number, number] };
+  nodes: BeltNode[];
+  spans: BeltSpan[];
+  pieces: BeltPiece[];
+  /** the pulley that drives it, and the motor it sits on when Kerf finds one */
+  drive?: string;
+  motor?: { name: string; label: string; holdNmm?: number; stepDeg?: number; radialN?: number; radialAt?: number; lever: number };
+  load?: { mass?: number; accel?: number; friction: number; torque?: number; force: number };
+  figures: BeltFigures;
+  span: Span;
+}
+
+export interface BeltFigures {
+  /** stretch over the whole belt at the installed tension, mm */
+  stretch: number;
+  /** open belts: belt length from each clamp to the drive pulley, mm */
+  lenA?: number;
+  lenB?: number;
+  /** stiffness at the carriage (or drive), N/mm: belt only at the position shown, the softest anywhere on the travel, and the motor's */
+  kShown?: number;
+  kMin?: number;
+  kMotor?: number;
+  /** with the motor in series, N/mm */
+  kTotalShown?: number;
+  kTotalMin?: number;
+  /** natural frequency of the moving mass on the belt, Hz */
+  ringShown?: number;
+  ringMin?: number;
+  /** how far the carriage lags the motor at full acceleration, mm */
+  lag?: number;
+  /** peak tight-side and slack-side tension, N */
+  tight?: number;
+  slack?: number;
+  /** pull on the drive pulley's shaft at rest and at peak, N */
+  hubStatic?: number;
+  hubPeak?: number;
+  /** the motor's radial rating scaled to where the belt pulls, N */
+  hubLimit?: number;
+  /** pull the teeth carry at this many teeth in mesh, N */
+  teAllowed?: number;
+  teethInMesh?: number;
+}
+
 export interface MachineData {
   components: MachineComponent[];
   wires: WireDef[];
@@ -393,8 +506,10 @@ export interface MachineData {
   items: BuyItem[];
   /** circuit boards designed in Kerf */
   boards: BoardDef[];
+  /** timing belts round pulleys */
+  belts: BeltDef[];
 }
 
 export function emptyMachine(): MachineData {
-  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [], boards: [] };
+  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [], boards: [], belts: [] };
 }

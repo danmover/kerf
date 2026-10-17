@@ -10,6 +10,8 @@ import { useProject } from "../app/project";
 import { exportBuildPack } from "../app/exports";
 import { toast } from "../app/ui";
 import { checkItems, cutList, madeParts, readiness, testPlan, type PlanItem, type Readiness } from "../machine/pack";
+import { showWire } from "./wiringView";
+import { routedRuns, updateHarness, useHarness } from "../machine/harness/runtime";
 import { componentPositions, wireList, wiresCsv, wiringDiagram, wireHex, type WireEnd, type WireKind, type WireRow } from "../machine/wiring";
 import { generateFirmware, type FirmwareOutput } from "../machine/firmware";
 import { catalogPart, shopLinks } from "../machine/catalog";
@@ -22,9 +24,10 @@ import { Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { BoardView } from "./BoardView";
 import { SoundPanel } from "./SoundPanel";
+import { Belts } from "./BeltsView";
 import { hasCircuit } from "../machine/circuit/netlist";
 
-type Section = "overview" | "sound" | "board" | "wiring" | "calcs" | "firmware" | "tests";
+type Section = "overview" | "sound" | "board" | "belts" | "wiring" | "calcs" | "firmware" | "tests";
 
 /** Remembered while the dock switches tabs. */
 const useBuildView = create<{ section: Section; wiring: "diagram" | "list"; file: string; openCalcs: string[] }>(() => ({ section: "overview", wiring: "diagram", file: "", openCalcs: [] }));
@@ -41,7 +44,6 @@ function partIds(model: Model, comp: string, index?: number): string[] {
     .map((p) => p.id);
 }
 
-const endIds = (model: Model, e: WireEnd) => partIds(model, e.comp.replace(/\[\d+\]$/, ""), e.comp.endsWith("]") ? e.index : undefined);
 
 export function MachinePanel() {
   const model = useDesign((s) => s.model);
@@ -56,7 +58,22 @@ export function MachinePanel() {
   const items = useMemo(() => (model ? checkItems(model, report) : []), [model, report]);
   const plan = useMemo(() => (m ? testPlan(m) : []), [m]);
   const ready = useMemo(() => (model ? readiness(model, items, plan) : null), [model, items, plan]);
-  const rows = useMemo(() => (model && m ? wireList(m, componentPositions(model)) : []), [model, m]);
+  // cut lengths come from the 3D cable routes once they are routed (in a worker, about half a second)
+  const stage = useDesign((s) => s.stage);
+  const meshVersion = useDesign((s) => s.meshVersion);
+  const routes = useHarness((s) => s.routes);
+  const routeStatus = useHarness((s) => s.status);
+  useEffect(() => {
+    if (!model?.machine || (stage !== "done" && stage !== "refining")) return;
+    const t = setTimeout(() => updateHarness(model), 300);
+    return () => clearTimeout(t);
+  }, [model, stage, meshVersion]);
+  const rows = useMemo(
+    () => (model && m ? wireList(m, componentPositions(model), routedRuns(model)) : []),
+    // the routes are read through routedRuns
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [model, m, routes, routeStatus],
+  );
   const fw = useMemo(() => (model && m ? generateFirmware(m, model.name || name) : []), [model, m, name]);
 
   if (!model || !m || !ready) {
@@ -73,7 +90,8 @@ export function MachinePanel() {
   // an audio circuit gets a Sound section, a design with circuit boards a Board section
   const sound = m.components.some((c) => catalogPart(c.catalogId)?.sim?.k === "input") && hasCircuit(m);
   const boards = m.boards.length > 0;
-  const shown: Section = (section === "sound" && !sound) || (section === "board" && !boards) ? "overview" : section;
+  const belts = m.belts.length > 0;
+  const shown: Section = (section === "sound" && !sound) || (section === "board" && !boards) || (section === "belts" && !belts) ? "overview" : section;
   const verdict = ready.level === "ready" ? { cls: "pass", word: "ready to build" } : ready.level === "review" ? { cls: "warn", word: "review first" } : { cls: "fail", word: "not ready" };
   const makePack = async () => {
     setBusy(true);
@@ -95,6 +113,7 @@ export function MachinePanel() {
             { value: "overview", label: "Overview" },
             ...(sound ? [{ value: "sound" as const, label: "Sound", title: "The circuit simulated: turn the knobs, see the response and listen" }] : []),
             ...(boards ? [{ value: "board" as const, label: <>Board{m.boards.length > 1 && <span className="seg-n">{m.boards.length}</span>}</>, title: "Circuit board layout, rule check and board house files" }] : []),
+            ...(belts ? [{ value: "belts" as const, label: <>Belts{m.belts.length > 1 && <span className="seg-n">{m.belts.length}</span>}</>, title: "Timing belts: path, tension, pluck notes and stiffness" }] : []),
             { value: "wiring", label: <>Wiring{rows.length > 0 && <span className="seg-n">{rows.length}</span>}</>, title: "Wiring diagram and wire list" },
             { value: "calcs", label: <>Calculations{m.calcs.length > 0 && <span className="seg-n">{m.calcs.length}</span>}</>, title: "Engineering calculations with their working" },
             { value: "firmware", label: <>Firmware{fwFiles > 0 && <span className="seg-n">{fwFiles}</span>}</>, title: "Code generated to match the wiring" },
@@ -117,6 +136,7 @@ export function MachinePanel() {
         {shown === "overview" && <Overview model={model} m={m} ready={ready} rows={rows} plan={plan} fw={fw} checking={checking} />}
         {shown === "sound" && <SoundPanel m={m} />}
         {shown === "board" && <BoardView model={model} m={m} items={items} />}
+        {shown === "belts" && <Belts model={model} m={m} />}
         {shown === "wiring" && <Wiring model={model} m={m} rows={rows} items={items} name={name} />}
         {shown === "calcs" && <Calcs m={m} items={items} />}
         {shown === "firmware" && <Firmware fw={fw} />}
@@ -600,7 +620,7 @@ function WireTable({ model, rows }: { model: Model; rows: WireRow[] }) {
     }
     const notes = [r.label ? `Label: ${r.label}` : "", r.note ?? ""].filter(Boolean).join(" ");
     out.push(
-      <tr key={r.id} onClick={() => select([...new Set([...endIds(model, r.from), ...endIds(model, r.to)])])} style={{ cursor: "pointer" }}>
+      <tr key={r.id} onClick={() => showWire(r.id)} style={{ cursor: "pointer" }} data-tip="Show this cable in the 3D view">
         <td className="mono" style={{ color: "var(--text)" }}>
           {r.id}
         </td>
@@ -624,7 +644,7 @@ function WireTable({ model, rows }: { model: Model; rows: WireRow[] }) {
             </>
           )}
         </td>
-        <td className="mono" style={{ textAlign: "right" }}>
+        <td className="mono" style={{ textAlign: "right" }} data-tip={r.lengthMm === undefined ? undefined : r.lengthRouted ? "Measured along the cable's route in the 3D wiring, plus 150 mm for the ends and a service loop" : "Estimated from where the parts are; measured along the 3D route once the cables are routed"}>
           {r.lengthMm !== undefined ? `${r.lengthMm} mm` : ""}
         </td>
         <td className="note">{notes}</td>
@@ -791,7 +811,7 @@ function Calcs({ m, items }: { m: MachineData; items: CheckItem[] }) {
 
 // ---------------------------------------------------------------- firmware
 
-const TARGET_WORD: Record<FirmwareOutput["target"], string> = { arduino: "Arduino", klipper: "Klipper", none: "not generated" };
+const TARGET_WORD: Record<FirmwareOutput["target"], string> = { arduino: "Arduino", klipper: "Klipper", marlin: "Marlin", reprapfirmware: "RepRapFirmware", none: "not generated" };
 
 /** Light highlighting: comments, preprocessor lines, strings and section headers. */
 function highlight(line: string, ext: string): ReactNode {

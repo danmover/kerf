@@ -81,7 +81,9 @@ export type ShapeRecipe =
   /** a helical thread; detailed builds model the real form, fast builds a plain cylinder at the pitch diameter */
   | { t: "thread"; spec: ThreadSpec3; length: number; at: V3; dir: V3; internal: boolean; lead: number; bore?: number; fastD?: number }
   /** a knurled or ridged grip; fast builds use a plain cylinder */
-  | { t: "knurl"; d: number; h: number; at: V3; dir: V3; count: number; depth: number; style: "straight" | "fluted" };
+  | { t: "knurl"; d: number; h: number; at: V3; dir: V3; count: number; depth: number; style: "straight" | "fluted" }
+  /** a simple stand-in for fast builds and the full shape for detailed ones (a belt without and with its teeth) */
+  | { t: "lod"; fast: ShapeRecipe; detail: ShapeRecipe };
 
 /** One piece of a closed sketch loop, in sketch-plane coordinates. Arcs pass through m. */
 export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number };
@@ -159,6 +161,7 @@ export function shapeHasDetail(r: ShapeRecipe): boolean {
   switch (r.t) {
     case "thread":
     case "knurl":
+    case "lod":
       return true;
     case "hole":
       return !!r.thread;
@@ -210,6 +213,9 @@ export function fontsIn(p: PartRecipe): FontName[] {
       case "diff":
         shape(r.a);
         return r.b.forEach(shape);
+      case "lod":
+        shape(r.fast);
+        return shape(r.detail);
     }
   };
   if (p.base) shape(p.base);

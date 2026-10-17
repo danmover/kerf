@@ -6,7 +6,7 @@
 
 import { fmtNum } from "../lang/values";
 
-export type ResultUnit = "mm" | "mm/s" | "s" | "deg" | "share" | "V" | "A" | "mAh" | "C" | "bytes" | "N" | "count" | "turns" | "yes/no" | "text";
+export type ResultUnit = "mm" | "mm/s" | "s" | "deg" | "share" | "V" | "A" | "mAh" | "C" | "bytes" | "N" | "count" | "turns" | "yes/no" | "text" | "W" | "Wh" | "mm3/s" | "g";
 
 export interface ResultInfo {
   unit: ResultUnit;
@@ -62,6 +62,40 @@ export const WORLD_RESULTS: Record<string, Record<string, ResultInfo>> = {
   bench: {
     "<motor>.turns": { unit: "turns", doc: "output shaft turns over the run" },
   },
+  printer: {
+    finished: { unit: "yes/no", doc: "the whole G-code ran without the firmware stopping it" },
+    firmware: { unit: "text", doc: 'the firmware that ran it: "Klipper", "Marlin" or "RepRapFirmware"' },
+    print_time: { unit: "s", doc: "from the first extruding move to the last" },
+    heat_time: { unit: "s", doc: "time spent waiting for the hotend and bed to heat" },
+    layer_shifts: { unit: "count", doc: "times a motor skipped steps (each one shifts every layer after it)" },
+    max_shift: { unit: "mm", doc: "how far off the print ended up in X and Y from skipped steps" },
+    under_extrusion: { unit: "share", doc: "share of the plastic asked for that the hotend could not melt or the extruder could not push" },
+    flow_peak: { unit: "mm3/s", doc: "the most plastic the hotend melted, mm³/s" },
+    speed_avg: { unit: "mm/s", doc: "average speed while extruding" },
+    filament: { unit: "mm", doc: "filament used" },
+    filament_g: { unit: "g", doc: "plastic used" },
+    hotend_error: { unit: "C", doc: "furthest the hotend strayed from its target while printing" },
+    hotend_overshoot: { unit: "C", doc: "how far the hotend went past its last target" },
+    bed_error: { unit: "C", doc: "furthest the bed strayed from its target while printing" },
+    first_layer_error: { unit: "mm", doc: "largest error in the first layer's gap to the bed (bed shape the mesh missed, probe offset)" },
+    first_layer_mean: { unit: "mm", doc: "average first-layer gap error (+ too high)" },
+    first_layer_squashed: { unit: "share", doc: "share of the first layer laid at under half its height (nozzle scraping)" },
+    first_layer_loose: { unit: "share", doc: "share of the first layer laid at over 1.5 times its height (it may not stick)" },
+    mesh_range: { unit: "mm", doc: "highest minus lowest point of the probed bed mesh" },
+    psu_peak: { unit: "W", doc: "most power drawn from the supply" },
+    energy: { unit: "Wh", doc: "energy used for the whole run" },
+    firmware_errors: { unit: "count", doc: "errors the firmware reported" },
+    unknown_commands: { unit: "count", doc: "different G-code commands the firmware does not know (it skips them)" },
+    heater_fault: { unit: "text", doc: "the heater safety check that stopped the printer, if any" },
+    pressure_advance: { unit: "count", doc: "pressure advance (or Marlin's K) in force at the end" },
+    x_load: { unit: "share", doc: "peak torque the X motor needed as a share of what it had at that speed (over 100 % skips steps)" },
+    y_load: { unit: "share", doc: "the same for Y" },
+    z_load: { unit: "share", doc: "the same for Z" },
+    extruder_load: { unit: "share", doc: "the same for the extruder motor (the melt pushes back near the hotend's flow limit)" },
+    ringing: { unit: "mm", doc: "most the X or Y belt let the nozzle ring after a change of speed while printing (ghosting), from lib.belt" },
+    ringing_hz: { unit: "count", doc: "lowest frequency the X or Y axis rings at on its belt, Hz (what an input shaper would tune to)" },
+    belt_slack: { unit: "N", doc: "slackest the X or Y belt's slack side got at peak pull (below 0 it went slack)" },
+  },
 };
 
 /** The info for a result name, matching `<motor>` style patterns. */
@@ -100,7 +134,8 @@ export function fmtResult(v: number | boolean | string | undefined, unit?: Resul
     case "mAh":
       return `${fmtNum(v, 0)} mAh`;
     case "mm":
-      return `${fmtNum(v, 0)} mm`;
+      // a first layer's gap is hundredths of a millimetre; a tunnel's progress is hundreds
+      return `${fmtNum(v, Math.abs(v) < 1 && v !== 0 ? 3 : Math.abs(v) < 10 ? 1 : 0)} mm`;
     case "mm/s":
       return `${fmtNum(v, 2)} mm/s`;
     case "bytes":
@@ -109,6 +144,14 @@ export function fmtResult(v: number | boolean | string | undefined, unit?: Resul
       return `${fmtNum(v, 0)} N`;
     case "turns":
       return `${fmtNum(v, 1)} turns`;
+    case "W":
+      return `${fmtNum(v, 0)} W`;
+    case "Wh":
+      return `${fmtNum(v, 1)} Wh`;
+    case "mm3/s":
+      return `${fmtNum(v, 1)} mm³/s`;
+    case "g":
+      return `${fmtNum(v, 1)} g`;
     case "yes/no":
       return v ? "yes" : "no";
     default:
