@@ -27,6 +27,33 @@ export interface PlantView {
   servo(comp: string): { angle: number } | undefined;
 }
 
+/**
+ * A motor, actuator or servo a world moves itself (a mechanism it simulates as rigid bodies), with what its
+ * driver gives it this step.
+ */
+export interface DriveIO {
+  comp: string;
+  kind: "motor" | "actuator" | "servo";
+  /** volts on the terminals (+ forward; null: open), the driver's current limit, A */
+  v: number | null;
+  ilim: number;
+  /** a servo's pulse, µs (null: none), and whether it has power */
+  us: number | null;
+  powered: boolean;
+  /** the device's own model, for its constants (kt, ke, resistance, stall force, rated speed) */
+  dev: unknown;
+}
+
+/** How a world moved a device this step, for the plant to take its current and heating from. */
+export interface DriveMotion {
+  /** output speed: rad/s (motor), mm/s (actuator) or °/s (servo) */
+  speed: number;
+  /** rod position, mm from fully in (actuator), or horn angle, ° (servo) */
+  pos: number;
+  /** torque (N·m) or force (N, + pushing the rod in) the mechanism put on it */
+  load: number;
+}
+
 export interface Orientation {
   /** degrees, counter-clockwise seen from above, from the start heading */
   yaw: number;
@@ -60,6 +87,11 @@ export interface SceneBody {
   origin: [number, number, number];
   /** members inside an X range that also turn with a motor about the design X axis */
   spin: { motor: string; xmin: number; xmax: number; sign: number }[];
+  /** the EvalPart ids on this body (a mechanism's bodies), instead of an X range; its pose then comes from
+   * `<id>.qw/.qx/.qy/.qz`, the turn from the design pose, and `origin` is its design-pose centre of mass */
+  parts?: string[];
+  /** a loose box with this size, mm, drawn at origin */
+  box?: [number, number, number];
 }
 
 export interface SceneSpec {
@@ -68,6 +100,10 @@ export interface SceneSpec {
   box?: { min: [number, number, number]; max: [number, number, number]; fill: "sand" | "water" | "air" | "soil"; fillTop: number; label: string };
   /** a floor plane at this height, mm */
   floor?: number;
+  /** a floor that may slope (a point on it and its up direction) and fixed blocks on it, mm */
+  ground?: { p: [number, number, number]; n: [number, number, number]; blocks: { min: [number, number, number]; max: [number, number, number] }[]; label: string; down?: [number, number, number] };
+  /** the body a camera should follow */
+  follow?: string;
   bodies: SceneBody[];
   /** an opening or target to reach */
   target?: { at: [number, number, number]; normal: [number, number, number]; d: number; label: string };
@@ -85,6 +121,11 @@ export interface World {
   actuatorLoad(comp: string): number;
   /** torque on a servo horn, N·m (+ against increasing angle) */
   servoLoad?(comp: string): number;
+  /**
+   * Worlds that simulate the machine's mechanism move its motors, actuators and servos themselves: given what
+   * each driver puts out this step, they step the mechanism and say how each device moved.
+   */
+  couple?(io: DriveIO[], dt: number, t: number): Map<string, DriveMotion>;
   /** advance the world by dt seconds after the motors moved */
   step(dt: number, t: number, plant: PlantView): void;
   /** orientation of the body an IMU sits on */

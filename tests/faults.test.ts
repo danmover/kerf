@@ -47,6 +47,17 @@ describe("fault blocks", () => {
     expect(def.spec.faults).toHaveLength(1);
     expect(withScenario(`scenario "X" { like: "Cross the pt" expect "x": faults == 0 }`).errors[0]).toMatch(/No scenario "Cross the pt" above this one\. Did you mean "Cross the pit"/);
   });
+
+  it("like: keeps a mechanism run without firmware as one", () => {
+    const reducer = readFileSync(join(__dirname, "../src/demos/reducer.kerf"), "utf8");
+    const m = evaluate(`${reducer}\nscenario "Longer spin" { like: "Spins up to speed" duration: 20s }\n`);
+    expect(m.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    const [base, def] = m.scenarios!.slice(-2);
+    expect(def.spec.mechanism).toEqual(base.spec.mechanism);
+    expect(def.spec.physicsOnly).toBe(base.spec.physicsOnly);
+    expect(def.spec.world).toEqual(base.spec.world);
+    expect(def.spec.duration).toBe(20);
+  });
 });
 
 describe("faults on the bench, with the real firmware", () => {

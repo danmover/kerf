@@ -15,6 +15,8 @@ import type { SceneOverlay } from "./scene";
 
 const D2R = Math.PI / 180;
 
+const FLOOR_COLOUR: Record<string, number> = { concrete: 0x8b8f96, wood: 0x9a7650, tile: 0xb9bcc2, carpet: 0x6a5f74, grass: 0x4f7a3a, gravel: 0x8a8378, sand: 0xd8c08f, ice: 0xcfe3ee };
+
 interface Body {
   spec: SceneBody;
   group: THREE.Group;
@@ -110,6 +112,11 @@ export class SimOverlay implements SceneOverlay {
 
   private buildWorld() {
     const b = this.spec.box;
+    const g = this.spec.ground;
+    if (!b && g && g.label !== "bench top") {
+      this.buildFloor(g);
+      return;
+    }
     if (!b) {
       // a bench: a table top under the machine
       const mb = this.modelBox;
@@ -186,6 +193,39 @@ export class SimOverlay implements SceneOverlay {
     }
   }
 
+  /** an open floor round the machine, with its blocks; a sloping floor tilts the whole scene */
+  private buildFloor(g: NonNullable<SceneSpec["ground"]>) {
+    const mb = this.modelBox;
+    const size = mb.getSize(new THREE.Vector3());
+    const span = Math.max(1500, 6 * Math.max(size.x, size.y));
+    const c = mb.getCenter(new THREE.Vector3());
+    const colour = FLOOR_COLOUR[g.label] ?? 0x8b8f96;
+    const floor = new THREE.Mesh(this.keep(new THREE.BoxGeometry(span, span, 20)), this.keep(new THREE.MeshStandardMaterial({ color: colour, roughness: 0.95 })));
+    floor.position.set(c.x, c.y, g.p[2] - 10.2);
+    this.object.add(floor);
+    // a light grid so movement over the floor reads
+    const grid = new THREE.GridHelper(span, Math.round(span / 100), 0x000000, 0x000000);
+    const gm = grid.material as THREE.Material;
+    gm.transparent = true;
+    gm.opacity = 0.12;
+    this.keep(grid.geometry);
+    this.keep(gm);
+    grid.rotation.x = Math.PI / 2;
+    grid.position.set(c.x, c.y, g.p[2] + 0.2);
+    this.object.add(grid);
+    const blockMat = this.keep(new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.9 }));
+    for (const bl of g.blocks) {
+      const sz = [bl.max[0] - bl.min[0], bl.max[1] - bl.min[1], bl.max[2] - bl.min[2]];
+      const m = new THREE.Mesh(this.keep(new THREE.BoxGeometry(sz[0], sz[1], sz[2])), blockMat);
+      m.position.set((bl.min[0] + bl.max[0]) / 2, (bl.min[1] + bl.max[1]) / 2, (bl.min[2] + bl.max[2]) / 2);
+      this.object.add(m);
+    }
+    if (g.down) {
+      // the run keeps the machine's axes level with the floor and tilts gravity: tilt the picture back
+      this.object.quaternion.setFromUnitVectors(new THREE.Vector3(...g.down).normalize(), new THREE.Vector3(0, 0, -1));
+    }
+  }
+
   // ---------- the machine ----------
 
   private buildBodies(parts: EvalPart[], meshes: Map<string, MeshEntry>) {
@@ -200,6 +240,17 @@ export class SimOverlay implements SceneOverlay {
     for (const b of this.bodies) for (const sp of b.spins) {
       sp.group.matrixAutoUpdate = false;
       b.group.add(sp.group);
+    }
+    // a mechanism's bodies name their parts; loose boxes are drawn as boxes
+    const byPart = new Map<string, Body>();
+    for (const b of this.bodies) for (const id of b.spec.parts ?? []) byPart.set(id, b);
+    const crate = this.keep(new THREE.MeshStandardMaterial({ color: 0xc8a27a, roughness: 0.8 }));
+    for (const b of this.bodies) {
+      const bx = b.spec.box;
+      if (!bx) continue;
+      const m = new THREE.Mesh(this.keep(new THREE.BoxGeometry(bx[0], bx[1], bx[2])), crate);
+      m.position.set(...b.spec.origin);
+      b.group.add(m);
     }
     for (const p of parts) {
       if (p.hidden) continue;
@@ -225,7 +276,7 @@ export class SimOverlay implements SceneOverlay {
       mesh.matrix.copy(m);
       // which body carries it: the one whose X range holds the part's centre
       const c = new THREE.Vector3((entry.bbox[0][0] + entry.bbox[1][0]) / 2, (entry.bbox[0][1] + entry.bbox[1][1]) / 2, (entry.bbox[0][2] + entry.bbox[1][2]) / 2).applyMatrix4(m);
-      const body = this.bodies.find((b) => c.x >= b.spec.xmin && c.x < b.spec.xmax) ?? this.bodies[0];
+      const body = byPart.size ? (byPart.get(p.id) ?? this.bodies[0]) : (this.bodies.find((b) => c.x >= b.spec.xmin && c.x < b.spec.xmax) ?? this.bodies[0]);
       if (!body) continue;
       const spinIdx = p.motion ? body.spec.spin.findIndex((sp) => c.x >= sp.xmin && c.x <= sp.xmax) : -1;
       (spinIdx >= 0 ? body.spins[spinIdx].group : body.group).add(mesh);
@@ -281,7 +332,9 @@ export class SimOverlay implements SceneOverlay {
         b.group.matrix.identity();
       } else {
         const m = new THREE.Matrix4().makeTranslation(px, valueAt(f, `${id}.py`, t), valueAt(f, `${id}.pz`, t));
-        const r = new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(valueAt(f, `${id}.roll`, t) * D2R, -valueAt(f, `${id}.pitch`, t) * D2R, valueAt(f, `${id}.yaw`, t) * D2R, "ZYX"));
+        const r = f.series[`${id}.qw`]
+          ? new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion(valueAt(f, `${id}.qx`, t), valueAt(f, `${id}.qy`, t), valueAt(f, `${id}.qz`, t), valueAt(f, `${id}.qw`, t)).normalize())
+          : new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(valueAt(f, `${id}.roll`, t) * D2R, -valueAt(f, `${id}.pitch`, t) * D2R, valueAt(f, `${id}.yaw`, t) * D2R, "ZYX"));
         const o = new THREE.Matrix4().makeTranslation(-b.spec.origin[0], -b.spec.origin[1], -b.spec.origin[2]);
         b.group.matrix.copy(m.multiply(r).multiply(o));
       }
@@ -412,13 +465,25 @@ export class SimOverlay implements SceneOverlay {
     return new THREE.Box3(new THREE.Vector3(b.min[0] - 150, b.min[1], b.min[2]), new THREE.Vector3(b.max[0] + 150, b.max[1], zTop));
   }
 
-  /** Where the machine's nose is now, for a camera that follows it. */
+  /** Where the machine's nose (or the body the scene follows) is now, for a camera that follows it. */
   nose(): THREE.Vector3 | null {
     const tr = this.spec.trail;
     const f = this.frames;
+    const fb = this.spec.follow;
+    if (fb && f && !tr) {
+      const x = valueAt(f, `${fb}.px`, this.t);
+      return Number.isNaN(x) ? null : new THREE.Vector3(x, valueAt(f, `${fb}.py`, this.t), valueAt(f, `${fb}.pz`, this.t)).applyQuaternion(this.object.quaternion);
+    }
     if (!tr || !f) return null;
     const x = valueAt(f, tr.channelX, this.t);
     return Number.isNaN(x) ? null : new THREE.Vector3(x, valueAt(f, tr.channelY, this.t), valueAt(f, tr.channelZ, this.t));
+  }
+
+  /** The box a following camera frames round the nose. */
+  followBox(n: THREE.Vector3): THREE.Box3 {
+    if (this.spec.box) return new THREE.Box3(n.clone().add(new THREE.Vector3(-650, -150, -150)), n.clone().add(new THREE.Vector3(150, 150, 150)));
+    const r = Math.max(150, this.modelBox.getSize(new THREE.Vector3()).length() * 0.75);
+    return new THREE.Box3(n.clone().subScalar(r), n.clone().addScalar(r));
   }
 
   dispose() {

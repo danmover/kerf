@@ -296,7 +296,8 @@ part front_panel {
   for p in [gain, bass, mid, treble, master] {
     cut cylinder(d: p.panel_hole, h: pan_t + 2, at: (p.face.x, pan_y - 1, p.face.z), dir: Y)
   }
-  cut cylinder(d: jack_in.hole_d, h: pan_t + 2, at: (115, pan_y - 1, knob_z), dir: Y)
+  // printed holes close up by about 0.15 mm, so the jack's bushing gets 0.2 mm more
+  cut cylinder(d: jack_in.hole_d + 0.2, h: pan_t + 2, at: (115, pan_y - 1, knob_z), dir: Y)
   cut cylinder(d: power_sw.hole_d, h: pan_t + 2, at: (286, pan_y - 1, knob_z), dir: Y)
   cut box(24, pan_t + 2, 13, at: (oled.screen.x, pan_y + pan_t / 2, oled.screen.z - 6.5))
   cut cylinder(d: tune.actuator_d + 1, h: pan_t + 2, at: (tune.actuator_top.x, pan_y - 1, tune.actuator_top.z), dir: Y)

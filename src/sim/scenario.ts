@@ -16,6 +16,8 @@ import type { MachineData } from "../machine/types";
 import { flavorOf, PRINTER_FLAVORS } from "../machine/firmware/printer";
 import type { PrinterWorldSpec } from "./printer/run";
 import { TEST_SHAPES, type PrintMaterial, type TestPrintSpec, type TestShape } from "./printer/testPrint";
+import { FLOOR_FN, FloorValue, MECHANISM_FN, MECH_FNS, MechSpecValue, type FloorSpec, type MechSpec } from "./mech/lang";
+import type { MechModel } from "./mech/model";
 
 /** A world or machine description made by a sim.* function. */
 export class SimSpec extends Obj {
@@ -58,7 +60,8 @@ export const FAULT_WORDS: Record<FaultKind, string> = { jam: "jams", unplug: "is
 export type WorldSpec =
   | { kind: "sand_pit"; pit: Omit<SandPitSpec, "start"> & { start: PitStart }; robot: TunnellerSpec }
   | { kind: "bench"; bench: BenchSpec }
-  | { kind: "printer"; printer: PrinterWorldSpec };
+  | { kind: "printer"; printer: PrinterWorldSpec }
+  | { kind: "floor"; floor: FloorSpec };
 
 /** Everything a run needs (the expectations are checked afterwards, on the main thread). */
 export interface ScenarioSpec {
@@ -66,6 +69,12 @@ export interface ScenarioSpec {
   world: WorldSpec;
   /** firmware block to run; the first one when left out */
   firmware?: string;
+  /** run the mechanism without firmware (the design has none, or the scenario says firmware: none) */
+  physicsOnly?: boolean;
+  /** the moving parts as the scenario names them */
+  mechanism?: MechSpec;
+  /** the mechanism resolved against the built parts (masses, centres, gear sizes), SI units: the app fills it in before a run */
+  mech?: MechModel;
   /** longest simulated time, s */
   duration: number;
   console: { t: number; text: string }[];
@@ -99,7 +108,7 @@ export interface ScenarioDef {
   labelSpan: Span;
 }
 
-export const SCENARIO_PROPS = ["like", "world", "robot", "firmware", "duration", "console", "config", "variants", "charge", "seed", "faults"];
+export const SCENARIO_PROPS = ["like", "world", "robot", "mechanism", "firmware", "duration", "console", "config", "variants", "charge", "seed", "faults"];
 
 // ---------- the sim namespace ----------
 
@@ -410,11 +419,11 @@ const MEASURED_FN = new Fn(
   "Values measured on the real part, for a component's measured: property, e.g. measured: sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm). The simulation uses them in place of the catalog's; the checks keep the maker's ratings. Gearmotors: i_free, i_stall, rpm_free, t_stall (at rated voltage). Batteries: r_int (whole pack, Ohm or mOhm), capacity (mAh). The Calibrate panel in the Simulation tab fits them from a bench test.",
 );
 
-const SIM_ENTRIES: [string, Fn][] = [...Object.entries(SIM_FNS), ["config", CONFIG_FN], ["measured", MEASURED_FN]];
+const SIM_ENTRIES: [string, Fn][] = [...Object.entries(SIM_FNS), ["config", CONFIG_FN], ["measured", MEASURED_FN], ["mechanism", MECHANISM_FN], ["floor", FLOOR_FN], ...MECH_FNS];
 export const SIM_DOCS: Record<string, string> = Object.fromEntries(SIM_ENTRIES.map(([k, f]) => [k, f.doc ?? ""]));
 
 export function simNamespace(): Obj {
-  return new Obj({ ...SIM_FNS, config: CONFIG_FN, measured: MEASURED_FN }, "simulations", "sim");
+  return new Obj(Object.fromEntries(SIM_ENTRIES), "simulations", "sim");
 }
 
 // ---------- scenario props to a spec ----------
@@ -423,6 +432,8 @@ export interface ScenarioProps {
   get(name: string): Value | undefined;
   span(name: string): Span;
   firmware?: string;
+  /** the design has a firmware block to run */
+  hasFirmware?: boolean;
 }
 
 /**
@@ -439,18 +450,27 @@ export function scenarioSpec(
   const { base, machine } = opts;
   // like: another scenario takes everything this one leaves out from it
   const inherit = <K extends keyof ScenarioSpec>(name: string, key: K, own: () => ScenarioSpec[K]): ScenarioSpec[K] => (base && p.get(name) === undefined ? base[key] : own());
-  const world = p.get("world");
+  const mv = p.get("mechanism");
+  if (mv !== undefined && !(mv instanceof MechSpecValue)) return fail(`mechanism: should be sim.mechanism(sim.pivot(...), ...), not ${typeName(mv)}`, p.span("mechanism"));
+  let world = p.get("world");
   const robot = p.get("robot");
+  let mechanism: MechSpec | undefined;
   let ws: WorldSpec;
-  if (world === undefined && base) {
+  if (world === undefined && mv === undefined && base) {
     if (robot !== undefined) return fail("robot: goes with a world: give the world too, or leave robot: out to keep the one from like:", p.span("robot"));
     ws = base.world;
+    mechanism = base.mechanism;
   } else {
+    mechanism = mv instanceof MechSpecValue ? mv.spec : undefined;
+    if (world === undefined && mechanism) world = mechanism.base === "free" ? new FloorValue({ surface: "concrete", grip: 0.8, roll: 0.015, slope: 0, uphill: [1, 0, 0], ambient: 20, blocks: [] }) : new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: 1, forces: {}, force: 0, range: 1000, ambient: 20, signals: [] } }, "bench");
     if (world === undefined) return fail(`Scenario "${label}" needs a world, like world: sim.sand_pit(length: 2m, width: 0.5m, depth: 5m), world: sim.bench() or world: sim.printer(print: sim.test_print("cube"))`, p.span("world"));
-    if (!(world instanceof SimSpec && world.what === "world")) return fail(`world: should be sim.sand_pit(...), sim.bench(...) or sim.printer(...), not ${typeName(world)}`, p.span("world"));
-    const w = world.data as { kind: string };
-    if (w.kind === "sand_pit") {
-      const pit = (w as unknown as { pit: Omit<SandPitSpec, "start"> & { start: PitStart } }).pit;
+    if (world instanceof FloorValue) {
+      if (!mechanism) return fail("A floor needs the machine on it: mechanism: sim.mechanism(...), with its wheels, tracks or feet", p.span("world"));
+      ws = { kind: "floor", floor: world.spec };
+    } else if (!(world instanceof SimSpec && world.what === "world")) return fail(`world: should be sim.sand_pit(...), sim.bench(...), sim.floor(...) or sim.printer(...), not ${typeName(world)}`, p.span("world"));
+    else if ((world.data as { kind: string }).kind === "sand_pit") {
+      if (mechanism) return fail("A sand pit simulates its own machine: leave out mechanism:, or use sim.bench() or sim.floor()", p.span("mechanism"));
+      const pit = (world.data as unknown as { pit: Omit<SandPitSpec, "start"> & { start: PitStart } }).pit;
       if (robot === undefined && base?.world.kind === "sand_pit") ws = { kind: "sand_pit", pit, robot: base.world.robot };
       else {
         if (!(robot instanceof SimSpec && robot.what === "robot")) return fail("A sand pit needs the machine in it: robot: sim.screw_tunneller(...)", p.span(robot === undefined ? "world" : "robot"));
@@ -462,13 +482,22 @@ export function scenarioSpec(
         void _drop;
         ws = { kind: "sand_pit", pit, robot: { ...rest, imus } };
       }
-    } else ws = w as WorldSpec;
+    } else {
+      ws = world.data as WorldSpec;
+      if (ws.kind === "printer" && mechanism) return fail("A printer scenario simulates the printer itself: leave out mechanism:, or use sim.bench()", p.span("mechanism"));
+    }
   }
+  // firmware: none (or a design without firmware) runs a mechanism alone; like: keeps the other scenario's choice
+  const fw = p.firmware ?? (base ? (base.physicsOnly && !base.firmware ? "none" : base.firmware) : undefined);
+  const physicsOnly = !!mechanism && (fw === "none" || !p.hasFirmware);
+  if (fw === "none" && !mechanism) fail("firmware: none runs only a mechanism: add mechanism: sim.mechanism(...)", p.span("firmware"));
   return {
     label,
     world: ws,
-    firmware: p.firmware ?? base?.firmware,
-    duration: inherit("duration", "duration", () => duration(p, fail, ws.kind)),
+    firmware: fw === "none" ? undefined : fw,
+    physicsOnly: physicsOnly || undefined,
+    mechanism,
+    duration: inherit("duration", "duration", () => duration(p, fail, ws.kind, physicsOnly)),
     console: inherit("console", "console", () => consoleOf(p, fail)),
     config: inherit("config", "config", () => configOf(p, fail)),
     variants: inherit("variants", "variants", () => variantsOf(p, fail)),
@@ -478,9 +507,9 @@ export function scenarioSpec(
   };
 }
 
-function duration(p: ScenarioProps, fail: (msg: string, span: Span) => never, world: WorldSpec["kind"]): number {
-  // a print can take hours; anything else ten minutes unless it says
-  const d = num(p, "duration", world === "printer" ? 4 * 3600 : 600, fail);
+function duration(p: ScenarioProps, fail: (msg: string, span: Span) => never, world: WorldSpec["kind"], physicsOnly: boolean): number {
+  // a print can take hours, a mechanism on its own ten seconds; anything else ten minutes unless it says
+  const d = num(p, "duration", world === "printer" ? 4 * 3600 : physicsOnly ? 10 : 600, fail);
   if (d <= 0 || d > 4 * 3600) fail("duration: more than 0 s and at most 4 h of simulated time", p.span("duration"));
   return d;
 }

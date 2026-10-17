@@ -9,6 +9,8 @@ import { Bench } from "./worlds/bench";
 import { SandPit, type TunnellerSpec } from "./worlds/sandPit";
 import type { VariantName } from "./worlds/common";
 import type { World } from "./worlds/types";
+import { MechWorld } from "./worlds/mechanism";
+import { mechFrameHz, runMechanism } from "./mech/runMech";
 
 /** How far in from the near wall the robot's hinge starts, and what that means. */
 export function pitStart(start: ScenarioSpec["world"] & { kind: "sand_pit" }): { x: number; note: string } {
@@ -36,6 +38,12 @@ export function worldFor(spec: ScenarioSpec, machine: MachineData): (variant: Va
     };
   }
   if (w.kind === "printer") throw new Error("a printer scenario runs through runPrinter");
+  const mech = spec.mech;
+  if (w.kind === "floor") {
+    if (!mech) throw new Error("A floor needs the mechanism resolved first");
+    return (variant) => new MechWorld(mech, variant, null, w.floor.ambient, "floor");
+  }
+  if (mech) return (variant) => new MechWorld(mech, variant, new Bench(machine, w.bench, variant), w.bench.ambient, "bench");
   return (variant) => new Bench(machine, w.bench, variant);
 }
 
@@ -43,6 +51,11 @@ export function worldFor(spec: ScenarioSpec, machine: MachineData): (variant: Va
 export function runSpec(spec: ScenarioSpec, machine: MachineData, designName: string, opts: { variants?: VariantName[]; onProgress?: (variant: VariantName, done: number) => void } = {}): RunResult {
   if (spec.world.kind === "printer")
     return runPrinter({ machine, designName, firmware: spec.firmware, world: spec.world.printer, duration: spec.duration, config: spec.config, variants: opts.variants ?? spec.variants, seed: spec.seed, onProgress: opts.onProgress });
+  if (spec.mechanism && !spec.mech) throw new Error("The mechanism has not been resolved against the built parts yet");
+  if (spec.physicsOnly) {
+    const world = worldFor(spec, machine) as (variant: VariantName, seed: number) => MechWorld;
+    return runMechanism({ machine, world, duration: spec.duration, variants: opts.variants ?? spec.variants, seed: spec.seed, onProgress: opts.onProgress });
+  }
   return runScenario({
     machine,
     designName,
@@ -55,6 +68,7 @@ export function runSpec(spec: ScenarioSpec, machine: MachineData, designName: st
     faults: spec.faults,
     variants: opts.variants ?? spec.variants,
     seed: spec.seed,
+    frameHz: spec.mech ? mechFrameHz(spec.duration) : undefined,
     onProgress: opts.onProgress,
   });
 }

@@ -270,6 +270,12 @@ function worldText(def: ScenarioDef): string {
     const what = p.test ? `a ${p.test.shape.replace("_", " ")} test print` : "G-code";
     return `Printing ${what} in ${p.test?.material ?? p.material}${p.flavor ? ` on ${FLAVOR_NAME[p.flavor]}` : ""}${p.ambient !== 20 ? `, ${fmtNum(p.ambient, 0)} °C room` : ""}`;
   }
+  const mech = def.spec.mechanism ? `, ${def.spec.mech ? `${def.spec.mech.bodies.filter((b) => !b.fixed && b.id !== "frame").length} moving bodies` : "mechanism"}${def.spec.physicsOnly ? ", no firmware" : ""}` : "";
+  if (w.kind === "floor") {
+    const f = w.floor;
+    return `On a ${f.surface} floor${f.slope ? ` sloping ${fmtNum(f.slope, 0)}°` : ""}${f.blocks.length ? `, ${f.blocks.length} block${f.blocks.length > 1 ? "s" : ""}` : ""}${mech}`;
+  }
+  if (def.spec.mechanism) return `On the bench${mech}`;
   return `On the bench${w.bench.loadFactor !== 1 ? `, ${w.bench.loadFactor ? `${fmtNum(w.bench.loadFactor * 100, 0)} % load` : "motors free"}` : ""}${w.bench.ambient !== 20 ? `, ${fmtNum(w.bench.ambient, 0)} °C` : ""}`;
 }
 
@@ -278,12 +284,15 @@ function worldText(def: ScenarioDef): string {
 function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
   const world = def.spec.world.kind;
   const r = v.results;
+  const mechKeys = def.spec.mechanism ? [...(r.distance !== undefined ? ["distance", "tilt_max"] : []), ...Object.keys(r).filter((k) => /\.(peak_torque|peak_force|max_rpm|max_speed|bearing_load)$/.test(k))].slice(0, 5) : [];
   const pick =
     world === "sand_pit"
       ? ["progress", "miss", "speed", "slip", "heading_max", "battery_left"]
       : world === "printer"
         ? ["firmware", "print_time", "heat_time", "layer_shifts", "under_extrusion", "hotend_error", "first_layer_error", "ringing", "belt_slack", "flow_peak", "psu_peak", "x_load", "y_load", "z_load"]
-        : ["time", "battery_left", "battery_peak_amps", "faults"];
+        : def.spec.mechanism
+          ? ["time", ...mechKeys]
+          : ["time", "battery_left", "battery_peak_amps", "faults"];
   if (world === "printer") return <PrinterStats v={v} pick={pick} />;
   const motors = v.summary.motors;
   const hottest = motors.reduce<{ name: string; t: number } | null>((a, m) => (!a || m.maxTemp > a.t ? { name: m.name, t: m.maxTemp } : a), null);
@@ -336,20 +345,25 @@ function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
             </div>
           </div>
         )}
-        <div className={`sim-stat ${v.summary.ram.used / v.summary.ram.total > 0.85 ? "warn" : ""}`} title="Globals plus the deepest stack">
-          <div className="k">ram</div>
-          <div className="v">
-            {v.summary.ram.used}
-            <small>/ {v.summary.ram.total} B</small>
-          </div>
-        </div>
-        <div className="sim-stat" title="Longest single pass of loop()">
-          <div className="k">loop()</div>
-          <div className="v">
-            {fmtNum(v.summary.loopMax, 2)}
-            <small>ms max</small>
-          </div>
-        </div>
+        {/* a mechanism run without firmware has no chip to report on */}
+        {v.summary.ram.total > 0 && (
+          <>
+            <div className={`sim-stat ${v.summary.ram.used / v.summary.ram.total > 0.85 ? "warn" : ""}`} title="Globals plus the deepest stack">
+              <div className="k">ram</div>
+              <div className="v">
+                {v.summary.ram.used}
+                <small>/ {v.summary.ram.total} B</small>
+              </div>
+            </div>
+            <div className="sim-stat" title="Longest single pass of loop()">
+              <div className="k">loop()</div>
+              <div className="v">
+                {fmtNum(v.summary.loopMax, 2)}
+                <small>ms max</small>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </>
   );
@@ -493,7 +507,7 @@ export function Timeline({ v, compact }: { v: VariantRun; compact?: boolean }) {
         {playing ? <Icon.Pause size={14} /> : <Icon.Play size={14} />}
       </button>
       <select value={speed} onChange={(e) => useSim.setState({ speed: Number(e.target.value) })} aria-label="Playback speed" className="mono" style={{ height: 24, borderRadius: 6, border: "1px solid var(--line-2)", background: "var(--bg-2)", color: "var(--text-2)", fontSize: 11 }}>
-        {[1, 5, 10, 30, 60, 120].map((s) => (
+        {[0.1, 0.25, 0.5, 1, 5, 10, 30, 60, 120].map((s) => (
           <option key={s} value={s}>
             {s}×
           </option>

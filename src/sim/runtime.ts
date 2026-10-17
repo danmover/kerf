@@ -9,13 +9,14 @@
 // so editing an `expect` line re-checks without running again.
 
 import { create } from "zustand";
-import { refreshReport, useDesign } from "../core/engine";
+import { meshes, refreshReport, useDesign } from "../core/engine";
+import { resolveMechanism } from "./mech/resolve";
 import { useProject } from "../app/project";
 import type { CheckItem } from "../core/checks";
 import { useVerdict } from "../core/briefChecks";
 import { registerReportPass, type ReportContext } from "../core/reportPasses";
 import type { Model } from "../core/model";
-import type { MachineData } from "../machine/types";
+import { emptyMachine, type MachineData } from "../machine/types";
 import type { RunResult, VariantRun } from "./engine/run";
 import { judge, type ExpectOutcome } from "./expect";
 import type { SimRequest, SimResponse } from "./protocol";
@@ -271,13 +272,27 @@ function cancel(label: string) {
 
 let scheduledModel: Model | null = null;
 
-function start(def: ScenarioDef, model: Model, key: string, runs: Map<string, SimRun>) {
+function start(def: ScenarioDef, spec: ScenarioSpec, model: Model, key: string, runs: Map<string, SimRun>) {
   const prev = runs.get(def.label);
   cancel(def.label);
-  runs.set(def.label, { label: def.label, key, status: "waiting", progress: Object.fromEntries(def.spec.variants.map((v) => [v, 0])), result: prev?.result, stale: !!prev?.result, startedAt: performance.now() });
-  for (const variant of def.spec.variants) {
-    queue.push({ id: ++nextId, label: def.label, key, variant, req: { id: nextId, spec: def.spec, machine: model.machine!, designName: model.name, variant } });
+  runs.set(def.label, { label: def.label, key, status: "waiting", progress: Object.fromEntries(spec.variants.map((v) => [v, 0])), result: prev?.result, stale: !!prev?.result, startedAt: performance.now() });
+  for (const variant of spec.variants) {
+    queue.push({ id: ++nextId, label: def.label, key, variant, req: { id: nextId, spec, machine: model.machine ?? emptyMachine(), designName: model.name, variant } });
   }
+}
+
+/** a mechanism scenario waits for the design's parts to be built (it needs their shapes for masses) */
+let waitingForGeometry = false;
+
+/** The spec a run uses: a mechanism resolved against the built parts. null while the parts are still building. */
+function runSpecOf(def: ScenarioDef, model: Model): ScenarioSpec | { error: string } | null {
+  if (!def.spec.mechanism) return def.spec;
+  const st = useDesign.getState();
+  const built = st.model !== model || st.stage === "checking" || st.stage === "refining" || st.stage === "done" || st.kernelStatus === "error";
+  const r = resolveMechanism(def.spec, model, (h) => meshes.get(h), built && st.stage !== "checking");
+  if ("waiting" in r) return null;
+  if ("error" in r) return r;
+  return { ...def.spec, mech: r.mech };
 }
 
 /** Queue runs for the scenarios whose inputs changed. */
@@ -294,8 +309,17 @@ function schedule(model: Model, force?: string) {
     if (selected === label) selected = null;
   }
   const auto = sGet().auto;
+  waitingForGeometry = false;
   for (const def of defs) {
-    const key = scenarioKey(def.spec, model.machine, model.name);
+    const spec = runSpecOf(def, model);
+    if (spec === null || "error" in spec) {
+      const prev = runs.get(def.label);
+      cancel(def.label);
+      if (spec === null) waitingForGeometry = true;
+      runs.set(def.label, spec === null ? { label: def.label, key: "", status: "waiting", progress: {}, result: prev?.result, stale: !!prev?.result, startedAt: performance.now() } : { label: def.label, key: "", status: "error", error: spec.error, progress: {}, stale: false, startedAt: performance.now() });
+      continue;
+    }
+    const key = scenarioKey(spec, model.machine, model.name);
     const run = runs.get(def.label);
     if (run && run.key === key && force !== def.label && run.status !== "idle") continue;
     const hit = cache.get(key)?.r;
@@ -311,7 +335,7 @@ function schedule(model: Model, force?: string) {
       }
       continue;
     }
-    start(def, model, key, runs);
+    start(def, spec, model, key, runs);
   }
   if (!selected && defs.length) selected = defs[0].label;
   sSet({ runs, selected });
@@ -501,6 +525,8 @@ export function startSimRuntime() {
   useDesign.subscribe((s, prev) => {
     if (!useProject.getState().current) return;
     if (s.model && s.model !== prev.model && s.model !== scheduledModel) scheduleSoon(s.model);
+    // a mechanism waiting for its parts' shapes runs once they are built
+    else if (waitingForGeometry && s.model && (s.meshVersion !== prev.meshVersion || s.stage !== prev.stage) && !timer) scheduleSoon(s.model);
   });
   const m = useDesign.getState().model;
   if (m) schedule(m);

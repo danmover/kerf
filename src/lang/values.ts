@@ -1,5 +1,6 @@
 // Runtime values for the Kerf evaluator.
 
+import type { FlexInfo } from "../core/model";
 import type { Path3, Profile, Sel, ShapeRecipe, V2, V3 } from "../kernel/recipe";
 import type { MachineData } from "../machine/types";
 import type { SketchGeom } from "../sketch/types";
@@ -67,6 +68,8 @@ export class FeatureV {
     public info: Record<string, Value>,
     /** bending strain at full deflection, checked against the part's material */
     public strain?: number,
+    /** the bending arm or blade, for the springs and clips checks (name and span are filled in where it is added) */
+    public flex?: Omit<FlexInfo, "name" | "span">,
   ) {}
 }
 
