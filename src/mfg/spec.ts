@@ -140,34 +140,70 @@ const ALIASES: [ProcessId, string[]][] = [
   ["fdm", ["fdm", "fff", "3d printed", "3d printing", "3d print", "printed", "print", "filament"]],
 ];
 
-/** Printing technologies decide the process whatever else the text says: "SLA printed" is SLA, not FDM. */
+/**
+ * Technologies decide the process whatever else the text says, checked in
+ * this order: metal printing first ("DMLS printed" is neither FDM nor SLS,
+ * though DMLS stands for direct metal laser sintering), then the castings
+ * ("resin cast" is vacuum casting, not SLA; "sand cast, then machined" is a
+ * casting), then the plastic printing technologies ("SLA printed" is SLA).
+ */
 const TECHNOLOGIES: [ProcessId, string[]][] = [
+  [
+    "metal_print",
+    [
+      "dmls",
+      "slm",
+      "lpbf",
+      "l pbf",
+      "metal printed",
+      "metal printing",
+      "metal print",
+      "metal 3d printed",
+      "metal 3d printing",
+      "metal 3d print",
+      "metal additive",
+      "laser powder bed",
+      "direct metal laser sintering",
+      "direct metal laser melting",
+      "selective laser melting",
+      "laser melted",
+    ],
+  ],
+  [
+    "vacuum_cast",
+    [
+      "vacuum cast",
+      "vacuum casting",
+      "vacuum casted",
+      "urethane cast",
+      "urethane casting",
+      "polyurethane cast",
+      "polyurethane casting",
+      "pu cast",
+      "pu casting",
+      "resin cast",
+      "resin casting",
+      "silicone mould",
+      "silicone mold",
+      "silicone moulds",
+      "silicone molds",
+      "rtv mould",
+      "rtv mold",
+    ],
+  ],
+  ["investment_cast", ["investment cast", "investment casting", "investment casted", "lost wax", "precision cast", "precision casting"]],
+  ["sand_cast", ["sand cast", "sand casting", "sand casted", "sandcast", "green sand", "no bake", "nobake", "lost foam"]],
   ["sla", ["sla", "msla", "dlp", "lcd resin", "resin", "stereolithography", "polyjet"]],
   ["sls", ["sls", "mjf", "multi jet fusion", "powder bed", "sintered", "sintering", "laser sintered", "selective laser sintering"]],
 ];
 
-/** Processes Kerf has no rules for, which would otherwise read as one it has ("vacuum cast" is not die casting). */
-const UNSUPPORTED = [
-  "vacuum cast",
-  "vacuum casting",
-  "urethane cast",
-  "urethane casting",
-  "resin cast",
-  "resin casting",
-  "silicone mould",
-  "silicone mold",
-  "dmls",
-  "slm",
-  "metal printed",
-  "metal printing",
-  "metal 3d printed",
-  "binder jet",
-  "binder jetting",
-  "sand cast",
-  "sand casting",
-  "investment cast",
-  "investment casting",
-];
+/** A printing word next to a metal, with no plastic named, means metal printing: "3D printed titanium", "316L printed". */
+const METALS = "metal|titanium|ti64|stainless|steel|inconel|alsi10mg|aluminium|aluminum|cobalt chrome|copper|316l";
+const PRINTED_METAL = new RegExp(` (?:3d )?print(?:ed|ing)?(?: in)? (?:${METALS}) | (?:${METALS})(?: steel)? (?:3d )?print(?:ed|ing)? `);
+const PLASTICS = ["plastic", "filament", "fdm", "fff", "pla", "petg", "abs", "asa", "nylon", "tpu", "pc", "pa", "cf"];
+
+/** Processes Kerf has no rules for, which would otherwise read as one it has ("binder jetted steel" is not FDM). */
+const UNSUPPORTED = ["binder jet", "binder jetted", "binder jetting"];
 
 /** "injection moulded" → "injection", "laser cut" → "laser_cut". Null when nothing matches. */
 export function processFromText(text: string): ProcessId | null {
@@ -192,6 +228,7 @@ export function processFromText(text: string): ProcessId | null {
       if (has(n) && (!best || n.length > best.len)) best = { id, len: n.length };
     }
   }
+  if (best?.id === "fdm" && PRINTED_METAL.test(s) && !PLASTICS.some(has)) return "metal_print";
   return best?.id ?? null;
 }
 

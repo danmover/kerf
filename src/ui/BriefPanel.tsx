@@ -32,6 +32,7 @@ import { assemblyStats } from "../core/briefChecks";
 import type { CheckItem, CheckStatus } from "../core/checks";
 import { MATERIALS } from "../library/standards";
 import { BriefMaterialHint } from "./materials/BriefMaterialHint";
+import { AccessEditor, accessSummary, useAccess } from "./make/AccessEditor";
 import { fmtNum } from "../lang/values";
 import type { V3 } from "../kernel/recipe";
 import { Icon } from "./icons";
@@ -994,7 +995,34 @@ function MakeCard({ data }: { data: BriefData }) {
         <InlineText value={data.look} placeholder="Finish, colour, style" label="look" onSave={(v) => field("look", (d) => void (d.look = v || undefined), "look")} />
         <Assumed field="look" data={data} />
       </div>
+      <ProcessAccessField />
     </Card>
+  );
+}
+
+/** Which processes this design can use: a summary, opening the editor in place. */
+function ProcessAccessField() {
+  const { access, fromBrief } = useAccess();
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div className="brief-field">
+        <span className="brief-label">Processes</span>
+        <button className="link-btn" onClick={() => setOpen(!open)} aria-expanded={open} data-tip={fromBrief ? "Set in this brief (workshop: and can_order:)" : "Your usual processes, from Settings → Making"}>
+          {accessSummary(access)}
+          {fromBrief ? "" : " (your usual)"}
+        </button>
+      </div>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div style={{ overflow: "hidden" }} initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+            <div style={{ padding: "6px 0 4px" }}>
+              <AccessEditor compact />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 

@@ -1,7 +1,8 @@
 // Manufacturing process profiles: what each process can make, its settings
 // with defaults, the rules a part is checked against, and design guidance
 // for the assistant. Numbers follow common design-for-manufacture guides
-// (Protolabs, Xometry, Hubs, Formlabs) and are deliberately on the safe side.
+// (Protolabs, Xometry, Hubs, Formlabs, foundry and investment-casting design
+// guides) and are deliberately on the safe side.
 
 import type { V3 } from "../kernel/recipe";
 import { isMetal, materialInfo, suggestMaterials } from "./materials";
@@ -28,6 +29,8 @@ export interface ProcessDef {
   tolerance: number;
   /** ISO 2768 general tolerance class for drawings, where the standard fits the process */
   iso2768?: "f" | "m" | "c" | "v";
+  /** ISO 8062-3 casting tolerance grade (DCTG) for drawings of castings */
+  dctg?: number;
   /** what you send to the maker */
   output: string;
   /** when this process is the right choice */
@@ -82,6 +85,20 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     bestFor: "functional nylon parts, complex shapes and low-to-mid volumes without tooling",
     settings: [{ key: "bed", kind: "size", def: [300, 300, 300], doc: "build volume (x, y, z), mm" }],
   },
+  metal_print: {
+    id: "metal_print",
+    label: "Metal 3D printing (DMLS/SLM)",
+    short: "Metal print",
+    family: "additive",
+    summary: "Metal powder melted layer by layer by a laser (laser powder-bed fusion). Complex metal shapes without tooling; supports are cut off and accurate faces machined afterwards.",
+    tolerance: 0.2,
+    output: "STL or STEP, plus a drawing of the faces to machine after printing",
+    bestFor: "complex or lightweighted metal parts, internal channels, and one-offs to tens in aluminium (AlSi10Mg), stainless 316L or titanium",
+    settings: [
+      { key: "build", kind: "dir", def: Z, doc: "build direction in the part's frame (Z: built as modelled)" },
+      { key: "bed", kind: "size", def: [250, 250, 300], doc: "build volume (x, y, z), mm" },
+    ],
+  },
   cnc_mill: {
     id: "cnc_mill",
     label: "CNC milling (3-axis)",
@@ -133,6 +150,17 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "max_wall", kind: "number", def: null, doc: "override the material's maximum wall, mm" },
     ],
   },
+  vacuum_cast: {
+    id: "vacuum_cast",
+    label: "Vacuum casting (urethane)",
+    short: "Vacuum cast",
+    family: "formative",
+    summary: "Polyurethane poured under vacuum into a silicone mould taken from a 3D-printed master. Production-like plastic parts without steel tooling; each mould makes about 20 to 25 parts.",
+    tolerance: 0.25,
+    output: "STEP for the master pattern, plus the polyurethane grade (ABS-, PP- or rubber-like), colour and finish",
+    bestFor: "10 to 100 production-like plastic parts: pre-production runs and samples, one silicone mould per 20 to 25 parts",
+    settings: [],
+  },
   die_cast: {
     id: "die_cast",
     label: "Die casting",
@@ -146,6 +174,37 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "pull", kind: "dir", def: Z, doc: "direction the die opens" },
       { key: "draft", kind: "number", def: 1.5, doc: "minimum draft, degrees" },
       { key: "side_actions", kind: "bool", def: false, doc: "slides allowed for undercuts" },
+    ],
+  },
+  sand_cast: {
+    id: "sand_cast",
+    label: "Sand casting",
+    short: "Sand cast",
+    family: "formative",
+    summary: "Molten metal poured into a sand mould packed around a pattern. Cheap tooling for rough metal parts of almost any size; the faces that matter are machined afterwards.",
+    tolerance: 1,
+    dctg: 10,
+    output: "STEP of the casting with machining allowance, plus a drawing of the machined faces",
+    bestFor: "one-off to hundreds of rough metal parts (housings, brackets, bases, pump bodies) in aluminium, cast iron or bronze, machined on their critical faces",
+    settings: [
+      { key: "pull", kind: "dir", def: Z, doc: "direction the pattern is drawn out of the sand (the parting line runs square to it)" },
+      { key: "draft", kind: "number", def: 2, doc: "minimum draft on faces along the pull, degrees" },
+      { key: "cores", kind: "bool", def: true, doc: "sand cores allowed for undercuts and internal passages (each adds cost; false makes undercuts failures)" },
+    ],
+  },
+  investment_cast: {
+    id: "investment_cast",
+    label: "Investment casting (lost wax)",
+    short: "Investment cast",
+    family: "formative",
+    summary: "A wax copy of the part is coated in ceramic, melted out and replaced by molten metal. Fine detail and smooth surfaces with little or no draft.",
+    tolerance: 0.25,
+    dctg: 6,
+    output: "STEP of the casting, plus a drawing of the faces and holes to machine after casting",
+    bestFor: "detailed steel, stainless and aluminium parts in hundreds to thousands, where machining from solid would waste material or time",
+    settings: [
+      { key: "pull", kind: "dir", def: Z, doc: "direction the die for the wax patterns opens" },
+      { key: "cores", kind: "bool", def: true, doc: "soluble wax or ceramic cores allowed for undercuts and internal passages (each adds cost; false makes undercuts failures)" },
     ],
   },
   sheet_metal: {
@@ -282,6 +341,18 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         envelope: { size: size(s.bed, [300, 300, 300]), frame: null, what: "printer's build volume" },
         voids: { severity: "fail", why: "unfused powder is trapped inside; add two escape holes of at least 5 mm" },
       };
+    case "metal_print": {
+      const build = dir(s.build, Z);
+      return {
+        ...base,
+        wall: { fail: 0.4, warn: 0.8, why: "thinner metal walls warp from the laser's heat or break when the supports are cut away" },
+        // flat metal ceilings sag after a couple of millimetres; small round holes arch over on their own
+        overhang: { build, max: 45, severity: "warn", bridgeR: 4, span: 2 },
+        holes: { minD: 1, why: "smaller holes fill with half-melted powder and have to be drilled out" },
+        envelope: { size: size(s.bed, [250, 250, 300]), frame: build, what: "printer's build volume" },
+        voids: { severity: "fail", why: "unfused metal powder is trapped inside; add at least two escape holes of 2 mm or more so it can be shaken out" },
+      };
+    }
     case "cnc_mill": {
       const tool = num(s.tool_d, 3);
       const setups = dirs(s.setups, [Z, NZ]);
@@ -333,6 +404,44 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         envelope: { size: [600, 500, 300], frame: null, what: "die area of a mid-size casting machine" },
       };
     }
+    case "vacuum_cast":
+      // the silicone mould flexes and is cut open along a wavy parting line: no draft and no undercut rules
+      return {
+        ...base,
+        wall: { fail: 0.8, warn: 1.5, max: 8, why: "cast polyurethane fills a silicone mould well between 1.5 and 8 mm; thinner walls fill short or tear coming out, thicker ones shrink and sink" },
+        holes: { minD: 1, why: "the silicone pins that form smaller holes tear off when the part is pulled out; drill them afterwards" },
+        envelope: { size: [900, 600, 400], frame: null, what: "casting chamber of a large vacuum caster" },
+        voids: { severity: "fail", why: "a sealed cavity cannot be moulded, since the silicone that forms it could not be pulled out; open it to the outside" },
+      };
+    case "sand_cast": {
+      const pull = dir(s.pull, Z);
+      const draft = num(s.draft, 2);
+      const [fail, warn] = info.castWall ?? [3, 4];
+      return {
+        ...base,
+        wall: { fail, warn, thickRatio: 2, why: `molten ${metal ? material : "metal"} freezes in the sand before it fills thinner sections` },
+        // a patternmaker adds draft to straight faces (which moves them), so only back draft fails
+        draft: { pull, warn: draft, fail: 0 },
+        reach: { dirs: [pull, neg(pull)], severity: s.cores === false ? "fail" : "info", what: "mould", relief: "sand cores" },
+        innerRadius: { min: 3, factor: 0.5, dirs: null, severity: "warn", why: "sharp inside corners crack as the casting shrinks, and the sand there crumbles" },
+        holes: { minD: 10, why: "holes under Ø10 mm are not cored but drilled after casting" },
+        envelope: { size: [1000, 800, 600], frame: null, what: "moulding box of a typical jobbing foundry" },
+        voids: { severity: "fail", why: "a sealed cavity needs a sand core that can be neither held in place nor shaken out; open it to the outside, ideally in two places" },
+      };
+    }
+    case "investment_cast": {
+      const pull = dir(s.pull, Z);
+      // the wax pattern slides out of its die with little or no draft, so draft is not checked
+      return {
+        ...base,
+        wall: { fail: 1, warn: 1.5, thickRatio: 2, why: "thinner sections freeze before the metal fills them, even in a hot ceramic shell" },
+        reach: { dirs: [pull, neg(pull)], severity: s.cores === false ? "fail" : "info", what: "mould", relief: "soluble wax or ceramic cores" },
+        innerRadius: { min: 0.5, dirs: null, severity: "warn", why: "sharp inside corners crack the ceramic shell and the casting as it shrinks" },
+        holes: { minD: 2.5, maxDepthRatio: 4, why: "the ceramic shell cannot form holes under Ø2.5 mm or deeper than 4× their diameter, so they are drilled afterwards" },
+        envelope: { size: [500, 400, 300], frame: null, what: "largest pattern a typical investment foundry handles" },
+        voids: { severity: "fail", why: "a sealed cavity can be neither formed in the wax pattern nor cleaned of ceramic; open it to the outside" },
+      };
+    }
     case "sheet_metal": {
       const t = typeof s.t === "number" ? s.t : null;
       const factor = info.bendFactor ?? 1;
@@ -355,12 +464,15 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
 
 /**
  * The general tolerance a drawing's title block states for this process:
- * an ISO 2768 class for machined, cut and bent parts, otherwise the
- * process's typical tolerance. For the engineering drawings.
+ * an ISO 2768 class for machined, cut and bent parts, an ISO 8062-3 casting
+ * tolerance grade for sand and investment castings, otherwise the process's
+ * typical tolerance. For the engineering drawings.
  */
 export function generalToleranceFor(spec: ProcessSpec): string {
   const def = PROCESSES[spec.id];
-  return def.iso2768 ? `ISO 2768-${def.iso2768}` : `±${fmt(def.tolerance)} UNLESS STATED`;
+  if (def.iso2768) return `ISO 2768-${def.iso2768}`;
+  if (def.dctg) return `ISO 8062-3 DCTG ${def.dctg}`;
+  return `±${fmt(def.tolerance)} UNLESS STATED`;
 }
 
 export function fmt(n: number, d = 2): string {
@@ -436,9 +548,16 @@ export function guideLines(rules: Rules): string[] {
     out.push(`Keep walls uniform: sections more than ${r.wall.thickRatio}× the nominal wall sink and void. Core out thick areas and use ribs (about 0.6× the wall) for stiffness.`);
   if (r.draft)
     out.push(
-      `Draft every face that runs along the pull direction ${axisName(r.draft.pull)} by at least ${fmt(r.draft.warn)}° (under ${fmt(r.draft.fail)}° fails). Bosses, ribs and hole walls need it too.`,
+      `Draft every face that runs along the pull direction ${axisName(r.draft.pull)} by at least ${fmt(r.draft.warn)}° (${r.draft.fail > 0 ? `under ${fmt(r.draft.fail)}° fails` : "faces that lean back against the pull fail"}). Bosses, ribs and hole walls need it too.`,
     );
-  if (r.reach?.what === "mould")
+  if (r.reach?.what === "mould" && r.reach.relief) {
+    const along = `${axisName(r.reach.dirs[0])} or ${axisName(r.reach.dirs[1])}`;
+    out.push(
+      r.reach.severity === "info"
+        ? `Faces should release straight along ${along}. Undercuts, side holes and internal passages are made with ${r.reach.relief}, which are allowed here but each adds cost.`
+        : `No undercuts: every face must release straight along ${along}. Undercuts, side holes and internal passages need ${r.reach.relief}, which are not allowed here; open them to a pull direction.`,
+    );
+  } else if (r.reach?.what === "mould")
     out.push(
       `No undercuts: every face must release straight along ${axisName(r.reach.dirs[0])} or ${axisName(r.reach.dirs[1])}${r.reach.severity === "info" ? " (side actions are allowed here, but each adds tool cost)" : ". Snap hooks, side holes and inward lips need side actions; redesign them as pass-through cores or open them to a pull direction"}.`,
     );
@@ -454,7 +573,7 @@ export function guideLines(rules: Rules): string[] {
   if (r.depthRatio) out.push(`Pockets no deeper than ${r.depthRatio.max}× their width.`);
   if (r.overhang)
     out.push(
-      `Overhangs steeper than ${r.overhang.max}° from vertical need support${r.overhang.severity === "fail" ? " (not allowed here)" : ""}. Orient the part with a large flat face on the bed (build direction ${axisName(r.overhang.build)}), chamfer the underside of ledges at 45°, and keep horizontal holes under Ø${fmt(2 * r.overhang.bridgeR)} or use teardrops.`,
+      `Overhangs steeper than ${r.overhang.max}° from vertical need support${r.overhang.severity === "fail" ? " (not allowed here)" : ""}. Orient the part with a large flat face on the bed (build direction ${axisName(r.overhang.build)}), chamfer the underside of ledges at 45°, and keep horizontal holes under Ø${fmt(2 * r.overhang.bridgeR)} or use teardrops.${r.overhang.span !== undefined ? ` Flat ceilings wider than ${fmt(r.overhang.span)} mm need support too.` : ""}`,
     );
   if (r.holes) out.push(`Holes at least Ø${fmt(r.holes.minD)} mm${r.holes.maxDepthRatio ? ` and no deeper than ${r.holes.maxDepthRatio}× their diameter` : ""}: ${r.holes.why}.`);
   if (r.envelope) out.push(`Fits the ${r.envelope.what}: ${r.envelope.size.map((x) => fmt(x)).join(" × ")} mm.`);

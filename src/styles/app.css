@@ -63,6 +63,11 @@
   --fail-ink: #ffb3bb;
   --info-ink: #a6dbff;
   --violet-ink: #d9ccff;
+  /* chart series, in this fixed order (blue, orange, aqua): checked for
+     colour-blind separation on the dark panels with the dataviz validator */
+  --series-1: #5b7cf0;
+  --series-2: #d95926;
+  --series-3: #199e70;
   /* text on a solid accent fill, and the primary button's gradient */
   --on-accent: #fff;
   --accent-hi: #7b97ff;

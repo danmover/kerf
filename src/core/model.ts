@@ -244,6 +244,10 @@ export interface Brief {
   material?: string;
   quantity?: number;
   buildVolume?: V3;
+  /** processes the user has themselves, as written; replaces Settings for this project */
+  workshop?: string[];
+  /** processes the user can order, as written; replaces Settings for this project */
+  canOrder?: string[];
   maxSize?: V3;
   /** grams */
   maxMass?: number;

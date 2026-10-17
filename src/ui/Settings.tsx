@@ -16,6 +16,8 @@ import { AccountKeySection, AccountSettings, CloudIcon, signOutForClear } from "
 import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
+import { AccessEditor } from "./make/AccessEditor";
+import "../styles/make.css";
 import { desktop, graphicsCard, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
@@ -23,6 +25,7 @@ const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "account", label: "Account", icon: <CloudIcon size={14} /> },
   { id: "voice", label: "Voice", icon: <Icon.Mic size={14} /> },
   { id: "app", label: "Display", icon: <Icon.Eye size={14} /> },
+  { id: "making", label: "Making", icon: <Icon.Factory size={14} /> },
   { id: "data", label: "Data", icon: <Icon.Layers size={14} /> },
   { id: "about", label: "About", icon: <Icon.Info size={14} /> },
 ];
@@ -50,11 +53,35 @@ export function SettingsModal() {
           {shown === "account" && <AccountSettings />}
           {shown === "voice" && <VoiceSettings />}
           {shown === "app" && <AppSettings />}
+          {shown === "making" && <MakingSettings />}
           {shown === "data" && <DataSettings />}
           {shown === "about" && <About />}
         </div>
       </div>
     </Modal>
+  );
+}
+
+function MakingSettings() {
+  const labour = useSettings((s) => s.labourRate);
+  return (
+    <>
+      <Section title="Processes you can use">
+        <div className="d" style={{ marginBottom: 10, color: "var(--text-3)", fontSize: 12.5 }}>
+          Kerf recommends ways to make each part from these, for every design. A design's brief can list its own instead (workshop: and can_order:). Processes you have cost your time and material, with no shipping or waiting on a shop.
+        </div>
+        <AccessEditor settingsOnly />
+      </Section>
+      <Section title="Costs">
+        <Row t="Your time" d="What an hour of your own work is worth, for parts made on your machines and for assembling a design.">
+          <span className="mk-num">
+            $
+            <input type="number" min={0} max={500} step={1} value={labour} onChange={(e) => updateSettings({ labourRate: Math.min(500, Math.max(0, Number(e.target.value) || 0)) })} aria-label="Your hourly rate in dollars" />
+            /h
+          </span>
+        </Row>
+      </Section>
+    </>
   );
 }
 

@@ -49,6 +49,10 @@ export interface BriefData {
   material?: string;
   quantity?: number;
   buildVolume?: V3;
+  /** processes the user has themselves, as written ("fdm", "laser cut") */
+  workshop?: string[];
+  /** processes the user can order from a shop or online service */
+  canOrder?: string[];
   maxSize?: V3;
   maxMass?: number;
   /** source names of the fields Claude assumed */
@@ -60,7 +64,7 @@ export interface BriefData {
   extra: { name: string; text: string }[];
 }
 
-export type FieldKey = "purpose" | "setting" | "look" | "priorities" | "temp" | "outdoor" | "exposure" | "process" | "material" | "quantity" | "build_volume" | "max_size" | "max_mass";
+export type FieldKey = "purpose" | "setting" | "look" | "priorities" | "temp" | "outdoor" | "exposure" | "process" | "material" | "quantity" | "build_volume" | "workshop" | "can_order" | "max_size" | "max_mass";
 
 /** Source name, data key and a plain label for every brief field, in file order. */
 export const FIELDS: { key: FieldKey; prop: keyof BriefData; label: string }[] = [
@@ -75,6 +79,8 @@ export const FIELDS: { key: FieldKey; prop: keyof BriefData; label: string }[] =
   { key: "material", prop: "material", label: "material" },
   { key: "quantity", prop: "quantity", label: "quantity" },
   { key: "build_volume", prop: "buildVolume", label: "build volume" },
+  { key: "workshop", prop: "workshop", label: "processes you have" },
+  { key: "can_order", prop: "canOrder", label: "processes you can order" },
   { key: "max_size", prop: "maxSize", label: "maximum size" },
   { key: "max_mass", prop: "maxMass", label: "maximum mass" },
 ];
@@ -96,6 +102,8 @@ export function briefData(b: Brief | null | undefined): BriefData | null {
     material: b.material,
     quantity: b.quantity,
     buildVolume: b.buildVolume ? [...b.buildVolume] : undefined,
+    workshop: b.workshop ? [...b.workshop] : undefined,
+    canOrder: b.canOrder ? [...b.canOrder] : undefined,
     maxSize: b.maxSize ? [...b.maxSize] : undefined,
     maxMass: b.maxMass,
     // in field order, so the same brief always compares equal however it was typed
@@ -146,6 +154,10 @@ function fieldText(d: BriefData, key: FieldKey): string | null {
     case "priorities":
     case "exposure":
       return d[key].length ? list(d[key]) : null;
+    case "workshop":
+      return d.workshop ? list(d.workshop) : null;
+    case "can_order":
+      return d.canOrder ? list(d.canOrder) : null;
     case "temp":
       return d.temp ? `${num(d.temp[0], 1)}C .. ${num(d.temp[1], 1)}C` : null;
     case "outdoor":
@@ -193,7 +205,7 @@ export function serializeBrief(d: BriefData): string {
   };
   add(["purpose", "setting", "priorities", "look"]);
   add(["temp", "outdoor", "exposure"]);
-  add(["process", "material", "quantity", "build_volume"]);
+  add(["process", "material", "quantity", "build_volume", "workshop", "can_order"]);
   add(["max_size", "max_mass"]);
   groups.push(
     d.uses.map((u) => {
@@ -273,16 +285,35 @@ export function slugId(text: string, taken: Iterable<string>, fallback = "use"):
 
 // ---------- processes and vocabulary ----------
 
-export type ProcessKind = "fdm" | "resin" | "sls" | "cnc" | "laser" | "sheet" | "molding" | "other";
+export type ProcessKind =
+  | "fdm"
+  | "resin"
+  | "sls"
+  | "metal_print"
+  | "cnc"
+  | "laser"
+  | "sheet"
+  | "molding"
+  | "vacuum_cast"
+  | "die_cast"
+  | "sand_cast"
+  | "investment_cast"
+  | "other";
 
+/** The brief's process choices. Each label reads back as its process (processFromText), so the picker and the checks agree. */
 export const PROCESSES: { kind: ProcessKind; label: string; print?: boolean; volume?: V3 }[] = [
   { kind: "fdm", label: "FDM print", print: true, volume: [220, 220, 250] },
   { kind: "resin", label: "Resin print", print: true, volume: [200, 120, 200] },
   { kind: "sls", label: "SLS print", print: true, volume: [300, 300, 300] },
+  { kind: "metal_print", label: "Metal 3D print", print: true, volume: [250, 250, 300] },
   { kind: "cnc", label: "CNC machined" },
   { kind: "laser", label: "Laser cut" },
   { kind: "sheet", label: "Sheet metal" },
   { kind: "molding", label: "Injection moulded" },
+  { kind: "vacuum_cast", label: "Vacuum cast" },
+  { kind: "die_cast", label: "Die cast" },
+  { kind: "sand_cast", label: "Sand cast" },
+  { kind: "investment_cast", label: "Investment cast" },
   { kind: "other", label: "Other" },
 ];
 
@@ -290,12 +321,16 @@ const KINDS: Record<ProcessId, ProcessKind> = {
   fdm: "fdm",
   sla: "resin",
   sls: "sls",
+  metal_print: "metal_print",
   cnc_mill: "cnc",
   cnc_lathe: "cnc",
   laser_cut: "laser",
   sheet_metal: "sheet",
   injection: "molding",
-  die_cast: "molding",
+  vacuum_cast: "vacuum_cast",
+  die_cast: "die_cast",
+  sand_cast: "sand_cast",
+  investment_cast: "investment_cast",
 };
 
 /** Reads loose process names ("3D printed in PETG", "machined") as a process kind, with the same reading the manufacturing checks use. */
@@ -320,6 +355,11 @@ const fieldValue = (d: BriefData, key: FieldKey): string => {
     case "priorities":
     case "exposure":
       return d[key].length ? d[key].join(", ") : "none";
+    case "workshop":
+    case "can_order": {
+      const v = key === "workshop" ? d.workshop : d.canOrder;
+      return v ? (v.length ? v.join(", ") : "none of them") : "not set";
+    }
     case "build_volume":
     case "max_size": {
       const v = key === "max_size" ? d.maxSize : d.buildVolume;

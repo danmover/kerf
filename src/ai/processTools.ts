@@ -7,6 +7,14 @@ import { MAX_DIRECTIONS, PROCESSES, PROCESS_IDS, uniqueDirs } from "../mfg/profi
 import { processGuideText } from "../mfg/guide";
 import { compareProcesses } from "../mfg/compare";
 import { processFromText } from "../mfg/spec";
+import { PlanError, planDesign, planPart, projectAccess } from "../mfg/plan";
+import { defaultTiers, designText, designTotals, planText, type Tier } from "../mfg/advisor";
+import { availabilityText } from "../mfg/availability";
+import { money } from "../materials/advise";
+import { bomRows, bomTotal } from "../persist/files";
+import { useSettings } from "../app/settings";
+import { dfaFor } from "../mfg/dfaRuntime";
+import { dfaText, fmtTime } from "../mfg/dfa";
 import type { ProcessId, ProcessSpec, SettingValue } from "../mfg/types";
 import type { V3 } from "../kernel/recipe";
 import type { ToolOutcome } from "./tools";
@@ -39,19 +47,49 @@ export const PROCESS_TOOL_DEFS = [
       type: "object" as const,
       properties: {
         part: { type: "string", description: "Part name as in the source." },
-        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: 9, description: "Limit the comparison to these processes." },
+        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: PROCESS_IDS.length, description: "Limit the comparison to these processes." },
       },
       required: ["part"],
       additionalProperties: false,
     },
   },
+  {
+    name: "plan_manufacturing",
+    description:
+      "How to make a part (or every part of the design) at a prototype, a small batch and production quantity, within the processes the user has or can order: for each quantity the recommended process and material, the cheapest and the best-quality way, cost per part with setup and tooling, total, lead time and what limits the pick; the quantity where each process becomes the cheapest; and every process with its geometry checks and costs. Without a part it totals the whole design (made parts, bought parts, assembly). Use when the user asks how to make something, what it costs, which process or material to use, or for a different quantity or budget. Costs are estimates for comparing, not quotes.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        part: { type: "string", description: "Part name as in the source. Leave out to plan the whole design." },
+        quantities: { type: "array", items: { type: "integer", minimum: 1, maximum: 10000000 }, maxItems: 5, description: "Numbers of designs to plan for, e.g. [1, 20, 2000]. Defaults to 1, 50 and 5000, plus the brief's quantity." },
+        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: PROCESS_IDS.length, description: "Only consider these processes." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "review_assembly",
+    description:
+      "Design for assembly review of the whole design (Boothroyd–Dewhurst): how many parts, bought parts and fasteners it has against the theoretical minimum, the estimated hand assembly time per unit and what it is spent on, the DFA index, the fastener sizes, the directions parts go in from, parts that could be combined, loose nuts and washers, and joints held by many screws. Use when the user asks about assembly, part count, fasteners or build time, and before simplifying a design.",
+    input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
+  },
 ];
 
-export const PROCESS_TOOL_TITLES: Record<string, string> = { process_guide: "Reading the process rules", compare_processes: "Comparing processes" };
+export const PROCESS_TOOL_TITLES: Record<string, string> = { process_guide: "Reading the process rules", compare_processes: "Comparing processes", plan_manufacturing: "Planning how to make it", review_assembly: "Reviewing the assembly" };
 
 const ProcessIdSchema = z.string().refine((s) => !!processFromText(s), { message: `use one of ${PROCESS_IDS.join(", ")}` });
 const GuideInput = z.object({ process: ProcessIdSchema, material: z.string().max(80).optional(), settings: z.record(z.string(), z.unknown()).optional() });
-const CompareInput = z.object({ part: z.string().min(1).max(120), processes: z.array(ProcessIdSchema).max(9).optional() });
+const CompareInput = z.object({ part: z.string().min(1).max(120), processes: z.array(ProcessIdSchema).max(PROCESS_IDS.length).optional() });
+const PlanInput = z.object({ part: z.string().min(1).max(120).optional(), quantities: z.array(z.number().int().min(1).max(1e7)).max(5).optional(), processes: z.array(ProcessIdSchema).max(PROCESS_IDS.length).optional() });
+
+/** A name for a number of designs. */
+const tierName = (qty: number) => (qty === 1 ? "Prototype" : qty <= 200 ? "Small batch" : qty <= 2000 ? "Batch" : "Production");
+
+/** Tiers for the quantities Claude asked about. */
+function tiersFor(qs: number[] | undefined, briefQty: number | undefined): Tier[] {
+  if (!qs?.length) return defaultTiers(briefQty);
+  return [...new Set(qs)].sort((a, b) => a - b).map((qty) => ({ qty, label: qty === 1 ? "Prototype" : `${tierName(qty)} of ${qty.toLocaleString("en-US")}`, brief: qty === briefQty }));
+}
 
 const AXES: Record<string, V3> = { X: [1, 0, 0], "-X": [-1, 0, 0], Y: [0, 1, 0], "-Y": [0, -1, 0], Z: [0, 0, 1], "-Z": [0, 0, -1] };
 
@@ -88,6 +126,16 @@ function parseSettings(id: ProcessId, raw: Record<string, unknown>): { settings:
       );
   }
   return { settings, errors };
+}
+
+/** How Claude chooses processes, materials and quantities with the user (static: the live process list is in the brief summary). */
+export function makingPromptSection(): string {
+  return `## How it is made, and what it costs
+The user says which processes they have (their own printer, a laser cutter...) and which they can order, in Settings → Making or in the brief (workshop: and can_order: lists of process ids). The brief summary lists them. Recommend only processes they can use, prefer their own machines for prototypes, and mention a much cheaper process they cannot use yet only as an option.
+- plan_manufacturing answers "how should I make this", "what will it cost" and "what if I made 500": for a part (or the whole design without one) it gives the recommended process and material at a prototype, a small batch and production (or the quantities you pass), the cheapest and best-quality ways, cost per part with setup and tooling, lead time, the quantity where each process becomes cheapest, and every process's geometry checks. Use it instead of guessing costs, and pass the user's own quantities and budget.
+- A cheaper or better route that fails its geometry checks needs design changes first: say which (from its issues) and offer to make them with process_guide's rules.
+- The make tab shows the same plan, with Use buttons. Switch a part's process or material yourself only when the user asked for it; otherwise give the recommendation and its cost difference and let them choose.
+- Costs are estimates for comparing ways to make it, not quotes: say so once, and suggest a quote from a shop before committing to tooling.`;
 }
 
 const err = (content: string, title: string): ToolOutcome => ({ isError: true, content, card: { title, detail: content, status: "error" } });
@@ -139,6 +187,54 @@ export async function runProcessTool(name: string, input: unknown): Promise<Tool
       return {
         content: lines.join("\n"),
         card: { title: `Compared ${options.length} processes for ${part.label}`, detail: best.map((o) => `${PROCESSES[o.id].short}: ${o.summary!.fail} fail · ${o.summary!.warn} warn`).join("\n") },
+      };
+    }
+    case "plan_manufacturing": {
+      const p = PlanInput.safeParse(input);
+      if (!p.success) return err(p.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; "), "Invalid tool input");
+      const s = await whenChecked();
+      const model = s.model;
+      if (!model) return err("There is no design yet.", "No design");
+      const tiers = tiersFor(p.data.quantities, model.brief?.quantity);
+      const only = p.data.processes?.map((x) => processFromText(x)!);
+      const { access, fromBrief } = projectAccess(model.brief);
+      const avail = `Processes: ${availabilityText(access, fromBrief)}`;
+      if (p.data.part) {
+        const name = model.parts.find((q) => q.id === p.data.part)?.name ?? p.data.part;
+        try {
+          const { plan } = await planPart(name, { tiers, only });
+          return {
+            content: `${planText(plan)}\n${avail}`,
+            card: {
+              title: `Planned how to make ${plan.label}`,
+              detail: plan.tiers.map((t) => `${t.label}: ${t.recommended ? `${PROCESSES[t.recommended.process].short}, ${t.recommended.materialLabel}, ${money(t.recommended.costs[plan.tiers.indexOf(t)]!.unit)} each` : "no usable way"}`).join("\n"),
+            },
+          };
+        } catch (e) {
+          if (e instanceof PlanError) {
+            const names = [...new Set(model.parts.filter((q) => q.kind === "part" && !q.imported).map((q) => q.name))];
+            return err(`${e.message}${/No part named/.test(e.message) ? ` Made parts: ${names.join(", ") || "none"}.` : ""}`, "Cannot plan this part");
+          }
+          throw e;
+        }
+      }
+      const design = await planDesign({ tiers });
+      const plans = design.parts.map((x) => x.plan);
+      const extras = { bought: bomTotal(bomRows(model)).total, labour: useSettings.getState().labourRate };
+      const totals = designTotals(plans, tiers, extras);
+      const per = plans.map((pl) => `${pl.part}: ${pl.tiers.map((t) => (t.recommended ? `${t.qty}→${t.recommended.process}` : `${t.qty}→none`)).join(", ")}`);
+      return {
+        content: [designText(plans, totals, extras), design.skipped.length ? `Not planned: ${design.skipped.map((x) => `${x.label} (${x.why})`).join("; ")}` : "", `Picks by part (designs→process): ${per.join("; ")}`, avail, "Call plan_manufacturing with a part for its full comparison. Costs are estimates for comparing, not quotes."].filter(Boolean).join("\n"),
+        card: { title: `Planned how to make the design`, detail: totals.map((t) => `${t.label}: ${money(t.each)} per design`).join("\n") },
+      };
+    }
+    case "review_assembly": {
+      const s = await whenChecked();
+      if (!s.model) return err("There is no design yet.", "No design");
+      const r = dfaFor(s.model, s.buildErrors);
+      return {
+        content: dfaText(r),
+        card: { title: "Reviewed the assembly", detail: r.counts.items ? `${r.counts.items} items, minimum ${r.minimumParts}\nabout ${fmtTime(r.time.seconds)} to assemble` : "nothing to assemble yet" },
       };
     }
   }

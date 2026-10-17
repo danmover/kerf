@@ -53,6 +53,17 @@ describe("general tolerance from the process", () => {
     expect(specs.find((s) => s.name === "milled_drawing")?.tolerance).toBe("ISO 2768-f");
   });
 
+  it("castings state an ISO 8062-3 grade that widens with size", () => {
+    const cast = evaluate(`part housing { material: "Aluminum A356" process: mfg.sand_cast() body box(120, 80, 40) }
+part lever { process: "investment cast" body box(30, 10, 6, at: (0, 120, 0)) }`);
+    expect(cast.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const specs = autoDrawings(cast);
+    expect(specs.find((s) => s.name === "auto:housing")?.tolerance).toBe("ISO 8062-3 DCTG 10");
+    expect(specs.find((s) => s.name === "auto:lever")?.tolerance).toBe("ISO 8062-3 DCTG 6");
+    expect(generalDeviation("ISO 8062-3 DCTG 10", 40)).toBe(1.3);
+    expect(generalDeviation("ISO 8062-3 DCTG 10", 120)).toBe(1.8);
+  });
+
   it("a flat ± note gives every size the same general deviation", () => {
     expect(generalDeviation("±0.3 UNLESS STATED", 12)).toBe(0.3);
     expect(generalDeviation("ISO 2768-m", 12)).toBe(0.2);

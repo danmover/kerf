@@ -71,6 +71,10 @@ export interface Settings {
   keepWarm: number;
   /** show what each reply cost and saved */
   showCost: boolean;
+  /** manufacturing processes you have ("own"), can order ("order") or cannot use ("none"); missing ones can be ordered */
+  processAccess: Record<string, "own" | "order" | "none">;
+  /** what an hour of your own hands-on time is worth in cost estimates, US dollars */
+  labourRate: number;
   /** version of these defaults the stored settings were last migrated to */
   rev: number;
 }
@@ -113,6 +117,8 @@ const DEFAULTS: Settings = {
   routeQuick: true,
   keepWarm: 30,
   showCost: true,
+  processAccess: {},
+  labourRate: 20,
   rev: SETTINGS_REV,
 };
 
@@ -155,6 +161,12 @@ function load(): Settings {
     if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
     out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
     if (!KEEP_WARM_MINUTES.includes(out.keepWarm)) out.keepWarm = DEFAULTS.keepWarm;
+    const access: Settings["processAccess"] = {};
+    if (out.processAccess && typeof out.processAccess === "object" && !Array.isArray(out.processAccess)) {
+      for (const [k, a] of Object.entries(out.processAccess)) if (/^[a-z_]{2,24}$/.test(k) && (a === "own" || a === "order" || a === "none")) access[k] = a;
+    }
+    out.processAccess = access;
+    out.labourRate = Math.min(500, Math.max(0, Number.isFinite(out.labourRate) ? out.labourRate : DEFAULTS.labourRate));
     // the photoreal view starts off on every load: a GPU that hangs while path tracing must not be sent back into it
     out.photoreal = false;
     return out;
