@@ -86,9 +86,12 @@ part g { body box(10, 10, 10) process: mfg.injection(pull: 3) }
     expect(processFromText("3D printed in resin")).toBe("sla");
     expect(processFromText("selective laser sintering")).toBe("sls");
     expect(processFromText("die cast")).toBe("die_cast");
+    // castings and metal printing are not die casting or FDM
+    expect(processFromText("vacuum cast")).toBe("vacuum_cast");
+    expect(processFromText("DMLS printed titanium")).toBe("metal_print");
     // processes Kerf has no rules for are not mistaken for one it has
-    expect(processFromText("vacuum cast")).toBeNull();
-    expect(processFromText("DMLS printed titanium")).toBeNull();
+    expect(processFromText("binder jetted steel")).toBeNull();
+    expect(processFromText("binder jet")).toBeNull();
     expect(processFromValue({ id: "sla", settings: {} })).toEqual({ id: "sla", settings: {} });
     expect(processFromValue("nope")).toBeNull();
   });
@@ -205,7 +208,8 @@ part a { body box(10, 10, 10) }
     expect(isProcessSource('mfg.fdm(material: "a)')).toBe(false);
     expect(isProcessSource("mfg.fdm(bed: (1, 2, 3]))")).toBe(false);
     expect(isProcessSource("mfg.fdm() // x")).toBe(false);
-    expect(processKind("vacuum cast")).toBe("other");
+    expect(processKind("binder jetted")).toBe("other");
+    expect(processKind("vacuum cast")).toBe("vacuum_cast");
     expect(processKind("CNC machined")).toBe("cnc");
   });
 });

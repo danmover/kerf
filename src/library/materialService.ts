@@ -25,12 +25,16 @@ const KIND: Record<ProcessId, ProcessKind> = {
   fdm: "fdm",
   sla: "resin",
   sls: "sls",
+  metal_print: "metal_print",
   cnc_mill: "cnc",
   cnc_lathe: "cnc",
   laser_cut: "laser",
   sheet_metal: "sheet",
   injection: "molding",
-  die_cast: "molding",
+  vacuum_cast: "vacuum_cast",
+  die_cast: "die_cast",
+  sand_cast: "sand_cast",
+  investment_cast: "investment_cast",
 };
 
 export const MATERIAL_SERVICE: Record<string, MaterialService> = Object.fromEntries(

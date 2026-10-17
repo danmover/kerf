@@ -39,7 +39,7 @@ export const PROCESS_TOOL_DEFS = [
       type: "object" as const,
       properties: {
         part: { type: "string", description: "Part name as in the source." },
-        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: 9, description: "Limit the comparison to these processes." },
+        processes: { type: "array", items: { type: "string", enum: [...PROCESS_IDS] }, maxItems: PROCESS_IDS.length, description: "Limit the comparison to these processes." },
       },
       required: ["part"],
       additionalProperties: false,
@@ -51,7 +51,7 @@ export const PROCESS_TOOL_TITLES: Record<string, string> = { process_guide: "Rea
 
 const ProcessIdSchema = z.string().refine((s) => !!processFromText(s), { message: `use one of ${PROCESS_IDS.join(", ")}` });
 const GuideInput = z.object({ process: ProcessIdSchema, material: z.string().max(80).optional(), settings: z.record(z.string(), z.unknown()).optional() });
-const CompareInput = z.object({ part: z.string().min(1).max(120), processes: z.array(ProcessIdSchema).max(9).optional() });
+const CompareInput = z.object({ part: z.string().min(1).max(120), processes: z.array(ProcessIdSchema).max(PROCESS_IDS.length).optional() });
 
 const AXES: Record<string, V3> = { X: [1, 0, 0], "-X": [-1, 0, 0], Y: [0, 1, 0], "-Y": [0, -1, 0], Z: [0, 0, 1], "-Z": [0, 0, -1] };
 

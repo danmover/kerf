@@ -188,14 +188,53 @@ export function generalTolerance(size: number, cls: "f" | "m" | "c" | "v"): numb
   return ISO2768[cls][i] ?? null;
 }
 
+// ---------- ISO 8062-3 casting tolerances (DCTG) ----------
+
+const CASTING_RANGES = [10, 16, 25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000];
+/** total casting tolerance in mm for each size range (rows) and grade DCTG 1 to 16 (columns); null where the standard gives none */
+const DCT: (number | null)[][] = [
+  [0.09, 0.13, 0.18, 0.26, 0.36, 0.52, 0.74, 1, 1.5, 2, 2.8, 4.2, null, null, null, null],
+  [0.1, 0.14, 0.2, 0.28, 0.38, 0.54, 0.78, 1.1, 1.6, 2.2, 3, 4.4, null, null, null, null],
+  [0.11, 0.15, 0.22, 0.3, 0.42, 0.58, 0.82, 1.2, 1.7, 2.4, 3.2, 4.6, 6, 8, 10, 12],
+  [0.12, 0.17, 0.24, 0.32, 0.46, 0.64, 0.9, 1.3, 1.8, 2.6, 3.6, 5, 7, 9, 11, 14],
+  [0.13, 0.18, 0.26, 0.36, 0.5, 0.7, 1, 1.4, 2, 2.8, 4, 5.6, 8, 10, 12, 16],
+  [0.14, 0.2, 0.28, 0.4, 0.56, 0.78, 1.1, 1.6, 2.2, 3.2, 4.4, 6, 9, 11, 14, 18],
+  [0.15, 0.22, 0.3, 0.44, 0.62, 0.88, 1.2, 1.8, 2.5, 3.6, 5, 7, 10, 12, 16, 20],
+  [null, 0.24, 0.34, 0.5, 0.7, 1, 1.4, 2, 2.8, 4, 5.6, 8, 11, 14, 18, 22],
+  [null, null, 0.4, 0.56, 0.78, 1.1, 1.6, 2.2, 3.2, 4.4, 6.2, 9, 12, 16, 20, 25],
+  [null, null, null, 0.64, 0.9, 1.2, 1.8, 2.6, 3.6, 5, 7, 10, 14, 18, 22, 28],
+  [null, null, null, 0.72, 1, 1.4, 2, 2.8, 4, 6, 8, 11, 16, 20, 25, 32],
+  [null, null, null, 0.8, 1.1, 1.6, 2.2, 3.2, 4.6, 7, 9, 13, 18, 23, 29, 37],
+  [null, null, null, null, null, null, 2.6, 3.8, 5.4, 8, 10, 15, 21, 26, 33, 42],
+  [null, null, null, null, null, null, null, 4.4, 6.2, 9, 12, 17, 24, 30, 38, 49],
+];
+
+/** The casting tolerance grade in a note such as "ISO 8062-3 DCTG 10", or null. */
+export function castingGrade(tolerance: string): number | null {
+  const m = /DCTG\s*(\d{1,2})\b/i.exec(tolerance);
+  const g = m ? Number(m[1]) : NaN;
+  return g >= 1 && g <= 16 ? g : null;
+}
+
+/** Permissible deviation (±, half the total casting tolerance) for a raw casting size under an ISO 8062-3 grade. */
+export function castingTolerance(size: number, grade: number): number | null {
+  const s = Math.abs(size);
+  if (!(s > 0) || s > 4000) return null;
+  const total = DCT[CASTING_RANGES.findIndex((hi) => s <= hi)]?.[grade - 1];
+  return total == null ? null : total / 2;
+}
+
 /**
  * The general ± for a size under a drawing's tolerance note: the ISO 2768-1
- * class, or a flat "±0.3 UNLESS STATED" (what printing and moulding
- * processes state). Null when the note gives neither.
+ * class, an ISO 8062-3 casting grade (DCTG), or a flat "±0.3 UNLESS STATED"
+ * (what printing and moulding processes state). Null when the note gives
+ * none of them.
  */
 export function generalDeviation(tolerance: string, size: number): number | null {
   const cls = generalClass(tolerance);
   if (cls) return generalTolerance(size, cls);
+  const grade = castingGrade(tolerance);
+  if (grade) return castingTolerance(size, grade);
   const m = /±\s*(\d+(?:\.\d+)?)/.exec(tolerance);
   return m ? Number(m[1]) : null;
 }
