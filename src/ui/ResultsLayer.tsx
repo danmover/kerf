@@ -8,6 +8,7 @@ import { ResultsOverlay, fieldMode, fieldRange } from "./viewport/resultsOverlay
 import { useAnalysis, showResults, type ResultField } from "../analysis/runtime";
 import type { StructuralResult } from "../analysis/fe/structural";
 import { gradientCss, safetyAt } from "../analysis/colormap";
+import { modeWords } from "../analysis/dynamics";
 import { useDesign } from "../core/engine";
 import { useSettings } from "../app/settings";
 import { useTheme } from "../app/theme";
@@ -52,6 +53,38 @@ export function autoDeform(r: StructuralResult): number {
   return Math.max(1, (0.06 * resultSize(r)) / d);
 }
 
+/** The mode shape to draw: the one picked, or the first when the analysis only finds frequencies (nothing else moves). */
+export function shownMode(r: StructuralResult, picked: number | null): number | null {
+  const n = r.modal?.modes.length ?? 0;
+  if (!n) return null;
+  if (picked !== null) return picked < n ? picked : null;
+  return r.maxDisp.value > 0 ? null : 0;
+}
+
+function ModeLegend({ result, mode, label }: { result: StructuralResult; mode: number; label: string }) {
+  const m = result.modal!.modes[mode];
+  return (
+    <>
+      <div className="row" style={{ gap: 8, marginBottom: 6 }}>
+        <span className="res-legend-title">Mode {mode + 1}</span>
+        <span className="dim mono">{fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz</span>
+        <div className="grow" />
+        <button className="icon-btn sm" onClick={() => showResults(null)} aria-label="Hide results" data-tip="Hide results">
+          <Icon.X size={13} />
+        </button>
+      </div>
+      <div className="res-bar" style={{ background: gradientCss("sequential", 12) }} />
+      <div className="res-ticks">
+        <span style={{ left: "0%" }}>still</span>
+        <span style={{ left: "100%" }}>moves most</span>
+      </div>
+      <div className="res-meta mono">
+        {label} · {modeWords(m)} · shape exaggerated
+      </div>
+    </>
+  );
+}
+
 export function deformScale(r: StructuralResult, deform: number, trueScale: boolean): number {
   if (deform <= 0) return 0;
   return trueScale ? 1 : deform * autoDeform(r);
@@ -64,12 +97,14 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
   const deform = useAnalysis((s) => s.deform);
   const trueScale = useAnalysis((s) => s.trueScale);
   const animate = useAnalysis((s) => s.animate);
+  const pickedMode = useAnalysis((s) => s.mode);
   const model = useDesign((s) => s.model);
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const theme = useTheme();
   const spec = model?.analyses.find((a) => a.label === shown && a.kind === "structural");
   const target = spec?.safety ?? 2;
   const result = run?.result;
+  const mode = result ? shownMode(result, pickedMode) : null;
   const ov = useRef<ResultsOverlay | null>(null);
   const [probe, setProbe] = useState<{ x: number; y: number; text: string; part: string } | null>(null);
 
@@ -88,9 +123,9 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
 
   const scale = result ? deformScale(result, deform, trueScale) : 0;
   useEffect(() => {
-    ov.current?.configure({ field, scale, animate: animate && !reduceMotion, safetyTarget: target });
+    ov.current?.configure({ field, scale, animate: animate && !reduceMotion, safetyTarget: target, mode });
     scene.invalidate();
-  }, [field, scale, animate, reduceMotion, target, result, scene, theme]);
+  }, [field, scale, animate, reduceMotion, target, result, scene, theme, mode]);
 
   // the value under the cursor
   useEffect(() => {
@@ -125,7 +160,11 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
       <AnimatePresence>
         {result && shown && (
           <motion.div key="legend" className="vp-float res-legend" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}>
-            <Legend result={result} field={field} target={target} scale={scale} trueScale={trueScale} label={shown} stale={run?.status === "running" || run?.status === "waiting"} />
+            {mode !== null ? (
+              <ModeLegend result={result} mode={mode} label={shown} />
+            ) : (
+              <Legend result={result} field={field} target={target} scale={scale} trueScale={trueScale} label={shown} stale={run?.status === "running" || run?.status === "waiting"} />
+            )}
           </motion.div>
         )}
       </AnimatePresence>

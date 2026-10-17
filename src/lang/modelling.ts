@@ -731,7 +731,7 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "snap_hook",
-    ["at", "length", "t", "w", "catch", "dir", "facing", "angle", "root_r"],
+    ["at", "length", "t", "w", "catch", "dir", "facing", "angle", "root_r", "retain", "preload", "cycles"],
     (a) => {
       const at = a.vec3("at");
       const L = a.positive("length");
@@ -746,26 +746,88 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
       const n = vcross(u, dir);
       const ang = a.num("angle", 30);
       if (ang < 10 || ang > 60) a.ctx.error("snap_hook(): angle (the lead-in slope from the hook's axis) must be 10..60 degrees");
+      const retain = a.num("retain", 90);
+      if (retain < 20 || retain > 90) a.ctx.error("snap_hook(): retain (the slope of the catch face from the hook's axis) must be 20..90 degrees; 90 is a square catch that does not let go");
+      const preload = a.num("preload", 0);
+      if (preload < 0 || preload >= y) a.ctx.error("snap_hook(): preload (how far the hook stays bent once latched) must be 0 or more and less than the catch");
+      const cycles = Math.max(1, Math.round(a.num("cycles", 10)));
       const land = Math.max(0.2, 0.25 * y);
       const tipX = Math.min(0.4 * t, t);
+      // a catch face sloped back from square lets the hook be pulled out again
+      const back = retain >= 89.9 ? 0 : y / Math.tan((retain * Math.PI) / 180);
       const slope = (t / 2 + y - (-t / 2 + tipX)) / Math.tan((ang * Math.PI) / 180);
       const pts: V2[] = [
         [-t / 2, 0],
         [t / 2, 0],
         [t / 2, L],
-        [t / 2 + y, L],
-        [t / 2 + y, L + land],
-        [-t / 2 + tipX, L + land + slope],
-        [-t / 2, L + land + slope],
+        [t / 2 + y, L + back],
+        [t / 2 + y, L + back + land],
+        [-t / 2 + tipX, L + back + land + slope],
+        [-t / 2, L + back + land + slope],
       ];
       const steps: FeatStep[] = [{ op: "add", shape: { t: "extrude", p: { t: "poly", pts, r: 0 }, h: w, f: { o: vsub(at, vscale(n, w / 2)), u, n }, twist: 0, scale: 1 } }];
       const rr = a.num("root_r", r2(t / 2));
       if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
       // Bayer cantilever: strain = 1.5 y t / L² for a beam of constant section
       const strain = (1.5 * y * t) / (L * L);
-      return new FeatureV("snap_hook", steps, { strain, deflection: y, length: L, tip: new Vec(vadd(at, vscale(dir, L + land + slope))) }, strain);
+      const tip = vadd(at, vscale(dir, L + back + land + slope));
+      return new FeatureV("snap_hook", steps, { strain, deflection: y, length: L, tip: new Vec(tip) }, strain, {
+        kind: "snap",
+        at,
+        dir,
+        facing: u,
+        length: L,
+        t,
+        w,
+        deflection: y,
+        leadIn: ang,
+        retain,
+        preload,
+        cycles,
+      });
     },
-    "snap_hook(at, length, t, w, catch: 1, dir: Z, facing: X, angle: 30, root_r: t/2) — a cantilever snap-fit hook rising from `at` (the centre of its root) along dir, t thick (toward facing), w wide, with a catch lip `catch` mm deep on the facing side and a lead-in slope. Its bending strain (1.5·catch·t/length²) is checked against the part's material; .strain gives the value. Use with add.",
+    "snap_hook(at, length, t, w, catch: 1, dir: Z, facing: X, angle: 30, root_r: t/2, retain: 90, preload: 0, cycles: 10) — a cantilever snap-fit hook rising from `at` (the centre of its root) along dir, t thick (toward facing), w wide, with a catch lip `catch` mm deep on the facing side and a lead-in slope. retain is the catch face's slope (90: square, permanent; 30-45: it can be pulled apart again); preload is how far it stays bent once latched (0 rattles if the parts come out a little off); cycles is how often it is snapped. The springs and clips checks give its push-in and pull-out forces, its strain against the material (and the print's layers) and whether it latches tight or goes slack. .strain gives the bending strain. Use with add.",
+  ),
+  def(
+    "flexure",
+    ["at", "length", "t", "w", "dir", "facing", "travel", "angle", "cycles", "root_r"],
+    (a) => {
+      const at = a.vec3("at");
+      const L = a.positive("length");
+      const t = a.positive("t");
+      const w = a.positive("w");
+      const dir = a.dir("dir", Z);
+      const fIn = a.dir("facing", [1, 0, 0]);
+      const uRaw = vsub(fIn, vscale(dir, vdot(fIn, dir)));
+      if (vlen(uRaw) < 1e-6) a.ctx.error("flexure(): facing must be across the blade, not along dir");
+      const u = vnorm(uRaw);
+      const n = vcross(u, dir);
+      const hasAngle = a.has("angle");
+      const travel = a.has("travel") ? a.positive("travel") : 0;
+      const angle = hasAngle ? a.positive("angle") : undefined;
+      if (!hasAngle && !travel) a.ctx.error("flexure(): give travel (how far the free end moves, mm) for a blade, or angle (degrees) for a living hinge");
+      if (hasAngle && travel) a.ctx.error("flexure(): give travel or angle, not both");
+      if (angle !== undefined && angle > 180) a.ctx.error("flexure(): angle is at most 180 degrees");
+      const cycles = Math.max(1, Math.round(a.num("cycles", 1000)));
+      const steps: FeatStep[] = [{ op: "add", shape: { t: "extrude", p: { t: "rect", w: t, h: L, r: 0, c: [0, L / 2] }, h: w, f: { o: vsub(at, vscale(n, w / 2)), u, n }, twist: 0, scale: 1 } }];
+      const rr = a.num("root_r", r2(Math.min(t, 1)));
+      if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
+      // a living hinge bent through θ over its length strains t·θ / (2 L); a cantilever blade moved δ at its tip 1.5 t δ / L²
+      const strain = angle !== undefined ? (t * ((angle * Math.PI) / 180)) / (2 * L) : (1.5 * t * travel) / (L * L);
+      return new FeatureV("flexure", steps, { strain, length: L, tip: new Vec(vadd(at, vscale(dir, L))) }, undefined, {
+        kind: "flexure",
+        at,
+        dir,
+        facing: u,
+        length: L,
+        t,
+        w,
+        deflection: travel,
+        angle,
+        cycles,
+      });
+    },
+    "flexure(at, length, t, w, dir: Z, facing: X, travel: | angle:, cycles: 1000, root_r:) — a thin blade that bends instead of a joint, rising from `at` along dir, t thick (toward facing), w wide. Give travel (mm the free end moves sideways) for a spring blade or a parallel-blade stage, or angle (degrees) for a living hinge (make it short and thin: 0.3-0.6 mm in PP). The springs and clips checks give its stiffness, the force or torque at full travel, and its strain against the material over that many cycles. Use with add.",
   ),
 ]);
 

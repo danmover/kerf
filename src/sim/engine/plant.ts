@@ -11,7 +11,7 @@ import type { CatalogPart, MachineComponent, MachineData } from "../../machine/t
 import type { Board } from "../mcu/board";
 import { Actuator, Battery, Bno055, DCMotor, Mpu6050, Regulator, Servo, Ssd1306, quadrature, type ImuNoise } from "./devices";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
-import { FREE_LOAD, type PlantView, type World, type WorldEvent } from "../worlds/types";
+import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
 type Src = { kind: "mcu"; pin: number } | { kind: "high" } | { kind: "low" } | { kind: "none"; def: number };
 
@@ -428,6 +428,18 @@ export class Plant implements PlantPort, PlantView {
     return s ? { angle: s.s.angle } : undefined;
   }
 
+  /** what each driver puts on its motor, actuator or servo this step, for a world that moves them itself */
+  driveIO(): DriveIO[] {
+    const out: DriveIO[] = [];
+    for (const s of this.motors) out.push({ comp: s.comp, kind: "motor", v: s.chan ? (s.chan.vOut === null ? null : s.polarity * s.chan.vOut) : null, ilim: s.chan?.ilim ?? 99, us: null, powered: true, dev: s.m });
+    for (const s of this.acts) out.push({ comp: s.comp, kind: "actuator", v: s.chan ? (s.chan.vOut === null ? null : s.polarity * s.chan.vOut) : null, ilim: s.chan?.ilim ?? 99, us: null, powered: true, dev: s.a });
+    for (const s of this.servos) {
+      const powered = s.vcc ? (this.netV.get(s.vcc.id) ?? 0) > 4 : false;
+      out.push({ comp: s.comp, kind: "servo", v: null, ilim: 0, us: s.pin >= 0 ? (this.hal.servoUs.get(s.pin) ?? null) : null, powered, dev: s.s });
+    }
+    return out;
+  }
+
   // ---------- stepping ----------
 
   private level(src: Src): number {
@@ -532,12 +544,15 @@ export class Plant implements PlantPort, PlantView {
       c.current = 0;
       c.supplyCurrent = 0;
     }
+    // a world that simulates the machine's mechanism moves its motors itself
+    const moved = this.world.couple?.(this.driveIO(), dt, t);
     // motors against the world's loads
     for (const s of this.motors) {
       const v = s.chan ? (s.chan.vOut === null ? null : s.polarity * s.chan.vOut) : null;
-      const load = this.world.motorLoad(s.comp) ?? FREE_LOAD;
       const c0 = s.m.counts;
-      s.m.step(v, s.chan?.ilim ?? 99, load, dt, ambient, cooling);
+      const mv = moved?.get(s.comp);
+      if (mv) s.m.follow(v, s.chan?.ilim ?? 99, mv.speed, dt, ambient, cooling);
+      else s.m.step(v, s.chan?.ilim ?? 99, this.world.motorLoad(s.comp) ?? FREE_LOAD, dt, ambient, cooling);
       if (s.chan) {
         const i = s.polarity * s.m.current;
         s.chan.current += Math.abs(i);
@@ -548,7 +563,9 @@ export class Plant implements PlantPort, PlantView {
     }
     for (const s of this.acts) {
       const v = s.chan ? (s.chan.vOut === null ? null : s.polarity * s.chan.vOut) : null;
-      s.a.step(v, this.world.actuatorLoad(s.comp), dt);
+      const mv = moved?.get(s.comp);
+      if (mv) s.a.follow(v, mv.pos, mv.speed, mv.load, dt);
+      else s.a.step(v, this.world.actuatorLoad(s.comp), dt);
       if (s.chan) {
         s.chan.current += s.a.current;
         const vs = s.chan.supply ? (this.netV.get(s.chan.supply.id) ?? 0) : 0;
@@ -557,7 +574,10 @@ export class Plant implements PlantPort, PlantView {
     }
     for (const s of this.servos) {
       const powered = s.vcc ? (this.netV.get(s.vcc.id) ?? 0) > 4 : false;
-      s.s.step(s.pin >= 0 ? (this.hal.servoUs.get(s.pin) ?? null) : null, this.world.servoLoad?.(s.comp) ?? 0, powered, dt);
+      const us = s.pin >= 0 ? (this.hal.servoUs.get(s.pin) ?? null) : null;
+      const mv = moved?.get(s.comp);
+      if (mv) s.s.follow(us, mv.pos, mv.load, powered);
+      else s.s.step(us, this.world.servoLoad?.(s.comp) ?? 0, powered, dt);
     }
     // driver overheating: past its continuous rating for long, it shuts down
     for (const c of this.chans) {

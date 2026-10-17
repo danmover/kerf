@@ -6,6 +6,8 @@ import type { PartRecipe, ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/rec
 import { BEARINGS, THREADS, type ThreadSpec } from "./standards";
 import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
 import { MACHINE_LIBRARY } from "../machine/library";
+import { SPRING_WIRE, springRate } from "./springs";
+import type { SpringInfo } from "../core/model";
 import type { Footprint } from "../machine/pcb/types";
 
 export type Placement = "axis" | "facing" | "free";
@@ -39,6 +41,7 @@ export interface CompDef {
   fastener?: { headTop: V3; outward: V3; key: number; headD: number; size: string };
   gear?: { m: number; z: number; width: number; pa: number; bore: number };
   bearing?: { code: string; bore: number; od: number; width: number; dynamicLoadN: number };
+  spring?: Omit<SpringInfo, "center" | "axis">;
   bom: { description: string; standard?: string; catalogId?: string; length?: number };
   /** catalog-backed purchasable part */
   catalog?: { id: string; length?: number; travel?: number };
@@ -71,6 +74,7 @@ const ZP: V3 = [0, 0, 1];
 const ZN: V3 = [0, 0, -1];
 
 const STEEL = "#8b929c";
+const fmt = (n: number) => String(Math.round(n * 100) / 100);
 const DARK_STEEL = "#3b4048";
 const BRASS = "#c9a24b";
 
@@ -402,6 +406,50 @@ export const LIBRARY: Record<string, LibEntry> = {
           shapes: { opening: { t: "rrect", w: ow, h: oh, r: 0.8, depth: 25, at: [-1, 0, h / 2], dir: [1, 0, 0], center: false } },
         },
         bom: { description: `Panel connector ${w}×${h}×${d} mm` },
+      };
+    },
+  },
+
+  spring: {
+    signature: "lib.spring(d: 1, od: 10, free: 30, coils: 8, installed: 24, working: 16) { at: (x, y, z), axis: Z }",
+    doc: 'Helical compression spring in drawn spring wire. d: wire diameter; od: outside diameter; free: free length; coils: active coils; installed: its length once assembled (shorter than free gives preload); working: the shortest it gets in use; ends: "closed-ground" (default), "closed" or "plain"; wire: "music" (default), "stainless" or "bronze"; cycles: compressions in its life (default 1e6). `at` is the centre of its seat end, it extends along `axis` to its installed length. The springs check gives its rate, the forces at installed and working length, stress, coil bind, buckling and fatigue life. Fields: rate (N/mm), preload and force (N at installed and working length), solid (solid length), at, end, axis.',
+    params: ["d", "od", "free", "coils", "installed", "working", "ends", "wire", "cycles"],
+    make(a) {
+      const d = a.num("d", 1);
+      const od = a.num("od", 10);
+      const free = a.num("free", 30);
+      const coils = a.num("coils", 8);
+      const installed = a.num("installed", free);
+      const working = a.num("working", installed);
+      const ends = a.str("ends", "closed-ground");
+      const wire = a.str("wire", "music");
+      const cycles = a.num("cycles", 1e6);
+      if (!(d > 0) || !(od > 2 * d)) throw new Error("lib.spring: od must be more than twice the wire diameter d");
+      if (!(coils >= 1) || coils > 150) throw new Error("lib.spring: coils (active coils) must be 1..150");
+      if (!(installed > 0) || installed > free) throw new Error("lib.spring: installed length must be more than 0 and no more than the free length");
+      if (!(working > 0) || working > installed) throw new Error("lib.spring: working length must be more than 0 and no more than the installed length");
+      if (!["closed-ground", "closed", "plain"].includes(ends)) throw new Error('lib.spring: ends must be "closed-ground", "closed" or "plain"');
+      const grade = SPRING_WIRE[wire];
+      if (!grade) throw new Error(`lib.spring: wire must be ${Object.keys(SPRING_WIRE).map((k) => `"${k}"`).join(", ")}`);
+      const calc = springRate({ d, od, coils, material: grade.material });
+      const total = coils + (ends === "plain" ? 0 : 2);
+      const solid = d * (ends === "closed-ground" ? total : total + 1);
+      // the wire swept along a helix at its installed length (one even pitch: the closed ends are not drawn tighter)
+      const h = Math.max(installed - d, d);
+      const recipe: PartRecipe = { base: { t: "sweep", p: { t: "circle", d, c: [0, 0] }, path: { t: "helix", pitch: h / total, h, d: od - d, at: [0, 0, d / 2], dir: ZP, left: false }, rot: 0, frenet: false }, ops: [] };
+      const label = `Spring ${fmt(d)}×${fmt(od)}×${fmt(free)} mm`;
+      return {
+        kind: "spring",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe, color: wire === "bronze" ? BRASS : STEEL, material: grade.material, finish: "polished" }],
+        fields: {
+          scalars: { rate: calc.k, preload: calc.k * (free - installed), force: calc.k * (free - working), solid, free, installed, working, d, od },
+          points: { at: Z0, end: [0, 0, installed], center: [0, 0, installed / 2] },
+          dirs: { axis: ZP },
+        },
+        spring: { d, od, free, installed, working, coils, ends: ends as "closed-ground", cycles },
+        bom: { description: `Compression spring, ${grade.label}, wire Ø${fmt(d)} mm, OD ${fmt(od)} mm, free length ${fmt(free)} mm, ${fmt(coils)} active coils, ends ${ends}, rate ${fmt(calc.k)} N/mm` },
       };
     },
   },

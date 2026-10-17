@@ -47,6 +47,7 @@ param steer_max  = 5.5      "Largest hinge angle either way (degrees); the slot 
 // ── Skeleton: X points forward, the hinge pin is vertical at the origin ──
 let core_od = 50            // static cores ride in the 6810 bores
 let core_id = 44
+let plate_d = core_id - 0.3  // printed motor plates slide into the printed cores: printed holes close up and printed discs swell
 let bore = 65               // 6810 outside diameter = screw shell bore
 let body_od = 60
 let body_id = 54
@@ -168,7 +169,7 @@ part front_core {
   color: #5c6b7a
   material: "PETG"
   group: "Front"
-  process: mfg.fdm(build: -X)   // printed standing on end
+  process: mfg.fdm(build: -X, shrink_comp: true)   // printed standing on end, scaled for shrink so the 6810 bearings sit snug
   body tube(od: core_od, id: core_id, h: f_end - fc_wall, at: (fc_wall, 0, 0), dir: X)
   // end wall at the hinge, with the opening the guide and wires pass through
   add cylinder(d: core_od, h: 4, at: (fc_wall, 0, 0), dir: X)
@@ -187,7 +188,7 @@ part front_core {
   // bridge holding the follower pin, with a window for the cam bar and a wire hole
   add cylinder(d: 45, h: 8, at: (pin_x - 4, 0, 0), dir: X)
   cut box(10, 23.2, 9, at: (pin_x, 0, -4.5))
-  cut cylinder(d: 5, h: 40, at: (pin_x, 0, -20), dir: Z)
+  cut cylinder(d: 5.3, h: 40, at: (pin_x, 0, -20), dir: Z)   // snug on the 5 mm pin once the printed hole closes up
   cut cylinder(d: 8, h: 10, at: (pin_x - 5, -17, 0), dir: X)
   // motor plate screws
   for s in [1, -1] {
@@ -200,14 +201,14 @@ part front_plate {
   material: "PETG"
   group: "Front"
   process: mfg.fdm(build: -X)   // printed flat on its face
-  body cylinder(d: core_id - 0.2, h: 8, at: (f_motor, 0, 0), dir: X)
+  body cylinder(d: plate_d, h: 8, at: (f_motor, 0, 0), dir: X)
   cut cylinder(d: 15, h: 2.5, at: (f_motor - 0.01, 0, 0), dir: X)
   cut cylinder(d: 10, h: 9, at: (f_motor - 0.5, 0, 0), dir: X)
   for h in m_front.holes {
     cut hole(M4, depth: 9, at: (f_motor + 8, h.y, h.z), dir: -X)
   }
   for s in [1, -1] {
-    cut hole(M3, fit: "insert", depth: 6.5, at: (f_motor + 4, s * (core_id - 0.2) / 2, 0), dir: (0, -s, 0))
+    cut hole(M3, fit: "insert", depth: 6.5, at: (f_motor + 4, s * (plate_d) / 2, 0), dir: (0, -s, 0))
   }
 }
 
@@ -251,8 +252,8 @@ component seal_f = lib.seal("seal_tc_50x65x8") { at: (f0, 0, 0), axis: X }
 component bearing_f1 = lib.bearing("6810") { at: (f_b1, 0, 0), axis: X }
 component bearing_f2 = lib.bearing("6810") { at: (f_b2, 0, 0), axis: X }
 component plate_screws_f = lib.screw(M4, 12) { at: [(f_motor + 8, m_front.holes[0].y, m_front.holes[0].z), (f_motor + 8, m_front.holes[1].y, m_front.holes[1].z), (f_motor + 8, m_front.holes[2].y, m_front.holes[2].z), (f_motor + 8, m_front.holes[3].y, m_front.holes[3].z)], axis: -X }
-component plate_ins_f1 = lib.insert(M3) { at: (f_motor + 4, (core_id - 0.2) / 2, 0), axis: -Y }
-component plate_ins_f2 = lib.insert(M3) { at: (f_motor + 4, -(core_id - 0.2) / 2, 0), axis: Y }
+component plate_ins_f1 = lib.insert(M3) { at: (f_motor + 4, (plate_d) / 2, 0), axis: -Y }
+component plate_ins_f2 = lib.insert(M3) { at: (f_motor + 4, -(plate_d) / 2, 0), axis: Y }
 component plate_scr_f1 = lib.screw(M3, 8) { at: (f_motor + 4, core_od / 2, 0), axis: -Y }
 component plate_scr_f2 = lib.screw(M3, 8) { at: (f_motor + 4, -core_od / 2, 0), axis: Y }
 component nose_ins_1 = lib.insert(M3) { at: (f_end + 3, (bore - 0.2) / 2, 0), axis: -Y }
@@ -272,7 +273,7 @@ part cam_bar {
   // fork around the actuator rod end
   add box(14, 16, 14, at: (rod_end - 1, 0, -7))
   cut box(13, 9, 9, at: (rod_end - 2, 0, -4.5))
-  cut cylinder(d: 4, h: 16, at: (rod_end, 0, -8), dir: Z)
+  cut cylinder(d: 4.15, h: 16, at: (rod_end, 0, -8), dir: Z)   // a light press on the 4 mm clevis pin
   // the slot: the pin is pushed sideways by cam_slope mm per mm of stroke
   let p1 = (pin_x - slot_half, cam_slope * slot_half)
   let p2 = (pin_x + slot_half, -cam_slope * slot_half)
@@ -355,7 +356,7 @@ part body_b {
   process: mfg.fdm(build: X)   // printed standing up
   body tube(od: body_od, id: body_id, h: a_end - b_end, at: (b_end, 0, 0), dir: X)
   // socket for the rear core
-  add tube(od: body_id + 0.5, id: core_od + 0.2, h: 12, at: (b_end, 0, 0), dir: X)
+  add tube(od: body_id + 0.5, id: core_od + 0.65, h: 12, at: (b_end, 0, 0), dir: X)
   // battery floor and the shelf over it for the rear driver
   add box(a_end - 12 - (b_end + 12) - 0.5, 50, 1.5, at: ((b_end + 12 + a_end - 12) / 2, 0, -12))
   add box(50, 50, 1.5, at: (-210, 0, 11))
@@ -376,7 +377,7 @@ part rear_core {
   color: #5c6b7a
   material: "PETG"
   group: "Rear"
-  process: mfg.fdm(build: X)   // printed standing on end
+  process: mfg.fdm(build: X, shrink_comp: true)   // printed standing on end, scaled for shrink so the 6810 bearings sit snug
   body tube(od: core_od, id: core_id, h: b_end + 12 - r_end, at: (r_end, 0, 0), dir: X)
   add tube(od: 56, id: 49, h: 2, at: (r_col - 2, 0, 0), dir: X)
   add tube(od: 56, id: 49, h: 4, at: (r_b2, 0, 0), dir: X)
@@ -396,14 +397,14 @@ part rear_plate {
   material: "PETG"
   group: "Rear"
   process: mfg.fdm(build: X)   // printed flat on its face
-  body cylinder(d: core_id - 0.2, h: 8, at: (r_motor, 0, 0), dir: -X)
+  body cylinder(d: plate_d, h: 8, at: (r_motor, 0, 0), dir: -X)
   cut cylinder(d: 15, h: 2.5, at: (r_motor + 0.01, 0, 0), dir: -X)
   cut cylinder(d: 10, h: 9, at: (r_motor + 0.5, 0, 0), dir: -X)
   for h in m_rear.holes {
     cut hole(M4, depth: 9, at: (r_motor - 8, h.y, h.z), dir: X)
   }
   for s in [1, -1] {
-    cut hole(M3, fit: "insert", depth: 6.5, at: (r_motor - 4, s * (core_id - 0.2) / 2, 0), dir: (0, -s, 0))
+    cut hole(M3, fit: "insert", depth: 6.5, at: (r_motor - 4, s * (plate_d) / 2, 0), dir: (0, -s, 0))
   }
 }
 
@@ -466,8 +467,8 @@ component joint_bc_ins_2 = lib.insert(M3) { at: (b_end + 6, -core_od / 2, 0), ax
 component joint_bc_scr_1 = lib.screw(M3, 10) { at: (b_end + 6, body_od / 2, 0), axis: -Y }
 component joint_bc_scr_2 = lib.screw(M3, 10) { at: (b_end + 6, -body_od / 2, 0), axis: Y }
 component plate_screws_r = lib.screw(M4, 12) { at: [(r_motor - 8, m_rear.holes[0].y, m_rear.holes[0].z), (r_motor - 8, m_rear.holes[1].y, m_rear.holes[1].z), (r_motor - 8, m_rear.holes[2].y, m_rear.holes[2].z), (r_motor - 8, m_rear.holes[3].y, m_rear.holes[3].z)], axis: X }
-component plate_ins_r1 = lib.insert(M3) { at: (r_motor - 4, (core_id - 0.2) / 2, 0), axis: -Y }
-component plate_ins_r2 = lib.insert(M3) { at: (r_motor - 4, -(core_id - 0.2) / 2, 0), axis: Y }
+component plate_ins_r1 = lib.insert(M3) { at: (r_motor - 4, (plate_d) / 2, 0), axis: -Y }
+component plate_ins_r2 = lib.insert(M3) { at: (r_motor - 4, -(plate_d) / 2, 0), axis: Y }
 component plate_scr_r1 = lib.screw(M3, 8) { at: (r_motor - 4, core_od / 2, 0), axis: -Y }
 component plate_scr_r2 = lib.screw(M3, 8) { at: (r_motor - 4, -core_od / 2, 0), axis: Y }
 component tail_ins_1 = lib.insert(M3) { at: (r_end - 3, (bore - 0.2) / 2, 0), axis: -Y }

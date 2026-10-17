@@ -63,20 +63,20 @@ component motor = lib.nema17(length: 40) {
 }
 
 // ── Gear train ─────────────────────────────────────────
-component g1 = lib.spur_gear(m: m1, z: z1, width: w1, bore: motor.shaft_d) {
+component g1 = lib.spur_gear(m: m1, z: z1, width: w1, bore: motor.shaft_d, backlash: 0.12) {
   at: (0, y_a, 0), axis: Y
   turns_with: motor
 }
-component g2 = lib.spur_gear(m: m1, z: z2, width: w1, bore: 5) {
+component g2 = lib.spur_gear(m: m1, z: z2, width: w1, bore: 5, backlash: 0.12) {
   at: (p_mid.x, y_a, p_mid.y), axis: Y
   mesh: g1
   removable
 }
-component g3 = lib.spur_gear(m: m2, z: z3, width: w2, bore: 5) {
+component g3 = lib.spur_gear(m: m2, z: z3, width: w2, bore: 5, backlash: 0.1) {
   at: (p_mid.x, y_b, p_mid.y), axis: Y
   turns_with: g2
 }
-component g4 = lib.spur_gear(m: m2, z: z4, width: w2, bore: out_d) {
+component g4 = lib.spur_gear(m: m2, z: z4, width: w2, bore: out_d, backlash: 0.1) {
   at: (p_out.x, y_b, p_out.y), axis: Y
   mesh: g3
   removable
@@ -110,6 +110,7 @@ component out_back  = lib.bearing(out_bearing) { at: (p_out.x, y_cover - 2, p_ou
 
 // seats: a pocket per bearing with a 2.5 mm wall around it
 let seats = [[p_mid, mid_front.od], [p_out, out_front.od]]
+let seat_allow = 0.1    // printed holes close up by about 0.18 mm: the bearings then press in lightly and stay put when warm
 
 // ── Housing envelope from the gear layout ──────────────
 let screw_reach = 15.5 + 2.75
@@ -140,7 +141,7 @@ part housing {
   }
 
   // motor mount: pilot recess, shaft clearance and four M3 screws from inside
-  cut cylinder(d: motor.pilot_d + 0.4, h: 2.2, at: (0, -0.01, 0), dir: Y)
+  cut cylinder(d: motor.pilot_d + 0.3, h: 2.2, at: (0, -0.01, 0), dir: Y)
   cut cylinder(d: 9, h: wall + 1, at: (0, 0, 0), dir: Y)
   for h in motor.holes {
     cut hole(M3, through: true, at: (h.x, wall + 1, h.z), dir: -Y)
@@ -149,7 +150,7 @@ part housing {
   // front bearing bosses
   for s in seats {
     add cylinder(d: s[1] + 5, h: 3.01, at: (s[0].x, wall - 0.01, s[0].y), dir: Y)
-    cut cylinder(d: s[1], h: 5.01, at: (s[0].x, 1, s[0].y), dir: Y)
+    cut cylinder(d: s[1] + seat_allow, h: 5.01, at: (s[0].x, 1, s[0].y), dir: Y)
     cut cylinder(d: s[1] - 5, h: 2, at: (s[0].x, -0.5, s[0].y), dir: Y)
   }
 
@@ -169,7 +170,7 @@ part cover {
   body box(housing_w, cover_t, housing_h, at: (hx, y_cover + cover_t / 2, z_floor))
   for s in seats {
     add cylinder(d: s[1] + 5, h: 2.01, at: (s[0].x, y_cover - 2, s[0].y), dir: Y)
-    cut cylinder(d: s[1], h: 5.03, at: (s[0].x, y_cover - 2.01, s[0].y), dir: Y)
+    cut cylinder(d: s[1] + seat_allow, h: 5.03, at: (s[0].x, y_cover - 2.01, s[0].y), dir: Y)
   }
   cut cylinder(d: out_d + 2, h: cover_t + 1, at: (p_out.x, y_cover, p_out.y), dir: Y)
   cut cylinder(d: 8, h: 2, at: (0, y_cover - 0.01, 0), dir: Y)
@@ -230,4 +231,15 @@ analysis "Light duty" {
   speed: 300rpm
   life: 1000h
   safety: 1.5
+}
+
+// ── Simulation: the gear train as rigid bodies ─────────
+// The parts that spin: and mesh: turn on their own shafts in their bearings,
+// with masses from their shapes; the motor's shaft is turned at the duty speed.
+scenario "Spins up to speed" for reduce {
+  mechanism: sim.mechanism(sim.turn(motor, speed: [(0s, 0rpm), (0.5s, 300rpm)]))
+  duration: 3s
+  variants: ["expected"]
+  expect "Output turns 12:1": abs(abs(motor.turns / g4.turns) - target_ratio) < target_ratio * 0.02
+  expect "Output reaches 25 rpm": g4.max_rpm > 24rpm
 }

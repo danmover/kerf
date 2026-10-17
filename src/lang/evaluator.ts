@@ -13,7 +13,7 @@ import type { ImportRef, ImportTable } from "../kernel/imports";
 import { frameFor, hasDetail, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
-import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, GearInfo, Model, Motion } from "../core/model";
+import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, GearInfo, Model, Motion } from "../core/model";
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
@@ -122,6 +122,7 @@ interface PartState {
   /** counters for unnamed ready-made features (screw_boss#1) */
   auto: Map<string, number>;
   strain: { strain: number; span: Span }[];
+  flex: FlexInfo[];
 }
 
 class Scope {
@@ -492,6 +493,10 @@ class Evaluator {
         // a firmware block is named, not a value
         const fwName = it.value.k === "ident" ? it.value.name : this.expr(it.value, scope);
         if (typeof fwName !== "string") throw new EvalError("firmware: give the name of a firmware block, like firmware: brain", it.value.span);
+        if (fwName === "none") {
+          firmware = fwName;
+          continue;
+        }
         if (!this.machine.firmware.some((f) => f.name === fwName)) {
           const sugg = suggest(fwName, this.machine.firmware.map((f) => f.name));
           throw new EvalError(`No firmware block "${fwName}"${sugg ? `. Did you mean "${sugg}"?` : this.machine.firmware.length ? `. Firmware blocks: ${this.machine.firmware.map((f) => f.name).join(", ")}` : ". Add a firmware block first."}`, it.value.span);
@@ -501,7 +506,7 @@ class Evaluator {
       }
       values.set(it.name, this.expr(it.value, scope));
     }
-    if (!this.machine.firmware.length) throw new EvalError("A scenario runs the design's firmware: add a firmware block for its controller first", s.labelSpan);
+    if (!this.machine.firmware.length && !values.has("mechanism")) throw new EvalError("A scenario runs the design's firmware: add a firmware block for its controller first (or give it a mechanism: to simulate without one)", s.labelSpan);
     const imuX: Record<string, number> = {};
     for (const [name, info] of this.comps) {
       const part = info.def.catalog ? catalogPart(info.def.catalog.id) : undefined;
@@ -510,7 +515,7 @@ class Evaluator {
     const fail = (msg: string, span: Span): never => {
       throw new EvalError(msg, span);
     };
-    const spec = scenarioSpec(s.label, { get: (n) => values.get(n), span: (n) => spans.get(n) ?? s.labelSpan, firmware }, fail, imuX);
+    const spec = scenarioSpec(s.label, { get: (n) => values.get(n), span: (n) => spans.get(n) ?? s.labelSpan, firmware, hasFirmware: this.machine.firmware.length > 0 }, fail, imuX);
     const uses = s.uses.map((u) => u.name);
     for (const u of s.uses) {
       if (this.brief && !this.brief.uses.some((b) => b.id === u.name)) {
@@ -1164,6 +1169,7 @@ class Evaluator {
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
           gear: sd.suffix ? undefined : gear,
           bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
+          spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
           fastener:
             def.fastener && !sd.suffix
               ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
@@ -1412,6 +1418,7 @@ class Evaluator {
       feats: new Map(),
       auto: new Map(),
       strain: [],
+      flex: [],
     };
     const lockedFlag = s.items.some((i) => i.k === "flag" && i.name === "locked");
     this.blocks.push({ name: s.name, kind: "part", span: s.span, locked: lockedFlag });
@@ -1488,6 +1495,7 @@ class Evaluator {
       motion,
       features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
       detail: hasDetail(recipe),
+      ...(state.flex.length ? { flex: state.flex } : {}),
     });
   }
 
@@ -1557,6 +1565,7 @@ class Evaluator {
                 else st.ops.push({ op: step.op, r: step.r, edges: { s: "feat", f: name, part: step.part }, cosmetic: true });
               }
               if (f.strain !== undefined) st.strain.push({ strain: f.strain, span: it.shape.span });
+              if (f.flex) st.flex.push({ ...f.flex, name, span: it.shape.span });
             }
             break;
           }
@@ -2279,6 +2288,7 @@ function groupFor(kind: string): string {
     case "nut":
     case "insert":
     case "dowel":
+    case "spring":
       return "Hardware";
     case "bearing":
       return "Bearings";
