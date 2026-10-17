@@ -267,7 +267,8 @@ export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
 
 /**
  * The general tolerance the parts' manufacturing process states (ISO 2768 for
- * machined, cut and bent parts, the process's typical ± otherwise), when the
+ * machined, cut and bent parts, an ISO 8062-3 grade for sand and investment
+ * castings, the process's typical ± otherwise), when the
  * named parts are all made one way. Undefined leaves the drawing's default.
  */
 export function processTolerance(model: Model, names: string[]): string | undefined {

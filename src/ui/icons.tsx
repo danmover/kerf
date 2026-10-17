@@ -369,6 +369,13 @@ export const Icon = {
       <path d="M6 18l-3 3V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2z" />
     </I>
   ),
+  /** a factory: how parts are made and what they cost */
+  Factory: (p: P) => (
+    <I {...p}>
+      <path d="M3 21V10l5 3V10l5 3V10l5 3V4h3v17z" />
+      <path d="M7 17h2M12 17h2M17 17h1" />
+    </I>
+  ),
   Wrench: (p: P) => (
     <I {...p}>
       <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" />

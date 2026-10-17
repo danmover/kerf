@@ -37,6 +37,7 @@ export function Viewport() {
   const mfgOverlay = useRef<ProcessOverlay | null>(null);
   const processResults = useDesign((s) => s.process);
   const showProcessIssues = useMfgView((s) => s.overlay);
+  const processPreview = useMfgView((s) => s.preview);
   const model = useDesign((s) => s.model);
   const meshVersion = useDesign((s) => s.meshVersion);
   const interferences = useDesign((s) => s.interferences);
@@ -163,9 +164,10 @@ export function Viewport() {
   useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
   // after setParts above, so overlays attach to the current part groups
   useEffect(() => {
-    if (model) mfgOverlay.current?.update(model.parts, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion);
+    // a route hovered in the make tab shows only that process's issues on its part
+    if (model) mfgOverlay.current?.update(model.parts, processPreview ?? processResults, view.focusCheck, showProcessIssues || !!processPreview, settings.reduceMotion);
     ctl.current?.setProcessMarks(!!mfgOverlay.current?.size);
-  }, [model, meshVersion, processResults, view.focusCheck, showProcessIssues, settings.reduceMotion]);
+  }, [model, meshVersion, processResults, processPreview, view.focusCheck, showProcessIssues, settings.reduceMotion]);
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
   useEffect(() => {

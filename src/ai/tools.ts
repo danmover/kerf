@@ -7,6 +7,9 @@ import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly } from "..
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
 import { decisionsSummary } from "../core/decisions";
 import type { Model } from "../core/model";
+import { useSettings } from "../app/settings";
+import { projectAccess } from "../mfg/plan";
+import { availabilityText } from "../mfg/availability";
 import type { CheckReport } from "../core/checks";
 import { commitSource } from "../app/project";
 import { viewport } from "../app/viewportApi";
@@ -23,6 +26,7 @@ import { calcParams } from "./reference";
 import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
 import { SIM_TOOL_DEFS, SIM_TOOL_TITLES, runSimTool } from "./simTools";
 import { PROCESSES } from "../mfg/profiles";
+import { processFromText } from "../mfg/spec";
 import { sheetFor, useDrawings } from "../drawing/engine";
 import { describeSheet, sheetToPng } from "../drawing/export";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
@@ -237,10 +241,12 @@ export const TOOL_DEFS = [
             temp: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "Service temperature range in °C: [lowest, highest]." },
             outdoor: { type: "boolean" },
             exposure: { type: "array", items: { type: "string" }, maxItems: 12, description: "What it is exposed to, e.g. sunlight, rain, humidity, oil, chemicals, food contact, dust, impacts, vibration." },
-            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, CNC machined, Laser cut, Sheet metal, Injection moulded or another process, or a process with settings like mfg.fdm(layer: 0.2). It becomes the default process of every part." },
+            process: { type: "string", description: "How it is made: FDM print, Resin print, SLS print, Metal 3D print, CNC machined, Laser cut, Sheet metal, Injection moulded, Vacuum cast, Die cast, Sand cast, Investment cast or another process, or a process with settings like mfg.fdm(layer: 0.2). It becomes the default process of every part." },
             material: { type: "string", description: "Preferred material for made parts." },
             quantity: { type: "integer", minimum: 1 },
             build_volume: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "Printer build volume in mm (X, Y, Z)." },
+            workshop: { type: "array", items: { type: "string" }, maxItems: 16, description: "Processes the user has themselves for this project, by id or plain name, e.g. [\"fdm\", \"laser_cut\"]. Replaces their Settings for this design; set only when the user says so." },
+            can_order: { type: "array", items: { type: "string" }, maxItems: 16, description: "Processes the user can order from a shop or online service for this project. Replaces their Settings for this design; set only when the user says so." },
             max_size: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3, description: "The whole design must fit within this box, in mm (X, Y, Z)." },
             max_mass: { type: "number", description: "Maximum total mass in grams." },
           },
@@ -454,6 +460,8 @@ const BriefInput = z.object({
       material: z.string().max(80),
       quantity: z.number().int().min(1).max(10_000_000),
       build_volume: z.tuple([Num.positive(), Num.positive(), Num.positive()]),
+      workshop: z.array(z.string().max(60)).max(16),
+      can_order: z.array(z.string().max(60)).max(16),
       max_size: z.tuple([Num.positive(), Num.positive(), Num.positive()]),
       max_mass: Num.positive(),
     })
@@ -514,6 +522,17 @@ export function applyBriefInput(before: BriefData | null, input: z.infer<typeof 
   if (f.material !== undefined) d.material = f.material.trim() || undefined;
   if (f.quantity !== undefined) d.quantity = f.quantity;
   if (f.build_volume) d.buildVolume = [...f.build_volume];
+  for (const [k, prop] of [
+    ["workshop", "workshop"],
+    ["can_order", "canOrder"],
+  ] as const) {
+    const v = f[k];
+    if (!v) continue;
+    const names = v.map((x) => x.trim()).filter(Boolean);
+    const unknown = names.filter((x) => !processFromText(x));
+    if (unknown.length) errors.push(`fields.${k}: ${unknown.map((x) => `"${x}"`).join(", ")} ${unknown.length > 1 ? "are not processes" : "is not a process"} Kerf knows`);
+    d[prop] = names.map((x) => processFromText(x) ?? x);
+  }
   if (f.max_size) d.maxSize = [...f.max_size];
   if (f.max_mass !== undefined) d.maxMass = f.max_mass;
   for (const k of input.clear_fields ?? []) {
@@ -717,11 +736,20 @@ export function modelSummary(m: Model | null): string {
 export function briefSummary(): string {
   const { model, report } = useDesign.getState();
   if (!model) return "";
-  return briefContext(briefData(model.brief), (id) => {
+  const brief = briefContext(briefData(model.brief), (id) => {
     const it = report?.items.find((i) => i.id === `use:${id}`);
     if (!it) return undefined;
     return it.detail.startsWith("No check") ? "not checked yet" : `${it.status}: ${it.detail}`;
   });
+  return [brief, processesSummary(model.brief)].filter(Boolean).join("\n");
+}
+
+/** Which processes the user can use, for Claude: from the brief's lists or Settings. */
+function processesSummary(brief: Model["brief"]): string {
+  const saved = useSettings.getState().processAccess;
+  const { access, fromBrief } = projectAccess(brief);
+  if (!fromBrief && !Object.keys(saved).length) return "Manufacturing processes: the user has not said which they own, so every process counts as one they can order (Settings → Making, or the brief's workshop: and can_order:, change this).";
+  return `Manufacturing processes: ${availabilityText(access, fromBrief)}`;
 }
 
 /** A sketch as solved, for get_sketch. */

@@ -21,6 +21,7 @@ import { BIcon } from "./briefIcons";
 import { briefData, openAssumptions } from "../core/brief";
 import { MachinePanel } from "./MachinePanel";
 import { SimPanel } from "./sim/SimPanel";
+import { MakePanel } from "./make/MakePanel";
 import { useSim } from "../sim/runtime";
 import { Icon } from "./icons";
 import { lineCol } from "../lang/lexer";
@@ -91,6 +92,8 @@ function SimIcon() {
   return simulating ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Flask size={13} />;
 }
 
+const useHasMadeParts = () => useDesign((s) => !!s.model?.parts.some((p) => p.kind === "part" && !p.imported));
+
 const useHasSims = () => useDesign((s) => !!s.model?.machine || !!s.model?.scenarios?.length);
 
 export const DOCK_TABS: DockTabDef[] = [
@@ -100,6 +103,7 @@ export const DOCK_TABS: DockTabDef[] = [
   { id: "analysis", label: "strength", icon: <StrengthIcon />, useBadge: useStrengthBadge, Body: AnalysisPanel },
   { id: "build", label: "build", icon: <Icon.Wrench size={13} />, useBadge: useBuildBadge, useShown: useIsMachine, Body: MachinePanel },
   { id: "sim", label: "simulate", icon: <SimIcon />, useBadge: useSimBadge, useShown: useHasSims, Body: SimPanel },
+  { id: "make", label: "make", icon: <Icon.Factory size={13} />, useShown: useHasMadeParts, Body: MakePanel },
   { id: "bom", label: "parts list", icon: <Icon.List size={13} />, Body: BomTable },
   { id: "graph", label: "graph", icon: <Icon.Graph size={13} />, Body: GraphView },
   { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, useBadge: useCodeBadge, Body: () => null, file: true },

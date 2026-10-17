@@ -66,6 +66,36 @@ function modellingTips(id: ProcessId, rules: Rules): string[] {
           : "fillet() inside corners to at least half the wall; make bosses as tube() with the wall of the part, joined by ribs.",
         "Point holes and openings along the pull; side holes need side actions.",
       ];
+    case "metal_print":
+      return [
+        "Model the part the way it will be built, or set build: on the process to the direction that points up in the printer. Faces lower than 45° get supports, which are cut away and leave rough witness marks.",
+        "Use chamfer() or 45° roofs instead of flat ceilings, and keep horizontal holes small or teardrop shaped. Hollow and lighten freely, but open every hollow to the outside with escape holes of at least 2 mm for the powder.",
+        "Leave about 0.5 mm extra on faces, bores and threads that must be accurate or smooth: they are machined after printing. Note them on the drawing.",
+      ];
+    case "vacuum_cast":
+      return [
+        rich
+          ? "Model the finished part as for moulding: an even 1.5 to 3 mm wall from shell(t, open: …), and rib(from, to, t: …, h: …) instead of thick sections. No draft is needed and undercuts are fine, because the silicone mould flexes and is cut open."
+          : "Model the finished part as for moulding: an even 1.5 to 3 mm wall from shell(t, open: …), and ribs instead of thick sections. No draft is needed and undercuts are fine, because the silicone mould flexes and is cut open.",
+        'Set material: "Polyurethane" and say which plastic the grade should imitate (ABS-, PP-, PC- or rubber-like) and its colour. A printed master is made from the model, and each silicone mould casts about 20 to 25 parts.',
+      ];
+    case "sand_cast":
+      return [
+        rich
+          ? `Model the casting as it comes out of the sand: walls of ${fmt(rules.wall?.warn ?? 4)} mm or more, as even as possible, with shell(t, open: …) and rib(…) instead of solid blocks, and fillet(r, edges: "concave") of at least R${fmt(rules.innerRadius?.min ?? 3)} or half the wall on every inside corner.`
+          : `Model the casting as it comes out of the sand: walls of ${fmt(rules.wall?.warn ?? 4)} mm or more, as even as possible, with shell(t, open: …) and ribs instead of solid blocks, and fillet() of at least R${fmt(rules.innerRadius?.min ?? 3)} or half the wall on every inside corner.`,
+        draft,
+        "Add 2 to 3 mm of machining allowance on faces that must be flat, square or accurate, and leave holes under Ø10, threads and bores to be drilled and machined afterwards. Put those on the drawing.",
+        "Hollows, side openings and internal passages need sand cores, each adding cost: open internal cavities to the outside, ideally in two places, so a core can be held and shaken out.",
+      ];
+    case "investment_cast":
+      return [
+        `Model the finished shape: fine detail, lettering, thin fins and undercuts are fine, and no draft is needed. Keep walls of ${fmt(rules.wall?.warn ?? 1.5)} mm or more and as even as possible, and blend thick into thin with tapers and fillets.`,
+        rich
+          ? 'fillet(r, edges: "concave") every inside corner to at least R0.5, more where sections join.'
+          : "fillet() every inside corner to at least R0.5, more where sections join.",
+        "Holes under Ø2.5 mm, threads and precise bores are drilled or machined after casting: leave about 0.5 mm on faces that will be machined, and note them on the drawing.",
+      ];
     case "sheet_metal":
       return [
         "Model one thickness t throughout: flat flanges joined by real bends, each bend a quarter tube(od: 2·(r+t), id: 2·r, …) intersected to 90°, never a sharp corner.",
@@ -97,7 +127,7 @@ export function processGuideText(spec: ProcessSpec, material?: string): string {
     "",
     "## Source",
     `process: ${specToSource(spec)}`,
-    `Settings: ${def.settings.map((s) => `${s.key} (${s.doc}; default ${s.def === null ? "from the geometry" : Array.isArray(s.def) ? (Array.isArray(s.def[0]) ? (s.def as [number, number, number][]).map(axisName).join(", ") : s.kind === "dir" ? axisName(s.def as [number, number, number]) : (s.def as number[]).join(" × ")) : String(s.def)})`).join("; ")}.`,
+    `Settings: ${def.settings.map((s) => `${s.key} (${s.doc}; default ${s.def === null ? "from the geometry" : Array.isArray(s.def) ? (Array.isArray(s.def[0]) ? (s.def as [number, number, number][]).map(axisName).join(", ") : s.kind === "dir" ? axisName(s.def as [number, number, number]) : (s.def as number[]).join(" × ")) : String(s.def)})`).join("; ") || "none, only material:"}.`,
     `Numbers a requirement can read from the process value: ${Object.entries(fields)
       .map(([k, v]) => `.${k} = ${fmt(v)}`)
       .join(", ")}.`,
@@ -108,7 +138,7 @@ export function processGuideText(spec: ProcessSpec, material?: string): string {
 /** The working method, for the assistant's system prompt. */
 export function processPromptSection(): string {
   return `## Design for manufacture
-Every custom part is made somehow, and its design has to suit that process. The brief's process is every part's default; set process: on a part (see "Manufacturing processes" in the language reference) only where it is made differently. Choose from the brief: quantity, material, accuracy, budget, and what the user owns (such as a 3D printer). When the brief does not say, pick the sensible default (FDM printing for prototypes and one-offs, CNC milling for precise metal parts, sheet metal for metal brackets and covers, injection moulding only for thousands of plastic parts) and say which you chose.
+Every custom part is made somehow, and its design has to suit that process. The brief's process is every part's default; set process: on a part (see "Manufacturing processes" in the language reference) only where it is made differently. Choose from the brief: quantity, material, accuracy, budget, and what the user owns (such as a 3D printer). When the brief does not say, pick the sensible default (FDM printing for prototypes and one-offs, CNC milling for precise metal parts, sheet metal for metal brackets and covers, injection moulding only for thousands of plastic parts) and say which you chose. Castings and metal printing fit narrower cases: sand casting for one-off to hundreds of large or rough metal parts that are machined on their critical faces, investment casting for detailed steel or stainless parts in hundreds to thousands, vacuum casting for 10 to 100 production-like plastic parts before a steel mould pays off, and metal printing for complex metal parts in ones and tens that would be hard to machine.
 1. Design to the process from the start. Before modelling a part, call process_guide for its process and material and follow those rules while you model: wall thickness, draft along the pull, inside radii no tighter than the tool, hole sizes, bend radii, print orientation and overhangs.
 2. When parts share a process, put it in a let (let printed = mfg.fdm(layer: 0.2)) and drive dimensions from its numbers with requirements, for example require "Printable wall": wall >= printed.min_wall. The feasibility solver then keeps them valid when other dimensions change.
 3. run_checks reports process findings in the "process" category, each with the faces it flags on the model and a suggested fix. Fix failures before you finish. Some findings offer a one-click option, which is a setting on the part's process (for example build: -Z to print upside down). Warnings are judgement calls: fix the cheap ones and explain the rest.
@@ -120,7 +150,7 @@ Every custom part is made somehow, and its design has to suit that process. The 
 export function processReference(): string {
   const rows = PROCESS_IDS.map((id) => {
     const d = PROCESSES[id];
-    return `- mfg.${id}(${d.settings.map((s) => `${s.key}:`).join(" ")}${d.settings.length ? " " : ""}material:) — ${d.label}. ${d.settings.map((s) => `${s.key}: ${s.doc}`).join("; ")}${d.settings.length ? "." : ""} Default material ${defaultMaterial(id)}.`;
+    return `- mfg.${id}(${d.settings.map((s) => `${s.key}:`).join(" ")}${d.settings.length ? " " : ""}material:) — ${d.label}.${d.settings.length ? ` ${d.settings.map((s) => `${s.key}: ${s.doc}`).join("; ")}.` : ""} Default material ${defaultMaterial(id)}.`;
   }).join("\n");
   return `## Manufacturing processes
 part bracket {
