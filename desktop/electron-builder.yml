@@ -1,0 +1,45 @@
+# Packages the staged app in .desktop/app (scripts/build-desktop.mjs) into
+# installers under release/. CI builds the Windows one; see .github/workflows/desktop.yml.
+appId: app.kerf.desktop
+productName: Kerf
+copyright: Copyright © 2026 Kerf
+directories:
+  app: .desktop/app
+  output: release
+  buildResources: desktop/resources
+asar: true
+# the staged app has no dependencies: everything it runs is bundled, so no node_modules ship
+files:
+  - "**/*"
+  - "!node_modules{,/**/*}"
+npmRebuild: false
+# Kerf's interface is in English: leave out Chromium's other languages (about 40 MB)
+electronLanguages: [en-US, en-GB]
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: desktop/resources/icon.png
+  artifactName: Kerf-Setup-${version}.${ext}
+nsis:
+  # installs for this Windows user only, so no administrator prompt
+  oneClick: true
+  perMachine: false
+  runAfterFinish: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Kerf
+  # uninstalling keeps projects and settings, as a browser keeps a site's data
+  deleteAppDataOnUninstall: false
+linux:
+  target: [AppImage]
+  category: Graphics
+  icon: desktop/resources/icon.png
+  artifactName: Kerf-${version}.${ext}
+mac:
+  target: [dmg]
+  category: public.app-category.graphics-design
+  icon: desktop/resources/icon.png
+  artifactName: Kerf-${version}-${arch}.${ext}
+# CI uploads the files itself (gh release), so electron-builder never publishes
+publish: null

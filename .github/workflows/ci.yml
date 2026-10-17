@@ -12,6 +12,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # the desktop app's Electron binary isn't needed here; the Desktop app workflow downloads it
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
 jobs:
   check:
     name: Test, typecheck and build

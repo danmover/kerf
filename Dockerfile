@@ -5,6 +5,8 @@
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
+# the desktop app's Electron download is not needed to build the web app and server
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build && npm run build:server

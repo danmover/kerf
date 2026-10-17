@@ -9,3 +9,5 @@ test-results/
 playwright-report/
 server/data/
 server/dist/
+.desktop/
+release/

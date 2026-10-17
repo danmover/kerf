@@ -31,6 +31,11 @@ const L_HOVER = 3;
 /** process marks, drawn again over the photoreal image (which has none of its own) */
 const L_MARKS = 4;
 
+/** How many removed parts' materials are kept so their shaders stay compiled (see retire()). */
+const RETIRED_MAX = 48;
+/** How many material-ball materials are kept */
+const SWATCH_MATS_MAX = 96;
+
 interface GeoEntry {
   mesh: THREE.BufferGeometry;
   edges: THREE.BufferGeometry;
@@ -274,6 +279,12 @@ export class SceneController {
   private turntable = false;
   private lightDrag: { x: number; angle: number } | null = null;
   private swatchCache = new Map<string, string>();
+  /** the material ball's scene, built once */
+  private swatchStage: { scene: THREE.Scene; ball: THREE.Mesh; key: THREE.DirectionalLight; backdrop: THREE.Group; cam: THREE.PerspectiveCamera } | null = null;
+  /** one ball material per look, kept so each look's shader compiles once */
+  private swatchMats = new Map<string, THREE.MeshPhysicalMaterial>();
+  /** materials of removed parts, kept unused so their compiled shaders stay ready */
+  private retired: THREE.Material[] = [];
   private disposed = false;
   private measure = new MeasureOverlay();
   private overlays = new Set<SceneOverlay>();
@@ -429,7 +440,11 @@ export class SceneController {
       if (hold && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > 8) endHold();
     });
     el.addEventListener("pointercancel", endHold);
-    el.addEventListener("pointerdown", (e) => (down = { x: e.clientX, y: e.clientY }));
+    el.addEventListener("pointerdown", (e) => {
+      down = { x: e.clientX, y: e.clientY };
+      // nothing is hovered while the view turns: that saves drawing the hover outline's passes every frame
+      if (this.display.hovered) this.onHover(null);
+    });
     el.addEventListener("pointerup", (e) => {
       endHold();
       if (this.lightDrag) {
@@ -483,6 +498,14 @@ export class SceneController {
     }
     this.pipe.dispose();
     this.swatchPipe?.dispose();
+    for (const m of [...this.retired, ...this.swatchMats.values()]) m.dispose();
+    this.swatchStage?.ball.geometry.dispose();
+    this.swatchStage?.backdrop.traverse((o) => {
+      if (o instanceof THREE.Mesh) {
+        o.geometry.dispose();
+        (o.material as THREE.Material).dispose();
+      }
+    });
     this.photo?.dispose();
     this.envs.dispose();
     this.renderer.dispose();
@@ -838,9 +861,20 @@ export class SceneController {
     obj.u.uNoiseScale.value = 7 / Math.max(g.mesh.boundingSphere!.radius * 2, 1);
   }
 
+  /**
+   * Dispose of a removed part's material later. three.js deletes a shader program as soon as no material uses it,
+   * and the part shader is big: compiling it again can hold up the page for seconds (Direct3D on Windows is the
+   * slowest). Keeping the last few materials, unused, keeps the variants they compiled (reveal clipping, x-ray,
+   * glass) ready for the next part, rebuild or design.
+   */
+  private retire(mat: THREE.Material) {
+    this.retired.push(mat);
+    if (this.retired.length > RETIRED_MAX) this.retired.shift()!.dispose();
+  }
+
   private disposePart(obj: PartObj) {
     this.root.remove(obj.group);
-    obj.mat.dispose();
+    this.retire(obj.mat);
     obj.cap$.mat.dispose();
     obj.edgeMat.dispose();
     this.release(obj.geoKey);
@@ -871,7 +905,7 @@ export class SceneController {
 
   private disposeGhost(g: Ghost) {
     this.root.remove(g.group);
-    g.mat.dispose();
+    this.retire(g.mat);
     g.edgeMat.dispose();
     this.release(g.geoKey);
     this.ghosts = this.ghosts.filter((x) => x !== g);
@@ -2086,6 +2120,50 @@ export class SceneController {
 
   // ---------- material swatches ----------
 
+  /** The material ball's scene, built on first use and kept like its pipeline and materials. */
+  private stageSwatch() {
+    if (this.swatchStage) return this.swatchStage;
+    const scene = new THREE.Scene();
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48));
+    // turn the ball so printed layers and brushing run across the view
+    ball.rotation.set(0.35, 0, 0.6);
+    const key = new THREE.DirectionalLight();
+    // something behind a clear material to see through it
+    const backdrop = new THREE.Group();
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshBasicMaterial({ color: 0x8a93a6 }));
+    back.position.set(0, 30, 0);
+    back.rotation.x = Math.PI / 2;
+    const checker = new THREE.Mesh(new THREE.PlaneGeometry(8, 60), new THREE.MeshBasicMaterial({ color: 0x2a2f3a }));
+    checker.position.set(0, 29.9, 0);
+    checker.rotation.x = Math.PI / 2;
+    backdrop.add(back, checker);
+    scene.add(ball, key, backdrop);
+    const cam = new THREE.PerspectiveCamera(24, 1, 1, 400);
+    cam.up.set(0, 0, 1);
+    cam.position.set(0, -52, 14);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld();
+    return (this.swatchStage = { scene, ball, key, backdrop, cam });
+  }
+
+  /** The ball's material for a look. Kept, newest last, so a look seen before doesn't compile its shader again. */
+  private swatchMaterial(look: Appearance) {
+    let mat = this.swatchMats.get(look.key);
+    if (mat) this.swatchMats.delete(look.key);
+    else {
+      const m = this.newPartMaterial(look);
+      m.u.uNoiseScale.value = 0.3;
+      mat = m.mat;
+      if (this.swatchMats.size >= SWATCH_MATS_MAX) {
+        const [oldest, m0] = this.swatchMats.entries().next().value!;
+        this.swatchMats.delete(oldest);
+        this.retire(m0);
+      }
+    }
+    this.swatchMats.set(look.key, mat);
+    return mat;
+  }
+
   /** A rendered ball of a material under the current lighting, as a data URL with a transparent background. */
   swatch(material: string, finish: string | undefined, color: string, size = 96): string {
     const look = appearanceFor(material, finish, color);
@@ -2093,36 +2171,18 @@ export class SceneController {
     const hit = this.swatchCache.get(key);
     if (hit) return hit;
     const r = this.renderer;
-    const scene = new THREE.Scene();
+    const st = this.stageSwatch();
+    const { scene, ball, cam } = st;
     scene.environment = this.scene.environment;
     scene.environmentIntensity = this.scene.environmentIntensity;
     scene.environmentRotation.copy(this.scene.environmentRotation);
-    const { mat, u } = this.newPartMaterial(look);
-    u.uNoiseScale.value = 0.3;
-    const ball = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48), mat);
-    // turn the ball so printed layers and brushing run across the view
-    ball.rotation.set(0.35, 0, 0.6);
-    scene.add(ball);
-    const key2 = new THREE.DirectionalLight(this.key.color, this.key.intensity);
+    ball.material = this.swatchMaterial(look);
+    st.key.color.copy(this.key.color);
+    st.key.intensity = this.key.intensity;
     // same angle to the camera as the key light has to the default view
-    key2.position.copy(dirFrom(this.preset.key.az - 36, this.preset.key.el)).multiplyScalar(50);
-    scene.add(key2);
-    if (look.transmission > 0) {
-      // something behind a clear material to see through it
-      const back = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshBasicMaterial({ color: 0x8a93a6 }));
-      back.position.set(0, 30, 0);
-      back.rotation.x = Math.PI / 2;
-      const checker = new THREE.Mesh(new THREE.PlaneGeometry(8, 60), new THREE.MeshBasicMaterial({ color: 0x2a2f3a }));
-      checker.position.set(0, 29.9, 0);
-      checker.rotation.x = Math.PI / 2;
-      scene.add(back, checker);
-    }
-    const cam = new THREE.PerspectiveCamera(24, 1, 1, 400);
-    cam.up.set(0, 0, 1);
-    cam.position.set(0, -52, 14);
-    cam.lookAt(0, 0, 0);
-    cam.updateMatrixWorld();
-    // one small pipeline reused for every swatch
+    st.key.position.copy(dirFrom(this.preset.key.az - 36, this.preset.key.el)).multiplyScalar(50);
+    st.backdrop.visible = look.transmission > 0;
+    // one small pipeline reused for every swatch, and kept: its shaders compile once
     const pipe = (this.swatchPipe ??= new RenderPipeline(r));
     Object.assign(pipe.look, this.pipe.look);
     pipe.look.ao = 0;
@@ -2149,16 +2209,7 @@ export class SceneController {
       this.swatchCache.set(key, url);
       return url;
     } finally {
-      pipe.dispose();
       out.dispose();
-      ball.geometry.dispose();
-      mat.dispose();
-      scene.traverse((o) => {
-        if (o instanceof THREE.Mesh && o !== ball) {
-          o.geometry.dispose();
-          (o.material as THREE.Material).dispose();
-        }
-      });
       r.setRenderTarget(null);
       this.needComposite = true;
     }

@@ -26,6 +26,25 @@ The build in `dist/` is a static site. Any static host works. `public/_headers` 
 
 Chatting with Claude needs an Anthropic API key from the [Claude Console](https://platform.claude.com/). Kerf asks for it during first-run setup, or later under Settings → Claude. Everything else works without a key.
 
+`npm run dev` is for working on Kerf itself: it serves hundreds of separate source files with React's development checks on, and re-bundles dependencies after an update, so it loads and runs slower than a build. To use Kerf, run the desktop app or a production build.
+
+### Desktop app
+
+Kerf also runs as its own app. Download **Kerf-Setup-<version>.exe** from the repository's [Releases](../../releases) page and run it: it installs for your Windows user with no administrator prompt and adds Kerf to the Start menu and desktop. The installer isn't code-signed yet, so Windows may say it protected your PC; choose **More info**, then **Run anyway**.
+
+The app is the production build in its own window, served from Kerf's own origin with the same security headers as the web version. It always uses the fast graphics card on machines with two, keeps building and rendering while another window is in front, and Settings → Display → Graphics shows the card in use and can switch how Kerf talks to it (Direct3D 11, Vulkan or OpenGL on Windows). Projects are kept by the app, separately from any browser: to bring browser projects across, use Settings → Data → Download a backup in the browser, then Import in the app. Voice input isn't in the app yet; on Windows, Windows + H dictates into the message box.
+
+To run or package it yourself:
+
+```bash
+npm run desktop       # builds Kerf and opens it in the desktop app
+npm run desktop:dist  # builds the installer for this platform into release/
+```
+
+On Windows, PowerShell may block `npm`; use `npm.cmd` instead. `node scripts/build-desktop.mjs` stages the app in `.desktop/app`, and `desktop/electron-builder.yml` packages it.
+
+**Releases.** The Desktop app workflow builds the Windows installer, starts the packaged app to check it opens a design and passes its checks, and publishes it. Pull requests that change `desktop/` put their installer on the **Kerf desktop preview** draft release, which only people who can push to the repository see. A merge to `main` whose `package.json` version has no release yet publishes `v<version>`, so bumping the version is how to cut a release. Run workflow on the Actions tab rebuilds `main` and replaces the installer on the current version's release.
+
 ### With accounts
 
 ```bash

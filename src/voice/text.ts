@@ -132,3 +132,10 @@ export function clock(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
+
+/** Where to talk into the desktop app, which has no voice input of its own yet. */
+export function desktopDictationHint(windows: boolean): string {
+  return windows
+    ? "Voice input isn't in the desktop app yet. Press Windows + H to dictate into the message box with Windows voice typing, or open Kerf in Chrome or Edge to use its own."
+    : "Voice input isn't in the desktop app yet. Use your system's dictation to talk into the message box, or open Kerf in Chrome, Edge or Safari to use its own.";
+}

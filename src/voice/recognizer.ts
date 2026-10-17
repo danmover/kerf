@@ -3,6 +3,7 @@
 // recognition; Kerf never touches the audio itself.
 
 import { collect, type Phrase, type ResultLike } from "./text";
+import { desktop } from "../app/desktop";
 
 export type OnDevice = "available" | "downloadable" | "downloading" | "unavailable";
 
@@ -44,6 +45,9 @@ interface RecognitionClass {
 
 function recognitionClass(): RecognitionClass | null {
   if (typeof window === "undefined") return null;
+  // The desktop app's Chromium has the recogniser but not Google's speech service behind it, nor the on-device
+  // model, so every attempt would fail: it says so up front instead (see desktopDictation in ./text)
+  if (desktop()) return null;
   const w = window as unknown as { SpeechRecognition?: RecognitionClass; webkitSpeechRecognition?: RecognitionClass };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }

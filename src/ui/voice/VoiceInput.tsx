@@ -8,7 +8,8 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useDesign } from "../../core/engine";
 import { useSettings } from "../../app/settings";
 import { go, openSettings, useUi } from "../../app/ui";
-import { joinText, serviceName, providerName, clock } from "../../voice/text";
+import { joinText, serviceName, providerName, clock, desktopDictationHint } from "../../voice/text";
+import { desktop } from "../../app/desktop";
 import { allowOnlineSpeech, cancelVoice, dismissVoice, downloadSpeechModel, holdSend, sendNow, stopVoice, toggleVoice, useVoice, type VoiceClient, type VoicePhase } from "../../voice/voice";
 import { Icon } from "../icons";
 import "../../styles/voice.css";
@@ -345,12 +346,12 @@ export function VoiceNotice() {
       <>
         <div className="vn-head">
           <Icon.MicOff size={15} />
-          <span className="grow">This browser can't do voice input</span>
+          <span className="grow">{desktop() ? "No voice input in the desktop app yet" : "This browser can't do voice input"}</span>
           <button type="button" className="icon-btn sm" onClick={dismissVoice} aria-label="Close">
             <Icon.X size={13} />
           </button>
         </div>
-        <p>On a phone, use the dictation key on your keyboard to talk into the message box. Chrome, Edge and Safari have voice input built in.</p>
+        <p>{desktop() ? desktopDictationHint(/Windows/.test(navigator.userAgent)) : "On a phone, use the dictation key on your keyboard to talk into the message box. Chrome, Edge and Safari have voice input built in."}</p>
       </>
     );
   } else if (s.phase === "error" && s.error) {
