@@ -1171,6 +1171,8 @@ function sheet(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
     }
   });
   const sharp = c.sharpEdges().filter((e) => e.concave && role[e.f1] === "skin" && role[e.f2] === "skin");
+  const bendFaces = faces.filter((f, i) => f.type === "CYLINDRE" && f.concave && !f.fullTurn && role[i] === "skin").length;
+  stats.bends = bendFaces + chains(sharp);
   if (tight.size || sharp.length) {
     const n = chains(sharp);
     out.push({
@@ -1185,7 +1187,7 @@ function sheet(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
       lines: sharp.length ? lineMarks(sharp) : undefined,
     });
   } else {
-    const bends = faces.filter((f, i) => f.type === "CYLINDRE" && f.concave && !f.fullTurn && role[i] === "skin").length;
+    const bends = bendFaces;
     out.push({ rule: "bend-radius", status: "pass", title: bends ? `Bends R${fmt(bendR)} or more` : "Flat sheet", detail: bends ? `${plural(bends, "bend")}, all at a safe radius` : "No bends" });
   }
   // holes close to edges and bends
@@ -1357,6 +1359,7 @@ function holes(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
       deepest = Math.max(deepest, f.length / d);
     }
   });
+  stats.holes = count;
   const out: ProcessFinding[] = [];
   if (small.size) {
     const failing = minDFail !== undefined && smallest < minDFail - 1e-3;

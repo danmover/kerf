@@ -49,6 +49,10 @@ export interface BriefData {
   material?: string;
   quantity?: number;
   buildVolume?: V3;
+  /** processes the user has themselves, as written ("fdm", "laser cut") */
+  workshop?: string[];
+  /** processes the user can order from a shop or online service */
+  canOrder?: string[];
   maxSize?: V3;
   maxMass?: number;
   /** source names of the fields Claude assumed */
@@ -60,7 +64,7 @@ export interface BriefData {
   extra: { name: string; text: string }[];
 }
 
-export type FieldKey = "purpose" | "setting" | "look" | "priorities" | "temp" | "outdoor" | "exposure" | "process" | "material" | "quantity" | "build_volume" | "max_size" | "max_mass";
+export type FieldKey = "purpose" | "setting" | "look" | "priorities" | "temp" | "outdoor" | "exposure" | "process" | "material" | "quantity" | "build_volume" | "workshop" | "can_order" | "max_size" | "max_mass";
 
 /** Source name, data key and a plain label for every brief field, in file order. */
 export const FIELDS: { key: FieldKey; prop: keyof BriefData; label: string }[] = [
@@ -75,6 +79,8 @@ export const FIELDS: { key: FieldKey; prop: keyof BriefData; label: string }[] =
   { key: "material", prop: "material", label: "material" },
   { key: "quantity", prop: "quantity", label: "quantity" },
   { key: "build_volume", prop: "buildVolume", label: "build volume" },
+  { key: "workshop", prop: "workshop", label: "processes you have" },
+  { key: "can_order", prop: "canOrder", label: "processes you can order" },
   { key: "max_size", prop: "maxSize", label: "maximum size" },
   { key: "max_mass", prop: "maxMass", label: "maximum mass" },
 ];
@@ -96,6 +102,8 @@ export function briefData(b: Brief | null | undefined): BriefData | null {
     material: b.material,
     quantity: b.quantity,
     buildVolume: b.buildVolume ? [...b.buildVolume] : undefined,
+    workshop: b.workshop ? [...b.workshop] : undefined,
+    canOrder: b.canOrder ? [...b.canOrder] : undefined,
     maxSize: b.maxSize ? [...b.maxSize] : undefined,
     maxMass: b.maxMass,
     // in field order, so the same brief always compares equal however it was typed
@@ -146,6 +154,10 @@ function fieldText(d: BriefData, key: FieldKey): string | null {
     case "priorities":
     case "exposure":
       return d[key].length ? list(d[key]) : null;
+    case "workshop":
+      return d.workshop ? list(d.workshop) : null;
+    case "can_order":
+      return d.canOrder ? list(d.canOrder) : null;
     case "temp":
       return d.temp ? `${num(d.temp[0], 1)}C .. ${num(d.temp[1], 1)}C` : null;
     case "outdoor":
@@ -193,7 +205,7 @@ export function serializeBrief(d: BriefData): string {
   };
   add(["purpose", "setting", "priorities", "look"]);
   add(["temp", "outdoor", "exposure"]);
-  add(["process", "material", "quantity", "build_volume"]);
+  add(["process", "material", "quantity", "build_volume", "workshop", "can_order"]);
   add(["max_size", "max_mass"]);
   groups.push(
     d.uses.map((u) => {
@@ -320,6 +332,11 @@ const fieldValue = (d: BriefData, key: FieldKey): string => {
     case "priorities":
     case "exposure":
       return d[key].length ? d[key].join(", ") : "none";
+    case "workshop":
+    case "can_order": {
+      const v = key === "workshop" ? d.workshop : d.canOrder;
+      return v ? (v.length ? v.join(", ") : "none of them") : "not set";
+    }
     case "build_volume":
     case "max_size": {
       const v = key === "max_size" ? d.maxSize : d.buildVolume;

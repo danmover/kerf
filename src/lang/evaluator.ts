@@ -27,7 +27,7 @@ import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
 import type { AnalysisSpec } from "../analysis/spec";
-import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromValue, toProcess } from "../mfg/spec";
+import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
 import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
 
@@ -87,7 +87,9 @@ const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_wit
 const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as const;
 const BRIEF_LISTS = ["priorities", "exposure"] as const;
 const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as const;
-export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", "max_size", "max_mass"];
+/** process lists: what the user has (workshop) and can order, replacing Settings for this design */
+const BRIEF_PROCESS_LISTS = { workshop: "workshop", can_order: "canOrder" } as const;
+export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", ...Object.keys(BRIEF_PROCESS_LISTS), "max_size", "max_mass"];
 /** extra properties of purchasable catalog parts */
 const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref"];
 const GRAVITY = 9.81;
@@ -1742,6 +1744,13 @@ class Evaluator {
           const list = Array.isArray(v) ? v : [v];
           if (!list.every((x) => typeof x === "string")) throw new EvalError(`${n} should be a list of text, like ["sunlight", "rain"]`, it.value.span);
           b[n as "priorities" | "exposure"] = list as string[];
+        } else if (n in BRIEF_PROCESS_LISTS) {
+          const v = this.expr(it.value, null);
+          const list = Array.isArray(v) ? v : [v];
+          if (!list.every((x) => typeof x === "string")) throw new EvalError(`${n} should be a list of processes, like ["fdm", "laser cut"]`, it.value.span);
+          const unknown = (list as string[]).filter((x) => !processFromText(x));
+          if (unknown.length) this.diags.push({ message: `In the brief: ${n} has ${unknown.map((x) => `"${x}"`).join(", ")}, which ${unknown.length > 1 ? "are not processes" : "is not a process"} Kerf knows. Use names like "fdm", "cnc_mill" or "sheet metal".`, start: it.value.span.start, end: it.value.span.end, severity: "warning" });
+          b[BRIEF_PROCESS_LISTS[n as keyof typeof BRIEF_PROCESS_LISTS]] = list as string[];
         } else if (n === "temp") {
           let lo: number;
           let hi: number;

@@ -92,6 +92,10 @@ export interface ProcessStats {
   nominalWall?: number;
   maxWall?: number;
   sheetT?: number;
+  /** round holes, for cost estimates */
+  holes?: number;
+  /** sheet metal bends, for cost estimates */
+  bends?: number;
 }
 
 export interface ProcessResult {
