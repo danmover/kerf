@@ -6,7 +6,7 @@
 
 import { fmtNum } from "../lang/values";
 
-export type ResultUnit = "mm" | "mm/s" | "s" | "deg" | "share" | "V" | "A" | "mAh" | "C" | "bytes" | "N" | "count" | "turns" | "yes/no" | "text" | "W" | "Wh" | "mm3/s" | "g";
+export type ResultUnit = "mm" | "mm/s" | "s" | "deg" | "share" | "V" | "A" | "mAh" | "C" | "bytes" | "N" | "Nmm" | "rpm" | "count" | "turns" | "yes/no" | "text" | "W" | "Wh" | "mm3/s" | "g";
 
 export interface ResultInfo {
   unit: ResultUnit;
@@ -98,9 +98,41 @@ export const WORLD_RESULTS: Record<string, Record<string, ResultInfo>> = {
   },
 };
 
+/** Scenarios with a mechanism: (on the bench or the floor). `<joint>` is a joint's name (its first part's, unless named). */
+export const MECH_RESULTS: Record<string, ResultInfo> = {
+  "<joint>.angle": { unit: "deg", doc: "a pivot's angle at the end, from the design pose" },
+  "<joint>.angle_min": { unit: "deg", doc: "the lowest angle a pivot reached" },
+  "<joint>.angle_max": { unit: "deg", doc: "the highest angle a pivot reached" },
+  "<joint>.turns": { unit: "turns", doc: "a pivot's turns from the design pose at the end (+ about its axis)" },
+  "<joint>.max_rpm": { unit: "rpm", doc: "a pivot's highest speed" },
+  "<joint>.peak_torque": { unit: "Nmm", doc: "the most torque along a pivot's axis (from its drive, stops, springs and friction)" },
+  "<joint>.pos": { unit: "mm", doc: "a slider's position at the end, from the design pose" },
+  "<joint>.pos_min": { unit: "mm", doc: "a slider's lowest position" },
+  "<joint>.pos_max": { unit: "mm", doc: "a slider's highest position" },
+  "<joint>.travel": { unit: "mm", doc: "how far a slider moved in all" },
+  "<joint>.max_speed": { unit: "mm/s", doc: "a slider's highest speed" },
+  "<joint>.peak_force": { unit: "N", doc: "the most force along a slider's axis; for gears the tooth force, for a cam the follower force, for a spring its force" },
+  "<joint>.bearing_load": { unit: "N", doc: "the most force across a joint (what its bearings carry)" },
+  "<joint>.hit_stop": { unit: "yes/no", doc: "a joint with limits reached one of its end stops" },
+  "<screw>.peak_thrust": { unit: "N", doc: "a lead screw's or worm's highest thrust" },
+  "<spring>.min_length": { unit: "mm", doc: "a spring's shortest length" },
+  "<spring>.max_length": { unit: "mm", doc: "a spring's longest length" },
+  "<cam>.jump": { unit: "mm", doc: "how far the follower left the cam (0 when it stayed on)" },
+  "<cam>.lifted_time": { unit: "s", doc: "time the follower spent off the cam" },
+  "<clutch>.slip_time": { unit: "s", doc: "time a clutch or brake spent slipping; for a wheel, time spinning on the floor" },
+  "<input>.peak_power": { unit: "W", doc: "the most power a sim.turn input gave" },
+  "<body>.x": { unit: "mm", doc: "where a moving body's centre of mass is at the end (also .y, .z)" },
+  "<body>.moved": { unit: "mm", doc: "how far a moving body's (or a loose box's) centre ended up from where it started" },
+  distance: { unit: "mm", doc: "how far a free-standing machine moved over the floor" },
+  climbed: { unit: "mm", doc: "how much higher a free-standing machine ended up" },
+  tilt_max: { unit: "deg", doc: "the most a free-standing machine tilted" },
+  tipped: { unit: "yes/no", doc: "it tipped over (more than 30°)" },
+  unstable: { unit: "yes/no", doc: "the mechanism simulation went unstable and was stopped (parts fighting each other)" },
+};
+
 /** The info for a result name, matching `<motor>` style patterns. */
 export function resultInfo(name: string, world?: string): ResultInfo | undefined {
-  const tables = [...(world && Object.hasOwn(WORLD_RESULTS, world) ? [WORLD_RESULTS[world]] : []), COMMON_RESULTS];
+  const tables = [...(world && Object.hasOwn(WORLD_RESULTS, world) ? [WORLD_RESULTS[world]] : []), COMMON_RESULTS, ...(world === "sand_pit" || world === "printer" ? [] : [MECH_RESULTS])];
   for (const t of tables) if (Object.hasOwn(t, name)) return t[name];
   const dot = name.indexOf(".");
   if (dot < 0) return undefined;
@@ -141,11 +173,15 @@ export function fmtResult(v: number | boolean | string | undefined, unit?: Resul
     case "bytes":
       return `${fmtNum(v, 0)} bytes`;
     case "N":
-      return `${fmtNum(v, 0)} N`;
+      return `${fmtNum(v, Math.abs(v) < 10 ? 1 : 0)} N`;
+    case "Nmm":
+      return Math.abs(v) >= 1000 ? `${fmtNum(v / 1000, 2)} N·m` : `${fmtNum(v, 0)} N·mm`;
+    case "rpm":
+      return `${fmtNum(v, Math.abs(v) < 10 ? 1 : 0)} rpm`;
+    case "W":
+      return `${fmtNum(v, Math.abs(v) < 10 ? 1 : 0)} W`;
     case "turns":
       return `${fmtNum(v, 1)} turns`;
-    case "W":
-      return `${fmtNum(v, 0)} W`;
     case "Wh":
       return `${fmtNum(v, 1)} Wh`;
     case "mm3/s":
@@ -167,6 +203,7 @@ export function resultDocs(world?: string): string {
     if (world && w !== world) continue;
     out.push(`${w}:`, ...Object.entries(t).map(([k, i]) => line(k, i)));
   }
+  if (world !== "sand_pit" && world !== "printer") out.push("with a mechanism:", ...Object.entries(MECH_RESULTS).map(([k, i]) => line(k, i)));
   out.push("every run:", ...Object.entries(COMMON_RESULTS).map(([k, i]) => line(k, i)));
   return out.join("\n");
 }

@@ -98,7 +98,7 @@ export function scenarioSummary(def: ScenarioDef, run: SimRun | undefined): stri
     const ev = main.events.filter((e) => e.kind !== "info" || /Firmware/.test(e.text)).slice(0, 14);
     if (ev.length) lines.push(`  Events: ${ev.map((e) => `${mmss(e.t)} ${e.text}`).join("; ")}`);
     if (main.faults.length) lines.push(`  Firmware mistakes: ${main.faults.map((f) => `${f.msg}${f.count > 1 ? ` (${f.count}×)` : ""}`).join("; ")}`);
-    lines.push(`  Chip: RAM ${main.summary.ram.used}/${main.summary.ram.total} bytes, longest loop() ${fmtNum(main.summary.loopMax, 2)} ms, ${fmtNum(main.summary.isrLoad * 100, 1)} % of the time in interrupts.`);
+    if (main.summary.ram.total) lines.push(`  Chip: RAM ${main.summary.ram.used}/${main.summary.ram.total} bytes, longest loop() ${fmtNum(main.summary.loopMax, 2)} ms, ${fmtNum(main.summary.isrLoad * 100, 1)} % of the time in interrupts.`);
     if (main.assumptions.length) lines.push(`  Assumed: ${main.assumptions.join("; ")}`);
     lines.push(`  Limits: ${main.limits.join(" ")}`);
   }

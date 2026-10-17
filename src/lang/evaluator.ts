@@ -492,6 +492,10 @@ class Evaluator {
         // a firmware block is named, not a value
         const fwName = it.value.k === "ident" ? it.value.name : this.expr(it.value, scope);
         if (typeof fwName !== "string") throw new EvalError("firmware: give the name of a firmware block, like firmware: brain", it.value.span);
+        if (fwName === "none") {
+          firmware = fwName;
+          continue;
+        }
         if (!this.machine.firmware.some((f) => f.name === fwName)) {
           const sugg = suggest(fwName, this.machine.firmware.map((f) => f.name));
           throw new EvalError(`No firmware block "${fwName}"${sugg ? `. Did you mean "${sugg}"?` : this.machine.firmware.length ? `. Firmware blocks: ${this.machine.firmware.map((f) => f.name).join(", ")}` : ". Add a firmware block first."}`, it.value.span);
@@ -501,7 +505,7 @@ class Evaluator {
       }
       values.set(it.name, this.expr(it.value, scope));
     }
-    if (!this.machine.firmware.length) throw new EvalError("A scenario runs the design's firmware: add a firmware block for its controller first", s.labelSpan);
+    if (!this.machine.firmware.length && !values.has("mechanism")) throw new EvalError("A scenario runs the design's firmware: add a firmware block for its controller first (or give it a mechanism: to simulate without one)", s.labelSpan);
     const imuX: Record<string, number> = {};
     for (const [name, info] of this.comps) {
       const part = info.def.catalog ? catalogPart(info.def.catalog.id) : undefined;
@@ -510,7 +514,7 @@ class Evaluator {
     const fail = (msg: string, span: Span): never => {
       throw new EvalError(msg, span);
     };
-    const spec = scenarioSpec(s.label, { get: (n) => values.get(n), span: (n) => spans.get(n) ?? s.labelSpan, firmware }, fail, imuX);
+    const spec = scenarioSpec(s.label, { get: (n) => values.get(n), span: (n) => spans.get(n) ?? s.labelSpan, firmware, hasFirmware: this.machine.firmware.length > 0 }, fail, imuX);
     const uses = s.uses.map((u) => u.name);
     for (const u of s.uses) {
       if (this.brief && !this.brief.uses.some((b) => b.id === u.name)) {

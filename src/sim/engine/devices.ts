@@ -235,6 +235,29 @@ export class DCMotor {
     if (ia > this.peakCurrent) this.peakCurrent = ia;
     this.stalledFor = Math.abs(wn) < 0.01 && ia > 0.5 * (this.vr / R) * 0.3 ? this.stalledFor + dt : 0;
   }
+  /**
+   * Take the output shaft's speed from a mechanism the world simulates (it already turned the shaft against the
+   * motor's torque, its own inertia and the loads), and work out the current, heating and wear from it.
+   */
+  follow(v: number | null, ilim: number, omega: number, dt: number, ambient: number, cooling: number) {
+    const R = this.resistance;
+    if (v !== null) {
+      const iNow = (v - this.ke * omega) / R;
+      if (Math.abs(iNow) > ilim) v = this.ke * omega + Math.sign(iNow) * ilim * R;
+    }
+    this.omega = omega;
+    this.angle += omega * dt;
+    this.volts = v ?? this.ke * omega;
+    this.current = v === null ? 0 : (v - this.ke * omega) / R;
+    this.torque = this.kt * this.current - Math.sign(omega) * this.tf;
+    const p = this.current * this.current * R;
+    this.energy += Math.abs(this.volts * this.current) * dt;
+    this.temp += (dt * (p - ((this.temp - ambient) * cooling) / this.rth)) / this.cth;
+    if (this.temp > this.maxTemp) this.maxTemp = this.temp;
+    const ia = Math.abs(this.current);
+    if (ia > this.peakCurrent) this.peakCurrent = ia;
+    this.stalledFor = Math.abs(omega) < 0.01 && ia > 0.5 * (this.vr / R) * 0.3 ? this.stalledFor + dt : 0;
+  }
   /** encoder counts per output radian */
   get countsPerRad() {
     return this.cpr / (2 * Math.PI);
@@ -310,6 +333,21 @@ export class Actuator {
     this.pos = p;
     this.stalledFor = s !== 0 && speed === 0 ? this.stalledFor + dt : 0;
   }
+  /** take the rod's motion from a mechanism the world simulates: pos mm, speed mm/s, force N pushing the rod in */
+  follow(v: number | null, pos: number, speed: number, force: number, dt: number) {
+    const u = v === null ? 0 : Math.min(1.2, Math.abs(v) / this.vr);
+    const s = v === null || v === 0 ? 0 : Math.sign(v);
+    this.force = force;
+    if (s !== 0 && u > this.dead) {
+      const fs = this.fStall * u;
+      const share = Math.max(0, Math.min(1, (force * s) / fs));
+      this.current = Math.abs(speed) < 0.01 ? this.iStall * u : this.iFree + (this.iStall * u - this.iFree) * share;
+    } else this.current = s !== 0 ? this.iStall * u : 0;
+    this.travel += Math.abs(pos - this.pos);
+    this.pos = pos;
+    this.speed = speed;
+    this.stalledFor = s !== 0 && Math.abs(speed) < 0.01 ? this.stalledFor + dt : 0;
+  }
 }
 
 // ---------- hobby servo ----------
@@ -352,6 +390,22 @@ export class Servo {
     const step = Math.min(Math.abs(e), this.speed * frac * dt);
     this.angle += Math.sign(e) * step;
     this.current = frac > 0 ? this.iRun + (this.iStall - this.iRun) * (1 - frac) : this.iStall;
+  }
+  /** the angle (deg) a pulse asks for, or null without one */
+  wanted(us: number | null): number | null {
+    return us === null ? null : Math.max(0, Math.min(this.range, ((us - 500) / 2000) * this.range));
+  }
+  /** take the horn's angle from a mechanism the world simulates, with the torque it gave (N·m) */
+  follow(us: number | null, angle: number, torque: number, powered: boolean) {
+    this.angle = angle;
+    const want = this.wanted(us);
+    if (want === null || !powered) {
+      this.current = powered ? 0.01 : 0;
+      return;
+    }
+    this.target = want;
+    const share = Math.min(1, Math.abs(torque) / this.tStall);
+    this.current = Math.abs(want - angle) < 0.5 ? 0.02 + share * this.iStall : this.iRun + (this.iStall - this.iRun) * share;
   }
 }
 
