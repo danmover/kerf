@@ -34,12 +34,23 @@ export interface RouteWire {
   b: RouteEnd;
   /** outer diameter of the cable, mm */
   d: number;
+  /** keep-out groups (bits of RouteKeepOut.bit) this cable stays out of where it can */
+  avoid?: number;
+}
+
+/** Space a cable should not be tied in: where a moving part or a drag chain goes (assembly coordinates). */
+export interface RouteKeepOut {
+  lo: V3;
+  hi: V3;
+  /** its group, one bit of 16 */
+  bit: number;
 }
 
 export interface RouteInput {
   geos: RouteGeometry[];
   placed: RoutePlaced[];
   wires: RouteWire[];
+  keepOut?: RouteKeepOut[];
   /** grid cell size, mm (chosen from the region's size when left out) */
   cell?: number;
 }
@@ -65,6 +76,8 @@ export interface RouteResult {
 const COST_HUG = 1;
 const COST_FREE = 1.8;
 const COST_SOLID = 400;
+/** a cell a moving part sweeps through: avoided, but a plug inside one can still get out */
+const COST_KEEP = 8;
 const BUNDLE = 0.55;
 const TURN = 1.6;
 const MAX_CELLS = 2_400_000;
@@ -82,6 +95,8 @@ class Grid {
   readonly hug: Uint8Array;
   /** how many routed cables pass through each cell */
   readonly use: Uint16Array;
+  /** keep-out groups covering each cell */
+  readonly keep: Uint16Array;
 
   constructor(
     readonly min: V3,
@@ -95,6 +110,13 @@ class Grid {
     this.solid = new Uint8Array(this.n);
     this.hug = new Uint8Array(this.n);
     this.use = new Uint16Array(this.n);
+    this.keep = new Uint16Array(this.n);
+  }
+
+  markKeepOut(k: RouteKeepOut) {
+    const [i0, j0, k0] = this.cellOf(k.lo);
+    const [i1, j1, k1] = this.cellOf(k.hi);
+    for (let z = k0; z <= k1; z++) for (let y = j0; y <= j1; y++) for (let x = i0; x <= i1; x++) this.keep[this.index(x, y, z)] |= k.bit;
   }
 
   index(i: number, j: number, k: number) {
@@ -342,6 +364,7 @@ export function routeCables(input: RouteInput): RouteResult {
   });
   grid.close();
   grid.buildHug();
+  for (const k of input.keepOut ?? []) grid.markKeepOut(k);
 
   const search = new Search(grid);
   const paths: { wire: RouteWire; cells: number[] }[] = [];
@@ -456,6 +479,7 @@ class Search {
     stamp[start] = gen;
     heap.push(hcost(start), start);
     const steps = [1, -1, nx, -nx, sxy, -sxy];
+    const avoid = w.avoid ?? 0;
     let expanded = 0;
     let found = false;
     while (heap.size) {
@@ -479,6 +503,7 @@ class Search {
         if (closed[v] === gen) continue;
         let c = gr.solid[v] ? COST_SOLID : gr.hug[v] ? COST_HUG : COST_FREE;
         if (gr.use[v]) c *= BUNDLE;
+        if (avoid && gr.keep[v] & avoid) c += COST_KEEP;
         if (inDir && d !== inDir) c += TURN;
         const ng = g[u] + c;
         if (stamp[v] !== gen || ng < g[v]) {

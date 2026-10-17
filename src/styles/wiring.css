@@ -155,3 +155,41 @@
   border: 1px solid var(--line-2);
   box-shadow: var(--shadow);
 }
+
+.wr-travel {
+  position: absolute;
+  left: 12px;
+  /* above the viewport's solids/eval/build line (bottom: 104px) */
+  bottom: 132px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.wr-travel .btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.wr-axes {
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: pre;
+}
+.wr-check {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.wr-check svg {
+  flex: none;
+  margin-top: 2px;
+}
+.wr-check.pass svg {
+  color: var(--pass);
+}
+.wr-check.warn svg {
+  color: var(--warn);
+}
+.wr-check.fail svg {
+  color: var(--fail);
+}

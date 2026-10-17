@@ -9,7 +9,8 @@ import { catalogPart } from "../catalog";
 import type { MachineData } from "../types";
 import { componentPositions, wireList, wireHex, type WireEnd, type WireRow } from "../wiring";
 import { PITCH, cableWires, plugFor, type PlugKind, type PlugSpec } from "./plugs";
-import type { RouteWire } from "./route";
+import type { RouteKeepOut, RouteWire } from "./route";
+import { slotPoint, type TravelPlan } from "./travel";
 
 /** A plug frame: origin and axes (x along the contacts, z the way it goes in, y = z × x). */
 export interface Frame {
@@ -204,9 +205,61 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
 export const leadLength = (w: HarnessWire) => Math.max(6, w.d * 3);
 
 /** Where each cable's free run starts and ends, for the router. */
-export function routeRequests(h: Harness): RouteWire[] {
+export function routeRequests(h: Harness, plan?: TravelPlan | null): RouteWire[] {
   const endPoint = (e: PlugEnd, w: HarnessWire) => ({ p: add(e.frame.o, e.frame.z, PLUG_BACK[e.spec.kind] + leadLength(w)), dir: e.frame.z });
   // thick cables first: they claim the clear runs, and thin ones then follow them
   const order = [...h.wires].sort((a, b) => b.d * b.wires.length - a.d * a.wires.length);
-  return order.map((w) => ({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d }));
+  if (!plan) return order.map((w) => ({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d }));
+  const { avoid } = keepOutBits(plan);
+  const links = new Map(plan.links.map((l) => [l.id, l]));
+  const carrierOf = new Map<string, string>();
+  for (const c of plan.carriers) for (const id of c.parts) carrierOf.set(id, c.id);
+  const out: RouteWire[] = [];
+  for (const w of order) {
+    const pieces = plan.pieces[w.id];
+    if (!pieces) {
+      // a cable that does not move still keeps out of the way of what does
+      const on = carrierOf.get(w.ends[0].partId) ?? null;
+      out.push({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d, avoid: avoid(on) });
+      continue;
+    }
+    for (const pc of pieces) {
+      const end = (e: (typeof pc)["a"]) => {
+        if ("plug" in e) return endPoint(w.ends[e.plug], w);
+        const l = links.get(e.link)!;
+        const dir = e.end === "F" ? l.outF : l.outG;
+        return { p: add(slotPoint(plan, l, e.end, w.id), dir, leadLength(w)), dir };
+      };
+      out.push({ id: pc.id, a: end(pc.a), b: end(pc.b), d: w.d, avoid: avoid(pc.carrier) });
+    }
+  }
+  return out;
+}
+
+/** The keep-out boxes for the router, and which of them a run on each carrier (null: the frame) stays out of. */
+export function keepOutBits(plan: TravelPlan): { bits: Map<string, number>; avoid: (carrier: string | null) => number; boxes: RouteKeepOut[] } {
+  const bits = new Map<string, number>();
+  for (const s of plan.sweeps) if (!bits.has(s.key) && bits.size < 16) bits.set(s.key, 1 << bits.size);
+  const boxes = plan.sweeps.filter((s) => bits.has(s.key)).map((s) => ({ lo: s.lo, hi: s.hi, bit: bits.get(s.key)! }));
+  const parent = new Map(plan.carriers.map((c) => [c.id, c.parent]));
+  const under = (c: string, of: string | null) => {
+    // is carrier c carried by `of` (or by the frame, when of is null)?
+    for (let p: string | null | undefined = parent.get(c); ; p = parent.get(p!)) {
+      if (p === of) return true;
+      if (p === null || p === undefined) return of === null;
+    }
+  };
+  const chainOn = new Map(plan.links.filter((l) => l.chain).map((l) => [`chain:${l.id}`, l.parent]));
+  const avoid = (carrier: string | null) => {
+    let m = 0;
+    for (const [key, bit] of bits) {
+      const chainParent = chainOn.get(key);
+      // a run on the frame keeps out of everything that moves; a run on a carrier, out of what rides on it
+      if (chainParent !== undefined) {
+        if (carrier === null || chainParent === carrier || (chainParent !== null && under(chainParent, carrier))) m |= bit;
+      } else if (carrier === null || under(key, carrier)) m |= bit;
+    }
+    return m;
+  };
+  return { bits, avoid, boxes };
 }

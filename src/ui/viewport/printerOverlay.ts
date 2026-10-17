@@ -3,18 +3,18 @@
 // growing on the bed move by move, as it really came out: layer shifts move
 // it, under-extruded lines are thinner and redder. Which parts move with which
 // axis comes from re-evaluating the design with its show_x, show_y and show_z
-// parameters nudged (posePrinter below), so any printer design that poses
-// itself from those parameters plays back.
+// parameters nudged (machine/pose), so any printer design that poses itself
+// from those parameters plays back.
 
 import * as THREE from "three";
 import type { EvalPart, Model } from "../../core/model";
 import type { MeshEntry } from "../../core/engine";
-import { evaluate } from "../../lang/evaluator";
 import { xformMatrix } from "../../kernel/recipe";
+import { machinePose, POSE_PARAMS } from "../../machine/pose";
 import type { PrintTrace } from "../../sim/printer/run";
 import type { SceneOverlay } from "./scene";
 
-export const POSE_PARAMS = ["show_x", "show_y", "show_z"] as const;
+export { POSE_PARAMS };
 
 /** How each part moves per mm of each axis, from the design itself. */
 export interface PrinterPose {
@@ -30,38 +30,12 @@ export interface PrinterPose {
 
 const ZERO = () => new THREE.Vector3();
 
-/** Re-evaluate the design with each pose parameter nudged and see what moves. */
+/** Re-evaluate the design with each pose parameter nudged and see what moves (machine/pose). */
 export function posePrinter(source: string, model: Model): PrinterPose {
-  const val = (n: string) => {
-    const p = model.params.find((x) => x.name === n);
-    return typeof p?.value === "number" ? p.value : undefined;
-  };
-  const s0 = POSE_PARAMS.map((n) => val(n) ?? 0) as [number, number, number];
-  const origin = (p: EvalPart) => new THREE.Vector3().applyMatrix4(new THREE.Matrix4().fromArray(xformMatrix(p.xf)));
-  const base = new Map(model.parts.map((p) => [p.id, origin(p)]));
-  const moves = new Map<string, [THREE.Vector3, THREE.Vector3, THREE.Vector3]>();
-  POSE_PARAMS.forEach((name, ax) => {
-    if (val(name) === undefined) return;
-    const d = 1;
-    let m2: Model;
-    try {
-      m2 = evaluate(source, { overrides: { [name]: s0[ax] + d } });
-    } catch {
-      return;
-    }
-    for (const p of m2.parts) {
-      const b = base.get(p.id);
-      if (!b) continue;
-      const delta = origin(p).sub(b).divideScalar(d);
-      if (delta.lengthSq() < 1e-8) continue;
-      const mv = moves.get(p.id) ?? [ZERO(), ZERO(), ZERO()];
-      mv[ax] = delta;
-      moves.set(p.id, mv);
-    }
-  });
-  const hot = model.parts.find((p) => p.libKind === "hotend");
-  const bed = model.parts.find((p) => p.libKind === "heated_bed");
-  return { s0, moves, nozzle: hot ? origin(hot) : undefined, hotId: hot?.id, bedId: bed?.id };
+  const p = machinePose(source, model);
+  const v = (a: number[]) => new THREE.Vector3(...a);
+  const moves = new Map([...p.moves].map(([id, mv]) => [id, mv.map(v) as [THREE.Vector3, THREE.Vector3, THREE.Vector3]]));
+  return { s0: p.s0, moves, nozzle: p.nozzle && v(p.nozzle), hotId: p.hotId, bedId: p.bedId };
 }
 
 export class PrinterOverlay implements SceneOverlay {
