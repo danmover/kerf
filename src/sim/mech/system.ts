@@ -172,7 +172,7 @@ export class MechSystem {
           break;
         }
         case "ratio":
-          this.ratios.push(s.add(new RatioLink(l.name, joint(l.a), joint(l.b), l.ratio, l.slack, 1 - (1 - l.efficiency) * f.friction)));
+          this.ratios.push(s.add(new RatioLink(l.name, joint(l.a), joint(l.b), l.ratio, l.slack, 1 - (1 - l.efficiency) * f.friction, l.stiffness)));
           break;
         case "cam":
           this.cams.push(s.add(new Cam(l.name, joint(l.cam), joint(l.follower), new Profile(Float64Array.from(l.lift)), l.phase, l.grooved)));

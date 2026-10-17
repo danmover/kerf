@@ -267,7 +267,7 @@ export const MECH_FNS: [string, Fn][] = [
   mechFn(
     "couple",
     ["a", "b", "ratio", "slack", "efficiency", "name"],
-    "Any drive given as a ratio between two joints: b moves ratio × a (a timing belt between pulleys, a gearbox Kerf has no closer model for, a cable). slack: lost motion at b (deg or mm); efficiency: 95%.",
+    "Any drive given as a ratio between two joints: b moves ratio × a (a belt Kerf has no lib.belt for, a gearbox it has no closer model for, a cable). slack: lost motion at b (deg or mm); efficiency: 95%.",
     (a) => {
       const s1 = nameOf(a.value("a"), a.ctx, "sim.couple(): a");
       const s2 = nameOf(a.value("b"), a.ctx, "sim.couple(): b");
@@ -423,7 +423,7 @@ export const MECHANISM_FN = new Fn(
     const spec: MechSpec = { items, base: base as MechSpec["base"], auto, follow };
     return new MechSpecValue(spec);
   },
-  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.turn, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: (true); follow: the part the camera follows. Everything not on a joint is the frame.',
+  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.turn, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
 );
 
 export class MechSpecValue extends Obj {

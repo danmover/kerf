@@ -352,6 +352,89 @@ scenario "Falls on its stop" {
   });
 });
 
+describe("timing belts in a mechanism", () => {
+  // a 20-tooth drive pulley over a base plate (the bench top is under the plate, clear of the turning pulleys)
+  const RIG = `design "Belt drive"
+part base { material: "Aluminum 6061"  body box(500, 60, 5, at: (200, 0, -30)) }
+component p = lib.pulley("gt2_pulley_20t_5mm") { at: (0, 0, 0), axis: Y }
+`;
+  /** box meshes: parts where the test puts them, components (pulleys) in their own axes, which their placement turns and moves */
+  const placed = (model: ReturnType<typeof evaluate>, at: Record<string, V3>, size: Record<string, V3>) => (hash: string) => {
+    const p = model.parts.find((x) => x.hash === hash)!;
+    if (p.name === "base") return boxMesh([500, 60, 5], [200, 0, -27.5]);
+    return boxMesh(size[p.name] ?? [12, 12, 8], at[p.name] ?? [0, 0, 0]);
+  };
+  const resolveRun = (src: string, at: Record<string, V3>, size: Record<string, V3>) => {
+    const model = evaluate(src);
+    expect(model.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    const def = model.scenarios![0];
+    const r = resolveMechanism(def.spec, model, placed(model, at, size), true);
+    if (!("mech" in r)) throw new Error(JSON.stringify(r));
+    const v = runSpec({ ...def.spec, mech: r.mech }, model.machine!, model.name).variants[0];
+    expect(v.error).toBeUndefined();
+    return { model, mech: r.mech, v };
+  };
+
+  it("a closed loop turns the big pulley a third as fast, and stretches under load by its own stiffness", () => {
+    const { model, mech, v } = resolveRun(
+      `${RIG}component q = lib.pulley("gt2_pulley_60t_8mm") { at: (150, 0, 0), axis: Y }
+component loop = lib.belt("gt2_6mm_loop", path: [p, q], tension: 15N)
+scenario "Belt ratio" {
+  mechanism: sim.mechanism(sim.pivot(p, at: (0, 0, 0), axis: Y), sim.pivot(q, at: (150, 0, 0), axis: Y),
+    sim.turn(p, speed: [(0s, 0rpm), (0.2s, 300rpm)]), sim.load(on: q, torque: 300, dir: -Y))
+  duration: 1.5s
+  variants: ["expected"]
+}
+`,
+      {},
+      // the 60-tooth pulley: about 30 g of aluminium
+      { q: [38, 38, 8] },
+    );
+    const belt = model.machine!.belts[0];
+    expect(belt.open).toBe(false);
+    const link = mech.links.find((l) => l.name === "loop")!;
+    expect(link.kind).toBe("ratio");
+    if (link.kind !== "ratio") return;
+    // both pulleys inside the loop turn the same way, 20:60
+    expect(link.ratio).toBeCloseTo(1 / 3, 3);
+    // both sides of the belt pull against each other: EA/La + EA/Lb, as torque at the 60-tooth pulley
+    const rq = belt.nodes.find((n) => n.name === "q")!.r / 1000;
+    expect(link.stiffness! / rq ** 2).toBeGreaterThan((4 * belt.belt.ea) / (belt.length / 1000) * 0.9);
+    expect(mech.notes.join(" ")).toMatch(/loop: turns q at 3\.00:1/);
+    const pt = v.results["p.turns"] as number;
+    const qt = v.results["q.turns"] as number;
+    expect(qt / pt).toBeCloseTo(1 / 3, 2);
+    // held back by 0.3 N·m, the big pulley lags by the torque over the belt's stiffness
+    const lag = (qt - pt * link.ratio) * 2 * Math.PI;
+    expect(lag).toBeLessThan(0);
+    expect(Math.abs(lag)).toBeGreaterThan((0.3 / link.stiffness!) * 0.8);
+    expect(Math.abs(lag)).toBeLessThan((0.3 / link.stiffness!) * 1.25);
+    expect(v.results["loop.peak_torque"] as number).toBeGreaterThan(290);
+  });
+
+  it("an open belt drives the carriage its ends are clamped to, 40 mm a turn of a 20-tooth pulley", () => {
+    const PD = 12.732;
+    const { mech, v } = resolveRun(
+      `${RIG}component i = lib.pulley("gt2_idler_20t_5mm") { at: (400, 6.5, 0), axis: Y }
+part carriage { material: "PETG"  body box(40, 20, 10, at: (205, 11.5, ${PD / 2})) }
+component x_belt = lib.belt("gt2_6mm", path: [(180, 11.5, ${PD / 2}), p, i, (230, 11.5, ${PD / 2})], tension: 15N)
+scenario "Carriage" {
+  mechanism: sim.mechanism(sim.pivot(p, at: (0, 0, 0), axis: Y), sim.slider(carriage, axis: X), sim.turn(p, speed: 60rpm))
+  duration: 1s
+  variants: ["expected"]
+}
+`,
+      { carriage: [205, 11.5, PD / 2 + 5] },
+      { carriage: [40, 20, 10] },
+    );
+    const link = mech.links.find((l) => l.name === "x_belt")!;
+    expect(link.kind === "ratio" && link.b).toBe("carriage");
+    // turning p forward about +Y carries its top, and the belt clamped there, towards +X
+    expect(v.results["carriage.pos"] as number).toBeCloseTo(40 * (v.results["p.turns"] as number), 0);
+    expect(v.results["carriage.pos"] as number).toBeGreaterThan(30);
+  });
+});
+
 describe("firmware driving a mechanism", () => {
   it("the Sand Tunneller's firmware turns its front screw as a rigid body through its real motor and driver", () => {
     const src = readFileSync(join(__dirname, "../src/demos/sand-tunneller.kerf"), "utf8");
