@@ -1,5 +1,5 @@
 # Packages the staged app in .desktop/app (scripts/build-desktop.mjs) into
-# installers under release/. CI builds the Windows one; see .github/workflows/desktop.yml.
+# installers under release/. CI builds the Windows and Mac ones; see .github/workflows/desktop.yml.
 appId: app.kerf.desktop
 productName: Kerf
 copyright: Copyright © 2026 Kerf
@@ -37,9 +37,20 @@ linux:
   icon: desktop/resources/icon.png
   artifactName: Kerf-${version}.${ext}
 mac:
-  target: [dmg]
+  # one download for Apple Silicon and Intel Macs
+  target:
+    - target: dmg
+      arch: [universal]
   category: public.app-category.graphics-design
   icon: desktop/resources/icon.png
-  artifactName: Kerf-${version}-${arch}.${ext}
+  artifactName: Kerf-${version}-mac.${ext}
+  # There's no Apple Developer ID yet, so the app is ad-hoc signed: Apple Silicon
+  # won't run an app with no signature at all (it says the app is damaged), and
+  # without a notarised one macOS asks once before the first launch.
+  identity: "-"
+  # the hardened runtime is for notarised apps; with an ad-hoc signature it
+  # would stop Electron loading its own framework
+  hardenedRuntime: false
+  notarize: false
 # CI uploads the files itself (gh release), so electron-builder never publishes
 publish: null

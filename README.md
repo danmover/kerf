@@ -30,7 +30,10 @@ Chatting with Claude needs an Anthropic API key from the [Claude Console](https:
 
 ### Desktop app
 
-Kerf also runs as its own app. Download **Kerf-Setup-<version>.exe** from the repository's [Releases](../../releases) page and run it: it installs for your Windows user with no administrator prompt and adds Kerf to the Start menu and desktop. The installer isn't code-signed yet, so Windows may say it protected your PC; choose **More info**, then **Run anyway**.
+Kerf also runs as its own app, for Windows and Mac, from the repository's [Releases](../../releases) page.
+
+- **Windows:** download **Kerf-Setup-<version>.exe** and run it. It installs for your Windows user with no administrator prompt and adds Kerf to the Start menu and desktop. The installer isn't code-signed yet, so Windows may say it protected your PC; choose **More info**, then **Run anyway**.
+- **Mac** (Apple Silicon and Intel): download **Kerf-<version>-mac.dmg**, open it and drag Kerf into Applications. The app isn't notarised by Apple yet, so the first time you open it macOS says it can't check it: open System Settings → Privacy & Security, scroll down and click **Open Anyway** next to Kerf. On macOS 14 or older, Control-click Kerf in Applications and choose **Open** instead.
 
 The app is the production build in its own window, served from Kerf's own origin with the same security headers as the web version. It always uses the fast graphics card on machines with two, keeps building and rendering while another window is in front, and Settings → Display → Graphics shows the card in use and can switch how Kerf talks to it (Direct3D 11, Vulkan or OpenGL on Windows). Projects are kept by the app, separately from any browser: to bring browser projects across, use Settings → Data → Download a backup in the browser, then Import in the app. Voice input isn't in the app yet; on Windows, Windows + H dictates into the message box.
 
@@ -43,7 +46,7 @@ npm run desktop:dist  # builds the installer for this platform into release/
 
 On Windows, PowerShell may block `npm`; use `npm.cmd` instead. `node scripts/build-desktop.mjs` stages the app in `.desktop/app`, and `desktop/electron-builder.yml` packages it.
 
-**Releases.** The Desktop app workflow builds the Windows installer, starts the packaged app to check it opens a design and passes its checks, and publishes it. Pull requests that change `desktop/` put their installer on the **Kerf desktop preview** draft release, which only people who can push to the repository see. A merge to `main` whose `package.json` version has no release yet publishes `v<version>`, so bumping the version is how to cut a release. Run workflow on the Actions tab rebuilds `main` and replaces the installer on the current version's release.
+**Releases.** The Desktop app workflow builds the Windows and Mac installers, starts each packaged app to check it opens a design and passes its checks, and publishes them. Pull requests that change `desktop/` put their installers on the **Kerf desktop preview** draft release, which only people who can push to the repository see. Mac runners cost ten times the minutes, so pull requests build the Mac app only when they change the workflow or `desktop/electron-builder.yml`. The Mac app is ad-hoc signed, not notarised, until there is an Apple Developer ID. A merge to `main` whose `package.json` version has no release yet publishes `v<version>`, so bumping the version is how to cut a release. Run workflow on the Actions tab rebuilds `main` and replaces the installers on the current version's release.
 
 ### With accounts
 

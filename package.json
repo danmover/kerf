@@ -1,6 +1,6 @@
 {
   "name": "kerf",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Kerf: AI-directed mechanical CAD",
   "scripts": {
     "dev": "vite",
