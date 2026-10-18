@@ -15,7 +15,8 @@ import { checkIsolated } from "./isolated";
 import type { Usage } from "./pricing";
 import type { AgentStep } from "./progress";
 import { STEP_STATUSES, type StepInput } from "../ai/plan";
-import { BINDING_BETA, MAX_OUTPUT_TOKENS, hasThinking, isThinkingSignatureError, stripThinking } from "../ai/history";
+import { BINDING_BETA, MAX_CUT_RECOVERIES, MAX_OUTPUT_TOKENS, cutOffNote, hasThinking, trimCutOff, isThinkingSignatureError, stripThinking } from "../ai/history";
+import { pause, retryWait } from "../ai/retry";
 
 z.config({ jitless: true });
 
@@ -205,6 +206,7 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
   const system = [{ type: "text" as const, text: cfg.system, cache_control: { type: "ephemeral" as const } }];
   let lastText = "";
   let signalled = false;
+  let cuts = 0;
 
   for (let step = 0; step < cfg.maxSteps; step++) {
     if (cfg.signal.aborted) return { status: "stopped", summary: lastText || "Stopped before finishing." };
@@ -255,7 +257,14 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
       return { status: "failed", summary: `The Claude API returned an error: ${errorText(e)}` };
     }
     hooks.usage(final.model, final.usage as unknown as Usage);
-    const content = final.content as BetaContentBlock[];
+    // cut off at the length limit: keep what was complete (the thinking, finished calls) and carry on in smaller steps
+    let cutNote: string | null = null;
+    let content = final.content as BetaContentBlock[];
+    if (final.stop_reason === "max_tokens") {
+      const t = trimCutOff(content);
+      content = t.content;
+      cutNote = cutOffNote(t.cutTool);
+    }
     history.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
     const text = content
       .filter((b): b is Extract<BetaContentBlock, { type: "text" }> => b.type === "text")
@@ -265,13 +274,8 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
     if (text) lastText = text;
 
     if (final.stop_reason === "refusal") return { status: "failed", summary: "Claude declined this subassembly. Rephrase its brief and run it again." };
-    if (final.stop_reason === "max_tokens" && content.some((b) => b.type === "tool_use")) {
-      history.pop();
-      history.push({ role: "assistant", content: [{ type: "text", text: "(My last step was cut off at the length limit.)" }] });
-      history.push({ role: "user", content: [{ type: "text", text: "Your last tool call was cut off at the output limit and did not run. Make smaller edits." }] });
-      continue;
-    }
-    if (final.stop_reason !== "tool_use") {
+    if (cutNote && ++cuts > MAX_CUT_RECOVERIES) return { status: "failed", summary: lastText || "Its responses kept running past the length limit." };
+    if (final.stop_reason !== "tool_use" && !cutNote) {
       // a change the user made during the last request still gets an answer
       const late = hooks.takeSteering();
       if (late && !cfg.signal.aborted) {
@@ -283,6 +287,10 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
     }
 
     const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
+    if (cutNote && !uses.length) {
+      history.push({ role: "user", content: [{ type: "text", text: cutNote }] });
+      continue;
+    }
     const results: BetaToolResultBlockParam[] = [];
     // the last change in a response comes back with check_section's results, unless the agent asks for it after the change
     let lastChange = uses.length - 1;
@@ -306,7 +314,7 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
       }
       results.push({ type: "tool_result", tool_use_id: u.id, content: r.content, is_error: r.isError || undefined });
     }
-    history.push({ role: "user", content: results });
+    history.push({ role: "user", content: cutNote ? [...results, { type: "text", text: cutNote }] : results });
   }
   return { status: "stopped", summary: lastText || `Stopped after ${cfg.maxSteps} steps without finishing.` };
 }
@@ -368,13 +376,11 @@ async function streamOnce(cfg: AgentConfig, params: Record<string, unknown>, his
           continue;
         }
       }
-      // busy or rate limited after the SDK's own retries: wait and try again
-      const busy = e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError || (e instanceof Anthropic.APIError && e.status === 529);
-      if (busy && attempt < 5 && !cfg.signal.aborted) {
-        const after = Number((e as InstanceType<typeof Anthropic.APIError>).headers?.get?.("retry-after")) || 0;
-        const wait = Math.min(60, Math.max(after, 10 * (attempt + 1)));
+      // busy, rate limited or cut off part-way (which the SDK's own retries do not cover): wait and try again
+      const wait = retryWait(e, attempt, 5);
+      if (wait !== null && !cfg.signal.aborted) {
         hooks.activity(e instanceof Anthropic.RateLimitError ? `Rate limited, retrying in ${wait} s` : `Claude is busy, retrying in ${wait} s`);
-        await sleep(wait * 1000, cfg.signal);
+        await pause(wait * 1000, cfg.signal);
         continue;
       }
       throw e;
@@ -593,11 +599,4 @@ function withCacheBreakpoint(h: BetaMessageParam[]): BetaMessageParam[] {
 function errorText(e: unknown): string {
   const m = e instanceof Error ? e.message : String(e);
   return m.replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…").slice(0, 300);
-}
-
-function sleep(ms: number, signal: AbortSignal) {
-  return new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
-  });
 }

@@ -7,6 +7,8 @@ import type { BetaContentBlock, BetaContentBlockParam, BetaMessageParam, BetaToo
 import { z } from "zod";
 import { reviewerPrompt } from "./prompt";
 import { recordSpend } from "../spend";
+import { MAX_OUTPUT_TOKENS, trimCutOff } from "../history";
+import { pause, retryWait } from "../retry";
 import type { Usage } from "../../agents/pricing";
 import { AREAS, type Brief, type Finding, type ReviewProgress, type ReviewUsage, type ReviewView } from "./types";
 
@@ -209,7 +211,7 @@ export async function callReviewer(i: ReviewerInput): Promise<ReviewerOutput> {
 
   for (let step = 0; step < MAX_STEPS; step++) {
     i.onProgress?.({ stage: step === 0 ? "reviewing" : "writing", detail: step === 0 ? "Reviewer is looking at the renders" : "Reviewer is writing up" });
-    const params: Record<string, unknown> = { model: i.model, max_tokens: 16000, system, tools: [LOOK_CLOSER, SUBMIT], messages: withRollingCache(messages) };
+    const params: Record<string, unknown> = { model: i.model, max_tokens: MAX_OUTPUT_TOKENS, system, tools: [LOOK_CLOSER, SUBMIT], messages: withRollingCache(messages) };
     if (!unsupported.has("thinking")) params.thinking = { type: "adaptive", display: "omitted" };
     if (!unsupported.has("effort")) params.output_config = { effort: i.effort };
     if (!unsupported.has("fallbacks")) {
@@ -223,7 +225,9 @@ export async function callReviewer(i: ReviewerInput): Promise<ReviewerOutput> {
     usage.output += final.usage.output_tokens ?? 0;
     usage.cacheRead += final.usage.cache_read_input_tokens ?? 0;
     model = final.model;
-    const content = final.content as BetaContentBlock[];
+    // cut off at the length limit: what it was writing (half a call, unsigned thinking) cannot be sent back
+    const cut = final.stop_reason === "max_tokens";
+    const content = cut ? trimCutOff(final.content as BetaContentBlock[]).content : (final.content as BetaContentBlock[]);
     messages.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
 
     if (final.stop_reason === "refusal") throw new ReviewError("The reviewer declined to review this design.");
@@ -274,7 +278,7 @@ export async function callReviewer(i: ReviewerInput): Promise<ReviewerOutput> {
           ],
         });
       }
-      messages.push({ role: "user", content: results });
+      messages.push({ role: "user", content: cut ? [...results, { type: "text", text: "You ran out of room. Finish with submit_review, keeping each field short." }] : results });
       continue;
     }
     // ended without submitting: ask once more
@@ -286,7 +290,8 @@ export async function callReviewer(i: ReviewerInput): Promise<ReviewerOutput> {
 }
 
 async function streamWithRetry(client: Anthropic, params: Record<string, unknown>, signal?: AbortSignal) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+  let busy = 0;
+  for (let attempt = 0; attempt < 7; attempt++) {
     try {
       return await client.beta.messages.stream(params as never, { signal }).finalMessage();
     } catch (e) {
@@ -304,6 +309,13 @@ async function streamWithRetry(client: Anthropic, params: Record<string, unknown
           }
           continue;
         }
+      }
+      // busy or cut off part-way: wait and send it again rather than lose the review
+      const wait = retryWait(e, busy);
+      if (wait !== null && !signal?.aborted) {
+        busy++;
+        await pause(wait * 1000, signal);
+        continue;
       }
       throw e;
     }

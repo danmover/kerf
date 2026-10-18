@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Anthropic from "@anthropic-ai/sdk";
 import { useDesign } from "../src/core/engine";
 import { useSettings } from "../src/app/settings";
-import { clearChat, sendMessage, setClientFactory, useChat, trimCutOff } from "../src/ai/chat";
+import { clearChat, sendMessage, setClientFactory, useChat } from "../src/ai/chat";
+import { trimCutOff } from "../src/ai/history";
 import type { CheckReport } from "../src/core/checks";
 
 type Block = Record<string, unknown> & { type: string };
