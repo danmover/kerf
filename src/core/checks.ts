@@ -94,6 +94,8 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
   for (const p of visible) {
     const board = onBoard.get(p.name);
     if (board && /\.(leads|pins|legs|headerpins)$/.test(p.id)) ignorePairs.push([p.id, board]);
+    // a band presses on the tube it wraps and sits on its hooks
+    if (p.band) for (const other of [...p.band.around, ...(p.band.holds ? [p.band.holds] : [])]) for (const q of visible) if (q.name === other) ignorePairs.push([p.id, q.id]);
   }
   return { placed, queries: model.geoQueries, access, envelopes, ignorePairs };
 }

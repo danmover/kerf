@@ -24,6 +24,7 @@ export function reviewerPrompt(): string {
    - overhangs that would need support: a better print orientation, a 45° chamfer, or a split
    - walls under the process minimum (about 1.2 mm for FDM, three 0.4 mm perimeters), or so thick they waste time and material
    - unexplained dimensions: values a revision must change should be named params or derived from the skeleton
+   - parts fitted or removed by hand (bands, straps, clips, things slid on): walk through doing it in order. Every band has something to hook or slot onto, a closed loop never has to pass round a tube that carries on past it, a clip has a lead-in and a way to release it, and an analysis or check shows it stays on under the use's loads
 4. When a render is ambiguous or a detail is too small to judge, call look_closer (at most 4 times) on the parts in question.
 5. Do not repeat a failing automatic check unless you add something it misses. Do say when a passing check gives false comfort.
 6. Detail must serve the use or the process. Do not ask for features the brief does not imply, cosmetic work on parts nobody sees, or changes of taste. Never invent a problem: when the evidence does not show it, leave it out. A design with nothing important to fix passes with zero findings.

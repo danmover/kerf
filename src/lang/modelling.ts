@@ -731,7 +731,7 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "snap_hook",
-    ["at", "length", "t", "w", "catch", "dir", "facing", "angle", "root_r", "retain", "preload", "cycles"],
+    ["at", "length", "t", "w", "catch", "dir", "facing", "angle", "root_r", "retain", "preload", "cycles", "peg"],
     (a) => {
       const at = a.vec3("at");
       const L = a.positive("length");
@@ -765,12 +765,36 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
         [-t / 2 + tipX, L + back + land + slope],
         [-t / 2, L + back + land + slope],
       ];
-      const steps: FeatStep[] = [{ op: "add", shape: { t: "extrude", p: { t: "poly", pts, r: 0 }, h: w, f: { o: vsub(at, vscale(n, w / 2)), u, n }, twist: 0, scale: 1 } }];
+      // peg: a round catch that drops into a hole (a race number, a strap, a sheet): the catch face is the peg's
+      // root side and its tip side is sloped off so the sheet's edge rides up over it
+      const peg = a.has("peg") ? a.positive("peg") : 0;
+      if (peg && peg > w) a.ctx.error("snap_hook(): peg (the round catch's diameter) must be no wider than the hook (w)");
+      if (peg && back > 0) a.ctx.error("snap_hook(): a peg catch is square (retain: 90); slope a strap's hole edge instead");
+      const ramp = peg ? y / Math.tan((ang * Math.PI) / 180) : 0;
+      if (peg && ramp > peg / 2 + 1e-6) a.ctx.error(`snap_hook(): with peg: ${r2(peg)} the lead-in must finish inside the peg: make angle at least ${Math.ceil((Math.atan((2 * y) / peg) * 180) / Math.PI)} degrees or the catch shallower`);
+      const armL = peg ? L + peg + Math.max(0.5, t / 2) : 0;
+      const frame = { o: vsub(at, vscale(n, w / 2)), u, n };
+      const steps: FeatStep[] = [
+        { op: "add", shape: { t: "extrude", p: { t: "poly", pts: peg ? [[-t / 2, 0], [t / 2, 0], [t / 2, armL], [-t / 2, armL]] : pts, r: 0 }, h: w, f: frame, twist: 0, scale: 1 } },
+      ];
       const rr = a.num("root_r", r2(t / 2));
       if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
+      if (peg) {
+        // the peg rises from the arm's face; everything above the lead-in slope on its tip side is cut away
+        const c = vadd(at, vadd(vscale(u, t / 2 - 0.2), vscale(dir, L + peg / 2)));
+        const cutF = { o: vsub(at, vscale(n, peg)), u, n };
+        const cutter: V2[] = [
+          [t / 2 + y, L + peg / 2],
+          [t / 2 + y + 2, L + peg / 2],
+          [t / 2 + y + 2, L + peg + 2],
+          [t / 2, L + peg + 2],
+          [t / 2, L + peg / 2 + ramp],
+        ];
+        steps.push({ op: "add", shape: { t: "diff", a: { t: "cyl", d: peg, h: y + 0.2, at: c, dir: u }, b: [{ t: "extrude", p: { t: "poly", pts: cutter, r: 0 }, h: 2 * peg, f: cutF, twist: 0, scale: 1 }] } });
+      }
       // Bayer cantilever: strain = 1.5 y t / L² for a beam of constant section
       const strain = (1.5 * y * t) / (L * L);
-      const tip = vadd(at, vscale(dir, L + back + land + slope));
+      const tip = vadd(at, vscale(dir, peg ? armL : L + back + land + slope));
       return new FeatureV("snap_hook", steps, { strain, deflection: y, length: L, tip: new Vec(tip) }, strain, {
         kind: "snap",
         at,
@@ -784,9 +808,10 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
         retain,
         preload,
         cycles,
+        ...(peg ? { peg } : {}),
       });
     },
-    "snap_hook(at, length, t, w, catch: 1, dir: Z, facing: X, angle: 30, root_r: t/2, retain: 90, preload: 0, cycles: 10) — a cantilever snap-fit hook rising from `at` (the centre of its root) along dir, t thick (toward facing), w wide, with a catch lip `catch` mm deep on the facing side and a lead-in slope. retain is the catch face's slope (90: square, permanent; 30-45: it can be pulled apart again); preload is how far it stays bent once latched (0 rattles if the parts come out a little off); cycles is how often it is snapped. The springs and clips checks give its push-in and pull-out forces, its strain against the material (and the print's layers) and whether it latches tight or goes slack. .strain gives the bending strain. Use with add.",
+    "snap_hook(at, length, t, w, catch: 1, dir: Z, facing: X, angle: 30, root_r: t/2, retain: 90, preload: 0, cycles: 10, peg:) — a cantilever snap-fit hook rising from `at` (the centre of its root) along dir, t thick (toward facing), w wide, with a catch lip `catch` mm deep on the facing side and a lead-in slope. retain is the catch face's slope (90: square, permanent; 30-45: it can be pulled apart again); preload is how far it stays bent once latched (0 rattles if the parts come out a little off); cycles is how often it is snapped. peg: d makes the catch a round peg of that diameter at the arm's tip that clicks into a hole (a race number, a strap or a sheet slid along the arm), square on its root side and sloped on its tip side (angle 40-50). The springs and clips checks give its push-in and pull-out forces, its strain against the material (and the print's layers) and whether it latches tight or goes slack. .strain gives the bending strain. Use with add.",
   ),
   def(
     "flexure",

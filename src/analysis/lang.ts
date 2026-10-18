@@ -1,6 +1,6 @@
 // The `analysis` block of the design language: the functions that are only
 // callable inside it (face, zone, force, pressure, torque, roller, mass, spin,
-// band) and the step that turns its properties into an AnalysisSpec.
+// band, wind, pull, contact) and the step that turns its properties into an AnalysisSpec.
 //
 //   analysis "Shelf load" {
 //     parts: [bracket]
@@ -107,7 +107,7 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "force",
-    ["where", "f", "dir"],
+    ["where", "f", "dir", "at"],
     (a) => {
       const r = region(a.value("where"), a);
       const fv = a.value("f");
@@ -117,9 +117,74 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
         f = [d[0] * fv, d[1] * fv, d[2] * fv];
       } else f = a.vec3("f");
       f = clean(f);
+      if (a.has("at")) return leverLoads(a, r, f, a.vec3("at"), "force");
       return wrap(LOAD, { t: "force", region: r, f } satisfies LoadSpec, "force");
     },
-    "force(region, (0, 0, -50N)) → a total force in newtons spread over the region. force(region, 50N, dir: -Z) is the same. 1 kg of weight ≈ 9.81 N.",
+    "force(region, (0, 0, -50N)) → a total force in newtons spread over the region. force(region, 50N, dir: -Z) is the same. 1 kg of weight ≈ 9.81 N. force(zone(...), 20N, dir: X, at: p) is a force on something not analysed (a thin sheet, a sign, a handle) at point p, carried into the zone as that force plus its moment.",
+  ),
+  def(
+    "wind",
+    ["where", "speed", "dir", "area", "at", "cd"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      const v = a.positive("speed");
+      if (v < 1000) a.ctx.error("wind(): give the speed with its unit, like 70kmh or 45mph (a plain number is mm/s)");
+      const cd = a.num("cd", 1.2);
+      // dynamic pressure ½ρv², air at 1.225 kg/m³: in N/mm² with v in mm/s
+      const q = 0.5 * 1.225e-12 * v * v;
+      if (!a.has("area")) return wrap(LOAD, { t: "pressure", region: r, p: q * cd } satisfies LoadSpec, "wind");
+      const d = a.dir("dir", [1, 0, 0]);
+      const F = q * cd * a.positive("area");
+      const f = clean([d[0] * F, d[1] * F, d[2] * F]);
+      return a.has("at") ? leverLoads(a, r, f, a.vec3("at"), "wind") : wrap(LOAD, { t: "force", region: r, f } satisfies LoadSpec, "wind");
+    },
+    'wind(region, 70kmh, cd: 1.2) → wind pressure ½ρv²·cd pushing on a face (cd 1.2 for a flat plate square to the wind, 0.5 for a tube). wind(zone(...), 70kmh, dir: X, area: 8400, at: p) is the wind on a sheet or sign that is not analysed (area in mm², centre of pressure p), carried into the zone that holds it as a force plus its moment. Speeds take kmh or mph.',
+  ),
+  def(
+    "pull",
+    ["band"],
+    (a) => {
+      const b = a.value("band");
+      if (!(b instanceof Obj) || b.kind !== "component" || b.fields.kind !== "band") a.ctx.error("pull(): name a lib.band, like pull(band_top)");
+      const f = (b as Obj).fields;
+      const pt = (k: string) => (f[k] instanceof Vec ? (f[k] as Vec).v : null);
+      const from = pt("from");
+      const to = pt("to");
+      const fd = pt("from_pull");
+      const td = pt("to_pull");
+      if (!from || !to || !fd || !td) a.ctx.error("pull(): the band must be hooked at both ends (from: and to:) to pull on its hooks");
+      const P = typeof f.pull === "number" ? f.pull : 0;
+      const zoneAt = (p: number[], pin: number): RegionSpec => ({ t: "sphere", at: [p[0], p[1], p[2] ?? 0], r: pin / 2 + 1 });
+      const load = (p: number[], d: number[], pin: number) => wrap(LOAD, { t: "force", region: zoneAt(p, pin), f: clean([d[0] * P, d[1] * P, (d[2] ?? 0) * P]) } satisfies LoadSpec, "band pull");
+      return [load(from!, fd!, Number(f.from_pin ?? 4)), load(to!, td!, Number(f.to_pin ?? 4))];
+    },
+    "pull(band) → the pull of a lib.band on its two hook pins (both strands, toward the tube it wraps), as two forces. Use it with load: on the part the band holds.",
+  ),
+  def(
+    "contact",
+    ["where", "mu", "normal", "grip"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      if (r.t !== "face" && r.t !== "cyl" && !a.has("normal")) a.ctx.error("contact(): give normal: (the way the seat faces, out of the part) for a sphere or box zone; face() and cylinder zones know theirs");
+      const mu = a.num("mu", 0.3);
+      if (!(mu >= 0) || mu > 2) a.ctx.error("contact(): mu (the friction coefficient) should be 0..2");
+      let grip: { force: number; moment: number; names: string[] } | undefined;
+      const gv = a.value("grip");
+      if (gv !== undefined) {
+        grip = { force: 0, moment: 0, names: [] };
+        for (const b of Array.isArray(gv) ? gv : [gv]) {
+          if (!(b instanceof Obj) || b.kind !== "component" || b.fields.kind !== "band") a.ctx.error("contact(): grip: lists the lib.band components round the same tube, like grip: [band_top, band_bottom]");
+          const f = (b as Obj).fields;
+          const n = Number(f.grip_force ?? 0);
+          grip.force += n;
+          grip.moment += Number(f.grip_moment ?? 0);
+          grip.names.push(String(f.name));
+        }
+      }
+      const spec: SupportSpec = { region: r, contact: { mu, ...(a.has("normal") ? { normal: clean(a.dir("normal")) } : {}), ...(grip ? { grip } : {}) } };
+      return wrap(SUPPORT, spec, "contact");
+    },
+    "contact(region, mu: 0.3, grip: [band]) → a seat that is only pressed on (by bands, springs or its own weight), not glued: it holds like fix:, then the result checks that the seat stays pressed (no edge lifts off) and that friction holds what would slide or turn it. A cylinder zone round a tube (zone(at:, d:, axis:, length:)) is a saddle on that tube; grip: adds the friction of bands round the same tube.",
   ),
   def(
     "pressure",
@@ -175,6 +240,18 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     "band(20Hz, 60Hz, name: \"road\") → shaking anywhere between two frequencies (a vehicle, footsteps, a vibrating table). A plain number like 50Hz in excite: is one frequency. Use it in excite:.",
   ),
 ]);
+
+/** A force at a point off the analysed parts, carried into a zone as the same force plus its moment about the zone's centre. */
+function leverLoads(a: Args, r: RegionSpec, f: V3, at: V3, what: string): Value {
+  const c: V3 | null = r.t === "sphere" || r.t === "box" ? r.at : r.t === "cyl" ? [r.at[0] + (r.axis[0] * r.length) / 2, r.at[1] + (r.axis[1] * r.length) / 2, r.at[2] + (r.axis[2] * r.length) / 2] : null;
+  if (!c) return a.ctx.error(`${a.fname}(): at: carries the load in from a point, so give a zone() that holds it (its centre is the pivot), not a face()`);
+  const arm: V3 = [at[0] - c[0], at[1] - c[1], at[2] - c[2]];
+  const M: V3 = [arm[1] * f[2] - arm[2] * f[1], arm[2] * f[0] - arm[0] * f[2], arm[0] * f[1] - arm[1] * f[0]];
+  const m = Math.hypot(...M);
+  const out: Value[] = [wrap(LOAD, { t: "force", region: r, f, from: at } satisfies LoadSpec, what)];
+  if (m > 1e-9) out.push(wrap(LOAD, { t: "torque", region: r, torque: m, axis: clean([M[0] / m, M[1] / m, M[2] / m]), at: c } satisfies LoadSpec, `${what} moment`));
+  return out;
+}
 
 export interface AnalysisItem {
   name: string;
@@ -259,10 +336,10 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       if (as === "fix") {
         if (x instanceof Obj && x.kind === REGION) supports.push({ region: x.fields.spec as unknown as RegionSpec });
         else if (x instanceof Obj && x.kind === SUPPORT) supports.push(x.fields.spec as unknown as SupportSpec);
-        else fail(`fix: should be a region like face(bracket, -Y), zone(at: p, r: 3) or roller(face(base, -Z), Z); got ${typeName(x)}`, p.span);
+        else fail(`fix: should be a region like face(bracket, -Y), zone(at: p, r: 3), roller(face(base, -Z), Z) or contact(region, mu: 0.3); got ${typeName(x)}`, p.span);
       } else {
         if (x instanceof Obj && x.kind === LOAD) loads.push(x.fields.spec as unknown as LoadSpec);
-        else fail(`load: should be force(...), pressure(...) or torque(...); got ${typeName(x)}`, p.span);
+        else fail(`load: should be force(...), pressure(...), torque(...), wind(...) or pull(band); got ${typeName(x)}`, p.span);
       }
     }
   };

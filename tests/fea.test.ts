@@ -270,3 +270,43 @@ describe("analysis size limits", () => {
     expect(sizeGrid([100, 10, 10], 1e4, 30_000, 1)).toEqual({ cells: [100, 10, 10], raised: false });
   });
 });
+
+describe("seats that are only pressed on", () => {
+  const block = (loads: StructuralInput["loads"]) =>
+    runStructural(
+      base({
+        parts: [{ id: "block", name: "block", mesh: gridBox([-20, -20, 0], [20, 20, 10], [8, 8, 2]), material: 0 }],
+        materials: [mechMaterial("PETG")],
+        supports: [{ region: { t: "face", part: "block", dir: [0, 0, -1] }, contact: { mu: 0.5 } }],
+        loads,
+        target: 4000,
+      }),
+    ).supports[0].contact!;
+  const top = { t: "face" as const, part: "block", dir: [0, 0, 1] as V3 };
+
+  it("is pressed on evenly by a push down its middle", () => {
+    const c = block([{ t: "force", region: top, f: [0, 0, -100] }]);
+    expect(c.pressing).toBeCloseTo(100, 0);
+    expect(c.lift).toBeLessThan(1 / 3);
+    expect(c.use).toBeLessThan(0.01);
+  });
+
+  it("uses its friction to hold a sideways push", () => {
+    const c = block([{ t: "force", region: top, f: [20, 0, -100] }]);
+    expect(c.slide).toBeCloseTo(20, 0);
+    expect(c.slideCap).toBeCloseTo(50, 0);
+    expect(c.use).toBeCloseTo(0.4, 1);
+  });
+
+  it("tips over its edge when the push acts beyond it, and comes off when pulled", () => {
+    // 100 N down with 3000 N·mm about Y: the push acts 30 mm off the middle of a seat 20 mm half-wide
+    const tipped = block([
+      { t: "force", region: top, f: [0, 0, -100] },
+      { t: "torque", region: top, torque: 3000, axis: [0, 1, 0] },
+    ]);
+    expect(tipped.lift).toBeGreaterThan(1);
+    expect(tipped.liftAt).toBeDefined();
+    const pulled = block([{ t: "force", region: top, f: [0, 0, 100] }]);
+    expect(pulled.pressing).toBeLessThan(0);
+  });
+});
