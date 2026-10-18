@@ -132,6 +132,10 @@ let abort: AbortController | null = null;
 /** bumped whenever the chat leaves its project or is cleared, so a loop still finishing leaves the new state alone */
 let gen = 0;
 let lastEditedSource: string | null = null;
+/** the source as Claude last read or wrote it (get_design, its own edits, or the context note); null when it has not */
+let sourceSeen: string | null = null;
+/** a design up to this long goes with the user's message when Claude has not seen it, which saves a get_design step */
+const INLINE_SOURCE_MAX = 16_000;
 let idn = 0;
 const nid = () => `c${Date.now().toString(36)}${(++idn).toString(36)}`;
 type Feature = "effort" | "thinking" | "fallbacks" | "binding";
@@ -208,7 +212,7 @@ export async function loadChat(projectId: string) {
   const items = ((rec?.items as ChatItem[]) ?? []).map((it) =>
     it.kind === "assistant" ? { ...it, streaming: false } : (it.kind === "tool" || it.kind === "review") && it.status === "running" ? { ...it, status: "error" as const, detail: "Interrupted", error: "Interrupted" } : it,
   );
-  lastEditedSource = null;
+  lastEditedSource = sourceSeen = null;
   // a choice card left open in a previous session is still answerable
   const open = savedPending && items.some((i) => i.id === savedPending.itemId && i.kind === "choice" && !i.chosen) ? savedPending : null;
   set({ projectId, items, busy: false, pendingChoice: open, briefSeen });
@@ -314,6 +318,7 @@ export async function clearChat() {
   history = [];
   sent = null;
   flatServer = false;
+  lastEditedSource = sourceSeen = null;
   set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
   const { projectId } = get();
@@ -327,6 +332,7 @@ export function resetChat() {
   history = [];
   sent = null;
   flatServer = false;
+  lastEditedSource = sourceSeen = null;
   set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
 }
@@ -495,10 +501,25 @@ function contextNote(): string {
     reportSummary(report, 12),
     selected.length ? `The user has selected: ${selected.slice(0, 20).join(", ")}` : "",
     drawingContext(),
-    lastEditedSource !== null && lastEditedSource !== source ? "The source changed since your last edit (the user edited it). Call get_design before editing." : "",
+    sourceNote(source),
     `</context>`,
   ];
   return lines.filter(Boolean).join("\n");
+}
+
+/** The source itself when Claude has not seen it as it is and it is short; otherwise a word on whether to read it. */
+function sourceNote(source: string): string {
+  if (sourceSeen === source) return "";
+  const edited = lastEditedSource !== null || sourceSeen !== null;
+  if (source.length > INLINE_SOURCE_MAX) return edited ? "The source changed since you last saw it (the user edited it). Call get_design before editing." : "";
+  sourceSeen = source;
+  const lines = source.split("\n");
+  const w = String(lines.length).length;
+  return [
+    `<source note="The design as it is now${edited ? "; it changed since you last saw it" : ""}. Line numbers are not part of the text. Edit it from here without calling get_design.">`,
+    ...lines.map((l, i) => `${String(i + 1).padStart(w, " ")}| ${l}`),
+    `</source>`,
+  ].join("\n");
 }
 
 /** Add attached files to the brief as references (one version), returning each file's reference id. */
@@ -738,10 +759,10 @@ function answerText(label: string, option: AskOption, r: ReturnType<typeof recor
   if (note) lines.push(`They added: ${note}`);
   if (r) {
     const applied = r.applied.length ? `Kerf has already applied the option's values (${r.applied.map((c) => `${c.param} = ${fmtValue(c.to)}`).join(", ")}) and recorded` : "Kerf recorded";
-    lines.push(`${applied} the answer as \`decision ${r.name}\` in the source. The source changed, so call get_design before your next edit.`);
+    lines.push(`${applied} the answer as \`decision ${r.name}\` in the source. The source changed: the context note below holds it when the design is short; otherwise call get_design before your next edit.`);
     if (r.missing.length) lines.push(`These option values were not applied because the parameters no longer exist: ${r.missing.join(", ")}.`);
-    lines.push(option.set && Object.keys(option.set).length ? "Make any other changes this option needs, then run_checks and report." : "Carry out this choice, then run_checks and report.");
-  } else lines.push("Carry out this choice, then run_checks and report.");
+    lines.push(option.set && Object.keys(option.set).length ? "Make any other changes this option needs and report the checks (each edit returns them; call run_checks if you change nothing else)." : "Carry out this choice and report the checks that come with your edits.");
+  } else lines.push("Carry out this choice and report the checks that come with your edits.");
   return lines.join("\n");
 }
 
@@ -888,6 +909,8 @@ class NeedsDesignModel extends Error {
 
 /** Tools that change the design: each one counts as an edit for the turn card, the "before" picture, revert and the self-review. */
 const EDIT_TOOLS = new Set(["edit_design", "write_design", "build_subassemblies", "set_material"]);
+/** Tools whose result can carry the build and checks of their change (see runTool's check). */
+const CHECKED_TOOLS = new Set(["edit_design", "write_design", "update_brief", "set_material"]);
 
 /** Why a quick turn that called this tool goes to the design model. */
 function handoverWhy(tool: string) {
@@ -1205,7 +1228,11 @@ async function runLoop(opts: LoopOptions = {}) {
       let ask: { toolUseId: string; outcome: ToolOutcome } | null = null;
       let pausedAfter: string | null = null;
       let offered: string | null = null;
-      for (const u of uses) {
+      // the last change in a response comes back with the build and checks, unless Claude asks for run_checks after it
+      let lastChange = uses.length - 1;
+      while (lastChange >= 0 && !CHECKED_TOOLS.has(uses[lastChange].name)) lastChange--;
+      const checkAt = uses.slice(lastChange + 1).some((u) => u.name === "run_checks") ? -1 : lastChange;
+      for (const [i, u] of uses.entries()) {
         if (ac.signal.aborted) break;
         if (pausedAfter) {
           // the user asked to review once that step was done: nothing after it runs
@@ -1225,7 +1252,7 @@ async function runLoop(opts: LoopOptions = {}) {
         endPreview();
         let outcome: ToolOutcome;
         try {
-          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems) : await runTool(u.name, u.input, { signal: ac.signal, toolUseId: u.id });
+          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems) : await runTool(u.name, u.input, { signal: ac.signal, toolUseId: u.id, check: CHECKED_TOOLS.has(u.name) ? i === checkAt : undefined });
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
@@ -1247,9 +1274,9 @@ async function runLoop(opts: LoopOptions = {}) {
         if (EDIT_TOOLS.has(u.name) || u.name === "update_brief") {
           if (!outcome.isError) {
             edits++;
-            lastEditedSource = useDesign.getState().source;
+            lastEditedSource = sourceSeen = useDesign.getState().source;
           }
-        }
+        } else if (u.name === "get_design") sourceSeen = useDesign.getState().source;
         patch(itemId, (it) =>
           it.kind === "tool"
             ? { ...it, status: outcome.card.status ?? (outcome.isError ? "error" : "done"), title: outcome.card.title, detail: outcome.card.detail, diff: outcome.card.diff, image: outcome.card.image }

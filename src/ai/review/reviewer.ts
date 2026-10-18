@@ -179,7 +179,21 @@ function firstMessage(i: ReviewerInput): BetaContentBlockParam[] {
     blocks.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: v.image.split(",")[1] ?? "" } });
   }
   text(`This is review round ${i.round}. Review the design against the brief, then call submit_review.`);
+  // the renders, source and inventory are sent again with every close-up the reviewer asks for: read them from the cache
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: "ephemeral" } } as BetaContentBlockParam;
   return blocks;
+}
+
+/** The messages with a cache breakpoint on the newest user turn, so each step reads the one before from the cache. */
+function withRollingCache(messages: BetaMessageParam[]): BetaMessageParam[] {
+  if (messages.length < 2) return messages;
+  const out = messages.slice();
+  const last = out[out.length - 1];
+  if (last.role !== "user" || typeof last.content === "string" || !last.content.length) return out;
+  const blocks = last.content.slice();
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: "ephemeral" } } as BetaContentBlockParam;
+  out[out.length - 1] = { ...last, content: blocks };
+  return out;
 }
 
 export async function callReviewer(i: ReviewerInput): Promise<ReviewerOutput> {
@@ -192,7 +206,7 @@ export async function callReviewer(i: ReviewerInput): Promise<ReviewerOutput> {
 
   for (let step = 0; step < MAX_STEPS; step++) {
     i.onProgress?.({ stage: step === 0 ? "reviewing" : "writing", detail: step === 0 ? "Reviewer is looking at the renders" : "Reviewer is writing up" });
-    const params: Record<string, unknown> = { model: i.model, max_tokens: 16000, system, tools: [LOOK_CLOSER, SUBMIT], messages };
+    const params: Record<string, unknown> = { model: i.model, max_tokens: 16000, system, tools: [LOOK_CLOSER, SUBMIT], messages: withRollingCache(messages) };
     if (!unsupported.has("thinking")) params.thinking = { type: "adaptive", display: "omitted" };
     if (!unsupported.has("effort")) params.output_config = { effort: i.effort };
     if (!unsupported.has("fallbacks")) {

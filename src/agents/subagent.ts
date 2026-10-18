@@ -24,7 +24,8 @@ export const VIEWS = ["iso", "front", "back", "top", "bottom", "left", "right"] 
 export const SUBAGENT_TOOLS = [
   {
     name: "write_section",
-    description: "Replace your whole section with new Kerf source (statements only, no section markers). The section is evaluated at once with the layout and your dependencies, and the result is returned. Use for the first draft or a rewrite.",
+    description:
+      "Replace your whole section with new Kerf source (statements only, no section markers). The section is evaluated with the layout and your dependencies, built and checked, and the result comes back with the checks (when one response makes several changes, the last one carries them). Use for the first draft or a rewrite.",
     eager_input_streaming: true,
     input_schema: {
       type: "object" as const,
@@ -38,7 +39,7 @@ export const SUBAGENT_TOOLS = [
   },
   {
     name: "edit_section",
-    description: "Apply exact text replacements inside your section, in order. Each old_text must appear exactly once in your section. Returns the evaluation result.",
+    description: "Apply exact text replacements inside your section, in order. Each old_text must appear exactly once in your section. Returns the evaluation result with the checks, as write_section does.",
     eager_input_streaming: true,
     input_schema: {
       type: "object" as const,
@@ -62,7 +63,7 @@ export const SUBAGENT_TOOLS = [
   },
   {
     name: "check_section",
-    description: "Build your section with the layout and your dependencies in a separate geometry worker and run every check: build errors, requirements, solid interference, tool access, gear meshing and motion. Returns the results that involve your parts.",
+    description: "Build your section with the layout and your dependencies in a separate geometry worker and run every check: build errors, requirements, solid interference, tool access, gear meshing and motion. Returns the results that involve your parts. Your writes and edits already return these, so call it only to check again.",
     input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
   },
   {
@@ -283,14 +284,23 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
 
     const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
     const results: BetaToolResultBlockParam[] = [];
-    for (const u of uses) {
+    // the last change in a response comes back with check_section's results, unless the agent asks for it after the change
+    let lastChange = uses.length - 1;
+    while (lastChange >= 0 && !CHANGE_TOOLS.has(uses[lastChange].name)) lastChange--;
+    const checkAt = uses.slice(lastChange + 1).some((u) => u.name === "check_section") ? -1 : lastChange;
+    for (const [i, u] of uses.entries()) {
       if (cfg.signal.aborted) {
         results.push({ type: "tool_result", tool_use_id: u.id, content: "Stopped by the user before this ran.", is_error: true });
         continue;
       }
       let r: { content: ResultContent; isError?: boolean };
       try {
-        r = await runTool(u.name, u.input, ws, hooks);
+        const mode = CHANGE_TOOLS.has(u.name) ? (i === checkAt ? "now" : "later") : undefined;
+        r = await runTool(u.name, u.input, ws, hooks, mode);
+        if (mode === "now" && !r.isError && typeof r.content === "string" && !r.content.startsWith("No change")) {
+          const c = await runTool("check_section", {}, ws, hooks);
+          r = { content: `${r.content}\n\nBuilt and checked:\n${typeof c.content === "string" ? c.content : ""}` };
+        }
       } catch (e) {
         r = { content: `Tool failed: ${errorText(e)}`, isError: true };
       }
@@ -385,12 +395,19 @@ const TOOL_ACTIVITY: Record<string, string> = {
 
 // ---------- tools ----------
 
-async function runTool(name: string, input: unknown, ws: Workspace, hooks: AgentHooks): Promise<{ content: ResultContent; isError?: boolean }> {
+/** Tools that change the section: the last one in a response carries the checks. */
+const CHANGE_TOOLS = new Set(["write_section", "edit_section"]);
+
+/**
+ * mode, for a change: "now" leaves the checks to the caller, which adds them to the result; "later" says another
+ * change in the same response carries them; undefined asks for check_section.
+ */
+async function runTool(name: string, input: unknown, ws: Workspace, hooks: AgentHooks, mode?: "now" | "later"): Promise<{ content: ResultContent; isError?: boolean }> {
   switch (name) {
     case "write_section": {
       const p = WriteIn.safeParse(input);
       if (!p.success) return invalid(p.error);
-      return saveBody(stripMarkers(p.data.source.replace(/\r\n/g, "\n")), p.data.summary, ws, hooks);
+      return saveBody(stripMarkers(p.data.source.replace(/\r\n/g, "\n")), p.data.summary, ws, hooks, mode);
     }
     case "edit_section": {
       const p = EditIn.safeParse(input);
@@ -401,7 +418,7 @@ async function runTool(name: string, input: unknown, ws: Workspace, hooks: Agent
         hooks.step({ title: "Edit could not be applied", status: "error", detail: errors[0] });
         return { content: `No edits were applied.\n${msg}`, isError: true };
       }
-      return saveBody(src, p.data.summary, ws, hooks);
+      return saveBody(src, p.data.summary, ws, hooks, mode);
     }
     case "check_section": {
       const id = hooks.step({ title: "Checking the geometry", status: "running" });
@@ -468,7 +485,7 @@ function stripMarkers(src: string): string {
     .join("\n");
 }
 
-function saveBody(body: string, summary: string, ws: Workspace, hooks: AgentHooks): { content: ResultContent; isError?: boolean } {
+function saveBody(body: string, summary: string, ws: Workspace, hooks: AgentHooks, mode?: "now" | "later"): { content: ResultContent; isError?: boolean } {
   const before = ws.body();
   const clean = body.endsWith("\n") || !body ? body : body + "\n";
   if (clean === before) return { content: "No change: the section is identical." };
@@ -485,7 +502,8 @@ function saveBody(body: string, summary: string, ws: Workspace, hooks: AgentHook
     collisions.length ? `Name collisions (rename yours): ${collisions.join("; ")}` : "",
     own.summary,
     `<your_section note="Line numbers are not part of the text.">\n${numbered(clean)}\n</your_section>`,
-    "Next: call check_section to build and check the geometry.",
+    // with source errors the checks are left for after the fix
+    own.errors.length || mode === undefined ? "Next: call check_section to build and check the geometry." : mode === "later" ? "The checks come after your last change in this response." : "",
   ];
   return { content: lines.filter(Boolean).join("\n"), isError: own.errors.length > 0 || undefined };
 }

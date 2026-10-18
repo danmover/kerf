@@ -251,6 +251,21 @@ export function writeBrief(src: string, model: Model | null, d: BriefData): stri
   const text = serializeBrief(d);
   const b = model?.brief;
   if (b) return src.slice(0, b.span.start) + text + src.slice(b.span.end);
+  return placeBrief(src, text);
+}
+
+/**
+ * A whole new source that has no brief block keeps the brief of the source it replaces, as written, so Claude can
+ * rewrite the design in the same response that records the brief.
+ */
+export function keepBrief(next: string, before: string, model: Model | null): string {
+  const b = model?.brief;
+  if (!b || /(^|\n)\s*brief\s*\{/.test(next)) return next;
+  return placeBrief(next, before.slice(b.span.start, b.span.end));
+}
+
+/** Add a brief block after the design name and notes at the top of the file. */
+function placeBrief(src: string, text: string): string {
   let at = 0;
   for (const s of parse(src).program.stmts) {
     if (s.k !== "design" && s.k !== "note") break;

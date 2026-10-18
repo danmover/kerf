@@ -34,7 +34,7 @@ import { PLAN_TOOL, runPlanTool } from "./planTool";
 import { REVIEW_TOOL } from "./review/tool";
 import { useProject } from "../app/project";
 import { assetBlock } from "../persist/assets";
-import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssumptions, protectedBriefChanges, validId, writeBrief, type BriefData, type FieldKey } from "../core/brief";
+import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssumptions, protectedBriefChanges, validId, writeBrief, keepBrief, type BriefData, type FieldKey } from "../core/brief";
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./materialTools";
 import { sketchStatusText } from "../sketch/evaluate";
@@ -56,13 +56,13 @@ export const TOOL_DEFS = [
   {
     name: "get_design",
     description:
-      "Read the current design: full source with line numbers (the numbers are not part of the text), the evaluated parameters, parts and requirements, and the latest check results. Call before your first edit and whenever the user may have changed the source.",
+      "Read the current design: full source with line numbers (the numbers are not part of the text), the evaluated parameters, parts and requirements, and the latest check results. Call before your first edit and whenever the user may have changed the source, unless the context note already holds the current source.",
     input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
   },
   {
     name: "edit_design",
     description:
-      "Apply exact text replacements to the design source, in order. Each old_text must match the current source exactly once (copy it from get_design without the line-number prefix). The design is re-evaluated at once and the result returned; call run_checks afterwards for geometry checks. Prefer several small edits over large ones.",
+      "Apply exact text replacements to the design source, in order. Each old_text must match the current source exactly once (copy it from get_design or the source in the context note, without the line-number prefix). The design is rebuilt and checked, and the result comes back with every check (when one response makes several changes, the last one carries the checks). Prefer several small edits over large ones.",
     eager_input_streaming: true,
     input_schema: {
       type: "object" as const,
@@ -90,7 +90,8 @@ export const TOOL_DEFS = [
   },
   {
     name: "write_design",
-    description: "Replace the whole design source. Use for a brand-new design or a rewrite of most of the file; otherwise use edit_design.",
+    description:
+      "Replace the whole design source. Use for a brand-new design or a rewrite of most of the file; otherwise use edit_design. Leave the brief block out of the source to keep the current brief (record or change it with update_brief). Like edit_design, the result comes back with every check.",
     eager_input_streaming: true,
     input_schema: {
       type: "object" as const,
@@ -117,7 +118,7 @@ export const TOOL_DEFS = [
   {
     name: "run_checks",
     description:
-      "Wait for the geometry kernel to build the current design, then return every check: requirements with margins, solid interference, fastener tool access, gear meshing, swept motion envelopes, build errors, and for machines the electrical rules, motor loads, the physical test plan and a summary of the generated firmware with its warnings.",
+      "Wait for the geometry kernel to build the current design, then return every check: requirements with margins, solid interference, fastener tool access, gear meshing, swept motion envelopes, build errors, and for machines the electrical rules, motor loads, the physical test plan and a summary of the generated firmware with its warnings. Edits already return these, so call it only to look again, for example once the detailed geometry has finished.",
     input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
   },
   {
@@ -889,8 +890,14 @@ function lockedChanges(before: string, after: string): string[] {
   return out;
 }
 
-function evalFeedback(m: Model, before: Model | null): string {
-  const lines = [modelSummary(m)];
+/**
+ * How an edit's result deals with the checks: undefined asks Claude to call run_checks, "later" says another change in
+ * the same response carries them, "now" leaves the design summary to the check results added after the edit.
+ */
+type CheckMode = "now" | "later" | undefined;
+
+function evalFeedback(m: Model, before: Model | null, mode: CheckMode): string {
+  const lines = mode === "now" ? [] : [modelSummary(m)];
   if (before) {
     const changed = m.parts.filter((p) => {
       const q = before.parts.find((x) => x.id === p.id);
@@ -899,11 +906,12 @@ function evalFeedback(m: Model, before: Model | null): string {
     const removed = before.parts.filter((p) => !m.parts.some((x) => x.id === p.id));
     lines.push(`Geometry to rebuild: ${changed.length} solid(s)${changed.length ? ` (${changed.slice(0, 20).map((p) => p.id).join(", ")})` : ""}; removed: ${removed.length}. Unchanged solids are reused from cache.`);
   }
-  lines.push("Next: call run_checks to build and check the geometry.");
+  if (mode === undefined) lines.push("Next: call run_checks to build and check the geometry.");
+  else if (mode === "later") lines.push("The build and check results come after your last change in this response.");
   return lines.join("\n");
 }
 
-function applySource(next: string, summary: string, unlockOk: boolean | undefined): ToolOutcome {
+function applySource(next: string, summary: string, unlockOk: boolean | undefined, mode: CheckMode): ToolOutcome {
   const before = useDesign.getState().source;
   const beforeModel = useDesign.getState().model;
   if (next === before) return { content: "No change: the new source is identical to the current one.", card: { title: "No change needed" } };
@@ -921,7 +929,7 @@ function applySource(next: string, summary: string, unlockOk: boolean | undefine
   const stats = diffStats(before, next);
   const errors = model.diagnostics.filter((d) => d.severity === "error").length;
   return {
-    content: evalFeedback(model, beforeModel),
+    content: evalFeedback(model, beforeModel, mode),
     card: {
       title: summary,
       detail: `+${stats.added} −${stats.removed} lines${errors ? ` · ${errors} source error${errors > 1 ? "s" : ""}` : ""}`,
@@ -933,7 +941,60 @@ function applySource(next: string, summary: string, unlockOk: boolean | undefine
 
 // ---------- handlers ----------
 
-export async function runTool(name: string, input: unknown, ctx: { signal?: AbortSignal; toolUseId?: string } = {}): Promise<ToolOutcome> {
+/** Tools that change the source: given check, the result carries the build and check results of the change. */
+const SOURCE_TOOLS = new Set(["edit_design", "write_design", "update_brief", "set_material"]);
+
+interface ToolContext {
+  signal?: AbortSignal;
+  toolUseId?: string;
+  /**
+   * For a tool that changes the source: true waits for the build and checks and returns them with the result, so
+   * Claude needs no run_checks step; false says a later change in the same response carries them.
+   */
+  check?: boolean;
+}
+
+export async function runTool(name: string, input: unknown, ctx: ToolContext = {}): Promise<ToolOutcome> {
+  const before = useDesign.getState().source;
+  const out = await runOne(name, input, ctx);
+  if (!ctx.check || !SOURCE_TOOLS.has(name) || out.isError || useDesign.getState().source === before) return out;
+  const c = await checkResults(ctx.signal);
+  const text = `Built and checked:\n${c.text}`;
+  return {
+    ...out,
+    content: typeof out.content === "string" ? `${out.content}\n\n${text}` : [...out.content, { type: "text", text }],
+    card: { ...out.card, detail: [out.card.detail, c.title].filter(Boolean).join(" · ") },
+  };
+}
+
+const orAbort = (p: Promise<unknown>, signal?: AbortSignal) =>
+  signal ? Promise.race([p, new Promise<void>((r) => (signal.aborted ? r() : signal.addEventListener("abort", () => r(), { once: true })))]) : p;
+
+/** Wait for the current source's build and checks (and briefly for its detailed geometry), then report them. */
+async function checkResults(signal?: AbortSignal): Promise<{ text: string; title: string; detail?: string; ok: boolean; kernelDown?: boolean }> {
+  await orAbort(whenChecked(), signal);
+  let s = useDesign.getState();
+  // detailed geometry (threads, knurls, cosmetic steps) builds after the checks; wait a little for it so its problems are seen
+  let refining = false;
+  if (s.model?.parts.some((p) => p.detail) && s.kernelStatus !== "error" && !signal?.aborted) {
+    await orAbort(whenRefined(20_000), signal);
+    s = useDesign.getState();
+    refining = s.stage !== "done";
+  }
+  if (s.kernelStatus === "error") return { text: `The geometry kernel is unavailable: ${s.kernelError}`, title: "Geometry kernel unavailable", ok: false, kernelDown: true };
+  const r = s.report;
+  const c = r?.counts;
+  const fw = firmwareSummary(s.model);
+  return {
+    text: `${modelSummary(s.model)}\n\n${reportSummary(r)}${fw.text ? `\n${fw.text}` : ""}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${refining ? "\nThe detailed geometry (threads, knurls, cosmetic steps) is still building; its problems, if any, show in a later run_checks." : ""}${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
+    title: c ? (c.fail ? `${c.fail} check${c.fail > 1 ? "s" : ""} failing` : `All ${c.pass} checks pass`) : "Checks unavailable",
+    detail: c ? `${c.pass} pass · ${c.fail} fail · ${c.warn} warn${fw.warnings ? ` · ${fw.warnings} firmware warning${fw.warnings > 1 ? "s" : ""}` : ""}` : undefined,
+    ok: !!c && c.fail === 0,
+  };
+}
+
+async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<ToolOutcome> {
+  const mode: CheckMode = ctx.check === undefined ? undefined : ctx.check ? "now" : "later";
   switch (name) {
     case "build_subassemblies":
       return runBuildTool(input, ctx);
@@ -955,12 +1016,13 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
         return { isError: true, content: `No edits were applied.\n${errors.join("\n")}`, card: { title: "Edit could not be applied", detail: errors[0], status: "error" } };
       }
       if (src.length > MAX_SOURCE_CHARS) return { isError: true, content: "The design would exceed the 300,000 character limit.", card: { title: "Edit too large", status: "error" } };
-      return applySource(src, p.data.summary, p.data.unlock_ok);
+      return applySource(src, p.data.summary, p.data.unlock_ok, mode);
     }
     case "write_design": {
       const p = WriteInput.safeParse(input);
       if (!p.success) return invalid(p.error);
-      return applySource(p.data.source.replace(/\r\n/g, "\n"), p.data.summary, p.data.unlock_ok);
+      const { source, model } = useDesign.getState();
+      return applySource(keepBrief(p.data.source.replace(/\r\n/g, "\n"), source, model), p.data.summary, p.data.unlock_ok, mode);
     }
     case "get_sketch": {
       const parsed = z.object({ name: z.string().min(1).max(200) }).strict().safeParse(input);
@@ -971,26 +1033,9 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       return { content: sketchDetail(sk), card: { title: `Read sketch ${sk.name}`, detail: sketchStatusText(sk), status: "done" } };
     }
     case "run_checks": {
-      let s = await whenChecked();
-      // detailed geometry (threads, knurls, cosmetic steps) builds after the checks; wait a little for it so its problems are seen
-      let refining = false;
-      if (s.model?.parts.some((p) => p.detail) && s.kernelStatus !== "error") {
-        await whenRefined(20_000);
-        s = useDesign.getState();
-        refining = s.stage !== "done";
-      }
-      if (s.kernelStatus === "error") return { isError: true, content: `The geometry kernel is unavailable: ${s.kernelError}`, card: { title: "Geometry kernel unavailable", status: "error" } };
-      const r = s.report;
-      const c = r?.counts;
-      const fw = firmwareSummary(s.model);
-      return {
-        content: `${modelSummary(s.model)}\n\n${reportSummary(r)}${fw.text ? `\n${fw.text}` : ""}\nBuild: ${s.timings.built} solid(s) built, ${s.timings.reused} reused, ${Math.round(s.timings.buildMs)} ms; checks ${Math.round(s.timings.checksMs)} ms.${refining ? "\nThe detailed geometry (threads, knurls, cosmetic steps) is still building; its problems, if any, show in a later run_checks." : ""}${s.checksError ? `\nChecks error: ${s.checksError}` : ""}`,
-        card: {
-          title: c ? (c.fail ? `${c.fail} check${c.fail > 1 ? "s" : ""} failing` : `All ${c.pass} checks pass`) : "Checks unavailable",
-          detail: c ? `${c.pass} pass · ${c.fail} fail · ${c.warn} warn${fw.warnings ? ` · ${fw.warnings} firmware warning${fw.warnings > 1 ? "s" : ""}` : ""}` : undefined,
-          status: c && c.fail === 0 ? "done" : "error",
-        },
-      };
+      const c = await checkResults(ctx.signal);
+      if (c.kernelDown) return { isError: true, content: c.text, card: { title: c.title, status: "error" } };
+      return { content: c.text, card: { title: c.title, detail: c.detail, status: c.ok ? "done" : "error" } };
     }
     case "explore_fixes": {
       const p = FixInput.safeParse(input ?? {});
@@ -1113,7 +1158,7 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
       if (errors.length) return { isError: true, content: `The brief was not changed.\n${errors.join("\n")}`, card: { title: "Brief update rejected", detail: errors[0], status: "error" } };
       const next = writeBrief(source, model, data);
       if (next.length > MAX_SOURCE_CHARS) return { isError: true, content: "The design would exceed the 300,000 character limit.", card: { title: "Brief too large", status: "error" } };
-      const out = applySource(next, p.data.summary, p.data.user_asked);
+      const out = applySource(next, p.data.summary, p.data.user_asked, mode);
       if (out.isError || typeof out.content !== "string") return out;
       const m = useDesign.getState().model;
       const open = openAssumptions(briefData(m?.brief));
@@ -1125,7 +1170,7 @@ export async function runTool(name: string, input: unknown, ctx: { signal?: Abor
         const failing = rs.filter((r) => r.status === "fail");
         if (failing.length) return `fail: ${failing.map((r) => `${r.label} (${r.detail})`).join("; ")}`;
         const pending = rs.filter((r) => r.status === "pending").length;
-        return pending ? `${rs.length - pending} of ${rs.length} requirements pass; ${pending} measured after the build (see run_checks)` : `pass (${rs.length} requirement${rs.length === 1 ? "" : "s"})`;
+        return pending ? `${rs.length - pending} of ${rs.length} requirements pass; ${pending} measured after the build (see ${mode === "now" ? "the checks below" : "run_checks"})` : `pass (${rs.length} requirement${rs.length === 1 ? "" : "s"})`;
       };
       const notes = [
         briefContext(briefData(m?.brief), useStatus),
