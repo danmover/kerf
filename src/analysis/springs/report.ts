@@ -49,7 +49,12 @@ function snapItem(p: EvalPart, f: FlexInfo): CheckItem {
   }
   const push = r.push!;
   detail += ` Push-in force about ${n1(push)} N on its ${f.leadIn ?? 30}° lead-in`;
-  detail += Number.isFinite(r.pull!) ? `; it pulls apart at about ${n1(r.pull!)} N on its ${f.retain}° catch face.` : "; its square catch does not let go without a tool.";
+  if (f.peg) {
+    // a round peg in a hole lets go only when the peg shears off (or the hole tears): shear strength ≈ 0.6 × yield
+    const m = materialRecord(p.material);
+    const shear = m ? 0.6 * m.mech.yield * ((Math.PI * f.peg * f.peg) / 4) : NaN;
+    detail += `; its Ø${n2(f.peg)} mm peg clicks into the hole and holds until it shears${Number.isFinite(shear) ? ` at about ${n1(shear)} N` : ""}, or the hole tears.`;
+  } else detail += Number.isFinite(r.pull!) ? `; it pulls apart at about ${n1(r.pull!)} N on its ${f.retain}° catch face.` : "; its square catch does not let go without a tool.";
   if (push > 50) {
     status = worst(status, "warn");
     problems.push("it is hard to push together by hand (over 50 N)");

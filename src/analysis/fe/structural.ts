@@ -7,7 +7,7 @@ import { CORNERS, principal, vonMises, elementMatrices } from "./element";
 import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg } from "./solver";
 import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
-import type { FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
+import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
@@ -170,7 +170,7 @@ export interface StructuralResult {
   volume: number;
   /** at: centroid of the loaded surface (a torque's centre for torques); vector: net force; axis: a torque's axis */
   loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3 }[];
-  supports: { region: string; dir?: V3; at: V3; nodes: number; reaction: V3; markers: Float32Array }[];
+  supports: { region: string; dir?: V3; at: V3; nodes: number; reaction: V3; markers: Float32Array; contact?: ContactResult }[];
   gravity: { vector: V3; at: V3 } | null;
   parts: PartField[];
   ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number] };
@@ -878,6 +878,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       for (let d = 0; d < 3; d++) if (bc[3 * n + d]) R[d] += Ku[3 * n + d] - f[3 * n + d];
     }
     supportInfo[si].reaction = R;
+    const ct = inp.supports[si].contact;
+    if (ct) supportInfo[si].contact = contactCheck(inp.supports[si], ct, sel, Ku, f, bc, nodePos);
   });
   for (let n = 0; n < nn; n++) for (let d = 0; d < 3; d++) if (bc[3 * n + d] && fine.free[3 * n + d] === 0 && Ku[3 * n + d] !== 0) reaction[d] += Ku[3 * n + d] - f[3 * n + d];
   const appliedMag = Math.hypot(...applied) || 1;
@@ -1295,3 +1297,133 @@ const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 export { CORNERS };
+
+/**
+ * A seat that is only pressed on: from the reaction at each of its nodes, the
+ * net force pressing it, how much of it would rather pull (an edge lifting),
+ * and the sliding force and twisting moment its friction (plus any bands round
+ * the same tube) has to hold.
+ */
+function contactCheck(sup: SupportSpec, ct: NonNullable<SupportSpec["contact"]>, sel: { nodes: number[]; av: number[] }, Ku: Float64Array, f: Float64Array, bc: Uint8Array, nodePos: (n: number) => V3): ContactResult {
+  const r = sup.region;
+  const unit = (v: V3): V3 => {
+    const l = Math.hypot(v[0], v[1], v[2]);
+    return l > 1e-12 ? [v[0] / l, v[1] / l, v[2] / l] : [0, 0, 0];
+  };
+  const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const tube = r.t === "cyl" ? { at: r.at, axis: unit(r.axis) } : null;
+  // the way whatever it rests on pushes the part, at each node
+  const inward = (p: V3, q: number): V3 => {
+    if (ct.normal) return unit([-ct.normal[0], -ct.normal[1], -ct.normal[2]]);
+    if (r.t === "face") return unit([-r.dir[0], -r.dir[1], -r.dir[2]]);
+    if (tube) {
+      const d: V3 = [p[0] - tube.at[0], p[1] - tube.at[1], p[2] - tube.at[2]];
+      const a = dot(d, tube.axis);
+      return unit([d[0] - a * tube.axis[0], d[1] - a * tube.axis[1], d[2] - a * tube.axis[2]]);
+    }
+    return unit([-sel.av[3 * q], -sel.av[3 * q + 1], -sel.av[3 * q + 2]]);
+  };
+  const seen = new Set<number>();
+  const nodes: { p: V3; R: V3; n: V3 }[] = [];
+  sel.nodes.forEach((nd, q) => {
+    if (seen.has(nd)) return;
+    seen.add(nd);
+    const R: V3 = [0, 0, 0];
+    for (let d = 0; d < 3; d++) if (bc[3 * nd + d]) R[d] = Ku[3 * nd + d] - f[3 * nd + d];
+    const p = nodePos(nd);
+    nodes.push({ p, R, n: inward(p, q) });
+  });
+  let push = 0;
+  let pull = 0;
+  let c: V3 = [0, 0, 0];
+  let avgN: V3 = [0, 0, 0];
+  for (const k of nodes) {
+    const rn = dot(k.R, k.n);
+    if (rn >= 0) push += rn;
+    else pull -= rn;
+    c = [c[0] + k.p[0], c[1] + k.p[1], c[2] + k.p[2]];
+    avgN = [avgN[0] + k.n[0], avgN[1] + k.n[1], avgN[2] + k.n[2]];
+  }
+  const m = Math.max(1, nodes.length);
+  c = [c[0] / m, c[1] / m, c[2] / m];
+  // Whether an edge lifts is judged from where the pressing force acts, not
+  // node by node: a held seat shows pulling at single nodes (it stops the part
+  // flexing and shrinking across) even where the real seat stays pressed.
+  // Each coordinate across the seat gives the centre of pressure's offset from
+  // the middle as a share of the half-width: under 1/3 every part stays
+  // pressed (as with a straight pressure ramp), 1 and more and it tips over
+  // that edge. Round a tube the coordinates are along it and round it.
+  const { lift, liftAt } = seatLift(nodes, tube, unit(avgN), push - pull, c);
+  // slide along the tube (or across a flat seat) and twist about the tube's axis (or the seat's normal)
+  const axis = tube ? tube.axis : unit(avgN);
+  const pivot = tube ? tube.at : c;
+  let slideV: V3 = [0, 0, 0];
+  let twist = 0;
+  let twistHold = 0;
+  for (const k of nodes) {
+    const rn = dot(k.R, k.n);
+    const t: V3 = [k.R[0] - rn * k.n[0], k.R[1] - rn * k.n[1], k.R[2] - rn * k.n[2]];
+    const arm: V3 = [k.p[0] - pivot[0], k.p[1] - pivot[1], k.p[2] - pivot[2]];
+    const along = dot(arm, axis);
+    const rho = Math.hypot(arm[0] - along * axis[0], arm[1] - along * axis[1], arm[2] - along * axis[2]);
+    twist += dot(cross(arm, t), axis);
+    if (rn > 0) twistHold += ct.mu * rn * rho;
+    slideV = [slideV[0] + t[0], slideV[1] + t[1], slideV[2] + t[2]];
+  }
+  // a tube: only the part along it slides; the rest of the tangential force is the twist, already counted
+  const slide = tube ? Math.abs(dot(slideV, axis)) : Math.hypot(...slideV);
+  const pressing = push - pull;
+  const slideCap = ct.mu * Math.max(0, pressing) + (ct.grip?.force ?? 0);
+  const twistCap = twistHold + (ct.grip?.moment ?? 0);
+  const use = (slideCap > 0 ? slide / slideCap : slide > 1e-6 ? Infinity : 0) + (twistCap > 0 ? Math.abs(twist) / twistCap : Math.abs(twist) > 1e-6 ? Infinity : 0);
+  return { pressing, lift, liftAt, slide, slideCap, twist: Math.abs(twist), twistCap, use };
+}
+
+/** How far a seat's centre of pressure sits off its middle (share of the half-width, worst direction) and the edge it unloads. */
+function seatLift(nodes: { p: V3; R: V3; n: V3 }[], tube: { at: V3; axis: V3 } | null, avgN: V3, pressing: number, centre: V3): { lift: number; liftAt?: V3 } {
+  if (pressing <= 0 || nodes.length < 2) return { lift: pressing > 0 ? 0 : 1 };
+  const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const unit = (v: V3): V3 => {
+    const l = Math.hypot(v[0], v[1], v[2]);
+    return l > 1e-12 ? [v[0] / l, v[1] / l, v[2] / l] : [1, 0, 0];
+  };
+  // two coordinates across the seat for each node
+  let coords: (k: { p: V3; n: V3 }) => [number, number];
+  if (tube) {
+    const ref = unit([avgN[0] - dot(avgN, tube.axis) * tube.axis[0], avgN[1] - dot(avgN, tube.axis) * tube.axis[1], avgN[2] - dot(avgN, tube.axis) * tube.axis[2]]);
+    const side = cross(tube.axis, ref);
+    coords = (k) => [dot([k.p[0] - tube.at[0], k.p[1] - tube.at[1], k.p[2] - tube.at[2]], tube.axis), Math.atan2(dot(k.n, side), dot(k.n, ref))];
+  } else {
+    const u = unit(cross(avgN, Math.abs(avgN[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+    const v = cross(avgN, u);
+    coords = (k) => {
+      const d: V3 = [k.p[0] - centre[0], k.p[1] - centre[1], k.p[2] - centre[2]];
+      return [dot(d, u), dot(d, v)];
+    };
+  }
+  const q = nodes.map((k) => ({ k, c: coords(k), rn: dot(k.R, k.n) }));
+  let lift = 0;
+  let liftAt: V3 | undefined;
+  for (const d of [0, 1]) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    let moment = 0;
+    for (const e of q) {
+      lo = Math.min(lo, e.c[d]);
+      hi = Math.max(hi, e.c[d]);
+      moment += e.rn * e.c[d];
+    }
+    const half = (hi - lo) / 2;
+    if (half < 1e-9) continue;
+    const off = moment / pressing - (lo + hi) / 2;
+    const share = Math.abs(off) / half;
+    if (share <= lift) continue;
+    lift = share;
+    // the edge it unloads: the far side from where the pressure gathers
+    const far = q.reduce((a, b) => (off > 0 ? (b.c[d] < a.c[d] ? b : a) : b.c[d] > a.c[d] ? b : a));
+    liftAt = far.k.p;
+  }
+  return { lift, liftAt };
+}

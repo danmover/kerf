@@ -110,6 +110,9 @@ export const UNITS: Record<string, number> = {
   bar: 0.1,
   psi: 0.00689476,
   hr: 3600,
+  // wind and riding speeds, in mm/s
+  kmh: 1e6 / 3600,
+  mph: 447.04,
 };
 
 const OPS = [

@@ -16,7 +16,7 @@ import { mechMaterial, type MechMaterial } from "./materials";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, StructuralInput, StructuralResult } from "./fe/structural";
-import { modeText, stiffnessVerdict, strengthVerdict } from "./summary";
+import { contactVerdicts, modeText, stiffnessVerdict, strengthVerdict } from "./summary";
 import { dynamicItems } from "./dynamics";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
@@ -376,6 +376,7 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
       detail: `Largest deflection ${fmtNum(r.maxDisp.value, 3)} mm at ${fmtP(r.maxDisp.at)}, limit ${fmtNum(spec.maxDeflection, 3)} mm.${status === "warn" ? " The result is in doubt; the strength check says why." : ""}`,
     });
   }
+  for (const c of contactVerdicts(spec, r)) out.push({ ...base, id: id(`contact${c.i}`), status: c.status, margin: c.margin, title: c.title, detail: c.detail, ...(c.fix ? { fix: c.fix } : {}) });
   if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
   return out;
 }

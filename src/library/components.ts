@@ -454,6 +454,17 @@ export const LIBRARY: Record<string, LibEntry> = {
     },
   },
 
+  band: {
+    signature: 'lib.band("EPDM", id: 30, cs: 2.5, around: post, holds: bracket, from: (-14, 5, 12), to: (14, 5, 12), pin: 4, lip: 1.5, open: Z)',
+    doc: 'An O-ring or rubber band stretched round a tube, post or bar (around:) and hooked at both ends onto the part it holds there (holds:), the way bike-light and number mounts are held on. It is laid out round the wrapped part\'s real cross-section (an extrude, cylinder or tube), and behaves like rubber: Gent\'s hyperelastic law, the cord thinning as it stretches, relaxing over months, and friction round the tube. rubber: "EPDM" (outdoors), "NBR", "silicone" or "natural rubber"; id and cs: the O-ring\'s inside diameter and cord, mm; shore: hardness (A). from: and to: the two hook pins\' centres in the holds part\'s own coordinates (world coordinates without holds:): the loop end goes over the from: pin, round the far side of the tube, and is stretched over the to: pin\'s head; pin: their diameter, lip: how far the loop must stretch past its seat to get over each pin\'s head, open: the way each pin\'s free end points (a direction or a list of two; default along the tube). Leave out from: and to: for a closed loop round everything (it cannot go round a post or bar that carries on both sides). carries: the mass it holds on (g), shock: the bumps it must ride, in g, saddle_mu: friction of the holds part on the tube (0.3). The springs, clips and bands checks give its stretch, pull, hand force to fit, hold on the tube, relaxation, weathering and whether it can be put on at all. Fields: tension (N in each strand), pull (N on each hook), fit_force (hand force to stretch it on), stretch, fit_stretch, length, free_length, wrap (degrees), squeeze (N onto the tube), cord, from, to, from_pull, to_pull (force vectors on the hooks).',
+    positional: ["rubber"],
+    params: ["rubber", "id", "cs", "shore", "around", "holds", "from", "to", "pin", "lip", "open", "axis", "carries", "shock", "saddle_mu"],
+    group: "Bands",
+    make() {
+      throw new Error("lib.band is laid out round the parts it wraps");
+    },
+  },
+
   dowel: {
     signature: "lib.dowel(d: 3, length: 12) { at: (x, y, z), axis: Z }",
     doc: "Hardened steel dowel pin (ISO 8734). Fields: at, tip, axis.",

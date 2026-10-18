@@ -129,3 +129,68 @@ analysis "Duty" {
     expect(b.center[1]).toBeCloseTo(13.5);
   });
 });
+
+describe("loads from off the analysed parts, and seats held on by bands", () => {
+  const banded = `design "b"
+part post { process: false  body cylinder(d: 30, h: 200, at: (0, 0, -100)) }
+part bracket { body box(40, 6, 20, at: (0, 23, -10)) }
+component b = lib.band("EPDM", id: 30, cs: 2.5, around: post, holds: bracket, from: (-14, 20, 0), to: (14, 20, 0), pin: 4, lip: 2, open: Z)
+`;
+
+  it("carries wind on a sign into the zone that holds it as a force and its moment", () => {
+    const m = evaluate(
+      bracket +
+        `analysis "Gust" {
+  parts: [plate]
+  fix: face(plate, -Y)
+  load: wind(zone(at: (0, 2, 0), size: (60, 4, 30)), 72kmh, dir: X, area: 10000, at: (0, 102, 0))
+}`,
+    );
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toHaveLength(0);
+    const a = m.analyses[0] as StructuralSpec;
+    // 72 km/h is 20 m/s: ½ρv² = 245 Pa, × cd 1.2 × 0.01 m² = 2.94 N
+    const f = a.loads[0];
+    if (f.t !== "force") throw new Error("expected a force");
+    expect(f.f[0]).toBeCloseTo(2.94, 2);
+    expect(f.from).toEqual([0, 102, 0]);
+    // 100 mm out along Y: 294 N·mm about -Z
+    expect(a.loads[1]).toMatchObject({ t: "torque", axis: [0, 0, -1], at: [0, 2, 0] });
+    if (a.loads[1].t === "torque") expect(a.loads[1].torque).toBeCloseTo(294, 0);
+  });
+
+  it("asks for a unit on a wind speed", () => {
+    const e = errors(bracket + `analysis "Gust" {\n  parts: [plate]\n  fix: face(plate, -Y)\n  load: wind(face(plate, +Y), 70)\n}`);
+    expect(e.join(" ")).toMatch(/70kmh/);
+  });
+
+  it("pulls a band's pins toward the tube, and lets the bands grip a seat that is only pressed on", () => {
+    const m = evaluate(
+      banded +
+        `analysis "Held" {
+  parts: [bracket]
+  fix: contact(zone(at: (0, 0, -10), d: 32, axis: Z, length: 20), mu: 0.3, grip: [b])
+  load: pull(b)
+}`,
+    );
+    expect(m.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    const a = m.analyses[0] as StructuralSpec;
+    const L = m.parts.find((p) => p.name === "b")!.band!.layout;
+    expect(a.loads).toHaveLength(2);
+    for (const l of a.loads) {
+      if (l.t !== "force") throw new Error("expected a force");
+      expect(Math.hypot(...l.f)).toBeCloseTo(2 * L.tension, 3);
+      // toward the post, in front of the pins
+      expect(l.f[1]).toBeLessThan(0);
+    }
+    const c = a.supports[0].contact!;
+    expect(c.mu).toBe(0.3);
+    expect(c.grip!.names).toEqual(["b"]);
+    expect(c.grip!.force).toBeGreaterThan(0);
+    expect(c.grip!.moment).toBeGreaterThan(0);
+  });
+
+  it("asks which way a seat in a box zone faces", () => {
+    const e = errors(bracket + `analysis "Seat" {\n  parts: [plate]\n  fix: contact(zone(at: (0, 2, 0), size: (60, 4, 30)))\n  load: force(face(plate, +Y), (0, -10, 0))\n}`);
+    expect(e.join(" ")).toMatch(/normal:/);
+  });
+});

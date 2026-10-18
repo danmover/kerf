@@ -31,6 +31,8 @@ import { ResultsLayer } from "./ResultsLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { SimLayer } from "./sim/SimLayer";
 import { WiringLayer } from "./WiringLayer";
+import { FitLayer, playFitting, useFitView } from "./FitLayer";
+import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
 import { BoardDecorator } from "./viewport/boards/decorate";
 
@@ -189,6 +191,8 @@ export function Viewport() {
   }, [view.cameraRequest]);
 
   const hasMotion = !!model?.parts.some((p) => p.motion && p.motion.ratio);
+  const canFit = useMemo(() => !!model && hasFitting(model), [model]);
+  const fitting = useFitView((f) => f.on);
   // the photoreal look hides the grid and CAD edges while it runs
   const photoLook = photo.state !== "off" && photo.state !== "paused";
   const visibleParts = model?.parts.length ?? 0;
@@ -255,6 +259,11 @@ export function Viewport() {
         {hasWires && (
           <button className={`icon-btn ${wiring ? "active" : ""}`} onClick={() => toggleWiring()} data-tip="Wiring: every cable and plug (W)" aria-label="Wiring" aria-pressed={wiring}>
             <Icon.Plug />
+          </button>
+        )}
+        {canFit && (
+          <button className={`icon-btn ${fitting ? "active" : ""}`} onClick={() => (fitting ? useFitView.setState({ on: false }) : playFitting())} data-tip="How it goes on and what keeps it there" aria-label="How it goes on" aria-pressed={fitting}>
+            <Icon.Assemble />
           </button>
         )}
         <div className="sep" />
@@ -335,13 +344,15 @@ export function Viewport() {
         )}
       </AnimatePresence>
 
-      <Hud stage={stage} parts={visibleParts} />
+      {/* the "How it goes on" card sits where this line is; the status bar still shows the same counts */}
+      {!fitting && <Hud stage={stage} parts={visibleParts} />}
       <MeasureTool host={measureHost} />
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
       {scene && !inSketch && <SimLayer scene={scene} />}
       {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
+      {scene && !inSketch && canFit && <FitLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 

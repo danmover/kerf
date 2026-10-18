@@ -13,7 +13,8 @@ import type { ImportRef, ImportTable } from "../kernel/imports";
 import { frameFor, hasDetail, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
-import type { Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, GearInfo, Model, Motion } from "../core/model";
+import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, GearInfo, Model, Motion } from "../core/model";
+import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
@@ -980,6 +981,7 @@ class Evaluator {
     };
     let def: CompDef;
     let belt: BeltDef | undefined;
+    let band: BandInfo | undefined;
     let imported: { ref: ImportRef; origin: ImportOrigin } | undefined;
     if (key === "step") {
       const table = this.opts.imports ?? evalImports();
@@ -997,6 +999,12 @@ class Evaluator {
       const made = this.belt(s, args);
       def = made.def;
       belt = made.belt;
+    } else if (key === "band") {
+      const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with"].find((k) => props[k] !== undefined);
+      if (placed) throw new EvalError(`A band lies round the parts it wraps: leave out ${placed}:`, propSpans[placed]);
+      const made = this.band(s, args);
+      def = made.def;
+      band = made.band;
     } else {
       try {
         def = entry!.make(libArgs, phase);
@@ -1195,6 +1203,7 @@ class Evaluator {
           gear: sd.suffix ? undefined : gear,
           bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
+          ...(band && !sd.suffix ? { band } : {}),
           fastener:
             def.fastener && !sd.suffix
               ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
@@ -1381,6 +1390,129 @@ class Evaluator {
       catalog: { id: part.id, length: layout.open ? bd.cutLength : undefined },
     };
     return { def, belt: bd };
+  }
+
+  /** lib.band: lay an O-ring round the parts it wraps and onto its hooks, and work out how it pulls. */
+  band(s: Extract<Stmt, { k: "component" }>, args: Args): { def: CompDef; band?: BandInfo } {
+    const ctx = this.ctx();
+    const argSpan = (name: string) => s.call.args.find((a) => a.name === name)?.span ?? s.call.span;
+    const rubberName = args.str("rubber", "EPDM");
+    const rubber = rubberOf(rubberName);
+    if (!rubber) throw new EvalError(`lib.band: "${rubberName}" is not a band rubber. Use ${Object.values(RUBBERS).map((r) => `"${r.name}"`).join(", ")}`, argSpan("rubber"));
+    const id = args.positive("id");
+    const cs = args.positive("cs");
+    const shore = args.num("shore", rubber.shore);
+    if (shore < 30 || shore > 90) throw new EvalError("lib.band: shore (hardness) should be 30..90 A", argSpan("shore"));
+    if (cs > id) throw new EvalError("lib.band: the cord (cs) is thicker than the ring's inside diameter (id); O-rings are sized inside diameter × cord, like id: 30, cs: 2.5", argSpan("cs"));
+    const cord: BandCord = { rubber, shore, cs, id };
+    const label = bandLabel(cord);
+    const key = Object.keys(RUBBERS).find((k) => RUBBERS[k] === rubber)!;
+    // the parts it goes round, by name
+    const aroundV = args.value("around");
+    if (aroundV === undefined) throw new EvalError("lib.band needs around: the part (or list of parts) it wraps round, like around: post", s.call.span);
+    const partName = (v: Value, what: string): string => {
+      if (v instanceof Ref && v.what === "part") return v.name;
+      if (v instanceof Obj && (v.kind === "component" || v.kind === "part")) return String(v.fields.name);
+      throw new EvalError(`${what}: expected a part name, got ${typeName(v)}`, argSpan(what));
+    };
+    const around = (Array.isArray(aroundV) ? aroundV : [aroundV]).map((v) => partName(v, "around"));
+    const holds = args.has("holds") ? partName(args.value("holds")!, "holds") : undefined;
+    for (const n of [...around, ...(holds ? [holds] : [])]) this.current?.add(n);
+    const pair = (name: string, def: number): [number, number] => {
+      const v = args.value(name);
+      if (v === undefined) return [def, def];
+      if (Array.isArray(v)) {
+        if (v.length !== 2 || typeof v[0] !== "number" || typeof v[1] !== "number") throw new EvalError(`${name}: give one number, or a list of two (from, to)`, argSpan(name));
+        return [v[0], v[1]];
+      }
+      return [this.num(v, argSpan(name), name), this.num(v, argSpan(name), name)];
+    };
+    const pins = pair("pin", 4);
+    const lips = pair("lip", Math.round(cs * 0.75 * 10) / 10);
+    const scalars = (l?: BandLayout): Record<string, number> => ({
+      tension: l?.tension ?? 0,
+      pull: 2 * (l?.tension ?? 0),
+      fit_force: 2 * (l?.fitTension ?? 0),
+      stretch: l?.stretch ?? 1,
+      fit_stretch: l?.fitStretch ?? 1,
+      length: l?.length ?? freeLength(cord),
+      free_length: freeLength(cord),
+      wrap: l?.wrapDeg ?? 0,
+      squeeze: l?.squeeze ?? 0,
+      cord: l?.cord ?? cs,
+      id,
+      cs,
+      shore,
+      from_pin: pins[0],
+      to_pin: pins[1],
+      // what its friction round the tube holds, wet: sliding along it (N) and turning about it (N·mm)
+      grip_force: rubber.mu[1] * (l?.squeeze ?? 0),
+      grip_moment: l && l.wrapDeg > 0 ? rubber.mu[1] * l.squeeze * (l.contact / ((l.wrapDeg * Math.PI) / 180)) : 0,
+    });
+    const bom = { description: `${label} (${rubber.label} O-ring)` };
+    // a design checked without geometry (solving params) has no cross-sections to lie on
+    if (this.opts.skipGeometry) return { def: { kind: "band", label, placement: "free", solids: [], fields: { scalars: scalars() }, bom } };
+    const sectionFor = (name: string) => {
+      const p = this.parts.find((q) => q.name === name && q.kind === "part") ?? this.parts.find((q) => q.name === name);
+      if (!p) throw new EvalError(`around: "${name}" must be defined above the band`, argSpan("around"));
+      try {
+        return { name, section: sectionOf(p.recipe, p.xf) };
+      } catch (e) {
+        if (e instanceof BandError) throw new EvalError(`around: ${name}: ${e.message}`, argSpan("around"));
+        throw e;
+      }
+    };
+    const wrapped = around.map(sectionFor);
+    const holdsXf = holds ? (this.parts.find((q) => q.name === holds)?.xf ?? []) : [];
+    if (holds && !this.parts.some((q) => q.name === holds)) throw new EvalError(`holds: "${holds}" must be defined above the band`, argSpan("holds"));
+    const hasFrom = args.has("from");
+    const hasTo = args.has("to");
+    if (hasFrom !== hasTo) throw new EvalError("lib.band: give both from: and to: (the two hook pins), or neither for a loop that goes right round", argSpan(hasFrom ? "from" : "to"));
+    let axisW: V3 | undefined;
+    if (args.has("axis")) axisW = vnorm(applyXformsToDir(args.vec3("axis"), holdsXf));
+    let from: HookIn | undefined;
+    let to: HookIn | undefined;
+    if (hasFrom) {
+      const fromAt = applyXforms(toV3(args.value("from")!, ctx, "from"), holdsXf);
+      const toAt = applyXforms(toV3(args.value("to")!, ctx, "to"), holdsXf);
+      const openV = args.value("open");
+      const axis0 = axisW ?? wrapped[0].section.axis;
+      const opens: [V3, V3] =
+        openV === undefined
+          ? [axis0, axis0]
+          : Array.isArray(openV) && openV.length === 2 && openV.every((o) => o instanceof Vec)
+            ? [vnorm(applyXformsToDir(toV3(openV[0], ctx, "open"), holdsXf)), vnorm(applyXformsToDir(toV3(openV[1], ctx, "open"), holdsXf))]
+            : [vnorm(applyXformsToDir(toV3(openV, ctx, "open"), holdsXf)), vnorm(applyXformsToDir(toV3(openV, ctx, "open"), holdsXf))];
+      from = { at: fromAt, pin: pins[0], lip: lips[0], open: opens[0] };
+      to = { at: toAt, pin: pins[1], lip: lips[1], open: opens[1] };
+    }
+    let layout: BandLayout;
+    try {
+      layout = layoutBand({ cord, from, to, around: wrapped, axis: axisW });
+    } catch (e) {
+      if (e instanceof BandError) throw new EvalError(`lib.band: ${e.message}`, argSpan(hasFrom ? "from" : "around"));
+      throw e;
+    }
+    const carries = args.has("carries") ? args.positive("carries") : undefined;
+    const shock = args.has("shock") ? args.num("shock") : undefined;
+    const band: BandInfo = { rubber: key, shore, cs, id, around, holds, layout, carries, shock, saddleMu: args.num("saddle_mu", 0.3) };
+    const hookPts: Record<string, V3> = {};
+    const hookDirs: Record<string, V3> = {};
+    if (layout.hooks.length === 2) {
+      hookPts.from = layout.hooks[0].at;
+      hookPts.to = layout.hooks[1].at;
+      hookDirs.from_pull = layout.hooks[0].toward;
+      hookDirs.to_pull = layout.hooks[1].toward;
+    }
+    const def: CompDef = {
+      kind: "band",
+      label,
+      placement: "free",
+      solids: [{ suffix: "", label: `${s.name} (${label}, stretched ${fmtNum((layout.stretch - 1) * 100, 0)} %)`, recipe: bandRecipe(layout), color: rubber.name === "natural rubber" ? "#b8763a" : "#17191c", material: rubber.material, finish: "matte" }],
+      fields: { scalars: scalars(layout), points: hookPts, dirs: { ...hookDirs, axis: layout.n } },
+      bom,
+    };
+    return { def, band };
   }
 
   compRef(v: Value, span: Span, what: string): CompInfo {

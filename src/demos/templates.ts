@@ -9,6 +9,7 @@ import canister from "./canister.kerf?raw";
 import tunneller from "./sand-tunneller.kerf?raw";
 import printer from "./printer.kerf?raw";
 import practiceAmp from "./practice-amp.kerf?raw";
+import seatpost from "./seatpost-number.kerf?raw";
 
 export interface Template {
   id: string;
@@ -56,6 +57,18 @@ export const TEMPLATES: Template[] = [
       "Make the arm 200 mm long and keep the safety factor above 2.5",
     ],
     stats: "3 parts · stress analysis",
+  },
+  {
+    id: "seatpost-number",
+    name: "Seatpost Number Bracket",
+    tagline: "Screwless ASA clip for a race number on an aero seatpost: two O-rings, a click peg and wind, knock and pothole checks.",
+    source: seatpost,
+    prompts: [
+      "My seatpost measures 21 × 35 mm: update the saddle to fit",
+      "Make the O-rings easier to put on without losing grip",
+      "Show me how the number goes in and what keeps it there",
+    ],
+    stats: "5 parts · 7 requirements · wind and knock analysis",
   },
   {
     id: "reducer",

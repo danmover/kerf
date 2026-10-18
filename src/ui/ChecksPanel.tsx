@@ -34,7 +34,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   fit: "Real-world fit",
   vibration: "Vibration",
   knocks: "Drops and heat",
-  springs: "Springs and clips",
+  springs: "Springs, clips and bands",
   build: "Build",
   electrical: "Wiring",
   engineering: "Calculations",
