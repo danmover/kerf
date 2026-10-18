@@ -11,6 +11,7 @@ import type { CheckItem } from "../core/checks";
 import { registerReportPass, type ReportContext } from "../core/reportPasses";
 import type { EvalPart, Model } from "../core/model";
 import { xformMatrix } from "../kernel/recipe";
+import type { MeshData } from "../kernel/build";
 import { fmtNum } from "../lang/values";
 import { mechMaterial, type MechMaterial } from "./materials";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
@@ -162,6 +163,37 @@ function pump() {
   }, RUN_TIME_LIMIT_MS);
 }
 
+/**
+ * Solve one structural input in a worker of its own, away from the design's runs (for comparing alternatives that are
+ * not the design). Rejects on an error, a crash, a stop or the time limit.
+ */
+export function solveOnce(input: StructuralInput, timeoutMs = RUN_TIME_LIMIT_MS, signal?: AbortSignal): Promise<StructuralResult> {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL("./fea.worker.ts", import.meta.url), { type: "module", name: "kerf-analysis-compare" });
+    const end = (e?: Error, r?: StructuralResult) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+      w.terminate();
+      if (e) reject(e);
+      else resolve(r!);
+    };
+    const stop = () => end(new Error("Stopped"));
+    const timer = setTimeout(() => end(new Error(`it took longer than ${Math.round(timeoutMs / 1000)} s`)), timeoutMs);
+    signal?.addEventListener("abort", stop, { once: true });
+    w.onmessage = (ev: MessageEvent<FeaResponse>) => {
+      const msg = ev.data;
+      if (msg.type === "error") end(new Error(msg.message));
+      else if (msg.type !== "progress") end(undefined, msg.result);
+    };
+    w.onerror = (ev) => {
+      ev.preventDefault();
+      end(new Error("the analysis stopped unexpectedly, most likely out of memory"));
+    };
+    const transfer = input.parts.flatMap((p) => [p.mesh.positions.buffer, p.mesh.indices.buffer, ...(p.normals ? [p.normals.buffer] : [])]) as ArrayBuffer[];
+    w.postMessage({ id: 1, input } satisfies FeaRequest, transfer);
+  });
+}
+
 function cancel(label: string) {
   queue = queue.filter((j) => j.label !== label);
   if (current?.label === label) stopWorker();
@@ -169,8 +201,17 @@ function cancel(label: string) {
 
 // ---------- preparing a run ----------
 
+/** The design's own meshes, as the main view built them. */
+const shownMesh = (hash: string) => meshes.get(hash)?.preview ?? meshes.get(hash)?.final;
+
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
-function prepare(spec: StructuralSpec, parts: EvalPart[], fine: boolean, buildErrors: Map<string, string>): { input?: StructuralInput; error?: string } | null {
+export function structuralInput(
+  spec: StructuralSpec,
+  parts: EvalPart[],
+  fine: boolean,
+  buildErrors: Map<string, string>,
+  meshOf: (hash: string) => MeshData | undefined = shownMesh,
+): { input?: StructuralInput; error?: string } | null {
   if (!parts.length) return { error: `None of ${spec.parts.join(", ")} has geometry to analyse.` };
   const broken = parts.find((p) => buildErrors.has(p.hash));
   if (broken) return { error: `${broken.label} did not build, so it cannot be analysed yet.` };
@@ -178,8 +219,7 @@ function prepare(spec: StructuralSpec, parts: EvalPart[], fine: boolean, buildEr
   const mats: MechMaterial[] = [];
   const matIndex = new Map<string, number>();
   for (const p of parts) {
-    const entry = meshes.get(p.hash);
-    const data = entry?.preview ?? entry?.final;
+    const data = meshOf(p.hash);
     if (!data) return null;
     const name = spec.material ?? p.material;
     let mi = matIndex.get(name);
@@ -267,7 +307,7 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
     const key = fine ? inputKey(spec, parts, true) : plainKey;
     const run = runs.get(spec.label);
     if (run && run.key === key) continue;
-    const prep = prepare(spec, parts, fine, state.buildErrors);
+    const prep = structuralInput(spec, parts, fine, state.buildErrors);
     if (!prep) continue;
     cancel(spec.label);
     const resolution = fine ? "fine" : typeof spec.resolution === "string" ? spec.resolution : `${fmtNum(spec.resolution.h)} mm`;
@@ -331,6 +371,12 @@ export function analysisItems(items: CheckItem[], ctx: ReportContext): CheckItem
 }
 
 const fmtP = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
+
+/** The check items one structural result gives (or its error), for a model that is not the design (an alternative). */
+export function structuralChecks(spec: StructuralSpec, model: Model, outcome: { result?: StructuralResult; error?: string }): CheckItem[] {
+  const run: StructuralRun = { label: spec.label, key: "", fine: false, status: outcome.result ? "done" : "error", stage: "", frac: 1, trace: [], result: outcome.result, stale: false, error: outcome.error, resolution: "draft", startedAt: 0 };
+  return structuralItems(spec, run, model);
+}
 
 function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, model: Model): CheckItem[] {
   const parts = model.parts.filter((p) => spec.parts.includes(p.name)).map((p) => p.id);

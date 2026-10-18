@@ -917,7 +917,7 @@ function handoverWhy(tool: string) {
   if (EDIT_TOOLS.has(tool)) return "it needs a design change";
   if (tool === "update_brief") return "it changes the brief";
   if (tool === "update_plan") return "it needs a plan";
-  if (tool === "ask_user" || tool === "explore_fixes") return "it needs a design decision";
+  if (tool === "ask_user" || tool === "explore_fixes" || tool === "compare_designs") return "it needs a design decision";
   if (tool === "review_design") return "it needs a design review";
   return "it needs a tool only the design model uses";
 }

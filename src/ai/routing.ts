@@ -99,7 +99,7 @@ const LONG = 400;
 
 // Messages that start by asking for a change. English only: anything else goes to the router.
 const CHANGE =
-  /^(?:(?:please|pls|can you|could you|would you|let'?s|now|ok(?:ay)?|then|and|also|yes|yeah|sure)[,\s]+)*(?:make|add|change|move|increase|decrease|reduce|raise|lower|remove|delete|drop|replace|use|set|put|rotate|mirror|flip|fillet|chamfer|round|thicken|widen|narrow|shorten|lengthen|extend|design|create|build|model|fix|try|redo|undo|revert|split|combine|merge|swap|resize|scale|align|cent(?:er|re)|offset|cut|drill|hollow|shell|attach|mount|connect|update|adjust|tweak|modify|convert|switch|apply|continue|go ahead|do it|start|generate|draw|sketch|give it|bump|shrink|enlarge|double|halve)\b/i;
+  /^(?:(?:please|pls|can you|could you|would you|let'?s|now|ok(?:ay)?|then|and|also|yes|yeah|sure)[,\s]+)*(?:make|add|change|move|increase|decrease|reduce|raise|lower|remove|delete|drop|replace|use|set|put|rotate|mirror|flip|fillet|chamfer|round|thicken|widen|narrow|shorten|lengthen|extend|design|create|build|model|fix|try|redo|undo|revert|split|combine|merge|swap|resize|scale|align|cent(?:er|re)|offset|cut|drill|hollow|shell|attach|mount|connect|update|adjust|tweak|modify|improve|optimi[sz]e|redesign|rethink|rework|refine|simplify|strengthen|stiffen|lighten|reinforce|convert|switch|apply|continue|go ahead|do it|start|generate|draw|sketch|give it|bump|shrink|enlarge|double|halve)\b/i;
 
 /** The reason a turn needs the design model, when that is plain without asking; null means ask the router. */
 export function ruleReason(f: TurnFacts): string | null {
