@@ -48,7 +48,8 @@ export function PlanPane() {
   const open = usePlanUi((s) => s.open);
   const tree = useMemo(() => planTree(plan), [plan]);
   const pr = useMemo(() => progress(plan), [plan]);
-  const waiting = pendingSteering(plan);
+  // messages typed in the chat show their own state there
+  const waiting = pendingSteering(plan).filter((w) => w.kind !== "message");
   const scoped = pendingByScope(plan);
   // interrupting while sub-agents run would stop them, so their changes wait for their next step
   const agentsRunning = anyBranchOpen();
@@ -386,7 +387,7 @@ function ChildSummary({ node }: { node: PlanNode }) {
 }
 
 function SteerTag({ steer }: { steer: Steer }) {
-  const label: Record<Steer["kind"], string> = { rename: "renamed", note: "note", add: "added", skip: "skip", restore: "restored", next: "do next", pause: "pause", unpause: "no pause", remove: "removed", design: "edit" };
+  const label: Record<Steer["kind"], string> = { rename: "renamed", note: "note", add: "added", skip: "skip", restore: "restored", next: "do next", pause: "pause", unpause: "no pause", remove: "removed", design: "edit", message: "message" };
   return (
     <motion.span className={`ps-tag steer ${steer.delivered ? "seen" : ""}`} initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} data-tip={steer.delivered ? "Claude has your change" : "Claude picks this up after its current action"}>
       {steer.delivered ? <Icon.Check size={9} /> : <span className="steer-dot" />}

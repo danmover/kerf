@@ -7,6 +7,11 @@
 // at its next tool boundary as a <plan-changes> note (or at once, when the
 // user interrupts), so the assistant picks it up as it goes.
 //
+// A chat message the user sends while Claude works takes the same path: it
+// queues here and reaches the running loop (or the sub-agents it is for) at
+// the next tool boundary as a <user-messages> note, so the run takes it into
+// account as it goes instead of being stopped and asked again.
+//
 // Sub-agents (one per subassembly, a review pass) report into the same tree
 // as branches with openBranch(). Each branch owns its own steps; the main
 // loop's update_plan never replaces them, and the user's changes on a branch
@@ -74,7 +79,7 @@ export interface PlanStep {
   endedAt?: number;
 }
 
-export type SteerKind = "rename" | "note" | "add" | "skip" | "restore" | "next" | "pause" | "unpause" | "remove" | "design";
+export type SteerKind = "rename" | "note" | "add" | "skip" | "restore" | "next" | "pause" | "unpause" | "remove" | "design" | "message";
 
 /** One change the user made, waiting to reach the agent that owns the step. */
 export interface Steer {
@@ -90,9 +95,19 @@ export interface Steer {
   parent?: string;
   /** a note's id, so an undelivered note can be withdrawn */
   noteId?: string;
+  /** a message: the chat item it came from; copies of one message for several agents share it */
+  msg?: string;
+  /** a message: the branch (sub-agent) this copy is for; left out for the main loop */
+  to?: string;
+  /** a message copy that went to every agent working, not just this one */
+  shared?: boolean;
+  /** a message about a spot on the model: where, in words for Claude */
+  about?: string;
   at: number;
   /** when it reached the agent */
   delivered?: number;
+  /** which agent read it: MAIN or a branch id */
+  readBy?: string;
 }
 
 export interface Plan {
@@ -108,7 +123,7 @@ export interface Plan {
 
 export const emptyPlan = (): Plan => ({ goal: "", steps: [], steering: [], pauseHit: null, updatedAt: 0 });
 
-const LIMITS = { steps: 80, depth: 4, title: 140, detail: 300, note: 1000, activity: 40 };
+const LIMITS = { steps: 80, depth: 4, title: 140, detail: 300, note: 1000, message: 4000, activity: 40 };
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 const ended = (s: StepStatus) => s === "done" || s === "skipped";
 let idn = 0;
@@ -449,10 +464,40 @@ export function designEdited(plan: Plan, what: string, now = Date.now()): Plan {
   return withSteer(plan, { kind: "design", text: what }, now);
 }
 
+/**
+ * A chat message the user sent while Claude worked. It goes to the main loop,
+ * and a copy to each sub-agent in `to` while its branch is open. A copy whose
+ * agent finished first falls back to the main loop, which reads it once.
+ */
+export function queueMessage(plan: Plan, m: { msg: string; text: string; about?: string; to?: { branch: string; shared: boolean }[] }, now = Date.now()): Plan {
+  const text = clip(m.text.trim(), LIMITS.message);
+  if (!text || plan.steering.some((w) => w.msg === m.msg)) return plan;
+  const base = { kind: "message" as const, msg: m.msg, text, about: m.about };
+  let next = withSteer(plan, base, now);
+  for (const t of m.to ?? []) next = withSteer(next, { ...base, to: t.branch, shared: t.shared || undefined }, now);
+  return next;
+}
+
+/** Take back a message no agent has read yet; false (and no change) once one has. */
+export function withdrawMessage(plan: Plan, msg: string, now = Date.now()): Plan | null {
+  const copies = plan.steering.filter((w) => w.kind === "message" && w.msg === msg);
+  if (!copies.length || copies.some((w) => w.delivered)) return null;
+  return { ...plan, steering: plan.steering.filter((w) => !copies.includes(w)), updatedAt: now };
+}
+
+/** Where a message from the chat stands: null when it never queued (it was sent as a turn of its own). */
+export function messageState(plan: Plan, msg: string): { delivered: boolean; main: boolean; agents: string[] } | null {
+  const copies = plan.steering.filter((w) => w.kind === "message" && w.msg === msg);
+  if (!copies.length) return null;
+  const agents = copies.filter((w) => w.delivered && w.readBy && w.readBy !== MAIN).map((w) => findStep(plan, w.readBy)?.title ?? "an agent");
+  return { delivered: copies.some((w) => w.delivered), main: copies.some((w) => w.delivered && (w.readBy ?? MAIN) === MAIN), agents: [...new Set(agents)] };
+}
+
 // ---------- delivering steering ----------
 
 /** Which agent a change is for: its step's owner while that branch is open, else the main loop. */
 export function steerScope(plan: Plan, s: Steer, isOpen: (branch: string) => boolean): string {
+  if (s.kind === "message") return s.to && isOpen(s.to) ? s.to : MAIN;
   const owner = findStep(plan, s.stepId)?.owner ?? MAIN;
   return owner !== MAIN && isOpen(owner) ? owner : MAIN;
 }
@@ -464,14 +509,45 @@ export function steerScope(plan: Plan, s: Steer, isOpen: (branch: string) => boo
 export function takeSteering(plan: Plan, scope = MAIN, isOpen: (branch: string) => boolean = () => false, now = Date.now()): { plan: Plan; text: string | null } {
   const mine = plan.steering.filter((s) => !s.delivered && steerScope(plan, s, isOpen) === scope);
   if (!mine.length) return { plan, text: null };
-  const text = formatSteering(plan, mine, scope);
+  // an agent's copy that falls back to the main loop after the main loop read the message is not read again
+  const read = (w: Steer) => scope === MAIN && w.kind === "message" && plan.steering.some((o) => o !== w && o.msg === w.msg && o.delivered && (o.readBy ?? MAIN) === MAIN);
+  const fresh = mine.filter((w) => !read(w));
+  const text = fresh.length ? formatSteering(plan, fresh, scope) : null;
   const ids = new Set(mine.map((s) => s.id));
-  return { plan: { ...plan, steering: plan.steering.map((s) => (ids.has(s.id) ? { ...s, delivered: now } : s)), updatedAt: now }, text };
+  return { plan: { ...plan, steering: plan.steering.map((s) => (ids.has(s.id) ? { ...s, delivered: now, readBy: scope } : s)), updatedAt: now }, text };
 }
 
-const quote = (s: string) => `“${s.replace(/<\/?plan-changes>/gi, "").replace(/[“”]/g, '"')}”`;
+const quote = (s: string) => `“${s.replace(/<\/?(?:plan-changes|user-messages)>/gi, "").replace(/[“”]/g, '"')}”`;
 
+/** Changes and messages for one agent, as the text its next request carries. */
 export function formatSteering(plan: Plan, steers: Steer[], scope = MAIN): string {
+  const changes = steers.filter((w) => w.kind !== "message");
+  const messages = steers.filter((w) => w.kind === "message");
+  return [messages.length ? formatMessages(plan, messages, scope) : "", changes.length ? formatChanges(plan, changes, scope) : ""].filter(Boolean).join("\n");
+}
+
+function formatMessages(plan: Plan, steers: Steer[], scope: string): string {
+  // copies of one message that all ended up here are read once
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const w of steers) {
+    if (w.msg && seen.has(w.msg)) continue;
+    if (w.msg) seen.add(w.msg);
+    const reached = scope === MAIN ? (messageState(plan, w.msg ?? "")?.agents ?? []) : [];
+    const head = scope !== MAIN && w.shared ? " (sent to every subassembly agent working now: act on what concerns yours, and leave the rest to the others and the lead)" : "";
+    lines.push(`- ${quote(w.text)}${head}`);
+    if (w.about) lines.push(`  <spot>${w.about.replace(/<\/?spot>/gi, "")}</spot>`);
+    if (reached.length) lines.push(`  It also reached the agent${reached.length > 1 ? "s" : ""} for ${reached.join(", ")} while ${reached.length > 1 ? "they" : "it"} worked; their reports say what they did about it. Do whatever it still needs.`);
+  }
+  return [
+    "<user-messages>",
+    "The user sent this while you were working. It is their newest instruction and comes before your plan: take it into account from your next step on. Keep work already done unless the message changes it, and if your plan changes, call update_plan with your next action.",
+    ...lines,
+    "</user-messages>",
+  ].join("\n");
+}
+
+function formatChanges(plan: Plan, steers: Steer[], scope: string): string {
   const local = (id?: string) => (!id ? "" : scope !== MAIN && id.startsWith(scope + "/") ? id.slice(scope.length + 1) : id);
   const ref = (id?: string) => {
     const s = findStep(plan, id);
@@ -502,6 +578,8 @@ export function formatSteering(plan: Plan, steers: Steer[], scope = MAIN): strin
         return `- Removed step ${local(w.stepId)} ${quote(w.prev ?? w.text)} that they had added. Leave it out.`;
       case "design":
         return `- Edited the design themselves (${w.text}). Call get_design before your next edit and keep their change.`;
+      case "message":
+        return "";
     }
   });
   return [
@@ -512,10 +590,10 @@ export function formatSteering(plan: Plan, steers: Steer[], scope = MAIN): strin
   ].join("\n");
 }
 
-/** The waiting changes in a line or two, for the user's own message when they send them. */
+/** The waiting changes in a line or two, for the user's own message when they send them. Messages already show in the chat. */
 export function describeSteering(plan: Plan): string {
   const name = (id?: string) => `“${findStep(plan, id)?.title ?? "a step"}”`;
-  const parts = pendingSteering(plan).map((w) => {
+  const parts = pendingSteering(plan).filter((w) => w.kind !== "message").map((w) => {
     switch (w.kind) {
       case "rename":
         return `renamed “${w.prev}” to “${w.text}”`;
@@ -537,6 +615,8 @@ export function describeSteering(plan: Plan): string {
         return `removed “${w.prev ?? w.text}”`;
       case "design":
         return `edited the design (${w.text})`;
+      case "message":
+        return "";
     }
   });
   return parts.length ? `Plan changes: ${parts.join("; ")}.` : "";
@@ -615,11 +695,19 @@ export function userAdd(where: { after?: string; parent?: string }, title: strin
   return r.id;
 }
 export const noteDesignEdit = (what: string) => change((p) => designEdited(p, what));
+export const userMessage = (m: Parameters<typeof queueMessage>[1]) => change((p) => queueMessage(p, m));
+/** Take back a message before any agent reads it; false once one has. */
+export function userWithdrawMessage(msg: string): boolean {
+  const next = withdrawMessage(getPlan(), msg);
+  if (next) setPlan(next);
+  return !!next;
+}
 
 /** For the main loop: the user's changes since the last tool boundary, or null. */
 export function takeMainSteering(): string | null {
-  const r = takeSteering(getPlan(), MAIN, isOpen);
-  if (r.text) setPlan(r.plan);
+  const p = getPlan();
+  const r = takeSteering(p, MAIN, isOpen);
+  if (r.plan !== p) setPlan(r.plan);
   return r.text;
 }
 
@@ -724,8 +812,9 @@ export function openBranch(opts: { title: string; agent: string; under?: string;
       change((p) => patchStep(p, id, { status, detail: detail !== undefined ? clip(detail, LIMITS.detail) : undefined }));
     },
     takeSteering() {
-      const r = takeSteering(getPlan(), id, isOpen);
-      if (r.text) setPlan(r.plan);
+      const p = getPlan();
+      const r = takeSteering(p, id, isOpen);
+      if (r.plan !== p) setPlan(r.plan);
       return r.text;
     },
     get skipped() {

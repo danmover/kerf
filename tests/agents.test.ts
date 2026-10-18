@@ -6,7 +6,8 @@ import { sectionReport } from "../src/agents/subagent";
 import { evaluate } from "../src/lang/evaluator";
 import { closeRunBranches, branchRootId, noteForBranch, openRunBranches, setBranchSteps, takeBranchSteering } from "../src/agents/planBranches";
 import { getAgentRun, patchBranch, setRun, type AgentBranch } from "../src/agents/progress";
-import { findStep, resetPlan, updatePlanFromClaude, usePlan, userSkip } from "../src/ai/plan";
+import { findStep, resetPlan, takeMainSteering, updatePlanFromClaude, usePlan, userMessage, userSkip } from "../src/ai/plan";
+import { kickoffMessage } from "../src/agents/prompts";
 
 const LAYOUT_SRC = `design "Fan"
 param d = 120mm
@@ -228,6 +229,34 @@ describe("reporting into the plan tree", () => {
     patchBranch("base", (b) => ({ ...b, status: "done", summary: "Done." }));
     expect(step(`${branchRootId("base")}/a`)?.status).toBe("done");
     closeRunBranches();
+  });
+
+  it("gives a chat message to the agents it is for, even one still queued, at its next step", () => {
+    start();
+    patchBranch("base", (b) => ({ ...b, status: "running" }));
+    userMessage({ msg: "c1", text: "use M4 screws", to: [{ branch: branchRootId("base"), shared: true }, { branch: branchRootId("guard"), shared: true }] });
+    expect(takeBranchSteering("base")).toContain("<user-messages>");
+    // the guard agent has not started: it reads the message with its first request
+    expect(takeBranchSteering("guard")).toContain("use M4 screws");
+    closeRunBranches();
+    expect(takeMainSteering()).toContain("It also reached the agents for Base, Guard");
+  });
+
+  it("tells an agent what the user told the agents it builds on", () => {
+    const k = kickoffMessage({
+      goal: "Fan",
+      told: [{ to: "Base", text: "Make the plate 6 mm thick" }],
+      layout: LAYOUT_SRC,
+      integration: "",
+      me: { id: "guard", name: "Guard", brief: "A guard ring.", after: ["base"], uses: [] },
+      others: [],
+      dependencies: [],
+      current: "",
+      revising: false,
+    });
+    expect(k).toContain("<user_notes");
+    expect(k).toContain("- To Base: “Make the plate 6 mm thick”");
+    expect(kickoffMessage({ goal: "Fan", layout: LAYOUT_SRC, integration: "", me: { id: "base", name: "Base", brief: "x", after: [], uses: [] }, others: [], dependencies: [], current: "", revising: false })).not.toContain("<user_notes");
   });
 
   it("stops an agent when its whole branch is skipped", () => {

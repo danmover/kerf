@@ -1152,6 +1152,51 @@ a:hover {
   word-wrap: break-word;
   font-size: 13px;
 }
+/* a message sent while Claude worked: waiting for its next step, or read */
+.midrun {
+  --plan-you: var(--violet);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  white-space: normal;
+}
+.midrun-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  color: var(--plan-you);
+  border: 1px solid rgb(var(--violet-rgb) / 0.45);
+  background: rgb(var(--violet-rgb) / 0.1);
+}
+.midrun-tag.seen {
+  color: var(--pass);
+  border-color: rgb(var(--pass-rgb) / 0.35);
+  background: var(--pass-soft);
+}
+.midrun-btn {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.midrun-btn:hover {
+  border-color: var(--line-3);
+  color: var(--text);
+}
 .msg-assistant {
   font-size: 13px;
   color: var(--text);
