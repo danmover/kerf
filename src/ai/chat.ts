@@ -26,11 +26,12 @@ import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type B
 import { isBuilding, relayToAgents } from "../agents/orchestrator";
 import { toast } from "../app/ui";
 import { claudeClient, claudeRoute } from "./client";
-import { BINDING_BETA, MAX_OUTPUT_TOKENS, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
+import { BINDING_BETA, MAX_CUT_RECOVERIES, MAX_OUTPUT_TOKENS, bindingKey, cutOffNote, trimCutOff, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 import { MODELS, type Effort } from "../app/settings";
 import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, type Route, type TurnFacts } from "./routing";
 import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
 import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm } from "./keepWarm";
+import { pause, retryWait } from "./retry";
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
 import { webTools, webActivity, describeWebCall, citedSources, isWebTool, isPausedTurn, flattenServerTools, echoContent, isWebToolError, isServerBlockError, type WebActivity } from "./web";
 
@@ -150,36 +151,7 @@ const unsupported = (model: string) => {
 let webUnavailable = false;
 /** a paused server-tool turn is resumed this many times in a row before Claude stops and says so */
 const MAX_PAUSE_RESUMES = 5;
-/** a response cut off at that limit is carried on this many times in a run before Claude stops and says so */
-const MAX_CUT_RECOVERIES = 2;
 
-/**
- * A response cut off at the length limit ends in the block it was writing: a tool call with half its input, or
- * thinking with no signature. Neither can go back to the API, so both are left out; the complete blocks before them
- * stay (the thinking that planned the work, finished tool calls, text), and a short note closes the turn when it
- * would end in thinking.
- */
-export function trimCutOff<T extends { type: string }>(content: readonly T[]): { content: T[]; cutTool: string | null } {
-  const out = content.slice();
-  const last = out[out.length - 1] as { type: string; name?: string } | undefined;
-  const cutTool = last?.type === "tool_use" ? (last.name ?? "a tool") : null;
-  if (cutTool) out.pop();
-  const kept = out.filter((b) => !(b.type === "thinking" && !(b as { signature?: string }).signature));
-  // the turn ends in text or a call, not in thinking
-  const end = kept[kept.length - 1]?.type;
-  if (!end || end === "thinking" || end === "redacted_thinking") kept.push({ type: "text", text: "(Cut off at the length limit.)" } as unknown as T);
-  return { content: kept, cutTool };
-}
-
-/** What Claude is told after a response was cut off, so it carries on by itself in smaller steps. */
-export function cutOffNote(cutTool: string | null): string {
-  if (!cutTool) return "Your last response reached the output length limit and was cut off. Carry on from where it stopped, more briefly.";
-  const how =
-    cutTool === "write_design"
-      ? "Write the design in two or more steps: write_design with the brief, parameters and main parts first, then add the rest with edit_design, a few parts per call."
-      : "Make it again in smaller pieces, over several calls.";
-  return `Your last response reached the output length limit while writing its ${cutTool} call, so that call did not run. ${how} You have already planned this, so keep your thinking short and go straight to the calls.`;
-}
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
@@ -1575,6 +1547,7 @@ interface StreamOptions {
 
 async function streamOnce(anthropic: Anthropic, build: () => Record<string, unknown>, live: Live, carried: unknown[], signal: AbortSignal, opts: StreamOptions = { design: true }) {
   let strippedOnce = false;
+  let busy = 0;
   for (let attempt = 0; attempt < 7; attempt++) {
     const params = build();
     const at = Date.now();
@@ -1677,6 +1650,18 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
           continue;
         }
       }
+      // busy, overloaded or cut off, even part-way through: wait and send it again rather than end the run
+      // (a quick answer is handed to the design model instead)
+      const wait = opts.design ? retryWait(e, busy) : null;
+      if (wait !== null && !signal.aborted) {
+        busy++;
+        resetLive(live);
+        const note = nid();
+        push({ kind: "notice", id: note, level: "info", title: "Claude is busy", detail: `Trying again in ${wait} s.` });
+        await pause(wait * 1000, signal);
+        set((s) => ({ items: s.items.filter((i) => i.id !== note) }));
+        continue;
+      }
       throw e;
     }
   }
@@ -1725,7 +1710,7 @@ function newestUser(h: readonly BetaMessageParam[]): number {
   return i;
 }
 
-function withCacheBreakpoint(h: BetaMessageParam[], prev?: number): BetaMessageParam[] {
+export function withCacheBreakpoint(h: BetaMessageParam[], prev?: number): BetaMessageParam[] {
   if (!h.length) return h;
   const out = h.slice();
   const i = newestUser(out);
@@ -1739,7 +1724,8 @@ function markCache(out: BetaMessageParam[], i: number) {
   if (m.role !== "user" || typeof m.content === "string" || !m.content.length) return;
   const blocks = m.content.slice();
   const lb = blocks[blocks.length - 1];
-  if (lb.type !== "text" && lb.type !== "tool_result") return;
+  // a review's report ends in its contact sheet, an answer to a question can end in a marked-up picture
+  if (lb.type !== "text" && lb.type !== "tool_result" && lb.type !== "image" && lb.type !== "document") return;
   blocks[blocks.length - 1] = { ...lb, cache_control: { type: "ephemeral" } } as BetaContentBlockParam;
   out[i] = { ...m, content: blocks };
 }

@@ -16,6 +16,36 @@ export const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 
 /** Room for one response: thinking, text and tool calls together (Haiku 4.5's ceiling; every newer model allows 128K). */
 export const MAX_OUTPUT_TOKENS = 64000;
+/** A response cut off at that limit is carried on this many times in a run before Claude stops and says so. */
+export const MAX_CUT_RECOVERIES = 2;
+
+/**
+ * A response cut off at the length limit ends in the block it was writing: a tool call with half its input, or
+ * thinking with no signature. Neither can go back to the API, so both are left out; the complete blocks before them
+ * stay (the thinking that planned the work, finished tool calls, text), and a short note closes the turn when it
+ * would end in thinking.
+ */
+export function trimCutOff<T extends { type: string }>(content: readonly T[]): { content: T[]; cutTool: string | null } {
+  const out = content.slice();
+  const last = out[out.length - 1] as { type: string; name?: string } | undefined;
+  const cutTool = last?.type === "tool_use" ? (last.name ?? "a tool") : null;
+  if (cutTool) out.pop();
+  const kept = out.filter((b) => !(b.type === "thinking" && !(b as { signature?: string }).signature));
+  // the turn ends in text or a call, not in thinking
+  const end = kept[kept.length - 1]?.type;
+  if (!end || end === "thinking" || end === "redacted_thinking") kept.push({ type: "text", text: "(Cut off at the length limit.)" } as unknown as T);
+  return { content: kept, cutTool };
+}
+
+/** What Claude is told after a response was cut off, so it carries on by itself in smaller steps. */
+export function cutOffNote(cutTool: string | null): string {
+  if (!cutTool) return "Your last response reached the output length limit and was cut off. Carry on from where it stopped, more briefly.";
+  const how =
+    cutTool === "write_design"
+      ? "Write the design in two or more steps: write_design with the brief, parameters and main parts first, then add the rest with edit_design, a few parts per call."
+      : "Make it again in smaller pieces, over several calls.";
+  return `Your last response reached the output length limit while writing its ${cutTool} call, so that call did not run. ${how} You have already planned this, so keep your thinking short and go straight to the calls.`;
+}
 
 /** A stable 53-bit hash (cyrb53), enough to tell two snapshots of a message apart. */
 function hash(s: string): string {
