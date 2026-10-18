@@ -19,11 +19,40 @@ export interface SupportSpec {
   region: RegionSpec;
   /** undefined: held in every direction; otherwise held along this axis only (a roller or sliding support) */
   dir?: V3;
+  /** a seat only pressed on (by bands, springs or weight), not bonded: the solve checks it stays pressed and does not slide or turn */
+  contact?: ContactSpec;
+}
+
+export interface ContactSpec {
+  /** friction of the seat on what it rests against */
+  mu: number;
+  /** the way the seat faces, out of the part; face regions use their own direction and a cylinder zone faces away from its axis */
+  normal?: V3;
+  /** bands round the same tube that grip it too: the sliding force (N) and twisting moment about the tube (N·mm) their friction holds */
+  grip?: { force: number; moment: number; names: string[] };
+}
+
+/** How a contact seat fared: what presses it, how much of it would lift, and what friction must hold. */
+export interface ContactResult {
+  /** net force pressing the seat on, N (negative: pulled off) */
+  pressing: number;
+  /** how far the centre of pressure sits off the seat's middle, as a share of its half-width: above 1/3 an edge starts to unload, from 1 it tips over */
+  lift: number;
+  /** the edge that unloads */
+  liftAt?: V3;
+  /** the force sliding the seat along its surface (along the tube for a cylinder zone), N, and what friction holds */
+  slide: number;
+  slideCap: number;
+  /** the moment turning it about the seat's normal (about the tube for a cylinder zone), N·mm, and what friction holds */
+  twist: number;
+  twistCap: number;
+  /** slide/slideCap + twist/twistCap: above 1 it slips */
+  use: number;
 }
 
 export type LoadSpec =
-  /** total force in N spread evenly over the region's surface */
-  | { t: "force"; region: RegionSpec; f: V3 }
+  /** total force in N spread evenly over the region's surface; from: where it really acts, off the analysed parts (a torque after it carries its moment in) */
+  | { t: "force"; region: RegionSpec; f: V3; from?: V3 }
   /** pressure in MPa pushing into the region's surface */
   | { t: "pressure"; region: RegionSpec; p: number }
   /** torque in N·mm about an axis through a point (default: the centre of the loaded surface) */
@@ -142,7 +171,8 @@ export const RESOLUTION_TARGET: Record<"draft" | "standard" | "fine", number> = 
 };
 
 export function describeRegion(r: RegionSpec): string {
-  const p = (v: V3) => `(${v.map((x) => Math.round(x * 100) / 100).join(", ")})`;
+  const n = (x: number) => Math.round(x * 100) / 100;
+  const p = (v: V3) => `(${v.map(n).join(", ")})`;
   const d = (v: V3) => {
     const names = ["X", "Y", "Z"];
     const k = v.findIndex((x) => Math.abs(Math.abs(x) - 1) < 1e-6);
@@ -153,11 +183,11 @@ export function describeRegion(r: RegionSpec): string {
     case "face":
       return `${r.part} ${d(r.dir)} face`;
     case "sphere":
-      return `zone r ${r.r} mm at ${p(r.at)}`;
+      return `zone r ${n(r.r)} mm at ${p(r.at)}`;
     case "box":
-      return `zone ${r.size.join("×")} mm at ${p(r.at)}`;
+      return `zone ${r.size.map(n).join("×")} mm at ${p(r.at)}`;
     case "cyl":
-      return `zone ⌀${r.d} mm along ${d(r.axis)} at ${p(r.at)}`;
+      return `zone ⌀${n(r.d)} mm along ${d(r.axis)} at ${p(r.at)}`;
     case "extreme":
       return `the side that lands first (${d(r.dir)})`;
   }

@@ -1,5 +1,6 @@
 // The evaluated design model: what the viewer, checks, AI and UI consume.
 
+import type { BandLayout } from "../library/bands";
 import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
 import type { PartRecipe, V3, Xform } from "../kernel/recipe";
@@ -68,7 +69,27 @@ export interface FlexInfo {
   preload?: number;
   /** times it bends in its life */
   cycles?: number;
+  /** snap: a round peg catch of this diameter that drops into a hole */
+  peg?: number;
   span: Span;
+}
+
+/** An O-ring or rubber band (lib.band), laid out in world space. */
+export interface BandInfo {
+  /** key into RUBBERS */
+  rubber: string;
+  shore: number;
+  cs: number;
+  id: number;
+  /** the parts it wraps, and the part its hooks are on */
+  around: string[];
+  holds?: string;
+  layout: BandLayout;
+  /** mass it holds on, g, and the bumps it rides, g */
+  carries?: number;
+  shock?: number;
+  /** friction of the holding part's seat on the tube */
+  saddleMu: number;
 }
 
 /** A coil spring's design (lib.spring), in world space. */
@@ -135,6 +156,7 @@ export interface EvalPart {
   /** snap hooks and flexures in this part */
   flex?: FlexInfo[];
   spring?: SpringInfo;
+  band?: BandInfo;
   bom?: { description: string; standard?: string; catalogId?: string; length?: number };
   /** named features (`add ... as name`), for selectors and inspection */
   features?: { name: string; kind: string; cosmetic: boolean }[];

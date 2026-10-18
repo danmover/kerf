@@ -9,6 +9,7 @@ import type { Model } from "./model";
 import { processItems } from "../mfg/report";
 import { fitItems } from "../analysis/fits/report";
 import { springItems } from "../analysis/springs/report";
+import { bandItems } from "../analysis/bands";
 import { hotSoakItems } from "../analysis/hotSoak";
 import type { ProcessResult } from "../mfg/types";
 
@@ -32,6 +33,7 @@ const passes: { id: string; order: number; run: ReportPass }[] = [
   { id: "process", order: 10, run: (items, ctx) => [...items, ...processItems(ctx.model, ctx.process, ctx.buildErrors)] },
   { id: "fits", order: 12, run: fitItems },
   { id: "springs", order: 13, run: springItems },
+  { id: "bands", order: 13.5, run: bandItems },
   { id: "hot-soak", order: 14, run: hotSoakItems },
 ];
 

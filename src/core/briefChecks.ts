@@ -84,7 +84,8 @@ export function assemblyStats(model: Model, geom: GeomLookup): AssemblyStats {
   return { size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], mass, heaviest, complete };
 }
 
-const made = (model: Model) => model.parts.filter((p) => p.kind === "part" && !p.hidden);
+// parts marked process: false are bought or already exist (the bike a mount goes on): their material is not the design's choice
+const made = (model: Model) => model.parts.filter((p) => p.kind === "part" && !p.hidden && !p.processNone);
 
 function byMaterial(parts: EvalPart[]) {
   const m = new Map<string, EvalPart[]>();

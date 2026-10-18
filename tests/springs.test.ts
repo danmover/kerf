@@ -49,6 +49,18 @@ describe("springs, snap fits and flexures", () => {
     expect(flat.detail).toMatch(/does not let go/);
   });
 
+  it("makes a peg that clicks into a hole and says what shears it", () => {
+    const { m, items } = checks(`part clip {
+  material: "ASA"
+  process: mfg.fdm(build: Y)
+  body box(30, 20, 3)
+  add snap_hook(at: (0, 0, 3), length: 14, t: 1.6, w: 4.5, catch: 1.2, angle: 45, root_r: 0, peg: 3) as hook
+}`);
+    const f = m.parts[0].flex![0];
+    expect(f.peg).toBe(3);
+    expect(items[0].detail).toMatch(/Ø3 mm peg clicks into the hole and holds until it shears at about [\d.]+ N/);
+  });
+
   it("says whether a latch stays tight or goes slack", () => {
     const latch = (extra: string) =>
       checks(`part clip {

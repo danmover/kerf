@@ -330,6 +330,22 @@ export function TemplateArt({ id }: { id: string }) {
         <path d="M52 20v76M48 20h8M48 96h8" style={line} />
       </svg>
     );
+  if (id === "seatpost-number")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <g transform="rotate(16 60 60)">
+          <rect x="44" y="4" width="26" height="112" rx="12" fill="none" style={line} />
+          <motion.rect x="66" y="40" width="14" height="34" rx="3" style={tint(0.1)} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.2 }} />
+          {[47, 67].map((y) => (
+            <motion.ellipse key={y} cx="60" cy={y} rx="22" ry="3.4" fill="none" style={{ ...violet, originX: "60px", originY: `${y}px` }} strokeWidth="1.6" animate={{ scaleX: [0.86, 1.05, 1] }} transition={{ duration: 2.4, repeat: Infinity, repeatDelay: 1.2 }} />
+          ))}
+        </g>
+        <motion.g animate={{ x: [18, 0, 0] }} transition={{ duration: 3.6, repeat: Infinity, times: [0, 0.35, 1] }}>
+          <path d="M92 50 104 38h64v44h-64L92 70z" style={tint(0.06)} strokeWidth="1.3" />
+          <text x="136" y="65" style={{ fill: "var(--text-3)" }} fontSize="13" textAnchor="middle" fontFamily="monospace">4004</text>
+        </motion.g>
+      </svg>
+    );
   if (id === "sand-tunneller") {
     // two screw sections either side of the body; the flights scroll as if turning
     const flights = (x0: number, dir: number) => (

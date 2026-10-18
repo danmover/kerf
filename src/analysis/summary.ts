@@ -70,6 +70,52 @@ export function stiffnessVerdict(spec: StructuralSpec, r: StructuralResult): Ver
   return d.unreliable || (ok && d.assumed.length) ? "warn" : ok ? "pass" : "fail";
 }
 
+/**
+ * Each contact seat: pressed on, an edge lifting, or slipping. Pulled right
+ * off fails; an edge lifting or friction not holding warns, since the band or
+ * spring that presses it will give and the part shifts rather than breaks.
+ */
+export function contactVerdicts(spec: StructuralSpec, r: StructuralResult): { i: number; status: Verdict; title: string; detail: string; fix?: string; margin: number }[] {
+  const out: { i: number; status: Verdict; title: string; detail: string; fix?: string; margin: number }[] = [];
+  r.supports.forEach((s, i) => {
+    const c = s.contact;
+    const ct = spec.supports[i]?.contact;
+    if (!c || !ct) return;
+    const where = describeRegion(spec.supports[i].region);
+    const grip = ct.grip?.names.length ? ` and ${ct.grip.names.join(" and ")} round the tube (${fmtNum(ct.grip.force, 1)} N along it, ${fmtNum(ct.grip.moment / 1000, 2)} N·m about it)` : "";
+    let detail = `The seat on ${where} is pressed on with ${fmtNum(c.pressing, 1)} N.`;
+    detail += ` Friction (μ ${fmtNum(ct.mu, 2)} at the seat${grip}) must hold ${fmtNum(c.slide, 1)} N of sliding and ${fmtNum(c.twist / 1000, 3)} N·m of turning: it holds ${fmtNum(c.slideCap, 1)} N and ${fmtNum(c.twistCap / 1000, 3)} N·m, so it uses ${fmtNum(c.use * 100, 0)} % of its grip.`;
+    let status: Verdict = "pass";
+    let fix: string | undefined;
+    if (c.pressing <= 0) {
+      status = "fail";
+      detail += " The loads pull it right off the seat.";
+      fix = "Press it on harder (a tighter band or a second one) or move the load closer to the seat.";
+    } else {
+      // with a straight pressure ramp across the seat, the share of it that opens a gap
+      const open = Math.min(1, Math.max(0, 1.5 * c.lift - 0.5));
+      const near = c.liftAt ? ` near ${p3(c.liftAt)}` : "";
+      if (c.lift >= 1) {
+        status = "warn";
+        detail += ` The loads press it on outside the seat, so it tips over its edge and the side${near} lifts off: it rocks on the seat.`;
+        fix = "Widen the seat across the load, press it on harder, or bring the load closer.";
+      } else if (open >= 0.5) {
+        status = "warn";
+        detail += ` The pressure is lopsided: about ${fmtNum(open * 100, 0)} % of the seat${near} lets go, so it rocks and can rattle.`;
+        fix = "Widen the seat across the load, press it on harder, or bring the load closer.";
+      } else if (open > 0) detail += ` The pressure leans to one side: the edge${near} carries little but stays on.`;
+      else detail += " Every part of the seat stays pressed on.";
+      if (c.use > 1) {
+        status = "warn";
+        detail += " Friction cannot hold it: it slides or turns on the seat until something stops it.";
+        fix = (fix ? fix + " " : "") + "Add grip (a rubber pad, a band with more pull) or a shape that keys it, such as a seat that hugs the tube's corners.";
+      }
+    }
+    out.push({ i, status, title: `Stays put: ${spec.label}`, detail, fix, margin: c.pressing > 0 ? 1 - c.use : -1 });
+  });
+  return out;
+}
+
 /** Only natural frequencies: no loads, so no stresses to judge. */
 const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length && !spec.accel;
 
@@ -77,7 +123,7 @@ const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length &
 export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Verdict {
   if (modalOnly(spec)) return vibrationVerdict(spec, r);
   if (spec.drop) return dropVerdict(spec, r, strengthVerdict(spec, r).status);
-  const all = [strengthVerdict(spec, r).status, stiffnessVerdict(spec, r) ?? "pass", vibrationVerdict(spec, r)];
+  const all = [strengthVerdict(spec, r).status, stiffnessVerdict(spec, r) ?? "pass", vibrationVerdict(spec, r), ...contactVerdicts(spec, r).map((c) => c.status)];
   return all.includes("fail") ? "fail" : all.includes("warn") ? "warn" : "pass";
 }
 
@@ -118,9 +164,10 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   if (r.layer) lines.push(`Worst stress across print layers: ${fmtNum(r.layer.value, 2)} MPa at ${p3(r.layer.at)}.`);
   lines.push(
     "Supports: " +
-      r.supports.map((s, i) => `${s.dir ? "roller" : "fixed"} ${describeRegion(spec.supports[i].region)} (${s.nodes} nodes) carries ${fmtNum(Math.hypot(...s.reaction), 1)} N`).join("; ") +
+      r.supports.map((s, i) => `${s.contact ? "contact" : s.dir ? "roller" : "fixed"} ${describeRegion(spec.supports[i].region)} (${s.nodes} nodes) carries ${fmtNum(Math.hypot(...s.reaction), 1)} N`).join("; ") +
       ".",
   );
+  for (const c of contactVerdicts(spec, r)) lines.push(`${c.title}: ${c.status.toUpperCase()}. ${c.detail}${c.fix ? ` Fix: ${c.fix}` : ""}`);
   if (r.loads.length)
     lines.push(
       "Loads: " +
