@@ -61,14 +61,14 @@ export const TEMPLATES: Template[] = [
   {
     id: "seatpost-number",
     name: "Seatpost Number Bracket",
-    tagline: "Screwless ASA clip for a race number on an aero seatpost: two O-rings, a click peg and wind, knock and pothole checks.",
+    tagline: "Screwless ASA clip for a race number on an aero seatpost, held like a rear light: one O-ring, a TPU grip pad, a click peg and wind, knock and pothole checks.",
     source: seatpost,
     prompts: [
       "My seatpost measures 21 × 35 mm: update the saddle to fit",
-      "Make the O-rings easier to put on without losing grip",
+      "Make the O-ring easier to put on without losing grip",
       "Show me how the number goes in and what keeps it there",
     ],
-    stats: "5 parts · 7 requirements · wind and knock analysis",
+    stats: "8 parts · 8 requirements · wind and knock analysis",
   },
   {
     id: "reducer",

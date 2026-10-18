@@ -1,11 +1,11 @@
 design "Seatpost Number Bracket"
-note "A screwless race-number holder for the back of a Giant Propel aero seatpost. Two EPDM O-rings hook over a pin on one side, wrap round the post and stretch over a mushroom-headed pin on the other, pressing a contoured saddle onto the post's flat back. The number's pointed end slides into a V pocket and clicks over a round peg on a flexing tongue; lift the tongue's tab to slide it out."
+note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring hooks over a pin on one side, wraps round the post and stretches over a mushroom-headed pin on the other, pressing a contoured saddle and its TPU grip pad onto the post's flat back. The number's pointed end slides into a V pocket and clicks over a round peg on a flexing tongue; lift the tongue's tab to slide it out."
 note "Everything about the bracket is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); the jaw is turned forward by the same angle so the number hangs level."
 
 brief {
   purpose: "Hold a race number behind a Giant Propel aero seatpost with no screws"
   setting: "Road and triathlon racing: fitted and taken off by hand at the bike, ridden in rain and sun"
-  priorities: ["number never comes out", "fits by hand", "compact"]
+  priorities: ["number never comes out", "fits by hand with one O-ring", "prints without supports", "compact"]
   look: "Black, small, tucked in behind the post"
 
   temp: -5C .. 50C
@@ -33,27 +33,28 @@ brief {
   given hole_in = 9.3mm "From the pointed end to the holes, read from the photo" assumed
   given hole_z = 19mm "Holes above and below the middle, read from the photo" assumed
 
-  reference photo "The number on its old bolted bracket" { notes: "Race Result plate 4004, tag-shaped, its pointed end clamped by an M5 washer; holes 38 mm apart about 9 mm from the tip" }
+  reference photo "The number on its old bolted bracket" { notes: "Race Result plate 4004, tag-shaped, its pointed end clamped by an M5 washer; holes 38 mm apart about 9 mm from the tip, two more along the top edge; yellow stripe at the tail, timing transponder sticker across the top half, 4004 in heavy black digits with a small leading 4" }
   reference propel "Giant Propel seatpost" { url: "https://www.giant-bicycles.com/", notes: "Giant publishes no section drawing of the aero seatpost: measure its width, depth and flat back and set the givens" }
+  reference lights "How rear lights hold on with one band" { notes: "Garmin Varia seat-post mount: a rubber shim shaped to the post (round or aero) sits in the back of the bracket, keyed into slots; one band hooks on one side, wraps the post and hooks on the other. Riders on D-shaped posts report it turning unless the shim fits the post" }
 
   assume "The number is polypropylene, about 30 MPa yield"
-  assume "Painted carbon post: EPDM grips it with μ 0.8 dry, 0.5 wet"
+  assume "Painted carbon post: EPDM grips it with μ 0.8 dry, 0.5 wet; the TPU pad about 0.5 wet; bare ASA only about 0.3"
 }
 
 // ── The saddle on the post ─────────────────────────────
 param saddle_h = 34mm   range 26 .. 50  "Saddle height along the post"
 param saddle_t = 6mm    range 4 .. 10   "Saddle thickness behind the post"
 param horn     = 4mm    range 0 .. 8    "How far the saddle wraps round the post's back corners"
-param wall     = 2.6mm  range 2 .. 4    "Wall beside the post"
+param wall     = 2.2mm  range 1.6 .. 4  "Wall beside the post"
+param pad_t    = 1.5mm  range 1.2 .. 2.5 "Grip pad thickness (TPU)"
 
-// ── The O-rings and their pins ─────────────────────────
-param oring_id = 40.87mm range 30 .. 60 "O-ring inside diameter (AS568-126 is 40.87 mm)"
-param oring_cs = 2.62mm  range 1.78 .. 3.53 "O-ring cord (AS568-1xx is 2.62 mm)"
-param band_z   = 11mm   range 6 .. 16   "Bands above and below the saddle's middle"
-param pin_x    = 13.5mm range 11 .. 18  "Pins out from the middle"
+// ── The O-ring and its pins ────────────────────────────
+param oring_id = 44.04mm range 30 .. 60 "O-ring inside diameter (AS568-224 is 44.04 mm)"
+param oring_cs = 3.53mm  range 1.78 .. 3.53 "O-ring cord (AS568-2xx is 3.53 mm)"
+param pin_x    = 18.5mm range 13 .. 22  "Pins out from the middle"
 param pin_y    = 4mm    range 2 .. 8    "Pins behind the post's flat back"
-param pin_d    = 4mm    range 3 .. 6    "Pin diameter"
-param lip      = 2mm    range 1 .. 3    "Pin head overhang (the stretch to get the loop over it)"
+param pin_d    = 6mm    range 3 .. 7    "Pin diameter (at least 1.5 cords, so the O-ring does not wear through)"
+param lip      = 2.7mm  range 1 .. 4    "Pin head overhang (the stretch to get the loop over it)"
 
 // ── The jaw and its click ──────────────────────────────
 param jaw_y    = 16mm   range 12 .. 30  "Jaw's back behind the post"
@@ -69,12 +70,14 @@ param gust     = 70kmh  range 30kmh .. 120kmh "Crosswind gust"
 param knock    = 25N    range 5 .. 60   "A leg or hand knocking the number's tail"
 param bump_g   = 12     range 3 .. 25   "Pothole shock, in g"
 
-let slot     = plate_t + 0.4                         // the number slides in with 0.2 mm each side
-let catch    = slot - 0.2                            // the peg reaches through the number's hole
+let slot     = plate_t + 0.6                         // the number slides in with 0.3 mm each side, what a printed slot needs
+let catch    = plate_t + 0.2                         // the peg reaches through the number's hole
 let jaw_w    = slot + 2 * cheek
-let sw       = tail_w + 2 * wall                     // saddle width
+let seat_off = pad_t + 0.2                           // the saddle's seat stands off the post by the pad and a little room
+let sw       = tail_w + 2 * (seat_off + wall)        // saddle width
+let pad_mu   = 0.5                                   // TPU on wet painted carbon
 // the number's outline: pointed end at (0, 0), running back along +u, up +v
-let tag      = polygon(points: [(0, -tip_h / 2), (13, -plate_h / 2), (plate_l, -plate_h / 2), (plate_l, plate_h / 2), (13, plate_h / 2), (0, tip_h / 2)], r: 1.5)
+let tag      = polygon(points: [(0, -tip_h / 2), (13, -plate_h / 2), (plate_l, -plate_h / 2), (plate_l, plate_h / 2), (13, plate_h / 2), (0, tip_h / 2)], r: 3)
 // the post's section: a round nose and a straight taper to its flat back at y = 0
 let nose_y   = -post_d + post_w / 2
 let post_sec = circle(post_w, at: (0, nose_y)) + polygon(points: [(-post_w / 2, nose_y), (post_w / 2, nose_y), (tail_w / 2, 0), (-tail_w / 2, 0)], r: 1.5)
@@ -94,7 +97,7 @@ let peg_root = tongue_l + peg_d / 2
 let tongue_at = (slot / 2 + tongue_t / 2, H.y - peg_root, H.z)
 let gap_l    = peg_root + peg_d + 3
 // the saddle seat: a cylinder zone round the post's axis that takes in the seat but not the saddle's back or the wings
-let seat_r   = hypot(tail_w / 2, nose_y / 2)
+let seat_r   = hypot(tail_w / 2, nose_y / 2) + seat_off
 let wing_x0  = sw / 2 - 1
 let wing_x1  = pin_x + pin_d / 2 + lip + 0.5
 let wing_d   = pin_y + pin_d / 2 + lip + 1
@@ -116,23 +119,26 @@ part bracket {
   material: "ASA"
   group: "Bracket"
   rotate: (-tilt, 0, 0)
-  // printed standing up as drawn: the saddle's foot and the bottom wings sit on the bed
-  // saddle: a block behind the post with its front cut to the post's own shape
+  // printed standing up as drawn: the saddle's foot, both wings and the neck stand on the bed, nothing hangs out
+  // saddle: a block behind the post with its front cut to the post's own shape, standing off it by the pad
   body box(sw, saddle_t + horn, saddle_h, at: (0, (saddle_t - horn) / 2, -saddle_h / 2)) as saddle
   fillet(1.5, edges: "vertical")
-  cut extrude(offset(post_sec, 0.15), saddle_h + 2, at: (0, 0, -saddle_h / 2 - 1)) as seat
-  // each band's loop ends sit on mushroom-headed pins standing up from a wing just under the band:
-  // the bottom wings stand on the bed, the top ones are short enough to bridge
-  for s in [1, -1] {
-    for side in [-1, 1] {
-      add box(wing_x1 - wing_x0, wing_d, s > 0 ? 2.5 : saddle_h / 2 - band_z - oring_cs, at: (side * (wing_x0 + wing_x1) / 2, wing_d / 2, s > 0 ? band_z - oring_cs - 2.5 : -saddle_h / 2)) as wings
-      add cylinder(d: pin_d, h: 2 * oring_cs + 0.3, at: (side * pin_x, pin_y, s * band_z - oring_cs)) as pins
-      // the head's underside is a steep cone so it prints without support and still keeps the loop on
-      add cone(d1: pin_d, d2: pin_d + 2 * lip, h: 1.25 * lip, at: (side * pin_x, pin_y, s * band_z + oring_cs + 0.3)) as heads
-      add cylinder(d: pin_d + 2 * lip, h: 0.8, at: (side * pin_x, pin_y, s * band_z + oring_cs + 0.3 + 1.25 * lip)) as heads
-      add cone(d1: pin_d + 2 * lip, d2: pin_d + 0.6, h: 1.2, at: (side * pin_x, pin_y, s * band_z + oring_cs + 1.1 + 1.25 * lip)) as heads
-    }
+  cut extrude(offset(post_sec, seat_off), saddle_h + 2, at: (0, 0, -saddle_h / 2 - 1)) as seat
+  // a stopped groove for the pad's key, so the pad cannot slide or turn in the saddle
+  cut box(3.4, 1.3, saddle_h - 7.4, at: (0, seat_off + 0.55, -(saddle_h - 7.4) / 2)) as key_slot
+  // the O-ring's ends sit on mushroom-headed pins at the saddle's mid-height, each standing on a wing that rises from the bed
+  for side in [-1, 1] {
+    add box(wing_x1 - wing_x0, wing_d, saddle_h / 2 - oring_cs, at: (side * (wing_x0 + wing_x1) / 2, wing_d / 2, -saddle_h / 2)) as wings
+    add cylinder(d: pin_d, h: 2 * oring_cs + 0.3, at: (side * pin_x, pin_y, -oring_cs)) as pins
+    // the pull bends each pin across its layers: flare its root, below where the cord sits
+    add cone(d1: pin_d + 2, d2: pin_d, h: 1, at: (side * pin_x, pin_y, -oring_cs)) as pins
+    // the head's underside is a steep cone so it prints without support and still keeps the loop on
+    add cone(d1: pin_d, d2: pin_d + 2 * lip, h: 1.25 * lip, at: (side * pin_x, pin_y, oring_cs + 0.3)) as heads
+    add cylinder(d: pin_d + 2 * lip, h: 0.8, at: (side * pin_x, pin_y, oring_cs + 0.3 + 1.25 * lip)) as heads
+    add cone(d1: pin_d + 2 * lip, d2: pin_d + 0.6, h: 1.2, at: (side * pin_x, pin_y, oring_cs + 1.1 + 1.25 * lip)) as heads
   }
+  // round the inside corner where each wing's front meets the saddle: the pins' pull bends the wing there
+  fillet(1.5, edges: near((sw / 2, 0, -10), 1) + near((-sw / 2, 0, -10), 1))
   // neck from the saddle back to the jaw
   add box(jaw_w + 4, jaw_y - saddle_t + 3, saddle_h / 2 + 12, at: (0, saddle_t + (jaw_y - saddle_t + 3) / 2 - 1, -saddle_h / 2)) as neck
   // the jaw, turned forward by the lean: its pocket is the number's own pointed outline
@@ -150,6 +156,25 @@ part bracket {
   cut box(120, 120, 40, at: (0, 0, -saddle_h / 2 - 40)) as foot
 }
 
+// the rubber shim a rear light's bracket has: a TPU liner shaped to the post's back and corners
+part pad {
+  label: "Grip pad"
+  material: "TPU"
+  color: #3b3e44
+  group: "Bracket"
+  rotate: (-tilt, 0, 0)
+  // printed standing up as drawn, like the bracket
+  body extrude(overlap(offset(post_sec, 0.05 + pad_t) - offset(post_sec, 0.05), rect(sw + 2, horn + pad_t + 1, at: (0, (pad_t + 1 - horn) / 2))), saddle_h, at: (0, 0, -saddle_h / 2)) as liner
+  // a key down its back drops into the saddle's groove
+  add box(3, 1, saddle_h - 8, at: (0, pad_t + 0.5, -(saddle_h - 8) / 2)) as key
+}
+
+// ── The race number, as the Race Result plate it is ─────
+let ink      = offset(text("004", size: 31, at: (4.4, 0)), 0.45) + offset(text("4", size: 14, at: (-29, -6.2)), 0.25)
+let ink_at   = J_w + (0, 59.5, -17.5)
+let sticker  = rect(108, 28, r: 2, at: (65, 12.5))
+let stripe   = overlap(tag, rect(12, plate_h + 2, at: (plate_l - 6, 0)))
+
 part number {
   label: "Race number (4004)"
   material: "PP"
@@ -160,27 +185,67 @@ part number {
   for zz in [-hole_z, hole_z] {
     cut hole(hole_d, through: true, at: J_w + (plate_t / 2, hole_in, zz), dir: -X)
   }
-  cosmetic {
-    add emboss(text("4004", size: 24), at: J_w + (plate_t / 2, plate_l / 2 + 8, 0), facing: X, h: 0.05)
+  // two more along its top edge, for brackets that tie it on
+  for uu in [49, 70] {
+    cut hole(hole_d, through: true, at: J_w + (plate_t / 2, uu, plate_h / 2 - 4), dir: -X)
   }
 }
 
-// ── O-rings: hooked on the left pin, round the post, stretched over the right pin's head ──
-component band_top = lib.band("EPDM", id: oring_id, cs: oring_cs, around: post, holds: bracket, from: (-pin_x, pin_y, band_z), to: (pin_x, pin_y, band_z), pin: pin_d, lip: lip, open: Z, carries: 25g, shock: bump_g) {
-  group: "Bands"
+// printed on both faces; each reads from its own side
+part number_print {
+  label: "Race number print"
+  material: "PP"
+  color: #121214
+  group: "Number"
+  process: false
+  body emboss(ink, at: ink_at + (-plate_t / 2 - 0.05, 0, 0), facing: -X, h: 0.03)
+  add emboss(ink, at: ink_at + (plate_t / 2 + 0.05, 0, 0), facing: X, h: 0.03)
 }
-component band_bottom = lib.band("EPDM", id: oring_id, cs: oring_cs, around: post, holds: bracket, from: (-pin_x, pin_y, -band_z), to: (pin_x, pin_y, -band_z), pin: pin_d, lip: lip, open: Z) {
+
+part number_stripe {
+  label: "Race number stripe"
+  material: "PP"
+  color: #f2c200
+  group: "Number"
+  process: false
+  body extrude(stripe, 0.05, at: J_w + (plate_t / 2, 0, 0), dir: X)
+  add extrude(stripe - sticker, 0.05, at: J_w + (-plate_t / 2 - 0.05, 0, 0), dir: X)
+}
+
+// a foil antenna under clear film: silver-grey, not shiny metal
+part transponder {
+  label: "Timing transponder sticker"
+  material: "PP"
+  finish: "gloss"
+  color: #c9cac6
+  group: "Number"
+  process: false
+  body extrude(sticker, 0.1, at: J_w + (-plate_t / 2 - 0.1, 0, 0), dir: X)
+}
+
+// ── The O-ring: hooked on the left pin, round the post, stretched over the right pin's head ──
+component oring = lib.band("EPDM", id: oring_id, cs: oring_cs, around: post, holds: bracket, from: (-pin_x, pin_y, 0), to: (pin_x, pin_y, 0), pin: pin_d, lip: lip, open: Z, carries: 30g, shock: bump_g, saddle_mu: pad_mu) {
   group: "Bands"
 }
 
 decision holding "How it holds the post" {
   ask: "Hold the bracket on without a screw"
-  chose: "Two O-rings hooked on pins"
-  by: "claude"
-  why: "A closed band cannot get round a seatpost that carries on above and below, so each O-ring hooks on one pin, wraps the post and stretches over the other pin's head: on and off by hand, and the stretch is checked like real rubber."
-  option "Two O-rings hooked on pins" "Swap in seconds; spare O-rings cost pennies."
-  option "One wide rubber strap" "Grips more post, but a strap is harder to buy in the right length."
+  chose: "One O-ring and a grip pad"
+  by: "you"
+  why: "How rear lights do it: one band at the bracket's middle, hooked on a pin either side, and a rubber pad shaped to the post so a single band's squeeze is enough. A closed band cannot get round a seatpost that carries on above and below, so the O-ring hooks on one pin, wraps the post and stretches over the other pin's head."
+  option "One O-ring and a grip pad" "One thick O-ring to fit; the TPU pad doubles what the squeeze holds."
+  option "Two O-rings hooked on pins" "More grip and a spare if one breaks, but two to fit each time."
   option "Clamp with a screw" "Holds hardest, but needs a tool and can mark the post."
+}
+
+decision seat_grip "What grips the post" {
+  ask: "Stop the bracket turning on the post with only one O-ring"
+  chose: "Printed TPU pad"
+  by: "claude"
+  why: "Bare ASA on painted carbon grips at about μ 0.3; a rubbery pad about 0.5 even wet, so one O-ring holds what two did. Keyed into a groove so it cannot slip out, like the shim in a rear light's bracket."
+  option "Printed TPU pad" "A second small print in TPU; replaceable."
+  option "Strip of old inner tube" "Cut to fit and stick in with double-sided tape: no TPU needed, grips as well."
+  option "Bare plastic" "Nothing extra, but the knock check fails with one O-ring."
 }
 
 decision number_hold "How the number is held" {
@@ -194,20 +259,21 @@ decision number_hold "How the number is held" {
 }
 
 decision oring_size "O-ring size" {
-  chose: "AS568-126 (40.87 × 2.62 mm)"
+  chose: "AS568-224 (44.04 × 3.53 mm)"
   by: "claude"
-  why: "Stretched about 50 % on the post: a firm hold that fitting by hand can still manage, and well inside what EPDM takes for years."
-  option "AS568-124 (34.52 × 2.62 mm)" { oring_id: 34.52mm } "Tighter: about 75 % stretch, a hard pull to fit."
-  option "AS568-126 (40.87 × 2.62 mm)" { oring_id: 40.87mm } "Balanced."
-  option "AS568-128 (47.22 × 2.62 mm)" { oring_id: 47.22mm } "Looser: about 30 % stretch, less grip once it relaxes."
+  why: "The thick 3.53 mm cord pulls about twice as hard as the 2.62 mm one at the same stretch, so one O-ring does the work of two; this size stretches about 45 % on the post, which fitting by hand can still manage."
+  option "AS568-223 (40.87 × 3.53 mm)" { oring_id: 40.87mm, oring_cs: 3.53mm } "Tighter: more grip, a hard pull to fit."
+  option "AS568-224 (44.04 × 3.53 mm)" { oring_id: 44.04mm, oring_cs: 3.53mm } "Balanced."
+  option "AS568-225 (47.22 × 3.53 mm)" { oring_id: 47.22mm, oring_cs: 3.53mm } "Looser: easier on, less grip once it relaxes."
+  option "AS568-126 (40.87 × 2.62 mm)" { oring_id: 40.87mm, oring_cs: 2.62mm } "Thin cord: easy on, but about half the grip."
 }
 
 // ── Checks ─────────────────────────────────────────────
 analysis "Crosswind gust" {
   parts: [bracket]
-  // the saddle is only pressed on by the bands: it must stay pressed and not turn on the post
-  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: 0.3, grip: [band_top, band_bottom])
-  load: [pull(band_top), pull(band_bottom)]
+  // the saddle is only pressed on by the O-ring, through the pad: it must stay pressed and not turn on the post
+  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
+  load: pull(oring)
   // the wind on the number comes into the jaw as a force and its moment
   load: wind(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), gust, dir: X, area: plate_l * plate_h - 6.5 * (plate_h - tip_h), at: J_w + (0, plate_l / 2, 0))
   carries: mass(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), 8g)
@@ -222,8 +288,8 @@ let knock_felt  = min(knock, number_bend / (plate_l - pocket))
 
 analysis "Leg knock" {
   parts: [bracket]
-  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: 0.3, grip: [band_top, band_bottom])
-  load: [pull(band_top), pull(band_bottom)]
+  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
+  load: pull(oring)
   load: force(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), knock_felt, dir: X, at: J_w + (0, plate_l, 0))
   printed
   cycles: 1000
@@ -232,8 +298,8 @@ analysis "Leg knock" {
 
 analysis "Pothole" {
   parts: [bracket]
-  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: 0.3, grip: [band_top, band_bottom])
-  load: [pull(band_top), pull(band_bottom)]
+  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
+  load: pull(oring)
   carries: mass(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), 8g)
   accel: (0, 0, -bump_g)
   printed
@@ -243,11 +309,12 @@ analysis "Pothole" {
 require "The peg sits in the number's hole, inside the jaw" for knock: hole_in + hole_d / 2 + 2 <= pocket
 require "The peg is smaller than the hole" for knock: peg_d <= hole_d - 0.3
 require "The jaw covers both holes" for knock: jaw_h / 2 >= hole_z + hole_d / 2 + 1.5
-require "The O-rings pull firmly" soft for gust, bumps: band_top.stretch >= 1.3
-require "Stretching the O-ring over its pin is a one-hand job" soft for fit: band_top.fit_force <= 45N
+require "The O-ring pulls firmly" soft for gust, bumps: oring.stretch >= 1.3
+require "Stretching the O-ring over its pin is a one-hand job" soft for fit: oring.fit_force <= 45N
 require "The O-ring's head keeps it on the pin" for fit: lip >= 0.75 * oring_cs
+require "The O-ring runs clear of the saddle's sides" for fit: pin_x - pin_d / 2 - oring.cord >= sw / 2 + 0.5
 require "The saddle hugs the post's back corners" for gust: horn >= 2 && horn <= post_d / 3
 
-test "Fit and remove": "Hook each O-ring on its left pin, wrap it round the post and stretch it over the right pin's head with one hand; slide the number into the jaw until it clicks, then lift the tab and slide it out."
+test "Fit and remove": "Hook the O-ring on its left pin, wrap it round the post and stretch it over the right pin's head with one hand; slide the number into the jaw until it clicks, then lift the tab and slide it out."
 test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post and the number must not move in the jaw."
-buy "AS568-126 EPDM O-rings (spares)" { qty: 4, price: 0.5 }
+buy "AS568-224 EPDM O-rings (spares)" { qty: 4, price: 0.6 }
