@@ -344,7 +344,8 @@ export function Viewport() {
         )}
       </AnimatePresence>
 
-      <Hud stage={stage} parts={visibleParts} />
+      {/* the "How it goes on" card sits where this line is; the status bar still shows the same counts */}
+      {!fitting && <Hud stage={stage} parts={visibleParts} />}
       <MeasureTool host={measureHost} />
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
