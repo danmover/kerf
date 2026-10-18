@@ -138,6 +138,8 @@ export interface ReviewerInput {
   source: string;
   views: ReviewView[];
   earlier: Finding[];
+  /** what changed in the source since the work began (round 1) or since the last round */
+  changes?: string;
   focus?: string;
   scope?: string[];
   closeup: (req: { parts: string[]; view: (typeof VIEWS)[number]; section?: "x" | "y" | "z"; why: string }) => Promise<ReviewView | null>;
@@ -173,6 +175,7 @@ function firstMessage(i: ReviewerInput): BetaContentBlockParam[] {
         .join("\n")}\n</earlier_findings>`,
     );
   }
+  if (i.changes) text(`<changes since="${i.round > 1 ? "the last review round" : "the start of this piece of work"}">\n${i.changes}\n</changes>`);
   if (i.focus) text(`The designer asks you to look especially at: ${i.focus}`);
   for (const v of i.views) {
     text(`View: ${v.label}`);

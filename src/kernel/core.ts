@@ -6,7 +6,7 @@ import type { Shape3D } from "replicad";
 import { applyXf, bboxOf, buildPartFull, importFaceColors, meshShape, solidVolume, type MeshData } from "./build";
 import { applyXforms, hasDetail, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
 import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, InspectRequest, InspectResult, Interference, PlacedItem } from "./protocol";
-import { inspectPart as inspectForReview, type PartInspection } from "./inspect";
+import { inspectPart as inspectForReview, solidPieces, type PartInspection } from "./inspect";
 import { inspectShape } from "./selectInspect";
 import { geoKey, type GeoQuery } from "../lang/values";
 import { ProcessAnalyzer } from "../mfg/analyzer";
@@ -20,6 +20,8 @@ interface CacheEntry {
   bbox: [V3, V3];
   meshes: Partial<Record<"preview" | "final", MeshData>>;
   inspection?: PartInspection;
+  /** the separate solids it is made of, worked out on the first check that needs them */
+  pieces?: PartInspection["pieces"] | null;
   /** colours of each face, for imported bodies that carry them */
   faceColors: string[] | null;
   used: number;
@@ -307,7 +309,21 @@ export class KernelCore {
       envelopes.push({ id: env.id, hits });
     }
 
-    return { interferences, geo, geoErrors, access, envelopes, ms: performance.now() - t0, pairsTested };
+    // parts made of solids that do not touch: usually a feature added where it misses the body
+    const pieces: NonNullable<ChecksResult["pieces"]> = {};
+    for (const p of placed) {
+      const e = this.cache.get(p.hash)!;
+      if (e.pieces === undefined) {
+        try {
+          e.pieces = solidPieces(e.shape) ?? null;
+        } catch {
+          e.pieces = null;
+        }
+      }
+      if (e.pieces && e.pieces.count > 1) pieces[p.hash] = e.pieces;
+    }
+
+    return { interferences, geo, geoErrors, access, envelopes, ms: performance.now() - t0, pairsTested, pieces };
   }
 
   /** How much two placed solids overlap: exactly, unless their meshes show they are well apart. */

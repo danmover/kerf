@@ -1,7 +1,7 @@
 // Renders for the review: a fixed set of views of the whole model, close-ups
 // on request, and a labelled contact sheet of them all.
 
-import type { CaptureOptions } from "../../app/viewportApi";
+import type { Box, CaptureOptions } from "../../app/viewportApi";
 import type { ViewPreset } from "../../app/view";
 import type { ReviewView } from "./types";
 
@@ -29,11 +29,17 @@ export const VIEW_H = 704;
 
 const nameOf = (s: ViewSpec) => (s.section ? `section-${s.section}` : s.view);
 
-export async function captureViews(capture: Capture, ids: string[] | undefined, onView?: (v: ReviewView) => void, specs = REVIEW_VIEWS): Promise<ReviewView[]> {
+/**
+ * The review's views. With `subject` (the parts being designed, when they are small beside what they fit on), the
+ * first view shows the whole model and the rest are framed on the subject, nothing ghosted.
+ */
+export async function captureViews(capture: Capture, ids: string[] | undefined, onView?: (v: ReviewView) => void, specs = REVIEW_VIEWS, subject?: Box): Promise<ReviewView[]> {
   const out: ReviewView[] = [];
-  for (const s of specs) {
-    const image = await capture({ view: s.view, width: VIEW_W, height: VIEW_H, section: s.section, focus: ids, frame: ids?.length ? "focus" : "model", mime: "image/jpeg", quality: 0.85, samples: 24, overlays: false });
-    const v = { name: nameOf(s), label: s.label, image };
+  for (const [i, s] of specs.entries()) {
+    const box = subject && i > 0 ? subject : undefined;
+    const image = await capture({ view: s.view, width: VIEW_W, height: VIEW_H, section: s.section, focus: ids, frame: ids?.length ? "focus" : "model", box, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: false });
+    const label = subject ? (box ? `${s.label}, framed on the parts being designed` : `${s.label}, whole model`) : s.label;
+    const v = { name: nameOf(s), label, image };
     out.push(v);
     onView?.(v);
     // let the page paint between captures

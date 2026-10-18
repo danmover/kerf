@@ -441,7 +441,7 @@ function syncFindings(session: ReviewSession, itemIds: string[]) {
 }
 
 /** Run one review round into the chat item itemId. Returns the result, or null when it could not run. */
-async function reviewInto(itemId: string, session: ReviewSession, itemIds: string[], auto: boolean, focus?: string): Promise<ReviewResult | { error: string }> {
+async function reviewInto(itemId: string, session: ReviewSession, itemIds: string[], auto: boolean, since: string, focus?: string): Promise<ReviewResult | { error: string }> {
   const round = session.round + 1;
   set((s) => ({ items: s.items.map((it) => (it.id === itemId ? { kind: "review", id: itemId, auto, round, status: "running", progress: { stage: "waiting", views: [] } } : it)) }));
   itemIds.push(itemId);
@@ -452,6 +452,7 @@ async function reviewInto(itemId: string, session: ReviewSession, itemIds: strin
         round,
         earlier: session.carried(),
         nextId: session.nextId,
+        since,
         focus,
         signal: abort?.signal,
         onProgress: (p) => patch(itemId, (it) => (it.kind === "review" ? { ...it, progress: { stage: p.stage, detail: p.detail, views: (p.views ?? []).map((v) => v.image) } } : it)),
@@ -1252,7 +1253,7 @@ async function runLoop(opts: LoopOptions = {}) {
         endPreview();
         let outcome: ToolOutcome;
         try {
-          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems) : await runTool(u.name, u.input, { signal: ac.signal, toolUseId: u.id, check: CHECKED_TOOLS.has(u.name) ? i === checkAt : undefined });
+          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems, startSource) : await runTool(u.name, u.input, { signal: ac.signal, toolUseId: u.id, check: CHECKED_TOOLS.has(u.name) ? i === checkAt : undefined });
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
@@ -1413,7 +1414,7 @@ async function autoReview(session: ReviewSession, reviewItems: string[], startSo
   if (mode === "auto" && !answering && !isSubstantial(base, now)) return false;
   const itemId = nid();
   push({ kind: "review", id: itemId, auto: true, round: session.round + 1, status: "running", progress: { stage: "waiting", views: [] } });
-  const r = await reviewInto(itemId, session, reviewItems, true);
+  const r = await reviewInto(itemId, session, reviewItems, true, base);
   if (stale() || "error" in r) return false;
   const text = designerReport(r, session.roundsLeft, true);
   // after a suggest_next_steps turn the history ends with its results, so the review joins that user turn
@@ -1427,7 +1428,7 @@ async function autoReview(session: ReviewSession, reviewItems: string[], startSo
 }
 
 /** Claude's review_design tool: record its answers to earlier findings, then run the next round. */
-async function reviewTool(input: unknown, itemId: string, session: ReviewSession, reviewItems: string[]): Promise<ToolOutcome> {
+async function reviewTool(input: unknown, itemId: string, session: ReviewSession, reviewItems: string[], startSource: string): Promise<ToolOutcome> {
   const p = ReviewInput.safeParse(input ?? {});
   if (!p.success) return { isError: true, content: `Invalid tool input: ${p.error.issues.map((i) => i.message).join("; ")}`, card: { title: "Invalid review request", status: "error" } };
   const unknown = session.respond(p.data.responses ?? []);
@@ -1438,7 +1439,7 @@ async function reviewTool(input: unknown, itemId: string, session: ReviewSession
       card: { title: "Review limit reached", detail: `${session.maxRounds} rounds per reply. You can change this in Settings.` },
     };
   }
-  const r = await reviewInto(itemId, session, reviewItems, false, p.data.focus);
+  const r = await reviewInto(itemId, session, reviewItems, false, session.lastSource ?? startSource, p.data.focus);
   if ("error" in r) return { isError: true, content: `The review could not run: ${r.error}`, card: { title: "Review could not run", detail: r.error, status: "error" } };
   const text = designerReport(r, session.roundsLeft, false) + (unknown.length ? `\nNote: these finding ids were not recognised: ${unknown.join(", ")}.` : "");
   return { content: reviewContent(r, text), card: { title: "Reviewed the design" } };

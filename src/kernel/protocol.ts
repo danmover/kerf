@@ -83,6 +83,8 @@ export interface ChecksResult {
   envelopes: { id: string; hits: string[] }[];
   ms: number;
   pairsTested: number;
+  /** parts (by geometry hash) made of more than one solid, with the smaller pieces in the part's own coordinates */
+  pieces?: Record<string, { count: number; others: { volume: number; at: V3 }[] }>;
 }
 
 export interface InspectRequest {
