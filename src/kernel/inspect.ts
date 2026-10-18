@@ -3,6 +3,7 @@
 // rims, sharp internal corners, how much support it needs to print in each
 // orientation, and its thinnest walls. Runs in the kernel worker and in Node.
 
+import * as R from "replicad";
 import type { Shape3D } from "replicad";
 import type { MeshData } from "./build";
 import type { V3 } from "./recipe";
@@ -39,6 +40,8 @@ export interface PartInspection {
   support: SupportNote[];
   /** thinnest wall found by casting rays through the solid; null when no wall could be measured */
   walls: { min: number; p5: number; at: V3; samples: number } | null;
+  /** separate solids the part is made of (a feature that does not touch the body makes a second one), with the smaller ones */
+  pieces?: { count: number; others: { volume: number; at: V3 }[] };
   /** true when the part had more edges than were inspected */
   truncated: boolean;
   ms: number;
@@ -414,14 +417,38 @@ export function wallThickness(tris: Tri[], samples = 600): PartInspection["walls
   return { min: Math.round(found[0].t * 100) / 100, p5: Math.round(p5 * 100) / 100, at: round(found[0].at, 1), samples: found.length };
 }
 
+/** The solids a shape is made of: one for a sound part; more when a feature does not touch the body it was added to. */
+export function solidPieces(shape: Shape3D): PartInspection["pieces"] {
+  const solids = [...R.iterTopo(shape.wrapped, "solid")];
+  if (solids.length <= 1) return { count: Math.max(1, solids.length), others: [] };
+  const list = solids.map((s) => {
+    const c = R.cast(s) as Shape3D;
+    try {
+      const [lo, hi] = c.boundingBox.bounds;
+      return { volume: Math.round(Math.abs(R.measureVolume(c)) * 10) / 10, at: round([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2], 1) };
+    } finally {
+      free(c as unknown as { delete?: () => void });
+    }
+  });
+  list.sort((a, b) => b.volume - a.volume);
+  return { count: list.length, others: list.slice(1, 6) };
+}
+
 export function inspectPart(shape: Shape3D, mesh: MeshData | undefined): PartInspection {
   const t0 = performance.now();
   const edges = scanEdges(shape);
   const tris = mesh ? triangles(mesh) : [];
+  let pieces: PartInspection["pieces"];
+  try {
+    pieces = solidPieces(shape);
+  } catch {
+    pieces = undefined;
+  }
   return {
     ...edges,
     support: tris.length ? supportAreas(tris) : [],
     walls: tris.length ? wallThickness(tris) : null,
+    pieces,
     ms: Math.round(performance.now() - t0),
   };
 }

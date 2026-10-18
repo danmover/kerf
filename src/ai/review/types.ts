@@ -90,6 +90,8 @@ export interface DetailInventory {
   literals: Literal[];
   /** part names left out because the scan could not reach them (not built yet, kernel busy) */
   missing: string[];
+  /** parts that no other part comes near, in a design whose other parts touch: floating or misplaced */
+  alone?: string[];
 }
 
 export interface Brief {

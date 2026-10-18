@@ -5,7 +5,7 @@
 import type { Model, EvalPart, ReqStatus } from "./model";
 import type { Span } from "../lang/ast";
 import type { ChecksRequest, ChecksResult, PlacedItem } from "../kernel/protocol";
-import { frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
+import { applyXforms, frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
 import { centerDistance, densify, gearOutline, maxPenetration, tipDiameter } from "../library/gears";
 import { materialDensity } from "../library/standards";
 import { isPrinted } from "../library/materials";
@@ -204,6 +204,8 @@ export interface ReportInputs {
  * The core checks. Checks from other modules (manufacturing processes,
  * analyses) are added afterwards by the passes in reportPasses.
  */
+const pt = (p: V3) => `(${p.map((x) => fmtNum(x, 1)).join(", ")})`;
+
 export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckReport {
   const { geoModel = null, kernel = null, buildErrors = new Map<string, string>(), geom = () => undefined } = inputs;
   const partsById = inputs.partsById ?? new Map(model.parts.map((p) => [p.id, p]));
@@ -247,6 +249,27 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         detail: `${fmtNum(i.volume, 1)} mm³ of solid overlap`,
         parts: [i.a, i.b],
         span: partsById.get(i.a)?.span,
+        basis: "geometry",
+      });
+    }
+    // a made part in several solids that do not touch: a feature that misses the body, or two parts in one
+    // (not bought or stand-in parts, such as a printed number's separate digits)
+    const split = new Set<string>();
+    for (const p of model.parts) {
+      const pc = kernel.pieces?.[p.hash];
+      if (!pc || p.kind !== "part" || p.imported || p.processNone || split.has(p.hash)) continue;
+      split.add(p.hash);
+      const same = model.parts.filter((q) => q.hash === p.hash);
+      const where = pc.others.map((o) => `${fmtNum(o.volume, 1)} mm³ at ${pt(applyXforms(o.at, p.xf))}`).join("; ");
+      items.push({
+        id: `pieces:${p.name}`,
+        category: "build",
+        status: "warn",
+        title: `${p.label} is ${pc.count} separate pieces`,
+        detail: `It is made of ${pc.count} solids that do not touch. Besides the main body: ${where}${pc.count - 1 > pc.others.length ? " and more" : ""}${same.length > 1 ? ` (in each of its ${same.length} copies)` : ""}. A feature placed where it misses the body floats in the air and would fall off when made.`,
+        fix: "Move or extend the loose feature so it overlaps the body slightly, or make it a part of its own if it really is separate.",
+        parts: same.map((q) => q.id),
+        span: p.span,
         basis: "geometry",
       });
     }

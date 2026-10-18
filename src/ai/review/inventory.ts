@@ -1,7 +1,7 @@
 // The detail inventory: what the kernel measured on each custom part, plus the
 // unexplained dimensions in the source, written out for the reviewer.
 
-import type { Model } from "../../core/model";
+import type { EvalPart, Model } from "../../core/model";
 import type { PartInspection, SupportNote } from "../../kernel/inspect";
 import { applyXforms, applyXformsToDir, type V3 } from "../../kernel/recipe";
 import { fmtNum } from "../../lang/values";
@@ -48,6 +48,7 @@ export async function buildInventory(model: Model, source: string, inspect: Insp
       sharp: { ...m.sharp, top: m.sharp.top.map((e) => ({ ...e, at: toWorld(e.at) })) },
       internal: { ...m.internal, top: m.internal.top.map((e) => ({ ...e, at: toWorld(e.at) })) },
       walls: m.walls ? { ...m.walls, at: toWorld(m.walls.at) } : null,
+      pieces: m.pieces && !first.processNone ? { ...m.pieces, others: m.pieces.others.map((o) => ({ ...o, at: toWorld(o.at) })) } : undefined,
     };
     // the part direction that points down in the world when the part sits as placed
     let asPlaced: SupportNote["down"] | null = null;
@@ -58,7 +59,43 @@ export async function buildInventory(model: Model, source: string, inspect: Insp
     parts.push({ name, label: first.label, material: first.material, instances: list.length, size, inspection: moved, asPlaced });
   }
   const literals = unexplainedLiterals(source).filter((l) => !scope?.length || scope.includes(l.part));
-  return { parts, literals, missing };
+  return { parts, literals, missing, alone: aloneParts(model, bboxOf, scope) };
+}
+
+/** A placed part's world-space bounding box (from its own box's corners, so a little generous when turned), grown by `grow` mm. */
+export function worldBox(p: EvalPart, bboxOf: (hash: string) => [V3, V3] | undefined, grow = 0): [V3, V3] | null {
+  const b = bboxOf(p.hash);
+  if (!b) return null;
+  const lo: V3 = [Infinity, Infinity, Infinity];
+  const hi: V3 = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < 8; i++) {
+    const w = applyXforms([b[i & 1][0], b[(i >> 1) & 1][1], b[(i >> 2) & 1][2]], p.xf);
+    for (let k = 0; k < 3; k++) {
+      lo[k] = Math.min(lo[k], w[k] - grow);
+      hi[k] = Math.max(hi[k], w[k] + grow);
+    }
+  }
+  return [lo, hi];
+}
+
+/**
+ * Parts whose bounding box, grown by half a millimetre, meets no other part's: they touch nothing. Boxes are
+ * generous, so a part listed here certainly floats; reported only when most parts touch something (an assembly,
+ * not a set of separate parts laid out side by side).
+ */
+export function aloneParts(model: Model, bboxOf: (hash: string) => [V3, V3] | undefined, scope?: string[]): string[] {
+  const placed = model.parts
+    .filter((p) => !p.hidden)
+    .map((p) => {
+      const b = worldBox(p, bboxOf, 0.5);
+      return b && { p, lo: b[0], hi: b[1] };
+    })
+    .filter((x): x is NonNullable<typeof x> => !!x);
+  if (placed.length < 2) return [];
+  const meets = (a: (typeof placed)[number], b: (typeof placed)[number]) => a.lo.every((v, k) => v <= b.hi[k]) && b.lo.every((v, k) => v <= a.hi[k]);
+  const alone = placed.filter((a) => !placed.some((b) => b !== a && meets(a, b)));
+  if (alone.length * 2 > placed.length) return [];
+  return [...new Set(alone.filter((a) => !scope?.length || scope.includes(a.p.name)).map((a) => a.p.name))];
 }
 
 const n = (v: number, d = 1) => fmtNum(v, d);
@@ -68,6 +105,7 @@ const pt = (p: V3) => `(${p.map((x) => n(x, 1)).join(", ")})`;
 export function inventoryText(inv: DetailInventory): string {
   const out: string[] = [];
   out.push("Measured on the exact geometry of each custom part (library hardware is not listed). Locations are world coordinates in mm, Z up.");
+  if (inv.alone?.length) out.push(`TOUCHES NOTHING: no other part comes within 0.5 mm of ${inv.alone.join(", ")}. In an assembly that means floating or misplaced.`);
   for (const p of inv.parts) {
     const head = `Part "${p.name}"${p.label && p.label !== p.name ? ` (${p.label})` : ""}: ${p.material || "no material"}, ${p.size.map((x) => n(x)).join(" × ")} mm${p.instances > 1 ? `, ${p.instances} identical instances` : ""}`;
     out.push("", head);
@@ -82,6 +120,8 @@ export function inventoryText(inv: DetailInventory): string {
     );
     if (m.sharp.top.length) out.push(`  - Longest sharp edges: ${m.sharp.top.map((e) => `${n(e.length)} mm ${e.kind === "outer" ? "" : e.kind.replace("_", " ") + " "}at ${pt(e.at)}${e.angle !== 90 ? ` (${e.angle}°)` : ""}`).join("; ")}`);
     out.push(`  - Sharp internal corners (no fillet): ${m.internal.count}${m.internal.count ? ` (${n(m.internal.length, 0)} mm in total); longest: ${m.internal.top.slice(0, 5).map((e) => `${n(e.length)} mm at ${pt(e.at)}`).join("; ")}` : ""}`);
+    if (m.pieces && m.pieces.count > 1)
+      out.push(`  - SEPARATE PIECES: made of ${m.pieces.count} solids that do not touch; besides the main body ${m.pieces.others.map((o) => `${n(o.volume, 0)} mm³ at ${pt(o.at)}`).join("; ")}. A feature here misses the body and floats, unless these are meant to be separate parts`);
     if (m.tiny) out.push(`  - ${m.tiny} edges shorter than 0.1 mm (often modelling slivers from coincident faces)`);
     if (m.walls) out.push(`  - Thinnest wall ≈ ${n(m.walls.min, 2)} mm at ${pt(m.walls.at)}; 5% of the surface is under ${n(m.walls.p5, 2)} mm (ray-cast on the mesh, about ±0.25 mm)`);
     if (m.support.length) {

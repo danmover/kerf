@@ -31,6 +31,9 @@ import { sheetFor, useDrawings } from "../drawing/engine";
 import { describeSheet, sheetToPng } from "../drawing/export";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
+import { COMPARE_TOOL, COMPARE_TITLE, alternativeSource, compareDesigns } from "./compare";
+import { measureIsolated, pool } from "../agents/isolated";
+import { solveOnce } from "../analysis/runtime";
 import { REVIEW_TOOL } from "./review/tool";
 import { useProject } from "../app/project";
 import { assetBlock } from "../persist/assets";
@@ -62,7 +65,7 @@ export const TOOL_DEFS = [
   {
     name: "edit_design",
     description:
-      "Apply exact text replacements to the design source, in order. Each old_text must match the current source exactly once (copy it from get_design or the source in the context note, without the line-number prefix). The design is rebuilt and checked, and the result comes back with every check (when one response makes several changes, the last one carries the checks). Prefer several small edits over large ones.",
+      "Apply exact text replacements to the design source, in order. Each old_text must match the current source exactly once (copy it from get_design or the source in the context note, without the line-number prefix). The design is rebuilt and checked, and the result comes back with every check (when one response makes several changes, the last one carries the checks). Prefer several small edits over large ones. To apply an alternative from your last compare_designs as it was measured, give its label as alternative instead of edits.",
     eager_input_streaming: true,
     input_schema: {
       type: "object" as const,
@@ -70,7 +73,6 @@ export const TOOL_DEFS = [
         summary: { type: "string", description: "One short line for the version history, in the user's terms, e.g. 'Narrowed the enclosure to 77 mm and moved the bosses'." },
         edits: {
           type: "array",
-          minItems: 1,
           maxItems: 40,
           items: {
             type: "object",
@@ -82,9 +84,10 @@ export const TOOL_DEFS = [
             additionalProperties: false,
           },
         },
+        alternative: { type: "string", description: "Label of an alternative from your last compare_designs call: applies its edits and values (leave edits out)." },
         unlock_ok: { type: "boolean", description: "Set true only when the user explicitly asked to change a locked parameter or component." },
       },
-      required: ["summary", "edits"],
+      required: ["summary"],
       additionalProperties: false,
     },
   },
@@ -131,6 +134,7 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  COMPARE_TOOL,
   {
     name: "catalog_lookup",
     description:
@@ -405,11 +409,14 @@ export const TOOL_DEFS = [
   ...MATERIAL_TOOL_DEFS,
 ];
 
-const EditInput = z.object({
-  summary: z.string().min(1).max(300),
-  edits: z.array(z.object({ old_text: z.string().max(MAX_SOURCE_CHARS), new_text: z.string().max(MAX_SOURCE_CHARS) })).min(1).max(40),
-  unlock_ok: z.boolean().optional(),
-});
+const EditInput = z
+  .object({
+    summary: z.string().min(1).max(300),
+    edits: z.array(z.object({ old_text: z.string().max(MAX_SOURCE_CHARS), new_text: z.string().max(MAX_SOURCE_CHARS) })).max(40).optional(),
+    alternative: z.string().trim().min(1).max(40).optional(),
+    unlock_ok: z.boolean().optional(),
+  })
+  .refine((e) => !!e.edits?.length !== !!e.alternative, { message: "give either edits or alternative (the label of one from compare_designs)", path: ["edits"] });
 const WriteInput = z.object({ summary: z.string().min(1).max(300), source: z.string().min(1).max(MAX_SOURCE_CHARS), unlock_ok: z.boolean().optional() });
 const FixInput = z.object({ hold: z.array(z.string().max(80)).max(50).optional() });
 const ViewInput = z.object({
@@ -939,6 +946,18 @@ function applySource(next: string, summary: string, unlockOk: boolean | undefine
   };
 }
 
+/** compare_designs builds alternatives in the agents' geometry workers and solves their analyses in a worker of its own. */
+const compareDeps = {
+  current: async () => {
+    await whenChecked(60_000);
+    const s = useDesign.getState();
+    return { source: s.source, model: s.model, report: s.report };
+  },
+  measure: measureIsolated,
+  solve: (input: Parameters<typeof solveOnce>[0], signal?: AbortSignal) => solveOnce(input, undefined, signal),
+  locked: (before: string, after: string) => lockedChanges(before, after),
+};
+
 // ---------- handlers ----------
 
 /** Tools that change the source: given check, the result carries the build and check results of the change. */
@@ -1011,7 +1030,12 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       const p = EditInput.safeParse(input);
       if (!p.success) return invalid(p.error);
       const before = useDesign.getState().source;
-      const { src, errors } = applyTextEdits(before, p.data.edits);
+      if (p.data.alternative) {
+        const alt = alternativeSource(p.data.alternative, before);
+        if (alt.error) return { isError: true, content: alt.error, card: { title: "Alternative not applied", detail: alt.error, status: "error" } };
+        return applySource(alt.src!, p.data.summary, p.data.unlock_ok, mode);
+      }
+      const { src, errors } = applyTextEdits(before, p.data.edits!);
       if (errors.length) {
         return { isError: true, content: `No edits were applied.\n${errors.join("\n")}`, card: { title: "Edit could not be applied", detail: errors[0], status: "error" } };
       }
@@ -1037,6 +1061,13 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       if (c.kernelDown) return { isError: true, content: c.text, card: { title: c.title, status: "error" } };
       return { content: c.text, card: { title: c.title, detail: c.detail, status: c.ok ? "done" : "error" } };
     }
+    case "compare_designs":
+      try {
+        return await compareDesigns(input, compareDeps, ctx.signal);
+      } finally {
+        // each geometry worker holds a few hundred MB
+        pool.closeSoon();
+      }
     case "explore_fixes": {
       const p = FixInput.safeParse(input ?? {});
       if (!p.success) return invalid(p.error);
@@ -1283,6 +1314,7 @@ export const TOOL_TITLES: Record<string, string> = {
   write_design: "Writing the design",
   run_checks: "Building and checking",
   explore_fixes: "Searching for fixes",
+  compare_designs: COMPARE_TITLE,
   ...MATERIAL_TOOL_TITLES,
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",

@@ -5,7 +5,8 @@
 
 import { parse } from "../lang/parser";
 import { evaluate } from "../lang/evaluator";
-import { KernelClient } from "../kernel/client";
+import { KernelClient, type PartResult } from "../kernel/client";
+import type { PartInspection } from "../kernel/inspect";
 import { assembleReport, buildChecksRequest, type CheckReport } from "../core/checks";
 import { composeReport } from "../core/reportPasses";
 import type { ChecksResult } from "../kernel/protocol";
@@ -75,11 +76,27 @@ export interface IsolatedResult {
 
 /** Evaluate, build and check a design in a pool worker. */
 export async function checkIsolated(src: string, onStage?: (s: string) => void, timeoutMs = 150_000): Promise<IsolatedResult> {
+  const { parts: _p, inspections: _i, ...r } = await measureIsolated(src, () => [], onStage, timeoutMs);
+  void _p;
+  void _i;
+  return r;
+}
+
+export interface MeasuredResult extends IsolatedResult {
+  /** every part built, by geometry hash: its mesh, volume and bounding box */
+  parts: Map<string, PartResult>;
+  /** detail inspection (walls, print support, sharp edges) of the hashes asked for */
+  inspections: Record<string, PartInspection | { error: string }>;
+}
+
+/** As checkIsolated, keeping each part's mesh and size and inspecting the parts `inspect` picks from the model. */
+export async function measureIsolated(src: string, inspect: (model: Model) => string[], onStage?: (s: string) => void, timeoutMs = 150_000): Promise<MeasuredResult> {
   const t0 = performance.now();
   const parsed = parse(src);
   const model = evaluate(src, { parsed });
   const byHash = new Map<string, EvalPart>();
   for (const p of model.parts) if (!byHash.has(p.hash)) byHash.set(p.hash, p);
+  const parts = new Map<string, PartResult>();
 
   onStage?.("Waiting for a geometry worker");
   const { client, index } = await pool.acquire();
@@ -87,20 +104,22 @@ export async function checkIsolated(src: string, onStage?: (s: string) => void, 
     onStage?.(`Building in geometry worker ${index}`);
     await client.ready();
     const buildErrors = new Map<string, string>();
-    const built = new Set<string>();
     const job = client.build(
       [...byHash.values()].map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
       "preview",
-      (r) => built.add(r.hash),
+      (r) => parts.set(r.hash, r),
       (hash, message) => buildErrors.set(hash, message),
     );
+    const built = new Set(parts.keys());
     const timer = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), timeoutMs));
     const r = await Promise.race([job.done, timer]);
+    const ms = () => performance.now() - t0;
     if (r === "timeout") {
       job.cancel();
-      return { model, report: null, error: `The build took longer than ${Math.round(timeoutMs / 1000)} s and was stopped. Simplify the heaviest part (fewer fillets or boolean operations).`, worker: index, built: built.size, ms: performance.now() - t0 };
+      return { model, report: null, error: `The build took longer than ${Math.round(timeoutMs / 1000)} s and was stopped. Simplify the heaviest part (fewer fillets or boolean operations).`, worker: index, built: parts.size, ms: ms(), parts, inspections: {} };
     }
-    if (r.cancelled) return { model, report: null, error: "The geometry worker restarted during the build. Check again.", worker: index, built: built.size, ms: performance.now() - t0 };
+    if (r.cancelled) return { model, report: null, error: "The geometry worker restarted during the build. Check again.", worker: index, built: parts.size, ms: ms(), parts, inspections: {} };
+    for (const h of parts.keys()) built.add(h);
 
     onStage?.(`Checking in geometry worker ${index}`);
     let result: ChecksResult | null = null;
@@ -113,7 +132,18 @@ export async function checkIsolated(src: string, onStage?: (s: string) => void, 
     const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
     const base = assembleReport(model, { geoModel, kernel: result, buildErrors });
     const report = composeReport(base, { model, live: false, rev: 0, buildErrors, process: null });
-    return { model: geoModel ?? model, report, error, worker: index, built: built.size, ms: performance.now() - t0 };
+    const wanted = inspect(model).filter((h) => built.has(h));
+    let inspections: MeasuredResult["inspections"] = {};
+    if (wanted.length) {
+      onStage?.(`Measuring in geometry worker ${index}`);
+      try {
+        inspections = await client.inspect(wanted);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        inspections = Object.fromEntries(wanted.map((h) => [h, { error: message }]));
+      }
+    }
+    return { model: geoModel ?? model, report, error, worker: index, built: built.size, ms: ms(), parts, inspections };
   } finally {
     pool.release(client);
   }

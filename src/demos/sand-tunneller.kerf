@@ -337,8 +337,9 @@ part body_a {
   cut hole(M4, fit: "insert", depth: 9, at: (act_rear, 0, -8.1), dir: -Z)
   // access hole above the pivot screw (tape it shut)
   cut cylinder(d: 8, h: 6, at: (act_rear, 0, 24.5), dir: Z)
-  // spigot into the rear body, with bosses for two heat-set inserts
+  // spigot into the rear body, with bosses for two heat-set inserts, joined to the wall by a ring at the body's end
   add tube(od: body_id - 0.4, id: 49, h: 12.5, at: (a_end - 12, 0, 0), dir: X)
+  add tube(od: body_id + 1, id: 49, h: 2.5, at: (a_end, 0, 0), dir: X)
   for s in [1, -1] {
     add cylinder(d: 8, h: 8.2, at: (a_end - 6, s * 18.5, 0), dir: (0, s, 0))
     cut hole(M3, fit: "insert", depth: 6.5, at: (a_end - 6, s * (body_id - 0.4) / 2, 0), dir: (0, -s, 0))
