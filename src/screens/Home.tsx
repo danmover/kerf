@@ -336,13 +336,14 @@ export function TemplateArt({ id }: { id: string }) {
         <g transform="rotate(16 60 60)">
           <rect x="44" y="4" width="26" height="112" rx="12" fill="none" style={line} />
           <motion.rect x="66" y="40" width="14" height="34" rx="3" style={tint(0.1)} strokeWidth="1.3" initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 1.2 }} />
-          {[47, 67].map((y) => (
-            <motion.ellipse key={y} cx="60" cy={y} rx="22" ry="3.4" fill="none" style={{ ...violet, originX: "60px", originY: `${y}px` }} strokeWidth="1.6" animate={{ scaleX: [0.86, 1.05, 1] }} transition={{ duration: 2.4, repeat: Infinity, repeatDelay: 1.2 }} />
-          ))}
+          <rect x="69" y="42" width="2.4" height="30" rx="1" style={{ fill: "var(--line-3)" }} />
+          <motion.ellipse cx="60" cy="57" rx="23" ry="3.8" fill="none" style={{ ...violet, originX: "60px", originY: "57px" }} strokeWidth="2.2" animate={{ scaleX: [0.86, 1.05, 1] }} transition={{ duration: 2.4, repeat: Infinity, repeatDelay: 1.2 }} />
         </g>
         <motion.g animate={{ x: [18, 0, 0] }} transition={{ duration: 3.6, repeat: Infinity, times: [0, 0.35, 1] }}>
           <path d="M92 50 104 38h64v44h-64L92 70z" style={tint(0.06)} strokeWidth="1.3" />
-          <text x="136" y="65" style={{ fill: "var(--text-3)" }} fontSize="13" textAnchor="middle" fontFamily="monospace">4004</text>
+          <rect x="160" y="38.6" width="7.4" height="42.8" style={{ fill: "#f2c200", opacity: 0.8 }} />
+          <rect x="104" y="42" width="58" height="13" rx="1.5" style={{ fill: "var(--line-3)", opacity: 0.7 }} />
+          <text x="132" y="75" style={{ fill: "var(--text-2)" }} fontSize="15" fontWeight="700" textAnchor="middle">4004</text>
         </motion.g>
       </svg>
     );

@@ -3,7 +3,9 @@
 // each band is hooked over its first pin, pulled round and stretched over the
 // second pin's head (with its real stretch and pull as it goes), a part that
 // clicks onto a peg slides along the arm until it clicks, and each analysis
-// that checks a seat shows its loads and how much of the grip they use.
+// that checks a seat shows its loads and how much of the grip they use. Parts
+// that sit inside another's box (a pad in a seat, the print on a sign) ride
+// along with it.
 
 import type { EvalPart, Model } from "../core/model";
 import { applyXforms, applyXformsToDir, vadd, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
@@ -23,12 +25,17 @@ export interface FitArrow {
 }
 
 export type FitStep =
-  | { kind: "seat"; part: string; from: V3; title: string; caption: string; dur: number }
+  | { kind: "seat"; part: string; riders: string[]; from: V3; title: string; caption: string; dur: number }
   | { kind: "band"; part: string; name: string; around: string; holds: string; layout: BandLayout; sections: Section[]; cord: BandCord; title: string; dur: number }
-  | { kind: "slide"; part: string; host: string; from: V3; peg: V3; title: string; caption: string; dur: number }
+  | { kind: "slide"; part: string; riders: string[]; host: string; from: V3; peg: V3; title: string; caption: string; dur: number }
   | { kind: "hold"; spec: StructuralSpec; parts: string[]; hooks: V3[]; centre: V3; title: string; dur: number };
 
 const pct = (stretch: number) => `${fmtNum((stretch - 1) * 100, 0)} %`;
+/** A band's name as words: o_ring and oring read "O-ring". */
+const bandName = (name: string) => name.replace(/_/g, " ").replace(/\bo ?ring\b/i, "O-ring");
+
+/** Every part that moves when the given one does: the parts whose box lies inside its own. */
+export const moves = (s: Extract<FitStep, { kind: "seat" | "slide" }>) => [s.part, ...s.riders];
 
 /** Whether the design has anything that goes on by hand worth showing: a band hooked at both ends, or a snap that clicks onto a peg. */
 export function hasFitting(model: Model): boolean {
@@ -45,6 +52,8 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
   const byName = new Map(model.parts.map((p) => [p.name, p]));
   const bands = model.parts.filter((p) => p.band?.layout.doubled);
   const seated = new Set<string>();
+  const riders = riderMap(model, bbox);
+  const riding = new Set([...riders.values()].flat());
   for (const b of bands) {
     const info = b.band!;
     const holds = info.holds ? byName.get(info.holds) : undefined;
@@ -62,7 +71,7 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
     const aroundLabel = around.map((p) => p.label).join(" and ");
     if (holds && !seated.has(holds.id)) {
       seated.add(holds.id);
-      steps.push({ kind: "seat", part: holds.id, from: vscale(info.layout.u, -40), title: `Put ${holds.label} on`, caption: `Hold ${holds.label} against ${aroundLabel}.`, dur: 1.5 });
+      steps.push({ kind: "seat", part: holds.id, riders: riders.get(holds.id) ?? [], from: vscale(info.layout.u, -40), title: `Put ${holds.label} on`, caption: `Hold ${holds.label} against ${aroundLabel}.`, dur: 1.5 });
     }
     steps.push({
       kind: "band",
@@ -73,7 +82,7 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       layout: info.layout,
       sections,
       cord: { rubber, shore: info.shore, cs: info.cs, id: info.id },
-      title: `Fit ${b.name.replace(/_/g, " ")}`,
+      title: `Fit ${bandName(b.name)}`,
       dur: 4.6,
     });
   }
@@ -84,9 +93,9 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       if (f.kind !== "snap" || !f.peg) continue;
       const tip = vadd(vadd(f.at, vscale(vnorm(f.dir), f.length - f.peg / 2)), vscale(vnorm(f.facing), f.t / 2 + f.deflection / 2));
       const peg = applyXforms(tip, p.xf);
-      // the smallest part round the peg: the sheet it clicks into, not what the whole thing sits on
+      // the smallest part round the peg: the sheet it clicks into, not what the whole thing sits on nor the print on it
       const mate = model.parts
-        .filter((q) => q.id !== p.id && !q.band && contains(q, bbox(q), peg))
+        .filter((q) => q.id !== p.id && !q.band && !riding.has(q.id) && contains(q, bbox(q), peg))
         .map((q) => ({ q, size: volumeOf(bbox(q)!) }))
         .sort((a, b) => a.size - b.size)[0]?.q;
       if (!mate) continue;
@@ -95,6 +104,7 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       steps.push({
         kind: "slide",
         part: mate.id,
+        riders: riders.get(mate.id) ?? [],
         host: p.id,
         from: vscale(along, 2 * f.length + 10),
         peg,
@@ -124,14 +134,43 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
 
 const volumeOf = (b: [V3, V3]) => (b[1][0] - b[0][0]) * (b[1][1] - b[0][1]) * (b[1][2] - b[0][2]);
 
-function contains(p: EvalPart, box: [V3, V3] | undefined, world: V3): boolean {
-  if (!box) return false;
-  // the part's box as placed, square to the world axes
+/** A part's box as placed, square to the world axes. */
+function placedBox(p: EvalPart, box: [V3, V3]): [V3, V3] {
   const corners: V3[] = [];
   for (const x of [box[0][0], box[1][0]]) for (const y of [box[0][1], box[1][1]]) for (const z of [box[0][2], box[1][2]]) corners.push(applyXforms([x, y, z], p.xf));
-  const lo = [0, 1, 2].map((d) => Math.min(...corners.map((c) => c[d])) - 1);
-  const hi = [0, 1, 2].map((d) => Math.max(...corners.map((c) => c[d])) + 1);
-  return [0, 1, 2].every((d) => world[d] >= lo[d] && world[d] <= hi[d]);
+  const lo = [0, 1, 2].map((d) => Math.min(...corners.map((c) => c[d]))) as V3;
+  const hi = [0, 1, 2].map((d) => Math.max(...corners.map((c) => c[d]))) as V3;
+  return [lo, hi];
+}
+
+function contains(p: EvalPart, box: [V3, V3] | undefined, world: V3): boolean {
+  if (!box) return false;
+  const [lo, hi] = placedBox(p, box);
+  return [0, 1, 2].every((d) => world[d] >= lo[d] - 1 && world[d] <= hi[d] + 1);
+}
+
+/**
+ * Which parts ride along with which: a part whose placed box lies inside
+ * another's (within 1 mm) goes where the smallest such part goes, like a pad
+ * in a seat or the print and stickers on a sign. Bands and what they wrap
+ * stay put.
+ */
+function riderMap(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined): Map<string, string[]> {
+  const wrapped = new Set(model.parts.flatMap((p) => p.band?.around ?? []));
+  const boxes = model.parts
+    .filter((p) => !p.band && !wrapped.has(p.name))
+    .map((p) => ({ p, box: bbox(p) }))
+    .filter((x): x is { p: EvalPart; box: [V3, V3] } => !!x.box)
+    .map((x) => ({ p: x.p, box: placedBox(x.p, x.box) }));
+  const inside = (a: [V3, V3], b: [V3, V3]) => [0, 1, 2].every((d) => a[0][d] >= b[0][d] - 1 && a[1][d] <= b[1][d] + 1);
+  const out = new Map<string, string[]>();
+  for (const a of boxes) {
+    const host = boxes
+      .filter((b) => b.p.id !== a.p.id && volumeOf(b.box) > volumeOf(a.box) && inside(a.box, b.box))
+      .sort((x, y) => volumeOf(x.box) - volumeOf(y.box))[0];
+    if (host) out.set(host.p.id, [...(out.get(host.p.id) ?? []), a.p.id]);
+  }
+  return out;
 }
 
 /** A seat check's loads as arrows (the bands' pull on their pins aside: the bands show that) and what they use of the grip, from its latest run when there is one. */
@@ -172,10 +211,10 @@ function holdCaption(spec: StructuralSpec, r: StructuralResult | undefined): str
 
 /** The caption for a band part way on, with its stretch and pull as they are at that moment. */
 export function bandCaption(step: Extract<FitStep, { kind: "band" }>, pose: FitPose): string {
-  const name = step.name.replace(/_/g, " ");
+  const name = bandName(step.name);
   switch (pose.phase) {
     case "hook":
-      return `Hook ${name} over its first pin.`;
+      return `Hook the ${name} over its first pin.`;
     case "wrap":
       return `Pull it round ${step.around}: stretched ${pct(pose.stretch)}, ${fmtNum(2 * pose.tension, 0)} N in your hand.`;
     case "over":

@@ -101,6 +101,55 @@ describe("a band hooked on two pins round a post", () => {
     expect(bandChecks(m).some((i) => i.status !== "pass" && /slide|off/i.test(i.detail))).toBe(true);
   });
 
+  it("reaches both hooks when they sit at different heights, climbing evenly round the post", () => {
+    const m = model(hooked().replace("from: (-14, 20, 0), to: (14, 20, 0)", "from: (-14, 20, -10), to: (14, 20, 10)"));
+    const L = m.parts.find((p) => p.name === "b")!.band!.layout;
+    expect(L.skew).toBeCloseTo(20, 6);
+    // the cord goes round each pin, wherever it sits
+    for (const h of L.hooks) {
+      const nearest = Math.min(...L.loop.map((q) => vlen(vsub(q, h.at))));
+      expect(nearest).toBeCloseTo(h.pin / 2 + L.cord / 2, 0);
+    }
+    // each strand is the slanted route from hook to hook
+    let D = 0;
+    for (let i = 1; i < L.route.length; i++) D += vlen(vsub(L.route[i], L.route[i - 1]));
+    const r = 2 + L.cord / 2 + 0.05;
+    expect(L.length).toBeCloseTo(2 * D + Math.PI * 2 * r, 1);
+    expect(L.route[L.route.length - 1][2]).toBeCloseTo(10, 6);
+    // the first hook is pulled up toward the second, the second down toward the first
+    expect(vdot(L.hooks[0].toward, L.n)).toBeGreaterThan(0.1);
+    expect(vdot(L.hooks[1].toward, L.n)).toBeLessThan(-0.1);
+    expect(L.slant).toBeGreaterThan(5);
+    expect(L.offHook).toBeUndefined();
+    const items = bandChecks(m);
+    expect(items.map((i) => i.status)).not.toContain("fail");
+    expect(items.find((i) => i.id === "band:b:hold")!.detail).toMatch(/slant/);
+    // and it goes on that way too, reaching its fitting stretch on the way
+    const sec = sectionOf(m.parts.find((p) => p.name === "post")!.recipe, []);
+    const info = m.parts.find((p) => p.name === "b")!.band!;
+    const cord: BandCord = { rubber: rubberOf(info.rubber)!, shore: info.shore, cs: info.cs, id: info.id };
+    const poses = Array.from({ length: 101 }, (_, i) => fittingPose(L, [sec], cord, i / 100));
+    expect(Math.abs(Math.max(...poses.map((p) => p.stretch)) / L.fitStretch - 1)).toBeLessThan(0.04);
+    expect(Math.min(...poses[91].loop.map((q) => vlen(vsub(q, L.hooks[1].at))))).toBeLessThan(L.hooks[1].pin / 2 + L.cord);
+  });
+
+  it("fails when the hooks are so far apart along the post that the loop is dragged off its pin", () => {
+    const m = model(hooked().replace("from: (-14, 20, 0), to: (14, 20, 0)", "from: (-14, 20, -30), to: (14, 20, 30)"));
+    expect(m.parts.find((p) => p.name === "b")!.band!.layout.offHook).toBe(0);
+    const item = bandChecks(m).find((i) => i.id === "band:b:fit")!;
+    expect(item.status).toBe("fail");
+    expect(item.detail).toMatch(/slants \d+° round the tube/);
+    expect(item.fix).toMatch(/same height/);
+  });
+
+  it("fails when a hook sits past the end of the post", () => {
+    const m = model(hooked().replace("from: (-14, 20, 0), to: (14, 20, 0)", "from: (-14, 20, 104), to: (14, 20, 104)"));
+    expect(m.parts.find((p) => p.name === "b")!.band!.layout.pastEnd).toBe("post");
+    const item = bandChecks(m).find((i) => i.id === "band:b:fit")!;
+    expect(item.status).toBe("fail");
+    expect(item.detail).toMatch(/past the end of post/);
+  });
+
   it("is too tight to fit by hand when the O-ring is much smaller than the post", () => {
     const m = model(hooked().replace("id: 30", "id: 16"));
     const items = bandChecks(m);
@@ -116,17 +165,26 @@ describe("the seatpost number bracket", () => {
     expect([...r.buildErrors.values()]).toEqual([]);
     expect(problems(r.report, ["fail", "warn"])).toEqual([]);
     const bands = r.report.items.filter((i) => i.id.startsWith("band:"));
-    expect(bands.length).toBeGreaterThanOrEqual(5);
+    expect(bands.length).toBeGreaterThanOrEqual(3);
     expect(bands.every((i) => i.status === "pass")).toBe(true);
   }, 120_000);
 
-  it("plays the bracket on, both O-rings, the number clicking in and each load it is checked for", async () => {
+  it("plays the bracket and its pad on, the O-ring, the number clicking in with its print and each load it is checked for", async () => {
     const r = await fullCheck(src);
     const steps = fittingSteps(r.model, (p) => r.core.get(p.hash)?.bbox as never);
-    expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "band", "slide", "hold", "hold", "hold"]);
+    expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "slide", "hold", "hold", "hold"]);
+    const name = (id: string) => r.model.parts.find((p) => p.id === id)!.name;
+    const seat = steps[0];
+    if (seat.kind !== "seat") throw new Error("no seat step");
+    expect(name(seat.part)).toBe("bracket");
+    expect(seat.riders.map(name)).toEqual(["pad"]);
+    expect(steps[1].title).toBe("Fit O-ring");
     const slide = steps.find((s) => s.kind === "slide")!;
-    expect(slide.kind === "slide" && r.model.parts.find((p) => p.id === slide.part)!.name).toBe("number");
-    expect(slide.kind === "slide" && slide.caption).toMatch(/clicks into its hole: about \d+(\.\d)? N/);
+    if (slide.kind !== "slide") throw new Error("no slide step");
+    expect(name(slide.part)).toBe("number");
+    // the print and the transponder sticker go in with it
+    expect(slide.riders.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
+    expect(slide.caption).toMatch(/clicks into its hole: about \d+(\.\d)? N/);
     const gust = steps.find((s) => s.kind === "hold" && s.title === "Crosswind gust")!;
     if (gust.kind !== "hold") throw new Error("no gust step");
     const d = holdDetails(gust, undefined);

@@ -64,12 +64,21 @@ function fitItem(p: EvalPart, b: BandInfo): CheckItem {
       problems.push(`about ${n0(hand)} N is a hard pull for cold or wet fingers`);
       fixes.push("a thinner cord or a slightly bigger ring");
     }
+    if (L.pastEnd) {
+      status = "fail";
+      problems.push(`a hook sits past the end of ${L.pastEnd}, so the band has nothing to wrap there and slips off the end`);
+      fixes.push(`move both hooks along ${L.pastEnd} to where it carries on either side of them`);
+    }
     L.hooks.forEach((h, i) => {
       const which = i ? "second" : "first";
       if (L.offHook === i) {
         status = "fail";
-        problems.push(`the band pulls the loop along the ${which} pin toward its free end, so it slides off`);
-        fixes.push(`turn the ${which} pin so its free end points across the pull (open:), or give it a deeper head`);
+        problems.push(
+          L.skew !== undefined
+            ? `the band slants ${n0(L.slant)}° round the tube to the other hook and pulls the loop along the ${which} pin toward its free end, so it slides off`
+            : `the band pulls the loop along the ${which} pin toward its free end, so it slides off`,
+        );
+        fixes.push(L.skew !== undefined ? "put both hooks at the same height on the tube" : `turn the ${which} pin so its free end points across the pull (open:), or give it a deeper head`);
       }
       if (h.lip < 0.4 * c.cs) {
         status = "fail";
@@ -101,7 +110,7 @@ function fitItem(p: EvalPart, b: BandInfo): CheckItem {
     detail,
     parts: [p.id, ...(b.holds ? [b.holds] : []), ...b.around],
     span: p.span,
-    margin: L.captive ? -1 : (fitLimit(r) - L.fitStretch) / (fitLimit(r) - 1),
+    margin: L.captive || L.pastEnd ? -1 : (fitLimit(r) - L.fitStretch) / (fitLimit(r) - 1),
     fix: sentence(fixes),
   };
 }
@@ -149,7 +158,7 @@ function holdItem(p: EvalPart, b: BandInfo, model: Model): CheckItem {
   }
   if (L.skew !== undefined) {
     status = worst(status, "warn");
-    problems.push(`its hooks are ${n1(L.skew)} mm apart along the tube, so the band runs at a slant and creeps toward the lower hook`);
+    problems.push(`its hooks are ${n1(L.skew)} mm apart along the tube, so it runs round at a ${n0(L.slant)}° slant: it pulls each loop ${n1(2 * L.tension * Math.sin((L.slant * Math.PI) / 180))} N along the tube and twists ${b.holds ?? "what it holds"} on it`);
     fixes.push("put both hooks at the same height on the tube");
   }
   if (problems.length) detail += ` Watch out: ${problems.join("; ")}.`;

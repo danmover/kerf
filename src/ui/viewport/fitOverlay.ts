@@ -5,12 +5,13 @@
 // stretch), a part that clicks in slides along its arm and clicks, and each
 // seat check shows its loads while the parts shiver under them. Parts move
 // through the scene's pose offsets; bands not yet on are drawn here instead
-// of as solids, and a part not yet fitted stays hidden until its turn.
+// of as solids, and a part not yet fitted (with what rides on it, like the
+// print on a sign) stays hidden until its turn.
 
 import * as THREE from "three";
 import type { V3 } from "../../kernel/recipe";
 import type { SceneOverlay } from "./scene";
-import { bandCaption, bandPoseAt, bandStrainShare, holdDetails, type FitStep } from "../../analysis/fitting";
+import { bandCaption, bandPoseAt, bandStrainShare, holdDetails, moves, type FitStep } from "../../analysis/fitting";
 import type { StructuralResult } from "../../analysis/fe/structural";
 
 interface Host {
@@ -81,7 +82,14 @@ export class FitOverlay implements SceneOverlay {
     this.click.visible = false;
     this.object.add(this.bandMesh, this.finger, this.click, this.arrows);
     // bands not on yet and parts not fitted yet are hidden until their turn
-    for (const s of steps) if (s.kind === "band" || s.kind === "slide") this.replaces.add(s.part);
+    this.hideUnfitted();
+  }
+
+  private hideUnfitted() {
+    for (const s of this.steps) {
+      if (s.kind === "band") this.replaces.add(s.part);
+      else if (s.kind === "slide") for (const id of moves(s)) this.replaces.add(id);
+    }
   }
 
   private keep<T extends { dispose(): void }>(x: T): T {
@@ -95,7 +103,7 @@ export class FitOverlay implements SceneOverlay {
     this.finished = false;
     this.shownStep = -1;
     this.replaces.clear();
-    for (const s of this.steps) if (s.kind === "band" || s.kind === "slide") this.replaces.add(s.part);
+    this.hideUnfitted();
     this.host.overlaysChanged();
     this.host.requestRender();
   }
@@ -142,15 +150,19 @@ export class FitOverlay implements SceneOverlay {
     // parts still to come wait where their step starts them
     for (let j = i + 1; j < this.steps.length; j++) {
       const s = this.steps[j];
-      if (s.kind === "seat" && !offsets.has(s.part)) offsets.set(s.part, s.from);
+      if (s.kind === "seat") for (const id of moves(s)) if (!offsets.has(id)) offsets.set(id, s.from);
     }
     // fitted parts and bands show as themselves from the end of their step
     let hidden = false;
+    const show = (ids: string[]) => {
+      for (const id of ids) if (this.replaces.delete(id)) hidden = true;
+    };
     for (let j = 0; j < i; j++) {
       const s = this.steps[j];
-      if ((s.kind === "band" || s.kind === "slide") && this.replaces.delete(s.part)) hidden = true;
+      if (s.kind === "band") show([s.part]);
+      else if (s.kind === "slide") show(moves(s));
     }
-    if (step.kind === "slide" && this.replaces.delete(step.part)) hidden = true;
+    if (step.kind === "slide") show(moves(step));
     if (hidden) this.host.overlaysChanged();
 
     let caption = "";
@@ -159,7 +171,7 @@ export class FitOverlay implements SceneOverlay {
     this.click.visible = false;
     if (step.kind === "seat") {
       const f = 1 - easeOut(k);
-      offsets.set(step.part, [step.from[0] * f, step.from[1] * f, step.from[2] * f]);
+      for (const id of moves(step)) offsets.set(id, [step.from[0] * f, step.from[1] * f, step.from[2] * f]);
       caption = step.caption;
     } else if (step.kind === "band") {
       const p = bandPoseAt(step, k);
@@ -173,7 +185,7 @@ export class FitOverlay implements SceneOverlay {
       // in along the arm, a quick stop as the peg drops into the hole
       const s = Math.min(1, k / 0.8);
       const f = 1 - easeOut(s);
-      offsets.set(step.part, [step.from[0] * f, step.from[1] * f, step.from[2] * f]);
+      for (const id of moves(step)) offsets.set(id, [step.from[0] * f, step.from[1] * f, step.from[2] * f]);
       if (k >= 0.8) {
         const c = (k - 0.8) / 0.2;
         this.click.visible = true;
