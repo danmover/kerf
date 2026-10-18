@@ -15,7 +15,7 @@ import { checkIsolated } from "./isolated";
 import type { Usage } from "./pricing";
 import type { AgentStep } from "./progress";
 import { STEP_STATUSES, type StepInput } from "../ai/plan";
-import { BINDING_BETA, hasThinking, isThinkingSignatureError, stripThinking } from "../ai/history";
+import { BINDING_BETA, MAX_OUTPUT_TOKENS, hasThinking, isThinkingSignatureError, stripThinking } from "../ai/history";
 
 z.config({ jitless: true });
 
@@ -214,7 +214,7 @@ export async function runAgent(cfg: AgentConfig, ws: Workspace, hooks: AgentHook
 
     const params: Record<string, unknown> = {
       model: cfg.model,
-      max_tokens: 32000,
+      max_tokens: MAX_OUTPUT_TOKENS,
       system,
       tools: SUBAGENT_TOOLS,
       messages: withCacheBreakpoint(history),

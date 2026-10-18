@@ -14,6 +14,9 @@ import type { BetaMessageParam, BetaContentBlockParam } from "@anthropic-ai/sdk/
 /** The API's opt-in for choosing what happens to a thinking block that no longer matches its conversation. */
 export const BINDING_BETA = "thinking-binding-controls-2026-08-01";
 
+/** Room for one response: thinking, text and tool calls together (Haiku 4.5's ceiling; every newer model allows 128K). */
+export const MAX_OUTPUT_TOKENS = 64000;
+
 /** A stable 53-bit hash (cyrb53), enough to tell two snapshots of a message apart. */
 function hash(s: string): string {
   let h1 = 0xdeadbeef;

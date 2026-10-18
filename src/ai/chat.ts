@@ -26,7 +26,7 @@ import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type B
 import { isBuilding, relayToAgents } from "../agents/orchestrator";
 import { toast } from "../app/ui";
 import { claudeClient, claudeRoute } from "./client";
-import { BINDING_BETA, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
+import { BINDING_BETA, MAX_OUTPUT_TOKENS, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 import { MODELS, type Effort } from "../app/settings";
 import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, type Route, type TurnFacts } from "./routing";
 import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
@@ -150,6 +150,36 @@ const unsupported = (model: string) => {
 let webUnavailable = false;
 /** a paused server-tool turn is resumed this many times in a row before Claude stops and says so */
 const MAX_PAUSE_RESUMES = 5;
+/** a response cut off at that limit is carried on this many times in a run before Claude stops and says so */
+const MAX_CUT_RECOVERIES = 2;
+
+/**
+ * A response cut off at the length limit ends in the block it was writing: a tool call with half its input, or
+ * thinking with no signature. Neither can go back to the API, so both are left out; the complete blocks before them
+ * stay (the thinking that planned the work, finished tool calls, text), and a short note closes the turn when it
+ * would end in thinking.
+ */
+export function trimCutOff<T extends { type: string }>(content: readonly T[]): { content: T[]; cutTool: string | null } {
+  const out = content.slice();
+  const last = out[out.length - 1] as { type: string; name?: string } | undefined;
+  const cutTool = last?.type === "tool_use" ? (last.name ?? "a tool") : null;
+  if (cutTool) out.pop();
+  const kept = out.filter((b) => !(b.type === "thinking" && !(b as { signature?: string }).signature));
+  // the turn ends in text or a call, not in thinking
+  const end = kept[kept.length - 1]?.type;
+  if (!end || end === "thinking" || end === "redacted_thinking") kept.push({ type: "text", text: "(Cut off at the length limit.)" } as unknown as T);
+  return { content: kept, cutTool };
+}
+
+/** What Claude is told after a response was cut off, so it carries on by itself in smaller steps. */
+export function cutOffNote(cutTool: string | null): string {
+  if (!cutTool) return "Your last response reached the output length limit and was cut off. Carry on from where it stopped, more briefly.";
+  const how =
+    cutTool === "write_design"
+      ? "Write the design in two or more steps: write_design with the brief, parameters and main parts first, then add the rest with edit_design, a few parts per call."
+      : "Make it again in smaller pieces, over several calls.";
+  return `Your last response reached the output length limit while writing its ${cutTool} call, so that call did not run. ${how} You have already planned this, so keep your thinking short and go straight to the calls.`;
+}
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
@@ -1060,6 +1090,7 @@ async function runLoop(opts: LoopOptions = {}) {
     }
   }
   let resumes = 0;
+  let cuts = 0;
   /** chat items of this turn's paused responses: a hand-over takes them away with the rest of the quick answer */
   let pausedItems: string[] = [];
 
@@ -1141,7 +1172,7 @@ async function runLoop(opts: LoopOptions = {}) {
       if (stale()) return;
       const raw = final.content as BetaContentBlock[];
       // after a mid-answer fallback, only what the API accepts back goes into the history
-      const content = echoContent(raw);
+      let content = echoContent(raw);
       const usage = final.usage as unknown as Usage;
       lastPrompt = promptTokens(usage);
       if (r.quick) {
@@ -1164,6 +1195,14 @@ async function runLoop(opts: LoopOptions = {}) {
         }
         recordSpend("quick", final.model, usage, counterfactualCost(useSettings.getState().model, usage) - costOf(final.model, usage));
       } else recordSpend("chat", final.model, usage, requestFinished(params, usage));
+      // a response cut off at the length limit: Claude carries on by itself, in smaller steps
+      let cutNote: string | null = null;
+      if (final.stop_reason === "max_tokens" && ++cuts <= MAX_CUT_RECOVERIES) {
+        const t = trimCutOff(content);
+        content = t.content;
+        cutNote = cutOffNote(t.cutTool);
+        push({ kind: "notice", id: nid(), level: "info", title: "The response ran past its length limit", detail: t.cutTool ? "Claude is carrying on by itself in smaller steps." : "Claude is carrying on by itself." });
+      }
       history.push({ role: "assistant", content: content as unknown as BetaContentBlockParam[] });
       reportDroppedThinking(final.input_transformations);
 
@@ -1202,7 +1241,7 @@ async function runLoop(opts: LoopOptions = {}) {
         push({ kind: "notice", id: nid(), level: "warn", title: "Claude declined this request", detail: "Try rephrasing what you need. Kerf is for designing mechanical parts and assemblies." });
         break;
       }
-      if (final.stop_reason === "max_tokens") {
+      if (final.stop_reason === "max_tokens" && !cutNote) {
         const cut = content.some((b) => b.type === "tool_use");
         push({ kind: "notice", id: nid(), level: "warn", title: "The response hit its length limit", detail: cut ? "The last step was cut off before it could run. Ask Claude to continue in smaller steps." : "Ask Claude to continue." });
         if (cut) history.pop();
@@ -1223,7 +1262,12 @@ async function runLoop(opts: LoopOptions = {}) {
       // rows for calls a fallback discarded never run
       const dropped = new Set([...live.toolRows.values()].filter((id) => !uses.some((u) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)));
       if (dropped.size) set((s) => ({ items: s.items.filter((i) => !dropped.has(i.id)) }));
-      if (final.stop_reason !== "tool_use") break;
+      if (cutNote && !uses.length) {
+        history.push({ role: "user", content: [{ type: "text", text: cutNote }] });
+        persist();
+        continue;
+      }
+      if (final.stop_reason !== "tool_use" && !cutNote) break;
 
       const results: BetaToolResultBlockParam[] = [];
       let ask: { toolUseId: string; outcome: ToolOutcome } | null = null;
@@ -1304,7 +1348,7 @@ async function runLoop(opts: LoopOptions = {}) {
       const atLimit = step === settings.maxSteps - 1;
       // on a pause or at the step limit the user's changes and messages wait, so they go with the next message Claude acts on
       const steer = pausedAfter || atLimit ? [] : steering();
-      history.push({ role: "user", content: [...results, ...steer] });
+      history.push({ role: "user", content: [...results, ...(cutNote ? [{ type: "text" as const, text: cutNote }] : []), ...steer] });
       tookMessage(steer);
       persist();
       if (pausedAfter) {
@@ -1475,7 +1519,7 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, route: Route, set
   const msgs = messages();
   const params: Record<string, unknown> = {
     model: route.model,
-    max_tokens: 32000,
+    max_tokens: MAX_OUTPUT_TOKENS,
     system,
     tools,
     messages: withCacheBreakpoint(msgs, lastBreak.get(route.model)),
