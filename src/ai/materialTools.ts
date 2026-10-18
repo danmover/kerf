@@ -38,7 +38,7 @@ export const MATERIAL_TOOL_DEFS = [
   {
     name: "set_material",
     description:
-      "Set the material of one or more part blocks, with a finish and colour that suit it, as one undoable change. When the part's process cannot make the material, its process switches too (the one compare_materials named, or the process given). Prefer this over edit_design for material changes. Afterwards call run_checks, and run_analysis for analyses that include the part.",
+      "Set the material of one or more part blocks, with a finish and colour that suit it, as one undoable change. When the part's process cannot make the material, its process switches too (the one compare_materials named, or the process given). Prefer this over edit_design for material changes. The result comes back with the checks; afterwards call run_analysis for analyses that include the part.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -83,7 +83,7 @@ const issues = (e: z.ZodError) => err(e.issues.map((i) => `${i.path.join(".") ||
 const unknownMaterials = (names: string[]) => names.filter((n) => !materialRecord(n));
 const blockNames = () => [...new Set((useDesign.getState().model?.parts ?? []).filter((p) => !p.id.startsWith(`${p.name}.`)).map((p) => p.name))];
 
-export async function runMaterialTool(name: string, input: unknown, ctx: { toolUseId?: string } = {}): Promise<ToolOutcome | null> {
+export async function runMaterialTool(name: string, input: unknown, ctx: { toolUseId?: string; check?: boolean } = {}): Promise<ToolOutcome | null> {
   switch (name) {
     case "compare_materials": {
       const p = CompareInput.safeParse(input ?? {});
@@ -148,7 +148,7 @@ export async function runMaterialTool(name: string, input: unknown, ctx: { toolU
       const errors = next.diagnostics.filter((d) => d.severity === "error").length;
       const stats = diffStats(source, src);
       return {
-        content: [`Set ${rec.label}:`, ...lines.map((l) => `- ${l}`), ...warnings, errors ? `The source now has ${errors} error(s); fix them with edit_design.` : "", "Next: call run_checks (the process checks use the new material), then run_analysis for any analysis that includes these parts."].filter(Boolean).join("\n"),
+        content: [`Set ${rec.label}:`, ...lines.map((l) => `- ${l}`), ...warnings, errors ? `The source now has ${errors} error(s); fix them with edit_design.` : "", ctx.check ? "The checks below use the new material. Next: run_analysis for any analysis that includes these parts." : ctx.check === false ? "The checks come after your last change in this response; then run_analysis for any analysis that includes these parts." : "Next: call run_checks (the process checks use the new material), then run_analysis for any analysis that includes these parts."].filter(Boolean).join("\n"),
         card: {
           title: p.data.summary,
           detail: `${lines.join("\n")} · +${stats.added} −${stats.removed} lines`,
@@ -167,7 +167,7 @@ export function materialPromptSection(): string {
 Choose each part's material for what that part does, not out of habit, and say what decided it.
 - Before choosing or changing the material of a part that carries load, lives outdoors or hot, gets wet, touches food, rubs, flexes, must be light or must be clear, call compare_materials for it, with needs: from what the part does (a seal is soft, a hinge flexible, a gear low friction and wear resistant). It ranks materials against the brief, the part's loads, its latest analysis, its process, the mass limit and material cost. Cite its numbers (service temperature, safety factor and deflection in each material, mass, cost) instead of material facts from memory.
 - Keep the part's process unless the user wants another. Options marked as made another way change how the part is made; offer them with ask_user when they are clearly better, rather than switching.
-- Apply a choice with set_material, which picks a finish that suits the process, keeps the part's colour where it can, and switches the process only when the current one cannot make the material. Then run_checks and run_analysis for analyses that include the part, and report the numbers before and after.
+- Apply a choice with set_material, which picks a finish that suits the process, keeps the part's colour where it can, and switches the process only when the current one cannot make the material. Its result carries the checks; then run_analysis for analyses that include the part, and report the numbers before and after.
 - Fix strength with geometry first. Change the material when the conditions rule it out (heat, sunlight, water, salt, chemicals, food) or when geometry cannot reach the target in the space there is. When the user or the brief chose the material, propose the change with ask_user and the numbers instead of switching.
 - Record the material of each part that matters as a decision with the runner-up as an alternative.
 - The checks also flag different metals touching in a wet design (galvanic corrosion: isolate them or change one), plastic parts that carry a constant load near their creep limit, and screws driven straight into printed plastic (use heat-set inserts). Fix those like any other check.`;
