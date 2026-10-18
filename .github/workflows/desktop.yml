@@ -1,12 +1,15 @@
 name: Desktop app
 
-# Builds the Windows installer, starts the packaged app to check it opens a
-# design and passes its checks, and publishes the installer to GitHub Releases:
-#   - pull requests that touch the desktop app: build and test, installer put on the
+# Builds the Windows and Mac installers, starts each packaged app to check it
+# opens a design and passes its checks, and publishes them to GitHub Releases:
+#   - pull requests that touch the desktop app: build and test, installers put on the
 #     "Kerf desktop preview" draft release (only people who can push see drafts)
 #   - main, when package.json has a version with no release yet: build, test and release v<version>
-#   - Run workflow (manual): build and test main, and put the installer on v<version>'s release
-# Windows runners cost double minutes, so other changes don't trigger it.
+#   - Run workflow (manual): build and test main, and put the installers on v<version>'s release
+# Windows runners cost double minutes and Mac runners ten times, so other changes
+# don't trigger it, and pull requests build the Mac app only when they change
+# how it is packaged (this file or desktop/electron-builder.yml).
+# The Mac job runs after the Windows one, which creates the release it adds to.
 # Installers go on releases rather than workflow artifacts: release files don't count
 # against the account's Actions storage, which a 100 MB installer per run soon fills.
 
@@ -35,9 +38,13 @@ jobs:
   plan:
     name: Decide whether to release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       version: ${{ steps.v.outputs.version }}
       publish: ${{ steps.v.outputs.publish }}
+      mac: ${{ steps.v.outputs.mac }}
     steps:
       - uses: actions/checkout@v4
       - id: v
@@ -45,14 +52,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           WANT: ${{ inputs.publish }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           version=$(node -p "require('./package.json').version")
           publish=false
           if [ "$EVENT" = workflow_dispatch ]; then publish=$WANT
           elif [ "$EVENT" = push ] && ! gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then publish=true; fi
+          mac=false
+          if [ "$EVENT" = workflow_dispatch ] || [ "$publish" = true ]; then mac=true
+          elif [ "$EVENT" = pull_request ]; then
+            files=$(gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only)
+            if grep -qxE '\.github/workflows/desktop\.yml|desktop/electron-builder\.yml' <<< "$files"; then mac=true; fi
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "Version $version, publish: $publish"
+          echo "mac=$mac" >> "$GITHUB_OUTPUT"
+          echo "Version $version, publish: $publish, Mac: $mac"
 
   windows:
     name: Windows installer
@@ -104,7 +119,7 @@ jobs:
           # one draft release holds the newest pull request build; drafts have no tag until published
           gh release delete desktop-preview --yes >/dev/null 2>&1 || true
           gh release create desktop-preview release/Kerf-Setup-*.exe --draft --prerelease --target "$SHA" --title "Kerf desktop preview" \
-            --notes "Test build of pull request #$PR at ${SHA:0:7}, not a release. The installer isn't code-signed yet, so Windows may say it protected your PC: choose **More info**, then **Run anyway**."
+            --notes "Test build of pull request #$PR at ${SHA:0:7}, not a release. The installers aren't code-signed yet, so Windows may say it protected your PC: choose **More info**, then **Run anyway**. A Mac installer is added when the pull request changes how the app is packaged."
       - name: Publish to GitHub Releases
         if: needs.plan.outputs.publish == 'true'
         shell: bash
@@ -116,5 +131,62 @@ jobs:
             gh release upload "$TAG" release/Kerf-Setup-*.exe --clobber
           else
             gh release create "$TAG" release/Kerf-Setup-*.exe --target "$GITHUB_SHA" --title "Kerf $TAG" --generate-notes \
-              --notes "Download **Kerf-Setup-${TAG#v}.exe** below and run it. It installs for your Windows user only, with no administrator prompt, and adds Kerf to the Start menu and desktop. The installer isn't code-signed yet, so Windows may say it protected your PC: choose **More info**, then **Run anyway**."
+              --notes "$(cat <<EOF
+          **Windows:** download **Kerf-Setup-${TAG#v}.exe** below and run it. It installs for your Windows user only, with no administrator prompt, and adds Kerf to the Start menu and desktop. The installer isn't code-signed yet, so Windows may say it protected your PC: choose **More info**, then **Run anyway**.
+
+          **Mac** (Apple Silicon and Intel): download **Kerf-${TAG#v}-mac.dmg** below, open it and drag Kerf into Applications. Kerf isn't notarised by Apple yet, so the first time you open it macOS says it can't check it: open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Kerf, then confirm. On macOS 14 or older, Control-click Kerf in Applications and choose **Open** instead. After that it opens normally.
+          EOF
+          )"
           fi
+
+  mac:
+    name: Mac installer
+    needs: [plan, windows]
+    if: needs.plan.outputs.mac == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: node scripts/build-desktop.mjs
+      - run: npx electron-builder --config desktop/electron-builder.yml --mac --publish never
+      - name: Check the signature and open a design in the packaged app
+        env:
+          KERF_SMOKE_SHOT: smoke.png
+          KERF_SMOKE_OUT: smoke.json
+        run: |
+          app=release/mac-universal/Kerf.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          lipo -archs "$app/Contents/MacOS/Kerf"
+          status=0
+          "$app/Contents/MacOS/Kerf" --smoke-test || status=$?
+          cat smoke.json || echo "no result written"
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: kerf-mac-smoke-${{ needs.plan.outputs.version }}
+          path: |
+            smoke.png
+            smoke.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Put the test build on the preview release
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload desktop-preview release/Kerf-*-mac.dmg --clobber
+      - name: Publish to GitHub Releases
+        if: needs.plan.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ needs.plan.outputs.version }}
+        run: gh release upload "$TAG" release/Kerf-*-mac.dmg --clobber
