@@ -6,7 +6,8 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useChat, sendMessage, type ChatItem } from "../ai/chat";
+import { useChat, sendMessage, addMidRun, type ChatItem } from "../ai/chat";
+import { useAgents, isLive } from "../agents/progress";
 import { useDesign, evaluateOnly } from "../core/engine";
 import { decisionsFor, paramUnit, paramsDriving, withValues } from "../core/decisions";
 import { commitSource, endPreview, previewSource, realSource, useProject } from "../app/project";
@@ -15,7 +16,7 @@ import { useView, revealSpan, select, showDecision } from "../app/view";
 import { viewport } from "../app/viewportApi";
 import { openSettings } from "../app/ui";
 import { fmtNum } from "../lang/values";
-import { useApiKey } from "./ChatPanel";
+import { useApiKey, MidRun } from "./ChatPanel";
 import { SuggestionChips } from "./ChatPanel";
 import { ChoiceCard } from "./ChoiceCard";
 import { ChangeCard } from "./ChangeCard";
@@ -51,6 +52,7 @@ function SpotPopover({ spot }: { spot: Spot }) {
   const { model: real } = useRealModel();
   const items = useChat((s) => s.items);
   const busy = useChat((s) => s.busy);
+  const building = useAgents((s) => isLive(s.run));
   const hasKey = !!useApiKey();
   const report = useDesign((s) => s.report);
   const part = real?.parts.find((p) => p.id === spot.partId) ?? model?.parts.find((p) => p.id === spot.partId);
@@ -136,12 +138,16 @@ function SpotPopover({ spot }: { spot: Spot }) {
 
   const send = (t: string) => {
     const msg = t.trim();
-    if (!msg || busy || !hasKey) return;
+    if (!msg || !hasKey) return;
     const id = `spot${Date.now().toString(36)}`;
+    const ref = { partId: spot.partId, label: part?.label ?? spot.label, local: spot.local, point: spot.point, normal: spot.normal };
+    // while Claude works (here or anywhere), the message joins that run at its next step, pointing at this spot
+    const midRun = busy || building;
+    if (midRun && !addMidRun(msg, { spot: ref, id })) return;
     noteSpotMessage(id);
     select([spot.partId]);
     endPreview(previewKey);
-    void sendMessage(msg, { spot: { partId: spot.partId, label: part?.label ?? spot.label, local: spot.local, point: spot.point, normal: spot.normal }, id });
+    if (!midRun) void sendMessage(msg, { spot: ref, id });
     setText("");
   };
 
@@ -199,7 +205,7 @@ function SpotPopover({ spot }: { spot: Spot }) {
           {!mine && hasKey && (
             <div className="spot-quick">
               {QUICK.map((q) => (
-                <button key={q.label} className="suggest-chip" disabled={busy} onClick={() => send(q.prompt)} data-tip={`Send “${q.prompt}”`}>
+                <button key={q.label} className="suggest-chip" onClick={() => send(q.prompt)} data-tip={busy ? `Add “${q.prompt}” to what Claude is doing` : `Send “${q.prompt}”`}>
                   {q.label}
                 </button>
               ))}
@@ -213,8 +219,7 @@ function SpotPopover({ spot }: { spot: Spot }) {
                 rows={1}
                 value={text}
                 maxLength={4000}
-                disabled={busy && !working}
-                placeholder={busy ? (working ? "Claude is on it. You can type your next message." : "Claude is busy with another message") : mine ? "Reply about this spot…" : "Ask about this spot, or say what to change here…"}
+                placeholder={busy || building ? (working ? "Claude is on it. Add more and it reads it at its next step…" : "Claude is working. Say what to change here and it joins the run…") : mine ? "Reply about this spot…" : "Ask about this spot, or say what to change here…"}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -228,8 +233,8 @@ function SpotPopover({ spot }: { spot: Spot }) {
                 }}
                 aria-label={`Message Claude about ${label}`}
               />
-              <button className="btn sm primary" disabled={!text.trim() || busy} onClick={() => send(text)} aria-label="Send">
-                <Icon.Send size={12} />
+              <button className="btn sm primary" disabled={!text.trim()} onClick={() => send(text)} aria-label={busy || building ? "Add to what Claude is doing" : "Send"}>
+                {busy || building ? <Icon.Plus size={12} /> : <Icon.Send size={12} />}
               </button>
             </div>
           ) : (
@@ -264,7 +269,7 @@ function SpotPopover({ spot }: { spot: Spot }) {
                   <span className={`dot ${i.status}`} />
                   <span className="grow">{i.title}</span>
                   {hasKey && (
-                    <button className="btn sm ghost" disabled={busy} onClick={() => send(`Fix this check: ${i.title}${i.detail ? ` (${i.detail})` : ""}.`)}>
+                    <button className="btn sm ghost" onClick={() => send(`Fix this check: ${i.title}${i.detail ? ` (${i.detail})` : ""}.`)}>
                       Fix
                     </button>
                   )}
@@ -329,7 +334,12 @@ function SpotItem({ it, last, onSend }: { it: ChatItem; last: boolean; onSend: (
   const busy = useChat((s) => s.busy);
   switch (it.kind) {
     case "user":
-      return <div className="spot-user">{it.text}</div>;
+      return (
+        <div className="spot-user">
+          {it.text}
+          {it.midRun && <MidRun id={it.id} compact />}
+        </div>
+      );
     case "assistant":
       return it.text ? (
         <div className="spot-assistant">

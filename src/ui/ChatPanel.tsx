@@ -2,7 +2,9 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useChat, sendMessage, stop, retryLast, clearChat, type ChatItem } from "../ai/chat";
+import { useChat, sendMessage, stop, retryLast, clearChat, addMidRun, withdrawMidRun, sendQueuedNow, type ChatItem } from "../ai/chat";
+import { usePlan, messageState, anyBranchOpen } from "../ai/plan";
+import { useAgents, isLive } from "../agents/progress";
 import { ChoiceCard } from "./ChoiceCard";
 import { ChangeCard } from "./ChangeCard";
 import { DiffView } from "./DiffView";
@@ -222,6 +224,7 @@ function Item({ it }: { it: ChatItem }) {
           )}
           {it.image && <img className="mark-img" src={it.image} alt="Your marked-up view" />}
           {it.text}
+          {it.midRun && <MidRun id={it.id} />}
         </motion.div>
       );
     case "assistant":
@@ -396,8 +399,54 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
   );
 }
 
+const andList = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : xs[0]);
+
+/**
+ * Under a message sent while Claude worked: whether it is still waiting for
+ * Claude's next step or has been read (and by which subassembly agents), with
+ * a way to take it back or have Claude take it at once.
+ */
+export function MidRun({ id, compact }: { id: string; compact?: boolean }) {
+  const plan = usePlan();
+  const busy = useChat((s) => s.busy);
+  const asking = useChat((s) => !!s.pendingChoice);
+  const building = useAgents((s) => isLive(s.run));
+  const st = useMemo(() => messageState(plan, id), [plan, id]);
+  if (!st) return null;
+  if (st.delivered) {
+    const who = st.agents.length ? `${st.main ? "Claude and " : ""}the ${andList(st.agents)} agent${st.agents.length > 1 ? "s" : ""}` : "Claude";
+    return (
+      <div className="midrun">
+        <span className="midrun-tag seen" data-tip="Sent while Claude worked: it took this into account from its next step, without starting over">
+          <Icon.Check size={9} /> added mid-run{compact ? "" : ` · ${who} ${st.agents.length + (st.main ? 1 : 0) > 1 ? "have" : "has"} it`}
+        </span>
+      </div>
+    );
+  }
+  // interrupting a parallel build would stop its agents, so they take it at their next step
+  const agents = building || anyBranchOpen();
+  const where = busy || building ? (agents ? "waiting for the agents' next step" : "waiting for Claude's next step") : asking ? "goes with your answer" : "not sent yet";
+  const canNow = (busy && !agents) || (!busy && !building && !asking);
+  return (
+    <div className="midrun">
+      <span className="midrun-tag" data-tip="Claude takes this into account as it goes, without stopping or starting over">
+        <span className="steer-dot" /> {compact ? "waiting" : where}
+      </span>
+      {canNow && (
+        <button className="midrun-btn" onClick={() => void sendQueuedNow()} data-tip={busy ? "Stop Claude's current response and take this now. What it was writing is dropped." : "Send it to Claude now"}>
+          {busy ? "now" : "send"}
+        </button>
+      )}
+      <button className="midrun-btn" onClick={() => withdrawMidRun(id)} data-tip="Take it back before Claude reads it">
+        undo
+      </button>
+    </div>
+  );
+}
+
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
   const routing = useChat((s) => s.routing);
+  const building = useAgents((s) => isLive(s.run));
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
   const draft = useChatDraft();
@@ -422,13 +471,19 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
     el.style.height = Math.min(200, el.scrollHeight) + "px";
   }, [text]);
   const canSend = (!!text.trim() || att.files.length > 0) && !att.loading;
+  // while Claude works, a message joins the run at its next step; files wait for the run to end
+  const midRun = busy || building;
   const send = () => {
-    if (!canSend || busy) return;
+    if (!canSend) return;
+    if (midRun) {
+      if (addMidRun(text, { files: att.files })) setText("");
+      return;
+    }
     void sendMessage(text, { files: att.files });
     setText("");
     att.clear();
   };
-  const voice = useVoiceInput({ text, setText, send, canSend: !busy, input: ta });
+  const voice = useVoiceInput({ text, setText, send, canSend, input: ta });
   return (
     <div className="composer">
       <VoiceNotice />
@@ -460,7 +515,9 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
           placeholder={
             pending
               ? "Pick an option above, or answer here…"
-              : !hasKey
+              : midRun && hasKey
+                ? "Add to what Claude is doing. It reads this after its current step…"
+                : !hasKey
                 ? "Add your API key in settings to chat with Claude"
                 : about.length
                   ? `What should change about ${about.length === 1 ? about[0] : "the selected parts"}?`
@@ -479,17 +536,33 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
         <div className="row">
           <AttachButton att={att} disabled={!hasKey} />
           <span className="mono dim" style={{ fontSize: 10.5 }}>
-            {busy ? <span className="shimmer-text">{routing ? "Choosing a model" : "Claude is working"}</span> : `Enter to send · Shift+Enter for a new line · ${mod}K to focus`}
+            {busy ? (
+              <>
+                <span className="shimmer-text">{routing ? "Choosing a model" : "Claude is working"}</span>
+                {text.trim() ? " · Enter adds this to the run" : ""}
+              </>
+            ) : building ? (
+              "The agents are building · Enter adds a note for them"
+            ) : (
+              `Enter to send · Shift+Enter for a new line · ${mod}K to focus`
+            )}
           </span>
           <div className="grow" />
           <MicButton voice={voice} />
-          {busy ? (
+          {busy && (
             <button className="btn sm danger" onClick={stop} aria-label="Stop">
               <Icon.Stop size={12} /> Stop
             </button>
-          ) : (
-            <button className="btn sm primary" onClick={send} disabled={!canSend} aria-label="Send">
-              <Icon.Send size={13} />
+          )}
+          {(!busy || !!text.trim()) && (
+            <button
+              className="btn sm primary"
+              onClick={send}
+              disabled={!canSend || (midRun && (!text.trim() || att.files.length > 0))}
+              aria-label={midRun ? "Add to this run" : "Send"}
+              data-tip={midRun ? (att.files.length ? "Files go once Claude finishes. Remove them to add just the text now." : "Add this to what Claude is doing: it reads it after its current step, without starting over") : undefined}
+            >
+              {midRun ? <Icon.Plus size={13} /> : <Icon.Send size={13} />}
             </button>
           )}
         </div>

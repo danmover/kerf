@@ -33,8 +33,8 @@ export interface AgentBranch {
   after: string[];
   uses: string[];
   steps: AgentStep[];
-  /** notes from the user, delivered to the agent before its next model call */
-  notes: { text: string; ts: number; delivered: boolean }[];
+  /** notes from the user, delivered to the agent before its next model call; shared: a chat message every agent got */
+  notes: { text: string; ts: number; delivered: boolean; shared?: boolean }[];
   requests: ChangeRequest[];
   summary?: string;
   /** the agent's own checks, from its last check_section */

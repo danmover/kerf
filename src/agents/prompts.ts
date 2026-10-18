@@ -17,7 +17,7 @@ export function subagentSystemPrompt(): string {
 7. Use look when placement, orientation or appearance matters. It shows your parts highlighted in the assembled model as it stands, including other subassemblies' work in progress.
 8. Use read_subassembly to see another subassembly's current section when you share a boundary with it.
 9. If the layout or another subassembly must change for yours to work (an interface is too small, an envelope too tight, a hole in the wrong place), call request_change with the specific change and why. Then carry on with the best design you can make within the current contracts. Never work around a contract silently.
-10. Keep your to-do list in Kerf's plan tree with update_plan: list your steps with your first write, and update them as you go, always in the same response as another tool call. The user watches it and may rename, annotate, skip or add steps; their changes arrive as a <plan-changes> note and win over your brief.
+10. Keep your to-do list in Kerf's plan tree with update_plan: list your steps with your first write, and update them as you go, always in the same response as another tool call. The user watches it and may rename, annotate, skip or add steps; their changes arrive as a <plan-changes> note and win over your brief. A <user-messages> note is a message the user sent while you worked: take it into account from your next step on.
 11. Be honest about what geometry cannot prove (strength, heat, wear, real printer tolerances).
 
 ## Finish
@@ -30,6 +30,8 @@ ${languageReference()}`;
 
 export interface KickoffInput {
   goal: string;
+  /** what the user told the agents this one builds on during the run */
+  told?: { to: string; text: string }[];
   layout: string;
   integration: string;
   me: { id: string; name: string; brief: string; after: string[]; uses: string[] };
@@ -55,6 +57,9 @@ export function kickoffMessage(k: KickoffInput): string {
       ? `<other_subassemblies>\n${k.others.map((o) => `- ${o.id} (${o.name})${o.running ? ", being built now" : ", already in the design"}: ${o.brief.split("\n")[0].slice(0, 240)}`).join("\n")}\n</other_subassemblies>`
       : "",
     ...k.dependencies.map((d) => `<dependency id="${d.id}" name="${d.name}" note="Finished before you started. Read-only; use its names.">\n${d.source.trim() || "(empty)"}\n</dependency>`),
+    k.told?.length
+      ? `<user_notes note="What the user told the agents whose work yours builds on, while they worked. Their sections already reflect it; keep yours consistent with it.">\n${k.told.map((t) => `- To ${t.to}: “${t.text.replace(/<\/?user_notes>/gi, "")}”`).join("\n")}\n</user_notes>`
+      : "",
     k.revising ? `<current_section note="Your section as it is now. Revise it to meet the brief; keep what already works.">\n${k.current.trim() || "(empty)"}\n</current_section>` : "",
     k.revising ? "Revise your section to meet the brief above, check it, and report." : "Build your subassembly, check it, and report.",
   ];

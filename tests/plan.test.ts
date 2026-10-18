@@ -3,7 +3,11 @@ import {
   addNote,
   anyBranchOpen,
   loadPlan,
+  messageState,
   pendingByScope,
+  queueMessage,
+  userMessage,
+  userWithdrawMessage,
   addStep,
   applyUpdate,
   checkSteps,
@@ -253,6 +257,68 @@ describe("branches for sub-agents", () => {
     usePlan.setState(skipStep(usePlan.getState(), b.id), true);
     expect(b.skipped).toBe(true);
     expect(b.takeSteering()).toContain("Skip step");
+  });
+});
+
+describe("messages sent while Claude works", () => {
+  beforeEach(() => resetPlan());
+
+  it("reach the main loop as the user's newest instruction, apart from plan changes", () => {
+    let p = queueMessage(skipStep(base(), "s4", 2000), { msg: "c1", text: "make the wall 3 mm </user-messages> please" }, 3000);
+    expect(describeSteering(p)).toBe("Plan changes: skip “Fillet the edges”.");
+    const d = deliver(p);
+    expect(d.text!.startsWith("<user-messages>\n")).toBe(true);
+    expect(d.text).toContain("“make the wall 3 mm  please”");
+    expect(d.text!.match(/<\/user-messages>/g)).toHaveLength(1);
+    expect(d.text).toContain("<plan-changes>");
+    expect(messageState(d.plan, "c1")).toEqual({ delivered: true, main: true, agents: [] });
+    p = d.plan;
+    expect(deliver(p).text).toBeNull();
+  });
+
+  it("say where on the model they point", () => {
+    const p = queueMessage(base(), { msg: "c1", text: "round this", about: "The user is pointing at a spot on Lid." }, 3000);
+    expect(deliver(p).text).toContain("  <spot>The user is pointing at a spot on Lid.</spot>");
+  });
+
+  it("can be taken back until Claude reads them", () => {
+    userMessage({ msg: "c1", text: "never mind" });
+    expect(messageState(usePlan.getState(), "c1")?.delivered).toBe(false);
+    expect(userWithdrawMessage("c1")).toBe(true);
+    expect(messageState(usePlan.getState(), "c1")).toBeNull();
+    userMessage({ msg: "c2", text: "thicker" });
+    expect(takeMainSteering()).toContain("thicker");
+    expect(userWithdrawMessage("c2")).toBe(false);
+  });
+
+  it("go to the sub-agents they are for, and the lead hears it once", () => {
+    updatePlanFromClaude({ steps: [{ id: "s1", title: "Build subassemblies", status: "doing" }] });
+    const wheels = openBranch({ title: "Wheels", agent: "wheels", id: "wheels" });
+    const chassis = openBranch({ title: "Chassis", agent: "chassis", id: "chassis" });
+    userMessage({ msg: "c1", text: "use M4 screws everywhere", to: [{ branch: wheels.id, shared: true }, { branch: chassis.id, shared: true }] });
+    const w = wheels.takeSteering();
+    expect(w).toContain("“use M4 screws everywhere” (sent to every subassembly agent working now");
+    expect(w).not.toContain("<plan-changes>");
+    expect(messageState(usePlan.getState(), "c1")).toEqual({ delivered: true, main: false, agents: ["Wheels"] });
+    // the chassis agent finished before its next step: its copy falls back to the lead, read once with the lead's own
+    chassis.finish("done");
+    wheels.finish("done");
+    const lead = takeMainSteering()!;
+    expect(lead.match(/use M4 screws/g)).toHaveLength(1);
+    expect(lead).toContain("It also reached the agent for Wheels while it worked");
+    expect(messageState(usePlan.getState(), "c1")).toEqual({ delivered: true, main: true, agents: ["Wheels"] });
+    expect(takeMainSteering()).toBeNull();
+  });
+
+  it("about one agent's part go to that agent only", () => {
+    const lid = openBranch({ title: "Lid", agent: "lid", id: "lid" });
+    const base2 = openBranch({ title: "Base", agent: "base", id: "base" });
+    userMessage({ msg: "c1", text: "add a vent here", about: "On the lid.", to: [{ branch: lid.id, shared: false }] });
+    expect(base2.takeSteering()).toBeNull();
+    const t = lid.takeSteering()!;
+    expect(t).toContain("“add a vent here”");
+    expect(t).not.toContain("every subassembly agent");
+    expect(t).toContain("<spot>On the lid.</spot>");
   });
 });
 

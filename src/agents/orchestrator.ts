@@ -21,7 +21,7 @@ import { recordSpend } from "../ai/spend";
 import { kickoffMessage, subagentSystemPrompt } from "./prompts";
 import { runAgent, SUBAGENT_TOOLS, type AgentEnd, type Workspace } from "./subagent";
 import { defaultWorkers, pool } from "./isolated";
-import { closeRunBranches, noteForBranch, openRunBranches, setBranchSteps, takeBranchSteering } from "./planBranches";
+import { branchRootId, closeRunBranches, noteForBranch, openRunBranches, setBranchSteps, takeBranchSteering } from "./planBranches";
 import { getAgentRun, isLive, loadRuns, patchBranch, patchRun, saveRuns, setRun, type AgentBranch, type AgentRunTree, type CrossIssue } from "./progress";
 
 export interface BuildInput {
@@ -189,6 +189,25 @@ export function steerAgent(id: string, note: string) {
   patchBranch(id, (x) => ({ ...x, notes: [...x.notes, { text, ts: Date.now(), delivered: false }] }));
 }
 
+/**
+ * A chat message sent while a build runs: the agents it is for are the one
+ * building the part a spot is on, or every agent still to finish when it is
+ * about the design as a whole. It shows on their cards; the returned plan-tree
+ * branches are where the chat queues it, so each agent reads it at its next
+ * step (or its first, if it has not started yet).
+ */
+export function relayToAgents(text: string, partId?: string): { branch: string; shared: boolean }[] {
+  const run = getAgentRun();
+  if (!live || !run) return [];
+  const working = run.branches.filter((b) => b.include && (b.status === "running" || b.status === "queued" || b.status === "waiting"));
+  // a part no working agent builds is the lead's to change once the build is back
+  const targets = partId ? working.filter((b) => b.partIds.includes(partId)) : working;
+  const shared = !partId;
+  const ts = Date.now();
+  for (const b of targets) patchBranch(b.id, (x) => ({ ...x, notes: [...x.notes, { text: text.trim().slice(0, 2000), ts, delivered: false, shared: shared || undefined }] }));
+  return targets.map((b) => ({ branch: branchRootId(b.id), shared }));
+}
+
 export function stopAgent(id: string) {
   if (!live) return;
   const c = live.controllers.get(id);
@@ -340,6 +359,20 @@ async function schedule(l: Live, instruction?: string) {
 
 const titleOf = (id: string) => getAgentRun()?.branches.find((b) => b.id === id)?.title ?? id;
 
+/** The sections in this run that one waits for, directly or through another. */
+function upstream(l: Live, id: string): string[] {
+  const out: string[] = [];
+  const walk = (x: string) => {
+    for (const d of l.doc.sections.find((s) => s.id === x)?.after ?? []) {
+      if (!l.planIds.includes(d) || out.includes(d) || d === id) continue;
+      out.push(d);
+      walk(d);
+    }
+  };
+  walk(id);
+  return out;
+}
+
 async function startAgent(l: Live, id: string, anthropic: Anthropic, system: string, first: boolean, instruction?: string) {
   const ctl = new AbortController();
   const stopOnRun = () => ctl.abort();
@@ -353,8 +386,13 @@ async function startAgent(l: Live, id: string, anthropic: Anthropic, system: str
   const sec = l.doc.sections.find((s) => s.id === id)!;
   const branch = tree.branches.find((b) => b.id === id)!;
   const brief = instruction ? `${sec.brief}\n\nRevision requested by the user: ${instruction}` : branch.brief;
+  // what the user told the agents this one builds on, so it stays consistent with what they changed
+  const told = upstream(l, id).flatMap((d) =>
+    (tree.branches.find((b) => b.id === d)?.notes ?? []).filter((n) => !n.shared).map((n) => ({ to: titleOf(d), text: n.text })),
+  );
   const kickoff = kickoffMessage({
     goal: tree.goal,
+    told,
     layout: l.doc.head,
     integration: l.doc.tail,
     me: { id, name: sec.name, brief, after: sec.after, uses: sec.uses },

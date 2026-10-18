@@ -17,13 +17,13 @@ import { paramEdits, upsertDecision, applySpanEdits, type SetMap } from "../core
 import { fmtNum } from "../lang/values";
 import { shotOf, changeShots, type ChangeShots } from "../app/changeShots";
 import { spotText, type SpotRef } from "../app/spot";
-import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering, anyBranchOpen } from "./plan";
+import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering, anyBranchOpen, userMessage, userWithdrawMessage, messageState } from "./plan";
 import { appDeps, currentBrief as reviewBrief, designerReport, registerBriefProvider, ReviewError, ReviewInput, ReviewSession, runReview, type Finding, type ReviewProgress, type ReviewResult } from "./review";
 import { shrinkImage } from "./review/renders";
 import { isSubstantial } from "./review/gate";
 import { assetBlock } from "../persist/assets";
 import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type BriefData } from "../core/brief";
-import { isBuilding } from "../agents/orchestrator";
+import { isBuilding, relayToAgents } from "../agents/orchestrator";
 import { toast } from "../app/ui";
 import { claudeClient, claudeRoute } from "./client";
 import { BINDING_BETA, bindingKey, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
@@ -44,7 +44,8 @@ export interface ChatFile {
 }
 
 export type ChatItem =
-  | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[]; spot?: SpotRef; image?: string }
+  /** midRun: sent while Claude worked; it joined that run at its next step instead of starting a turn */
+  | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[]; spot?: SpotRef; image?: string; midRun?: boolean }
   | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[] }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number; link?: { url: string; label: string }; web?: boolean }
   | {
@@ -299,11 +300,13 @@ useProject.subscribe((s, prev) => {
   if (v.author === "you" && get().busy) noteDesignEdit(v.message);
 });
 
-/** The user's plan changes since the last tool boundary, as a text block for the next request. */
+/** The user's plan changes and messages since the last tool boundary, as a text block for the next request. */
 function steering(): { type: "text"; text: string }[] {
   const text = takeMainSteering();
   return text ? [{ type: "text", text }] : [];
 }
+/** The steering includes a message the user typed (not only plan changes). */
+const hasMessage = (blocks: { text: string }[]) => blocks.some((b) => b.text.startsWith("<user-messages>"));
 
 export async function clearChat() {
   stopLoop();
@@ -563,10 +566,10 @@ export function stop() {
 export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: { url: string; note: string }; design?: boolean } = {}) {
   const t = text.trim();
   const attached = opts.files ?? [];
-  if ((!t && !attached.length) || get().busy) return;
-  // a revision started from a build card is still writing the design; an edit from chat now would be merged away
-  if (isBuilding()) {
-    toast({ kind: "info", title: "The parallel build is still running", detail: "Send this once it finishes, or stop the build from its card." });
+  if (!t && !attached.length) return;
+  // while Claude (or a parallel build) works, a message joins that run at its next step instead of waiting for it to end
+  if (get().busy || isBuilding()) {
+    addMidRun(t, opts);
     return;
   }
   endPreview();
@@ -609,6 +612,56 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
     },
   });
 }
+
+/**
+ * A message sent while Claude works. It shows in the chat at once and queues
+ * with the plan's steering: the running loop reads it after its current
+ * action, and sub-agents of a parallel build read their copy at their next
+ * step (the one building the part a spot is on, or all of them). Nothing is
+ * stopped or redone, so the change costs only the steps it needs. Files and
+ * marked-up views wait for the run to end: they are too heavy to queue.
+ * Returns whether it queued.
+ */
+export function addMidRun(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: unknown } = {}): boolean {
+  const t = text.trim();
+  if (!t || opts.files?.length || opts.image) {
+    if (opts.files?.length || opts.image) toast({ kind: "info", title: "Send pictures and files once Claude finishes", detail: "A message without them can go now: Claude reads it at its next step." });
+    return false;
+  }
+  const id = opts.id ?? nid();
+  const to = isBuilding() ? relayToAgents(t, opts.spot?.partId) : [];
+  push({ kind: "user", id, text: t, ts: Date.now(), spot: opts.spot, midRun: true });
+  userMessage({ msg: id, text: t, about: opts.spot ? spotText(opts.spot) : undefined, to });
+  persist();
+  return true;
+}
+
+/** Take back a message sent mid-run before Claude reads it. */
+export function withdrawMidRun(itemId: string) {
+  if (!userWithdrawMessage(itemId)) return;
+  set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
+  persist();
+}
+
+/**
+ * Messages sent mid-run that are still waiting (the run was stopped, or the
+ * page reloaded): while Claude works, stop its current response and go on with
+ * them; otherwise send them now as a turn of their own.
+ */
+export async function sendQueuedNow() {
+  if (get().busy) return applyPlanChangesNow();
+  if (get().pendingChoice || isBuilding()) return;
+  const blocks = steering();
+  if (!blocks.length) return;
+  endPreview();
+  settlePausedTail();
+  addUser([{ type: "text", text: contextNote() }, ...blocks]);
+  persist();
+  await runLoop({ route: designRoute("your message from while Claude worked", "rule") });
+}
+
+/** Where a message sent mid-run stands, for its bubble. */
+export const midRunState = (itemId: string) => messageState(usePlan.getState(), itemId);
 
 /** Add user content to the history, joining results a finished turn left waiting for it. */
 function addUser(content: BetaContentBlockParam[]) {
@@ -997,8 +1050,24 @@ async function runLoop(opts: LoopOptions = {}) {
     }
     if (stale()) return;
     routeNote ??= { model: route.model, quick: route.quick, why: route.why, by: route.by };
+    // a message the user adds while a quick answer runs may ask for anything: the design model takes it from there
+    const tookMessage = (blocks: { text: string }[]) => {
+      if (!route.quick || !hasMessage(blocks)) return;
+      const why = "you added a message while it worked";
+      route = designRoute(why, "rule");
+      routeNote = { ...routeNote!, escalated: { to: route.model, why } };
+    };
     for (let step = 0; step < settings.maxSteps; step++) {
       if (stale()) return;
+      // what the user sent since the last request was built (while the model was chosen, or a review ran) goes with this one
+      const lastMsg = history[history.length - 1];
+      if (lastMsg?.role === "user" && typeof lastMsg.content !== "string") {
+        const late = steering();
+        if (late.length) {
+          history[history.length - 1] = { ...lastMsg, content: [...lastMsg.content, ...late] };
+          tookMessage(late);
+        }
+      }
       repairHistory();
       capHeavy();
       const live: Live = { bubbles: [], toolRows: new Map(), webRows, noticed, created: [] };
@@ -1115,6 +1184,16 @@ async function runLoop(opts: LoopOptions = {}) {
         if (cut) history.pop();
         break;
       }
+      if (final.stop_reason === "end_turn" && step < settings.maxSteps - 1) {
+        // a message sent while this response was written still gets an answer in this run (any review waits for the end)
+        const late = steering();
+        if (late.length) {
+          history.push({ role: "user", content: late });
+          tookMessage(late);
+          persist();
+          continue;
+        }
+      }
       if (final.stop_reason === "end_turn" && edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale))) continue;
       const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
       // rows for calls a fallback discarded never run
@@ -1193,9 +1272,13 @@ async function runLoop(opts: LoopOptions = {}) {
         set({ pendingChoice: { toolUseId: ask.toolUseId, itemId: cid, results } });
         break;
       }
-      history.push({ role: "user", content: [...results, ...steering()] });
-      persist();
       pausedAfter ??= takePauseHit();
+      const atLimit = step === settings.maxSteps - 1;
+      // on a pause or at the step limit the user's changes and messages wait, so they go with the next message Claude acts on
+      const steer = pausedAfter || atLimit ? [] : steering();
+      history.push({ role: "user", content: [...results, ...steer] });
+      tookMessage(steer);
+      persist();
       if (pausedAfter) {
         push({ kind: "notice", id: nid(), level: "info", title: `Paused after “${pausedAfter}”`, detail: "You asked to review here. Look it over, change the plan if you like, then continue.", action: "continue" });
         history.push({ role: "assistant", content: [{ type: "text", text: `(Paused for the user's review after “${pausedAfter}”, as they asked.)` }] });
@@ -1203,14 +1286,15 @@ async function runLoop(opts: LoopOptions = {}) {
       }
       // offering next steps closes the turn; the results wait for the user's next message
       if (offered && uses.every((u) => u.name === "suggest_next_steps")) {
-        // this is where the turn ends, so Claude's changes are reviewed here; the chips go if Claude has more to do
-        const more = edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale));
+        // this is where the turn ends, so Claude's changes are reviewed here; the chips go if Claude has more to do,
+        // as they do when the user changed the plan or sent a message meanwhile (any review waits for the end)
+        const more = steer.length > 0 || (edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale)));
         if (!more) break;
         const chips = offered;
         set((st) => ({ items: st.items.filter((i) => i.id !== chips) }));
         continue;
       }
-      if (step === settings.maxSteps - 1) {
+      if (atLimit) {
         push({ kind: "notice", id: nid(), level: "info", title: `Paused after ${settings.maxSteps} steps`, detail: "Say “continue” to let Claude keep going. You can raise the limit in Settings." });
         history.push({ role: "assistant", content: [{ type: "text", text: "(Paused at the step limit.)" }] });
       }
@@ -1267,7 +1351,9 @@ const isAbort = (e: unknown) => e instanceof Anthropic.APIUserAbortError || (e i
 export async function applyPlanChangesNow() {
   if (!pendingSteering(usePlan.getState()).length) return;
   if (!get().busy) {
-    await sendMessage(describeSteering(usePlan.getState()), { design: true });
+    // messages are already in the chat: with nothing else waiting, they go as they are
+    const said = describeSteering(usePlan.getState());
+    await (said ? sendMessage(said, { design: true }) : sendQueuedNow());
     return;
   }
   // sub-agents run inside the main loop's current action; they take their own changes at their next step
@@ -1279,7 +1365,8 @@ export async function applyPlanChangesNow() {
 async function resumeWithSteering() {
   const blocks = steering();
   if (!blocks.length) return;
-  push({ kind: "notice", id: nid(), level: "info", title: "Interrupted to apply your plan changes" });
+  const onlyMessages = hasMessage(blocks) && !blocks[0].text.includes("<plan-changes>");
+  push({ kind: "notice", id: nid(), level: "info", title: onlyMessages ? "Interrupted to take your message now" : "Interrupted to apply your plan changes" });
   const last = history[history.length - 1];
   if (last?.role === "user" && typeof last.content !== "string") history[history.length - 1] = { ...last, content: [...last.content, ...blocks] };
   else history.push({ role: "user", content: [{ type: "text", text: contextNote() }, ...blocks] });

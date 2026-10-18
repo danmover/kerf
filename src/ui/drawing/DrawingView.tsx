@@ -12,7 +12,8 @@ import { commitSource, endComparison } from "../../app/project";
 import { revealSpan, select, useView, requestCamera, type ViewPreset } from "../../app/view";
 import { toast, errorText, useUi } from "../../app/ui";
 import { useSketch } from "../sketch/session";
-import { sendMessage, useChat } from "../../ai/chat";
+import { addMidRun, sendMessage, useChat } from "../../ai/chat";
+import { useAgents, isLive } from "../../agents/progress";
 import { closeDrawings, drawingSpecs, markAsked, openDrawings, selectSheetItem, setDrawingTheme, showDrawing, useDrawings } from "../../drawing/engine";
 import { exportDrawingDxf, exportDrawingPdf, exportDrawingsPdf, exportDrawingSvg } from "../../drawing/export";
 import { addBlockLine, ensureBlock, setBlockProp, setDimTolerance, type TolEdit } from "../../drawing/source";
@@ -617,17 +618,23 @@ function TextField({ label, value, placeholder, onCommit }: { label: string; val
 }
 
 function Ask({ sheet, itemKey, info }: { sheet: Sheet; itemKey: string; info: Described }) {
-  const busy = useChat((s) => s.busy);
+  // while Claude works, what is said here joins that run at its next step
+  const chatBusy = useChat((s) => s.busy);
+  const building = useAgents((s) => isLive(s.run));
+  const busy = chatBusy || building;
   const [text, setText] = useState("");
-  const [sent, setSent] = useState(false);
+  const [sent, setSent] = useState<"" | "sent" | "added">("");
   const area = useRef<HTMLTextAreaElement>(null);
   const send = (t: string) => {
     const msg = t.trim();
-    if (!msg || busy) return;
+    if (!msg) return;
+    const said = `On the drawing “${sheet.title}”, about ${info.about}: ${msg}`;
+    if (busy) {
+      if (!addMidRun(said)) return;
+    } else void sendMessage(said);
     markAsked(sheet.name, itemKey, msg);
-    void sendMessage(`On the drawing “${sheet.title}”, about ${info.about}: ${msg}`);
     setText("");
-    setSent(true);
+    setSent(busy ? "added" : "sent");
   };
   return (
     <div className="section">
@@ -636,7 +643,7 @@ function Ask({ sheet, itemKey, info }: { sheet: Sheet; itemKey: string; info: De
           ref={area}
           rows={1}
           value={text}
-          placeholder={busy ? "Claude is working…" : "Tell Claude what to change here"}
+          placeholder={busy ? "Claude is working. Say what to change here and it joins the run…" : "Tell Claude what to change here"}
           onChange={(e) => {
             setText(e.target.value);
             e.target.style.height = "auto";
@@ -650,18 +657,18 @@ function Ask({ sheet, itemKey, info }: { sheet: Sheet; itemKey: string; info: De
           }}
           aria-label="Message to Claude about this item"
         />
-        <button className="btn primary sm" disabled={busy || !text.trim()} onClick={() => send(text)} aria-label="Send to Claude">
-          <Icon.Send size={13} />
+        <button className="btn primary sm" disabled={!text.trim()} onClick={() => send(text)} aria-label={busy ? "Add to what Claude is doing" : "Send to Claude"}>
+          {busy ? <Icon.Plus size={13} /> : <Icon.Send size={13} />}
         </button>
       </div>
       <div className="dwg-chips">
         {info.chips.map((c) => (
-          <button key={c} disabled={busy} onClick={() => send(c)}>
+          <button key={c} onClick={() => send(c)}>
             {c}
           </button>
         ))}
       </div>
-      {sent && <div className="dwg-sent">Sent to Claude. The reply is in the chat, and the sheet updates when the design does.</div>}
+      {sent && <div className="dwg-sent">{sent === "added" ? "Added to what Claude is doing: it reads this at its next step. The sheet updates when the design does." : "Sent to Claude. The reply is in the chat, and the sheet updates when the design does."}</div>}
     </div>
   );
 }
