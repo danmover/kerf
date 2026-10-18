@@ -116,17 +116,26 @@ describe("the seatpost number bracket", () => {
     expect([...r.buildErrors.values()]).toEqual([]);
     expect(problems(r.report, ["fail", "warn"])).toEqual([]);
     const bands = r.report.items.filter((i) => i.id.startsWith("band:"));
-    expect(bands.length).toBeGreaterThanOrEqual(5);
+    expect(bands.length).toBeGreaterThanOrEqual(3);
     expect(bands.every((i) => i.status === "pass")).toBe(true);
   }, 120_000);
 
-  it("plays the bracket on, both O-rings, the number clicking in and each load it is checked for", async () => {
+  it("plays the bracket and its pad on, the O-ring, the number clicking in with its print and each load it is checked for", async () => {
     const r = await fullCheck(src);
     const steps = fittingSteps(r.model, (p) => r.core.get(p.hash)?.bbox as never);
-    expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "band", "slide", "hold", "hold", "hold"]);
+    expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "slide", "hold", "hold", "hold"]);
+    const name = (id: string) => r.model.parts.find((p) => p.id === id)!.name;
+    const seat = steps[0];
+    if (seat.kind !== "seat") throw new Error("no seat step");
+    expect(name(seat.part)).toBe("bracket");
+    expect(seat.riders.map(name)).toEqual(["pad"]);
+    expect(steps[1].title).toBe("Fit O-ring");
     const slide = steps.find((s) => s.kind === "slide")!;
-    expect(slide.kind === "slide" && r.model.parts.find((p) => p.id === slide.part)!.name).toBe("number");
-    expect(slide.kind === "slide" && slide.caption).toMatch(/clicks into its hole: about \d+(\.\d)? N/);
+    if (slide.kind !== "slide") throw new Error("no slide step");
+    expect(name(slide.part)).toBe("number");
+    // the print and the transponder sticker go in with it
+    expect(slide.riders.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
+    expect(slide.caption).toMatch(/clicks into its hole: about \d+(\.\d)? N/);
     const gust = steps.find((s) => s.kind === "hold" && s.title === "Crosswind gust")!;
     if (gust.kind !== "hold") throw new Error("no gust step");
     const d = holdDetails(gust, undefined);
