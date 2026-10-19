@@ -1275,6 +1275,22 @@ a:hover {
   font-size: 12px;
   white-space: pre-wrap;
 }
+/* the newest lines of Claude's reasoning while it thinks; older lines slide out of the top */
+.thinking-live {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: calc(1.45em * 3);
+  overflow: hidden;
+  border-left: 2px solid color-mix(in srgb, var(--accent-lo) 22%, var(--line-2));
+  padding: 0 0 0 10px;
+  margin: 2px 0 6px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 1.2em);
+  mask-image: linear-gradient(to bottom, transparent, #000 1.2em);
+}
 .thinking-toggle {
   display: inline-flex;
   align-items: center;
@@ -3685,6 +3701,10 @@ a:hover {
   gap: 7px;
   font-size: 11.5px;
   color: var(--text-2);
+}
+.spot-working .dim {
+  min-width: 0;
+  font-size: 11px;
 }
 .spot-quick {
   display: flex;

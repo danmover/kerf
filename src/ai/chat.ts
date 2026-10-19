@@ -48,7 +48,8 @@ export interface ChatFile {
 export type ChatItem =
   /** midRun: sent while Claude worked; it joined that run at its next step instead of starting a turn */
   | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[]; spot?: SpotRef; image?: string; midRun?: boolean }
-  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[] }
+  /** started: when the step began, for the live "Thinking" line */
+  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[]; started?: number }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number; link?: { url: string; label: string }; web?: boolean }
   | {
       kind: "choice";
@@ -1127,7 +1128,7 @@ interface Live {
 
 function newBubble(live: Live) {
   const id = nid();
-  push({ kind: "assistant", id, text: "", thinking: "", streaming: true });
+  push({ kind: "assistant", id, text: "", thinking: "", streaming: true, started: Date.now() });
   live.bubbles.push(id);
   live.created.push(id);
   return id;
