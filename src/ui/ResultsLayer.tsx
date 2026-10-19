@@ -9,7 +9,8 @@ import { useAnalysis, showResults, type ResultField } from "../analysis/runtime"
 import type { StructuralResult } from "../analysis/fe/structural";
 import { gradientCss, safetyAt } from "../analysis/colormap";
 import { modeWords } from "../analysis/dynamics";
-import { useDesign } from "../core/engine";
+import { followers } from "../analysis/carried";
+import { meshes, useDesign } from "../core/engine";
 import { useSettings } from "../app/settings";
 import { useTheme } from "../app/theme";
 import { fmtNum } from "../lang/values";
@@ -108,10 +109,13 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
   const ov = useRef<ResultsOverlay | null>(null);
   const [probe, setProbe] = useState<{ x: number; y: number; text: string; part: string } | null>(null);
 
-  // rebuilt on a theme change, as its markers and labels are drawn in the theme's colours
+  // rebuilt on a theme change, as its markers and labels are drawn in the theme's colours; the parts the analysed ones
+  // carry (a number clicked into a bracket) move with them
   useEffect(() => {
     if (!result) return;
-    const o = new ResultsOverlay(result, theme);
+    const design = useDesign.getState().model;
+    const carried = design ? followers(design, result, (p) => meshes.get(p.hash)?.bbox) : [];
+    const o = new ResultsOverlay(result, theme, carried.length ? { followers: carried, pose: (m) => scene.setPose(m) } : undefined);
     ov.current = o;
     scene.addOverlay(o);
     return () => {
