@@ -815,7 +815,7 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "flexure",
-    ["at", "length", "t", "w", "dir", "facing", "travel", "angle", "cycles", "root_r"],
+    ["at", "length", "t", "w", "dir", "facing", "travel", "angle", "cycles", "root_r", "pin", "reach", "pin_at", "teardrop"],
     (a) => {
       const at = a.vec3("at");
       const L = a.positive("length");
@@ -837,6 +837,29 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
       const steps: FeatStep[] = [{ op: "add", shape: { t: "extrude", p: { t: "rect", w: t, h: L, r: 0, c: [0, L / 2] }, h: w, f: { o: vsub(at, vscale(n, w / 2)), u, n }, twist: 0, scale: 1 } }];
       const rr = a.num("root_r", r2(Math.min(t, 1)));
       if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
+      // pin: a locking pin standing out of the blade's face toward facing, which drops through a hole in what it holds
+      // (and on into a hole beyond it); pull the blade back by its travel to let go
+      const pin = a.has("pin") ? a.positive("pin") : 0;
+      const reach = pin ? a.positive("reach") : 0;
+      const pinAt = pin ? a.num("pin_at", r2(L - pin / 2 - 0.5)) : 0;
+      if (!pin && (a.has("reach") || a.has("pin_at") || a.has("teardrop"))) a.ctx.error("flexure(): reach, pin_at and teardrop describe a locking pin: give its diameter with pin:");
+      if (pin && angle !== undefined) a.ctx.error("flexure(): a locking pin goes on a spring blade (travel:), not a living hinge");
+      if (pin && (pinAt < pin / 2 || pinAt > L - pin / 2 + 1e-6)) a.ctx.error(`flexure(): pin_at must keep the pin on the blade: ${r2(pin / 2)} to ${r2(L - pin / 2)} mm from its root`);
+      if (pin && pin > w + 1e-6) a.ctx.error("flexure(): the pin must be no wider than the blade (w)");
+      if (pin) {
+        const o = vadd(at, vscale(dir, pinAt));
+        steps.push({ op: "add", shape: { t: "cyl", d: pin, h: t / 2 + reach, at: o, dir: u } });
+        if (a.has("teardrop")) {
+          // printed with its axis level, the underside of a round pin hangs out; a 45° point that way prints on its own
+          const down = a.dir("teardrop");
+          const dRaw = vsub(down, vscale(u, vdot(down, u)));
+          if (vlen(dRaw) < 1e-6) a.ctx.error("flexure(): teardrop is the way the pin's point faces, across the pin, not along it");
+          const d = vnorm(dRaw);
+          const r = pin / 2;
+          const k = r * Math.SQRT1_2;
+          steps.push({ op: "add", shape: { t: "extrude", p: { t: "poly", pts: [[k, k], [0, r * Math.SQRT2], [-k, k]], r: 0 }, h: t / 2 + reach, f: { o, u: vcross(d, u), n: u }, twist: 0, scale: 1 } });
+        }
+      }
       // a living hinge bent through θ over its length strains t·θ / (2 L); a cantilever blade moved δ at its tip 1.5 t δ / L²
       const strain = angle !== undefined ? (t * ((angle * Math.PI) / 180)) / (2 * L) : (1.5 * t * travel) / (L * L);
       return new FeatureV("flexure", steps, { strain, length: L, tip: new Vec(vadd(at, vscale(dir, L))) }, undefined, {
@@ -850,9 +873,10 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
         deflection: travel,
         angle,
         cycles,
+        ...(pin ? { peg: pin, reach, pinAt } : {}),
       });
     },
-    "flexure(at, length, t, w, dir: Z, facing: X, travel: | angle:, cycles: 1000, root_r:) — a thin blade that bends instead of a joint, rising from `at` along dir, t thick (toward facing), w wide. Give travel (mm the free end moves sideways) for a spring blade or a parallel-blade stage, or angle (degrees) for a living hinge (make it short and thin: 0.3-0.6 mm in PP). The springs and clips checks give its stiffness, the force or torque at full travel, and its strain against the material over that many cycles. Use with add.",
+    "flexure(at, length, t, w, dir: Z, facing: X, travel: | angle:, cycles: 1000, root_r:, pin:, reach:, pin_at:, teardrop:) — a thin blade that bends instead of a joint, rising from `at` along dir, t thick (toward facing), w wide. Give travel (mm the free end moves sideways) for a spring blade or a parallel-blade stage, or angle (degrees) for a living hinge (make it short and thin: 0.3-0.6 mm in PP). pin: d puts a locking pin of that diameter on the blade's face toward facing, pin_at mm from the root (default near the tip), standing reach mm out of the face: it goes through a hole in what it holds and on into a hole beyond, so nothing can slip past it, and pulling the blade back by its travel lets go (travel must clear the pin out of what it holds). teardrop: -Z gives the pin a 45° point that way so it prints level without support. The springs and clips checks give its stiffness, the force or torque at full travel, and its strain against the material over that many cycles. Use with add.",
   ),
 ]);
 

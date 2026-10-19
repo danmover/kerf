@@ -69,8 +69,12 @@ export interface FlexInfo {
   preload?: number;
   /** times it bends in its life */
   cycles?: number;
-  /** snap: a round peg catch of this diameter that drops into a hole */
+  /** snap: a round peg catch of this diameter that drops into a hole; flexure: a locking pin of this diameter */
   peg?: number;
+  /** flexure: how far the locking pin stands out of the blade's face, mm */
+  reach?: number;
+  /** flexure: the locking pin's distance from the blade's root, mm */
+  pinAt?: number;
   span: Span;
 }
 
