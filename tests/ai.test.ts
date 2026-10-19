@@ -344,7 +344,8 @@ const of = <K extends ChatItem["kind"]>(k: K) => items().filter((i): i is Extrac
 describe("chat loop", () => {
   beforeEach(async () => {
     await clearChat();
-    useSettings.setState({ model: "claude-opus-5-5", webSearch: true, maxSteps: 30, showThinking: true });
+    // effort marks between steps have their own tests (stepEffort.test.ts)
+    useSettings.setState({ model: "claude-opus-5-5", webSearch: true, maxSteps: 30, showThinking: true, fasterFollowUps: false });
   });
   afterEach(() => setClientFactory(null));
 

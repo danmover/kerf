@@ -246,6 +246,9 @@ function AiSettings() {
         <Row t="Effort" d={effort.d}>
           <Segmented id="effort" value={s.effort} options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))} onChange={(v) => updateSettings({ effort: v })} />
         </Row>
+        <Row t="Faster follow-up steps" d="Claude plans each reply at the effort above, then thinks at medium for the steps after it: reading the checks an edit returned, small fixes, the reply itself. Replies finish sooner and cost less, with slightly less careful thinking on those steps.">
+          <Toggle on={s.fasterFollowUps} onChange={(v) => updateSettings({ fasterFollowUps: v })} label="Faster follow-up steps" />
+        </Row>
         <Row t="Show Claude's reasoning" d="Shows a summary of Claude's thinking above each answer, collapsed by default.">
           <Toggle on={s.showThinking} onChange={(v) => updateSettings({ showThinking: v })} label="Show Claude's reasoning" />
         </Row>

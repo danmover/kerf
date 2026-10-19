@@ -47,7 +47,8 @@ describe("a response cut off at the length limit", () => {
   let stop: () => void;
   beforeEach(async () => {
     await clearChat();
-    useSettings.setState({ model: "claude-opus-5-5", webSearch: false, maxSteps: 30, selfReview: "off", routeQuick: false });
+    // effort marks between steps have their own tests (stepEffort.test.ts)
+    useSettings.setState({ model: "claude-opus-5-5", webSearch: false, maxSteps: 30, selfReview: "off", routeQuick: false, fasterFollowUps: false });
     useDesign.setState({ source: 'design "Untitled design"\n', model: null, report: null });
     const report = { items: [], counts: { pass: 1, fail: 0, warn: 0, pending: 0, info: 0 }, ms: 1 } as unknown as CheckReport;
     stop = useDesign.subscribe((s) => {
