@@ -7,7 +7,7 @@ import { create } from "zustand";
 import { sessionEnded } from "../cloud/account";
 import * as db from "../persist/db";
 import { updateSettings, useSettings, type Settings } from "../app/settings";
-import { useDesign, evaluateOnly } from "../core/engine";
+import { useDesign, evaluateOnly, whenChecked } from "../core/engine";
 import { useView } from "../app/view";
 import { drawingContext } from "../drawing/engine";
 import { commitSource, useProject, endPreview } from "../app/project";
@@ -32,7 +32,7 @@ import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS,
 import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
 import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm } from "./keepWarm";
 import { pause, retryWait } from "./retry";
-import { COMPACT_AT, COMPACT_BETA, COMPACT_INSTRUCTIONS, RETRY_GROWTH, SUMMARY_INPUT_MAX, afterCut, compactionUsage, cutPoints, hasCompaction, messageTokens, planCut, planOutline, promptTooLong, userMessagesText, type Cut } from "./compact";
+import { COMPACT_BETA, COMPACT_INSTRUCTIONS, MIN_COMPACT_AT, RETRY_GROWTH, SUMMARY_INPUT_MAX, afterCut, compactionUsage, cutPoints, hasCompaction, keepTokens, messageTokens, planCut, planOutline, promptTooLong, userMessagesText, type Cut } from "./compact";
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
 import { webTools, webActivity, describeWebCall, citedSources, isWebTool, isPausedTurn, flattenServerTools, echoContent, isWebToolError, isServerBlockError, type WebActivity } from "./web";
 
@@ -48,7 +48,8 @@ export interface ChatFile {
 export type ChatItem =
   /** midRun: sent while Claude worked; it joined that run at its next step instead of starting a turn */
   | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[]; spot?: SpotRef; image?: string; midRun?: boolean }
-  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[] }
+  /** started: when the step began, for the live "Thinking" line */
+  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[]; started?: number }
   | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number; link?: { url: string; label: string }; web?: boolean }
   | {
       kind: "choice";
@@ -583,7 +584,7 @@ function promptSize() {
 }
 
 /**
- * Summarise the older turns once the prompt passes COMPACT_AT, or when the API
+ * Summarise the older turns once the prompt passes the size set in Settings, or when the API
  * refused it as too long. Runs on the design model with the same system prompt,
  * tools and thinking settings as the conversation, so the thinking in the kept
  * turns stays valid. Returns where a message index moves to, or null when
@@ -592,12 +593,14 @@ function promptSize() {
  */
 async function compactIfLong(anthropic: Anthropic, signal: AbortSignal, stale: () => boolean): Promise<((i: number) => number) | null> {
   const size = promptSize();
-  if (size < COMPACT_AT || (compactFailedAt && !refusedAt && size < compactFailedAt + RETRY_GROWTH)) return null;
+  const compactAt = Math.max(MIN_COMPACT_AT, useSettings.getState().compactAt);
+  if (size < (refusedAt ? MIN_COMPACT_AT : compactAt) || (compactFailedAt && !refusedAt && size < compactFailedAt + RETRY_GROWTH)) return null;
+  const keep = keepTokens(compactAt);
   // per-message sizes are guesses from their length: scaled up to what the API last counted, when it counted more
   const known = refusedAt || lastPrompt;
   const scale = known ? Math.max(1, known / estimatePrompt()) : 1;
   const sizes = () => history.map((m) => messageTokens(m) * scale);
-  if (history[history.length - 1]?.role !== "user" || !planCut(history, SUMMARY_INPUT_MAX, sizes())) return null;
+  if (history[history.length - 1]?.role !== "user" || !planCut(history, keep, SUMMARY_INPUT_MAX, sizes())) return null;
   const route = designRoute("summarising the conversation", "rule");
   const system = systemBlocks();
   const tools = requestTools(useSettings.getState());
@@ -612,7 +615,7 @@ async function compactIfLong(anthropic: Anthropic, signal: AbortSignal, stale: (
   settleEdits(system, tools);
   try {
     while (done.length < 6) {
-      const cut = planCut(history, limit, sizes());
+      const cut = planCut(history, keep, limit, sizes());
       if (!cut) break;
       const older = sendable(history.slice(0, cut.at), tools);
       // only the first summary's turns can still be in the prompt cache
@@ -1125,7 +1128,7 @@ interface Live {
 
 function newBubble(live: Live) {
   const id = nid();
-  push({ kind: "assistant", id, text: "", thinking: "", streaming: true });
+  push({ kind: "assistant", id, text: "", thinking: "", streaming: true, started: Date.now() });
   live.bubbles.push(id);
   live.created.push(id);
   return id;
@@ -1300,7 +1303,7 @@ async function runLoop(opts: LoopOptions = {}) {
         const over = !refused && !stale() && e instanceof Anthropic.BadRequestError ? promptTooLong(e.message) : null;
         if (over !== null) {
           refused = true;
-          refusedAt = Math.max(over, COMPACT_AT);
+          refusedAt = Math.max(over, MIN_COMPACT_AT);
           const shown = new Set(live.created);
           set((s) => ({ items: s.items.filter((i) => !shown.has(i.id)) }));
           const moved = await compactIfLong(anthropic, ac.signal, stale);
@@ -1435,6 +1438,11 @@ async function runLoop(opts: LoopOptions = {}) {
       let lastChange = uses.length - 1;
       while (lastChange >= 0 && !CHECKED_TOOLS.has(uses[lastChange].name)) lastChange--;
       const checkAt = uses.slice(lastChange + 1).some((u) => u.name === "run_checks") ? -1 : lastChange;
+      // a review asked for in the same response as a change waits for it, and is held when the change broke something
+      const reviewAfterChange = uses.some((u, i) => u.name === "review_design" && uses.slice(0, i).some((e) => EDIT_TOOLS.has(e.name) || e.name === "update_brief"));
+      const failingBefore = reviewAfterChange ? failingChecks() : null;
+      let changed = false;
+      let changeFailed = false;
       for (const [i, u] of uses.entries()) {
         if (ac.signal.aborted) break;
         if (pausedAfter) {
@@ -1455,7 +1463,8 @@ async function runLoop(opts: LoopOptions = {}) {
         endPreview();
         let outcome: ToolOutcome;
         try {
-          outcome = u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems, startSource) : await runTool(u.name, u.input, { signal: ac.signal, toolUseId: u.id, check: CHECKED_TOOLS.has(u.name) ? i === checkAt : undefined });
+          const held = u.name === "review_design" && failingBefore && (changed || changeFailed) ? await reviewHold(failingBefore, changeFailed) : null;
+          outcome = held ?? (u.name === "review_design" ? await reviewTool(u.input, itemId, session, reviewItems, startSource) : await runTool(u.name, u.input, { signal: ac.signal, toolUseId: u.id, check: CHECKED_TOOLS.has(u.name) ? i === checkAt : undefined }));
         } catch (e) {
           outcome = { isError: true, content: `Tool failed: ${e instanceof Error ? e.message : String(e)}`, card: { title: "Tool failed", detail: e instanceof Error ? e.message : String(e), status: "error" } };
         }
@@ -1475,7 +1484,9 @@ async function runLoop(opts: LoopOptions = {}) {
           continue;
         }
         if (EDIT_TOOLS.has(u.name) || u.name === "update_brief") {
-          if (!outcome.isError) {
+          if (outcome.isError) changeFailed = true;
+          else {
+            changed = true;
             edits++;
             lastEditedSource = sourceSeen = useDesign.getState().source;
           }
@@ -1627,6 +1638,33 @@ async function autoReview(session: ReviewSession, reviewItems: string[], startSo
   persist();
   // nothing to act on: the reply stands, and Claude knows about the review next turn
   return r.verdict !== "pass";
+}
+
+/** The failing checks of the current report, by id. */
+function failingChecks(): Set<string> {
+  return new Set((useDesign.getState().report?.items ?? []).filter((c) => c.status === "fail").map((c) => c.id));
+}
+
+/**
+ * A review asked for in the same response as a change, held when the change failed or left a check failing that did
+ * not fail before (a source or build error among them): the designer fixes those first (the change's result lists
+ * them), and no review round is used. Null when the review can run.
+ */
+async function reviewHold(before: Set<string>, changeFailed: boolean): Promise<ToolOutcome | null> {
+  if (changeFailed) {
+    return {
+      content: "Not reviewed: a change above was not applied, so the design is not what you meant to have reviewed. Fix that change, then call review_design again in the same response as the fix. No review round was used.",
+      card: { title: "Review held", detail: "A change in this step was not applied" },
+    };
+  }
+  await whenChecked(60_000);
+  const fails = (useDesign.getState().report?.items ?? []).filter((c) => c.status === "fail" && !before.has(c.id));
+  if (!fails.length) return null;
+  const titles = fails.slice(0, 6).map((c) => c.title).join("; ") + (fails.length > 6 ? `; and ${fails.length - 6} more` : "");
+  return {
+    content: `Not reviewed yet: the changes above left ${fails.length} check${fails.length > 1 ? "s" : ""} failing that did not fail before (${titles}); the change's result above has the details. Fix them, then call review_design again in the same response as the fix. If one has to stay, call review_design on its own and say why in focus. No review round was used.`,
+    card: { title: "Review held", detail: `${fails.length} new failing check${fails.length > 1 ? "s" : ""} to fix first` },
+  };
 }
 
 /** Claude's review_design tool: record its answers to earlier findings, then run the next round. */

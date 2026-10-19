@@ -70,6 +70,8 @@ export interface Settings {
   routeQuick: boolean;
   /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
   keepWarm: number;
+  /** prompt tokens at which a long chat's older turns are summarised (see ai/compact) */
+  compactAt: number;
   /** show what each reply cost and saved */
   showCost: boolean;
   /** manufacturing processes you have ("own"), can order ("order") or cannot use ("none"); missing ones can be ordered */
@@ -121,6 +123,7 @@ const DEFAULTS: Settings = {
   agentWorkers: 0,
   routeQuick: true,
   keepWarm: 30,
+  compactAt: 500_000,
   showCost: true,
   processAccess: {},
   labourRate: 20,
@@ -131,6 +134,8 @@ const DEFAULTS: Settings = {
 
 /** keep-warm durations the settings offer, in minutes */
 export const KEEP_WARM_MINUTES = [0, 15, 30, 60];
+/** prompt sizes a long chat can be summarised at; every model Kerf offers reads up to 1M tokens */
+export const COMPACT_AT_TOKENS = [200_000, 350_000, 500_000, 750_000];
 
 const KEY = "kerf.settings.v1";
 
@@ -168,6 +173,7 @@ function load(): Settings {
     if (!["off", "auto", "always"].includes(out.selfReview)) out.selfReview = DEFAULTS.selfReview;
     out.reviewRounds = Math.min(3, Math.max(1, Math.round(out.reviewRounds) || DEFAULTS.reviewRounds));
     if (!KEEP_WARM_MINUTES.includes(out.keepWarm)) out.keepWarm = DEFAULTS.keepWarm;
+    if (!COMPACT_AT_TOKENS.includes(out.compactAt)) out.compactAt = DEFAULTS.compactAt;
     const access: Settings["processAccess"] = {};
     if (out.processAccess && typeof out.processAccess === "object" && !Array.isArray(out.processAccess)) {
       for (const [k, a] of Object.entries(out.processAccess)) if (/^[a-z_]{2,24}$/.test(k) && (a === "own" || a === "order" || a === "none")) access[k] = a;

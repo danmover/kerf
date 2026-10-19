@@ -17,7 +17,7 @@ import { viewport } from "../app/viewportApi";
 import { openSettings } from "../app/ui";
 import { fmtNum } from "../lang/values";
 import { useApiKey, MidRun } from "./ChatPanel";
-import { SuggestionChips } from "./ChatPanel";
+import { SuggestionChips, thinkingTail } from "./ChatPanel";
 import { ChoiceCard } from "./ChoiceCard";
 import { ChangeCard } from "./ChangeCard";
 import { Markdown } from "./Markdown";
@@ -365,10 +365,12 @@ function Working({ thread }: { thread: ChatItem[] }) {
   const tool = [...thread].reverse().find((i): i is Extract<ChatItem, { kind: "tool" }> => i.kind === "tool" && i.status === "running");
   const streaming = thread.some((i) => i.kind === "assistant" && i.streaming && i.text);
   if (streaming && !tool) return null;
+  const thinking = tool ? "" : [...thread].reverse().find((i): i is Extract<ChatItem, { kind: "assistant" }> => i.kind === "assistant" && i.streaming)?.thinking ?? "";
   return (
     <div className="spot-working">
       <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} />
       <span className="shimmer-text">{tool?.title ?? "Thinking"}</span>
+      {thinking.trim() && <span className="dim">{thinkingTail(thinking, 90)}</span>}
     </div>
   );
 }

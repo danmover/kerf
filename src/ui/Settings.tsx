@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, MIN_STEPS, MAX_STEPS, type Effort, type ThemePref } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, COMPACT_AT_TOKENS, MIN_STEPS, MAX_STEPS, type Effort, type ThemePref } from "../app/settings";
 import { setTheme } from "../app/theme";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
 import { forgetApiKey, getApiKey, isRemembered, keyHint, subscribeKey } from "../persist/vault";
 import { storageEstimate } from "../persist/db";
+import { priceFor } from "../agents/pricing";
 import { resetChat } from "../ai/chat";
 import { KeyForm } from "../screens/Onboarding";
 import { Modal, Segmented, Toggle } from "./common";
@@ -221,6 +222,21 @@ function AiSettings() {
             onChange={(v) => updateSettings({ keepWarm: Number(v) })}
           />
         </Row>
+        <Row
+          t="Summarise long chats at"
+          d={
+            <>
+              Every step of a reply reads the whole conversation again, so a long chat costs more per step: on {designLabel}, about ${stepCost(s.model, s.compactAt)} a step at this size, read from the cache. Past it, Claude summarises the older turns (about ${stepCost(s.model, s.compactAt, true)} once) and Kerf keeps the newest fifth word for word, with every message you wrote, the plan and the design. A larger size keeps more of the conversation exactly; a smaller one makes each step cheaper.
+            </>
+          }
+        >
+          <Segmented
+            id="compact-at"
+            value={String(s.compactAt)}
+            options={COMPACT_AT_TOKENS.map((n) => ({ value: String(n), label: `${n / 1000}K` }))}
+            onChange={(v) => updateSettings({ compactAt: Number(v) })}
+          />
+        </Row>
         <Row t="Show cost per reply" d="A line under each reply with the model that answered, what the turn cost and what Kerf saved. Click it for the breakdown.">
           <Toggle on={s.showCost} onChange={(v) => updateSettings({ showCost: v })} label="Show cost per reply" />
         </Row>
@@ -348,6 +364,13 @@ function GraphicsSettings() {
       {info && <Row t="Desktop app" d={`Kerf ${info.version} · Electron ${info.electron} · Chromium ${info.chrome}`} />}
     </Section>
   );
+}
+
+/** What one step reading a conversation of `tokens` from the cache costs on `model`, or the summary of all but its newest fifth (sent uncached, with a summary of about 4K tokens). */
+function stepCost(model: string, tokens: number, summary = false) {
+  const p = priceFor(model, tokens);
+  const usd = summary ? (tokens * 0.8 * p.input + 4000 * p.output) / 1e6 : (tokens * p.cacheRead) / 1e6;
+  return usd < 1 ? usd.toFixed(2) : usd.toFixed(1);
 }
 
 function fmtBytes(n: number) {

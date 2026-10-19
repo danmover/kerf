@@ -10,7 +10,7 @@ import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages
 import { useDesign } from "../src/core/engine";
 import { useSettings } from "../src/app/settings";
 import { chatHistory, clearChat, sendMessage, setClientFactory, useChat } from "../src/ai/chat";
-import { COMPACT_BETA, cutPoints, planCut, promptTooLong } from "../src/ai/compact";
+import { COMPACT_BETA, cutPoints, keepTokens, planCut, promptTooLong } from "../src/ai/compact";
 import type { CheckReport } from "../src/core/checks";
 
 type Block = Record<string, unknown> & { type: string };
@@ -72,17 +72,17 @@ describe("where a summary may cut the conversation", () => {
 
   it("keeps the newest turns that fit, and never separates a tool call from its result", () => {
     expect(cutPoints(h)).toEqual([2, 6]);
-    expect(planCut(h, 600_000, [10, 60_000, 10, 10_000, 30_000, 5_000, 10])).toEqual({ at: 6, all: false, final: true });
-    expect(planCut(h, 600_000, [10, 60_000, 10, 1_000, 3_000, 500, 10])).toEqual({ at: 2, all: false, final: true });
+    expect(planCut(h, 40_000, 600_000, [10, 60_000, 10, 10_000, 30_000, 5_000, 10])).toEqual({ at: 6, all: false, final: true });
+    expect(planCut(h, 40_000, 600_000, [10, 60_000, 10, 1_000, 3_000, 500, 10])).toEqual({ at: 2, all: false, final: true });
   });
 
   it("summarises everything when one long turn would leave too little before it", () => {
-    expect(planCut(h, 600_000, [10, 100, 10, 10_000, 30_000, 5_000, 10])).toEqual({ at: 7, all: true, final: true });
+    expect(planCut(h, 40_000, 600_000, [10, 100, 10, 10_000, 30_000, 5_000, 10])).toEqual({ at: 7, all: true, final: true });
   });
 
   it("summarises a conversation too long for one request in parts, oldest first", () => {
-    expect(planCut(h, 70_000, [10, 60_000, 10, 10_000, 30_000, 5_000, 10])).toEqual({ at: 2, all: false, final: false });
-    expect(planCut(h, 50_000, [10, 60_000, 10, 10_000, 30_000, 5_000, 10])).toBeNull();
+    expect(planCut(h, 40_000, 70_000, [10, 60_000, 10, 10_000, 30_000, 5_000, 10])).toEqual({ at: 2, all: false, final: false });
+    expect(planCut(h, 40_000, 50_000, [10, 60_000, 10, 10_000, 30_000, 5_000, 10])).toBeNull();
   });
 
   it("does not cut right after an earlier summary, and reads the size from a refusal", () => {
@@ -91,13 +91,18 @@ describe("where a summary may cut the conversation", () => {
     expect(promptTooLong("400 prompt is too long: 1054564 tokens > 1000000 maximum")).toBe(1054564);
     expect(promptTooLong("400 Invalid `signature` in `thinking` block")).toBeNull();
   });
+
+  it("keeps a fifth of the size set in Settings word for word", () => {
+    expect(keepTokens(500_000)).toBe(100_000);
+    expect(planCut(h, keepTokens(500_000), 600_000, [10, 60_000, 10, 10_000, 30_000, 5_000, 10])).toEqual({ at: 2, all: false, final: true });
+  });
 });
 
 describe("a long design conversation", () => {
   let stop: () => void;
   beforeEach(async () => {
     await clearChat();
-    useSettings.setState({ model: "claude-opus-5-5", webSearch: false, maxSteps: 30, selfReview: "off", routeQuick: false });
+    useSettings.setState({ model: "claude-opus-5-5", webSearch: false, maxSteps: 30, selfReview: "off", routeQuick: false, compactAt: 200_000 });
     useDesign.setState({ source: SOURCE, model: null, report: null });
     const report = { items: [], counts: { pass: 1, fail: 0, warn: 0, pending: 0, info: 0 }, ms: 1 } as unknown as CheckReport;
     stop = useDesign.subscribe((s) => {
@@ -140,6 +145,18 @@ describe("a long design conversation", () => {
     expect(chatHistory()[0]).toEqual(block);
     expect(notices().map((n) => n.title)).toEqual(["Summarised the earlier conversation"]);
     expect(notices()[0].detail).toMatch(/the last 2 turns stay word for word/);
+  });
+
+  it("is not summarised below the size set in Settings", async () => {
+    useSettings.setState({ compactAt: 500_000 });
+    const requests = fakeClient([reply("x".repeat(300_000), 70_000), reply("Made it 40 mm wide.", 210_000), reply("Added the hole.", 300_000)]);
+    await sendMessage("Make a bracket");
+    await sendMessage("Make it 40 mm wide");
+    await sendMessage("Now add a 5 mm hole");
+
+    expect(requests).toHaveLength(3);
+    expect(requests.some((r) => r.compaction)).toBe(false);
+    expect(notices()).toEqual([]);
   });
 
   it("recovers a chat already over Claude's limit when the user tries again, summarising it in parts", async () => {

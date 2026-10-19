@@ -299,17 +299,69 @@ export function SuggestionChips({ options, onSend }: { options: { label: string;
   );
 }
 
+/** The newest part of Claude's summarised thinking, as plain text cut at a word: what it is working on right now. */
+export function thinkingTail(text: string, max = 280): string {
+  const plain = text
+    .replace(/\*\*|__|`/g, "")
+    .split("\n")
+    .map((l) => l.replace(/^\s*(#+|[-*])\s+/, "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" · ");
+  if (plain.length <= max) return plain;
+  const tail = plain.slice(-max);
+  const space = tail.indexOf(" ");
+  return `…${space >= 0 && space < 30 ? tail.slice(space + 1) : tail}`;
+}
+
+/** Whole seconds since `from`, counting while `on`. */
+function useElapsed(from: number | undefined, on: boolean) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!on) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [on]);
+  return from ? Math.max(0, Math.floor((now - from) / 1000)) : 0;
+}
+
+/** What Claude is doing in the current run, for the line under the message box. */
+function currentActivity(items: ChatItem[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "user") break;
+    if (it.kind === "tool" && it.status === "running") return it.title;
+    if (it.kind === "review" && it.status === "running") return "Reviewing the design";
+    if (it.kind === "assistant" && it.streaming) return it.text ? "Writing" : "Thinking";
+  }
+  return "";
+}
+
 function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) {
   const [showThinking, setShowThinking] = useState(false);
   const thinkingLive = it.streaming && !it.text;
+  const secs = useElapsed(it.started, thinkingLive);
   return (
     <motion.div className="msg-assistant" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
       {(it.thinking || thinkingLive) && (
         <div>
           <button className="thinking-toggle" onClick={() => setShowThinking((s) => !s)} aria-expanded={showThinking}>
             <Icon.Chevron size={11} style={{ transform: showThinking ? "rotate(90deg)" : undefined, transition: "transform .15s" }} />
-            {thinkingLive ? <span className="shimmer-text">Thinking</span> : "Thought process"}
+            {thinkingLive ? (
+              <>
+                <span className="shimmer-text">Thinking</span>
+                {secs >= 2 && <span className="dim">{secs} s</span>}
+              </>
+            ) : (
+              "Thought process"
+            )}
           </button>
+          {/* while it thinks, the newest of its reasoning shows as it streams, so a long think does not look idle */}
+          {thinkingLive && !showThinking && it.thinking.trim() && (
+            <div className="thinking-live" aria-live="polite">
+              <div>{thinkingTail(it.thinking)}</div>
+            </div>
+          )}
           <AnimatePresence>
             {showThinking && it.thinking && (
               <motion.div className="thinking" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
@@ -446,6 +498,7 @@ export function MidRun({ id, compact }: { id: string; compact?: boolean }) {
 
 function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
   const routing = useChat((s) => s.routing);
+  const activity = useChat((s) => (s.busy ? currentActivity(s.items) : ""));
   const building = useAgents((s) => isLive(s.run));
   const [text, setText] = useState("");
   const ta = useRef<HTMLTextAreaElement>(null);
@@ -538,7 +591,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
           <span className="mono dim" style={{ fontSize: 10.5 }}>
             {busy ? (
               <>
-                <span className="shimmer-text">{routing ? "Choosing a model" : "Claude is working"}</span>
+                <span className="shimmer-text">{routing ? "Choosing a model" : activity ? `Claude is working · ${activity}` : "Claude is working"}</span>
                 {text.trim() ? " · Enter adds this to the run" : ""}
               </>
             ) : building ? (
