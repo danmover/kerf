@@ -31,8 +31,9 @@ const KIND_LABEL: Record<SpendKind, string> = {
   review: "Self-review",
   agents: "Parallel agents",
   warm: "Kept the cache warm",
+  compact: "Summarised the conversation",
 };
-const KIND_ORDER: SpendKind[] = ["chat", "quick", "review", "agents", "router", "escalated", "warm"];
+const KIND_ORDER: SpendKind[] = ["chat", "quick", "review", "agents", "compact", "router", "escalated", "warm"];
 
 export function CostLine({ it }: { it: CostItem }) {
   const showCost = useSettings((s) => s.showCost);

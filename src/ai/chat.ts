@@ -32,6 +32,7 @@ import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS,
 import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
 import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm } from "./keepWarm";
 import { pause, retryWait } from "./retry";
+import { COMPACT_AT, COMPACT_BETA, COMPACT_INSTRUCTIONS, RETRY_GROWTH, SUMMARY_INPUT_MAX, afterCut, compactionUsage, cutPoints, hasCompaction, messageTokens, planCut, planOutline, promptTooLong, userMessagesText, type Cut } from "./compact";
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
 import { webTools, webActivity, describeWebCall, citedSources, isWebTool, isPausedTurn, flattenServerTools, echoContent, isWebToolError, isServerBlockError, type WebActivity } from "./web";
 
@@ -266,7 +267,7 @@ function dropPendingSave() {
 /** Stop the running loop for good; whatever it was doing no longer reaches this chat. */
 function stopLoop() {
   stopWarm();
-  lastPrompt = 0;
+  lastPrompt = refusedAt = compactFailedAt = 0;
   quickTouched = 0;
   lastBreak.clear();
   if (get().busy) persist();
@@ -516,13 +517,13 @@ function sourceNote(source: string): string {
   const edited = lastEditedSource !== null || sourceSeen !== null;
   if (source.length > INLINE_SOURCE_MAX) return edited ? "The source changed since you last saw it (the user edited it). Call get_design before editing." : "";
   sourceSeen = source;
+  return sourceBlock(source, `The design as it is now${edited ? "; it changed since you last saw it" : ""}. Line numbers are not part of the text. Edit it from here without calling get_design.`);
+}
+
+function sourceBlock(source: string, note: string) {
   const lines = source.split("\n");
   const w = String(lines.length).length;
-  return [
-    `<source note="The design as it is now${edited ? "; it changed since you last saw it" : ""}. Line numbers are not part of the text. Edit it from here without calling get_design.">`,
-    ...lines.map((l, i) => `${String(i + 1).padStart(w, " ")}| ${l}`),
-    `</source>`,
-  ].join("\n");
+  return [`<source note="${note}">`, ...lines.map((l, i) => `${String(i + 1).padStart(w, " ")}| ${l}`), `</source>`].join("\n");
 }
 
 /** Add attached files to the brief as references (one version), returning each file's reference id. */
@@ -573,6 +574,165 @@ async function fileBlocks(files: ChatFile[]): Promise<BetaContentBlockParam[]> {
   return out;
 }
 
+
+// ---------- summarising a long conversation (see ./compact) ----------
+
+/** How long the next request's prompt is: as the API last counted it, or a rough guess for a chat no request has measured yet. */
+function promptSize() {
+  return Math.max(lastPrompt || estimatePrompt(), refusedAt);
+}
+
+/**
+ * Summarise the older turns once the prompt passes COMPACT_AT, or when the API
+ * refused it as too long. Runs on the design model with the same system prompt,
+ * tools and thinking settings as the conversation, so the thinking in the kept
+ * turns stays valid. Returns where a message index moves to, or null when
+ * nothing was summarised (too short, or it failed: the conversation then goes
+ * as it is).
+ */
+async function compactIfLong(anthropic: Anthropic, signal: AbortSignal, stale: () => boolean): Promise<((i: number) => number) | null> {
+  const size = promptSize();
+  if (size < COMPACT_AT || (compactFailedAt && !refusedAt && size < compactFailedAt + RETRY_GROWTH)) return null;
+  // per-message sizes are guesses from their length: scaled up to what the API last counted, when it counted more
+  const known = refusedAt || lastPrompt;
+  const scale = known ? Math.max(1, known / estimatePrompt()) : 1;
+  const sizes = () => history.map((m) => messageTokens(m) * scale);
+  if (history[history.length - 1]?.role !== "user" || !planCut(history, SUMMARY_INPUT_MAX, sizes())) return null;
+  const route = designRoute("summarising the conversation", "rule");
+  const system = systemBlocks();
+  const tools = requestTools(useSettings.getState());
+  const note = nid();
+  const k = (n: number) => `${Math.round(n / 1000)}K`;
+  push({ kind: "notice", id: note, level: "info", title: "Summarising the earlier conversation", detail: `It has grown to about ${k(size)} tokens. The older turns become a summary so Claude stays within its context and each step costs less.` });
+  const done: Cut[] = [];
+  let summarised = 0;
+  let limit = SUMMARY_INPUT_MAX;
+  // the summary replaces the start of the conversation and the API accepts that, so only edits made before it count
+  const swapped = () => void (sent = { binding: bindingKey(system, tools), keys: messageKeys(sendable(history, tools)) });
+  settleEdits(system, tools);
+  try {
+    while (done.length < 6) {
+      const cut = planCut(history, limit, sizes());
+      if (!cut) break;
+      const older = sendable(history.slice(0, cut.at), tools);
+      // only the first summary's turns can still be in the prompt cache
+      const r = await summarise(anthropic, route, system, tools, !done.length && cut.final ? withCacheBreakpoint(older) : older, signal);
+      if (stale()) return null;
+      if (r === "too long") {
+        if ((limit = Math.floor(limit / 2)) < 20_000) throw new Error("The conversation is too long to summarise.");
+        continue;
+      }
+      summarised += cut.at - (hasCompaction(history) ? 1 : 0);
+      history = [{ role: "assistant", content: [r] }, ...history.slice(cut.at)];
+      if (cut.all) history.push({ role: "user", content: [] });
+      swapped();
+      done.push(cut);
+      if (cut.final) break;
+    }
+    if (!done.length || !done[done.length - 1].final) throw new Error("The conversation could not be split where no step is left half done.");
+  } catch (e) {
+    if (isAbort(e) || stale()) {
+      set((s) => ({ items: s.items.filter((i) => i.id !== note) }));
+      throw e;
+    }
+    compactFailedAt = size;
+    const why = e instanceof Anthropic.APIError ? cleanApiMessage(e.message) : e instanceof Error ? e.message : String(e);
+    console.warn(`[kerf] Could not summarise the conversation: ${why}`);
+    patch(note, (it) => (it.kind === "notice" ? { ...it, level: "warn", title: "Could not summarise the earlier conversation", detail: `${why} Claude carries on with the whole conversation${done.length ? ", part of it summarised" : ""}.` } : it));
+    if (!done.length) return null;
+  }
+  const last = done[done.length - 1];
+  // what a summary could blur goes with the next request, word for word
+  const end = history[history.length - 1];
+  const content = typeof end.content === "string" ? [{ type: "text" as const, text: end.content }] : end.content;
+  const carryOn = last.all ? [{ type: "text" as const, text: "Carry on from where the summary leaves off." }] : [];
+  history[history.length - 1] = { ...end, content: [...content, { type: "text", text: restateAfterSummary() }, ...carryOn] };
+  swapped();
+  lastBreak.clear();
+  lastPrompt = refusedAt = 0;
+  // earlier turns can no longer be taken back off the end by their position
+  set((s) => ({ items: s.items.map((it) => (it.kind === "cost" ? { ...it, historyStart: -1 } : it)) }));
+  if (last.final) {
+    compactFailedAt = 0;
+    const kept = last.all ? 0 : cutPoints(history).length + 1;
+    const stays = kept ? `the last ${kept === 1 ? "turn stays" : `${kept} turns stay`} word for word` : "everything up to now is in it";
+    patch(note, (it) =>
+      it.kind === "notice"
+        ? { ...it, title: "Summarised the earlier conversation", detail: `It had grown to about ${k(size)} tokens. ${summarised} older messages are now a summary that Claude reads first; ${stays}, and the design, its brief, the plan and every message you wrote go to Claude again in full.` }
+        : it,
+    );
+  }
+  persist();
+  return (i) => done.reduce((j, c) => (j < 0 ? -1 : afterCut(j, c)), i);
+}
+
+/** One summary request: the compaction block to put first, or "too long" when even the part sent does not fit. */
+async function summarise(anthropic: Anthropic, route: Route, system: ReturnType<typeof systemBlocks>, tools: unknown[], messages: BetaMessageParam[], signal: AbortSignal): Promise<BetaContentBlockParam | "too long"> {
+  let busy = 0;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const off = unsupported(route.model);
+    const betas = [COMPACT_BETA];
+    const params: Record<string, unknown> = { model: route.model, max_tokens: MAX_OUTPUT_TOKENS, system, tools, messages, compaction: { type: "summarize", instructions: COMPACT_INSTRUCTIONS } };
+    if (!off.has("thinking")) {
+      const thinking: Record<string, unknown> = { type: "adaptive", display: useSettings.getState().showThinking ? "summarized" : "omitted" };
+      if (!off.has("binding")) {
+        thinking.block_binding = { prefix_mismatch_behavior: "drop_block" };
+        betas.push(BINDING_BETA);
+      }
+      params.thinking = thinking;
+    }
+    if (!off.has("effort")) params.output_config = { effort: route.effort };
+    params.betas = betas;
+    try {
+      const final = await anthropic.beta.messages.stream(params as never, { signal }).finalMessage();
+      recordSpend("compact", final.model, compactionUsage(final.usage));
+      const block = (final.content as { type: string; content?: string | null }[]).find((b) => b.type === "compaction");
+      if (final.stop_reason === "compaction" && block?.content) return block as unknown as BetaContentBlockParam;
+      if ((final.stop_reason as string) === "model_context_window_exceeded") return "too long";
+      throw new Error(final.stop_reason === "compaction" ? "The summary came back empty." : `The summary stopped early (${final.stop_reason}).`);
+    } catch (e) {
+      if (e instanceof Anthropic.BadRequestError) {
+        if (promptTooLong(e.message) !== null) return "too long";
+        // a model that rejects an optional feature: drop it and ask again (never the summary itself)
+        const feature = /compact/i.test(e.message) ? null : rejectedFeature(e.message.toLowerCase(), off);
+        if (feature && !off.has(feature)) {
+          off.add(feature);
+          continue;
+        }
+      }
+      const wait = retryWait(e, busy);
+      if (wait !== null && !signal.aborted) {
+        busy++;
+        await pause(wait * 1000, signal);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("The summary request could not be completed.");
+}
+
+/** What Claude needs word for word after the earlier turns were summarised: every message the user wrote, the plan, and the design as it is now. */
+function restateAfterSummary(): string {
+  const { model, source } = useDesign.getState();
+  const said = get()
+    .items.filter((i): i is Extract<ChatItem, { kind: "user" }> => i.kind === "user")
+    .map((i) => `${i.text.trim() || "(no text)"}${i.files?.length ? ` [attached: ${i.files.map((f) => `“${f.name}”${f.ref ? ` (reference ${f.ref})` : ""}`).join(", ")}]` : ""}${i.spot ? ` [about: ${spotText(i.spot)}]` : ""}`);
+  const plan = planOutline(usePlan.getState());
+  lastEditedSource = null;
+  sourceSeen = source.length <= INLINE_SOURCE_MAX ? source : null;
+  return [
+    `<after-summary note="The earlier part of this conversation was summarised to keep it within your context; the summary comes first. Restated here word for word, as they are now, is what the summary could blur.">`,
+    said.length ? `<user-messages note="Every message the user wrote in this chat, oldest first. What they asked for and decided still stands unless a later message changed it.">\n${userMessagesText(said)}\n</user-messages>` : "",
+    plan ? `<plan note="The plan as the user sees it. Keep its step ids when you call update_plan.">\n${plan}\n</plan>` : "",
+    modelSummary(model),
+    briefSummary(),
+    sourceSeen !== null ? sourceBlock(source, "The design as it is now, with its brief and recorded decisions. Line numbers are not part of the text. Edit it from here without calling get_design.") : "The design source is too long to repeat here: call get_design before you edit it.",
+    `</after-summary>`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 // ---------- the loop ----------
 
@@ -793,7 +953,8 @@ export async function askDesignModel(costId: string) {
   const items = get().items;
   const at = items.findIndex((i) => i.id === costId);
   const it = items[at];
-  if (!it || it.kind !== "cost" || !it.route.quick || it.route.escalated || it.historyStart > history.length) return;
+  // a turn whose start was summarised can't be taken back off the end
+  if (!it || it.kind !== "cost" || !it.route.quick || it.route.escalated || it.historyStart < 0 || it.historyStart > history.length) return;
   // only the latest turn: nothing the user said since
   if (items.slice(at + 1).some((i) => i.kind === "user" || i.kind === "cost" || i.kind === "choice")) return;
   let userAt = at - 1;
@@ -865,8 +1026,12 @@ export const modelLabel = (id: string) => MODELS.find((m) => id === m.id || id.s
 
 /** the quick model is not available to this key: every turn goes to the design model this session */
 let quickUnavailable = false;
-/** prompt tokens of the latest chat request, on any model (0 before the first one of this chat) */
+/** prompt tokens of the latest chat request, on any model (0 before the first one of this chat, and after a summary) */
 let lastPrompt = 0;
+/** prompt tokens the API counted when it refused the conversation as too long */
+let refusedAt = 0;
+/** how long the prompt was when summarising it last failed; it is tried again once the conversation grows well past that */
+let compactFailedAt = 0;
 /** when the latest quick request started */
 let quickTouched = 0;
 
@@ -1044,7 +1209,7 @@ async function runLoop(opts: LoopOptions = {}) {
   const session = new ReviewSession(settings.reviewRounds);
   const reviewItems: string[] = [];
   const system = systemBlocks();
-  const historyStart = history.length;
+  let historyStart = history.length;
   // what this turn costs, from every request made while it runs (the router, reviews and agents included)
   const box = { spend: emptyTurn() };
   if (opts.replaces) box.spend = carryOver(box.spend, opts.replaces.spend);
@@ -1063,6 +1228,8 @@ async function runLoop(opts: LoopOptions = {}) {
   }
   let resumes = 0;
   let cuts = 0;
+  /** the API refused this run's conversation as too long once already */
+  let refused = false;
   /** chat items of this turn's paused responses: a hand-over takes them away with the rest of the quick answer */
   let pausedItems: string[] = [];
 
@@ -1097,6 +1264,10 @@ async function runLoop(opts: LoopOptions = {}) {
       }
       repairHistory();
       capHeavy();
+      // a long conversation is summarised before it outgrows Claude's context, and so each step costs less
+      const moved = await compactIfLong(anthropic, ac.signal, stale);
+      if (stale()) return;
+      if (moved) historyStart = moved(historyStart);
       const live: Live = { bubbles: [], toolRows: new Map(), webRows, noticed, created: [] };
       newBubble(live);
       const r = route;
@@ -1125,6 +1296,21 @@ async function runLoop(opts: LoopOptions = {}) {
       try {
         sentReq = await streamOnce(anthropic, () => buildRequest(system, r, settings), live, carried, ac.signal, { design: !r.quick, stopOnTool: r.quick ? (name) => !QUICK_TOOLS.has(name) : undefined });
       } catch (e) {
+        // too long for Claude's context (a chat that grew past it, or a guess that fell short): summarise, then send it again
+        const over = !refused && !stale() && e instanceof Anthropic.BadRequestError ? promptTooLong(e.message) : null;
+        if (over !== null) {
+          refused = true;
+          refusedAt = Math.max(over, COMPACT_AT);
+          const shown = new Set(live.created);
+          set((s) => ({ items: s.items.filter((i) => !shown.has(i.id)) }));
+          const moved = await compactIfLong(anthropic, ac.signal, stale);
+          if (stale()) return;
+          if (moved) {
+            historyStart = moved(historyStart);
+            step--;
+            continue;
+          }
+        }
         if (r.quick && !stale() && !isAbort(e)) {
           if (e instanceof NeedsDesignModel) {
             handOver(e.why, e.usage);
@@ -1461,34 +1647,17 @@ async function reviewTool(input: unknown, itemId: string, session: ReviewSession
   return { content: reviewContent(r, text), card: { title: "Reviewed the design" } };
 }
 
-/**
- * The next request. The history must only have grown since the last request:
- * if an earlier message, the system prompt or the tools changed, the thinking
- * blocks from that point on are removed first, because Claude rejects them.
- */
+/** The next request, after leaving out thinking that edits to the history invalidated (see settleEdits). */
 function buildRequest(system: ReturnType<typeof systemBlocks>, route: Route, settings: Pick<Settings, "webSearch">): Record<string, unknown> {
   // web search can switch off mid-run (a key that cannot use it), which changes the tools
   const tools = requestTools(settings);
-  const binding = bindingKey(system, tools);
-  // earlier web results go as plain notes when this request can't carry them; a copy, so the history itself only grows
-  const hasWeb = (tools as { type?: string }[]).some((t) => typeof t.type === "string" && /^web_(search|fetch)_/.test(t.type));
-  const messages = () => (flatServer && !hasWeb ? flattenServerTools(history).history : history);
-  let keys = messageKeys(messages());
-  if (sent) {
-    const at = sent.binding !== binding ? 0 : firstEdit(sent.keys, keys);
-    if (at >= 0 && hasThinking(history, at)) {
-      const n = stripThinking(history, at);
-      keys = messageKeys(messages());
-      console.warn(`[kerf] ${at === 0 && sent.binding !== binding ? "The system prompt or tools changed" : `Chat message ${at} changed`} since the last request; left out ${n} thinking block(s) from there on.`);
-    }
-  }
-  sent = { binding, keys };
+  settleEdits(system, tools);
 
   // Every model gets the same system prompt, tools and messages, thinking blocks
   // included: a model that cannot read another model's blocks leaves them out
   // of that request (unbilled), and they count again when the turn returns to
   // the model that wrote them.
-  const msgs = messages();
+  const msgs = sendable(history, tools);
   const params: Record<string, unknown> = {
     model: route.model,
     max_tokens: MAX_OUTPUT_TOKENS,
@@ -1514,8 +1683,35 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, route: Route, set
     params.fallbacks = "default";
     betas.push(FALLBACK_BETA);
   }
+  // a conversation that starts from a summary needs the summary's opt-in on every request
+  if (hasCompaction(history)) betas.push(COMPACT_BETA);
   if (betas.length) params.betas = betas;
   return params;
+}
+
+/** The history as this request can send it: earlier web results become plain notes when it can't carry them (a copy, so the history itself only grows). */
+function sendable(h: BetaMessageParam[], tools: unknown[]): BetaMessageParam[] {
+  const hasWeb = (tools as { type?: string }[]).some((t) => typeof t.type === "string" && /^web_(search|fetch)_/.test(t.type));
+  return flatServer && !hasWeb ? flattenServerTools(h).history : h;
+}
+
+/**
+ * The history must only have grown since the last request: where an earlier
+ * message, the system prompt or the tools changed, the thinking blocks from
+ * that point on are removed, because Claude rejects them. Records what is sent now.
+ */
+function settleEdits(system: ReturnType<typeof systemBlocks>, tools: unknown[]) {
+  const binding = bindingKey(system, tools);
+  let keys = messageKeys(sendable(history, tools));
+  if (sent) {
+    const at = sent.binding !== binding ? 0 : firstEdit(sent.keys, keys);
+    if (at >= 0 && hasThinking(history, at)) {
+      const n = stripThinking(history, at);
+      keys = messageKeys(sendable(history, tools));
+      console.warn(`[kerf] ${at === 0 && sent.binding !== binding ? "The system prompt or tools changed" : `Chat message ${at} changed`} since the last request; left out ${n} thinking block(s) from there on.`);
+    }
+  }
+  sent = { binding, keys };
 }
 
 /** Thinking blocks the API dropped mean the history changed in a way buildRequest missed: worth knowing about. */
@@ -1755,6 +1951,10 @@ function handleError(e: unknown) {
   }
   if (e instanceof Anthropic.APIConnectionError) {
     push({ kind: "notice", id: nid(), level: "error", title: "Could not reach the Claude API", detail: navigator.onLine ? "Check your connection or any network filter that blocks api.anthropic.com." : "You appear to be offline.", action: "retry" });
+    return;
+  }
+  if (e instanceof Anthropic.BadRequestError && promptTooLong(e.message) !== null) {
+    push({ kind: "notice", id: nid(), level: "error", title: "This conversation is too long for Claude", detail: "Kerf could not summarise the earlier turns to make room. Press Try again to have another go, or clear the chat to start afresh: the design and its versions stay as they are.", action: "retry" });
     return;
   }
   if (e instanceof Anthropic.APIError) {

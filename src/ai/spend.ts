@@ -19,7 +19,9 @@ export type SpendKind =
   | "review"
   | "agents"
   /** a max_tokens: 0 request that kept the prompt cache warm */
-  | "warm";
+  | "warm"
+  /** summarising the older turns of a long conversation */
+  | "compact";
 
 export interface SpendLine {
   model: string;
