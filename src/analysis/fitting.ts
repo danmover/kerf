@@ -7,7 +7,7 @@
 // that sit inside another's box (a pad in a seat, the print on a sign) ride
 // along with it.
 
-import type { EvalPart, Model } from "../core/model";
+import type { EvalPart, FlexInfo, Model } from "../core/model";
 import { applyXforms, applyXformsToDir, vadd, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
 import { fittingPose, rubberOf, sectionOf, type BandCord, type BandLayout, type FitPose, type Section } from "../library/bands";
 import { flexCalc } from "../library/springs";
@@ -88,35 +88,28 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
   }
 
   // a part that clicks onto a peg: the part around the peg slides in along the arm, toward its root
-  for (const p of model.parts) {
-    for (const f of p.flex ?? []) {
-      if (f.kind !== "snap" || !f.peg) continue;
-      const tip = vadd(vadd(f.at, vscale(vnorm(f.dir), f.length - f.peg / 2)), vscale(vnorm(f.facing), f.t / 2 + f.deflection / 2));
-      const peg = applyXforms(tip, p.xf);
-      // the smallest part round the peg: the sheet it clicks into, not what the whole thing sits on nor the print on it
-      const mate = model.parts
-        .filter((q) => q.id !== p.id && !q.band && !riding.has(q.id) && contains(q, bbox(q), peg))
-        .map((q) => ({ q, size: volumeOf(bbox(q)!) }))
-        .sort((a, b) => a.size - b.size)[0]?.q;
-      if (!mate) continue;
-      const along = vnorm(applyXformsToDir(f.dir, p.xf));
-      const push = flexCalc(f, p.material, 1).push ?? 0;
-      steps.push({
-        kind: "slide",
-        part: mate.id,
-        riders: riders.get(mate.id) ?? [],
-        host: p.id,
-        from: vscale(along, 2 * f.length + 10),
-        peg,
-        title: `Slide ${mate.label} in`,
-        caption: `Slide ${mate.label} in along the tongue until the peg clicks into its hole: about ${fmtNum(push, 1)} N. Lift the tongue to slide it out.`,
-        dur: 3,
-      });
-    }
+  for (const { host: p, flex: f, mate, peg } of pegMates(model, bbox, riding)) {
+    const along = vnorm(applyXformsToDir(f.dir, p.xf));
+    const push = flexCalc(f, p.material, 1).push ?? 0;
+    steps.push({
+      kind: "slide",
+      part: mate.id,
+      riders: riders.get(mate.id) ?? [],
+      host: p.id,
+      from: vscale(along, 2 * f.length + 10),
+      peg,
+      title: `Slide ${mate.label} in`,
+      caption: `Slide ${mate.label} in along the tongue until the peg clicks into its hole: about ${fmtNum(push, 1)} N. Lift the tongue to slide it out.`,
+      dur: 3,
+    });
   }
 
   // what keeps it there: each analysis that checks a seat, with its loads and the share of the grip they use
-  const hooks = bands.flatMap((b) => b.band!.layout.hooks.map((h) => h.at));
+  // where the bands pull: each pin, or each prong of a double hook
+  const hooks = bands.flatMap((b) => {
+    const L = b.band!.layout;
+    return L.hooks.flatMap((h) => (L.spread > 0 ? [1, -1].map((up) => vadd(h.at, vscale(L.n, (up * L.spread) / 2))) : [h.at]));
+  });
   // under load everything but what the bands wrap moves together
   const wrapped = new Set(bands.flatMap((b) => b.band!.around));
   const moving = model.parts.filter((p) => !wrapped.has(p.name));
@@ -134,8 +127,36 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
 
 const volumeOf = (b: [V3, V3]) => (b[1][0] - b[0][0]) * (b[1][1] - b[0][1]) * (b[1][2] - b[0][2]);
 
+/** Each peg snap and the part it clicks into: the smallest part round the peg, not what the whole thing sits on nor the print on it (riding). */
+function pegMates(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined, riding: ReadonlySet<string>): { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3 }[] {
+  const out: { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3 }[] = [];
+  for (const p of model.parts)
+    for (const f of p.flex ?? []) {
+      if (f.kind !== "snap" || !f.peg) continue;
+      const tip = vadd(vadd(f.at, vscale(vnorm(f.dir), f.length - f.peg / 2)), vscale(vnorm(f.facing), f.t / 2 + f.deflection / 2));
+      const peg = applyXforms(tip, p.xf);
+      const mate = model.parts
+        .filter((q) => q.id !== p.id && !q.band && !riding.has(q.id) && contains(q, bbox(q), peg))
+        .map((q) => ({ q, size: volumeOf(bbox(q)!) }))
+        .sort((a, b) => a.size - b.size)[0]?.q;
+      if (mate) out.push({ host: p, flex: f, mate, peg });
+    }
+  return out;
+}
+
+/**
+ * What each part carries: the parts riding inside its box and the parts
+ * clicked onto its pegs. Bands and what they wrap are never carried.
+ */
+export function carriedBy(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined): Map<string, string[]> {
+  const out = riderMap(model, bbox);
+  const riding = new Set([...out.values()].flat());
+  for (const { host, mate } of pegMates(model, bbox, riding)) if (!out.get(host.id)?.includes(mate.id)) out.set(host.id, [...(out.get(host.id) ?? []), mate.id]);
+  return out;
+}
+
 /** A part's box as placed, square to the world axes. */
-function placedBox(p: EvalPart, box: [V3, V3]): [V3, V3] {
+export function placedBox(p: EvalPart, box: [V3, V3]): [V3, V3] {
   const corners: V3[] = [];
   for (const x of [box[0][0], box[1][0]]) for (const y of [box[0][1], box[1][1]]) for (const z of [box[0][2], box[1][2]]) corners.push(applyXforms([x, y, z], p.xf));
   const lo = [0, 1, 2].map((d) => Math.min(...corners.map((c) => c[d]))) as V3;

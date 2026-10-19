@@ -1167,10 +1167,13 @@ export class SceneController {
 
   // ---------- machine pose ----------
 
-  private pose: Map<string, [number, number, number]> | null = null;
+  private pose: Map<string, [number, number, number] | THREE.Matrix4> | null = null;
 
-  /** Move parts from where the design shows them, e.g. a printer's axes through their travel (null: as designed). */
-  setPose(offsets: Map<string, [number, number, number]> | null) {
+  /**
+   * Move parts from where the design shows them, e.g. a printer's axes through their travel, or a part carried on one
+   * that bends under load (an offset, or a motion in world space; null: as designed).
+   */
+  setPose(offsets: Map<string, [number, number, number] | THREE.Matrix4> | null) {
     if (!offsets && !this.pose) return;
     this.pose = offsets;
     this.changed = true;
@@ -1743,7 +1746,7 @@ export class SceneController {
 
       // motion about the part's axis, after the machine's pose
       const po = this.pose?.get(obj.part.id);
-      const m = new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
+      const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(sp.pos.x, sp.pos.y, sp.pos.z).multiply(po) : new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
       const mo = obj.part.motion;
       if (mo && Math.abs(this.angle) > 1e-9 && mo.ratio) {
         const o = new THREE.Vector3(...mo.origin);

@@ -18,7 +18,7 @@ export function reviewerPrompt(): string {
 ## How to review
 1. Work out what the design is for from the brief: what it holds or mates with, who handles it, where it lives, how it is made, what loads it sees. Where the brief is silent, assume the common case (for example FDM printing when the materials are PLA or PETG) and state what you assumed.
 2. Look at every render and describe to yourself what is actually there. Check that parts exist, sit where they should, face the right way, and are in sensible proportion; nothing floating, missing, inverted, absurdly thin or thick, or hidden where it cannot be reached. Then go through the design connection by connection, as the person putting it together would, and find evidence for each one:
-   - every fastener, pin, peg, hook, band, cable and belt reaches what it belongs to and engages it: a band sits on its pin or in its slot and wraps what it should, a screw passes through both parts into a boss or nut, a pin enters its hole, a belt runs on its pulleys
+   - every fastener, pin, peg, hook, band, cable and belt reaches what it belongs to and engages it: a band sits on its pin, round its hook or in its slot and wraps what it should, a screw passes through both parts into a boss or nut, a pin enters its hole, a belt runs on its pulleys
    - features meant to be one body are joined to it: a SEPARATE PIECES line is a part that cannot be made as one piece
    - parts touch where they should: a TOUCHES NOTHING part floats, unless the brief explains it
    - the load runs from where it acts, through each part and joint, to where the design is held, with no gap or lone thin neck on the way

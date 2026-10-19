@@ -1448,6 +1448,7 @@ class Evaluator {
       // what its friction round the tube holds, wet: sliding along it (N) and turning about it (N·mm)
       grip_force: rubber.mu[1] * (l?.squeeze ?? 0),
       grip_moment: l && l.wrapDeg > 0 ? rubber.mu[1] * l.squeeze * (l.contact / ((l.wrapDeg * Math.PI) / 180)) : 0,
+      spread: l?.spread ?? 0,
     });
     const bom = { description: `${label} (${rubber.label} O-ring)` };
     // a design checked without geometry (solving params) has no cross-sections to lie on
@@ -1486,11 +1487,13 @@ class Evaluator {
       from = { at: fromAt, pin: pins[0], lip: lips[0], open: opens[0] };
       to = { at: toAt, pin: pins[1], lip: lips[1], open: opens[1] };
     }
+    if (args.has("spread") && !hasFrom) throw new EvalError("lib.band: spread: is for double hooks, so it needs from: and to:", argSpan("spread"));
+    const spread = args.has("spread") ? args.positive("spread") : 0;
     let layout: BandLayout;
     try {
-      layout = layoutBand({ cord, from, to, around: wrapped, axis: axisW });
+      layout = layoutBand({ cord, from, to, around: wrapped, axis: axisW, spread });
     } catch (e) {
-      if (e instanceof BandError) throw new EvalError(`lib.band: ${e.message}`, argSpan(hasFrom ? "from" : "around"));
+      if (e instanceof BandError) throw new EvalError(`lib.band: ${e.message}`, argSpan(e.message.startsWith("spread") ? "spread" : hasFrom ? "from" : "around"));
       throw e;
     }
     const carries = args.has("carries") ? args.positive("carries") : undefined;

@@ -156,9 +156,20 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
       const P = typeof f.pull === "number" ? f.pull : 0;
       const zoneAt = (p: number[], pin: number): RegionSpec => ({ t: "sphere", at: [p[0], p[1], p[2] ?? 0], r: pin / 2 + 1 });
       const load = (p: number[], d: number[], pin: number) => wrap(LOAD, { t: "force", region: zoneAt(p, pin), f: clean([d[0] * P, d[1] * P, (d[2] ?? 0) * P]) } satisfies LoadSpec, "band pull");
+      const s = typeof f.spread === "number" ? f.spread : 0;
+      const n = pt("axis");
+      if (s > 0 && n) {
+        // a double hook: each prong takes one strand's pull toward the tube and the end's pull toward the other prong
+        const T = typeof f.tension === "number" ? f.tension : 0;
+        const prong = (p: number[], d: number[], pin: number, up: number) =>
+          wrap(LOAD, { t: "force", region: zoneAt([0, 1, 2].map((k) => (p[k] ?? 0) + (up * s * n[k]) / 2), pin), f: clean([0, 1, 2].map((k) => T * ((d[k] ?? 0) - up * n[k])) as V3) } satisfies LoadSpec, "band pull");
+        const fp = Number(f.from_pin ?? 4);
+        const tp = Number(f.to_pin ?? 4);
+        return [prong(from!, fd!, fp, 1), prong(from!, fd!, fp, -1), prong(to!, td!, tp, 1), prong(to!, td!, tp, -1)];
+      }
       return [load(from!, fd!, Number(f.from_pin ?? 4)), load(to!, td!, Number(f.to_pin ?? 4))];
     },
-    "pull(band) → the pull of a lib.band on its two hook pins (both strands, toward the tube it wraps), as two forces. Use it with load: on the part the band holds.",
+    "pull(band) → the pull of a lib.band on its two hook pins (both strands, toward the tube it wraps), as two forces; on double hooks (spread:) four, one on each prong. Use it with load: on the part the band holds.",
   ),
   def(
     "contact",

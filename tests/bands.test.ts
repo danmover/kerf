@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import { evaluate } from "../src/lang/evaluator";
 import { bandChecks } from "../src/analysis/bands";
 import { fittingPose, freeLength, rubberOf, sectionOf, shoreToE, strandTension, stretchedCord, relaxedShare, type BandCord } from "../src/library/bands";
-import { fittingSteps, holdDetails } from "../src/analysis/fitting";
-import { vdot, vlen, vnorm, vsub } from "../src/kernel/recipe";
+import { carriedBy, fittingSteps, holdDetails } from "../src/analysis/fitting";
+import { vadd, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../src/kernel/recipe";
+import type { StructuralSpec } from "../src/analysis/spec";
 import { fullCheck, problems } from "./helpers/fullcheck";
 
 const post = `design "t"
@@ -157,6 +158,63 @@ describe("a band hooked on two pins round a post", () => {
   });
 });
 
+describe("a band on two double hooks, the way a rear light holds", () => {
+  const dbl = (spread: number | string = 12) => hooked().replace("open: Z", `spread: ${spread}, open: [(-1, 0, 0), (1, 0, 0)]`);
+
+  it("runs a strand round the post above and below, each end round both prongs of its hook", () => {
+    const m = model(dbl());
+    const L = m.parts.find((p) => p.name === "b")!.band!.layout;
+    expect(L.spread).toBe(12);
+    // two strands from hook to hook, a quarter turn round each of the four prongs and down behind each hook between them
+    const r = 2 + L.cord / 2 + 0.05;
+    let D = 0;
+    for (let i = 1; i < L.route.length; i++) D += vlen(vsub(L.route[i], L.route[i - 1]));
+    expect(L.length).toBeCloseTo(2 * D + 2 * 12 + Math.PI * 2 * r, 1);
+    // the cord passes round every prong, and its strands run round the post above and below them
+    for (const h of L.hooks)
+      for (const up of [1, -1]) {
+        const prong = vadd(h.at, vscale(L.n, up * 6));
+        expect(Math.min(...L.loop.map((q) => vlen(vsub(q, prong))))).toBeCloseTo(r, 0);
+      }
+    const across = L.loop.filter((q) => Math.abs(q[0]) < 1);
+    expect(Math.max(...across.map((q) => vdot(q, L.n)))).toBeGreaterThan(6);
+    expect(Math.min(...across.map((q) => vdot(q, L.n)))).toBeLessThan(-6);
+    expect(L.offHook).toBeUndefined();
+    const items = bandChecks(m);
+    expect(items.map((i) => i.status)).not.toContain("fail");
+    expect(items.find((i) => i.id === "band:b:fit")!.detail).toMatch(/double hook \(prongs 12 mm apart\)/);
+  });
+
+  it("pulls each prong toward the post and toward the other prong", () => {
+    const m = model(
+      dbl() +
+        `
+analysis "Held" {
+  parts: [bracket]
+  fix: contact(zone(at: (0, 0, -10), d: 32, axis: Z, length: 20), mu: 0.3, grip: [b])
+  load: pull(b)
+}`,
+    );
+    const L = m.parts.find((p) => p.name === "b")!.band!.layout;
+    const a = m.analyses[0] as StructuralSpec;
+    expect(a.loads).toHaveLength(4);
+    const f = a.loads.map((l) => (l.t === "force" ? l.f : ([0, 0, 0] as V3)));
+    for (const v of f) expect(vlen(v)).toBeCloseTo(Math.SQRT2 * L.tension, 3);
+    // the end's pull between the prongs cancels: each hook takes both strands' pull toward the post
+    for (const k of [0, 2]) {
+      const sum = vadd(f[k], f[k + 1]);
+      expect(vlen(sum)).toBeCloseTo(2 * L.tension, 3);
+      expect(Math.abs(vdot(sum, L.n))).toBeLessThan(1e-6);
+    }
+  });
+
+  it("needs room for a prong and the cord between the prongs, and both ends hooked", () => {
+    const e = (src: string) => evaluate(src).diagnostics.filter((d) => d.severity === "error").map((d) => d.message);
+    expect(e(dbl(5)).join(" ")).toMatch(/spread: a double hook's prongs must be at least a prong and a cord apart/);
+    expect(e(`${post}component b = lib.band("EPDM", id: 30, cs: 2.5, around: post, holds: bracket, spread: 12)`).join(" ")).toMatch(/needs from: and to:/);
+  });
+});
+
 describe("the seatpost number bracket", () => {
   const src = readFileSync(new URL("../src/demos/seatpost-number.kerf", import.meta.url), "utf8");
 
@@ -185,6 +243,10 @@ describe("the seatpost number bracket", () => {
     // the print and the transponder sticker go in with it
     expect(slide.riders.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
     expect(slide.caption).toMatch(/clicks into its hole: about \d+(\.\d)? N/);
+    // in the stress results the bracket carries its pad and the number, and the number its print, so they move with it
+    const carried = carriedBy(r.model, (p) => r.core.get(p.hash)?.bbox as never);
+    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["number", "pad"]);
+    expect(carried.get(slide.part)!.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
     const gust = steps.find((s) => s.kind === "hold" && s.title === "Crosswind gust")!;
     if (gust.kind !== "hold") throw new Error("no gust step");
     const d = holdDetails(gust, undefined);

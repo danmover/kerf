@@ -45,7 +45,10 @@ function fitItem(p: EvalPart, b: BandInfo): CheckItem {
   } else {
     const hand = 2 * L.fitTension;
     const lip = L.hooks[1].lip;
-    detail = `Hook it over the first pin, wrap it round ${b.around.join(" and ")} and stretch it over the second pin's ${n1(lip)} mm head: that stretches it ${pc(L.fitStretch - 1)} for a moment and takes about ${n0(hand)} N by hand.`;
+    const dbl = L.spread > 0;
+    detail = dbl
+      ? `Hook one end over the first double hook (prongs ${n1(L.spread)} mm apart), wrap it round ${b.around.join(" and ")} and stretch the other end over the second one's ${n1(lip)} mm rim: that stretches it ${pc(L.fitStretch - 1)} for a moment and takes about ${n0(hand)} N by hand. Its two strands run round ${n0(L.spread + L.hooks[0].pin + L.cord)} mm apart, so they also stop what it holds rocking on the tube.`
+      : `Hook it over the first pin, wrap it round ${b.around.join(" and ")} and stretch it over the second pin's ${n1(lip)} mm head: that stretches it ${pc(L.fitStretch - 1)} for a moment and takes about ${n0(hand)} N by hand.`;
     if (L.fitStretch >= 0.9 * breakStretch(r)) {
       status = "fail";
       problems.push(`it snaps while being fitted: ${pc(L.fitStretch - 1)} is within 10 % of where ${r.label} breaks (${pc(r.breakStrain)})`);
@@ -71,32 +74,34 @@ function fitItem(p: EvalPart, b: BandInfo): CheckItem {
     }
     L.hooks.forEach((h, i) => {
       const which = i ? "second" : "first";
+      const pin = dbl ? `${which} double hook's prongs` : `${which} pin`;
       if (L.offHook === i) {
         status = "fail";
         problems.push(
           L.skew !== undefined
             ? `the band slants ${n0(L.slant)}° round the tube to the other hook and pulls the loop along the ${which} pin toward its free end, so it slides off`
-            : `the band pulls the loop along the ${which} pin toward its free end, so it slides off`,
+            : `the band pulls the loop along the ${pin} toward ${dbl ? "their" : "its"} free end, so it slides off`,
         );
-        fixes.push(L.skew !== undefined ? "put both hooks at the same height on the tube" : `turn the ${which} pin so its free end points across the pull (open:), or give it a deeper head`);
+        fixes.push(L.skew !== undefined ? "put both hooks at the same height on the tube" : `turn the ${pin} so the free end points across the pull (open:), or give it a deeper ${dbl ? "rim" : "head"}`);
       }
+      const head = dbl ? "rim" : "head";
       if (h.lip < 0.4 * c.cs) {
         status = "fail";
-        problems.push(`the ${which} pin's ${n1(h.lip)} mm head is too low to keep a ${n1(c.cs)} mm cord on when it is knocked`);
-        fixes.push(`give the pins a head (a mushroom or a lip) at least ${n1(0.75 * c.cs)} mm proud of the seat`);
+        problems.push(`the ${which} ${dbl ? "double hook" : "pin"}'s ${n1(h.lip)} mm ${head} is too low to keep a ${n1(c.cs)} mm cord on when it is knocked`);
+        fixes.push(dbl ? `give the hooks a rim at least ${n1(0.75 * c.cs)} mm proud of the prongs` : `give the pins a head (a mushroom or a lip) at least ${n1(0.75 * c.cs)} mm proud of the seat`);
       } else if (h.lip < 0.75 * c.cs) {
         status = worst(status, "warn");
-        problems.push(`the ${which} pin's ${n1(h.lip)} mm head is shallow for a ${n1(c.cs)} mm cord: a sharp knock can flick the loop off`);
-        fixes.push(`make the head about ${n1(0.75 * c.cs)} mm proud`);
+        problems.push(`the ${which} ${dbl ? "double hook" : "pin"}'s ${n1(h.lip)} mm ${head} is shallow for a ${n1(c.cs)} mm cord: a sharp knock can flick the loop off`);
+        fixes.push(`make the ${head} about ${n1(0.75 * c.cs)} mm proud`);
       }
       if (h.pin < 1.5 * c.cs) {
         status = worst(status, "warn");
-        problems.push(`the cord bends tightly round the ${which} ${n1(h.pin)} mm pin and wears through there`);
-        fixes.push(`make the pins at least ${n1(1.5 * c.cs)} mm across`);
+        problems.push(`the cord bends tightly round the ${which} ${dbl ? `double hook's ${n1(h.pin)} mm prongs` : `${n1(h.pin)} mm pin`} and wears through there`);
+        fixes.push(`make the ${dbl ? "prongs" : "pins"} at least ${n1(1.5 * c.cs)} mm across`);
       }
       if (r.tears && h.pin < 3 * c.cs) {
         status = worst(status, "warn");
-        problems.push(`silicone tears from small radii: round the ${which} pin to ${n1(3 * c.cs)} mm or use EPDM`);
+        problems.push(`silicone tears from small radii: round the ${pin} to ${n1(3 * c.cs)} mm or use EPDM`);
       }
     });
   }

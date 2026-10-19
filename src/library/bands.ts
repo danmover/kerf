@@ -396,6 +396,13 @@ export interface BandInput {
   around: { name: string; section: Section }[];
   /** the band's plane normal; by default the wrapped part's own direction */
   axis?: V3;
+  /**
+   * both hooks are double hooks: two prongs this far apart along the tube,
+   * centred on from and to. The two strands then run round at the prongs'
+   * heights instead of side by side, and each end turns round its pair of
+   * prongs, the way a rear light's band holds. 0: single pins.
+   */
+  spread?: number;
 }
 
 export interface BandLayout {
@@ -438,6 +445,8 @@ export interface BandLayout {
   skew?: number;
   /** then it runs round at a slant, rising evenly from one hook to the other: its angle to the plane square to the axis, degrees */
   slant: number;
+  /** a double hook's two prongs apart along the axis, mm (0 for single pins) */
+  spread: number;
 }
 
 const to2 = (p: V3, o: V3, u: V3, v: V3): V2 => [vdot(vsub(p, o), u), vdot(vsub(p, o), v)];
@@ -496,6 +505,9 @@ export function layoutBand(inp: BandInput): BandLayout {
   if (!inp.around.length) throw new BandError("around: name the part (or parts) the band wraps round, like around: post");
   const doubled = !!(inp.from && inp.to);
   if (!!inp.from !== !!inp.to) throw new BandError("give both from: and to: (the two hooks the band's ends go over), or neither for a loop that goes right round");
+  const spread = doubled ? Math.max(0, inp.spread ?? 0) : 0;
+  if (spread > 0 && spread < Math.max(inp.from!.pin, inp.to!.pin) + c.cs)
+    throw new BandError(`spread: a double hook's prongs must be at least a prong and a cord apart (${fmt(Math.max(inp.from!.pin, inp.to!.pin) + c.cs)} mm), or the band's end has nothing to run down between them`);
   const axisIn = inp.axis ?? inp.around[0].section.axis;
   const n = vnorm(axisIn);
   // the band's plane passes through the first hook, or the middle of what it wraps (half way along it)
@@ -519,7 +531,7 @@ export function layoutBand(inp: BandInput): BandLayout {
   // the second hook's height above the first along the axis: the band rises evenly between them, the way a
   // stretched cord lies on a prism (straight once the surface is unrolled), so it reaches both hooks
   const rise = doubled ? vdot(vsub(inp.to!.at, inp.from!.at), n) : 0;
-  let out: Omit<BandLayout, "tension" | "fitTension" | "hooks" | "squeeze" | "stretch" | "fitStretch" | "fitLength" | "slant"> & { hookDirs: V2[]; climb: number } = null!;
+  let out: Omit<BandLayout, "tension" | "fitTension" | "hooks" | "squeeze" | "stretch" | "fitStretch" | "fitLength" | "slant" | "spread"> & { hookDirs: V2[]; climb: number } = null!;
   for (let pass = 0; pass < 3; pass++) {
     const P = grown(sec2, cord / 2 + 0.05);
     if (!doubled) {
@@ -569,7 +581,8 @@ export function layoutBand(inp: BandInput): BandLayout {
       const along = route2.map((_, i) => polyLen(route2.slice(0, i + 1)));
       const heights = along.map((a) => (D > 1e-9 ? (rise * a) / D : 0));
       const strand = Math.hypot(D, rise);
-      const length = 2 * strand + Math.PI * (rA + rB);
+      // each end turns half way round its pin, or a quarter round each prong of a double hook with the run between them
+      const length = 2 * strand + 2 * spread + Math.PI * (rA + rB);
       // the length lying on the wrapped parts: between the first and last points that came from it
       let contact = 0;
       for (let i = 2; i < route2.length - 1; i++) contact += len2(route2[i - 1], route2[i]);
@@ -584,7 +597,7 @@ export function layoutBand(inp: BandInput): BandLayout {
         u,
         v,
         route: route2.map((q, i) => to3(q, o, u, v, heights[i], n)),
-        loop: doubledLoop(route2, heights, A, B, dA, dB, rA, rB, h).map(([q, z]) => to3(q, o, u, v, z, n)),
+        loop: (spread > 0 ? spreadLoop(route2, heights, A, B, dA, dB, rA, rB, spread) : doubledLoop(route2, heights, A, B, dA, dB, rA, rB, h)).map(([q, z]) => to3(q, o, u, v, z, n)),
         length,
         free,
         wrapDeg: (wrap * 180) / Math.PI,
@@ -629,12 +642,13 @@ export function layoutBand(inp: BandInput): BandLayout {
         break;
       }
     }
-  // hooks beyond either end of what the band wraps leave it nothing to lie on there
+  // hooks beyond either end of what the band wraps leave it nothing to lie on there (a double hook's strands run outside its prongs)
   let pastEnd: string | undefined;
+  const reach = spread > 0 ? spread / 2 + Math.max(inp.from!.pin, inp.to!.pin) / 2 + out.cord / 2 : 0;
   if (doubled)
     for (const a of inp.around) {
       const at = [inp.from!.at, inp.to!.at].map((p) => vdot(vsub(p, a.section.start), a.section.axis));
-      if (Math.min(...at) < -out.cord / 2 || Math.max(...at) > a.section.length + out.cord / 2) {
+      if (Math.min(...at) - reach < -out.cord / 2 || Math.max(...at) + reach > a.section.length + out.cord / 2) {
         pastEnd = a.name;
         break;
       }
@@ -656,6 +670,7 @@ export function layoutBand(inp: BandInput): BandLayout {
     offHook,
     skew: skew > Math.max(1.5, c.cs) ? skew : undefined,
     slant,
+    spread,
   };
 }
 
@@ -701,6 +716,37 @@ function doubledLoop(route: V2[], heights: number[], A: V2, B: V2, dA: V2, dB: V
   return out;
 }
 
+/**
+ * The cord's centre line for a band whose ends go round double hooks: the
+ * upper strand along the route over the top prongs, down the far side of the
+ * second hook's prongs (away from the tube), back along the route under the
+ * lower prongs and up the far side of the first hook's. heights are the
+ * route's own (rising from the first hook to the second); the strands run s/2
+ * plus the bend radius above and below them.
+ */
+function spreadLoop(route: V2[], heights: number[], A: V2, B: V2, dA: V2, dB: V2, rA: number, rB: number, s: number): [V2, number][] {
+  const along = route.map((_, i) => polyLen(route.slice(0, i + 1)));
+  const D = along[along.length - 1] || 1;
+  const off = (i: number) => s / 2 + rA + ((rB - rA) * along[i]) / D;
+  const inner = route.slice(1, -1).map((q, i) => ({ q, z: heights[i + 1], off: off(i + 1) }));
+  // a quarter turn round one prong, on the hook's far side from the tube: a from 0 (on top) to π (underneath)
+  const turn = (c: V2, d: V2, r: number, zc: number, a0: number, a1: number): [V2, number][] =>
+    Array.from({ length: 7 }, (_, i) => {
+      const a = a0 + ((a1 - a0) * i) / 6;
+      return [[c[0] - d[0] * r * Math.sin(a), c[1] - d[1] * r * Math.sin(a)], zc + r * Math.cos(a)];
+    });
+  const zA = heights[0];
+  const zB = heights[heights.length - 1];
+  const out: [V2, number][] = [];
+  out.push(...turn(A, dA, rA, zA + s / 2, Math.PI / 2, 0));
+  for (const p of inner) out.push([p.q, p.z + p.off]);
+  out.push(...turn(B, dB, rB, zB + s / 2, 0, Math.PI / 2));
+  out.push(...turn(B, dB, rB, zB - s / 2, Math.PI / 2, Math.PI));
+  for (const p of [...inner].reverse()) out.push([p.q, p.z - p.off]);
+  out.push(...turn(A, dA, rA, zA - s / 2, Math.PI, Math.PI / 2));
+  return out;
+}
+
 // ---------------------------------------------------------------- putting it on
 
 export type FitPhase = "hook" | "wrap" | "over" | "seated";
@@ -737,8 +783,11 @@ export function fittingPose(layout: BandLayout, around: Section[], c: BandCord, 
   const c2 = centroid2(P);
   const rA = hA.pin / 2 + layout.cord / 2 + 0.05;
   const rE = hB.pin / 2 + layout.cord / 2 + 0.05;
+  const s = layout.spread;
   // the second hook's height above the first: the hand carries the free end up (or down) to it on the way round
   const rise = vdot(vsub(hB.at, hA.at), n);
+  // over a pin's head the end is lifted along the tube; onto a double hook it comes in from the prongs' free ends
+  const side: V2 | null = s > 0 ? norm2([vdot(hB.open, u), vdot(hB.open, v)]) : null;
   // the free end held taut straight back from the first pin
   const away = norm2([A[0] - c2[0], A[1] - c2[1]]);
   const reach = Math.max(4, (layout.free - Math.PI * (rA + rE)) / 2);
@@ -773,7 +822,7 @@ export function fittingPose(layout: BandLayout, around: Section[], c: BandCord, 
     route.push(E);
     return route;
   };
-  const loopLength = (E: V2, h: number) => 2 * Math.hypot(polyLen(strands(E)), h) + Math.PI * (rA + rE);
+  const loopLength = (E: V2, h: number) => 2 * Math.hypot(polyLen(strands(E)), h) + 2 * s + Math.PI * (rA + rE);
   let E: V2;
   let h = 0;
   // the hand's height above the first pin, before any lift over the head
@@ -811,7 +860,7 @@ export function fittingPose(layout: BandLayout, around: Section[], c: BandCord, 
   }
   const route = strands(E);
   const D = polyLen(route);
-  const length = 2 * Math.hypot(D, h + hE) + Math.PI * (rA + rE);
+  const length = 2 * Math.hypot(D, h + hE) + 2 * s + Math.PI * (rA + rE);
   const stretch = Math.max(1, length / layout.free);
   const cord = stretchedCord(c.cs, stretch);
   const dA = norm2([route[1][0] - A[0], route[1][1] - A[1]]);
@@ -819,12 +868,15 @@ export function fittingPose(layout: BandLayout, around: Section[], c: BandCord, 
   const zh = cord / 2 + 0.02;
   // the strands climb evenly to the hand's height; the end in the hand rises over the head with it, the end on the first pin stays down
   const heights = route.map((_, i) => (D > 1e-9 ? (hE * polyLen(route.slice(0, i + 1))) / D : 0));
-  const loop = doubledLoop(route, heights, A, E, dA, dE, rA, rE, zh).map(([q, z]) => {
+  const drawn = s > 0 ? spreadLoop(route, heights, A, E, dA, dE, rA, rE, s) : doubledLoop(route, heights, A, E, dA, dE, rA, rE, zh);
+  const loop = drawn.map(([q, z]) => {
     const a = len2(q, A);
     const w = a / (a + len2(q, E) || 1);
-    return to3(q, o, u, v, z + h * w * w, n);
+    const k = h * w * w;
+    return side ? to3([q[0] + side[0] * k, q[1] + side[1] * k], o, u, v, z, n) : to3(q, o, u, v, z + k, n);
   });
-  return { phase, loop, hand: to3(E, o, u, v, h + hE, n), stretch, tension: strandTension(c, stretch), cord };
+  const hand = side ? to3([E[0] + side[0] * h, E[1] + side[1] * h], o, u, v, hE, n) : to3(E, o, u, v, h + hE, n);
+  return { phase, loop, hand, stretch, tension: strandTension(c, stretch), cord };
 }
 
 // ---------------------------------------------------------------- solid

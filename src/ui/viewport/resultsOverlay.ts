@@ -1,8 +1,9 @@
 // Draws a structural analysis result on the model: a banded colour map of
 // the chosen field on the real CAD surface, the deformed shape (exaggerated,
 // optionally animated between unloaded and loaded), a ghost of the original
-// outline, load arrows, support markers and labelled hot spots. Plugs into
-// the scene through SceneOverlay and knows nothing else about it.
+// outline, load arrows, support markers and labelled hot spots. Parts the
+// analysed ones carry (a number clicked into a bracket) move with them. Plugs
+// into the scene through SceneOverlay and knows nothing else about it.
 
 import * as THREE from "three";
 import type { StructuralResult } from "../../analysis/fe/structural";
@@ -11,6 +12,7 @@ import type { ResultField } from "../../analysis/runtime";
 import type { SceneOverlay } from "./scene";
 import { fmtNum } from "../../lang/values";
 import type { Theme } from "../../app/theme";
+import type { Follower, RigidMotion } from "../../analysis/carried";
 
 export interface OverlayConfig {
   field: ResultField;
@@ -20,6 +22,12 @@ export interface OverlayConfig {
   safetyTarget: number;
   /** a natural frequency's mode shape to draw swinging (index into result.modal.modes), instead of the static result */
   mode?: number | null;
+}
+
+/** Parts the analysed ones carry, and how to move them in the scene (null: back where they were). */
+export interface Carried {
+  followers: Follower[];
+  pose(motions: Map<string, THREE.Matrix4> | null): void;
 }
 
 export interface ProbeHit {
@@ -97,6 +105,7 @@ export class ResultsOverlay implements SceneOverlay {
   constructor(
     private result: StructuralResult,
     theme: Theme = "dark",
+    private carried?: Carried,
   ) {
     this.look = LOOK[theme];
     this.ghostMat = new THREE.LineBasicMaterial({ color: this.look.ghost, transparent: true, opacity: this.look.ghostOpacity, depthWrite: false });
@@ -175,6 +184,7 @@ export class ResultsOverlay implements SceneOverlay {
       this.uniforms.uScale.value = cfg.animate ? this.uniforms.uScale.value : this.modeAmp;
       for (const p of this.parts) p.ghost.visible = true;
       this.placeSpotLabels();
+      this.moveCarried();
       return;
     }
     this.uniforms.uMode.value = cfg.field === "safety" ? 1 : cfg.field === "strain" ? 2 : 0;
@@ -183,8 +193,26 @@ export class ResultsOverlay implements SceneOverlay {
     if (!cfg.animate) for (const s of this.spots) s.scale.setScalar(s.userData.base);
     for (const p of this.parts) p.ghost.visible = cfg.scale > 0;
     this.placeSpotLabels();
+    this.moveCarried();
   }
   private filled = false;
+  private posed: { k: number; mode: number | null } | null = null;
+
+  /** carried parts turn and shift with the bit of their host they sit on, by the same scale as the shape drawn */
+  private moveCarried() {
+    const c = this.carried;
+    if (!c?.followers.length) return;
+    const k = this.uniforms.uScale.value;
+    const mode = this.modeShown();
+    if (this.posed && this.posed.k === k && this.posed.mode === mode) return;
+    this.posed = { k, mode };
+    const out = new Map<string, THREE.Matrix4>();
+    for (const f of c.followers) {
+      const r = mode !== null ? f.modes[mode] : f.disp;
+      if (r && k !== 0) out.set(f.id, rigidMatrix(r, k));
+    }
+    c.pose(out.size ? out : null);
+  }
 
   /** normalised colour position per vertex for the current field */
   private fill() {
@@ -234,12 +262,14 @@ export class ResultsOverlay implements SceneOverlay {
       for (const s of this.spots) s.scale.setScalar(s.userData.base * pulse);
       active = true;
     }
+    this.moveCarried();
     return active;
   }
 
   still() {
     this.uniforms.uScale.value = this.modeShown() !== null ? this.modeAmp : this.cfg.scale;
     for (const s of this.spots) s.scale.setScalar(s.userData.base);
+    this.moveCarried();
   }
 
   setClipping(planes: THREE.Plane[] | null) {
@@ -285,6 +315,7 @@ export class ResultsOverlay implements SceneOverlay {
   }
 
   dispose() {
+    if (this.carried?.followers.length) this.carried.pose(null);
     for (const d of this.disposables) d.dispose();
     this.object.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -475,6 +506,15 @@ export class ResultsOverlay implements SceneOverlay {
     this.labels.add(sp);
     return sp;
   }
+}
+
+/** A carried part's motion at scale k: turned by k·|w| about w through c, then shifted by k·t. */
+function rigidMatrix(r: RigidMotion, k: number): THREE.Matrix4 {
+  const w = new THREE.Vector3(...r.w);
+  const m = new THREE.Matrix4().makeTranslation(r.c[0] + k * r.t[0], r.c[1] + k * r.t[1], r.c[2] + k * r.t[2]);
+  const a = k * w.length();
+  if (Math.abs(a) > 1e-12) m.multiply(new THREE.Matrix4().makeRotationAxis(w.normalize(), a));
+  return m.multiply(new THREE.Matrix4().makeTranslation(-r.c[0], -r.c[1], -r.c[2]));
 }
 
 function axisName(d: number[]): string {
