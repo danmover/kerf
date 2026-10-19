@@ -5,26 +5,34 @@ import type { EvalPart, Model } from "../core/model";
 import type { CheckItem } from "../core/checks";
 import { PROCESSES, PROCESS_IDS, resolveRules } from "./profiles";
 import { defaultMaterial, materialFit } from "./materials";
-import type { FindingStatus, ProcessFinding, ProcessId, ProcessProbe, ProcessResult, ProcessSpec } from "./types";
+import { NO_MACHINES, machineForSpec, specOnMachine, type MachineContext } from "./machines";
+import type { FindingStatus, ProcessFinding, ProcessId, ProcessProbe, ProcessResult, ProcessSpec, Rules } from "./types";
 
 /** Parts that are made rather than bought: custom parts, not library components. */
 export const madeParts = (model: Model) => model.parts.filter((p) => p.kind === "part");
 
-/** One probe per part with a process, for the parts whose geometry is built. */
-export function processProbes(model: Model, builtHashes: Set<string>): ProcessProbe[] {
-  return madeParts(model)
-    .filter((p) => p.process && builtHashes.has(p.hash))
-    .map((p) => ({ id: p.id, hash: p.hash, rules: resolveRules(p.process!, p.material) }));
+/** The rules a part is held to: its process on the machine it is made on (the part's own, or the user's for that process). */
+export function rulesOnMachine(spec: ProcessSpec, material: string, machines: MachineContext = NO_MACHINES): Rules {
+  const on = specOnMachine(spec, machines);
+  const rules = resolveRules(on.spec, material);
+  return on.machine ? { ...rules, machine: on.machine } : rules;
 }
 
-/** Probes for checking one part against every process, for comparing them. */
-export function compareProbes(part: EvalPart, ids: ProcessId[] = PROCESS_IDS): ProcessProbe[] {
+/** One probe per part with a process, for the parts whose geometry is built. */
+export function processProbes(model: Model, builtHashes: Set<string>, machines: MachineContext = NO_MACHINES): ProcessProbe[] {
+  return madeParts(model)
+    .filter((p) => p.process && builtHashes.has(p.hash))
+    .map((p) => ({ id: p.id, hash: p.hash, rules: rulesOnMachine(p.process!, p.material, machines) }));
+}
+
+/** Probes for checking one part against every process, for comparing them: each on the user's machine for it. */
+export function compareProbes(part: EvalPart, ids: ProcessId[] = PROCESS_IDS, machines: MachineContext = NO_MACHINES): ProcessProbe[] {
   return ids.map((id) => {
     const own = part.process?.id === id;
     const spec: ProcessSpec = own ? part.process! : { id, settings: {} };
     // a material that does not suit the process would skew its rules: compare with the usual one
     const material = own || materialFit(part.material, id).status === "pass" ? part.material : defaultMaterial(id);
-    return { id, hash: part.hash, rules: resolveRules(spec, material) };
+    return { id, hash: part.hash, rules: rulesOnMachine(spec, material, machines) };
   });
 }
 
@@ -71,7 +79,7 @@ export function findingFor(id: string, results: Record<string, ProcessResult>): 
 }
 
 /** Check report items for the manufacturing processes. */
-export function processItems(model: Model, results: Record<string, ProcessResult> | null, buildErrors?: Map<string, string>): CheckItem[] {
+export function processItems(model: Model, results: Record<string, ProcessResult> | null, buildErrors?: Map<string, string>, machines: MachineContext = NO_MACHINES): CheckItem[] {
   const items: CheckItem[] = [];
   const made = madeParts(model).filter((p) => !p.hidden);
   const withProcess = made.filter((p) => p.process);
@@ -90,6 +98,16 @@ export function processItems(model: Model, results: Record<string, ProcessResult
     if (fit.status !== "pass") {
       items.push({ ...base, id: `mfg:${p.id}:material`, status: fit.status, title: `${p.label}: ${p.material} for ${def.short}`, detail: fit.detail, basis: "parameters" });
     }
+    const { missing } = machineForSpec(spec, machines);
+    if (missing)
+      items.push({
+        ...base,
+        id: `mfg:${p.id}:machine`,
+        status: "warn",
+        title: `${p.label}: no machine called "${missing}"`,
+        detail: `Checked against a typical ${def.short} shop instead. Add the machine in Settings → Making, or name one that is there.`,
+        basis: "parameters",
+      });
 
     const r = results?.[p.id];
     if (!r && buildErrors?.has(p.hash)) {

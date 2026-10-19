@@ -970,3 +970,66 @@
   line-height: 1.4;
   margin-top: 2px;
 }
+
+/* Settings → Making: the machine each process is checked against */
+.machines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.machine-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.machine-head select,
+.machine-field select,
+.machine-field input:not([type="checkbox"]) {
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  color: var(--text);
+  font-size: 12px;
+}
+.machine-head select {
+  width: 200px;
+  max-width: 50%;
+}
+.machine-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px 16px;
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+}
+.machine-note,
+.machine-actions {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.machine-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.machine-field small {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.35;
+}
+.machine-field input[readonly],
+.machine-field select:disabled {
+  opacity: 0.7;
+}
+.machine-field input.bad {
+  border-color: var(--fail);
+}

@@ -17,6 +17,7 @@ import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
 import { AccessEditor } from "./make/AccessEditor";
+import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
 import { desktop, graphicsCard, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 
@@ -71,6 +72,12 @@ function MakingSettings() {
           Kerf recommends ways to make each part from these, for every design. A design's brief can list its own instead (workshop: and can_order:). Processes you have cost your time and material, with no shipping or waiting on a shop.
         </div>
         <AccessEditor settingsOnly />
+      </Section>
+      <Section title="Your machines">
+        <div className="d" style={{ marginBottom: 10, color: "var(--text-3)", fontSize: 12.5 }}>
+          Every part is checked against the machine you pick for its process: build size, nozzle and temperature, soluble supports, a mill's axes, travel, tools and spindle, a press's tonnage, a furnace's pour, a brake's length, a cutter's bed and source. Pick a preset or make your own; with none, Kerf assumes a typical shop. A part can name another with process: mfg.fdm(machine: "…").
+        </div>
+        <MachineEditor />
       </Section>
       <Section title="Costs">
         <Row t="Your time" d="What an hour of your own work is worth, for parts made on your machines and for assembling a design.">

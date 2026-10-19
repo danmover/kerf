@@ -10,6 +10,8 @@ import type { Model } from "../core/model";
 import { useSettings } from "../app/settings";
 import { projectAccess } from "../mfg/plan";
 import { availabilityText } from "../mfg/availability";
+import { machinesText } from "../mfg/machines";
+import { userMachines } from "../mfg/userMachines";
 import type { CheckReport } from "../core/checks";
 import { commitSource } from "../app/project";
 import { viewport } from "../app/viewportApi";
@@ -756,8 +758,10 @@ export function briefSummary(): string {
 function processesSummary(brief: Model["brief"]): string {
   const saved = useSettings.getState().processAccess;
   const { access, fromBrief } = projectAccess(brief);
-  if (!fromBrief && !Object.keys(saved).length) return "Manufacturing processes: the user has not said which they own, so every process counts as one they can order (Settings → Making, or the brief's workshop: and can_order:, change this).";
-  return `Manufacturing processes: ${availabilityText(access, fromBrief)}`;
+  const machines = userMachines();
+  const machineLine = Object.keys(machines.machineFor).length ? `\n${machinesText(machines)}` : "";
+  if (!fromBrief && !Object.keys(saved).length) return `Manufacturing processes: the user has not said which they own, so every process counts as one they can order (Settings → Making, or the brief's workshop: and can_order:, change this).${machineLine}`;
+  return `Manufacturing processes: ${availabilityText(access, fromBrief)}${machineLine}`;
 }
 
 /** A sketch as solved, for get_sketch. */

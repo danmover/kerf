@@ -45,6 +45,8 @@ export function withStats(g: CostGeometry, r: ProcessResult | undefined): CostGe
   if (s.sheetT && s.sheetT > 0) out.sheetT = s.sheetT;
   if (s.bends !== undefined) out.bends = s.bends;
   if (s.holes !== undefined) out.holes = s.holes;
+  // the machining plan counts the setups the part really needs
+  if (s.setups !== undefined) out.setups = s.setups;
   const undercut = r.findings.some((f) => UNDERCUT_RULES.has(f.rule) && (f.status === "fail" || f.status === "info" || f.status === "warn"));
   if (undercut) out.undercuts = 1;
   return out;

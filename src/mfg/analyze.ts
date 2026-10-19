@@ -6,9 +6,9 @@
 
 import { TriBVH } from "./bvh";
 import { triCentroid, triNormal, type AnalysisMesh, type FaceInfo } from "./brep";
-import { axisName, fmt } from "./profiles";
+import { axisName, fmt, slowestTool, toolName } from "./profiles";
 import { isMetal } from "./materials";
-import type { Alternative, ProcessFinding, ProcessId, ProcessStats, Rules } from "./types";
+import type { Alternative, ProcessFinding, ProcessId, ProcessStats, Rules, Tool } from "./types";
 import type { V3 } from "../kernel/recipe";
 
 const AXES: V3[] = [
@@ -47,6 +47,7 @@ export class Ctx {
   private _gap: Float64Array | null = null;
   private clearCache = new Map<string, Uint8Array>();
   private _sharp: SharpEdge[] | null = null;
+  private _volume: number | null = null;
 
   constructor(
     readonly m: AnalysisMesh,
@@ -180,6 +181,23 @@ export class Ctx {
     return out;
   }
 
+  /** Enclosed volume, mm³ (divergence theorem over the outward-facing triangles). */
+  volume(): number {
+    if (this._volume !== null) return this._volume;
+    const { pos, idx } = this.m;
+    let v = 0;
+    for (let t = 0; t < this.n; t++) {
+      const a = idx[t * 3] * 3,
+        b = idx[t * 3 + 1] * 3,
+        c = idx[t * 3 + 2] * 3;
+      v +=
+        pos[a] * (pos[b + 1] * pos[c + 2] - pos[b + 2] * pos[c + 1]) +
+        pos[a + 1] * (pos[b + 2] * pos[c] - pos[b] * pos[c + 2]) +
+        pos[a + 2] * (pos[b] * pos[c + 1] - pos[b + 1] * pos[c]);
+    }
+    return (this._volume = Math.abs(v) / 6);
+  }
+
   /** Sharp edges between different B-rep faces, from the welded mesh. */
   sharpEdges(): SharpEdge[] {
     if (this._sharp) return this._sharp;
@@ -291,6 +309,11 @@ function vertexOf(c: Ctx, t: number, weld: Int32Array, id: number): V3 {
 
 /** Count connected chains of edge segments (one chain per physical corner). */
 function chains(edges: SharpEdge[]): number {
+  return chainLengths(edges).length;
+}
+
+/** Total length of each chain of connected edges. */
+function chainLengths(edges: SharpEdge[]): number[] {
   const parent = new Map<number, number>();
   const find = (x: number): number => {
     let r = x;
@@ -303,7 +326,9 @@ function chains(edges: SharpEdge[]): number {
     if (!parent.has(e.vb)) parent.set(e.vb, e.vb);
     parent.set(find(e.va), find(e.vb));
   }
-  return new Set(edges.map((e) => find(e.va))).size;
+  const len = new Map<number, number>();
+  for (const e of edges) len.set(find(e.va), (len.get(find(e.va)) ?? 0) + e.len);
+  return [...len.values()];
 }
 
 function lineMarks(edges: SharpEdge[]): Float32Array {
@@ -352,7 +377,13 @@ export function analyzeSolid(solid: AnalysisMesh | Ctx, rules: Rules, opts: Anal
   else if (rules.reach) findings.push(...setups(c, rules));
   if (rules.innerRadius) findings.push(...insideCorners(c, rules, stats));
   if (rules.gap) findings.push(...gaps(c, rules));
+  if (rules.machining) findings.push(...machining(c, rules, stats));
   if (rules.overhang) findings.push(...overhangs(c, rules));
+  if (rules.supportAccess) findings.push(...supportAccess(c, rules));
+  if (rules.fuse) findings.push(...fusedGaps(c, rules));
+  if (rules.printer) findings.push(...printerFit(rules));
+  if (rules.press) findings.push(...pressFit(c, rules, stats));
+  if (rules.pour) findings.push(...pourFit(c, rules));
   if (rules.revolve) findings.push(...turning(c, rules));
   if (rules.sheet) findings.push(...sheet(c, rules, stats));
   if (rules.profile) findings.push(...profile(c, rules, stats));
@@ -686,7 +717,7 @@ function setups(c: Ctx, rules: Rules): ProcessFinding[] {
     {
       rule: "reach",
       status: reach.severity === "info" ? "info" : reach.severity,
-      title: internal && !added.length ? "Undercut a 3-axis tool cannot reach" : "Faces the setups cannot reach",
+      title: internal && !added.length ? (rules.machining && rules.machining.axes > 3 ? "Undercut no tool direction reaches" : "Undercut a 3-axis tool cannot reach") : "Faces the setups cannot reach",
       detail: `${mm2(um.area)} of surface cannot be reached from ${names}.${internal ? ` ${mm2(left)} is not reachable from any straight direction (an internal undercut).` : ""}`,
       fix: `${alt ? alt.detail + " " : ""}${internal ? "Reshape the hidden features so a straight tool reaches them, split the part, or plan 5-axis machining or a T-slot cutter." : "Each extra setup adds cost; reshaping the feature may avoid it."}`,
       marks: um.marks,
@@ -783,45 +814,6 @@ function gaps(c: Ctx, rules: Rules): ProcessFinding[] {
     });
   } else {
     out.push({ rule: "narrow", status: "pass", title: `Slots fit a Ø${fmt(g.min)} tool`, detail: "Every slot and pocket is wide enough to cut" });
-  }
-  if (rules.depthRatio) {
-    const dr = rules.depthRatio;
-    const tops = dr.dirs.map((d) => {
-      let top = -Infinity;
-      for (let i = 0; i < c.m.pos.length; i += 3) top = Math.max(top, c.m.pos[i] * d[0] + c.m.pos[i + 1] * d[1] + c.m.pos[i + 2] * d[2]);
-      return top;
-    });
-    const masks = dr.dirs.map((d) => c.clear(d));
-    let worst = 0;
-    const deep = (s: number) => {
-      const t = c.samples[s];
-      const width = gap[s];
-      if (!(width < 3 * g.min * dr.max)) return false;
-      const f = c.face(t);
-      if (f.type === "CYLINDRE" && f.fullTurn) return false;
-      let depth = Infinity;
-      dr.dirs.forEach((d, i) => {
-        if (masks[i][s] && Math.abs(dot(tn, d, t * 4)) < 0.2) depth = Math.min(depth, tops[i] - (c.tc[t * 3] * d[0] + c.tc[t * 3 + 1] * d[1] + c.tc[t * 3 + 2] * d[2]));
-      });
-      const r = depth / width;
-      if (Number.isFinite(r) && r > dr.max) {
-        if (r > worst) worst = r;
-        return true;
-      }
-      return false;
-    };
-    const dm = c.marks((s) => deep(s));
-    if (dm.area > 1)
-      out.push({
-        rule: "deep-pocket",
-        status: "warn",
-        title: "Deep narrow pockets",
-        detail: `Pockets up to ${fmt(worst, 1)}× deeper than they are wide (limit ${dr.max}×). Long tools deflect and chatter.`,
-        fix: `Make these pockets shallower or wider (depth under ${dr.max}× the width), or open them from the other side.`,
-        value: worst,
-        limit: dr.max,
-        marks: dm.marks,
-      });
   }
   return out;
 }
@@ -1022,6 +1014,17 @@ function turning(c: Ctx, rules: Rules): ProcessFinding[] {
   if (bad.size) {
     const m = c.faceMarks(bad);
     const major = m.area > 0.5 * total;
+    if (!major && rv.liveTools) {
+      out.push({
+        rule: "revolve",
+        status: "info",
+        title: "Milled on the lathe's live tools",
+        detail: `${plural(bad.size, "face")} (${mm2(m.area)}) ${bad.size === 1 ? "does" : "do"} not revolve about ${axisName(a)}: flats, cross holes or off-axis features, milled by the live tooling in the same setup.`,
+        fix: "Nothing to change; each one adds a little cycle time.",
+        marks: m.marks,
+      });
+      return out.concat(turningSize(c, rv, p0));
+    }
     out.push({
       rule: "revolve",
       status: major ? "fail" : "warn",
@@ -1035,6 +1038,20 @@ function turning(c: Ctx, rules: Rules): ProcessFinding[] {
   } else {
     out.push({ rule: "revolve", status: "pass", title: "Every surface turns", detail: `All faces revolve about ${axisName(a)}` });
   }
+  return out.concat(turningSize(c, rv, p0));
+}
+
+/** Size, slenderness and bores of a turned part. */
+function turningSize(c: Ctx, rv: NonNullable<Rules["revolve"]>, p0: V3): ProcessFinding[] {
+  const a = rv.axis;
+  const faces = c.m.faces;
+  const out: ProcessFinding[] = [];
+  const tol = Math.max(0.01, c.diag * 1e-4);
+  const onAxis = (p: V3) => {
+    const r: V3 = [p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]];
+    const s = dot(r, a);
+    return Math.hypot(r[0] - a[0] * s, r[1] - a[1] * s, r[2] - a[2] * s) < tol;
+  };
   // size and slenderness
   let rMax = 0;
   let lo = Infinity;
@@ -1215,6 +1232,43 @@ function sheet(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
     const bends = bendFaces;
     out.push({ rule: "bend-radius", status: "pass", title: bends ? `Bends R${fmt(bendR)} or more` : "Flat sheet", detail: bends ? `${plural(bends, "bend")}, all at a safe radius` : "No bends" });
   }
+  // the press brake: bend length and sheet thickness
+  if (sh.brake && stats.bends) {
+    let longest = 0;
+    const long = new Set<number>();
+    faces.forEach((f, i) => {
+      if (f.type !== "CYLINDRE" || !f.concave || f.fullTurn || role[i] !== "skin" || !f.length) return;
+      longest = Math.max(longest, f.length);
+      if (f.length > sh.brake! + 1e-6) long.add(i);
+    });
+    // a sharp bend (flagged above) is still bent on the brake once it has its radius
+    const sharpLong = chainLengths(sharp).filter((l) => l > sh.brake! + 1e-6);
+    for (const l of chainLengths(sharp)) longest = Math.max(longest, l);
+    const brake = rules.machine ? `the ${rules.machine}` : "a typical press brake";
+    if (long.size || sharpLong.length)
+      out.push({
+        rule: "brake",
+        status: "fail",
+        title: "Bend longer than the press brake",
+        detail: `A ${fmt(longest, 0)} mm long bend; ${brake} bends up to ${fmt(sh.brake, 0)} mm.`,
+        fix: "Shorten the bend, break it into separate flanges with relief cuts, or use a longer brake.",
+        value: longest,
+        limit: sh.brake,
+        marks: long.size ? c.faceMarks(long).marks : undefined,
+        lines: sharpLong.length ? lineMarks(sharp) : undefined,
+      });
+    if (sh.maxT && t > sh.maxT + 1e-6)
+      out.push({
+        rule: "brake",
+        status: "fail",
+        title: "Sheet too thick for the press brake",
+        detail: `${fmt(t)} mm ${rules.material}; ${brake} bends up to ${fmt(sh.maxT)} mm of it.`,
+        fix: "Use thinner sheet and stiffen it with a return flange or bead, or use a bigger brake.",
+        value: t,
+        limit: sh.maxT,
+      });
+    if (!long.size && !sharpLong.length && !(sh.maxT && t > sh.maxT + 1e-6)) out.push({ rule: "brake", status: "pass", title: "Fits the press brake", detail: `Longest bend ${fmt(longest, 0)} mm in ${fmt(t)} mm sheet, within ${fmt(sh.brake, 0)} mm and ${fmt(sh.maxT ?? 0)} mm` });
+  }
   // holes close to edges and bends
   const holeFaces = faces.map((f, i) => (f.type === "CYLINDRE" && f.concave && f.fullTurn && role[i] === "edge" ? i : -1)).filter((i) => i >= 0);
   const edgeOrBend = (tri: number) => {
@@ -1328,16 +1382,76 @@ function profile(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
   } else {
     out.push({ rule: "flat-profile", status: "pass", title: `Flat ${fmt(t)} mm profile`, detail: `Cut straight through along ${axisName(n)}` });
   }
-  if (t > pr.maxT)
+  const cutter = rules.cutter;
+  const tool = !cutter || cutter.source === "any" ? "laser" : cutter.source === "waterjet" ? "waterjet" : cutter.source === "plasma" ? "plasma cutter" : `${cutter.source === "co2" ? "CO2" : cutter.source} laser`;
+  const named = rules.machine ? `the ${rules.machine}` : `a typical ${tool}`;
+  if (cutter && t > cutter.maxT + 1e-6)
+    out.push({
+      rule: "plate-thickness",
+      status: "fail",
+      title: `Plate too thick for the ${tool}`,
+      detail: `${fmt(t)} mm plate; ${named} cuts up to ${fmt(cutter.maxT)} mm.`,
+      fix: "Use thinner plate, or have it waterjet cut or milled.",
+      value: t,
+      limit: cutter.maxT,
+    });
+  else if (t > pr.maxT)
     out.push({
       rule: "plate-thickness",
       status: "warn",
-      title: "Plate too thick to laser",
-      detail: `${fmt(t)} mm ${rules.material} is over the ${fmt(pr.maxT)} mm a laser cuts cleanly.`,
+      title: `Plate too thick to ${tool === "waterjet" || tool === "plasma cutter" ? "cut" : "laser"} cleanly`,
+      detail: `${fmt(t)} mm ${rules.material} is over the ${fmt(pr.maxT)} mm a ${tool} cuts cleanly.`,
       fix: "Waterjet or mill it, or use thinner plate.",
       value: t,
       limit: pr.maxT,
     });
+  if (cutter) {
+    // the outline must fit the bed in some orientation
+    const [u0, v0] = perpPair(n);
+    let fit: { w: number; h: number } | null = null;
+    let smallest: { w: number; h: number } | null = null;
+    for (let k = 0; k < 18; k++) {
+      const th = (k * Math.PI) / 36;
+      const u: V3 = [u0[0] * Math.cos(th) + v0[0] * Math.sin(th), u0[1] * Math.cos(th) + v0[1] * Math.sin(th), u0[2] * Math.cos(th) + v0[2] * Math.sin(th)];
+      const v = cross(n, u);
+      let lu = Infinity,
+        hu = -Infinity,
+        lv = Infinity,
+        hv = -Infinity;
+      for (let i = 0; i < c.m.pos.length; i += 3) {
+        const pu = c.m.pos[i] * u[0] + c.m.pos[i + 1] * u[1] + c.m.pos[i + 2] * u[2];
+        const pv = c.m.pos[i] * v[0] + c.m.pos[i + 1] * v[1] + c.m.pos[i + 2] * v[2];
+        lu = Math.min(lu, pu);
+        hu = Math.max(hu, pu);
+        lv = Math.min(lv, pv);
+        hv = Math.max(hv, pv);
+      }
+      const dims = [hu - lu, hv - lv].sort((a, b) => b - a);
+      const box = { w: dims[0], h: dims[1] };
+      if (!smallest || box.w * box.h < smallest.w * smallest.h) smallest = box;
+      const bed = [...cutter.bed].sort((a, b) => b - a);
+      if (box.w <= bed[0] + 1e-6 && box.h <= bed[1] + 1e-6) {
+        fit = box;
+        break;
+      }
+    }
+    if (!fit && smallest)
+      out.push({
+        rule: "cut-bed",
+        status: "fail",
+        title: `Too big for the ${tool}'s bed`,
+        detail: `The outline is ${fmt(smallest.w, 0)} × ${fmt(smallest.h, 0)} mm; ${named} cuts up to ${fmt(cutter.bed[0], 0)} × ${fmt(cutter.bed[1], 0)} mm.`,
+        fix: "Split the plate into pieces that join with tabs or a lap joint, or use a bigger machine.",
+      });
+    if (cutter.status !== "pass")
+      out.push({
+        rule: "cutter-material",
+        status: cutter.status,
+        title: cutter.status === "fail" ? `The ${tool} cannot cut ${rules.material}` : `Rough cut in ${rules.material}`,
+        detail: `${cap(cutter.why)}.`,
+        fix: cutter.status === "fail" ? `Order it cut by a shop with a ${isMetal(rules.material) ? "fiber laser, waterjet or plasma" : "CO2 laser or waterjet"}, or choose a material the ${tool} cuts.` : "Expect to clean up the edges, or have it waterjet cut.",
+      });
+  }
   // narrow webs: material width across, measured from the cut walls
   const th = c.thickness();
   const web = (s: number) => Math.abs(dot(tn, n, c.samples[s] * 4)) < 0.01 && th[s] < pr.minWeb - 1e-3;
@@ -1412,4 +1526,745 @@ function holes(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
     });
   if (!small.size && !deep.size && count) out.push({ rule: "holes", status: "pass", title: "Hole sizes", detail: `${plural(count, "hole")}, all Ø${fmt(minD)} mm or larger` });
   return out;
+}
+
+// ---------------- support removal ----------------
+
+/** Ways out of a support, looked for from the middle of its column: the axes and the twelve edge diagonals. */
+const ESCAPE: V3[] = [
+  ...AXES,
+  ...(
+    [
+      [1, 1, 0],
+      [1, -1, 0],
+      [-1, 1, 0],
+      [-1, -1, 0],
+      [1, 0, 1],
+      [1, 0, -1],
+      [-1, 0, 1],
+      [-1, 0, -1],
+      [0, 1, 1],
+      [0, 1, -1],
+      [0, -1, 1],
+      [0, -1, -1],
+    ] as V3[]
+  ).map(norm),
+];
+
+/** Half-widths tried around a way out, mm: the widest bundle of parallel lines that still gets out is the opening a tool has. */
+const OPEN_R = [0.5, 1, 1.5, 2.5, 4, 6, 9, 15];
+
+/** How a support can be got at: freely, only deep in, only through a gap narrower than the tool, or not at all. */
+type Reach = "open" | "deep" | "narrow" | "trapped";
+
+interface SupportPoint {
+  reach: Reach;
+  /** half-width of the best way out, mm */
+  r: number;
+  /** how far in from the part's outline the support sits along that way out, mm */
+  depth: number;
+  /** the column stands on the part rather than the bed */
+  onPart: boolean;
+  /** column height, mm */
+  h: number;
+}
+
+function perpPair(d: V3): [V3, V3] {
+  const u = norm(cross(d, Math.abs(d[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]));
+  return [u, cross(d, u)];
+}
+
+/** Distance from p along d to where it leaves the part's bounding box. */
+function boxExit(c: Ctx, p: V3, d: V3): number {
+  let t = Infinity;
+  for (let k = 0; k < 3; k++) {
+    if (Math.abs(d[k]) < 1e-9) continue;
+    t = Math.min(t, ((d[k] > 0 ? c.hi[k] : c.lo[k]) - p[k]) / d[k]);
+  }
+  return Math.max(0, t);
+}
+
+/** Whether a bundle of four lines r from p, parallel to d, all get out of the part, or run len clear (and r of space reaches them from p). */
+function bundleClear(c: Ctx, p: V3, d: V3, u: V3, v: V3, r: number, len = Infinity): boolean {
+  for (const w of [u, v])
+    for (const sg of [1, -1]) {
+      const wx = w[0] * sg,
+        wy = w[1] * sg,
+        wz = w[2] * sg;
+      if (c.bvh.raycast(p[0], p[1], p[2], wx, wy, wz, 0, r, -1, true)) return false;
+      if (c.bvh.raycast(p[0] + wx * r, p[1] + wy * r, p[2] + wz * r, d[0], d[1], d[2], 0, len, -1, true)) return false;
+    }
+  return true;
+}
+
+/**
+ * Whether an opening r wide gets to p along d with p anywhere in it, not just
+ * at its centre: a support beside a wall of a wide pocket is still reached
+ * through the pocket's mouth. Tries the bundle centred on p, then shifted r
+ * toward eight sides; returns the centre that works.
+ */
+function shiftedClear(c: Ctx, p: V3, d: V3, u: V3, v: V3, r: number, len = Infinity): V3 | null {
+  if (bundleClear(c, p, d, u, v, r, len)) return p;
+  const k = Math.SQRT1_2;
+  for (const [a, bb] of [[1, 0], [-1, 0], [0, 1], [0, -1], [k, k], [-k, k], [k, -k], [-k, -k]]) {
+    const w: V3 = [u[0] * a + v[0] * bb, u[1] * a + v[1] * bb, u[2] * a + v[2] * bb];
+    if (c.bvh.raycast(p[0], p[1], p[2], w[0], w[1], w[2], 0, r, -1, true)) continue;
+    const center: V3 = [p[0] + w[0] * r, p[1] + w[1] * r, p[2] + w[2] * r];
+    if (bundleClear(c, center, d, u, v, r, len)) return center;
+  }
+  return null;
+}
+
+/** The widest straight way out from p (half-width r) and how far it runs inside the part's box; null when every line from p hits the part. */
+function wayOut(c: Ctx, p: V3, opening: number): { r: number; depth: number } | null {
+  let best: { r: number; depth: number } | null = null;
+  const free: V3[] = [];
+  for (const d of ESCAPE) {
+    if (c.bvh.raycast(p[0], p[1], p[2], d[0], d[1], d[2], 0, Infinity, -1, true)) continue;
+    free.push(d);
+    const [u, v] = perpPair(d);
+    // only a wider way out (or the first one) is worth measuring
+    let r = 0;
+    let i = 0;
+    if (best) {
+      i = OPEN_R.findIndex((x) => x > best!.r);
+      if (i < 0 || !bundleClear(c, p, d, u, v, OPEN_R[i])) continue;
+      r = OPEN_R[i++];
+    }
+    for (; i < OPEN_R.length && bundleClear(c, p, d, u, v, OPEN_R[i]); i++) r = OPEN_R[i];
+    const depth = boxExit(c, p, d);
+    if (!best || r > best.r || (r === best.r && depth < best.depth)) best = { r, depth };
+    if (r >= OPEN_R[OPEN_R.length - 1]) break;
+  }
+  if (best && 2 * best.r < opening - 1e-6) {
+    // near a wall: the tool need not be centred on the support
+    const r = opening / 2;
+    for (const d of free) {
+      const [u, v] = perpPair(d);
+      const center = shiftedClear(c, p, d, u, v, r);
+      if (center) return { r, depth: boxExit(c, center, d) };
+    }
+  }
+  return best;
+}
+
+/**
+ * A way out with one turn: a tool reaches in through an opening, then across
+ * the cavity to the support (the inside of a jar's shoulder, through its
+ * neck). The first leg runs halfway to the wall it faces and must be as wide
+ * as the opening too.
+ */
+function aroundCorner(c: Ctx, p: V3, opening: number): { r: number; depth: number } | null {
+  const r = opening / 2;
+  for (const d of ESCAPE) {
+    const hit = c.bvh.raycast(p[0], p[1], p[2], d[0], d[1], d[2], 0, Infinity, -1);
+    if (!hit || hit.t < 2 * opening) continue;
+    const len = hit.t / 2;
+    const [u, v] = perpPair(d);
+    const start = shiftedClear(c, p, d, u, v, r, len);
+    if (!start) continue;
+    const turn: V3 = [start[0] + d[0] * len, start[1] + d[1] * len, start[2] + d[2] * len];
+    const out = wayOut(c, turn, opening);
+    if (out && 2 * out.r >= opening - 1e-6) return { r: out.r, depth: len + out.depth };
+  }
+  return null;
+}
+
+/** Where the support under triangle t stands, and how a tool (opening wide) gets to it. */
+function supportPoint(c: Ctx, t: number, b: V3, minB: number, opening: number, deepOk: boolean): SupportPoint {
+  const n: V3 = [c.tn[t * 4], c.tn[t * 4 + 1], c.tn[t * 4 + 2]];
+  const e = c.clearEps;
+  const o: V3 = [c.tc[t * 3] + n[0] * e, c.tc[t * 3 + 1] + n[1] * e, c.tc[t * 3 + 2] + n[2] * e];
+  // the column runs straight down to whatever is below: the part or the bed
+  const hit = c.bvh.raycast(o[0], o[1], o[2], -b[0], -b[1], -b[2], 0, Infinity, t);
+  const toBed = dot(o, b) - minB;
+  const onPart = !!hit && hit.t < toBed - e;
+  const h = onPart ? hit!.t : Math.max(0, toBed);
+  const m: V3 = [o[0] - (b[0] * h) / 2, o[1] - (b[1] * h) / 2, o[2] - (b[2] * h) / 2];
+  let best = wayOut(c, m, opening);
+  if (!best || 2 * best.r < opening - 1e-6) best = aroundCorner(c, m, opening) ?? best;
+  if (!best) return { reach: "trapped", r: 0, depth: Infinity, onPart, h };
+  if (2 * best.r < opening - 1e-6) return { reach: "narrow", ...best, onPart, h };
+  if (!deepOk && best.r < OPEN_R[OPEN_R.length - 1] && best.depth > Math.max(20, 8 * best.r)) return { reach: "deep", ...best, onPart, h };
+  return { reach: "open", ...best, onPart, h };
+}
+
+interface SupportSurvey {
+  area: Record<Reach, number>;
+  /** each supported face's class */
+  faces: Map<number, Reach>;
+  /** support volume, mm³ */
+  volume: number;
+  /** supported area whose supports stand on the part */
+  onPart: number;
+  /** narrowest way out among the narrow points, and the deepest among the deep ones */
+  narrowest: number;
+  deepest: { depth: number; r: number } | null;
+  /** flat face resting on the bed, mm² */
+  contact: number;
+}
+
+/**
+ * Supports for one build direction: which faces need them (as overhangs()
+ * decides), how much there is, and how hard each face's supports are to get
+ * at, judged from a few points per face (a third of them decides).
+ */
+function surveySupports(c: Ctx, b: V3, o: NonNullable<Rules["overhang"]>, opening: number, deepOk: boolean, perFace: number, budget: number): { flag: Uint8Array; survey: SupportSurvey; total: number } {
+  const flag = new Uint8Array(c.n);
+  const { area: total, contact } = overhangArea(c, b, o, flag);
+  const survey: SupportSurvey = { area: { open: 0, deep: 0, narrow: 0, trapped: 0 }, faces: new Map(), volume: 0, onPart: 0, narrowest: Infinity, deepest: null, contact };
+  if (total <= 5) return { flag, survey, total };
+  let minB = Infinity;
+  for (let i = 0; i < c.m.pos.length; i += 3) minB = Math.min(minB, c.m.pos[i] * b[0] + c.m.pos[i + 1] * b[1] + c.m.pos[i + 2] * b[2]);
+  const byFace = new Map<number, number[]>();
+  for (let t = 0; t < c.n; t++) {
+    if (!flag[t]) continue;
+    const f = c.m.faceOf[t];
+    const list = byFace.get(f);
+    if (list) list.push(t);
+    else byFace.set(f, [t]);
+  }
+  const per = Math.max(1, Math.min(perFace, Math.floor(budget / Math.max(1, byFace.size))));
+  for (const [f, tris] of byFace) {
+    const counts: Record<Reach, number> = { open: 0, deep: 0, narrow: 0, trapped: 0 };
+    let k = 0;
+    let hSum = 0;
+    let on = 0;
+    const step = Math.max(1, Math.floor(tris.length / per));
+    for (let i = Math.floor(step / 2); i < tris.length && k < per; i += step, k++) {
+      const pt = supportPoint(c, tris[i], b, minB, opening, deepOk);
+      counts[pt.reach]++;
+      hSum += pt.h;
+      if (pt.onPart) on++;
+      if (pt.reach === "narrow") survey.narrowest = Math.min(survey.narrowest, 2 * pt.r);
+      if (pt.reach === "deep" && (!survey.deepest || pt.depth > survey.deepest.depth)) survey.deepest = { depth: pt.depth, r: pt.r };
+    }
+    if (!k) continue;
+    const third = k / 3 - 1e-9;
+    const cls: Reach = counts.trapped >= third ? "trapped" : counts.trapped + counts.narrow >= third ? "narrow" : counts.trapped + counts.narrow + counts.deep >= third ? "deep" : "open";
+    let a = 0;
+    let projected = 0;
+    for (const t of tris) {
+      a += c.tn[t * 4 + 3];
+      projected += c.tn[t * 4 + 3] * Math.abs(dot(c.tn, b, t * 4));
+    }
+    survey.area[cls] += a;
+    survey.faces.set(f, cls);
+    survey.volume += projected * (hSum / k);
+    if (on * 2 >= k) survey.onPart += a;
+  }
+  return { flag, survey, total };
+}
+
+function supportAccess(c: Ctx, rules: Rules): ProcessFinding[] {
+  const sa = rules.supportAccess!;
+  const o = { build: sa.build, max: sa.max, severity: "warn" as const, bridgeR: sa.bridgeR, span: sa.span };
+  // soluble supports only need a way in for the solvent, at any depth
+  const opening = sa.soluble ? 1 : sa.opening;
+  const { flag, survey, total } = surveySupports(c, sa.build, o, opening, sa.soluble, 10, 900);
+  if (total <= 5)
+    return rules.overhang ? [] : [{ rule: "support-access", status: "pass", title: "No supports needed", detail: `No surface faces the ${rules.process === "sla" ? "vat" : "bed"} more steeply than ${fmt(sa.max)}° from vertical` }];
+  const s = survey;
+  const vol = `about ${fmt(s.volume / 1000, s.volume < 1000 ? 2 : 1)} cm³ of support`;
+  const marksOf = (cls: Reach) => c.marks((_s, t) => flag[t] === 1 && s.faces.get(c.m.faceOf[t]) === cls);
+  const bad = s.area.trapped + s.area.narrow;
+  const alt = bad > 0.5 ? betterBuild(c, rules, opening, bad) : undefined;
+  const turn = alt ? ` ${alt.detail}` : "";
+  const out: ProcessFinding[] = [];
+  if (s.area.trapped > 0.5)
+    out.push({
+      rule: "support-trapped",
+      status: "fail",
+      title: "Supports trapped inside",
+      detail: `${mm2(s.area.trapped)} of overhang sits in a closed space, so the support printed under it could never be taken out${sa.soluble ? ", even dissolved: no solvent gets in" : ` (supports here are ${sa.how})`}.`,
+      fix: `Make that ceiling self-supporting (a 45° roof, or a teardrop or diamond hole instead of a flat top), open the cavity toward the ${rules.process === "sla" ? "build plate" : "bed"} so its supports come out through the opening, or split the part along the cavity.${turn}`,
+      marks: marksOf("trapped").marks,
+      alt,
+    });
+  if (s.area.narrow > 0.5) {
+    const w = Number.isFinite(s.narrowest) ? s.narrowest : 0;
+    out.push({
+      rule: "support-narrow",
+      status: sa.soluble ? "warn" : "fail",
+      title: sa.soluble ? "Supports the solvent can barely reach" : "Supports behind a narrow opening",
+      detail: sa.soluble
+        ? `${mm2(s.area.narrow)} of overhang is supported in a space whose way out is under 1 mm wide: the solvent hardly circulates and the support may never fully dissolve.`
+        : `${mm2(s.area.narrow)} of overhang is supported in a space whose way out is ${w > 0 ? `only about ${fmt(w, 1)} mm wide` : "a crack"}, narrower than the ${fmt(sa.opening)} mm a tool needs, so the support cannot be ${sa.how}.`,
+      fix: `Widen the opening to at least ${fmt(sa.soluble ? 2 : sa.opening)} mm, make the ceiling self-supporting (45° roofs, teardrop holes, chamfered ledges), or turn the part so the overhang faces up.${turn}`,
+      value: w,
+      limit: sa.soluble ? 1 : sa.opening,
+      marks: marksOf("narrow").marks,
+      alt,
+    });
+  }
+  if (s.area.deep > 0.5) {
+    const d = s.deepest;
+    out.push({
+      rule: "support-deep",
+      status: "warn",
+      title: "Supports deep in a narrow channel",
+      detail: `${mm2(s.area.deep)} of overhang is supported ${d ? `about ${fmt(d.depth, 0)} mm in through an opening about ${fmt(2 * d.r, 0)} mm wide` : "deep in a narrow space"}: hard to reach, and it tends to break off and stay behind.`,
+      fix: "Make that ceiling self-supporting (a teardrop or diamond channel, 45° roofs), shorten the channel or open a second way in, or turn the part so the channel prints upright.",
+      value: d?.depth,
+      marks: marksOf("deep").marks,
+    });
+  }
+  if (!out.length)
+    out.push({
+      rule: "support-access",
+      status: "pass",
+      title: "Supports come off",
+      detail: `${cap(vol)}, all reachable from outside${s.onPart > 0.5 ? `; ${mm2(s.onPart)} of it stands on the part's own faces and marks both` : ""}`,
+    });
+  else out[0].detail += ` In all, ${vol}${s.onPart > 0.5 ? `, ${mm2(s.onPart)} of it standing on the part's own faces` : ""}.`;
+  return out;
+}
+
+/** The axis build direction whose supports are easiest to remove, if it is clearly better. */
+function betterBuild(c: Ctx, rules: Rules, opening: number, current: number): Alternative | undefined {
+  const sa = rules.supportAccess!;
+  let best: { b: V3; bad: number; total: number } | null = null;
+  for (const b of AXES) {
+    if (sameDir(b, sa.build)) continue;
+    const o = { build: b, max: sa.max, severity: "warn" as const, bridgeR: sa.bridgeR, span: sa.span };
+    const { survey, total } = surveySupports(c, b, o, opening, sa.soluble, 3, 240);
+    if (survey.contact <= 0) continue;
+    const bad = survey.area.trapped + survey.area.narrow;
+    if (!best || bad < best.bad - 1 || (Math.abs(bad - best.bad) <= 1 && total < best.total)) best = { b, bad, total };
+  }
+  if (!best || best.bad > current * 0.5) return undefined;
+  return {
+    setting: "build",
+    value: best.b,
+    label: `Print with ${axisName(best.b)} up`,
+    detail:
+      best.bad < 0.5
+        ? `Printing with ${axisName(best.b)} as the build direction leaves no support that cannot be removed (${mm2(best.total)} supported in all).`
+        : `Printing with ${axisName(best.b)} as the build direction cuts supports that cannot be removed from ${mm2(current)} to ${mm2(best.bad)}.`,
+  };
+}
+
+// ---------------- gaps that fuse shut ----------------
+
+function fusedGaps(c: Ctx, rules: Rules): ProcessFinding[] {
+  const f = rules.fuse!;
+  const gap = c.gap();
+  // a gap is two faces squarely facing each other: parallel planes, or cylinders round parallel axes (a pin in a hole). A
+  // wedge where a boss meets a wall at an angle, or a round boss that just touches a flat wall, is only a corner
+  const facing = new Uint8Array(gap.length);
+  const parallel = (a: FaceInfo, b: FaceInfo) =>
+    a.type === "CYLINDRE" && b.type === "CYLINDRE" ? !!a.axis && !!b.axis && Math.abs(dot(a.axis.d, b.axis.d)) > 0.99 : !(a.type === "CYLINDRE" || b.type === "CYLINDRE");
+  const { tn, tc, eps } = c;
+  for (let s = 0; s < gap.length; s++) {
+    if (!(gap[s] > 2 * eps && gap[s] < f.min - 1e-6)) continue;
+    const t = c.samples[s];
+    const n: V3 = [tn[t * 4], tn[t * 4 + 1], tn[t * 4 + 2]];
+    const h = c.bvh.raycast(tc[t * 3] + n[0] * eps, tc[t * 3 + 1] + n[1] * eps, tc[t * 3 + 2] + n[2] * eps, n[0], n[1], n[2], 0, Infinity, t);
+    if (h && dot(tn, n, h.tri * 4) < -0.95 && parallel(c.face(t), c.face(h.tri))) facing[s] = 1;
+  }
+  const tight = (s: number) => facing[s] === 1;
+  const m = c.marks((s) => tight(s));
+  if (m.area < 1) return [{ rule: "clearance", status: "pass", title: `Gaps at least ${fmt(f.min)} mm`, detail: "No faces close enough to fuse together" }];
+  let w = Infinity;
+  for (let s = 0; s < gap.length; s++) if (tight(s)) w = Math.min(w, gap[s]);
+  return [
+    {
+      rule: "clearance",
+      status: "warn",
+      title: `Gaps under ${fmt(f.min)} mm fuse shut`,
+      detail: `${mm2(m.area)} of facing surfaces are as little as ${fmt(w)} mm apart: ${f.why}. Anything meant to move, slide or come apart there ends up stuck.`,
+      fix: `Open these gaps to at least ${fmt(f.min)} mm (more for parts that move), or close them completely if the faces should be one piece.`,
+      value: w,
+      limit: f.min,
+      marks: m.marks,
+    },
+  ];
+}
+
+// ---------------- the printer against the material ----------------
+
+function printerFit(rules: Rules): ProcessFinding[] {
+  const p = rules.printer!;
+  if (p.needTemp === undefined) return [];
+  const who = rules.machine ? `the ${rules.machine}` : "the printer";
+  if (p.needTemp > p.maxTemp + 1e-6)
+    return [
+      {
+        rule: "printer",
+        status: "fail",
+        title: `Printer too cold for ${rules.material}`,
+        detail: `${rules.material} prints at about ${fmt(p.needTemp, 0)} °C at the nozzle; ${who} reaches ${fmt(p.maxTemp, 0)} °C.`,
+        fix: `Print it in a filament ${who} melts (PETG or PLA where the part's temperature and toughness allow), or use a printer whose hot end reaches ${fmt(p.needTemp, 0)} °C.`,
+        value: p.needTemp,
+        limit: p.maxTemp,
+      },
+    ];
+  if (p.warps && !p.enclosed)
+    return [
+      {
+        rule: "printer",
+        status: "warn",
+        title: `${rules.material} warps on an open printer`,
+        detail: `${rules.material} shrinks as it cools; without an enclosure around ${who} its corners lift off the bed and tall walls split between layers.`,
+        fix: "Print it in an enclosed printer, or in PETG if the part's temperature and toughness allow. Rounded corners and a brim help a little.",
+      },
+    ];
+  return [{ rule: "printer", status: "pass", title: `Printer suits ${rules.material}`, detail: `about ${fmt(p.needTemp, 0)} °C at the nozzle${p.warps ? ", inside an enclosure" : ""}` }];
+}
+
+// ---------------- the milling machine ----------------
+
+/** Highest point of the part along d. */
+function topAlong(c: Ctx, d: V3): number {
+  let top = -Infinity;
+  for (let i = 0; i < c.m.pos.length; i += 3) top = Math.max(top, c.m.pos[i] * d[0] + c.m.pos[i + 1] * d[1] + c.m.pos[i + 2] * d[2]);
+  return top;
+}
+
+/**
+ * Checks that depend on the mill: every wall and corner has a tool that fits
+ * and reaches it, the spindle drives the smallest tool needed, the frame cuts
+ * the material, the stock can be held, and the plan: setups, tools and stock.
+ */
+function machining(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
+  const mc = rules.machining!;
+  const dirs = rules.reach!.dirs;
+  const tools = mc.tools;
+  const smallest = tools[0]?.[0] ?? Infinity;
+  const gap = c.gap();
+  const { tn, tc } = c;
+  const masks = dirs.map((d) => c.clear(d));
+  const tops = dirs.map((d) => topAlong(c, d));
+  const out: ProcessFinding[] = [];
+  const used = new Map<number, number>(); // tool diameter → deepest cut, for the plan
+  let worst: { limit: number; depth: number; gap: number } | null = null;
+  let tightest: { d: number; corner: boolean } | null = null;
+  const short = new Uint8Array(c.samples.length);
+  for (let s = 0; s < c.samples.length; s++) {
+    const t = c.samples[s];
+    const f = c.face(t);
+    if (f.type === "CYLINDRE" && f.fullTurn) continue; // drilled or bored
+    const corner = f.type === "CYLINDRE" && !!f.concave && f.radius !== undefined && !!f.axis;
+    let limit = Number.isFinite(gap[s]) ? gap[s] : Infinity;
+    if (corner) limit = Math.min(limit, 2 * f.radius!);
+    // side walls along the tool, and corner fillets whose axis runs along it
+    const from = dirs.map((d, i) => i).filter((i) => masks[i][s] && (corner ? Math.abs(dot(f.axis!.d, dirs[i])) > 0.98 : Math.abs(dot(tn, dirs[i], t * 4)) < 0.2));
+    // the bottom of the wall has to be reached too: depth at the middle and each corner of the triangle (just inside it), from the setup that comes closest
+    let depth = from.length ? 0 : Infinity;
+    for (let k = 0; k < 4 && from.length; k++) {
+      const v = c.m.idx[t * 3 + Math.min(k, 2)] * 3;
+      const p: V3 = [0, 1, 2].map((j) => (k < 3 ? 0.9 * c.m.pos[v + j] + 0.1 * tc[t * 3 + j] : tc[t * 3 + j])) as V3;
+      let near = Infinity;
+      for (const i of from) near = Math.min(near, tops[i] - dot(p, dirs[i]));
+      depth = Math.max(depth, near);
+    }
+    // floors, faces no setup reaches (the reach check reports those), slots no tool fits (the slot and corner checks do), and
+    // the outside: any tool cuts round it from either side, or it is the stock's own face
+    if (!Number.isFinite(depth) || !Number.isFinite(limit) || limit < smallest - 1e-3) continue;
+    let pick: Tool | null = null;
+    for (const tool of tools) if (tool[0] <= limit + 1e-3 && tool[1] >= depth - 1e-3 && (!pick || tool[0] > pick[0])) pick = tool;
+    if (pick) {
+      used.set(pick[0], Math.max(used.get(pick[0]) ?? 0, depth));
+      if (Number.isFinite(limit) && (!tightest || pick[0] < tightest.d)) tightest = { d: pick[0], corner };
+    } else {
+      short[s] = 1;
+      if (!worst || depth / Math.min(limit, 1e6) > worst.depth / Math.min(worst.limit, 1e6)) worst = { limit, depth, gap: gap[s] };
+    }
+  }
+  const named = rules.machine ? `the ${rules.machine}` : "the machine";
+  const sm = c.marks((s) => short[s] === 1);
+  if (sm.area > 0.5 && worst) {
+    const fits = tools.filter((x) => x[0] <= worst!.limit + 1e-3);
+    const longest = fits.reduce<Tool | null>((a, x) => (!a || x[1] > a[1] ? x : a), null);
+    const reaching = tools.find((x) => x[1] >= worst!.depth - 1e-3);
+    const wanted: Tool = [Number.isFinite(worst.limit) ? Math.floor(worst.limit * 10) / 10 : smallest, Math.ceil(worst.depth)];
+    out.push({
+      rule: "tool-reach",
+      status: mc.library ? "fail" : "warn",
+      title: "Deeper than the tools reach",
+      detail: `${mm2(sm.area)} of walls and corners sit up to ${fmt(worst.depth, 1)} mm deep where ${Number.isFinite(worst.limit) ? `only a tool of Ø${fmt(worst.limit)} or less fits` : "a tool has to reach"}; ${longest ? `the longest-reaching one ${mc.library ? `${named} has` : "in a standard set"} is ${toolName(longest)}` : "no tool fits"}${mc.library ? "" : ` (standard end mills reach about ${fmt(tools[0][1] / tools[0][0], 1)}× their diameter)`}.`,
+      fix: `${reaching && Number.isFinite(worst.limit) ? `Open the corners to R${fmt(reaching[0] / 2 + 0.1, 1)} or slots to ${fmt(reaching[0] + 0.2, 1)} mm so the ${toolName(reaching)} tool fits, ` : ""}make the feature shallower, cut it from the other side (another setup), or add a long-reach ${toolName(wanted)} tool to ${mc.library ? `${named}'s` : "the"} tools list.`,
+      value: worst.depth,
+      limit: longest?.[1],
+      marks: sm.marks,
+    });
+  } else {
+    out.push({ rule: "tool-reach", status: "pass", title: "Tools reach every wall", detail: `Every wall and corner has a tool that fits and reaches it (${tools.map(toolName).join(", ")})` });
+  }
+  // the smallest tool the part needs, against the spindle
+  const minD = slowestTool(mc.cutSpeed, mc.rpm);
+  if (tightest && tightest.d < minD - 1e-6) {
+    const need = (mc.cutSpeed * 1000) / (Math.PI * tightest.d);
+    const ok = tools.find((x) => x[0] >= minD)?.[0] ?? Math.ceil(minD);
+    out.push({
+      rule: "spindle",
+      status: "warn",
+      title: "Spindle too slow for the smallest tool",
+      detail: `The part needs tools as small as Ø${fmt(tightest.d)} mm (for its ${tightest.corner ? "tightest inside corners" : "narrowest slots"}). In ${rules.material} they cut best at about ${fmt(Math.round(need / 1000) * 1000, 0)} rpm, and ${named}'s spindle reaches ${fmt(mc.rpm, 0)} rpm, so they cut slowly and break more often.`,
+      fix: `Open the tightest corners to R${fmt(ok / 2 + 0.1, 1)} and slots to ${fmt(ok + 0.2, 1)} mm or more so a Ø${fmt(ok)} mm tool does the work.`,
+      value: tightest.d,
+      limit: minD,
+    });
+  }
+  // the frame against the material
+  if (mc.frame.status !== "pass")
+    out.push({
+      rule: "machine-material",
+      status: mc.frame.status,
+      title: mc.frame.status === "fail" ? `${cap(mc.frame.name === "router" ? "a router" : "this mill")} cannot cut ${rules.material}` : `Slow going in ${rules.material}`,
+      detail: `${cap(mc.frame.why)}.`,
+      fix: mc.frame.status === "fail" ? `Order it from a shop with a machining centre, or make it in aluminium or plastic if the part allows.` : "Expect slow, light passes and keep corners generous so larger tools do the work, or order it from a shop.",
+    });
+  else out.push({ rule: "machine-material", status: "pass", title: `The mill cuts ${rules.material}`, detail: cap(mc.frame.why) });
+  out.push(...holding(c, rules, dirs[0]));
+  out.push(machiningPlan(c, rules, masks, used, stats));
+  return out;
+}
+
+/** Whether the stock can be held for the first setup: in the vise, and not a thin flexing plate. */
+function holding(c: Ctx, rules: Rules, d: V3): ProcessFinding[] {
+  const mc = rules.machining!;
+  const ax = Math.abs(d[0]) > 0.99 ? 0 : Math.abs(d[1]) > 0.99 ? 1 : Math.abs(d[2]) > 0.99 ? 2 : -1;
+  if (ax < 0) return [];
+  const ext = [c.hi[0] - c.lo[0], c.hi[1] - c.lo[1], c.hi[2] - c.lo[2]];
+  const across = ext.filter((_, i) => i !== ax).sort((a, b) => a - b);
+  const height = ext[ax];
+  const stock = across[0] + 4;
+  const out: ProcessFinding[] = [];
+  if (mc.vise > 0 && stock > mc.vise + 1e-6)
+    out.push({
+      rule: "holding",
+      status: "info",
+      title: "Too wide for the vise",
+      detail: `The stock is at least ${fmt(stock, 0)} mm across even turned its narrow way, and the vise opens ${fmt(mc.vise, 0)} mm.`,
+      fix: "Clamp it to the table or screw it to a fixture plate through its own holes (allow for the clamps in the tool paths), or use a wider vise.",
+      value: stock,
+      limit: mc.vise,
+    });
+  if (height < 4 && across[0] > 40)
+    out.push({
+      rule: "holding",
+      status: "warn",
+      title: "Thin plate to hold",
+      detail: `Only ${fmt(height, 1)} mm thick across ${fmt(across[0], 0)} × ${fmt(across[1], 0)} mm: it flexes in a vise and lifts under the tool.`,
+      fix: "Screw it to a fixture plate, hold it on a vacuum table or with tabs, or cut the outline by laser or waterjet and mill only the details.",
+    });
+  return out;
+}
+
+/** The setups, tools and stock the part needs: an info line for the user and Claude, and setups for the cost estimate. */
+function machiningPlan(c: Ctx, rules: Rules, masks: Uint8Array[], used: Map<number, number>, stats: ProcessStats): ProcessFinding {
+  const mc = rules.machining!;
+  const dirs = rules.reach!.dirs;
+  // directions one setup covers: everything round the rotary axis on a 4-axis, everything from above on a 5-axis
+  const group = (d: V3) => (mc.axes >= 5 ? (d[2] > -0.1 ? "tilting from above" : axisName(d)) : mc.axes === 4 ? (Math.abs(d[0]) < 0.1 ? "on the rotary axis" : axisName(d)) : `from ${axisName(d)}`);
+  const groups = new Map<string, Uint8Array[]>();
+  dirs.forEach((d, i) => groups.set(group(d), [...(groups.get(group(d)) ?? []), masks[i]]));
+  const reached = (s: number, ms: Uint8Array[]) => ms.some((mk) => mk[s]);
+  const left = new Uint8Array(c.samples.length);
+  let remaining = 0;
+  const all = [...groups.values()].flat();
+  for (let s = 0; s < c.samples.length; s++)
+    if (reached(s, all)) {
+      left[s] = 1;
+      remaining += c.sampleArea[s];
+    }
+  const chosen: string[] = [];
+  while (remaining > 0.5 && chosen.length < groups.size) {
+    let best: { key: string; gain: number } | null = null;
+    for (const [key, ms] of groups) {
+      if (chosen.includes(key)) continue;
+      let gain = 0;
+      for (let s = 0; s < c.samples.length; s++) if (left[s] && reached(s, ms)) gain += c.sampleArea[s];
+      if (!best || gain > best.gain) best = { key, gain };
+    }
+    if (!best || best.gain <= 0.5) break;
+    chosen.push(best.key);
+    const ms = groups.get(best.key)!;
+    for (let s = 0; s < c.samples.length; s++)
+      if (left[s] && reached(s, ms)) {
+        left[s] = 0;
+        remaining -= c.sampleArea[s];
+      }
+  }
+  stats.setups = Math.max(1, chosen.length);
+  const ext = [c.hi[0] - c.lo[0], c.hi[1] - c.lo[1], c.hi[2] - c.lo[2]];
+  const stock = ext.map((x) => fmt(Math.ceil(x + 4), 0)).join(" × ");
+  const toolList = [...used.entries()].sort((a, b) => b[0] - a[0]).slice(0, 6);
+  const holes = c.m.faces.filter((f) => f.type === "CYLINDRE" && f.concave && f.fullTurn && f.radius !== undefined).map((f) => 2 * f.radius!);
+  const sizes = [...new Set(holes.map((d) => fmt(d, 1)))];
+  const kind = mc.axes === 5 ? "5-axis" : mc.axes === 4 ? "4-axis" : "3-axis";
+  return {
+    rule: "plan",
+    status: "info",
+    title: `Machining plan: ${plural(stats.setups, "setup")} on ${rules.machine ? `the ${rules.machine}` : `a ${kind} mill`}`,
+    detail: [
+      `Stock about ${stock} mm${mc.vise > 0 ? ` in a vise opening ${fmt(mc.vise, 0)} mm` : ", clamped to the table"}.`,
+      `Setups: ${chosen.join("; ") || "one"}.`,
+      toolList.length ? `End mills: ${toolList.map(([d, depth]) => `Ø${fmt(d)} (to ${fmt(depth, 0)} mm deep)`).join(", ")}.` : "",
+      holes.length ? `Holes: ${holes.length}, Ø${sizes.slice(0, 6).join(", Ø")}${sizes.length > 6 ? "…" : ""}, drilled or bored.` : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+  };
+}
+
+// ---------------- presses: moulding and die casting ----------------
+
+/** Area of the part's shadow along d, mm², rasterised on a grid of about 256 cells across. */
+function shadowArea(c: Ctx, d: V3): number {
+  const [u, v] = perpPair(d);
+  const P = c.m.pos;
+  const nv = P.length / 3;
+  const pu = new Float64Array(nv);
+  const pv = new Float64Array(nv);
+  let lu = Infinity,
+    hu = -Infinity,
+    lv = Infinity,
+    hv = -Infinity;
+  for (let i = 0; i < nv; i++) {
+    pu[i] = P[i * 3] * u[0] + P[i * 3 + 1] * u[1] + P[i * 3 + 2] * u[2];
+    pv[i] = P[i * 3] * v[0] + P[i * 3 + 1] * v[1] + P[i * 3 + 2] * v[2];
+    lu = Math.min(lu, pu[i]);
+    hu = Math.max(hu, pu[i]);
+    lv = Math.min(lv, pv[i]);
+    hv = Math.max(hv, pv[i]);
+  }
+  const cs = Math.max(hu - lu, hv - lv, 1e-6) / 256;
+  const nu = Math.ceil((hu - lu) / cs) + 1;
+  const nvv = Math.ceil((hv - lv) / cs) + 1;
+  const grid = new Uint8Array(nu * nvv);
+  const idx = c.m.idx;
+  for (let t = 0; t < c.n; t++) {
+    if (Math.abs(dot(c.tn, d, t * 4)) < 1e-3) continue;
+    const a = idx[t * 3],
+      b = idx[t * 3 + 1],
+      e = idx[t * 3 + 2];
+    const x0 = (pu[a] - lu) / cs,
+      y0 = (pv[a] - lv) / cs,
+      x1 = (pu[b] - lu) / cs,
+      y1 = (pv[b] - lv) / cs,
+      x2 = (pu[e] - lu) / cs,
+      y2 = (pv[e] - lv) / cs;
+    const area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (Math.abs(area) < 1e-12) continue;
+    const sgn = area > 0 ? 1 : -1;
+    const i0 = Math.max(0, Math.floor(Math.min(x0, x1, x2))),
+      i1 = Math.min(nu - 1, Math.ceil(Math.max(x0, x1, x2)));
+    const j0 = Math.max(0, Math.floor(Math.min(y0, y1, y2))),
+      j1 = Math.min(nvv - 1, Math.ceil(Math.max(y0, y1, y2)));
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
+        if (grid[j * nu + i]) continue;
+        const px = i + 0.5,
+          py = j + 0.5;
+        const w0 = sgn * ((x1 - x0) * (py - y0) - (px - x0) * (y1 - y0));
+        const w1 = sgn * ((x2 - x1) * (py - y1) - (px - x1) * (y2 - y1));
+        const w2 = sgn * ((x0 - x2) * (py - y2) - (px - x2) * (y0 - y2));
+        if (w0 >= 0 && w1 >= 0 && w2 >= 0) grid[j * nu + i] = 1;
+      }
+  }
+  let n = 0;
+  for (let i = 0; i < grid.length; i++) n += grid[i];
+  return n * cs * cs;
+}
+
+function pressFit(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
+  const p = rules.press!;
+  const out: ProcessFinding[] = [];
+  const shadow = shadowArea(c, p.pull);
+  const cav = p.cavities > 1 ? ` × ${p.cavities} cavities` : "";
+  const named = rules.machine ? `the ${rules.machine}` : `a typical ${p.what}`;
+  // runners and the gate add about a tenth to the shadow
+  const tonnes = (shadow * p.pressure * p.cavities * 1.1) / 9806.65;
+  if (tonnes > p.clamp + 1e-6)
+    out.push({
+      rule: "clamp",
+      status: "fail",
+      title: "Needs a bigger press",
+      detail: `The part's shadow along the pull is ${fmt(shadow / 100, 1)} cm²${cav}; at about ${fmt(p.pressure, 0)} MPa in the cavity it takes about ${fmt(tonnes, 0)} t to hold the mould shut, and ${named} has ${fmt(p.clamp, 0)} t. The mould would open and flash.`,
+      fix: `Use a press of at least ${fmt(Math.ceil((tonnes * 1.2) / 10) * 10, 0)} t, mould fewer parts per shot, or reduce the area the part covers seen along the pull (split it).`,
+      value: tonnes,
+      limit: p.clamp,
+    });
+  else out.push({ rule: "clamp", status: "pass", title: `Clamp force about ${fmt(Math.max(1, tonnes), 0)} t`, detail: `${fmt(shadow / 100, 1)} cm² shadow${cav}, within ${named}'s ${fmt(p.clamp, 0)} t` });
+  const cm3 = c.volume() / 1000;
+  const shot = cm3 * p.cavities * 1.15;
+  if (shot > 0.8 * p.shot + 1e-6)
+    out.push({
+      rule: "shot",
+      status: "fail",
+      title: "Shot too big for the press",
+      detail: `${fmt(cm3, 1)} cm³ of part${cav} plus runners is about ${fmt(shot, 0)} cm³ a shot; ${named} shoots up to ${fmt(p.shot, 0)} cm³, and a shot over 80 % of that fills unevenly.`,
+      fix: "Use a bigger press, mould fewer parts per shot, or core out thick sections to cut the volume.",
+      value: shot,
+      limit: 0.8 * p.shot,
+    });
+  else if (p.flowRatio && shot < 0.1 * p.shot)
+    out.push({
+      rule: "shot",
+      status: "warn",
+      title: "Shot small for the press",
+      detail: `About ${fmt(shot, 1)} cm³ a shot is under a tenth of ${named}'s ${fmt(p.shot, 0)} cm³: the plastic waits in the hot barrel for many shots and degrades.`,
+      fix: "Mould more parts per shot (cavities:) or use a smaller press.",
+      value: shot,
+    });
+  else out.push({ rule: "shot", status: "pass", title: `Shot about ${fmt(shot, shot < 10 ? 1 : 0)} cm³`, detail: `within ${named}'s ${fmt(p.shot, 0)} cm³` });
+  const wall = stats.nominalWall;
+  if (p.flowRatio && wall && wall > 0) {
+    const flow = flowLength(c, p.pull);
+    const ratio = flow / wall;
+    if (ratio > p.flowRatio)
+      out.push({
+        rule: "flow",
+        status: "warn",
+        title: "Long flow for the wall",
+        detail: `Plastic flows about ${fmt(flow, 0)} mm from a centre gate to the farthest corner through a ${fmt(wall, 1)} mm wall (${fmt(ratio, 0)}:1); ${rules.material} fills reliably to about ${p.flowRatio}:1, so the far end may not fill.`,
+        fix: "Thicken the wall, plan two or more gates (tell the toolmaker), or use an easier-flowing grade.",
+        value: ratio,
+        limit: p.flowRatio,
+      });
+    else out.push({ rule: "flow", status: "pass", title: "Fills from one gate", detail: `${fmt(ratio, 0)}:1 flow to wall, under ${p.flowRatio}:1` });
+  }
+  return out;
+}
+
+/** Path from a gate at the middle of the face seen along the pull to the farthest point: across, then along the pull. */
+function flowLength(c: Ctx, pull: V3): number {
+  const mid: V3 = [(c.lo[0] + c.hi[0]) / 2, (c.lo[1] + c.hi[1]) / 2, (c.lo[2] + c.hi[2]) / 2];
+  let across = 0;
+  let lo = Infinity;
+  let hi = -Infinity;
+  const P = c.m.pos;
+  for (let i = 0; i < P.length; i += 3) {
+    const r: V3 = [P[i] - mid[0], P[i + 1] - mid[1], P[i + 2] - mid[2]];
+    const s = dot(r, pull);
+    lo = Math.min(lo, s);
+    hi = Math.max(hi, s);
+    across = Math.max(across, Math.hypot(r[0] - pull[0] * s, r[1] - pull[1] * s, r[2] - pull[2] * s));
+  }
+  return across + (hi - lo);
+}
+
+// ---------------- casting: the pour ----------------
+
+function pourFit(c: Ctx, rules: Rules): ProcessFinding[] {
+  const p = rules.pour!;
+  const kg = ((c.volume() / 1000) * p.density) / 1000;
+  const poured = kg / p.yield;
+  const named = rules.machine ? `the ${rules.machine}` : `a typical ${p.what.replace(/'s .*/, "")}`;
+  const kgText = (x: number) => (x < 1 ? `${fmt(x * 1000, 0)} g` : `${fmt(x, 1)} kg`);
+  if (poured > p.maxKg + 1e-9)
+    return [
+      {
+        rule: "pour",
+        status: "fail",
+        title: "Too much to pour at once",
+        detail: `The casting weighs about ${kgText(kg)} in ${rules.material}; with gates and risers that is about ${kgText(poured)} poured, and ${named} pours at most ${kgText(p.maxKg)}.`,
+        fix: "Lighten it (core out thick areas, ribs instead of solid sections), split it into castings that bolt together, or use a larger foundry or caster.",
+        value: poured,
+        limit: p.maxKg,
+      },
+    ];
+  return [{ rule: "pour", status: "pass", title: `About ${kgText(poured)} poured`, detail: `${kgText(kg)} casting; ${named} pours up to ${kgText(p.maxKg)}` }];
 }

@@ -3,7 +3,9 @@
 
 import { z } from "zod";
 import { whenChecked } from "../core/engine";
-import { MAX_DIRECTIONS, PROCESSES, PROCESS_IDS, uniqueDirs } from "../mfg/profiles";
+import { MAX_DIRECTIONS, MAX_TOOLS, PROCESSES, PROCESS_IDS, sortTools, uniqueDirs } from "../mfg/profiles";
+import { specOnMachine } from "../mfg/machines";
+import { userMachines } from "../mfg/userMachines";
 import { processGuideText } from "../mfg/guide";
 import { compareProcesses } from "../mfg/compare";
 import { processFromText } from "../mfg/spec";
@@ -15,7 +17,7 @@ import { bomRows, bomTotal } from "../persist/files";
 import { useSettings } from "../app/settings";
 import { dfaFor } from "../mfg/dfaRuntime";
 import { dfaText, fmtTime } from "../mfg/dfa";
-import type { ProcessId, ProcessSpec, SettingValue } from "../mfg/types";
+import type { ProcessId, SettingValue, Tool } from "../mfg/types";
 import type { V3 } from "../kernel/recipe";
 import type { ToolOutcome } from "./tools";
 
@@ -31,9 +33,10 @@ export const PROCESS_TOOL_DEFS = [
         material: { type: "string", description: "Material name, e.g. ABS or Aluminum 6061. Defaults to the process's usual material." },
         settings: {
           type: "object",
-          description: 'Optional process settings by name, e.g. {"tool_d": 2, "setups": ["Z", "-Z", "X"]} or {"build": "-Z"}. Directions are axis names or [x, y, z].',
+          description: 'Optional process settings by name, e.g. {"tool_d": 2, "setups": ["Z", "-Z", "X"]} or {"build": "-Z"}. Directions are axis names or [x, y, z]; tools are [[diameter, reach], ...].',
           additionalProperties: true,
         },
+        machine: { type: "string", description: "A machine from Settings → Making (or a preset such as \"Prusa MK4S\") to check against. Defaults to the one chosen for this process." },
       },
       required: ["process"],
       additionalProperties: false,
@@ -78,7 +81,7 @@ export const PROCESS_TOOL_DEFS = [
 export const PROCESS_TOOL_TITLES: Record<string, string> = { process_guide: "Reading the process rules", compare_processes: "Comparing processes", plan_manufacturing: "Planning how to make it", review_assembly: "Reviewing the assembly" };
 
 const ProcessIdSchema = z.string().refine((s) => !!processFromText(s), { message: `use one of ${PROCESS_IDS.join(", ")}` });
-const GuideInput = z.object({ process: ProcessIdSchema, material: z.string().max(80).optional(), settings: z.record(z.string(), z.unknown()).optional() });
+const GuideInput = z.object({ process: ProcessIdSchema, material: z.string().max(80).optional(), settings: z.record(z.string(), z.unknown()).optional(), machine: z.string().max(80).optional() });
 const CompareInput = z.object({ part: z.string().min(1).max(120), processes: z.array(ProcessIdSchema).max(PROCESS_IDS.length).optional() });
 const PlanInput = z.object({ part: z.string().min(1).max(120).optional(), quantities: z.array(z.number().int().min(1).max(1e7)).max(5).optional(), processes: z.array(ProcessIdSchema).max(PROCESS_IDS.length).optional() });
 
@@ -102,6 +105,9 @@ function toDir(v: unknown): V3 | null {
   return null;
 }
 
+const isTools = (v: unknown): v is Tool[] =>
+  Array.isArray(v) && v.length > 0 && v.length <= MAX_TOOLS && v.every((t) => Array.isArray(t) && t.length === 2 && t.every((x) => typeof x === "number" && Number.isFinite(x) && x > 0));
+
 /** Validate settings the way mfg.*() does, with errors the assistant can act on. */
 function parseSettings(id: ProcessId, raw: Record<string, unknown>): { settings: Record<string, SettingValue>; errors: string[] } {
   const settings: Record<string, SettingValue> = {};
@@ -120,9 +126,25 @@ function parseSettings(id: ProcessId, raw: Record<string, unknown>): { settings:
       if (dirs.length > MAX_DIRECTIONS) errors.push(`${k}: at most ${MAX_DIRECTIONS} different directions`);
       else settings[k] = dirs;
     } else if (sd.kind === "size" && Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number" && x > 0)) settings[k] = v as V3;
+    else if (sd.kind === "choice" && typeof v === "string" && sd.options?.includes(v)) settings[k] = v;
+    else if (sd.kind === "tools" && isTools(v)) settings[k] = sortTools(v);
     else
       errors.push(
-        `${k}: expected ${sd.kind === "dirs" ? "a list of directions" : sd.kind === "dir" ? 'a direction such as "Z"' : sd.kind === "size" ? "[x, y, z] sizes" : sd.kind === "bool" ? "true or false" : "a non-negative number"}`,
+        `${k}: expected ${
+          sd.kind === "dirs"
+            ? "a list of directions"
+            : sd.kind === "dir"
+              ? 'a direction such as "Z"'
+              : sd.kind === "size"
+                ? "[x, y, z] sizes"
+                : sd.kind === "bool"
+                  ? "true or false"
+                  : sd.kind === "choice"
+                    ? `one of ${sd.options?.join(", ")}`
+                    : sd.kind === "tools"
+                      ? `up to ${MAX_TOOLS} [diameter, reach] pairs in mm`
+                      : "a non-negative number"
+        }`,
       );
   }
   return { settings, errors };
@@ -135,7 +157,13 @@ The user says which processes they have (their own printer, a laser cutter...) a
 - plan_manufacturing answers "how should I make this", "what will it cost" and "what if I made 500": for a part (or the whole design without one) it gives the recommended process and material at a prototype, a small batch and production (or the quantities you pass), the cheapest and best-quality ways, cost per part with setup and tooling, lead time, the quantity where each process becomes cheapest, and every process's geometry checks. Use it instead of guessing costs, and pass the user's own quantities and budget.
 - A cheaper or better route that fails its geometry checks needs design changes first: say which (from its issues) and offer to make them with process_guide's rules.
 - The make tab shows the same plan, with Use buttons. Switch a part's process or material yourself only when the user asked for it; otherwise give the recommendation and its cost difference and let them choose.
-- Costs are estimates for comparing ways to make it, not quotes: say so once, and suggest a quote from a shop before committing to tooling.`;
+- Costs are estimates for comparing ways to make it, not quotes: say so once, and suggest a quote from a shop before committing to tooling.
+
+## Can it really be made
+Every made part is tested on each edit (process findings in the checks) against the user's machine for its process, chosen in Settings → Making and listed with the brief, or a typical shop when none is chosen. process: mfg.cnc_mill(machine: "Shop VMC") picks another machine; settings on the part override the machine's. The tests: printing checks overhangs and whether every support can be got out (support-trapped, support-narrow, support-deep), gaps that fuse shut, bed size and whether the printer reaches the material's temperature or needs an enclosure; milling checks tool-reach (each pocket and inside corner against the machine's tools, diameter × reach), setups for 3, 4 or 5 axes, travel, vise, spindle speed for the smallest tool and whether the frame cuts the material, and plans the setups; turning checks size, slenderness, bores and live tooling; moulding and die casting check draft, walls, undercuts, clamp force, shot size and flow length; casting checks the envelope and pour weight; sheet and cutting check bends, brake length and tonnage, plate thickness, bed size and whether the cutter cuts the material.
+- Design to the machine from the start: process_guide gives its rules. Inside corners a little larger than the tool that reaches that depth, pockets no deeper than that tool reaches, features reachable in few setups, ceilings inside printed cavities at 45° (chamfers, teardrop or diamond holes) rather than flat.
+- Do not show a design while a process check fails. Trapped or narrow supports: make the ceiling self-supporting, open the cavity, turn the part (the finding offers a better build direction) or split it; soluble support only when the printer has it. Tool reach: bigger radii, shallower or wider pockets, or a split into machinable pieces. Press, pour, brake or cutter limits: fewer cavities, a lighter part, or another process. Fix cheap warnings and explain the rest in a line.
+- When a result hangs on a machine the user has not chosen, say what was assumed and that Settings → Making can set theirs.`;
 }
 
 const err = (content: string, title: string): ToolOutcome => ({ isError: true, content, card: { title, detail: content, status: "error" } });
@@ -148,9 +176,9 @@ export async function runProcessTool(name: string, input: unknown): Promise<Tool
       const id = processFromText(p.data.process)!;
       const { settings, errors } = parseSettings(id, p.data.settings ?? {});
       if (errors.length) return err(`Settings not applied: ${errors.join("; ")}`, "Invalid process settings");
-      const spec: ProcessSpec = { id, settings };
+      const on = specOnMachine({ id, settings, ...(p.data.machine ? { machine: p.data.machine } : {}) }, userMachines());
       return {
-        content: processGuideText(spec, p.data.material),
+        content: processGuideText(on.spec, p.data.material, { name: on.machine, missing: on.missing }),
         card: { title: `Read the ${PROCESSES[id].label} rules`, detail: p.data.material ? `for ${p.data.material}` : undefined },
       };
     }
