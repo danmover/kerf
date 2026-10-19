@@ -116,6 +116,28 @@ describe("detailed modelling", () => {
   });
 });
 
+describe("a flexure's locking pin", () => {
+  const arm = (pin: string) => `design "t"
+part arm {
+  body box(10, 4, 20)
+  add flexure(at: (0, 0, 20), length: 20, t: 1.2, w: 8, dir: Z, facing: -Y, travel: 2${pin})
+}`;
+  it("stands out of the blade's face as far as it reaches, and a teardrop point adds only its point", () => {
+    const [plain] = buildAll(arm(""));
+    const [pinned] = buildAll(arm(", pin: 3, reach: 5, pin_at: 15"));
+    const [pointed] = buildAll(arm(", pin: 3, reach: 5, pin_at: 15, teardrop: -Z"));
+    for (const b of [plain, pinned, pointed]) expect(b.fast.warnings).toEqual([]);
+    const v = (b: typeof plain) => solidVolume(b.fast.shape);
+    // the pin's length outside the blade: 5 mm of Ø3
+    expect(v(pinned) - v(plain)).toBeCloseTo(Math.PI * 1.5 ** 2 * 5, 0);
+    // the point: the part of a 45° kite round the circle that the circle leaves out, r²(1 − π/4), over the same length
+    expect(v(pointed) - v(pinned)).toBeCloseTo(1.5 ** 2 * (1 - Math.PI / 4) * 5, 0);
+    const [lo, hi] = pointed.fast.shape.boundingBox.bounds;
+    expect(lo[1]).toBeCloseTo(-0.6 - 5, 1);
+    expect(hi[1]).toBeCloseTo(2, 1);
+  });
+});
+
 describe("threads", () => {
   const m3: ThreadSpec3 = { d: 3, pitch: 0.5, form: "iso", starts: 1, left: false, clearance: 0 };
 

@@ -116,6 +116,15 @@ function flexureItem(p: EvalPart, f: FlexInfo): CheckItem {
     ? `Living hinge ${n2(f.t)} mm thick and ${n2(f.length)} mm long, bent ${n1(f.angle!)}°: stiffness ${n1(r.stiffness!)} N·mm/rad, ${n1(r.load!)} N·mm at full bend.`
     : `Blade ${n2(f.t)} × ${n2(f.w)} mm, ${n2(f.length)} mm long, moved ${n2(f.deflection)} mm: ${n2(r.stiffness!)} N/mm, ${n1(r.load!)} N at full travel.`;
   detail += ` It strains ${pc(r.strain)}; ${p.material} takes about ${pc(r.limit)} ${hinge && r.limit >= 0.2 ? "folded as a living hinge" : `over ${big(cycles)} cycles`}${across ? " printed with its layers across the blade" : ""}.`;
+  if (f.peg && !hinge) {
+    // a pin held in a hole on both sides of what it holds lets go only when it shears through twice: 2 × 0.6 × yield × area
+    const m = materialRecord(p.material);
+    const shear = m ? 2 * 0.6 * m.mech.yield * ((Math.PI * f.peg * f.peg) / 4) : NaN;
+    // a cantilever's deflection at a from its root, for its tip moved δ: δ a²(3L − a) / 2L³
+    const a = f.pinAt ?? f.length;
+    const back = (f.deflection * a * a * (3 * f.length - a)) / (2 * f.length ** 3);
+    detail += ` Its Ø${n2(f.peg)} mm pin, ${n2(a)} mm from the root, stands ${n2(f.reach ?? 0)} mm out of the blade; full travel draws it back ${n2(back)} mm. Held on both sides of what it goes through, it lets go only by shearing twice${Number.isFinite(shear) ? `, at about ${n1(shear)} N` : ""}.`;
+  }
   let status: CheckStatus = "pass";
   let fix: string | undefined;
   if (r.strain > r.limit) {

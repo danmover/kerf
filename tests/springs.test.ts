@@ -61,6 +61,30 @@ describe("springs, snap fits and flexures", () => {
     expect(items[0].detail).toMatch(/Ø3 mm peg clicks into the hole and holds until it shears at about [\d.]+ N/);
   });
 
+  it("puts a locking pin on a flexure blade, says how far it draws back and what shears it, and refuses one it cannot hold", () => {
+    const { m, items } = checks(`part clip {
+  material: "ASA"
+  process: mfg.fdm(build: Z)
+  body box(30, 20, 3)
+  add flexure(at: (0, 0, 3), length: 20, t: 1.2, w: 8, dir: Y, facing: -X, travel: 3, cycles: 500, pin: 3, reach: 5, pin_at: 16, teardrop: -Z) as arm
+}`);
+    const f = m.parts[0].flex![0];
+    expect(f).toMatchObject({ kind: "flexure", peg: 3, reach: 5, pinAt: 16 });
+    // 3 × 16²(60 − 16) / (2 × 20³) of the tip's 3 mm
+    expect(items[0].detail).toMatch(/Ø3 mm pin, 16 mm from the root, stands 5 mm out of the blade; full travel draws it back 2\.11 mm/);
+    expect(items[0].detail).toMatch(/lets go only by shearing twice, at about [\d.]+ N/);
+    const errs = (args: string) =>
+      evaluate(`design "t"\npart p { body box(30, 20, 3)\n add flexure(at: (0, 0, 3), length: 20, t: 1.2, w: 8, dir: Y, facing: -X, ${args}) }`)
+        .diagnostics.filter((d) => d.severity === "error")
+        .map((d) => d.message)
+        .join(" ");
+    expect(errs("travel: 2, reach: 5")).toMatch(/give its diameter with pin:/);
+    expect(errs("travel: 2, pin: 3, reach: 5, pin_at: 19.5")).toMatch(/pin_at must keep the pin on the blade/);
+    expect(errs("angle: 90, pin: 3, reach: 5")).toMatch(/not a living hinge/);
+    expect(errs("travel: 2, pin: 10, reach: 5")).toMatch(/no wider than the blade/);
+    expect(errs("travel: 2, pin: 3, reach: 5, teardrop: X")).toMatch(/across the pin, not along it/);
+  });
+
   it("says whether a latch stays tight or goes slack", () => {
     const latch = (extra: string) =>
       checks(`part clip {

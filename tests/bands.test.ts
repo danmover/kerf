@@ -227,7 +227,7 @@ describe("the seatpost number bracket", () => {
     expect(bands.every((i) => i.status === "pass")).toBe(true);
   }, 120_000);
 
-  it("plays the bracket and its pad on, the O-ring, the number clicking in with its print and each load it is checked for", async () => {
+  it("plays the bracket and its pad on, the O-ring, the number pinned in with its print and each load it is checked for", async () => {
     const r = await fullCheck(src);
     const steps = fittingSteps(r.model, (p) => r.core.get(p.hash)?.bbox as never);
     expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "slide", "hold", "hold", "hold"]);
@@ -242,7 +242,10 @@ describe("the seatpost number bracket", () => {
     expect(name(slide.part)).toBe("number");
     // the print and the transponder sticker go in with it
     expect(slide.riders.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
-    expect(slide.caption).toMatch(/clicks into its hole: about \d+(\.\d)? N/);
+    expect(slide.caption).toMatch(/^Pull the arm back \(about \d+(\.\d)? N\), slide Race number \(4004\) in and let go: the pin goes through its hole and on into the far side/);
+    // the pin is found where it passes through the number, not in the cheek it starts from
+    const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
+    expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);
     // in the stress results the bracket carries its pad and the number, and the number its print, so they move with it
     const carried = carriedBy(r.model, (p) => r.core.get(p.hash)?.bbox as never);
     expect(carried.get(seat.part)!.map(name).sort()).toEqual(["number", "pad"]);

@@ -37,9 +37,9 @@ const bandName = (name: string) => name.replace(/_/g, " ").replace(/\bo ?ring\b/
 /** Every part that moves when the given one does: the parts whose box lies inside its own. */
 export const moves = (s: Extract<FitStep, { kind: "seat" | "slide" }>) => [s.part, ...s.riders];
 
-/** Whether the design has anything that goes on by hand worth showing: a band hooked at both ends, or a snap that clicks onto a peg. */
+/** Whether the design has anything that goes on by hand worth showing: a band hooked at both ends, or a snap or a sprung pin that holds a part by a hole. */
 export function hasFitting(model: Model): boolean {
-  return model.parts.some((p) => p.band?.layout.doubled || p.flex?.some((f) => f.kind === "snap" && f.peg));
+  return model.parts.some((p) => p.band?.layout.doubled || p.flex?.some((f) => (f.kind === "snap" || f.kind === "flexure") && f.peg));
 }
 
 /**
@@ -87,10 +87,14 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
     });
   }
 
-  // a part that clicks onto a peg: the part around the peg slides in along the arm, toward its root
+  // a part that clicks onto a peg, or that a sprung arm pins through its hole: the part slides in along the arm, toward its root
   for (const { host: p, flex: f, mate, peg } of pegMates(model, bbox, riding)) {
     const along = vnorm(applyXformsToDir(f.dir, p.xf));
-    const push = flexCalc(f, p.material, 1).push ?? 0;
+    const calc = flexCalc(f, p.material, 1);
+    const caption =
+      f.kind === "snap"
+        ? `Slide ${mate.label} in along the tongue until the peg clicks into its hole: about ${fmtNum(calc.push ?? 0, 1)} N. Lift the tongue to slide it out.`
+        : `Pull the arm back (about ${fmtNum(calc.load ?? 0, 1)} N), slide ${mate.label} in and let go: the pin goes through its hole and on into the far side, so it cannot slip past. Pull the arm back again to take it out.`;
     steps.push({
       kind: "slide",
       part: mate.id,
@@ -99,7 +103,7 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       from: vscale(along, 2 * f.length + 10),
       peg,
       title: `Slide ${mate.label} in`,
-      caption: `Slide ${mate.label} in along the tongue until the peg clicks into its hole: about ${fmtNum(push, 1)} N. Lift the tongue to slide it out.`,
+      caption,
       dur: 3,
     });
   }
@@ -127,19 +131,28 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
 
 const volumeOf = (b: [V3, V3]) => (b[1][0] - b[0][0]) * (b[1][1] - b[0][1]) * (b[1][2] - b[0][2]);
 
-/** Each peg snap and the part it clicks into: the smallest part round the peg, not what the whole thing sits on nor the print on it (riding). */
+/**
+ * Each peg snap or pinned flexure and the part it holds: the smallest part round the peg (or anywhere along the pin), not
+ * what the whole thing sits on nor the print on it (riding).
+ */
 function pegMates(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined, riding: ReadonlySet<string>): { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3 }[] {
   const out: { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3 }[] = [];
   for (const p of model.parts)
     for (const f of p.flex ?? []) {
-      if (f.kind !== "snap" || !f.peg) continue;
-      const tip = vadd(vadd(f.at, vscale(vnorm(f.dir), f.length - f.peg / 2)), vscale(vnorm(f.facing), f.t / 2 + f.deflection / 2));
-      const peg = applyXforms(tip, p.xf);
-      const mate = model.parts
-        .filter((q) => q.id !== p.id && !q.band && !riding.has(q.id) && contains(q, bbox(q), peg))
-        .map((q) => ({ q, size: volumeOf(bbox(q)!) }))
-        .sort((a, b) => a.size - b.size)[0]?.q;
-      if (mate) out.push({ host: p, flex: f, mate, peg });
+      if ((f.kind !== "snap" && f.kind !== "flexure") || !f.peg) continue;
+      const face = vnorm(f.facing);
+      // a snap's peg stands half its catch out of the arm; a flexure's pin reaches through what it holds and beyond
+      const base = vadd(f.at, vscale(vnorm(f.dir), f.kind === "snap" ? f.length - f.peg / 2 : (f.pinAt ?? f.length - f.peg / 2)));
+      const along = f.kind === "snap" ? [f.t / 2 + f.deflection / 2] : [0.2, 0.4, 0.6, 0.8, 0.95].map((k) => f.t / 2 + k * (f.reach ?? 0));
+      const best = along
+        .map((s) => applyXforms(vadd(base, vscale(face, s)), p.xf))
+        .flatMap((peg) =>
+          model.parts
+            .filter((q) => q.id !== p.id && !q.band && !riding.has(q.id) && contains(q, bbox(q), peg))
+            .map((q) => ({ q, peg, size: volumeOf(bbox(q)!) })),
+        )
+        .sort((a, b) => a.size - b.size)[0];
+      if (best) out.push({ host: p, flex: f, mate: best.q, peg: best.peg });
     }
   return out;
 }
