@@ -144,3 +144,112 @@ const DEFAULT_MATERIAL: Record<ProcessId, string> = {
 export function defaultMaterial(process: ProcessId): string {
   return DEFAULT_MATERIAL[process];
 }
+
+// ---------------- what a machine needs to know about the material ----------------
+
+/** Nozzle temperature (°C) and warping for FDM filaments, most specific name first. */
+const FDM_NEEDS: [RegExp, number, boolean][] = [
+  [/peek/i, 400, true],
+  [/\bpei\b|ultem/i, 380, true],
+  [/nylon ?cf|\bpa ?(6|12)? ?-?cf\b|carbon/i, 280, true],
+  [/nylon|\bpa ?(6|11|12)?\b/i, 270, true],
+  [/polycarbonate|\bpc\b/i, 290, true],
+  [/\basa\b/i, 255, true],
+  [/\babs\b/i, 250, true],
+  [/polypropylene|\bpp\b/i, 240, true],
+  [/\bpom\b|acetal|delrin/i, 220, true],
+  [/\bpetg?\b/i, 240, false],
+  [/\btpu\b|\btpe\b/i, 230, false],
+  [/\bpla\b/i, 215, false],
+];
+
+/** What an FDM printer needs for a filament: nozzle temperature and whether it warps without an enclosure. Null when it is not a filament Kerf knows. */
+export function fdmNeeds(material: string): { temp: number; warps: boolean } | null {
+  for (const [re, temp, warps] of FDM_NEEDS) if (re.test(material)) return { temp, warps };
+  return null;
+}
+
+/** How hard a material is to mill, for matching it to a machine's frame. */
+export type CutClass = "wood" | "plastic" | "light metal" | "steel" | "tough metal";
+
+/**
+ * A material's milling class and carbide cutting speed (m/min), from common
+ * feeds-and-speeds tables. The speed sets the spindle speed a small tool needs.
+ */
+export function millClass(material: string): { cls: CutClass; speed: number } {
+  const m = material.toLowerCase();
+  if (/titanium|inconel|hastelloy|nickel/.test(m)) return { cls: "tough metal", speed: 45 };
+  if (/stainless/.test(m)) return { cls: "tough metal", speed: 80 };
+  if (/cast iron/.test(m)) return { cls: "steel", speed: 120 };
+  if (/steel/.test(m)) return { cls: "steel", speed: 120 };
+  if (/brass|bronze|copper/.test(m)) return { cls: "light metal", speed: 200 };
+  if (/alumin|alsi|a356|a380|zamak|zinc|magnesium/.test(m)) return { cls: "light metal", speed: 300 };
+  const info = materialInfo(material);
+  if (info.family === "wood") return { cls: "wood", speed: 500 };
+  if (info.family === "metal") return { cls: "steel", speed: 120 };
+  return { cls: "plastic", speed: 250 };
+}
+
+/** Whether a mill's frame cuts a material class: a router flexes in steel, a benchtop mill is slow in stainless. */
+export function frameFit(frame: string, material: string): { status: "pass" | "warn" | "fail"; why: string } {
+  const { cls } = millClass(material);
+  if (frame === "router") {
+    if (cls === "steel" || cls === "tough metal") return { status: "fail", why: `a router's frame flexes too much to cut ${material}: the tool chatters and breaks` };
+    if (cls === "light metal") return { status: "warn", why: `a router cuts ${material} only with light, shallow passes: slow, with a rougher finish and more broken small tools` };
+  }
+  if (frame === "benchtop" && cls === "tough metal") return { status: "warn", why: `a benchtop mill cuts ${material} only slowly, with light passes` };
+  return { status: "pass", why: `a ${frame === "vmc" ? "machining centre" : frame === "benchtop" ? "benchtop mill" : "router"} cuts ${material}` };
+}
+
+/** Injection cavity pressure (MPa) for the clamp force: easy-flowing plastics need less. */
+export function mouldPressure(material: string): number {
+  const m = material.toLowerCase();
+  if (/\bcf\b|glass|gf\b|carbon/.test(m)) return 60;
+  if (/polycarbonate|\bpc\b|acrylic|pmma/.test(m)) return 55;
+  if (/nylon|\bpa\b|\bpom\b|acetal/.test(m)) return 45;
+  if (/polypropylene|\bpp\b|\bpe\b|polyethylene|tpu|tpe/.test(m)) return 30;
+  return 40;
+}
+
+/** Longest flow from the gate as a multiple of the wall before a mould stops filling, by plastic. */
+export function flowRatio(material: string): number {
+  const m = material.toLowerCase();
+  if (/polypropylene|\bpp\b|\bpe\b|polyethylene/.test(m)) return 250;
+  if (/tpu|tpe/.test(m)) return 200;
+  if (/\bcf\b|glass|gf\b/.test(m)) return 120;
+  if (/polycarbonate|\bpc\b|acrylic|pmma/.test(m)) return 120;
+  if (/\bpom\b|acetal/.test(m)) return 150;
+  if (/abs|asa|nylon|\bpa\b|\bps\b|hips/.test(m)) return 180;
+  return 150;
+}
+
+/** Laser, waterjet and plasma cutting sources, and what each cuts. */
+export const CUTTER_SOURCES = ["any", "co2", "diode", "fiber", "plasma", "waterjet"] as const;
+
+/** Whether a cutting source cuts a material. "any" lets the shop pick. */
+export function cutterFit(source: string, material: string): { status: "pass" | "warn" | "fail"; why: string } {
+  const info = materialInfo(material);
+  const metal = info.family === "metal";
+  const m = material.toLowerCase();
+  const pass = (why: string) => ({ status: "pass" as const, why });
+  switch (source) {
+    case "co2":
+      if (metal) return { status: "fail", why: `a CO2 laser does not cut ${material}; a fiber laser, waterjet or plasma does` };
+      if (/pvc|vinyl/.test(m)) return { status: "fail", why: "PVC gives off chlorine gas when laser cut, which harms people and the machine" };
+      if (/polycarbonate|\bpc\b|\babs\b|petg/.test(m)) return { status: "warn", why: `${material} melts and browns along a CO2-laser cut; waterjet or mill it for clean edges` };
+      return pass(`a CO2 laser cuts ${material}`);
+    case "diode":
+      if (metal) return { status: "fail", why: `a diode laser does not cut ${material}` };
+      if (/acrylic|pmma/.test(m)) return { status: "warn", why: "a diode laser's blue light passes through clear and light acrylic; it cuts only dark, opaque sheet" };
+      if (info.family !== "wood") return { status: "warn", why: `a diode laser cuts ${material} poorly; it is made for thin wood and dark acrylic` };
+      return pass(`a diode laser cuts thin ${material}`);
+    case "fiber":
+      if (!metal) return { status: "fail", why: `a fiber laser's light passes through or chars ${material}; a CO2 laser or waterjet cuts it` };
+      return pass(`a fiber laser cuts ${material}`);
+    case "plasma":
+      if (!metal) return { status: "fail", why: `plasma cuts only metals, not ${material}` };
+      return pass(`plasma cuts ${material}, with a rougher, slightly bevelled edge`);
+    default:
+      return pass(source === "waterjet" ? `a waterjet cuts ${material}` : "the shop picks a cutter that suits the material");
+  }
+}

@@ -28,7 +28,8 @@ export function reviewerPrompt(): string {
    - edges people touch or grip: break them (0.5 to 1 mm fillet or chamfer); hidden internal edges can stay sharp
    - hole rims where screws, pins or heat-set inserts go in: a chamfer or countersink as a lead-in
    - sharp internal corners in a load path or a snap fit: fillet them
-   - overhangs that would need support: a better print orientation, a 45° chamfer, or a split
+   - overhangs that would need support: a better print orientation, a 45° chamfer, or a split. Supports the process checks say cannot be got out (support-trapped, support-narrow) are blockers
+   - what the process checks say the machine cannot do (a pocket or corner its tools cannot reach, a face no setup reaches, a press, furnace, brake or cutter too small): blockers, with the fix the finding gives
    - walls under the process minimum (about 1.2 mm for FDM, three 0.4 mm perimeters), or so thick they waste time and material
    - unexplained dimensions: values a revision must change should be named params or derived from the skeleton
    - parts fitted or removed by hand (bands, straps, clips, things slid on): walk through doing it in order. Every band has something to hook or slot onto, a closed loop never has to pass round a tube that carries on past it, a clip has a lead-in and a way to release it, a seat held by one band has a grippy pad, and an analysis or check shows it stays on under the use's loads

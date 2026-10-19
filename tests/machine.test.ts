@@ -361,11 +361,12 @@ describe("sand tunneller", () => {
     const r = await fullCheck(TUNNELLER);
     expect([...r.buildErrors.values()]).toEqual([]);
     expect(problems(r.report, ["fail"])).toEqual([]);
-    // the only warnings are print advice: supports under the screw flights and overhangs, and thin skins
-    // where the screw-access channels and inserts sit close to the surface of the nose and tail
+    // the only warnings are print advice: supports under the screw flights and overhangs, supports deep inside the
+    // long body tubes, a hairline gap that prints closed, and thin skins where the screw-access channels and
+    // inserts sit close to the surface of the nose and tail
     const warns = r.report.items.filter((i) => i.status === "warn");
     expect(warns.filter((i) => i.category !== "process").map((i) => i.title)).toEqual([]);
-    expect([...new Set(warns.map((i) => i.id.split(":")[2]))].sort()).toEqual(["knife-edge", "overhang", "wall-thin"]);
+    expect([...new Set(warns.map((i) => i.id.split(":")[2]))].sort()).toEqual(["clearance", "knife-edge", "overhang", "support-deep", "wall-thin"]);
     // every printed part has a process and fits a 220 × 220 × 250 printer the way it is meant to print
     const printed = r.model.parts.filter((p) => p.kind === "part");
     expect(printed.every((p) => p.process?.id === "fdm")).toBe(true);

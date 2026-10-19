@@ -5,10 +5,11 @@
 // guides) and are deliberately on the safe side.
 
 import type { V3 } from "../kernel/recipe";
-import { isMetal, materialInfo, suggestMaterials } from "./materials";
-import type { ProcessId, ProcessSpec, Rules, SettingValue } from "./types";
+import { materialRecord } from "../library/materialDb";
+import { CUTTER_SOURCES, cutterFit, fdmNeeds, flowRatio, frameFit, isMetal, materialInfo, millClass, mouldPressure, suggestMaterials } from "./materials";
+import type { ProcessId, ProcessSpec, Rules, SettingValue, Tool } from "./types";
 
-export type SettingKind = "number" | "bool" | "dir" | "dirs" | "size";
+export type SettingKind = "number" | "bool" | "dir" | "dirs" | "size" | "choice" | "tools";
 
 export interface SettingDef {
   key: string;
@@ -16,6 +17,10 @@ export interface SettingDef {
   /** null: worked out from the geometry */
   def: SettingValue | null;
   doc: string;
+  /** describes the machine or shop rather than this part, so a machine profile (Settings → Making) sets it */
+  machine?: boolean;
+  /** choice: the values allowed */
+  options?: readonly string[];
 }
 
 export interface ProcessDef {
@@ -52,14 +57,18 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     output: "STL or 3MF, sliced for the printer",
     bestFor: "prototypes, jigs and low volumes in PLA, PETG, ABS, ASA or nylon",
     settings: [
-      { key: "nozzle", kind: "number", def: 0.4, doc: "nozzle diameter, mm" },
+      { key: "nozzle", kind: "number", def: 0.4, doc: "nozzle diameter, mm", machine: true },
       { key: "layer", kind: "number", def: 0.2, doc: "layer height, mm" },
       { key: "build", kind: "dir", def: Z, doc: "build direction in the part's frame (Z: printed as modelled; -Z: upside down)" },
-      { key: "overhang", kind: "number", def: 45, doc: "steepest unsupported overhang, degrees from vertical" },
+      { key: "overhang", kind: "number", def: 45, doc: "steepest unsupported overhang, degrees from vertical", machine: true },
       { key: "supports", kind: "bool", def: true, doc: "support material allowed (false makes overhangs failures)" },
-      { key: "bed", kind: "size", def: [250, 210, 210], doc: "build volume (x, y, z), mm" },
-      { key: "hole_comp", kind: "number", def: 0, doc: "slicer X-Y hole compensation, mm: holes print this much larger in radius" },
-      { key: "shrink_comp", kind: "bool", def: false, doc: "slicer scales the part up to cancel the plastic's shrink as it cools (filament shrinkage setting)" },
+      { key: "bed", kind: "size", def: [250, 210, 210], doc: "build volume (x, y, z), mm", machine: true },
+      { key: "hole_comp", kind: "number", def: 0, doc: "slicer X-Y hole compensation, mm: holes print this much larger in radius", machine: true },
+      { key: "shrink_comp", kind: "bool", def: false, doc: "slicer scales the part up to cancel the plastic's shrink as it cools (filament shrinkage setting)", machine: true },
+      { key: "soluble", kind: "bool", def: false, doc: "supports print in a soluble material (PVA, BVOH) from a second nozzle and dissolve out of places no tool reaches", machine: true },
+      { key: "max_temp", kind: "number", def: 300, doc: "hottest the nozzle runs, °C", machine: true },
+      { key: "enclosed", kind: "bool", def: true, doc: "an enclosure keeps ABS, ASA, nylon and PC warm enough not to warp", machine: true },
+      { key: "bridge", kind: "number", def: 10, doc: "widest flat ceiling it bridges without support, mm", machine: true },
     ],
   },
   sla: {
@@ -73,7 +82,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     bestFor: "small detailed parts, smooth cosmetic models and moulding masters",
     settings: [
       { key: "build", kind: "dir", def: Z, doc: "build direction" },
-      { key: "bed", kind: "size", def: [145, 145, 185], doc: "build volume (x, y, z), mm" },
+      { key: "bed", kind: "size", def: [145, 145, 185], doc: "build volume (x, y, z), mm", machine: true },
     ],
   },
   sls: {
@@ -85,7 +94,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     tolerance: 0.3,
     output: "STL or 3MF",
     bestFor: "functional nylon parts, complex shapes and low-to-mid volumes without tooling",
-    settings: [{ key: "bed", kind: "size", def: [300, 300, 300], doc: "build volume (x, y, z), mm" }],
+    settings: [{ key: "bed", kind: "size", def: [300, 300, 300], doc: "build volume (x, y, z), mm", machine: true }],
   },
   metal_print: {
     id: "metal_print",
@@ -98,7 +107,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     bestFor: "complex or lightweighted metal parts, internal channels, and one-offs to tens in aluminium (AlSi10Mg), stainless 316L or titanium",
     settings: [
       { key: "build", kind: "dir", def: Z, doc: "build direction in the part's frame (Z: built as modelled)" },
-      { key: "bed", kind: "size", def: [250, 250, 300], doc: "build volume (x, y, z), mm" },
+      { key: "bed", kind: "size", def: [250, 250, 300], doc: "build volume (x, y, z), mm", machine: true },
     ],
   },
   cnc_mill: {
@@ -112,10 +121,15 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     output: "STEP plus a drawing for toleranced features and threads",
     bestFor: "precise metal and engineering-plastic parts in low to mid volumes",
     settings: [
-      { key: "tool_d", kind: "number", def: 3, doc: "smallest end mill diameter, mm (sets the tightest inside corner and narrowest slot)" },
+      { key: "tool_d", kind: "number", def: 3, doc: "smallest end mill diameter, mm (sets the tightest inside corner and narrowest slot)", machine: true },
       { key: "setups", kind: "dirs", def: [Z, NZ], doc: "directions the tool comes from, one per setup (add X, -Y... for side work)" },
-      { key: "max_depth", kind: "number", def: 4, doc: "deepest pocket as a multiple of its width" },
-      { key: "envelope", kind: "size", def: [600, 400, 300], doc: "machine travel (x, y, z), mm" },
+      { key: "max_depth", kind: "number", def: 4, doc: "how deep the end mills reach, as a multiple of their diameter (used when no tools list is given)", machine: true },
+      { key: "envelope", kind: "size", def: [600, 400, 300], doc: "machine travel (x, y, z), mm", machine: true },
+      { key: "axes", kind: "number", def: 3, doc: "3 (tool from above, the part flipped by hand for each side), 4 (a rotary axis about X turns the part) or 5 (the tool tilts to any side from above)", machine: true },
+      { key: "tools", kind: "tools", def: null, doc: "end mills as (diameter, reach) pairs, mm, e.g. [(6, 25), (3, 12), (1, 4)]; reach is the flute or neck length (default: sizes from tool_d up, each reaching max_depth × its diameter)", machine: true },
+      { key: "rpm", kind: "number", def: 12000, doc: "fastest spindle speed, rpm", machine: true },
+      { key: "frame", kind: "choice", def: "vmc", options: ["router", "benchtop", "vmc"], doc: "router (wood, plastic, light aluminium), benchtop mill (aluminium and steel) or vmc (an industrial machining centre: anything)", machine: true },
+      { key: "vise", kind: "number", def: 200, doc: "widest the vise opens, mm (0: stock is clamped or screwed to the table)", machine: true },
     ],
   },
   cnc_lathe: {
@@ -130,8 +144,9 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     bestFor: "shafts, bushings, spacers and anything round",
     settings: [
       { key: "axis", kind: "dir", def: Z, doc: "spindle axis in the part's frame" },
-      { key: "max_d", kind: "number", def: 200, doc: "largest diameter the machine turns, mm" },
-      { key: "max_length", kind: "number", def: 300, doc: "longest part, mm" },
+      { key: "max_d", kind: "number", def: 200, doc: "largest diameter the machine turns, mm", machine: true },
+      { key: "max_length", kind: "number", def: 300, doc: "longest part, mm", machine: true },
+      { key: "live_tools", kind: "bool", def: false, doc: "live tooling (mill-turn): flats and cross holes are milled on the lathe in the same setup", machine: true },
     ],
   },
   injection: {
@@ -150,6 +165,9 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "side_actions", kind: "bool", def: false, doc: "side actions or lifters allowed for undercuts (raises tool cost)" },
       { key: "min_wall", kind: "number", def: null, doc: "override the material's minimum wall, mm" },
       { key: "max_wall", kind: "number", def: null, doc: "override the material's maximum wall, mm" },
+      { key: "cavities", kind: "number", def: 1, doc: "parts moulded per shot" },
+      { key: "clamp", kind: "number", def: 150, doc: "the press's clamp force, tonnes", machine: true },
+      { key: "shot", kind: "number", def: 300, doc: "the press's largest shot, cm³", machine: true },
     ],
   },
   vacuum_cast: {
@@ -161,7 +179,10 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     tolerance: 0.25,
     output: "STEP for the master pattern, plus the polyurethane grade (ABS-, PP- or rubber-like), colour and finish",
     bestFor: "10 to 100 production-like plastic parts: pre-production runs and samples, one silicone mould per 20 to 25 parts",
-    settings: [],
+    settings: [
+      { key: "chamber", kind: "size", def: [900, 600, 400], doc: "largest mould the vacuum chamber takes (x, y, z), mm", machine: true },
+      { key: "max_pour", kind: "number", def: 3, doc: "most resin mixed and poured at once, kg", machine: true },
+    ],
   },
   die_cast: {
     id: "die_cast",
@@ -176,6 +197,9 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "pull", kind: "dir", def: Z, doc: "direction the die opens" },
       { key: "draft", kind: "number", def: 1.5, doc: "minimum draft, degrees" },
       { key: "side_actions", kind: "bool", def: false, doc: "slides allowed for undercuts" },
+      { key: "cavities", kind: "number", def: 1, doc: "parts cast per shot" },
+      { key: "clamp", kind: "number", def: 400, doc: "the machine's locking force, tonnes", machine: true },
+      { key: "shot", kind: "number", def: 1000, doc: "the machine's largest shot of metal, cm³", machine: true },
     ],
   },
   sand_cast: {
@@ -192,6 +216,8 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "pull", kind: "dir", def: Z, doc: "direction the pattern is drawn out of the sand (the parting line runs square to it)" },
       { key: "draft", kind: "number", def: 2, doc: "minimum draft on faces along the pull, degrees" },
       { key: "cores", kind: "bool", def: true, doc: "sand cores allowed for undercuts and internal passages (each adds cost; false makes undercuts failures)" },
+      { key: "flask", kind: "size", def: [1000, 800, 600], doc: "largest moulding box (x, y, z), mm", machine: true },
+      { key: "max_pour", kind: "number", def: 500, doc: "most metal poured at once, kg", machine: true },
     ],
   },
   investment_cast: {
@@ -207,6 +233,8 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     settings: [
       { key: "pull", kind: "dir", def: Z, doc: "direction the die for the wax patterns opens" },
       { key: "cores", kind: "bool", def: true, doc: "soluble wax or ceramic cores allowed for undercuts and internal passages (each adds cost; false makes undercuts failures)" },
+      { key: "max_size", kind: "size", def: [500, 400, 300], doc: "largest pattern the foundry handles (x, y, z), mm", machine: true },
+      { key: "max_pour", kind: "number", def: 50, doc: "most metal poured into one shell, kg", machine: true },
     ],
   },
   sheet_metal: {
@@ -222,6 +250,8 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     settings: [
       { key: "t", kind: "number", def: null, doc: "sheet thickness, mm (measured from the part if not given)" },
       { key: "bend_r", kind: "number", def: null, doc: "minimum inside bend radius, mm (default from the material)" },
+      { key: "brake", kind: "number", def: 2500, doc: "longest bend the press brake makes, mm", machine: true },
+      { key: "max_t", kind: "number", def: 6, doc: "thickest mild steel the press brake bends, mm (aluminium about 1.5× this, stainless about 0.65×)", machine: true },
     ],
   },
   laser_cut: {
@@ -237,7 +267,9 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
     settings: [
       { key: "t", kind: "number", def: null, doc: "plate thickness, mm (measured if not given)" },
       { key: "normal", kind: "dir", def: null, doc: "plate normal (found from the geometry if not given)" },
-      { key: "kerf", kind: "number", def: 0.2, doc: "cut width, mm" },
+      { key: "kerf", kind: "number", def: 0.2, doc: "cut width, mm", machine: true },
+      { key: "source", kind: "choice", def: "any", options: CUTTER_SOURCES, doc: "what cuts: any (the shop picks), co2 or diode laser (wood, acrylic), fiber laser or plasma (metal), or waterjet (anything)", machine: true },
+      { key: "bed", kind: "size", def: [3000, 1500, 25], doc: "cutting area (x, y) and the thickest plate it cuts (z), mm", machine: true },
     ],
   },
 };
@@ -259,6 +291,8 @@ const num = (v: SettingValue | null | undefined, d: number) => (typeof v === "nu
 const dir = (v: SettingValue | null | undefined, d: V3): V3 => (Array.isArray(v) && typeof v[0] === "number" ? norm(v as V3) : d);
 const dirs = (v: SettingValue | null | undefined, d: V3[]): V3[] => (Array.isArray(v) && Array.isArray(v[0]) ? uniqueDirs(v as V3[]).slice(0, MAX_DIRECTIONS) : d);
 const size = (v: SettingValue | null | undefined, d: V3): V3 => (Array.isArray(v) && typeof v[0] === "number" ? (v as V3) : d);
+const choice = (v: SettingValue | null | undefined, d: string) => (typeof v === "string" ? v : d);
+const toolList = (v: SettingValue | null | undefined): Tool[] | null => (Array.isArray(v) && Array.isArray(v[0]) && v[0].length === 2 ? sortTools(v as Tool[]) : null);
 const neg = (v: V3): V3 => [-v[0] + 0, -v[1] + 0, -v[2] + 0];
 /** rounds away float noise such as 3 × 0.6 = 1.7999999999999998 */
 const r6 = (x: number) => Math.round(x * 1e6) / 1e6;
@@ -269,6 +303,40 @@ function norm(v: V3): V3 {
 
 /** Each direction is a full set of reach rays over the part, so a list of them is kept short: the six axes and a few diagonals. */
 export const MAX_DIRECTIONS = 12;
+
+/** A machine's tool library is kept to a sensible rack. */
+export const MAX_TOOLS = 24;
+
+/** End mills smallest first, repeats dropped. */
+export function sortTools(list: Tool[]): Tool[] {
+  const out: Tool[] = [];
+  for (const [d, r] of [...list].sort((a, b) => a[0] - b[0] || a[1] - b[1])) if (!out.some((o) => o[0] === d && o[1] === r)) out.push([d, r]);
+  return out.slice(0, MAX_TOOLS);
+}
+
+/** Common end mill sizes, for a machine that gives only its smallest tool. */
+const STANDARD_TOOLS = [1, 1.5, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20];
+
+/** The library a mill is assumed to have without a tools list: standard sizes from the smallest up, each reaching depthRatio × its diameter. */
+export function defaultTools(smallest: number, depthRatio: number): Tool[] {
+  const sizes = [smallest, ...STANDARD_TOOLS.filter((d) => d > smallest)];
+  return sizes.map((d) => [d, r6(d * depthRatio)]);
+}
+
+/** Tool directions a 4-axis mill reaches with the part on a rotary axis about X, and a 5-axis trunnion with the tool tilted from above. */
+const S2 = Math.SQRT1_2;
+const FOUR_AXIS: V3[] = [Z, NZ, [0, 1, 0], [0, -1, 0], [0, S2, S2], [0, -S2, S2], [0, S2, -S2], [0, -S2, -S2]];
+const FIVE_AXIS: V3[] = [Z, [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [S2, 0, S2], [-S2, 0, S2], [0, S2, S2], [0, -S2, S2], NZ];
+
+/** A mill's axes count as 3, 4 or 5. */
+export const millAxes = (v: SettingValue | null | undefined) => (typeof v === "number" && v >= 5 ? 5 : typeof v === "number" && v >= 4 ? 4 : 3);
+
+/** Directions the tool comes from: the setups the part names, plus every direction the machine's extra axes reach. */
+export function millDirections(setups: V3[], axes: number): V3[] {
+  if (axes >= 5) return uniqueDirs([...setups, ...FIVE_AXIS], 16).slice(0, 16);
+  if (axes === 4) return uniqueDirs([...setups, ...FOUR_AXIS], 16).slice(0, 16);
+  return setups;
+}
 
 /** Unit directions with repeats (within half a degree) removed; stops once it has more than `limit`. */
 export function uniqueDirs(list: V3[], limit = MAX_DIRECTIONS): V3[] {
@@ -301,6 +369,11 @@ export function sanitizeSettings(id: ProcessId, raw: unknown): Record<string, Se
       const list = uniqueDirs(v.filter((d): d is V3 => isVec3(d) && Math.hypot(...d) > 1e-9)).slice(0, MAX_DIRECTIONS);
       if (list.length) out[sd.key] = list;
     } else if (sd.kind === "size" && isVec3(v) && v.every((x) => x > 0)) out[sd.key] = v;
+    else if (sd.kind === "choice" && typeof v === "string" && sd.options?.includes(v)) out[sd.key] = v;
+    else if (sd.kind === "tools" && Array.isArray(v)) {
+      const list = v.filter((t): t is Tool => Array.isArray(t) && t.length === 2 && t.every((x) => typeof x === "number" && Number.isFinite(x) && x > 0));
+      if (list.length) out[sd.key] = sortTools(list);
+    }
   }
   return out;
 }
@@ -316,13 +389,22 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
     case "fdm": {
       const nozzle = num(s.nozzle, 0.4);
       const build = dir(s.build, Z);
+      const max = num(s.overhang, 45);
+      const span = num(s.bridge, 10);
+      const soluble = s.soluble === true;
+      const need = fdmNeeds(material);
       return {
         ...base,
         wall: { fail: r6(2 * nozzle), warn: r6(3 * nozzle), why: `two lines of a ${nozzle} mm nozzle is the thinnest wall that prints; three is reliable` },
-        overhang: { build, max: num(s.overhang, 45), severity: s.supports === false ? "fail" : "warn", bridgeR: 4 },
+        overhang: { build, max, severity: s.supports === false ? "fail" : "warn", bridgeR: 4, span },
         bedContact: { build },
         holes: { minD: Math.max(1.5, r6(3 * nozzle)), why: "small printed holes close up and need drilling out" },
         envelope: { size: size(s.bed, [250, 210, 210]), frame: build, what: "printer's build volume" },
+        ...(s.supports === false
+          ? {}
+          : { supportAccess: { build, max, bridgeR: 4, span, soluble, opening: 5, how: soluble ? "dissolved out in water or a solvent" : "broken out with pliers or a hook" } }),
+        fuse: { min: Math.max(0.3, r6(0.75 * nozzle)), why: "the printer cannot keep a gap narrower than about one extrusion line open, so the plastic bridges it" },
+        printer: { maxTemp: num(s.max_temp, 300), enclosed: s.enclosed !== false, needTemp: need?.temp, warps: need?.warps ?? false },
       };
     }
     case "sla": {
@@ -333,15 +415,19 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         holes: { minD: 0.5, why: "resin does not drain from smaller holes" },
         envelope: { size: size(s.bed, [145, 145, 185]), frame: build, what: "printer's build volume" },
         voids: { severity: "warn", why: "uncured resin stays trapped inside; add two drain holes of at least 3.5 mm" },
+        // resin prints are supported wherever a surface faces the vat at more than about 60° from vertical
+        supportAccess: { build, max: 60, bridgeR: 1.5, span: 2, soluble: false, opening: 3, how: "snipped off with flush cutters" },
+        fuse: { min: 0.4, why: "light scattering in the resin cures across narrower gaps" },
       };
     }
     case "sls":
       return {
         ...base,
         wall: { fail: 0.7, warn: 1.0, why: "thinner nylon walls do not sinter through and break" },
-        holes: { minD: 1.5, why: "powder sinters shut in smaller holes" },
+        holes: { minD: 1.5, maxDepthRatio: 20, why: "powder sinters shut in smaller holes and packs into long narrow ones" },
         envelope: { size: size(s.bed, [300, 300, 300]), frame: null, what: "printer's build volume" },
         voids: { severity: "fail", why: "unfused powder is trapped inside; add two escape holes of at least 5 mm" },
+        fuse: { min: 0.5, why: "the heat sinters the powder in narrower gaps, fusing the faces together" },
       };
     case "metal_print": {
       const build = dir(s.build, Z);
@@ -353,27 +439,41 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         holes: { minD: 1, why: "smaller holes fill with half-melted powder and have to be drilled out" },
         envelope: { size: size(s.bed, [250, 250, 300]), frame: build, what: "printer's build volume" },
         voids: { severity: "fail", why: "unfused metal powder is trapped inside; add at least two escape holes of 2 mm or more so it can be shaken out" },
+        supportAccess: { build, max: 45, bridgeR: 4, span: 2, soluble: false, opening: 8, how: "cut off with a saw or wire EDM, or machined away" },
+        fuse: { min: 0.4, why: "the melt pool and half-melted powder bridge narrower gaps" },
       };
     }
     case "cnc_mill": {
-      const tool = num(s.tool_d, 3);
+      const lib = toolList(s.tools);
+      const tool = lib ? lib[0][0] : num(s.tool_d, 3);
+      const axes = millAxes(s.axes);
       const setups = dirs(s.setups, [Z, NZ]);
+      const reach = millDirections(setups, axes);
+      const frame = choice(s.frame, "vmc");
       return {
         ...base,
         wall: metal ? { fail: 0.5, warn: 0.8, why: "thin metal walls vibrate and bend while cutting" } : { fail: 1.0, warn: 1.5, why: "thin plastic walls flex and melt while cutting" },
-        reach: { dirs: setups, severity: "fail", what: "setup" },
-        innerRadius: { min: tool / 2, dirs: setups, severity: "fail", why: `a Ø${fmt(tool)} mm end mill leaves at least R${fmt(tool / 2)} in every inside corner along its axis` },
-        gap: { min: tool, dirs: setups },
-        depthRatio: { max: num(s.max_depth, 4), dirs: setups },
+        reach: { dirs: reach, severity: "fail", what: "setup" },
+        innerRadius: { min: tool / 2, dirs: reach, severity: "fail", why: `a Ø${fmt(tool)} mm end mill leaves at least R${fmt(tool / 2)} in every inside corner along its axis` },
+        gap: { min: tool, dirs: reach },
         holes: { minD: 1, minDFail: 0.5, maxDepthRatio: 10, why: "drills under 1 mm break easily; holes deeper than 10× their diameter need gun drilling" },
         envelope: { size: size(s.envelope, [600, 400, 300]), frame: null, what: "machine's travel" },
+        machining: {
+          tools: lib ?? defaultTools(tool, num(s.max_depth, 4)),
+          library: !!lib,
+          axes,
+          rpm: num(s.rpm, 12000),
+          vise: num(s.vise, 200),
+          cutSpeed: millClass(material).speed,
+          frame: { name: frame, ...frameFit(frame, material) },
+        },
       };
     }
     case "cnc_lathe": {
       return {
         ...base,
         wall: metal ? { fail: 0.5, warn: 0.8, why: "thin-walled turned parts chatter and distort in the chuck" } : { fail: 1.0, warn: 1.5, why: "thin plastic walls distort in the chuck" },
-        revolve: { axis: dir(s.axis, Z), maxSlender: 8, maxBoreRatio: 5, maxD: num(s.max_d, 200), maxLength: num(s.max_length, 300) },
+        revolve: { axis: dir(s.axis, Z), maxSlender: 8, maxBoreRatio: 5, maxD: num(s.max_d, 200), maxLength: num(s.max_length, 300), liveTools: s.live_tools === true },
         holes: { minD: 1, minDFail: 0.5, maxDepthRatio: 10, why: "small or very deep holes need special drills" },
       };
     }
@@ -391,6 +491,7 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         innerRadius: { min: 0.5, factor: 0.5, dirs: null, severity: "warn", why: "sharp inside corners concentrate stress and block the flow; use at least half the wall" },
         holes: { minD: 1, maxDepthRatio: 5, why: "thin core pins bend under injection pressure" },
         envelope: { size: [600, 500, 300], frame: null, what: "mould area of a mid-size press" },
+        press: { pull, clamp: num(s.clamp, 150), shot: num(s.shot, 300), cavities: cavities(s.cavities), pressure: mouldPressure(material), flowRatio: flowRatio(material), what: "moulding press" },
       };
     }
     case "die_cast": {
@@ -404,6 +505,8 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         innerRadius: { min: 1, factor: 0.5, dirs: null, severity: "warn", why: "sharp inside corners crack the die and the casting; use at least R1 or half the wall" },
         holes: { minD: 2.5, maxDepthRatio: 4, why: "cast holes under 2.5 mm, or deeper than 4× their diameter, are drilled afterwards" },
         envelope: { size: [600, 500, 300], frame: null, what: "die area of a mid-size casting machine" },
+        // zinc runs hot-chamber at lower pressure than aluminium's cold chamber
+        press: { pull, clamp: num(s.clamp, 400), shot: num(s.shot, 1000), cavities: cavities(s.cavities), pressure: /zinc|zamak/i.test(material) ? 30 : 70, what: "die-casting machine" },
       };
     }
     case "vacuum_cast":
@@ -412,8 +515,9 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         ...base,
         wall: { fail: 0.8, warn: 1.5, max: 8, why: "cast polyurethane fills a silicone mould well between 1.5 and 8 mm; thinner walls fill short or tear coming out, thicker ones shrink and sink" },
         holes: { minD: 1, why: "the silicone pins that form smaller holes tear off when the part is pulled out; drill them afterwards" },
-        envelope: { size: [900, 600, 400], frame: null, what: "casting chamber of a large vacuum caster" },
+        envelope: { size: size(s.chamber, [900, 600, 400]), frame: null, what: "vacuum caster's chamber" },
         voids: { severity: "fail", why: "a sealed cavity cannot be moulded, since the silicone that forms it could not be pulled out; open it to the outside" },
+        pour: { maxKg: num(s.max_pour, 3), density: density(material, 1.1), yield: 0.85, what: "vacuum caster's largest pour" },
       };
     case "sand_cast": {
       const pull = dir(s.pull, Z);
@@ -427,8 +531,9 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         reach: { dirs: [pull, neg(pull)], severity: s.cores === false ? "fail" : "info", what: "mould", relief: "sand cores" },
         innerRadius: { min: 3, factor: 0.5, dirs: null, severity: "warn", why: "sharp inside corners crack as the casting shrinks, and the sand there crumbles" },
         holes: { minD: 10, why: "holes under Ø10 mm are not cored but drilled after casting" },
-        envelope: { size: [1000, 800, 600], frame: null, what: "moulding box of a typical jobbing foundry" },
+        envelope: { size: size(s.flask, [1000, 800, 600]), frame: null, what: "foundry's moulding box" },
         voids: { severity: "fail", why: "a sealed cavity needs a sand core that can be neither held in place nor shaken out; open it to the outside, ideally in two places" },
+        pour: { maxKg: num(s.max_pour, 500), density: density(material, 2.7), yield: 0.6, what: "foundry's largest pour" },
       };
     }
     case "investment_cast": {
@@ -440,8 +545,9 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         reach: { dirs: [pull, neg(pull)], severity: s.cores === false ? "fail" : "info", what: "mould", relief: "soluble wax or ceramic cores" },
         innerRadius: { min: 0.5, dirs: null, severity: "warn", why: "sharp inside corners crack the ceramic shell and the casting as it shrinks" },
         holes: { minD: 2.5, maxDepthRatio: 4, why: "the ceramic shell cannot form holes under Ø2.5 mm or deeper than 4× their diameter, so they are drilled afterwards" },
-        envelope: { size: [500, 400, 300], frame: null, what: "largest pattern a typical investment foundry handles" },
+        envelope: { size: size(s.max_size, [500, 400, 300]), frame: null, what: "foundry's largest pattern" },
         voids: { severity: "fail", why: "a sealed cavity can be neither formed in the wax pattern nor cleaned of ceramic; open it to the outside" },
+        pour: { maxKg: num(s.max_pour, 50), density: density(material, 7.9), yield: 0.6, what: "foundry's largest pour" },
       };
     }
     case "sheet_metal": {
@@ -449,19 +555,37 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
       const factor = info.bendFactor ?? 1;
       return {
         ...base,
-        sheet: { t, bendR: typeof s.bend_r === "number" ? s.bend_r : null, bendFactor: factor, holeEdge: 2 },
+        sheet: { t, bendR: typeof s.bend_r === "number" ? s.bend_r : null, bendFactor: factor, holeEdge: 2, brake: num(s.brake, 2500), maxT: r6(num(s.max_t, 6) * brakeFactor(material)) },
         holes: { minD: t ?? 1, minDFail: t ?? 1, why: "punched or cut holes must be at least as wide as the sheet is thick" },
       };
     }
     case "laser_cut": {
       const t = typeof s.t === "number" ? s.t : null;
+      const source = choice(s.source, "any");
+      const bed = size(s.bed, [3000, 1500, 25]);
+      // a laser's clean-cut limit depends on the material; waterjet and plasma are limited by the machine
+      const laser = source === "any" || source === "co2" || source === "diode" || source === "fiber";
+      const maxT = laser ? Math.min(info.laserMaxT ?? 10, bed[2]) : bed[2];
       return {
         ...base,
-        profile: { normal: Array.isArray(s.normal) ? dir(s.normal, Z) : null, t, maxT: info.laserMaxT ?? 10, minWeb: Math.max(0.5, metal ? (t ?? 1) : 1) },
+        profile: { normal: Array.isArray(s.normal) ? dir(s.normal, Z) : null, t, maxT, minWeb: Math.max(0.5, metal ? (t ?? 1) : 1) },
         holes: { minD: metal ? (t ?? 1) : 0.5, why: metal ? "holes narrower than the plate thickness taper and burn" : "very small holes burn through" },
+        cutter: { bed: [bed[0], bed[1]], maxT: bed[2], source, ...cutterFit(source, material) },
       };
     }
   }
+}
+
+const cavities = (v: SettingValue | null | undefined) => Math.max(1, Math.round(num(v, 1)));
+
+/** g/cm³ from the material database, or a stand-in for the family. */
+const density = (material: string, d: number) => materialRecord(material)?.density ?? d;
+
+/** A press brake rated for mild steel bends softer aluminium thicker and stainless thinner. */
+function brakeFactor(material: string): number {
+  if (/alumin|alsi|a356|a380/i.test(material)) return 1.5;
+  if (/stainless|titanium/i.test(material)) return 0.65;
+  return 1;
 }
 
 /**
@@ -501,6 +625,8 @@ function settingSource(kind: SettingKind, v: SettingValue): string {
   if (kind === "number") return fmt(v as number, 3);
   if (kind === "dir") return axisName(v as V3);
   if (kind === "dirs") return "[" + (v as V3[]).map(axisName).join(", ") + "]";
+  if (kind === "choice") return JSON.stringify(v);
+  if (kind === "tools") return "[" + (v as Tool[]).map(([d, r]) => `(${fmt(d, 3)}, ${fmt(r, 3)})`).join(", ") + "]";
   return "(" + (v as V3).map((x) => fmt(x, 3)).join(", ") + ")";
 }
 
@@ -514,6 +640,7 @@ export function specToSource(spec: ProcessSpec): string {
     args.push(`${sd.key}: ${settingSource(sd.kind, v)}`);
   }
   if (spec.material) args.push(`material: ${JSON.stringify(spec.material)}`);
+  if (spec.machine) args.push(`machine: ${JSON.stringify(spec.machine)}`);
   return `mfg.${spec.id}(${args.join(", ")})`;
 }
 
@@ -537,6 +664,27 @@ export function ruleFields(rules: Rules): Record<string, number> {
   if (rules.revolve) f.max_d = rules.revolve.maxD;
   return f;
 }
+
+/** "Ø6 × 24 mm", the way a tool is named in advice. */
+export const toolName = ([d, r]: Tool) => `Ø${fmt(d)} × ${fmt(r, 1)} mm`;
+
+/** The mill, its tools, and what they mean for corners and pockets. */
+function machiningLines(r: Rules): string[] {
+  const m = r.machining!;
+  const kind = m.axes === 5 ? "5-axis" : m.axes === 4 ? "4-axis (rotary about X)" : "3-axis";
+  const list = m.tools.map(toolName).join(", ");
+  return [
+    `Mill: ${kind} ${m.frame.name === "vmc" ? "machining centre" : m.frame.name === "benchtop" ? "benchtop mill" : "router"}, spindle up to ${fmt(m.rpm, 0)} rpm${m.vise > 0 ? `, stock held in a vise opening ${fmt(m.vise, 0)} mm` : ", stock clamped to the table"}.${m.frame.status === "pass" ? "" : ` For ${r.material}: ${m.frame.why}.`}`,
+    `End mills (diameter × reach): ${list}${m.library ? "" : " (standard sizes; give the machine's own list with tools: for exact checks)"}. Every inside corner, slot and pocket wall needs a tool that both fits and reaches: a corner of radius r at depth h needs a tool no wider than 2r that reaches h. Make deep corners larger than shallow ones, and pockets no deeper than the reach of a tool that fits them.`,
+    `Small tools need high spindle speeds: in ${r.material} a Ø${fmt(slowestTool(m.cutSpeed, m.rpm), 1)} mm tool is about the smallest this spindle drives properly, so keep corners at R${fmt(slowestTool(m.cutSpeed, m.rpm) / 2, 1)} or more where you can.`,
+  ];
+}
+
+/** A tool may run this many times slower than its ideal speed before it cuts too slowly and breaks. */
+export const SPINDLE_SLACK = 5;
+
+/** The smallest tool a spindle still drives properly in a material with this cutting speed (m/min), mm. */
+export const slowestTool = (cutSpeed: number, rpm: number) => (cutSpeed * 1000) / (Math.PI * SPINDLE_SLACK * Math.max(1, rpm));
 
 /** Design rules in plain words, for the assistant and the process picker. */
 export function guideLines(rules: Rules): string[] {
@@ -572,7 +720,7 @@ export function guideLines(rules: Rules): string[] {
         : `Round every inside corner to at least ${r.innerRadius.factor ? `${r.innerRadius.factor}× the wall (min ${fmt(r.innerRadius.min)} mm)` : `${fmt(r.innerRadius.min)} mm`}: ${r.innerRadius.why}.`,
     );
   if (r.gap) out.push(`Slots and gaps must be at least ${fmt(r.gap.min)} mm wide so the smallest tool fits.`);
-  if (r.depthRatio) out.push(`Pockets no deeper than ${r.depthRatio.max}× their width.`);
+  if (r.machining) out.push(...machiningLines(r));
   if (r.overhang)
     out.push(
       `Overhangs steeper than ${r.overhang.max}° from vertical need support${r.overhang.severity === "fail" ? " (not allowed here)" : ""}. Orient the part with a large flat face on the bed (build direction ${axisName(r.overhang.build)}), chamfer the underside of ledges at 45°, and keep horizontal holes under Ø${fmt(2 * r.overhang.bridgeR)} or use teardrops.${r.overhang.span !== undefined ? ` Flat ceilings wider than ${fmt(r.overhang.span)} mm need support too.` : ""}`,
@@ -592,6 +740,34 @@ export function guideLines(rules: Rules): string[] {
       `A flat plate of one thickness${r.profile.t ? ` (${fmt(r.profile.t)} mm)` : ""}, cut straight through: no pockets, steps, bends or bevels. Webs at least ${fmt(r.profile.minWeb)} mm; plate no thicker than ${fmt(r.profile.maxT)} mm for ${r.material}.`,
     );
   if (r.voids) out.push(`No sealed internal voids: ${r.voids.why}.`);
+  if (r.supportAccess) {
+    const a = r.supportAccess;
+    out.push(
+      a.soluble
+        ? `Supports dissolve, so they may sit inside, but every supported cavity needs an opening for the solvent; a sealed one keeps its support for good.`
+        : `Every support must come out: supports are ${a.how}, so none may sit in a closed cavity, behind an opening narrower than ${fmt(a.opening)} mm, or deep in a narrow channel (more than about 4× its width in). Inside, use self-supporting shapes (45° roofs, teardrop or diamond holes, chamfered ledges) or open the cavity toward the bed.`,
+    );
+  }
+  if (r.fuse) out.push(`Keep gaps between faces (print-in-place clearances, slots between features) at least ${fmt(r.fuse.min)} mm: ${r.fuse.why}.`);
+  if (r.printer) {
+    const p = r.printer;
+    out.push(
+      `Printer: nozzle up to ${fmt(p.maxTemp, 0)} °C, ${p.enclosed ? "enclosed" : "open frame (no enclosure)"}${p.needTemp ? `; ${r.material} prints at about ${fmt(p.needTemp, 0)} °C${p.warps ? " and warps without an enclosure" : ""}` : ""}.`,
+    );
+  }
+  if (r.press) {
+    const p = r.press;
+    out.push(
+      `The ${p.what} has ${fmt(p.clamp, 0)} t of clamp and a ${fmt(p.shot, 0)} cm³ shot: the part's shadow along the pull × ${fmt(p.pressure, 0)} MPa${p.cavities > 1 ? ` × ${p.cavities} cavities` : ""} must stay under the clamp, and its volume with runners under 80 % of the shot.${p.flowRatio ? ` Keep the flow from a centre gate to the farthest corner under ${p.flowRatio}× the wall.` : ""}`,
+    );
+  }
+  if (r.pour) out.push(`Pours up to ${fmt(r.pour.maxKg)} kg (the ${r.pour.what}): the casting plus gates and risers, about ${fmt(1 / r.pour.yield, 1)}× its own weight.`);
+  if (r.sheet?.brake) out.push(`The press brake bends up to ${fmt(r.sheet.brake, 0)} mm long and ${fmt(r.sheet.maxT ?? 6)} mm thick in ${r.material}.`);
+  if (r.cutter)
+    out.push(
+      `Cutter: ${r.cutter.source === "any" ? "the shop's choice" : r.cutter.source}, ${fmt(r.cutter.bed[0], 0)} × ${fmt(r.cutter.bed[1], 0)} mm bed${r.cutter.status === "pass" ? "" : `; ${r.cutter.why}`}.`,
+    );
+  if (r.revolve?.liveTools) out.push("Live tooling: flats, cross holes and off-axis features are milled on the lathe in the same setup.");
   const mats = suggestMaterials(r.process);
   if (mats.length) out.push(`Usual materials: ${mats.join(", ")}.`);
   return out;

@@ -107,7 +107,13 @@ function modellingTips(id: ProcessId, rules: Rules): string[] {
 }
 
 /** The process_guide tool's text for one process, material and settings. */
-export function processGuideText(spec: ProcessSpec, material?: string): string {
+/** The machine a guide was written for: its name, or a name Settings → Making does not have. */
+export interface GuideMachine {
+  name?: string;
+  missing?: string;
+}
+
+export function processGuideText(spec: ProcessSpec, material?: string, machine: GuideMachine = {}): string {
   const def = PROCESSES[spec.id];
   const mat = material ?? spec.material ?? defaultMaterial(spec.id);
   const rules = resolveRules(spec, mat);
@@ -118,6 +124,9 @@ export function processGuideText(spec: ProcessSpec, material?: string): string {
     def.summary,
     `Best for: ${def.bestFor}. Typical tolerance ±${fmt(def.tolerance)} mm (drawings state ${generalToleranceFor(spec)}). The maker needs: ${def.output}.`,
     `Material ${mat}: ${fit.detail}${fit.status === "pass" ? "" : ` (${fit.status})`}. Usual materials: ${suggestMaterials(spec.id).join(", ") || "see supplier"}.`,
+    machine.name
+      ? `Machine: ${machine.name}, from Settings → Making. Its settings fill in whatever the part's process leaves out, and the rules below are for it.`
+      : `Machine: ${machine.missing ? `Settings → Making has no machine called "${machine.missing}", so` : "none chosen in Settings → Making, so"} the rules below assume a typical shop. Where the machine decides the design (a mill's tools and travel, a printer's temperature and supports, a press's tonnage), say what you assumed.`,
     "",
     "## Rules the part is checked against",
     ...guideLines(rules).map((l) => `- ${l}`),
@@ -127,7 +136,7 @@ export function processGuideText(spec: ProcessSpec, material?: string): string {
     "",
     "## Source",
     `process: ${specToSource(spec)}`,
-    `Settings: ${def.settings.map((s) => `${s.key} (${s.doc}; default ${s.def === null ? "from the geometry" : Array.isArray(s.def) ? (Array.isArray(s.def[0]) ? (s.def as [number, number, number][]).map(axisName).join(", ") : s.kind === "dir" ? axisName(s.def as [number, number, number]) : (s.def as number[]).join(" × ")) : String(s.def)})`).join("; ") || "none, only material:"}.`,
+    `Settings (* = set by the machine profile unless the part sets it): ${def.settings.map((s) => `${s.key}${s.machine ? "*" : ""} (${s.doc}; default ${s.def === null ? (s.kind === "tools" ? "standard sizes" : "from the geometry") : Array.isArray(s.def) ? (Array.isArray(s.def[0]) ? (s.def as [number, number, number][]).map(axisName).join(", ") : s.kind === "dir" ? axisName(s.def as [number, number, number]) : (s.def as number[]).join(" × ")) : String(s.def)})`).join("; ") || "none, only material:"}.`,
     `Numbers a requirement can read from the process value: ${Object.entries(fields)
       .map(([k, v]) => `.${k} = ${fmt(v)}`)
       .join(", ")}.`,

@@ -7,6 +7,7 @@ import { whenChecked } from "../core/engine";
 import type { EvalPart } from "../core/model";
 import { PROCESS_IDS } from "./profiles";
 import { compareProbes, summarize, type ProcessSummary } from "./report";
+import { userMachines } from "./userMachines";
 import type { ProcessId, ProcessResult } from "./types";
 
 export interface ProcessOption {
@@ -25,7 +26,7 @@ export async function compareProcesses(part: EvalPart, ids: ProcessId[] = PROCES
   const now = s.model?.parts.find((p) => p.id === part.id) ?? part;
   const buildError = s.buildErrors.get(now.hash);
   if (buildError) throw new Error(`${now.label} does not build, so it cannot be checked: ${buildError}`);
-  const probes = compareProbes(now, ids);
+  const probes = compareProbes(now, ids, userMachines());
   const results = await kernel.process(probes);
   const out = probes.map((p, i) => ({ id: p.id as ProcessId, result: results[i], summary: summarize(results[i]) }));
   return out.sort((a, b) => score(a.summary) - score(b.summary));

@@ -3,9 +3,9 @@
 // process names ("injection moulded", "laser cut") for briefs and chat.
 
 import { Fn, Obj, Vec, typeName, type CallCtx, type Value } from "../lang/values";
-import { MAX_DIRECTIONS, PROCESSES, PROCESS_IDS, isProcessId, resolveRules, ruleFields, resolvedSettings, sanitizeSettings, uniqueDirs, type SettingDef } from "./profiles";
+import { MAX_DIRECTIONS, MAX_TOOLS, PROCESSES, PROCESS_IDS, isProcessId, resolveRules, ruleFields, resolvedSettings, sanitizeSettings, sortTools, uniqueDirs, type SettingDef } from "./profiles";
 import { defaultMaterial, materialInfo } from "./materials";
-import type { ProcessId, ProcessSpec, SettingValue } from "./types";
+import type { ProcessId, ProcessSpec, SettingValue, Tool } from "./types";
 import type { V3 } from "../kernel/recipe";
 import type { EvalPart, Model } from "../core/model";
 
@@ -22,11 +22,12 @@ export class ProcessV extends Obj {
 function processFields(spec: ProcessSpec): Record<string, Value> {
   const fields: Record<string, Value> = { id: spec.id, label: PROCESSES[spec.id].label };
   for (const [k, v] of Object.entries(resolvedSettings(spec))) {
-    if (typeof v === "number" || typeof v === "boolean") fields[k] = v;
+    if (typeof v === "number" || typeof v === "boolean" || typeof v === "string") fields[k] = v;
     else if (Array.isArray(v) && typeof v[0] === "number") fields[k] = new Vec(v as number[]);
   }
   const material = spec.material ?? defaultMaterial(spec.id);
   fields.material = material;
+  if (spec.machine) fields.machine = spec.machine;
   Object.assign(fields, ruleFields(resolveRules(spec, material)));
   return fields;
 }
@@ -37,7 +38,7 @@ export function mfgNamespace(): Obj {
   for (const id of PROCESS_IDS) {
     const def = PROCESSES[id];
     const keys = def.settings.map((s) => s.key);
-    const doc = `mfg.${id}(${[...keys.map((k) => `${k}:`), "material:"].join(" ")}) — ${def.label}. ${def.summary}`;
+    const doc = `mfg.${id}(${[...keys.map((k) => `${k}:`), "material:", "machine:"].join(" ")}) — ${def.label}. ${def.summary}`;
     fns[id] = new Fn(`mfg.${id}`, (pos, named, ctx) => new ProcessV(specFromArgs(id, pos, named, ctx)), doc);
   }
   return new Obj(fns, "manufacturing processes", "mfg");
@@ -49,17 +50,23 @@ function specFromArgs(id: ProcessId, pos: Value[], named: Record<string, Value>,
   if (pos.length) ctx.error(`${fname}() takes named settings, for example ${fname}(${def.settings[0] ? `${def.settings[0].key}: …` : `material: "…"`})`);
   const settings: Record<string, SettingValue> = {};
   let material: string | undefined;
+  let machine: string | undefined;
   for (const [k, v] of Object.entries(named)) {
     if (k === "material") {
       if (typeof v !== "string") ctx.error(`${fname}(): material should be a name such as "ABS", got ${typeName(v)}`);
       material = v as string;
       continue;
     }
+    if (k === "machine") {
+      if (typeof v !== "string" || !v.trim()) ctx.error(`${fname}(): machine should be the name of a machine or shop from Settings → Making, such as "Prusa MK4", got ${typeName(v)}`);
+      machine = (v as string).trim();
+      continue;
+    }
     const sd = def.settings.find((s) => s.key === k);
-    if (!sd) ctx.error(`${fname}() has no setting "${k}". It accepts: ${[...def.settings.map((s) => s.key), "material"].join(", ")}`);
+    if (!sd) ctx.error(`${fname}() has no setting "${k}". It accepts: ${[...def.settings.map((s) => s.key), "material", "machine"].join(", ")}`);
     settings[k] = settingValue(sd!, v, fname, ctx);
   }
-  return material ? { id, settings, material } : { id, settings };
+  return { id, settings, ...(material ? { material } : {}), ...(machine ? { machine } : {}) };
 }
 
 function settingValue(sd: SettingDef, v: Value, fname: string, ctx: CallCtx): SettingValue {
@@ -84,6 +91,20 @@ function settingValue(sd: SettingDef, v: Value, fname: string, ctx: CallCtx): Se
     case "size": {
       if (!(v instanceof Vec) || v.v.length !== 3 || v.v.some((x) => !(x > 0))) return ctx.error(`${what} should be three positive sizes, for example (250, 210, 210)`);
       return v.v3();
+    }
+    case "choice":
+      if (typeof v !== "string" || !sd.options?.includes(v)) return ctx.error(`${what} should be one of ${(sd.options ?? []).map((o) => `"${o}"`).join(", ")}`);
+      return v;
+    case "tools": {
+      const list = Array.isArray(v) ? v : [v];
+      const tools: Tool[] = [];
+      for (const t of list) {
+        if (!(t instanceof Vec) || t.v.length !== 2 || t.v.some((x) => !(x > 0))) return ctx.error(`${what} should be a list of (diameter, reach) pairs in mm, for example [(6, 25), (3, 12)]`);
+        tools.push([t.v[0], t.v[1]]);
+      }
+      if (!tools.length) return ctx.error(`${what} needs at least one tool`);
+      if (tools.length > MAX_TOOLS) return ctx.error(`${what} takes at most ${MAX_TOOLS} tools`);
+      return sortTools(tools);
     }
   }
 }
@@ -122,8 +143,13 @@ export function processFromValue(v: unknown): ProcessSpec | null {
     return id ? { id, settings: {} } : null;
   }
   if (v && typeof v === "object" && "id" in v && typeof (v as { id: unknown }).id === "string" && isProcessId((v as { id: string }).id)) {
-    const o = v as { id: ProcessId; settings?: unknown; material?: unknown };
-    return { id: o.id, settings: sanitizeSettings(o.id, o.settings), ...(typeof o.material === "string" && o.material ? { material: o.material } : {}) };
+    const o = v as { id: ProcessId; settings?: unknown; material?: unknown; machine?: unknown };
+    return {
+      id: o.id,
+      settings: sanitizeSettings(o.id, o.settings),
+      ...(typeof o.material === "string" && o.material ? { material: o.material } : {}),
+      ...(typeof o.machine === "string" && o.machine.trim() ? { machine: o.machine.trim() } : {}),
+    };
   }
   return null;
 }
@@ -258,7 +284,7 @@ export function applyDefaultProcess(model: Model, spec: ProcessSpec | null, opts
       const m = p.process ? (p.process.material ?? opts.material ?? defaultMaterial(p.process.id)) : opts.material;
       if (m) p.material = m;
     }
-    const bedless = p.process && PROCESSES[p.process.id].settings.some((s) => s.key === "bed") && p.process.settings.bed === undefined;
+    const bedless = p.process && PROCESSES[p.process.id].family === "additive" && PROCESSES[p.process.id].settings.some((s) => s.key === "bed") && p.process.settings.bed === undefined;
     if (bedless && opts.buildVolume) {
       p.process = { ...p.process!, settings: { ...p.process!.settings, bed: opts.buildVolume } };
       p.processDefaults = [...(p.processDefaults ?? []), "bed"];

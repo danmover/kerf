@@ -15,6 +15,8 @@ import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
 import { processProbes } from "../mfg/report";
+import { userMachines } from "../mfg/userMachines";
+import { useSettings } from "../app/settings";
 import type { ProcessResult } from "../mfg/types";
 import { detailImportsLoaded, importsLoaded, modelUsesImports, onImportsChanged, recipeUsesImport, reloadImports } from "./imports";
 import { evalImports } from "../lang/imports";
@@ -124,6 +126,12 @@ export function startEngine() {
     if (reason === "loaded" && !buildErrors.size) return;
     set({ buildErrors: new Map() });
     setSource(source, { force: true });
+  });
+  // a different machine in Settings → Making changes what the process checks allow
+  useSettings.subscribe((now, before) => {
+    if (now.machines === before.machines && now.machineFor === before.machineFor) return;
+    const { source } = get();
+    if (source) setSource(source, { force: true });
   });
   kernel.start();
   // the detail worker starts on first use; if it is restarted, request the detailed geometry again
@@ -243,7 +251,8 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   if (get().rev !== rev) return;
   // manufacturing-process checks (cached in the worker by geometry and rules)
   const process: Record<string, ProcessResult> = {};
-  const probes = processProbes(model, builtHashes);
+  const machines = userMachines();
+  const probes = processProbes(model, builtHashes, machines);
   if (probes.length) {
     try {
       const results = await kernel.process(probes);
@@ -255,7 +264,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
   const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h) });
-  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process };
+  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process, machines };
   reportBase = { report: base, ctx };
   const report = composeReport(base, ctx);
   set({

@@ -1,6 +1,7 @@
 // User preferences (never secrets) in localStorage.
 
 import { create } from "zustand";
+import { sanitizeMachines, sanitizeMachineFor, type MachineProfile } from "../mfg/machines";
 
 export const TERMS_VERSION = "2026-10-draft-2";
 
@@ -75,6 +76,10 @@ export interface Settings {
   processAccess: Record<string, "own" | "order" | "none">;
   /** what an hour of your own hands-on time is worth in cost estimates, US dollars */
   labourRate: number;
+  /** your own machine and shop profiles (copies of presets or your own), see mfg/machines */
+  machines: MachineProfile[];
+  /** the machine each process's parts are checked against, by process id (a preset's or your machine's id) */
+  machineFor: Record<string, string>;
   /** version of these defaults the stored settings were last migrated to */
   rev: number;
 }
@@ -119,6 +124,8 @@ const DEFAULTS: Settings = {
   showCost: true,
   processAccess: {},
   labourRate: 20,
+  machines: [],
+  machineFor: {},
   rev: SETTINGS_REV,
 };
 
@@ -167,6 +174,8 @@ function load(): Settings {
     }
     out.processAccess = access;
     out.labourRate = Math.min(500, Math.max(0, Number.isFinite(out.labourRate) ? out.labourRate : DEFAULTS.labourRate));
+    out.machines = sanitizeMachines(out.machines);
+    out.machineFor = sanitizeMachineFor(out.machineFor) as Record<string, string>;
     // the photoreal view starts off on every load: a GPU that hangs while path tracing must not be sent back into it
     out.photoreal = false;
     return out;

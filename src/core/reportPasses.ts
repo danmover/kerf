@@ -7,6 +7,7 @@
 import { finishReport, type CheckItem, type CheckReport } from "./checks";
 import type { Model } from "./model";
 import { processItems } from "../mfg/report";
+import type { MachineContext } from "../mfg/machines";
 import { fitItems } from "../analysis/fits/report";
 import { springItems } from "../analysis/springs/report";
 import { bandItems } from "../analysis/bands";
@@ -23,6 +24,8 @@ export interface ReportContext {
   buildErrors: Map<string, string>;
   /** manufacturing-process results by part id; null when they were not worked out (isolated builds) */
   process: Record<string, ProcessResult> | null;
+  /** the user's machines the process checks ran against */
+  machines?: MachineContext;
 }
 
 /** Takes the items so far and returns them with this pass's items added (or some removed). */
@@ -30,7 +33,7 @@ export type ReportPass = (items: CheckItem[], ctx: ReportContext) => CheckItem[]
 
 const passes: { id: string; order: number; run: ReportPass }[] = [
   // stateless passes live here; modules with state of their own (the analysis runtime) register theirs
-  { id: "process", order: 10, run: (items, ctx) => [...items, ...processItems(ctx.model, ctx.process, ctx.buildErrors)] },
+  { id: "process", order: 10, run: (items, ctx) => [...items, ...processItems(ctx.model, ctx.process, ctx.buildErrors, ctx.machines)] },
   { id: "fits", order: 12, run: fitItems },
   { id: "springs", order: 13, run: springItems },
   { id: "bands", order: 13.5, run: bandItems },
