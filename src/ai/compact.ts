@@ -16,6 +16,7 @@
 import type { BetaMessageParam } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { MAIN, type Plan, type PlanStep } from "./plan";
 import { roughTokens, type Usage } from "../agents/pricing";
+import { messageBefore } from "./stepEffort";
 
 /** The API's opt-in for compaction: on the request that summarises and on every request that carries the summary. */
 export const COMPACT_BETA = "compact-2026-09-04";
@@ -77,8 +78,9 @@ export function messageTokens(m: BetaMessageParam): number {
 export function cutPoints(h: readonly BetaMessageParam[]): number[] {
   const out: number[] = [];
   for (let i = 1; i < h.length; i++) {
-    const prev = h[i - 1];
-    if (h[i].role !== "user" || prev.role !== "assistant") continue;
+    // an effort mark in between goes with the summarised turns
+    const prev = messageBefore(h, i);
+    if (h[i].role !== "user" || prev?.role !== "assistant") continue;
     const blocks = typeof prev.content === "string" ? [] : prev.content;
     if (blocks.some((b) => b.type === "tool_use" || isCompaction(b))) continue;
     // a web search the server paused waits for its turn to be sent back

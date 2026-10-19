@@ -15,8 +15,8 @@ export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 export const MAX_CONCURRENT = 10;
 /** On the shared key one request runs at a time, so a day's spending can pass the budget by one request at most. */
 const MAX_CONCURRENT_SHARED = 1;
-/** Betas the shared key passes on: Kerf's chat keeps its thinking blocks valid with this one. */
-const SHARED_BETAS = new Set(["thinking-binding-controls-2026-08-01"]);
+/** Betas the shared key passes on: Kerf's chat keeps its thinking blocks valid with the first, and sets a lower effort for follow-up steps with the second. */
+const SHARED_BETAS = new Set(["thinking-binding-controls-2026-08-01", "mid-conversation-output-config-2026-07-01"]);
 const SHARED_MAX_TOKENS = 64_000;
 /**
  * A generous ceiling on how many tokens a model writes per second. A cancelled

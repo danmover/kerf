@@ -126,7 +126,8 @@ describe("a from-scratch build in the chat", () => {
   let stop: () => void;
   beforeEach(async () => {
     await clearChat();
-    useSettings.setState({ model: "claude-opus-5-5", webSearch: false, maxSteps: 30, selfReview: "off", routeQuick: false });
+    // effort marks between steps have their own tests (stepEffort.test.ts)
+    useSettings.setState({ model: "claude-opus-5-5", webSearch: false, maxSteps: 30, selfReview: "off", routeQuick: false, fasterFollowUps: false });
     useDesign.setState({ source: 'design "Untitled design"\nnote "Describe what you want in the chat, or write it here."\n', model: null, report: null });
     stop = fakePipeline(2);
   });

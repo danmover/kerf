@@ -26,6 +26,8 @@ export interface Settings {
   theme: ThemePref;
   model: ModelId;
   effort: Effort;
+  /** steps after the first in a reply run at medium effort at most (see ai/stepEffort) */
+  fasterFollowUps: boolean;
   showThinking: boolean;
   reduceMotion: boolean;
   grid: boolean;
@@ -98,6 +100,7 @@ const DEFAULTS: Settings = {
   theme: "dark",
   model: "claude-opus-5-5",
   effort: "high",
+  fasterFollowUps: true,
   showThinking: true,
   reduceMotion: false,
   grid: true,

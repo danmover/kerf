@@ -235,6 +235,25 @@ describe("handing over to the design model", () => {
     expect(cost.spend.cost).toBeGreaterThan(quick.spend.cost);
   });
 
+  it("answers the quick question again on the design model when the effort changed between steps", async () => {
+    useApi([{ tool: "get_design" }, { text: "Made it thicker." }, { text: "Made it thicker again." }, { text: "40 mm." }, { text: "The base is 40 mm wide." }], { route: "quick" });
+    await chat.sendMessage("make the base thicker");
+    await chat.sendMessage("make it thicker again");
+    await chat.sendMessage("how wide is the base?");
+    const quick = costs()[2];
+    expect(quick.route.quick).toBe(true);
+
+    await chat.askDesignModel(quick.id);
+    expect(errors()).toEqual([]);
+    expect(api.requests.map((r) => r.model)).toEqual(["claude-opus-5-5", "claude-opus-5-5", "claude-opus-5-5", "claude-haiku-5-5", "claude-opus-5-5"]);
+    // the quick answer goes, the question stays, and the design model thinks at its own effort again
+    const last = api.requests[4].messages;
+    expect(last.slice(-3).map((m) => m.role)).toEqual(["system", "system", "user"]);
+    expect(JSON.stringify(last[last.length - 1].content)).toContain("how wide is the base?");
+    expect(replies().at(-1)?.text).toBe("The base is 40 mm wide.");
+    expect(api.dropped).toEqual([]);
+  });
+
   it("offers the design model only for the latest quick answer", async () => {
     useApi([{ text: "40 mm." }, { text: "Made it thicker." }], { route: "quick" });
     await chat.sendMessage("how wide is the base?");

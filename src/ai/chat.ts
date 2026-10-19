@@ -34,6 +34,7 @@ import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm
 import { pause, retryWait } from "./retry";
 import { COMPACT_BETA, COMPACT_INSTRUCTIONS, MIN_COMPACT_AT, RETRY_GROWTH, SUMMARY_INPUT_MAX, afterCut, compactionUsage, cutPoints, hasCompaction, keepTokens, messageTokens, planCut, planOutline, promptTooLong, userMessagesText, type Cut } from "./compact";
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
+import { STEP_EFFORT_BETA, hasEffortMarks, indexAfter, markEffort, messageBefore, stepEffort, withoutEffortMarks } from "./stepEffort";
 import { webTools, webActivity, describeWebCall, citedSources, isWebTool, isPausedTurn, flattenServerTools, echoContent, isWebToolError, isServerBlockError, type WebActivity } from "./web";
 
 /** A file the user attached to a message; it is also kept as a reference in the brief. */
@@ -141,7 +142,7 @@ let sourceSeen: string | null = null;
 const INLINE_SOURCE_MAX = 16_000;
 let idn = 0;
 const nid = () => `c${Date.now().toString(36)}${(++idn).toString(36)}`;
-type Feature = "effort" | "thinking" | "fallbacks" | "binding";
+type Feature = "effort" | "thinking" | "fallbacks" | "binding" | "stepEffort";
 /** request features each model rejected this session */
 const rejected = new Map<string, Set<Feature>>();
 const unsupported = (model: string) => {
@@ -149,6 +150,8 @@ const unsupported = (model: string) => {
   if (!s) rejected.set(model, (s = new Set()));
   return s;
 };
+/** Whether requests to a model can carry effort marks (see stepEffort): they need effort and thinking on. */
+const marksOn = (off: ReadonlySet<Feature>) => !off.has("stepEffort") && !off.has("effort") && !off.has("thinking");
 /** this key can't use web search: no request offers it for the rest of the session (it is the same for every model) */
 let webUnavailable = false;
 /** a paused server-tool turn is resumed this many times in a row before Claude stops and says so */
@@ -611,13 +614,14 @@ async function compactIfLong(anthropic: Anthropic, signal: AbortSignal, stale: (
   let summarised = 0;
   let limit = SUMMARY_INPUT_MAX;
   // the summary replaces the start of the conversation and the API accepts that, so only edits made before it count
-  const swapped = () => void (sent = { binding: bindingKey(system, tools), keys: messageKeys(sendable(history, tools)) });
+  const marks = marksOn(unsupported(route.model));
+  const swapped = () => void (sent = { binding: bindingKey(system, tools), keys: messageKeys(sendable(history, tools, true)) });
   settleEdits(system, tools);
   try {
     while (done.length < 6) {
       const cut = planCut(history, keep, limit, sizes());
       if (!cut) break;
-      const older = sendable(history.slice(0, cut.at), tools);
+      const older = sendable(history.slice(0, cut.at), tools, marks);
       // only the first summary's turns can still be in the prompt cache
       const r = await summarise(anthropic, route, system, tools, !done.length && cut.final ? withCacheBreakpoint(older) : older, signal);
       if (stale()) return null;
@@ -675,7 +679,9 @@ async function summarise(anthropic: Anthropic, route: Route, system: ReturnType<
   for (let attempt = 0; attempt < 6; attempt++) {
     const off = unsupported(route.model);
     const betas = [COMPACT_BETA];
-    const params: Record<string, unknown> = { model: route.model, max_tokens: MAX_OUTPUT_TOKENS, system, tools, messages, compaction: { type: "summarize", instructions: COMPACT_INSTRUCTIONS } };
+    const sending = marksOn(off) ? messages : withoutEffortMarks(messages);
+    if (hasEffortMarks(sending)) betas.push(STEP_EFFORT_BETA);
+    const params: Record<string, unknown> = { model: route.model, max_tokens: MAX_OUTPUT_TOKENS, system, tools, messages: sending, compaction: { type: "summarize", instructions: COMPACT_INSTRUCTIONS } };
     if (!off.has("thinking")) {
       const thinking: Record<string, unknown> = { type: "adaptive", display: useSettings.getState().showThinking ? "summarized" : "omitted" };
       if (!off.has("binding")) {
@@ -1247,9 +1253,14 @@ async function runLoop(opts: LoopOptions = {}) {
     }
     if (stale()) return;
     routeNote ??= { model: route.model, quick: route.quick, why: route.why, by: route.by };
+    // models that have answered in this run: their later steps are follow-ups (see stepEffort)
+    const answered = new Set<string>();
     // a message the user adds while a quick answer runs may ask for anything: the design model takes it from there
     const tookMessage = (blocks: { text: string }[]) => {
-      if (!route.quick || !hasMessage(blocks)) return;
+      if (!hasMessage(blocks)) return;
+      // a message added while Claude works is thought through like the start of a reply
+      answered.clear();
+      if (!route.quick) return;
       const why = "you added a message while it worked";
       route = designRoute(why, "rule");
       routeNote = { ...routeNote!, escalated: { to: route.model, why } };
@@ -1294,6 +1305,11 @@ async function runLoop(opts: LoopOptions = {}) {
         push({ kind: "notice", id: nid(), level: "info", title: `Passed to ${modelLabel(route.model)}`, detail: `${modelLabel(r.model)} started on this, but ${why}.` });
       };
 
+      // the first step of a reply thinks at the effort set in Settings, later ones at medium: set by a mark inside
+      // the conversation, so the cache stays valid; a mark before this turn's own message moves where the turn starts
+      const stepAt = stepEffort(r.effort, !answered.has(r.model), useSettings.getState().fasterFollowUps);
+      if (marksOn(unsupported(r.model)) && markEffort(history, stepAt, r.effort) && historyStart > history.length - 2) historyStart++;
+
       let sentReq: { final: Awaited<ReturnType<typeof streamOnce>>["final"]; params: Record<string, unknown> };
       if (r.quick) quickTouched = Date.now();
       try {
@@ -1331,6 +1347,7 @@ async function runLoop(opts: LoopOptions = {}) {
       }
       const { final, params } = sentReq;
       if (stale()) return;
+      answered.add(r.model);
       const raw = final.content as BetaContentBlock[];
       // after a mid-answer fallback, only what the API accepts back goes into the history
       let content = echoContent(raw);
@@ -1689,13 +1706,15 @@ async function reviewTool(input: unknown, itemId: string, session: ReviewSession
 function buildRequest(system: ReturnType<typeof systemBlocks>, route: Route, settings: Pick<Settings, "webSearch">): Record<string, unknown> {
   // web search can switch off mid-run (a key that cannot use it), which changes the tools
   const tools = requestTools(settings);
+  const off = unsupported(route.model);
+  const marks = marksOn(off);
   settleEdits(system, tools);
 
   // Every model gets the same system prompt, tools and messages, thinking blocks
   // included: a model that cannot read another model's blocks leaves them out
   // of that request (unbilled), and they count again when the turn returns to
   // the model that wrote them.
-  const msgs = sendable(history, tools);
+  const msgs = sendable(history, tools, marks);
   const params: Record<string, unknown> = {
     model: route.model,
     max_tokens: MAX_OUTPUT_TOKENS,
@@ -1704,7 +1723,6 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, route: Route, set
     messages: withCacheBreakpoint(msgs, lastBreak.get(route.model)),
   };
   lastBreak.set(route.model, newestUser(msgs));
-  const off = unsupported(route.model);
   const betas: string[] = [];
   if (!off.has("thinking")) {
     const thinking: Record<string, unknown> = { type: "adaptive", display: useSettings.getState().showThinking ? "summarized" : "omitted" };
@@ -1723,14 +1741,17 @@ function buildRequest(system: ReturnType<typeof systemBlocks>, route: Route, set
   }
   // a conversation that starts from a summary needs the summary's opt-in on every request
   if (hasCompaction(history)) betas.push(COMPACT_BETA);
+  if (hasEffortMarks(msgs)) betas.push(STEP_EFFORT_BETA);
   if (betas.length) params.betas = betas;
   return params;
 }
 
 /** The history as this request can send it: earlier web results become plain notes when it can't carry them (a copy, so the history itself only grows). */
-function sendable(h: BetaMessageParam[], tools: unknown[]): BetaMessageParam[] {
+function sendable(h: BetaMessageParam[], tools: unknown[], marks: boolean): BetaMessageParam[] {
   const hasWeb = (tools as { type?: string }[]).some((t) => typeof t.type === "string" && /^web_(search|fetch)_/.test(t.type));
-  return flatServer && !hasWeb ? flattenServerTools(h).history : h;
+  const out = flatServer && !hasWeb ? flattenServerTools(h).history : h;
+  // a model that refused effort marks gets the conversation without them
+  return marks ? out : withoutEffortMarks(out);
 }
 
 /**
@@ -1740,12 +1761,13 @@ function sendable(h: BetaMessageParam[], tools: unknown[]): BetaMessageParam[] {
  */
 function settleEdits(system: ReturnType<typeof systemBlocks>, tools: unknown[]) {
   const binding = bindingKey(system, tools);
-  let keys = messageKeys(sendable(history, tools));
+  // effort marks count as sent even to a model that refuses them: leaving them out of one request is not an edit worth losing thinking over (drop_block covers it)
+  let keys = messageKeys(sendable(history, tools, true));
   if (sent) {
     const at = sent.binding !== binding ? 0 : firstEdit(sent.keys, keys);
     if (at >= 0 && hasThinking(history, at)) {
       const n = stripThinking(history, at);
-      keys = messageKeys(sendable(history, tools));
+      keys = messageKeys(sendable(history, tools, true));
       console.warn(`[kerf] ${at === 0 && sent.binding !== binding ? "The system prompt or tools changed" : `Chat message ${at} changed`} since the last request; left out ${n} thinking block(s) from there on.`);
     }
   }
@@ -1765,6 +1787,8 @@ function reportDroppedThinking(list: readonly { type: string; path?: string; rea
 /** Which optional request feature a 400 is about, if the model rejected one. */
 function rejectedFeature(msg: string, off: ReadonlySet<Feature>): Feature | null {
   if (msg.includes("block_binding") || msg.includes("thinking-binding")) return "binding";
+  // an effort level set inside the conversation (see stepEffort), before the request's own
+  if (msg.includes("per-turn effort") || msg.includes("mid-conversation-output-config") || (/\broles?\b/.test(msg) && /system|user.{0,3} or .{0,3}assistant/.test(msg))) return "stepEffort";
   if (msg.includes("effort") || msg.includes("output_config")) return "effort";
   if (msg.includes("fallback")) return "fallbacks";
   if (msg.includes("thinking")) return "thinking";
@@ -1908,7 +1932,7 @@ function repairHistory() {
     const m = history[i];
     // a tool result needs its tool_use in the turn just before; one without it (from a turn that was cut off) fails every request
     if (m.role === "user" && typeof m.content !== "string" && m.content.some((b) => b.type === "tool_result")) {
-      const prev = history[i - 1];
+      const prev = messageBefore(history, i);
       const ids = new Set(prev?.role === "assistant" && typeof prev.content !== "string" ? prev.content.filter((b) => b.type === "tool_use").map((b) => (b as { id: string }).id) : []);
       const content = m.content.filter((b) => b.type !== "tool_result" || ids.has((b as BetaToolResultBlockParam).tool_use_id));
       if (content.length !== m.content.length) history[i] = { ...m, content: content.length ? content : [{ type: "text", text: "(An interrupted step was dropped here.)" }] };
@@ -1916,14 +1940,15 @@ function repairHistory() {
     if (m.role !== "assistant" || typeof m.content === "string") continue;
     const uses = m.content.filter((b) => b.type === "tool_use") as { id: string }[];
     if (!uses.length) continue;
-    const next = history[i + 1];
+    const at = indexAfter(history, i);
+    const next = history[at];
     const have = new Set(next && next.role === "user" && typeof next.content !== "string" ? next.content.filter((b) => b.type === "tool_result").map((b) => (b as BetaToolResultBlockParam).tool_use_id) : []);
     const missing: BetaToolResultBlockParam[] = uses.filter((u) => !have.has(u.id)).map((u) => ({ type: "tool_result", tool_use_id: u.id, content: "This step was interrupted and did not run.", is_error: true }));
     if (!missing.length) continue;
     if (next && next.role === "user") {
       const content = typeof next.content === "string" ? [{ type: "text" as const, text: next.content }] : next.content;
-      history[i + 1] = { ...next, content: [...missing, ...content] };
-    } else history.splice(i + 1, 0, { role: "user", content: missing });
+      history[at] = { ...next, content: [...missing, ...content] };
+    } else history.splice(at, 0, { role: "user", content: missing });
   }
 }
 
