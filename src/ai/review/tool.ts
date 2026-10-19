@@ -9,7 +9,7 @@ z.config({ jitless: true });
 export const REVIEW_TOOL = {
   name: "review_design",
   description:
-    "Get an independent review before you report back. Kerf renders the model from 7 angles, measures every custom part (sharp edges, bare hole rims, sharp internal corners, wall thickness, print support, unnamed dimensions), and a separate reviewer who sees only the brief, the renders, the measurements, the checks and the source returns findings with fixes. Call it once a new design or a substantial revision builds and its checks are sorted, before your final reply. After fixing findings, call it again with a response for each one you touched. Takes a minute or so.",
+    "Get an independent review before you report back. Kerf renders the model from 7 angles, measures every custom part (sharp edges, bare hole rims, sharp internal corners, wall thickness, print support, unnamed dimensions), and a separate reviewer who sees only the brief, the renders, the measurements, the checks and the source returns findings with fixes. Call it in the same response as the edit that finishes a new design or a substantial revision, after that edit: it runs once the edit has built and its checks are in, and is held (no round used) when the edit leaves a build error or a new failing check. After fixing findings, call it again in the same response as the fixes, with a response for each one you touched. Takes a minute or so.",
   input_schema: {
     type: "object" as const,
     properties: {

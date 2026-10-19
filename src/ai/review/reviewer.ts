@@ -22,7 +22,7 @@ const MAX_STEPS = 8;
 
 const LOOK_CLOSER = {
   name: "look_closer",
-  description: "Render a close-up of specific parts, framed to fill the image, with everything else ghosted. Use it when a detail is too small or ambiguous in the overview renders. At most 4 per review.",
+  description: "Render a close-up of specific parts, framed to fill the image, with everything else ghosted. Use it when a detail is too small or ambiguous in the overview renders. At most 4 per review; ask for all the close-ups you need in one response, as several calls.",
   strict: true,
   input_schema: {
     type: "object" as const,

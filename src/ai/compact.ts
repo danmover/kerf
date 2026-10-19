@@ -2,7 +2,8 @@
 //
 // Every request sends the whole conversation again, so a long session costs a
 // little more with every step and in the end no longer fits at all ("prompt is
-// too long: 1054564 tokens > 1000000 maximum"). Past COMPACT_AT, the older
+// too long: 1054564 tokens > 1000000 maximum"). Past the size set in Settings
+// (500K tokens unless the user picks another), the older
 // turns are summarised by the API (on-demand compaction, beta) and replaced by
 // the signed summary block it returns. The newest turns stay word for word,
 // thinking blocks included: the API accepts a summary it wrote in place of the
@@ -18,10 +19,13 @@ import { roughTokens, type Usage } from "../agents/pricing";
 
 /** The API's opt-in for compaction: on the request that summarises and on every request that carries the summary. */
 export const COMPACT_BETA = "compact-2026-09-04";
-/** A prompt this long (system prompt, tools and conversation) is summarised before the next request. */
-export const COMPACT_AT = 200_000;
-/** The newest turns kept word for word, up to about this many tokens (always at least the turn in progress). */
-export const KEEP_TOKENS = 40_000;
+/**
+ * The newest turns kept word for word once a prompt of `compactAt` tokens (Settings → Cost) is summarised: a fifth
+ * of it, so a longer window also keeps more of the recent work exactly. The turn in progress is always kept.
+ */
+export const keepTokens = (compactAt: number) => Math.round(compactAt / 5);
+/** Never summarise a prompt shorter than this, whatever a refusal said (Kerf's instructions alone are about 60K). */
+export const MIN_COMPACT_AT = 200_000;
 /** Below this, summarising the turns before the kept ones frees too little: everything is summarised instead. */
 export const MIN_SUMMARISED = 50_000;
 /** Turns one summary request sends at most; a longer conversation (one already over the limit) is summarised in parts. */
@@ -94,19 +98,19 @@ export interface Cut {
 }
 
 /**
- * What to summarise: the turns before the newest ones that fit in KEEP_TOKENS.
+ * What to summarise: the turns before the newest ones that fit in `keep` tokens.
  * When that leaves too little to be worth it (one long turn in progress),
  * everything is. When the part to summarise is more than one request can send
  * (`limit`), the oldest part that fits goes first. Null when nothing can be.
  * The history must end in a user message.
  */
-export function planCut(h: readonly BetaMessageParam[], limit = SUMMARY_INPUT_MAX, sizes = h.map(messageTokens)): Cut | null {
+export function planCut(h: readonly BetaMessageParam[], keep: number, limit = SUMMARY_INPUT_MAX, sizes = h.map(messageTokens)): Cut | null {
   if (h[h.length - 1]?.role !== "user") return null;
   const before: number[] = [0];
   for (const s of sizes) before.push(before[before.length - 1] + s);
   const total = before[h.length];
   const cuts = cutPoints(h);
-  let at = cuts.find((c) => total - before[c] <= KEEP_TOKENS) ?? cuts[cuts.length - 1];
+  let at = cuts.find((c) => total - before[c] <= keep) ?? cuts[cuts.length - 1];
   let all = false;
   if (at === undefined || before[at] < MIN_SUMMARISED) {
     at = h.length;
