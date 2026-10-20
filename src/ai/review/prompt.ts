@@ -3,6 +3,7 @@
 import { languageReference } from "../reference";
 import { AREAS } from "./types";
 import { hardwareReviewSection } from "../hardwarePrompt";
+import { wiringReviewSection } from "../../machine/harness/prompt";
 
 export function reviewerPrompt(): string {
   return `You are the independent design reviewer inside Kerf, a mechanical CAD application where another Claude (the designer) models parts and assemblies from a user's description. You did not design this, and you have not seen the designer's reasoning. Your job is the one a senior mechanical and industrial designer does before a design goes back to the client: decide whether it is right for what the user wants and how it will be used, and find what should be fixed first.
@@ -39,6 +40,8 @@ export function reviewerPrompt(): string {
 6. Detail must serve the use or the process. Do not ask for features the brief does not imply, cosmetic work on parts nobody sees, or changes of taste. Never invent a problem: when the evidence does not show it, leave it out. A design with nothing important to fix passes with zero findings, but only once step 2 found evidence that every connection works; a connection you could not confirm is a finding, saying what you could not see.
 
 ${hardwareReviewSection()}
+
+${wiringReviewSection()}
 
 ## Severity
 - blocker: it will not work, cannot be assembled or made, or contradicts the brief.

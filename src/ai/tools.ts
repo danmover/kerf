@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly } from "../core/engine";
+import { whenWiringChecked } from "../machine/harness/runtime";
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
 import { decisionsSummary } from "../core/decisions";
 import type { Model } from "../core/model";
@@ -1012,6 +1013,11 @@ async function checkResults(signal?: AbortSignal): Promise<{ text: string; title
     refining = s.stage !== "done";
   }
   if (s.kernelStatus === "error") return { text: `The geometry kernel is unavailable: ${s.kernelError}`, title: "Geometry kernel unavailable", ok: false, kernelDown: true };
+  // the wiring and mounting checks route the cables in a worker after the build; wait a little for them
+  if (!signal?.aborted) {
+    await orAbort(whenWiringChecked(s.model, 20_000), signal);
+    s = useDesign.getState();
+  }
   const r = s.report;
   const c = r?.counts;
   const fw = firmwareSummary(s.model);

@@ -184,7 +184,13 @@ component jack_in = lib.jack("jack_635_mono") { at: (115, pan_y, knob_z), axis: 
 component power_sw = lib.switch("toggle_spst") { at: (286, pan_y, knob_z), axis: -Y, role: "power" }
 
 // ── Power amp, speaker and supply ───────────────────────
-component amp = lib.amplifier("tpa3116_mono") { at: (285, 150, ply + 6) }
+component amp = lib.amplifier("tpa3116_mono") { at: (285, 150, ply + 12) }
+// the amp board on four 12 mm brass standoffs: screws down through the board, and countersunk screws up through the floor
+let amp_top = calc.fastener(grip: 1.6, into: "tapped", material: "Brass", depth: 5.5, size: M3)
+let amp_floor = calc.fastener(grip: ply, into: "tapped", material: "Brass", depth: 5.5, size: M3, flush: true)
+component amp_standoffs = lib.standoff(M3, 12) { at: with_z(amp.holes, ply), axis: Z }
+component amp_screws = lib.screw(amp_top) { at: with_z(amp.holes, ply + 12 + 1.6), axis: -Z }
+component amp_floor_screws = lib.screw(amp_floor) { at: with_z(amp.holes, 0), axis: Z }
 component spk = lib.speaker("jensen_mod10_35") { at: (cab_w / 2, ply, spk_z), axis: -Y }
 component dc_in = lib.jack("dc_jack_panel") { at: (330, cab_d, 330), axis: Y, role: "24V in" }
 component psu = lib.psu("psu_24v_2a") { at: (330, cab_d + 150, 0) }
@@ -221,6 +227,7 @@ part bottom_panel {
   finish: "varnished"
   group: "Cabinet"
   body box(cab_w - 2 * ply, cab_d, ply, at: (cab_w / 2, cab_d / 2, 0))
+  for h in amp.holes { cut hole(M3, through: true, csink: true, at: (h.x, h.y, 0), dir: Z) }
 }
 // the speaker baffle, covered in grille cloth wrapped round its edges
 part baffle {
@@ -358,7 +365,6 @@ buy "Speaker grille cloth, 0.5 m" { qty: 1, price: 12, search: "guitar amp speak
 buy "M5 T-nuts" { qty: 8, price: 0.3, search: "M5 T-nut 4 prong" }
 buy "Wood screws No. 4 × 10 mm (panel)" { qty: 4, price: 0.05, search: "wood screw 3mm x 10mm countersunk" }
 buy "Wood screws 4 × 30 mm (baffle and strip to cleats)" { qty: 12, price: 0.05, search: "wood screw 4mm x 30mm" }
-buy "Nylon standoffs M3 × 6 mm with screws (amp board)" { qty: 4, price: 0.2, search: "M3 6mm nylon standoff screw kit" }
 buy "Wood glue" { qty: 1, price: 6, search: "PVA wood glue" }
 buy "Amp strap handle with screws" { qty: 1, price: 8, search: "guitar amp strap handle" }
 buy "Rubber feet 20 mm" { qty: 4, price: 0.5, search: "rubber feet 20mm screw on" }

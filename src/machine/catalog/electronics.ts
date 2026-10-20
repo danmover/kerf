@@ -446,7 +446,8 @@ export const ELECTRONICS: CatalogPart[] = [
       hole_d: 3.2,
       features: [
         { kind: "terminal", x: -31.5, y: -29.7, w: 34, d: 10, h: 12 },
-        { kind: "header", x: -8, y: 30, w: 73, d: 6, h: 7 },
+        // the header row stops short of the mounting hole by the top-left corner
+        { kind: "header", x: 2, y: 30, w: 53, d: 6, h: 7 },
         { kind: "chip", x: 5, y: 0, w: 10, d: 10, h: 1.5 },
         { kind: "heatsink", x: -7, y: 17, w: 83, d: 10, h: 4 },
         { kind: "usb", x: 49, y: 10, w: 9, d: 9, h: 3.5 },

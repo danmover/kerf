@@ -258,12 +258,23 @@ const num = (d: Record<string, number>, k: string, def: number) => (typeof d[k] 
 function defaultKind(part: CatalogPart, pin: PinDef): PlugKind {
   if (pin.port === "usb") return "usb_micro";
   if (pin.port) return part.geom.g === "board" ? "xh" : "lead";
-  if (part.kind === "battery") return "xt60";
+  // a pack's own leads, with its connector on the end of them
+  if (part.kind === "battery") return "lead";
   if (part.kind === "psu") return "fork";
   if (part.kind === "fuse" || part.kind === "switch") return "spade";
   if (part.geom.g === "gearmotor" || part.geom.g === "micro_gearmotor" || part.geom.g === "tt_motor") return "solder";
   if (part.geom.g === "board") return pin.type === "pwr_in" || pin.type === "gnd" || pin.type === "motor_out" || pin.type === "passive" ? "ferrule" : "dupont";
   return "lead";
+}
+
+/**
+ * A board's pin with its wire soldered straight to the pad (`leads: "soldered"`):
+ * the joint sits on the top face over the pin and the wire leaves it upwards,
+ * where a plug would need room for its housing and lead. Other parts keep their own.
+ */
+export function solderedPlug(part: CatalogPart, spec: PlugSpec): PlugSpec {
+  if (part.geom.g !== "board") return spec;
+  return { kind: "solder", at: [spec.at[0], spec.at[1], num(part.geom.dims, "t", 1.6)], out: Z, row: spec.row, ways: 1 };
 }
 
 /**

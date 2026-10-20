@@ -170,6 +170,8 @@ part y_stop_mount {
   cut hole(M5, cbore: true, through: true, at: (-45.5, 60, z_ybeam + 6), dir: -Z)
   for h in y_stop.holes { cut hole(M2_5, through: true, at: (h.x, 58, h.z), dir: Y) }
 }
+component y_stop_screws = lib.screw(M2_5, 8) { at: with_y(y_stop.holes, 56.4), axis: Y }
+component y_stop_nuts   = lib.nut(M2_5) { at: with_y(y_stop.holes, 62), axis: Y }
 
 // ── Z axis: two rails on the uprights, two lead screws outboard ───────
 component z_rails    = lib.rail("mgn12h", length: 320, travel: z_zb - 180) { at: [(-up_x, y_up_front, 180), (up_x, y_up_front, 180)], axis: Z, rotate: 180 }
@@ -267,8 +269,13 @@ part x_stop_mount {
   body box(16, 8, 16, at: (-160, -65, z_xr - 8))                 // on the beam's lower slot, beyond the rail end
   add box(4, 28.5, 32, at: (-152.1, -75.25, z_xr - 17))         // plate the switch board screws to, above the BLTouch arm and below the X belt
   cut hole(M5, cbore: true, through: true, at: (-160, -69, z_xr), dir: Y)
-  for h in x_stop.holes { cut hole(M2_5, through: true, at: (-150.1, h.y, h.z), dir: -X) }
+  // the switch board drops onto a peg through its upper hole and is screwed through the lower one from behind the plate:
+  // the carriage parks against the switch, and the X motor sits behind the upper hole
+  add cylinder(d: 2.5, h: 2.1, at: (-150.11, x_stop.holes[0].y, x_stop.holes[0].z), dir: X)
+  cut hole(M2_5, through: true, at: (-150.1, x_stop.holes[1].y, x_stop.holes[1].z), dir: -X)
 }
+component x_stop_screw = lib.screw(M2_5, 10) { at: with_x(x_stop.holes[1], -154.1), axis: X }
+component x_stop_nut   = lib.nut(M2_5) { at: with_x(x_stop.holes[1], -148.5), axis: X }
 
 // ── Toolhead: direct drive, X carriage in front of the rail ───────────
 component hotend     = lib.hotend("e3d_v6_24v") { at: (xc, y_noz, zn), axis: Z, rotate: 180 }
@@ -314,6 +321,7 @@ part x_carriage {
   cut box(26, 14, 2.5, at: (xc + 21, y_noz, zn + 4))
   cut box(12, 14, 2, at: (xc + 29.5, y_noz, zn + 6))
 }
+component probe_screws = lib.screw(M3, 8) { at: with_z(probe.holes, probe_top + 5), axis: -Z }
 
 part extruder_mount {
   group: "Toolhead"
@@ -340,31 +348,38 @@ part extruder_mount {
 
 // ── Electronics: box on the left upright, supply on the right ─────────
 component skr   = lib.controller("skr_mini_e3_v3") { at: (-170, 82, 190), rotate: (90, 0, -90) }
-component pi    = lib.host("rpi_zero_2w") { at: (-170, 62, 132), rotate: (90, 0, -90) }
-component buck  = lib.regulator("buck_24v_5v_3a") { at: (-170, 122, 132), rotate: (90, 0, -90) }
-component board_fan = lib.fan("fan_4010_24v") { at: (-209, 89, 200), axis: X, role: "controller" }
+component pi    = lib.host("rpi_zero_2w") { at: (-170, 60, 132), rotate: (90, 0, -90) }
+component buck  = lib.regulator("buck_24v_5v_3a") { at: (-170, 118, 124), rotate: (90, 0, -90), held: "double-sided foam tape on its pad" }
+component board_fan = lib.fan("fan_4010_24v") { at: (-213, 89, 200), axis: X, role: "controller", removable }   // comes off with the lid
 component psu   = lib.psu("lrs_350_24") { at: (165, 79.5, 217.5), rotate: (0, 90, 0) }
 component fuse  = lib.fuse("fuse_holder_atc") { at: (180, 113, 74.5), rotate: (0, 0, 90), rating: 15A }
+component skr_screws = lib.screw(M3, 6) { at: with_x(skr.holes, -171.6), axis: X }
+component pi_screws  = lib.screw(M2_5, 6) { at: with_x(pi.holes, -171.4), axis: X }
+component psu_screws = lib.screw(M3, 6) { at: with_x(psu.holes, 163.4), axis: X }
 note "Mains enters through a fused, switched IEC inlet in the supply's terminal cover. The 24 V side has its own 15 A blade fuse right at the supply, sized for the 14 AWG lead to the board."
 
 part ebox {
   group: "Electronics"
   material: "PETG"
+  process: mfg.fdm(build: -X, shrink_comp: true)   // printed open side up; scaled for shrink, so the board's screw pattern lines up with its holes
   color: #2b3038
-  body box(36, 124, 124, at: (-178, 84, 108))
+  body box(40, 124, 124, at: (-180, 84, 108))
   shell(3, open: -X)
   add box(3, 40.01, 124, at: (-161.5, 2, 108))                       // flange on the upright's outer face
   for y in [-10, 10] { for z in [130, 210] { cut hole(M5, through: true, at: (-163.01, y, z), dir: X) } }
   // standoffs with heat-set inserts
   for h in skr.holes { add cylinder(d: 7, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M3, fit: "insert", depth: 6, at: (-170, h.y, h.z), dir: X) }
-  for h in pi.holes { add cylinder(d: 6, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M2_5, fit: "insert", depth: 5, at: (-170, h.y, h.z), dir: X) }
-  add box(7.02, 24, 16, at: (-166.49, 122, 124))                      // pad for the buck module (foam tape)
-  // lid screw bosses and the cable slot in the floor
+  for h in pi.holes { add cylinder(d: 6.5, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M2_5, fit: "insert", depth: 5, at: (-170, h.y, h.z), dir: X) }
+  add box(7.02, 24, 16, at: (-166.49, 118, 116))                      // pad for the buck module (foam tape)
+  // lid screw bosses in the corners, stopping short of the back wall so the buck's and the Pi's leads pass behind them
   for p in [(27, 113), (141, 113), (27, 227), (141, 227)] {
-    add cylinder(d: 8, h: 33, at: (-163, p.x, p.y), dir: -X)
-    cut hole(M3, fit: "insert", depth: 8, at: (-196, p.x, p.y), dir: X)
+    add cylinder(d: 8, h: 25, at: (-175, p.x, p.y), dir: -X)
+    cut hole(M3, fit: "insert", depth: 8, at: (-200, p.x, p.y), dir: X)
   }
-  cut box(20, 60, 10, at: (-180, 84, 104))
+  // cable slot in the floor, reaching under the Pi's USB socket so its plug goes straight down through it
+  cut box(22, 70, 10, at: (-181, 79, 104))
+  // opening in the front wall for the board's USB-C plug
+  cut box(16, 8, 16, at: (-173.2, 23, 192))
 }
 
 part ebox_lid {
@@ -372,16 +387,17 @@ part ebox_lid {
   material: "PETG"
   color: #3d4450
   removable
-  body box(3, 124, 124, at: (-197.5, 84, 108))
-  cut cylinder(d: 37, h: 5, at: (-200, 89, 200), dir: X)
-  for h in board_fan.holes { cut hole(M3, through: true, at: (-199, h.y, h.z), dir: X) }
-  for p in [(27, 113), (141, 113), (27, 227), (141, 227)] { cut hole(M3, through: true, at: (-199, p.x, p.y), dir: X) }
-  for i in range(6) { cut rrect(w: 3, h: 40, r: 1.4, depth: 5, at: (-200, 110 + i * 6, 140), dir: X) }
+  body box(3, 124, 124, at: (-201.5, 84, 108))
+  cut cylinder(d: 37, h: 5, at: (-204, 89, 200), dir: X)
+  for h in board_fan.holes { cut hole(M3, through: true, at: (-203, h.y, h.z), dir: X) }
+  for p in [(27, 113), (141, 113), (27, 227), (141, 227)] { cut hole(M3, through: true, at: (-203, p.x, p.y), dir: X) }
+  for i in range(6) { cut rrect(w: 3, h: 40, r: 1.4, depth: 5, at: (-204, 110 + i * 6, 140), dir: X) }
 }
 
 part psu_mount {
   group: "Electronics"
   material: "PETG"
+  process: mfg.fdm(build: X, shrink_comp: true)   // printed flat; scaled for shrink, so the supply's screw pattern lines up
   color: #2b3038
   body box(5, 155, 171, at: (162.5, 59.5, 132))
   cut box(7, 135, 131, at: (162.5, 59.5, 152))                   // window: a frame is enough
@@ -395,8 +411,10 @@ part psu_cover {
   group: "Electronics"
   material: "PETG"
   color: #2b3038
-  body box(30, 115, 38, at: (180, 79.5, 72))
+  // runs 20 mm past the supply's end, so the fuse's ring terminals and their leads have room; roofed where the supply does not cover it
+  body box(30, 135, 38, at: (180, 89.5, 72))
   shell(2.5, open: Z)
+  add box(30, 20.5, 2.5, at: (180, 147, 107.5))
   add box(4.5, 10, 34, at: (169.74, 130, 74))                       // boss for the two fixing screws
   for z in [82, 100] { cut hole(M3, fit: "insert", depth: 7, at: (165, 130, z), dir: X) }
   cut rrect(w: 47.5, h: 27.5, r: 1, depth: 5, at: (196, 70, 91), dir: -X)   // IEC C14 inlet with switch and fuse

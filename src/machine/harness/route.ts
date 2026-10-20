@@ -1,12 +1,16 @@
-// Routes cables through the assembly. The parts' surfaces are marked in a
-// voxel grid, and each cable is found with A* over the free cells, preferring
-// to run along surfaces (as cables are tied along a frame), to keep straight
-// and to join cables already routed, so they gather into a harness. The cell
-// path is then pushed apart where cables share it and smoothed into bends,
-// never into a part. Plain arithmetic on typed arrays: it runs in a worker
-// and in Node tests.
+// Routes cables through the assembly. The parts are filled into a voxel
+// grid (surface and inside), a signed distance field says how much room
+// each free cell has, and each cable is found with A* over the cells it
+// fits through, preferring to run along surfaces (as cables are tied along a
+// frame), to keep straight and to join cables already routed, so they gather
+// into a harness. The cell paths are then relaxed together (relax.ts): pushed
+// out of the parts by the cable's own radius and apart from each other, so
+// no cable runs through a part or through another cable. Plain arithmetic on
+// typed arrays: it runs in a worker and in Node tests.
 
 import type { V3 } from "../../kernel/recipe";
+import { relaxCables, type SignedField } from "./relax";
+import { Solids, invert, transform, type SolidRole } from "./solids";
 
 export interface RouteGeometry {
   positions: Float32Array;
@@ -19,6 +23,11 @@ export interface RoutePlaced {
   m: number[];
   /** a bought part: cables go round it, never through its openings (fan bores, vents), so its whole box is solid (part frame) */
   box?: [V3, V3];
+  /** the part's id, its component instance and what it is, for the wiring checks */
+  id?: string;
+  comp?: string;
+  role?: SolidRole;
+  removable?: boolean;
 }
 
 export interface RouteEnd {
@@ -61,21 +70,33 @@ export interface RoutedWire {
   points: V3[];
   /** length of the centre line, mm */
   length: number;
-  /** cells of the path that are inside a part's surface: the router had to go through one */
+  /** cells of the path that are inside a part: the router had to go through one */
   through: number;
   /** no path was found in the search budget: a straight line is drawn instead */
   straight: boolean;
+  /** outer radius of the cable, mm */
+  r: number;
 }
 
 export interface RouteResult {
   wires: RoutedWire[];
   cell: number;
   ms: number;
+  /** time spent in each stage, ms */
+  stages?: Record<string, number>;
 }
 
+/** Room the router leaves between a cable and a part, mm, on top of the cable's radius. */
+export const CLEAR = 0.25;
 const COST_HUG = 1;
 const COST_FREE = 1.8;
-const COST_SOLID = 400;
+const COST_SOLID = 4000;
+/** a cell outside the assembly, for a cable whose ends are both inside it: out through a hole and back in is a cable left in the open */
+const COST_OUT = 200;
+/** holes narrower than twice this are closed when finding the outside, mm */
+const OUT_REACH = 8;
+/** a free cell too close to a part for the cable to pass without pressing on it */
+const COST_TIGHT = 30;
 /** a cell a moving part sweeps through: avoided, but a plug inside one can still get out */
 const COST_KEEP = 8;
 const BUNDLE = 0.55;
@@ -84,6 +105,8 @@ const MAX_CELLS = 2_400_000;
 const MAX_EXPAND = 2_000_000;
 /** cells a plug's end may search through to get out of a solid */
 const MAX_ESCAPE = 400_000;
+/** a part bigger than this many cells is marked by its surface only */
+const MAX_PART_CELLS = 6_000_000;
 
 class Grid {
   readonly nx: number;
@@ -91,8 +114,12 @@ class Grid {
   readonly nz: number;
   readonly n: number;
   readonly solid: Uint8Array;
-  /** 1: a free cell next to a solid one */
-  readonly hug: Uint8Array;
+  /** signed distance from each cell centre to the parts' surfaces, mm: positive in free space, negative inside a part */
+  phi: Float32Array;
+  /** free cells outside the assembly (1), from buildOutside */
+  outside: Uint8Array;
+  /** which closed-off space each free cell inside the assembly is in (1, 2, ...; 0 outside it or in a part) */
+  region: Int32Array;
   /** how many routed cables pass through each cell */
   readonly use: Uint16Array;
   /** keep-out groups covering each cell */
@@ -108,7 +135,9 @@ class Grid {
     this.nz = Math.max(1, Math.ceil((max[2] - min[2]) / h));
     this.n = this.nx * this.ny * this.nz;
     this.solid = new Uint8Array(this.n);
-    this.hug = new Uint8Array(this.n);
+    this.phi = new Float32Array(0);
+    this.outside = new Uint8Array(0);
+    this.region = new Int32Array(0);
     this.use = new Uint16Array(this.n);
     this.keep = new Uint16Array(this.n);
   }
@@ -140,36 +169,113 @@ class Grid {
     return this.solid[this.index(i, j, k)] === 1;
   }
 
-  /** mark the cells a triangle passes through, by sampling it finer than a cell */
-  markTriangle(a: V3, b: V3, c: V3) {
-    // start at the corner shared by the longest and shortest edges so a sliver needs few samples
-    const pts = [a, b, c];
-    const len = (p: V3, q: V3) => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]);
-    const e = [len(b, c), len(c, a), len(a, b)]; // edge opposite each corner
-    const longest = e.indexOf(Math.max(...e));
-    const shortest = e.indexOf(Math.min(...e));
-    // the corner on both edges is the one opposite neither
-    const o = longest === shortest ? 0 : 3 - longest - shortest;
-    const p0 = pts[o];
-    const p1 = pts[(o + 1) % 3];
-    const p2 = pts[(o + 2) % 3];
-    const s = this.h * 0.45;
-    const n1 = Math.max(1, Math.ceil(len(p0, p1) / s));
-    const n2 = Math.max(1, Math.ceil(len(p0, p2) / s));
-    const { nx, ny, nz, min, h } = this;
-    for (let i = 0; i <= n1; i++) {
-      const u = i / n1;
-      const jmax = Math.floor((1 - u) * n2 + 1e-9);
-      for (let j = 0; j <= jmax; j++) {
-        const v = j / n2;
-        const x = p0[0] + u * (p1[0] - p0[0]) + v * (p2[0] - p0[0]);
-        const y = p0[1] + u * (p1[1] - p0[1]) + v * (p2[1] - p0[1]);
-        const z = p0[2] + u * (p1[2] - p0[2]) + v * (p2[2] - p0[2]);
-        const ci = Math.floor((x - min[0]) / h);
-        const cj = Math.floor((y - min[1]) / h);
-        const ck = Math.floor((z - min[2]) / h);
-        if (ci < 0 || cj < 0 || ck < 0 || ci >= nx || cj >= ny || ck >= nz) continue;
-        this.solid[ci + nx * (cj + ny * ck)] = 1;
+  /**
+   * Mark one part: its surface cells, and the cells inside it (those its
+   * surface closes off from the outside of its own box), so a cable that
+   * goes in has to come out through solid again.
+   */
+  markPart(pos: Float32Array, idx: Uint32Array, probe?: PartProbe) {
+    const { h } = this;
+    const lo: V3 = [Infinity, Infinity, Infinity];
+    const hi: V3 = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < pos.length; i += 3)
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], pos[i + k]);
+        hi[k] = Math.max(hi[k], pos[i + k]);
+      }
+    if (!Number.isFinite(lo[0])) return;
+    // the part's own little grid, one cell wider than it all round and aligned with this one
+    const i0 = Math.floor((lo[0] - this.min[0]) / h) - 1;
+    const j0 = Math.floor((lo[1] - this.min[1]) / h) - 1;
+    const k0 = Math.floor((lo[2] - this.min[2]) / h) - 1;
+    const lx = Math.floor((hi[0] - this.min[0]) / h) + 2 - i0;
+    const ly = Math.floor((hi[1] - this.min[1]) / h) + 2 - j0;
+    const lz = Math.floor((hi[2] - this.min[2]) / h) + 2 - k0;
+    // clear of the grid altogether
+    if (i0 + lx < 0 || j0 + ly < 0 || k0 + lz < 0 || i0 >= this.nx || j0 >= this.ny || k0 >= this.nz) return;
+    const fill = lx * ly * lz <= MAX_PART_CELLS;
+    const lmin: V3 = [this.min[0] + i0 * h, this.min[1] + j0 * h, this.min[2] + k0 * h];
+    if (!fill) {
+      // too big to fill: its surface alone, straight into the grid
+      for (let t = 0; t < idx.length; t += 3) markTriangle(this.solid, this.min, h, this.nx, this.ny, this.nz, pos, idx[t], idx[t + 1], idx[t + 2]);
+      return;
+    }
+    const cells = new Uint8Array(lx * ly * lz);
+    for (let t = 0; t < idx.length; t += 3) markTriangle(cells, lmin, h, lx, ly, lz, pos, idx[t], idx[t + 1], idx[t + 2]);
+    // keep only the cells whose centre is within half a cell of the surface: still a wall no step can pass (a step is one cell),
+    // but a hole a few cells across stays open, where every cell its edge touches would close it
+    const at = (c: number): V3 => [lmin[0] + ((c % lx) + 0.5) * h, lmin[1] + ((Math.floor(c / lx) % ly) + 0.5) * h, lmin[2] + (Math.floor(c / (lx * ly)) + 0.5) * h];
+    if (probe)
+      for (let c = 0; c < cells.length; c++) {
+        if (cells[c] !== 1) continue;
+        const p = at(c);
+        if (probe.surface(p[0], p[1], p[2], h / 2 + 1e-3) > h / 2) cells[c] = 0;
+      }
+    // flood the outside in from the little grid's border; what it never reaches is inside
+    const sxy = lx * ly;
+    const queue = new Int32Array(lx * ly * lz);
+    let head = 0;
+    let tail = 0;
+    const seed = (c: number) => {
+      if (cells[c]) return;
+      cells[c] = 2;
+      queue[tail++] = c;
+    };
+    for (let z = 0; z < lz; z++)
+      for (let y = 0; y < ly; y++)
+        for (let x = 0; x < lx; x++) if (x === 0 || y === 0 || z === 0 || x === lx - 1 || y === ly - 1 || z === lz - 1) seed(x + lx * (y + ly * z));
+    while (head < tail) {
+      const c = queue[head++];
+      const x = c % lx;
+      const y = Math.floor(c / lx) % ly;
+      const z = Math.floor(c / sxy);
+      if (x > 0) seed(c - 1);
+      if (x < lx - 1) seed(c + 1);
+      if (y > 0) seed(c - lx);
+      if (y < ly - 1) seed(c + lx);
+      if (z > 0) seed(c - sxy);
+      if (z < lz - 1) seed(c + sxy);
+    }
+    // what the flood never reached is the part's material, or a hollow it closes in (a sealed box's inside, a sleeve's bore
+    // closed at both ends): one inside test for each pocket of unreached cells tells which, and a hollow stays free
+    if (probe) {
+      for (let c = 0; c < cells.length; c++) {
+        if (cells[c] !== 0) continue;
+        const p = at(c);
+        const keep = probe.inside(p[0], p[1], p[2]) ? 3 : 2;
+        cells[c] = keep;
+        head = tail = 0;
+        queue[tail++] = c;
+        while (head < tail) {
+          const u = queue[head++];
+          const x = u % lx;
+          const y = Math.floor(u / lx) % ly;
+          const z = Math.floor(u / sxy);
+          const visit = (v: number) => {
+            if (cells[v] !== 0) return;
+            cells[v] = keep;
+            queue[tail++] = v;
+          };
+          if (x > 0) visit(u - 1);
+          if (x < lx - 1) visit(u + 1);
+          if (y > 0) visit(u - lx);
+          if (y < ly - 1) visit(u + lx);
+          if (z > 0) visit(u - sxy);
+          if (z < lz - 1) visit(u + sxy);
+        }
+      }
+    }
+    for (let z = 0; z < lz; z++) {
+      const gk = k0 + z;
+      if (gk < 0 || gk >= this.nz) continue;
+      for (let y = 0; y < ly; y++) {
+        const gj = j0 + y;
+        if (gj < 0 || gj >= this.ny) continue;
+        for (let x = 0; x < lx; x++) {
+          const gi = i0 + x;
+          if (gi < 0 || gi >= this.nx) continue;
+          if (cells[x + lx * (y + ly * z)] !== 2) this.solid[gi + this.nx * (gj + this.ny * gk)] = 1;
+        }
       }
     }
   }
@@ -198,41 +304,207 @@ class Grid {
         }
   }
 
-  /** close openings one cell wide (vents, slots between parts) so cables don't thread through them */
-  close() {
-    const { nx, ny, nz } = this;
-    const sxy = nx * ny;
-    const grown = this.solid.slice();
-    for (let k = 0; k < nz; k++)
-      for (let j = 0; j < ny; j++)
-        for (let i = 0; i < nx; i++) {
-          const idx = i + nx * (j + ny * k);
-          if (this.solid[idx]) continue;
-          const s = this.solid;
-          if ((i > 0 && s[idx - 1]) || (i < nx - 1 && s[idx + 1]) || (j > 0 && s[idx - nx]) || (j < ny - 1 && s[idx + nx]) || (k > 0 && s[idx - sxy]) || (k < nz - 1 && s[idx + sxy])) grown[idx] = 1;
-        }
-    // shrink back: a grown cell stays solid only if all its neighbours are solid after growing
-    for (let k = 0; k < nz; k++)
-      for (let j = 0; j < ny; j++)
-        for (let i = 0; i < nx; i++) {
-          const idx = i + nx * (j + ny * k);
-          if (this.solid[idx] || !grown[idx]) continue;
-          const g = grown;
-          const all = (i === 0 || g[idx - 1]) && (i === nx - 1 || g[idx + 1]) && (j === 0 || g[idx - nx]) && (j === ny - 1 || g[idx + nx]) && (k === 0 || g[idx - sxy]) && (k === nz - 1 || g[idx + sxy]);
-          if (all) this.solid[idx] = 1;
-        }
+  /** The signed distance field, from the distances to the nearest solid and the nearest free cell centres. */
+  buildField() {
+    const toSolid = edt3(this.solid, 1, this.nx, this.ny, this.nz);
+    const toFree = edt3(this.solid, 0, this.nx, this.ny, this.nz);
+    const phi = new Float32Array(this.n);
+    const half = this.h / 2;
+    for (let i = 0; i < this.n; i++) phi[i] = this.solid[i] ? -(Math.sqrt(toFree[i]) * this.h - half) : Math.sqrt(toSolid[i]) * this.h - half;
+    this.phi = phi;
   }
 
-  buildHug() {
-    const { nx, ny, nz, solid, hug } = this;
+  /**
+   * The free cells outside the assembly: those reached from the grid's
+   * border through gaps wider than 2·reach, and every free cell within reach
+   * of them. A hole smaller than that (a grommet, an access hole) closes the
+   * inside of an enclosure off from the outside.
+   */
+  buildOutside(reach: number) {
+    const { nx, ny, nz, phi } = this;
     const sxy = nx * ny;
+    const far = new Uint8Array(this.n);
+    const queue = new Int32Array(this.n);
+    let head = 0;
+    let tail = 0;
+    const seed = (c: number) => {
+      if (far[c] || phi[c] < reach) return;
+      far[c] = 1;
+      queue[tail++] = c;
+    };
     for (let k = 0; k < nz; k++)
       for (let j = 0; j < ny; j++)
-        for (let i = 0; i < nx; i++) {
-          const idx = i + nx * (j + ny * k);
-          if (solid[idx]) continue;
-          if ((i > 0 && solid[idx - 1]) || (i < nx - 1 && solid[idx + 1]) || (j > 0 && solid[idx - nx]) || (j < ny - 1 && solid[idx + nx]) || (k > 0 && solid[idx - sxy]) || (k < nz - 1 && solid[idx + sxy])) hug[idx] = 1;
-        }
+        for (let i = 0; i < nx; i++) if (i === 0 || j === 0 || k === 0 || i === nx - 1 || j === ny - 1 || k === nz - 1) seed(i + nx * (j + ny * k));
+    while (head < tail) {
+      const c = queue[head++];
+      const i = c % nx;
+      const j = Math.floor(c / nx) % ny;
+      const k = Math.floor(c / sxy);
+      if (i > 0) seed(c - 1);
+      if (i < nx - 1) seed(c + 1);
+      if (j > 0) seed(c - nx);
+      if (j < ny - 1) seed(c + nx);
+      if (k > 0) seed(c - sxy);
+      if (k < nz - 1) seed(c + sxy);
+    }
+    const d = edt3(far, 1, nx, ny, nz);
+    const lim = (reach / this.h + 0.5) ** 2;
+    const out = new Uint8Array(this.n);
+    for (let c = 0; c < this.n; c++) if (!this.solid[c] && d[c] <= lim) out[c] = 1;
+    this.outside = out;
+    // the spaces inside, each on its own: an enclosure's compartments joined by a gap are one, two sealed boxes are two
+    const region = new Int32Array(this.n);
+    let next = 0;
+    for (let c0 = 0; c0 < this.n; c0++) {
+      if (region[c0] || this.solid[c0] || out[c0]) continue;
+      region[c0] = ++next;
+      head = tail = 0;
+      queue[tail++] = c0;
+      while (head < tail) {
+        const c = queue[head++];
+        const i = c % nx;
+        const j = Math.floor(c / nx) % ny;
+        const k = Math.floor(c / sxy);
+        const visit = (v: number) => {
+          if (region[v] || this.solid[v] || out[v]) return;
+          region[v] = next;
+          queue[tail++] = v;
+        };
+        if (i > 0) visit(c - 1);
+        if (i < nx - 1) visit(c + 1);
+        if (j > 0) visit(c - nx);
+        if (j < ny - 1) visit(c + nx);
+        if (k > 0) visit(c - sxy);
+        if (k < nz - 1) visit(c + sxy);
+      }
+    }
+    this.region = region;
+  }
+
+  regionAt(x: number, y: number, z: number): number {
+    if (!this.region.length) return 0;
+    const [i, j, k] = this.cellOf([x, y, z]);
+    return this.region[this.index(i, j, k)];
+  }
+
+  outsideAt(x: number, y: number, z: number): boolean {
+    if (!this.outside.length) return false;
+    const [i, j, k] = this.cellOf([x, y, z]);
+    return this.outside[this.index(i, j, k)] === 1;
+  }
+
+  /** The field at any point, by trilinear interpolation between cell centres (far outside the grid: a large clearance). */
+  phiAt(x: number, y: number, z: number): number {
+    const { nx, ny, nz, h, min, phi } = this;
+    const u = (x - min[0]) / h - 0.5;
+    const v = (y - min[1]) / h - 0.5;
+    const w = (z - min[2]) / h - 0.5;
+    const i = Math.max(0, Math.min(nx - 2, Math.floor(u)));
+    const j = Math.max(0, Math.min(ny - 2, Math.floor(v)));
+    const k = Math.max(0, Math.min(nz - 2, Math.floor(w)));
+    if (nx < 2 || ny < 2 || nz < 2) return phi[this.index(Math.min(nx - 1, Math.max(0, Math.round(u))), Math.min(ny - 1, Math.max(0, Math.round(v))), Math.min(nz - 1, Math.max(0, Math.round(w))))] ?? 1e3;
+    const fu = Math.max(0, Math.min(1, u - i));
+    const fv = Math.max(0, Math.min(1, v - j));
+    const fw = Math.max(0, Math.min(1, w - k));
+    const at = (a: number, b: number, c: number) => phi[i + a + nx * (j + b + ny * (k + c))];
+    const c00 = at(0, 0, 0) * (1 - fu) + at(1, 0, 0) * fu;
+    const c10 = at(0, 1, 0) * (1 - fu) + at(1, 1, 0) * fu;
+    const c01 = at(0, 0, 1) * (1 - fu) + at(1, 0, 1) * fu;
+    const c11 = at(0, 1, 1) * (1 - fu) + at(1, 1, 1) * fu;
+    const val = (c00 * (1 - fv) + c10 * fv) * (1 - fw) + (c01 * (1 - fv) + c11 * fv) * fw;
+    // beyond the grid the parts are further away still
+    const out = Math.max(0, -u - 0.5, u - (nx - 0.5), -v - 0.5, v - (ny - 0.5), -w - 0.5, w - (nz - 0.5)) * h;
+    return val + out;
+  }
+}
+
+/** Squared distances (in cells) from every cell to the nearest cell whose mask value is `site`, by the separable transform of Felzenszwalb and Huttenlocher. */
+function edt3(mask: Uint8Array, site: number, nx: number, ny: number, nz: number): Float32Array {
+  const BIG = 1e20;
+  const n = nx * ny * nz;
+  const d = new Float32Array(n);
+  for (let i = 0; i < n; i++) d[i] = mask[i] === site ? 0 : BIG;
+  const m = Math.max(nx, ny, nz);
+  const f = new Float64Array(m);
+  const out = new Float64Array(m);
+  const v = new Int32Array(m);
+  const z = new Float64Array(m + 1);
+  const pass = (count: number, len: number, stride: number, start: (line: number) => number) => {
+    for (let line = 0; line < count; line++) {
+      const s = start(line);
+      for (let q = 0; q < len; q++) f[q] = d[s + q * stride];
+      edt1(f, len, out, v, z);
+      for (let q = 0; q < len; q++) d[s + q * stride] = out[q];
+    }
+  };
+  pass(ny * nz, nx, 1, (l) => l * nx);
+  pass(nx * nz, ny, nx, (l) => (l % nx) + nx * ny * Math.floor(l / nx));
+  pass(nx * ny, nz, nx * ny, (l) => l);
+  return d;
+}
+
+function edt1(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Float64Array) {
+  let k = 0;
+  v[0] = 0;
+  z[0] = -Infinity;
+  z[1] = Infinity;
+  for (let q = 1; q < n; q++) {
+    let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    while (s <= z[k]) {
+      k--;
+      s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    }
+    k++;
+    v[k] = q;
+    z[k] = s;
+    z[k + 1] = Infinity;
+  }
+  k = 0;
+  for (let q = 0; q < n; q++) {
+    while (z[k + 1] < q) k++;
+    d[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
+  }
+}
+
+/** Exact questions about one part's mesh, for marking it finely: distance to its surface (Infinity beyond maxD) and inside or out. */
+interface PartProbe {
+  surface(x: number, y: number, z: number, maxD: number): number;
+  inside(x: number, y: number, z: number): boolean;
+}
+
+/** Mark the cells of a grid (origin min, cell h) that a triangle of pos passes through, by sampling it finer than a cell. */
+function markTriangle(cells: Uint8Array, min: V3, h: number, nx: number, ny: number, nz: number, pos: Float32Array, ia: number, ib: number, ic: number) {
+  const a: V3 = [pos[3 * ia], pos[3 * ia + 1], pos[3 * ia + 2]];
+  const b: V3 = [pos[3 * ib], pos[3 * ib + 1], pos[3 * ib + 2]];
+  const c: V3 = [pos[3 * ic], pos[3 * ic + 1], pos[3 * ic + 2]];
+  // start at the corner shared by the longest and shortest edges so a sliver needs few samples
+  const pts = [a, b, c];
+  const len = (p: V3, q: V3) => Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]);
+  const e = [len(b, c), len(c, a), len(a, b)]; // edge opposite each corner
+  const longest = e.indexOf(Math.max(...e));
+  const shortest = e.indexOf(Math.min(...e));
+  // the corner on both edges is the one opposite neither
+  const o = longest === shortest ? 0 : 3 - longest - shortest;
+  const p0 = pts[o];
+  const p1 = pts[(o + 1) % 3];
+  const p2 = pts[(o + 2) % 3];
+  const s = h * 0.45;
+  const n1 = Math.max(1, Math.ceil(len(p0, p1) / s));
+  const n2 = Math.max(1, Math.ceil(len(p0, p2) / s));
+  for (let i = 0; i <= n1; i++) {
+    const u = i / n1;
+    const jmax = Math.floor((1 - u) * n2 + 1e-9);
+    for (let j = 0; j <= jmax; j++) {
+      const v = j / n2;
+      const x = p0[0] + u * (p1[0] - p0[0]) + v * (p2[0] - p0[0]);
+      const y = p0[1] + u * (p1[1] - p0[1]) + v * (p2[1] - p0[1]);
+      const z = p0[2] + u * (p1[2] - p0[2]) + v * (p2[2] - p0[2]);
+      const ci = Math.floor((x - min[0]) / h);
+      const cj = Math.floor((y - min[1]) / h);
+      const ck = Math.floor((z - min[2]) / h);
+      if (ci < 0 || cj < 0 || ck < 0 || ci >= nx || cj >= ny || ck >= nz) continue;
+      cells[ci + nx * (cj + ny * ck)] = 1;
+    }
   }
 }
 
@@ -284,20 +556,6 @@ class Heap {
   }
 }
 
-function transform(m: number[], x: number, y: number, z: number): V3 {
-  return [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]];
-}
-
-/** Inverse of a column-major affine 4×4. */
-function invert(m: number[]): number[] | null {
-  const [a, b, c, , d, e, f, , g, h, i] = m;
-  const det = a * (e * i - f * h) - d * (b * i - c * h) + g * (b * f - c * e);
-  if (Math.abs(det) < 1e-12) return null;
-  const r = [(e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det, (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det, (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det];
-  const t = [m[12], m[13], m[14]];
-  return [r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, -(r[0] * t[0] + r[3] * t[1] + r[6] * t[2]), -(r[1] * t[0] + r[4] * t[1] + r[7] * t[2]), -(r[2] * t[0] + r[5] * t[1] + r[8] * t[2]), 1];
-}
-
 const add = (a: V3, b: V3, s = 1): V3 => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
@@ -336,8 +594,13 @@ function region(input: RouteInput, world: Float32Array[]): { min: V3; max: V3 } 
   return { min, max };
 }
 
-/** Route every cable. Cables are routed in the order given, each one drawn to the ones before it. */
-export function routeCables(input: RouteInput): RouteResult {
+/** Route every cable. Cables are routed in the order given, each one drawn to the ones before it, then all are relaxed together. */
+export function routeCables(input: RouteInput, solids?: Solids): RouteResult {
+  return routeWithField(input, solids).result;
+}
+
+/** routeCables, with the signed distance field it routed in (for the wiring checks that follow it in the same worker). */
+export function routeWithField(input: RouteInput, solids?: Solids): { result: RouteResult; field: SignedField } {
   const t0 = Date.now();
   // place every solid's vertices in the assembly once
   const world = input.placed.map((pl) => {
@@ -355,15 +618,40 @@ export function routeCables(input: RouteInput): RouteResult {
   const vol = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
   const h = input.cell ?? Math.max(2.5, Math.cbrt(vol / MAX_CELLS) * 1.02);
   const grid = new Grid(min, h, max);
+  const stages: Record<string, number> = {};
+  let t = Date.now();
+  const lap = (name: string) => {
+    const now = Date.now();
+    stages[name] = now - t;
+    t = now;
+  };
+  const sol = solids ?? new Solids(input.geos, input.placed);
+  const near = new Float64Array(4);
   input.placed.forEach((pl, n) => {
-    const idx = input.geos[pl.geo].indices;
-    const pos = world[n];
-    const v = (i: number): V3 => [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]];
-    for (let t = 0; t < idx.length; t += 3) grid.markTriangle(v(idx[t]), v(idx[t + 1]), v(idx[t + 2]));
+    const inv = invert(pl.m);
+    const bvh = inv && !pl.box ? sol.bvh(pl.geo) : null;
+    grid.markPart(
+      world[n],
+      input.geos[pl.geo].indices,
+      bvh
+        ? {
+            surface: (x, y, z, maxD) => {
+              const q = transform(inv!, x, y, z);
+              return bvh.closest(q[0], q[1], q[2], maxD, near);
+            },
+            inside: (x, y, z) => {
+              const q = transform(inv!, x, y, z);
+              return bvh.contains(q[0], q[1], q[2]);
+            },
+          }
+        : undefined,
+    );
     if (pl.box) grid.fillBox(pl.m, pl.box);
   });
-  grid.close();
-  grid.buildHug();
+  lap("grid");
+  grid.buildField();
+  grid.buildOutside(OUT_REACH);
+  lap("field");
   for (const k of input.keepOut ?? []) grid.markKeepOut(k);
 
   const search = new Search(grid);
@@ -374,8 +662,27 @@ export function routeCables(input: RouteInput): RouteResult {
     paths.push({ wire: w, cells });
   }
   const wires = paths.map((p, n) => finish(grid, p.wire, p.cells, n, paths));
-  return { wires, cell: h, ms: Date.now() - t0 };
+  lap("search");
+  // push the runs out of the parts by their radius and apart from each other
+  const field: SignedField = { h, phi: (x, y, z) => grid.phiAt(x, y, z), outside: (x, y, z) => grid.outsideAt(x, y, z), region: (x, y, z) => grid.regionAt(x, y, z) };
+  const live = wires.filter((w) => !w.straight);
+  relaxCables(
+    live.map((w) => ({ id: w.id, pts: w.points, r: w.r })),
+    field,
+    sol,
+  ).forEach((pts, i) => {
+    live[i].points = pts;
+    live[i].length = pathLength(pts);
+  });
+  lap("relax");
+  return { result: { wires, cell: h, ms: Date.now() - t0, stages }, field };
 }
+
+const pathLength = (pts: V3[]) => {
+  let length = 0;
+  for (let i = 1; i < pts.length; i++) length += dist(pts[i - 1], pts[i]);
+  return length;
+};
 
 class Search {
   private g: Float32Array;
@@ -480,6 +787,13 @@ class Search {
     heap.push(hcost(start), start);
     const steps = [1, -1, nx, -nx, sxy, -sxy];
     const avoid = w.avoid ?? 0;
+    // the room this cable needs from a part, and the band along a surface it is happy to run in
+    const need = w.d / 2 + CLEAR;
+    const hugTo = need + gr.h;
+    const phi = gr.phi;
+    // a cable from inside the assembly to inside it stays inside
+    const outer = gr.outside;
+    const outCost = outer.length && gr.region[start] && gr.region[start] === gr.region[goal] ? COST_OUT : 0;
     let expanded = 0;
     let found = false;
     while (heap.size) {
@@ -501,8 +815,10 @@ class Search {
         if ((s === 0 && ui === nx - 1) || (s === 1 && ui === 0) || (s === 2 && uj === ny - 1) || (s === 3 && uj === 0) || (s === 4 && uk === nz - 1) || (s === 5 && uk === 0)) continue;
         const v = u + d;
         if (closed[v] === gen) continue;
-        let c = gr.solid[v] ? COST_SOLID : gr.hug[v] ? COST_HUG : COST_FREE;
+        const room = phi[v];
+        let c = gr.solid[v] ? COST_SOLID : room < need ? COST_TIGHT : room < hugTo ? COST_HUG : COST_FREE;
         if (gr.use[v]) c *= BUNDLE;
+        if (outCost && outer[v]) c += outCost;
         if (avoid && gr.keep[v] & avoid) c += COST_KEEP;
         if (inDir && d !== inDir) c += TURN;
         const ng = g[u] + c;
@@ -525,7 +841,7 @@ class Search {
 function finish(grid: Grid, w: RouteWire, cells: number[], n: number, all: { wire: RouteWire; cells: number[] }[]): RoutedWire {
   if (!cells.length) {
     const points = [w.a.p, w.b.p];
-    return { id: w.id, points, length: dist(w.a.p, w.b.p), through: 0, straight: true };
+    return { id: w.id, points, length: dist(w.a.p, w.b.p), through: 0, straight: true, r: w.d / 2 };
   }
   const centers = cells.map((c) => grid.center(c));
   // cables in each shared cell sit side by side, in routing order, across the run's direction
@@ -569,9 +885,7 @@ function finish(grid: Grid, w: RouteWire, cells: number[], n: number, all: { wir
   pts = trimEnds(pts);
   const through = cells.filter((c) => grid.solid[c]).length;
   pts = smooth(grid, pts, 6);
-  let length = 0;
-  for (let i = 1; i < pts.length; i++) length += dist(pts[i - 1], pts[i]);
-  return { id: w.id, points: pts, length, through, straight: false };
+  return { id: w.id, points: pts, length: pathLength(pts), through, straight: false, r: w.d / 2 };
 }
 
 /** Skip the first and last cell centres when the exact end lies beyond them along the path. */

@@ -13,6 +13,7 @@ import { xformMatrix } from "../../../kernel/recipe";
 import type { EvalPart } from "../../../core/model";
 import { PLUG_BACK, contactX, leadLength, placeFrame, type Harness, type HarnessWire, type PlugEnd } from "../../../machine/harness/harness";
 import type { RoutedWire } from "../../../machine/harness/route";
+import type { WiringFindings } from "../../../machine/harness/clash";
 import { endAxes, slotPoint, type FlexLink, type PieceEnd, type TravelPlan } from "../../../machine/harness/travel";
 import { MeshBuilder, norm } from "./builder";
 import { plugBody, socketBody } from "./bodies";
@@ -77,6 +78,9 @@ interface SocketObj {
 }
 
 const DIM = 0.16;
+/** heat-shrink over a splice, and a black nylon cable tie */
+const SLEEVE_COLOR = "#26282c";
+const TIE_COLOR = "#1a1a1a";
 
 export class WiringOverlay implements SceneOverlay {
   readonly object = new THREE.Group();
@@ -86,6 +90,7 @@ export class WiringOverlay implements SceneOverlay {
   private flexes: FlexObj[] = [];
   private sockets: SocketObj[] = [];
   private follows = new Map<string, Follow>();
+  private byWire = new Map<string, HarnessWire>();
   private plastic = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0 });
   private metal = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.32, metalness: 0.55 });
   private picked: string | null = null;
@@ -108,8 +113,9 @@ export class WiringOverlay implements SceneOverlay {
    * and so, less, do made parts that a plug sits inside (an electronics box, a
    * carriage around the hotend's leads). `boxOf` is a part's box in its own frame.
    */
-  set(h: Harness, routes: Map<string, RoutedWire> | null, parts: EvalPart[], boxOf?: (p: EvalPart) => [V3, V3] | undefined, plan?: TravelPlan | null) {
+  set(h: Harness, routes: Map<string, RoutedWire> | null, parts: EvalPart[], boxOf?: (p: EvalPart) => [V3, V3] | undefined, plan?: TravelPlan | null, findings?: WiringFindings | null) {
     this.clear();
+    this.byWire = new Map(h.wires.map((w) => [w.id, w]));
     const byId = new Map(parts.map((p) => [p.id, p]));
     for (const p of parts) if (p.removable) this.ghosts.set(p.id, 0.14);
     const ends = h.wires.flatMap((w) => w.ends);
@@ -136,7 +142,12 @@ export class WiringOverlay implements SceneOverlay {
     for (const w of h.wires) {
       const pieces = plan?.pieces[w.id];
       const segEnd = (e: PieceEnd): { end: SegEnd; follow: Follow } => {
-        if ("plug" in e) return { end: { plug: w.ends[e.plug] }, follow: follow(w.ends[e.plug].partId) };
+        if ("plug" in e) {
+          const p = w.ends[e.plug];
+          // a wire joined into another's splice starts inside the sleeve, with no plug of its own
+          if (p.splice && p.splice.host !== w.id) return { end: { at: p.splice.from, dir: p.splice.dir, across: p.splice.across }, follow: follow(p.partId) };
+          return { end: { plug: p }, follow: follow(p.partId) };
+        }
         const l = links.get(e.link)!;
         return { end: { at: slotPoint(plan!, l, e.end, w.id), dir: e.end === "F" ? l.outF : l.outG, across: endAxes(l, e.end).e1 }, follow: follow(e.end === "F" ? fixedPart(l) : l.movingOn) };
       };
@@ -164,6 +175,37 @@ export class WiringOverlay implements SceneOverlay {
       this.object.add(group);
       this.sockets.push({ group, follow: f });
     }
+    // cable ties round the bundles, on the parts they are tied to
+    const ties = new Map<string, MeshBuilder>();
+    for (const t of findings?.ties ?? []) {
+      const ws = t.wires.map((id) => this.byWire.get(id)).filter((x): x is HarnessWire => !!x);
+      if (!ws.length) continue;
+      const r = Math.max(...ws.map((x) => x.d / 2)) * Math.sqrt(ws.length) * 0.75 + 0.5;
+      const b = ties.get(t.part) ?? new MeshBuilder();
+      ties.set(t.part, b);
+      const d = norm(t.dir);
+      const u = norm(Math.abs(d[2]) < 0.9 ? [d[1], -d[0], 0] : [0, d[2], -d[1]]);
+      const v: V3 = [d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0]];
+      const ring: V3[] = [];
+      const nrm: V3[] = [];
+      const bin: V3[] = [];
+      for (let k = 0; k <= 24; k++) {
+        const a = (k / 24) * Math.PI * 2;
+        const c = Math.cos(a);
+        const sn = Math.sin(a);
+        ring.push([t.at[0] + (u[0] * c + v[0] * sn) * r, t.at[1] + (u[1] * c + v[1] * sn) * r, t.at[2] + (u[2] * c + v[2] * sn) * r]);
+        nrm.push([u[0] * c + v[0] * sn, u[1] * c + v[1] * sn, u[2] * c + v[2] * sn]);
+        bin.push(d);
+      }
+      b.tube(ring, nrm, bin, 0.45, TIE_COLOR, 5, ring.map(() => 0));
+    }
+    for (const [id, b] of ties) {
+      const group = new THREE.Group();
+      group.matrixAutoUpdate = false;
+      group.add(new THREE.Mesh(b.build(), this.plastic));
+      this.object.add(group);
+      this.sockets.push({ group, follow: follow(id) });
+    }
     this.applyLook();
     this.host.requestRender();
   }
@@ -175,7 +217,15 @@ export class WiringOverlay implements SceneOverlay {
     const plugs = w.ends.map((e, k) => {
       const p = new MeshBuilder();
       const m = new MeshBuilder();
-      plugBody(p, m, e.frame, { spec: e.spec, wires: w.wires });
+      // a wire joined into another's splice has no plug; the splice's host draws the sleeve with its plug
+      if (!e.splice || e.splice.host === w.id) plugBody(p, m, e.frame, { spec: e.spec, wires: w.wires });
+      if (e.splice?.host === w.id) {
+        const sp = e.splice;
+        const ws = sp.wires.map((id) => this.byWire.get(id)).filter((x): x is HarnessWire => !!x);
+        const r = Math.max(...ws.map((x) => x.d)) * Math.sqrt(ws.length) * 0.6 + 0.6;
+        const b: V3 = [sp.dir[1] * sp.across[2] - sp.dir[2] * sp.across[1], sp.dir[2] * sp.across[0] - sp.dir[0] * sp.across[2], sp.dir[0] * sp.across[1] - sp.dir[1] * sp.across[0]];
+        p.tube([sp.from, sp.to], [sp.across, sp.across], [b, b], r, SLEEVE_COLOR, 14, [0, 0]);
+      }
       const g = new THREE.Group();
       g.matrixAutoUpdate = false;
       for (const [b, mat] of [
@@ -199,11 +249,13 @@ export class WiringOverlay implements SceneOverlay {
   private buildSeg(w: HarnessWire, A: SegEnd, B: SegEnd, r: RoutedWire | undefined, follows: [Follow, Follow], mat: THREE.Material): Seg {
     const lead = leadLength(w);
     const back = (e: SegEnd) => ("plug" in e ? add(e.plug.frame.o, e.plug.frame.z, PLUG_BACK[e.plug.spec.kind]) : e.at);
-    const dir = (e: SegEnd) => ("plug" in e ? e.plug.frame.z : e.dir);
+    const dir = (e: SegEnd) => ("plug" in e ? (e.plug.splice?.dir ?? e.plug.frame.z) : e.dir);
+    // the splice's host runs from its plug's lead through the sleeve
+    const via = (e: SegEnd): V3[] => ("plug" in e && e.plug.splice ? [e.plug.splice.from, e.plug.splice.to] : []);
     const backA = back(A);
     const backB = back(B);
     const route = r?.points ?? [add(backA, dir(A), lead), add(backB, dir(B), lead)];
-    const centre = sample([backA, ...route, backB], w.d);
+    const centre = sample([backA, ...via(A), ...route, ...via(B).reverse(), backB], w.d);
     const startX = "plug" in A ? A.plug.frame.x : A.across;
     const { pts, frames } = transport(centre, startX);
     const L = pts.length ? arcLength(pts) : 0;
