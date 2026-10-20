@@ -119,6 +119,15 @@ export interface FastenerInfo {
   key: number;
   headD: number;
   size: string;
+  /** what turns it ("2.5 mm hex key", "Torx T10", "13 mm spanner") and how wide that tool is */
+  tool?: string;
+  toolD?: number;
+  head?: string;
+  length?: number;
+  grade?: string;
+  /** tension and shear it carries in use, N each */
+  load?: number;
+  shear?: number;
 }
 
 export interface EvalPart {
@@ -161,7 +170,7 @@ export interface EvalPart {
   flex?: FlexInfo[];
   spring?: SpringInfo;
   band?: BandInfo;
-  bom?: { description: string; standard?: string; catalogId?: string; length?: number };
+  bom?: { description: string; standard?: string; catalogId?: string; length?: number; price?: number; priceNote?: string; search?: string; key?: string };
   /** named features (`add ... as name`), for selectors and inspection */
   features?: { name: string; kind: string; cosmetic: boolean }[];
   /** detailed builds differ from fast ones (threads, knurls, cosmetic steps) */

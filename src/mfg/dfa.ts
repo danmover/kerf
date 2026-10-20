@@ -229,6 +229,7 @@ const FASTENER_KINDS: Record<string, FastenerType> = {
   pin: "dowel",
   rivet: "rivet",
   standoff: "other",
+  circlip: "other",
 };
 
 const BOARD_KINDS = new Set(["pcb", "circuit_board"]);

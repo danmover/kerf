@@ -7,6 +7,7 @@ import type { PartRecipe, ShapeRecipe, V2, V3 } from "../kernel/recipe";
 import type { CompSolid, LocalFields, Placement } from "../library/components";
 import type { CatalogPart } from "./types";
 import { footprintSolids } from "./catalog/footprints";
+import { THREADS, type ThreadSpec } from "../library/standards";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -87,9 +88,13 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
 
     // gearmotor: the output shaft sits on the local Z axis and `at` is the
     // centre of the mounting face. gear_d/gear_l gearbox, motor_d/motor_l can,
-    // enc_l encoder cap, shaft_d/shaft_l output shaft, shaft_offset moves the
-    // body off the shaft axis along -X (offset-shaft spur gearboxes),
-    // boss_d/boss_h pilot boss, hole_circle/hole_n/hole_d/hole_start face holes.
+    // enc_l encoder cap, shaft_d/shaft_l output shaft, shaft_flat D-flat
+    // depth, shaft_offset moves the body off the shaft axis along -X
+    // (offset-shaft spur gearboxes), boss_d/boss_h pilot boss,
+    // hole_circle/hole_n/hole_d/hole_start face holes round the gearbox
+    // centre (or `holes`, from the shaft), hole_d the tap drill, hole_depth
+    // the thread depth. The gearbox is the main solid (color), the can and
+    // encoder the second (color2).
     case "gearmotor": {
       const gd = num(d, "gear_d", 37);
       const gl = num(d, "gear_l", 25);
@@ -101,32 +106,173 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const off = num(d, "shaft_offset", 0);
       const bd = num(d, "boss_d", 0);
       const bh = num(d, "boss_h", 0);
+      const hd = num(d, "hole_d", 2.5);
+      const depth = num(d, "hole_depth", 6);
       const c: V3 = [-off, 0, 0];
-      const ops: PartRecipe["ops"] = [
-        { op: "add", shape: { t: "cyl", d: md, h: ml + 0.02, at: [c[0], 0, -gl - ml], dir: ZP } },
-      ];
-      if (el > 0) ops.push({ op: "add", shape: { t: "cyl", d: md * 0.92, h: el + 0.02, at: [c[0], 0, -gl - ml - el], dir: ZP } });
+      const holes = g.holes?.length ? g.holes : faceHoles(g, d).map(([x, y]) => [x - off, y] as [number, number]);
+      const ops: PartRecipe["ops"] = [];
       if (bd > 0 && bh > 0) ops.push({ op: "add", shape: { t: "cyl", d: bd, h: bh, at: [0, 0, -0.01], dir: ZP } });
-      const holes = faceHoles(g, d);
-      for (const h of holes) ops.push({ op: "cut", shape: { t: "cyl", d: num(d, "hole_d", 2.5), h: 6, at: [h[0], h[1], -6 + 0.01], dir: ZP } });
+      for (const h of holes) ops.push({ op: "cut", shape: { t: "cyl", d: hd, h: depth, at: [h[0], h[1], -depth + 0.01], dir: ZP } });
       const body: PartRecipe = { base: { t: "cyl", d: gd, h: gl, at: [c[0], 0, -gl], dir: ZP }, ops };
-      // a D flat `shaft_flat` deep along the outer 80% of the shaft
-      const flat = num(d, "shaft_flat", 0);
-      const shaft: PartRecipe = { base: { t: "cyl", d: sd, h: sl, at: [0, 0, bh], dir: ZP }, ops: flat > 0 ? [{ op: "cut", shape: { t: "box", w: sd + 1, d: sd, h: sl * 0.8 + 1, at: [0, sd - flat, bh + sl * 0.2], r: 0 } }] : [] };
+      const can: PartRecipe = { base: { t: "cyl", d: md, h: ml + 0.02, at: [c[0], 0, -gl - ml], dir: ZP }, ops: el > 0 ? [{ op: "add", shape: { t: "cyl", d: md * 0.92, h: el + 0.02, at: [c[0], 0, -gl - ml - el], dir: ZP } }] : [] };
+      const shaft = dShaft(sd, sl, bh, num(d, "shaft_flat", 0), sl * 0.8);
+      const screw = screwFor(d, hd, true);
       return {
         placement: "axis",
-        solids: [solid("", p.name, body, g.color ?? "#3a3f47", "Steel"), solid("shaft", `${p.name} shaft`, shaft, STEEL, "Steel", true)],
+        solids: [solid("", p.name, body, g.color ?? "#3a3f47", "Steel"), solid("can", `${p.name} motor`, can, g.color2 ?? ALU, "Steel"), solid("shaft", `${p.name} shaft`, shaft, STEEL, "Steel", true)],
         fields: {
-          scalars: { shaft_d: sd, shaft_len: sl, body_d: Math.max(gd, md), length: gl + ml + el, gear_d: gd, shaft_offset: off },
+          scalars: { shaft_d: sd, shaft_len: sl, body_d: Math.max(gd, md), length: gl + ml + el, gear_d: gd, shaft_offset: off, ...mountScalars(screw, depth) },
           points: { face: Z0, at: Z0, shaft_tip: [0, 0, bh + sl], body_center: [c[0], 0, -(gl + ml + el) / 2], back: [c[0], 0, -(gl + ml + el)] },
           pointLists: { holes: holes.map(([x, y]) => [x, y, 0] as V3) },
           dirs: { axis: ZP },
+          shapes: { mount: mountCut(holes, screw, Math.max(bd, sd + 1) + 0.6, 1) },
+        },
+      };
+    }
+
+    // micro_gearmotor: N20-size gearmotor, `at` the centre of the gearbox
+    // face, shaft along +Z. A w (X) × t (Y) gearbox gear_l long, a can of
+    // diameter w flattened to t, motor_l long, an optional encoder enc_l,
+    // the D shaft shaft_d × shaft_l (shaft_flat deep) on a boss_d × boss_h
+    // bearing boss, two holes hole_spacing apart along X (hole_d tap drill,
+    // hole_depth deep).
+    case "micro_gearmotor": {
+      const w = num(d, "w", 12);
+      const t = num(d, "t", 10);
+      const gl = num(d, "gear_l", 9);
+      const ml = num(d, "motor_l", 15);
+      const el = num(d, "enc_l", 0);
+      const sd = num(d, "shaft_d", 3);
+      const sl = num(d, "shaft_l", 10);
+      const bd = num(d, "boss_d", 4);
+      const bh = num(d, "boss_h", 0.8);
+      const hs = num(d, "hole_spacing", 9) / 2;
+      const hd = num(d, "hole_d", 1.25);
+      const depth = num(d, "hole_depth", 2);
+      const holes: [number, number][] = [[hs, 0], [-hs, 0]];
+      const back = gl + ml + el;
+      const body: PartRecipe = {
+        base: { t: "box", w, d: t, h: gl, at: [0, 0, -gl], r: 0.3 },
+        ops: [{ op: "add", shape: { t: "cyl", d: bd, h: bh, at: [0, 0, -0.01], dir: ZP } }, ...holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: hd, h: depth, at: [x, y, -depth + 0.01] as V3, dir: ZP } }))],
+      };
+      const can: PartRecipe = {
+        base: { t: "cyl", d: w, h: ml + el + 0.02, at: [0, 0, -back], dir: ZP },
+        ops: [
+          { op: "intersect", shape: { t: "box", w: w + 2, d: t, h: ml + el + 2, at: [0, 0, -back - 1], r: 0 } },
+          // the two solder tabs on the end cap
+          { op: "add", shape: { t: "box", w: 1.6, d: 0.4, h: 2.4, at: [w / 4, 0, -back - 2.3], r: 0 } },
+          { op: "add", shape: { t: "box", w: 1.6, d: 0.4, h: 2.4, at: [-w / 4, 0, -back - 2.3], r: 0 } },
+        ],
+      };
+      const shaft = dShaft(sd, sl, bh, num(d, "shaft_flat", 0.5), sl * 0.85);
+      const screw = screwFor(d, hd, true);
+      return {
+        placement: "axis",
+        solids: [solid("", p.name, body, g.color ?? "#c9a24b", "Brass"), solid("can", `${p.name} motor`, can, g.color2 ?? ALU, "Steel"), solid("shaft", `${p.name} shaft`, shaft, STEEL, "Steel", true)],
+        fields: {
+          scalars: { shaft_d: sd, shaft_len: sl, w, t, length: back, ...mountScalars(screw, depth) },
+          points: { face: Z0, at: Z0, shaft_tip: [0, 0, bh + sl], body_center: [0, 0, -back / 2], back: [0, 0, -back] },
+          pointLists: { holes: holes.map(([x, y]) => [x, y, 0] as V3) },
+          dirs: { axis: ZP },
+          shapes: { mount: mountCut(holes, screw, bd + 0.6, 1) },
+        },
+      };
+    }
+
+    // tt_motor: the yellow "TT" hobby gearmotor. The output shaft runs along
+    // Z right through the gearbox and `at` is its centre on the gearbox's +Z
+    // face. The gearbox is gear_l long along X (the shaft shaft_x from its +X
+    // end), gear_w wide (Y), gear_t thick (down -Z); the can (motor_d,
+    // flattened to motor_t) sticks out along -X, motor_l long. Double-D shaft
+    // shaft_d with shaft_af across the flats, shaft_l out of each face.
+    // Through holes for long screws from `holes` (hole_d).
+    case "tt_motor": {
+      const gl = num(d, "gear_l", 37);
+      const gw = num(d, "gear_w", 22.5);
+      const gt = num(d, "gear_t", 18.8);
+      const sx = num(d, "shaft_x", 11);
+      const md = num(d, "motor_d", 20);
+      const mt = num(d, "motor_t", 15);
+      const ml = num(d, "motor_l", 25);
+      const sd = num(d, "shaft_d", 5.4);
+      const af = num(d, "shaft_af", 3.7);
+      const sl = num(d, "shaft_l", 9);
+      const hd = num(d, "hole_d", 3.2);
+      const holes = g.holes ?? [];
+      const x0 = sx - gl;
+      const body: PartRecipe = {
+        base: { t: "box", w: gl, d: gw, h: gt, at: [sx - gl / 2, 0, -gt], r: 1.5 },
+        ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: hd, h: gt + 2, at: [x, y, -gt - 1] as V3, dir: ZP } })),
+      };
+      const can: PartRecipe = {
+        base: { t: "cyl", d: md, h: ml + 0.02, at: [x0 + 0.01, 0, -gt / 2], dir: [-1, 0, 0] },
+        ops: [{ op: "intersect", shape: { t: "box", w: ml + 4, d: md + 2, h: mt, at: [x0 - ml / 2, 0, -gt / 2 - mt / 2], r: 0 } }],
+      };
+      const total = gt + 2 * sl;
+      const shaft: PartRecipe = { base: { t: "cyl", d: sd, h: total, at: [0, 0, -gt - sl], dir: ZP }, ops: [{ op: "intersect", shape: { t: "box", w: sd + 1, d: af, h: total + 2, at: [0, 0, -gt - sl - 1], r: 0 } }] };
+      const screw = screwFor(d, hd, false);
+      return {
+        placement: "axis",
+        solids: [solid("", p.name, body, g.color ?? "#f0c419", "ABS"), solid("can", `${p.name} motor`, can, g.color2 ?? ALU, "Steel"), solid("shaft", `${p.name} shaft`, shaft, "#f4f4f4", "ABS", true)],
+        fields: {
+          scalars: { shaft_d: sd, shaft_af: af, shaft_len: sl, gear_t: gt, gear_w: gw, length: gl + ml, ...mountScalars(screw, 0) },
+          points: { face: Z0, at: Z0, back_face: [0, 0, -gt], shaft_tip: [0, 0, sl], shaft_tip2: [0, 0, -gt - sl], body_center: [sx - gl / 2, 0, -gt / 2], can_end: [x0 - ml, 0, -gt / 2] },
+          pointLists: { holes: holes.map(([x, y]) => [x, y, 0] as V3) },
+          dirs: { axis: ZP },
+          shapes: { mount: mountCut(holes, screw, sd + 2, 1) },
+        },
+      };
+    }
+
+    // outrunner: brushless outrunner. `at` is the centre of the mounting face
+    // (the back of the base), the bell and shaft point along +Z. base_d ×
+    // base_h base, the bell (bell_d × bell_h) spins in front of it, the shaft
+    // (shaft_d) sticks shaft_l past the bell. Tapped holes from `holes` in
+    // the back face (hole_d tap drill, hole_depth deep: longer screws reach
+    // the windings).
+    case "outrunner": {
+      const bd = num(d, "base_d", 28);
+      const bh = num(d, "base_h", 4);
+      const belld = num(d, "bell_d", 28);
+      const bellh = num(d, "bell_h", 20);
+      const sd = num(d, "shaft_d", 5);
+      const sl = num(d, "shaft_l", 12);
+      const hd = num(d, "hole_d", 2.5);
+      const depth = num(d, "hole_depth", 3);
+      const holes = g.holes ?? [];
+      const base: PartRecipe = {
+        base: { t: "cyl", d: bd, h: bh, at: Z0, dir: ZP },
+        ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: hd, h: depth, at: [x, y, -0.01] as V3, dir: ZP } })),
+      };
+      const bell: PartRecipe = {
+        base: { t: "cyl", d: belld, h: bellh, at: [0, 0, bh + 0.3], dir: ZP },
+        ops: [{ op: "add", shape: { t: "cyl", d: sd + 5, h: 1.5, at: [0, 0, bh + 0.3 + bellh - 0.01], dir: ZP } }, { op: "chamfer", r: 0.8, edges: "bottom" }],
+      };
+      const top = bh + 0.3 + bellh + 1.5;
+      const shaft: PartRecipe = { base: { t: "cyl", d: sd, h: sl, at: [0, 0, top - 0.01], dir: ZP }, ops: [{ op: "chamfer", r: 0.3, edges: "top" }] };
+      const screw = screwFor(d, hd, true);
+      return {
+        placement: "axis",
+        solids: [solid("", p.name, base, g.color ?? "#2a2e35", "Aluminum 6061"), solid("bell", `${p.name} bell`, bell, g.color2 ?? "#c0392b", "Aluminum 6061", true), solid("shaft", `${p.name} shaft`, shaft, STEEL, "Steel", true)],
+        fields: {
+          scalars: { shaft_d: sd, shaft_len: sl, bell_d: belld, length: top, ...mountScalars(screw, depth) },
+          points: { face: Z0, at: Z0, shaft_tip: [0, 0, top + sl], bell_top: [0, 0, top], body_center: [0, 0, top / 2] },
+          pointLists: { holes: holes.map(([x, y]) => [x, y, 0] as V3) },
+          dirs: { axis: ZP },
+          // the arm or plate is behind the motor: the cut runs back along -Z, with room for the shaft's circlip
+          shapes: { mount: mountCut(holes, screw, sd + 4, -1) },
         },
       };
     }
 
     // stepper: NEMA frame `size` square, body length `l` behind the face,
-    // pilot_d/pilot_h, shaft_d/shaft_l, holes on a hole_spacing square.
+    // pilot_d/pilot_h, shaft_d/shaft_l (shaft_flat D-flat depth, flat_l
+    // long; or key_w/key_l keyway), holes on a hole_spacing square. Small
+    // frames have tapped holes in the front cap (hole_d tap drill,
+    // hole_depth deep); flange_t > 0 is a through-hole flange (NEMA 23 and
+    // up, hole_d clearance) with the corners behind it relieved for nuts.
+    // Front cap, lamination stack and rear cap are separate solids (color,
+    // color2).
     case "stepper": {
       const s = num(d, "size", 42.3);
       const L = num(d, "l", 40);
@@ -135,25 +281,51 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const sd = num(d, "shaft_d", 5);
       const sl = num(d, "shaft_l", 24);
       const hs = num(d, "hole_spacing", 31) / 2;
-      const holes: V3[] = [
-        [hs, hs, 0],
-        [-hs, hs, 0],
-        [-hs, -hs, 0],
-        [hs, -hs, 0],
+      const hd = num(d, "hole_d", 2.5);
+      const ft = num(d, "flange_t", 0);
+      const depth = num(d, "hole_depth", 4.5);
+      const holes2: [number, number][] = [
+        [hs, hs],
+        [-hs, hs],
+        [-hs, -hs],
+        [hs, -hs],
       ];
-      const body: PartRecipe = {
-        base: { t: "box", w: s, d: s, h: L, at: [0, 0, -L], r: Math.min(4, s / 10) },
-        ops: [{ op: "add", shape: { t: "cyl", d: pd, h: ph, at: [0, 0, -0.01], dir: ZP } }, ...holes.map((h) => ({ op: "cut" as const, shape: { t: "hole" as const, d: num(d, "hole_d", 2.5), depth: 4.5, at: h, dir: ZN } }))],
+      const holes = holes2.map(([x, y]) => [x, y, 0] as V3);
+      const r = Math.min(4, s / 10);
+      const cap = Math.min(Math.max(L * 0.2, 4), 12);
+      const fc = Math.min(Math.max(cap, ft), L * 0.6);
+      const rc = Math.min(cap, (L - fc) / 3);
+      const stack = L - fc - rc;
+      // room behind a through-hole flange for the nut or screw head
+      const relief = (z0: number, h: number): PartRecipe["ops"] => (ft > 0 ? holes.map((p) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: hd * 2.2, h: h + 0.2, at: [p[0], p[1], z0 - 0.1] as V3, dir: ZP } })) : []);
+      const front: PartRecipe = {
+        base: { t: "box", w: s, d: s, h: fc, at: [0, 0, -fc], r },
+        ops: [
+          { op: "add", shape: { t: "cyl", d: pd, h: ph, at: [0, 0, -0.01], dir: ZP } },
+          ...holes.map((h) => (ft > 0 ? { op: "cut" as const, shape: { t: "cyl" as const, d: hd, h: ft + 0.2, at: [h[0], h[1], -ft - 0.1] as V3, dir: ZP } } : { op: "cut" as const, shape: { t: "hole" as const, d: hd, depth, at: h, dir: ZN } })),
+          ...(fc > ft && ft > 0 ? relief(-fc, fc - ft) : []),
+        ],
       };
-      const shaft: PartRecipe = { base: { t: "cyl", d: sd, h: sl, at: [0, 0, ph - 1], dir: ZP }, ops: [{ op: "chamfer", r: 0.4, edges: "top" }] };
+      const lam: PartRecipe = { base: { t: "box", w: s, d: s, h: stack, at: [0, 0, -fc - stack], r: r * 0.5 }, ops: relief(-fc - stack, stack) };
+      const rear: PartRecipe = { base: { t: "box", w: s, d: s, h: rc, at: [0, 0, -L], r }, ops: relief(-L, rc) };
+      const flat = num(d, "shaft_flat", sd <= 6.4 ? 0.5 : 0);
+      const shaft = dShaft(sd, sl, ph - 1, flat, num(d, "flat_l", Math.min(sl - 2, 15)), num(d, "key_w", 0), num(d, "key_l", sl * 0.75));
+      const screw = screwFor(d, hd, ft <= 0);
+      const capColor = g.color ?? "#24272d";
       return {
         placement: "axis",
-        solids: [solid("", p.name, body, g.color ?? "#2a2e35", "Steel"), solid("shaft", `${p.name} shaft`, shaft, STEEL, "Stainless 304", true)],
+        solids: [
+          solid("", p.name, front, capColor, "Aluminum 6061"),
+          ...(stack > 0.5 ? [solid("stack", `${p.name} stator`, lam, g.color2 ?? "#8e949c", "Steel")] : []),
+          ...(rc > 0.5 ? [solid("cap", `${p.name} end cap`, rear, capColor, "Aluminum 6061")] : []),
+          solid("shaft", `${p.name} shaft`, shaft, STEEL, "Stainless 304", true),
+        ],
         fields: {
-          scalars: { body: s, length: L, pilot_d: pd, pilot_h: ph, shaft_d: sd, shaft_len: sl, hole_spacing: hs * 2 },
-          points: { face: Z0, at: Z0, shaft_tip: [0, 0, ph - 1 + sl], back: [0, 0, -L] },
+          scalars: { body: s, length: L, pilot_d: pd, pilot_h: ph, shaft_d: sd, shaft_len: sl, hole_spacing: hs * 2, flange_t: ft, ...mountScalars(screw, ft > 0 ? 0 : depth) },
+          points: { face: Z0, at: Z0, shaft_tip: [0, 0, ph - 1 + sl], back: [0, 0, -L], body_center: [0, 0, -L / 2] },
           pointLists: { holes },
           dirs: { axis: ZP },
+          shapes: { mount: mountCut(holes2, screw, pd + 0.4, 1) },
         },
       };
     }
@@ -181,14 +353,22 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         ],
       };
       const spline: PartRecipe = { base: { t: "cyl", d: num(d, "spline_d", 5.8), h: 4, at: [0, 0, 1.9], dir: ZP }, ops: [] };
+      // the case drops through a pocket in the plate and the tabs sit on it: screws through the tabs, nuts under
+      const screw = screwFor(d, (g.hole_d ?? 4.5) >= 3.5 ? 3.6 : 2.3, false);
+      const under = -fz - ft;
+      const pocket: ShapeRecipe = {
+        t: "union",
+        shapes: [{ t: "box", w: w + 0.8, d: dd + 0.8, h: 40, at: [-sx, 0, under - 40 + 0.01], r: 0.8 }, ...holes.map(([x, y]) => ({ t: "cyl" as const, d: screw.clearance, h: 40, at: [x, y, under + 0.01] as V3, dir: ZN }))],
+      };
       return {
         placement: "axis",
         solids: [solid("", p.name, body, g.color ?? "#1b1f25", "ABS"), solid("horn", `${p.name} spline`, spline, "#e8e9eb", "POM", true)],
         fields: {
-          scalars: { w, d: dd, h, flange_z: fz },
-          points: { at: Z0, spline_top: [0, 0, 5.9], case_center: [-sx, 0, -h / 2] },
+          scalars: { w, d: dd, h, flange_z: fz, flange_t: ft, ...mountScalars(screw, 0) },
+          points: { at: Z0, spline_top: [0, 0, 5.9], case_center: [-sx, 0, -h / 2], tab_under: [0, 0, under] },
           pointLists: { holes: holes.map(([x, y]) => [x, y, -fz] as V3) },
           dirs: { axis: ZP },
+          shapes: { mount: pocket },
         },
       };
     }
@@ -470,6 +650,12 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const dd = num(d, "d", 34);
       const h = num(d, "h", 42);
       const fx = num(d, "fil_x", 0);
+      const hs = num(d, "hole_spacing", 31) / 2;
+      const screwHoles: [number, number][] = [
+        [hs, hs],
+        [-hs, -hs],
+        [hs, -hs],
+      ];
       const body: PartRecipe = {
         base: { t: "box", w, d: h, h: dd, at: Z0, r: 3 },
         ops: [
@@ -477,6 +663,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
           // the motor's 22 mm pilot and its shaft (carrying the drive pinion) go into the motor face
           { op: "cut", shape: { t: "cyl", d: 22.6, h: 2.5, at: [0, 0, -0.01], dir: ZP } },
           { op: "cut", shape: { t: "cyl", d: 5.6, h: Math.min(26, dd - 2), at: [0, 0, -0.01], dir: ZP } },
+          // three of the motor's four screws run through it from the back face (the idler arm covers the fourth)
+          ...screwHoles.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: 3.4, h: dd + 0.02, at: [x, y, -0.01] as V3, dir: ZP } })),
         ],
       };
       return {
@@ -485,6 +673,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         fields: {
           scalars: { w, d: dd, h },
           points: { at: Z0, filament_in: [fx, h / 2, dd / 2], filament_out: [fx, -h / 2, dd / 2], top: [0, 0, dd] },
+          pointLists: { holes: screwHoles.map(([x, y]) => [x, y, dd] as V3) },
           dirs: { axis: ZP },
         },
       };
@@ -535,19 +724,21 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const ret = num(d, "ret_l", bl + 20);
       const ext = Math.min(Math.max(a.travel ?? 0, 0), stroke);
       const end = ret + ext;
-      const body: PartRecipe = { base: { t: "box", w: bw, d: bd, h: bl, at: [0, 0, -4], r: 2 }, ops: [{ op: "cut", shape: { t: "cyl", d: 4.2, h: bd + 2, at: [0, -bd / 2 - 1, 0], dir: YP } }] };
+      // clevis pin holes at both ends
+      const pin = num(d, "pin_d", 4.2);
+      const body: PartRecipe = { base: { t: "box", w: bw, d: bd, h: bl, at: [0, 0, -4], r: 2 }, ops: [{ op: "cut", shape: { t: "cyl", d: pin, h: bd + 2, at: [0, -bd / 2 - 1, 0], dir: YP } }] };
       const rod: PartRecipe = {
         base: { t: "cyl", d: rd, h: Math.max(1, end - bl), at: [0, 0, bl - 4], dir: ZP },
         ops: [
-          { op: "add", shape: { t: "box", w: 8, d: 8, h: 8, at: [0, 0, end - 4], r: 1 } },
-          { op: "cut", shape: { t: "cyl", d: 4.2, h: 10, at: [0, -5, end], dir: YP } },
+          { op: "add", shape: { t: "box", w: Math.max(8, rd + 2), d: Math.max(8, rd + 2), h: 8, at: [0, 0, end - 4], r: 1 } },
+          { op: "cut", shape: { t: "cyl", d: pin, h: Math.max(10, rd + 2), at: [0, -Math.max(5, rd / 2 + 1), end], dir: YP } },
         ],
       };
       return {
         placement: "axis",
         solids: [solid("", p.name, body, g.color ?? "#2a2e35", "Aluminum 6061"), solid("rod", `${p.name} rod`, rod, STEEL, "Stainless 304", true)],
         fields: {
-          scalars: { stroke, ret_l: ret, length: end, travel: ext },
+          scalars: { stroke, ret_l: ret, length: end, travel: ext, pin_d: pin },
           points: { at: Z0, rear: Z0, rod_end: [0, 0, end] },
           dirs: { axis: ZP },
         },
@@ -741,6 +932,46 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       };
     }
   }
+}
+
+/** A shaft from z0 along +Z with an optional D-flat (`flat` deep, `flatL` from the tip) or keyway. */
+function dShaft(sd: number, sl: number, z0: number, flat: number, flatL: number, keyW = 0, keyL = 0): PartRecipe {
+  const ops: PartRecipe["ops"] = [{ op: "chamfer", r: Math.min(0.4, sd * 0.08), edges: "top" }];
+  if (flat > 0) ops.push({ op: "cut", shape: { t: "box", w: sd + 1, d: sd, h: flatL + 1, at: [0, sd - flat, z0 + sl - flatL], r: 0 } });
+  if (keyW > 0) ops.push({ op: "cut", shape: { t: "box", w: keyW, d: sd * 0.4, h: keyL + 1, at: [0, sd / 2, z0 + sl - keyL], r: 0 } });
+  return { base: { t: "cyl", d: sd, h: sl, at: [0, 0, z0], dir: ZP }, ops };
+}
+
+/**
+ * The metric screw a motor's holes take: `screw` in the dims (its nominal
+ * diameter) when given, otherwise the size whose tap drill matches a tapped
+ * hole, or the largest that passes a through hole.
+ */
+function screwFor(d: Record<string, number>, holeD: number, tapped: boolean): ThreadSpec {
+  const all = Object.values(THREADS);
+  const named = typeof d.screw === "number" ? all.find((t) => t.d === d.screw) : undefined;
+  if (named) return named;
+  if (tapped) return all.reduce((a, b) => (Math.abs(b.tap - holeD) < Math.abs(a.tap - holeD) ? b : a));
+  return all.filter((t) => t.d < holeD - 0.05).at(-1) ?? all[0];
+}
+
+/** Fields every motor carries for its mount: the screw size and the thread depth in its holes (0: through holes, nuts behind). */
+function mountScalars(screw: ThreadSpec, depth: number): Record<string, number | string> {
+  return { screw: screw.name, screw_depth: depth, screw_clearance: screw.clearance };
+}
+
+/**
+ * The cut for the plate a motor bolts to (its `mount` field): a clearance
+ * hole for each screw and one for the pilot, boss or shaft, `depth` mm out
+ * from the mounting face, along +Z (the plate is in front of the face) or
+ * -Z (behind it).
+ */
+function mountCut(holes: [number, number][], screw: ThreadSpec, centreD: number, dir: 1 | -1, depth = 40): ShapeRecipe {
+  const z0 = dir > 0 ? -0.5 : 0.5;
+  const along = dir > 0 ? ZP : ZN;
+  const shapes: ShapeRecipe[] = holes.map(([x, y]) => ({ t: "cyl", d: screw.clearance, h: depth + 0.5, at: [x, y, z0], dir: along }));
+  if (centreD > 0) shapes.push({ t: "cyl", d: centreD, h: depth + 0.5, at: [0, 0, z0], dir: along });
+  return { t: "union", shapes };
 }
 
 function faceHoles(g: CatalogPart["geom"], d: Record<string, number>): [number, number][] {

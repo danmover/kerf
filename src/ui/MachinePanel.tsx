@@ -16,6 +16,7 @@ import { componentPositions, wireList, wiresCsv, wiringDiagram, wireHex, type Wi
 import { generateFirmware, type FirmwareOutput } from "../machine/firmware";
 import { catalogPart, shopLinks } from "../machine/catalog";
 import { bomRows, bomTotal, download, safeFileName } from "../persist/files";
+import { useSettings } from "../app/settings";
 import type { CheckItem } from "../core/checks";
 import type { Model } from "../core/model";
 import type { CalcLine, CalcTrace, CatalogKind, MachineComponent, MachineData } from "../machine/types";
@@ -188,7 +189,8 @@ function focusItem(model: Model, i: CheckItem) {
 
 function Overview({ model, m, ready, rows, plan, fw, checking }: { model: Model; m: MachineData; ready: Readiness; rows: WireRow[]; plan: PlanItem[]; fw: FirmwareOutput[]; checking: boolean }) {
   const focusCheck = useView((s) => s.focusCheck);
-  const bom = useMemo(() => bomRows(model), [model]);
+  const have = useSettings((s) => s.onHand);
+  const bom = useMemo(() => bomRows(model, have), [model, have]);
   const cost = useMemo(() => bomTotal(bom), [bom]);
   const made = useMemo(() => madeParts(model), [model]);
   const cuts = useMemo(() => cutList(model), [model]);

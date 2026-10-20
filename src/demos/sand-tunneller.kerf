@@ -296,8 +296,9 @@ part boot {
 
 component pivot_top = lib.screw(M4, 12) { at: (0, 0, kn_z + kn_t), axis: -Z }
 component pivot_bot = lib.screw(M4, 12) { at: (0, 0, -kn_z - kn_t), axis: Z }
-component pivot_nut_top = lib.nut(M4) { at: (0, 0, lug_z), axis: -Z }
-component pivot_nut_bot = lib.nut(M4) { at: (0, 0, -lug_z), axis: Z }
+// thin nuts (with threadlocker) so a full thread shows past them without the tips reaching the cam channel
+component pivot_nut_top = lib.nut(M4, type: "thin") { at: (0, 0, lug_z), axis: -Z }
+component pivot_nut_bot = lib.nut(M4, type: "thin") { at: (0, 0, -lug_z), axis: Z }
 
 // ── Middle body: hinge knuckles, cam guide, electronics shelves ──
 part body_a {
@@ -544,7 +545,7 @@ test "Sand seal": "After the runs, open the screws and check for sand inside the
 test "Battery soak": "Run the two box tests back to back for 12 minutes in all, the time of two crossings, with the other motor running free: the battery stays above 3.6 V per cell."
 
 // ── Also buy ─────────────────────────────────────────────
-buy "goBILDA 8 mm REX pattern mount hub" { qty: 2, price: 8, search: "goBILDA 1310 Series 8mm REX Bore Pattern Mount Hub" }
+buy "goBILDA 8 mm REX pattern mount hub (M4 tapped)" { qty: 2, price: 8, search: "goBILDA 1310 Series 8mm REX Bore Pattern Mount Hub" }
 buy "ATC blade fuse 15 A" { qty: 3, price: 1, search: "ATC blade fuse 15A" }
 buy "LiPo balance charger (3S)" { qty: 1, price: 35, search: "LiPo balance charger 3S XT60" }
 buy "LiPo fireproof charging bag" { qty: 1, price: 10, search: "LiPo safe charging bag" }

@@ -41,7 +41,7 @@ let floor_t = wall
 let base_h  = height - lid_t
 let lid_screws = corners(width - 2 * corner_r, depth - 2 * corner_r)
 let boss_r  = corner_r - wall + 0.6
-let printed = mfg.fdm(layer: 0.2)   // both housing parts are FDM printed
+let printed = mfg.fdm(layer: 0.2, shrink_comp: true)   // FDM printed, scaled for shrink so the board holes line up with the inserts
 
 // ── Electronics (frozen board design) ──────────────────
 component pcb = lib.pcb(w: board_w, d: board_d, t: 1.6, hole_inset: 3.5, hole_d: 3.2) {
@@ -90,7 +90,7 @@ part base {
 part lid {
   color: #c9d4e3
   material: "PETG"
-  process: mfg.fdm(build: -Z)   // printed top face down
+  process: mfg.fdm(build: -Z, shrink_comp: true)   // printed top face down, scaled for shrink like the base
   group: "Housing"
   removable
   body box(width, depth, lid_t, at: (0, 0, base_h), r: corner_r)

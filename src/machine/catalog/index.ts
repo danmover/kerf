@@ -5,13 +5,28 @@ import type { CatalogKind, CatalogPart } from "../types";
 import { AUDIO } from "./audio";
 import { ELECTRONICS } from "./electronics";
 import { MOTION } from "./motion";
+import { MOTORS } from "./motors";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...AUDIO];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...MOTORS, ...AUDIO];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 
 export function catalogPart(id: string): CatalogPart | undefined {
   return BY_ID.get(id);
+}
+
+const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** Whether something on the user's list is this part: its id, part number or name. */
+export function isHad(p: CatalogPart, have: readonly string[]): boolean {
+  const id = norm(p.id);
+  const mpn = p.mpn ? norm(p.mpn) : "";
+  const name = norm(p.name);
+  return have.some((h) => {
+    const n = norm(h);
+    if (n.length < 3) return false;
+    return n === id || (mpn.length >= 4 && (n === mpn || n.includes(mpn))) || (n.length >= 6 && (name.includes(n) || id.includes(n)));
+  });
 }
 
 export const CATALOG_KINDS: CatalogKind[] = [...new Set(CATALOG.map((p) => p.kind))];
@@ -79,6 +94,8 @@ const shortSpec = (p: CatalogPart): string => {
       return `${s.i_rated}A ${nm(s.t_hold)}N·m hold`;
     case "servo":
       return `${nm(s.t_stall)}N·m ${s.v_min}-${s.v_max}V`;
+    case "bldc":
+      return `${s.kv}kV ${s.i_max}A ${s.v_max}V max`;
     case "actuator":
       return `${s.f_max}N ${s.stroke}mm ${s.v_rated}V`;
     case "motor_driver":

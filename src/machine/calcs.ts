@@ -8,6 +8,7 @@ import { Args } from "../lang/args";
 import { Fn, Obj, typeName, type CallCtx, type Value } from "../lang/values";
 import { BEARINGS } from "../library/standards";
 import { catalogPart } from "./catalog";
+import { HARDWARE_CALCS } from "./hardwareCalcs";
 import { footprintFor } from "./catalog/footprints";
 import { PICKUP_OHMS } from "./circuit/netlist";
 import { preampFigures } from "./circuit/analysis";
@@ -731,6 +732,7 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
       };
     },
   ),
+  ...HARDWARE_CALCS.map((c) => calcFn(c.name, c.params, c.doc, c.impl)),
 ]);
 
 export function calcNamespace(): Obj {

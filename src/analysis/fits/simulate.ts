@@ -500,6 +500,8 @@ function perpOf(v: V3, axis: V3): V3 {
   return vsub(v, vscale(axis, vdot(v, axis)));
 }
 
+const FOLLOWERS = new Set(["nut", "insert", "standoff"]);
+
 function runPatterns(joints: ScrewJoint[], samples: Map<FitInstance, Float64Array>, ctx: Ctx): FitOutcome[] {
   // group screws by the parts they join
   const groups = new Map<string, ScrewJoint[]>();
@@ -519,7 +521,10 @@ function runPatterns(joints: ScrewJoint[], samples: Map<FitInstance, Float64Arra
       for (const t of j.through) partsByName.set(t.hole.part.name, t.hole.part);
       for (const p of j.threads) partsByName.set(p.name, p);
     }
+    // a nut floats on the screw, and an insert sits in its host's pocket and moves with it: neither sets where the screw goes
+    for (const [name, p] of partsByName) if (FOLLOWERS.has(p.libKind ?? "") && partsByName.size > 2) partsByName.delete(name);
     const names = [...partsByName.keys()];
+    if (names.length < 2) continue;
     const pos = list.map((j) => j.through[0].shaft.at);
     const centre = vscale(pos.reduce((s, p) => vadd(s, p), [0, 0, 0] as V3), 1 / pos.length);
     const r = rng(`pattern|${key}`);

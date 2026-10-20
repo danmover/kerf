@@ -26,6 +26,7 @@ const GROUPS: Record<CatalogKind, string> = {
   gearmotor: "Drive",
   stepper: "Drive",
   servo: "Drive",
+  bldc: "Drive",
   actuator: "Drive",
   hotend: "Toolhead",
   extruder: "Toolhead",
@@ -56,10 +57,11 @@ const GROUPS: Record<CatalogKind, string> = {
 };
 
 const KIND_DOC: Partial<Record<CatalogKind, string>> = {
-  gearmotor: "`at` is the centre of the mounting face, the output shaft points along `axis`, the body extends behind. Fields: face, shaft_tip, holes, body_center, back, shaft_d, shaft_len, body_d, length, plus specs (v_rated, rpm_free, t_stall in N·mm, i_stall, i_free, encoder_cpr).",
-  stepper: "`at` is the centre of the mounting face, the shaft points along `axis`. Fields: face, shaft_tip, holes, pilot_d, body, length, plus specs (i_rated, t_hold in N·mm, r_phase, l_phase).",
-  servo: "`at` is the top face at the output spline, the spline points along `axis`. Fields: spline_top, holes (on the mounting tabs), case_center, plus specs (t_stall).",
-  actuator: "Linear actuator along `axis`; `at` is the rear mounting hole. Args: travel (extension, mm). Fields: rear, rod_end, stroke, ret_l, plus specs (f_max N).",
+  gearmotor: "`at` is the centre of the mounting face, the output shaft points along `axis`, the body extends behind (TT motors: `at` is the shaft on the gearbox face, the body runs along −x). Fields: face, shaft_tip, holes, body_center, back, shaft_d, shaft_len, body_d, length, plus the mount fields and specs (v_rated, rpm_free, t_stall in N·mm, i_stall, i_free, encoder_cpr).",
+  stepper: "`at` is the centre of the mounting face, the shaft points along `axis`. Fields: face, shaft_tip, holes, pilot_d, body, length, flange_t (through-hole flange on NEMA 23 and 34, 0 for tapped holes), plus the mount fields and specs (i_rated, t_hold in N·mm, r_phase, l_phase).",
+  servo: "`at` is the top face at the output spline, the spline points along `axis`. Fields: spline_top, holes (on the mounting tabs), tab_under (the plate's top face), case_center, flange_t, plus the mount fields (mount is the pocket the case drops through) and specs (t_stall).",
+  bldc: "Brushless outrunner: `at` is the centre of the mounting face at the back, the bell and shaft point along `axis`; the arm or plate is behind it (mount cuts back along −axis). Fields: shaft_tip, bell_top, holes, bell_d, length, plus the mount fields and specs (kv, i_max, v_max, esc_a: the ESC it needs).",
+  actuator: "Linear actuator along `axis`; `at` is the rear mounting hole. Args: travel (extension, mm). Fields: rear, rod_end, stroke, ret_l, pin_d (clevis pins), plus specs (f_max N).",
   controller: "Board lying flat; `at` is the centre of the underside. Fields: top, holes, corners, w, d, height.",
   host: "Board lying flat; `at` is the centre of the underside. Fields: top, holes, corners.",
   motor_driver: "Board lying flat; `at` is the centre of the underside. Fields: top, holes, corners, height.",
@@ -76,7 +78,7 @@ const KIND_DOC: Partial<Record<CatalogKind, string>> = {
   belt: "Timing belt round pulleys: see Belts below. No at: or axis: (the path places it).",
   coupler: "Shaft coupler along `axis`, `at` is the bore1 end. Fields: end, center.",
   hotend: "`at` is the nozzle tip, `axis` points up toward the mount. Fields: nozzle, mount_top, groove, sink_center.",
-  extruder: "Filament drive bolted to a NEMA 17 face: `at` is the motor-side face centre, `axis` is the motor axis. Fields: filament_in, filament_out, top.",
+  extruder: "Filament drive bolted to a NEMA 17 face: `at` is the motor-side face centre, `axis` is the motor axis. Fields: filament_in, filament_out, top, holes (where three M3 screws go in on the back face, through it and into the motor).",
   heated_bed: "Plate lying flat; `at` is the centre of the underside. Fields: top, holes.",
   fan: "Fan on `axis`; `at` is the intake face centre. Fields: outlet, holes.",
   seal: "Lip seal ring on `axis`; `at` is one face.",
@@ -90,6 +92,11 @@ const KIND_DOC: Partial<Record<CatalogKind, string>> = {
   speaker: "Speaker facing `axis`; `at` is the centre of the front of its mounting flange (against the back of the baffle). Fields: cutout_d (baffle hole), bolt_circle, holes (8 bolt positions), depth, back.",
   amplifier: "Amplifier board lying flat; `at` is the centre of the underside. Fields: top, holes, corners.",
 };
+
+/** The fields every motor has for bolting it on. */
+const MOUNT_DOC =
+  "Mount fields: mount (a shape: `cut motor.mount` from the plate it bolts to gives the pilot or boss clearance and a clearance hole per screw), screw (the thread its holes take, like \"M3\"), screw_depth (most thread depth in its holes; 0 for through holes with nuts), screw_clearance. Choose the screws with calc.fastener(grip: plate, into: \"tapped\", material: \"Aluminum 6061\", depth: motor.screw_depth, size: motor.screw).";
+const MOTOR_KINDS = new Set<CatalogKind>(["gearmotor", "stepper", "servo", "bldc"]);
 
 /** reference designator letters by kind: R1, C4, U2, J3 */
 const REF_PREFIX: Partial<Record<CatalogKind, string>> = {
@@ -204,7 +211,7 @@ function kindEntry(kind: CatalogKind): LibEntry {
   const ids = catalogOfKind(kind).map((p) => p.id);
   return {
     signature: `lib.${kind}("${ids[0]}") { at: (x, y, z) }`,
-    doc: `Purchasable ${kind.replace(/_/g, " ")} from the parts catalog. ${KIND_DOC[kind] ?? ""} Ids: ${ids.join(", ")}.`,
+    doc: `Purchasable ${kind.replace(/_/g, " ")} from the parts catalog. ${KIND_DOC[kind] ?? ""}${MOTOR_KINDS.has(kind) ? ` ${MOUNT_DOC}` : ""} Ids: ${ids.join(", ")}.`,
     positional: POS,
     params: PARAMS,
     group: GROUPS[kind],

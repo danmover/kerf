@@ -8,6 +8,7 @@ import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { Icon } from "./icons";
 import { partMaterialCost } from "../materials/context";
+import { cleanOnHand, updateSettings, useSettings } from "../app/settings";
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
@@ -34,10 +35,32 @@ function WhereToBuy({ r }: { r: BomRow }) {
   );
 }
 
+/** Mark a bought row as something you have, or take it off the list again. */
+function HaveToggle({ r, have }: { r: BomRow; have: string[] }) {
+  if (r.kind !== "Buy" || !r.haveAs) return null;
+  const mine = have.findIndex((h) => h.toLowerCase() === r.haveAs!.toLowerCase());
+  if (r.onHand && mine < 0)
+    return (
+      <span className="chip" data-tip="Matches a line in Settings → Making → Parts you have">
+        on hand
+      </span>
+    );
+  return (
+    <button
+      className={`chip have-toggle${r.onHand ? " accent" : ""}`}
+      data-tip={r.onHand ? "On hand: not counted in the cost. Click to take it off your list" : `I have this: adds "${r.haveAs}" to Settings → Making → Parts you have`}
+      onClick={() => updateSettings({ onHand: cleanOnHand(mine >= 0 ? have.filter((_, i) => i !== mine) : [...have, r.haveAs!]) })}
+    >
+      {r.onHand ? "on hand ✓" : "I have it"}
+    </button>
+  );
+}
+
 export function BomTable() {
   const model = useDesign((s) => s.model);
   const meshVersion = useDesign((s) => s.meshVersion);
-  const rows = useMemo(() => (model ? bomRows(model) : []), [model]);
+  const have = useSettings((s) => s.onHand);
+  const rows = useMemo(() => (model ? bomRows(model, have) : []), [model, have]);
   const cost = useMemo(() => bomTotal(rows), [rows]);
   const totals = useMemo(() => {
     if (!model) return { mass: 0, printed: 0 };
@@ -108,7 +131,11 @@ export function BomTable() {
                 <td>{r.material}</td>
                 <td className="mono dim">{r.standard}</td>
                 <td className="bom-price" data-tip={r.priceNote}>
-                  {r.price !== undefined ? (
+                  {r.onHand ? (
+                    <span className="dim" style={{ textDecoration: "line-through" }}>
+                      {r.price !== undefined ? money(r.price * r.qty) : ""}
+                    </span>
+                  ) : r.price !== undefined ? (
                     <>
                       {money(r.price * r.qty)}
                       {r.qty > 1 && (
@@ -126,7 +153,8 @@ export function BomTable() {
                   ) : null}
                 </td>
                 <td>
-                  <WhereToBuy r={r} />
+                  <HaveToggle r={r} have={have} />
+                  {!r.onHand && <WhereToBuy r={r} />}
                 </td>
               </tr>
             ))}
@@ -136,6 +164,7 @@ export function BomTable() {
               <tr className="bom-total">
                 <td colSpan={6}>
                   Total for bought parts
+                  {cost.saved > 0 && <span className="dim"> (less {money(cost.saved)} you have on hand)</span>}
                   {cost.unpriced > 0 && (
                     <span className="dim">
                       {" "}

@@ -12,6 +12,7 @@ import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { briefChecks, type GeomLookup } from "./briefChecks";
 import { machineChecks } from "../machine/checks";
+import { fastenerChecks } from "./fastenerChecks";
 import type { SettingValue } from "../mfg/types";
 
 export type CheckCategory =
@@ -80,7 +81,7 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
   }));
   const access = visible
     .filter((p) => p.fastener)
-    .map((p) => ({ id: p.id, headTop: p.fastener!.headTop, outward: p.fastener!.outward, diameter: p.fastener!.key + 1.5, length: 35 }));
+    .map((p) => ({ id: p.id, headTop: p.fastener!.headTop, outward: p.fastener!.outward, diameter: p.fastener!.toolD ?? p.fastener!.key + 1.5, length: 35 }));
   const envelopes = visible
     .filter((p) => p.gear && p.motion)
     .map((p) => {
@@ -284,7 +285,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         category: "access",
         status: a.blockedBy.length ? "fail" : "pass",
         title: `Tool access: ${p?.label ?? a.id}`,
-        detail: a.blockedBy.length ? `A ${p?.fastener ? fmtNum(p.fastener.key) + " mm hex key" : "tool"} is blocked by ${a.blockedBy.map(label).join(", ")}` : `${p?.fastener ? fmtNum(p.fastener.key) + " mm hex key" : "Tool"} reaches the head (removable covers off)`,
+        detail: a.blockedBy.length ? `A ${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key") : "tool"} is blocked by ${a.blockedBy.map(label).join(", ")}` : `${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key").replace(/^./, (c) => c.toUpperCase()) : "Tool"} reaches the head (removable covers off)`,
         parts: [a.id, ...a.blockedBy],
         span: p?.span,
         basis: "geometry",
@@ -305,6 +306,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     }
   }
   items.push(...gearChecks(model));
+  items.push(...fastenerChecks(model));
   if (model.machine) items.push(...machineChecks(model.machine));
 
   // things geometry cannot prove

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, MODELS, KEEP_WARM_MINUTES, COMPACT_AT_TOKENS, MIN_STEPS, MAX_STEPS, type Effort, type ThemePref } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, cleanOnHand, MODELS, KEEP_WARM_MINUTES, COMPACT_AT_TOKENS, MIN_STEPS, MAX_STEPS, type Effort, type ThemePref } from "../app/settings";
 import { setTheme } from "../app/theme";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
 import { forgetApiKey, getApiKey, isRemembered, keyHint, subscribeKey } from "../persist/vault";
@@ -80,6 +80,12 @@ function MakingSettings() {
         </div>
         <MachineEditor />
       </Section>
+      <Section title="Parts you have">
+        <div className="d" style={{ marginBottom: 10, color: "var(--text-3)", fontSize: 12.5 }}>
+          One per line, the way you would say it: screws and nuts ("M3x10 socket", "M3x6-20 button stainless", "M3 nut", "M4 insert"), motors and boards by name or part number ("17HS4401", "Arduino Nano"). Claude prefers these when they fit, and the parts list marks them on hand and leaves them out of the cost.
+        </div>
+        <OnHandEditor />
+      </Section>
       <Section title="Costs">
         <Row t="Your time" d="What an hour of your own work is worth, for parts made on your machines and for assembling a design.">
           <span className="mk-num">
@@ -90,6 +96,34 @@ function MakingSettings() {
         </Row>
       </Section>
     </>
+  );
+}
+
+function OnHandEditor() {
+  const saved = useSettings((s) => s.onHand);
+  const [text, setText] = useState(() => saved.join("\n"));
+  // pick up changes made elsewhere (the parts list's "I have this") while not typing here
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setText(saved.join("\n"));
+  }, [saved]);
+  const save = () => updateSettings({ onHand: cleanOnHand(text.split("\n")) });
+  return (
+    <textarea
+      className="mk-onhand"
+      rows={6}
+      value={text}
+      placeholder={"M3x8-20 socket\nM3 nut\nM3 insert\n17HS4401\nArduino Nano"}
+      onFocus={() => (focused.current = true)}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => {
+        focused.current = false;
+        save();
+      }}
+      aria-label="Parts you have, one per line"
+      spellCheck={false}
+      style={{ width: "100%", boxSizing: "border-box", fontFamily: "var(--mono)", fontSize: 12.5, resize: "vertical" }}
+    />
   );
 }
 
