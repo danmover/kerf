@@ -20,7 +20,7 @@ import { fmtNum, Obj, type Value } from "../lang/values";
 import { lineCol } from "../lang/lexer";
 import { evaluate } from "../lang/evaluator";
 import { BEARINGS } from "../library/standards";
-import { CATALOG_KINDS, catalogPart, describePart, searchCatalog } from "../machine/catalog";
+import { CATALOG_KINDS, catalogPart, describePart, isHad, searchCatalog } from "../machine/catalog";
 import { CALC_FNS, isCalc } from "../machine/calcs";
 import { generateFirmware } from "../machine/firmware";
 import type { CatalogPart } from "../machine/types";
@@ -751,7 +751,14 @@ export function briefSummary(): string {
     if (!it) return undefined;
     return it.detail.startsWith("No check") ? "not checked yet" : `${it.status}: ${it.detail}`;
   });
-  return [brief, processesSummary(model.brief)].filter(Boolean).join("\n");
+  return [brief, processesSummary(model.brief), onHandSummary()].filter(Boolean).join("\n");
+}
+
+/** What the user has on hand (Settings → Making), for Claude to prefer. */
+function onHandSummary(): string {
+  const have = useSettings.getState().onHand;
+  if (!have.length) return "";
+  return `Parts the user has on hand (prefer them when they fit; calc.fastener and calc.motor_select get them as have: from engineering_calc, and the design's calls should carry the same have: list): ${have.slice(0, 120).join("; ")}${have.length > 120 ? `; and ${have.length - 120} more` : ""}`;
 }
 
 /** Which processes the user can use, for Claude: from the brief's lists or Settings. */
@@ -1340,7 +1347,8 @@ export const TOOL_TITLES: Record<string, string> = {
 
 // ---------- parts catalog ----------
 
-const oneLine = (p: CatalogPart) => `${p.id} | ${p.name} | ${p.summary.split(/(?<=\.)\s+/).slice(0, 2).join(" ")}${p.price_usd ? ` | ~$${p.price_usd}` : ""}`;
+const onHandMark = (p: CatalogPart) => (isHad(p, useSettings.getState().onHand) ? " | ON HAND (the user has it)" : "");
+const oneLine = (p: CatalogPart) => `${p.id} | ${p.name} | ${p.summary.split(/(?<=\.)\s+/).slice(0, 2).join(" ")}${p.price_usd ? ` | ~$${p.price_usd}` : ""}${onHandMark(p)}`;
 const usage = (p: CatalogPart) => `Use as: lib.${p.kind}("${p.id}"${p.cut_to_length ? ", length: <mm>" : ""}) or lib.part("${p.id}")`;
 
 export function catalogLookup(q: { id?: string; query?: string; kind?: string; limit?: number }): ToolOutcome {
@@ -1355,7 +1363,7 @@ export function catalogLookup(q: { id?: string; query?: string; kind?: string; l
         card: { title: `No catalog part "${id}"`, status: "error" },
       };
     }
-    return { content: `${usage(p)}\n${describePart(p)}`, card: { title: `Looked up ${p.name}`, detail: `${p.id} · ${p.kind}${p.price_usd ? ` · about $${p.price_usd}` : ""}` } };
+    return { content: `${usage(p)}${onHandMark(p) ? "\nThe user has this part on hand." : ""}\n${describePart(p)}`, card: { title: `Looked up ${p.name}`, detail: `${p.id} · ${p.kind}${p.price_usd ? ` · about $${p.price_usd}` : ""}` } };
   }
   const kind = q.kind?.trim() || undefined;
   if (kind && !CATALOG_KINDS.includes(kind as CatalogPart["kind"])) {
@@ -1408,6 +1416,18 @@ function partFor(text: string): { part: CatalogPart; label: string; ref: string 
 }
 
 const COMPONENT_ARGS = new Set(["motor", "battery", "actuator"]);
+/** Words the hardware choosers take as text: a thread size like "1/4-20" must not be read as arithmetic. */
+const TEXT_ARGS: Record<string, Set<string>> = {
+  fastener: new Set(["into", "material", "clamped", "head", "grade", "env", "size", "min", "max"]),
+  motor_select: new Set(["kind", "prefer"]),
+};
+/** Choosers that prefer what the user has: their on-hand list goes in as have: when the call does not give one. */
+const HAVE_CALCS = new Set(["fastener", "motor_select"]);
+const listOf = (text: string) =>
+  text
+    .split(/[\n;,]+/)
+    .map((x) => x.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
 
 export function engineeringCalc(name: string, args: Record<string, number | string | boolean>): ToolOutcome {
   const fn = CALC_FNS[name];
@@ -1432,6 +1452,16 @@ export function engineeringCalc(name: string, args: Record<string, number | stri
       continue;
     }
     const text = raw.trim();
+    if (TEXT_ARGS[name]?.has(k)) {
+      named[k] = text.replace(/^["']|["']$/g, "");
+      shown.push(`${k}: ${JSON.stringify(named[k])}`);
+      continue;
+    }
+    if (k === "have" && HAVE_CALCS.has(name)) {
+      named[k] = listOf(text);
+      shown.push(`${k}: ${JSON.stringify(named[k])}`);
+      continue;
+    }
     const comp = partFor(text);
     if (comp) {
       named[k] = new Obj(specFields(comp.part), "component", comp.label);
@@ -1449,6 +1479,15 @@ export function engineeringCalc(name: string, args: Record<string, number | stri
     if ("error" in lit) return fail(`could not read ${k}: "${text}" (${lit.error})`);
     named[k] = lit.value;
     shown.push(`${k}: ${text}`);
+  }
+
+  // what the user has on hand, so the choice prefers it; the design must say it too to evaluate the same everywhere
+  const onHand = useSettings.getState().onHand;
+  let haveNote = "";
+  if (HAVE_CALCS.has(name) && !("have" in args) && onHand.length) {
+    named.have = [...onHand];
+    shown.push(`have: ${JSON.stringify(onHand)}`);
+    haveNote = "The user's parts on hand were passed as have:. Keep have: in the call when you record it in the design.";
   }
 
   let result: Value;
@@ -1483,6 +1522,7 @@ export function engineeringCalc(name: string, args: Record<string, number | stri
     t.verify ? `Confirm with a physical test: ${t.verify}` : "",
     `Result fields in base units (mm, N, N·mm, MPa, V, A, W, s), for other calculations and the design: ${fields}`,
     `To record it in the design: let <name> = ${call}`,
+    haveNote,
   ].filter(Boolean);
   return {
     content: text.join("\n"),

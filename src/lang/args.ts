@@ -3,7 +3,7 @@
 
 import type { Path3, Profile, V2, V3 } from "../kernel/recipe";
 import { Fn, Obj, PathV, Pending, ProfileV, ShapeV, typeName, Vec, type CallCtx, type Value } from "./values";
-import { THREADS, type ThreadSpec } from "../library/standards";
+import { THREADS, threadSpec, type ThreadSpec } from "../library/standards";
 
 export class Args {
   constructor(
@@ -142,8 +142,10 @@ export function toV3(v: Value, ctx: CallCtx, what: string): V3 {
 export function toThread(v: Value | undefined, ctx: CallCtx, what: string): ThreadSpec {
   if (v instanceof Obj && v.kind === "thread") return THREADS[String(v.fields.key)];
   if (typeof v === "string") {
-    const key = v.replace(".", "_").toUpperCase();
-    if (THREADS[key]) return THREADS[key];
+    const t = threadSpec(v);
+    if (t) return t;
   }
-  return ctx.error(`${what} should be a metric thread size like M3 (available: ${Object.keys(THREADS).join(", ")})`);
+  // a fastener chosen by calc.fastener() carries its size
+  if (v instanceof Obj && typeof v.fields.size === "string" && threadSpec(v.fields.size)) return threadSpec(v.fields.size)!;
+  return ctx.error(`${what} should be a thread size like M3 (available: ${Object.keys(THREADS).join(", ")}, or inch sizes as text such as "#10-24" and "1/4-20")`);
 }

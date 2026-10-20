@@ -5,7 +5,8 @@ import { z } from "zod";
 import type { MeshData } from "../kernel/build";
 import { xformMatrix, type Xform } from "../kernel/recipe";
 import type { EvalPart, Model } from "../core/model";
-import { catalogPart, searchLinks, shopLinks, type ShopLink } from "../machine/catalog";
+import { catalogPart, isHad, searchLinks, shopLinks, type ShopLink } from "../machine/catalog";
+import { haveKey } from "../library/fasteners";
 import type { CatalogPart } from "../machine/types";
 import { IMPORT_META_VERSION, MAX_BODIES, MAX_STEP_BYTES, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { cleanName } from "../kernel/stepText";
@@ -335,6 +336,31 @@ export interface BomRow {
   catalogId?: string;
   /** cut length in mm for stock items */
   length?: number;
+  /** the user has it already (Settings → Making → Parts you have): not counted in the cost */
+  onHand?: boolean;
+  /** what to add to the on-hand list for this row ("M3x10 socket 12.9", "17HS4401") */
+  haveAs?: string;
+}
+
+/** The on-hand line for a library hardware key (see screwKey): what "I have it" adds. */
+function haveText(key: string): string | undefined {
+  const [kind, size, a, b, c] = key.split("|");
+  switch (kind) {
+    case "screw":
+      return `${size}x${a} ${b} ${c}`;
+    case "nut":
+      return `${size} ${a === "hex" ? "" : a === "tslot20" ? "T-slot " : `${a} `}nut`;
+    case "washer":
+      return `${size} ${a === "large" ? "large " : ""}washer`;
+    case "insert":
+      return `${size} insert`;
+    case "standoff":
+      return `${size}x${a} standoff`;
+    case "circlip":
+      return `circlip ${size} mm`;
+    default:
+      return undefined;
+  }
 }
 
 /** Price per metre when the catalog says so (profiles), else per piece. */
@@ -345,7 +371,12 @@ function catalogPrice(p: CatalogPart, length?: number): { price?: number; note?:
 }
 
 /** Bill of materials grouped by identical description, with purchased extras from buy statements. */
-export function bomRows(model: Model): BomRow[] {
+/**
+ * The parts list: one row per distinct part with its quantity, price and
+ * where to buy it. `have` is what the user already has (free text, as in
+ * Settings): matching rows are marked on hand.
+ */
+export function bomRows(model: Model, have: readonly string[] = []): BomRow[] {
   const rows = new Map<string, BomRow>();
   const seenInstance = new Set<string>();
   const comps = new Map((model.machine?.components ?? []).map((c) => [c.name, c]));
@@ -367,32 +398,45 @@ export function bomRows(model: Model): BomRow[] {
       priceNote = mc?.price !== undefined ? undefined : c.note;
       links = shopLinks(cp);
       if (mc?.buyUrl) links = [{ vendor: "Design link", url: mc.buyUrl, direct: true }, ...links.filter((l) => l.url !== mc.buyUrl)];
+    } else if (p.bom?.price !== undefined) {
+      // library hardware (screws, nuts, washers, inserts): a typical pack price each and marketplace searches
+      price = p.bom.price;
+      priceNote = p.bom.priceNote;
+      links = p.bom.search ? searchLinks(p.bom.search) : [];
     }
+    const onHand = have.length > 0 && (cp ? isHad(cp, have) : p.bom?.key ? haveKey(have, p.bom.key) : false);
     const link = links.find((l) => l.direct)?.url;
     const key = `${kind}|${description}|${p.material}|${price ?? ""}|${link ?? ""}`;
     const row = rows.get(key);
     // a bought catalog part's material is only its colour in the model; stock cut to length keeps it
     const material = cp && !cp.cut_to_length ? "" : p.material;
     if (row) row.qty++;
-    else rows.set(key, { qty: 1, item: p.kind === "part" ? p.name : p.imported ? p.imported.file : (cp?.kind ?? p.libKind ?? p.name), description, standard: p.bom?.standard ?? "", material, kind, price, priceNote, link, links, catalogId: cp?.id, length: p.bom?.length });
+    else {
+      const haveAs = kind === "Make" ? undefined : cp ? (cp.mpn ?? cp.id) : p.bom?.key ? haveText(p.bom.key) : undefined;
+      rows.set(key, { qty: 1, item: p.kind === "part" ? p.name : p.imported ? p.imported.file : (cp?.kind ?? p.libKind ?? p.name), description, standard: p.bom?.standard ?? "", material, kind, price, priceNote, link, links, catalogId: cp?.id, length: p.bom?.length, onHand: onHand || undefined, haveAs });
+    }
   }
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
   for (const it of model.machine?.items ?? []) {
     const links: ShopLink[] = [...(it.buyUrl ? [{ vendor: "Design link", url: it.buyUrl, direct: true }] : []), ...searchLinks(it.search ?? it.label)];
-    rows.set(`Buy|item|${it.label}|${rows.size}`, { qty: it.qty, item: "item", description: it.label, standard: "", material: "", kind: "Buy", price: it.price, link: it.buyUrl, links });
+    const onHand = have.some((h) => norm(h).length >= 4 && norm(it.label).includes(norm(h)));
+    rows.set(`Buy|item|${it.label}|${rows.size}`, { qty: it.qty, item: "item", description: it.label, standard: "", material: "", kind: "Buy", price: it.price, link: it.buyUrl, links, onHand: onHand || undefined, haveAs: it.label });
   }
   return [...rows.values()].sort((a, b) => (a.kind === b.kind ? a.item.localeCompare(b.item) : a.kind === "Make" ? -1 : 1));
 }
 
-/** Sum of qty × price over priced rows, and how many rows have no price. */
-export function bomTotal(rows: BomRow[]): { total: number; unpriced: number } {
+/** Sum of qty × price over priced rows still to buy, how many rows have no price, and what the parts on hand save. */
+export function bomTotal(rows: BomRow[]): { total: number; unpriced: number; saved: number } {
   let total = 0;
   let unpriced = 0;
+  let saved = 0;
   for (const r of rows) {
     if (r.kind !== "Buy") continue;
-    if (r.price === undefined) unpriced++;
+    if (r.onHand) saved += (r.price ?? 0) * r.qty;
+    else if (r.price === undefined) unpriced++;
     else total += r.price * r.qty;
   }
-  return { total: Math.round(total * 100) / 100, unpriced };
+  return { total: Math.round(total * 100) / 100, unpriced, saved: Math.round(saved * 100) / 100 };
 }
 
 export function csvEscape(s: string | number | undefined): string {

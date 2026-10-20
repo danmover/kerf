@@ -6,9 +6,9 @@
 import type { CatalogPart, PinDef } from "../types";
 import { gnd, input, port, pwrIn } from "./pins";
 
-const kgcm = (x: number) => Math.round(x * 98.0665);
+export const kgcm = (x: number) => Math.round(x * 98.0665);
 
-function dcMotorPins(v: number, encoder?: { vmin: number; vmax: number; labels?: [string, string, string, string] }): PinDef[] {
+export function dcMotorPins(v: number, encoder?: { vmin: number; vmax: number; labels?: [string, string, string, string] }): PinDef[] {
   const pins: PinDef[] = [
     { id: "M_PLUS", label: "M+ (red)", type: "motor", v, channel: "M", required: true },
     { id: "M_MINUS", label: "M− (black)", type: "motor", v, channel: "M", required: true },
@@ -25,9 +25,9 @@ function dcMotorPins(v: number, encoder?: { vmin: number; vmax: number; labels?:
   return pins;
 }
 
-const stepperPlug = (amps: number): PinDef[] => [port("PLUG", "stepper4", "sink", { label: "A+ A− B+ B−", need_a: amps, required: true })];
+export const stepperPlug = (amps: number): PinDef[] => [port("PLUG", "stepper4", "sink", { label: "A+ A− B+ B−", need_a: amps, required: true })];
 
-function servoPins(vmin: number, vmax: number, drawA: number): PinDef[] {
+export function servoPins(vmin: number, vmax: number, drawA: number): PinDef[] {
   return [
     pwrIn("V_PLUS", vmin, vmax, { label: "V+ (red)", draw: drawA, vabs: vmax + 0.4, note: "Power from a separate 5 to 6 V supply that can give the stall current, not the controller's 5 V pin" }),
     gnd("GND", "GND (brown)"),
@@ -37,7 +37,7 @@ function servoPins(vmin: number, vmax: number, drawA: number): PinDef[] {
 
 const gobildaDims = (gearL: number) => ({ gear_d: 36, gear_l: gearL, motor_d: 36, motor_l: 55, enc_l: 20, shaft_d: 8, shaft_l: 24, boss_d: 14, boss_h: 2, hole_circle: 22.63, hole_n: 4, hole_start: 45, hole_d: 3.3 });
 
-function gobilda(ratio: string, ratioN: number, rpm: number, stallKgcm: number, cpr: number, gearL: number, price: number, mass: number): CatalogPart {
+export function gobilda(ratio: string, ratioN: number, rpm: number, stallKgcm: number, cpr: number, gearL: number, price: number, mass: number): CatalogPart {
   const url = `https://www.gobilda.com/5203-series-yellow-jacket-planetary-gear-motor-${ratio.replace(".", "-")}-1-ratio-24mm-length-8mm-rex-shaft-${rpm}-rpm-3-3-5v-encoder/`;
   return {
     id: `gobilda_5203_${ratio.replace(".", "_")}`,
@@ -48,7 +48,7 @@ function gobilda(ratio: string, ratioN: number, rpm: number, stallKgcm: number, 
     summary: `12 V planetary gearmotor, ${rpm} rpm free, ${(kgcm(stallKgcm) / 1000).toFixed(1)} N·m stall at 9.2 A, built-in encoder (${cpr} counts per output turn), 8 mm REX shaft.`,
     specs: { v_rated: 12, ratio: ratioN, rpm_free: rpm, i_free: 0.25, i_stall: 9.2, t_stall: kgcm(stallKgcm), encoder_cpr: cpr, shaft: "8 mm REX (rounded hex)", mass_g: mass },
     pins: dcMotorPins(12, { vmin: 3.3, vmax: 5, labels: ["Encoder VCC (red)", "Encoder GND (black)", "Encoder A (yellow)", "Encoder B (white)"] }),
-    geom: { g: "gearmotor", dims: gobildaDims(gearL), color: "#2b2f36" },
+    geom: { g: "gearmotor", dims: gobildaDims(gearL), color: "#2b2f36", color2: "#e0b420" },
     price_usd: price,
     buy: [{ vendor: "goBILDA", url }, { vendor: "Marketplace", search: `goBILDA 5203 ${ratio}:1 Yellow Jacket` }],
     source: url,
@@ -57,7 +57,7 @@ function gobilda(ratio: string, ratioN: number, rpm: number, stallKgcm: number, 
   };
 }
 
-function pololu37(ratio: number, item: number, rpm: number, stallKgcm: number, cprOut: number, gearboxL: number, mass: number): CatalogPart {
+export function pololu37(ratio: number, item: number, rpm: number, stallKgcm: number, cprOut: number, gearboxL: number, mass: number): CatalogPart {
   return {
     id: `pololu_37d_${ratio}`,
     kind: "gearmotor",
@@ -67,7 +67,7 @@ function pololu37(ratio: number, item: number, rpm: number, stallKgcm: number, c
     summary: `12 V spur gearmotor, ${rpm} rpm free, ${(kgcm(stallKgcm) / 1000).toFixed(1)} N·m stall at 5.5 A, encoder ${cprOut} counts per output turn, 6 mm D shaft offset 7 mm from centre.`,
     specs: { v_rated: 12, ratio, rpm_free: rpm, i_free: 0.2, i_stall: 5.5, t_stall: kgcm(stallKgcm), encoder_cpr: cprOut, shaft: "6 mm D", mass_g: mass },
     pins: dcMotorPins(12, { vmin: 3.5, vmax: 20, labels: ["Encoder Vcc (blue)", "Encoder GND (green)", "Encoder A (yellow)", "Encoder B (white)"] }),
-    geom: { g: "gearmotor", dims: { gear_d: 37, gear_l: gearboxL, motor_d: 34.5, motor_l: 30.5, enc_l: 15.5, shaft_d: 6, shaft_l: 16, shaft_flat: 0.5, shaft_offset: 7, boss_d: 12, boss_h: 4, hole_circle: 31, hole_n: 6, hole_start: 0, hole_d: 2.5 }, color: "#3a3f47" },
+    geom: { g: "gearmotor", dims: { gear_d: 37, gear_l: gearboxL, motor_d: 34.5, motor_l: 30.5, enc_l: 15.5, shaft_d: 6, shaft_l: 16, shaft_flat: 0.5, shaft_offset: 7, boss_d: 12, boss_h: 4, hole_circle: 31, hole_n: 6, hole_start: 0, hole_d: 2.5, hole_depth: 3 }, color: "#9ea3aa", color2: "#c4c9d0" },
     price_usd: 50,
     buy: [{ vendor: "Pololu", url: `https://www.pololu.com/product/${item}` }, { vendor: "Marketplace", search: `Pololu 37D ${ratio}:1 gearmotor encoder` }],
     source: `https://www.pololu.com/product/${item}`,
@@ -75,7 +75,7 @@ function pololu37(ratio: number, item: number, rpm: number, stallKgcm: number, c
   };
 }
 
-function nema17(id: string, name: string, maker: string | undefined, generic: boolean, s: { i: number; r: number; l: number; hold: number; len: number; inertia: number; mass: number; price: number; url?: string; search: string }): CatalogPart {
+export function nema17(id: string, name: string, maker: string | undefined, generic: boolean, s: { i: number; r: number; l: number; hold: number; len: number; inertia: number; mass: number; price: number; url?: string; search: string }): CatalogPart {
   return {
     id,
     kind: "stepper",
@@ -115,7 +115,7 @@ export const MOTION: CatalogPart[] = [
     summary: "NEMA 23 bipolar stepper, 1.24 N·m holding, 2.8 A per phase, 0.92 Ω, 2.68 mH, 6.35 mm shaft.",
     specs: { frame: 23, step_deg: 1.8, i_rated: 2.8, r_phase: 0.92, l_phase: 2.68, t_hold: 1240, rotor_inertia_gcm2: 300, mass_g: 700, shaft_d: 6.35, radial_n: 75, radial_at: 20 },
     pins: stepperPlug(2.8),
-    geom: { g: "stepper", dims: { size: 56.4, l: 56, pilot_d: 38.1, pilot_h: 1.6, shaft_d: 6.35, shaft_l: 21, hole_spacing: 47.14, hole_d: 5.2 } },
+    geom: { g: "stepper", dims: { size: 56.4, l: 56, pilot_d: 38.1, pilot_h: 1.6, shaft_d: 6.35, shaft_l: 21, hole_spacing: 47.14, hole_d: 5.2, flange_t: 5 } },
     price_usd: 22,
     buy: [{ vendor: "StepperOnline", url: "https://www.omc-stepperonline.com/nema-23-bipolar-1-8deg-1-26nm-178-4oz-in-2-8a-2-5v-57x57x56mm-4-wires-23hs22-2804s" }, { vendor: "Marketplace", search: "23HS22-2804S" }],
     source: "https://www.omc-stepperonline.com/nema-23-bipolar-1-8deg-1-26nm-178-4oz-in-2-8a-2-5v-57x57x56mm-4-wires-23hs22-2804s",

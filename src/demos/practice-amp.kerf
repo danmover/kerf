@@ -60,7 +60,7 @@ let knob_z = 326
 // seen from the front: board (x, y) is cabinet (275 - x, board_y, 296 + y).
 let bx = 275
 let bz = 296
-component pcb = lib.circuit_board(w: 150, d: 80, holes: [(4, 4), (146, 4), (146, 76), (4, 76)], title: "Practice Amp") {
+component pcb = lib.circuit_board(w: 150, d: 80, holes: [(4, 4), (146, 4), (146, 76), (4, 76)], hole_d: 3.4, title: "Practice Amp") {
   at: (bx, board_y, bz), rotate: (90, 0, 180)
 }
 
@@ -289,7 +289,7 @@ part back_lower {
 // and the switch go through it; the board hangs on four bosses.
 part front_panel {
   material: "PETG"
-  process: mfg.fdm(build: Y)   // printed face down: the bosses grow up off the back
+  process: mfg.fdm(build: Y, shrink_comp: true)   // printed face down: the bosses grow up off the back; scaled for shrink so the board holes line up
   color: #1d1f23
   group: "Control panel"
   body box(pan_x1 - pan_x0, pan_t, pan_z1 - pan_z0, at: ((pan_x0 + pan_x1) / 2, pan_y + pan_t / 2, pan_z0))

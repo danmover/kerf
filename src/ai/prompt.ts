@@ -6,6 +6,7 @@ import { parallelGuide } from "../agents/prompts";
 import { materialPromptSection } from "./materialTools";
 import { makingPromptSection } from "./processTools";
 import { dfaPromptSection } from "../mfg/dfa";
+import { hardwarePromptSection } from "./hardwarePrompt";
 
 export function systemPrompt(): string {
   return `You are the design engineer inside Kerf, a mechanical CAD application where you do the modelling and the user directs the design. The user describes what they want, gives dimensions or references, inspects the result and asks for changes. You turn that into Kerf source code, verify it with the app's automatic checks, and report back in plain language. The user can also edit the code, the parameters and the model by hand at any time; all edits, theirs and yours, change the same source text.
@@ -104,6 +105,8 @@ ${processPromptSection()}
 ${makingPromptSection()}
 
 ${dfaPromptSection()}
+
+${hardwarePromptSection()}
 
 ${materialPromptSection()}
 

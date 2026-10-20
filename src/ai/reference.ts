@@ -6,7 +6,7 @@ import { FEATURE_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../la
 import { SEL_PRESETS } from "../kernel/recipe";
 import { UNITS } from "../lang/lexer";
 import { LIBRARY } from "../library/components";
-import { THREADS, BEARINGS, MATERIALS } from "../library/standards";
+import { THREADS, UNIFIED_THREADS, BEARINGS, MATERIALS } from "../library/standards";
 import { CALC_FNS, CALC_PARAMS } from "../machine/calcs";
 import { CATALOG, CATALOG_KINDS, catalogOfKind } from "../machine/catalog";
 import { FLAVOR_NAME, boardFlavors } from "../machine/firmware/printer";
@@ -428,6 +428,7 @@ ${importsReference()}
 ## Standard data
 Threads (use M3 etc. directly as values: M3.clearance, M3.tap, M3.head_d, or pass M3 to hole() and lib.screw()):
 ${threads}
+Inch (Unified) sizes are written as text, not constants: ${Object.keys(UNIFIED_THREADS).map((k) => `"${k}"`).join(", ")}, for hole(), lib.screw("1/4-20", 19.05), lib.nut() and calc.fastener(inch: true).
 Bearings for lib.bearing(code): ${bearings}
 
 ## Materials and finishes

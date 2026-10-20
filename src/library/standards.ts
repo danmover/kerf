@@ -20,6 +20,7 @@ export interface ThreadSpec {
 }
 
 export const THREADS: Record<string, ThreadSpec> = {
+  M1_6: { name: "M1.6", d: 1.6, clearance: 1.8, close: 1.7, tap: 1.25, head_d: 3, head_h: 1.6, key: 1.5, nut_af: 3.2, nut_h: 1.3, insert_d: 0, insert_l: 0, pitch: 0.35 },
   M2: { name: "M2", d: 2, clearance: 2.4, close: 2.2, tap: 1.6, head_d: 3.8, head_h: 2, key: 1.5, nut_af: 4, nut_h: 1.6, insert_d: 3.2, insert_l: 3, pitch: 0.4 },
   M2_5: { name: "M2.5", d: 2.5, clearance: 2.9, close: 2.7, tap: 2.05, head_d: 4.5, head_h: 2.5, key: 2, nut_af: 5, nut_h: 2, insert_d: 3.6, insert_l: 4, pitch: 0.45 },
   M3: { name: "M3", d: 3, clearance: 3.4, close: 3.2, tap: 2.5, head_d: 5.5, head_h: 3, key: 2.5, nut_af: 5.5, nut_h: 2.4, insert_d: 4.2, insert_l: 5.7, pitch: 0.5 },
@@ -30,7 +31,51 @@ export const THREADS: Record<string, ThreadSpec> = {
   M8: { name: "M8", d: 8, clearance: 9, close: 8.4, tap: 6.8, head_d: 13, head_h: 8, key: 6, nut_af: 13, nut_h: 6.8, insert_d: 0, insert_l: 0, pitch: 1.25 },
   M10: { name: "M10", d: 10, clearance: 11, close: 10.5, tap: 8.5, head_d: 16, head_h: 10, key: 8, nut_af: 16, nut_h: 8.4, insert_d: 0, insert_l: 0, pitch: 1.5 },
   M12: { name: "M12", d: 12, clearance: 13.5, close: 13, tap: 10.2, head_d: 18, head_h: 12, key: 10, nut_af: 18, nut_h: 10.8, insert_d: 0, insert_l: 0, pitch: 1.75 },
+  M14: { name: "M14", d: 14, clearance: 15.5, close: 15, tap: 12, head_d: 21, head_h: 14, key: 12, nut_af: 21, nut_h: 12.8, insert_d: 0, insert_l: 0, pitch: 2 },
+  M16: { name: "M16", d: 16, clearance: 17.5, close: 17, tap: 14, head_d: 24, head_h: 16, key: 14, nut_af: 24, nut_h: 14.8, insert_d: 0, insert_l: 0, pitch: 2 },
+  M20: { name: "M20", d: 20, clearance: 22, close: 21, tap: 17.5, head_d: 30, head_h: 20, key: 17, nut_af: 30, nut_h: 18, insert_d: 0, insert_l: 0, pitch: 2.5 },
 };
+
+const inch = (x: number) => Math.round(x * 25.4 * 100) / 100;
+
+/**
+ * Unified (inch) threads, by the name written in designs ("#4-40", "1/4-20").
+ * Socket head sizes from ASME B18.3, hex nuts from B18.6.3 and B18.2.2,
+ * normal and close clearance drills and tap drills from the usual tables.
+ * They are not language constants (M3 is): write them as text, lib.screw("1/4-20", 19.05).
+ */
+function unified(name: string, d: number, tpi: number, close: number, clearance: number, tap: number, head: number, key: number, nutAf: number, nutH: number): ThreadSpec {
+  return { name, d: inch(d), clearance: inch(clearance), close: inch(close), tap: inch(tap), head_d: inch(head), head_h: inch(d), key: inch(key), nut_af: inch(nutAf), nut_h: inch(nutH), insert_d: 0, insert_l: 0, pitch: Math.round((25.4 / tpi) * 10000) / 10000 };
+}
+
+export const UNIFIED_THREADS: Record<string, ThreadSpec> = Object.fromEntries(
+  [
+    unified("#2-56", 0.086, 56, 0.089, 0.096, 0.07, 0.14, 5 / 64, 3 / 16, 1 / 16),
+    unified("#4-40", 0.112, 40, 0.116, 0.1285, 0.089, 0.183, 3 / 32, 1 / 4, 3 / 32),
+    unified("#6-32", 0.138, 32, 0.144, 0.1495, 0.1065, 0.226, 7 / 64, 5 / 16, 7 / 64),
+    unified("#8-32", 0.164, 32, 0.1695, 0.177, 0.136, 0.27, 9 / 64, 11 / 32, 1 / 8),
+    unified("#10-24", 0.19, 24, 0.196, 0.213, 0.1495, 0.312, 5 / 32, 3 / 8, 1 / 8),
+    unified("#10-32", 0.19, 32, 0.196, 0.213, 0.159, 0.312, 5 / 32, 3 / 8, 1 / 8),
+    unified("1/4-20", 0.25, 20, 0.257, 0.266, 0.201, 0.375, 3 / 16, 7 / 16, 7 / 32),
+    unified("5/16-18", 0.3125, 18, 0.323, 0.332, 0.257, 0.469, 1 / 4, 1 / 2, 17 / 64),
+    unified("3/8-16", 0.375, 16, 0.386, 0.397, 0.3125, 0.5625, 5 / 16, 9 / 16, 21 / 64),
+    unified("1/2-13", 0.5, 13, 0.516, 0.531, 0.4219, 0.75, 3 / 8, 3 / 4, 7 / 16),
+  ].map((t) => [t.name, t]),
+);
+
+/** A thread by its key or name: "M3", "M2_5", "M2.5", "#10-24", "1/4-20" (metric first). */
+export function threadSpec(name: string | undefined): ThreadSpec | undefined {
+  if (!name) return undefined;
+  const s = name.trim().replace(/\s+/g, "");
+  const key = s.replace(".", "_").toUpperCase();
+  return THREADS[key] ?? UNIFIED_THREADS[s] ?? Object.values(THREADS).find((t) => t.name === s);
+}
+
+/** Every thread size Kerf has hardware for, metric then unified. */
+export const ALL_THREADS: ThreadSpec[] = [...Object.values(THREADS), ...Object.values(UNIFIED_THREADS)];
+
+/** Unified sizes are written with a fraction or a number sign. */
+export const isUnified = (t: ThreadSpec) => /^#|\//.test(t.name);
 
 /** ISO 261 coarse pitches by nominal diameter, for thread("M16") and friends. */
 export const COARSE_PITCH: Record<string, number> = {

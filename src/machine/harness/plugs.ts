@@ -261,7 +261,7 @@ function defaultKind(part: CatalogPart, pin: PinDef): PlugKind {
   if (part.kind === "battery") return "xt60";
   if (part.kind === "psu") return "fork";
   if (part.kind === "fuse" || part.kind === "switch") return "spade";
-  if (part.geom.g === "gearmotor") return "solder";
+  if (part.geom.g === "gearmotor" || part.geom.g === "micro_gearmotor" || part.geom.g === "tt_motor") return "solder";
   if (part.geom.g === "board") return pin.type === "pwr_in" || pin.type === "gnd" || pin.type === "motor_out" || pin.type === "passive" ? "ferrule" : "dupont";
   return "lead";
 }
@@ -306,6 +306,21 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): P
       const r = num(d, "motor_d", 35) * 0.3;
       const off = num(d, "shaft_offset", 0);
       return { kind, at: [-off + (pin.id.match(/MINUS|NEG|2$|B$/) ? -r : r), 0, -back], out: NZ, row: X, ways };
+    }
+    case "micro_gearmotor": {
+      // the solder tabs on the can's end cap
+      const back = num(d, "gear_l", 9) + num(d, "motor_l", 15) + num(d, "enc_l", 0);
+      return { kind, at: [(pin.id.match(/MINUS|NEG|2$|B$/) ? -1 : 1) * num(d, "w", 12) / 4, 0, -back - 1], out: NZ, row: X, ways };
+    }
+    case "tt_motor": {
+      // tabs on the end of the can, which sticks out along -X
+      const end = num(d, "shaft_x", 11) - num(d, "gear_l", 37) - num(d, "motor_l", 25);
+      return { kind, at: [end - 1, 0, -num(d, "gear_t", 18.8) / 2 + (pin.id.match(/MINUS|NEG|2$|B$/) ? -4 : 4)], out: [-1, 0, 0], row: Z, ways };
+    }
+    case "outrunner": {
+      // the three phase leads leave the side of the base
+      const r = num(d, "base_d", 28) / 2;
+      return { kind, at: [r, (i - 1) * 2.5, num(d, "base_h", 4) / 2], out: X, row: Y, ways: 1 };
     }
     case "stepper":
       return STEPPER_PLUG(num(d, "l", 40), num(d, "size", 42.3));

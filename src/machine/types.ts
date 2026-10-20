@@ -87,6 +87,7 @@ export type CatalogKind =
   | "gearmotor"
   | "stepper"
   | "servo"
+  | "bldc"
   | "actuator"
   | "battery"
   | "psu"
@@ -127,6 +128,9 @@ export type CatalogKind =
 export type GeomClass =
   | "board"
   | "gearmotor"
+  | "micro_gearmotor"
+  | "tt_motor"
+  | "outrunner"
   | "stepper"
   | "servo"
   | "actuator"

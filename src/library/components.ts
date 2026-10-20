@@ -3,7 +3,36 @@
 // the result and converts local fields to world coordinates.
 
 import type { PartRecipe, ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/recipe";
-import { BEARINGS, THREADS, type ThreadSpec } from "./standards";
+import { BEARINGS, THREADS, threadSpec, type ThreadSpec } from "./standards";
+import {
+  CIRCLIPS,
+  GRADES,
+  GRADE_IDS,
+  HEADS,
+  HEAD_TYPES,
+  NUT_TYPES,
+  STANDOFF_LENGTHS,
+  gradeFrom,
+  headDims,
+  headsFor,
+  insertDims,
+  insertPrice,
+  nutDims,
+  nutPrice,
+  screwDescription,
+  screwKey,
+  screwPrice,
+  screwSearch,
+  screwStandard,
+  standoffDims,
+  stockLengths,
+  washerDims,
+  washerPrice,
+  type Grade,
+  type HeadType,
+  type NutType,
+  type WasherType,
+} from "./fasteners";
 import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
 import { MACHINE_LIBRARY } from "../machine/library";
 import { SPRING_WIRE, springRate } from "./springs";
@@ -38,11 +67,11 @@ export interface CompDef {
   placement: Placement;
   solids: CompSolid[];
   fields: LocalFields;
-  fastener?: { headTop: V3; outward: V3; key: number; headD: number; size: string };
+  fastener?: { headTop: V3; outward: V3; key: number; headD: number; size: string; tool?: string; toolD?: number; head?: string; length?: number; grade?: string; load?: number; shear?: number };
   gear?: { m: number; z: number; width: number; pa: number; bore: number };
   bearing?: { code: string; bore: number; od: number; width: number; dynamicLoadN: number };
   spring?: Omit<SpringInfo, "center" | "axis">;
-  bom: { description: string; standard?: string; catalogId?: string; length?: number };
+  bom: { description: string; standard?: string; catalogId?: string; length?: number; price?: number; priceNote?: string; search?: string; key?: string };
   /** catalog-backed purchasable part */
   catalog?: { id: string; length?: number; travel?: number };
   /** soldered to a circuit board (place it with on: board): footprint, value and reference prefix */
@@ -67,7 +96,29 @@ export interface LibArgs {
   thread(name: string, def?: string): ThreadSpec;
   list2(name: string): V2[] | undefined;
   has(name: string): boolean;
+  /** the fields of an object passed for this argument (a fastener chosen by calc.fastener) */
+  obj?(name: string): Record<string, unknown> | undefined;
 }
+
+/** A fastener chosen by calc.fastener(), when one is passed as the size: lib.screw(joint). */
+function chosen(a: LibArgs): Record<string, unknown> | undefined {
+  const f = a.obj?.("size");
+  return f && typeof f.size === "string" && typeof f.head === "string" ? f : undefined;
+}
+
+function gradeArg(a: LibArgs, def: Grade, allowed?: readonly Grade[]): Grade {
+  const raw = a.has("grade") ? a.str("grade") : def;
+  const g = gradeFrom(raw);
+  if (!g) throw new Error(`grade: should be one of ${GRADE_IDS.map((x) => `"${x}"`).join(", ")} (got "${raw}")`);
+  if (allowed && !allowed.includes(g)) throw new Error(`grade: "${g}" is not made in this form; use ${allowed.map((x) => `"${x}"`).join(", ")}`);
+  return g;
+}
+
+/** hardware is sold in packs: the parts list shows the price of one */
+const PACK_NOTE = "typical price each, bought in a pack";
+/** Nuts and washers are not graded like screws: plain steel is just zinc plated. */
+const partGrade = (g: Grade) => (g === "4.8" || g === "8.8" || g === "10.9" || g === "12.9" ? "steel, zinc plated" : GRADES[g].label);
+const searchGrade = (g: Grade) => (g === "A2-70" ? "stainless" : g === "A4-80" ? "316 stainless" : g === "brass" || g === "nylon" ? g : "zinc plated");
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -75,7 +126,6 @@ const ZN: V3 = [0, 0, -1];
 
 const STEEL = "#8b929c";
 const fmt = (n: number) => String(Math.round(n * 100) / 100);
-const DARK_STEEL = "#3b4048";
 const BRASS = "#c9a24b";
 
 export interface LibEntry {
@@ -140,81 +190,187 @@ export const LIBRARY: Record<string, LibEntry> = {
   },
 
   screw: {
-    signature: "lib.screw(M3, 12) { at: seat_point, axis: -Z }",
-    doc: "ISO 4762 socket head cap screw. Args: size (M2 M2_5 M3 M4 M5 M6), length. `at` is where the underside of the head seats, `axis` points along the shank into the material. Fields: seat, tip, head_top, axis, length. Fastener access is checked automatically.",
+    signature: 'lib.screw(M3, 12, head: "socket", grade: "A2-70", load: 0, shear: 0) { at: seat_point, axis: -Z }',
+    doc: `Machine screw from the fastener catalogue. Args: size (M1.6 to M20 as M3, M2_5…, or inch sizes as text: "#4-40", "#6-32", "#8-32", "#10-24", "#10-32", "1/4-20", "5/16-18", "3/8-16", "1/2-13"), length (mm; for a countersunk head it includes the head), head, grade, load (tension it carries in use, N each), shear (N each). Or pass a fastener chosen by calc.fastener as the size: lib.screw(joint) takes its size, length, head, grade and load. head: ${HEAD_TYPES.map((h) => `"${h}" (${HEADS[h].standard})`).join(", ")}. grade: "12.9" (black steel, the socket default), "A2-70" (stainless, most other heads' default), "A4-80" (marine), "8.8", "10.9", "4.8", "brass", "nylon". \`at\` is where the underside of the head seats (the surface, for a countersunk head; the top of a set screw), \`axis\` points along the shank into the material. Fields: seat, tip, head_top, axis, length, size, head, head_d, head_h, key. Tool access, thread engagement and (with load:) strength are checked automatically; the parts list gets its price and where to buy.`,
+    params: ["size", "length", "head", "grade", "load", "shear"],
     make(a) {
-      const t = a.thread("size", "M3");
-      const L = a.num("length", 10);
-      const b = 2 * t.d + 12;
-      const socket = hexPoints(t.key);
-      const recipe: PartRecipe = {
-        base: { t: "cyl", d: t.head_d, h: t.head_h, at: [0, 0, -t.head_h], dir: ZP },
-        ops: [
-          { op: "fillet", r: Math.min(0.4, t.head_h * 0.15), edges: "bottom" },
-          { op: "cut", shape: { t: "prism", pts: socket, h: t.head_h * 0.6, at: [0, 0, -t.head_h - 0.01], dir: ZP, rot: 0 } },
-          ...(L > b ? [{ op: "add" as const, shape: { t: "cyl" as const, d: t.tap, h: L - b + 0.01, at: [0, 0, -0.01] as V3, dir: ZP } }] : []),
-          // the thread length (b = 2d + 12, or the whole shank): a plain tap-size cylinder in checks, the real ISO thread in detail builds
-          { op: "add", shape: { t: "thread", spec: isoThread(t), length: L > b ? b : L + 0.01, at: [0, 0, L > b ? L - b : -0.01], dir: ZP, internal: false, lead: 0, fastD: t.tap } },
-        ],
-      };
+      const c = chosen(a);
+      const t = c ? threadSpec(String(c.size))! : a.thread("size", "M3");
+      const head = (a.has("head") ? a.str("head") : typeof c?.head === "string" ? c.head : "socket") as HeadType;
+      const hd = HEAD_TYPES.includes(head) ? headDims(head, t) : null;
+      if (!HEAD_TYPES.includes(head)) throw new Error(`head: should be one of ${HEAD_TYPES.map((h) => `"${h}"`).join(", ")}`);
+      if (!hd) throw new Error(`${HEADS[head].noun} is not made in ${t.name}. ${t.name} comes as ${headsFor(t).map((h) => `"${h}"`).join(", ")}`);
+      const L = a.has("length") ? a.num("length") : typeof c?.length === "number" ? c.length : 10;
+      if (!(L > 0)) throw new Error("length must be greater than 0");
+      const grade = gradeArg(a, typeof c?.grade === "string" ? (c.grade as Grade) : HEADS[head].grades[0], HEADS[head].grades);
+      const load = a.has("load") ? a.num("load") : typeof c?.load_each === "number" ? c.load_each : 0;
+      const shear = a.has("shear") ? a.num("shear") : typeof c?.shear_each === "number" ? c.shear_each : 0;
+      const lengths = stockLengths(head, t);
+      const stocked = lengths.some((x) => Math.abs(x - L) < 0.05);
+      const g = GRADES[grade];
+      const flat = head === "flat";
+      const set = head === "set";
+      // the shank starts under the head (in the material for a countersunk head)
+      const z0 = flat ? hd.h : 0;
+      const shank = L - z0;
+      if (shank <= 0.5) throw new Error(`A ${t.name} countersunk screw is at least ${Math.ceil(hd.h + 1)} mm long: its length includes the ${hd.h} mm head`);
+      // socket and low heads are threaded b = 2d + 12 from the tip when longer than that; the rest are fully threaded
+      const b = head === "socket" || head === "low" ? 2 * t.d + 12 : shank;
+      const threadLen = shank > b ? b : shank + 0.01;
+      const ops: PartRecipe["ops"] = [];
+      let base: ShapeRecipe;
+      const socket = (key: number, depth: number, z: number) => ({ op: "cut" as const, shape: { t: "prism" as const, pts: hexPoints(key), h: depth, at: [0, 0, z - 0.01] as V3, dir: ZP, rot: 0 } });
+      switch (head) {
+        case "socket":
+        case "low":
+          base = { t: "cyl", d: hd.d, h: hd.h, at: [0, 0, -hd.h], dir: ZP };
+          ops.push({ op: "fillet", r: Math.min(0.4, hd.h * 0.15), edges: "bottom" }, socket(hd.key, hd.h * 0.6, -hd.h));
+          break;
+        case "button":
+          base = { t: "revolve", pts: [[0, 0], [hd.d / 2, 0], [hd.d / 2, -hd.h * 0.25], [hd.d * 0.38, -hd.h * 0.8], [hd.d * 0.2, -hd.h], [0, -hd.h]], at: Z0, dir: ZP };
+          ops.push(socket(hd.key, hd.h * 0.65, -hd.h));
+          break;
+        case "pan":
+        case "forming":
+          base = { t: "revolve", pts: [[0, 0], [hd.d / 2, 0], [hd.d / 2, -hd.h * 0.55], [hd.d * 0.4, -hd.h * 0.92], [hd.d * 0.25, -hd.h], [0, -hd.h]], at: Z0, dir: ZP };
+          // Torx recess, drawn as a six-lobed hexagon
+          ops.push(socket(hd.d * 0.32, hd.h * 0.55, -hd.h));
+          break;
+        case "flat":
+          base = { t: "cone", d1: hd.d, d2: t.d, h: hd.h, at: Z0, dir: ZP };
+          ops.push(socket(hd.key, Math.min(hd.h * 0.9, hd.key), 0));
+          break;
+        case "hex":
+          base = { t: "prism", pts: hexPoints(hd.af!), h: hd.h, at: [0, 0, -hd.h], dir: ZP, rot: 0 };
+          ops.push({ op: "chamfer", r: Math.min(0.4, hd.af! * 0.04), edges: "bottom", cosmetic: true });
+          break;
+        case "set":
+          // headless: the thread is the whole screw
+          base = { t: "cyl", d: t.tap, h: 0.02, at: Z0, dir: ZP };
+          break;
+      }
+      if (!set && shank > b) ops.push({ op: "add", shape: { t: "cyl", d: t.tap, h: shank - b + 0.01, at: [0, 0, z0 - 0.01], dir: ZP } });
+      // the thread length: a plain tap-size cylinder in checks, the real thread in detail builds
+      ops.push({ op: "add", shape: { t: "thread", spec: isoThread(t), length: threadLen, at: [0, 0, shank > b ? L - b : z0 - 0.01], dir: ZP, internal: false, lead: 0, fastD: t.tap } });
+      if (set) ops.push(socket(hd.key, Math.min(L * 0.6, hd.key * 1.3), 0));
+      const recipe: PartRecipe = { base: base!, ops };
+      const spec = { thread: t, length: L, head, grade };
+      const short = `${t.name}×${fmt(L)}${head === "socket" ? "" : ` ${head}`}`;
+      const price = screwPrice(t, L, head, grade);
       return {
         kind: "screw",
-        label: `${t.name}×${L} SHCS`,
+        label: `${short} ${head === "socket" ? "SHCS" : HEADS[head].label}`,
         placement: "axis",
-        solids: [{ suffix: "", label: `${t.name}×${L}`, recipe, color: DARK_STEEL, material: "Steel", finish: "black-oxide" }],
+        solids: [{ suffix: "", label: short, recipe, color: g.color, material: g.material, finish: g.finish }],
         fields: {
-          scalars: { length: L, size: t.name, head_d: t.head_d, head_h: t.head_h },
-          points: { seat: Z0, tip: [0, 0, L], head_top: [0, 0, -t.head_h] },
+          scalars: { length: L, size: t.name, head, grade, head_d: hd.d, head_h: hd.h, key: hd.key, load, shear },
+          points: { seat: Z0, tip: [0, 0, L], head_top: [0, 0, flat || set ? 0 : -hd.h] },
           dirs: { axis: ZP },
         },
-        fastener: { headTop: [0, 0, -t.head_h], outward: ZN, key: t.key, headD: t.head_d, size: t.name },
-        bom: { description: `Socket head cap screw ${t.name}×${L}`, standard: "ISO 4762" },
+        fastener: { headTop: [0, 0, flat || set ? 0 : -hd.h], outward: ZN, key: hd.key || hd.toolD - 1.5, headD: hd.d, size: t.name, tool: hd.drive, toolD: hd.toolD, head, length: L, grade, load, shear },
+        bom: { description: screwDescription(spec), standard: screwStandard(spec), price, priceNote: `${PACK_NOTE}${stocked ? "" : `; ${fmt(L)} mm is not a stocked length (${lengths.filter((x) => x < L).slice(-1)[0] ?? "-"} or ${lengths.find((x) => x > L) ?? "-"} are)`}`, search: screwSearch(spec), key: screwKey(spec) },
       };
     },
   },
 
   nut: {
-    signature: "lib.nut(M3) { at: (x, y, z), axis: Z }",
-    doc: "ISO 4032 hex nut. `at` is the centre of one face, it extends along `axis`. Fields: at, end, axis, af, height.",
+    signature: 'lib.nut(M3, type: "hex", grade: "A2-70") { at: (x, y, z), axis: Z }',
+    doc: `Nut. type: "hex" (ISO 4032), "nyloc" (nylon-insert lock nut, ISO 10511: for anything that shakes), "thin" (ISO 4035 jam nut), "flange" (DIN 6923, M5 to M12: spreads the load without a washer), "square" (DIN 562: a captive nut slid into a printed slot), "tslot20" (drop-in T-nut for 2020 profile slots, M3 to M5). Or pass a fastener from calc.fastener: lib.nut(joint). \`at\` is the centre of one face, it extends along \`axis\`. Fields: at, end, axis, af, height.`,
+    params: ["size", "type", "grade"],
     make(a) {
-      const t = a.thread("size", "M3");
-      const recipe: PartRecipe = {
-        base: { t: "prism", pts: hexPoints(t.nut_af), h: t.nut_h, at: Z0, dir: ZP, rot: 0 },
-        ops: [
-          // detailed builds break the corners on both faces; the hole is a plain tap-size bore in checks and the real ISO thread in detail
-          { op: "chamfer", r: Math.min(0.4, t.nut_af * 0.04), edges: { s: "or", a: ["top", "bottom"] }, cosmetic: true },
-          { op: "cut", shape: { t: "thread", spec: isoThread(t), length: t.nut_h + 0.2, at: [0, 0, -0.1], dir: ZP, internal: true, lead: 0, fastD: t.tap } },
-        ],
-      };
+      const c = chosen(a);
+      const t = c ? threadSpec(String(c.size))! : a.thread("size", "M3");
+      const type = (a.has("type") ? a.str("type") : typeof c?.nut === "string" && c.nut ? c.nut : "hex") as NutType;
+      if (!NUT_TYPES.includes(type)) throw new Error(`type: should be one of ${NUT_TYPES.map((x) => `"${x}"`).join(", ")}`);
+      const n = nutDims(type, t);
+      if (!n) throw new Error(`A ${type} nut is not made in ${t.name}`);
+      const grade = gradeArg(a, typeof c?.grade === "string" ? (c.grade as Grade) : "8.8");
+      const g = GRADES[grade];
+      const threadCut = { op: "cut" as const, shape: { t: "thread" as const, spec: isoThread(t), length: n.h + 0.2, at: [0, 0, -0.1] as V3, dir: ZP, internal: true, lead: 0, fastD: t.tap } };
+      let recipe: PartRecipe;
+      switch (type) {
+        case "square":
+          recipe = { base: { t: "box", w: n.af, d: n.af, h: n.h, at: Z0, r: 0 }, ops: [threadCut] };
+          break;
+        case "tslot20":
+          // a neck that sits in the 6 mm slot opening above a body under the slot's lips
+          recipe = { base: { t: "box", w: 5.8, d: 11, h: 1.8, at: Z0, r: 0 }, ops: [{ op: "add", shape: { t: "box", w: 10, d: 11, h: 3.6, at: [0, 0, 1.8], r: 0.5 } }, { ...threadCut, shape: { ...threadCut.shape, length: 5.6 } }] };
+          break;
+        case "flange":
+          recipe = { base: { t: "cyl", d: n.flange!, h: n.h * 0.2, at: Z0, dir: ZP }, ops: [{ op: "add", shape: { t: "prism", pts: hexPoints(n.af), h: n.h * 0.8 + 0.01, at: [0, 0, n.h * 0.2 - 0.01], dir: ZP, rot: 0 } }, threadCut] };
+          break;
+        case "nyloc":
+          recipe = { base: { t: "prism", pts: hexPoints(n.af), h: n.h * 0.72, at: Z0, dir: ZP, rot: 0 }, ops: [{ op: "add", shape: { t: "cyl", d: n.af * 0.95, h: n.h * 0.28 + 0.01, at: [0, 0, n.h * 0.72 - 0.01], dir: ZP } }, threadCut] };
+          break;
+        default:
+          recipe = {
+            base: { t: "prism", pts: hexPoints(n.af), h: n.h, at: Z0, dir: ZP, rot: 0 },
+            // detailed builds break the corners on both faces; the hole is a plain tap-size bore in checks and the real thread in detail
+            ops: [{ op: "chamfer", r: Math.min(0.4, n.af * 0.04), edges: { s: "or", a: ["top", "bottom"] }, cosmetic: true }, threadCut],
+          };
+      }
+      const price = nutPrice(type, t, grade);
+      const label = `${t.name} ${type === "hex" ? "nut" : type === "tslot20" ? "T-nut" : `${type} nut`}`;
       return {
         kind: "nut",
-        label: `${t.name} nut`,
+        label,
         placement: "axis",
-        solids: [{ suffix: "", label: `${t.name} nut`, recipe, color: "#c9d1dc", material: "Steel", finish: "zinc-plated" }],
-        fields: { scalars: { af: t.nut_af, height: t.nut_h }, points: { at: Z0, end: [0, 0, t.nut_h] }, dirs: { axis: ZP } },
-        bom: { description: `Hex nut ${t.name}`, standard: "ISO 4032" },
+        solids: [{ suffix: "", label, recipe, color: type === "tslot20" ? "#c9d1dc" : g.color, material: g.material, finish: grade === "A2-70" || grade === "A4-80" ? "machined" : "zinc-plated" }],
+        fields: { scalars: { af: n.af, height: n.h, type }, points: { at: Z0, end: [0, 0, type === "tslot20" ? 5.4 : n.h] }, dirs: { axis: ZP } },
+        bom: { description: `${n.label} ${t.name}, ${type === "tslot20" ? "steel, zinc plated" : partGrade(grade)}`, standard: n.standard, price, priceNote: PACK_NOTE, search: `${t.name} ${n.label.toLowerCase()} ${searchGrade(grade)}`, key: `nut|${t.name}|${type}|${grade}` },
+      };
+    },
+  },
+
+  washer: {
+    signature: 'lib.washer(M3, type: "flat") { at: (x, y, z), axis: Z }',
+    doc: 'Flat washer: type "flat" (ISO 7089, or SAE for inch sizes) or "large" (ISO 7093, about 3 × the screw size across: spreads a screw\'s or nut\'s load on plastic and wood, and covers slotted holes). Or pass a fastener from calc.fastener: lib.washer(joint). `at` is the centre of one face, it extends along `axis`. Fields: at, end, axis, id, od, thickness.',
+    params: ["size", "type", "grade"],
+    make(a) {
+      const c = chosen(a);
+      const t = c ? threadSpec(String(c.size))! : a.thread("size", "M3");
+      const type = (a.has("type") ? a.str("type") : typeof c?.washer === "string" && c.washer ? c.washer : "flat") as WasherType;
+      if (type !== "flat" && type !== "large") throw new Error('type: should be "flat" or "large"');
+      const w = washerDims(type, t);
+      if (!w) throw new Error(`A ${type} washer is not listed for ${t.name}`);
+      const grade = gradeArg(a, typeof c?.grade === "string" ? (c.grade as Grade) : "8.8");
+      const g = GRADES[grade];
+      const price = washerPrice(type, t, grade);
+      const label = `${t.name} ${type === "large" ? "large " : ""}washer`;
+      return {
+        kind: "washer",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe: { base: { t: "tube", od: w.od, id: w.id, h: w.h, at: Z0, dir: ZP }, ops: [] }, color: g.color, material: g.material, finish: grade === "A2-70" || grade === "A4-80" ? "machined" : "zinc-plated" }],
+        fields: { scalars: { id: w.id, od: w.od, thickness: w.h }, points: { at: Z0, end: [0, 0, w.h] }, dirs: { axis: ZP } },
+        bom: { description: `${w.label} ${t.name} (${fmt(w.id)} × ${fmt(w.od)} × ${fmt(w.h)} mm), ${partGrade(grade)}`, standard: w.standard, price, priceNote: PACK_NOTE, search: `${t.name} ${type === "large" ? "large flat washer" : "flat washer"} ${searchGrade(grade)}`, key: `washer|${t.name}|${type}|${grade}` },
       };
     },
   },
 
   insert: {
-    signature: "lib.insert(M3) { at: top_point, axis: -Z }",
-    doc: "Brass heat-set threaded insert. `at` is the top face, it extends along `axis` into the material. Model the receiving hole with hole(M3, fit: \"insert\"). Fields: at, bottom, axis, length, od.",
+    signature: "lib.insert(M3, length: 5.7) { at: top_point, axis: -Z }",
+    doc: "Brass heat-set threaded insert (M2 to M6). `at` is the top face, it extends along `axis` into the material. Model the receiving hole with hole(M3, fit: \"insert\") at least 1 mm deeper than the insert. length: a short or long variant (same hole). Or pass a fastener from calc.fastener: lib.insert(joint). Fields: at, bottom, axis, length, od.",
+    params: ["size", "length"],
     make(a) {
-      const t = a.thread("size", "M3");
+      const c = chosen(a);
+      const t = c ? threadSpec(String(c.size))! : a.thread("size", "M3");
+      const ins = insertDims(t, a.has("length") ? a.num("length") : undefined);
+      if (!ins) throw new Error(`There is no common heat-set insert for ${t.name} (M2 to M6): use a nut, a tapped hole or a thread-forming screw`);
       // modelled in its installed state: the knurl is melted into the hole wall
-      const od = t.insert_d;
+      const od = ins.hole;
       const recipe: PartRecipe = {
-        base: { t: "tube", od, id: t.tap, h: t.insert_l, at: Z0, dir: ZP },
+        base: { t: "tube", od, id: t.tap, h: ins.length, at: Z0, dir: ZP },
         ops: [],
       };
+      const price = insertPrice(t);
       return {
         kind: "insert",
         label: `${t.name} heat-set insert`,
         placement: "axis",
         solids: [{ suffix: "", label: `${t.name} insert`, recipe, color: BRASS, material: "Brass", finish: "machined" }],
-        fields: { scalars: { length: t.insert_l, od }, points: { at: Z0, bottom: [0, 0, t.insert_l] }, dirs: { axis: ZP } },
-        bom: { description: `Heat-set insert ${t.name}×${t.insert_l}` },
+        fields: { scalars: { length: ins.length, od, hole_d: ins.hole }, points: { at: Z0, bottom: [0, 0, ins.length] }, dirs: { axis: ZP } },
+        bom: { description: `Heat-set insert ${t.name}×${fmt(ins.length)}, brass (hole Ø${fmt(ins.hole)} mm)`, price, priceNote: PACK_NOTE, search: `${t.name} heat set insert brass ${fmt(ins.length)}mm`, key: `insert|${t.name}|${fmt(ins.length)}` },
       };
     },
   },
@@ -479,6 +635,64 @@ export const LIBRARY: Record<string, LibEntry> = {
         solids: [{ suffix: "", label: `Dowel ${d}×${L}`, recipe, color: STEEL, material: "Steel", finish: "polished" }],
         fields: { scalars: { d, length: L }, points: { at: Z0, tip: [0, 0, L] }, dirs: { axis: ZP } },
         bom: { description: `Dowel pin ${d}×${L}`, standard: "ISO 8734" },
+      };
+    },
+  },
+
+  standoff: {
+    signature: 'lib.standoff(M3, 10, type: "FF", grade: "brass") { at: bottom_point, axis: Z }',
+    doc: `Hex standoff (spacer) that holds a circuit board or panel off a base: M2, M2_5, M3 or M4, length ${STANDOFF_LENGTHS.join(", ")} mm. type: "FF" (threaded inside at both ends: a screw from each side) or "MF" (a male stud under \`at\` screws into the base, a screw from above). grade: "brass" (default), "nylon" (insulating) or "A2-70". \`at\` is the centre of the bottom face, it extends along \`axis\`. Fields: top, bottom, stud_tip, length, af.`,
+    params: ["size", "length", "type", "grade"],
+    make(a) {
+      const t = a.thread("size", "M3");
+      const L = a.num("length", 10);
+      const type = a.str("type", "FF");
+      if (type !== "FF" && type !== "MF") throw new Error('type: should be "FF" (female both ends) or "MF" (male stud and female)');
+      const sd = standoffDims(t);
+      if (!sd) throw new Error(`Standoffs here come in M2, M2_5, M3 and M4, not ${t.name}`);
+      if (!STANDOFF_LENGTHS.some((x) => Math.abs(x - L) < 0.05)) throw new Error(`Standoffs come in ${STANDOFF_LENGTHS.join(", ")} mm`);
+      const grade = gradeArg(a, "brass", ["brass", "nylon", "A2-70"]);
+      const g = GRADES[grade];
+      const depth = Math.min(L / 2 - 0.3, 1.5 * t.d + 1);
+      const ops: PartRecipe["ops"] = [{ op: "cut", shape: { t: "thread", spec: isoThread(t), length: depth + 0.1, at: [0, 0, L - depth], dir: ZP, internal: true, lead: 0, fastD: t.tap } }];
+      if (type === "FF") ops.push({ op: "cut", shape: { t: "thread", spec: isoThread(t), length: depth + 0.1, at: [0, 0, -0.1], dir: ZP, internal: true, lead: 0, fastD: t.tap } });
+      else ops.push({ op: "add", shape: { t: "thread", spec: isoThread(t), length: sd.stud + 0.01, at: [0, 0, -sd.stud], dir: ZP, internal: false, lead: 0, fastD: t.tap } });
+      const price = Math.round((0.12 + 0.008 * L) * GRADES[grade].priceFactor * 100) / 100;
+      const label = `${t.name}×${fmt(L)} standoff`;
+      return {
+        kind: "standoff",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe: { base: { t: "prism", pts: hexPoints(sd.af), h: L, at: Z0, dir: ZP, rot: 0 }, ops }, color: g.color, material: g.material, finish: grade === "nylon" ? "matte" : "machined" }],
+        fields: { scalars: { length: L, af: sd.af, type }, points: { at: Z0, bottom: Z0, top: [0, 0, L], stud_tip: [0, 0, type === "MF" ? -sd.stud : 0] }, dirs: { axis: ZP } },
+        bom: { description: `Hex standoff ${t.name} × ${fmt(L)} mm, ${type === "FF" ? "female–female" : `male–female (${sd.stud} mm stud)`}, ${g.label}`, price, priceNote: PACK_NOTE, search: `${t.name} ${fmt(L)}mm ${type === "FF" ? "female female" : "male female"} hex standoff ${grade}`, key: `standoff|${t.name}|${fmt(L)}|${type}|${grade}` },
+      };
+    },
+  },
+
+  circlip: {
+    signature: "lib.circlip(8) { at: groove_center, axis: X }",
+    doc: `External retaining ring (DIN 471) that stops a bearing, gear or wheel sliding off a shaft. Arg: shaft (diameter, mm: ${Object.keys(CIRCLIPS).join(", ")}). \`at\` is the centre of the groove on the shaft's axis, \`axis\` along the shaft. Cut its groove into the shaft part with \`cut clip.groove\`. Fields: groove (cutting tool), groove_d, groove_w, at, axis.`,
+    positional: ["shaft"],
+    params: ["shaft"],
+    make(a) {
+      const d = a.num("shaft", 8);
+      const r = CIRCLIPS[d];
+      if (!r) throw new Error(`DIN 471 retaining rings here fit shafts of ${Object.keys(CIRCLIPS).join(", ")} mm`);
+      const label = `Retaining ring ${d} mm`;
+      const price = Math.round((0.04 + 0.006 * d) * 100) / 100;
+      return {
+        kind: "circlip",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe: { base: { t: "tube", od: d + 2 * r.a * 0.75, id: r.groove, h: r.s, at: [0, 0, -r.s / 2], dir: ZP }, ops: [] }, color: "#3b4048", material: "Steel", finish: "black-oxide" }],
+        fields: {
+          scalars: { groove_d: r.groove, groove_w: r.m, shaft: d },
+          points: { at: Z0 },
+          dirs: { axis: ZP },
+          shapes: { groove: { t: "tube", od: d + 2, id: r.groove, h: r.m, at: [0, 0, -r.m / 2], dir: ZP } },
+        },
+        bom: { description: `Retaining ring for ${d} mm shaft (groove Ø${fmt(r.groove)} × ${fmt(r.m)} mm), spring steel`, standard: "DIN 471", price, priceNote: PACK_NOTE, search: `DIN 471 ${d}mm external circlip`, key: `circlip|${d}` },
       };
     },
   },

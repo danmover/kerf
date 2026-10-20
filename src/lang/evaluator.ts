@@ -60,7 +60,10 @@ const POSITIONAL: Record<string, string[]> = {
   bearing: ["code"],
   screw: ["size", "length"],
   nut: ["size"],
+  washer: ["size"],
   insert: ["size"],
+  standoff: ["size", "length"],
+  circlip: ["shaft"],
   spur_gear: ["m", "z", "width", "bore"],
   nema17: ["length"],
   pcb: ["w", "d", "t"],
@@ -71,9 +74,12 @@ const POSITIONAL: Record<string, string[]> = {
 };
 const LIB_ARGS: Record<string, string[]> = {
   bearing: ["code"],
-  screw: ["size", "length"],
-  nut: ["size"],
-  insert: ["size"],
+  screw: ["size", "length", "head", "grade", "load", "shear"],
+  nut: ["size", "type", "grade"],
+  washer: ["size", "type", "grade"],
+  insert: ["size", "length"],
+  standoff: ["size", "length", "type", "grade"],
+  circlip: ["shaft"],
   spur_gear: ["m", "z", "width", "bore", "hub_d", "hub_l", "pa", "backlash"],
   nema17: ["length"],
   pcb: ["w", "d", "t", "hole_inset", "hole_d", "holes"],
@@ -978,6 +984,10 @@ class Evaluator {
       thread: (n, d) => toThread(args.value(n) ?? d, ctx, `lib.${key}(): "${n}"`),
       list2: (n) => (args.has(n) ? args.points2(n) : undefined),
       has: (n) => args.has(n),
+      obj: (n) => {
+        const v = args.value(n);
+        return v instanceof Obj ? v.fields : undefined;
+      },
     };
     let def: CompDef;
     let belt: BeltDef | undefined;
@@ -1206,7 +1216,7 @@ class Evaluator {
           ...(band && !sd.suffix ? { band } : {}),
           fastener:
             def.fastener && !sd.suffix
-              ? { headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)), key: def.fastener.key, headD: def.fastener.headD, size: def.fastener.size }
+              ? { ...def.fastener, headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)) }
               : undefined,
           bom: (imported ? sdIdx > 0 : sd.suffix) ? undefined : def.bom,
           imported: imported

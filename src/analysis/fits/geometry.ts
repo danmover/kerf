@@ -6,7 +6,7 @@
 import type { EvalPart } from "../../core/model";
 import type { PartRecipe, ShapeRecipe, V2, V3, Xform } from "../../kernel/recipe";
 import { applyXforms, applyXformsToDir, vadd, vdot, vnorm, vscale, vsub } from "../../kernel/recipe";
-import { THREADS, type ThreadSpec } from "../../library/standards";
+import { ALL_THREADS, threadSpec, type ThreadSpec } from "../../library/standards";
 
 export type CylRole = "plain" | "bearing-od" | "bearing-bore" | "screw" | "head" | "insert" | "gear-bore" | "thread";
 
@@ -32,8 +32,7 @@ const EPS = 1e-6;
 
 /** Thread spec for a name such as "M3" or "M2.5". */
 export function threadByName(name: string | undefined): ThreadSpec | undefined {
-  if (!name) return undefined;
-  return THREADS[name] ?? THREADS[name.replace(".", "_")] ?? Object.values(THREADS).find((t) => t.name === name);
+  return threadSpec(name);
 }
 
 /** The end point of a cylinder. */
@@ -221,14 +220,14 @@ function shapeCyls(s: ShapeRecipe, cut: boolean, out: LocalCyl[], bounds: Box | 
         at = vadd(s.at, vscale(axis, span[0]));
         length = span[1] - span[0];
       }
-      const thread = threadByName(s.threadName) ?? (s.thread ? Object.values(THREADS).find((t) => Math.abs(t.d - s.thread!.d) < 1e-6) : undefined);
+      const thread = threadByName(s.threadName) ?? (s.thread ? ALL_THREADS.find((t) => Math.abs(t.d - s.thread!.d) < 1e-6) : undefined);
       const threaded = !!s.thread || s.fit === "thread" || s.fit === "tap" || s.fit === "insert";
       out.push({ side: "hole", d: s.d, at, axis, length, role: threaded ? "thread" : "plain", thread, holeFit: s.fit });
       if (s.cbore) out.push({ side: "hole", d: s.cbore[0], at: s.at, axis, length: s.cbore[1], role: "plain", thread, holeFit: "cbore" });
       return;
     }
     case "thread": {
-      const thread = Object.values(THREADS).find((t) => Math.abs(t.d - s.spec.d) < 1e-6 && Math.abs(t.pitch - s.spec.pitch) < 1e-6);
+      const thread = ALL_THREADS.find((t) => Math.abs(t.d - s.spec.d) < 1e-6 && Math.abs(t.pitch - s.spec.pitch) < 1e-6);
       if (s.internal || cut) out.push({ side: "hole", d: s.spec.d, at: s.at, axis: vnorm(s.dir), length: s.length, role: "thread", thread });
       else out.push({ side: "shaft", d: s.spec.d, at: s.at, axis: vnorm(s.dir), length: s.length, role: "thread", thread });
       return;
@@ -280,13 +279,15 @@ export function partCylinders(p: EvalPart): Cyl[] {
     const local: LocalCyl[] = [];
     if (p.recipe.base) shapeCyls(p.recipe.base, false, local, null);
     for (const op of p.recipe.ops) if (op.op === "add") shapeCyls(op.shape, false, local, null);
+    // the shank and thread start at the seat (a hair above it, to fuse with the head); the head is above the seat
+    const SEAT = 0.05;
     let shank = 0;
     for (const c of local) {
       const end = c.at[2] + c.axis[2] * c.length;
-      if (c.at[2] >= -EPS && c.side === "shaft") shank = Math.max(shank, end);
+      if (c.at[2] >= -SEAT && c.side === "shaft") shank = Math.max(shank, end);
     }
     if (t && shank > 0) out.push(toWorld(p, { side: "shaft", d: t.d, at: [0, 0, 0], axis: [0, 0, 1], length: shank, role: "screw", thread: t }));
-    const head = local.find((c) => c.at[2] < -EPS && c.side === "shaft");
+    const head = local.find((c) => c.at[2] < -SEAT && c.side === "shaft");
     if (head) out.push(toWorld(p, { ...head, role: "head", thread: t }));
     return out;
   }

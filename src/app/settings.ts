@@ -80,6 +80,8 @@ export interface Settings {
   processAccess: Record<string, "own" | "order" | "none">;
   /** what an hour of your own hands-on time is worth in cost estimates, US dollars */
   labourRate: number;
+  /** parts the user already has, one per line as they would say it ("M3x10 socket", "M3 nut", "17HS4401", "Arduino Nano"): preferred when they fit, and not counted in the cost */
+  onHand: string[];
   /** your own machine and shop profiles (copies of presets or your own), see mfg/machines */
   machines: MachineProfile[];
   /** the machine each process's parts are checked against, by process id (a preset's or your machine's id) */
@@ -130,6 +132,7 @@ const DEFAULTS: Settings = {
   showCost: true,
   processAccess: {},
   labourRate: 20,
+  onHand: [],
   machines: [],
   machineFor: {},
   rev: SETTINGS_REV,
@@ -183,6 +186,7 @@ function load(): Settings {
     }
     out.processAccess = access;
     out.labourRate = Math.min(500, Math.max(0, Number.isFinite(out.labourRate) ? out.labourRate : DEFAULTS.labourRate));
+    out.onHand = cleanOnHand(out.onHand);
     out.machines = sanitizeMachines(out.machines);
     out.machineFor = sanitizeMachineFor(out.machineFor) as Record<string, string>;
     // the photoreal view starts off on every load: a GPU that hangs while path tracing must not be sent back into it
@@ -191,6 +195,19 @@ function load(): Settings {
   } catch {
     return DEFAULTS;
   }
+}
+
+/** The on-hand list as stored: short lines of text, no blanks or repeats, a few hundred at most. */
+export function cleanOnHand(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== "string") continue;
+    const t = x.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+    if (t && !out.some((o) => o.toLowerCase() === t.toLowerCase())) out.push(t);
+    if (out.length >= 300) break;
+  }
+  return out;
 }
 
 export const useSettings = create<Settings>(() => load());
