@@ -2,7 +2,8 @@
 // app from Kerf's own kerf://app origin, with the security headers it has on
 // the web. What the desktop adds is control a browser tab doesn't give:
 // Kerf always gets the fast graphics card, its work doesn't slow down behind
-// other windows, and the graphics backend can be switched in Settings.
+// other windows, and the graphics backend can be switched in Settings. It can
+// also offer Kerf's design tools to the person's own Claude Code (desktop/mcp.ts).
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, session, shell, type IpcMainInvokeEvent, type WebContents } from "electron";
 import { mkdtempSync } from "node:fs";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import { HOST, ORIGIN, SCHEME, staticHandler } from "./serve.js";
 import { backendsFor, loadSettings, loadWindowState, saveSettings, saveWindowState, type GraphicsBackend } from "./settings.js";
 import { runSmokeTest } from "./smoke.js";
+import { newToken, startMcp, type RunningMcp } from "./mcp.js";
 
 const SMOKE = process.argv.includes("--smoke-test");
 // the smoke test starts from an empty profile and never touches real projects
@@ -87,9 +89,14 @@ function createWindow() {
     const b = w.getNormalBounds();
     saveWindowState(userData, { x: b.x, y: b.y, width: b.width, height: b.height, maximized: w.isMaximized() });
   });
-  w.on("closed", () => (win = null));
+  w.on("closed", () => {
+    win = null;
+    pageGone();
+  });
+  w.webContents.on("did-start-loading", pageGone);
   shortcuts(w.webContents);
   w.webContents.on("render-process-gone", (_e, d) => {
+    pageGone();
     if (d.reason === "clean-exit" || SMOKE) return;
     const choice = dialog.showMessageBoxSync(w, {
       type: "error",
@@ -205,6 +212,97 @@ function bridge() {
     app.relaunch();
     app.quit();
   });
+  ipcMain.handle("kerf:claude-code-info", (e) => {
+    fromKerf(e);
+    return claudeCodeInfo();
+  });
+  ipcMain.handle("kerf:set-claude-code", async (e, enabled: boolean) => {
+    fromKerf(e);
+    settings.claudeCode.enabled = enabled === true;
+    await stopClaudeCode();
+    if (settings.claudeCode.enabled) await startClaudeCode();
+    else saveSettings(userData, settings);
+    return claudeCodeInfo();
+  });
+  ipcMain.handle("kerf:claude-code-new-token", async (e) => {
+    fromKerf(e);
+    settings.claudeCode.token = newToken();
+    await stopClaudeCode();
+    if (settings.claudeCode.enabled) await startClaudeCode();
+    else saveSettings(userData, settings);
+    return claudeCodeInfo();
+  });
+  ipcMain.handle("kerf:mcp-ready", (e) => {
+    fromKerf(e);
+    pageReady = true;
+  });
+  ipcMain.handle("kerf:mcp-response", (e, r: { id: number; result?: unknown; error?: string }) => {
+    fromKerf(e);
+    const c = calls.get(r?.id);
+    if (!c) return;
+    if (r.error !== undefined) c.reject(new Error(String(r.error)));
+    else c.resolve(r.result);
+  });
+}
+
+// ---------- Kerf's tools for the person's own Claude Code ----------
+
+const MCP_INSTRUCTIONS =
+  "Kerf is the mechanical CAD app open on this computer. These tools read and change the design open in its window, and the person watches every change there live. Before you work on a design, call kerf_instructions once and follow it: it is Kerf's design guide and the reference for its design language. Start each task with get_design.";
+
+let mcp: RunningMcp | null = null;
+let mcpError = "";
+let pageReady = false;
+let nextCall = 1;
+const calls = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+/** Run a tools/list or tools/call in the page, where the design and its tools live. */
+function askPage(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
+  const wc = win?.webContents;
+  if (!wc || wc.isDestroyed()) return Promise.reject(new Error("Kerf's window is closed. Ask the person to open Kerf."));
+  if (!pageReady) return Promise.reject(new Error("Kerf is still starting. Try again in a few seconds."));
+  const id = nextCall++;
+  const onAbort = () => wc.isDestroyed() || wc.send("kerf:mcp-cancel", id);
+  signal.addEventListener("abort", onAbort, { once: true });
+  return new Promise<unknown>((resolve, reject) => {
+    calls.set(id, { resolve, reject });
+    wc.send("kerf:mcp-request", { id, method, params });
+  }).finally(() => {
+    calls.delete(id);
+    signal.removeEventListener("abort", onAbort);
+  });
+}
+
+/** A reload or crash drops whatever the page was running. */
+function pageGone() {
+  pageReady = false;
+  for (const c of calls.values()) c.reject(new Error("Kerf reloaded while running this. Call it again."));
+  calls.clear();
+}
+
+async function startClaudeCode() {
+  const cc = settings.claudeCode;
+  if (!cc.token) cc.token = newToken();
+  mcpError = "";
+  try {
+    mcp = await startMcp({ port: cc.port, token: cc.token, backend: { request: askPage, instructions: MCP_INSTRUCTIONS, version: app.getVersion() } });
+    // keep the port it found, so the command Claude Code saved keeps working
+    cc.port = mcp.port;
+  } catch (e) {
+    mcp = null;
+    mcpError = (e as Error).message;
+  }
+  saveSettings(userData, settings);
+}
+
+async function stopClaudeCode() {
+  await mcp?.close();
+  mcp = null;
+}
+
+function claudeCodeInfo() {
+  const cc = settings.claudeCode;
+  return { enabled: cc.enabled, running: !!mcp, url: mcp?.url ?? `http://127.0.0.1:${cc.port}/mcp`, token: cc.token, error: mcpError };
 }
 
 // ---------- start ----------
@@ -216,10 +314,13 @@ app.whenReady().then(() => {
   lockDown();
   bridge();
   createWindow();
+  if (settings.claudeCode.enabled && !SMOKE) void startClaudeCode();
   app.on("activate", () => {
     if (!BrowserWindow.getAllWindows().length) createWindow();
   });
 });
+
+app.on("will-quit", () => void stopClaudeCode());
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

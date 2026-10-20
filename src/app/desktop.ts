@@ -15,10 +15,28 @@ export interface DesktopInfo {
   backends: GraphicsBackend[];
 }
 
+/** Kerf's tools served to the person's own Claude Code (desktop/mcp.ts). */
+export interface ClaudeCodeInfo {
+  enabled: boolean;
+  running: boolean;
+  url: string;
+  token: string;
+  /** why the server could not start, e.g. every port taken */
+  error: string;
+}
+
+export interface ClaudeCodeBridge {
+  info(): Promise<ClaudeCodeInfo>;
+  setEnabled(on: boolean): Promise<ClaudeCodeInfo>;
+  newToken(): Promise<ClaudeCodeInfo>;
+  serve(page: { run(id: number, method: string, params: unknown): Promise<unknown>; cancel(id: number): void }): Promise<void>;
+}
+
 export interface DesktopBridge {
   info(): Promise<DesktopInfo>;
   setGraphics(b: GraphicsBackend): Promise<void>;
   relaunch(): Promise<void>;
+  claudeCode: ClaudeCodeBridge;
 }
 
 export function desktop(): DesktopBridge | null {

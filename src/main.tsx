@@ -19,3 +19,6 @@ createRoot(document.getElementById("root")!).render(
     <App />
   </StrictMode>,
 );
+
+// the desktop app can offer Kerf's design tools to the person's own Claude Code
+if ("kerfDesktop" in window) void import("./ai/claudeCode").then((m) => m.serveClaudeCode());

@@ -10,6 +10,8 @@ export type GraphicsBackend = "auto" | "d3d11" | "vulkan" | "gl";
 
 export interface DesktopSettings {
   graphics: GraphicsBackend;
+  /** Kerf's tools for the person's own Claude Code (desktop/mcp.ts): off until they turn it on in Settings → Claude */
+  claudeCode: { enabled: boolean; port: number; token: string };
 }
 
 export interface WindowState {
@@ -20,7 +22,7 @@ export interface WindowState {
   maximized: boolean;
 }
 
-const DEFAULTS: DesktopSettings = { graphics: "auto" };
+const DEFAULTS: DesktopSettings = { graphics: "auto", claudeCode: { enabled: false, port: 47615, token: "" } };
 
 /** Backends worth offering: only Windows has a real choice between them. */
 export function backendsFor(platform: NodeJS.Platform): GraphicsBackend[] {
@@ -44,6 +46,12 @@ function writeJson(file: string, v: unknown) {
 export function loadSettings(dir: string, platform: NodeJS.Platform): DesktopSettings {
   const s = { ...DEFAULTS, ...readJson<DesktopSettings>(join(dir, "desktop-settings.json")) };
   if (!backendsFor(platform).includes(s.graphics)) s.graphics = "auto";
+  const cc = (s.claudeCode ?? {}) as Partial<DesktopSettings["claudeCode"]>;
+  s.claudeCode = {
+    enabled: cc.enabled === true,
+    port: Number.isInteger(cc.port) && cc.port! >= 1024 && cc.port! < 65536 ? cc.port! : DEFAULTS.claudeCode.port,
+    token: typeof cc.token === "string" && cc.token.length >= 32 ? cc.token : "",
+  };
   return s;
 }
 
