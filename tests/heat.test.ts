@@ -71,7 +71,7 @@ describe("heat inside the box", () => {
   }, 120_000);
 
   it("warns when the printer's electronics box loses its fan, and says how much a fan brings it down", () => {
-    const src = demo("printer").replace(/(component board_fan = lib\.fan\("fan_4010_24v"\) \{ at: )\(-209, 89, 200\)/, "$1(-209, 89, 600)");
+    const src = demo("printer").replace(/(component board_fan = lib\.fan\("fan_4010_24v"\) \{ at: )\(-213, 89, 200\)/, "$1(-213, 89, 600)");
     expect(src).not.toBe(demo("printer"));
     const [ebox] = spaces(src);
     expect(ebox.fans).toEqual([]);

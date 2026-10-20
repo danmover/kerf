@@ -29,8 +29,9 @@ export function mountParts(model: Model): Map<string, { part: EvalPart; comp: st
   for (const p of model.parts) {
     if (p.kind !== "component" || p.hidden || p.id.includes(".")) continue;
     const mc = comps.get(p.name);
-    const kind = p.bom?.catalogId ? catalogPart(p.bom.catalogId)?.kind : undefined;
-    const isMount = (kind && MOUNT_KINDS.has(kind) && !mc?.pcb) || p.libKind === "pcb";
+    const cat = p.bom?.catalogId ? catalogPart(p.bom.catalogId) : undefined;
+    // a plug-in adapter sits outside the design on the end of its cord
+    const isMount = (cat && MOUNT_KINDS.has(cat.kind) && !cat.external && !mc?.pcb) || p.libKind === "pcb";
     if (!isMount) continue;
     const inst = p.id.match(/#(\d+)$/);
     const comp = mc && mc.count > 1 && inst ? `${p.name}[${Number(inst[1]) - 1}]` : p.name;

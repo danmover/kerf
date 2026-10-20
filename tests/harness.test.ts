@@ -61,6 +61,19 @@ describe("wiring harness", () => {
     expect(end("amp", "OUT_P", "spk").spec.kind).toBe("ferrule");
   });
 
+  it("solders the tunneller's wires to its modules' pads, and takes the battery's leads from the pack", () => {
+    const h = buildHarness(demo("sand-tunneller"));
+    const ends = h.wires.flatMap((w) => w.ends);
+    const nano = ends.filter((e) => e.comp === "ctrl");
+    expect(nano.length).toBeGreaterThan(10);
+    // on the top of the board, leaving upwards, where a Dupont plug would point down into the shelf
+    for (const e of nano) {
+      expect(e.spec.kind).toBe("solder");
+      expect(e.frame.z[2]).toBeCloseTo(1);
+    }
+    expect(ends.filter((e) => e.comp === "bat").map((e) => e.spec.kind)).toEqual(["lead", "lead"]);
+  });
+
   it("routes a cable round a wall instead of through it", () => {
     const wall = boxGeo([-5, -60, 0], [5, 60, 80]);
     const floor = boxGeo([-120, -120, -10], [120, 120, 0]);

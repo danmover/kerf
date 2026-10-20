@@ -11,7 +11,7 @@ import { xformMatrix, type V3 } from "../../kernel/recipe";
 import { catalogPart } from "../catalog";
 import type { MachineData } from "../types";
 import { componentPositions, wireList, wireHex, type WireEnd, type WireRow } from "../wiring";
-import { PITCH, cableWires, plugFor, type PlugKind, type PlugSpec } from "./plugs";
+import { PITCH, cableWires, plugFor, solderedPlug, type PlugKind, type PlugSpec } from "./plugs";
 import type { RouteKeepOut, RouteWire } from "./route";
 import { slotPoint, type TravelPlan } from "./travel";
 
@@ -199,6 +199,8 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
   const wires: HarnessWire[] = [];
   const usedSpots = new Set<string>();
   const parts = new Set<string>();
+  // parts whose wires are soldered to their pads, by instance name (name or name[i])
+  const soldered = new Set(m.components.filter((c) => c.leads === "soldered").map((c) => c.name));
   const catalogOf = (e: WireEnd) => {
     const it = inst.get(e.comp);
     return it && catalogPart(it.catalogId);
@@ -208,8 +210,9 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
   const endOf = (e: WireEnd, other: WireEnd): (PlugEnd & { spot: string }) | undefined => {
     const it = inst.get(e.comp);
     const part = it && catalogPart(it.catalogId);
-    const spec = part && plugFor(part, e.pin, catalogOf(other));
-    if (!it || !part || !spec) return undefined;
+    const plug = part && plugFor(part, e.pin, catalogOf(other));
+    if (!it || !part || !plug) return undefined;
+    const spec = soldered.has(e.comp.replace(/\[\d+\]$/, "")) ? solderedPlug(part, plug) : plug;
     const key = `${e.comp}.${e.pin}`;
     const n = taken.get(key) ?? 0;
     taken.set(key, n + 1);

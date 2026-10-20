@@ -136,16 +136,19 @@ component steer = lib.actuator("actuonix_p16p_50_256", travel: act_mid) {
 }
 
 // ── Electronics: top shelf (brain), bottom shelf (power), rear body ──
-component ctrl = lib.controller("arduino_nano") { at: (-128, 0, top_shelf + 1.5) }
-component imu = lib.sensor("bno055") { at: (-86, 0, top_shelf + 1.5) }
-component drv_s = lib.motor_driver("tb6612fng") { at: (-58, 0, top_shelf + 1.5), role: "steering driver" }
-component drv_f = lib.motor_driver("pololu_g2_18v17") { at: (-40, 0, bot_shelf + 1.5), role: "front driver" }
-component reg = lib.regulator("d24v50f5") { at: (-68, 0, bot_shelf + 1.5) }
-component vsense = lib.sensor("voltage_sensor_25v") { at: (-95, 0, bot_shelf + 1.5) }
+// The tube leaves no room for plugs or a screwdriver, so the wires are soldered to the boards' pads, the boards
+// on the top shelf are cable-tied down through slots in it, and the ones on the bottom shelf and in the rear body
+// sit on foam tape (there is no room under those shelves for a tie).
+component ctrl = lib.controller("arduino_nano") { at: (-128, 0, top_shelf + 1.5), leads: "soldered", held: "a cable tie along it between its pin rows, through two slots in the shelf" }
+component imu = lib.sensor("bno055") { at: (-86, 0, top_shelf + 1.5), leads: "soldered", held: "a cable tie along it, through two slots in the shelf" }
+component drv_s = lib.motor_driver("tb6612fng") { at: (-58, 0, top_shelf + 1.5), role: "steering driver", leads: "soldered", held: "a cable tie across it between its pin rows, through two slots in the shelf" }
+component drv_f = lib.motor_driver("pololu_g2_18v17") { at: (-40, 0, bot_shelf + 1.5), role: "front driver", leads: "soldered", held: "double-sided foam tape" }
+component reg = lib.regulator("d24v50f5") { at: (-68, 0, bot_shelf + 1.5), leads: "soldered", held: "double-sided foam tape" }
+component vsense = lib.sensor("voltage_sensor_25v") { at: (-95, 0, bot_shelf + 1.5), leads: "soldered", held: "double-sided foam tape" }
 component fuse = lib.fuse("fuse_holder_atc") { at: (-131, 11, -15.5), rotate: (90, 0, 0), rating: 15A }
 component xt = lib.connector("xt60_pair") { at: (-174, 0, -8) }
-component bat = lib.battery("lipo_3s_2200") { at: (a_end - 14 - 53, 0, -10.5) }
-component drv_r = lib.motor_driver("pololu_g2_18v17") { at: (-210, 0, 12.5), role: "rear driver" }
+component bat = lib.battery("lipo_3s_2200") { at: (a_end - 14 - 53, 0, -10.5), held: "a hook-and-loop strap round it, through two slots in the battery floor" }
+component drv_r = lib.motor_driver("pololu_g2_18v17") { at: (-212, 0, 12.5), role: "rear driver", leads: "soldered", held: "double-sided foam tape" }
 
 // ── Operating point ──────────────────────────────────────
 let front_pt = calc.motor_point(motor: m_front, load: front.torque, voltage: bat.v_nom)
@@ -331,6 +334,9 @@ part body_a {
       cut cylinder(d: 8, h: 4, at: (x, y, top_shelf - 1), dir: Z)
     }
   }
+  // cable-tie slots for the boards on the top shelf: along the Nano and the IMU, across the steering driver
+  for x in [-128 - 23.5, -128 + 23.5, -86 - 15.5, -86 + 15.5] { cut box(1.8, 3.5, 4, at: (x, 2, top_shelf - 1)) }
+  for y in [-12, 12] { cut box(3.5, 1.8, 4, at: (-58, y, top_shelf - 1)) }
   // actuator rear pivot: block under the top shelf, block with an insert on the bottom shelf
   add box(12, 12, top_shelf - 8.1 + 0.5, at: (act_rear, 0, 8.1))
   add box(12, 12, -8.1 - (bot_shelf + 1.5) + 0.5, at: (act_rear, 0, bot_shelf + 1))
@@ -361,7 +367,9 @@ part body_b {
   add tube(od: body_id + 0.5, id: core_od + 0.65, h: 12, at: (b_end, 0, 0), dir: X)
   // battery floor and the shelf over it for the rear driver
   add box(a_end - 12 - (b_end + 12) - 0.5, 50, 1.5, at: ((b_end + 12 + a_end - 12) / 2, 0, -12))
-  add box(50, 50, 1.5, at: (-210, 0, 11))
+  add box(40, 50, 1.5, at: (-214, 0, 11))                  // stops short of the battery's leads
+  // slots for the battery strap
+  for y in [-20, 20] { cut box(22, 3, 4, at: (-211, y, -13)) }
   // radial screws: to the middle body's spigot and to the rear core
   for s in [1, -1] {
     cut hole(M3, depth: 4, at: (a_end - 6, s * body_od / 2, 0), dir: (0, -s, 0))

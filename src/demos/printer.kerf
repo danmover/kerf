@@ -353,8 +353,7 @@ component buck  = lib.regulator("buck_24v_5v_3a") { at: (-170, 118, 124), rotate
 component board_fan = lib.fan("fan_4010_24v") { at: (-213, 89, 200), axis: X, role: "controller", removable }   // comes off with the lid
 component psu   = lib.psu("lrs_350_24") { at: (165, 79.5, 217.5), rotate: (0, 90, 0) }
 component fuse  = lib.fuse("fuse_holder_atc") { at: (180, 113, 74.5), rotate: (0, 0, 90), rating: 15A }
-// four of the board's five holes (the first is under its header row)
-component skr_screws = lib.screw(M3, 6) { at: with_x([skr.holes[1], skr.holes[2], skr.holes[3], skr.holes[4]], -171.6), axis: X }
+component skr_screws = lib.screw(M3, 6) { at: with_x(skr.holes, -171.6), axis: X }
 component pi_screws  = lib.screw(M2_5, 6) { at: with_x(pi.holes, -171.4), axis: X }
 component psu_screws = lib.screw(M3, 6) { at: with_x(psu.holes, 163.4), axis: X }
 note "Mains enters through a fused, switched IEC inlet in the supply's terminal cover. The 24 V side has its own 15 A blade fuse right at the supply, sized for the 14 AWG lead to the board."

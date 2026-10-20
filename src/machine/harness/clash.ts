@@ -123,6 +123,8 @@ const TIE_EVERY = 100;
 const RELIEF_WITHIN = 60;
 /** A cable may reach this far from a surface and still be tied to it, mm. */
 const TIE_REACH = 6;
+/** how far a part's own multi-wire lead carries its wires together before they part, mm */
+const OWN_LEAD = 60;
 /** Longer than this with nothing to tie to: it hangs free, mm. */
 const FREE_SPAN = 100;
 /** Ties closer than this become one tie round both bundles, mm. */
@@ -370,6 +372,20 @@ export function checkWiring(h: Harness, routes: RoutedWire[], solids: Solids, fi
     }
   });
   const crossings = new Map<string, CableCross>();
+  // a part's own multi-wire lead (an actuator's or a sensor's cable) carries its wires in one jacket for a way
+  // before they part: where two wires leave the same lead, they lie together that far
+  const ownLeads = new Map<string, V3[]>();
+  const ownLeadOf = (wa: string, wb: string): V3[] => {
+    const k = `${wa}|${wb}`;
+    let at = ownLeads.get(k);
+    if (!at) {
+      const ea = byId.get(wa)!.ends.filter((e) => e.spec.kind === "lead");
+      const eb = byId.get(wb)!.ends.filter((e) => e.spec.kind === "lead");
+      at = ea.filter((e) => eb.some((f) => f.partId === e.partId && dist(f.frame.o, e.frame.o) < 3)).map((e) => e.frame.o);
+      ownLeads.set(k, at);
+    }
+    return at;
+  };
   runs.forEach((a, ai) => {
     if (a.straight) return;
     const wa = wireOf.get(a.id)!;
@@ -396,6 +412,7 @@ export function checkWiring(h: Harness, routes: RoutedWire[], solids: Solids, fi
               // cables leaving the same terminal or splice lie together there
               const shared = ends(a).some((e) => ends(b).some((f) => dist(e, f) < a.r + b.r + 1 && dist(p, e) < 4 * (a.r + b.r) + 4 && dist(q, e) < 4 * (a.r + b.r) + 4));
               if (shared) continue;
+              if (ownLeadOf(wa, wb).some((e) => dist(p, e) < OWN_LEAD && dist(q, e) < OWN_LEAD)) continue;
               const k = wa < wb ? `${wa}|${wb}` : `${wb}|${wa}`;
               const c = crossings.get(k);
               if (!c || depth > c.depth) crossings.set(k, { a: wa < wb ? wa : wb, b: wa < wb ? wb : wa, depth, at: mid(p, q) });

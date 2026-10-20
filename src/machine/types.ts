@@ -299,6 +299,8 @@ export interface MachineComponent {
   measured?: Record<string, number>;
   /** how the part is held where the geometry cannot show it (`held: "hook-and-loop strap"`) */
   held?: string;
+  /** its wires are soldered straight to its pads (`leads: "soldered"`), with no plugs or headers */
+  leads?: "soldered";
   span: Span;
 }
 
