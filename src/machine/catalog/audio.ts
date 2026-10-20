@@ -358,7 +358,7 @@ export const AUDIO: CatalogPart[] = [
         { kind: "terminal", x: 34, y: 0, w: 8, d: 15, h: 10 },
         { kind: "cap", x: -16, y: -18, w: 10, d: 10, h: 16 },
         { kind: "cap", x: -16, y: 18, w: 10, d: 10, h: 16 },
-        { kind: "jack", x: 34, y: 20, w: 9, d: 9, h: 12 },
+        { kind: "jack", x: 34, y: 12, w: 9, d: 9, h: 12 },   // clear of the mounting hole in the corner
       ],
     },
     sim: { k: "load", a: "IN", b: "IN_GND", r: 20000 },

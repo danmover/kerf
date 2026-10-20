@@ -274,7 +274,7 @@ part x_stop_mount {
   add cylinder(d: 2.5, h: 2.1, at: (-150.11, x_stop.holes[0].y, x_stop.holes[0].z), dir: X)
   cut hole(M2_5, through: true, at: (-150.1, x_stop.holes[1].y, x_stop.holes[1].z), dir: -X)
 }
-component x_stop_screw = lib.screw(M2_5, 8) { at: with_x(x_stop.holes[1], -154.1), axis: X }
+component x_stop_screw = lib.screw(M2_5, 10) { at: with_x(x_stop.holes[1], -154.1), axis: X }
 component x_stop_nut   = lib.nut(M2_5) { at: with_x(x_stop.holes[1], -148.5), axis: X }
 
 // ── Toolhead: direct drive, X carriage in front of the rail ───────────
@@ -361,6 +361,7 @@ note "Mains enters through a fused, switched IEC inlet in the supply's terminal 
 part ebox {
   group: "Electronics"
   material: "PETG"
+  process: mfg.fdm(build: -X, shrink_comp: true)   // printed open side up; scaled for shrink, so the board's screw pattern lines up with its holes
   color: #2b3038
   body box(40, 124, 124, at: (-180, 84, 108))
   shell(3, open: -X)
@@ -368,7 +369,7 @@ part ebox {
   for y in [-10, 10] { for z in [130, 210] { cut hole(M5, through: true, at: (-163.01, y, z), dir: X) } }
   // standoffs with heat-set inserts
   for h in skr.holes { add cylinder(d: 7, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M3, fit: "insert", depth: 6, at: (-170, h.y, h.z), dir: X) }
-  for h in pi.holes { add cylinder(d: 6, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M2_5, fit: "insert", depth: 5, at: (-170, h.y, h.z), dir: X) }
+  for h in pi.holes { add cylinder(d: 6.5, h: 7.01, at: (-162.99, h.y, h.z), dir: -X)  cut hole(M2_5, fit: "insert", depth: 5, at: (-170, h.y, h.z), dir: X) }
   add box(7.02, 24, 16, at: (-166.49, 118, 116))                      // pad for the buck module (foam tape)
   // lid screw bosses in the corners, stopping short of the back wall so the buck's and the Pi's leads pass behind them
   for p in [(27, 113), (141, 113), (27, 227), (141, 227)] {
@@ -396,6 +397,7 @@ part ebox_lid {
 part psu_mount {
   group: "Electronics"
   material: "PETG"
+  process: mfg.fdm(build: X, shrink_comp: true)   // printed flat; scaled for shrink, so the supply's screw pattern lines up
   color: #2b3038
   body box(5, 155, 171, at: (162.5, 59.5, 132))
   cut box(7, 135, 131, at: (162.5, 59.5, 152))                   // window: a frame is enough
