@@ -44,16 +44,21 @@ export function toMcp(c: ToolResultContent): McpContent[] {
   });
 }
 
-const refuse = (text: string) => ({ isError: true, content: [{ type: "text", text }] });
+export interface McpToolResult {
+  content: McpContent[];
+  isError?: boolean;
+}
+
+const refuse = (text: string): McpToolResult => ({ isError: true, content: [{ type: "text", text }] });
 
 // one call at a time, as in Kerf's chat: each edit starts from the last one's result
 let queue: Promise<unknown> = Promise.resolve();
 
-export async function callTool(params: { name?: unknown; arguments?: unknown }, signal: AbortSignal) {
+export async function callTool(params: { name?: unknown; arguments?: unknown }, signal: AbortSignal): Promise<McpToolResult> {
   const name = String(params.name ?? "");
   if (name === GUIDE_TOOL) return { content: [{ type: "text", text: `${PREAMBLE}\n\n${systemPrompt()}` }] };
   if (!mcpTools().some((t) => t.name === name)) return refuse(`Kerf has no tool called ${name}.`);
-  const run = async () => {
+  const run = async (): Promise<McpToolResult> => {
     if (signal.aborted) return refuse("Cancelled.");
     if (!useProject.getState().current) return refuse("No project is open in Kerf. Ask the person to open or create one in Kerf's window, then call get_design.");
     if (useChat.getState().busy) return refuse("Kerf's own chat is working on this design right now. Ask the person to wait for it or stop it, so the two don't edit at once.");

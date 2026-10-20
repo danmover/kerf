@@ -4,12 +4,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:net";
 import { startMcp, type McpBackend, type RunningMcp } from "../desktop/mcp";
-import { callTool, mcpTools, toMcp } from "../src/ai/claudeCode";
+import { callTool, mcpTools, toMcp, type McpToolResult } from "../src/ai/claudeCode";
 import { TOOL_DEFS } from "../src/ai/tools";
 import { useProject } from "../src/app/project";
 import { useChat } from "../src/ai/chat";
 
 const TOKEN = "t".repeat(43);
+const textOf = (r: McpToolResult) => r.content.map((c) => (c.type === "text" ? c.text : "")).join("");
 let running: RunningMcp[] = [];
 afterEach(async () => {
   await Promise.all(running.map((r) => r.close()));
@@ -131,21 +132,21 @@ describe("Kerf's tools in Claude Code", () => {
   it("gives the guide, runs tools on the open project and says when it can't", async () => {
     const signal = new AbortController().signal;
     const guide = await callTool({ name: "kerf_instructions" }, signal);
-    expect(guide.content[0].text).toContain("through Claude Code");
-    expect(guide.content[0].text).toContain("design engineer inside Kerf");
+    expect(textOf(guide)).toContain("through Claude Code");
+    expect(textOf(guide)).toContain("design engineer inside Kerf");
 
     expect((await callTool({ name: "nope" }, signal)).isError).toBe(true);
     const closed = await callTool({ name: "catalog_lookup", arguments: { id: "lipo_3s_2200" } }, signal);
     expect(closed.isError).toBe(true);
-    expect(closed.content[0].text).toContain("No project is open");
+    expect(textOf(closed)).toContain("No project is open");
 
     useProject.setState({ current: { id: "p1" } as never });
     const ok = await callTool({ name: "catalog_lookup", arguments: { id: "lipo_3s_2200" } }, signal);
     expect(ok.isError).toBeUndefined();
-    expect(ok.content[0].text).toContain("lipo_3s_2200");
+    expect(textOf(ok)).toContain("lipo_3s_2200");
 
     useChat.setState({ busy: true });
     const clash = await callTool({ name: "catalog_lookup", arguments: { id: "lipo_3s_2200" } }, signal);
-    expect(clash.content[0].text).toContain("Kerf's own chat is working");
+    expect(textOf(clash)).toContain("Kerf's own chat is working");
   });
 });
