@@ -20,7 +20,7 @@ import { AgentSettings } from "./agents/AgentSettings";
 import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
-import { desktop, graphicsCard, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
+import { desktop, graphicsCard, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "Claude", icon: <Icon.Sparkle size={14} /> },
@@ -165,6 +165,98 @@ function BrowserKey() {
   );
 }
 
+/** A command to copy, on one line. */
+function CopyLine({ text, label }: { text: string; label: string }) {
+  return (
+    <div className="row" style={{ gap: 8, alignItems: "stretch", marginTop: 6 }}>
+      <code className="mono grow" style={{ padding: "7px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-0)", fontSize: 11.5, color: "var(--text-2)", overflowX: "auto", whiteSpace: "nowrap" }}>
+        {text}
+      </code>
+      <button
+        className="btn sm"
+        aria-label={label}
+        onClick={() =>
+          void navigator.clipboard.writeText(text).then(
+            () => toast({ kind: "success", title: "Copied" }),
+            () => toast({ kind: "warn", title: "Could not copy", detail: "Select the text and copy it yourself." }),
+          )
+        }
+      >
+        Copy
+      </button>
+    </div>
+  );
+}
+
+/** The person's own Claude Code, on their Claude plan, working through Kerf's tools (desktop app only). */
+function ClaudeCodeSection() {
+  const cc = desktop()?.claudeCode;
+  const [info, setInfo] = useState<ClaudeCodeInfo | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void cc?.info().then(setInfo);
+  }, [cc]);
+  const act = async (f: () => Promise<ClaudeCodeInfo>) => {
+    setBusy(true);
+    try {
+      setInfo(await f());
+    } finally {
+      setBusy(false);
+    }
+  };
+  const newToken = async () => {
+    if (await confirmDialog({ title: "Make a new token?", body: "Claude Code's saved connection to Kerf stops working until you run the new connect command.", confirm: "New token" })) await act(() => cc!.newToken());
+  };
+  if (!cc)
+    return (
+      <Section title="Claude Code">
+        <Row t="Use your Claude plan" d="In the Kerf desktop app, your own Claude Code can design in Kerf on your Claude Pro or Max plan, without an API key." />
+      </Section>
+    );
+  const add = info ? `claude mcp add --transport http --scope user kerf ${info.url} --header "Authorization: Bearer ${info.token}"` : "";
+  return (
+    <Section title="Claude Code">
+      <Row
+        t="Let Claude Code use Kerf"
+        d="Your own Claude Code, signed in with your Claude account, reads and changes the open design with Kerf's tools while you watch it here. It runs on your Claude plan's usage, not an API key. Only programs on this computer that have the token below can connect. Kerf's own chat panel still uses the API key above."
+      >
+        <Toggle on={!!info?.enabled} onChange={(v) => void act(() => cc.setEnabled(v))} label="Let Claude Code use Kerf" />
+      </Row>
+      {info?.enabled && info.error && (
+        <div className="setting">
+          <span className="dot fail" />
+          <div className="grow">
+            <div className="t">Kerf could not start its tools for Claude Code</div>
+            <div className="d">{info.error}</div>
+          </div>
+          <button className="btn sm" disabled={busy} onClick={() => void act(() => cc.setEnabled(true))}>
+            Try again
+          </button>
+        </div>
+      )}
+      {info?.running && (
+        <div className="setting" style={{ display: "block" }}>
+          <div className="t">Connect Claude Code (once)</div>
+          <div className="d">
+            Install Claude Code and sign in by running <span className="mono">claude</span> once. Then run this in a terminal, which saves the connection for every folder:
+          </div>
+          <CopyLine text={add} label="Copy the connect command" />
+          <div className="d" style={{ marginTop: 10 }}>
+            To design, open a project here, start Claude Code with Kerf's tools allowed and ask it, for example "Design a wall bracket for a 30 mm tube in Kerf":
+          </div>
+          <CopyLine text="claude --allowedTools mcp__kerf" label="Copy the start command" />
+          <div className="row" style={{ gap: 8, marginTop: 10 }}>
+            <span className="d grow">Keep Kerf open while Claude Code works. Changes land in the version history like any other.</span>
+            <button className="btn ghost sm" disabled={busy} onClick={() => void newToken()}>
+              New token
+            </button>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function AiSettings() {
   const s = useSettings();
   const effort = EFFORTS.find((e) => e.value === s.effort)!;
@@ -177,6 +269,8 @@ function AiSettings() {
         <AccountKeySection browserForm={<BrowserKey />} />
         {!server && <BrowserKey />}
       </Section>
+
+      <ClaudeCodeSection />
 
       <Section title="Model for design work">
         <div role="radiogroup" aria-label="Model" style={{ display: "grid", gap: 6 }}>

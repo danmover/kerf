@@ -26,6 +26,8 @@ The build in `dist/` is a static site. Any static host works. `public/_headers` 
 
 Chatting with Claude needs an Anthropic API key from the [Claude Console](https://platform.claude.com/). Kerf asks for it during first-run setup, or later under Settings → Claude. Everything else works without a key.
 
+In the desktop app you can also design on your Claude Pro or Max plan instead: turn on **Let Claude Code use Kerf** under Settings → Claude and run the connect command it shows. Your own Claude Code, signed in with your Claude account, then reads and edits the open design with Kerf's tools while you watch it in Kerf. Kerf never sees your Claude login. Kerf's own chat panel still needs an API key, because Anthropic doesn't let other apps use a Claude plan's login.
+
 `npm run dev` is for working on Kerf itself: it serves hundreds of separate source files with React's development checks on, and re-bundles dependencies after an update, so it loads and runs slower than a build. To use Kerf, run the desktop app or a production build.
 
 ### Desktop app
