@@ -112,6 +112,15 @@ export interface SceneSpec {
   notes: string[];
 }
 
+/** A current-limited bench supply, clipped on where the design's batteries and supplies connect (or on a net). */
+export interface BenchSupplySpec {
+  volts: number;
+  /** current limit, A */
+  amps: number;
+  /** a net name or "component.PIN"; where the design's own batteries and supplies connect when left out */
+  on?: string;
+}
+
 export interface World {
   kind: string;
   /** called once with the plant before the run */
@@ -134,6 +143,8 @@ export interface World {
   range?(comp: string): number;
   /** signals the world puts on nets (by name or "component.PIN"): volts at a time in seconds */
   drives?(): { on: string; v: (t: number) => number }[];
+  /** a bench supply that powers the machine in place of its own batteries and supplies */
+  supply?(): BenchSupplySpec | undefined;
   /** ambient temperature, °C, and how well motors shed heat here (1 = still air) */
   thermal(): { ambient: number; cooling: number };
   /** numbers to record each frame (pose, contact forces, progress) */

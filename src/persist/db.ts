@@ -63,11 +63,26 @@ export interface ChatRecord {
   updatedAt: number;
 }
 
+/** A finished simulation run, kept with its project so it can be replayed after Kerf restarts (see src/sim/saved.ts). */
+export interface SimRunRecord {
+  /** projectId | savedAt | runKey | label (see src/sim/saved.ts) */
+  key: string;
+  projectId: string;
+  /** the scenario's label */
+  label: string;
+  /** what the run was made from: the same key gives the same result */
+  runKey: string;
+  savedAt: number;
+  bytes: number;
+  /** the RunResult, as the worker sent it */
+  result: unknown;
+}
+
 const DB_NAME = "kerf";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const MAX_VERSIONS = 300;
 
-type StoreName = "projects" | "versions" | "chats" | "vault" | "assets" | "blobs";
+type StoreName = "projects" | "versions" | "chats" | "vault" | "assets" | "blobs" | "sims";
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 export let persistent = true;
@@ -79,6 +94,7 @@ const memory: Record<StoreName, Map<string, unknown>> = {
   vault: new Map(),
   assets: new Map(),
   blobs: new Map(),
+  sims: new Map(),
 };
 
 function open(): Promise<IDBDatabase | null> {
@@ -108,6 +124,10 @@ function open(): Promise<IDBDatabase | null> {
         a.createIndex("projectId", "projectId");
       }
       if (!db.objectStoreNames.contains("blobs")) db.createObjectStore("blobs", { keyPath: "hash" });
+      if (!db.objectStoreNames.contains("sims")) {
+        const r = db.createObjectStore("sims", { keyPath: "key" });
+        r.createIndex("projectId", "projectId");
+      }
     };
     let blocked = 0;
     req.onsuccess = () => {
@@ -131,7 +151,7 @@ function open(): Promise<IDBDatabase | null> {
 
 function keyOf(store: StoreName, v: unknown): string {
   const r = v as Record<string, string>;
-  return store === "chats" ? r.projectId : store === "assets" ? r.key : store === "blobs" ? r.hash : r.id;
+  return store === "chats" ? r.projectId : store === "assets" || store === "sims" ? r.key : store === "blobs" ? r.hash : r.id;
 }
 
 async function tx<T>(store: StoreName, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
@@ -199,9 +219,26 @@ export async function assetsFor(projectId: string): Promise<AssetRecord[]> {
   return ((await tx<AssetRecord[]>("assets", "readonly", (s) => s.index("projectId").getAll(projectId) as IDBRequest<AssetRecord[]>)) ?? []) as AssetRecord[];
 }
 
+/** Saved simulation runs of a project, newest first. */
+export async function simRunsFor(projectId: string): Promise<SimRunRecord[]> {
+  const db = await open();
+  let all: SimRunRecord[];
+  if (!db) all = [...(memory.sims.values() as Iterable<SimRunRecord>)].filter((r) => r.projectId === projectId);
+  else all = ((await tx<SimRunRecord[]>("sims", "readonly", (s) => s.index("projectId").getAll(projectId) as IDBRequest<SimRunRecord[]>)) ?? []) as SimRunRecord[];
+  return all.sort((a, b) => b.savedAt - a.savedAt);
+}
+
+/** Keys of a project's saved runs, without reading the runs themselves. */
+export async function simRunKeysFor(projectId: string): Promise<string[]> {
+  const db = await open();
+  if (!db) return [...(memory.sims.values() as Iterable<SimRunRecord>)].filter((r) => r.projectId === projectId).map((r) => r.key);
+  return (((await tx<IDBValidKey[]>("sims", "readonly", (s) => s.index("projectId").getAllKeys(projectId))) ?? []) as string[]).map(String);
+}
+
 export async function deleteProjectData(projectId: string): Promise<void> {
   for (const v of await versionsFor(projectId)) await remove("versions", v.id);
   for (const a of await assetsFor(projectId)) await remove("assets", a.key);
+  for (const k of await simRunKeysFor(projectId)) await remove("sims", k);
   await remove("chats", projectId);
   await remove("projects", projectId);
 }
@@ -212,7 +249,7 @@ export async function clearEverything(): Promise<void> {
     for (const m of Object.values(memory)) m.clear();
     return;
   }
-  for (const store of ["projects", "versions", "chats", "vault", "assets", "blobs"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
+  for (const store of ["projects", "versions", "chats", "vault", "assets", "blobs", "sims"] as StoreName[]) await tx(store, "readwrite", (s) => s.clear());
 }
 
 /** Hashes of every stored import file (keys only, so large files are not read). */

@@ -4,6 +4,9 @@
 // scenario itself, the machine (parts, wiring, firmware settings) or the
 // design name. Results are cached by those inputs, so undo or switching back
 // shows the earlier result at once. A newer change cancels an older run.
+// Finished runs are also saved with the project (saved.ts), so after Kerf
+// restarts a scenario that has not changed shows its run at once, ready to
+// play, instead of running again.
 //
 // Expectations are judged here on the main thread, from the cached results,
 // so editing an `expect` line re-checks without running again.
@@ -22,6 +25,9 @@ import { judge, type ExpectOutcome } from "./expect";
 import type { SimRequest, SimResponse } from "./protocol";
 import type { ScenarioDef, ScenarioSpec } from "./scenario";
 import { VARIANTS, type VariantName } from "./worlds/common";
+import { resultBytes, saveRun, savedRuns } from "./saved";
+
+export { resultBytes };
 
 export interface SimRun {
   label: string;
@@ -37,6 +43,8 @@ export interface SimRun {
   startedAt: number;
   /** wall-clock ms the last run took */
   ms?: number;
+  /** the result shown was saved with the project at this time (in an earlier session) */
+  savedAt?: number;
 }
 
 interface SimState {
@@ -106,8 +114,11 @@ function hash(str: string): string {
 /** Source positions move when anything above them is edited; they do not change a run. */
 const noSpans = (k: string, v: unknown) => (k === "span" || k.endsWith("Span") ? undefined : v);
 
+/** A newer Kerf can simulate the same inputs differently, so its version is part of a run's identity. */
+const KERF = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "dev";
+
 export function scenarioKey(spec: ScenarioSpec, machine: MachineData | undefined, designName: string): string {
-  return hash(JSON.stringify({ spec, machine, designName }, noSpans));
+  return hash(JSON.stringify({ spec, machine, designName, kerf: KERF }, noSpans));
 }
 
 const CACHE_MAX = 16;
@@ -115,19 +126,6 @@ const CACHE_MAX = 16;
 const CACHE_BYTES = 160 * 2 ** 20;
 const cache = new Map<string, { r: RunResult; bytes: number }>();
 let cacheBytes = 0;
-
-/** Roughly how much memory a result holds: its frames, screens and logs. */
-export function resultBytes(r: RunResult): number {
-  let n = 0;
-  for (const v of r.variants) {
-    n += v.frames.t.byteLength;
-    for (const s of Object.values(v.frames.series)) n += s.byteLength;
-    for (const d of v.displays ?? []) n += d.frames.length * (d.w * d.h) / 8 + 32 * d.frames.length;
-    if (v.print) n += v.print.t.byteLength * 5;
-    n += v.serial.length * 64 + v.events.length * 96;
-  }
-  return n;
-}
 
 function remember(key: string, r: RunResult) {
   const old = cache.get(key);
@@ -152,6 +150,8 @@ interface Job {
   key: string;
   variant: VariantName;
   req: SimRequest;
+  /** the project the run is saved with */
+  projectId?: string;
 }
 
 interface Slot {
@@ -235,7 +235,8 @@ function finishVariant(job: Job, result: RunResult) {
   const parts = want.map((v) => got.get(v)!);
   const merged: RunResult = { firmware: parts[0].firmware, error: parts.find((p) => p.error)?.error, variants: parts.flatMap((p) => p.variants) };
   remember(job.key, merged);
-  patchRun(job.label, { status: "done", result: merged, stale: false, error: undefined, progress: {}, ms: performance.now() - run.startedAt });
+  patchRun(job.label, { status: "done", result: merged, stale: false, error: undefined, progress: {}, ms: performance.now() - run.startedAt, savedAt: undefined });
+  if (job.projectId) void saveRun(job.projectId, job.label, job.key, merged);
   refreshReport();
 }
 
@@ -275,10 +276,45 @@ let scheduledModel: Model | null = null;
 function start(def: ScenarioDef, spec: ScenarioSpec, model: Model, key: string, runs: Map<string, SimRun>) {
   const prev = runs.get(def.label);
   cancel(def.label);
-  runs.set(def.label, { label: def.label, key, status: "waiting", progress: Object.fromEntries(spec.variants.map((v) => [v, 0])), result: prev?.result, stale: !!prev?.result, startedAt: performance.now() });
+  runs.set(def.label, { label: def.label, key, status: "waiting", progress: Object.fromEntries(spec.variants.map((v) => [v, 0])), result: prev?.result, stale: !!prev?.result, startedAt: performance.now(), savedAt: prev?.savedAt });
+  const projectId = useProject.getState().current?.id;
   for (const variant of spec.variants) {
-    queue.push({ id: ++nextId, label: def.label, key, variant, req: { id: nextId, spec, machine: model.machine ?? emptyMachine(), designName: model.name, variant } });
+    queue.push({ id: ++nextId, label: def.label, key, variant, projectId, req: { id: nextId, spec, machine: model.machine ?? emptyMachine(), designName: model.name, variant } });
   }
+}
+
+// ---------- runs saved with the project ----------
+
+/** the open project's saved runs while they load: nothing is scheduled until they are in */
+let loading: { projectId: string; done: Promise<void>; then?: { model: Model; force?: string } } | null = null;
+/** when each saved run in the cache was saved, by run key */
+const savedAt = new Map<string, number>();
+/** each scenario's newest saved run, shown (stale) until a run for the design as it is now comes in */
+const lastSaved = new Map<string, { result: RunResult; savedAt: number }>();
+
+/** Load a project's saved runs into the cache, so its scenarios show them instead of running again. */
+export function loadSavedRuns(projectId: string): Promise<void> {
+  lastSaved.clear();
+  // (storage that another Kerf window holds stops the project opening at all, so this always answers)
+  const done = savedRuns(projectId).then((list) => {
+    if (useProject.getState().current?.id !== projectId) return;
+    // oldest first, so the cache keeps the newest
+    for (const r of [...list].reverse()) {
+      remember(r.runKey, r.result);
+      savedAt.set(r.runKey, r.savedAt);
+    }
+    for (const r of list) if (!lastSaved.has(r.label)) lastSaved.set(r.label, { result: r.result, savedAt: r.savedAt });
+  });
+  const entry: NonNullable<typeof loading> = { projectId, done: done.catch(() => undefined) };
+  loading = entry;
+  void entry.done.then(() => {
+    if (loading !== entry) return;
+    loading = null;
+    const next = entry.then;
+    if (next && useDesign.getState().model === next.model) schedule(next.model, next.force);
+    refreshReport();
+  });
+  return entry.done;
 }
 
 /** a mechanism scenario waits for the design's parts to be built (it needs their shapes for masses) */
@@ -297,10 +333,20 @@ function runSpecOf(def: ScenarioDef, model: Model): ScenarioSpec | { error: stri
 
 /** Queue runs for the scenarios whose inputs changed. */
 function schedule(model: Model, force?: string) {
+  if (loading) {
+    // the project's saved runs come first: they may make a run unnecessary
+    loading.then = { model, force: loading.then?.model === model && !force ? loading.then.force : force };
+    return;
+  }
   scheduledModel = model;
   const defs = model.scenarios ?? [];
   const labels = new Set(defs.map((d) => d.label));
   const runs = new Map(sGet().runs);
+  // the last saved run of a scenario stays on show while it runs again for the design as it is now
+  for (const def of defs) {
+    const last = lastSaved.get(def.label);
+    if (last && !runs.has(def.label)) runs.set(def.label, { label: def.label, key: "", status: "idle", progress: {}, result: last.result, stale: true, startedAt: performance.now(), savedAt: last.savedAt });
+  }
   let selected = sGet().selected;
   for (const label of [...runs.keys()]) {
     if (labels.has(label)) continue;
@@ -316,7 +362,7 @@ function schedule(model: Model, force?: string) {
       const prev = runs.get(def.label);
       cancel(def.label);
       if (spec === null) waitingForGeometry = true;
-      runs.set(def.label, spec === null ? { label: def.label, key: "", status: "waiting", progress: {}, result: prev?.result, stale: !!prev?.result, startedAt: performance.now() } : { label: def.label, key: "", status: "error", error: spec.error, progress: {}, stale: false, startedAt: performance.now() });
+      runs.set(def.label, spec === null ? { label: def.label, key: "", status: "waiting", progress: {}, result: prev?.result, stale: !!prev?.result, startedAt: performance.now(), savedAt: prev?.savedAt } : { label: def.label, key: "", status: "error", error: spec.error, progress: {}, stale: false, startedAt: performance.now() });
       continue;
     }
     const key = scenarioKey(spec, model.machine, model.name);
@@ -325,13 +371,13 @@ function schedule(model: Model, force?: string) {
     const hit = cache.get(key)?.r;
     if (hit && force !== def.label) {
       cancel(def.label);
-      runs.set(def.label, { label: def.label, key, status: "done", progress: {}, result: hit, stale: false, startedAt: performance.now(), ms: 0 });
+      runs.set(def.label, { label: def.label, key, status: "done", progress: {}, result: hit, stale: false, startedAt: performance.now(), ms: 0, savedAt: savedAt.get(key) });
       continue;
     }
     if (!auto && force !== def.label && force !== "*") {
       if (run?.key !== key) {
         cancel(def.label);
-        runs.set(def.label, { label: def.label, key, status: "idle", progress: {}, result: run?.result, stale: !!run?.result, startedAt: performance.now() });
+        runs.set(def.label, { label: def.label, key, status: "idle", progress: {}, result: run?.result, stale: !!run?.result, startedAt: performance.now(), savedAt: run?.savedAt });
       }
       continue;
     }
@@ -509,6 +555,8 @@ export function resetSim() {
   partial.clear();
   for (const s of [...slots]) if (s.job) kill(s);
   scheduledModel = null;
+  loading = null;
+  lastSaved.clear();
   sSet({ runs: new Map(), selected: null, view: false, playing: false, t: 0 });
 }
 
@@ -520,8 +568,12 @@ export function startSimRuntime() {
   registerReportPass("simulations", simItems, 30);
   // closing a project leaves its model loaded, so follow the project itself too
   useProject.subscribe((s, prev) => {
-    if (s.current?.id !== prev.current?.id) resetSim();
+    if (s.current?.id === prev.current?.id) return;
+    resetSim();
+    if (s.current) void loadSavedRuns(s.current.id);
   });
+  const open = useProject.getState().current;
+  if (open) void loadSavedRuns(open.id);
   useDesign.subscribe((s, prev) => {
     if (!useProject.getState().current) return;
     if (s.model && s.model !== prev.model && s.model !== scheduledModel) scheduleSoon(s.model);

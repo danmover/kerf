@@ -36,15 +36,31 @@ export function openSimulation(label?: string, show3d = true) {
   useSim.setState({ selected: sel, view: show3d && !!(sel && st.runs.get(sel)?.result) ? true : st.view });
 }
 
-/** Jump the playback to a time (clamped to the run on show). */
-export function seek(t: number) {
+/** Where the run on show ends, s (0 with no run). */
+function shownEnd(): number {
   const st = useSim.getState();
   const m = useDesign.getState().model;
   const def = m?.scenarios?.find((d) => d.label === st.selected);
   const run = def ? st.runs.get(def.label) : undefined;
   const v = run?.result ? pick(run.result.variants, st.variant) : undefined;
-  const end = v ? duration(v.frames) : 0;
-  useSim.setState({ t: Math.max(0, Math.min(end, t)) });
+  return v ? duration(v.frames) : 0;
+}
+
+/** Jump the playback to a time (clamped to the run on show). */
+export function seek(t: number) {
+  useSim.setState({ t: Math.max(0, Math.min(shownEnd(), t)) });
+}
+
+/** Replay the run on show (from the start once it has reached the end) in the 3D view, or pause it. Nothing runs again. */
+export function togglePlayback(show3d = false) {
+  const st = useSim.getState();
+  if (!st.playing && st.t >= shownEnd() - 0.05) useSim.setState({ t: 0 });
+  useSim.setState({ playing: !st.playing, view: show3d || st.view || !st.playing });
+}
+
+/** "20 Oct, 09:14": when a run was saved. */
+export function savedWhen(t: number): string {
+  return new Date(t).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 export const EVENT_KIND_LABEL: Record<string, string> = { goal: "goal", contact: "contact", stall: "stuck", info: "", warn: "warning" };

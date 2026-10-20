@@ -133,6 +133,100 @@ export class Regulator {
   }
 }
 
+// ---------- mains supply, plug-in adapter, USB or bench supply ----------
+
+/**
+ * What a supply does past its rating. "cutout": a switch-mode adapter or
+ * enclosed supply (and a USB port's polyfuse) switches off once the current
+ * stays over its trip point, then comes back on by itself. "limit": a bench
+ * supply holds the current at its limit by letting the voltage fall.
+ */
+export interface SupplyBehaviour {
+  mode: "cutout" | "limit";
+  /** trips above this many times the rating */
+  trip: number;
+  /** after this long over the trip point (longer when only just over), s */
+  after: number;
+  /** stays off this long before it tries again, s */
+  off: number;
+}
+
+/** Mean Well and plug-in adapter datasheets: overload protection at 105 to 150 % of the rating, hiccup mode. */
+export const ADAPTER: SupplyBehaviour = { mode: "cutout", trip: 1.3, after: 0.05, off: 1 };
+/** a USB port behind the board's 500 mA polyfuse: it trips at about twice that and takes seconds to reset */
+export const USB_PORT: SupplyBehaviour = { mode: "cutout", trip: 2, after: 0.5, off: 5 };
+export const BENCH_SUPPLY: SupplyBehaviour = { mode: "limit", trip: 1, after: 0, off: 0 };
+
+/** A regulated supply: its set voltage, less a little across its output resistance, up to its current rating. */
+export class Supply {
+  current = 0;
+  peak = 0;
+  minV = Infinity;
+  /** times it cut out */
+  trips = 0;
+  /** the bench supply is holding its current limit */
+  limiting = false;
+  private saidLimit = false;
+  private offFor = 0;
+  private over = 0;
+  /** share of the set voltage a current-limited supply holds */
+  private fold = 1;
+  constructor(
+    public name: string,
+    /** set voltage */
+    public v: number,
+    /** rating or current limit, A */
+    public imax: number,
+    /** output resistance, Ω */
+    public r: number,
+    public how: SupplyBehaviour,
+  ) {}
+  get off() {
+    return this.offFor > 0;
+  }
+  volts(i = this.current) {
+    if (this.offFor > 0) return 0;
+    return Math.max(0, this.fold * this.v - i * this.r);
+  }
+  /** Draw `i` amps for `dt` seconds. Returns what to tell the user when it cuts out or starts limiting. */
+  step(i: number, dt: number): string | undefined {
+    let said: string | undefined;
+    if (this.offFor > 0) {
+      this.current = 0;
+      this.offFor -= dt;
+      if (this.offFor <= 0) this.offFor = this.over = 0;
+    } else {
+      this.current = i;
+      if (i > this.peak) this.peak = i;
+      if (this.how.mode === "limit") {
+        if (i > this.imax) {
+          // most loads draw less as the voltage falls: close in on the limit without overshooting it
+          this.fold = Math.max(0, this.fold * (0.5 + (0.5 * this.imax) / i));
+          if (!this.saidLimit) said = `${this.name} hit its ${fmt(this.imax)} A current limit: the voltage falls to hold it`;
+          this.limiting = this.saidLimit = true;
+        } else if (this.fold < 1) this.fold = Math.min(1, this.fold + dt * 5);
+        else this.limiting = false;
+      } else {
+        const trip = this.imax * this.how.trip;
+        this.over = i > trip ? this.over + dt * (i / trip) ** 2 : Math.max(0, this.over - dt);
+        if (this.over > this.how.after) {
+          this.trips++;
+          this.offFor = this.how.off;
+          this.current = 0;
+          // a supply that keeps cutting out says so a few times, not every second of the run
+          if (this.trips <= 3) said = `${this.name} cut out: ${fmt(i)} A is past its ${fmt(this.imax)} A rating (it tries again after ${fmt(this.how.off)} s)`;
+          else if (this.trips === 4) said = `${this.name} keeps cutting out: still past its ${fmt(this.imax)} A rating`;
+        }
+      }
+    }
+    const v = this.volts();
+    if (v < this.minV) this.minV = v;
+    return said;
+  }
+}
+
+const fmt = (x: number) => String(Number(x.toPrecision(3)));
+
 // ---------- DC gearmotor ----------
 
 export class DCMotor {

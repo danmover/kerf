@@ -4,10 +4,11 @@
 // It is the world for any design that has firmware but no environment of its
 // own yet: it still runs the real firmware against the real wiring, battery
 // and motors, so pin mistakes, current draw, heat and battery life show up.
+// A bench supply can stand in for the design's own battery or power supply.
 
 import type { MachineData } from "../../machine/types";
 import { catalogPart } from "../../machine/catalog";
-import type { MotorLoad, Orientation, PlantView, SceneSpec, World, WorldEvent } from "./types";
+import type { BenchSupplySpec, MotorLoad, Orientation, PlantView, SceneSpec, World, WorldEvent } from "./types";
 import type { VariantName } from "./common";
 import { describeSignal, signalFn, type SignalSpec } from "./signals";
 
@@ -25,6 +26,8 @@ export interface BenchSpec {
   ambient: number;
   /** test signals on nets (a plucked note into a tuner's input) */
   signals?: SignalSpec[];
+  /** a bench supply in place of the design's own batteries and supplies */
+  supply?: BenchSupplySpec;
 }
 
 const K: Record<VariantName, number> = { pessimistic: 1.3, expected: 1, optimistic: 0.7 };
@@ -59,6 +62,10 @@ export class Bench implements World {
 
   drives() {
     return (this.spec.signals ?? []).map((s) => ({ on: s.on, v: signalFn(s) }));
+  }
+
+  supply() {
+    return this.spec.supply;
   }
 
   motorLoad(comp: string): MotorLoad {

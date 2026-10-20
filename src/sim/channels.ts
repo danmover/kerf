@@ -86,6 +86,7 @@ export function channelInfo(name: string): ChannelInfo {
   if (thing === "fw") return { label: field, unit: "", group: "Firmware variables" };
   if (thing === "nose") return { label: `nose ${field}`, unit: "mm", group: "Pose" };
   if (thing === "logic") return { label: "logic supply", unit: "V", group: "Power" };
+  if (thing === "bench_supply" || thing === "usb") return { label: `${thing === "usb" ? "USB" : "bench supply"} ${FIELD[field]?.label ?? field}`, unit: FIELD[field]?.unit ?? "", group: "Power" };
   if (thing === "front" || thing === "rear") return { label: `${thing} body ${FIELD[field]?.label ?? field}`, unit: FIELD[field]?.unit ?? "", group: "Pose" };
   const f = FIELD[field];
   return { label: `${thing} ${f?.label ?? field}`, unit: f?.unit ?? "", group: thing };

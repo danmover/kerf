@@ -10,7 +10,7 @@ import { catalogPart } from "../../machine/catalog";
 import { measuredPart } from "../../machine/measured";
 import type { CatalogPart, MachineComponent, MachineData } from "../../machine/types";
 import type { Board } from "../mcu/board";
-import { Actuator, Battery, Bno055, DCMotor, Mpu6050, Regulator, Servo, Ssd1306, quadrature, type ImuNoise } from "./devices";
+import { ADAPTER, Actuator, BENCH_SUPPLY, Battery, Bno055, DCMotor, Mpu6050, Regulator, Servo, Ssd1306, Supply, USB_PORT, quadrature, type ImuNoise } from "./devices";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
@@ -66,8 +66,15 @@ interface ServoSlot {
   vcc?: Net;
 }
 
+interface RegSlot {
+  r: Regulator;
+  vin?: Net;
+  vout?: Net;
+}
+
 interface FuseSlot {
   comp: string;
+  net?: Net;
   rating: number;
   over2: number;
   over35: number;
@@ -95,7 +102,13 @@ export class Plant implements PlantPort, PlantView {
   net: Netlist;
   mcuPinOfNet = new Map<number, number>();
   batteries: { b: Battery; net?: Net }[] = [];
-  regs: { r: Regulator; vin?: Net; vout?: Net }[] = [];
+  /** mains supplies, plug-in adapters and a bench supply, with the nets they feed */
+  supplies: { s: Supply; nets: Net[] }[] = [];
+  /** the controller's USB port, which powers it when nothing in the wiring does */
+  usb = new Supply("USB", 5, 0.5, 0.3, USB_PORT);
+  regs: RegSlot[] = [];
+  /** regulators fed by another regulator first, so the one feeding them carries their load */
+  private regOrder: RegSlot[] = [];
   fuses: FuseSlot[] = [];
   chans: Channel[] = [];
   motors: MotorSlot[] = [];
@@ -132,6 +145,10 @@ export class Plant implements PlantPort, PlantView {
   ) {
     this.net = buildNetlist(machine);
     const ambient = world.thermal().ambient;
+    // a bench supply stands in for the design's own batteries and supplies, where they connect
+    const bench = world.supply?.();
+    const benchNets: (Net | undefined)[] = [];
+    const replaced: string[] = [];
     // the microcontroller's pins, by net
     for (const np of this.net.pinsOf.get(mcu) ?? []) {
       const n = this.net.netOf.get(np.key);
@@ -150,8 +167,29 @@ export class Plant implements PlantPort, PlantView {
       }
       switch (part.kind) {
         case "battery":
+          if (bench) {
+            benchNets.push(this.netOf(mc.name, "POS"));
+            replaced.push(mc.name);
+            break;
+          }
           this.batteries.push({ b: new Battery(mc.name, part, opts.soc ?? 1), net: this.netOf(mc.name, "POS") });
           break;
+        case "psu": {
+          // a mains supply or plug-in adapter: its positive outputs are live for the whole run
+          const model = part.sim?.k === "supply" ? part.sim : undefined;
+          const outs = part.pins.filter((p) => p.type === "pwr_out" || p.id === model?.pos);
+          const nets = [...new Set(outs.map((p) => this.netOf(mc.name, p.id)).filter((n): n is Net => !!n))];
+          if (bench) {
+            benchNets.push(...nets);
+            replaced.push(mc.name);
+            break;
+          }
+          const v = Number(part.specs.v_out ?? model?.v ?? outs[0]?.v ?? 12);
+          const i = Number(part.specs.i_out ?? outs[0]?.imax ?? 2);
+          this.supplies.push({ s: new Supply(mc.name, v, i, model?.r ?? 0.02, ADAPTER), nets });
+          this.assumptions.push(`${mc.name}: plugged in and switched on for the whole run, ${v} V up to ${i} A; past about ${Math.round(ADAPTER.trip * 100)} % of that it cuts out and tries again a second later`);
+          break;
+        }
         case "regulator": {
           const vin = this.netOf(mc.name, "VIN") ?? this.netOf(mc.name, "IN_POS");
           const vout = this.netOf(mc.name, "VOUT") ?? this.netOf(mc.name, "OUT_POS");
@@ -159,7 +197,7 @@ export class Plant implements PlantPort, PlantView {
           break;
         }
         case "fuse":
-          this.fuses.push({ comp: mc.name, rating: Number(part.specs.rating_a ?? 20), over2: 0, over35: 0, blown: false });
+          this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(part.specs.rating_a ?? 20), over2: 0, over35: 0, blown: false });
           break;
         case "motor_driver":
           for (const ch of ["A", "B"]) {
@@ -222,10 +260,9 @@ export class Plant implements PlantPort, PlantView {
     }
     // test signals from the world, onto the analog inputs their nets reach
     for (const d of world.drives?.() ?? []) {
-      const dot = d.on.indexOf(".");
-      const n = dot > 0 ? this.netOf(d.on.slice(0, dot), d.on.slice(dot + 1)) : this.net.nets.find((x) => x.name === d.on);
+      const n = this.netByName(d.on);
       if (!n) {
-        this.notes.push(`The signal on ${d.on} goes nowhere: there is no net called ${d.on}${dot > 0 ? " (or that pin is not wired)" : ""}.`);
+        this.notes.push(`The signal on ${d.on} goes nowhere: there is no net called ${d.on}${d.on.includes(".") ? " (or that pin is not wired)" : ""}.`);
         continue;
       }
       const pin = this.mcuPinOfNet.get(n.id);
@@ -236,12 +273,34 @@ export class Plant implements PlantPort, PlantView {
       const fcpu = this.board.fcpu;
       this.analogSrc.set(pin, (t) => d.v(t / fcpu));
     }
+    if (bench) {
+      const on = bench.on ? this.netByName(bench.on) : undefined;
+      const nets = [...new Set(bench.on ? (on ? [on] : []) : benchNets.filter((n): n is Net => !!n))];
+      if (!nets.length)
+        this.notes.push(
+          bench.on
+            ? `The bench supply goes nowhere: there is no net called ${bench.on}${bench.on.includes(".") ? " (or that pin is not wired)" : ""}.`
+            : "The bench supply has nowhere to clip on: the design has no wired battery or power supply. Say where with sim.supply(on: \"NET\").",
+        );
+      else {
+        this.supplies.push({ s: new Supply("bench_supply", bench.volts, bench.amps, 0.01, BENCH_SUPPLY), nets });
+        const where = bench.on ?? (replaced.length ? `where ${listOf(replaced)} connect${replaced.length > 1 ? "" : "s"}` : "");
+        this.assumptions.push(`Powered from a bench supply at ${bench.volts} V with its current limit at ${bench.amps} A, clipped on ${where}${bench.on && replaced.length ? `, with ${listOf(replaced)} left out` : ""}`);
+      }
+    }
+    // a regulator's depth down a chain of regulators
+    const depth = (g: RegSlot, n = 0): number => {
+      const up = n < this.regs.length ? this.regs.find((u) => u !== g && u.vout && g.vin && u.vout.id === g.vin.id) : undefined;
+      return up ? 1 + depth(up, n + 1) : 0;
+    };
+    this.regOrder = [...this.regs].sort((a, b) => depth(b) - depth(a));
     if (this.unsupported.length) this.notes.push(`Not simulated yet (they stay still): ${this.unsupported.join(", ")}.`);
     for (const b of this.batteries) this.assumptions.push(...b.b.assumed);
     for (const m of this.motors) this.assumptions.push(...m.m.assumed);
     for (const mc of machine.components) if (mc.measured) this.assumptions.push(`${mc.name}: measured on the real part (${Object.entries(mc.measured).map(([k, v]) => `${k} ${Number(v.toPrecision(3))}`).join(", ")}), in place of the catalog's numbers`);
     hal.plant = this;
     this.updateRails();
+    if (this.mcuSupply === "USB") this.assumptions.push(`Nothing in the wiring powers ${mcu}, so it runs from its USB port: 5 V, with its 500 mA polyfuse`);
   }
 
   // ---------- netlist helpers ----------
@@ -256,6 +315,12 @@ export class Plant implements PlantPort, PlantView {
 
   netOf(comp: string, pin: string, index = 0): Net | undefined {
     return this.net.netOf.get(`${comp}[${index}].${pin}`);
+  }
+
+  /** a net by its name, or by "component.PIN" on it */
+  netByName(on: string): Net | undefined {
+    const dot = on.indexOf(".");
+    return dot > 0 ? this.netOf(on.slice(0, dot), on.slice(dot + 1)) : this.net.nets.find((x) => x.name === on);
   }
 
   /** the MCU pin on the same net as a part's pin, or -1 */
@@ -504,12 +569,16 @@ export class Plant implements PlantPort, PlantView {
 
   private updateRails() {
     this.netV.clear();
-    for (const { b, net } of this.batteries) if (net) this.netV.set(net.id, this.fuses.some((f) => f.blown) ? 0 : b.volts());
+    // a blown fuse cuts the net it sits on
+    const blown = new Set(this.fuses.filter((f) => f.blown && f.net).map((f) => f.net!.id));
+    const live = (n: Net) => !blown.has(n.id);
+    for (const { b, net } of this.batteries) if (net && live(net)) this.netV.set(net.id, b.volts());
+    for (const { s, nets } of this.supplies) for (const n of nets) if (live(n)) this.netV.set(n.id, Math.max(this.netV.get(n.id) ?? 0, s.volts()));
     // regulators, in order (one may feed another)
     for (let pass = 0; pass < 2; pass++)
       for (const g of this.regs) {
         const vin = g.vin ? (this.netV.get(g.vin.id) ?? 0) : 0;
-        if (g.vout) this.netV.set(g.vout.id, g.r.out(vin));
+        if (g.vout && live(g.vout)) this.netV.set(g.vout.id, g.r.out(vin));
       }
     for (const n of this.net.nets) {
       if (this.netV.has(n.id)) continue;
@@ -532,9 +601,9 @@ export class Plant implements PlantPort, PlantView {
       this.mcuSupply = "VIN";
       if (v5) this.netV.set(v5.id, this.mcuV);
     } else {
-      this.mcuV = 5;
+      this.mcuV = this.usb.volts();
       this.mcuSupply = "USB";
-      if (v5) this.netV.set(v5.id, 5);
+      if (v5) this.netV.set(v5.id, this.mcuV);
     }
   }
 
@@ -595,28 +664,42 @@ export class Plant implements PlantPort, PlantView {
       } else if (c.shutdown && c.heat < 0.5) c.shutdown = false;
     }
     this.world.step(dt, t, this);
-    // the battery carries everything
+    // the batteries and supplies carry everything on the nets they feed
     this.logicLoad = this.logicCurrent();
-    for (const g of this.regs) g.r.load = g.vout ? this.railLoad(g.vout) : 0;
+    const draw = this.netDraws();
+    // sources on the same net share its load
+    const sources = new Map<number, number>();
+    for (const n of [...this.batteries.map((b) => b.net), ...this.supplies.flatMap((s) => s.nets)]) if (n) sources.set(n.id, (sources.get(n.id) ?? 0) + 1);
+    const onNet = (n: Net) => ((this.netV.get(n.id) ?? 0) > 0.5 ? this.staticDraw(n) + (draw.get(n.id) ?? 0) : 0);
+    const carried = (n: Net) => onNet(n) / (sources.get(n.id) ?? 1);
     let ib = 0;
-    for (const c of this.chans) ib += c.supplyCurrent;
-    for (const g of this.regs) ib += g.r.inputCurrent(g.vin ? (this.netV.get(g.vin.id) ?? 0) : 0);
-    for (const s of this.servos) if (s.vcc && this.batteries.some((b) => b.net?.id === s.vcc!.id)) ib += s.s.current;
-    if (this.fuses.some((f) => f.blown)) ib = 0;
+    for (const { b, net } of this.batteries) {
+      const i = net ? carried(net) : 0;
+      b.step(i, dt);
+      ib += i;
+    }
     this.batteryCurrent = ib;
     if (ib > this.peakBatteryCurrent) this.peakBatteryCurrent = ib;
-    for (const { b } of this.batteries) b.step(ib / this.batteries.length, dt);
+    for (const { s, nets } of this.supplies) {
+      const said = s.step(nets.reduce((a, n) => a + carried(n), 0), dt);
+      if (said) this.events.push({ t, kind: "warn", text: said });
+    }
+    if (this.mcuSupply === "USB") {
+      const said = this.usb.step(this.logicLoad, dt);
+      if (said) this.events.push({ t, kind: "warn", text: `The ${this.board.name}'s ${said}` });
+    }
     for (const f of this.fuses) {
       if (f.blown) continue;
-      f.over2 = ib > 2 * f.rating ? f.over2 + dt : Math.max(0, f.over2 - dt * 0.2);
-      f.over35 = ib > 3.5 * f.rating ? f.over35 + dt : 0;
+      const i = f.net ? onNet(f.net) : ib;
+      f.over2 = i > 2 * f.rating ? f.over2 + dt : Math.max(0, f.over2 - dt * 0.2);
+      f.over35 = i > 3.5 * f.rating ? f.over35 + dt : 0;
       if (f.over2 > 2 || f.over35 > 0.2) {
         f.blown = true;
-        this.events.push({ t, kind: "warn", text: `Fuse ${f.comp} (${f.rating} A) blew at ${ib.toFixed(1)} A` });
+        this.events.push({ t, kind: "warn", text: `Fuse ${f.comp} (${f.rating} A) blew at ${i.toFixed(1)} A` });
         this.hal.powerFail = `fuse ${f.comp} blew`;
       }
     }
-    if (this.mcuV < 4 && this.mcuSupply !== "USB") {
+    if (this.mcuV < 4) {
       this.events.push({ t, kind: "warn", text: `The ${this.board.name} browned out: its supply fell to ${this.mcuV.toFixed(1)} V` });
       this.hal.powerFail = "brownout";
     }
@@ -666,16 +749,42 @@ export class Plant implements PlantPort, PlantView {
     }
   }
 
-  /** current drawn from a rail by everything on it */
-  private railLoad(rail: Net): number {
+  /** what the parts on a net draw just by being powered, A */
+  private staticDraw(rail: Net): number {
     let i = 0;
     for (const p of rail.pins) {
-      if (p.pin.type !== "pwr_in" && !(p.pin.type === "pwr_rail" && p.comp === this.mcu)) continue;
-      if (p.comp === this.mcu) i += 0.03;
-      else i += p.pin.draw ?? 0.01;
+      if (p.comp === this.mcu) {
+        // the controller counts once, on the pin it runs from: VIN's share is in logicLoad
+        if (p.pin.id !== "VIN" && (p.pin.type === "pwr_rail" || p.pin.type === "pwr_in")) i += 0.03;
+      } else if (p.pin.type === "pwr_in") i += p.pin.draw ?? 0.01;
     }
+    return i;
+  }
+
+  /** current drawn from a rail by everything on it */
+  private railLoad(rail: Net): number {
+    let i = this.staticDraw(rail);
     for (const s of this.servos) if (s.vcc && s.vcc.id === rail.id) i += s.s.current;
     return i;
+  }
+
+  /**
+   * Current drawn out of each net this step beyond what its parts draw by being powered: motor drivers,
+   * servos, the controller through its own regulator, and regulators down the chain.
+   */
+  private netDraws(): Map<number, number> {
+    const d = new Map<number, number>();
+    const add = (n: Net | undefined, a: number) => {
+      if (n && a > 0) d.set(n.id, (d.get(n.id) ?? 0) + a);
+    };
+    for (const c of this.chans) add(c.supply, c.supplyCurrent);
+    for (const s of this.servos) add(s.vcc, s.s.current);
+    if (this.mcuSupply === "VIN") add(this.netOf(this.mcu, "VIN"), this.logicLoad);
+    for (const g of this.regOrder) {
+      g.r.load = g.vout ? this.staticDraw(g.vout) + (d.get(g.vout.id) ?? 0) : 0;
+      add(g.vin, g.r.inputCurrent(g.vin ? (this.netV.get(g.vin.id) ?? 0) : 0));
+    }
+    return d;
   }
 
   private logicCurrent(): number {
@@ -704,6 +813,13 @@ export class Plant implements PlantPort, PlantView {
       out[`${b.name}.amps`] = b.current;
       out[`${b.name}.soc`] = b.soc * 100;
     }
+    for (const { s } of this.supplies) {
+      out[`${s.name}.volts`] = s.volts();
+      out[`${s.name}.amps`] = s.current;
+    }
+    if (this.mcuSupply === "USB") out["usb.amps"] = this.usb.current;
     out["logic.volts"] = this.mcuV;
   }
 }
+
+const listOf = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : xs[0] ?? "");
