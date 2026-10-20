@@ -172,6 +172,10 @@ export class MechWorld implements World {
     return this.inner?.drives?.() ?? [];
   }
 
+  supply() {
+    return this.inner?.supply?.();
+  }
+
   thermal() {
     return this.inner?.thermal() ?? { ambient: this.ambient, cooling: 1 };
   }

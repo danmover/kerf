@@ -324,6 +324,14 @@ export class FaultInjector {
         undos.push(() => delete (b as { volts?: unknown }).volts);
         break;
       }
+      case "psu": {
+        // a supply unplugged from the wall, or its plug pulled out of the machine
+        const s = plant.supplies.find((x) => x.s.name === comp)?.s;
+        if (!s || Object.prototype.hasOwnProperty.call(s, "volts")) break;
+        s.volts = () => 0;
+        undos.push(() => delete (s as { volts?: unknown }).volts);
+        break;
+      }
       case "regulator": {
         const g = plant.regs.find((x) => x.r.name === comp);
         if (g) undos.push(this.swap(g, "vout", undefined));

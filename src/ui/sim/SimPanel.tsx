@@ -28,7 +28,7 @@ import { useChatDraft } from "../chatDraft";
 import { Plot } from "./Plot";
 import { DisplayView } from "./DisplayView";
 import { Calibrate } from "./Calibrate";
-import { mmss, seek, useSelectedScenario } from "./simUi";
+import { mmss, savedWhen, seek, togglePlayback, useSelectedScenario } from "./simUi";
 import "../../styles/sim.css";
 
 type Status = "pass" | "warn" | "fail" | "pending" | "info";
@@ -107,8 +107,12 @@ export function SimPanel() {
 function HeadControls({ def, run }: { def: ScenarioDef; run?: SimRun }) {
   const auto = useSim((s) => s.auto);
   const view = useSim((s) => s.view);
+  const playing = useSim((s) => s.playing);
   const setDraft = useChatDraft((s) => s.set);
   const busy = run?.status === "running" || run?.status === "waiting";
+  // with a run to show, play replays it; running it again is the second choice
+  const replayable = !!run?.result && !run.result.error && run.result.variants.some((v) => v.frames.t.length > 1);
+  const spinner = <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />;
   const st = scenarioStatus(def, run);
   const ask =
     st.status === "fail" || st.status === "warn"
@@ -119,9 +123,20 @@ function HeadControls({ def, run }: { def: ScenarioDef; run?: SimRun }) {
       <button className={`sim-toggle ${auto ? "on" : ""}`} onClick={() => setAutoRun(!auto)} aria-pressed={auto} data-tip="Run scenarios again after every change">
         <Icon.Refresh size={12} /> auto
       </button>
-      <button className="btn sm" disabled={busy} onClick={() => runScenarioNow(def.label)} data-tip="Run all three variants again">
-        {busy ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Play size={12} />} {busy ? "Running" : "Run"}
-      </button>
+      {replayable ? (
+        <>
+          <button className="btn sm" onClick={() => togglePlayback(true)} aria-pressed={playing} data-tip={playing ? "Pause the replay" : `Replay ${run?.stale ? "the last" : "this"} run in the 3D view, without running it again`}>
+            {playing ? <Icon.Pause size={12} /> : <Icon.Play size={12} />} {playing ? "Pause" : "Play"}
+          </button>
+          <button className="btn sm ghost" disabled={busy} onClick={() => runScenarioNow(def.label)} data-tip="Run all three variants again, fresh">
+            {busy ? spinner : <Icon.Redo size={12} />} {busy ? "Running" : "Run again"}
+          </button>
+        </>
+      ) : (
+        <button className="btn sm" disabled={busy} onClick={() => runScenarioNow(def.label)} data-tip="Run all three variants">
+          {busy ? spinner : <Icon.Play size={12} />} {busy ? "Running" : "Run"}
+        </button>
+      )}
       <button className={`sim-toggle ${view ? "on" : ""}`} disabled={!run?.result} onClick={() => useSim.setState({ view: !view })} aria-pressed={view} data-tip="Play the run in the 3D view">
         <Icon.Cube size={12} /> 3D
       </button>
@@ -209,6 +224,11 @@ function Verdict({ def, run }: { def: ScenarioDef; run?: SimRun }) {
         <div className="sub">
           {run?.result?.error ?? (run?.status === "error" ? run.error : `${worldText(def)}${def.uses.length ? ` · for ${def.uses.join(", ")}` : ""}`)}
         </div>
+        {run?.savedAt && run.result && (
+          <div className="sub" style={{ marginTop: 4 }}>
+            {run.stale ? `The last run, saved ${savedWhen(run.savedAt)}, from before the latest change.` : `Saved with the design ${savedWhen(run.savedAt)}: nothing has changed since, so Play replays it.`}
+          </div>
+        )}
         {variants.length > 0 && (
           <div className="sim-variants" role="tablist" aria-label="Which run">
             {VARIANTS.filter((v) => variants.some((x) => x.variant === v)).map((v) => (
@@ -292,7 +312,7 @@ function Stats({ def, v }: { def: ScenarioDef; v: VariantRun }) {
         ? ["firmware", "print_time", "heat_time", "layer_shifts", "under_extrusion", "hotend_error", "first_layer_error", "ringing", "belt_slack", "flow_peak", "psu_peak", "x_load", "y_load", "z_load"]
         : def.spec.mechanism
           ? ["time", ...mechKeys]
-          : ["time", "battery_left", "battery_peak_amps", "faults"];
+          : ["time", "battery_left", "battery_peak_amps", "supply_peak_amps", "supply_min_volts", "faults"];
   if (world === "printer") return <PrinterStats v={v} pick={pick} />;
   const motors = v.summary.motors;
   const hottest = motors.reduce<{ name: string; t: number } | null>((a, m) => (!a || m.maxTemp > a.t ? { name: m.name, t: m.maxTemp } : a), null);
@@ -496,14 +516,7 @@ export function Timeline({ v, compact }: { v: VariantRun; compact?: boolean }) {
   const frac = end ? Math.min(1, t / end) : 0;
   return (
     <div className="sim-timeline">
-      <button
-        className="icon-btn sm"
-        aria-label={playing ? "Pause" : "Play"}
-        onClick={() => {
-          if (!playing && t >= end - 0.05) useSim.setState({ t: 0 });
-          useSim.setState({ playing: !playing, view: compact ? true : useSim.getState().view || !playing });
-        }}
-      >
+      <button className="icon-btn sm" aria-label={playing ? "Pause" : "Play"} onClick={() => togglePlayback(compact)}>
         {playing ? <Icon.Pause size={14} /> : <Icon.Play size={14} />}
       </button>
       <select value={speed} onChange={(e) => useSim.setState({ speed: Number(e.target.value) })} aria-label="Playback speed" className="mono" style={{ height: 24, borderRadius: 6, border: "1px solid var(--line-2)", background: "var(--bg-2)", color: "var(--text-2)", fontSize: 11 }}>

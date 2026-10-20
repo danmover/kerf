@@ -84,6 +84,7 @@ export function scenarioSummary(def: ScenarioDef, run: SimRun | undefined): stri
   const r = run.result;
   if (!r) return [...lines, "  Still running."].join("\n");
   if (r.error) return [...lines, `  Cannot run: ${r.error}`].join("\n");
+  if (run.savedAt && !run.stale) lines.push(`  The run saved with the project on ${new Date(run.savedAt).toISOString().slice(0, 16).replace("T", " ")} UTC: nothing it depends on has changed since, so it was not run again.`);
   const outs = outcomesFor(def, r) ?? [];
   for (const o of outs) {
     lines.push(`  [${o.status}] ${o.label}${o.level === "soft" ? " (soft)" : ""}: ${o.detail}${o.estimate ? ` ${estimateNote(o, useDesign.getState().model?.machine?.tests)}` : ""}`);

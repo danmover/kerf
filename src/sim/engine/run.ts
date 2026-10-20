@@ -77,6 +77,8 @@ export interface RunSummary {
   /** share of the chip's time spent in interrupt handlers */
   isrLoad: number;
   battery?: { start: number; end: number; minVolts: number; usedMah: number; peakAmps: number };
+  /** the design's mains supplies and plug-in adapters, or the bench supply */
+  supply?: { minVolts: number; peakAmps: number; trips: number };
   motors: MotorSummary[];
   eepromWrites: number;
   /** the firmware's last reported state line, if it prints one */
@@ -291,6 +293,9 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     loopMax: (loopMax / board.fcpu) * 1000,
     isrLoad: hal.isrCycles / total,
     battery: bat ? { start: soc0 * 100, end: bat.soc * 100, minVolts: bat.minV, usedMah: bat.ah * 1000, peakAmps: plant.peakBatteryCurrent } : undefined,
+    supply: plant.supplies.length
+      ? { minVolts: Math.min(...plant.supplies.map((x) => x.s.minV)), peakAmps: Math.max(...plant.supplies.map((x) => x.s.peak)), trips: plant.supplies.reduce((a, x) => a + x.s.trips, 0) }
+      : undefined,
     motors: plant.motors.map((m) => ({ name: m.comp, peakAmps: m.m.peakCurrent, maxTemp: m.m.maxTemp, wh: m.m.energy / 3600, loadPeak: peakOf(frames, `${m.comp}.torque`) / (motorSpecs.get(m.comp) ?? 1), heatGuess: m.m.heatGuess || undefined })),
     eepromWrites: hal.eepromWrites,
     state,
@@ -310,6 +315,12 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results.battery_used = summary.battery.usedMah;
     results.battery_peak_amps = summary.battery.peakAmps;
   }
+  if (summary.supply) {
+    results.supply_min_volts = summary.supply.minVolts;
+    results.supply_peak_amps = summary.supply.peakAmps;
+    results.supply_trips = summary.supply.trips;
+  }
+  results.browned_out = stop === "brownout";
   for (const m of summary.motors) {
     results[`${m.name}.peak_amps`] = m.peakAmps;
     results[`${m.name}.max_temp`] = m.maxTemp;

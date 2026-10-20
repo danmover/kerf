@@ -65,6 +65,8 @@ function printer(m: Model, label: string, world: string, expects: string[]): str
 
 const motors = (m: Model) => (m.machine?.components ?? []).filter((c) => catalogPart(c.catalogId)?.kind === "gearmotor").map((c) => c.name);
 const hasBattery = (m: Model) => (m.machine?.components ?? []).some((c) => catalogPart(c.catalogId)?.kind === "battery");
+/** a mains supply or plug-in adapter */
+const hasSupply = (m: Model) => (m.machine?.components ?? []).some((c) => catalogPart(c.catalogId)?.kind === "psu");
 const startDelay = (m: Model) => {
   const v = firmwareOf(m)?.settings.start_delay;
   return typeof v === "number" ? v : 10;
@@ -204,10 +206,11 @@ export const SIM_TEMPLATES: SimTemplate[] = [
     id: "power_up",
     hidden: isPrinter,
     title: "Power-up on the bench",
-    blurb: "Power it with the motors free: the firmware starts, every motor turns, nothing is mis-wired, RAM and loop time have room.",
+    blurb: "Power it from its own battery or supply with the motors free: it stays powered, the firmware starts, every motor turns, nothing is mis-wired, RAM and loop time have room.",
     unavailable: needsFirmware,
     source: (m) =>
       bench(m, "Power-up on the bench", "sim.bench(load: 0)", Math.max(60, Math.ceil((startDelay(m) + 60) / 60) * 60), [
+        'expect "Stays powered": browned_out == false',
         'expect "No firmware mistakes": faults == 0',
         ...motors(m).map((n) => `expect "${n} turns" soft: abs(${n}.turns) > 1`),
         'expect "RAM to spare" soft: ram_use < 75%',
@@ -242,6 +245,7 @@ export const SIM_TEMPLATES: SimTemplate[] = [
         ...motors(m).map((n) => `expect "${n} keeps turning": abs(${n}.turns) > 1`),
         ...motors(m).map((n) => `expect "${n} stays below 80 °C" soft: ${n}.max_temp < 80C`),
         ...(hasBattery(m) ? ['expect "Battery voltage holds" soft: battery_min_volts > 0.8 * bat.v_nom'] : []),
+        ...(hasSupply(m) ? ['expect "The power supply copes" soft: supply_trips == 0'] : []),
       ]).replace(/bat\.v_nom/g, (m.machine?.components.find((c) => catalogPart(c.catalogId)?.kind === "battery")?.name ?? "bat") + ".v_nom"),
   },
   {

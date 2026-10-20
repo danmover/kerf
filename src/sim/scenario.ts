@@ -8,6 +8,7 @@ import { Args } from "../lang/args";
 import type { Expr, Span } from "../lang/ast";
 import { Fn, Obj, Vec, typeName, type CallCtx, type Value } from "../lang/values";
 import type { BenchSpec } from "./worlds/bench";
+import type { BenchSupplySpec } from "./worlds/types";
 import { noteHz, type SignalShape, type SignalSpec } from "./worlds/signals";
 import type { HingeSpec, SandPitSpec, ScrewSpec, TunnellerSpec } from "./worlds/sandPit";
 import { VARIANTS, type VariantName } from "./worlds/common";
@@ -22,7 +23,7 @@ import type { MechModel } from "./mech/model";
 /** A world or machine description made by a sim.* function. */
 export class SimSpec extends Obj {
   constructor(
-    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "fault" | "print" | "measured",
+    public what: "world" | "robot" | "screw" | "hinge" | "type" | "config" | "signal" | "supply" | "fault" | "print" | "measured",
     public data: unknown,
     label: string,
   ) {
@@ -159,15 +160,30 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   simFn(
     "bench",
-    ["load", "force", "range", "ambient", "signals"],
-    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. Use it for power-up, battery runtime, overload and hot-room tests. load: share of the design load (1; 0 runs the motors free, 1.5 is a 50 % overload); force: push on each linear actuator's rod (0 N); range: what a distance sensor sees (1 m); ambient: room temperature (20C); signals: a sim.signal(...) or a list of them, test signals on nets that reach the controller's analog inputs.",
+    ["load", "force", "range", "ambient", "signals", "supply"],
+    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. It runs from the design's own battery or power supply (a plug-in adapter or mains supply is plugged in and on). Use it for power-up, battery runtime, overload and hot-room tests. load: share of the design load (1; 0 runs the motors free, 1.5 is a 50 % overload); force: push on each linear actuator's rod (0 N); range: what a distance sensor sees (1 m); ambient: room temperature (20C); signals: a sim.signal(...) or a list of them, test signals on nets that reach the controller's analog inputs; supply: a sim.supply(...) bench supply to power it from instead.",
     (a, ctx) => {
       const load = a.num("load", 1);
       if (load < 0) a.ctx.error("sim.bench(): load is a share of the design load, 0 or more");
       const sv = a.value("signals");
       const list = sv === undefined ? [] : Array.isArray(sv) ? sv : [sv];
       const signals = list.map((v, i) => (v instanceof SimSpec && v.what === "signal" ? (v.data as SignalSpec) : ctx.error(`sim.bench(): signal ${i + 1} is ${typeName(v)}, not sim.signal(...)`)));
-      return new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: load, forces: {}, force: a.num("force", 0), range: a.positive("range", 1000), ambient: a.num("ambient", 20), signals } }, "bench");
+      const pv = a.value("supply");
+      const supply = pv === undefined ? undefined : pv instanceof SimSpec && pv.what === "supply" ? (pv.data as BenchSupplySpec) : ctx.error(`sim.bench(): supply is ${typeName(pv)}, not sim.supply(...)`);
+      return new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: load, forces: {}, force: a.num("force", 0), range: a.positive("range", 1000), ambient: a.num("ambient", 20), signals, ...(supply ? { supply } : {}) } }, "bench");
+    },
+  ),
+  simFn(
+    "supply",
+    ["volts", "amps", "on"],
+    'A bench power supply, for sim.bench(supply: ...): it powers the machine in place of its own batteries and supplies, clipped on where they connect. volts: its set voltage; amps: its current limit (past it the voltage falls to hold the current there, as a real bench supply does; 3A); on: a net name or "component.PIN" to clip it on somewhere else, for a design with no battery or supply of its own. Use it for a current-limited first power-up.',
+    (a, ctx) => {
+      const volts = a.positive("volts");
+      const amps = a.positive("amps", 3);
+      if (volts > 60) ctx.error("sim.supply(): bench supplies go up to about 60 V; volts should be the voltage it is set to, like 12V");
+      const on = a.has("on") ? a.str("on") : undefined;
+      if (on !== undefined && !/^[A-Za-z_][\w]*(\.[A-Za-z0-9_+-]+)?$/.test(on)) ctx.error(`sim.supply(): on should be a net name or "component.PIN", like "VBAT" or "bat.POS"`);
+      return new SimSpec("supply", { volts, amps, ...(on ? { on } : {}) } satisfies BenchSupplySpec, `bench supply at ${volts} V`);
     },
   ),
   simFn(
@@ -282,7 +298,7 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   simFn(
     "unplug",
     ["part", "at", "until"],
-    "A part comes unplugged: every wire to it is cut. part: any component but the controller (a sensor stops answering, a motor or actuator goes limp, a driver's outputs go off, a battery cuts the power); at: when; until: when it is plugged back in.",
+    "A part comes unplugged: every wire to it is cut. part: any component but the controller (a sensor stops answering, a motor or actuator goes limp, a driver's outputs go off, a battery or power supply cuts the power); at: when; until: when it is plugged back in.",
     (a, ctx) => fault("unplug", compName(a.value("part"), ctx, "sim.unplug(): part"), a),
   ),
   simFn(
