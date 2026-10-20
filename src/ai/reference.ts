@@ -154,6 +154,7 @@ Every normal component property works (at, axis, rotate, color, group, label, at
 - role: "text": what the part does here ("front screw", "steering hinge", "x", "extruder", "part cooling"). The firmware generators read it to tell motors, axes and fans apart.
 - load: torque on the output shaft (N·mm, write 10.8Nm). The engineering check compares it with the stall or holding torque (fail at 100 %, warning above 50 %; a DC motor's stall torque and current scale with its driver's supply voltage, as in calc.motor_point), and the wiring rules use the current it implies to size drivers, wires and supplies.
 - rating: (fuses only) the fuse you fit, in A (write 15A); without it the catalog's fuse is assumed. The wiring rules fail a fuse larger than the thinnest wire after it can carry, and warn when the load after it is over 90 % of its rating.
+- held: "text": how a board, module, supply or battery is held when the model cannot show it ("double-sided foam tape", "hook-and-loop strap"). Without it, the mounting check needs screws through two of its holes into something, or parts that close it in on every side.
 - buy: "https://…": a direct product page for this exact item; replaces the catalog link in the parts list.
 - price: USD each; replaces the catalog price.
 - ref: "R12": (parts on a lib.circuit_board) the reference designator printed on the board and used in its parts list; left out, Kerf numbers each kind in order (R1, C1, D1, U1, RV1...).

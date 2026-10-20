@@ -1,13 +1,19 @@
-// Routes the wiring harness off the main thread. For a machine whose parts
-// move with its axes, the worker also works out how they move (re-evaluating
-// the design, machine/pose) and plans the moving cables' links (travel.ts)
-// before routing the runs between them.
+// Routes the wiring harness off the main thread, then checks it against the
+// parts (clash.ts) and checks how each electronics module is held
+// (mounts.ts). For a machine whose parts move with its axes, the worker also
+// works out how they move (re-evaluating the design, machine/pose) and plans
+// the moving cables' links (travel.ts) before routing the runs between them.
 
 import { evaluate } from "../../lang/evaluator";
 import { machinePose, type MachinePose } from "../pose";
-import { keepOutBits, routeRequests, type Harness } from "./harness";
-import { routeCables, type RouteInput, type RouteResult } from "./route";
+import type { SplicePlace, WiringFindings } from "./clash";
+import type { Harness } from "./harness";
+import type { MountResult } from "./mounts";
+import type { RouteInput, RouteResult } from "./route";
 import { planTravel, type PartBox, type TravelPlan } from "./travel";
+import { runWiring, type WiringInput } from "./wiringRun";
+
+export type { WiringInput };
 
 /** What the planner needs: the design's source (to pose it), every part's box, and the harness. */
 export interface TravelInput {
@@ -16,8 +22,10 @@ export interface TravelInput {
   harness: Harness;
 }
 
-export type HarnessRouteRequest = { id: number; input: RouteInput; travel?: TravelInput } | { id: number; plan: TravelInput };
-export type HarnessRouteResponse = { id: number; ok: true; result?: RouteResult; plan: TravelPlan | null } | { id: number; ok: false; error: string };
+export type HarnessRouteRequest = { id: number; input: RouteInput; travel?: TravelInput; wiring: WiringInput } | { id: number; plan: TravelInput };
+export type HarnessRouteResponse =
+  | { id: number; ok: true; result?: RouteResult; plan: TravelPlan | null; findings?: WiringFindings; mounts?: MountResult[]; splices?: SplicePlace[] }
+  | { id: number; ok: false; error: string };
 
 let posed: { source: string; pose: MachinePose | null } | null = null;
 
@@ -45,8 +53,7 @@ self.onmessage = (ev: MessageEvent<HarnessRouteRequest>) => {
     if ("plan" in req) msg = { id: req.id, ok: true, plan: plan(req.plan) };
     else {
       const p = req.travel ? plan(req.travel) : null;
-      const input: RouteInput = p ? { ...req.input, wires: routeRequests(req.travel!.harness, p), keepOut: keepOutBits(p).boxes } : req.input;
-      msg = { id: req.id, ok: true, result: routeCables(input), plan: p };
+      msg = { id: req.id, ok: true, plan: p, ...runWiring(req.input, req.wiring, p) };
     }
   } catch (e) {
     msg = { id: req.id, ok: false, error: e instanceof Error ? e.message : String(e) };

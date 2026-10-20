@@ -100,7 +100,7 @@ const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as co
 const BRIEF_PROCESS_LISTS = { workshop: "workshop", can_order: "canOrder" } as const;
 export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", ...Object.keys(BRIEF_PROCESS_LISTS), "max_size", "max_mass"];
 /** extra properties of purchasable catalog parts */
-const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref", "measured"];
+const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref", "measured", "held"];
 const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
@@ -1119,6 +1119,7 @@ class Evaluator {
         const price = props.price !== undefined ? this.num(props.price, propSpans.price, "price") : undefined;
         if (props.buy !== undefined && (typeof props.buy !== "string" || !/^https?:\/\//.test(props.buy))) throw new EvalError('buy: should be a web address in quotes, e.g. buy: "https://www.pololu.com/product/713"', propSpans.buy);
         if (props.role !== undefined && typeof props.role !== "string") throw new EvalError('role: should be text, e.g. role: "front screw"', propSpans.role);
+        if (props.held !== undefined && (typeof props.held !== "string" || !props.held.trim())) throw new EvalError('held: says how the part is held where the model cannot show it, e.g. held: "hook-and-loop strap"', propSpans.held);
         if (props.rating !== undefined && cp.kind !== "fuse") throw new EvalError("rating: is a fuse's rating in amps; only fuses take it", propSpans.rating);
         const rating = props.rating !== undefined ? this.num(props.rating, propSpans.rating, "rating (the fuse's rating, A)") : undefined;
         if (rating !== undefined && !(rating > 0)) throw new EvalError("rating: should be a current above zero, like 15A", propSpans.rating);
@@ -1155,6 +1156,7 @@ class Evaluator {
           pcb: onBoard ? { board: onBoard.board, x: onBoard.x, y: onBoard.y, rot: onBoard.rot, side: onBoard.side } : undefined,
           ref: typeof props.ref === "string" ? props.ref : undefined,
           measured,
+          held: typeof props.held === "string" ? props.held.trim() : undefined,
           span: s.span,
         });
         const mc = this.machine.components[this.machine.components.length - 1];

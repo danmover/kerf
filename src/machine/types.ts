@@ -297,6 +297,8 @@ export interface MachineComponent {
   ref?: string;
   /** catalog specs replaced by values measured on the real part (`measured: sim.measured(...)`), for the simulation */
   measured?: Record<string, number>;
+  /** how the part is held where the geometry cannot show it (`held: "hook-and-loop strap"`) */
+  held?: string;
   span: Span;
 }
 

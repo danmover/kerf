@@ -18,6 +18,7 @@ export class TriBVH {
   private len: Uint32Array;
   private nodes = 0;
   private stack = new Int32Array(128);
+  private q = new Float64Array(3);
 
   constructor(positions: ArrayLike<number>, indices: ArrayLike<number>) {
     const n = Math.floor(indices.length / 3);
@@ -241,6 +242,102 @@ export class TriBVH {
     return Math.sqrt(best2);
   }
 
+  /**
+   * The nearest point on the mesh to (x, y, z), up to maxDist: its distance, with the point
+   * written to out[0..2] and the triangle to out[3]. Infinity (out untouched) when none is that close.
+   */
+  closest(x: number, y: number, z: number, maxDist: number, out: Float64Array): number {
+    if (!this.count) return Infinity;
+    let best2 = maxDist * maxDist;
+    let bestTri = -1;
+    let sp = 0;
+    let stack = this.stack;
+    stack[sp++] = 0;
+    const b = this.bounds;
+    const q = this.q;
+    while (sp) {
+      const node = stack[--sp];
+      const dx = Math.max(b[node * 6] - x, 0, x - b[node * 6 + 3]);
+      const dy = Math.max(b[node * 6 + 1] - y, 0, y - b[node * 6 + 4]);
+      const dz = Math.max(b[node * 6 + 2] - z, 0, z - b[node * 6 + 5]);
+      if (dx * dx + dy * dy + dz * dz >= best2) continue;
+      if (this.left[node] < 0) {
+        const s = this.start[node];
+        const e = s + this.len[node];
+        for (let k = s; k < e; k++) {
+          const tri = this.order[k];
+          closestOnTri(this.tris, tri * 9, x, y, z, q);
+          const d2 = (q[0] - x) ** 2 + (q[1] - y) ** 2 + (q[2] - z) ** 2;
+          if (d2 < best2) {
+            best2 = d2;
+            bestTri = tri;
+            out[0] = q[0];
+            out[1] = q[1];
+            out[2] = q[2];
+          }
+        }
+      } else {
+        if (sp + 2 > stack.length) {
+          const bigger = new Int32Array(stack.length * 2);
+          bigger.set(stack);
+          this.stack = stack = bigger;
+        }
+        stack[sp++] = this.left[node];
+        stack[sp++] = this.right[node];
+      }
+    }
+    if (bestTri < 0) return Infinity;
+    out[3] = bestTri;
+    return Math.sqrt(best2);
+  }
+
+  /** The (unnormalised) winding normal of triangle `tri`: outward on a closed mesh wound counter-clockwise. */
+  normal(tri: number, out: Float64Array) {
+    const T = this.tris;
+    const o = tri * 9;
+    const ax = T[o + 3] - T[o],
+      ay = T[o + 4] - T[o + 1],
+      az = T[o + 5] - T[o + 2];
+    const bx = T[o + 6] - T[o],
+      by = T[o + 7] - T[o + 1],
+      bz = T[o + 8] - T[o + 2];
+    out[0] = ay * bz - az * by;
+    out[1] = az * bx - ax * bz;
+    out[2] = ax * by - ay * bx;
+  }
+
+  /** Signed volume enclosed by the triangles: positive when they are wound with their normals out. */
+  signedVolume(): number {
+    const T = this.tris;
+    let v = 0;
+    for (let o = 0; o < T.length; o += 9) v += T[o] * (T[o + 4] * T[o + 8] - T[o + 5] * T[o + 7]) - T[o + 1] * (T[o + 3] * T[o + 8] - T[o + 5] * T[o + 6]) + T[o + 2] * (T[o + 3] * T[o + 7] - T[o + 4] * T[o + 6]);
+    return v / 6;
+  }
+
+  /** Calls `fn` for every triangle whose bounds meet the box lo..hi (the caller tests the triangle itself). */
+  trianglesNear(lo: readonly number[], hi: readonly number[], fn: (tri: number) => boolean | void) {
+    if (!this.count) return;
+    const b = this.bounds;
+    const T = this.tris;
+    const stack: number[] = [0];
+    while (stack.length) {
+      const node = stack.pop()!;
+      if (b[node * 6] > hi[0] || b[node * 6 + 3] < lo[0] || b[node * 6 + 1] > hi[1] || b[node * 6 + 4] < lo[1] || b[node * 6 + 2] > hi[2] || b[node * 6 + 5] < lo[2]) continue;
+      if (this.left[node] >= 0) {
+        stack.push(this.left[node], this.right[node]);
+        continue;
+      }
+      for (let s = this.start[node], e = s + this.len[node]; s < e; s++) {
+        const tri = this.order[s];
+        const o = tri * 9;
+        if (Math.min(T[o], T[o + 3], T[o + 6]) > hi[0] || Math.max(T[o], T[o + 3], T[o + 6]) < lo[0]) continue;
+        if (Math.min(T[o + 1], T[o + 4], T[o + 7]) > hi[1] || Math.max(T[o + 1], T[o + 4], T[o + 7]) < lo[1]) continue;
+        if (Math.min(T[o + 2], T[o + 5], T[o + 8]) > hi[2] || Math.max(T[o + 2], T[o + 5], T[o + 8]) < lo[2]) continue;
+        if (fn(tri) === true) return;
+      }
+    }
+  }
+
   /** Whether any triangle of this mesh comes within `gap` of a triangle of `other` (both in the same frame). */
   near(other: TriBVH, gap: number): boolean {
     if (!this.count || !other.count) return false;
@@ -342,6 +439,53 @@ export function pointTriDist2(T: ArrayLike<number>, o: number, px: number, py: n
   const v = vb * denom;
   const w = vc * denom;
   return sq(apx - abx * v - acx * w, apy - aby * v - acy * w, apz - abz * v - acz * w);
+}
+
+/** The point of the triangle at T[o..o+9] nearest to p, into out (the same regions as pointTriDist2). */
+export function closestOnTri(T: ArrayLike<number>, o: number, px: number, py: number, pz: number, out: Float64Array) {
+  const ax = T[o],
+    ay = T[o + 1],
+    az = T[o + 2];
+  const abx = T[o + 3] - ax,
+    aby = T[o + 4] - ay,
+    abz = T[o + 5] - az;
+  const acx = T[o + 6] - ax,
+    acy = T[o + 7] - ay,
+    acz = T[o + 8] - az;
+  const set = (u: number, v: number) => {
+    out[0] = ax + abx * u + acx * v;
+    out[1] = ay + aby * u + acy * v;
+    out[2] = az + abz * u + acz * v;
+  };
+  const apx = px - ax,
+    apy = py - ay,
+    apz = pz - az;
+  const d1 = abx * apx + aby * apy + abz * apz;
+  const d2 = acx * apx + acy * apy + acz * apz;
+  if (d1 <= 0 && d2 <= 0) return set(0, 0);
+  const bpx = px - T[o + 3],
+    bpy = py - T[o + 4],
+    bpz = pz - T[o + 5];
+  const d3 = abx * bpx + aby * bpy + abz * bpz;
+  const d4 = acx * bpx + acy * bpy + acz * bpz;
+  if (d3 >= 0 && d4 <= d3) return set(1, 0);
+  const vc = d1 * d4 - d3 * d2;
+  if (vc <= 0 && d1 >= 0 && d3 <= 0) return set(d1 / (d1 - d3), 0);
+  const cpx = px - T[o + 6],
+    cpy = py - T[o + 7],
+    cpz = pz - T[o + 8];
+  const d5 = abx * cpx + aby * cpy + abz * cpz;
+  const d6 = acx * cpx + acy * cpy + acz * cpz;
+  if (d6 >= 0 && d5 <= d6) return set(0, 1);
+  const vb = d5 * d2 - d1 * d6;
+  if (vb <= 0 && d2 >= 0 && d6 <= 0) return set(0, d2 / (d2 - d6));
+  const va = d3 * d6 - d5 * d4;
+  if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) {
+    const w = (d4 - d3) / (d4 - d3 + (d5 - d6));
+    return set(1 - w, w);
+  }
+  const denom = 1 / (va + vb + vc);
+  set(vb * denom, vc * denom);
 }
 
 /** Sum of a node box's sides, to choose which of two boxes to open first. */

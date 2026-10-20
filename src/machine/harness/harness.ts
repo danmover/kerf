@@ -1,7 +1,10 @@
 // The design's wiring harness in 3D: one entry per row of the wire list (the
 // same rows as the build pack's wire list and diagram), each with a plug at
 // both ends placed on the right pin of the right part, and the route request
-// that the cable router (route.ts) turns into a cable run.
+// that the cable router (route.ts) turns into a cable run. A terminal takes
+// only so many wires (one per crimp housing, two in a twin ferrule or under
+// a screw); the rest are joined to the first wire in a splice next to it, so
+// plugs never sit on top of each other.
 
 import type { Model } from "../../core/model";
 import { xformMatrix, type V3 } from "../../kernel/recipe";
@@ -35,6 +38,26 @@ export interface PlugEnd {
   local: Frame;
   /** the plug in the assembly */
   frame: Frame;
+  /** the terminal's wires are joined in a splice next to it: this end runs through it (with no plug of its own unless it is the splice's first wire) */
+  splice?: Splice;
+}
+
+/** Wires joined in a heat-shrunk crimp splice just behind a terminal that cannot take them all. */
+export interface Splice {
+  /** the wire that keeps the plug on the terminal */
+  host: string;
+  /** every wire through the splice, the host first */
+  wires: string[];
+  /** where the sleeve starts and ends, in the assembly; dir runs from the plug along the lead */
+  from: V3;
+  to: V3;
+  dir: V3;
+  across: V3;
+  /** the part and pin it is on */
+  partId: string;
+  comp: string;
+  pin: string;
+  label: string;
 }
 
 export interface HarnessWire {
@@ -83,6 +106,27 @@ export const PLUG_BACK: Record<PlugKind, number> = {
   barrel: 26,
   spade: 15,
 };
+
+/** How many wires one terminal of each kind takes: a crimp housing holds one, a twin ferrule, a screw or a solder joint two. */
+export const SPOT_WIRES: Record<PlugKind, number> = {
+  xh: 1,
+  ph: 1,
+  dupont: 1,
+  ferrule: 2,
+  fork: 2,
+  ring: 2,
+  usb_c: 1,
+  usb_micro: 1,
+  xt60: 1,
+  lead: 1,
+  solder: 2,
+  lug: 2,
+  barrel: 1,
+  spade: 1,
+};
+
+/** Length of a splice's heat-shrink sleeve, mm. */
+export const SPLICE_LEN = 18;
 
 const norm = (v: V3): V3 => {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
@@ -159,7 +203,9 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
     const it = inst.get(e.comp);
     return it && catalogPart(it.catalogId);
   };
-  const endOf = (e: WireEnd, other: WireEnd): PlugEnd | undefined => {
+  // the wire ends on each terminal, in wire list order
+  const onSpot = new Map<string, { wire: number; end: 0 | 1 }[]>();
+  const endOf = (e: WireEnd, other: WireEnd): (PlugEnd & { spot: string }) | undefined => {
     const it = inst.get(e.comp);
     const part = it && catalogPart(it.catalogId);
     const spec = part && plugFor(part, e.pin, catalogOf(other));
@@ -168,11 +214,12 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
     const n = taken.get(key) ?? 0;
     taken.set(key, n + 1);
     const spots = [spec.at, ...(spec.more ?? [])];
-    const at = spots[Math.min(n, spots.length - 1)];
-    usedSpots.add(`${it.partId}|${e.pin}|${Math.min(n, spots.length - 1)}`);
+    // a pin with several identical terminals (a supply's −V screws) fills them in turn
+    const k = n % spots.length;
+    usedSpots.add(`${it.partId}|${e.pin}|${k}`);
     parts.add(e.comp);
-    const local = localFrame(at, spec.out, spec.row);
-    return { partId: it.partId, comp: e.comp, pin: e.pin, label: e.label, part: e.part, spec, local, frame: placeFrame(it.m, local) };
+    const local = localFrame(spots[k], spec.out, spec.row);
+    return { partId: it.partId, comp: e.comp, pin: e.pin, label: e.label, part: e.part, spec, local, frame: placeFrame(it.m, local), spot: `${it.partId}|${e.pin}|${k}` };
   };
   for (const r of rows) {
     const a = endOf(r.from, r.to);
@@ -181,7 +228,23 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
     const port = catalogPart(inst.get(r.from.comp)!.catalogId)?.pins.find((p) => p.id === r.from.pin)?.port;
     const list = cableWires(port, r.color, r.gauge);
     const wiresIn = list.map((w) => ({ name: w.color, color: wireHex(w.color), d: w.d }));
-    wires.push({ id: r.id, row: r, ends: [a, b], wires: wiresIn, d: bundleDiameter(wiresIn.length, wiresIn[0].d), port });
+    [a, b].forEach((e, k) => onSpot.set(e.spot, [...(onSpot.get(e.spot) ?? []), { wire: wires.length, end: k as 0 | 1 }]));
+    const { spot: _a, ...ea } = a;
+    const { spot: _b, ...eb } = b;
+    wires.push({ id: r.id, row: r, ends: [ea, eb], wires: wiresIn, d: bundleDiameter(wiresIn.length, wiresIn[0].d), port });
+  }
+  // more wires on a terminal than it takes: the extra ones join the first in a splice behind its plug
+  for (const list of onSpot.values()) {
+    const first = wires[list[0].wire].ends[list[0].end];
+    const room = SPOT_WIRES[first.spec.kind];
+    if (list.length <= room) continue;
+    // the ones the terminal still takes keep their own plugs; the host is the first, the rest join it
+    const joined = [list[0], ...list.slice(room)];
+    const host = wires[list[0].wire];
+    const f = first.frame;
+    const from = add(f.o, f.z, PLUG_BACK[first.spec.kind] + leadLength(host));
+    const splice: Splice = { host: host.id, wires: joined.map((j) => wires[j.wire].id), from, to: add(from, f.z, SPLICE_LEN), dir: f.z, across: f.x, partId: first.partId, comp: first.comp, pin: first.pin, label: first.label };
+    for (const j of joined) wires[j.wire].ends[j.end].splice = splice;
   }
   // headers and terminals on the parts that are wired, used or not
   const sockets: Socket[] = [];
@@ -201,12 +264,81 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
   return { wires, sockets };
 }
 
+/**
+ * The space a plug's body takes in its plug frame (x along the contacts, y
+ * across, z out of the part), as the 3D wiring draws it: lo and hi corners.
+ * Null for ends with no body of their own (a part's own lead, a joint
+ * soldered to a pad or lug).
+ */
+export function plugBox(spec: PlugSpec, wires: { d: number }[]): [V3, V3] | null {
+  const n = wires.length;
+  const pitch = spec.pitch ?? PITCH[spec.kind];
+  const span = (Math.max(spec.ways ?? n, n) - 1) * pitch;
+  const xs = wires.map((_, i) => contactX(spec, i, n));
+  const x0 = Math.min(...xs);
+  const x1 = Math.max(...xs);
+  const dmax = Math.max(...wires.map((w) => w.d));
+  switch (spec.kind) {
+    case "xh":
+      return [[-(span / 2 + 2.45), -2.85, 1.5], [span / 2 + 2.45, 3.55, 9.8]];
+    case "ph":
+      return [[-(span / 2 + 1.95), -2.25, 1], [span / 2 + 1.95, 2.7, 8.2]];
+    case "dupont": {
+      const w = Math.max(1, spec.ways ?? n) * 1.27;
+      return [[-w, -1.27, 2.5], [w, 1.27, 16.5]];
+    }
+    case "ferrule":
+      return [[x0 - dmax * 0.62, -dmax * 0.62, 0.6], [x1 + dmax * 0.62, dmax * 0.62, 8]];
+    case "fork":
+    case "ring": {
+      const r = Math.max(2, dmax * 0.85);
+      return [[x0 - 3.2, -r, 4.5], [x1 + 3.2, r, 13]];
+    }
+    case "usb_c":
+      return [[-6, -3.3, 0], [6, 3.3, 23]];
+    case "usb_micro":
+      return [[-5.3, -3, 0], [5.3, 3, 18]];
+    case "xt60":
+      return [[-7.8, -4, 0], [7.8, 4, 16]];
+    case "spade":
+      return [[x0 - 3.7, -2.3, 0], [x1 + 3.7, 2.3, 15]];
+    case "barrel":
+      return [[-5, -5, 0], [5, 5, 26]];
+    default:
+      return null;
+  }
+}
+
+/** How far each kind of plug slides along its pins before it comes off, mm (0: it is screwed or soldered on). */
+export const PULL: Record<PlugKind, number> = {
+  xh: 4.5,
+  ph: 3.5,
+  dupont: 6,
+  ferrule: 0,
+  fork: 0,
+  ring: 0,
+  usb_c: 6.5,
+  usb_micro: 5,
+  xt60: 8,
+  lead: 0,
+  solder: 0,
+  lug: 0,
+  barrel: 9.5,
+  spade: 7,
+};
+
 /** The straight lead out of a plug before the cable is free to bend, mm. */
 export const leadLength = (w: HarnessWire) => Math.max(6, w.d * 3);
 
+/** Where a cable's free run starts at one of its ends: past the plug's straight lead, or just past the splice it runs through. */
+export function runStart(e: PlugEnd, w: HarnessWire): { p: V3; dir: V3 } {
+  if (e.splice) return { p: add(e.splice.to, e.splice.dir, 2), dir: e.splice.dir };
+  return { p: add(e.frame.o, e.frame.z, PLUG_BACK[e.spec.kind] + leadLength(w)), dir: e.frame.z };
+}
+
 /** Where each cable's free run starts and ends, for the router. */
 export function routeRequests(h: Harness, plan?: TravelPlan | null): RouteWire[] {
-  const endPoint = (e: PlugEnd, w: HarnessWire) => ({ p: add(e.frame.o, e.frame.z, PLUG_BACK[e.spec.kind] + leadLength(w)), dir: e.frame.z });
+  const endPoint = runStart;
   // thick cables first: they claim the clear runs, and thin ones then follow them
   const order = [...h.wires].sort((a, b) => b.d * b.wires.length - a.d * a.wires.length);
   if (!plan) return order.map((w) => ({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d }));

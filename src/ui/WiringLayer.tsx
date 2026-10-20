@@ -13,6 +13,7 @@ import { select } from "../app/view";
 import { useHarness, updateHarness, wireRun } from "../machine/harness/runtime";
 import { PLUG_NAME } from "../machine/harness/plugs";
 import type { HarnessWire, PlugEnd } from "../machine/harness/harness";
+import type { WiringFindings } from "../machine/harness/clash";
 import { travelOffsets, type TravelPlan } from "../machine/harness/travel";
 import { cutLength } from "../machine/wiring";
 import { useWiringView } from "./wiringView";
@@ -33,6 +34,7 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
   const routes = useHarness((s) => s.routes);
   const status = useHarness((s) => s.status);
   const plan = useHarness((s) => s.plan);
+  const findings = useHarness((s) => s.findings);
   const ov = useRef<WiringOverlay | null>(null);
   const [drawn, setDrawn] = useState(0);
   const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
@@ -65,12 +67,12 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
   useEffect(() => {
     const o = ov.current;
     if (!o || !harness || !model) return;
-    o.set(harness, routes, model.parts, (p) => meshes.get(p.hash)?.bbox, plan);
+    o.set(harness, routes, model.parts, (p) => meshes.get(p.hash)?.bbox, plan, findings);
     scene.overlaysChanged();
     setDrawn((n) => n + 1);
     // the model is read when the harness changes, not on every model update in between
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [harness, routes, plan, on, scene]);
+  }, [harness, routes, plan, findings, on, scene]);
 
   useEffect(() => ov.current?.setFocus(picked, hovered, link), [picked, hovered, link, drawn]);
 
@@ -126,7 +128,7 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
         </div>
       )}
       <AnimatePresence>
-        {wire && <WireCard key="card" wire={wire} run={run} flex={flexOf.map((l) => l.label)} onClose={() => useWiringView.setState({ picked: null, end: null })} />}
+        {wire && <WireCard key="card" wire={wire} run={run} flex={flexOf.map((l) => l.label)} issues={wireIssues(wire, findings, (id) => model?.parts.find((p) => p.id === id)?.name ?? id)} onClose={() => useWiringView.setState({ picked: null, end: null })} />}
         {!wire && link && plan && <LinkCard key="link" plan={plan} id={link} onClose={() => useWiringView.setState({ link: null })} />}
       </AnimatePresence>
       <AnimatePresence>
@@ -251,7 +253,21 @@ function LinkCard({ plan, id, onClose }: { plan: TravelPlan; id: string; onClose
   );
 }
 
-function WireCard({ wire, run, flex, onClose }: { wire: HarnessWire; run?: number; flex: string[]; onClose: () => void }) {
+/** What the wiring checks found on one cable, in a line each. */
+function wireIssues(w: HarnessWire, f: WiringFindings | null, name: (id: string) => string): string[] {
+  if (!f) return [];
+  const out: string[] = [];
+  for (const c of f.cableHits) if (c.wire === w.id) out.push(c.through ? `runs through ${name(c.part)}` : `squashed against ${name(c.part)}`);
+  const crossed = f.crossings.filter((c) => c.a === w.id || c.b === w.id).map((c) => (c.a === w.id ? c.b : c.a));
+  if (crossed.length) out.push(`crowded through ${crossed.length > 3 ? `${crossed.length} other cables` : crossed.join(", ")}`);
+  for (const p of f.plugHits) if (p.wire === w.id) out.push(`plug on ${w.ends[p.end].comp} ${w.ends[p.end].label} runs into ${name(p.part)}`);
+  for (const p of f.pullBlocked) if (p.wire === w.id) out.push(`no room to unplug it from ${w.ends[p.end].comp}`);
+  if (f.outside.some((o) => o.wire === w.id)) out.push("leaves the enclosure on the way");
+  for (const e of w.ends) if (e.splice) out.push(`joined with ${e.splice.wires.length - 1} other wire${e.splice.wires.length > 2 ? "s" : ""} in a splice at ${e.comp} ${e.label}`);
+  return out;
+}
+
+function WireCard({ wire, run, flex, issues, onClose }: { wire: HarnessWire; run?: number; flex: string[]; issues: string[]; onClose: () => void }) {
   const setDraft = useChatDraft((s) => s.set);
   const r = wire.row;
   const title = r.cable ?? (r.label || `${r.kind === "ground" ? "Ground" : r.kind === "power" ? "Power" : r.kind === "motor" ? "Motor" : "Signal"} wire`);
@@ -312,6 +328,13 @@ function WireCard({ wire, run, flex, onClose }: { wire: HarnessWire; run?: numbe
         )}
       </div>
       {r.note && <div className="wr-note">{r.note}</div>}
+      {issues.length > 0 && (
+        <div className="wr-note">
+          {issues.map((t) => (
+            <div key={t}>{t}</div>
+          ))}
+        </div>
+      )}
       <div className="row" style={{ marginTop: 10, gap: 6, flexWrap: "wrap" }}>
         <button className="btn sm" onClick={() => setDraft(`About wire ${wire.id} (${endText(wire.ends[0])} to ${endText(wire.ends[1])}): `)} data-tip="Ask Claude about this cable">
           <Icon.Sparkle size={13} /> Ask
