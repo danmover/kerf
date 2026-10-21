@@ -109,6 +109,20 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (user_id, hash)
   );
   `,
+  `
+  CREATE TABLE mcp_codes (
+    hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, challenge TEXT NOT NULL,
+    resource TEXT NOT NULL, scope TEXT NOT NULL, expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE mcp_grants (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_id TEXT NOT NULL, resource TEXT NOT NULL, scope TEXT NOT NULL,
+    access_hash TEXT NOT NULL UNIQUE, access_expires INTEGER NOT NULL,
+    refresh_hash TEXT UNIQUE, refresh_expires INTEGER NOT NULL, created_at INTEGER NOT NULL
+  );
+  CREATE INDEX mcp_grants_user ON mcp_grants(user_id);
+  `,
 ];
 
 export class Db {

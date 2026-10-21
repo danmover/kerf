@@ -6,6 +6,9 @@ import { sanitizeMachines, sanitizeMachineFor, type MachineProfile } from "../mf
 export const TERMS_VERSION = "2026-10-draft-2";
 
 export const MODELS = [
+  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", note: "OpenAI: capable design work with balanced cost." },
+  { id: "gpt-6-astra", label: "GPT-6 Astra", note: "OpenAI: most capable for complex engineering tasks." },
+  { id: "gpt-6-luna", label: "GPT-6 Luna", note: "OpenAI: fast and economical for simpler tasks." },
   { id: "claude-opus-5-5", label: "Claude Opus 5.5", note: "Most capable. Best for whole designs and big revisions." },
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", note: "Fast and strong. Good for most edits." },
   { id: "claude-haiku-5-5", label: "Claude Haiku 5.5", note: "Fastest and cheapest. Good for small changes." },
@@ -220,7 +223,10 @@ useSettings.subscribe((s) => {
   }
 });
 
-export const updateSettings = (patch: Partial<Settings>) => useSettings.setState(patch);
+export const updateSettings = (patch: Partial<Settings>) => {
+  if (patch.model && patch.model.startsWith("gpt-") !== useSettings.getState().model.startsWith("gpt-")) patch = { ...patch, agentModel: "same" };
+  useSettings.setState(patch);
+};
 export const resetSettings = () => useSettings.setState({ ...DEFAULTS, termsAccepted: useSettings.getState().termsAccepted, onboarded: true });
 export const clearSettingsStorage = () => {
   try {

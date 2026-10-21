@@ -16,7 +16,7 @@ const CHAT_ONLY = new Set(["ask_user", "suggest_next_steps", "review_design", "b
 
 const GUIDE_TOOL = "kerf_instructions";
 
-const PREAMBLE = `You are working in Kerf through Claude Code: Claude Code calls Kerf's tools, and the person watches the design change in Kerf's window. The guide below is written for Kerf's own chat, so read it with these differences:
+const PREAMBLE = (clientName: string) => `You are working in Kerf through ${clientName}. Your tool calls run in Kerf, and the person watches the design change in Kerf's window. The guide below is written for Kerf's own chat, so read it with these differences:
 - There is no context note. Call get_design at the start of each task, and again whenever the person may have changed the design in Kerf.
 - ask_user, suggest_next_steps, review_design and build_subassemblies are not available here. Ask questions in your reply, offer follow-ups in your reply, review your own work before you report (capture_view from every side, inspect_part on the details), and build subassemblies one after another yourself.
 - update_plan shows your plan in Kerf's plan panel beside the design.`;
@@ -54,16 +54,16 @@ const refuse = (text: string): McpToolResult => ({ isError: true, content: [{ ty
 // one call at a time, as in Kerf's chat: each edit starts from the last one's result
 let queue: Promise<unknown> = Promise.resolve();
 
-export async function callTool(params: { name?: unknown; arguments?: unknown }, signal: AbortSignal): Promise<McpToolResult> {
+export async function callTool(params: { name?: unknown; arguments?: unknown }, signal: AbortSignal, clientName = "Claude Code"): Promise<McpToolResult> {
   const name = String(params.name ?? "");
-  if (name === GUIDE_TOOL) return { content: [{ type: "text", text: `${PREAMBLE}\n\n${systemPrompt()}` }] };
+  if (name === GUIDE_TOOL) return { content: [{ type: "text", text: `${PREAMBLE(clientName)}\n\n${systemPrompt()}` }] };
   if (!mcpTools().some((t) => t.name === name)) return refuse(`Kerf has no tool called ${name}.`);
   const run = async (): Promise<McpToolResult> => {
     if (signal.aborted) return refuse("Cancelled.");
     if (!useProject.getState().current) return refuse("No project is open in Kerf. Ask the person to open or create one in Kerf's window, then call get_design.");
     if (useChat.getState().busy) return refuse("Kerf's own chat is working on this design right now. Ask the person to wait for it or stop it, so the two don't edit at once.");
     const out = await runTool(name, params.arguments ?? {}, { signal, check: true });
-    if (!out.isError && (name === "edit_design" || name === "write_design")) toast({ kind: "info", title: "Claude Code changed the design", detail: out.card.title });
+    if (!out.isError && (name === "edit_design" || name === "write_design")) toast({ kind: "info", title: `${clientName} changed the design`, detail: out.card.title });
     return { content: toMcp(out.content), ...(out.isError ? { isError: true } : {}) };
   };
   const p = queue.then(run, run);

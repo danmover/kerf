@@ -17,13 +17,15 @@ import { AccountKeySection, AccountSettings, CloudIcon, signOutForClear } from "
 import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
+import { ChatGPTSection, OpenAIKeySection } from "./ChatGPTSettings";
+import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
 import { desktop, graphicsCard, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
-  { id: "ai", label: "Claude", icon: <Icon.Sparkle size={14} /> },
+  { id: "ai", label: "AI", icon: <Icon.Sparkle size={14} /> },
   { id: "account", label: "Account", icon: <CloudIcon size={14} /> },
   { id: "voice", label: "Voice", icon: <Icon.Mic size={14} /> },
   { id: "app", label: "Display", icon: <Icon.Eye size={14} /> },
@@ -305,6 +307,8 @@ function AiSettings() {
       </Section>
 
       <ClaudeCodeSection />
+      <OpenAIKeySection />
+      <ChatGPTSection />
 
       <Section title="Model for design work">
         <div role="radiogroup" aria-label="Model" style={{ display: "grid", gap: 6 }}>
@@ -324,7 +328,7 @@ function AiSettings() {
         </div>
       </Section>
 
-      <Section title="Cost">
+      {!s.model.startsWith("gpt-") && <Section title="Cost">
         <Row
           t="Use the cheapest model that can do each turn"
           d={
@@ -370,6 +374,7 @@ function AiSettings() {
         </Row>
       </Section>
 
+      }
       <Section title="Behaviour">
         <Row t="Effort" d={effort.d}>
           <Segmented id="effort" value={s.effort} options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))} onChange={(v) => updateSettings({ effort: v })} />
@@ -377,7 +382,7 @@ function AiSettings() {
         <Row t="Faster follow-up steps" d="Claude plans each reply at the effort above, then thinks at medium for the steps after it: reading the checks an edit returned, small fixes, the reply itself. Replies finish sooner and cost less, with slightly less careful thinking on those steps.">
           <Toggle on={s.fasterFollowUps} onChange={(v) => updateSettings({ fasterFollowUps: v })} label="Faster follow-up steps" />
         </Row>
-        <Row t="Show Claude's reasoning" d="Shows a summary of Claude's thinking above each answer, collapsed by default.">
+        <Row t="Show reasoning" d="Shows a summary of the assistant's thinking above each answer, collapsed by default.">
           <Toggle on={s.showThinking} onChange={(v) => updateSettings({ showThinking: v })} label="Show Claude's reasoning" />
         </Row>
         <Row t="Steps per message" d="The most rounds of tool calls (edits, checks, views, part lookups) Claude can make for one message before it stops and reports. Designing a whole machine takes about 20 to 40; each step costs tokens.">
@@ -390,7 +395,7 @@ function AiSettings() {
         </Row>
         <Row
           t="Search the web for parts"
-          d="When the parts catalog has nothing suitable, Claude can search the web and read product pages to find a real part with a price and a link. Anthropic runs the searches and bills them to your API key ($10 per 1,000 searches at the time of writing, plus the tokens the pages use). Results come from the open web, so check a part before you buy it. A Kerf server's shared key doesn't offer web search, so there Claude uses the catalog only."
+          d="When the catalog has nothing suitable, your selected provider can search the web for real parts. The provider bills searches and page content to your API account. Check product details before buying. Shared Claude keys use the catalog only."
         >
           <Toggle on={s.webSearch} onChange={(v) => updateSettings({ webSearch: v, webNotice: false })} label="Search the web for parts" />
         </Row>
@@ -414,7 +419,7 @@ function AiSettings() {
         </Row>
       </Section>
       <AgentSettings />
-      <div className="help">{viaAccount ? "Usage is billed to the Anthropic account that owns the key, at its normal API rates. Requests go from this browser to your Kerf server, which adds the key and passes them to api.anthropic.com." : "Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com."}</div>
+      <div className="help">{s.model.startsWith("gpt-") ? "Usage is billed to your OpenAI API account, separately from ChatGPT. Requests go directly from this device to api.openai.com. Cost figures are estimates; your provider's billing is authoritative." : viaAccount ? "Usage is billed to the Anthropic account that owns the key, at its normal API rates. Requests go from this browser to your Kerf server, which adds the key and passes them to api.anthropic.com." : "Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com."}</div>
     </>
   );
 }
@@ -539,6 +544,7 @@ function DataSettings() {
     await signOutForClear();
     resetChat();
     await forgetApiKey();
+    await forgetOpenAIKey();
     await clearAllData();
     clearSettingsStorage();
     location.reload();
