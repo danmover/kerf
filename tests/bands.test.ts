@@ -246,6 +246,9 @@ describe("the seatpost number bracket", () => {
     // the pin is found where it passes through the number, not in the cheek it starts from
     const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
     expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);
+    // it slides in along its own length, tilted up with it, point first
+    const rise = (30 * Math.PI) / 180;
+    expect(vdot(vnorm(slide.from), [0, Math.cos(rise), Math.sin(rise)])).toBeCloseTo(1, 6);
     // in the stress results the bracket carries its pad and the number, and the number its print, so they move with it
     const carried = carriedBy(r.model, (p) => r.core.get(p.hash)?.bbox as never);
     expect(carried.get(seat.part)!.map(name).sort()).toEqual(["number", "pad"]);

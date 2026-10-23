@@ -215,7 +215,7 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
       const at = a.has("at") ? a.vec3("at") : r.t === "face" || r.t === "extreme" ? undefined : r.at;
       return wrap(LOAD, { t: "torque", region: r, torque: a.num("t"), axis, at } satisfies LoadSpec, "torque");
     },
-    "torque(region, 2Nm, axis: Z, at: (0, 0, 0)) → a twisting load about an axis through a point (default: the zone's centre, or the face's centre), shared over the region in proportion to the distance from the axis. Positive is counter-clockwise looking down the axis.",
+    "torque(region, 2Nm, axis: Z, at: (0, 0, 0)) → a twisting load about an axis (at: marks the point it is drawn through), shared over the region in proportion to the distance from that axis through the loaded surface's own centre, so it twists without pushing the region sideways. Positive is counter-clockwise looking down the axis.",
   ),
   def(
     "mass",

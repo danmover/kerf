@@ -216,6 +216,42 @@ const fmt = (n: number, d = 2) => String(Math.round(n * 10 ** d) / 10 ** d);
 const fmtP = (p: V3) => `(${p.map((v) => fmt(v, 1)).join(", ")})`;
 
 /**
+ * A torque T shared over weighted points as a couple: each is pushed as if the points were turned rigidly about
+ * their own weighted centre (f = w ω × r, with I ω = T for I their weighted inertia), so the pushes add up to
+ * exactly T and nothing else: no net force and no twist about any other axis. Plain pushes round the axis would
+ * also tip a zone that is not symmetric about it. null when the points have no lever arm about T (all on its line).
+ */
+export function shareTorque(ps: V3[], w: number[], T: V3): V3[] | null {
+  const tot = w.reduce((s, v) => s + v, 0);
+  if (!(tot > 0)) return null;
+  const c: V3 = [0, 0, 0];
+  ps.forEach((p, s) => {
+    for (let d = 0; d < 3; d++) c[d] += (p[d] * w[s]) / tot;
+  });
+  const rs = ps.map((p): V3 => [p[0] - c[0], p[1] - c[1], p[2] - c[2]]);
+  const I = new Float64Array(9);
+  rs.forEach((r, s) => {
+    const r2 = dot(r, r);
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) I[a * 3 + b] += w[s] * ((a === b ? r2 : 0) - r[a] * r[b]);
+  });
+  const { values, vectors } = jacobiEigen(I, 3);
+  const big = Math.max(...values, 0);
+  const mag = Math.hypot(...T);
+  const om: V3 = [0, 0, 0];
+  for (let k = 0; k < 3; k++) {
+    const v: V3 = [vectors[3 * k], vectors[3 * k + 1], vectors[3 * k + 2]];
+    const tk = dot(v, T);
+    // points on a line cannot be twisted about that line
+    if (big < 1e-12 || values[k] <= 1e-9 * big) {
+      if (Math.abs(tk) > 1e-6 * mag) return null;
+      continue;
+    }
+    for (let d = 0; d < 3; d++) om[d] += (tk / values[k]) * v[d];
+  }
+  return rs.map((r, s): V3 => [w[s] * (om[1] * r[2] - om[2] * r[1]), w[s] * (om[2] * r[0] - om[0] * r[2]), w[s] * (om[0] * r[1] - om[1] * r[0])]);
+}
+
+/**
  * Cells per axis for the analysis grid. Cells fit the bounding box exactly, thin directions get
  * smaller cells within about 3:1 of the others, and the grid and its solid elements stay within
  * MAX_CELLS and MAX_ELEMENTS by enlarging cells (and, for very thin parts, stretching them further).
@@ -592,25 +628,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       });
     } else {
       const ax = norm(ld.axis);
-      const at = ld.at ?? c;
-      let denom = 0;
-      const tang: V3[] = [];
-      sel.nodes.forEach((n, s) => {
-        const p = nodePos(n);
-        const v: V3 = [p[0] - at[0], p[1] - at[1], p[2] - at[2]];
-        const along = dot(v, ax);
-        const rp: V3 = [v[0] - along * ax[0], v[1] - along * ax[1], v[2] - along * ax[2]];
-        const t: V3 = [ax[1] * rp[2] - ax[2] * rp[1], ax[2] * rp[0] - ax[0] * rp[2], ax[0] * rp[1] - ax[1] * rp[0]];
-        tang.push(t);
-        denom += sel.w[s] * dot(rp, rp);
-      });
-      if (denom < 1e-12) throw new FeaError(`Load ${i + 1}: the torque zone sits on its own axis, so it has no lever arm. Put the zone on a surface away from the axis (for example a bore or a flange).`);
-      const kk = ld.torque / denom;
+      const pushes = shareTorque(sel.nodes.map(nodePos), sel.w, [ld.torque * ax[0], ld.torque * ax[1], ld.torque * ax[2]]);
+      if (!pushes) throw new FeaError(`Load ${i + 1}: the torque zone sits on its own axis, so it has no lever arm. Put the zone on a surface away from the axis (for example a bore or a flange).`);
       sel.nodes.forEach((n, s) => {
         for (let d = 0; d < 3; d++) {
-          const v = kk * sel.w[s] * tang[s][d];
-          f[3 * n + d] += v;
-          R[d] += v;
+          f[3 * n + d] += pushes[s][d];
+          R[d] += pushes[s][d];
         }
       });
     }
