@@ -20,14 +20,14 @@ import { openSpot } from "../app/spot";
 import { useApiKey } from "./ChatPanel";
 import { openAnalysis } from "./AnalysisPanel";
 
-const CATEGORY_LABEL: Record<string, string> = {
+export const CATEGORY_LABEL: Record<string, string> = {
   brief: "Brief",
   requirement: "Requirements",
   interference: "Interference",
   access: "Tool access",
   motion: "Motion",
   gears: "Gears",
-  analysis: "Strength",
+  analysis: "Analysis",
   simulation: "Simulations",
   process: "Manufacturing",
   assembly: "Assembly",

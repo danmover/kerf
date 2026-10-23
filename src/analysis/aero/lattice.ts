@@ -33,6 +33,12 @@ export const KAPPA = 0.41;
 export const VAN_DRIEST = 26;
 /** share of the gap to its target the wall model's slip closes each step */
 export const SLIP_RATE = 0.1;
+/**
+ * Most momentum the slip may put into a cell along itself, per unit of slip: Σ 6 wᵢ kᵢ (cᵢ·ŝ)² over the wall links.
+ * A flat wall gives a third. A cell walled in on most sides gives five times that, and its slip then outruns the
+ * velocity it is worked out from until the run blows up, so the slip is scaled back to a flat wall's push.
+ */
+export const SLIP_GAIN = 1 / 3;
 
 /** drag coefficient of geometry thinner than a cell (spokes, cables, mesh), as a cylinder in cross flow */
 export const SUBGRID_CD = 1.0;

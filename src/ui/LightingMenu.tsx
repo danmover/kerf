@@ -21,7 +21,8 @@ const PHOTO_NOTE: Record<Settings["quality"], string> = {
 const chip = (l: LightingPreset) => `radial-gradient(60px 40px at 50% 30%, ${l.backdrop.glow}55, transparent 70%), linear-gradient(180deg, ${l.backdrop.top}, ${l.backdrop.bottom})`;
 const ball = (l: LightingPreset) => `radial-gradient(circle at 32% 28%, #ffffff 0, ${l.key.color} 9%, ${l.light ? "#b9c0cc" : "#7a8294"} 32%, ${l.light ? "#5d6573" : "#262b36"} 72%, ${l.backdrop.bottom} 100%)`;
 
-export function LightingMenu() {
+/** The look of the 3D view: lighting, quality, photoreal, and the grid and edges drawn over it. */
+export function LightingMenu({ photoLook = false }: { photoLook?: boolean }) {
   const s = useSettings();
   // the tiles show each set as it looks in this theme
   const theme = useTheme();
@@ -31,7 +32,7 @@ export function LightingMenu() {
     <Menu
       width={300}
       trigger={(open, toggle) => (
-        <button className={`icon-btn ${open ? "active" : ""}`} onClick={toggle} data-tip="Lighting and quality (L)" aria-label="Lighting and quality">
+        <button className={`icon-btn ${open ? "active" : ""}`} onClick={toggle} data-tip="Look: lighting, quality, grid and edges (L)" aria-label="Lighting, quality, grid and edges">
           <Icon.Sun />
         </button>
       )}
@@ -73,6 +74,18 @@ export function LightingMenu() {
             <span className={`toggle ${s.photoreal ? "on" : ""}`} />
           </button>
           <div className="light-note">{PHOTO_NOTE[s.quality]}</div>
+          <div className="menu-label">Show</div>
+          <button role="switch" aria-checked={s.grid} className={`photo-switch ${s.grid ? "on" : ""}`} onClick={() => updateSettings({ grid: !s.grid })}>
+            <Icon.Grid size={15} />
+            <span className="grow">Floor grid</span>
+            <span className={`toggle ${s.grid ? "on" : ""}`} />
+          </button>
+          <button role="switch" aria-checked={s.edges} className={`photo-switch ${s.edges ? "on" : ""}`} onClick={() => updateSettings({ edges: !s.edges })}>
+            <Icon.Box size={15} />
+            <span className="grow">Edges</span>
+            <span className={`toggle ${s.edges ? "on" : ""}`} />
+          </button>
+          {photoLook && (s.grid || s.edges) && <div className="light-note">The photoreal view hides the grid and edges while it runs.</div>}
         </div>
       )}
     </Menu>

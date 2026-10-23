@@ -65,9 +65,9 @@ export function MeasureButton() {
   );
 }
 
-function RulerIcon() {
+export function RulerIcon({ size = 16 }: { size?: number }) {
   return (
-    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M3.5 15.5 15.5 3.5l5 5-12 12z" />
       <path d="m7.5 11.5 2 2M10.5 8.5l2 2M13.5 5.5l2 2" />
     </svg>
@@ -107,7 +107,7 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
       // dialogs, the sketch editor and markup keep their own keys
       const ui = useUi.getState();
       const sk = useSketch.getState();
-      if (ui.settingsOpen || ui.shortcutsOpen || ui.confirm || sk.active || sk.picking || useMarkup.getState().on) return;
+      if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || sk.active || sk.picking || useMarkup.getState().on) return;
       if (e.key === "r" || e.key === "R") toggleMeasure();
       else if (e.key === "Escape" && measuring()) {
         if (picksRef.current.length) clear();

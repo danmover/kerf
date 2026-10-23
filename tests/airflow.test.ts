@@ -3,12 +3,15 @@ import { evaluate } from "../src/lang/evaluator";
 import type { AirflowSpec } from "../src/analysis/spec";
 import { airAt } from "../src/analysis/aeroLang";
 import { equilibrium } from "../src/analysis/aero/cpu";
-import { CX, CY, CZ, Q } from "../src/analysis/aero/lattice";
-import { sphereMesh } from "../src/analysis/aero/geometry";
+import { CX, CY, CZ, Q, SOLID, TYPE_MASK } from "../src/analysis/aero/lattice";
+import { buildGrid, sphereMesh, type V3 } from "../src/analysis/aero/geometry";
+import { boxMesh } from "../src/analysis/fe/voxel";
 import { cellBudget, dot, planRun, windAxes } from "../src/analysis/aero/setup";
 import { frontalArea, surfaceNets } from "../src/analysis/aero/post";
-import { batchStderr, runAirflow } from "../src/analysis/aero/solve";
-import type { AirflowInput } from "../src/analysis/aero/types";
+import { batchStderr, CpuSolver, runAirflow } from "../src/analysis/aero/solve";
+import type { AirflowInput, SurfaceField, YawResult } from "../src/analysis/aero/types";
+import { dragHotSpots } from "../src/analysis/aeroSummary";
+import type { LbmCase } from "../src/analysis/aero/case";
 
 const bike = `design "b"
 part frame { body box(1000, 40, 500, at: (0, 0, 600)) }
@@ -151,6 +154,39 @@ describe("airflow solver pieces", () => {
     expect(vol).toBeLessThan(1.1 * ((4 / 3) * Math.PI * 6 ** 3));
   });
 
+  it("fills a pocket walled in on five sides, but not a slot between two plates", () => {
+    const box = (lo: V3, hi: V3) => {
+      const m = boxMesh(lo, hi);
+      return { positions: Float64Array.from(m.positions), indices: Uint32Array.from(m.indices), part: 0 };
+    };
+    const solid = (g: { flags: Uint32Array }, x: number, y: number, z: number) => (g.flags[x + 20 * (y + 20 * z)] & TYPE_MASK) === SOLID;
+    // a one-cell well at (10, 10): floor and four walls, open at the top
+    const well = buildGrid({ nx: 20, ny: 20, nz: 20, bodies: [box([8.5, 8.5, 8.5], [11.5, 11.5, 9.5]), box([8.5, 8.5, 8.5], [9.5, 11.5, 11.5]), box([10.5, 8.5, 8.5], [11.5, 11.5, 11.5]), box([8.5, 8.5, 8.5], [11.5, 9.5, 11.5]), box([8.5, 10.5, 8.5], [11.5, 11.5, 11.5])] }, 1);
+    expect(solid(well, 10, 10, 10)).toBe(true);
+    expect(solid(well, 10, 10, 11)).toBe(true);
+    expect(solid(well, 10, 10, 12)).toBe(false);
+    // a one-cell gap between two plates is a slot the air can run along
+    const slot = buildGrid({ nx: 20, ny: 20, nz: 20, bodies: [box([4.5, 4.5, 8.5], [15.5, 15.5, 9.5]), box([4.5, 4.5, 10.5], [15.5, 15.5, 11.5])] }, 1);
+    expect(solid(slot, 10, 10, 10)).toBe(false);
+  });
+
+  it("lists the design's own drag patches even where the rider's are bigger", () => {
+    // a square facing into the wind, s mm across, at x
+    const face = (name: string, s: number, x: number, extra?: boolean): SurfaceField => ({
+      id: name,
+      name,
+      positions: Float32Array.from([x, 0, 0, x, s, 0, x, 0, s]),
+      normals: null,
+      indices: Uint32Array.from([0, 1, 2]),
+      cp: Float32Array.from([1, 1, 1]),
+      cf: new Float32Array(9),
+      extra,
+    });
+    const y = { surface: [face("Rider", 400, 0, true), face("frame", 50, 1000)], parts: [] } as unknown as YawResult;
+    expect(dragHotSpots(y, [1, 0, 0], 100, 60, 1).map((h) => h.part)).toEqual(["frame"]);
+    expect(dragHotSpots(y, [1, 0, 0], 100, 60, 1, true).map((h) => h.part)).toEqual(["Rider"]);
+  });
+
   it("estimates the error of a noisy mean", () => {
     expect(batchStderr([1, 2, 3])).toBe(Infinity);
     expect(batchStderr(Array(200).fill(4))).toBe(0);
@@ -174,5 +210,19 @@ describe("airflow solver pieces", () => {
     expect(Math.abs(y.side)).toBeLessThan(0.1 * y.drag);
     expect(y.surface[0].cp.some((c) => c > 0.5)).toBe(true);
     expect(y.streamlines.starts.length).toBeGreaterThan(10);
+  }, 120_000);
+
+  it("runs an angle again without the wall model when the flow blows up, and says so", async () => {
+    const blowUp = (c: LbmCase, always: boolean) => {
+      const s = new CpuSolver(c);
+      if (always || c.wallModel) s.forces = async () => new Float64Array(3 * c.parts.length).fill(NaN);
+      return s;
+    };
+    const input = sphereInput({ cells: 8000, nu: (10 * 0.1) / 100, maxMinutes: 0.25 });
+    const r = await runAirflow(input, { solver: async (c) => blowUp(c, false), solverBackend: "cpu" });
+    expect(r.yaws).toHaveLength(1);
+    expect(Number.isFinite(r.yaws[0].drag)).toBe(true);
+    expect(r.warnings.some((w) => w.includes("without the wall model"))).toBe(true);
+    await expect(runAirflow(input, { solver: async (c) => blowUp(c, true), solverBackend: "cpu" })).rejects.toThrow("blew up");
   }, 120_000);
 });

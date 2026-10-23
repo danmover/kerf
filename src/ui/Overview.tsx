@@ -13,10 +13,13 @@ import { openSpot } from "../app/spot";
 import { attention, briefSummary, checkScope, designStats, massText, sizeText, placedBox, type UseStatus } from "../app/designStats";
 import { lineCol } from "../lang/lexer";
 import { diffStats } from "../core/sourceEdit";
-import { materialDef, FINISHES, resolveFinish } from "../library/materials";
+import { materialDef, FINISHES, isPrinted, resolveFinish } from "../library/materials";
 import { Icon, StatusIcon } from "./icons";
 import { BIcon } from "./briefIcons";
-import { timeAgo, useTick } from "./common";
+import { mod, timeAgo, useTick } from "./common";
+import { openFind } from "../app/ui";
+import { runExport } from "../app/exportFormats";
+import { askClaude, REVIEW_ASK } from "./chatDraft";
 import { useApiKey } from "./ChatPanel";
 import { useRealModel } from "./useRealModel";
 import type { CheckItem } from "../core/checks";
@@ -43,8 +46,47 @@ export function Overview() {
       <BriefCard i={i++} />
       {/* the design as a whole, or the part you are looking at */}
       {selected.length > 0 ? <SelectionCard key={selected.join(",")} ids={selected} i={i++} /> : <SpecsCard i={i++} />}
+      <NextCard i={i++} />
       <ChangesCard i={i++} />
     </div>
+  );
+}
+
+/**
+ * Where to go from here, from what the design has and hasn't got yet: test
+ * it, run it, plan how it's made, make the files for it. Each opens the tab or
+ * file behind it, so the features lead on from one another instead of waiting
+ * to be found.
+ */
+function NextCard({ i }: { i: number }) {
+  const model = useDesign((s) => s.model);
+  const fails = useDesign((s) => s.report?.counts.fail ?? 0);
+  if (!model?.parts.length) return null;
+  const made = model.parts.filter((p) => p.kind === "part" && !p.imported);
+  const printed = made.some((p) => (p.process ? p.process.id === "fdm" || p.process.id === "sla" : isPrinted(p.material)));
+  const steps: { key: string; icon: ReactNode; text: string; sub: string; run: () => void }[] = [];
+  if (fails) steps.push({ key: "fix", icon: <Icon.Alert size={13} />, text: "Fix what's failing", sub: "Open the checks", run: () => openTab("checks") });
+  if (!model.analyses.length && made.length) steps.push({ key: "test", icon: <Icon.Stress size={13} />, text: "Test it", sub: "Strength, drops, vibration or airflow", run: () => openTab("analysis") });
+  if (model.machine) steps.push({ key: "sim", icon: <Icon.Flask size={13} />, text: "Run it", sub: "Simulate the firmware and the physics", run: () => openTab("sim") });
+  if (made.length) steps.push({ key: "make", icon: <Icon.Factory size={13} />, text: "Plan how it's made", sub: "Process, machine limits, cost and time", run: () => openTab("make") });
+  if (made.length) steps.push(printed ? { key: "plate", icon: <Icon.Grid size={13} />, text: "Print it", sub: "Every part turned to print, as a .3mf plate", run: () => void runExport("3mf-plate") } : { key: "dwg", icon: <Icon.Doc size={13} />, text: "Draw it up", sub: "Dimensioned drawings, as a PDF", run: () => void runExport("drawings") });
+  steps.push({ key: "review", icon: <Icon.Sparkle size={13} />, text: "Get a second opinion", sub: "Claude reviews it like a careful engineer", run: () => askClaude(REVIEW_ASK) });
+  return (
+    <Card title="next" icon={<Icon.Chevron size={12} />} i={i} className="ov-next" action={<button className="ov-chip ov-find" onClick={openFind} data-tip={`Everything Kerf can do (${mod}K)`}>all</button>}>
+      <ul className="ov-list">
+        {steps.slice(0, 4).map((x) => (
+          <li key={x.key}>
+            <button className="ov-item ov-step" onClick={x.run}>
+              {x.icon}
+              <span className="ov-step-text">
+                <span className="ov-item-text">{x.text}</span>
+                <span className="ov-step-sub">{x.sub}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 

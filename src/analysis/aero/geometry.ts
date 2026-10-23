@@ -38,6 +38,8 @@ export interface GridBuild {
 }
 
 const EPS = 1e-9;
+/** wall links that make a fluid cell a pocket to fill (a box's inside corner has 12) */
+const POCKET_WALLS = 13;
 
 /** Solid cells, far-field cells and boundary records for a set of bodies on a grid. */
 export function buildGrid(g: GridGeometry, nParts: number): GridBuild {
@@ -92,6 +94,51 @@ export function buildGrid(g: GridGeometry, nParts: number): GridBuild {
   for (const [n, f] of squeezed) {
     flags[n] = f;
     filled.add(n);
+  }
+  // a fluid cell walled in on more sides than a box's inside corner (12 of its 18 links) is a pocket the grid cannot
+  // carry, such as a crease where an arm lies against the rider's side: the wall model's slip on all those links feeds
+  // back on itself until the run blows up. Fill it, then any cell its filling walls in.
+  const owner = new Map<number, number>();
+  /** the solid cell's flag word to fill a pocket with (the part most of its walls belong to), or 0 if it is not one */
+  const pocket = (n: number) => {
+    if ((flags[n] & TYPE_MASK) !== FLUID) return 0;
+    const x = n % nx,
+      y = Math.floor(n / nx) % ny,
+      z = Math.floor(n / (nx * ny));
+    let walls = 0;
+    owner.clear();
+    for (let i = 1; i < Q; i++) {
+      const s = flags[idx(clampX(x - CX[i]), wrapY(y - CY[i]), wrapZ(z - CZ[i]))];
+      if ((s & TYPE_MASK) !== SOLID) continue;
+      walls++;
+      owner.set(s, (owner.get(s) ?? 0) + 1);
+    }
+    if (walls < POCKET_WALLS) return 0;
+    let best = 0,
+      most = 0;
+    for (const [s, k] of owner) if (k > most) [best, most] = [s, k];
+    return best;
+  };
+  let pockets: [number, number][] = [];
+  for (let n = 0; n < N; n++) {
+    const f = pocket(n);
+    if (f) pockets.push([n, f]);
+  }
+  for (let pass = 0; pass < 4 && pockets.length; pass++) {
+    const next = new Set<number>();
+    for (const [n, f] of pockets) {
+      flags[n] = f;
+      filled.add(n);
+      const x = n % nx,
+        y = Math.floor(n / nx) % ny,
+        z = Math.floor(n / (nx * ny));
+      for (let i = 1; i < Q; i++) next.add(idx(clampX(x + CX[i]), wrapY(y + CY[i]), wrapZ(z + CZ[i])));
+    }
+    pockets = [];
+    for (const n of next) {
+      const f = pocket(n);
+      if (f) pockets.push([n, f]);
+    }
   }
   let solidCells = 0;
   for (let n = 0; n < N; n++) if ((flags[n] & TYPE_MASK) === SOLID) solidCells++;

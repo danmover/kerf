@@ -65,7 +65,7 @@ export function DrawingView() {
       // dialogs and the sketch editor keep their own keys
       const ui = useUi.getState();
       const sk = useSketch.getState();
-      if (ui.settingsOpen || ui.shortcutsOpen || ui.confirm || sk.active || sk.picking) return;
+      if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || sk.active || sk.picking) return;
       if (e.key === "d" || e.key === "D") {
         if (useDrawings.getState().open) closeDrawings();
         else if (useDesign.getState().model?.parts.length) openDrawings();

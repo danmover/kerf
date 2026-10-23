@@ -23,6 +23,7 @@ import { Workspace } from "./screens/Workspace";
 import { Legal } from "./screens/Legal";
 import { SettingsModal } from "./ui/Settings";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
+import { FindPalette } from "./ui/FindPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
 import { AuthDialog } from "./ui/Account";
@@ -74,6 +75,7 @@ export function App() {
         <SettingsModal />
         <AuthDialog />
         <ShortcutsModal />
+        <FindPalette />
         <ConfirmDialog />
         <Toasts />
       </ErrorBoundary>
@@ -142,14 +144,20 @@ function useShortcuts() {
         });
         return;
       }
-      if (ui.settingsOpen || ui.shortcutsOpen || ui.confirm || !inWorkspace) return;
-      const typing = isTyping(e.target);
-
-      if (meta && key === "k") {
+      // the find palette opens from anywhere, even mid-sentence in the chat
+      if (meta && key === "k" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
-        document.getElementById("chat-input")?.focus();
+        if (!ui.settingsOpen && !ui.confirm) useUi.setState({ findOpen: !ui.findOpen, shortcutsOpen: false });
         return;
       }
+      if (ui.findOpen) return;
+      const typing = isTyping(e.target);
+      if (key === "/" && !meta && !e.altKey && !typing && !ui.settingsOpen && !ui.shortcutsOpen && !ui.confirm) {
+        e.preventDefault();
+        useUi.setState({ findOpen: true });
+        return;
+      }
+      if (ui.settingsOpen || ui.shortcutsOpen || ui.confirm || !inWorkspace) return;
       if (meta && !typing && (key === "z" || key === "y")) {
         e.preventDefault();
         if (key === "y" || e.shiftKey) redo();

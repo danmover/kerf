@@ -16,10 +16,11 @@ import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
 import { FIELD_INFO, FIELDS, autoDeform, shownMode } from "./ResultsLayer";
 import { dropVerdict, modeWords, resonances, vibrationText, vibrationVerdict } from "../analysis/dynamics";
-import { Segmented } from "./common";
+import { Menu, MenuItem, Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { useChatDraft } from "./chatDraft";
 import { AirflowControls, AirflowView } from "./AirflowView";
+import { kindsFor } from "./analysisKinds";
 import { useAirflow, showAirflow, yawMean, type AirflowRun } from "../analysis/aeroRuntime";
 import { fmtNum } from "../lang/values";
 import "../styles/analysis.css";
@@ -57,6 +58,7 @@ export function AnalysisPanel() {
         {specs.map((a) => (
           <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} air={airRuns.get(a.label)} />
         ))}
+        <AddAnalysis />
         <div className="grow" />
         {spec?.kind === "structural" && <FineButton spec={spec} run={runs.get(spec.label)} />}
         {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} air={spec.kind === "airflow" ? airRuns.get(spec.label) : undefined} />}
@@ -821,10 +823,51 @@ function SafetyMeter({ sf, target }: { sf: number; target: number }) {
   );
 }
 
+// ---------- adding one ----------
+
+/** The kinds of analysis this design could have, each a draft for Claude, so a second kind is as easy to add as the first. */
+function AddAnalysis() {
+  const model = useDesign((s) => s.model);
+  const setDraft = useChatDraft((s) => s.set);
+  const kinds = kindsFor(model);
+  return (
+    <Menu
+      width={330}
+      trigger={(open, toggle) => (
+        <button className={`an-add ${open ? "open" : ""}`} onClick={toggle} aria-label="Add an analysis" data-tip="Add an analysis: Claude sets it up from how the design is used">
+          <Icon.Plus size={12} /> add
+        </button>
+      )}
+    >
+      {(close) => (
+        <>
+          <div className="menu-label">Ask Claude to set up</div>
+          {kinds.map((k) => {
+            const I = Icon[k.icon];
+            const n = model?.analyses.filter(k.is).length ?? 0;
+            return (
+              <MenuItem key={k.id} icon={<I size={14} />} hint={n ? `${n} here` : undefined} onClick={() => (close(), setDraft(k.ask))}>
+                <div>
+                  <div>{k.label}</div>
+                  <div className="dim" style={{ fontSize: 11 }}>
+                    {k.detail}
+                  </div>
+                </div>
+              </MenuItem>
+            );
+          })}
+        </>
+      )}
+    </Menu>
+  );
+}
+
 // ---------- empty state ----------
 
 function EmptyState() {
   const setDraft = useChatDraft((s) => s.set);
+  const model = useDesign((s) => s.model);
+  const kinds = kindsFor(model);
   return (
     <div className="an-body">
       <div className="an-empty">
@@ -833,16 +876,26 @@ function EmptyState() {
             <span style={{ color: "var(--accent-2)" }}>
               <Icon.Stress size={22} />
             </span>
-            <span style={{ fontWeight: 600, fontSize: 14 }}>No strength analysis yet</span>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>No analysis yet</span>
           </div>
           <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-            An analysis says how a part is held and what pushes on it. Kerf then works out stress, strain, deflection and the factor of safety, colours the model with the results, and adds a strength check that re-runs whenever the design changes.
-            Gear trains get tooth, bearing and shaft checks from their input torque and speed.
+            An analysis puts the design through what it will face in use and colours the model with the results. Each one adds checks that re-run whenever the design changes. Pick one and Claude works out the loads, speeds or rules from what the design is for.
           </div>
-          <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
-            <button className="btn sm primary" onClick={() => setDraft("Set up a strength analysis for this design from how it will be used: work out realistic loads and how it is held, then run it and tell me what you find.")}>
-              <Icon.Sparkle size={13} /> Ask Claude to set one up
-            </button>
+          <div className="an-kinds">
+            {kinds.map((k, i) => {
+              const I = Icon[k.icon];
+              return (
+                <button key={k.id} className={`an-kind ${i === 0 ? "first" : ""}`} onClick={() => setDraft(k.ask)}>
+                  <span className="an-kind-icon">
+                    <I size={15} />
+                  </span>
+                  <span>
+                    <span className="an-kind-label">{k.label}</span>
+                    <span className="an-kind-detail">{k.detail}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
         <pre className="an-code">

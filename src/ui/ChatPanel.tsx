@@ -17,7 +17,8 @@ import { useAccount } from "../cloud/account";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
 import { useProject } from "../app/project";
-import { templateById, TEMPLATES } from "../demos/templates";
+import { audienceById, templateById, TEMPLATES } from "../demos/templates";
+import { desktop } from "../app/desktop";
 import { diffStats } from "../core/sourceEdit";
 import { useDesign } from "../core/engine";
 import { describeQuick } from "../core/quickCommands";
@@ -176,7 +177,10 @@ export function ChatPanel() {
 
 function Welcome({ hasKey }: { hasKey: boolean }) {
   const project = useProject((s) => s.current);
+  const audience = useSettings((s) => s.audience);
   const t = templateById(project?.template ?? "") ?? TEMPLATES[0];
+  // a blank design suggests briefs for what the user said they make
+  const prompts = t.id === "blank" ? (audienceById(audience)?.briefs ?? t.prompts) : t.prompts;
   if (!hasKey)
     return (
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="card" style={{ padding: 18 }}>
@@ -185,7 +189,7 @@ function Welcome({ hasKey }: { hasKey: boolean }) {
           <span style={{ fontWeight: 600, color: "var(--text)" }}>Connect an AI model to design by conversation</span>
         </div>
         <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-          Add an OpenAI or Claude API key in Settings → AI, then choose a model. Everything else (editing, checks, export) works without a key.
+          Add a Claude or OpenAI API key in Settings → AI, then choose a model.{desktop() ? " On a Claude Pro or Max plan, you can let your own Claude Code design here instead, from the same page." : ""} Everything else (the modelling tools, checks, analyses and exports) works without a key.
         </div>
         <button className="btn primary" style={{ marginTop: 14 }} onClick={() => openSettings("ai")}>
           <Icon.Key size={14} /> Add API key
@@ -199,7 +203,7 @@ function Welcome({ hasKey }: { hasKey: boolean }) {
         Describe the part or mechanism, give the dimensions that matter, and say what must stay fixed. Claude edits the design, runs every check and tells you what changed.
       </div>
       <div className="suggestions">
-        {t.prompts.map((p, i) => (
+        {prompts.map((p, i) => (
           <motion.button key={p} className="suggestion" onClick={() => void sendMessage(p)} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.08 * i + 0.1 }}>
             <Icon.Sparkle size={12} /> {p}
           </motion.button>
@@ -613,7 +617,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
                 <Icon.Bolt size={10} /> {describeQuick(command)} · instant, no Claude
               </span>
             ) : (
-              `Enter to send · Shift+Enter for a new line · ${mod}K to focus`
+              `Enter to send · Shift+Enter for a new line · ${mod}K finds anything`
             )}
           </span>
           <div className="grow" />

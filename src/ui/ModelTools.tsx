@@ -38,9 +38,9 @@ const TOOLS: { id: ToolId; label: string; icon: (p: { size?: number }) => ReactN
 /** Tools that work on a spot you click (the others work on the selection). */
 const PICKS: Partial<Record<ToolId, "needs" | "may">> = { hole: "needs", box: "may", cylinder: "may", fillet: "may", chamfer: "may", shell: "may" };
 
-const FIX_IT_UP =
+export const FIX_IT_UP =
   "I modelled this by hand with the modelling tools. Fix it up so it works: keep the shapes, sizes and positions I chose and what the design is for, but make the parts fit and hold together, fix anything that no longer builds or passes the checks, and tidy the code (parameters and named features instead of loose numbers). Tell me what you changed.";
-const MAKE_BUILDABLE =
+export const MAKE_BUILDABLE =
   "Make this an actual buildable product: real fasteners and fits, parts that can be made with the processes I have, wiring and electronics if it needs them, an assembly order, and a parts list with where to buy each part. Keep the design's shape and purpose, and fix every failing check.";
 
 interface Form {

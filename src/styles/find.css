@@ -1,0 +1,224 @@
+/* ── the find palette (ui/FindPalette) ────────────────────────────── */
+
+.find-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  background: var(--scrim);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: min(12vh, 110px) 16px 16px;
+}
+.find {
+  width: min(640px, 100%);
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.find-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-3);
+}
+.find-box input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+.find-box input::placeholder {
+  color: var(--text-4);
+}
+.find-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  overscroll-behavior: contain;
+}
+.find-group {
+  padding: 10px 10px 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-2);
+}
+.find-row.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.find-icon {
+  flex: none;
+  width: 18px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-3);
+}
+.find-row.active .find-icon,
+.find-row.ask-row .find-icon {
+  color: var(--accent-2);
+}
+.find-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgb(var(--ink-rgb) / 0.25);
+}
+.find-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.find-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.find-row.ask-row .find-title {
+  font-weight: 600;
+}
+.find-detail {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.find-tag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  border: 1px solid var(--line-2);
+  color: var(--text-3);
+}
+.find-tag.ask {
+  border-color: rgb(var(--violet-rgb) / 0.4);
+  color: var(--violet-ink);
+  background: rgb(var(--violet-rgb) / 0.08);
+}
+.find-tag.on {
+  border-color: rgb(var(--accent-rgb) / 0.45);
+  color: var(--accent-ink);
+}
+.find-tag.here {
+  border-color: rgb(var(--pass-rgb) / 0.4);
+  color: var(--pass-ink);
+}
+.find-where {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+.find-keys {
+  flex: none;
+  display: inline-flex;
+  gap: 3px;
+}
+.find-none {
+  padding: 18px;
+  text-align: center;
+  color: var(--text-3);
+}
+.find-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.find-foot > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* the top bar's way in */
+.find-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+.find-btn:hover {
+  color: var(--text);
+  border-color: var(--line-3);
+}
+.find-btn-label {
+  margin-right: 6px;
+}
+.find-btn-keys {
+  display: inline-flex;
+  gap: 2px;
+}
+@media (max-width: 1100px) {
+  .find-btn-label,
+  .find-btn-keys {
+    display: none;
+  }
+  .find-btn {
+    padding: 0 8px;
+    border-color: transparent;
+    background: none;
+  }
+}
+@media (pointer: coarse) {
+  .find-row {
+    padding: 10px;
+  }
+}
+@media (max-width: 760px) {
+  .find-layer {
+    padding: 8px;
+  }
+  .find {
+    max-height: calc(var(--app-h, 100dvh) - 16px);
+  }
+  .find-foot {
+    display: none;
+  }
+  .find-where {
+    display: none;
+  }
+}

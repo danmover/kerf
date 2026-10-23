@@ -14,6 +14,7 @@ import { mod } from "./common";
 import { ExportMenu } from "./ExportMenu";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { SyncBadge } from "./Account";
+import { FindButton } from "./FindPalette";
 
 export function TopBar() {
   const project = useProject((s) => s.current);
@@ -73,6 +74,7 @@ export function TopBar() {
       <div className="grow" />
       <Pipeline />
       <div className="grow" />
+      <FindButton />
       <div className="tb-group">
         <button className="icon-btn" disabled={!undoN} onClick={undo} data-tip={`Undo (${mod}Z)`} aria-label="Undo">
           <Icon.Undo />

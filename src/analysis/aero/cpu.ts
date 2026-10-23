@@ -20,7 +20,7 @@
 // floats. The CPU stores 32-bit floats, a cell's 19 together (the GPU keeps
 // each direction together instead: populations() gives them in that order).
 
-import { CX, CY, CZ, FARFIELD, INDEX_SHIFT, KAPPA, OPP, Q, SGS_FLOOR, SGS_STRAIN, SLIP_RATE, SOLID, SUBGRID_CD, TYPE_MASK, VAN_DRIEST, W, WW_A, WW_B, WW_YPLUS } from "./lattice";
+import { CX, CY, CZ, FARFIELD, INDEX_SHIFT, KAPPA, OPP, Q, SGS_FLOOR, SGS_STRAIN, SLIP_GAIN, SLIP_RATE, SOLID, SUBGRID_CD, TYPE_MASK, VAN_DRIEST, W, WW_A, WW_B, WW_YPLUS } from "./lattice";
 import { cellCount, coarseDims, FIELD_AVG, REC_AVG, startAt, type LbmCase } from "./case";
 
 // typed copies of the lattice for the hot loops
@@ -251,9 +251,17 @@ export class CpuLbm {
               const sx = (ws[3 * r] += SLIP_RATE * (tx * slip - ws[3 * r])),
                 sy = (ws[3 * r + 1] += SLIP_RATE * (ty * slip - ws[3 * r + 1])),
                 sz = (ws[3 * r + 2] += SLIP_RATE * (tz * slip - ws[3 * r + 2]));
+              const s2 = sx * sx + sy * sy + sz * sz;
+              let gain = 0;
               for (let i = 1; i < Q; i++) {
                 if (!wall[i]) continue;
-                const k = wq[i] < 0.5 ? 1 : 1 / (2 * wq[i]);
+                const cs = CX[i] * sx + CY[i] * sy + CZ[i] * sz;
+                gain += (6 * W[i] * cs * cs) / (wq[i] < 0.5 ? 1 : 2 * wq[i]);
+              }
+              const back = s2 > 0 && gain > SLIP_GAIN * s2 ? (SLIP_GAIN * s2) / gain : 1;
+              for (let i = 1; i < Q; i++) {
+                if (!wall[i]) continue;
+                const k = (wq[i] < 0.5 ? 1 : 1 / (2 * wq[i])) * back;
                 f[i] += 6 * W[i] * (CX[i] * sx + CY[i] * sy + CZ[i] * sz) * k;
               }
               drho = 0;

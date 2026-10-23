@@ -1,7 +1,7 @@
 // The workspace on a phone: the 3D view on top and one panel below it, chat
 // first, so you can talk to Claude and watch the model change on the go.
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TopBar } from "../ui/TopBar";
 import { LeftPanel } from "../ui/LeftPanel";
 import { Viewport } from "../ui/Viewport";
@@ -13,6 +13,7 @@ import { useDesign } from "../core/engine";
 import { useProject } from "../app/project";
 import { useView } from "../app/view";
 import { useChat } from "../ai/chat";
+import { useUi } from "../app/ui";
 import { useVoice } from "../voice/voice";
 import { PreviewBanner } from "../ui/PreviewBanner";
 import { PlanHud } from "../ui/PlanHud";
@@ -85,6 +86,14 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
   useEffect(() => {
     if (listening) setPane("chat");
   }, [listening]);
+  // the find palette shows what it opened: a panel, the model panel or the chat
+  const asked = useUi((s) => s.phonePane);
+  const seenAsk = useRef(asked?.n ?? 0);
+  useEffect(() => {
+    if (!asked || asked.n <= seenAsk.current) return;
+    seenAsk.current = asked.n;
+    setPane(asked.pane === "panel" ? "code" : asked.pane);
+  }, [asked]);
 
   const tabs: { id: Pane; label: string; icon: JSX.Element; badge?: JSX.Element }[] = [
     { id: "chat", label: "Chat", icon: <Icon.Sparkle size={14} />, badge: busy ? <span className="dot pending" /> : listening ? <span className="dot fail" /> : undefined },

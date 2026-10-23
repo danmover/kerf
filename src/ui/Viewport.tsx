@@ -13,6 +13,7 @@ import { useSettings, updateSettings } from "../app/settings";
 import { useTheme } from "../app/theme";
 import { lightingPreset } from "./viewport/render/studio";
 import { registerViewport } from "../app/viewportApi";
+import { openFind } from "../app/ui";
 import { Icon } from "./icons";
 import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
@@ -227,7 +228,23 @@ export function Viewport() {
       {hold && <div key={hold.n} className="vp-hold" style={{ left: hold.x, top: hold.y }} aria-hidden="true" />}
 
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
+        {/* modelling it yourself comes first and is labelled, so it isn't lost among the view switches */}
+        <div className="vp-make">
+          <button className={`vp-lbtn ${settings.advanced ? "active" : ""}`} onClick={() => updateSettings({ advanced: !settings.advanced })} data-tip="Modelling tools: box, cylinder, hole, fillet, chamfer, shell, move. Model it yourself, then let Claude fix it up" aria-label="Modelling tools" aria-pressed={settings.advanced}>
+            <Icon.Tools size={15} />
+            <span>Tools</span>
+          </button>
+          <button className={`vp-lbtn ${sketching ? "active" : ""}`} onClick={() => (sketching ? exitSketch() : startPicking())} data-tip={sketching ? "Leave the sketch" : "New sketch: draw a profile on a face or plane, then extrude or revolve it"} aria-label="Sketch" aria-pressed={sketching}>
+            <T.Sketch size={15} />
+            <span>Sketch</span>
+          </button>
+          <button className={`icon-btn ${marking ? "active" : ""}`} disabled={sketching} onClick={() => toggleMarkup()} data-tip={sketching ? "Leave the sketch to draw on the view" : "Draw on the view for Claude (M)"} aria-label="Draw on the view for Claude">
+            <Icon.Edit />
+          </button>
+        </div>
+        <div className="sep" />
         <Menu
+          className="vp-cam"
           trigger={(open, toggle) => (
             <button className={`icon-btn ${open ? "active" : ""}`} onClick={toggle} data-tip="Camera view" aria-label="Camera view">
               <Icon.Cube />
@@ -253,7 +270,7 @@ export function Viewport() {
             </>
           )}
         </Menu>
-        <button className="icon-btn" onClick={() => requestCamera("fit")} data-tip="Fit to view (F)" aria-label="Fit to view">
+        <button className="icon-btn vp-cam" onClick={() => requestCamera("fit")} data-tip="Fit to view (F)" aria-label="Fit to view">
           <Icon.Fit />
         </button>
         <div className="sep" />
@@ -285,32 +302,14 @@ export function Viewport() {
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
         <div className="sep" />
-        <button className={`icon-btn ${marking ? "active" : ""}`} disabled={sketching} onClick={() => toggleMarkup()} data-tip={sketching ? "Leave the sketch to draw on the view" : "Draw on the view for Claude (M)"} aria-label="Draw on the view for Claude">
-          <Icon.Edit />
-        </button>
-        <button className={`icon-btn ${sketching ? "active" : ""}`} onClick={() => (sketching ? exitSketch() : startPicking())} data-tip={sketching ? "Leave the sketch" : "New sketch"} aria-label="Sketch">
-          <T.Sketch />
-        </button>
-        <div className="sep" />
-        <button className={`icon-btn ${settings.grid && !photoLook ? "active" : ""}`} onClick={() => updateSettings({ grid: !settings.grid })} data-tip={photoLook ? "Grid (hidden in the photoreal view)" : "Grid"} aria-label="Grid">
-          <Icon.Grid />
-        </button>
-        <button className={`icon-btn ${settings.edges && !photoLook ? "active" : ""}`} onClick={() => updateSettings({ edges: !settings.edges })} data-tip={photoLook ? "Edges (hidden in the photoreal view)" : "Edges"} aria-label="Edges">
-          <Icon.Box />
-        </button>
-        <div className="sep" />
         <div className="vp-look">
-          <LightingMenu />
+          <LightingMenu photoLook={photoLook} />
           <button className={`icon-btn vp-photo-btn ${settings.photoreal ? "active" : ""}`} onClick={() => updateSettings({ photoreal: !settings.photoreal })} data-tip="Photoreal view (P)" aria-label="Photoreal view" aria-pressed={settings.photoreal}>
             <Icon.Aperture />
           </button>
         </div>
         <button className={`icon-btn ${view.turntable ? "active" : ""}`} disabled={!visibleParts} onClick={() => useView.setState({ turntable: !view.turntable })} data-tip="Turntable (T)" aria-label="Turntable">
           <Icon.Orbit />
-        </button>
-        <div className="sep" />
-        <button className={`icon-btn ${settings.advanced ? "active" : ""}`} onClick={() => updateSettings({ advanced: !settings.advanced })} data-tip="Modelling tools: model it yourself, then let Claude fix it up" aria-label="Modelling tools" aria-pressed={settings.advanced}>
-          <Icon.Edit />
         </button>
       </div>
 
@@ -390,7 +389,21 @@ export function Viewport() {
             </div>
             <div style={{ fontWeight: 600, fontSize: 15 }}>Nothing to show yet</div>
             <div className="muted" style={{ marginTop: 6 }}>
-              Describe what you want to make in the chat on the right, or start writing in the code editor below.
+              Describe what you want to make to Claude in the chat, or model it yourself.
+            </div>
+            <div className="vp-empty-actions">
+              <button className="btn sm primary" onClick={() => document.getElementById("chat-input")?.focus()}>
+                <Icon.Sparkle size={13} /> Describe it
+              </button>
+              <button className="btn sm" onClick={() => startPicking()}>
+                <T.Sketch size={13} /> Sketch
+              </button>
+              <button className="btn sm" onClick={() => updateSettings({ advanced: true })}>
+                <Icon.Tools size={13} /> Tools
+              </button>
+              <button className="btn sm ghost" onClick={openFind}>
+                <Icon.Search size={13} /> Find
+              </button>
             </div>
           </motion.div>
         </div>

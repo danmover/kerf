@@ -159,6 +159,13 @@ export class AirflowCancelled extends Error {
   }
 }
 
+/** The flow blew up: the forces came back infinite or not a number. */
+export class AirflowDiverged extends Error {
+  constructor() {
+    super("the airflow run blew up");
+  }
+}
+
 /** Tolerance on the mean drag (standard error over mean) and how long to average, by quality. */
 const QUALITY = {
   draft: { tol: 0.03, avg: 0.5 },
@@ -216,109 +223,125 @@ export async function runAirflow(input: AirflowInput, opt: RunOptions = {}): Pro
     const plan = planRun(input, yaw, budget);
     outerPlan ??= plan.levels[0];
     const yawStart = performance.now();
-    const share = (deadline - yawStart) / (input.yaws.length - yi);
-    const yawDeadline = yawStart + share;
     const beta = (yaw * Math.PI) / 180;
     const roadSpeed = input.speed * Math.cos(beta);
     let parent: { plan: LevelPlan; mean: Float32Array; dims: V3; coarse: number } | undefined;
     let result: YawResult | null = null;
 
-    for (const [li, lp] of plan.levels.entries()) {
-      const last = li === plan.levels.length - 1;
-      const lv = buildLevel(input, yaw, lp, parent);
-      if (last && yi === 0) {
-        if (lv.missed > 0.01 * Math.max(1, lv.case.rec.count)) warnings.push(`${lv.missed} wall links did not meet a surface (an open or self-crossing mesh); they were treated as walls halfway along.`);
-        for (const [k, b] of input.bodies.entries()) {
-          const own = lv.case.rec.partStart[k + 1] - lv.case.rec.partStart[k];
-          if (own === 0) warnings.push(`${b.name} is too small for the cells and adds no drag.`);
-        }
-      }
-      let solver: Solver;
+    // a run that blows up is caught within a few hundred steps and run again without the wall model; if it blows up
+    // again the angle is left out
+    for (let attempt = 0; attempt < 2 && !result; attempt++) {
+      parent = undefined;
+      const levelStart = performance.now();
+      const share = (deadline - levelStart) / (input.yaws.length - yi);
+      const yawDeadline = levelStart + share;
       try {
-        solver = opt.solver ? await opt.solver(lv.case) : backend === "gpu" ? await GpuSolver.create(lv.case, half, adapter) : new CpuSolver(lv.case);
-      } catch (e) {
-        if (!(e instanceof GpuError) || opt.solver) throw e;
-        // the GPU could not take it: the CPU, coarser, from this yaw on
-        warnings.push(`The GPU could not run it (${e.message}), so it ran on the CPU on a coarser grid.`);
-        backend = "cpu";
-        adapter = null;
-        return runAirflow({ ...input, backend: "cpu" }, opt).then((r) => ({ ...r, warnings: [...warnings, ...r.warnings] }));
-      }
-      try {
-        const out = await settleAndAverage(input, lv, solver, {
-          last,
-          nested: !!parent,
-          size: plan.size,
-          deadline: last ? yawDeadline : yawStart + 0.25 * share,
-          progress: (frac, stage, extra) =>
-            opt.onProgress?.({
-              stage: plan.levels.length > 1 ? `${stage} (${last ? "close up" : "whole tunnel"})` : stage,
-              frac: (yi + (plan.levels.length > 1 ? (last ? 0.3 + 0.7 * frac : 0.3 * frac) : frac)) / input.yaws.length,
+        for (const [li, lp] of plan.levels.entries()) {
+          const last = li === plan.levels.length - 1;
+          const lv = buildLevel(input, yaw, lp, parent);
+          lv.case.wallModel &&= attempt === 0;
+          if (last && yi === 0) {
+            if (lv.missed > 0.01 * Math.max(1, lv.case.rec.count)) warnings.push(`${lv.missed} wall links did not meet a surface (an open or self-crossing mesh); they were treated as walls halfway along.`);
+            for (const [k, b] of input.bodies.entries()) {
+              const own = lv.case.rec.partStart[k + 1] - lv.case.rec.partStart[k];
+              if (own === 0) warnings.push(`${b.name} is too small for the cells and adds no drag.`);
+            }
+          }
+          let solver: Solver;
+          try {
+            solver = opt.solver ? await opt.solver(lv.case) : backend === "gpu" ? await GpuSolver.create(lv.case, half, adapter) : new CpuSolver(lv.case);
+          } catch (e) {
+            if (!(e instanceof GpuError) || opt.solver) throw e;
+            // the GPU could not take it: the CPU, coarser, from this yaw on
+            warnings.push(`The GPU could not run it (${e.message}), so it ran on the CPU on a coarser grid.`);
+            backend = "cpu";
+            adapter = null;
+            return runAirflow({ ...input, backend: "cpu" }, opt).then((r) => ({ ...r, warnings: [...warnings, ...r.warnings] }));
+          }
+          try {
+            const out = await settleAndAverage(input, lv, solver, {
+              last,
+              nested: !!parent,
+              size: plan.size,
+              deadline: last ? yawDeadline : levelStart + 0.25 * share,
+              progress: (frac, stage, extra) =>
+                opt.onProgress?.({
+                  stage: plan.levels.length > 1 ? `${stage} (${last ? "close up" : "whole tunnel"})` : stage,
+                  frac: (yi + (plan.levels.length > 1 ? (last ? 0.3 + 0.7 * frac : 0.3 * frac) : frac)) / input.yaws.length,
+                  yaw,
+                  ...extra,
+                }),
+              aborted: opt.aborted,
+              dragOf: (Fl) => -dot(vecToWorld(lp.frame, Fl), F) * forceScale(input, lp.frame.h),
+            });
+            if (!last) {
+              const dims = coarseDims(lv.case);
+              parent = { plan: lp, mean: meanFlow(out.field, dims[0] * dims[1] * dims[2]), dims, coarse: lv.case.coarse };
+              continue;
+            }
+            opt.onProgress?.({ stage: "Working out the results", frac: (yi + 0.98) / input.yaws.length, yaw });
+            const fs = forceScale(input, lp.frame.h);
+            const pf = meanPartForces(lv, out.rec, out.avgSteps);
+            const wd = wallData(lv, out.rec, out.avgSteps);
+            const surface = surfaceFields(lv, input.bodies, wd, shared);
+            shared ??= surface;
+            const parts: PartForce[] = [];
+            const total: V3 = [0, 0, 0];
+            for (const [k, b] of input.bodies.entries()) {
+              const Fw = scale(vecToWorld(lp.frame, [pf[3 * k], pf[3 * k + 1], pf[3 * k + 2]]), fs);
+              total[0] += Fw[0];
+              total[1] += Fw[1];
+              total[2] += Fw[2];
+              const drag = -dot(Fw, F);
+              const split = integrateDrag(surface[k], scale(F, -1));
+              const fr = split.friction + split.pressure !== 0 ? split.friction / (split.friction + split.pressure) : 0;
+              parts.push({ id: b.id, name: b.name, drag, side: -dot(Fw, R), lift: dot(Fw, up), cda: drag / q, friction: Math.min(1, Math.max(0, fr)), extra: b.extra });
+            }
+            const drag = -dot(total, F);
+            const area = frontalArea(input.bodies, lp.frame.ex, lp.frame.ey, lp.frame.ez);
+            const centre = toWorld(lp.frame, [(lp.body.lo[0] + lp.body.hi[0]) / 2, (lp.body.lo[1] + lp.body.hi[1]) / 2, (lp.body.lo[2] + lp.body.hi[2]) / 2]);
+            const M = scale(meanMoment(lv, out.rec, out.avgSteps, centre, lv.parts.findIndex((p) => p.road)), fs * 1e-3);
+            const bf = blockFlow(lv, out.field);
+            const snap = blockFlow(lv, out.snapshot);
+            const yp = Array.from(wd.yPlus).filter(Number.isFinite).sort((a, b) => a - b);
+            const thin = Math.max(1, Math.min(plan.size[1], plan.size[2]));
+            result = {
               yaw,
-              ...extra,
-            }),
-          aborted: opt.aborted,
-          dragOf: (Fl) => -dot(vecToWorld(lp.frame, Fl), F) * forceScale(input, lp.frame.h),
-        });
-        if (!last) {
-          const dims = coarseDims(lv.case);
-          parent = { plan: lp, mean: meanFlow(out.field, dims[0] * dims[1] * dims[2]), dims, coarse: lv.case.coarse };
-          continue;
+              drag,
+              side: -dot(total, R),
+              lift: dot(total, up),
+              windDrag: dot(total, lp.frame.ex),
+              cda: drag / q,
+              area,
+              cd: area > 0 ? drag / q / area : 0,
+              watts: drag * roadSpeed,
+              pitch: dot(M, R),
+              yawMoment: -dot(M, up),
+              parts,
+              history: decimate(out.history, 240),
+              stderr: out.stderr,
+              converged: out.converged,
+              steps: out.steps,
+              seconds: (performance.now() - yawStart) / 1e3,
+              surface,
+              streamlines: streamlines(lv, bf),
+              wake: wakeSurface(lv, bf),
+              vortices: vortexSurface(lv, snap, thin),
+              volume: flowVolume(lv, bf),
+              yPlus: yp.length ? yp[Math.floor(yp.length / 2)] : NaN,
+            };
+            first ??= lp;
+          } finally {
+            solver.dispose();
+          }
         }
-        opt.onProgress?.({ stage: "Working out the results", frac: (yi + 0.98) / input.yaws.length, yaw });
-        const fs = forceScale(input, lp.frame.h);
-        const pf = meanPartForces(lv, out.rec, out.avgSteps);
-        const wd = wallData(lv, out.rec, out.avgSteps);
-        const surface = surfaceFields(lv, input.bodies, wd, shared);
-        shared ??= surface;
-        const parts: PartForce[] = [];
-        const total: V3 = [0, 0, 0];
-        for (const [k, b] of input.bodies.entries()) {
-          const Fw = scale(vecToWorld(lp.frame, [pf[3 * k], pf[3 * k + 1], pf[3 * k + 2]]), fs);
-          total[0] += Fw[0];
-          total[1] += Fw[1];
-          total[2] += Fw[2];
-          const drag = -dot(Fw, F);
-          const split = integrateDrag(surface[k], scale(F, -1));
-          const fr = split.friction + split.pressure !== 0 ? split.friction / (split.friction + split.pressure) : 0;
-          parts.push({ id: b.id, name: b.name, drag, side: -dot(Fw, R), lift: dot(Fw, up), cda: drag / q, friction: Math.min(1, Math.max(0, fr)), extra: b.extra });
-        }
-        const drag = -dot(total, F);
-        const area = frontalArea(input.bodies, lp.frame.ex, lp.frame.ey, lp.frame.ez);
-        const centre = toWorld(lp.frame, [(lp.body.lo[0] + lp.body.hi[0]) / 2, (lp.body.lo[1] + lp.body.hi[1]) / 2, (lp.body.lo[2] + lp.body.hi[2]) / 2]);
-        const M = scale(meanMoment(lv, out.rec, out.avgSteps, centre, lv.parts.findIndex((p) => p.road)), fs * 1e-3);
-        const bf = blockFlow(lv, out.field);
-        const snap = blockFlow(lv, out.snapshot);
-        const yp = Array.from(wd.yPlus).filter(Number.isFinite).sort((a, b) => a - b);
-        const thin = Math.max(1, Math.min(plan.size[1], plan.size[2]));
-        result = {
-          yaw,
-          drag,
-          side: -dot(total, R),
-          lift: dot(total, up),
-          windDrag: dot(total, lp.frame.ex),
-          cda: drag / q,
-          area,
-          cd: area > 0 ? drag / q / area : 0,
-          watts: drag * roadSpeed,
-          pitch: dot(M, R),
-          yawMoment: -dot(M, up),
-          parts,
-          history: decimate(out.history, 240),
-          stderr: out.stderr,
-          converged: out.converged,
-          steps: out.steps,
-          seconds: (performance.now() - yawStart) / 1e3,
-          surface,
-          streamlines: streamlines(lv, bf),
-          wake: wakeSurface(lv, bf),
-          vortices: vortexSurface(lv, snap, thin),
-          volume: flowVolume(lv, bf),
-          yPlus: yp.length ? yp[Math.floor(yp.length / 2)] : NaN,
-        };
-        first ??= lp;
-      } finally {
-        solver.dispose();
+      } catch (e) {
+        if (!(e instanceof AirflowDiverged)) throw e;
+        warnings.push(
+          attempt === 0
+            ? `At ${yaw}° the flow went unstable next to the walls, so that angle ran again without the wall model (its drag reads somewhat higher).`
+            : `At ${yaw}° the flow went unstable even without the wall model, so that angle is left out.`,
+        );
       }
     }
     if (result) {
@@ -327,7 +350,7 @@ export async function runAirflow(input: AirflowInput, opt: RunOptions = {}): Pro
     }
   }
 
-  if (!first) throw new Error("no yaw angles to run");
+  if (!first) throw new Error(input.yaws.length ? "the flow blew up at every yaw angle" : "no yaw angles to run");
   const fp = first;
   const size = planRun(input, input.yaws[0] ?? 0, cellBudget(input.quality, backend === "gpu")).size;
   const tunnel = outerPlan!;
@@ -443,6 +466,7 @@ async function settleAndAverage(input: AirflowInput, lv: BuiltLevel, s: Solver, 
     await s.run(n, 0);
     steps += n;
     const d = ph.dragOf(total(await s.forces()));
+    if (!Number.isFinite(d)) throw new AirflowDiverged();
     await note((0.45 * steps) / develop, devStage, d);
     // don't let settling eat the averaging's time
     if (performance.now() > devCap && steps > 0.5 * develop) break;
@@ -461,6 +485,7 @@ async function settleAndAverage(input: AirflowInput, lv: BuiltLevel, s: Solver, 
     avg += every;
     steps += every;
     const d = ph.dragOf(total(await s.forces()));
+    if (!Number.isFinite(d)) throw new AirflowDiverged();
     hist.push(d);
     const mean = hist.reduce((a, b) => a + b, 0) / hist.length;
     if (avg >= avgMin) {
