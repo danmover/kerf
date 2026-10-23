@@ -2,7 +2,7 @@
 // Some checks run in the kernel (solid booleans, distances, tool access,
 // swept envelopes); gear meshing is checked here with exact 2D tooth outlines.
 
-import { absRate, type Model, type EvalPart, type ReqStatus } from "./model";
+import { absRate, massVolume, partMass, type Model, type EvalPart, type ReqStatus } from "./model";
 import type { Span } from "../lang/ast";
 import type { ChecksRequest, ChecksResult, PlacedItem } from "../kernel/protocol";
 import { applyXforms, frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
@@ -19,6 +19,8 @@ import { linkChecks } from "./linkChecks";
 import { stashSweep, sweepChecks } from "./sweepChecks";
 import { stabilityChecks } from "./stability";
 import { sheetChecks } from "./sheetChecks";
+import { chainChecks } from "./chainChecks";
+import { uciChecks } from "./uciChecks";
 import type { SettingValue } from "../mfg/types";
 
 export type CheckCategory =
@@ -108,6 +110,8 @@ export function contactPairs(model: Model, visible: EvalPart[] = model.parts): [
     if (board && /\.(leads|pins|legs|headerpins)$/.test(p.id)) ignorePairs.push([p.id, board]);
     // a band presses on the tube it wraps and sits on its hooks
     if (p.band) for (const other of [...p.band.around, ...(p.band.holds ? [p.band.holds] : [])]) for (const q of visible) if (q.name === other) ignorePairs.push([p.id, q.id]);
+    // a chain's rollers sit in its sprockets' tooth gaps (the chain checks look after the fit)
+    if (p.chain) for (const n of p.chain.nodes) for (const q of visible) if (q.name === n.name) ignorePairs.push([p.id, q.id]);
   }
   return ignorePairs;
 }
@@ -333,15 +337,19 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   items.push(...gearChecks(model));
   items.push(...fastenerChecks(model));
   const holds = findHolds(model, inputs.mesh);
-  items.push(...holdChecks(model, holds, kernel, (p) => geom(p.hash)?.volume));
+  // a part given its real mass (a hollow frame modelled solid) weighs that, wherever weight matters
+  const volumeOf = (p: EvalPart) => massVolume(p, geom(p.hash)?.volume, materialDensity(p.material));
+  items.push(...holdChecks(model, holds, kernel, volumeOf));
   items.push(...linkChecks(model));
   if (kernel && inputs.mesh) {
     const sweep = { model, holds, kernel, mesh: inputs.mesh, ignore: contactPairs(model) };
     if (inputs.sweepLater) stashSweep(sweep);
     else items.push(...sweepChecks(sweep.model, sweep.holds, sweep.kernel, sweep.mesh, sweep.ignore));
-    items.push(...stabilityChecks(model, holds, kernel, inputs.mesh, (p) => geom(p.hash)?.volume));
+    items.push(...stabilityChecks(model, holds, kernel, inputs.mesh, volumeOf));
   }
   items.push(...sheetChecks(model));
+  items.push(...chainChecks(model));
+  items.push(...uciChecks(model, inputs.mesh, (p) => partMass(p, geom(p.hash)?.volume, materialDensity(p.material))));
   if (model.machine) items.push(...machineChecks(model.machine));
 
   // things geometry cannot prove

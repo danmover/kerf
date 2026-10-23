@@ -346,6 +346,7 @@ const KINDS: Record<ProcessId, ProcessKind> = {
   die_cast: "die_cast",
   sand_cast: "sand_cast",
   investment_cast: "investment_cast",
+  carbon_layup: "other",
 };
 
 /** Reads loose process names ("3D printed in PETG", "machined") as a process kind, with the same reading the manufacturing checks use. */

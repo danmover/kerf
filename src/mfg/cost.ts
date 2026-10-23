@@ -123,6 +123,7 @@ const SPREAD: Record<ProcessId, [number, number]> = {
   laser_cut: [0.6, 1.8],
   sand_cast: [0.6, 2],
   investment_cast: [0.6, 2],
+  carbon_layup: [0.6, 2.2],
   vacuum_cast: [0.6, 1.8],
   metal_print: [0.6, 1.8],
 };
@@ -332,6 +333,24 @@ function makeIt(process: ProcessId, g: CostGeometry, m: MaterialRecord | undefin
         minEach: own ? 0 : 20,
         days: [15, 30],
         notes: useDie ? [] : ["Each part starts as a 3D-printed pattern, so there is no die to pay for."],
+      };
+    }
+    case "carbon_layup": {
+      // plies cut from prepreg and laid by hand over a bladder, cured in a heated steel clamshell mould
+      const laminate = g.wall && g.wall <= 5 ? g.wall : 1.2;
+      return {
+        setup: own ? 100 : 300,
+        tooling: { cost: 4000 + 5 * proj + 3000 * undercuts, note: `machined steel clamshell mould${undercuts ? ` with ${undercuts} slide${undercuts > 1 ? "s" : ""}` : ""}, plus bladders`, days: [30, 60] },
+        // about an hour in the heated press per part
+        hours: 1,
+        rate: 30,
+        handsOn: 30 + (A / 100) * 0.05,
+        // offcuts from the roll and the overlaps between plies
+        kg: kgOf(A * laminate * 1.4),
+        extra: { label: "Bladder, bonded inserts, sanding and paint", amount: 20 + (A / 100) * 0.01 },
+        minEach: own ? 0 : 50,
+        days: [20, 40],
+        notes: ["The factory engineers the final ply book and proves it with physical tests (ISO 4210 for bicycles), which are not included."],
       };
     }
     case "vacuum_cast": {

@@ -8,6 +8,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
 import { motionPose } from "../../core/kinematics";
+import { ChainLinks } from "./chainLinks";
 import type { MeshEntry } from "../../core/engine";
 import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
@@ -78,6 +79,8 @@ interface PartObj {
   /** last state that affects the rendered image (for resetting the accumulation) */
   sig: string;
   decor: Decor | null;
+  /** a chain's links, drawn in place of its solid while the motion preview is turned */
+  links?: ChainLinks | null;
 }
 
 /** Detail drawn with a part in its own frame: a bought circuit board's components, copper and silkscreen. */
@@ -956,7 +959,41 @@ export class SceneController {
     if (this.retired.length > RETIRED_MAX) this.retired.shift()!.dispose();
   }
 
+  /**
+   * A chain shows its solid at the start of the motion and its moving links
+   * once the drive turns. True when what is drawn changed.
+   */
+  private chainLinks(obj: PartObj): boolean {
+    const info = obj.part.chain!;
+    let changed = false;
+    if (obj.links?.info !== info) {
+      if (obj.links) {
+        obj.group.remove(obj.links.object);
+        obj.links.dispose();
+      }
+      obj.links = new ChainLinks(info, obj.mat);
+      obj.group.add(obj.links.object);
+      changed = true;
+    }
+    const on = Math.abs(this.angle) > 1e-9 && info.linkRate !== 0;
+    if (obj.links.object.visible !== on) {
+      obj.links.object.visible = on;
+      obj.mesh.visible = !on;
+      const d = this.display;
+      obj.edges.visible = !on && ((d.edges && !this.photoLookOn) || d.selected.has(obj.id) || d.hovered === obj.id);
+      changed = true;
+    }
+    for (const m of obj.links.meshes) m.layers.mask = obj.mesh.layers.mask;
+    if (on && obj.links.update(this.angle)) changed = true;
+    return changed;
+  }
+
   private disposePart(obj: PartObj) {
+    if (obj.links) {
+      obj.group.remove(obj.links.object);
+      obj.links.dispose();
+      obj.links = null;
+    }
     this.undecorate(obj);
     this.root.remove(obj.group);
     this.retire(obj.mat);
@@ -1048,7 +1085,7 @@ export class SceneController {
     if (d.reduceMotion) obj.opacity = obj.opacityTarget;
     const visible = !d.hidden.has(obj.id) && !p.hidden && !this.replaced.has(obj.id);
     obj.group.visible = visible;
-    obj.edges.visible = (d.edges && !this.photoLookOn) || selected || hovered;
+    obj.edges.visible = ((d.edges && !this.photoLookOn) || selected || hovered) && !obj.links?.object.visible;
     obj.mesh.layers.set(0);
     if (visible && obj.opacityTarget >= 1 && !obj.removing) {
       obj.mesh.layers.enable(L_OPAQUE);
@@ -1774,6 +1811,7 @@ export class SceneController {
         m.multiply(new THREE.Matrix4().makeTranslation(lo.axis[0] * k, lo.axis[1] * k, lo.axis[2] * k));
       }
       m.multiply(obj.placement);
+      if (obj.part.chain && this.chainLinks(obj)) moving = true;
       if (!m.equals(obj.group.matrix)) {
         obj.group.matrix.copy(m);
         obj.group.matrixWorldNeedsUpdate = true;

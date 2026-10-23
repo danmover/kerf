@@ -3,6 +3,7 @@
 
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { FEATURE_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../lang/modelling";
+import { AERO_FNS } from "../lang/aero";
 import { SHEET_FNS } from "../lang/sheet";
 import { MOULD_FNS } from "../lang/mould";
 import { SEL_PRESETS } from "../kernel/recipe";
@@ -291,7 +292,7 @@ wire a.PIN -> b.PIN { gauge: 22 }  /  net NAME: a.PIN, b.PIN   // wiring between
 firmware name { board: ctrl, ... }                             // generated firmware for a controller
 test "Label": "procedure"                                      // a physical test the build must pass
 buy "Label" { qty: 1, price: 10, url: "https://…" }            // a purchase with no model
-analysis "Label" { props }                                     // a strength analysis or drivetrain duty, re-run after every change (see Analysis blocks)
+analysis "Label" { props }                                     // a strength analysis, drivetrain duty or UCI rules check, re-run after every change (see Analysis blocks)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -345,7 +346,7 @@ part bracket {
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
   cosmetic { chamfer(0.4, edges: boss.tip) }   // full-quality detail only
 }
-Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin), rides (carried round by a moving part, with its own spin: or mesh: relative to it: a teacup on a turning deck), slides (an axis: it slides along it, pushed by a connecting rod: a piston), swings (an axis: it rocks about axis_at:, pushed by a connecting rod: a rocker, a swing ship), links ([driver, follower] on the connecting rod itself: the turning part and the part that slides or swings; declare the rod after both) with pins ([crank pin centre on the driver, pin centre on the follower]; the rod keeps the distance between them), held ("text": how it is held when the model cannot show it, such as glue, tape or undrawn hardware on the parts list). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
+Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin), rides (carried round by a moving part, with its own spin: or mesh: relative to it: a teacup on a turning deck), slides (an axis: it slides along it, pushed by a connecting rod: a piston), swings (an axis: it rocks about axis_at:, pushed by a connecting rod: a rocker, a swing ship), links ([driver, follower] on the connecting rod itself: the turning part and the part that slides or swings; declare the rod after both) with pins ([crank pin centre on the driver, pin centre on the follower]; the rod keeps the distance between them), held ("text": how it is held when the model cannot show it, such as glue, tape or undrawn hardware on the parts list), mass (its real mass when the solid is not: a hollow carbon frame modelled solid, a foam-filled shell; mass: 950g. Weight, balance and the UCI check use it). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
 Order matters: each modifier applies to the body as built so far. Shell right after the body (before bosses, ribs and holes). Fillet a joint right after adding the feature it rounds (fillet(r, edges: boss.root)); fillet outer edges before cutting holes that cross them. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
@@ -367,6 +368,10 @@ ${docs({ ...SOLID_FNS, extrude: SKETCH_FNS.extrude, revolve: SKETCH_FNS.revolve 
 
 ### Ready-made features (use with add; each adds and cuts what it needs and rounds its own root)
 ${docs(FEATURE_FNS)}
+
+### Streamlined tubes (bike frames, forks, seatposts, aero bars, fairing struts)
+${docs(AERO_FNS)}
+Build a bike frame as one part, like a one-piece carbon monocoque: each tube an aero_path() whose section changes along it (deep and wide where it meets the next tube, slim between), with role: on each, and the tubes overlapping well inside each other so the joints blend. on: "nose" lays a straight leading edge (head and seat tubes), on: "tail" a straight trailing edge (a flat-topped top tube with wind: -Z). A tube that runs with the wind (a top tube, chainstays, a stem) has no side to streamline: give it wind: Z or -Z so its section stands up. Keep carbon tubes solid (wall: makes booleans slow) and give the part its real weight with mass: (a 56 cm aero frame is about 1000 g, a fork about 400 g). Give it process: mfg.carbon_layup(pull: Y, slides: [...], cores: true, wall: 1.1): the mould splits on the centre plane, cores slide out between the stays and fork legs, mandrels pull out of the head and seat tubes. Make the bearing seats, thru-axle dropouts, hanger, flat mounts and seatpost clamp real features, and put the ply book on the frame's drawing with note(). The UCI analysis reads each tube's section from the aero_tube or aero_path itself.
 
 ### Sheet metal and moulds
 ${docs({ ...SHEET_FNS, ...MOULD_FNS })}
@@ -493,6 +498,18 @@ analysis "Gearbox duty" {
   life: 2000h              // required running life (sets fatigue cycles and the bearing life target)
   safety: 1.5
 }
+A bicycle for road racing gets the UCI's technical rules (2026) instead; every rule becomes a check with the fix that passes it:
+analysis "UCI road rules" {
+  uci: "road"
+  bottom_bracket: crankset          // the crank axle: a part turning about it, or a point
+  wheels: [front_tyre, rear_tyre]   // what is measured across the tyres (front and rear in either order)
+  saddle: saddle
+  bars: handlebar
+  hoods: [left_lever, right_lever]  // optional: lever spacing and flare
+  rim_depth: 50mm                   // optional: the 65 mm mass-start limit
+  // forward: X (the way the bike rides, level; default X), parts: [...] (what is weighed and measured; default everything)
+}
+It checks weight (6.8 kg or more, by mass: where given), length and width, bottom bracket height and its distance to each axle, saddle setback (nose 50 mm or more behind the crank axle) and length, bar width (400 mm or more), lever gap (280 mm), flare (65 mm), wheel size, rim depth, every aero_tube's and aero_path's section (10 to 80 mm deep for every frame, fork, bar and post element, up to 160 mm for role: "head"; an aero_path's first and last points sit in the free joints between tubes and are not measured) and the top gear against the proposed 54 × 11 limit (on hold). Run it with run_analysis.
 Natural frequencies (vibration) use the same block with modes:, excite: or ringing:. Without load: or gravity it only finds frequencies (at "draft" resolution by default):
 analysis "Frame shake" {
   parts: [frame, motor_mount]

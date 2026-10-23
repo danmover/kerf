@@ -375,6 +375,7 @@ export function analyzeSolid(solid: AnalysisMesh | Ctx, rules: Rules, opts: Anal
   if (rules.wall && !rules.sheet && !rules.profile) findings.push(...walls(c, rules, stats));
   if (rules.reach?.what === "mould") findings.push(...mould(c, rules));
   else if (rules.reach) findings.push(...setups(c, rules));
+  if (rules.layup) findings.push(layup(c, rules, stats));
   if (rules.innerRadius) findings.push(...insideCorners(c, rules, stats));
   if (rules.gap) findings.push(...gaps(c, rules));
   if (rules.machining) findings.push(...machining(c, rules, stats));
@@ -449,6 +450,7 @@ const KNIFE_EDGE: Partial<Record<ProcessId, string>> = {
   vacuum_cast: "It fills poorly and tears out of the silicone mould",
   sand_cast: "The metal freezes before it fills it, and the sand there crumbles",
   investment_cast: "The metal freezes before it fills it",
+  carbon_layup: "The plies cannot follow it, leaving a resin-rich edge that chips",
 };
 
 function walls(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
@@ -579,11 +581,15 @@ function mould(c: Ctx, rules: Rules): ProcessFinding[] {
   const sinSide = Math.sin(45 * DEG);
   const draftOf = new Float64Array(c.samples.length).fill(NaN);
   const undercut = new Uint8Array(c.samples.length);
+  // mould slides: further pieces that pull out sideways, for faces neither half reaches
+  const slides = reach.dirs.slice(2).map((d) => ({ d, clear: c.clear(d), area: 0 }));
   for (let s = 0; s < c.samples.length; s++) {
     const t = c.samples[s];
     const np = dot(tn, pull, t * 4);
     if (!up[s] && !down[s]) {
-      undercut[s] = 1;
+      const slide = slides.find((sl) => sl.clear[s]);
+      if (slide) slide.area += c.sampleArea[s];
+      else undercut[s] = 1;
       continue;
     }
     if (Math.abs(np) > sinSide) continue;
@@ -642,9 +648,39 @@ function mould(c: Ctx, rules: Rules): ProcessFinding[] {
       alt,
     });
   } else {
-    out.push({ rule: "undercut", status: "pass", title: "No undercuts", detail: `Everything releases straight along ${pullName}` });
+    out.push({ rule: "undercut", status: "pass", title: "No undercuts", detail: `Everything releases straight along ${pullName}${slides.length ? ` or with the ${plural(slides.length, "slide")}` : ""}` });
+  }
+  const used = slides.filter((sl) => sl.area > 0.5);
+  if (used.length) {
+    out.push({
+      rule: "slides",
+      status: "info",
+      title: `${plural(used.length, "mould slide")}`,
+      detail: `${used.map((sl) => `${mm2(sl.area)} releases with a slide pulled along ${axisName(sl.d)}`).join("; ")}. Each slide is a further steel piece in the mould and adds tool cost.`,
+    });
+  }
+  for (const sl of slides) {
+    if (sl.area <= 0.5) out.push({ rule: "slides", status: "warn", title: `Slide along ${axisName(sl.d)} is not needed`, detail: `No face needs the slide pulled along ${axisName(sl.d)}: the mould halves reach everything it would.`, fix: `Remove ${axisName(sl.d)} from slides: to save a mould piece.` });
   }
   return out;
+}
+
+// ---------------- moulded composites ----------------
+
+/** What the laminate over the part's outer surface weighs: the part is modelled as its outer surface, hollow inside. */
+function layup(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding {
+  const { wall, density } = rules.layup!;
+  let area = 0;
+  for (let s = 0; s < c.samples.length; s++) area += c.sampleArea[s];
+  const grams = (area * wall * density) / 1000;
+  stats.nominalWall = wall;
+  return {
+    rule: "layup",
+    status: "info",
+    title: `Laminate about ${fmt(grams, 0)} g`,
+    detail: `A ${fmt(wall)} mm laminate (about ${Math.max(1, Math.round(wall / 0.12))} plies of 0.12 mm prepreg) over ${fmt(area / 100, 0)} cm² of surface weighs about ${fmt(grams, 0)} g, before metal inserts, filler and paint. The factory's ply book builds it up at joints and round bearings, axles and bolts, and thins it where the load is low.`,
+    value: grams,
+  };
 }
 
 function undercutArea(c: Ctx, axis: V3): number {

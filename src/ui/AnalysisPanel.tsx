@@ -7,7 +7,10 @@ import { useDesign } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
 import { useAnalysis, showResults, runFine, type StructuralRun, type ResultField } from "../analysis/runtime";
 import { modeText, safetyAway, strengthVerdict, structuralVerdict } from "../analysis/summary";
-import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec } from "../analysis/spec";
+import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec } from "../analysis/spec";
+import { uciItems, uciVerdict } from "../analysis/summary";
+import { uciResult, UCI_ROAD } from "../core/uciChecks";
+import type { CheckItem } from "../core/checks";
 import type { StructuralResult } from "../analysis/fe/structural";
 import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
@@ -38,6 +41,7 @@ export function AnalysisPanel() {
   const drivetrain = useAnalysis((s) => s.drivetrain);
   const shown = useAnalysis((s) => s.shown);
   const selected = useAnalysis((s) => s.selected);
+  const report = useDesign((s) => s.report);
   const specs = model?.analyses ?? [];
   const spec = specs.find((a) => a.label === selected) ?? specs.find((a) => a.label === shown) ?? specs[0];
 
@@ -47,7 +51,7 @@ export function AnalysisPanel() {
     <div className="an">
       <div className="an-head">
         {specs.map((a) => (
-          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} />
+          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} />
         ))}
         <div className="grow" />
         {spec?.kind === "structural" && <FineButton spec={spec} run={runs.get(spec.label)} />}
@@ -59,6 +63,7 @@ export function AnalysisPanel() {
           <motion.div key={spec?.label} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
             {spec?.kind === "structural" && <StructuralView spec={spec} run={runs.get(spec.label)} />}
             {spec?.kind === "drivetrain" && <DrivetrainView spec={spec} result={drivetrain.get(spec.label)} />}
+            {spec?.kind === "uci" && <UciView spec={spec} items={uciItems(spec, report?.items ?? [])} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -68,10 +73,15 @@ export function AnalysisPanel() {
 
 // ---------- header ----------
 
-function Pick({ spec, active, run, dt }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult }) {
+function Pick({ spec, active, run, dt, items }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult; items?: CheckItem[] }) {
   let status: Status = "pending";
   let val = "";
-  if (spec.kind === "structural") {
+  if (spec.kind === "uci") {
+    const mine = uciItems(spec, items ?? []);
+    status = uciVerdict(mine);
+    const fails = mine.filter((i) => i.status === "fail").length;
+    val = status === "pending" ? "" : fails ? `${fails} failing` : status === "warn" ? "check" : "legal";
+  } else if (spec.kind === "structural") {
     if (run?.status === "error") {
       status = "fail";
       val = "error";
@@ -156,7 +166,9 @@ function AskButton({ spec, run, dt }: { spec: AnalysisSpec; run?: StructuralRun;
   const err = run?.status === "error" ? run.error : dt?.error;
   const text = err
     ? `The "${spec.label}" analysis can't run: ${err} Please fix the set-up.`
-    : `Explain the "${spec.label}" analysis results and suggest how to strengthen the weakest area without adding much material.`;
+    : spec.kind === "uci"
+      ? `Make the bike pass every item of the "${spec.label}" UCI rules check, keeping it as fast as you can.`
+      : `Explain the "${spec.label}" analysis results and suggest how to strengthen the weakest area without adding much material.`;
   return (
     <button className="btn sm ghost" onClick={() => setDraft(text)}>
       <Icon.Sparkle size={13} /> Ask Claude
@@ -513,6 +525,54 @@ function ConvergenceBox({ run, r }: { run: StructuralRun; r?: StructuralResult }
         {balance !== null && ` · reactions balance loads within ${balance < 1e-3 ? "0.1" : fmtNum(balance * 100, 1)}%`}
       </div>
     </div>
+  );
+}
+
+// ---------- UCI rules ----------
+
+function UciView({ spec, items }: { spec: UciSpec; items: CheckItem[] }) {
+  const model = useDesign((s) => s.model);
+  const r = model ? uciResult(model, spec.label) : undefined;
+  if (!items.length) return <div className="mono dim">Measuring…</div>;
+  const st = (key: string): Status => (items.find((i) => i.id === `uci:${spec.label}:${key}`)?.status as Status) ?? "info";
+  const L = UCI_ROAD;
+  const stat = (key: string, k: string, v: number | undefined, unit: string, s: string, d = 0) =>
+    v !== undefined && (
+      <div className={`an-stat ${st(key)}`}>
+        <div className="k">{k}</div>
+        <div className="v">
+          {fmtNum(v, d)}
+          <small>{unit}</small>
+        </div>
+        <div className="s">{s}</div>
+      </div>
+    );
+  const order: Record<string, number> = { fail: 0, warn: 1, pending: 2, pass: 3, info: 4 };
+  return (
+    <>
+      <div className="an-grid">
+        {stat("weight", "Weight", r?.weight !== undefined ? r.weight / 1000 : undefined, "kg", `at least ${fmtNum(L.weight / 1000, 1)} kg${r?.declared.length ? ` · ${r.declared.length} part${r.declared.length === 1 ? "" : "s"} by mass:` : ""}`, 2)}
+        {stat("setback", "Saddle setback", r?.setback, "mm", `nose behind the crank axle, at least ${L.setback}`)}
+        {stat("bar-width", "Bar width", r?.barWidth, "mm", `outside to outside, at least ${L.barWidth}`)}
+        {stat("hoods", "Lever gap", r?.hoodGap, "mm", `inside to inside, at least ${L.hoodGap}`)}
+        {stat("bb-height", "Bottom bracket", r?.bbHeight, "mm", `above the ground, ${L.bbHeight[0]} to ${L.bbHeight[1]}`)}
+        {stat("size", "Length", r?.length, "mm", `at most ${L.length}; ${fmtNum(r?.width ?? 0, 0)} wide of ${L.width}`)}
+      </div>
+      <div className="an-box" style={{ marginTop: 12 }}>
+        <h4>UCI road racing rules (2026)</h4>
+        {[...items]
+          .sort((a, b) => order[a.status] - order[b.status])
+          .map((i) => (
+            <div key={i.id} className="an-note">
+              <StatusIcon status={i.status} />
+              <span className="grow">
+                <b>{i.title.replace(/^UCI: /, "")}</b> <span className="dim">{i.detail}</span>
+                {i.fix && <div style={{ marginTop: 2 }}>{i.fix}</div>}
+              </span>
+            </div>
+          ))}
+      </div>
+    </>
   );
 }
 

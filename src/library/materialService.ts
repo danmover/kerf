@@ -35,6 +35,7 @@ const KIND: Record<ProcessId, ProcessKind> = {
   die_cast: "die_cast",
   sand_cast: "sand_cast",
   investment_cast: "investment_cast",
+  carbon_layup: "other",
 };
 
 export const MATERIAL_SERVICE: Record<string, MaterialService> = Object.fromEntries(

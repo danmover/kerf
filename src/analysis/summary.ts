@@ -4,7 +4,8 @@ import { fmtNum } from "../lang/values";
 import type { SafetyAt, StructuralResult } from "./fe/structural";
 import type { DrivetrainResult } from "./drivetrain";
 import { dropText, dropVerdict, vibrationText, vibrationVerdict } from "./dynamics";
-import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec } from "./spec";
+import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec } from "./spec";
+import type { CheckItem } from "../core/checks";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
 export interface RunLike {
@@ -200,8 +201,30 @@ export function drivetrainSummary(spec: DrivetrainSpec, r: DrivetrainResult | un
   return lines.join("\n");
 }
 
+/** A UCI rules check's items (from the check report) as text. */
+export function uciSummary(spec: UciSpec, report: CheckItem[]): string {
+  const items = uciItems(spec, report);
+  const head = `Analysis "${spec.label}" (UCI road racing rules, 2026)`;
+  if (!items.length) return `${head}: not checked yet.`;
+  const v = uciVerdict(items);
+  return [`${head}: ${v === "pending" ? "MEASURING" : v.toUpperCase()}.`, ...items.map((i) => `  - [${i.status}] ${i.title.replace(/^UCI: /, "")}: ${i.detail}${i.fix ? ` Fix: ${i.fix}` : ""}`)].join("\n");
+}
+
+/** The report items a UCI rules check produced. */
+export const uciItems = (spec: UciSpec, report: CheckItem[]) => report.filter((i) => i.id.startsWith(`uci:${spec.label}:`));
+
+export function uciVerdict(items: CheckItem[]): "pass" | "warn" | "fail" | "pending" {
+  if (!items.length || items.some((i) => i.status === "pending")) return "pending";
+  return items.some((i) => i.status === "fail") ? "fail" : items.some((i) => i.status === "warn") ? "warn" : "pass";
+}
+
 /** One line per analysis for the design overview. */
-export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined): string {
+export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = []): string {
+  if (spec.kind === "uci") {
+    const items = uciItems(spec, report);
+    const bad = items.filter((i) => i.status === "fail" || i.status === "warn");
+    return `"${spec.label}" UCI road rules: ${uciVerdict(items)}${bad.length ? ` (${bad.map((i) => i.title.replace(/^UCI: /, "")).join("; ")})` : ""}`;
+  }
   if (spec.kind === "drivetrain") {
     const state = !dt ? "not calculated" : dt.error ? `error: ${dt.error}` : `${dt.items.filter((i) => i.status === "fail").length} failing of ${dt.items.length} checks`;
     return `"${spec.label}" drivetrain (${spec.drive}, ${fmtNum(spec.torque / 1000, 3)} N·m at ${fmtNum(spec.speed, 0)} rpm): ${state}`;

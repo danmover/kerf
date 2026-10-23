@@ -12,6 +12,8 @@ import type { AnalysisSpec } from "../analysis/spec";
 import type { ProcessSpec } from "../mfg/types";
 import type { DrawingSpec } from "../drawing/spec";
 import type { SheetInfo } from "../lang/sheet";
+import type { ChainInfo } from "../machine/chains";
+import type { AeroTube } from "../lang/aero";
 
 export interface Motion {
   origin: V3;
@@ -43,6 +45,18 @@ export interface Link {
 }
 
 /** How fast a motion turns about `axis` (a unit vector) per unit of driver angle, counting what it rides on. */
+/** A part's mass in grams: as given, else its volume (mm³) times its material's density (g/cm³). */
+export function partMass(p: EvalPart, volume: number | undefined, density: number): number | undefined {
+  if (p.mass !== undefined) return p.mass;
+  return volume === undefined ? undefined : (volume / 1000) * density;
+}
+
+/** The volume that gives a part its mass: its solid's, or the one that matches a given mass:. */
+export function massVolume(p: EvalPart, volume: number | undefined, density: number): number | undefined {
+  if (p.mass !== undefined && density > 0) return (p.mass / density) * 1000;
+  return volume;
+}
+
 export function absRate(m: Motion | undefined, axis: V3): number {
   let r = 0;
   for (let x = m; x; x = x.parent) {
@@ -205,6 +219,8 @@ export interface EvalPart {
   gear?: GearInfo;
   bearing?: BearingInfo;
   fastener?: FastenerInfo;
+  /** the part's real mass in grams, given because its solid is not what is made (a hollow carbon frame modelled solid) */
+  mass?: number;
   /** how the part is held where the model cannot show it (`held: "glued"`, a catalog part's `held: "strap"`) */
   held?: string;
   /** snap hooks and flexures in this part */
@@ -213,6 +229,10 @@ export interface EvalPart {
   sheet?: SheetPart;
   spring?: SpringInfo;
   band?: BandInfo;
+  /** aero_tube()s the part is built from, in its own coordinates */
+  tubes?: AeroTube[];
+  /** a lib.chain: its sprockets, where its rollers sit and how fast it runs */
+  chain?: ChainInfo;
   bom?: { description: string; standard?: string; catalogId?: string; length?: number; price?: number; priceNote?: string; search?: string; key?: string };
   /** named features (`add ... as name`), for selectors and inspection */
   features?: { name: string; kind: string; cosmetic: boolean }[];

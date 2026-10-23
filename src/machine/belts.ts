@@ -87,6 +87,8 @@ export interface PulleyIn {
   driver: boolean;
   outside: boolean;
   label: string;
+  /** pitch radius given outright (a sprocket: a roller chain's pitch line is the same on either face) */
+  r?: number;
 }
 export interface PointIn {
   k: "point";
@@ -190,7 +192,8 @@ export function layoutBelt(input: BeltIn[], b: BeltSpec): BeltLayout {
     const dir: 1 | -1 = x.outside ? (-orient as 1 | -1) : orient;
     // the pitch line's radius depends on which face of the belt touches the pulley
     let r: number;
-    if (!x.outside) r = x.smooth ? x.contactD / 2 + b.pld + b.toothH : x.pd / 2;
+    if (x.r !== undefined) r = x.r;
+    else if (!x.outside) r = x.smooth ? x.contactD / 2 + b.pld + b.toothH : x.pd / 2;
     else r = (x.smooth ? x.contactD / 2 : x.pd / 2 - b.pld) + back;
     const cosT = Math.min(1, Math.abs(vdot(vnorm(x.axis), n)));
     return { name: x.name, kind: "pulley", c: c2[i], r, dir, outside: x.outside, smooth: x.smooth, teeth: x.smooth ? undefined : x.teeth, wrap: 0, offset: vdot(vsub(x.c, o), n), tilt: deg(Math.acos(cosT)), grooveW: x.grooveW, beltW: x.beltW, label: x.label };

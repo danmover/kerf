@@ -142,6 +142,7 @@ const SURFACE: Record<ProcessId, [string, number]> = {
   laser_cut: ["clean cut edges", 0.8],
   sand_cast: ["rough sand texture", 0.3],
   investment_cast: ["smooth cast skin", 0.8],
+  carbon_layup: ["moulded gloss or matt, weave visible under clear coat", 0.95],
   vacuum_cast: ["smooth, any colour", 0.9],
   metal_print: ["rough, grainy", 0.45],
 };

@@ -98,6 +98,12 @@ function modellingTips(id: ProcessId, rules: Rules): string[] {
           : "fillet() every inside corner to at least R0.5, more where sections join.",
         "Holes under Ø2.5 mm, threads and precise bores are drilled or machined after casting: leave about 0.5 mm on faces that will be machined, and note them on the drawing.",
       ];
+    case "carbon_layup":
+      return [
+        "Model the outer surface of the finished part as a solid: Kerf treats it as a laminate of wall: mm laid over that surface, hollow inside. aero_path() and aero_tube() make smooth tubes that change section along their length; let them overlap where they join so the part is one piece.",
+        `Every face must come away from one of the two mould halves along ${axisName(rules.reach?.dirs[0] ?? [0, 0, 1])}, or from a slide listed in slides: (the core between a frame's rear stays pulls out backwards). Put the parting line on the centre plane of symmetric parts.`,
+        "Leave a way in for the bladder or core at the ends of every hollow (the bottom bracket shell, head tube and seat tube on a frame), and bond in metal for threads, bearings and axles rather than tapping the carbon. Note the joints, bearing seats and dropouts that need extra plies.",
+      ];
     case "sheet_metal":
       return [
         'Model the part with body sheet(base, t: …, r: …, flanges: [flange("front", h), …]): one thickness throughout, real bends at the bend radius, corner gaps and reliefs made for you, and a flat pattern with a bend table and DXF. Then cut holes and cut-outs.',

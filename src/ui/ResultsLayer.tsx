@@ -7,6 +7,7 @@ import type { SceneController } from "./viewport/scene";
 import { ResultsOverlay, fieldMode, fieldRange } from "./viewport/resultsOverlay";
 import { useAnalysis, showResults, type ResultField } from "../analysis/runtime";
 import type { StructuralResult } from "../analysis/fe/structural";
+import type { StructuralSpec } from "../analysis/spec";
 import { gradientCss, safetyAt } from "../analysis/colormap";
 import { modeWords } from "../analysis/dynamics";
 import { followers } from "../analysis/carried";
@@ -102,7 +103,7 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
   const model = useDesign((s) => s.model);
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const theme = useTheme();
-  const spec = model?.analyses.find((a) => a.label === shown && a.kind === "structural");
+  const spec = model?.analyses.find((a): a is StructuralSpec => a.label === shown && a.kind === "structural");
   const target = spec?.safety ?? 2;
   const result = run?.result;
   const mode = result ? shownMode(result, pickedMode) : null;

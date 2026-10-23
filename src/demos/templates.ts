@@ -16,6 +16,7 @@ import pirateShip from "./pirate-ship.kerf?raw";
 import ferrisWheel from "./ferris-wheel.kerf?raw";
 import sheetChassis from "./sheet-chassis.kerf?raw";
 import castKnob from "./cast-knob.kerf?raw";
+import aeroBike from "./aero-road-bike.kerf?raw";
 
 export interface Template {
   id: string;
@@ -136,6 +137,18 @@ export const TEMPLATES: Template[] = [
       "Why do the gondolas stay level, and what would make them tip?",
     ],
     stats: "40 parts · 4 requirements · ride simulation",
+  },
+  {
+    id: "aero-road-bike",
+    name: "Aero Road Bike",
+    tagline: "Carbon aero race bike with Kammtail tubes and dropped stays; a real 11-speed chain runs 52 × 11 through the derailleur, and a UCI check proves it race legal.",
+    source: aeroBike,
+    prompts: [
+      "Make the frame as aero as you can and keep it UCI legal",
+      "Fit 30 mm tyres and check they clear the frame and fork",
+      "Put the chain on the 36 × 30 and check the chain line",
+    ],
+    stats: "34 parts · UCI rules check · moving chain",
   },
   {
     id: "bracket",

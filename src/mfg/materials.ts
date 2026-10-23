@@ -133,6 +133,7 @@ const DEFAULT_MATERIAL: Record<ProcessId, string> = {
   cnc_lathe: "Aluminum 6061",
   injection: "ABS",
   vacuum_cast: "Polyurethane",
+  carbon_layup: "Carbon fiber",
   die_cast: "Aluminum A380",
   sand_cast: "Aluminum A356",
   investment_cast: "Stainless 304",

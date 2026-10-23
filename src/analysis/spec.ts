@@ -156,7 +156,28 @@ export interface DrivetrainSpec {
   span: Span;
 }
 
-export type AnalysisSpec = StructuralSpec | DrivetrainSpec;
+/** A bicycle checked against the UCI's technical rules for road racing: which parts are the wheels, saddle and bars, and where the bottom bracket is. */
+export interface UciSpec {
+  kind: "uci";
+  label: string;
+  rules: "road";
+  /** the bottom bracket axle: a point, or a part turning about it (the crankset) */
+  bb: { at?: V3; part?: string };
+  wheels: string[];
+  saddle: string;
+  bars: string;
+  /** the two brake levers, for the spacing between the hoods */
+  hoods?: string[];
+  /** the way the bike rides */
+  forward: V3;
+  /** what is weighed and measured (default: every part shown) */
+  parts?: string[];
+  /** rim depth in mm, when given */
+  rimDepth?: number;
+  span: Span;
+}
+
+export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec;
 
 /** the smallest element size accepted from resolution:, in mm */
 export const MIN_ELEMENT_SIZE = 0.1;
