@@ -6,6 +6,8 @@ import type { DrivetrainResult } from "./drivetrain";
 import { dropText, dropVerdict, vibrationText, vibrationVerdict } from "./dynamics";
 import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec } from "./spec";
 import type { CheckItem } from "../core/checks";
+import { airflowLine } from "./aeroSummary";
+import type { AirflowRun } from "./aeroRuntime";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
 export interface RunLike {
@@ -219,7 +221,8 @@ export function uciVerdict(items: CheckItem[]): "pass" | "warn" | "fail" | "pend
 }
 
 /** One line per analysis for the design overview. */
-export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = []): string {
+export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = [], air?: AirflowRun): string {
+  if (spec.kind === "airflow") return airflowLine(spec, air);
   if (spec.kind === "uci") {
     const items = uciItems(spec, report);
     const bad = items.filter((i) => i.status === "fail" || i.status === "warn");

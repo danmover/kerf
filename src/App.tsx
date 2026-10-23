@@ -9,6 +9,7 @@ import { useView, requestCamera, toggleCode, type ViewPreset } from "./app/view"
 import { startEngine, useDesign } from "./core/engine";
 import { turns } from "./core/model";
 import { startAnalysisRuntime } from "./analysis/runtime";
+import { startAirflowRuntime } from "./analysis/aeroRuntime";
 import { startBoardRuntime } from "./machine/pcb/runtime";
 import { startCableRuntime } from "./machine/harness/runtime";
 import "./core/sweepRuntime";
@@ -97,6 +98,7 @@ function useBoot() {
     startAssemblyChecks();
     startHeatAndWearChecks();
     startAnalysisRuntime();
+    startAirflowRuntime();
     startBoardRuntime();
     startCableRuntime();
     startSimRuntime();

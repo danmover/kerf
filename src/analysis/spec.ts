@@ -177,7 +177,45 @@ export interface UciSpec {
   span: Span;
 }
 
-export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec;
+/** A standard rider on a bike, sat on its saddle with hands on the bars: the position sets the frontal area. */
+export type RiderPosition = "drops" | "hoods" | "tops" | "tt" | "upright";
+
+/**
+ * Air flowing past the design: drag, side force and lift at each yaw angle, the drag area (CdA), the power it costs,
+ * and the flow itself, from a lattice-Boltzmann LES on the GPU.
+ */
+export interface AirflowSpec {
+  kind: "airflow";
+  label: string;
+  /** air speed past the design, mm/s; at a yaw angle the road speed is this × cos yaw */
+  speed: number;
+  /** parts in the air; empty: every part shown */
+  parts: string[];
+  /** the way the design travels, and up */
+  forward: V3;
+  up: V3;
+  /** yaw angles, degrees; positive: the wind comes from the right-hand side */
+  yaw: number[];
+  /** a rolling road under it (wheels turn with it) */
+  ground: boolean;
+  /** the parts that roll on the road (they and what turns with them spin); unset: found from the parts' own motion */
+  wheels?: string[];
+  rider?: { position: RiderPosition; height: number; saddle?: string; bars?: string; bb?: string };
+  resolution: Resolution;
+  /** air density, kg/m³, and kinematic viscosity, m²/s */
+  density: number;
+  nu: number;
+  /** limits that make check items: drag area m², drag N, power W, lift N (negative: downforce wanted) */
+  maxCda?: number;
+  maxDrag?: number;
+  maxWatts?: number;
+  maxLift?: number;
+  /** stop after this long, seconds */
+  time?: number;
+  span: Span;
+}
+
+export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec | AirflowSpec;
 
 /** the smallest element size accepted from resolution:, in mm */
 export const MIN_ELEMENT_SIZE = 0.1;

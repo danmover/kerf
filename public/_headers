@@ -27,6 +27,10 @@
 /assets/fea.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
 
+# The airflow worker: WebGPU compute or plain arithmetic, no network.
+/assets/aero.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
 # The circuit simulation worker (Sound tab): plain arithmetic, no network.
 /assets/render.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'

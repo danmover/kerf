@@ -45,6 +45,9 @@ export const BVH_CSP = "default-src 'none'; script-src 'self'";
 /** The cable router for the 3D wiring is plain arithmetic on meshes: no eval, no network. */
 export const CABLES_CSP = "default-src 'none'; script-src 'self'";
 
+/** The airflow worker steps the flow on the GPU through WebGPU (or arithmetic on the CPU): no eval, no network. */
+export const AERO_CSP = "default-src 'none'; script-src 'self'";
+
 const COMMON_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
@@ -73,6 +76,7 @@ function securityPolicy(): Plugin {
         else if (/^\/assets\/sim\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SIM_CSP);
         else if (/^\/assets\/bvh\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", BVH_CSP);
         else if (/^\/assets\/cables\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CABLES_CSP);
+        else if (/^\/assets\/aero\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", AERO_CSP);
         else if (path === "/" || path.endsWith(".html")) {
           res.setHeader("Content-Security-Policy", `${CSP}; frame-ancestors 'none'`);
           res.setHeader("X-Frame-Options", "DENY");

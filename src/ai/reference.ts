@@ -292,7 +292,7 @@ wire a.PIN -> b.PIN { gauge: 22 }  /  net NAME: a.PIN, b.PIN   // wiring between
 firmware name { board: ctrl, ... }                             // generated firmware for a controller
 test "Label": "procedure"                                      // a physical test the build must pass
 buy "Label" { qty: 1, price: 10, url: "https://…" }            // a purchase with no model
-analysis "Label" { props }                                     // a strength analysis, drivetrain duty or UCI rules check, re-run after every change (see Analysis blocks)
+analysis "Label" { props }                                     // a strength analysis, drivetrain duty, UCI rules check or airflow (drag), re-run after every change (see Analysis blocks)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -532,6 +532,16 @@ analysis "Knocked over" { parts: [tower]  tip: +X }   // tips over its bottom ed
 The result gives the impact speed, how long the impact lasts, the peak g, the g the parts feel (a short impact loads flexible parts less, one about as long as their swing loads them more) and the stresses. A dent right where it lands is not counted as breaking. Safety defaults to 1.5 for drops.
 Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
+An airflow analysis puts the design in a virtual wind tunnel: a GPU lattice-Boltzmann flow solver with LES turbulence and a wall model, on a rolling road with the wheels spinning, re-run after each change:
+analysis "Aero at 45 km/h" {
+  airflow: 45kmh          // the air speed past it (kmh, mph or mm/s)
+  forward: X              // the way the design travels (or wind: -X, the way the air blows past it); up: defaults to Z
+  yaw: [0, 5, 10]         // crosswind angles in degrees, up to 12 from -45 to 45; each is its own run
+  parts: [frame, fork]    // what is in the tunnel (default: every part); a part's motion spin about an axle square to forward makes it a rolling wheel, or name them with wheels:
+  rider: "drops"          // adds a standard rider: drops, hoods, tops, tt (time-trial bars) or upright; rider_height: 1780mm; saddle:, bars:, bottom_bracket: name the touch points (else found from a bike fit analysis or the part names)
+  max_cda: 0.25           // targets: max_cda (m²), max_drag (N), max_watts (W to push the air), max_lift (N, downforce is negative lift)
+}
+Also: ground: false for free air with no road, temperature: 20C or density: 1.2 for the air, resolution: "draft" (quick look), "standard" (default) or "fine", or a cell size like 4mm, and time: 10min to cap the run. The result gives drag, CdA, side force, lift and the watts at each yaw (mean too), the drag of every part, and the surface patches with the most drag, saying whether each is pressure on a blunt front, suction behind a back where the flow separates, or skin friction. The viewport shows surface pressure or friction, animated streamlines, the wake, eddies, cuts through the flow and a version history. To cut drag: round or point the fronts that stop the air, taper the backs where it separates (a tail about three times as long as it is thick, or a truncated aerofoil), close gaps between parts that let air in behind, and shrink the frontal area; then compare the new CdA with the last version and keep the change only if it helped across the yaws.
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins
 - exact solid interference between every pair of nearby parts (OpenCASCADE booleans); parts of one multi-solid component are not checked against each other; gears are checked by tooth geometry instead
@@ -539,7 +549,7 @@ Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default;
 - swept envelopes of rotating gears against static parts
 - gear meshing: same module, exact centre distance, face overlap, and tooth clearance through a rotation
 - build errors (a modelling step the kernel could not perform)
-- every analysis block: structural strength (factor of safety) and stiffness, natural frequencies against what shakes it, drops and tip-overs, or the drivetrain's tooth, bearing and shaft checks
+- every analysis block: structural strength (factor of safety) and stiffness, natural frequencies against what shakes it, drops and tip-overs, the drivetrain's tooth, bearing and shaft checks, or airflow drag, CdA, watts and lift against their targets
 - real-world fit: every hole with a shaft, pin, bearing, dowel or screw in it, every gear mesh and every screw pattern is simulated as made a few thousand times: printed holes come out small and printed parts shrink as they cool (by material, process settings and orientation), bought parts sit anywhere in their standard tolerance band (ISO 492 bearings, ISO 286 dowels and shafts, 6g screws), sizes a drawing calls with fit: or tol: are held, all at the brief's temperatures. Outcomes: won't fit, cracks (a plastic hub split by a press fit), creeps, slips, loose, binds (gears whose backlash the fits eat up), misaligned (screw patterns). Fix with the size the check names (a 5 mm dowel in PETG wants a hole of about 5.2 mm), gear backlash:, the fdm settings hole_comp: and shrink_comp: when the user's slicer uses them, or a drawing tolerance for machined parts
 - springs and clips: every lib.spring (rate, preload, stress, coil bind, buckling, fatigue, surge frequency), every snap_hook (strain with the print's layers, push-in and pull-out force, whether it stays tight or rattles once latched given real part scatter) and every flexure (stiffness, force or torque, strain over its cycles)
 - hot soak: when the brief goes above 45 °C, latches held bent near their plastic's softening point and batteries past their limits; a brief that says car or vehicle but stops short of 60 °C gets a reminder

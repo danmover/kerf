@@ -48,6 +48,8 @@ import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
 import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
 import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict, uciSummary, uciItems, uciVerdict } from "../analysis/summary";
+import { airflowItems, showAirflow, startAirflowNow, useAirflow, whenAirflowDone, type SurfaceShown } from "../analysis/aeroRuntime";
+import { airflowSummary } from "../analysis/aeroSummary";
 import { evaluateSelector } from "../lang/evaluator";
 import { kernel } from "../kernel/client";
 import { inspectText } from "../kernel/inspectText";
@@ -157,7 +159,7 @@ export const TOOL_DEFS = [
   {
     name: "run_analysis",
     description:
-      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call.",
+      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. Airflow analyses (airflow: 45kmh) put the parts in a wind tunnel (lattice-Boltzmann LES on the GPU, rolling road, spinning wheels, an optional standard rider) and report drag, drag area CdA, side force, lift and watts at each yaw angle, the drag of each part, the surface patches that cause the most drag (pressure on fronts, suction behind backs, friction) and the change from the previous version; they take from under a minute to several minutes, and if one is still running when this returns, call run_analysis again later. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -197,6 +199,8 @@ export const TOOL_DEFS = [
         section: { type: "string", enum: ["x", "y", "z"], description: "Cut the model in half across this axis to see inside." },
         results: { type: "string", enum: ["stress", "safety", "disp", "strain"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, or principal strain. Run run_analysis first." },
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
+        airflow: { type: "string", enum: ["pressure", "friction", "streamlines", "wake", "eddies"], description: "Draw an airflow analysis's result: surface pressure (red: pushed on, blue: suction), skin friction, streamlines coloured by speed, the wake (where the air lost its total pressure) or the eddies. Run run_analysis first." },
+        yaw: { type: "number", description: "With airflow: the yaw angle to draw (default the first)." },
       },
       required: ["view"],
       additionalProperties: false,
@@ -429,7 +433,11 @@ const ViewInput = z.object({
   section: z.enum(["x", "y", "z"]).optional(),
   results: z.enum(["stress", "safety", "disp", "strain"]).optional(),
   analysis: z.string().max(200).optional(),
+  airflow: z.enum(["pressure", "friction", "streamlines", "wake", "eddies"]).optional(),
+  yaw: z.number().finite().optional(),
 });
+/** how long run_analysis waits for airflow runs before reporting them as still running */
+const AIRFLOW_WAIT_MS = 8 * 60_000;
 const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional() });
 const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
@@ -735,7 +743,8 @@ export function modelSummary(m: Model | null): string {
   if (m.sketches.length) lines.push("Sketches:\n" + m.sketches.map((sk) => `  - ${sk.name} on ${sk.planeText}: ${sketchStatusText(sk)}${sk.usedBy.length ? `; shapes ${sk.usedBy.join(", ")}` : "; not used by a part yet"}`).join("\n"));
   if (m.analyses.length) {
     const a = useAnalysis.getState();
-    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label), useDesign.getState().report?.items)}`).join("\n"));
+    const air = useAirflow.getState();
+    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label), useDesign.getState().report?.items, air.runs.get(x.label))}`).join("\n"));
   }
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
@@ -1123,14 +1132,34 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       const targets = p.data.label ? all.filter((a) => a.label === p.data.label) : all;
       if (!targets.length) return { isError: true, content: `No analysis is labelled "${p.data.label}". Analyses: ${all.map((a) => `"${a.label}"`).join(", ")}.`, card: { title: "Analysis not found", status: "error" } };
       if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
-      await whenAnalyzed();
+      if (targets.some((a) => a.kind === "airflow")) {
+        startAirflowNow();
+        await whenAirflowDone(AIRFLOW_WAIT_MS);
+      }
+      if (targets.some((a) => a.kind !== "airflow")) await whenAnalyzed();
       const st = useAnalysis.getState();
       const report = useDesign.getState().report?.items ?? [];
-      const text = targets.map((a) => (a.kind === "structural" ? structuralSummary(a, st.runs.get(a.label)) : a.kind === "uci" ? uciSummary(a, report) : drivetrainSummary(a, st.drivetrain.get(a.label)))).join("\n\n");
+      const air = useAirflow.getState();
+      const model = useDesign.getState().model;
+      const text = targets
+        .map((a) =>
+          a.kind === "airflow"
+            ? airflowSummary(a, air.runs.get(a.label), air.versions.get(a.label))
+            : a.kind === "structural"
+              ? structuralSummary(a, st.runs.get(a.label))
+              : a.kind === "uci"
+                ? uciSummary(a, report)
+                : drivetrainSummary(a, st.drivetrain.get(a.label)),
+        )
+        .join("\n\n");
       const verdicts = targets.map((a) => {
         if (a.kind === "uci") {
           const v = uciVerdict(uciItems(a, report));
           return v === "pending" ? "fail" : v;
+        }
+        if (a.kind === "airflow") {
+          const items = model ? airflowItems(a, air.runs.get(a.label), model) : [];
+          return items.some((i) => i.status === "fail") ? "fail" : items.some((i) => i.status === "warn" || i.status === "pending") ? "warn" : "pass";
         }
         if (a.kind === "drivetrain") {
           const r = st.drivetrain.get(a.label);
@@ -1141,15 +1170,25 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       });
       const firstShown = targets.find((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
       if (firstShown) showResults(firstShown.label);
+      const airShown = targets.find((a) => a.kind === "airflow" && air.runs.get(a.label)?.result);
+      if (airShown) showAirflow(airShown.label);
       const fails = verdicts.filter((v) => v === "fail").length;
       let title: string;
       if (targets.length === 1) {
         const a = targets[0];
         const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
-        title = r && a.kind === "structural" ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.safety, 1)})` : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
+        const ar = a.kind === "airflow" ? air.runs.get(a.label)?.result : undefined;
+        title = r
+          ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.kind === "structural" ? a.safety : 0, 1)})`
+          : ar
+            ? `${a.label}: CdA ${fmtNum(ar.yaws.reduce((t, y) => t + y.cda, 0) / ar.yaws.length, 3)} m²`
+            : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
       } else title = fails ? `${fails} of ${targets.length} analyses failing` : `All ${targets.length} analyses pass`;
       return {
-        content: text + (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : ""),
+        content:
+          text +
+          (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : "") +
+          (airShown ? `\n\nThe airflow of "${airShown.label}" is shown on the user's model. Use capture_view with airflow: "pressure", "streamlines" or "wake" to look at it.` : ""),
         card: { title, detail: verdicts.map((v, i) => `${targets[i].label}: ${v}`).join(" · "), status: fails ? "error" : "done" },
       };
     }
@@ -1174,15 +1213,36 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         const fieldText = { stress: "von Mises stress (blue low, red high)", safety: "factor of safety (red below 1, amber below the target, green to blue above)", disp: "deflection (blue none, red most)", strain: "principal strain (blue compression, red tension)" }[p.data.results];
         resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed supports (spheres are rollers), rings mark hot spots`;
       }
+      if (p.data.airflow) {
+        const air = useAirflow.getState();
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "airflow" && air.runs.get(a.label)?.result);
+        const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === air.shown) ?? specs[0];
+        if (!pick) return { isError: true, content: "No airflow analysis has results to draw. Add one (airflow: 45kmh) and call run_analysis first.", card: { title: "No airflow to show", status: "error" } };
+        const r = air.runs.get(pick.label)!.result!;
+        let yi = 0;
+        if (p.data.yaw !== undefined) yi = r.yaws.reduce((b, y, i) => (Math.abs(y.yaw - p.data.yaw!) < Math.abs(r.yaws[b].yaw - p.data.yaw!) ? i : b), 0);
+        const kind = p.data.airflow;
+        const surface: SurfaceShown = kind === "pressure" ? "cp" : kind === "friction" ? "cf" : "none";
+        useAirflow.setState({ shown: pick.label, yaw: yi, surface: kind === "eddies" ? "cp" : surface, lines: kind === "streamlines", wake: kind === "wake", vortices: kind === "eddies", slice: "off" });
+        await new Promise((r) => setTimeout(r, 160));
+        const what = {
+          pressure: "surface pressure coefficient (red: the air pushes on it, blue: suction)",
+          friction: "skin friction (dark: little, bright: most)",
+          streamlines: "streamlines from upstream, coloured by speed (blue slow, red fast)",
+          wake: "the wake: the surface where the air has lost all its total pressure, coloured by speed",
+          eddies: "the eddies at the end of the run (Q-criterion), coloured by speed",
+        }[kind];
+        resultNote = `, showing ${what} from "${pick.label}" at ${fmtNum(r.yaws[yi].yaw, 1)}° yaw (the wind comes from the right at positive yaw)`;
+      }
       const ids = expandNames(p.data.highlight ?? []);
-      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results });
+      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results || !!p.data.airflow });
       const data = url.split(",")[1] ?? "";
       return {
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
           { type: "text", text: `Rendered ${p.data.view} view${p.data.section ? `, sectioned across ${p.data.section}` : ""}${ids.length ? `, highlighting ${p.data.highlight!.join(", ")}` : ""}${resultNote}. Z is up; X is red, Y is green in the axis triad.` },
         ],
-        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : `Looked at the ${p.data.view} view`, image: url },
+        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : p.data.airflow ? `Looked at the airflow (${p.data.airflow})` : `Looked at the ${p.data.view} view`, image: url },
       };
     }
     case "view_drawing": {
