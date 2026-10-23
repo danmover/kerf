@@ -13,7 +13,8 @@ import { analyzeSolid, prepareSolid } from "../src/mfg/analyze";
 import { resolveRules } from "../src/mfg/profiles";
 import { processFromText } from "../src/mfg/spec";
 import { estimateCost } from "../src/mfg/cost";
-import type { ProcessSpec, V3 } from "../src/mfg/types";
+import type { ProcessSpec } from "../src/mfg/types";
+import type { V3 } from "../src/kernel/recipe";
 import { fullCheck } from "./helpers/fullcheck";
 import { initKernel } from "./helpers/kernel";
 
@@ -142,7 +143,7 @@ describe("the aero road bike template", () => {
   it("passes every check, the UCI rules included", async () => {
     const src = readFileSync("src/demos/aero-road-bike.kerf", "utf8");
     const r = await fullCheck(src);
-    expect(r.model.diagnostics.filter((d) => d.severity !== "info")).toEqual([]);
+    expect(r.model.diagnostics).toEqual([]);
     expect([...r.buildErrors]).toEqual([]);
     expect(r.report.items.filter((i) => i.status === "fail" || i.status === "warn").map((i) => `${i.id}: ${i.title}`)).toEqual([]);
     const uci = r.report.items.filter((i) => i.id.startsWith("uci:"));
