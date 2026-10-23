@@ -48,7 +48,8 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
   {
     group: "General",
     items: [
-      [[mod, "K"], "Focus the chat"],
+      [[mod, "K"], "Find any tool, view, analysis or export, or ask Claude"],
+      [["/"], "Find, when you're not typing"],
       [["V"], "Talk to Claude (Enter finishes, Esc cancels)"],
       [[mod, "Z"], "Undo"],
       [[mod, "⇧", "Z"], "Redo"],

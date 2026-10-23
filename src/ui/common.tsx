@@ -109,7 +109,7 @@ function menuKey(e: ReactKeyboardEvent<HTMLElement>) {
 }
 
 /** Dropdown menu anchored to a trigger; closes on outside click and Escape. Focus moves into it on open and back to the trigger on close. */
-export function Menu({ trigger, children, align = "left", width }: { trigger: (open: boolean, toggle: () => void) => ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right"; width?: number }) {
+export function Menu({ trigger, children, align = "left", width, className }: { trigger: (open: boolean, toggle: () => void) => ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right"; width?: number; className?: string }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -121,14 +121,17 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
       if (!a || a === document.body || menuRef.current?.contains(a)) ref.current?.querySelector<HTMLElement>("button, [tabindex]")?.focus();
     });
   };
-  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; up: boolean } | null>(null);
   useLayoutEffect(() => {
     if (!open || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
     // wide menus shrink to fit a narrow window
     const w = Math.min(width ?? 240, window.innerWidth - 16);
     const left = align === "right" ? Math.max(8, r.right - w) : Math.max(8, Math.min(window.innerWidth - w - 8, r.left));
-    setPos({ top: r.bottom + 6, left, width: w });
+    // a trigger low on the screen (the dock, the message box) opens its menu upward when there is more room above
+    const below = window.innerHeight - r.bottom;
+    const up = below < 280 && r.top > below;
+    setPos({ top: up ? r.top - 6 : r.bottom + 6, left, width: w, up });
   }, [open, align, width]);
   useEffect(() => {
     if (!open) return;
@@ -148,7 +151,7 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
     if (open && pos) menuItems(menuRef.current)[0]?.focus({ preventScroll: true });
   }, [open, !!pos]);
   return (
-    <div ref={ref} style={{ display: "inline-flex" }}>
+    <div ref={ref} className={className} style={{ display: "inline-flex" }}>
       {trigger(open, () => setOpen((o) => !o))}
       {createPortal(
         <AnimatePresence>
@@ -157,10 +160,17 @@ export function Menu({ trigger, children, align = "left", width }: { trigger: (o
               ref={menuRef}
               className="menu"
               role="menu"
-              style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, maxHeight: `calc(100dvh - ${Math.round(pos.top) + 10}px)`, overflowY: "auto", transformOrigin: align === "right" ? "top right" : "top left" }}
-              initial={{ opacity: 0, y: -6, scale: 0.98 }}
+              style={{
+                position: "fixed",
+                ...(pos.up ? { bottom: window.innerHeight - pos.top, maxHeight: Math.round(pos.top) - 10 } : { top: pos.top, maxHeight: `calc(100dvh - ${Math.round(pos.top) + 10}px)` }),
+                left: pos.left,
+                width: pos.width,
+                overflowY: "auto",
+                transformOrigin: `${pos.up ? "bottom" : "top"} ${align === "right" ? "right" : "left"}`,
+              }}
+              initial={{ opacity: 0, y: pos.up ? 6 : -6, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -4 }}
+              exit={{ opacity: 0, y: pos.up ? 4 : -4 }}
               transition={{ duration: 0.14 }}
               onKeyDown={menuKey}
             >

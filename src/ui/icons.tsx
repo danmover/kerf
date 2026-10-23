@@ -438,6 +438,20 @@ export const Icon = {
       <path d="m14 5 1-2 1 2 2 1-2 1-1 2-1-2-2-1zM19 11l.5-1 .5 1 1 .5-1 .5-.5 1-.5-1-1-.5z" />
     </I>
   ),
+  Search: (p: P) => (
+    <I {...p}>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m20 20-4.2-4.2" />
+    </I>
+  ),
+  /** a set square and a pencil: modelling it yourself */
+  Tools: (p: P) => (
+    <I {...p}>
+      <path d="M3 21V9l12 12z" />
+      <path d="M7 17v-3l3 3z" />
+      <path d="m12.5 11.5 6.3-6.3a1.6 1.6 0 0 1 2.3 2.3l-6.3 6.3-3.1.8z" />
+    </I>
+  ),
   Wrench: (p: P) => (
     <I {...p}>
       <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" />

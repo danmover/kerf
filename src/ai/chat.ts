@@ -1298,7 +1298,7 @@ async function runLoop(opts: LoopOptions = {}) {
   const settings = useSettings.getState();
   if (settings.webNotice && !isOpenAIModel(settings.model)) {
     if (settings.webSearch)
-      push({ kind: "notice", id: nid(), level: "info", title: "Claude can now search the web for parts", detail: "When the parts catalog has nothing suitable, Claude may search the web and read product pages. Each search costs about $0.01 on your API key, plus the tokens the pages use. Turn it off in Settings → Claude → Search the web for parts.", action: "settings" });
+      push({ kind: "notice", id: nid(), level: "info", title: "Claude can now search the web for parts", detail: "When the parts catalog has nothing suitable, Claude may search the web and read product pages. Each search costs about $0.01 on your API key, plus the tokens the pages use. Turn it off in Settings → AI → Search the web for parts.", action: "settings" });
     updateSettings({ webNotice: false });
   }
   const session = new ReviewSession(settings.reviewRounds);

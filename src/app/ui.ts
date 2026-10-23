@@ -23,12 +23,19 @@ export interface ConfirmRequest {
 
 export type SettingsTab = "ai" | "account" | "voice" | "app" | "making" | "data" | "about";
 
+/** The panels a phone shows one at a time (see screens/PhoneWorkspace): the chat, the model panel, or the dock's panels. */
+export type PhonePane = "chat" | "model" | "panel";
+
 interface UiState {
   screen: Screen;
   toasts: Toast[];
   settingsOpen: SettingsTab | null;
   shortcutsOpen: boolean;
   confirm: ConfirmRequest | null;
+  /** the find palette (ui/FindPalette) is open */
+  findOpen: boolean;
+  /** something asked a phone to show this pane (the find palette opening a panel) */
+  phonePane: { pane: PhonePane; n: number } | null;
 }
 
 export const useUi = create<UiState>(() => ({
@@ -37,6 +44,8 @@ export const useUi = create<UiState>(() => ({
   settingsOpen: null,
   shortcutsOpen: false,
   confirm: null,
+  findOpen: false,
+  phonePane: null,
 }));
 
 let toastId = 0;
@@ -55,6 +64,8 @@ export function confirmDialog(req: Omit<ConfirmRequest, "resolve">): Promise<boo
 export const go = (screen: Screen) => useUi.setState({ screen });
 export const openSettings = (tab: SettingsTab = "ai") => useUi.setState({ settingsOpen: tab });
 export const closeSettings = () => useUi.setState({ settingsOpen: null });
+export const openFind = () => useUi.setState({ findOpen: true });
+export const showPhonePane = (pane: PhonePane) => useUi.setState((s) => ({ phonePane: { pane, n: (s.phonePane?.n ?? 0) + 1 } }));
 
 export function errorText(e: unknown): string {
   if (e instanceof Error) return e.message;

@@ -1,5 +1,5 @@
 // The bottom dock. It opens on the overview (status, brief, the design at a
-// glance, the selected part and recent changes); the brief, checks, strength,
+// glance, the selected part and recent changes); the brief, checks, analysis,
 // build and simulate (for machines and scenarios), the parts list and the
 // graph sit next to it, and design.kerf sits at the end of the row as the
 // file behind it all, one click (or C) away. Features add a tab with an

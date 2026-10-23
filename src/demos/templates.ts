@@ -18,6 +18,16 @@ import sheetChassis from "./sheet-chassis.kerf?raw";
 import castKnob from "./cast-knob.kerf?raw";
 import aeroBike from "./aero-road-bike.kerf?raw";
 
+/** What kind of thing a starting point is, for grouping them on the home screen. */
+export type TemplateCategory = "parts" | "mechanisms" | "machines" | "processes";
+
+export const TEMPLATE_CATEGORIES: { id: TemplateCategory; label: string }[] = [
+  { id: "parts", label: "Parts and products" },
+  { id: "mechanisms", label: "Mechanisms" },
+  { id: "machines", label: "Machines and electronics" },
+  { id: "processes", label: "Sheet, cast and carbon" },
+];
+
 export interface Template {
   id: string;
   name: string;
@@ -26,6 +36,9 @@ export interface Template {
   /** prompts suggested in the chat for this starting point */
   prompts: string[];
   stats: string;
+  category?: TemplateCategory;
+  /** the Kerf features it shows off, as short tags ("airflow", "mould") */
+  shows?: string[];
 }
 
 export const TEMPLATES: Template[] = [
@@ -52,6 +65,8 @@ export const TEMPLATES: Template[] = [
       "Switch the lid screws to M2.5 and update the bosses",
     ],
     stats: "21 parts · 8 requirements",
+    category: "parts",
+    shows: ["fit checks", "heat-set inserts"],
   },
   {
     id: "shelf",
@@ -64,6 +79,8 @@ export const TEMPLATES: Template[] = [
       "Make the arm 200 mm long and keep the safety factor above 2.5",
     ],
     stats: "3 parts · stress analysis",
+    category: "parts",
+    shows: ["strength analysis"],
   },
   {
     id: "seatpost-number",
@@ -76,6 +93,8 @@ export const TEMPLATES: Template[] = [
       "Show me how the number goes in and what keeps it there",
     ],
     stats: "9 parts · 15 requirements · wind, knock and tilt analysis",
+    category: "parts",
+    shows: ["wind and knocks", "tilt dial", "no supports"],
   },
   {
     id: "reducer",
@@ -89,6 +108,8 @@ export const TEMPLATES: Template[] = [
       "Why are two of the gears marked removable?",
     ],
     stats: "26 parts · 8 requirements",
+    category: "mechanisms",
+    shows: ["gears", "bearings", "strength"],
   },
   {
     id: "engine",
@@ -101,6 +122,8 @@ export const TEMPLATES: Template[] = [
       "Why is the rod four times the crank throw?",
     ],
     stats: "29 parts · 4 requirements · motion simulation",
+    category: "mechanisms",
+    shows: ["motion sweep", "simulation"],
   },
   {
     id: "teacups",
@@ -113,6 +136,8 @@ export const TEMPLATES: Template[] = [
       "Add a motor under the base to drive the deck, and show it in the ride simulation",
     ],
     stats: "18 parts · 3 requirements · ride simulation",
+    category: "mechanisms",
+    shows: ["planetary gears", "ride sim"],
   },
   {
     id: "pirate-ship",
@@ -125,6 +150,8 @@ export const TEMPLATES: Template[] = [
       "What happens to the swing if the rod is 20 mm shorter?",
     ],
     stats: "37 parts · 2 requirements · ride simulation",
+    category: "mechanisms",
+    shows: ["linkage", "ride sim"],
   },
   {
     id: "ferris-wheel",
@@ -137,6 +164,8 @@ export const TEMPLATES: Template[] = [
       "Why do the gondolas stay level, and what would make them tip?",
     ],
     stats: "40 parts · 4 requirements · ride simulation",
+    category: "mechanisms",
+    shows: ["gravity", "ride sim"],
   },
   {
     id: "aero-road-bike",
@@ -149,6 +178,8 @@ export const TEMPLATES: Template[] = [
       "Put the chain on the 36 × 30 and check the chain line",
     ],
     stats: "34 parts · UCI rules check · moving chain",
+    category: "processes",
+    shows: ["airflow", "carbon layup", "UCI rules", "chain"],
   },
   {
     id: "bracket",
@@ -161,6 +192,8 @@ export const TEMPLATES: Template[] = [
       "Make the gusset reach two thirds of the way up the upright",
     ],
     stats: "2 parts · 5 sketches · 2 requirements",
+    category: "parts",
+    shows: ["sketches", "constraints"],
   },
   {
     id: "sheet-chassis",
@@ -173,6 +206,8 @@ export const TEMPLATES: Template[] = [
       "Turn the top edge of the front panel into a 10 mm lip that folds inward",
     ],
     stats: "10 parts · 2 flat patterns",
+    category: "processes",
+    shows: ["sheet metal", "flat patterns", "DXF"],
   },
   {
     id: "cast-knob",
@@ -185,6 +220,8 @@ export const TEMPLATES: Template[] = [
       "Split the mould halfway up the knob instead and show me why that's worse",
     ],
     stats: "3 parts · 2 mould halves",
+    category: "processes",
+    shows: ["mould", "casting"],
   },
   {
     id: "canister",
@@ -197,6 +234,8 @@ export const TEMPLATES: Template[] = [
       "Add a drip ridge below the thread and round the jar's shoulder more",
     ],
     stats: "2 parts · 4 requirements",
+    category: "parts",
+    shows: ["threads", "O-ring seal"],
   },
   {
     id: "sand-tunneller",
@@ -209,6 +248,8 @@ export const TEMPLATES: Template[] = [
       "Why does the steering push the hinge through a slanted slot instead of directly?",
     ],
     stats: "91 parts · 11 requirements · firmware",
+    category: "machines",
+    shows: ["Arduino", "wiring", "firmware", "test plan"],
   },
   {
     id: "printer",
@@ -221,6 +262,8 @@ export const TEMPLATES: Template[] = [
       "Why is the power supply at 92 % with everything heating, and what would you change?",
     ],
     stats: "98 parts · 28 requirements · Klipper",
+    category: "machines",
+    shows: ["Klipper", "wiring", "parts to buy"],
   },
   {
     id: "practice-amp",
@@ -233,7 +276,65 @@ export const TEMPLATES: Template[] = [
       "Make it battery powered for busking and check how long it plays",
     ],
     stats: "266 parts · 11 requirements · tuner firmware",
+    category: "machines",
+    shows: ["circuit you can hear", "circuit board", "firmware"],
   },
 ];
 
 export const templateById = (id: string) => TEMPLATES.find((t) => t.id === id);
+
+/** Who Kerf is for. The answer orders the starting points and picks the example briefs. */
+export type Audience = "maker" | "engineer" | "student" | "manufacturer";
+
+export const AUDIENCES: { id: Audience; label: string; detail: string; order: TemplateCategory[]; recommended: string; briefs: string[] }[] = [
+  {
+    id: "maker",
+    label: "Making things at home",
+    detail: "3D printing, electronics and projects for yourself",
+    order: ["parts", "machines", "mechanisms", "processes"],
+    recommended: "enclosure",
+    briefs: [
+      "A wall mount that holds my bike by the top tube, printed in PETG with two screws",
+      "A box for an Arduino Uno with a USB cutout and a snap-on lid",
+      "A replacement knob for a 6 mm D shaft with a grippy edge",
+    ],
+  },
+  {
+    id: "engineer",
+    label: "Engineering and product design",
+    detail: "Real loads, fits and tolerances, for work",
+    order: ["mechanisms", "machines", "parts", "processes"],
+    recommended: "reducer",
+    briefs: [
+      "A 3:1 spur gearbox on 8 mm shafts for a NEMA 17, with bearings and a printed housing",
+      "A wall bracket that holds 15 kg with a safety factor of 3, as light as it can be",
+      "A sheet-metal electronics chassis 200 × 120 × 60 mm with vents and rubber feet",
+    ],
+  },
+  {
+    id: "student",
+    label: "Learning and school projects",
+    detail: "See how things work and why they're shaped that way",
+    order: ["mechanisms", "machines", "parts", "processes"],
+    recommended: "engine",
+    briefs: [
+      "A see-through model of a four-stroke engine I can print and turn by hand",
+      "A small robot arm with two servos and an Arduino",
+      "A streamlined soapbox car body, tested in the wind tunnel for drag",
+    ],
+  },
+  {
+    id: "manufacturer",
+    label: "Making products to sell",
+    detail: "Batches, processes, costs and drawings for a factory",
+    order: ["processes", "parts", "machines", "mechanisms"],
+    recommended: "sheet-chassis",
+    briefs: [
+      "A two-part injection-moulded case for a handheld sensor, 5,000 a year",
+      "A laser-cut and bent steel mounting bracket, drawn up ready to quote",
+      "A cast aluminium motor housing with machined bearing seats and drawings for the factory",
+    ],
+  },
+];
+
+export const audienceById = (id: string | undefined) => AUDIENCES.find((a) => a.id === id);

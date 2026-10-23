@@ -758,3 +758,32 @@
 .app.phone .ov-card-body {
   overflow: visible;
 }
+
+/* next: where to go from here */
+.ov-step {
+  align-items: center;
+}
+.ov-step > svg {
+  color: var(--accent-2);
+  margin-top: 0;
+}
+.ov-step-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ov-step-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-find {
+  cursor: pointer;
+  border: none;
+  font: inherit;
+}
+.ov-find:hover {
+  color: var(--accent-2);
+}
