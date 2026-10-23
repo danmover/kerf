@@ -1,6 +1,8 @@
 design "Ferris Wheel"
-note "A desktop Ferris wheel: a stepper turns the wheel through a 12:60 gear pair, and the six gondolas hang free on pins between the two rims, so gravity keeps them level all the way round, swinging a little as the wheel speeds up and slows down."
-note "Assembly order: press a bearing into each rim's boss, then the tie rods and gondola pins into the back rim with the gondolas on their pins, and press the front rim on; bolt the motor to the back tower and press the pinion on; press the stub axles into the towers, slide the wheel onto them and press the big gear onto the back boss so it meshes; screw the towers to the base."
+note "A desktop Ferris wheel that lights up: an encoder gearmotor turns the wheel through a 12:60 gear pair, the six gondolas hang free on pins between the two rims so gravity keeps them level all the way round, and a ring of 60 addressable LEDs round the front rim and a ring of 16 round its hub turn with the wheel, fed through a slip ring in the front tower."
+note "An Arduino Nano in the operator's booth runs the ride: boarding lights, a countdown, a ride at 6 rpm held by the motor's encoder, then a slow creep round until a hall sensor on the front tower sees the magnet in the front rim's lug, so it always stops with a gondola at the platform. The booth has the start button, the emergency stop (which cuts the motor's supply in hardware), the power switch, the supply socket and a beacon."
+note "Assembly order: press the two bearings into the back rim's boss, the tie rods and gondola pins into the back rim with the gondolas on their pins, and press the front rim on; glue the station magnet into the front rim's lug and the two LED rings onto the front rim with their wires through the holes behind their pads. Screw the motor to its plate, the plate into the back tower's recess with the gearbox through the hole, and press the pinion on; press the back axle into the back tower, slide the wheel onto it and press the big gear onto the back boss so it meshes. Press the slip ring's body into the front tower with its collar through the front rim, screw the towers to the base and stick the hall sensor to the front tower's inner face with its plug through the slot. Wire the booth last."
+note "Coordinates: X right (the booth is at +X), Y back to front (the motor is at the back, negative Y), Z up, in millimetres; the wheel turns about the Y axis."
 
 // ── Wheel ──────────────────────────────────────────────
 param hub_z    = 135mm  "Height of the wheel's axle"
@@ -11,28 +13,37 @@ param z_pinion = 12     "Motor pinion teeth"
 param z_wheel  = 60     "Wheel gear teeth"
 param backlash = 0.16mm "Backlash on each gear: the wheel floats a little on its printed bosses"
 param press    = 0.15mm "Printed holes drawn this much over a pressed shaft: they close up by about that much"
-param seat     = 22mm   "608 seats in the rims: the slicer's shrink compensation opens them to a light press"
+param seat     = 22mm   "608 seats in the back rim: the slicer's shrink compensation opens them to a light press"
+param wheel_rpm = 6     "Wheel speed during the ride (rpm)"
 
 // ── Layout along Y (motor at the back, negative) ───────
 let cab_w    = 30                      // gondola width between the rims
 let rim_t    = 4
-let boss_t   = 11                      // bearing boss on each rim
+let boss_t   = rim_t + 14              // the back rim and its boss behind it, carrying two bearings back to back
 let y_rim_f  = cab_w / 2 + 2           // front rim's inner face
 let y_rim_b  = -cab_w / 2 - 2          // back rim's inner face
-let y_gear   = y_rim_b - rim_t - 7     // big gear and pinion, 6 wide, on the back boss
+let y_gear   = y_rim_b - boss_t        // big gear and pinion, 6 wide, on the back end of the boss
 let y_bt     = y_gear - 2              // back tower's front face (18 thick)
-let y_ft     = y_rim_f + rim_t + 3     // front tower's inner face (10 thick)
+let y_ft     = y_rim_f + rim_t + 12    // front tower's inner face (10 thick): room for the LED rings and the slip ring
+let y_face   = y_rim_f + rim_t         // the front rim's outer face, where the LED rings sit
 let hub_d    = 44
 let cd       = center_distance(m, z_pinion, z_wheel)
 let motor_z  = hub_z - cd
+let rim_r    = rim_d / 2
+let y_mag    = y_face + 3              // the station magnet, in a lug on the front rim's outer face at its bottom edge
+let z_mag    = hub_z - rim_r + 5
 // points round the axle in the X–Z plane, as (x, z)
 let gp      = polar(6, pin_r, start: 90, center: (0, hub_z))
-// windows between the spokes; the bottom one lines up with the motor's screws so a hex key reaches them
+// windows between the spokes; the bottom one lines up with the motor's screws and its plate's so a hex key reaches them
 let windows = polar(3, cd, start: 270, center: (0, hub_z))
 let ties    = polar(3, 35, start: 90, center: (0, hub_z))
 // a gondola's side, from its pin: a stem down to a cabin with a big window
 let cabin = [(-3, 6), (3, 6), (3, -10), (14, -12), (14, -32), (-14, -32), (-14, -12), (-3, -10)]
-let motor_holes = [(15.5, 15.5), (-15.5, 15.5), (-15.5, -15.5), (15.5, -15.5)]
+
+// the motor plate: its screws above and below the motor, where a hex key reaches them through the bottom window
+let plate_w  = 28
+let plate_h  = 48
+let plate_z  = [motor_z - 17.5, motor_z + 17.5]
 
 let foot_bolt = calc.fastener(grip: 6, into: "insert", material: "PETG", size: M3)
 
@@ -42,32 +53,13 @@ part base {
   material: "PETG"
   process: mfg.fdm(build: Z)
   group: "Frame"
-  body box(200, 112, 8, at: (0, 0, 0), r: 6)
+  body box(200, 120, 8, at: (0, 2, 0), r: 6)
   for p in [(-60, y_bt + 3), (60, y_bt + 3), (-60, y_ft + 17), (60, y_ft + 17)] {
     cut hole(M3, fit: "insert", depth: 6, at: (p.x, p.y, 8))
   }
 }
 
-// the back tower carries the stepper on its back face and a stub axle at the top, printed lying on its back
-part back_tower {
-  color: #3d7bfd
-  material: "PETG"
-  process: mfg.fdm(build: Y)
-  group: "Frame"
-  body prism([(-80, 8), (80, 8), (16, hub_z + 16), (-16, hub_z + 16)], h: 18, at: (0, y_bt, 0), dir: -Y)
-  add box(170, 26, 6, at: (0, y_bt - 5, 8))
-  cut cylinder(d: 8 + press, h: 20, at: (0, y_bt - 19, hub_z), dir: Y)
-  // stepper: its pilot locates in a straight hole, four screws counterbored deep into the front face
-  cut cylinder(d: 22.4, h: 20, at: (0, y_bt - 19, motor_z), dir: Y)
-  for h in motor_holes {
-    cut hole(M3, through: true, cbore: (6.5, 5.5), at: (h.x, y_bt, motor_z + h.y), dir: -Y)
-  }
-  for x in [-60, 60] {
-    // a millimetre over the clearance: the holes are 120 mm apart and the print shrinks
-    cut hole(foot_bolt.clearance + 1, through: true, at: (x, y_bt + 3, 15), dir: -Z)
-  }
-}
-
+// the front tower holds the slip ring's body and the station sensor, printed lying on its back
 part front_tower {
   color: #3d7bfd
   material: "PETG"
@@ -75,30 +67,26 @@ part front_tower {
   group: "Frame"
   body prism([(-80, 8), (80, 8), (16, hub_z + 16), (-16, hub_z + 16)], h: 10, at: (0, y_ft + 10, 0), dir: -Y)
   add box(170, 24, 6, at: (0, y_ft + 12, 8))
-  cut cylinder(d: 8 + press, h: 12, at: (0, y_ft - 1, hub_z), dir: Y)
+  cut cylinder(d: 12.2, h: 12, at: (0, y_ft - 1, hub_z), dir: Y)
+  // a slot for the station sensor's plug, which goes on from the front through the tower
+  cut box(8, 12, 14, at: (-15, y_ft + 5, z_mag - 7))
   for x in [-60, 60] {
     cut hole(foot_bolt.clearance + 1, through: true, at: (x, y_ft + 17, 15), dir: -Z)
   }
 }
 
-// a stub axle from each tower into the bearing in each rim's boss
+// the axle from the back tower through both bearings in the back rim's boss
 part axle_back {
   color: #c3c8cf
   material: "Stainless 304"
   process: mfg.cnc_lathe(axis: Y)
   group: "Frame"
-  body cylinder(d: 8, h: y_rim_b - rim_t - 0.5 - (y_bt - 18), at: (0, y_bt - 18, hub_z), dir: Y)
-}
-part axle_front {
-  color: #c3c8cf
-  material: "Stainless 304"
-  process: mfg.cnc_lathe(axis: Y)
-  group: "Frame"
-  body cylinder(d: 8, h: y_ft + 10 - (y_rim_f + rim_t - 7.5), at: (0, y_rim_f + rim_t - 7.5, hub_z), dir: Y)
+  body cylinder(d: 8, h: y_rim_b - rim_t + 1 - (y_bt - 18), at: (0, y_bt - 18, hub_z), dir: Y)
 }
 
 // ── Wheel ──────────────────────────────────────────────
-// the back rim and its boss, printed lying on the rim's inner face
+// the back rim and its boss, printed lying on the rim's inner face: the boss carries two bearings back to back, so
+// the wheel needs no bearing at the front, where the slip ring goes through
 part wheel {
   color: #f2f2f2
   material: "PETG"
@@ -109,9 +97,10 @@ part wheel {
   axis_at: (0, 0, hub_z)
   body cylinder(d: rim_d, h: rim_t, at: (0, y_rim_b - rim_t, hub_z), dir: Y)
   add cylinder(d: hub_d, h: boss_t - rim_t + 0.01, at: (0, y_rim_b - boss_t, hub_z), dir: Y)
-  cut cylinder(d: seat, h: boss_t + 2, at: (0, y_rim_b - boss_t - 1, hub_z), dir: Y)
+  cut cylinder(d: seat, h: boss_t - rim_t + 1, at: (0, y_rim_b - boss_t - 1, hub_z), dir: Y)
+  cut cylinder(d: 12, h: rim_t + 2, at: (0, y_rim_b - rim_t - 1, hub_z), dir: Y)
   for w in windows {
-    cut cylinder(d: 50, h: rim_t + 2, at: (w.x, y_rim_b - rim_t - 1, w.y), dir: Y)
+    cut cylinder(d: 40, h: rim_t + 2, at: (w.x, y_rim_b - rim_t - 1, w.y), dir: Y)
   }
   for g in gp {
     cut cylinder(d: 6 + press, h: rim_t + 2, at: (g.x, y_rim_b - rim_t - 1, g.y), dir: Y)
@@ -121,18 +110,22 @@ part wheel {
   }
 }
 
-// the front rim and its boss, printed lying on the rim's outer face
+// the front rim, printed lying on its inner face: the slip ring's collar through its middle, holes behind the LED
+// rings' pads for their wires, and a lug on its outer face at the bottom edge holding the station magnet
 part front_rim {
   color: #f2f2f2
   material: "PETG"
-  process: mfg.fdm(build: -Y, shrink_comp: true)
+  process: mfg.fdm(build: Y, shrink_comp: true)
   group: "Wheel"
   turns_with: wheel
   body cylinder(d: rim_d, h: rim_t, at: (0, y_rim_f, hub_z), dir: Y)
-  add cylinder(d: hub_d, h: boss_t - rim_t + 0.01, at: (0, y_rim_f + rim_t - boss_t, hub_z), dir: Y)
-  cut cylinder(d: seat, h: boss_t + 2, at: (0, y_rim_f + rim_t - boss_t - 1, hub_z), dir: Y)
+  add box(12, y_mag + 3 - y_face + 0.01, 10, at: (0, (y_face + y_mag + 3) / 2 - 0.005, z_mag - 5))
+  cut cylinder(d: 6.4, h: 3.1, at: (0, y_mag + 3.01, z_mag), dir: -Y)
+  cut cylinder(d: 7.95, h: rim_t + 2, at: (0, y_rim_f - 1, hub_z), dir: Y)
+  cut cylinder(d: 10, h: rim_t + 2, at: (-19, y_rim_f - 1, hub_z), dir: Y)
+  cut cylinder(d: 10, h: rim_t + 2, at: (-75.75, y_rim_f - 1, hub_z), dir: Y)
   for w in windows {
-    cut cylinder(d: 50, h: rim_t + 2, at: (w.x, y_rim_f - 1, w.y), dir: Y)
+    cut cylinder(d: 40, h: rim_t + 2, at: (w.x, y_rim_f - 1, w.y), dir: Y)
   }
   for g in gp {
     cut cylinder(d: 6 + press, h: rim_t + 2, at: (g.x, y_rim_f - 1, g.y), dir: Y)
@@ -142,23 +135,71 @@ part front_rim {
   }
 }
 
-component rim_bearings = lib.bearing("608") { at: [(0, y_rim_b - rim_t - 7.5, hub_z), (0, y_rim_f + rim_t - 7.5, hub_z)], axis: Y }
+component rim_bearings = lib.bearing("608") { at: [(0, y_rim_b - boss_t, hub_z), (0, y_rim_b - boss_t + 7, hub_z)], axis: Y }
 // three steel tie rods and the six gondola pins hold the rims together
 component tie_rods = lib.dowel(d: 6, length: y_rim_f - y_rim_b + 2 * rim_t) { at: [(ties[0].x, y_rim_b - rim_t, ties[0].y), (ties[1].x, y_rim_b - rim_t, ties[1].y), (ties[2].x, y_rim_b - rim_t, ties[2].y)], axis: Y }
 component gondola_pins = lib.dowel(d: 6, length: y_rim_f - y_rim_b + 2 * rim_t) { at: [(gp[0].x, y_rim_b - rim_t, gp[0].y), (gp[1].x, y_rim_b - rim_t, gp[1].y), (gp[2].x, y_rim_b - rim_t, gp[2].y), (gp[3].x, y_rim_b - rim_t, gp[3].y), (gp[4].x, y_rim_b - rim_t, gp[4].y), (gp[5].x, y_rim_b - rim_t, gp[5].y)], axis: Y }
+component magnet = lib.magnet("magnet_6x3_n35") { at: (0, y_mag, z_mag), axis: Y  rides: wheel  held: "glued into the lug on the front rim, south pole facing forward" }
 
 // the big gear presses onto the back boss last, so it comes off to reach the motor screws behind it
 component wheel_gear = lib.spur_gear(m: m, z: z_wheel, width: 6, bore: hub_d, backlash: backlash) { at: (0, y_gear, hub_z), axis: Y  turns_with: wheel  removable }
 
+// ── Lights on the wheel, through the slip ring ─────────
+// the slip ring's body presses into the front tower; its collar turns with the front rim, its wires out into the wheel
+component slip = lib.connector("slip_ring_12mm_6") { at: (0, y_face + 17.5, hub_z), axis: -Y  turns_with: wheel  group: "Lights" }
+component hub_ring = lib.led("neopixel_ring_16") { at: (0, y_face, hub_z), axis: Y  turns_with: wheel  held: "hot glue at four points round its edge"  brightness: 0.5  group: "Lights" }
+component rim_ring = lib.led("neopixel_ring_60") { at: (0, y_face, hub_z), axis: Y  turns_with: wheel  held: "hot glue at eight points round its edge"  brightness: 0.3  group: "Lights" }
+
 // ── Drive ──────────────────────────────────────────────
-component pinion = lib.spur_gear(m: m, z: z_pinion, width: 6, bore: 5, backlash: backlash) { at: (0, y_gear, motor_z), axis: Y  mesh: wheel_gear }
-component motor = lib.nema17(length: 40) {
-  at: (0, y_bt - 18, motor_z)
-  axis: Y
-  turns_with: pinion
+// the pinion presses on after the motor is screwed in, so it comes off to reach the screws behind it
+component pinion = lib.spur_gear(m: m, z: z_pinion, width: 6, bore: 4, backlash: backlash) { at: (0, y_gear, motor_z), axis: Y  mesh: wheel_gear  removable  group: "Drive" }
+component m_wheel = lib.gearmotor("jga25_370_12v_enc_78") { at: (0, y_bt - 4, motor_z), axis: Y  turns_with: pinion  group: "Drive" }
+let motor_fix = calc.fastener(grip: 4, into: "tapped", material: "Aluminum", depth: 4.5, size: M3, head: "flat")
+component motor_screws = lib.screw(motor_fix) { at: [(m_wheel.holes[0].x, y_bt, m_wheel.holes[0].z), (m_wheel.holes[1].x, y_bt, m_wheel.holes[1].z)], axis: -Y }
+
+// the motor screws to a plate, which screws into a recess in the back tower's front face with the gearbox through a
+// hole behind it: the tower prints lying on its back with nothing overhanging
+part motor_plate {
+  color: #3d7bfd
+  material: "PETG"
+  process: mfg.fdm(build: Y)
   group: "Drive"
+  body box(plate_w, 4, plate_h, at: (0, y_bt - 2, motor_z - plate_h / 2))
+  cut cylinder(d: 7.15, h: 6, at: (0, y_bt - 5, motor_z), dir: Y)
+  for h in m_wheel.holes {
+    cut hole(M3, through: true, csink: true, at: (h.x, y_bt, h.z), dir: -Y)
+  }
+  for z in plate_z {
+    cut hole(M3, through: true, csink: true, at: (0, y_bt, z), dir: -Y)
+  }
 }
-component motor_screws = lib.screw(M3, 16) { at: [(motor_holes[0].x, y_bt - 5.5, motor_z + motor_holes[0].y), (motor_holes[1].x, y_bt - 5.5, motor_z + motor_holes[1].y), (motor_holes[2].x, y_bt - 5.5, motor_z + motor_holes[2].y), (motor_holes[3].x, y_bt - 5.5, motor_z + motor_holes[3].y)], axis: -Y }
+let plate_fix = calc.fastener(grip: 4, into: "insert", material: "PETG", size: M3, head: "flat")
+component plate_inserts = lib.insert(M3) { at: [(0, y_bt - 4, plate_z[0]), (0, y_bt - 4, plate_z[1])], axis: -Y }
+component plate_screws = lib.screw(plate_fix) { at: [(0, y_bt, plate_z[0]), (0, y_bt, plate_z[1])], axis: -Y }
+
+// the back tower carries the motor plate and the axle at the top, printed lying on its back
+part back_tower {
+  color: #3d7bfd
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Frame"
+  body prism([(-80, 8), (80, 8), (16, hub_z + 16), (-16, hub_z + 16)], h: 18, at: (0, y_bt, 0), dir: -Y)
+  add box(170, 26, 6, at: (0, y_bt - 5, 8))
+  cut cylinder(d: 8 + press, h: 20, at: (0, y_bt - 19, hub_z), dir: Y)
+  // the motor plate's recess, the gearbox's hole through behind it and the plate's two inserts
+  cut box(plate_w + 0.4, 4.01, plate_h + 0.4, at: (0, y_bt - 2 + 0.005, motor_z - plate_h / 2 - 0.2))
+  cut cylinder(d: 27, h: 14.02, at: (0, y_bt - 18.01, motor_z), dir: Y)
+  for z in plate_z {
+    cut hole(M3, fit: "insert", depth: 6, at: (0, y_bt - 4, z), dir: -Y)
+  }
+  for x in [-60, 60] {
+    // a millimetre over the clearance: the holes are 120 mm apart and the print shrinks
+    cut hole(foot_bolt.clearance + 1, through: true, at: (x, y_bt + 3, 15), dir: -Z)
+  }
+}
+
+// ── Station sensor: on the front tower's inner face, its chip facing the magnet's path, its plug through the tower ──
+component hall = lib.sensor("hall_ky003") { at: (-7.5, y_ft, z_mag), rotate: (90, 0, 0), held: "double-sided foam tape on the front tower" }
 
 // ── Gondolas: each hangs free on its pin; spin: -1 against the wheel keeps it level ──
 part gondola_1 { color: #e05a7a  material: "PETG"  process: mfg.fdm(build: Y)  group: "Gondolas"  rides: wheel  spin: -1  axis: Y  axis_at: (gp[0].x, 0, gp[0].y)
@@ -202,19 +243,133 @@ part gondola_6 { color: #f08c3c  material: "PETG"  process: mfg.fdm(build: Y)  g
 component base_inserts = lib.insert(M3) { at: [(-60, y_bt + 3, 8), (60, y_bt + 3, 8), (-60, y_ft + 17, 8), (60, y_ft + 17, 8)], axis: -Z }
 component foot_screws  = lib.screw(foot_bolt) { at: [(-60, y_bt + 3, 14), (60, y_bt + 3, 14), (-60, y_ft + 17, 14), (60, y_ft + 17, 14)], axis: -Z }
 
+// ── Operator's booth: a printed cover screwed to a plate, the controls on top ──
+let bx = 172                 // booth centre
+let plate_t = 4
+let booth_h = 56
+let booth_top = plate_t + booth_h
+let shell_w = 120
+let shell_d = 90
+let corner = [(bx - 56, -41), (bx + 56, -41), (bx + 56, 41), (bx - 56, 41)]
+
+part booth_plate {
+  color: #2b2f36
+  material: "PETG"
+  process: mfg.fdm(build: -Z)
+  group: "Booth"
+  body box(shell_w + 10, shell_d + 10, plate_t, at: (bx, 0, 0), r: 4)
+  // roomy holes so the four screws line up across the booth, countersunk underneath
+  for c in corner {
+    cut cylinder(d: 3.8, h: plate_t + 2, at: (c.x, c.y, -1))
+    cut cone(d1: 6.4, d2: 3.8, h: 1.3, at: (c.x, c.y, -0.01))
+  }
+}
+
+part booth {
+  color: #f2f2f2
+  material: "PETG"
+  process: mfg.fdm(build: -Z)
+  group: "Booth"
+  body box(shell_w, shell_d, booth_h, at: (bx, 0, plate_t), r: 6)
+  cut box(shell_w - 6, shell_d - 6, booth_h - 3 + 0.01, at: (bx, 0, plate_t - 0.01), r: 3)
+  // corner posts for the screws from under the plate
+  for c in corner {
+    add box(8, 8, booth_h - 3 + 0.02, at: (c.x, c.y, plate_t - 0.01))
+    cut hole(M3, fit: "insert", depth: 6, at: (c.x, c.y, plate_t), dir: Z)
+  }
+  // panel holes: stop, start, power, the supply socket, under the beacon's pads; a slot for the cables out to the ride
+  cut cylinder(d: 22.5, h: 5, at: (bx + 30, 18, booth_top - 4))
+  cut cylinder(d: 16.4, h: 5, at: (bx - 8, 18, booth_top - 4))
+  cut cylinder(d: 6.4, h: 5, at: (bx - 38, 18, booth_top - 4))
+  cut cylinder(d: 11.6, h: 5, at: (bx - 38, -22, booth_top - 4))
+  cut cylinder(d: 16, h: 5, at: (bx + 34, -22, booth_top - 4))
+  cut box(5, 40, 18, at: (bx - shell_w / 2 + 1.5, 0, plate_t - 0.01))
+}
+
+component booth_inserts = lib.insert(M3) { at: with_z(corner, plate_t), axis: Z }
+let booth_fix = calc.fastener(grip: plate_t, into: "insert", material: "PETG", size: M3, head: "flat")
+component booth_screws = lib.screw(booth_fix) { at: with_z(corner, 0), axis: Z }
+
+component estop = lib.switch("estop_22mm") { at: (bx + 30, 18, booth_top), axis: Z, role: "emergency stop" }
+component start = lib.switch("button_16mm") { at: (bx - 8, 18, booth_top), axis: Z, role: "start" }
+component power = lib.switch("toggle_spst") { at: (bx - 38, 18, booth_top), axis: Z, role: "power" }
+component jack = lib.jack("dc_jack_panel") { at: (bx - 38, -22, booth_top), axis: Z, role: "12V in" }
+component beacon = lib.led("neopixel_jewel_7") { at: (bx + 30, -22, booth_top), axis: Z  held: "hot glue round its edge, over the hole its wires come up through" }
+component psu = lib.psu("psu_12v_5a") { at: (bx, 100, 0) }
+
+component ctrl = lib.controller("arduino_nano") { at: (bx - 30, -20, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component drv = lib.motor_driver("tb6612fng") { at: (bx + 5, -22, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component reg = lib.regulator("d24v50f5") { at: (bx + 30, -22, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component vsense = lib.sensor("voltage_sensor_25v") { at: (bx - 30, 10, plate_t), leads: "soldered", held: "double-sided foam tape" }
+
+// ── Wiring ─────────────────────────────────────────────
+// 12 V: brick → socket → power switch → the regulator, and through the emergency stop to the motor driver
+wire psu.VPOS -> jack.PIN { gauge: 18, color: "red", label: "12 V in" }
+wire psu.VNEG -> jack.SLEEVE { gauge: 18, color: "black", label: "12 V return" }
+wire jack.PIN -> power.A { gauge: 18, color: "red" }
+net V12: power.B, reg.VIN, estop.IN { gauge: 18, color: "red" }
+// the stop button cuts the motor's supply in hardware; the voltage sensor tells the Nano
+net VMOT: estop.OUT, drv.VM, vsense.VCC_IN { gauge: 20, color: "orange" }
+net GND: jack.SLEEVE, reg.GND, ctrl.GND, drv.GND, vsense.GND_IN, vsense.MINUS, hall.GND, m_wheel.ENC_GND, beacon.GND, start.B, slip.S3, slip.S4 { gauge: 20, color: "black" }
+net V5: reg.VOUT, ctrl.V5, drv.VCC, drv.STBY, hall.VCC, m_wheel.ENC_VCC, beacon.V5, slip.S1, slip.S2 { gauge: 20, color: "red" }
+// motor
+wire drv.AO1 -> m_wheel.M_PLUS { gauge: 22, color: "red", label: "motor +" }
+wire drv.AO2 -> m_wheel.M_MINUS { gauge: 22, color: "white", label: "motor −" }
+wire ctrl.D5 -> drv.PWMA { gauge: 24, color: "orange" }
+wire ctrl.D7 -> drv.AIN1 { gauge: 24, color: "yellow" }
+wire ctrl.D8 -> drv.AIN2 { gauge: 24, color: "green" }
+wire ctrl.D2 -> m_wheel.ENC_A { gauge: 24, color: "yellow", label: "encoder A" }
+wire ctrl.D4 -> m_wheel.ENC_B { gauge: 24, color: "green", label: "encoder B" }
+// lights: the beacon, then through the slip ring to the hub ring and on to the rim ring;
+// two slip ring circuits each for 5 V and ground share the wheel lights' current
+wire ctrl.D6 -> beacon.DIN { gauge: 24, color: "blue", label: "LED data" }
+wire beacon.DOUT -> slip.S5 { gauge: 24, color: "blue", label: "LED data to the wheel" }
+wire slip.R5 -> hub_ring.DIN { gauge: 26, color: "blue" }
+wire hub_ring.DOUT -> rim_ring.DIN { gauge: 26, color: "blue" }
+wire slip.R1 -> hub_ring.V5 { gauge: 26, color: "red" }
+wire slip.R2 -> rim_ring.V5 { gauge: 26, color: "red" }
+wire slip.R3 -> hub_ring.GND { gauge: 26, color: "black" }
+wire slip.R4 -> rim_ring.GND { gauge: 26, color: "black" }
+// station sensor, start button, motor supply
+wire ctrl.D3 -> hall.S { gauge: 24, color: "purple", label: "station" }
+wire ctrl.D9 -> start.A { gauge: 24, color: "white", label: "start" }
+wire ctrl.A0 -> vsense.S { gauge: 24, color: "green", label: "motor supply" }
+
+// ── Firmware ───────────────────────────────────────────
+firmware ride {
+  board: ctrl
+  behaviour: "Ferris wheel ride: boarding lights, then on the start button (or after the boarding time) a countdown, a few turns at ride speed, and a slow creep round to the station"
+  boarding: 3s
+  countdown: 1s
+  ramp: 2s
+  ride_time: 12s
+  creep: 0.4
+  m_wheel_rpm: wheel_rpm * z_wheel / z_pinion
+  beacon_show: "twinkle"
+  hub_ring_show: "comet"
+  rim_ring_show: "chase"
+}
+
 // ── Requirements ───────────────────────────────────────
 require "Gondolas clear the base at the bottom": hub_z - pin_r - 32 >= 8 + 8
 require "Gondolas clear each other": 2 * pin_r * sin(30) - 28 >= 20
 require "Gondola pins sit inside the rims": pin_r + 6 <= rim_d / 2
 require "The big gear clears the gondolas' pins": m * (z_wheel + 2) / 2 <= pin_r - 10
+require "The LED ring clears the windows": cd + 17 <= 145 / 2 - 1
 
-// ── A ride ─────────────────────────────────────────────
-// The stepper spins up to 30 rpm, turning the wheel at 6 rpm. Nothing holds
-// the gondolas level but their weight hanging under the pins.
-scenario "Ride" {
-  mechanism: sim.mechanism(sim.turn(motor, speed: [(0s, 0rpm), (2s, 30rpm)]))
-  duration: 8s
+// ── A ride, run by the firmware ────────────────────────
+// After 3 s of boarding lights and a 1 s countdown the motor ramps up to
+// 30 rpm, turning the wheel at 6 rpm, for 12 s; then the wheel creeps round
+// until the magnet is over the station sensor. Nothing holds the gondolas
+// level but their weight hanging under the pins.
+scenario "A ride" {
+  mechanism: sim.mechanism(sim.motor(m_wheel))
+  firmware: ride
+  duration: 40s
   variants: ["expected"]
-  expect "Wheel turns at 6 rpm": wheel.max_rpm > 5.8rpm && wheel.max_rpm < 6.2rpm
+  expect "Wheel turns at 6 rpm": wheel.max_rpm > 5.7rpm && wheel.max_rpm < 6.6rpm
   expect "Gondolas hang within 5° of level": abs(gondola_1.angle + wheel.angle) < 5 && abs(gondola_4.angle + wheel.angle) < 5
+  expect "Creeps round and stops at the station": fw.stops >= 1 && hall.passes >= 1
+  expect "The wheel's lights play through the slip ring": rim_ring.shows > 400 && rim_ring.colours > 30
+  expect "The supply copes": supply_peak_amps < 5A
 }

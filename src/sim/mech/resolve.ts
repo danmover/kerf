@@ -712,6 +712,15 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
         drives.push({ kind: "turn", name: it.name, joint: j.name, speed: it.speed.map(([t, v]) => [t, v * k]), limit: j.kind === "pivot" ? it.limit / 1000 : it.limit });
         break;
       }
+      case "motor": {
+        const mc = comps.get(it.comp);
+        const cat = mc ? catalogPart(mc.catalogId) : undefined;
+        if (!mc || cat?.kind !== "gearmotor") fail(`sim.motor(${it.comp}): ${it.comp} is not a catalog gearmotor in the design`);
+        const j = jointOf(it.comp, `sim.motor(${it.comp})`, "pivot");
+        if (drives.some((d) => d.joint === j.name)) fail(`sim.motor(${it.comp}): ${j.name} already has a drive`);
+        drives.push({ kind: "motor", joint: j.name, comp: it.comp, sign: 1 });
+        break;
+      }
       case "push": {
         const j = jointOf(it.joint, `sim.push(${it.joint})`);
         drives.push({ kind: "force", name: it.name, joint: j.name, value: it.value.map(([t, v]) => [t, j.kind === "pivot" ? v / 1000 : v]) });
@@ -820,12 +829,28 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
 
   const mounts: Record<string, string> = {};
   for (const g of groups) for (const m of g.members) if (comps.has(m)) mounts[m] = g.id;
+  // hall sensors and the magnets they see: where each senses or sits in the design pose
+  const magnets: NonNullable<MechModel["magnets"]> = { sensors: [], magnets: [] };
+  for (const mc of comps.values()) {
+    const cat = catalogPart(mc.catalogId);
+    const hall = cat?.kind === "sensor" && cat.specs.iface === "hall";
+    if (!cat || (!hall && cat.kind !== "magnet")) continue;
+    for (const p of byName.get(mc.name) ?? []) {
+      // the component's main solid, not its extra ones (name.parts)
+      if (p.id.replace(/#\d+$/, "") !== mc.name) continue;
+      if (hall) magnets.sensors.push({ comp: mc.name, at: SI(applyXforms([Number(cat.specs.sense_x ?? 0), Number(cat.specs.sense_y ?? 0), Number(cat.specs.sense_z ?? 0)], p.xf)), range: Number(cat.specs.range_mm ?? 6) / 1000 });
+      else {
+        const pr = props.get(p.id);
+        if (pr) magnets.magnets.push({ comp: mc.name, at: SI(pr.com) });
+      }
+    }
+  }
   const power: Record<string, [number, number][]> = {};
   for (const it of spec.items) if (it.k === "power") power[it.comp] = it.value;
   const follow = spec.follow ? bodyIdOf(spec.follow, "follow") : base === "free" ? FRAME : undefined;
 
   return {
-    mech: { bodies, joints, drives, links, springs, loads, wheels, tracks, loose, ground, base, gravity, mounts, power, follow, notes },
+    mech: { bodies, joints, drives, links, springs, loads, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, power, follow, notes },
   };
 }
 

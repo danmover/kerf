@@ -1,23 +1,64 @@
 design "Teacup Ride"
-note "A desktop model of the spinning teacups: the big deck turns, and each cup's gear rolls round a fixed gear in the middle, so the cups spin on their own axles as they go round, faster than the deck and the same way."
-note "Assembly order: press the centre shaft into the base and the sun gear onto its spigot; press the bearings into the deck; push each axle through its planet gear and deck bearing and press its cup on top; lower the deck over the centre shaft so the planets mesh with the sun."
+note "A desktop model of the spinning teacups with three things turning at once: the big deck turns one way, three turntables on it turn the other way, and three cups on each turntable spin faster still, all from one motor. Under the deck an idler between the fixed centre gear and each turntable's gear makes the turntables run backwards; on top of the deck the cups' gears roll round a gear fixed to the deck under each turntable."
+note "The motor stands on the roof, which sits on three steel posts, and turns the deck through a pinion and a gear on top of its hub. A ring of 60 addressable LEDs on the roof and a beacon on the operator's booth play light shows; the booth has the start button, the emergency stop, the power switch and the supply socket, and an Arduino Nano runs the ride: boarding lights, a countdown, a ride that changes direction part way, then a slow creep round until a hall sensor under the deck sees the station magnet, so it always stops at the platform."
+note "Assembly order: press the centre post into the base and the sun gear onto its spigot. Build the deck: press its two centre bearings in from below, drop the idler and turntable bearings into their pockets from the top, push the idler pins up through them with the idler gears on, and each turntable's axle up through its gear and bearing; press a ring gear's hub into each pocket over the bearing, the turntables onto the axles, the cup bearings into the turntables and the cup pins up through them with their gears, and press the cups on. Glue the magnet in, lower the deck over the centre post so the idlers mesh with the sun, and press the hub gear onto the top of the hub. Press the posts into the base, lower the roof onto them, screw the motor on from underneath with its pinion meshing the hub gear, and glue the LED ring on. Stick the hall sensor on its pillar and wire the booth last."
+note "Coordinates: X right (the booth is at +X), Y back, Z up, in millimetres; the ride turns about the Z axis and the table is z = 0."
 
 // ── Gears ──────────────────────────────────────────────
-param m        = 2mm   "Gear module"
-param z_sun    = 36    "Teeth on the fixed centre gear"
-param z_planet = 20    "Teeth on each cup's gear"
-param backlash = 0.15mm "Backlash on the gears: the deck and cups float a little on their bearings"
-param press    = 0.15mm "Printed holes drawn this much over a pressed shaft: they close up by about that much"
+param m         = 1.25mm "Module of the gears under the deck"
+param z_sun     = 36    "Teeth on the fixed centre gear"
+param z_idler   = 12    "Teeth on each idler"
+param z_planet  = 18    "Teeth on each turntable's gear: half the centre gear's, so the turntables turn backwards as fast as the deck turns forwards"
+param m_cup     = 1mm   "Module of the cup gears"
+param z_ring    = 24    "Teeth on the gear fixed to the deck under each turntable"
+param z_cup     = 15    "Teeth on each cup's gear"
+param m_drive   = 1mm   "Module of the drive gears under the roof"
+param z_hub     = 48    "Teeth on the gear on top of the deck's hub"
+param z_pinion  = 12    "Teeth on the motor's pinion"
+param backlash  = 0.13mm "Backlash on the gears: the deck and turntables run on bearings and steel pins, so they hardly float"
+param press     = 0.15mm "Printed holes drawn this much over a pressed steel pin: they close up by about that much"
+param deck_rpm  = 10    "Deck speed during the ride (rpm)"
 
-// ── Layout (everything turns about Z) ──────────────────
-let cd      = center_distance(m, z_sun, z_planet)
-let gear_w  = 8
-let z_gear  = 44           // underside of the sun and planet gears
-let z_deck  = z_gear + gear_w + 2
-let deck_t  = 8
-let z_cup   = z_deck + deck_t + 1
-let hub_h   = 14           // bearing boss on top of the deck
-let cups    = [(cd, 0), (cd * cos(120), cd * sin(120)), (cd * cos(240), cd * sin(240))]
+// ── Layout ─────────────────────────────────────────────
+let r_idler  = center_distance(m, z_sun, z_idler)
+let r_table  = r_idler + center_distance(m, z_idler, z_planet)
+let r_cup    = center_distance(m_cup, z_ring, z_cup)
+let cd_drive = center_distance(m_drive, z_hub, z_pinion)
+let base_d   = 204
+let base_t   = 8
+let z_gear   = 14                 // underside of the sun, idlers and turntable gears
+let gear_w   = 6
+let z_deck   = z_gear + gear_w + 2
+let deck_t   = 10
+let deck_r   = 85
+let deck_d   = 2 * deck_r
+let deck_top = z_deck + deck_t
+let z_cg     = deck_top + 1       // underside of the cup gears and the ring gears they roll round
+let cg_w     = 4
+let z_table  = z_cg + cg_w + 1.5  // underside of the turntables
+let table_t  = 5
+let table_d  = 64
+let z_cups   = z_table + table_t + 1
+let cup_h    = 18
+let z_drive  = z_cups + cup_h + 3.5   // underside of the hub gear and pinion
+let drive_w  = 5
+let z_roof   = z_drive + drive_w + 1
+let roof_t   = 4
+let roof_top = z_roof + roof_t
+let r_post   = 94
+let a_hall   = -60                // the station: the magnet in the deck's rim passes its sensor here
+let z_mag    = z_deck + deck_t / 2
+let hub_d    = 20
+let tables   = polar(3, r_table, start: 60)
+let idlers   = polar(3, r_idler, start: 60)
+let posts    = polar(3, r_post, start: 0)
+// each turntable's three cups, at the turntable's angle, 120° and 240° round it
+let cups_a = polar(3, r_cup, start: 60, center: tables[0])
+let cups_b = polar(3, r_cup, start: 180, center: tables[1])
+let cups_c = polar(3, r_cup, start: 300, center: tables[2])
+let cups   = cups_a + cups_b + cups_c
+// a cup's half-section (radius, height): a flared bowl with a boss in the middle for its pin
+let cup_shape = [(0, 0), (9.5, 0), (10.5, 2), (12, cup_h), (10.4, cup_h), (9.1, 4), (4, 4), (4, 7.5), (0, 7.5)]
 
 // ── Base and the fixed centre ──────────────────────────
 part base {
@@ -25,24 +66,29 @@ part base {
   material: "PETG"
   process: mfg.fdm(build: Z)
   group: "Base"
-  body cylinder(d: 200, h: 8)
-  add cylinder(d: 44, h: z_gear - 8 + 0.01, at: (0, 0, 7.99))
+  body cylinder(d: base_d, h: base_t)
+  add cylinder(d: 30, h: z_gear - base_t + 0.01, at: (0, 0, base_t - 0.01))
   // spigot the sun gear presses onto
-  add cylinder(d: 18, h: gear_w, at: (0, 0, z_gear - 0.01))
-  cut cylinder(d: 8 + press, h: 31, at: (0, 0, z_gear + gear_w - 30))
+  add cylinder(d: 13.98, h: gear_w, at: (0, 0, z_gear - 0.01))
+  cut cylinder(d: 8 + press, h: z_gear + gear_w, at: (0, 0, 2))
+  // the block the station sensor's board stands against, below its pins
+  add rotate(box(6.5, 15, z_mag + 10 - base_t, at: (deck_r + 5.6 + 3.25, 0, base_t - 0.01)), a_hall)
+  for p in posts {
+    cut cylinder(d: 8.2, h: base_t, at: (p.x, p.y, 2))
+  }
 }
 
-part centre_shaft {
+part centre_post {
   color: #c3c8cf
   material: "Stainless 304"
   process: mfg.cnc_lathe(axis: Z)
   group: "Base"
-  body cylinder(d: 8, h: z_deck + deck_t + hub_h - (z_gear + gear_w - 30), at: (0, 0, z_gear + gear_w - 30))
+  body cylinder(d: 8, h: deck_top - 2, at: (0, 0, 2))
 }
 
-component sun = lib.spur_gear(m: m, z: z_sun, width: gear_w, bore: 18, backlash: backlash) { at: (0, 0, z_gear), axis: Z }
+component sun = lib.spur_gear(m: m, z: z_sun, width: gear_w, bore: 14, backlash: backlash) { at: (0, 0, z_gear), axis: Z }
 
-// ── The turning deck ───────────────────────────────────
+// ── The deck ───────────────────────────────────────────
 part deck {
   color: #e8c547
   material: "PETG"
@@ -50,72 +96,283 @@ part deck {
   group: "Deck"
   spin: 1
   axis: Z
-  body cylinder(d: 200, h: deck_t, at: (0, 0, z_deck))
-  add cylinder(d: 36, h: hub_h, at: (0, 0, z_deck + deck_t - 0.01))
-  // two 608s on the centre shaft, and one under each cup
-  cut cylinder(d: 22.1, h: deck_t + hub_h + 2, at: (0, 0, z_deck - 1))
-  for c in cups {
-    cut cylinder(d: 22.1, h: deck_t + 2, at: (c.x, c.y, z_deck - 1))
+  body cylinder(d: deck_d, h: deck_t, at: (0, 0, z_deck))
+  // the hub up to the drive gear: a cone out to a collar the gear sits on, and a narrower top it presses onto
+  add cylinder(d: hub_d, h: z_drive - 5 - deck_top + 0.01, at: (0, 0, deck_top - 0.01))
+  add cone(d1: hub_d, d2: 26, h: 4, at: (0, 0, z_drive - 5))
+  add cylinder(d: 26, h: 1, at: (0, 0, z_drive - 1))
+  add cylinder(d: 20, h: drive_w + 0.01, at: (0, 0, z_drive - 0.01))
+  // two 688s on the centre post, then a cone up into the hub's bore so nothing overhangs
+  cut cylinder(d: 16.1, h: deck_t + 0.02, at: (0, 0, z_deck - 0.01))
+  cut cone(d1: 16.1, d2: 10, h: 4, at: (0, 0, deck_top - 0.01))
+  cut cylinder(d: 10, h: z_drive + drive_w - deck_top + 1, at: (0, 0, deck_top))
+  // under each turntable, from the top: a pocket for the ring gear's hub over the 625 for the axle
+  for t in tables {
+    cut cylinder(d: 16.25, h: 2.01, at: (t.x, t.y, deck_top - 2))
+    cut cylinder(d: 16.1, h: 5.01, at: (t.x, t.y, deck_top - 7))
+    cut cylinder(d: 6.6, h: deck_t + 2, at: (t.x, t.y, z_deck - 1))
   }
+  // the idlers' 625s, from the top
+  for i in idlers {
+    cut cylinder(d: 16.1, h: 5.01, at: (i.x, i.y, deck_top - 5))
+    cut cylinder(d: 6.6, h: deck_t + 2, at: (i.x, i.y, z_deck - 1))
+  }
+  // pocket in the rim for the station magnet
+  cut rotate(cylinder(d: 6.4, h: 3.2, at: (deck_r - 3.1, 0, z_mag), dir: X), a_hall)
 }
 
-component deck_bearing_low  = lib.bearing("608") { at: (0, 0, z_deck + 0.5), axis: Z }
-component deck_bearing_high = lib.bearing("608") { at: (0, 0, z_deck + deck_t + hub_h - 7.5), axis: Z }
-component cup_bearings = lib.bearing("608") { at: [(cups[0].x, cups[0].y, z_deck + 0.5), (cups[1].x, cups[1].y, z_deck + 0.5), (cups[2].x, cups[2].y, z_deck + 0.5)], axis: Z }
+component deck_bearings = lib.bearing("688") { at: [(0, 0, z_deck), (0, 0, z_deck + 5)], axis: Z }
+component hub_gear = lib.spur_gear(m: m_drive, z: z_hub, width: drive_w, bore: 20, backlash: backlash) { at: (0, 0, z_drive), axis: Z  turns_with: deck }
+component magnet = lib.magnet("magnet_6x3_n35") { at: ((deck_r - 3.1) * cos(a_hall), (deck_r - 3.1) * sin(a_hall), z_mag), axis: (cos(a_hall), sin(a_hall), 0)  rides: deck  held: "glued into its pocket in the deck's rim, south pole out" }
 
-// ── Cups: each planet gear turns its axle and cup ──────
-component planet_a = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 8, backlash: backlash) { at: (cups[0].x, cups[0].y, z_gear), axis: Z  rides: deck  mesh: sun }
-component planet_b = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 8, backlash: backlash) { at: (cups[1].x, cups[1].y, z_gear), axis: Z  rides: deck  mesh: sun }
-component planet_c = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 8, backlash: backlash) { at: (cups[2].x, cups[2].y, z_gear), axis: Z  rides: deck  mesh: sun }
+// ── Idlers: each turns on a steel pin in a bearing in the deck, between the sun and a turntable's gear ──
+component idler_a = lib.spur_gear(m: m, z: z_idler, width: gear_w, bore: 5, backlash: backlash) { at: (idlers[0].x, idlers[0].y, z_gear), axis: Z  rides: deck  mesh: sun }
+component idler_b = lib.spur_gear(m: m, z: z_idler, width: gear_w, bore: 5, backlash: backlash) { at: (idlers[1].x, idlers[1].y, z_gear), axis: Z  rides: deck  mesh: sun }
+component idler_c = lib.spur_gear(m: m, z: z_idler, width: gear_w, bore: 5, backlash: backlash) { at: (idlers[2].x, idlers[2].y, z_gear), axis: Z  rides: deck  mesh: sun }
+component idler_bearings = lib.bearing("625") { at: with_z(idlers, deck_top - 5), axis: Z }
+part idler_pin_a { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Deck"  turns_with: idler_a  body cylinder(d: 5, h: deck_top - z_gear, at: (idlers[0].x, idlers[0].y, z_gear)) }
+part idler_pin_b { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Deck"  turns_with: idler_b  body cylinder(d: 5, h: deck_top - z_gear, at: (idlers[1].x, idlers[1].y, z_gear)) }
+part idler_pin_c { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Deck"  turns_with: idler_c  body cylinder(d: 5, h: deck_top - z_gear, at: (idlers[2].x, idlers[2].y, z_gear)) }
 
-let axle_h = z_cup + 9 - z_gear
-let cup_shape = [(0, 0), (27, 0), (30, 4), (34, 28), (31.5, 28), (28, 7), (0, 7)]
+// ── Turntables: each gear turns its axle and the turntable on top ──
+component planet_a = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 5, backlash: backlash) { at: (tables[0].x, tables[0].y, z_gear), axis: Z  rides: deck  mesh: idler_a }
+component planet_b = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 5, backlash: backlash) { at: (tables[1].x, tables[1].y, z_gear), axis: Z  rides: deck  mesh: idler_b }
+component planet_c = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 5, backlash: backlash) { at: (tables[2].x, tables[2].y, z_gear), axis: Z  rides: deck  mesh: idler_c }
+component table_bearings = lib.bearing("625") { at: with_z(tables, deck_top - 7), axis: Z }
 
-part axle_a { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: planet_a  body cylinder(d: 8, h: axle_h, at: (cups[0].x, cups[0].y, z_gear)) }
-part axle_b { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: planet_b  body cylinder(d: 8, h: axle_h, at: (cups[1].x, cups[1].y, z_gear)) }
-part axle_c { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: planet_c  body cylinder(d: 8, h: axle_h, at: (cups[2].x, cups[2].y, z_gear)) }
+let axle_h = z_table + table_t - 1 - z_gear
+part axle_a { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Turntables"  turns_with: planet_a  body cylinder(d: 5, h: axle_h, at: (tables[0].x, tables[0].y, z_gear)) }
+part axle_b { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Turntables"  turns_with: planet_b  body cylinder(d: 5, h: axle_h, at: (tables[1].x, tables[1].y, z_gear)) }
+part axle_c { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Turntables"  turns_with: planet_c  body cylinder(d: 5, h: axle_h, at: (tables[2].x, tables[2].y, z_gear)) }
 
-part cup_a {
+// a gear fixed to the deck under each turntable, its hub in the pocket over the axle's bearing: the cups' gears roll round it
+component ring_a = lib.spur_gear(m: m_cup, z: z_ring, width: cg_w, bore: 6.6, hub_d: 16, hub_l: 2.7, backlash: backlash) { at: (tables[0].x, tables[0].y, z_cg + cg_w), axis: -Z  rides: deck }
+component ring_b = lib.spur_gear(m: m_cup, z: z_ring, width: cg_w, bore: 6.6, hub_d: 16, hub_l: 2.7, backlash: backlash) { at: (tables[1].x, tables[1].y, z_cg + cg_w), axis: -Z  rides: deck }
+component ring_c = lib.spur_gear(m: m_cup, z: z_ring, width: cg_w, bore: 6.6, hub_d: 16, hub_l: 2.7, backlash: backlash) { at: (tables[2].x, tables[2].y, z_cg + cg_w), axis: -Z  rides: deck }
+
+part table_a {
   color: #e05a7a
   material: "PETG"
   process: mfg.fdm(build: Z)
-  group: "Cups"
+  group: "Turntables"
   turns_with: planet_a
-  body revolve(cup_shape, at: (cups[0].x, cups[0].y, z_cup), dir: Z)
-  cut cylinder(d: 8 + press, h: 10, at: (cups[0].x, cups[0].y, z_cup - 1))
+  body cylinder(d: table_d, h: table_t, at: (tables[0].x, tables[0].y, z_table))
+  cut cylinder(d: 5 + press, h: table_t + 2, at: (tables[0].x, tables[0].y, z_table - 1))
+  for c in cups_a { cut cylinder(d: 16.1, h: table_t + 2, at: (c.x, c.y, z_table - 1)) }
 }
-part cup_b {
+part table_b {
   color: #4fb3d9
   material: "PETG"
   process: mfg.fdm(build: Z)
-  group: "Cups"
+  group: "Turntables"
   turns_with: planet_b
-  body revolve(cup_shape, at: (cups[1].x, cups[1].y, z_cup), dir: Z)
-  cut cylinder(d: 8 + press, h: 10, at: (cups[1].x, cups[1].y, z_cup - 1))
+  body cylinder(d: table_d, h: table_t, at: (tables[1].x, tables[1].y, z_table))
+  cut cylinder(d: 5 + press, h: table_t + 2, at: (tables[1].x, tables[1].y, z_table - 1))
+  for c in cups_b { cut cylinder(d: 16.1, h: table_t + 2, at: (c.x, c.y, z_table - 1)) }
 }
-part cup_c {
+part table_c {
   color: #7cc66b
   material: "PETG"
   process: mfg.fdm(build: Z)
-  group: "Cups"
+  group: "Turntables"
   turns_with: planet_c
-  body revolve(cup_shape, at: (cups[2].x, cups[2].y, z_cup), dir: Z)
-  cut cylinder(d: 8 + press, h: 10, at: (cups[2].x, cups[2].y, z_cup - 1))
+  body cylinder(d: table_d, h: table_t, at: (tables[2].x, tables[2].y, z_table))
+  cut cylinder(d: 5 + press, h: table_t + 2, at: (tables[2].x, tables[2].y, z_table - 1))
+  for c in cups_c { cut cylinder(d: 16.1, h: table_t + 2, at: (c.x, c.y, z_table - 1)) }
+}
+
+// ── Cups: each gear, on a steel pin through a bearing in its turntable, turns the cup pressed on top ──
+// (the cup gears face down like the ring gears they roll round)
+component cup_bearings = lib.bearing("625") { at: with_z(cups, z_table), axis: Z }
+component cg_a1 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_a[0].x, cups_a[0].y, z_cg + cg_w), axis: -Z  rides: table_a  mesh: ring_a }
+component cg_a2 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_a[1].x, cups_a[1].y, z_cg + cg_w), axis: -Z  rides: table_a  mesh: ring_a }
+component cg_a3 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_a[2].x, cups_a[2].y, z_cg + cg_w), axis: -Z  rides: table_a  mesh: ring_a }
+component cg_b1 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_b[0].x, cups_b[0].y, z_cg + cg_w), axis: -Z  rides: table_b  mesh: ring_b }
+component cg_b2 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_b[1].x, cups_b[1].y, z_cg + cg_w), axis: -Z  rides: table_b  mesh: ring_b }
+component cg_b3 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_b[2].x, cups_b[2].y, z_cg + cg_w), axis: -Z  rides: table_b  mesh: ring_b }
+component cg_c1 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_c[0].x, cups_c[0].y, z_cg + cg_w), axis: -Z  rides: table_c  mesh: ring_c }
+component cg_c2 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_c[1].x, cups_c[1].y, z_cg + cg_w), axis: -Z  rides: table_c  mesh: ring_c }
+component cg_c3 = lib.spur_gear(m: m_cup, z: z_cup, width: cg_w, bore: 5, backlash: backlash) { at: (cups_c[2].x, cups_c[2].y, z_cg + cg_w), axis: -Z  rides: table_c  mesh: ring_c }
+
+let pin_h = z_cups + 5 - z_cg
+part cup_pin_a1 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_a1  body cylinder(d: 5, h: pin_h, at: (cups_a[0].x, cups_a[0].y, z_cg)) }
+part cup_pin_a2 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_a2  body cylinder(d: 5, h: pin_h, at: (cups_a[1].x, cups_a[1].y, z_cg)) }
+part cup_pin_a3 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_a3  body cylinder(d: 5, h: pin_h, at: (cups_a[2].x, cups_a[2].y, z_cg)) }
+part cup_pin_b1 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_b1  body cylinder(d: 5, h: pin_h, at: (cups_b[0].x, cups_b[0].y, z_cg)) }
+part cup_pin_b2 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_b2  body cylinder(d: 5, h: pin_h, at: (cups_b[1].x, cups_b[1].y, z_cg)) }
+part cup_pin_b3 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_b3  body cylinder(d: 5, h: pin_h, at: (cups_b[2].x, cups_b[2].y, z_cg)) }
+part cup_pin_c1 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_c1  body cylinder(d: 5, h: pin_h, at: (cups_c[0].x, cups_c[0].y, z_cg)) }
+part cup_pin_c2 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_c2  body cylinder(d: 5, h: pin_h, at: (cups_c[1].x, cups_c[1].y, z_cg)) }
+part cup_pin_c3 { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: cg_c3  body cylinder(d: 5, h: pin_h, at: (cups_c[2].x, cups_c[2].y, z_cg)) }
+
+part cup_a1 { color: #f6a5c0  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_a1  body revolve(cup_shape, at: (cups_a[0].x, cups_a[0].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_a[0].x, cups_a[0].y, z_cups - 0.01)) }
+part cup_a2 { color: #ffd166  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_a2  body revolve(cup_shape, at: (cups_a[1].x, cups_a[1].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_a[1].x, cups_a[1].y, z_cups - 0.01)) }
+part cup_a3 { color: #9ad1f5  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_a3  body revolve(cup_shape, at: (cups_a[2].x, cups_a[2].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_a[2].x, cups_a[2].y, z_cups - 0.01)) }
+part cup_b1 { color: #b8e986  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_b1  body revolve(cup_shape, at: (cups_b[0].x, cups_b[0].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_b[0].x, cups_b[0].y, z_cups - 0.01)) }
+part cup_b2 { color: #f6a5c0  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_b2  body revolve(cup_shape, at: (cups_b[1].x, cups_b[1].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_b[1].x, cups_b[1].y, z_cups - 0.01)) }
+part cup_b3 { color: #c9a7eb  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_b3  body revolve(cup_shape, at: (cups_b[2].x, cups_b[2].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_b[2].x, cups_b[2].y, z_cups - 0.01)) }
+part cup_c1 { color: #ffd166  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_c1  body revolve(cup_shape, at: (cups_c[0].x, cups_c[0].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_c[0].x, cups_c[0].y, z_cups - 0.01)) }
+part cup_c2 { color: #9ad1f5  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_c2  body revolve(cup_shape, at: (cups_c[1].x, cups_c[1].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_c[1].x, cups_c[1].y, z_cups - 0.01)) }
+part cup_c3 { color: #f4978e  material: "PETG"  process: mfg.fdm(build: Z)  group: "Cups"  turns_with: cg_c3  body revolve(cup_shape, at: (cups_c[2].x, cups_c[2].y, z_cups), dir: Z)  cut cylinder(d: 5 + press, h: 6.01, at: (cups_c[2].x, cups_c[2].y, z_cups - 0.01)) }
+
+// ── Roof: on three posts, with the motor and the lights ──
+component pinion = lib.spur_gear(m: m_drive, z: z_pinion, width: drive_w, bore: 4, backlash: backlash) { at: (cd_drive, 0, z_drive), axis: Z  mesh: hub_gear  group: "Drive" }
+// turned so its two screws sit either side of the pinion, clear of the hub gear
+component m_deck = lib.gearmotor("jga25_370_12v_enc_78") { at: (cd_drive, 0, roof_top), axis: -Z  rotate: 90  turns_with: pinion  group: "Drive" }
+component posts_steel = lib.dowel(d: 8, length: roof_top - 2) { at: with_z(posts, 2), axis: Z }
+
+part roof {
+  color: #d94a4a
+  material: "PETG"
+  process: mfg.fdm(build: -Z)
+  group: "Roof"
+  body cylinder(d: base_d, h: roof_t, at: (0, 0, z_roof))
+  for p in posts {
+    cut cylinder(d: 8.2, h: roof_t + 2, at: (p.x, p.y, z_roof - 1))
+  }
+  // the motor's boss locates it; two countersunk screws from underneath; a hole under the LED ring's pads for its wires
+  cut cylinder(d: 7.15, h: roof_t + 2, at: (cd_drive, 0, z_roof - 1))
+  for h in m_deck.holes {
+    cut hole(M3, through: true, csink: true, at: (h.x, h.y, z_roof), dir: Z)
+  }
+  cut cylinder(d: 10, h: roof_t + 2, at: (75.75, 0, z_roof - 1))
+}
+
+let motor_fix = calc.fastener(grip: roof_t, into: "tapped", material: "Aluminum", depth: 4.5, size: M3, head: "flat")
+component motor_screws = lib.screw(motor_fix) { at: with_z(m_deck.holes, z_roof), axis: Z }
+
+component roof_lights = lib.led("neopixel_ring_60") { at: (0, 0, roof_top), axis: Z  held: "hot glue at six points round its edge"  brightness: 0.5 }
+// standing on its end beside the deck's rim, chip down and facing the magnet's path 2.5 mm away; its pins point out over the block
+component hall = lib.sensor("hall_ky003") { at: ((deck_r + 5.6) * cos(a_hall), (deck_r + 5.6) * sin(a_hall), z_mag + 7.5), rotate: (0, 90, a_hall + 180), held: "double-sided foam tape on the block" }
+
+// ── Operator's booth: a printed cover screwed to a plate, the controls on top ──
+let bx = 172                 // booth centre
+let plate_t = 4
+let booth_h = 56
+let booth_top = plate_t + booth_h
+let shell_w = 120
+let shell_d = 90
+let corner = [(bx - 56, -41), (bx + 56, -41), (bx + 56, 41), (bx - 56, 41)]
+
+part booth_plate {
+  color: #2b2f36
+  material: "PETG"
+  process: mfg.fdm(build: -Z)
+  group: "Booth"
+  body box(shell_w + 10, shell_d + 10, plate_t, at: (bx, 0, 0), r: 4)
+  // roomy holes so the four screws line up across the booth, countersunk underneath
+  for c in corner {
+    cut cylinder(d: 3.8, h: plate_t + 2, at: (c.x, c.y, -1))
+    cut cone(d1: 6.4, d2: 3.8, h: 1.3, at: (c.x, c.y, -0.01))
+  }
+}
+
+part booth {
+  color: #f2f2f2
+  material: "PETG"
+  process: mfg.fdm(build: -Z)
+  group: "Booth"
+  body box(shell_w, shell_d, booth_h, at: (bx, 0, plate_t), r: 6)
+  cut box(shell_w - 6, shell_d - 6, booth_h - 3 + 0.01, at: (bx, 0, plate_t - 0.01), r: 3)
+  // corner posts for the screws from under the plate
+  for c in corner {
+    add box(8, 8, booth_h - 3 + 0.02, at: (c.x, c.y, plate_t - 0.01))
+    cut hole(M3, fit: "insert", depth: 6, at: (c.x, c.y, plate_t), dir: Z)
+  }
+  // panel holes: stop, start, power, the supply socket, the beacon's wires; a slot for the cables out to the ride
+  cut cylinder(d: 22.5, h: 5, at: (bx + 30, 18, booth_top - 4))
+  cut cylinder(d: 16.4, h: 5, at: (bx - 8, 18, booth_top - 4))
+  cut cylinder(d: 6.4, h: 5, at: (bx - 38, 18, booth_top - 4))
+  cut cylinder(d: 11.6, h: 5, at: (bx - 38, -22, booth_top - 4))
+  cut cylinder(d: 16, h: 5, at: (bx + 34, -22, booth_top - 4))
+  cut box(5, 30, 14, at: (bx - shell_w / 2 + 1.5, 0, plate_t - 0.01))
+}
+
+component booth_inserts = lib.insert(M3) { at: with_z(corner, plate_t), axis: Z }
+let booth_fix = calc.fastener(grip: plate_t, into: "insert", material: "PETG", size: M3, head: "flat")
+component booth_screws = lib.screw(booth_fix) { at: with_z(corner, 0), axis: Z }
+
+component estop = lib.switch("estop_22mm") { at: (bx + 30, 18, booth_top), axis: Z, role: "emergency stop" }
+component start = lib.switch("button_16mm") { at: (bx - 8, 18, booth_top), axis: Z, role: "start" }
+component power = lib.switch("toggle_spst") { at: (bx - 38, 18, booth_top), axis: Z, role: "power" }
+component jack = lib.jack("dc_jack_panel") { at: (bx - 38, -22, booth_top), axis: Z, role: "12V in" }
+component beacon = lib.led("neopixel_jewel_7") { at: (bx + 30, -22, booth_top), axis: Z  held: "hot glue round its edge, over the hole its wires come up through" }
+component psu = lib.psu("psu_12v_5a") { at: (bx, 100, 0) }
+
+component ctrl = lib.controller("arduino_nano") { at: (bx - 30, -20, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component drv = lib.motor_driver("tb6612fng") { at: (bx + 5, -22, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component reg = lib.regulator("d24v50f5") { at: (bx + 30, -22, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component vsense = lib.sensor("voltage_sensor_25v") { at: (bx - 30, 10, plate_t), leads: "soldered", held: "double-sided foam tape" }
+
+// ── Wiring ─────────────────────────────────────────────
+// 12 V: brick → socket → power switch → the regulator, and through the emergency stop to the motor driver
+wire psu.VPOS -> jack.PIN { gauge: 18, color: "red", label: "12 V in" }
+wire psu.VNEG -> jack.SLEEVE { gauge: 18, color: "black", label: "12 V return" }
+wire jack.PIN -> power.A { gauge: 18, color: "red" }
+net V12: power.B, reg.VIN, estop.IN { gauge: 18, color: "red" }
+// the stop button cuts the motor's supply in hardware; the voltage sensor tells the Nano
+net VMOT: estop.OUT, drv.VM, vsense.VCC_IN { gauge: 20, color: "orange" }
+net GND: jack.SLEEVE, reg.GND, ctrl.GND, drv.GND, vsense.GND_IN, vsense.MINUS, hall.GND, m_deck.ENC_GND, roof_lights.GND, beacon.GND, start.B { gauge: 20, color: "black" }
+net V5: reg.VOUT, ctrl.V5, drv.VCC, drv.STBY, hall.VCC, m_deck.ENC_VCC, roof_lights.V5, beacon.V5 { gauge: 20, color: "red" }
+// motor
+wire drv.AO1 -> m_deck.M_PLUS { gauge: 22, color: "red", label: "motor +" }
+wire drv.AO2 -> m_deck.M_MINUS { gauge: 22, color: "white", label: "motor −" }
+wire ctrl.D5 -> drv.PWMA { gauge: 24, color: "orange" }
+wire ctrl.D7 -> drv.AIN1 { gauge: 24, color: "yellow" }
+wire ctrl.D8 -> drv.AIN2 { gauge: 24, color: "green" }
+wire ctrl.D2 -> m_deck.ENC_A { gauge: 24, color: "yellow", label: "encoder A" }
+wire ctrl.D4 -> m_deck.ENC_B { gauge: 24, color: "green", label: "encoder B" }
+// lights: the beacon first, then the roof ring from its data out
+wire ctrl.D6 -> beacon.DIN { gauge: 24, color: "blue", label: "LED data" }
+wire beacon.DOUT -> roof_lights.DIN { gauge: 24, color: "blue", label: "LED data to the roof" }
+// station sensor, start button, motor supply
+wire ctrl.D3 -> hall.S { gauge: 24, color: "purple", label: "station" }
+wire ctrl.D9 -> start.A { gauge: 24, color: "white", label: "start" }
+wire ctrl.A0 -> vsense.S { gauge: 24, color: "green", label: "motor supply" }
+
+// ── Firmware ───────────────────────────────────────────
+firmware ride {
+  board: ctrl
+  behaviour: "Teacup ride: boarding lights, then on the start button (or after the boarding time) a countdown, a ride that changes direction part way, and a slow creep round to the station"
+  boarding: 3s
+  countdown: 1s
+  ramp: 2s
+  ride_time: 12s
+  reverse: true
+  creep: 0.5
+  m_deck_rpm: deck_rpm * z_hub / z_pinion
+  beacon_show: "twinkle"
+  roof_lights_show: "rainbow"
 }
 
 // ── Requirements ───────────────────────────────────────
-require "Cups clear each other as they spin": cd * sqrt(3) - 68 >= 10
-require "Cups stay on the deck": cd + 34 <= 100 - 5
-require "Planet gears clear the centre shaft's hub": cd - m * (z_planet + 2) / 2 - 22 >= 2
+require "Turntables clear each other": r_table * sqrt(3) - table_d >= 10
+require "Turntables stay on the deck": r_table + table_d / 2 <= deck_d / 2 - 1
+require "Turntables clear the hub": r_table - table_d / 2 - hub_d / 2 >= 3
+require "Cups clear each other on a turntable": r_cup * sqrt(3) - 24 >= 5
+require "Cups stay on their turntable": r_cup + 12 <= table_d / 2
+require "Deck clears the posts": r_post - 4 - deck_d / 2 >= 4
+require "Idlers clear the base's boss": r_idler - m * (z_idler + 2) / 2 - 15 >= 3
 
-// ── A ride ─────────────────────────────────────────────
-// The deck is brought up to 12 rpm; the planets roll round the fixed sun gear,
-// so each cup turns 36/20 = 1.8 times on the deck (2.8 times in all) for
-// every turn of the deck.
-scenario "Ride" {
-  mechanism: sim.mechanism(sim.turn(deck, speed: [(0s, 0rpm), (1s, 12rpm)]))
-  duration: 5s
+// ── A ride, run by the firmware ────────────────────────
+// After 3 s of boarding lights and a 1 s countdown the deck ramps up to 10 rpm
+// (the motor at 40 rpm through the 48:12 drive), turns about 7 s one way and
+// 5 s the other, then creeps round until the magnet is over the station
+// sensor. The turntables turn twice as fast as the deck against it, so once
+// backwards in all; each cup turns 24/15 times on its turntable for every
+// turn of its turntable on the deck, the same way round.
+scenario "A ride" {
+  mechanism: sim.mechanism(sim.motor(m_deck))
+  firmware: ride
+  duration: 32s
   variants: ["expected"]
-  expect "Deck reaches 12 rpm": deck.max_rpm > 11.5rpm
-  expect "Cups turn 1.8 times on the deck for each turn of it": abs(planet_a.turns / deck.turns - z_sun / z_planet) < 0.05
+  expect "Deck reaches 10 rpm": deck.max_rpm > 9.5rpm && deck.max_rpm < 11rpm
+  // the ride ends back at the station, so compare how far each turned on the first leg, which turns the deck
+  // clockwise seen from above (negative about Z): its furthest is its angle_min, the turntables' their angle_max
+  expect "Turntables turn backwards on the deck, twice as fast as it": abs(planet_a.angle_max / deck.angle_min + z_sun / z_planet) < 0.05
+  // (the cup gears face down, so their angles count the other way round)
+  expect "Cups spin on their turntables, 24/15 as fast as the turntables turn": abs(cg_a1.angle_min / planet_a.angle_max + z_ring / z_cup) < 0.05
+  expect "Creeps home and stops at the station after the ride": fw.stops >= 1 && hall.passes >= 2
+  expect "Lights play the whole time": roof_lights.shows > 500 && roof_lights.colours > 50
+  expect "The supply copes": supply_peak_amps < 5A
 }

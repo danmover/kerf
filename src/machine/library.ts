@@ -54,6 +54,8 @@ const GROUPS: Record<CatalogKind, string> = {
   knob: "Panel",
   amplifier: "Electronics",
   speaker: "Speaker",
+  led: "Lights",
+  magnet: "Electronics",
 };
 
 const KIND_DOC: Partial<Record<CatalogKind, string>> = {
@@ -90,6 +92,8 @@ const KIND_DOC: Partial<Record<CatalogKind, string>> = {
   jack: "Panel-mount jack or socket: `at` is the centre of the panel hole on the panel's front face, `axis` points out of the front. Fields: hole_d (drill the panel this size), back, depth.",
   knob: "Push-on knob: `at` is the centre of its underside, `axis` along the shaft. Fields: top, d, skirt_d.",
   speaker: "Speaker facing `axis`; `at` is the centre of the front of its mounting flange (against the back of the baffle). Fields: cutout_d (baffle hole), bolt_circle, holes (8 bolt positions), depth, back.",
+  led: "Addressable LED board (WS2812B): a ring or jewel faces its LEDs along `axis` with `at` the centre of its back; a stick lies flat with `at` the centre of its underside, LEDs up, length along x (turn it with rotate:). Wire V5, GND and DIN (DOUT on to the next board in the chain). brightness: the firmware's cap, 0 to 1 (power is budgeted for full white times it). Fields: face (centre of the LED tops), back, leds (each LED's centre), od, id.",
+  magnet: "Disc magnet on `axis`; `at` is the centre of one face. A hall sensor sees it within its range_mm. Fields: d, h, end.",
   amplifier: "Amplifier board lying flat; `at` is the centre of the underside. Fields: top, holes, corners.",
 };
 

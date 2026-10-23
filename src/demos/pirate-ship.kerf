@@ -1,6 +1,7 @@
 design "Pirate Ship Ride"
-note "A desktop model of the swinging pirate ship: a stepper turns a crank round and round, and a connecting rod to one of the ship's hanger arms rocks the ship back and forth on its axle, like the real ride's drive swinging it higher each pass."
-note "Assembly order: press the bearings into the hanger arms and screw the arms to the hull; press the axle into the motor tower, slide the ship's bearings on and press the far tower on the end; screw both towers to the base; bolt the motor to its tower, press the crank on its shaft, and pin the rod between the crank and the ship."
+note "A desktop model of the swinging pirate ship that lights up: an encoder gearmotor turns a crank round and round, and a connecting rod to one of the ship's hanger arms rocks the ship back and forth on its axle. A lantern at the masthead and two strips of deck lights swing with the ship, fed through a slip ring in the far tower."
+note "An Arduino Nano in the operator's booth runs the ride: boarding lights, a countdown, the crank ramping up to 20 rpm held by the motor's encoder, then a slow creep round until a hall sensor in the motor tower sees the magnet in the crank's counterweight, so the ship always stops hanging level at the platform. The booth has the start button, the emergency stop (which cuts the motor's supply in hardware), the power switch, the supply socket and a beacon."
+note "Assembly order: press both bearings into the motor-side hanger arm's boss and screw the arms to the hull with the slip ring's collar through the far arm; press the mast into the hull, the crow's nest onto it and glue the lantern and deck lights on with their wires through the holes behind their pads. Press the axle into the motor tower and slide the ship's bearings onto it, press the slip ring's body into the far tower, and screw both towers to the base. Screw the motor to its plate, the plate into the motor tower's recess with the gearbox through the hole, press the crank on with its magnet glued in, and pin the rod between the crank and the ship. Stick the hall sensor into its recess with its plug through the tower and wire the booth last."
 
 // ── Linkage (the ship swings about Y) ──────────────────
 param pivot_z  = 200mm  "Height of the ship's axle"
@@ -10,6 +11,7 @@ param crank_x  = -110mm "Crank (motor shaft) position along the ride"
 param crank_z  = 148mm  "Crank height"
 param press    = 0.15mm "Printed holes drawn this much over a pressed pin or shaft: they close up by about that much"
 param run_gap  = 0.6mm  "Clearance on the pins the rod turns on"
+param crank_rpm = 20    "Crank speed during the ride (rpm): the ship swings once a turn"
 
 // ── Layout along Y (motor side negative) ───────────────
 let beam     = 46               // hull width
@@ -18,6 +20,7 @@ let y_arm    = -beam / 2 - arm_t  // outer face of the motor-side arm
 let y_rod    = y_arm - 7        // the rod, 6 thick, 1 clear of the arm
 let y_crank  = y_rod - 9        // the crank, 8 thick, 1 clear of the rod
 let y_mt     = y_crank - 17     // outer face of the motor tower (16 thick)
+let y_ti     = y_mt + 16        // its inner face
 let y_ft     = beam / 2 + arm_t + 1   // inner face of the far tower (10 thick)
 let rod_y    = y_rod + 3        // the rod's centre plane
 let p_crank  = (crank_x, crank_z + throw)   // crank pin, drawn straight up
@@ -25,6 +28,12 @@ let p_rocker = (0, pivot_z - arm_r)         // rocker pin, ship hanging still
 let rod_dir  = (p_rocker - p_crank) / len(p_rocker - p_crank)
 let rod_n    = (-rod_dir.y, rod_dir.x) * 4  // half the rod's width, across it
 let hull_screws = [(-40, 84), (40, 84)]
+// the motor plate in the motor tower's recess, its two screws either side of the motor's
+let plate_w  = 48
+let plate_h  = 32
+let plate_x  = [crank_x - 17.5, crank_x + 17.5]
+// the station magnet in the crank's counterweight, below the crank's axis when the crank pin is at the top
+let mag_r    = 24
 
 let foot_bolt = calc.fastener(grip: 6, into: "insert", material: "PETG", size: M3)
 let arm_bolt  = calc.fastener(grip: arm_t, into: "insert", material: "PETG", size: M3, head: "flat")
@@ -41,7 +50,8 @@ part base {
   }
 }
 
-// the motor tower carries the axle at the top and the stepper on its outer face, printed lying on that face
+// the motor tower carries the axle at the top and the motor plate in a recess in its inner face, the gearbox through a
+// hole behind it, and the station sensor in a recess below; printed lying on its outer face, so nothing overhangs
 part motor_tower {
   color: #8b5a2b
   material: "PETG"
@@ -50,11 +60,14 @@ part motor_tower {
   body prism([(-140, 8), (100, 8), (20, pivot_z + 16), (-20, pivot_z + 16), (-140, crank_z + 32)], h: 16, at: (0, y_mt + 16, 0), dir: -Y)
   add box(240, 30, 6, at: (-20, y_mt + 15, 8))
   cut cylinder(d: 8 + press, h: 18, at: (0, y_mt - 1, pivot_z), dir: Y)
-  // stepper: its pilot locates in a straight hole (a recess would print with a ceiling), four screws counterbored into the inner face
-  cut cylinder(d: 22.4, h: 18, at: (crank_x, y_mt - 1, crank_z), dir: Y)
-  for h in [(15.5, 15.5), (-15.5, 15.5), (-15.5, -15.5), (15.5, -15.5)] {
-    cut hole(M3, through: true, cbore: (6.5, 3.5), at: (crank_x + h.x, y_mt + 16, crank_z + h.y), dir: -Y)
+  cut box(plate_w + 0.4, 4.01, plate_h + 0.4, at: (crank_x, y_ti - 2 + 0.005, crank_z - plate_h / 2 - 0.2))
+  cut cylinder(d: 27, h: 12.02, at: (crank_x, y_mt - 0.01, crank_z), dir: Y)
+  for x in plate_x {
+    cut hole(M3, fit: "insert", depth: 6, at: (x, y_ti - 4, crank_z), dir: -Y)
   }
+  // the station sensor's recess, and a slot behind its header for the plug, which goes on from the back
+  cut box(16.2, 4.11, 18.9, at: (crank_x, y_ti - 2.05 + 0.005, crank_z - mag_r - 16.95))
+  cut box(8, 11.92, 14, at: (crank_x, y_ti - 10.05, crank_z - mag_r - 22))
   for x in [-125, 75] {
     // a millimetre over the clearance: the holes are 200 mm apart and the print shrinks
     cut hole(foot_bolt.clearance + 1, through: true, at: (x, y_mt + 23, 15), dir: -Z)
@@ -63,8 +76,11 @@ part motor_tower {
   for s in hull_screws {
     cut cylinder(d: 8, h: 18, at: (s.x, y_mt - 1, s.y), dir: Y)
   }
+  // a hole for the motor's and the station sensor's cables through to the booth's side
+  cut cylinder(d: 14, h: 18, at: (40, y_mt - 1, 104), dir: Y)
 }
 
+// the far tower holds the slip ring's body, its collar turning with the far hanger arm
 part far_tower {
   color: #8b5a2b
   material: "PETG"
@@ -72,7 +88,7 @@ part far_tower {
   group: "Frame"
   body prism([(-90, 8), (90, 8), (20, pivot_z + 16), (-20, pivot_z + 16)], h: 10, at: (0, y_ft + 10, 0), dir: -Y)
   add box(180, 24, 6, at: (0, y_ft - 2, 8))
-  cut cylinder(d: 8 + press, h: 12, at: (0, y_ft - 1, pivot_z), dir: Y)
+  cut cylinder(d: 12.2, h: 12, at: (0, y_ft - 1, pivot_z), dir: Y)
   for x in [-75, 75] {
     cut hole(foot_bolt.clearance + 1, through: true, at: (x, y_ft - 7, 15), dir: -Z)
   }
@@ -81,7 +97,7 @@ part far_tower {
   }
 }
 
-// a stub axle from each tower into its arm's bearing
+// the axle from the motor tower through both bearings in the motor-side arm's boss
 part axle_drive {
   color: #c3c8cf
   material: "Stainless 304"
@@ -89,38 +105,56 @@ part axle_drive {
   group: "Frame"
   body cylinder(d: 8, h: -beam / 2 - y_mt, at: (0, y_mt, pivot_z), dir: Y)
 }
-part axle_far {
-  color: #c3c8cf
-  material: "Stainless 304"
-  process: mfg.cnc_lathe(axis: Y)
-  group: "Frame"
-  body cylinder(d: 8, h: y_ft + 10 - beam / 2, at: (0, beam / 2, pivot_z), dir: Y)
-}
 
 // ── Drive ──────────────────────────────────────────────
-component motor = lib.nema17(length: 40) {
-  at: (crank_x, y_mt, crank_z)
-  axis: Y
-  spin: 1
-  group: "Drive"
-}
-component motor_screws = lib.screw(M3, 16) { at: [(crank_x + 15.5, y_mt + 12.5, crank_z + 15.5), (crank_x - 15.5, y_mt + 12.5, crank_z + 15.5), (crank_x - 15.5, y_mt + 12.5, crank_z - 15.5), (crank_x + 15.5, y_mt + 12.5, crank_z - 15.5)], axis: -Y }
-
 part crank {
   color: #e2a93b
   material: "PETG"
   process: mfg.fdm(build: Y)
   group: "Drive"
-  turns_with: motor
-  // an arm rather than a disc, so a hex key reaches the motor screws past it
+  spin: 1
+  axis: Y
+  axis_at: (crank_x, 0, crank_z)
+  // presses onto the motor's shaft after the motor is screwed in, so it comes off to reach the screws behind it
+  removable
+  // an arm out to the crank pin and a counterweight arm the other way, carrying the station magnet
   body cylinder(d: 16, h: 8, at: (crank_x, y_crank, crank_z), dir: Y)
   add cylinder(d: 14, h: 8, at: (crank_x, y_crank, p_crank.y), dir: Y)
   add box(10, 8, throw, at: (crank_x, y_crank + 4, crank_z))
-  cut cylinder(d: 5 + press, h: 10, at: (crank_x, y_crank - 1, crank_z), dir: Y)
+  add box(10, 8, mag_r + 6, at: (crank_x, y_crank + 4, crank_z - mag_r - 6))
+  cut cylinder(d: 4 + press, h: 10, at: (crank_x, y_crank - 1, crank_z), dir: Y)
   cut cylinder(d: 5 + press, h: 10, at: (crank_x, y_crank - 1, p_crank.y), dir: Y)
+  cut cylinder(d: 6.4, h: 3.1, at: (crank_x, y_crank - 0.01, crank_z - mag_r), dir: Y)
 }
 
+component m_ship = lib.gearmotor("jga25_370_12v_enc_78") { at: (crank_x, y_ti - 4, crank_z), axis: Y  turns_with: crank  group: "Drive" }
+let motor_fix = calc.fastener(grip: 4, into: "tapped", material: "Aluminum", depth: 4.5, size: M3, head: "flat")
+component motor_screws = lib.screw(motor_fix) { at: [(m_ship.holes[0].x, y_ti, m_ship.holes[0].z), (m_ship.holes[1].x, y_ti, m_ship.holes[1].z)], axis: -Y }
+
+// the motor screws to a plate, which screws into the motor tower's recess
+part motor_plate {
+  color: #8b5a2b
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Drive"
+  body box(plate_w, 4, plate_h, at: (crank_x, y_ti - 2, crank_z - plate_h / 2))
+  cut cylinder(d: 7.15, h: 6, at: (crank_x, y_ti - 5, crank_z), dir: Y)
+  for h in m_ship.holes {
+    cut hole(M3, through: true, csink: true, at: (h.x, y_ti, h.z), dir: -Y)
+  }
+  for x in plate_x {
+    cut hole(M3, through: true, csink: true, at: (x, y_ti, crank_z), dir: -Y)
+  }
+}
+let plate_fix = calc.fastener(grip: 4, into: "insert", material: "PETG", size: M3, head: "flat")
+component plate_inserts = lib.insert(M3) { at: [(plate_x[0], y_ti - 4, crank_z), (plate_x[1], y_ti - 4, crank_z)], axis: -Y }
+component plate_screws = lib.screw(plate_fix) { at: [(plate_x[0], y_ti, crank_z), (plate_x[1], y_ti, crank_z)], axis: -Y }
+
 component crank_pin = lib.dowel(d: 5, length: 14) { at: (crank_x, y_crank + 1, p_crank.y), axis: Y }
+component magnet = lib.magnet("magnet_6x3_n35") { at: (crank_x, y_crank + 3, crank_z - mag_r), axis: -Y  rides: crank  held: "glued into the crank's counterweight, south pole toward the tower" }
+
+// ── Station sensor: in its recess in the motor tower, its chip facing the magnet's path, its plug through the tower ──
+component hall = lib.sensor("hall_ky003") { at: (crank_x, y_ti - 4.1, crank_z - mag_r - 7.5), rotate: (0, -90, -90), held: "double-sided foam tape in its recess" }
 
 // ── The ship ───────────────────────────────────────────
 part hull {
@@ -134,11 +168,28 @@ part hull {
     cut hole(M3, fit: "insert", depth: 7, at: (s.x, beam / 2, s.y), dir: -Y)
   }
   cut cylinder(d: 6 + 2 * press, h: 21, at: (0, 0, 80))
+  // grooves under the deck lights' pads, open past their ends, for the wires soldered underneath
+  cut box(17, 12, 7.01, at: (-25.5, 12, 93))
+  cut box(17, 12, 7.01, at: (25.5, 12, 93))
+  cut box(17, 12, 7.01, at: (-25.5, -12, 93))
 }
 
 component mast = lib.dowel(d: 6, length: 60) { at: (0, 0, 80), axis: Z }
 
-// the motor-side hanger arm: the rod rocks it, and it carries the rest of the ship
+// the crow's nest on the masthead carries the lantern, its wires down through a slot behind the pads
+part crows_nest {
+  color: #6b3e1f
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Ship"
+  held: "pressed and glued onto the mast's top"
+  body cylinder(d: 26, h: 8, at: (0, 0, 134))
+  cut cylinder(d: 6 + press, h: 6.01, at: (0, 0, 133.99))
+  cut box(5, 10.5, 8.02, at: (8, 0, 133.99))
+}
+
+// the motor-side hanger arm: the rod rocks it, and it carries the rest of the ship on two bearings back to back in its
+// boss, so the far arm needs none and the slip ring can go through it
 part arm_drive {
   color: #d9a066
   material: "PETG"
@@ -148,7 +199,8 @@ part arm_drive {
   axis_at: (0, 0, pivot_z)
   body prism([(-55, 70), (55, 70), (55, 96), (14, pivot_z - 8), (-14, pivot_z - 8), (-55, 96)], h: arm_t, at: (0, y_arm + arm_t, 0), dir: -Y)
   add cylinder(d: 36, h: arm_t, at: (0, y_arm, pivot_z), dir: Y)
-  cut cylinder(d: 22.1, h: arm_t + 2, at: (0, y_arm - 1, pivot_z), dir: Y)
+  add cylinder(d: 32, h: 8.01, at: (0, y_arm - 8, pivot_z), dir: Y)
+  cut cylinder(d: 22.1, h: arm_t + 10, at: (0, y_arm - 9, pivot_z), dir: Y)
   cut cylinder(d: 5 + press, h: arm_t + 2, at: (0, y_arm - 1, p_rocker.y), dir: Y)
   for s in hull_screws {
     cut hole(M3, through: true, csink: true, at: (s.x, y_arm, s.y), dir: Y)
@@ -162,13 +214,21 @@ part arm_far {
   group: "Ship"
   body prism([(-55, 70), (55, 70), (55, 96), (14, pivot_z - 8), (-14, pivot_z - 8), (-55, 96)], h: arm_t, at: (0, beam / 2 + arm_t, 0), dir: -Y)
   add cylinder(d: 36, h: arm_t, at: (0, beam / 2, pivot_z), dir: Y)
-  cut cylinder(d: 22.1, h: arm_t + 2, at: (0, beam / 2 - 1, pivot_z), dir: Y)
+  // the slip ring's collar
+  cut cylinder(d: 7.95, h: arm_t + 2, at: (0, beam / 2 - 1, pivot_z), dir: Y)
   for s in hull_screws {
     cut hole(M3, through: true, csink: true, at: (s.x, beam / 2 + arm_t, s.y), dir: -Y)
   }
 }
 
-component arm_bearings = lib.bearing("608") { at: [(0, y_arm + 0.5, pivot_z), (0, beam / 2 + 0.5, pivot_z)], axis: Y }
+component arm_bearings = lib.bearing("608") { at: [(0, y_arm - 7.5, pivot_z), (0, y_arm + 0.5, pivot_z)], axis: Y }
+// ── Lights on the ship, through the slip ring ──────────
+// the slip ring's body presses into the far tower; its collar turns with the far arm, its wires out inside the ship
+component slip = lib.connector("slip_ring_12mm_6") { at: (0, beam / 2 + arm_t + 0.5 + 17, pivot_z), axis: -Y  turns_with: arm_drive  group: "Lights" }
+component lantern = lib.led("neopixel_jewel_7") { at: (0, 0, 142), axis: Z  turns_with: arm_drive  held: "hot glue round its edge"  brightness: 0.5  group: "Lights" }
+component deck_a = lib.led("neopixel_stick_8") { at: (0, 12, 100), axis: Z  turns_with: arm_drive  held: "hot glue along its edges"  brightness: 0.5  group: "Lights" }
+component deck_b = lib.led("neopixel_stick_8") { at: (0, -12, 100), axis: Z  turns_with: arm_drive  held: "hot glue along its edges"  brightness: 0.5  group: "Lights" }
+
 component rocker_pin = lib.dowel(d: 5, length: 14) { at: (0, y_rod, p_rocker.y), axis: Y }
 
 // ── Connecting rod ─────────────────────────────────────
@@ -194,16 +254,133 @@ component hull_inserts_far = lib.insert(M3) { at: [(hull_screws[0].x, beam / 2, 
 component arm_screws = lib.screw(arm_bolt) { at: [(hull_screws[0].x, y_arm, hull_screws[0].y), (hull_screws[1].x, y_arm, hull_screws[1].y)], axis: Y }
 component arm_screws_far = lib.screw(arm_bolt) { at: [(hull_screws[0].x, beam / 2 + arm_t, hull_screws[0].y), (hull_screws[1].x, beam / 2 + arm_t, hull_screws[1].y)], axis: -Y }
 
+// ── Operator's booth: a printed cover screwed to a plate, the controls on top ──
+let bx = 172                 // booth centre
+let plate_t = 4
+let booth_h = 56
+let booth_top = plate_t + booth_h
+let shell_w = 120
+let shell_d = 90
+let corner = [(bx - 56, -41), (bx + 56, -41), (bx + 56, 41), (bx - 56, 41)]
+
+part booth_plate {
+  color: #2b2f36
+  material: "PETG"
+  process: mfg.fdm(build: -Z)
+  group: "Booth"
+  body box(shell_w + 10, shell_d + 10, plate_t, at: (bx, 0, 0), r: 4)
+  // roomy holes so the four screws line up across the booth, countersunk underneath
+  for c in corner {
+    cut cylinder(d: 3.8, h: plate_t + 2, at: (c.x, c.y, -1))
+    cut cone(d1: 6.4, d2: 3.8, h: 1.3, at: (c.x, c.y, -0.01))
+  }
+}
+
+part booth {
+  color: #f2f2f2
+  material: "PETG"
+  process: mfg.fdm(build: -Z)
+  group: "Booth"
+  body box(shell_w, shell_d, booth_h, at: (bx, 0, plate_t), r: 6)
+  cut box(shell_w - 6, shell_d - 6, booth_h - 3 + 0.01, at: (bx, 0, plate_t - 0.01), r: 3)
+  // corner posts for the screws from under the plate
+  for c in corner {
+    add box(8, 8, booth_h - 3 + 0.02, at: (c.x, c.y, plate_t - 0.01))
+    cut hole(M3, fit: "insert", depth: 6, at: (c.x, c.y, plate_t), dir: Z)
+  }
+  // panel holes: stop, start, power, the supply socket, under the beacon's pads; a slot for the cables out to the ride
+  cut cylinder(d: 22.5, h: 5, at: (bx + 30, 18, booth_top - 4))
+  cut cylinder(d: 16.4, h: 5, at: (bx - 8, 18, booth_top - 4))
+  cut cylinder(d: 6.4, h: 5, at: (bx - 38, 18, booth_top - 4))
+  cut cylinder(d: 11.6, h: 5, at: (bx - 38, -22, booth_top - 4))
+  cut cylinder(d: 16, h: 5, at: (bx + 34, -22, booth_top - 4))
+  cut box(5, 56, 22, at: (bx - shell_w / 2 + 1.5, 0, plate_t - 0.01))
+}
+
+component booth_inserts = lib.insert(M3) { at: with_z(corner, plate_t), axis: Z }
+let booth_fix = calc.fastener(grip: plate_t, into: "insert", material: "PETG", size: M3, head: "flat")
+component booth_screws = lib.screw(booth_fix) { at: with_z(corner, 0), axis: Z }
+
+component estop = lib.switch("estop_22mm") { at: (bx + 30, 18, booth_top), axis: Z, role: "emergency stop" }
+component start = lib.switch("button_16mm") { at: (bx - 8, 18, booth_top), axis: Z, role: "start" }
+component power = lib.switch("toggle_spst") { at: (bx - 38, 18, booth_top), axis: Z, role: "power" }
+component jack = lib.jack("dc_jack_panel") { at: (bx - 38, -22, booth_top), axis: Z, role: "12V in" }
+component beacon = lib.led("neopixel_jewel_7") { at: (bx + 30, -22, booth_top), axis: Z  held: "hot glue round its edge, over the hole its wires come up through" }
+component psu = lib.psu("psu_12v_5a") { at: (bx, 100, 0) }
+
+component ctrl = lib.controller("arduino_nano") { at: (bx - 30, -20, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component drv = lib.motor_driver("tb6612fng") { at: (bx + 5, -22, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component reg = lib.regulator("d24v50f5") { at: (bx + 30, -22, plate_t), leads: "soldered", held: "double-sided foam tape" }
+component vsense = lib.sensor("voltage_sensor_25v") { at: (bx - 30, 24, plate_t), leads: "soldered", held: "double-sided foam tape" }
+
+// ── Wiring ─────────────────────────────────────────────
+// 12 V: brick → socket → power switch → the regulator, and through the emergency stop to the motor driver
+wire psu.VPOS -> jack.PIN { gauge: 18, color: "red", label: "12 V in" }
+wire psu.VNEG -> jack.SLEEVE { gauge: 18, color: "black", label: "12 V return" }
+wire jack.PIN -> power.A { gauge: 18, color: "red" }
+net V12: power.B, reg.VIN, estop.IN { gauge: 18, color: "red" }
+// the stop button cuts the motor's supply in hardware; the voltage sensor tells the Nano
+net VMOT: estop.OUT, drv.VM, vsense.VCC_IN { gauge: 20, color: "orange" }
+net GND: jack.SLEEVE, reg.GND, ctrl.GND, drv.GND, vsense.GND_IN, vsense.MINUS, hall.GND, m_ship.ENC_GND, beacon.GND, start.B, slip.S3, slip.S4 { gauge: 20, color: "black" }
+net V5: reg.VOUT, ctrl.V5, drv.VCC, drv.STBY, hall.VCC, m_ship.ENC_VCC, beacon.V5, slip.S1, slip.S2 { gauge: 20, color: "red" }
+// motor
+wire drv.AO1 -> m_ship.M_PLUS { gauge: 22, color: "red", label: "motor +" }
+wire drv.AO2 -> m_ship.M_MINUS { gauge: 22, color: "white", label: "motor −" }
+wire ctrl.D5 -> drv.PWMA { gauge: 24, color: "orange" }
+wire ctrl.D7 -> drv.AIN1 { gauge: 24, color: "yellow" }
+wire ctrl.D8 -> drv.AIN2 { gauge: 24, color: "green" }
+wire ctrl.D2 -> m_ship.ENC_A { gauge: 24, color: "yellow", label: "encoder A" }
+wire ctrl.D4 -> m_ship.ENC_B { gauge: 24, color: "green", label: "encoder B" }
+// lights: the beacon, then through the slip ring to the lantern and on along the deck lights
+wire ctrl.D6 -> beacon.DIN { gauge: 24, color: "blue", label: "LED data" }
+wire beacon.DOUT -> slip.S5 { gauge: 24, color: "blue", label: "LED data to the ship" }
+wire slip.R5 -> lantern.DIN { gauge: 26, color: "blue" }
+wire lantern.DOUT -> deck_a.DIN { gauge: 26, color: "blue" }
+wire deck_a.DOUT -> deck_b.DIN { gauge: 26, color: "blue" }
+wire slip.R1 -> lantern.V5 { gauge: 26, color: "red" }
+wire slip.R2 -> deck_a.V5 { gauge: 26, color: "red" }
+wire slip.R2 -> deck_b.V5 { gauge: 26, color: "red" }
+wire slip.R3 -> lantern.GND { gauge: 26, color: "black" }
+wire slip.R4 -> deck_a.GND { gauge: 26, color: "black" }
+wire slip.R4 -> deck_b.GND { gauge: 26, color: "black" }
+// station sensor, start button, motor supply
+wire ctrl.D3 -> hall.S { gauge: 24, color: "purple", label: "station" }
+wire ctrl.D9 -> start.A { gauge: 24, color: "white", label: "start" }
+wire ctrl.A0 -> vsense.S { gauge: 24, color: "green", label: "motor supply" }
+
+// ── Firmware ───────────────────────────────────────────
+firmware ride {
+  board: ctrl
+  behaviour: "Pirate ship ride: boarding lights, then on the start button (or after the boarding time) a countdown, the ship swinging at full speed, and a slow creep round to the station with the ship hanging level"
+  boarding: 3s
+  countdown: 1s
+  ramp: 2s
+  ride_time: 12s
+  creep: 0.4
+  m_ship_rpm: crank_rpm
+  beacon_show: "twinkle"
+  lantern_show: "sparkle"
+  deck_a_show: "chase"
+  deck_b_show: "comet"
+}
+
 // ── Requirements ───────────────────────────────────────
 require "Crank turns all the way round (Grashof: crank + longest link <= the other two)": throw + len(p_crank - (0, pivot_z)) <= len(p_rocker - p_crank) + arm_r
 require "Ship clears the base at the bottom of its swing": pivot_z - len((85, 115) - (0, pivot_z)) >= 8 + 20
 
-// ── A ride ─────────────────────────────────────────────
-// The stepper runs the crank at 20 rpm; the ship swings back and forth once a turn.
-scenario "Ride" {
-  mechanism: sim.mechanism(sim.turn(motor, speed: [(0s, 0rpm), (1s, 20rpm)]))
-  duration: 6s
+// ── A ride, run by the firmware ────────────────────────
+// After 3 s of boarding lights and a 1 s countdown the crank ramps up to 20 rpm
+// for 12 s, swinging the ship once a turn (it surges as the ship swings down);
+// then it creeps round until the magnet in its counterweight is over the
+// station sensor, with the ship hanging level for the next riders.
+scenario "A ride" {
+  mechanism: sim.mechanism(sim.motor(m_ship))
+  firmware: ride
+  duration: 25s
   variants: ["expected"]
-  expect "Crank reaches 20 rpm": motor.max_rpm > 19rpm
+  expect "Crank reaches 20 rpm": crank.max_rpm > 18.5rpm
   expect "Ship swings at least 50° end to end": arm_drive.angle_max - arm_drive.angle_min > 50
+  expect "Creeps round and stops at the station with the ship hanging level": fw.stops >= 1 && hall.passes >= 1 && abs(arm_drive.angle) < 5
+  expect "The ship's lights play through the slip ring": deck_b.shows > 300 && deck_b.colours > 10
+  expect "The supply copes": supply_peak_amps < 5A
 }

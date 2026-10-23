@@ -140,6 +140,8 @@ export interface MechModel {
   gravity: V3;
   /** components that ride on a moving body (an IMU on an arm), by body id; the rest ride on the frame */
   mounts: Record<string, string>;
+  /** where a hall sensor senses and where each magnet sits, design pose, m, with its range for sensors (m) */
+  magnets?: { sensors: { comp: string; at: V3; range: number }[]; magnets: { comp: string; at: V3 }[] };
   /** runs without firmware: volts on a motor or actuator over time, or a servo's angle (deg) over time */
   power: Record<string, Schedule>;
   /** the body the camera follows (the frame when it stands free) */

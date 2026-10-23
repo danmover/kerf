@@ -168,6 +168,33 @@ const STEPPER_PLUG = (l: number, size: number): PlugSpec => ({
   socket: true,
 });
 
+// NeoPixel boards: the wires are soldered to pads on the back and leave straight out behind
+// the board, so it is glued over a hole for them. Rings and the jewel have their four pads
+// side by side in the board's band at +X; the stick has DIN, 5V and GND at its -X end and
+// DOUT at the +X end.
+function pixelPads(x: number): PlugTable {
+  const pad = (y: number): PlugSpec => ({ kind: "solder", at: [x, y, 0], out: NZ, row: Y, ways: 1 });
+  return { V5: pad(-3.75), GND: pad(-1.25), DIN: pad(1.25), DOUT: pad(3.75) };
+}
+const STICK_PADS: PlugTable = {
+  DIN: { kind: "solder", at: [-23.5, 2.5, 0], out: NZ, row: Y, ways: 1 },
+  V5: { kind: "solder", at: [-23.5, 0, 0], out: NZ, row: Y, ways: 1 },
+  GND: { kind: "solder", at: [-23.5, -2.5, 0], out: NZ, row: Y, ways: 1 },
+  DOUT: { kind: "solder", at: [23.5, 0, 0], out: NZ, row: Y, ways: 1 },
+};
+
+// a capsule slip ring: the fixed wires leave the end of its body (at), the turning ones the end of its collar
+function slipLeads(n: number, len: number): PlugTable {
+  const out: PlugTable = {};
+  for (let i = 1; i <= n; i++) {
+    const a = (2 * Math.PI * (i - 1)) / n;
+    const at = (z: number): V3 => [2 * Math.cos(a), 2 * Math.sin(a), z];
+    out[`S${i}`] = { kind: "lead", at: at(0), out: NZ, row: X, ways: 1 };
+    out[`R${i}`] = { kind: "lead", at: at(len), out: Z, row: X, ways: 1 };
+  }
+  return out;
+}
+
 /** Plugs for catalog parts, by catalog id and pin id. */
 export const PLUGS: Record<string, PlugTable> = {
   skr_mini_e3_v3: SKR,
@@ -214,6 +241,13 @@ export const PLUGS: Record<string, PlugTable> = {
   endstop_mech: { PLUG: { kind: "xh", at: [-14, 1, 1.6], out: Z, row: Y, ways: 3, socket: true } },
   // the BLTouch's own 5-wire lead leaves the side of the case next to its mount
   bltouch: { PLUG: { kind: "lead", at: [13, 0, 5], out: X, row: Z, ways: 5, pitch: 1.1 } },
+  neopixel_ring_12: pixelPads(15),
+  neopixel_ring_16: pixelPads(19),
+  neopixel_ring_24: pixelPads(29.5),
+  neopixel_ring_60: pixelPads(75.75),
+  neopixel_jewel_7: pixelPads(8),
+  neopixel_stick_8: STICK_PADS,
+  slip_ring_12mm_6: slipLeads(6, 22),
 };
 
 /** Wires inside each kind of cable, in contact order: colour and insulated diameter (mm). */

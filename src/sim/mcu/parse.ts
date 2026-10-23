@@ -122,7 +122,8 @@ class Parser {
         if (!this.funcs.has(d.name)) this.funcs.set(d.name, fn);
       } else {
         const v: VarDecl = { name: d.name, type: d.type, storage: spec.storage === "static" ? "static" : spec.storage === "extern" ? "extern" : "auto", isConst: spec.isConst, ...this.pos(start) };
-        if (this.eat("=")) v.init = this.initializer();
+        if (d.ctor) v.init = d.ctor;
+        else if (this.eat("=")) v.init = this.initializer();
         else if (this.is("{")) v.init = this.initializer();
         v.type = this.completeArray(v.type, v.init);
         if (v.storage !== "extern" || v.init) this.globals.push(v);
@@ -379,7 +380,7 @@ class Parser {
   }
 
   /** Pointer stars, a reference, a name and array or function suffixes. */
-  declarator(base: CType): { name?: string; type: CType; params?: Param[] } {
+  declarator(base: CType): { name?: string; type: CType; params?: Param[]; ctor?: Expr } {
     let type = base;
     for (;;) {
       if (this.eat("*")) {
@@ -395,6 +396,19 @@ class Parser {
     if (this.is("(") && this.is("*", 1)) this.fail("Function pointers are not supported; pass the function by name");
     let name: string | undefined;
     if (this.peek().k === "id" && !this.isTypeStart()) name = this.next().v;
+    // a library object built with constructor arguments: Adafruit_NeoPixel strip(60, 6, NEO_GRB);
+    if (name && type.k === "class" && !ref && this.is("(")) {
+      const pos = this.pos();
+      this.next();
+      const items: Expr[] = [];
+      if (!this.eat(")"))
+        for (;;) {
+          items.push(this.assign());
+          if (this.eat(")")) break;
+          this.expect(",");
+        }
+      return { name, type, ctor: { k: "init", items, ...pos } };
+    }
     let params: Param[] | undefined;
     const dims: number[] = [];
     for (;;) {
@@ -620,7 +634,8 @@ class Parser {
       if (!d.name) this.fail("Expected a variable name", start);
       if (d.type.k === "fn") this.fail(`Declare ${d.name}() outside functions`, start);
       const v: VarDecl = { name: d.name, type: d.type, storage: spec.storage === "static" ? "static" : "auto", isConst: spec.isConst, ...this.pos(start) };
-      if (this.eat("=")) v.init = this.initializer();
+      if (d.ctor) v.init = d.ctor;
+      else if (this.eat("=")) v.init = this.initializer();
       else if (this.is("{")) v.init = this.initializer();
       v.type = this.completeArray(v.type, v.init);
       this.locals[this.locals.length - 1]?.set(v.name, v.isConst ? this.localConst(v) : null);

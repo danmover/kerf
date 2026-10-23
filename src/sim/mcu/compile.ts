@@ -280,6 +280,13 @@ class Compiler {
 
   initEv(t: CType, init: Expr): Ev {
     if (t.k === "ref") throw new CError("Reference variables are not supported; use a pointer", init.file, init.line);
+    if (t.k === "class") {
+      const make = LIB_CLASSES[t.name]?.construct;
+      // Type name = Type(arguments); builds it the same way
+      if (init.k === "call" && init.fn.k === "id" && init.fn.name === t.name && make) return make(init.args.map((x) => this.expr(x)), this.ctx, init).ev;
+      if (init.k !== "init" || !make) throw new CError(`${t.name} cannot be set up that way here: declare it as ${t.name} name; or ${t.name} name(arguments);`, init.file, init.line);
+      return make(init.items.map((x) => this.expr(x)), this.ctx, init).ev;
+    }
     if (init.k === "init") {
       if (t.k === "arr") {
         const items = init.items.map((it) => this.initEv(t.of, it));

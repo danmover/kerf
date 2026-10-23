@@ -104,7 +104,7 @@ const BRIEF_VECTORS = { build_volume: "buildVolume", max_size: "maxSize" } as co
 const BRIEF_PROCESS_LISTS = { workshop: "workshop", can_order: "canOrder" } as const;
 export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "quantity", "build_volume", ...Object.keys(BRIEF_PROCESS_LISTS), "max_size", "max_mass"];
 /** extra properties of purchasable catalog parts */
-const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref", "measured", "held", "leads"];
+const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref", "measured", "held", "leads", "brightness"];
 const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
@@ -1168,6 +1168,9 @@ class Evaluator {
         if (props.rating !== undefined && cp.kind !== "fuse") throw new EvalError("rating: is a fuse's rating in amps; only fuses take it", propSpans.rating);
         const rating = props.rating !== undefined ? this.num(props.rating, propSpans.rating, "rating (the fuse's rating, A)") : undefined;
         if (rating !== undefined && !(rating > 0)) throw new EvalError("rating: should be a current above zero, like 15A", propSpans.rating);
+        if (props.brightness !== undefined && cp.kind !== "led") throw new EvalError("brightness: is the firmware's cap on an LED board's brightness; only lib.led parts take it", propSpans.brightness);
+        const brightness = props.brightness !== undefined ? this.num(props.brightness, propSpans.brightness, "brightness (the LEDs' cap, 0 to 1)") : undefined;
+        if (brightness !== undefined && !(brightness > 0 && brightness <= 1)) throw new EvalError("brightness: should be above 0 and at most 1 (or 100%), like brightness: 40%", propSpans.brightness);
         let measured: Record<string, number> | undefined;
         if (props.measured !== undefined) {
           const mv = props.measured;
@@ -1193,6 +1196,7 @@ class Evaluator {
           buyUrl: typeof props.buy === "string" ? props.buy : undefined,
           price,
           rating,
+          brightness,
           value: def.board?.value,
           valueText: def.board?.valueText,
           taper: def.board?.taper,

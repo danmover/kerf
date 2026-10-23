@@ -782,11 +782,14 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         { t: "box", w: 2.5, d: 0.4, h: 6, at: [-bw / 4, 0, -pt - bl - 5.5], r: 0 },
         { t: "box", w: 2.5, d: 0.4, h: 6, at: [bw / 4, 0, -pt - bl - 5.5], r: 0 },
       ];
+      // a push button's cap (a mushroom for an emergency stop) stands on the nut, in the part's colour
+      const capD = num(d, "cap_d", 0);
       const solids = [
         solid("", p.name, { base: { t: "box", w: bw, d: bdd, h: bl, at: [0, 0, -pt - bl], r: 0.5 }, ops: [] }, g.color2 ?? DARK, "Nylon"),
-        solid("front", `${p.name} bushing and nut`, front, g.color ?? STEEL, "Stainless 304"),
+        solid("front", `${p.name} bushing and nut`, front, capD ? STEEL : (g.color ?? STEEL), "Stainless 304"),
         solid("lugs", `${p.name} solder lugs`, { base: { t: "union", shapes: lugs }, ops: [] }, "#c9ced6", "Stainless 304"),
       ];
+      if (capD) solids.push(solid("cap", `${p.name} cap`, { base: { t: "cyl", d: capD, h: num(d, "cap_h", 3), at: [0, 0, nt], dir: ZP }, ops: [{ op: "fillet", r: Math.min(1.5, num(d, "cap_h", 3) / 3), edges: "top" }] }, g.color ?? STEEL, capD > 30 ? "ABS" : "Stainless 304"));
       if (lever) solids.push(solid("lever", `${p.name} lever`, { base: { t: "cone", d1: num(d, "lever_d", 2.6), d2: num(d, "lever_d", 2.6) * 0.75, h: lever, at: [0, 0, nt], dir: ZP }, ops: [] }, STEEL, "Stainless 304"));
       return {
         placement: "axis",
@@ -890,6 +893,68 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       };
     }
 
+    // led: an addressable LED board. A ring (od, id > 0) or jewel (od, id 0:
+    // six round one in the middle) lies on the local XY plane with its LEDs
+    // facing +Z and `at` the centre of its back; a stick (w × d) lies flat
+    // with `at` the centre of its underside and its n LEDs along X. t board
+    // thickness, led the LED package's side (5050: 5), led_h its height.
+    case "led": {
+      const n = Math.max(1, Math.round(num(d, "n", 12)));
+      const t = num(d, "t", 1.6);
+      const ls = num(d, "led", 5);
+      const lh = num(d, "led_h", 1.6);
+      const od = num(d, "od", 0);
+      const idd = num(d, "id", 0);
+      const w = num(d, "w", 0);
+      const leds = ledLayout(d);
+      const board: PartRecipe =
+        w > 0
+          ? { base: { t: "box", w, d: num(d, "d", 10), h: t, at: Z0, r: 1 }, ops: [] }
+          : idd > 0
+            ? { base: { t: "tube", od, id: idd, h: t, at: Z0, dir: ZP }, ops: [] }
+            : { base: { t: "cyl", d: od, h: t, at: Z0, dir: ZP }, ops: [] };
+      const pkg: ShapeRecipe[] = leds.map(({ p: c, a }) => ({
+        t: "prism",
+        pts: [
+          [-ls / 2, -ls / 2],
+          [ls / 2, -ls / 2],
+          [ls / 2, ls / 2],
+          [-ls / 2, ls / 2],
+        ].map(([x, y]) => [c[0] + x * Math.cos(a) - y * Math.sin(a), c[1] + x * Math.sin(a) + y * Math.cos(a)] as V2),
+        h: lh,
+        at: [0, 0, t] as V3,
+        dir: ZP,
+        rot: 0,
+      }));
+      return {
+        placement: w > 0 ? "free" : "axis",
+        solids: [solid("", p.name, board, g.color ?? BLACK, "FR4"), solid("leds", `${p.name} LEDs`, { base: { t: "union", shapes: pkg }, ops: [] }, "#f4f1e8", "PC")],
+        fields: {
+          scalars: { leds: n, od, id: idd, t, height: t + lh },
+          points: { back: Z0, bottom: Z0, face: [0, 0, t + lh], top: [0, 0, t + lh], center: [0, 0, (t + lh) / 2] },
+          pointLists: { leds: leds.map((l) => [l.p[0], l.p[1], t + lh] as V3) },
+          dirs: { axis: ZP },
+        },
+      };
+    }
+
+    // disc: a plain cylinder d × h on Z from `at` (a magnet, a slip ring's
+    // body), with a collar_d × collar_h collar on its far end that turns with
+    // whatever the part turns with (a slip ring's rotor).
+    case "disc": {
+      const dd = num(d, "d", 6);
+      const h = num(d, "h", 3);
+      const cd = num(d, "collar_d", 0);
+      const ch = num(d, "collar_h", 0);
+      const solids = [solid("", p.name, { base: { t: "cyl", d: dd, h, at: Z0, dir: ZP }, ops: [] }, g.color ?? STEEL, g.material ?? "Steel")];
+      if (cd > 0 && ch > 0) solids.push(solid("collar", `${p.name} turning collar`, { base: { t: "cyl", d: cd, h: ch + 0.01, at: [0, 0, h - 0.01], dir: ZP }, ops: [] }, "#9aa0a8", g.material ?? "Steel", true));
+      return {
+        placement: "axis",
+        solids,
+        fields: { scalars: { d: dd, h, length: h + ch }, points: { at: Z0, end: [0, 0, h + ch], body_end: [0, 0, h], center: [0, 0, h / 2] }, dirs: { axis: ZP } },
+      };
+    }
+
     // brick: plug-in power supply lying flat, `at` the centre of its bottom
     // face, cord leaving the +X end. w × d × h.
     case "brick": {
@@ -935,6 +1000,40 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
 }
 
 /** A shaft from z0 along +Z with an optional D-flat (`flat` deep, `flatL` from the tip) or keyway. */
+/** Each LED's centre on an LED board's top face, in data order, and the way its package is turned (radians). */
+function ledLayout(d: Record<string, number>): { p: V3; a: number }[] {
+  const n = Math.max(1, Math.round(num(d, "n", 12)));
+  const t = num(d, "t", 1.6);
+  const od = num(d, "od", 0);
+  const idd = num(d, "id", 0);
+  const w = num(d, "w", 0);
+  const out: { p: V3; a: number }[] = [];
+  if (w > 0) for (let i = 0; i < n; i++) out.push({ p: [-w / 2 + (w / n) * (i + 0.5), 0, t], a: 0 });
+  else if (idd > 0) {
+    const r = (od + idd) / 4;
+    for (let i = 0; i < n; i++) {
+      const a = (2 * Math.PI * i) / n;
+      out.push({ p: [r * Math.cos(a), r * Math.sin(a), t], a });
+    }
+  } else {
+    // a jewel: one in the middle, the rest round it
+    const r = od / 2 - num(d, "led", 5) * 0.9;
+    out.push({ p: [0, 0, t], a: 0 });
+    for (let i = 0; i < n - 1; i++) {
+      const a = (2 * Math.PI * i) / Math.max(1, n - 1);
+      out.push({ p: [r * Math.cos(a), r * Math.sin(a), t], a });
+    }
+  }
+  return out;
+}
+
+/** Where each LED of an LED board shines from, on top of its package, in the part's own frame (data order). */
+export function ledPoints(p: CatalogPart): V3[] {
+  if (p.geom.g !== "led") return [];
+  const lh = num(p.geom.dims, "led_h", 1.6);
+  return ledLayout(p.geom.dims).map(({ p: c }) => [c[0], c[1], c[2] + lh] as V3);
+}
+
 function dShaft(sd: number, sl: number, z0: number, flat: number, flatL: number, keyW = 0, keyL = 0): PartRecipe {
   const ops: PartRecipe["ops"] = [{ op: "chamfer", r: Math.min(0.4, sd * 0.08), edges: "top" }];
   if (flat > 0) ops.push({ op: "cut", shape: { t: "box", w: sd + 1, d: sd, h: flatL + 1, at: [0, sd - flat, z0 + sl - flatL], r: 0 } });

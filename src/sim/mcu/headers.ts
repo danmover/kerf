@@ -152,6 +152,18 @@ ${analog}
     "Wire.h": empty,
     "EEPROM.h": empty,
     "Servo.h": empty,
+    "Adafruit_NeoPixel.h": `#pragma once
+#define NEO_RGB ((0 << 6) | (0 << 4) | (1 << 2) | (2))
+#define NEO_RBG ((0 << 6) | (0 << 4) | (2 << 2) | (1))
+#define NEO_GRB ((1 << 6) | (1 << 4) | (0 << 2) | (2))
+#define NEO_GBR ((2 << 6) | (2 << 4) | (0 << 2) | (1))
+#define NEO_BRG ((1 << 6) | (1 << 4) | (2 << 2) | (0))
+#define NEO_BGR ((2 << 6) | (2 << 4) | (1 << 2) | (0))
+#define NEO_RGBW ((3 << 6) | (0 << 4) | (1 << 2) | (2))
+#define NEO_GRBW ((3 << 6) | (1 << 4) | (0 << 2) | (2))
+#define NEO_KHZ800 0x0000
+#define NEO_KHZ400 0x0100
+`,
   };
 }
 
