@@ -27,6 +27,7 @@ import { briefChanges, briefData, briefHasErrors, emptyBrief, writeBrief, type B
 import { isBuilding, relayToAgents } from "../agents/orchestrator";
 import { toast } from "../app/ui";
 import { claudeClient, claudeRoute } from "./client";
+import { isOpenAIModel } from "./openai";
 import { BINDING_BETA, MAX_CUT_RECOVERIES, MAX_OUTPUT_TOKENS, bindingKey, cutOffNote, trimCutOff, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 import { MODELS, type Effort } from "../app/settings";
 import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, smallChange, type Route, type TurnFacts } from "./routing";
@@ -195,7 +196,7 @@ onSpend((kind, model, cost, saved, u) => {
 
 configureWarm({
   // the shared key runs one request at a time: a refresh would hold the slot a chat message needs
-  client: () => (claudeRoute() === "shared" ? null : client()),
+  client: () => (claudeRoute() === "shared" || isOpenAIModel(useSettings.getState().model) ? null : client()),
   minutes: () => useSettings.getState().keepWarm,
   // a refresh is spend the design model alone would not have had; what it saves shows on the next request
   record: (model, u) => void recordSpend("warm", model, u, -costOf(model, u)),
@@ -1140,6 +1141,7 @@ function estimatePrompt(): number {
 /** Which model a turn needs: the design model, unless the turn only reads the design. */
 async function chooseRoute(anthropic: Anthropic, facts: TurnFacts | undefined, signal: AbortSignal): Promise<Route> {
   const s = useSettings.getState();
+  if (isOpenAIModel(s.model)) return designRoute("using the selected OpenAI model");
   if (!facts) return designRoute();
   // a short, plain change: the design model, thinking briefly, and no self-review
   if (s.fastChanges && smallChange(facts)) return { ...designRoute("a small change", "rule"), small: true };
@@ -1280,7 +1282,7 @@ const WEB_NOTICE: Record<string, string> = {
 async function runLoop(opts: LoopOptions = {}) {
   const anthropic = client();
   if (!anthropic) {
-    push({ kind: "notice", id: nid(), level: "warn", title: "Add your Claude API key to chat", detail: "Kerf talks to Claude directly from your browser with your own key. Everything else works without one.", action: "settings" });
+    push({ kind: "notice", id: nid(), level: "warn", title: "Add your selected provider's API key to chat", detail: "Add an OpenAI or Claude key in Settings → AI and select a matching model. Everything else works without a key.", action: "settings" });
     persist();
     return;
   }
@@ -1294,7 +1296,7 @@ async function runLoop(opts: LoopOptions = {}) {
   const before = shotOf(startSource);
   let edits = 0;
   const settings = useSettings.getState();
-  if (settings.webNotice) {
+  if (settings.webNotice && !isOpenAIModel(settings.model)) {
     if (settings.webSearch)
       push({ kind: "notice", id: nid(), level: "info", title: "Claude can now search the web for parts", detail: "When the parts catalog has nothing suitable, Claude may search the web and read product pages. Each search costs about $0.01 on your API key, plus the tokens the pages use. Turn it off in Settings → Claude → Search the web for parts.", action: "settings" });
     updateSettings({ webNotice: false });
@@ -2139,7 +2141,7 @@ function dropLastFiles() {
 
 function cleanApiMessage(m: string) {
   // never echo anything that looks like a key back into the UI
-  return m.replace(/sk-ant-[A-Za-z0-9_-]+/g, "sk-ant-…").slice(0, 800);
+  return m.replace(/sk-[A-Za-z0-9_-]+/g, "sk-ant-…").slice(0, 800);
 }
 
 export async function testKey(key: string): Promise<{ ok: boolean; message: string }> {

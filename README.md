@@ -1,5 +1,11 @@
 # Kerf
 
+## 0.1.12
+
+Based on the latest `main` (`adb22f2`): saved and replayable simulations, the expanded fastener and motor catalogue, cable routing by thickness, plug/cable clash checks and electronics mounting checks are included. This version adds OpenAI models in Kerf's chat, review and design agents, plus an OAuth-protected MCP connection from ChatGPT to an explicitly connected hosted Kerf tab. See [ChatGPT and OpenAI setup](docs/CHATGPT.md).
+
+The Windows installer and universal macOS DMG are built and smoke-tested by GitHub Actions. The `codex/chatgpt-integration` branch can publish this release without first merging into `main`; the release points to the exact validated source commit.
+
 Mechanical CAD where Claude does the modelling and you direct the design.
 
 You describe a part or a mechanism, give the dimensions and constraints that matter, and Claude writes it as a parametric design. Kerf builds exact solids with OpenCASCADE, checks them for fit, interference, screw access, gear meshing, motion and strength, and shows you the result. You can then ask for changes, scrub parameter values, or edit the design file by hand. All three edit the same source, with full version history and undo.

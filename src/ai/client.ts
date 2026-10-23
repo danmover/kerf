@@ -6,11 +6,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getApiKey } from "../persist/vault";
 import { useAccount } from "../cloud/account";
+import { useSettings } from "../app/settings";
+import { getOpenAIKey } from "../persist/openaiVault";
+import { isOpenAIModel, openAIFetch } from "./openai";
 
 const TIMEOUT = 10 * 60 * 1000;
 
 /** Where Claude requests go: through the Kerf server with the account's or a shared key, with this browser's key, or nowhere. */
 export function claudeRoute(): "account" | "shared" | "browser" | null {
+  if (isOpenAIModel(useSettings.getState().model)) return getOpenAIKey() ? "browser" : null;
   const acct = useAccount.getState();
   const via = acct.status === "signed-in" ? acct.info?.claude?.source : null;
   const key = getApiKey();
@@ -20,6 +24,10 @@ export function claudeRoute(): "account" | "shared" | "browser" | null {
 }
 
 export function claudeClient(opts: { maxRetries?: number } = {}): Anthropic | null {
+  if (isOpenAIModel(useSettings.getState().model)) {
+    const key = getOpenAIKey();
+    return key ? new Anthropic({ apiKey: "openai-adapter", baseURL: "https://api.openai.com/v1", fetch: openAIFetch(key), dangerouslyAllowBrowser: true, maxRetries: opts.maxRetries ?? 2, timeout: TIMEOUT }) : null;
+  }
   const route = claudeRoute();
   const maxRetries = opts.maxRetries ?? 2;
   if (route === "account" || route === "shared") {

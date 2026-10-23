@@ -125,7 +125,7 @@ export function apiHeaders(cfg: Config): MiddlewareHandler {
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "no-referrer");
     c.header("X-Frame-Options", "DENY");
-    c.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+    if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
     c.header("Cross-Origin-Resource-Policy", "same-origin");
     if (cfg.secure) c.header("Strict-Transport-Security", "max-age=63072000; includeSubDomains");
   };

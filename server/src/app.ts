@@ -12,6 +12,7 @@ import { authRoutes, loadSession } from "./auth.js";
 import { claudeRoutes, MAX_REQUEST_BYTES } from "./claude.js";
 import { fileRoutes, MAX_FILE_BYTES } from "./files.js";
 import { projectRoutes } from "./projects.js";
+import { mountChatGPT } from "./chatgpt.js";
 import { apiHeaders, clientIp, loadHeaderRules, sameOrigin } from "./security.js";
 import { HttpError, type AppEnv, type Deps } from "./types.js";
 
@@ -49,6 +50,7 @@ export function createApp(deps: Deps) {
   app.use("/api/*", apiHeaders(cfg), sameOrigin(cfg), loadSession(deps));
   app.get("/api/health", (c) => c.json({ ok: true, version: cfg.version }));
   app.get("/api/session", (c) => c.json(sessionInfo(deps, c.get("user"))));
+  mountChatGPT(app, deps);
   app.use("/api/auth/*", limit(64 * 1024));
   app.route("/api/auth", authRoutes(deps));
   app.use("/api/account/*", limit(64 * 1024));
