@@ -1,10 +1,12 @@
 // Projects home: recent designs, starting points and import.
 
 import { motion } from "framer-motion";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useProject, openProject, createProject, duplicateProject, deleteProject, exportProject, importProject, renameProject } from "../app/project";
 import { confirmDialog, go, openSettings, toast } from "../app/ui";
-import { TEMPLATES } from "../demos/templates";
+import { TEMPLATES, TEMPLATE_CATEGORIES, audienceById, templateById, type TemplateCategory } from "../demos/templates";
+import { useSettings } from "../app/settings";
+import { startDesign } from "../app/startDesign";
 import { Logo, LogoMark } from "../ui/Logo";
 import { Icon } from "../ui/icons";
 import { Menu, MenuItem, timeAgo, useTick } from "../ui/common";
@@ -97,48 +99,31 @@ export function Home() {
           <p>Kerf is mechanical CAD where the AI does the modelling and you direct the design. Every change, by you or by Claude, edits one design file that is rebuilt as exact solids and checked for fit, interference, tool access, motion and strength.</p>
         </motion.div>
 
+        <DescribeBox hasKey={!!key} />
+
         {save === "memory" && (
           <div className="banner" style={{ borderRadius: 10, border: "1px solid rgb(var(--warn-rgb) / 0.35)", marginBottom: 10 }}>
             <Icon.Alert size={14} /> This browser is blocking local storage. Projects last only until you close the tab.
           </div>
         )}
 
-        <div className="section-label">Start from</div>
-        <div className="cards">
-          {TEMPLATES.map((t, i) => (
-            <motion.div key={t.id} className="card clickable" onClick={() => void startFrom(t.id)} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 * i + 0.15 }} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && void startFrom(t.id)}>
-              <div className="thumb">
-                <TemplateArt id={t.id} />
-              </div>
-              <div className="body">
-                <div className="title">{t.name}</div>
-                <div className="sub">{t.tagline}</div>
-                <div className="foot">
-                  <span className="chip">{t.stats}</span>
-                </div>
-              </div>
-            </motion.div>
-          ))}
-        </div>
-
-        <div className="section-label">Your projects</div>
+        {/* someone coming back wants their own work first; the examples follow */}
         <UploadBanner />
         {!loaded ? (
-          <div className="row dim">
-            <div className="spinner" /> Loading…
-          </div>
-        ) : projects.length === 0 ? (
-          <div className="empty-state">
-            <div style={{ color: "var(--text-2)", fontWeight: 500 }}>No projects yet</div>
-            <div style={{ marginTop: 4 }}>Pick a starting point above, or drop a .kerf, .kerfproj or backup file anywhere on this page.</div>
-          </div>
+          <>
+            <div className="section-label">Your projects</div>
+            <div className="row dim">
+              <div className="spinner" /> Loading…
+            </div>
+          </>
         ) : (
-          <div className="cards">
-            {projects.map((p, i) => (
-              <ProjectCard key={p.id} p={p} index={i} />
-            ))}
-          </div>
+          projects.length > 0 && <Projects projects={projects} />
         )}
+
+        <Examples onStart={(id) => void startFrom(id)} />
+        <div className="home-drop-note">
+          <Icon.Upload size={12} /> Drop a .kerf, .kerfproj, backup or STEP file anywhere on this page to open it.
+        </div>
 
         <footer className="row dim" style={{ marginTop: 50, fontSize: 12, flexWrap: "wrap", gap: 14 }}>
           <span>Kerf {__APP_VERSION__} · prototype</span>
@@ -174,6 +159,145 @@ export function Home() {
 function StorageNote() {
   const signedIn = useAccount((s) => s.status === "signed-in" || s.status === "unreachable");
   return <span>{signedIn ? "Projects are saved in this browser and synced to your account." : "Projects are stored only in this browser."}</span>;
+}
+
+/** Home's first question: what to make. The description becomes a new design and Claude's first message. */
+function DescribeBox({ hasKey }: { hasKey: boolean }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const audience = useSettings((s) => s.audience);
+  const ta = useRef<HTMLTextAreaElement>(null);
+  const briefs = audienceById(audience)?.briefs ?? templateById("blank")?.prompts ?? [];
+  useLayoutEffect(() => {
+    const el = ta.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(180, el.scrollHeight) + "px";
+  }, [text]);
+  const start = async (brief = text) => {
+    if (!brief.trim() || busy) return;
+    setBusy(true);
+    try {
+      await startDesign(brief);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <motion.div className="describe" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.08 }}>
+      <div className="describe-box">
+        <Icon.Sparkle size={16} />
+        <textarea
+          ref={ta}
+          rows={1}
+          value={text}
+          maxLength={20000}
+          placeholder="What do you want to make? Say what it's for, the sizes that matter and what it must fit…"
+          aria-label="Describe what you want to make"
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void start();
+            }
+          }}
+        />
+        <button className="btn primary" disabled={!text.trim() || busy} onClick={() => void start()}>
+          {busy ? <span className="spinner" /> : <Icon.Send size={13} />} Start designing
+        </button>
+      </div>
+      <div className="describe-foot">
+        {briefs.slice(0, 3).map((b) => (
+          <button key={b} className="describe-chip" onClick={() => (setText(b), ta.current?.focus())} data-tip="Use this brief (you can change it before starting)">
+            {b}
+          </button>
+        ))}
+      </div>
+      {!hasKey && (
+        <div className="describe-note">
+          <Icon.Key size={12} /> Claude needs an API key to design by chat.{" "}
+          <button className="link-btn" onClick={() => openSettings("ai")}>
+            Add one
+          </button>{" "}
+          or start from an example below: the editor, checks and exports all work without one.
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+const RECENT = 8;
+
+function Projects({ projects }: { projects: ProjectRecord[] }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? projects : projects.slice(0, RECENT);
+  return (
+    <>
+      <div className="section-label">
+        Your projects
+        {projects.length > RECENT && (
+          <button className="section-more" onClick={() => setAll(!all)}>
+            {all ? "Show recent" : `Show all ${projects.length}`}
+          </button>
+        )}
+      </div>
+      <div className="cards">
+        {shown.map((p, i) => (
+          <ProjectCard key={p.id} p={p} index={i} />
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** The starting points, grouped by what they are, in the order that suits who the user said they are. */
+function Examples({ onStart }: { onStart: (id: string) => void }) {
+  const audience = audienceById(useSettings((s) => s.audience));
+  const [cat, setCat] = useState<TemplateCategory | "all">("all");
+  const order = audience?.order ?? TEMPLATE_CATEGORIES.map((c) => c.id);
+  const cats = [...TEMPLATE_CATEGORIES].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  const list = TEMPLATES.filter((t) => t.id !== "blank" && (cat === "all" || t.category === cat))
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => (cat === "all" ? order.indexOf(a.t.category ?? "parts") - order.indexOf(b.t.category ?? "parts") : 0) || a.i - b.i)
+    .map((x) => x.t);
+  return (
+    <>
+      <div className="section-label">Start from an example</div>
+      <div className="example-filter" role="tablist" aria-label="Kinds of example">
+        {[{ id: "all" as const, label: "All" }, ...cats].map((c) => (
+          <button key={c.id} role="tab" aria-selected={cat === c.id} className={`example-chip ${cat === c.id ? "active" : ""}`} onClick={() => setCat(c.id)}>
+            {c.label}
+          </button>
+        ))}
+        <div className="grow" />
+        <button className="example-chip blank" onClick={() => onStart("blank")}>
+          <Icon.Plus size={12} /> Blank design
+        </button>
+      </div>
+      <div className="cards">
+        {list.map((t, i) => (
+          <motion.div key={t.id} className="card clickable" onClick={() => onStart(t.id)} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(0.04 * i, 0.3) }} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && onStart(t.id)}>
+            <div className="thumb">
+              <TemplateArt id={t.id} />
+            </div>
+            <div className="body">
+              <div className="title">{t.name}</div>
+              <div className="sub">{t.tagline}</div>
+              <div className="foot">
+                {t.id === audience?.recommended && <span className="chip accent">for you</span>}
+                {(t.shows ?? []).map((x) => (
+                  <span key={x} className="chip shows">
+                    {x}
+                  </span>
+                ))}
+                <span className="chip">{t.stats.split(" · ")[0]}</span>
+              </div>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </>
+  );
 }
 
 function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {

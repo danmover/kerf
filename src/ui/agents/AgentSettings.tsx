@@ -1,4 +1,4 @@
-// Settings for parallel subassembly agents (shown under Settings → Claude).
+// Settings for parallel subassembly agents (shown under Settings → AI).
 
 import { useEffect, useState } from "react";
 import { useSettings, updateSettings, MODELS } from "../../app/settings";

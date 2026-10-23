@@ -412,7 +412,7 @@ export function UploadBanner() {
 
 // ---------- Claude key on the account ----------
 
-/** The API key part of Settings → Claude when a Kerf server is in use. Returns null without a server, so the browser-only form shows. */
+/** The API key part of Settings → AI when a Kerf server is in use. Returns null without a server, so the browser-only form shows. */
 export function AccountKeySection({ browserForm }: { browserForm: ReactNode }) {
   const status = useAccount((s) => s.status);
   const claude = useAccount((s) => s.info?.claude);

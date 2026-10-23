@@ -48,7 +48,7 @@ export function ReviewCard({ it }: { it: ReviewItem }) {
           <span className="rv-round">round {it.round}</span>
         </span>
         {it.auto && (
-          <span className="chip" data-tip="Kerf asked for this review because the design changed substantially. Change this in Settings → Self-review.">
+          <span className="chip" data-tip="Kerf asked for this review because the design changed substantially. Change this in Settings → AI → Self-review.">
             auto
           </span>
         )}

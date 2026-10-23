@@ -151,7 +151,7 @@ function Privacy() {
           <tr>
             <td>Claude API key, if you keep it in the browser</td>
             <td>Memory only, by default. If you choose "Remember on this device", it is encrypted with a browser key that cannot be exported and stored in IndexedDB.</td>
-            <td>Settings → Claude → Forget key, or clear all data</td>
+            <td>Settings → AI → Forget key, or clear all data</td>
           </tr>
           <tr>
             <td>Sign-in session, if you have an account</td>
@@ -188,7 +188,7 @@ function Privacy() {
           <tr>
             <td>Your Claude API key, if you save it to your account</td>
             <td>Until you remove it. It is encrypted with AES-256-GCM under a key only the server holds, and only its last 4 characters are ever shown back.</td>
-            <td>Settings → Claude → Remove, or delete the account</td>
+            <td>Settings → AI → Remove, or delete the account</td>
           </tr>
           <tr>
             <td>Signed-in devices: a hash of each session token, the browser name, IP address and when it was last used</td>

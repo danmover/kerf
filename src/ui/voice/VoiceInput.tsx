@@ -109,7 +109,7 @@ export function useVoiceInput(o: Options): VoiceHandle {
       }
       const ui = useUi.getState();
       if (e.key.toLowerCase() !== "v" || e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTyping(e.target)) return;
-      if (ui.settingsOpen || ui.shortcutsOpen || ui.confirm || ui.screen.name !== "workspace") return;
+      if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || ui.screen.name !== "workspace") return;
       e.preventDefault();
       toggleVoice(client);
     };

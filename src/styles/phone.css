@@ -154,7 +154,7 @@
 .app.phone .vp-toolbar > * {
   order: 1;
 }
-.app.phone .vp-toolbar > :nth-child(-n + 2),
+.app.phone .vp-toolbar > .vp-cam,
 .app.phone .vp-toolbar > .vp-look {
   order: 0;
 }

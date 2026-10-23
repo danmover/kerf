@@ -12,6 +12,7 @@ import { resetChat } from "../ai/chat";
 import { KeyForm } from "../screens/Onboarding";
 import { Modal, Segmented, Toggle } from "./common";
 import { Icon } from "./icons";
+import { AUDIENCES } from "../demos/templates";
 import { LogoMark } from "./Logo";
 import { AccountKeySection, AccountSettings, CloudIcon, signOutForClear } from "./Account";
 import { useAccount } from "../cloud/account";
@@ -68,8 +69,21 @@ export function SettingsModal() {
 
 function MakingSettings() {
   const labour = useSettings((s) => s.labourRate);
+  const audience = useSettings((s) => s.audience);
   return (
     <>
+      <Section title="What you make">
+        <Row t="Mostly" d="Puts the examples and example briefs that suit you first on the projects page.">
+          <select className="input" style={{ width: 240 }} value={audience} onChange={(e) => updateSettings({ audience: e.target.value })} aria-label="What you mostly make">
+            <option value="">Not said</option>
+            {AUDIENCES.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label}
+              </option>
+            ))}
+          </select>
+        </Row>
+      </Section>
       <Section title="Processes you can use">
         <div className="d" style={{ marginBottom: 10, color: "var(--text-3)", fontSize: 12.5 }}>
           Kerf recommends ways to make each part from these, for every design. A design's brief can list its own instead (workshop: and can_order:). Processes you have cost your time and material, with no shipping or waiting on a shop.
