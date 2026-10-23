@@ -126,6 +126,8 @@ export interface FlexInfo {
   reach?: number;
   /** flexure: the locking pin's distance from the blade's root, mm */
   pinAt?: number;
+  /** flexure: how far the locking pin sits off the blade's middle, across it (along facing × dir), mm */
+  pinOff?: number;
   span: Span;
 }
 

@@ -1,13 +1,14 @@
 design "Seatpost Number Bracket"
-note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring wraps the post with a strand at the top and one at the bottom, and each end turns round a double hook on the bracket's side (over the top prong, down behind, under the bottom one), pressing a contoured saddle and its TPU grip pad onto the post's flat back. The number's pointed end slides into a V pocket in the jaw, and a pin on a springy side arm goes through the near cheek, through the number's centre hole (where the old bolt went) and on into a hole in the far cheek, so the 1 mm number cannot slip past it. Press the arm's lever to draw the pin back and slide the number in or out. The number's tail rises 30° above level."
-note "Everything about the bracket is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); the pocket is turned forward by that angle plus rise, so the number's tail rises rise degrees above level."
+note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring wraps the post with a strand at the top and one at the bottom, and each end turns round a double hook on the bracket's side (over the top prong, down behind, under the bottom one), pressing a contoured saddle and its TPU grip pad onto the post's flat back. The number's pointed end slides into the V lip of a printed tilt dial in the jaw, and a pin on a springy side arm goes through the near cheek, through the number's centre hole (where the old bolt went) and on into the stub on the far cheek that the dial turns on, so the 1 mm number cannot slip past it. A springy latch beside the far cheek pushes three wedge-sided teeth into gaps under the dial, so the tilt clicks at 0, 15 and 30° with no play. Press the latch's tab to change the tilt; press the arm's lever to draw the pin back and slide the number in or out. The number's tail rises 30° above level."
+note "Everything about the bracket is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); the dial and the number turn about the centre hole by that angle plus rise, so the number's tail rises rise degrees above level."
 note "v4, from the printed v3 and its side-arm rework: the pin spans the whole slot and goes on into the far cheek, and every overhang prints without supports (the pin and its holes are teardrops)."
 note "v5: the number tilts up 30°, the bracket is 20 mm tall (the O-ring's double hooks as short as a 3.53 mm cord allows) and its seat fits a 20 mm flat back. The jaw is a plain block standing on the bed with the tilted pocket cut through it."
+note "v6: the tilt adjusts by hand and is firm at each click: the number sits in a dial (a third small print) that turns about its centre hole on a stub off the far cheek and is locked by a sprung latch whose wedge teeth take up all play. The centre hole sits 3.2 mm higher so the dial's teeth fit under it in the same 20 mm height."
 
 brief {
   purpose: "Hold a race number behind a Giant Propel aero seatpost with no screws"
   setting: "Road and triathlon racing: fitted and taken off by hand at the bike, ridden in rain and sun"
-  priorities: ["number never comes out: the pin goes through it into the far side", "prints with no supports at all", "compact", "fits by hand with one O-ring", "does not rock or turn on the post"]
+  priorities: ["number never comes out: the pin goes through it into the far side", "tilt adjusts by hand and has no play", "prints with no supports at all", "compact", "fits by hand with one O-ring", "does not rock or turn on the post"]
   look: "Black, small, tucked in behind the post"
 
   temp: -5C .. 50C
@@ -22,6 +23,7 @@ brief {
   use knock "Survives a leg or hand knocking the number's tail" { on: bracket }
   use bumps "Stays put over potholes (about 12 g)" { on: bracket }
   use fit "Goes on and comes off by hand, no tools" { on: bracket }
+  use adjust "Tilts by hand in 15° clicks and stays put, with no play" { on: bracket }
 
   given post_w = 20mm "Seatpost width, side to side at its widest (taken as no wider than its flat back)" assumed
   given post_d = 36mm "Seatpost depth, front to back" assumed
@@ -61,60 +63,120 @@ param hook_y   = 4mm    range 2 .. 8    "Prongs behind the post's flat back"
 param prong_d  = 5.5mm  range 3 .. 8    "Prong diameter: the bend the cord makes (at least 1.5 cords, so the O-ring does not wear through)"
 param lip      = 2.7mm  range 1 .. 4    "Rim round each double hook (the stretch to get the O-ring's end over it)"
 
-// ── The jaw and its locking pin ────────────────────────
-param jaw_y    = 21mm   range 16 .. 30  "From the post's flat back to the number's point"
-param rise     = 30     range 0 .. 40   "How far the number's tail rises above level, degrees"
-param pocket   = 12.5mm range 9 .. 16   "How far along its middle the number runs into the jaw"
+// ── The jaw, its locking pin and the tilt dial ─────────
+param pivot_y  = 24mm   range 20 .. 32  "From the post's flat back to the number's centre hole, where the pin goes and the number turns"
+param rise     = 30     range 0 .. 30   "How far the number's tail rises above level, degrees: the dial clicks at 0, 15 and 30"
 param cheek    = 2.5mm  range 2 .. 4    "Jaw cheek thickness"
-param arm_t    = 1.2mm  range 1.2 .. 2  "Locking arm thickness"
+param arm_t    = 1.2mm  range 1.2 .. 2  "Locking arm and tilt latch thickness"
 param pin_d    = 3.2mm  range 2.4 .. 3.6 "Locking pin diameter (it and its teardrop point go through the 5.2 mm centre hole)"
-param engage   = 1mm    range 0.6 .. 2  "How far the pin goes on into the far cheek"
+param engage   = 1mm    range 0.6 .. 2  "How far the pin goes on into the stub on the far cheek"
+param dial_t   = 2.4mm  range 1.6 .. 3.2 "Tilt dial thickness, beside the number"
+param wedge    = 8      range 5 .. 15   "Slope of the latch teeth's sides, degrees: they wedge into the dial's gaps, so the dial has no play, and below about 15° a push on the number cannot force them out"
 
 // ── Duty ───────────────────────────────────────────────
 param gust     = 70kmh  range 30kmh .. 120kmh "Crosswind gust"
 param knock    = 25N    range 5 .. 60   "A leg or hand knocking the number's tail"
 param bump_g   = 12     range 3 .. 25   "Pothole shock, in g"
+param tilt_push = 3N    range 1 .. 10   "A hand pressing the number's tail up or down (riding loads are a fraction of it)"
 
 let slot     = plate_t + 0.6                         // the number slides in with 0.3 mm each side, what a printed slot needs
-let jaw_w    = slot + 2 * cheek
+let jaw_w    = slot + 2 * cheek                      // the near cheek stands from slot / 2 to jaw_w / 2
 let seat_off = pad_t + 0.2                           // the saddle's seat stands off the post by the pad and a little room
 let sw       = tail_w + 2 * (seat_off + wall)        // saddle width
 let pad_mu   = 0.5                                   // TPU on wet painted carbon
-// the number's outline: its point at (0, 0), running back along +u, up +v
+// the number's outline: its point at (0, 0), running back along +u, up +v; and the same about its centre hole
 let tag      = polygon(points: [(0, -tip_h / 2), (taper_l, -plate_h / 2), (plate_l, -plate_h / 2), (plate_l, plate_h / 2), (taper_l, plate_h / 2), (0, tip_h / 2)], r: 3)
+let tag_h    = polygon(points: [(-hole_c, -tip_h / 2), (taper_l - hole_c, -plate_h / 2), (plate_l - hole_c, -plate_h / 2), (plate_l - hole_c, plate_h / 2), (taper_l - hole_c, plate_h / 2), (-hole_c, tip_h / 2)], r: 3)
 // the post's section: a round nose and a straight taper to its flat back at y = 0
 let nose_y   = -post_d + post_w / 2
 let post_sec = circle(post_w, at: (0, nose_y)) + polygon(points: [(-post_w / 2, nose_y), (post_w / 2, nose_y), (tail_w / 2, 0), (-tail_w / 2, 0)], r: 1.5)
 
-// the pocket is turned forward about the number's point J by the post's lean and on by rise, so the number's tail rises
-// rise degrees above level; the point sits low enough that its centre hole, where the pin goes, is at the bracket's mid-height
+// the tilt dial: a plate beside the number on a stub off the far cheek, with a lip in the number's own plane round its
+// point (a V pocket, so the number turns with it). Under it, a sector of 15° teeth as far out as the bracket's height
+// allows: printed teeth and gaps need 1.2 mm (three lines of a 0.4 mm nozzle), so they sit 10.8 mm out, and the
+// number's centre hole sits a little above the bracket's middle to leave room under them for the latch's comb
+let lip_t    = slot - 0.2
+let x_bed    = -slot / 2 - dial_t                    // the dial's far face, which it prints on
+let far_in   = x_bed - 0.2                           // the far cheek's inner face
+let far_out  = far_in - cheek
+let r_root   = 10.8
+let r_tip    = r_root + 1
+let r_mesh   = (r_root + r_tip) / 2
+let web      = 1.25                                  // the comb under the teeth, on the bed
+let H_z      = r_tip + 0.15 + web - saddle_h / 2
+let r_hub    = saddle_h / 2 - H_z                    // the dial's hub, up to the bracket's top
+let r_lobe   = 8.6                                   // its lobe in front, under the lip
+let r_lip    = r_lobe - 0.2
+let lip_a    = 180 - acos((hole_c - 0.5) / r_lip) + 6
+
+// the number turns about its centre hole H: by the post's lean and on by rise, so its tail rises rise degrees above
+// level; its point J sits hole_c in front of H
+let H        = (0, pivot_y, H_z)
 let ja       = tilt + rise
 let ca       = cos(ja)
 let sa       = sin(ja)
-let J        = (0, jaw_y, -hole_c * sa)
+let jaw_y    = pivot_y - hole_c * ca
+let J        = (0, jaw_y, H_z - hole_c * sa)
 let ct       = cos(tilt)
 let st       = sin(tilt)
-// where J and the post's axis end up in the world once everything leans back
+// where J, H and the post's axis end up in the world once everything leans back
 let J_w      = (0, jaw_y * ct + J.z * st, -jaw_y * st + J.z * ct)
+let H_w      = (0, pivot_y * ct + H_z * st, -pivot_y * st + H_z * ct)
 let post_ax  = (0, st, ct)
+let post_back = (0, ct, -st)
 let post_mid = (0, (nose_y / 2) * ct - (saddle_h / 2 - 1.5) * st, -(nose_y / 2) * st - (saddle_h / 2 - 1.5) * ct)
-// the number's centre hole in the bracket's frame: the pocket's (0, hole_c, 0) turned with it; and in the world
-let H        = (0, jaw_y + hole_c * ca, 0)
-// where the number's point bears on the jaw, in the world: the cheeks and V in front of the pin (the pin itself sits clear
-// of its holes, so the loads go into the jaw here, not into the pin)
-let grip_w   = (0, (jaw_y - 3.7) * ct, -(jaw_y - 3.7) * st)
 // the way the number runs back, in the world
 let num_dir  = (0, cos(rise), sin(rise))
-// the jaw is a block standing on the bed, as tall as the saddle, reaching back to where the number's middle has run pocket into it
-let jaw_back = jaw_y + pocket * ca
+// the dial clicks every 15°; at 30° the number's top front corner is as close to the post as it may come
+let clicks   = [0, 15, 30]
+let top_click = 30
+let ja_t     = tilt + top_click
 // tilted up, the number's top front corner swings forward toward the post: how far behind the post's flat back it stays
-let corner_y = jaw_y + taper_l * ca - plate_h / 2 * sa
-// where the number's top front edge leaves the top of the jaw (the slot opens on the top face behind it)
-let edge_y   = taper_l * ca - (plate_h - tip_h) / 2 * sa
-let edge_z   = taper_l * sa + (plate_h - tip_h) / 2 * ca
-let top_open = jaw_y - tip_h / 2 * sa + (saddle_h / 2 - J.z - tip_h / 2 * ca) * edge_y / edge_z
+let corner_y = pivot_y + (taper_l - hole_c) * cos(ja_t) - plate_h / 2 * sin(ja_t)
+// where the number's top front edge leaves the top of the jaw at the top click (the slot opens on the top face behind it)
+let jaw_t    = pivot_y - hole_c * cos(ja_t)
+let jz_t     = H_z - hole_c * sin(ja_t)
+let edge_y   = taper_l * cos(ja_t) - (plate_h - tip_h) / 2 * sin(ja_t)
+let edge_z   = taper_l * sin(ja_t) + (plate_h - tip_h) / 2 * cos(ja_t)
+let top_open = jaw_t - tip_h / 2 * sin(ja_t) + (saddle_h / 2 - jz_t - tip_h / 2 * cos(ja_t)) * edge_y / edge_z
+
+// the stub the dial turns on: a hexagon with flat top and bottom, 9 mm across its corners
+let stub_d   = 9
+let sk       = stub_d / 2 * 0.866
+let hex      = polygon(points: [(pivot_y + stub_d / 2, H_z), (pivot_y + stub_d / 4, H_z + sk), (pivot_y - stub_d / 4, H_z + sk), (pivot_y - stub_d / 2, H_z), (pivot_y - stub_d / 4, H_z - sk), (pivot_y + stub_d / 4, H_z - sk)])
+// the dial slides up onto its stub along a slot that runs out through the number's side of the hub, clear of the lip
+let slot_turn = 60
+// the tilt latch: a blade beside the far cheek, rooted in the saddle like the arm, carrying a comb under the dial with two
+// teeth (7.5° either side of straight down) that bite axially into its gaps from the far side. The teeth's sides slope by
+// the wedge and the gaps' with them, 0.05 mm clear as drawn: the latch springs the teeth in until they wedge, so the dial
+// has no play. A tab off its tip, pressed toward the post, bends it out and frees the dial
+let tw       = tan(wedge)
+let bite     = 1.5
+let comb_tip = x_bed + bite
+let rw_tip   = 1.2
+let rw_bed   = rw_tip + 2 * tw * bite
+let rw_root  = rw_bed + 2 * tw * (x_bed - far_in + 0.1)
+let gap0     = rw_bed + 0.1                          // the dial's gaps at its far face, narrowing toward the number
+let gw1      = gap0 + 2 * tw * 0.1
+let gw2      = gap0 - 2 * tw * (dial_t + 0.1)
+// the gaps sit where the latch's teeth are at every click; the sector runs to the teeth either side of the gaps they use
+let gap_turn = -tilt
+let sec_lo   = gap_turn - 135 - 11
+let sec_hi   = gap_turn - 75 + 11
+let sec_3    = (sec_hi - sec_lo) / 3
+let cav_front = pivot_y + r_tip * cos(sec_lo + tilt) - 0.5
+let cheek_back = pivot_y + 6
+let comb_lo  = pivot_y - 4
+let comb_hi  = pivot_y + 4
+let latch_t  = 1.6
+let latch_x  = far_out - 0.6 - latch_t / 2
+let latch_root = seat_off + 1.3
+let latch_l  = cheek_back - latch_root
+let latch_a  = comb_lo - latch_root
+let latch_travel = (bite + 0.3) * 2 * latch_l^3 / (latch_a^2 * (3 * latch_l - latch_a))
+let tab_l    = 4.5
 // the locking arm: a blade beside the near (+x) cheek, rooted in the saddle and running back past the hole; its pin goes
-// through the near cheek, the number and on into the far cheek. Drawing it back by pull frees the slot
+// through the near cheek, the number and on into the stub. Drawing it back by pull frees the slot
 let arm_gap  = 0.6                                   // between the arm and the cheek: open enough not to fuse when printed
 let arm_x    = jaw_w / 2 + arm_gap + arm_t / 2
 let arm_root = seat_off + 1.3                        // in the saddle, 1.3 mm behind its seat
@@ -193,27 +255,47 @@ part bracket {
     // toward the post clears it
     add extrude(overlap(hook_face, rect(block_d + lip - hook_y, saddle_h + 2, at: ((block_d + lip + hook_y) / 2, 0))), hook_x - groove / 2 - hook_in, at: (side * (hook_in + hook_x - groove / 2) / 2 - (hook_x - groove / 2 - hook_in) / 2, 0, 0), dir: X) as stops
   }
-  // neck from the saddle back to the jaw, the full height of the saddle; on the arm's side it stops at the cheek
-  add box(jaw_w + 2, jaw_y - saddle_t + 1, saddle_h, at: (-1, saddle_t - 1 + (jaw_y - saddle_t + 1) / 2, -saddle_h / 2)) as neck
-  // the jaw: a block with square sides standing on the bed, the tilted pocket cut through it below
-  add box(jaw_w, jaw_back - saddle_t + 1, saddle_h, at: (0, saddle_t - 1 + (jaw_back - saddle_t + 1) / 2, -saddle_h / 2)) as jaw
+  // the jaw: a block standing on the bed from the saddle back past the pin, the full height of the saddle; on the arm's side
+  // it stops at the near cheek
+  add box(jaw_w / 2 - far_out, cheek_back - saddle_t + 1, saddle_h, at: ((jaw_w / 2 + far_out) / 2, (saddle_t - 1 + cheek_back) / 2, -saddle_h / 2)) as jaw
   // the seat cut last of the solid, so nothing added reaches into it
   cut extrude(offset(post_sec, seat_off), 2 * saddle_h + 2, at: (0, 0, -saddle_h - 1)) as seat
   // a stopped groove for the pad's key, so the pad cannot slide or turn in the saddle
   cut box(3.4, 1.3, saddle_h - 7.4, at: (0, seat_off + 0.55, -(saddle_h - 7.4) / 2)) as key_slot
-  // the pocket: the number's own pointed outline, tilted, so its point nests in a V and cannot turn about the pin
-  cut rotate(extrude(offset(tag, 0.3), slot, at: (-slot / 2, J.y, J.z), dir: X), ja, axis: X, origin: J) as pocket_cut
-  // flared mouths where the number leaves the jaw, at its back and along its top, so it slides in and does not crease there
-  cut prism(points: [(-slot / 2, jaw_back - 1.2), (slot / 2, jaw_back - 1.2), (slot / 2 + 1.2, jaw_back + 0.1), (-slot / 2 - 1.2, jaw_back + 0.1)], h: saddle_h + 2, at: (0, 0, -saddle_h / 2 - 1)) as mouth
-  cut prism(points: [(-slot / 2, saddle_h / 2 - 1.2), (slot / 2, saddle_h / 2 - 1.2), (slot / 2 + 1.2, saddle_h / 2 + 0.1), (-slot / 2 - 1.2, saddle_h / 2 + 0.1)], h: jaw_back + 1 - top_open, at: (0, top_open, 0), dir: Y) as top_mouth
-  // the pin's holes, square across both cheeks at the number's centre hole
+  // the cavity the dial and the number's point turn in, between the cheeks, from just in front of the dial out through the
+  // top, the bottom and the back
+  cut box(slot / 2 - far_in, cheek_back + 2 - cav_front, saddle_h + 2, at: ((slot / 2 + far_in) / 2, (cav_front + cheek_back + 2) / 2, -saddle_h / 2 - 1)) as cavity
+  // in front of it, the slot the number's outline runs on into at each click, and a flared mouth along its top
+  for c in clicks {
+    cut rotate(extrude(offset(tag, 0.3), slot, at: (-slot / 2, pivot_y - hole_c, H_z), dir: X), tilt + c, axis: X, origin: H) as slot_cut
+  }
+  cut prism(points: [(-slot / 2, saddle_h / 2 - 1.2), (slot / 2, saddle_h / 2 - 1.2), (slot / 2 + 1.2, saddle_h / 2 + 0.1), (-slot / 2 - 1.2, saddle_h / 2 + 0.1)], h: cav_front + 1 - top_open, at: (0, top_open, 0), dir: Y) as top_mouth
+  // under the far cheek, a bridged notch the latch's comb runs through
+  cut box(cheek + 0.2, comb_hi - comb_lo + 1.2, 4, at: ((far_in + far_out) / 2, pivot_y, -saddle_h / 2 - 1)) as comb_notch
+  // the stub the dial turns on, off the far cheek's inner face up to the slot; flat on top and bottom with its sides at
+  // 60°, so it prints without support
+  add extrude(hex, -slot / 2 - far_in + 0.5, at: (far_in - 0.5, 0, 0), dir: X) as stub
+  // the pin's holes: through the near cheek at the number's centre hole, and on into the stub
   cut extrude(near_hole, jaw_w / 2 + arm_gap / 2, at: (0, H.y, H.z), dir: X) as near_hole_cut
-  cut extrude(far_hole, jaw_w / 2 + 1, at: (-jaw_w / 2 - 1, H.y, H.z), dir: X) as far_hole_cut
-  // slits either side of the arm's root, so it bends from inside the saddle and is long enough not to strain
+  cut extrude(far_hole, engage + 0.5, at: (-slot / 2 - engage - 0.5, H.y, H.z), dir: X) as far_hole_cut
+  // slits either side of the arm's and the latch's roots, so they bend from inside the saddle and are long enough not to strain
   cut box(arm_t + 2 * arm_gap, saddle_t + 1 - arm_root, saddle_h + 2, at: (arm_x, (arm_root + saddle_t + 1) / 2, -saddle_h / 2 - 1)) as arm_slit
-  // the locking arm stands on the bed beside the near cheek; its pin has a teardrop point underneath, so it prints level
-  add flexure((arm_x, arm_root, H.z), arm_l, arm_t, saddle_h, dir: Y, facing: -X, travel: arm_travel, cycles: 500, root_r: 0.3, pin: pin_d, reach: reach, pin_at: pin_at, teardrop: -Z) as arm
+  cut box(latch_t + 1.2, saddle_t + 1 - latch_root, saddle_h + 2, at: (latch_x, (latch_root + saddle_t + 1) / 2, -saddle_h / 2 - 1)) as latch_slit
+  // the locking arm stands on the bed beside the near cheek, its pin level with the number's centre hole; the pin has a
+  // teardrop point underneath, so it prints level
+  add flexure((arm_x, arm_root, 0), arm_l, arm_t, saddle_h, dir: Y, facing: -X, travel: arm_travel, cycles: 500, root_r: 0.3, pin: pin_d, reach: reach, pin_at: (arm_x, H.y, H.z), teardrop: -Z) as arm
   add prism(points: [(lever_x, lever_y), (lever_x + lever_l, lever_y + lever_l), (lever_x + lever_l + 1.13, lever_y + lever_l - 1.13), (lever_x + 1.13, lever_y - 1.13)], h: saddle_h, at: (0, 0, -saddle_h / 2)) as lever
+  // the tilt latch stands on the bed beside the far cheek
+  add flexure((latch_x, latch_root, 0), latch_l, latch_t, saddle_h, dir: Y, facing: X, travel: latch_travel, cycles: 1000, root_r: 0.3) as latch
+  // its comb: a bar along its foot under the far cheek, and a web under the dial's teeth, curved round them, with three teeth
+  // that bite into the dial's gaps. Everything faces up or stands upright, so no support
+  add box(far_in - latch_x - latch_t / 2 + 0.1, comb_hi - comb_lo, 1.8, at: ((latch_x + latch_t / 2 - 0.1 + far_in) / 2, pivot_y, -saddle_h / 2)) as comb
+  add extrude(rect(comb_hi - comb_lo, 4, at: (pivot_y, -saddle_h / 2 + 2)) - circle(2 * r_tip + 0.3, at: (pivot_y, H_z)), comb_tip - far_in + 0.1, at: (far_in - 0.1, 0, 0), dir: X) as comb_web
+  for ang in [-105, -90, -75] {
+    add rotate(prism(points: [(-far_in + 0.1, -rw_root / 2), (-far_in + 0.1, rw_root / 2), (-comb_tip, rw_tip / 2), (-comb_tip, -rw_tip / 2)], h: r_tip + 0.4 - r_root - 0.15, at: (0, pivot_y + r_root + 0.15, H_z), dir: Y), ang, axis: X, origin: H) as comb_teeth
+  }
+  // the tab, straight out from the latch's tip: pressed toward the post it bends the latch out and the teeth let go
+  add box(tab_l, 1.6, saddle_h, at: (latch_x - tab_l / 2, cheek_back - 0.8, -saddle_h / 2)) as tab
   // flat underneath, level with the saddle's foot, so it stands on the bed
   cut box(120, 120, 40, at: (0, 0, -saddle_h / 2 - 40)) as foot
 }
@@ -231,6 +313,26 @@ part pad {
   add box(3, 1, saddle_h - 8, at: (0, pad_t + 0.5, -(saddle_h - 8) / 2)) as key
 }
 
+// ── The tilt dial ───────────────────────────────────────
+// drawn about the number's centre hole, where it turns, with +y along the number; turned with the number and moved to the jaw
+part dial {
+  label: "Tilt dial"
+  color: #222428
+  material: "ASA"
+  group: "Bracket"
+  process: mfg.fdm(build: X)
+  rotate: (rise, 0, 0)
+  at: H_w
+  // printed on its far face: the gaps go straight through and the teeth's sides lean out as they rise, so nothing hangs out
+  // (shrunk and grown back by 0.6 mm, which rounds its corners and leaves nothing thinner than 1.2 mm)
+  body extrude(offset(offset(circle(2 * r_hub) + overlap(circle(2 * r_lobe), rect(r_lobe + 1 - hole_c + 0.7, 2 * r_lobe + 2, at: ((-r_lobe - 1 - hole_c + 0.7) / 2, 0))) + overlap(circle(2 * r_tip), polygon(points: [(0, 0), (14 * cos(sec_lo), 14 * sin(sec_lo)), (14 * cos(sec_lo + sec_3), 14 * sin(sec_lo + sec_3)), (14 * cos(sec_hi - sec_3), 14 * sin(sec_hi - sec_3)), (14 * cos(sec_hi), 14 * sin(sec_hi))])) - circle(stub_d + 0.3) - rotate(rect(r_hub + 1, stub_d + 0.3, at: ((r_hub + 1) / 2, 0)), slot_turn), -0.6), 0.6), dial_t, at: (x_bed, 0, 0), dir: X) as disc
+  // the lip in front of the number's point, in the number's own plane: a V pocket 0.2 mm round its outline
+  add extrude(overlap(circle(2 * r_lip) - offset(tag_h, 0.2), polygon(points: [(0, 0), (12 * cos(lip_a), 12 * sin(lip_a)), (-12, 12), (-12, -12), (12 * cos(lip_a), -12 * sin(lip_a))])), lip_t + 0.1, at: (-slot / 2 - 0.1, 0, 0), dir: X) as v_lip
+  for i in range(24) {
+    cut rotate(prism(points: [(-x_bed + 0.1, -gw1 / 2), (-x_bed + 0.1, gw1 / 2), (slot / 2 - 0.1, gw2 / 2), (slot / 2 - 0.1, -gw2 / 2)], h: r_tip + 0.5 - r_root, at: (0, r_root, 0), dir: Y), gap_turn + 15 * i, axis: X) as gaps
+  }
+}
+
 // ── The race number, as the Race Result plate it is ─────
 // each of its parts is drawn with the point at the origin, then tilted up by rise and moved to the jaw
 let ink      = offset(text("004", size: 31, at: (4.4, 0)), 0.45) + offset(text("4", size: 14, at: (-29, -6.2)), 0.25)
@@ -245,6 +347,7 @@ part number {
   group: "Number"
   process: false
   rotate: (rise, 0, 0)
+  held: "pinned through its centre hole by the sprung arm's pin, which runs on into the stub on the far cheek"
   at: J_w
   body extrude(tag, plate_t, at: (-plate_t / 2, 0, 0), dir: X) as plate
   // the centre hole at the point, where the old bracket's bolt went and the locking pin now goes
@@ -325,8 +428,8 @@ decision number_hold "How the number is held" {
   ask: "Keep the number in without a screw"
   chose: "Pin through both cheeks"
   by: "you"
-  why: "It mounts where the old bracket's bolt did, at the centre hole in the point. The point nests in a pocket of its own shape, so it cannot turn about the pin. A test print showed that a peg that only reaches into the hole lets a 1 mm number slip past its tip, so the pin on the springy side arm goes right through the number and on into a hole in the far cheek: it is held on both sides and the number can only come out by shearing it."
-  option "Pin through both cheeks" "Press the lever, slide the number in and let go; the pin goes through it into the far cheek."
+  why: "It mounts where the old bracket's bolt did, at the centre hole in the point. The point nests in a pocket of its own shape, so it cannot turn about the pin. A test print showed that a peg that only reaches into the hole lets a 1 mm number slip past its tip, so the pin on the springy side arm goes right through the number and on into the stub on the far cheek: it is held on both sides and the number can only come out by shearing it. The point nests in the tilt dial's lip, so it turns with the dial and not about the pin."
+  option "Pin through both cheeks" "Press the lever, slide the number in and let go; the pin goes through it into the far cheek's stub."
   option "Click peg in the centre hole" "Slides in until it clicks, but the peg only reaches into the hole, so a thin number can slip past it."
   option "Bolt through the centre hole" "What it had: needs a nut and a spanner."
   option "Zip ties through the corner holes" "No print, but cut off and replaced every race."
@@ -336,10 +439,20 @@ decision number_angle "How the number sits" {
   ask: "Angle the number"
   chose: "Tail up 30°"
   by: "you"
-  why: "You asked for the number to tilt up about 30°. Its point stays in the jaw and the pocket is turned with it; tilted up, its top front corner swings toward the post, so the point sits 21 mm behind the post's flat back to keep that corner clear."
-  option "Tail up 30°" { rise: 30 } "What you asked for."
-  option "Tail up 15°" { rise: 15 } "A gentler tilt."
-  option "Level" { rise: 0 } "Straight back, as the old bracket held it."
+  why: "You asked for the number to tilt up about 30°, then to be able to change it. The dial clicks at 0, 15 and 30°; this is the click the design is shown and checked at, and every click is checked to fit. Tilted up, the number's top front corner swings toward the post, so its centre hole sits 24 mm behind the post's flat back to keep that corner clear at the top click."
+  option "Tail up 30°" { rise: 30 } "What you asked for: the dial's top click."
+  option "Tail up 15°" { rise: 15 } "The middle click."
+  option "Level" { rise: 0 } "The bottom click: straight back, as the old bracket held it."
+}
+
+decision tilt_lock "How the tilt is set and held" {
+  ask: "Adjust the tilt without it being loose"
+  chose: "Click dial with a sprung wedge latch"
+  by: "claude"
+  why: "You asked to adjust the tilt without it being loose. The number's point sits in a printed dial that turns on a stub off the far cheek, about the centre hole the pin goes through. Three teeth on a springy latch beside the far cheek reach up into gaps under the dial. Their sides slope 8°, so the spring pushes them in until they wedge, which takes out all the play, and a push on the number cannot force them out (ASA only slides on ASA past about 17°). Press the latch's tab toward the post to free the dial, turn the number to the next click and let go. It all still prints flat with no supports."
+  option "Click dial with a sprung wedge latch" "Firm at 0, 15 and 30°, changed by hand with no tools."
+  option "Friction clamp" "Any angle, but it needs a screw to clamp it and can creep when knocked."
+  option "Fixed angle" "Nothing to move or wear: reprint it to change the tilt."
 }
 
 decision oring_size "O-ring size" {
@@ -353,28 +466,34 @@ decision oring_size "O-ring size" {
 }
 
 // ── Checks ─────────────────────────────────────────────
+// where the dial and the number bear on the jaw: the cheeks' inner faces round the dial and the stub it turns on (the pin
+// sits clear of its holes, so the loads go into the jaw here, not into it)
+let grip_w   = ((far_in + slot / 2) / 2, H_w.y, H_w.z)
+let grip_sz  = (slot / 2 - far_in + 0.4, 14, 13)
+
 analysis "Crosswind gust" {
   parts: [bracket]
   // the saddle is only pressed on by the O-ring, through the pad: it must stay pressed and not turn on the post
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
   // the wind on the number comes into the jaw as a force and its moment
-  load: wind(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), gust, dir: X, area: plate_l * plate_h - taper_l * (plate_h - tip_h) / 2, at: J_w + num_dir * (plate_l / 2))
-  carries: mass(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), 8g)
+  load: wind(zone(at: grip_w, size: grip_sz), gust, dir: X, area: plate_l * plate_h - taper_l * (plate_h - tip_h) / 2, at: J_w + num_dir * (plate_l / 2))
+  carries: mass(zone(at: grip_w, size: grip_sz), 11g)
   gravity
   printed
   safety: 2
 }
 
-// a knock bends the thin number over before it can pass much force on: at most its bending strength at the jaw's mouth
+// a knock bends the thin number over before it can pass much force on: at most its bending strength where it leaves the
+// dial, about r_tip behind its centre hole
 let number_bend = 30 * (plate_h * plate_t * plate_t / 6)          // N·mm, 30 MPa polypropylene
-let knock_felt  = min(knock, number_bend / (plate_l - pocket))
+let knock_felt  = min(knock, number_bend / (plate_l - hole_c - r_tip))
 
 analysis "Leg knock" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  load: force(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), knock_felt, dir: X, at: J_w + num_dir * plate_l)
+  load: force(zone(at: grip_w, size: grip_sz), knock_felt, dir: X, at: J_w + num_dir * plate_l)
   printed
   cycles: 1000
   safety: 2
@@ -384,23 +503,55 @@ analysis "Pothole" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  carries: mass(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), 8g)
+  carries: mass(zone(at: grip_w, size: grip_sz), 11g)
   accel: (0, 0, -bump_g)
   printed
   safety: 2
 }
 
-require "The pin goes through the number's centre hole, inside the jaw" for knock: hole_c + hole_cd / 2 + 2 <= pocket
+// a hand pressing the number's tail down turns the dial: its teeth push the latch's teeth forward (into the comb bar
+// they stand on; their own strength is a requirement below) and its hub pushes the back of the stub the other way, a
+// couple as big as the push's moment about the pin
+let tilt_turn = tilt_push * (plate_l - hole_c) / r_mesh
+let comb_z   = H_z - r_root - 0.15 - (saddle_h / 2 + H_z - r_root - 0.15) / 2
+let stub_y   = pivot_y + stub_d / 2 - 0.6
+let comb_w   = ((far_in + comb_tip) / 2, pivot_y * ct + comb_z * st, -pivot_y * st + comb_z * ct)
+let stub_w   = ((far_in - slot / 2) / 2, stub_y * ct + H_z * st, -stub_y * st + H_z * ct)
+
+analysis "Tilt push" {
+  parts: [bracket]
+  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
+  load: pull(oring)
+  load: force(zone(at: comb_w, size: (comb_tip - far_in + 0.4, comb_hi - comb_lo, saddle_h / 2 + H_z - r_root - 0.15)), tilt_turn, dir: (0, -ct, st))
+  load: force(zone(at: stub_w, size: (-slot / 2 - far_in + 0.4, 1.4, 4)), tilt_turn, dir: post_back)
+  printed
+  cycles: 1000
+  safety: 2
+}
+
+// each of the dial's teeth that the latch's teeth bear on, bent at its root at the dial's far face, and each latch tooth,
+// bent where it stands on the comb: taking only two of the three to bear, as printed teeth may not all seat at once
+let tooth_w  = 2 * 3.14159 * r_root / 24 - gap0
+let tooth_mpa = 6 * (tilt_turn / 2) * (r_tip - r_root) / 2 / (dial_t * tooth_w * tooth_w)
+let ridge_mpa = 6 * (tilt_turn / 2) * (r_tip - r_root) / 2 / ((bite + 0.3) * ((rw_tip + rw_root) / 2)^2)
+
 require "The pin and its teardrop point pass through the centre hole" for knock: pin_d * 0.7071 + 0.15 <= hole_cd / 2
-require "The pin goes on into the far cheek, so the number cannot slip past its tip" for knock: engage >= 0.6
-require "Each cheek keeps at least 2 mm round the pin's hole" for knock: ha + near_e / 2 + 2 <= saddle_h / 2 && jaw_back - H.y - hd / 2 - near_e >= 2
-require "Tilted up, the number's top front corner stays clear of the seatpost" for fit: corner_y >= 2
+require "The pin goes on into the stub on the far cheek, so the number cannot slip past its tip" for knock: engage >= 0.6
+require "The near cheek keeps at least 2 mm round the pin's hole" for knock: H_z + ha + near_e / 2 + 2 <= saddle_h / 2 && cheek_back - H.y - hd / 2 - near_e >= 2
+require "The stub keeps at least 0.8 mm round the pin's hole" for knock: sk - ha - far_e / 2 >= 0.8
+require "The dial's lip stands at least 2 mm in front of the number's point" for knock: r_lip - hole_c - 0.2 >= 2
+require "At its top click, the number's top front corner stays clear of the seatpost" for fit: corner_y >= 2
+require "The tilt is one of the dial's clicks" for adjust: abs(rise - 15 * round(rise / 15)) < 0.01 && rise <= top_click
+require "The dial's teeth hold a hand pressing the number's tail, twice over" for adjust: 34 / tooth_mpa >= 2
+require "The latch's teeth hold it too, twice over" for adjust: 34 / ridge_mpa >= 2
+require "The latch's teeth slope less than ASA grips ASA (about 0.3 wet), so a push on the number cannot wedge them out" for adjust: tan(wedge) <= 0.25
 require "The O-ring pulls firmly" soft for gust, bumps: oring.stretch >= 1.3
 require "Stretching the O-ring over its hook is a one-hand job" soft for fit: oring.fit_force <= 45N
 require "The hooks' rim keeps the O-ring on" for fit: lip >= 0.75 * oring_cs
 require "The O-ring runs clear of the saddle's sides" for fit: clear >= oring.cord / 2 + 0.5
 require "The saddle hugs the post's back corners" for gust: horn >= 2 && horn <= post_d / 3
 
-test "Fit and remove": "Hook one end of the O-ring over the left double hook (over the top prong, down behind, under the bottom one), wrap it round the post high and low and stretch the other end over the right hook's rim with one hand; press the arm's lever toward the post, slide the number into the jaw and let go: the pin must go through its centre hole and show in the far cheek's hole. Press the lever again and slide it out."
-test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post and the number must not move in the jaw."
+test "Fit and remove": "Press the latch's tab toward the post, push the dial up into the jaw from below, slot first, onto its stub, and let go at a click. Hook one end of the O-ring over the left double hook (over the top prong, down behind, under the bottom one), wrap it round the post high and low and stretch the other end over the right hook's rim with one hand; press the arm's lever toward the post, slide the number into the dial's lip and let go: the pin must go through its centre hole into the stub. Press the lever again and slide it out."
+test "Tilt": "Press the latch's tab toward the post, turn the number to the next click and let go: it must click in at 0, 15 and 30° and not move when the tail is pushed up and down by hand."
+test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post and the number must neither move in the jaw nor change its tilt."
 buy "AS568-227 EPDM O-rings (spares)" { qty: 4, price: 0.6 }

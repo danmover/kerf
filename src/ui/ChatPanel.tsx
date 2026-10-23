@@ -12,6 +12,7 @@ import { DiffView } from "./DiffView";
 import { openSpot, spotLabel } from "../app/spot";
 import { safeUrl, domainOf } from "../ai/web";
 import { getApiKey, subscribeKey } from "../persist/vault";
+import { getOpenAIKey, subscribeOpenAIKey } from "../persist/openaiVault";
 import { useAccount } from "../cloud/account";
 import { useSettings, updateSettings, MODELS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
@@ -42,7 +43,10 @@ const touchScreen = typeof matchMedia !== "undefined" && matchMedia("(pointer: c
 /** The browser's key, or "account" when chat goes through a Kerf server that holds the key. */
 export function useApiKey() {
   const key = useSyncExternalStore(subscribeKey, getApiKey);
+  const openAIKey = useSyncExternalStore(subscribeOpenAIKey, getOpenAIKey);
+  const openAI = useSettings(s => s.model.startsWith("gpt-"));
   const viaAccount = useAccount((s) => s.status === "signed-in" && !!s.info?.claude?.source);
+  if (openAI) return openAIKey;
   return key ?? (viaAccount ? "account" : null);
 }
 
@@ -56,7 +60,7 @@ export function ChatPanel() {
   const settings = useSettings();
   const model = MODELS.find((m) => m.id === settings.model)!;
   const spend = useChatSpend();
-  const routes = settings.routeQuick && !settings.model.startsWith("claude-haiku");
+  const routes = settings.routeQuick && settings.model.startsWith("claude-") && !settings.model.startsWith("claude-haiku");
 
   useLayoutEffect(() => {
     const el = feed.current;
@@ -67,7 +71,7 @@ export function ChatPanel() {
     <div className="panel panel-right">
       <div className="panel-head">
         <LogoMark size={18} animate={false} />
-        <span className="panel-title">Claude</span>
+        <span className="panel-title">{settings.model.startsWith("gpt-") ? "OpenAI" : "Claude"}</span>
         <Menu
           align="left"
           width={290}
@@ -178,10 +182,10 @@ function Welcome({ hasKey }: { hasKey: boolean }) {
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="card" style={{ padding: 18 }}>
         <div className="row" style={{ marginBottom: 8, color: "var(--accent-2)" }}>
           <Icon.Key size={18} />
-          <span style={{ fontWeight: 600, color: "var(--text)" }}>Connect Claude to design by conversation</span>
+          <span style={{ fontWeight: 600, color: "var(--text)" }}>Connect an AI model to design by conversation</span>
         </div>
         <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-          Kerf sends your messages and the design straight from this browser to the Claude API with your own key. There is no Kerf server in between. Everything else (editing, checks, export) works without a key.
+          Add an OpenAI or Claude API key in Settings → AI, then choose a model. Everything else (editing, checks, export) works without a key.
         </div>
         <button className="btn primary" style={{ marginTop: 14 }} onClick={() => openSettings("ai")}>
           <Icon.Key size={14} /> Add API key

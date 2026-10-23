@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
 
 /** /api goes to a Kerf server when one is running (see server/README.md); without it Kerf runs on its own. */
-const API_PROXY = process.env.KERF_API ? { "/api": { target: process.env.KERF_API, changeOrigin: false } } : undefined;
+const API_PROXY = process.env.KERF_API ? Object.fromEntries(["/api", "/mcp", "/oauth", "/.well-known"].map(path => [path, { target: process.env.KERF_API, changeOrigin: false }])) : undefined;
 
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
@@ -14,7 +14,7 @@ const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "worker-src 'self'",
-  "connect-src 'self' https://api.anthropic.com",
+  "connect-src 'self' https://api.anthropic.com https://api.openai.com",
   "img-src 'self' data: blob:",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
