@@ -9,7 +9,8 @@ import { boxMesh } from "../src/analysis/fe/voxel";
 import { cellBudget, dot, planRun, windAxes } from "../src/analysis/aero/setup";
 import { frontalArea, surfaceNets } from "../src/analysis/aero/post";
 import { batchStderr, CpuSolver, runAirflow } from "../src/analysis/aero/solve";
-import type { AirflowInput } from "../src/analysis/aero/types";
+import type { AirflowInput, SurfaceField, YawResult } from "../src/analysis/aero/types";
+import { dragHotSpots } from "../src/analysis/aeroSummary";
 import type { LbmCase } from "../src/analysis/aero/case";
 
 const bike = `design "b"
@@ -167,6 +168,23 @@ describe("airflow solver pieces", () => {
     // a one-cell gap between two plates is a slot the air can run along
     const slot = buildGrid({ nx: 20, ny: 20, nz: 20, bodies: [box([4.5, 4.5, 8.5], [15.5, 15.5, 9.5]), box([4.5, 4.5, 10.5], [15.5, 15.5, 11.5])] }, 1);
     expect(solid(slot, 10, 10, 10)).toBe(false);
+  });
+
+  it("lists the design's own drag patches even where the rider's are bigger", () => {
+    // a square facing into the wind, s mm across, at x
+    const face = (name: string, s: number, x: number, extra?: boolean): SurfaceField => ({
+      id: name,
+      name,
+      positions: Float32Array.from([x, 0, 0, x, s, 0, x, 0, s]),
+      normals: null,
+      indices: Uint32Array.from([0, 1, 2]),
+      cp: Float32Array.from([1, 1, 1]),
+      cf: new Float32Array(9),
+      extra,
+    });
+    const y = { surface: [face("Rider", 400, 0, true), face("frame", 50, 1000)], parts: [] } as unknown as YawResult;
+    expect(dragHotSpots(y, [1, 0, 0], 100, 60, 1).map((h) => h.part)).toEqual(["frame"]);
+    expect(dragHotSpots(y, [1, 0, 0], 100, 60, 1, true).map((h) => h.part)).toEqual(["Rider"]);
   });
 
   it("estimates the error of a noisy mean", () => {
