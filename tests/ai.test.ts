@@ -567,7 +567,7 @@ describe("chat loop", () => {
     await sendMessage("hi");
     expect(of("notice")).toHaveLength(1);
     expect(of("notice")[0]).toMatchObject({ level: "info", title: "Claude can now search the web for parts", action: "settings" });
-    expect(of("notice")[0].detail).toMatch(/\$0\.01 on your API key.*Settings → Claude/);
+    expect(of("notice")[0].detail).toMatch(/\$0\.01 on your API key.*Settings → AI/);
     expect(useSettings.getState().webNotice).toBe(false);
     fakeClient([{ stop_reason: "end_turn", content: [{ type: "text", text: "Again." }] }]);
     await sendMessage("again");

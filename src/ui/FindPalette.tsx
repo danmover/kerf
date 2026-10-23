@@ -100,6 +100,7 @@ export function FindPalette() {
           <Icon.Search size={16} />
           <input
             ref={input}
+            autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={inWorkspace ? "Find a tool, view, analysis or export, or ask Claude…" : "Find a template or setting, or describe a new design…"}

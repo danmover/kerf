@@ -13,7 +13,7 @@ import { openSpot } from "../app/spot";
 import { attention, briefSummary, checkScope, designStats, massText, sizeText, placedBox, type UseStatus } from "../app/designStats";
 import { lineCol } from "../lang/lexer";
 import { diffStats } from "../core/sourceEdit";
-import { materialDef, FINISHES, resolveFinish } from "../library/materials";
+import { materialDef, FINISHES, isPrinted, resolveFinish } from "../library/materials";
 import { Icon, StatusIcon } from "./icons";
 import { BIcon } from "./briefIcons";
 import { mod, timeAgo, useTick } from "./common";
@@ -46,8 +46,8 @@ export function Overview() {
       <BriefCard i={i++} />
       {/* the design as a whole, or the part you are looking at */}
       {selected.length > 0 ? <SelectionCard key={selected.join(",")} ids={selected} i={i++} /> : <SpecsCard i={i++} />}
-      <ChangesCard i={i++} />
       <NextCard i={i++} />
+      <ChangesCard i={i++} />
     </div>
   );
 }
@@ -63,7 +63,7 @@ function NextCard({ i }: { i: number }) {
   const fails = useDesign((s) => s.report?.counts.fail ?? 0);
   if (!model?.parts.length) return null;
   const made = model.parts.filter((p) => p.kind === "part" && !p.imported);
-  const printed = made.some((p) => p.process?.id === "fdm" || p.process?.id === "sla");
+  const printed = made.some((p) => (p.process ? p.process.id === "fdm" || p.process.id === "sla" : isPrinted(p.material)));
   const steps: { key: string; icon: ReactNode; text: string; sub: string; run: () => void }[] = [];
   if (fails) steps.push({ key: "fix", icon: <Icon.Alert size={13} />, text: "Fix what's failing", sub: "Open the checks", run: () => openTab("checks") });
   if (!model.analyses.length && made.length) steps.push({ key: "test", icon: <Icon.Stress size={13} />, text: "Test it", sub: "Strength, drops, vibration or airflow", run: () => openTab("analysis") });
