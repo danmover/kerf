@@ -31,6 +31,7 @@ import { SketchLayer } from "./sketch/SketchPanels";
 import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
+import { AirflowLayer } from "./AirflowLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { SimLayer } from "./sim/SimLayer";
 import { WiringLayer } from "./WiringLayer";
@@ -367,6 +368,7 @@ export function Viewport() {
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
+      {scene && !inSketch && <AirflowLayer scene={scene} />}
       {scene && !inSketch && <SimLayer scene={scene} />}
       {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
       {scene && !inSketch && canFit && <FitLayer scene={scene} />}

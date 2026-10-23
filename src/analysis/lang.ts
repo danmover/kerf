@@ -36,6 +36,7 @@ import type { Span } from "../lang/ast";
 import type { AnalysisSpec, DropSpec, Excitation, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, V3 } from "./spec";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
+import { buildAirflow } from "./aeroLang";
 
 /** supports plus loads in one analysis: each one is a pass over the model's surface */
 export const MAX_BOUNDARY_ITEMS = 200;
@@ -281,6 +282,7 @@ export interface AnalysisEnv {
 export function buildAnalysis(label: string, props: AnalysisItem[], flags: AnalysisItem[], span: Span, env: AnalysisEnv): AnalysisSpec {
   const fail: (msg: string, span: Span) => never = env.fail;
   if (props.some((p) => p.name === "uci")) return buildUci(label, props, flags, span, env);
+  if (props.some((p) => p.name === "airflow")) return buildAirflow(label, props, flags, span, env);
   const isDrive = props.some((p) => p.name === "drive");
   const allowed = isDrive ? DRIVETRAIN_PROPS : STRUCTURAL_PROPS;
   for (const p of props) {
@@ -291,7 +293,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
           ? isDrive
             ? `"${p.name}:" belongs to a structural analysis. A drivetrain analysis (one with drive:) takes ${DRIVETRAIN_PROPS.join(", ")}.`
             : `"${p.name}:" belongs to a drivetrain analysis, which starts with drive: gear_name.`
-          : `Unknown analysis property "${p.name}". Use ${STRUCTURAL_PROPS.join(", ")} for stress, or drive:, torque:, speed:, life: for a gear train.`,
+          : `Unknown analysis property "${p.name}". Use ${STRUCTURAL_PROPS.join(", ")} for stress, drive:, torque:, speed:, life: for a gear train, or airflow: 45kmh for drag and the flow round it.`,
         p.span,
       );
     }

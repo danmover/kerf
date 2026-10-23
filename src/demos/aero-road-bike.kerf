@@ -505,7 +505,14 @@ analysis "UCI road rules" {
   rim_depth: rim_deep
 }
 
-// Airflow: an "Aero at 45 km/h" analysis goes here once the airflow solver lands.
+// Airflow: the bike and a rider on the drops in a wind tunnel at 45 km/h, head on and in 5° and 10° crosswinds,
+// on a rolling road with both wheels spinning. Saddle, bars and bottom bracket come from the UCI analysis.
+analysis "Aero at 45 km/h" {
+  airflow: 45kmh
+  forward: X
+  yaw: [0, 5, 10]
+  rider: "drops"
+}
 
 require "Front tyre clears the down tube by 4 mm": min_distance(front_tyre, frame) >= 4
 require "Front tyre clears the fork by 4 mm": min_distance(front_tyre, fork) >= 4

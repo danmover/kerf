@@ -2563,6 +2563,7 @@ class Evaluator {
     });
     // the parts it reads are dependencies, so the graph and incremental reruns see them
     if (spec.kind === "structural") for (const p of spec.parts) if (this.defKind.has(p)) this.current?.add(p);
+    if (spec.kind === "airflow") for (const p of [...spec.parts, ...(spec.wheels ?? [])]) if (this.defKind.has(p)) this.current?.add(p);
     if (spec.kind === "drivetrain") {
       const k = this.defKind.get(spec.drive);
       if (k !== "component" && k !== "part") throw new EvalError(`drive: "${spec.drive}" is not a component or part`, s.span);

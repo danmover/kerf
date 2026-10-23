@@ -19,6 +19,8 @@ import { dropVerdict, modeWords, resonances, vibrationText, vibrationVerdict } f
 import { Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { useChatDraft } from "./chatDraft";
+import { AirflowControls, AirflowView } from "./AirflowView";
+import { useAirflow, showAirflow, yawMean, type AirflowRun } from "../analysis/aeroRuntime";
 import { fmtNum } from "../lang/values";
 import "../styles/analysis.css";
 
@@ -33,6 +35,7 @@ export function openAnalysis(label: string) {
   useView.setState({ dockTab: "analysis", dockOpen: true });
   useAnalysis.setState({ selected: label });
   if (useAnalysis.getState().runs.get(label)?.result) showResults(label);
+  if (useAirflow.getState().runs.get(label)?.result) showAirflow(label);
 }
 
 export function AnalysisPanel() {
@@ -42,6 +45,7 @@ export function AnalysisPanel() {
   const shown = useAnalysis((s) => s.shown);
   const selected = useAnalysis((s) => s.selected);
   const report = useDesign((s) => s.report);
+  const airRuns = useAirflow((s) => s.runs);
   const specs = model?.analyses ?? [];
   const spec = specs.find((a) => a.label === selected) ?? specs.find((a) => a.label === shown) ?? specs[0];
 
@@ -51,12 +55,13 @@ export function AnalysisPanel() {
     <div className="an">
       <div className="an-head">
         {specs.map((a) => (
-          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} />
+          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} air={airRuns.get(a.label)} />
         ))}
         <div className="grow" />
         {spec?.kind === "structural" && <FineButton spec={spec} run={runs.get(spec.label)} />}
-        {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} />}
+        {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} air={spec.kind === "airflow" ? airRuns.get(spec.label) : undefined} />}
         {spec?.kind === "structural" && <StructuralControls spec={spec} run={runs.get(spec.label)} />}
+        {spec?.kind === "airflow" && <AirflowControls spec={spec} run={airRuns.get(spec.label)} />}
       </div>
       <div className="an-body">
         <AnimatePresence mode="wait" initial={false}>
@@ -64,6 +69,7 @@ export function AnalysisPanel() {
             {spec?.kind === "structural" && <StructuralView spec={spec} run={runs.get(spec.label)} />}
             {spec?.kind === "drivetrain" && <DrivetrainView spec={spec} result={drivetrain.get(spec.label)} />}
             {spec?.kind === "uci" && <UciView spec={spec} items={uciItems(spec, report?.items ?? [])} />}
+            {spec?.kind === "airflow" && <AirflowView spec={spec} run={airRuns.get(spec.label)} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -73,7 +79,7 @@ export function AnalysisPanel() {
 
 // ---------- header ----------
 
-function Pick({ spec, active, run, dt, items }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult; items?: CheckItem[] }) {
+function Pick({ spec, active, run, dt, items, air }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult; items?: CheckItem[]; air?: AirflowRun }) {
   let status: Status = "pending";
   let val = "";
   if (spec.kind === "uci") {
@@ -81,6 +87,15 @@ function Pick({ spec, active, run, dt, items }: { spec: AnalysisSpec; active: bo
     status = uciVerdict(mine);
     const fails = mine.filter((i) => i.status === "fail").length;
     val = status === "pending" ? "" : fails ? `${fails} failing` : status === "warn" ? "check" : "legal";
+  } else if (spec.kind === "airflow") {
+    if (air?.status === "error") {
+      status = air.error === "Stopped." && air.result ? "info" : "fail";
+      val = air.error === "Stopped." ? "stopped" : "error";
+    } else if (air?.result && air.status === "done") {
+      const cda = yawMean(air.result, (y) => y.cda);
+      status = spec.maxCda !== undefined ? (cda <= spec.maxCda ? "pass" : "fail") : "info";
+      val = `CdA ${fmtNum(cda, 3)}`;
+    } else val = air?.status === "running" ? `${Math.round(air.frac * 100)}%` : air ? "waiting" : "";
   } else if (spec.kind === "structural") {
     if (run?.status === "error") {
       status = "fail";
@@ -161,14 +176,16 @@ function FineButton({ spec, run }: { spec: StructuralSpec; run?: StructuralRun }
   );
 }
 
-function AskButton({ spec, run, dt }: { spec: AnalysisSpec; run?: StructuralRun; dt?: DrivetrainResult }) {
+function AskButton({ spec, run, dt, air }: { spec: AnalysisSpec; run?: StructuralRun; dt?: DrivetrainResult; air?: AirflowRun }) {
   const setDraft = useChatDraft((s) => s.set);
-  const err = run?.status === "error" ? run.error : dt?.error;
+  const err = run?.status === "error" ? run.error : air?.status === "error" && air.error !== "Stopped." ? air.error : dt?.error;
   const text = err
     ? `The "${spec.label}" analysis can't run: ${err} Please fix the set-up.`
     : spec.kind === "uci"
       ? `Make the bike pass every item of the "${spec.label}" UCI rules check, keeping it as fast as you can.`
-      : `Explain the "${spec.label}" analysis results and suggest how to strengthen the weakest area without adding much material.`;
+      : spec.kind === "airflow"
+        ? `Look at the "${spec.label}" airflow results: where does the drag come from? Reshape the parts that cost the most to cut the drag (keep them strong, legal and makeable), re-run the airflow after each change and tell me what each change saved.`
+        : `Explain the "${spec.label}" analysis results and suggest how to strengthen the weakest area without adding much material.`;
   return (
     <button className="btn sm ghost" onClick={() => setDraft(text)}>
       <Icon.Sparkle size={13} /> Ask Claude
