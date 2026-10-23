@@ -10,6 +10,7 @@ import { MATERIALS, materialDensity } from "../library/standards";
 import { FINISHES, resolveFinish } from "../library/materials";
 import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DimDef, type DimStyle } from "./dims";
 import { partFeatures } from "./features";
+import { bendLabel, bendRows, bendWay, flatShift } from "./flat";
 import { arcPoints, clipPolylineToCircle, hatchLines } from "./hatch";
 import { gridCell, layoutSheet, type LayoutItem, type LayoutResult } from "./layout";
 import { boxOk, emptyBox, fmtNum, growBox, Ink, shapeBox, type BomLine, type Box, type Sheet, type SheetDim, type SheetPart, type SheetView } from "./sheet";
@@ -67,7 +68,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
 
   // notes and tables in the bottom-left corner
   const notes = defaultNotes(spec, plan);
-  const gearRows = !plan.assembly ? gearTable(plan.parts[0]) : null;
+  const table = dataTable(plan);
 
   // ---- sheet size and scale
   const portrait = spec.orientation === "portrait";
@@ -82,7 +83,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     const w = portrait ? Math.min(a, b) : Math.max(a, b);
     const h = portrait ? Math.max(a, b) : Math.min(a, b);
     const st = dimStyle(w);
-    const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, gearRows);
+    const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, table);
     const area = inset(frameBox(w, h), 4);
     let found: Choice | null = null as Choice | null;
     search: for (const s of scales) {
@@ -154,8 +155,11 @@ export function composeSheet(inp: ComposeInput): Sheet {
     else inkView(ink, i, sv, r, v, plan);
   });
 
+  // bend lines on a flat pattern
+  if (spec.flat) plan.views.forEach((v, i) => results[i] && v.kind === "top" && bendLines(ink, i, views[i], v, plan, st));
+
   // centre lines for features seen end-on and along their axis
-  if (!plan.assembly) plan.views.forEach((v, i) => results[i] && v.kind !== "detail" && v.kind !== "iso" && centreLines(ink, i, views[i], v, plan, inp.bboxOf));
+  if (!plan.assembly && !spec.flat) plan.views.forEach((v, i) => results[i] && v.kind !== "detail" && v.kind !== "iso" && centreLines(ink, i, views[i], v, plan, inp.bboxOf));
 
   // cutting planes, detail circles and view labels
   plan.views.forEach((v, i) => {
@@ -225,7 +229,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
   const notesW = tb[0] - frame[0] - 14;
   const nb = inkNotes(ink, frame[0] + 4, bottom, notesW, notes, st.size);
   if (nb) bottom = nb[1] - 4;
-  if (gearRows) inkDataTable(ink, frame[0] + 4, bottom, "GEAR DATA", gearRows, "n");
+  if (table) inkDataTable(ink, frame[0] + 4, bottom, table.title, table.rows, "n");
 
   // final row assignment was done per view during layout at this scale
   const pending = views.filter((v) => v.state === "pending").length;
@@ -328,7 +332,7 @@ function gridFor(v: PlannedView, plan: DrawingPlan, spec: DrawingSpec): [number,
 }
 
 /** Fixed regions on the sheet: title block, tolerance strip, parts list, notes. */
-function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, notes: string[], st: DimStyle, gearRows: [string, string][] | null): Box[] {
+function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, notes: string[], st: DimStyle, table: DataTable | null): Box[] {
   const f = frameBox(w, h);
   const tbH = 37 + (/2768/.test(tolerance) ? 9 : 0) + (bomRows ? (bomRows + 1) * 5.5 : 0);
   const out: Box[] = [[f[2] - TB_W, f[3] - tbH, f[2], f[3]]];
@@ -341,8 +345,8 @@ function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, 
     out.push([nb[0] - 2, nb[1] - 2, nb[2] + 2, f[3]]);
     bottom = nb[1] - 4;
   }
-  if (gearRows) {
-    const gb = inkDataTable(scratch, f[0] + 4, bottom, "GEAR DATA", gearRows, "n");
+  if (table) {
+    const gb = inkDataTable(scratch, f[0] + 4, bottom, table.title, table.rows, "n");
     out.push([gb[0] - 2, gb[1] - 2, gb[2] + 2, f[3]]);
   }
   return out;
@@ -805,7 +809,48 @@ function defaultNotes(spec: DrawingSpec, plan: DrawingPlan): string[] {
   if (/2768|8062/.test(spec.tolerance)) out.push(`UNLESS OTHERWISE STATED, TOLERANCES TO ${spec.tolerance.toUpperCase()}.`);
   else if (spec.tolerance) out.push(`GENERAL TOLERANCES: ${spec.tolerance.toUpperCase()}.`);
   if (!plan.assembly && plan.parts.some((p) => p.kind === "part")) out.push("REMOVE BURRS AND BREAK SHARP EDGES.");
+  if (spec.flat) out.push("FLAT PATTERN SEEN FROM ABOVE: UP BENDS RISE TOWARD THE VIEWER. BEND LINES CHAIN-DOTTED, WITH ANGLES AND INSIDE RADII IN THE BEND TABLE.");
   return [...out, ...spec.notes.map((n) => n.toUpperCase())];
+}
+
+type DataTable = { title: string; rows: [string, string][] };
+
+/** The table in the bottom-left corner: a gear's data, or a flat pattern's bends. */
+function dataTable(plan: DrawingPlan): DataTable | null {
+  if (plan.spec.flat) {
+    const rows = bendRows(plan.parts);
+    return rows ? { title: "BEND TABLE", rows } : null;
+  }
+  const rows = !plan.assembly ? gearTable(plan.parts[0]) : null;
+  return rows ? { title: "GEAR DATA", rows } : null;
+}
+
+/** Each bend's centre line across the flat, chain-dotted and tagged with its bend-table label. */
+function bendLines(ink: Ink, i: number, sv: SheetView, v: PlannedView, plan: DrawingPlan, st: DimStyle) {
+  const s = sv.scale;
+  const [ox, oy] = sv.origin;
+  for (const p of plan.parts) {
+    if (!p.sheet) continue;
+    ink.key = `v${i}:p${plan.parts.indexOf(p)}`;
+    const dx = flatShift(p);
+    p.sheet.bends.forEach((b, k) => {
+      const [a, c] = b.line.map(([x, y]) => toView([x + dx, y, 0], v.frame)).map(([u, w]) => [ox + u * s, oy - w * s] as [number, number]);
+      const len = Math.hypot(c[0] - a[0], c[1] - a[1]);
+      if (len < 1e-6) return;
+      // a little past the blank's edges, as bend lines are drawn
+      const ext = Math.min(3, len * 0.1);
+      const e: [number, number] = [(c[0] - a[0]) / len, (c[1] - a[1]) / len];
+      ink.line(a[0] - e[0] * ext, a[1] - e[1] * ext, c[0] + e[0] * ext, c[1] + e[1] * ext, "phantom");
+      // the tag reads along the line at its middle, on the side its letters stand up from
+      let rot = (Math.atan2(-e[1], e[0]) * 180) / Math.PI;
+      if (rot > 90) rot -= 180;
+      if (rot <= -90) rot += 180;
+      const r = (rot * Math.PI) / 180;
+      const off = st.size * 0.4;
+      const mid: [number, number] = [(a[0] + c[0]) / 2 - Math.sin(r) * off, (a[1] + c[1]) / 2 - Math.cos(r) * off];
+      ink.text(mid[0], mid[1], `${bendLabel(k)} ${bendWay(b.angle)} ${fmtNum(Math.abs(b.angle))}°`, st.size * 0.85, "middle", { rot });
+    });
+  }
 }
 
 function gearTable(p: EvalPart | undefined): [string, string][] | null {

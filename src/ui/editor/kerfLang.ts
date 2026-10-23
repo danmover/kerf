@@ -10,6 +10,8 @@ import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
 import { useImports } from "../../core/imports";
 import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../../lang/modelling";
+import { SHEET_FNS } from "../../lang/sheet";
+import { MOULD_FNS } from "../../lang/mould";
 import { LIBRARY } from "../../library/components";
 import { PROCESSES, PROCESS_IDS } from "../../mfg/profiles";
 import { DRAWING_DOCS, DRAWING_PROPS } from "../../drawing/spec";
@@ -199,6 +201,7 @@ export function kerfCompletions(getModel: () => Model | null) {
     ...Object.values(PROFILE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "profile", apply: f.name + "(" })),
     ...Object.values(PATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "path", apply: f.name + "(" })),
     ...Object.values(FEATURE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "feature", apply: f.name + "(" })),
+    ...Object.values({ ...SHEET_FNS, ...MOULD_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "mould" ? "mould" : "sheet metal", apply: f.name + "(" })),
     ...Object.values(SELECT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "selection", apply: f.name + "(" })),
     ...Object.entries(CONSTRAINTS).map(([k, c]) => ({ label: k, type: "keyword", info: c.doc, detail: c.dim ? "sketch dimension" : "sketch relation" })),
     ...SKETCH_GEOMETRY.map((k) => ({ label: k, type: "keyword", detail: "sketch geometry" })),

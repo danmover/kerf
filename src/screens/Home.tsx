@@ -445,6 +445,33 @@ export function TemplateArt({ id }: { id: string }) {
         <circle cx="100" cy="60" r="6" style={{ fill: "var(--accent)" }} />
       </svg>
     );
+  if (id === "sheet-chassis") {
+    // a flat blank folding up along its bend lines into a tray, and back
+    const flat = "M24 86 L52 86 L148 86 L176 86";
+    const bent = "M52 50 L52 86 L148 86 L148 50";
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <motion.path fill="none" style={accent} strokeWidth="3" strokeLinejoin="round" initial={{ d: flat }} animate={{ d: [flat, bent, bent, flat] }} transition={{ duration: 4, times: [0, 0.4, 0.8, 1], repeat: Infinity, ease: "easeInOut" }} />
+        <motion.path d="M47 66 L47 45 L153 45 L153 66" fill="none" style={violet} strokeWidth="1.4" strokeLinejoin="round" animate={{ opacity: [0, 0, 1, 1, 0] }} transition={{ duration: 4, times: [0, 0.35, 0.45, 0.8, 0.9], repeat: Infinity }} />
+        {[52, 148].map((x) => (
+          <path key={x} d={`M${x} 96V106`} style={line} strokeWidth="1.2" strokeDasharray="3 2" />
+        ))}
+        <circle cx="100" cy="86" r="2.5" style={{ fill: "var(--accent)" }} />
+      </svg>
+    );
+  }
+  if (id === "cast-knob")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        {/* the bottom half with its core, the knob, and the top half lifting off */}
+        <rect x="56" y="76" width="88" height="30" rx="2" style={tint(0.08)} strokeWidth="1.3" />
+        <motion.path d="M80 76 Q80 50 100 50 Q120 50 120 76 Z" style={{ ...violet, fill: "rgb(var(--violet-rgb) / 0.25)" }} strokeWidth="1.3" animate={{ opacity: [1, 1, 0.35, 1] }} transition={{ duration: 3.2, times: [0, 0.45, 0.7, 1], repeat: Infinity }} />
+        <motion.g animate={{ y: [0, 0, -22, -22, 0] }} transition={{ duration: 3.2, times: [0, 0.2, 0.45, 0.75, 1], repeat: Infinity, ease: "easeInOut" }}>
+          <path d="M56 76 V46 H144 V76 H120 Q120 50 100 50 Q80 50 80 76 Z" style={tint(0.12)} strokeWidth="1.3" strokeLinejoin="round" />
+          <path d="M100 50V40" style={accent} strokeWidth="3" />
+        </motion.g>
+      </svg>
+    );
   if (id === "pirate-ship")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">

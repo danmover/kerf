@@ -106,6 +106,8 @@ export interface DrawingSpec {
   autoDims: boolean;
   partsList?: boolean;
   balloons?: boolean;
+  /** shows sheet-metal parts laid flat, with bend lines and a bend table */
+  flat?: boolean;
   views: ViewSpec[];
   sections: SectionSpec[];
   details: DetailSpec[];
@@ -337,6 +339,7 @@ export const DRAWING_PROPS = [
   "auto_dims",
   "parts_list",
   "balloons",
+  "flat_pattern",
   "views",
 ] as const;
 

@@ -1,0 +1,53 @@
+design "Cast Knob and Mould"
+note "A polyurethane control knob for a 6 mm D shaft, cast at home in a two-part printed mould. The mould halves are made from the knob with mould(), so they follow every change to it: registration keys, M4 clamping bolts, a pour hole into the top and air vents. The top half is shown opened like a book, the way it prints."
+
+// ── Sizes ──────────────────────────────────────────────
+param knob_d  = 36mm  range 20 .. 60  "Knob diameter"
+param knob_h  = 16mm  range 10 .. 30  "Knob height"
+param wall    = 2.5mm range 1.5 .. 3  "Wall thickness"
+param shaft_d = 6mm   "Shaft diameter"
+param boss_d  = 11mm  "Shaft boss diameter"
+param mould_wall = 10mm range 8 .. 20 "Mould wall round the knob"
+
+let top_r    = 3
+let groove   = knob_d / 2 - top_r - 6
+let block    = knob_d + 2 * mould_wall
+let mould_z  = knob_h + 2 * mould_wall
+// where the mould halves stand, beside the knob
+let bottom_x = block / 2 + knob_d / 2 + 12
+let top_x    = bottom_x + block + 12
+
+// ── The knob, as it comes out of the mould ─────────────
+part knob {
+  material: "Polyurethane"
+  process: mfg.vacuum_cast()
+  body cylinder(d: knob_d, h: knob_h)
+  fillet(top_r, edges: "top")
+  shell(wall, open: "bottom")
+  // the shaft boss hangs from the top, with the D shaft's flat
+  add tube(od: boss_d, id: shaft_d, h: knob_h - wall - 2, at: (0, 0, 2)) as boss
+  add box(shaft_d, 0.5, knob_h - wall - 2, at: (0, shaft_d / 2 - 0.25, 2))
+  // pointer groove across the top, clear of the pour hole in the middle
+  cut box(1.6, groove, 0.8, at: (0, 5 + groove / 2, knob_h - 0.8))
+}
+
+// ── The mould: printed in PLA, opened with the knob beside it ──
+part mould_bottom {
+  material: "PLA"
+  process: mfg.fdm()
+  body mould(knob, half: "bottom", wall: mould_wall, bolts: M4)
+  at: (bottom_x, 0, mould_wall)
+}
+
+part mould_top {
+  material: "PLA"
+  // printed as shown, its outside face down on the bed
+  process: mfg.fdm(build: -Z)
+  body mould(knob, half: "top", wall: mould_wall, bolts: M4)
+  // opened like a book: turned over beside the bottom half, its cavity facing up
+  rotate: (180, 0, 0)
+  at: (top_x, 0, knob_h + mould_wall)
+}
+
+require "The boss holds the shaft for its length" : knob_h - wall - 2 >= 1.5 * shaft_d
+require "Mould walls take the clamping bolts" : mould_wall >= 4 + 4

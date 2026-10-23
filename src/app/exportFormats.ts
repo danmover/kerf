@@ -27,7 +27,7 @@ import {
 import { errorText, toast } from "./ui";
 import { useDesign } from "../core/engine";
 import { viewport } from "./viewportApi";
-import { exportDrawingsPdf } from "../drawing/export";
+import { exportDrawingsPdf, exportFlatPatternsDxf } from "../drawing/export";
 
 async function exportDrawings() {
   await exportDrawingsPdf();
@@ -71,6 +71,19 @@ export const EXPORT_FORMATS: ExportFormat[] = [
 
   { id: "build-pack", group: "print", label: "Build pack", detail: "Parts to buy and make, wiring, firmware and tests", ext: ".zip", icon: "Wrench", shown: () => !!useDesign.getState().model?.machine, run: () => exportBuildPack() },
   { id: "gerbers", group: "print", label: "Circuit board Gerbers", detail: "Copper, mask, silkscreen and drill files for a board house", ext: ".zip", icon: "Chip", shown: () => !!useDesign.getState().model?.machine?.boards.length, run: () => exportGerbers() },
+  {
+    id: "flat-patterns",
+    group: "print",
+    label: "Flat patterns",
+    detail: "Sheet-metal blanks at 1:1 with bend lines, for the laser or punch",
+    ext: ".dxf",
+    icon: "Scissors",
+    shown: () => !!useDesign.getState().model?.parts.some((p) => p.sheet),
+    run: async () => {
+      const n = await exportFlatPatternsDxf();
+      toast({ kind: "success", title: n === 1 ? "Flat pattern exported" : `${n} flat patterns exported`, detail: "Outlines and holes on the CUT layer, bend lines on BEND, 1:1 in millimetres." });
+    },
+  },
   { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, turned to print, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
   { id: "stl-parts", group: "print", label: "STL per part", detail: "One file per part, named with how many", ext: ".zip", icon: "Layers", selection: true, run: (o) => exportStlParts(o.selectionOnly) },
   { id: "stl", group: "print", label: "STL, one mesh", detail: "The whole assembly in place", ext: ".stl", icon: "Layers", selection: true, run: (o) => exportStl(o.selectionOnly) },

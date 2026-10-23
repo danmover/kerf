@@ -25,6 +25,7 @@ export function specToSource(spec: DrawingSpec, name: string): string {
   if (spec.scale) lines.push(`  scale: ${str(scaleText(spec.scale))}`);
   if (spec.projection !== "first") lines.push(`  projection: ${str(spec.projection)}`);
   if (spec.hidden !== undefined) lines.push(`  hidden_lines: ${spec.hidden}`);
+  if (spec.flat) lines.push("  flat_pattern: true");
   lines.push(`  views: [${spec.views.map((v) => str(v.kind)).join(", ")}]`);
   for (const s of spec.sections) lines.push(`  section(${str(s.label)}, at: ${vec(s.at)}, normal: ${vec(s.normal)}${s.view ? `, view: ${str(s.view)}` : ""})`);
   for (const d of spec.details) lines.push(`  detail(${str(d.label)}, view: ${str(d.view)}, at: ${vec(d.at)}, r: ${num(d.r)}, scale: ${num(d.scale)})`);

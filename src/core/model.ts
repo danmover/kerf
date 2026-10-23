@@ -11,6 +11,7 @@ import type { EvalSketch } from "../sketch/types";
 import type { AnalysisSpec } from "../analysis/spec";
 import type { ProcessSpec } from "../mfg/types";
 import type { DrawingSpec } from "../drawing/spec";
+import type { SheetInfo } from "../lang/sheet";
 
 export interface Motion {
   origin: V3;
@@ -206,6 +207,8 @@ export interface EvalPart {
   held?: string;
   /** snap hooks and flexures in this part */
   flex?: FlexInfo[];
+  /** a sheet() part: its bends and flanges, and the recipe of its flat pattern */
+  sheet?: SheetPart;
   spring?: SpringInfo;
   band?: BandInfo;
   bom?: { description: string; standard?: string; catalogId?: string; length?: number; price?: number; priceNote?: string; search?: string; key?: string };
@@ -215,6 +218,12 @@ export interface EvalPart {
   detail?: boolean;
   /** set for bodies of an imported STEP file */
   imported?: ImportedBody;
+}
+
+/** A sheet-metal part's data: flanges, bends and regions (part coordinates), and its flat pattern as a part of its own. */
+export interface SheetPart extends Omit<SheetInfo, "unfold"> {
+  flat: PartRecipe;
+  flatHash: string;
 }
 
 export interface ImportedBody {

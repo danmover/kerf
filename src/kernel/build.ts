@@ -8,6 +8,7 @@ import { gearOutline } from "../library/gears";
 import { extrudeProfile, loftProfiles, revolveProfile2, sweepProfile } from "./profiles";
 import { buildKnurl, buildThread } from "./threads";
 import { describeSel, Topo, type FeatureTools } from "./topology";
+import { buildMould } from "./mould";
 
 export class BuildError extends Error {}
 
@@ -187,6 +188,28 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       return buildKnurl(r.d, r.h, r.at, r.dir, r.count, r.depth, r.style, detail);
     case "lod":
       return buildShape(detail ? r.detail : r.fast, detail);
+    case "unfold":
+      return buildUnfold(r);
+    case "mould":
+      return buildMould(r, buildPart(r.part), (s) => applyXf(s, r.xf));
+  }
+}
+
+/** The flat pattern of a sheet-metal part, from the part as built: every hole and cut-out on its flat regions comes along. */
+function buildUnfold(r: Extract<ShapeRecipe, { t: "unfold" }>): Shape3D {
+  const solid = buildPart(r.part);
+  const flat: Shape3D[] = [];
+  for (const p of r.pieces) {
+    const piece = solid.intersect(buildShape(p.region)) as Shape3D;
+    if (solidVolume(piece) > 1e-6) flat.push(applyXf(piece, p.xf));
+  }
+  for (const b of r.bends) flat.push(buildShape(b));
+  if (!flat.length) throw new BuildError("the flat pattern came out empty");
+  const out = fuseAll(flat);
+  try {
+    return out.simplify();
+  } catch {
+    return out;
   }
 }
 

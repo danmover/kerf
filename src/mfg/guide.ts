@@ -65,6 +65,7 @@ function modellingTips(id: ProcessId, rules: Rules): string[] {
           ? 'fillet(r, edges: "concave") rounds inside corners to at least half the wall; make bosses as tube() with the wall of the part, joined by ribs.'
           : "fillet() inside corners to at least half the wall; make bosses as tube() with the wall of the part, joined by ribs.",
         "Point holes and openings along the pull; side holes need side actions.",
+        'For a simple two-plate tool, or a printed mould to cast resin in, add the halves as parts of their own with mould(part, half: "top") and mould(part, half: "bottom"), pulled along the same direction.',
       ];
     case "metal_print":
       return [
@@ -78,6 +79,7 @@ function modellingTips(id: ProcessId, rules: Rules): string[] {
           ? "Model the finished part as for moulding: an even 1.5 to 3 mm wall from shell(t, open: …), and rib(from, to, t: …, h: …) instead of thick sections. No draft is needed and undercuts are fine, because the silicone mould flexes and is cut open."
           : "Model the finished part as for moulding: an even 1.5 to 3 mm wall from shell(t, open: …), and ribs instead of thick sections. No draft is needed and undercuts are fine, because the silicone mould flexes and is cut open.",
         'Set material: "Polyurethane" and say which plastic the grade should imitate (ABS-, PP-, PC- or rubber-like) and its colour. A printed master is made from the model, and each silicone mould casts about 20 to 25 parts.',
+        'To cast a few parts at home instead, add a printed two-part mould with mould(part, half: "top") and mould(part, half: "bottom") as parts of their own; then the part does need to release along the pull, without undercuts.',
       ];
     case "sand_cast":
       return [
@@ -98,8 +100,8 @@ function modellingTips(id: ProcessId, rules: Rules): string[] {
       ];
     case "sheet_metal":
       return [
-        "Model one thickness t throughout: flat flanges joined by real bends, each bend a quarter tube(od: 2·(r+t), id: 2·r, …) intersected to 90°, never a sharp corner.",
-        "Keep holes at least 2t from edges and bends.",
+        'Model the part with body sheet(base, t: …, r: …, flanges: [flange("front", h), …]): one thickness throughout, real bends at the bend radius, corner gaps and reliefs made for you, and a flat pattern with a bend table and DXF. Then cut holes and cut-outs.',
+        "Make flanges at least 4t long outside, and keep holes at least 2t from edges and 2t plus the bend radius from bends.",
       ];
     case "laser_cut":
       return ["Model a flat plate: body prism(points, h: t) or box, then cut through-holes and outline notches only. No pockets, steps or chamfers."];

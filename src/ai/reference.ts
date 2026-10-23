@@ -3,6 +3,8 @@
 
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { FEATURE_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../lang/modelling";
+import { SHEET_FNS } from "../lang/sheet";
+import { MOULD_FNS } from "../lang/mould";
 import { SEL_PRESETS } from "../kernel/recipe";
 import { UNITS } from "../lang/lexer";
 import { LIBRARY } from "../library/components";
@@ -365,6 +367,11 @@ ${docs({ ...SOLID_FNS, extrude: SKETCH_FNS.extrude, revolve: SKETCH_FNS.revolve 
 
 ### Ready-made features (use with add; each adds and cuts what it needs and rounds its own root)
 ${docs(FEATURE_FNS)}
+
+### Sheet metal and moulds
+${docs({ ...SHEET_FNS, ...MOULD_FNS })}
+Make every bent metal part (brackets, covers, chassis, trays, enclosure shells) with body sheet(...), never with boxes and quarter tubes: Kerf then knows its bends, unfolds the finished part into a flat pattern (its own drawing with bend lines and a bend table, and Export → Flat patterns, a 1:1 DXF for the laser), and checks it as sheet metal: flanges long enough to bend (4 × t), flanges that would hit each other at a corner, a flat pattern that overlaps itself or is bigger than a sheet, plus thickness, bend radius against the material and holes too close to a bend. Cut holes and cut-outs after the body; those in flanges come along onto the flat. A bracket: body sheet(rect(60, 40), t: 2, flanges: [flange("back", 50), flange("front", 12, angle: -90)]) then cut hole(d: 5.5, through: true, at: (0, 0, 2), dir: -Z) through the base and cut hole(d: 5.5, depth: 5, at: (0, 17, 30), dir: Y) through the back flange.
+To cast or mould a part, keep the part as it should come out and add its mould as two more parts, one per half, made by printing or machining: part mould_top { material: "PLA"  process: mfg.fdm()  body mould(knob, half: "top", bolts: M4) } and the same with half: "bottom". Put the halves beside the part with at: (opened like a book, all standing on the floor). The mould follows every change to the part. Give the moulded part the casting material and process (vacuum_cast for polyurethane in a silicone mould, injection for a plastic in a two-plate tool, the casting processes for metal) so its draft, walls and undercuts are checked along the same pull.
 
 ### Naming features and picking edges
 Name any step with \`as\`: \`body box(80, 50, 30) as shell\`, \`add cylinder(d: 8, h: 10, at: p) as boss\`, \`cut hole(M3, through: true) as bore\`. Using the same name again (for example inside a for loop) adds to the same feature. A name then picks geometry by meaning, however the part changes later:

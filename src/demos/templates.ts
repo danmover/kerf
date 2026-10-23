@@ -14,6 +14,8 @@ import engine from "./engine.kerf?raw";
 import teacups from "./teacups.kerf?raw";
 import pirateShip from "./pirate-ship.kerf?raw";
 import ferrisWheel from "./ferris-wheel.kerf?raw";
+import sheetChassis from "./sheet-chassis.kerf?raw";
+import castKnob from "./cast-knob.kerf?raw";
 
 export interface Template {
   id: string;
@@ -146,6 +148,30 @@ export const TEMPLATES: Template[] = [
       "Make the gusset reach two thirds of the way up the upright",
     ],
     stats: "2 parts · 5 sketches · 2 requirements",
+  },
+  {
+    id: "sheet-chassis",
+    name: "Sheet-Metal Chassis",
+    tagline: "Aluminium tray and cover, each bent from one sheet with sheet(): flat patterns with bend tables, a laser DXF, and bend, flange and fit checks.",
+    source: sheetChassis,
+    prompts: [
+      "Make the chassis 200 mm wide and 60 mm tall, and keep every check passing",
+      "Add a row of vent slots to the back and two holes in the floor for rubber feet",
+      "Turn the top edge of the front panel into a 10 mm lip that folds inward",
+    ],
+    stats: "10 parts · 2 flat patterns",
+  },
+  {
+    id: "cast-knob",
+    name: "Cast Knob and Mould",
+    tagline: "Polyurethane knob for a 6 mm D shaft with its own two-part printed mould, made from the knob with mould(): keys, clamping bolts, a pour hole and vents.",
+    source: castKnob,
+    prompts: [
+      "Make the knob 45 mm across with a knurled grip and update the mould",
+      "Add a skirt with a scale of ten marks round the bottom of the knob",
+      "Split the mould halfway up the knob instead and show me why that's worse",
+    ],
+    stats: "3 parts · 2 mould halves",
   },
   {
     id: "canister",
