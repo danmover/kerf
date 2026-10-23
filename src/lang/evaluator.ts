@@ -6,6 +6,7 @@ import { parse, parseExpression, type Diagnostic } from "./parser";
 import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
 import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
+import { SheetV, type SheetInfo } from "./sheet";
 import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
@@ -132,6 +133,8 @@ interface PartState {
   auto: Map<string, number>;
   strain: { strain: number; span: Span }[];
   flex: FlexInfo[];
+  /** the part's sheet() body */
+  sheet?: SheetInfo;
 }
 
 class Scope {
@@ -250,6 +253,12 @@ class Evaluator {
       },
       machine: () => this.machine,
       tick: (n: number) => this.tick(n, this.callSpan),
+      partShape: (name: string) => {
+        const p = this.parts.find((q) => q.name === name && q.kind === "part");
+        if (!p) return undefined;
+        this.current?.add(name);
+        return { recipe: p.recipe, xf: p.xf, material: p.material };
+      },
     };
   }
 
@@ -1678,12 +1687,14 @@ class Evaluator {
     checkHeld(state.props.held, state.propSpans.held);
     this.checkMaterial(state.props, state.propSpans);
     const processSpan = state.propSpans.process;
-    const process =
+    let process =
       state.props.process === undefined || state.props.process === null || state.props.process === false
         ? undefined
         : toProcess(state.props.process, (msg) => {
             throw new EvalError(msg, processSpan ?? s.span);
           });
+    // a sheet() body is cut and bent unless the part says how it is made
+    if (!process && state.sheet && state.props.process !== false) process = { id: "sheet_metal", settings: { t: state.sheet.t } };
     const material = partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process);
     const limit = allowableStrain(material);
     for (const c of state.strain) {
@@ -1699,6 +1710,12 @@ class Evaluator {
     }
     const recipe: PartRecipe = { base: state.base, ops: state.ops };
     if (state.baseName) recipe.baseName = state.baseName;
+    let sheet: EvalPart["sheet"];
+    if (state.sheet) {
+      const { unfold, ...rest } = state.sheet;
+      const flat: PartRecipe = { base: { t: "unfold", part: recipe, pieces: unfold.pieces, bends: unfold.bends }, ops: [] };
+      sheet = { ...rest, flat, flatHash: recipeHash(flat) };
+    }
     this.parts.push({
       id: s.name,
       name: s.name,
@@ -1725,6 +1742,7 @@ class Evaluator {
       features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
       detail: hasDetail(recipe),
       ...(state.flex.length ? { flex: state.flex } : {}),
+      ...(sheet ? { sheet } : {}),
     });
   }
 
@@ -1801,6 +1819,10 @@ class Evaluator {
           const shapes = flattenShapes(v, it.shape.span);
           if (it.op === "body" && st.cosmetic) throw new EvalError("The body cannot be cosmetic; put body before the cosmetic { } block", it.span);
           for (const sh of shapes) {
+            if (sh instanceof SheetV) {
+              if (st.base || (it.op !== "body" && it.op !== "add")) throw new EvalError("sheet() makes the whole part: use it as the body (body sheet(...)), then cut holes and cut-outs", it.span);
+              st.sheet = sh.info;
+            }
             if (it.op === "body" || (it.op === "add" && !st.base)) {
               if (!st.base) {
                 st.base = sh.recipe;
@@ -1980,6 +2002,9 @@ class Evaluator {
               case "balloons":
                 spec.balloons = bool(v, it.span, "balloons");
                 break;
+              case "flat_pattern":
+                spec.flat = bool(v, it.span, "flat_pattern");
+                break;
               case "views": {
                 if (!Array.isArray(v)) throw new EvalError('views should be a list such as ["front", "top", "right", "iso"]', it.span);
                 viewsProp = v.map((x) => viewKind(x, it.span, "each view"));
@@ -2100,6 +2125,11 @@ class Evaluator {
       }
     };
     walk(s.items, new Scope(), 0);
+    if (spec.flat) {
+      const flat = this.parts.filter((p) => p.sheet && (!spec.of.length || spec.of.includes(p.name)));
+      if (!flat.length) throw new EvalError("flat_pattern: true shows sheet-metal parts laid flat, and this drawing has none: make the part with body sheet(...) and name it in of:", s.span);
+      if (!viewsProp && !spec.views.length) spec.views = [{ kind: "top" }];
+    }
     if (viewsProp) spec.views = [...(viewsProp as ViewKind[]).filter((k) => !spec.views.some((v) => v.kind === k)).map((kind) => ({ kind })), ...spec.views];
     if (!spec.views.length && !spec.sections.length) spec.views = defaultSpec("", "", []).views;
     if (spec.views.length + spec.sections.length + spec.details.length > 12) throw new EvalError("A drawing is limited to 12 views", s.span);

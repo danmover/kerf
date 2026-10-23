@@ -1,7 +1,7 @@
 // Runtime values for the Kerf evaluator.
 
 import type { FlexInfo } from "../core/model";
-import type { Path3, Profile, Sel, ShapeRecipe, V2, V3 } from "../kernel/recipe";
+import type { PartRecipe, Path3, Profile, Sel, ShapeRecipe, V2, V3, Xform } from "../kernel/recipe";
 import type { MachineData } from "../machine/types";
 import type { SketchGeom } from "../sketch/types";
 
@@ -131,6 +131,8 @@ export interface CallCtx {
   machine?(): MachineData;
   /** Count n steps of list-sized work against the evaluation budget. */
   tick?(n: number): void;
+  /** A part defined above: its recipe, placement and material, for shapes made from another part (mould()). */
+  partShape?(name: string): { recipe: PartRecipe; xf: Xform[]; material: string } | undefined;
 }
 
 export type GeoQuery =

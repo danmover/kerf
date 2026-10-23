@@ -18,6 +18,7 @@ import { holdChecks } from "./holdChecks";
 import { linkChecks } from "./linkChecks";
 import { stashSweep, sweepChecks } from "./sweepChecks";
 import { stabilityChecks } from "./stability";
+import { sheetChecks } from "./sheetChecks";
 import type { SettingValue } from "../mfg/types";
 
 export type CheckCategory =
@@ -340,6 +341,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     else items.push(...sweepChecks(sweep.model, sweep.holds, sweep.kernel, sweep.mesh, sweep.ignore));
     items.push(...stabilityChecks(model, holds, kernel, inputs.mesh, (p) => geom(p.hash)?.volume));
   }
+  items.push(...sheetChecks(model));
   if (model.machine) items.push(...machineChecks(model.machine));
 
   // things geometry cannot prove

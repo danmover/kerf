@@ -4,7 +4,8 @@
 import { useDesign } from "../core/engine";
 import { download, safeFileName } from "../persist/files";
 import { dismissToast, errorText, toast } from "../app/ui";
-import { allSheets, drawingSpecs, sheetFor, useDrawings } from "./engine";
+import { allSheets, drawingSpecs, flatPatterns, sheetFor, useDrawings } from "./engine";
+import { flatsToDxf } from "./flat";
 import { sheetsToPdf, sheetToDxf, sheetToSvg } from "./render";
 import type { Sheet } from "./sheet";
 import { blockNameFor, specToSource } from "./source";
@@ -42,6 +43,13 @@ export async function exportDrawingSvg() {
 export async function exportDrawingDxf() {
   const s = await current();
   download(sheetToDxf(s), safeFileName(s.title, "dxf"), "application/dxf");
+}
+
+/** Every sheet-metal part's flat pattern in one DXF at 1:1, outlines on CUT and bend lines on BEND, for the laser or punch. */
+export async function exportFlatPatternsDxf(): Promise<number> {
+  const flats = await flatPatterns();
+  download(flatsToDxf(flats), safeFileName(`${designName()} flat patterns`, "dxf"), "application/dxf");
+  return flats.length;
 }
 
 export async function exportDrawingPdf() {

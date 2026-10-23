@@ -83,7 +83,11 @@ export type ShapeRecipe =
   /** a knurled or ridged grip; fast builds use a plain cylinder */
   | { t: "knurl"; d: number; h: number; at: V3; dir: V3; count: number; depth: number; style: "straight" | "fluted" }
   /** a simple stand-in for fast builds and the full shape for detailed ones (a belt without and with its teeth) */
-  | { t: "lod"; fast: ShapeRecipe; detail: ShapeRecipe };
+  | { t: "lod"; fast: ShapeRecipe; detail: ShapeRecipe }
+  /** a sheet-metal part laid flat: each region of the built part cut out and moved onto the flat, plus its bends laid flat */
+  | { t: "unfold"; part: PartRecipe; pieces: { region: ShapeRecipe; xf: Xform[] }[]; bends: ShapeRecipe[] }
+  /** one half of a two-part mould round a part (placed by xf), split across the pull at `split` (null: where the part is widest) */
+  | { t: "mould"; part: PartRecipe; xf: Xform[]; half: "top" | "bottom"; pull: V3; split: number | null; wall: number; shrink: number; keys: number; sprue: number; vents: number; bolt: number };
 
 /** One piece of a closed sketch loop, in sketch-plane coordinates. Arcs pass through m. */
 export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number };

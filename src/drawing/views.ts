@@ -10,6 +10,7 @@ import type { Span } from "../lang/ast";
 import { partFeatures, probeSegments, type Extent, type Feature } from "./features";
 import { defaultSpec, type DetailSpec, type DrawingSpec, type SectionSpec, type ViewKind } from "./spec";
 import { generalToleranceFor } from "../mfg/profiles";
+import { layFlat } from "./flat";
 
 const N = 1 / Math.sqrt(3);
 
@@ -99,8 +100,12 @@ export function worldBox(p: EvalPart, local: [V3, V3]): [V3, V3] {
   return [lo, hi];
 }
 
-/** Parts a drawing shows: named parts and components (all instances), or the whole visible design. */
+/** Parts a drawing shows: named parts and components (all instances), or the whole visible design; a flat-pattern drawing shows its sheet-metal parts laid flat. */
 export function drawingParts(spec: DrawingSpec, model: Model): EvalPart[] {
+  if (spec.flat) {
+    const seen = new Set<string>();
+    return layFlat(model.parts.filter((p) => p.sheet && (spec.of.length ? spec.of.includes(p.name) : !p.hidden) && !seen.has(p.name) && seen.add(p.name)));
+  }
   if (!spec.of.length) return model.parts.filter((p) => !p.hidden);
   const names = new Set(spec.of);
   const parts = model.parts.filter((p) => names.has(p.name));
@@ -228,10 +233,15 @@ export function partExtent(p: EvalPart, bboxOf: BBoxOf): Extent {
 /** Library parts that are made rather than bought get their own drawing. */
 const MADE_LIB = new Set(["spur_gear"]);
 
-/** Drawings generated when the source has none for a target: the whole design and each made part. */
+/** Drawings generated when the source has none for a target: the whole design, each made part, and each sheet-metal part's flat pattern. */
 export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
   const covered = new Set<string>();
+  const flatCovered = new Set<string>();
   for (const d of model.drawings) {
+    if (d.flat) {
+      for (const p of drawingParts(d, model)) flatCovered.add(p.name);
+      continue;
+    }
     if (!d.of.length) covered.add("");
     for (const n of d.of) if (d.of.length === 1) covered.add(n);
   }
@@ -260,6 +270,19 @@ export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
       const replaced = sec.normal[1] ? "front" : "right";
       s.views = s.views.filter((v) => v.kind !== replaced);
     }
+    out.push(s);
+  }
+  // the blank a sheet-metal part is cut from, with its bends
+  const flats = new Set<string>();
+  for (const p of model.parts) {
+    if (!p.sheet || p.hidden || flats.has(p.name) || flatCovered.has(p.name)) continue;
+    flats.add(p.name);
+    const s = defaultSpec(`auto:${p.name}:flat`, `${humanize(p.label.replace(/ #1$/, ""))} flat pattern`, [p.name]);
+    s.flat = true;
+    s.material = p.material;
+    s.tolerance = processTolerance(model, [p.name]) ?? s.tolerance;
+    s.views = [{ kind: "top" }];
+    s.hidden = false;
     out.push(s);
   }
   return out;
