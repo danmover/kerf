@@ -85,6 +85,18 @@ export interface ChecksResult {
   pairsTested: number;
   /** parts (by geometry hash) made of more than one solid, with the smaller pieces in the part's own coordinates */
   pieces?: Record<string, { count: number; others: { volume: number; at: V3 }[] }>;
+  /** pairs of parts whose surfaces touch (or cross), with which one holds the other up */
+  contacts?: Contact[];
+  /** each placed part's box in the assembly, by part id */
+  boxes?: Record<string, [V3, V3]>;
+}
+
+export interface Contact {
+  a: string;
+  b: string;
+  /** a rests on b (b's surface faces up under it where they meet) */
+  aOnB: boolean;
+  bOnA: boolean;
 }
 
 export interface InspectRequest {

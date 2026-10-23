@@ -57,6 +57,7 @@ export type MechDrive =
   | { kind: "cylinder"; name: string; joint: string; sign: number; fOut: number; fIn: number; vmax: number; seal: number; valve: Schedule };
 
 export type MechLink =
+  /** b is a joint, or FRAME for a gear fixed to the frame */
   | { kind: "gears"; name: string; a: string; b: string; ca: V3; cb: V3; ra: number; backlash: number; efficiency: number }
   | { kind: "rack"; name: string; pinion: string; rack: string; p: V3; dir: V3; backlash: number; efficiency: number }
   | { kind: "thread"; name: string; screw: string; follower: string; point: V3; k: number; backlash: number; frictionArm: number; what: "lead screw" | "ball screw" | "worm" }

@@ -7,6 +7,7 @@ import { useSettings, updateSettings, TERMS_VERSION, LIGHTING_IDS } from "./app/
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
 import { useView, requestCamera, toggleCode, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
+import { turns } from "./core/model";
 import { startAnalysisRuntime } from "./analysis/runtime";
 import { startBoardRuntime } from "./machine/pcb/runtime";
 import { startCableRuntime } from "./machine/harness/runtime";
@@ -165,7 +166,7 @@ function useShortcuts() {
       }
       if (key === " ") {
         if ((e.target as HTMLElement | null)?.tagName === "BUTTON") return;
-        const moves = useDesign.getState().model?.parts.some((p) => p.motion && p.motion.ratio);
+        const moves = useDesign.getState().model?.parts.some((p) => turns(p.motion));
         if (moves) {
           e.preventDefault();
           useView.setState({ playing: !v.playing });

@@ -370,6 +370,42 @@ export class TriBVH {
     return false;
   }
 
+  /**
+   * Calls `fn` with each pair of triangles, one from this mesh and one from `other`, that come within `gap` of each
+   * other (both in the same frame), until it returns true.
+   */
+  pairsWithin(other: TriBVH, gap: number, fn: (mine: number, theirs: number) => boolean | void): void {
+    if (!this.count || !other.count) return;
+    const A = this.bounds;
+    const B = other.bounds;
+    const g2 = gap * gap;
+    const stack: number[] = [0, 0];
+    while (stack.length) {
+      const j = stack.pop()!;
+      const i = stack.pop()!;
+      let d2 = 0;
+      for (let k = 0; k < 3; k++) {
+        const d = Math.max(0, A[i * 6 + k] - B[j * 6 + 3 + k], B[j * 6 + k] - A[i * 6 + 3 + k]);
+        d2 += d * d;
+      }
+      if (d2 > g2) continue;
+      const leafA = this.left[i] < 0;
+      const leafB = other.left[j] < 0;
+      if (leafA && leafB) {
+        for (let s = this.start[i], e = s + this.len[i]; s < e; s++)
+          for (let t = other.start[j], f = t + other.len[j]; t < f; t++) {
+            const ta = this.order[s];
+            const tb = other.order[t];
+            if (trianglesWithin(this.tris, ta * 9, other.tris, tb * 9, gap) && fn(ta, tb) === true) return;
+          }
+      } else if (leafB || (!leafA && boxSize(A, i) >= boxSize(B, j))) {
+        stack.push(this.left[i], j, this.right[i], j);
+      } else {
+        stack.push(i, other.left[j], i, other.right[j]);
+      }
+    }
+  }
+
   /** Inside test by counting crossings along a skew ray (in direction d). */
   contains(x: number, y: number, z: number, d: readonly number[] = [0.5773, 0.5774, 0.5772]): boolean {
     let crossings = 0;

@@ -148,11 +148,13 @@ export class MechSystem {
       switch (l.kind) {
         case "gears": {
           const ja = joint(l.a);
-          const jb = joint(l.b);
-          const where = gearPitch(ja.B, l.ca, jb.B, l.cb, () => ja.axis(), l.ra);
+          // b is the frame for a gear fixed to it (a planet rolling round a still sun)
+          const jb = l.b === FRAME ? null : joint(l.b);
+          const B2 = jb ? jb.B : this.frame;
+          const where = gearPitch(ja.B, l.ca, B2, l.cb, () => ja.axis(), l.ra);
           // the driven gear's pivot loses (1 - η) of the tooth force's moment
           const rb = Math.hypot(...sub(l.cb, l.ca)) - l.ra;
-          this.meshes.push(s.add(new ToothMesh(l.name, ja.B, jb.B, where, l.backlash, loss(jb, (1 - l.efficiency) * f.friction * Math.max(rb, 0)))));
+          this.meshes.push(s.add(new ToothMesh(l.name, ja.B, B2, where, l.backlash, jb ? loss(jb, (1 - l.efficiency) * f.friction * Math.max(rb, 0)) : loss(ja, (1 - l.efficiency) * f.friction * l.ra))));
           break;
         }
         case "rack": {

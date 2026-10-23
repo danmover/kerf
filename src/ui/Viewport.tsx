@@ -5,7 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneController, type PhotoStatus } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
-import { meshes, useDesign } from "../core/engine";
+import { meshes, meshOf, useDesign } from "../core/engine";
+import { turns } from "../core/model";
+import { findHolds } from "../core/holds";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
 import { useTheme } from "../app/theme";
@@ -151,6 +153,16 @@ export function Viewport() {
     if (model) ctl.current?.setParts(model.parts, meshes);
   }, [model, meshVersion]);
 
+  // what moving parts carry with them (their screws, nuts and the parts bolted on), measured once the meshes settle
+  useEffect(() => {
+    if (!model?.parts.some((p) => turns(p.motion))) {
+      ctl.current?.setHolds(null);
+      return;
+    }
+    const t = window.setTimeout(() => ctl.current?.setHolds(findHolds(model, meshOf)), 400);
+    return () => window.clearTimeout(t);
+  }, [model, meshVersion]);
+
   useEffect(() => {
     if (stage === "refining" || stage === "done") ctl.current?.settle();
     ctl.current?.setModelSettling(stage !== "idle" && stage !== "done");
@@ -190,7 +202,7 @@ export function Viewport() {
     if (view.cameraRequest) ctl.current?.fit(view.cameraRequest.preset === "fit" ? "current" : view.cameraRequest.preset);
   }, [view.cameraRequest]);
 
-  const hasMotion = !!model?.parts.some((p) => p.motion && p.motion.ratio);
+  const hasMotion = !!model?.parts.some((p) => turns(p.motion));
   const canFit = useMemo(() => !!model && hasFitting(model), [model]);
   const fitting = useFitView((f) => f.on);
   // the photoreal look hides the grid and CAD edges while it runs

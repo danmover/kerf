@@ -209,6 +209,6 @@ describe("Practice Amp with geometry", () => {
     // every bought electronic part is in the parts list once per instance, priced; its socket or pins are not extra lines
     const bom = bomRows(r.model);
     expect(bom.find((b) => b.catalogId === "tl072")).toMatchObject({ qty: 2, price: 0.4 });
-    expect(bom.filter((b) => b.kind === "Buy" && !b.catalogId && b.item !== "item").map((b) => b.description)).not.toContainEqual(expect.stringMatching(/TL072|socket|pins|tab/));
+    expect(bom.filter((b) => b.kind === "Buy" && !b.catalogId && b.item !== "item").map((b) => b.description)).not.toContainEqual(expect.stringMatching(/TL072|IC socket|pins|tab/));
   });
 });

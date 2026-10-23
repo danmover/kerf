@@ -28,6 +28,8 @@ export interface Surface {
 export interface PlacedSurface {
   mesh: TriBVH;
   pieces: number[];
+  /** +1 when the triangles wind with their normals out, -1 when the placement mirrored them */
+  out?: number;
 }
 
 /** The welded surface of a solid's mesh, or null when it is not closed (a face that failed to mesh): an open mesh proves nothing. */
@@ -101,4 +103,38 @@ export function apart(a: PlacedSurface, b: PlacedSurface): boolean {
 function inside(inner: PlacedSurface, outer: PlacedSurface): boolean {
   const T = inner.mesh.tris;
   return inner.pieces.some((t) => RAYS.some((d) => outer.mesh.contains(T[t * 9], T[t * 9 + 1], T[t * 9 + 2], d)));
+}
+
+/** Parts whose surfaces come this close touch, mm: preview meshes keep within about 0.25 mm of the true surface. */
+export const CONTACT_GAP = 0.3;
+
+export interface Touch {
+  /** a rests on b: b's surface faces up under a's facing down where they meet */
+  aOnB: boolean;
+  bOnA: boolean;
+}
+
+/** Whether two placed surfaces touch, and which (if either) holds the other up against gravity (-Z). */
+export function touching(a: PlacedSurface, b: PlacedSurface, gap = CONTACT_GAP): Touch | null {
+  const oa = (a.out ??= a.mesh.signedVolume() >= 0 ? 1 : -1);
+  const ob = (b.out ??= b.mesh.signedVolume() >= 0 ? 1 : -1);
+  const na = new Float64Array(3);
+  const nb = new Float64Array(3);
+  let touch = false;
+  let aOnB = false;
+  let bOnA = false;
+  let pairs = 0;
+  a.mesh.pairsWithin(b.mesh, gap, (ta, tb) => {
+    touch = true;
+    a.mesh.normal(ta, na);
+    b.mesh.normal(tb, nb);
+    const la = Math.hypot(na[0], na[1], na[2]) || 1;
+    const lb = Math.hypot(nb[0], nb[1], nb[2]) || 1;
+    const za = (oa * na[2]) / la;
+    const zb = (ob * nb[2]) / lb;
+    if (zb > 0.5 && za < -0.5) aOnB = true;
+    if (za > 0.5 && zb < -0.5) bOnA = true;
+    return (aOnB && bOnA) || ++pairs > 4000;
+  });
+  return touch ? { aOnB, bOnA } : null;
 }

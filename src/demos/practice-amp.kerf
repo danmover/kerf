@@ -187,7 +187,7 @@ component power_sw = lib.switch("toggle_spst") { at: (286, pan_y, knob_z), axis:
 component amp = lib.amplifier("tpa3116_mono") { at: (285, 150, ply + 12) }
 // the amp board on four 12 mm brass standoffs: screws down through the board, and countersunk screws up through the floor
 let amp_top = calc.fastener(grip: 1.6, into: "tapped", material: "Brass", depth: 5.5, size: M3)
-let amp_floor = calc.fastener(grip: ply, into: "tapped", material: "Brass", depth: 5.5, size: M3, flush: true)
+let amp_floor = calc.fastener(grip: ply, into: "tapped", material: "Brass", depth: 5.5, size: M3, head: "flat")
 component amp_standoffs = lib.standoff(M3, 12) { at: with_z(amp.holes, ply), axis: Z }
 component amp_screws = lib.screw(amp_top) { at: with_z(amp.holes, ply + 12 + 1.6), axis: -Z }
 component amp_floor_screws = lib.screw(amp_floor) { at: with_z(amp.holes, 0), axis: Z }
@@ -214,6 +214,7 @@ part right_side {
 }
 part top_panel {
   material: "Wood"
+  held: "glued and pinned"
   process: mfg.cnc_mill()
   color: #d6b585
   finish: "varnished"
@@ -232,6 +233,7 @@ part bottom_panel {
 // the speaker baffle, covered in grille cloth wrapped round its edges
 part baffle {
   material: "Wood"
+  held: "glued and pinned"
   process: mfg.cnc_mill(setups: [Y, -Y])
   color: #2b2a29
   group: "Cabinet"
@@ -245,6 +247,7 @@ part baffle {
 // the control strip above it, with the window the printed panel shows through
 part control_strip {
   material: "Wood"
+  held: "glued and pinned"
   process: mfg.cnc_mill(setups: [Y, -Y])
   color: #d6b585
   finish: "varnished"
@@ -256,6 +259,7 @@ part control_strip {
 // cleats behind the front: the baffle and the strip screw to them
 part cleat_left {
   material: "Wood"
+  held: "glued and pinned"
   process: mfg.cnc_mill()
   color: #c4a072
   finish: "varnished"
@@ -264,6 +268,7 @@ part cleat_left {
 }
 part cleat_right {
   material: "Wood"
+  held: "glued and pinned"
   process: mfg.cnc_mill()
   color: #c4a072
   finish: "varnished"
@@ -273,6 +278,7 @@ part cleat_right {
 // open back: an upper panel with the power socket and a lower rail
 part back_upper {
   material: "Wood"
+  held: "glued and pinned"
   process: mfg.cnc_mill(setups: [Y, -Y])
   color: #d6b585
   finish: "varnished"
@@ -284,6 +290,7 @@ part back_upper {
 }
 part back_lower {
   material: "Wood"
+  held: "glued and pinned"
   process: mfg.cnc_mill(setups: [Y, -Y])
   color: #d6b585
   finish: "varnished"
@@ -296,6 +303,7 @@ part back_lower {
 // and the switch go through it; the board hangs on four bosses.
 part front_panel {
   material: "PETG"
+  held: "four No. 4 wood screws into the control strip"
   process: mfg.fdm(build: Y, shrink_comp: true)   // printed face down: the bosses grow up off the back; scaled for shrink so the board holes line up
   color: #1d1f23
   group: "Control panel"

@@ -154,7 +154,7 @@ Every normal component property works (at, axis, rotate, color, group, label, at
 - role: "text": what the part does here ("front screw", "steering hinge", "x", "extruder", "part cooling"). The firmware generators read it to tell motors, axes and fans apart.
 - load: torque on the output shaft (N·mm, write 10.8Nm). The engineering check compares it with the stall or holding torque (fail at 100 %, warning above 50 %; a DC motor's stall torque and current scale with its driver's supply voltage, as in calc.motor_point), and the wiring rules use the current it implies to size drivers, wires and supplies.
 - rating: (fuses only) the fuse you fit, in A (write 15A); without it the catalog's fuse is assumed. The wiring rules fail a fuse larger than the thinnest wire after it can carry, and warn when the load after it is over 90 % of its rating.
-- held: "text": how a board, module, supply or battery is held when the model cannot show it ("double-sided foam tape", "hook-and-loop strap"). Without it, the mounting check needs screws through two of its holes into something (or one screw and a peg), or parts that close it in on every side.
+- held: "text": how a board, module, supply or battery (or any part) is held when the model cannot show it ("double-sided foam tape", "hook-and-loop strap", "M5 screws into T-nuts in the extrusion"). Without it, the mounting check needs screws through two of its holes into something (or one screw and a peg), or parts that close it in on every side, and the held-in-place check needs it fastened, fitted or pivoted to the parts on the floor.
 - leads: "soldered": the wires are soldered straight to a board's pads, with no plugs, and leave it upwards. For tight spaces where a plug and its lead have no room (small modules in a tube, header pins that point down into a shelf).
 - buy: "https://…": a direct product page for this exact item; replaces the catalog link in the parts list.
 - price: USD each; replaces the catalog price.
@@ -343,7 +343,7 @@ part bracket {
   if wall > 2 { add box(4, 4, 4) } else { add box(3, 3, 3) }
   cosmetic { chamfer(0.4, edges: boss.tip) }   // full-quality detail only
 }
-Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
+Part props: color, material, finish, process (how it is made, see Manufacturing processes), group, label, at (translate the finished part), rotate ((rx, ry, rz) degrees), turns_with (moves with a component or part), spin (driver ratio), axis and axis_at (rotation axis for spin), rides (carried round by a moving part, with its own spin: or mesh: relative to it: a teacup on a turning deck), held ("text": how it is held when the model cannot show it, such as glue, tape or undrawn hardware on the parts list). Flags: locked, hidden, removable (removable parts such as lids or covers are ignored by the tool-access check, meaning "removed for assembly").
 Order matters: each modifier applies to the body as built so far. Shell right after the body (before bosses, ribs and holes). Fillet a joint right after adding the feature it rounds (fillet(r, edges: boss.root)); fillet outer edges before cutting holes that cross them. A part is limited to 600 operations.
 
 ### Shape functions (use after body/add/cut/intersect)
@@ -419,7 +419,7 @@ ${processReference()}
 
 ## Components
 component name = lib.kind(args) { at: point, axis: dir, ... }
-Props: at (a point, or a LIST of points to make a pattern of identical instances: name#1..n; use name.all[i] or name.count), axis (orientation for axial parts), facing (horizontal direction for connectors), rotate, spin (drives the mechanism: spin: 1), mesh (gears: mesh with another spur_gear; the phase and speed are computed so teeth interleave), turns_with (locks to another component's rotation, e.g. a gear on a motor shaft), color, group, material, finish, label. Flags: locked, hidden, removable.
+Props: at (a point, or a LIST of points to make a pattern of identical instances: name#1..n; use name.all[i] or name.count), axis (orientation for axial parts), facing (horizontal direction for connectors), rotate, spin (drives the mechanism: spin: 1), mesh (gears: mesh with another spur_gear; the phase and speed are computed so teeth interleave), turns_with (locks to another component's rotation, e.g. a gear on a motor shaft), rides (carried by a moving part: a planet gear with rides: carrier and mesh: sun turns round the sun as the carrier turns), held ("text": glue, tape or undrawn hardware), color, group, material, finish, label. Flags: locked, hidden, removable.
 Component fields are world-space after placement (motor.holes is a list of world points). Moving components get .speed (rotation ratio relative to the driver). Pattern components expose fields of the first instance plus .all and .count; shape fields (like usb.opening) become lists so \`cut usb.opening\` works.
 
 ${lib}

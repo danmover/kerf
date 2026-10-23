@@ -74,9 +74,9 @@ let probe_top = zn + 44.6                 // BLTouch mount face: case bottom 8.3
 component base_front = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, y_front, z_cross + 10), axis: X, rotate: 90 }
 component base_mid   = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, 0, z_cross + 10), axis: X, rotate: 90 }
 component base_back  = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, y_back, z_cross + 10), axis: X, rotate: 90 }
-component y_beams    = lib.extrusion("vslot_2040", length: base_l) { at: [(-beam_x, y_front - 20, z_ybeam + 10), (beam_x, y_front - 20, z_ybeam + 10)], axis: Y, rotate: 90 }
-component uprights   = lib.extrusion("vslot_2040", length: up_l) { at: [(-up_x, 0, z_up), (up_x, 0, z_up)], axis: Z }
-component top_bar    = lib.extrusion("vslot_2020", length: base_w) { at: (-base_w / 2, 0, z_top + 10), axis: X }
+component y_beams    = lib.extrusion("vslot_2040", length: base_l) { at: [(-beam_x, y_front - 20, z_ybeam + 10), (beam_x, y_front - 20, z_ybeam + 10)], axis: Y, rotate: 90, held: "corner brackets and M5 T-nuts to the base cross members" }
+component uprights   = lib.extrusion("vslot_2040", length: up_l) { at: [(-up_x, 0, z_up), (up_x, 0, z_up)], axis: Z, held: "corner brackets and M5 T-nuts to the base" }
+component top_bar    = lib.extrusion("vslot_2020", length: base_w) { at: (-base_w / 2, 0, z_top + 10), axis: X, held: "corner brackets and M5 T-nuts to the uprights" }
 
 // how the frame sways after each move: the X gantry rides on the uprights, and every move at accel sets it ringing
 analysis "Frame sway" {
@@ -97,8 +97,8 @@ part foot_br { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40
 component foot_screws = lib.screw(M5, 12) { at: [(-140, y_front + 10, 5.4), (140, y_front + 10, 5.4), (-140, 10, 5.4), (140, 10, 5.4), (-140, y_back + 10, 5.4), (140, y_back + 10, 5.4)], axis: Z }
 
 // ── Y axis: bed on two rails, belt under the middle ───────────────────
-component y_rails  = lib.rail("mgn12h", length: 300, travel: yc - y_rail0) { at: [(-rail_x, y_rail0, z_yrail), (rail_x, y_rail0, z_yrail)], axis: Y }
-component bed      = lib.heated_bed("heated_bed_235_24v") { at: (0, yc, z_bed) }
+component y_rails  = lib.rail("mgn12h", length: 300, travel: yc - y_rail0) { at: [(-rail_x, y_rail0, z_yrail), (rail_x, y_rail0, z_yrail)], axis: Y, held: "M3 screws into T-nuts in the Y beams" }
+component bed      = lib.heated_bed("heated_bed_235_24v") { at: (0, yc, z_bed), held: "M4 countersunk screws through silicone spacers into nyloc nuts under the bed carriage" }
 component y_motor  = lib.stepper("nema17_17hs4401") { at: (-17.5, y_ym, z_yb), axis: X, role: "y" }
 // three of the four holes: with the bed all the way forward its carriage covers the upper back one
 component y_motor_screws = lib.screw(M3, 8) { at: [(-12.5, y_ym - 15.5, z_yb - 15.5), (-12.5, y_ym + 15.5, z_yb - 15.5), (-12.5, y_ym - 15.5, z_yb + 15.5)], axis: -X }   // through the 5 mm web, 3 mm into the motor
@@ -112,6 +112,7 @@ note "Y homes to the back: the fin under the bed carriage presses the Y switch w
 part bed_carriage {
   group: "Y axis"
   material: "ABS"
+  held: "M3 screws down into both Y rail carriages"
   color: #c8553d
   body box(210, 190, 6, at: (0, yc, z_carriage), r: 6)
   // lightening windows clear of the rail blocks, bed screws and belt clamp
@@ -134,6 +135,7 @@ part bed_carriage {
 part y_motor_mount {
   group: "Y axis"
   material: "PETG"
+  held: "M5 screws into T-nuts in the front cross member"
   color: #3d7bfd
   body box(60, 42, 6, at: (-10, -279, z_ybeam))              // plate on the front cross member
   add box(37.5, 4.9, 18, at: (1.25, -257.45, z_cross + 2))     // flange on its back face
@@ -150,6 +152,7 @@ part y_motor_mount {
 part y_idler_mount {
   group: "Y axis"
   material: "PETG"
+  held: "M5 screws through its slotted feet into T-nuts in the back cross member"
   color: #3d7bfd
   body box(4, 24, 24, at: (-8, y_back, z_ybeam))               // cheeks either side of the idler
   add box(4, 24, 24, at: (7.5, y_back, z_ybeam))
@@ -164,6 +167,7 @@ part y_idler_mount {
 part y_stop_mount {
   group: "Y axis"
   material: "PETG"
+  held: "an M5 screw into a T-nut in the back cross member"
   color: #3d7bfd
   body box(25, 20, 6, at: (-45.5, 64, z_ybeam))                // foot on the back cross member
   add box(40, 4, 24, at: (-38, 60, z_ybeam + 6))               // plate behind the switch board
@@ -174,7 +178,7 @@ component y_stop_screws = lib.screw(M2_5, 8) { at: with_y(y_stop.holes, 56.4), a
 component y_stop_nuts   = lib.nut(M2_5) { at: with_y(y_stop.holes, 62), axis: Y }
 
 // ── Z axis: two rails on the uprights, two lead screws outboard ───────
-component z_rails    = lib.rail("mgn12h", length: 320, travel: z_zb - 180) { at: [(-up_x, y_up_front, 180), (up_x, y_up_front, 180)], axis: Z, rotate: 180 }
+component z_rails    = lib.rail("mgn12h", length: 320, travel: z_zb - 180) { at: [(-up_x, y_up_front, 180), (up_x, y_up_front, 180)], axis: Z, rotate: 180, held: "M3 screws into T-nuts in the uprights" }
 component z_motors   = lib.stepper("nema17_17hs4401") { at: [(-lead_x, lead_y, 50), (lead_x, lead_y, 50)], axis: Z, role: "z" }
 component z_couplers = lib.coupler("coupler_5x8") { at: [(-lead_x, lead_y, 63), (lead_x, lead_y, 63)], axis: Z }
 component z_screws   = lib.lead_screw("lead_screw_t8x8", length: 350, travel: z_b - 20 - 76) { at: [(-lead_x, lead_y, 76), (lead_x, lead_y, 76)], axis: Z }
@@ -184,6 +188,7 @@ note "Both Z motors run from the SKR's single Z driver (ZA and ZB headers in par
 part z_motor_mount_l {
   group: "Z axis"
   material: "PETG"
+  held: "four M5 screws into T-nuts in the upright"
   color: #3d7bfd
   let s = -1
   body box(6, 86, 68, at: (s * (up_x + 13), -23, z_up))                // plate on the upright's outer face
@@ -198,6 +203,7 @@ part z_motor_mount_l {
 part z_motor_mount_r {
   group: "Z axis"
   material: "PETG"
+  held: "four M5 screws into T-nuts in the upright"
   color: #3d7bfd
   let s = 1
   body box(6, 86, 68, at: (s * (up_x + 13), -23, z_up))
@@ -210,8 +216,8 @@ part z_motor_mount_r {
 }
 
 // ── X axis: beam on the Z carriages, rail on its front face ───────────
-component x_beam   = lib.extrusion("vslot_2040", length: 340) { at: (-170, (y_zc_front + y_beam_front) / 2, z_b + 20), axis: X }
-component x_rail   = lib.rail("mgn12h", length: 300, travel: xc + 150) { at: (-150, y_beam_front, z_xr), axis: X, rotate: 90 }
+component x_beam   = lib.extrusion("vslot_2040", length: 340) { at: (-170, (y_zc_front + y_beam_front) / 2, z_b + 20), axis: X, held: "M5 screws through the Z carriages into T-nuts in the beam" }
+component x_rail   = lib.rail("mgn12h", length: 300, travel: xc + 150) { at: (-150, y_beam_front, z_xr), axis: X, rotate: 90, held: "M3 screws into T-nuts in the X beam" }
 component x_motor  = lib.stepper("nema17_17hs4401") { at: (x_xm, -86.5, z_xp), axis: Y, role: "x" }
 // the two outboard holes: a key can't reach the inboard pair past the Z lead screw, and the pilot in its recess takes the belt pull
 component x_motor_screws = lib.screw(M3, 8) { at: [(x_xm - 15.5, -81.5, z_xp - 15.5), (x_xm - 15.5, -81.5, z_xp + 15.5)], axis: -Y }   // through the 5 mm plate, 3 mm into the motor
@@ -225,6 +231,7 @@ component x_stop   = lib.sensor("endstop_mech") { at: (-150.1, -81.5, z_xr), rot
 part z_carriage_l {
   group: "Z axis"
   material: "PETG"
+  held: "M3 screws into the Z rail carriage"
   color: #2f6fe0
   let s = -1
   body box(53, 8, 95, at: (s * 154.5, (y_zc_back + y_zc_front) / 2, z_b - 5))
@@ -245,6 +252,7 @@ part z_carriage_l {
 part z_carriage_r {
   group: "Z axis"
   material: "PETG"
+  held: "M3 screws into the Z rail carriage"
   color: #2f6fe0
   let s = 1
   body box(53, 8, 95, at: (s * 154.5, (y_zc_back + y_zc_front) / 2, z_b - 5))
@@ -265,6 +273,7 @@ note "X belt tension: loosen the idler's M5 axle nut, pull the belt through the 
 part x_stop_mount {
   group: "X axis"
   material: "PETG"
+  held: "an M5 screw into a T-nut in the X beam"
   color: #3d7bfd
   body box(16, 8, 16, at: (-160, -65, z_xr - 8))                 // on the beam's lower slot, beyond the rail end
   add box(4, 28.5, 32, at: (-152.1, -75.25, z_xr - 17))         // plate the switch board screws to, above the BLTouch arm and below the X belt
@@ -281,8 +290,8 @@ component x_stop_nut   = lib.nut(M2_5) { at: with_x(x_stop.holes[1], -148.5), ax
 component hotend     = lib.hotend("e3d_v6_24v") { at: (xc, y_noz, zn), axis: Z, rotate: 180 }
 component e_motor    = lib.stepper("nema17_17hs08_1004s") { at: (xc + 6.2, -116.5 - 3, h_top + 23), axis: Y, role: "extruder" }
 component extruder   = lib.extruder("bmg_clone") { at: (xc + 6.2, -116.5, h_top + 23), axis: Y }
-component hotend_fan = lib.fan("fan_4010_24v") { at: (xc, -126, zn + 34.15), axis: Y, role: "hotend heatsink" }
-component part_fan   = lib.fan("blower_5015_24v") { at: (xc + 22, -110, zn + 33), rotate: (0, 90, 0), role: "part cooling" }
+component hotend_fan = lib.fan("fan_4010_24v") { at: (xc, -126, zn + 34.15), axis: Y, role: "hotend heatsink", held: "M3 screws into the tapped holes in the extruder mount" }
+component part_fan   = lib.fan("blower_5015_24v") { at: (xc + 22, -110, zn + 33), rotate: (0, 90, 0), role: "part cooling", held: "two M3 screws through the carriage's side" }
 component probe      = lib.sensor("bltouch") { at: (xc - 38, y_noz, probe_top), rotate: (180, 0, 0), role: "probe" }
 note "The heater block points left, toward the BLTouch, so the part-cooling duct on the right blows straight at the nozzle. The pancake motor keeps the toolhead near 600 g."
 note "Extruder: the pancake motor, a 3 mm printed plate and the BMG are one unit, held by the BMG's three long M3 screws (from its back face, through the plate, into the motor). The plate is part of the front hotend clamp, so two M3 × 25 screws hold the hotend, extruder and motor on the carriage and come off from the front."
@@ -291,6 +300,7 @@ component clamp_screws = lib.screw(M3, 25) { at: [(xc - 14, -119.5, h_clamp + 9)
 part x_carriage {
   group: "Toolhead"
   material: "ABS"
+  held: "M3 screws into the X rail carriage"
   color: #e07a2f
   // plate on the rail carriage
   body box(64, 8, z_xr + 36 - (zn + 44), at: (xc, (y_xc_back + y_xc_front) / 2, zn + 44), r: 3)
@@ -361,6 +371,7 @@ note "Mains enters through a fused, switched IEC inlet in the supply's terminal 
 part ebox {
   group: "Electronics"
   material: "PETG"
+  held: "four M5 screws into T-nuts in the upright"
   process: mfg.fdm(build: -X, shrink_comp: true)   // printed open side up; scaled for shrink, so the board's screw pattern lines up with its holes
   color: #2b3038
   body box(40, 124, 124, at: (-180, 84, 108))
@@ -397,6 +408,7 @@ part ebox_lid {
 part psu_mount {
   group: "Electronics"
   material: "PETG"
+  held: "four M5 screws into T-nuts in the upright"
   process: mfg.fdm(build: X, shrink_comp: true)   // printed flat; scaled for shrink, so the supply's screw pattern lines up
   color: #2b3038
   body box(5, 155, 171, at: (162.5, 59.5, 132))
@@ -424,6 +436,7 @@ part psu_cover {
 part spool_holder {
   group: "Frame"
   material: "PETG"
+  held: "two M5 screws into T-nuts in the top bar"
   color: #3a3f47
   body box(40, 40, 8, at: (0, 10, z_top + 20))
   add box(20, 10, 80, at: (0, 25, z_top + 28))

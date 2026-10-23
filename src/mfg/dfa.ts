@@ -5,7 +5,7 @@
 // confirmed contacts) and mfg/dfaRuntime feeds that from the live engine.
 
 import type { CheckItem } from "../core/checks";
-import type { EvalPart, Model } from "../core/model";
+import { turns, type EvalPart, type Model } from "../core/model";
 import { applyXforms, applyXformsToDir, frameAt, framePoint, vadd, vdot, vlen, vnorm, vscale, vsub, type ShapeRecipe, type V2, type V3, type Xform } from "../kernel/recipe";
 import { THREADS, materialDensity } from "../library/standards";
 import { materialRecord } from "../library/materialDb";
@@ -523,7 +523,7 @@ export function dfaReport(model: Model, facts: DfaFacts = {}): DfaReport {
       solids,
       box,
       volume,
-      moves: solids.some((s) => !!s.motion && Math.abs(s.motion.ratio) > 1e-9),
+      moves: solids.some((s) => turns(s.motion)),
       removable: solids.some((s) => s.removable),
       op: "",
     });
