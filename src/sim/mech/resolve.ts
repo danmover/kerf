@@ -6,7 +6,8 @@
 // profile from its shape, and everything converted to SI units for the
 // solver. Runs in the app (it needs the meshes), before the run is queued.
 
-import type { EvalPart, Model } from "../../core/model";
+import { turns, type EvalPart, type Model, type Motion } from "../../core/model";
+import { findHolds, isFastener } from "../../core/holds";
 import type { MeshEntry } from "../../core/engine";
 import { applyXforms, type Xform } from "../../kernel/recipe";
 import { catalogPart } from "../../machine/catalog";
@@ -28,6 +29,13 @@ const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const len = (a: V3) => Math.hypot(a[0], a[1], a[2]);
 const unit = (a: V3): V3 => scl(a, 1 / (len(a) || 1));
+/** One key per turning: its axis line (its closest point to the design origin), its rate, and what it rides on. */
+function lineKey(m: Motion): string {
+  const a = unit(m.axis);
+  const c = sub(m.origin, scl(a, dot(m.origin, a)));
+  const key = [...a.map((x) => Math.round(Math.abs(x) * 1e4)), ...c.map((x) => Math.round(x * 100)), Math.round(m.ratio * 1e6) * Math.sign(a[0] + a[1] * 1e-3 + a[2] * 1e-6 || 1)].join(",");
+  return m.parent ? `${key}<${lineKey(m.parent)}` : key;
+}
 const SI = (p: V3): V3 => [p[0] / 1000, p[1] / 1000, p[2] / 1000];
 
 /** rotates v about a unit axis by an angle */
@@ -212,15 +220,16 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   }
   const explicit = new Set(bodyOf.keys());
   const named = new Set(spec.items.flatMap((i) => ("name" in i ? [i.name] : [])));
+  // how the design holds together: what each screw clamps, and what moving parts carry with them
+  const holds = findHolds(model, (h) => geom(h)?.preview ?? geom(h)?.final);
+  const lines = new Map<string, Group>();
   if (spec.auto) {
-    const lines = new Map<string, Group>();
+    const parentOf = new Map<Group, string>();
     for (const p of parts) {
-      if (!p.motion || explicit.has(p.name) || !p.motion.ratio) continue;
+      if (!p.motion || explicit.has(p.name) || !turns(p.motion)) continue;
       const a = unit(p.motion.axis);
       const o = p.motion.origin;
-      // the axis line through the origin: its closest point to the design origin
-      const c = sub(o, scl(a, dot(o, a)));
-      const key = [...a.map((x) => Math.round(Math.abs(x) * 1e4)), ...c.map((x) => Math.round(x * 100)), Math.round(p.motion.ratio * 1e6) * Math.sign(a[0] + a[1] * 1e-3 + a[2] * 1e-6 || 1)].join(",");
+      const key = lineKey(p.motion);
       let g = lines.get(key);
       if (!g) {
         let id = p.name;
@@ -228,6 +237,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
         g = { id, members: [], parts: [], auto: true, joint: { k: "pivot", name: id, what: [], on: null, at: o, axis: a } };
         lines.set(key, g);
         groups.push(g);
+        if (p.motion.parent) parentOf.set(g, lineKey(p.motion.parent));
       }
       if (!g.members.includes(p.name)) {
         g.members.push(p.name);
@@ -237,9 +247,43 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       taken.add(p.id);
       if (!bodyOf.has(p.name)) bodyOf.set(p.name, g.id);
     }
+    // a gear riding on a turning deck (rides:) pivots on the deck's body, not the frame
+    for (const [g, pk] of parentOf) {
+      const carrier = lines.get(pk) ?? groups.find((x) => x.parts.some((q) => q.motion && lineKey(q.motion) === pk));
+      if (carrier && carrier !== g) g.joint!.on = carrier.id;
+    }
     const autos = [...lines.values()];
-    if (autos.length) notes.push(`Turning on their own shafts (from spin:/mesh:): ${autos.map((g) => g.members.join(" + ")).join("; ")}`);
+    if (autos.length) notes.push(`Turning on their own shafts (from spin:/mesh:): ${autos.map((g) => g.members.join(" + ") + (g.joint!.on ? ` (on ${g.joint!.on})` : "")).join("; ")}`);
   }
+  // screws, nuts and washers move with the part they clamp (not one they are its pivot), and parts bolted to a
+  // turning part turn with it
+  const groupOf = new Map<string, Group>();
+  for (const g of groups) for (const p of g.parts) groupOf.set(p.id, g);
+  const ride = (p: EvalPart, g: Group | undefined) => {
+    if (!g || taken.has(p.id)) return;
+    g.parts.push(p);
+    taken.add(p.id);
+    groupOf.set(p.id, g);
+  };
+  let rode = 0;
+  for (const st of holds.stacks) {
+    const anchor = st.clamped.find((p) => !isFastener(p) && !st.pivots.includes(p)) ?? (st.host && !st.pivots.includes(st.host) ? st.host : undefined);
+    const g = anchor ? groupOf.get(anchor.id) : undefined;
+    if (!g) continue;
+    const before = taken.size;
+    ride(st.screw, g);
+    for (const l of st.layers) if (isFastener(l.part) && l.part.libKind !== "insert" && l.part.libKind !== "standoff") ride(l.part, g);
+    rode += taken.size - before;
+  }
+  if (spec.auto)
+    for (const p of parts) {
+      const c = holds.carried.get(p.id);
+      if (!c) continue;
+      const before = taken.size;
+      ride(p, groupOf.get(c.from.id) ?? lines.get(lineKey(c.motion)));
+      rode += taken.size - before;
+    }
+  if (rode) notes.push(`${rode} screw${rode === 1 ? "" : "s"}, nut${rode === 1 ? "" : "s"} and bolted part${rode === 1 ? "" : "s"} move with the bodies they fasten`);
   const frameParts = parts.filter((p) => !taken.has(p.id));
   const bodyIdOf = (name: string | null, what: string): string => {
     if (name === null || name === FRAME) return FRAME;
@@ -489,10 +533,20 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   if (spec.auto)
     for (const p of parts) {
       const g = p.gear;
-      if (!g?.meshWith || !bodyOf.has(p.name) || !bodyOf.has(g.meshWith)) continue;
-      const ja = joints.find((x) => x.body === bodyOf.get(p.name));
-      const jb = joints.find((x) => x.body === bodyOf.get(g.meshWith!));
+      if (!g?.meshWith || (!bodyOf.has(p.name) && !bodyOf.has(g.meshWith))) continue;
+      const ja = bodyOf.has(p.name) ? joints.find((x) => x.body === bodyOf.get(p.name)) : undefined;
+      const jb = bodyOf.has(g.meshWith) ? joints.find((x) => x.body === bodyOf.get(g.meshWith!)) : undefined;
       if (ja?.kind === "pivot" && jb?.kind === "pivot" && ja !== jb) addGears(`${p.name}-${g.meshWith}`, p.name, g.meshWith, undefined, 0.98);
+      else if (!ja !== !jb) {
+        // one gear still on the frame: the other rolls round it if its pivot rides on a moving body (a planet)
+        const [mover, still] = ja ? [p, byName.get(g.meshWith)?.find((q) => q.gear)] : [byName.get(g.meshWith)?.find((q) => q.gear), p];
+        const jm = ja ?? jb!;
+        if (!mover?.gear || !still?.gear || jm.kind !== "pivot" || jm.on === FRAME) continue;
+        const key = [mover.name, still.name].sort().join("|");
+        if (meshed.has(key)) continue;
+        meshed.add(key);
+        links.push({ kind: "gears", name: `${mover.name}-${still.name}`, a: jm.name, b: FRAME, ca: SI(mover.gear.center), cb: SI(still.gear.center), ra: (mover.gear.m * mover.gear.z) / 2 / 1000, backlash: (mover.gear.backlash || still.gear.backlash || 0.05) / 1000, efficiency: 0.98 });
+      }
     }
   if (spec.auto) for (const b of model.machine?.belts ?? []) beltLinks(b, joints, bodyOf, bodyById, links, notes);
 

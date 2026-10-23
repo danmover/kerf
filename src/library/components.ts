@@ -377,7 +377,7 @@ export const LIBRARY: Record<string, LibEntry> = {
 
   spur_gear: {
     signature: "lib.spur_gear(m: 1, z: 20, width: 8, bore: 5) { at: (x, y, z), axis: Y, mesh: other_gear }",
-    doc: "Involute spur gear, 20° pressure angle. Args: m (module), z (teeth), width, bore, hub_d, hub_l, backlash. `at` is the centre of one face, the gear extends along `axis`. Props: `spin: 1` marks the driving gear, `mesh: g` meshes with gear g (phase and speed are computed), `turns_with: g` locks it to g (compound gears). Fields: m, z, pitch_d, tip_d, root_d, width, at, center, end, axis.",
+    doc: "Involute spur gear, 20° pressure angle. Args: m (module), z (teeth), width, bore, hub_d, hub_l, backlash. `at` is the centre of one face, the gear extends along `axis`. Props: `spin: 1` marks the driving gear, `mesh: g` meshes with gear g (phase and speed are computed), `turns_with: g` locks it to g (compound gears), `rides: carrier` with `mesh: sun` makes a planet that turns round a still or turning sun as its carrier turns. Fields: m, z, pitch_d, tip_d, root_d, width, at, center, end, axis.",
     make(a, phase) {
       const m = a.num("m", 1);
       const z = Math.round(a.num("z", 20));

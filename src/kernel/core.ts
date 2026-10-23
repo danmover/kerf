@@ -12,7 +12,7 @@ import { geoKey, type GeoQuery } from "../lang/values";
 import { ProcessAnalyzer } from "../mfg/analyzer";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { FeatureTools } from "./topology";
-import { apart, closedSurface, placeSurface, type PlacedSurface } from "./apart";
+import { CONTACT_GAP, apart, closedSurface, placeSurface, touching, type PlacedSurface, type Touch } from "./apart";
 
 interface CacheEntry {
   shape: Shape3D;
@@ -62,6 +62,8 @@ export class KernelCore {
   private placedCache = new Map<string, { shape: Shape3D; bbox: [V3, V3]; used: number; key: string }>();
   /** overlaps of placed pairs, kept across checks so an edit re-tests only the pairs it moved or changed */
   private pairs = new Map<string, PairResult>();
+  /** whether two placed solids touch, by the same pair key */
+  private touches = new Map<string, Touch | null>();
   private tick = 0;
   private processes = new ProcessAnalyzer();
   maxEntries = 400;
@@ -249,6 +251,34 @@ export class KernelCore {
       this.pairs.delete(key);
     }
 
+    // which parts touch, and which holds which up: for the check that every part is held in place
+    const contacts: NonNullable<ChecksResult["contacts"]> = [];
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const A = list[i];
+        const B = list[j];
+        if (!boxesOverlap(A.bbox, B.bbox, CONTACT_GAP)) continue;
+        if (A.item.id.split(".")[0] === B.item.id.split(".")[0]) continue;
+        const swap = A.key > B.key;
+        const key = swap ? `${B.key}#${A.key}` : `${A.key}#${B.key}`;
+        let t = this.touches.get(key);
+        if (t === undefined) {
+          const sa = surfaceOf(swap ? B : A);
+          const sb = surfaceOf(swap ? A : B);
+          t = sa && sb ? touching(sa, sb) : null;
+        }
+        this.touches.delete(key);
+        this.touches.set(key, t);
+        if (t) contacts.push({ a: A.item.id, b: B.item.id, aOnB: swap ? t.bOnA : t.aOnB, bOnA: swap ? t.aOnB : t.bOnA });
+      }
+    }
+    for (const key of this.touches.keys()) {
+      if (this.touches.size <= 20000) break;
+      this.touches.delete(key);
+    }
+    const boxes: Record<string, [V3, V3]> = {};
+    for (const w of list) boxes[w.item.id] = w.bbox;
+
     // geometric queries for requirements
     const geo: Record<string, number> = {};
     const geoErrors: Record<string, string> = {};
@@ -323,7 +353,7 @@ export class KernelCore {
       if (e.pieces && e.pieces.count > 1) pieces[p.hash] = e.pieces;
     }
 
-    return { interferences, geo, geoErrors, access, envelopes, ms: performance.now() - t0, pairsTested, pieces };
+    return { interferences, geo, geoErrors, access, envelopes, ms: performance.now() - t0, pairsTested, pieces, contacts, boxes };
   }
 
   /** How much two placed solids overlap: exactly, unless their meshes show they are well apart. */

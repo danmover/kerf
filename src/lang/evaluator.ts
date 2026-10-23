@@ -14,6 +14,7 @@ import { frameFor, hasDetail, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, GearInfo, Model, Motion } from "../core/model";
+import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
@@ -89,8 +90,8 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "label"];
-const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "color", "group", "material", "finish", "label"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "held", "label"];
+const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "held", "color", "group", "material", "finish", "label"];
 
 /** Fields of the brief block, by the type of value each takes. */
 const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as const;
@@ -916,7 +917,7 @@ class Evaluator {
     const catalogForm = !!MACHINE_LIBRARY[key] && LIBRARY[key] !== MACHINE_LIBRARY[key] && typeof pos[0] === "string";
     // undefined for step(): an imported file has no library entry
     const entry: (typeof LIBRARY)[string] | undefined = catalogForm ? MACHINE_LIBRARY[key] : LIBRARY[key];
-    const compProps = entry?.machine ? [...COMP_PROPS, ...MACHINE_PROPS] : COMP_PROPS;
+    const compProps = entry?.machine ? [...new Set([...COMP_PROPS, ...MACHINE_PROPS])] : COMP_PROPS;
     this.callSpan = s.call.span;
     const args = new Args(key === "step" ? "step" : `lib.${key}`, pos, named, this.ctx(), mergeParams((catalogForm ? undefined : POSITIONAL[key]) ?? entry?.positional ?? [], (catalogForm ? undefined : LIB_ARGS[key]) ?? entry?.params ?? []));
 
@@ -932,9 +933,10 @@ class Evaluator {
       } else if (it.k === "flag") {
         if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". Components accept locked, hidden and removable.`, it.span);
         flags.add(it.name);
-      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, color:, group:, material:, finish:) and flags (locked, hidden, removable)", it.span);
+      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, rides:, held:, color:, group:, material:, finish:) and flags (locked, hidden, removable)", it.span);
     }
     this.checkMaterial(props, propSpans);
+    checkHeld(props.held, propSpans.held);
     this.blocks.push({ name: s.name, kind: "component", span: s.span, locked: flags.has("locked") });
     const ctx = this.ctx();
     // `at` may be a single point or a list of points (a pattern of identical components)
@@ -954,6 +956,9 @@ class Evaluator {
     let meshWith: string | undefined;
     const meshV = props.mesh;
     const turnsV = props.turns_with;
+    // the moving part it rides on: its own spin or mesh is then relative to that part
+    const carrier = props.rides !== undefined ? this.motionOf(props.rides, propSpans.rides, "rides") : undefined;
+    if (carrier && turnsV !== undefined) throw new EvalError("rides: and turns_with: together: turns_with: already moves it with that part, carrier and all; give rides: with spin: or mesh: instead", propSpans.rides);
     if (props.spin !== undefined) {
       const ratio = this.num(props.spin, propSpans.spin, "spin");
       motion = { origin: at0, axis, ratio };
@@ -969,14 +974,17 @@ class Evaluator {
       const d = vsub(at0, other.at);
       const theta = (Math.atan2(vdot(d, v), vdot(d, u)) * 180) / Math.PI;
       phase = meshPhase(theta, other.gear.phase, other.gear.z, z);
-      const otherRatio = other.motion?.ratio ?? 0;
-      motion = { origin: at0, axis, ratio: (-otherRatio * other.gear.z) / z };
+      // teeth roll on each other relative to the carrier both centres sit on: a gear riding a turning deck
+      // round a fixed centre gear turns about its own axis (a planet), one beside a still gear on a still frame does not
+      const otherRate = absRate(other.motion, axis) - absRate(carrier, axis);
+      motion = { origin: at0, axis, ratio: (-otherRate * other.gear.z) / z };
       meshWith = String(other.value.fields.name);
     }
     if (turnsV !== undefined) {
       const other = this.motionOf(turnsV, propSpans.turns_with);
-      motion = key === "spur_gear" || key === "bearing" ? { origin: at0, axis, ratio: other?.ratio ?? 0 } : { origin: other?.origin ?? at0, axis: other?.axis ?? axis, ratio: other?.ratio ?? 0 };
+      motion = key === "spur_gear" || key === "bearing" ? { origin: at0, axis, ratio: other?.ratio ?? 0, ...(other?.parent ? { parent: other.parent } : {}) } : other;
     }
+    if (carrier) motion = motion ? { ...motion, parent: carrier } : carrier;
 
     const libArgs: LibArgs = {
       num: (n, d) => args.num(n, d),
@@ -1119,7 +1127,6 @@ class Evaluator {
         const price = props.price !== undefined ? this.num(props.price, propSpans.price, "price") : undefined;
         if (props.buy !== undefined && (typeof props.buy !== "string" || !/^https?:\/\//.test(props.buy))) throw new EvalError('buy: should be a web address in quotes, e.g. buy: "https://www.pololu.com/product/713"', propSpans.buy);
         if (props.role !== undefined && typeof props.role !== "string") throw new EvalError('role: should be text, e.g. role: "front screw"', propSpans.role);
-        if (props.held !== undefined && (typeof props.held !== "string" || !props.held.trim())) throw new EvalError('held: says how the part is held where the model cannot show it, e.g. held: "hook-and-loop strap"', propSpans.held);
         if (props.leads !== undefined && props.leads !== "soldered") throw new EvalError('leads: "soldered" solders the wires straight to the part\'s pads instead of plugging them in', propSpans.leads);
         if (props.rating !== undefined && cp.kind !== "fuse") throw new EvalError("rating: is a fuse's rating in amps; only fuses take it", propSpans.rating);
         const rating = props.rating !== undefined ? this.num(props.rating, propSpans.rating, "rating (the fuse's rating, A)") : undefined;
@@ -1214,6 +1221,7 @@ class Evaluator {
           span: s.span,
           deps: [],
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
+          ...(typeof props.held === "string" ? { held: props.held.trim() } : {}),
           gear: sd.suffix ? undefined : gear,
           bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
@@ -1561,20 +1569,20 @@ class Evaluator {
     }
   }
 
-  motionOf(v: Value, span: Span): Motion | undefined {
+  motionOf(v: Value, span: Span, prop = "turns_with"): Motion | undefined {
     if (v instanceof Obj && v.kind === "component") {
       const c = this.comps.get(String(v.fields.name));
       if (c) {
-        if (!c.motion) throw new EvalError(`turns_with: "${String(v.fields.name)}" does not move (give it spin:, mesh: or turns_with:)`, span);
+        if (!c.motion) throw new EvalError(`${prop}: "${String(v.fields.name)}" does not move (give it spin:, mesh:, turns_with: or rides:)`, span);
         return c.motion;
       }
     }
     if (v instanceof Ref && v.what === "part") {
       const m = this.partMotion.get(v.name);
-      if (!m) throw new EvalError(`turns_with: part "${v.name}" does not move`, span);
+      if (!m) throw new EvalError(`${prop}: part "${v.name}" does not move (give it spin:, turns_with: or rides:)`, span);
       return m;
     }
-    throw new EvalError("turns_with: expected a moving component or part", span);
+    throw new EvalError(`${prop}: expected a moving component or part`, span);
   }
 
   // ---------------- parts ----------------
@@ -1614,6 +1622,8 @@ class Evaluator {
     }
     if (state.props.at !== undefined) xf.push({ op: "translate", v: toV3(state.props.at, ctx, "at") });
     let motion: Motion | undefined;
+    const carrier = state.props.rides !== undefined ? this.motionOf(state.props.rides, state.propSpans.rides, "rides") : undefined;
+    if (carrier && state.props.turns_with !== undefined) throw new EvalError("rides: and turns_with: together: turns_with: already moves it with that part, carrier and all; give rides: with spin: instead", state.propSpans.rides);
     if (state.props.turns_with !== undefined) motion = this.motionOf(state.props.turns_with, state.propSpans.turns_with);
     if (state.props.spin !== undefined) {
       const ratio = this.num(state.props.spin, state.propSpans.spin, "spin");
@@ -1621,7 +1631,9 @@ class Evaluator {
       const origin = state.props.axis_at !== undefined ? toV3(state.props.axis_at, ctx, "axis_at") : ([0, 0, 0] as V3);
       motion = { origin, axis, ratio };
     }
+    if (carrier) motion = motion ? { ...motion, parent: carrier } : carrier;
     if (motion) this.partMotion.set(s.name, motion);
+    checkHeld(state.props.held, state.propSpans.held);
     this.checkMaterial(state.props, state.propSpans);
     const processSpan = state.propSpans.process;
     const process =
@@ -1667,6 +1679,7 @@ class Evaluator {
       span: s.span,
       deps: [],
       motion,
+      ...(typeof state.props.held === "string" ? { held: state.props.held.trim() } : {}),
       features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
       detail: hasDetail(recipe),
       ...(state.flex.length ? { flex: state.flex } : {}),
@@ -2423,7 +2436,12 @@ function hasMachine(m: MachineData): boolean {
   return m.components.length + m.wires.length + m.nets.length + m.calcs.length + m.firmware.length + m.tests.length + m.items.length + m.boards.length > 0;
 }
 
-const spinLike = (props: Record<string, Value>) => props.spin !== undefined || props.mesh !== undefined || props.turns_with !== undefined;
+const spinLike = (props: Record<string, Value>) => props.spin !== undefined || props.mesh !== undefined || props.turns_with !== undefined || props.rides !== undefined;
+
+/** held: is plain words for how a part is held where the model cannot show it. */
+function checkHeld(v: Value | undefined, span: Span | undefined) {
+  if (v !== undefined && (typeof v !== "string" || !v.trim())) throw new EvalError('held: says how the part is held where the model cannot show it, e.g. held: "glued with epoxy" or held: "hook-and-loop strap"', span ?? { start: 0, end: 0 });
+}
 
 function truthy(v: Value): boolean {
   if (typeof v === "boolean") return v;

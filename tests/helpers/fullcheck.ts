@@ -41,7 +41,8 @@ export async function fullCheck(src: string): Promise<FullCheck> {
     const e = core.get(h);
     return e ? { volume: e.volume, bbox: e.bbox } : undefined;
   };
-  const base = assembleReport(model, { geoModel, kernel: result, buildErrors, geom });
+  const mesh = (h: string) => (core.get(h) ? core.mesh(h, "preview") : undefined);
+  const base = assembleReport(model, { geoModel, kernel: result, buildErrors, geom, mesh });
   const probes = processProbes(model, built);
   const results = core.process(probes);
   const process: Record<string, ProcessResult> = {};

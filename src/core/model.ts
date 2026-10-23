@@ -15,9 +15,25 @@ import type { DrawingSpec } from "../drawing/spec";
 export interface Motion {
   origin: V3;
   axis: V3;
-  /** rotation = ratio × driver angle */
+  /** rotation = ratio × driver angle (relative to `parent` when it rides on one) */
   ratio: number;
+  /** the moving part this one rides on (`rides:`): its own turn is about an axis carried round by the parent's motion */
+  parent?: Motion;
 }
+
+/** How fast a motion turns about `axis` (a unit vector) per unit of driver angle, counting what it rides on. */
+export function absRate(m: Motion | undefined, axis: V3): number {
+  let r = 0;
+  for (let x = m; x; x = x.parent) {
+    const a = x.axis;
+    const l = Math.hypot(a[0], a[1], a[2]) || 1;
+    r += (x.ratio * (a[0] * axis[0] + a[1] * axis[1] + a[2] * axis[2])) / l;
+  }
+  return r;
+}
+
+/** Whether a motion turns at all, itself or by what it rides on. */
+export const turns = (m: Motion | undefined): boolean => !!m && (Math.abs(m.ratio) > 1e-12 || turns(m.parent));
 
 export interface GearInfo {
   m: number;
@@ -166,6 +182,8 @@ export interface EvalPart {
   gear?: GearInfo;
   bearing?: BearingInfo;
   fastener?: FastenerInfo;
+  /** how the part is held where the model cannot show it (`held: "glued"`, a catalog part's `held: "strap"`) */
+  held?: string;
   /** snap hooks and flexures in this part */
   flex?: FlexInfo[];
   spring?: SpringInfo;

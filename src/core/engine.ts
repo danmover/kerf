@@ -59,6 +59,11 @@ export interface DesignState {
 
 /** Mesh cache by geometry hash. Mutable, outside React state; meshVersion signals changes. */
 export const meshes = new Map<string, MeshEntry>();
+/** A part's fast mesh (or its fine one), for measuring the design: what each screw clamps. */
+export const meshOf = (hash: string): MeshData | undefined => {
+  const e = meshes.get(hash);
+  return e?.preview ?? e?.final;
+};
 
 export const useDesign = create<DesignState>(() => ({
   rev: 0,
@@ -263,7 +268,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     if (get().rev !== rev) return;
   }
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h) });
+  const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h), mesh: meshOf });
   const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process, machines };
   reportBase = { report: base, ctx };
   const report = composeReport(base, ctx);

@@ -2,7 +2,7 @@
 // Some checks run in the kernel (solid booleans, distances, tool access,
 // swept envelopes); gear meshing is checked here with exact 2D tooth outlines.
 
-import type { Model, EvalPart, ReqStatus } from "./model";
+import { absRate, type Model, type EvalPart, type ReqStatus } from "./model";
 import type { Span } from "../lang/ast";
 import type { ChecksRequest, ChecksResult, PlacedItem } from "../kernel/protocol";
 import { applyXforms, frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
@@ -13,6 +13,8 @@ import { fmtNum } from "../lang/values";
 import { briefChecks, type GeomLookup } from "./briefChecks";
 import { machineChecks } from "../machine/checks";
 import { fastenerChecks } from "./fastenerChecks";
+import { findHolds, type MeshLookup } from "./holds";
+import { holdChecks } from "./holdChecks";
 import type { SettingValue } from "../mfg/types";
 
 export type CheckCategory =
@@ -151,8 +153,11 @@ export function gearChecks(model: Model): CheckItem[] {
     // tooth clearance through one tooth pitch of rotation
     if (cdStatus !== "fail" && overlap > 0) {
       const c2: V2 = [vdot(d, u), vdot(d, v)];
-      const r1 = other.motion?.ratio ?? 1;
-      const r2 = g.motion?.ratio ?? (-r1 * go.z) / gi.z;
+      // turning rates in the frame of the carrier both ride on (a planet and its sun), about this gear's axis
+      const carrier = g.motion?.parent ?? other.motion?.parent;
+      const rel = (p: EvalPart) => absRate(p.motion, gi.axis) - absRate(carrier, gi.axis);
+      const r1 = other.motion || carrier ? rel(other) : 1;
+      const r2 = g.motion ? rel(g) : (-r1 * go.z) / gi.z;
       let worst = 0;
       const steps = 10;
       const pitchDeg = 360 / go.z;
@@ -199,6 +204,8 @@ export interface ReportInputs {
   partsById?: Map<string, EvalPart>;
   /** meshes by geometry hash, for the brief's size checks */
   geom?: GeomLookup;
+  /** part meshes by geometry hash, to measure what each screw clamps */
+  mesh?: MeshLookup;
 }
 
 /**
@@ -307,6 +314,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   }
   items.push(...gearChecks(model));
   items.push(...fastenerChecks(model));
+  items.push(...holdChecks(model, findHolds(model, inputs.mesh), kernel, (p) => geom(p.hash)?.volume));
   if (model.machine) items.push(...machineChecks(model.machine));
 
   // things geometry cannot prove

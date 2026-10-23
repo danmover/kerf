@@ -3,6 +3,7 @@
 import { languageReference } from "../reference";
 import { AREAS } from "./types";
 import { hardwareReviewSection } from "../hardwarePrompt";
+import { assemblyReviewSection } from "../assemblyPrompt";
 import { wiringReviewSection } from "../../machine/harness/prompt";
 
 export function reviewerPrompt(): string {
@@ -40,6 +41,8 @@ export function reviewerPrompt(): string {
 6. Detail must serve the use or the process. Do not ask for features the brief does not imply, cosmetic work on parts nobody sees, or changes of taste. Never invent a problem: when the evidence does not show it, leave it out. A design with nothing important to fix passes with zero findings, but only once step 2 found evidence that every connection works; a connection you could not confirm is a finding, saying what you could not see.
 
 ${hardwareReviewSection()}
+
+${assemblyReviewSection()}
 
 ${wiringReviewSection()}
 

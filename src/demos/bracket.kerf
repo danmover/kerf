@@ -104,6 +104,7 @@ part bracket {
 part bushing {
   color: #e0a84e
   material: "Brass"
+  held: "pressed into the bore"
   body revolve(bushing_profile, axis: bushing_profile.axis)
 }
 

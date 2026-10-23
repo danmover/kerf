@@ -6,7 +6,7 @@
 
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { EvalPart } from "../../core/model";
+import { turns, type EvalPart, type Motion } from "../../core/model";
 import type { MeshEntry } from "../../core/engine";
 import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
@@ -233,6 +233,16 @@ export interface AppearanceOverride {
 
 const ease = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : 1 - Math.pow(1 - k, 3));
 const easeInOut = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+
+/** A motion's placement at a driver angle (degrees): its turn about its own axis, then whatever it rides on. */
+function motionMatrix(mo: Motion, deg: number): THREE.Matrix4 {
+  const o = new THREE.Vector3(...mo.origin);
+  const own = new THREE.Matrix4()
+    .makeTranslation(o.x, o.y, o.z)
+    .multiply(new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(...mo.axis).normalize(), THREE.MathUtils.degToRad(deg * mo.ratio)))
+    .multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z));
+  return mo.parent ? motionMatrix(mo.parent, deg).multiply(own) : own;
+}
 
 export class SceneController {
   readonly renderer: THREE.WebGLRenderer;
@@ -1179,6 +1189,19 @@ export class SceneController {
     this.changed = true;
   }
 
+  // ---------- fastenings ----------
+
+  private carried: Map<string, { motion: Motion }> | null = null;
+  private loose: Map<string, { axis: [number, number, number]; play: number }> | null = null;
+
+  /** Motions carried through fastenings (a screw and its nut turn with the part they hold) and loose fasteners that rattle; null for none. */
+  setHolds(h: { carried: Map<string, { motion: Motion }>; loose: Map<string, { axis: [number, number, number]; play: number }> } | null) {
+    if (!h && !this.carried && !this.loose) return;
+    this.carried = h?.carried ?? null;
+    this.loose = h?.loose?.size ? h.loose : null;
+    this.changed = true;
+  }
+
   // ---------- decorations ----------
 
   /** Draw extra detail with the parts the decorator knows (null for none). */
@@ -1747,11 +1770,14 @@ export class SceneController {
       // motion about the part's axis, after the machine's pose
       const po = this.pose?.get(obj.part.id);
       const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(sp.pos.x, sp.pos.y, sp.pos.z).multiply(po) : new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
-      const mo = obj.part.motion;
-      if (mo && Math.abs(this.angle) > 1e-9 && mo.ratio) {
-        const o = new THREE.Vector3(...mo.origin);
-        const rot = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(...mo.axis).normalize(), THREE.MathUtils.degToRad(this.angle * mo.ratio));
-        m.multiply(new THREE.Matrix4().makeTranslation(o.x, o.y, o.z)).multiply(rot).multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z));
+      // its own motion or the one it is fastened to (a screw turns with the part it holds), riding on its carrier
+      const mo = turns(obj.part.motion) ? obj.part.motion : this.carried?.get(obj.part.id)?.motion;
+      if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(motionMatrix(mo, this.angle));
+      // a loose screw, nut or washer rattles along its axis as the parts move
+      const lo = this.loose?.get(obj.part.id);
+      if (lo && Math.abs(this.angle) > 1e-9) {
+        const k = (lo.play / 2) * Math.sin(THREE.MathUtils.degToRad(this.angle * 8));
+        m.multiply(new THREE.Matrix4().makeTranslation(lo.axis[0] * k, lo.axis[1] * k, lo.axis[2] * k));
       }
       m.multiply(obj.placement);
       if (!m.equals(obj.group.matrix)) {
