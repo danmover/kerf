@@ -13,6 +13,7 @@ import { CodeEditor } from "./CodeEditor";
 import { ChecksPanel } from "./ChecksPanel";
 import { AnalysisPanel } from "./AnalysisPanel";
 import { useAnalysis } from "../analysis/runtime";
+import { useAirflow } from "../analysis/aeroRuntime";
 import { GraphView } from "./GraphView";
 import { BomTable } from "./BomTable";
 import { BriefPanel } from "./BriefPanel";
@@ -59,17 +60,20 @@ function useCodeBadge() {
   return errors ? { count: errors, tone: "fail" as const } : null;
 }
 
-function useStrengthBadge() {
+function useAnalysisBadge() {
   const analyses = useDesign((s) => s.model?.analyses.length ?? 0);
   const fails = useDesign((s) => s.report?.items.filter((i) => i.category === "analysis" && i.status === "fail").length ?? 0);
   if (!analyses) return null;
   return fails ? { count: fails, tone: "fail" as const } : { count: analyses };
 }
 
-/** the strength tab's icon turns into a spinner while an analysis runs */
-function StrengthIcon() {
-  const analysing = useAnalysis((s) => [...s.runs.values()].some((r) => r.status === "running" || r.status === "waiting"));
-  return analysing ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Stress size={13} />;
+const busy = (runs: Map<string, { status: string }>) => [...runs.values()].some((r) => r.status === "running" || r.status === "waiting");
+
+/** the analysis tab's icon turns into a spinner while a strength or airflow analysis runs */
+function AnalysisIcon() {
+  const analysing = useAnalysis((s) => busy(s.runs));
+  const blowing = useAirflow((s) => busy(s.runs));
+  return analysing || blowing ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <Icon.Stress size={13} />;
 }
 
 function useBuildBadge() {
@@ -100,7 +104,7 @@ export const DOCK_TABS: DockTabDef[] = [
   { id: "overview", label: "overview", icon: <OverviewGlyph size={13} />, Body: Overview },
   { id: "brief", label: "brief", icon: <BIcon.Brief size={13} />, useBadge: useBriefBadge, Body: BriefPanel },
   { id: "checks", label: "checks", icon: <Icon.Shield size={13} />, useBadge: useChecksBadge, Body: ChecksPanel },
-  { id: "analysis", label: "strength", icon: <StrengthIcon />, useBadge: useStrengthBadge, Body: AnalysisPanel },
+  { id: "analysis", label: "analysis", icon: <AnalysisIcon />, useBadge: useAnalysisBadge, Body: AnalysisPanel },
   { id: "build", label: "build", icon: <Icon.Wrench size={13} />, useBadge: useBuildBadge, useShown: useIsMachine, Body: MachinePanel },
   { id: "sim", label: "simulate", icon: <SimIcon />, useBadge: useSimBadge, useShown: useHasSims, Body: SimPanel },
   { id: "make", label: "make", icon: <Icon.Factory size={13} />, useShown: useHasMadeParts, Body: MakePanel },
