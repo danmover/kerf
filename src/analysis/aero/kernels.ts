@@ -11,7 +11,7 @@
 // Directions 0..9 live in one buffer and 10..18 in another, so no single
 // binding has to hold the whole lattice.
 
-import { CX, CY, CZ, OPP, W, FARFIELD, KAPPA, SGS_FLOOR, SGS_STRAIN, SLIP_RATE, SOLID, SUBGRID_CD, VAN_DRIEST, WW_A, WW_B, WW_YPLUS } from "./lattice";
+import { CX, CY, CZ, OPP, W, FARFIELD, KAPPA, SGS_FLOOR, SGS_STRAIN, SLIP_GAIN, SLIP_RATE, SOLID, SUBGRID_CD, VAN_DRIEST, WW_A, WW_B, WW_YPLUS } from "./lattice";
 
 /** most parts (bodies, wheels, the road) one case can hold */
 export const MAX_PARTS = 255;
@@ -326,9 +326,18 @@ fn cell(n: u32) -> array<f32, 19> {
         recOut[so] = sv.x;
         recOut[so + 1u] = sv.y;
         recOut[so + 2u] = sv.z;
+        // scaled back to a flat wall's push where many wall links would let it outrun the flow (see SLIP_GAIN)
+        let s2 = dot(sv, sv);
+        var gain = 0.0;
         for (var i = 1u; i < 19u; i++) {
           if ((wallMask & (1u << i)) == 0u) { continue; }
-          let k = select(1.0 / (2.0 * wq[i]), 1.0, wq[i] < 0.5);
+          let cs = dot(ci(i), sv);
+          gain += 6.0 * WQ[i] * cs * cs / select(2.0 * wq[i], 1.0, wq[i] < 0.5);
+        }
+        let back = select(1.0, ${SLIP_GAIN} * s2 / gain, s2 > 0.0 && gain > ${SLIP_GAIN} * s2);
+        for (var i = 1u; i < 19u; i++) {
+          if ((wallMask & (1u << i)) == 0u) { continue; }
+          let k = select(1.0 / (2.0 * wq[i]), 1.0, wq[i] < 0.5) * back;
           f[i] += 6.0 * WQ[i] * dot(ci(i), sv) * k;
         }
         m = moments(&f);
