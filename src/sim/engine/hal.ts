@@ -819,6 +819,14 @@ export class SimHal implements Hal {
     this.spend(this.fcpu * 0.0033);
   }
 
+  /** the latest NeoPixel frame sent down each data pin, numbered so the plant takes each one once */
+  pixelFrames = new Map<number, { colours: number[]; type: number; seq: number }>();
+  private pixelSeq = 0;
+
+  pixels(pin: number, colours: number[], type: number): void {
+    this.pixelFrames.set(pin, { colours, type, seq: ++this.pixelSeq });
+  }
+
   servoPulse(pin: number, us: number | null): void {
     if (us === null) this.servoUs.delete(pin);
     else this.servoUs.set(pin, us);

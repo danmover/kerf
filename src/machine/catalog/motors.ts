@@ -82,6 +82,24 @@ function jga25(ratio: number, rpm: number, stallKgcm: number, gearL: number): Ca
   };
 }
 
+/** The same gearmotor with a hall encoder on the back of the can: 11 pulses per motor turn on each channel. */
+function jga25Enc(ratio: number, rpm: number, stallKgcm: number, gearL: number): CatalogPart {
+  const base = jga25(ratio, rpm, stallKgcm, gearL);
+  const cpr = Math.round(44 * ratio * 10) / 10;
+  return {
+    ...base,
+    id: `jga25_370_12v_enc_${String(ratio).replace(".", "_")}`,
+    name: `JGA25-370 gearmotor 12 V ${ratio}:1 (${rpm} rpm) with hall encoder`,
+    summary: `25 mm spur gearmotor, 12 V, ${rpm} rpm free, ${(kgcm(stallKgcm) / 1000).toFixed(2)} N·m stall at 1.5 A, hall encoder ${cpr} counts per output turn (3.3 to 5 V), 4 mm D shaft, 2 × M3 holes 17 mm apart in the face.`,
+    specs: { ...base.specs, encoder_cpr: cpr, mass_g: 105 },
+    pins: dcMotorPins(12, { vmin: 3.3, vmax: 5, labels: ["Encoder VCC (blue)", "Encoder GND (black)", "Encoder A (yellow)", "Encoder B (green)"] }),
+    geom: { ...base.geom, dims: { ...base.geom.dims, enc_l: 15 } },
+    price_usd: 13,
+    buy: [{ vendor: "Marketplace", search: `JGA25-370 12V ${rpm}rpm encoder gear motor` }],
+    notes: [...(base.notes ?? []), "Motor leads red (M+) and white (M−); encoder blue (VCC), black (GND), yellow (A), green (B) on most listings: check yours."],
+  };
+}
+
 function pololuMicro(ratio: number, rpm: number, stallKgcm: number): CatalogPart {
   return {
     id: `pololu_micro_hp6v_${ratio}`,
@@ -150,6 +168,10 @@ export const MOTORS: CatalogPart[] = [
   jga25(78, 77, 9, 23),
   jga25(103, 58, 10, 23),
   jga25(226, 27, 15, 25),
+  jga25Enc(46.8, 128, 6, 21),
+  jga25Enc(78, 77, 9, 23),
+  jga25Enc(103, 58, 10, 23),
+  jga25Enc(226, 27, 15, 25),
   pololuMicro(30, 1000, 0.65),
   pololuMicro(100, 320, 2.2),
   pololuMicro(298, 100, 5),

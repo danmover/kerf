@@ -66,6 +66,30 @@ interface ServoSlot {
   vcc?: Net;
 }
 
+/** An addressable LED board (or a chain of them) and what it is showing. */
+export interface LedSlot {
+  comp: string;
+  n: number;
+  vcc?: Net;
+  /** the controller pin whose data reaches it (-1: none) and how many LEDs come before it on that pin */
+  pin: number;
+  offset: number;
+  /** the colour order its chips read the bytes in, like "GRB" */
+  order: string;
+  /** mA per LED at full white, and dark */
+  maPer: number;
+  idleMa: number;
+  /** 0xRRGGBB shown by each LED */
+  colours: number[];
+  current: number;
+  peak: number;
+  seq: number;
+  shows: number;
+  litTime: number;
+  seen: Set<number>;
+  orderWarned: boolean;
+}
+
 interface RegSlot {
   r: Regulator;
   vin?: Net;
@@ -114,6 +138,9 @@ export class Plant implements PlantPort, PlantView {
   motors: MotorSlot[] = [];
   acts: ActSlot[] = [];
   servos: ServoSlot[] = [];
+  leds: LedSlot[] = [];
+  /** hall switches: the pin each pulls low while the world puts a magnet near it */
+  halls: { comp: string; pin: number; vcc?: Net; level: number; hits: number }[] = [];
   i2cDevs = new Map<number, { dev: I2CDevice & { ready?(t: number): boolean }; vcc?: Net; comp: string }>();
   analogSrc = new Map<number, (t: number) => number | undefined>();
   /** OLED panels on the I2C bus, with what they showed over the run */
@@ -226,6 +253,11 @@ export class Plant implements PlantPort, PlantView {
         case "sensor":
           this.sensor(mc, part, opts);
           break;
+        case "led": {
+          const n = Number(part.specs.leds ?? 1);
+          this.leds.push({ comp: mc.name, n, vcc: this.netOf(mc.name, "V5"), pin: -1, offset: 0, order: String(part.specs.order ?? "GRB"), maPer: Number(part.specs.ma_per_led ?? 60), idleMa: Number(part.specs.idle_ma ?? 1), colours: new Array<number>(n).fill(0), current: 0, peak: 0, seq: 0, shows: 0, litTime: 0, seen: new Set(), orderWarned: false });
+          break;
+        }
         case "stepper":
         case "stepper_driver":
         case "hotend":
@@ -234,6 +266,24 @@ export class Plant implements PlantPort, PlantView {
           break;
       }
     }
+    // the data line to each LED board: straight from a controller pin, or on from the board before it in a chain
+    for (let pass = 0; pass < this.leds.length; pass++)
+      for (const l of this.leds) {
+        if (l.pin >= 0) continue;
+        const din = this.netOf(l.comp, "DIN");
+        if (!din) continue;
+        const pin = this.mcuPinOfNet.get(din.id);
+        if (pin !== undefined) {
+          l.pin = pin;
+          continue;
+        }
+        const up = this.leds.find((u) => u !== l && u.pin >= 0 && this.netOf(u.comp, "DOUT")?.id === din.id);
+        if (up) {
+          l.pin = up.pin;
+          l.offset = up.offset + up.n;
+        }
+      }
+    for (const l of this.leds) if (l.pin < 0) this.notes.push(`${l.comp} gets no data: wire its DIN to a ${this.board.name} pin, or to the DOUT of the board before it in the chain.`);
     // current sense outputs of the drivers
     for (const c of this.chans) {
       const csId = c.ch === "A" ? ["CS", "R_IS", "CS1"] : ["CS2"];
@@ -414,6 +464,11 @@ export class Plant implements PlantPort, PlantView {
       const vin = this.netOf(mc.name, "VCC_IN") ?? this.netOf(mc.name, "PLUS");
       const ratio = Number(part.specs.ratio ?? 5);
       this.analogSrc.set(s, () => (vin ? (this.netV.get(vin.id) ?? 0) / ratio : 0));
+      return;
+    }
+    if (iface === "hall") {
+      const pin = this.mcuPinFor(mc.name, "S");
+      if (pin >= 0) this.halls.push({ comp: mc.name, pin, vcc: this.netOf(mc.name, "VCC"), level: -1, hits: 0 });
       return;
     }
     if (iface === "pulse" && part.id === "hc_sr04") {
@@ -654,6 +709,7 @@ export class Plant implements PlantPort, PlantView {
       if (mv) s.s.follow(us, mv.pos, mv.load, powered);
       else s.s.step(us, this.world.servoLoad?.(s.comp) ?? 0, powered, dt);
     }
+    this.stepLeds(t, dt);
     // driver overheating: past its continuous rating for long, it shuts down
     for (const c of this.chans) {
       c.heat += dt * ((c.current / Math.max(0.1, c.icont)) ** 2 - 1) * 0.02;
@@ -664,6 +720,15 @@ export class Plant implements PlantPort, PlantView {
       } else if (c.shutdown && c.heat < 0.5) c.shutdown = false;
     }
     this.world.step(dt, t, this);
+    for (const h of this.halls) {
+      const powered = h.vcc ? (this.netV.get(h.vcc.id) ?? 0) > 4 : false;
+      // open collector with the module's pull-up: low while a magnet is near, and low unpowered
+      const level = powered && !this.world.magnet?.(h.comp) ? 1 : 0;
+      if (level === h.level) continue;
+      if (level === 0 && h.level === 1) h.hits++;
+      h.level = level;
+      this.hal.setExternal(h.pin, level);
+    }
     // the batteries and supplies carry everything on the nets they feed
     this.logicLoad = this.logicCurrent();
     const draw = this.netDraws();
@@ -749,6 +814,52 @@ export class Plant implements PlantPort, PlantView {
     }
   }
 
+  /**
+   * LED boards take the latest frame on their data pin (their share of it, after the boards before them in the
+   * chain), read in their own colour order, and draw current for what they show. Unpowered, they go dark.
+   */
+  private stepLeds(t: number, dt: number) {
+    for (const l of this.leds) {
+      const powered = l.vcc ? (this.netV.get(l.vcc.id) ?? 0) > 3.5 : false;
+      if (!powered) l.colours.fill(0);
+      const f = l.pin >= 0 ? this.hal.pixelFrames.get(l.pin) : undefined;
+      if (f && f.seq !== l.seq) {
+        l.seq = f.seq;
+        if (powered) {
+          l.shows++;
+          // the bytes go out in the firmware's NEO_* order and the chips read them in their own
+          const off = [(f.type >> 4) & 3, (f.type >> 2) & 3, f.type & 3];
+          const phys = l.order.toUpperCase();
+          const swapped = ["R", "G", "B"].some((ch, k) => phys.indexOf(ch) !== off[k]);
+          if (swapped && !l.orderWarned) {
+            l.orderWarned = true;
+            const sent = ["R", "G", "B"].sort((a, b) => off["RGB".indexOf(a)] - off["RGB".indexOf(b)]).join("");
+            this.events.push({ t, kind: "warn", text: `${l.comp}'s chips read colours as ${phys} but the firmware sends NEO_${sent}: its colours come out swapped` });
+          }
+          for (let i = 0; i < l.n; i++) {
+            const c = f.colours[l.offset + i];
+            if (c === undefined) continue;
+            const logical = [(c >>> 16) & 255, (c >>> 8) & 255, c & 255];
+            const bytes = [0, 0, 0];
+            for (let k = 0; k < 3; k++) bytes[off[k]] = logical[k];
+            const rgb = [bytes[phys.indexOf("R")] ?? 0, bytes[phys.indexOf("G")] ?? 0, bytes[phys.indexOf("B")] ?? 0];
+            l.colours[i] = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+          }
+        }
+      }
+      let sum = 0;
+      let lit = false;
+      for (const c of l.colours) {
+        sum += ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255);
+        if (c) lit = true;
+      }
+      if (lit) l.litTime += dt;
+      if (lit && l.seen.size < 64) for (const c of l.colours) if (c) l.seen.add(c);
+      l.current = powered ? (l.n * l.idleMa + (sum / 255) * (l.maPer / 3)) / 1000 : 0;
+      if (l.current > l.peak) l.peak = l.current;
+    }
+  }
+
   /** what the parts on a net draw just by being powered, A */
   private staticDraw(rail: Net): number {
     let i = 0;
@@ -756,7 +867,7 @@ export class Plant implements PlantPort, PlantView {
       if (p.comp === this.mcu) {
         // the controller counts once, on the pin it runs from: VIN's share is in logicLoad
         if (p.pin.id !== "VIN" && (p.pin.type === "pwr_rail" || p.pin.type === "pwr_in")) i += 0.03;
-      } else if (p.pin.type === "pwr_in") i += p.pin.draw ?? 0.01;
+      } else if (p.pin.type === "pwr_in" && p.part.kind !== "led") i += p.pin.draw ?? 0.01;
     }
     return i;
   }
@@ -765,6 +876,7 @@ export class Plant implements PlantPort, PlantView {
   private railLoad(rail: Net): number {
     let i = this.staticDraw(rail);
     for (const s of this.servos) if (s.vcc && s.vcc.id === rail.id) i += s.s.current;
+    for (const l of this.leds) if (l.vcc && l.vcc.id === rail.id) i += l.current;
     return i;
   }
 
@@ -779,6 +891,7 @@ export class Plant implements PlantPort, PlantView {
     };
     for (const c of this.chans) add(c.supply, c.supplyCurrent);
     for (const s of this.servos) add(s.vcc, s.s.current);
+    for (const l of this.leds) add(l.vcc, l.current);
     if (this.mcuSupply === "VIN") add(this.netOf(this.mcu, "VIN"), this.logicLoad);
     for (const g of this.regOrder) {
       g.r.load = g.vout ? this.staticDraw(g.vout) + (d.get(g.vout.id) ?? 0) : 0;
@@ -808,6 +921,11 @@ export class Plant implements PlantPort, PlantView {
       out[`${s.comp}.force`] = s.a.force;
     }
     for (const s of this.servos) out[`${s.comp}.angle`] = s.s.angle;
+    // each LED's colour as 0xRRGGBB, for the playback to light it
+    for (const l of this.leds) {
+      out[`${l.comp}.amps`] = l.current;
+      l.colours.forEach((c, i) => (out[`${l.comp}.led${i}`] = c));
+    }
     for (const { b } of this.batteries) {
       out[`${b.name}.volts`] = b.volts();
       out[`${b.name}.amps`] = b.current;

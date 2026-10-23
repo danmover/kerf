@@ -42,7 +42,12 @@ export function generateFirmware(m: MachineData, designName: string): FirmwareOu
         name: fw.name,
         board: ctx.board.name,
         target: "arduino",
-        summary: r.behaviour === "tunneller" ? `Arduino sketch for ${ctx.boardPart.name}: autonomous tunnelling run with heading hold, stall back-off and a run log` : `Arduino sketch for ${ctx.boardPart.name}: serial console to test every motor and sensor`,
+        summary:
+          r.behaviour === "ride"
+            ? `Arduino sketch for ${ctx.boardPart.name}: ${r.rideSummary}`
+            : r.behaviour === "tunneller"
+              ? `Arduino sketch for ${ctx.boardPart.name}: autonomous tunnelling run with heading hold, stall back-off and a run log`
+              : `Arduino sketch for ${ctx.boardPart.name}: serial console to test every motor and sensor`,
         files: r.files,
         warnings: r.warnings,
         pinTable: r.pinTable,

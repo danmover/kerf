@@ -109,6 +109,8 @@ export type CatalogKind =
   | "belt"
   | "coupler"
   | "seal"
+  | "led"
+  | "magnet"
   // circuit-board parts and audio
   | "resistor"
   | "capacitor"
@@ -153,7 +155,10 @@ export type GeomClass =
   | "panel_jack"
   | "speaker"
   | "knob"
-  | "brick";
+  | "brick"
+  // addressable LED boards (rings, sticks, jewels) and plain discs (magnets, slip rings)
+  | "led"
+  | "disc";
 
 export interface BoardFeature {
   kind: "usb" | "jack" | "header" | "terminal" | "chip" | "heatsink" | "cap" | "socket" | "module";
@@ -282,6 +287,8 @@ export interface MachineComponent {
   price?: number;
   /** a fuse's rating in A (component prop `rating:`), in place of the catalog's */
   rating?: number;
+  /** an LED board's brightness cap, 0 to 1 (component prop `brightness:`): the firmware never sets it brighter, so its power is budgeted at that share of full white */
+  brightness?: number;
   /** resistance (Ω), capacitance (F) or pot resistance (Ω) */
   value?: number;
   /** the value as written: "10k", "100n", "A500k" */

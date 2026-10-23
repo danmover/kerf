@@ -8,22 +8,25 @@
 //              breakthrough, battery cut-off, EEPROM run log
 //   bench      no autonomous behaviour: the serial console drives each motor,
 //              actuator and sensor for bring-up tests
-// Both include the serial console.
+//   ride       a fairground ride's controller (ride.ts): boarding lights, start
+//              button, speed ramps, station stop, emergency stop, LED shows
+// All include the serial console.
 
 import { catalogPart } from "../catalog";
 import type { CatalogPart, MachineComponent } from "../types";
 import { type FwContext, type GenFile, cComment, cNum, cString, ident, setting } from "./common";
+import { RIDE_WORDS, type RideOutput, rideFirmware } from "./ride";
 
-interface Io {
+export interface Io {
   /** the C expression for the pin: 9, A2 */
   pin: string;
   /** "ctrl.D9" for comments */
   at: string;
 }
 
-type Role = "pwm" | "dir" | "in1" | "in2" | "en" | "en2" | "cs" | "cs2" | "flt";
+export type Role = "pwm" | "dir" | "in1" | "in2" | "en" | "en2" | "cs" | "cs2" | "flt";
 
-interface DriveOut {
+export interface DriveOut {
   key: string;
   label: string;
   comp: MachineComponent;
@@ -61,13 +64,15 @@ export interface ArduinoResult {
   files: GenFile[];
   warnings: string[];
   pinTable: { signal: string; pin: string; wire: string }[];
-  behaviour: "tunneller" | "bench";
+  behaviour: "tunneller" | "bench" | "ride";
+  /** one line on what a ride controller does, for the summary */
+  rideSummary?: string;
 }
 
 /** a C float literal */
-const cFloat = (n: number) => (Number.isInteger(n) ? `${n}.0f` : `${cNum(n)}f`);
+export const cFloat = (n: number) => (Number.isInteger(n) ? `${n}.0f` : `${cNum(n)}f`);
 
-const SCHEME_C: Record<string, string> = {
+export const SCHEME_C: Record<string, string> = {
   pwm_dir: "PWM_DIR",
   rpwm_lpwm: "RPWM_LPWM",
   in1_in2_en: "EN_IN1_IN2",
@@ -76,7 +81,7 @@ const SCHEME_C: Record<string, string> = {
 };
 
 /** Driver pin ids for each role of one channel. */
-function channelPins(part: CatalogPart, channel: string): Partial<Record<Role, string>> {
+export function channelPins(part: CatalogPart, channel: string): Partial<Record<Role, string>> {
   const has = (id: string) => part.pins.some((p) => p.id === id);
   const pick = (...ids: string[]) => ids.find(has);
   const B = channel === "B";
@@ -257,8 +262,9 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
 
   // ---- behaviour and settings ----
   const behaviourText = setting(c.fw, "behaviour", setting(c.fw, "behavior", ""));
-  const tunneller = /tunnel|burrow|sand|drill|dig|bore/i.test(behaviourText) && motors.length > 0;
-  const behaviour: ArduinoResult["behaviour"] = tunneller ? "tunneller" : "bench";
+  const ride = RIDE_WORDS.test(behaviourText);
+  const tunneller = !ride && /tunnel|burrow|sand|drill|dig|bore/i.test(behaviourText) && motors.length > 0;
+  const behaviour: ArduinoResult["behaviour"] = ride ? "ride" : tunneller ? "tunneller" : "bench";
   const ledPin = used.has("13") || isEsp32 ? "-1" : "LED_BUILTIN";
 
   const stallA = (m: DriveOut) => {
@@ -329,7 +335,7 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     def(`${s.key}_SIG`, s.sig, `${s.comp.name}.SIG`);
     P.push("");
   }
-  if (vsense) {
+  if (vsense && !ride) {
     P.push(`// ${vsense.name}: battery voltage through a ${vsRatio}:1 divider`);
     def("VBAT_SENSE", vsPin, `${vsense.name}.S`);
     P.push("");
@@ -407,7 +413,7 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     C.push("#define SERVO_US_PER_DEG 10");
     C.push("");
   }
-  if (vsense || cells) {
+  if ((vsense || cells) && !ride) {
     C.push("// Battery");
     C.push(`#define VBAT_RATIO       ${cNum(vsRatio)}`);
     C.push(`#define LOW_BATTERY_V    ${cNum(cells ? cells * S.LOW_CELL_V : 0)}${cells ? `   // ${cells} cells × ${cNum(S.LOW_CELL_V)} V` : ""}`);
@@ -418,11 +424,16 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
   if (mpu) C.push("#define MPU_ADDR         0x68");
 
   // ---- the sketch ----
-  const ino = sketch({ c, outs, motors, front, rear, steer, steerServo, servos, encs, bno: !!bno, mpu: !!mpu, vsense: !!vsPin, tunneller, isEsp32 });
+  let rideOut: RideOutput | undefined;
+  if (ride) {
+    // the ride controller's own pins and settings go after the motors'
+    rideOut = rideFirmware({ c, motors, encs, io, def, P, C, warnings, vsense: vsense ? { comp: vsense, pin: vsPin, ratio: vsRatio } : undefined, adcMax, boardV });
+  }
+  const ino = rideOut ? rideOut.ino : sketch({ c, outs, motors, front, rear, steer, steerServo, servos, encs, bno: !!bno, mpu: !!mpu, vsense: !!vsPin, tunneller, isEsp32 });
 
   const name = ident(c.fw.name).toLowerCase() || "firmware";
   const dir = `firmware/${name}`;
-  const readme = arduinoReadme({ c, name, outs, servos, imu, vsense: !!vsPin, tunneller, warnings, pinTable, isEsp32, steer, front, rear });
+  const readme = arduinoReadme({ c, name, outs, servos, imu, vsense: !!vsPin, tunneller, ride: rideOut, warnings, pinTable, isEsp32, steer, front, rear });
   return {
     files: [
       { path: `${dir}/${name}.ino`, content: ino },
@@ -433,6 +444,7 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     warnings,
     pinTable,
     behaviour,
+    rideSummary: rideOut?.summary,
   };
 }
 
@@ -1141,6 +1153,7 @@ function arduinoReadme(a: {
   imu?: MachineComponent;
   vsense: boolean;
   tunneller: boolean;
+  ride?: RideOutput;
   warnings: string[];
   pinTable: ArduinoResult["pinTable"];
   isEsp32: boolean;
@@ -1159,14 +1172,15 @@ function arduinoReadme(a: {
   const L: string[] = [];
   L.push(`# ${c.fw.name}: firmware for ${c.designName}`, "");
   L.push(`Generated by Kerf from the design's wiring for **${c.board.name}** (${c.boardPart.name}). Every pin in \`pins.h\` comes from a wire in the design, so if you change the wiring, export again.`, "");
-  L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, and backs off when it stalls. It stops when the front motor's load drops as the nose breaks through, or when the far wall stops it. Screw turns only estimate the distance (screws turning in place count too), so if neither happens by twice the expected distance or the give-up time, it backs out on the reserve. It also estimates each motor's heating from its current and backs out when they get warm without a breakthrough, resting on the way out if they get hot. Backing out stops when the rear motor runs free: its screw is out of the sand and the tail can be reached from the wall hole, so pull it out by the tail. It stops if the body rolls, backs out if the IMU stops answering, and logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
+  if (a.ride) L.push(...a.ride.readme, "");
+  else L.push(a.tunneller ? "**Mode: tunneller.** After the start delay it digs forward, holds its heading with the hinge, trims roll by splitting speed between the screws, and backs off when it stalls. It stops when the front motor's load drops as the nose breaks through, or when the far wall stops it. Screw turns only estimate the distance (screws turning in place count too), so if neither happens by twice the expected distance or the give-up time, it backs out on the reserve. It also estimates each motor's heating from its current and backs out when they get warm without a breakthrough, resting on the way out if they get hot. Backing out stops when the rear motor runs free: its screw is out of the sand and the tail can be reached from the wall hole, so pull it out by the tail. It stops if the body rolls, backs out if the IMU stops answering, and logs the run to EEPROM." : "**Mode: bench.** No autonomous behaviour: use the serial console to run each motor and read each sensor while you build and test.", "");
   if (a.warnings.length) {
     L.push("## Fix before uploading", "");
     for (const w of a.warnings) L.push(`- ${w}`);
     L.push("");
   }
   L.push("## Upload", "");
-  L.push("1. Install the Arduino IDE 2 from arduino.cc. No extra libraries are needed: Wire, EEPROM and Servo come with it.");
+  L.push(a.ride ? "1. Install the Arduino IDE 2 from arduino.cc, then the **Adafruit NeoPixel** library (Tools → Manage Libraries)." : "1. Install the Arduino IDE 2 from arduino.cc. No extra libraries are needed: Wire, EEPROM and Servo come with it.");
   L.push(`2. Open \`${a.name}/${a.name}.ino\` (the folder name must match the sketch name).`);
   L.push(`3. Tools → Board: ${boardMenu[c.boardPart.id] ?? c.boardPart.name}. Pick the port.`);
   L.push("4. Upload with the motor battery **disconnected** or the drivers asleep, then open the Serial Monitor at 115200 baud.", "");
@@ -1175,13 +1189,20 @@ function arduinoReadme(a: {
   L.push("");
   L.push("## Console", "", "Type a command and press Enter:", "");
   L.push("| Command | Does |", "|---|---|");
-  L.push("| `h` | help |", "| `s` | status: state, distance, heading, roll, pitch, motor commands and currents, battery |", "| `g` | start now |", "| `x` | stop everything |");
+  if (a.ride) L.push("| `h` | help |", "| `s` | status: state, rides so far, each motor's speed and PWM, the motor supply, whether it is at the station |", "| `g` | start a ride, as the start button |", "| `x` | end the ride early: slow down and stop at the station |", "| `m <n> <pwm>` | run motor n at -255..255 for 2 seconds, while boarding |");
+  else L.push("| `h` | help |", "| `s` | status: state, distance, heading, roll, pitch, motor commands and currents, battery |", "| `g` | start now |", "| `x` | stop everything |");
   L.push("| `m <n> <pwm>` | run motor n at -255..255 for 2 seconds |", "| `t <deg>` | steer to an angle |", "| `k` | calibrate the steering actuator's ends |", "| `e` | encoder counts |", "| `i` | IMU readings for 5 seconds |", "| `z` | zero the heading |", "| `l` | print the run log as CSV |", "| `c` | clear the log |", "| `b` | bench test for Kerf's Calibrate panel (machine held still, motors free to turn) |");
   L.push("");
   a.outs.forEach((o, i) => L.push(`Motor ${i} is **${o.label}** (${o.part.name}).`));
   L.push("");
   L.push("## Bring-up, in order", "");
-  const steps = [
+  const steps = a.ride ? [
+    "With the 12 V supply off, upload over USB: the console prints `ready` and `state: emergency stop` (no motor power), and the lights flash red. If a board stays dark, check its 5 V, ground and data wire, and that its arrow points away from the controller.",
+    "Supply on, hands clear, emergency stop released: press start (or `g`). After the countdown each motor should ramp up the right way. If one turns backwards, flip its `_FWD` in config.h rather than swapping wires.",
+    ...(a.outs.some((o) => o.encA) ? ["During the ride, `s` shows each motor's measured and asked speed: they should agree within a few rpm once it is up to speed. If the measured speed is negative while it runs forwards, swap ENC_A and ENC_B in the design."] : []),
+    "Hold a magnet in front of the station sensor: its LED lights and `s` says `station yes`. Then let a ride finish: it should creep round and stop with the magnet in front of the sensor.",
+    ...(a.vsense ? ["Press the emergency stop mid-ride: the motors stop at once (their power is cut), every light flashes red and the console says `state: emergency stop`. Release it and press start: the ride creeps back to the station."] : []),
+  ] : [
     "With the motor battery off, upload and check the console prints `ready`. If the IMU line says not found, fix SDA/SCL first.",
     "Battery on, everything clear of hands. `m 0 80`: the motor should turn slowly for 2 seconds. Repeat for each motor. If one turns the wrong way, flip its `_FWD` in config.h rather than swapping wires.",
     ...(a.outs.some((o) => o.encA) ? ["`e`, turn each output shaft one full turn by hand, `e` again: the count should change by about the counts per turn in config (half the maker's figure, since only channel A edges are counted). If it goes down when the motor runs forward, swap ENC_A and ENC_B in the design."] : []),

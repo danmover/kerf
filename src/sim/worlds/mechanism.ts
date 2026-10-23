@@ -184,6 +184,26 @@ export class MechWorld implements World {
     return this.inner?.range?.(comp) ?? 2000;
   }
 
+  /** a magnet riding any body is within a hall sensor's range, both where their bodies have moved them */
+  magnet(comp: string): boolean {
+    const m = this.model.magnets;
+    if (!m) return this.inner?.magnet?.(comp) ?? false;
+    for (const s of m.sensors) {
+      if (s.comp !== comp) continue;
+      const ps = this.placed(comp, s.at);
+      for (const g of m.magnets) if (Math.hypot(...sub(this.placed(g.comp, g.at), ps)) <= s.range) return true;
+    }
+    return false;
+  }
+
+  /** a design-pose point on the body a component rides, where that body is now */
+  private placed(comp: string, at: V3): V3 {
+    const b = this.sys.bodies.get(this.model.mounts[comp] ?? FRAME) ?? this.sys.frame;
+    const x0 = this.start.get(b.id) ?? b.x;
+    const r = qrot(b.turn(), sub(at, x0));
+    return [b.x[0] + r[0], b.x[1] + r[1], b.x[2] + r[2]];
+  }
+
   step(dt: number, t: number, plant: PlantView): void {
     this.inner?.step(dt, t, plant);
     this.watch(dt, t + dt);

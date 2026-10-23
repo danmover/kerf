@@ -68,6 +68,8 @@ export interface Hal {
   eepromWrite(addr: number, v: number): void;
 
   servoPulse(pin: number, us: number | null): void;
+  /** Adafruit_NeoPixel show(): a frame of 0xWWRRGGBB colours sent down a data pin, with the library's NEO_* type */
+  pixels?(pin: number, colours: number[], type: number): void;
   /** pulseIn(): microseconds the pin stayed at state, 0 on timeout (polled when absent) */
   pulseIn?(pin: number, state: number, timeoutUs: number): number;
 

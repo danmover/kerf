@@ -79,7 +79,9 @@ export function buildNetlist(m: MachineData): Netlist {
     if (!part) continue;
     const list: NetPin[] = [];
     for (let i = 0; i < c.count; i++) {
-      for (const pin of part.pins) {
+      for (const p of part.pins) {
+        // LED boards draw what their brightness cap lets them
+        const pin = c.brightness !== undefined && part.kind === "led" && p.type === "pwr_in" && p.draw ? { ...p, draw: p.draw * c.brightness } : p;
         const np = { key: key(c.name, i, pin.id), comp: c.name, index: i, pin, part, mc: c };
         all.set(np.key, np);
         list.push(np);

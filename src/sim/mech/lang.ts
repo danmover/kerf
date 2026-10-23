@@ -46,6 +46,7 @@ export type MechItem =
   | { k: "payload"; name: string; on: string; mass: number; at?: V3 }
   | { k: "load"; name: string; on: string; at?: V3; dir: V3; value: Schedule; torque: boolean; turns: boolean }
   | { k: "turn"; name: string; joint: string; speed: Schedule; limit: number }
+  | { k: "motor"; name: string; comp: string }
   | { k: "push"; name: string; joint: string; value: Schedule }
   | { k: "solenoid"; name: string; joint: string; force: number; stroke: number; on: Schedule; pull: boolean }
   | { k: "cylinder"; name: string; joint: string; bore: number; rod: number; pressure: number; speed: number; seal?: number; valve: Schedule; retract: boolean }
@@ -351,6 +352,10 @@ export const MECH_FNS: [string, Fn][] = [
     const j = nameOf(a.value("joint"), a.ctx, "sim.turn(): joint");
     return new MechValue({ k: "turn", name: a.has("name") ? a.str("name") : `turn ${j}`, joint: j, speed: schedule(a, "speed")!, limit: a.positive("limit", 1e9) }, "turn");
   }),
+  mechFn("motor", ["motor", "name"], "The design's gearmotor turning the shaft it is on (its spin:, mesh: or turns_with: line, or a sim.pivot it belongs to), driven by the scenario's firmware through its wiring: the firmware's PWM, the supply and the motor's own torque curve set how it moves. Results come from the shaft it turns (<part>.max_rpm, .turns) and the motor (<motor>.peak_amps, .stall_time, .max_temp).", (a) => {
+    const m = nameOf(a.value("motor"), a.ctx, "sim.motor(): motor");
+    return new MechValue({ k: "motor", name: a.has("name") ? a.str("name") : m, comp: m }, "motor");
+  }),
   mechFn("push", ["joint", "force", "name"], "A torque (N·mm, on a pivot) or force (N, on a slider) along a joint, steady or over time.", (a) => {
     const j = nameOf(a.value("joint"), a.ctx, "sim.push(): joint");
     return new MechValue({ k: "push", name: a.has("name") ? a.str("name") : `push ${j}`, joint: j, value: schedule(a, "force")! }, "push");
@@ -423,7 +428,7 @@ export const MECHANISM_FN = new Fn(
     const spec: MechSpec = { items, base: base as MechSpec["base"], auto, follow };
     return new MechSpecValue(spec);
   },
-  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.turn, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
+  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
 );
 
 export class MechSpecValue extends Obj {

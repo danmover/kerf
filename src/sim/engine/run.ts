@@ -327,6 +327,13 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results[`${m.name}.load`] = m.loadPeak;
   }
   for (const a of plant.acts) results[`${a.comp}.travel`] = a.a.travel;
+  for (const h of plant.halls) results[`${h.comp}.passes`] = h.hits;
+  for (const l of plant.leds) {
+    results[`${l.comp}.shows`] = l.shows;
+    results[`${l.comp}.peak_amps`] = l.peak;
+    results[`${l.comp}.lit_time`] = l.litTime;
+    results[`${l.comp}.colours`] = l.seen.size;
+  }
   Object.assign(results, copingResults(frames, hal.serial, plant, inj));
   if (fwRef) for (const g of watch) {
     const v = fwRef.fw.read(g);

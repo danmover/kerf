@@ -141,6 +141,8 @@ export interface World {
   orientation(comp: string): Orientation;
   /** distance a range sensor sees, mm */
   range?(comp: string): number;
+  /** a magnet is within a hall sensor's range */
+  magnet?(comp: string): boolean;
   /** signals the world puts on nets (by name or "component.PIN"): volts at a time in seconds */
   drives?(): { on: string; v: (t: number) => number }[];
   /** a bench supply that powers the machine in place of its own batteries and supplies */

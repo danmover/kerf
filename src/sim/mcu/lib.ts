@@ -1,6 +1,6 @@
 // The Arduino core and libraries the virtual microcontroller provides: pins,
-// time, interrupts, maths, C strings and printf, Serial, Wire (I2C), EEPROM
-// and Servo. Printing, rounding and overflow follow the AVR core and
+// time, interrupts, maths, C strings and printf, Serial, Wire (I2C), EEPROM,
+// Servo and Adafruit_NeoPixel. Printing, rounding and overflow follow the AVR core and
 // avr-libc, so the simulated board prints and computes what the real one does
 // (sprintf has no %f, Serial.print(x) shows 2 decimals, map() is long maths).
 
@@ -14,6 +14,8 @@ export type LibFn = (args: C[], ctx: Ctx, pos: Pos) => C;
 export type LibMethod = (obj: C, args: C[], ctx: Ctx, pos: Pos) => C;
 export interface LibClass {
   methods: Record<string, LibMethod>;
+  /** `Type name(args);`: builds an instance from constructor arguments */
+  construct?: (args: C[], ctx: Ctx, pos: Pos) => C;
 }
 
 /** Library state that belongs to one running chip (reset at power-up). */
@@ -1433,13 +1435,155 @@ const servo: LibClass = {
   }),
 };
 
+// ---------- Adafruit_NeoPixel ----------
+// The Adafruit library's calls, colour packing and maths (ColorHSV, gamma32,
+// sine8) as it does them. show() hands the frame to the board, which sends it
+// down the data pin to the LED boards wired there; on an AVR it holds the CPU
+// for about 30 µs per LED with interrupts off, as the real one does.
+
+interface PixelObj {
+  kind: "NeoPixel";
+  n: number;
+  pin: number;
+  /** the NEO_* type: colour order and speed */
+  type: number;
+  /** 0 = full (the library keeps brightness + 1, wrapping 255 to 0) */
+  bright: number;
+  px: number[];
+}
+
+const newPixels = (n = 0, pin = -1, type = 0x52): PixelObj => ({ kind: "NeoPixel", n, pin, type, bright: 0, px: new Array<number>(Math.max(0, n)).fill(0) });
+
+/** Adafruit's gamma table: round(255 · (i/255)^2.6) */
+const GAMMA8 = Array.from({ length: 256 }, (_, i) => Math.round(Math.pow(i / 255, 2.6) * 255));
+/** Adafruit's sine table: one cycle over 0..255, 0..255 */
+const SINE8 = Array.from({ length: 256 }, (_, i) => Math.min(255, Math.max(0, Math.round(127.5 + 127.5 * Math.sin((2 * Math.PI * i) / 256)))));
+const pack = (r: number, g: number, b: number, w = 0) => ((((w & 255) << 24) | ((r & 255) << 16) | ((g & 255) << 8) | (b & 255)) >>> 0);
+
+/** Adafruit_NeoPixel::ColorHSV: hue 0..65535 round the colour wheel, saturation and value 0..255. */
+function colorHSV(hue: number, sat: number, val: number): number {
+  let r: number;
+  let g: number;
+  let b: number;
+  hue = (((hue & 0xffff) * 1530 + 32768) / 65536) | 0;
+  if (hue < 510) {
+    b = 0;
+    if (hue < 255) (r = 255), (g = hue);
+    else (r = 510 - hue), (g = 255);
+  } else if (hue < 1020) {
+    r = 0;
+    if (hue < 765) (g = 255), (b = hue - 510);
+    else (g = 1020 - hue), (b = 255);
+  } else if (hue < 1530) {
+    g = 0;
+    if (hue < 1275) (r = hue - 1020), (b = 255);
+    else (r = 255), (b = 1530 - hue);
+  } else (r = 255), (g = 0), (b = 0);
+  const v1 = 1 + (val & 255);
+  const s1 = 1 + (sat & 255);
+  const s2 = 255 - (sat & 255);
+  const ch = (c: number) => ((((((c * s1) >> 8) + s2) * v1) & 0xff00) >> 8);
+  return pack(ch(r), ch(g), ch(b));
+}
+
+/** a method taking numbers: args converted to the given C types, at most max of them */
+function pxMethod(name: string, types: ("u8" | "u16" | "u32" | "int")[], min: number, ret: "void" | "u8" | "u16" | "u32" | "bool", cyc: number, run: (o: PixelObj, v: number[], ctx: Ctx) => number | void): LibMethod {
+  return (obj, args, ctx, pos) => {
+    if (args.length < min || args.length > types.length) argCount(`Adafruit_NeoPixel.${name}`, min, types.length, args.length, ctx, pos);
+    const O = obj.lv ? obj.lv.get : obj.ev;
+    const conv = (k: string) => (k === "u8" ? ctx.T.uchar : k === "u16" ? ctx.T.uint : k === "u32" ? ctx.T.ulong : ctx.T.int);
+    const evs = args.map((a, i) => numEv(a, conv(types[i]), ctx, `${name}()`));
+    const t = ret === "void" ? VOID : ret === "bool" ? BOOL : conv(ret === "u8" ? "u8" : ret === "u16" ? "u16" : "u32");
+    return {
+      t,
+      ev: (f) => {
+        const v = run(O(f) as PixelObj, evs.map((e) => e(f) as number), ctx);
+        return ret === "void" ? undefined : (v ?? 0);
+      },
+      cost: sumCost(args) + cyc,
+      pos,
+    };
+  };
+}
+
+const neoPixel: LibClass = {
+  construct: (args, ctx, pos) => {
+    if (args.length > 3) argCount("Adafruit_NeoPixel", 0, 3, args.length, ctx, pos);
+    const N = args[0] ? numEv(args[0], ctx.T.uint, ctx, "Adafruit_NeoPixel()") : () => 0;
+    const P = args[1] ? numEv(args[1], ctx.T.int, ctx, "Adafruit_NeoPixel()") : () => 6;
+    const T = args[2] ? numEv(args[2], ctx.T.uint, ctx, "Adafruit_NeoPixel()") : () => 0x52;
+    return { t: { k: "class", name: "Adafruit_NeoPixel" }, ev: (f) => newPixels(N(f) as number, P(f) as number, T(f) as number), cost: sumCost(args) + 60, pos };
+  },
+  methods: dict<LibMethod>({
+    begin: pxMethod("begin", [], 0, "void", 40, (o, _v, ctx) => {
+      if (o.pin >= 0) ctx.hal.pinMode(o.pin, 1);
+    }),
+    show: pxMethod("show", [], 0, "void", 60, (o, _v, ctx) => {
+      if (o.pin < 0 || !o.n) return;
+      const b = o.bright;
+      const out = o.px.map((c) => {
+        if (!b) return c;
+        const sc = (x: number) => ((x * b) >> 8) & 255;
+        return pack(sc((c >>> 16) & 255), sc((c >>> 8) & 255), sc(c & 255), sc((c >>> 24) & 255));
+      });
+      ctx.hal.pixels?.(o.pin, out, o.type);
+      // 24 bits at 800 kHz per LED, with interrupts off on an AVR
+      burn(ctx.hal, o.n * 30e-6 * ctx.hal.fcpu + 50e-6 * ctx.hal.fcpu);
+    }),
+    setPixelColor: pxMethod("setPixelColor", ["u16", "u32", "u8", "u8", "u8"], 2, "void", 40, (o, v) => {
+      const i = v[0];
+      if (i >= o.n) return;
+      o.px[i] = v.length === 2 ? v[1] >>> 0 : pack(v[1], v[2], v[3], v[4] ?? 0);
+    }),
+    getPixelColor: pxMethod("getPixelColor", ["u16"], 1, "u32", 30, (o, v) => (v[0] < o.n ? o.px[v[0]] : 0)),
+    fill: pxMethod("fill", ["u32", "u16", "u16"], 0, "void", 20, (o, v, ctx) => {
+      const c = (v[0] ?? 0) >>> 0;
+      const first = v[1] ?? 0;
+      const count = v[2] ?? 0;
+      if (first >= o.n) return;
+      const end = count === 0 ? o.n : Math.min(o.n, first + count);
+      for (let i = first; i < end; i++) o.px[i] = c;
+      burn(ctx.hal, (end - first) * 12);
+    }),
+    clear: pxMethod("clear", [], 0, "void", 20, (o, _v, ctx) => {
+      o.px.fill(0);
+      burn(ctx.hal, o.n * 6);
+    }),
+    setBrightness: pxMethod("setBrightness", ["u8"], 1, "void", 30, (o, v) => {
+      o.bright = (v[0] + 1) & 255;
+    }),
+    getBrightness: pxMethod("getBrightness", [], 0, "u8", 10, (o) => (o.bright - 1) & 255),
+    numPixels: pxMethod("numPixels", [], 0, "u16", 10, (o) => o.n),
+    getPin: pxMethod("getPin", [], 0, "u16", 10, (o) => o.pin),
+    canShow: pxMethod("canShow", [], 0, "bool", 20, () => 1),
+    setPin: pxMethod("setPin", ["int"], 1, "void", 30, (o, v, ctx) => {
+      o.pin = v[0];
+      if (o.pin >= 0) ctx.hal.pinMode(o.pin, 1);
+    }),
+    updateLength: pxMethod("updateLength", ["u16"], 1, "void", 60, (o, v) => {
+      o.n = v[0];
+      o.px = new Array<number>(o.n).fill(0);
+    }),
+    updateType: pxMethod("updateType", ["u16"], 1, "void", 20, (o, v) => {
+      o.type = v[0];
+    }),
+    // the library's static helpers, called through an instance
+    Color: pxMethod("Color", ["u8", "u8", "u8", "u8"], 3, "u32", 12, (_o, v) => pack(v[0], v[1], v[2], v[3] ?? 0)),
+    ColorHSV: pxMethod("ColorHSV", ["u16", "u8", "u8"], 1, "u32", 120, (_o, v) => colorHSV(v[0], v[1] ?? 255, v[2] ?? 255)),
+    gamma32: pxMethod("gamma32", ["u32"], 1, "u32", 40, (_o, v) => pack(GAMMA8[(v[0] >>> 16) & 255], GAMMA8[(v[0] >>> 8) & 255], GAMMA8[v[0] & 255], GAMMA8[(v[0] >>> 24) & 255])),
+    gamma8: pxMethod("gamma8", ["u8"], 1, "u8", 8, (_o, v) => GAMMA8[v[0] & 255]),
+    sine8: pxMethod("sine8", ["u8"], 1, "u8", 8, (_o, v) => SINE8[v[0] & 255]),
+  }),
+};
+
 export const LIB_FUNCS: Record<string, LibFn> = dict(libFuncs);
 export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Wire: wire, EEPROM: eeprom });
-export const LIB_CLASSES: Record<string, LibClass> = dict({ Servo: servo });
+export const LIB_CLASSES: Record<string, LibClass> = dict({ Servo: servo, Adafruit_NeoPixel: neoPixel });
 /** Library class names the parser accepts as types. */
 export const CLASS_NAMES = new Set(Object.keys(LIB_CLASSES));
 
 export function newClassInstance(name: string): unknown {
   if (name === "Servo") return { kind: "Servo", pin: -1, min: 544, max: 2400, us: 1500 } satisfies ServoObj;
+  if (name === "Adafruit_NeoPixel") return newPixels();
   return {};
 }
