@@ -833,15 +833,18 @@ function EmptyState() {
             <span style={{ color: "var(--accent-2)" }}>
               <Icon.Stress size={22} />
             </span>
-            <span style={{ fontWeight: 600, fontSize: 14 }}>No strength analysis yet</span>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>No analysis yet</span>
           </div>
           <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
             An analysis says how a part is held and what pushes on it. Kerf then works out stress, strain, deflection and the factor of safety, colours the model with the results, and adds a strength check that re-runs whenever the design changes.
-            Gear trains get tooth, bearing and shaft checks from their input torque and speed.
+            Gear trains get tooth, bearing and shaft checks from their input torque and speed. An airflow analysis puts the design in a wind tunnel and reports its drag, CdA, the parts that cost the most and the flow round it.
           </div>
           <div className="row" style={{ marginTop: 12, gap: 8, flexWrap: "wrap" }}>
             <button className="btn sm primary" onClick={() => setDraft("Set up a strength analysis for this design from how it will be used: work out realistic loads and how it is held, then run it and tell me what you find.")}>
               <Icon.Sparkle size={13} /> Ask Claude to set one up
+            </button>
+            <button className="btn sm" onClick={() => setDraft("Set up an airflow analysis for this design at the speed it will really move, with the wind head on and from the side, then run it and tell me where the drag comes from and how to cut it.")}>
+              <Icon.Sparkle size={13} /> Airflow (drag)
             </button>
           </div>
         </div>
