@@ -162,8 +162,8 @@ interface Ctx {
   m: MachineData;
 }
 
-function item(c: Ctx, id: string, status: CheckItem["status"], title: string, detail: string, comps: string[], span?: Span) {
-  c.out.push({ id: `erc:${id}`, category: "electrical", status, title, detail, parts: comps, span, basis: "electrical rules" });
+function item(c: Ctx, id: string, status: CheckItem["status"], title: string, detail: string, comps: string[], span?: Span, fix?: string) {
+  c.out.push({ id: `erc:${id}`, category: "electrical", status, title, detail, parts: comps, span, basis: "electrical rules", ...(fix ? { fix } : {}) });
 }
 
 const supplies = (n: Net) => n.pins.filter((p) => p.pin.type === "pwr_out");
@@ -190,7 +190,7 @@ function driveLevel(c: Ctx, p: NetPin): number | undefined {
   return p.pin.v;
 }
 
-export function electricalChecks(m: MachineData, opts: { motorCurrent?: (comp: string) => number | undefined } = {}): CheckItem[] {
+export function electricalChecks(m: MachineData, opts: { motorCurrent?: (comp: string) => number | undefined; motorStall?: (comp: string) => number | undefined } = {}): CheckItem[] {
   const nl = buildNetlist(m);
   const c: Ctx = { nl, out: [], m };
   const electrical = m.components.filter((x) => (catalogPart(x.catalogId)?.pins.length ?? 0) > 0);
@@ -203,12 +203,15 @@ export function electricalChecks(m: MachineData, opts: { motorCurrent?: (comp: s
 
   powerChecks(c);
   logicChecks(c);
+  sharedPins(c);
+  i2cAddresses(c);
   motorChecks(c, opts.motorCurrent);
   portChecks(c);
   groundChecks(c);
   unconnected(c);
   protection(c);
   budget(c, opts.motorCurrent);
+  surge(c, opts.motorCurrent, opts.motorStall);
 
   if (!c.out.some((i) => i.status === "fail" || i.status === "warn")) {
     item(c, "ok", "pass", "Wiring rules", `${nl.nets.length} nets and ${nl.cables.length} cables checked: power, logic levels, PWM and analog pins, motor drivers, grounds and connectors are consistent.`, []);
@@ -526,8 +529,21 @@ function protection(c: Ctx) {
   }
 }
 
-/** What each net and each powered pin carries: the current budget behind the supply and wire checks. */
-function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
+/**
+ * What each net and each powered pin carries: the current budget behind the supply and wire checks. With
+ * `peak`, motors and servos draw what they do starting or blocked (`motorCurrent` then gives stall currents),
+ * and the parts that do are added to `surging`.
+ */
+function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined, peak = false, surging?: Set<string>) {
+  // a servo or actuator powered straight from a supply draws its stall current as it starts
+  const drawOf = (p: NetPin): number => {
+    const run = p.pin.draw ?? 0;
+    const stall = p.part.specs.i_stall;
+    // (a gearmotor's power pins feed its encoder: its motor current comes through its driver)
+    if (!peak || p.pin.type !== "pwr_in" || typeof stall !== "number" || stall <= run || !STARTS_HARD.has(p.part.kind) || p.part.pins.some((q) => q.type === "motor")) return run;
+    surging?.add(p.comp);
+    return stall;
+  };
   const memo = new Map<number, number>();
   const visiting = new Set<number>();
   // current drawn out of a net by everything connected to it
@@ -539,7 +555,7 @@ function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined) 
     const hasSupply = supplies(n).length > 0;
     for (const p of n.pins) {
       if (p.pin.type === "pwr_in" || (p.pin.type === "pwr_rail" && hasSupply)) {
-        a += p.pin.draw ?? 0;
+        a += drawOf(p);
         a += downstream(p);
       }
     }
@@ -582,7 +598,10 @@ function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined) 
       }
       if (q.pin.type === "motor_out") {
         const n = c.nl.netOf.get(q.key);
-        for (const mp of n?.pins.filter((x) => x.pin.type === "motor" && x.pin.id === "M_PLUS") ?? []) a += motorCurrent?.(mp.comp) ?? Number(mp.part.specs.i_free ?? 0.2);
+        for (const mp of n?.pins.filter((x) => x.pin.type === "motor" && x.pin.id === "M_PLUS") ?? []) {
+          a += motorCurrent?.(mp.comp) ?? Number((peak ? mp.part.specs.i_stall : undefined) ?? mp.part.specs.i_free ?? 0.2);
+          if (peak) surging?.add(mp.comp);
+        }
       }
       if (q.pin.type === "port" && q.pin.side === "source") {
         const cab = c.nl.cables.find((x) => x.a.key === q.key || x.b.key === q.key);
@@ -594,6 +613,128 @@ function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined) 
     return a;
   };
   return { load, downstream };
+}
+
+/** Parts that draw their stall current from the supply each time they start. */
+const STARTS_HARD = new Set(["servo", "actuator", "gearmotor", "bldc"]);
+const CONTROLLERS = new Set(["controller", "host"]);
+const listOf = (xs: string[]) => {
+  const a = [...new Set(xs)];
+  return a.length <= 3 ? a.join(", ").replace(/, ([^,]*)$/, " and $1") : `${a.slice(0, 3).join(", ")} and ${a.length - 3} more`;
+};
+
+/**
+ * Motors and servos draw their stall current for a moment every time they start, and all the time they are
+ * blocked. A supply sized for their running current then sags: a controller's own regulator browns out and
+ * resets the board, and a supply's over-current protection cuts out.
+ */
+function surge(c: Ctx, motorCurrent?: (comp: string) => number | undefined, motorStall?: (comp: string) => number | undefined) {
+  const run = loadModel(c, motorCurrent);
+  for (const n of c.nl.nets) {
+    const src = sourcesOf(n)[0];
+    if (!src || src.pin.imax === undefined) continue;
+    if (src.pin.type === "pwr_rail" && supplies(n).length) continue;
+    // a model of its own per net, so the parts that surge are the ones behind this supply
+    const surging = new Set<string>();
+    const pk = loadModel(c, motorStall, true, surging).load(n);
+    const a = run.load(n);
+    if (pk <= src.pin.imax || pk < a + 0.1 || !surging.size) continue;
+    const onBoard = CONTROLLERS.has(src.part.kind);
+    const movers = listOf([...surging]);
+    const need = Math.ceil(pk);
+    item(
+      c,
+      `surge:${n.id}`,
+      onBoard ? "fail" : "warn",
+      `${movers} ${surging.size === 1 ? "pulls" : "pull"} ${who(src)} down as ${surging.size === 1 ? "it starts" : "they start"}`,
+      `Starting or blocked, ${movers} ${surging.size === 1 ? "draws" : "draw"} about ${fmtNum(pk, 1)} A from ${who(src)}, which gives ${fmtNum(src.pin.imax)} A (about ${fmtNum(a, 2)} A while running). ${onBoard ? `That is the board's own regulator: it sags and ${src.comp} resets every time ${surging.size === 1 ? "it starts" : "they start"}, and it can overheat.` : "The supply sags or its over-current protection cuts out, and a sag can reset the controller."}`,
+      [src.comp, ...surging],
+      n.spans[0],
+      onBoard
+        ? `Power ${movers} from a supply of ${surging.size === 1 ? "its" : "their"} own (a 5 to 6 V BEC or buck converter rated for ${need} A or more, fed from the battery or main supply), join its ground to ${src.comp}'s GND, and keep only the signal wires on ${src.comp}.`
+        : `Use a supply rated for at least ${need} A, or start the motors one at a time and ramp their PWM up over a few hundred milliseconds in firmware, and give the controller its own regulator so a sag cannot reset it.`,
+    );
+  }
+}
+
+/** The controller pins no net uses yet, of the kind a signal needs, for fix messages. */
+function freePins(c: Ctx, ctrl: NetPin, pwm: boolean): string[] {
+  const used = new Set((c.nl.pinsOf.get(ctrl.comp) ?? []).filter((p) => p.index === ctrl.index && (c.nl.netOf.has(p.key) || c.nl.cables.some((x) => x.a.key === p.key || x.b.key === p.key))).map((p) => p.pin.id));
+  return ctrl.part.pins.filter((p) => p.type === "io" && !p.input_only && !used.has(p.id) && !p.bus && (!pwm || p.pwm) && !/strapping|USB serial/i.test(p.note ?? "")).map((p) => p.id);
+}
+
+/**
+ * One controller pin wired to two modules' signals: almost always a pin number used twice. A module's output
+ * then drives the other module's input directly, and two inputs on one pin always get the same signal.
+ * Shared buses (I2C, SPI, serial) and a line every module takes on the same pin name (a common enable) are
+ * meant to be shared.
+ */
+function sharedPins(c: Ctx) {
+  for (const n of c.nl.nets) {
+    const ctrl = n.pins.find((p) => p.pin.type === "io" && CONTROLLERS.has(p.part.kind));
+    if (!ctrl) continue;
+    const sig = n.pins.filter((p) => !CONTROLLERS.has(p.part.kind) && !p.pin.bus && (p.pin.type === "in" || p.pin.type === "out" || p.pin.type === "analog_out"));
+    if (new Set(sig.map((p) => `${p.comp}[${p.index}]`)).size < 2) continue;
+    const pin = who(ctrl);
+    const span = n.spans[0];
+    const drivers = sig.filter((p) => p.pin.type !== "in");
+    const inputs = sig.filter((p) => p.pin.type === "in");
+    const driven = inputs.find((i) => drivers.some((d) => d.comp !== i.comp || d.index !== i.index));
+    if (drivers.length && driven) {
+      const d = drivers.find((x) => x.comp !== driven.comp || x.index !== driven.index)!;
+      const free = freePins(c, ctrl, driven.pin.needs === "pwm");
+      item(
+        c,
+        `twice:${n.id}`,
+        "fail",
+        `${pin} is used for two signals`,
+        `${who(d)} and ${who(driven)} are both wired to ${pin}: ${d.comp}'s output drives ${driven.comp}'s input directly, and the firmware cannot work ${driven.comp} on its own.`,
+        [ctrl.comp, d.comp, driven.comp],
+        span,
+        `Give ${who(driven)} a pin of its own on ${ctrl.comp}${free.length ? ` (free${driven.pin.needs === "pwm" ? " PWM" : ""} pins: ${free.slice(0, 5).join(", ")})` : ""} and change its wire.`,
+      );
+      continue;
+    }
+    if (inputs.length >= 2 && new Set(inputs.map((p) => p.pin.id)).size > 1) {
+      const free = freePins(c, ctrl, inputs.some((p) => p.pin.needs === "pwm"));
+      item(
+        c,
+        `twice:${n.id}`,
+        "warn",
+        `${pin} drives ${listOf(inputs.map(who))}`,
+        `${listOf(inputs.map(who))} all take their signal from ${pin}, so they always get the same one. That is right only for a line they must share; otherwise a pin number was used twice.`,
+        [ctrl.comp, ...inputs.map((p) => p.comp)],
+        span,
+        `Unless they must always switch together, give each its own pin on ${ctrl.comp}${free.length ? ` (free pins: ${free.slice(0, 5).join(", ")})` : ""}.`,
+      );
+    }
+  }
+}
+
+/** Two devices answering at the same address on one I2C bus: the controller cannot tell them apart. */
+function i2cAddresses(c: Ctx) {
+  for (const n of c.nl.nets) {
+    const byAddr = new Map<string, NetPin[]>();
+    for (const p of n.pins) {
+      const addr = p.part.specs.i2c_addr;
+      if (p.pin.bus !== "i2c_sda" || CONTROLLERS.has(p.part.kind) || addr === undefined) continue;
+      const k = String(addr).toLowerCase();
+      byAddr.set(k, [...(byAddr.get(k) ?? []), p]);
+    }
+    for (const [addr, ds] of byAddr) {
+      if (ds.length < 2) continue;
+      item(
+        c,
+        `i2c-addr:${n.id}:${addr}`,
+        "fail",
+        `Two I2C devices at address ${addr}`,
+        `${listOf(ds.map(who))} share ${netLabel(n)} and all answer at ${addr}, so the controller cannot tell them apart and reads come back garbled.`,
+        ds.map((p) => p.comp),
+        n.spans[0],
+        "Put one on the controller's second I2C bus if it has one, use a module whose address can be changed (an address pin or jumper) and set it to another address, or add an I2C multiplexer (TCA9548A) between them.",
+      );
+    }
+  }
 }
 
 /**
@@ -635,7 +776,7 @@ function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
     if (a <= 0) continue;
     const pct = a / src.pin.imax;
     const name = netLabel(n);
-    if (pct > 1) item(c, `budget:${n.id}`, "fail", `${who(src)} overloaded`, `Everything on ${name} draws about ${fmtNum(a, 2)} A; ${src.part.name} supplies ${fmtNum(src.pin.imax)} A.`, [src.comp], n.spans[0]);
+    if (pct > 1) item(c, `budget:${n.id}`, "fail", `${who(src)} overloaded`, `Everything on ${name} draws about ${fmtNum(a, 2)} A; ${src.part.name} supplies ${fmtNum(src.pin.imax)} A.`, [src.comp], n.spans[0], `Move the heavy loads (motors, servos, heaters, LED strips) to a supply of their own rated for at least ${fmtNum(Math.ceil(a * 1.25))} A, with its ground joined to this one, or use a bigger supply here.`);
     else item(c, `budget:${n.id}`, pct > 0.8 ? "warn" : "pass", `Power budget: ${name}`, `About ${fmtNum(a, 2)} A of ${fmtNum(src.pin.imax)} A available from ${who(src)} (${fmtNum(pct * 100, 0)} %).`, [src.comp], n.spans[0]);
   }
   wireChecks(c, load, downstream, motorCurrent);

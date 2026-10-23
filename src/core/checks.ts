@@ -16,6 +16,8 @@ import { fastenerChecks } from "./fastenerChecks";
 import { findHolds, type MeshLookup } from "./holds";
 import { holdChecks } from "./holdChecks";
 import { linkChecks } from "./linkChecks";
+import { stashSweep, sweepChecks } from "./sweepChecks";
+import { stabilityChecks } from "./stability";
 import type { SettingValue } from "../mfg/types";
 
 export type CheckCategory =
@@ -92,6 +94,11 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
       const partners = visible.filter((q) => q.gear && (q.gear.meshWith === p.name || g.meshWith === q.name)).map((q) => q.id);
       return { id: p.id, at: g.center, axis: g.axis, d: tipDiameter(g.m, g.z) + 0.2, length: g.width, ...(g.bore ? { bore: g.bore } : {}), exclude: partners };
     });
+  return { placed, queries: model.geoQueries, access, envelopes, ignorePairs: contactPairs(model, visible) };
+}
+
+/** Pairs of parts that press into each other by design, so overlap checks leave them alone. */
+export function contactPairs(model: Model, visible: EvalPart[] = model.parts): [string, string][] {
   // leads of parts soldered to a Kerf circuit board pass through its (undrawn) holes
   const ignorePairs: [string, string][] = [];
   const onBoard = new Map((model.machine?.components ?? []).filter((c) => c.pcb).map((c) => [c.name, c.pcb!.board]));
@@ -101,7 +108,7 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
     // a band presses on the tube it wraps and sits on its hooks
     if (p.band) for (const other of [...p.band.around, ...(p.band.holds ? [p.band.holds] : [])]) for (const q of visible) if (q.name === other) ignorePairs.push([p.id, q.id]);
   }
-  return { placed, queries: model.geoQueries, access, envelopes, ignorePairs };
+  return ignorePairs;
 }
 
 /** Pure-JS gear checks: module match, centre distance, face overlap, tooth clearance through a rotation. */
@@ -209,6 +216,8 @@ export interface ReportInputs {
   geom?: GeomLookup;
   /** part meshes by geometry hash, to measure what each screw clamps */
   mesh?: MeshLookup;
+  /** leave the motion sweep to the live sweep pass (sweepRuntime), which works through it a slice at a time */
+  sweepLater?: boolean;
 }
 
 /**
@@ -258,6 +267,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         status: "fail",
         title: `${label(i.a)} overlaps ${label(i.b)}`,
         detail: `${fmtNum(i.volume, 1)} mm³ of solid overlap`,
+        fix: overlapFix(i, partsById.get(i.a), partsById.get(i.b), kernel, geom),
         parts: [i.a, i.b],
         span: partsById.get(i.a)?.span,
         basis: "geometry",
@@ -296,6 +306,9 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         status: a.blockedBy.length ? "fail" : "pass",
         title: `Tool access: ${p?.label ?? a.id}`,
         detail: a.blockedBy.length ? `A ${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key") : "tool"} is blocked by ${a.blockedBy.map(label).join(", ")}` : `${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key").replace(/^./, (c) => c.toUpperCase()) : "Tool"} reaches the head (removable covers off)`,
+        ...(a.blockedBy.length && p?.fastener
+          ? { fix: `The tool needs a straight path of ${fmtNum(p.fastener.toolD ?? p.fastener.key + 1.5, 1)} mm across and 35 mm long out from the head along ${dirName(p.fastener.outward)}. Cut an access hole of at least ${fmtNum((p.fastener.toolD ?? p.fastener.key + 1.5) + 1, 1)} mm through ${a.blockedBy.map(label).join(", ")} in line with the screw, move the screw clear of ${a.blockedBy.length === 1 ? "it" : "them"}, put it in from the other side with the nut here, or mark the part in the way removable if it comes off to assemble.` }
+          : {}),
         parts: [a.id, ...a.blockedBy],
         span: p?.span,
         basis: "geometry",
@@ -309,6 +322,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         status: env.hits.length ? "fail" : "pass",
         title: `${p?.label ?? env.id} turns freely`,
         detail: env.hits.length ? `Its swept tip circle cuts into ${env.hits.map(label).join(", ")}` : "Swept tip circle clears all static parts",
+        ...(env.hits.length && p?.gear ? { fix: `Keep ${env.hits.map(label).join(", ")} out of the ${fmtNum(tipDiameter(p.gear.m, p.gear.z), 1)} mm circle the teeth sweep about the axis through ${pt(p.gear.center)}: at least ${fmtNum(tipDiameter(p.gear.m, p.gear.z) / 2 + 1, 1)} mm from the axis over the gear's ${fmtNum(p.gear.width, 1)} mm face, or recess ${env.hits.length === 1 ? "it" : "them"} there.` } : {}),
         parts: [env.id, ...env.hits],
         span: p?.span,
         basis: "geometry",
@@ -317,8 +331,15 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   }
   items.push(...gearChecks(model));
   items.push(...fastenerChecks(model));
-  items.push(...holdChecks(model, findHolds(model, inputs.mesh), kernel, (p) => geom(p.hash)?.volume));
+  const holds = findHolds(model, inputs.mesh);
+  items.push(...holdChecks(model, holds, kernel, (p) => geom(p.hash)?.volume));
   items.push(...linkChecks(model));
+  if (kernel && inputs.mesh) {
+    const sweep = { model, holds, kernel, mesh: inputs.mesh, ignore: contactPairs(model) };
+    if (inputs.sweepLater) stashSweep(sweep);
+    else items.push(...sweepChecks(sweep.model, sweep.holds, sweep.kernel, sweep.mesh, sweep.ignore));
+    items.push(...stabilityChecks(model, holds, kernel, inputs.mesh, (p) => geom(p.hash)?.volume));
+  }
   if (model.machine) items.push(...machineChecks(model.machine));
 
   // things geometry cannot prove
@@ -339,6 +360,53 @@ export function finishReport(items: CheckItem[], ms: number): CheckReport {
   const counts: Record<CheckStatus, number> = { pass: 0, fail: 0, warn: 0, pending: 0, info: 0 };
   for (const i of items) counts[i.status]++;
   return { items, counts, ms };
+}
+
+const dirName = (d: V3) => {
+  const k = [0, 1, 2].reduce((a, b) => (Math.abs(d[b]) > Math.abs(d[a]) ? b : a), 0);
+  return Math.abs(d[k]) > 0.97 ? `${d[k] > 0 ? "+" : "-"}${"XYZ"[k]}` : pt(d);
+};
+
+/**
+ * What to do about an overlap, worked out from where the parts overlap: the same part twice, one part sunk
+ * wholly in another (a pocket or bore not cut), or a slab of overlap whose thinnest side says how far to move.
+ */
+function overlapFix(i: NonNullable<ReportInputs["kernel"]>["interferences"][number], a: EvalPart | undefined, b: EvalPart | undefined, kernel: NonNullable<ReportInputs["kernel"]>, geom: GeomLookup): string | undefined {
+  if (!a || !b) return undefined;
+  const va = geom(a.hash)?.volume;
+  const vb = geom(b.hash)?.volume;
+  if (a.hash === b.hash && va && i.volume > 0.9 * va) return `${a.name} and ${b.name} are the same shape in the same place: one is a copy left behind. Delete it, or move it to where the second one belongs.`;
+  const small = va !== undefined && vb !== undefined ? (va <= vb ? a : b) : undefined;
+  const big = small === a ? b : a;
+  const vs = small === a ? va : vb;
+  if (small && vs && i.volume > 0.85 * vs) return `${small.name} sits wholly inside ${big.name}. If it fits into ${big.name}, cut its seat: cut ${small.libKind ? "a pocket or bore the size of " + small.name : small.name} from ${big.name} (with running or press clearance); otherwise move ${small.name} out to where it mounts.`;
+  // the overlap's thinnest side is how far apart to move them, along that axis
+  let lo: V3 = [i.center[0], i.center[1], i.center[2]];
+  let hi: V3 = [...lo];
+  const P = i.mesh?.positions;
+  if (P && P.length >= 9) {
+    lo = [Infinity, Infinity, Infinity];
+    hi = [-Infinity, -Infinity, -Infinity];
+    for (let k = 0; k < P.length; k += 3)
+      for (let d = 0; d < 3; d++) {
+        lo[d] = Math.min(lo[d], P[k + d]);
+        hi[d] = Math.max(hi[d], P[k + d]);
+      }
+  } else {
+    const r = Math.cbrt(i.volume) / 2;
+    lo = lo.map((x) => x - r) as V3;
+    hi = hi.map((x) => x + r) as V3;
+  }
+  const ext = [0, 1, 2].map((d) => hi[d] - lo[d]);
+  const axis = [0, 1, 2].reduce((m, d) => (ext[d] < ext[m] ? d : m), 0);
+  const ba = kernel.boxes?.[i.a];
+  const bb = kernel.boxes?.[i.b];
+  const ca = ba ? (ba[0][axis] + ba[1][axis]) / 2 : 0;
+  const cb = bb ? (bb[0][axis] + bb[1][axis]) / 2 : 0;
+  const sign = ca >= cb ? "+" : "-";
+  const other = sign === "+" ? "-" : "+";
+  const by = fmtNum(ext[axis] + 0.1, 2);
+  return `They overlap in a ${ext.map((x) => fmtNum(x, 1)).join(" × ")} mm region around ${pt([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2])}, ${fmtNum(ext[axis], 2)} mm deep along ${"XYZ"[axis]}. Move ${a.name} ${by} mm along ${sign}${"XYZ"[axis]} (or ${b.name} along ${other}${"XYZ"[axis]}), or trim the one that should give way. Place them from the same numbers as the faces they meet, so they touch without overlapping.`;
 }
 
 function mapReq(s: ReqStatus, level: "hard" | "soft"): CheckStatus {
