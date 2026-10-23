@@ -44,7 +44,6 @@ export interface Link {
   follower: { name: string; kind: "slide" | "swing"; axis: V3; at: V3 };
 }
 
-/** How fast a motion turns about `axis` (a unit vector) per unit of driver angle, counting what it rides on. */
 /** A part's mass in grams: as given, else its volume (mm³) times its material's density (g/cm³). */
 export function partMass(p: EvalPart, volume: number | undefined, density: number): number | undefined {
   if (p.mass !== undefined) return p.mass;
@@ -57,6 +56,7 @@ export function massVolume(p: EvalPart, volume: number | undefined, density: num
   return volume;
 }
 
+/** How fast a motion turns about `axis` (a unit vector) per unit of driver angle, counting what it rides on. */
 export function absRate(m: Motion | undefined, axis: V3): number {
   let r = 0;
   for (let x = m; x; x = x.parent) {
