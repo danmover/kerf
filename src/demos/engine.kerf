@@ -1,0 +1,194 @@
+design "Single-Cylinder Engine"
+note "A see-how-it-works model of a single-cylinder engine: turn the flywheel and the crank pushes the piston up and down its cylinder through a connecting rod, the way a lawnmower or motorbike engine does. Printed in PETG with a steel shaft and dowel pins, on two 608 skate bearings."
+note "Assembly order: press the bearings into the standard, push the shaft through and press the crank web and flywheel on; pin the rod to the piston, slide the piston up into the cylinder, pin the rod to the crank, then bolt the cylinder and head on."
+
+// ── Crank and rod ──────────────────────────────────────
+param throw   = 20mm  range 10 .. 24  "Crank throw: half the piston's stroke"
+param rod_len = 80mm  range 50 .. 110 "Connecting rod, pin to pin"
+param bore    = 40mm  "Piston diameter"
+param crank_z = 60mm  "Height of the crankshaft above the bench"
+param pin_d   = 8mm   "Crank pin"
+param wrist_d = 6mm   "Wrist (gudgeon) pin"
+param run_gap = 0.6mm "Clearance on the pins the rod turns on"
+param press   = 0.15mm "Printed holes drawn this much over a pressed pin (twice that on their side): they close up by about that much"
+
+// ── Layout (crank along Y, cylinder up Z) ──────────────
+let base_t  = 10
+let y_back  = -26          // back face of the standard
+let y_front = -10          // front face of the standard
+let y_web   = -9           // crank web, 8 thick
+let y_rod   = 0            // connecting rod, 8 thick
+let y_cyl   = y_rod + 4    // centre line of the cylinder
+let tdc     = crank_z + throw + rod_len   // wrist pin at top dead centre
+let piston_h = 30
+let pin_up   = 10          // wrist pin above the piston skirt
+let skirt    = tdc - pin_up
+let cyl_z0   = 96          // underside of the cylinder's flange
+let deck     = 186         // top of the cylinder, where the head sits
+let head_t   = 10
+let head_r   = 28
+let head_pts = [(head_r * 0.7071, y_cyl + head_r * 0.7071), (-head_r * 0.7071, y_cyl + head_r * 0.7071), (-head_r * 0.7071, y_cyl - head_r * 0.7071), (head_r * 0.7071, y_cyl - head_r * 0.7071)]
+let cyl_pts  = [(-30, -18), (30, -18)]
+let foot_pts = [(-30, 0), (30, 0)]
+
+let deck_bolt = calc.fastener(grip: 6, into: "insert", material: "PETG", size: M3)
+let head_bolt = calc.fastener(grip: head_t, into: "insert", material: "PETG", size: M3)
+
+// ── Frame ──────────────────────────────────────────────
+part base {
+  color: #2b2f36
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Frame"
+  body box(160, 110, base_t, at: (0, -10, 0), r: 6)
+  for f in foot_pts {
+    cut hole(M3, fit: "insert", depth: 7, at: (f.x, f.y, base_t))
+  }
+}
+
+// the upright that carries the crankshaft in two bearings, printed lying on its back
+part standard {
+  color: #3d7bfd
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Frame"
+  body box(80, y_front - y_back, cyl_z0 - base_t, at: (0, (y_back + y_front) / 2, base_t))
+  add box(80, 20, 6, at: (0, 0, base_t))
+  // one straight bore through for both 608s: it prints round and needs no support
+  cut cylinder(d: 22.1, h: y_front - y_back + 2, at: (0, y_back - 1, crank_z), dir: Y)
+  for f in foot_pts {
+    cut hole(deck_bolt.clearance, through: true, at: (f.x, f.y, base_t + 7), dir: -Z)
+  }
+  for c in cyl_pts {
+    cut hole(M3, fit: "insert", depth: 7, at: (c.x, c.y, cyl_z0))
+  }
+}
+
+component bearing_back  = lib.bearing("608") { at: (0, y_back + 0.5, crank_z), axis: Y }
+component bearing_front = lib.bearing("608") { at: (0, y_front - 7.5, crank_z), axis: Y }
+
+// ── Crankshaft ─────────────────────────────────────────
+part crank {
+  color: #e2a93b
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Crank"
+  spin: 1
+  axis: Y
+  axis_at: (0, 0, crank_z)
+  body cylinder(d: 56, h: 8, at: (0, y_web, crank_z), dir: Y)
+  // counterweight opposite the pin
+  add cylinder(d: 30, h: 8, at: (0, y_web, crank_z - 14), dir: Y)
+  cut cylinder(d: 8 + press, h: 10, at: (0, y_web - 1, crank_z), dir: Y)
+  cut cylinder(d: pin_d + press, h: 10, at: (0, y_web - 1, crank_z + throw), dir: Y)
+}
+
+part shaft {
+  color: #c3c8cf
+  material: "Stainless 304"
+  process: mfg.cnc_lathe(axis: Y)
+  group: "Crank"
+  turns_with: crank
+  body cylinder(d: 8, h: 43, at: (0, y_back - 18, crank_z), dir: Y)
+}
+
+part flywheel {
+  color: #8a9099
+  material: "Steel"
+  process: mfg.cnc_lathe(axis: Y)
+  group: "Crank"
+  turns_with: crank
+  body cylinder(d: 90, h: 12, at: (0, y_back - 16, crank_z), dir: Y)
+  cut cylinder(d: 70, h: 4.01, at: (0, y_back - 4, crank_z), dir: Y)
+  cut cylinder(d: 8, h: 14, at: (0, y_back - 17, crank_z), dir: Y)
+}
+
+component crank_pin = lib.dowel(d: pin_d, length: 18) { at: (0, y_web, crank_z + throw), axis: Y }
+
+// ── Connecting rod and piston ──────────────────────────
+part piston {
+  color: #c9d4e3
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Piston"
+  slides: Z
+  body cylinder(d: bore, h: piston_h, at: (0, y_cyl, skirt))
+  // a slot up the middle for the rod's small end
+  cut box(20, 10, 18, at: (0, y_cyl, skirt - 0.01))
+  cut cylinder(d: wrist_d + 2 * press, h: bore + 2, at: (0, y_cyl - bore / 2 - 1, tdc), dir: Y)
+}
+
+part rod {
+  color: #d9dde3
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Piston"
+  links: [crank, piston]
+  pins: [(0, y_cyl, crank_z + throw), (0, y_cyl, tdc)]
+  body cylinder(d: 18, h: 8, at: (0, y_rod, crank_z + throw), dir: Y)
+  add cylinder(d: 12, h: 8, at: (0, y_rod, tdc), dir: Y)
+  add box(8, 8, rod_len, at: (0, y_cyl, crank_z + throw))
+  cut cylinder(d: pin_d + run_gap, h: 10, at: (0, y_rod - 1, crank_z + throw), dir: Y)
+  cut cylinder(d: wrist_d + run_gap, h: 10, at: (0, y_rod - 1, tdc), dir: Y)
+}
+
+component wrist_pin = lib.dowel(d: wrist_d, length: 36) { at: (0, y_cyl - 18, tdc), axis: Y }
+
+// ── Cylinder and head ──────────────────────────────────
+part barrel {
+  color: #3d7bfd
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Cylinder"
+  // a flange bolted on top of the standard, reaching forward over the crank
+  body box(80, 56, 6, at: (0, 2, cyl_z0))
+  add cylinder(d: bore + 12, h: deck - cyl_z0 - 6, at: (0, y_cyl, cyl_z0 + 5.99))
+  // the head flange, flared out from the tube steeper than 45° so it prints without support
+  add cone(d1: bore + 12, d2: 2 * head_r + 12, h: 12, at: (0, y_cyl, deck - 21.99))
+  add cylinder(d: 2 * head_r + 12, h: 10, at: (0, y_cyl, deck - 10))
+  cut cylinder(d: bore + 0.6, h: deck - cyl_z0 + 2, at: (0, y_cyl, cyl_z0 - 1))
+  for c in cyl_pts {
+    cut hole(deck_bolt.clearance, through: true, at: (c.x, c.y, cyl_z0 + 7), dir: -Z)
+  }
+  for h in head_pts {
+    cut hole(M3, fit: "insert", depth: 7, at: (h.x, h.y, deck))
+  }
+}
+
+part head {
+  color: #2b2f36
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Cylinder"
+  body cylinder(d: 2 * head_r + 12, h: head_t, at: (0, y_cyl, deck))
+  // a spark plug boss on top
+  add cylinder(d: 16, h: 8, at: (0, y_cyl, deck + head_t - 0.01))
+  for h in head_pts {
+    cut hole(head_bolt.clearance, through: true, at: (h.x, h.y, deck + head_t + 1), dir: -Z)
+  }
+}
+
+// ── Hardware ───────────────────────────────────────────
+component foot_inserts = lib.insert(M3) { at: [(foot_pts[0].x, foot_pts[0].y, base_t), (foot_pts[1].x, foot_pts[1].y, base_t)], axis: -Z }
+component foot_screws  = lib.screw(deck_bolt) { at: [(foot_pts[0].x, foot_pts[0].y, base_t + 6), (foot_pts[1].x, foot_pts[1].y, base_t + 6)], axis: -Z }
+component deck_inserts = lib.insert(M3) { at: [(cyl_pts[0].x, cyl_pts[0].y, cyl_z0), (cyl_pts[1].x, cyl_pts[1].y, cyl_z0)], axis: -Z }
+component deck_screws  = lib.screw(deck_bolt) { at: [(cyl_pts[0].x, cyl_pts[0].y, cyl_z0 + 6), (cyl_pts[1].x, cyl_pts[1].y, cyl_z0 + 6)], axis: -Z }
+component head_inserts = lib.insert(M3) { at: [(head_pts[0].x, head_pts[0].y, deck), (head_pts[1].x, head_pts[1].y, deck), (head_pts[2].x, head_pts[2].y, deck), (head_pts[3].x, head_pts[3].y, deck)], axis: -Z }
+component head_screws  = lib.screw(head_bolt) { at: [(head_pts[0].x, head_pts[0].y, deck + head_t), (head_pts[1].x, head_pts[1].y, deck + head_t), (head_pts[2].x, head_pts[2].y, deck + head_t), (head_pts[3].x, head_pts[3].y, deck + head_t)], axis: -Z }
+
+// ── Requirements ───────────────────────────────────────
+require "Rod is at least 3 times the throw, so it pushes the piston nearly straight": rod_len >= 3 * throw
+require "Crank web clears the cylinder flange at the top": crank_z + 28 <= cyl_z0 - 4
+require "Piston stays in the bore at the bottom of its stroke": skirt - 2 * throw >= cyl_z0 + 6
+require "Piston clears the head at the top of its stroke": skirt + piston_h <= deck - 3
+
+// ── Turning it over ────────────────────────────────────
+// The crank turns at a steady speed; the piston, rod and flywheel follow as
+// rigid bodies with masses from their shapes.
+scenario "Turn it over" {
+  mechanism: sim.mechanism(sim.turn(crank, speed: [(0s, 0rpm), (0.5s, 300rpm)]))
+  duration: 2s
+  variants: ["expected"]
+  expect "Piston runs its full stroke": piston.pos_max - piston.pos_min > 2 * throw - 0.5mm
+  expect "Crank reaches 300 rpm": crank.max_rpm > 290rpm
+}

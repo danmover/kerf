@@ -54,6 +54,8 @@ export interface EnvelopeProbe {
   axis: V3;
   d: number;
   length: number;
+  /** the hole through it: what passes through its bore (a still axle it turns on) is not in its way */
+  bore?: number;
   /** ids that move with or mesh with this part (excluded) */
   exclude: string[];
 }

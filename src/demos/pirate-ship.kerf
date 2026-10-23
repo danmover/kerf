@@ -1,0 +1,209 @@
+design "Pirate Ship Ride"
+note "A desktop model of the swinging pirate ship: a stepper turns a crank round and round, and a connecting rod to one of the ship's hanger arms rocks the ship back and forth on its axle, like the real ride's drive swinging it higher each pass."
+note "Assembly order: press the bearings into the hanger arms and screw the arms to the hull; press the axle into the motor tower, slide the ship's bearings on and press the far tower on the end; screw both towers to the base; bolt the motor to its tower, press the crank on its shaft, and pin the rod between the crank and the ship."
+
+// ── Linkage (the ship swings about Y) ──────────────────
+param pivot_z  = 200mm  "Height of the ship's axle"
+param arm_r    = 60mm   "Rocker pin below the axle, on the hanger arm"
+param throw    = 30mm   "Crank throw"
+param crank_x  = -110mm "Crank (motor shaft) position along the ride"
+param crank_z  = 148mm  "Crank height"
+param press    = 0.15mm "Printed holes drawn this much over a pressed pin or shaft: they close up by about that much"
+param run_gap  = 0.6mm  "Clearance on the pins the rod turns on"
+
+// ── Layout along Y (motor side negative) ───────────────
+let beam     = 46               // hull width
+let arm_t    = 8
+let y_arm    = -beam / 2 - arm_t  // outer face of the motor-side arm
+let y_rod    = y_arm - 7        // the rod, 6 thick, 1 clear of the arm
+let y_crank  = y_rod - 9        // the crank, 8 thick, 1 clear of the rod
+let y_mt     = y_crank - 17     // outer face of the motor tower (16 thick)
+let y_ft     = beam / 2 + arm_t + 1   // inner face of the far tower (10 thick)
+let rod_y    = y_rod + 3        // the rod's centre plane
+let p_crank  = (crank_x, crank_z + throw)   // crank pin, drawn straight up
+let p_rocker = (0, pivot_z - arm_r)         // rocker pin, ship hanging still
+let rod_dir  = (p_rocker - p_crank) / len(p_rocker - p_crank)
+let rod_n    = (-rod_dir.y, rod_dir.x) * 4  // half the rod's width, across it
+let hull_screws = [(-40, 84), (40, 84)]
+
+let foot_bolt = calc.fastener(grip: 6, into: "insert", material: "PETG", size: M3)
+let arm_bolt  = calc.fastener(grip: arm_t, into: "insert", material: "PETG", size: M3, head: "flat")
+
+// ── Base and towers ────────────────────────────────────
+part base {
+  color: #2b2f36
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Frame"
+  body box(240, 120, 8, at: (-25, -10, 0), r: 6)
+  for p in [(-125, y_mt + 23), (75, y_mt + 23), (-75, y_ft - 7), (75, y_ft - 7)] {
+    cut hole(M3, fit: "insert", depth: 6, at: (p.x, p.y, 8))
+  }
+}
+
+// the motor tower carries the axle at the top and the stepper on its outer face, printed lying on that face
+part motor_tower {
+  color: #8b5a2b
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Frame"
+  body prism([(-140, 8), (100, 8), (20, pivot_z + 16), (-20, pivot_z + 16), (-140, crank_z + 32)], h: 16, at: (0, y_mt + 16, 0), dir: -Y)
+  add box(240, 30, 6, at: (-20, y_mt + 15, 8))
+  cut cylinder(d: 8 + press, h: 18, at: (0, y_mt - 1, pivot_z), dir: Y)
+  // stepper: its pilot locates in a straight hole (a recess would print with a ceiling), four screws counterbored into the inner face
+  cut cylinder(d: 22.4, h: 18, at: (crank_x, y_mt - 1, crank_z), dir: Y)
+  for h in [(15.5, 15.5), (-15.5, 15.5), (-15.5, -15.5), (15.5, -15.5)] {
+    cut hole(M3, through: true, cbore: (6.5, 3.5), at: (crank_x + h.x, y_mt + 16, crank_z + h.y), dir: -Y)
+  }
+  for x in [-125, 75] {
+    // a millimetre over the clearance: the holes are 200 mm apart and the print shrinks
+    cut hole(foot_bolt.clearance + 1, through: true, at: (x, y_mt + 23, 15), dir: -Z)
+  }
+  // hex key access to the ship's arm screws
+  for s in hull_screws {
+    cut cylinder(d: 8, h: 18, at: (s.x, y_mt - 1, s.y), dir: Y)
+  }
+}
+
+part far_tower {
+  color: #8b5a2b
+  material: "PETG"
+  process: mfg.fdm(build: -Y)
+  group: "Frame"
+  body prism([(-90, 8), (90, 8), (20, pivot_z + 16), (-20, pivot_z + 16)], h: 10, at: (0, y_ft + 10, 0), dir: -Y)
+  add box(180, 24, 6, at: (0, y_ft - 2, 8))
+  cut cylinder(d: 8 + press, h: 12, at: (0, y_ft - 1, pivot_z), dir: Y)
+  for x in [-75, 75] {
+    cut hole(foot_bolt.clearance + 1, through: true, at: (x, y_ft - 7, 15), dir: -Z)
+  }
+  for s in hull_screws {
+    cut cylinder(d: 8, h: 12, at: (s.x, y_ft - 1, s.y), dir: Y)
+  }
+}
+
+// a stub axle from each tower into its arm's bearing
+part axle_drive {
+  color: #c3c8cf
+  material: "Stainless 304"
+  process: mfg.cnc_lathe(axis: Y)
+  group: "Frame"
+  body cylinder(d: 8, h: -beam / 2 - y_mt, at: (0, y_mt, pivot_z), dir: Y)
+}
+part axle_far {
+  color: #c3c8cf
+  material: "Stainless 304"
+  process: mfg.cnc_lathe(axis: Y)
+  group: "Frame"
+  body cylinder(d: 8, h: y_ft + 10 - beam / 2, at: (0, beam / 2, pivot_z), dir: Y)
+}
+
+// ── Drive ──────────────────────────────────────────────
+component motor = lib.nema17(length: 40) {
+  at: (crank_x, y_mt, crank_z)
+  axis: Y
+  spin: 1
+  group: "Drive"
+}
+component motor_screws = lib.screw(M3, 16) { at: [(crank_x + 15.5, y_mt + 12.5, crank_z + 15.5), (crank_x - 15.5, y_mt + 12.5, crank_z + 15.5), (crank_x - 15.5, y_mt + 12.5, crank_z - 15.5), (crank_x + 15.5, y_mt + 12.5, crank_z - 15.5)], axis: -Y }
+
+part crank {
+  color: #e2a93b
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Drive"
+  turns_with: motor
+  // an arm rather than a disc, so a hex key reaches the motor screws past it
+  body cylinder(d: 16, h: 8, at: (crank_x, y_crank, crank_z), dir: Y)
+  add cylinder(d: 14, h: 8, at: (crank_x, y_crank, p_crank.y), dir: Y)
+  add box(10, 8, throw, at: (crank_x, y_crank + 4, crank_z))
+  cut cylinder(d: 5 + press, h: 10, at: (crank_x, y_crank - 1, crank_z), dir: Y)
+  cut cylinder(d: 5 + press, h: 10, at: (crank_x, y_crank - 1, p_crank.y), dir: Y)
+}
+
+component crank_pin = lib.dowel(d: 5, length: 14) { at: (crank_x, y_crank + 1, p_crank.y), axis: Y }
+
+// ── The ship ───────────────────────────────────────────
+part hull {
+  color: #a0522d
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Ship"
+  body prism([(-85, 115), (-60, 100), (60, 100), (85, 115), (78, 92), (65, 72), (40, 62), (0, 60), (-40, 62), (-65, 72), (-78, 92)], h: beam, at: (0, beam / 2, 0), dir: -Y)
+  for s in hull_screws {
+    cut hole(M3, fit: "insert", depth: 7, at: (s.x, -beam / 2, s.y), dir: Y)
+    cut hole(M3, fit: "insert", depth: 7, at: (s.x, beam / 2, s.y), dir: -Y)
+  }
+  cut cylinder(d: 6 + 2 * press, h: 21, at: (0, 0, 80))
+}
+
+component mast = lib.dowel(d: 6, length: 60) { at: (0, 0, 80), axis: Z }
+
+// the motor-side hanger arm: the rod rocks it, and it carries the rest of the ship
+part arm_drive {
+  color: #d9a066
+  material: "PETG"
+  process: mfg.fdm(build: -Y)   // inner face down, so the countersinks are on top
+  group: "Ship"
+  swings: Y
+  axis_at: (0, 0, pivot_z)
+  body prism([(-55, 70), (55, 70), (55, 96), (14, pivot_z - 8), (-14, pivot_z - 8), (-55, 96)], h: arm_t, at: (0, y_arm + arm_t, 0), dir: -Y)
+  add cylinder(d: 36, h: arm_t, at: (0, y_arm, pivot_z), dir: Y)
+  cut cylinder(d: 22.1, h: arm_t + 2, at: (0, y_arm - 1, pivot_z), dir: Y)
+  cut cylinder(d: 5 + press, h: arm_t + 2, at: (0, y_arm - 1, p_rocker.y), dir: Y)
+  for s in hull_screws {
+    cut hole(M3, through: true, csink: true, at: (s.x, y_arm, s.y), dir: Y)
+  }
+}
+
+part arm_far {
+  color: #d9a066
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Ship"
+  body prism([(-55, 70), (55, 70), (55, 96), (14, pivot_z - 8), (-14, pivot_z - 8), (-55, 96)], h: arm_t, at: (0, beam / 2 + arm_t, 0), dir: -Y)
+  add cylinder(d: 36, h: arm_t, at: (0, beam / 2, pivot_z), dir: Y)
+  cut cylinder(d: 22.1, h: arm_t + 2, at: (0, beam / 2 - 1, pivot_z), dir: Y)
+  for s in hull_screws {
+    cut hole(M3, through: true, csink: true, at: (s.x, beam / 2 + arm_t, s.y), dir: -Y)
+  }
+}
+
+component arm_bearings = lib.bearing("608") { at: [(0, y_arm + 0.5, pivot_z), (0, beam / 2 + 0.5, pivot_z)], axis: Y }
+component rocker_pin = lib.dowel(d: 5, length: 14) { at: (0, y_rod, p_rocker.y), axis: Y }
+
+// ── Connecting rod ─────────────────────────────────────
+part rod {
+  color: #d9dde3
+  material: "PETG"
+  process: mfg.fdm(build: Y)
+  group: "Drive"
+  links: [crank, arm_drive]
+  pins: [(p_crank.x, rod_y, p_crank.y), (p_rocker.x, rod_y, p_rocker.y)]
+  body prism([p_crank + rod_n, p_rocker + rod_n, p_rocker - rod_n, p_crank - rod_n], h: 6, at: (0, y_rod + 6, 0), dir: -Y)
+  add cylinder(d: 14, h: 6, at: (p_crank.x, y_rod, p_crank.y), dir: Y)
+  add cylinder(d: 14, h: 6, at: (p_rocker.x, y_rod, p_rocker.y), dir: Y)
+  cut cylinder(d: 5 + run_gap, h: 8, at: (p_crank.x, y_rod - 1, p_crank.y), dir: Y)
+  cut cylinder(d: 5 + run_gap, h: 8, at: (p_rocker.x, y_rod - 1, p_rocker.y), dir: Y)
+}
+
+// ── Hardware ───────────────────────────────────────────
+component base_inserts = lib.insert(M3) { at: [(-125, y_mt + 23, 8), (75, y_mt + 23, 8), (-75, y_ft - 7, 8), (75, y_ft - 7, 8)], axis: -Z }
+component foot_screws  = lib.screw(foot_bolt) { at: [(-125, y_mt + 23, 14), (75, y_mt + 23, 14), (-75, y_ft - 7, 14), (75, y_ft - 7, 14)], axis: -Z }
+component hull_inserts = lib.insert(M3) { at: [(hull_screws[0].x, -beam / 2, hull_screws[0].y), (hull_screws[1].x, -beam / 2, hull_screws[1].y)], axis: Y }
+component hull_inserts_far = lib.insert(M3) { at: [(hull_screws[0].x, beam / 2, hull_screws[0].y), (hull_screws[1].x, beam / 2, hull_screws[1].y)], axis: -Y }
+component arm_screws = lib.screw(arm_bolt) { at: [(hull_screws[0].x, y_arm, hull_screws[0].y), (hull_screws[1].x, y_arm, hull_screws[1].y)], axis: Y }
+component arm_screws_far = lib.screw(arm_bolt) { at: [(hull_screws[0].x, beam / 2 + arm_t, hull_screws[0].y), (hull_screws[1].x, beam / 2 + arm_t, hull_screws[1].y)], axis: -Y }
+
+// ── Requirements ───────────────────────────────────────
+require "Crank turns all the way round (Grashof: crank + longest link <= the other two)": throw + len(p_crank - (0, pivot_z)) <= len(p_rocker - p_crank) + arm_r
+require "Ship clears the base at the bottom of its swing": pivot_z - len((85, 115) - (0, pivot_z)) >= 8 + 20
+
+// ── A ride ─────────────────────────────────────────────
+// The stepper runs the crank at 20 rpm; the ship swings back and forth once a turn.
+scenario "Ride" {
+  mechanism: sim.mechanism(sim.turn(motor, speed: [(0s, 0rpm), (1s, 20rpm)]))
+  duration: 6s
+  variants: ["expected"]
+  expect "Crank reaches 20 rpm": motor.max_rpm > 19rpm
+  expect "Ship swings at least 50° end to end": arm_drive.angle_max - arm_drive.angle_min > 50
+}

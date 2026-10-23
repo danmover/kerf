@@ -19,6 +19,26 @@ export interface Motion {
   ratio: number;
   /** the moving part this one rides on (`rides:`): its own turn is about an axis carried round by the parent's motion */
   parent?: Motion;
+  /**
+   * moved by a connecting rod instead of turning at a fixed rate: a part that slides along `axis` (a piston), one
+   * that swings about `axis` through `origin` (a rocker, a pirate ship), or the rod itself; `link` says how
+   */
+  kind?: "slide" | "swing" | "rod";
+  link?: Link;
+}
+
+/** A connecting rod: a pin on a moving part (the driver) and a pin on a part that slides or swings (the follower). */
+export interface Link {
+  /** the rod's part id and name */
+  id: string;
+  name: string;
+  /** the driver's motion and the pins where they are drawn (world): p0 on the driver, w0 on the follower */
+  driver: Motion;
+  p0: V3;
+  w0: V3;
+  length: number;
+  /** the follower: slides along `axis`, or swings about `axis` through `at` */
+  follower: { name: string; kind: "slide" | "swing"; axis: V3; at: V3 };
 }
 
 /** How fast a motion turns about `axis` (a unit vector) per unit of driver angle, counting what it rides on. */
@@ -33,7 +53,7 @@ export function absRate(m: Motion | undefined, axis: V3): number {
 }
 
 /** Whether a motion turns at all, itself or by what it rides on. */
-export const turns = (m: Motion | undefined): boolean => !!m && (Math.abs(m.ratio) > 1e-12 || turns(m.parent));
+export const turns = (m: Motion | undefined): boolean => !!m && (Math.abs(m.ratio) > 1e-12 || !!m.link || turns(m.parent));
 
 export interface GearInfo {
   m: number;

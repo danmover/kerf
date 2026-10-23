@@ -15,6 +15,7 @@ import { machineChecks } from "../machine/checks";
 import { fastenerChecks } from "./fastenerChecks";
 import { findHolds, type MeshLookup } from "./holds";
 import { holdChecks } from "./holdChecks";
+import { linkChecks } from "./linkChecks";
 import type { SettingValue } from "../mfg/types";
 
 export type CheckCategory =
@@ -89,7 +90,7 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
     .map((p) => {
       const g = p.gear!;
       const partners = visible.filter((q) => q.gear && (q.gear.meshWith === p.name || g.meshWith === q.name)).map((q) => q.id);
-      return { id: p.id, at: g.center, axis: g.axis, d: tipDiameter(g.m, g.z) + 0.2, length: g.width, exclude: partners };
+      return { id: p.id, at: g.center, axis: g.axis, d: tipDiameter(g.m, g.z) + 0.2, length: g.width, ...(g.bore ? { bore: g.bore } : {}), exclude: partners };
     });
   // leads of parts soldered to a Kerf circuit board pass through its (undrawn) holes
   const ignorePairs: [string, string][] = [];
@@ -179,7 +180,9 @@ export function gearChecks(model: Model): CheckItem[] {
   }
   // gears that should move but are not driven
   for (const g of gears) {
-    if (!g.motion) {
+    // a fixed centre gear that planets ride round is meant to stay still
+    const sun = gears.some((q) => q.gear?.meshWith === g.name && q.motion?.parent);
+    if (!g.motion && !sun) {
       out.push({ category: "motion", id: `gear-driven:${g.id}`, status: "warn", title: `${g.label} is driven`, detail: `${g.name} has no spin:, mesh: or turns_with:, so nothing turns it`, parts: [g.id], span: g.span, basis: "parameters" });
     }
   }
@@ -315,6 +318,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   items.push(...gearChecks(model));
   items.push(...fastenerChecks(model));
   items.push(...holdChecks(model, findHolds(model, inputs.mesh), kernel, (p) => geom(p.hash)?.volume));
+  items.push(...linkChecks(model));
   if (model.machine) items.push(...machineChecks(model.machine));
 
   // things geometry cannot prove

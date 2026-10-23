@@ -408,6 +408,74 @@ export function TemplateArt({ id }: { id: string }) {
         <path d="M44 104h112" style={line} strokeWidth="2" />
       </svg>
     );
+  if (id === "engine") {
+    // the piston's height for 13 crank angles (throw 14, rod 42), so it rises and falls with the crank pin
+    const ys = Array.from({ length: 13 }, (_, i) => {
+      const a = (i / 12) * 2 * Math.PI;
+      return -(14 * Math.cos(a) + Math.sqrt(42 * 42 - (14 * Math.sin(a)) ** 2)) + 56;
+    });
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <path d="M80 6v62M120 6v62" style={line} strokeWidth="2" />
+        <motion.rect x="82" y="0" width="36" height="20" rx="2" style={tint(0.18)} strokeWidth="1.3" animate={{ y: ys }} transition={{ duration: 2, repeat: Infinity, ease: "linear" }} />
+        <motion.g animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: "linear" }} style={{ originX: "100px", originY: "88px" }}>
+          <circle cx="100" cy="88" r="20" fill="none" style={violet} strokeWidth="1.3" />
+          <circle cx="100" cy="74" r="3" style={{ fill: "var(--violet)" }} />
+        </motion.g>
+        <circle cx="100" cy="88" r="3" style={{ fill: "var(--accent)" }} />
+      </svg>
+    );
+  }
+  if (id === "teacups")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <motion.g animate={{ rotate: 360 }} transition={{ duration: 10, repeat: Infinity, ease: "linear" }} style={{ originX: "100px", originY: "60px" }}>
+          <circle cx="100" cy="60" r="50" style={tint(0.06)} strokeWidth="1.3" />
+          {[0, 120, 240].map((a) => {
+            const cx = 100 + 28 * Math.cos((a * Math.PI) / 180);
+            const cy = 60 + 28 * Math.sin((a * Math.PI) / 180);
+            return (
+              <motion.g key={a} animate={{ rotate: 360 }} transition={{ duration: 3.6, repeat: Infinity, ease: "linear" }} style={{ originX: `${cx}px`, originY: `${cy}px` }}>
+                <circle cx={cx} cy={cy} r="15" fill="none" style={violet} strokeWidth="1.3" strokeDasharray="5 3" />
+                <path d={`M${cx + 15} ${cy}h5`} style={violet} strokeWidth="2" />
+              </motion.g>
+            );
+          })}
+        </motion.g>
+        <circle cx="100" cy="60" r="6" style={{ fill: "var(--accent)" }} />
+      </svg>
+    );
+  if (id === "pirate-ship")
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <path d="M60 112 100 14l40 98" fill="none" style={line} strokeWidth="2" />
+        <motion.g animate={{ rotate: [-32, 32, -32] }} transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }} style={{ originX: "100px", originY: "16px" }}>
+          <path d="M92 18 84 78M108 18l8 60" style={accent} strokeWidth="1.3" />
+          <path d="M62 74h76l-8 16H70z" style={tint(0.18)} strokeWidth="1.3" />
+          <path d="M100 74V54l12 10z" style={{ stroke: "var(--warn)", fill: "rgb(var(--warn-rgb) / 0.2)" }} strokeWidth="1.1" />
+        </motion.g>
+        <circle cx="100" cy="16" r="3" style={{ fill: "var(--accent)" }} />
+      </svg>
+    );
+  if (id === "ferris-wheel") {
+    // the gondolas go round the rim but hang level, so each follows the circle without turning
+    const round = (k: number, axis: "x" | "y") => Array.from({ length: 25 }, (_, i) => 42 * (axis === "x" ? Math.cos : Math.sin)(((i / 24) * 360 + k * 60) * (Math.PI / 180)));
+    return (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <path d="M70 116 100 58l30 58" fill="none" style={line} strokeWidth="2" />
+        <motion.g animate={{ rotate: 360 }} transition={{ duration: 16, repeat: Infinity, ease: "linear" }} style={{ originX: "100px", originY: "58px" }}>
+          <circle cx="100" cy="58" r="42" fill="none" style={accent} strokeWidth="1.3" />
+          {[0, 60, 120].map((a) => (
+            <path key={a} d={`M${100 - 42 * Math.cos((a * Math.PI) / 180)} ${58 - 42 * Math.sin((a * Math.PI) / 180)}L${100 + 42 * Math.cos((a * Math.PI) / 180)} ${58 + 42 * Math.sin((a * Math.PI) / 180)}`} style={line} />
+          ))}
+        </motion.g>
+        {[0, 1, 2, 3, 4, 5].map((k) => (
+          <motion.rect key={k} x="94" y="58" width="12" height="10" rx="2" style={tint(0.25)} strokeWidth="1.1" animate={{ x: round(k, "x"), y: round(k, "y") }} transition={{ duration: 16, repeat: Infinity, ease: "linear" }} />
+        ))}
+        <circle cx="100" cy="58" r="3" style={{ fill: "var(--accent)" }} />
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 200 120" width="70%" height="70%">
       <motion.rect x="60" y="25" width="80" height="70" rx="6" fill="none" style={line} strokeDasharray="6 5" animate={{ strokeDashoffset: [0, -22] }} transition={{ duration: 1.6, repeat: Infinity, ease: "linear" }} />

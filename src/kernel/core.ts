@@ -319,7 +319,14 @@ export class KernelCore {
     // swept envelopes of rotating parts against static geometry
     const envelopes: ChecksResult["envelopes"] = [];
     for (const env of req.envelopes) {
-      const cyl = R.makeCylinder(env.d / 2, env.length, env.at, env.axis);
+      let cyl: Shape3D = R.makeCylinder(env.d / 2, env.length, env.at, env.axis);
+      if (env.bore && env.bore < env.d) {
+        const hole = R.makeCylinder(env.bore / 2, env.length + 0.2, vadd(env.at, vscale(env.axis, -0.1)), env.axis);
+        const ring = cyl.cut(hole) as Shape3D;
+        safeDelete(hole);
+        safeDelete(cyl);
+        cyl = ring;
+      }
       const cb = bboxOf(cyl);
       const ex = new Set(env.exclude);
       const hits: string[] = [];
