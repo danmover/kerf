@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FeaError, MAX_ELEMENTS, runStructural, sizeGrid, type FeaPart, type StructuralInput, type StructuralResult } from "../src/analysis/fe/structural";
+import { FeaError, MAX_ELEMENTS, runStructural, shareTorque, sizeGrid, type FeaPart, type StructuralInput, type StructuralResult } from "../src/analysis/fe/structural";
 import type { TriMesh, V3 } from "../src/analysis/fe/voxel";
 import { mechMaterial, allowableStress } from "../src/analysis/materials";
 
@@ -155,6 +155,37 @@ describe("structural analysis", () => {
     const J = 0.1406 * 10 ** 4; // square section torsion constant
     const theta = (1000 * 100) / (G * J);
     expect(rel(r.maxDisp.value, theta * Math.SQRT2 * 5)).toBeLessThan(0.08);
+  });
+
+  it("shares a torque over a lopsided zone as a pure couple", () => {
+    // a quarter disc and a bit of wall: not symmetric about the axis or its own centre
+    const ps: V3[] = [];
+    const w: number[] = [];
+    for (let i = 0; i < 12; i++)
+      for (let j = 0; j < 12; j++) if (i * i + j * j <= 121) {
+        ps.push([i, j, 10]);
+        w.push(1 + (i % 3));
+      }
+    for (let k = 0; k < 5; k++) {
+      ps.push([0, 4, 10 - k]);
+      w.push(2);
+    }
+    const T: V3 = [1000, 0, 0];
+    const fs = shareTorque(ps, w, T)!;
+    const net: V3 = [0, 0, 0];
+    const mom: V3 = [0, 0, 0];
+    fs.forEach((f, s) => {
+      const p = ps[s];
+      for (let d = 0; d < 3; d++) net[d] += f[d];
+      mom[0] += p[1] * f[2] - p[2] * f[1];
+      mom[1] += p[2] * f[0] - p[0] * f[2];
+      mom[2] += p[0] * f[1] - p[1] * f[0];
+    });
+    expect(Math.hypot(...net)).toBeLessThan(1e-9);
+    expect(mom[0]).toBeCloseTo(1000, 6);
+    expect(Math.abs(mom[1]) + Math.abs(mom[2])).toBeLessThan(1e-6);
+    // a line cannot be twisted about itself
+    expect(shareTorque([[0, 0, 0], [0, 0, 5]], [1, 1], [0, 0, 10])).toBeNull();
   });
 
   it("checks printed parts for strength between layers", () => {

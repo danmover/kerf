@@ -1,7 +1,8 @@
 design "Seatpost Number Bracket"
-note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring wraps the post with a strand at the top and one at the bottom, and each end turns round a double hook on the bracket's side (over the top prong, down behind, under the bottom one), pressing a contoured saddle and its TPU grip pad onto the post's flat back. The number's pointed end slides into a V pocket in the jaw, and a pin on a springy side arm goes through the near cheek, through the number's centre hole (where the old bolt went) and on into a hole in the far cheek, so the 1 mm number cannot slip past it. Press the arm's lever to draw the pin back and slide the number in or out."
-note "Everything about the bracket is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); the jaw is turned forward by the same angle so the number hangs level."
-note "v4, from the printed v3 and its side-arm rework: the pin now spans the whole slot and goes on into the far cheek, the jaw is shorter and closer to the post, and every overhang prints without supports (the jaw reaches down to the bed, the pin and its holes are teardrops)."
+note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring wraps the post with a strand at the top and one at the bottom, and each end turns round a double hook on the bracket's side (over the top prong, down behind, under the bottom one), pressing a contoured saddle and its TPU grip pad onto the post's flat back. The number's pointed end slides into a V pocket in the jaw, and a pin on a springy side arm goes through the near cheek, through the number's centre hole (where the old bolt went) and on into a hole in the far cheek, so the 1 mm number cannot slip past it. Press the arm's lever to draw the pin back and slide the number in or out. The number's tail rises 30° above level."
+note "Everything about the bracket is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); the pocket is turned forward by that angle plus rise, so the number's tail rises rise degrees above level."
+note "v4, from the printed v3 and its side-arm rework: the pin spans the whole slot and goes on into the far cheek, and every overhang prints without supports (the pin and its holes are teardrops)."
+note "v5: the number tilts up 30°, the bracket is 20 mm tall (the O-ring's double hooks as short as a 3.53 mm cord allows) and its seat fits a 20 mm flat back. The jaw is a plain block standing on the bed with the tilted pocket cut through it."
 
 brief {
   purpose: "Hold a race number behind a Giant Propel aero seatpost with no screws"
@@ -22,9 +23,9 @@ brief {
   use bumps "Stays put over potholes (about 12 g)" { on: bracket }
   use fit "Goes on and comes off by hand, no tools" { on: bracket }
 
-  given post_w = 20mm "Seatpost width, side to side at its widest" assumed
+  given post_w = 20mm "Seatpost width, side to side at its widest (taken as no wider than its flat back)" assumed
   given post_d = 36mm "Seatpost depth, front to back" assumed
-  given tail_w = 14mm "Width of the post's flat back" assumed
+  given tail_w = 20mm "Width of the post's flat back: at least 20 mm, measured on the bike"
   given tilt = 16.5 "How far the seatpost leans back from vertical, degrees (73.5° seat angle)" assumed
   given plate_l = 122mm "Number length, read from the photo" assumed
   given plate_h = 69mm "Number height, read from the photo" assumed
@@ -46,7 +47,7 @@ brief {
 }
 
 // ── The saddle on the post ─────────────────────────────
-param saddle_h = 34mm   range 26 .. 50  "Saddle height along the post"
+param saddle_h = 20mm   range 20 .. 50  "Height along the post of the saddle, its double hooks and the jaw: the whole bracket"
 param saddle_t = 6mm    range 4 .. 10   "Saddle thickness behind the post"
 param horn     = 4mm    range 0 .. 8    "How far the saddle wraps round the post's back corners"
 param wall     = 2.2mm  range 1.6 .. 4  "Wall beside the post"
@@ -55,15 +56,15 @@ param pad_t    = 1.5mm  range 1.2 .. 2.5 "Grip pad thickness (TPU)"
 // ── The O-ring and its double hooks ────────────────────
 param oring_id = 53.57mm range 40 .. 70 "O-ring inside diameter (AS568-227 is 53.57 mm)"
 param oring_cs = 3.53mm  range 2.62 .. 3.53 "O-ring cord (AS568-2xx is 3.53 mm)"
-param hook_x   = 14.5mm range 13 .. 22  "Double hooks out from the middle"
+param hook_x   = 18.5mm range 13 .. 24  "Double hooks out from the middle"
 param hook_y   = 4mm    range 2 .. 8    "Prongs behind the post's flat back"
 param prong_d  = 5.5mm  range 3 .. 8    "Prong diameter: the bend the cord makes (at least 1.5 cords, so the O-ring does not wear through)"
 param lip      = 2.7mm  range 1 .. 4    "Rim round each double hook (the stretch to get the O-ring's end over it)"
 
 // ── The jaw and its locking pin ────────────────────────
-param jaw_y    = 18mm   range 16 .. 30  "From the post's flat back to the number's point"
-param jaw_h    = 36mm   range 30 .. 70  "Jaw height"
-param pocket   = 9.5mm  range 8 .. 16   "How deep the number's point sits in the jaw"
+param jaw_y    = 21mm   range 16 .. 30  "From the post's flat back to the number's point"
+param rise     = 30     range 0 .. 40   "How far the number's tail rises above level, degrees"
+param pocket   = 12.5mm range 9 .. 16   "How far along its middle the number runs into the jaw"
 param cheek    = 2.5mm  range 2 .. 4    "Jaw cheek thickness"
 param arm_t    = 1.2mm  range 1.2 .. 2  "Locking arm thickness"
 param pin_d    = 3.2mm  range 2.4 .. 3.6 "Locking pin diameter (it and its teardrop point go through the 5.2 mm centre hole)"
@@ -85,18 +86,33 @@ let tag      = polygon(points: [(0, -tip_h / 2), (taper_l, -plate_h / 2), (plate
 let nose_y   = -post_d + post_w / 2
 let post_sec = circle(post_w, at: (0, nose_y)) + polygon(points: [(-post_w / 2, nose_y), (post_w / 2, nose_y), (tail_w / 2, 0), (-tail_w / 2, 0)], r: 1.5)
 
-// the jaw is turned forward about this point by the post's lean so the number hangs level
-let J        = (0, jaw_y, 0)
+// the pocket is turned forward about the number's point J by the post's lean and on by rise, so the number's tail rises
+// rise degrees above level; the point sits low enough that its centre hole, where the pin goes, is at the bracket's mid-height
+let ja       = tilt + rise
+let ca       = cos(ja)
+let sa       = sin(ja)
+let J        = (0, jaw_y, -hole_c * sa)
 let ct       = cos(tilt)
 let st       = sin(tilt)
 // where J and the post's axis end up in the world once everything leans back
-let J_w      = (0, jaw_y * ct, -jaw_y * st)
+let J_w      = (0, jaw_y * ct + J.z * st, -jaw_y * st + J.z * ct)
 let post_ax  = (0, st, ct)
 let post_mid = (0, (nose_y / 2) * ct - (saddle_h / 2 - 1.5) * st, -(nose_y / 2) * st - (saddle_h / 2 - 1.5) * ct)
-// the number's centre hole in the bracket's frame: the jaw's (0, hole_c, 0) turned with it
-let H        = (0, jaw_y + hole_c * ct, hole_c * st)
-let jaw_front = 6                                    // the jaw reaches forward of the point into the neck, down to the bed
-let jaw_ext  = 4                                     // and down past the foot, which trims it flat, so nothing under it hangs
+// the number's centre hole in the bracket's frame: the pocket's (0, hole_c, 0) turned with it; and in the world
+let H        = (0, jaw_y + hole_c * ca, 0)
+// where the number's point bears on the jaw, in the world: the cheeks and V in front of the pin (the pin itself sits clear
+// of its holes, so the loads go into the jaw here, not into the pin)
+let grip_w   = (0, (jaw_y - 3.7) * ct, -(jaw_y - 3.7) * st)
+// the way the number runs back, in the world
+let num_dir  = (0, cos(rise), sin(rise))
+// the jaw is a block standing on the bed, as tall as the saddle, reaching back to where the number's middle has run pocket into it
+let jaw_back = jaw_y + pocket * ca
+// tilted up, the number's top front corner swings forward toward the post: how far behind the post's flat back it stays
+let corner_y = jaw_y + taper_l * ca - plate_h / 2 * sa
+// where the number's top front edge leaves the top of the jaw (the slot opens on the top face behind it)
+let edge_y   = taper_l * ca - (plate_h - tip_h) / 2 * sa
+let edge_z   = taper_l * sa + (plate_h - tip_h) / 2 * ca
+let top_open = jaw_y - tip_h / 2 * sa + (saddle_h / 2 - J.z - tip_h / 2 * ca) * edge_y / edge_z
 // the locking arm: a blade beside the near (+x) cheek, rooted in the saddle and running back past the hole; its pin goes
 // through the near cheek, the number and on into the far cheek. Drawing it back by pull frees the slot
 let arm_gap  = 0.6                                   // between the arm and the cheek: open enough not to fuse when printed
@@ -108,7 +124,6 @@ let reach    = arm_gap + cheek + slot + engage
 let pull     = slot + engage + 0.3
 // the tip moves further than the pin does: a cantilever's deflection at a is δ a²(3L − a) / 2L³
 let arm_travel = pull * 2 * arm_l^3 / (pin_at^2 * (3 * arm_l - pin_at))
-let arm_w    = 2 * (H.z + saddle_h / 2) + 1          // centred on the pin, from just under the foot
 // the pin's holes: round with 0.35 mm all round (any less fuses shut when printed), pointed up so their tops print
 // without support and down to clear the pin's own teardrop point. As the arm is drawn back it tips the pin back a
 // little, so the holes run on that way: most in the near cheek, which the pin stays in
@@ -117,8 +132,8 @@ let hk       = hd / 2 * 0.7071
 let ha       = hd / 2 * 1.4142
 let near_e   = 1.2
 let far_e    = 0.6
-let near_hole = circle(hd) + circle(hd, at: (near_e, 0)) + polygon(points: [(-hk, -hk), (-hk, hk), (0, ha), (near_e / 2, ha - near_e / 2), (near_e, ha), (near_e + hk, hk), (near_e + hk, -hk), (near_e, -ha), (near_e / 2, near_e / 2 - ha), (0, -ha)])
-let far_hole = circle(hd) + circle(hd, at: (far_e, 0)) + polygon(points: [(-hk, -hk), (-hk, hk), (0, ha), (far_e / 2, ha - far_e / 2), (far_e, ha), (far_e + hk, hk), (far_e + hk, -hk), (far_e, -ha), (far_e / 2, far_e / 2 - ha), (0, -ha)])
+let near_hole = circle(hd) + circle(hd, at: (near_e, 0)) + polygon(points: [(-hk, -hk), (-hk, hk), (near_e / 2, ha + near_e / 2), (near_e + hk, hk), (near_e + hk, -hk), (near_e / 2, -ha - near_e / 2)])
+let far_hole = circle(hd) + circle(hd, at: (far_e, 0)) + polygon(points: [(-hk, -hk), (-hk, hk), (far_e / 2, ha + far_e / 2), (far_e + hk, hk), (far_e + hk, -hk), (far_e / 2, -ha - far_e / 2)])
 // a lever off the arm's tip, back and out at 45°: a thumb pressing it toward the post draws the pin back
 let lever_x  = jaw_w / 2 + arm_gap
 let lever_y  = arm_root + arm_l
@@ -136,7 +151,11 @@ let hook_out = hook_x + groove / 2
 // lip proud. The lower prong's underside is chamfered at 45° below its middle, so it prints without support
 let pr       = prong_d / 2
 let block    = outline([(0, -spread / 2 - pr), (hook_y + 0.414 * pr, -spread / 2 - pr), (hook_y + 0.707 * pr, -spread / 2 - 0.707 * pr), arc_to((hook_y + pr, -spread / 2), via: (hook_y + 0.924 * pr, -spread / 2 - 0.383 * pr)), (hook_y + pr, spread / 2), arc_to((hook_y, spread / 2 + pr), via: (hook_y + 0.707 * pr, spread / 2 + 0.707 * pr)), (0, spread / 2 + pr)])
-let hook_face = overlap(offset(block, lip), rect(block_d + lip, saddle_h, at: ((block_d + lip) / 2, 0)))
+// (the rims' tops already come flush with the saddle's, so the rect only trims their front). Under the lower prong's
+// back corner the offset rounds off into the bed; a step down to the bed there keeps that rounding from hanging out
+let corner_x = hook_y + 0.414 * pr + 0.7071 * lip
+let corner_z = -spread / 2 - pr - 0.7071 * lip
+let hook_face = overlap(offset(block, lip) + rect(corner_x, corner_z + saddle_h / 2 + 0.5, at: (corner_x / 2, (corner_z - saddle_h / 2 - 0.5) / 2)), rect(block_d + lip, saddle_h + 2, at: ((block_d + lip) / 2, 0)))
 // how far the saddle's front corner stands inside the strand that runs from a hook to the widest of the post's nose
 let run_x    = post_w / 2 - hook_x
 let run_y    = nose_y - hook_y
@@ -172,28 +191,29 @@ part bracket {
     add extrude(hook_face, rim_t, at: (side * (hook_out + rim_t / 2) - rim_t / 2, 0, 0), dir: X) as rims
     // the stop runs from the saddle's side to the groove and starts behind the prongs, so the strand running forward and in
     // toward the post clears it
-    add extrude(overlap(hook_face, rect(block_d + lip - hook_y, saddle_h, at: ((block_d + lip + hook_y) / 2, 0))), hook_x - groove / 2 - hook_in, at: (side * (hook_in + hook_x - groove / 2) / 2 - (hook_x - groove / 2 - hook_in) / 2, 0, 0), dir: X) as stops
+    add extrude(overlap(hook_face, rect(block_d + lip - hook_y, saddle_h + 2, at: ((block_d + lip + hook_y) / 2, 0))), hook_x - groove / 2 - hook_in, at: (side * (hook_in + hook_x - groove / 2) / 2 - (hook_x - groove / 2 - hook_in) / 2, 0, 0), dir: X) as stops
   }
   // neck from the saddle back to the jaw, the full height of the saddle; on the arm's side it stops at the cheek
   add box(jaw_w + 2, jaw_y - saddle_t + 1, saddle_h, at: (-1, saddle_t - 1 + (jaw_y - saddle_t + 1) / 2, -saddle_h / 2)) as neck
-  // the jaw, turned forward by the lean: its pocket is the number's own pointed outline. It runs on down past the foot,
-  // so its underside is trimmed flat on the bed instead of hanging out behind the neck
-  add rotate(box(jaw_w, pocket + jaw_front, jaw_h + jaw_ext, at: (0, jaw_y + (pocket + jaw_front) / 2 - jaw_front, -jaw_h / 2 - jaw_ext)), tilt, axis: X, origin: J) as jaw
+  // the jaw: a block with square sides standing on the bed, the tilted pocket cut through it below
+  add box(jaw_w, jaw_back - saddle_t + 1, saddle_h, at: (0, saddle_t - 1 + (jaw_back - saddle_t + 1) / 2, -saddle_h / 2)) as jaw
   // the seat cut last of the solid, so nothing added reaches into it
-  cut extrude(offset(post_sec, seat_off), 2 * jaw_h, at: (0, 0, -jaw_h)) as seat
+  cut extrude(offset(post_sec, seat_off), 2 * saddle_h + 2, at: (0, 0, -saddle_h - 1)) as seat
   // a stopped groove for the pad's key, so the pad cannot slide or turn in the saddle
   cut box(3.4, 1.3, saddle_h - 7.4, at: (0, seat_off + 0.55, -(saddle_h - 7.4) / 2)) as key_slot
-  cut rotate(extrude(offset(tag, 0.3), slot, at: (-slot / 2, jaw_y, 0), dir: X), tilt, axis: X, origin: J) as pocket_cut
-  // a flared mouth so the number slides in and does not crease where it leaves the jaw
-  cut rotate(prism(points: [(-slot / 2, jaw_y + pocket - 1.2), (slot / 2, jaw_y + pocket - 1.2), (slot / 2 + 1.2, jaw_y + pocket + 0.1), (-slot / 2 - 1.2, jaw_y + pocket + 0.1)], h: jaw_h + jaw_ext + 2, at: (0, 0, -jaw_h / 2 - jaw_ext - 1)), tilt, axis: X, origin: J) as mouth
+  // the pocket: the number's own pointed outline, tilted, so its point nests in a V and cannot turn about the pin
+  cut rotate(extrude(offset(tag, 0.3), slot, at: (-slot / 2, J.y, J.z), dir: X), ja, axis: X, origin: J) as pocket_cut
+  // flared mouths where the number leaves the jaw, at its back and along its top, so it slides in and does not crease there
+  cut prism(points: [(-slot / 2, jaw_back - 1.2), (slot / 2, jaw_back - 1.2), (slot / 2 + 1.2, jaw_back + 0.1), (-slot / 2 - 1.2, jaw_back + 0.1)], h: saddle_h + 2, at: (0, 0, -saddle_h / 2 - 1)) as mouth
+  cut prism(points: [(-slot / 2, saddle_h / 2 - 1.2), (slot / 2, saddle_h / 2 - 1.2), (slot / 2 + 1.2, saddle_h / 2 + 0.1), (-slot / 2 - 1.2, saddle_h / 2 + 0.1)], h: jaw_back + 1 - top_open, at: (0, top_open, 0), dir: Y) as top_mouth
   // the pin's holes, square across both cheeks at the number's centre hole
   cut extrude(near_hole, jaw_w / 2 + arm_gap / 2, at: (0, H.y, H.z), dir: X) as near_hole_cut
   cut extrude(far_hole, jaw_w / 2 + 1, at: (-jaw_w / 2 - 1, H.y, H.z), dir: X) as far_hole_cut
   // slits either side of the arm's root, so it bends from inside the saddle and is long enough not to strain
   cut box(arm_t + 2 * arm_gap, saddle_t + 1 - arm_root, saddle_h + 2, at: (arm_x, (arm_root + saddle_t + 1) / 2, -saddle_h / 2 - 1)) as arm_slit
   // the locking arm stands on the bed beside the near cheek; its pin has a teardrop point underneath, so it prints level
-  add flexure((arm_x, arm_root, H.z), arm_l, arm_t, arm_w, dir: Y, facing: -X, travel: arm_travel, cycles: 500, root_r: 0.3, pin: pin_d, reach: reach, pin_at: pin_at, teardrop: -Z) as arm
-  add prism(points: [(lever_x, lever_y), (lever_x + lever_l, lever_y + lever_l), (lever_x + lever_l + 1.13, lever_y + lever_l - 1.13), (lever_x + 1.13, lever_y - 1.13)], h: arm_w, at: (0, 0, H.z - arm_w / 2)) as lever
+  add flexure((arm_x, arm_root, H.z), arm_l, arm_t, saddle_h, dir: Y, facing: -X, travel: arm_travel, cycles: 500, root_r: 0.3, pin: pin_d, reach: reach, pin_at: pin_at, teardrop: -Z) as arm
+  add prism(points: [(lever_x, lever_y), (lever_x + lever_l, lever_y + lever_l), (lever_x + lever_l + 1.13, lever_y + lever_l - 1.13), (lever_x + 1.13, lever_y - 1.13)], h: saddle_h, at: (0, 0, -saddle_h / 2)) as lever
   // flat underneath, level with the saddle's foot, so it stands on the bed
   cut box(120, 120, 40, at: (0, 0, -saddle_h / 2 - 40)) as foot
 }
@@ -212,8 +232,9 @@ part pad {
 }
 
 // ── The race number, as the Race Result plate it is ─────
+// each of its parts is drawn with the point at the origin, then tilted up by rise and moved to the jaw
 let ink      = offset(text("004", size: 31, at: (4.4, 0)), 0.45) + offset(text("4", size: 14, at: (-29, -6.2)), 0.25)
-let ink_at   = J_w + (0, 59.5, -17.5)
+let ink_at   = (0, 59.5, -17.5)
 let sticker  = rect(105, 28, r: 2, at: (67, 12.5))
 let stripe   = overlap(tag, rect(12, plate_h + 2, at: (plate_l - 6, 0)))
 
@@ -223,15 +244,17 @@ part number {
   color: #f4f4f0
   group: "Number"
   process: false
-  body extrude(tag, plate_t, at: J_w + (-plate_t / 2, 0, 0), dir: X) as plate
+  rotate: (rise, 0, 0)
+  at: J_w
+  body extrude(tag, plate_t, at: (-plate_t / 2, 0, 0), dir: X) as plate
   // the centre hole at the point, where the old bracket's bolt went and the locking pin now goes
-  cut hole(hole_cd, through: true, at: J_w + (plate_t / 2, hole_c, 0), dir: -X)
+  cut hole(hole_cd, through: true, at: (plate_t / 2, hole_c, 0), dir: -X)
   for zz in [-hole_z, hole_z] {
-    cut hole(hole_d, through: true, at: J_w + (plate_t / 2, hole_in, zz), dir: -X)
+    cut hole(hole_d, through: true, at: (plate_t / 2, hole_in, zz), dir: -X)
   }
   // two more along its top edge, for brackets that tie it on
   for uu in [49, 70] {
-    cut hole(hole_d, through: true, at: J_w + (plate_t / 2, uu, plate_h / 2 - 4), dir: -X)
+    cut hole(hole_d, through: true, at: (plate_t / 2, uu, plate_h / 2 - 4), dir: -X)
   }
 }
 
@@ -242,6 +265,8 @@ part number_print {
   color: #121214
   group: "Number"
   process: false
+  rotate: (rise, 0, 0)
+  at: J_w
   body emboss(ink, at: ink_at + (-plate_t / 2 - 0.05, 0, 0), facing: -X, h: 0.03)
   add emboss(ink, at: ink_at + (plate_t / 2 + 0.05, 0, 0), facing: X, h: 0.03)
 }
@@ -252,8 +277,10 @@ part number_stripe {
   color: #f2c200
   group: "Number"
   process: false
-  body extrude(stripe, 0.05, at: J_w + (plate_t / 2, 0, 0), dir: X)
-  add extrude(stripe - sticker, 0.05, at: J_w + (-plate_t / 2 - 0.05, 0, 0), dir: X)
+  rotate: (rise, 0, 0)
+  at: J_w
+  body extrude(stripe, 0.05, at: (plate_t / 2, 0, 0), dir: X)
+  add extrude(stripe - sticker, 0.05, at: (-plate_t / 2 - 0.05, 0, 0), dir: X)
 }
 
 // a foil antenna under clear film: silver-grey, not shiny metal
@@ -264,7 +291,9 @@ part transponder {
   color: #c9cac6
   group: "Number"
   process: false
-  body extrude(sticker, 0.1, at: J_w + (-plate_t / 2 - 0.1, 0, 0), dir: X)
+  rotate: (rise, 0, 0)
+  at: J_w
+  body extrude(sticker, 0.1, at: (-plate_t / 2 - 0.1, 0, 0), dir: X)
 }
 
 // ── The O-ring: its end on the left double hook, round the post high and low, its other end over the right hook's rim ──
@@ -277,7 +306,7 @@ decision holding "How it holds the post" {
   chose: "One O-ring on double hooks"
   by: "you"
   why: "How the rear light in your photo does it: one band wraps the post with a strand high and a strand low, and each end turns round a double hook on the bracket's side, so the band also stops the bracket rocking about it. A rubber pad shaped to the post lets one band's squeeze hold it. A closed band cannot get round a seatpost that carries on above and below, so the O-ring's end goes on one hook, wraps the post and is stretched over the other hook's rim."
-  option "One O-ring on double hooks" "One O-ring to fit; its two strands, 32 mm apart, hold the bracket square on the post."
+  option "One O-ring on double hooks" "One O-ring to fit; its two strands, 18 mm apart, hold the bracket square on the post."
   option "One O-ring on two pins" "Simpler hooks, but both strands sit at mid-height, so the bracket can rock about them."
   option "Clamp with a screw" "Holds hardest, but needs a tool and can mark the post."
 }
@@ -303,10 +332,20 @@ decision number_hold "How the number is held" {
   option "Zip ties through the corner holes" "No print, but cut off and replaced every race."
 }
 
+decision number_angle "How the number sits" {
+  ask: "Angle the number"
+  chose: "Tail up 30°"
+  by: "you"
+  why: "You asked for the number to tilt up about 30°. Its point stays in the jaw and the pocket is turned with it; tilted up, its top front corner swings toward the post, so the point sits 21 mm behind the post's flat back to keep that corner clear."
+  option "Tail up 30°" { rise: 30 } "What you asked for."
+  option "Tail up 15°" { rise: 15 } "A gentler tilt."
+  option "Level" { rise: 0 } "Straight back, as the old bracket held it."
+}
+
 decision oring_size "O-ring size" {
   chose: "AS568-227 (53.57 × 3.53 mm)"
   by: "claude"
-  why: "Going round the double hooks takes a longer loop than two pins did. The thick 3.53 mm cord pulls about twice as hard as a 2.62 mm one at the same stretch, so one O-ring does the work of two; this size stretches about 45 % on the post, which fitting by hand can still manage."
+  why: "Going round the double hooks takes a longer loop than two pins did. The thick 3.53 mm cord pulls about twice as hard as a 2.62 mm one at the same stretch, so one O-ring does the work of two; this size stretches about 35 % on the post, which fitting by hand can still manage."
   option "AS568-226 (50.39 × 3.53 mm)" { oring_id: 50.39mm, oring_cs: 3.53mm } "Tighter: more grip, a hard pull to fit."
   option "AS568-227 (53.57 × 3.53 mm)" { oring_id: 53.57mm, oring_cs: 3.53mm } "Balanced."
   option "AS568-228 (56.74 × 3.53 mm)" { oring_id: 56.74mm, oring_cs: 3.53mm } "Looser: easier on, less grip once it relaxes."
@@ -320,8 +359,8 @@ analysis "Crosswind gust" {
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
   // the wind on the number comes into the jaw as a force and its moment
-  load: wind(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), gust, dir: X, area: plate_l * plate_h - taper_l * (plate_h - tip_h) / 2, at: J_w + (0, plate_l / 2, 0))
-  carries: mass(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), 8g)
+  load: wind(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), gust, dir: X, area: plate_l * plate_h - taper_l * (plate_h - tip_h) / 2, at: J_w + num_dir * (plate_l / 2))
+  carries: mass(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), 8g)
   gravity
   printed
   safety: 2
@@ -335,7 +374,7 @@ analysis "Leg knock" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  load: force(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), knock_felt, dir: X, at: J_w + (0, plate_l, 0))
+  load: force(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), knock_felt, dir: X, at: J_w + num_dir * plate_l)
   printed
   cycles: 1000
   safety: 2
@@ -345,7 +384,7 @@ analysis "Pothole" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  carries: mass(zone(at: J_w + (0, pocket / 2, 0), size: (jaw_w + 2, pocket, jaw_h)), 8g)
+  carries: mass(zone(at: grip_w, size: (jaw_w + 0.4, 8, 14)), 8g)
   accel: (0, 0, -bump_g)
   printed
   safety: 2
@@ -354,7 +393,8 @@ analysis "Pothole" {
 require "The pin goes through the number's centre hole, inside the jaw" for knock: hole_c + hole_cd / 2 + 2 <= pocket
 require "The pin and its teardrop point pass through the centre hole" for knock: pin_d * 0.7071 + 0.15 <= hole_cd / 2
 require "The pin goes on into the far cheek, so the number cannot slip past its tip" for knock: engage >= 0.6
-require "The jaw holds the number's point well above and below the pin, so it cannot turn" for knock: jaw_h >= plate_h / 2
+require "Each cheek keeps at least 2 mm round the pin's hole" for knock: ha + near_e / 2 + 2 <= saddle_h / 2 && jaw_back - H.y - hd / 2 - near_e >= 2
+require "Tilted up, the number's top front corner stays clear of the seatpost" for fit: corner_y >= 2
 require "The O-ring pulls firmly" soft for gust, bumps: oring.stretch >= 1.3
 require "Stretching the O-ring over its hook is a one-hand job" soft for fit: oring.fit_force <= 45N
 require "The hooks' rim keeps the O-ring on" for fit: lip >= 0.75 * oring_cs

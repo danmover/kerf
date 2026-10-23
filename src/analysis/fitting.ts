@@ -8,7 +8,7 @@
 // along with it.
 
 import type { EvalPart, FlexInfo, Model } from "../core/model";
-import { applyXforms, applyXformsToDir, vadd, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
+import { applyXforms, applyXformsToDir, vadd, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
 import { fittingPose, rubberOf, sectionOf, type BandCord, type BandLayout, type FitPose, type Section } from "../library/bands";
 import { flexCalc } from "../library/springs";
 import { fmtNum } from "../lang/values";
@@ -87,9 +87,10 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
     });
   }
 
-  // a part that clicks onto a peg, or that a sprung arm pins through its hole: the part slides in along the arm, toward its root
+  // a part that clicks onto a peg slides in along the arm, toward its root; one a sprung arm pins through its hole
+  // slides in along its own length, the end with the hole first
   for (const { host: p, flex: f, mate, peg } of pegMates(model, bbox, riding)) {
-    const along = vnorm(applyXformsToDir(f.dir, p.xf));
+    const along = (f.kind === "flexure" && slideAlong(mate, bbox(mate), vnorm(applyXformsToDir(f.facing, p.xf)), peg)) || vnorm(applyXformsToDir(f.dir, p.xf));
     const calc = flexCalc(f, p.material, 1);
     const caption =
       f.kind === "snap"
@@ -127,6 +128,22 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       steps.push({ kind: "hold", spec, parts: moving.map((p) => p.id), hooks, centre, title: spec.label, dur: 3 });
     }
   return steps;
+}
+
+/**
+ * The way a part pinned through its hole slides off: its longest own side that runs across the pin, pointing from the
+ * pin toward the part's middle.
+ */
+function slideAlong(mate: EvalPart, box: [V3, V3] | undefined, pin: V3, peg: V3): V3 | undefined {
+  if (!box) return undefined;
+  const size = [0, 1, 2].map((d) => box[1][d] - box[0][d]);
+  const mid = applyXforms(vscale(vadd(box[0], box[1]), 0.5), mate.xf);
+  for (const d of [0, 1, 2].sort((a, b) => size[b] - size[a])) {
+    const u = vnorm(applyXformsToDir([d === 0 ? 1 : 0, d === 1 ? 1 : 0, d === 2 ? 1 : 0], mate.xf));
+    if (Math.abs(vdot(u, pin)) > 0.5) continue;
+    return vdot(vsub(mid, peg), u) < 0 ? vscale(u, -1) : u;
+  }
+  return undefined;
 }
 
 const volumeOf = (b: [V3, V3]) => (b[1][0] - b[0][0]) * (b[1][1] - b[0][1]) * (b[1][2] - b[0][2]);
