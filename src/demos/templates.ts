@@ -10,6 +10,10 @@ import tunneller from "./sand-tunneller.kerf?raw";
 import printer from "./printer.kerf?raw";
 import practiceAmp from "./practice-amp.kerf?raw";
 import seatpost from "./seatpost-number.kerf?raw";
+import engine from "./engine.kerf?raw";
+import teacups from "./teacups.kerf?raw";
+import pirateShip from "./pirate-ship.kerf?raw";
+import ferrisWheel from "./ferris-wheel.kerf?raw";
 
 export interface Template {
   id: string;
@@ -82,6 +86,54 @@ export const TEMPLATES: Template[] = [
       "Why are two of the gears marked removable?",
     ],
     stats: "26 parts · 8 requirements",
+  },
+  {
+    id: "engine",
+    name: "Single-Cylinder Engine",
+    tagline: "Crank, connecting rod and piston on 608 bearings: turn the flywheel and the piston runs its 40 mm stroke, checked all the way round and simulated at 300 rpm.",
+    source: engine,
+    prompts: [
+      "Make the stroke 50 mm and keep the rod long enough that it doesn't bind",
+      "Add a second cylinder at 180° on the same crankshaft",
+      "Why is the rod four times the crank throw?",
+    ],
+    stats: "29 parts · 4 requirements · motion simulation",
+  },
+  {
+    id: "teacups",
+    name: "Teacup Ride",
+    tagline: "A turning deck with three cups whose gears roll round a fixed sun gear, so each cup spins 2.8 times for every turn of the deck.",
+    source: teacups,
+    prompts: [
+      "Give it four cups instead of three and keep them clear of each other",
+      "Make the cups spin the opposite way to the deck",
+      "Add a motor under the base to drive the deck, and show it in the ride simulation",
+    ],
+    stats: "18 parts · 3 requirements · ride simulation",
+  },
+  {
+    id: "pirate-ship",
+    name: "Pirate Ship Ride",
+    tagline: "A stepper turns a crank, and a connecting rod rocks the ship 60° on its axle; every screw, pin and bearing that holds it together moves with it.",
+    source: pirateShip,
+    prompts: [
+      "Make the ship swing higher, about 45° each way, and check the crank still goes all the way round",
+      "Drive the ship with a tyre pushing on the hull instead, like the real ride",
+      "What happens to the swing if the rod is 20 mm shorter?",
+    ],
+    stats: "37 parts · 2 requirements · ride simulation",
+  },
+  {
+    id: "ferris-wheel",
+    name: "Ferris Wheel",
+    tagline: "A stepper turns the wheel through 12:60 gears; six gondolas hang free on their pins and gravity keeps them level all the way round.",
+    source: ferrisWheel,
+    prompts: [
+      "Give it eight gondolas and check they still clear each other",
+      "Make the wheel 300 mm across and pick a gear ratio for 3 rpm",
+      "Why do the gondolas stay level, and what would make them tip?",
+    ],
+    stats: "40 parts · 4 requirements · ride simulation",
   },
   {
     id: "bracket",

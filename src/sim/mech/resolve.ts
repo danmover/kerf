@@ -6,10 +6,11 @@
 // profile from its shape, and everything converted to SI units for the
 // solver. Runs in the app (it needs the meshes), before the run is queued.
 
-import { turns, type EvalPart, type Model, type Motion } from "../../core/model";
+import { turns, type EvalPart, type Link, type Model, type Motion } from "../../core/model";
 import { findHolds, isFastener } from "../../core/holds";
 import type { MeshEntry } from "../../core/engine";
 import { applyXforms, type Xform } from "../../kernel/recipe";
+import { cylMid, lineDistance, partCylinders } from "../../analysis/fits/geometry";
 import { catalogPart } from "../../machine/catalog";
 import type { BeltDef, BeltNode } from "../../machine/types";
 import { MATERIALS, materialDensity } from "../../library/standards";
@@ -31,6 +32,7 @@ const len = (a: V3) => Math.hypot(a[0], a[1], a[2]);
 const unit = (a: V3): V3 => scl(a, 1 / (len(a) || 1));
 /** One key per turning: its axis line (its closest point to the design origin), its rate, and what it rides on. */
 function lineKey(m: Motion): string {
+  if (m.link) return `${m.kind}:${m.link.id}`;
   const a = unit(m.axis);
   const c = sub(m.origin, scl(a, dot(m.origin, a)));
   const key = [...a.map((x) => Math.round(Math.abs(x) * 1e4)), ...c.map((x) => Math.round(x * 100)), Math.round(m.ratio * 1e6) * Math.sign(a[0] + a[1] * 1e-3 + a[2] * 1e-6 || 1)].join(",");
@@ -223,10 +225,11 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   // how the design holds together: what each screw clamps, and what moving parts carry with them
   const holds = findHolds(model, (h) => geom(h)?.preview ?? geom(h)?.final);
   const lines = new Map<string, Group>();
+  const rodLinks: { link: Link; group: Group }[] = [];
   if (spec.auto) {
     const parentOf = new Map<Group, string>();
     for (const p of parts) {
-      if (!p.motion || explicit.has(p.name) || !turns(p.motion)) continue;
+      if (!p.motion || explicit.has(p.name) || !turns(p.motion) || p.motion.link) continue;
       const a = unit(p.motion.axis);
       const o = p.motion.origin;
       const key = lineKey(p.motion);
@@ -246,6 +249,35 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       g.parts.push(p);
       taken.add(p.id);
       if (!bodyOf.has(p.name)) bodyOf.set(p.name, g.id);
+    }
+    // connecting rods: the follower slides or swings on the frame, and the rod pivots on its driver at the crank pin
+    // (a ball joint at the follower's pin closes the loop, below)
+    for (const p of parts) {
+      const m = p.motion;
+      if (!m?.link || !m.kind || explicit.has(p.name)) continue;
+      const key = `${m.kind}:${m.link.id}`;
+      let g = lines.get(key);
+      if (!g) {
+        let id = p.name;
+        for (let k = 2; named.has(id) || groups.some((x) => x.id === id); k++) id = `${p.name}_${k}`;
+        const l = m.link;
+        const joint: MechJointItem = m.kind === "slide" ? { k: "slider", name: id, what: [], on: null, at: l.w0, axis: unit(m.axis) } : m.kind === "swing" ? { k: "pivot", name: id, what: [], on: null, at: m.origin, axis: unit(m.axis) } : { k: "pivot", name: id, what: [], on: null, at: l.p0, axis: unit(l.driver.axis) };
+        g = { id, members: [], parts: [], auto: true, joint };
+        lines.set(key, g);
+        groups.push(g);
+        if (m.kind === "rod") rodLinks.push({ link: l, group: g });
+      }
+      if (!g.members.includes(p.name)) {
+        g.members.push(p.name);
+        g.joint!.what.push(p.name);
+      }
+      g.parts.push(p);
+      taken.add(p.id);
+      if (!bodyOf.has(p.name)) bodyOf.set(p.name, g.id);
+    }
+    for (const { link, group } of rodLinks) {
+      const driver = lines.get(lineKey(link.driver)) ?? groups.find((x) => x.parts.some((q) => q.motion === link.driver));
+      if (driver && driver !== group) group.joint!.on = driver.id;
     }
     // a gear riding on a turning deck (rides:) pivots on the deck's body, not the frame
     for (const [g, pk] of parentOf) {
@@ -456,9 +488,18 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
           mj.frictionPerLoad = 0.0015 * 0.0025;
           mj.assumed!.push(`${j.name}: turns in ${own.name}'s own bearings, rolling friction 0.0015`);
         } else {
-          mj.frictionPerLoad = 0.15 * 0.004;
-          mj.friction = 0.002;
-          mj.assumed!.push(`${j.name}: no bearing found on its axis, so a plain 8 mm pin (friction 0.15)`);
+          // a pin on the axis (a dowel or shaft the body hangs on) turns in a plain hole: its own size, and no drag
+          // beyond the friction of the load on it, so a light part hanging free still finds its level
+          const atMm: V3 = [atM[0] * 1000, atM[1] * 1000, atM[2] * 1000];
+          const pin = [...g.parts, ...onBody].flatMap((p) => partCylinders(p).filter((c) => c.side === "shaft" && c.role === "plain" && Math.abs(dot(unit(c.axis), ax)) > 0.99 && lineDistance(cylMid(c), atMm, ax) < Math.max(0.5, c.d * 0.1)).map((c) => ({ p, c })))[0];
+          if (pin) {
+            mj.frictionPerLoad = 0.15 * (pin.c.d / 2000);
+            mj.assumed!.push(`${j.name}: turns on ${pin.p.name}, a plain Ø${Math.round(pin.c.d * 10) / 10} mm pin (friction 0.15)`);
+          } else {
+            mj.frictionPerLoad = 0.15 * 0.004;
+            mj.friction = 0.002;
+            mj.assumed!.push(`${j.name}: no bearing found on its axis, so a plain 8 mm pin (friction 0.15)`);
+          }
         }
       }
     } else if (j.k === "slider") {
@@ -500,6 +541,13 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     joints.push(mj);
     jointByName.set(mj.name, mj);
     for (const a of mj.assumed ?? []) notes.push(a);
+  }
+  // each connecting rod's pin in its follower closes the loop: a ball joint, so a planar linkage is not held twice over
+  for (const { link, group } of rodLinks) {
+    const follower = lines.get(`${link.follower.kind}:${link.id}`);
+    if (!follower) continue;
+    joints.push({ kind: "ball", name: `${link.name}-${link.follower.name} pin`, body: follower.id, on: group.id, at: SI(link.w0), axis: unit(link.driver.axis), assumed: [] });
+    notes.push(`${link.name} drives ${link.follower.name} through its pins (a closed linkage)`);
   }
   const jointOf = (name: string, what: string, kind?: MechJoint["kind"]): MechJoint => {
     const j = jointByName.get(name) ?? joints.find((x) => x.body === bodyOf.get(name));

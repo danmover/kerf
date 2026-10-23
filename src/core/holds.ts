@@ -589,6 +589,8 @@ const r4 = (x: number) => Math.round(x * 1e4) / 1e4 || 0;
 /** Two motions are the same turn when they share an axis line (wherever along it the origin was put) and rate. */
 function motionKey(m: Motion | undefined): string {
   if (!m) return "";
+  // a part on a connecting rod moves as its rod says: one motion per rod and role
+  if (m.link) return `${m.kind}:${m.link.id}`;
   // one direction for the line, flipping the rate with it
   const k = m.axis.findIndex((x) => Math.abs(x) > 1e-6);
   const sg = k >= 0 && m.axis[k] < 0 ? -1 : 1;
@@ -629,11 +631,13 @@ function carryMotion(model: Model, parts: EvalPart[], stacks: Stack[], joins: Jo
   const link = (a: number, b: number, what: string) => {
     const ra = find(a);
     const rb = find(b);
-    const s = new Set([...(by.get(ra) ?? []), ...(by.get(rb) ?? []), what]);
+    const s = new Set([...(by.get(ra) ?? []), ...(by.get(rb) ?? []), ...(what ? [what] : [])]);
     if (ra !== rb) root[ra] = rb;
     by.set(rb, s);
   };
   for (const p of parts) nodeOf(p);
+  // a bearing is drawn with its outer ring: it goes round with what it is seated in
+  for (const p of parts) if (p.bearing) link(nodeOf(p), nodeOf(p, "out"), "");
   // every screw rides with what it passes through, tight or not (a loose screw still rattles round in its holes)
   for (const st of stacks) {
     const s = nodeOf(st.screw);
@@ -651,7 +655,7 @@ function carryMotion(model: Model, parts: EvalPart[], stacks: Stack[], joins: Jo
   }
 
   // which parts are still: the fixed half of a bought part that turns, and the base on the floor
-  const moving = (p: EvalPart) => !!p.motion && (Math.abs(p.motion.ratio) > 1e-9 || !!p.motion.parent);
+  const moving = (p: EvalPart) => !!p.motion && turns(p.motion);
   const turningInstances = new Set(parts.filter((p) => p.kind === "component" && moving(p)).map(instanceOf));
   let zmin = Infinity;
   const boxes = new Map<string, Box>();

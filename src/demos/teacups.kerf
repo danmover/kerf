@@ -1,0 +1,121 @@
+design "Teacup Ride"
+note "A desktop model of the spinning teacups: the big deck turns, and each cup's gear rolls round a fixed gear in the middle, so the cups spin on their own axles as they go round, faster than the deck and the same way."
+note "Assembly order: press the centre shaft into the base and the sun gear onto its spigot; press the bearings into the deck; push each axle through its planet gear and deck bearing and press its cup on top; lower the deck over the centre shaft so the planets mesh with the sun."
+
+// ── Gears ──────────────────────────────────────────────
+param m        = 2mm   "Gear module"
+param z_sun    = 36    "Teeth on the fixed centre gear"
+param z_planet = 20    "Teeth on each cup's gear"
+param backlash = 0.15mm "Backlash on the gears: the deck and cups float a little on their bearings"
+param press    = 0.15mm "Printed holes drawn this much over a pressed shaft: they close up by about that much"
+
+// ── Layout (everything turns about Z) ──────────────────
+let cd      = center_distance(m, z_sun, z_planet)
+let gear_w  = 8
+let z_gear  = 44           // underside of the sun and planet gears
+let z_deck  = z_gear + gear_w + 2
+let deck_t  = 8
+let z_cup   = z_deck + deck_t + 1
+let hub_h   = 14           // bearing boss on top of the deck
+let cups    = [(cd, 0), (cd * cos(120), cd * sin(120)), (cd * cos(240), cd * sin(240))]
+
+// ── Base and the fixed centre ──────────────────────────
+part base {
+  color: #2b2f36
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Base"
+  body cylinder(d: 200, h: 8)
+  add cylinder(d: 44, h: z_gear - 8 + 0.01, at: (0, 0, 7.99))
+  // spigot the sun gear presses onto
+  add cylinder(d: 18, h: gear_w, at: (0, 0, z_gear - 0.01))
+  cut cylinder(d: 8 + press, h: 31, at: (0, 0, z_gear + gear_w - 30))
+}
+
+part centre_shaft {
+  color: #c3c8cf
+  material: "Stainless 304"
+  process: mfg.cnc_lathe(axis: Z)
+  group: "Base"
+  body cylinder(d: 8, h: z_deck + deck_t + hub_h - (z_gear + gear_w - 30), at: (0, 0, z_gear + gear_w - 30))
+}
+
+component sun = lib.spur_gear(m: m, z: z_sun, width: gear_w, bore: 18, backlash: backlash) { at: (0, 0, z_gear), axis: Z }
+
+// ── The turning deck ───────────────────────────────────
+part deck {
+  color: #e8c547
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Deck"
+  spin: 1
+  axis: Z
+  body cylinder(d: 200, h: deck_t, at: (0, 0, z_deck))
+  add cylinder(d: 36, h: hub_h, at: (0, 0, z_deck + deck_t - 0.01))
+  // two 608s on the centre shaft, and one under each cup
+  cut cylinder(d: 22.1, h: deck_t + hub_h + 2, at: (0, 0, z_deck - 1))
+  for c in cups {
+    cut cylinder(d: 22.1, h: deck_t + 2, at: (c.x, c.y, z_deck - 1))
+  }
+}
+
+component deck_bearing_low  = lib.bearing("608") { at: (0, 0, z_deck + 0.5), axis: Z }
+component deck_bearing_high = lib.bearing("608") { at: (0, 0, z_deck + deck_t + hub_h - 7.5), axis: Z }
+component cup_bearings = lib.bearing("608") { at: [(cups[0].x, cups[0].y, z_deck + 0.5), (cups[1].x, cups[1].y, z_deck + 0.5), (cups[2].x, cups[2].y, z_deck + 0.5)], axis: Z }
+
+// ── Cups: each planet gear turns its axle and cup ──────
+component planet_a = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 8, backlash: backlash) { at: (cups[0].x, cups[0].y, z_gear), axis: Z  rides: deck  mesh: sun }
+component planet_b = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 8, backlash: backlash) { at: (cups[1].x, cups[1].y, z_gear), axis: Z  rides: deck  mesh: sun }
+component planet_c = lib.spur_gear(m: m, z: z_planet, width: gear_w, bore: 8, backlash: backlash) { at: (cups[2].x, cups[2].y, z_gear), axis: Z  rides: deck  mesh: sun }
+
+let axle_h = z_cup + 9 - z_gear
+let cup_shape = [(0, 0), (27, 0), (30, 4), (34, 28), (31.5, 28), (28, 7), (0, 7)]
+
+part axle_a { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: planet_a  body cylinder(d: 8, h: axle_h, at: (cups[0].x, cups[0].y, z_gear)) }
+part axle_b { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: planet_b  body cylinder(d: 8, h: axle_h, at: (cups[1].x, cups[1].y, z_gear)) }
+part axle_c { color: #c3c8cf  material: "Stainless 304"  process: mfg.cnc_lathe(axis: Z)  group: "Cups"  turns_with: planet_c  body cylinder(d: 8, h: axle_h, at: (cups[2].x, cups[2].y, z_gear)) }
+
+part cup_a {
+  color: #e05a7a
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Cups"
+  turns_with: planet_a
+  body revolve(cup_shape, at: (cups[0].x, cups[0].y, z_cup), dir: Z)
+  cut cylinder(d: 8 + press, h: 10, at: (cups[0].x, cups[0].y, z_cup - 1))
+}
+part cup_b {
+  color: #4fb3d9
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Cups"
+  turns_with: planet_b
+  body revolve(cup_shape, at: (cups[1].x, cups[1].y, z_cup), dir: Z)
+  cut cylinder(d: 8 + press, h: 10, at: (cups[1].x, cups[1].y, z_cup - 1))
+}
+part cup_c {
+  color: #7cc66b
+  material: "PETG"
+  process: mfg.fdm(build: Z)
+  group: "Cups"
+  turns_with: planet_c
+  body revolve(cup_shape, at: (cups[2].x, cups[2].y, z_cup), dir: Z)
+  cut cylinder(d: 8 + press, h: 10, at: (cups[2].x, cups[2].y, z_cup - 1))
+}
+
+// ── Requirements ───────────────────────────────────────
+require "Cups clear each other as they spin": cd * sqrt(3) - 68 >= 10
+require "Cups stay on the deck": cd + 34 <= 100 - 5
+require "Planet gears clear the centre shaft's hub": cd - m * (z_planet + 2) / 2 - 22 >= 2
+
+// ── A ride ─────────────────────────────────────────────
+// The deck is brought up to 12 rpm; the planets roll round the fixed sun gear,
+// so each cup turns 36/20 = 1.8 times on the deck (2.8 times in all) for
+// every turn of the deck.
+scenario "Ride" {
+  mechanism: sim.mechanism(sim.turn(deck, speed: [(0s, 0rpm), (1s, 12rpm)]))
+  duration: 5s
+  variants: ["expected"]
+  expect "Deck reaches 12 rpm": deck.max_rpm > 11.5rpm
+  expect "Cups turn 1.8 times on the deck for each turn of it": abs(planet_a.turns / deck.turns - z_sun / z_planet) < 0.05
+}

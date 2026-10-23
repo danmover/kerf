@@ -126,7 +126,7 @@ export function findFits(model: Model): FoundFits {
   const instances: { kind: FitKind; inst: FitInstance }[] = [];
   const located = new Map<string, Set<EvalPart>>(); // screw part id -> parts it threads into
   for (const h of holes) {
-    let best: { s: Cyl; score: number; overlap: number; ecc: number } | null = null;
+    const cands: { s: Cyl; score: number; overlap: number; ecc: number }[] = [];
     for (const s of shafts) {
       if (s.part === h.part || instanceOf(s.part) === instanceOf(h.part)) continue;
       if (s.role === "insert") continue;
@@ -143,13 +143,13 @@ export function findFits(model: Model): FoundFits {
       if (h.role === "thread") continue;
       const c = h.d - s.d;
       if (c < -maxInterference(h.d) || c > maxClearance(h.d)) continue;
-      const score = overlap / (1 + Math.abs(c) * 4);
-      if (!best || score > best.score) best = { s, score, overlap, ecc };
+      cands.push({ s, score: overlap / (1 + Math.abs(c) * 4), overlap, ecc });
     }
-    if (!best) continue;
-    const s = best.s;
-    const mid = cylMid(h);
-    instances.push({ kind: kindOf(h, s, best.overlap), inst: { hole: h, shaft: s, ecc: best.ecc, at: mid } });
+    // the best fit, and others of the same kind further along the same hole (two bearings in one bore)
+    cands.sort((a, b) => b.score - a.score);
+    const picked: typeof cands = [];
+    for (const c of cands) if (!picked.length || (c.s.role === picked[0].s.role && picked.every((p) => axialOverlap(p.s, c.s) <= 0.3))) picked.push(c);
+    for (const c of picked) instances.push({ kind: kindOf(h, c.s, c.overlap), inst: { hole: h, shaft: c.s, ecc: c.ecc, at: picked.length > 1 ? cylMid(c.s) : cylMid(h) } });
   }
 
   // group identical fits: same parts by name, same kind and sizes

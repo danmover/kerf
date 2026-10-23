@@ -7,6 +7,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
+import { motionPose } from "../../core/kinematics";
 import type { MeshEntry } from "../../core/engine";
 import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
@@ -233,16 +234,6 @@ export interface AppearanceOverride {
 
 const ease = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : 1 - Math.pow(1 - k, 3));
 const easeInOut = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
-
-/** A motion's placement at a driver angle (degrees): its turn about its own axis, then whatever it rides on. */
-function motionMatrix(mo: Motion, deg: number): THREE.Matrix4 {
-  const o = new THREE.Vector3(...mo.origin);
-  const own = new THREE.Matrix4()
-    .makeTranslation(o.x, o.y, o.z)
-    .multiply(new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(...mo.axis).normalize(), THREE.MathUtils.degToRad(deg * mo.ratio)))
-    .multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z));
-  return mo.parent ? motionMatrix(mo.parent, deg).multiply(own) : own;
-}
 
 export class SceneController {
   readonly renderer: THREE.WebGLRenderer;
@@ -1772,7 +1763,7 @@ export class SceneController {
       const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(sp.pos.x, sp.pos.y, sp.pos.z).multiply(po) : new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
       // its own motion or the one it is fastened to (a screw turns with the part it holds), riding on its carrier
       const mo = turns(obj.part.motion) ? obj.part.motion : this.carried?.get(obj.part.id)?.motion;
-      if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(motionMatrix(mo, this.angle));
+      if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(new THREE.Matrix4().fromArray(motionPose(mo, this.angle)));
       // a loose screw, nut or washer rattles along its axis as the parts move
       const lo = this.loose?.get(obj.part.id);
       if (lo && Math.abs(this.angle) > 1e-9) {
