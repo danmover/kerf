@@ -7,6 +7,7 @@ import { usePlan, messageState, anyBranchOpen } from "../ai/plan";
 import { useAgents, isLive } from "../agents/progress";
 import { ChoiceCard } from "./ChoiceCard";
 import { ChangeCard } from "./ChangeCard";
+import { QuickCard } from "./QuickCard";
 import { DiffView } from "./DiffView";
 import { openSpot, spotLabel } from "../app/spot";
 import { safeUrl, domainOf } from "../ai/web";
@@ -18,6 +19,8 @@ import { useProject } from "../app/project";
 import { templateById, TEMPLATES } from "../demos/templates";
 import { diffStats } from "../core/sourceEdit";
 import { useDesign } from "../core/engine";
+import { describeQuick } from "../core/quickCommands";
+import { quickCommandOf } from "../app/quickRun";
 import { useView, select } from "../app/view";
 import { Markdown } from "./Markdown";
 import { Icon } from "./icons";
@@ -262,6 +265,8 @@ function Item({ it }: { it: ChatItem }) {
       );
     case "turn":
       return <ChangeCard it={it} />;
+    case "quick":
+      return <QuickCard it={it} />;
     case "review":
       return <ReviewCard it={it} />;
     case "suggest":
@@ -523,6 +528,9 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
     el.style.height = "auto";
     el.style.height = Math.min(200, el.scrollHeight) + "px";
   }, [text]);
+  const quickOn = useSettings((s) => s.quickCommands);
+  // a plain command is done at once, without Claude (see app/quickRun)
+  const command = useMemo(() => (quickOn && !att.files.length && !pending && text.trim() ? quickCommandOf(text) : null), [quickOn, att.files.length, pending, text, model]);
   const canSend = (!!text.trim() || att.files.length > 0) && !att.loading;
   // while Claude works, a message joins the run at its next step; files wait for the run to end
   const midRun = busy || building;
@@ -571,7 +579,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
               : midRun && hasKey
                 ? "Add to what Claude is doing. It reads this after its current step…"
                 : !hasKey
-                ? "Add your API key in settings to chat with Claude"
+                ? "Add your API key in settings to chat with Claude, or type a command: fillet 2, hole M3, wall 3…"
                 : about.length
                   ? `What should change about ${about.length === 1 ? about[0] : "the selected parts"}?`
                   : `Describe a part, a change or a question… (${touchScreen ? "press and hold" : "right-click"} the model to ask about a spot)`
@@ -596,6 +604,10 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
               </>
             ) : building ? (
               "The agents are building · Enter adds a note for them"
+            ) : command ? (
+              <span className="quick-hint" style={{ color: "var(--accent)" }}>
+                <Icon.Bolt size={10} /> {describeQuick(command)} · instant, no Claude
+              </span>
             ) : (
               `Enter to send · Shift+Enter for a new line · ${mod}K to focus`
             )}
@@ -615,7 +627,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
               aria-label={midRun ? "Add to this run" : "Send"}
               data-tip={midRun ? (att.files.length ? "Files go once Claude finishes. Remove them to add just the text now." : "Add this to what Claude is doing: it reads it after its current step, without starting over") : undefined}
             >
-              {midRun ? <Icon.Plus size={13} /> : <Icon.Send size={13} />}
+              {midRun ? <Icon.Plus size={13} /> : command ? <Icon.Bolt size={13} /> : <Icon.Send size={13} />}
             </button>
           )}
         </div>

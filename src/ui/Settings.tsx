@@ -377,6 +377,15 @@ function AiSettings() {
         <Row t="Faster follow-up steps" d="Claude plans each reply at the effort above, then thinks at medium for the steps after it: reading the checks an edit returned, small fixes, the reply itself. Replies finish sooner and cost less, with slightly less careful thinking on those steps.">
           <Toggle on={s.fasterFollowUps} onChange={(v) => updateSettings({ fasterFollowUps: v })} label="Faster follow-up steps" />
         </Row>
+        <Row t="Do plain commands at once" d="A plain command typed in the chat changes the design straight away, without asking Claude: no wait and no cost. For example “fillet 2”, “chamfer 1 top”, “shell 2”, “move 10 up”, “rotate 90”, “wall 3” (any parameter), “PETG”, “red”, “copy”, “delete”, “box 40x20x10”, and after right-clicking a spot, “hole M3” or “fillet 1” on the edge there. Anything more than a plain command goes to Claude as usual.">
+          <Toggle on={s.quickCommands} onChange={(v) => updateSettings({ quickCommands: v })} label="Do plain commands at once" />
+        </Row>
+        <Row t="Quick small changes" d="A short request for one plain change (“make the wall 3 mm thicker”, “round these edges”, “move the lid up 5”) has Claude think briefly and skips the self-review, so it comes back in seconds. If it turns out to need more, Claude carries on as usual.">
+          <Toggle on={s.fastChanges} onChange={(v) => updateSettings({ fastChanges: v })} label="Quick small changes" />
+        </Row>
+        <Row t="Modelling tools" d="Tools beside the 3D view for modelling it yourself: boxes, cylinders, holes, fillets, chamfers, shells, move, turn, copy and delete. Then “Fix it up” or “Make it buildable” has Claude finish what you modelled. The pencil in the view's toolbar shows and hides them.">
+          <Toggle on={s.advanced} onChange={(v) => updateSettings({ advanced: v })} label="Modelling tools" />
+        </Row>
         <Row t="Show Claude's reasoning" d="Shows a summary of Claude's thinking above each answer, collapsed by default.">
           <Toggle on={s.showThinking} onChange={(v) => updateSettings({ showThinking: v })} label="Show Claude's reasoning" />
         </Row>

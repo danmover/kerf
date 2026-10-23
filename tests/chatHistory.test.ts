@@ -29,7 +29,7 @@ vi.mock("../src/core/engine", async () => {
 vi.mock("../src/app/view", () => ({ useView: { getState: () => ({ selected: [] }) } }));
 vi.mock("../src/app/project", async () => {
   const { create } = await import("zustand");
-  return { commitSource: () => undefined, endPreview: () => undefined, setUndoGuard: () => undefined, useProject: create(() => ({ current: { id: "p1" }, versions: [] })) };
+  return { commitSource: () => undefined, endPreview: () => undefined, setUndoGuard: () => undefined, realSource: () => "", undo: () => false, redo: () => false, useProject: create(() => ({ current: { id: "p1" }, versions: [] })) };
 });
 vi.mock("../src/agents/orchestrator", () => ({ isBuilding: () => false }));
 vi.mock("../src/ai/prompt", () => ({ systemPrompt: () => mem.prompt }));
