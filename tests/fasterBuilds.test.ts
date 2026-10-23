@@ -189,7 +189,7 @@ describe("a from-scratch build in the chat", () => {
       },
       { stop_reason: "end_turn", content: [{ type: "text", text: "Done." }] },
     ]);
-    await sendMessage("A 5 mm cube");
+    await sendMessage("Make a 5 mm test cube");
     const results = requests[1].messages[2].content as Block[];
     expect(String(results[0].content)).not.toContain("Built and checked");
     expect(String(results[1].content)).toContain("Checks: 2 pass");

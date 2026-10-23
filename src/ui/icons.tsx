@@ -384,6 +384,60 @@ export const Icon = {
       <path d="M7 17h2M12 17h2M17 17h1" />
     </I>
   ),
+  /** a lightning bolt: done at once, without Claude */
+  Bolt: (p: P) => (
+    <I {...p}>
+      <path d="M13 2 4 14h7l-1 8 9-12h-7z" />
+    </I>
+  ),
+  /** four arrows: move */
+  Move: (p: P) => (
+    <I {...p}>
+      <path d="M12 3v18M3 12h18" />
+      <path d="m9 6 3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3" />
+    </I>
+  ),
+  /** a rounded corner */
+  Fillet: (p: P) => (
+    <I {...p}>
+      <path d="M4 20V12a8 8 0 0 1 8-8h8" />
+      <path d="M4 20h16" strokeDasharray="2 3" />
+    </I>
+  ),
+  /** a bevelled corner */
+  Chamfer: (p: P) => (
+    <I {...p}>
+      <path d="M4 20V10l6-6h10" />
+      <path d="M4 20h16" strokeDasharray="2 3" />
+    </I>
+  ),
+  /** a hollowed box */
+  Shell: (p: P) => (
+    <I {...p}>
+      <path d="M3 7v12h18V7" />
+      <path d="M7 7v8h10V7" />
+    </I>
+  ),
+  /** a drilled hole */
+  Hole: (p: P) => (
+    <I {...p}>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="12" cy="12" r="4" />
+    </I>
+  ),
+  Cylinder: (p: P) => (
+    <I {...p}>
+      <ellipse cx="12" cy="6" rx="7" ry="3" />
+      <path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
+    </I>
+  ),
+  /** a magic wand: let Claude tidy it up */
+  Wand: (p: P) => (
+    <I {...p}>
+      <path d="m4 20 11-11" />
+      <path d="m14 5 1-2 1 2 2 1-2 1-1 2-1-2-2-1zM19 11l.5-1 .5 1 1 .5-1 .5-.5 1-.5-1-1-.5z" />
+    </I>
+  ),
   Wrench: (p: P) => (
     <I {...p}>
       <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" />

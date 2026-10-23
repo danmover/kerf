@@ -52,7 +52,7 @@ export interface ViewportApi {
   /** the view exactly as it is on screen */
   snapshot(): string;
   /** the part (and spot on it) under a point in page coordinates */
-  hitAt(clientX: number, clientY: number): { id: string; local: Vec3; point: Vec3; normal: Vec3 } | null;
+  hitAt(clientX: number, clientY: number): { id: string; local: Vec3; point: Vec3; normal: Vec3; localNormal: Vec3 } | null;
   /** what the photoreal view is doing */
   photoStatus(): PhotoState;
   /** why the photoreal view couldn't run now (software graphics, section view, ...), or null */

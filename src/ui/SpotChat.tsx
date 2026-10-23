@@ -15,11 +15,15 @@ import { useSpot, closeSpot, noteSpotMessage, type Spot } from "../app/spot";
 import { useView, revealSpan, select, showDecision } from "../app/view";
 import { viewport } from "../app/viewportApi";
 import { openSettings } from "../app/ui";
+import { useSettings } from "../app/settings";
+import { quickCommandOf } from "../app/quickRun";
+import { describeQuick } from "../core/quickCommands";
 import { fmtNum } from "../lang/values";
 import { useApiKey, MidRun } from "./ChatPanel";
 import { SuggestionChips, thinkingTail } from "./ChatPanel";
 import { ChoiceCard } from "./ChoiceCard";
 import { ChangeCard } from "./ChangeCard";
+import { QuickCard } from "./QuickCard";
 import { Markdown } from "./Markdown";
 import { ValueField } from "./ValueField";
 import { useRealModel } from "./useRealModel";
@@ -138,9 +142,10 @@ function SpotPopover({ spot }: { spot: Spot }) {
 
   const send = (t: string) => {
     const msg = t.trim();
-    if (!msg || !hasKey) return;
+    // without a key, plain commands ("fillet 2", "hole M3") still work
+    if (!msg || (!hasKey && !quickCommandOf(msg))) return;
     const id = `spot${Date.now().toString(36)}`;
-    const ref = { partId: spot.partId, label: part?.label ?? spot.label, local: spot.local, point: spot.point, normal: spot.normal };
+    const ref = { partId: spot.partId, label: part?.label ?? spot.label, local: spot.local, point: spot.point, normal: spot.normal, localNormal: spot.localNormal };
     // while Claude works (here or anywhere), the message joins that run at its next step, pointing at this spot
     const midRun = busy || building;
     if (midRun && !addMidRun(msg, { spot: ref, id })) return;
@@ -159,6 +164,8 @@ function SpotPopover({ spot }: { spot: Spot }) {
   };
 
   const label = part?.label ?? spot.label;
+  const quickOn = useSettings((s) => s.quickCommands);
+  const command = useMemo(() => (quickOn && text.trim() ? quickCommandOf(text) : null), [quickOn, text, real]);
 
   return (
     <>
@@ -212,14 +219,14 @@ function SpotPopover({ spot }: { spot: Spot }) {
             </div>
           )}
 
-          {hasKey ? (
+          {hasKey || quickOn ? (
             <div className="spot-input">
               <textarea
                 ref={input}
                 rows={1}
                 value={text}
                 maxLength={4000}
-                placeholder={busy || building ? (working ? "Claude is on it. Add more and it reads it at its next step…" : "Claude is working. Say what to change here and it joins the run…") : mine ? "Reply about this spot…" : "Ask about this spot, or say what to change here…"}
+                placeholder={!hasKey ? "Type a command: fillet 2, hole M3, move 10 up…" : busy || building ? (working ? "Claude is on it. Add more and it reads it at its next step…" : "Claude is working. Say what to change here and it joins the run…") : mine ? "Reply about this spot…" : "Ask about this spot, or say what to change here…"}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -234,13 +241,19 @@ function SpotPopover({ spot }: { spot: Spot }) {
                 aria-label={`Message Claude about ${label}`}
               />
               <button className="btn sm primary" disabled={!text.trim()} onClick={() => send(text)} aria-label={busy || building ? "Add to what Claude is doing" : "Send"}>
-                {busy || building ? <Icon.Plus size={12} /> : <Icon.Send size={12} />}
+                {busy || building ? <Icon.Plus size={12} /> : command ? <Icon.Bolt size={12} /> : <Icon.Send size={12} />}
               </button>
             </div>
           ) : (
             <button className="btn sm" style={{ marginTop: 8 }} onClick={() => openSettings("ai")}>
               <Icon.Settings size={12} /> Add your API key to ask Claude
             </button>
+          )}
+
+          {command && !busy && !building && (
+            <div className="spot-hint mono">
+              <Icon.Bolt size={10} /> {describeQuick(command)} · done at once, no Claude
+            </div>
           )}
 
           {drivers.length > 0 && (
@@ -351,6 +364,8 @@ function SpotItem({ it, last, onSend }: { it: ChatItem; last: boolean; onSend: (
       return <ChoiceCard it={it} />;
     case "turn":
       return <ChangeCard it={it} compact />;
+    case "quick":
+      return <QuickCard it={it} compact />;
     case "suggest":
       return last && !busy ? <SuggestionChips options={it.options} onSend={onSend} /> : null;
     case "notice":

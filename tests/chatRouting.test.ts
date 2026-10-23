@@ -30,7 +30,7 @@ vi.mock("../src/core/engine", async () => {
 vi.mock("../src/app/view", () => ({ useView: { getState: () => ({ selected: [] }) } }));
 vi.mock("../src/app/project", async () => {
   const { create } = await import("zustand");
-  return { commitSource: () => undefined, endPreview: () => undefined, setUndoGuard: () => undefined, useProject: create(() => ({ current: { id: "p1" }, versions: [] })) };
+  return { commitSource: () => undefined, endPreview: () => undefined, setUndoGuard: () => undefined, realSource: () => "", undo: () => false, redo: () => false, useProject: create(() => ({ current: { id: "p1" }, versions: [] })) };
 });
 vi.mock("../src/agents/orchestrator", () => ({ isBuilding: () => false }));
 vi.mock("../src/ai/prompt", () => ({ systemPrompt: () => "You design mechanical parts." }));
@@ -99,12 +99,34 @@ describe("choosing a model for each turn", () => {
   });
 
   it("sends a change straight to the design model without asking the router", async () => {
-    useApi([{ text: "Made it thicker." }], { route: "quick" });
-    await chat.sendMessage("make the base 5 mm thicker");
+    useApi([{ text: "Added it." }], { route: "quick" });
+    await chat.sendMessage("add a battery compartment to the base");
     expect(api.routerRequests).toHaveLength(0);
     expect(api.requests[0].model).toBe("claude-opus-5-5");
     expect(api.requests[0].fallbacks).toBe("default");
     expect(costs()[0].route).toMatchObject({ model: "claude-opus-5-5", quick: false, by: "rule", why: "asks for a change" });
+  });
+
+  it("does a plain command at once, without Claude", async () => {
+    useApi([{ text: "unused" }], { route: "quick" });
+    await chat.sendMessage("undo");
+    expect(api.requests).toHaveLength(0);
+    expect(api.routerRequests).toHaveLength(0);
+    expect(chat.useChat.getState().items.slice(-2)).toMatchObject([
+      { kind: "user", text: "undo" },
+      { kind: "notice", title: "There is nothing to undo." },
+    ]);
+  });
+
+  it("does a short, plain change on the design model as a small change", async () => {
+    useApi([{ text: "Made it thicker." }], { route: "quick" });
+    await chat.sendMessage("make the base 5 mm thicker");
+    expect(api.routerRequests).toHaveLength(0);
+    expect(api.requests[0].model).toBe("claude-opus-5-5");
+    expect(costs()[0].route).toMatchObject({ model: "claude-opus-5-5", quick: false, by: "rule", why: "a small change" });
+    // it thinks at low effort, set inside the conversation so the cache stays warm
+    const messages = api.requests[0].messages as { role: string; output_config?: { effort: string } }[];
+    expect(messages.find((m) => m.role === "system")?.output_config?.effort).toBe("low");
   });
 
   it("keeps a turn on the design model when the router says so", async () => {

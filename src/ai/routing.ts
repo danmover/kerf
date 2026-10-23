@@ -77,6 +77,8 @@ export interface Route {
   /** why, in a few words, for the line under the reply */
   why: string;
   by: "rule" | "router" | "you" | "settings";
+  /** a short, plain change ("make the wall 3 mm", "add a hole here"): every step at low effort, and no self-review */
+  small?: boolean;
 }
 
 /** What the router knows about a turn before it starts. */
@@ -111,6 +113,26 @@ export function ruleReason(f: TurnFacts): string | null {
   if (f.text.length > LONG) return "a detailed request";
   if (CHANGE.test(f.text.trim())) return "asks for a change";
   return null;
+}
+
+// What a small change is about: a size, a simple feature, a position, a look. Anything else ("add a battery
+// compartment") needs Claude's full thought even when it is short.
+const SIMPLE = /\d|\b(?:fillet|chamfer|round(?:ed)?|bevel|hole|drill|move|shift|nudge|raise|lower|rotate|turn|flip|mirror|colou?r|paint|material|thick(?:er|en)?|thin(?:ner)?|wid(?:er|en)|narrow(?:er)?|long(?:er)?|lengthen|short(?:er|en)|tall(?:er)?|high(?:er)?|big(?:ger)?|small(?:er)?|larger|resize|scale|rename|remove|delete|hide)\b/i;
+// Words that ask for judgment or a lot of work, however short the message.
+const BIG = /\b(?:design|redesign|create|build|generate|rethink|rework|optimi[sz]e|improve|strengthen|stiffen|reinforce|simplify|lighten|fix|work|why|whole|every|all parts|everything|mechanism|motor|wiring|electronics|circuit|assembly)\b/i;
+
+/**
+ * A short request for one plain change, which the design model can do at low
+ * effort and without a self-review: "make the wall 3 mm", "move the lid up 5",
+ * "round these edges", "add a 6 mm hole here".
+ */
+export function smallChange(f: TurnFacts): boolean {
+  if (f.answersChoice || f.steering || f.hasFiles || !f.parts) return false;
+  const t = f.text.trim();
+  if (t.length > 90 || t.includes("\n") || t.includes("?")) return false;
+  if (!CHANGE.test(t) || !SIMPLE.test(t) || BIG.test(t)) return false;
+  // one change: at most one "and" or comma joining clauses
+  return (t.match(/\band\b|,|;/g) ?? []).length <= 1;
 }
 
 const ROUTER_PROMPT = `You route messages in Kerf, a CAD app where an AI design engineer models mechanical parts and assemblies for the user. A fast assistant can answer a message when answering only needs reading the current design (its source, check results, renders and measurements) and replying. Everything else needs the design engineer.

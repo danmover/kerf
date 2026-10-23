@@ -22,6 +22,7 @@ import { LightingMenu } from "./LightingMenu";
 import { MaterialButton } from "./MaterialPicker";
 import { MaterialCompareHost } from "./materials/CompareOverlay";
 import { SpotChat } from "./SpotChat";
+import { ModelTools } from "./ModelTools";
 import { Markup, toggleMarkup, useMarkup } from "./Markup";
 import { openSpot, closeSpot, useSpot } from "../app/spot";
 import { useGap, type Gap } from "./useGap";
@@ -114,7 +115,7 @@ export function Viewport() {
       const part = hit && useDesign.getState().model?.parts.find((p) => p.id === hit.id);
       if (!hit || !part) return closeSpot();
       select([hit.id]);
-      openSpot({ partId: hit.id, label: part.label, local: hit.local, point: hit.point, normal: hit.normal });
+      openSpot({ partId: hit.id, label: part.label, local: hit.local, point: hit.point, normal: hit.normal, localNormal: hit.localNormal });
     };
     registerViewport({
       capture: (o) => c.capture(o),
@@ -306,6 +307,10 @@ export function Viewport() {
         <button className={`icon-btn ${view.turntable ? "active" : ""}`} disabled={!visibleParts} onClick={() => useView.setState({ turntable: !view.turntable })} data-tip="Turntable (T)" aria-label="Turntable">
           <Icon.Orbit />
         </button>
+        <div className="sep" />
+        <button className={`icon-btn ${settings.advanced ? "active" : ""}`} onClick={() => updateSettings({ advanced: !settings.advanced })} data-tip="Modelling tools: model it yourself, then let Claude fix it up" aria-label="Modelling tools" aria-pressed={settings.advanced}>
+          <Icon.Edit />
+        </button>
       </div>
 
       <AnimatePresence>
@@ -368,6 +373,7 @@ export function Viewport() {
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
+      {settings.advanced && !inSketch && <ModelTools host={mount} />}
       <SpotChat />
       <Markup />
       <MaterialCompareHost />

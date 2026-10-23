@@ -70,6 +70,12 @@ export interface Settings {
   agentWorkers: number;
   /** let a cheaper model answer turns that only read the design (see ai/routing) */
   routeQuick: boolean;
+  /** plain commands ("fillet 2", "hole M3 here", "wall 3") are done at once, without Claude (see core/quickCommands) */
+  quickCommands: boolean;
+  /** short, plain change requests run at low effort without the self-review (see ai/routing smallChange) */
+  fastChanges: boolean;
+  /** the modelling tools beside the 3D view (see ui/ModelTools) */
+  advanced: boolean;
   /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
   keepWarm: number;
   /** prompt tokens at which a long chat's older turns are summarised (see ai/compact) */
@@ -127,6 +133,9 @@ const DEFAULTS: Settings = {
   agentReview: true,
   agentWorkers: 0,
   routeQuick: true,
+  quickCommands: true,
+  fastChanges: true,
+  advanced: false,
   keepWarm: 30,
   compactAt: 500_000,
   showCost: true,

@@ -248,13 +248,13 @@
   container-type: inline-size;
 }
 @container (max-width: 400px) {
-  .composer-box > .row > .mono:not(:has(.shimmer-text)) {
+  .composer-box > .row > .mono:not(:has(.shimmer-text, .quick-hint)) {
     display: none;
   }
 }
 /* and so does any touch screen, where they mean nothing */
 @media (pointer: coarse) {
-  .composer-box > .row > .mono:not(:has(.shimmer-text)) {
+  .composer-box > .row > .mono:not(:has(.shimmer-text, .quick-hint)) {
     display: none;
   }
 }

@@ -127,6 +127,8 @@ export interface Hit {
   point: [number, number, number];
   /** outward face normal, in assembly coordinates */
   normal: [number, number, number];
+  /** the same normal in the part's own frame */
+  localNormal: [number, number, number];
 }
 
 const tuple = (v: THREE.Vector3): [number, number, number] => [v.x, v.y, v.z];
@@ -1573,7 +1575,8 @@ export class SceneController {
     if (!h || !obj) return null;
     const local = h.point.clone().applyMatrix4(h.object.matrixWorld.clone().invert());
     const n = (h.face?.normal ?? new THREE.Vector3(0, 0, 1)).clone();
-    return { id: obj.id, local: tuple(local), point: tuple(local.clone().applyMatrix4(obj.placement)), normal: tuple(n.transformDirection(obj.placement)) };
+    const localNormal = tuple(n);
+    return { id: obj.id, local: tuple(local), point: tuple(local.clone().applyMatrix4(obj.placement)), normal: tuple(n.transformDirection(obj.placement)), localNormal };
   }
 
   /**

@@ -17,6 +17,7 @@ import { paramEdits, upsertDecision, applySpanEdits, type SetMap } from "../core
 import { fmtNum } from "../lang/values";
 import { shotOf, changeShots, type ChangeShots } from "../app/changeShots";
 import { spotText, type SpotRef } from "../app/spot";
+import { runQuick } from "../app/quickRun";
 import { usePlan, loadPlan, resetPlan, planSnapshot, takeMainSteering, takePauseHit, mainActivityStart, mainActivityEnd, settleActivity, noteDesignEdit, pendingSteering, describeSteering, anyBranchOpen, userMessage, userWithdrawMessage, messageState } from "./plan";
 import { appDeps, currentBrief as reviewBrief, designerReport, registerBriefProvider, ReviewError, ReviewInput, ReviewSession, runReview, type Finding, type ReviewProgress, type ReviewResult } from "./review";
 import { shrinkImage } from "./review/renders";
@@ -28,7 +29,7 @@ import { toast } from "../app/ui";
 import { claudeClient, claudeRoute } from "./client";
 import { BINDING_BETA, MAX_CUT_RECOVERIES, MAX_OUTPUT_TOKENS, bindingKey, cutOffNote, trimCutOff, firstEdit, forSaving, hasThinking, isThinkingSignatureError, messageKeys, prepareSaved, stripThinking } from "./history";
 import { MODELS, type Effort } from "../app/settings";
-import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, type Route, type TurnFacts } from "./routing";
+import { QUICK_EFFORT, QUICK_MAX_STEPS, QUICK_MODEL, QUICK_TOOLS, QUICK_WARM_MS, askRouter, quickCanSave, ruleReason, smallChange, type Route, type TurnFacts } from "./routing";
 import { addToTurn, carryOver, counterfactualCost, emptyTurn, onSpend, promptTokens, recordSpend, type TurnSpend } from "./spend";
 import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm } from "./keepWarm";
 import { pause, retryWait } from "./retry";
@@ -69,6 +70,12 @@ export type ChatItem =
     }
   | { kind: "notice"; id: string; level: "error" | "warn" | "info"; title: string; detail?: string; action?: "settings" | "retry" | "continue" }
   | { kind: "turn"; id: string; before: string; after: string; edits: number; reverted?: boolean; shots?: ChangeShots }
+  /**
+   * A plain command done at once without Claude ("fillet 2", "hole M3 here"):
+   * what it did, the source either side for undo, and why the part failed to
+   * build when it did. plain: undo and redo themselves, which have no undo.
+   */
+  | { kind: "quick"; id: string; text: string; title: string; detail?: string; before: string; after: string; spot?: SpotRef; undone?: boolean; failed?: string; plain?: boolean }
   | {
       kind: "review";
       id: string;
@@ -138,6 +145,8 @@ let gen = 0;
 let lastEditedSource: string | null = null;
 /** the source as Claude last read or wrote it (get_design, its own edits, or the context note); null when it has not */
 let sourceSeen: string | null = null;
+/** changes the user made with plain commands since Claude's last turn, for the next context note */
+let quickLog: string[] = [];
 /** a design up to this long goes with the user's message when Claude has not seen it, which saves a get_design step */
 const INLINE_SOURCE_MAX = 16_000;
 let idn = 0;
@@ -220,6 +229,7 @@ export async function loadChat(projectId: string) {
     it.kind === "assistant" ? { ...it, streaming: false } : (it.kind === "tool" || it.kind === "review") && it.status === "running" ? { ...it, status: "error" as const, detail: "Interrupted", error: "Interrupted" } : it,
   );
   lastEditedSource = sourceSeen = null;
+  quickLog = [];
   // a choice card left open in a previous session is still answerable
   const open = savedPending && items.some((i) => i.id === savedPending.itemId && i.kind === "choice" && !i.chosen) ? savedPending : null;
   set({ projectId, items, busy: false, pendingChoice: open, briefSeen });
@@ -326,6 +336,7 @@ export async function clearChat() {
   sent = null;
   flatServer = false;
   lastEditedSource = sourceSeen = null;
+  quickLog = [];
   set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
   const { projectId } = get();
@@ -340,6 +351,7 @@ export function resetChat() {
   sent = null;
   flatServer = false;
   lastEditedSource = sourceSeen = null;
+  quickLog = [];
   set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
 }
@@ -506,6 +518,7 @@ function contextNote(): string {
     modelSummary(model),
     briefSummary(),
     changed,
+    takeQuickNote(),
     reportSummary(report, 12),
     selected.length ? `The user has selected: ${selected.slice(0, 20).join(", ")}` : "",
     drawingContext(),
@@ -765,6 +778,8 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
     addMidRun(t, opts);
     return;
   }
+  // a plain command ("fillet 2", "hole M3 here", "wall 3") is done at once, without Claude; an open question from Claude takes the message instead
+  if (!attached.length && !opts.image && !opts.design && !get().pendingChoice && useSettings.getState().quickCommands && quickly(t, opts.spot, opts.id)) return;
   endPreview();
   const pending = get().pendingChoice;
   const lastReply = [...get().items].reverse().find((i): i is Extract<ChatItem, { kind: "assistant" }> => i.kind === "assistant" && !!i.text.trim())?.text ?? "";
@@ -830,6 +845,70 @@ export function addMidRun(text: string, opts: { files?: ChatFile[]; spot?: SpotR
 }
 
 /** Take back a message sent mid-run before Claude reads it. */
+function takeQuickNote(): string {
+  if (!quickLog.length) return "";
+  const note = `Since your last turn the user made these changes themselves with quick commands (already in the source): ${quickLog.slice(-12).join("; ")}.`;
+  quickLog = [];
+  return note;
+}
+
+/**
+ * Do a message as a plain command when it is one. Returns whether the message
+ * is dealt with: done, or refused with a reason the user can act on. One that
+ * Claude could do instead (no part chosen, a mechanism part) goes to Claude
+ * when there is a key.
+ */
+function quickly(text: string, spot: SpotRef | undefined, id: string | undefined): boolean {
+  const q = runQuick(text, spot);
+  if (!q) return false;
+  if (!q.ok && q.ai && client()) return false;
+  push({ kind: "user", id: id ?? nid(), text, ts: Date.now(), spot });
+  if (!q.ok) {
+    push({ kind: "notice", id: nid(), level: "info", title: q.why });
+    persist();
+    return true;
+  }
+  const itemId = nid();
+  push({ kind: "quick", id: itemId, text, title: q.title, detail: q.detail, before: q.before, after: q.after, spot, plain: q.kind === "undo" || q.kind === "redo" });
+  quickLog.push(`“${text}” (${q.title})`);
+  persist();
+  const g = gen;
+  void q.built.then((err) => {
+    if (err && g === gen) {
+      patch(itemId, (it) => (it.kind === "quick" ? { ...it, failed: err } : it));
+      persist();
+    }
+  });
+  return true;
+}
+
+/** Undo a quick command, when the design has not moved on since. */
+export function undoQuick(itemId: string): boolean {
+  const it = get().items.find((i) => i.id === itemId);
+  if (!it || it.kind !== "quick" || it.undone || it.plain) return false;
+  if (useDesign.getState().source !== it.after) {
+    toast({ kind: "info", title: "The design has changed since", detail: "Use Undo (Ctrl+Z) or the version history to go back further." });
+    return false;
+  }
+  commitSource(it.before, "you", `Undid: ${it.title}`);
+  patch(itemId, (x) => (x.kind === "quick" ? { ...x, undone: true } : x));
+  quickLog.push(`undid “${it.text}”`);
+  persist();
+  return true;
+}
+
+/** Hand a quick command to Claude: undo it when it can be, then ask Claude, pointing where the command pointed. */
+export function askClaudeInstead(itemId: string, fix?: boolean) {
+  const it = get().items.find((i) => i.id === itemId);
+  if (!it || it.kind !== "quick") return;
+  if (fix) {
+    void sendMessage(`I ran the command “${it.text}” (${it.title}), but the part no longer builds: ${it.failed}. Fix it, keeping what I asked for as far as it can work.`, { spot: it.spot, design: true });
+    return;
+  }
+  if (!it.undone && useDesign.getState().source === it.after) undoQuick(itemId);
+  void sendMessage(it.text, { spot: it.spot, design: true });
+}
+
 export function withdrawMidRun(itemId: string) {
   if (!userWithdrawMessage(itemId)) return;
   set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
@@ -1062,6 +1141,8 @@ function estimatePrompt(): number {
 async function chooseRoute(anthropic: Anthropic, facts: TurnFacts | undefined, signal: AbortSignal): Promise<Route> {
   const s = useSettings.getState();
   if (!facts) return designRoute();
+  // a short, plain change: the design model, thinking briefly, and no self-review
+  if (s.fastChanges && smallChange(facts)) return { ...designRoute("a small change", "rule"), small: true };
   if (!s.routeQuick) return designRoute("cheaper models are off in Settings");
   if (s.model.startsWith(QUICK_MODEL) || quickUnavailable) return designRoute();
   const rule = ruleReason(facts);
@@ -1073,6 +1154,9 @@ async function chooseRoute(anthropic: Anthropic, facts: TurnFacts | undefined, s
   if (r.usage) recordSpend("router", r.model, r.usage, -costOf(r.model, r.usage));
   return r.quick ? { model: QUICK_MODEL, effort: QUICK_EFFORT, quick: true, why: r.why, by: "router" } : designRoute(r.why, "router");
 }
+
+/** Steps a small change gets at low effort without review before it is treated as ordinary design work. */
+const SMALL_STEPS = 4;
 
 /** A quick turn reached for something only the design model does. */
 class NeedsDesignModel extends Error {
@@ -1260,6 +1344,7 @@ async function runLoop(opts: LoopOptions = {}) {
       if (!hasMessage(blocks)) return;
       // a message added while Claude works is thought through like the start of a reply
       answered.clear();
+      if (route.small) route = { ...route, small: false };
       if (!route.quick) return;
       const why = "you added a message while it worked";
       route = designRoute(why, "rule");
@@ -1267,6 +1352,8 @@ async function runLoop(opts: LoopOptions = {}) {
     };
     for (let step = 0; step < settings.maxSteps; step++) {
       if (stale()) return;
+      // a small change that is still going after a few steps was not small: back to the usual effort and review
+      if (route.small && step >= SMALL_STEPS) route = { ...route, small: false };
       // what the user sent since the last request was built (while the model was chosen, or a review ran) goes with this one
       const lastMsg = history[history.length - 1];
       if (lastMsg?.role === "user" && typeof lastMsg.content !== "string") {
@@ -1307,7 +1394,7 @@ async function runLoop(opts: LoopOptions = {}) {
 
       // the first step of a reply thinks at the effort set in Settings, later ones at medium: set by a mark inside
       // the conversation, so the cache stays valid; a mark before this turn's own message moves where the turn starts
-      const stepAt = stepEffort(r.effort, !answered.has(r.model), useSettings.getState().fasterFollowUps);
+      const stepAt = r.small ? "low" : stepEffort(r.effort, !answered.has(r.model), useSettings.getState().fasterFollowUps);
       if (marksOn(unsupported(r.model)) && markEffort(history, stepAt, r.effort) && historyStart > history.length - 2) historyStart++;
 
       let sentReq: { final: Awaited<ReturnType<typeof streamOnce>>["final"]; params: Record<string, unknown> };
@@ -1435,7 +1522,7 @@ async function runLoop(opts: LoopOptions = {}) {
           continue;
         }
       }
-      if (final.stop_reason === "end_turn" && edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale))) continue;
+      if (final.stop_reason === "end_turn" && edits && !route.small && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale))) continue;
       const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
       // rows for calls a fallback discarded never run
       const dropped = new Set([...live.toolRows.values()].filter((id) => !uses.some((u) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)));
@@ -1546,7 +1633,7 @@ async function runLoop(opts: LoopOptions = {}) {
       if (offered && uses.every((u) => u.name === "suggest_next_steps")) {
         // this is where the turn ends, so Claude's changes are reviewed here; the chips go if Claude has more to do,
         // as they do when the user changed the plan or sent a message meanwhile (any review waits for the end)
-        const more = steer.length > 0 || (edits && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale)));
+        const more = steer.length > 0 || (edits && !route.small && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale)));
         if (!more) break;
         const chips = offered;
         set((st) => ({ items: st.items.filter((i) => i.id !== chips) }));

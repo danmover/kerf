@@ -14,6 +14,8 @@ export interface SpotRef {
   point?: Vec3;
   /** outward face normal there, in assembly coordinates */
   normal?: Vec3;
+  /** the same normal in the part's own frame */
+  localNormal?: Vec3;
 }
 
 export interface Spot extends SpotRef {
