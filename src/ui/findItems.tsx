@@ -265,7 +265,7 @@ export function findItems(ctx: FindContext): FindItem[] {
 
   // ── starting points ──
   for (const t of TEMPLATES)
-    push({ id: `new:${t.id}`, group: "New design", title: t.id === "blank" ? "New blank design" : `New: ${t.name}`, detail: t.tagline, keywords: `new create start template example ${t.stats}`, icon: <Icon.Plus size={14} />, run: () => void createProject(t.id).then((p) => openProject(p.id)) });
+    push({ id: `new:${t.id}`, group: "New design", title: t.id === "blank" ? "New blank design" : `New: ${t.name}`, detail: t.tagline, keywords: `new create start template example ${t.stats} ${(t.shows ?? []).join(" ")}`, icon: <Icon.Plus size={14} />, run: () => void createProject(t.id).then((p) => openProject(p.id)) });
 
   // ── settings and help ──
   for (const x of SETTINGS_FIND) push({ id: `set:${x.tab}`, group: "Settings", title: x.title, detail: x.detail, keywords: `settings preferences options ${x.keywords}`, icon: <Icon.Settings size={14} />, run: () => openSettings(x.tab) });
