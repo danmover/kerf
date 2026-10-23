@@ -371,7 +371,7 @@ ${docs(FEATURE_FNS)}
 
 ### Streamlined tubes (bike frames, forks, seatposts, aero bars, fairing struts)
 ${docs(AERO_FNS)}
-Build a bike frame from aero_tube()s unioned into one part: head tube on the steering axis, down tube, seat tube, top tube and the stays, each with its role:. A tube that runs with the wind (a top tube, chainstays, a stem) has no side to streamline: give it wind: Z so its section stands up. Keep carbon tubes solid (wall: makes booleans slow) and give the part its real weight with mass: (a 56 cm aero frame is about 1000 g, a fork about 400 g). The UCI analysis reads each tube's section from the aero_tube itself.
+Build a bike frame as one part, like a one-piece carbon monocoque: each tube an aero_path() whose section changes along it (deep and wide where it meets the next tube, slim between), with role: on each, and the tubes overlapping well inside each other so the joints blend. on: "nose" lays a straight leading edge (head and seat tubes), on: "tail" a straight trailing edge (a flat-topped top tube with wind: -Z). A tube that runs with the wind (a top tube, chainstays, a stem) has no side to streamline: give it wind: Z or -Z so its section stands up. Keep carbon tubes solid (wall: makes booleans slow) and give the part its real weight with mass: (a 56 cm aero frame is about 1000 g, a fork about 400 g). Give it process: mfg.carbon_layup(pull: Y, slides: [...], cores: true, wall: 1.1): the mould splits on the centre plane, cores slide out between the stays and fork legs, mandrels pull out of the head and seat tubes. Make the bearing seats, thru-axle dropouts, hanger, flat mounts and seatpost clamp real features, and put the ply book on the frame's drawing with note(). The UCI analysis reads each tube's section from the aero_tube or aero_path itself.
 
 ### Sheet metal and moulds
 ${docs({ ...SHEET_FNS, ...MOULD_FNS })}
@@ -509,7 +509,7 @@ analysis "UCI road rules" {
   rim_depth: 50mm                   // optional: the 65 mm mass-start limit
   // forward: X (the way the bike rides, level; default X), parts: [...] (what is weighed and measured; default everything)
 }
-It checks weight (6.8 kg or more, by mass: where given), length and width, bottom bracket height and its distance to each axle, saddle setback (nose 50 mm or more behind the crank axle) and length, bar width (400 mm or more), lever gap (280 mm), flare (65 mm), wheel size, rim depth, every aero_tube's section (main tubes 25 to 80 mm, stays, blades, bars and posts 10 to 80 mm) and the top gear against the proposed 54 × 11 limit (on hold). Run it with run_analysis.
+It checks weight (6.8 kg or more, by mass: where given), length and width, bottom bracket height and its distance to each axle, saddle setback (nose 50 mm or more behind the crank axle) and length, bar width (400 mm or more), lever gap (280 mm), flare (65 mm), wheel size, rim depth, every aero_tube's and aero_path's section (10 to 80 mm deep for every frame, fork, bar and post element, up to 160 mm for role: "head"; an aero_path's first and last points sit in the free joints between tubes and are not measured) and the top gear against the proposed 54 × 11 limit (on hold). Run it with run_analysis.
 Natural frequencies (vibration) use the same block with modes:, excite: or ringing:. Without load: or gravity it only finds frequencies (at "draft" resolution by default):
 analysis "Frame shake" {
   parts: [frame, motor_mount]

@@ -16,6 +16,7 @@ export type ProcessId =
   | "die_cast"
   | "sand_cast"
   | "investment_cast"
+  | "carbon_layup"
   | "sheet_metal"
   | "laser_cut";
 
@@ -76,6 +77,8 @@ export interface Rules {
   envelope?: { size: V3; frame: V3 | null; what: string };
   /** turned parts: every surface revolves about this axis */
   revolve?: { axis: V3; maxSlender: number; maxBoreRatio: number; maxD: number; maxLength: number; liveTools?: boolean };
+  /** moulded composites: the laminate laid over the part's outer surface, mm, and its cured density, g/cm³ */
+  layup?: { wall: number; density: number };
   /** sheet metal: constant thickness t (null: measure), minimum inside bend radius */
   sheet?: { t: number | null; bendR: number | null; bendFactor: number; holeEdge: number; brake?: number; maxT?: number };
   /** profile cutting: a flat plate cut through along normal (null: find it) */

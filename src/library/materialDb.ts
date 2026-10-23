@@ -1162,7 +1162,7 @@ export const MATERIAL_DB: MaterialRecord[] = [
     wear: "fair",
     electrical: "conductor",
     anodic: 0.1,
-    processes: ["cnc_mill", "laser_cut"],
+    processes: ["carbon_layup", "cnc_mill", "laser_cut"],
     processNotes: { laser_cut: "Cut carbon fiber plate by waterjet or CNC routing; a laser chars the resin and gives off toxic fumes" },
     cost: { sheet: 150 },
   },
@@ -1417,6 +1417,8 @@ export const COST_FORM: Record<ProcessId, CostForm> = {
   die_cast: "ingot",
   sand_cast: "ingot",
   investment_cast: "ingot",
+  // prepreg comes off the roll
+  carbon_layup: "sheet",
   sheet_metal: "sheet",
   laser_cut: "sheet",
 };

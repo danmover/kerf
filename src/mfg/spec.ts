@@ -217,6 +217,7 @@ const TECHNOLOGIES: [ProcessId, string[]][] = [
       "rtv mold",
     ],
   ],
+  ["carbon_layup", ["carbon layup", "carbon fibre layup", "carbon fiber layup", "carbon lay-up", "prepreg", "bladder moulded", "bladder molded", "carbon monocoque", "moulded carbon", "molded carbon", "cfrp moulded", "cfrp molded"]],
   ["investment_cast", ["investment cast", "investment casting", "investment casted", "lost wax", "precision cast", "precision casting"]],
   ["sand_cast", ["sand cast", "sand casting", "sand casted", "sandcast", "green sand", "no bake", "nobake", "lost foam"]],
   ["sla", ["sla", "msla", "dlp", "lcd resin", "resin", "stereolithography", "polyjet"]],

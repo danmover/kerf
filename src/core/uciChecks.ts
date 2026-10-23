@@ -30,7 +30,8 @@ export const UCI_ROAD = {
   flare: 65,
   wheel: [550, 700],
   rimDepth: 65,
-  tube: { max: 80, min: { main: 25, stay: 10, bar: 10, post: 10 } as Record<TubeRole, number> },
+  /** every frame, fork, bar and post element 10 to 80 mm; the head tube zone up to 160 mm deep; the joints between tubes are free */
+  tube: { max: { main: 80, head: 160, stay: 80, bar: 80, post: 80 } as Record<TubeRole, number>, min: 10 },
   /** the proposed top-gear rollout per crank turn (about 54 × 11), on hold for 2026 */
   rollout: 10460,
 } as const;
@@ -318,26 +319,28 @@ function checkBike(model: Model, a: UciSpec, mesh: MeshLookup | undefined, massO
     const tubes: { part: EvalPart; t: AeroTube }[] = [];
     const parts = a.parts ? model.parts.filter((p) => a.parts!.includes(p.name)) : model.parts;
     for (const p of parts) for (const t of p.tubes ?? []) tubes.push({ part: p, t });
-    if (!tubes.length) push("tubes", "info", "tube sections not checked", `Build the frame, fork, seatpost and bars with aero_tube(..., role:) and the check reads each tube's section: main tubes ${UCI_ROAD.tube.min.main} to ${UCI_ROAD.tube.max} mm, stays, fork blades, bars and posts ${UCI_ROAD.tube.min.stay} to ${UCI_ROAD.tube.max} mm (Art. 1.3.020).`, [], undefined, { basis: "needs analysis" });
+    const T = UCI_ROAD.tube;
+    const rule = `Art. 1.3.020 holds every frame, fork, bar and seatpost element to ${T.max.main} mm deep and ${T.min} mm thick, and the head tube zone to ${T.max.head} mm; the joints between tubes are free`;
+    if (!tubes.length) push("tubes", "info", "tube sections not checked", `Build the frame, fork, seatpost and bars with aero_tube() or aero_path() and role: and the check reads each tube's section. ${rule}.`, [], undefined, { basis: "needs analysis" });
     else {
       const bad: string[] = [];
       const badParts = new Set<string>();
       for (const { part, t } of tubes) {
-        const min = UCI_ROAD.tube.min[t.role];
+        const max = T.max[t.role];
         const c = Math.max(t.chord, t.chord2);
         const th = Math.min(t.thickness, t.thickness2);
-        const where = `${part.name}'s ${t.role} tube from ${pt(t.from)}`;
-        if (c > UCI_ROAD.tube.max + 1e-6) bad.push(`${where} is ${N(c)} mm deep (at most ${UCI_ROAD.tube.max})`);
-        if (th < min - 1e-6) bad.push(`${where} is ${N(th, 1)} mm wide (at least ${min})`);
-        if (c > UCI_ROAD.tube.max + 1e-6 || th < min - 1e-6) badParts.add(part.name);
+        const where = `${part.name}'s ${t.role === "head" ? "head" : t.role} tube from ${pt(t.from)}`;
+        if (c > max + 1e-6) bad.push(`${where} is ${N(c)} mm deep (at most ${max})`);
+        if (th < T.min - 1e-6) bad.push(`${where} is ${N(th, 1)} mm thick (at least ${T.min})`);
+        if (c > max + 1e-6 || th < T.min - 1e-6) badParts.add(part.name);
       }
       push(
         "tubes",
         bad.length ? "fail" : "pass",
         bad.length ? "tube sections" : `${tubes.length} tube sections`,
-        bad.length ? `${bad.join("; ")}. Art. 1.3.020 holds frame tubes to ${UCI_ROAD.tube.min.main} to ${UCI_ROAD.tube.max} mm and stays, fork blades, bars and posts to ${UCI_ROAD.tube.min.stay} to ${UCI_ROAD.tube.max} mm.` : `Every aero tube fits the UCI's sections: main tubes ${UCI_ROAD.tube.min.main} to ${UCI_ROAD.tube.max} mm, the rest ${UCI_ROAD.tube.min.stay} to ${UCI_ROAD.tube.max} mm (Art. 1.3.020; the old 3:1 shape rule was dropped in 2019).`,
+        bad.length ? `${bad.join("; ")}. ${rule}.` : `Every aero tube fits the UCI's sections. ${rule} (the old 3:1 shape rule is gone).`,
         bad.length ? [...badParts] : [...new Set(tubes.map((x) => x.part.name))],
-        "Bring each tube's chord (front to back) to 80 mm or less and its width to the minimum or more; a shorter Kammtail (tail: 0.6 to 0.7) keeps the airflow of a deeper tube in less depth.",
+        `Bring each tube's chord (front to back) to ${T.max.main} mm or less (${T.max.head} for the head tube) and its thickness to ${T.min} mm or more; a shorter Kammtail (tail: 0.6 to 0.7) keeps the airflow of a deeper tube in less depth. An aero_path's first and last points sit in the joints and are not held to the limits.`,
         { basis: "parameters" },
       );
     }

@@ -237,6 +237,23 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "max_pour", kind: "number", def: 50, doc: "most metal poured into one shell, kg", machine: true },
     ],
   },
+  carbon_layup: {
+    id: "carbon_layup",
+    label: "Carbon fibre layup (moulded composite)",
+    short: "Carbon layup",
+    family: "formative",
+    summary: "Prepreg carbon plies laid up over an inflatable bladder or a removable core, closed in a heated steel mould and cured under pressure. Hollow, one-piece, very light and stiff.",
+    tolerance: 0.3,
+    output: "STEP of the outer surface with the parting line, a ply book (plies, directions and zones), and the metal parts bonded in",
+    bestFor: "hollow, light, stiff parts in tens to thousands: bike frames, forks, bars, rims, drone arms",
+    settings: [
+      { key: "pull", kind: "dir", def: Z, doc: "direction the mould halves open (the parting line runs square to it; a bike frame splits on its centre plane, pull: Y)" },
+      { key: "slides", kind: "dirs", def: [], doc: "extra mould pieces and the way each pulls out, for faces neither half reaches (the core between a frame's rear stays, between fork legs)" },
+      { key: "cores", kind: "bool", def: false, doc: "split cores that come apart inside the part, for small pockets no mould half or slide reaches (each adds tool cost; false makes them failures)" },
+      { key: "wall", kind: "number", def: 1.2, doc: "nominal laminate thickness, mm (about ten 0.12 mm plies); the factory builds it up at joints, the bottom bracket and the head tube" },
+      { key: "mould", kind: "size", def: [1500, 1000, 400], doc: "largest mould the shop's press or oven takes (x, y, z), mm", machine: true },
+    ],
+  },
   sheet_metal: {
     id: "sheet_metal",
     label: "Sheet metal (cut and bent)",
@@ -548,6 +565,17 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
         envelope: { size: size(s.max_size, [500, 400, 300]), frame: null, what: "foundry's largest pattern" },
         voids: { severity: "fail", why: "a sealed cavity can be neither formed in the wax pattern nor cleaned of ceramic; open it to the outside" },
         pour: { maxKg: num(s.max_pour, 50), density: density(material, 7.9), yield: 0.6, what: "foundry's largest pour" },
+      };
+    }
+    case "carbon_layup": {
+      const pull = dir(s.pull, Z);
+      return {
+        ...base,
+        // the part is the laminate's outer surface: walls are the plies, not the solid
+        reach: { dirs: [pull, neg(pull), ...dirs(s.slides, [])], severity: s.cores === true ? "info" : "fail", what: "mould", relief: s.cores === true ? "split cores" : "mould slides or split cores" },
+        layup: { wall: num(s.wall, 1.2), density: materialRecord(material)?.density ?? 1.55 },
+        holes: { minD: 3, why: "holes in carbon are drilled after curing, and bolted ones need a bonded metal insert" },
+        envelope: { size: size(s.mould, [1500, 1000, 400]), frame: null, what: "largest mould the shop presses" },
       };
     }
     case "sheet_metal": {

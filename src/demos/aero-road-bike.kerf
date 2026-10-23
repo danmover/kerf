@@ -1,16 +1,16 @@
 design "Aero Road Bike"
-note "A carbon aero race bike in the style of a Giant Propel or Cervélo S5: Kammtail tubes, dropped seat stays, an aero seatpost and a one-piece bar and stem, on 50 mm deep wheels with 28 mm tyres. A 52 × 11 top gear drives the rear wheel through a real 11-speed chain that wraps the chainring, the cog and both jockey wheels of the rear derailleur; press play to watch the links seat in the teeth."
-note "The frame, fork and other carbon parts are modelled solid, so each carries its real weight with mass:. The UCI analysis checks the bike against the 2026 road racing rules: weight, size, bottom bracket position, saddle setback, bar width, lever spacing, flare, rims and every tube's section."
+note "A one-piece carbon aero race frame in the language of the Giant Propel and Cervélo S5: a deep head tube the fork crown tucks into, a down tube 78 mm deep growing out of it, a straight-edged seat tube cut back round the rear tyre, dropped seat stays, a moulded bottom bracket node and a flat-topped top tube, every section changing smoothly along its tube. Size M (56): stack 545, reach 388, 73° head and 73.5° seat angles, 405 mm chainstays."
+note "Standards: T47 threaded bottom bracket in an 86.5 mm shell, 1-1/2 to 1-1/8 inch tapered steerer on 6808 and 6806 headset bearings, 12 x 142 and 12 x 100 thru-axles, flat-mount disc brakes, a replaceable derailleur hanger, two bottle cage positions and an internal wedge seatpost clamp. Clearance for 34 mm tyres. The frame, fork and other carbon parts are modelled solid, so each carries its real weight with mass:. The UCI analysis checks the bike against the road racing rules: weight, size, bottom bracket position, saddle setback, bar width, lever spacing, flare, rims and every tube's section."
 
 brief {
-  purpose: "A UCI-legal aero road race bike for mass-start racing"
+  purpose: "A UCI-legal aero road race bike for mass-start racing, its frame moulded in one piece of carbon"
   setting: "Raced on open roads at 40 to 50 km/h, balanced by its rider"
-  priorities: ["low drag", "UCI legal", "stiff and light"]
+  priorities: ["low drag", "UCI legal", "stiff and light", "made in one mould"]
 }
 
 // ── Fit ────────────────────────────────────────────────
-param stack    = 565mm "Stack: bottom bracket to the top of the head tube, straight up"
-param reach    = 395mm "Reach: bottom bracket to the top of the head tube, straight forward"
+param stack    = 545mm "Stack: bottom bracket to the top of the head tube, straight up"
+param reach    = 388mm "Reach: bottom bracket to the top of the head tube, straight forward"
 param saddle_h = 740mm "Saddle height, from the bottom bracket along the seat tube to the top of the saddle"
 param stem     = 110mm "Stem length"
 param bar_w    = 410mm "Handlebar width outside to outside at the drops (UCI: 400 mm or more)"
@@ -18,12 +18,12 @@ param bar_w    = 410mm "Handlebar width outside to outside at the drops (UCI: 40
 // ── Frame geometry ─────────────────────────────────────
 param ht_angle = 73     "Head tube angle (degrees)"
 param st_angle = 73.5   "Seat tube angle (degrees)"
-param ht_len   = 150mm  "Head tube length"
-param st_len   = 500mm  "Seat tube length, bottom bracket to the top of the frame"
+param ht_len   = 145mm  "Head tube length"
+param st_len   = 482mm  "Seat tube length, bottom bracket to the top of the frame"
 param cs       = 405mm  "Chainstay length"
 param bb_drop  = 70mm   "Bottom bracket drop below the axles"
 param rake     = 45mm   "Fork rake"
-param tyre     = 28mm   "Tyre width"
+param tyre     = 28mm   "Tyre width (the frame and fork clear 34 mm)"
 param rim_deep = 50mm   "Rim depth (UCI mass start: 65 mm at most)"
 
 // ── Drivetrain ─────────────────────────────────────────
@@ -35,13 +35,31 @@ let R      = 311 + tyre                                    // 622 mm rim bead se
 let bb     = (0, 0, R - bb_drop)
 let rear   = (-sqrt(cs * cs - bb_drop * bb_drop), 0, R)
 let a      = (cos(ht_angle), 0, -sin(ht_angle))            // down the steering axis
+let hf     = (sin(ht_angle), 0, cos(ht_angle))             // square to it, forward
 let sdir   = (-cos(st_angle), 0, sin(st_angle))            // up the seat tube
+let sf     = (sin(st_angle), 0, cos(st_angle))             // square to it, forward
 let ht_top = (reach, 0, bb.z + stack)
 let ht_bot = ht_top + a * ht_len
 let t_ax   = (ht_top.z - R) / sin(ht_angle)
 let front  = (reach + t_ax * cos(ht_angle) + rake / sin(ht_angle), 0, R)
 let st_top = bb + sdir * st_len
 let gear   = z_ring / z_cog                                // wheel turns per crank turn in top gear
+
+// frame lines: the head tube's leading edge runs 40 mm ahead of the steering axis, the seat tube's 28 mm
+// ahead of its axis; the down tube grows out of the head tube's tail; the seat stays meet the seat tube 350 up
+let ht_nose = 40
+let st_nose = 28
+let sn      = bb + sf * st_nose
+let dt_top  = ht_top + a * 92 - hf * 34
+let dt_dir  = normalize(bb - dt_top)
+let dt_len  = hypot(bb.x - dt_top.x, bb.z - dt_top.z)
+let dt_up   = normalize(cross(Y, dt_dir))                  // square to the down tube, toward its flat top
+let tt_a    = ht_top + a * 3 - hf * 8                      // the top tube's flat top, from the head tube
+let tt_b    = st_top + (14, 0, 1)                          // to the seat tube
+let tt_n    = normalize(tt_b - tt_a)
+let ss_top  = bb + sdir * 350
+let ss_d    = rear + (8, 0, 14)
+let ss_v    = ss_top - ss_d
 
 // chainline: the big ring and the 11 tooth cog, and where the cassette sits on the freehub
 let y_ring = -47.3
@@ -55,66 +73,138 @@ let j_up   = rear + ju
 let j_lo   = rear + jl
 // the derailleur cage plates' outline, (x, z) from the rear axle
 let cage   = [(ju.x - 24, ju.z), (ju.x - 16, ju.z + 20), (ju.x + 16, ju.z + 22), (ju.x + 24, ju.z), (jl.x + 24, jl.z), (jl.x + 16, jl.z - 22), (jl.x - 14, jl.z - 24), (jl.x - 24, jl.z)]
+// where the derailleur hangs from its hanger, (x, z) from the rear axle
+let rd_at  = (-22, 0, -27)
 
 // sections (chord along the wind × width), in mm
-let post_c = 50
-let post_t = 22
+let post_c = 53
+let post_t = 27
 
-// ── Frame ──────────────────────────────────────────────
+// ── Frame: one moulded carbon piece ────────────────────
 part frame {
   color: #1d2733
   material: "Carbon fiber"
+  // moulded in one piece: two halves split on the centre plane; between the stays, cores slide out backwards along the chainstays and down along the seat stays;
+  // mandrels pull down out of the head tube and up out of the seat tube
+  process: mfg.carbon_layup(pull: Y, slides: [normalize(rear - bb), normalize(ss_d - ss_top), a, sdir], cores: true, wall: 1.1)
   mass: 1050g
   group: "Frame"
   held: "stands on the wheels' thru-axles"
-  // head tube on the steering axis, down tube and seat tube: Kammtail sections facing the wind
-  body aero_tube(ht_bot, ht_top, 62, 46, tail: 0.75, role: "main")
-  add aero_tube(ht_top + a * 120, bb, 64, 40, tail: 0.72, role: "main")
-  add aero_tube(bb, st_top, 55, 32, tail: 0.65, role: "main")
-  // the top tube runs with the wind, so its section stands up (wind: Z)
-  add aero_tube(ht_top + a * 20, bb + sdir * (st_len - 22), 42, 28, tail: 0.85, wind: Z, role: "main")
-  // dropped seat stays and chainstays
+  // bottom bracket node: the down tube's underside sweeps round below the shell into the chainstays, narrow enough to clear the chainrings
+  body extrude(polygon([(46, 4), (24, -31), (0, -39), (-36, -33), (-60, -16), (-60, 18), (-28, 40), (20, 38), (42, 22)], r: 16), h: 72, at: bb + (0, 36, 0), dir: -Y)
+  fillet(6, edges: facing(Y))
+  fillet(6, edges: facing(-Y))
+  // the T47 shell's faces, 86.5 apart
+  add revolve(rounded(rect(31, 86.5, at: (15.5, 0)), 3), at: bb, axis: Y)
+  // head tube: a deep Kammtail, deepest at the bottom where the down tube grows out of its tail
+  add aero_path([ht_top + hf * ht_nose, ht_top + a * 70 + hf * ht_nose, ht_bot + hf * ht_nose], chord: [100, 110, 120], thickness: [54, 57, 64], tail: 0.65, on: "nose", role: "head")
+  // down tube: 78 deep along its length, flaring into the bottom bracket node
+  add aero_path([dt_top, dt_top + dt_dir * 120, dt_top + dt_dir * (dt_len * 0.55), bb - dt_dir * 90, bb], chord: [100, 79, 78, 76, 80], thickness: [74, 50, 50, 58, 64], tail: [0.62, 0.7, 0.7, 0.66, 0.62])
+  // top tube: nose down so its top is flat, traced along that flat top in a straight line from the head tube to the seat tube
+  add aero_path([tt_a, tt_a + (tt_b - tt_a) * 0.12, tt_a + (tt_b - tt_a) * 0.7, tt_b, tt_b + tt_n * 34], chord: [60, 46, 42, 46, 46], thickness: [44, 32, 28, 31, 31], tail: 0.6, wind: -Z, on: "tail")
+  // seat tube: straight leading edge, its tail cut back to follow the rear tyre
+  add aero_path([sn - sf * 4, sn + sdir * 70, sn + sdir * 140, sn + sdir * 200, sn + sdir * 270, sn + sdir * 360, sn + sdir * st_len], chord: [86, 60, 46, 43, 50, 62, 58], thickness: [60, 48, 38, 34, 32, 32, 32], tail: 0.62, on: "nose")
   for s in [1, -1] {
-    add aero_tube(rear + (8, 78 * s, 12), bb + sdir * 345 + (0, 20 * s, 0), 28, 14, role: "stay")
-    add aero_tube(bb + (-15, 17 * s, 0), rear + (8, 78 * s, -4), 32, 14, tail: 0.85, wind: Z, role: "stay")
-    add box(30, 8, 30, at: rear + (0, 75 * s, 0), center: true)
+    // dropped seat stays: straight from the side, curving in round the tyre to the seat tube's flanks
+    add aero_path([ss_d + (0, 76 * s, 0), ss_d + ss_v * 0.35 + (0, 60 * s, 0), ss_d + ss_v * 0.7 + (0, 40 * s, 0), ss_d + ss_v * 0.88 + (0, 28 * s, 0), ss_top + (0, 12 * s, 0)], chord: [30, 26, 26, 28, 44], thickness: [10, 12, 12, 12, 18], tail: 0.7, role: "stay")
+    // chainstays: tall and narrow past the chainrings, out to the dropouts
+    add aero_path([bb + (-12, 24 * s, 4), bb + (-110, 29 * s, 22), rear + (130, 54 * s, -14), rear + (10, 76 * s, -6)], chord: [56, 38, 30, 26], thickness: [18, 16, 14, 10], tail: 0.72, wind: Z, role: "stay")
+    // dropouts: flat pads round the thru-axle, 142 mm apart inside
+    add rrect(36, 44, 12, depth: 10, at: rear + (3, 76 * s, 3), dir: (0, s, 0), center: true)
   }
-  add cylinder(d: 46, h: 86, at: bb - (0, 43, 0), dir: Y)
-  // square off the joints where the fork crown and the stem meet the head tube
-  cut aero_tube(ht_bot, ht_bot + a * 30, 66, 50, tail: 0.75)
-  cut cylinder(d: 90, h: 50, at: ht_top, dir: -a)
-  // headset bearing seats, the seatpost's socket and the BB86 bearing seats
-  cut cylinder(d: 42, h: ht_len + 20, at: ht_top - a * 10, dir: a)
-  cut aero_tube(st_top - sdir * 90, st_top + sdir * 2, post_c + 0.2, post_t + 0.2, tail: 0.65)
-  cut cylinder(d: 41, h: 90, at: bb - (0, 45, 0), dir: Y)
-  // the seat tube wraps the rear tyre, 5 mm clear (the cut-out aero frames hide the wheel in)
-  cut cylinder(d: 2 * R + 10, h: 32, at: rear - (0, 16, 0), dir: Y)
+  // flat mount for the rear caliper on the left chainstay
+  add box(50, 22, 8, at: rear + (62, 66, 2), center: true)
+  // the seat cluster's top carries on the top tube's flat top, so the seatpost leaves a sloping cap
+  cut extrude(polygon([(tt_b.x - tt_n.x * 60, tt_b.z - tt_n.z * 60 + 0.8), (tt_b.x + tt_n.x * 90, tt_b.z + tt_n.z * 90 + 0.8), (tt_b.x + tt_n.x * 90, tt_b.z + 100), (tt_b.x - tt_n.x * 60, tt_b.z + 100)]), h: 120, at: (0, 60, 0), dir: -Y)
+  // the stem's base sits square on the head tube's top
+  cut cylinder(d: 100, h: 60, at: ht_top, dir: -a)
+  // the fork crown turns in here
+  cut cylinder(d: 98, h: 80, at: ht_bot, dir: a)
+  // tyre envelopes: 34 mm tyres, 5 mm clear all round
+  cut revolve(circle(d: 44, at: (328, 0)), at: rear, axis: Y)
+  cut revolve(circle(d: 44, at: (328, 0)), at: front, axis: Y)
+  // headset: 6806 and 6808 bearing seats, the bore between them clears the tapered steerer and the brake hoses
+  cut cylinder(d: 42, h: 7.5, at: ht_top - a * 0.5, dir: a)
+  cut cylinder(d: 52, h: 7.5, at: ht_bot + a * 0.5, dir: -a)
+  cut cone(d1: 47, d2: 37, h: ht_len, at: ht_bot, dir: -a)
+  // the seatpost socket and the wedge clamp's pocket in front of it
+  cut aero_tube(st_top - sdir * 110 + sf * 1.5, st_top + sdir * 10 + sf * 1.5, post_c + 0.3, post_t + 0.3, tail: 0.65)
+  cut cylinder(d: 14, h: 46, at: st_top + sf * 33 + sdir * 6, dir: -sdir)
+  // T47 bottom bracket: 47 mm threaded shell (M47 x 1)
+  cut cylinder(d: 46, h: 90, at: bb - (0, 45, 0), dir: Y)
+  // 12 mm thru-axle holes; the axle threads into the hanger on the drive side
+  cut cylinder(d: 12.2, h: 180, at: rear - (0, 90, 0), dir: Y)
+  // the hanger's seat and its rotation stop on the outside of the drive-side dropout
+  cut cylinder(d: 5.2, h: 12, at: rear + (-7, -70, -12), dir: -Y)
+  cosmetic {
+    // the port under the bottom bracket for the hoses and the moulding bladder
+    cut rrect(40, 18, 8, depth: 30, at: bb + (6, 0, -46), dir: Z, center: false)
+    // bottle cage bosses: M5 rivnuts on the down tube's flat top and the seat tube's leading edge
+    for d in [190, 254] {
+      cut hole(d: 7, depth: 14, at: bb - dt_dir * d + dt_up * 47, dir: -dt_up)
+    }
+    for d in [170, 234] {
+      cut hole(d: 7, depth: 14, at: sn + sdir * d + sf * 2, dir: -sf)
+    }
+    // the rear brake hose leaves the chainstay beside the caliper
+    cut hole(d: 7, depth: 30, at: rear + (100, 52, 6), dir: (-0.6, 0, -0.8))
+  }
 }
+
+// the fork legs run straight from the crown to the dropouts, so the core between them slides out along them
+let leg_top = ht_bot + a * 22 + hf * 2
+let leg_bot = front + (2, 0, 14)
 
 part fork {
   color: #1d2733
   material: "Carbon fiber"
+  // two halves split on the centre plane and a core pulled down along the legs from between them
+  process: mfg.carbon_layup(pull: Y, slides: [normalize(leg_bot - leg_top)], cores: true, wall: 1.2)
   mass: 395g
   group: "Frame"
-  held: "headset bearings, preloaded by the stem's steerer clamp"
-  // the crown carries on the head tube's section, the blades reach the 100 mm dropouts
-  body aero_tube(ht_bot, ht_bot + a * 22, 62, 46, tail: 0.75, role: "main")
-  add cylinder(d: 34, h: ht_len + 62, at: ht_bot + a * 22, dir: -a)
+  held: "turns on the headset bearings; the stem's top cap preloads them"
+  // the crown carries on the head tube's nose, cut round so it can turn inside the frame
+  body aero_path([ht_bot + a * 1.5 + hf * ht_nose, ht_bot + a * 30 + hf * ht_nose], chord: [120, 123], thickness: [64, 64], tail: 0.65, on: "nose", role: "head")
+  intersect cylinder(d: 94, h: 40, at: ht_bot, dir: a)
+  // a broad crown bridge under it, its faces square to the steering axis like the head tube's
+  add aero_path([ht_bot + a * 24 + (0, -60, 0), ht_bot + a * 22, ht_bot + a * 24 + (0, 60, 0)], chord: [66, 80, 66], thickness: [28, 34, 28], tail: 0.62, wind: hf)
+  // legs set wide of the tyre, straight down to the 12 x 100 thru-axle dropouts
   for s in [1, -1] {
-    add aero_tube(ht_bot + a * 16 + (0, 28 * s, 0), front + (0, 62 * s, 10), 42, 18, role: "stay")
-    add box(26, 12, 26, at: front + (0, 56 * s, 0), center: true)
+    add aero_path([leg_top + (0, 56 * s, 0), leg_top + (leg_bot - leg_top) * 0.3 + (0, 56.3 * s, 0), leg_bot + (0, 57 * s, 0)], chord: [70, 52, 38], thickness: [30, 22, 16], tail: 0.66, role: "stay")
+    add rrect(30, 36, 10, depth: 10, at: front + (0, 55 * s, 2), dir: (0, s, 0), center: true)
   }
+  // flat mount for the front caliper behind the left leg
+  add box(24, 12, 40, at: front + (-44, 58, 50), center: true)
+  // tapered steerer: 1-1/2 inch at the crown race, 1-1/8 inch (on the top bearing's compression ring) at the top
+  add cylinder(d: 40, h: 9, at: ht_bot + a * 1.5, dir: -a)
+  add cone(d1: 40, d2: 30, h: ht_len - 14, at: ht_bot - a * 7.5, dir: -a)
+  add cylinder(d: 30, h: 49, at: ht_top + a * 7, dir: -a)
+  cut revolve(circle(d: 44, at: (328, 0)), at: front, axis: Y)
+  // nothing but the steerer above the crown race
+  cut tube(od: 240, id: 41, h: 30, at: ht_bot + a * 1.5, dir: -a)
+  cut cylinder(d: 12.2, h: 130, at: front - (0, 65, 0), dir: Y)
 }
+component headset_lower = lib.bearing("6808") { at: ht_bot, axis: -a, group: "Frame" }
+component headset_upper = lib.bearing("6806") { at: ht_top + a * 7, axis: -a, group: "Frame" }
 
 part seatpost {
   color: #1d2733
   material: "Carbon fiber"
   mass: 210g
   group: "Frame"
-  held: "wedge clamp in the top tube, one M5 bolt"
-  body aero_tube(st_top - sdir * 88, bb + sdir * (saddle_h - 57), post_c, post_t, tail: 0.65, role: "post")
+  held: "clamped by the wedge in front of it"
+  body aero_tube(st_top - sdir * 105 + sf * 1.5, bb + sdir * (saddle_h - 57) + sf * 1.5, post_c, post_t, tail: 0.65, role: "post")
   // the head the saddle rails clamp to
   add box(50, 34, 14, at: bb + sdir * (saddle_h - 45) - (0, 0, 7), center: true)
+}
+part seat_wedge {
+  color: #2a2e35
+  material: "Aluminum 7075"
+  mass: 18g
+  group: "Frame"
+  held: "pulled up by its M5 bolt from the top tube, pressing the seatpost back"
+  body cylinder(d: 13.6, h: 30, at: st_top + sf * 33 - sdir * 6, dir: -sdir)
+  cut hole(M5, depth: 12, at: st_top + sf * 33 - sdir * 6, dir: -sdir)
 }
 
 part saddle {
@@ -127,7 +217,7 @@ part saddle {
   body prism([(125, -14), (125, 14), (60, 22), (0, 45), (-80, 68), (-120, 70), (-125, 50), (-125, -50), (-120, -70), (-80, -68), (0, -45), (60, -22)], h: 38, at: bb + sdir * (saddle_h - 45))
 }
 
-// one-piece bar and stem: an aero top section, round drops
+// one-piece bar and stem: its base carries on the head tube's shape, an aero top section, round drops
 let B    = ht_top - a * 30 + (stem, 0, 0)
 let drop_l = shift([(-5, 145, 0), (45, 160, -5), (85, 170, -25), (95, 180, -70), (70, 190, -118), (5, bar_w / 2 - 12, -128)], by: B)
 let drop_r = shift([(-5, -145, 0), (45, -160, -5), (85, -170, -25), (95, -180, -70), (70, -190, -118), (5, 12 - bar_w / 2, -128)], by: B)
@@ -137,13 +227,13 @@ part handlebar {
   mass: 430g
   group: "Cockpit"
   held: "two M5 bolts clamp the steerer"
-  body cylinder(d: 46, h: 40, at: ht_top, dir: -a)
-  // the stem: its section stands up, nose down, so it clears the head tube's top
-  add aero_tube(ht_top - a * 30, B, 38, 30, tail: 0.85, wind: -Z, role: "bar")
+  body aero_path([ht_top - a * 1 + hf * ht_nose, ht_top - a * 50 + hf * ht_nose], chord: [80, 78], thickness: [54, 52], tail: 0.65, on: "nose", role: "head")
+  // the stem: its section stands up, nose down, so its top is flat and level with the base
+  add aero_path([ht_top - a * 50 + hf * 20, B + (0, 0, 14)], chord: [34, 34], thickness: [30, 28], tail: 0.62, wind: -Z, on: "tail", role: "bar")
   add aero_tube(B + (0, -150, 0), B + (0, 150, 0), 50, 14, role: "bar")
   add pipe(spline_path(drop_l), d: 23.8)
   add pipe(spline_path(drop_r), d: 23.8)
-  cut cylinder(d: 34, h: 42, at: ht_top + a, dir: -a)
+  cut cylinder(d: 30, h: 52, at: ht_top - a * 0.5, dir: -a)
 }
 
 // brake and shift levers on the hoods, gripping the bar's bend
@@ -175,7 +265,7 @@ part crankset {
   spin: 1
   axis: Y
   axis_at: bb
-  held: "two BB86 press-fit bearings in the bottom bracket shell"
+  held: "two bearings in T47 cups threaded into the bottom bracket shell"
   body cylinder(d: 24, h: 140, at: bb - (0, 70, 0), dir: Y)
   // the spider the chainrings bolt to, between them, clear of the bottom bracket shell
   add revolve([(35, 0), (52, 0), (52, 5.46), (35, 5.46)], at: bb + (0, -46.28, 0), dir: Y)
@@ -202,15 +292,31 @@ component cog_19 = lib.sprocket(z: 19, chain: "bike_11s", width: 1.6, bore: 34.5
 component cog_24 = lib.sprocket(z: 24, chain: "bike_11s", width: 1.6, bore: 34.5) { at: rear + (0, y_cog + 8 * pitch - 0.8, 0), axis: Y, turns_with: cog, held: "splined onto the freehub", group: "Drivetrain" }
 component cog_30 = lib.sprocket(z: 30, chain: "bike_11s", width: 1.6, bore: 34.5) { at: rear + (0, y_cog + 10 * pitch - 0.8, 0), axis: Y, turns_with: cog, held: "splined onto the freehub", group: "Drivetrain" }
 
-// rear derailleur: a cage holding two 11 tooth jockey wheels in line with the cog
+// a replaceable derailleur hanger on the outside of the drive-side dropout; the thru-axle threads into it
+part hanger {
+  color: #8a9099
+  material: "Aluminum 7075"
+  mass: 22g
+  group: "Drivetrain"
+  held: "clamped to the dropout by the thru-axle, keyed by its pin"
+  body extrude(polygon([(-12, 12), (12, 12), (14, -4), (rd_at.x + 10, rd_at.z - 9), (rd_at.x - 9, rd_at.z - 9), (rd_at.x - 10, rd_at.z + 8)], r: 4), h: 5, at: rear + (0, -81, 0), dir: -Y)
+  add cylinder(d: 5, h: 6, at: rear + (-7, -81, -12), dir: Y)
+  cut cylinder(d: 12.2, h: 8, at: rear + (0, -80, 0), dir: -Y)
+  cut cylinder(d: 10, h: 8, at: rear + (rd_at.x, -80, rd_at.z), dir: -Y)
+}
+
+// rear derailleur: hung from the hanger, a cage holding two 11 tooth jockey wheels in line with the cog
 part rear_derailleur {
   color: #2a2e35
   material: "Aluminum 6061"
   mass: 235g
   group: "Drivetrain"
-  held: "bolted to the frame's hanger"
-  body box(20, 8, 26, at: rear + (-22, -75, -28), center: true)
-  add box(14, 13, 40, at: rear + (-22, -70.5, -52), center: true)
+  held: "M10 bolt through the hanger"
+  // the B-knuckle on its bolt, the parallelogram reaching in and down to the cage
+  body box(20, 12, 24, at: rear + (rd_at.x, -92, rd_at.z - 4), center: true)
+  add cylinder(d: 10, h: 7, at: rear + (rd_at.x, -86, rd_at.z), dir: Y)
+  add box(16, 26, 12, at: rear + (-14, -79, -46), center: true)
+  add box(12, 12, 24, at: rear + (-16, -92, -30), center: true)
   // the cage's two plates, either side of the chain
   for y in [y_cog - 6, y_cog + 8] {
     add prism(cage, h: 2, at: rear + (0, y, 0), dir: -Y)
@@ -246,7 +352,6 @@ part front_hub {
   mass: 240g
   group: "Wheels"
   turns_with: front_wheel
-  held: "12 mm thru-axle through the fork dropouts"
   body cylinder(d: 30, h: 98, at: front - (0, 49, 0), dir: Y)
   add cylinder(d: 52, h: 4, at: front + (0, 24, 0), dir: Y)
   add cylinder(d: 52, h: 4, at: front - (0, 28, 0), dir: Y)
@@ -259,6 +364,8 @@ part front_hub {
       add cylinder(d: 2.2, h: hypot(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z), at: p0, dir: p1 - p0)
     }
   }
+  // it turns on its bearings about the thru-axle
+  cut cylinder(d: 12.8, h: 110, at: front - (0, 55, 0), dir: Y)
 }
 part rear_wheel {
   color: #20242a
@@ -275,7 +382,6 @@ part rear_hub {
   mass: 370g
   group: "Wheels"
   turns_with: rear_wheel
-  held: "12 mm thru-axle through the frame's dropouts"
   body cylinder(d: 30, h: 140, at: rear - (0, 70, 0), dir: Y)
   add cylinder(d: 56, h: 4, at: rear + (0, 30, 0), dir: Y)
   add cylinder(d: 56, h: 4, at: rear - (0, 18, 0), dir: Y)
@@ -290,6 +396,7 @@ part rear_hub {
       add cylinder(d: 2.2, h: hypot(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z), at: p0, dir: p1 - p0)
     }
   }
+  cut cylinder(d: 12.8, h: 160, at: rear - (0, 80, 0), dir: Y)
 }
 part front_tyre {
   color: #17191c
@@ -308,6 +415,26 @@ part rear_tyre {
   turns_with: rear_wheel
   held: "tubeless beads seated on the rim at 5 bar"
   body revolve(circle(d: tyre, at: (311 + tyre / 2, 0)), at: rear, axis: Y)
+}
+
+// 12 mm thru-axles: through the left dropout, threaded into the fork's right dropout and the frame's hanger
+part front_axle {
+  color: #2b2f36
+  material: "Aluminum 7075"
+  mass: 45g
+  group: "Wheels"
+  held: "threaded into the fork's right dropout"
+  body cylinder(d: 12, h: 120, at: front - (0, 59, 0), dir: Y)
+  add cylinder(d: 22, h: 5, at: front + (0, 60, 0), dir: Y)
+}
+part rear_axle {
+  color: #2b2f36
+  material: "Aluminum 7075"
+  mass: 55g
+  group: "Wheels"
+  held: "threaded into the derailleur hanger"
+  body cylinder(d: 12, h: 167, at: rear - (0, 85, 0), dir: Y)
+  add cylinder(d: 22, h: 5, at: rear + (0, 81, 0), dir: Y)
 }
 
 // disc brakes: 160 mm rotors on the left of each hub
@@ -335,9 +462,9 @@ part front_caliper {
   mass: 125g
   group: "Brakes"
   held: "two M5 bolts through the fork's flat mount"
-  body box(36, 26, 42, at: front + (-75, 42, 46), center: true)
+  body box(36, 26, 42, at: front + (-74, 42, 52), center: true)
   // the slot the rotor runs in, closed at the top by the caliper's bridge
-  cut box(40, 2.8, 48, at: front + (-75, 41.9, 35), center: true)
+  cut box(40, 2.8, 48, at: front + (-74, 41.9, 41), center: true)
 }
 part rear_caliper {
   color: #2a2e35
@@ -345,8 +472,26 @@ part rear_caliper {
   mass: 125g
   group: "Brakes"
   held: "two M5 bolts through the chainstay's flat mount"
-  body box(44, 24, 30, at: rear + (62, 52, 20), center: true)
+  body box(44, 24, 30, at: rear + (62, 52, 21), center: true)
   cut box(42.5, 2.8, 34, at: rear + (59.25, 52.9, 20), center: true)
+}
+
+// ── Drawings: the machined bearing seats are called on them ──
+drawing frame_drawing {
+  title: "Frame"
+  of: frame
+  diameter(ht_top + a * 4, 42, view: "front", fit: "H7")
+  diameter(ht_bot - a * 4, 52, view: "front", fit: "H7")
+  note("One-piece carbon monocoque in a two-half steel tool split on the centre plane. Cores slide out backwards between the chainstays and down along the seat stays; mandrels pull down out of the head tube and up out of the seat tube; split cores at the dropouts and chainstay roots. Bladders go in and come out through the BB shell, head tube and seatpost socket.")
+  note("Starting ply book, T700 and T800 prepreg in 0.12 mm plies, to be proven by the factory's FEA and ISO 4210 tests: head tube 2.2 mm (18 plies), 3.0 at the bearing seats; down tube 1.4 at the head tube, 1.0 in the middle, 2.0 at the BB; BB area 3.0; top tube 1.0; seat tube 1.2, 2.0 round the seatpost clamp; chainstays 1.6 drive side, 1.4 non-drive; seat stays 1.0; dropouts solid 6 mm with a bonded 7075 thread insert on the drive side.")
+  note("Bearing seats, BB thread and dropout faces machined after moulding. Blend every tube junction R5 or more in the production surfaces. Outer ply 3K twill under clear coat.")
+}
+drawing fork_drawing {
+  title: "Fork"
+  of: fork
+  diameter(ht_top + a * 3, 30, view: "front", fit: "h6")
+  diameter(ht_bot - a * 4, 40, view: "front", fit: "h6")
+  note("One-piece carbon fork with its steerer, in a two-half steel tool split on the centre plane; a core slides out down along the legs. Starting ply book: steerer 2.5 mm, crown 3.0, legs 1.8 at the crown thinning to 1.2, dropouts solid 5 mm. Crown race seat and dropout faces machined after moulding.")
 }
 
 // ── Rules and requirements ─────────────────────────────
@@ -363,5 +508,6 @@ analysis "UCI road rules" {
 // Airflow: an "Aero at 45 km/h" analysis goes here once the airflow solver lands.
 
 require "Front tyre clears the down tube by 4 mm": min_distance(front_tyre, frame) >= 4
+require "Front tyre clears the fork by 4 mm": min_distance(front_tyre, fork) >= 4
 require "Rear tyre clears the frame by 4 mm": min_distance(rear_tyre, frame) >= 4
 require "Chainrings clear the chainstays": min_distance(ring_small, frame) >= 2.5

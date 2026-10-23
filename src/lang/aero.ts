@@ -6,12 +6,13 @@
 // turned into the wind, tapering if the far end is given its own size.
 
 import { def } from "./builtins";
+import type { Args } from "./args";
 import { ProfileV, ShapeV } from "./values";
-import { vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type ShapeRecipe, type V2, type V3 } from "../kernel/recipe";
+import { vadd, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type ShapeRecipe, type V2, type V3 } from "../kernel/recipe";
 
-/** What an aero_tube is for, which sets its UCI section limits: main frame tubes, stays and fork blades, bars and stems, seatposts. */
-export type TubeRole = "main" | "stay" | "bar" | "post";
-export const TUBE_ROLES: TubeRole[] = ["main", "stay", "bar", "post"];
+/** What an aero_tube is for, which sets its UCI section limits: main frame tubes, the head tube, stays and fork blades, bars and stems, seatposts. */
+export type TubeRole = "main" | "head" | "stay" | "bar" | "post";
+export const TUBE_ROLES: TubeRole[] = ["main", "head", "stay", "bar", "post"];
 
 /** An aero_tube as written, in the part's own coordinates, so checks can read its section without measuring. */
 export interface AeroTube {
@@ -105,6 +106,18 @@ export function aeroFrame(o: V3, along: V3, wind: V3): Frame | null {
   return { o, u: vnorm(c), n: t };
 }
 
+/** A number or a list of numbers, one per station (a single number is used at every station). */
+function perStation(a: Args, name: string, n: number, def?: number): number[] {
+  const v = a.value(name);
+  if (v === undefined) {
+    if (def === undefined) a.ctx.error(`aero_path(): needs ${name}: (a number, or a list with one value per point)`);
+    return Array(n).fill(def);
+  }
+  if (typeof v === "number") return Array(n).fill(v);
+  if (Array.isArray(v) && v.length === n && v.every((x) => typeof x === "number")) return v as number[];
+  return a.ctx.error(`aero_path(): ${name}: should be a number or a list of ${n} numbers, one per point`);
+}
+
 export const AERO_FNS = Object.fromEntries([
   def(
     "airfoil",
@@ -149,7 +162,7 @@ export const AERO_FNS = Object.fromEntries([
       const p0 = airfoilProfile(chord, thickness, tail);
       const p1 = airfoilProfile(chord2, thickness2, tail);
       const solid = (q0: Profile, q1: Profile, g0: Frame, g1: Frame, h: number): ShapeRecipe =>
-        chord === chord2 && thickness === thickness2 ? { t: "extrude", p: q0, h, f: g0, twist: 0, scale: 1 } : { t: "loft", secs: [{ p: q0, f: g0 }, { p: q1, f: g1 }], ruled: false };
+        chord === chord2 && thickness === thickness2 ? { t: "extrude", p: q0, h, f: g0, twist: 0, scale: 1 } : { t: "loft", secs: [{ p: q0, f: g0 }, { p: q1, f: g1 }], ruled: false, matched: true };
       const outer = solid(p0, p1, f0!, f1, len);
       if (!wall) return new TubeV(outer, tube);
       if (wall < 0 || 2 * wall >= Math.min(thickness, thickness2)) a.ctx.error(`aero_tube(): wall ${wall} leaves no hollow in a ${Math.min(thickness, thickness2)} mm wide tube`);
@@ -161,6 +174,45 @@ export const AERO_FNS = Object.fromEntries([
       const inner = solid(airfoilProfile(chord - 2 * wall, thickness - 2 * wall, tail), airfoilProfile(chord2 - 2 * wall, thickness2 - 2 * wall, tail), g0, g1, len + 1);
       return new TubeV({ t: "diff", a: outer, b: [inner] }, tube);
     },
-    `aero_tube(from, to, chord, thickness, tail: 0.72, chord2:, thickness2:, wind: X, wall: 0) — a streamlined (airfoil) tube from one point to another with its nose turned into the wind: bike frame tubes, fork blades, seatposts, aero bars, fairing struts. chord and thickness size the section (chord along the wind, after the Kammtail cut), chord2 and thickness2 taper it to the far end. wind: the way the design moves through the air. wall: makes it hollow (carbon tubes run about 1 to 1.5 mm), open at the ends so joined tubes open into each other. role: "main" (top, down, seat and head tubes), "stay" (seat stays, chainstays, fork blades), "bar" (handlebars, stems) or "post" (seatposts): the UCI check holds each to its section limits (main tubes 25 to 80 mm, stays, blades and bars 10 to 80 mm).`,
+    `aero_tube(from, to, chord, thickness, tail: 0.72, chord2:, thickness2:, wind: X, wall: 0) — a streamlined (airfoil) tube from one point to another with its nose turned into the wind: bike frame tubes, fork blades, seatposts, aero bars, fairing struts. chord and thickness size the section (chord along the wind, after the Kammtail cut), chord2 and thickness2 taper it to the far end. wind: the way the design moves through the air. wall: makes it hollow (carbon tubes run about 1 to 1.5 mm), open at the ends so joined tubes open into each other. role: "main" (top, down and seat tubes), "head" (the head tube and fork crown), "stay" (seat stays, chainstays, fork blades), "bar" (handlebars, stems) or "post" (seatposts): the UCI check holds every element to 10 to 80 mm deep, and the head tube to 160 mm.`,
+  ),
+  def(
+    "aero_path",
+    ["points", "chord", "thickness", "tail", "wind", "role", "on"],
+    (a) => {
+      const pts = a.points3("points");
+      const n = pts.length;
+      if (n < 2) a.ctx.error("aero_path(): needs at least 2 points");
+      if (n > 24) a.ctx.error("aero_path(): 24 points at most; a few well-placed stations give the same smooth skin");
+      for (let i = 1; i < n; i++) if (vlen(vsub(pts[i], pts[i - 1])) < 1) a.ctx.error(`aero_path(): points ${i} and ${i + 1} are in the same place`);
+      const chords = perStation(a, "chord", n);
+      const thick = perStation(a, "thickness", n);
+      const tails = perStation(a, "tail", n, 0.72);
+      for (let i = 0; i < n; i++) {
+        if (!(chords[i] > 0 && thick[i] > 0)) a.ctx.error(`aero_path(): station ${i + 1} needs a positive chord and thickness`);
+        if (thick[i] >= chords[i]) a.ctx.error(`aero_path(): at point ${i + 1} the thickness ${thick[i]} should be less than the chord ${chords[i]}`);
+        if (!(tails[i] >= 0.4 && tails[i] < 1)) a.ctx.error("aero_path(): tail: should be 0.4 to just under 1 at every point (the square-cut Kammtail; lofted tubes keep the cut so their sections match)");
+      }
+      const wind = vnorm(a.dir("wind", [1, 0, 0]));
+      const role = a.oneOf("role", TUBE_ROLES, "main");
+      // the points trace the widest part of the section, its leading edge or its trailing edge
+      const on = a.oneOf("on", ["middle", "nose", "tail"] as const, "middle");
+      // each station square to the path there (the direction between its neighbours), nose into the wind
+      const secs = pts.map((o, i) => {
+        const t = vsub(pts[Math.min(n - 1, i + 1)], pts[Math.max(0, i - 1)]);
+        const f = aeroFrame(o, t, wind);
+        if (!f) return a.ctx.error(`aero_path(): at point ${i + 1} the tube points along the wind, so it has no side to streamline; give it wind: Z (its section then stands up) or aim it across the wind`);
+        const nose = (0.3 * chords[i]) / tails[i];
+        const back = on === "nose" ? -nose : on === "tail" ? chords[i] - nose : 0;
+        return { p: airfoilProfile(chords[i], thick[i], tails[i]), f: back ? { ...f, o: vadd(o, vscale(f.u, back)) } : f };
+      });
+      // the end points sit in the joints with other tubes, which the UCI leaves free: the tube is measured between them
+      const mid = (v: number[]) => (n > 2 ? v.slice(1, -1) : v);
+      const c = Math.max(...mid(chords));
+      const th = Math.min(...mid(thick));
+      const tube: AeroTube = { from: pts[0], to: pts[n - 1], chord: c, thickness: th, chord2: c, thickness2: th, tail: Math.min(...tails), role };
+      return new TubeV({ t: "loft", secs, ruled: false, matched: true }, tube);
+    },
+    `aero_path(points: [p1, p2, ...], chord:, thickness:, tail: 0.72, wind: X, role: "main", on: "middle") — a streamlined tube along a smooth curve through the points, its section changing continuously from one point to the next: chord, thickness and tail take one number for the whole tube or a list with one value per point (a down tube 80 deep at the head tube easing to 55 at the bottom bracket: chord: [80, 70, 55]). Every section is square to the curve with its nose into the wind. on: "nose" makes the points trace the leading edge instead of the middle (a straight leading edge while the chord changes behind it: a seat tube whose tail is cut back to follow the tyre), "tail" the trailing edge. The way to build a moulded frame: run each tube through 3 to 5 points, start and end each one inside the tube or node it joins, and flare its end sections (bigger chord and thickness) so the joints blend; the first and last points sit in the joints, which the UCI leaves free, so the UCI check measures the stations between them. Keep end sections clearly inside or clearly across the surface they meet: nearly matching surfaces are slow to join.`,
   ),
 ]);

@@ -176,7 +176,7 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     case "sweep":
       return sweepProfile(r.p, r.path, r.rot, r.frenet);
     case "loft":
-      return loftProfiles(r.secs, r.ruled);
+      return loftProfiles(r.secs, r.ruled, r.matched);
     case "revolve2":
       return revolveProfile2(r.p, r.f, r.angle);
     case "thread": {
@@ -337,8 +337,21 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
   if (p.baseName) features.set(p.baseName, { name: p.baseName, kind: "body", tools: [shape] });
   let topo: Topo | null = null;
   const topoNow = () => (topo && topo.shape === shape ? topo : (topo?.dispose(), (topo = new Topo(shape, features))));
+  const batchable = (op: PartOp | undefined, kind: string): op is BoolOp => !!op && op.op === kind && "shape" in op && !op.cosmetic && (kind === "add" || !(detail && threadEnvelope(op.shape)));
+  let skip = 0;
   p.ops.forEach((op, i) => {
+    if (skip) return void skip--;
     if (op.cosmetic && !detail) return;
+    // a run of adds (or cuts) goes through the kernel in one boolean: much faster than one at a time on curved parts
+    if (op.op === "add" || op.op === "cut") {
+      let n = 1;
+      while (batchable(op, op.op) && batchable(p.ops[i + n], op.op)) n++;
+      if (n > 1) {
+        shape = applyBatch(shape, p.ops.slice(i, i + n) as BoolOp[], i, detail, features);
+        skip = n - 1;
+        return;
+      }
+    }
     const step = `step ${i + 2}`;
     try {
       shape = applyOp(shape, op, detail, features, topoNow);
@@ -363,6 +376,56 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
   });
   (topo as Topo | null)?.dispose();
   return { shape, warnings, features };
+}
+
+type BoolOp = PartOp & { op: "add" | "cut"; shape: ShapeRecipe; name?: string };
+
+/** Several adds or several cuts in one go. If the kernel balks, they are applied one at a time so the error names the step. */
+function applyBatch(shape: Shape3D, ops: BoolOp[], first: number, detail: boolean, features: Map<string, FeatureTools>): Shape3D {
+  const tools = ops.map((op, k) => {
+    try {
+      return buildShape(op.shape, detail);
+    } catch (e) {
+      if (isTrap(e) || e instanceof BuildError) throw e;
+      throw new BuildError(`The kernel could not apply ${opLabel(op)} (step ${first + k + 2}): ${errMsg(e)}.`);
+    }
+  });
+  ops.forEach((op, k) => {
+    if (!op.name) return;
+    const f = features.get(op.name);
+    if (f) f.tools.push(tools[k]);
+    else features.set(op.name, { name: op.name, kind: op.op, tools: [tools[k]] });
+  });
+  const oc = R.getOC();
+  const args = new oc.NCollection_List_TopoDS_Shape();
+  const list = new oc.NCollection_List_TopoDS_Shape();
+  const b = ops[0].op === "add" ? new oc.BRepAlgoAPI_Fuse() : new oc.BRepAlgoAPI_Cut();
+  try {
+    args.Append(shape.wrapped);
+    for (const t of tools) list.Append(t.wrapped);
+    b.SetArguments(args);
+    b.SetTools(list);
+    b.Build();
+    if (!b.HasErrors() && b.IsDone()) {
+      b.SimplifyResult(true, true, 0.001);
+      return R.cast(b.Shape()) as Shape3D;
+    }
+  } catch (e) {
+    if (isTrap(e)) throw e;
+  } finally {
+    args.delete();
+    list.delete();
+    b.delete();
+  }
+  ops.forEach((op, k) => {
+    try {
+      shape = op.op === "add" ? shape.fuse(tools[k]) : shape.cut(tools[k]);
+    } catch (e) {
+      if (isTrap(e)) throw e;
+      throw new BuildError(`The kernel could not apply ${opLabel(op)} (step ${first + k + 2}): ${errMsg(e)}.`);
+    }
+  });
+  return shape;
 }
 
 function opLabel(op: PartOp): string {

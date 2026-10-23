@@ -180,6 +180,7 @@ const PROCESS_LABEL: Record<ProcessId, string> = {
   die_cast: "die casting",
   sand_cast: "sand casting",
   investment_cast: "investment casting",
+  carbon_layup: "carbon fibre layup",
   sheet_metal: "sheet metal",
   laser_cut: "laser cutting",
 };

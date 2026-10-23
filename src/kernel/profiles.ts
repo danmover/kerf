@@ -233,14 +233,14 @@ export function sweepProfile(p: Profile, path: Path3, rot: number, frenet: boole
   return out;
 }
 
-export function loftProfiles(secs: { p: Profile; f: Frame }[], ruled: boolean): Shape3D {
+export function loftProfiles(secs: { p: Profile; f: Frame }[], ruled: boolean, matched = false): Shape3D {
   let wires = secs.map((s, i) => {
     const regions = profileRegions(s.p, s.f);
     if (regions.length !== 1 || regions[0].inner.length) throw new ProfileError(`loft(): section ${i + 1} must be a single outline without holes`);
     return regions[0].outer;
   });
-  if (!ruled) wires = matchedSections(wires, secs.map((s) => s.f)) ?? wires;
-  const solid = R.loft(wires, { ruled });
+  if (!ruled && !matched) wires = matchedSections(wires, secs.map((s) => s.f)) ?? wires;
+  const solid = matched && !ruled ? skin(wires) : R.loft(wires, { ruled });
   // lofts can come out inside out (negative volume), which breaks shell and booleans
   if (R.measureVolume(solid) < 0) return R.cast(solid.wrapped.Reversed()) as Shape3D;
   return solid;
@@ -332,6 +332,26 @@ function matchedSections(wires: R.Wire[], frames: Frame[]): R.Wire[] | null {
     out.push(R.assembleWire([R.makeBSplineApproximation(pts, { tolerance: 0.01, degMax: 3, degMin: 3, smoothing: null })]));
   }
   return out;
+}
+
+/**
+ * Skin sections that already match edge for edge. The surfaces are kept cubic along the
+ * skin: the kernel's default (up to degree 8 through many sections) makes later booleans
+ * several times slower for no visible gain.
+ */
+function skin(wires: R.Wire[]): Shape3D {
+  const oc = R.getOC();
+  const b = new oc.BRepOffsetAPI_ThruSections(true, false, 1e-6);
+  try {
+    b.SetMaxDegree(3);
+    for (const w of wires) b.AddWire(w.wrapped);
+    b.Build();
+    const shape = R.cast(b.Shape());
+    if (!R.isShape3D(shape)) throw new ProfileError("loft(): could not skin the sections");
+    return shape;
+  } finally {
+    b.delete();
+  }
 }
 
 export { framePoint };

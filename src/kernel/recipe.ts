@@ -76,7 +76,8 @@ export type ShapeRecipe =
   /** a profile pushed along n by h; twist turns it (degrees over h), scale shrinks or grows the far end */
   | { t: "extrude"; p: Profile; h: number; f: Frame; twist: number; scale: number }
   | { t: "sweep"; p: Profile; path: Path3; rot: number; frenet: boolean }
-  | { t: "loft"; secs: { p: Profile; f: Frame }[]; ruled: boolean }
+  /** matched: the sections already have the same edges from the same start (aero tubes), so they are skinned as drawn, not resampled */
+  | { t: "loft"; secs: { p: Profile; f: Frame }[]; ruled: boolean; matched?: boolean }
   | { t: "revolve2"; p: Profile; f: Frame; angle: number }
   /** a helical thread; detailed builds model the real form, fast builds a plain cylinder at the pitch diameter */
   | { t: "thread"; spec: ThreadSpec3; length: number; at: V3; dir: V3; internal: boolean; lead: number; bore?: number; fastD?: number }
