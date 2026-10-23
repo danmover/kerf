@@ -8,6 +8,7 @@ import { makingPromptSection } from "./processTools";
 import { dfaPromptSection } from "../mfg/dfa";
 import { hardwarePromptSection } from "./hardwarePrompt";
 import { assemblyPromptSection } from "./assemblyPrompt";
+import { checksPromptSection } from "./checksPrompt";
 import { wiringPromptSection } from "../machine/harness/prompt";
 
 export function systemPrompt(): string {
@@ -111,6 +112,8 @@ ${dfaPromptSection()}
 ${hardwarePromptSection()}
 
 ${assemblyPromptSection()}
+
+${checksPromptSection()}
 
 ${wiringPromptSection()}
 

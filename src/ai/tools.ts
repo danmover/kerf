@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly } from "../core/engine";
 import { whenWiringChecked } from "../machine/harness/runtime";
+import { whenSwept } from "../core/sweepRuntime";
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
 import { decisionsSummary } from "../core/decisions";
 import type { Model } from "../core/model";
@@ -1016,6 +1017,8 @@ async function checkResults(signal?: AbortSignal): Promise<{ text: string; title
   // the wiring and mounting checks route the cables in a worker after the build; wait a little for them
   if (!signal?.aborted) {
     await orAbort(whenWiringChecked(s.model, 20_000), signal);
+    // the motion sweep works through moving parts a slice at a time
+    await orAbort(whenSwept(20_000), signal);
     s = useDesign.getState();
   }
   const r = s.report;

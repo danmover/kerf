@@ -30,11 +30,20 @@ export function motorCurrentFor(m: MachineData, supplies = motorSupplies(m)): (c
   };
 }
 
+/** Stall current of a DC gearmotor on its driver's supply: what it draws for a moment each time it starts. */
+export function motorStallFor(m: MachineData, supplies = motorSupplies(m)): (comp: string) => number | undefined {
+  return (comp) => {
+    const mc = m.components.find((c) => c.name === comp);
+    const s = mc && catalogPart(mc.catalogId)?.specs;
+    return s && typeof s.i_stall === "number" ? s.i_stall * supplyScale(supplies, comp, s) : undefined;
+  };
+}
+
 export function machineChecks(m: MachineData): CheckItem[] {
   const out: CheckItem[] = [];
   const supplies = motorSupplies(m);
   const current = motorCurrentFor(m, supplies);
-  out.push(...electricalChecks(m, { motorCurrent: current }));
+  out.push(...electricalChecks(m, { motorCurrent: current, motorStall: motorStallFor(m, supplies) }));
   out.push(...circuitChecks(m));
   out.push(...placementItems(m));
   for (const b of m.belts) out.push(...beltChecks(b));

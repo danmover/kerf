@@ -4,6 +4,7 @@ import { languageReference } from "../reference";
 import { AREAS } from "./types";
 import { hardwareReviewSection } from "../hardwarePrompt";
 import { assemblyReviewSection } from "../assemblyPrompt";
+import { checksReviewSection } from "../checksPrompt";
 import { wiringReviewSection } from "../../machine/harness/prompt";
 
 export function reviewerPrompt(): string {
@@ -43,6 +44,8 @@ export function reviewerPrompt(): string {
 ${hardwareReviewSection()}
 
 ${assemblyReviewSection()}
+
+${checksReviewSection()}
 
 ${wiringReviewSection()}
 

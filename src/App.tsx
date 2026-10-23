@@ -11,6 +11,7 @@ import { turns } from "./core/model";
 import { startAnalysisRuntime } from "./analysis/runtime";
 import { startBoardRuntime } from "./machine/pcb/runtime";
 import { startCableRuntime } from "./machine/harness/runtime";
+import "./core/sweepRuntime";
 import { startSimRuntime } from "./sim/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadChat, useChat } from "./ai/chat";
