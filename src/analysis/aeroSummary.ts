@@ -25,12 +25,14 @@ export interface HotSpot {
 
 /**
  * The surface patches (cubes of `cell` mm) that add the most drag at one yaw, from the pressure and friction on each
- * triangle along the way the design travels.
+ * triangle along the way the design travels. Parts that are not part of the design (a rider) are left out unless asked
+ * for: they would crowd the design's own patches off the list.
  */
-export function dragHotSpots(y: YawResult, forward: V3, q: number, cell = 60, n = 6): HotSpot[] {
+export function dragHotSpots(y: YawResult, forward: V3, q: number, cell = 60, n = 6, extras = false): HotSpot[] {
   const back: V3 = [-forward[0], -forward[1], -forward[2]];
   const cells = new Map<string, HotSpot & { w: number; sx: number; sy: number; sz: number }>();
   for (const s of y.surface) {
+    if (s.extra && !extras) continue;
     const P = s.positions;
     const I = s.indices;
     for (let t = 0; t < I.length; t += 3) {
@@ -114,7 +116,7 @@ export function airflowSummary(spec: AirflowSpec, run: AirflowRun | undefined, v
   const total = zero.parts.reduce((a, p) => a + p.drag, 0) || 1;
   lines.push(`Drag by part at ${fmtNum(zero.yaw, 1)}° (share, CdA, friction share):`);
   for (const p of [...zero.parts].sort((a, b) => b.drag - a.drag).slice(0, 12)) lines.push(`  ${p.name}${p.extra ? " (not part of the design)" : ""}: ${fmtNum((100 * p.drag) / total, 1)} %, ${fmtNum(p.cda, 4)} m², ${fmtNum(100 * p.friction, 0)} % friction`);
-  const spots = dragHotSpots(zero, spec.forward, q).filter((h) => !/^Rider/.test(h.part));
+  const spots = dragHotSpots(zero, spec.forward, q);
   if (spots.length) {
     lines.push("Where the design's drag comes from (surface patches with the most drag):");
     for (const h of spots) lines.push(`  ${spotText(h)}`);
