@@ -34,6 +34,7 @@ import {
   type WasherType,
 } from "./fasteners";
 import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
+import { CHAINS, CHAIN_IDS, sprocketPd, sprocketProfile, sprocketRoot, sprocketTip, toothWidth } from "../machine/chains";
 import { MACHINE_LIBRARY } from "../machine/library";
 import { SPRING_WIRE, springRate } from "./springs";
 import type { SpringInfo } from "../core/model";
@@ -410,6 +411,62 @@ export const LIBRARY: Record<string, LibEntry> = {
         gear: { m, z, width: w, pa, bore },
         bom: { description: `Spur gear module ${m}, ${z} teeth, ${w} mm face` },
       };
+    },
+  },
+
+  sprocket: {
+    signature: 'lib.sprocket(z: 52, chain: "bike_11s", bore: 10) { at: (x, y, z), axis: Y, spin: 1 }',
+    doc: `Roller-chain sprocket (chainring, cassette cog, jockey wheel or drive sprocket) with ISO 606 teeth for the chain it runs: z teeth, chain: the chain id (${CHAIN_IDS.join(", ")}), width (tooth width, default 0.93 × the chain's inner width), bore, hub_d, hub_l. \`at\` is the centre of one face and the teeth extend along \`axis\` (use the same axis for every sprocket on a chain). Props: \`spin: 1\` drives it, \`chain: other_sprocket\` turns it from that sprocket through the chain at z_other / z, the same way round (so other parts can turns_with: it); a sprocket on the chain's path with no motion of its own is turned by the chain (jockey wheels, idlers). rotate: turns its teeth about the axis; the chain seats its rollers in whatever gaps they meet. Fields: z, pitch, pd (pitch diameter), tip_d, root_d, width, at, center (middle of the teeth, where the chain runs), end, axis, seats (the tooth-gap centres on the pitch circle).`,
+    positional: ["z"],
+    params: ["z", "chain", "width", "bore", "hub_d", "hub_l"],
+    group: "Motion",
+    make(a) {
+      const z = Math.round(a.num("z", 18));
+      if (z < 6 || z > 150) throw new Error(`A sprocket needs 6 to 150 teeth (got ${z})`);
+      const id = a.str("chain", "bike_11s");
+      const c = CHAINS[id];
+      if (!c) throw new Error(`chain: "${id}" is not a chain. Chains: ${CHAIN_IDS.join(", ")}`);
+      const w = a.num("width", toothWidth(c));
+      if (!(w > 0)) throw new Error("width must be greater than 0");
+      if (w > c.inner - 0.05) throw new Error(`width: ${fmt(w)} mm teeth do not fit between the ${fmt(c.inner)} mm inner plates of the ${c.name}`);
+      const bore = a.num("bore", 0);
+      const hubD = a.num("hub_d", 0);
+      const hubL = a.num("hub_l", 0);
+      const root = sprocketRoot(c.pitch, z, c.roller);
+      if (bore >= root - 2) throw new Error(`bore ${fmt(bore)} mm leaves no metal under the teeth (root diameter ${fmt(root)} mm)`);
+      const pd = sprocketPd(c.pitch, z);
+      const ops: PartRecipe["ops"] = [];
+      if (hubD > 0 && hubL > 0) ops.push({ op: "add", shape: { t: "cyl", d: hubD, h: hubL + 0.01, at: [0, 0, w - 0.01], dir: ZP } });
+      if (bore > 0) ops.push({ op: "cut", shape: { t: "cyl", d: bore, h: w + hubL + 2, at: [0, 0, -1], dir: ZP } });
+      const recipe: PartRecipe = { base: { t: "extrude", p: sprocketProfile(c.pitch, z, c.roller), h: w, f: { o: Z0, u: [1, 0, 0], n: ZP }, twist: 0, scale: 1 }, ops };
+      const seats: V3[] = Array.from({ length: z }, (_, i) => {
+        const t = (2 * Math.PI * i) / z;
+        return [(pd / 2) * Math.cos(t), (pd / 2) * Math.sin(t), w / 2];
+      });
+      return {
+        kind: "sprocket",
+        label: `Sprocket ${z}T`,
+        placement: "axis",
+        solids: [{ suffix: "", label: `Sprocket ${z}T`, recipe, color: "#c4c8ce", material: "Steel", finish: "machined" }],
+        fields: {
+          scalars: { z, pitch: c.pitch, pd, tip_d: sprocketTip(c.pitch, z, c.roller), root_d: root, width: w, bore, hub_l: hubL, chain: c.id },
+          points: { at: Z0, center: [0, 0, w / 2], end: [0, 0, w + hubL] },
+          dirs: { axis: ZP },
+          pointLists: { seats },
+        },
+        bom: { description: `Sprocket, ${z} teeth, for ${c.name}`, search: `${z}T sprocket ${c.bike ? "bicycle " : ""}${c.pitch === 12.7 ? "1/2 inch pitch" : c.id.replace("_", " ")}` },
+      };
+    },
+  },
+
+  chain: {
+    signature: 'lib.chain("bike_11s", path: [chainring, cog, upper_jockey, lower_jockey], outside: [upper_jockey], torque: 120Nm)',
+    doc: `Roller chain round its sprockets, made of real links: rollers seat in the tooth gaps and the links move round with the sprockets in the motion preview. id: ${CHAIN_IDS.join(", ")}. path: the lib.sprocket components in the order the chain meets them (a closed loop). outside: sprockets the chain wraps the other way round (the upper jockey wheel of a derailleur, a back-side tensioner). drive: the driving sprocket (default: the first on the path that moves). torque: torque at the drive sprocket (N·mm, e.g. 120Nm for a rider's hard effort), for the pull check. links: the link count (default: the shortest even count that reaches round). The chain makes every other sprocket on its path turn at the right speed (or checks the speed they were given). Checks: speed match, chain line, wrap and teeth engaged, smallest sprocket, link count and slack, and pull against the chain's strength. Fields: links, length (pitch length), pitch, pull (N), ratio (drive to last sprocket).`,
+    positional: ["id"],
+    params: ["id", "path", "outside", "drive", "torque", "links"],
+    group: "Motion",
+    make() {
+      throw new Error("lib.chain is laid out from its path");
     },
   },
 

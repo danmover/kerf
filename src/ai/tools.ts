@@ -47,7 +47,7 @@ import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./mat
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
 import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
-import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict } from "../analysis/summary";
+import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict, uciSummary, uciItems, uciVerdict } from "../analysis/summary";
 import { evaluateSelector } from "../lang/evaluator";
 import { kernel } from "../kernel/client";
 import { inspectText } from "../kernel/inspectText";
@@ -735,7 +735,7 @@ export function modelSummary(m: Model | null): string {
   if (m.sketches.length) lines.push("Sketches:\n" + m.sketches.map((sk) => `  - ${sk.name} on ${sk.planeText}: ${sketchStatusText(sk)}${sk.usedBy.length ? `; shapes ${sk.usedBy.join(", ")}` : "; not used by a part yet"}`).join("\n"));
   if (m.analyses.length) {
     const a = useAnalysis.getState();
-    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label))}`).join("\n"));
+    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label), useDesign.getState().report?.items)}`).join("\n"));
   }
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
@@ -1125,8 +1125,13 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
       await whenAnalyzed();
       const st = useAnalysis.getState();
-      const text = targets.map((a) => (a.kind === "structural" ? structuralSummary(a, st.runs.get(a.label)) : drivetrainSummary(a, st.drivetrain.get(a.label)))).join("\n\n");
+      const report = useDesign.getState().report?.items ?? [];
+      const text = targets.map((a) => (a.kind === "structural" ? structuralSummary(a, st.runs.get(a.label)) : a.kind === "uci" ? uciSummary(a, report) : drivetrainSummary(a, st.drivetrain.get(a.label)))).join("\n\n");
       const verdicts = targets.map((a) => {
+        if (a.kind === "uci") {
+          const v = uciVerdict(uciItems(a, report));
+          return v === "pending" ? "fail" : v;
+        }
         if (a.kind === "drivetrain") {
           const r = st.drivetrain.get(a.label);
           return !r || r.error || r.items.some((i) => i.status === "fail") ? "fail" : r.items.some((i) => i.status === "warn") ? "warn" : "pass";
@@ -1141,7 +1146,7 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       if (targets.length === 1) {
         const a = targets[0];
         const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
-        title = r ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.safety, 1)})` : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
+        title = r && a.kind === "structural" ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.safety, 1)})` : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
       } else title = fails ? `${fails} of ${targets.length} analyses failing` : `All ${targets.length} analyses pass`;
       return {
         content: text + (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : ""),

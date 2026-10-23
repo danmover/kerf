@@ -2,7 +2,7 @@
 // what is bought, the materials, and how far it meets its brief. Shared by
 // the overview board and the design report.
 
-import type { EvalPart, Model } from "../core/model";
+import { partMass, type EvalPart, type Model } from "../core/model";
 import type { CheckItem, CheckReport } from "../core/checks";
 import { briefData, openAssumptions, type BriefData } from "../core/brief";
 import { xformMatrix } from "../kernel/recipe";
@@ -74,7 +74,7 @@ export function designStats(model: Model | null, mesh: MeshLookup, only?: (p: Ev
       out.pending++;
       continue;
     }
-    const g = (info.volume / 1000) * materialDensity(p.material);
+    const g = partMass(p, info.volume, materialDensity(p.material)) ?? 0;
     out.mass += g;
     mat.mass += g;
     if (p.kind === "part" && isPrinted(p.material)) out.printedMass += g;

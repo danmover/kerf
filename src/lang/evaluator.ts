@@ -7,6 +7,7 @@ import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, Vec, 
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
 import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
 import { SheetV, type SheetInfo } from "./sheet";
+import { TubeV, type AeroTube } from "./aero";
 import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
@@ -21,6 +22,7 @@ import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
 import { emptyMachine, type BeltDef, type MachineComponent, type MachineData, type PinRef } from "../machine/types";
+import { ChainError, chainAsBelt, chainRecipe, chainSpec, linksFor, type ChainInfo, type ChainNode } from "../machine/chains";
 import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
 import { MEASURED } from "../machine/measured";
@@ -91,8 +93,8 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label"];
-const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass"];
+const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label"];
 
 /** Fields of the brief block, by the type of value each takes. */
 const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as const;
@@ -135,6 +137,8 @@ interface PartState {
   flex: FlexInfo[];
   /** the part's sheet() body */
   sheet?: SheetInfo;
+  /** aero_tube()s it is built from */
+  tubes: AeroTube[];
 }
 
 class Scope {
@@ -989,6 +993,18 @@ class Evaluator {
       motion = { origin: at0, axis, ratio: (-otherRate * other.gear.z) / z };
       meshWith = String(other.value.fields.name);
     }
+    if (props.chain !== undefined) {
+      if (key !== "sprocket") throw new EvalError("chain: only applies to lib.sprocket (it turns one sprocket from another through the chain)", propSpans.chain);
+      if (multi) throw new EvalError("chain: needs a single sprocket position, not a list", propSpans.chain);
+      if (props.spin !== undefined || meshV !== undefined) throw new EvalError("chain: sets how fast this sprocket turns: leave out spin:", propSpans.chain);
+      const other = this.compRef(props.chain, propSpans.chain, "chain");
+      if (other.def.kind !== "sprocket") throw new EvalError(`chain: "${String(other.value.fields.name)}" is not a lib.sprocket`, propSpans.chain);
+      if (!other.motion) throw new EvalError(`chain: "${String(other.value.fields.name)}" does not move (give it spin:, or chain: from a sprocket that does)`, propSpans.chain);
+      if (Math.abs(vdot(other.axis, axis)) < 0.999) throw new EvalError("chain: sprockets on one chain need parallel axes (use the same axis: value)", propSpans.chain);
+      const zo = Number(other.value.fields.z);
+      const z = Math.round(args.num("z", 18));
+      motion = { origin: at0, axis, ratio: (absRate(other.motion, axis) * zo) / z };
+    }
     if (turnsV !== undefined) {
       const other = this.motionOf(turnsV, propSpans.turns_with);
       motion = key === "spur_gear" || key === "bearing" ? { origin: at0, axis, ratio: other?.ratio ?? 0, ...(other?.parent ? { parent: other.parent } : {}) } : other;
@@ -1014,6 +1030,7 @@ class Evaluator {
     let def: CompDef;
     let belt: BeltDef | undefined;
     let band: BandInfo | undefined;
+    let chainInfo: ChainInfo | undefined;
     let imported: { ref: ImportRef; origin: ImportOrigin } | undefined;
     if (key === "step") {
       const table = this.opts.imports ?? evalImports();
@@ -1031,6 +1048,12 @@ class Evaluator {
       const made = this.belt(s, args);
       def = made.def;
       belt = made.belt;
+    } else if (key === "chain") {
+      const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides"].find((k) => props[k] !== undefined);
+      if (placed) throw new EvalError(`A chain follows its path: leave out ${placed}:`, propSpans[placed]);
+      const made = this.chain(s, args);
+      def = made.def;
+      chainInfo = made.chain;
     } else if (key === "band") {
       const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with"].find((k) => props[k] !== undefined);
       if (placed) throw new EvalError(`A band lies round the parts it wraps: leave out ${placed}:`, propSpans[placed]);
@@ -1240,6 +1263,7 @@ class Evaluator {
           bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
           ...(band && !sd.suffix ? { band } : {}),
+          ...(chainInfo && !sd.suffix ? { chain: chainInfo } : {}),
           fastener:
             def.fastener && !sd.suffix
               ? { ...def.fastener, headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)) }
@@ -1271,6 +1295,130 @@ class Evaluator {
       used.add(mc.ref);
       next.set(prefix, n + 1);
     }
+  }
+
+  /**
+   * lib.chain: lay the chain round its sprockets, seat its rollers in their
+   * tooth gaps, and make the sprockets turn together: one with no motion of its
+   * own is turned by the chain; one with its own is checked against it.
+   */
+  chain(s: Extract<Stmt, { k: "component" }>, args: Args): { def: CompDef; chain: ChainInfo } {
+    const ctx = this.ctx();
+    const argSpan = (name: string) => s.call.args.find((a) => a.name === name)?.span ?? s.call.span;
+    let spec;
+    try {
+      spec = chainSpec(args.str("id"));
+    } catch (e) {
+      if (e instanceof ChainError) throw new EvalError(e.message, s.call.span);
+      throw e;
+    }
+    const pathV = args.value("path");
+    if (!Array.isArray(pathV)) throw new EvalError("lib.chain() needs path: the sprockets in the order the chain meets them, like path: [chainring, cog, upper_jockey, lower_jockey]", argSpan("path"));
+    const outsideV = args.value("outside");
+    if (outsideV !== undefined && !Array.isArray(outsideV)) throw new EvalError("outside: should be a list of the sprockets the chain wraps the other way round, like outside: [upper_jockey]", argSpan("outside"));
+    const outside = new Set((outsideV ?? []).map((v) => (v instanceof Obj && v.kind === "component" ? String(v.fields.name) : "")));
+    const sps = pathV.map((v, i) => {
+      if (!(v instanceof Obj) || v.kind !== "component") throw new EvalError(`path: item ${i + 1} should be a lib.sprocket component, got ${typeName(v)}`, argSpan("path"));
+      const name = String(v.fields.name);
+      if (typeof v.fields.count === "number") throw new EvalError(`path: "${name}" is a pattern of ${v.fields.count}: give each sprocket its own name`, argSpan("path"));
+      const info = this.comps.get(name);
+      if (!info || info.def.kind !== "sprocket") throw new EvalError(`path: "${name}" is not a sprocket. A chain runs on lib.sprocket components (chainrings, cogs and jockey wheels are all sprockets)`, argSpan("path"));
+      if (v.fields.chain !== spec.id) throw new EvalError(`path: ${name} has teeth for "${String(v.fields.chain)}", not "${spec.id}": give it chain: "${spec.id}"`, argSpan("path"));
+      this.current?.add(name);
+      const f = v.fields;
+      const seats = Array.isArray(f.seats) ? f.seats.map((q, k) => toV3(q, ctx, `seats[${k}]`)) : [];
+      return { name, info, c: toV3(f.center, ctx, "center"), axis: vnorm(toV3(f.axis, ctx, "axis")), z: Number(f.z), pd: Number(f.pd), seats };
+    });
+    if (sps.length < 2) throw new EvalError("path: a chain needs at least two sprockets", argSpan("path"));
+    const seen = new Set<string>();
+    for (const sp of sps) {
+      if (seen.has(sp.name)) throw new EvalError(`path: ${sp.name} is listed twice`, argSpan("path"));
+      seen.add(sp.name);
+    }
+    for (const o of outside) if (!seen.has(o)) throw new EvalError(`outside: ${o || "each item"} should be one of the sprockets in path:`, argSpan("outside"));
+    const ins: PulleyIn[] = sps.map((sp) => ({ k: "pulley", name: sp.name, c: sp.c, axis: sp.axis, pd: sp.pd, teeth: sp.z, smooth: false, contactD: sp.pd, driver: false, outside: outside.has(sp.name), label: `${sp.z}-tooth sprocket`, r: sp.pd / 2 }));
+    let layout;
+    try {
+      layout = layoutBelt(ins, chainAsBelt(spec));
+    } catch (e) {
+      if (e instanceof BeltError) throw new EvalError(e.message.replace(/belt/g, "chain").replace(/pulleys/g, "sprockets").replace(/pulley/g, "sprocket"), argSpan("path"));
+      throw e;
+    }
+
+    // the driver, and how far the chain travels per degree of it
+    let drive: number | undefined;
+    const driveV = args.value("drive");
+    if (driveV !== undefined) {
+      const dn = driveV instanceof Obj && driveV.kind === "component" ? String(driveV.fields.name) : "";
+      drive = sps.findIndex((sp) => sp.name === dn);
+      if (drive < 0) throw new EvalError("drive: should be one of the sprockets in path:", argSpan("drive"));
+    } else {
+      const i = sps.findIndex((sp) => sp.info.motion);
+      drive = i >= 0 ? i : undefined;
+    }
+    const n = layout.n;
+    const sideOf = (a: V3): 1 | -1 => (vdot(a, n) >= 0 ? 1 : -1);
+    // a sprocket moves the chain one link per tooth, so speeds go by teeth: links per degree of the driver, signed along the path
+    const dsp = drive !== undefined ? sps[drive] : undefined;
+    const linkRate = dsp?.info.motion ? (absRate(dsp.info.motion, dsp.axis) * sideOf(dsp.axis) * layout.nodes[drive!].dir * dsp.z) / 360 : 0;
+
+    const nodes: ChainNode[] = layout.nodes.map((nd, i) => {
+      const sp = sps[i];
+      const need = linkRate ? ((linkRate * 360) / (sp.z * nd.dir)) * sideOf(sp.axis) : 0;
+      const has = sp.info.motion ? absRate(sp.info.motion, sp.axis) : undefined;
+      let idler = false;
+      let declared: number | undefined;
+      if (has === undefined) {
+        idler = true;
+        if (linkRate) {
+          const m: Motion = { origin: sp.info.at, axis: sp.info.axis, ratio: need * vdot(sp.axis, sp.info.axis) };
+          sp.info.motion = m;
+          sp.info.value.fields.speed = m.ratio;
+          for (const p of this.parts) if (p.name === sp.name) p.motion = m;
+        }
+      } else if (Math.abs(has - need) > 1e-6 * Math.max(1, Math.abs(need))) declared = has;
+      const q = sp.seats.length ? vsub(sp.seats[0], layout.o) : ([0, 0, 0] as V3);
+      const seat0 = Math.atan2(vdot(q, layout.v) - nd.c[1], vdot(q, layout.u) - nd.c[0]);
+      return { name: sp.name, c: nd.c, r: nd.r, dir: nd.dir, z: sp.z, wrap: nd.wrap, engaged: (nd.wrap / 360) * sp.z, outside: nd.outside, offset: nd.offset, tilt: nd.tilt, seat0, rate: has ?? need, axisSign: sideOf(sp.axis), idler, ...(declared !== undefined ? { declared, rate: declared } : {}) };
+    });
+
+    // links: one per seated roller on the sprockets plus the free spans' length in pitches
+    const needLinks = nodes.reduce((t, nd) => t + nd.engaged, 0) + layout.spans.reduce((t, sp) => t + sp.length / spec.pitch, 0);
+    const linksV = args.value("links");
+    if (linksV !== undefined && !(typeof linksV === "number" && Number.isInteger(linksV) && linksV >= 4 && linksV <= 2000)) throw new EvalError("links: the number of links, a whole number like links: 110", argSpan("links"));
+    const links = linksFor(needLinks, linksV as number | undefined);
+    const torqueV = args.value("torque");
+    if (torqueV !== undefined && !(typeof torqueV === "number" && torqueV > 0)) throw new EvalError("torque: the torque at the drive sprocket, like torque: 120Nm", argSpan("torque"));
+    const torque = torqueV as number | undefined;
+    const pull = torque !== undefined && drive !== undefined ? torque / layout.nodes[drive].r : undefined;
+
+    const info: ChainInfo = {
+      name: s.name,
+      spec,
+      plane: { o: layout.o, u: layout.u, v: layout.v, n },
+      pieces: layout.pieces.map((p) => (p.k === "line" ? { ...p } : { ...p, node: layout.nodes.findIndex((nd) => nd.c === p.c) })),
+      length: layout.length,
+      links,
+      needLinks,
+      linksGiven: linksV !== undefined,
+      tensioner: nodes.some((nd) => nd.idler || nd.outside),
+      nodes,
+      linkRate,
+      speed: (linkRate * layout.length) / links,
+      drive: drive !== undefined ? sps[drive].name : undefined,
+      torque,
+      pull,
+      spans: layout.spans.map((sp) => ({ from: sp.from, to: sp.to, length: sp.length })),
+    };
+    const def: CompDef = {
+      kind: "chain",
+      label: spec.name,
+      placement: "free",
+      solids: [{ suffix: "", label: `${s.name} (${links} links)`, recipe: chainRecipe(info), color: "#a3a8ae", material: "Steel", finish: "machined" }],
+      fields: { scalars: { links, length: Math.round(layout.length * 100) / 100, pitch: spec.pitch, pull: pull ?? 0 }, dirs: { normal: n } },
+      bom: { description: `${spec.name}, ${links} links`, price: spec.price, search: spec.search },
+    };
+    return { def, chain: info };
   }
 
   /** lib.belt: resolve the path to pulleys and clamp points, lay it out, draw it and work out what tension does. */
@@ -1650,6 +1798,7 @@ class Evaluator {
       auto: new Map(),
       strain: [],
       flex: [],
+      tubes: [],
     };
     const lockedFlag = s.items.some((i) => i.k === "flag" && i.name === "locked");
     this.blocks.push({ name: s.name, kind: "part", span: s.span, locked: lockedFlag });
@@ -1685,6 +1834,8 @@ class Evaluator {
     if (linked) motion = linked;
     if (motion) this.partMotion.set(s.name, motion);
     checkHeld(state.props.held, state.propSpans.held);
+    const massV = state.props.mass;
+    if (massV !== undefined && !(typeof massV === "number" && massV > 0 && Number.isFinite(massV))) throw new EvalError("mass: the part's real mass when its solid is not (a hollow carbon frame, a foam-filled shell), like mass: 950g", state.propSpans.mass);
     this.checkMaterial(state.props, state.propSpans);
     const processSpan = state.propSpans.process;
     let process =
@@ -1739,10 +1890,12 @@ class Evaluator {
       deps: [],
       motion,
       ...(typeof state.props.held === "string" ? { held: state.props.held.trim() } : {}),
+      ...(typeof massV === "number" ? { mass: massV } : {}),
       features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
       detail: hasDetail(recipe),
       ...(state.flex.length ? { flex: state.flex } : {}),
       ...(sheet ? { sheet } : {}),
+      ...(state.tubes.length ? { tubes: state.tubes } : {}),
     });
   }
 
@@ -1823,6 +1976,7 @@ class Evaluator {
               if (st.base || (it.op !== "body" && it.op !== "add")) throw new EvalError("sheet() makes the whole part: use it as the body (body sheet(...)), then cut holes and cut-outs", it.span);
               st.sheet = sh.info;
             }
+            if (sh instanceof TubeV && (it.op === "body" || it.op === "add") && !st.cosmetic) st.tubes.push(sh.tube);
             if (it.op === "body" || (it.op === "add" && !st.base)) {
               if (!st.base) {
                 st.base = sh.recipe;

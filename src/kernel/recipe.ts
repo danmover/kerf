@@ -84,6 +84,8 @@ export type ShapeRecipe =
   | { t: "knurl"; d: number; h: number; at: V3; dir: V3; count: number; depth: number; style: "straight" | "fluted" }
   /** a simple stand-in for fast builds and the full shape for detailed ones (a belt without and with its teeth) */
   | { t: "lod"; fast: ShapeRecipe; detail: ShapeRecipe }
+  /** copies of shapes placed without fusing them (a chain's links): each shape built once, everything gathered in one compound */
+  | { t: "instances"; items: { shape: ShapeRecipe; xfs: Xform[][] }[] }
   /** a sheet-metal part laid flat: each region of the built part cut out and moved onto the flat, plus its bends laid flat */
   | { t: "unfold"; part: PartRecipe; pieces: { region: ShapeRecipe; xf: Xform[] }[]; bends: ShapeRecipe[] }
   /** one half of a two-part mould round a part (placed by xf), split across the pull at `split` (null: where the part is widest) */
@@ -175,6 +177,8 @@ export function shapeHasDetail(r: ShapeRecipe): boolean {
       return r.shapes.some(shapeHasDetail);
     case "diff":
       return shapeHasDetail(r.a) || r.b.some(shapeHasDetail);
+    case "instances":
+      return r.items.some((it) => shapeHasDetail(it.shape));
     default:
       return false;
   }
@@ -220,6 +224,8 @@ export function fontsIn(p: PartRecipe): FontName[] {
       case "lod":
         shape(r.fast);
         return shape(r.detail);
+      case "instances":
+        return r.items.forEach((it) => shape(it.shape));
     }
   };
   if (p.base) shape(p.base);

@@ -42,6 +42,7 @@ export const MAX_BOUNDARY_ITEMS = 200;
 
 export const STRUCTURAL_PROPS = ["parts", "part", "material", "fix", "load", "gravity", "accel", "printed", "build", "cycles", "safety", "max_deflection", "resolution", "carries", "modes", "excite", "damping", "ringing", "drop", "tip", "impact", "onto"];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
+export const UCI_PROPS = ["uci", "bottom_bracket", "wheels", "saddle", "bars", "hoods", "forward", "parts", "rim_depth"];
 const FLAGS = ["gravity", "printed", "locked"];
 
 const REGION = "region";
@@ -279,6 +280,7 @@ export interface AnalysisEnv {
 /** Turn the evaluated items of an analysis block into a spec. */
 export function buildAnalysis(label: string, props: AnalysisItem[], flags: AnalysisItem[], span: Span, env: AnalysisEnv): AnalysisSpec {
   const fail: (msg: string, span: Span) => never = env.fail;
+  if (props.some((p) => p.name === "uci")) return buildUci(label, props, flags, span, env);
   const isDrive = props.some((p) => p.name === "drive");
   const allowed = isDrive ? DRIVETRAIN_PROPS : STRUCTURAL_PROPS;
   for (const p of props) {
@@ -496,4 +498,51 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(drop ? { drop } : {}),
     span,
   };
+}
+
+/** A UCI rules check: names the bike's wheels, saddle and bars and where its bottom bracket is. */
+function buildUci(label: string, props: AnalysisItem[], flags: AnalysisItem[], span: Span, env: AnalysisEnv): AnalysisSpec {
+  const fail = env.fail;
+  for (const p of props) if (!UCI_PROPS.includes(p.name)) fail(`"${p.name}:" is not part of a UCI rules check, which takes ${UCI_PROPS.join(", ")}`, p.span);
+  for (const f of flags) fail(`A UCI rules check takes no flags ("${f.name}")`, f.span);
+  const one = (name: string) => {
+    const all = props.filter((p) => p.name === name);
+    if (all.length > 1) fail(`"${name}:" is given twice`, all[1].span);
+    return all[0];
+  };
+  const nameOf = (v: Value, p: AnalysisItem, what: string): string => {
+    const n = v instanceof Ref ? v.name : v instanceof Obj && v.kind === "component" && typeof v.fields.name === "string" ? v.fields.name : undefined;
+    if (!n || !env.kindOf(n)) return fail(`${what} should name a part or component, got ${typeName(v)}`, p.span);
+    return n;
+  };
+  const need = (name: string, example: string) => one(name) ?? fail(`A UCI rules check needs ${name}: (${example})`, span);
+  const list = (name: string, count?: number) => {
+    const p = one(name);
+    if (!p) return undefined;
+    const v = Array.isArray(p.value) ? p.value : [p.value];
+    if (count !== undefined && v.length !== count) fail(`${name}: should list ${count} parts`, p.span);
+    return v.map((x) => nameOf(x, p, `${name}:`));
+  };
+  const rules = one("uci")!;
+  if (rules.value !== "road") fail('uci: "road" is the rule set Kerf checks (UCI mass-start road racing, technical regulation part 1.3)', rules.span);
+  const bbP = need("bottom_bracket", "the crank axle's centre as a point, or the crankset that turns about it");
+  const bb = bbP.value instanceof Vec ? { at: [bbP.value.v[0], bbP.value.v[1], bbP.value.v[2] ?? 0] as V3 } : { part: nameOf(bbP.value, bbP, "bottom_bracket:") };
+  need("wheels", "wheels: [front_wheel, rear_wheel]");
+  const wheels = list("wheels", 2)!;
+  const saddle = nameOf(need("saddle", "the saddle part").value, one("saddle")!, "saddle:");
+  const bars = nameOf(need("bars", "the handlebar or one-piece bar and stem").value, one("bars")!, "bars:");
+  const hoods = list("hoods", 2);
+  const fw = one("forward");
+  let forward: V3 = [1, 0, 0];
+  if (fw) {
+    if (!(fw.value instanceof Vec)) fail("forward: the way the bike rides, like forward: X", fw.span);
+    const v = (fw.value as Vec).v;
+    const h = Math.hypot(v[0], v[1]);
+    if (h < 1e-6) fail("forward: should be level, like X or -Y", fw.span);
+    forward = [v[0] / h, v[1] / h, 0];
+  }
+  const parts = list("parts");
+  const rim = one("rim_depth");
+  if (rim && !(typeof rim.value === "number" && rim.value > 0)) fail("rim_depth: the rims' depth, like rim_depth: 50mm", rim.span);
+  return { kind: "uci", label, rules: "road", bb, wheels, saddle, bars, hoods, forward, parts, ...(rim ? { rimDepth: rim.value as number } : {}), span };
 }

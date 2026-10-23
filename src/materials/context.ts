@@ -2,7 +2,7 @@
 // the part's geometry, process and loads, and its latest strength analysis.
 
 import { meshes, useDesign } from "../core/engine";
-import type { EvalPart, Model } from "../core/model";
+import { partMass, type EvalPart, type Model } from "../core/model";
 import { useAnalysis } from "../analysis/runtime";
 import { mechMaterial } from "../analysis/materials";
 import { materialDensity } from "../library/standards";
@@ -54,7 +54,7 @@ export function analysisFacts(model: Model, name: string): AnalysisFacts | undef
   return undefined;
 }
 
-const massOf = (p: EvalPart) => ((meshes.get(p.hash)?.volume ?? 0) / 1000) * materialDensity(p.material);
+const massOf = (p: EvalPart) => partMass(p, meshes.get(p.hash)?.volume ?? 0, materialDensity(p.material)) ?? 0;
 
 /** What the advisor knows about one part block (all its instances). */
 export function partFacts(model: Model, name: string): PartFacts | null {

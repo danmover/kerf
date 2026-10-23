@@ -188,6 +188,15 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       return buildKnurl(r.d, r.h, r.at, r.dir, r.count, r.depth, r.style, detail);
     case "lod":
       return buildShape(detail ? r.detail : r.fast, detail);
+    case "instances": {
+      const all: Shape3D[] = [];
+      for (const it of r.items) {
+        const s = buildShape(it.shape, detail);
+        for (const xf of it.xfs) all.push(applyXf(s.clone() as Shape3D, xf));
+        s.delete();
+      }
+      return R.makeCompound(all) as unknown as Shape3D;
+    }
     case "unfold":
       return buildUnfold(r);
     case "mould":

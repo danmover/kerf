@@ -484,6 +484,21 @@ export function TemplateArt({ id }: { id: string }) {
         <circle cx="100" cy="16" r="3" style={{ fill: "var(--accent)" }} />
       </svg>
     );
+  if (id === "aero-road-bike")
+    return (
+      <svg viewBox="0 0 200 120" width="80%" height="80%">
+        {[48, 152].map((cx) => (
+          <motion.g key={cx} animate={{ rotate: 360 }} transition={{ duration: 3, repeat: Infinity, ease: "linear" }} style={{ originX: `${cx}px`, originY: "84px" }}>
+            <circle cx={cx} cy="84" r="28" fill="none" style={line} strokeWidth="3" />
+            <circle cx={cx} cy="84" r="21" fill="none" style={line} strokeWidth="1" opacity={0.5} />
+            <path d={`M${cx - 21} 84h42M${cx} 63v42`} style={line} strokeWidth="0.8" opacity={0.5} />
+          </motion.g>
+        ))}
+        <path d="M48 84 92 88 82 40M92 88 136 42 82 40M152 84 136 42M48 84 80 52" fill="none" style={accent} strokeWidth="3.2" strokeLinejoin="round" strokeLinecap="round" />
+        <path d="M136 42l-3-10h16M78 32h16" fill="none" style={accent} strokeWidth="2.4" strokeLinecap="round" />
+        <circle cx="92" cy="88" r="8" fill="none" style={line} strokeWidth="1.4" strokeDasharray="2.5 1.5" />
+      </svg>
+    );
   if (id === "ferris-wheel") {
     // the gondolas go round the rim but hang level, so each follows the circle without turning
     const round = (k: number, axis: "x" | "y") => Array.from({ length: 25 }, (_, i) => 42 * (axis === "x" ? Math.cos : Math.sin)(((i / 24) * 360 + k * 60) * (Math.PI / 180)));
