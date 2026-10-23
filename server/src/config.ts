@@ -29,6 +29,8 @@ export interface Config {
   shared: { key: string; emails: string[]; dailyTokens: number; models: string[] } | null;
   trustProxy: TrustProxy;
   version: string;
+  /** Pre-registered OAuth client for the ChatGPT MCP connection; disabled until configured. */
+  chatgpt: { clientId: string; clientSecret: string; redirectUris: string[] } | null;
 }
 
 type Env = Record<string, string | undefined>;
@@ -102,6 +104,13 @@ export function loadConfig(env: Env = process.env, version = "0.0.0"): Config {
   const anthropicBaseUrl = (env.KERF_ANTHROPIC_BASE_URL ?? "https://api.anthropic.com").replace(/\/+$/, "");
   if (production && !anthropicBaseUrl.startsWith("https://")) throw new Error("KERF_ANTHROPIC_BASE_URL must use https in production");
 
+  const clientId = env.KERF_CHATGPT_CLIENT_ID?.trim() ?? "";
+  const clientSecret = env.KERF_CHATGPT_CLIENT_SECRET?.trim() ?? "";
+  const redirectUris = (env.KERF_CHATGPT_REDIRECT_URIS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  if (clientId || clientSecret || redirectUris.length) {
+    if (!clientId || clientSecret.length < 32 || !redirectUris.length) throw Error("Set KERF_CHATGPT_CLIENT_ID, KERF_CHATGPT_CLIENT_SECRET (at least 32 characters), and KERF_CHATGPT_REDIRECT_URIS together.");
+    for (const redirect of redirectUris) { const u = new URL(redirect); if (u.protocol !== "https:" || u.hash || u.username || u.password) throw Error("ChatGPT redirect URIs must be exact HTTPS URLs without fragments or credentials."); }
+  }
   return {
     production,
     port,
@@ -119,5 +128,6 @@ export function loadConfig(env: Env = process.env, version = "0.0.0"): Config {
     shared: sharedKey && sharedEmails.length ? { key: sharedKey, emails: sharedEmails, dailyTokens, models: sharedModels } : null,
     trustProxy: trust,
     version,
+    chatgpt: clientId ? { clientId, clientSecret, redirectUris } : null,
   };
 }

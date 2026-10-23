@@ -22,7 +22,7 @@ export function AgentSettings() {
         </div>
         <select className="select" value={s.agentModel} onChange={(e) => updateSettings({ agentModel: e.target.value })} aria-label="Model for parallel agents" style={{ height: 30, width: 170, flex: "none" }}>
           <option value="same">Same as chat</option>
-          {MODELS.map((m) => (
+          {MODELS.filter((m) => m.id.startsWith("gpt-") === s.model.startsWith("gpt-")).map((m) => (
             <option key={m.id} value={m.id}>
               {m.label.replace("Claude ", "")}
             </option>
