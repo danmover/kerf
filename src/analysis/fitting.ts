@@ -8,7 +8,7 @@
 // along with it.
 
 import type { EvalPart, FlexInfo, Model } from "../core/model";
-import { applyXforms, applyXformsToDir, vadd, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
+import { applyXforms, applyXformsToDir, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
 import { fittingPose, rubberOf, sectionOf, type BandCord, type BandLayout, type FitPose, type Section } from "../library/bands";
 import { flexCalc } from "../library/springs";
 import { fmtNum } from "../lang/values";
@@ -149,39 +149,50 @@ function slideAlong(mate: EvalPart, box: [V3, V3] | undefined, pin: V3, peg: V3)
 const volumeOf = (b: [V3, V3]) => (b[1][0] - b[0][0]) * (b[1][1] - b[0][1]) * (b[1][2] - b[0][2]);
 
 /**
- * Each peg snap or pinned flexure and the part it holds: the smallest part round the peg (or anywhere along the pin), not
- * what the whole thing sits on nor the print on it (riding).
+ * Each peg snap or pinned flexure and the part it holds: the part round the peg (or anywhere along the pin) that is
+ * thinnest along it, then the smallest, not what the whole thing sits on nor the print on it (riding); and every part
+ * the pin reaches into.
  */
-function pegMates(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined, riding: ReadonlySet<string>): { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3 }[] {
-  const out: { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3 }[] = [];
+function pegMates(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined, riding: ReadonlySet<string>): { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3; through: EvalPart[] }[] {
+  const out: { host: EvalPart; flex: FlexInfo; mate: EvalPart; peg: V3; through: EvalPart[] }[] = [];
   for (const p of model.parts)
     for (const f of p.flex ?? []) {
       if ((f.kind !== "snap" && f.kind !== "flexure") || !f.peg) continue;
       const face = vnorm(f.facing);
       // a snap's peg stands half its catch out of the arm; a flexure's pin reaches through what it holds and beyond
-      const base = vadd(f.at, vscale(vnorm(f.dir), f.kind === "snap" ? f.length - f.peg / 2 : (f.pinAt ?? f.length - f.peg / 2)));
+      const mid = vadd(f.at, vscale(vnorm(f.dir), f.kind === "snap" ? f.length - f.peg / 2 : (f.pinAt ?? f.length - f.peg / 2)));
+      const base = f.pinOff ? vadd(mid, vscale(vnorm(vcross(face, vnorm(f.dir))), f.pinOff)) : mid;
       const along = f.kind === "snap" ? [f.t / 2 + f.deflection / 2] : [0.2, 0.4, 0.6, 0.8, 0.95].map((k) => f.t / 2 + k * (f.reach ?? 0));
-      const best = along
+      // what it goes through: the part thinnest along it (a plate it pierces, not a bigger part round that), then the smallest
+      const axis = applyXformsToDir(face, p.xf);
+      const across = (q: EvalPart) => {
+        const [lo, hi] = placedBox(q, bbox(q)!);
+        return [0, 1, 2].reduce((s, k) => s + Math.abs(axis[k]) * (hi[k] - lo[k]), 0);
+      };
+      const hits = along
         .map((s) => applyXforms(vadd(base, vscale(face, s)), p.xf))
         .flatMap((peg) =>
           model.parts
             .filter((q) => q.id !== p.id && !q.band && !riding.has(q.id) && contains(q, bbox(q), peg))
-            .map((q) => ({ q, peg, size: volumeOf(bbox(q)!) })),
+            .map((q) => ({ q, peg, across: across(q), size: volumeOf(bbox(q)!) })),
         )
-        .sort((a, b) => a.size - b.size)[0];
-      if (best) out.push({ host: p, flex: f, mate: best.q, peg: best.peg });
+        .sort((a, b) => a.across - b.across || a.size - b.size);
+      // everything else it reaches into (a dial it locks the number into, say) is held there with it
+      if (hits.length) out.push({ host: p, flex: f, mate: hits[0].q, peg: hits[0].peg, through: [...new Set(hits.map((h) => h.q))] });
     }
   return out;
 }
 
 /**
- * What each part carries: the parts riding inside its box and the parts
- * clicked onto its pegs. Bands and what they wrap are never carried.
+ * What each part carries: the parts riding inside its box, the parts
+ * clicked onto its pegs and everything its pins go through or into. Bands and
+ * what they wrap are never carried.
  */
 export function carriedBy(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined): Map<string, string[]> {
   const out = riderMap(model, bbox);
   const riding = new Set([...out.values()].flat());
-  for (const { host, mate } of pegMates(model, bbox, riding)) if (!out.get(host.id)?.includes(mate.id)) out.set(host.id, [...(out.get(host.id) ?? []), mate.id]);
+  for (const { host, through } of pegMates(model, bbox, riding))
+    for (const q of through) if (!out.get(host.id)?.includes(q.id)) out.set(host.id, [...(out.get(host.id) ?? []), q.id]);
   return out;
 }
 

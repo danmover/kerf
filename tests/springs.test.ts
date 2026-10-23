@@ -83,6 +83,15 @@ describe("springs, snap fits and flexures", () => {
     expect(errs("angle: 90, pin: 3, reach: 5")).toMatch(/not a living hinge/);
     expect(errs("travel: 2, pin: 10, reach: 5")).toMatch(/no wider than the blade/);
     expect(errs("travel: 2, pin: 3, reach: 5, teardrop: X")).toMatch(/across the pin, not along it/);
+    // or lined up with the hole it goes through, which may sit off the blade's middle (here 2 mm down its width)
+    const off = checks(`part clip {
+  material: "ASA"
+  process: mfg.fdm(build: Z)
+  body box(30, 20, 3)
+  add flexure(at: (0, 0, 3), length: 20, t: 1.2, w: 8, dir: Y, facing: -X, travel: 3, cycles: 500, pin: 3, reach: 5, pin_at: (-4, 16, 1)) as arm
+}`).m.parts[0].flex![0];
+    expect(off).toMatchObject({ pinAt: 16, pinOff: 2 });
+    expect(errs("travel: 2, pin: 3, reach: 5, pin_at: (0, 16, 0)")).toMatch(/pin_at must keep the pin on the blade: at most 2\.5 mm off its middle/);
   });
 
   it("says whether a latch stays tight or goes slack", () => {
