@@ -4,6 +4,8 @@
 // meshes; it never goes through OpenCASCADE except as a coarse stand-in for
 // the checks (see mesh.ts).
 
+import type { SheetData } from "./sheet";
+
 export type V3 = [number, number, number];
 export type V2 = [number, number];
 
@@ -50,6 +52,10 @@ export interface Item {
   noise?: PaintNoise;
   /** a name for the shape, kept for rigging and for messages */
   name?: string;
+  /** which entry of the model's shape list it came from, so fitting moves an ear or a leg as one */
+  g?: number;
+  /** -1 on the copy that mirror: true made across x = 0 */
+  side?: -1;
 }
 
 export type OrganicStyle = "lowpoly" | "smooth" | "detailed";
@@ -67,6 +73,9 @@ export interface OrganicModel {
   tris: number;
   /** detailed style: what the surface looks like up close */
   detail?: { kind: DetailKind; amp: number; scale: number };
+  /** a reference sheet: the shapes are fitted to its outlines (unless fit is false) and coloured from its views */
+  sheet?: SheetData;
+  fit?: boolean;
 }
 
 /** Default triangle budgets: smooth fits one Roblox mesh (20k) and still shades smoothly from the field's normals. */

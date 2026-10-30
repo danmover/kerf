@@ -14,6 +14,7 @@
 import { Args } from "../../lang/args";
 import { Fn, Obj, ShapeV, Vec, typeName, type CallCtx, type Value } from "../../lang/values";
 import { hexColor } from "./sdf";
+import { IDENT, movePrim, rotation, transpose } from "./transform";
 import { MAX_ITEMS, MAX_TRIS, type DetailKind, type Item, type M3, type OrganicModel, type OrganicStyle, type Prim, type V2, type V3 } from "./model";
 
 /** A list of organic items, as the namespace's functions pass them round. */
@@ -26,78 +27,13 @@ export class OrganicV extends Obj {
 const STYLES: readonly OrganicStyle[] = ["lowpoly", "smooth", "detailed"];
 const DETAILS: readonly DetailKind[] = ["fur", "scales", "skin", "feathers"];
 
-// ── transforms ─────────────────────────────────────────────────────────────
-
-type Mat = number[]; // 3x3 row-major
-
-const mul = (a: Mat, b: Mat): Mat => {
-  const o = new Array(9).fill(0);
-  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) o[i * 3 + j] += a[i * 3 + k] * b[k * 3 + j];
-  return o;
-};
-const apply = (m: Mat, v: V3): V3 => [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
-const transpose = (m: Mat): Mat => [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
-const IDENT: Mat = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-const MIRROR_X: Mat = [-1, 0, 0, 0, 1, 0, 0, 0, 1];
-
-/** Rotation by rx about X, then ry about Y, then rz about Z (degrees), like a part's rotate:. */
-export function rotation(r: V3): Mat {
-  const [ax, ay, az] = r.map((d) => (d * Math.PI) / 180);
-  const rx: Mat = [1, 0, 0, 0, Math.cos(ax), -Math.sin(ax), 0, Math.sin(ax), Math.cos(ax)];
-  const ry: Mat = [Math.cos(ay), 0, Math.sin(ay), 0, 1, 0, -Math.sin(ay), 0, Math.cos(ay)];
-  const rz: Mat = [Math.cos(az), -Math.sin(az), 0, Math.sin(az), Math.cos(az), 0, 0, 0, 1];
-  return mul(rz, mul(ry, rx));
-}
-
-/** Move a primitive: p → s·R·p + t, or its mirror image across x = 0 when `mirror`. */
-function movePrim(p: Prim, R: Mat, s: number, t: V3, mirror = false): Prim {
-  const L = mirror ? MIRROR_X : R;
-  const pt = (v: V3): V3 => {
-    const r = apply(L, v);
-    return [r[0] * s + t[0], r[1] * s + t[1], r[2] * s + t[2]];
-  };
-  const dir = (v: V3): V3 => apply(L, v);
-  // world→local maps compose with the inverse of the move's linear part
-  const local = (m: M3 | undefined): M3 => mul(m ?? IDENT, mirror ? MIRROR_X : transpose(R)) as M3;
-  switch (p.k) {
-    case "ball":
-      return { ...p, c: pt(p.c), r: p.r * s };
-    case "ellipsoid":
-      return { ...p, c: pt(p.c), r: [p.r[0] * s, p.r[1] * s, p.r[2] * s], m: local(p.m) };
-    case "limb":
-      return { ...p, a: pt(p.a), b: pt(p.b), ra: p.ra * s, rb: p.rb * s };
-    case "box":
-      return { ...p, c: pt(p.c), h: [p.h[0] * s, p.h[1] * s, p.h[2] * s], r: p.r * s, m: local(p.m) };
-    case "slab":
-      return {
-        ...p,
-        o: pt(p.o),
-        u: dir(p.u),
-        n: dir(p.n),
-        // a mirrored frame turns the outline over in its own plane
-        pts: p.pts.map(([x, y]) => [x * s, (mirror ? -y : y) * s] as V2),
-        t: p.t * s,
-        r: p.r * s,
-      };
-    case "torus":
-      return { ...p, c: pt(p.c), n: dir(p.n), R: p.R * s, r: p.r * s };
-    case "gem":
-      return { ...p, a: pt(p.a), b: pt(p.b), r: p.r * s, tip: p.tip * s };
-    case "cones": {
-      const out = p.s.slice();
-      for (let o = 0; o + 7 < out.length; o += 8) {
-        [out[o], out[o + 1], out[o + 2]] = pt([out[o], out[o + 1], out[o + 2]]);
-        [out[o + 3], out[o + 4], out[o + 5]] = pt([out[o + 3], out[o + 4], out[o + 5]]);
-        out[o + 6] *= s;
-        out[o + 7] *= s;
-      }
-      return { k: "cones", s: out };
-    }
-  }
-}
-
 function mirrored(items: Item[]): Item[] {
-  return items.map((it) => ({ ...it, prim: movePrim(it.prim, IDENT, 1, [0, 0, 0], true), name: it.name ? it.name + "_mirror" : undefined }));
+  return items.map((it) => {
+    const m: Item = { ...it, prim: movePrim(it.prim, IDENT, 1, [0, 0, 0], true), name: it.name ? it.name + "_mirror" : undefined };
+    if (it.side) delete m.side;
+    else m.side = -1;
+    return m;
+  });
 }
 
 // ── arguments ──────────────────────────────────────────────────────────────
@@ -152,6 +88,12 @@ export function organicItems(v: Value | undefined, ctx: CallCtx, what: string): 
   if (out.length > MAX_ITEMS) ctx.error(`${what}: ${out.length} shapes is more than the ${MAX_ITEMS} one model can hold; join small details or make a second part`);
   ctx.tick?.(out.length);
   return out;
+}
+
+function countItems(x: Value | undefined): number {
+  if (x instanceof OrganicV) return x.items.length;
+  if (Array.isArray(x)) return x.reduce((n: number, y) => n + countItems(y), 0);
+  return 0;
 }
 
 function frame(a: Args): { u: V3; n: V3 } {
@@ -264,6 +206,14 @@ export function organicNamespace(): Obj {
       ["shapes", "style", "tris", "color", "blend", "detail", "detail_size", "detail_depth"],
       (a) => {
         const items = organicItems(a.raw("shapes"), a.ctx, "organic.model()");
+        // each entry of the list is one piece (an ear group, a leg, the head) for fitting
+        const shapes = a.raw("shapes");
+        if (Array.isArray(shapes)) {
+          let n = 0;
+          shapes.forEach((x, g) => {
+            for (let k = countItems(x); k > 0 && n < items.length; k--, n++) items[n] = { ...items[n], g };
+          });
+        }
         if (!items.some((i) => i.op === "add")) a.ctx.error("organic.model() needs at least one shape that adds material (not only paint or carve)");
         const blend = a.num("blend", 3);
         if (blend < 0) a.ctx.error("organic.model(): blend must be 0 or more");

@@ -55,7 +55,7 @@ describe("organic shapes", () => {
     const mesh = meshOrganic(organicModel(fox), "final");
     const v = solidVolume(built.shape);
     expect(Math.abs(v - mesh.volume) / mesh.volume).toBeLessThan(0.05);
-  });
+  }, 30000);
 
   it("refuses add and cut after an organic body", () => {
     const m = evaluate(`part p {\n  body organic.model([organic.ball(d: 20)])\n  cut cylinder(d: 4, h: 30)\n}`);

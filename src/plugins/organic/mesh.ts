@@ -5,10 +5,13 @@
 //    like the true curved surface; colours split along borders
 //  - lowpoly: drawn faceted, one flat colour per facet
 
+import { hashString, stableStringify } from "../../kernel/recipe";
 import { decimate } from "./decimate";
+import { fitItems, fitToOutlines, type FitResult } from "./fit";
 import { fieldNormal, surfaceNets } from "./mesher";
-import { makeField, type Field } from "./sdf";
-import { MAX_TRIS, STYLE_TRIS, type OrganicModel, type Prim } from "./model";
+import { makeField, primBox, type Field } from "./sdf";
+import { nearestColour, readSheet, sheetField, sheetFrame, sheetOutlines, type SheetFrame } from "./sheet";
+import { MAX_TRIS, STYLE_TRIS, type OrganicModel, type Prim, type V3 } from "./model";
 
 export type OrganicQuality = "preview" | "final" | "proxy";
 
@@ -62,10 +65,12 @@ function thickness(p: Prim): number {
   }
 }
 
-export function meshOrganic(model: OrganicModel, quality: OrganicQuality): OrganicMesh {
+export function meshOrganic(source: OrganicModel, quality: OrganicQuality): OrganicMesh {
   const t0 = performance.now();
+  const fitted = source.sheet ? fitToSheet(source) : null;
+  const model = fitted?.model ?? source;
   // previews and stand-ins skip the fine detail (it would only alias at their grid size)
-  const field = makeField(quality === "final" ? model : { ...model, detail: undefined });
+  let field = makeField(quality === "final" ? model : { ...model, detail: undefined });
   const size = Math.max(field.hi[0] - field.lo[0], field.hi[1] - field.lo[1], field.hi[2] - field.lo[2]);
   let thin = Infinity;
   for (const it of model.items) if (it.op === "add") thin = Math.min(thin, thickness(it.prim));
@@ -73,14 +78,61 @@ export function meshOrganic(model: OrganicModel, quality: OrganicQuality): Organ
   // thin ears, fins and horns need a few cells across them
   if (quality !== "proxy" && Number.isFinite(thin)) cell = Math.min(cell, Math.max(thin / 2.5, size / 400));
   if (quality === "final" && model.style === "detailed" && model.detail) cell = Math.min(cell, Math.max(model.detail.scale / 3, size / 400));
-  const raw = surfaceNets(field.dist, field.lo, field.hi, cell);
-  const faceColor = colourFaces(field, raw.positions, raw.indices);
-  if (quality !== "proxy") smoothBorders(field, raw.positions, raw.indices, faceColor, cell);
-
   let budget = model.tris > 0 ? model.tris : STYLE_TRIS[model.style];
   if (quality === "preview") budget = Math.min(budget * (model.style === "lowpoly" ? 1 : 0.5), 60000);
   if (quality === "proxy") budget = 900;
   budget = Math.max(12, Math.min(MAX_TRIS, Math.round(budget)));
+  if (fitted && source.sheet && quality !== "proxy") {
+    // colours from the sheet; the model's own (as the nearest sheet colour) where no view sees squarely
+    const base = field;
+    const own = base.palette.map((c) => nearestColour(source.sheet!.palette, c));
+    field = sheetField(base, fitted.frame, source.sheet.palette, cell, (x, y, z) => own[base.sample(x, y, z).color] ?? 0);
+  }
+  return { ...meshField(field, cell, model.style, budget, quality), ms: performance.now() - t0 };
+}
+
+/** Fitted models by their recipe: fitting takes a few seconds, and previews, finals and checks all need it. */
+const fitCache = new Map<string, { model: OrganicModel; frame: SheetFrame; result: FitResult | null }>();
+
+/**
+ * Line a model up with its reference sheet (the sheet scaled to the model's
+ * height, centred on its footprint) and, unless fit is false, move and scale
+ * each entry of its shape list to the sheet's outlines.
+ */
+export function fitToSheet(model: OrganicModel): { model: OrganicModel; frame: SheetFrame; result: FitResult | null } {
+  const key = hashString(stableStringify({ items: model.items, sheet: model.sheet, fit: model.fit }));
+  const hit = fitCache.get(key);
+  if (hit) return hit;
+  const lo: V3 = [Infinity, Infinity, Infinity];
+  const hi: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const it of model.items) {
+    if (it.op !== "add") continue;
+    const [a, b] = primBox(it.prim);
+    for (let k = 0; k < 3; k++) {
+      lo[k] = Math.min(lo[k], a[k]);
+      hi[k] = Math.max(hi[k], b[k]);
+    }
+  }
+  const height = hi[2] - lo[2];
+  const frame = sheetFrame(readSheet(model.sheet!), height, [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]]);
+  let out: { model: OrganicModel; frame: SheetFrame; result: FitResult | null } = { model, frame, result: null };
+  if (model.fit !== false) {
+    const result = fitToOutlines(model, sheetOutlines(frame, height / 90));
+    out = { model: { ...model, items: fitItems(model.items, result.rows) }, frame, result };
+  }
+  if (fitCache.size > 8) fitCache.delete(fitCache.keys().next().value!);
+  fitCache.set(key, out);
+  return out;
+}
+
+/** Mesh any coloured field: surface, colours and clean borders, simplified to the budget, shaded. */
+export function meshField(field: Field, cell: number, style: OrganicModel["style"], budget: number, quality: OrganicQuality): OrganicMesh {
+  const t0 = performance.now();
+  const size = Math.max(field.hi[0] - field.lo[0], field.hi[1] - field.lo[1], field.hi[2] - field.lo[2]);
+  const raw = surfaceNets(field.dist, field.lo, field.hi, cell);
+  const faceColor = colourFaces(field, raw.positions, raw.indices);
+  if (field.tidy) tidyColours(raw.positions, raw.indices, faceColor, field.tidy);
+  if (quality !== "proxy") smoothBorders(field, raw.positions, raw.indices, faceColor, cell);
 
   let positions = raw.positions;
   let indices = raw.indices;
@@ -97,7 +149,7 @@ export function meshOrganic(model: OrganicModel, quality: OrganicQuality): Organ
   const linear = field.palette.map(linearBytes);
   const normal = quality === "proxy" ? null : fieldNormals(field, positions, cell);
   const ao = normal ? occlusion(field, positions, normal, size) : null;
-  const out = model.style === "lowpoly" || !normal ? faceted(positions, indices, colours, linear, ao) : smoothSplit(positions, indices, colours, linear, normal, ao);
+  const out = style === "lowpoly" || !normal ? faceted(positions, indices, colours, linear, ao) : smoothSplit(positions, indices, colours, linear, normal, ao);
   return { ...out, faceColor: colours, palette: field.palette, volume, bbox, cell, ms: performance.now() - t0 };
 }
 
@@ -172,6 +224,94 @@ function colourFaces(field: Field, pos: Float32Array, idx: Uint32Array): Int32Ar
     fc[f] = field.sample((pos[a] + pos[b] + pos[c]) / 3, (pos[a + 1] + pos[b + 1] + pos[c + 1]) / 3, (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3).color;
   }
   return fc;
+}
+
+/**
+ * Clear stray specks of colour: every patch smaller than `minArea` mm² takes
+ * the colour it shares the longest border with, and then each triangle whose
+ * neighbours mostly agree on another colour takes theirs, so borders traced
+ * from pictures come out clean.
+ */
+function tidyColours(pos: Float32Array, idx: Uint32Array, fc: Int32Array, minArea: number) {
+  const nf = fc.length;
+  const nbr = new Int32Array(nf * 3).fill(-1);
+  const open = new Map<string, number>();
+  for (let f = 0; f < nf; f++)
+    for (let k = 0; k < 3; k++) {
+      const a = idx[f * 3 + k];
+      const b = idx[f * 3 + ((k + 1) % 3)];
+      const key = a < b ? a + "," + b : b + "," + a;
+      const g = open.get(key);
+      if (g === undefined) open.set(key, f * 3 + k);
+      else {
+        nbr[f * 3 + k] = Math.floor(g / 3);
+        nbr[g] = f;
+        open.delete(key);
+      }
+    }
+  const area = new Float32Array(nf);
+  for (let f = 0; f < nf; f++) {
+    const a = idx[f * 3] * 3;
+    const b = idx[f * 3 + 1] * 3;
+    const c = idx[f * 3 + 2] * 3;
+    const ux = pos[b] - pos[a], uy = pos[b + 1] - pos[a + 1], uz = pos[b + 2] - pos[a + 2];
+    const vx = pos[c] - pos[a], vy = pos[c + 1] - pos[a + 1], vz = pos[c + 2] - pos[a + 2];
+    area[f] = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    const patch = new Int32Array(nf).fill(-1);
+    const patches: { faces: number[]; area: number }[] = [];
+    for (let f = 0; f < nf; f++) {
+      if (patch[f] >= 0) continue;
+      const id = patches.length;
+      const faces = [f];
+      patch[f] = id;
+      let sum = 0;
+      for (let q = 0; q < faces.length; q++) {
+        const g = faces[q];
+        sum += area[g];
+        for (let k = 0; k < 3; k++) {
+          const h = nbr[g * 3 + k];
+          if (h >= 0 && patch[h] < 0 && fc[h] === fc[f]) {
+            patch[h] = id;
+            faces.push(h);
+          }
+        }
+      }
+      patches.push({ faces, area: sum });
+    }
+    let changed = 0;
+    for (const p of patches.filter((p) => p.area < minArea).sort((a, b) => a.area - b.area)) {
+      const border = new Map<number, number>();
+      for (const g of p.faces)
+        for (let k = 0; k < 3; k++) {
+          const h = nbr[g * 3 + k];
+          if (h >= 0 && fc[h] !== fc[g]) border.set(fc[h], (border.get(fc[h]) ?? 0) + 1);
+        }
+      let best = -1;
+      let most = 0;
+      for (const [c, n] of border)
+        if (n > most) {
+          most = n;
+          best = c;
+        }
+      if (best < 0) continue;
+      for (const g of p.faces) fc[g] = best;
+      changed++;
+    }
+    for (let f = 0; f < nf; f++) {
+      const a = nbr[f * 3];
+      const b = nbr[f * 3 + 1];
+      const c = nbr[f * 3 + 2];
+      if (a < 0 || b < 0 || c < 0) continue;
+      const odd = fc[a] === fc[b] ? fc[a] : fc[b] === fc[c] ? fc[b] : fc[a] === fc[c] ? fc[a] : fc[f];
+      if (odd !== fc[f]) {
+        fc[f] = odd;
+        changed++;
+      }
+    }
+    if (!changed) break;
+  }
 }
 
 function fieldNormals(field: Field, pos: Float32Array, cell: number): Float32Array {

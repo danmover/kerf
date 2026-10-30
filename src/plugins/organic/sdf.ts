@@ -41,6 +41,8 @@ export interface Field {
   palette: string[];
   /** how far the detail moves the surface, mm */
   detailAmp: number;
+  /** colour patches smaller than this (mm²) are stray and take their surroundings' colour */
+  tidy?: number;
 }
 
 // ── primitives ─────────────────────────────────────────────────────────────
@@ -196,7 +198,7 @@ function gem(a: V3, b: V3, r: number, sides: number, tip: number): Dist {
   };
 }
 
-function primDist(p: Prim): Dist {
+export function primDist(p: Prim): Dist {
   switch (p.k) {
     case "ball":
       return (x, y, z) => len3(x - p.c[0], y - p.c[1], z - p.c[2]) - p.r;
