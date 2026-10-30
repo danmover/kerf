@@ -235,7 +235,8 @@ describe("the seatpost number bracket", () => {
     const seat = steps[0];
     if (seat.kind !== "seat") throw new Error("no seat step");
     expect(name(seat.part)).toBe("bracket");
-    expect(seat.riders.map(name)).toEqual(["pad"]);
+    // the tilt dial is fitted into the jaw first, so it goes on with the bracket and its pad
+    expect(seat.riders.map(name).sort()).toEqual(["dial", "pad"]);
     expect(steps[1].title).toBe("Fit O-ring");
     const slide = steps.find((s) => s.kind === "slide")!;
     if (slide.kind !== "slide") throw new Error("no slide step");

@@ -1,14 +1,15 @@
 design "Seatpost Number Bracket"
-note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring wraps the post with a strand at the top and one at the bottom, and each end turns round a double hook on the bracket's side (over the top prong, down behind, under the bottom one), pressing a contoured saddle and its TPU grip pad onto the post's flat back. The number's pointed end slides into the V lip of a printed tilt dial in the jaw, and a pin on a springy side arm goes through the near cheek, through the number's centre hole (where the old bolt went) and on into the stub on the far cheek that the dial turns on, so the 1 mm number cannot slip past it. A springy latch beside the far cheek pushes three wedge-sided teeth into gaps under the dial, so the tilt clicks at 0, 15 and 30° with no play. Press the latch's tab to change the tilt; press the arm's lever to draw the pin back and slide the number in or out. The number's tail rises 30° above level."
+note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring wraps the post with a strand at the top and one at the bottom, and each end turns round a double hook on the bracket's side (over the top prong, down behind, under the bottom one), pressing a contoured saddle and its TPU grip pad onto the post's flat back. The number's pointed end slides into the V lip of a printed tilt dial in the jaw, and a pin on a springy side arm goes through the near cheek, through the number's centre hole (where the old bolt went) and on into the stub on the far cheek that the dial turns on, so the 1 mm number cannot slip past it. A springy latch beside the far cheek pushes three wedge-sided teeth into gaps under the dial, so the tilt clicks at 0, 15 and 30° with no play. To change the tilt, pull the arrow-shaped tab on the far side out, tilt the number and let go; press the arm's lever to draw the pin back and slide the number in or out. The number's tail rises 30° above level."
 note "Everything about the bracket is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); the dial and the number turn about the centre hole by that angle plus rise, so the number's tail rises rise degrees above level."
 note "v4, from the printed v3 and its side-arm rework: the pin spans the whole slot and goes on into the far cheek, and every overhang prints without supports (the pin and its holes are teardrops)."
 note "v5: the number tilts up 30°, the bracket is 20 mm tall (the O-ring's double hooks as short as a 3.53 mm cord allows) and its seat fits a 20 mm flat back. The jaw is a plain block standing on the bed with the tilted pocket cut through it."
 note "v6: the tilt adjusts by hand and is firm at each click: the number sits in a dial (a third small print) that turns about its centre hole on a stub off the far cheek and is locked by a sprung latch whose wedge teeth take up all play. The centre hole sits 3.2 mm higher so the dial's teeth fit under it in the same 20 mm height."
+note "v7: the tilt is changed by pulling one big arrow-shaped tab straight out, about 7.5 N, rather than pressing a small tab sideways with about 27 N. The arrow points the way to pull, the latch springs back into the next click on its own, and a requirement keeps the pull light."
 
 brief {
   purpose: "Hold a race number behind a Giant Propel aero seatpost with no screws"
   setting: "Road and triathlon racing: fitted and taken off by hand at the bike, ridden in rain and sun"
-  priorities: ["number never comes out: the pin goes through it into the far side", "tilt adjusts by hand and has no play", "prints with no supports at all", "compact", "fits by hand with one O-ring", "does not rock or turn on the post"]
+  priorities: ["number never comes out: the pin goes through it into the far side", "tilt adjusts by hand and has no play", "anyone can change the tilt without being shown how", "prints with no supports at all", "compact", "fits by hand with one O-ring", "does not rock or turn on the post"]
   look: "Black, small, tucked in behind the post"
 
   temp: -5C .. 50C
@@ -67,7 +68,7 @@ param lip      = 2.7mm  range 1 .. 4    "Rim round each double hook (the stretch
 param pivot_y  = 24mm   range 20 .. 32  "From the post's flat back to the number's centre hole, where the pin goes and the number turns"
 param rise     = 30     range 0 .. 30   "How far the number's tail rises above level, degrees: the dial clicks at 0, 15 and 30"
 param cheek    = 2.5mm  range 2 .. 4    "Jaw cheek thickness"
-param arm_t    = 1.2mm  range 1.2 .. 2  "Locking arm and tilt latch thickness"
+param arm_t    = 1.2mm  range 1.2 .. 2  "Locking arm thickness"
 param pin_d    = 3.2mm  range 2.4 .. 3.6 "Locking pin diameter (it and its teardrop point go through the 5.2 mm centre hole)"
 param engage   = 1mm    range 0.6 .. 2  "How far the pin goes on into the stub on the far cheek"
 param dial_t   = 2.4mm  range 1.6 .. 3.2 "Tilt dial thickness, beside the number"
@@ -146,10 +147,10 @@ let sk       = stub_d / 2 * 0.866
 let hex      = polygon(points: [(pivot_y + stub_d / 2, H_z), (pivot_y + stub_d / 4, H_z + sk), (pivot_y - stub_d / 4, H_z + sk), (pivot_y - stub_d / 2, H_z), (pivot_y - stub_d / 4, H_z - sk), (pivot_y + stub_d / 4, H_z - sk)])
 // the dial slides up onto its stub along a slot that runs out through the number's side of the hub, clear of the lip
 let slot_turn = 60
-// the tilt latch: a blade beside the far cheek, rooted in the saddle like the arm, carrying a comb under the dial with two
-// teeth (7.5° either side of straight down) that bite axially into its gaps from the far side. The teeth's sides slope by
+// the tilt latch: a blade beside the far cheek, rooted in the saddle like the arm, carrying a comb under the dial with
+// three teeth (15° apart round straight down) that bite axially into its gaps from the far side. The teeth's sides slope by
 // the wedge and the gaps' with them, 0.05 mm clear as drawn: the latch springs the teeth in until they wedge, so the dial
-// has no play. A tab off its tip, pressed toward the post, bends it out and frees the dial
+// has no play. Pulling the tab on its tip straight out bends it away and frees the dial
 let tw       = tan(wedge)
 let bite     = 1.5
 let comb_tip = x_bed + bite
@@ -174,7 +175,14 @@ let latch_root = seat_off + 1.3
 let latch_l  = cheek_back - latch_root
 let latch_a  = comb_lo - latch_root
 let latch_travel = (bite + 0.3) * 2 * latch_l^3 / (latch_a^2 * (3 * latch_l - latch_a))
-let tab_l    = 4.5
+// the pull tab: an arrow standing out from the latch's tip, pointing the way to pull. Its head's back edges are what the
+// fingertips hook behind, and pulled straight out it bends the whole blade, so the pull is light
+let tab_o    = latch_x - latch_t / 2                 // the latch's outer face
+let tab_y    = cheek_back - 1.2
+let tab_out  = 8                                     // shaft, out from the latch
+let tab_head = 5
+let tab_w    = 9
+let pull_n   = 3 * 1900 * (saddle_h * latch_t^3 / 12) * latch_travel / latch_l^3    // N, ASA's modulus 1900 MPa
 // the locking arm: a blade beside the near (+x) cheek, rooted in the saddle and running back past the hole; its pin goes
 // through the near cheek, the number and on into the stub. Drawing it back by pull frees the slot
 let arm_gap  = 0.6                                   // between the arm and the cheek: open enough not to fuse when printed
@@ -294,8 +302,9 @@ part bracket {
   for ang in [-105, -90, -75] {
     add rotate(prism(points: [(-far_in + 0.1, -rw_root / 2), (-far_in + 0.1, rw_root / 2), (-comb_tip, rw_tip / 2), (-comb_tip, -rw_tip / 2)], h: r_tip + 0.4 - r_root - 0.15, at: (0, pivot_y + r_root + 0.15, H_z), dir: Y), ang, axis: X, origin: H) as comb_teeth
   }
-  // the tab, straight out from the latch's tip: pressed toward the post it bends the latch out and the teeth let go
-  add box(tab_l, 1.6, saddle_h, at: (latch_x - tab_l / 2, cheek_back - 0.8, -saddle_h / 2)) as tab
+  // the pull tab, an arrow out from the latch's tip: pulled the way it points it bends the latch out and the teeth let go.
+  // It stands on the bed, so it prints with no support
+  add prism(points: [(tab_o + 0.1, tab_y - 1.2), (tab_o - tab_out, tab_y - 1.2), (tab_o - tab_out, tab_y - tab_w / 2), (tab_o - tab_out - 1.2, tab_y - tab_w / 2), (tab_o - tab_out - tab_head, tab_y), (tab_o - tab_out - 1.2, tab_y + tab_w / 2), (tab_o - tab_out, tab_y + tab_w / 2), (tab_o - tab_out, tab_y + 1.2), (tab_o + 0.1, tab_y + 1.2)], h: saddle_h, at: (0, 0, -saddle_h / 2)) as pull_tab
   // flat underneath, level with the saddle's foot, so it stands on the bed
   cut box(120, 120, 40, at: (0, 0, -saddle_h / 2 - 40)) as foot
 }
@@ -447,11 +456,11 @@ decision number_angle "How the number sits" {
 
 decision tilt_lock "How the tilt is set and held" {
   ask: "Adjust the tilt without it being loose"
-  chose: "Click dial with a sprung wedge latch"
+  chose: "Click dial with a pull-tab latch"
   by: "claude"
-  why: "You asked to adjust the tilt without it being loose. The number's point sits in a printed dial that turns on a stub off the far cheek, about the centre hole the pin goes through. Three teeth on a springy latch beside the far cheek reach up into gaps under the dial. Their sides slope 8°, so the spring pushes them in until they wedge, which takes out all the play, and a push on the number cannot force them out (ASA only slides on ASA past about 17°). Press the latch's tab toward the post to free the dial, turn the number to the next click and let go. It all still prints flat with no supports."
-  option "Click dial with a sprung wedge latch" "Firm at 0, 15 and 30°, changed by hand with no tools."
-  option "Friction clamp" "Any angle, but it needs a screw to clamp it and can creep when knocked."
+  why: "You asked to adjust the tilt without it being loose, then for it to be much easier for someone who has never seen it. The number's point sits in a printed dial that turns on a stub off the far cheek, about the centre hole the pin goes through. Three teeth on a springy latch beside the far cheek reach up into gaps under the dial. Their sides slope 8°, so a push on the number cannot force them out (ASA only slides on ASA past about 17°) and the dial has no play. To change it, pull the arrow-shaped tab out the way it points (about 7.5 N), tilt the number and let go: the latch springs back and clicks into the next stop on its own. A dial you just push from click to click would be easier still, but a printed spring that size holds it only loosely, so the number would wobble on bumps."
+  option "Click dial with a pull-tab latch" "Firm at 0, 15 and 30°: pull the tab, tilt, let go."
+  option "Push-to-click dial" "No tab: push the number to the next click. Easiest, but it gives a little on big bumps."
   option "Fixed angle" "Nothing to move or wear: reprint it to change the tilt."
 }
 
@@ -509,21 +518,21 @@ analysis "Pothole" {
   safety: 2
 }
 
-// a hand pressing the number's tail down turns the dial: its teeth push the latch's teeth forward (into the comb bar
-// they stand on; their own strength is a requirement below) and its hub pushes the back of the stub the other way, a
-// couple as big as the push's moment about the pin
+// a hand pressing the number's tail down turns the dial: its teeth push the latch's teeth forward, which pass it into
+// the comb's bar and web (the teeth's own strength is a requirement below), and its hub pushes the back of the stub the
+// other way, a couple as big as the push's moment about the pin
 let tilt_turn = tilt_push * (plate_l - hole_c) / r_mesh
-let comb_z   = H_z - r_root - 0.15 - (saddle_h / 2 + H_z - r_root - 0.15) / 2
-let stub_y   = pivot_y + stub_d / 2 - 0.6
-let comb_w   = ((far_in + comb_tip) / 2, pivot_y * ct + comb_z * st, -pivot_y * st + comb_z * ct)
+let comb_z   = H_z - r_tip - 0.15 - (saddle_h / 2 + H_z - r_tip - 0.15) / 2
+let stub_y   = pivot_y + stub_d / 2 - 1.1
+let comb_w   = ((latch_x + latch_t / 2 + comb_tip) / 2, pivot_y * ct + comb_z * st, -pivot_y * st + comb_z * ct)
 let stub_w   = ((far_in - slot / 2) / 2, stub_y * ct + H_z * st, -stub_y * st + H_z * ct)
 
 analysis "Tilt push" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  load: force(zone(at: comb_w, size: (comb_tip - far_in + 0.4, comb_hi - comb_lo, saddle_h / 2 + H_z - r_root - 0.15)), tilt_turn, dir: (0, -ct, st))
-  load: force(zone(at: stub_w, size: (-slot / 2 - far_in + 0.4, 1.4, 4)), tilt_turn, dir: post_back)
+  load: force(zone(at: comb_w, size: (comb_tip - latch_x - latch_t / 2 + 0.2, comb_hi - comb_lo, saddle_h / 2 + H_z - r_tip - 0.15)), tilt_turn, dir: (0, -ct, st))
+  load: force(zone(at: stub_w, size: (-slot / 2 - far_in + 0.4, 2.4, 6)), tilt_turn, dir: post_back)
   printed
   cycles: 1000
   safety: 2
@@ -545,13 +554,15 @@ require "The tilt is one of the dial's clicks" for adjust: abs(rise - 15 * round
 require "The dial's teeth hold a hand pressing the number's tail, twice over" for adjust: 34 / tooth_mpa >= 2
 require "The latch's teeth hold it too, twice over" for adjust: 34 / ridge_mpa >= 2
 require "The latch's teeth slope less than ASA grips ASA (about 0.3 wet), so a push on the number cannot wedge them out" for adjust: tan(wedge) <= 0.25
+require "Pulling the tab out far enough to free the dial takes a light pull" soft for adjust: pull_n <= 10
+require "The tab stands out far enough to pinch and pull" for adjust: tab_out + tab_head >= 12
 require "The O-ring pulls firmly" soft for gust, bumps: oring.stretch >= 1.3
 require "Stretching the O-ring over its hook is a one-hand job" soft for fit: oring.fit_force <= 45N
 require "The hooks' rim keeps the O-ring on" for fit: lip >= 0.75 * oring_cs
 require "The O-ring runs clear of the saddle's sides" for fit: clear >= oring.cord / 2 + 0.5
 require "The saddle hugs the post's back corners" for gust: horn >= 2 && horn <= post_d / 3
 
-test "Fit and remove": "Press the latch's tab toward the post, push the dial up into the jaw from below, slot first, onto its stub, and let go at a click. Hook one end of the O-ring over the left double hook (over the top prong, down behind, under the bottom one), wrap it round the post high and low and stretch the other end over the right hook's rim with one hand; press the arm's lever toward the post, slide the number into the dial's lip and let go: the pin must go through its centre hole into the stub. Press the lever again and slide it out."
-test "Tilt": "Press the latch's tab toward the post, turn the number to the next click and let go: it must click in at 0, 15 and 30° and not move when the tail is pushed up and down by hand."
+test "Fit and remove": "Pull the arrow-shaped tab out, push the dial up into the jaw from below, slot first, onto its stub, and let go at a click. Hook one end of the O-ring over the left double hook (over the top prong, down behind, under the bottom one), wrap it round the post high and low and stretch the other end over the right hook's rim with one hand; press the arm's lever toward the post, slide the number into the dial's lip and let go: the pin must go through its centre hole into the stub. Press the lever again and slide it out."
+test "Tilt": "Hand the bracket to someone who has not seen it and ask them to tilt the number: they should find the arrow-shaped tab, pull it out, turn the number and let go, and it must click in at 0, 15 and 30° and not move when the tail is pushed up and down by hand."
 test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post and the number must neither move in the jaw nor change its tilt."
 buy "AS568-227 EPDM O-rings (spares)" { qty: 4, price: 0.6 }
