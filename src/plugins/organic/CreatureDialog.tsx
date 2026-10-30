@@ -20,10 +20,10 @@ import "./creature.css";
 export const useCreatureDialog = create<{ open: boolean }>(() => ({ open: false }));
 export const openCreatureDialog = () => useCreatureDialog.setState({ open: true });
 
-const STYLES: { id: OrganicStyle; label: string; detail: string; tris: number[] }[] = [
-  { id: "lowpoly", label: "Low-poly game", detail: "Chunky facets and flat colours, like Roblox pets", tris: [1500, 2500, 4000, 8000] },
-  { id: "smooth", label: "Smooth toy", detail: "Soft rounded forms for figurines and renders", tris: [10000, 20000, 40000] },
-  { id: "detailed", label: "Detailed", detail: "Fur, scales, skin or feathers up close", tris: [80000, 160000, 300000] },
+const STYLES: { id: OrganicStyle; label: string; detail: string; tris: number[]; def: number }[] = [
+  { id: "smooth", label: "Smooth", detail: "Soft stylised forms with baked shading, like game pet sheets", tris: [8000, 12000, 16000, 20000, 40000], def: 16000 },
+  { id: "lowpoly", label: "Low-poly", detail: "Chunky facets and flat colours", tris: [1500, 2500, 4000, 8000], def: 4000 },
+  { id: "detailed", label: "Detailed", detail: "Fur, scales, skin or feathers up close", tris: [80000, 160000, 300000], def: 160000 },
 ];
 
 /** What Claude is asked to do, from the dialog's choices. */
@@ -32,7 +32,9 @@ export function creatureBrief(o: { text: string; style: OrganicStyle; tris: numb
   const lines = [
     `Make this creature with organic.model(): style: "${o.style}" (${style.label.toLowerCase()}), tris: ${o.tris}, about ${o.height} mm tall, facing -Y and standing on z = 0.`,
     o.blankFace ? "Leave the face blank for expression decals: no painted eyes, eyebrows or mouth, but keep the muzzle, beak or nose shape." : "Give it its eyes and mouth as part of the model.",
-    o.pictures ? `Match the attached reference picture${o.pictures > 1 ? "s" : ""}: the silhouette from the front, side, back and top, the colour regions and every count. Compare with capture_view from those sides before you finish.` : "",
+    o.pictures
+      ? `Match the attached reference picture${o.pictures > 1 ? "s" : ""}: measure its proportions first (head, body, legs, ears and tail as fractions of the height), then match the silhouette from the front, side, back and top, the colour regions, the shapes of the fur edges and every count. Compare with capture_view from those sides and fix what differs before you finish.`
+      : "Work out its proportions and characteristic shapes first, then compare with capture_view from the front, side and top and refine before you finish.",
     "",
     o.text.trim(),
   ];
@@ -55,8 +57,8 @@ async function chatReady(projectId: string, ms = 4000) {
 export function CreatureDialog() {
   const open = useCreatureDialog((s) => s.open);
   const [text, setText] = useState("");
-  const [style, setStyle] = useState<OrganicStyle>("lowpoly");
-  const [tris, setTris] = useState(2500);
+  const [style, setStyle] = useState<OrganicStyle>("smooth");
+  const [tris, setTris] = useState(16000);
   const [height, setHeight] = useState(100);
   const [blankFace, setBlankFace] = useState(true);
   const [files, setFiles] = useState<File[]>([]);
@@ -77,8 +79,8 @@ export function CreatureDialog() {
   const chooseStyle = (id: OrganicStyle) => {
     setStyle(id);
     const s = STYLES.find((x) => x.id === id)!;
-    setTris(s.tris[Math.min(1, s.tris.length - 1)]);
-    setBlankFace(id === "lowpoly");
+    setTris(s.def);
+    setBlankFace(id !== "detailed");
   };
 
   const make = async () => {

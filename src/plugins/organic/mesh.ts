@@ -1,8 +1,9 @@
 // From an organic model to triangles: sample the field on a grid, make a
-// surface, colour every triangle, then shape the mesh for its style.
-//  - lowpoly: simplified to the triangle budget and drawn faceted, one flat
-//    colour per facet (the chunky look of stylised game pets)
-//  - smooth and detailed: dense, smooth normals, colours split along borders
+// surface, colour every triangle and straighten the colour borders, simplify
+// to the triangle budget, then bake soft shading into the colours.
+//  - smooth and detailed: normals from the field, so even a light mesh shades
+//    like the true curved surface; colours split along borders
+//  - lowpoly: drawn faceted, one flat colour per facet
 
 import { decimate } from "./decimate";
 import { fieldNormal, surfaceNets } from "./mesher";
@@ -53,6 +54,11 @@ function thickness(p: Prim): number {
       return p.r * 2;
     case "gem":
       return p.r * 2;
+    case "cones": {
+      let t = Infinity;
+      for (let o = 0; o + 7 < p.s.length; o += 8) t = Math.min(t, Math.max(p.s[o + 6], p.s[o + 7]) * 2);
+      return t;
+    }
   }
 }
 
@@ -69,6 +75,7 @@ export function meshOrganic(model: OrganicModel, quality: OrganicQuality): Organ
   if (quality === "final" && model.style === "detailed" && model.detail) cell = Math.min(cell, Math.max(model.detail.scale / 3, size / 400));
   const raw = surfaceNets(field.dist, field.lo, field.hi, cell);
   const faceColor = colourFaces(field, raw.positions, raw.indices);
+  if (quality !== "proxy") smoothBorders(field, raw.positions, raw.indices, faceColor, cell);
 
   let budget = model.tris > 0 ? model.tris : STYLE_TRIS[model.style];
   if (quality === "preview") budget = Math.min(budget * (model.style === "lowpoly" ? 1 : 0.5), 60000);
@@ -88,11 +95,72 @@ export function meshOrganic(model: OrganicModel, quality: OrganicQuality): Organ
   const volume = signedVolume(positions, indices);
   const bbox = boxOf(positions);
   const linear = field.palette.map(linearBytes);
-  const out =
-    model.style === "lowpoly" || quality === "proxy"
-      ? faceted(positions, indices, colours, linear)
-      : smoothSplit(positions, indices, colours, linear, field, cell);
+  const normal = quality === "proxy" ? null : fieldNormals(field, positions, cell);
+  const ao = normal ? occlusion(field, positions, normal, size) : null;
+  const out = model.style === "lowpoly" || !normal ? faceted(positions, indices, colours, linear, ao) : smoothSplit(positions, indices, colours, linear, normal, ao);
   return { ...out, faceColor: colours, palette: field.palette, volume, bbox, cell, ms: performance.now() - t0 };
+}
+
+/**
+ * Straighten the edges between colours. Each triangle takes the colour at its
+ * middle, so a border first follows the grid in little steps; sliding the
+ * border's corners toward their neighbours along the border, then back onto
+ * the surface, turns the steps into clean curves (a muzzle's edge, a sock's
+ * rim) before the mesh is simplified.
+ */
+function smoothBorders(field: Field, pos: Float32Array, idx: Uint32Array, fc: Int32Array, cell: number) {
+  const nv = pos.length / 3;
+  // the colour on each side of every edge
+  const sides = new Map<number, number>();
+  const borderNbrs = new Map<number, number[]>();
+  const link = (a: number, b: number) => {
+    let l = borderNbrs.get(a);
+    if (!l) borderNbrs.set(a, (l = []));
+    if (!l.includes(b)) l.push(b);
+  };
+  for (let f = 0; f < fc.length; f++)
+    for (let k = 0; k < 3; k++) {
+      const a = idx[f * 3 + k];
+      const b = idx[f * 3 + ((k + 1) % 3)];
+      const key = a < b ? a * nv + b : b * nv + a;
+      const other = sides.get(key);
+      if (other === undefined) sides.set(key, fc[f]);
+      else if (other !== fc[f]) {
+        link(a, b);
+        link(b, a);
+      }
+    }
+  if (!borderNbrs.size) return;
+  // only corners on a simple border line move; where three colours meet stays put
+  const movers = [...borderNbrs].filter(([, l]) => l.length === 2);
+  const next = new Float32Array(movers.length * 3);
+  for (let iter = 0; iter < 6; iter++) {
+    movers.forEach(([v, [a, b]], i) => {
+      for (let c = 0; c < 3; c++) next[i * 3 + c] = pos[v * 3 + c] * 0.5 + (pos[a * 3 + c] + pos[b * 3 + c]) * 0.25;
+    });
+    movers.forEach(([v], i) => {
+      let x = next[i * 3];
+      let y = next[i * 3 + 1];
+      let z = next[i * 3 + 2];
+      // back onto the surface
+      for (let s = 0; s < 2; s++) {
+        const d = field.dist(x, y, z);
+        const n = fieldNormal(field.dist, x, y, z, cell * 0.25);
+        x -= n[0] * d;
+        y -= n[1] * d;
+        z -= n[2] * d;
+      }
+      // never further than a cell from where it started this pass
+      const dx = x - pos[v * 3];
+      const dy = y - pos[v * 3 + 1];
+      const dz = z - pos[v * 3 + 2];
+      const l = Math.hypot(dx, dy, dz);
+      const k = l > cell ? cell / l : 1;
+      pos[v * 3] += dx * k;
+      pos[v * 3 + 1] += dy * k;
+      pos[v * 3 + 2] += dz * k;
+    });
+  }
 }
 
 function colourFaces(field: Field, pos: Float32Array, idx: Uint32Array): Int32Array {
@@ -106,8 +174,54 @@ function colourFaces(field: Field, pos: Float32Array, idx: Uint32Array): Int32Ar
   return fc;
 }
 
+function fieldNormals(field: Field, pos: Float32Array, cell: number): Float32Array {
+  const nv = pos.length / 3;
+  const normal = new Float32Array(nv * 3);
+  const e = cell * 0.25;
+  for (let v = 0; v < nv; v++) {
+    const n = fieldNormal(field.dist, pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2], e);
+    normal[v * 3] = n[0];
+    normal[v * 3 + 1] = n[1];
+    normal[v * 3 + 2] = n[2];
+  }
+  return normal;
+}
+
+/**
+ * Ambient occlusion baked into the colours: how much of the open space just
+ * above each corner the model itself fills, probed along the normal. Creases
+ * where a head meets a body, under ears and between puffs go softly darker,
+ * which reads as depth in every renderer and game engine.
+ */
+function occlusion(field: Field, pos: Float32Array, normal: Float32Array, size: number): Float32Array {
+  const nv = pos.length / 3;
+  const ao = new Float32Array(nv);
+  const STEPS = [0.012, 0.03, 0.055, 0.085, 0.12];
+  const W = [1, 0.85, 0.7, 0.55, 0.4];
+  const wsum = W.reduce((s, w) => s + w, 0);
+  for (let v = 0; v < nv; v++) {
+    const x = pos[v * 3];
+    const y = pos[v * 3 + 1];
+    const z = pos[v * 3 + 2];
+    let occ = 0;
+    for (let i = 0; i < STEPS.length; i++) {
+      const h = STEPS[i] * size;
+      const d = field.dist(x + normal[v * 3] * h, y + normal[v * 3 + 1] * h, z + normal[v * 3 + 2] * h);
+      occ += W[i] * Math.min(1, Math.max(0, (h - d) / h));
+    }
+    ao[v] = 1 - Math.min(1, (occ / wsum) * 1.6);
+  }
+  return ao;
+}
+
+/** Colour scaled by occlusion: open surfaces keep their colour, deep creases drop to about half. */
+const shade = (c: [number, number, number], ao: number): [number, number, number] => {
+  const k = 0.42 + 0.58 * ao;
+  return [Math.round(c[0] * k), Math.round(c[1] * k), Math.round(c[2] * k)];
+};
+
 /** Every facet its own three corners, flat normal and colour. */
-function faceted(pos: Float32Array, idx: Uint32Array, fc: Int32Array, rgb: [number, number, number][]) {
+function faceted(pos: Float32Array, idx: Uint32Array, fc: Int32Array, rgb: [number, number, number][], ao: Float32Array | null) {
   const nf = idx.length / 3;
   const positions = new Float32Array(nf * 9);
   const normals = new Float32Array(nf * 9);
@@ -130,7 +244,9 @@ function faceted(pos: Float32Array, idx: Uint32Array, fc: Int32Array, rgb: [numb
     nx /= l;
     ny /= l;
     nz /= l;
-    const col = rgb[fc[f]] ?? [200, 200, 200];
+    const base = rgb[fc[f]] ?? [200, 200, 200];
+    // one shade per facet keeps the low-poly look flat
+    const col = ao ? shade(base, (ao[idx[f * 3]] + ao[idx[f * 3 + 1]] + ao[idx[f * 3 + 2]]) / 3) : base;
     for (let k = 0; k < 3; k++) {
       const s = idx[f * 3 + k] * 3;
       const o = (f * 3 + k) * 3;
@@ -150,16 +266,7 @@ function faceted(pos: Float32Array, idx: Uint32Array, fc: Int32Array, rgb: [numb
 }
 
 /** Shared corners with smooth normals, split only where two colours meet. */
-function smoothSplit(pos: Float32Array, idx: Uint32Array, fc: Int32Array, rgb: [number, number, number][], field: Field, cell: number) {
-  const nv = pos.length / 3;
-  const normal = new Float32Array(nv * 3);
-  const e = cell * 0.25;
-  for (let v = 0; v < nv; v++) {
-    const n = fieldNormal(field.dist, pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2], e);
-    normal[v * 3] = n[0];
-    normal[v * 3 + 1] = n[1];
-    normal[v * 3 + 2] = n[2];
-  }
+function smoothSplit(pos: Float32Array, idx: Uint32Array, fc: Int32Array, rgb: [number, number, number][], normal: Float32Array, ao: Float32Array | null) {
   const copies = new Map<number, number>();
   const P: number[] = [];
   const N: number[] = [];
@@ -176,7 +283,8 @@ function smoothSplit(pos: Float32Array, idx: Uint32Array, fc: Int32Array, rgb: [
         copies.set(key, o);
         P.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
         N.push(normal[v * 3], normal[v * 3 + 1], normal[v * 3 + 2]);
-        const c = rgb[col] ?? [200, 200, 200];
+        const base = rgb[col] ?? [200, 200, 200];
+        const c = ao ? shade(base, ao[v]) : base;
         C.push(c[0], c[1], c[2]);
       }
       I[f * 3 + k] = o;

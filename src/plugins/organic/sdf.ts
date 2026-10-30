@@ -212,7 +212,44 @@ function primDist(p: Prim): Dist {
       return torus(p.c, p.R, p.r, p.n);
     case "gem":
       return gem(p.a, p.b, p.r, p.sides, p.tip);
+    case "cones":
+      return cones(p.s);
   }
+}
+
+/** The union of tapered segments, skipping those whose box is further than the nearest so far. */
+function cones(s: number[]): Dist {
+  const n = Math.floor(s.length / 8);
+  const ds: Dist[] = [];
+  const box = new Float64Array(n * 6);
+  for (let i = 0; i < n; i++) {
+    const o = i * 8;
+    const a: V3 = [s[o], s[o + 1], s[o + 2]];
+    const b: V3 = [s[o + 3], s[o + 4], s[o + 5]];
+    const ra = s[o + 6];
+    const rb = s[o + 7];
+    ds.push(limb(a, b, ra, rb));
+    for (let k = 0; k < 3; k++) {
+      box[i * 6 + k] = Math.min(a[k] - ra, b[k] - rb);
+      box[i * 6 + 3 + k] = Math.max(a[k] + ra, b[k] + rb);
+    }
+  }
+  return (x, y, z) => {
+    let d = Infinity;
+    for (let i = 0; i < n; i++) {
+      const o = i * 6;
+      if (d !== Infinity) {
+        const dx = Math.max(box[o] - x, 0, x - box[o + 3]);
+        const dy = Math.max(box[o + 1] - y, 0, y - box[o + 4]);
+        const dz = Math.max(box[o + 2] - z, 0, z - box[o + 5]);
+        const b2 = dx * dx + dy * dy + dz * dz;
+        // the segment is at least as far as its box
+        if (b2 > 0 && (d <= 0 || b2 >= d * d)) continue;
+      }
+      d = Math.min(d, ds[i](x, y, z));
+    }
+    return d;
+  };
 }
 
 /** A box sure to hold the primitive. */
@@ -245,6 +282,11 @@ export function primBox(p: Prim): [V3, V3] {
       const L = len3(p.b[0] - p.a[0], p.b[1] - p.a[1], p.b[2] - p.a[2]) || 1;
       const tipEnd: V3 = [p.b[0] + ((p.b[0] - p.a[0]) / L) * p.tip, p.b[1] + ((p.b[1] - p.a[1]) / L) * p.tip, p.b[2] + ((p.b[2] - p.a[2]) / L) * p.tip];
       return join(around(p.a, p.r), around(tipEnd, p.r));
+    }
+    case "cones": {
+      let b: [V3, V3] = around([p.s[0], p.s[1], p.s[2]], p.s[6]);
+      for (let o = 0; o + 7 < p.s.length; o += 8) b = join(join(b, around([p.s[o], p.s[o + 1], p.s[o + 2]], p.s[o + 6])), around([p.s[o + 3], p.s[o + 4], p.s[o + 5]], p.s[o + 7]));
+      return b;
     }
   }
 }

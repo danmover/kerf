@@ -2,42 +2,42 @@
 // shapes, with a Meshy-style "Make a creature" panel and a game-ready export.
 
 import type { KerfPlugin } from "../types";
-import zephyrFox from "./templates/zephyr-fox.kerf?raw";
-import puffling from "./templates/puffling.kerf?raw";
+import fox from "./templates/fox.kerf?raw";
+import cloudSheep from "./templates/cloud-sheep.kerf?raw";
 import { organicPromptSection } from "./prompt";
 
 export const organicPlugin: KerfPlugin = {
   id: "organic",
   name: "Creatures and characters",
-  description: "Animals, people, pets and other soft shapes: describe one or drop in a reference sheet, pick low-poly, smooth or detailed, and export it with its colours for Roblox, Unity or Godot.",
+  description: "Animals, people, pets and other soft shapes: describe one or drop in a reference sheet, pick smooth, low-poly or detailed, and export it with its colours for Roblox, Unity or Godot.",
   templates: [
     {
-      id: "zephyr-fox",
-      name: "Zephyr Fox",
-      tagline: "A chunky low-poly game pet: sky-blue fox with a cloud-swirl tail, painted markings and a blank face for expression decals.",
-      source: zephyrFox,
+      id: "fox",
+      name: "Fox",
+      tagline: "A smooth stylised game pet built to match its reference sheet: cheek ruffs, a bushy tail, dark boots and a blank face for expression decals.",
+      source: fox,
       prompts: [
-        "Make the tail swirl bigger and add a second, smaller curl",
-        "Turn it into an orange fox with dark brown socks and ear tips",
-        "Make a smooth, detailed version with fur for a close-up render",
+        "Make it a sky-blue Zephyr Fox whose tail ends in a white cloud swirl",
+        "Give it big glossy eyes and a small smile for a render",
+        "Make a detailed version with fur for a close-up",
       ],
-      stats: "1 painted body · 2600 triangles · game export",
+      stats: "1 painted body · 16k triangles · game export",
       category: "characters",
-      shows: ["organic", "low-poly", "game export"],
+      shows: ["organic", "smooth", "game export"],
     },
     {
-      id: "puffling",
-      name: "Puffling",
-      tagline: "A round little cloud pet made of exactly five puffs, with stubby pale-blue legs, ready for a game.",
-      source: puffling,
+      id: "cloud-sheep",
+      name: "Cloud Sheep",
+      tagline: "A woolly game pet from its reference sheet: a coat of round puffs, curled lavender horns and a star on its forehead.",
+      source: cloudSheep,
       prompts: [
-        "Give it a small rainbow on its back, solid and attached",
-        "Make a storm-cloud version in dark grey with a yellow lightning bolt painted on the front",
-        "Make it smooth and 60 mm tall to 3D print as a figurine",
+        "Make the horns curl one more turn and add a rainbow star",
+        "Turn it into a storm sheep: dark grey wool with a yellow lightning bolt",
+        "Make it 60 mm tall to 3D print as a figurine",
       ],
-      stats: "1 painted body · 2000 triangles · game export",
+      stats: "1 painted body · 18k triangles · game export",
       category: "characters",
-      shows: ["organic", "low-poly"],
+      shows: ["organic", "smooth"],
     },
   ],
   prompt: organicPromptSection,
@@ -46,7 +46,7 @@ export const organicPlugin: KerfPlugin = {
       id: "game-model",
       group: "model",
       label: "Game model",
-      detail: "Roblox, Unity, Godot: one colour texture, no vertex colours",
+      detail: "Roblox, Unity, Godot: colours and shading baked into one texture",
       ext: ".glb",
       icon: "Sparkle",
       selection: true,

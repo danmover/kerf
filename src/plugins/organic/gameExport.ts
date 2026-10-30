@@ -1,8 +1,9 @@
 // "Game model" export: a .glb for Roblox, Unity, Godot and the like. Game
 // engines want a colour texture rather than vertex colours (Roblox ignores
-// those), so every colour on the model gets a small square in one palette
-// texture and each triangle's corners point at its colour's square. Flat
-// colours stay exact and the texture stays tiny.
+// those), so the colours are baked into one texture: every triangle of a
+// painted model gets its own small square, filled with its corners' colours
+// blended across it (so the baked shading in the creases and the clean colour
+// borders come along), and a plain part gets one square of its colour.
 
 import type { MeshData } from "../../kernel/build";
 
@@ -28,15 +29,16 @@ export interface GameMesh {
 
 export interface GameModel {
   meshes: GameMesh[];
-  /** palette texture, sRGB RGBA, size × size */
+  /** the baked texture, sRGB RGBA, size × size */
   size: number;
   pixels: Uint8Array<ArrayBuffer>;
-  colors: number;
+  /** texture squares used: one per painted triangle, one per plain part */
+  cells: number;
   triangles: number;
 }
 
-/** Pixels per colour square: enough that mipmaps keep each colour clean a few levels down. */
-const CELL = 16;
+/** Largest texture Roblox keeps at full size. */
+const TEXTURE = 1024;
 
 const srgbByte = (linearByte: number) => {
   const l = linearByte / 255;
@@ -50,56 +52,57 @@ function hexRgb(hex: string): [number, number, number] {
 }
 
 export function gameModel(items: GameItem[]): GameModel {
-  const palette: [number, number, number][] = [];
-  const index = new Map<number, number>();
-  const cellOf = (rgb: [number, number, number]) => {
-    const key = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
-    let i = index.get(key);
-    if (i === undefined) {
-      i = palette.length;
-      palette.push(rgb);
-      index.set(key, i);
-    }
-    return i;
-  };
-  // first pass: every vertex's colour square
-  const cells = items.map((it) => {
-    const nv = it.mesh.positions.length / 3;
-    const c = new Int32Array(nv);
-    if (it.painted && it.mesh.colors) {
-      const col = it.mesh.colors;
-      for (let v = 0; v < nv; v++) c[v] = cellOf([srgbByte(col[v * 3]), srgbByte(col[v * 3 + 1]), srgbByte(col[v * 3 + 2])]);
-    } else c.fill(cellOf(hexRgb(it.color)));
-    return c;
-  });
-
-  const cols = Math.max(1, Math.ceil(Math.sqrt(palette.length)));
+  const painted = items.map((it) => it.painted && !!it.mesh.colors);
+  const cells = items.reduce((n, it, k) => n + (painted[k] ? it.mesh.indices.length / 3 : 1), 0);
+  const grid = Math.max(1, Math.ceil(Math.sqrt(cells)));
+  // the biggest square that fits the texture, 4 px at least (then the texture grows)
+  const cell = [16, 8, 4].find((c) => grid * c <= TEXTURE) ?? 4;
   let size = 64;
-  while (size < cols * CELL) size *= 2;
-  const per = Math.floor(size / CELL);
+  while (size < grid * cell) size *= 2;
   const pixels = new Uint8Array(size * size * 4);
-  palette.forEach((rgb, i) => {
-    const cx = (i % per) * CELL;
-    const cy = Math.floor(i / per) * CELL;
-    for (let y = cy; y < cy + CELL; y++)
-      for (let x = cx; x < cx + CELL; x++) {
-        const o = (y * size + x) * 4;
-        pixels[o] = rgb[0];
-        pixels[o + 1] = rgb[1];
-        pixels[o + 2] = rgb[2];
+  // corners of a triangle's square, inset a pixel so mipmaps and filtering stay inside it
+  const pad = cell >= 8 ? 1 : 0.5;
+  const span = cell - 2 * pad;
+  let next = 0;
+  const place = () => {
+    const i = next++;
+    return [(i % grid) * cell, Math.floor(i / grid) * cell];
+  };
+  const fill = (x0: number, y0: number, a: number[], b: number[], c: number[]) => {
+    for (let ty = 0; ty < cell; ty++)
+      for (let tx = 0; tx < cell; tx++) {
+        // where this texel falls on the triangle, clamped onto it so the margin repeats the edge
+        let u = Math.max(0, (tx + 0.5 - pad) / span);
+        let v = Math.max(0, (ty + 0.5 - pad) / span);
+        if (u + v > 1) {
+          const k = 1 / (u + v);
+          u *= k;
+          v *= k;
+        }
+        const w = 1 - u - v;
+        const o = ((y0 + ty) * size + x0 + tx) * 4;
+        for (let ch = 0; ch < 3; ch++) pixels[o + ch] = Math.round(w * a[ch] + u * b[ch] + v * c[ch]);
         pixels[o + 3] = 255;
       }
-  });
+  };
 
   let triangles = 0;
   const meshes = items.map((it, k) => {
     const m = it.matrix;
     const src = it.mesh;
-    const nv = src.positions.length / 3;
+    // a mirroring placement turns triangles inside out: flip them back
+    const det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
+    const nf = src.indices.length / 3;
+    triangles += nf;
+    // painted: three corners of its own per triangle, each pointing into the triangle's square
+    const corners = painted[k] ? Uint32Array.from(src.indices) : null;
+    const nv = corners ? nf * 3 : src.positions.length / 3;
+    const vertexOf = (i: number) => (corners ? corners[i] : i);
     const positions = new Float32Array(nv * 3);
     const normals = new Float32Array(nv * 3);
     const uvs = new Float32Array(nv * 2);
-    for (let v = 0; v < nv; v++) {
+    for (let i = 0; i < nv; i++) {
+      const v = vertexOf(i);
       const x = src.positions[v * 3];
       const y = src.positions[v * 3 + 1];
       const z = src.positions[v * 3 + 2];
@@ -107,9 +110,9 @@ export function gameModel(items: GameItem[]): GameModel {
       const py = m[1] * x + m[5] * y + m[9] * z + m[13];
       const pz = m[2] * x + m[6] * y + m[10] * z + m[14];
       // Kerf is Z up with fronts toward -Y; glTF is Y up with fronts toward +Z, in metres
-      positions[v * 3] = px / 1000;
-      positions[v * 3 + 1] = pz / 1000;
-      positions[v * 3 + 2] = -py / 1000;
+      positions[i * 3] = px / 1000;
+      positions[i * 3 + 1] = pz / 1000;
+      positions[i * 3 + 2] = -py / 1000;
       const nx = src.normals[v * 3];
       const ny = src.normals[v * 3 + 1];
       const nz = src.normals[v * 3 + 2];
@@ -120,27 +123,46 @@ export function gameModel(items: GameItem[]): GameModel {
       qx /= l;
       qy /= l;
       qz /= l;
-      normals[v * 3] = qx;
-      normals[v * 3 + 1] = qz;
-      normals[v * 3 + 2] = -qy;
-      const cell = cells[k][v];
-      uvs[v * 2] = ((cell % per) * CELL + CELL / 2) / size;
-      // glTF puts uv (0, 0) at the image's top left
-      uvs[v * 2 + 1] = (Math.floor(cell / per) * CELL + CELL / 2) / size;
+      normals[i * 3] = qx;
+      normals[i * 3 + 1] = qz;
+      normals[i * 3 + 2] = -qy;
     }
-    // a mirroring placement turns triangles inside out: flip them back
-    const det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
-    const indices = Uint32Array.from(src.indices);
+    if (corners) {
+      const col = src.colors!;
+      const rgb = (v: number) => [srgbByte(col[v * 3]), srgbByte(col[v * 3 + 1]), srgbByte(col[v * 3 + 2])];
+      for (let f = 0; f < nf; f++) {
+        const [x0, y0] = place();
+        fill(x0, y0, rgb(corners[f * 3]), rgb(corners[f * 3 + 1]), rgb(corners[f * 3 + 2]));
+        // glTF puts uv (0, 0) at the image's top left
+        const at = [
+          [x0 + pad, y0 + pad],
+          [x0 + pad + span, y0 + pad],
+          [x0 + pad, y0 + pad + span],
+        ];
+        for (let c = 0; c < 3; c++) {
+          uvs[(f * 3 + c) * 2] = at[c][0] / size;
+          uvs[(f * 3 + c) * 2 + 1] = at[c][1] / size;
+        }
+      }
+    } else {
+      const [x0, y0] = place();
+      const c = hexRgb(it.color);
+      fill(x0, y0, c, c, c);
+      for (let i = 0; i < nv; i++) {
+        uvs[i * 2] = (x0 + cell / 2) / size;
+        uvs[i * 2 + 1] = (y0 + cell / 2) / size;
+      }
+    }
+    const indices = corners ? Uint32Array.from({ length: nf * 3 }, (_, i) => i) : Uint32Array.from(src.indices);
     if (det < 0)
       for (let f = 0; f < indices.length; f += 3) {
         const t = indices[f + 1];
         indices[f + 1] = indices[f + 2];
         indices[f + 2] = t;
       }
-    triangles += indices.length / 3;
     return { name: it.name, positions, normals, uvs, indices };
   });
-  return { meshes, size, pixels, colors: palette.length, triangles };
+  return { meshes, size, pixels, cells, triangles };
 }
 
 /** Most triangles Roblox imports in one mesh. */
@@ -153,9 +175,8 @@ export async function gameGlb(model: GameModel, title: string): Promise<ArrayBuf
   const tex = new THREE.DataTexture(model.pixels, model.size, model.size, THREE.RGBAFormat);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.flipY = false;
-  tex.magFilter = THREE.NearestFilter;
   tex.needsUpdate = true;
-  const mat = new THREE.MeshStandardMaterial({ name: "palette", map: tex, roughness: 0.75, metalness: 0 });
+  const mat = new THREE.MeshStandardMaterial({ name: "baked", map: tex, roughness: 0.7, metalness: 0 });
   const root = new THREE.Group();
   root.name = title;
   const geos: InstanceType<typeof THREE.BufferGeometry>[] = [];

@@ -1,0 +1,62 @@
+design "Cloud Sheep"
+note "Island pet Cloud Sheep, from its reference sheet: a cream sheep in a coat of round wool puffs, a big woolly head over a smooth tan face, floppy tan ears, lavender ram horns curling at the sides, lavender hooves, a small round wool tail and a yellow star on its forehead. Smooth stylised game pet; the face is left blank for the expression decals."
+note "Coordinates: X right, Y back, Z up, in millimetres; it faces -Y and stands on z = 0."
+
+let wool     = #f6ecdd
+let face     = #ecc9a0
+let lavender = #b7a0d8
+let star     = #f6cf4e
+
+// one leg, cream with a lavender hoof
+let leg = [
+  organic.limb(from: (0, 0, 21), to: (0, -0.5, 6), d: 14, d2: 13, blend: 3),
+  organic.egg(size: (14, 15, 8), at: (0, -1, 4), blend: 2),
+  organic.paint(organic.block(size: (20, 20, 12), at: (0, 0, 2), r: 0), color: lavender),
+]
+
+part cloud_sheep {
+  material: "PLA"
+  body organic.model([
+    // body: a smooth core under a coat of wool puffs, spread evenly over its top and sides (right half, mirrored)
+    organic.egg(size: (40, 58, 32), at: (0, 8, 34)),
+    organic.ball(d: 19, at: (4.3, 8.0, 50.1), mirror: true),
+    organic.ball(d: 19, at: (0.8, -5.3, 48.5)),
+    organic.ball(d: 19, at: (6.6, 20.4, 47.7), mirror: true),
+    organic.ball(d: 19, at: (11.2, -2.2, 46), mirror: true),
+    organic.ball(d: 19, at: (14.8, 15.7, 43.5), mirror: true),
+    organic.ball(d: 19, at: (7.2, -14.0, 41.9), mirror: true),
+    organic.ball(d: 19, at: (5.2, 31.8, 41), mirror: true),
+    organic.ball(d: 19, at: (17.8, 2.4, 39.4), mirror: true),
+    organic.ball(d: 19, at: (14.5, 25.5, 36.9), mirror: true),
+    organic.ball(d: 19, at: (13.7, -11.4, 35.2), mirror: true),
+    organic.ball(d: 19, at: (19.1, 11.7, 32.8), mirror: true),
+    organic.ball(d: 19, at: (4.2, -18.5, 31.1), mirror: true),
+    organic.ball(d: 19, at: (9.4, 31.3, 30.3), mirror: true),
+    organic.ball(d: 19, at: (16.6, -2.9, 28.6), mirror: true),
+    organic.ball(d: 19, at: (15.0, 19.3, 26.1), mirror: true),
+    organic.ball(d: 15, at: (0, 41, 37), blend: 3),
+    // legs
+    organic.group(leg, at: (10, -8, 0), mirror: true),
+    organic.group(leg, at: (10, 23, 0), mirror: true),
+    // head: a big woolly cap of puffs, left open at the front for a smooth face
+    organic.ball(d: 46, at: (0, -14, 68), blend: 6),
+    organic.ball(d: 20, at: (5.5, -14.0, 86.7), mirror: true),
+    organic.ball(d: 20, at: (1.0, -24.8, 84.3)),
+    organic.ball(d: 20, at: (8.4, -4.0, 83.1), mirror: true),
+    organic.ball(d: 20, at: (14.1, -22.2, 80.7), mirror: true),
+    organic.ball(d: 20, at: (18.3, -7.9, 77.1), mirror: true),
+    organic.ball(d: 20, at: (8.8, -31.2, 74.6), mirror: true),
+    organic.ball(d: 20, at: (6.3, 4.5, 73.4), mirror: true),
+    organic.ball(d: 20, at: (21.3, -18.3, 71), mirror: true),
+    organic.ball(d: 20, at: (16.9, -1.0, 67.4), mirror: true),
+    organic.ball(d: 20, at: (20.5, -11.5, 61.4), mirror: true),
+    organic.ball(d: 20, at: (9.3, 0.9, 57.7), mirror: true),
+    organic.ball(d: 20, at: (15.1, -20.4, 55.3), mirror: true),
+    organic.egg(size: (28, 22, 28), at: (0, -30, 53), color: face, blend: 6),
+    // floppy ears and curled horns
+    organic.egg(size: (25, 10, 12), at: (29, -19, 55), rotate: (0, 25, -15), color: face, blend: 3, mirror: true),
+    organic.curl(at: (28, -8, 70), axis: (1, -0.8, 0), start: Z, r: 12.5, r2: 3, turns: -1.15, d: 14, d2: 6, rise: 6, color: lavender, blend: 2, mirror: true),
+    // star on the forehead
+    organic.star(d: 18, t: 6, at: (0, -38, 81), facing: (0, -0.7, 0.72), color: star, blend: 1.5),
+  ], style: "smooth", tris: 18000, color: wool, blend: 2)
+}

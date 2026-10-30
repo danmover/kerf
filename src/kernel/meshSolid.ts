@@ -38,10 +38,16 @@ export function solidFromTriangles(positions: Float32Array, indices: Uint32Array
     }
     sew.Perform();
     const sewed = sew.SewedShape();
-    if (sewed.ShapeType() !== oc.TopAbs_ShapeEnum.TopAbs_SHELL) throw new BuildError("The shape's surface did not close into one shell.");
-    const solid = R.cast(fixer.SolidFromShell(oc.TopoDS.Shell(sewed)));
-    if (!(solid instanceof R.Solid)) throw new BuildError("The shape's surface did not make a solid.");
-    return solid;
+    // a creature with a loose bit (an ear that misses the head) sews into several shells:
+    // keep each as its own solid so the checks can say what floats and where
+    const shells = sewed.ShapeType() === oc.TopAbs_ShapeEnum.TopAbs_SHELL ? [sewed] : [...R.iterTopo(sewed, "shell")];
+    if (!shells.length) throw new BuildError("The shape's surface did not close into a shell.");
+    const solids = shells.map((sh) => {
+      const solid = R.cast(fixer.SolidFromShell(oc.TopoDS.Shell(sh)));
+      if (!(solid instanceof R.Solid)) throw new BuildError("The shape's surface did not make a solid.");
+      return solid;
+    });
+    return solids.length === 1 ? solids[0] : (R.makeCompound(solids) as Shape3D);
   } finally {
     for (const f of faces) f.delete();
     sew.delete();

@@ -386,27 +386,34 @@ export function TemplateArt({ id }: { id: string }) {
   const line = { stroke: "var(--line-3)" };
   const tint = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})` });
 
-  if (id === "zephyr-fox" || id === "puffling") {
-    // a few flat facets, like the low-poly creatures themselves
-    const facet = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})`, strokeWidth: 1, strokeLinejoin: "round" as const });
-    return id === "puffling" ? (
+  if (id === "fox" || id === "cloud-sheep") {
+    const soft = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})`, strokeWidth: 1.2 });
+    return id === "cloud-sheep" ? (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
-        <polygon points="70,58 84,38 104,34 122,40 132,58 118,74 86,74" style={facet(0.16)} />
-        <polygon points="58,66 70,52 86,58 82,76 64,78" style={facet(0.1)} />
-        <polygon points="132,58 144,64 140,78 120,78 118,66" style={facet(0.1)} />
-        <polygon points="86,74 118,74 112,86 92,86" style={{ ...violet, fill: "rgb(var(--violet-rgb) / 0.12)", strokeWidth: 1 }} />
-        <polygon points="84,38 88,26 96,34" style={facet(0.22)} />
-        <polygon points="114,34 122,26 124,38" style={facet(0.22)} />
+        {[
+          [78, 66, 15],
+          [96, 60, 16],
+          [116, 64, 15],
+          [130, 74, 12],
+          [88, 80, 14],
+          [112, 82, 14],
+        ].map(([cx, cy, r], i) => (
+          <circle key={i} cx={cx} cy={cy} r={r} style={soft(0.1)} />
+        ))}
+        <circle cx="70" cy="44" r="18" style={soft(0.16)} />
+        <ellipse cx="62" cy="52" rx="9" ry="10" style={{ ...line, fill: "rgb(var(--accent-rgb) / 0.05)", strokeWidth: 1 }} />
+        <path d="M80 36 a8 8 0 1 1 -2 12 a4.5 4.5 0 1 1 3 -6" style={{ ...violet, fill: "none", strokeWidth: 2.2, strokeLinecap: "round" }} />
+        <path d="M86 94 v12 M108 96 v12" style={{ ...accent, strokeWidth: 3, strokeLinecap: "round" }} />
       </svg>
     ) : (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
-        <polygon points="78,30 70,6 92,26" style={facet(0.26)} />
-        <polygon points="122,30 130,6 108,26" style={facet(0.26)} />
-        <polygon points="72,36 100,24 128,36 132,58 100,70 68,58" style={facet(0.14)} />
-        <polygon points="84,58 100,70 116,58 100,82" style={{ ...line, fill: "rgb(var(--accent-rgb) / 0.05)", strokeWidth: 1 }} />
-        <polygon points="86,72 114,72 118,100 82,100" style={facet(0.1)} />
-        <polygon points="114,84 150,70 164,56 158,84 128,96" style={facet(0.12)} />
-        <circle cx="160" cy="62" r="9" style={{ ...violet, fill: "none", strokeWidth: 1.2 }} />
+        <path d="M76 34 L72 8 L94 28 Z M124 34 L128 8 L106 28 Z" style={{ ...soft(0.24), strokeLinejoin: "round" }} />
+        <ellipse cx="100" cy="46" rx="30" ry="25" style={soft(0.14)} />
+        <path d="M70 56 l-10 4 l8 2 l-6 6 l14 -4 M130 56 l10 4 l-8 2 l6 6 l-14 -4" style={{ ...accent, fill: "none", strokeWidth: 1.1, strokeLinejoin: "round" }} />
+        <circle cx="100" cy="60" r="3" style={{ fill: "var(--accent)" }} />
+        <path d="M86 70 Q100 66 114 70 L116 100 L84 100 Z" style={soft(0.1)} />
+        <path d="M114 88 C138 92 150 70 166 60 C168 76 150 98 120 98" style={{ ...soft(0.12), strokeLinejoin: "round" }} />
+        <path d="M156 64 l4 8 l4 -10" style={{ ...violet, fill: "none", strokeWidth: 1.2 }} />
       </svg>
     );
   }  if (id === "reducer")

@@ -23,7 +23,9 @@ export type Prim =
   /** a ring of radius R and tube radius r round axis n */
   | { k: "torus"; c: V3; R: number; r: number; n: V3 }
   /** a faceted crystal from a to b: `sides` flat sides of radius r, a pointed tip of length tip */
-  | { k: "gem"; a: V3; b: V3; r: number; sides: number; tip: number };
+  | { k: "gem"; a: V3; b: V3; r: number; sides: number; tip: number }
+  /** tapered segments joined end to end or fanned out (curved tubes, curls, fur tufts): [ax, ay, az, bx, by, bz, ra, rb] per segment */
+  | { k: "cones"; s: number[] };
 
 export type ItemOp = "add" | "carve" | "paint";
 
@@ -59,7 +61,7 @@ export interface OrganicModel {
   items: Item[];
   /** colour where no shape or paint gives one */
   color: string;
-  /** lowpoly: faceted, flat colours (stylised game assets); smooth: soft toy; detailed: fine surface detail */
+  /** smooth: soft stylised forms (the default); lowpoly: faceted, flat colours; detailed: fine surface detail */
   style: OrganicStyle;
   /** target triangle count of the final mesh (0: the style's default) */
   tris: number;
@@ -67,7 +69,8 @@ export interface OrganicModel {
   detail?: { kind: DetailKind; amp: number; scale: number };
 }
 
-export const STYLE_TRIS: Record<OrganicStyle, number> = { lowpoly: 4000, smooth: 40000, detailed: 160000 };
+/** Default triangle budgets: smooth fits one Roblox mesh (20k) and still shades smoothly from the field's normals. */
+export const STYLE_TRIS: Record<OrganicStyle, number> = { lowpoly: 4000, smooth: 16000, detailed: 160000 };
 
 /** Most triangles a model may ask for. */
 export const MAX_TRIS = 400000;

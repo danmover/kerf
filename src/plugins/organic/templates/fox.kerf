@@ -1,0 +1,52 @@
+design "Fox"
+note "Island pet Fox, from its reference sheet: an orange fox with a cream lower face, cheek ruffs, chest and tail tip, dark brown ear tips and boots, big pointed ears with pink insides, a short tapering snout with a small dark nose and a big bushy tail. Smooth stylised game pet with an oversized head; the face is left blank for the expression decals."
+note "Coordinates: X right, Y back, Z up, in millimetres; the fox faces -Y and stands on z = 0."
+
+let orange = #e2691f
+let cream  = #f7e3ca
+let dark   = #4a2c24
+let pink   = #f0a49a
+let nose   = #2a1c19
+
+// one ear, upright round its base: a thick rounded triangle, hollowed and pink inside, dark at the tip
+let ear = [
+  organic.slab(points: [(-15, 0), (15, 0), (0, 34)], t: 9, r: 4),
+  organic.carve(organic.slab(points: [(-9.5, 5), (9.5, 5), (0, 26)], t: 5, at: (0, -5, 0), r: 2.6), color: pink, blend: 1.5),
+  organic.paint(organic.egg(size: (56, 34, 40), at: (0, 0, 39)), color: dark),
+]
+
+// one leg from hip to paw, dark from the ankle down
+let leg = [
+  organic.limb(from: (0, 0, 24), to: (0, -1.5, 6), d: 13.5, d2: 12.5, blend: 4),
+  organic.egg(size: (15, 19, 11), at: (0, -3.5, 5.5), blend: 3),
+  organic.paint(organic.limb(from: (0, -2, -2), to: (0, -1, 10.5), d: 24), color: dark),
+]
+
+part fox {
+  material: "PLA"
+  body organic.model([
+    // body: chest forward, rump back
+    organic.egg(size: (34, 48, 30), at: (0, 10, 32)),
+    organic.egg(size: (30, 24, 30), at: (0, -5, 36), blend: 8),
+    organic.egg(size: (16, 22, 24), at: (10.5, 17, 26), blend: 6, mirror: true),
+    organic.group(leg, at: (10, -6, 0), mirror: true),
+    organic.group(leg, at: (11, 20, 0), mirror: true),
+    // head: round cranium, wide cheeks, a short tapering snout and a little nose
+    organic.egg(size: (62, 48, 48), at: (0, -6, 66), blend: 10),
+    organic.egg(size: (68, 38, 30), at: (0, -12, 54), blend: 8),
+    organic.limb(from: (0, -16, 54), to: (0, -38, 49), d: 26, d2: 10, blend: 8),
+    organic.egg(size: (8.5, 6.5, 6.5), at: (0, -42.5, 50), color: nose, blend: 1),
+    // white mutton-chop cheeks with jagged points
+    organic.egg(size: (20, 28, 16), at: (21, -12, 49), color: cream, blend: 8, mirror: true),
+    organic.tuft(at: (25, -10, 49), toward: (1, 0.55, -0.3), length: 14, d: 17, count: 3, spread: 56, fan: Z, color: cream, blend: 5, mirror: true),
+    // ears
+    organic.group(ear, at: (21.5, -3, 80), rotate: (-6, 26, 16), mirror: true),
+    // big bushy tail
+    organic.tube(points: [(0, 26, 28), (0, 34, 33), (0, 45, 39), (0, 56, 43), (0, 67, 45)], d: [10, 28, 37, 29, 4], blend: 5),
+    // cream lower face, chest ruff and tail tip
+    organic.paint(organic.egg(size: (70, 36, 21), at: (0, -24, 45)), color: cream),
+    organic.paint(organic.egg(size: (30, 18, 28), at: (0, -17, 40)), color: cream),
+    organic.paint(organic.tuft(at: (0, -17, 36), toward: (0, 0, -1), length: 18, d: 13, count: 3, spread: 50, fan: Y), color: cream),
+    organic.paint(organic.tuft(at: (0, 76, 48), toward: (0, -1, -0.2), length: 28, d: 28, count: 6, around: true, spread: 56), color: cream),
+  ], style: "smooth", tris: 16000, color: orange, blend: 3)
+}

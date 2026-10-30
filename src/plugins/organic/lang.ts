@@ -8,11 +8,11 @@
 //       organic.ball(d: 48, at: (0, -16, 52), blend: 8),
 //       organic.limb(from: (9, -4, 24), to: (9, -4, 4), d: 12, mirror: true),
 //       organic.paint(organic.egg(size: (18, 20, 14), at: (0, -36, 46)), color: #ffffff),
-//     ], style: "lowpoly", tris: 2000, color: #7cc3f0)
+//     ], tris: 12000, color: #7cc3f0)
 //   }
 
 import { Args } from "../../lang/args";
-import { Fn, Obj, ShapeV, typeName, type CallCtx, type Value } from "../../lang/values";
+import { Fn, Obj, ShapeV, Vec, typeName, type CallCtx, type Value } from "../../lang/values";
 import { hexColor } from "./sdf";
 import { MAX_ITEMS, MAX_TRIS, type DetailKind, type Item, type M3, type OrganicModel, type OrganicStyle, type Prim, type V2, type V3 } from "./model";
 
@@ -83,6 +83,16 @@ function movePrim(p: Prim, R: Mat, s: number, t: V3, mirror = false): Prim {
       return { ...p, c: pt(p.c), n: dir(p.n), R: p.R * s, r: p.r * s };
     case "gem":
       return { ...p, a: pt(p.a), b: pt(p.b), r: p.r * s, tip: p.tip * s };
+    case "cones": {
+      const out = p.s.slice();
+      for (let o = 0; o + 7 < out.length; o += 8) {
+        [out[o], out[o + 1], out[o + 2]] = pt([out[o], out[o + 1], out[o + 2]]);
+        [out[o + 3], out[o + 4], out[o + 5]] = pt([out[o + 3], out[o + 4], out[o + 5]]);
+        out[o + 6] *= s;
+        out[o + 7] *= s;
+      }
+      return { k: "cones", s: out };
+    }
   }
 }
 
@@ -169,6 +179,78 @@ function starPoints(points: number, d: number, inner: number): V2[] {
   return out;
 }
 
+// ── curves ─────────────────────────────────────────────────────────────────
+
+const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit = (a: V3): V3 => {
+  const l = Math.hypot(...a) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+
+/** Most segments one tube, curl or tuft may have. */
+const MAX_SEGMENTS = 160;
+
+/** Segments along a smooth (Catmull-Rom) curve through the points, radius eased from point to point. */
+export function tubeSegments(pts: V3[], radii: number[]): number[] {
+  const n = pts.length;
+  const tangent = (i: number): V3 => {
+    const a = pts[Math.max(0, i - 1)];
+    const b = pts[Math.min(n - 1, i + 1)];
+    const k = i === 0 || i === n - 1 ? 1 : 0.5;
+    return [(b[0] - a[0]) * k, (b[1] - a[1]) * k, (b[2] - a[2]) * k];
+  };
+  const out: number[] = [];
+  const budget = Math.max(1, Math.floor(MAX_SEGMENTS / (n - 1)));
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = pts[i];
+    const p1 = pts[i + 1];
+    const m0 = tangent(i);
+    const m1 = tangent(i + 1);
+    const len = Math.hypot(...sub(p1, p0));
+    const rMin = Math.max(0.05, Math.min(radii[i], radii[i + 1]));
+    const steps = Math.max(1, Math.min(budget, Math.ceil(len / (rMin * 0.9)), 16));
+    let prev = p0;
+    let prevR = radii[i];
+    for (let k = 1; k <= steps; k++) {
+      const t = k / steps;
+      const t2 = t * t;
+      const t3 = t2 * t;
+      const h00 = 2 * t3 - 3 * t2 + 1;
+      const h10 = t3 - 2 * t2 + t;
+      const h01 = -2 * t3 + 3 * t2;
+      const h11 = t3 - t2;
+      const q: V3 = [0, 1, 2].map((c) => h00 * p0[c] + h10 * m0[c] + h01 * p1[c] + h11 * m1[c]) as V3;
+      const r = radii[i] + (radii[i + 1] - radii[i]) * t;
+      out.push(prev[0], prev[1], prev[2], q[0], q[1], q[2], prevR, r);
+      prev = q;
+      prevR = r;
+    }
+  }
+  return out;
+}
+
+/** Turn v about the unit axis k by angle a (radians). */
+function turn(v: V3, k: V3, a: number): V3 {
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  const kv = cross(k, v);
+  const d = (k[0] * v[0] + k[1] * v[1] + k[2] * v[2]) * (1 - c);
+  return [v[0] * c + kv[0] * s + k[0] * d, v[1] * c + kv[1] * s + k[1] * d, v[2] * c + kv[2] * s + k[2] * d];
+}
+
+/** Diameters at each of n points: one number, a start and end, or one per point. */
+function diameters(a: Args, name: string, n: number, def?: number): number[] {
+  const v = a.raw(name);
+  const list = typeof v === "number" ? [v] : Array.isArray(v) ? v : v instanceof Vec ? v.v : v === undefined && def !== undefined ? [def] : null;
+  if (!list || !list.every((x) => typeof x === "number" && x > 0)) return a.ctx.error(`${a.fname}(): ${name} is a diameter in mm, or a list of them, each greater than 0`);
+  const ds = list as number[];
+  if (ds.length === 1) return new Array(n).fill(ds[0]);
+  if (ds.length === n) return ds;
+  if (ds.length === 2) return Array.from({ length: n }, (_, i) => ds[0] + ((ds[1] - ds[0]) * i) / Math.max(1, n - 1));
+  return a.ctx.error(`${a.fname}(): ${name} needs one diameter, a start and end pair, or one per point (${n})`);
+}
+
 // ── the namespace ──────────────────────────────────────────────────────────
 
 function fn(name: string, params: string[], impl: (a: Args) => Value, doc: string): [string, Fn] {
@@ -185,7 +267,7 @@ export function organicNamespace(): Obj {
         if (!items.some((i) => i.op === "add")) a.ctx.error("organic.model() needs at least one shape that adds material (not only paint or carve)");
         const blend = a.num("blend", 3);
         if (blend < 0) a.ctx.error("organic.model(): blend must be 0 or more");
-        const style = a.oneOf("style", STYLES, "lowpoly");
+        const style = a.oneOf("style", STYLES, "smooth");
         const tris = Math.round(a.num("tris", 0));
         if (tris < 0 || tris > MAX_TRIS) a.ctx.error(`organic.model(): tris is the triangle budget, from 100 to ${MAX_TRIS} (0 picks one for the style)`);
         if (tris > 0 && tris < 100) a.ctx.error("organic.model(): tris below 100 cannot hold a recognisable shape");
@@ -203,7 +285,7 @@ export function organicNamespace(): Obj {
         } else if (style === "detailed") model.detail = { kind: "skin", scale: 3, amp: 0.25 };
         return new ShapeV({ t: "meshgen", gen: "organic", data: model });
       },
-      'organic.model(shapes, style: "lowpoly", tris: 0, color: #c8c8c8, blend: 3, detail:, detail_size:, detail_depth:) — one soft body from organic shapes, for a part\'s body. Shapes join in order, each smoothed into the ones before by its blend (mm). style: "lowpoly" (faceted game asset, ~2000–5000 tris), "smooth" (soft toy) or "detailed" (fine surface detail: detail: "fur", "scales", "skin" or "feathers", detail_size: pattern size mm, detail_depth: bump height mm). tris: triangle budget. color: where no shape or paint sets one.',
+      'organic.model(shapes, style: "smooth", tris: 0, color: #c8c8c8, blend: 3, detail:, detail_size:, detail_depth:) — one soft body from organic shapes, for a part\'s body. Shapes join in order, each smoothed into the ones before by its blend (mm). style: "smooth" (soft stylised forms with baked soft shading, 8000–20000 tris; the default), "lowpoly" (faceted, flat colours, 1500–5000 tris) or "detailed" (fine surface detail: detail: "fur", "scales", "skin" or "feathers", detail_size: pattern size mm, detail_depth: bump height mm). tris: triangle budget (0: 16000 smooth, 4000 lowpoly, 160000 detailed). color: where no shape or paint sets one.',
     ),
     fn(
       "ball",
@@ -285,6 +367,109 @@ export function organicNamespace(): Obj {
         return common(a, { k: "gem", a: a.vec3("from"), b: a.vec3("to"), r: d / 2, sides, tip: a.num("tip", d * 0.6) });
       },
       "organic.gem(from:, to:, d:, sides: 6, tip:) — a faceted crystal: a prism with flat sides from from to to, then a point of length tip (default 0.6 d). Crystals, gems, sharp spikes.",
+    ),
+    fn(
+      "tube",
+      ["points", "d", ...COMMON],
+      (a) => {
+        const pts = a.points3("points");
+        if (pts.length < 2) a.ctx.error("organic.tube(): points needs at least 2 points");
+        const ds = diameters(a, "d", pts.length);
+        return common(a, { k: "cones", s: tubeSegments(pts, ds.map((d) => d / 2)) });
+      },
+      "organic.tube(points: [(x, y, z) …], d:, color:, blend:, mirror:) — a smooth curved tube through the points, tapering through the diameters d: (one number, a [start, end] pair, or one per point). Tails that sweep and curl, necks, curved bodies, trunks, tentacles, curved horns, eyebrows and mouths (inside carve).",
+    ),
+    fn(
+      "curl",
+      ["at", "axis", "start", "r", "r2", "turns", "d", "d2", "rise", ...COMMON],
+      (a) => {
+        const c = a.vec3("at", [0, 0, 0]);
+        const n = a.dir("axis", [1, 0, 0]);
+        let s0 = a.dir("start", Math.abs(n[2]) > 0.9 ? [0, -1, 0] : [0, 0, 1]);
+        const k = s0[0] * n[0] + s0[1] * n[1] + s0[2] * n[2];
+        s0 = unit([s0[0] - n[0] * k, s0[1] - n[1] * k, s0[2] - n[2] * k]);
+        const r = a.positive("r");
+        const r2 = a.num("r2", r * 0.3);
+        const turns = a.num("turns", 1);
+        if (Math.abs(turns) < 0.05 || Math.abs(turns) > 4) a.ctx.error("organic.curl(): turns must be from 0.05 to 4 (negative winds the other way)");
+        const d = a.positive("d");
+        const d2 = a.positive("d2", d * 0.4);
+        const rise = a.num("rise", 0);
+        const m = Math.max(4, Math.ceil(Math.abs(turns) * 20));
+        const pts: V3[] = [];
+        const rs: number[] = [];
+        for (let i = 0; i <= m; i++) {
+          const t = i / m;
+          const rho = r + (Math.max(0, r2) - r) * t;
+          const dir = turn(s0, n, 2 * Math.PI * turns * t);
+          pts.push([c[0] + dir[0] * rho + n[0] * rise * t, c[1] + dir[1] * rho + n[1] * rise * t, c[2] + dir[2] * rho + n[2] * rise * t]);
+          rs.push((d + (d2 - d) * t) / 2);
+        }
+        return common(a, { k: "cones", s: tubeSegments(pts, rs) });
+      },
+      "organic.curl(at:, axis: X, start: Z, r:, r2:, turns: 1, d:, d2:, rise: 0) — a tapering tube wound in a spiral round at: about axis:, starting toward start: at radius r and closing to r2 (default 0.3 r), diameter d to d2 (default 0.4 d). rise: drift along the axis over the curl. Ram horns, curly tails, snail shells, fern tips, curled antennae; mirror: true winds the other side's copy the mirrored way.",
+    ),
+    fn(
+      "tuft",
+      ["at", "toward", "length", "d", "count", "spread", "fan", "around", "tip", ...COMMON],
+      (a) => {
+        const base = a.vec3("at");
+        const dir = a.dir("toward");
+        const len = a.positive("length");
+        const d = a.positive("d");
+        const count = Math.round(a.num("count", 3));
+        if (count < 1 || count > 24) a.ctx.error("organic.tuft(): count must be from 1 to 24");
+        const spread = (a.num("spread", 50) * Math.PI) / 180;
+        const tip = a.num("tip", d * 0.12) / 2;
+        const out: number[] = [];
+        const push = (v: V3) => out.push(base[0], base[1], base[2], base[0] + v[0] * len, base[1] + v[1] * len, base[2] + v[2] * len, d / 2, Math.max(0.05, tip));
+        if (a.bool("around")) {
+          // a ring of spikes round the direction, opening by spread
+          const side = unit(Math.abs(dir[2]) < 0.9 ? cross(dir, [0, 0, 1]) : cross(dir, [1, 0, 0]));
+          for (let i = 0; i < count; i++) push(turn(turn(dir, side, spread / 2), dir, (2 * Math.PI * i) / count));
+          if (count > 2) push(dir);
+        } else {
+          let fan = a.has("fan") ? a.dir("fan") : cross(dir, [0, 0, 1]);
+          if (Math.hypot(...fan) < 1e-6) fan = [0, 1, 0];
+          fan = unit(fan);
+          for (let i = 0; i < count; i++) push(turn(dir, fan, count === 1 ? 0 : -spread / 2 + (spread * i) / (count - 1)));
+        }
+        return common(a, { k: "cones", s: out });
+      },
+      "organic.tuft(at:, toward:, length:, d:, count: 3, spread: 50, fan:, around: false, tip:) — a clump of pointed spikes from at: fanned over spread degrees round the direction toward: (in the plane of toward and Z unless fan: gives the turning axis; around: true puts them in a ring like a tail tip). d: base diameter, tip: point diameter. Jagged fur: cheek ruffs, chest ruffs, manes, tail tips, crests, spiky hair, feather crowns; also paint(tuft) for jagged colour edges.",
+    ),
+    fn(
+      "eye",
+      ["at", "d", "facing", "color", "shine", "blend", "mirror", "name"],
+      (a) => {
+        const c = a.vec3("at");
+        const d = a.positive("d");
+        const f = a.dir("facing", [0, -1, 0]);
+        const up0: V3 = Math.abs(f[2]) > 0.9 ? [0, 1, 0] : [0, 0, 1];
+        const k = up0[0] * f[0] + up0[1] * f[1] + up0[2] * f[2];
+        const up = unit([up0[0] - f[0] * k, up0[1] - f[1] * k, up0[2] - f[2] * k]);
+        const side = cross(up, f);
+        const shine = a.has("shine") ? colorArg(a, "shine") : "#ffffff";
+        const color = a.has("color") ? colorArg(a, "color") : "#1b1820";
+        const blend = a.has("blend") ? Math.max(0, a.num("blend")) : 0.5;
+        const name = a.has("name") ? a.str("name") : undefined;
+        // the highlights sit on the same side of both eyes, as if lit from one window
+        const eye = (c: V3, f: V3): Item[] => {
+          const at = (w: [number, number, number], s: number): V3 => {
+            const u = unit([f[0] + up[0] * w[1] + side[0] * w[0], f[1] + up[1] * w[1] + side[1] * w[0], f[2] + up[2] * w[1] + side[2] * w[0]]);
+            return [c[0] + u[0] * s, c[1] + u[1] * s, c[2] + u[2] * s];
+          };
+          return [
+            { op: "add", prim: { k: "ball", c, r: d / 2 }, color, blend, detail: 0, ...(name ? { name } : {}) },
+            { op: "paint", prim: { k: "ball", c: at([-0.4, 0.55, 0], d / 2), r: d * 0.17 }, color: shine, blend: 0 },
+            { op: "paint", prim: { k: "ball", c: at([0.35, -0.45, 0], d / 2), r: d * 0.08 }, color: shine, blend: 0 },
+          ];
+        };
+        const items = eye(c, f);
+        if (a.bool("mirror")) items.push(...eye([-c[0], c[1], c[2]], [-f[0], f[1], f[2]]).map((it) => (it.name ? { ...it, name: it.name + "_mirror" } : it)));
+        return new OrganicV(items);
+      },
+      "organic.eye(at:, d:, facing: -Y, color: #1b1820, shine: #ffffff, mirror:) — a glossy cartoon eye: a dark ball (set at: so about a third of it stands out of the head) with two painted highlights. Leave eyes out when the face is for expression decals.",
     ),
     fn(
       "paint",
