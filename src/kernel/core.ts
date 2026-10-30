@@ -13,6 +13,13 @@ import { ProcessAnalyzer } from "../mfg/analyzer";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { FeatureTools } from "./topology";
 import { CONTACT_GAP, apart, closedSurface, placeSurface, touching, type PlacedSurface, type Touch } from "./apart";
+import { meshGenerator } from "../plugins/kernel";
+
+/** A plugin shape's own mesh, with no edge lines (its triangles are not edges of the design). */
+function generatedMesh(g: { gen: string; data: unknown }, quality: "preview" | "final"): MeshData {
+  const m = meshGenerator(g.gen).mesh(g.data, quality);
+  return { positions: m.positions, normals: m.normals, indices: m.indices, edges: new Float32Array(0), ...(m.colors ? { colors: m.colors } : {}) };
+}
 
 interface CacheEntry {
   shape: Shape3D;
@@ -28,6 +35,8 @@ interface CacheEntry {
   features: Map<string, FeatureTools>;
   /** cosmetic steps that could not be built */
   warnings: string[];
+  /** a plugin shape: drawn from the plugin's meshes, not from the solid (which is its coarse stand-in) */
+  gen?: { gen: string; data: unknown };
 }
 
 /** A solid placed in the world for the checks. */
@@ -107,13 +116,15 @@ export class KernelCore {
     } catch {
       volume = 0;
     }
-    return { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), used: ++this.tick, features, warnings };
+    const base = item.recipe.base;
+    const gen = base?.t === "meshgen" && !item.recipe.ops.length ? { gen: base.gen, data: base.data } : undefined;
+    return { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), used: ++this.tick, features, warnings, gen };
   }
 
   mesh(hash: string, quality: "preview" | "final"): MeshData {
     const e = (quality === "final" ? this.detailCache.get(hash) : undefined) ?? this.get(hash);
     if (!e) throw new Error("not built");
-    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors);
+    if (!e.meshes[quality]) e.meshes[quality] = e.gen ? generatedMesh(e.gen, quality) : meshShape(e.shape, quality, e.faceColors);
     return e.meshes[quality]!;
   }
 

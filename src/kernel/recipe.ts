@@ -67,6 +67,8 @@ export type ShapeRecipe =
   | { t: "union"; shapes: ShapeRecipe[] }
   /** a body of an imported STEP file (by content hash); body -1 is the whole file */
   | { t: "import"; asset: string; body: number }
+  /** a shape a plugin makes as triangles (organic creatures): drawn from the plugin's own mesh, built for the checks from a coarse stand-in */
+  | { t: "meshgen"; gen: string; data: unknown }
   /** sketch profile pushed along the plane normal from `start` to `start + h` */
   | { t: "sk_extrude"; o: V3; u: V3; n: V3; regions: ProfileRegion[]; h: number; start: number }
   /** sketch profile turned about an axis in the sketch plane (point, direction in sketch coordinates) */

@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useProject, openProject, createProject, duplicateProject, deleteProject, exportProject, importProject, renameProject } from "../app/project";
 import { confirmDialog, go, openSettings, toast } from "../app/ui";
+import { openCreatureDialog } from "../plugins/organic/CreatureDialog";
 import { TEMPLATES, TEMPLATE_CATEGORIES, audienceById, templateById, type TemplateCategory } from "../demos/templates";
 import { useSettings } from "../app/settings";
 import { startDesign } from "../app/startDesign";
@@ -255,8 +256,10 @@ function Examples({ onStart }: { onStart: (id: string) => void }) {
   const audience = audienceById(useSettings((s) => s.audience));
   const [cat, setCat] = useState<TemplateCategory | "all">("all");
   const order = audience?.order ?? TEMPLATE_CATEGORIES.map((c) => c.id);
-  const cats = [...TEMPLATE_CATEGORIES].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-  const list = TEMPLATES.filter((t) => t.id !== "blank" && (cat === "all" || t.category === cat))
+  const off = useSettings((s) => s.pluginsOff);
+  const shown = TEMPLATES.filter((t) => t.id !== "blank" && !(t.plugin && off.includes(t.plugin)));
+  const cats = [...TEMPLATE_CATEGORIES].filter((c) => shown.some((t) => (t.category ?? "parts") === c.id)).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  const list = shown.filter((t) => cat === "all" || t.category === cat)
     .map((t, i) => ({ t, i }))
     .sort((a, b) => (cat === "all" ? order.indexOf(a.t.category ?? "parts") - order.indexOf(b.t.category ?? "parts") : 0) || a.i - b.i)
     .map((x) => x.t);
@@ -270,6 +273,11 @@ function Examples({ onStart }: { onStart: (id: string) => void }) {
           </button>
         ))}
         <div className="grow" />
+        {!off.includes("organic") && (
+          <button className="example-chip blank" onClick={openCreatureDialog} data-tip="Describe an animal, person or pet, or drop in a reference sheet, like Meshy or Tripo">
+            <Icon.Sparkle size={12} /> Make a creature
+          </button>
+        )}
         <button className="example-chip blank" onClick={() => onStart("blank")}>
           <Icon.Plus size={12} /> Blank design
         </button>
@@ -377,7 +385,31 @@ export function TemplateArt({ id }: { id: string }) {
   const violet = { stroke: "var(--violet)" };
   const line = { stroke: "var(--line-3)" };
   const tint = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})` });
-  if (id === "reducer")
+
+  if (id === "zephyr-fox" || id === "puffling") {
+    // a few flat facets, like the low-poly creatures themselves
+    const facet = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})`, strokeWidth: 1, strokeLinejoin: "round" as const });
+    return id === "puffling" ? (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <polygon points="70,58 84,38 104,34 122,40 132,58 118,74 86,74" style={facet(0.16)} />
+        <polygon points="58,66 70,52 86,58 82,76 64,78" style={facet(0.1)} />
+        <polygon points="132,58 144,64 140,78 120,78 118,66" style={facet(0.1)} />
+        <polygon points="86,74 118,74 112,86 92,86" style={{ ...violet, fill: "rgb(var(--violet-rgb) / 0.12)", strokeWidth: 1 }} />
+        <polygon points="84,38 88,26 96,34" style={facet(0.22)} />
+        <polygon points="114,34 122,26 124,38" style={facet(0.22)} />
+      </svg>
+    ) : (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <polygon points="78,30 70,6 92,26" style={facet(0.26)} />
+        <polygon points="122,30 130,6 108,26" style={facet(0.26)} />
+        <polygon points="72,36 100,24 128,36 132,58 100,70 68,58" style={facet(0.14)} />
+        <polygon points="84,58 100,70 116,58 100,82" style={{ ...line, fill: "rgb(var(--accent-rgb) / 0.05)", strokeWidth: 1 }} />
+        <polygon points="86,72 114,72 118,100 82,100" style={facet(0.1)} />
+        <polygon points="114,84 150,70 164,56 158,84 128,96" style={facet(0.12)} />
+        <circle cx="160" cy="62" r="9" style={{ ...violet, fill: "none", strokeWidth: 1.2 }} />
+      </svg>
+    );
+  }  if (id === "reducer")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
         <motion.circle cx="80" cy="62" r="34" fill="none" strokeWidth="1.3" strokeDasharray="5 3" animate={{ rotate: -360 }} transition={{ duration: 18, repeat: Infinity, ease: "linear" }} style={{ ...accent, originX: "80px", originY: "62px" }} />

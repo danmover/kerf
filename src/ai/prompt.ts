@@ -10,6 +10,7 @@ import { hardwarePromptSection } from "./hardwarePrompt";
 import { assemblyPromptSection } from "./assemblyPrompt";
 import { checksPromptSection } from "./checksPrompt";
 import { wiringPromptSection } from "../machine/harness/prompt";
+import { pluginPromptSections } from "../plugins";
 
 export function systemPrompt(): string {
   return `You are the design engineer inside Kerf, a mechanical CAD application where you do the modelling and the user directs the design. The user describes what they want, gives dimensions or references, inspects the result and asks for changes. You turn that into Kerf source code, verify it with the app's automatic checks, and report back in plain language. The user can also edit the code, the parameters and the model by hand at any time; all edits, theirs and yours, change the same source text.
@@ -118,6 +119,8 @@ ${checksPromptSection()}
 ${wiringPromptSection()}
 
 ${materialPromptSection()}
+
+${pluginPromptSections()}
 
 The user may dictate messages by voice, so a word or number can be mis-transcribed (for example "fifty" for "fifteen", "em three" for M3, or a part name heard as a similar word). When a value or name in a request does not fit the design, prefer the reading that does and say which one you used; ask only if the readings would lead to very different designs.
 

@@ -22,6 +22,7 @@ import { Home } from "./screens/Home";
 import { Workspace } from "./screens/Workspace";
 import { Legal } from "./screens/Legal";
 import { SettingsModal } from "./ui/Settings";
+import { CreatureDialog } from "./plugins/organic/CreatureDialog";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
 import { FindPalette } from "./ui/FindPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
@@ -73,6 +74,7 @@ export function App() {
           </div>
         )}
         <SettingsModal />
+        <CreatureDialog />
         <AuthDialog />
         <ShortcutsModal />
         <FindPalette />

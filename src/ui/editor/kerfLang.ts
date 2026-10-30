@@ -24,7 +24,12 @@ import { SKETCH_FNS } from "../../sketch/fns";
 import { ANALYSIS_FNS, DRIVETRAIN_PROPS, STRUCTURAL_PROPS, UCI_PROPS } from "../../analysis/lang";
 import { AIRFLOW_PROPS } from "../../analysis/aeroLang";
 import { currentTheme } from "../../app/theme";
+import { pluginNamespaces } from "../../plugins/lang";
+import { Fn } from "../../lang/values";
 import "../../styles/syntax.css";
+
+/** Namespaces plugins add to the language (organic ...). */
+const PLUGIN_NS = new Set(Object.keys(pluginNamespaces()));
 
 const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "component", "interface", "part", "require", "decision", "sketch", "analysis"]);
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
@@ -89,6 +94,7 @@ const parser: StreamParser<St> = {
       if (KEYWORDS.has(w)) return w === "true" || w === "false" ? "bool" : "controlKeyword";
       if (w === "mfg") return "namespace";
       if (w === "lib") return "namespace";
+      if (PLUGIN_NS.has(w)) return "namespace";
       if (w === "option" && stream.match(/^\s*"/, false)) return "controlKeyword";
       if (CONSTS.has(w)) return "constant";
       if (stream.peek() === "(" && BUILTIN_FNS.has(w)) return "builtin";
@@ -222,6 +228,15 @@ export function kerfCompletions(getModel: () => Model | null) {
   const mfgItems: Completion[] = PROCESS_IDS.map((id) => ({ label: id, type: "class", info: `${PROCESSES[id].label}. ${PROCESSES[id].summary}\n\nSettings: ${PROCESSES[id].settings.map((s) => `${s.key}: ${s.doc}`).join("; ") || "none"}`, detail: "process", apply: id + "(" }));
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
+  // plugin namespaces (organic.ball ...): each function's own doc
+  const pluginItems = new Map<string, Completion[]>();
+  for (const [ns, obj] of Object.entries(pluginNamespaces())) {
+    fnCompletions.push({ label: ns, type: "namespace", detail: obj.kind });
+    pluginItems.set(
+      ns,
+      Object.entries(obj.fields).map(([k, f]) => ({ label: k, type: "function", info: f instanceof Fn ? f.doc : undefined, detail: ns, apply: k + "(" })),
+    );
+  }
   const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "mass", "chain", "label", "axis_at", "plane", "offset", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
@@ -231,6 +246,9 @@ export function kerfCompletions(getModel: () => Model | null) {
     if (mfg) return { from: mfg.from + 4, options: mfgItems, validFor: /^[A-Za-z_0-9]*$/ };
     const lib = ctx.matchBefore(/lib\.[A-Za-z_0-9]*/);
     if (lib) return { from: lib.from + 4, options: libItems, validFor: /^[A-Za-z_0-9]*$/ };
+    const plug = ctx.matchBefore(/[a-z_]+\.[A-Za-z_0-9]*/);
+    const plugNs = plug?.text.split(".")[0];
+    if (plug && plugNs && pluginItems.has(plugNs)) return { from: plug.from + plugNs.length + 1, options: pluginItems.get(plugNs)!, validFor: /^[A-Za-z_0-9]*$/ };
     const word = ctx.matchBefore(/[A-Za-z_][A-Za-z_0-9]*/);
     const line = ctx.state.doc.lineAt(ctx.pos).text;
     if (/process:\s*"[A-Za-z_]*$/.test(line.slice(0, ctx.pos - ctx.state.doc.lineAt(ctx.pos).from))) {

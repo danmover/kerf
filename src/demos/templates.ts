@@ -17,15 +17,17 @@ import ferrisWheel from "./ferris-wheel.kerf?raw";
 import sheetChassis from "./sheet-chassis.kerf?raw";
 import castKnob from "./cast-knob.kerf?raw";
 import aeroBike from "./aero-road-bike.kerf?raw";
+import { PLUGINS } from "../plugins";
 
 /** What kind of thing a starting point is, for grouping them on the home screen. */
-export type TemplateCategory = "parts" | "mechanisms" | "machines" | "processes";
+export type TemplateCategory = "parts" | "mechanisms" | "machines" | "processes" | "characters";
 
 export const TEMPLATE_CATEGORIES: { id: TemplateCategory; label: string }[] = [
   { id: "parts", label: "Parts and products" },
   { id: "mechanisms", label: "Mechanisms" },
   { id: "machines", label: "Machines and electronics" },
   { id: "processes", label: "Sheet, cast and carbon" },
+  { id: "characters", label: "Creatures and characters" },
 ];
 
 export interface Template {
@@ -39,9 +41,11 @@ export interface Template {
   category?: TemplateCategory;
   /** the Kerf features it shows off, as short tags ("airflow", "mould") */
   shows?: string[];
+  /** the plugin it comes from */
+  plugin?: string;
 }
 
-export const TEMPLATES: Template[] = [
+const BUILT_IN: Template[] = [
   {
     id: "blank",
     name: "Blank design",
@@ -281,6 +285,10 @@ export const TEMPLATES: Template[] = [
   },
 ];
 
+/** Every starting point: Kerf's own, then those of its plugins (each marked with its plugin, so Home can hide those switched off). */
+export const TEMPLATES: Template[] = [...BUILT_IN, ...PLUGINS.flatMap((p) => (p.templates ?? []).map((t) => ({ ...t, plugin: p.id })))];
+
+
 export const templateById = (id: string) => TEMPLATES.find((t) => t.id === id);
 
 /** Who Kerf is for. The answer orders the starting points and picks the example briefs. */
@@ -291,7 +299,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "maker",
     label: "Making things at home",
     detail: "3D printing, electronics and projects for yourself",
-    order: ["parts", "machines", "mechanisms", "processes"],
+    order: ["parts", "machines", "mechanisms", "processes", "characters"],
     recommended: "enclosure",
     briefs: [
       "A wall mount that holds my bike by the top tube, printed in PETG with two screws",
@@ -303,7 +311,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "engineer",
     label: "Engineering and product design",
     detail: "Real loads, fits and tolerances, for work",
-    order: ["mechanisms", "machines", "parts", "processes"],
+    order: ["mechanisms", "machines", "parts", "processes", "characters"],
     recommended: "reducer",
     briefs: [
       "A 3:1 spur gearbox on 8 mm shafts for a NEMA 17, with bearings and a printed housing",
@@ -315,7 +323,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "student",
     label: "Learning and school projects",
     detail: "See how things work and why they're shaped that way",
-    order: ["mechanisms", "machines", "parts", "processes"],
+    order: ["mechanisms", "machines", "parts", "processes", "characters"],
     recommended: "engine",
     briefs: [
       "A see-through model of a four-stroke engine I can print and turn by hand",
@@ -327,7 +335,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "manufacturer",
     label: "Making products to sell",
     detail: "Batches, processes, costs and drawings for a factory",
-    order: ["processes", "parts", "machines", "mechanisms"],
+    order: ["processes", "parts", "machines", "mechanisms", "characters"],
     recommended: "sheet-chassis",
     briefs: [
       "A two-part injection-moulded case for a handheld sensor, 5,000 a year",

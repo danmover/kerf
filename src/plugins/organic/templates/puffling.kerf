@@ -1,0 +1,30 @@
+design "Puffling"
+note "Island pet Puffling (Common, Cloud Island): a round little cloud creature. Its body is one plump ball of soft white cloud made of five large rounded puffs, with a pale sky-blue underside, four very short stubby pale-blue legs with rounded feet, two tiny cloud-puff ears on top and one small round cloud-puff tail at the back. The face is a smooth flat oval patch on the front of the cloud, left blank for the expression decals."
+note "Coordinates: X right, Y back, Z up, in millimetres; it faces -Y and stands on z = 0."
+
+let cloud = #fbfdff
+let under = #c4e3f8
+let legs  = #a8d3f2
+
+part puffling {
+  material: "PLA"
+  body organic.model([
+    // the cloud: a core and exactly five big puffs, kept lumpy with small blends
+    organic.ball(d: 48, at: (0, 6, 31)),
+    organic.ball(d: 33, at: (0, 5, 51), blend: 2.5),
+    organic.ball(d: 30, at: (19, 3, 36), blend: 2.5, mirror: true),
+    organic.ball(d: 28, at: (11, 21, 40), blend: 2.5, mirror: true),
+    // smooth flat oval face patch on the front
+    organic.egg(size: (40, 18, 32), at: (0, -14, 33), blend: 10),
+    // four stubby legs with rounded feet
+    organic.limb(from: (12, -5, 16), to: (12.5, -6, 5), d: 11.5, d2: 12.5, color: legs, blend: 3, mirror: true),
+    organic.limb(from: (12, 17, 16), to: (12.5, 18, 5), d: 11.5, d2: 12.5, color: legs, blend: 3, mirror: true),
+    organic.egg(size: (13, 14, 7), at: (12.5, -7.5, 3.5), color: legs, blend: 2, mirror: true),
+    organic.egg(size: (13, 14, 7), at: (12.5, 16.5, 3.5), color: legs, blend: 2, mirror: true),
+    // two tiny ear puffs and one tail puff
+    organic.ball(d: 13, at: (13, 0, 62), blend: 2, mirror: true),
+    organic.ball(d: 15, at: (0, 33, 29), blend: 2),
+    // pale sky-blue underside
+    organic.paint(organic.egg(size: (90, 80, 36), at: (0, 6, 4)), color: under),
+  ], style: "lowpoly", tris: 2000, color: cloud, blend: 4)
+}

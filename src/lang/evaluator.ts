@@ -34,6 +34,7 @@ import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
 import type { AnalysisSpec } from "../analysis/spec";
+import { pluginNamespaces } from "../plugins/lang";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
 import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
@@ -240,6 +241,7 @@ class Evaluator {
     this.builtins.set("calc", calcNamespace());
     this.builtins.set("sim", simNamespace());
     this.builtins.set("mfg", mfgNamespace());
+    for (const [k, v] of Object.entries(pluginNamespaces())) this.builtins.set(k, v);
   }
 
   ctx(): CallCtx {
@@ -1814,6 +1816,8 @@ class Evaluator {
     }
     this.items(s.items, scope, state, 0);
     if (!state.base) throw new EvalError(`Part "${s.name}" has no geometry. Start with: body box(...) or body cylinder(...)`, s.nameSpan);
+    if (state.base.t === "meshgen" && state.ops.length)
+      throw new EvalError(`Part "${s.name}": organic.model() makes the whole part, so put every shape inside it (organic.carve() cuts, organic.paint() colours) rather than adding, cutting or rounding after it`, s.nameSpan);
     const ctx = this.ctx();
     const xf: Xform[] = [];
     if (state.props.rotate !== undefined) {
@@ -1897,6 +1901,7 @@ class Evaluator {
       ...(typeof massV === "number" ? { mass: massV } : {}),
       features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
       detail: hasDetail(recipe),
+      ...(recipe.base?.t === "meshgen" ? { painted: true } : {}),
       ...(state.flex.length ? { flex: state.flex } : {}),
       ...(sheet ? { sheet } : {}),
       ...(state.tubes.length ? { tubes: state.tubes } : {}),

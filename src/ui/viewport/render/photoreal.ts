@@ -29,6 +29,8 @@ export interface PhotoPart {
   look: Appearance;
   /** drawn with this material as it is (a decoration's textured or vertex-coloured surfaces) instead of one made from the look */
   material?: THREE.Material;
+  /** drawn in its geometry's own vertex colours, as the interactive view draws it (painted creatures, coloured imports) */
+  painted?: boolean;
 }
 
 export interface PhotoStage {
@@ -118,7 +120,7 @@ bool kerfBad( vec4 c ) {
  * tile units projected onto each triangle's dominant plane (top faces run
  * diagonally, like a printer's top skin), and tangents to match.
  */
-export function boxProjected(src: THREE.BufferGeometry, tile: number): THREE.BufferGeometry {
+export function boxProjected(src: THREE.BufferGeometry, tile: number, painted = false): THREE.BufferGeometry {
   const pos = src.getAttribute("position") as THREE.BufferAttribute;
   const nor = src.getAttribute("normal") as THREE.BufferAttribute;
   const index = src.getIndex();
@@ -205,6 +207,18 @@ export function boxProjected(src: THREE.BufferGeometry, tile: number): THREE.Buf
   g.setAttribute("normal", new THREE.BufferAttribute(Nn, 3));
   g.setAttribute("uv", new THREE.BufferAttribute(UV, 2));
   g.setAttribute("tangent", new THREE.BufferAttribute(T, 4));
+  // painted parts (organic creatures, imported bodies with face colours) keep their colours
+  const col = src.getAttribute("color") as THREE.BufferAttribute | undefined;
+  if (col && painted) {
+    const C = new Uint8Array(count * 3);
+    for (let o = 0; o < count; o++) {
+      const vi = index ? index.getX(o) : o;
+      C[o * 3] = col.getX(vi) * 255;
+      C[o * 3 + 1] = col.getY(vi) * 255;
+      C[o * 3 + 2] = col.getZ(vi) * 255;
+    }
+    g.setAttribute("color", new THREE.BufferAttribute(C, 3, true));
+  }
   g.computeBoundingBox();
   g.computeBoundingSphere();
   return g;
@@ -678,17 +692,25 @@ export class PhotoRenderer {
         this.parts.add(mesh);
         continue;
       }
-      let m = this.mats.get(p.look.key);
+      // a painted mesh's own colours replace the material's colour
+      const painted = !!p.painted && !!p.geometry.getAttribute("color");
+      const mk = p.look.key + (painted ? "|vc" : "");
+      let m = this.mats.get(mk);
       if (!m) {
         const pm = photoMaterial(p.look);
+        if (painted) {
+          pm.mat.vertexColors = true;
+          pm.mat.color.set(0xffffff);
+          pm.mat.map = null;
+        }
         m = { ...pm, look: p.look, bump: pm.mat.normalScale.x, fade: 1 };
-        this.mats.set(p.look.key, m);
+        this.mats.set(mk, m);
       }
-      usedMats.add(p.look.key);
-      const gk = `${p.geoKey}|${m.tile.toFixed(5)}`;
+      usedMats.add(mk);
+      const gk = `${p.geoKey}|${m.tile.toFixed(5)}${painted ? "|vc" : ""}`;
       let g = this.geos.get(gk);
       if (!g) {
-        g = boxProjected(p.geometry, m.tile);
+        g = boxProjected(p.geometry, m.tile, painted);
         this.geos.set(gk, g);
       }
       usedGeos.add(gk);

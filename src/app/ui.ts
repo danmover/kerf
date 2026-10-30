@@ -21,7 +21,7 @@ export interface ConfirmRequest {
   resolve: (ok: boolean) => void;
 }
 
-export type SettingsTab = "ai" | "account" | "voice" | "app" | "making" | "data" | "about";
+export type SettingsTab = "ai" | "account" | "voice" | "app" | "making" | "plugins" | "data" | "about";
 
 /** The panels a phone shows one at a time (see screens/PhoneWorkspace): the chat, the model panel, or the dock's panels. */
 export type PhonePane = "chat" | "model" | "panel";
