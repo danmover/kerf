@@ -9,6 +9,8 @@ import { buildChecksRequest } from "../src/core/checks";
 import { apart, closedSurface, placeSurface } from "../src/kernel/apart";
 import type { MeshData } from "../src/kernel/build";
 import { initKernel } from "./helpers/kernel";
+import { fullCheck } from "./helpers/fullcheck";
+import { depthAlong } from "../src/core/preload";
 
 /** A closed box mesh from lo to hi, its faces' corners repeated the way the kernel's meshes repeat them. */
 function boxMesh(lo: number[], hi: number[], dropFace = false): MeshData {
@@ -113,5 +115,51 @@ describe("interference check", () => {
     const again = check(src, core);
     expect(again.interferences[0].volume).toBe(first.interferences[0].volume);
     expect(again.interferences[0].mesh!.positions.length).toBeGreaterThan(0);
+  });
+});
+
+describe("a sprung blade drawn pressing on its mate", () => {
+  it("measures how deep an overlap runs along a direction", () => {
+    const slab = boxMesh([0, 0, 0], [10, 4, 0.5]);
+    expect(depthAlong(slab, [0, 0, 1])).toBeCloseTo(0.5, 6);
+    expect(depthAlong(slab, [1, 0, 0])).toBeCloseTo(10, 6);
+  });
+
+  const design = (x0: number) => `design "t"
+part base {
+  material: "ASA"
+  process: mfg.fdm(build: Z)
+  body box(30, 6, 4, at: (0, -3, 0))
+  add flexure(at: (0, 0, 2), length: 20, t: 1.5, w: 4, dir: Y, facing: X, travel: 1, preload: 0.5, against: "block") as blade
+}
+part block {
+  material: "ASA"
+  process: mfg.fdm(build: Z)
+  body box(4, 4, 4, at: (${x0 + 2}, 18, 0))
+}`;
+
+  it("takes an overlap no deeper than the preload as the spring's squeeze", async () => {
+    const { report } = await fullCheck(design(0.25));
+    const int = report.items.filter((i) => i.category === "interference");
+    expect(int.find((i) => i.id.startsWith("int:base"))).toMatchObject({ status: "pass", title: expect.stringMatching(/presses on .* with its spring/) });
+    expect(int.find((i) => i.id === "int:none")?.status).toBe("pass");
+    const spring = report.items.find((i) => i.id.startsWith("spring:") && i.id.endsWith(":blade"))!;
+    // 3 E I / L³ = 3 × 1900 × (4 × 1.5³ / 12) / 20³ = 0.80 N/mm, so 0.4 N at 0.5 mm
+    expect(spring.detail).toMatch(/Bent 0\.5 mm pressing on block, it pushes on it with about 0\.4 N, held at 0\.3 % strain, under the/);
+    expect(spring.status).toBe("pass");
+  });
+
+  it("still fails an overlap deeper than the preload", async () => {
+    const { report } = await fullCheck(design(-0.45));
+    expect(report.items.find((i) => i.id.startsWith("int:base"))?.status).toBe("fail");
+    expect(report.items.some((i) => i.id === "int:none")).toBe(false);
+  });
+
+  it("needs against with preload", () => {
+    const errs = evaluate(`design "t"\npart p { body box(30, 20, 3)\n add flexure(at: (0, 0, 3), length: 20, t: 1.2, w: 8, dir: Y, facing: -X, travel: 1, preload: 0.5) }`)
+      .diagnostics.filter((d) => d.severity === "error")
+      .map((d) => d.message)
+      .join(" ");
+    expect(errs).toMatch(/preload needs against/);
   });
 });

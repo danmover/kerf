@@ -116,8 +116,10 @@ export interface FlexInfo {
   leadIn?: number;
   /** snap: slope of the catch face, degrees (90: square, does not let go) */
   retain?: number;
-  /** snap: how far the arm stays bent once latched, mm (0: it just touches) */
+  /** snap: how far the arm stays bent once latched, mm (0: it just touches); flexure: how far the blade stays bent pressing on `against` */
   preload?: number;
+  /** flexure: the part the blade presses on with its preload (drawn overlapping it by that much along facing) */
+  against?: string;
   /** times it bends in its life */
   cycles?: number;
   /** snap: a round peg catch of this diameter that drops into a hole; flexure: a locking pin of this diameter */

@@ -169,5 +169,5 @@ export function flexCalc(f: FlexInfo, material: string, layersAcross: number): F
     return { E, strain: (f.t * th) / (2 * f.length), limit: hingeLimit, stiffness, load: stiffness * th, holdStrain: 0 };
   }
   const stiffness = (3 * E * I) / f.length ** 3;
-  return { E, strain: (1.5 * f.t * f.deflection) / f.length ** 2, limit, stiffness, load: stiffness * f.deflection, holdStrain: 0 };
+  return { E, strain: (1.5 * f.t * f.deflection) / f.length ** 2, limit, stiffness, load: stiffness * f.deflection, holdStrain: (1.5 * f.t * (f.preload ?? 0)) / f.length ** 2 };
 }

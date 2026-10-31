@@ -818,7 +818,7 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "flexure",
-    ["at", "length", "t", "w", "dir", "facing", "travel", "angle", "cycles", "root_r", "pin", "reach", "pin_at", "teardrop"],
+    ["at", "length", "t", "w", "dir", "facing", "travel", "angle", "cycles", "root_r", "pin", "reach", "pin_at", "teardrop", "preload", "against"],
     (a) => {
       const at = a.vec3("at");
       const L = a.positive("length");
@@ -837,6 +837,15 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
       if (hasAngle && travel) a.ctx.error("flexure(): give travel or angle, not both");
       if (angle !== undefined && angle > 180) a.ctx.error("flexure(): angle is at most 180 degrees");
       const cycles = Math.max(1, Math.round(a.num("cycles", 1000)));
+      // preload: the blade is drawn unbent, pressing that far into the part it bears on (against:), which is drawn where it
+      // sits; the overlap checks take that much of an overlap along facing as the spring's squeeze, not a clash
+      const preload = a.has("preload") ? a.positive("preload") : 0;
+      const againstV = a.raw("against");
+      const against = againstV === undefined ? undefined : typeof againstV === "string" ? againstV : againstV instanceof Obj && (againstV.kind === "part" || againstV.kind === "component") ? String(againstV.fields.name) : a.ctx.error(`flexure(): against is the part the blade presses on, by name (like against: "dial"), not ${typeName(againstV)}`);
+      if (preload && !against) a.ctx.error('flexure(): preload needs against: the part the blade presses on (like against: "dial")');
+      if (against && !preload) a.ctx.error("flexure(): against names the part the blade presses on: give how far it stays bent there with preload:");
+      if (preload && angle !== undefined) a.ctx.error("flexure(): preload goes on a spring blade (travel:), not a living hinge");
+      if (preload && travel && preload > travel + 1e-6) a.ctx.error("flexure(): preload is part of the blade's travel: make travel at least the preload");
       const steps: FeatStep[] = [{ op: "add", shape: { t: "extrude", p: { t: "rect", w: t, h: L, r: 0, c: [0, L / 2] }, h: w, f: { o: vsub(at, vscale(n, w / 2)), u, n }, twist: 0, scale: 1 } }];
       const rr = a.num("root_r", r2(Math.min(t, 1)));
       if (rr > 0) steps.push({ op: "fillet", r: rr, part: "root" });
@@ -882,9 +891,10 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
         angle,
         cycles,
         ...(pin ? { peg: pin, reach, pinAt, ...(pinOff ? { pinOff } : {}) } : {}),
+        ...(preload ? { preload, against } : {}),
       });
     },
-    "flexure(at, length, t, w, dir: Z, facing: X, travel: | angle:, cycles: 1000, root_r:, pin:, reach:, pin_at:, teardrop:) — a thin blade that bends instead of a joint, rising from `at` along dir, t thick (toward facing), w wide. Give travel (mm the free end moves sideways) for a spring blade or a parallel-blade stage, or angle (degrees) for a living hinge (make it short and thin: 0.3-0.6 mm in PP). pin: d puts a locking pin of that diameter on the blade's face toward facing, pin_at mm from the root (default near the tip) or at a point it lines up with, such as the hole it goes through (it may then sit off the blade's middle), standing reach mm out of the face: it goes through a hole in what it holds and on into a hole beyond, so nothing can slip past it, and pulling the blade back by its travel lets go (travel must clear the pin out of what it holds). teardrop: -Z gives the pin a 45° point that way so it prints level without support. The springs and clips checks give its stiffness, the force or torque at full travel, and its strain against the material over that many cycles. Use with add.",
+    "flexure(at, length, t, w, dir: Z, facing: X, travel: | angle:, cycles: 1000, root_r:, pin:, reach:, pin_at:, teardrop:, preload:, against:) — a thin blade that bends instead of a joint, rising from `at` along dir, t thick (toward facing), w wide. Give travel (mm the free end moves sideways) for a spring blade or a parallel-blade stage, or angle (degrees) for a living hinge (make it short and thin: 0.3-0.6 mm in PP). pin: d puts a locking pin of that diameter on the blade's face toward facing, pin_at mm from the root (default near the tip) or at a point it lines up with, such as the hole it goes through (it may then sit off the blade's middle), standing reach mm out of the face: it goes through a hole in what it holds and on into a hole beyond, so nothing can slip past it, and pulling the blade back by its travel lets go (travel must clear the pin out of what it holds). teardrop: -Z gives the pin a 45° point that way so it prints level without support. preload: mm with against: \"part\" makes it a sprung click or clamp: draw the blade unbent and the part it presses on where it sits, overlapping it by the preload along facing; the overlap checks take that as the spring's squeeze (anything deeper is still a clash) and the springs checks give the force it holds with and whether ASA or PLA creeps under it. The springs and clips checks give its stiffness, the force or torque at full travel, and its strain against the material over that many cycles. Use with add.",
   ),
 ]);
 

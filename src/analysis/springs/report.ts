@@ -107,7 +107,7 @@ function snapItem(p: EvalPart, f: FlexInfo): CheckItem {
   };
 }
 
-function flexureItem(p: EvalPart, f: FlexInfo): CheckItem {
+function flexureItem(p: EvalPart, f: FlexInfo, model?: Model): CheckItem {
   const { factor, across } = layerFactor(p, f);
   const r = flexCalc(f, p.material, factor);
   const cycles = f.cycles ?? 1000;
@@ -127,6 +127,23 @@ function flexureItem(p: EvalPart, f: FlexInfo): CheckItem {
   }
   let status: CheckStatus = "pass";
   let fix: string | undefined;
+  if (f.preload && !hinge) {
+    // drawn unbent where it presses on its mate: it stays bent by the preload, so it pushes with k × preload for good,
+    // and a plastic held strained creeps (relaxes) unless the strain is small
+    const m = materialRecord(p.material);
+    const creep = m?.creepLimit !== undefined && m.mech.E ? m.creepLimit * (m.mech.yield / m.mech.E) : Infinity;
+    detail += ` Bent ${n2(f.preload)} mm pressing on ${f.against}, it pushes on it with about ${n1(r.stiffness! * f.preload)} N, held at ${pc(r.holdStrain)} strain`;
+    if (r.holdStrain > creep) {
+      status = "warn";
+      detail += `, more than the ${pc(creep)} ${p.material} holds for good: it creeps and the squeeze fades over months.`;
+      fix = "Make the blade longer or thinner, or give it less preload, so it holds less strain.";
+    } else detail += Number.isFinite(creep) ? `, under the ${pc(creep)} ${p.material} holds for good without creeping.` : ".";
+    if (model && !model.parts.some((q) => q.name === f.against)) {
+      status = "warn";
+      detail += ` No part is called ${f.against}, so its overlap with what it presses on is checked as a clash.`;
+      fix = "Name the part the blade presses on in against:, as it is called in the design.";
+    }
+  }
   if (r.strain > r.limit) {
     status = "fail";
     detail += hinge ? " It cracks at the fold." : " It cracks or takes a set.";
@@ -138,7 +155,7 @@ function flexureItem(p: EvalPart, f: FlexInfo): CheckItem {
   } else if (r.strain > 0.8 * r.limit) {
     status = "warn";
     detail += " Little margin.";
-    fix = "Make it a little longer or thinner.";
+    fix = fix ?? "Make it a little longer or thinner.";
   }
   return { id: `spring:${p.id}:${f.name}`, category: "springs", basis: "calculation", status, title: `${hinge ? "Living hinge" : "Flexure"} ${f.name} on ${p.name}`, detail, parts: [p.id], span: f.span, margin: r.limit / r.strain, fix };
 }
@@ -211,7 +228,7 @@ export function springChecks(model: Model): CheckItem[] {
   const springsDone = new Set<string>();
   for (const p of model.parts) {
     if (p.hidden) continue;
-    for (const f of p.flex ?? []) out.push(f.kind === "snap" ? snapItem(p, f) : flexureItem(p, f));
+    for (const f of p.flex ?? []) out.push(f.kind === "snap" ? snapItem(p, f) : flexureItem(p, f, model));
     // a spring placed several times is one design: check it once
     if (p.spring && !springsDone.has(p.name)) {
       springsDone.add(p.name);

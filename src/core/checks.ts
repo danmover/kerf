@@ -6,6 +6,7 @@ import { absRate, massVolume, partMass, type Model, type EvalPart, type ReqStatu
 import type { Span } from "../lang/ast";
 import type { ChecksRequest, ChecksResult, PlacedItem } from "../kernel/protocol";
 import { applyXforms, frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
+import { preloadOverlap } from "./preload";
 import { centerDistance, densify, gearOutline, maxPenetration, tipDiameter } from "../library/gears";
 import { materialDensity } from "../library/standards";
 import { isPrinted } from "../library/materials";
@@ -265,7 +266,24 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   items.push(...briefChecks(model, items.filter((i) => i.category === "requirement"), geom));
 
   if (kernel) {
+    let clashes = 0;
     for (const i of kernel.interferences) {
+      // a sprung blade drawn unbent, pressing on its mate by its preload
+      const pre = preloadOverlap(i, (id) => partsById.get(id));
+      if (pre) {
+        items.push({
+          id: `int:${i.a}|${i.b}`,
+          category: "interference",
+          status: "pass",
+          title: `${label(pre.host.id)} presses on ${label(pre.mate.id)} with its spring`,
+          detail: `They are drawn ${fmtNum(i.volume, 1)} mm³ into each other, nowhere deeper than ${fmtNum(pre.depth, 2)} mm along the way ${pre.flex.name} bends: the ${fmtNum(pre.flex.preload!, 2)} mm it stays bent pressing on ${label(pre.mate.id)}, not a clash`,
+          parts: [i.a, i.b],
+          span: pre.flex.span,
+          basis: "geometry",
+        });
+        continue;
+      }
+      clashes++;
       items.push({
         id: `int:${i.a}|${i.b}`,
         category: "interference",
@@ -300,7 +318,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
       });
     }
     const solids = model.parts.length;
-    if (!kernel.interferences.length) {
+    if (!clashes) {
       items.push({ id: "int:none", category: "interference", status: "pass", title: "No solid interference", detail: `${solids} solids, ${kernel.pairsTested} touching pairs tested with exact booleans`, basis: "geometry" });
     }
     for (const a of kernel.access) {
