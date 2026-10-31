@@ -276,7 +276,8 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     report,
     reportRev: rev,
     checksError,
-    interferences: result?.interferences ?? [],
+    // a sprung blade pressing on its mate by its preload is drawn into it on purpose: not shown as a clash
+    interferences: (result?.interferences ?? []).filter((i) => base.items.find((x) => x.id === `int:${i.a}|${i.b}`)?.status !== "pass"),
     process,
     stage: "refining",
     timings: { ...get().timings, checksMs: performance.now() - tChecks },

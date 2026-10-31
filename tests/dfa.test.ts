@@ -137,6 +137,20 @@ part block { material: "PETG" ${extra} body box(20, 20, 15, at: (0, 0, 5)) }
     }
   });
 
+  it("never pairs a part that a sprung blade on the other presses on", () => {
+    const m = model(`design "t"
+part plate {
+  material: "PETG"
+  body box(60, 40, 5)
+  add flexure(at: (12, 0, 5), length: 15, t: 1.5, w: 4, dir: Y, facing: X, travel: 1, preload: 0.3, against: "block") as latch
+}
+part block { material: "PETG" body box(20, 20, 15, at: (0, 0, 5)) }
+`);
+    const r = dfaReport(m, boxFacts(m, () => true));
+    expect(r.merges).toEqual([]);
+    expect(r.items.find((w) => w.id === "block")).toMatchObject({ essential: true, reason: "moves", why: "plate's spring presses on it, so it moves against that part." });
+  });
+
   it("keeps a part of another material that touches, and ignores parts that are apart", () => {
     const m = model(`design "t"
 part plate { material: "PETG" body box(60, 40, 5) }

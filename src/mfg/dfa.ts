@@ -488,6 +488,11 @@ export function dfaReport(model: Model, facts: DfaFacts = {}): DfaReport {
     groups.set(inst, [...(groups.get(inst) ?? []), p]);
   }
 
+  // a part a sprung blade is drawn pressing on (flexure preload:, against:) is held by that spring and moves against it
+  const pressedBy = new Map<string, EvalPart>();
+  for (const p of model.parts) for (const f of p.flex ?? []) if (f.kind === "flexure" && f.preload && f.against) pressedBy.set(f.against, p);
+  const springHost = (solids: EvalPart[]) => solids.map((s) => pressedBy.get(s.name)).find((p) => p && !solids.includes(p));
+
   const items: Work[] = [];
   for (const [id, solids] of groups) {
     const main = solids.find((s) => s.id === id) ?? solids[0];
@@ -523,7 +528,7 @@ export function dfaReport(model: Model, facts: DfaFacts = {}): DfaReport {
       solids,
       box,
       volume,
-      moves: solids.some((s) => turns(s.motion)),
+      moves: solids.some((s) => turns(s.motion)) || !!springHost(solids),
       removable: solids.some((s) => s.removable),
       op: "",
     });
@@ -582,7 +587,8 @@ export function dfaReport(model: Model, facts: DfaFacts = {}): DfaReport {
     } else if (w.moves) {
       w.essential = true;
       w.reason = "moves";
-      w.why = "It moves relative to the parts around it.";
+      const by = springHost(w.solids);
+      w.why = by ? `${plain(by.label)}'s spring presses on it, so it moves against that part.` : "It moves relative to the parts around it.";
     } else if (w.removable) {
       w.essential = true;
       w.reason = "service";
