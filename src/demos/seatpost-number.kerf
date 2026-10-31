@@ -5,7 +5,7 @@ note "v4, from the printed v3 and its side-arm rework: the pin spans the whole s
 note "v5: the number tilts up 30°, the bracket is 20 mm tall (the O-ring's double hooks as short as a 3.53 mm cord allows) and its seat fits a 20 mm flat back. The jaw is a plain block standing on the bed with the tilted pocket cut through it."
 note "v6: the tilt adjusts by hand and is firm at each click: the number sits in a dial (a third small print) that turns about its centre hole on a stub off the far cheek and is locked by a sprung latch whose wedge teeth take up all play. The centre hole sits 3.2 mm higher so the dial's teeth fit under it in the same 20 mm height."
 note "v7: the tilt is changed by pulling one big arrow-shaped tab straight out, about 7.5 N, rather than pressing a small tab sideways with about 27 N. The arrow points the way to pull, the latch springs back into the next click on its own, and a requirement keeps the pull light."
-note "v8: pulling v7's latch let the dial drop off its stub, because the latch was all that held it on. Now the dial goes on a keyed stub through a keyhole that only lines up 35° past the top click, which the number cannot reach (its corner meets the seatpost first), and there is nothing to pull: a spring blade outside the far cheek presses a V finger through a window into three grooves under the dial, preloaded so there is no play. It holds well over twice what a 12 g pothole turns the number with and clicks over at about 3.5 N on the tail; the end grooves rise higher on their outer sides, so the end clicks are firmer and spring back. The spring is drawn unbent, pressing into the dial by its preload (flexure preload: against:), which the overlap checks take as its squeeze."
+note "v8: pulling v7's latch let the dial drop off its stub, because the latch was all that held it on. Now the dial goes on a keyed stub through a keyhole that only lines up 35° past the top click, which the number cannot reach (its corner meets the seatpost first), and there is nothing to pull: a spring blade outside the far cheek presses a V finger through a window into three grooves under the dial, preloaded so there is no play. It holds twice what a 12 g pothole turns the number with, yet clicks over at about 2 N on the tail, light enough that the push does not rock the bracket on the post: a soft blade with a lot of preload does that, where a stiff one with little would need a hard push. The end grooves rise higher on their outer sides, so the end clicks are firmer and spring back. The spring is drawn unbent, pressing into the dial by its preload (flexure preload: against:), which the overlap checks take as its squeeze."
 
 brief {
   purpose: "Hold a race number behind a Giant Propel aero seatpost with no screws"
@@ -74,8 +74,8 @@ param pin_d    = 3.2mm  range 2.4 .. 3.6 "Locking pin diameter (it and its teard
 param engage   = 1mm    range 0.6 .. 2  "How far the pin goes on into the stub on the far cheek"
 param dial_t   = 3mm    range 2.6 .. 4  "Tilt dial thickness: it turns on the stub over all of it, and its click grooves are cut in its far face"
 param flank    = 55     range 45 .. 60  "Slope of the click grooves' sides and the finger's V from the dial's face, degrees: steeper holds harder for the same spring; much past 60° friction locks it"
-param squeeze  = 0.6mm  range 0.3 .. 0.8 "How far the click spring stays bent with its finger in a groove: its preload, which takes up all play"
-param spring_t = 2.4mm  range 2 .. 3    "Click spring blade thickness"
+param squeeze  = 0.8mm  range 0.4 .. 1   "How far the click spring stays bent with its finger in a groove: its preload, which takes up all play. More preload with a softer blade holds as hard but clicks over more easily"
+param spring_t = 2mm    range 1.8 .. 3  "Click spring blade thickness"
 
 // ── Duty ───────────────────────────────────────────────
 param gust     = 70kmh  range 30kmh .. 120kmh "Crosswind gust"
@@ -163,8 +163,8 @@ let key_slip = asin(key_w / 2 / st_r) - acos(st_c / st_r)    // how far either s
 // hole, into one of three V grooves 15° apart in the dial's far face. Between the end grooves the face is cut back by tr_d,
 // so the finger rides out only ride to pass to the next click; the end grooves' outer sides run on up to the face, so the
 // end clicks are firmer and spring back. Drawn unbent, the finger sits squeeze deeper than its groove: the spring's preload
-let tr_d     = 0.6
-let ride     = 0.7
+let tr_d     = 0.4
+let ride     = 0.5
 let x_apex   = x_bed + tr_d + ride + 0.2             // the grooves' bottom; the finger's point stops 0.2 mm short of it
 let gw       = (x_apex - x_bed + 0.1) / tan(flank)   // half a groove's width at the far face
 let r_tr     = bore_r + 1.3                          // the track and grooves start here, outside the hub's ring round the bore
@@ -480,7 +480,7 @@ decision tilt_lock "How the tilt is set and held" {
   ask: "Adjust the tilt without it being loose, and without the dial coming off"
   chose: "Push-to-click dial on a keyed stub"
   by: "claude"
-  why: "Your v7 dial dropped off its stub when its latch was pulled to turn it, because the latch was all that held it on. Now there is nothing to pull: push the number's tail and it clicks to the next tilt. A spring blade outside the far cheek presses a V finger into one of three grooves under the dial, preloaded so there is no play; it holds well over twice what a 12 g pothole turns the number with and lets go at about 3.7 N on the tail, and the end clicks are firmer and spring back if pushed a little past. The dial goes on its stub through a keyhole that only lines up 35° past the top click, where the number cannot go (it would be inside the seatpost), so the dial is held on by its own shape at every click and while it turns."
+  why: "Your v7 dial dropped off its stub when its latch was pulled to turn it, because the latch was all that held it on. Now there is nothing to pull: push the number's tail and it clicks to the next tilt. A spring blade outside the far cheek presses a V finger into one of three grooves under the dial, preloaded so there is no play; it holds twice what a 12 g pothole turns the number with, yet clicks over at about 2 N on the tail, so the push does not rock the bracket on the post, and the end clicks are firmer and spring back if pushed a little past. The dial goes on its stub through a keyhole that only lines up 35° past the top click, where the number cannot go (it would be inside the seatpost), so the dial is held on by its own shape at every click and while it turns."
   option "Push-to-click dial on a keyed stub" "Push the tail: it clicks at 0, 15 and 30°, and the dial cannot come off."
   option "Click dial with a pull-tab latch" "v7: firm, but the dial dropped off its stub while the latch was pulled."
   option "Fixed angle" "Nothing to move or wear: reprint it to change the tilt."
@@ -541,20 +541,20 @@ analysis "Pothole" {
 }
 
 // a hand pushing the number's tail past an end click: the dial's groove pushes the finger sideways with all the end click
-// passes on (any more and it slips), and its hub pushes the back of the stub the other way, a couple as big as the push's
-// moment about the pin
+// passes on (any more and it slips), and its bore pushes the stub the other way, a couple as big as the push's moment about
+// the pin. Each is spread over the part that takes it (the finger, the stub inside the dial), not put on a point; the
+// finger's own bending is checked on its own below
 let tilt_turn = end_n * tail_arm / r_c
 let f_z      = H_z - r_c
-let finger_w = ((f_base + f_tip) / 2, pivot_y * ct + f_z * st, -pivot_y * st + f_z * ct)
-let stub_y   = pivot_y + st_w - 0.6
-let stub_w   = ((far_in + x_stub) / 2, stub_y * ct + H_z * st, -stub_y * st + H_z * ct)
+let finger_w = ((blade_in + f_tip) / 2, pivot_y * ct + f_z * st, -pivot_y * st + f_z * ct)
+let stub_w   = ((far_in + x_stub) / 2, H_w.y, H_w.z)
 
 analysis "Tilt push" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  load: force(zone(at: finger_w, size: (f_tip - f_base + 0.4, f_w, r_sec - r_in)), tilt_turn, dir: (0, -ct, st))
-  load: force(zone(at: stub_w, size: (x_stub - far_in + 0.4, 1.6, 4)), tilt_turn, dir: post_back)
+  load: force(zone(at: finger_w, d: r_sec - r_in, axis: X, length: f_tip - blade_in), tilt_turn, dir: (0, -ct, st))
+  load: force(zone(at: stub_w, d: 2 * st_r + 0.4, axis: X, length: x_stub - far_in), tilt_turn, dir: post_back)
   printed
   cycles: 1000
   safety: 2
