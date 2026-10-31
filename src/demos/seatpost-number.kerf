@@ -82,7 +82,7 @@ param gust     = 70kmh  range 30kmh .. 120kmh "Crosswind gust"
 param knock    = 25N    range 5 .. 60   "A leg or hand knocking the number's tail"
 param bump_g   = 12     range 3 .. 25   "Pothole shock, in g"
 
-let slot     = plate_t + 0.6                         // the number slides in with 0.3 mm each side, what a printed slot needs
+let slot     = plate_t + 0.4                         // in front of the dial the number runs in a slot 0.2 mm each side of it: a narrow slot prints a little undersize
 let jaw_w    = slot + 2 * cheek                      // the near cheek stands from slot / 2 to jaw_w / 2
 let seat_off = pad_t + 0.2                           // the saddle's seat stands off the post by the pad and a little room
 let sw       = tail_w + 2 * (seat_off + wall)        // saddle width
@@ -95,10 +95,11 @@ let nose_y   = -post_d + post_w / 2
 let post_sec = circle(post_w, at: (0, nose_y)) + polygon(points: [(-post_w / 2, nose_y), (post_w / 2, nose_y), (tail_w / 2, 0), (-tail_w / 2, 0)], r: 1.5)
 
 // the tilt dial: a plate beside the number that turns on a keyed stub off the far cheek, with a lip in the number's own
-// plane round its point (a V pocket, so the number turns with it). The lip bears on the near cheek, which leaves the number
-// 0.3 mm of room beside the dial's face. Under its hub, a sector as big as the bracket's height allows carries the click
-// grooves, so the number's centre hole sits a little above the bracket's middle
-let lip_t    = plate_t + 0.3
+// plane round its point (a V pocket, so the number turns with it). The click spring holds the lip hard against the near
+// cheek, so the number's gap in the jaw is the lip's height, 0.1 mm each side of it: the dial prints on its far face, so
+// that height comes out true to the layer (4.2 mm in all, 21 layers of 0.2). Under its hub, a sector as big as the
+// bracket's height allows carries the click grooves, so the number's centre hole sits a little above the bracket's middle
+let lip_t    = plate_t + 0.2
 let x_near   = slot / 2                              // the near cheek's inner face
 let x_dn     = x_near - lip_t                        // the dial's near face, beside the number
 let x_bed    = x_dn - dial_t                         // its far face, which it prints on
@@ -165,7 +166,8 @@ let key_slip = asin(key_w / 2 / st_r) - acos(st_c / st_r)    // how far either s
 // end clicks are firmer and spring back. Drawn unbent, the finger sits squeeze deeper than its groove: the spring's preload
 let tr_d     = 0.4
 let ride     = 0.5
-let x_apex   = x_bed + tr_d + ride + 0.2             // the grooves' bottom; the finger's point stops 0.2 mm short of it
+let pt_gap   = 0.5                                   // the finger's point stops this far short of the grooves' bottom, so it is a flat 0.7 mm wide
+let x_apex   = x_bed + tr_d + ride + pt_gap          // the grooves' bottom
 let gw       = (x_apex - x_bed + 0.1) / tan(flank)   // half a groove's width at the far face
 let r_tr     = bore_r + 1.3                          // the track and grooves start here, outside the hub's ring round the bore
 let r_in     = r_tr + 0.4                            // the finger's top
@@ -182,9 +184,9 @@ let spring_a = pivot_y - spring_root
 let blade_in = far_out - 0.8                         // the blade's inner face, clear of the far cheek
 let blade_x  = blade_in - spring_t / 2
 let f_w      = 5
-let f_tip    = x_apex + squeeze - 0.2
+let f_tip    = x_apex + squeeze - pt_gap
 let f_base   = x_apex + squeeze - f_w / 2 * tan(flank)
-let f_flat   = 0.2 / tan(flank)
+let f_flat   = pt_gap / tan(flank)
 let finger   = [(blade_in - 0.1, pivot_y - f_w / 2), (f_base, pivot_y - f_w / 2), (f_tip, pivot_y - f_flat), (f_tip, pivot_y + f_flat), (f_base, pivot_y + f_w / 2), (blade_in - 0.1, pivot_y + f_w / 2)]
 let fit_travel = f_tip - x_bed + 0.3                 // drawn back this far, the finger clears the dial's face to fit it
 let tab_y    = cheek_back - 1.25
@@ -542,26 +544,30 @@ analysis "Pothole" {
 
 // a hand pushing the number's tail past an end click: the dial's groove pushes the finger sideways with all the end click
 // passes on (any more and it slips), and its bore pushes the stub the other way, a couple as big as the push's moment about
-// the pin. Each is spread over the part that takes it (the finger, the stub inside the dial), not put on a point; the
-// finger's own bending is checked on its own below
+// the pin. The finger's point is finer than the analysis's elements, so its push goes in along its stem, from the blade
+// into the window in the far cheek, whose side the stem bears on once it has moved 0.3 mm; the bore's goes on the stub
+// inside the dial. Each zone starts at its at: and runs on along X, short of the faces beside it. The finger's own bending,
+// stem and point, is checked on its own below
 let tilt_turn = end_n * tail_arm / r_c
 let f_z      = H_z - r_c
-let finger_w = ((blade_in + f_tip) / 2, pivot_y * ct + f_z * st, -pivot_y * st + f_z * ct)
-let stub_w   = ((far_in + x_stub) / 2, H_w.y, H_w.z)
+let finger_w = (blade_in, pivot_y * ct + f_z * st, -pivot_y * st + f_z * ct)
+let stub_w   = (x_bed + 0.7, H_w.y, H_w.z)
 
 analysis "Tilt push" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  load: force(zone(at: finger_w, d: r_sec - r_in, axis: X, length: f_tip - blade_in), tilt_turn, dir: (0, -ct, st))
-  load: force(zone(at: stub_w, d: 2 * st_r + 0.4, axis: X, length: x_stub - far_in), tilt_turn, dir: post_back)
+  load: force(zone(at: finger_w, d: f_w + 0.2, axis: X, length: far_in - blade_in - 0.6), tilt_turn, dir: (0, -ct, st))
+  load: force(zone(at: stub_w, d: 2 * st_r + 0.4, axis: X, length: x_stub - x_bed - 1), tilt_turn, dir: post_back)
   printed
   cycles: 1000
   safety: 2
 }
 
-// the finger, bent at the click spring by the end click's sideways push
+// the finger, bent at the click spring by the end click's sideways push; and its point, which takes all of that push at
+// its very tip just as the click slips, and is bent hardest pt_gap back from the tip
 let finger_mpa = 6 * tilt_turn * ((f_base + f_tip) / 2 - blade_in) / ((saddle_h / 2 + H_z - r_in) * f_w * f_w)
+let point_mpa = 3 * tilt_turn * tan(flank)^2 / (8 * (saddle_h / 2 + H_z - r_in) * pt_gap)
 
 require "The pin and its teardrop point pass through the centre hole" for knock: pin_d * 0.7071 + 0.15 <= hole_cd / 2
 require "The pin goes on into the stub on the far cheek, so the number cannot slip past its tip" for knock: engage >= 0.6
@@ -576,7 +582,7 @@ require "A knock on the number pushes the dial back less than it takes to slip a
 require "The dial holds its tilt over a pothole, twice over" for bumps, adjust: hold_t >= 2 * pothole_t
 require "Pushing the number's tail clicks it to the next tilt: firm, but light" soft for adjust: click_n >= 2 && click_n <= 5
 require "Clicking strains the spring within what ASA takes for thousands of clicks" for adjust: 1.5 * spring_t * (squeeze + ride + tr_d) / spring_a^2 <= 0.7 * 0.025
-require "The finger takes the end click's sideways push twice over" for adjust: 34 / finger_mpa >= 2
+require "The finger takes the end click's sideways push twice over, at its stem and at its point" for adjust: 34 / max(finger_mpa, point_mpa) >= 2
 require "Pulling the spring's tab out to fit the dial is a firm pull, not a hard one" soft for fit: fit_n <= 25
 require "The O-ring pulls firmly" soft for gust, bumps: oring.stretch >= 1.3
 require "Stretching the O-ring over its hook is a one-hand job" soft for fit: oring.fit_force <= 45N
