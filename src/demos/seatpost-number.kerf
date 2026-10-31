@@ -545,7 +545,7 @@ analysis "Pothole" {
 // a hand pushing the number's tail past an end click: the dial's groove pushes the finger sideways with all the end click
 // passes on (any more and it slips), and its bore pushes the stub the other way, a couple as big as the push's moment about
 // the pin. The finger's point is finer than the analysis's elements, so its push goes in along its stem, from the blade
-// through the window in the far cheek, whose side the stem bears on once it has moved 0.3 mm; the bore's goes on the stub
+// into the window in the far cheek, whose side the stem bears on once it has moved 0.3 mm; the bore's goes on the stub
 // inside the dial. Each zone starts at its at: and runs on along X, short of the faces beside it. The finger's own bending,
 // stem and point, is checked on its own below
 let tilt_turn = end_n * tail_arm / r_c
@@ -557,7 +557,7 @@ analysis "Tilt push" {
   parts: [bracket]
   fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
   load: pull(oring)
-  load: force(zone(at: finger_w, d: f_w + 0.2, axis: X, length: far_in - blade_in), tilt_turn, dir: (0, -ct, st))
+  load: force(zone(at: finger_w, d: f_w + 0.2, axis: X, length: far_in - blade_in - 0.6), tilt_turn, dir: (0, -ct, st))
   load: force(zone(at: stub_w, d: 2 * st_r + 0.4, axis: X, length: x_stub - x_bed - 1), tilt_turn, dir: post_back)
   printed
   cycles: 1000
