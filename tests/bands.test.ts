@@ -227,33 +227,38 @@ describe("the seatpost number bracket", () => {
     expect(bands.every((i) => i.status === "pass")).toBe(true);
   }, 120_000);
 
-  it("plays the bracket and its pad on, the O-ring, the number pinned in with its print and each load it is checked for, the tilt dial riding with them", async () => {
+  it("plays the bracket and its pad on, the O-ring, the number slid in with its print, the snap pin pushed through it, and each load it is checked for", async () => {
     const r = await fullCheck(src);
     const steps = fittingSteps(r.model, (p) => r.core.get(p.hash)?.bbox as never);
-    expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "slide", "hold", "hold", "hold", "hold"]);
+    expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "slide", "slide", "hold", "hold", "hold"]);
     const name = (id: string) => r.model.parts.find((p) => p.id === id)!.name;
     const seat = steps[0];
     if (seat.kind !== "seat") throw new Error("no seat step");
     expect(name(seat.part)).toBe("bracket");
-    // the tilt dial is fitted into the jaw first, so it goes on with the bracket and its pad
-    expect(seat.riders.map(name).sort()).toEqual(["dial", "pad"]);
+    // the pin sits inside the bracket's box, but it goes in later, on its own
+    expect(seat.riders.map(name)).toEqual(["pad"]);
     expect(steps[1].title).toBe("Fit O-ring");
-    const slide = steps.find((s) => s.kind === "slide")!;
-    if (slide.kind !== "slide") throw new Error("no slide step");
+    const [slide, push] = steps.filter((s) => s.kind === "slide");
+    if (slide.kind !== "slide" || push.kind !== "slide") throw new Error("no slide steps");
     expect(name(slide.part)).toBe("number");
     // the print and the transponder sticker go in with it
     expect(slide.riders.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
-    expect(slide.caption).toMatch(/^Pull the arm back \(about \d+(\.\d)? N\), slide Race number \(4004\) in and let go: the pin goes through its hole and on into the far side/);
-    // the pin is found where it passes through the number, not in the cheek it starts from or the dial round it
-    const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
-    expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);
+    expect(slide.caption).toBe("Slide Race number (4004) in until it stops, with its hole in line with the hole for Snap pin.");
     // it slides in along its own length, tilted up with it, point first
     const rise = (30 * Math.PI) / 180;
     expect(vdot(vnorm(slide.from), [0, Math.cos(rise), Math.sin(rise)])).toBeCloseTo(1, 6);
-    // in the stress results the bracket carries its pad, the number and the dial its pin reaches into, and the number its
-    // print, so they move with it
+    // then the pin goes in across the jaw, through the number's centre hole, and clicks out behind the far cheek
+    expect(name(push.part)).toBe("pin");
+    expect(push.caption).toMatch(/^Push Snap pin in through Race number \(4004\) until it clicks: about \d+(\.\d)? N\. To take it out, pinch its prongs together and push it back\.$/);
+    expect(Math.abs(vnorm(push.from)[0])).toBeCloseTo(1, 6);
+    const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
+    expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);
+    expect(Math.sign(push.peg[0])).toBe(-Math.sign(push.from[0]));
+    // in the stress results the bracket carries its pad and the pin, the pin the number, and the number its print, so
+    // they move with it
     const carried = carriedBy(r.model, (p) => r.core.get(p.hash)?.bbox as never);
-    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["dial", "number", "pad"]);
+    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["pad", "pin"]);
+    expect(carried.get(push.part)!.map(name)).toEqual(["number"]);
     expect(carried.get(slide.part)!.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
     const gust = steps.find((s) => s.kind === "hold" && s.title === "Crosswind gust")!;
     if (gust.kind !== "hold") throw new Error("no gust step");
