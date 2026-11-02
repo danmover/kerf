@@ -2,7 +2,8 @@
 // the viewport plays: a part held on by bands comes up to what they wrap,
 // each band is hooked over its first pin, pulled round and stretched over the
 // second pin's head (with its real stretch and pull as it goes), a part that
-// clicks onto a peg slides along the arm until it clicks, and each analysis
+// clicks onto a peg slides along the arm until it clicks, a part held by a
+// split snap pin slides in before the pin is pushed through, and each analysis
 // that checks a seat shows its loads and how much of the grip they use. Parts
 // that sit inside another's box (a pad in a seat, the print on a sign) ride
 // along with it.
@@ -37,9 +38,18 @@ const bandName = (name: string) => name.replace(/_/g, " ").replace(/\bo ?ring\b/
 /** Every part that moves when the given one does: the parts whose box lies inside its own. */
 export const moves = (s: Extract<FitStep, { kind: "seat" | "slide" }>) => [s.part, ...s.riders];
 
-/** Whether the design has anything that goes on by hand worth showing: a band hooked at both ends, or a snap or a sprung pin that holds a part by a hole. */
+/** Whether the design has anything that goes on by hand worth showing: a band hooked at both ends, a snap or a sprung pin that holds a part by a hole, or a split snap pin. */
 export function hasFitting(model: Model): boolean {
-  return model.parts.some((p) => p.band?.layout.doubled || p.flex?.some((f) => (f.kind === "snap" || f.kind === "flexure") && f.peg));
+  return model.parts.some((p) => p.band?.layout.doubled || p.flex?.some((f) => (f.kind === "snap" || f.kind === "flexure") && f.peg) || splitPin(p));
+}
+
+/** A split snap pin's prongs: two or more peg-less snap hooks, and nothing else that bends, rooted side by side and pointing the same way. */
+function splitPin(p: EvalPart): FlexInfo[] | undefined {
+  const flex = p.flex ?? [];
+  if (flex.length < 2 || flex.some((f) => f.kind !== "snap" || f.peg)) return undefined;
+  const d = vnorm(flex[0].dir);
+  const root = vdot(flex[0].at, d);
+  return flex.every((f) => vdot(vnorm(f.dir), d) > 0.999 && Math.abs(vdot(f.at, d) - root) < 0.5) ? flex : undefined;
 }
 
 /**
@@ -54,6 +64,10 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
   const seated = new Set<string>();
   const riders = riderMap(model, bbox);
   const riding = new Set([...riders.values()].flat());
+  // a split pin gets a step of its own, so it does not ride in with the part it clicks into
+  const pins = splitPins(model, bbox, riding);
+  const pinIds = new Set(pins.map((s) => s.pin.id));
+  for (const [host, list] of riders) riders.set(host, list.filter((id) => !pinIds.has(id)));
   for (const b of bands) {
     const info = b.band!;
     const holds = info.holds ? byName.get(info.holds) : undefined;
@@ -105,6 +119,36 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       peg,
       title: `Slide ${mate.label} in`,
       caption,
+      dur: 3,
+    });
+  }
+
+  // the part a split pin pins slides in first, along its own length, the end with the hole first; then the pin is
+  // pushed through it until it clicks
+  for (const s of pins) {
+    if (s.mate) {
+      const along = slideAlong(s.mate, bbox(s.mate), s.dir, s.mateAt) ?? vscale(s.dir, -1);
+      steps.push({
+        kind: "slide",
+        part: s.mate.id,
+        riders: riders.get(s.mate.id) ?? [],
+        host: s.host?.id ?? s.pin.id,
+        from: vscale(along, 30),
+        peg: s.mateAt,
+        title: `Slide ${s.mate.label} in`,
+        caption: `Slide ${s.mate.label} in until it stops, with its hole in line with the hole for ${s.pin.label}.`,
+        dur: 3,
+      });
+    }
+    steps.push({
+      kind: "slide",
+      part: s.pin.id,
+      riders: riders.get(s.pin.id) ?? [],
+      host: s.host?.id ?? s.pin.id,
+      from: vscale(s.dir, -(s.length + 10)),
+      peg: s.click,
+      title: `Push ${s.pin.label} in`,
+      caption: `Push ${s.pin.label} in${s.mate ? ` through ${s.mate.label}` : ""} until it clicks: about ${fmtNum(s.push, 1)} N. To take it out, pinch its prongs together and push it back.`,
       dur: 3,
     });
   }
@@ -191,8 +235,65 @@ function pegMates(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined, rid
 export function carriedBy(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined): Map<string, string[]> {
   const out = riderMap(model, bbox);
   const riding = new Set([...out.values()].flat());
-  for (const { host, through } of pegMates(model, bbox, riding))
-    for (const q of through) if (!out.get(host.id)?.includes(q.id)) out.set(host.id, [...(out.get(host.id) ?? []), q.id]);
+  const add = (host: string, id: string) => {
+    if (!out.get(host)?.includes(id)) out.set(host, [...(out.get(host) ?? []), id]);
+  };
+  for (const { host, through } of pegMates(model, bbox, riding)) for (const q of through) add(host.id, q.id);
+  // a split pin goes with the part it clicks into and carries what it pins
+  for (const s of splitPins(model, bbox, riding)) {
+    if (s.host && !riding.has(s.pin.id)) add(s.host.id, s.pin.id);
+    for (const q of s.through) if (q.id !== s.host?.id) add(s.pin.id, q.id);
+  }
+  return out;
+}
+
+/**
+ * Each split snap pin and what its prongs go through, from their root to their catches: the part thinnest along it is
+ * the one it pins (a number through its centre hole), the biggest the one it clicks into. Neither riders nor what the
+ * bands wrap count.
+ */
+function splitPins(
+  model: Model,
+  bbox: (p: EvalPart) => [V3, V3] | undefined,
+  riding: ReadonlySet<string>,
+): { pin: EvalPart; dir: V3; length: number; click: V3; mate?: EvalPart; mateAt: V3; host?: EvalPart; through: EvalPart[]; push: number }[] {
+  const wrapped = new Set(model.parts.flatMap((p) => p.band?.around ?? []));
+  const out: ReturnType<typeof splitPins> = [];
+  for (const p of model.parts) {
+    const prongs = splitPin(p);
+    if (!prongs) continue;
+    const length = prongs[0].length;
+    const root = vscale(prongs.reduce((s, f) => vadd(s, f.at), [0, 0, 0] as V3), 1 / prongs.length);
+    const d = vnorm(prongs[0].dir);
+    const dir = vnorm(applyXformsToDir(d, p.xf));
+    const across = (q: EvalPart) => {
+      const [lo, hi] = placedBox(q, bbox(q)!);
+      return [0, 1, 2].reduce((s, k) => s + Math.abs(dir[k]) * (hi[k] - lo[k]), 0);
+    };
+    const hits = [0.1, 0.3, 0.5, 0.7, 0.9]
+      .map((k) => applyXforms(vadd(root, vscale(d, k * length)), p.xf))
+      .flatMap((at) =>
+        model.parts
+          .filter((q) => q.id !== p.id && !q.band && !wrapped.has(q.name) && !riding.has(q.id) && contains(q, bbox(q), at))
+          .map((q) => ({ q, at, across: across(q), size: volumeOf(bbox(q)!) })),
+      );
+    if (!hits.length) continue;
+    const thin = [...hits].sort((a, b) => a.across - b.across || a.size - b.size)[0];
+    const big = [...hits].sort((a, b) => b.size - a.size)[0];
+    const onMate = hits.filter((h) => h.q.id === thin.q.id);
+    const push = prongs.reduce((s, f) => s + (flexCalc(f, p.material, 1).push ?? 0), 0);
+    out.push({
+      pin: p,
+      dir,
+      length,
+      click: applyXforms(vadd(root, vscale(d, length)), p.xf),
+      mate: thin.q.id !== big.q.id ? thin.q : undefined,
+      mateAt: vscale(onMate.reduce((a, h) => vadd(a, h.at), [0, 0, 0] as V3), 1 / onMate.length),
+      host: big.q,
+      through: [...new Set(hits.map((h) => h.q))],
+      push,
+    });
+  }
   return out;
 }
 
