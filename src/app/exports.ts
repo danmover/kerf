@@ -39,7 +39,7 @@ function visibleParts(selectionOnly: boolean) {
   return model.parts.filter((p) => !p.hidden && !hiddenIds.includes(p.id) && (!selectionOnly || selected.includes(p.id)));
 }
 
-const baseName = () => useProject.getState().current?.name ?? useDesign.getState().model?.name ?? "design";
+export const baseName = () => useProject.getState().current?.name ?? useDesign.getState().model?.name ?? "design";
 
 /** Exact STEP of placed parts, with their full detail; the STEP export and the build pack share it. */
 async function stepOf(parts: ReturnType<typeof visibleParts>) {
@@ -182,10 +182,10 @@ export async function exportProjectFile() {
 
 // ---------- more formats: print files, meshes for other tools, images, report ----------
 
-type Placed = { part: EvalPart; mesh: MeshData };
+export type Placed = { part: EvalPart; mesh: MeshData };
 
 /** The fine meshes of the parts being exported (visible ones, or just the selection). */
-async function placedMeshes(selectionOnly: boolean, only?: (p: EvalPart) => boolean): Promise<Placed[] | null> {
+export async function placedMeshes(selectionOnly: boolean, only?: (p: EvalPart) => boolean): Promise<Placed[] | null> {
   const parts = visibleParts(selectionOnly).filter((p) => !only || only(p));
   if (!parts.length) {
     toast({ kind: "warn", title: "Nothing to export", detail: selectionOnly ? "Select one or more parts first." : only ? "The design has no parts to make." : "The design has no visible parts." });
@@ -203,7 +203,7 @@ async function placedMeshes(selectionOnly: boolean, only?: (p: EvalPart) => bool
 /** Parts you make (not bought hardware or imported boards). */
 const madePart = (p: EvalPart) => p.kind === "part" && !p.imported;
 
-const suffix = (selectionOnly: boolean) => (selectionOnly ? " selection" : "");
+export const suffix = (selectionOnly: boolean) => (selectionOnly ? " selection" : "");
 
 /** One of each made part, with how many the design uses. */
 function uniqueMade(items: Placed[]) {

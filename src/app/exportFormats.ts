@@ -28,6 +28,7 @@ import { errorText, toast } from "./ui";
 import { useDesign } from "../core/engine";
 import { viewport } from "./viewportApi";
 import { exportDrawingsPdf, exportFlatPatternsDxf } from "../drawing/export";
+import { PLUGINS, pluginOn } from "../plugins";
 
 async function exportDrawings() {
   await exportDrawingsPdf();
@@ -68,6 +69,8 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "glb", group: "model", label: "glTF with materials", detail: "Blender, the web, game engines", ext: ".glb", icon: "Material", selection: true, run: (o) => exportGlb(o.selectionOnly) },
   { id: "usdz", group: "model", label: "USDZ for AR", detail: "Place it on your desk with an iPhone", ext: ".usdz", icon: "Orbit", selection: true, run: (o) => exportUsdz(o.selectionOnly) },
   { id: "obj", group: "model", label: "OBJ + materials", detail: "Renderers and mesh tools", ext: ".zip", icon: "Box", selection: true, run: (o) => exportObj(o.selectionOnly) },
+  // plugins' own exports (a game model with a colour texture ...), while the plugin is on
+  ...PLUGINS.flatMap((p) => (p.exports ?? []).map((f) => ({ ...f, shown: () => pluginOn(p.id) && (f.shown?.() ?? true) }))),
 
   { id: "build-pack", group: "print", label: "Build pack", detail: "Parts to buy and make, wiring, firmware and tests", ext: ".zip", icon: "Wrench", shown: () => !!useDesign.getState().model?.machine, run: () => exportBuildPack() },
   { id: "gerbers", group: "print", label: "Circuit board Gerbers", detail: "Copper, mask, silkscreen and drill files for a board house", ext: ".zip", icon: "Chip", shown: () => !!useDesign.getState().model?.machine?.boards.length, run: () => exportGerbers() },

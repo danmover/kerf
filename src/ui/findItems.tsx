@@ -20,6 +20,8 @@ import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
 import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
 import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
+import { pluginOn } from "../plugins";
+import { openCreatureDialog } from "../plugins/organic/CreatureDialog";
 import { importStepFiles } from "../app/imports";
 import { TEMPLATES } from "../demos/templates";
 import { openDrawings, closeDrawings, useDrawings } from "../drawing/engine";
@@ -104,6 +106,7 @@ const SETTINGS_FIND: { tab: SettingsTab; title: string; detail: string; keywords
   { tab: "voice", title: "Voice input", detail: "Talk to Claude instead of typing", keywords: "speech microphone dictate talk" },
   { tab: "app", title: "Display", detail: "Theme, viewport, motion and graphics card", keywords: "theme dark light viewport graphics gpu motion animation" },
   { tab: "making", title: "Making: your tools and parts", detail: "Processes you can use, your machines, parts you have and costs", keywords: "workshop 3d printer cnc laser own machines processes parts on hand inventory labour" },
+  { tab: "plugins", title: "Plugins", detail: "Switch Kerf's plugins on or off: creatures and characters", keywords: "plugins extensions add-ons creatures characters animals organic" },
   { tab: "data", title: "Data and backups", detail: "Back up or import every project", keywords: "backup export import storage restore" },
   { tab: "about", title: "About Kerf", detail: "Version, licences and help", keywords: "version licence license help" },
 ];
@@ -264,6 +267,8 @@ export function findItems(ctx: FindContext): FindItem[] {
   }
 
   // ── starting points ──
+  if (pluginOn("organic"))
+    push({ id: "new:creature", group: "New design", title: "Make a creature", detail: "Describe an animal, person or pet, or drop in a reference sheet, and Claude models it", keywords: "creature animal pet character person people organic sculpt meshy tripo roblox game low poly figurine", icon: <Icon.Sparkle size={14} />, run: openCreatureDialog });
   for (const t of TEMPLATES)
     push({ id: `new:${t.id}`, group: "New design", title: t.id === "blank" ? "New blank design" : `New: ${t.name}`, detail: t.tagline, keywords: `new create start template example ${t.stats} ${(t.shows ?? []).join(" ")}`, icon: <Icon.Plus size={14} />, run: () => void createProject(t.id).then((p) => openProject(p.id)) });
 

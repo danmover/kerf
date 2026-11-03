@@ -23,6 +23,7 @@ import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
+import { PLUGINS } from "../plugins";
 import { desktop, graphicsCard, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
@@ -31,6 +32,7 @@ const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "voice", label: "Voice", icon: <Icon.Mic size={14} /> },
   { id: "app", label: "Display", icon: <Icon.Eye size={14} /> },
   { id: "making", label: "Making", icon: <Icon.Factory size={14} /> },
+  { id: "plugins", label: "Plugins", icon: <Icon.Plug size={14} /> },
   { id: "data", label: "Data", icon: <Icon.Layers size={14} /> },
   { id: "about", label: "About", icon: <Icon.Info size={14} /> },
 ];
@@ -59,11 +61,25 @@ export function SettingsModal() {
           {shown === "voice" && <VoiceSettings />}
           {shown === "app" && <AppSettings />}
           {shown === "making" && <MakingSettings />}
+          {shown === "plugins" && <PluginSettings />}
           {shown === "data" && <DataSettings />}
           {shown === "about" && <About />}
         </div>
       </div>
     </Modal>
+  );
+}
+
+function PluginSettings() {
+  const off = useSettings((s) => s.pluginsOff);
+  return (
+    <Section title="Plugins">
+      {PLUGINS.map((p) => (
+        <Row key={p.id} t={p.name} d={<>{p.description} Switched off, its starting points, exports and assistant instructions are hidden; designs that use it still build.</>}>
+          <Toggle on={!off.includes(p.id)} onChange={(v) => updateSettings({ pluginsOff: v ? off.filter((x) => x !== p.id) : [...off, p.id] })} label={p.name} />
+        </Row>
+      ))}
+    </Section>
   );
 }
 

@@ -9,6 +9,8 @@ import { extrudeProfile, loftProfiles, revolveProfile2, sweepProfile } from "./p
 import { buildKnurl, buildThread } from "./threads";
 import { describeSel, Topo, type FeatureTools } from "./topology";
 import { buildMould } from "./mould";
+import { meshGenerator } from "../plugins/kernel";
+import { solidFromTriangles } from "./meshSolid";
 
 export class BuildError extends Error {}
 
@@ -153,6 +155,10 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       const origin = vadd(r.o, vadd(vscale(r.u, p[0]), vscale(v, p[1])));
       const dir = vadd(vscale(r.u, d[0]), vscale(v, d[1]));
       return fuseAll(r.regions.map((reg) => regionSketch(plane, reg).revolve(dir, { origin, angle: r.angle }) as Shape3D));
+    }
+    case "meshgen": {
+      const m = meshGenerator(r.gen).mesh(r.data, "proxy");
+      return solidFromTriangles(m.positions, m.indices);
     }
     case "import": {
       const file = imported.get(r.asset);

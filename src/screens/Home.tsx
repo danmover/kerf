@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useProject, openProject, createProject, duplicateProject, deleteProject, exportProject, importProject, renameProject } from "../app/project";
 import { confirmDialog, go, openSettings, toast } from "../app/ui";
+import { openCreatureDialog } from "../plugins/organic/CreatureDialog";
 import { TEMPLATES, TEMPLATE_CATEGORIES, audienceById, templateById, type TemplateCategory } from "../demos/templates";
 import { useSettings } from "../app/settings";
 import { startDesign } from "../app/startDesign";
@@ -255,8 +256,10 @@ function Examples({ onStart }: { onStart: (id: string) => void }) {
   const audience = audienceById(useSettings((s) => s.audience));
   const [cat, setCat] = useState<TemplateCategory | "all">("all");
   const order = audience?.order ?? TEMPLATE_CATEGORIES.map((c) => c.id);
-  const cats = [...TEMPLATE_CATEGORIES].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-  const list = TEMPLATES.filter((t) => t.id !== "blank" && (cat === "all" || t.category === cat))
+  const off = useSettings((s) => s.pluginsOff);
+  const shown = TEMPLATES.filter((t) => t.id !== "blank" && !(t.plugin && off.includes(t.plugin)));
+  const cats = [...TEMPLATE_CATEGORIES].filter((c) => shown.some((t) => (t.category ?? "parts") === c.id)).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  const list = shown.filter((t) => cat === "all" || t.category === cat)
     .map((t, i) => ({ t, i }))
     .sort((a, b) => (cat === "all" ? order.indexOf(a.t.category ?? "parts") - order.indexOf(b.t.category ?? "parts") : 0) || a.i - b.i)
     .map((x) => x.t);
@@ -270,6 +273,11 @@ function Examples({ onStart }: { onStart: (id: string) => void }) {
           </button>
         ))}
         <div className="grow" />
+        {!off.includes("organic") && (
+          <button className="example-chip blank" onClick={openCreatureDialog} data-tip="Describe an animal, person or pet, or drop in a reference sheet, like Meshy or Tripo">
+            <Icon.Sparkle size={12} /> Make a creature
+          </button>
+        )}
         <button className="example-chip blank" onClick={() => onStart("blank")}>
           <Icon.Plus size={12} /> Blank design
         </button>
@@ -377,7 +385,38 @@ export function TemplateArt({ id }: { id: string }) {
   const violet = { stroke: "var(--violet)" };
   const line = { stroke: "var(--line-3)" };
   const tint = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})` });
-  if (id === "reducer")
+
+  if (id === "fox" || id === "cloud-sheep") {
+    const soft = (a: number) => ({ ...accent, fill: `rgb(var(--accent-rgb) / ${a})`, strokeWidth: 1.2 });
+    return id === "cloud-sheep" ? (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        {[
+          [78, 66, 15],
+          [96, 60, 16],
+          [116, 64, 15],
+          [130, 74, 12],
+          [88, 80, 14],
+          [112, 82, 14],
+        ].map(([cx, cy, r], i) => (
+          <circle key={i} cx={cx} cy={cy} r={r} style={soft(0.1)} />
+        ))}
+        <circle cx="70" cy="44" r="18" style={soft(0.16)} />
+        <ellipse cx="62" cy="52" rx="9" ry="10" style={{ ...line, fill: "rgb(var(--accent-rgb) / 0.05)", strokeWidth: 1 }} />
+        <path d="M80 36 a8 8 0 1 1 -2 12 a4.5 4.5 0 1 1 3 -6" style={{ ...violet, fill: "none", strokeWidth: 2.2, strokeLinecap: "round" }} />
+        <path d="M86 94 v12 M108 96 v12" style={{ ...accent, strokeWidth: 3, strokeLinecap: "round" }} />
+      </svg>
+    ) : (
+      <svg viewBox="0 0 200 120" width="78%" height="78%">
+        <path d="M76 34 L72 8 L94 28 Z M124 34 L128 8 L106 28 Z" style={{ ...soft(0.24), strokeLinejoin: "round" }} />
+        <ellipse cx="100" cy="46" rx="30" ry="25" style={soft(0.14)} />
+        <path d="M70 56 l-10 4 l8 2 l-6 6 l14 -4 M130 56 l10 4 l-8 2 l6 6 l-14 -4" style={{ ...accent, fill: "none", strokeWidth: 1.1, strokeLinejoin: "round" }} />
+        <circle cx="100" cy="60" r="3" style={{ fill: "var(--accent)" }} />
+        <path d="M86 70 Q100 66 114 70 L116 100 L84 100 Z" style={soft(0.1)} />
+        <path d="M114 88 C138 92 150 70 166 60 C168 76 150 98 120 98" style={{ ...soft(0.12), strokeLinejoin: "round" }} />
+        <path d="M156 64 l4 8 l4 -10" style={{ ...violet, fill: "none", strokeWidth: 1.2 }} />
+      </svg>
+    );
+  }  if (id === "reducer")
     return (
       <svg viewBox="0 0 200 120" width="78%" height="78%">
         <motion.circle cx="80" cy="62" r="34" fill="none" strokeWidth="1.3" strokeDasharray="5 3" animate={{ rotate: -360 }} transition={{ duration: 18, repeat: Infinity, ease: "linear" }} style={{ ...accent, originX: "80px", originY: "62px" }} />

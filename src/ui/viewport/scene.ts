@@ -1067,7 +1067,7 @@ export class SceneController {
     const p = obj.part;
     const look = this.lookFor(p);
     // imported bodies whose faces carry their own colours keep them, except while a material is previewed
-    const faceColors = !!p.imported?.faceColors && !!obj.mesh.geometry.getAttribute("color") && !this.overrides.has(p.id);
+    const faceColors = (!!p.imported?.faceColors || !!p.painted) && !!obj.mesh.geometry.getAttribute("color") && !this.overrides.has(p.id);
     if (look !== obj.look || obj.mat.vertexColors !== faceColors) {
       const recompile = (look.transmission > 0) !== (obj.look.transmission > 0) || obj.mat.vertexColors !== faceColors;
       obj.look = look;
@@ -2050,7 +2050,7 @@ export class SceneController {
     const out: PhotoPart[] = [];
     for (const o of this.parts.values()) {
       if (o.removing || !o.group.visible || o.opacityTarget < 1) continue;
-      out.push({ id: o.id, geoKey: o.geoKey, geometry: o.mesh.geometry, matrix: o.mesh.matrixWorld, look: o.look });
+      out.push({ id: o.id, geoKey: o.geoKey, geometry: o.mesh.geometry, matrix: o.mesh.matrixWorld, look: o.look, painted: o.mat.vertexColors });
       o.decor?.meshes.forEach((m, i) => {
         if (!m.visible) return;
         const mat = Array.isArray(m.material) ? m.material[0] : m.material;

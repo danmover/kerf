@@ -242,6 +242,8 @@ export interface EvalPart {
   detail?: boolean;
   /** set for bodies of an imported STEP file */
   imported?: ImportedBody;
+  /** drawn in the colours its mesh carries (organic creatures painted in several colours) */
+  painted?: boolean;
 }
 
 /** A sheet-metal part's data: flanges, bends and regions (part coordinates), and its flat pattern as a part of its own. */

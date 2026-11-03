@@ -97,6 +97,8 @@ export interface Settings {
   machineFor: Record<string, string>;
   /** what the user said they make with Kerf ("maker", "engineer", "student", "manufacturer"; empty: not asked yet), which orders the starting points */
   audience: string;
+  /** plugins the user switched off, by id (see plugins/index); a new plugin starts on */
+  pluginsOff: string[];
   /** version of these defaults the stored settings were last migrated to */
   rev: number;
 }
@@ -150,6 +152,7 @@ const DEFAULTS: Settings = {
   machines: [],
   machineFor: {},
   audience: "",
+  pluginsOff: [],
   rev: SETTINGS_REV,
 };
 
@@ -186,6 +189,7 @@ function load(): Settings {
     if (!/^([a-z]{2,3}(-[A-Za-z0-9]{2,8})*)?$/.test(out.voiceLang)) out.voiceLang = DEFAULTS.voiceLang;
     if (!LIGHTING_IDS.includes(out.lighting)) out.lighting = DEFAULTS.lighting;
     if (!["", "maker", "engineer", "student", "manufacturer"].includes(out.audience)) out.audience = DEFAULTS.audience;
+    out.pluginsOff = Array.isArray(out.pluginsOff) ? out.pluginsOff.filter((x): x is string => typeof x === "string").slice(0, 50) : [];
     if (!["draft", "balanced", "high"].includes(out.quality)) out.quality = DEFAULTS.quality;
     out.lightAngle = Number.isFinite(out.lightAngle) ? ((Math.round(out.lightAngle) % 360) + 360) % 360 : 0;
     if (out.agentModel !== "same" && !MODELS.some((m) => m.id === out.agentModel)) out.agentModel = "same";
