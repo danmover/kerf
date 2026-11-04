@@ -8,6 +8,10 @@ import { callTool, mcpTools, toMcp, type McpToolResult } from "../src/ai/claudeC
 import { TOOL_DEFS } from "../src/ai/tools";
 import { useProject } from "../src/app/project";
 import { useChat } from "../src/ai/chat";
+import { useDesign } from "../src/core/engine";
+import { evaluate } from "../src/lang/evaluator";
+import { templateById } from "../src/demos/templates";
+import { clearAsks } from "../src/ai/asks";
 
 const TOKEN = "t".repeat(43);
 const textOf = (r: McpToolResult) => r.content.map((c) => (c.type === "text" ? c.text : "")).join("");
@@ -148,5 +152,17 @@ describe("Kerf's tools in Claude Code", () => {
     useChat.setState({ busy: true });
     const clash = await callTool({ name: "catalog_lookup", arguments: { id: "lipo_3s_2200" } }, signal);
     expect(textOf(clash)).toContain("Kerf's own chat is working");
+  });
+
+  it("measures Claude Code's asks against the design as it was when it noted them", async () => {
+    const source = templateById("enclosure")!.source;
+    const s = useDesign.getState();
+    useDesign.setState({ source, model: evaluate(source), reportRev: s.rev });
+    useProject.setState({ current: { id: "p1" } as never });
+    clearAsks();
+    const r = await callTool({ name: "record_asks", arguments: { asks: [{ ask: "keep the lid screws", keep: true, part: "lid_fasteners" }] } }, new AbortController().signal);
+    expect(r.isError).toBeUndefined();
+    expect(textOf(r)).toContain("✓ keep: keep the lid screws (lid_fasteners unchanged)");
+    clearAsks();
   });
 });
