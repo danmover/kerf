@@ -41,6 +41,12 @@ export function stepEffort(chosen: Effort, first: boolean, faster: boolean): Eff
   return LEVELS.indexOf(chosen) > LEVELS.indexOf(FOLLOW_UP_EFFORT) ? FOLLOW_UP_EFFORT : chosen;
 }
 
+/** The level for a step in Thorough mode: the most thought on the first step, at least high after it. */
+export function thoroughEffort(chosen: Effort, first: boolean): Effort {
+  if (first) return "max";
+  return LEVELS.indexOf(chosen) < LEVELS.indexOf("high") ? "high" : chosen;
+}
+
 /**
  * Put a mark before the newest user message, which has not been sent yet, when
  * the next response should run at another level than the conversation is at.

@@ -3,7 +3,7 @@
 // validated before it touches the design.
 
 import { z } from "zod";
-import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly } from "../core/engine";
+import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly, meshes } from "../core/engine";
 import { whenWiringChecked } from "../machine/harness/runtime";
 import { whenSwept } from "../core/sweepRuntime";
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
@@ -54,6 +54,9 @@ import { evaluateSelector } from "../lang/evaluator";
 import { kernel } from "../kernel/client";
 import { inspectText } from "../kernel/inspectText";
 import { inverseXforms } from "../kernel/recipe";
+import { buildChecksRequest } from "../core/checks";
+import type { GeoQuery } from "../lang/values";
+import { ASKS_TOOL, AsksInput, asksState, asksText, remeasure, setAsks } from "./asks";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -62,6 +65,7 @@ export const VIEW_NAMES = ["iso", "front", "back", "top", "bottom", "left", "rig
 
 export const TOOL_DEFS = [
   PLAN_TOOL,
+  ASKS_TOOL,
   {
     name: "get_design",
     description:
@@ -1000,12 +1004,31 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext = {
   const out = await runOne(name, input, ctx);
   if (!ctx.check || !SOURCE_TOOLS.has(name) || out.isError || useDesign.getState().source === before) return out;
   const c = await checkResults(ctx.signal);
-  const text = `Built and checked:\n${c.text}`;
+  const asks = await measuredAsks(ctx.signal);
+  const text = `Built and checked:\n${c.text}${asks ? `\n\nThe user's asks, measured after this change:\n${asks}` : ""}`;
   return {
     ...out,
     content: typeof out.content === "string" ? `${out.content}\n\n${text}` : [...out.content, { type: "text", text }],
     card: { ...out.card, detail: [out.card.detail, c.title].filter(Boolean).join(" · ") },
   };
+}
+
+/** Geometric quantities for the asks, from the kernel: only the parts the queries name are placed, so it costs little. */
+export async function kernelGeo(queries: GeoQuery[]) {
+  const s = useDesign.getState();
+  if (!s.model) return { geo: {}, geoErrors: {} };
+  const named = new Set(queries.flatMap((q) => (q.q === "min_distance" ? [q.a, q.b] : [q.a])));
+  const req = buildChecksRequest(s.model, new Set(s.model.parts.map((p) => p.hash).filter((h) => meshes.has(h))));
+  const placed = req.placed.filter((p) => named.has(p.name) || named.has(p.id));
+  return kernel.checks({ placed, queries, access: [], envelopes: [], ignorePairs: [] });
+}
+
+/** The asks measured on the design as it is now, as Claude reads them; empty when nothing was asked. */
+async function measuredAsks(signal?: AbortSignal): Promise<string> {
+  if (!asksState().asks.length || signal?.aborted) return "";
+  const s = useDesign.getState();
+  if (s.kernelStatus === "error") return "";
+  return asksText(await remeasure({ source: s.source, model: s.model }, kernelGeo));
 }
 
 const orAbort = (p: Promise<unknown>, signal?: AbortSignal) =>
@@ -1048,6 +1071,19 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       return runBuildTool(input, ctx);
     case "update_plan":
       return runPlanTool(input);
+    case "record_asks": {
+      const p = AsksInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      setAsks(p.data.asks);
+      // measured now as a baseline, which also shows a measure that cannot be read; not waiting long for a build in flight
+      await orAbort(whenChecked(20_000), ctx.signal);
+      const measured = await measuredAsks(ctx.signal);
+      const n = p.data.asks.length;
+      return {
+        content: `Recorded ${n} ask${n > 1 ? "s" : ""}. Kerf measures them after every change and lists parts that change though no ask names them. As the design is now, before your change:\n${measured}`,
+        card: { title: `Noted ${n} ask${n > 1 ? "s" : ""}` },
+      };
+    }
     case "get_design": {
       const { source, model, report } = useDesign.getState();
       return {
@@ -1394,6 +1430,7 @@ function invalid(e: z.ZodError): ToolOutcome {
 
 export const TOOL_TITLES: Record<string, string> = {
   update_plan: "Updating the plan",
+  record_asks: "Noting what you asked for",
   get_design: "Reading the design",
   edit_design: "Editing the design",
   write_design: "Writing the design",
