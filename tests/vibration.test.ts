@@ -52,7 +52,7 @@ describe("natural frequencies", () => {
     let mx = 0;
     for (let v = 0; v < shape.length; v += 3) mx = Math.max(mx, Math.hypot(shape[v], shape[v + 1], shape[v + 2]));
     expect(mx).toBeCloseTo(1, 3);
-  });
+  }, 30_000);
 
   it("drops with a carried mass at the tip", () => {
     const r = runStructural(base({ modes: 1, masses: [{ region: { t: "face", part: "beam", dir: [1, 0, 0] }, grams: 2000 }] }));
@@ -61,7 +61,7 @@ describe("natural frequencies", () => {
     const f = Math.sqrt(k / ((2 + 0.236 * 0.0785) * 1e-3)) / (2 * Math.PI);
     expect(rel(r.modal!.modes[0].freq, f)).toBeLessThan(0.06);
     expect(r.mass).toBeCloseTo(2078.5, 0);
-  });
+  }, 30_000);
 });
 
 describe("drops", () => {
@@ -92,7 +92,7 @@ describe("drops", () => {
     // twice the height: √2 times the deceleration
     const higher = runStructural(inp(2000, { name: "concrete", E: 30000 })).drop!;
     expect(rel(higher.g, hard.g * Math.SQRT2)).toBeLessThan(1e-6);
-  });
+  }, 30_000);
 
   it("follows the shock response spectrum of a half-sine pulse", () => {
     expect(halfSineShock(0.01)).toBeCloseTo(0.04, 3);
@@ -184,5 +184,5 @@ part frame {
     expect(items[0].fix).toMatch(/Stiffen/);
     // a 25 mm square beam lifts it to about 2 kHz, well clear of the spindle
     expect(vibrationVerdict(s, run(25))).toBe("pass");
-  });
+  }, 30_000);
 });

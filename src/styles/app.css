@@ -5230,3 +5230,85 @@ button.mp-stat:hover {
     width: min(250px, calc(100% - 102px));
   }
 }
+
+/* what the user asked for, as Kerf measured it (AsksCard) */
+.asks-card {
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  padding: 6px 10px 7px;
+  font-size: 12px;
+}
+.asks-card.failing {
+  border-color: rgb(var(--fail-rgb) / 0.4);
+}
+.asks-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 500;
+  margin-bottom: 3px;
+}
+.asks-head .dim {
+  font-weight: 400;
+  font-size: 11px;
+}
+.asks-card ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.asks-card .ask {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.asks-card .ask-mark {
+  flex: none;
+  width: 14px;
+  display: inline-grid;
+  place-items: center;
+  align-self: center;
+}
+.asks-card .ask.pass .ask-mark {
+  color: var(--pass);
+}
+.asks-card .ask.fail .ask-mark {
+  color: var(--fail);
+}
+.asks-card .ask.error .ask-mark {
+  color: var(--warn);
+}
+.asks-card .ask-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--line-3);
+}
+.asks-card .ask-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.asks-card .ask-detail {
+  margin-left: auto;
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+.asks-extra {
+  margin-top: 4px;
+  font-size: 11px;
+}
+.speed-chip {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+}

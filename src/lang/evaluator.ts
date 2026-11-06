@@ -150,6 +150,45 @@ class Scope {
   }
 }
 
+/** A condition read against a design: ok is null while a geometric quantity it uses is not measured yet. */
+export interface ConditionResult {
+  ok: boolean | null;
+  /** what it compared, such as "3 = 3" or "24 ≤ 20" */
+  detail: string;
+  error?: string;
+  /** the params, lets and parts it reads */
+  uses?: string[];
+}
+
+/**
+ * Conditions written as in a require statement (`wall == 3`, `size(lid, "z") <= 20`), read against a design without
+ * changing it: the design runs once and each condition is read in its scope. Geometric quantities come from geo; the
+ * ones it lacks come back in queries, and the conditions that use them read as not measured yet.
+ */
+export function evaluateConditions(design: string, conds: string[], opts: { geo?: Record<string, number>; parsed?: EvalOptions["parsed"] } = {}): { results: ConditionResult[]; queries: GeoQuery[] } {
+  const ev = new Evaluator(design, { geo: opts.geo });
+  ev.run((opts.parsed ?? parse(design)).program);
+  const queries: GeoQuery[] = [];
+  const results = conds.map((text): ConditionResult => {
+    const parsed = parseExpression(text);
+    if (!parsed.expr) return { ok: null, detail: "", error: parsed.error ?? "the condition could not be read" };
+    ev.stmtGeo = [];
+    ev.callSpan = parsed.expr.span;
+    ev.current = new Set();
+    try {
+      const r = ev.condition(parsed.expr, null);
+      queries.push(...ev.stmtGeo);
+      return { ok: r.ok, detail: r.detail, uses: [...ev.current] };
+    } catch (e) {
+      if (e instanceof EvalError || e instanceof Error) return { ok: null, detail: "", error: e.message };
+      throw e;
+    } finally {
+      ev.current = null;
+    }
+  });
+  return { results, queries };
+}
+
 /**
  * Evaluate a selector written as text (`boss.root`, `near((0, 0, 10))`,
  * `"top" + circles(3)`) for a part with the given feature names, seeing the params and lets of the design source.

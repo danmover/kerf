@@ -14,7 +14,7 @@ import { safeUrl, domainOf } from "../ai/web";
 import { getApiKey, subscribeKey } from "../persist/vault";
 import { getOpenAIKey, subscribeOpenAIKey } from "../persist/openaiVault";
 import { useAccount } from "../cloud/account";
-import { useSettings, updateSettings, MODELS } from "../app/settings";
+import { useSettings, updateSettings, MODELS, SPEEDS } from "../app/settings";
 import { openSettings, confirmDialog } from "../app/ui";
 import { useProject } from "../app/project";
 import { audienceById, templateById, TEMPLATES } from "../demos/templates";
@@ -34,6 +34,7 @@ import { AgentRunCard } from "./agents/AgentRunCard";
 import { MaterialAdviceCard } from "./materials/AdviceCard";
 import { PlanPane } from "./PlanPane";
 import { ReviewCard } from "./ReviewCard";
+import { AsksCard } from "./AsksCard";
 import { AttachButton, MessageFiles, PendingFiles, useAttachments } from "./Attachments";
 import { useStickToBottom } from "./useStickToBottom";
 import { CostLine, fmtCost, useChatSpend } from "./CostLine";
@@ -279,9 +280,52 @@ function Item({ it }: { it: ChatItem }) {
       return <ReviewCard it={it} />;
     case "suggest":
       return null;
+    case "asks":
+      return <AsksCard it={it} />;
     case "cost":
       return <CostLine it={it} />;
   }
+}
+
+/** How hard Claude works on the next message: Quick, Normal or Thorough. */
+function SpeedMenu() {
+  const speed = useSettings((s) => s.speed);
+  const current = SPEEDS.find((x) => x.value === speed) ?? SPEEDS[1];
+  return (
+    <Menu
+      align="right"
+      width={260}
+      trigger={(open, toggle) => (
+        <button className={`chip speed-chip ${speed !== "normal" ? "accent" : ""} ${open ? "open" : ""}`} onClick={toggle} aria-label={`Speed: ${current.label}`} data-tip={current.d} data-tip-pos="top">
+          {speed === "quick" && <Icon.Bolt size={11} />}
+          {current.label} <Icon.ChevronDown size={10} />
+        </button>
+      )}
+    >
+      {(close) => (
+        <>
+          <div className="menu-label">Speed</div>
+          {SPEEDS.map((x) => (
+            <MenuItem
+              key={x.value}
+              icon={speed === x.value ? <Icon.Check size={14} /> : undefined}
+              onClick={() => {
+                updateSettings({ speed: x.value });
+                close();
+              }}
+            >
+              <div>
+                <div>{x.label}</div>
+                <div className="dim" style={{ fontSize: 11 }}>
+                  {x.d}
+                </div>
+              </div>
+            </MenuItem>
+          ))}
+        </>
+      )}
+    </Menu>
+  );
 }
 
 /** Claude's suggested follow-ups, as chips after its latest reply until the user sends something. */
@@ -621,6 +665,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
             )}
           </span>
           <div className="grow" />
+          <SpeedMenu />
           <MicButton voice={voice} />
           {busy && (
             <button className="btn sm danger" onClick={stop} aria-label="Stop">

@@ -15,7 +15,7 @@ import type { Findable } from "../app/find";
 import { useDesign } from "../core/engine";
 import { turns } from "../core/model";
 import { useView, requestCamera, select, toggleCode, type ViewPreset } from "../app/view";
-import { useSettings, updateSettings, LIGHTING_IDS } from "../app/settings";
+import { useSettings, updateSettings, LIGHTING_IDS, SPEEDS } from "../app/settings";
 import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
 import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
 import { currentTheme, setTheme } from "../app/theme";
@@ -99,7 +99,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
 };
 
 const SETTINGS_FIND: { tab: SettingsTab; title: string; detail: string; keywords: string }[] = [
-  { tab: "ai", title: "AI: key, model and cost", detail: "Your Claude or OpenAI key, the model, effort, self-review and cost", keywords: "claude openai gpt api key model effort review cost tokens claude code mcp plan" },
+  { tab: "ai", title: "AI: key, model and cost", detail: "Your Claude or OpenAI key, the model, effort, self-review and cost", keywords: "claude openai gpt api key model effort review cost tokens claude code mcp plan bench benchmark measure accuracy test speed" },
   { tab: "account", title: "Account and sync", detail: "Sign in to sync projects between devices", keywords: "sign in login cloud sync devices" },
   { tab: "voice", title: "Voice input", detail: "Talk to Claude instead of typing", keywords: "speech microphone dictate talk" },
   { tab: "app", title: "Display", detail: "Theme, viewport, motion and graphics card", keywords: "theme dark light viewport graphics gpu motion animation" },
@@ -269,6 +269,7 @@ export function findItems(ctx: FindContext): FindItem[] {
 
   // ── settings and help ──
   for (const x of SETTINGS_FIND) push({ id: `set:${x.tab}`, group: "Settings", title: x.title, detail: x.detail, keywords: `settings preferences options ${x.keywords}`, icon: <Icon.Settings size={14} />, run: () => openSettings(x.tab) });
+  for (const x of SPEEDS) push({ id: `set:speed:${x.value}`, group: "Settings", title: `${x.label} speed`, detail: x.d, keywords: "speed fast quick slow careful thorough effort think claude ai", icon: <Icon.Bolt size={14} />, tag: s.speed === x.value ? "on" : undefined, run: () => updateSettings({ speed: x.value }) });
   const light = currentTheme() === "light";
   push(
     { id: "set:theme", group: "Settings", title: light ? "Dark theme" : "Light theme", detail: "Switch the colours", keywords: "theme dark light mode night day colours colors", icon: <Icon.Sun size={14} />, run: () => setTheme(light ? "dark" : "light") },

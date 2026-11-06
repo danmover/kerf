@@ -20,7 +20,8 @@ jobs:
   check:
     name: Test, typecheck and build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # the tests take 8 to 13 minutes depending on the runner
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

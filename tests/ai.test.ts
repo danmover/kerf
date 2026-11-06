@@ -603,7 +603,7 @@ describe("settings", () => {
 
   it("moves the old 16-step default to the new one and turns web search on", async () => {
     const s = await withStored({ maxSteps: 16, model: "claude-haiku-5-5" });
-    expect(s.maxSteps).toBe(30);
+    expect(s.maxSteps).toBe(50);
     expect(s.webSearch).toBe(true);
     expect(s.model).toBe("claude-haiku-5-5");
   });
@@ -613,6 +613,18 @@ describe("settings", () => {
     expect((await withStored({ maxSteps: 16, rev: 2 })).maxSteps).toBe(16);
     expect((await withStored({ maxSteps: 500, rev: 2 })).maxSteps).toBe(80);
     expect((await withStored({ maxSteps: 30, webSearch: false, rev: 2 })).webSearch).toBe(false);
+  });
+
+  it("moves the 30-step default to 50 once, and keeps 30 when it was chosen after that", async () => {
+    expect((await withStored({ maxSteps: 30, rev: 2 })).maxSteps).toBe(50);
+    expect((await withStored({ maxSteps: 30, rev: 3 })).maxSteps).toBe(30);
+    expect((await withStored({ maxSteps: 40, rev: 2 })).maxSteps).toBe(40);
+  });
+
+  it("starts at normal speed and drops a speed it does not know", async () => {
+    expect((await withStored({ rev: 3 })).speed).toBe("normal");
+    expect((await withStored({ rev: 3, speed: "thorough" })).speed).toBe("thorough");
+    expect((await withStored({ rev: 3, speed: "warp" })).speed).toBe("normal");
   });
 
   it("tells someone who used Kerf before web search, once, what it costs (integration review)", async () => {
