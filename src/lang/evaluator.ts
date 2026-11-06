@@ -1257,6 +1257,7 @@ class Evaluator {
           measured,
           held: typeof props.held === "string" ? props.held.trim() : undefined,
           leads: props.leads === "soldered" ? "soldered" : undefined,
+          axes: rot.length && !onBoard ? ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]).map((d) => vnorm(applyXformsToDir(d, rot)).map((x) => Math.round(x * 1e6) / 1e6) as V3) as [V3, V3, V3] : undefined,
           span: s.span,
         });
         const mc = this.machine.components[this.machine.components.length - 1];

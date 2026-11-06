@@ -283,6 +283,8 @@ export interface MachineComponent {
   label: string;
   count: number;
   role?: string;
+  /** the component's own X, Y and Z axes in design coordinates, when its placement turns it (an IMU's chip axes) */
+  axes?: [[number, number, number], [number, number, number], [number, number, number]];
   /** mechanical load on a motor in N·mm (component prop `load:`) */
   load?: number;
   /** cut length for stock items */

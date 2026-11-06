@@ -22,7 +22,7 @@ const D2R = Math.PI / 180;
 const PHI = [45, 135, 225, 315];
 
 /** the rig's electronics, wired as the jet-vane design wires them */
-function design(scenario: string, extra = "") {
+function design(scenario: string, extra = "", imuAt = "at: (0, 60, 0)") {
   const servos = [1, 2, 3, 4].map((i) => `component s${i} = lib.servo("savox_sh0264mg") { at: (${i * 40}, 60, 100), axis: Z }`).join("\n");
   const sigs = ["D14", "D32", "D33", "D27"].map((p, i) => `wire fc.${p} -> s${i + 1}.SIG`).join("\n");
   return evaluate(
@@ -32,7 +32,7 @@ component esc = lib.esc("skywalker_60a_v2") { at: (120, 0, 0) }
 component edf = lib.bldc("xfly_edf_64_12b_3200kv") { at: (0, 0, 200), axis: Z }
 component bat = lib.battery("lipo_4s_5000_xt90") { at: (250, 0, 0) }
 component fuse = lib.fuse("fuse_holder_maxi") { at: (200, 60, 0) }
-component imu = lib.sensor("lsm6dsox_breakout") { at: (0, 60, 0) }
+component imu = lib.sensor("lsm6dsox_breakout") { ${imuAt} }
 component hx = lib.sensor("hx711_breakout") { at: (0, -60, 0) }
 component cell = lib.sensor("tal221_500g") { at: (0, -120, 0) }
 component estop = lib.switch("estop_jaycar_sp0786") { at: (300, 0, 0) }
@@ -267,6 +267,42 @@ describe("balance firmware", () => {
     // the vanes did it
     expect(v.results["jet.peak_vane_force"]).toBeGreaterThan(0.05);
     expect(String(v.results.state)).toMatch(/holding level/);
+  });
+
+  it("reads the IMU in the rig's axes when the board is mounted on its side", () => {
+    // stood on a face looking out along -X: the chip's X runs up, its Z points out along -X
+    const m = design(
+      `scenario "Knock" {
+  world: sim.bench()
+  duration: 11s
+  console: [sim.type("arm", at: 3s), sim.type("t 70", at: 3.1s), sim.type("hold", at: 3.2s)]
+}`,
+      "",
+      "at: (-40, 0, 0), rotate: (0, -90, 0)",
+    );
+    expect(m.machine!.components.find((c) => c.name === "imu")!.axes).toEqual([
+      [0, 0, 1],
+      [0, 1, 0],
+      [-1, 0, 0],
+    ]);
+    const cfg = generateFirmware(m.machine!, m.name)[0].files.find((f) => f.path.endsWith("config.h"))!.content;
+    expect(cfg).toContain("#define IMU_R { { 0.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } }");
+    const mech = gimbal();
+    mech.drives.push({ kind: "force", name: "knock", joint: "roll", value: [[0, 0], [9, 0], [9.001, 0.06], [9.15, 0.06], [9.151, 0]] });
+    const v = runSpec({ ...m.scenarios![0].spec, mech, variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.error).toBeUndefined();
+    const t = v.frames.t;
+    const roll = v.frames.series["roll.angle"];
+    const pitch = v.frames.series["pitch.angle"];
+    const at = (s: number) => t.findIndex((x) => x >= s);
+    for (let i = at(8); i < at(9); i++) {
+      expect(Math.abs(roll[i])).toBeLessThan(1.5);
+      expect(Math.abs(pitch[i])).toBeLessThan(1.5);
+    }
+    let worst = 0;
+    for (let i = at(9); i < t.length; i++) worst = Math.max(worst, Math.abs(roll[i]));
+    expect(worst).toBeLessThan(15);
+    expect(Math.abs(roll[t.length - 1])).toBeLessThan(3);
   });
 
   it("measures the vane moment on the load cell in the static force test", () => {
