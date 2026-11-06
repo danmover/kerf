@@ -201,6 +201,8 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       return buildUnfold(r);
     case "mould":
       return buildMould(r, buildPart(r.part), (s) => applyXf(s, r.xf));
+    case "part":
+      return applyXf(applyXf(buildPart(r.part, { detail }), r.xf), r.into ?? []);
   }
 }
 

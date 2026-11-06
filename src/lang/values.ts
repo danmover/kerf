@@ -133,6 +133,8 @@ export interface CallCtx {
   tick?(n: number): void;
   /** A part defined above: its recipe, placement and material, for shapes made from another part (mould()). */
   partShape?(name: string): { recipe: PartRecipe; xf: Xform[]; material: string } | undefined;
+  /** Every solid a part or component defined above is made of, each with its placement (shape_of()). */
+  partShapes?(name: string): { recipe: PartRecipe; xf: Xform[]; kind: "part" | "component" }[] | undefined;
 }
 
 export type GeoQuery =
