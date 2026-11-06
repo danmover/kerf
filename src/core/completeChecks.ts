@@ -43,6 +43,9 @@ const HARDWARE: { re: RegExp; what: string }[] = [
 /** Phrases that look like hardware but are not drawn hardware: a bike's bottom bracket, a switch's own panel nut. */
 const NOT_HARDWARE = [/\bbottom\s+brackets?\b/gi, /\b(?:its|their)\s+own\s+(?:panel\s+|mounting\s+)?nuts?\b/gi, /\bpanel\s+nuts?\b/gi, /\bspoke\s+nipples?\b/gi, /\bnut\s+clip\b/gi];
 
+/** A held: note saying the hardware comes with the bought part. */
+const SUPPLIED = /\bsupplied\b|\bincluded\b|\bcomes?\s+with\b/i;
+
 /** The hardware a held: note names, or [] when it names none (glue, tape, a strap, a press fit). */
 export function heldHardware(text: string): string[] {
   let t = text;
@@ -75,6 +78,9 @@ function undrawnItems(model: Model, holds: Holds): CheckItem[] {
     const what = heldHardware(text);
     if (!what.length) continue;
     seen.add(instanceOf(p));
+    // a bought assembly that comes with its own bolts (a derailleur, a brake caliper, a crankset's chainring bolts):
+    // the parts list has them in the part. Catalogue parts (motors, boards, sensors) still need their screws drawn.
+    if (SUPPLIED.test(text) && (p.kind === "component" ? !p.bom?.catalogId : p.processNone)) continue;
     if (fastened.has(instanceOf(p))) continue;
     const g = groups.get(text) ?? { text, parts: [], what };
     g.parts.push(p);
