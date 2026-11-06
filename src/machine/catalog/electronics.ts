@@ -111,7 +111,7 @@ function featherV2Pins(): PinDef[] {
     imax: inputOnly.has(n) ? 0 : 0.02,
     pwm: !inputOnly.has(n),
     irq: true,
-    adc: [26, 25, 34, 39, 36, 4, 12, 13, 14, 15, 27, 32, 33].includes(n),
+    adc: [26, 25, 34, 39, 36, 4, 12, 13, 14, 15, 27, 32, 33, 37].includes(n),
     input_only: inputOnly.has(n) || undefined,
     mcu: String(n),
     bus: id === "SDA" ? "i2c_sda" : id === "SCL" ? "i2c_scl" : id === "TX" ? "uart_tx" : id === "RX" ? "uart_rx" : id === "SCK" ? "spi_sck" : id === "MOSI" ? "spi_mosi" : id === "MISO" ? "spi_miso" : undefined,
@@ -488,7 +488,8 @@ export const ELECTRONICS: CatalogPart[] = [
     source: "https://learn.adafruit.com/adafruit-esp32-feather-v2/pinouts",
     notes: [
       "GPIO2 powers the STEMMA QT socket: set it HIGH in setup() before talking to anything plugged in there.",
-      "A2, A3, A4 and 37 are inputs only. A0, A1 and 12 to 15, 27, 32, 33 are ADC2: no analog reads while Wi-Fi is on.",
+      "A2, A3, A4 and 37 are inputs only. A0, A1, A5 and 12 to 15, 27 are ADC2: no analog reads while Wi-Fi is on. A2, A3, A4, 32, 33 and 37 are ADC1 and always read.",
+      "BATT_MONITOR (GPIO35, not on a header) reads the LiPo through a 1:2 divider: analogReadMilliVolts(BATT_MONITOR) * 2 is the cell's millivolts.",
       "Mounting holes assumed 0.1 in from the corners (the Feather standard): check against the board before printing a mount.",
     ],
   },

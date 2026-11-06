@@ -38,6 +38,7 @@ export interface Hal {
   digitalWrite(pin: number, v: number): void;
   digitalRead(pin: number): number;
   analogRead(pin: number): number;
+  analogMilliVolts(pin: number): number;
   analogWrite(pin: number, v: number): void;
   analogReference(mode: number): void;
   attachInterrupt(n: number, fn: FnRef, mode: number): void;

@@ -370,7 +370,7 @@ export class Plant implements PlantPort, PlantView {
         continue;
       }
       const pin = this.mcuPinOfNet.get(n.id);
-      if (pin === undefined || !this.board.analog.includes(pin)) {
+      if (pin === undefined || !(this.board.adcPins ?? this.board.analog).includes(pin)) {
         this.notes.push(`The signal on ${d.on} does not reach an analog input of the ${this.board.name}, so the firmware cannot read it.`);
         continue;
       }
@@ -405,6 +405,17 @@ export class Plant implements PlantPort, PlantView {
     for (const m of this.motors) this.assumptions.push(...m.m.assumed);
     for (const e of this.escs) if (e.fan) this.assumptions.push(...e.dev.assumed);
     for (const mc of machine.components) if (mc.measured) this.assumptions.push(`${mc.name}: measured on the real part (${Object.entries(mc.measured).map(([k, v]) => `${k} ${Number(v.toPrecision(3))}`).join(", ")}), in place of the catalog's numbers`);
+    // the board's own battery divider (the Feather's BATT_MONITOR): the LiPo on BAT, else the charger's output,
+    // which sits near its 4.2 V float voltage while USB or the 5 V pin feeds it with no cell plugged in
+    const bm = this.board.battMonitor;
+    if (bm && !this.analogSrc.has(bm.pin)) {
+      const bat = this.netOf(this.mcu, "BAT");
+      this.analogSrc.set(bm.pin, () => {
+        const v = bat ? this.netV.get(bat.id) : undefined;
+        if (v !== undefined && v > 0.5) return v / bm.ratio;
+        return this.mcuSupply === "BAT" ? 0 : 4.2 / bm.ratio;
+      });
+    }
     hal.plant = this;
     this.updateRails();
     if (this.mcuSupply === "USB") this.assumptions.push(`Nothing in the wiring powers ${mcu}, so it runs from its USB port: 5 V, with its 500 mA polyfuse`);

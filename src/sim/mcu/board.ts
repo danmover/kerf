@@ -39,6 +39,10 @@ export interface Board {
   defines: Record<string, string>;
   /** the core family: which Arduino.h the board's sketches see */
   arch?: "avr" | "esp32";
+  /** ESP32: every GPIO analogRead() takes (its core takes GPIO numbers, so more than the A0.. names) */
+  adcPins?: number[];
+  /** a pin the board wires to its battery through a divider (the Feather's BATT_MONITOR), and the divider's ratio */
+  battMonitor?: { pin: number; ratio: number };
 }
 
 const atmega328p = (name: string, parts: string[], board: string, analog: number[], analogOnly: number[]): Board => ({
@@ -79,7 +83,8 @@ export const NANO = atmega328p("Arduino Nano", ["arduino_nano"], "ARDUINO_AVR_NA
 export const UNO = atmega328p("Arduino Uno", ["arduino_uno"], "ARDUINO_AVR_UNO", [14, 15, 16, 17, 18, 19], []);
 
 // The Adafruit ESP32 Feather V2 (ESP32-PICO-MINI-02): every output GPIO does PWM (LEDC) and takes interrupts;
-// Wire runs on SDA 22 / SCL 20 (the STEMMA QT socket) by default.
+// Wire runs on SDA 22 / SCL 20 (the STEMMA QT socket) by default. analogRead() takes any ADC GPIO: ADC1 is 32 to 39
+// (35 is BATT_MONITOR, the LiPo through a 1:2 divider on the board), ADC2 is 4, 12 to 15 and 25 to 27.
 const FEATHER_GPIO = [4, 5, 7, 8, 12, 13, 14, 15, 19, 20, 21, 22, 25, 26, 27, 32, 33];
 const FEATHER_INPUTS = [34, 36, 37, 39];
 export const FEATHER_ESP32_V2: Board = {
@@ -94,6 +99,8 @@ export const FEATHER_ESP32_V2: Board = {
   eepromBytes: 4096,
   digitalPins: 39,
   analog: [26, 25, 34, 39, 36, 4],
+  adcPins: [26, 25, 34, 39, 36, 4, 12, 13, 14, 15, 27, 32, 33, 35, 37],
+  battMonitor: { pin: 35, ratio: 2 },
   analogOnly: [],
   interrupts: Object.fromEntries([...FEATHER_GPIO, ...FEATHER_INPUTS, 0, 2, 38].map((p) => [p, p])),
   pwm: Object.fromEntries([...FEATHER_GPIO, 0, 2].map((p) => [p, 1000])),

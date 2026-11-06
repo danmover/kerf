@@ -41,6 +41,9 @@ class BareBoard implements Hal {
   analogRead(p: number) {
     return this.analog.get(p) ?? 0;
   }
+  analogMilliVolts(p: number) {
+    return Math.round(((this.analog.get(p) ?? 0) / 1023) * 5000);
+  }
   analogWrite(p: number, v: number) {
     this.pwm.set(p, v);
   }
