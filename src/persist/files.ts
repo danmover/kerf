@@ -371,7 +371,6 @@ function catalogPrice(p: CatalogPart, length?: number): { price?: number; note?:
   return { price: p.price_usd };
 }
 
-/** Bill of materials grouped by identical description, with purchased extras from buy statements. */
 /** Metric screws, nuts and washers a hardware store keeps on the shelf (Bunnings, Mitre 10 and the like), by parts-list key. */
 function hardwareStore(key: string | undefined): boolean {
   if (!key) return false;
@@ -384,6 +383,7 @@ function hardwareStore(key: string | undefined): boolean {
   return false;
 }
 
+/** Bill of materials grouped by identical description, with purchased extras from buy statements. */
 /**
  * The parts list: one row per distinct part with its quantity, price and
  * where to buy it. `have` is what the user already has (free text, as in

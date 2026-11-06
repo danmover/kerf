@@ -1339,7 +1339,7 @@ async function runLoop(opts: LoopOptions = {}) {
   const before = shotOf(startSource);
   let edits = 0;
   // the finish gate: once per run, Claude is sent back when it stops with the design incomplete
-  const failingAtStart = failingChecks();
+  const openAtStart = openChecks();
   let gated = false;
   const settings = useSettings.getState();
   if (settings.webNotice && !isOpenAIModel(settings.model)) {
@@ -1580,7 +1580,7 @@ async function runLoop(opts: LoopOptions = {}) {
       }
       if (final.stop_reason === "end_turn" && edits && !route.small && !gated && step < settings.maxSteps - 2) {
         gated = true;
-        const gate = await finishGate(failingAtStart);
+        const gate = await finishGate(openAtStart);
         if (stale()) break;
         if (gate) {
           push({ kind: "notice", id: nid(), level: "info", title: gate.title, detail: gate.detail });
@@ -1848,27 +1848,38 @@ async function settleAsks(isStale: () => boolean) {
 }
 
 /**
- * Before Claude finishes a run that changed the design: the checks its changes left failing, and every completeness
- * check that fails (an empty screw hole, an unjoined frame joint, hardware named in held: but not drawn, a stand-in
- * box, an unwired board). Null when there is nothing to send it back for.
+ * Before Claude finishes a run that changed the design: the checks its changes left failing, every completeness
+ * check that fails (an unjoined frame joint, hardware named in held: but not drawn, a stand-in box with a catalogue
+ * part for it, an unwired board), and the completeness warnings the run left that were not there when it started
+ * (an empty screw hole, a stand-in with no catalogue part, a machine that cannot be run). Warnings already there at
+ * the start were sent back for, or explained, in an earlier run, so they do not cost a turn every time. Null when
+ * there is nothing to send it back for.
  */
 async function finishGate(before: Set<string>): Promise<{ text: string; title: string; detail: string } | null> {
   const s = await whenChecked(60_000).catch(() => null);
   if (!s?.model || s.kernelStatus === "error") return null;
   await whenWiringChecked(s.model, 20_000).catch(() => undefined);
   const items = useDesign.getState().report?.items ?? [];
-  const fails = items.filter((c) => c.status === "fail" && (c.id.startsWith("complete:") || !before.has(c.id)));
+  const fails = items.filter((c) => isOpen(c) && ((c.status === "fail" && c.id.startsWith("complete:")) || !before.has(c.id)));
   if (!fails.length) return null;
   const list = fails.slice(0, 10).map((c) => `- ${c.title}${c.fix ? ` (fix: ${c.fix})` : ""}`);
   if (fails.length > 10) list.push(`- and ${fails.length - 10} more (run_checks lists them)`);
   return {
-    title: `Sent back to finish: ${fails.length} check${fails.length > 1 ? "s" : ""} still fail${fails.length > 1 ? "" : "s"}`,
+    title: `Sent back to finish: ${fails.length} problem${fails.length > 1 ? "s" : ""} left`,
     detail: fails
       .slice(0, 6)
       .map((c) => c.title)
       .join("\n"),
-    text: `Kerf: before you finish, the design still fails ${fails.length} check${fails.length > 1 ? "s" : ""} that make it incomplete or that your changes left failing:\n${list.join("\n")}\nFix them (place_fasteners fills empty screw holes and joins profiles; catalogue parts replace stand-in boxes; wire and mount every board). If one cannot be fixed without the user, say which and why in your reply.`,
+    text: `Kerf: before you finish, the design still has ${fails.length} problem${fails.length > 1 ? "s" : ""} that make${fails.length > 1 ? "" : "s"} it incomplete or that your changes left failing:\n${list.join("\n")}\nFix them (place_fasteners fills empty screw holes and joins profiles; catalogue parts replace stand-in boxes; wire and mount every board). If one cannot be fixed without the user, say which and why in your reply.`,
   };
+}
+
+/** A check the finish gate can send Claude back for: a failure, or a completeness warning (an empty screw hole and the like). */
+const isOpen = (c: { id: string; status: string }) => c.status === "fail" || (c.status === "warn" && c.id.startsWith("complete:"));
+
+/** The open checks of the current report (failures and completeness warnings), by id. */
+function openChecks(): Set<string> {
+  return new Set((useDesign.getState().report?.items ?? []).filter(isOpen).map((c) => c.id));
 }
 
 /** The failing checks of the current report, by id. */
