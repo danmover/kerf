@@ -5,7 +5,7 @@
 
 import { partMass, type EvalPart, type Model } from "../core/model";
 import type { Edge2, ViewResult } from "../kernel/drawing";
-import { vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
+import { recipeHash, vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
 import { MATERIALS, materialDensity } from "../library/standards";
 import { FINISHES, resolveFinish } from "../library/materials";
 import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DatumMark, type DimDef, type DimStyle } from "./dims";
@@ -65,7 +65,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
   warnings.push(...built.warnings);
 
   // parts list
-  const bom = plan.assembly && spec.partsList !== false ? bomLines(plan.parts) : [];
+  const bom = plan.assembly && spec.partsList !== false ? bomLines(plan.parts, inp.bboxOf, inp.volumeOf) : [];
   const itemOf = new Map<string, number>();
   for (const l of bom) for (const id of l.ids) itemOf.set(id, l.item);
 
@@ -874,7 +874,24 @@ const LIB_NAMES: Record<string, string> = {
   connector: "Connector",
 };
 
-function bomLines(parts: EvalPart[]): BomLine[] {
+/**
+ * What a made part looks like wherever it sits: its recipe's structure, its
+ * volume and size, and its features measured from its own corner. Parts
+ * modelled in place (a loop of pins each with its own at:) come out the
+ * same when they are the same part.
+ */
+function shapeKey(p: EvalPart, bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) => number | undefined): string {
+  const local = bboxOf?.(p);
+  const vol = volumeOf?.(p);
+  if (!local || vol === undefined) return p.hash;
+  const [lo, hi] = worldBox(p, local);
+  const r = (n: number) => Math.round(n * 100) / 100;
+  const structure = JSON.stringify(p.recipe, (_k, v) => (typeof v === "number" ? 0 : v));
+  const feats = partFeatures(p).map((f) => JSON.stringify({ ...f, part: undefined, at: "at" in f ? (f.at as V3).map((c, k) => r(c - lo[k])) : undefined }, (_k, v) => (typeof v === "number" ? r(v) : v)));
+  return recipeHash({ structure, vol: Number(vol.toPrecision(7)), size: hi.map((h, k) => r(h - lo[k])), feats: feats.sort() });
+}
+
+function bomLines(parts: EvalPart[], bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) => number | undefined): BomLine[] {
   const rows = new Map<string, BomLine & { kind: string; names: Set<string> }>();
   const seen = new Set<string>();
   for (const p of parts) {
@@ -886,7 +903,7 @@ function bomLines(parts: EvalPart[]): BomLine[] {
     const name = p.kind === "part" ? humanize(p.label) : (LIB_NAMES[p.libKind ?? ""] ?? humanize(p.libKind ?? p.name));
     // made parts of the same shape, material and hand are one line, whatever they are called
     const hand = (p.worldXf ?? p.xf).filter((x) => x.op === "mirror").length % 2;
-    const key = p.kind === "part" ? `${kind}|${p.hash}|${hand}|${p.material}|${description}` : `${kind}|${description}|${p.material}`;
+    const key = p.kind === "part" ? `${kind}|${shapeKey(p, bboxOf, volumeOf)}|${hand}|${p.material}|${description}` : `${kind}|${description}|${p.material}`;
     const row = rows.get(key);
     const ids = parts.filter((q) => q.id.split(".")[0] === inst).map((q) => q.id);
     if (row) {
@@ -900,11 +917,22 @@ function bomLines(parts: EvalPart[]): BomLine[] {
   return list.map((r, i) => ({ item: i + 1, qty: r.qty, name: r.name, description: r.description, material: r.material, ids: r.ids }));
 }
 
-/** One name for parts made alike: "Vane 1", "Vane 2" → "Vane"; else the first name and how many more. */
+/** One name for parts made alike: the words their names share ("Cup a1", "Cup b2" → "Cup"; "Left side", "Right side" → "Side"), else the first name and how many more. */
 function sharedName(names: string[]): string {
-  const stems = new Set(names.map((n) => n.replace(/[\s_#-]*\d+$/, "").trim()));
-  const stem = [...stems][0];
-  return stems.size === 1 && stem ? stem : `${names[0]} (+${names.length - 1})`;
+  const words = names.map((n) => n.split(/[\s_]+/).filter(Boolean));
+  const common = (pick: (w: string[], i: number) => string | undefined) => {
+    const out: string[] = [];
+    for (let i = 0; ; i++) {
+      const w = pick(words[0], i);
+      if (w === undefined || !words.every((ws) => pick(ws, i)?.toLowerCase() === w.toLowerCase())) return out;
+      out.push(w);
+    }
+  };
+  const head = common((w, i) => w[i]);
+  if (head.length) return humanize(head.join(" "));
+  const tail = common((w, i) => w[w.length - 1 - i]).reverse();
+  if (tail.length) return humanize(tail.join(" "));
+  return `${names[0]} (+${names.length - 1})`;
 }
 
 function defaultNotes(spec: DrawingSpec, plan: DrawingPlan, built: { datums: unknown[]; notes: string[] }): string[] {

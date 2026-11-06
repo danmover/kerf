@@ -278,7 +278,8 @@ describe("slots modelled as rows of cuts", () => {
 
 // a rig with four vanes cut alike under different names, and many other parts
 function rig(extra: string) {
-  const vanes = [0, 1, 2, 3].map((k) => `part vane_${k + 1} { material: "PLA" body box(30, 3, 40, at: (0, 0, 20)) at: (${k * 40}, 0, 0) }`).join("\n");
+  // two placed with at:, two modelled where they sit
+  const vanes = [0, 1, 2, 3].map((k) => (k < 2 ? `part vane_${k + 1} { material: "PLA" body box(30, 3, 40, at: (0, 0, 20)) at: (${k * 40}, 0, 0) }` : `part vane_${k + 1} { material: "PLA" body box(30, 3, 40, at: (${k * 40}, 0, 20)) }`)).join("\n");
   const blocks = Array.from({ length: 44 }, (_, k) => `part block_${k} { material: "PLA" body box(${10 + k}, 10, 5, at: (${(k % 11) * 60}, ${40 + Math.floor(k / 11) * 30}, 0)) }`).join("\n");
   return `${vanes}\n${blocks}\n${extra}`;
 }
