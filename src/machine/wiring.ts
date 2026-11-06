@@ -14,7 +14,7 @@ import { xformMatrix, type V3 } from "../kernel/recipe";
 import { awgAmpacity } from "./calcs";
 import { catalogPart } from "./catalog";
 import { buildNetlist, netLabel, type Net, type NetPin, type Netlist } from "./erc";
-import type { CatalogKind, CatalogPart, MachineComponent, MachineData, PinRef } from "./types";
+import type { CatalogKind, CatalogPart, MachineComponent, MachineData, PinRef, WireInsulation } from "./types";
 
 export type WireKind = "ground" | "power" | "motor" | "signal" | "cable";
 
@@ -39,6 +39,8 @@ export interface WireRow {
   gauge?: number;
   /** the design gave no gauge: Kerf suggests this one */
   gaugeSuggested: boolean;
+  /** "silicone" when the design asks for high-strand silicone wire */
+  insulation?: WireInsulation;
   color: string;
   colorSuggested: boolean;
   /** cut length in mm: the distance between the parts plus slack, when positions are known */
@@ -67,6 +69,7 @@ interface Item {
   colorSuggested: boolean;
   gauge?: number;
   gaugeSuggested: boolean;
+  insulation?: WireInsulation;
   label?: string;
   cable?: string;
   /** the net has a name in the design (not one Kerf made up from a pin) */
@@ -164,7 +167,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
   const items: Item[] = [];
   const seenPairs = new Set<string>();
   let signals = 0;
-  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; label?: string }) => {
+  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; insulation?: WireInsulation; label?: string }) => {
     const net = pins[0].pin.type === "port" ? undefined : nl.netOf.get(pins[0].key);
     const kind = classify(pins, net);
     const bus = pins.length > 2;
@@ -177,7 +180,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const gauge = o.gauge ?? suggestGauge(kind, pins, net?.pins ?? pins);
     const cable = kind === "cable" ? (CABLE_NAMES[pins.find((p) => p.pin.port)?.pin.port ?? ""] ?? "cable") : undefined;
     const name = o.name ?? net?.name ?? o.label ?? (cable ? `${instName(pins[0])}.${pins[0].pin.id}` : net ? netLabel(net) : `${instName(pins[0])}.${pins[0].pin.id}`);
-    items.push({ id: items.length, name, kind, bus, pins, hub: bus ? hubOf(pins) : undefined, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, label: o.label, cable, named: !!(o.name ?? net?.name) });
+    items.push({ id: items.length, name, kind, bus, pins, hub: bus ? hubOf(pins) : undefined, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name) });
   };
   for (const w of m.wires) {
     const a = resolve(w.a);
@@ -185,7 +188,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     if (!a || !b || a.key === b.key) continue;
     // the two halves of a connector pair, or a fuse or switch, join inside the part: no wire to make
     if (a.comp === b.comp && a.index === b.index && a.pin.through === b.pin.id) continue;
-    add([a, b], { color: w.color, gauge: w.gauge, label: w.label });
+    add([a, b], { color: w.color, gauge: w.gauge, insulation: w.insulation, label: w.label });
   }
   // a net joining pins on one circuit board is copper on that board, not a wire to make
   const boardOf = new Map(m.components.filter((c) => c.pcb).map((c) => [c.name, c.pcb!.board]));
@@ -194,7 +197,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const pins = n.pins.map(resolve).filter((p): p is NetPin => !!p && !seen.has(p.key) && !!seen.add(p.key));
     const boards = new Set(pins.map((p) => boardOf.get(p.comp) ?? ""));
     if (boards.size === 1 && !boards.has("")) continue;
-    if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge });
+    if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation });
   }
   return items;
 }
@@ -265,6 +268,7 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
         kind: it.kind,
         gauge: it.gauge,
         gaugeSuggested: it.gaugeSuggested,
+        insulation: it.insulation,
         color: it.color,
         colorSuggested: it.colorSuggested,
         lengthMm: estimateLength(a, b, positions),
@@ -293,7 +297,7 @@ export function wiresCsv(rows: WireRow[]): string {
   const head = ["Wire", "From", "From label", "To", "To label", "Net", "Gauge (AWG)", "Colour", "Length (mm)", "Type", "Label", "Notes"];
   const lines = [head.join(",")];
   for (const r of rows) {
-    const notes = [r.gaugeSuggested ? "Gauge suggested by Kerf" : "", r.colorSuggested ? "Colour suggested by Kerf" : "", r.note ?? ""].filter(Boolean).join(". ");
+    const notes = [r.insulation === "silicone" ? "Silicone wire" : "", r.gaugeSuggested ? "Gauge suggested by Kerf" : "", r.colorSuggested ? "Colour suggested by Kerf" : "", r.note ?? ""].filter(Boolean).join(". ");
     lines.push([r.id, `${r.from.comp}.${r.from.pin}`, r.from.label, `${r.to.comp}.${r.to.pin}`, r.to.label, r.net, r.cable ? "" : r.gauge, r.cable ? "" : r.color, r.lengthMm, r.cable ?? r.kind, r.label, notes].map(csvCell).join(","));
   }
   return lines.join("\n") + "\n";
@@ -769,7 +773,7 @@ export function wiringDiagram(m: MachineData, opts: { title?: string } = {}): Wi
   }
 
   // ---- horizontal frame
-  const railLabel = (it: Item) => `${it.name}${it.gauge ? `  ${it.gauge} AWG` : ""}`;
+  const railLabel = (it: Item) => `${it.name}${it.gauge ? `  ${it.gauge} AWG${it.insulation === "silicone" ? " silicone" : ""}` : ""}`;
   const marginL = 24;
   const labelArea = Math.max(0, ...[...topRails, ...bottomRails].map((it) => textW(railLabel(it), 10.5) + 22));
   const chW = chRuns.map((list, ch) => (list.length ? list.length * TRACK + 2 * CH_PAD - TRACK : ch === 0 || ch === nCols ? 16 : 40));
@@ -813,7 +817,7 @@ export function wiringDiagram(m: MachineData, opts: { title?: string } = {}): Wi
     const xEnd = Math.max(...mine.map((r) => r.x));
     const x0 = marginL + labelArea - 8;
     wiresSvg.push(`<g>${path(it, `M${x0} ${ry}H${xEnd}`)}</g>`);
-    labels.push(`<text x="${x0 - 6}" y="${ry + 3.5}" text-anchor="end" font-family="${MONO}" font-size="10.5" fill="#222"><tspan font-weight="600">${esc(it.name)}</tspan>${it.gauge ? `<tspan fill="#666">  ${it.gauge} AWG</tspan>` : ""}</text>`);
+    labels.push(`<text x="${x0 - 6}" y="${ry + 3.5}" text-anchor="end" font-family="${MONO}" font-size="10.5" fill="#222"><tspan font-weight="600">${esc(it.name)}</tspan>${it.gauge ? `<tspan fill="#666">  ${it.gauge} AWG${it.insulation === "silicone" ? " silicone" : ""}</tspan>` : ""}</text>`);
     for (const r of mine) dots.push(`<circle cx="${r.x}" cy="${ry}" r="2.6" fill="${hexOf.get(it.id) === "#ffffff" ? "#555" : hexOf.get(it.id)}"/>`);
   }
   // channel runs: vertical plus stubs
@@ -857,7 +861,7 @@ export function wiringDiagram(m: MachineData, opts: { title?: string } = {}): Wi
     const shared = (bp: BoxPin) => (pinItems.get(bp.np.key) ?? []).filter((x) => !x.bus).length > 1;
     const [a, b] = shared(ends[0]) && !shared(ends[1]) ? [ends[1], ends[0]] : [ends[0], ends[1]];
     const far = chOf(a) !== chOf(b);
-    const spec = it.cable ? it.cable.replace(/ cable$| lead$/, "") : it.kind === "signal" && it.gauge === signalGauge ? "" : it.gauge ? `${it.gauge} AWG` : "";
+    const spec = it.cable ? it.cable.replace(/ cable$| lead$/, "") : it.kind === "signal" && it.gauge === signalGauge ? "" : it.gauge ? `${it.gauge} AWG${it.insulation === "silicone" ? " silicone" : ""}` : "";
     const boxB = boxFor(b.np);
     const boxA = boxFor(a.np);
     const txtA = [spec, far ? `→ ${boxB.name}` : ""].filter(Boolean).join(" ");

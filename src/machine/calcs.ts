@@ -12,7 +12,7 @@ import { HARDWARE_CALCS } from "./hardwareCalcs";
 import { footprintFor } from "./catalog/footprints";
 import { PICKUP_OHMS } from "./circuit/netlist";
 import { preampFigures } from "./circuit/analysis";
-import type { CalcLine, CalcTrace, MachineData } from "./types";
+import type { CalcLine, CalcTrace, MachineData, WireInsulation } from "./types";
 
 export type CalcBody = Omit<CalcTrace, "name" | "span">;
 
@@ -78,23 +78,25 @@ function compName(v: Value | undefined): string {
   return "motor";
 }
 
-// AWG copper: ohms per metre and a conservative chassis-wiring ampacity (A)
-const AWG: [number, number, number][] = [
-  [30, 0.3386, 0.5],
-  [28, 0.2129, 0.8],
-  [26, 0.1339, 1.3],
-  [24, 0.0842, 2.1],
-  [22, 0.053, 3.5],
-  [20, 0.0333, 5],
-  [18, 0.021, 7],
-  [16, 0.0132, 10],
-  [14, 0.00829, 15],
-  [12, 0.00521, 20],
-  [10, 0.00328, 30],
+// AWG copper: ohms per metre, a conservative ampacity for PVC wire (A, building-wire ratings), and the
+// free-air chassis rating that high-strand silicone wire (RC, drone and EDF leads) carries (A)
+const AWG: [number, number, number, number][] = [
+  [30, 0.3386, 0.5, 0.86],
+  [28, 0.2129, 0.8, 1.4],
+  [26, 0.1339, 1.3, 2.2],
+  [24, 0.0842, 2.1, 3.5],
+  [22, 0.053, 3.5, 7],
+  [20, 0.0333, 5, 11],
+  [18, 0.021, 7, 16],
+  [16, 0.0132, 10, 22],
+  [14, 0.00829, 15, 32],
+  [12, 0.00521, 20, 41],
+  [10, 0.00328, 30, 55],
 ];
-export function awgAmpacity(awg: number): number {
+/** Current a wire of this gauge carries continuously: PVC (the default) as building wire, silicone in free air. */
+export function awgAmpacity(awg: number, insulation?: WireInsulation): number {
   const row = AWG.find((r) => r[0] === awg) ?? AWG.reduce((a, b) => (Math.abs(b[0] - awg) < Math.abs(a[0] - awg) ? b : a));
-  return row[2];
+  return insulation === "silicone" ? row[3] : row[2];
 }
 
 export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
@@ -409,18 +411,21 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
 
   calcFn(
     "wire_gauge",
-    ["current", "length", "voltage", "max_drop"],
-    "Smallest copper wire (AWG) for a current. current: A; length: one-way run (mm); voltage: supply (V); max_drop: allowed voltage drop fraction (0.03). Returns awg, drop (V), drop_pct and fits (false when even 10 AWG is not enough: then awg is 10 and the run needs thicker or parallel wire).",
+    ["current", "length", "voltage", "max_drop", "insulation"],
+    'Smallest copper wire (AWG) for a current. current: A; length: one-way run (mm); voltage: supply (V); max_drop: allowed voltage drop fraction (0.03); insulation: "pvc" (the default, rated as building wire) or "silicone" (high-strand RC wire, rated in free air). Returns awg, drop (V), drop_pct and fits (false when even 10 AWG is not enough: then awg is 10 and the run needs thicker or parallel wire).',
     (a) => {
       const I = a.positive("current");
       const len = a.num("length", 500) / 1000;
       const V = a.num("voltage", 12);
       const maxDrop = a.num("max_drop", 0.03);
+      const ins = a.str("insulation", "pvc");
+      if (ins !== "pvc" && ins !== "silicone") throw new Error('insulation: should be "pvc" or "silicone"');
+      const amps = (row: (typeof AWG)[number]) => (ins === "silicone" ? row[3] : row[2]);
       let pick = AWG[AWG.length - 1];
       let fits = false;
       for (const row of AWG) {
         const drop = row[1] * len * 2 * I;
-        if (row[2] >= I && drop / V <= maxDrop) {
+        if (amps(row) >= I && drop / V <= maxDrop) {
           pick = row;
           fits = true;
           break;
@@ -434,8 +439,8 @@ export const CALC_FNS: Record<string, Fn> = Object.fromEntries([
           title: `Wire size for ${sig(I)} A`,
           inputs: [L("Current", I, "A"), L("One-way length", len * 1000, "mm"), L("Supply", V, "V")],
           outputs: [L("Wire size", pick[0], "AWG"), L("Voltage drop there and back", drop, "V"), L("Drop", (drop / V) * 100, "%")],
-          method: ["Pick the thinnest wire whose chassis ampacity ≥ I and whose 2·R·L·I drop ≤ the limit", ...(fits ? [] : [`Nothing up to 10 AWG (30 A) fits ${sig(I)} A over ${sig(len * 1000)} mm: use thicker wire, parallel runs or a shorter run`])],
-          assumptions: ["Copper, chassis wiring in free air, PVC or silicone insulation"],
+          method: [`Pick the thinnest wire whose ampacity ≥ I and whose 2·R·L·I drop ≤ the limit`, ...(fits ? [] : [`Nothing up to 10 AWG (${amps(AWG[AWG.length - 1])} A) fits ${sig(I)} A over ${sig(len * 1000)} mm: use thicker wire, parallel runs or a shorter run`])],
+          assumptions: [ins === "silicone" ? "Copper, high-strand silicone wire in free air (chassis ratings)" : "Copper, PVC insulation, rated as building wire (conservative: bundled or enclosed runs)"],
           confidence: "standard",
         },
       };

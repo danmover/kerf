@@ -343,15 +343,20 @@ export interface WireDef {
   b: PinRef;
   /** AWG */
   gauge?: number;
+  /** what the wire is insulated with: "pvc" (the default, rated as building wire) or "silicone" (high-strand RC wire, rated in free air) */
+  insulation?: WireInsulation;
   color?: string;
   label?: string;
   span: Span;
 }
 
+export type WireInsulation = "pvc" | "silicone";
+
 export interface NetDef {
   name: string;
   pins: PinRef[];
   gauge?: number;
+  insulation?: WireInsulation;
   color?: string;
   /** copper track width on a circuit board, mm */
   width?: number;
