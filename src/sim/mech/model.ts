@@ -75,6 +75,37 @@ export interface MechSpring {
   c: number;
   free: number;
   push: number;
+  /** a load cell component this link is, which reads its pull */
+  cell?: string;
+}
+
+/** A vane in a jet: where its lift acts, the axis it turns on and its size, SI, design pose. */
+export interface MechVane {
+  joint: string;
+  body: string;
+  /** centre of pressure (a quarter chord back from its leading edge, mid-span) */
+  cp: V3;
+  axis: V3;
+  /** m² */
+  area: number;
+  /** lift slope per radian and the aspect ratio it came from */
+  cla: number;
+  ar: number;
+}
+
+/** A ducted fan's jet: its thrust on the body it rides, along its axis, and the vanes in the jet. */
+export interface MechJet {
+  name: string;
+  fan: string;
+  body: string;
+  /** the fan's centre and its thrust direction (the jet leaves the other way) */
+  at: V3;
+  axis: V3;
+  vanes: MechVane[];
+  /** rad */
+  stall: number;
+  /** share of the rotor's swirl torque the stators take back */
+  recovery: number;
 }
 
 export interface MechLoad {
@@ -131,6 +162,7 @@ export interface MechModel {
   links: MechLink[];
   springs: MechSpring[];
   loads: MechLoad[];
+  jets?: MechJet[];
   wheels: MechWheel[];
   tracks: MechTrack[];
   loose: MechLoose[];

@@ -265,6 +265,96 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       };
     }
 
+    // edf: an electric ducted fan. `at` is the centre of the intake face and `axis` points out of the intake,
+    // the way the fan pushes; the housing runs back along -Z to the exhaust. od housing outside diameter,
+    // fan_d the bore, length intake to exhaust, hub_d the motor hub, blades rotor blades, stators stator
+    // vanes, lead_az where the three motor leads leave the rear (degrees from +X). The housing and stator
+    // are the main solid, the rotor the second (it spins). tabs mounting tabs round the intake ring (tab_t
+    // thick, through holes hole_d on tab_circle, first at tab_start degrees) take screws and nuts into the
+    // seat behind them; `mount` is that seat's cut: the housing bore back along -Z and a hole per tab.
+    case "edf": {
+      const od = num(d, "od", 70);
+      const fd = num(d, "fan_d", 64);
+      const L = num(d, "length", 66);
+      const hd = num(d, "hub_d", 31);
+      const nb = Math.max(3, Math.round(num(d, "blades", 12)));
+      const ns = Math.max(3, Math.round(num(d, "stators", 6)));
+      const laz = (num(d, "lead_az", 0) * Math.PI) / 180;
+      const ri = fd / 2;
+      const rh = hd / 2;
+      // housing with a small chamfer on the intake lip (inside and out, leaving a flat between them), a stator
+      // ring of vanes from the hub to the wall, the motor can, and the mounting tabs round the intake ring
+      const lip = Math.min(1.2, (od - fd) / 6);
+      const nt = Math.max(0, Math.round(num(d, "tabs", 4)));
+      const tt = num(d, "tab_t", 3);
+      const tc = num(d, "tab_circle", od + 10);
+      const thd = num(d, "hole_d", 3.2);
+      const tabs = nt ? circlePts(nt, tc / 2, num(d, "tab_start", 45)).map((q) => [q[0], q[1]] as [number, number]) : [];
+      const tab = ([x, y]: [number, number]): ShapeRecipe => {
+        const a = (Math.atan2(y, x) * 180) / Math.PI;
+        const w = tc / 2 - od / 2 + 4;
+        return {
+          t: "union",
+          shapes: [
+            { t: "cyl", d: thd + 4.4, h: tt, at: [x, y, -tt], dir: ZP },
+            { t: "xform", shape: { t: "box", w, d: thd + 4.4, h: tt, at: [od / 2 - 2 + w / 2, 0, -tt], r: 0 }, xf: [{ op: "rotate", angle: a, origin: Z0, axis: ZP }] },
+          ],
+        };
+      };
+      const stator = (a: number): ShapeRecipe => ({ t: "xform", shape: { t: "box", w: ri - rh + 0.8, d: 1.4, h: L * 0.32, at: [(ri + rh) / 2, 0, -L * 0.86], r: 0 }, xf: [{ op: "rotate", angle: a, origin: Z0, axis: ZP }] });
+      const housing: PartRecipe = {
+        base: { t: "tube", od, id: fd, h: L, at: [0, 0, -L], dir: ZP },
+        ops: [
+          { op: "chamfer", r: lip, edges: "top" },
+          { op: "add", shape: { t: "cyl", d: hd, h: L * 0.72, at: [0, 0, -L], dir: ZP } },
+          { op: "add", shape: { t: "cone", d1: hd, d2: hd * 0.55, h: L * 0.06, at: [0, 0, -L + 0.01], dir: ZN } },
+          ...Array.from({ length: ns }, (_, i) => ({ op: "add" as const, shape: stator((360 * i) / ns + 90 / ns) })),
+          ...tabs.map((q) => ({ op: "add" as const, shape: tab(q) })),
+          ...tabs.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: thd, h: tt + 2, at: [x, y, -tt - 1] as V3, dir: ZP } })),
+        ],
+      };
+      const screw = screwFor(d, thd, false);
+      // rotor: hub with a spinner, and pitched blades just behind the intake
+      const blade = (a: number): ShapeRecipe => ({
+        t: "xform",
+        shape: { t: "box", w: ri - rh + 0.6, d: 1.2, h: 9, at: [(ri + rh - 1.4) / 2, 0, -L * 0.2 - 4.5], r: 0 },
+        xf: [
+          { op: "rotate", angle: 32, origin: [0, 0, -L * 0.2], axis: XP },
+          { op: "rotate", angle: a, origin: Z0, axis: ZP },
+        ],
+      });
+      const rotor: PartRecipe = {
+        base: { t: "cyl", d: hd - 0.6, h: L * 0.2, at: [0, 0, -L * 0.28], dir: ZP },
+        ops: [
+          { op: "add", shape: { t: "cone", d1: hd - 0.6, d2: hd * 0.25, h: L * 0.07, at: [0, 0, -L * 0.08 - 0.01], dir: ZP } },
+          ...Array.from({ length: nb }, (_, i) => ({ op: "add" as const, shape: blade((360 * i) / nb) })),
+        ],
+      };
+      // the three motor leads leave the rear of the hub through the stator, bunched
+      const lr = (rh + ri) / 2;
+      const leads: PartRecipe = {
+        base: { t: "union", shapes: [-1, 0, 1].map((k) => ({ t: "cyl" as const, d: 2.8, h: 26, at: [lr * Math.cos(laz) - k * 3 * Math.sin(laz), lr * Math.sin(laz) + k * 3 * Math.cos(laz), -L - 24] as V3, dir: ZP })) },
+        ops: [],
+      };
+      return {
+        placement: "axis",
+        solids: [
+          solid("", p.name, housing, g.color ?? "#2b2f36", "Nylon"),
+          solid("rotor", `${p.name} rotor`, rotor, g.color2 ?? "#c9ced6", "Nylon", true),
+          solid("leads", `${p.name} motor leads`, leads, "#1e2a5c", "PVC"),
+        ],
+        fields: {
+          scalars: { od, fan_d: fd, hub_d: hd, length: L, tab_t: tt, ...mountScalars(screw, 0) },
+          points: { at: Z0, intake: Z0, exhaust: [0, 0, -L], center: [0, 0, -L / 2], leads: [lr * Math.cos(laz), lr * Math.sin(laz), -L - 24] },
+          // the tab holes on the back of the tabs, where the seat behind them starts
+          pointLists: { holes: tabs.map(([x, y]) => [x, y, -tt] as V3) },
+          dirs: { axis: ZP },
+          // the seat is behind the tabs: the housing's bore (0.4 mm clearance) and a hole per tab run back along -Z
+          shapes: { mount: { t: "xform", shape: mountCut(tabs, screw, od + 0.4, -1, L), xf: [{ op: "translate", v: [0, 0, -tt] }] } },
+        },
+      };
+    }
+
     // stepper: NEMA frame `size` square, body length `l` behind the face,
     // pilot_d/pilot_h, shaft_d/shaft_l (shaft_flat D-flat depth, flat_l
     // long; or key_w/key_l keyway), holes on a hole_spacing square. Small

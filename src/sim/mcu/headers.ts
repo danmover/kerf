@@ -12,14 +12,13 @@ export function systemHeaders(b: Board): Record<string, string> {
     .map(([pin, n]) => `((p) == ${pin} ? ${n} : `)
     .join("");
   const irqClose = ")".repeat(Object.keys(b.interrupts).length);
+  const esp = b.arch === "esp32";
   const arduino = `#pragma once
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <avr/pgmspace.h>
-#include <avr/io.h>
-#include <avr/interrupt.h>
+${esp ? "#include <pgmspace.h>\n#define IRAM_ATTR\n#define DRAM_ATTR\n#define ESP_OK 0\n#define portTICK_PERIOD_MS 1" : "#include <avr/pgmspace.h>\n#include <avr/io.h>\n#include <avr/interrupt.h>"}
 
 #define HIGH 0x1
 #define LOW  0x0
@@ -62,6 +61,7 @@ export function systemHeaders(b: Board): Record<string, string> {
 
 #define interrupts() sei()
 #define noInterrupts() cli()
+${esp ? "#define NEOPIXEL_I2C_POWER 2\n#define PIN_NEOPIXEL 0\n#define BUTTON 38\n#define BATT_MONITOR 35" : ""}
 
 #define clockCyclesPerMicrosecond() ( F_CPU / 1000000L )
 #define clockCyclesToMicroseconds(a) ( (a) / clockCyclesPerMicrosecond() )
@@ -82,10 +82,7 @@ export function systemHeaders(b: Board): Record<string, string> {
 ${analog}
 #define SDA ${b.sda}
 #define SCL ${b.scl}
-#define SS 10
-#define MOSI 11
-#define MISO 12
-#define SCK 13
+${esp ? "#define SS 33\n#define MOSI 19\n#define MISO 21\n#define SCK 5\n#define RX 7\n#define TX 8" : "#define SS 10\n#define MOSI 11\n#define MISO 12\n#define SCK 13"}
 #define NUM_DIGITAL_PINS ${b.digitalPins + 1}
 #define NUM_ANALOG_INPUTS ${b.analog.length}
 #define digitalPinToInterrupt(p) ${irq}NOT_AN_INTERRUPT${irqClose}
@@ -131,9 +128,7 @@ ${analog}
 #define SCHAR_MIN (-128)
 #define SCHAR_MAX 127
 #define UCHAR_MAX 255
-#define INT_MIN (-32767-1)
-#define INT_MAX 32767
-#define UINT_MAX 65535U
+${b.abi.intBits === 32 ? "#define INT_MIN (-2147483647-1)\n#define INT_MAX 2147483647\n#define UINT_MAX 4294967295U" : "#define INT_MIN (-32767-1)\n#define INT_MAX 32767\n#define UINT_MAX 65535U"}
 #define LONG_MIN (-2147483647L-1)
 #define LONG_MAX 2147483647L
 #define ULONG_MAX 4294967295UL
@@ -152,6 +147,9 @@ ${analog}
     "Wire.h": empty,
     "EEPROM.h": empty,
     "Servo.h": empty,
+    // the ESP32Servo library (Kevin Harrington, John K. Bennett): Servo on the LEDC timers, any output pin
+    "ESP32Servo.h": empty,
+    "Preferences.h": empty,
     "Adafruit_NeoPixel.h": `#pragma once
 #define NEO_RGB ((0 << 6) | (0 << 4) | (1 << 2) | (2))
 #define NEO_RBG ((0 << 6) | (0 << 4) | (2 << 2) | (1))

@@ -123,6 +123,22 @@ export const MOTION: CatalogPart[] = [
 
   // ---- servos and linear actuators ----
   {
+    id: "savox_sh0264mg",
+    kind: "servo",
+    name: "Savox SH-0264MG super-speed digital micro servo",
+    maker: "Savox",
+    mpn: "SH-0264MG",
+    summary: "Micro digital servo with metal gears and two ball bearings: 0.08 s/60° and 0.8 kg·cm at 4.8 V (0.06 s and 1.2 kg·cm at 6 V), 21-tooth spline, 22.8 x 12 x 25.4 mm, 13 g. Digital: takes up to 333 Hz frames.",
+    specs: { t_stall: kgcm(0.9), v_min: 4.8, v_max: 6, speed_s_per_60: 0.08, i_stall: 0.9, i_run: 0.15, mass_g: 13, range_deg: 180, frame_hz_max: 333, spline: "21T" },
+    pins: servoPins(4.8, 6, 0.15),
+    // spline 5.9 mm off the case centre; tabs 6 mm below the top face, holes 27.5 mm apart (assumed: measure yours)
+    geom: { g: "servo", dims: { w: 22.8, d: 12, h: 25.4, flange_w: 32.5, flange_t: 1.8, flange_z: 6, shaft_x: 5.9, spline_d: 4.8 }, holes: [[-19.65, 0], [7.85, 0]], hole_d: 2.2, color: "#1b1f25" },
+    price_usd: 24,
+    buy: [{ vendor: "Metro Hobbies (Box Hill VIC)", url: "https://metrohobbies.com.au/collections/rc-servo-remote-control-servo-motor-for-sale-metro-hobbies/products/savox-super-speed-metal-gear-micro-digital-ser" }],
+    source: "https://servodatabase.com/servo/savox/sh-0264mg",
+    notes: ["Mounting tab height, hole spacing and the spline offset are not published: measure one before printing the mounts.", "Screw it down through the tabs with the M2 screws in its bag, or M2 x 10 pan heads and nuts."],
+  },
+  {
     id: "mg996r",
     kind: "servo",
     name: "MG996R metal-gear servo",

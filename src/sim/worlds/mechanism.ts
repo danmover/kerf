@@ -6,7 +6,8 @@
 // (the bench, for sensors and the motors outside the mechanism) and records
 // each joint's motion and loads.
 
-import type { Actuator, DCMotor, Servo } from "../engine/devices";
+import type { Actuator, DCMotor, EscFan, Servo } from "../engine/devices";
+import { JetForces } from "../mech/forces";
 import { ActuatorDrive, MotorDrive, ServoDrive } from "../mech/drives";
 import { FRAME, type MechModel } from "../mech/model";
 import { qconj, qrot, sub, type Body, type V3 } from "../mech/solver";
@@ -47,6 +48,7 @@ export class MechWorld implements World {
   private flagged = new Set<string>();
   private start = new Map<string, V3>();
   private peakPower = new Map<string, number>();
+  jets: JetForces[] = [];
   unstable = false;
 
   constructor(
@@ -104,6 +106,22 @@ export class MechWorld implements World {
         this.sys.addActuator(d.comp, ad, d.start);
         this.devs.set(d.comp, { kind: "actuator", drive: ad, sign: d.sign, zero: d.start });
       }
+    }
+    for (const jt of this.model.jets ?? []) {
+      const x = io.find((i) => i.comp === jt.fan && i.kind === "fan");
+      const body = this.sys.bodies.get(jt.body);
+      if (!x || !body) {
+        this.assumptions.push(`${jt.fan} has no ESC spinning it from the firmware, so ${jt.name} blows nothing`);
+        continue;
+      }
+      const fan = x.dev as EscFan;
+      const vanes = jt.vanes.flatMap((v) => {
+        const vb = this.sys.bodies.get(v.body);
+        if (!vb) return [];
+        return [{ name: v.joint, body: vb, lp: vb.toLocal(v.cp), la: vb.dirToLocal(v.axis), lc: vb.dirToLocal([-jt.axis[0], -jt.axis[1], -jt.axis[2]]), area: v.area, cla: v.cla, ar: v.ar, angle: 0, lift: 0, stalled: false }];
+      });
+      const state = () => ({ thrust: fan.thrust, omega: fan.omega, alpha: fan.alpha, drag: fan.dragTorque, J: fan.J, spin: fan.spin, area: fan.fanArea });
+      this.jets.push(this.sys.solver.add(new JetForces(jt.name, body, jt.at, jt.axis, vanes, jt.stall, jt.recovery, state)));
     }
   }
 
@@ -194,6 +212,12 @@ export class MechWorld implements World {
       for (const g of m.magnets) if (Math.hypot(...sub(this.placed(g.comp, g.at), ps)) <= s.range) return true;
     }
     return false;
+  }
+
+  /** the pull on a load cell that is a spring link of the mechanism, N */
+  force(comp: string): number {
+    const sp = this.sys.springs.find((x) => this.model.springs.find((m) => m.name === x.name)?.cell === comp);
+    return sp ? -sp.force : (this.inner?.force?.(comp) ?? 0);
   }
 
   /** a design-pose point on the body a component rides, where that body is now */
@@ -299,6 +323,14 @@ export class MechWorld implements World {
       out[`${c.name}.gap`] = Math.max(0, c.gap) * 1000;
     }
     for (const c of s.clutches) out[`${c.name}.torque`] = c.torque;
+    for (const jt of this.jets) {
+      out[`${jt.name}.side_force`] = jt.side;
+      out[`${jt.name}.thrust`] = jt.thrust;
+      for (const v of jt.vanes) {
+        out[`${v.name}.lift`] = v.lift;
+        out[`${v.name}.attack`] = v.angle * R2D;
+      }
+    }
     for (const w of s.wheels) out[`${w.name}.slip_speed`] = w.slipSpeed * 1000;
     for (const inp of s.inputs) {
       const lin = inp.joint.kind === "slider";
@@ -352,6 +384,11 @@ export class MechWorld implements World {
       r[`${c.name}.peak_force`] = c.peak;
     }
     for (const c of s.clutches) r[`${c.name}.slip_time`] = c.slipTime;
+    for (const jt of this.jets) {
+      r[`${jt.name}.peak_vane_force`] = jt.peakVane;
+      r[`${jt.name}.stall_time`] = jt.stallTime;
+      r[`${jt.name}.peak_gyro`] = jt.peakGyro * 1000;
+    }
     for (const w of s.wheels) r[`${w.name}.slip_time`] = w.slipTime;
     for (const inp of s.inputs) {
       const lin = inp.joint.kind === "slider";

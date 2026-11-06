@@ -800,7 +800,7 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
       groups.set(g, [...(groups.get(g) ?? []), r]);
     }
     const KIND_HEAD: Record<string, string> = { ground: "Ground wires", power: "Power wires", signal: "Signal wires", motor: "Motor leads", cable: "Cables" };
-    const spec = (r: WireRow) => (r.cable ? r.cable : `${r.gauge ? `${r.gauge} AWG` : "wire"} ${r.color}`);
+    const spec = (r: WireRow) => (r.cable ? r.cable : `${r.gauge ? `${r.gauge} AWG${r.insulation === "silicone" ? " silicone" : ""}` : "wire"} ${r.color}`);
     const end = (e: WireRow["from"]) => `${e.comp}.${e.pin}${e.label !== e.pin ? ` ("${e.label}")` : ""}`;
     for (const [key, rows] of groups) {
       const r0 = rows[0];

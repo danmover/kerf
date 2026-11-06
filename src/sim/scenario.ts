@@ -38,7 +38,7 @@ export type PitStart = number | "wall" | "buried";
  * or actuator jams, a part is unplugged, one wire comes loose, a sensor
  * freezes, or the battery is an old one.
  */
-export type FaultKind = "jam" | "unplug" | "loose" | "stuck" | "aged";
+export type FaultKind = "jam" | "unplug" | "loose" | "stuck" | "aged" | "press";
 
 export interface FaultSpec {
   kind: FaultKind;
@@ -56,7 +56,7 @@ export interface FaultSpec {
   resistance?: number;
 }
 
-export const FAULT_WORDS: Record<FaultKind, string> = { jam: "jams", unplug: "is unplugged", loose: "comes loose", stuck: "freezes", aged: "is an old one" };
+export const FAULT_WORDS: Record<FaultKind, string> = { jam: "jams", unplug: "is unplugged", loose: "comes loose", stuck: "freezes", aged: "is an old one", press: "is pressed" };
 
 export type WorldSpec =
   | { kind: "sand_pit"; pit: Omit<SandPitSpec, "start"> & { start: PitStart }; robot: TunnellerSpec }
@@ -319,6 +319,12 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
     (a, ctx) => fault("stuck", compName(a.value("part"), ctx, "sim.stuck(): part"), a),
   ),
   simFn(
+    "press",
+    ["part", "at", "until"],
+    "Someone presses a switch or emergency stop: its normally closed contacts open and its normally open ones close. part: the switch; at: when; until: when it is released (a latching e-stop stays pressed when left out). An NC contact in an ESC's signal wire cuts the signal; an NO contact from a controller pin to GND pulls that pin low.",
+    (a, ctx) => fault("press", compName(a.value("part"), ctx, "sim.press(): part"), a),
+  ),
+  simFn(
     "aged",
     ["part", "capacity", "resistance"],
     "An old battery, for the whole run: part: the battery; capacity: the share of its new capacity it still holds (80% is the usual end of life); resistance: how many times its new internal resistance (1.5).",
@@ -574,6 +580,7 @@ const FAULT_KINDS: Record<FaultKind, (k: string) => boolean> = {
   loose: () => true,
   stuck: (k) => k === "sensor" || k === "actuator" || k === "gearmotor",
   aged: (k) => k === "battery",
+  press: (k) => k === "switch",
 };
 
 const FAULT_PARTS: Record<FaultKind, string> = {
@@ -582,6 +589,7 @@ const FAULT_PARTS: Record<FaultKind, string> = {
   loose: "any part",
   stuck: "a sensor, an actuator or a gearmotor with an encoder",
   aged: "a battery",
+  press: "a switch or emergency stop",
 };
 
 /** The faults: list, checked against the design's parts and their pins. */
@@ -591,7 +599,7 @@ function faultList(p: ScenarioProps, fail: (msg: string, span: Span) => never, m
   const items = Array.isArray(v) ? v : [v];
   const out: FaultSpec[] = [];
   for (const it of items) {
-    if (!(it instanceof SimSpec && it.what === "fault")) return fail("faults: should be a list of sim.jam(...), sim.unplug(...), sim.loose(...), sim.stuck(...) or sim.aged(...)", p.span("faults"));
+    if (!(it instanceof SimSpec && it.what === "fault")) return fail("faults: should be a list of sim.jam(...), sim.unplug(...), sim.loose(...), sim.stuck(...), sim.press(...) or sim.aged(...)", p.span("faults"));
     const f = it.data as FaultSpec;
     if (machine) {
       const [comp, pin] = f.target.split(".");

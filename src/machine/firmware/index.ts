@@ -9,6 +9,7 @@ import { marlinConfig } from "./marlin";
 import { FLAVOR_NAME, type PrinterFlavor, PRINTER_FLAVORS, boardFlavors, flavorOf } from "./printer";
 import { rrfConfig } from "./rrf";
 import { tunerSketch } from "./tuner";
+import { VANE_WORDS, vaneFirmware } from "./vanes";
 import type { FwContext } from "./common";
 
 export type { GenFile } from "./common";
@@ -24,7 +25,7 @@ export interface FirmwareOutput {
   pinTable: { signal: string; pin: string; wire: string }[];
 }
 
-const ARDUINO_BOARDS = /^(arduino_|esp32|rpi_pico)/;
+const ARDUINO_BOARDS = /^(arduino_|esp32|rpi_pico|feather_esp32)/;
 
 export function generateFirmware(m: MachineData, designName: string): FirmwareOutput[] {
   return m.firmware.map((fw) => {
@@ -35,6 +36,10 @@ export function generateFirmware(m: MachineData, designName: string): FirmwareOu
     if (fw.settings.app === "tuner" && /^arduino_(nano|uno)/.test(ctx.boardPart.id)) {
       const r = tunerFor(ctx);
       return { name: fw.name, board: ctx.board.name, target: "arduino", summary: `Arduino sketch for ${ctx.boardPart.name}: chromatic guitar tuner with the note and cents on the OLED`, ...r };
+    }
+    if (VANE_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? "")) && ARDUINO_BOARDS.test(ctx.boardPart.id) && /esp32/i.test(String(ctx.boardPart.specs.mcu ?? ""))) {
+      const r = vaneFirmware(ctx);
+      return { name: fw.name, board: ctx.board.name, target: "arduino", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
     }
     if (ARDUINO_BOARDS.test(ctx.boardPart.id)) {
       const r = arduinoFirmware(ctx);

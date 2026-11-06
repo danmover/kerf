@@ -123,7 +123,7 @@ export class FaultInjector {
   private clear(i: number, f: FaultSpec, t: number, say: boolean) {
     this.live.get(i)?.();
     this.live.delete(i);
-    if (say) this.events.push({ t, kind: "info", text: `Fault cleared: ${f.target} ${f.kind === "jam" ? "frees" : f.kind === "stuck" ? "recovers" : "is connected again"}` });
+    if (say) this.events.push({ t, kind: "info", text: `Fault cleared: ${f.target} ${f.kind === "jam" ? "frees" : f.kind === "stuck" ? "recovers" : f.kind === "press" ? "is released" : "is connected again"}` });
   }
 
   private apply(f: FaultSpec, t: number): Undo {
@@ -135,6 +135,8 @@ export class FaultInjector {
         return this.stick(f.target, t);
       case "unplug":
         return this.unplug(f.target);
+      case "press":
+        return plant.press(f.target) ?? this.unsupported(f, `Pressing ${f.target} changes nothing Kerf simulates: wire it to a controller pin (normally open) or put it in a signal or supply (normally closed).`);
       case "loose": {
         const [comp, pin] = f.target.split(".");
         if (comp === plant.mcu) return this.looseAtController(pin);
@@ -145,8 +147,8 @@ export class FaultInjector {
     }
   }
 
-  private unsupported(f: FaultSpec): Undo {
-    const msg = `Kerf cannot simulate ${f.target} coming loose yet, so that fault changed nothing.`;
+  private unsupported(f: FaultSpec, why?: string): Undo {
+    const msg = why ?? `Kerf cannot simulate ${f.target} coming loose yet, so that fault changed nothing.`;
     if (!this.notes.includes(msg)) this.notes.push(msg);
     return () => {};
   }
@@ -261,6 +263,19 @@ export class FaultInjector {
         else if (/^FB/.test(pin) && a.fbPin >= 0) dropAnalog(a.fbPin);
         break;
       }
+      case "esc": {
+        const e = plant.escs.find((x) => x.comp === comp);
+        if (!e) break;
+        if (pin === "SIG") undos.push(this.swap(e, "pin", -1));
+        else if (pin === "B_PLUS" || pin === "B_MINUS") undos.push(this.swap(e, "vin", DEAD_NET));
+        break;
+      }
+      case "bldc": {
+        // a motor lead off: an ESC cannot run a brushless motor on two phases, it stops it
+        const e = plant.escs.find((x) => x.fan?.name === comp);
+        if (e) undos.push(this.swap(e, "pin", -1));
+        break;
+      }
       case "servo": {
         const s = plant.servos.find((x) => x.comp === comp);
         if (!s) break;
@@ -301,6 +316,11 @@ export class FaultInjector {
       case "sensor":
       case "display": {
         offBus();
+        // an HX711 off its pins, or the load cell off the HX711
+        for (const h of plant.hxs) {
+          if (h.comp === comp) undos.push(this.swap(h, "on", false));
+          else if (h.cell === comp) undos.push(this.swap(h, "cell", undefined));
+        }
         if (mcuPin >= 0) dropAnalog(mcuPin);
         // a distance sensor stops echoing
         const trig = plant.mcuPinFor(comp, "TRIG");
@@ -398,6 +418,8 @@ export function copingResults(frames: FrameData, serial: SerialLine[], plant: Pl
       if (Math.abs(frames.series[`${m.comp}.rpm`]?.[i] ?? 0) > STILL_RPM) return false;
     }
     for (const a of plant.acts) if (Math.abs(frames.series[`${a.comp}.amps`]?.[i] ?? 0) > QUIET_A / 2) return false;
+    // a fan coasting down still moves
+    for (const e of plant.escs) if (e.fan && Math.abs(frames.series[`${e.fan.name}.rpm`]?.[i] ?? 0) > 300) return false;
     return true;
   };
   for (const m of plant.motors) {
@@ -424,8 +446,9 @@ export function copingResults(frames: FrameData, serial: SerialLine[], plant: Pl
     r.fault_stopped = true;
     r.fault_stop_time = Math.max(0, frames.t[from] - ft);
   } else r.fault_stopped = false;
-  const said = serial.find((l) => l.dir === "out" && l.t >= ft && NOTICED.test(l.text));
+  // a pin the fault changes reads differently in the same millisecond, so a line from that step counts
+  const said = serial.find((l) => l.dir === "out" && l.t >= ft - 0.0015 && NOTICED.test(l.text));
   r.fault_noticed = !!said;
-  if (said) r.fault_reaction = said.t - ft;
+  if (said) r.fault_reaction = Math.max(0, said.t - ft);
   return r;
 }

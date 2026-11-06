@@ -9,7 +9,7 @@ import type { Span } from "../lang/ast";
 import { fmtNum } from "../lang/values";
 import { awgAmpacity } from "./calcs";
 import { catalogPart } from "./catalog";
-import type { CatalogPart, MachineComponent, MachineData, PinDef, PinRef } from "./types";
+import type { CatalogPart, MachineComponent, MachineData, PinDef, PinRef, WireInsulation } from "./types";
 
 export interface NetPin {
   key: string;
@@ -25,6 +25,7 @@ export interface NetSeg {
   a: NetPin;
   b: NetPin;
   gauge?: number;
+  insulation?: WireInsulation;
   span: Span;
   label?: string;
   /** the `net` statement this branch belongs to: its branches form one bus */
@@ -112,12 +113,12 @@ export function buildNetlist(m: MachineData): Netlist {
   for (const w of m.wires) {
     const a = resolve(w.a);
     const b = resolve(w.b);
-    if (a && b) join({ a, b, gauge: w.gauge, span: w.span, label: w.label });
+    if (a && b) join({ a, b, gauge: w.gauge, insulation: w.insulation, span: w.span, label: w.label });
   }
   m.nets.forEach((n, bus) => {
     const ps = n.pins.map(resolve).filter((x): x is NetPin => !!x);
     for (const p of ps) touched.add(p.key);
-    for (let i = 1; i < ps.length; i++) join({ a: ps[0], b: ps[i], gauge: n.gauge, span: n.span, label: n.name, bus });
+    for (let i = 1; i < ps.length; i++) join({ a: ps[0], b: ps[i], gauge: n.gauge, insulation: n.insulation, span: n.span, label: n.name, bus });
     if (ps[0]) names.set(ps[0].key, n.name);
   });
   // passive parts (fuses, switches, connector pairs) conduct between their paired terminals
@@ -786,6 +787,7 @@ function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
 
 const isSupplyPart = (p: NetPin) => p.part.kind === "battery" || p.part.kind === "psu";
 const segName = (sg: NetSeg) => (sg.label && !sg.bus ? sg.label : `${sg.label ? `${sg.label}: ` : ""}${who(sg.a)} → ${who(sg.b)}`);
+const wireName = (sg: NetSeg) => `${fmtNum(sg.gauge!)} AWG${sg.insulation === "silicone" ? " silicone" : ""}`;
 
 /**
  * Every wire run against the current it carries, and every fuse against the wires it protects. Power,
@@ -883,8 +885,8 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
         if (a > 3) unsized = Math.max(unsized, a);
         return;
       }
-      const amp = awgAmpacity(sg.gauge);
-      if (a > amp) item(c, `gauge:${n.id}:${i}`, "fail", `${segName(sg)}: wire too thin`, `${fmtNum(sg.gauge)} AWG carries about ${fmtNum(amp)} A; this run carries about ${fmtNum(a, 1)} A${n.pins.some((p) => p.pin.type === "gnd") ? " (the ground return carries what the parts on it draw)" : ""}. Use thicker wire.`, [sg.a.comp, sg.b.comp], sg.span);
+      const amp = awgAmpacity(sg.gauge, sg.insulation);
+      if (a > amp) item(c, `gauge:${n.id}:${i}`, "fail", `${segName(sg)}: wire too thin`, `${wireName(sg)} carries about ${fmtNum(amp)} A; this run carries about ${fmtNum(a, 1)} A${n.pins.some((p) => p.pin.type === "gnd") ? " (the ground return carries what the parts on it draw)" : ""}. Use thicker wire.`, [sg.a.comp, sg.b.comp], sg.span);
     });
     if (unsized) item(c, `gauge:${n.id}`, "warn", `Wire size for ${netLabel(n)}`, `This net carries about ${fmtNum(unsized, 1)} A: give its wires a gauge (gauge: 16) so the parts list and wiring diagram say what wire to use.`, [src[0].comp], n.spans[0]);
   }
@@ -905,13 +907,15 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
       const side = reach(n, [out], link);
       const after = n.segs.filter((sg) => side.has(sg.a.key) && side.has(sg.b.key) && sg.gauge !== undefined);
       const fname = `${f.name}${f.count > 1 ? `[${i}]` : ""}`;
-      const thinnest = after.sort((x, y) => y.gauge! - x.gauge!)[0];
+      // the run that carries least is what overheats first
+      const thinnest = after.sort((x, y) => awgAmpacity(x.gauge!, x.insulation) - awgAmpacity(y.gauge!, y.insulation))[0];
       const through = n.pins.filter((p) => side.has(p.key)).reduce((a, p) => a + pinLoad(p, n), 0);
-      if (thinnest && rating > awgAmpacity(thinnest.gauge!)) {
-        const amp = awgAmpacity(thinnest.gauge!);
-        item(c, `fuse-wire:${fname}`, "fail", `${fname} too big for its wires`, `The ${fmtNum(rating)} A fuse protects ${segName(thinnest)}, ${fmtNum(thinnest.gauge!)} AWG, which carries about ${fmtNum(amp)} A: a short or a stall could overheat that wire without blowing the fuse. Use a fuse of ${fmtNum(amp)} A or less (rating: ${fmtNum(amp)}A), or thicker wire.`, [f.name, thinnest.a.comp, thinnest.b.comp], f.span);
+      if (thinnest && rating > awgAmpacity(thinnest.gauge!, thinnest.insulation)) {
+        const amp = awgAmpacity(thinnest.gauge!, thinnest.insulation);
+        const silicone = thinnest.insulation === "silicone" ? "" : ` High-strand silicone wire in free air (insulation: "silicone") carries ${fmtNum(awgAmpacity(thinnest.gauge!, "silicone"))} A at this gauge.`;
+        item(c, `fuse-wire:${fname}`, "fail", `${fname} too big for its wires`, `The ${fmtNum(rating)} A fuse protects ${segName(thinnest)}, ${wireName(thinnest)}, which carries about ${fmtNum(amp)} A: a short or a stall could overheat that wire without blowing the fuse. Use a fuse of ${fmtNum(amp)} A or less (rating: ${fmtNum(amp)}A), or thicker wire.${silicone}`, [f.name, thinnest.a.comp, thinnest.b.comp], f.span);
       } else if (thinnest) {
-        item(c, `fuse-wire:${fname}`, "pass", `${fname} sized to its wires`, `The ${fmtNum(rating)} A fuse is no more than the thinnest wire after it can carry (${fmtNum(thinnest.gauge!)} AWG, about ${fmtNum(awgAmpacity(thinnest.gauge!))} A).`, [f.name], f.span);
+        item(c, `fuse-wire:${fname}`, "pass", `${fname} sized to its wires`, `The ${fmtNum(rating)} A fuse is no more than the weakest wire after it can carry (${wireName(thinnest)}, about ${fmtNum(awgAmpacity(thinnest.gauge!, thinnest.insulation))} A).`, [f.name], f.span);
       }
       // blade fuses carry 110 % of their rating for 100 hours (SAE J1284) and lose a little in a warm box
       if (through > rating) item(c, `fuse-load:${fname}`, "fail", `${fname} blows in normal use`, `About ${fmtNum(through, 1)} A flows through the ${fmtNum(rating)} A fuse when everything runs.`, [f.name], f.span);

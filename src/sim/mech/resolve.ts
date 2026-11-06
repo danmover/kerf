@@ -6,7 +6,7 @@
 // profile from its shape, and everything converted to SI units for the
 // solver. Runs in the app (it needs the meshes), before the run is queued.
 
-import { turns, type EvalPart, type Link, type Model, type Motion } from "../../core/model";
+import { partMass, turns, type EvalPart, type Link, type Model, type Motion } from "../../core/model";
 import { findHolds, isFastener } from "../../core/holds";
 import type { MeshEntry } from "../../core/engine";
 import { applyXforms, type Xform } from "../../kernel/recipe";
@@ -16,7 +16,7 @@ import type { BeltDef, BeltNode } from "../../machine/types";
 import { MATERIALS, materialDensity } from "../../library/standards";
 import type { ScenarioSpec } from "../scenario";
 import type { MechItem, MechJointItem, MechSpec } from "./lang";
-import { FRAME, type MechBody, type MechDrive, type MechGround, type MechJoint, type MechLink, type MechModel } from "./model";
+import { FRAME, type MechBody, type MechDrive, type MechGround, type MechJet, type MechJoint, type MechLink, type MechModel } from "./model";
 import type { M3, V3 } from "./solver";
 
 export type Resolved = { mech: MechModel } | { error: string } | { waiting: string[] };
@@ -370,7 +370,8 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       if (!pr) continue;
       const cat = compMass.get(p.name);
       // grams
-      const g = cat !== undefined && Number.isFinite(cat) ? (cat * pr.volume) / Math.max(1e-9, compVol.get(p.name)!) : (pr.volume / 1000) * materialDensity(p.material);
+      // a part's own mass: when given (a printed part's infill), else its solid's volume times its material's density
+      const g = cat !== undefined && Number.isFinite(cat) ? (cat * pr.volume) / Math.max(1e-9, compVol.get(p.name)!) : partMass(p, pr.volume, materialDensity(p.material))!;
       const k = g / Math.max(1e-9, pr.volume);
       items.push({ m: g, c: pr.com, cov: pr.cov.map((x) => x * k) as M3 });
       mass += g;
@@ -749,7 +750,12 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     const b = bodyIdOf(it.b, `spring ${it.name}`);
     if (a === b) fail(`spring ${it.name}: both ends are on ${a}`);
     const L = len(sub(it.atB, it.atA));
-    return [{ name: it.name, a, b, pa: SI(it.atA), pb: SI(it.atB), k: it.rate * 1000, c: it.damping * 1000, free: (it.free ?? L) / 1000, push: it.push }];
+    if (it.cell) {
+      const cat = comps.get(it.cell) ? catalogPart(comps.get(it.cell)!.catalogId) : undefined;
+      if (cat?.specs.iface !== "bridge") fail(`spring ${it.name}: cell: ${it.cell} is not a load cell in the design`);
+      if (!(it.rate > 0)) fail(`spring ${it.name}: give the load cell's stiffness as rate: (N/mm)`);
+    }
+    return [{ name: it.name, a, b, pa: SI(it.atA), pb: SI(it.atB), k: it.rate * 1000, c: it.damping * 1000, free: (it.free ?? L) / 1000, push: it.push, cell: it.cell }];
   });
   const loads = spec.items.flatMap((it) => {
     if (it.k !== "load") return [];
@@ -757,6 +763,66 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     const b = bodyById.get(id)!;
     return [{ name: it.name, body: id, at: it.at ? SI(it.at) : b.com, dir: it.dir, value: it.value.map(([t, v]) => [t, it.torque ? v / 1000 : v] as [number, number]), torque: it.torque, turns: it.turns }];
   });
+
+  // ---- jets: a ducted fan's thrust and the vanes steering it
+  const jets: MechJet[] = [];
+  for (const it of spec.items) {
+    if (it.k !== "jet") continue;
+    const mc = comps.get(it.fan);
+    const cat = mc ? catalogPart(mc.catalogId) : undefined;
+    if (!mc || !cat || cat.kind !== "bldc") fail(`sim.jet(${it.fan}): ${it.fan} is not a ducted fan or brushless motor component in the design`);
+    const main = (byName.get(it.fan) ?? []).find((p) => p.id.replace(/#\d+$/, "") === it.fan);
+    if (!main) fail(`sim.jet(${it.fan}): ${it.fan} has not been built`);
+    const o = applyXforms([0, 0, 0], main!.xf);
+    const z = unit(sub(applyXforms([0, 0, 1], main!.xf), o));
+    const dims = cat!.geom?.dims ?? {};
+    const L = Number(dims.length ?? 60);
+    const fanD = Number(dims.fan_d ?? cat!.specs.fan_d ?? 64);
+    const hubD = Number(dims.hub_d ?? cat!.specs.hub_d ?? fanD * 0.45);
+    const d = scl(z, -1);
+    const vanes = it.vanes.map((v) => {
+      const j = jointOf(v, `sim.jet(${it.name}): vane ${v}`, "pivot");
+      const a = unit(j.axis);
+      if (Math.abs(dot(a, z)) > 0.2) fail(`sim.jet(${it.name}): ${v} turns about an axis along the jet; a vane's pivot runs across it`);
+      // its planform from its shape: along the pivot (span) and along the jet (chord), mm from the pivot point
+      const p0 = scl(j.at, 1000);
+      let a0 = Infinity;
+      let a1 = -Infinity;
+      let c0 = Infinity;
+      let c1 = -Infinity;
+      for (const pid of bodyById.get(j.body)?.parts ?? []) {
+        const vs = props.get(pid)?.verts;
+        if (!vs) continue;
+        for (let k = 0; k < vs.length; k += 3) {
+          const r = sub([vs[k], vs[k + 1], vs[k + 2]], p0);
+          const pa = dot(r, a);
+          const pc = dot(r, d);
+          if (pa < a0) a0 = pa;
+          if (pa > a1) a1 = pa;
+          if (pc < c0) c0 = pc;
+          if (pc > c1) c1 = pc;
+        }
+      }
+      if (!Number.isFinite(a0) && (it.chord === undefined || it.span === undefined)) fail(`sim.jet(${it.name}): ${v} has no shape to size it from; give chord: and span:`);
+      const annulus = (fanD - hubD) / 2;
+      const span = it.span ?? Math.min(a1 - a0, annulus);
+      const chord = it.chord ?? c1 - c0;
+      const le = Number.isFinite(c0) ? c0 : -chord / 4;
+      const mid = Number.isFinite(a0) ? (a0 + a1) / 2 : 0;
+      const cp = add(add(p0, scl(a, mid)), scl(d, le + chord / 4));
+      // the duct wall at its root doubles its aspect ratio; Helmbold's low-aspect-ratio lift slope
+      const ar = (2 * span) / chord;
+      const cla = it.lift ?? (2 * Math.PI * ar) / (2 + Math.sqrt(ar * ar + 4));
+      return { joint: j.name, body: j.body, cp: SI(cp), axis: a, area: (span * chord) / 1e6, cla, ar, span, chord };
+    });
+    const body = bodyIdOf(it.fan, `sim.jet(${it.name})`);
+    if (body === FRAME) notes.push(`${it.name}: ${it.fan} is on the frame, so its thrust pushes nothing that moves`);
+    jets.push({ name: it.name, fan: it.fan, body, at: SI(add(o, scl(z, -L / 2))), axis: z, vanes: vanes.map(({ span: _s, chord: _c, ...v }) => v), stall: it.stall * D2R, recovery: it.recovery });
+    if (vanes.length)
+      notes.push(
+        `${it.name}: ${vanes.length} vane${vanes.length > 1 ? "s" : ""}, ${vanes.map((v) => `${v.chord.toFixed(0)} × ${v.span.toFixed(0)} mm`).filter((x, i, l) => l.indexOf(x) === i).join(", ")} (chord × span), lift slope ${vanes[0].cla.toFixed(2)} per radian at aspect ratio ${vanes[0].ar.toFixed(2)} with the duct wall at the root, lift held past ${it.stall}°; jet pressure from thrust ÷ (2 × the fan's swept area)`,
+      );
+  }
 
   // ---- the ground
   let zmin = Infinity;
@@ -850,7 +916,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   const follow = spec.follow ? bodyIdOf(spec.follow, "follow") : base === "free" ? FRAME : undefined;
 
   return {
-    mech: { bodies, joints, drives, links, springs, loads, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, power, follow, notes },
+    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, power, follow, notes },
   };
 }
 

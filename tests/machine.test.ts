@@ -159,6 +159,20 @@ wire ctrl.GND -> mf.M_MINUS
     expect(errors(TUNNELLER.replace('lib.battery("lipo_3s_2200") {', 'lib.battery("lipo_3s_2200") { rating: 5A,'))[0]).toMatch(/only fuses take it/);
   });
 
+  it("rates high-strand silicone wire in free air, and keeps building-wire ratings for PVC", () => {
+    const trunk = 'net VBAT: fuse.OUT, drv_f.VIN, drv_r.VIN, drv_s.VM, reg.VIN, vsense.VCC_IN { gauge: main_awg';
+    // a 20 A fuse on a 16 AWG silicone trunk (22 A; PVC carries 10 A)
+    const src = TUNNELLER.replace(trunk, trunk.replace("gauge: main_awg", 'gauge: 16, insulation: "silicone"')).replace(", rating: 15A }", ", rating: 20A }");
+    const m = evaluate(src);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const fuse = machineChecks(m.machine!).find((c) => c.id === "erc:fuse-wire:fuse")!;
+    expect(fuse.status).toBe("pass");
+    expect(fuse.detail).toMatch(/16 AWG silicone, about 22 A/);
+    // the failing PVC run says what silicone would carry
+    expect(ercFails(trunk, trunk.replace("gauge: main_awg", "gauge: 16"))[0].detail).toMatch(/insulation: "silicone"\) carries 22 A/);
+    expect(errors(TUNNELLER.replace(trunk, trunk.replace("gauge: main_awg", 'gauge: 16, insulation: "rubber"')))[0]).toMatch(/insulation: should be "silicone"/);
+  });
+
   it("takes only web addresses in a buy statement (integration review)", () => {
     expect(errors(`design "x"\nbuy "Thing" { url: "javascript:alert(1)" }\n`)[0]).toMatch(/url: should be a web address/);
     expect(errors(`design "x"\nbuy "Thing" { url: "https://example.com/thing" }\n`)).toEqual([]);

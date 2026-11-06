@@ -83,6 +83,8 @@ export type CatalogKind =
   | "controller"
   | "host"
   | "motor_driver"
+  /** brushless motor controller: battery in, three phases out, an RC throttle pulse and usually a BEC */
+  | "esc"
   | "stepper_driver"
   | "gearmotor"
   | "stepper"
@@ -133,6 +135,8 @@ export type GeomClass =
   | "micro_gearmotor"
   | "tt_motor"
   | "outrunner"
+  // electric ducted fan: housing, rotor and stator round the jet axis
+  | "edf"
   | "stepper"
   | "servo"
   | "actuator"
@@ -279,6 +283,8 @@ export interface MachineComponent {
   label: string;
   count: number;
   role?: string;
+  /** the component's own X, Y and Z axes in design coordinates, when its placement turns it (an IMU's chip axes) */
+  axes?: [[number, number, number], [number, number, number], [number, number, number]];
   /** mechanical load on a motor in N·mm (component prop `load:`) */
   load?: number;
   /** cut length for stock items */
@@ -337,15 +343,20 @@ export interface WireDef {
   b: PinRef;
   /** AWG */
   gauge?: number;
+  /** what the wire is insulated with: "pvc" (the default, rated as building wire) or "silicone" (high-strand RC wire, rated in free air) */
+  insulation?: WireInsulation;
   color?: string;
   label?: string;
   span: Span;
 }
 
+export type WireInsulation = "pvc" | "silicone";
+
 export interface NetDef {
   name: string;
   pins: PinRef[];
   gauge?: number;
+  insulation?: WireInsulation;
   color?: string;
   /** copper track width on a circuit board, mm */
   width?: number;

@@ -33,14 +33,15 @@ export interface PlantView {
  */
 export interface DriveIO {
   comp: string;
-  kind: "motor" | "actuator" | "servo";
+  kind: "motor" | "actuator" | "servo" | "fan";
   /** volts on the terminals (+ forward; null: open), the driver's current limit, A */
   v: number | null;
   ilim: number;
   /** a servo's pulse, µs (null: none), and whether it has power */
   us: number | null;
   powered: boolean;
-  /** the device's own model, for its constants (kt, ke, resistance, stall force, rated speed) */
+  /** the device's own model, for its constants (kt, ke, resistance, stall force, rated speed); a fan's is the
+   * ESC and fan model, with its thrust and rotor speed this step */
   dev: unknown;
 }
 
@@ -143,6 +144,8 @@ export interface World {
   range?(comp: string): number;
   /** a magnet is within a hall sensor's range */
   magnet?(comp: string): boolean;
+  /** the force on a load cell, N (+ pulling on it) */
+  force?(comp: string): number;
   /** signals the world puts on nets (by name or "component.PIN"): volts at a time in seconds */
   drives?(): { on: string; v: (t: number) => number }[];
   /** a bench supply that powers the machine in place of its own batteries and supplies */

@@ -13,6 +13,8 @@ export interface Abi {
 }
 
 export const AVR: Abi = { intBits: 16, ptrBytes: 2, doubleBits: 32, charSigned: true };
+/** ESP32 (Xtensa LX6): 32-bit int and pointers, a real 64-bit double */
+export const XTENSA: Abi = { intBits: 32, ptrBytes: 4, doubleBits: 64, charSigned: true };
 
 export interface StructField {
   name: string;

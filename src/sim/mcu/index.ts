@@ -15,7 +15,7 @@ import type { Hal } from "./vm";
 export { Halt, type Hal, type Ptr, type FnRef } from "./vm";
 export { CError } from "./lex";
 export type { Firmware } from "./compile";
-export { boardFor, BOARDS, NANO, UNO, type Board } from "./board";
+export { boardFor, BOARDS, FEATHER_ESP32_V2, NANO, UNO, type Board } from "./board";
 
 export interface LoadedFirmware {
   fw: Firmware;
