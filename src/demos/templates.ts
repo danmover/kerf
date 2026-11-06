@@ -94,7 +94,7 @@ export const TEMPLATES: Template[] = [
     ],
     stats: "9 parts · 13 requirements · wind, knock and pothole analysis",
     category: "parts",
-    shows: ["wind and knocks", "tilt dial", "no supports"],
+    shows: ["wind and knocks", "snap pin", "no supports"],
   },
   {
     id: "reducer",

@@ -6,7 +6,11 @@
 
 import { TOOL_DEFS, runTool, type ToolResultContent } from "./tools";
 import { systemPrompt } from "./prompt";
+import { lessonsPrompt } from "./lessons";
+import { useSettings } from "../app/settings";
 import { useChat } from "./chat";
+import { beginAsks } from "./asks";
+import { useDesign } from "../core/engine";
 import { useProject } from "../app/project";
 import { desktop } from "../app/desktop";
 import { toast } from "../app/ui";
@@ -56,12 +60,18 @@ let queue: Promise<unknown> = Promise.resolve();
 
 export async function callTool(params: { name?: unknown; arguments?: unknown }, signal: AbortSignal, clientName = "Claude Code"): Promise<McpToolResult> {
   const name = String(params.name ?? "");
-  if (name === GUIDE_TOOL) return { content: [{ type: "text", text: `${PREAMBLE(clientName)}\n\n${systemPrompt()}` }] };
+  if (name === GUIDE_TOOL) {
+    // the lessons the user taught Kerf's chat hold here too
+    const s = useSettings.getState();
+    return { content: [{ type: "text", text: `${PREAMBLE(clientName)}\n\n${systemPrompt()}${lessonsPrompt(s.useLessons ? s.lessons : [])}` }] };
+  }
   if (!mcpTools().some((t) => t.name === name)) return refuse(`Kerf has no tool called ${name}.`);
   const run = async (): Promise<McpToolResult> => {
     if (signal.aborted) return refuse("Cancelled.");
     if (!useProject.getState().current) return refuse("No project is open in Kerf. Ask the person to open or create one in Kerf's window, then call get_design.");
     if (useChat.getState().busy) return refuse("Kerf's own chat is working on this design right now. Ask the person to wait for it or stop it, so the two don't edit at once.");
+    // Kerf never sees Claude Code's messages, so its asks are measured against the design as it is when it notes them
+    if (name === "record_asks") beginAsks(useDesign.getState().model, false);
     const out = await runTool(name, params.arguments ?? {}, { signal, check: true });
     if (!out.isError && (name === "edit_design" || name === "write_design")) toast({ kind: "info", title: `${clientName} changed the design`, detail: out.card.title });
     return { content: toMcp(out.content), ...(out.isError ? { isError: true } : {}) };
