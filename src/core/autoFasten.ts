@@ -13,7 +13,7 @@
 import type { EvalPart, Model } from "./model";
 import { applyXformsToDir, frameFor, vadd, vcross, vdot, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
 import { cylEnd, cylMid, lineDistance } from "../analysis/fits/geometry";
-import { boxNearSegment, cylsOf, findHolds, isFastener, isProfile, meshIntervals, worldBox, type MeshLookup, type Shank } from "./holds";
+import { boxNearSegment, carriedGroups, cylsOf, findHolds, isFastener, isProfile, meshIntervals, worldBox, type MeshLookup, type Shank } from "./holds";
 import { clearanceSize, heldHardware, joinGraph, joinedDirect } from "./completeChecks";
 import { engagementFor, headDims, nutDims, pickLength, washerDims, type HeadType } from "../library/fasteners";
 import type { ThreadSpec } from "../library/standards";
@@ -125,6 +125,8 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
   const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid"));
   const want = opts.parts ? new Set(opts.parts) : null;
   const plan: FastenPlan = { groups: [], done: [], skipped: [] };
+  const holds = findHolds(model, mesh);
+  carried = carriedGroups(model, holds);
   const placed = new Map<string, Placed>();
   const slot = (p: EvalPart) => placed.get(p.name) ?? placed.set(p.name, { part: p, screws: [], nuts: [], washers: [], brackets: [] }).get(p.name)!;
   const fillers = parts.flatMap((p) => cylsOf(p).filter((c) => c.side === "shaft" || c.role === "screw").map((c) => ({ p, c })));
@@ -132,8 +134,8 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
   const planned: { at: V3; axis: V3; len: number }[] = [];
   const filled = (p: EvalPart, at: V3, axis: V3, len: number, d: number) =>
     fillers.some(({ p: q, c }) => {
-      // a pin, shaft or screw in the hole (not a tube round it, like a spacer under a bed)
-      if (q === p || c.d > d + 0.3 || Math.abs(vdot(c.axis, axis)) < 0.995 || lineDistance(cylMid(c), at, axis) > Math.max(0.4, 0.1 * d)) return false;
+      // a pin, shaft or screw in the hole (not a tube round it, like a spacer under a bed; a screw into a tapped hole is wider than it)
+      if (q === p || (c.d > d + 0.3 && c.role !== "screw") || Math.abs(vdot(c.axis, axis)) < 0.995 || lineDistance(cylMid(c), at, axis) > Math.max(0.4, 0.1 * d)) return false;
       const a = vdot(vsub(c.at, at), axis);
       const b = vdot(vsub(cylEnd(c), at), axis);
       return Math.max(a, b) > -1 && Math.min(a, b) < len + 1;
@@ -168,7 +170,6 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
 
   // ---- corner brackets on profile joints nothing joins ----
   if (opts.kernel?.contacts) {
-    const holds = findHolds(model, mesh);
     const g = joinGraph(holds);
     const done = new Set<string>();
     const byId = new Map(parts.map((p) => [p.id, p]));
@@ -289,14 +290,22 @@ function along(q: EvalPart, mesh: MeshLookup, at: V3, axis: V3, r: number, s0: n
 }
 
 /** The first part in a hex key's way: a straight path 35 mm long out from the head (what the tool-access check needs). Removable covers come off. */
-function keyBlocker(seat: V3, axis: V3, head: HeadType, t: ThreadSpec, parts: EvalPart[], mesh: MeshLookup, skip: EvalPart[]): EvalPart | undefined {
+/** Parts carried by an axis (see carriedGroups), for the plan being made: they slide clear of a key that does not move with them. */
+let carried: Map<string, number> = new Map();
+const slidesClear = (q: EvalPart, owner?: EvalPart) => {
+  const g = carried.get(q.id);
+  const o = owner ? carried.get(owner.id) : undefined;
+  return (g !== undefined || o !== undefined) && g !== o;
+};
+
+function keyBlocker(seat: V3, axis: V3, head: HeadType, t: ThreadSpec, parts: EvalPart[], mesh: MeshLookup, skip: EvalPart[], owner?: EvalPart): EvalPart | undefined {
   const hd = headDims(head, t);
   if (!hd) return undefined;
   const out = vscale(axis, -1);
   const top = vadd(seat, vscale(out, hd.h));
   const r = (hd.key + 1.5) / 2;
   for (const q of parts) {
-    if (skip.includes(q) || q.removable || isFastener(q)) continue;
+    if (skip.includes(q) || q.removable || isFastener(q) || slidesClear(q, owner)) continue;
     const b = worldBox(q, mesh);
     if (!b || !boxNearSegment(b, top, out, 35, r)) continue;
     if (along(q, mesh, top, out, r, 0.05, 35).length) return q;
@@ -324,7 +333,7 @@ function tryDirection(p: EvalPart, own: { a: number; b: number }, layers: { part
     return !!b && boxNearSegment(b, point(ownA - head.h), axis, head.h, rim) && along(q, mesh, at, axis, rim / 0.92, ownA - head.h + 0.05, ownA - 0.05).length > 0;
   });
   if (crowd) return { why: `no room for the head (${crowd.name} is in the way)` };
-  const keyIn = keyBlocker(point(ownA), axis, "socket", t, parts, mesh, []);
+  const keyIn = keyBlocker(point(ownA), axis, "socket", t, parts, mesh, [], p);
   if (keyIn) return { why: `no room for a hex key (${keyIn.name} is in the way: mark it removable if it comes off to assemble)` };
   // the parts the screw passes through, each against the next
   let x = ownB;

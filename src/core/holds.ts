@@ -721,3 +721,70 @@ function seatOf(bearing: EvalPart, other: EvalPart): boolean {
 export function motionOfPart(p: EvalPart, holds: Holds | null | undefined): Motion | undefined {
   return turns(p.motion) ? p.motion : (holds?.carried.get(p.id)?.motion ?? p.motion);
 }
+
+/**
+ * Parts carried by a linear rail's carriage or a lead screw's nut, grouped by what carries them: the carriage and
+ * everything fastened to it, but not through a bought part's own joins (the carriage to its rail). Sliding the axis by
+ * hand moves them clear of a screw that does not move with them, as on a real printer, so they never block its key.
+ */
+export function carriedGroups(model: Model, holds: Holds): Map<string, number> {
+  const adj = new Map<string, string[]>();
+  const add = (a: string, b: string) => (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+  for (const j of holds.joins) {
+    if (j.kind === "band" || j.kind === "bought") continue;
+    add(j.a.id, j.b.id);
+    add(j.b.id, j.a.id);
+  }
+  const group = new Map<string, number>();
+  let n = 0;
+  for (const p of model.parts) {
+    const carrier = (p.libKind === "rail" && p.id.endsWith(".block")) || (p.libKind === "lead_screw" && p.id.endsWith(".nut"));
+    if (!carrier || group.has(p.id)) continue;
+    const g = n++;
+    group.set(p.id, g);
+    const queue = [p.id];
+    while (queue.length) {
+      for (const q of adj.get(queue.pop()!) ?? []) {
+        if (group.has(q)) continue;
+        group.set(q, g);
+        queue.push(q);
+      }
+    }
+  }
+  return group;
+}
+
+/**
+ * Whether a round hole is open on a side, so it is no closed screw hole: the round end of a slot, a notch, or a hole
+ * that breaks out of an edge. Along the hole, rays from the axis outward must meet the wall all the way round at some
+ * depth; a hole whose wall is never whole is open. Unknown (no material found along it) counts as closed.
+ */
+export function holeOpen(p: EvalPart, m: MeshData, at: V3, axis: V3, d: number, len: number): boolean {
+  const bvh = bvhOf(m);
+  if (!bvh.count) return false;
+  const M = xformMatrix(p.xf);
+  const inv = (q: V3): V3 => {
+    const x = q[0] - M[12],
+      y = q[1] - M[13],
+      z = q[2] - M[14];
+    return [M[0] * x + M[1] * y + M[2] * z, M[4] * x + M[5] * y + M[6] * z, M[8] * x + M[9] * y + M[10] * z];
+  };
+  const invDir = (q: V3): V3 => [M[0] * q[0] + M[1] * q[1] + M[2] * q[2], M[4] * q[0] + M[5] * q[1] + M[6] * q[2], M[8] * q[0] + M[9] * q[1] + M[10] * q[2]];
+  const { u, v } = frameFor(axis);
+  const wall = d / 2 + Math.max(0.6, 0.15 * d);
+  const dirs = Array.from({ length: ANGLES }, (_, k) => {
+    const ang = ANGLE0 + (2 * Math.PI * k) / ANGLES;
+    return invDir(vadd(vscale(u, Math.cos(ang)), vscale(v, Math.sin(ang))));
+  });
+  const n = Math.min(40, Math.max(3, Math.ceil(Math.abs(len) / 0.8)));
+  let some = false;
+  for (let i = 0; i < n; i++) {
+    const o = inv(vadd(at, vscale(axis, (len * (i + 0.5)) / n)));
+    let hits = 0;
+    for (const dir of dirs) if (bvh.raycast(o[0], o[1], o[2], dir[0], dir[1], dir[2], 0, wall)) hits++;
+    // a whole ring of wall: a closed hole
+    if (hits === ANGLES) return false;
+    if (hits) some = true;
+  }
+  return some;
+}

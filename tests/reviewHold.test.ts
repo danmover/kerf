@@ -72,12 +72,15 @@ describe("a review asked for with the edit that finishes the work", () => {
     const requests = fakeClient([{ stop_reason: "tool_use", content: [edit("param wall = 4", "param wall = 1"), review] }]);
     await sendMessage("Make the wall thinner");
 
-    expect(requests).toHaveLength(2);
     expect(resultOf(requests[1], "e1")).toMatch(/Built and checked/);
     const held = resultOf(requests[1], "r1");
     expect(held).toMatch(/^Not reviewed yet/);
     expect(held).toContain("Plate wall is thick enough");
     expect(held).toMatch(/No review round was used/);
+    // finishing with the check still failing sends Claude back once to fix it
+    expect(requests).toHaveLength(3);
+    const gate = requests[2].messages.at(-1)!.content as Block[];
+    expect(gate.map((b) => String(b.text ?? "")).join("")).toMatch(/before you finish, the design still fails 1 check[\s\S]*Plate wall is thick enough/);
   });
 
   it("is held when the edit was not applied", async () => {

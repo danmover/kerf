@@ -14,7 +14,7 @@ import { fmtNum } from "../lang/values";
 import { briefChecks, type GeomLookup } from "./briefChecks";
 import { machineChecks } from "../machine/checks";
 import { fastenerChecks } from "./fastenerChecks";
-import { findHolds, type MeshLookup } from "./holds";
+import { carriedGroups, findHolds, type MeshLookup } from "./holds";
 import { completeChecks } from "./completeChecks";
 import { holdChecks } from "./holdChecks";
 import { linkChecks } from "./linkChecks";
@@ -266,6 +266,8 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   }
   items.push(...briefChecks(model, items.filter((i) => i.category === "requirement"), geom));
 
+  const holds = findHolds(model, inputs.mesh);
+  const carried = carriedGroups(model, holds);
   if (kernel) {
     let clashes = 0;
     for (const i of kernel.interferences) {
@@ -322,14 +324,19 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     if (!clashes) {
       items.push({ id: "int:none", category: "interference", status: "pass", title: "No solid interference", detail: `${solids} solids, ${kernel.pairsTested} touching pairs tested with exact booleans`, basis: "geometry" });
     }
-    for (const a of kernel.access) {
-      const p = partsById.get(a.id);
+    for (const k of kernel.access) {
+      const p = partsById.get(k.id);
+      // a part that slides with an axis (or a screw that does) is moved out of the way by hand to reach the screw
+      const slid = k.blockedBy.filter((b) => (carried.has(b) || carried.has(k.id)) && carried.get(b) !== carried.get(k.id));
+      const a = slid.length ? { ...k, blockedBy: k.blockedBy.filter((b) => !slid.includes(b)) } : k;
       items.push({
         id: `access:${a.id}`,
         category: "access",
         status: a.blockedBy.length ? "fail" : "pass",
         title: `Tool access: ${p?.label ?? a.id}`,
-        detail: a.blockedBy.length ? `A ${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key") : "tool"} is blocked by ${a.blockedBy.map(label).join(", ")}` : `${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key").replace(/^./, (c) => c.toUpperCase()) : "Tool"} reaches the head (removable covers off)`,
+        detail: a.blockedBy.length
+          ? `A ${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key") : "tool"} is blocked by ${a.blockedBy.map(label).join(", ")}`
+          : `${p?.fastener ? (p.fastener.tool ?? fmtNum(p.fastener.key) + " mm hex key").replace(/^./, (c) => c.toUpperCase()) : "Tool"} reaches the head (${slid.length ? `with ${[...new Set(slid.map(label))].join(", ")} slid along ${slid.length === 1 ? "its" : "their"} axis out of the way` : "removable covers off"})`,
         ...(a.blockedBy.length && p?.fastener
           ? { fix: `The tool needs a straight path of ${fmtNum(p.fastener.toolD ?? p.fastener.key + 1.5, 1)} mm across and 35 mm long out from the head along ${dirName(p.fastener.outward)}. Cut an access hole of at least ${fmtNum((p.fastener.toolD ?? p.fastener.key + 1.5) + 1, 1)} mm through ${a.blockedBy.map(label).join(", ")} in line with the screw, move the screw clear of ${a.blockedBy.length === 1 ? "it" : "them"}, put it in from the other side with the nut here, or mark the part in the way removable if it comes off to assemble.` }
           : {}),
@@ -355,11 +362,10 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   }
   items.push(...gearChecks(model));
   items.push(...fastenerChecks(model));
-  const holds = findHolds(model, inputs.mesh);
   // a part given its real mass (a hollow frame modelled solid) weighs that, wherever weight matters
   const volumeOf = (p: EvalPart) => massVolume(p, geom(p.hash)?.volume, materialDensity(p.material));
   items.push(...holdChecks(model, holds, kernel, volumeOf));
-  items.push(...completeChecks(model, holds, kernel));
+  items.push(...completeChecks(model, holds, kernel, inputs.mesh));
   items.push(...linkChecks(model));
   if (kernel && inputs.mesh) {
     const sweep = { model, holds, kernel, mesh: inputs.mesh, ignore: contactPairs(model) };

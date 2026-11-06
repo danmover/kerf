@@ -790,16 +790,19 @@ export const LIBRARY: Record<string, LibEntry> = {
       if (type !== "L") throw new Error('type: "L" (the 90° five-hole plate)');
       const t = 3;
       const holes: [number, number][] = [[10, 10], [30, 10], [50, 10], [10, 30], [10, 50]];
-      const ops: PartRecipe["ops"] = [
-        { op: "add", shape: { t: "box", w: 20, d: 40, h: t, at: [10, 40, 0], r: 0 } },
-        ...holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: 5.5, h: t + 2, at: [x, y, -1] as V3, dir: ZP } })),
-      ];
+      const cut = (hs: [number, number][]) => hs.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: 5.5, h: t + 2, at: [x, y, -1] as V3, dir: ZP } }));
+      // two solids, one per arm, so the L's open corner is not counted as solid where things pass it (cable chains)
+      const armA: PartRecipe = { base: { t: "box", w: 60, d: 20, h: t, at: [30, 10, 0], r: 0 }, ops: cut(holes.filter(([, y]) => y < 20)) };
+      const armB: PartRecipe = { base: { t: "box", w: 20, d: 40, h: t, at: [10, 40, 0], r: 0 }, ops: cut(holes.filter(([, y]) => y > 20)) };
       const label = "90° joining plate (5 hole)";
       return {
         kind: "joining_plate",
         label,
         placement: "axis",
-        solids: [{ suffix: "", label, recipe: { base: { t: "box", w: 60, d: 20, h: t, at: [30, 10, 0], r: 0 }, ops }, color: "#2b2f36", material: "Aluminum 6061", finish: "anodized" }],
+        solids: [
+          { suffix: "", label, recipe: armA, color: "#2b2f36", material: "Aluminum 6061", finish: "anodized" },
+          { suffix: "arm", label: `${label}, upright arm`, recipe: armB, color: "#2b2f36", material: "Aluminum 6061", finish: "anodized" },
+        ],
         fields: {
           scalars: { thickness: t },
           points: { at: Z0 },

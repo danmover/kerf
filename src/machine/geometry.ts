@@ -573,7 +573,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         base: { t: "box", w: bw, d: bh - rh * 0.45, h: bl, at: [0, (bh + rh * 0.45) / 2, pos - bl / 2], r: 0 },
         ops: [
           { op: "cut", shape: { t: "box", w: rw + 0.6, d: rh * 0.6, h: bl + 2, at: [0, rh * 0.45 + rh * 0.3 - 0.01, pos - bl / 2 - 1], r: 0 } },
-          ...bholes.map((h) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: 2.5, h: 5, at: [h[0], bh - 4.99, h[2]] as V3, dir: YP } })),
+          // M3 tapped holes in the carriage's top
+          ...bholes.map((h) => ({ op: "cut" as const, shape: { t: "hole" as const, d: 2.5, depth: 5, at: [h[0], bh, h[2]] as V3, dir: [0, -1, 0] as V3, fit: "tap", threadName: "M3" } })),
         ],
       };
       return {

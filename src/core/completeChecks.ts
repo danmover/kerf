@@ -12,7 +12,7 @@ import type { CheckItem } from "./checks";
 import type { ChecksResult } from "../kernel/protocol";
 import { vdot, vsub, type V3 } from "../kernel/recipe";
 import { fmtNum } from "../lang/values";
-import { boxNearSegment, cylsOf, isFastener, isProfile, worldBox, type Holds } from "./holds";
+import { boxNearSegment, cylsOf, holeOpen, isFastener, isProfile, worldBox, type Holds, type MeshLookup } from "./holds";
 import { cylEnd, cylMid, lineDistance } from "../analysis/fits/geometry";
 import { CATALOG, catalogPart } from "../machine/catalog";
 import { THREADS, type ThreadSpec } from "../library/standards";
@@ -40,8 +40,10 @@ const HARDWARE: { re: RegExp; what: string }[] = [
   { re: /\bstandoffs?\b|\bspacers?\b/i, what: "standoffs" },
   { re: /\bstuds?\b|\bthreaded\s+rod\b/i, what: "studs" },
 ];
+/** Wood screws: Kerf has no wood-screw part to draw, so a held: note is how they are declared (into wood). */
+const WOOD_SCREWS_G = /\bwood\s+screws?\b|\bchipboard\s+screws?\b/gi;
 /** Phrases that look like hardware but are not drawn hardware: a bike's bottom bracket, a switch's own panel nut. */
-const NOT_HARDWARE = [/\bbottom\s+brackets?\b/gi, /\b(?:its|their)\s+own\s+(?:panel\s+|mounting\s+)?nuts?\b/gi, /\bpanel\s+nuts?\b/gi, /\bspoke\s+nipples?\b/gi, /\bnut\s+clip\b/gi];
+const NOT_HARDWARE = [WOOD_SCREWS_G, /\bbottom\s+brackets?\b/gi, /\b(?:its|their)\s+own\s+(?:panel\s+|mounting\s+)?nuts?\b/gi, /\bpanel\s+nuts?\b/gi, /\bspoke\s+nipples?\b/gi, /\bnut\s+clip\b/gi];
 
 /** A held: note saying the hardware comes with the bought part. */
 const SUPPLIED = /\bsupplied\b|\bincluded\b|\bcomes?\s+with\b/i;
@@ -274,7 +276,11 @@ export function clearanceSize(d: number): ThreadSpec | undefined {
   return fits.sort((a, b) => Math.abs(d - a.clearance) - Math.abs(d - b.clearance))[0];
 }
 
-function emptyHoleItems(model: Model, kernel?: ChecksResult | null): CheckItem[] {
+/** A held: note naming wood screws: Kerf has no wood-screw part, so the note is how they are declared. */
+const WOOD_SCREWS = /\bwood\s+screws?\b|\bchipboard\s+screws?\b|\bself-?tapping\s+screws?\b/i;
+const WOODY = /wood|ply|mdf|pine|oak|birch|bamboo|timber|chipboard|particle/i;
+
+function emptyHoleItems(model: Model, kernel?: ChecksResult | null, mesh?: MeshLookup): CheckItem[] {
   const out: CheckItem[] = [];
   const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid"));
   const box = (p: EvalPart) => (kernel?.boxes?.[p.id] as [V3, V3] | undefined) ?? worldBox(p);
@@ -300,12 +306,17 @@ function emptyHoleItems(model: Model, kernel?: ChecksResult | null): CheckItem[]
       // only holes that line up with another part: one that opens to the outside world (a wall, the bench) is for the user
       const reach = 4;
       const from: V3 = [h.at[0] - h.axis[0] * reach, h.at[1] - h.axis[1] * reach, h.at[2] - h.axis[2] * reach];
-      const meets = parts.some((q) => {
+      const mates = parts.filter((q) => {
         if (q === p || isFastener(q)) return false;
         const b = box(q);
         return !!b && boxNearSegment(b, from, h.axis, h.length + 2 * reach, -0.05);
       });
-      if (!meets) continue;
+      if (!mates.length) continue;
+      // wood screws the held: note declares, into a wooden part
+      if (p.held && WOOD_SCREWS.test(p.held) && mates.some((q) => WOODY.test(q.material ?? ""))) continue;
+      // the round end of a slot, or a hole that breaks out of an edge, is no screw hole
+      const m = mesh?.(p.hash);
+      if (m && holeOpen(p, m, h.at, h.axis, h.d, h.length)) continue;
       empty.push({ d: h.d, t });
     }
     if (!empty.length) continue;
@@ -349,15 +360,19 @@ export function joinedDirect(g: Map<string, Set<string>>, byId: Map<string, Eval
   const seen = new Set([a]);
   for (let depth = 0; depth < 4 && frontier.length; depth++) {
     const next: string[] = [];
-    for (const x of frontier)
+    // the solids of one bought part (a plate's two arms) are one step
+    for (let i = 0; i < frontier.length; i++) {
+      const x = frontier[i];
       for (const y of g.get(x) ?? []) {
         if (y === b) return true;
         if (seen.has(y)) continue;
         seen.add(y);
         const p = byId.get(y);
         if (p && isProfile(p)) continue;
-        next.push(y);
+        if (y.split(".")[0] === x.split(".")[0]) frontier.push(y);
+        else next.push(y);
       }
+    }
     frontier = next;
   }
   return false;
@@ -394,8 +409,8 @@ function jointItems(model: Model, holds: Holds, kernel?: ChecksResult | null): C
 }
 
 /** The completeness checks. Contacts and boxes come from the kernel; without them the geometry-only parts are skipped. */
-export function completeChecks(model: Model, holds: Holds, kernel?: ChecksResult | null): CheckItem[] {
-  const items = [...undrawnItems(model, holds), ...standInItems(model), ...runItems(model), ...(kernel ? [...emptyHoleItems(model, kernel), ...jointItems(model, holds, kernel)] : [])];
+export function completeChecks(model: Model, holds: Holds, kernel?: ChecksResult | null, mesh?: MeshLookup): CheckItem[] {
+  const items = [...undrawnItems(model, holds), ...standInItems(model), ...runItems(model), ...(kernel ? [...emptyHoleItems(model, kernel, mesh), ...jointItems(model, holds, kernel)] : [])];
   const bad = items.filter((i) => i.status === "fail");
   if (!bad.length && model.parts.length > 1)
     items.push({ id: "complete:ok", category: "assembly", status: "pass", title: "Complete: hardware drawn, real parts", detail: "Every joint a held: note names has its hardware drawn, no bought electronics, motors or batteries are stand-in blocks, and the electronics are wired.", basis: "geometry" });

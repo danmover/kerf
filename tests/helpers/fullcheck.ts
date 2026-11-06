@@ -10,6 +10,10 @@ import { processProbes } from "../../src/mfg/report";
 import type { ProcessResult } from "../../src/mfg/types";
 import type { Model } from "../../src/core/model";
 import { initKernel } from "./kernel";
+import { buildHarness } from "../../src/machine/harness/harness";
+import { mountParts, mountSpecs, screwSpecs, solidsInput } from "../../src/machine/harness/inputs";
+import { runWiring } from "../../src/machine/harness/wiringRun";
+import { wiringItems } from "../../src/machine/harness/checks";
 
 export interface FullCheck {
   model: Model;
@@ -21,7 +25,12 @@ export interface FullCheck {
   ms: number;
 }
 
-export async function fullCheck(src: string): Promise<FullCheck> {
+export interface FullCheckOptions {
+  /** also run the mount and wiring checks, which the app runs after the others (machines only) */
+  wiring?: boolean;
+}
+
+export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promise<FullCheck> {
   const t0 = Date.now();
   await initKernel();
   const model = evaluate(src);
@@ -49,7 +58,22 @@ export async function fullCheck(src: string): Promise<FullCheck> {
   const results = core.process(probes);
   const process: Record<string, ProcessResult> = {};
   probes.forEach((p, i) => (process[p.id] = results[i]));
-  const report = composeReport(base, { model, live: false, rev: 0, buildErrors, process });
+  let report = composeReport(base, { model, live: false, rev: 0, buildErrors, process });
+  if (opts.wiring && model.machine) {
+    const harness = buildHarness(model);
+    const mounts = mountParts(model);
+    const wmesh = (h: string) => {
+      const e = core.get(h);
+      const m = e ? core.mesh(h, "preview") : undefined;
+      return e && m ? { positions: m.positions, indices: m.indices, bbox: e.bbox } : undefined;
+    };
+    const { geos, placed } = solidsInput({ ...model, parts: model.parts.filter((p) => !p.hidden) }, wmesh, mounts);
+    const run = runWiring({ geos, placed, wires: [] }, { harness, mounts: mountSpecs(model, (h) => core.get(h)?.bbox, mounts), screws: screwSpecs(model) });
+    const items = [...report.items, ...wiringItems(harness, run.findings ?? null, run.mounts, model)];
+    const counts = { pass: 0, fail: 0, warn: 0, pending: 0, info: 0 };
+    for (const i of items) counts[i.status]++;
+    report = { ...report, items, counts };
+  }
   // the model with geometry measurements filled in, when the design asks for any
   return { model: geoModel ?? model, report, buildErrors, core, kernel: result, ms: Date.now() - t0 };
 }
