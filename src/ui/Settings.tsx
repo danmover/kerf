@@ -19,6 +19,7 @@ import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
 import { BenchSection } from "./BenchSection";
+import { LessonsSection } from "./LessonsSection";
 import { ChatGPTSection, OpenAIKeySection } from "./ChatGPTSettings";
 import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
@@ -406,6 +407,9 @@ function AiSettings() {
         <Row t="Quick small changes" d="A short request for one plain change (“make the wall 3 mm thicker”, “round these edges”, “move the lid up 5”) has Claude think briefly and skips the self-review, so it comes back in seconds. If it turns out to need more, Claude carries on as usual.">
           <Toggle on={s.fastChanges} onChange={(v) => updateSettings({ fastChanges: v })} label="Quick small changes" />
         </Row>
+        <Row t="Slimmer prompt (trial)" d="Claude starts each chat without the reference for machines, simulations, analyses, drawings and imported STEP files, about 40% of what it rereads at every step, and reads a section when a design needs it. Steps start sooner and cost a little less; the bench below shows whether the designs are as good. Applies from your next chat.">
+          <Toggle on={s.leanPrompt} onChange={(v) => updateSettings({ leanPrompt: v })} label="Slimmer prompt" />
+        </Row>
         <Row t="Modelling tools" d="Tools beside the 3D view for modelling it yourself: boxes, cylinders, holes, fillets, chamfers, shells, move, turn, copy and delete. Then “Fix it up” or “Make it buildable” has Claude finish what you modelled. The pencil in the view's toolbar shows and hides them.">
           <Toggle on={s.advanced} onChange={(v) => updateSettings({ advanced: v })} label="Modelling tools" />
         </Row>
@@ -446,6 +450,7 @@ function AiSettings() {
         </Row>
       </Section>
       <AgentSettings />
+      <LessonsSection />
       <BenchSection />
       <div className="help">{s.model.startsWith("gpt-") ? "Usage is billed to your OpenAI API account, separately from ChatGPT. Requests go directly from this device to api.openai.com. Cost figures are estimates; your provider's billing is authoritative." : viaAccount ? "Usage is billed to the Anthropic account that owns the key, at its normal API rates. Requests go from this browser to your Kerf server, which adds the key and passes them to api.anthropic.com." : "Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com."}</div>
     </>

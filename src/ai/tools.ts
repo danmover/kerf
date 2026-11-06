@@ -57,6 +57,9 @@ import { inverseXforms } from "../kernel/recipe";
 import { buildChecksRequest } from "../core/checks";
 import type { GeoQuery } from "../lang/values";
 import { ASKS_TOOL, AsksInput, asksState, asksText, remeasure, setAsks } from "./asks";
+import { EXAMPLE_TOOL, ExampleInput, exampleText } from "./examples";
+import { LESSON_TOOL, LessonInput, saveLesson } from "./lessons";
+import { DEFERRED, ReferenceInput, referenceText } from "./leanReference";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -66,12 +69,14 @@ export const VIEW_NAMES = ["iso", "front", "back", "top", "bottom", "left", "rig
 export const TOOL_DEFS = [
   PLAN_TOOL,
   ASKS_TOOL,
+  LESSON_TOOL,
   {
     name: "get_design",
     description:
       "Read the current design: full source with line numbers (the numbers are not part of the text), the evaluated parameters, parts and requirements, and the latest check results. Call before your first edit and whenever the user may have changed the source, unless the context note already holds the current source.",
     input_schema: { type: "object" as const, properties: {}, additionalProperties: false },
   },
+  EXAMPLE_TOOL,
   {
     name: "edit_design",
     description:
@@ -1084,6 +1089,25 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         card: { title: `Noted ${n} ask${n > 1 ? "s" : ""}` },
       };
     }
+    case "save_lesson": {
+      const p = LessonInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      const r = saveLesson(p.data.lesson, p.data.replaces);
+      return { content: r.text, card: r.saved ? { title: "Saved a lesson", detail: `${p.data.lesson} · Settings → AI → Lessons lists them` } : { title: "Lesson not saved", detail: r.text } };
+    }
+    case "get_example": {
+      const p = ExampleInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      const r = exampleText(p.data.id, p.data.part);
+      if ("error" in r) return { isError: true, content: r.error, card: { title: "Example not found", detail: r.error, status: "error" } };
+      return { content: r.text, card: { title: "Read a worked example", detail: r.title } };
+    }
+    case "read_reference": {
+      const p = ReferenceInput.safeParse(input);
+      if (!p.success) return invalid(p.error);
+      const d = DEFERRED.find((x) => x.id === p.data.section)!;
+      return { content: referenceText(p.data.section), card: { title: "Read the reference", detail: d.heading.replace(/^## /, "") } };
+    }
     case "get_design": {
       const { source, model, report } = useDesign.getState();
       return {
@@ -1431,6 +1455,9 @@ function invalid(e: z.ZodError): ToolOutcome {
 export const TOOL_TITLES: Record<string, string> = {
   update_plan: "Updating the plan",
   record_asks: "Noting what you asked for",
+  get_example: "Reading a worked example",
+  read_reference: "Reading the language reference",
+  save_lesson: "Saving a lesson",
   get_design: "Reading the design",
   edit_design: "Editing the design",
   write_design: "Writing the design",

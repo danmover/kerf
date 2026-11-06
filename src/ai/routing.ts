@@ -26,6 +26,8 @@ export const QUICK_EFFORT: Effort = "medium";
  */
 export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   "get_design",
+  "get_example",
+  "read_reference",
   "run_checks",
   "capture_view",
   "measure",
