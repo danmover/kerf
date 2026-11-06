@@ -38,6 +38,8 @@ import { COMPACT_BETA, COMPACT_INSTRUCTIONS, MIN_COMPACT_AT, RETRY_GROWTH, SUMMA
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
 import { STEP_EFFORT_BETA, hasEffortMarks, indexAfter, markEffort, messageBefore, stepEffort, thoroughEffort, withoutEffortMarks } from "./stepEffort";
 import { asksState, beginAsks, clearAsks, remeasure, type AskResult } from "./asks";
+import { lessonsPrompt } from "./lessons";
+import { REFERENCE_TOOL } from "./leanReference";
 import { webTools, webActivity, describeWebCall, citedSources, isWebTool, isPausedTurn, flattenServerTools, echoContent, isWebToolError, isServerBlockError, type WebActivity } from "./web";
 
 /** A file the user attached to a message; it is also kept as a reference in the brief. */
@@ -236,6 +238,7 @@ export async function loadChat(projectId: string) {
   quickLog = [];
   clearAsks();
   asksCard = "";
+  readChatSetup();
   // a choice card left open in a previous session is still answerable
   const open = savedPending && items.some((i) => i.id === savedPending.itemId && i.kind === "choice" && !i.chosen) ? savedPending : null;
   set({ projectId, items, busy: false, pendingChoice: open, briefSeen });
@@ -345,6 +348,7 @@ export async function clearChat() {
   quickLog = [];
   clearAsks();
   asksCard = "";
+  readChatSetup();
   set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
   const { projectId } = get();
@@ -362,6 +366,7 @@ export function resetChat() {
   quickLog = [];
   clearAsks();
   asksCard = "";
+  readChatSetup();
   set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
 }
@@ -1105,7 +1110,20 @@ function client() {
 }
 
 function systemBlocks() {
-  return [{ type: "text" as const, text: systemPrompt(), cache_control: { type: "ephemeral" as const } }];
+  return [{ type: "text" as const, text: systemPrompt({ lean: chatLean }) + lessonsPrompt(chatLessons), cache_control: { type: "ephemeral" as const } }];
+}
+
+/**
+ * The lessons and prompt this chat runs with, read when the chat is opened: a lesson saved while it runs is
+ * already in the conversation, and leaving the system prompt and tools alone keeps the whole conversation's cache
+ * and its thinking.
+ */
+let chatLessons: string[] = [];
+let chatLean = false;
+function readChatSetup() {
+  const s = useSettings.getState();
+  chatLessons = s.useLessons ? [...s.lessons] : [];
+  chatLean = s.leanPrompt;
 }
 
 /** The system prompt and tools this build of Kerf sends; thinking blocks made under different ones can't be sent back. */
@@ -1136,7 +1154,7 @@ let quickTouched = 0;
 /** Rough prompt size of the conversation before any request has reported one (a reopened chat). */
 function estimatePrompt(): number {
   let images = 0;
-  const text = JSON.stringify([systemPrompt(), requestTools(useSettings.getState()), history], (k, v) => {
+  const text = JSON.stringify([systemPrompt({ lean: chatLean }), requestTools(useSettings.getState()), history], (k, v) => {
     if (k === "data" && typeof v === "string") {
       images++;
       return "";
@@ -1223,8 +1241,9 @@ interface LoopOptions {
  * when the user allows them. The same for every model. A Kerf server's shared
  * key takes no server-side tools (its proxy refuses them), so they stay off there.
  */
-export function requestTools(settings: Pick<Settings, "webSearch">): unknown[] {
-  return settings.webSearch && !webUnavailable && claudeRoute() !== "shared" ? [...TOOL_DEFS, ...webTools()] : [...TOOL_DEFS];
+export function requestTools(settings: Pick<Settings, "webSearch">, lean = chatLean): unknown[] {
+  const own = lean ? [...TOOL_DEFS, REFERENCE_TOOL] : [...TOOL_DEFS];
+  return settings.webSearch && !webUnavailable && claudeRoute() !== "shared" ? [...own, ...webTools()] : own;
 }
 
 /** What one response looks like in the chat while it streams. */

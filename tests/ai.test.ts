@@ -104,6 +104,21 @@ describe("catalog_lookup", () => {
     const bad = await runTool("catalog_lookup", { limit: 500 });
     expect(bad.isError).toBe(true);
   });
+
+  it("reads a section the slimmer prompt leaves out, a worked example, and saves a lesson", async () => {
+    const ref = await runTool("read_reference", { section: "drawings" });
+    expect(ref.content).toMatch(/^## Drawings\n/);
+    expect(ref.card).toMatchObject({ title: "Read the reference", detail: "Drawings" });
+    expect((await runTool("read_reference", { section: "everything" })).isError).toBe(true);
+    const ex = await runTool("get_example", { id: "enclosure", part: "lid" });
+    expect(ex.content).toMatch(/^part lid \{/m);
+    expect((await runTool("get_example", { id: "nope" })).isError).toBe(true);
+    useSettings.setState({ lessons: [], useLessons: true });
+    const saved = await runTool("save_lesson", { lesson: "Prints in PETG." });
+    expect(saved.card).toMatchObject({ title: "Saved a lesson" });
+    expect(useSettings.getState().lessons).toEqual(["Prints in PETG."]);
+    useSettings.setState({ lessons: [] });
+  });
 });
 
 describe("engineering_calc", () => {
@@ -412,6 +427,7 @@ describe("chat loop", () => {
     expect(requests[0].tools.some((t) => t.name === "web_search" || t.name === "web_fetch")).toBe(false);
     expect(requests[0].tools).toHaveLength(TOOL_DEFS.length);
     expect(requestTools({ webSearch: false })).toHaveLength(TOOL_DEFS.length);
+    expect(requestTools({ webSearch: false }, true).map((t) => (t as { name: string }).name)).toEqual([...TOOL_DEFS.map((t) => t.name), "read_reference"]);
   });
 
   it("leaves web tools off on a Kerf server's shared key, which refuses server-side tools", () => {

@@ -8,6 +8,7 @@ import { def, SHAPE_FNS } from "./builtins";
 import { SHEET_FNS } from "./sheet";
 import { MOULD_FNS } from "./mould";
 import { AERO_FNS } from "./aero";
+import { BLOCK_FNS } from "./blocks";
 import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, Ref, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
 import { SEL_PRESETS, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
 import { threadDepth, threadTurnsError } from "../kernel/threadMath";
@@ -686,7 +687,7 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
 /** Allowable bending strain for a snap fit used a few times, from the material database. */
 export const allowableStrain = (material: string) => materialRecord(material)?.snapStrain ?? 0.02;
 
-export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
+const OWN_FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
   def(
     "screw_boss",
     ["at", "size", "h", "d", "fit", "depth", "dir", "root_r", "gussets", "t"],
@@ -912,6 +913,9 @@ export const FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
     "flexure(at, length, t, w, dir: Z, facing: X, travel: | angle:, cycles: 1000, root_r:, pin:, reach:, pin_at:, teardrop:, preload:, against:) — a thin blade that bends instead of a joint, rising from `at` along dir, t thick (toward facing), w wide. Give travel (mm the free end moves sideways) for a spring blade or a parallel-blade stage, or angle (degrees) for a living hinge (make it short and thin: 0.3-0.6 mm in PP). pin: d puts a locking pin of that diameter on the blade's face toward facing, pin_at mm from the root (default near the tip) or at a point it lines up with, such as the hole it goes through (it may then sit off the blade's middle), standing reach mm out of the face: it goes through a hole in what it holds and on into a hole beyond, so nothing can slip past it, and pulling the blade back by its travel lets go (travel must clear the pin out of what it holds). teardrop: -Z gives the pin a 45° point that way so it prints level without support. preload: mm with against: \"part\" makes it a sprung click or clamp: draw the blade unbent and the part it presses on where it sits, overlapping it by the preload along facing; the overlap checks take that as the spring's squeeze (anything deeper is still a clash) and the springs checks give the force it holds with and whether ASA or PLA creeps under it. The springs and clips checks give its stiffness, the force or torque at full travel, and its strain against the material over that many cycles. Use with add.",
   ),
 ]);
+
+/** Every ready-made feature: the ones above and the building blocks (hinges, lips, vents, clips, clamps, joints, mounts). */
+export const FEATURE_FNS: Record<string, Fn> = { ...OWN_FEATURE_FNS, ...BLOCK_FNS };
 
 // ---------- edge and face selectors ----------
 

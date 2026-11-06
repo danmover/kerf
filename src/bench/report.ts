@@ -6,8 +6,9 @@ import type { BenchRun, CaseResult } from "./run";
 const money = (n: number) => `$${n.toFixed(n < 1 ? 3 : 2)}`;
 const secs = (n: number) => (n < 90 ? `${Math.round(n)} s` : `${(n / 60).toFixed(1)} min`);
 
-export function benchTotals(run: BenchRun) {
-  const done = run.cases;
+/** The run's totals, or one set-up's in a comparison. */
+export function benchTotals(run: BenchRun, setup?: string) {
+  const done = setup ? run.cases.filter((c) => c.setup === setup) : run.cases;
   const marks = done.flatMap((c) => c.marks);
   return {
     cases: done.length,
@@ -20,10 +21,38 @@ export function benchTotals(run: BenchRun) {
   };
 }
 
-function row(c: CaseResult) {
-  const failed = c.marks.filter((m) => !m.ok);
-  const why = c.error ? `Error: ${c.error}` : failed.map((m) => `${m.label} (${m.detail})`).join("; ");
-  return `| ${c.passed ? "✓" : "✗"} ${c.title} | ${c.kind} | ${secs(c.seconds)} | ${money(c.cost)} | ${c.requests} | ${c.asks.pass}/${c.asks.pass + c.asks.fail} | ${why.replace(/\|/g, "/") || "all marks"} |`;
+const missed = (c: CaseResult) => (c.error ? `Error: ${c.error}` : c.marks.filter((m) => !m.ok).map((m) => `${m.label} (${m.detail})`).join("; ")).replace(/\|/g, "/");
+
+function row(c: CaseResult, setups?: BenchRun["setups"]) {
+  const setup = setups ? ` ${setups.find((x) => x.id === c.setup)?.label ?? c.setup ?? ""} |` : "";
+  return `| ${c.passed ? "✓" : "✗"} ${c.title} |${setup} ${c.kind} | ${secs(c.seconds)} | ${money(c.cost)} | ${c.requests} | ${c.asks.pass}/${c.asks.pass + c.asks.fail} | ${missed(c) || "all marks"} |`;
+}
+
+/** A comparison's summary: each set-up's totals, then each ask under every set-up side by side. */
+function comparison(run: BenchRun): string[] {
+  const setups = run.setups!;
+  const asks = [...new Map(run.cases.map((c) => [c.id, c.title])).entries()];
+  const cell = (id: string, setup: string) => {
+    const c = run.cases.find((x) => x.id === id && x.setup === setup);
+    return c ? `${c.passed ? "✓" : "✗"} ${secs(c.seconds)}, ${money(c.cost)}` : "not run";
+  };
+  return [
+    "## Set-ups compared",
+    "",
+    "| Set-up | Asks passed | Marks | Time | Cost | Requests |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...setups.map((w) => {
+      const t = benchTotals(run, w.id);
+      return `| ${w.label} | ${t.passed} of ${t.cases} | ${t.marksOk} of ${t.marks} | ${secs(t.seconds)} | ${money(t.cost)} | ${t.requests} |`;
+    }),
+    "",
+    `| Ask | ${setups.map((w) => w.label).join(" | ")} |`,
+    `| --- | ${setups.map(() => "---").join(" | ")} |`,
+    ...asks.map(([id, title]) => `| ${title} | ${setups.map((w) => cell(id, w.id)).join(" | ")} |`),
+    "",
+    "## Every run",
+    "",
+  ];
 }
 
 export function benchMarkdown(run: BenchRun): string {
@@ -32,13 +61,14 @@ export function benchMarkdown(run: BenchRun): string {
   const lines = [
     `# Kerf bench, ${when} UTC`,
     "",
-    `${t.passed} of ${t.cases} asks passed every mark (${t.marksOk} of ${t.marks} marks). Took ${secs(t.seconds)} and cost about ${money(t.cost)} in ${t.requests} requests.${run.cancelled ? " Stopped before the end." : ""}`,
+    `${t.passed} of ${t.cases} ${run.setups ? "runs" : "asks"} passed every mark (${t.marksOk} of ${t.marks} marks). Took ${secs(t.seconds)} and cost about ${money(t.cost)} in ${t.requests} requests.${run.cancelled ? " Stopped before the end." : ""}`,
     "",
-    `Model ${run.model}, effort ${run.effort}, speed ${run.speed}.`,
+    run.setups ? `Each ask ran under ${run.setups.length} set-ups: ${run.setups.map((w) => w.label).join("; ")}. Effort ${run.effort}, speed ${run.speed}.` : `Model ${run.model}, effort ${run.effort}, speed ${run.speed}.`,
     "",
-    "| Ask | Kind | Time | Cost | Requests | Claude's checklist | What missed |",
-    "| --- | --- | --- | --- | --- | --- | --- |",
-    ...run.cases.map(row),
+    ...(run.setups ? comparison(run) : []),
+    `| Ask |${run.setups ? " Set-up |" : ""} Kind | Time | Cost | Requests | Claude's checklist | What missed |`,
+    `| --- |${run.setups ? " --- |" : ""} --- | --- | --- | --- | --- | --- |`,
+    ...run.cases.map((c) => row(c, run.setups)),
     "",
     "## Run data",
     "",

@@ -3,10 +3,13 @@
 // designs and chats are never touched. Claude works exactly as it does for the
 // user (routing, speed, review), and a question it asks is answered with its
 // own recommendation. The project that was open is opened again at the end.
+// Lessons are left out, so one user's saved rules neither steer the run nor
+// grow from it. A comparison runs every case under each set-up in turn (a
+// model, the slimmer prompt), so the set-ups meet the same API conditions.
 
 import { create } from "zustand";
 import { createProject, deleteProject, openProject, closeProject, useProject } from "../app/project";
-import { useSettings } from "../app/settings";
+import { useSettings, updateSettings, BENCH_RESTORE_KEY, type ModelId, type Settings } from "../app/settings";
 import { useDesign, whenChecked, meshes } from "../core/engine";
 import { buildChecksRequest } from "../core/checks";
 import { kernel } from "../kernel/client";
@@ -38,7 +41,24 @@ export interface CaseResult {
   questions: number;
   reply: string;
   error?: string;
+  /** the set-up it ran under, in a comparison */
+  setup?: string;
 }
+
+/** One way of running Claude that a comparison measures. */
+export interface BenchSetup {
+  id: string;
+  label: string;
+  model: ModelId;
+  leanPrompt: boolean;
+}
+
+/** What a comparison measures: today's prompt against the slimmer one, and Opus against Sonnet. */
+export const COMPARE: BenchSetup[] = [
+  { id: "opus", label: "Opus 5.5", model: "claude-opus-5-5", leanPrompt: false },
+  { id: "opus-lean", label: "Opus 5.5, slimmer prompt", model: "claude-opus-5-5", leanPrompt: true },
+  { id: "sonnet", label: "Sonnet 5.5", model: "claude-sonnet-5-5", leanPrompt: false },
+];
 
 export interface BenchRun {
   started: number;
@@ -48,6 +68,8 @@ export interface BenchRun {
   speed: string;
   cases: CaseResult[];
   cancelled?: boolean;
+  /** a comparison's set-ups, each case run under every one */
+  setups?: BenchSetup[];
 }
 
 interface BenchState {
@@ -174,23 +196,47 @@ async function runCase(c: BenchCase): Promise<CaseResult> {
   }
 }
 
-/** Run the cases one after another and return what they scored. Throws when the chat is busy. */
-export async function runBench(cases: BenchCase[]): Promise<BenchRun> {
+/** The settings a run changes, as they were before it. */
+type Changed = Pick<Settings, "model" | "leanPrompt" | "useLessons">;
+
+/**
+ * Run the cases one after another, each under every set-up given (or as set), and return what they scored.
+ * Throws when the chat is busy. The settings it changes are put back at the end.
+ */
+export async function runBench(cases: BenchCase[], setups: BenchSetup[] = []): Promise<BenchRun> {
   if (useBench.getState().running) throw new Error("The bench is already running.");
   if (useChat.getState().busy) throw new Error("Claude is working on something. Wait for it to finish, then run the bench.");
   const was = useProject.getState().current?.id ?? null;
   const s = useSettings.getState();
-  const run: BenchRun = { started: Date.now(), model: s.model, effort: s.effort, speed: s.speed, cases: [] };
-  cancelled = false;
-  useBench.setState({ running: true, at: 0, total: cases.length, current: "", run });
+  const before: Changed = { model: s.model, leanPrompt: s.leanPrompt, useLessons: s.useLessons };
   try {
-    for (const [i, c] of cases.entries()) {
+    localStorage.setItem(BENCH_RESTORE_KEY, JSON.stringify(before));
+  } catch {
+    /* storage blocked: the settings are still put back at the end of the run */
+  }
+  const ways: (BenchSetup | null)[] = setups.length ? setups : [null];
+  const run: BenchRun = { started: Date.now(), model: s.model, effort: s.effort, speed: s.speed, cases: [], setups: setups.length ? setups : undefined };
+  cancelled = false;
+  useBench.setState({ running: true, at: 0, total: cases.length * ways.length, current: "", run });
+  try {
+    let at = 0;
+    for (const c of cases) {
+      for (const w of ways) {
+        if (cancelled) break;
+        updateSettings({ useLessons: false, ...(w ? { model: w.model, leanPrompt: w.leanPrompt } : {}) });
+        useBench.setState({ at: ++at, current: w ? `${c.title} (${w.label})` : c.title });
+        run.cases.push({ ...(await runCase(c)), ...(w ? { setup: w.id } : {}) });
+        useBench.setState({ run: { ...run, cases: [...run.cases] } });
+      }
       if (cancelled) break;
-      useBench.setState({ at: i + 1, current: c.title });
-      run.cases.push(await runCase(c));
-      useBench.setState({ run: { ...run, cases: [...run.cases] } });
     }
   } finally {
+    updateSettings(before);
+    try {
+      localStorage.removeItem(BENCH_RESTORE_KEY);
+    } catch {
+      /* nothing to put back */
+    }
     run.finished = Date.now();
     run.cancelled = cancelled || undefined;
     useBench.setState({ running: false, current: "", run: { ...run } });
