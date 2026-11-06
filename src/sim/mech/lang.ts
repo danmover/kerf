@@ -42,7 +42,8 @@ export type MechItem =
   | { k: "chain"; name: string; a: string; b: string; ratio: number; slack: number; efficiency: number; chain: boolean }
   | { k: "cam"; name: string; cam: string; follower: string; lift?: number[]; grooved: boolean }
   | { k: "clutch"; name: string; a: string | null; b: string; torque: number; oneWay: boolean; engaged?: Schedule }
-  | { k: "spring"; name: string; a: string | null; b: string | null; atA: V3; atB: V3; rate: number; free?: number; damping: number; push: number }
+  | { k: "spring"; name: string; a: string | null; b: string | null; atA: V3; atB: V3; rate: number; free?: number; damping: number; push: number; cell?: string }
+  | { k: "jet"; name: string; fan: string; vanes: string[]; chord?: number; span?: number; lift?: number; stall: number; recovery: number }
   | { k: "payload"; name: string; on: string; mass: number; at?: V3 }
   | { k: "load"; name: string; on: string; at?: V3; dir: V3; value: Schedule; torque: boolean; turns: boolean }
   | { k: "turn"; name: string; joint: string; speed: Schedule; limit: number }
@@ -313,8 +314,8 @@ export const MECH_FNS: [string, Fn][] = [
   ),
   mechFn(
     "spring",
-    ["a", "b", "at_a", "at_b", "rate", "free", "damping", "push", "name"],
-    "A spring, damper or gas spring between a point on each of two bodies (a body is a part on a joint; leave a or b out for the frame). at_a, at_b: its ends in the design pose; rate: N/mm; free: its free length (its length in the design pose, so no preload, when left out); damping: N per mm/s; push: a gas spring's force, N. Results: <name>.peak_force, .min_length, .max_length.",
+    ["a", "b", "at_a", "at_b", "rate", "free", "damping", "push", "cell", "name"],
+    "A spring, damper or gas spring between a point on each of two bodies (a body is a part on a joint; leave a or b out for the frame). at_a, at_b: its ends in the design pose; rate: N/mm; free: its free length (its length in the design pose, so no preload, when left out); damping: N per mm/s; push: a gas spring's force, N; cell: a load cell component that is this link (give its stiffness as rate:, about 15 N/mm for a 500 g bar cell): the HX711 it is wired to reads the link's pull. Results: <name>.peak_force, .min_length, .max_length.",
     (a) => {
       const A = a.value("a");
       const B = a.value("b");
@@ -330,6 +331,7 @@ export const MECH_FNS: [string, Fn][] = [
           free: a.has("free") ? a.positive("free") : undefined,
           damping: a.num("damping", 0),
           push: a.num("push", 0),
+          cell: a.has("cell") ? nameOf(a.value("cell"), a.ctx, "sim.spring(): cell") : undefined,
         },
         "spring",
       );
@@ -346,6 +348,31 @@ export const MECH_FNS: [string, Fn][] = [
       const torque = a.has("torque");
       if (torque === a.has("force")) return a.ctx.error("sim.load(): give force: or torque:");
       return new MechValue({ k: "load", name: a.has("name") ? a.str("name") : "load", on: nameOf(a.value("on"), a.ctx, "sim.load(): on"), at: optV3(a, "at"), dir: dirOf(a, "dir", [0, 0, -1])!, value: schedule(a, torque ? "torque" : "force")!, torque, turns: a.bool("turns", false) }, "load");
+    },
+  ),
+  mechFn(
+    "jet",
+    ["fan", "vanes", "chord", "span", "lift", "stall", "recovery", "name"],
+    "A ducted fan's jet and the vanes steering it. fan: the design's ducted fan (or propeller) component, spun by its ESC from the scenario's firmware: its thrust pushes the body it rides along its axis, and its rotor's momentum makes the gyroscopic torque when that body turns; vanes: the vanes in the jet, each a part on its own sim.pivot across the jet (a servo's drive:), each giving lift from the jet's dynamic pressure as it turns from the design pose (low aspect ratio, with the duct wall at its root); chord, span: each vane's size, mm (from its shape when left out, span capped at the jet's annulus); lift: lift slope per radian (worked out from the vane's aspect ratio when left out); stall: the vane angle past which its lift stops growing (25deg); recovery: share of the rotor's swirl torque the stators take back (85%). Results: <name>.peak_vane_force (N), .stall_time, .peak_gyro (N·mm); channels <vane>.lift and <name>.side_force.",
+    (a) => {
+      const fan = nameOf(a.value("fan"), a.ctx, "sim.jet(): fan");
+      const vanes = a.has("vanes") ? namesOf(a.value("vanes"), a.ctx, "sim.jet(): vanes") : [];
+      const stall = a.num("stall", 25);
+      if (!(stall > 2 && stall < 60)) a.ctx.error("sim.jet(): stall is a vane angle in degrees, 2 to 60");
+      return new MechValue(
+        {
+          k: "jet",
+          name: a.has("name") ? a.str("name") : `${fan} jet`,
+          fan,
+          vanes,
+          chord: a.has("chord") ? a.positive("chord") : undefined,
+          span: a.has("span") ? a.positive("span") : undefined,
+          lift: a.has("lift") ? a.positive("lift") : undefined,
+          stall,
+          recovery: share(a, "recovery", 0.85),
+        },
+        "jet",
+      );
     },
   ),
   mechFn("turn", ["joint", "speed", "limit", "name"], "Turns a pivot (or moves a slider) at a speed, like a hand on a crank or a test rig: speed: rpm (mm/s on a slider), steady or over time like [(0s, 0rpm), (1s, 60rpm)]; limit: the most torque (N·mm) or force (N) it gives (no limit when left out). Results: <name>.peak_torque or .peak_force, .peak_power.", (a) => {
@@ -428,7 +455,7 @@ export const MECHANISM_FN = new Fn(
     const spec: MechSpec = { items, base: base as MechSpec["base"], auto, follow };
     return new MechSpecValue(spec);
   },
-  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
+  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.jet, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
 );
 
 export class MechSpecValue extends Obj {

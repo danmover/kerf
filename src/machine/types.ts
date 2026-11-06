@@ -83,6 +83,8 @@ export type CatalogKind =
   | "controller"
   | "host"
   | "motor_driver"
+  /** brushless motor controller: battery in, three phases out, an RC throttle pulse and usually a BEC */
+  | "esc"
   | "stepper_driver"
   | "gearmotor"
   | "stepper"
@@ -133,6 +135,8 @@ export type GeomClass =
   | "micro_gearmotor"
   | "tt_motor"
   | "outrunner"
+  // electric ducted fan: housing, rotor and stator round the jet axis
+  | "edf"
   | "stepper"
   | "servo"
   | "actuator"

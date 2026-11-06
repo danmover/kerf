@@ -216,7 +216,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
       nextFrame += frameDt;
       opts.onProgress?.(variant, Math.min(1, t / opts.duration));
     }
-    const anyMoving = plant.motors.some((m) => Math.abs(m.m.omega) > 0.05) || plant.acts.some((a) => Math.abs(a.a.speed) > 0.05);
+    const anyMoving = plant.motors.some((m) => Math.abs(m.m.omega) > 0.05) || plant.acts.some((a) => Math.abs(a.a.speed) > 0.05) || plant.escs.some((e) => e.dev.omega > 30);
     if (anyMoving) {
       moved = true;
       stillSince = t;
@@ -327,6 +327,20 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results[`${m.name}.load`] = m.loadPeak;
   }
   for (const a of plant.acts) results[`${a.comp}.travel`] = a.a.travel;
+  for (const e of plant.escs) {
+    results[`${e.comp}.armed`] = e.dev.armed;
+    if (e.dev.armedAt >= 0) results[`${e.comp}.armed_at`] = e.dev.armedAt;
+    results[`${e.comp}.peak_amps`] = e.dev.peakCurrent;
+    results[`${e.comp}.signal_lost`] = e.dev.lost;
+    if (!e.fan) continue;
+    results[`${e.fan.name}.peak_thrust`] = e.dev.peakThrust;
+    results[`${e.fan.name}.thrust`] = e.dev.thrust;
+    results[`${e.fan.name}.max_rpm`] = e.dev.maxRpm;
+  }
+  for (const h of plant.hxs) {
+    results[`${h.comp}.samples`] = h.samples;
+    if (h.cell) results[`${h.cell}.peak_force`] = h.peak;
+  }
   for (const h of plant.halls) results[`${h.comp}.passes`] = h.hits;
   for (const l of plant.leds) {
     results[`${l.comp}.shows`] = l.shows;

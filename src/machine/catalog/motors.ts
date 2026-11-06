@@ -143,6 +143,29 @@ function p16(stroke: number, price: number, mass: number): CatalogPart {
 }
 
 export const MOTORS: CatalogPart[] = [
+  {
+    id: "xfly_edf_64_12b_3200kv",
+    kind: "bldc",
+    name: "XFLY-Model 64 mm 12-blade EDF with 2840 3200 kV motor (4S)",
+    maker: "XFLY-Model",
+    mpn: "XF-DFS004",
+    summary: "64 mm electric ducted fan on 4S: 1250 g (12.3 N) static thrust at 40 A and 16.5 V, 12-blade rotor, 2840 3200 kV inrunner, 135 g. Needs a 40 A or bigger ESC.",
+    // thrust and current at full throttle at thrust_v; rpm_full from kV x volts at about 82 % loaded; rotor_j_gcm2 is the
+    // rotor and motor's spinning inertia (an estimate: 12-blade 64 mm rotor plus a 28 mm rotor can)
+    specs: { kv: 3200, v_nom: 14.8, v_max: 16.8, thrust_g: 1250, thrust_v: 16.5, i_max: 40, i_free: 1.5, rpm_full: 43300, fan_d: 64, rotor_j_gcm2: 140, spin: "ccw_from_intake", poles: 4, mass_g: 135, esc_a: 50, blades: 12 },
+    pins: [
+      { id: "PHASE_A", label: "Phase A", type: "motor", v: 16.8, channel: "M", required: false, note: "Brushless: wire the three phases to an ESC" },
+      { id: "PHASE_B", label: "Phase B", type: "motor", v: 16.8, channel: "M", required: false },
+      { id: "PHASE_C", label: "Phase C", type: "motor", v: 16.8, channel: "M", required: false },
+    ],
+    // housing outside diameter, length and tab holes are not published: measure yours (the duct seat is printed to them)
+    geom: { g: "edf", dims: { od: 70, fan_d: 64, length: 66, hub_d: 31, blades: 12, stators: 6, lead_az: -150 }, color: "#2b2f36", color2: "#c9ced6" },
+    price_usd: 60,
+    buy: [{ vendor: "Amazon AU", url: "https://www.amazon.com.au/XFLY-MODEL-2840-KV3200-Brushless-Outrunner-Aircraft/dp/B096V6NX4J" }],
+    source: "https://www.cmldistribution.com.au/",
+    notes: ["Housing size and its mounting-tab pattern are not published: Kerf assumes 4 tabs with 3.2 mm holes on an 80 mm circle at the intake ring, on the diagonals. Measure the outside diameter, length and tab holes before printing a duct or mount for it.", "Never run it unclamped or without an intake guard: the rotor tips run near 150 m/s."],
+    tests: ["Static thrust on a scale or load cell at 50, 70 and 100 % throttle"],
+  },
   // ---- steppers ----
   stepper({ id: "nema8_8hs15_0604s", name: "NEMA 8 stepper 8HS15-0604S (38 mm, 0.6 A)", generic: true, frame: 8, len: 38, i: 0.6, r: 10.8, l: 5.5, hold: 18, mass: 60, price: 15, shaft_d: 4, shaft_l: 15, search: "NEMA 8 stepper motor 20x20x38mm 0.6A" }),
   stepper({ id: "nema11_11hs20_0674s", name: "NEMA 11 stepper 11HS20-0674S (51 mm, 0.67 A)", generic: true, frame: 11, len: 51, i: 0.67, r: 8, l: 6.5, hold: 95, mass: 200, price: 16, shaft_d: 5, shaft_l: 20, search: "NEMA 11 stepper motor 28x28x51mm" }),

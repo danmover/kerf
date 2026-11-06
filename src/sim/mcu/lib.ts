@@ -1261,7 +1261,10 @@ const eeprom: Record<string, LibFn> = dict({
   write: def("EEPROM.write", ["int", "u8"], "void", 20, ([a, v], c, pos) => eepromProgram(c.hal, eepromAddr(c, a, 1, pos, "write"), v, false)),
   update: def("EEPROM.update", ["int", "u8"], "void", 20, ([a, v], c, pos) => eepromProgram(c.hal, eepromAddr(c, a, 1, pos, "update"), v, true)),
   length: def("EEPROM.length", [], "uint", 4, (_v, c) => c.hal.eeprom.length),
-  begin: def("EEPROM.begin", [], "void", 4, () => undefined),
+  // the ESP32 core emulates EEPROM in flash: begin(size) maps it, commit() writes it back
+  begin: def("EEPROM.begin", ["int"], "bool", 4, () => 1, [0]),
+  commit: def("EEPROM.commit", [], "bool", 40, () => 1),
+  end: def("EEPROM.end", [], "void", 4, () => undefined),
   get: (args, ctx, pos) => {
     if (args.length !== 2) argCount("EEPROM.get", 2, 2, args.length, ctx, pos);
     const A = numEv(args[0], ctx.T.int, ctx, "EEPROM.get()");
@@ -1414,6 +1417,13 @@ const servo: LibClass = {
     readMicroseconds: (obj, _args, ctx, pos) => {
       const O = servoArg(obj, ctx);
       return { t: ctx.T.int, ev: (f) => (O(f) as ServoObj).us, cost: 20, pos };
+    },
+    // ESP32Servo: the frame rate (50 Hz analog, up to 333 Hz digital servos); the pulse width is what moves it
+    setPeriodHertz: (obj, args, ctx, pos) => {
+      if (args.length !== 1) argCount("Servo.setPeriodHertz", 1, 1, args.length, ctx, pos);
+      const O = servoArg(obj, ctx);
+      const V = numEv(args[0], ctx.T.int, ctx, "setPeriodHertz()");
+      return { t: VOID, ev: (f) => void ((O(f) as ServoObj & { hz?: number }).hz = V(f)), cost: sumCost(args) + 20, pos };
     },
     attached: (obj, _args, ctx, pos) => {
       const O = servoArg(obj, ctx);

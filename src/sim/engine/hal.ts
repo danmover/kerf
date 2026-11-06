@@ -393,7 +393,8 @@ export class SimHal implements Hal {
   analogRead(pin: number): number {
     if (this.adc.done < Infinity && this.adc.adcsra & ADATE)
       this.fault("analogRead() while the ADC runs free from its registers: on the chip it rewrites ADMUX under the interrupt, and both get the wrong channel's readings", "firmware", 0);
-    const ch = pin >= this.board.analog[0] ? pin - this.board.analog[0] : pin;
+    // the ESP32 core takes GPIO numbers (A0 is GPIO26 on the Feather); the AVR core takes A0.. or 0..
+    const ch = this.board.arch === "esp32" ? this.board.analog.indexOf(pin) : pin >= this.board.analog[0] ? pin - this.board.analog[0] : pin;
     const p = this.board.analog[ch];
     if (p === undefined) {
       this.fault(`analogRead(${pin}): the ${this.board.name} has no analog input ${pin}`, "firmware", 0);
@@ -436,7 +437,7 @@ export class SimHal implements Hal {
   }
 
   attachInterrupt(n: number, fn: FnRef, mode: number): void {
-    if (n < 0 || n >= Object.keys(this.board.interrupts).length) {
+    if (n < 0 || !Object.values(this.board.interrupts).includes(n)) {
       this.fault(`attachInterrupt(${n === 255 ? "NOT_AN_INTERRUPT" : n}): that pin has no external interrupt on the ${this.board.name} (only ${Object.keys(this.board.interrupts).join(" and ")}), so the handler never runs`, "firmware", 0);
       return;
     }
@@ -656,7 +657,9 @@ export class SimHal implements Hal {
   }
 
   micros(): number {
-    return (Math.floor(this.cyc / 64) * 4) >>> 0;
+    // the AVR core counts in 4 µs steps (timer 0 at 64 cycles a tick on 16 MHz); the ESP32's timer in 1 µs ones
+    if (this.board.arch === "esp32") return Math.floor(this.cyc / (this.fcpu / 1e6)) >>> 0;
+    return (Math.floor(this.cyc / (this.fcpu / 250000)) * 4) >>> 0;
   }
 
   tone(pin: number, freq: number): void {

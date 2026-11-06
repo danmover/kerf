@@ -667,6 +667,228 @@ export class Mpu6050 implements I2CDevice {
   }
 }
 
+/**
+ * ST LSM6DSOX: accelerometer and gyro registers, little-endian, with the axes physically right for a chip
+ * mounted flat with its X along the design's X (nose up reads +X acceleration, a nose-up turn -Y rate).
+ */
+export class Lsm6dsox implements I2CDevice {
+  regs = new Uint8Array(128);
+  ptr = 0;
+  private bias: [number, number, number];
+  /** the chip answers 10 ms after power-up */
+  private bootAt: number;
+  constructor(
+    public name: string,
+    private fcpu: number,
+    private orient: () => Orientation,
+    noise: ImuNoise,
+    private rng: () => number,
+  ) {
+    this.regs[0x0f] = 0x6c;
+    // CTRL3_C: register address auto-increment on
+    this.regs[0x12] = 0x04;
+    this.bootAt = 0.01 * fcpu;
+    const b = () => (rng() - 0.5) * 2 * (noise.driftPerMin / 60) * 4;
+    this.bias = [b(), b(), b()];
+  }
+  ready(t: number) {
+    return t >= this.bootAt;
+  }
+  write(bytes: number[], t: number) {
+    if (!bytes.length) return;
+    this.ptr = bytes[0] & 0x7f;
+    for (let i = 1; i < bytes.length; i++) {
+      const r = this.ptr;
+      if (r === 0x12 && bytes[i] & 0x01) {
+        // software reset: registers back to their defaults, the chip back after its boot time
+        this.regs.fill(0, 0x10, 0x20);
+        this.regs[0x12] = 0x04;
+        this.bootAt = t + 0.01 * this.fcpu;
+      } else if (r !== 0x0f) this.regs[r] = bytes[i];
+      this.advance();
+    }
+  }
+  read(n: number): number[] {
+    this.update();
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      out.push(this.regs[this.ptr]);
+      this.advance();
+    }
+    return out;
+  }
+  private advance() {
+    if (this.regs[0x12] & 0x04) this.ptr = (this.ptr + 1) & 0x7f;
+  }
+  private put16le(reg: number, v: number) {
+    const x = Math.max(-32768, Math.min(32767, Math.round(v))) & 0xffff;
+    this.regs[reg] = x & 0xff;
+    this.regs[reg + 1] = x >> 8;
+  }
+  private update() {
+    const xlOn = this.regs[0x10] >> 4 !== 0;
+    const gOn = this.regs[0x11] >> 4 !== 0;
+    this.regs[0x1e] = (xlOn ? 1 : 0) | (gOn ? 2 : 0) | (xlOn || gOn ? 4 : 0);
+    const o = this.orient();
+    const D = Math.PI / 180;
+    const g = 9.80665;
+    if (xlOn) {
+      // ±2, ±16, ±4, ±8 g
+      const fs = [2, 16, 4, 8][(this.regs[0x10] >> 2) & 3];
+      const lsb = 32768 / fs;
+      const n = () => (this.rng() + this.rng() - 1) * 0.0012;
+      const ax = Math.sin(o.pitch * D) + o.accel[0] / g;
+      const ay = Math.sin(o.roll * D) * Math.cos(o.pitch * D) + o.accel[1] / g;
+      const az = Math.cos(o.roll * D) * Math.cos(o.pitch * D) + o.accel[2] / g;
+      this.put16le(0x28, (ax + n()) * lsb);
+      this.put16le(0x2a, (ay + n()) * lsb);
+      this.put16le(0x2c, (az + n()) * lsb);
+    }
+    if (gOn) {
+      const c2 = this.regs[0x11];
+      // 125 dps when FS_125 is set, else 250, 500, 1000, 2000 dps
+      const fs = c2 & 0x02 ? 125 : [250, 500, 1000, 2000][(c2 >> 2) & 3];
+      const lsb = 32768 / (fs * 1.143);
+      const n = () => (this.rng() + this.rng() - 1) * 0.07;
+      // physical body rates: the orientation's pitch rate is nose-up positive, which is a negative turn about Y
+      const w = [o.rate[0], -o.rate[1], o.rate[2]];
+      this.put16le(0x22, (w[0] + this.bias[0] + n()) * lsb);
+      this.put16le(0x24, (w[1] + this.bias[1] + n()) * lsb);
+      this.put16le(0x26, (w[2] + this.bias[2] + n()) * lsb);
+    }
+    this.put16le(0x20, 0);
+  }
+}
+
+// ---------- ESC and ducted fan ----------
+
+/**
+ * A hobby brushless ESC with the motor it spins, here an electric ducted fan. The ESC arms after its signal
+ * has sat at minimum throttle for its arming time, maps 1000-2000 µs to throttle, holds the last throttle
+ * through short gaps and stops the motor (and disarms) when the signal is gone for its timeout. The motor is
+ * a Kv model (back EMF, winding resistance worked out from the rated full-throttle current, a current limit)
+ * driving a fan whose drag torque and thrust go with speed squared.
+ */
+export class EscFan {
+  /** the ESC is powered and has armed */
+  powered = false;
+  armed = false;
+  armedAt = -1;
+  throttle = 0;
+  /** rotor speed, rad/s; thrust, N; motor current and battery current, A */
+  omega = 0;
+  thrust = 0;
+  motorCurrent = 0;
+  current = 0;
+  /** rotor angular acceleration, rad/s²; the drag torque the air puts on the blades, N·m */
+  alpha = 0;
+  dragTorque = 0;
+  /** what the ESC did, for the run's events */
+  said: string[] = [];
+  peakThrust = 0;
+  peakCurrent = 0;
+  maxRpm = 0;
+  lost = false;
+  /** rotor inertia, kg·m², and which way it spins about the thrust axis (+1: counter-clockwise seen from the intake) */
+  readonly J: number;
+  readonly spin: number;
+  readonly fanArea: number;
+  assumed: string[] = [];
+  private lowFor = 0;
+  private lostFor = 0;
+  private kvr: number;
+  private R: number;
+  private cq: number;
+  private kT: number;
+  private iFree: number;
+  private wFull: number;
+  private iLim: number;
+  private usMin: number;
+  private usMax: number;
+  private armS: number;
+  private lossS: number;
+  private vOn: number;
+  constructor(
+    public name: string,
+    esc: CatalogPart,
+    fan: CatalogPart | undefined,
+  ) {
+    this.usMin = num(esc, "pwm_min_us", 1000);
+    this.usMax = num(esc, "pwm_max_us", 2000);
+    this.armS = num(esc, "arm_ms", 1500) / 1000;
+    this.lossS = num(esc, "signal_loss_ms", 250) / 1000;
+    this.iLim = num(esc, "i_burst", num(esc, "i_cont", 30) * 1.3);
+    this.vOn = Math.max(5, num(esc, "v_min", 9.9) * 0.7);
+    const f = fan ?? esc;
+    const kv = num(f, "kv", 3000);
+    this.kvr = (kv * 2 * Math.PI) / 60;
+    const vRated = num(f, "thrust_v", 14.8);
+    const iMax = num(f, "i_max", 30);
+    this.iFree = num(f, "i_free", 1);
+    this.wFull = (num(f, "rpm_full", kv * vRated * 0.82) * 2 * Math.PI) / 60;
+    const r = (vRated - this.wFull / this.kvr) / iMax;
+    this.R = r > 0.005 ? r : 0.05;
+    this.cq = ((iMax - this.iFree) / this.kvr) / (this.wFull * this.wFull);
+    this.kT = ((num(f, "thrust_g", 1000) / 1000) * 9.80665) / (this.wFull * this.wFull);
+    this.J = num(f, "rotor_j_gcm2", 100) * 1e-7;
+    this.spin = String(f.specs.spin ?? "ccw_from_intake").startsWith("cw") ? -1 : 1;
+    const d = num(f, "fan_d", 64) / 1000;
+    const hub = num(f, "hub_d", d * 450) / 1000;
+    this.fanArea = (Math.PI / 4) * (d * d - hub * hub);
+    if (fan && !("rotor_j_gcm2" in fan.specs)) this.assumed.push(`${name}: rotor inertia assumed ${num(f, "rotor_j_gcm2", 100)} g·cm²`);
+    this.assumed.push(
+      `${name}: thrust and drag go with fan speed squared, from ${num(f, "thrust_g", 1000)} g at ${Math.round((this.wFull * 60) / (2 * Math.PI))} rpm on ${vRated} V; winding and ESC resistance ${(this.R * 1000).toFixed(0)} mΩ worked out from the rated ${iMax} A`,
+    );
+  }
+
+  /** one step: the signal's pulse (µs, or null when there is none) and the battery volts at the ESC */
+  step(us: number | null, vbatt: number, dt: number, t: number) {
+    if (vbatt < this.vOn) {
+      if (this.armed) this.said.push(`${this.name} lost power`);
+      this.powered = this.armed = false;
+      this.lowFor = 0;
+    } else this.powered = true;
+    if (us === null) this.lostFor += dt;
+    else this.lostFor = 0;
+    if (this.powered && !this.armed) {
+      this.throttle = 0;
+      this.lowFor = us !== null && us < this.usMin + 50 ? this.lowFor + dt : 0;
+      if (this.lowFor >= this.armS) {
+        this.armed = true;
+        this.lost = false;
+        if (this.armedAt < 0) this.armedAt = t;
+        this.said.push(`${this.name} armed (signal at ${Math.round(us ?? 0)} µs for ${this.armS} s)`);
+      }
+    } else if (this.armed && this.lostFor > this.lossS) {
+      this.armed = false;
+      this.lost = true;
+      this.lowFor = 0;
+      this.throttle = 0;
+      this.said.push(`${this.name} lost its signal for over ${Math.round(this.lossS * 1000)} ms: motor stopped, it needs minimum throttle again to re-arm`);
+    } else if (this.armed && us !== null) this.throttle = Math.max(0, Math.min(1, (us - this.usMin) / (this.usMax - this.usMin)));
+    // the motor: the ESC's average voltage against back EMF, never driving current backwards (brake off)
+    const run = this.powered && this.armed && this.throttle > 0.03;
+    const veff = run ? this.throttle * vbatt : 0;
+    const emf = this.omega / this.kvr;
+    this.motorCurrent = run ? Math.max(0, Math.min(this.iLim, (veff - emf) / this.R)) : 0;
+    const loss = (this.iFree / this.kvr) * Math.min(1, this.omega / this.wFull + 0.05) * (this.omega > 1 ? 1 : 0);
+    this.dragTorque = this.cq * this.omega * this.omega;
+    this.alpha = (this.motorCurrent / this.kvr - loss - this.dragTorque) / this.J;
+    this.omega = Math.max(0, this.omega + this.alpha * dt);
+    this.thrust = this.kT * this.omega * this.omega;
+    this.current = this.powered ? (run ? (this.throttle * this.motorCurrent) / 0.95 : 0) + 0.04 : 0;
+    if (this.thrust > this.peakThrust) this.peakThrust = this.thrust;
+    if (this.current > this.peakCurrent) this.peakCurrent = this.current;
+    const rpm = (this.omega * 60) / (2 * Math.PI);
+    if (rpm > this.maxRpm) this.maxRpm = rpm;
+  }
+
+  /** the jet's speed leaving the fan, m/s (thrust = mass flow × speed) */
+  jetSpeed(rho = 1.2) {
+    return Math.sqrt(this.thrust / (rho * this.fanArea));
+  }
+}
+
 /** What a display showed from a moment on: one bit a pixel, rows of w/8 bytes, most significant bit leftmost. */
 export interface DisplayFrame {
   t: number;
