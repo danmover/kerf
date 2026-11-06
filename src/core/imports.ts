@@ -199,6 +199,8 @@ function shapeUsesImport(r: ShapeRecipe): boolean {
       return r.shapes.some(shapeUsesImport);
     case "diff":
       return shapeUsesImport(r.a) || r.b.some(shapeUsesImport);
+    case "part":
+      return recipeUsesImport(r.part);
     default:
       return false;
   }

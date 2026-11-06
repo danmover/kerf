@@ -90,7 +90,9 @@ export type ShapeRecipe =
   /** a sheet-metal part laid flat: each region of the built part cut out and moved onto the flat, plus its bends laid flat */
   | { t: "unfold"; part: PartRecipe; pieces: { region: ShapeRecipe; xf: Xform[] }[]; bends: ShapeRecipe[] }
   /** one half of a two-part mould round a part (placed by xf), split across the pull at `split` (null: where the part is widest) */
-  | { t: "mould"; part: PartRecipe; xf: Xform[]; half: "top" | "bottom"; pull: V3; split: number | null; wall: number; shrink: number; keys: number; sprue: number; vents: number; bolt: number };
+  | { t: "mould"; part: PartRecipe; xf: Xform[]; half: "top" | "bottom"; pull: V3; split: number | null; wall: number; shrink: number; keys: number; sprue: number; vents: number; bolt: number }
+  /** another part's solid where it sits (xf), brought into the frame of the part that uses it (into: that part's placement undone) */
+  | { t: "part"; part: PartRecipe; xf: Xform[]; into?: Xform[] };
 
 /** One piece of a closed sketch loop, in sketch-plane coordinates. Arcs pass through m. */
 export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number };
@@ -180,6 +182,8 @@ export function shapeHasDetail(r: ShapeRecipe): boolean {
       return shapeHasDetail(r.a) || r.b.some(shapeHasDetail);
     case "instances":
       return r.items.some((it) => shapeHasDetail(it.shape));
+    case "part":
+      return hasDetail(r.part);
     default:
       return false;
   }
@@ -227,6 +231,8 @@ export function fontsIn(p: PartRecipe): FontName[] {
         return shape(r.detail);
       case "instances":
         return r.items.forEach((it) => shape(it.shape));
+      case "part":
+        return fontsIn(r.part).forEach((f) => out.add(f));
     }
   };
   if (p.base) shape(p.base);

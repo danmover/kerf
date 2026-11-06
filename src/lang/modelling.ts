@@ -8,7 +8,7 @@ import { def, SHAPE_FNS } from "./builtins";
 import { SHEET_FNS } from "./sheet";
 import { MOULD_FNS } from "./mould";
 import { AERO_FNS } from "./aero";
-import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
+import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, Ref, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
 import { SEL_PRESETS, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
 import { threadDepth, threadTurnsError } from "../kernel/threadMath";
 import { THREADS, parseThreadName } from "../library/standards";
@@ -568,6 +568,21 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
     ["shape", "normal", "at"],
     (a) => new ShapeV({ t: "xform", shape: a.shape("shape").recipe, xf: [{ op: "mirror", origin: a.vec3("at", [0, 0, 0]), normal: a.dir("normal", [1, 0, 0]) }] }),
     "mirror(shape, normal: X, at: (0, 0, 0)) — mirrored copy across the plane through `at` square to normal. Add both for symmetric features: add [s, mirror(s, X)].",
+  ),
+  def(
+    "shape_of",
+    ["part"],
+    (a) => {
+      const v = a.value("part");
+      // a part is a reference by name; a component is its value, labelled with its name (an instance as name[i])
+      const name = v instanceof Ref ? v.name : v instanceof Obj && v.kind === "component" && v.label ? v.label.replace(/\[\d+\]$/, "") : null;
+      if (!name) return a.ctx.error(`shape_of(): give the name of a part or component defined above, got ${v === undefined ? "nothing" : typeName(v)}`);
+      const solids = a.ctx.partShapes?.(name);
+      if (!solids?.length) return a.ctx.error(`shape_of(): "${name}" must be a part or component defined above this one`);
+      const shapes: ShapeRecipe[] = solids.map((p) => ({ t: "part", part: p.recipe, xf: p.xf }));
+      return new ShapeV(shapes.length === 1 ? shapes[0] : { t: "union", shapes });
+    },
+    "shape_of(part) — the solid of a part or component defined above, exactly where it sits in the assembly (inside a part, that part's own at: and rotate: are taken off, so it lands where the other part really is). Linked: it follows every change to that part. cut shape_of(magnet) pockets a part round another; body mirror(shape_of(left_arm), normal: X) makes the other hand of a part. A part whose body is shape_of() stays where its source is; move the source instead.",
   ),
   def(
     "rib",

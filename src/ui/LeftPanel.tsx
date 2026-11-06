@@ -13,6 +13,7 @@ import { Icon } from "./icons";
 import { G } from "./left/glyphs";
 import { PartsTab } from "./left/PartsTab";
 import { ParamsTab } from "./left/ParamsTab";
+import { FeaturesTab } from "./left/FeaturesTab";
 import { HistoryTab, HistoryTools } from "./left/HistoryTab";
 import { Decisions } from "./DecisionsPanel";
 import { SketchesTab } from "./sketch/SketchesTab";
@@ -56,6 +57,7 @@ const HistoryCount: FC = () => {
 
 export const LEFT_TABS: LeftTabDef[] = [
   { id: "structure", label: "parts", icon: <Icon.Layers size={14} />, Count: PartsCount, filter: "Filter parts", Body: PartsTab },
+  { id: "features", label: "features", icon: <Icon.Steps size={14} />, filter: "Filter parts and steps", Body: FeaturesTab },
   { id: "params", label: "params", icon: <Icon.Sliders size={14} />, Count: ParamsCount, filter: "Filter parameters", Body: ParamsTab },
   { id: "sketches", label: "sketches", icon: <T.Sketch size={14} />, Count: SketchesCount, filter: "Filter sketches", Body: SketchesTab },
   { id: "decisions", label: "decisions", icon: <Icon.Fork size={14} />, Count: DecisionsCount, Body: DecisionsTab },
