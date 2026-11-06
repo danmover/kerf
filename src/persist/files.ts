@@ -6,7 +6,8 @@ import type { MeshData } from "../kernel/build";
 import { xformMatrix, type Xform } from "../kernel/recipe";
 import type { EvalPart, Model } from "../core/model";
 import { catalogPart, isHad, searchLinks, shopLinks, type ShopLink } from "../machine/catalog";
-import { haveKey } from "../library/fasteners";
+import { haveKey, retailLengths, type HeadType } from "../library/fasteners";
+import { threadSpec } from "../library/standards";
 import type { CatalogPart } from "../machine/types";
 import { IMPORT_META_VERSION, MAX_BODIES, MAX_STEP_BYTES, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { cleanName } from "../kernel/stepText";
@@ -370,6 +371,18 @@ function catalogPrice(p: CatalogPart, length?: number): { price?: number; note?:
   return { price: p.price_usd };
 }
 
+/** Metric screws, nuts and washers a hardware store keeps on the shelf (Bunnings, Mitre 10 and the like), by parts-list key. */
+function hardwareStore(key: string | undefined): boolean {
+  if (!key) return false;
+  const [kind, size, a, b] = key.split("|");
+  const t = /^M\d+$/.test(size ?? "") ? threadSpec(size) : undefined;
+  if (!t) return false;
+  if (kind === "nut") return ["hex", "nyloc", "flange"].includes(a);
+  if (kind === "washer") return true;
+  if (kind === "screw") return retailLengths(b as HeadType, t).includes(Number(a));
+  return false;
+}
+
 /** Bill of materials grouped by identical description, with purchased extras from buy statements. */
 /**
  * The parts list: one row per distinct part with its quantity, price and
@@ -385,8 +398,10 @@ export function bomRows(model: Model, have: readonly string[] = []): BomRow[] {
     const instance = p.id.split(".")[0];
     if (p.kind === "component" && seenInstance.has(instance)) continue;
     seenInstance.add(instance);
-    const description = p.bom?.description ?? (p.kind === "part" ? `Custom part: ${p.label}` : p.label);
-    const kind = p.kind === "part" ? "Make" : "Buy";
+    // process: false is bought or already on hand, not made
+    const made = p.kind === "part" && !p.processNone;
+    const description = p.bom?.description ?? (made ? `Custom part: ${p.label}` : p.kind === "part" ? `${p.label} (bought, or one you have)` : p.label);
+    const kind = made ? "Make" : "Buy";
     const cp = p.bom?.catalogId ? catalogPart(p.bom.catalogId) : undefined;
     const mc = cp ? comps.get(p.name) : undefined;
     let price: number | undefined;
@@ -403,6 +418,7 @@ export function bomRows(model: Model, have: readonly string[] = []): BomRow[] {
       price = p.bom.price;
       priceNote = p.bom.priceNote;
       links = p.bom.search ? searchLinks(p.bom.search) : [];
+      if (p.bom.search && hardwareStore(p.bom.key)) links = [{ vendor: "Bunnings", url: `https://www.bunnings.com.au/search/products?q=${encodeURIComponent(p.bom.search)}`, direct: false }, ...links];
     }
     const onHand = have.length > 0 && (cp ? isHad(cp, have) : p.bom?.key ? haveKey(have, p.bom.key) : false);
     const link = links.find((l) => l.direct)?.url;
@@ -413,7 +429,7 @@ export function bomRows(model: Model, have: readonly string[] = []): BomRow[] {
     if (row) row.qty++;
     else {
       const haveAs = kind === "Make" ? undefined : cp ? (cp.mpn ?? cp.id) : p.bom?.key ? haveText(p.bom.key) : undefined;
-      rows.set(key, { qty: 1, item: p.kind === "part" ? p.name : p.imported ? p.imported.file : (cp?.kind ?? p.libKind ?? p.name), description, standard: p.bom?.standard ?? "", material, kind, price, priceNote, link, links, catalogId: cp?.id, length: p.bom?.length, onHand: onHand || undefined, haveAs });
+      rows.set(key, { qty: 1, item: made ? p.name : p.imported ? p.imported.file : (cp?.kind ?? p.libKind ?? p.name), description, standard: p.bom?.standard ?? "", material, kind, price, priceNote, link, links, catalogId: cp?.id, length: p.bom?.length, onHand: onHand || undefined, haveAs });
     }
   }
   const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");

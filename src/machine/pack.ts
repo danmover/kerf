@@ -429,7 +429,8 @@ export function madeParts(model: Model, meshFor?: (p: EvalPart) => MeshData | un
   // identical parts (a pattern, or the same part placed twice) are one file, printed several times
   const same = new Map<string, MadePart>();
   for (const p of model.parts) {
-    if (p.kind !== "part") continue;
+    // process: false is bought or already on hand: nothing to print or make
+    if (p.kind !== "part" || p.processNone) continue;
     const key = `${p.hash}|${p.material}`;
     const twin = same.get(key);
     if (twin) {
@@ -766,7 +767,7 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
   const partLine = (p: EvalPart) => {
     const cp = p.bom?.catalogId ? catalogPart(p.bom.catalogId) : undefined;
     const mc = m.components.find((c) => c.name === p.name);
-    const what = p.kind === "part" ? `${isPrinted(p) ? "printed" : "made"} ${p.material} part` : (p.bom?.description ?? p.label);
+    const what = p.kind === "part" ? (p.processNone ? `bought or on-hand ${p.label}` : `${isPrinted(p) ? "printed" : "made"} ${p.material} part`) : (p.bom?.description ?? p.label);
     let s = `- [ ] **${p.id}**${mc?.role ? ` (${mc.role})` : ""}: ${what}, at ${fmtPos(pos(p))}.`;
     if (cp && !seenNotes.has(cp.id)) {
       seenNotes.add(cp.id);

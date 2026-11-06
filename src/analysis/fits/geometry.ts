@@ -244,6 +244,20 @@ function shapeCyls(s: ShapeRecipe, cut: boolean, out: LocalCyl[], bounds: Box | 
     case "union":
       for (const x of s.shapes) shapeCyls(x, cut, out, bounds);
       return;
+    case "part": {
+      // shape_of(another part), mirrored or moved: its holes and shafts come along
+      if (cut) return;
+      const inner: LocalCyl[] = [];
+      const pb = recipeBounds(s.part);
+      if (s.part.base) shapeCyls(s.part.base, false, inner, pb);
+      for (const op of s.part.ops) {
+        if (op.op === "add") shapeCyls(op.shape, false, inner, pb);
+        else if (op.op === "cut") shapeCyls(op.shape, true, inner, pb);
+      }
+      const xf = [...s.xf, ...(s.into ?? [])];
+      for (const c of inner) out.push({ ...c, at: applyXforms(c.at, xf), axis: vnorm(applyXformsToDir(c.axis, xf)) });
+      return;
+    }
     default:
       return;
   }

@@ -75,8 +75,29 @@ component base_front = lib.extrusion("vslot_2040", length: base_w) { at: (-base_
 component base_mid   = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, 0, z_cross + 10), axis: X, rotate: 90 }
 component base_back  = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, y_back, z_cross + 10), axis: X, rotate: 90 }
 component y_beams    = lib.extrusion("vslot_2040", length: base_l) { at: [(-beam_x, y_front - 20, z_ybeam + 10), (beam_x, y_front - 20, z_ybeam + 10)], axis: Y, rotate: 90, held: "corner brackets and M5 T-nuts to the base cross members" }
+component y_beams_brackets = lib.corner_bracket("2020") { at: [(-60, -290, 32), (100, -290, 32), (-60, 10, 32), (100, 10, 32), (100, 60, 32)], axis: Z }
+component y_beams_brackets_2 = lib.corner_bracket("2020") { at: [(-100, -290, 32), (60, -290, 32), (-100, 10, 32), (60, 10, 32), (-100, 60, 32), (60, 60, 32)], axis: Z, rotate: 180 }
+component y_beams_screws = lib.screw(M5, 8, head: "button") { at: [(-47.5, -290, 35), (-112.5, -290, 35), (112.5, -290, 35), (47.5, -290, 35), (-47.5, 10, 35), (-112.5, 10, 35), (112.5, 10, 35), (47.5, 10, 35), (-112.5, 60, 35), (112.5, 60, 35), (47.5, 60, 35)], axis: -Z }
+component y_beams_screws_2 = lib.screw(M5, 8, head: "button") { at: [(-57, -290, 42), (103, -290, 42), (-57, 10, 42), (103, 10, 42), (103, 60, 42)], axis: -X }
+component y_beams_screws_3 = lib.screw(M5, 8, head: "button") { at: [(-103, -290, 42), (57, -290, 42), (-103, 10, 42), (57, 10, 42), (-103, 60, 42), (57, 60, 42)], axis: X }
+component y_beams_tnuts = lib.nut(M5, type: "tslot20") { at: [(-47.5, -290, 32), (-112.5, -290, 32), (112.5, -290, 32), (47.5, -290, 32), (-47.5, 10, 32), (-112.5, 10, 32), (112.5, 10, 32), (47.5, 10, 32), (-112.5, 60, 32), (112.5, 60, 32), (47.5, 60, 32)], axis: -Z, rotate: -90 }
+component y_beams_tnuts_2 = lib.nut(M5, type: "tslot20") { at: [(-60, -290, 42), (100, -290, 42), (-60, 10, 42), (100, 10, 42), (100, 60, 42)], axis: -X, rotate: 90 }
+component y_beams_tnuts_3 = lib.nut(M5, type: "tslot20") { at: [(-100, -290, 42), (60, -290, 42), (-100, 10, 42), (60, 10, 42), (-100, 60, 42), (60, 60, 42)], axis: X, rotate: -90 }
 component uprights   = lib.extrusion("vslot_2040", length: up_l) { at: [(-up_x, 0, z_up), (up_x, 0, z_up)], axis: Z, held: "corner brackets and M5 T-nuts to the base" }
-component top_bar    = lib.extrusion("vslot_2020", length: base_w) { at: (-base_w / 2, 0, z_top + 10), axis: X, held: "corner brackets and M5 T-nuts to the uprights" }
+component uprights_plates = lib.joining_plate("L") { at: (-160, -20, 12), axis: -Y }
+component uprights_plates_2 = lib.joining_plate("L") { at: (160, -23, 12), axis: Y }
+component uprights_brackets = lib.corner_bracket("2020") { at: (-140, -10, 512), axis: -Z }
+component uprights_brackets_2 = lib.corner_bracket("2020") { at: (140, -10, 512), axis: -Z, rotate: 180 }
+component uprights_screws = lib.screw(M5, 8, head: "button") { at: [(-150, -23, 22), (-130, -23, 22), (-110, -23, 22), (-150, -23, 42), (-150, -23, 62), (150, -23, 22), (130, -23, 22), (110, -23, 22), (150, -23, 42), (150, -23, 62)], axis: Y }
+component uprights_screws_2 = lib.screw(M5, 8, head: "button") { at: [(-127.5, -10, 509), (127.5, -10, 509)], axis: Z }
+component uprights_screws_3 = lib.screw(M5, 8, head: "button") { at: (-137, -10, 499.5), axis: -X }
+component uprights_screws_4 = lib.screw(M5, 8, head: "button") { at: (137, -10, 499.5), axis: X }
+component uprights_tnuts = lib.nut(M5, type: "tslot20") { at: [(-150, -20, 22), (-130, -20, 22), (-110, -20, 22), (150, -20, 22), (130, -20, 22), (110, -20, 22)], axis: Y, rotate: 90 }
+component uprights_tnuts_2 = lib.nut(M5, type: "tslot20") { at: [(-150, -20, 42), (-150, -20, 62), (150, -20, 42), (150, -20, 62)], axis: Y }
+component uprights_tnuts_3 = lib.nut(M5, type: "tslot20") { at: [(-127.5, -10, 512), (127.5, -10, 512)], axis: Z, rotate: -90 }
+component uprights_tnuts_4 = lib.nut(M5, type: "tslot20") { at: (-140, -10, 499.5), axis: -X }
+component uprights_tnuts_5 = lib.nut(M5, type: "tslot20") { at: (140, -10, 499.5), axis: X }
+component top_bar    = lib.extrusion("vslot_2040", length: base_w) { at: (-base_w / 2, 0, z_top + 10), axis: X, rotate: 90, held: "corner brackets and M5 T-nuts to the uprights" }
 
 // how the frame sways after each move: the X gantry rides on the uprights, and every move at accel sets it ringing
 analysis "Frame sway" {
@@ -95,10 +116,17 @@ part foot_mr { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40
 part foot_bl { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (-140, y_back, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (-140, y_back + 10, 0), dir: Z) }
 part foot_br { group: "Frame"  material: "PETG"  color: #3a3f47  body box(40, 40, foot_h, at: (140, y_back, 0), r: 5)  cut hole(M5, cbore: true, through: true, at: (140, y_back + 10, 0), dir: Z) }
 component foot_screws = lib.screw(M5, 12) { at: [(-140, y_front + 10, 5.4), (140, y_front + 10, 5.4), (-140, 10, 5.4), (140, 10, 5.4), (-140, y_back + 10, 5.4), (140, y_back + 10, 5.4)], axis: Z }
+component foot_tnuts  = lib.nut(M5, type: "tslot20") { at: [(-140, y_front + 10, foot_h), (140, y_front + 10, foot_h), (-140, 10, foot_h), (140, 10, foot_h), (-140, y_back + 10, foot_h), (140, y_back + 10, foot_h)], axis: Z, rotate: -90 }   // in the cross members' bottom slots
 
 // ── Y axis: bed on two rails, belt under the middle ───────────────────
 component y_rails  = lib.rail("mgn12h", length: 300, travel: yc - y_rail0) { at: [(-rail_x, y_rail0, z_yrail), (rail_x, y_rail0, z_yrail)], axis: Y, held: "M3 screws into T-nuts in the Y beams" }
-component bed      = lib.heated_bed("heated_bed_235_24v") { at: (0, yc, z_bed), held: "M4 countersunk screws through silicone spacers into nyloc nuts under the bed carriage" }
+component y_rails_screws_2 = lib.screw(M3, 8) { at: [(-90, -187.5, 55.5), (-90, -162.5, 55.5), (-90, -137.5, 55.5), (-90, -112.5, 55.5), (-90, -87.5, 55.5), (-90, -62.5, 55.5), (-90, -37.5, 55.5), (-90, -12.5, 55.5), (90, -187.5, 55.5), (90, -162.5, 55.5), (90, -137.5, 55.5), (90, -112.5, 55.5), (90, -87.5, 55.5), (90, -62.5, 55.5), (90, -37.5, 55.5), (90, -12.5, 55.5)], axis: -Z }
+component y_rails_tnuts_2 = lib.nut(M3, type: "tslot20") { at: [(-90, -187.5, 52), (-90, -162.5, 52), (-90, -137.5, 52), (-90, -112.5, 52), (-90, -87.5, 52), (-90, -62.5, 52), (-90, -37.5, 52), (-90, -12.5, 52), (90, -187.5, 52), (90, -162.5, 52), (90, -137.5, 52), (90, -112.5, 52), (90, -87.5, 52), (90, -62.5, 52), (90, -37.5, 52), (90, -12.5, 52)], axis: -Z, rotate: 180 }
+component y_rails_screws = lib.screw(M3, 8) { at: [(-90, -237.5, 55.5), (-90, -212.5, 55.5), (-90, 12.5, 55.5), (-90, 37.5, 55.5), (90, -237.5, 55.5), (90, -212.5, 55.5), (90, 12.5, 55.5), (90, 37.5, 55.5)], axis: -Z }
+component y_rails_tnuts = lib.nut(M3, type: "tslot20") { at: [(-90, -237.5, 52), (-90, -212.5, 52), (-90, 12.5, 52), (-90, 37.5, 52), (90, -237.5, 52), (90, -212.5, 52), (90, 12.5, 52), (90, 37.5, 52)], axis: -Z, rotate: 180 }
+component bed      = lib.heated_bed("heated_bed_235_24v") { at: (0, yc, z_bed), removable, held: "M4 screws through the silicone spacers into nyloc nuts under the bed carriage" }
+component bed_screws = lib.screw(M4, 30, head: "button") { at: with_z(bed.holes, z_bed + 3), axis: -Z }   // the bed comes off: levelling screws from the top
+component bed_nuts   = lib.nut(M4, type: "nyloc") { at: with_z(bed.holes, z_carriage + 3.59), axis: -Z }   // in the pockets under the carriage
 component y_motor  = lib.stepper("nema17_17hs4401") { at: (-17.5, y_ym, z_yb), axis: X, role: "y" }
 // three of the four holes: with the bed all the way forward its carriage covers the upper back one
 component y_motor_screws = lib.screw(M3, 8) { at: [(-12.5, y_ym - 15.5, z_yb - 15.5), (-12.5, y_ym + 15.5, z_yb - 15.5), (-12.5, y_ym - 15.5, z_yb + 15.5)], axis: -X }   // through the 5 mm web, 3 mm into the motor
@@ -113,23 +141,39 @@ part bed_carriage {
   group: "Y axis"
   material: "ABS"
   held: "M3 screws down into both Y rail carriages"
+  process: mfg.fdm(build: -Z, shrink_comp: true)   // printed upside down; scaled for shrink, so the bed's corner screws line up
   color: #c8553d
   body box(210, 190, 6, at: (0, yc, z_carriage), r: 6)
   // lightening windows clear of the rail blocks, bed screws and belt clamp
   for sx in [-1, 1] { for sy in [-1, 1] { cut rrect(w: 46, h: 30, r: 6, depth: 8, at: (sx * 40, yc + sy * 60, z_carriage - 1), dir: Z) } }
-  // M3 screws down into both rail carriages, heads recessed
-  for r in y_rails.all { for h in r.carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, h.y, z_carriage + 6), dir: -Z) } }
+  // M3 screws down into both rail carriages, heads recessed; the right carriage's holes are slots across X, so the
+  // 180 mm between the rails needs no precision from the print
+  for h in y_rails.all[0].carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, h.y, z_carriage + 6), dir: -Z) }
+  for h in y_rails.all[1].carriage_holes {
+    cut rrect(w: 5, h: 3.4, r: 1.7, depth: 8, at: (h.x, h.y, z_carriage - 1), dir: Z)
+    cut rrect(w: 7.4, h: 6, r: 2.9, depth: 4, at: (h.x, h.y, z_carriage + 2.6), dir: Z)
+  }
   // bed screws (M4 countersunk from the top) with nyloc nuts captive underneath
   for h in bed.holes {
-    cut hole(M4, through: true, at: (h.x, h.y, z_carriage + 6), dir: -Z)
+    cut cylinder(d: 5.4, h: 8, at: (h.x, h.y, z_carriage - 1))   // a loose M4 hole: the bed is aluminium, the carriage a print
     cut cylinder(d: 8.4, h: 3.6, at: (h.x, h.y, z_carriage - 0.01))
   }
-  // belt clamp tower: the upper belt run ends in this slot, pinched by two M3 screws
+  // belt clamp tower: each end of the upper belt run is pressed teeth-down into this tight slot, which holds it by its
+  // teeth (no screws through the belt)
   add box(16, 30, z_carriage - 39 + 0.01, at: (0, yc, 39))
   cut box(8, 32, 2.6, at: (0, yc, z_yb + 5.4))
-  for sy in [-8, 8] { cut hole(M3, through: true, at: (8, yc + sy, z_yb + 6.7), dir: -X) }
   // fin that presses the Y endstop at the back of travel
   add box(16, 10, 15.01, at: (-34, yc + 35, z_carriage - 15))
+}
+component bed_carriage_screws = lib.screw(M3, 6) { at: with_z(y_rails.all[0].carriage_holes + y_rails.all[1].carriage_holes, z_carriage + 2.6), axis: -Z }
+part bed_spacers {
+  label: "Silicone bed spacer"
+  group: "Y axis"
+  material: "Silicone"
+  color: #d8492e
+  process: false
+  body tube(od: 9, id: 4.6, h: spacer_h, at: (bed.holes[0].x, bed.holes[0].y, z_carriage + 6))
+  for h in bed.holes { add tube(od: 9, id: 4.6, h: spacer_h, at: (h.x, h.y, z_carriage + 6)) }
 }
 
 part y_motor_mount {
@@ -146,39 +190,54 @@ part y_motor_mount {
   for h in y_motor.holes { cut hole(3.6, through: true, at: (-12.5, h.y, h.z), dir: -X) }
   cut hole(M5, cbore: true, through: true, at: (-30, -270, z_ybeam + 6), dir: -Z)
   cut hole(M5, cbore: true, through: true, at: (10, -290, z_ybeam + 6), dir: -Z)
-  cut hole(M5, through: true, at: (5, -255.1, z_cross + 10), dir: -Y)
+  // countersunk, so the head sits flush and leaves the motor screws' hex key a clear path
+  cut hole(M5, csink: true, through: true, at: (5, -255, z_cross + 10), dir: -Y)
 }
+component y_motor_mount_screws_3 = lib.screw(M5, 10, head: "flat") { at: (5, -255, z_cross + 10), axis: -Y }
+component y_motor_mount_tnuts_2 = lib.nut(M5, type: "tslot20") { at: (5, -260, z_cross + 10), axis: -Y, rotate: -90 }
+component y_motor_mount_screws = lib.screw(M3, 8) { at: (-12.5, -219.5, 57.3), axis: -X }
+component y_motor_mount_screws_2 = lib.screw(M5, 6) { at: [(-30, -270, 32.6), (10, -290, 32.6)], axis: -Z }
+component y_motor_mount_tnuts = lib.nut(M5, type: "tslot20") { at: [(-30, -270, 32), (10, -290, 32)], axis: -Z, rotate: -90 }
 
 part y_idler_mount {
   group: "Y axis"
   material: "PETG"
-  held: "M5 screws through its slotted feet into T-nuts in the back cross member"
+  held: "M5 screws through its feet into T-nuts in the back cross member"
   color: #3d7bfd
   body box(4, 24, 24, at: (-8, y_back, z_ybeam))               // cheeks either side of the idler
   add box(4, 24, 24, at: (7.5, y_back, z_ybeam))
   add box(19.5, 24, 3, at: (-0.25, y_back, z_ybeam + 21))       // bridge over the idler
-  add box(22, 24, 5, at: (-21, y_back, z_ybeam))               // feet on the back cross member
-  add box(22, 24, 5, at: (20.5, y_back, z_ybeam))
+  add box(22, 30, 5, at: (-21, y_back + 3, z_ybeam))           // feet on the back cross member
+  add box(22, 30, 5, at: (20.5, y_back + 3, z_ybeam))
   cut hole(M5, through: true, at: (-10.01, y_back, z_yb), dir: X)   // M5 axle
-  // slotted feet: slide the mount back to tension the Y belt
-  for sx in [-21, 20.5] { cut rrect(w: 5.5, h: 14, r: 2.7, depth: 7, at: (sx, y_back, z_ybeam + 6), dir: -Z) }
+  // feet on the cross member's back slot line (the Y belt is tensioned at the bed carriage's clamp)
+  for sx in [-21, 20.5] { cut hole(M5, through: true, at: (sx, y_back + 10, z_ybeam + 5), dir: -Z) }
 }
+component y_idler_mount_screws = lib.screw(M5, 10) { at: [(-21, 80, 37), (20.5, 80, 37)], axis: -Z }
+component y_idler_mount_tnuts = lib.nut(M5, type: "tslot20") { at: [(-21, 80, 32), (20.5, 80, 32)], axis: -Z, rotate: -90 }
 
 part y_stop_mount {
   group: "Y axis"
   material: "PETG"
   held: "an M5 screw into a T-nut in the back cross member"
   color: #3d7bfd
-  body box(25, 20, 6, at: (-45.5, 64, z_ybeam))                // foot on the back cross member
+  body box(25, 32, 6, at: (-45.5, 70, z_ybeam))                // foot on the back cross member
   add box(40, 4, 24, at: (-38, 60, z_ybeam + 6))               // plate behind the switch board
-  cut hole(M5, cbore: true, through: true, at: (-45.5, 60, z_ybeam + 6), dir: -Z)
+  // into the rear slot, clear of the plate behind the switch so a hex key reaches it
+  cut hole(M5, cbore: true, through: true, at: (-45.5, 80, z_ybeam + 6), dir: -Z)
   for h in y_stop.holes { cut hole(M2_5, through: true, at: (h.x, 58, h.z), dir: Y) }
 }
+component y_stop_mount_screws = lib.screw(M5, 6) { at: (-45.5, 80, z_ybeam + 0.6), axis: -Z }
+component y_stop_mount_tnuts = lib.nut(M5, type: "tslot20") { at: (-45.5, 80, z_ybeam), axis: -Z, rotate: -90 }
 component y_stop_screws = lib.screw(M2_5, 8) { at: with_y(y_stop.holes, 56.4), axis: Y }
 component y_stop_nuts   = lib.nut(M2_5) { at: with_y(y_stop.holes, 62), axis: Y }
 
 // ── Z axis: two rails on the uprights, two lead screws outboard ───────
 component z_rails    = lib.rail("mgn12h", length: 320, travel: z_zb - 180) { at: [(-up_x, y_up_front, 180), (up_x, y_up_front, 180)], axis: Z, rotate: 180, held: "M3 screws into T-nuts in the uprights" }
+component z_rails_screws_2 = lib.screw(M3, 8) { at: [(-150, -23.5, 190), (-150, -23.5, 215), (-150, -23.5, 240), (-150, -23.5, 265), (150, -23.5, 190), (150, -23.5, 215), (150, -23.5, 240), (150, -23.5, 265)], axis: Y }
+component z_rails_tnuts_2 = lib.nut(M3, type: "tslot20") { at: [(-150, -20, 190), (-150, -20, 215), (-150, -20, 240), (-150, -20, 265), (150, -20, 190), (150, -20, 215), (150, -20, 240), (150, -20, 265)], axis: Y }
+component z_rails_screws = lib.screw(M3, 8) { at: [(-150, -23.5, 290), (-150, -23.5, 315), (-150, -23.5, 340), (-150, -23.5, 365), (-150, -23.5, 390), (-150, -23.5, 415), (-150, -23.5, 440), (-150, -23.5, 465), (-150, -23.5, 490), (150, -23.5, 290), (150, -23.5, 315), (150, -23.5, 340), (150, -23.5, 365), (150, -23.5, 390), (150, -23.5, 415), (150, -23.5, 440), (150, -23.5, 465), (150, -23.5, 490)], axis: Y }
+component z_rails_tnuts = lib.nut(M3, type: "tslot20") { at: [(-150, -20, 290), (-150, -20, 315), (-150, -20, 340), (-150, -20, 365), (-150, -20, 390), (-150, -20, 415), (-150, -20, 440), (-150, -20, 465), (-150, -20, 490), (150, -20, 290), (150, -20, 315), (150, -20, 340), (150, -20, 365), (150, -20, 390), (150, -20, 415), (150, -20, 440), (150, -20, 465), (150, -20, 490)], axis: Y }
 component z_motors   = lib.stepper("nema17_17hs4401") { at: [(-lead_x, lead_y, 50), (lead_x, lead_y, 50)], axis: Z, role: "z" }
 component z_couplers = lib.coupler("coupler_5x8") { at: [(-lead_x, lead_y, 63), (lead_x, lead_y, 63)], axis: Z }
 component z_screws   = lib.lead_screw("lead_screw_t8x8", length: 350, travel: z_b - 20 - 76) { at: [(-lead_x, lead_y, 76), (lead_x, lead_y, 76)], axis: Z }
@@ -199,6 +258,8 @@ part z_motor_mount_l {
   for h in z_motors.all[0].holes { cut hole(M3, through: true, at: (h.x, h.y, 56), dir: -Z) }
   for y in [-10, 10] { for z in [66, 88] { cut hole(M5, cbore: true, through: true, at: (s * (up_x + 16), y, z), dir: (-s, 0, 0)) } }
 }
+component z_motor_mount_l_screws = lib.screw(M5, 6) { at: [(-160.6, -10, 66), (-160.6, -10, 88), (-160.6, 10, 66), (-160.6, 10, 88)], axis: X }
+component z_motor_mount_l_tnuts = lib.nut(M5, type: "tslot20") { at: [(-160, -10, 66), (-160, -10, 88), (-160, 10, 66), (-160, 10, 88)], axis: X }
 
 part z_motor_mount_r {
   group: "Z axis"
@@ -214,10 +275,16 @@ part z_motor_mount_r {
   for h in z_motors.all[1].holes { cut hole(M3, through: true, at: (h.x, h.y, 56), dir: -Z) }
   for y in [-10, 10] { for z in [66, 88] { cut hole(M5, cbore: true, through: true, at: (s * (up_x + 16), y, z), dir: (-s, 0, 0)) } }
 }
+component z_motor_mount_r_screws = lib.screw(M5, 6) { at: [(160.6, -10, 66), (160.6, -10, 88), (160.6, 10, 66), (160.6, 10, 88)], axis: -X }
+component z_motor_mount_r_tnuts = lib.nut(M5, type: "tslot20") { at: [(160, -10, 66), (160, -10, 88), (160, 10, 66), (160, 10, 88)], axis: -X }
 
 // ── X axis: beam on the Z carriages, rail on its front face ───────────
 component x_beam   = lib.extrusion("vslot_2040", length: 340) { at: (-170, (y_zc_front + y_beam_front) / 2, z_b + 20), axis: X, held: "M5 screws through the Z carriages into T-nuts in the beam" }
 component x_rail   = lib.rail("mgn12h", length: 300, travel: xc + 150) { at: (-150, y_beam_front, z_xr), axis: X, rotate: 90, held: "M3 screws into T-nuts in the X beam" }
+component x_rail_screws_2 = lib.screw(M3, 8) { at: [(-12.5, -64.5, zn + 72), (12.5, -64.5, zn + 72)], axis: Y }
+component x_rail_tnuts_2 = lib.nut(M3, type: "tslot20") { at: [(-12.5, -61, zn + 72), (12.5, -61, zn + 72)], axis: Y, rotate: 90 }
+component x_rail_screws = lib.screw(M3, 8) { at: [(-137.5, -64.5, zn + 72), (-112.5, -64.5, zn + 72), (-87.5, -64.5, zn + 72), (-62.5, -64.5, zn + 72), (-37.5, -64.5, zn + 72), (37.5, -64.5, zn + 72), (62.5, -64.5, zn + 72), (87.5, -64.5, zn + 72), (112.5, -64.5, zn + 72), (137.5, -64.5, zn + 72)], axis: Y }
+component x_rail_tnuts = lib.nut(M3, type: "tslot20") { at: [(-137.5, -61, zn + 72), (-112.5, -61, zn + 72), (-87.5, -61, zn + 72), (-62.5, -61, zn + 72), (-37.5, -61, zn + 72), (37.5, -61, zn + 72), (62.5, -61, zn + 72), (87.5, -61, zn + 72), (112.5, -61, zn + 72), (137.5, -61, zn + 72)], axis: Y, rotate: 90 }
 component x_motor  = lib.stepper("nema17_17hs4401") { at: (x_xm, -86.5, z_xp), axis: Y, role: "x" }
 // the two outboard holes: a key can't reach the inboard pair past the Z lead screw, and the pilot in its recess takes the belt pull
 component x_motor_screws = lib.screw(M3, 8) { at: [(x_xm - 15.5, -81.5, z_xp - 15.5), (x_xm - 15.5, -81.5, z_xp + 15.5)], axis: -Y }   // through the 5 mm plate, 3 mm into the motor
@@ -239,7 +306,8 @@ part z_carriage_l {
   for h in z_rails.all[0].carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, y_zc_front, h.z), dir: Y) }
   for bx in [134, 162] { for bz in [z_b + 10, z_b + 30] { cut hole(M5, through: true, at: (s * bx, y_zc_back, bz), dir: -Y) } }
   cut cylinder(d: 10.5, h: 10, at: (s * lead_x, lead_y, z_b - 6))
-  for h in z_screws.all[0].nut_holes { cut hole(M3, through: true, at: (h.x, h.y, z_b + 3), dir: -Z) }
+  // three of the nut's four flange holes: the inboard one sits under the carriage, where no hex key reaches
+  for h in [(s * lead_x, lead_y + 8), (s * (lead_x + 8), lead_y), (s * lead_x, lead_y - 8)] { cut hole(M3, through: true, at: (h.x, h.y, z_b + 3), dir: -Z) }
   // X motor mount: rib off the front face with a window for the belt, and the motor plate
   add box(9, 43.2, 75, at: (s * 176.5, -62.5, z_b + 10))
   cut box(12, 12, 22, at: (s * 176.5, y_belt, z_xp - 11))
@@ -248,6 +316,16 @@ part z_carriage_l {
   cut cylinder(d: 8, h: 7, at: (x_xm, -87, z_xp), dir: Y)
   for h in x_motor.holes { cut hole(M3, through: true, at: (h.x, -81.5, h.z), dir: -Y) }
 }
+component z_carriage_l_screws_4 = lib.screw(M5, 16) { at: [(-162, -31, zn + 72), (-162, -31, zn + 92)], axis: -Y }
+component z_carriage_l_screws_5 = lib.screw(M3, 8) { at: [(-184.5, -81.5, zn + 111), (-184.5, -81.5, zn + 80)], axis: -Y }
+component z_carriage_l_washers_2 = lib.washer(M5) { at: [(-162, -32, zn + 72), (-162, -31, zn + 72), (-162, -32, zn + 92), (-162, -31, zn + 92)], axis: -Y }
+component z_carriage_l_tnuts_2 = lib.nut(M5, type: "tslot20") { at: [(-162, -41, zn + 72), (-162, -41, zn + 92)], axis: -Y, rotate: -90 }
+component z_carriage_l_screws = lib.screw(M3, 8) { at: [(-160, -37.6, zn + 115), (-140, -37.6, zn + 115), (-140, -37.6, zn + 135), (-160, -37.6, zn + 135)], axis: Y }
+component z_carriage_l_screws_2 = lib.screw(M5, 16) { at: [(-134, -31, zn + 72), (-134, -31, zn + 92)], axis: -Y }
+component z_carriage_l_screws_3 = lib.screw(M3, 16) { at: [(-188, -38, zn + 65), (-196, -46, zn + 65), (-188, -54, zn + 65)], axis: -Z }
+component z_carriage_l_washers = lib.washer(M5) { at: [(-134, -32, zn + 72), (-134, -31, zn + 72), (-134, -32, zn + 92), (-134, -31, zn + 92)], axis: -Y }
+component z_carriage_l_tnuts = lib.nut(M5, type: "tslot20") { at: [(-134, -41, zn + 72), (-134, -41, zn + 92)], axis: -Y, rotate: -90 }
+component z_carriage_l_nuts = lib.nut(M3) { at: [(-188, -38, zn + 53.5), (-196, -46, zn + 53.5), (-188, -54, zn + 53.5)], axis: -Z }
 
 part z_carriage_r {
   group: "Z axis"
@@ -260,7 +338,8 @@ part z_carriage_r {
   for h in z_rails.all[1].carriage_holes { cut hole(M3, cbore: true, through: true, at: (h.x, y_zc_front, h.z), dir: Y) }
   for bx in [134, 162] { for bz in [z_b + 10, z_b + 30] { cut hole(M5, through: true, at: (s * bx, y_zc_back, bz), dir: -Y) } }
   cut cylinder(d: 10.5, h: 10, at: (s * lead_x, lead_y, z_b - 6))
-  for h in z_screws.all[1].nut_holes { cut hole(M3, through: true, at: (h.x, h.y, z_b + 3), dir: -Z) }
+  // three of the nut's four flange holes: the inboard one sits under the carriage, where no hex key reaches
+  for h in [(s * lead_x, lead_y + 8), (s * (lead_x + 8), lead_y), (s * lead_x, lead_y - 8)] { cut hole(M3, through: true, at: (h.x, h.y, z_b + 3), dir: -Z) }
   // X idler mount: rib with a belt window and two cheeks on an M5 axle
   add box(9, 39.2, 75, at: (s * 176.5, -60.5, z_b + 10))
   cut box(12, 12, 22, at: (s * 176.5, y_belt, z_xp - 11))
@@ -268,6 +347,15 @@ part z_carriage_r {
   add box(21, 4, 20, at: (191.5, -60.5, z_xp - 10))
   cut hole(M5, through: true, at: (x_xi, -80.01, z_xp), dir: Y)
 }
+component z_carriage_r_screws_4 = lib.screw(M5, 16) { at: [(162, -31, zn + 72), (162, -31, zn + 92)], axis: -Y }
+component z_carriage_r_washers_2 = lib.washer(M5) { at: [(162, -32, zn + 72), (162, -31, zn + 72), (162, -32, zn + 92), (162, -31, zn + 92)], axis: -Y }
+component z_carriage_r_tnuts_2 = lib.nut(M5, type: "tslot20") { at: [(162, -41, zn + 72), (162, -41, zn + 92)], axis: -Y, rotate: -90 }
+component z_carriage_r_screws = lib.screw(M3, 8) { at: [(140, -37.6, zn + 115), (160, -37.6, zn + 115), (160, -37.6, zn + 135), (140, -37.6, zn + 135)], axis: Y }
+component z_carriage_r_screws_2 = lib.screw(M5, 16) { at: [(134, -31, zn + 72), (134, -31, zn + 92)], axis: -Y }
+component z_carriage_r_screws_3 = lib.screw(M3, 16) { at: [(196, -46, zn + 65), (188, -38, zn + 65), (188, -54, zn + 65)], axis: -Z }
+component z_carriage_r_washers = lib.washer(M5) { at: [(134, -32, zn + 72), (134, -31, zn + 72), (134, -32, zn + 92), (134, -31, zn + 92)], axis: -Y }
+component z_carriage_r_tnuts = lib.nut(M5, type: "tslot20") { at: [(134, -41, zn + 72), (134, -41, zn + 92)], axis: -Y, rotate: -90 }
+component z_carriage_r_nuts = lib.nut(M3) { at: [(196, -46, zn + 53.5), (188, -38, zn + 53.5), (188, -54, zn + 53.5)], axis: -Z }
 note "X belt tension: loosen the idler's M5 axle nut, pull the belt through the carriage clamp by hand and pinch it, then pluck it and tune to the frequency in the test plan (phone tuner app). Change x_tension and the belt checks, frequency and cut length follow."
 
 part x_stop_mount {
@@ -283,6 +371,8 @@ part x_stop_mount {
   add cylinder(d: 2.5, h: 2.1, at: (-150.11, x_stop.holes[0].y, x_stop.holes[0].z), dir: X)
   cut hole(M2_5, through: true, at: (-150.1, x_stop.holes[1].y, x_stop.holes[1].z), dir: -X)
 }
+component x_stop_mount_screws = lib.screw(M5, 8) { at: (-160, -63.6, zn + 72), axis: Y }
+component x_stop_mount_tnuts = lib.nut(M5, type: "tslot20") { at: (-160, -61, zn + 72), axis: Y, rotate: 90 }
 component x_stop_screw = lib.screw(M2_5, 10) { at: with_x(x_stop.holes[1], -154.1), axis: X }
 component x_stop_nut   = lib.nut(M2_5) { at: with_x(x_stop.holes[1], -148.5), axis: X }
 
@@ -290,7 +380,9 @@ component x_stop_nut   = lib.nut(M2_5) { at: with_x(x_stop.holes[1], -148.5), ax
 component hotend     = lib.hotend("e3d_v6_24v") { at: (xc, y_noz, zn), axis: Z, rotate: 180 }
 component e_motor    = lib.stepper("nema17_17hs08_1004s") { at: (xc + 6.2, -116.5 - 3, h_top + 23), axis: Y, role: "extruder" }
 component extruder   = lib.extruder("bmg_clone") { at: (xc + 6.2, -116.5, h_top + 23), axis: Y }
-component hotend_fan = lib.fan("fan_4010_24v") { at: (xc, -126, zn + 34.15), axis: Y, role: "hotend heatsink", held: "M3 screws into the tapped holes in the extruder mount" }
+component hotend_fan = lib.fan("fan_4010_24v") { at: (xc, -126, zn + 34.15), axis: Y, role: "hotend heatsink", held: "M3 screws through the extruder mount's fan plate into nuts behind it" }
+component hotend_fan_screws = lib.screw(M3, 20) { at: (xc - 16, -126, zn + 18.15), axis: Y }
+component hotend_fan_nuts = lib.nut(M3) { at: (xc - 16, -112, zn + 18.15), axis: Y }
 component part_fan   = lib.fan("blower_5015_24v") { at: (xc + 22, -110, zn + 33), rotate: (0, 90, 0), role: "part cooling", held: "two M3 screws through the carriage's side" }
 component probe      = lib.sensor("bltouch") { at: (xc - 38, y_noz, probe_top), rotate: (180, 0, 0), role: "probe" }
 note "The heater block points left, toward the BLTouch, so the part-cooling duct on the right blows straight at the nozzle. The pancake motor keeps the toolhead near 600 g."
@@ -331,6 +423,8 @@ part x_carriage {
   cut box(26, 14, 2.5, at: (xc + 21, y_noz, zn + 4))
   cut box(12, 14, 2, at: (xc + 29.5, y_noz, zn + 6))
 }
+component x_carriage_screws = lib.screw(M3, 25) { at: (xc + 40.01, -128, zn + 13), axis: -X }
+component x_carriage_nuts = lib.nut(M3) { at: (xc + 22, -128, zn + 13), axis: -X }
 component probe_screws = lib.screw(M3, 8) { at: with_z(probe.holes, probe_top + 5), axis: -Z }
 
 part extruder_mount {
@@ -347,20 +441,25 @@ part extruder_mount {
   add box(42, 3, h_top + 46 - (zn + 60), at: (xc + 6.2, -118, zn + 60))
   cut cylinder(d: 22.6, h: 2.5, at: (xc + 6.2, -119.51, h_top + 23), dir: Y)
   cut cylinder(d: 8, h: 4, at: (xc + 6.2, -120, h_top + 23), dir: Y)
-  for h in e_motor.holes { cut hole(M3, through: true, at: (h.x, -116.5, h.z), dir: -Y) }
+  // the three motor screws that run through the BMG (its idler arm covers the fourth)
+  for h in extruder.holes { cut hole(M3, through: true, at: (h.x, -116.5, h.z), dir: -Y) }
   // the two clamp screws go into heat-set inserts in the carriage half
   for sx in [-1, 1] { cut hole(M3, through: true, at: (xc + sx * 14, -119.5, h_clamp + 9), dir: Y) }
   // heatsink fan plate
   add box(42, 4, 42, at: (xc, y_noz - 14, zn + 12))
   cut cylinder(d: 34, h: 6, at: (xc, y_noz - 11, hotend_fan.outlet.z), dir: -Y)
-  for h in hotend_fan.holes { cut hole(M3, fit: "tap", depth: 6, at: (h.x, -116, h.z), dir: Y) }
+  for h in hotend_fan.holes { cut hole(M3, through: true, at: (h.x, -116, h.z), dir: Y) }
 }
+component extruder_mount_screws = lib.screw(M3, 20) { at: (xc + 16, -112, zn + 18.15), axis: -Y }
+component extruder_mount_nuts = lib.nut(M3) { at: (xc + 16, -126, zn + 18.15), axis: -Y }
 
 // ── Electronics: box on the left upright, supply on the right ─────────
 component skr   = lib.controller("skr_mini_e3_v3") { at: (-170, 82, 190), rotate: (90, 0, -90) }
 component pi    = lib.host("rpi_zero_2w") { at: (-170, 60, 132), rotate: (90, 0, -90) }
 component buck  = lib.regulator("buck_24v_5v_3a") { at: (-170, 118, 124), rotate: (90, 0, -90), held: "double-sided foam tape on its pad" }
-component board_fan = lib.fan("fan_4010_24v") { at: (-213, 89, 200), axis: X, role: "controller", removable }   // comes off with the lid
+component board_fan = lib.fan("fan_4010_24v") { at: (-213, 89, 200), axis: X, role: "controller", removable, held: "four M3 screws through its corners and the lid into nuts" }   // comes off with the lid
+component board_fan_screws = lib.screw(M3, 20) { at: [(-213, 105, 216), (-213, 73, 216), (-213, 73, 184), (-213, 105, 184)], axis: X }
+component board_fan_nuts = lib.nut(M3) { at: [(-200, 105, 216), (-200, 73, 216), (-200, 73, 184), (-200, 105, 184)], axis: X }
 component psu   = lib.psu("lrs_350_24") { at: (165, 79.5, 217.5), rotate: (0, 90, 0) }
 component fuse  = lib.fuse("fuse_holder_atc") { at: (180, 113, 74.5), rotate: (0, 0, 90), rating: 15A }
 component skr_screws = lib.screw(M3, 6) { at: with_x(skr.holes, -171.6), axis: X }
@@ -392,18 +491,26 @@ part ebox {
   // opening in the front wall for the board's USB-C plug
   cut box(16, 8, 16, at: (-173.2, 23, 192))
 }
+component ebox_screws = lib.screw(M5, 8) { at: [(-163, -10, 130), (-163, -10, 210), (-163, 10, 130), (-163, 10, 210)], axis: X }
+component ebox_tnuts = lib.nut(M5, type: "tslot20") { at: [(-160, -10, 130), (-160, -10, 210), (-160, 10, 130), (-160, 10, 210)], axis: X }
 
 part ebox_lid {
   group: "Electronics"
   material: "PETG"
+  held: "four M3 screws into heat-set inserts in the box's corners"
+  process: mfg.fdm(build: X, shrink_comp: true)   // printed flat; scaled for shrink, so its screws meet the box's inserts
   color: #3d4450
   removable
   body box(3, 124, 124, at: (-201.5, 84, 108))
   cut cylinder(d: 37, h: 5, at: (-204, 89, 200), dir: X)
   for h in board_fan.holes { cut hole(M3, through: true, at: (-203, h.y, h.z), dir: X) }
-  for p in [(27, 113), (141, 113), (27, 227), (141, 227)] { cut hole(M3, through: true, at: (-203, p.x, p.y), dir: X) }
+  // 4 mm holes: room for the print's hole positions against the inserts in the box
+  for p in [(27, 113), (141, 113), (27, 227), (141, 227)] { cut cylinder(d: 4, h: 5, at: (-204, p.x, p.y), dir: X) }
   for i in range(6) { cut rrect(w: 3, h: 40, r: 1.4, depth: 5, at: (-204, 110 + i * 6, 140), dir: X) }
 }
+let lid_holes = [(-203, 27, 113), (-203, 141, 113), (-203, 27, 227), (-203, 141, 227)]
+component ebox_lid_screws = lib.screw(M3, 8) { at: lid_holes, axis: X }
+component ebox_lid_inserts = lib.insert(M3) { at: with_x(lid_holes, -200), axis: X }
 
 part psu_mount {
   group: "Electronics"
@@ -414,10 +521,15 @@ part psu_mount {
   body box(5, 155, 171, at: (162.5, 59.5, 132))
   cut box(7, 135, 131, at: (162.5, 59.5, 152))                   // window: a frame is enough
   add box(5, 10, 58.01, at: (162.5, 132, 74))                      // leg down to the terminal cover
-  for y in [-10, 10] { for z in [141, 294] { cut hole(M5, cbore: true, through: true, at: (165, y, z), dir: -X) } }
+  // plain holes: a counterbore would go right through the 5 mm plate and leave the heads nothing to sit on
+  for y in [-10, 10] { for z in [141, 294] { cut hole(M5, through: true, at: (165, y, z), dir: -X) } }
   for h in psu.holes { cut hole(M3, cbore: true, through: true, at: (160, h.y, h.z), dir: X) }
   for z in [82, 100] { cut hole(M3, through: true, at: (160, 130, z), dir: X) }
 }
+component psu_mount_screws_2 = lib.screw(M5, 10) { at: [(165, -10, 141), (165, -10, 294), (165, 10, 141), (165, 10, 294)], axis: -X }
+component psu_mount_tnuts = lib.nut(M5, type: "tslot20") { at: [(160, -10, 141), (160, -10, 294), (160, 10, 141), (160, 10, 294)], axis: -X }
+component psu_mount_screws = lib.screw(M3, 10) { at: [(160, 130, 82), (160, 130, 100)], axis: X }
+component psu_mount_inserts = lib.insert(M3) { at: [(165, 130, 82), (165, 130, 100)], axis: X }
 
 part psu_cover {
   group: "Electronics"
@@ -442,8 +554,10 @@ part spool_holder {
   add box(20, 10, 80, at: (0, 25, z_top + 28))
   add cylinder(d: 30, h: 80, at: (0, 20, z_top + 95), dir: Y)
   add cylinder(d: 40, h: 3, at: (0, 100, z_top + 95), dir: Y)
-  for x in [-10, 10] { cut hole(M5, cbore: true, through: true, at: (x, 0, z_top + 28), dir: -Z) }
+  for x in [-10, 10] { cut hole(M5, cbore: true, through: true, at: (x, 10, z_top + 28), dir: -Z) }
 }
+component spool_holder_screws = lib.screw(M5, 8) { at: [(-10, 10, 534.6), (10, 10, 534.6)], axis: -Z }
+component spool_holder_tnuts = lib.nut(M5, type: "tslot20") { at: [(-10, 10, 532), (10, 10, 532)], axis: -Z, rotate: -90 }
 
 // ── Wiring ────────────────────────────────────────────────────────────
 // power: supply → 15 A fuse → board and the Pi's 5 V buck, one common ground

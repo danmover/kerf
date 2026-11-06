@@ -473,7 +473,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const holes = g.holes ?? [];
       const body: PartRecipe = {
         base: { t: "box", w, d: dd, h, at: Z0, r },
-        ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: g.hole_d ?? 3, depth: 6, at: [x, y, 0] as V3, dir: ZP } })),
+        // mounting holes up from the bottom face: blind (6 mm) unless hole_depth says how deep (a blower's ears go right through)
+        ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: g.hole_d ?? 3, depth: num(d, "hole_depth", 6), at: [x, y, 0] as V3, dir: ZP } })),
       };
       const solids = [solid("", p.name, body, g.color ?? "#2b3038", g.material ?? "ABS")];
       const band = num(d, "band", 0);
@@ -501,22 +502,35 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const ops: PartRecipe["ops"] = [];
       const nx = Math.max(1, Math.round(w / 20));
       const ny = Math.max(1, Math.round(h / 20));
+      // each slot: the opening between the lips, then the T-nut cavity under them, narrowing toward the core's flat
+      // (so a T-nut's body fits under the lips, a screw reaches down to the core, and the core stays joined to the
+      // walls by its diagonal webs)
+      const lip = num(d, "lip", 1.8);
+      const cav = Math.min(11, sw + 4.8);
+      const bot = sw - 0.2;
+      const slot = (s: V2, n: V2): V2[] => {
+        // s: centre of the opening on the face, n: inward normal; points across (t) and in (n)
+        const t: V2 = [-n[1], n[0]];
+        const at = (a: number, b: number): V2 => [s[0] + t[0] * a + n[0] * b, s[1] + t[1] * a + n[1] * b];
+        return [at(-sw / 2, -0.05), at(sw / 2, -0.05), at(sw / 2, lip), at(cav / 2, lip), at(bot / 2, sdp), at(-bot / 2, sdp), at(-cav / 2, lip), at(-sw / 2, lip)];
+      };
+      const cutSlot = (pts: V2[]) => ops.push({ op: "cut", shape: { t: "prism", pts, h: L + 2, at: [0, 0, -1], dir: ZP, rot: 0 } });
       for (let i = 0; i < nx; i++) {
         const x = -w / 2 + 10 + 20 * i;
-        ops.push({ op: "cut", shape: { t: "box", w: sw, d: sdp, h: L + 2, at: [x, h / 2 - sdp / 2 + 0.01, -1], r: 0 } });
-        ops.push({ op: "cut", shape: { t: "box", w: sw, d: sdp, h: L + 2, at: [x, -h / 2 + sdp / 2 - 0.01, -1], r: 0 } });
+        cutSlot(slot([x, h / 2], [0, -1]));
+        cutSlot(slot([x, -h / 2], [0, 1]));
       }
       for (let j = 0; j < ny; j++) {
         const y = -h / 2 + 10 + 20 * j;
-        ops.push({ op: "cut", shape: { t: "box", w: sdp, d: sw, h: L + 2, at: [w / 2 - sdp / 2 + 0.01, y, -1], r: 0 } });
-        ops.push({ op: "cut", shape: { t: "box", w: sdp, d: sw, h: L + 2, at: [-w / 2 + sdp / 2 - 0.01, y, -1], r: 0 } });
+        cutSlot(slot([w / 2, y], [-1, 0]));
+        cutSlot(slot([-w / 2, y], [1, 0]));
       }
       for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) ops.push({ op: "cut", shape: { t: "cyl", d: bore, h: L + 2, at: [-w / 2 + 10 + 20 * i, -h / 2 + 10 + 20 * j, -1], dir: ZP } });
       return {
         placement: "axis",
         solids: [solid("", `${p.name} × ${Math.round(L)} mm`, { base: { t: "box", w, d: h, h: L, at: Z0, r: 1.5 }, ops }, g.color ?? ALU, "Aluminum 6061")],
         fields: {
-          scalars: { length: L, w, h, slot_w: sw },
+          scalars: { length: L, w, h, slot_w: sw, lip },
           points: { at: Z0, start: Z0, end: [0, 0, L], center: [0, 0, L / 2] },
           dirs: { axis: ZP },
         },
@@ -539,7 +553,13 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const holeCount = Math.max(1, Math.floor((L - 10) / pitch) + 1);
       const first = (L - (holeCount - 1) * pitch) / 2;
       const ops: PartRecipe["ops"] = [];
-      for (let i = 0; i < Math.min(holeCount, 60); i++) ops.push({ op: "cut", shape: { t: "cyl", d: num(d, "rail_hole_d", 3.5), h: rh + 2, at: [0, -1, first + i * pitch], dir: YP } });
+      // each hole counterbored from the top so the screw head sits below the carriage's path
+      const cbd = num(d, "rail_cbore_d", 6);
+      const cbh = Math.min(num(d, "rail_cbore_h", 4.5), rh * 0.6);
+      for (let i = 0; i < Math.min(holeCount, 60); i++) {
+        ops.push({ op: "cut", shape: { t: "cyl", d: num(d, "rail_hole_d", 3.5), h: rh + 2, at: [0, -1, first + i * pitch], dir: YP } });
+        ops.push({ op: "cut", shape: { t: "cyl", d: cbd, h: cbh + 1, at: [0, rh - cbh, first + i * pitch], dir: YP } });
+      }
       const rail: PartRecipe = { base: { t: "box", w: rw, d: rh, h: L, at: [0, rh / 2, 0], r: 0 }, ops };
       const hx = num(d, "block_hx", 20) / 2;
       const hz = num(d, "block_hz", 20) / 2;
@@ -553,7 +573,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         base: { t: "box", w: bw, d: bh - rh * 0.45, h: bl, at: [0, (bh + rh * 0.45) / 2, pos - bl / 2], r: 0 },
         ops: [
           { op: "cut", shape: { t: "box", w: rw + 0.6, d: rh * 0.6, h: bl + 2, at: [0, rh * 0.45 + rh * 0.3 - 0.01, pos - bl / 2 - 1], r: 0 } },
-          ...bholes.map((h) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: 2.5, h: 5, at: [h[0], bh - 4.99, h[2]] as V3, dir: YP } })),
+          // M3 tapped holes in the carriage's top
+          ...bholes.map((h) => ({ op: "cut" as const, shape: { t: "hole" as const, d: 2.5, depth: 5, at: [h[0], bh, h[2]] as V3, dir: [0, -1, 0] as V3, fit: "tap", threadName: "M3" } })),
         ],
       };
       return {

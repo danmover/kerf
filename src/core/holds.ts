@@ -21,6 +21,7 @@ import { applyXforms, frameFor, vadd, vdot, vscale, vsub, xformMatrix, type V3 }
 import { axialOverlap, cylEnd, cylMid, lineDistance, partCylinders, recipeBounds, type Cyl } from "../analysis/fits/geometry";
 import { findFits } from "../analysis/fits/detect";
 import { TriBVH } from "../mfg/bvh";
+import { catalogPart } from "../machine/catalog";
 
 export type MeshLookup = (hash: string) => MeshData | undefined;
 
@@ -169,7 +170,7 @@ const bvhOf = (m: MeshData) => {
 };
 
 const cylCache = new WeakMap<EvalPart, Cyl[]>();
-const cylsOf = (p: EvalPart) => {
+export const cylsOf = (p: EvalPart) => {
   let c = cylCache.get(p);
   if (!c) {
     c = partCylinders(p);
@@ -192,7 +193,7 @@ function unite(xs: [number, number][]): [number, number][] {
 
 // ---------- one screw's stack ----------
 
-interface Shank {
+export interface Shank {
   seat: V3;
   axis: V3;
   length: number;
@@ -201,7 +202,7 @@ interface Shank {
 }
 
 /** Material of a part round the shank, from its round holes: the coaxial holes narrower than the head. */
-function holeIntervals(p: EvalPart, sh: Shank): [number, number][] {
+export function holeIntervals(p: EvalPart, sh: Shank): [number, number][] {
   const out: [number, number][] = [];
   // threads are cut a little past a nut's or standoff's faces: keep to the part itself
   const box = worldBox(p);
@@ -246,9 +247,10 @@ const ANGLE0 = 0.37;
 /**
  * Material of a part round the shank, measured on its mesh: rays parallel to the axis at two radii inside the
  * head's footprint, eight round. A part counts when it surrounds the shank (material on most of the rays): a
- * wall beside the head does not. Null when the part is not round the shank at all.
+ * wall beside the head does not. Null when the part is not round the shank at all. minAngles: how many of the
+ * eight directions must find material (1 to find anything in the way, like a probe for a tool's path).
  */
-function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: number): [number, number][] | null {
+export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: number, minAngles = 5): [number, number][] | null {
   const bvh = bvhOf(m);
   if (!bvh.count) return null;
   const M = xformMatrix(p.xf);
@@ -304,7 +306,7 @@ function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: numb
     }
     if (hit) hitAngles++;
   }
-  if (hitAngles < 5) return null;
+  if (hitAngles < minAngles) return null;
   return unite(all);
 }
 
@@ -326,7 +328,7 @@ function localBounds(m: MeshData): Box {
 }
 
 /** Does the box come within `r` of the segment from p along unit n for `len`? (a slab test on the grown box) */
-function boxNearSegment(b: Box, p: V3, n: V3, len: number, r: number): boolean {
+export function boxNearSegment(b: Box, p: V3, n: V3, len: number, r: number): boolean {
   let t0 = 0,
     t1 = len;
   for (let i = 0; i < 3; i++) {
@@ -532,6 +534,13 @@ function compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined):
     if (st.pocket && st.host) join(st.host, st.pocket, "insert", st.host.name);
     // washers and nuts on the shank past the clamp travel with it
   }
+  // a T-nut in a profile's slot grips the slot's lips: the screw clamps the profile as well
+  for (const st of stacks) {
+    if (!(st.tight || st.hinge) || !st.host || !isTnut(st.host)) continue;
+    const at = applyXforms([0, 0, 0], st.host.xf);
+    const profile = parts.find((p) => p !== st.host && isProfile(p) && boxHas(worldBox(p, mesh), at, 0.6));
+    if (profile && !st.clamped.includes(profile)) join(st.screw, profile, "screw", st.screw.name);
+  }
   const inserts = parts.filter((p) => p.libKind === "insert");
   for (const ins of inserts) {
     const b = worldBox(ins, mesh);
@@ -581,6 +590,11 @@ function compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined):
   return { stacks, joins, carried, conflicts, loose };
 }
 
+/** A drop-in T-nut for a profile's slot. */
+export const isTnut = (p: EvalPart) => p.libKind === "nut" && /^nut\|[^|]*\|tslot20\|/.test(p.bom?.key ?? "");
+/** An aluminium profile (2020, 2040...) from the catalog. */
+export const isProfile = (p: EvalPart) => p.kind === "component" && !!p.bom?.catalogId && catalogPart(p.bom.catalogId)?.kind === "extrusion";
+const boxHas = (b: Box | null, q: V3, r: number) => !!b && q.every((x, i) => x >= b[0][i] - r && x <= b[1][i] + r);
 const boxesTouch = (a: Box, b: Box | null) => !!b && a[0].every((_, i) => a[0][i] <= b[1][i] + 0.5 && b[0][i] <= a[1][i] + 0.5);
 
 // ---------- motion carried through fastenings ----------
@@ -706,4 +720,71 @@ function seatOf(bearing: EvalPart, other: EvalPart): boolean {
 /** The motion a part shows: its own, or the one it is carried by. */
 export function motionOfPart(p: EvalPart, holds: Holds | null | undefined): Motion | undefined {
   return turns(p.motion) ? p.motion : (holds?.carried.get(p.id)?.motion ?? p.motion);
+}
+
+/**
+ * Parts carried by a linear rail's carriage or a lead screw's nut, grouped by what carries them: the carriage and
+ * everything fastened to it, but not through a bought part's own joins (the carriage to its rail). Sliding the axis by
+ * hand moves them clear of a screw that does not move with them, as on a real printer, so they never block its key.
+ */
+export function carriedGroups(model: Model, holds: Holds): Map<string, number> {
+  const adj = new Map<string, string[]>();
+  const add = (a: string, b: string) => (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+  for (const j of holds.joins) {
+    if (j.kind === "band" || j.kind === "bought") continue;
+    add(j.a.id, j.b.id);
+    add(j.b.id, j.a.id);
+  }
+  const group = new Map<string, number>();
+  let n = 0;
+  for (const p of model.parts) {
+    const carrier = (p.libKind === "rail" && p.id.endsWith(".block")) || (p.libKind === "lead_screw" && p.id.endsWith(".nut"));
+    if (!carrier || group.has(p.id)) continue;
+    const g = n++;
+    group.set(p.id, g);
+    const queue = [p.id];
+    while (queue.length) {
+      for (const q of adj.get(queue.pop()!) ?? []) {
+        if (group.has(q)) continue;
+        group.set(q, g);
+        queue.push(q);
+      }
+    }
+  }
+  return group;
+}
+
+/**
+ * Whether a round hole is open on a side, so it is no closed screw hole: the round end of a slot, a notch, or a hole
+ * that breaks out of an edge. Along the hole, rays from the axis outward must meet the wall all the way round at some
+ * depth; a hole whose wall is never whole is open. Unknown (no material found along it) counts as closed.
+ */
+export function holeOpen(p: EvalPart, m: MeshData, at: V3, axis: V3, d: number, len: number): boolean {
+  const bvh = bvhOf(m);
+  if (!bvh.count) return false;
+  const M = xformMatrix(p.xf);
+  const inv = (q: V3): V3 => {
+    const x = q[0] - M[12],
+      y = q[1] - M[13],
+      z = q[2] - M[14];
+    return [M[0] * x + M[1] * y + M[2] * z, M[4] * x + M[5] * y + M[6] * z, M[8] * x + M[9] * y + M[10] * z];
+  };
+  const invDir = (q: V3): V3 => [M[0] * q[0] + M[1] * q[1] + M[2] * q[2], M[4] * q[0] + M[5] * q[1] + M[6] * q[2], M[8] * q[0] + M[9] * q[1] + M[10] * q[2]];
+  const { u, v } = frameFor(axis);
+  const wall = d / 2 + Math.max(0.6, 0.15 * d);
+  const dirs = Array.from({ length: ANGLES }, (_, k) => {
+    const ang = ANGLE0 + (2 * Math.PI * k) / ANGLES;
+    return invDir(vadd(vscale(u, Math.cos(ang)), vscale(v, Math.sin(ang))));
+  });
+  const n = Math.min(40, Math.max(3, Math.ceil(Math.abs(len) / 0.8)));
+  let some = false;
+  for (let i = 0; i < n; i++) {
+    const o = inv(vadd(at, vscale(axis, (len * (i + 0.5)) / n)));
+    let hits = 0;
+    for (const dir of dirs) if (bvh.raycast(o[0], o[1], o[2], dir[0], dir[1], dir[2], 0, wall)) hits++;
+    // a whole ring of wall: a closed hole
+    if (hits === ANGLES) return false;
+    if (hits) some = true;
+  }
+  return some;
 }

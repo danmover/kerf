@@ -94,6 +94,9 @@ const set = useDesign.setState;
 let parsedCache: { src: string; parsed: ReturnType<typeof parse> } | null = null;
 /** the core report of the latest checks, before the passes in reportPasses add their items */
 let reportBase: { report: CheckReport; ctx: ReportContext } | null = null;
+// the last full kernel check run (contacts, interferences): the fastener planner reads its contacts
+let lastKernel: ChecksResult | null = null;
+export const kernelResult = (): ChecksResult | null => lastKernel;
 let activeJobs: { cancel: () => void }[] = [];
 /** geometry hashes whose detailed build failed: not retried until the design is reloaded */
 const detailFailed = new Set<string>();
@@ -254,6 +257,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     checksError = e instanceof Error ? e.message : String(e);
   }
   if (get().rev !== rev) return;
+  lastKernel = result;
   // manufacturing-process checks (cached in the worker by geometry and rules)
   const process: Record<string, ProcessResult> = {};
   const machines = userMachines();

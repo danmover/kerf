@@ -72,12 +72,15 @@ describe("a review asked for with the edit that finishes the work", () => {
     const requests = fakeClient([{ stop_reason: "tool_use", content: [edit("param wall = 4", "param wall = 1"), review] }]);
     await sendMessage("Make the wall thinner");
 
-    expect(requests).toHaveLength(2);
     expect(resultOf(requests[1], "e1")).toMatch(/Built and checked/);
     const held = resultOf(requests[1], "r1");
     expect(held).toMatch(/^Not reviewed yet/);
     expect(held).toContain("Plate wall is thick enough");
     expect(held).toMatch(/No review round was used/);
+    // finishing with the check still failing sends Claude back once to fix it
+    expect(requests).toHaveLength(3);
+    const gate = requests[2].messages.at(-1)!.content as Block[];
+    expect(gate.map((b) => String(b.text ?? "")).join("")).toMatch(/before you finish, the design still has 1 problem[\s\S]*Plate wall is thick enough/);
   });
 
   it("is held when the edit was not applied", async () => {
@@ -93,5 +96,46 @@ describe("a review asked for with the edit that finishes the work", () => {
     await sendMessage("Make the wall thinner");
 
     expect(resultOf(requests.at(-1)!, "r1")).not.toMatch(/Not reviewed/);
+  });
+});
+
+describe("the finish gate", () => {
+  let stop: () => void;
+  /** an empty screw hole, a completeness warning, once the plate has a hole */
+  const holes = (source: string): CheckReport => {
+    const empty = /cut hole/.test(source);
+    const items = [{ id: "complete:empty-holes:plate", category: "assembly", status: empty ? "warn" : "pass", title: "plate has 1 screw hole with nothing in it", detail: "", basis: "assembly" }] as unknown as CheckItem[];
+    return { items, counts: { pass: empty ? 0 : 1, fail: 0, warn: empty ? 1 : 0, pending: 0, info: 0 }, ms: 1 };
+  };
+  const start = (source: string) => {
+    useDesign.setState({ source, model: null, report: holes(source) });
+    stop = useDesign.subscribe((s) => {
+      if (s.rev > s.reportRev) useDesign.setState({ report: holes(s.source), reportRev: s.rev, stage: "done" });
+    });
+  };
+  beforeEach(async () => {
+    await clearChat();
+    useSettings.setState({ model: "claude-opus-5-5", webSearch: false, maxSteps: 30, selfReview: "off", routeQuick: false, reviewRounds: 2 });
+  });
+  afterEach(() => {
+    stop();
+    setClientFactory(null);
+  });
+
+  it("sends Claude back for a screw hole its run left empty", async () => {
+    start(SOURCE);
+    const requests = fakeClient([{ stop_reason: "tool_use", content: [edit("part plate { body box(40, wall, 30) }", "part plate { body box(40, wall, 30)  cut hole(M3, through: true) }")] }]);
+    await sendMessage("Add a mounting hole");
+    expect(requests).toHaveLength(3);
+    const gate = requests[2].messages.at(-1)!.content as Block[];
+    expect(gate.map((b) => String(b.text ?? "")).join("")).toMatch(/before you finish, the design still has 1 problem[\s\S]*plate has 1 screw hole with nothing in it/);
+  });
+
+  it("does not spend a turn every run on an empty hole that was there before it", async () => {
+    const holed = SOURCE.replace("body box(40, wall, 30) }", "body box(40, wall, 30)  cut hole(M3, through: true) }");
+    start(holed);
+    const requests = fakeClient([{ stop_reason: "tool_use", content: [edit("param wall = 4", "param wall = 3")] }]);
+    await sendMessage("Make the wall thinner");
+    expect(requests).toHaveLength(2);
   });
 });

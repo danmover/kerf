@@ -11,7 +11,7 @@ import type { MountSpec, ScrewSpec } from "./mounts";
 import type { SolidGeometry, SolidPlaced, SolidRole } from "./solids";
 
 /** Catalog kinds that are modules to hold down: boards, supplies, batteries, sensors. */
-export const MOUNT_KINDS = new Set<CatalogKind>(["controller", "host", "motor_driver", "stepper_driver", "regulator", "sensor", "battery", "psu", "display", "amplifier", "circuit_board"]);
+export const MOUNT_KINDS = new Set<CatalogKind>(["controller", "host", "motor_driver", "esc", "stepper_driver", "regulator", "sensor", "battery", "psu", "display", "amplifier", "circuit_board"]);
 /** Library hardware that holds things together. */
 const FASTENER_KINDS = new Set(["screw", "nut", "insert", "washer", "standoff", "dowel", "rivet"]);
 

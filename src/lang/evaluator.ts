@@ -76,6 +76,8 @@ const POSITIONAL: Record<string, string[]> = {
   usb_c: [],
   connector: ["w", "h", "d"],
   dowel: ["d", "length"],
+  corner_bracket: ["size"],
+  joining_plate: ["type"],
   step: ["file"],
 };
 const LIB_ARGS: Record<string, string[]> = {
@@ -92,6 +94,8 @@ const LIB_ARGS: Record<string, string[]> = {
   usb_c: ["opening_w", "opening_h"],
   connector: ["w", "h", "d", "opening_w", "opening_h"],
   dowel: ["d", "length"],
+  corner_bracket: ["size"],
+  joining_plate: ["type"],
   step: ["file", "origin"],
 };
 

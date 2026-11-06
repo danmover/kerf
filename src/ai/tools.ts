@@ -44,6 +44,7 @@ import { assetBlock } from "../persist/assets";
 import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssumptions, protectedBriefChanges, validId, writeBrief, keepBrief, type BriefData, type FieldKey } from "../core/brief";
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./materialTools";
+import { FASTEN_TOOL_DEFS, FASTEN_TOOL_TITLES, runFastenTool } from "./fastenTool";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
 import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
@@ -424,6 +425,7 @@ export const TOOL_DEFS = [
   },
   ...IMPORT_TOOL_DEFS,
   ...MATERIAL_TOOL_DEFS,
+  ...FASTEN_TOOL_DEFS,
 ];
 
 const EditInput = z
@@ -992,7 +994,7 @@ const compareDeps = {
 // ---------- handlers ----------
 
 /** Tools that change the source: given check, the result carries the build and check results of the change. */
-const SOURCE_TOOLS = new Set(["edit_design", "write_design", "update_brief", "set_material"]);
+const SOURCE_TOOLS = new Set(["edit_design", "write_design", "update_brief", "set_material", "place_fasteners"]);
 
 interface ToolContext {
   signal?: AbortSignal;
@@ -1438,6 +1440,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (imported) return imported;
   const material = await runMaterialTool(name, input, ctx);
   if (material) return material;
+  const fasten = await runFastenTool(name, input, ctx);
+  if (fasten) return fasten;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -1465,6 +1469,7 @@ export const TOOL_TITLES: Record<string, string> = {
   explore_fixes: "Searching for fixes",
   compare_designs: COMPARE_TITLE,
   ...MATERIAL_TOOL_TITLES,
+  ...FASTEN_TOOL_TITLES,
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
   view_drawing: "Looking at the drawing",

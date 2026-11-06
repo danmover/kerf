@@ -19,6 +19,8 @@ import { toast } from "../app/ui";
 const CHAT_ONLY = new Set(["ask_user", "suggest_next_steps", "review_design", "build_subassemblies"]);
 
 const GUIDE_TOOL = "kerf_instructions";
+/** Tools that change the design, so the person sees a toast in Kerf's window when Claude Code makes one. */
+const DESIGN_CHANGES = new Set(["edit_design", "write_design", "set_material", "place_fasteners"]);
 
 const PREAMBLE = (clientName: string) => `You are working in Kerf through ${clientName}. Your tool calls run in Kerf, and the person watches the design change in Kerf's window. The guide below is written for Kerf's own chat, so read it with these differences:
 - There is no context note. Call get_design at the start of each task, and again whenever the person may have changed the design in Kerf.
@@ -73,7 +75,7 @@ export async function callTool(params: { name?: unknown; arguments?: unknown }, 
     // Kerf never sees Claude Code's messages, so its asks are measured against the design as it is when it notes them
     if (name === "record_asks") beginAsks(useDesign.getState().model, false);
     const out = await runTool(name, params.arguments ?? {}, { signal, check: true });
-    if (!out.isError && (name === "edit_design" || name === "write_design")) toast({ kind: "info", title: `${clientName} changed the design`, detail: out.card.title });
+    if (!out.isError && DESIGN_CHANGES.has(name)) toast({ kind: "info", title: `${clientName} changed the design`, detail: out.card.title });
     return { content: toMcp(out.content), ...(out.isError ? { isError: true } : {}) };
   };
   const p = queue.then(run, run);

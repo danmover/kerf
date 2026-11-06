@@ -30,7 +30,7 @@ import { markSvg } from "../ui/logoGeometry";
 import { briefSummary, designStats, massText, sizeText } from "./designStats";
 import { designReportHtml } from "./report";
 import { simUse } from "../machine/runtime";
-import { routeNow } from "../machine/harness/runtime";
+import { routeNow, whenWiringChecked } from "../machine/harness/runtime";
 
 function visibleParts(selectionOnly: boolean) {
   const { model } = useDesign.getState();
@@ -97,6 +97,9 @@ async function makeBuildPack() {
   try {
     await whenRefined();
     await whenChecked();
+    // checks.md carries the mount and wiring checks too, which run after the others
+    const checked = useDesign.getState().model;
+    if (checked) await whenWiringChecked(checked, 30_000).catch(() => undefined);
     const { model, report } = useDesign.getState();
     if (!model?.machine) throw new Error("The design changed and no longer has machine data.");
     const parts = visibleParts(false).filter((p) => meshes.has(p.hash));

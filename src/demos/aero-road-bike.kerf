@@ -202,7 +202,8 @@ part seat_wedge {
   material: "Aluminum 7075"
   mass: 18g
   group: "Frame"
-  held: "pulled up by its M5 bolt from the top tube, pressing the seatpost back"
+  process: false   // comes with the frame
+  held: "pulled up by its own M5 bolt, supplied with the frame, from the top tube, pressing the seatpost back"
   body cylinder(d: 13.6, h: 30, at: st_top + sf * 33 - sdir * 6, dir: -sdir)
   cut hole(M5, depth: 12, at: st_top + sf * 33 - sdir * 6, dir: -sdir)
 }
@@ -226,7 +227,8 @@ part handlebar {
   material: "Carbon fiber"
   mass: 430g
   group: "Cockpit"
-  held: "two M5 bolts clamp the steerer"
+  process: false   // a bought one-piece bar and stem
+  held: "its own two M5 bolts, supplied with it, clamp the steerer"
   body aero_path([ht_top - a * 1 + hf * ht_nose, ht_top - a * 50 + hf * ht_nose], chord: [80, 78], thickness: [54, 52], tail: 0.65, on: "nose", role: "head")
   // the stem: its section stands up, nose down, so its top is flat and level with the base
   add aero_path([ht_top - a * 50 + hf * 20, B + (0, 0, 14)], chord: [34, 34], thickness: [30, 28], tail: 0.62, wind: -Z, on: "tail", role: "bar")
@@ -281,8 +283,8 @@ part crankset {
   add box(70, 62, 18, at: bb + (172.5, -76 - 44, 0), center: true)
   add box(70, 62, 18, at: bb + (-172.5, 76 + 44, 0), center: true)
 }
-component ring = lib.sprocket(z: z_ring, chain: "bike_11s", bore: 100) { at: bb + (0, y_ring - cog_w / 2, 0), axis: Y, turns_with: crankset, material: "Aluminum 7075", held: "four chainring bolts through the spider", group: "Drivetrain" }
-component ring_small = lib.sprocket(z: 36, chain: "bike_11s", bore: 100) { at: bb + (0, -39.8 - cog_w / 2, 0), axis: Y, turns_with: crankset, material: "Aluminum 7075", held: "four chainring bolts through the spider", group: "Drivetrain" }
+component ring = lib.sprocket(z: z_ring, chain: "bike_11s", bore: 100) { at: bb + (0, y_ring - cog_w / 2, 0), axis: Y, turns_with: crankset, material: "Aluminum 7075", held: "its own four chainring bolts, supplied with the crankset, through the spider", group: "Drivetrain" }
+component ring_small = lib.sprocket(z: 36, chain: "bike_11s", bore: 100) { at: bb + (0, -39.8 - cog_w / 2, 0), axis: Y, turns_with: crankset, material: "Aluminum 7075", held: "its own four chainring bolts, supplied with the crankset, through the spider", group: "Drivetrain" }
 component cog = lib.sprocket(z: z_cog, chain: "bike_11s", bore: 34.5) { at: rear + (0, y_cog - cog_w / 2, 0), axis: Y, chain: ring, held: "splined onto the freehub, lockring", group: "Drivetrain" }
 // the rest of an 11-30 cassette, turning with the 11
 component cog_12 = lib.sprocket(z: 12, chain: "bike_11s", width: 1.6, bore: 34.5) { at: rear + (0, y_cog + pitch - 0.8, 0), axis: Y, turns_with: cog, held: "splined onto the freehub", group: "Drivetrain" }
@@ -311,7 +313,8 @@ part rear_derailleur {
   material: "Aluminum 6061"
   mass: 235g
   group: "Drivetrain"
-  held: "M10 bolt through the hanger"
+  process: false   // bought
+  held: "its own M10 mounting bolt, supplied with it, through the hanger"
   // the B-knuckle on its bolt, the parallelogram reaching in and down to the cage
   body box(20, 12, 24, at: rear + (rd_at.x, -92, rd_at.z - 4), center: true)
   add cylinder(d: 10, h: 7, at: rear + (rd_at.x, -86, rd_at.z), dir: Y)
@@ -461,7 +464,8 @@ part front_caliper {
   material: "Aluminum 6061"
   mass: 125g
   group: "Brakes"
-  held: "two M5 bolts through the fork's flat mount"
+  process: false   // bought
+  held: "its own two M5 flat-mount bolts, supplied with it, through the fork's flat mount"
   body box(36, 26, 42, at: front + (-74, 42, 52), center: true)
   // the slot the rotor runs in, closed at the top by the caliper's bridge
   cut box(40, 2.8, 48, at: front + (-74, 41.9, 41), center: true)
@@ -471,7 +475,8 @@ part rear_caliper {
   material: "Aluminum 6061"
   mass: 125g
   group: "Brakes"
-  held: "two M5 bolts through the chainstay's flat mount"
+  process: false   // bought
+  held: "its own two M5 flat-mount bolts, supplied with it, through the chainstay's flat mount"
   body box(44, 24, 30, at: rear + (62, 52, 21), center: true)
   cut box(42.5, 2.8, 34, at: rear + (59.25, 52.9, 20), center: true)
 }
