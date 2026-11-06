@@ -4,13 +4,16 @@
 
 import type { EvalPart, Model } from "../core/model";
 import type { ProjItem, ViewRequest } from "../kernel/drawing";
-import { applyXforms, applyXformsToDir, recipeHash, vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
+import { applyXforms, applyXformsToDir, recipeHash, vcross, vdot, vnorm, type ShapeRecipe, type V3, type Xform } from "../kernel/recipe";
 import type { Frame } from "./sheet";
 import type { Span } from "../lang/ast";
-import { partFeatures, probeSegments, type Extent, type Feature } from "./features";
+import { partFeatures, probeSegments, shellOpenDir, type Extent, type Feature } from "./features";
 import { defaultSpec, type DetailSpec, type DrawingSpec, type SectionSpec, type ViewKind } from "./spec";
 import { generalToleranceFor } from "../mfg/profiles";
 import { layFlat } from "./flat";
+import { gdtWanted } from "./gdt";
+import { processFamily } from "./intent";
+import { squareUp } from "./square";
 
 const N = 1 / Math.sqrt(3);
 
@@ -110,9 +113,10 @@ export function drawingParts(spec: DrawingSpec, model: Model): EvalPart[] {
   const names = new Set(spec.of);
   const parts = model.parts.filter((p) => names.has(p.name));
   if (spec.of.length !== 1) return parts;
-  // a drawing of one part shows a single instance of it
+  // a drawing of one part shows a single instance of it, square to its own axes
   const first = parts[0]?.id.split(".")[0];
-  return parts.filter((p) => p.id.split(".")[0] === first);
+  const one = parts.filter((p) => p.id.split(".")[0] === first);
+  return one.length === 1 ? [squareUp(one[0])] : one;
 }
 
 /** Corners of a box projected into a view: [u0, v0, u1, v1]. */
@@ -131,6 +135,8 @@ export function boxExtents(box: [V3, V3], f: Frame): [number, number, number, nu
 
 export function planDrawing(spec: DrawingSpec, model: Model, bboxOf: BBoxOf): DrawingPlan {
   const parts = drawingParts(spec, model);
+  // a block that names one part and no views gets the views that part needs
+  if (spec.viewsAuto && !spec.auto && !spec.flat && spec.of.length === 1 && parts.length && new Set(parts.map((p) => p.id.split(".")[0])).size === 1) spec = { ...spec, views: autoViews(parts[0]).map((kind) => ({ kind })) };
   const errors: string[] = [];
   const instances = new Set(parts.map((p) => p.id.split(".")[0]));
   const assembly = instances.size > 1;
@@ -254,17 +260,20 @@ export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
     out.push(s);
   }
   const seen = new Set<string>();
-  for (const p of model.parts) {
-    if (seen.has(p.name) || covered.has(p.name)) continue;
-    if (p.kind === "component" && !(p.libKind && MADE_LIB.has(p.libKind))) continue;
-    seen.add(p.name);
+  for (const placed of model.parts) {
+    if (seen.has(placed.name) || covered.has(placed.name)) continue;
+    if (placed.kind === "component" && !(placed.libKind && MADE_LIB.has(placed.libKind))) continue;
+    seen.add(placed.name);
+    // views and sections follow the part's own axes, as its drawing shows it
+    const p = squareUp(placed);
     const s = defaultSpec(`auto:${p.name}`, humanize(p.label.replace(/ #1$/, "")), [p.name]);
     s.material = p.material;
     s.tolerance = processTolerance(model, [p.name]) ?? s.tolerance;
     s.views = autoViews(p).map((kind) => ({ kind }));
     const local = bboxOf?.(p);
     if (local && wantsSection(p)) {
-      const sec = autoSection(p, worldBox(p, local));
+      // with datums A to C on the sheet, the section takes the next letter
+      const sec = autoSection(p, worldBox(p, local), gdtWanted(s, processFamily(p)) ? "D" : "A");
       s.sections.push(sec);
       // the section takes the place of the view it looks like
       const replaced = sec.normal[1] ? "front" : "right";
@@ -317,7 +326,7 @@ export function withProcessTolerance(model: Model, specs: DrawingSpec[]): Drawin
  * A section along the part's main feature direction (the open side of a
  * shell, or where most blind cuts point), through as many features as it can.
  */
-export function autoSection(p: EvalPart, box: [V3, V3]): SectionSpec {
+export function autoSection(p: EvalPart, box: [V3, V3], label = "A"): SectionSpec {
   const feats = partFeatures(p);
   const shell = feats.find((f) => f.t === "shell");
   const votes = [0, 0, 0];
@@ -343,7 +352,7 @@ export function autoSection(p: EvalPart, box: [V3, V3]): SectionSpec {
   }
   const at: V3 = [...centre];
   at[k] = best;
-  return { label: "A", at, normal, view: axis === 1 ? "front" : "top" };
+  return { label, at, normal, view: axis === 1 ? "front" : "top" };
 }
 
 /** Parts with hollows or blind features are clearer with a section. */
@@ -352,14 +361,83 @@ export function wantsSection(p: EvalPart): boolean {
   return p.recipe.ops.some((o) => o.op === "shell" || (o.op === "cut" && !(o.shape.t === "hole" && o.shape.depth >= 1000)));
 }
 
-/** Views for a single-part drawing: an end view and a side view for turned parts and gears, else the standard three plus iso. */
+/**
+ * Views for a single-part drawing: an end view and a side view for turned
+ * parts and gears; the profile view and one side view for a part whose
+ * features all run one way (a plate, a lid, a bracket cut from bar), where a
+ * third view would only repeat the other two; else the standard three. An
+ * iso view goes with all of them.
+ */
 export function autoViews(p: EvalPart): ViewKind[] {
   const axis = turnedAxis(p);
-  if (!axis) return ["front", "top", "right", "iso"];
+  if (!axis) {
+    const axes = p.sheet ? null : extrusionAxes(p);
+    if (!axes || axes.size > 1) return ["front", "top", "right", "iso"];
+    // the view along the features shows their profile, the other its depths
+    return axes.has(0) ? ["front", "right", "iso"] : ["front", "top", "iso"];
+  }
   // gears read best as an end view and a conventional side view
   const iso: ViewKind[] = p.gear ? [] : ["iso"];
   if (axis[2]) return ["front", "top", ...iso];
   return ["front", "right", ...iso];
+}
+
+/**
+ * The world axes (0 X, 1 Y, 2 Z) the part's directional shapes run along:
+ * holes, cylinders, slots, prisms, revolved bosses and rounded boxes (along
+ * their rounded edges), with square boxes fitting any. Null when the part has shapes that don't read as
+ * one direction (a loft, a sketch, an angled feature).
+ */
+export function extrusionAxes(p: EvalPart): Set<number> | null {
+  const out = new Set<number>();
+  let unknown = false;
+  const axisOf = (d: V3): number => {
+    const k = d.map(Math.abs).indexOf(Math.max(...d.map(Math.abs)));
+    return Math.abs(d[k]) > 0.999 ? k : -1;
+  };
+  const along = (d: V3, xf: Xform[]) => {
+    const k = axisOf(vnorm(applyXformsToDir(applyXformsToDir(d, xf), p.xf)));
+    if (k < 0) unknown = true;
+    else out.add(k);
+  };
+  const walk = (s: ShapeRecipe, op: "base" | "add" | "cut" | "intersect", xf: Xform[]) => {
+    switch (s.t) {
+      case "xform":
+        return walk(s.shape, op, [...s.xf, ...xf]);
+      case "union":
+        for (const c of s.shapes) walk(c, op, xf);
+        return;
+      case "box":
+        // rounded vertical edges make a box a profile drawn along its Z; a square one fits any view
+        if (s.r > 0) along([0, 0, 1], xf);
+        return;
+      case "sphere":
+        return;
+      case "hole":
+      case "cyl":
+      case "tube":
+      case "cone":
+      case "prism":
+      case "rrect":
+      case "revolve":
+      case "gear":
+        return along(s.dir, xf);
+      default:
+        unknown = true;
+    }
+  };
+  if (p.recipe.base) walk(p.recipe.base, "base", []);
+  else unknown = true;
+  for (const o of p.recipe.ops) {
+    if (o.op === "add" || o.op === "cut") walk(o.shape, o.op, []);
+    else if (o.op === "intersect") unknown = true;
+    else if (o.op === "shell") {
+      const open = shellOpenDir(o.open);
+      if (open) along(open, []);
+      else unknown = true;
+    } else if (o.op === "draft") unknown = true;
+  }
+  return unknown ? null : out;
 }
 
 /** Axis of a turned part (revolve body) or gear in world space, when it lies along X, Y or Z. */

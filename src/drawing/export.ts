@@ -101,9 +101,11 @@ export function describeSheet(sheet: Sheet): string {
         break;
       }
       const tol = d.tol ? ` tol ${d.tol[0]}/${d.tol[1]}` : d.general ? ` (general ±${d.general})` : "";
-      lines.push(`  d${i} [${sheet.views[d.view]?.name ?? "?"}] ${d.label} = ${d.text}${tol}${d.param ? ` → param ${d.param}` : ""}${d.auto ? (d.id ? ` id "${d.id}"` : "") : " (from the drawing block)"}`);
+      const gd = `${d.basic ? " [basic]" : ""}${d.datum ? ` [datum ${d.datum}]` : ""}${d.frames?.length ? ` frames: ${d.frames.join("; ")}` : ""}`;
+      lines.push(`  d${i} [${sheet.views[d.view]?.name ?? "?"}] ${d.label} = ${d.text}${tol}${gd}${d.param ? ` → param ${d.param}` : ""}${d.auto ? (d.id ? ` id "${d.id}"` : "") : " (from the drawing block)"}`);
     }
   }
+  if (sheet.datums?.length) lines.push(`Datums: ${sheet.datums.map((d) => `${d.letter} = ${d.what}`).join("; ")}. Kerf picked them from how the part seats and how its features are located; gdt("id", "position", 0.2, "A B C") changes a frame, gdt: false removes them.`);
   if (sheet.bom.length) lines.push(`Parts list: ${sheet.bom.map((b) => `${b.item}. ${b.qty}× ${b.name}`).join("; ")}`);
   if (sheet.notes.length) lines.push(`Notes: ${sheet.notes.map((n, i) => `${i + 1}. ${n}`).join(" ")}`);
   if (sheet.warnings.length) lines.push(`Warnings: ${sheet.warnings.join("; ")}`);

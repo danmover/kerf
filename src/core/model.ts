@@ -211,6 +211,8 @@ export interface EvalPart {
   recipe: PartRecipe;
   hash: string;
   xf: Xform[];
+  /** set on a part a drawing shows squared up (src/drawing/square.ts): where it really sits */
+  worldXf?: Xform[];
   locked: boolean;
   hidden: boolean;
   /** removable covers (lids) are ignored by the tool-access check */

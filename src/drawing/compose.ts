@@ -3,12 +3,15 @@
 // planes, balloons, the title block, parts list and notes. Pure and
 // synchronous: views whose projection has not arrived yet show placeholders.
 
-import type { EvalPart, Model } from "../core/model";
+import { partMass, type EvalPart, type Model } from "../core/model";
 import type { Edge2, ViewResult } from "../kernel/drawing";
-import { vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
+import { recipeHash, vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
 import { MATERIALS, materialDensity } from "../library/standards";
 import { FINISHES, resolveFinish } from "../library/materials";
-import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DimDef, type DimStyle } from "./dims";
+import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DatumMark, type DimDef, type DimStyle } from "./dims";
+import { datumExtent, fcfHeight, fcfText, fcfWidth, faceName, inkDatum, inkFcf } from "./gdt";
+import { processFamily } from "./intent";
+import { applyXformsToDir } from "../kernel/recipe";
 import { partFeatures } from "./features";
 import { bendLabel, bendRows, bendWay, flatShift } from "./flat";
 import { arcPoints, clipPolylineToCircle, hatchLines } from "./hatch";
@@ -16,7 +19,7 @@ import { gridCell, layoutSheet, type LayoutItem, type LayoutResult } from "./lay
 import { boxOk, emptyBox, fmtNum, growBox, Ink, shapeBox, type BomLine, type Box, type Sheet, type SheetDim, type SheetPart, type SheetView } from "./sheet";
 import { scaleText, SHEETS, STANDARD_SCALES, type DrawingSpec, type SheetSize } from "./spec";
 import { textWidth } from "./text";
-import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTitleBlock, inkToleranceStrip, TB_W } from "./titleblock";
+import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTitleBlock, inkToleranceStrip, partsListBoxes, TB_W } from "./titleblock";
 import { boxExtents, humanize, toView, viewFrame, worldBox, type BBoxOf, type DrawingPlan, type PlannedView } from "./views";
 
 export interface ComposeInput {
@@ -62,68 +65,91 @@ export function composeSheet(inp: ComposeInput): Sheet {
   warnings.push(...built.warnings);
 
   // parts list
-  const bom = plan.assembly && spec.partsList !== false ? bomLines(plan.parts) : [];
+  const bom = plan.assembly && spec.partsList !== false ? bomLines(plan.parts, inp.bboxOf, inp.volumeOf) : [];
   const itemOf = new Map<string, number>();
   for (const l of bom) for (const id of l.ids) itemOf.set(id, l.item);
 
   // notes and tables in the bottom-left corner
-  const notes = defaultNotes(spec, plan);
+  const notes = defaultNotes(spec, plan, built);
   const table = dataTable(plan);
 
   // ---- sheet size and scale
   const portrait = spec.orientation === "portrait";
-  const sizes = spec.sheet ? [spec.sheet] : SIZES;
-  const scales = spec.scale ? [spec.scale] : STANDARD_SCALES;
   type Choice = { size: SheetSize; w: number; h: number; scale: number; iso: number; res: LayoutResult; items: LayoutItem[]; st: DimStyle; fixed: Box[] };
-  let chosen: Choice | null = null as Choice | null;
+  const minFeature = Math.min(Infinity, ...dims.filter((d) => d.kind === "callout" && d.circle && d.meta.auto).map((d) => 2 * d.circle!.r));
   const principal = plan.views.filter((v) => gridFor(v, plan, spec));
   const maxExtent = Math.max(1, ...principal.map((v) => Math.max(...[0, 1].map((k) => lext[plan.views.indexOf(v)][k + 2] - lext[plan.views.indexOf(v)][k]))));
-  for (const size of sizes) {
+  const paperOf = (size: SheetSize) => {
     const [a, b] = SHEETS[size];
-    const w = portrait ? Math.min(a, b) : Math.max(a, b);
-    const h = portrait ? Math.max(a, b) : Math.min(a, b);
-    const st = dimStyle(w);
-    const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, table);
-    const area = inset(frameBox(w, h), 4);
-    let found: Choice | null = null as Choice | null;
-    search: for (const s of scales) {
-      // the pictorial view may drop one scale to make room
-      const smaller = STANDARD_SCALES.find((x) => x < s - 1e-9);
-      for (const iso of plan.views.some((v) => v.kind === "iso") && smaller ? [s, smaller] : [s]) {
-        const sc = { s, iso };
-        const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec));
-        const items = plan.views.map((v, i) => layoutItem(v, sc, lext[i], margins[i], spec, area, w, plan));
-        const res = layoutSheet(items, area, fixed, GAP);
-        if (res) {
-          found = { size, w, h, scale: s, iso, res, items, st, fixed };
-          break search;
+    return { w: portrait ? Math.min(a, b) : Math.max(a, b), h: portrait ? Math.max(a, b) : Math.min(a, b) };
+  };
+  /** The first sheet and scale that hold everything; fixed: the first fit, else the readable choice described below. */
+  const pick = (sizes: SheetSize[], scales: number[], fixedChoice: boolean): Choice | null => {
+    let chosen: Choice | null = null as Choice | null;
+    /** the first readable choice, kept while a bigger sheet is tried for small features */
+    let roomy: Choice | null = null as Choice | null;
+    for (const size of sizes) {
+      const { w, h } = paperOf(size);
+      const st = dimStyle(w);
+      const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, table);
+      const area = inset(frameBox(w, h), 4);
+      let found: Choice | null = null as Choice | null;
+      search: for (const s of scales) {
+        // the pictorial view may drop one scale to make room
+        const smaller = STANDARD_SCALES.find((x) => x < s - 1e-9);
+        for (const iso of plan.views.some((v) => v.kind === "iso") && smaller ? [s, smaller] : [s]) {
+          const sc = { s, iso };
+          const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec, bom.length));
+          const items = plan.views.map((v, i) => layoutItem(v, sc, lext[i], margins[i], spec, area, w, plan));
+          const res = layoutSheet(items, area, fixed, GAP);
+          if (res) {
+            found = { size, w, h, scale: s, iso, res, items, st, fixed };
+            break search;
+          }
         }
       }
+      if (!found) continue;
+      if (fixedChoice) return found;
+      const readable = maxExtent * found.scale >= 60 || found.scale >= 2;
+      // small holes and bores should come out at least 2 mm across: a sheet up to A2 may be worth it
+      const clear = !minFeature || minFeature * found.scale >= 2;
+      if (!roomy) {
+        chosen = found;
+        if (!readable) continue;
+        if (clear || ["A2", "A1", "A0"].includes(size)) break;
+        roomy = found;
+        continue;
+      }
+      // a bigger sheet only helps when it draws the part bigger
+      if (found.scale > chosen!.scale) chosen = found;
+      if ((clear && found.scale > roomy.scale) || size === "A2") break;
     }
-    if (!found) continue;
-    chosen = found;
-    const readable = maxExtent * found.scale >= 60 || found.scale >= 2;
-    if (spec.sheet || readable) break;
+    return chosen;
+  };
+  const sizes = spec.sheet ? [spec.sheet] : SIZES;
+  let chosen = pick(sizes, spec.scale ? [spec.scale] : STANDARD_SCALES, !!(spec.sheet || spec.scale));
+  if (!chosen && spec.scale) {
+    // the scale asked for does not fit: the largest standard scale below it that does
+    chosen = pick(sizes, STANDARD_SCALES.filter((x) => x < spec.scale! - 1e-9), true);
+    if (chosen) warnings.push(`At ${scaleText(spec.scale)} the views do not fit on ${spec.sheet ? `an ${spec.sheet} sheet` : "any sheet up to A0"}, so this sheet is drawn at ${scaleText(chosen.scale)}; change scale: or sheet: to choose`);
   }
   if (!chosen) {
-    // nothing fits: the biggest sheet at the smallest scale, overlapping if it must
+    // nothing fits: the biggest sheet at the smallest scale, the views in rows, overlapping only if they must
     const size = spec.sheet ?? "A0";
-    const [a, b] = SHEETS[size];
-    const w = portrait ? Math.min(a, b) : Math.max(a, b);
-    const h = portrait ? Math.max(a, b) : Math.min(a, b);
+    const { w, h } = paperOf(size);
     const st = dimStyle(w);
-    const s = scales[scales.length - 1];
+    const s = STANDARD_SCALES[STANDARD_SCALES.length - 1];
     const sc = { s, iso: s };
-    const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec));
+    const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec, bom.length));
     const area = inset(frameBox(w, h), 4);
     const items = plan.views.map((v, i) => layoutItem(v, sc, lext[i], margins[i], spec, area, w, plan));
-    const res = layoutSheet(items, area, [], GAP) ?? { origins: items.map(() => [area[0] + 40, area[1] + 40] as [number, number]), boxes: items.map(() => area), group: null };
+    const res = layoutSheet(items, area, [], GAP) ?? packRows(items, area, GAP);
     chosen = { size, w, h, scale: s, iso: s, res, items, st, fixed: [] };
     warnings.push("The views do not fit on the sheet at any standard scale");
   }
   const { size, w, h, scale, items, st, fixed } = chosen;
   // stacking rows were last assigned while searching; assign them for the chosen scale
-  const margins = plan.views.map((v, i) => viewMargins(v, i, { s: scale, iso: chosen!.iso }, dims, lext, st, plan, spec));
+  const margins = plan.views.map((v, i) => viewMargins(v, i, { s: scale, iso: chosen!.iso }, dims, lext, st, plan, spec, bom.length));
   const res = centre(chosen.res, inset(frameBox(w, h), 4), fixed);
 
   // ---- ink
@@ -196,8 +222,14 @@ export function composeSheet(inp: ComposeInput): Sheet {
       a: d.meta.a ?? world(d.kind === "callout" ? centre : d.a),
       b: d.meta.b ?? (d.kind === "callout" ? undefined : world(d.b)),
       align: d.kind === "h" || d.kind === "v" || d.kind === "aligned" ? d.kind : undefined,
+      frames: d.frames?.length ? d.frames.map(fcfText) : undefined,
+      datum: d.datum,
+      basic: d.text.boxed || undefined,
     });
   });
+
+  // datum symbols on faces, where they find room
+  if (built.marks.length) inkMarks(ink, built.marks, views, st, fixed, frameBox(w, h));
 
   // balloons
   if (plan.assembly && spec.balloons !== false && bom.length) balloons(ink, plan, views, results, bom, st);
@@ -223,8 +255,8 @@ export function composeSheet(inp: ComposeInput): Sheet {
   let top: Box = tb;
   const strip = inkToleranceStrip(ink, top, spec.tolerance);
   if (strip) top = strip;
-  if (bom.length) inkPartsList(ink, top, bom);
   const frame = frameBox(w, h);
+  if (bom.length) inkPartsList(ink, top, bom, frame);
   let bottom = frame[3] - 4;
   const notesW = tb[0] - frame[0] - 14;
   const nb = inkNotes(ink, frame[0] + 4, bottom, notesW, notes, st.size);
@@ -249,6 +281,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     bom,
     notes,
     warnings,
+    datums: built.datums,
     pending,
     spec,
     titleBox: tb,
@@ -278,7 +311,7 @@ function viewScale(v: PlannedView, sc: Scales): number {
   return v.scale ?? (v.kind === "iso" ? sc.iso : sc.s);
 }
 
-function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext: Ext[], st: DimStyle, plan: DrawingPlan, spec: DrawingSpec) {
+function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext: Ext[], st: DimStyle, plan: DrawingPlan, spec: DrawingSpec, balloonCount = 0) {
   const scale = viewScale(v, sc);
   const s = sc.s;
   const e = lext[i];
@@ -301,8 +334,31 @@ function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext
   }
   // cutting-plane lines stick out of the views they are drawn on
   if (plan.views.some((o) => o.kind === "section" && o.parent === i)) for (const k of ["top", "right", "bottom", "left"] as const) out[k] = Math.max(out[k], 10);
-  if (plan.assembly && spec.balloons !== false && i === balloonView(plan)) for (const k of ["top", "right", "bottom", "left"] as const) out[k] += 16;
+  if (plan.assembly && spec.balloons !== false && i === balloonView(plan)) {
+    const ring = 16 + balloonRoom(balloonCount, box[2] - box[0] + 18, box[3] - box[1] + 18);
+    for (const k of ["top", "right", "bottom", "left"] as const) out[k] += ring;
+  }
   return out;
+}
+
+const BALLOON_GAP = 10.5;
+const BALLOON_STEP = 9.5;
+
+/** How many rings of balloons a view takes, and how far out the first one goes beyond its usual place, for n balloons around a w × h view. */
+function balloonRings(n: number, w: number, h: number): { rings: number; grow: number } {
+  const per = 2 * (w + h);
+  if (n * BALLOON_GAP <= per) return { rings: 1, grow: 0 };
+  // a second ring staggered outside the first, then both pushed out until they hold them all
+  const rings = 2;
+  let grow = 0;
+  while (n * BALLOON_GAP > rings * 2 * (w + h + 4 * grow) && grow < 200) grow += 2;
+  return { rings, grow };
+}
+
+/** The extra margin a view needs around its balloons. */
+function balloonRoom(n: number, w: number, h: number): number {
+  const r = balloonRings(n, w, h);
+  return r.grow + (r.rings - 1) * BALLOON_STEP;
 }
 
 function layoutItem(v: PlannedView, sc: Scales, e: Ext, margin: LayoutItem["margin"], spec: DrawingSpec, area: Box, sheetW: number, plan: DrawingPlan): LayoutItem {
@@ -334,8 +390,9 @@ function gridFor(v: PlannedView, plan: DrawingPlan, spec: DrawingSpec): [number,
 /** Fixed regions on the sheet: title block, tolerance strip, parts list, notes. */
 function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, notes: string[], st: DimStyle, table: DataTable | null): Box[] {
   const f = frameBox(w, h);
-  const tbH = 37 + (/2768/.test(tolerance) ? 9 : 0) + (bomRows ? (bomRows + 1) * 5.5 : 0);
-  const out: Box[] = [[f[2] - TB_W, f[3] - tbH, f[2], f[3]]];
+  const tbH = 37 + (/2768/.test(tolerance) ? 9 : 0);
+  const tb: Box = [f[2] - TB_W, f[3] - tbH, f[2], f[3]];
+  const out: Box[] = [tb, ...(bomRows ? partsListBoxes(bomRows, tb, f).boxes : [])];
   // notes and tables: measure them with a scratch ink
   const scratch = new Ink();
   const notesW = f[2] - TB_W - f[0] - 14;
@@ -350,6 +407,31 @@ function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, 
     out.push([gb[0] - 2, gb[1] - 2, gb[2] + 2, f[3]]);
   }
   return out;
+}
+
+/** Views side by side in rows across the area, wrapping when a row is full: the last resort when no layout fits. */
+function packRows(items: LayoutItem[], area: Box, gap: number): LayoutResult {
+  const origins: [number, number][] = [];
+  const boxes: Box[] = [];
+  let x = area[0];
+  let y = area[1];
+  let rowH = 0;
+  for (const it of items) {
+    const left = -it.ext[0] * it.scale + it.margin.left;
+    const right = it.ext[2] * it.scale + it.margin.right;
+    const top = it.ext[3] * it.scale + it.margin.top;
+    const bottom = -it.ext[1] * it.scale + it.margin.bottom;
+    if (x > area[0] && x + left + right > area[2]) {
+      x = area[0];
+      y += rowH + gap;
+      rowH = 0;
+    }
+    origins.push([x + left, y + top]);
+    boxes.push([x, y, x + left + right, y + top + bottom]);
+    x += left + right + gap;
+    rowH = Math.max(rowH, top + bottom);
+  }
+  return { origins, boxes, group: null };
 }
 
 /** Moves the views toward the middle of the free space when that keeps them clear of everything. */
@@ -708,8 +790,11 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
     anchors.push({ item: line.item, ax: best[0], ay: best[1], t: 0 });
   }
   if (!anchors.length) return;
-  // balloons sit on a rectangle around the view, ordered by angle so leaders do not cross
-  const R: Box = [sv.box[0] - 9, sv.box[1] - 9, sv.box[2] + 9, sv.box[3] + 9];
+  // balloons sit on a rectangle around the view, ordered by angle so leaders do not cross;
+  // many of them take a second ring, every other balloon staggered out
+  const { rings, grow } = balloonRings(anchors.length, sv.box[2] - sv.box[0] + 18, sv.box[3] - sv.box[1] + 18);
+  const g = 9 + grow;
+  const R: Box = [sv.box[0] - g, sv.box[1] - g, sv.box[2] + g, sv.box[3] + g];
   const W = R[2] - R[0];
   const H = R[3] - R[1];
   const per = 2 * (W + H);
@@ -734,7 +819,8 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
   };
   for (const a of anchors) a.t = toT(a.ax, a.ay);
   anchors.sort((a, b) => a.t - b.t);
-  const minGap = 10.5;
+  // the gap between neighbours on the rectangle; with two rings, neighbours alternate in and out
+  const minGap = BALLOON_GAP / rings;
   // spread evenly where they crowd
   for (let pass = 0; pass < 40; pass++) {
     let moved = false;
@@ -754,9 +840,15 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
     if (!moved) break;
   }
   const rb = 4;
-  for (const a of anchors) {
+  anchors.forEach((a, k) => {
     ink.key = `b${a.item}`;
-    const [bx, by] = atT(a.t);
+    let [bx, by] = atT(a.t);
+    if (rings > 1 && k % 2 === 1) {
+      // out from the rectangle's side it sits on
+      const side = Math.abs(by - R[1]) < 1e-6 ? [0, -1] : Math.abs(bx - R[2]) < 1e-6 ? [1, 0] : Math.abs(by - R[3]) < 1e-6 ? [0, 1] : [-1, 0];
+      bx += side[0] * BALLOON_STEP;
+      by += side[1] * BALLOON_STEP;
+    }
     const dx = a.ax - bx;
     const dy = a.ay - by;
     const L = Math.hypot(dx, dy) || 1;
@@ -764,7 +856,7 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
     ink.dot(a.ax, a.ay, 0.6);
     ink.circle(bx, by, rb, "frame");
     ink.text(bx, by + st.size * 0.42, String(a.item), Math.min(3.5, st.size * 1.2), "middle", { bold: true });
-  }
+  });
 }
 
 // ---------- tables and fields ----------
@@ -782,8 +874,25 @@ const LIB_NAMES: Record<string, string> = {
   connector: "Connector",
 };
 
-function bomLines(parts: EvalPart[]): BomLine[] {
-  const rows = new Map<string, BomLine & { kind: string }>();
+/**
+ * What a made part looks like wherever it sits: its recipe's structure, its
+ * volume and size, and its features measured from its own corner. Parts
+ * modelled in place (a loop of pins each with its own at:) come out the
+ * same when they are the same part.
+ */
+function shapeKey(p: EvalPart, bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) => number | undefined): string {
+  const local = bboxOf?.(p);
+  const vol = volumeOf?.(p);
+  if (!local || vol === undefined) return p.hash;
+  const [lo, hi] = worldBox(p, local);
+  const r = (n: number) => Math.round(n * 100) / 100;
+  const structure = JSON.stringify(p.recipe, (_k, v) => (typeof v === "number" ? 0 : v));
+  const feats = partFeatures(p).map((f) => JSON.stringify({ ...f, part: undefined, at: "at" in f ? (f.at as V3).map((c, k) => r(c - lo[k])) : undefined }, (_k, v) => (typeof v === "number" ? r(v) : v)));
+  return recipeHash({ structure, vol: Number(vol.toPrecision(7)), size: hi.map((h, k) => r(h - lo[k])), feats: feats.sort() });
+}
+
+function bomLines(parts: EvalPart[], bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) => number | undefined): BomLine[] {
+  const rows = new Map<string, BomLine & { kind: string; names: Set<string> }>();
   const seen = new Set<string>();
   for (const p of parts) {
     const inst = p.id.split(".")[0];
@@ -792,25 +901,136 @@ function bomLines(parts: EvalPart[]): BomLine[] {
     const description = p.bom?.description ?? (p.kind === "part" ? `Custom part` : p.label);
     const kind = p.kind === "part" ? "Make" : "Buy";
     const name = p.kind === "part" ? humanize(p.label) : (LIB_NAMES[p.libKind ?? ""] ?? humanize(p.libKind ?? p.name));
-    const key = `${kind}|${description}|${p.material}|${p.kind === "part" ? p.name : ""}`;
+    // made parts of the same shape, material and hand are one line, whatever they are called
+    const hand = (p.worldXf ?? p.xf).filter((x) => x.op === "mirror").length % 2;
+    const key = p.kind === "part" ? `${kind}|${shapeKey(p, bboxOf, volumeOf)}|${hand}|${p.material}|${description}` : `${kind}|${description}|${p.material}`;
     const row = rows.get(key);
     const ids = parts.filter((q) => q.id.split(".")[0] === inst).map((q) => q.id);
     if (row) {
       row.qty++;
       row.ids.push(...ids);
-    } else rows.set(key, { item: 0, qty: 1, name, description: p.bom?.standard ? `${description} (${p.bom.standard})` : description, material: MATERIALS[p.material]?.label ?? p.material, ids, kind });
+      row.names.add(name);
+    } else rows.set(key, { item: 0, qty: 1, name, names: new Set([name]), description: p.bom?.standard ? `${description} (${p.bom.standard})` : description, material: MATERIALS[p.material]?.label ?? p.material, ids, kind });
   }
-  const list = [...rows.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "Make" ? -1 : 1));
+  for (const r of rows.values()) if (r.names.size > 1) r.name = sharedName([...r.names]);
+  const list = [...rows.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { numeric: true }) : a.kind === "Make" ? -1 : 1));
   return list.map((r, i) => ({ item: i + 1, qty: r.qty, name: r.name, description: r.description, material: r.material, ids: r.ids }));
 }
 
-function defaultNotes(spec: DrawingSpec, plan: DrawingPlan): string[] {
+/** One name for parts made alike: the words their names share ("Cup a1", "Cup b2" → "Cup"; "Left side", "Right side" → "Side"), else the first name and how many more. */
+function sharedName(names: string[]): string {
+  const words = names.map((n) => n.split(/[\s_]+/).filter(Boolean));
+  const common = (pick: (w: string[], i: number) => string | undefined) => {
+    const out: string[] = [];
+    for (let i = 0; ; i++) {
+      const w = pick(words[0], i);
+      if (w === undefined || !words.every((ws) => pick(ws, i)?.toLowerCase() === w.toLowerCase())) return out;
+      out.push(w);
+    }
+  };
+  const head = common((w, i) => w[i]);
+  if (head.length) return humanize(head.join(" "));
+  const tail = common((w, i) => w[w.length - 1 - i]).reverse();
+  if (tail.length) return humanize(tail.join(" "));
+  return `${names[0]} (+${names.length - 1})`;
+}
+
+function defaultNotes(spec: DrawingSpec, plan: DrawingPlan, built: { datums: unknown[]; notes: string[] }): string[] {
   const out = ["ALL DIMENSIONS IN MILLIMETRES."];
   if (/2768|8062/.test(spec.tolerance)) out.push(`UNLESS OTHERWISE STATED, TOLERANCES TO ${spec.tolerance.toUpperCase()}.`);
   else if (spec.tolerance) out.push(`GENERAL TOLERANCES: ${spec.tolerance.toUpperCase()}.`);
-  if (!plan.assembly && plan.parts.some((p) => p.kind === "part")) out.push("REMOVE BURRS AND BREAK SHARP EDGES.");
+  if (built.datums.length) out.push(spec.projection === "third" ? "INTERPRET DIMENSIONS AND TOLERANCES PER ASME Y14.5-2018. BOXED DIMENSIONS ARE BASIC." : "GEOMETRICAL TOLERANCES TO ISO 1101, DATUMS TO ISO 5459. BOXED DIMENSIONS ARE THEORETICALLY EXACT.");
+  const part = !plan.assembly ? plan.parts.find((p) => p.kind === "part") : undefined;
+  if (part) out.push(...processNotes(part));
   if (spec.flat) out.push("FLAT PATTERN SEEN FROM ABOVE: UP BENDS RISE TOWARD THE VIEWER. BEND LINES CHAIN-DOTTED, WITH ANGLES AND INSIDE RADII IN THE BEND TABLE.");
-  return [...out, ...spec.notes.map((n) => n.toUpperCase())];
+  return [...out, ...built.notes, ...spec.notes.map((n) => n.toUpperCase())];
+}
+
+/** What the maker needs to know for the way the part is made. */
+function processNotes(p: EvalPart): string[] {
+  const family = processFamily(p);
+  const set = p.process?.settings ?? {};
+  if (family === "subtractive") return ["BREAK SHARP EDGES 0.2 × 45° MAX AND REMOVE BURRS.", "SURFACE TEXTURE Ra 3.2 µm UNLESS STATED."];
+  if (family === "additive") {
+    const out = ["REMOVE SUPPORT MATERIAL AND BREAK SHARP EDGES."];
+    const b = set.build;
+    if (Array.isArray(b) && b.length === 3 && typeof b[0] === "number") {
+      const up = vnorm(applyXformsToDir(b as V3, p.xf));
+      const axis = up.map(Math.abs).indexOf(Math.max(...up.map(Math.abs)));
+      if (Math.abs(up[axis]) > 0.999) {
+        const layer = typeof set.layer === "number" ? `, ${fmtNum(set.layer)} MM LAYERS` : "";
+        const name = `${up[axis] > 0 ? "+" : "−"}${"XYZ"[axis]}`;
+        out.push(`PRINT ON THE ${faceName([-up[0], -up[1], -up[2]]).toUpperCase()} FACE, BUILDING TOWARD ${name}${layer}.`);
+      }
+    }
+    return out;
+  }
+  if (family === "formative") return ["REMOVE FLASH AND GATE MARKS FLUSH; BREAK SHARP EDGES."];
+  return ["REMOVE BURRS AND BREAK SHARP EDGES."];
+}
+
+/**
+ * Datum symbols on faces seen edge-on: each goes to the first spot along its
+ * edge where the letter (and its frame) clears everything already on the
+ * sheet, trying longer stems further out.
+ */
+function inkMarks(ink: Ink, marks: DatumMark[], views: SheetView[], st: DimStyle, fixed: Box[], frame: Box) {
+  // what is already on the sheet, polylines as their segments so an outline's box doesn't fill its inside
+  const taken: Box[] = [];
+  for (const sh of ink.shapes) {
+    if (sh.key === "border") continue;
+    if (sh.t === "poly") {
+      const p = sh.p;
+      const n = p.length / 2;
+      for (let i = 0; i + 1 < n + (sh.closed ? 1 : 0); i++) {
+        const j = (i + 1) % n;
+        taken.push([Math.min(p[2 * i], p[2 * j]), Math.min(p[2 * i + 1], p[2 * j + 1]), Math.max(p[2 * i], p[2 * j]), Math.max(p[2 * i + 1], p[2 * j + 1])]);
+      }
+    } else taken.push(shapeBox(sh));
+  }
+  const area = inset(frame, 2);
+  const hit = (b: Box) => b[0] < area[0] || b[1] < area[1] || b[2] > area[2] || b[3] > area[3] || fixed.some((f) => f[0] < b[2] && b[0] < f[2] && f[1] < b[3] && b[1] < f[3]) || taken.some((t) => t[0] < b[2] + 0.5 && b[0] < t[2] + 0.5 && t[1] < b[3] + 0.5 && b[1] < t[3] + 0.5);
+  for (const m of marks) {
+    const sv = views[m.view];
+    if (!sv || sv.state !== "ready") continue;
+    const P = (p: [number, number]): [number, number] => [sv.origin[0] + p[0] * sv.scale, sv.origin[1] - p[1] * sv.scale];
+    const A = P(m.a);
+    const B = P(m.b);
+    const ux = m.out[0];
+    const uy = -m.out[1];
+    const fw = m.frame ? fcfWidth(m.frame, st.size) : 0;
+    const fh = fcfHeight(st.size);
+    /** the box of the letter and its frame, beyond the triangle and stem */
+    const region = (x: number, y: number, stem: number): { box: Box; fx: number; fy: number } => {
+      const e = datumExtent(x, y, ux, uy, st.size, stem);
+      // the letter box is the far end of the extent
+      const b = st.size * 1.75;
+      const bx = ux > 0 ? e[2] - b : ux < 0 ? e[0] : (e[0] + e[2]) / 2 - b / 2;
+      const by = uy > 0 ? e[3] - b : uy < 0 ? e[1] : (e[1] + e[3]) / 2 - b / 2;
+      // the frame carries on outward from a side letter, and to the right of a letter above or below
+      const fx = ux < 0 ? bx - 1 - fw : bx + b + 1;
+      const fy = by + b / 2 - fh / 2;
+      const box: Box = [Math.min(bx, fw ? fx : bx), Math.min(by, fy), Math.max(bx + b, fw ? fx + fw : bx + b), Math.max(by + b, fy + fh)];
+      return { box, fx, fy };
+    };
+    let pick: { x: number; y: number; stem: number } | null = null;
+    search: for (const stem of [1.5, 5, 10, 16]) {
+      for (const t of [m.t, 0.5, 0.2, 0.8, 0.35, 0.65, 0.1, 0.9]) {
+        const x = A[0] + (B[0] - A[0]) * t;
+        const y = A[1] + (B[1] - A[1]) * t;
+        if (!hit(region(x, y, stem).box)) {
+          pick = { x, y, stem };
+          break search;
+        }
+      }
+    }
+    pick ??= { x: A[0] + (B[0] - A[0]) * m.t, y: A[1] + (B[1] - A[1]) * m.t, stem: 1.5 };
+    ink.key = `v${m.view}`;
+    const box = inkDatum(ink, pick.x, pick.y, ux, uy, m.letter, st.size, pick.stem);
+    const r = region(pick.x, pick.y, pick.stem);
+    if (m.frame) inkFcf(ink, r.fx, r.fy, m.frame, st.size);
+    taken.push(box, r.box);
+  }
 }
 
 type DataTable = { title: string; rows: [string, string][] };
@@ -876,13 +1096,13 @@ function finishText(parts: EvalPart[]): string {
   return FINISHES[id]?.label ?? id;
 }
 
+/** The parts' mass as the design's mass report gives it: a stated mass: where there is one (bought parts, hollow parts), else the solid's volume times its material's density. */
 function massText(parts: EvalPart[], volumeOf?: (p: EvalPart) => number | undefined): string {
-  if (!volumeOf) return "";
   let g = 0;
   for (const p of parts) {
-    const v = volumeOf(p);
-    if (v === undefined) return "";
-    g += (v / 1000) * materialDensity(p.material);
+    const m = partMass(p, volumeOf?.(p), materialDensity(p.material));
+    if (m === undefined) return "";
+    g += m;
   }
   return g >= 1000 ? `${fmtNum(g / 1000, 2)} kg` : `${fmtNum(g, g < 10 ? 2 : 1)} g`;
 }

@@ -10,6 +10,9 @@ import { fmtDev, fmtNum, Ink, type Box, type Frame, type SheetDim } from "./shee
 import { fitLimits, generalDeviation, type DrawingSpec } from "./spec";
 import { textWidth } from "./text";
 import { partExtent, toView, type BBoxOf, type DrawingPlan } from "./views";
+import { designIntent, type Intent, type Role } from "./intent";
+import { squareUp } from "./square";
+import { boreTol, datumBox, faceName, fcfHeight, fcfWidth, flatnessTol, gdtWanted, holePosition, inkDatum, inkFcf, runoutTol, squareTol, type DatumInfo, type Fcf } from "./gdt";
 
 export type Side = "bottom" | "top" | "left" | "right";
 
@@ -43,6 +46,10 @@ export interface DimDef {
   anchors?: [number, number][];
   /** which way a callout's leader runs */
   lead?: "left" | "right";
+  /** geometric tolerance frames under a callout's text */
+  frames?: Fcf[];
+  /** the datum letter this feature (or the feature of size a dimension measures) is */
+  datum?: string;
   /** the features a dimension runs between ("o3.4", "2.4x26"), so its id doesn't depend on the order dimensions come in */
   tag?: string;
   meta: Omit<SheetDim, "view" | "box" | "value" | "text">;
@@ -157,6 +164,22 @@ function partsOf(model: Model): Parts {
   return out;
 }
 
+const framedCache = new WeakMap<Parts, Parts>();
+
+/** The parts as the drawing shows them: a part drawn squared up is squared up in every design its dimensions are checked against. */
+function framed(parts: Parts, plan: DrawingPlan): Parts {
+  const p = plan.parts[0];
+  if (plan.assembly || !p?.worldXf) return parts;
+  let out = framedCache.get(parts);
+  if (!out) {
+    out = new Map(parts);
+    const q = parts.get(p.id);
+    if (q) out.set(p.id, squareUp(q));
+    framedCache.set(parts, out);
+  }
+  return out;
+}
+
 function featuresOf(p: EvalPart | undefined): Feature[] {
   if (!p) return [];
   let out = featCache.get(p);
@@ -217,9 +240,35 @@ function featureTag(f: Feature): string {
 }
 
 /** All dimensions and callouts for a drawing, in view space. */
-export function buildDims(ctx: DimContext): { dims: DimDef[]; warnings: string[] } {
+/** A datum on a face seen edge-on in a view: the triangle sits on the outline edge from a to b, the letter outside it. */
+export interface DatumMark {
+  letter: string;
+  view: number;
+  /** the edge in view space (model mm, y up) */
+  a: [number, number];
+  b: [number, number];
+  /** outward from the part, in view space */
+  out: [number, number];
+  /** preferred spot along the edge, 0 at a and 1 at b */
+  t: number;
+  /** a frame beside the letter (the face's flatness) */
+  frame?: Fcf;
+}
+
+export interface BuiltDims {
+  dims: DimDef[];
+  warnings: string[];
+  /** datum symbols on faces, inked by the composer where they find room */
+  marks: DatumMark[];
+  datums: DatumInfo[];
+  /** notes the features' functions call for */
+  notes: string[];
+}
+
+export function buildDims(ctx: DimContext): BuiltDims {
   const dims: DimDef[] = [];
   const warnings: string[] = [];
+  const extra: Omit<BuiltDims, "dims" | "warnings"> = { marks: [], datums: [], notes: [] };
   const { plan, model, spec } = ctx;
   const linkParams = paramsByPart(model);
   const partNames = [...new Set(plan.parts.map((p) => p.name))];
@@ -233,11 +282,11 @@ export function buildDims(ctx: DimContext): { dims: DimDef[]; warnings: string[]
     for (const n of partNames) for (const p of linkParams.get(n) ?? []) candidates.add(p);
     const same = model.params.filter((p) => candidates.has(p.name) && typeof p.value === "number" && close(p.value, value) && !p.locked);
     if (!same.length) return undefined;
-    const base = probe(partsOf(model));
+    const base = probe(framed(partsOf(model), plan));
     if (base === undefined) return undefined;
     const hits = same.filter((p) => {
       const parts = nudged(model, p.name, (p.value as number) + NUDGE, reevaluate);
-      const moved = parts ? probe(parts) : undefined;
+      const moved = parts ? probe(framed(parts, plan)) : undefined;
       return moved !== undefined && close(moved - base, NUDGE, 1e-3);
     });
     return hits.length === 1 ? hits[0].name : undefined;
@@ -248,7 +297,7 @@ export function buildDims(ctx: DimContext): { dims: DimDef[]; warnings: string[]
     const meta: DimDef["meta"] = {
       kind: d.kind === "callout" ? "callout" : d.kind === "inline" ? "diameter" : "linear",
       auto: true,
-      general: d.text.suffix || d.text.up ? undefined : general(d.value),
+      general: d.text.suffix || d.text.up || d.text.boxed ? undefined : general(d.value),
       ...d.meta,
     };
     dims.push({ ...d, meta });
@@ -256,13 +305,34 @@ export function buildDims(ctx: DimContext): { dims: DimDef[]; warnings: string[]
 
   if (spec.autoDims) {
     if (plan.assembly) assemblyDims(ctx, push, paramFor);
-    else partDims(ctx, push, paramFor, warnings);
+    else partDims(ctx, push, paramFor, warnings, dims, extra);
   }
   explicitDims(ctx, push, warnings);
   const out = mergeExplicit(dims);
   assignIds(out, plan);
   applyTols(out, spec.tols, warnings);
-  return { dims: out, warnings };
+  applyFrames(out, spec.frames ?? [], warnings);
+  return { dims: out, warnings, ...extra };
+}
+
+/** gdt() calls in the drawing block set or replace the frames on automatic dimensions and callouts. */
+function applyFrames(dims: DimDef[], frames: DrawingSpec["frames"], warnings: string[]) {
+  for (const g of frames) {
+    const d = dims.find((x) => x.meta.id === g.id);
+    if (!d) {
+      warnings.push(`gdt("${g.id}"): there is no dimension or callout with that id on this drawing`);
+      continue;
+    }
+    const f: Fcf = { kind: g.kind, tol: g.tol, dia: g.kind === "position" || g.kind === "coaxiality" || (g.kind === "perpendicularity" && d.kind === "callout"), mmc: g.mmc, datums: g.datums };
+    const list = (d.frames ?? []).filter((x) => x.kind !== g.kind);
+    if (d.kind === "callout") d.frames = [...list, f];
+    else {
+      // a frame on a linear dimension makes it basic, the frame then holds the tolerance
+      d.frames = [...list, f];
+      d.text = { main: d.text.main, boxed: true };
+    }
+    d.meta = { ...d.meta, auto: d.meta.auto, span: g.span, general: undefined };
+  }
 }
 
 /** Readable ids for automatic dimensions, such as "top:overall-width-x", stable while the design changes. */
@@ -290,10 +360,10 @@ function tolString(tol: [number, number] | undefined, fit: string | undefined): 
   return close(tol[0], -tol[1], 1e-9) ? `±${fmtDev(tol[0]).replace(/^[+−]/, "")}` : `${fmtDev(tol[0])}/${fmtDev(tol[1])}`;
 }
 
-/** Puts a tolerance after the diameter it belongs to in a callout's lines. */
+/** Puts a tolerance after the diameter it belongs to in a callout's lines, replacing one already there. */
 function tolInCallout(d: DimDef, dia: number, text: string) {
   const s = fmtNum(dia);
-  const re = new RegExp(`Ø${s.replace(".", "\\.")}(?![\\d.])`);
+  const re = new RegExp(`Ø${s.replace(".", "\\.")}(?![\\d.])(?: (?:[A-Za-z]{1,2}\\d{1,2}(?: \\([^)]*\\))?|±[\\d.]+|[+−][\\d.]+/[+−]?[\\d.]+))?`);
   if (re.test(d.text.main)) d.text = { ...d.text, main: d.text.main.replace(re, `Ø${s} ${text}`) };
   else if (d.lines?.some((l) => re.test(l))) d.lines = d.lines.map((l) => l.replace(re, `Ø${s} ${text}`));
   else d.text = { ...d.text, main: `${d.text.main} ${text}` };
@@ -399,7 +469,9 @@ function viewAlong(ctx: DimContext, dir: V3): number {
   return -1;
 }
 
-function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: string[]) {
+type Extra = Omit<BuiltDims, "dims" | "warnings">;
+
+function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: string[], dims: DimDef[], extra: Extra) {
   const part = ctx.plan.parts[0];
   if (!part) return;
   const what = part.label;
@@ -408,6 +480,9 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
   // the kernel's probe lines settle through or blind where the recipe cannot
   if (ctx.plan.probes) applyProbes(feats, ctx.plan.probes.segs, ctx.results[ctx.plan.probes.view]?.probes);
   const turned = feats.find((f): f is Extract<Feature, { t: "turned" }> => f.t === "turned" && f.part === part.id);
+  // what each feature is for, read from the parts around this one
+  const intent = designIntent(part, ctx.model, feats);
+  const gdt = part.kind === "part" && !part.gear && gdtWanted(ctx.spec, intent.family);
   const skip = new Set<string>();
   if (part.gear || turned) {
     // turned parts and gears get diameters instead of overall sizes across the axis
@@ -419,21 +494,36 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
 
   // per view: the groups of features seen end-on, for position dimensions; concentric groups merge
   const anchors = new Map<number, Anchor[][]>();
-  const addGroup = (vi: number, list: Feature[], centers: [number, number][]) => {
+  const addGroup = (vi: number, list: Feature[], centers: [number, number][], track?: Anchor["at"][], tagged?: string) => {
     const groups = anchors.get(vi) ?? [];
     const same = (a: Anchor[], b: [number, number][]) => a.length === b.length && a.every(({ c }) => b.some((d) => close(c[0], d[0], 0.01) && close(c[1], d[1], 0.01)));
     const frame = ctx.plan.views[vi].frame;
-    const tag = featureTag(list[0]);
+    const tag = tagged ?? featureTag(list[0]);
     const twin = groups.find((g) => same(g, centers));
     // concentric features share the group, and their sizes together name it
     if (twin) for (const a of twin) a.tag = a.tag.split("-").includes(tag) ? a.tag : `${a.tag}-${tag}`;
-    else groups.push(list.map((f, k) => ({ c: centers[k], at: trackFeature(part.id, feats.indexOf(f), frame), tag })));
+    else groups.push(centers.map((c, k) => ({ c, at: track?.[k] ?? trackFeature(part.id, feats.indexOf(list[k]), frame), tag })));
     anchors.set(vi, groups);
   };
 
   // callouts are collected first so concentric ones can share a leader
-  type Callout = { vi: number; centers: [number, number][]; order: number; size: number; lines: string[]; r: number; label: string; param?: string; value: number };
+  type Callout = { vi: number; centers: [number, number][]; order: number; size: number; lines: string[]; r: number; label: string; param?: string; value: number; feats: Feature[]; role?: Role; fit?: { code: string; tol: [number, number] }; slot?: boolean; leader?: [number, number] };
   const callouts: Callout[] = [];
+  const roleOf = (f: Feature) => intent.roles.get(feats.indexOf(f));
+  /** "H7 (+0.018/0)" after the diameter, and the role line, for a feature with a function */
+  const withRole = (c: Callout) => {
+    const role = c.role;
+    if (!role) return;
+    const ra = role.ra ? `, Ra ${fmtNum(role.ra)}` : "";
+    c.lines.push(role.text + ra);
+    if (!role.fit) return;
+    const lim = fitLimits(role.fit, c.value);
+    if (!lim) return;
+    c.fit = { code: role.fit, tol: [lim.upper, lim.lower] };
+    const dia = `Ø${fmtNum(c.value, c.value < 10 ? 2 : 1)}`;
+    const fit = `${role.fit} (${fmtDev(lim.upper)}/${fmtDev(lim.lower)})`;
+    c.lines = c.lines.map((l, i) => (i === 0 || l.startsWith("TAP") ? l.replace(dia, `${dia} ${fit}`) : l));
+  };
   // a blind cut that opens on the side of the part away from the view
   const farSide = (at: V3, dir: V3, h: number, vi: number) => {
     const v = ctx.plan.views[vi].frame.dir;
@@ -443,9 +533,47 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     return Math.max(s0, s1) < hi - 0.02 && Math.min(s0, s1) <= lo + 0.02;
   };
 
+  // rows of overlapping holes or bores cut one after another make one slot, straight or on an arc
+  const chained = new Set<number>();
+  for (const ch of slotChains(ctx, feats)) {
+    for (const i of ch.members) chained.add(i);
+    const f0 = feats[ch.members[0]] as RoundCut;
+    const frame = ctx.plan.views[ch.vi].frame;
+    const depth = cutDepth(f0, extent);
+    const deep = f0.through || depth === null ? "THRU" : `× ${fmtNum(depth, 1)} DEEP${farSide(f0.at, f0.dir, depth, ch.vi) ? " FAR SIDE" : ""}`;
+    const w = fmtNum(f0.d, f0.d < 10 ? 2 : 1);
+    const ends = [ch.members[0], ch.members[ch.members.length - 1]].map((i) => toView((feats[i] as RoundCut).at, frame));
+    const lead = ends[0][0] + ends[0][1] >= ends[1][0] + ends[1][1] ? ends[0] : ends[1];
+    const track = (i: number) => trackFeature(part.id, i, frame);
+    let c: Callout;
+    if (ch.kind === "arc") {
+      const [i0, im, i1] = [ch.members[0], ch.members[Math.floor(ch.members.length / 2)], ch.members[ch.members.length - 1]].map(track);
+      const pivot: Anchor["at"] = (parts) => {
+        const [a, b, d] = [i0(parts), im(parts), i1(parts)];
+        return a && b && d ? (circumcentre(a, b, d) ?? undefined) : undefined;
+      };
+      const span = ch.sweep >= 359.5 ? "360°" : `${fmtNum(ch.sweep, 1)}° (${fmtNum(ch.from, 1)}° TO ${fmtNum(ch.from + ch.sweep, 1)}°)`;
+      c = { vi: ch.vi, centers: [ch.centre], order: 1, size: f0.d, lines: [`ARC SLOT ${w} WIDE ${deep}`, `R${fmtNum(ch.r)} × ${span}`], r: f0.d / 2, value: f0.d, label: `Arc slot ${w} wide, R${fmtNum(ch.r)} in ${what}`, feats: [f0], slot: true, leader: lead };
+      callouts.push(c);
+      addGroup(ch.vi, [f0], [ch.centre], [pivot], `arc${fmtNum(ch.r)}`);
+    } else {
+      const [ia, ib] = [ch.members[0], ch.members[ch.members.length - 1]].map(track);
+      const mid: Anchor["at"] = (parts) => {
+        const [a, b] = [ia(parts), ib(parts)];
+        return a && b ? [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] : undefined;
+      };
+      const len = fmtNum(ch.length + f0.d);
+      const tilt = ((ch.angle % 180) + 180) % 180;
+      const square = close(tilt, 0, 0.05) || close(tilt, 90, 0.05) || close(tilt, 180, 0.05);
+      c = { vi: ch.vi, centers: [ch.centre], order: 1, size: f0.d, lines: [`SLOT ${w} × ${len} ${deep}`, ...(square ? [] : [`AT ${fmtNum(tilt, 1)}°`])], r: f0.d / 2, value: f0.d, label: `Slot ${w} × ${len} in ${what}`, feats: [f0], slot: true, leader: lead };
+      callouts.push(c);
+      addGroup(ch.vi, [f0], [ch.centre], [mid], `slot${w}`);
+    }
+  }
+
   // holes, grouped into "n×" callouts
   const groups = new Map<string, Extract<Feature, { t: "hole" }>[]>();
-  for (const f of feats) if (f.t === "hole") groups.set(holeKey(f), [...(groups.get(holeKey(f)) ?? []), f]);
+  feats.forEach((f, i) => f.t === "hole" && !chained.has(i) && groups.set(holeKey(f), [...(groups.get(holeKey(f)) ?? []), f]));
   for (const list of groups.values()) {
     const vi = viewAlong(ctx, list[0].dir);
     if (vi < 0) continue;
@@ -454,15 +582,17 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     const lines = holeCallout(list[0], (n) => fmtNum(n, n < 10 ? 2 : 1));
     if (!list[0].through && farSide(list[0].at, list[0].dir, list[0].depth, vi)) lines[0] += " FAR SIDE";
     const r = list[0].d / 2;
-    callouts.push({ vi, centers, order: 0, size: list[0].d, lines, r, value: list[0].d, label: `${list.length > 1 ? `${list.length} holes` : "Hole"} Ø${fmtNum(list[0].d)} in ${what}` });
+    const c: Callout = { vi, centers, order: 0, size: list[0].d, lines, r, value: list[0].d, label: `${list.length > 1 ? `${list.length} holes` : "Hole"} Ø${fmtNum(list[0].d)} in ${what}`, feats: list, role: roleOf(list[0]) };
+    withRole(c);
+    callouts.push(c);
     addGroup(vi, list, centers);
   }
 
   // cut and added cylinders: bores, seats and bosses
   const cyls = new Map<string, Extract<Feature, { t: "cyl" }>[]>();
-  for (const f of feats) {
-    if (f.t !== "cyl") continue;
-    const k = [f.op, f.d.toFixed(3), f.op === "cut" ? (f.through ? "T" : f.h.toFixed(2)) : "", f.dir.map((v) => Math.round(Math.abs(v) * 1000)).join(",")].join("|");
+  for (const [i, f] of feats.entries()) {
+    if (f.t !== "cyl" || chained.has(i)) continue;
+    const k = [f.op, f.d.toFixed(3), f.op === "cut" ? (f.through ? "T" : f.h.toFixed(2)) : "", f.dir.map((v) => Math.round(Math.abs(v) * 1000)).join(","), roleOf(f)?.text ?? ""].join("|");
     cyls.set(k, [...(cyls.get(k) ?? []), f]);
   }
   for (const list of cyls.values()) {
@@ -485,7 +615,9 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
       const f = featuresOf(parts.get(part.id))[i0];
       return f?.t === "cyl" ? f.d : undefined;
     };
-    callouts.push({ vi, centers, order: f0.op === "cut" ? 1 : 2, size: f0.d, lines: [main], r: f0.d / 2, value: f0.d, label: `${f0.op === "add" ? "Boss" : "Bore"} Ø${fmtNum(f0.d)} in ${what}`, param: paramFor(f0.d, dia) });
+    const c: Callout = { vi, centers, order: f0.op === "cut" ? 1 : 2, size: f0.d, lines: [main], r: f0.d / 2, value: f0.d, label: `${f0.op === "add" ? "Boss" : "Bore"} Ø${fmtNum(f0.d)} in ${what}`, param: paramFor(f0.d, dia), feats: list, role: roleOf(f0) };
+    withRole(c);
+    callouts.push(c);
     addGroup(vi, list, centers);
   }
 
@@ -505,36 +637,359 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     const size = `${fmtNum(s.w)} × ${fmtNum(s.h)}`;
     let main = isSlot ? `SLOT ${size}` : `${size} R${fmtNum(s.r)}`;
     main += s.through ? " THRU" : ` × ${fmtNum(s.depth, 1)} DEEP${farSide(s.at, s.dir, s.depth, vi) ? " FAR SIDE" : ""}`;
-    callouts.push({ vi, centers, order: 1, size: Math.min(s.w, s.h), lines: [main], r: Math.min(s.w, s.h) / 2, value: s.w, label: `${isSlot ? "Slot" : "Pocket"} ${size} in ${what}` });
+    callouts.push({ vi, centers, order: 1, size: Math.min(s.w, s.h), lines: [main], r: Math.min(s.w, s.h) / 2, value: s.w, label: `${isSlot ? "Slot" : "Pocket"} ${size} in ${what}`, feats: list });
     addGroup(vi, list, centers);
   }
 
-  // one leader per set of concentric features: holes first, then bores by size, then bosses
+  // the datum reference frame: the view that sees most features end-on carries it
+  let main = -1;
+  let most = 0;
+  for (const [vi, gs] of anchors) {
+    const n = gs.reduce((a, g) => a + g.length, 0);
+    if (n > most) {
+      most = n;
+      main = vi;
+    }
+  }
   const sameSet = (a: [number, number][], b: [number, number][]) => a.length === b.length && a.every((c) => b.some((d) => close(c[0], d[0], 0.01) && close(c[1], d[1], 0.01)));
+  const frameDatums: string[] = [];
+  /** callout sets (by their centres) that are datum features, and their letter */
+  const datumSets: { centers: [number, number][]; letter: string }[] = [];
+  const modes = main >= 0 ? axisModes(ctx.ext[main], (anchors.get(main) ?? []).map((g) => g.map((a) => a.c))) : null;
+  if (gdt && main >= 0 && modes && !turned) {
+    datumFrame(ctx, part, feats, main, modes, callouts.filter((c) => !c.slot), dims, extra, frameDatums, datumSets, intent.family, extent);
+  }
+
+  // one leader per set of concentric features: holes first, then bores by size, then bosses
   const used = new Set<Callout>();
   for (const c of callouts) {
     if (used.has(c)) continue;
-    const set = callouts.filter((o) => !used.has(o) && o.vi === c.vi && sameSet(o.centers, c.centers)).sort((a, b) => a.order - b.order || a.size - b.size);
+    const set = callouts.filter((o) => !used.has(o) && o.vi === c.vi && !!o.slot === !!c.slot && sameSet(o.centers, c.centers)).sort((a, b) => a.order - b.order || a.size - b.size);
     for (const o of set) used.add(o);
     const lines = set.flatMap((o) => o.lines);
     if (c.centers.length > 1) lines[0] = `${c.centers.length}× ${lines[0]}`;
     const rep = repIndex(c.centers);
     const big = set.reduce((a, b) => (b.r > a.r ? b : a));
-    push({ view: c.vi, kind: "callout", a: c.centers[rep], b: c.centers[rep], value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: c.centers[rep], r: big.r }, anchors: c.centers, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined } });
+    // geometric tolerances for the pattern in the datum view
+    let frames: Fcf[] | undefined;
+    let datum: string | undefined;
+    if (gdt && c.vi === main && frameDatums.length) {
+      datum = c.slot ? undefined : datumSets.find((d) => sameSet(d.centers, c.centers))?.letter;
+      const seat = set.some((o) => o.role?.kind === "bearing" || o.role?.kind === "dowel");
+      // the first datum feature after the face is held square to it; a later one is positioned from the datums before it
+      const k = datum ? frameDatums.indexOf(datum) : -1;
+      if (datum && k <= 1) frames = [{ kind: "perpendicularity", tol: squareTol(intent.family), dia: true, datums: frameDatums.slice(0, 1) }];
+      else if (datum) frames = [{ kind: "position", tol: boreTol(intent.family, seat), dia: true, datums: frameDatums.slice(0, k) }];
+      else {
+        const hole = set.find((o) => o.feats[0].t === "hole" && !o.slot);
+        const pos = hole && !seat ? holePosition(hole.feats[0] as Extract<Feature, { t: "hole" }>, intent.family) : { tol: boreTol(intent.family, seat), mmc: false };
+        const slot = set.every((o) => o.slot || o.feats[0].t === "slot");
+        frames = [{ kind: "position", tol: pos.tol, dia: !slot, mmc: pos.mmc || undefined, datums: frameDatums.filter((d) => c.slot || !datumSets.some((x) => x.letter === d && sameSet(x.centers, c.centers))) }];
+      }
+    }
+    const fit = set.find((o) => o.fit)?.fit;
+    const role = set.find((o) => o.role)?.role;
+    const at = c.leader ?? c.centers[rep];
+    push({ view: c.vi, kind: "callout", a: at, b: at, value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: at, r: big.r }, anchors: c.leader ? [at] : c.centers, frames, datum, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined, fit: fit?.code, tol: fit?.tol, general: fit ? undefined : undefined, role: role?.text } });
   }
 
-  // positions of the end-on features
-  for (const [vi, groups] of anchors) positionDims(ctx, vi, groups, push, paramFor, warnings, what);
+  // positions of the end-on features: basic where a frame holds their tolerance
+  for (const [vi, gs] of anchors) positionDims(ctx, vi, gs, push, paramFor, warnings, what, gdt && vi === main && frameDatums.length > 0);
+
+  // the distance between axes that carry meshing gears sets their backlash: dimension it directly
+  for (const cp of intent.centres) {
+    const vi = viewAlong(ctx, cp.dir);
+    if (vi < 0) continue;
+    const frame = ctx.plan.views[vi].frame;
+    const a = toView(cp.a, frame);
+    const b = toView(cp.b, frame);
+    const du = Math.abs(b[0] - a[0]);
+    const dv = Math.abs(b[1] - a[1]);
+    const kind = dv < 1e-4 ? "h" : du < 1e-4 ? "v" : "aligned";
+    const basic = gdt && vi === main && frameDatums.length > 0;
+    const label = `Gear centre distance (${cp.gears.join("–")}) in ${what}`;
+    const text: DimText = basic ? { main: fmtNum(cp.value), boxed: true } : { main: fmtNum(cp.value), suffix: `±${fmtNum(cp.tol)}` };
+    const tol: [number, number] | undefined = basic ? undefined : [cp.tol, -cp.tol];
+    // the same span may already be a spacing dimension: give that one the function instead
+    const twin = kind !== "aligned" && dims.find((d) => d.view === vi && d.kind === kind && close(Math.abs(d.value), cp.value, 0.01) && [d.a, d.b].every((p) => [a, b].some((q) => close(p[kind === "h" ? 0 : 1], q[kind === "h" ? 0 : 1], 0.01))));
+    if (twin) {
+      twin.text = text;
+      twin.meta = { ...twin.meta, label, tol, general: undefined };
+    } else push({ view: vi, kind, a, b, value: cp.value, text, side: kind === "h" ? "bottom" : kind === "v" ? "right" : undefined, tag: `${cp.gears.join("-")}`, meta: { label, tol } });
+    const general = generalDeviation(ctx.spec.tolerance, cp.value);
+    if (!basic && general !== null && general > cp.tol + 1e-9) warnings.push(`The ${cp.gears.join("/")} gear centre distance needs ±${fmtNum(cp.tol)} to keep its ${fmtNum(cp.backlash)} mm backlash; the ${ctx.spec.tolerance} general tolerance is ±${fmtNum(general)}, so check the mesh after making it or add backlash`);
+    extra.notes.push(`GEAR CENTRE DISTANCES SET THE BACKLASH: HOLD THEIR TOLERANCE.`);
+  }
 
   // turned profile: length and diameters on the side view
   if (turned) {
     const ti = feats.indexOf(turned);
-    turnedDims(ctx, turned, push, paramFor, what, (parts) => {
-      const f = featuresOf(parts.get(part.id))[ti];
-      return f?.t === "turned" ? f : undefined;
-    });
+    turnedDims(
+      ctx,
+      turned,
+      push,
+      paramFor,
+      what,
+      (parts) => {
+        const f = featuresOf(parts.get(part.id))[ti];
+        return f?.t === "turned" ? f : undefined;
+      },
+      intent,
+      gdt,
+      extra,
+    );
   }
   if (part.gear && part.recipe.base?.t === "gear") gearDims(ctx, part, push, what);
+  extra.notes = [...new Set(extra.notes)];
+}
+
+type Modes = [AxisMode, AxisMode];
+/** How the features in a view are located along one view axis: from the part's centre, the design origin, or the lower edge. */
+type AxisMode = { mode: "centre" | "origin" | "edge"; value: number };
+
+/** The datum each view axis is dimensioned from, the same choice positionDims makes. */
+function axisModes(ext: [number, number, number, number], groups: [number, number][][]): Modes {
+  const centers = groups.flat();
+  return [0, 1].map((axis) => {
+    const lo = ext[axis];
+    const hi = ext[axis + 2];
+    const mid = (lo + hi) / 2;
+    const vals = uniq(centers.map((c) => c[axis]));
+    if (vals.length && vals.every((v) => vals.some((w) => close(w, 2 * mid - v, 0.02)))) return { mode: "centre", value: mid };
+    if (lo < 1e-6 && hi > -1e-6 && vals.some((v) => close(v, 0, 0.01))) return { mode: "origin", value: 0 };
+    return { mode: "edge", value: lo };
+  }) as Modes;
+}
+
+/**
+ * Picks datums A, B and C for a prismatic part and attaches their symbols:
+ * A is the face the main features run square to (the face a shell is closed
+ * on, or the one most holes come out of: the face that seats on the mating
+ * part), B and C follow the way the features are dimensioned in the main
+ * view (a centre plane, the bore on the origin, or an edge).
+ */
+function datumFrame(
+  ctx: DimContext,
+  part: EvalPart,
+  feats: Feature[],
+  main: number,
+  modes: Modes,
+  callouts: { vi: number; centers: [number, number][]; size: number; feats: Feature[]; role?: Role }[],
+  dims: DimDef[],
+  extra: Extra,
+  letters: string[],
+  datumSets: { centers: [number, number][]; letter: string }[],
+  family: Intent["family"],
+  extent: (dir: V3) => [number, number],
+) {
+  const mv = ctx.plan.views[main];
+  const n = mv.frame.dir;
+  // A: which end of the main axis
+  const shell = feats.find((f): f is Extract<Feature, { t: "shell" }> => f.t === "shell");
+  let sign = 0;
+  if (shell && Math.abs(vdot(vnorm(shell.open), n)) > 0.999) sign = -Math.sign(vdot(shell.open, n));
+  else {
+    let s = 0;
+    for (const f of feats) if ((f.t === "hole" || (f.t === "cyl" && f.op === "cut") || f.t === "slot") && Math.abs(vdot(f.dir, n)) > 0.999) s += Math.sign(vdot(f.dir, n));
+    sign = s > 0 ? 1 : -1;
+  }
+  const nA: V3 = [n[0] * sign, n[1] * sign, n[2] * sign];
+  // datum letters skip the ones sections and details use, and I, O and Q
+  const used = new Set(ctx.plan.views.filter((v) => v.kind === "section" || v.kind === "detail").map((v) => v.name.toUpperCase()));
+  const free = "ABCDEFGHJKLMNPRSTUVWXYZ".split("").filter((l) => !used.has(l));
+  const [LA, LB, LC] = free;
+  const [lo, hi] = extent(nA);
+  const size = Math.max(...[0, 1].map((k) => ctx.ext[main][k + 2] - ctx.ext[main][k]));
+  // a view (or a section) that sees face A edge-on
+  let placed = false;
+  for (const vi of [...principalViews(ctx.plan), ...ctx.plan.views.flatMap((v, i) => (v.kind === "section" ? [i] : []))]) {
+    const f = ctx.plan.views[vi].frame;
+    if (vi === main || Math.abs(vdot(f.dir, nA)) > 1e-6) continue;
+    const [u0, v0, u1, v1] = ctx.ext[vi];
+    const hx = vdot(f.x, nA);
+    const hy = vdot(f.y, nA);
+    if (Math.abs(hx) < 0.999 && Math.abs(hy) < 0.999) continue;
+    // the coordinate of the face in this view: the part's extreme along nA
+    const at = hi;
+    const mark: DatumMark =
+      Math.abs(hx) > 0.999
+        ? { letter: LA, view: vi, a: [at * Math.sign(hx), v0], b: [at * Math.sign(hx), v1], out: [Math.sign(hx), 0], t: 0.35 }
+        : { letter: LA, view: vi, a: [u0, at * Math.sign(hy)], b: [u1, at * Math.sign(hy)], out: [0, Math.sign(hy)], t: 0.35 };
+    mark.frame = { kind: "flatness", tol: flatnessTol(family, size), dia: false, datums: [] };
+    extra.marks.push(mark);
+    placed = true;
+    break;
+  }
+  if (!placed) return;
+  void lo;
+  letters.push(LA);
+  extra.datums.push({ letter: LA, what: `${faceName(nA)} face, the face the part seats on` });
+
+  const groups = callouts.filter((c) => c.vi === main);
+  const at = (c: { centers: [number, number][] }, u: number, v: number) => c.centers.some((p) => close(p[0], u, 0.01) && close(p[1], v, 0.01));
+  const biggest = (list: typeof groups) => list.reduce<(typeof groups)[number] | undefined>((a, b) => (!a || b.size > a.size ? b : a), undefined);
+  const edge = (axis: 0 | 1, letter: string) => {
+    const [u0, v0, u1, v1] = ctx.ext[main];
+    extra.marks.push(axis === 0 ? { letter, view: main, a: [u0, v0], b: [u0, v1], out: [-1, 0], t: 0.3 } : { letter, view: main, a: [u0, v0], b: [u1, v0], out: [0, -1], t: 0.7 });
+    const world: V3 = axis === 0 ? mv.frame.x : mv.frame.y;
+    extra.datums.push({ letter, what: `${faceName([-world[0], -world[1], -world[2]])} face` });
+    letters.push(letter);
+  };
+  const centrePlane = (axis: 0 | 1, letter: string): boolean => {
+    const world = axis === 0 ? mv.frame.x : mv.frame.y;
+    const name = AXES.find((a) => Math.abs(vdot(a.v, world)) > 0.999)?.name;
+    const d = dims.find((x) => x.meta.label.startsWith("Overall") && x.meta.label.includes(`(${name})`));
+    if (!d) return false;
+    d.datum = letter;
+    extra.datums.push({ letter, what: `centre plane of the overall ${AXES.find((a) => a.name === name)!.word}` });
+    letters.push(letter);
+    return true;
+  };
+  const feature = (c: (typeof groups)[number], letter: string) => {
+    datumSets.push({ centers: c.centers, letter });
+    const f = c.feats[0];
+    const d = "d" in f ? `Ø${fmtNum(f.d)} ` : "";
+    extra.datums.push({ letter, what: `axis of the ${d}${c.role ? c.role.text.toLowerCase() : f.t === "hole" ? "hole" : "bore"}` });
+    letters.push(letter);
+  };
+
+  // the bore on the origin locates both ways: it is B, and the next bore (or an edge) clocks the part as C
+  const onOrigin = modes[0].mode === "origin" && modes[1].mode === "origin" ? biggest(groups.filter((c) => c.centers.length === 1 && at(c, 0, 0) && c.feats[0].t !== "slot")) : undefined;
+  if (onOrigin) {
+    feature(onOrigin, LB);
+    const next = biggest(groups.filter((c) => c !== onOrigin && c.centers.length === 1 && !at(c, 0, 0) && (c.role || (c.feats[0].t === "cyl" && (c.feats[0] as Extract<Feature, { t: "cyl" }>).op === "cut"))));
+    if (next) feature(next, LC);
+    else edge(1, LC);
+    return;
+  }
+  ([0, 1] as const).forEach((axis, k) => {
+    const letter = k === 0 ? LB : LC;
+    const m = modes[axis];
+    if (m.mode === "centre" && centrePlane(axis, letter)) return;
+    // located from the bore on the origin along this axis: that bore is the datum
+    if (m.mode === "origin") {
+      const c = biggest(groups.filter((g) => g.centers.length === 1 && close(g.centers[0][axis], 0, 0.01) && g.feats[0].t !== "slot" && !datumSets.some((d) => d.centers === g.centers)));
+      if (c) return feature(c, letter);
+    }
+    edge(axis, letter);
+  });
+}
+
+type RoundCut = Extract<Feature, { t: "hole" }> | Extract<Feature, { t: "cyl" }>;
+
+/** How deep a blind hole or cut cylinder goes into the part; null when it runs through. */
+function cutDepth(f: RoundCut, extent: (dir: V3) => [number, number]): number | null {
+  if (f.t === "hole") return f.through ? null : f.depth;
+  if (f.through) return null;
+  const [lo, hi] = extent(f.dir);
+  const start = vdot(f.at, f.dir);
+  return Math.min(start + f.h, hi) - Math.max(start, lo);
+}
+
+/** Centre of the circle through three points, or null when they are in a line. */
+export function circumcentre(a: [number, number], b: [number, number], c: [number, number]): [number, number] | null {
+  const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+  if (Math.abs(d) < 1e-9) return null;
+  const a2 = a[0] ** 2 + a[1] ** 2;
+  const b2 = b[0] ** 2 + b[1] ** 2;
+  const c2 = c[0] ** 2 + c[1] ** 2;
+  return [(a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d, (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d];
+}
+
+/** A slot cut as a row of overlapping holes or cylinders: its members in order along it, and its shape in the view. */
+type ChainShape = { centre: [number, number] } & ({ kind: "straight"; length: number; angle: number } | { kind: "arc"; r: number; from: number; sweep: number });
+export type SlotChain = ChainShape & { vi: number; members: number[] };
+
+/**
+ * Rows of three or more identical round cuts at the same depth, each
+ * overlapping the next, that run along a line or an arc: the way a slot is
+ * often modelled (a loop of cylinders). Each becomes one slot instead of a
+ * dozen holes with a dimension apiece.
+ */
+export function slotChains(ctx: DimContext, feats: Feature[]): SlotChain[] {
+  const out: SlotChain[] = [];
+  const buckets = new Map<string, number[]>();
+  feats.forEach((f, i) => {
+    let k: string | null = null;
+    if (f.t === "hole" && !f.thread) k = `h|${holeKey(f)}`;
+    else if (f.t === "cyl" && f.op === "cut") k = ["c", f.part, f.d.toFixed(3), f.through ? "T" : f.h.toFixed(2), f.dir.map((v) => Math.round(v * 1000)).join(",")].join("|");
+    if (!k) return;
+    const r = f as RoundCut;
+    k += `|${vdot(r.at, vnorm(r.dir)).toFixed(2)}`;
+    buckets.set(k, [...(buckets.get(k) ?? []), i]);
+  });
+  for (const idx of buckets.values()) {
+    if (idx.length < 3) continue;
+    const f0 = feats[idx[0]] as RoundCut;
+    const vi = viewAlong(ctx, f0.dir);
+    if (vi < 0) continue;
+    const frame = ctx.plan.views[vi].frame;
+    const pts = idx.map((i) => toView((feats[i] as RoundCut).at, frame));
+    const dist = (a: number, b: number) => Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]);
+    const seen = new Set<number>();
+    for (let s0 = 0; s0 < idx.length; s0++) {
+      if (seen.has(s0)) continue;
+      // the cuts that overlap one another, one after the next
+      const comp: number[] = [];
+      const stack = [s0];
+      seen.add(s0);
+      while (stack.length) {
+        const x = stack.pop()!;
+        comp.push(x);
+        for (let y = 0; y < idx.length; y++) if (!seen.has(y) && dist(x, y) < f0.d - 1e-6) (seen.add(y), stack.push(y));
+      }
+      if (comp.length < 3) continue;
+      const ch = chainShape(comp.map((k) => pts[k]), f0.d);
+      if (ch) out.push({ ...ch.shape, vi, members: ch.order.map((k) => idx[comp[k]]) });
+    }
+  }
+  return out;
+}
+
+/** The line or arc a row of centres runs along, and their order along it; null for any other path. */
+function chainShape(pts: [number, number][], d: number): { order: number[]; shape: ChainShape } | null {
+  const tol = Math.max(0.01, d * 0.002);
+  let fa = 0;
+  let fb = 1;
+  let far = -1;
+  for (let a = 0; a < pts.length; a++)
+    for (let b = a + 1; b < pts.length; b++) {
+      const l = Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]);
+      if (l > far) [fa, fb, far] = [a, b, l];
+    }
+  const [A, B] = [pts[fa], pts[fb]];
+  const u: [number, number] = [(B[0] - A[0]) / far, (B[1] - A[1]) / far];
+  const off = (p: [number, number]) => Math.abs((p[0] - A[0]) * u[1] - (p[1] - A[1]) * u[0]);
+  const steps = (order: number[]) => order.every((k, i) => i === 0 || Math.hypot(pts[k][0] - pts[order[i - 1]][0], pts[k][1] - pts[order[i - 1]][1]) < d - 1e-6);
+  if (pts.every((p) => off(p) < tol)) {
+    const order = pts.map((_, k) => k).sort((a, b) => (pts[a][0] - A[0]) * u[0] + (pts[a][1] - A[1]) * u[1] - ((pts[b][0] - A[0]) * u[0] + (pts[b][1] - A[1]) * u[1]));
+    if (!steps(order)) return null;
+    return { order, shape: { kind: "straight", centre: [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], length: far, angle: (Math.atan2(u[1], u[0]) * 180) / Math.PI } };
+  }
+  // an arc: the circle through the ends and the point furthest from their chord
+  let m = 0;
+  for (let k = 0; k < pts.length; k++) if (off(pts[k]) > off(pts[m])) m = k;
+  const c = circumcentre(A, pts[m], B);
+  if (!c) return null;
+  const r = Math.hypot(A[0] - c[0], A[1] - c[1]);
+  if (!pts.every((p) => Math.abs(Math.hypot(p[0] - c[0], p[1] - c[1]) - r) < tol)) return null;
+  const ang = pts.map((p) => Math.atan2(p[1] - c[1], p[0] - c[0]));
+  const sorted = ang.map((a, k) => ({ a, k })).sort((x, y) => x.a - y.a);
+  // the slot spans everything but the widest gap between neighbours
+  let gap = -1;
+  let after = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const next = i + 1 < sorted.length ? sorted[i + 1].a : sorted[0].a + 2 * Math.PI;
+    if (next - sorted[i].a > gap) [gap, after] = [next - sorted[i].a, (i + 1) % sorted.length];
+  }
+  const order = [...sorted.slice(after), ...sorted.slice(0, after)].map((x) => x.k);
+  const ring = gap < d / r;
+  if (!ring && !steps(order)) return null;
+  const deg = (a: number) => (a * 180) / Math.PI;
+  let from = deg(ang[order[0]]);
+  if (from > 180) from -= 360;
+  const sweep = ring ? 360 : 360 - deg(gap);
+  return { order, shape: { kind: "arc", centre: c, r, from, sweep } };
 }
 
 /** The feature to hang a callout on: the top-right one. */
@@ -551,7 +1006,7 @@ function repIndex(centers: [number, number][]): number {
  * the lower edge. Each feature group then gets its spacing or pattern pitch
  * and one dimension tying it to the datum.
  */
-function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], push: Push, paramFor: ParamFor, warnings: string[], what: string) {
+function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], push: Push, paramFor: ParamFor, warnings: string[], what: string, basic = false) {
   const [u0, v0, u1, v1] = ctx.ext[vi];
   const all = anchorGroups.flat();
   const centers = all.map((a) => a.c);
@@ -585,7 +1040,7 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
       if (on) return on.at(parts)?.[axis];
       if (close(val, 0, 1e-6)) return 0;
       if (!close(val, lo, 0.05) && !close(val, hi, 0.05)) return undefined;
-      const s0 = spanOver(partsOf(ctx.model), ids, dir);
+      const s0 = spanOver(framed(partsOf(ctx.model), ctx.plan), ids, dir);
       const s1 = spanOver(parts, ids, dir);
       if (!s0 || !s1) return undefined;
       return close(val, lo, 0.05) ? val + s1[0] - s0[0] : val + s1[1] - s0[1];
@@ -657,7 +1112,8 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
         const eb = endIn(b, parts);
         return ea === undefined || eb === undefined ? undefined : Math.abs(eb - ea);
       };
-      push({ view: vi, kind: axis === 0 ? "h" : "v", a: pa, b: pb, value, text: { main: text }, side: axis === 0 ? "bottom" : "right", tag, meta: { label, param: paramFor(value, length) } });
+      const boxed = basic && !label.startsWith("Outline");
+      push({ view: vi, kind: axis === 0 ? "h" : "v", a: pa, b: pb, value, text: boxed ? { main: text, boxed } : { main: text }, side: axis === 0 ? "bottom" : "right", tag, meta: { label, param: paramFor(value, length), basic: boxed || undefined } });
     }
   }
 }
@@ -674,7 +1130,17 @@ function evenlySpaced(vals: number[]): boolean {
   return d > 0.01;
 }
 
-function turnedDims(ctx: DimContext, f: Extract<Feature, { t: "turned" }>, push: Push, paramFor: ParamFor, what: string, track: (parts: Parts) => Extract<Feature, { t: "turned" }> | undefined) {
+function turnedDims(
+  ctx: DimContext,
+  f: Extract<Feature, { t: "turned" }>,
+  push: Push,
+  paramFor: ParamFor,
+  what: string,
+  track: (parts: Parts) => Extract<Feature, { t: "turned" }> | undefined,
+  intent?: Intent,
+  gdt = false,
+  extra?: Extra,
+) {
   const axis = vnorm(f.dir);
   const vi = principalViews(ctx.plan).find((i) => Math.abs(vdot(ctx.plan.views[i].frame.x, axis)) > 0.999 || Math.abs(vdot(ctx.plan.views[i].frame.y, axis)) > 0.999);
   if (vi === undefined) return;
@@ -696,16 +1162,22 @@ function turnedDims(ctx: DimContext, f: Extract<Feature, { t: "turned" }>, push:
   if (horizontal) push({ view: vi, kind: "h", a: [Math.min(a0[0], a1[0]), a0[1] + perp[1]], b: [Math.max(a0[0], a1[0]), a0[1] + perp[1]], value: len, text: { main: fmtNum(len) }, side: "bottom", meta: { label: `Overall length of ${what}`, param: paramFor(len, length) } });
   else push({ view: vi, kind: "v", a: [a0[0] + perp[0], Math.min(a0[1], a1[1])], b: [a0[0] + perp[0], Math.max(a0[1], a1[1])], value: len, text: { main: fmtNum(len) }, side: "right", meta: { label: `Overall length of ${what}`, param: paramFor(len, length) } });
   // cylindrical runs: one diameter each, at the middle of the longest run
-  const runs = new Map<string, { r: number; z: number; len: number; i: number }>();
+  const runs = new Map<string, { r: number; z: number; len: number; i: number; role?: Role }>();
   for (let i = 0; i + 1 < f.pts.length; i++) {
     const [ra, za] = f.pts[i];
     const [rb, zb] = f.pts[i + 1];
     if (ra < 0.05 || !close(ra, rb, 1e-4) || close(za, zb, 1e-4)) continue;
     const k = ra.toFixed(3);
-    const run = { r: ra, z: (za + zb) / 2, len: Math.abs(zb - za), i };
-    if (!runs.has(k) || runs.get(k)!.len < run.len) runs.set(k, run);
+    const run = { r: ra, z: (za + zb) / 2, len: Math.abs(zb - za), i, role: intent?.runRole(f, ra, za, zb) };
+    const was = runs.get(k);
+    if (!was || was.len < run.len) runs.set(k, { ...run, role: run.role ?? was?.role });
+    else if (!was.role && run.role) was.role = run.role;
   }
-  for (const run of [...runs.values()].sort((a, b) => b.len - a.len).slice(0, 4)) {
+  // diameters with a job (bearing and gear seats) first, then the longest
+  const shown = [...runs.values()].sort((a, b) => (b.role ? 1 : 0) - (a.role ? 1 : 0) || b.len - a.len).slice(0, 4);
+  // the datum axis: the first bearing seat, else the longest diameter
+  const datumRun = gdt ? (shown.find((r) => r.role?.kind === "journal") ?? [...shown].sort((a, b) => b.len - a.len)[0]) : undefined;
+  for (const run of shown) {
     const c = along(run.z);
     const a: [number, number] = horizontal ? [c[0], c[1] - run.r] : [c[0] - run.r, c[1]];
     const b: [number, number] = horizontal ? [c[0], c[1] + run.r] : [c[0] + run.r, c[1]];
@@ -713,8 +1185,25 @@ function turnedDims(ctx: DimContext, f: Extract<Feature, { t: "turned" }>, push:
       const q = track(parts)?.pts[run.i];
       return q && 2 * q[0];
     };
-    push({ view: vi, kind: "inline", a, b, value: 2 * run.r, text: { main: `Ø${fmtNum(2 * run.r)}` }, meta: { label: `Diameter of ${what}`, param: paramFor(2 * run.r, dia) } });
+    const d = 2 * run.r;
+    const text: DimText = { main: `Ø${fmtNum(d)}` };
+    let tol: [number, number] | undefined;
+    const fit = run.role?.fit;
+    if (fit) {
+      const lim = fitLimits(fit, d);
+      if (lim) {
+        text.suffix = fit;
+        text.up = `(${fmtDev(lim.upper)}`;
+        text.lo = `${fmtDev(lim.lower)})`;
+        tol = [lim.upper, lim.lower];
+      }
+    }
+    const isDatum = run === datumRun;
+    const frames: Fcf[] | undefined = gdt && datumRun && !isDatum && run.role ? [{ kind: "runout", tol: runoutTol(intent!.family), dia: false, datums: ["A"] }] : undefined;
+    push({ view: vi, kind: "inline", a, b, value: d, text, datum: isDatum ? "A" : undefined, frames, meta: { label: run.role ? `${run.role.text[0]}${run.role.text.slice(1).toLowerCase()} Ø${fmtNum(d)} of ${what}` : `Diameter of ${what}`, param: paramFor(d, dia), tol, fit: tol ? fit : undefined, role: run.role?.text } });
+    if (run.role && extra) extra.notes.push(`Ø${fmtNum(d)}${fit ? ` ${fit}` : ""}: ${run.role.text}${run.role.ra ? `, Ra ${fmtNum(run.role.ra)}` : ""}.`);
   }
+  if (datumRun && extra) extra.datums.push({ letter: "A", what: `axis of the Ø${fmtNum(2 * datumRun.r)} ${datumRun.role ? datumRun.role.text.toLowerCase() : "diameter"}` });
 }
 
 function gearDims(ctx: DimContext, part: EvalPart, push: Push, what: string) {
@@ -909,12 +1398,26 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
     }
     if (rows.length) margin[side] = st.first + (rows.length - 1) * st.step + st.size * 0.5;
     for (const d of defs) if (d.side === side && d.offset !== undefined) margin[side] = Math.max(margin[side], d.offset + st.size);
+    // a datum symbol on a dimension line sticks out past its row
+    for (const d of list) if (d.datum) margin[side] = Math.max(margin[side], st.first + (d.row ?? 0) * st.step + datumReach(st));
+  }
+  // frames and datums on diameters drawn across a turned part hang off one end of the line
+  let k = 0;
+  for (const d of defs) {
+    if (d.kind !== "inline" || (!d.frames?.length && !d.datum)) continue;
+    if (d.frames?.length) d.row = k++;
+    const vertical = Math.abs(d.b[1] - d.a[1]) > Math.abs(d.b[0] - d.a[0]);
+    const reach = markReach(d, st) + 1;
+    const tw = dimTextWidth(d.text, st.size);
+    const fits = Math.hypot(d.b[0] - d.a[0], d.b[1] - d.a[1]) * v.scale >= tw + 2 * st.arrow + 2;
+    if (vertical) margin.top = Math.max(margin.top, reach + (fits ? 0 : tw + 2));
+    else margin.left = Math.max(margin.left, reach + (d.frames?.length ? Math.max(...d.frames.map((f) => fcfWidth(f, st.size))) : 0));
   }
   // callouts stack above the view, leaders running up-right or up-left
   const callouts = defs.filter((d) => d.kind === "callout");
   const mid = (v.box[0] + v.box[2]) / 2;
-  const height = (d: DimDef) => (1 + (d.lines?.length ?? 0)) * st.size * 1.5 + 1.5;
-  const widthOf = (d: DimDef) => Math.max(dimTextWidth(d.text, st.size), ...(d.lines ?? []).map((l) => textWidth(l, st.size)));
+  const height = (d: DimDef) => (1 + (d.lines?.length ?? 0)) * st.size * 1.5 + 1.5 + framesHeight(d, st);
+  const widthOf = (d: DimDef) => Math.max(dimTextWidth(d.text, st.size), ...(d.lines ?? []).map((l) => textWidth(l, st.size)), ...(d.frames ?? []).map((f) => fcfWidth(f, st.size)));
   const tally = { left: 0, right: 0 };
   const fixed: DimDef[] = [];
   const flexible: DimDef[] = [];
@@ -970,7 +1473,7 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
     let h = st.first - st.size;
     for (const d of list) {
       const n = 1 + (d.lines?.length ?? 0);
-      d.row = h + st.size * 0.4 + ((n - 1) * st.size * 1.5) / 2;
+      d.row = h + framesHeight(d, st) + st.size * 0.4 + ((n - 1) * st.size * 1.5) / 2;
       h += height(d);
       const S = calloutStart(d, v);
       const rise = Math.max(S[1] - (v.box[1] - d.row), 0);
@@ -984,6 +1487,24 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
   margin.left = Math.max(margin.left, left);
   return margin;
 }
+
+/** Height the frames and datum symbol under a callout's text take. */
+function framesHeight(d: DimDef, st: DimStyle): number {
+  if (d.kind !== "callout") return 0;
+  return (d.frames?.length ?? 0) * (fcfHeight(st.size) + 0.8) + (d.datum ? datumReach(st) : 0);
+}
+
+/** How far a datum symbol reaches from the line it stands on. */
+const datumReach = (st: DimStyle) => st.size * 0.75 + 1.5 + datumBox(st.size) + 1;
+
+/** How far a turned diameter's datum symbol or frames reach past the end of its line. */
+function markReach(d: DimDef, st: DimStyle): number {
+  const n = d.frames?.length ?? 0;
+  return Math.max(d.datum ? 1.5 + datumReach(st) : 0, n ? inlineLead(st, d.row ?? 0) + n * (fcfHeight(st.size) + 0.8) : 0);
+}
+
+/** Length of the leader from a turned diameter's end to the frame it carries. */
+const inlineLead = (st: DimStyle, row: number) => st.first * 0.6 + row * (fcfHeight(st.size) + 1.5);
 
 /** Leader direction along which x ± y stays constant. */
 const key = (d: DimDef, v: Placed) => {
@@ -1013,6 +1534,26 @@ function calloutStart(d: DimDef, v: Placed): [number, number] {
 }
 
 // ---------- inking ----------
+
+/** A datum symbol or frames off the end (x, y) of a diameter drawn across a turned part, along (ux, uy) on paper. */
+function inlineMarks(ink: Ink, d: DimDef, x: number, y: number, ux: number, uy: number, st: DimStyle) {
+  if (d.datum) {
+    ink.line(x, y, x + ux * 1.5, y + uy * 1.5);
+    inkDatum(ink, x + ux * 1.5, y + uy * 1.5, ux, uy, d.datum, st.size, 1.5);
+  }
+  if (!d.frames?.length) return;
+  const L = inlineLead(st, d.row ?? 0);
+  const ex = x + ux * L;
+  const ey = y + uy * L;
+  ink.line(x, y, ex, ey);
+  const h = fcfHeight(st.size);
+  d.frames.forEach((f, i) => {
+    const w = fcfWidth(f, st.size);
+    // above the end for an upward leader, to its left for a leftward one
+    if (uy < 0) inkFcf(ink, ex - Math.min(4, w / 2), ey - h - i * (h + 0.8), f, st.size);
+    else inkFcf(ink, ex - w, ey - h / 2 + i * (h + 0.8), f, st.size);
+  });
+}
 
 /** Draws dimension text along a direction; returns its box. */
 export function inkDimText(ink: Ink, t: DimText, x: number, y: number, size: number, anchor: "middle" | "start", rot: number) {
@@ -1095,6 +1636,17 @@ export function inkDim(ink: Ink, d: DimDef, v: Placed, st: DimStyle): Box {
       const ty = textOutside ? lo - st.arrow - 2 : (lo + hi) / 2;
       inkDimText(ink, d.text, line - 0.8, ty, st.size, textOutside ? "start" : "middle", 90);
     }
+    // the datum this feature of size is: its symbol on the dimension line, pointing away from the view
+    if (d.datum) {
+      const out: [number, number] = side === "bottom" ? [0, 1] : side === "top" ? [0, -1] : side === "right" ? [1, 0] : [-1, 0];
+      const [mx, my] = pt(lo + (hi - lo) * 0.2);
+      inkDatum(ink, mx, my, out[0], out[1], d.datum, st.size, 1.5);
+    }
+    // a frame given to a linear dimension sits past its far end
+    if (d.frames?.length) {
+      const [ex, ey] = pt(hi + (horiz ? tail : ext) + 1.5);
+      d.frames.forEach((f, i) => inkFcf(ink, horiz ? ex : ex - fcfHeight(st.size) / 2, (horiz ? ey - fcfHeight(st.size) / 2 : ey) + i * (fcfHeight(st.size) + 0.8), f, st.size));
+    }
   } else if (d.kind === "aligned") {
     const dx = B[0] - A[0];
     const dy = B[1] - A[1];
@@ -1141,15 +1693,21 @@ export function inkDim(ink: Ink, d: DimDef, v: Placed, st: DimStyle): Box {
       ink.arrow(B[0], B[1], -ux, -uy, st.arrow);
       ink.line(A[0], A[1], A[0] - ux * (st.arrow + 2), A[1] - uy * (st.arrow + 2));
     }
+    // a datum or frame takes the top (or left) end of the line, so the text goes to the other end when it does not fit
+    const marked = !!(d.frames?.length || d.datum);
     if (vertical) {
       const top = Math.min(A[1], B[1]);
       const fits = L >= tw + 2 * st.arrow + 2;
       if (fits) inkDimText(ink, d.text, A[0] - 0.8, (A[1] + B[1]) / 2, st.size, "middle", 90);
+      // past the datum or frame, reading up in line with the dimension
+      else if (marked) inkDimText(ink, d.text, A[0] - 0.8, top - markReach(d, st) - 1.5, st.size, "start", 90);
       else {
         ink.line(A[0], top, A[0], top - tw - st.arrow - 3);
         inkDimText(ink, d.text, A[0] - 0.8, top - st.arrow - 2, st.size, "start", 90);
       }
+      if (marked) inlineMarks(ink, d, A[0], top, 0, -1, st);
     } else {
+      const left = Math.min(A[0], B[0]);
       const right = Math.max(A[0], B[0]);
       const fits = L >= tw + 2 * st.arrow + 2;
       if (fits) inkDimText(ink, d.text, (A[0] + B[0]) / 2, A[1] - 0.8, st.size, "middle", 0);
@@ -1157,6 +1715,7 @@ export function inkDim(ink: Ink, d: DimDef, v: Placed, st: DimStyle): Box {
         ink.line(right, A[1], right + tw + st.arrow + 3, A[1]);
         inkDimText(ink, d.text, right + st.arrow + 2, A[1] - 0.8, st.size, "start", 0);
       }
+      if (marked) inlineMarks(ink, d, left, A[1], -1, 0, st);
     }
   } else {
     // callout: leader from the circle at 45° to a shoulder above the view
@@ -1177,6 +1736,17 @@ export function inkDim(ink: Ink, d: DimDef, v: Placed, st: DimStyle): Box {
     const tx = sx > 0 ? E[0] + 4 : E[0] - 4 - w;
     inkDimText(ink, d.text, tx, firstBase, st.size, "start", 0);
     (d.lines ?? []).forEach((l, i) => ink.text(tx, firstBase + (i + 1) * st.size * 1.5, l, st.size));
+    // geometric tolerances under the text, the datum symbol hanging from the last frame
+    let fy = firstBase + (n - 1) * st.size * 1.5 + st.size * 0.6;
+    let last: Box | null = null;
+    for (const f of d.frames ?? []) {
+      last = inkFcf(ink, tx, fy, f, st.size);
+      fy += fcfHeight(st.size) + 0.8;
+    }
+    if (d.datum) {
+      const x = last ? last[0] + Math.min(4, (last[2] - last[0]) / 2) : tx + 2;
+      inkDatum(ink, x, last ? last[3] : fy, 0, 1, d.datum, st.size, 1.5);
+    }
   }
   const box: Box = [Infinity, Infinity, -Infinity, -Infinity];
   for (let i = start; i < ink.shapes.length; i++) {

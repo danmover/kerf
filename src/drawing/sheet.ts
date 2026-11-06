@@ -95,8 +95,16 @@ export interface SheetDim {
   b?: V3;
   /** direction of a linear dimension on its view */
   align?: "h" | "v" | "aligned";
-  /** an automatic dimension's id, for tol() in the drawing block */
+  /** an automatic dimension's id, for tol() and gdt() in the drawing block */
   id?: string;
+  /** geometric tolerances on the feature, as text: "position Ø0.4 (M) | A | B | C" */
+  frames?: string[];
+  /** the datum letter this feature is */
+  datum?: string;
+  /** a basic (theoretically exact) dimension, boxed: its feature's frame carries the tolerance */
+  basic?: boolean;
+  /** what the feature is for, e.g. "SEAT FOR 625 BEARING" */
+  role?: string;
 }
 
 export interface SheetPart {
@@ -132,6 +140,8 @@ export interface Sheet {
   bom: BomLine[];
   notes: string[];
   warnings: string[];
+  /** the datum reference frame, when the drawing has geometric tolerances */
+  datums: { letter: string; what: string }[];
   /** views still waiting for their projection */
   pending: number;
   spec: DrawingSpec;

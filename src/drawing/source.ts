@@ -26,6 +26,7 @@ export function specToSource(spec: DrawingSpec, name: string): string {
   if (spec.projection !== "first") lines.push(`  projection: ${str(spec.projection)}`);
   if (spec.hidden !== undefined) lines.push(`  hidden_lines: ${spec.hidden}`);
   if (spec.flat) lines.push("  flat_pattern: true");
+  if (spec.gdt !== undefined) lines.push(`  gdt: ${spec.gdt}`);
   lines.push(`  views: [${spec.views.map((v) => str(v.kind)).join(", ")}]`);
   for (const s of spec.sections) lines.push(`  section(${str(s.label)}, at: ${vec(s.at)}, normal: ${vec(s.normal)}${s.view ? `, view: ${str(s.view)}` : ""})`);
   for (const d of spec.details) lines.push(`  detail(${str(d.label)}, view: ${str(d.view)}, at: ${vec(d.at)}, r: ${num(d.r)}, scale: ${num(d.scale)})`);
@@ -34,6 +35,7 @@ export function specToSource(spec: DrawingSpec, name: string): string {
     const call = fit ?? (t.tol ? tolCall(t.id, close(t.tol[0], -t.tol[1]) ? { kind: "pm", t: t.tol[0] } : { kind: "limits", upper: t.tol[0], lower: t.tol[1] }) : null);
     if (call) lines.push(`  ${call}`);
   }
+  for (const g of spec.frames ?? []) lines.push(`  gdt(${str(g.id)}, ${str(g.kind)}, ${num(g.tol)}${g.datums.length ? `, ${str(g.datums.join(" "))}` : ""}${g.mmc ? ", mmc: true" : ""})`);
   for (const n of spec.notes) lines.push(`  note(${str(n)})`);
   lines.push("}");
   return lines.join("\n");

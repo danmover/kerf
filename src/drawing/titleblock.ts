@@ -178,9 +178,33 @@ export function inkToleranceStrip(ink: Ink, above: Box, tolerance: string): Box 
   return [x0, y0, x0 + TB_W, above[1]];
 }
 
-/** Parts list directly above a box, header at the bottom as ISO 7573 lays it out. */
-export function inkPartsList(ink: Ink, above: Box, lines: BomLine[]): Box {
-  const rh = 5.5;
+const ROW_H = 5.5;
+
+/**
+ * Where a parts list goes: one column directly above the title block while it
+ * takes no more than 60 % of the height there, else as many columns as it
+ * needs, each to the left of the one before, rows shared evenly.
+ */
+export function partsListBoxes(rows: number, above: Box, frame: Box): { per: number; boxes: Box[] } {
+  const room = above[1] - frame[1] - 4;
+  const full = Math.max(1, Math.floor(room / ROW_H) - 1);
+  const comfy = Math.max(1, Math.floor((room * 0.6) / ROW_H) - 1);
+  const maxCols = Math.max(1, Math.floor((above[2] - frame[0]) / TB_W));
+  let cols = Math.ceil(rows / comfy);
+  if (cols > maxCols) cols = Math.min(maxCols, Math.ceil(rows / full));
+  const per = Math.ceil(rows / cols);
+  const boxes: Box[] = [];
+  for (let k = 0; k * per < rows; k++) {
+    const n = Math.min(per, rows - k * per);
+    const x0 = above[2] - TB_W * (k + 1);
+    boxes.push([x0, above[1] - (n + 1) * ROW_H, x0 + TB_W, above[1]]);
+  }
+  return { per, boxes };
+}
+
+/** Parts list above a box, header at the bottom as ISO 7573 lays it out; a long one runs on in columns to the left. */
+export function inkPartsList(ink: Ink, above: Box, lines: BomLine[], frame: Box): Box {
+  const rh = ROW_H;
   const cols: [string, number][] = [
     ["ITEM", 11],
     ["QTY", 10],
@@ -188,36 +212,38 @@ export function inkPartsList(ink: Ink, above: Box, lines: BomLine[]): Box {
     ["DESCRIPTION", 80],
     ["MATERIAL", 37],
   ];
-  const x0 = above[0];
-  const n = lines.length;
-  const y1 = above[1];
-  const y0 = y1 - (n + 1) * rh;
+  const { per, boxes } = partsListBoxes(lines.length, above, frame);
   ink.with("bom", () => {
-    ink.rect(x0, y0, TB_W, y1 - y0, "frame");
-    // header row
-    const hy = y1 - rh;
-    let x = x0;
-    for (const [label, cw] of cols) {
-      ink.rect(x, hy, cw, rh, "frame");
-      ink.text(x + 1.2, hy + rh - 1.7, label, 2, "start", { bold: true });
-      x += cw;
-    }
-    // rows above the header, item 1 nearest it
-    lines.forEach((l, i) => {
-      const y = hy - (i + 1) * rh;
-      let cx = x0;
-      const values = [String(l.item), String(l.qty), l.name, l.description, l.material];
-      cols.forEach(([, cw], k) => {
-        ink.line(cx, y, cx, y + rh, "frame");
-        const v = fitText(values[k], 2.5, cw - 2.4);
-        if (k < 2) ink.text(cx + cw / 2, y + rh - 1.6, v, 2.5, "middle");
-        else ink.text(cx + 1.2, y + rh - 1.6, v, 2.5);
-        cx += cw;
+    boxes.forEach((b, c) => {
+      const [x0, y0, , y1] = b;
+      ink.rect(x0, y0, TB_W, y1 - y0, "frame");
+      // header row
+      const hy = y1 - rh;
+      let x = x0;
+      for (const [label, cw] of cols) {
+        ink.rect(x, hy, cw, rh, "frame");
+        ink.text(x + 1.2, hy + rh - 1.7, label, 2, "start", { bold: true });
+        x += cw;
+      }
+      // rows above the header, the column's first item nearest it
+      lines.slice(c * per, (c + 1) * per).forEach((l, i) => {
+        const y = hy - (i + 1) * rh;
+        let cx = x0;
+        const values = [String(l.item), String(l.qty), l.name, l.description, l.material];
+        cols.forEach(([, cw], k) => {
+          ink.line(cx, y, cx, y + rh, "frame");
+          const v = fitText(values[k], 2.5, cw - 2.4);
+          if (k < 2) ink.text(cx + cw / 2, y + rh - 1.6, v, 2.5, "middle");
+          else ink.text(cx + 1.2, y + rh - 1.6, v, 2.5);
+          cx += cw;
+        });
+        ink.line(x0, y, x0 + TB_W, y, "frame");
       });
-      ink.line(x0, y, x0 + TB_W, y, "frame");
     });
   });
-  return [x0, y0, x0 + TB_W, y1];
+  const x0 = Math.min(...boxes.map((b) => b[0]));
+  const y0 = Math.min(...boxes.map((b) => b[1]));
+  return [x0, y0, above[2], above[1]];
 }
 
 /** Word-wraps text to a width. */

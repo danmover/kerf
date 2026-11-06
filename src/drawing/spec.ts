@@ -4,6 +4,7 @@
 
 import type { Span } from "../lang/ast";
 import type { V3 } from "../kernel/recipe";
+import type { GdtKind } from "./gdt";
 
 export const VIEW_KINDS = ["front", "back", "top", "bottom", "left", "right", "iso"] as const;
 export type ViewKind = (typeof VIEW_KINDS)[number];
@@ -82,6 +83,16 @@ export interface TolSpec {
   span: Span;
 }
 
+/** A geometric tolerance written in the drawing block for an automatic dimension or callout. */
+export interface GdtSpec {
+  id: string;
+  kind: GdtKind;
+  tol: number;
+  datums: string[];
+  mmc?: boolean;
+  span: Span;
+}
+
 export interface DrawingSpec {
   /** block name in the source, or "auto:<target>" for generated drawings */
   name: string;
@@ -108,12 +119,18 @@ export interface DrawingSpec {
   balloons?: boolean;
   /** shows sheet-metal parts laid flat, with bend lines and a bend table */
   flat?: boolean;
+  /** datums and geometric tolerances; undefined chooses by process (machined, cast, moulded and sheet parts get them) */
+  gdt?: boolean;
+  /** the views were chosen by Kerf (no views: or view() in the block), so it may pick the ones the part needs */
+  viewsAuto?: boolean;
   views: ViewSpec[];
   sections: SectionSpec[];
   details: DetailSpec[];
   dims: DimSpec[];
   /** tolerances and fits for automatic dimensions, by the dimension's id */
   tols: TolSpec[];
+  /** geometric tolerances for automatic dimensions and callouts, by id */
+  frames: GdtSpec[];
   notes: string[];
   locked: boolean;
   span?: Span;
@@ -136,9 +153,11 @@ export function defaultSpec(name: string, title: string, of: string[]): DrawingS
     details: [],
     dims: [],
     tols: [],
+    frames: [],
     notes: [],
     locked: false,
     auto: true,
+    viewsAuto: true,
   };
 }
 
@@ -340,6 +359,7 @@ export const DRAWING_PROPS = [
   "parts_list",
   "balloons",
   "flat_pattern",
+  "gdt",
   "views",
 ] as const;
 
@@ -351,6 +371,7 @@ export const DRAWING_CALLS: Record<string, string[]> = {
   dim: ["a", "b", "view", "align", "offset", "tol", "fit", "text", "ref", "basic"],
   diameter: ["at", "d", "view", "tol", "fit", "text", "ref"],
   tol: ["id", "tol", "fit"],
+  gdt: ["id", "kind", "tol", "datums", "mmc"],
   note: ["text"],
 };
 
@@ -361,5 +382,6 @@ export const DRAWING_DOCS: Record<string, string> = {
   dim: 'dim(a, b, view: "top", align: "h"|"v"|"aligned"|"auto", offset: 10, tol: 0.1 or (0.1, -0.05), fit: "H7", text: "…", ref: true, basic: true) — a linear dimension between two model points, shown on the named view (or the best one).',
   diameter: 'diameter(at, d, view: "top", tol:, fit: "H7", text:) — a diameter callout for a circle of diameter d centred at a model point, on a view that looks along its axis.',
   tol: 'tol("top:overall-width-x", 0.1) or tol("front:4-holes-o3.4", fit: "H7") — a tolerance (± value or (upper, lower)) or ISO 286 fit for an automatic dimension, named by the id view_drawing lists. It follows the dimension when the design changes.',
+  gdt: 'gdt("front:4-holes-o3.4", "position", 0.3, "A B C", mmc: true) — a geometric tolerance (position, flatness, perpendicularity, parallelism, runout, coaxiality or profile) for an automatic dimension or callout, named by the id view_drawing lists; it replaces the frame of that kind Kerf chose. gdt: false in the block turns datums and frames off, gdt: true turns them on for printed parts.',
   note: 'note("Break sharp edges 0.2 mm") — a numbered general note on the sheet.',
 };
