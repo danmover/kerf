@@ -473,7 +473,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const holes = g.holes ?? [];
       const body: PartRecipe = {
         base: { t: "box", w, d: dd, h, at: Z0, r },
-        ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: g.hole_d ?? 3, depth: 6, at: [x, y, 0] as V3, dir: ZP } })),
+        // mounting holes up from the bottom face: blind (6 mm) unless hole_depth says how deep (a blower's ears go right through)
+        ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: g.hole_d ?? 3, depth: num(d, "hole_depth", 6), at: [x, y, 0] as V3, dir: ZP } })),
       };
       const solids = [solid("", p.name, body, g.color ?? "#2b3038", g.material ?? "ABS")];
       const band = num(d, "band", 0);
@@ -552,7 +553,13 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const holeCount = Math.max(1, Math.floor((L - 10) / pitch) + 1);
       const first = (L - (holeCount - 1) * pitch) / 2;
       const ops: PartRecipe["ops"] = [];
-      for (let i = 0; i < Math.min(holeCount, 60); i++) ops.push({ op: "cut", shape: { t: "cyl", d: num(d, "rail_hole_d", 3.5), h: rh + 2, at: [0, -1, first + i * pitch], dir: YP } });
+      // each hole counterbored from the top so the screw head sits below the carriage's path
+      const cbd = num(d, "rail_cbore_d", 6);
+      const cbh = Math.min(num(d, "rail_cbore_h", 4.5), rh * 0.6);
+      for (let i = 0; i < Math.min(holeCount, 60); i++) {
+        ops.push({ op: "cut", shape: { t: "cyl", d: num(d, "rail_hole_d", 3.5), h: rh + 2, at: [0, -1, first + i * pitch], dir: YP } });
+        ops.push({ op: "cut", shape: { t: "cyl", d: cbd, h: cbh + 1, at: [0, rh - cbh, first + i * pitch], dir: YP } });
+      }
       const rail: PartRecipe = { base: { t: "box", w: rw, d: rh, h: L, at: [0, rh / 2, 0], r: 0 }, ops };
       const hx = num(d, "block_hx", 20) / 2;
       const hz = num(d, "block_hz", 20) / 2;

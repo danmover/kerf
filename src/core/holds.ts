@@ -247,9 +247,10 @@ const ANGLE0 = 0.37;
 /**
  * Material of a part round the shank, measured on its mesh: rays parallel to the axis at two radii inside the
  * head's footprint, eight round. A part counts when it surrounds the shank (material on most of the rays): a
- * wall beside the head does not. Null when the part is not round the shank at all.
+ * wall beside the head does not. Null when the part is not round the shank at all. minAngles: how many of the
+ * eight directions must find material (1 to find anything in the way, like a probe for a tool's path).
  */
-export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: number): [number, number][] | null {
+export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: number, minAngles = 5): [number, number][] | null {
   const bvh = bvhOf(m);
   if (!bvh.count) return null;
   const M = xformMatrix(p.xf);
@@ -305,7 +306,7 @@ export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s
     }
     if (hit) hitAngles++;
   }
-  if (hitAngles < 5) return null;
+  if (hitAngles < minAngles) return null;
   return unite(all);
 }
 

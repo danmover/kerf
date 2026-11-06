@@ -137,7 +137,8 @@ export function findFits(model: Model): FoundFits {
       if (overlap < Math.min(0.5, 0.3 * Math.min(h.length, s.length))) continue;
       // a screw in a hole much smaller than its thread is screwed in, not fitted
       if (s.role === "screw" && (h.role === "thread" || h.d < s.d - 0.2)) {
-        located.set(s.part.id, (located.get(s.part.id) ?? new Set()).add(h.part));
+        // a nut (or a T-nut in a slot) goes wherever the screw is: it does not locate it
+        if (h.part.libKind !== "nut") located.set(s.part.id, (located.get(s.part.id) ?? new Set()).add(h.part));
         continue;
       }
       if (h.role === "thread") continue;

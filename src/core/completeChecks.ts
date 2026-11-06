@@ -321,30 +321,54 @@ function emptyHoleItems(model: Model, kernel?: ChecksResult | null): CheckItem[]
 
 // ---------- profile frames: every joint joined ----------
 
+/** Joins as a graph: part id to the ids it is fastened or fitted to (bands left out: a band is no structural joint). */
+export function joinGraph(holds: Holds): Map<string, Set<string>> {
+  const g = new Map<string, Set<string>>();
+  const add = (a: string, b: string) => (g.get(a) ?? g.set(a, new Set()).get(a)!).add(b);
+  for (const j of holds.joins) {
+    if (j.kind === "band") continue;
+    add(j.a.id, j.b.id);
+    add(j.b.id, j.a.id);
+  }
+  return g;
+}
+
+/**
+ * Are two profiles joined to each other, not just to the same frame: a path of at most four joins between them that
+ * passes only through hardware, brackets, gussets and plates (never through another profile). A screw into both, a
+ * corner bracket with its two screws, or a plate screwed to both all count.
+ */
+export function joinedDirect(g: Map<string, Set<string>>, byId: Map<string, EvalPart>, a: string, b: string): boolean {
+  let frontier = [a];
+  const seen = new Set([a]);
+  for (let depth = 0; depth < 4 && frontier.length; depth++) {
+    const next: string[] = [];
+    for (const x of frontier)
+      for (const y of g.get(x) ?? []) {
+        if (y === b) return true;
+        if (seen.has(y)) continue;
+        seen.add(y);
+        const p = byId.get(y);
+        if (p && isProfile(p)) continue;
+        next.push(y);
+      }
+    frontier = next;
+  }
+  return false;
+}
+
 function jointItems(model: Model, holds: Holds, kernel?: ChecksResult | null): CheckItem[] {
   const contacts = kernel?.contacts;
   if (!contacts) return [];
   const byId = new Map(model.parts.map((p) => [p.id, p]));
-  // what is joined to what by real hardware or fits (union-find over the joins)
-  const root = new Map<string, string>();
-  const find = (x: string): string => {
-    let r = x;
-    while (root.has(r) && root.get(r) !== r) r = root.get(r)!;
-    return r;
-  };
-  const link = (a: string, b: string) => {
-    const ra = find(a);
-    const rb = find(b);
-    if (ra !== rb) root.set(ra, rb);
-  };
-  for (const j of holds.joins) if (j.kind !== "band") link(j.a.id, j.b.id);
+  const g = joinGraph(holds);
   const out: CheckItem[] = [];
   const seen = new Set<string>();
   for (const c of contacts) {
     const a = byId.get(c.a);
     const b = byId.get(c.b);
     if (!a || !b || !isProfile(a) || !isProfile(b) || instanceOf(a) === instanceOf(b)) continue;
-    if (find(a.id) === find(b.id)) continue;
+    if (joinedDirect(g, byId, a.id, b.id)) continue;
     const key = [a.id, b.id].sort().join("|");
     if (seen.has(key)) continue;
     seen.add(key);

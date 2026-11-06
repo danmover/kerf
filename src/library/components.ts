@@ -300,7 +300,7 @@ export const LIBRARY: Record<string, LibEntry> = {
             base: { t: "box", w: 5.8, d: 11, h: 1.8, at: Z0, r: 0 },
             ops: [
               { op: "add", shape: { t: "prism", pts: [[-5, 1.79], [5, 1.79], [3.6, 4], [-3.6, 4]], h: 11, at: [0, -5.5, 0], dir: [0, 1, 0], rot: 0 } },
-              { ...threadCut, shape: { ...threadCut.shape, length: 4.2 } },
+              { ...threadCut, shape: { ...threadCut.shape, length: n.h + 0.1 } },
             ],
           };
           break;
@@ -324,7 +324,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         label,
         placement: "axis",
         solids: [{ suffix: "", label, recipe, color: type === "tslot20" ? "#c9d1dc" : g.color, material: g.material, finish: grade === "A2-70" || grade === "A4-80" ? "machined" : "zinc-plated" }],
-        fields: { scalars: { af: n.af, height: n.h, type }, points: { at: Z0, end: [0, 0, type === "tslot20" ? 5.4 : n.h] }, dirs: { axis: ZP } },
+        fields: { scalars: { af: n.af, height: n.h, type }, points: { at: Z0, end: [0, 0, n.h] }, dirs: { axis: ZP } },
         bom: { description: `${n.label} ${t.name}, ${type === "tslot20" ? "steel, zinc plated" : partGrade(grade)}`, standard: n.standard, price, priceNote: PACK_NOTE, search: `${t.name} ${n.label.toLowerCase()} ${searchGrade(grade)}`, key: `nut|${t.name}|${type}|${grade}` },
       };
     },
@@ -775,6 +775,43 @@ export const LIBRARY: Record<string, LibEntry> = {
           priceNote: "typical price each (Maker Store, Core Electronics)",
           search: `${size} corner bracket aluminium extrusion`,
           key: `corner_bracket|${size}`,
+        },
+      };
+    },
+  },
+
+  joining_plate: {
+    signature: 'lib.joining_plate("L") { at: outer_corner, axis: face_normal, rotate: 0 }',
+    doc: `Flat 3 mm aluminium joining plate for 20 series profiles whose faces sit flush (an upright standing on a base rail, both faces in one plane): "L" is the 90° five-hole plate, 60 × 60 mm with 20 mm arms and M5 holes 20 mm apart. It lies on the faces with \`at\` at the L's outer corner and \`axis\` the faces' outward normal; arm A runs along local +x (turn it with rotate:), arm B along local +y, the holes 10 mm in from the edges so each row meets a slot line. An M5 × 8 button screw into a T-nut goes in each hole. Fields: holes (where each screw head sits, on the plate's outer face), into (the screws' direction), arm_a, arm_b, thickness. place_fasteners puts these on flush joints where a corner bracket has no room.`,
+    params: ["type"],
+    group: "Frame",
+    make(a) {
+      const type = a.str("type", "L").toUpperCase();
+      if (type !== "L") throw new Error('type: "L" (the 90° five-hole plate)');
+      const t = 3;
+      const holes: [number, number][] = [[10, 10], [30, 10], [50, 10], [10, 30], [10, 50]];
+      const ops: PartRecipe["ops"] = [
+        { op: "add", shape: { t: "box", w: 20, d: 40, h: t, at: [10, 40, 0], r: 0 } },
+        ...holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: 5.5, h: t + 2, at: [x, y, -1] as V3, dir: ZP } })),
+      ];
+      const label = "90° joining plate (5 hole)";
+      return {
+        kind: "joining_plate",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe: { base: { t: "box", w: 60, d: 20, h: t, at: [30, 10, 0], r: 0 }, ops }, color: "#2b2f36", material: "Aluminum 6061", finish: "anodized" }],
+        fields: {
+          scalars: { thickness: t },
+          points: { at: Z0 },
+          pointLists: { holes: holes.map(([x, y]) => [x, y, t] as V3) },
+          dirs: { axis: ZP, into: ZN, arm_a: [1, 0, 0], arm_b: [0, 1, 0] },
+        },
+        bom: {
+          description: "90° joining plate for 20 series profile, 3 mm aluminium, 5 × M5 holes",
+          price: 3.5,
+          priceNote: "typical price each (Maker Store, Core Electronics)",
+          search: "90 degree joining plate 2020 v-slot 5 hole",
+          key: "joining_plate|L",
         },
       };
     },

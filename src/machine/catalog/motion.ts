@@ -510,7 +510,8 @@ export const MOTION: CatalogPart[] = [
     summary: "Part-cooling blower, 50 × 50 × 15 mm, 24 V, about 0.15 A.",
     specs: { size: 50, v: 24, i: 0.15 },
     pins: [port("PLUG", "fan2", "sink", { v: 24, need_a: 0.15, required: true })],
-    geom: { g: "box", dims: { w: 51, d: 51, h: 15, r: 6 }, color: "#16191e" },
+    // its two mounting ears' holes, through the housing at opposite corners
+    geom: { g: "box", dims: { w: 51, d: 51, h: 15, r: 6, hole_depth: 15.2 }, holes: [[20, -18], [-20, 18]], hole_d: 4.3, color: "#16191e" },
     price_usd: 5,
     buy: [{ vendor: "Marketplace", search: "5015 blower fan 24V" }],
   },

@@ -11,11 +11,11 @@
 // per group of identical screws, nuts or brackets, to go after each part.
 
 import type { EvalPart, Model } from "./model";
-import { applyXformsToDir, frameFor, vadd, vdot, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
+import { applyXformsToDir, frameFor, vadd, vcross, vdot, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
 import { cylEnd, cylMid, lineDistance } from "../analysis/fits/geometry";
 import { boxNearSegment, cylsOf, findHolds, isFastener, isProfile, meshIntervals, worldBox, type MeshLookup, type Shank } from "./holds";
-import { clearanceSize } from "./completeChecks";
-import { headDims, insertDims, nutDims, pickLength, washerDims, type HeadType } from "../library/fasteners";
+import { clearanceSize, heldHardware, joinGraph, joinedDirect } from "./completeChecks";
+import { engagementFor, headDims, nutDims, pickLength, washerDims, type HeadType } from "../library/fasteners";
 import type { ThreadSpec } from "../library/standards";
 import type { ChecksResult } from "../kernel/protocol";
 
@@ -24,7 +24,7 @@ type Box = [V3, V3];
 export interface FastenGroup {
   /** the part the hardware is for: its lines go after that part's block */
   part: string;
-  kind: "screw" | "nut" | "tnut" | "insert" | "washer" | "bracket";
+  kind: "screw" | "nut" | "tnut" | "insert" | "washer" | "bracket" | "plate";
   /** lib call, e.g. lib.screw(M5, 12, head: "button") */
   call: string;
   at: V3[];
@@ -113,10 +113,10 @@ interface Placed {
   screws: { t: ThreadSpec; L: number; head: HeadType; at: V3; axis: V3 }[];
   nuts: { t: ThreadSpec; kind: "nut" | "tnut" | "insert"; at: V3; axis: V3; rotate?: number; nyloc?: boolean }[];
   washers: { t: ThreadSpec; at: V3; axis: V3 }[];
-  brackets: { size: "2020" | "2040"; at: V3; axis: V3; rotate: number }[];
+  brackets: { size: "2020" | "2040"; plate?: boolean; at: V3; axis: V3; rotate: number }[];
 }
 
-/** T-nut depth below the profile face, and how deep a screw may go before it meets the core. */
+/** Where a T-nut's thread ends below the profile face (the tip goes a pitch past it), and how deep a screw may go before it meets the core. */
 const TNUT_DEPTH = 4;
 const CORE_DEPTH = 6;
 
@@ -132,17 +132,20 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
   const planned: { at: V3; axis: V3; len: number }[] = [];
   const filled = (p: EvalPart, at: V3, axis: V3, len: number, d: number) =>
     fillers.some(({ p: q, c }) => {
-      if (q === p || Math.abs(vdot(c.axis, axis)) < 0.995 || lineDistance(cylMid(c), at, axis) > Math.max(0.4, 0.1 * d)) return false;
+      // a pin, shaft or screw in the hole (not a tube round it, like a spacer under a bed)
+      if (q === p || c.d > d + 0.3 || Math.abs(vdot(c.axis, axis)) < 0.995 || lineDistance(cylMid(c), at, axis) > Math.max(0.4, 0.1 * d)) return false;
       const a = vdot(vsub(c.at, at), axis);
       const b = vdot(vsub(cylEnd(c), at), axis);
       return Math.max(a, b) > -1 && Math.min(a, b) < len + 1;
     }) || planned.some((s) => Math.abs(vdot(s.axis, axis)) > 0.995 && lineDistance(s.at, at, axis) < Math.max(0.4, 0.1 * d));
 
-  // ---- a screw through each empty clearance hole ----
-  for (const p of parts) {
+  // ---- a screw through each empty clearance hole: made parts first, so a bought part's oversize holes take their screws ----
+  for (const p of [...parts].sort((a, b) => Number(a.kind !== "part") - Number(b.kind !== "part"))) {
     if (isFastener(p) || p.libKind === "corner_bracket") continue;
     if (want && !want.has(p.name)) continue;
-    if (!want && (p.kind !== "part" || p.processNone)) continue;
+    // made parts, and bought parts whose held: note names the screws that hold them (a rail "M3 screws into T-nuts")
+    if (!want && (p.kind !== "part" || p.processNone) && !heldHardware(p.held ?? model.machine?.components.find((c) => c.name === p.name)?.held ?? "").length) continue;
+    if (isProfile(p)) continue;
     const m = mesh(p.hash);
     if (!m) continue;
     for (const h of cylsOf(p)) {
@@ -166,27 +169,30 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
   // ---- corner brackets on profile joints nothing joins ----
   if (opts.kernel?.contacts) {
     const holds = findHolds(model, mesh);
-    const root = new Map<string, string>();
-    const find = (x: string): string => {
-      let r = x;
-      while (root.has(r) && root.get(r) !== r) r = root.get(r)!;
-      return r;
-    };
-    for (const j of holds.joins) if (j.kind !== "band") root.set(find(j.a.id), find(j.b.id));
+    const g = joinGraph(holds);
+    const done = new Set<string>();
     const byId = new Map(parts.map((p) => [p.id, p]));
+    const allById = new Map(model.parts.map((p) => [p.id, p]));
     const taken: Box[] = [];
     for (const c of opts.kernel.contacts) {
       const a = byId.get(c.a);
       const b = byId.get(c.b);
       if (!a || !b || !isProfile(a) || !isProfile(b) || instanceOf(a) === instanceOf(b)) continue;
       if (want && !want.has(a.name) && !want.has(b.name)) continue;
-      if (find(a.id) === find(b.id)) continue;
-      const got = planJoint(a, b, parts, taken) ?? planJoint(b, a, parts, taken);
+      const pair = [a.id, b.id].sort().join("|");
+      if (done.has(pair) || joinedDirect(g, allById, a.id, b.id)) continue;
+      done.add(pair);
+      const why: string[] = [];
+      // the profile standing or lying on the other first, so brackets sit on top of the lower one
+      const ba = worldBox(a);
+      const bb = worldBox(b);
+      const [x, y] = ba && bb && ba[1][2] <= bb[0][2] + 0.3 ? [b, a] : [a, b];
+      const got = planJoint(x, y, parts, taken, mesh, why) ?? planJoint(y, x, parts, taken, mesh, why) ?? planPlate(x, y, parts, taken, mesh, why) ?? planPlate(y, x, parts, taken, mesh, why);
       if (!got) {
-        plan.skipped.push({ part: a.name, why: `no free inside corner for a bracket where ${a.id} meets ${b.id} (or the slots do not line up): join them with a plate screwed into both` });
+        const because = why.find((w) => /place|hex key/.test(w)) ?? why[0] ?? "no inside corner with room for a bracket's legs";
+        plan.skipped.push({ part: a.name, why: `no corner bracket or joining plate where ${a.id} meets ${b.id}: ${because}. Join them with a printed gusset screwed into both (with T-nuts), or move what is in the way` });
         continue;
       }
-      root.set(find(a.id), find(b.id));
       const s = slot(got.x);
       for (const br of got.brackets) {
         s.brackets.push(br);
@@ -212,7 +218,7 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
       e.at.push(at);
       g.set(key, e);
     };
-    for (const b of s.brackets) add("bracket", `lib.corner_bracket("${b.size}")`, b.at, b.axis, b.rotate);
+    for (const b of s.brackets) add(b.plate ? "plate" : "bracket", b.plate ? 'lib.joining_plate("L")' : `lib.corner_bracket("${b.size}")`, b.at, b.axis, b.rotate);
     for (const sc of s.screws) add("screw", `lib.screw(${sc.t.name.replace(".", "_")}, ${r3(sc.L)}${sc.head !== "socket" ? `, head: "${sc.head}"` : ""})`, sc.at, sc.axis);
     for (const w of s.washers) add("washer", `lib.washer(${w.t.name.replace(".", "_")})`, w.at, w.axis);
     for (const n of s.nuts) {
@@ -224,6 +230,7 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
     const count = (k: FastenGroup["kind"]) => [...g.values()].filter((x) => x.kind === k).reduce((n, x) => n + x.at.length, 0);
     const words = [
       [count("bracket"), "corner bracket"],
+      [count("plate"), "joining plate"],
       [count("screw"), "screw"],
       [count("tnut"), "T-nut"],
       [count("nut"), "nut"],
@@ -235,7 +242,7 @@ export function planFasteners(model: Model, mesh: MeshLookup, opts: FastenOption
     plan.done.push({ part: s.part.name, text: words.join(", ") });
   }
   for (const gr of plan.groups) {
-    const base = `${gr.part}_${gr.kind === "tnut" ? "tnuts" : gr.kind === "bracket" ? "brackets" : `${gr.kind}s`}`;
+    const base = `${gr.part}_${gr.kind}s`;
     (gr as FastenGroup & { name?: string }).name = nameFor(base);
   }
   return plan;
@@ -270,8 +277,31 @@ function planHole(p: EvalPart, at: V3, axis: V3, len: number, t: ThreadSpec, par
     reasons.push(res.why);
   }
   // the reason from the side the head fits on says what to change
-  const why = reasons.find((r) => !r.startsWith("no room for the head")) ?? reasons[0];
+  const why = reasons[0] === reasons[1] ? reasons[0] : `from ${axisText(axis)}: ${reasons[0]}; from ${axisText(vscale(axis, -1))}: ${reasons[1]}`;
   return { why: `${t.name} hole at ${ptText(at)}: ${why}` };
+}
+
+/** Material of q along a line, from rays round it out to radius r (any ray counts): distances along axis from at. */
+function along(q: EvalPart, mesh: MeshLookup, at: V3, axis: V3, r: number, s0: number, s1: number): [number, number][] {
+  const m = mesh(q.hash);
+  if (!m) return [];
+  return (meshIntervals(q, m, { seat: at, axis, length: s1 - s0, d: 0, headD: 2 * r }, s0, s1, 1) ?? []).filter(([a, b]) => b > s0 && a < s1);
+}
+
+/** The first part in a hex key's way: a straight path 35 mm long out from the head (what the tool-access check needs). Removable covers come off. */
+function keyBlocker(seat: V3, axis: V3, head: HeadType, t: ThreadSpec, parts: EvalPart[], mesh: MeshLookup, skip: EvalPart[]): EvalPart | undefined {
+  const hd = headDims(head, t);
+  if (!hd) return undefined;
+  const out = vscale(axis, -1);
+  const top = vadd(seat, vscale(out, hd.h));
+  const r = (hd.key + 1.5) / 2;
+  for (const q of parts) {
+    if (skip.includes(q) || q.removable || isFastener(q)) continue;
+    const b = worldBox(q, mesh);
+    if (!b || !boxNearSegment(b, top, out, 35, r)) continue;
+    if (along(q, mesh, top, out, r, 0.05, 35).length) return q;
+  }
+  return undefined;
 }
 
 function tryDirection(p: EvalPart, own: { a: number; b: number }, layers: { part: EvalPart; a: number; b: number }[], at: V3, axis0: V3, dir: number, t: ThreadSpec, parts: EvalPart[], mesh: MeshLookup): Hardware | { why: string } {
@@ -286,6 +316,16 @@ function tryDirection(p: EvalPart, own: { a: number; b: number }, layers: { part
   // room for the head: nothing else in the way just above the seat
   const blocked = L.find((l) => l.part !== p && l.b > ownA - head.h - 0.5 && l.a < ownA - 0.05);
   if (blocked) return { why: `no room for the head (${blocked.part.name} is in the way)` };
+  // the head's own room, out to its rim (a pocket narrower than the head, a wall beside it), in any part
+  const rim = headDims("socket", t)!.d / 2 + 0.02;
+  const crowd = parts.find((q) => {
+    if (isFastener(q)) return false;
+    const b = worldBox(q, mesh);
+    return !!b && boxNearSegment(b, point(ownA - head.h), axis, head.h, rim) && along(q, mesh, at, axis, rim / 0.92, ownA - head.h + 0.05, ownA - 0.05).length > 0;
+  });
+  if (crowd) return { why: `no room for the head (${crowd.name} is in the way)` };
+  const keyIn = keyBlocker(point(ownA), axis, "socket", t, parts, mesh, []);
+  if (keyIn) return { why: `no room for a hex key (${keyIn.name} is in the way: mark it removable if it comes off to assemble)` };
   // the parts the screw passes through, each against the next
   let x = ownB;
   const through: EvalPart[] = [p];
@@ -297,11 +337,15 @@ function tryDirection(p: EvalPart, own: { a: number; b: number }, layers: { part
       const slotAt = nearestSlot(prof, n, point(x));
       if (!slotAt) return { why: `it meets the end of ${prof.name} (tap the profile's end bore instead)` };
       if (slotAt.off > 0.6) return { why: `it is ${r3(slotAt.off)} mm off ${prof.name}'s slot line` };
+      // the T-nut sits on the profile's face itself (the part may stand a hair off it)
+      const kk = axis.findIndex((c) => Math.abs(c) > 0.99);
+      const pb = worldBox(prof)!;
+      x = ((axis[kk] > 0 ? pb[0][kk] : pb[1][kk]) - at[kk]) / axis[kk];
       const grip = x - ownA;
       // the tip a thread past the T-nut and short of the core: a window of about a millimetre, so washers under the head make up a length the shops sell
       const wh = washerDims("flat", t)?.h ?? 1;
       for (let k = 0; k <= 3; k++) {
-        const pick = pickLength("socket", t, grip + k * wh + TNUT_DEPTH + 0.8, grip + k * wh + CORE_DEPTH);
+        const pick = pickLength("socket", t, grip + k * wh + TNUT_DEPTH + t.pitch, grip + k * wh + CORE_DEPTH);
         if (!pick) continue;
         const washers = Array.from({ length: k }, (_, i) => ({ t, at: point(ownA - (i + 1) * wh), axis }));
         return {
@@ -310,7 +354,7 @@ function tryDirection(p: EvalPart, own: { a: number; b: number }, layers: { part
           washers,
         };
       }
-      return { why: `no stocked ${t.name} length between ${r3(grip + TNUT_DEPTH + 0.8)} and ${r3(grip + CORE_DEPTH)} mm, even with washers (the part is ${r3(grip)} mm thick there: counterbore it so a ${t.name} × 10 or 12 reaches)` };
+      return { why: `no stocked ${t.name} length between ${r3(grip + TNUT_DEPTH + t.pitch)} and ${r3(grip + CORE_DEPTH)} mm, even with washers (the part is ${r3(grip)} mm thick there: counterbore it so a ${t.name} × 10 or 12 reaches)` };
     }
     if (!next) break;
     const q = next.part;
@@ -319,30 +363,44 @@ function tryDirection(p: EvalPart, own: { a: number; b: number }, layers: { part
     const bought = q.kind === "component" && !isFastener(q);
     if (!hole && !bought) return { why: `${q.name} has no hole on its axis (cut hole(${t.name.replace(".", "_")}, fit: "insert") or a through hole for a nut in it)` };
     const grip = x - ownA;
-    const depth = next.b - next.a;
-    if (hole && (hole.role === "thread" || (hole.d < t.d - 0.2 && q.libKind !== "nut"))) {
-      const insert = hole.holeFit === "insert";
-      const ins = insert ? insertDims(t) : null;
-      const engage = insert ? (ins?.length ?? 1.5 * t.d) : Math.min(1.5 * t.d, depth - 0.5);
-      const pick = pickLength("socket", t, grip + Math.min(engage, depth - 0.5) - 0.01, grip + depth - 0.5);
-      if (!pick) return { why: `no stocked ${t.name} length to reach into ${q.name}'s ${insert ? "insert" : "tapped hole"} (${r3(grip)} mm grip, ${r3(depth)} mm deep)` };
-      return { screw: { t, L: pick.length, head: "socket", at: point(ownA), axis }, nut: insert ? { t, kind: "insert", at: point(x), axis } : undefined };
-    }
-    if (hole && clearanceSize(hole.d)?.name === t.name) {
+    if (!hole) {
+      // a bought part's own holes (a fan's corners, a board's mounting holes), seen on its mesh: through them to a nut, or into a blind thread
+      const solid = along(q, mesh, at, axis, 0.3 * t.d, x - 0.2, next.b + 0.5);
+      const first = solid.find(([, b]) => b > x + 0.05);
+      if (first && first[0] < x + 0.3) return { why: `${q.name} has no hole on the screw's axis` };
+      if (first && first[0] < next.b - 0.3) {
+        const depth = first[0] - x;
+        const pick = pickLength("socket", t, grip + Math.min(1.5 * t.d, depth - 0.5) - 0.01, grip + depth - 0.5);
+        if (!pick || depth < 2) return { why: `no stocked ${t.name} length to reach into ${q.name}'s ${r3(depth)} mm deep thread` };
+        return { screw: { t, L: pick.length, head: "socket", at: point(ownA), axis } };
+      }
       through.push(q);
       x = next.b;
       continue;
     }
-    if (bought && !hole) {
-      // a bought part's own threaded holes (a motor face, a rail carriage): a short screw into its thread
-      const pick = pickLength("socket", t, grip + Math.min(1.5 * t.d, 4), grip + Math.min(depth - 0.5, 6));
-      if (!pick) return { why: `no stocked ${t.name} length to reach into ${q.name}'s thread` };
-      return { screw: { t, L: pick.length, head: "socket", at: point(ownA), axis } };
+    // how far the screw can go into q: to the bottom of a blind hole, or through it
+    const holeFar = Math.max(vdot(vsub(hole.at, at), axis), vdot(vsub(cylEnd(hole), at), axis));
+    const depth = Math.min(next.b, holeFar) - x;
+    if (hole.role === "thread" || (hole.d < t.d - 0.2 && q.libKind !== "nut")) {
+      const insert = hole.holeFit === "insert";
+      // the engagement the screw checks ask for in that material and hole depth
+      const rule = engagementFor({ grip, into: insert ? "insert" : "tapped", material: q.material, depth: Math.max(depth - 0.3, 0.5) }, t, "socket");
+      const lo = rule?.min ?? Math.min(1.5 * t.d, depth - 0.5);
+      const hi = Math.min(rule?.max ?? depth, depth - 0.3);
+      const pick = hi >= lo ? pickLength("socket", t, grip + lo - 0.01, grip + hi) : undefined;
+      if (!pick) return { why: `no stocked ${t.name} length to reach into ${q.name}'s ${insert ? "insert" : "tapped hole"} (${r3(grip)} mm grip, ${r3(depth)} mm deep)` };
+      return { screw: { t, L: pick.length, head: "socket", at: point(ownA), axis }, nut: insert ? { t, kind: "insert", at: point(x), axis } : undefined };
+    }
+    // a clearance hole the screw passes (a bought part's holes are often a size up: a blower's 4.3 mm ears take M3)
+    if (clearanceSize(hole.d)?.name === t.name || (hole.d >= t.d + 0.15 && hole.d < 0.9 * (headDims("socket", t)?.d ?? t.head_d))) {
+      through.push(q);
+      x = next.b;
+      continue;
     }
     return { why: `${q.name}'s hole there is not a ${t.name} clearance or thread` };
   }
   if (through.length < 2) return { why: "nothing behind it to fasten to" };
-  // a nut on the last part's far face, with room for it
+  // a nut on the last part's far face, with room for it and a spanner
   const nd = nutDims("hex", t);
   if (!nd) return { why: `no ${t.name} nut` };
   const room = L.find((l) => !through.includes(l.part) && l.a < x + nd.h + 0.5 && l.b > x + 0.05);
@@ -376,7 +434,7 @@ interface JointPlan {
  * Brackets where profile x meets profile y's face: in each inside corner between a long face of x and y's face that
  * has room for a bracket's leg on y and slots where both legs' screws go.
  */
-function planJoint(x: EvalPart, y: EvalPart, parts: EvalPart[], taken: Box[]): JointPlan | null {
+function planJoint(x: EvalPart, y: EvalPart, parts: EvalPart[], taken: Box[], mesh: MeshLookup, why: string[]): JointPlan | null {
   const bx = worldBox(x);
   const by = worldBox(y);
   if (!bx || !by) return null;
@@ -406,7 +464,10 @@ function planJoint(x: EvalPart, y: EvalPart, parts: EvalPart[], taken: Box[]): J
       const face = sg > 0 ? bx[1][j] : bx[0][j];
       // room on y's face for leg A
       const yEdge = sg > 0 ? by[1][j] : by[0][j];
-      if ((yEdge - face) * sg < 19.5) continue;
+      if ((yEdge - face) * sg < 19.5) {
+        why.push(`${y.id}'s face does not reach 20 mm past ${x.id} on its ${axisText(n)} side`);
+        continue;
+      }
       const i = [0, 1, 2].find((q) => q !== j && q !== k)!;
       const w: V3 = [0, 0, 0];
       w[i] = 1;
@@ -422,20 +483,32 @@ function planJoint(x: EvalPart, y: EvalPart, parts: EvalPart[], taken: Box[]): J
       else if (yAcross) for (const l of ySlots) centres.push(l.at[i]);
       else centres.push((lo + hi) / 2);
       for (const ci of centres) {
-        if (ci - 10 < lo - 0.5 || ci + 10 > hi + 0.5) continue;
-        if (yAcross && !ySlots.some((l) => Math.abs(l.at[i] - ci) < 0.6)) continue;
+        if (ci - 10 < lo - 0.5 || ci + 10 > hi + 0.5) {
+          why.push("the joint is narrower than a 20 mm bracket");
+          continue;
+        }
+        if (yAcross && !ySlots.some((l) => Math.abs(l.at[i] - ci) < 0.6)) {
+          why.push(`${x.id}'s and ${y.id}'s slots do not line up`);
+          continue;
+        }
         // leg B's screw height: on x's slot line when x's slots run across the joint, else free
         let sb = 12.5;
         if (!xAcross) {
           const hs = xSlots.map((l) => (l.at[k] - plane) * mSign).filter((h) => h >= SLOT[0] - 0.01 && h <= SLOT[1] + 0.01);
-          if (!hs.length) continue;
+          if (!hs.length) {
+            why.push(`no slot of ${x.id} 8.5 to 12.5 mm from ${y.id}'s face`);
+            continue;
+          }
           sb = hs[0];
         }
         // leg A's screw distance out from x's face: on y's slot line when y's slots run across n, else free
         let sa = 12.5;
         if (!yAcross) {
           const ds = ySlots.map((l) => (l.at[j] - face) * sg).filter((d) => d >= SLOT[0] - 0.01 && d <= SLOT[1] + 0.01);
-          if (!ds.length) continue;
+          if (!ds.length) {
+            why.push(`no slot of ${y.id} 8.5 to 12.5 mm from ${x.id}'s face`);
+            continue;
+          }
           sa = ds[0];
         }
         if (Math.max(sa, sb) < 10.5) sa = yAcross ? 12.5 : sa;
@@ -451,20 +524,28 @@ function planJoint(x: EvalPart, y: EvalPart, parts: EvalPart[], taken: Box[]): J
         box[1][i] = ci + 10;
         const shrink = (b: Box): Box => [b[0].map((v) => v + 0.2) as V3, b[1].map((v) => v - 0.2) as V3];
         const inner = shrink(box);
-        const clash = parts.some((q) => q !== x && q !== y && !isFastener(q) && overlap(inner, worldBox(q))) || taken.some((b) => overlap(inner, b));
-        if (clash) continue;
+        const clash = parts.find((q) => q !== x && q !== y && !isFastener(q) && overlap(inner, worldBox(q)));
+        if (clash || taken.some((b) => overlap(inner, b))) {
+          why.push(clash ? `${clash.name} is in the bracket's place` : "another bracket is in the way");
+          continue;
+        }
+        // a hex key reaches both screws
+        const aAt = vadd(corner, vscale(n, sa));
+        const bAt = vadd(corner, vscale(m, sb));
+        const key = keyBlocker(vadd(aAt, vscale(m, T)), vscale(m, -1), "button", t, parts, mesh, [x, y]) ?? keyBlocker(vadd(bAt, vscale(n, T)), vscale(n, -1), "button", t, parts, mesh, [x, y]);
+        if (key) {
+          why.push(`a hex key cannot reach the bracket's screws (${key.name} is in the way)`);
+          continue;
+        }
         taken.push(box);
         const rotate = rotateFor(m, n, "x");
         const screws: Placed["screws"] = [];
         const nuts: Placed["nuts"] = [];
-        const la = pickLength("button", t, T + TNUT_DEPTH + 0.8, T + CORE_DEPTH)?.length ?? 8;
-        const off = vscale(w, 0);
+        const la = pickLength("button", t, T + TNUT_DEPTH + t.pitch, T + CORE_DEPTH)?.length ?? 8;
         // leg A: down into y's slot
-        const aAt = vadd(vadd(corner, vscale(n, sa)), off);
         screws.push({ t, L: la, head: "button", at: vadd(aAt, vscale(m, T)), axis: vscale(m, -1) });
         nuts.push({ t, kind: "tnut", at: aAt, axis: vscale(m, -1), rotate: rotateFor(vscale(m, -1), yAlong, "y") });
         // leg B: across into x's slot
-        const bAt = vadd(vadd(corner, vscale(m, sb)), off);
         screws.push({ t, L: la, head: "button", at: vadd(bAt, vscale(n, T)), axis: vscale(n, -1) });
         nuts.push({ t, kind: "tnut", at: bAt, axis: vscale(n, -1), rotate: rotateFor(vscale(n, -1), xAlong, "y") });
         out.push({ size: "2020", at: corner, axis: m, rotate, screws, nuts });
@@ -474,6 +555,109 @@ function planJoint(x: EvalPart, y: EvalPart, parts: EvalPart[], taken: Box[]): J
   }
   return out.length ? { x, brackets: out } : null;
 }
+
+// ---------- flat joining plates ----------
+
+/**
+ * An L joining plate where profile x stands on profile y and a side face of each lies in one plane: the corner square
+ * on y's face under x, one arm up x and the other along y, every hole on a slot line.
+ */
+function planPlate(x: EvalPart, y: EvalPart, parts: EvalPart[], taken: Box[], mesh: MeshLookup, why: string[]): JointPlan | null {
+  const bx = worldBox(x);
+  const by = worldBox(y);
+  if (!bx || !by) return null;
+  let k = -1;
+  let mSign = 0;
+  for (let i = 0; i < 3; i++) {
+    if (Math.abs(bx[0][i] - by[1][i]) < 0.3) (k = i), (mSign = 1);
+    else if (Math.abs(bx[1][i] - by[0][i]) < 0.3) (k = i), (mSign = -1);
+  }
+  if (k < 0) return null;
+  const m: V3 = [0, 0, 0];
+  m[k] = mSign;
+  const plane = mSign > 0 ? by[1][k] : by[0][k];
+  const xAlong = vnorm(applyXformsToDir([0, 0, 1], x.xf));
+  const yAlong = vnorm(applyXformsToDir([0, 0, 1], y.xf));
+  // x stands on y: its axis along the contact normal
+  if (Math.abs(vdot(xAlong, m)) < 0.999 || Math.abs(vdot(yAlong, m)) > 0.001) return null;
+  const t = { name: "M5", d: 5, pitch: 0.8 } as ThreadSpec;
+  const T = 3;
+  for (let j = 0; j < 3; j++) {
+    if (j === k || Math.abs(yAlong[j]) > 0.5) continue;
+    for (const sg of [1, -1]) {
+      const n: V3 = [0, 0, 0];
+      n[j] = sg;
+      const fx = sg > 0 ? bx[1][j] : bx[0][j];
+      const fy = sg > 0 ? by[1][j] : by[0][j];
+      if (Math.abs(fx - fy) > 0.3) continue;
+      // y's slot nearest x on that face (the arm along y), and x's slot lines (the arm up x)
+      const ySlot = slotLines(y, n)
+        .map((l) => l.at[k])
+        .filter((c) => Math.abs(Math.abs(c - plane) - 10) < 0.6)[0];
+      const xSlots = slotLines(x, n);
+      if (ySlot === undefined || !xSlots.length) {
+        why.push(`${x.id}'s and ${y.id}'s slots on their flush ${axisText(n)} faces do not suit a joining plate`);
+        continue;
+      }
+      const i = [0, 1, 2].find((q) => q !== j && q !== k)!;
+      for (const xl of xSlots) {
+        for (const dirSign of [1, -1]) {
+          // arm A along y (dir a), arm B up x (along m); the plate's local x, y and its axis follow from them
+          const a: V3 = [0, 0, 0];
+          a[i] = dirSign;
+          const oA = xl.at[i] - 10 * dirSign;
+          // y's face has to carry arm A out to 60 mm
+          const yEnd = dirSign > 0 ? by[1][i] : by[0][i];
+          if ((yEnd - oA) * dirSign < 59.5) continue;
+          const oB = plane - 20 * mSign;
+          if (((mSign > 0 ? bx[1][k] : bx[0][k]) - oB) * mSign < 59.5) continue;
+          const origin: V3 = [0, 0, 0];
+          origin[j] = fx;
+          origin[i] = oA;
+          origin[k] = oB;
+          // the plate's room, 3 mm out from the faces
+          const far = vadd(origin, vadd(vadd(vscale(a, 60), vscale(m, 60)), vscale(n, T)));
+          const box: Box = [origin.map((c, q) => Math.min(c, far[q])) as V3, origin.map((c, q) => Math.max(c, far[q])) as V3];
+          const inner: Box = [box[0].map((v) => v + 0.2) as V3, box[1].map((v) => v - 0.2) as V3];
+          // the L leaves the square beyond the corner free: test the two arms, not the whole square
+          const armA: Box = boxOf(origin, vadd(origin, vadd(vadd(vscale(a, 60), vscale(m, 20)), vscale(n, T))));
+          const armB: Box = boxOf(origin, vadd(origin, vadd(vadd(vscale(a, 20), vscale(m, 60)), vscale(n, T))));
+          const clash = parts.find((q) => q !== x && q !== y && !isFastener(q) && [armA, armB].some((bb) => overlap(shrinkBox(bb), worldBox(q))));
+          if (clash || taken.some((b) => overlap(inner, b) && [armA, armB].some((bb) => overlap(shrinkBox(bb), b)))) {
+            why.push(clash ? `${clash.name} is in the joining plate's place` : "another bracket is in the way");
+            continue;
+          }
+          const holes: V3[] = [
+            [10, 10],
+            [30, 10],
+            [50, 10],
+            [10, 30],
+            [10, 50],
+          ].map(([u, v]) => vadd(origin, vadd(vscale(a, u), vscale(m, v))));
+          const into = vscale(n, -1);
+          const key = holes.map((h) => keyBlocker(vadd(h, vscale(n, T)), into, "button", t, parts, mesh, [])).find(Boolean);
+          if (key) {
+            why.push(`a hex key cannot reach the joining plate's screws (${key.name} is in the way)`);
+            continue;
+          }
+          taken.push(box);
+          // local x along a, local y along m: the axis is a × m, which is n or -n; on -n the plate's origin is its outer face
+          const ax = vcross(a, m);
+          const flip = vdot(ax, n) < 0;
+          const at = flip ? vadd(origin, vscale(n, T)) : origin;
+          const la = pickLength("button", t, T + TNUT_DEPTH + t.pitch, T + CORE_DEPTH)?.length ?? 8;
+          const screws: Placed["screws"] = holes.map((h) => ({ t, L: la, head: "button" as HeadType, at: vadd(h, vscale(n, T)), axis: into }));
+          const nuts: Placed["nuts"] = holes.map((h, q) => ({ t, kind: "tnut" as const, at: h, axis: into, rotate: rotateFor(into, q < 3 ? yAlong : xAlong, "y") }));
+          return { x, brackets: [{ size: "2020", plate: true, at, axis: ax, rotate: rotateFor(ax, a, "x"), screws, nuts }] };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+const boxOf = (p: V3, q: V3): Box => [p.map((c, i) => Math.min(c, q[i])) as V3, p.map((c, i) => Math.max(c, q[i])) as V3];
+const shrinkBox = (b: Box): Box => [b[0].map((v) => v + 0.2) as V3, b[1].map((v) => v - 0.2) as V3];
 
 const overlap = (a: Box, b: Box | null) => !!b && a[0].every((_, i) => a[0][i] < b[1][i] && b[0][i] < a[1][i]);
 
