@@ -294,8 +294,15 @@ export const LIBRARY: Record<string, LibEntry> = {
           recipe = { base: { t: "box", w: n.af, d: n.af, h: n.h, at: Z0, r: 0 }, ops: [threadCut] };
           break;
         case "tslot20":
-          // a neck that sits in the 6 mm slot opening above a body under the slot's lips
-          recipe = { base: { t: "box", w: 5.8, d: 11, h: 1.8, at: Z0, r: 0 }, ops: [{ op: "add", shape: { t: "box", w: 10, d: 11, h: 3.6, at: [0, 0, 1.8], r: 0.5 } }, { ...threadCut, shape: { ...threadCut.shape, length: 5.6 } }] };
+          // a neck that sits in the 6 mm slot opening (at: is its top, flush with the profile's face) above a body
+          // under the slot's lips, its sides chamfered at 45° to fit the cavity; 11 mm long along local y (the slot)
+          recipe = {
+            base: { t: "box", w: 5.8, d: 11, h: 1.8, at: Z0, r: 0 },
+            ops: [
+              { op: "add", shape: { t: "prism", pts: [[-5, 1.79], [5, 1.79], [3.6, 4], [-3.6, 4]], h: 11, at: [0, -5.5, 0], dir: [0, 1, 0], rot: 0 } },
+              { ...threadCut, shape: { ...threadCut.shape, length: 4.2 } },
+            ],
+          };
           break;
         case "flange":
           recipe = { base: { t: "cyl", d: n.flange!, h: n.h * 0.2, at: Z0, dir: ZP }, ops: [{ op: "add", shape: { t: "prism", pts: hexPoints(n.af), h: n.h * 0.8 + 0.01, at: [0, 0, n.h * 0.2 - 0.01], dir: ZP, rot: 0 } }, threadCut] };
@@ -723,6 +730,52 @@ export const LIBRARY: Record<string, LibEntry> = {
         solids: [{ suffix: "", label, recipe: { base: { t: "prism", pts: hexPoints(sd.af), h: L, at: Z0, dir: ZP, rot: 0 }, ops }, color: g.color, material: g.material, finish: grade === "nylon" ? "matte" : "machined" }],
         fields: { scalars: { length: L, af: sd.af, type }, points: { at: Z0, bottom: Z0, top: [0, 0, L], stud_tip: [0, 0, type === "MF" ? -sd.stud : 0] }, dirs: { axis: ZP } },
         bom: { description: `Hex standoff ${t.name} × ${fmt(L)} mm, ${type === "FF" ? "female–female" : `male–female (${sd.stud} mm stud)`}, ${g.label}`, price, priceNote: PACK_NOTE, search: `${t.name} ${fmt(L)}mm ${type === "FF" ? "female female" : "male female"} hex standoff ${grade}`, key: `standoff|${t.name}|${fmt(L)}|${type}|${grade}` },
+      };
+    },
+  },
+
+  corner_bracket: {
+    signature: 'lib.corner_bracket("2020") { at: inside_corner, axis: Z, rotate: 0 }',
+    doc: `Cast aluminium 90° corner bracket that joins two aluminium profiles (or a profile and a plate) at a right angle, held by an M5 screw into a T-nut in each profile's slot: "2020" (20 mm wide, one hole per leg) or "2040" (40 mm wide, two holes per leg, 20 mm apart). Its holes are slots from 8.5 to 12.5 mm out from the inside corner, so a screw can meet a 20 series profile's slot line. \`at\` is the inside corner (on the line where the two faces meet, at the middle of the bracket's width); leg A lies on the face whose outward normal is \`axis\` and runs along local +x (turn it about the axis with rotate:); leg B stands up along \`axis\` against the face that faces local +x. Fields: holes_a and holes_b (where each screw head sits; the screws go along into_a and into_b), into_a, into_b, leg_a (leg A's direction), thickness. place_fasteners puts the brackets, screws and T-nuts on every profile joint for you.`,
+    params: ["size"],
+    group: "Frame",
+    make(a) {
+      const size = a.str("size", "2020");
+      if (size !== "2020" && size !== "2040") throw new Error('size: should be "2020" (one hole per leg) or "2040" (two holes per leg)');
+      const W = size === "2040" ? 40 : 20;
+      const L = 20;
+      const t = 3;
+      const ys = size === "2040" ? [-10, 10] : [0];
+      const rib = 2;
+      const ops: PartRecipe["ops"] = [
+        { op: "add", shape: { t: "box", w: t, d: W, h: L, at: [t / 2, 0, 0], r: 0 } },
+        // two side webs (local y): the triangle between the legs, clear of the screw heads
+        ...[W / 2 - rib, -W / 2].map((y) => ({ op: "add" as const, shape: { t: "prism" as const, pts: [[-t + 0.01, t - 0.01], [-(L - 1), t - 0.01], [-t + 0.01, L - 1]] as V2[], h: rib, at: [0, y, 0] as V3, dir: [0, 1, 0] as V3, rot: 0 } })),
+      ];
+      // slotted holes: a screw anywhere from 8.5 to 12.5 mm out from the inside corner, to meet a slot
+      for (const y of ys) {
+        ops.push({ op: "cut", shape: { t: "rrect", w: 9.5, h: 5.5, r: 2.7, depth: t + 2, at: [10.5, y, -1], dir: ZP, center: false } });
+        ops.push({ op: "cut", shape: { t: "rrect", w: 5.5, h: 9.5, r: 2.7, depth: t + 2, at: [-1, y, 10.5], dir: [1, 0, 0], center: false } });
+      }
+      const label = `${size} corner bracket`;
+      return {
+        kind: "corner_bracket",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe: { base: { t: "box", w: L, d: W, h: t, at: [L / 2, 0, 0], r: 0 }, ops }, color: "#b7bcc4", material: "Aluminum 6061", finish: "matte" }],
+        fields: {
+          scalars: { thickness: t, width: W, length: L, slot_from: 8.5, slot_to: 12.5 },
+          points: { at: Z0, corner: Z0 },
+          pointLists: { holes_a: ys.map((y) => [10.5, y, t] as V3), holes_b: ys.map((y) => [t, y, 10.5] as V3) },
+          dirs: { axis: ZP, into_a: ZN, into_b: [-1, 0, 0], leg_a: [1, 0, 0] },
+        },
+        bom: {
+          description: `${size} cast aluminium 90° corner bracket (${W} × ${L} × ${L} mm, ${ys.length * 2} × M5 holes)`,
+          price: size === "2040" ? 3.5 : 2.05,
+          priceNote: "typical price each (Maker Store, Core Electronics)",
+          search: `${size} corner bracket aluminium extrusion`,
+          key: `corner_bracket|${size}`,
+        },
       };
     },
   },

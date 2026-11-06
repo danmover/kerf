@@ -16,6 +16,8 @@ export interface FullCheck {
   report: CheckReport;
   buildErrors: Map<string, string>;
   core: KernelCore;
+  /** the kernel's checks result (contacts, clearances, boxes) */
+  kernel: ReturnType<KernelCore["checks"]>;
   ms: number;
 }
 
@@ -49,7 +51,7 @@ export async function fullCheck(src: string): Promise<FullCheck> {
   probes.forEach((p, i) => (process[p.id] = results[i]));
   const report = composeReport(base, { model, live: false, rev: 0, buildErrors, process });
   // the model with geometry measurements filled in, when the design asks for any
-  return { model: geoModel ?? model, report, buildErrors, core, ms: Date.now() - t0 };
+  return { model: geoModel ?? model, report, buildErrors, core, kernel: result, ms: Date.now() - t0 };
 }
 
 /** One line per item that is not a pass, for test output. */

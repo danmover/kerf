@@ -21,6 +21,7 @@ import { applyXforms, frameFor, vadd, vdot, vscale, vsub, xformMatrix, type V3 }
 import { axialOverlap, cylEnd, cylMid, lineDistance, partCylinders, recipeBounds, type Cyl } from "../analysis/fits/geometry";
 import { findFits } from "../analysis/fits/detect";
 import { TriBVH } from "../mfg/bvh";
+import { catalogPart } from "../machine/catalog";
 
 export type MeshLookup = (hash: string) => MeshData | undefined;
 
@@ -169,7 +170,7 @@ const bvhOf = (m: MeshData) => {
 };
 
 const cylCache = new WeakMap<EvalPart, Cyl[]>();
-const cylsOf = (p: EvalPart) => {
+export const cylsOf = (p: EvalPart) => {
   let c = cylCache.get(p);
   if (!c) {
     c = partCylinders(p);
@@ -192,7 +193,7 @@ function unite(xs: [number, number][]): [number, number][] {
 
 // ---------- one screw's stack ----------
 
-interface Shank {
+export interface Shank {
   seat: V3;
   axis: V3;
   length: number;
@@ -201,7 +202,7 @@ interface Shank {
 }
 
 /** Material of a part round the shank, from its round holes: the coaxial holes narrower than the head. */
-function holeIntervals(p: EvalPart, sh: Shank): [number, number][] {
+export function holeIntervals(p: EvalPart, sh: Shank): [number, number][] {
   const out: [number, number][] = [];
   // threads are cut a little past a nut's or standoff's faces: keep to the part itself
   const box = worldBox(p);
@@ -248,7 +249,7 @@ const ANGLE0 = 0.37;
  * head's footprint, eight round. A part counts when it surrounds the shank (material on most of the rays): a
  * wall beside the head does not. Null when the part is not round the shank at all.
  */
-function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: number): [number, number][] | null {
+export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: number): [number, number][] | null {
   const bvh = bvhOf(m);
   if (!bvh.count) return null;
   const M = xformMatrix(p.xf);
@@ -326,7 +327,7 @@ function localBounds(m: MeshData): Box {
 }
 
 /** Does the box come within `r` of the segment from p along unit n for `len`? (a slab test on the grown box) */
-function boxNearSegment(b: Box, p: V3, n: V3, len: number, r: number): boolean {
+export function boxNearSegment(b: Box, p: V3, n: V3, len: number, r: number): boolean {
   let t0 = 0,
     t1 = len;
   for (let i = 0; i < 3; i++) {
@@ -532,6 +533,13 @@ function compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined):
     if (st.pocket && st.host) join(st.host, st.pocket, "insert", st.host.name);
     // washers and nuts on the shank past the clamp travel with it
   }
+  // a T-nut in a profile's slot grips the slot's lips: the screw clamps the profile as well
+  for (const st of stacks) {
+    if (!(st.tight || st.hinge) || !st.host || !isTnut(st.host)) continue;
+    const at = applyXforms([0, 0, 0], st.host.xf);
+    const profile = parts.find((p) => p !== st.host && isProfile(p) && boxHas(worldBox(p, mesh), at, 0.6));
+    if (profile && !st.clamped.includes(profile)) join(st.screw, profile, "screw", st.screw.name);
+  }
   const inserts = parts.filter((p) => p.libKind === "insert");
   for (const ins of inserts) {
     const b = worldBox(ins, mesh);
@@ -581,6 +589,11 @@ function compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined):
   return { stacks, joins, carried, conflicts, loose };
 }
 
+/** A drop-in T-nut for a profile's slot. */
+export const isTnut = (p: EvalPart) => p.libKind === "nut" && /^nut\|[^|]*\|tslot20\|/.test(p.bom?.key ?? "");
+/** An aluminium profile (2020, 2040...) from the catalog. */
+export const isProfile = (p: EvalPart) => p.kind === "component" && !!p.bom?.catalogId && catalogPart(p.bom.catalogId)?.kind === "extrusion";
+const boxHas = (b: Box | null, q: V3, r: number) => !!b && q.every((x, i) => x >= b[0][i] - r && x <= b[1][i] + r);
 const boxesTouch = (a: Box, b: Box | null) => !!b && a[0].every((_, i) => a[0][i] <= b[1][i] + 0.5 && b[0][i] <= a[1][i] + 0.5);
 
 // ---------- motion carried through fastenings ----------

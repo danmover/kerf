@@ -334,6 +334,39 @@ export function stockLengths(head: HeadType, t: ThreadSpec): number[] {
   return list.filter((L) => L >= lo - 1e-6 && L <= hi + 1e-6 && (isUnified(t) || t.d >= 6 || !UNCOMMON.has(L)));
 }
 
+/**
+ * Lengths a hardware store keeps on the shelf in small packs (Bunnings, Mitre 10 and the like in Australia, and their
+ * counterparts elsewhere), for metric socket, button, countersunk and hex screws. Other stocked lengths come from
+ * fastener and maker shops (online, or a fastener supplier) and take longer to get.
+ */
+const RETAIL: Record<string, number[]> = {
+  M3: [6, 8, 10, 12, 16, 20, 25, 30, 40],
+  M4: [10, 12, 16, 20, 25, 30, 40, 50],
+  M5: [10, 12, 16, 20, 25, 30, 35, 40, 50],
+  M6: [12, 16, 20, 25, 30, 35, 40, 50, 60, 70],
+  M8: [16, 20, 25, 30, 35, 40, 50, 60, 70, 80, 100],
+  M10: [20, 25, 30, 40, 50, 60, 70, 80, 100],
+  M12: [25, 30, 40, 50, 60, 70, 80, 100],
+};
+const RETAIL_HEADS: HeadType[] = ["socket", "button", "flat", "hex"];
+
+/** Lengths of this screw sold in hardware-store packs (empty when the size or head is a fastener-shop item). */
+export function retailLengths(head: HeadType, t: ThreadSpec): number[] {
+  if (isUnified(t) || !RETAIL_HEADS.includes(head)) return [];
+  const all = RETAIL[keyOf(t)] ?? [];
+  const stocked = new Set(stockLengths(head, t));
+  return all.filter((L) => stocked.has(L));
+}
+
+/** The shortest length from lo to hi, mm: one from a hardware store when there is one, else any stocked length. */
+export function pickLength(head: HeadType, t: ThreadSpec, lo: number, hi: number): { length: number; retail: boolean } | undefined {
+  const inRange = (L: number) => L >= lo - 1e-6 && L <= hi + 1e-6;
+  const r = retailLengths(head, t).find(inRange);
+  if (r !== undefined) return { length: r, retail: true };
+  const s = stockLengths(head, t).find(inRange);
+  return s !== undefined ? { length: s, retail: false } : undefined;
+}
+
 /** Tensile stress area, mm² (ISO 898-1). */
 export function stressArea(t: ThreadSpec): number {
   const d2 = t.d - 0.6495 * t.pitch;

@@ -15,6 +15,7 @@ import { briefChecks, type GeomLookup } from "./briefChecks";
 import { machineChecks } from "../machine/checks";
 import { fastenerChecks } from "./fastenerChecks";
 import { findHolds, type MeshLookup } from "./holds";
+import { completeChecks } from "./completeChecks";
 import { holdChecks } from "./holdChecks";
 import { linkChecks } from "./linkChecks";
 import { stashSweep, sweepChecks } from "./sweepChecks";
@@ -358,6 +359,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   // a part given its real mass (a hollow frame modelled solid) weighs that, wherever weight matters
   const volumeOf = (p: EvalPart) => massVolume(p, geom(p.hash)?.volume, materialDensity(p.material));
   items.push(...holdChecks(model, holds, kernel, volumeOf));
+  items.push(...completeChecks(model, holds, kernel));
   items.push(...linkChecks(model));
   if (kernel && inputs.mesh) {
     const sweep = { model, holds, kernel, mesh: inputs.mesh, ignore: contactPairs(model) };
