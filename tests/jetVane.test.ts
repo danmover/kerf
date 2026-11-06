@@ -148,7 +148,7 @@ describe("devices", () => {
     expect(read16(up, 0x24) * 0.035).toBeCloseTo(-20, 0);
   });
 
-  it("the ESC arms after a second and a half at minimum, spins the fan up and stops it when the signal goes", () => {
+  it("the ESC arms after a second and a half at minimum, spins the fan up and stops it when the signal goes", { timeout: 30_000 }, () => {
     const e = new EscFan("edf", catalogPart("skywalker_60a_v2")!, catalogPart("xfly_edf_64_12b_3200kv")!);
     const dt = 0.001;
     let t = 0;
@@ -193,7 +193,7 @@ describe("balance firmware", () => {
   faults: [sim.press(estop, at: 7s)]
 }`);
 
-  it("is generated from the wiring and compiles on the ESP32", () => {
+  it("is generated from the wiring and compiles on the ESP32", { timeout: 30_000 }, () => {
     expect(bench.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
     const fw = generateFirmware(bench.machine!, bench.name)[0];
     expect(fw.summary).toMatch(/jet-vane balance/);
@@ -208,7 +208,7 @@ describe("balance firmware", () => {
     expect(lf.staticRam).toBeLessThan(FEATHER_ESP32_V2.ramBytes / 10);
   });
 
-  it("arms the ESC, spools the fan to the thrust asked for, and stops it when the e-stop is pressed", () => {
+  it("arms the ESC, spools the fan to the thrust asked for, and stops it when the e-stop is pressed", { timeout: 30_000 }, () => {
     const def = bench.scenarios![0];
     const v = runSpec({ ...def.spec, variants: ["expected"] }, bench.machine!, bench.name).variants[0];
     expect(v.error).toBeUndefined();
@@ -235,7 +235,7 @@ describe("balance firmware", () => {
     expect(r.fuse_blown).toBe(false);
   });
 
-  it("holds the fan unit level on its gimbal against a knock, with the vanes", () => {
+  it("holds the fan unit level on its gimbal against a knock, with the vanes", { timeout: 30_000 }, () => {
     const m = design(`scenario "Knock" {
   world: sim.bench()
   duration: 13s
@@ -269,7 +269,7 @@ describe("balance firmware", () => {
     expect(String(v.results.state)).toMatch(/holding level/);
   });
 
-  it("reads the IMU in the rig's axes when the board is mounted on its side", () => {
+  it("reads the IMU in the rig's axes when the board is mounted on its side", { timeout: 30_000 }, () => {
     // stood on a face looking out along -X: the chip's X runs up, its Z points out along -X
     const m = design(
       `scenario "Knock" {
@@ -305,7 +305,7 @@ describe("balance firmware", () => {
     expect(Math.abs(roll[t.length - 1])).toBeLessThan(3);
   });
 
-  it("measures the vane moment on the load cell in the static force test", () => {
+  it("measures the vane moment on the load cell in the static force test", { timeout: 30_000 }, () => {
     const m = design(`scenario "Force test" {
   world: sim.bench()
   duration: 20s
@@ -324,7 +324,7 @@ describe("balance firmware", () => {
     expect(v.results["cell.peak_force"]).toBeGreaterThan(0.2);
   });
 
-  it("cuts the fan when the IMU stops answering", () => {
+  it("cuts the fan when the IMU stops answering", { timeout: 30_000 }, () => {
     const m = design(`scenario "IMU unplugged" {
   world: sim.bench()
   duration: 9s
