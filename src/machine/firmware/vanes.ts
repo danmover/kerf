@@ -85,6 +85,14 @@ export function vaneFirmware(c: FwContext): VaneResult {
   const imu = c.m.components.find((x) => catalogPart(x.catalogId)?.id === "lsm6dsox_breakout");
   const imuPart = imu ? catalogPart(imu.catalogId) : undefined;
   const imuAddr = Number(imuPart?.specs.i2c_addr ?? 0x6a);
+  // the chip's axes as the design mounts it: rig axis j = sum over the chip's axes i of reading i x (axis i's component along j)
+  const ax3 = imu?.axes ?? [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
+  const imuR = [0, 1, 2].map((j) => [0, 1, 2].map((i) => Math.round(ax3[i][j] * 1e4) / 1e4));
+  const turned = imuR.some((row, j) => row.some((v, i) => Math.abs(v - (i === j ? 1 : 0)) > 1e-3));
   if (!imu) warnings.push("No LSM6DSOX in the design: the loop has nothing to balance on.");
   else {
     note("IMU SDA", imu.name, "SDA");
@@ -149,6 +157,8 @@ export function vaneFirmware(c: FwContext): VaneResult {
 #define PIN_I2C_POWER ${qtPower}
 #define PIN_LED ${pinNum(String(Number(bp.specs.led_builtin ?? 13)))}
 #define IMU_ADDR 0x${imuAddr.toString(16).toUpperCase()}
+// the chip's axes to the rig's (X, Y, Z) as the design mounts the board${turned ? "" : " (flat, its X along the rig's X)"}: rig = IMU_R x chip
+#define IMU_R { ${imuR.map((r) => `{ ${r.map((v) => cFloat(v)).join(", ")} }`).join(", ")} }
 
 // ---- vane servos${servoPart ? ` (${cComment(servoPart.name)})` : ""}
 #define SERVO_HZ ${S.servoHz}
@@ -312,7 +322,8 @@ bool imuBegin() {
   return ok;
 }
 
-// rates in rad/s and specific force in g, body axes (chip mounted flat, its X along the design's X)
+// rates in rad/s and specific force in g, in the rig's axes (IMU_R turns the chip's axes as it is mounted)
+const float imuR[3][3] = IMU_R;
 bool imuSample(float *g, float *a) {
   uint8_t b[12];
   if (!imuRead(0x22, b, 12)) return false;
@@ -324,9 +335,14 @@ bool imuSample(float *g, float *a) {
     lastRaw[i] = raw[i];
   }
   sameCount = same ? sameCount + 1 : 0;
+  float gc[3], ac[3];
   for (uint8_t i = 0; i < 3; i++) {
-    g[i] = raw[i] * (0.035f * DEG);
-    a[i] = raw[i + 3] * 0.000122f;
+    gc[i] = raw[i] * (0.035f * DEG);
+    ac[i] = raw[i + 3] * 0.000122f;
+  }
+  for (uint8_t j = 0; j < 3; j++) {
+    g[j] = imuR[j][0] * gc[0] + imuR[j][1] * gc[1] + imuR[j][2] * gc[2];
+    a[j] = imuR[j][0] * ac[0] + imuR[j][1] * ac[1] + imuR[j][2] * ac[2];
   }
   return sameCount < 50;
 }

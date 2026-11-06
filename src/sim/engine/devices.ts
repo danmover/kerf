@@ -683,6 +683,8 @@ export class Lsm6dsox implements I2CDevice {
     private orient: () => Orientation,
     noise: ImuNoise,
     private rng: () => number,
+    /** the chip's X, Y and Z axes in the body's (design) axes, when the board is mounted turned */
+    private axes?: [number, number, number][],
   ) {
     this.regs[0x0f] = 0x6c;
     // CTRL3_C: register address auto-increment on
@@ -725,6 +727,11 @@ export class Lsm6dsox implements I2CDevice {
     this.regs[reg] = x & 0xff;
     this.regs[reg + 1] = x >> 8;
   }
+  /** a body-axes vector in the chip's own axes */
+  private chip(v: number[]): number[] {
+    const m = this.axes;
+    return m ? m.map((c) => c[0] * v[0] + c[1] * v[1] + c[2] * v[2]) : v;
+  }
   private update() {
     const xlOn = this.regs[0x10] >> 4 !== 0;
     const gOn = this.regs[0x11] >> 4 !== 0;
@@ -737,9 +744,7 @@ export class Lsm6dsox implements I2CDevice {
       const fs = [2, 16, 4, 8][(this.regs[0x10] >> 2) & 3];
       const lsb = 32768 / fs;
       const n = () => (this.rng() + this.rng() - 1) * 0.0012;
-      const ax = Math.sin(o.pitch * D) + o.accel[0] / g;
-      const ay = Math.sin(o.roll * D) * Math.cos(o.pitch * D) + o.accel[1] / g;
-      const az = Math.cos(o.roll * D) * Math.cos(o.pitch * D) + o.accel[2] / g;
+      const [ax, ay, az] = this.chip([Math.sin(o.pitch * D) + o.accel[0] / g, Math.sin(o.roll * D) * Math.cos(o.pitch * D) + o.accel[1] / g, Math.cos(o.roll * D) * Math.cos(o.pitch * D) + o.accel[2] / g]);
       this.put16le(0x28, (ax + n()) * lsb);
       this.put16le(0x2a, (ay + n()) * lsb);
       this.put16le(0x2c, (az + n()) * lsb);
@@ -751,7 +756,7 @@ export class Lsm6dsox implements I2CDevice {
       const lsb = 32768 / (fs * 1.143);
       const n = () => (this.rng() + this.rng() - 1) * 0.07;
       // physical body rates: the orientation's pitch rate is nose-up positive, which is a negative turn about Y
-      const w = [o.rate[0], -o.rate[1], o.rate[2]];
+      const w = this.chip([o.rate[0], -o.rate[1], o.rate[2]]);
       this.put16le(0x22, (w[0] + this.bias[0] + n()) * lsb);
       this.put16le(0x24, (w[1] + this.bias[1] + n()) * lsb);
       this.put16le(0x26, (w[2] + this.bias[2] + n()) * lsb);

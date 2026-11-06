@@ -512,7 +512,7 @@ export class Plant implements PlantPort, PlantView {
       const vcc = this.netOf(mc.name, "VIN") ?? this.netOf(mc.name, "VCC");
       if (part.id === "bno055") this.i2cDevs.set(addr, { dev: new Bno055(mc.name, this.board.fcpu, orient, noise, opts.rng), vcc, comp: mc.name });
       else if (part.id === "mpu6050") this.i2cDevs.set(addr, { dev: new Mpu6050(mc.name, orient, noise, opts.rng), vcc, comp: mc.name });
-      else if (part.id === "lsm6dsox_breakout") this.i2cDevs.set(addr, { dev: new Lsm6dsox(mc.name, this.board.fcpu, orient, { driftPerMin: 0.3, noise: 0.05 }, opts.rng), vcc, comp: mc.name });
+      else if (part.id === "lsm6dsox_breakout") this.i2cDevs.set(addr, { dev: new Lsm6dsox(mc.name, this.board.fcpu, orient, { driftPerMin: 0.3, noise: 0.05 }, opts.rng, mc.axes), vcc, comp: mc.name });
       else this.unsupported.push(`${mc.name} (${part.name})`);
       return;
     }

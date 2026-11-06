@@ -309,7 +309,8 @@ function WireCard({ wire, run, flex, issues, onClose }: { wire: HarnessWire; run
         </div>
         {!r.cable && (
           <div>
-            {r.gauge ?? "?"} AWG {r.color}
+            {r.gauge ?? "?"} AWG {r.insulation === "silicone" ? "silicone " : ""}
+            {r.color}
             {r.gaugeSuggested || r.colorSuggested ? <span className="dim"> (suggested)</span> : null}
           </div>
         )}

@@ -22,7 +22,7 @@ import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubb
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
-import { emptyMachine, type BeltDef, type MachineComponent, type MachineData, type PinRef } from "../machine/types";
+import { emptyMachine, type BeltDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
 import { ChainError, chainAsBelt, chainRecipe, chainSpec, linksFor, type ChainInfo, type ChainNode } from "../machine/chains";
 import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
@@ -498,23 +498,31 @@ class Evaluator {
     return out;
   }
 
+  /** a wire's insulation: "pvc" (rated as building wire, the default) or "silicone" (RC wire, rated in free air) */
+  insulationOf(v: unknown, span: Span): WireInsulation | undefined {
+    if (v === undefined) return undefined;
+    if (v === "pvc" || v === "silicone") return v;
+    throw new EvalError('insulation: should be "silicone" (high-strand RC wire, rated in free air) or "pvc" (the default, rated as building wire)', span);
+  }
+
   machineStmt(s: Extract<Stmt, { k: "wire" | "net" | "firmware" | "test" | "buy" }>) {
     const str = (v: unknown) => (typeof v === "string" ? v : undefined);
     const numv = (v: unknown) => (typeof v === "number" ? v : undefined);
     switch (s.k) {
       case "wire": {
         const refs = s.path.map((e) => this.pinRef(e));
-        const pr = this.machineProps(s.items, ["gauge", "color", "label"], "wire");
-        for (let i = 0; i + 1 < refs.length; i++) this.machine.wires.push({ a: refs[i], b: refs[i + 1], gauge: numv(pr.gauge), color: str(pr.color), label: str(pr.label), span: s.span });
+        const pr = this.machineProps(s.items, ["gauge", "insulation", "color", "label"], "wire");
+        const insulation = this.insulationOf(pr.insulation, s.span);
+        for (let i = 0; i + 1 < refs.length; i++) this.machine.wires.push({ a: refs[i], b: refs[i + 1], gauge: numv(pr.gauge), insulation, color: str(pr.color), label: str(pr.label), span: s.span });
         return;
       }
       case "net": {
         if (this.machine.nets.some((n) => n.name === s.name)) throw new EvalError(`Net "${s.name}" is already defined: add the pins to it`, s.nameSpan);
         const pins = s.pins.map((e) => this.pinRef(e));
-        const pr = this.machineProps(s.items, ["gauge", "color", "width", "pour"], "net");
+        const pr = this.machineProps(s.items, ["gauge", "insulation", "color", "width", "pour"], "net");
         if (pr.width !== undefined && !(typeof pr.width === "number" && pr.width >= 0.15 && pr.width <= 5)) throw new EvalError("width: is the copper track width on a circuit board, 0.15 to 5 mm", s.span);
         if (pr.pour !== undefined && typeof pr.pour !== "boolean") throw new EvalError("pour: should be true (fill the board's spare copper with this net) or false", s.span);
-        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), color: str(pr.color), width: numv(pr.width), pour: typeof pr.pour === "boolean" ? pr.pour : undefined, span: s.span });
+        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), insulation: this.insulationOf(pr.insulation, s.span), color: str(pr.color), width: numv(pr.width), pour: typeof pr.pour === "boolean" ? pr.pour : undefined, span: s.span });
         return;
       }
       case "firmware": {
@@ -1261,6 +1269,7 @@ class Evaluator {
           measured,
           held: typeof props.held === "string" ? props.held.trim() : undefined,
           leads: props.leads === "soldered" ? "soldered" : undefined,
+          axes: rot.length && !onBoard ? ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]).map((d) => vnorm(applyXformsToDir(d, rot)).map((x) => Math.round(x * 1e6) / 1e6) as V3) as [V3, V3, V3] : undefined,
           span: s.span,
         });
         const mc = this.machine.components[this.machine.components.length - 1];

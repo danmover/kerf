@@ -174,7 +174,7 @@ ${partsTable()}
 
 ### Wiring
 wire ctrl.D9 -> drv.PWM { gauge: 24, color: "orange", label: "front PWM" }
-wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: 14, color: "red" }   // a chain is one wire per hop
+wire bat.POS -> xt.POS_A -> xt.POS_B -> fuse.IN { gauge: 14, insulation: "silicone", color: "red" }   // a chain is one wire per hop; insulation: "silicone" rates high-strand RC wire in free air (default "pvc": building-wire ratings)
 net GND: ctrl.GND, drv.GND, imu.GND { gauge: 24, color: "black" }             // named net: every listed pin on one conductor
 wire skr.XM -> motor_x.PLUG                                                    // port to port: one cable
 net V12: reg12.OUT, c_12.PLUS, u1.VPOS { width: 0.8mm }                    // on a circuit board: copper, not a cable
