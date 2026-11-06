@@ -1117,29 +1117,31 @@ function GivensCard({ data }: { data: BriefData }) {
               }, msg);
             return (
               <div key={g.name} className="given-row">
-                <span className="mono given-name">{g.name}</span>
-                <span className="dim mono">=</span>
-                <InlineText
-                  className="mono given-value"
-                  value={g.text}
-                  placeholder="value"
-                  label={`${g.name} value`}
-                  maxLength={60}
-                  onSave={(v) => v && set((x) => void (x.text = /^-?\d+(\.\d+)?$/.test(v) ? `${v}mm` : v), `${g.name} ${g.text} → ${v}`)}
-                />
-                {g.assumed && (
-                  <button className="chip warn assumed-chip" onClick={() => set((x) => void (x.assumed = false), `confirmed ${g.name}`)} data-tip="Claude estimated this. Click to confirm it.">
-                    assumed <Icon.Check size={10} />
-                  </button>
-                )}
-                <span className="grow" style={{ minWidth: 0 }}>
+                <span className="given-head">
+                  <span className="mono given-name">{g.name}</span>
+                  <span className="dim mono">=</span>
+                  <InlineText
+                    className="mono given-value"
+                    value={g.text}
+                    placeholder="value"
+                    label={`${g.name} value`}
+                    maxLength={60}
+                    onSave={(v) => v && set((x) => void (x.text = /^-?\d+(\.\d+)?$/.test(v) ? `${v}mm` : v), `${g.name} ${g.text} → ${v}`)}
+                  />
+                  {g.assumed && (
+                    <button className="chip warn assumed-chip" onClick={() => set((x) => void (x.assumed = false), `confirmed ${g.name}`)} data-tip="Claude estimated this. Click to confirm it.">
+                      assumed <Icon.Check size={10} />
+                    </button>
+                  )}
+                </span>
+                <span className="given-desc-cell">
                   <InlineText className="given-desc" value={g.desc} placeholder="what it is" label={`${g.name} description`} onSave={(v) => set((x) => void (x.desc = v || undefined), `${g.name} description`)} />
                 </span>
-                <span className={`chip ${used.length ? "" : "warn"}`} data-tip={used.length ? `Used by ${used.join(", ")}` : "Nothing in the design uses this yet"}>
+                <span className={`chip given-used ${used.length ? "" : "warn"}`} data-tip={used.length ? `Used by ${used.join(", ")}` : "Nothing in the design uses this yet"}>
                   {used.length ? `used ${used.length}×` : "unused"}
                 </span>
                 <button
-                  className="icon-btn sm row-more"
+                  className="icon-btn sm row-more given-del"
                   aria-label={`Remove ${g.name}`}
                   data-tip={used.length ? "Still used by the design" : "Remove"}
                   disabled={used.length > 0}

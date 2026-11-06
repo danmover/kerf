@@ -334,22 +334,60 @@
 }
 
 /* givens */
+/* Wide: name = value [assumed] | description | used | remove on one line.
+   Narrow: the description drops to its own full-width line under the name,
+   so it wraps by word instead of being squeezed to one letter per line. */
 .given-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(160px, 1fr) auto auto;
+  column-gap: 8px;
+  container-type: inline-size;
 }
 .given-row {
-  display: flex;
+  grid-column: 1 / -1;
+  display: grid;
+  /* share the list's columns so the descriptions line up row to row */
+  grid-template-columns: subgrid;
+  grid-template-areas: "head desc used del";
   align-items: center;
-  gap: 6px;
+  column-gap: 8px;
+  row-gap: 2px;
   padding: 4px 0;
   border-bottom: 1px solid rgb(var(--line-rgb) / 0.7);
   font-size: 12.5px;
   min-width: 0;
 }
+@container (max-width: 520px) {
+  .given-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "head used del"
+      "desc desc desc";
+  }
+}
+.given-head {
+  grid-area: head;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 0;
+}
+.given-desc-cell {
+  grid-area: desc;
+  min-width: 0;
+}
+.given-used {
+  grid-area: used;
+}
+.given-del {
+  grid-area: del;
+}
 .given-name {
   color: var(--syn-op);
   font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .given-value {
   font-size: 12px;
@@ -357,6 +395,8 @@
 .given-desc {
   font-size: 12px;
   color: var(--text-2);
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 /* notes */
