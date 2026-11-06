@@ -1136,7 +1136,7 @@ export const ELECTRONICS: CatalogPart[] = [
       { id: "SIG_P", type: "term", label: "green (S+)" },
       { id: "SIG_N", type: "term", label: "white (S−)" },
     ],
-    geom: { g: "box", dims: { w: 47, d: 12, h: 6, r: 0.5 }, holes: [[-19.5, 0], [-12.5, 0], [12.5, 0], [19.5, 0]], hole_d: 3, color: "#c9ced6", material: "Aluminum 6061" },
+    geom: { g: "box", dims: { w: 47, d: 12, h: 6, r: 0.5 }, holes: [[-19.5, 0], [-12.5, 0], [12.5, 0], [19.5, 0]], hole_d: 2.5, color: "#c9ced6", material: "Aluminum 6061" },
     price_usd: 20,
     buy: [{ vendor: "Core Electronics (AU)", url: "https://core-electronics.com.au/mini-load-cell-500g-straight-bar-tal221.html" }],
     source: "https://www.sparkfun.com/products/14728",
