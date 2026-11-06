@@ -12,6 +12,7 @@ import { useDesign } from "../src/core/engine";
 import { evaluate } from "../src/lang/evaluator";
 import { templateById } from "../src/demos/templates";
 import { clearAsks } from "../src/ai/asks";
+import { updateSettings } from "../src/app/settings";
 
 const TOKEN = "t".repeat(43);
 const textOf = (r: McpToolResult) => r.content.map((c) => (c.type === "text" ? c.text : "")).join("");
@@ -138,6 +139,12 @@ describe("Kerf's tools in Claude Code", () => {
     const guide = await callTool({ name: "kerf_instructions" }, signal);
     expect(textOf(guide)).toContain("through Claude Code");
     expect(textOf(guide)).toContain("design engineer inside Kerf");
+    expect(textOf(guide)).not.toContain("Lessons this user taught you");
+    updateSettings({ lessons: ["Prints in PETG on a 0.4 mm nozzle."], useLessons: true });
+    expect(textOf(await callTool({ name: "kerf_instructions" }, signal))).toContain("- Prints in PETG on a 0.4 mm nozzle.");
+    updateSettings({ useLessons: false });
+    expect(textOf(await callTool({ name: "kerf_instructions" }, signal))).not.toContain("Lessons this user taught you");
+    updateSettings({ lessons: [], useLessons: true });
 
     expect((await callTool({ name: "nope" }, signal)).isError).toBe(true);
     const closed = await callTool({ name: "catalog_lookup", arguments: { id: "lipo_3s_2200" } }, signal);
