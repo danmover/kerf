@@ -31,6 +31,12 @@ export type QuickCommand =
   | { k: "delete"; target?: string }
   /** size: box (w, d, h), cylinder (d, h), sphere (d); join: add to the part pointed at rather than make a new part */
   | { k: "new"; shape: "box" | "cylinder" | "sphere"; size: number[]; join?: boolean }
+  /** copies of a part: in a row, `step` apart, or round an axis through `center`, spread over `angle` degrees (360: all the way round) */
+  | { k: "pattern"; count: number; step?: Vec3; angle?: number; axis?: 0 | 1 | 2; center?: Vec3; target?: string }
+  /** the other hand of a part: a new part that is its mirror image across the plane square to `axis` at `at` along it, and follows it */
+  | { k: "mirror"; axis: 0 | 1 | 2; at?: number; target?: string }
+  /** cut another part or component (`tool`, which stays) out of this part, where it really sits */
+  | { k: "subtract"; tool: string; target?: string }
   | { k: "undo" }
   | { k: "redo" };
 
@@ -667,6 +673,14 @@ export function applyQuick(cmd: QuickCommand, ctx: QuickContext): QuickResult {
       return applyCopy(cmd, stmt, part.label, ctx);
     case "delete":
       return applyDelete(stmt, part.label, ctx);
+    case "pattern":
+      return applyPattern(cmd, stmt, part.label, ctx);
+    case "mirror":
+      if (stmt.k !== "part") return fail(`${part.label} is a library part, and its mirror image would be a different part (a left-hand thread, a flipped board). Copy it instead.`);
+      return applyMirror(cmd, stmt, part.label, part.color, ctx);
+    case "subtract":
+      if (stmt.k !== "part") return fail(`${part.label} is a library part, so nothing can be cut out of it here. Pick the part to cut first, then the part to cut out of it.`);
+      return applySubtract(cmd, stmt, part.label, ctx);
   }
 }
 
@@ -884,9 +898,19 @@ const dirWords = (by: Vec3) => {
   return out.join(", ");
 };
 
+/** The part another part's body is made from with shape_of() (a mirror image follows its source), if any. */
+function followsPart(stmt: PartStmt | CompStmt, src: string): string | undefined {
+  if (stmt.k !== "part") return undefined;
+  const body = stmt.items.find((it): it is Extract<Item, { k: "op" }> => it.k === "op" && it.op === "body");
+  if (!body) return undefined;
+  return /\bshape_of\(\s*([A-Za-z_][\w]*)/.exec(src.slice(body.shape.span.start, body.shape.span.end))?.[1];
+}
+
 function applyMove(cmd: Extract<QuickCommand, { k: "move" }>, stmt: PartStmt | CompStmt, label: string, ctx: QuickContext): QuickResult {
   const mech = mechanismProp(stmt);
   if (mech) return fail(`${label} is part of a mechanism (${mech}:), so its axis has to move with it.`, true);
+  const source = followsPart(stmt, ctx.src);
+  if (source) return fail(`${label} is made from ${source} and stays where it is. Move ${source} instead, or change the mirror plane in its steps (features tab).`);
   const src = setBlockProps(ctx.src, stmt.name, { at: shiftedAt(ctx.src, stmt, cmd.by) });
   return { ok: true, src, title: `Moved ${label} ${dirWords(cmd.by)}`, target: stmt.name };
 }
@@ -939,6 +963,8 @@ export function eulerOf(m: M3): Vec3 {
 function applyRotate(cmd: Extract<QuickCommand, { k: "rotate" }>, stmt: PartStmt | CompStmt, label: string, ctx: QuickContext): QuickResult {
   const mech = mechanismProp(stmt);
   if (mech) return fail(`${label} is part of a mechanism (${mech}:), so its axis has to turn with it.`, true);
+  const source = followsPart(stmt, ctx.src);
+  if (source) return fail(`${label} is made from ${source} and stays where it is. Turn ${source} instead.`);
   if (stmt.k === "component" && (propItem(stmt, "axis") || propItem(stmt, "facing") || propItem(stmt, "mesh"))) return fail(`${label} is placed by its axis, so turning it needs its axis changed.`, true);
   const old = literalVec(ctx.src, stmt, "rotate");
   if (old === null) return fail(`${label}'s rotation is worked out from other values.`, true);
@@ -988,6 +1014,111 @@ function applyCopy(cmd: Extract<QuickCommand, { k: "copy" }>, stmt: PartStmt | C
   if (!moved) return fail(`Couldn't copy ${label}.`, true);
   src = setBlockProps(src, name, { at: shiftedAt(src, moved, by) });
   return { ok: true, src, title: `Copied ${label} as ${name}, ${dirWords(by)}`, target: name };
+}
+
+/** Copies of a block right after the original, in order, each placed by `place(i)`: the props to set on copy i. */
+function copiesOf(src: string, stmt: PartStmt | CompStmt, count: number, place: (i: number, s: string, copy: PartStmt | CompStmt) => Record<string, string | null>): { src: string; names: string[] } {
+  const base = stmt.name.replace(/\d+$/, "") || stmt.name;
+  const text = src.slice(stmt.span.start, stmt.span.end);
+  const nameAt = stmt.nameSpan.start - stmt.span.start;
+  const names: string[] = [];
+  let out = src;
+  let after = stmt.name;
+  for (let i = 1; i < count; i++) {
+    const name = freshName(out, base, 2);
+    const prev = blockStmt(out, after)!;
+    const lineEnd = out.indexOf("\n", prev.span.end);
+    const at = lineEnd < 0 ? out.length : lineEnd;
+    out = out.slice(0, at) + "\n\n" + text.slice(0, nameAt) + name + text.slice(nameAt + stmt.name.length) + out.slice(at);
+    const copy = blockStmt(out, name)!;
+    out = setBlockProps(out, name, place(i, out, copy));
+    names.push(name);
+    after = name;
+  }
+  return { src: out, names };
+}
+
+function applyPattern(cmd: Extract<QuickCommand, { k: "pattern" }>, stmt: PartStmt | CompStmt, label: string, ctx: QuickContext): QuickResult {
+  const mech = mechanismProp(stmt);
+  if (mech) return fail(`${label} is part of a mechanism (${mech}:), so each copy needs its own axis and pins.`, true);
+  if (followsPart(stmt, ctx.src)) return fail(`${label} is made from another part, so pattern that part instead.`);
+  const count = Math.round(cmd.count);
+  if (!(count >= 2 && count <= 50)) return fail("A pattern of parts has 2 to 50 copies (the original counts as one). For more, pattern a step inside one part.");
+  const atItem = propItem(stmt, "at");
+  if (atItem && atItem.value.k === "list") return fail(`${label} is already a pattern of positions.`, true);
+  if (cmd.step) {
+    const step = cmd.step;
+    if (step.every((v) => Math.abs(v) < 1e-9)) return fail("Give the spacing between copies.");
+    const { src, names } = copiesOf(ctx.src, stmt, count, (i, s, copy) => ({ at: shiftedAt(s, copy, step.map((v) => Math.round(v * i * 1000) / 1000) as Vec3) }));
+    return { ok: true, src, title: `Patterned ${label} ${count} times in a row, ${mm(Math.hypot(...step))} apart (${names.join(", ")})`, target: stmt.name };
+  }
+  const axis = cmd.axis ?? 2;
+  const total = cmd.angle ?? 360;
+  if (!(Math.abs(total) > 1e-9 && Math.abs(total) <= 360)) return fail("Give the angle to spread the copies over (360 for all the way round).");
+  if (stmt.k === "component" && (propItem(stmt, "axis") || propItem(stmt, "facing") || propItem(stmt, "mesh"))) return fail(`${label} is placed by its axis, so turning copies of it needs their axes changed.`, true);
+  const at0 = literalVec(ctx.src, stmt, "at");
+  const r0 = literalVec(ctx.src, stmt, "rotate");
+  if (at0 === null || r0 === null) return fail(`${label}'s position is worked out from other values, so Kerf can't turn copies of it round an axis. Pattern it in a row, or ask Claude.`, true);
+  const full = Math.abs(Math.abs(total) - 360) < 1e-9;
+  const each = total / (full ? count : count - 1);
+  const c = cmd.center ?? [0, 0, 0];
+  const a0: Vec3 = at0 ?? [0, 0, 0];
+  const R0 = eulerMatrix(r0 ?? [0, 0, 0]);
+  const round3 = (v: Vec3) => v.map((x) => Math.round(x * 1000) / 1000) as Vec3;
+  // a copy turned by Ra about the axis through c: rotation Ra·R0, position Ra·(at0 − c) + c
+  const { src, names } = copiesOf(ctx.src, stmt, count, (i) => {
+    const Ra = axisRot(axis, each * i);
+    const r1 = eulerOf(mul(Ra, R0));
+    const p = apply3(Ra, [a0[0] - c[0], a0[1] - c[1], a0[2] - c[2]]);
+    return { at: vec(round3([p[0] + c[0], p[1] + c[1], p[2] + c[2]])), rotate: r1.every((v) => v === 0) ? null : vec(r1, 3) };
+  });
+  return { ok: true, src, title: `Patterned ${label} ${count} times round ${AXES[axis]}, ${f(each, 1)}° apart (${names.join(", ")})`, target: stmt.name };
+}
+
+const PROP_COPY = ["color", "material", "finish", "process", "group"];
+
+function applyMirror(cmd: Extract<QuickCommand, { k: "mirror" }>, stmt: PartStmt, label: string, color: string, ctx: QuickContext): QuickResult {
+  if (followsPart(stmt, ctx.src)) return fail(`${label} is already made from another part; mirror that part instead.`);
+  const name = freshName(ctx.src, `${stmt.name}_mirror`);
+  const point: Vec3 = [0, 0, 0];
+  point[cmd.axis] = cmd.at ?? 0;
+  const lines = [`label: "${label.replace(/"/g, "'")} (mirrored)"`];
+  for (const k of PROP_COPY) {
+    const it = propItem(stmt, k);
+    if (it) lines.push(ctx.src.slice(it.span.start, it.span.end));
+    else if (k === "color") lines.push(`color: ${color}`);
+  }
+  lines.push(`body mirror(shape_of(${stmt.name}), normal: ${AXES[cmd.axis]}, at: ${vec(point)})`);
+  const block = `// the mirror image of ${stmt.name}: it follows every change to it\npart ${name} {\n${lines.map((l) => `  ${l}`).join("\n")}\n}`;
+  const lineEnd = ctx.src.indexOf("\n", stmt.span.end);
+  const at = lineEnd < 0 ? ctx.src.length : lineEnd;
+  const src = ctx.src.slice(0, at) + "\n\n" + block + ctx.src.slice(at);
+  const plane = cmd.axis === 0 ? "YZ" : cmd.axis === 1 ? "XZ" : "XY";
+  return { ok: true, src, title: `Mirrored ${label} across the ${plane} plane${cmd.at ? ` at ${AXES[cmd.axis]} = ${mm(cmd.at)}` : ""} as ${name}`, detail: `${name} follows every change to ${label}.`, target: name };
+}
+
+function applySubtract(cmd: Extract<QuickCommand, { k: "subtract" }>, stmt: PartStmt, label: string, ctx: QuickContext): QuickResult {
+  if (cmd.tool === stmt.name) return fail("Pick a different part to cut out of it.");
+  const toolPart = ctx.model.parts.find((p) => p.name === cmd.tool);
+  let tool = blockStmt(ctx.src, cmd.tool);
+  if (!toolPart || !tool) return fail(`There is no part called ${cmd.tool}.`);
+  if (new RegExp(`\\bshape_of\\(\\s*${stmt.name}\\b`).test(ctx.src.slice(tool.span.start, tool.span.end))) return fail(`${toolPart.label} is made from ${label}, so it can't be cut out of it.`);
+  let src = ctx.src;
+  // the part that is cut comes after the one it is cut by
+  if (tool.span.start > stmt.span.start) {
+    const start = src.lastIndexOf("\n", stmt.span.start - 1) + 1;
+    let end = src.indexOf("\n", stmt.span.end);
+    end = end < 0 ? src.length : end + 1;
+    const text = src.slice(start, end);
+    src = (src.slice(0, start) + src.slice(end)).replace(/\n{3,}/g, "\n\n");
+    tool = blockStmt(src, cmd.tool)!;
+    let at = src.indexOf("\n", tool.span.end);
+    at = at < 0 ? src.length : at;
+    src = src.slice(0, at) + "\n\n" + text.replace(/\n$/, "") + src.slice(at);
+  }
+  const host = blockStmt(src, stmt.name) as PartStmt;
+  src = insertItem(src, host, `cut shape_of(${cmd.tool})`, null);
+  return { ok: true, src, title: `Cut ${toolPart.label} out of ${label}`, detail: `The cut is exactly ${toolPart.label}'s shape, where it sits, and follows it when it moves or changes. Give it room with a clearance if it has to slide in.`, target: stmt.name };
 }
 
 function applyDelete(stmt: PartStmt | CompStmt, label: string, ctx: QuickContext): QuickResult {
@@ -1108,6 +1239,12 @@ export function describeQuick(cmd: QuickCommand): string {
       return "Delete the part";
     case "new":
       return `New ${cmd.shape} ${cmd.size.map((v) => f(v)).join(" × ")} mm`;
+    case "pattern":
+      return cmd.step ? `${cmd.count} in a row, ${mm(Math.hypot(...cmd.step))} apart` : `${cmd.count} round ${AXES[cmd.axis ?? 2]}${cmd.angle !== undefined && Math.abs(cmd.angle) !== 360 ? ` over ${f(cmd.angle, 1)}°` : ""}`;
+    case "mirror":
+      return `Mirror across ${cmd.axis === 0 ? "YZ" : cmd.axis === 1 ? "XZ" : "XY"}${cmd.at ? ` at ${AXES[cmd.axis]} = ${mm(cmd.at)}` : ""}`;
+    case "subtract":
+      return `Cut ${cmd.tool} out of it`;
     case "undo":
       return "Undo";
     case "redo":

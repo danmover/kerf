@@ -230,7 +230,7 @@ export function Viewport() {
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
         {/* modelling it yourself comes first and is labelled, so it isn't lost among the view switches */}
         <div className="vp-make">
-          <button className={`vp-lbtn ${settings.advanced ? "active" : ""}`} onClick={() => updateSettings({ advanced: !settings.advanced })} data-tip="Modelling tools: box, cylinder, hole, fillet, chamfer, shell, move. Model it yourself, then let Claude fix it up" aria-label="Modelling tools" aria-pressed={settings.advanced}>
+          <button className={`vp-lbtn ${settings.advanced ? "active" : ""}`} onClick={() => updateSettings({ advanced: !settings.advanced })} data-tip="Modelling tools: box, cylinder, hole, fillet, chamfer, shell, move, pattern, mirror, cut out. Model it yourself; Claude is optional" aria-label="Modelling tools" aria-pressed={settings.advanced}>
             <Icon.Tools size={15} />
             <span>Tools</span>
           </button>

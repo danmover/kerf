@@ -6,7 +6,8 @@
 // "Make it buildable" hand it to Claude to finish properly.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { create } from "zustand";
 import { sendMessage, useChat } from "../ai/chat";
 import { useAgents, isLive } from "../agents/progress";
 import { useDesign } from "../core/engine";
@@ -15,12 +16,21 @@ import { runQuick, runQuickCommand, type QuickOutcome } from "../app/quickRun";
 import { realSource, undo } from "../app/project";
 import type { SpotRef } from "../app/spot";
 import { useView } from "../app/view";
+import { updateSettings } from "../app/settings";
 import { viewport } from "../app/viewportApi";
 import { fmtNum } from "../lang/values";
 import { useApiKey } from "./ChatPanel";
 import { Icon } from "./icons";
 
-type ToolId = "box" | "cylinder" | "hole" | "fillet" | "chamfer" | "shell" | "move" | "rotate" | "copy" | "delete";
+export type ToolId = "box" | "cylinder" | "hole" | "fillet" | "chamfer" | "shell" | "move" | "rotate" | "copy" | "pattern" | "mirror" | "subtract" | "delete";
+
+/** The open modelling tool, so other places (the find palette) can open one. */
+export const useModelTool = create<{ tool: ToolId | null }>(() => ({ tool: null }));
+/** Show the modelling tools with one of them open. */
+export function openModelTool(tool: ToolId) {
+  updateSettings({ advanced: true });
+  useModelTool.setState({ tool });
+}
 
 const TOOLS: { id: ToolId; label: string; icon: (p: { size?: number }) => ReactNode; hint: string }[] = [
   { id: "box", label: "Box", icon: (p) => <Icon.Box {...p} />, hint: "Add a box: on the face you click, or as a new part" },
@@ -32,6 +42,9 @@ const TOOLS: { id: ToolId; label: string; icon: (p: { size?: number }) => ReactN
   { id: "move", label: "Move", icon: (p) => <Icon.Move {...p} />, hint: "Move the selected parts" },
   { id: "rotate", label: "Turn", icon: (p) => <Icon.Refresh {...p} />, hint: "Turn the selected parts where they are" },
   { id: "copy", label: "Copy", icon: (p) => <Icon.Copy {...p} />, hint: "Copy the selected parts" },
+  { id: "pattern", label: "Pattern", icon: (p) => <Icon.Pattern {...p} />, hint: "Pattern: copies of the selected parts in a row or round an axis (to pattern a hole or boss inside a part, use the features tab)" },
+  { id: "mirror", label: "Mirror", icon: (p) => <Icon.Mirror {...p} />, hint: "Mirror: the other hand of the selected part, linked so it follows every change" },
+  { id: "subtract", label: "Cut out", icon: (p) => <Icon.Subtract {...p} />, hint: "Cut out: cut another part out of the selected one, where it sits (a pocket for a magnet, a hole for a connector)" },
   { id: "delete", label: "Delete", icon: (p) => <Icon.Trash {...p} />, hint: "Delete the selected parts" },
 ];
 
@@ -64,14 +77,26 @@ interface Form {
   angle: number;
   axis: 0 | 1 | 2;
   newPart: boolean;
+  patKind: "line" | "round";
+  count: number;
+  gap: number;
+  patAxis: 0 | 1 | 2;
+  spread: number;
+  cx: number;
+  cy: number;
+  cz: number;
+  mAxis: 0 | 1 | 2;
+  mAt: number;
+  cutTool: string;
 }
 
-const START: Form = { w: 40, d: 30, h: 10, cd: 20, ch: 20, size: "M3", holeD: 5, through: true, depth: 8, fit: "clearance", r: 1, edges: "picked", t: 2, open: "picked", dx: 0, dy: 0, dz: 10, angle: 90, axis: 2, newPart: false };
+const START: Form = { w: 40, d: 30, h: 10, cd: 20, ch: 20, size: "M3", holeD: 5, through: true, depth: 8, fit: "clearance", r: 1, edges: "picked", t: 2, open: "picked", dx: 0, dy: 0, dz: 10, angle: 90, axis: 2, newPart: false, patKind: "line", count: 3, gap: 30, patAxis: 0, spread: 360, cx: 0, cy: 0, cz: 0, mAxis: 0, mAt: 0, cutTool: "" };
 
 type Done = Extract<QuickOutcome, { ok: true }> & { failed?: string };
 
 export function ModelTools({ host }: { host: RefObject<HTMLDivElement | null> }) {
-  const [tool, setTool] = useState<ToolId | null>(null);
+  const tool = useModelTool((s) => s.tool);
+  const setTool = (t: ToolId | null) => useModelTool.setState({ tool: t });
   const [pick, setPick] = useState<SpotRef | null>(null);
   const [form, setForm] = useState<Form>(START);
   const [done, setDone] = useState<Done | null>(null);
@@ -165,18 +190,25 @@ export function ModelTools({ host }: { host: RefObject<HTMLDivElement | null> })
     void r.built.then((err) => err && setDone((d) => (d === r || d?.after === r.after ? { ...r, failed: err } : d)));
   };
 
+  // cut out: the part to cut is the first one selected, the one cut out of it the second (or picked in the form)
+  const blocks = useMemo(() => [...new Set(selected.map((id) => model?.parts.find((p) => p.id === id)?.name).filter((n): n is string => !!n))], [selected, model]);
+  const others = useMemo(() => [...new Map((model?.parts ?? []).filter((p) => p.name !== blocks[0]).map((p) => [p.name, p.label])).entries()], [model, blocks]);
+  const cutTool = form.cutTool && others.some(([n]) => n === form.cutTool) ? form.cutTool : (blocks[1] ?? others[0]?.[0] ?? "");
+  const command = (t: ToolId) => (t === "subtract" ? (cutTool && blocks[0] ? ({ k: "subtract", tool: cutTool, target: blocks[0] } as QuickCommand) : null) : commandFor(t, form, pick));
+
   const apply = () => {
-    const c = commandFor(tool!, form, pick);
+    const c = command(tool!);
     if (!c) return;
     report(runQuickCommand(c, pick));
   };
 
   const targetText = pick ? `${pick.label}${pick.normal ? ` · ${faceWord(pick.normal)}` : ""}` : selected.length ? `${selected.length === 1 ? (model?.parts.find((p) => p.id === selected[0])?.label ?? selected[0]) : `${selected.length} selected parts`}` : null;
+  const cutFrom = tool === "subtract" && blocks[0] ? `Cut from ${model?.parts.find((p) => p.name === blocks[0])?.label ?? blocks[0]}` : null;
   const needsPick = picking === "needs" && !pick;
   // with nothing selected, a design of one part means that part
   const onlyPart = new Set(model?.parts.filter((p) => p.kind === "part").map((p) => p.name)).size === 1;
-  const needsTarget = tool && !PICKS[tool] && !selected.length && !pick && !onlyPart;
-  const preview = tool ? commandFor(tool, form, pick) : null;
+  const needsTarget = tool && !PICKS[tool] && !selected.length && !pick && (!onlyPart || tool === "subtract");
+  const preview = tool ? command(tool) : null;
 
   return (
     <>
@@ -229,7 +261,7 @@ export function ModelTools({ host }: { host: RefObject<HTMLDivElement | null> })
             <div className={`mt-target ${needsPick || needsTarget ? "wait" : ""}`}>
               <Icon.Target size={11} />
               <span className="grow">
-                {picking ? (pick ? targetText : picking === "needs" ? "Click the model where it goes" : tool === "box" || tool === "cylinder" ? "Click a face to put it there, or it goes beside the model" : `Click an edge or face, or it works on ${targetText ?? "the selected part"}`) : (targetText ?? "Select the parts first")}
+                {cutFrom ?? (picking ? (pick ? targetText : picking === "needs" ? "Click the model where it goes" : tool === "box" || tool === "cylinder" ? "Click a face to put it there, or it goes beside the model" : `Click an edge or face, or it works on ${targetText ?? "the selected part"}`) : (targetText ?? (tool === "subtract" ? "Select the part to cut from" : "Select the parts first")))}
               </span>
               {pick && (
                 <button className="link-btn" onClick={() => setPick(null)}>
@@ -238,7 +270,7 @@ export function ModelTools({ host }: { host: RefObject<HTMLDivElement | null> })
               )}
             </div>
 
-            <ToolForm tool={tool} form={form} set={set} pick={pick} />
+            <ToolForm tool={tool} form={form} set={set} pick={pick} others={others} cutTool={cutTool} />
 
             <div className="row" style={{ gap: 6, marginTop: 10 }}>
               <button className={`btn sm ${tool === "delete" ? "danger" : "primary"}`} disabled={!preview || needsPick || !!needsTarget || working} onClick={apply} style={{ flex: 1 }}>
@@ -321,6 +353,21 @@ function commandFor(tool: ToolId, f: Form, pick: SpotRef | null): QuickCommand |
       return Number.isFinite(f.angle) && f.angle !== 0 ? { k: "rotate", angle: f.angle, axis: f.axis } : null;
     case "copy":
       return { k: "copy", by: [f.dx, f.dy, f.dz].some((v) => Number.isFinite(v) && v !== 0) ? [f.dx || 0, f.dy || 0, f.dz || 0] : undefined };
+    case "pattern": {
+      const count = Math.round(f.count);
+      if (!(count >= 2)) return null;
+      if (f.patKind === "line") {
+        if (!Number.isFinite(f.gap) || f.gap === 0) return null;
+        const step: [number, number, number] = [0, 0, 0];
+        step[f.patAxis] = f.gap;
+        return { k: "pattern", count, step };
+      }
+      return Number.isFinite(f.spread) && f.spread !== 0 ? { k: "pattern", count, angle: f.spread, axis: f.patAxis, center: [f.cx || 0, f.cy || 0, f.cz || 0] } : null;
+    }
+    case "mirror":
+      return { k: "mirror", axis: f.mAxis, at: Number.isFinite(f.mAt) ? f.mAt : 0 };
+    case "subtract":
+      return null;
     case "delete":
       return { k: "delete" };
   }
@@ -384,8 +431,75 @@ const OPEN_OPTIONS: { value: Form["open"]; label: string }[] = [
   { value: "closed", label: "Closed all round" },
 ];
 
-function ToolForm({ tool, form: f, set, pick }: { tool: ToolId; form: Form; set: <K extends keyof Form>(k: K, v: Form[K]) => void; pick: SpotRef | null }) {
+const AXIS_OPTIONS: { value: 0 | 1 | 2; label: string }[] = [
+  { value: 0, label: "X" },
+  { value: 1, label: "Y" },
+  { value: 2, label: "Z (up)" },
+];
+
+function ToolForm({ tool, form: f, set, pick, others, cutTool }: { tool: ToolId; form: Form; set: <K extends keyof Form>(k: K, v: Form[K]) => void; pick: SpotRef | null; others: [string, string][]; cutTool: string }) {
   switch (tool) {
+    case "pattern":
+      return (
+        <div className="mt-form">
+          <Pick
+            label="Kind"
+            value={f.patKind}
+            options={[
+              { value: "line", label: "In a row" },
+              { value: "round", label: "Round an axis" },
+            ]}
+            onChange={(v) => {
+              set("patKind", v);
+              if (v === "round") set("patAxis", 2);
+            }}
+          />
+          <Num label="Copies" value={f.count} onChange={(v) => set("count", v)} unit="" step={1} />
+          {f.patKind === "line" ? (
+            <>
+              <Num label="Apart" value={f.gap} onChange={(v) => set("gap", v)} step={1} />
+              <Pick label="Along" value={f.patAxis} options={AXIS_OPTIONS} onChange={(v) => set("patAxis", v)} />
+            </>
+          ) : (
+            <>
+              <Num label="Over" value={f.spread} onChange={(v) => set("spread", v)} unit="°" step={15} />
+              <Pick label="Round" value={f.patAxis} options={AXIS_OPTIONS} onChange={(v) => set("patAxis", v)} />
+              <Num label="At X" value={f.cx} onChange={(v) => set("cx", v)} step={1} />
+              <Num label="At Y" value={f.cy} onChange={(v) => set("cy", v)} step={1} />
+              <Num label="At Z" value={f.cz} onChange={(v) => set("cz", v)} step={1} />
+            </>
+          )}
+          <div className="dim" style={{ fontSize: 11 }}>The original counts as the first copy. Each copy is a part of its own.</div>
+        </div>
+      );
+    case "mirror":
+      return (
+        <div className="mt-form">
+          <Pick
+            label="Across"
+            value={f.mAxis}
+            options={[
+              { value: 0, label: "YZ plane (flip left and right)" },
+              { value: 1, label: "XZ plane (flip front and back)" },
+              { value: 2, label: "XY plane (flip up and down)" },
+            ]}
+            onChange={(v) => set("mAxis", v)}
+          />
+          <Num label={`At ${"XYZ"[f.mAxis]}`} value={f.mAt} onChange={(v) => set("mAt", v)} step={1} />
+          <div className="dim" style={{ fontSize: 11 }}>A new part that is the mirror image, linked: change the original and it follows.</div>
+        </div>
+      );
+    case "subtract":
+      return (
+        <div className="mt-form">
+          {others.length ? (
+            <Pick label="Cut out" value={cutTool} options={others.map(([value, label]) => ({ value, label }))} onChange={(v) => set("cutTool", v)} />
+          ) : (
+            <div className="dim" style={{ fontSize: 11.5 }}>Add the part to cut out first.</div>
+          )}
+          <div className="dim" style={{ fontSize: 11 }}>Cuts it out of the selected part where it sits, and stays linked. The other part is kept.</div>
+        </div>
+      );
     case "box":
     case "cylinder":
       return (

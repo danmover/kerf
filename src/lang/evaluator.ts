@@ -229,6 +229,8 @@ class Evaluator {
   defLabel = new Map<string, string>();
   deps = new Map<string, Set<string>>();
   current: Set<string> | null = null;
+  /** how many shape_of() calls so far: parts only look for them when there are some */
+  shapeRefs = 0;
   comps = new Map<string, CompInfo>();
   partMotion = new Map<string, Motion>();
   parts: EvalPart[] = [];
@@ -302,6 +304,13 @@ class Evaluator {
         if (!p) return undefined;
         this.current?.add(name);
         return { recipe: p.recipe, xf: p.xf, material: p.material };
+      },
+      partShapes: (name: string) => {
+        const ps = this.parts.filter((q) => q.name === name);
+        if (!ps.length) return undefined;
+        this.current?.add(name);
+        this.shapeRefs++;
+        return ps.map((p) => ({ recipe: p.recipe, xf: p.xf, kind: p.kind }));
       },
     };
   }
@@ -1863,6 +1872,11 @@ class Evaluator {
       if (r[2]) xf.push({ op: "rotate", angle: r[2], origin: [0, 0, 0], axis: [0, 0, 1] });
     }
     if (state.props.at !== undefined) xf.push({ op: "translate", v: toV3(state.props.at, ctx, "at") });
+    // shape_of() gives another part where it sits; this part's own placement is taken off it, so a cut lands where that part really is
+    if (this.shapeRefs) {
+      state.base = state.base && intoFrame(state.base, xf);
+      state.ops = state.ops.map((o) => ("shape" in o && o.shape ? { ...o, shape: intoFrame(o.shape, xf) } : o));
+    }
     let motion: Motion | undefined;
     const carrier = state.props.rides !== undefined ? this.motionOf(state.props.rides, state.propSpans.rides, "rides") : undefined;
     if (carrier && state.props.turns_with !== undefined) throw new EvalError("rides: and turns_with: together: turns_with: already moves it with that part, carrier and all; give rides: with spin: instead", state.propSpans.rides);
@@ -2772,6 +2786,37 @@ function groupFor(kind: string): string {
 }
 
 /** Express a rotation that maps X->u, Y->v, Z->n as a single axis-angle rotation. */
+/** The placement that undoes xf. */
+export function invertXf(xf: Xform[]): Xform[] {
+  return [...xf].reverse().map((x): Xform => (x.op === "translate" ? { op: "translate", v: [-x.v[0], -x.v[1], -x.v[2]] } : x.op === "rotate" ? { ...x, angle: -x.angle } : x));
+}
+
+/** A recipe with every shape_of() in it brought into the frame of a part placed by xf (copied, never changed in place). */
+function intoFrame(r: ShapeRecipe, xf: Xform[]): ShapeRecipe {
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) {
+      let out: unknown[] | null = null;
+      v.forEach((x, i) => {
+        const y = typeof x === "object" && x ? walk(x) : x;
+        if (y !== x) (out ??= v.slice())[i] = y;
+      });
+      return out ?? v;
+    }
+    if (!v || typeof v !== "object") return v;
+    const o = v as Record<string, unknown>;
+    if (o.t === "part" && "part" in o) return o.into ? o : { ...o, into: invertXf(xf) };
+    let out: Record<string, unknown> | null = null;
+    for (const k in o) {
+      const x = o[k];
+      if (!x || typeof x !== "object") continue;
+      const y = walk(x);
+      if (y !== x) (out ??= { ...o })[k] = y;
+    }
+    return out ?? o;
+  };
+  return walk(r) as ShapeRecipe;
+}
+
 function basisXforms(u: V3, v: V3, n: V3): Xform[] {
   // R columns are u, v, n. R[i][j] = col_j[i]
   const R = [

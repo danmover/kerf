@@ -35,7 +35,7 @@ import { playFitting, useFitView } from "./FitLayer";
 import { hasFitting } from "../analysis/fitting";
 import { exitSketch, startPicking, useSketch } from "./sketch/session";
 import { STEP_ACCEPT } from "./ImportsPanel";
-import { FIX_IT_UP, MAKE_BUILDABLE } from "./ModelTools";
+import { FIX_IT_UP, MAKE_BUILDABLE, openModelTool } from "./ModelTools";
 import { askClaude, REVIEW_ASK } from "./chatDraft";
 import { Icon } from "./icons";
 import { T } from "./sketch/glyphs";
@@ -92,6 +92,11 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   graph: { detail: "How the parts and features depend on each other", keywords: "dependencies dependency structure network" },
   code: { title: "Design file (design.kerf)", detail: "The design as text: edit it by hand", keywords: "code source editor text script file kerf language" },
   structure: { title: "Parts", detail: "Every part and component, grouped as in the design", keywords: "tree structure components assembly hierarchy outline" },
+  features: {
+    title: "Feature tree",
+    detail: "Each part's steps in build order: type over a value, suppress, reorder, delete, roll back, pattern or mirror a step",
+    keywords: "features feature tree history timeline steps operations suppress rollback roll back reorder edit dimensions parametric manual cad",
+  },
   params: { title: "Parameters", detail: "The sizes you can scrub, grouped as in the design", keywords: "params dimensions sizes variables sliders values" },
   sketches: { detail: "2D profiles with dimensions and constraints", keywords: "sketch profile 2d constraints outline" },
   decisions: { title: "Design decisions", detail: "The choices made, and the options not taken", keywords: "options alternatives choices tradeoffs trade offs" },
@@ -178,7 +183,10 @@ export function findItems(ctx: FindContext): FindItem[] {
     // ── modelling ──
     const sketching = useSketch.getState();
     push(
-      { id: "model:tools", group: "Model", title: "Modelling tools", detail: "Box, cylinder, hole, fillet, chamfer, shell, move, turn, copy: model it yourself, then let Claude fix it up", keywords: "advanced manual direct edit extrude cad tools hand", icon: <Icon.Wrench size={14} />, tag: s.advanced ? "on" : undefined, run: () => updateSettings({ advanced: !s.advanced }) },
+      { id: "model:tools", group: "Model", title: "Modelling tools", detail: "Box, cylinder, hole, fillet, chamfer, shell, move, turn, copy, pattern, mirror, cut out: model it yourself, with or without Claude", keywords: "advanced manual direct edit extrude cad tools hand without ai offline", icon: <Icon.Wrench size={14} />, tag: s.advanced ? "on" : undefined, run: () => updateSettings({ advanced: !s.advanced }) },
+      { id: "model:pattern", group: "Model", title: "Pattern parts", detail: "Copies of the selected parts in a row or round an axis (a hole or boss inside a part: the feature tree)", keywords: "pattern array linear circular polar repeat copies rectangular radial duplicate", icon: <Icon.Pattern size={14} />, run: () => openModelTool("pattern") },
+      { id: "model:mirror", group: "Model", title: "Mirror a part", detail: "The other hand of a part, linked so it follows every change", keywords: "mirror symmetric symmetry flip reflect opposite left right hand", icon: <Icon.Mirror size={14} />, run: () => openModelTool("mirror") },
+      { id: "model:subtract", group: "Model", title: "Cut one part out of another", detail: "A pocket or opening exactly where another part sits, linked to it", keywords: "subtract boolean combine difference cut out pocket cavity recess negative", icon: <Icon.Subtract size={14} />, run: () => openModelTool("subtract") },
       { id: "model:sketch", group: "Model", title: sketching.active || sketching.picking ? "Leave the sketch" : "New sketch", detail: "Draw a 2D profile on a face or plane, with dimensions, and extrude or revolve it", keywords: "sketch draw profile 2d extrude revolve constraint", icon: <T.Sketch size={14} />, run: () => (sketching.active || sketching.picking ? exitSketch() : startPicking()) },
       { id: "model:markup", group: "Model", title: "Draw on the view for Claude", detail: "Circle or scribble on the model and say what to change there", keywords: "markup annotate scribble sketch on screen pen highlight", icon: <Icon.Edit size={14} />, keys: "M", run: () => toggleMarkup() },
       { id: "model:step", group: "Model", title: "Import a STEP file", detail: "Bring in a part from another CAD tool to design around", keywords: "import step stp cad file part load open", icon: <Icon.Upload size={14} />, run: pickStep },

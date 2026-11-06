@@ -475,6 +475,54 @@ export const Icon = {
       <path d="m16.8 7.4 2.2 2.2 2.2-2.2" />
     </I>
   ),
+  /** copies in a row */
+  Pattern: (p: P) => (
+    <I {...p}>
+      <rect x="3" y="9" width="5" height="6" rx="1" />
+      <rect x="10" y="9" width="5" height="6" rx="1" />
+      <rect x="17" y="9" width="4" height="6" rx="1" strokeDasharray="2 2" />
+    </I>
+  ),
+  /** copies round a centre */
+  PatternRound: (p: P) => (
+    <I {...p}>
+      <circle cx="12" cy="12" r="1.2" />
+      <circle cx="12" cy="4.5" r="2" />
+      <circle cx="18.5" cy="15.8" r="2" />
+      <circle cx="5.5" cy="15.8" r="2" />
+    </I>
+  ),
+  /** a shape and its mirror image across a dashed plane */
+  Mirror: (p: P) => (
+    <I {...p}>
+      <path d="M12 3v18" strokeDasharray="2 2.5" />
+      <path d="M9 6 4 18h5z" />
+      <path d="m15 6 5 12h-5z" />
+    </I>
+  ),
+  /** one shape cut out of another */
+  Subtract: (p: P) => (
+    <I {...p}>
+      <path d="M4 4h11v5H9v6H4z" />
+      <rect x="9" y="9" width="11" height="11" rx="1" strokeDasharray="2 2" />
+    </I>
+  ),
+  /** a feature tree: steps hanging off a stem */
+  Steps: (p: P) => (
+    <I {...p}>
+      <path d="M5 4v14a2 2 0 0 0 2 2h1M5 9h3M5 14h3" />
+      <rect x="10" y="7" width="10" height="4" rx="1" />
+      <rect x="10" y="12" width="10" height="4" rx="1" />
+      <rect x="10" y="17" width="10" height="4" rx="1" />
+      <path d="M3 4h6" />
+    </I>
+  ),
+  /** up and down in a list */
+  Reorder: (p: P) => (
+    <I {...p}>
+      <path d="m8 9 4-4 4 4M8 15l4 4 4-4" />
+    </I>
+  ),
 };
 
 export function StatusIcon({ status }: { status: "pass" | "fail" | "warn" | "pending" | "info" }) {
