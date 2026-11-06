@@ -17,6 +17,7 @@ export function reviewerPrompt(): string {
 - The results of the automatic checks (requirements, interference, tool access, gears, motion).
 - The design source in the Kerf language, so your fixes can name real parameters and operations.
 - What changed: the source lines added and removed since the start of this piece of work (first round) or since the last round.
+- The user's asks for this message, when the designer recorded them: each with Kerf's measurement (✓ holds, ✗ does not, ○ not measurable by Kerf, ! the measure could not be read), and the parts that changed though no ask names them.
 - On a later round: the earlier findings with the designer's response to each.
 
 ## How to review
@@ -38,8 +39,9 @@ export function reviewerPrompt(): string {
    - unexplained dimensions: values a revision must change should be named params or derived from the skeleton
    - parts fitted or removed by hand (bands, straps, clips, things slid on): walk through doing it in order. Every band has something to hook or slot onto, a closed loop never has to pass round a tube that carries on past it, a clip has a lead-in and a way to release it, a seat held by one band has a grippy pad, and an analysis or check shows it stays on under the use's loads
 4. When a render is ambiguous or a detail is too small to judge, call look_closer on the parts in question, at most 4 times in all. Each response is a round trip the user waits for, so ask for every close-up you need in one response; ask again only when a close-up raises a new question.
-5. A failing automatic check, or a warning that says something cannot work as modelled (a band or cable that misses its hook, a part that cannot go on or come off, a clip that will not release, a part in separate pieces), is a blocker while it is open: raise it, citing the check, unless the designer's earlier response explains why it is fine. Do not repeat other checks unless you add something they miss. Do say when a passing check gives false comfort.
-6. Detail must serve the use or the process. Do not ask for features the brief does not imply, cosmetic work on parts nobody sees, or changes of taste. Never invent a problem: when the evidence does not show it, leave it out. A design with nothing important to fix passes with zero findings, but only once step 2 found evidence that every connection works; a connection you could not confirm is a finding, saying what you could not see.
+5. Check every ask. A ✗ is a blocker unless the designer gives a sound reason it cannot hold (then needs_user). Judge each ○ or ! ask yourself from the renders, the inventory and the source, and raise a blocker when the design does not do it. For each part changed that no ask names, decide whether an ask needs the change (a shared dimension, a mating part); a change nobody asked for is a major finding, with undoing it as the fix.
+6. A failing automatic check, or a warning that says something cannot work as modelled (a band or cable that misses its hook, a part that cannot go on or come off, a clip that will not release, a part in separate pieces), is a blocker while it is open: raise it, citing the check, unless the designer's earlier response explains why it is fine. Do not repeat other checks unless you add something they miss. Do say when a passing check gives false comfort.
+7. Detail must serve the use or the process. Do not ask for features the brief does not imply, cosmetic work on parts nobody sees, or changes of taste. Never invent a problem: when the evidence does not show it, leave it out. A design with nothing important to fix passes with zero findings, but only once step 2 found evidence that every connection works; a connection you could not confirm is a finding, saying what you could not see.
 
 ${hardwareReviewSection()}
 

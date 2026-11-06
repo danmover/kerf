@@ -79,6 +79,8 @@ export interface Route {
   by: "rule" | "router" | "you" | "settings";
   /** a short, plain change ("make the wall 3 mm", "add a hole here"): every step at low effort, and no self-review */
   small?: boolean;
+  /** the speed chosen beside Send, when not normal: quick keeps the small-change way for the whole run; thorough thinks hardest and reviews every change */
+  speed?: "quick" | "thorough";
 }
 
 /** What the router knows about a turn before it starts. */

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { closeSettings, confirmDialog, go, openSettings, toast, useUi, type LegalDoc, type SettingsTab } from "../app/ui";
-import { useSettings, updateSettings, resetSettings, clearSettingsStorage, cleanOnHand, MODELS, KEEP_WARM_MINUTES, COMPACT_AT_TOKENS, MIN_STEPS, MAX_STEPS, type Effort, type ThemePref } from "../app/settings";
+import { useSettings, updateSettings, resetSettings, clearSettingsStorage, cleanOnHand, MODELS, KEEP_WARM_MINUTES, COMPACT_AT_TOKENS, MIN_STEPS, MAX_STEPS, SPEEDS, type Effort, type ThemePref } from "../app/settings";
 import { setTheme } from "../app/theme";
 import { clearAllData, exportAllProjects, importProject, openProject, useProject } from "../app/project";
 import { forgetApiKey, getApiKey, isRemembered, keyHint, subscribeKey } from "../persist/vault";
@@ -18,6 +18,7 @@ import { AccountKeySection, AccountSettings, CloudIcon, signOutForClear } from "
 import { useAccount } from "../cloud/account";
 import { VoiceSettings } from "./voice/VoiceSettings";
 import { AgentSettings } from "./agents/AgentSettings";
+import { BenchSection } from "./BenchSection";
 import { ChatGPTSection, OpenAIKeySection } from "./ChatGPTSettings";
 import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
@@ -390,6 +391,9 @@ function AiSettings() {
 
       }
       <Section title="Behaviour">
+        <Row t="Speed" d={`${SPEEDS.find((x) => x.value === s.speed)?.d ?? ""} Also beside Send in the chat.`}>
+          <Segmented id="speed" value={s.speed} options={SPEEDS.map((x) => ({ value: x.value, label: x.label }))} onChange={(v) => updateSettings({ speed: v })} />
+        </Row>
         <Row t="Effort" d={effort.d}>
           <Segmented id="effort" value={s.effort} options={EFFORTS.map((e) => ({ value: e.value, label: e.label }))} onChange={(v) => updateSettings({ effort: v })} />
         </Row>
@@ -408,7 +412,7 @@ function AiSettings() {
         <Row t="Show reasoning" d="Shows a summary of the assistant's thinking above each answer, collapsed by default.">
           <Toggle on={s.showThinking} onChange={(v) => updateSettings({ showThinking: v })} label="Show Claude's reasoning" />
         </Row>
-        <Row t="Steps per message" d="The most rounds of tool calls (edits, checks, views, part lookups) Claude can make for one message before it stops and reports. Designing a whole machine takes about 20 to 40; each step costs tokens.">
+        <Row t="Steps per message" d="The most rounds of tool calls (edits, checks, views, part lookups) Claude can make for one message before it stops and reports. Designing and reviewing a whole machine takes about 20 to 50; each step costs tokens.">
           <div className="row" style={{ gap: 8, minWidth: 170 }}>
             <input type="range" min={MIN_STEPS} max={MAX_STEPS} step={1} value={s.maxSteps} onChange={(e) => updateSettings({ maxSteps: Number(e.target.value) })} aria-label="Steps per message" style={{ flex: 1 }} />
             <span className="mono" style={{ width: 22, textAlign: "right" }}>
@@ -442,6 +446,7 @@ function AiSettings() {
         </Row>
       </Section>
       <AgentSettings />
+      <BenchSection />
       <div className="help">{s.model.startsWith("gpt-") ? "Usage is billed to your OpenAI API account, separately from ChatGPT. Requests go directly from this device to api.openai.com. Cost figures are estimates; your provider's billing is authoritative." : viaAccount ? "Usage is billed to the Anthropic account that owns the key, at its normal API rates. Requests go from this browser to your Kerf server, which adds the key and passes them to api.anthropic.com." : "Usage is billed to your Anthropic account at its normal API rates. Requests go straight from this browser to api.anthropic.com."}</div>
     </>
   );

@@ -23,6 +23,7 @@ import { captureCloseup, captureViews, contactSheet, type Capture } from "./rend
 import { callReviewer, ReviewError } from "./reviewer";
 import { verdictOf } from "./session";
 import type { Brief, Finding, ReviewProgress, ReviewResult } from "./types";
+import { asksForReview } from "../asks";
 
 export { ReviewSession, designerReport, verdictOf } from "./session";
 export { REVIEW_TOOL, ReviewInput } from "./tool";
@@ -139,6 +140,7 @@ export async function runReview(req: ReviewRequest, deps: ReviewDeps): Promise<R
     views,
     earlier: req.earlier,
     changes: req.since !== undefined ? changesText(req.since, d.source) : undefined,
+    asks: req.scope?.length ? undefined : asksForReview(),
     focus: req.focus,
     scope: req.scope,
     closeup: async ({ parts, view, section, why }) => {

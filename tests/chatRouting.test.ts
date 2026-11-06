@@ -329,3 +329,39 @@ describe("keeping the design model's cache", () => {
     expect(api.dropped).toEqual([]);
   });
 });
+
+describe("the speed chosen beside Send", () => {
+  /** the effort each request runs at: the last mark inside the conversation, else the request's own */
+  const effortOf = (b: (typeof api.requests)[number]) =>
+    (b.messages as { role: string; output_config?: { effort: string } }[]).filter((m) => m.role === "system").at(-1)?.output_config?.effort ?? b.output_config?.effort;
+
+  it("Quick thinks briefly on every step, past the few a small change usually gets", async () => {
+    settings.useSettings.setState({ speed: "quick" });
+    useApi([{ tool: "get_design" }, { tool: "get_design" }, { tool: "get_design" }, { tool: "get_design" }, { tool: "get_design" }, { text: "Added it." }], { route: "quick" });
+    await chat.sendMessage("add a battery compartment to the base");
+    expect(api.requests).toHaveLength(6);
+    expect(api.requests.map(effortOf)).toEqual(["low", "low", "low", "low", "low", "low"]);
+    expect(api.requests.every((r) => r.model === "claude-opus-5-5")).toBe(true);
+    expect(costs()[0].route).toMatchObject({ by: "you", why: "you chose Quick" });
+  });
+
+  it("Quick leaves a question the router sends to the quick model as it is", async () => {
+    settings.useSettings.setState({ speed: "quick" });
+    useApi([{ text: "40 mm." }], { route: "quick" });
+    await chat.sendMessage("how wide is the base?");
+    expect(api.requests[0].model).toBe("claude-haiku-5-5");
+    expect(costs()[0].route).toMatchObject({ quick: true, by: "router" });
+  });
+
+  it("Thorough puts even a question on the design model without asking the router, thinking hardest first", async () => {
+    settings.useSettings.setState({ speed: "thorough" });
+    useApi([{ tool: "get_design" }, { text: "The base is 40 mm wide." }], { route: "quick" });
+    await chat.sendMessage("how wide is the base?");
+    expect(api.routerRequests).toHaveLength(0);
+    expect(api.requests.map((r) => r.model)).toEqual(["claude-opus-5-5", "claude-opus-5-5"]);
+    expect(api.requests.map(effortOf)).toEqual(["max", "high"]);
+    // the request's own effort stays as set, so the cache holds
+    expect(api.requests.map((r) => r.output_config?.effort)).toEqual(["high", "high"]);
+    expect(costs()[0].route).toMatchObject({ quick: false, by: "you", why: "you chose Thorough" });
+  });
+});

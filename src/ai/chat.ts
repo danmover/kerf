@@ -12,7 +12,7 @@ import { useView } from "../app/view";
 import { drawingContext } from "../drawing/engine";
 import { commitSource, useProject, endPreview } from "../app/project";
 import { systemPrompt } from "./prompt";
-import { TOOL_DEFS, TOOL_TITLES, runTool, modelSummary, reportSummary, briefSummary, type AskOption, type ToolOutcome } from "./tools";
+import { TOOL_DEFS, TOOL_TITLES, runTool, kernelGeo, modelSummary, reportSummary, briefSummary, type AskOption, type ToolOutcome } from "./tools";
 import { paramEdits, upsertDecision, applySpanEdits, type SetMap } from "../core/decisions";
 import { fmtNum } from "../lang/values";
 import { shotOf, changeShots, type ChangeShots } from "../app/changeShots";
@@ -36,7 +36,8 @@ import { configureWarm, requestFailed, requestFinished, requestStarted, stopWarm
 import { pause, retryWait } from "./retry";
 import { COMPACT_BETA, COMPACT_INSTRUCTIONS, MIN_COMPACT_AT, RETRY_GROWTH, SUMMARY_INPUT_MAX, afterCut, compactionUsage, cutPoints, hasCompaction, keepTokens, messageTokens, planCut, planOutline, promptTooLong, userMessagesText, type Cut } from "./compact";
 import { costOf, roughTokens, type Usage } from "../agents/pricing";
-import { STEP_EFFORT_BETA, hasEffortMarks, indexAfter, markEffort, messageBefore, stepEffort, withoutEffortMarks } from "./stepEffort";
+import { STEP_EFFORT_BETA, hasEffortMarks, indexAfter, markEffort, messageBefore, stepEffort, thoroughEffort, withoutEffortMarks } from "./stepEffort";
+import { asksState, beginAsks, clearAsks, remeasure, type AskResult } from "./asks";
 import { webTools, webActivity, describeWebCall, citedSources, isWebTool, isPausedTurn, flattenServerTools, echoContent, isWebToolError, isServerBlockError, type WebActivity } from "./web";
 
 /** A file the user attached to a message; it is also kept as a reference in the brief. */
@@ -92,6 +93,8 @@ export type ChatItem =
     }
   /** follow-ups Claude offers as one-click chips */
   | { kind: "suggest"; id: string; options: { label: string; prompt: string }[] }
+  /** what the user asked for in a message, as Kerf last measured it (see asks.ts) */
+  | { kind: "asks"; id: string; asks: AskResult[]; unasked: string[] }
   /** what a turn cost, which model answered it and why, and what Kerf saved */
   | {
       kind: "cost";
@@ -231,6 +234,8 @@ export async function loadChat(projectId: string) {
   );
   lastEditedSource = sourceSeen = null;
   quickLog = [];
+  clearAsks();
+  asksCard = "";
   // a choice card left open in a previous session is still answerable
   const open = savedPending && items.some((i) => i.id === savedPending.itemId && i.kind === "choice" && !i.chosen) ? savedPending : null;
   set({ projectId, items, busy: false, pendingChoice: open, briefSeen });
@@ -338,6 +343,8 @@ export async function clearChat() {
   flatServer = false;
   lastEditedSource = sourceSeen = null;
   quickLog = [];
+  clearAsks();
+  asksCard = "";
   set({ items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
   const { projectId } = get();
@@ -353,6 +360,8 @@ export function resetChat() {
   flatServer = false;
   lastEditedSource = sourceSeen = null;
   quickLog = [];
+  clearAsks();
+  asksCard = "";
   set({ projectId: null, items: [], busy: false, pendingChoice: null, briefSeen: null });
   quietly(resetPlan);
 }
@@ -1138,8 +1147,22 @@ function estimatePrompt(): number {
   return roughTokens(text) + images * 1600;
 }
 
-/** Which model a turn needs: the design model, unless the turn only reads the design. */
+/** Which model a turn needs, and how hard it works: the speed chosen beside Send, then the routing rules. */
 async function chooseRoute(anthropic: Anthropic, facts: TurnFacts | undefined, signal: AbortSignal): Promise<Route> {
+  // Thorough: the design model for everything, quick questions included
+  if (useSettings.getState().speed === "thorough") return withSpeed(designRoute());
+  return withSpeed(await routeFor(anthropic, facts, signal));
+}
+
+/** A route as the speed chosen beside Send changes it. A quick answer from Haiku stays as it is. */
+function withSpeed(r: Route): Route {
+  const speed = useSettings.getState().speed;
+  if (r.quick || speed === "normal") return r;
+  return { ...r, small: speed === "quick", speed, why: speed === "quick" ? "you chose Quick" : "you chose Thorough", by: "you" };
+}
+
+/** Which model a turn needs: the design model, unless the turn only reads the design. */
+async function routeFor(anthropic: Anthropic, facts: TurnFacts | undefined, signal: AbortSignal): Promise<Route> {
   const s = useSettings.getState();
   if (isOpenAIModel(s.model)) return designRoute("using the selected OpenAI model");
   if (!facts) return designRoute();
@@ -1303,6 +1326,10 @@ async function runLoop(opts: LoopOptions = {}) {
   }
   const session = new ReviewSession(settings.reviewRounds);
   const reviewItems: string[] = [];
+  // a new message is measured against the design as it is now; an answer to Claude's question or "continue" carries on
+  const fresh = !!opts.facts && !opts.facts.answersChoice && !/^(?:ok[, ]+)?(?:continue|go on|keep going|carry on)\b/i.test(opts.facts.text.trim());
+  beginAsks(useDesign.getState().model, !fresh);
+  if (fresh) asksCard = "";
   const system = systemBlocks();
   let historyStart = history.length;
   // what this turn costs, from every request made while it runs (the router, reviews and agents included)
@@ -1338,6 +1365,9 @@ async function runLoop(opts: LoopOptions = {}) {
       }
     }
     if (stale()) return;
+    // a retry or an answered question keeps the speed chosen beside Send
+    if (opts.route) route = withSpeed(route);
+    if (route.speed === "thorough") session.maxRounds = 3;
     routeNote ??= { model: route.model, quick: route.quick, why: route.why, by: route.by };
     // models that have answered in this run: their later steps are follow-ups (see stepEffort)
     const answered = new Set<string>();
@@ -1346,7 +1376,7 @@ async function runLoop(opts: LoopOptions = {}) {
       if (!hasMessage(blocks)) return;
       // a message added while Claude works is thought through like the start of a reply
       answered.clear();
-      if (route.small) route = { ...route, small: false };
+      if (route.small && route.speed !== "quick") route = { ...route, small: false };
       if (!route.quick) return;
       const why = "you added a message while it worked";
       route = designRoute(why, "rule");
@@ -1355,7 +1385,7 @@ async function runLoop(opts: LoopOptions = {}) {
     for (let step = 0; step < settings.maxSteps; step++) {
       if (stale()) return;
       // a small change that is still going after a few steps was not small: back to the usual effort and review
-      if (route.small && step >= SMALL_STEPS) route = { ...route, small: false };
+      if (route.small && route.speed !== "quick" && step >= SMALL_STEPS) route = { ...route, small: false };
       // what the user sent since the last request was built (while the model was chosen, or a review ran) goes with this one
       const lastMsg = history[history.length - 1];
       if (lastMsg?.role === "user" && typeof lastMsg.content !== "string") {
@@ -1396,7 +1426,8 @@ async function runLoop(opts: LoopOptions = {}) {
 
       // the first step of a reply thinks at the effort set in Settings, later ones at medium: set by a mark inside
       // the conversation, so the cache stays valid; a mark before this turn's own message moves where the turn starts
-      const stepAt = r.small ? "low" : stepEffort(r.effort, !answered.has(r.model), useSettings.getState().fasterFollowUps);
+      const first = !answered.has(r.model);
+      const stepAt = r.small ? "low" : r.speed === "thorough" ? thoroughEffort(r.effort, first) : stepEffort(r.effort, first, useSettings.getState().fasterFollowUps);
       if (marksOn(unsupported(r.model)) && markEffort(history, stepAt, r.effort) && historyStart > history.length - 2) historyStart++;
 
       let sentReq: { final: Awaited<ReturnType<typeof streamOnce>>["final"]; params: Record<string, unknown> };
@@ -1524,7 +1555,7 @@ async function runLoop(opts: LoopOptions = {}) {
           continue;
         }
       }
-      if (final.stop_reason === "end_turn" && edits && !route.small && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale))) continue;
+      if (final.stop_reason === "end_turn" && edits && !route.small && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale, reviewMode(route)))) continue;
       const uses = content.filter((b): b is Extract<BetaContentBlock, { type: "tool_use" }> => b.type === "tool_use");
       // rows for calls a fallback discarded never run
       const dropped = new Set([...live.toolRows.values()].filter((id) => !uses.some((u) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id)));
@@ -1582,6 +1613,9 @@ async function runLoop(opts: LoopOptions = {}) {
           ask = { toolUseId: u.id, outcome };
           continue;
         }
+        // the checklist card stands for record_asks; it is updated after every change
+        if (u.name === "record_asks" && !outcome.isError) set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
+        syncAsks();
         if (outcome.suggest) {
           set((s) => ({ items: s.items.filter((i) => i.id !== itemId) }));
           offered = nid();
@@ -1635,7 +1669,7 @@ async function runLoop(opts: LoopOptions = {}) {
       if (offered && uses.every((u) => u.name === "suggest_next_steps")) {
         // this is where the turn ends, so Claude's changes are reviewed here; the chips go if Claude has more to do,
         // as they do when the user changed the plan or sent a message meanwhile (any review waits for the end)
-        const more = steer.length > 0 || (edits && !route.small && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale)));
+        const more = steer.length > 0 || (edits && !route.small && step < settings.maxSteps - 2 && (await autoReview(session, reviewItems, startSource, stale, reviewMode(route))));
         if (!more) break;
         const chips = offered;
         set((st) => ({ items: st.items.filter((i) => i.id !== chips) }));
@@ -1677,6 +1711,7 @@ async function runLoop(opts: LoopOptions = {}) {
         persist();
       });
     }
+    void settleAsks(stale);
     // what the turn cost and which model answered, under the reply
     if (box.spend.cost > 0 && routeNote) push({ kind: "cost", id: nid(), spend: box.spend, route: routeNote, historyStart });
     // Claude has now seen the brief as it stands
@@ -1722,8 +1757,7 @@ async function resumeWithSteering() {
 }
 
 /** Review Claude's own changes when it is about to finish without having had them reviewed. Returns true when Claude should continue. */
-async function autoReview(session: ReviewSession, reviewItems: string[], startSource: string, stale: () => boolean): Promise<boolean> {
-  const mode = useSettings.getState().selfReview;
+async function autoReview(session: ReviewSession, reviewItems: string[], startSource: string, stale: () => boolean, mode = useSettings.getState().selfReview): Promise<boolean> {
   if (mode === "off" || !session.canReview || !claudeRoute()) return false;
   const now = useDesign.getState().source;
   const base = session.lastSource ?? startSource;
@@ -1744,6 +1778,39 @@ async function autoReview(session: ReviewSession, reviewItems: string[], startSo
   persist();
   // nothing to act on: the reply stands, and Claude knows about the review next turn
   return r.verdict !== "pass";
+}
+
+/** Thorough reviews every change; otherwise the Settings choice. */
+const reviewMode = (r: Route) => (r.speed === "thorough" ? "always" : useSettings.getState().selfReview);
+
+/** The id of the checklist card for the message in hand, so new measurements update it in place. */
+let asksCard = "";
+let asksShown = -1;
+
+/** Show the newest measurement of the user's asks: the card is added when Claude records them and updated after each change. */
+function syncAsks() {
+  const a = asksState();
+  if (a.version === asksShown) return;
+  asksShown = a.version;
+  if (!a.asks.length) return;
+  const card = { asks: a.results.map((r) => ({ ...r })), unasked: [...a.unasked] };
+  if (asksCard && get().items.some((i) => i.id === asksCard)) patch(asksCard, (it) => (it.kind === "asks" ? { ...it, ...card } : it));
+  else {
+    asksCard = nid();
+    push({ kind: "asks", id: asksCard, ...card });
+  }
+}
+
+/** After a run, measure the asks once more if the design changed since (an agents' build, a change with no checks). */
+async function settleAsks(isStale: () => boolean) {
+  const a = asksState();
+  if (!a.asks.length || a.measuredOn === useDesign.getState().source) return;
+  const s = await whenChecked(30_000).catch(() => null);
+  if (!s || isStale() || s.kernelStatus === "error") return;
+  await remeasure({ source: s.source, model: s.model }, kernelGeo);
+  if (isStale()) return;
+  syncAsks();
+  persist();
 }
 
 /** The failing checks of the current report, by id. */
