@@ -527,6 +527,11 @@ const libFuncs: Record<string, LibFn> = {
     c.hal.spend(Math.round(c.hal.fcpu * 104e-6));
     return v;
   }),
+  analogReadMilliVolts: def("analogReadMilliVolts", ["u8"], "ulong", 30, ([p], c) => {
+    const v = c.hal.analogMilliVolts(p);
+    c.hal.spend(Math.round(c.hal.fcpu * 104e-6));
+    return v;
+  }),
   analogWrite: def("analogWrite", ["u8", "int"], "void", 70, ([p, v], c) => c.hal.analogWrite(p, v)),
   analogReference: def("analogReference", ["u8"], "void", 10, ([m], c) => c.hal.analogReference(m)),
   millis: def("millis", [], "ulong", 30, (_v, c) => c.hal.millis()),

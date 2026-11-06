@@ -393,14 +393,21 @@ export class SimHal implements Hal {
   analogRead(pin: number): number {
     if (this.adc.done < Infinity && this.adc.adcsra & ADATE)
       this.fault("analogRead() while the ADC runs free from its registers: on the chip it rewrites ADMUX under the interrupt, and both get the wrong channel's readings", "firmware", 0);
-    // the ESP32 core takes GPIO numbers (A0 is GPIO26 on the Feather); the AVR core takes A0.. or 0..
-    const ch = this.board.arch === "esp32" ? this.board.analog.indexOf(pin) : pin >= this.board.analog[0] ? pin - this.board.analog[0] : pin;
-    const p = this.board.analog[ch];
+    // the ESP32 core takes GPIO numbers (A0 is GPIO26 on the Feather, BATT_MONITOR 35); the AVR core takes A0.. or 0..
+    const esp = this.board.arch === "esp32";
+    const p = esp ? ((this.board.adcPins ?? this.board.analog).includes(pin) ? pin : undefined) : this.board.analog[pin >= this.board.analog[0] ? pin - this.board.analog[0] : pin];
     if (p === undefined) {
-      this.fault(`analogRead(${pin}): the ${this.board.name} has no analog input ${pin}`, "firmware", 0);
+      this.fault(
+        esp
+          ? `analogRead(${pin}): GPIO${pin} is not an ADC pin on the ${this.board.name} (it reads ${(this.board.adcPins ?? this.board.analog).join(", ")})`
+          : `analogRead(${pin}): the ${this.board.name} has no analog input ${pin}`,
+        "firmware",
+        0,
+      );
       return 0;
     }
-    const vref = this.analogRef === 3 ? 1.1 : (this.plant?.vref() ?? this.board.adcRefV);
+    // the ESP32's ADC measures against its own reference, not its supply
+    const vref = this.analogRef === 3 ? 1.1 : esp ? this.board.adcRefV : (this.plant?.vref() ?? this.board.adcRefV);
     const v = this.plant?.analogVolts(p, this.cyc);
     const max = (1 << this.board.adcBits) - 1;
     if (v === undefined) {
@@ -409,6 +416,12 @@ export class SimHal implements Hal {
     }
     const noise = (this.rng() + this.rng() - 1) * 0.7;
     return Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+  }
+
+  /** the ESP32 core's analogReadMilliVolts(): the reading in millivolts, through the chip's calibration */
+  analogMilliVolts(pin: number): number {
+    const max = (1 << this.board.adcBits) - 1;
+    return Math.round((this.analogRead(pin) / max) * this.board.adcRefV * 1000);
   }
 
   analogWrite(pin: number, v: number): void {

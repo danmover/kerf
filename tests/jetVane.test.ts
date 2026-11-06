@@ -10,7 +10,9 @@ import { generateFirmware } from "../src/machine/firmware";
 import { evaluate } from "../src/lang/evaluator";
 import { EscFan, Lsm6dsox } from "../src/sim/engine/devices";
 import { SimHal } from "../src/sim/engine/hal";
-import { FEATHER_ESP32_V2, loadFirmware } from "../src/sim/mcu";
+import { FEATHER_ESP32_V2, Halt, loadFirmware } from "../src/sim/mcu";
+import { Plant } from "../src/sim/engine/plant";
+import { Bench } from "../src/sim/worlds/bench";
 import { runSpec } from "../src/sim/build";
 import { FRAME, type MechBody, type MechModel, type MechVane } from "../src/sim/mech/model";
 import type { M3, V3 } from "../src/sim/mech/solver";
@@ -208,6 +210,52 @@ describe("balance firmware", () => {
     expect(lf.staticRam).toBeLessThan(FEATHER_ESP32_V2.ramBytes / 10);
   });
 
+  it("reads every ADC pin of the Feather, the battery monitor too", { timeout: 30_000 }, () => {
+    const w = bench.scenarios![0].spec.world;
+    if (w.kind !== "bench") throw new Error("not a bench");
+    const hal = new SimHal(FEATHER_ESP32_V2, { seed: 1 });
+    new Plant(bench.machine!, "fc", FEATHER_ESP32_V2, hal, new Bench(bench.machine!, w.bench, "expected"), { rng: () => 0.5 });
+    hal.endCyc = Math.round(0.5 * FEATHER_ESP32_V2.fcpu);
+    const sketch = `void setup() { Serial.begin(115200); }
+void loop() {
+  delay(200);
+  Serial.print("batt ");
+  Serial.println(analogReadMilliVolts(BATT_MONITOR) * 2);
+  Serial.print("adc ");
+  Serial.print(analogRead(32));
+  Serial.print(" ");
+  Serial.print(analogRead(33));
+  Serial.print(" ");
+  Serial.print(analogRead(37));
+  Serial.print(" ");
+  Serial.println(analogRead(A2));
+}`;
+    const fw = loadFirmware({ "t.ino": sketch }, FEATHER_ESP32_V2, hal).fw;
+    hal.bindVectors(fw);
+    fw.reset();
+    try {
+      fw.call("setup");
+      for (;;) {
+        const c0 = hal.cyc;
+        fw.call("loop");
+        if (hal.cyc - c0 < hal.stepCycles) hal.spend(hal.stepCycles - (hal.cyc - c0));
+      }
+    } catch (e) {
+      if (!(e instanceof Halt)) throw e;
+    }
+    hal.finishSerial();
+    expect(hal.faults).toEqual([]);
+    const out = hal.serial.filter((l) => l.dir === "out").map((l) => l.text);
+    // no cell on BAT and the board fed on its 5 V pin: the charger's output sits near 4.2 V
+    const batt = Number(/batt (\d+)/.exec(out.join("\n"))?.[1]);
+    expect(batt).toBeGreaterThan(4000);
+    expect(batt).toBeLessThan(4400);
+    expect(out.some((l) => /^adc \d+ \d+ \d+ \d+$/.test(l))).toBe(true);
+    // GPIO5 (SCK) has no ADC channel
+    hal.analogRead(5);
+    expect(hal.faults.map((f) => f.msg).join()).toMatch(/GPIO5 is not an ADC pin/);
+  });
+
   it("arms the ESC, spools the fan to the thrust asked for, and stops it when the e-stop is pressed", { timeout: 30_000 }, () => {
     const def = bench.scenarios![0];
     const v = runSpec({ ...def.spec, variants: ["expected"] }, bench.machine!, bench.name).variants[0];
@@ -322,6 +370,66 @@ describe("balance firmware", () => {
     expect(Number(k?.[1])).toBeGreaterThan(0.75);
     expect(Number(k?.[1])).toBeLessThan(1.3);
     expect(v.results["cell.peak_force"]).toBeGreaterThan(0.2);
+  });
+
+  it("measures the rotor's momentum and its direction in the coupling test", { timeout: 30_000 }, () => {
+    // ROTOR_DIR set the wrong way round: the test must catch it
+    const m = design(
+      `scenario "Coupling test" {
+  world: sim.bench()
+  duration: 19.5s
+  console: [sim.type("tare", at: 2.9s), sim.type("arm", at: 3s), sim.type("t 70", at: 3.1s), sim.type("couple", at: 6s)]
+}`,
+      ", rotor_dir: -1",
+    );
+    const v = runSpec({ ...m.scenarios![0].spec, mech: gimbal({ cell: true }), variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.error).toBeUndefined();
+    expect(v.results.faults).toBe(0);
+    const text = v.serial.map((l) => l.text).join("\n");
+    expect(text).toMatch(/coupling: pitch nudge \+4 deg reads/);
+    const h = /rotor momentum: (-?[\d.]+) mN m s at 70 % thrust, predicted (-?[\d.]+) \(fit r2 ([\d.]+)\)/.exec(text);
+    expect(h).not.toBeNull();
+    const [meas, pred, r2] = [Number(h![1]), Number(h![2]), Number(h![3])];
+    // the sim's rotor is the design's, so the measured momentum is the predicted one, the other sign
+    expect(meas * pred).toBeLessThan(0);
+    expect(Math.abs(meas) / Math.abs(pred)).toBeGreaterThan(0.75);
+    expect(Math.abs(meas) / Math.abs(pred)).toBeLessThan(1.3);
+    expect(r2).toBeGreaterThan(0.8);
+    expect(text).toMatch(/the rotor turns the other way: rotor 1, then save/);
+    // the fan goes back to 0 at the end, and winds down
+    expect(text).toMatch(/fan back to 0/);
+    expect(v.results["edf.thrust"]).toBeLessThan(1);
+  });
+
+  it("prints the step response while holding, with gyro rates and the load cell in the log", { timeout: 30_000 }, () => {
+    const m = design(`scenario "Steps" {
+  world: sim.bench()
+  duration: 13s
+  console: [sim.type("arm", at: 3s), sim.type("t 70", at: 3.1s), sim.type("hold", at: 3.2s), sim.type("step roll 5", at: 7s), sim.type("step pitch -5", at: 10s)]
+}`);
+    const v = runSpec({ ...m.scenarios![0].spec, mech: gimbal(), variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.error).toBeUndefined();
+    expect(v.results.faults).toBe(0);
+    const lines = v.serial.map((l) => l.text);
+    for (const [axis, deg] of [
+      ["roll", "5.0"],
+      ["pitch", "-5.0"],
+    ]) {
+      const l = lines.find((x) => x.startsWith(`step ${axis} ${deg} deg:`)) ?? "";
+      const r = /rise ([\d.]+) s, overshoot (\d+) %, within 10 % after ([\d.]+) s, error (-?[\d.]+) deg/.exec(l);
+      expect(r, l).not.toBeNull();
+      expect(Number(r![1])).toBeLessThan(0.6);
+      expect(Number(r![2])).toBeLessThan(40);
+      expect(Number(r![3])).toBeLessThan(1.5);
+      expect(Math.abs(Number(r![4]))).toBeLessThan(0.5);
+    }
+    // the log ran through each step: roll, pitch, gx, gy, four vanes, thrust, cell
+    expect(lines.some((l) => l.startsWith("log: roll, pitch"))).toBe(true);
+    const rows = lines.filter((l) => /^-?[\d.]+(,-?[\d.]+){9}$/.test(l)).map((l) => l.split(",").map(Number));
+    expect(rows.length).toBeGreaterThan(150);
+    // the roll step shows in the roll rate column
+    expect(Math.max(...rows.map((r) => Math.abs(r[2])))).toBeGreaterThan(5);
+    expect(rows.every((r) => r[8] === 70)).toBe(true);
   });
 
   it("cuts the fan when the IMU stops answering", { timeout: 30_000 }, () => {
