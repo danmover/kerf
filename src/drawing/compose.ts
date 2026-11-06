@@ -8,7 +8,10 @@ import type { Edge2, ViewResult } from "../kernel/drawing";
 import { vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
 import { MATERIALS, materialDensity } from "../library/standards";
 import { FINISHES, resolveFinish } from "../library/materials";
-import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DimDef, type DimStyle } from "./dims";
+import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DatumMark, type DimDef, type DimStyle } from "./dims";
+import { datumExtent, fcfHeight, fcfText, fcfWidth, faceName, inkDatum, inkFcf } from "./gdt";
+import { processFamily } from "./intent";
+import { applyXformsToDir } from "../kernel/recipe";
 import { partFeatures } from "./features";
 import { bendLabel, bendRows, bendWay, flatShift } from "./flat";
 import { arcPoints, clipPolylineToCircle, hatchLines } from "./hatch";
@@ -67,7 +70,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
   for (const l of bom) for (const id of l.ids) itemOf.set(id, l.item);
 
   // notes and tables in the bottom-left corner
-  const notes = defaultNotes(spec, plan);
+  const notes = defaultNotes(spec, plan, built);
   const table = dataTable(plan);
 
   // ---- sheet size and scale
@@ -76,6 +79,9 @@ export function composeSheet(inp: ComposeInput): Sheet {
   const scales = spec.scale ? [spec.scale] : STANDARD_SCALES;
   type Choice = { size: SheetSize; w: number; h: number; scale: number; iso: number; res: LayoutResult; items: LayoutItem[]; st: DimStyle; fixed: Box[] };
   let chosen: Choice | null = null as Choice | null;
+  /** the first readable choice, kept while a bigger sheet is tried for small features */
+  let roomy: Choice | null = null as Choice | null;
+  const minFeature = Math.min(Infinity, ...dims.filter((d) => d.kind === "callout" && d.circle && d.meta.auto).map((d) => 2 * d.circle!.r));
   const principal = plan.views.filter((v) => gridFor(v, plan, spec));
   const maxExtent = Math.max(1, ...principal.map((v) => Math.max(...[0, 1].map((k) => lext[plan.views.indexOf(v)][k + 2] - lext[plan.views.indexOf(v)][k]))));
   for (const size of sizes) {
@@ -101,9 +107,23 @@ export function composeSheet(inp: ComposeInput): Sheet {
       }
     }
     if (!found) continue;
-    chosen = found;
+    if (spec.sheet || spec.scale) {
+      chosen = found;
+      break;
+    }
     const readable = maxExtent * found.scale >= 60 || found.scale >= 2;
-    if (spec.sheet || readable) break;
+    // small holes and bores should come out at least 2 mm across: a sheet up to A2 may be worth it
+    const clear = !minFeature || minFeature * found.scale >= 2;
+    if (!roomy) {
+      chosen = found;
+      if (!readable) continue;
+      if (clear || ["A2", "A1", "A0"].includes(size)) break;
+      roomy = found;
+      continue;
+    }
+    // a bigger sheet only helps when it draws the part bigger
+    if (found.scale > chosen!.scale) chosen = found;
+    if ((clear && found.scale > roomy.scale) || size === "A2") break;
   }
   if (!chosen) {
     // nothing fits: the biggest sheet at the smallest scale, overlapping if it must
@@ -196,8 +216,14 @@ export function composeSheet(inp: ComposeInput): Sheet {
       a: d.meta.a ?? world(d.kind === "callout" ? centre : d.a),
       b: d.meta.b ?? (d.kind === "callout" ? undefined : world(d.b)),
       align: d.kind === "h" || d.kind === "v" || d.kind === "aligned" ? d.kind : undefined,
+      frames: d.frames?.length ? d.frames.map(fcfText) : undefined,
+      datum: d.datum,
+      basic: d.text.boxed || undefined,
     });
   });
+
+  // datum symbols on faces, where they find room
+  if (built.marks.length) inkMarks(ink, built.marks, views, st, fixed, frameBox(w, h));
 
   // balloons
   if (plan.assembly && spec.balloons !== false && bom.length) balloons(ink, plan, views, results, bom, st);
@@ -249,6 +275,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     bom,
     notes,
     warnings,
+    datums: built.datums,
     pending,
     spec,
     titleBox: tb,
@@ -804,13 +831,102 @@ function bomLines(parts: EvalPart[]): BomLine[] {
   return list.map((r, i) => ({ item: i + 1, qty: r.qty, name: r.name, description: r.description, material: r.material, ids: r.ids }));
 }
 
-function defaultNotes(spec: DrawingSpec, plan: DrawingPlan): string[] {
+function defaultNotes(spec: DrawingSpec, plan: DrawingPlan, built: { datums: unknown[]; notes: string[] }): string[] {
   const out = ["ALL DIMENSIONS IN MILLIMETRES."];
   if (/2768|8062/.test(spec.tolerance)) out.push(`UNLESS OTHERWISE STATED, TOLERANCES TO ${spec.tolerance.toUpperCase()}.`);
   else if (spec.tolerance) out.push(`GENERAL TOLERANCES: ${spec.tolerance.toUpperCase()}.`);
-  if (!plan.assembly && plan.parts.some((p) => p.kind === "part")) out.push("REMOVE BURRS AND BREAK SHARP EDGES.");
+  if (built.datums.length) out.push(spec.projection === "third" ? "INTERPRET DIMENSIONS AND TOLERANCES PER ASME Y14.5-2018. BOXED DIMENSIONS ARE BASIC." : "GEOMETRICAL TOLERANCES TO ISO 1101, DATUMS TO ISO 5459. BOXED DIMENSIONS ARE THEORETICALLY EXACT.");
+  const part = !plan.assembly ? plan.parts.find((p) => p.kind === "part") : undefined;
+  if (part) out.push(...processNotes(part));
   if (spec.flat) out.push("FLAT PATTERN SEEN FROM ABOVE: UP BENDS RISE TOWARD THE VIEWER. BEND LINES CHAIN-DOTTED, WITH ANGLES AND INSIDE RADII IN THE BEND TABLE.");
-  return [...out, ...spec.notes.map((n) => n.toUpperCase())];
+  return [...out, ...built.notes, ...spec.notes.map((n) => n.toUpperCase())];
+}
+
+/** What the maker needs to know for the way the part is made. */
+function processNotes(p: EvalPart): string[] {
+  const family = processFamily(p);
+  const set = p.process?.settings ?? {};
+  if (family === "subtractive") return ["BREAK SHARP EDGES 0.2 × 45° MAX AND REMOVE BURRS.", "SURFACE TEXTURE Ra 3.2 µm UNLESS STATED."];
+  if (family === "additive") {
+    const out = ["REMOVE SUPPORT MATERIAL AND BREAK SHARP EDGES."];
+    const b = set.build;
+    if (Array.isArray(b) && b.length === 3 && typeof b[0] === "number") {
+      const up = vnorm(applyXformsToDir(b as V3, p.xf));
+      const axis = up.map(Math.abs).indexOf(Math.max(...up.map(Math.abs)));
+      if (Math.abs(up[axis]) > 0.999) {
+        const layer = typeof set.layer === "number" ? `, ${fmtNum(set.layer)} MM LAYERS` : "";
+        const name = `${up[axis] > 0 ? "+" : "−"}${"XYZ"[axis]}`;
+        out.push(`PRINT ON THE ${faceName([-up[0], -up[1], -up[2]]).toUpperCase()} FACE, BUILDING TOWARD ${name}${layer}.`);
+      }
+    }
+    return out;
+  }
+  if (family === "formative") return ["REMOVE FLASH AND GATE MARKS FLUSH; BREAK SHARP EDGES."];
+  return ["REMOVE BURRS AND BREAK SHARP EDGES."];
+}
+
+/**
+ * Datum symbols on faces seen edge-on: each goes to the first spot along its
+ * edge where the letter (and its frame) clears everything already on the
+ * sheet, trying longer stems further out.
+ */
+function inkMarks(ink: Ink, marks: DatumMark[], views: SheetView[], st: DimStyle, fixed: Box[], frame: Box) {
+  // what is already on the sheet, polylines as their segments so an outline's box doesn't fill its inside
+  const taken: Box[] = [];
+  for (const sh of ink.shapes) {
+    if (sh.key === "border") continue;
+    if (sh.t === "poly") {
+      const p = sh.p;
+      const n = p.length / 2;
+      for (let i = 0; i + 1 < n + (sh.closed ? 1 : 0); i++) {
+        const j = (i + 1) % n;
+        taken.push([Math.min(p[2 * i], p[2 * j]), Math.min(p[2 * i + 1], p[2 * j + 1]), Math.max(p[2 * i], p[2 * j]), Math.max(p[2 * i + 1], p[2 * j + 1])]);
+      }
+    } else taken.push(shapeBox(sh));
+  }
+  const area = inset(frame, 2);
+  const hit = (b: Box) => b[0] < area[0] || b[1] < area[1] || b[2] > area[2] || b[3] > area[3] || fixed.some((f) => f[0] < b[2] && b[0] < f[2] && f[1] < b[3] && b[1] < f[3]) || taken.some((t) => t[0] < b[2] + 0.5 && b[0] < t[2] + 0.5 && t[1] < b[3] + 0.5 && b[1] < t[3] + 0.5);
+  for (const m of marks) {
+    const sv = views[m.view];
+    if (!sv || sv.state !== "ready") continue;
+    const P = (p: [number, number]): [number, number] => [sv.origin[0] + p[0] * sv.scale, sv.origin[1] - p[1] * sv.scale];
+    const A = P(m.a);
+    const B = P(m.b);
+    const ux = m.out[0];
+    const uy = -m.out[1];
+    const fw = m.frame ? fcfWidth(m.frame, st.size) : 0;
+    const fh = fcfHeight(st.size);
+    /** the box of the letter and its frame, beyond the triangle and stem */
+    const region = (x: number, y: number, stem: number): { box: Box; fx: number; fy: number } => {
+      const e = datumExtent(x, y, ux, uy, st.size, stem);
+      // the letter box is the far end of the extent
+      const b = st.size * 1.75;
+      const bx = ux > 0 ? e[2] - b : ux < 0 ? e[0] : (e[0] + e[2]) / 2 - b / 2;
+      const by = uy > 0 ? e[3] - b : uy < 0 ? e[1] : (e[1] + e[3]) / 2 - b / 2;
+      // the frame carries on outward from a side letter, and to the right of a letter above or below
+      const fx = ux < 0 ? bx - 1 - fw : bx + b + 1;
+      const fy = by + b / 2 - fh / 2;
+      const box: Box = [Math.min(bx, fw ? fx : bx), Math.min(by, fy), Math.max(bx + b, fw ? fx + fw : bx + b), Math.max(by + b, fy + fh)];
+      return { box, fx, fy };
+    };
+    let pick: { x: number; y: number; stem: number } | null = null;
+    search: for (const stem of [1.5, 5, 10, 16]) {
+      for (const t of [m.t, 0.5, 0.2, 0.8, 0.35, 0.65, 0.1, 0.9]) {
+        const x = A[0] + (B[0] - A[0]) * t;
+        const y = A[1] + (B[1] - A[1]) * t;
+        if (!hit(region(x, y, stem).box)) {
+          pick = { x, y, stem };
+          break search;
+        }
+      }
+    }
+    pick ??= { x: A[0] + (B[0] - A[0]) * m.t, y: A[1] + (B[1] - A[1]) * m.t, stem: 1.5 };
+    ink.key = `v${m.view}`;
+    const box = inkDatum(ink, pick.x, pick.y, ux, uy, m.letter, st.size, pick.stem);
+    const r = region(pick.x, pick.y, pick.stem);
+    if (m.frame) inkFcf(ink, r.fx, r.fy, m.frame, st.size);
+    taken.push(box, r.box);
+  }
 }
 
 type DataTable = { title: string; rows: [string, string][] };

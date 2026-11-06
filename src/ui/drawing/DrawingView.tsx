@@ -413,6 +413,18 @@ function DimBody({ sheet, dim }: { sheet: Sheet; dim: SheetDim | undefined }) {
       <div className="big">{lines[0]}</div>
       {lines.length > 1 && <div className="lines">{lines.slice(1).join("\n")}</div>}
       <div className="label">{dim.label}</div>
+      {(dim.role || dim.datum || dim.basic || !!dim.frames?.length) && (
+        <div className="section">
+          {dim.role && <div className="label">For: {dim.role.toLowerCase()}</div>}
+          {dim.datum && <div className="label">Datum {dim.datum}: other features are measured from it</div>}
+          {dim.basic && <div className="label">Basic: the frame on its feature holds the tolerance</div>}
+          {dim.frames?.map((f) => (
+            <div key={f} className="lines">
+              {f}
+            </div>
+          ))}
+        </div>
+      )}
       {param && (
         <div className="section">
           <ParamField name={param.name} locked={!!param.locked} value={typeof param.value === "number" ? param.value : NaN} />

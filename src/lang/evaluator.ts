@@ -38,6 +38,7 @@ import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
 import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
+import { GDT_KINDS, type GdtKind } from "../drawing/gdt";
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -2134,6 +2135,7 @@ class Evaluator {
     if (this.opts.skipGeometry) return;
     const spec = defaultSpec(s.name, s.name.replace(/_/g, " "), []);
     spec.auto = false;
+    spec.viewsAuto = false;
     spec.locked = locked;
     spec.span = s.span;
     spec.views = [];
@@ -2217,6 +2219,11 @@ class Evaluator {
                 break;
               case "flat_pattern":
                 spec.flat = bool(v, it.span, "flat_pattern");
+                break;
+              case "gdt":
+                if (v === "auto") spec.gdt = undefined;
+                else if (typeof v === "boolean") spec.gdt = v;
+                else throw new EvalError('gdt should be true, false or "auto" (datums and geometric tolerances for machined, cast, moulded and sheet parts)', it.span);
                 break;
               case "views": {
                 if (!Array.isArray(v)) throw new EvalError('views should be a list such as ["front", "top", "right", "iso"]', it.span);
@@ -2328,6 +2335,16 @@ class Evaluator {
                 spec.tols.push({ id: a.str("id"), tol: t, fit, span: it.call.span });
                 break;
               }
+              case "gdt": {
+                const kind = a.str("kind", "position").toLowerCase();
+                if (!(GDT_KINDS as readonly string[]).includes(kind)) ctx().error(`gdt() kind should be one of ${GDT_KINDS.map((k) => `"${k}"`).join(", ")}`);
+                const t = a.value("tol");
+                if (typeof t !== "number" || !(t > 0)) ctx().error('gdt() needs a tolerance in mm, e.g. gdt("front:4-holes-o3.4", "position", 0.3, "A B C")');
+                const datums = a.has("datums") ? a.str("datums").toUpperCase().split(/[\s|,]+/).filter(Boolean) : [];
+                if (datums.some((d) => !/^[A-Z]{1,2}$/.test(d))) ctx().error('gdt() datums should be letters such as "A B C"');
+                spec.frames.push({ id: a.str("id"), kind: kind as GdtKind, tol: t as number, datums, mmc: a.has("mmc") ? a.bool("mmc") : undefined, span: it.call.span });
+                break;
+              }
               case "note":
                 spec.notes.push(a.str("text"));
                 break;
@@ -2344,7 +2361,10 @@ class Evaluator {
       if (!viewsProp && !spec.views.length) spec.views = [{ kind: "top" }];
     }
     if (viewsProp) spec.views = [...(viewsProp as ViewKind[]).filter((k) => !spec.views.some((v) => v.kind === k)).map((kind) => ({ kind })), ...spec.views];
-    if (!spec.views.length && !spec.sections.length) spec.views = defaultSpec("", "", []).views;
+    if (!spec.views.length && !spec.sections.length) {
+      spec.views = defaultSpec("", "", []).views;
+      spec.viewsAuto = true;
+    }
     if (spec.views.length + spec.sections.length + spec.details.length > 12) throw new EvalError("A drawing is limited to 12 views", s.span);
     this.drawings.push(spec);
   }
