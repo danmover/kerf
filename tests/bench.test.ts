@@ -11,7 +11,7 @@ import type { GeoQuery } from "../src/lang/values";
 import { BENCH, CORE } from "../src/bench/cases";
 import { grade, overall, type BenchView } from "../src/bench/grade";
 import { benchMarkdown, benchTotals } from "../src/bench/report";
-import type { BenchRun } from "../src/bench/run";
+import { COMPARE, type BenchRun } from "../src/bench/run";
 import { templateById } from "../src/demos/templates";
 import { initKernel } from "./helpers/kernel";
 
@@ -116,5 +116,25 @@ describe("marking", () => {
     expect(md).toContain("1 of 2 asks passed every mark");
     expect(md).toContain("| ✗ Vent slots in the lid | small | 80 s | $0.600 | 7 | 1/2 | The lid has openings (14456 < 14400) |");
     expect(JSON.parse(md.split("```json\n")[1].split("\n```")[0]).cases).toHaveLength(2);
+  });
+  it("compares set-ups side by side: each one's totals, then every ask under each", () => {
+    const one = (id: string, setup: string, passed: boolean, seconds: number, cost: number) => ({ id, title: id === "walls-3mm" ? "Enclosure walls to 3 mm" : "Vent slots in the lid", kind: "small" as const, message: "", passed, marks: [{ label: "Measured", ok: passed, detail: passed ? "3 = 3" : "2 != 3" }], seconds, cost, requests: 3, outputTokens: 2000, models: [], asks: { pass: 1, fail: 0, open: 0, error: 0 }, reviews: 0, questions: 0, reply: "", setup });
+    const run: BenchRun = {
+      started: Date.UTC(2026, 10, 6, 3, 0),
+      model: "claude-opus-5-5",
+      effort: "high",
+      speed: "normal",
+      setups: COMPARE,
+      cases: [one("walls-3mm", "opus", true, 40, 0.3), one("walls-3mm", "opus-lean", true, 30, 0.25), one("walls-3mm", "sonnet", false, 20, 0.1), one("lid-vents", "opus", true, 60, 0.5)],
+    };
+    expect(benchTotals(run, "opus")).toMatchObject({ cases: 2, passed: 2 });
+    expect(benchTotals(run, "sonnet")).toMatchObject({ cases: 1, passed: 0 });
+    const md = benchMarkdown(run);
+    expect(md).toContain("3 of 4 runs passed every mark");
+    expect(md).toContain("| Opus 5.5, slimmer prompt | 1 of 1 | 1 of 1 | 30 s | $0.250 | 3 |");
+    expect(md).toContain("| Ask | Opus 5.5 | Opus 5.5, slimmer prompt | Sonnet 5.5 |");
+    expect(md).toContain("| Enclosure walls to 3 mm | ✓ 40 s, $0.300 | ✓ 30 s, $0.250 | ✗ 20 s, $0.100 |");
+    expect(md).toContain("| Vent slots in the lid | ✓ 60 s, $0.500 | not run | not run |");
+    expect(md).toContain("| ✗ Enclosure walls to 3 mm | Sonnet 5.5 | small | 20 s | $0.100 | 3 | 1/1 | Measured (2 != 3) |");
   });
 });

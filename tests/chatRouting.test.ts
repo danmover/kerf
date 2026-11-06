@@ -33,7 +33,7 @@ vi.mock("../src/app/project", async () => {
   return { commitSource: () => undefined, endPreview: () => undefined, setUndoGuard: () => undefined, realSource: () => "", undo: () => false, redo: () => false, useProject: create(() => ({ current: { id: "p1" }, versions: [] })) };
 });
 vi.mock("../src/agents/orchestrator", () => ({ isBuilding: () => false }));
-vi.mock("../src/ai/prompt", () => ({ systemPrompt: () => "You design mechanical parts." }));
+vi.mock("../src/ai/prompt", () => ({ systemPrompt: (o?: { lean?: boolean }) => (o?.lean ? "You design mechanical parts, briefly." : "You design mechanical parts.") }));
 vi.mock("../src/ai/tools", () => ({
   TOOL_DEFS: mem.tools,
   TOOL_TITLES: {},
@@ -363,5 +363,46 @@ describe("the speed chosen beside Send", () => {
     // the request's own effort stays as set, so the cache holds
     expect(api.requests.map((r) => r.output_config?.effort)).toEqual(["high", "high"]);
     expect(costs()[0].route).toMatchObject({ quick: false, by: "you", why: "you chose Thorough" });
+  });
+});
+
+describe("what a chat starts with", () => {
+  const system = (i: number) => (api.requests[i].system as { text: string }[])[0].text;
+  const tools = (i: number) => (api.requests[i].tools as { name: string }[]).map((t) => t.name);
+
+  it("gives Claude the lessons saved before the chat opened, and keeps one saved during it for the next chat", async () => {
+    settings.updateSettings({ lessons: ["Prints in PETG on a 0.4 mm nozzle."], useLessons: true });
+    await chat.clearChat();
+    useApi([{ text: "Added it." }, { text: "Added another." }, { text: "Added a third." }]);
+    await chat.sendMessage("add a battery compartment to the base");
+    expect(system(0)).toBe("You design mechanical parts.\n\n## Lessons this user taught you\nRules the user gave you when they corrected you, in this chat or earlier ones. Follow them unless the user now asks otherwise, and save a corrected one with save_lesson's replaces.\n- Prints in PETG on a 0.4 mm nozzle.");
+    // saved mid-chat: the prompt, and so the cache and the thinking, stay as they were
+    settings.updateSettings({ lessons: [...settings.useSettings.getState().lessons, "Use M4 screws for anything that carries weight."] });
+    await chat.sendMessage("add a second compartment beside it");
+    expect(system(1)).toBe(system(0));
+    await chat.clearChat();
+    await chat.sendMessage("add a battery compartment to the base");
+    expect(system(2)).toContain("- Use M4 screws for anything that carries weight.");
+  });
+
+  it("leaves the lessons out while they are switched off", async () => {
+    settings.updateSettings({ lessons: ["Prints in PETG."], useLessons: false });
+    await chat.clearChat();
+    useApi([{ text: "Added it." }]);
+    await chat.sendMessage("add a battery compartment to the base");
+    expect(system(0)).toBe("You design mechanical parts.");
+  });
+
+  it("starts a chat on the slimmer prompt with read_reference among its tools, from the chat after it is switched on", async () => {
+    useApi([{ text: "Added it." }, { text: "Added another." }, { text: "Added a third." }]);
+    await chat.sendMessage("add a battery compartment to the base");
+    settings.updateSettings({ leanPrompt: true });
+    await chat.sendMessage("add a second compartment beside it");
+    expect(system(1)).toBe("You design mechanical parts.");
+    expect(tools(1)).not.toContain("read_reference");
+    await chat.clearChat();
+    await chat.sendMessage("add a battery compartment to the base");
+    expect(system(2)).toBe("You design mechanical parts, briefly.");
+    expect(tools(2)).toEqual(["get_design", "run_checks", "edit_design", "read_reference", "web_search", "web_fetch"]);
   });
 });

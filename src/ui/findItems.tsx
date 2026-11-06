@@ -99,7 +99,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
 };
 
 const SETTINGS_FIND: { tab: SettingsTab; title: string; detail: string; keywords: string }[] = [
-  { tab: "ai", title: "AI: key, model and cost", detail: "Your Claude or OpenAI key, the model, effort, self-review and cost", keywords: "claude openai gpt api key model effort review cost tokens claude code mcp plan bench benchmark measure accuracy test speed" },
+  { tab: "ai", title: "AI: key, model and cost", detail: "Your Claude or OpenAI key, the model, effort, self-review, lessons, the bench and cost", keywords: "claude openai gpt api key model effort review cost tokens claude code mcp plan bench benchmark measure accuracy test speed compare lessons corrections learn remember rules slimmer prompt lean reference" },
   { tab: "account", title: "Account and sync", detail: "Sign in to sync projects between devices", keywords: "sign in login cloud sync devices" },
   { tab: "voice", title: "Voice input", detail: "Talk to Claude instead of typing", keywords: "speech microphone dictate talk" },
   { tab: "app", title: "Display", detail: "Theme, viewport, motion and graphics card", keywords: "theme dark light viewport graphics gpu motion animation" },

@@ -101,6 +101,12 @@ export interface Settings {
   processAccess: Record<string, "own" | "order" | "none">;
   /** what an hour of your own hands-on time is worth in cost estimates, US dollars */
   labourRate: number;
+  /** rules Claude saved when the user corrected it (see ai/lessons), given to it at the start of every chat */
+  lessons: string[];
+  /** Claude saves lessons from corrections and follows them */
+  useLessons: boolean;
+  /** the system prompt leaves out the specialist reference sections, which Claude reads with read_reference (see ai/leanReference) */
+  leanPrompt: boolean;
   /** parts the user already has, one per line as they would say it ("M3x10 socket", "M3 nut", "17HS4401", "Arduino Nano"): preferred when they fit, and not counted in the cost */
   onHand: string[];
   /** your own machine and shop profiles (copies of presets or your own), see mfg/machines */
@@ -127,6 +133,9 @@ const DEFAULTS: Settings = {
   effort: "high",
   fasterFollowUps: true,
   speed: "normal",
+  lessons: [],
+  useLessons: true,
+  leanPrompt: false,
   showThinking: true,
   reduceMotion: false,
   grid: true,
@@ -172,12 +181,23 @@ export const KEEP_WARM_MINUTES = [0, 15, 30, 60];
 export const COMPACT_AT_TOKENS = [200_000, 350_000, 500_000, 750_000];
 
 const KEY = "kerf.settings.v1";
+/** the settings a bench run changed, kept until it puts them back, so a run cut short by closing Kerf leaves nothing changed */
+export const BENCH_RESTORE_KEY = "kerf.bench.restore";
 
 function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return DEFAULTS;
     const v = JSON.parse(raw) as Partial<Settings>;
+    const left = localStorage.getItem(BENCH_RESTORE_KEY);
+    if (left) {
+      localStorage.removeItem(BENCH_RESTORE_KEY);
+      try {
+        Object.assign(v, JSON.parse(left));
+      } catch {
+        /* a broken record: the settings as saved */
+      }
+    }
     const out = { ...DEFAULTS };
     // accept only known keys with the right types
     for (const k of Object.keys(DEFAULTS) as (keyof Settings)[]) {
@@ -221,6 +241,7 @@ function load(): Settings {
     out.processAccess = access;
     out.labourRate = Math.min(500, Math.max(0, Number.isFinite(out.labourRate) ? out.labourRate : DEFAULTS.labourRate));
     out.onHand = cleanOnHand(out.onHand);
+    out.lessons = cleanLessons(out.lessons);
     out.machines = sanitizeMachines(out.machines);
     out.machineFor = sanitizeMachineFor(out.machineFor) as Record<string, string>;
     // the photoreal view starts off on every load: a GPU that hangs while path tracing must not be sent back into it
@@ -232,6 +253,21 @@ function load(): Settings {
 }
 
 /** The on-hand list as stored: short lines of text, no blanks or repeats, a few hundred at most. */
+/** The most lessons kept; a new one beyond this pushes out the oldest. */
+export const MAX_LESSONS = 40;
+
+/** Lessons as stored: one line each, at most 200 characters, no repeats, at most MAX_LESSONS. */
+export function cleanLessons(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== "string") continue;
+    const t = x.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+    if (t && !out.some((o) => o.toLowerCase() === t.toLowerCase())) out.push(t);
+  }
+  return out.slice(-MAX_LESSONS);
+}
+
 export function cleanOnHand(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   const out: string[] = [];

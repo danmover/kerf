@@ -6,6 +6,7 @@ import { parse, parseExpression, type Diagnostic } from "./parser";
 import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
 import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
+import { BLOCK_FNS } from "./blocks";
 import { SheetV, type SheetInfo } from "./sheet";
 import { TubeV, type AeroTube } from "./aero";
 import { Args, toThread, toV3 } from "./args";
@@ -1950,7 +1951,8 @@ class Evaluator {
       if (!st.cosmetic) prev.cosmetic = false;
       return name;
     }
-    if (this.globals.has(name) || this.builtins.has(name)) throw new EvalError(`"${name}" is already defined outside this part; give the feature another name`, span);
+    // the building blocks came after designs that may already name a feature "hinge" or "vents": theirs wins in that part
+    if (this.globals.has(name) || (this.builtins.has(name) && !(name in BLOCK_FNS))) throw new EvalError(`"${name}" is already defined outside this part; give the feature another name`, span);
     if (st.root.vars.has(name)) throw new EvalError(`"${name}" is already used in this part`, span);
     st.feats.set(name, { kind, cosmetic: st.cosmetic });
     st.root.vars.set(name, new FeatRef(name, kind));
