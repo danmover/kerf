@@ -5,7 +5,7 @@
 import * as R from "replicad";
 import type { AnyShape, Edge, Face, Shape3D } from "replicad";
 import { applyXf } from "./build";
-import { reflect, vcross, vdot, vnorm, type V3, type Xform } from "./recipe";
+import { applyXforms, reflect, vcross, vdot, vnorm, vsub, type V3, type Xform } from "./recipe";
 
 // ---------- projection ----------
 
@@ -69,7 +69,9 @@ function free(o: unknown) {
   }
 }
 
-export function projectView(req: ViewRequest, placed: Placed): ViewResult {
+export function projectView(req: ViewRequest, placed: Placed, meshOf?: MeshOf): ViewResult {
+  // many parts and no cut: each part on its own, occlusion from a depth buffer
+  if (meshOf && !req.section && req.items.length >= FAST_ITEMS) return projectAssembly(req, placed, meshOf);
   const t0 = performance.now();
   const dir = vnorm(req.dir);
   const xAxis = vnorm(req.x);
@@ -128,48 +130,394 @@ export function projectView(req: ViewRequest, placed: Placed): ViewResult {
     free(plane);
   });
 
-  const edges: Edge2[] = [];
-  if (shapes.length) {
-    const O = oc();
-    const camera = new R.ProjectionCamera([0, 0, 0], dir, xAxis);
-    const algo = new O.HLRBRep_Algo();
-    for (const s of shapes) algo.Add(s.shape.wrapped, 0);
-    const projector = new O.HLRAlgo_Projector(camera.wrapped);
-    algo.Projector(projector);
-    algo.Update();
-    algo.Hide();
-    const hlr = new O.HLRBRep_HLRToShape(algo);
-    for (const s of shapes) {
-      const sets: [string, boolean][] = [
-        ["VCompound", true],
-        ["OutLineVCompound", true],
-      ];
-      if (req.hidden) sets.push(["HCompound", false], ["OutLineHCompound", false]);
-      for (const [fn, vis] of sets) {
-        let compound: unknown;
-        try {
-          compound = hlr[fn](s.shape.wrapped);
-        } catch {
-          continue;
-        }
-        const c = compound as { IsNull(): boolean };
-        if (!c || c.IsNull()) continue;
-        const comp = new R.Compound(compound as never);
-        for (const e of comp.edges) {
-          const g = edgePrim(e);
-          if (g) edges.push({ part: s.part, vis, g });
-          free(e);
-        }
-        free(comp);
-      }
-    }
-    free(hlr);
-    free(projector);
-    free(algo);
-    free(camera);
-  }
+  const edges = shapes.length ? hlrEdges(shapes, dir, xAxis, req.hidden) : [];
   for (const s of shapes) if (s.temp) free(s.shape);
   return { edges, hatch, probes, missing: missing.length ? missing : undefined, ms: performance.now() - t0 };
+}
+
+/** Exact hidden-line removal of some placed solids seen along dir, in view coordinates. */
+function hlrEdges(shapes: { part: number; shape: AnyShape }[], dir: V3, xAxis: V3, hidden: boolean): Edge2[] {
+  const edges: Edge2[] = [];
+  const O = oc();
+  const camera = new R.ProjectionCamera([0, 0, 0], dir, xAxis);
+  const algo = new O.HLRBRep_Algo();
+  for (const s of shapes) algo.Add(s.shape.wrapped, 0);
+  const projector = new O.HLRAlgo_Projector(camera.wrapped);
+  algo.Projector(projector);
+  algo.Update();
+  algo.Hide();
+  const hlr = new O.HLRBRep_HLRToShape(algo);
+  for (const s of shapes) {
+    const sets: [string, boolean][] = [
+      ["VCompound", true],
+      ["OutLineVCompound", true],
+    ];
+    if (hidden) sets.push(["HCompound", false], ["OutLineHCompound", false]);
+    for (const [fn, vis] of sets) {
+      let compound: unknown;
+      try {
+        compound = hlr[fn](s.shape.wrapped);
+      } catch {
+        continue;
+      }
+      const c = compound as { IsNull(): boolean };
+      if (!c || c.IsNull()) continue;
+      const comp = new R.Compound(compound as never);
+      for (const e of comp.edges) {
+        const g = edgePrim(e);
+        if (g) edges.push({ part: s.part, vis, g });
+        free(e);
+      }
+      free(comp);
+    }
+  }
+  free(hlr);
+  free(projector);
+  free(algo);
+  free(camera);
+  return edges;
+}
+
+// ---------- big assemblies ----------
+
+/** A part's surface mesh in its own coordinates. */
+export type MeshOf = (hash: string) => { positions: Float32Array; indices: Uint32Array } | undefined;
+
+/** Views of this many parts or more use the fast projection when meshes are at hand. */
+export const FAST_ITEMS = 20;
+
+/** Each part's own hidden-line result, by shape, turn and view, relative to where its origin projects. */
+const ownCache = new Map<string, { edges: { vis: boolean; g: Prim2 }[]; used: number }>();
+let ownTick = 0;
+
+/**
+ * Hidden lines for an assembly of many parts. Exact hidden-line removal over
+ * all parts at once grows with every pair of them (minutes for a hundred);
+ * here each part is projected exactly on its own, once per shape and turn
+ * (screws repeated across the design cost one projection), and where parts
+ * hide one another is read from a depth buffer of their meshes. Lines keep
+ * their exact shape; only the point where one passes behind another part is
+ * found to within a fraction of a millimetre.
+ */
+export function projectAssembly(req: ViewRequest, placed: Placed, meshOf: MeshOf): ViewResult {
+  const t0 = performance.now();
+  const dir = vnorm(req.dir);
+  const xAxis = vnorm(req.x);
+  const yAxis = vcross(dir, xAxis);
+  const missing: number[] = [];
+  let probes: number[] | undefined;
+  const own: Edge2[] = [];
+  const poses: { part: number; o: V3; lin: [V3, V3, V3]; hash: string }[] = [];
+  req.items.forEach((it, part) => {
+    let w: Shape3D;
+    try {
+      w = placed(it).shape;
+    } catch {
+      missing.push(part);
+      return;
+    }
+    if (part === 0 && req.probes?.length) probes = req.probes.map((s) => materialAlong(w, s.a, s.b));
+    const o = applyXforms([0, 0, 0], it.xf);
+    const lin = ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]).map((e) => vsub(applyXforms(e, it.xf), o)) as [V3, V3, V3];
+    const key = [it.hash, lin.flat().map((v) => v.toFixed(6)).join(","), dir.map((v) => v.toFixed(6)).join(","), xAxis.map((v) => v.toFixed(6)).join(","), req.hidden ? "h" : ""].join("|");
+    const ou = vdot(o, xAxis);
+    const ov = vdot(o, yAxis);
+    let hit = ownCache.get(key);
+    if (!hit) {
+      const edges = hlrEdges([{ part: 0, shape: w }], dir, xAxis, req.hidden).map((e) => ({ vis: e.vis, g: shift(e.g, -ou, -ov) }));
+      hit = { edges, used: 0 };
+      ownCache.set(key, hit);
+      if (ownCache.size > 3000) {
+        const old = [...ownCache.entries()].sort((a, b) => a[1].used - b[1].used).slice(0, 1000);
+        for (const [k] of old) ownCache.delete(k);
+      }
+    }
+    hit.used = ++ownTick;
+    for (const e of hit.edges) own.push({ part, vis: e.vis, g: shift(e.g, ou, ov) });
+    poses.push({ part, o, lin, hash: it.hash });
+  });
+
+  const depth = depthBuffer(poses, meshOf, dir, xAxis, yAxis);
+  const edges: Edge2[] = [];
+  for (const e of own) {
+    if (!e.vis || !depth) {
+      edges.push(e);
+      continue;
+    }
+    for (const run of splitByVisibility(e.g, depth.step, (u, v) => depth.visible(u, v, e.part))) {
+      if (run.vis) edges.push({ part: e.part, vis: true, g: run.g });
+      else if (req.hidden) edges.push({ part: e.part, vis: false, g: run.g });
+    }
+  }
+  return { edges, hatch: [], probes, missing: missing.length ? missing : undefined, ms: performance.now() - t0 };
+}
+
+function shift(g: Prim2, du: number, dv: number): Prim2 {
+  if (g.t === "L") return { t: "L", p: [g.p[0] + du, g.p[1] + dv, g.p[2] + du, g.p[3] + dv] };
+  if (g.t === "A") return { ...g, c: [g.c[0] + du, g.c[1] + dv] };
+  return { t: "P", p: g.p.map((x, i) => x + (i % 2 ? dv : du)) };
+}
+
+/** How near the viewer the nearest surface is across the view, and which part it belongs to. */
+interface DepthBuffer {
+  /** sample spacing along edges, model mm */
+  step: number;
+  visible: (u: number, v: number, part: number) => boolean;
+}
+
+/** Depths closer than this to the front surface count as on it: the meshes stand off the true surfaces by up to their 0.25 mm deflection. */
+const DEPTH_EPS = 0.6;
+
+function depthBuffer(poses: { part: number; o: V3; lin: [V3, V3, V3]; hash: string }[], meshOf: MeshOf, dir: V3, xAxis: V3, yAxis: V3): DepthBuffer | null {
+  // every part's triangles in view space: u, v and depth toward the viewer
+  const tris: number[] = [];
+  const triPart: number[] = [];
+  /** each part's nearest point to the viewer */
+  const front = new Map<number, number>();
+  let u0 = Infinity;
+  let v0 = Infinity;
+  let u1 = -Infinity;
+  let v1 = -Infinity;
+  for (const p of poses) {
+    let m: ReturnType<MeshOf>;
+    try {
+      m = meshOf(p.hash);
+    } catch {
+      m = undefined;
+    }
+    if (!m) return null;
+    const P = m.positions;
+    const proj = new Float64Array((P.length / 3) * 3);
+    for (let i = 0; i < P.length; i += 3) {
+      const w: V3 = [p.o[0] + P[i] * p.lin[0][0] + P[i + 1] * p.lin[1][0] + P[i + 2] * p.lin[2][0], p.o[1] + P[i] * p.lin[0][1] + P[i + 1] * p.lin[1][1] + P[i + 2] * p.lin[2][1], p.o[2] + P[i] * p.lin[0][2] + P[i + 1] * p.lin[1][2] + P[i + 2] * p.lin[2][2]];
+      const u = vdot(w, xAxis);
+      const v = vdot(w, yAxis);
+      proj[i] = u;
+      proj[i + 1] = v;
+      proj[i + 2] = vdot(w, dir);
+      if (!(proj[i + 2] <= (front.get(p.part) ?? -Infinity))) front.set(p.part, proj[i + 2]);
+      if (u < u0) u0 = u;
+      if (u > u1) u1 = u;
+      if (v < v0) v0 = v;
+      if (v > v1) v1 = v;
+    }
+    const I = m.indices;
+    for (let k = 0; k < I.length; k += 3) {
+      for (const j of [I[k], I[k + 1], I[k + 2]]) tris.push(proj[j * 3], proj[j * 3 + 1], proj[j * 3 + 2]);
+      triPart.push(p.part);
+    }
+  }
+  if (!triPart.length || !Number.isFinite(u0)) return null;
+  // about 2000 pixels across the bigger side, none finer than 0.2 mm (the meshes are only good to 0.25 mm)
+  const span = Math.max(u1 - u0, v1 - v0, 1e-3);
+  const px = Math.max(span / 2000, 0.2);
+  const pad = 4;
+  const W = Math.ceil((u1 - u0) / px) + 2 * pad;
+  const H = Math.ceil((v1 - v0) / px) + 2 * pad;
+  const ox = u0 - pad * px;
+  const oy = v0 - pad * px;
+  const zbuf = new Float32Array(W * H).fill(-Infinity);
+  const ids = new Int32Array(W * H).fill(-1);
+  // triangles by grid cell, for finding a part's own depth at a point
+  const CELL = 8;
+  const GW = Math.ceil(W / CELL);
+  const GH = Math.ceil(H / CELL);
+  const cells: number[][] = Array.from({ length: GW * GH }, () => []);
+  const n = triPart.length;
+  for (let t = 0; t < n; t++) {
+    const b = t * 9;
+    const ax = (tris[b] - ox) / px;
+    const ay = (tris[b + 1] - oy) / px;
+    const bx = (tris[b + 3] - ox) / px;
+    const by = (tris[b + 4] - oy) / px;
+    const cx = (tris[b + 6] - ox) / px;
+    const cy = (tris[b + 7] - oy) / px;
+    const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    const xa = Math.max(0, Math.floor(Math.min(ax, bx, cx)));
+    const xb = Math.min(W - 1, Math.ceil(Math.max(ax, bx, cx)));
+    const ya = Math.max(0, Math.floor(Math.min(ay, by, cy)));
+    const yb = Math.min(H - 1, Math.ceil(Math.max(ay, by, cy)));
+    for (let gy = Math.floor(ya / CELL); gy <= Math.floor(yb / CELL); gy++) for (let gx = Math.floor(xa / CELL); gx <= Math.floor(xb / CELL); gx++) cells[gy * GW + gx].push(t);
+    if (Math.abs(area) < 1e-12) continue;
+    const da = tris[b + 2];
+    const db = tris[b + 5];
+    const dc = tris[b + 8];
+    const part = triPart[t];
+    for (let y = ya; y <= yb; y++) {
+      const py = y + 0.5;
+      for (let x = xa; x <= xb; x++) {
+        const qx = x + 0.5;
+        const w0 = ((bx - qx) * (cy - py) - (by - py) * (cx - qx)) / area;
+        const w1 = ((cx - qx) * (ay - py) - (cy - py) * (ax - qx)) / area;
+        const w2 = 1 - w0 - w1;
+        if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+        const d = w0 * da + w1 * db + w2 * dc;
+        const k = y * W + x;
+        if (d > zbuf[k]) {
+          zbuf[k] = d;
+          ids[k] = part;
+        }
+      }
+    }
+  }
+  /** the nearest depth of one part's own surface around a pixel, from its triangles */
+  const ownDepth = (x: number, y: number, part: number, r: number): number | undefined => {
+    let best: number | undefined;
+    const seen = new Set<number>();
+    for (let gy = Math.floor((y - r) / CELL); gy <= Math.floor((y + r) / CELL); gy++)
+      for (let gx = Math.floor((x - r) / CELL); gx <= Math.floor((x + r) / CELL); gx++) {
+        if (gx < 0 || gy < 0 || gx >= GW || gy >= GH) continue;
+        for (const t of cells[gy * GW + gx]) {
+          if (triPart[t] !== part || seen.has(t)) continue;
+          seen.add(t);
+          const b = t * 9;
+          const ax = (tris[b] - ox) / px;
+          const ay = (tris[b + 1] - oy) / px;
+          const bx = (tris[b + 3] - ox) / px;
+          const by = (tris[b + 4] - oy) / px;
+          const cx = (tris[b + 6] - ox) / px;
+          const cy = (tris[b + 7] - oy) / px;
+          const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+          if (Math.abs(area) < 1e-12) continue;
+          // the point, or the nearest point of the triangle within r pixels
+          let w0 = ((bx - x) * (cy - y) - (by - y) * (cx - x)) / area;
+          let w1 = ((cx - x) * (ay - y) - (cy - y) * (ax - x)) / area;
+          let w2 = 1 - w0 - w1;
+          if (w0 < 0 || w1 < 0 || w2 < 0) {
+            const q = nearestOnTri(x, y, ax, ay, bx, by, cx, cy);
+            if (Math.hypot(q[0] - x, q[1] - y) > r) continue;
+            w0 = ((bx - q[0]) * (cy - q[1]) - (by - q[1]) * (cx - q[0])) / area;
+            w1 = ((cx - q[0]) * (ay - q[1]) - (cy - q[1]) * (ax - q[0])) / area;
+            w2 = 1 - w0 - w1;
+          }
+          const d = w0 * tris[b + 2] + w1 * tris[b + 5] + w2 * tris[b + 8];
+          if (best === undefined || d > best) best = d;
+        }
+      }
+    return best;
+  };
+  // the meshes stand off the true outlines by up to their deflection: look that far around
+  const R = Math.max(1, Math.ceil(0.3 / px));
+  const owns = new Map<number, number | undefined>();
+  const visible = (u: number, v: number, part: number): boolean => {
+    const x = (u - ox) / px;
+    const y = (v - oy) / px;
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    if (xi < 0 || yi < 0 || xi >= W || yi >= H) return true;
+    const c = ids[yi * W + xi];
+    if (c === part || c < 0) return true;
+    let nearest = Infinity;
+    for (let dy = -R; dy <= R; dy++)
+      for (let dx = -R; dx <= R; dx++) {
+        const xx = xi + dx;
+        const yy = yi + dy;
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H) return true;
+        const k = yy * W + xx;
+        // its own surface or open background beside the line: nothing covers it there
+        if (ids[k] === part || ids[k] < 0) return true;
+        nearest = Math.min(nearest, zbuf[k]);
+      }
+    // other parts all round: hidden when they are nearer the viewer than any of this part is, else than it is there
+    if (nearest > (front.get(part) ?? Infinity) + DEPTH_EPS) return false;
+    const key = (yi * W + xi) * 4096 + (part % 4096);
+    let own = owns.get(key);
+    if (!owns.has(key)) owns.set(key, (own = ownDepth(xi + 0.5, yi + 0.5, part, R + 1)));
+    return own === undefined || nearest <= own + DEPTH_EPS;
+  };
+  return { step: px, visible };
+}
+
+function nearestOnTri(x: number, y: number, ax: number, ay: number, bx: number, by: number, cx: number, cy: number): [number, number] {
+  let best: [number, number] = [ax, ay];
+  let bd = Infinity;
+  for (const [p0x, p0y, p1x, p1y] of [
+    [ax, ay, bx, by],
+    [bx, by, cx, cy],
+    [cx, cy, ax, ay],
+  ]) {
+    const ex = p1x - p0x;
+    const ey = p1y - p0y;
+    const L = ex * ex + ey * ey;
+    const t = L > 0 ? Math.max(0, Math.min(1, ((x - p0x) * ex + (y - p0y) * ey) / L)) : 0;
+    const qx = p0x + ex * t;
+    const qy = p0y + ey * t;
+    const d = Math.hypot(qx - x, qy - y);
+    if (d < bd) {
+      bd = d;
+      best = [qx, qy];
+    }
+  }
+  return best;
+}
+
+/** Splits a line, arc or polyline where it passes behind something, sampling every `step` along it. */
+export function splitByVisibility(g: Prim2, step: number, vis: (u: number, v: number) => boolean): { vis: boolean; g: Prim2 }[] {
+  // sample parameters along the primitive, then runs of equal visibility, with single-sample flickers smoothed out
+  const runs = (n: number, at: (i: number) => [number, number]) => {
+    const flags: boolean[] = [];
+    for (let i = 0; i <= n; i++) {
+      const [u, v] = at(i);
+      flags.push(vis(u, v));
+    }
+    for (let i = 1; i < n; i++) if (flags[i - 1] === flags[i + 1] && flags[i] !== flags[i - 1]) flags[i] = flags[i - 1];
+    // a change of visibility falls halfway between its samples
+    const out: { vis: boolean; i0: number; i1: number }[] = [];
+    let start = 0;
+    for (let i = 1; i <= n; i++)
+      if (flags[i] !== flags[i - 1]) {
+        out.push({ vis: flags[i - 1], i0: start, i1: i - 0.5 });
+        start = i - 0.5;
+      }
+    out.push({ vis: flags[n], i0: start, i1: n });
+    return out;
+  };
+  if (g.t === "L") {
+    const [x0, y0, x1, y1] = g.p;
+    const L = Math.hypot(x1 - x0, y1 - y0);
+    const n = Math.max(1, Math.min(20000, Math.ceil(L / step)));
+    const at = (i: number): [number, number] => [x0 + ((x1 - x0) * i) / n, y0 + ((y1 - y0) * i) / n];
+    const rs = runs(n, at);
+    if (rs.length === 1) return [{ vis: rs[0].vis, g }];
+    return rs.map((r) => {
+      const a = at(r.i0);
+      const b = at(r.i1);
+      return { vis: r.vis, g: { t: "L", p: [a[0], a[1], b[0], b[1]] } as Prim2 };
+    });
+  }
+  if (g.t === "A") {
+    const sweep = g.a1 - g.a0;
+    const n = Math.max(4, Math.min(20000, Math.ceil((sweep * g.r) / step)));
+    const ang = (i: number) => g.a0 + (sweep * i) / n;
+    const rs = runs(n, (i) => [g.c[0] + g.r * Math.cos(ang(i)), g.c[1] + g.r * Math.sin(ang(i))]);
+    if (rs.length === 1) return [{ vis: rs[0].vis, g }];
+    return rs.map((r) => ({ vis: r.vis, g: { t: "A", c: g.c, r: g.r, a0: ang(r.i0), a1: ang(r.i1) } as Prim2 }));
+  }
+  // a polyline: resample each segment, keeping its corners
+  const pts: [number, number][] = [];
+  for (let i = 0; i + 1 < g.p.length; i += 2) {
+    const q: [number, number] = [g.p[i], g.p[i + 1]];
+    if (pts.length) {
+      const p = pts[pts.length - 1];
+      const k = Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / step));
+      for (let j = 1; j < k; j++) pts.push([p[0] + ((q[0] - p[0]) * j) / k, p[1] + ((q[1] - p[1]) * j) / k]);
+    }
+    pts.push(q);
+  }
+  if (pts.length < 2) return [{ vis: true, g }];
+  const rs = runs(pts.length - 1, (i) => pts[i]);
+  if (rs.length === 1) return [{ vis: rs[0].vis, g }];
+  const lerp = (t: number): [number, number] => {
+    const i = Math.min(pts.length - 2, Math.floor(t));
+    const f = t - i;
+    return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * f, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * f];
+  };
+  return rs.map((r) => {
+    const seg: number[] = [...lerp(r.i0)];
+    for (let i = Math.ceil(r.i0 + 1e-9); i < r.i1; i++) seg.push(...pts[i]);
+    seg.push(...lerp(r.i1));
+    return { vis: r.vis, g: (seg.length === 4 ? { t: "L", p: seg } : { t: "P", p: seg }) as Prim2 };
+  });
 }
 
 /** Length of solid material along a segment: the common of the solid and a line edge. */

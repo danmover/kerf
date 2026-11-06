@@ -11,7 +11,7 @@ import { join } from "node:path";
 import opencascade from "replicad-opencascadejs";
 import * as R from "replicad";
 import { KernelCore } from "../src/kernel/core";
-import { projectView, type ViewResult } from "../src/kernel/drawing";
+import { projectAssembly, projectView, type ViewResult } from "../src/kernel/drawing";
 import { evaluate } from "../src/lang/evaluator";
 import { composeSheet } from "../src/drawing/compose";
 import { autoDrawings, autoViews, planDrawing } from "../src/drawing/views";
@@ -212,3 +212,130 @@ describe("gear centre distances", () => {
     expect(seat.fit).toBeUndefined();
   });
 });
+
+// a vane set at 45° in the design, with a blind pocket and a through hole
+const VANE = `
+part vane {
+  material: "Aluminium 6061"
+  process: mfg.cnc_mill()
+  body box(40, 4, 60, at: (0, 0, 30))
+  cut cylinder(d: 10, h: 2, at: (0, 2.01, 40), dir: -Y)
+  cut hole(d: 5, through: true, at: (0, 3, 15), dir: -Y)
+  rotate: (0, 0, 45)
+  at: (100, 50, 0)
+}
+`;
+
+describe("parts placed at an angle", () => {
+  it("draws a part turned 45° square to its own faces, with true lengths and a section that cuts it", () => {
+    const ctx = load(VANE);
+    const spec = auto(ctx, "auto:vane");
+    const plan = planDrawing(spec, ctx.model, ctx.bboxOf);
+    expect(plan.parts[0].worldXf).toBeTruthy();
+    const sheet = draw(ctx, spec, "vane");
+    const values = sheet.dims.filter((d) => d.kind !== "callout").map((d) => d.value);
+    expect(values.some((v) => Math.abs(v - 40) < 1e-6)).toBe(true);
+    expect(values.some((v) => Math.abs(v - 60) < 1e-6)).toBe(true);
+    // nothing measured across the diagonal of the turned outline
+    expect(values.some((v) => Math.abs(v - (40 + 4) / Math.SQRT2) < 0.01)).toBe(false);
+    const sec = plan.views.findIndex((v) => v.kind === "section");
+    expect(sec).toBeGreaterThanOrEqual(0);
+    const res = projectView(plan.views[sec].req, (p) => ctx.core.placed(p));
+    expect(res.hatch.length).toBeGreaterThan(0);
+    expect(sheet.dims.some((d) => d.text.startsWith("Ø5 THRU"))).toBe(true);
+  });
+});
+
+// a vane mount: a pivot bore with an arc slot about it (a loop of cylinders), and a straight slot of overlapping holes
+const SLOTS = `
+part mount {
+  material: "Aluminium 6061"
+  process: mfg.cnc_mill()
+  body box(80, 60, 6, at: (0, 0, 0))
+  cut hole(d: 6, through: true, at: (0, 0, 7), dir: -Z)
+  for a in linspace(15, 75, 13) {
+    cut cylinder(d: 4.2, h: 8, at: (25 * cos(a), 25 * sin(a), -1), dir: Z)
+  }
+  for x in linspace(-30, -10, 9) {
+    cut hole(d: 5, through: true, at: (x, -20, 7), dir: -Z)
+  }
+}
+`;
+
+describe("slots modelled as rows of cuts", () => {
+  it("calls an arc of overlapping cylinders one arc slot and a row of holes one straight slot", () => {
+    const ctx = load(SLOTS);
+    const sheet = draw(ctx, auto(ctx, "auto:mount"), "slots");
+    const texts = sheet.dims.filter((d) => d.kind === "callout").map((d) => d.text);
+    const arc = texts.find((t) => t.startsWith("ARC SLOT"))!;
+    expect(arc).toBe("ARC SLOT 4.2 WIDE THRU · R25 × 60° (15° TO 75°)");
+    expect(texts.some((t) => t.startsWith("SLOT 5 × 25 THRU"))).toBe(true);
+    // no callout per cut, and no dimension per cut centre
+    expect(texts.some((t) => /13×|9×/.test(t))).toBe(false);
+    expect(sheet.dims.length).toBeLessThan(20);
+  });
+});
+
+// a rig with four vanes cut alike under different names, and many other parts
+function rig(extra: string) {
+  const vanes = [0, 1, 2, 3].map((k) => `part vane_${k + 1} { material: "PLA" body box(30, 3, 40, at: (0, 0, 20)) at: (${k * 40}, 0, 0) }`).join("\n");
+  const blocks = Array.from({ length: 44 }, (_, k) => `part block_${k} { material: "PLA" body box(${10 + k}, 10, 5, at: (${(k % 11) * 60}, ${40 + Math.floor(k / 11) * 30}, 0)) }`).join("\n");
+  return `${vanes}\n${blocks}\n${extra}`;
+}
+
+describe("assembly sheets with many parts", () => {
+  it("lists parts made alike once and keeps a long parts list on the sheet", () => {
+    const ctx = load(rig(`drawing ga { title: "Rig" sheet: "A3" }`));
+    const spec = ctx.model.drawings.find((d) => d.name === "ga")!;
+    const sheet = draw(ctx, spec, "rig");
+    const vane = sheet.bom.find((l) => l.name === "Vane")!;
+    expect(vane.qty).toBe(4);
+    expect(sheet.bom.length).toBe(45);
+    // every line of the parts list is inside the sheet's frame
+    const bom = sheet.shapes.filter((x) => x.key === "bom");
+    const ys = bom.flatMap((x) => (x.t === "line" || x.t === "poly" ? x.p.filter((_, i) => i % 2 === 1) : x.t === "text" ? [x.at[1]] : []));
+    expect(Math.min(...ys)).toBeGreaterThan(9);
+  });
+
+  it("falls back to a scale that fits when the one asked for does not", () => {
+    const ctx = load(rig(`drawing ga { title: "Rig" sheet: "A3" scale: "2:1" }`));
+    const spec = ctx.model.drawings.find((d) => d.name === "ga")!;
+    const sheet = draw(ctx, spec);
+    expect(sheet.scale).toBeLessThan(2);
+    expect(sheet.warnings.some((w) => w.startsWith("At 2:1 the views do not fit"))).toBe(true);
+    // the views keep apart
+    const boxes = sheet.views.map((v) => v.box);
+    const overlap = boxes.some((a, i) => boxes.some((b, j) => j > i && a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]));
+    expect(overlap).toBe(false);
+  });
+});
+
+describe("hidden lines for big assemblies", () => {
+  // a plate in front of two rows of blocks: the middle ones are behind it
+  const xs = [-180, -150, -120, -60, -30, 0, 30, 60, 120, 150, 180];
+  const SRC = [`part plate { body box(200, 5, 100, at: (0, -50, 0)) }`, ...xs.flatMap((x, i) => [20, 70].map((z, k) => `part b${i}_${k} { body box(10, 10, 10, at: (${x}, 0, ${z})) }`))].join("\n");
+  const length = (r: ViewResult, part?: number) => r.edges.filter((e) => e.vis && (part === undefined || e.part === part)).reduce((a, e) => a + (e.g.t === "L" ? Math.hypot(e.g.p[2] - e.g.p[0], e.g.p[3] - e.g.p[1]) : 0), 0);
+
+  it("matches the exact projection, one part at a time with a depth buffer", () => {
+    const ctx = load(SRC);
+    const plan = planDrawing(auto(ctx, "auto:assembly"), ctx.model, ctx.bboxOf);
+    const front = plan.views.find((v) => v.kind === "front")!;
+    expect(front.req.items.length).toBeGreaterThanOrEqual(20);
+    const placed = (p: Parameters<typeof ctx.core.placed>[0]) => ctx.core.placed(p);
+    const meshOf = (h: string) => ctx.core.mesh(h, "preview");
+    const fast = projectView(front.req, placed, meshOf);
+    const exact = projectView(front.req, placed);
+    expect(Math.abs(length(fast) / length(exact) - 1)).toBeLessThan(0.02);
+    plan.parts.forEach((p, i) => {
+      const x = Number(/^b(\d+)/.exec(p.name)?.[1] ?? -1);
+      if (x < 0) return;
+      const hidden = Math.abs(xs[x]) <= 60;
+      expect(length(fast, i) > 0).toBe(!hidden);
+      expect(length(exact, i) > 0).toBe(!hidden);
+    });
+    // a second view of the same parts reuses each part's projection
+    const again = projectAssembly(front.req, placed, meshOf);
+    expect(again.edges.length).toBe(fast.edges.length);
+  });
+});
+

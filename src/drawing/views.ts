@@ -13,6 +13,7 @@ import { generalToleranceFor } from "../mfg/profiles";
 import { layFlat } from "./flat";
 import { gdtWanted } from "./gdt";
 import { processFamily } from "./intent";
+import { squareUp } from "./square";
 
 const N = 1 / Math.sqrt(3);
 
@@ -112,9 +113,10 @@ export function drawingParts(spec: DrawingSpec, model: Model): EvalPart[] {
   const names = new Set(spec.of);
   const parts = model.parts.filter((p) => names.has(p.name));
   if (spec.of.length !== 1) return parts;
-  // a drawing of one part shows a single instance of it
+  // a drawing of one part shows a single instance of it, square to its own axes
   const first = parts[0]?.id.split(".")[0];
-  return parts.filter((p) => p.id.split(".")[0] === first);
+  const one = parts.filter((p) => p.id.split(".")[0] === first);
+  return one.length === 1 ? [squareUp(one[0])] : one;
 }
 
 /** Corners of a box projected into a view: [u0, v0, u1, v1]. */
@@ -258,10 +260,12 @@ export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
     out.push(s);
   }
   const seen = new Set<string>();
-  for (const p of model.parts) {
-    if (seen.has(p.name) || covered.has(p.name)) continue;
-    if (p.kind === "component" && !(p.libKind && MADE_LIB.has(p.libKind))) continue;
-    seen.add(p.name);
+  for (const placed of model.parts) {
+    if (seen.has(placed.name) || covered.has(placed.name)) continue;
+    if (placed.kind === "component" && !(placed.libKind && MADE_LIB.has(placed.libKind))) continue;
+    seen.add(placed.name);
+    // views and sections follow the part's own axes, as its drawing shows it
+    const p = squareUp(placed);
     const s = defaultSpec(`auto:${p.name}`, humanize(p.label.replace(/ #1$/, "")), [p.name]);
     s.material = p.material;
     s.tolerance = processTolerance(model, [p.name]) ?? s.tolerance;

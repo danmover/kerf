@@ -123,7 +123,7 @@ async function run(msg: ToWorker) {
           return;
         }
         try {
-          const result = projectView(msg.req, (p) => core.placed(p));
+          const result = projectView(msg.req, (p) => core.placed(p), (h) => core.mesh(h, "preview"));
           post({ type: "projected", jobId: msg.jobId, result });
         } catch (e) {
           if (isTrap(e)) return fatal(msg.jobId, e);

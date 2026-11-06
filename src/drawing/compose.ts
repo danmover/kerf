@@ -3,7 +3,7 @@
 // planes, balloons, the title block, parts list and notes. Pure and
 // synchronous: views whose projection has not arrived yet show placeholders.
 
-import type { EvalPart, Model } from "../core/model";
+import { partMass, type EvalPart, type Model } from "../core/model";
 import type { Edge2, ViewResult } from "../kernel/drawing";
 import { vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
 import { MATERIALS, materialDensity } from "../library/standards";
@@ -19,7 +19,7 @@ import { gridCell, layoutSheet, type LayoutItem, type LayoutResult } from "./lay
 import { boxOk, emptyBox, fmtNum, growBox, Ink, shapeBox, type BomLine, type Box, type Sheet, type SheetDim, type SheetPart, type SheetView } from "./sheet";
 import { scaleText, SHEETS, STANDARD_SCALES, type DrawingSpec, type SheetSize } from "./spec";
 import { textWidth } from "./text";
-import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTitleBlock, inkToleranceStrip, TB_W } from "./titleblock";
+import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTitleBlock, inkToleranceStrip, partsListBoxes, TB_W } from "./titleblock";
 import { boxExtents, humanize, toView, viewFrame, worldBox, type BBoxOf, type DrawingPlan, type PlannedView } from "./views";
 
 export interface ComposeInput {
@@ -75,75 +75,81 @@ export function composeSheet(inp: ComposeInput): Sheet {
 
   // ---- sheet size and scale
   const portrait = spec.orientation === "portrait";
-  const sizes = spec.sheet ? [spec.sheet] : SIZES;
-  const scales = spec.scale ? [spec.scale] : STANDARD_SCALES;
   type Choice = { size: SheetSize; w: number; h: number; scale: number; iso: number; res: LayoutResult; items: LayoutItem[]; st: DimStyle; fixed: Box[] };
-  let chosen: Choice | null = null as Choice | null;
-  /** the first readable choice, kept while a bigger sheet is tried for small features */
-  let roomy: Choice | null = null as Choice | null;
   const minFeature = Math.min(Infinity, ...dims.filter((d) => d.kind === "callout" && d.circle && d.meta.auto).map((d) => 2 * d.circle!.r));
   const principal = plan.views.filter((v) => gridFor(v, plan, spec));
   const maxExtent = Math.max(1, ...principal.map((v) => Math.max(...[0, 1].map((k) => lext[plan.views.indexOf(v)][k + 2] - lext[plan.views.indexOf(v)][k]))));
-  for (const size of sizes) {
+  const paperOf = (size: SheetSize) => {
     const [a, b] = SHEETS[size];
-    const w = portrait ? Math.min(a, b) : Math.max(a, b);
-    const h = portrait ? Math.max(a, b) : Math.min(a, b);
-    const st = dimStyle(w);
-    const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, table);
-    const area = inset(frameBox(w, h), 4);
-    let found: Choice | null = null as Choice | null;
-    search: for (const s of scales) {
-      // the pictorial view may drop one scale to make room
-      const smaller = STANDARD_SCALES.find((x) => x < s - 1e-9);
-      for (const iso of plan.views.some((v) => v.kind === "iso") && smaller ? [s, smaller] : [s]) {
-        const sc = { s, iso };
-        const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec));
-        const items = plan.views.map((v, i) => layoutItem(v, sc, lext[i], margins[i], spec, area, w, plan));
-        const res = layoutSheet(items, area, fixed, GAP);
-        if (res) {
-          found = { size, w, h, scale: s, iso, res, items, st, fixed };
-          break search;
+    return { w: portrait ? Math.min(a, b) : Math.max(a, b), h: portrait ? Math.max(a, b) : Math.min(a, b) };
+  };
+  /** The first sheet and scale that hold everything; fixed: the first fit, else the readable choice described below. */
+  const pick = (sizes: SheetSize[], scales: number[], fixedChoice: boolean): Choice | null => {
+    let chosen: Choice | null = null as Choice | null;
+    /** the first readable choice, kept while a bigger sheet is tried for small features */
+    let roomy: Choice | null = null as Choice | null;
+    for (const size of sizes) {
+      const { w, h } = paperOf(size);
+      const st = dimStyle(w);
+      const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, table);
+      const area = inset(frameBox(w, h), 4);
+      let found: Choice | null = null as Choice | null;
+      search: for (const s of scales) {
+        // the pictorial view may drop one scale to make room
+        const smaller = STANDARD_SCALES.find((x) => x < s - 1e-9);
+        for (const iso of plan.views.some((v) => v.kind === "iso") && smaller ? [s, smaller] : [s]) {
+          const sc = { s, iso };
+          const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec, bom.length));
+          const items = plan.views.map((v, i) => layoutItem(v, sc, lext[i], margins[i], spec, area, w, plan));
+          const res = layoutSheet(items, area, fixed, GAP);
+          if (res) {
+            found = { size, w, h, scale: s, iso, res, items, st, fixed };
+            break search;
+          }
         }
       }
+      if (!found) continue;
+      if (fixedChoice) return found;
+      const readable = maxExtent * found.scale >= 60 || found.scale >= 2;
+      // small holes and bores should come out at least 2 mm across: a sheet up to A2 may be worth it
+      const clear = !minFeature || minFeature * found.scale >= 2;
+      if (!roomy) {
+        chosen = found;
+        if (!readable) continue;
+        if (clear || ["A2", "A1", "A0"].includes(size)) break;
+        roomy = found;
+        continue;
+      }
+      // a bigger sheet only helps when it draws the part bigger
+      if (found.scale > chosen!.scale) chosen = found;
+      if ((clear && found.scale > roomy.scale) || size === "A2") break;
     }
-    if (!found) continue;
-    if (spec.sheet || spec.scale) {
-      chosen = found;
-      break;
-    }
-    const readable = maxExtent * found.scale >= 60 || found.scale >= 2;
-    // small holes and bores should come out at least 2 mm across: a sheet up to A2 may be worth it
-    const clear = !minFeature || minFeature * found.scale >= 2;
-    if (!roomy) {
-      chosen = found;
-      if (!readable) continue;
-      if (clear || ["A2", "A1", "A0"].includes(size)) break;
-      roomy = found;
-      continue;
-    }
-    // a bigger sheet only helps when it draws the part bigger
-    if (found.scale > chosen!.scale) chosen = found;
-    if ((clear && found.scale > roomy.scale) || size === "A2") break;
+    return chosen;
+  };
+  const sizes = spec.sheet ? [spec.sheet] : SIZES;
+  let chosen = pick(sizes, spec.scale ? [spec.scale] : STANDARD_SCALES, !!(spec.sheet || spec.scale));
+  if (!chosen && spec.scale) {
+    // the scale asked for does not fit: the largest standard scale below it that does
+    chosen = pick(sizes, STANDARD_SCALES.filter((x) => x < spec.scale! - 1e-9), true);
+    if (chosen) warnings.push(`At ${scaleText(spec.scale)} the views do not fit on ${spec.sheet ? `an ${spec.sheet} sheet` : "any sheet up to A0"}, so this sheet is drawn at ${scaleText(chosen.scale)}; change scale: or sheet: to choose`);
   }
   if (!chosen) {
-    // nothing fits: the biggest sheet at the smallest scale, overlapping if it must
+    // nothing fits: the biggest sheet at the smallest scale, the views in rows, overlapping only if they must
     const size = spec.sheet ?? "A0";
-    const [a, b] = SHEETS[size];
-    const w = portrait ? Math.min(a, b) : Math.max(a, b);
-    const h = portrait ? Math.max(a, b) : Math.min(a, b);
+    const { w, h } = paperOf(size);
     const st = dimStyle(w);
-    const s = scales[scales.length - 1];
+    const s = STANDARD_SCALES[STANDARD_SCALES.length - 1];
     const sc = { s, iso: s };
-    const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec));
+    const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec, bom.length));
     const area = inset(frameBox(w, h), 4);
     const items = plan.views.map((v, i) => layoutItem(v, sc, lext[i], margins[i], spec, area, w, plan));
-    const res = layoutSheet(items, area, [], GAP) ?? { origins: items.map(() => [area[0] + 40, area[1] + 40] as [number, number]), boxes: items.map(() => area), group: null };
+    const res = layoutSheet(items, area, [], GAP) ?? packRows(items, area, GAP);
     chosen = { size, w, h, scale: s, iso: s, res, items, st, fixed: [] };
     warnings.push("The views do not fit on the sheet at any standard scale");
   }
   const { size, w, h, scale, items, st, fixed } = chosen;
   // stacking rows were last assigned while searching; assign them for the chosen scale
-  const margins = plan.views.map((v, i) => viewMargins(v, i, { s: scale, iso: chosen!.iso }, dims, lext, st, plan, spec));
+  const margins = plan.views.map((v, i) => viewMargins(v, i, { s: scale, iso: chosen!.iso }, dims, lext, st, plan, spec, bom.length));
   const res = centre(chosen.res, inset(frameBox(w, h), 4), fixed);
 
   // ---- ink
@@ -249,8 +255,8 @@ export function composeSheet(inp: ComposeInput): Sheet {
   let top: Box = tb;
   const strip = inkToleranceStrip(ink, top, spec.tolerance);
   if (strip) top = strip;
-  if (bom.length) inkPartsList(ink, top, bom);
   const frame = frameBox(w, h);
+  if (bom.length) inkPartsList(ink, top, bom, frame);
   let bottom = frame[3] - 4;
   const notesW = tb[0] - frame[0] - 14;
   const nb = inkNotes(ink, frame[0] + 4, bottom, notesW, notes, st.size);
@@ -305,7 +311,7 @@ function viewScale(v: PlannedView, sc: Scales): number {
   return v.scale ?? (v.kind === "iso" ? sc.iso : sc.s);
 }
 
-function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext: Ext[], st: DimStyle, plan: DrawingPlan, spec: DrawingSpec) {
+function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext: Ext[], st: DimStyle, plan: DrawingPlan, spec: DrawingSpec, balloonCount = 0) {
   const scale = viewScale(v, sc);
   const s = sc.s;
   const e = lext[i];
@@ -328,8 +334,31 @@ function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext
   }
   // cutting-plane lines stick out of the views they are drawn on
   if (plan.views.some((o) => o.kind === "section" && o.parent === i)) for (const k of ["top", "right", "bottom", "left"] as const) out[k] = Math.max(out[k], 10);
-  if (plan.assembly && spec.balloons !== false && i === balloonView(plan)) for (const k of ["top", "right", "bottom", "left"] as const) out[k] += 16;
+  if (plan.assembly && spec.balloons !== false && i === balloonView(plan)) {
+    const ring = 16 + balloonRoom(balloonCount, box[2] - box[0] + 18, box[3] - box[1] + 18);
+    for (const k of ["top", "right", "bottom", "left"] as const) out[k] += ring;
+  }
   return out;
+}
+
+const BALLOON_GAP = 10.5;
+const BALLOON_STEP = 9.5;
+
+/** How many rings of balloons a view takes, and how far out the first one goes beyond its usual place, for n balloons around a w × h view. */
+function balloonRings(n: number, w: number, h: number): { rings: number; grow: number } {
+  const per = 2 * (w + h);
+  if (n * BALLOON_GAP <= per) return { rings: 1, grow: 0 };
+  // a second ring staggered outside the first, then both pushed out until they hold them all
+  const rings = 2;
+  let grow = 0;
+  while (n * BALLOON_GAP > rings * 2 * (w + h + 4 * grow) && grow < 200) grow += 2;
+  return { rings, grow };
+}
+
+/** The extra margin a view needs around its balloons. */
+function balloonRoom(n: number, w: number, h: number): number {
+  const r = balloonRings(n, w, h);
+  return r.grow + (r.rings - 1) * BALLOON_STEP;
 }
 
 function layoutItem(v: PlannedView, sc: Scales, e: Ext, margin: LayoutItem["margin"], spec: DrawingSpec, area: Box, sheetW: number, plan: DrawingPlan): LayoutItem {
@@ -361,8 +390,9 @@ function gridFor(v: PlannedView, plan: DrawingPlan, spec: DrawingSpec): [number,
 /** Fixed regions on the sheet: title block, tolerance strip, parts list, notes. */
 function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, notes: string[], st: DimStyle, table: DataTable | null): Box[] {
   const f = frameBox(w, h);
-  const tbH = 37 + (/2768/.test(tolerance) ? 9 : 0) + (bomRows ? (bomRows + 1) * 5.5 : 0);
-  const out: Box[] = [[f[2] - TB_W, f[3] - tbH, f[2], f[3]]];
+  const tbH = 37 + (/2768/.test(tolerance) ? 9 : 0);
+  const tb: Box = [f[2] - TB_W, f[3] - tbH, f[2], f[3]];
+  const out: Box[] = [tb, ...(bomRows ? partsListBoxes(bomRows, tb, f).boxes : [])];
   // notes and tables: measure them with a scratch ink
   const scratch = new Ink();
   const notesW = f[2] - TB_W - f[0] - 14;
@@ -377,6 +407,31 @@ function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, 
     out.push([gb[0] - 2, gb[1] - 2, gb[2] + 2, f[3]]);
   }
   return out;
+}
+
+/** Views side by side in rows across the area, wrapping when a row is full: the last resort when no layout fits. */
+function packRows(items: LayoutItem[], area: Box, gap: number): LayoutResult {
+  const origins: [number, number][] = [];
+  const boxes: Box[] = [];
+  let x = area[0];
+  let y = area[1];
+  let rowH = 0;
+  for (const it of items) {
+    const left = -it.ext[0] * it.scale + it.margin.left;
+    const right = it.ext[2] * it.scale + it.margin.right;
+    const top = it.ext[3] * it.scale + it.margin.top;
+    const bottom = -it.ext[1] * it.scale + it.margin.bottom;
+    if (x > area[0] && x + left + right > area[2]) {
+      x = area[0];
+      y += rowH + gap;
+      rowH = 0;
+    }
+    origins.push([x + left, y + top]);
+    boxes.push([x, y, x + left + right, y + top + bottom]);
+    x += left + right + gap;
+    rowH = Math.max(rowH, top + bottom);
+  }
+  return { origins, boxes, group: null };
 }
 
 /** Moves the views toward the middle of the free space when that keeps them clear of everything. */
@@ -735,8 +790,11 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
     anchors.push({ item: line.item, ax: best[0], ay: best[1], t: 0 });
   }
   if (!anchors.length) return;
-  // balloons sit on a rectangle around the view, ordered by angle so leaders do not cross
-  const R: Box = [sv.box[0] - 9, sv.box[1] - 9, sv.box[2] + 9, sv.box[3] + 9];
+  // balloons sit on a rectangle around the view, ordered by angle so leaders do not cross;
+  // many of them take a second ring, every other balloon staggered out
+  const { rings, grow } = balloonRings(anchors.length, sv.box[2] - sv.box[0] + 18, sv.box[3] - sv.box[1] + 18);
+  const g = 9 + grow;
+  const R: Box = [sv.box[0] - g, sv.box[1] - g, sv.box[2] + g, sv.box[3] + g];
   const W = R[2] - R[0];
   const H = R[3] - R[1];
   const per = 2 * (W + H);
@@ -761,7 +819,8 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
   };
   for (const a of anchors) a.t = toT(a.ax, a.ay);
   anchors.sort((a, b) => a.t - b.t);
-  const minGap = 10.5;
+  // the gap between neighbours on the rectangle; with two rings, neighbours alternate in and out
+  const minGap = BALLOON_GAP / rings;
   // spread evenly where they crowd
   for (let pass = 0; pass < 40; pass++) {
     let moved = false;
@@ -781,9 +840,15 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
     if (!moved) break;
   }
   const rb = 4;
-  for (const a of anchors) {
+  anchors.forEach((a, k) => {
     ink.key = `b${a.item}`;
-    const [bx, by] = atT(a.t);
+    let [bx, by] = atT(a.t);
+    if (rings > 1 && k % 2 === 1) {
+      // out from the rectangle's side it sits on
+      const side = Math.abs(by - R[1]) < 1e-6 ? [0, -1] : Math.abs(bx - R[2]) < 1e-6 ? [1, 0] : Math.abs(by - R[3]) < 1e-6 ? [0, 1] : [-1, 0];
+      bx += side[0] * BALLOON_STEP;
+      by += side[1] * BALLOON_STEP;
+    }
     const dx = a.ax - bx;
     const dy = a.ay - by;
     const L = Math.hypot(dx, dy) || 1;
@@ -791,7 +856,7 @@ function balloons(ink: Ink, plan: DrawingPlan, views: SheetView[], results: (Vie
     ink.dot(a.ax, a.ay, 0.6);
     ink.circle(bx, by, rb, "frame");
     ink.text(bx, by + st.size * 0.42, String(a.item), Math.min(3.5, st.size * 1.2), "middle", { bold: true });
-  }
+  });
 }
 
 // ---------- tables and fields ----------
@@ -810,7 +875,7 @@ const LIB_NAMES: Record<string, string> = {
 };
 
 function bomLines(parts: EvalPart[]): BomLine[] {
-  const rows = new Map<string, BomLine & { kind: string }>();
+  const rows = new Map<string, BomLine & { kind: string; names: Set<string> }>();
   const seen = new Set<string>();
   for (const p of parts) {
     const inst = p.id.split(".")[0];
@@ -819,16 +884,27 @@ function bomLines(parts: EvalPart[]): BomLine[] {
     const description = p.bom?.description ?? (p.kind === "part" ? `Custom part` : p.label);
     const kind = p.kind === "part" ? "Make" : "Buy";
     const name = p.kind === "part" ? humanize(p.label) : (LIB_NAMES[p.libKind ?? ""] ?? humanize(p.libKind ?? p.name));
-    const key = `${kind}|${description}|${p.material}|${p.kind === "part" ? p.name : ""}`;
+    // made parts of the same shape, material and hand are one line, whatever they are called
+    const hand = (p.worldXf ?? p.xf).filter((x) => x.op === "mirror").length % 2;
+    const key = p.kind === "part" ? `${kind}|${p.hash}|${hand}|${p.material}|${description}` : `${kind}|${description}|${p.material}`;
     const row = rows.get(key);
     const ids = parts.filter((q) => q.id.split(".")[0] === inst).map((q) => q.id);
     if (row) {
       row.qty++;
       row.ids.push(...ids);
-    } else rows.set(key, { item: 0, qty: 1, name, description: p.bom?.standard ? `${description} (${p.bom.standard})` : description, material: MATERIALS[p.material]?.label ?? p.material, ids, kind });
+      row.names.add(name);
+    } else rows.set(key, { item: 0, qty: 1, name, names: new Set([name]), description: p.bom?.standard ? `${description} (${p.bom.standard})` : description, material: MATERIALS[p.material]?.label ?? p.material, ids, kind });
   }
-  const list = [...rows.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "Make" ? -1 : 1));
+  for (const r of rows.values()) if (r.names.size > 1) r.name = sharedName([...r.names]);
+  const list = [...rows.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { numeric: true }) : a.kind === "Make" ? -1 : 1));
   return list.map((r, i) => ({ item: i + 1, qty: r.qty, name: r.name, description: r.description, material: r.material, ids: r.ids }));
+}
+
+/** One name for parts made alike: "Vane 1", "Vane 2" → "Vane"; else the first name and how many more. */
+function sharedName(names: string[]): string {
+  const stems = new Set(names.map((n) => n.replace(/[\s_#-]*\d+$/, "").trim()));
+  const stem = [...stems][0];
+  return stems.size === 1 && stem ? stem : `${names[0]} (+${names.length - 1})`;
 }
 
 function defaultNotes(spec: DrawingSpec, plan: DrawingPlan, built: { datums: unknown[]; notes: string[] }): string[] {
@@ -992,13 +1068,13 @@ function finishText(parts: EvalPart[]): string {
   return FINISHES[id]?.label ?? id;
 }
 
+/** The parts' mass as the design's mass report gives it: a stated mass: where there is one (bought parts, hollow parts), else the solid's volume times its material's density. */
 function massText(parts: EvalPart[], volumeOf?: (p: EvalPart) => number | undefined): string {
-  if (!volumeOf) return "";
   let g = 0;
   for (const p of parts) {
-    const v = volumeOf(p);
-    if (v === undefined) return "";
-    g += (v / 1000) * materialDensity(p.material);
+    const m = partMass(p, volumeOf?.(p), materialDensity(p.material));
+    if (m === undefined) return "";
+    g += m;
   }
   return g >= 1000 ? `${fmtNum(g / 1000, 2)} kg` : `${fmtNum(g, g < 10 ? 2 : 1)} g`;
 }

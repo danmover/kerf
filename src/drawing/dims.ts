@@ -11,6 +11,7 @@ import { fitLimits, generalDeviation, type DrawingSpec } from "./spec";
 import { textWidth } from "./text";
 import { partExtent, toView, type BBoxOf, type DrawingPlan } from "./views";
 import { designIntent, type Intent, type Role } from "./intent";
+import { squareUp } from "./square";
 import { boreTol, datumBox, faceName, fcfHeight, fcfWidth, flatnessTol, gdtWanted, holePosition, inkDatum, inkFcf, runoutTol, squareTol, type DatumInfo, type Fcf } from "./gdt";
 
 export type Side = "bottom" | "top" | "left" | "right";
@@ -163,6 +164,22 @@ function partsOf(model: Model): Parts {
   return out;
 }
 
+const framedCache = new WeakMap<Parts, Parts>();
+
+/** The parts as the drawing shows them: a part drawn squared up is squared up in every design its dimensions are checked against. */
+function framed(parts: Parts, plan: DrawingPlan): Parts {
+  const p = plan.parts[0];
+  if (plan.assembly || !p?.worldXf) return parts;
+  let out = framedCache.get(parts);
+  if (!out) {
+    out = new Map(parts);
+    const q = parts.get(p.id);
+    if (q) out.set(p.id, squareUp(q));
+    framedCache.set(parts, out);
+  }
+  return out;
+}
+
 function featuresOf(p: EvalPart | undefined): Feature[] {
   if (!p) return [];
   let out = featCache.get(p);
@@ -265,11 +282,11 @@ export function buildDims(ctx: DimContext): BuiltDims {
     for (const n of partNames) for (const p of linkParams.get(n) ?? []) candidates.add(p);
     const same = model.params.filter((p) => candidates.has(p.name) && typeof p.value === "number" && close(p.value, value) && !p.locked);
     if (!same.length) return undefined;
-    const base = probe(partsOf(model));
+    const base = probe(framed(partsOf(model), plan));
     if (base === undefined) return undefined;
     const hits = same.filter((p) => {
       const parts = nudged(model, p.name, (p.value as number) + NUDGE, reevaluate);
-      const moved = parts ? probe(parts) : undefined;
+      const moved = parts ? probe(framed(parts, plan)) : undefined;
       return moved !== undefined && close(moved - base, NUDGE, 1e-3);
     });
     return hits.length === 1 ? hits[0].name : undefined;
@@ -477,20 +494,20 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
 
   // per view: the groups of features seen end-on, for position dimensions; concentric groups merge
   const anchors = new Map<number, Anchor[][]>();
-  const addGroup = (vi: number, list: Feature[], centers: [number, number][]) => {
+  const addGroup = (vi: number, list: Feature[], centers: [number, number][], track?: Anchor["at"][], tagged?: string) => {
     const groups = anchors.get(vi) ?? [];
     const same = (a: Anchor[], b: [number, number][]) => a.length === b.length && a.every(({ c }) => b.some((d) => close(c[0], d[0], 0.01) && close(c[1], d[1], 0.01)));
     const frame = ctx.plan.views[vi].frame;
-    const tag = featureTag(list[0]);
+    const tag = tagged ?? featureTag(list[0]);
     const twin = groups.find((g) => same(g, centers));
     // concentric features share the group, and their sizes together name it
     if (twin) for (const a of twin) a.tag = a.tag.split("-").includes(tag) ? a.tag : `${a.tag}-${tag}`;
-    else groups.push(list.map((f, k) => ({ c: centers[k], at: trackFeature(part.id, feats.indexOf(f), frame), tag })));
+    else groups.push(centers.map((c, k) => ({ c, at: track?.[k] ?? trackFeature(part.id, feats.indexOf(list[k]), frame), tag })));
     anchors.set(vi, groups);
   };
 
   // callouts are collected first so concentric ones can share a leader
-  type Callout = { vi: number; centers: [number, number][]; order: number; size: number; lines: string[]; r: number; label: string; param?: string; value: number; feats: Feature[]; role?: Role; fit?: { code: string; tol: [number, number] } };
+  type Callout = { vi: number; centers: [number, number][]; order: number; size: number; lines: string[]; r: number; label: string; param?: string; value: number; feats: Feature[]; role?: Role; fit?: { code: string; tol: [number, number] }; slot?: boolean; leader?: [number, number] };
   const callouts: Callout[] = [];
   const roleOf = (f: Feature) => intent.roles.get(feats.indexOf(f));
   /** "H7 (+0.018/0)" after the diameter, and the role line, for a feature with a function */
@@ -516,9 +533,47 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     return Math.max(s0, s1) < hi - 0.02 && Math.min(s0, s1) <= lo + 0.02;
   };
 
+  // rows of overlapping holes or bores cut one after another make one slot, straight or on an arc
+  const chained = new Set<number>();
+  for (const ch of slotChains(ctx, feats)) {
+    for (const i of ch.members) chained.add(i);
+    const f0 = feats[ch.members[0]] as RoundCut;
+    const frame = ctx.plan.views[ch.vi].frame;
+    const depth = cutDepth(f0, extent);
+    const deep = f0.through || depth === null ? "THRU" : `× ${fmtNum(depth, 1)} DEEP${farSide(f0.at, f0.dir, depth, ch.vi) ? " FAR SIDE" : ""}`;
+    const w = fmtNum(f0.d, f0.d < 10 ? 2 : 1);
+    const ends = [ch.members[0], ch.members[ch.members.length - 1]].map((i) => toView((feats[i] as RoundCut).at, frame));
+    const lead = ends[0][0] + ends[0][1] >= ends[1][0] + ends[1][1] ? ends[0] : ends[1];
+    const track = (i: number) => trackFeature(part.id, i, frame);
+    let c: Callout;
+    if (ch.kind === "arc") {
+      const [i0, im, i1] = [ch.members[0], ch.members[Math.floor(ch.members.length / 2)], ch.members[ch.members.length - 1]].map(track);
+      const pivot: Anchor["at"] = (parts) => {
+        const [a, b, d] = [i0(parts), im(parts), i1(parts)];
+        return a && b && d ? (circumcentre(a, b, d) ?? undefined) : undefined;
+      };
+      const span = ch.sweep >= 359.5 ? "360°" : `${fmtNum(ch.sweep, 1)}° (${fmtNum(ch.from, 1)}° TO ${fmtNum(ch.from + ch.sweep, 1)}°)`;
+      c = { vi: ch.vi, centers: [ch.centre], order: 1, size: f0.d, lines: [`ARC SLOT ${w} WIDE ${deep}`, `R${fmtNum(ch.r)} × ${span}`], r: f0.d / 2, value: f0.d, label: `Arc slot ${w} wide, R${fmtNum(ch.r)} in ${what}`, feats: [f0], slot: true, leader: lead };
+      callouts.push(c);
+      addGroup(ch.vi, [f0], [ch.centre], [pivot], `arc${fmtNum(ch.r)}`);
+    } else {
+      const [ia, ib] = [ch.members[0], ch.members[ch.members.length - 1]].map(track);
+      const mid: Anchor["at"] = (parts) => {
+        const [a, b] = [ia(parts), ib(parts)];
+        return a && b ? [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] : undefined;
+      };
+      const len = fmtNum(ch.length + f0.d);
+      const tilt = ((ch.angle % 180) + 180) % 180;
+      const square = close(tilt, 0, 0.05) || close(tilt, 90, 0.05) || close(tilt, 180, 0.05);
+      c = { vi: ch.vi, centers: [ch.centre], order: 1, size: f0.d, lines: [`SLOT ${w} × ${len} ${deep}`, ...(square ? [] : [`AT ${fmtNum(tilt, 1)}°`])], r: f0.d / 2, value: f0.d, label: `Slot ${w} × ${len} in ${what}`, feats: [f0], slot: true, leader: lead };
+      callouts.push(c);
+      addGroup(ch.vi, [f0], [ch.centre], [mid], `slot${w}`);
+    }
+  }
+
   // holes, grouped into "n×" callouts
   const groups = new Map<string, Extract<Feature, { t: "hole" }>[]>();
-  for (const f of feats) if (f.t === "hole") groups.set(holeKey(f), [...(groups.get(holeKey(f)) ?? []), f]);
+  feats.forEach((f, i) => f.t === "hole" && !chained.has(i) && groups.set(holeKey(f), [...(groups.get(holeKey(f)) ?? []), f]));
   for (const list of groups.values()) {
     const vi = viewAlong(ctx, list[0].dir);
     if (vi < 0) continue;
@@ -535,8 +590,8 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
 
   // cut and added cylinders: bores, seats and bosses
   const cyls = new Map<string, Extract<Feature, { t: "cyl" }>[]>();
-  for (const f of feats) {
-    if (f.t !== "cyl") continue;
+  for (const [i, f] of feats.entries()) {
+    if (f.t !== "cyl" || chained.has(i)) continue;
     const k = [f.op, f.d.toFixed(3), f.op === "cut" ? (f.through ? "T" : f.h.toFixed(2)) : "", f.dir.map((v) => Math.round(Math.abs(v) * 1000)).join(","), roleOf(f)?.text ?? ""].join("|");
     cyls.set(k, [...(cyls.get(k) ?? []), f]);
   }
@@ -602,14 +657,14 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
   const datumSets: { centers: [number, number][]; letter: string }[] = [];
   const modes = main >= 0 ? axisModes(ctx.ext[main], (anchors.get(main) ?? []).map((g) => g.map((a) => a.c))) : null;
   if (gdt && main >= 0 && modes && !turned) {
-    datumFrame(ctx, part, feats, main, modes, callouts, dims, extra, frameDatums, datumSets, intent.family, extent);
+    datumFrame(ctx, part, feats, main, modes, callouts.filter((c) => !c.slot), dims, extra, frameDatums, datumSets, intent.family, extent);
   }
 
   // one leader per set of concentric features: holes first, then bores by size, then bosses
   const used = new Set<Callout>();
   for (const c of callouts) {
     if (used.has(c)) continue;
-    const set = callouts.filter((o) => !used.has(o) && o.vi === c.vi && sameSet(o.centers, c.centers)).sort((a, b) => a.order - b.order || a.size - b.size);
+    const set = callouts.filter((o) => !used.has(o) && o.vi === c.vi && !!o.slot === !!c.slot && sameSet(o.centers, c.centers)).sort((a, b) => a.order - b.order || a.size - b.size);
     for (const o of set) used.add(o);
     const lines = set.flatMap((o) => o.lines);
     if (c.centers.length > 1) lines[0] = `${c.centers.length}× ${lines[0]}`;
@@ -619,22 +674,23 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     let frames: Fcf[] | undefined;
     let datum: string | undefined;
     if (gdt && c.vi === main && frameDatums.length) {
-      datum = datumSets.find((d) => sameSet(d.centers, c.centers))?.letter;
+      datum = c.slot ? undefined : datumSets.find((d) => sameSet(d.centers, c.centers))?.letter;
       const seat = set.some((o) => o.role?.kind === "bearing" || o.role?.kind === "dowel");
       // the first datum feature after the face is held square to it; a later one is positioned from the datums before it
       const k = datum ? frameDatums.indexOf(datum) : -1;
       if (datum && k <= 1) frames = [{ kind: "perpendicularity", tol: squareTol(intent.family), dia: true, datums: frameDatums.slice(0, 1) }];
       else if (datum) frames = [{ kind: "position", tol: boreTol(intent.family, seat), dia: true, datums: frameDatums.slice(0, k) }];
       else {
-        const hole = set.find((o) => o.feats[0].t === "hole");
+        const hole = set.find((o) => o.feats[0].t === "hole" && !o.slot);
         const pos = hole && !seat ? holePosition(hole.feats[0] as Extract<Feature, { t: "hole" }>, intent.family) : { tol: boreTol(intent.family, seat), mmc: false };
-        const slot = set.every((o) => o.feats[0].t === "slot");
-        frames = [{ kind: "position", tol: pos.tol, dia: !slot, mmc: pos.mmc || undefined, datums: frameDatums.filter((d) => !datumSets.some((x) => x.letter === d && sameSet(x.centers, c.centers))) }];
+        const slot = set.every((o) => o.slot || o.feats[0].t === "slot");
+        frames = [{ kind: "position", tol: pos.tol, dia: !slot, mmc: pos.mmc || undefined, datums: frameDatums.filter((d) => c.slot || !datumSets.some((x) => x.letter === d && sameSet(x.centers, c.centers))) }];
       }
     }
     const fit = set.find((o) => o.fit)?.fit;
     const role = set.find((o) => o.role)?.role;
-    push({ view: c.vi, kind: "callout", a: c.centers[rep], b: c.centers[rep], value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: c.centers[rep], r: big.r }, anchors: c.centers, frames, datum, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined, fit: fit?.code, tol: fit?.tol, general: fit ? undefined : undefined, role: role?.text } });
+    const at = c.leader ?? c.centers[rep];
+    push({ view: c.vi, kind: "callout", a: at, b: at, value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: at, r: big.r }, anchors: c.leader ? [at] : c.centers, frames, datum, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined, fit: fit?.code, tol: fit?.tol, general: fit ? undefined : undefined, role: role?.text } });
   }
 
   // positions of the end-on features: basic where a frame holds their tolerance
@@ -819,6 +875,123 @@ function datumFrame(
   });
 }
 
+type RoundCut = Extract<Feature, { t: "hole" }> | Extract<Feature, { t: "cyl" }>;
+
+/** How deep a blind hole or cut cylinder goes into the part; null when it runs through. */
+function cutDepth(f: RoundCut, extent: (dir: V3) => [number, number]): number | null {
+  if (f.t === "hole") return f.through ? null : f.depth;
+  if (f.through) return null;
+  const [lo, hi] = extent(f.dir);
+  const start = vdot(f.at, f.dir);
+  return Math.min(start + f.h, hi) - Math.max(start, lo);
+}
+
+/** Centre of the circle through three points, or null when they are in a line. */
+export function circumcentre(a: [number, number], b: [number, number], c: [number, number]): [number, number] | null {
+  const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+  if (Math.abs(d) < 1e-9) return null;
+  const a2 = a[0] ** 2 + a[1] ** 2;
+  const b2 = b[0] ** 2 + b[1] ** 2;
+  const c2 = c[0] ** 2 + c[1] ** 2;
+  return [(a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d, (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d];
+}
+
+/** A slot cut as a row of overlapping holes or cylinders: its members in order along it, and its shape in the view. */
+type ChainShape = { centre: [number, number] } & ({ kind: "straight"; length: number; angle: number } | { kind: "arc"; r: number; from: number; sweep: number });
+export type SlotChain = ChainShape & { vi: number; members: number[] };
+
+/**
+ * Rows of three or more identical round cuts at the same depth, each
+ * overlapping the next, that run along a line or an arc: the way a slot is
+ * often modelled (a loop of cylinders). Each becomes one slot instead of a
+ * dozen holes with a dimension apiece.
+ */
+export function slotChains(ctx: DimContext, feats: Feature[]): SlotChain[] {
+  const out: SlotChain[] = [];
+  const buckets = new Map<string, number[]>();
+  feats.forEach((f, i) => {
+    let k: string | null = null;
+    if (f.t === "hole" && !f.thread) k = `h|${holeKey(f)}`;
+    else if (f.t === "cyl" && f.op === "cut") k = ["c", f.part, f.d.toFixed(3), f.through ? "T" : f.h.toFixed(2), f.dir.map((v) => Math.round(v * 1000)).join(",")].join("|");
+    if (!k) return;
+    const r = f as RoundCut;
+    k += `|${vdot(r.at, vnorm(r.dir)).toFixed(2)}`;
+    buckets.set(k, [...(buckets.get(k) ?? []), i]);
+  });
+  for (const idx of buckets.values()) {
+    if (idx.length < 3) continue;
+    const f0 = feats[idx[0]] as RoundCut;
+    const vi = viewAlong(ctx, f0.dir);
+    if (vi < 0) continue;
+    const frame = ctx.plan.views[vi].frame;
+    const pts = idx.map((i) => toView((feats[i] as RoundCut).at, frame));
+    const dist = (a: number, b: number) => Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]);
+    const seen = new Set<number>();
+    for (let s0 = 0; s0 < idx.length; s0++) {
+      if (seen.has(s0)) continue;
+      // the cuts that overlap one another, one after the next
+      const comp: number[] = [];
+      const stack = [s0];
+      seen.add(s0);
+      while (stack.length) {
+        const x = stack.pop()!;
+        comp.push(x);
+        for (let y = 0; y < idx.length; y++) if (!seen.has(y) && dist(x, y) < f0.d - 1e-6) (seen.add(y), stack.push(y));
+      }
+      if (comp.length < 3) continue;
+      const ch = chainShape(comp.map((k) => pts[k]), f0.d);
+      if (ch) out.push({ ...ch.shape, vi, members: ch.order.map((k) => idx[comp[k]]) });
+    }
+  }
+  return out;
+}
+
+/** The line or arc a row of centres runs along, and their order along it; null for any other path. */
+function chainShape(pts: [number, number][], d: number): { order: number[]; shape: ChainShape } | null {
+  const tol = Math.max(0.01, d * 0.002);
+  let fa = 0;
+  let fb = 1;
+  let far = -1;
+  for (let a = 0; a < pts.length; a++)
+    for (let b = a + 1; b < pts.length; b++) {
+      const l = Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]);
+      if (l > far) [fa, fb, far] = [a, b, l];
+    }
+  const [A, B] = [pts[fa], pts[fb]];
+  const u: [number, number] = [(B[0] - A[0]) / far, (B[1] - A[1]) / far];
+  const off = (p: [number, number]) => Math.abs((p[0] - A[0]) * u[1] - (p[1] - A[1]) * u[0]);
+  const steps = (order: number[]) => order.every((k, i) => i === 0 || Math.hypot(pts[k][0] - pts[order[i - 1]][0], pts[k][1] - pts[order[i - 1]][1]) < d - 1e-6);
+  if (pts.every((p) => off(p) < tol)) {
+    const order = pts.map((_, k) => k).sort((a, b) => (pts[a][0] - A[0]) * u[0] + (pts[a][1] - A[1]) * u[1] - ((pts[b][0] - A[0]) * u[0] + (pts[b][1] - A[1]) * u[1]));
+    if (!steps(order)) return null;
+    return { order, shape: { kind: "straight", centre: [(A[0] + B[0]) / 2, (A[1] + B[1]) / 2], length: far, angle: (Math.atan2(u[1], u[0]) * 180) / Math.PI } };
+  }
+  // an arc: the circle through the ends and the point furthest from their chord
+  let m = 0;
+  for (let k = 0; k < pts.length; k++) if (off(pts[k]) > off(pts[m])) m = k;
+  const c = circumcentre(A, pts[m], B);
+  if (!c) return null;
+  const r = Math.hypot(A[0] - c[0], A[1] - c[1]);
+  if (!pts.every((p) => Math.abs(Math.hypot(p[0] - c[0], p[1] - c[1]) - r) < tol)) return null;
+  const ang = pts.map((p) => Math.atan2(p[1] - c[1], p[0] - c[0]));
+  const sorted = ang.map((a, k) => ({ a, k })).sort((x, y) => x.a - y.a);
+  // the slot spans everything but the widest gap between neighbours
+  let gap = -1;
+  let after = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    const next = i + 1 < sorted.length ? sorted[i + 1].a : sorted[0].a + 2 * Math.PI;
+    if (next - sorted[i].a > gap) [gap, after] = [next - sorted[i].a, (i + 1) % sorted.length];
+  }
+  const order = [...sorted.slice(after), ...sorted.slice(0, after)].map((x) => x.k);
+  const ring = gap < d / r;
+  if (!ring && !steps(order)) return null;
+  const deg = (a: number) => (a * 180) / Math.PI;
+  let from = deg(ang[order[0]]);
+  if (from > 180) from -= 360;
+  const sweep = ring ? 360 : 360 - deg(gap);
+  return { order, shape: { kind: "arc", centre: c, r, from, sweep } };
+}
+
 /** The feature to hang a callout on: the top-right one. */
 function repIndex(centers: [number, number][]): number {
   let best = 0;
@@ -867,7 +1040,7 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
       if (on) return on.at(parts)?.[axis];
       if (close(val, 0, 1e-6)) return 0;
       if (!close(val, lo, 0.05) && !close(val, hi, 0.05)) return undefined;
-      const s0 = spanOver(partsOf(ctx.model), ids, dir);
+      const s0 = spanOver(framed(partsOf(ctx.model), ctx.plan), ids, dir);
       const s1 = spanOver(parts, ids, dir);
       if (!s0 || !s1) return undefined;
       return close(val, lo, 0.05) ? val + s1[0] - s0[0] : val + s1[1] - s0[1];

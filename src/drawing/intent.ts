@@ -10,6 +10,7 @@ import { applyXforms, applyXformsToDir, vcross, vdot, vnorm, vsub, type V3 } fro
 import { PROCESSES } from "../mfg/profiles";
 import type { Feature } from "./features";
 import { fmtNum } from "./sheet";
+import { drawingFrame } from "./square";
 
 export type Family = "additive" | "subtractive" | "formative" | "sheet" | "none";
 
@@ -118,9 +119,16 @@ export function designIntent(part: EvalPart, model: Model, feats: Feature[]): In
   const family = processFamily(part);
   const machined = family === "subtractive";
   const roles = new Map<number, Role>();
-  const bearings = firstInstances(model, (p) => !!p.bearing && p.name !== part.name);
+  // the parts around it, moved into the frame the part is drawn in
+  const into = drawingFrame(part);
+  const moved = <T extends { center: V3; axis: V3 }>(i: T): T => ({ ...i, center: into.pt(i.center), axis: into.dir(i.axis) });
+  const bearings = firstInstances(model, (p) => !!p.bearing && p.name !== part.name).map((p) => (part.worldXf ? { ...p, bearing: moved(p.bearing!) } : p));
   const dowels = firstInstances(model, (p) => p.libKind === "dowel" && p.name !== part.name);
-  const gears = firstInstances(model, (p) => !!p.gear && p.name !== part.name);
+  const gears = firstInstances(model, (p) => !!p.gear && p.name !== part.name).map((p) => (part.worldXf ? { ...p, gear: moved(p.gear!) } : p));
+  const dowelAxis = (p: EvalPart): Axis | null => {
+    const ax = componentAxis(p);
+    return ax && { at: into.pt(ax.at), dir: into.dir(ax.dir) };
+  };
 
   // bores that hold a bearing's outer ring, holes that hold dowels
   feats.forEach((f, i) => {
@@ -136,7 +144,7 @@ export function designIntent(part: EvalPart, model: Model, feats: Feature[]): In
       return;
     }
     for (const d of dowels) {
-      const ax = componentAxis(d);
+      const ax = dowelAxis(d);
       const dia = d.recipe.base?.t === "cyl" ? d.recipe.base.d : 0;
       if (!ax || Math.abs(f.d - dia) > 0.06 || !coaxial(axis, ax)) continue;
       roles.set(i, { kind: "dowel", text: `FOR Ø${fmtNum(dia)} DOWEL`, fit: family === "additive" ? undefined : "H7", ra: machined ? 1.6 : undefined, mate: d.name });
