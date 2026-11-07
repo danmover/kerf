@@ -198,7 +198,7 @@ export const MECH_FNS: [string, Fn][] = [
   mechFn(
     "pivot",
     ["what", "on", "at", "axis", "limits", "friction", "damping", "spring", "free", "drive", "zero", "name"],
-    `A hinge or shaft turning about an axis. ${JOINT_DOC}; at: a point on the axis and axis: its direction (both from the part's spin:/mesh: or gear when left out); limits: end stops from the design pose, like (-10deg, 90deg); friction: torque in its bearings (N·mm); damping: N·mm per deg/s; spring: a torsion spring, N·mm per deg, relaxed at free: (deg from the design pose, 0); drive: the gearmotor or servo turning it (a servo also takes zero: its angle at the design pose, deg). Results: <name>.angle, .angle_min, .angle_max, .turns, .max_rpm, .peak_torque, .bearing_load, .hit_stop.`,
+    `A hinge or shaft turning about an axis. ${JOINT_DOC}; at: a point on the axis and axis: its direction (both from the part's spin:/mesh: or gear when left out); limits: end stops from the design pose, like (-10deg, 90deg); friction: torque in its bearings (N·mm); damping: N·mm per deg/s; spring: a torsion spring, N·mm per deg, relaxed at free: (deg from the design pose, 0); drive: the gearmotor or servo turning it (a servo also takes zero: its angle at the design pose, deg). Results: <name>.angle, .angle_min, .angle_max, .turns, .max_rpm, .peak_torque, .hold_torque (the most averaged over any one second: a servo reaches its stall torque for a moment whenever it starts or corrects, so judge its load by this), .bearing_load, .hit_stop.`,
     (a) => new MechValue(joint("pivot", a), "pivot"),
   ),
   mechFn(
@@ -411,7 +411,7 @@ export const MECH_FNS: [string, Fn][] = [
     const s = nameOf(a.value("sprocket"), a.ctx, "sim.track(): sprocket");
     return new MechValue({ k: "track", name: a.has("name") ? a.str("name") : `${s} track`, sprocket: s, d: a.positive("d"), length: a.positive("length"), toward: dirOf(a, "toward"), grip: a.num("grip", -1) }, "track");
   }),
-  mechFn("box", ["size", "mass", "at", "grip", "name"], "A loose box the machine pushes, grips, lifts or carries: size: (x, y, z) mm; mass: g or kg; at: its centre in the design's coordinates; grip: friction on it (0.5).", (a) =>
+  mechFn("box", ["size", "mass", "at", "grip", "name"], "A loose box the machine pushes, grips, lifts or carries: size: (x, y, z) mm; mass: g or kg; at: its centre in the design's coordinates; grip: friction on it (0.5). Results: <name>.x, .y, .z (where its centre ended up), .moved, .z_max (the highest its centre got).", (a) =>
     new MechValue({ k: "box", name: a.has("name") ? a.str("name") : "box", size: v3(a.value("size") ?? a.ctx.error("sim.box() needs size"), a.ctx, "sim.box(): size"), mass: a.positive("mass"), at: v3(a.value("at") ?? a.ctx.error("sim.box() needs at"), a.ctx, "sim.box(): at"), grip: a.num("grip", 0.5) }, "box"),
   ),
   mechFn("power", ["what", "volts", "angle"], "With no firmware: the volts on a gearmotor or linear actuator over time, like [(0s, 0V), (0.5s, 12V), (4s, 12V), (4.5s, -12V)], or a servo's angle (deg) over time. Motors and actuators run at their rated volts when left out.", (a) => {

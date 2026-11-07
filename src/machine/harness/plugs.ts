@@ -198,6 +198,11 @@ function slipLeads(n: number, len: number): PlugTable {
 /** Plugs for catalog parts, by catalog id and pin id. */
 export const PLUGS: Record<string, PlugTable> = {
   skr_mini_e3_v3: SKR,
+  // KY-023 thumb stick (34 × 26): its five right-angle header pins stick out of the -X end on the top side, in the
+  // board's order GND, +5V, VRx, VRy, SW, so Dupont plugs go on along -X
+  joystick_ky023: Object.fromEntries(
+    ["GND", "VCC", "VRX", "VRY", "SW"].map((id, k): [string, PlugSpec] => [id, { kind: "dupont", at: [-17, (k - 2) * 2.54, 2.87], out: NX, row: Y, ways: 1, socket: true }]),
+  ),
   rpi_zero_2w: PI,
   lrs_350_24: LRS,
   // 36 × 26 buck module: input pads at the -X end, output pads at the +X end beside the USB socket

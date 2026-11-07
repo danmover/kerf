@@ -47,6 +47,8 @@ export class MechWorld implements World {
   private stopCount = new Map<string, number>();
   private flagged = new Set<string>();
   private start = new Map<string, V3>();
+  /** the highest each moving body's centre got, m */
+  private topZ = new Map<string, number>();
   private peakPower = new Map<string, number>();
   jets: JetForces[] = [];
   unstable = false;
@@ -145,6 +147,7 @@ export class MechWorld implements World {
       const h = dt / this.substeps;
       for (let i = 0; i < this.substeps; i++) this.sys.step(h);
       this.checkStable(t + dt);
+      for (const [id, b] of this.sys.bodies) if (!b.fixed && b.x[2] > (this.topZ.get(id) ?? -Infinity)) this.topZ.set(id, b.x[2]);
     }
     const out = new Map<string, DriveMotion>();
     for (const [comp, a] of this.devs) {
@@ -361,6 +364,7 @@ export class MechWorld implements World {
         r[`${name}.turns`] = j.coord / (2 * Math.PI);
         r[`${name}.max_rpm`] = st.maxSpeed * RPM;
         r[`${name}.peak_torque`] = st.peakLoad * 1000;
+        r[`${name}.hold_torque`] = st.holdLoad * 1000;
       } else if (j.kind === "slider") {
         r[`${name}.pos`] = j.coord * 1000;
         r[`${name}.pos_min`] = st.min * 1000;
@@ -403,6 +407,7 @@ export class MechWorld implements World {
       r[`${id}.y`] = b.x[1] * 1000;
       r[`${id}.z`] = b.x[2] * 1000;
       r[`${id}.moved`] = Math.hypot(...sub(b.x, x0)) * 1000;
+      r[`${id}.z_max`] = Math.max(b.x[2], this.topZ.get(id) ?? b.x[2]) * 1000;
     }
     if (!s.frame.fixed) {
       const x0 = this.start.get(FRAME)!;

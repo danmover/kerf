@@ -10,7 +10,13 @@ double atan2(double y, double x);
 double sqrt(double x);
 double tan(double x);
 double fabs(double x);
+double sin(double x);
+double cos(double x);
+double acos(double x);
+double atof(const char *s);
+int strcmp(const char *a, const char *b);
 }
+#include <avr/pgmspace.h>
 
 #define HIGH 0x1
 #define LOW 0x0

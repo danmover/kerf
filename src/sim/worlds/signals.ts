@@ -3,7 +3,7 @@
 // controller's analog inputs, so firmware that listens to a signal (a tuner,
 // a level meter) runs against something like the real thing.
 
-export type SignalShape = "pluck" | "sine" | "square";
+export type SignalShape = "pluck" | "sine" | "square" | "path";
 
 export interface SignalSpec {
   /** the net it drives, by name ("TUNER_IN") or as "component.PIN" */
@@ -23,6 +23,8 @@ export interface SignalSpec {
   every: number;
   /** seconds for a pluck to fall to 37 % */
   decay: number;
+  /** shape "path": (seconds, volts) points with straight lines between them, held flat past the ends */
+  points?: [number, number][];
 }
 
 const NOTE = /^([A-Ga-g])([#b]?)(-?\d)$/;
@@ -50,6 +52,20 @@ const PLUCK_PEAK = (() => {
 
 /** The signal as volts at a time in seconds. */
 export function signalFn(s: SignalSpec): (t: number) => number {
+  if (s.shape === "path") {
+    const pts = s.points?.length ? s.points : [[0, s.offset] as [number, number]];
+    return (t) => {
+      if (t <= pts[0][0]) return pts[0][1];
+      for (let i = 1; i < pts.length; i++) {
+        const [t1, v1] = pts[i];
+        if (t <= t1) {
+          const [t0, v0] = pts[i - 1];
+          return t1 > t0 ? v0 + ((v1 - v0) * (t - t0)) / (t1 - t0) : v1;
+        }
+      }
+      return pts[pts.length - 1][1];
+    };
+  }
   const w = 2 * Math.PI * s.f;
   if (s.shape === "sine") return (t) => (t < s.start ? s.offset : s.offset + s.amplitude * Math.sin(w * (t - s.start)));
   if (s.shape === "square") return (t) => (t < s.start ? s.offset : s.offset + s.amplitude * (Math.sin(w * (t - s.start)) >= 0 ? 1 : -1));
@@ -66,6 +82,11 @@ export function signalFn(s: SignalSpec): (t: number) => number {
 
 /** How a signal reads in a run's assumptions. */
 export function describeSignal(s: SignalSpec): string {
+  if (s.shape === "path") {
+    const pts = s.points ?? [];
+    const vs = pts.map((p) => p[1]);
+    return `${s.on}: moved by hand between ${+Math.min(...vs).toFixed(2)} and ${+Math.max(...vs).toFixed(2)} V over ${+(pts.length ? pts[pts.length - 1][0] : 0).toFixed(1)} s (${pts.length} points)`;
+  }
   // "an A2", "an E2", "an F3", but "a C4"
   const what = s.shape === "pluck" ? `${s.note ? `${/^[AEF]/i.test(s.note) ? "an" : "a"} ${s.note} ` : "a "}string plucked${s.every > 0 ? ` every ${+s.every.toFixed(2)} s` : " once"}` : `a ${s.shape} wave`;
   return `${s.on}: ${what} at ${+s.f.toFixed(2)} Hz, ±${+s.amplitude.toFixed(3)} V about ${+s.offset.toFixed(3)} V from ${+s.start.toFixed(2)} s`;

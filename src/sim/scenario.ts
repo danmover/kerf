@@ -188,10 +188,19 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   simFn(
     "signal",
-    ["on", "note", "f", "cents", "shape", "amplitude", "offset", "start", "every", "decay"],
-    'A test signal on a net that reaches one of the controller\'s analog inputs, for sim.bench(signals: ...). on: the net\'s name ("TUNER_IN") or "component.PIN"; note: a note name ("E2", "A4", "C#3") or f: its frequency; cents: how far off the note it is (+ sharp); shape: "pluck" (a plucked string, the default with a note), "sine" (the default with f) or "square"; amplitude: peak volts either side of the offset (0.5V); offset: the volts it sits at (2.5V); start: when it starts, seconds after power-up (1s); every: seconds between plucks (3s; 0 plucks once); decay: seconds for a pluck to fade to 37 % (1.5s).',
+    ["on", "note", "f", "cents", "shape", "amplitude", "offset", "start", "every", "decay", "volts"],
+    'A test signal on a net that reaches one of the controller\'s analog inputs, for sim.bench(signals: ...). on: the net\'s name ("TUNER_IN") or "component.PIN"; note: a note name ("E2", "A4", "C#3") or f: its frequency; cents: how far off the note it is (+ sharp); shape: "pluck" (a plucked string, the default with a note), "sine" (the default with f) or "square"; amplitude: peak volts either side of the offset (0.5V); offset: the volts it sits at (2.5V); start: when it starts, seconds after power-up (1s); every: seconds between plucks (3s; 0 plucks once); decay: seconds for a pluck to fade to 37 % (1.5s). Or volts: a list of (time, volts) points with straight lines between them, for a slow input a person moves: a thumb stick pushed and let go, a knob turned (sim.signal(on: "stick.VRY", volts: [(0s, 2.5V), (4s, 2.5V), (4.3s, 4.8V), (6s, 4.8V), (6.3s, 2.5V)])).',
     (a, ctx) => {
       const on = a.str("on");
+      const pv = a.value("volts");
+      if (pv !== undefined) {
+        // a slow input someone moves: straight lines between (time, volts) points
+        if (!Array.isArray(pv) || !pv.length) return ctx.error("sim.signal(): volts should be a list of (time, volts) points like [(0s, 2.5V), (2s, 4.5V)]");
+        const points: [number, number][] = pv.map((p, i) => (p instanceof Vec && p.v.length === 2 ? ([p.v[0], p.v[1]] as [number, number]) : ctx.error(`sim.signal(): volts point ${i + 1} should be (time, volts), like (2s, 4.5V)`)));
+        for (let i = 1; i < points.length; i++) if (points[i][0] < points[i - 1][0]) ctx.error("sim.signal(): volts times must go up");
+        const spec: SignalSpec = { on, shape: "path", f: 0, amplitude: 0, offset: points[0][1], start: 0, every: 0, decay: 1, points };
+        return new SimSpec("signal", spec, `signal on ${on}`);
+      }
       const note = a.value("note");
       let f = a.num("f", 0);
       if (note !== undefined) {
@@ -321,7 +330,7 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   simFn(
     "press",
     ["part", "at", "until"],
-    "Someone presses a switch or emergency stop: its normally closed contacts open and its normally open ones close. part: the switch; at: when; until: when it is released (a latching e-stop stays pressed when left out). An NC contact in an ESC's signal wire cuts the signal; an NO contact from a controller pin to GND pulls that pin low.",
+    "Someone presses a switch or emergency stop: its normally closed contacts open and its normally open ones close. part: the switch (or a thumb joystick: its push button); at: when; until: when it is released (a latching e-stop stays pressed when left out). An NC contact in an ESC's signal wire cuts the signal; an NO contact from a controller pin to GND pulls that pin low.",
     (a, ctx) => fault("press", compName(a.value("part"), ctx, "sim.press(): part"), a),
   ),
   simFn(
@@ -484,6 +493,9 @@ export function scenarioSpec(
     mechanism = base.mechanism;
   } else {
     mechanism = mv instanceof MechSpecValue ? mv.spec : undefined;
+    // like: keeps the other scenario's mechanism when this one only changes the bench or floor (test signals, blocks)
+    const kind = world instanceof FloorValue ? "floor" : world instanceof SimSpec && world.what === "world" ? (world.data as { kind: string }).kind : undefined;
+    if (!mechanism && mv === undefined && base?.mechanism && (kind === "bench" || kind === "floor")) mechanism = base.mechanism;
     if (world === undefined && mechanism) world = mechanism.base === "free" ? new FloorValue({ surface: "concrete", grip: 0.8, roll: 0.015, slope: 0, uphill: [1, 0, 0], ambient: 20, blocks: [] }) : new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: 1, forces: {}, force: 0, range: 1000, ambient: 20, signals: [] } }, "bench");
     if (world === undefined) return fail(`Scenario "${label}" needs a world, like world: sim.sand_pit(length: 2m, width: 0.5m, depth: 5m), world: sim.bench() or world: sim.printer(print: sim.test_print("cube"))`, p.span("world"));
     if (world instanceof FloorValue) {
@@ -589,7 +601,7 @@ const FAULT_PARTS: Record<FaultKind, string> = {
   loose: "any part",
   stuck: "a sensor, an actuator or a gearmotor with an encoder",
   aged: "a battery",
-  press: "a switch or emergency stop",
+  press: "a switch, an emergency stop or a joystick (its button)",
 };
 
 /** The faults: list, checked against the design's parts and their pins. */
@@ -605,7 +617,7 @@ function faultList(p: ScenarioProps, fail: (msg: string, span: Span) => never, m
       const [comp, pin] = f.target.split(".");
       const mc = machine.components.find((c) => c.name === comp);
       if (!mc) return fail(`faults: ${comp} is not a part of the machine`, p.span("faults"));
-      if (!FAULT_KINDS[f.kind](mc.kind)) return fail(`faults: sim.${f.kind}() is for ${FAULT_PARTS[f.kind]}, and ${comp} is a ${mc.kind.replace(/_/g, " ")}`, p.span("faults"));
+      if (!FAULT_KINDS[f.kind](mc.kind) && !(f.kind === "press" && catalogPart(mc.catalogId)?.specs.iface === "joystick")) return fail(`faults: sim.${f.kind}() is for ${FAULT_PARTS[f.kind]}, and ${comp} is a ${mc.kind.replace(/_/g, " ")}`, p.span("faults"));
       if (pin !== undefined) {
         const pins = catalogPart(mc.catalogId)?.pins ?? [];
         if (!pins.some((x) => x.id === pin)) return fail(`faults: ${comp} has no pin ${pin}${pins.length ? `. Its pins: ${pins.map((x) => x.id).join(", ")}` : ""}`, p.span("faults"));
