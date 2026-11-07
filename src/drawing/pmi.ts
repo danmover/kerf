@@ -99,7 +99,8 @@ export interface PartPmi {
 export function pmiSpec(model: Model, name: string, bboxOf: BBoxOf, specs?: DrawingSpec[]): DrawingSpec | null {
   const own = (specs ?? model.drawings).find((d) => !d.flat && d.of.length === 1 && d.of[0] === name);
   if (own) return own.pmi === false ? null : own;
-  return autoDrawings(model, bboxOf).find((s) => s.name === `auto:${name}`) ?? null;
+  // a copy shares its original's sheet, but its annotations belong on its own solid
+  return autoDrawings(model, bboxOf, undefined, { copies: false }).find((s) => s.name === `auto:${name}`) ?? null;
 }
 
 const fmt = (n: number) => String(Math.round(n * 1000) / 1000);

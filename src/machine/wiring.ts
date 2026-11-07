@@ -156,7 +156,7 @@ const sourceAmps = (p: NetPin) => Math.max(0, ...p.part.pins.filter((q) => q.typ
 /**
  * The pin a net's wiring starts from: its supply, else the power-side terminal (a battery connector, a fuse, a
  * switch), else for a ground the return of the supply that gives the most current (an ESC's BEC), else the first
- * pin. `skip` leaves pins out: a switch contact that only senses, when it is far from the rest (wireList).
+ * pin. `skip` leaves pins out: a switch contact that only senses, when it is out on its own (wireList).
  */
 function hubOf(pins: NetPin[], skip?: (p: NetPin) => boolean): NetPin {
   const ok = skip ? pins.filter((p) => !skip(p)) : pins;
@@ -248,6 +248,20 @@ export function componentPositions(model: Model): Map<string, V3[]> {
   return out;
 }
 
+/**
+ * The moving body each component rides on: the sim.pivot joint (a gimbal's axis, a hinge) that the design's
+ * scenarios turn it on, by component name. A component on none rides on the frame and is not in the map.
+ */
+export function componentBodies(model: Model): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const sc of model.scenarios ?? [])
+    for (const it of sc.spec.mechanism?.items ?? []) {
+      if (it.k !== "pivot") continue;
+      for (const w of it.what ?? []) if (!out.has(w)) out.set(w, it.name);
+    }
+  return out;
+}
+
 const SLACK_MM = 150;
 
 function estimateLength(a: NetPin, b: NetPin, pos?: Map<string, V3[]>): number | undefined {
@@ -268,6 +282,8 @@ const end = (p: NetPin): WireEnd => ({ comp: instName(p), index: p.index, pin: p
 const GROUP_MM = 120;
 /** A group at least this far from the start of the net gets one trunk to it instead of a wire to every pin, mm. */
 const TRUNK_MM = 250;
+/** a switch's sense contact this far (Manhattan) from every other pin of its net is out on its own lead */
+const SENSE_ALONE_MM = 150;
 
 /** Amps a part takes through its supply and ground pins at most: its supply pins' draw, or most of a motor's stall current. */
 function partDraw(p: NetPin): number {
@@ -287,10 +303,11 @@ interface NetHop {
  * The wires that make up a net of many pins. Each pin gets its own wire from the start of the net (a star), except
  * a group of pins close together far from the start: one trunk runs to the nearest of them and short branches
  * split from there to the rest, the way a harness is made (a ground to every board on a gimbal is one wire across
- * the joints, not one per board). Heavy supply nets keep the star so each load's current comes back on its own
- * wire, and the trunks are used only when they save a good part of the cable.
+ * the joints, not one per board). A group on another moving body than the start, across a joint, gets its trunk
+ * however near it is, so only one wire crosses the joints. Heavy supply nets keep the star so each load's current
+ * comes back on its own wire, and the trunks are used only when they save a good part of the cable.
  */
-function netHops(it: Item, hub: NetPin, positions?: Map<string, V3[]>): NetHop[] {
+function netHops(it: Item, hub: NetPin, positions?: Map<string, V3[]>, bodies?: Map<string, string>): NetHop[] {
   const others = it.pins.filter((p) => p !== hub);
   const star = others.map((b) => ({ a: hub, b }));
   if (!positions || others.length < 3 || (it.kind !== "ground" && it.kind !== "power") || (it.gauge !== undefined && it.gauge <= 18)) return star;
@@ -310,8 +327,9 @@ function netHops(it: Item, hub: NetPin, positions?: Map<string, V3[]>): NetHop[]
   const hops: NetHop[] = [];
   for (const g of groups.values()) {
     const entry = g.reduce((b, p) => (md(hub, p) < md(hub, b) ? p : b), g[0]);
+    const across = !!bodies?.size && g.every((p) => (bodies.get(p.comp) ?? "") !== (bodies.get(hub.comp) ?? ""));
     // a trunk pays when it feeds four parts or more, and only downstream: not to the group the supply comes in at
-    if (new Set(g.map((p) => `${p.comp}[${p.index}]`)).size < 4 || md(hub, entry) < TRUNK_MM || g.some((p) => it.fed?.includes(p.key))) {
+    if (new Set(g.map((p) => `${p.comp}[${p.index}]`)).size < 4 || (md(hub, entry) < TRUNK_MM && !across) || g.some((p) => it.fed?.includes(p.key))) {
       for (const b of g) hops.push({ a: hub, b });
       continue;
     }
@@ -337,8 +355,9 @@ function netHops(it: Item, hub: NetPin, positions?: Map<string, V3[]>): NetHop[]
 
 /**
  * The pin a net's wiring starts from, where the parts are known: as hubOf picks it, except that a switch contact that
- * only senses never starts it when it is far from the rest of the net (an e-stop on a pendant: starting the ground
- * there would run every ground wire out to the pendant and back).
+ * only senses never starts it when it is out on its own, away from the rest of the net (an e-stop on a pendant's
+ * lead: starting the ground there would run every ground wire out along the lead and back). Beside the rest, in
+ * the same box, where the net starts changes little.
  */
 function hubFor(it: Item, positions?: Map<string, V3[]>): NetPin {
   const hub = it.hub!;
@@ -346,7 +365,7 @@ function hubFor(it: Item, positions?: Map<string, V3[]>): NetPin {
   const h = at(hub);
   if (!h || !it.sense?.includes(hub.key)) return hub;
   const near = Math.min(...it.pins.filter((p) => p !== hub && at(p)).map((p) => Math.abs(at(p)![0] - h[0]) + Math.abs(at(p)![1] - h[1]) + Math.abs(at(p)![2] - h[2])));
-  return near > TRUNK_MM ? hubOf(it.pins, (p) => !!it.sense?.includes(p.key)) : hub;
+  return near > SENSE_ALONE_MM ? hubOf(it.pins, (p) => !!it.sense?.includes(p.key)) : hub;
 }
 
 /**
@@ -367,9 +386,10 @@ const KIND_ORDER: Record<WireKind, number> = { ground: 0, signal: 1, motor: 2, c
 /**
  * Every physical wire to make, in build order: ground first, power last. Nets are wired as a star from their supply pin.
  * `routed` holds each wire's run along its 3D cable route by wire id, when the cables have been routed; those lengths
- * replace the estimates, so the wire list, the build pack and the 3D wiring agree.
+ * replace the estimates, so the wire list, the build pack and the 3D wiring agree. `bodies` says which moving body
+ * each component rides on (componentBodies), so a net's parts across a gimbal's joints share one trunk.
  */
-export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?: Map<string, number>): WireRow[] {
+export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?: Map<string, number>, bodies?: Map<string, string>): WireRow[] {
   const nl = buildNetlist(m);
   const items = buildItems(m, nl);
   const rows: (Omit<WireRow, "id"> & { order: number })[] = [];
@@ -382,7 +402,7 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
   items.forEach((it, order) => {
     const group = groupFirst.get(it.named ? `net:${it.name}` : `kind:${it.kind}`)!;
     const hub = it.bus ? hubFor(it, positions) : undefined;
-    const hops: NetHop[] = hub ? netHops(it, hub, positions) : [{ a: it.pins[0], b: it.pins[1] }];
+    const hops: NetHop[] = hub ? netHops(it, hub, positions, bodies) : [{ a: it.pins[0], b: it.pins[1] }];
     const trunked = hops.some((h) => h.feeds);
     for (const h of hops) {
       const { a, b } = h;

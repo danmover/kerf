@@ -254,7 +254,11 @@ export const BLOCK_FNS: Record<string, Fn> = Object.fromEntries([
       if (depth < lh / 2 + gap) a.ctx.error(`bayonet(): depth (the rim to the lugs' middle) must be at least ${r2(lh / 2 + gap)}`);
       const side = a.oneOf("side", ["lugs", "slots"] as const, "lugs");
       const start = a.num("start", 0);
-      const rIn = d / 2 - 0.5;
+      // the lugs' and slots' inner faces are flat, so they start where their corners are still inside the wall (lugs)
+      // or the bore (slots): a flat face at d/2 leaves its corners proud of the curve, a gap behind a lug or a
+      // paper-thin sliver of the bore's wall beside a slot
+      const rIn = Math.min(d / 2 - 0.5, Math.sqrt(Math.max(0, (d / 2) ** 2 - (lw / 2) ** 2)) - 0.2);
+      const rInSlot = Math.min(d / 2 - 0.5, Math.sqrt(Math.max(0, (d / 2) ** 2 - (lw / 2 + gap) ** 2)) - 0.3);
       const rOut = Math.hypot(d / 2 + lt, lw / 2) + gap;
       // the slot's half width as an angle on the bore
       const half = deg(Math.atan((lw / 2 + gap) / (d / 2)));
@@ -268,9 +272,9 @@ export const BLOCK_FNS: Record<string, Fn> = Object.fromEntries([
           steps.push({ op: "add", shape: extrude(rect(rIn, d / 2 + lt, -lw / 2, lw / 2), f.o, f.u, dir, lh) });
         } else {
           const f = frameAt(vsub(at, vscale(dir, 0.5)), dir, ang);
-          steps.push({ op: "cut", shape: extrude(rect(rIn, rOut, -lw / 2 - gap, lw / 2 + gap), f.o, f.u, dir, depth + lh / 2 + gap + 0.5) });
+          steps.push({ op: "cut", shape: extrude(rect(rInSlot, rOut, -lw / 2 - gap, lw / 2 + gap), f.o, f.u, dir, depth + lh / 2 + gap + 0.5) });
           const g = frameAt(at, dir, ang - half);
-          steps.push({ op: "cut", shape: { t: "revolve2", p: rect(rIn, rOut, depth - lh / 2 - gap, depth + lh / 2 + gap), f: { o: at, u: g.u, n: dir }, angle: turn + 2 * half } });
+          steps.push({ op: "cut", shape: { t: "revolve2", p: rect(rInSlot, rOut, depth - lh / 2 - gap, depth + lh / 2 + gap), f: { o: at, u: g.u, n: dir }, angle: turn + 2 * half } });
         }
       }
       return new FeatureV("bayonet", steps, { turn, depth, lug_w: lw, lug_h: lh, lug_t: lt });

@@ -23,20 +23,34 @@ const D2R = Math.PI / 180;
 
 const PHI = [45, 135, 225, 315];
 
+/** the rig's parts: v2's, or the cheaper v3 set (MG90D servos, the Makerverse HX710 amplifier, a 1 kg beam cell, a 4S 1800 pack) */
+interface RigParts {
+  servo: string;
+  amp: string;
+  cell: string;
+  battery: string;
+  fuse: string;
+  /** the fuse fitted in the holder, A (the holder's own when left out) */
+  fuseRating?: number;
+}
+const V2_PARTS: RigParts = { servo: "savox_sh0264mg", amp: "hx711_breakout", cell: "tal221_500g", battery: "lipo_4s_5000_xt90", fuse: "fuse_holder_maxi" };
+const V3_PARTS: RigParts = { servo: "mg90d", amp: "makerverse_load_cell_amp", cell: "beam_cell_1kg", battery: "lipo_4s_1800_xt60", fuse: "fuse_holder_atc" };
+
 /** the rig's electronics, wired as the jet-vane design wires them */
-function design(scenario: string, extra = "", imuAt = "at: (0, 60, 0)") {
-  const servos = [1, 2, 3, 4].map((i) => `component s${i} = lib.servo("savox_sh0264mg") { at: (${i * 40}, 60, 100), axis: Z }`).join("\n");
+function design(scenario: string, extra = "", imuAt = "at: (0, 60, 0)", parts: RigParts = V2_PARTS) {
+  const servos = [1, 2, 3, 4].map((i) => `component s${i} = lib.servo("${parts.servo}") { at: (${i * 40}, 60, 100), axis: Z }`).join("\n");
+  const ampVdd = catalogPart(parts.amp)!.pins.some((p) => p.id === "VDD") ? ", hx.VDD" : "";
   const sigs = ["D14", "D32", "D33", "D27"].map((p, i) => `wire fc.${p} -> s${i + 1}.SIG`).join("\n");
   return evaluate(
     `design "Jet vane rig"
 component fc = lib.controller("feather_esp32_v2") { at: (0, 0, 0) }
 component esc = lib.esc("skywalker_60a_v2") { at: (120, 0, 0) }
 component edf = lib.bldc("xfly_edf_64_12b_3200kv") { at: (0, 0, 200), axis: Z }
-component bat = lib.battery("lipo_4s_5000_xt90") { at: (250, 0, 0) }
-component fuse = lib.fuse("fuse_holder_maxi") { at: (200, 60, 0) }
+component bat = lib.battery("${parts.battery}") { at: (250, 0, 0) }
+component fuse = lib.fuse("${parts.fuse}") { at: (200, 60, 0)${parts.fuseRating ? `, rating: ${parts.fuseRating}A` : ""} }
 component imu = lib.sensor("lsm6dsox_breakout") { ${imuAt} }
-component hx = lib.sensor("hx711_breakout") { at: (0, -60, 0) }
-component cell = lib.sensor("tal221_500g") { at: (0, -120, 0) }
+component hx = lib.sensor("${parts.amp}") { at: (0, -60, 0) }
+component cell = lib.sensor("${parts.cell}") { at: (0, -120, 0) }
 component estop = lib.switch("estop_jaycar_sp0786") { at: (300, 0, 0) }
 ${servos}
 wire bat.POS -> fuse.IN { gauge: 10 }
@@ -53,7 +67,7 @@ ${sigs}
 wire fc.QT_3V -> imu.VIN
 wire fc.SDA -> imu.SDA
 wire fc.SCL -> imu.SCL
-net LOGIC_3V: fc.V3, hx.VCC, hx.VDD
+net LOGIC_3V: fc.V3, hx.VCC${ampVdd}
 wire fc.A3 -> hx.DOUT
 wire fc.A5 -> hx.SCK
 wire hx.E_PLUS -> cell.EXC_P
@@ -113,7 +127,7 @@ function gimbal(opts: { lockRoll?: boolean; cell?: boolean } = {}): MechModel {
 
 describe("parts", () => {
   it("has the rig's parts in the catalogue with Australian shops to buy them from", () => {
-    for (const id of ["feather_esp32_v2", "skywalker_60a_v2", "xfly_edf_64_12b_3200kv", "savox_sh0264mg", "lsm6dsox_breakout", "hx711_breakout", "tal221_500g", "estop_jaycar_sp0786", "fuse_holder_maxi", "xt90s_pair", "lipo_4s_5000_xt90"]) {
+    for (const id of ["feather_esp32_v2", "skywalker_60a_v2", "xfly_edf_64_12b_3200kv", "savox_sh0264mg", "lsm6dsox_breakout", "hx711_breakout", "tal221_500g", "estop_jaycar_sp0786", "fuse_holder_maxi", "xt90s_pair", "lipo_4s_5000_xt90", "mg90d", "makerverse_load_cell_amp", "beam_cell_1kg", "lipo_4s_1800_xt60"]) {
       const p = catalogPart(id);
       expect(p, id).toBeDefined();
       expect(p!.buy?.some((b) => b.url && /\.au\b|amazon\.com\.au/.test(b.url)), id).toBe(true);
@@ -372,6 +386,33 @@ void loop() {
     expect(v.results["cell.peak_force"]).toBeGreaterThan(0.2);
   });
 
+  it("reads the same vane moment with the cheaper parts: MG90D servos, the HX710 amplifier and a 1 kg beam cell", { timeout: 30_000 }, () => {
+    const m = design(
+      `scenario "Force test" {
+  world: sim.bench()
+  duration: 20s
+  console: [sim.type("tare", at: 2.9s), sim.type("arm", at: 3s), sim.type("t 70", at: 3.1s), sim.type("sweep", at: 6s)]
+}`,
+      "",
+      "at: (0, 60, 0)",
+      V3_PARTS,
+    );
+    const fw = generateFirmware(m.machine!, m.name)[0];
+    expect((fw.warnings ?? []).join(" ")).not.toMatch(/HX711|load cell|servo/i);
+    const config = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    // the MG90D moves about 90° on 1 to 2 ms, so about 11 µs a degree
+    expect(config).toMatch(/#define SERVO_US_PER_DEG 11\.1/);
+    const def = m.scenarios![0];
+    const mech = gimbal({ lockRoll: true, cell: true });
+    const v = runSpec({ ...def.spec, mech, variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.error).toBeUndefined();
+    const line = v.serial.find((l) => /vane moment:/.test(l.text))?.text ?? "";
+    const k = /set LIFT_K to ([\d.]+)/.exec(line);
+    expect(Number(k?.[1])).toBeGreaterThan(0.75);
+    expect(Number(k?.[1])).toBeLessThan(1.3);
+    expect(v.results["cell.peak_force"]).toBeGreaterThan(0.2);
+  });
+
   it("measures the rotor's momentum and its direction in the coupling test", { timeout: 30_000 }, () => {
     // ROTOR_DIR set the wrong way round: the test must catch it
     const m = design(
@@ -444,5 +485,50 @@ void loop() {
     expect(String(v.results.state)).toMatch(/IMU stopped answering/);
     expect(v.results.fault_reaction).toBeLessThan(0.1);
     expect(v.results["edf.thrust"]).toBeLessThan(0.5);
+  });
+
+  it("cuts the fan when the IMU freezes: its registers stop changing, noise and all", { timeout: 30_000 }, () => {
+    const m = design(`scenario "IMU freezes" {
+  world: sim.bench()
+  duration: 9s
+  console: [sim.type("arm", at: 3s), sim.type("t 60", at: 3.1s), sim.type("hold", at: 3.2s)]
+  faults: [sim.stuck(imu, at: 7s)]
+}`);
+    const def = m.scenarios![0];
+    const v = runSpec({ ...def.spec, mech: gimbal(), variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(String(v.results.state)).toMatch(/IMU frozen/);
+    expect(v.results.fault_reaction).toBeLessThan(0.2);
+    // the drive is cut for good while the rotor is still coasting down
+    expect(v.results.fault_cut).toBe(true);
+    expect(v.results.fault_cut_time).toBeLessThan(0.2);
+    expect(v.results.fault_stopped).toBe(false);
+  });
+
+  it("stops the fan when the pendant's plug is pulled: the throttle signal ran through its NC contact", { timeout: 30_000 }, () => {
+    const m = design(`scenario "Pendant unplugged" {
+  world: sim.bench()
+  duration: 9s
+  console: [sim.type("arm", at: 3s), sim.type("t 60", at: 3.1s)]
+  faults: [sim.unplug(estop, at: 6s)]
+}`);
+    const def = m.scenarios![0];
+    const v = runSpec({ ...def.spec, variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.notes.join(" ")).not.toMatch(/cannot simulate/);
+    expect(v.results["esc.signal_lost"]).toBe(true);
+    expect(v.results["edf.thrust"]).toBeLessThan(1);
+    expect(v.results.fault_cut).toBe(true);
+  });
+
+  it("blows the fuse the design fits, not the holder's own", () => {
+    const rating = (fuseRating?: number) => {
+      const m = design(`scenario "Bench" { world: sim.bench() duration: 1s }`, "", undefined, { ...V3_PARTS, fuseRating });
+      const w = m.scenarios![0].spec.world;
+      if (w.kind !== "bench") throw new Error("not a bench");
+      const plant = new Plant(m.machine!, "fc", FEATHER_ESP32_V2, new SimHal(FEATHER_ESP32_V2, { seed: 1 }), new Bench(m.machine!, w.bench, "expected"), { rng: () => 0.5 });
+      return plant.fuses.map((f) => f.rating);
+    };
+    // the ATC holder comes with a 20 A fuse
+    expect(rating()).toEqual([20]);
+    expect(rating(40)).toEqual([40]);
   });
 });

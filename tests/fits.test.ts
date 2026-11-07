@@ -96,6 +96,36 @@ part hub {
     expect(called.shaft!.mean).toBeCloseTo(8.0195, 3);
   });
 
+  it("holds a copy made with shape_of() to its original's drawing", () => {
+    const src = `
+part shaft {
+  material: "Steel"
+  process: mfg.cnc_lathe(axis: Z)
+  body cylinder(d: 8, h: 20, at: (10, 0, -5), dir: Z)
+}
+part shaft_2 {
+  material: "Steel"
+  process: mfg.cnc_lathe(axis: Z)
+  body rotate(shape_of(shaft), 180)
+}
+part hub {
+  material: "Aluminum 6061"
+  process: mfg.cnc_mill()
+  body box(40, 20, 8)
+  cut cylinder(d: 8, h: 10, at: (10, 0, -1), dir: Z)
+  cut cylinder(d: 8, h: 10, at: (-10, 0, -1), dir: Z)
+}
+drawing shaft_dwg {
+  of: shaft
+  diameter((10, 0, 5), 8, view: "front", fit: "p6")
+}
+`;
+    const shafts = run(src).report.outcomes.filter((o) => o.shaft);
+    expect(shafts).toHaveLength(2);
+    // p6 on 8 mm is +0.015 to +0.024, for the copy too
+    for (const o of shafts) expect(o.shaft!.mean).toBeCloseTo(8.0195, 3);
+  });
+
   it("leaves rubber seals and boots out", () => {
     const found = findFits(evaluate(demo("sand-tunneller")));
     expect(found.fits.some((f) => f.instances.some((i) => i.hole.part.name.startsWith("seal") || i.shaft.part.name.startsWith("seal") || i.hole.part.name === "boot"))).toBe(false);

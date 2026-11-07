@@ -50,6 +50,8 @@ export const COMMON_RESULTS: Record<string, ResultInfo> = {
   fault_time: { unit: "s", doc: "when the first fault happened (only in runs with faults:)" },
   fault_stopped: { unit: "yes/no", doc: "everything came to a stop after the fault and stayed stopped (only with faults:)" },
   fault_stop_time: { unit: "s", doc: "how long after the fault everything stopped for good (only when it did)" },
+  fault_cut: { unit: "yes/no", doc: "every motor, actuator and fan lost its drive after the fault and never got it back; a fan may still be coasting down (only with faults:)" },
+  fault_cut_time: { unit: "s", doc: "how long after the fault the drive was cut for good (only when it was)" },
   fault_noticed: { unit: "yes/no", doc: "the firmware said something about it after the fault: a state change or a warning on the console (only with faults:)" },
   fault_reaction: { unit: "s", doc: "how long after the fault the firmware first said so (only when it did)" },
   "fw.<name>": { unit: "count", doc: "a firmware global variable at the end of the run" },

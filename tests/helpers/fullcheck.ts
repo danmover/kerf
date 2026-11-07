@@ -14,6 +14,8 @@ import { buildHarness } from "../../src/machine/harness/harness";
 import { mountParts, mountSpecs, screwSpecs, solidsInput } from "../../src/machine/harness/inputs";
 import { runWiring } from "../../src/machine/harness/wiringRun";
 import { wiringItems } from "../../src/machine/harness/checks";
+import { pivotJoints } from "../../src/machine/harness/pivots";
+import { flowZones } from "../../src/machine/harness/flow";
 
 export interface FullCheck {
   model: Model;
@@ -22,6 +24,8 @@ export interface FullCheck {
   core: KernelCore;
   /** the kernel's checks result (contacts, clearances, boxes) */
   kernel: ReturnType<KernelCore["checks"]>;
+  /** the cable routes and wiring findings, when the wiring checks ran */
+  wiring?: ReturnType<typeof runWiring>;
   ms: number;
 }
 
@@ -59,6 +63,7 @@ export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promi
   const process: Record<string, ProcessResult> = {};
   probes.forEach((p, i) => (process[p.id] = results[i]));
   let report = composeReport(base, { model, live: false, rev: 0, buildErrors, process });
+  let wiring: ReturnType<typeof runWiring> | undefined;
   if (opts.wiring && model.machine) {
     const harness = buildHarness(model);
     const mounts = mountParts(model);
@@ -68,14 +73,16 @@ export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promi
       return e && m ? { positions: m.positions, indices: m.indices, bbox: e.bbox } : undefined;
     };
     const { geos, placed } = solidsInput({ ...model, parts: model.parts.filter((p) => !p.hidden) }, wmesh, mounts);
-    const run = runWiring({ geos, placed, wires: [] }, { harness, mounts: mountSpecs(model, (h) => core.get(h)?.bbox, mounts), screws: screwSpecs(model) });
+    // as the app routes them: cables keep out of fans' airflow and cross pivots beside their bearings
+    const run = runWiring({ geos, placed, wires: [] }, { harness, mounts: mountSpecs(model, (h) => core.get(h)?.bbox, mounts), screws: screwSpecs(model), pivots: pivotJoints(model), flow: flowZones(model) });
     const items = [...report.items, ...wiringItems(harness, run.findings ?? null, run.mounts, model)];
     const counts = { pass: 0, fail: 0, warn: 0, pending: 0, info: 0 };
     for (const i of items) counts[i.status]++;
     report = { ...report, items, counts };
+    wiring = run;
   }
   // the model with geometry measurements filled in, when the design asks for any
-  return { model: geoModel ?? model, report, buildErrors, core, kernel: result, ms: Date.now() - t0 };
+  return { model: geoModel ?? model, report, buildErrors, core, kernel: result, wiring, ms: Date.now() - t0 };
 }
 
 /** One line per item that is not a pass, for test output. */

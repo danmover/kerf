@@ -10,7 +10,7 @@ import type { Model } from "../../core/model";
 import { xformMatrix, type V3 } from "../../kernel/recipe";
 import { catalogPart } from "../catalog";
 import type { MachineData } from "../types";
-import { componentPositions, wireList, wireHex, type WireEnd, type WireRow } from "../wiring";
+import { componentBodies, componentPositions, wireList, wireHex, type WireEnd, type WireRow } from "../wiring";
 import { PITCH, cableWires, plugFor, solderedPlug, type PlugKind, type PlugSpec } from "./plugs";
 import type { RouteKeepOut, RouteWire } from "./route";
 import { slotPoint, type TravelPlan } from "./travel";
@@ -193,7 +193,7 @@ function instances(model: Model): Map<string, { partId: string; m: number[]; cat
  */
 export function buildHarness(model: Model, m: MachineData | undefined = model.machine): Harness {
   if (!m) return { wires: [], sockets: [] };
-  const rows = wireList(m, componentPositions(model));
+  const rows = wireList(m, componentPositions(model), undefined, componentBodies(model));
   const inst = instances(model);
   const taken = new Map<string, number>();
   const wires: HarnessWire[] = [];

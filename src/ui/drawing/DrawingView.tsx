@@ -14,7 +14,7 @@ import { toast, errorText, useUi } from "../../app/ui";
 import { useSketch } from "../sketch/session";
 import { addMidRun, sendMessage, useChat } from "../../ai/chat";
 import { useAgents, isLive } from "../../agents/progress";
-import { closeDrawings, drawingSpecs, markAsked, openDrawings, selectSheetItem, setDrawingTheme, showDrawing, useDrawings } from "../../drawing/engine";
+import { closeDrawings, drawingSpecs, markAsked, openDrawings, selectSheetItem, setDrawingTheme, sharedDrawingPart, showDrawing, useDrawings } from "../../drawing/engine";
 import { exportDrawingDxf, exportDrawingPdf, exportDrawingsPdf, exportDrawingSvg } from "../../drawing/export";
 import { addBlockLine, ensureBlock, removeStatement, setBlockProp, setDimTolerance, type TolEdit } from "../../drawing/source";
 import { keyBoxes } from "../../drawing/compose";
@@ -663,10 +663,12 @@ function OpenDrawingFor({ ids }: { ids: string[] }) {
   const list = useDrawings((s) => s.list);
   const active = useDrawings((s) => s.active);
   const part = model?.parts.find((q) => ids.includes(q.id));
-  if (!part) return null;
+  if (!model || !part) return null;
   const root = part.id.split(/[.#]/)[0];
   const specs = drawingSpecs(model);
-  const target = specs.find((s) => s.name !== active && s.of.length === 1 && (s.of[0] === part.name || s.of[0] === root));
+  // a copy's drawing is the one it shares
+  const name = sharedDrawingPart(model, part.name);
+  const target = specs.find((s) => s.name !== active && s.of.length === 1 && (s.of[0] === name || s.of[0] === root));
   if (!target || !list.some((d) => d.name === target.name)) return null;
   return (
     <div className="row" style={{ marginTop: 6 }}>

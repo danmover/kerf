@@ -14,6 +14,7 @@ import { layFlat } from "./flat";
 import { gdtWanted } from "./gdt";
 import { processFamily } from "./intent";
 import { squareUp } from "./square";
+import { copiesOf, sharedName, type MeshOf } from "./copies";
 
 const N = 1 / Math.sqrt(3);
 
@@ -481,8 +482,34 @@ export function partExtent(p: EvalPart, bboxOf: BBoxOf): Extent {
 /** Library parts that are made rather than bought get their own drawing. */
 const MADE_LIB = new Set(["spur_gear"]);
 
-/** Drawings generated when the source has none for a target: the whole design, each made part, and each sheet-metal part's flat pattern. */
-export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
+/** Parts and library parts that are made, so they get a drawing; a part marked process: false is bought or on hand. */
+const drawable = (p: EvalPart) => (p.kind === "part" ? !p.processNone : !!(p.libKind && MADE_LIB.has(p.libKind)));
+
+/** Single-part drawing blocks' parts. */
+function blockParts(model: Model): Set<string> {
+  const out = new Set<string>();
+  for (const d of model.drawings) if (!d.flat && d.of.length === 1) out.add(d.of[0]);
+  return out;
+}
+
+/**
+ * Made parts that are copies of another (the same solid moved, turned or renamed; see copies.ts), each mapped to the
+ * part whose drawing it shares. A drawing block's part comes first, so its copies share the block's sheet.
+ */
+export function drawnCopies(model: Model, meshOf?: MeshOf): Map<string, string> {
+  const blocks = blockParts(model);
+  const byName = new Map<string, EvalPart>();
+  for (const p of model.parts) if (drawable(p) && !byName.has(p.name)) byName.set(p.name, p);
+  const order = [...byName.values()].sort((a, b) => Number(blocks.has(b.name)) - Number(blocks.has(a.name)));
+  return copiesOf(order, meshOf);
+}
+
+/**
+ * Drawings generated when the source has none for a target: the whole design, each made part, and each sheet-metal
+ * part's flat pattern. Copies of a made part share one drawing, whose title says how many to make; a part marked
+ * process: false is bought or already on hand and gets none.
+ */
+export function autoDrawings(model: Model, bboxOf?: BBoxOf, meshOf?: MeshOf, opts: { copies?: boolean } = {}): DrawingSpec[] {
   const covered = new Set<string>();
   const flatCovered = new Set<string>();
   for (const d of model.drawings) {
@@ -501,14 +528,29 @@ export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
     s.balloons = true;
     out.push(s);
   }
+  // copies: false gives every copy its own sheet again (the 3D annotations want one on each solid)
+  const copies = opts.copies === false ? new Map<string, string>() : drawnCopies(model, meshOf);
+  const firstOf = (name: string) => copies.get(name) ?? name;
+  // how many of each part to make, copies and every placement counted, and the names they go by
+  const made = new Map<string, { n: number; names: Set<string> }>();
+  for (const p of model.parts) {
+    if (!drawable(p)) continue;
+    const m = made.get(firstOf(p.name)) ?? { n: 0, names: new Set<string>() };
+    m.n++;
+    m.names.add(humanize(p.label.replace(/ #\d+$/, "")));
+    made.set(firstOf(p.name), m);
+  }
+  const titled = (name: string, title: string, after = "") => {
+    const m = made.get(name);
+    return m && m.n > 1 ? `${(m.names.size > 1 && sharedName([...m.names])) || title}${after} (make ${m.n})` : title + after;
+  };
   const seen = new Set<string>();
   for (const placed of model.parts) {
-    if (seen.has(placed.name) || covered.has(placed.name)) continue;
-    if (placed.kind === "component" && !(placed.libKind && MADE_LIB.has(placed.libKind))) continue;
+    if (seen.has(placed.name) || covered.has(placed.name) || !drawable(placed) || copies.has(placed.name)) continue;
     seen.add(placed.name);
     // views and sections follow the part's own axes, as its drawing shows it
     const p = squareUp(placed);
-    const s = defaultSpec(`auto:${p.name}`, humanize(p.label.replace(/ #1$/, "")), [p.name]);
+    const s = defaultSpec(`auto:${p.name}`, titled(p.name, humanize(p.label.replace(/ #1$/, ""))), [p.name]);
     s.material = p.material;
     s.tolerance = processTolerance(model, [p.name]) ?? s.tolerance;
     s.views = autoViews(p).map((kind) => ({ kind }));
@@ -528,9 +570,9 @@ export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
   // the blank a sheet-metal part is cut from, with its bends
   const flats = new Set<string>();
   for (const p of model.parts) {
-    if (!p.sheet || p.hidden || flats.has(p.name) || flatCovered.has(p.name)) continue;
-    flats.add(p.name);
-    const s = defaultSpec(`auto:${p.name}:flat`, `${humanize(p.label.replace(/ #1$/, ""))} flat pattern`, [p.name]);
+    if (!p.sheet || p.hidden || !drawable(p) || flats.has(firstOf(p.name)) || flatCovered.has(firstOf(p.name)) || flatCovered.has(p.name)) continue;
+    flats.add(firstOf(p.name));
+    const s = defaultSpec(`auto:${p.name}:flat`, titled(firstOf(p.name), humanize(p.label.replace(/ #1$/, "")), " flat pattern"), [p.name]);
     s.flat = true;
     s.material = p.material;
     s.tolerance = processTolerance(model, [p.name]) ?? s.tolerance;

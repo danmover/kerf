@@ -90,7 +90,7 @@ const MATERIAL_ALIASES: Record<string, string> = {
   aluminium: "Aluminum 6061", aluminum: "Aluminum 6061", alu: "Aluminum 6061", ally: "Aluminum 6061", "6061": "Aluminum 6061", "7075": "Aluminum 7075", "5052": "Aluminum 5052",
   stainless: "Stainless 304", "stainless steel": "Stainless 304", "304": "Stainless 304", "316": "Stainless 316", ss: "Stainless 304",
   "mild steel": "Steel", "carbon steel": "Steel", iron: "Cast iron", "cast iron": "Cast iron",
-  nylon: "Nylon", pa: "Nylon", pa12: "Nylon", "carbon nylon": "Nylon CF", "nylon carbon": "Nylon CF", "carbon fibre nylon": "Nylon CF", pacf: "Nylon CF",
+  nylon: "Nylon", pa: "Nylon", pa12: "Nylon", "carbon nylon": "Nylon CF", "nylon carbon": "Nylon CF", "carbon fibre nylon": "Nylon CF", pacf: "Nylon CF", "petg cf": "PETG CF", "petg-cf": "PETG CF", "carbon petg": "PETG CF",
   "carbon fibre": "Carbon fiber", "carbon fiber": "Carbon fiber", carbon: "Carbon fiber", cf: "Carbon fiber",
   polycarbonate: "PC", acetal: "POM", delrin: "POM", polypropylene: "PP", perspex: "Acrylic", plexiglass: "Acrylic", pmma: "Acrylic",
   rubber: "Natural rubber", plywood: "Wood", timber: "Wood", resin: "Resin", ti: "Titanium",
