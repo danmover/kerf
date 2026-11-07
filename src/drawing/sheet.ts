@@ -74,8 +74,8 @@ export interface SheetView {
 
 export interface SheetDim {
   view: number;
-  /** "linear" dimensions, "diameter" and "radius" callouts, hole "callout" leaders */
-  kind: "linear" | "diameter" | "radius" | "callout";
+  /** "linear" dimensions, "diameter", "radius" and "chamfer" callouts, hole "callout" leaders, "angle", "arc" length and "ordinate" dimensions, "roughness" and "weld" symbols on leaders */
+  kind: "linear" | "diameter" | "radius" | "callout" | "angle" | "arc" | "ordinate" | "chamfer" | "roughness" | "weld";
   value: number;
   text: string;
   tol?: [number, number];
@@ -105,6 +105,18 @@ export interface SheetDim {
   basic?: boolean;
   /** what the feature is for, e.g. "SEAT FOR 625 BEARING" */
   role?: string;
+  /** the surface texture the feature carries, e.g. "Ra 1.6" */
+  finish?: string;
+}
+
+/** A row of a hole table: a hole's tag, position from the table's origin, and what it is. */
+export interface HoleRow {
+  tag: string;
+  x: number;
+  y: number;
+  size: string;
+  /** the geometric tolerance of the tag's holes, as text */
+  frame?: string;
 }
 
 export interface SheetPart {
@@ -142,6 +154,12 @@ export interface Sheet {
   warnings: string[];
   /** the datum reference frame, when the drawing has geometric tolerances */
   datums: { letter: string; what: string }[];
+  /** hole positions tabled instead of dimensioned, with the view and what the origin is */
+  holeTable?: { view: number; origin: string; rows: HoleRow[] };
+  /** the revision table, oldest first */
+  revisions: { rev: string; text: string; date: string; by: string }[];
+  /** surface texture and weld symbols, as text */
+  symbols: { kind: "roughness" | "weld"; text: string; view?: number }[];
   /** views still waiting for their projection */
   pending: number;
   spec: DrawingSpec;

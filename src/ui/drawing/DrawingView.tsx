@@ -172,6 +172,7 @@ function DrawingPane() {
         <button className="icon-btn" disabled={!sheet} onClick={() => sheet && editInSource(sheet)} data-tip="Edit this drawing in the source" aria-label="Edit in the source">
           <Icon.Code />
         </button>
+        {sheet && <AddMenu sheet={sheet} />}
         <Menu
           align="right"
           width={250}
@@ -222,6 +223,68 @@ function DrawingPane() {
     </motion.div>
   );
 }
+
+/** "+ Add" on the toolbar: tables, dimensioning style and symbols, each a line in the drawing block. */
+function AddMenu({ sheet }: { sheet: Sheet }) {
+  const style = sheet.spec.dimStyle ?? "auto";
+  const holes = !!sheet.spec.holeTable;
+  return (
+    <Menu
+      align="right"
+      width={280}
+      trigger={(o, toggle) => (
+        <button className={`icon-btn ${o ? "active" : ""}`} onClick={toggle} data-tip="Add tables, dimension styles and symbols" aria-label="Add to the drawing">
+          <Icon.Plus />
+        </button>
+      )}
+    >
+      {(close) => {
+        const go = (message: string, change: (src: string, block: string) => string) => () => {
+          close();
+          editDrawing(sheet, message, change);
+        };
+        const pos = (s: string, label: string) => (
+          <MenuItem key={s} icon={<RulerMark />} hint={style === s ? "on" : undefined} onClick={go(`Dimensioned feature positions ${label}`, (src, block) => setBlockProp(src, block, "dim_style", JSON.stringify(s)))}>
+            Positions {label}
+          </MenuItem>
+        );
+        return (
+          <>
+            <div className="menu-label">Tables</div>
+            <MenuItem icon={<Icon.Grid size={14} />} hint={holes ? "on" : undefined} onClick={go(holes ? "Took the hole table off the drawing" : "Listed the holes in a hole table", (src, block) => setBlockProp(src, block, "hole_table", holes ? "false" : "true"))}>
+              Hole table
+            </MenuItem>
+            <MenuItem icon={<Icon.Doc size={14} />} onClick={() => {
+              close();
+              selectSheetItem("tb");
+            }}>
+              Revision…
+            </MenuItem>
+            <div className="menu-sep" />
+            <div className="menu-label">Feature positions</div>
+            {pos("auto", "chosen by Kerf")}
+            {pos("baseline", "from a datum")}
+            {pos("ordinate", "as ordinates")}
+            {pos("chain", "one to the next")}
+            <div className="menu-sep" />
+            <div className="menu-label">Symbols</div>
+            <MenuItem icon={<Icon.Doc size={14} />} onClick={go("Gave the whole part a surface texture of Ra 3.2", (src, block) => setGeneralRoughness(src, block, sheet, 3.2))}>
+              Surface texture for the whole part
+            </MenuItem>
+            <MenuItem icon={<Icon.Doc size={14} />} onClick={() => {
+              close();
+              sendMessage(`On the ${sheet.title} drawing, add weld symbols (weld() in its drawing block) at the joints that are welded, with sizes that suit the parts.`);
+            }}>
+              Weld symbols… (ask Claude)
+            </MenuItem>
+          </>
+        );
+      }}
+    </Menu>
+  );
+}
+
+const RulerMark = () => <span style={{ width: 14, display: "inline-block", textAlign: "center", fontSize: 11 }}>↦</span>;
 
 // ---------- writing changes ----------
 
@@ -280,14 +343,15 @@ function describe(sheet: Sheet, key: string): Described | null {
   if (m) {
     const d = sheet.dims[Number(m[1])];
     if (!d) return null;
-    const what = d.kind === "linear" ? "dimension" : "callout";
-    return { kind: d.kind === "linear" ? "Dimension" : "Callout", title: d.text, about: `the ${what} "${d.text}" (${d.label}) in the ${viewName(d.view)}`, chips: d.kind === "linear" ? ["Dimension this from the other edge", "Why is it this size?", "Tighten the tolerance"] : ["Make this a tapped thread", "Why is it this size?", "Add a counterbore"] };
+    const kind = DIM_KINDS[d.kind] ?? "Callout";
+    const what = kind.toLowerCase();
+    return { kind, title: d.text, about: `the ${what} "${d.text}" (${d.label}) in the ${viewName(d.view)}`, chips: DIM_CHIPS[d.kind] ?? ["Make this a tapped thread", "Why is it this size?", "Add a counterbore"] };
   }
   m = /^v(\d+):p(\d+)$/.exec(key);
   if (m) {
     const p = sheet.parts[Number(m[2])];
     if (!p) return null;
-    return { kind: "Part", title: p.label, about: `the part ${p.label} (${p.id}) as seen in the ${viewName(Number(m[1]))}`, chips: ["Explain this part", "Show its drawing", "Make it lighter"] };
+    return { kind: "Part", title: p.label, about: `the part ${p.label} (${p.id}) as seen in the ${viewName(Number(m[1]))}`, chips: sheet.bom.length ? ["Explain this part", "Show its drawing", "Add weld symbols where it is welded"] : ["Explain this part", "Show its drawing", "Make it lighter"] };
   }
   m = /^v(\d+)$/.exec(key);
   if (m) {
@@ -303,10 +367,23 @@ function describe(sheet: Sheet, key: string): Described | null {
   if (key === "tb") return { kind: "Title block", title: sheet.title, about: "the title block", chips: ["Fill in the title block for a workshop", "Set the material and finish"] };
   if (key === "bom") return { kind: "Parts list", title: `${sheet.bom.length} items`, about: "the parts list", chips: ["Add supplier part numbers", "Group the fasteners"] };
   if (key === "n") return { kind: "Notes", title: `${sheet.notes.length} notes`, about: "the general notes", chips: ["Add a note on surface finish", "Add printing instructions"] };
+  if (key === "ht") return { kind: "Hole table", title: `${sheet.holeTable?.rows.length ?? 0} holes`, about: "the hole table", chips: ["Measure the holes from the bore instead", "Add the position tolerance"] };
+  if (key === "rev") return { kind: "Revisions", title: `${sheet.revisions.length} revisions`, about: "the revision table", chips: ["Add a revision for the last change"] };
   if (key.startsWith("sec:")) return { kind: "Cutting plane", title: `Section ${key.slice(4)}`, about: `the cutting plane of section ${key.slice(4)}`, chips: ["Move this section", "Cut through the bosses instead"] };
   if (key.startsWith("det:")) return { kind: "Detail", title: `Detail ${key.slice(4)}`, about: `the detail circle ${key.slice(4)}`, chips: ["Enlarge this detail more", "Move the detail circle"] };
   return null;
 }
+
+const DIM_KINDS: Partial<Record<SheetDim["kind"], string>> = { linear: "Dimension", diameter: "Diameter", radius: "Radius", chamfer: "Chamfer", angle: "Angle", arc: "Arc length", ordinate: "Ordinate", roughness: "Surface texture", weld: "Weld" };
+const DIM_CHIPS: Partial<Record<SheetDim["kind"], string[]>> = {
+  linear: ["Dimension this from the other edge", "Why is it this size?", "Tighten the tolerance"],
+  radius: ["Why this radius?", "Make the fillet bigger"],
+  chamfer: ["Change the chamfer to 0.5 × 45°", "Why is this chamfered?"],
+  angle: ["Why this angle?", "Tolerance this angle ±0.5°"],
+  ordinate: ["Dimension positions from the other corner", "Use a hole table"],
+  roughness: ["Is this finish needed?", "Make it Ra 0.8"],
+  weld: ["Is this weld big enough?", "Weld both sides"],
+};
 
 function ItemCard({ sheet, itemKey, api }: { sheet: Sheet; itemKey: string; api: React.MutableRefObject<CanvasApi | null> }) {
   const info = describe(sheet, itemKey);
@@ -370,6 +447,8 @@ function ItemBody({ sheet, itemKey, title }: { sheet: Sheet; itemKey: string; ti
   if (vm) return <ViewBody sheet={sheet} index={Number(vm[1])} />;
   if (itemKey === "tb") return <TitleBody sheet={sheet} />;
   if (itemKey === "n") return <NotesBody sheet={sheet} />;
+  if (itemKey === "ht") return <HoleTableBody sheet={sheet} />;
+  if (itemKey === "rev") return <TitleBody sheet={sheet} />;
   const bm = /^b(\d+)$/.exec(itemKey);
   if (bm) {
     const line = sheet.bom.find((b) => b.item === Number(bm[1]));
@@ -391,7 +470,9 @@ function DimBody({ sheet, dim }: { sheet: Sheet; dim: SheetDim | undefined }) {
   const lines = dim.text.split("\n");
   const cls = generalClass(sheet.spec.tolerance);
   const tolNow = dim.fit ? dim.fit : dim.tol ? (Math.abs(dim.tol[0] + dim.tol[1]) < 1e-9 ? `±${fmtNum(dim.tol[0], 3)}` : `+${fmtNum(dim.tol[0], 3)} / ${fmtNum(dim.tol[1], 3)}`) : null;
-  const linear = dim.kind === "linear";
+  const linear = dim.kind === "linear" || dim.kind === "ordinate" || dim.kind === "radius";
+  const tolerable = dim.kind === "linear" || dim.kind === "diameter" || dim.kind === "callout" || ((dim.kind === "radius" || dim.kind === "ordinate") && dim.auto);
+  const finishable = !!dim.id && dim.kind !== "weld" && dim.kind !== "roughness";
   const viewName = sheet.views[dim.view]?.name ?? "front";
   const setTol = (t: TolEdit, label: string) => editDrawing(sheet, label, (src, block) => setDimTolerance(src, block, dim, viewName, t));
   const options: { label: string; t: TolEdit }[] = linear
@@ -430,6 +511,22 @@ function DimBody({ sheet, dim }: { sheet: Sheet; dim: SheetDim | undefined }) {
           <ParamField name={param.name} locked={!!param.locked} value={typeof param.value === "number" ? param.value : NaN} />
         </div>
       )}
+      {finishable && (
+        <div className="section">
+          <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
+            <span className="label">Surface texture</span>
+            <span className="chip">{dim.finish ?? "general"}</span>
+          </div>
+          <div className="row">
+            {[3.2, 1.6, 0.8, 0.4].map((ra) => (
+              <button key={ra} className={`tolbtn ${dim.finish === `Ra ${ra}` ? "on" : ""}`} onClick={() => editDrawing(sheet, `Set the surface texture of ${dim.text.split("\n")[0]} to Ra ${ra}`, (src, block) => setRoughness(src, block, sheet, dim.id!, ra))}>
+                Ra {ra}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {tolerable && (
       <div className="section">
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
           <span className="label">Tolerance</span>
@@ -448,6 +545,7 @@ function DimBody({ sheet, dim }: { sheet: Sheet; dim: SheetDim | undefined }) {
           )}
         </div>
       </div>
+      )}
       {(dim.span || param?.span) && (
         <div className="row" style={{ marginTop: 8 }}>
           <button className="btn sm ghost" onClick={() => reveal((dim.span ?? param!.span)!)}>
@@ -589,6 +687,8 @@ const TITLE_FIELDS: { prop: string; label: string; value: (s: Sheet) => string }
 ];
 
 function TitleBody({ sheet }: { sheet: Sheet }) {
+  const last = sheet.revisions[sheet.revisions.length - 1]?.rev ?? sheet.spec.revision ?? "A";
+  const next = /^[A-Y]$/i.test(last) ? String.fromCharCode(last.toUpperCase().charCodeAt(0) + 1) : /^\d+$/.test(last) ? String(Number(last) + 1) : `${last}+`;
   return (
     <>
       <div className="big">{sheet.title}</div>
@@ -596,6 +696,46 @@ function TitleBody({ sheet }: { sheet: Sheet }) {
       {TITLE_FIELDS.map((f) => (
         <TextField key={f.prop} label={f.label} value={f.value(sheet)} onCommit={(v) => editDrawing(sheet, `Set the drawing ${f.label.toLowerCase()} to “${v}”`, (src, block) => setBlockProp(src, block, f.prop, JSON.stringify(v)))} />
       ))}
+      {sheet.revisions.length > 0 && <div className="lines" style={{ marginTop: 6 }}>{sheet.revisions.map((r) => `${r.rev}  ${r.text}${r.date ? ` (${r.date})` : ""}`).join("\n")}</div>}
+      <TextField
+        label={`Add revision ${next}`}
+        value=""
+        placeholder="What changed, e.g. Holes moved for M4"
+        onCommit={(v) => editDrawing(sheet, `Added revision ${next} to the drawing`, (src, block) => addBlockLine(src, block, `revision(${JSON.stringify(next)}, ${JSON.stringify(v)}, date: ${JSON.stringify(new Date().toISOString().slice(0, 10))})`))}
+      />
+    </>
+  );
+}
+
+/** A roughness("id", ra) line for a dimension, replacing the one it has. */
+function setRoughness(src: string, block: string, sheet: Sheet, id: string, ra: number): string {
+  const had = sheet.spec.roughness.find((r) => r.id === id);
+  const line = `roughness(${JSON.stringify(id)}, ${ra})`;
+  if (had?.span && src.slice(had.span.start, had.span.end).startsWith("roughness")) return src.slice(0, had.span.start) + line + src.slice(had.span.end);
+  return addBlockLine(src, block, line);
+}
+
+/** The whole part's surface texture: roughness(ra: …), replacing the one there is. */
+function setGeneralRoughness(src: string, block: string, sheet: Sheet, ra: number): string {
+  const had = sheet.spec.roughness.find((r) => !r.id && !r.at);
+  const line = `roughness(ra: ${ra})`;
+  if (had?.span && src.slice(had.span.start, had.span.end).startsWith("roughness")) return src.slice(0, had.span.start) + line + src.slice(had.span.end);
+  return addBlockLine(src, block, line);
+}
+
+function HoleTableBody({ sheet }: { sheet: Sheet }) {
+  const t = sheet.holeTable;
+  if (!t) return null;
+  return (
+    <>
+      <div className="big">{t.rows.length} holes</div>
+      <div className="label">{t.origin}</div>
+      <div className="lines">{t.rows.slice(0, 12).map((r) => `${r.tag}  ${r.x}, ${r.y}  ${r.size}`).join("\n")}{t.rows.length > 12 ? `\n… ${t.rows.length - 12} more` : ""}</div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button className="btn sm" onClick={() => editDrawing(sheet, "Went back to position dimensions for the holes", (src, block) => setBlockProp(src, block, "hole_table", "false"))}>
+          Dimension the holes instead
+        </button>
+      </div>
     </>
   );
 }
@@ -607,6 +747,19 @@ function NotesBody({ sheet }: { sheet: Sheet }) {
         {sheet.notes.map((n, i) => `${i + 1}. ${n}`).join("\n")}
       </div>
       <TextField label="Add a note" value="" placeholder="e.g. Deburr all edges" onCommit={(v) => editDrawing(sheet, `Added the note “${v}” to the drawing`, (src, block) => addBlockLine(src, block, `note(${JSON.stringify(v)})`))} />
+      <div className="section">
+        <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
+          <span className="label">Surface texture of the whole part</span>
+          <span className="chip">{sheet.symbols.find((s) => s.kind === "roughness" && s.view === undefined)?.text.replace(/^whole part /, "") ?? "none"}</span>
+        </div>
+        <div className="row">
+          {[6.3, 3.2, 1.6, 0.8].map((ra) => (
+            <button key={ra} className="tolbtn" onClick={() => editDrawing(sheet, `Set the whole part's surface texture to Ra ${ra}`, (src, block) => setGeneralRoughness(src, block, sheet, ra))}>
+              Ra {ra}
+            </button>
+          ))}
+        </div>
+      </div>
     </>
   );
 }

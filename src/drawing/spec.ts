@@ -93,6 +93,60 @@ export interface GdtSpec {
   span: Span;
 }
 
+/** An angle, radius, chamfer, arc length or ordinate written in the drawing block (model points in the drawing's frame). */
+export type MarkSpec =
+  | { t: "angle"; vertex: V3; a: V3; b: V3; view?: string; tol?: number; text?: string; span: Span }
+  | { t: "radius"; at: V3; r: number; toward?: V3; view?: string; tol?: [number, number]; text?: string; span: Span }
+  | { t: "chamfer"; at: V3; size: number; angle: number; view?: string; text?: string; span: Span }
+  | { t: "arc"; center: V3; a: V3; b: V3; view?: string; text?: string; span: Span }
+  | { t: "ordinate"; pts: V3[]; origin: V3; axis: "x" | "y" | "both"; view?: string; span: Span };
+
+/** A change recorded in the revision table. */
+export interface RevisionSpec {
+  rev: string;
+  text: string;
+  date?: string;
+  by?: string;
+  span: Span;
+}
+
+export const WELD_KINDS = ["fillet", "square", "v", "bevel", "u", "j", "plug", "spot", "seam", "edge"] as const;
+export type WeldKind = (typeof WELD_KINDS)[number];
+
+/** A surface texture requirement (ISO 21920-1 / ISO 1302): on a feature by id, at a surface point, or for the whole part. */
+export interface RoughnessSpec {
+  /** an automatic dimension's or callout's id */
+  id?: string;
+  at?: V3;
+  ra?: number;
+  rz?: number;
+  process?: string;
+  lay?: string;
+  removal: "required" | "prohibited" | "any";
+  view?: string;
+  span: Span;
+}
+
+/** A weld symbol (ISO 2553, arrow side on the continuous reference line). */
+export interface WeldSpec {
+  at: V3;
+  kind: WeldKind;
+  /** throat thickness of a fillet weld, depth of a butt weld, diameter of a plug or spot */
+  size?: number;
+  /** weld length, or "n × l (pitch)" for intermittent welds */
+  length?: string;
+  side: "arrow" | "other" | "both";
+  allRound: boolean;
+  field: boolean;
+  /** process or other information in the tail, e.g. "135" or "GMAW" */
+  note?: string;
+  view?: string;
+  span: Span;
+}
+
+export const DIM_STYLES = ["auto", "baseline", "chain", "ordinate"] as const;
+export type DimStyleName = (typeof DIM_STYLES)[number];
+
 export interface DrawingSpec {
   /** block name in the source, or "auto:<target>" for generated drawings */
   name: string;
@@ -121,6 +175,10 @@ export interface DrawingSpec {
   flat?: boolean;
   /** datums and geometric tolerances; undefined chooses by process (machined, cast, moulded and sheet parts get them) */
   gdt?: boolean;
+  /** a table of hole positions instead of position dimensions in the view that sees most holes */
+  holeTable?: boolean;
+  /** how automatic feature positions are dimensioned; auto uses baseline and turns to ordinate where a view has too many */
+  dimStyle?: DimStyleName;
   /** the views were chosen by Kerf (no views: or view() in the block), so it may pick the ones the part needs */
   viewsAuto?: boolean;
   views: ViewSpec[];
@@ -131,6 +189,11 @@ export interface DrawingSpec {
   tols: TolSpec[];
   /** geometric tolerances for automatic dimensions and callouts, by id */
   frames: GdtSpec[];
+  /** angles, radii, chamfers, arc lengths and ordinates from the block */
+  marks: MarkSpec[];
+  revisions: RevisionSpec[];
+  roughness: RoughnessSpec[];
+  welds: WeldSpec[];
   notes: string[];
   locked: boolean;
   span?: Span;
@@ -154,6 +217,10 @@ export function defaultSpec(name: string, title: string, of: string[]): DrawingS
     dims: [],
     tols: [],
     frames: [],
+    marks: [],
+    revisions: [],
+    roughness: [],
+    welds: [],
     notes: [],
     locked: false,
     auto: true,
@@ -260,6 +327,15 @@ export function generalDeviation(tolerance: string, size: number): number | null
   return m ? Number(m[1]) : null;
 }
 
+/** ISO 2768-1 general tolerance (± degrees) for an angle whose shorter leg is this long, under a drawing's tolerance note. */
+export function generalAngle(tolerance: string, shorterLeg: number): number | null {
+  const cls = generalClass(tolerance);
+  if (!cls) return null;
+  const table: Record<"f" | "m" | "c" | "v", number[]> = { f: [1, 0.5, 1 / 3, 1 / 6, 1 / 12], m: [1, 0.5, 1 / 3, 1 / 6, 1 / 12], c: [1.5, 1, 0.5, 0.25, 1 / 6], v: [3, 2, 1, 0.5, 1 / 3] };
+  const i = [10, 50, 120, 400].findIndex((hi) => shorterLeg <= hi);
+  return Math.round(table[cls][i < 0 ? 4 : i] * 1e4) / 1e4;
+}
+
 /** Rows of the general tolerance table, for the title block. */
 export function generalTable(cls: "f" | "m" | "c" | "v"): { range: string; tol: number }[] {
   const lows = [0.5, 3, 6, 30, 120, 400, 1000, 2000];
@@ -360,6 +436,8 @@ export const DRAWING_PROPS = [
   "balloons",
   "flat_pattern",
   "gdt",
+  "hole_table",
+  "dim_style",
   "views",
 ] as const;
 
@@ -372,6 +450,14 @@ export const DRAWING_CALLS: Record<string, string[]> = {
   diameter: ["at", "d", "view", "tol", "fit", "text", "ref"],
   tol: ["id", "tol", "fit"],
   gdt: ["id", "kind", "tol", "datums", "mmc"],
+  angle: ["vertex", "a", "b", "view", "tol", "text"],
+  radius: ["at", "r", "view", "toward", "tol", "text"],
+  chamfer: ["at", "size", "angle", "view", "text"],
+  arc_length: ["center", "a", "b", "view", "text"],
+  ordinate: ["at", "view", "origin", "axis"],
+  revision: ["rev", "text", "date", "by"],
+  roughness: ["at", "ra", "view", "process", "lay", "removal", "rz"],
+  weld: ["at", "kind", "size", "length", "view", "side", "all_round", "field", "note"],
   note: ["text"],
 };
 
@@ -383,5 +469,13 @@ export const DRAWING_DOCS: Record<string, string> = {
   diameter: 'diameter(at, d, view: "top", tol:, fit: "H7", text:) — a diameter callout for a circle of diameter d centred at a model point, on a view that looks along its axis.',
   tol: 'tol("top:overall-width-x", 0.1) or tol("front:4-holes-o3.4", fit: "H7") — a tolerance (± value or (upper, lower)) or ISO 286 fit for an automatic dimension, named by the id view_drawing lists. It follows the dimension when the design changes.',
   gdt: 'gdt("front:4-holes-o3.4", "position", 0.3, "A B C", mmc: true) — a geometric tolerance (position, flatness, perpendicularity, parallelism, runout, coaxiality or profile) for an automatic dimension or callout, named by the id view_drawing lists; it replaces the frame of that kind Kerf chose. gdt: false in the block turns datums and frames off, gdt: true turns them on for printed parts.',
+  angle: 'angle(vertex, a, b, view: "front", tol: 0.5, text: "…") — an angle at a model point between the lines to two other points, on the named view (or the one that sees the angle flat). Kerf already dimensions sloped edges against the edges they meet.',
+  radius: 'radius(at, r, view: "top", toward: (x, y, z), tol:, text:) — an R callout for an arc of radius r centred at a model point; toward is a point the leader aims through. Kerf already calls out fillets, rounded corners and sketch arcs it sees in the views ("4× R5").',
+  chamfer: 'chamfer(at, 1, angle: 45, view: "front") — a chamfer callout "1 × 45°" with its leader on a model point on the chamfer. Kerf already finds chamfers cut across square corners.',
+  arc_length: 'arc_length(center, a, b, view: "top") — the length along an arc around center from point a to point b (counter-clockwise as seen in the view), drawn with the arc symbol.',
+  ordinate: 'ordinate([(x, y, z), …], view: "top", origin: (0, 0, 0), axis: "x"|"y"|"both") — ordinate dimensions of points from an origin. dim_style: "ordinate" draws every automatic feature position this way; "baseline" (positions from a datum) and "chain" (feature to feature) are the others, and "auto" (the default) turns to ordinate where a view has too many positions for rows.',
+  revision: 'revision("B", "Holes moved for M4 screws", date: "2026-11-07", by: "DM") — a row of the revision table at the top right; the last one sets the revision in the title block unless revision: is given.',
+  roughness: 'roughness("front:bore-o22", 0.8) on a dimension or callout by id, roughness((x, y, z), 1.6, view: "front", process: "ground", lay: "=", removal: "required"|"prohibited"|"any", rz: 6.3) on a surface point, or roughness(ra: 3.2) for the whole part (shown by the title block) — an ISO 21920-1 surface texture symbol. Machined parts already get Ra on their seats and a general Ra 3.2.',
+  weld: 'weld((x, y, z), "fillet", size: 4, length: "3 × 50 (100)", side: "arrow"|"other"|"both", all_round: true, field: true, note: "135", view: "front") — an ISO 2553 weld symbol with its arrow on a model point at the joint. Kinds: fillet (size is the throat a), square, v, bevel, u, j (butt welds, size is the depth s), plug, spot, seam (size is the diameter or width), edge.',
   note: 'note("Break sharp edges 0.2 mm") — a numbered general note on the sheet.',
 };

@@ -2,6 +2,7 @@
 // ISO 7200 style title block, the general tolerance strip, the parts list,
 // notes and data tables.
 
+import { fcfHeight, fcfWidth, inkFcf, type Fcf } from "./gdt";
 import { fmtNum, Ink, type BomLine, type Box } from "./sheet";
 import { generalClass, generalTable } from "./spec";
 import { fitText, textWidth } from "./text";
@@ -302,4 +303,72 @@ export function inkDataTable(ink: Ink, x0: number, bottom: number, title: string
     ink.line(x0 + w1, y0 + rh, x0 + w1, y0 + h, "frame");
   });
   return [x0, y0, x0 + w1 + w2, bottom];
+}
+
+// ---------- tables with a header row: holes, revisions ----------
+
+/** A table cell: text, or a geometric tolerance frame. */
+export type Cell = string | { fcf: Fcf };
+
+export interface Table {
+  title: string;
+  head: string[];
+  rows: Cell[][];
+  key: string;
+}
+
+const TS = 2.5;
+const TRH = 5;
+
+function cellWidth(c: Cell): number {
+  return typeof c === "string" ? textWidth(c, TS) : fcfWidth(c.fcf, TS);
+}
+
+function colWidths(t: Table): number[] {
+  return t.head.map((h, i) => Math.max(textWidth(h, TS, true), ...t.rows.map((r) => (r[i] === undefined ? 0 : cellWidth(r[i])))) + 3);
+}
+
+export function tableSize(t: Table): { w: number; h: number } {
+  const cols = colWidths(t);
+  const w = Math.max(
+    cols.reduce((a, b) => a + b, 0),
+    textWidth(t.title, TS, true) + 3,
+  );
+  return { w, h: (t.rows.length + 2) * TRH };
+}
+
+/** Splits a long table into pieces of at most `per` rows, each with the header. */
+export function splitTable(t: Table, per: number): Table[] {
+  if (t.rows.length <= per) return [t];
+  const out: Table[] = [];
+  for (let k = 0; k * per < t.rows.length; k++) out.push({ ...t, title: k ? `${t.title} (CONT.)` : t.title, rows: t.rows.slice(k * per, (k + 1) * per) });
+  return out;
+}
+
+/** Inks a table with its top-left corner at (x0, y0): title row, header row, rows. */
+export function inkTable(ink: Ink, x0: number, y0: number, t: Table): Box {
+  const cols = colWidths(t);
+  const { w, h } = tableSize(t);
+  // the last column takes any width the title needs
+  cols[cols.length - 1] += w - cols.reduce((a, b) => a + b, 0);
+  ink.with(t.key, () => {
+    ink.rect(x0, y0, w, h, "frame");
+    ink.text(x0 + 1.5, y0 + TRH - 1.5, t.title, TS, "start", { bold: true });
+    const rowsY = (i: number) => y0 + (i + 1) * TRH;
+    for (let i = 0; i <= t.rows.length; i++) ink.line(x0, rowsY(i), x0 + w, rowsY(i), "frame");
+    let x = x0;
+    cols.forEach((cw, c) => {
+      if (c) ink.line(x, rowsY(0), x, y0 + h, "frame");
+      ink.text(x + 1.5, rowsY(0) + TRH - 1.5, t.head[c], TS, "start", { bold: true });
+      t.rows.forEach((r, i) => {
+        const cell = r[c];
+        if (cell === undefined) return;
+        const top = rowsY(i + 1);
+        if (typeof cell === "string") ink.text(x + 1.5, top + TRH - 1.5, cell, TS);
+        else inkFcf(ink, x + 1.5, top + (TRH - fcfHeight(TS)) / 2, cell.fcf, TS);
+      });
+      x += cw;
+    });
+  });
+  return [x0, y0, x0 + w, y0 + h];
 }

@@ -37,7 +37,7 @@ import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang
 import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
-import { DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, defaultSpec, parseScale, type DrawingSpec, type SheetSize, type ViewKind } from "../drawing/spec";
+import { DIM_STYLES, DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, WELD_KINDS, defaultSpec, parseScale, type DimStyleName, type DrawingSpec, type SheetSize, type ViewKind, type WeldKind } from "../drawing/spec";
 import { GDT_KINDS, type GdtKind } from "../drawing/gdt";
 
 export interface EvalOptions {
@@ -2238,6 +2238,15 @@ class Evaluator {
                 else if (typeof v === "boolean") spec.gdt = v;
                 else throw new EvalError('gdt should be true, false or "auto" (datums and geometric tolerances for machined, cast, moulded and sheet parts)', it.span);
                 break;
+              case "hole_table":
+                spec.holeTable = bool(v, it.span, "hole_table");
+                break;
+              case "dim_style": {
+                const t = str(v, it.span, "dim_style");
+                if (!(DIM_STYLES as readonly string[]).includes(t)) throw new EvalError(`dim_style should be one of ${DIM_STYLES.map((x) => `"${x}"`).join(", ")}: how feature positions are dimensioned`, it.span);
+                spec.dimStyle = t as DimStyleName;
+                break;
+              }
               case "views": {
                 if (!Array.isArray(v)) throw new EvalError('views should be a list such as ["front", "top", "right", "iso"]', it.span);
                 viewsProp = v.map((x) => viewKind(x, it.span, "each view"));
@@ -2276,7 +2285,7 @@ class Evaluator {
             break;
           }
           case "op":
-            throw new EvalError(`Drawings do not take ${it.op} shapes. Use view(), section(), detail(), dim(), diameter() and note().`, it.span);
+            throw new EvalError(`Drawings do not take ${it.op} shapes. Use view(), section(), detail(), dim(), diameter(), angle(), radius(), weld(), roughness() and note().`, it.span);
           case "modifier": {
             const callee = it.call.callee;
             const fname = callee.k === "ident" ? callee.name : "";
@@ -2356,6 +2365,70 @@ class Evaluator {
                 const datums = a.has("datums") ? a.str("datums").toUpperCase().split(/[\s|,]+/).filter(Boolean) : [];
                 if (datums.some((d) => !/^[A-Z]{1,2}$/.test(d))) ctx().error('gdt() datums should be letters such as "A B C"');
                 spec.frames.push({ id: a.str("id"), kind: kind as GdtKind, tol: t as number, datums, mmc: a.has("mmc") ? a.bool("mmc") : undefined, span: it.call.span });
+                break;
+              }
+              case "angle":
+                spec.marks.push({ t: "angle", vertex: a.vec3("vertex"), a: a.vec3("a"), b: a.vec3("b"), view: optStr("view"), tol: a.has("tol") ? Math.abs(a.num("tol")) : undefined, text: optStr("text"), span: it.call.span });
+                break;
+              case "radius":
+                spec.marks.push({ t: "radius", at: a.vec3("at"), r: a.positive("r"), toward: a.has("toward") ? a.vec3("toward") : undefined, view: optStr("view"), tol: tol(), text: optStr("text"), span: it.call.span });
+                break;
+              case "chamfer": {
+                const angle = a.num("angle", 45);
+                if (!(angle > 0 && angle < 90)) ctx().error("chamfer() angle should be between 0 and 90 degrees");
+                spec.marks.push({ t: "chamfer", at: a.vec3("at"), size: a.positive("size"), angle, view: optStr("view"), text: optStr("text"), span: it.call.span });
+                break;
+              }
+              case "arc_length":
+                spec.marks.push({ t: "arc", center: a.vec3("center"), a: a.vec3("a"), b: a.vec3("b"), view: optStr("view"), text: optStr("text"), span: it.call.span });
+                break;
+              case "ordinate": {
+                const at = a.value("at");
+                const pts = Array.isArray(at) ? a.points3("at") : [a.vec3("at")];
+                spec.marks.push({ t: "ordinate", pts, origin: a.vec3("origin", [0, 0, 0]), axis: a.oneOf("axis", ["x", "y", "both"] as const, "both"), view: optStr("view"), span: it.call.span });
+                break;
+              }
+              case "revision":
+                spec.revisions.push({ rev: a.str("rev"), text: a.str("text", ""), date: optStr("date"), by: optStr("by"), span: it.call.span });
+                break;
+              case "roughness": {
+                // roughness(3.2) is the whole part; roughness("id", 0.8) a feature; roughness((x, y, z), 1.6) a surface
+                const first = a.value("at");
+                const general = typeof first === "number" || first === undefined;
+                if (typeof first === "number" && a.has("ra")) ctx().error("roughness(): give Ra once, e.g. roughness(ra: 3.2) for the whole part");
+                const ra = typeof first === "number" ? (first > 0 ? first : ctx().error("roughness(): Ra must be greater than 0")) : a.has("ra") ? a.positive("ra") : undefined;
+                const rz = a.has("rz") ? a.positive("rz") : undefined;
+                if (ra === undefined && rz === undefined && a.str("removal", "any") === "any") ctx().error('roughness() needs ra: or rz:, e.g. roughness("front:bore-o22", 0.8)');
+                const removal = a.oneOf("removal", ["required", "prohibited", "any"] as const, "required");
+                spec.roughness.push({
+                  id: typeof first === "string" ? first : undefined,
+                  at: first !== undefined && !general && typeof first !== "string" ? a.vec3("at") : undefined,
+                  ra,
+                  rz,
+                  process: optStr("process"),
+                  lay: optStr("lay"),
+                  removal,
+                  view: optStr("view"),
+                  span: it.call.span,
+                });
+                break;
+              }
+              case "weld": {
+                const kind = a.str("kind", "fillet").toLowerCase();
+                if (!(WELD_KINDS as readonly string[]).includes(kind)) ctx().error(`weld() kind should be one of ${WELD_KINDS.map((k) => `"${k}"`).join(", ")}`);
+                const len = a.value("length");
+                spec.welds.push({
+                  at: a.vec3("at"),
+                  kind: kind as WeldKind,
+                  size: a.has("size") ? a.positive("size") : undefined,
+                  length: len === undefined ? undefined : typeof len === "number" ? String(len) : a.str("length"),
+                  side: a.oneOf("side", ["arrow", "other", "both"] as const, "arrow"),
+                  allRound: a.bool("all_round"),
+                  field: a.bool("field"),
+                  note: optStr("note"),
+                  view: optStr("view"),
+                  span: it.call.span,
+                });
                 break;
               }
               case "note":

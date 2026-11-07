@@ -6,7 +6,7 @@ import type { Model } from "../core/model";
 import { lex, type Token } from "../lang/lexer";
 import type { V3 } from "../kernel/recipe";
 import type { SheetDim } from "./sheet";
-import type { DrawingSpec } from "./spec";
+import type { DrawingSpec, MarkSpec, RoughnessSpec, WeldSpec } from "./spec";
 import { scaleText } from "./spec";
 
 const num = (n: number) => {
@@ -27,6 +27,8 @@ export function specToSource(spec: DrawingSpec, name: string): string {
   if (spec.hidden !== undefined) lines.push(`  hidden_lines: ${spec.hidden}`);
   if (spec.flat) lines.push("  flat_pattern: true");
   if (spec.gdt !== undefined) lines.push(`  gdt: ${spec.gdt}`);
+  if (spec.holeTable) lines.push("  hole_table: true");
+  if (spec.dimStyle && spec.dimStyle !== "auto") lines.push(`  dim_style: ${str(spec.dimStyle)}`);
   lines.push(`  views: [${spec.views.map((v) => str(v.kind)).join(", ")}]`);
   for (const s of spec.sections) lines.push(`  section(${str(s.label)}, at: ${vec(s.at)}, normal: ${vec(s.normal)}${s.view ? `, view: ${str(s.view)}` : ""})`);
   for (const d of spec.details) lines.push(`  detail(${str(d.label)}, view: ${str(d.view)}, at: ${vec(d.at)}, r: ${num(d.r)}, scale: ${num(d.scale)})`);
@@ -36,9 +38,44 @@ export function specToSource(spec: DrawingSpec, name: string): string {
     if (call) lines.push(`  ${call}`);
   }
   for (const g of spec.frames ?? []) lines.push(`  gdt(${str(g.id)}, ${str(g.kind)}, ${num(g.tol)}${g.datums.length ? `, ${str(g.datums.join(" "))}` : ""}${g.mmc ? ", mmc: true" : ""})`);
+  for (const m of spec.marks ?? []) lines.push(`  ${markCall(m)}`);
+  for (const r of spec.roughness ?? []) lines.push(`  ${roughnessCall(r)}`);
+  for (const w of spec.welds ?? []) lines.push(`  ${weldCall(w)}`);
+  for (const r of spec.revisions ?? []) lines.push(`  revision(${str(r.rev)}, ${str(r.text)}${r.date ? `, date: ${str(r.date)}` : ""}${r.by ? `, by: ${str(r.by)}` : ""})`);
   for (const n of spec.notes) lines.push(`  note(${str(n)})`);
   lines.push("}");
   return lines.join("\n");
+}
+
+const opt = (name: string, v: string | number | undefined) => (v === undefined ? "" : `, ${name}: ${typeof v === "number" ? num(v) : str(v)}`);
+
+/** An angle(), radius(), chamfer(), arc_length() or ordinate() call. */
+export function markCall(m: MarkSpec): string {
+  switch (m.t) {
+    case "angle":
+      return `angle(${vec(m.vertex)}, ${vec(m.a)}, ${vec(m.b)}${opt("view", m.view)}${opt("tol", m.tol)}${opt("text", m.text)})`;
+    case "radius": {
+      const tol = m.tol ? (close(m.tol[0], -m.tol[1]) ? `, tol: ${num(m.tol[0])}` : `, tol: (${num(m.tol[0])}, ${num(m.tol[1])})`) : "";
+      return `radius(${vec(m.at)}, ${num(m.r)}${opt("view", m.view)}${m.toward ? `, toward: ${vec(m.toward)}` : ""}${tol}${opt("text", m.text)})`;
+    }
+    case "chamfer":
+      return `chamfer(${vec(m.at)}, ${num(m.size)}${m.angle !== 45 ? `, angle: ${num(m.angle)}` : ""}${opt("view", m.view)}${opt("text", m.text)})`;
+    case "arc":
+      return `arc_length(${vec(m.center)}, ${vec(m.a)}, ${vec(m.b)}${opt("view", m.view)}${opt("text", m.text)})`;
+    case "ordinate":
+      return `ordinate([${m.pts.map(vec).join(", ")}]${opt("view", m.view)}, origin: ${vec(m.origin)}${m.axis !== "both" ? `, axis: ${str(m.axis)}` : ""})`;
+  }
+}
+
+export function roughnessCall(r: RoughnessSpec): string {
+  const rest = `${opt("view", r.view)}${opt("process", r.process)}${opt("lay", r.lay)}${r.removal !== "required" ? `, removal: ${str(r.removal)}` : ""}${opt("rz", r.rz)}`;
+  if (r.id) return `roughness(${str(r.id)}${r.ra !== undefined ? `, ${num(r.ra)}` : ""}${rest})`;
+  if (r.at) return `roughness(${vec(r.at)}${r.ra !== undefined ? `, ${num(r.ra)}` : ""}${rest})`;
+  return `roughness(${r.ra !== undefined ? `ra: ${num(r.ra)}` : ""}${r.ra === undefined ? rest.replace(/^, /, "") : rest})`;
+}
+
+export function weldCall(w: WeldSpec): string {
+  return `weld(${vec(w.at)}, ${str(w.kind)}${opt("size", w.size)}${opt("length", w.length)}${opt("view", w.view)}${w.side !== "arrow" ? `, side: ${str(w.side)}` : ""}${w.allRound ? ", all_round: true" : ""}${w.field ? ", field: true" : ""}${opt("note", w.note)})`;
 }
 
 /** A block name for an automatic drawing that is free in the design. */
