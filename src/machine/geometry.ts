@@ -47,6 +47,109 @@ function solid(suffix: string, label: string, recipe: PartRecipe, color: string,
   return { suffix, label, recipe, color, material, moving };
 }
 
+const XN: V3 = [-1, 0, 0];
+const box = (w: number, d: number, h: number, at: V3, r = 0): ShapeRecipe => ({ t: "box", w, d, h, at, r });
+/** a box turned 45° about Z round its own centre line: cut at a corner, it leaves a chamfer */
+const diamond = (s: number, at: V3, h: number): ShapeRecipe => ({ t: "xform", shape: box(s, s, h, at), xf: [{ op: "rotate", angle: 45, origin: at, axis: ZP }] });
+
+/**
+ * The look of a known kind of box-class part: the body's own cuts (seams,
+ * pockets) and the extra solids (labels, heatsinks, lids, boots), all inside
+ * the catalog envelope so mounts, trays and clash checks see the same box.
+ */
+function boxLook(style: NonNullable<CatalogPart["geom"]["style"]>, p: CatalogPart, w: number, dd: number, h: number, r: number): { base?: ShapeRecipe; cuts: ShapeRecipe[]; solids: CompSolid[]; color?: string } {
+  const g = p.geom;
+  const one = (shape: ShapeRecipe): PartRecipe => ({ base: shape, ops: [] });
+  switch (style) {
+    // a soft LiPo pack: cells stacked in its height (seams round the sides and ends), the printed
+    // sleeve over the middle with a foil stripe, and the tape over the cell tabs at the lead (+X) end
+    case "lipo": {
+      const cells = Math.max(1, Number(p.specs?.cells) || Math.round(h / 9));
+      const per = h / cells;
+      const lw = w * 0.6;
+      const lx = -w * 0.1;
+      const cuts: ShapeRecipe[] = [];
+      for (let k = 1; k < cells; k++) {
+        const z = k * per - 0.25;
+        cuts.push(box(w + 2, 0.7, 0.5, [0, dd / 2, z]), box(w + 2, 0.7, 0.5, [0, -dd / 2, z]), box(0.7, dd + 2, 0.5, [w / 2, 0, z]), box(0.7, dd + 2, 0.5, [-w / 2, 0, z]));
+      }
+      // the sleeve sits in a 0.3 mm recess, flush with the pack (the strap and tray see the same box)
+      cuts.push(box(lw, dd + 2, 0.3, [lx, 0, h - 0.3]), box(lw, 0.6, h + 2, [lx, dd / 2, -1]), box(lw, 0.6, h + 2, [lx, -dd / 2, -1]));
+      cuts.push(box(1.2, dd + 2, h + 2, [w / 2 - 0.6, 0, -1]));
+      const foil = 7;
+      const a = lw - 0.3 - foil;
+      const sleeve = (len: number, x: number) => box(len, dd, h, [x, 0, 0], 0.3);
+      const xa = lx - (lw - 0.3) / 2;
+      return {
+        cuts,
+        solids: [
+          solid("wrap", `${p.name} label`, one({ t: "union", shapes: [sleeve(a * 0.72, xa + (a * 0.72) / 2), sleeve(a * 0.28, xa + a * 0.72 + foil + (a * 0.28) / 2)] }), g.color2 ?? "#d4382c", "PVC"),
+          solid("foil", `${p.name} label stripe`, one(sleeve(foil, xa + a * 0.72 + foil / 2)), "#c9ced6", "PVC"),
+          solid("tabs", `${p.name} tab tape`, one(box(1.2, dd - 2 * r, h - 2 * Math.min(r, per / 2), [w / 2 - 0.6, 0, Math.min(r, per / 2)])), "#b5832a", "Polyimide"),
+        ],
+      };
+    }
+    // an ESC in shrink wrap: the label round the middle, and the aluminium heatsink's fins on top
+    case "esc": {
+      const fin = Math.min(1.6, h * 0.15);
+      const bodyH = h - fin - 0.6;
+      const hw = w * 0.62;
+      const hx = w * 0.06;
+      const n = Math.max(3, Math.floor((dd - 4) / 2.8));
+      const pitch = (dd - 4) / n;
+      const fins: ShapeRecipe[] = [box(hw, dd - 4, 0.6, [hx, 0, bodyH])];
+      for (let k = 0; k < n; k++) fins.push(box(hw, Math.min(1.2, pitch * 0.45), fin, [hx, -(dd - 4) / 2 + pitch * (k + 0.5), bodyH + 0.6]));
+      const band = Math.min(num(g.dims, "band", bodyH * 0.8), bodyH - 1);
+      return {
+        base: box(w, dd, bodyH, Z0, r),
+        cuts: [],
+        solids: [
+          solid("sink", `${p.name} heatsink`, one({ t: "union", shapes: fins }), "#aeb5be", "Aluminum 6063"),
+          solid("wrap", `${p.name} label`, one(box(w * 0.7, dd + 0.3, band, [0, 0, (bodyH - band) / 2], Math.max(0.2, r - 0.3))), g.color2 ?? "#2f6ad8", "PVC"),
+        ],
+      };
+    }
+    // an inline MAXI fuse holder: base, snap-on lid with a lip, and a tapered boot round each lead end
+    case "fuse_maxi": {
+      const boot = Math.min(5, w * 0.12);
+      const L = w - 2 * boot;
+      const hb = h * 0.56;
+      const zc = h / 2;
+      const bd = Math.min(dd, h) * 0.6;
+      return {
+        base: box(L - 0.8, dd - 0.8, hb, Z0, Math.max(0.3, r - 0.4)),
+        cuts: [],
+        color: "#1b1f25",
+        solids: [
+          solid("lid", `${p.name} lid`, one(box(L, dd, h - hb, [0, 0, hb], r)), "#2b3038", "PA66"),
+          solid("boots", `${p.name} lead boots`, one({ t: "union", shapes: [{ t: "cone", d1: bd, d2: bd * 0.62, h: boot, at: [L / 2 - 0.4, 0, zc], dir: XP }, { t: "cone", d1: bd, d2: bd * 0.62, h: boot, at: [-L / 2 + 0.4, 0, zc], dir: XN }] }), "#1b1f25", "PVC"),
+        ],
+      };
+    }
+    // a mated XT-series pair: the female housing below, the male above it on a slightly smaller body, the
+    // polarity chamfers on the +Y corners of both
+    case "xt": {
+      const s = Math.min(dd * 0.45, 4.5);
+      const ch = (zh: number, z0: number) => [diamond(s, [w / 2, dd / 2, z0 - 0.5], zh + 1), diamond(s, [-w / 2, dd / 2, z0 - 0.5], zh + 1)];
+      const hm = h * 0.48;
+      return {
+        base: box(w, dd, h - hm, Z0, r),
+        cuts: ch(h - hm, 0),
+        solids: [solid("male", `${p.name} male`, { base: box(w - 0.8, dd - 0.8, hm, [0, 0, h - hm], r), ops: ch(hm, h - hm).map((shape) => ({ op: "cut" as const, shape })) }, g.color2 ?? "#e3a81e", "PA66")],
+      };
+    }
+    // a bar load cell: the strain gauges under a pad of white potting in a pocket in the middle of the top
+    case "load_cell": {
+      const pw = Math.min(14, w * 0.3);
+      const pd = dd * 0.7;
+      return {
+        cuts: [box(pw, pd, 0.6, [0, 0, h - 0.6], 0.5)],
+        solids: [solid("gauge", `${p.name} gauge potting`, one(box(pw - 0.4, pd - 0.4, 0.6, [0, 0, h - 0.6], 0.4)), "#ece8dc", "Silicone")],
+      };
+    }
+  }
+}
+
 export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
   const g = p.geom;
   const d = g.dims;
@@ -465,19 +568,24 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
 
     // box: batteries, power supplies, modules. w (X), d (Y), h (Z), r corner
     // radius; `at` is the centre of the bottom face. band: a wrap band height.
+    // style: draw a known kind of part in detail (boxLook), inside the same box.
     case "box": {
       const w = num(d, "w", 50);
       const dd = num(d, "d", 30);
       const h = num(d, "h", 20);
       const r = Math.min(num(d, "r", 1), Math.min(w, dd) / 2 - 0.1);
       const holes = g.holes ?? [];
+      const look = g.style ? boxLook(g.style, p, w, dd, h, r) : undefined;
       const body: PartRecipe = {
-        base: { t: "box", w, d: dd, h, at: Z0, r },
+        base: look?.base ?? { t: "box", w, d: dd, h, at: Z0, r },
         // mounting holes up from the bottom face: blind (6 mm) unless hole_depth says how deep (a blower's ears go right through)
-        ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: g.hole_d ?? 3, depth: num(d, "hole_depth", 6), at: [x, y, 0] as V3, dir: ZP } })),
+        ops: [
+          ...holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: g.hole_d ?? 3, depth: num(d, "hole_depth", 6), at: [x, y, 0] as V3, dir: ZP } })),
+          ...(look?.cuts ?? []).map((shape) => ({ op: "cut" as const, shape })),
+        ],
       };
-      const solids = [solid("", p.name, body, g.color ?? "#2b3038", g.material ?? "ABS")];
-      const band = num(d, "band", 0);
+      const solids = [solid("", p.name, body, look?.color ?? g.color ?? "#2b3038", g.material ?? "ABS"), ...(look?.solids ?? [])];
+      const band = look ? 0 : num(d, "band", 0);
       if (band > 0) solids.push(solid("wrap", `${p.name} label`, { base: { t: "box", w: w + 0.4, d: dd + 0.4, h: band, at: [0, 0, (h - band) / 2], r: r + 0.2 }, ops: [] }, g.color2 ?? "#3d6fd6", "PETG"));
       return {
         placement: "free",
