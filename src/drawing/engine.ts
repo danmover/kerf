@@ -9,8 +9,9 @@ import type { EvalPart, Model } from "../core/model";
 import { evaluate } from "../lang/evaluator";
 import { kernel, KernelCrashed } from "../kernel/client";
 import type { Prim2, ViewRequest, ViewResult } from "../kernel/drawing";
-import type { V3 } from "../kernel/recipe";
+import { applyXforms, inverseXforms, vnorm, vsub, type V3 } from "../kernel/recipe";
 import { composeSheet } from "./compose";
+import { movePmi, partPmi, pmiSummary, type PartPmi } from "./pmi";
 import type { Sheet } from "./sheet";
 import type { DrawingSpec } from "./spec";
 import { layFlat } from "./flat";
@@ -161,6 +162,69 @@ const volumeOf = (p: EvalPart) => meshes.get(p.hash)?.volume ?? flatGeo(p.hash)?
 export function drawingSpecs(model: Model | null): DrawingSpec[] {
   if (!model) return [];
   return [...withProcessTolerance(model, model.drawings), ...autoDrawings(model, bboxOf)];
+}
+
+const specsCache = new WeakMap<Model, DrawingSpec[]>();
+const pmiCache = new WeakMap<Model, Map<string, PartPmi | null>>();
+
+/**
+ * Each made part's PMI (its drawing's dimensions, fits, datums and frames in
+ * 3D), every instance placed where it sits. Parts whose solids are not built
+ * yet are left out; `ids` limits it to those part instances.
+ */
+export function modelPmi(model: Model, ids?: readonly string[]): PartPmi[] {
+  // drawings read the parts' boxes, so nothing is kept until every part is built
+  const ready = model.parts.every((p) => p.hidden || meshes.has(p.hash));
+  let specs = specsCache.get(model);
+  if (!specs) {
+    specs = drawingSpecs(model);
+    if (ready) specsCache.set(model, specs);
+  }
+  let cache = pmiCache.get(model);
+  if (!cache) {
+    cache = new Map();
+    if (ready) pmiCache.set(model, cache);
+  }
+  const out: PartPmi[] = [];
+  for (const p of model.parts) {
+    if (p.hidden || (ids && !ids.includes(p.id)) || !meshes.has(p.hash)) continue;
+    let base = cache.get(p.name);
+    if (base === undefined) {
+      const first = model.parts.find((q) => q.name === p.name)!;
+      if (!meshes.has(first.hash)) continue;
+      try {
+        base = partPmi(model, first, bboxOf, specs);
+      } catch {
+        base = null;
+      }
+      cache.set(p.name, base);
+    }
+    if (!base) continue;
+    if (base.part === p.id) {
+      out.push(base);
+      continue;
+    }
+    // another instance: the drawn one's annotations moved onto it
+    const drawn = model.parts.find((q) => q.id === base!.part);
+    if (!drawn) continue;
+    const pt = (q: V3): V3 => applyXforms(inverseXforms(q, drawn.xf), p.xf);
+    const o = pt([0, 0, 0]);
+    const dir = (d: V3): V3 => vnorm(vsub(pt(d), o));
+    out.push(movePmi(base, p.id, pt, dir));
+  }
+  return out;
+}
+
+/** A line for view_drawing on what a part drawing puts on the 3D model and into STEP AP242. */
+export function pmiNote(sheetName: string): string | null {
+  const model = useDesign.getState().model;
+  if (!model) return null;
+  const spec = drawingSpecs(model).find((s) => s.name === sheetName);
+  if (!spec || spec.flat || spec.of.length !== 1) return null;
+  if (spec.pmi === false) return "PMI: off for this part (pmi: false in its drawing block), so the 3D annotations and STEP AP242 export leave it out.";
+  const first = model.parts.find((p) => p.name === spec.of[0]);
+  const pmi = first && modelPmi(model, [first.id])[0];
+  return pmi ? `PMI (the same annotations on the 3D model, and written into "STEP with PMI (AP242)" exports tied to the faces): ${pmiSummary(pmi)}. pmi: false in the drawing block leaves the part out.` : null;
 }
 
 /** The drawing that shows these parts: a part's own drawing, or the assembly's for several. */

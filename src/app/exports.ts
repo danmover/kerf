@@ -67,6 +67,37 @@ export async function exportStep(selectionOnly = false) {
   }
 }
 
+/**
+ * STEP AP242 with each made part's PMI (its drawing's sizes, fits,
+ * distances, datums and geometric tolerances) written in as semantic data
+ * tied to the faces, for CAM, inspection and other CAD tools.
+ */
+export async function exportStepWithPmi(selectionOnly = false) {
+  const parts = visibleParts(selectionOnly);
+  const model = useDesign.getState().model;
+  if (!parts.length || !model) return toast({ kind: "warn", title: "Nothing to export", detail: selectionOnly ? "Select one or more parts first." : "The design has no visible parts." });
+  const t = toast({ kind: "info", title: "Preparing STEP with PMI…", detail: "Exporting exact solids and tying each drawing's dimensions and tolerances to their faces." }, 0);
+  try {
+    const { data, count } = await stepOf(parts);
+    const { modelPmi } = await import("../drawing/engine");
+    const { addStepPmi } = await import("../drawing/stepPmi");
+    const pmi = modelPmi(model, parts.map((p) => p.id));
+    const { text, report } = addStepPmi(new TextDecoder().decode(data), pmi);
+    download(text, safeFileName(baseName() + (selectionOnly ? " selection" : "") + " PMI", "step"), "application/step");
+    const written = report.parts.reduce((n, p) => n + p.written, 0);
+    const missed = report.parts.reduce((n, p) => n + p.missed.length, 0);
+    toast({
+      kind: "success",
+      title: "STEP with PMI exported",
+      detail: `${count} solids, ${written} annotations on ${report.parts.length} part${report.parts.length === 1 ? "" : "s"} (AP242)${missed ? `; ${missed} could not be tied to a face and were left out` : ""}.`,
+    });
+  } catch (e) {
+    toast({ kind: "error", title: "STEP export failed", detail: errorText(e) }, 9000);
+  } finally {
+    dismissToast(t);
+  }
+}
+
 export async function exportStl(selectionOnly = false) {
   const parts = visibleParts(selectionOnly);
   if (!parts.length) return toast({ kind: "warn", title: "Nothing to export", detail: selectionOnly ? "Select one or more parts first." : "The design has no visible parts." });

@@ -419,6 +419,12 @@ export const Icon = {
     </I>
   ),
   /** a drilled hole */
+  Dimension: (p: P) => (
+    <I {...p}>
+      <path d="M4 5v6M20 5v6M4 8h16M4 8l3-2M4 8l3 2M20 8l-3-2M20 8l-3 2" />
+      <rect x="5" y="14" width="14" height="6" rx="1" />
+    </I>
+  ),
   Hole: (p: P) => (
     <I {...p}>
       <rect x="3" y="3" width="18" height="18" rx="2" />

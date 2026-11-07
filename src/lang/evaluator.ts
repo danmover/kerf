@@ -2241,6 +2241,9 @@ class Evaluator {
               case "hole_table":
                 spec.holeTable = bool(v, it.span, "hole_table");
                 break;
+              case "pmi":
+                spec.pmi = bool(v, it.span, "pmi");
+                break;
               case "breaks":
                 if (v === "auto") spec.autoBreak = undefined;
                 else if (typeof v === "boolean") spec.autoBreak = v;

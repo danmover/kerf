@@ -31,7 +31,7 @@ import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./proces
 import { SIM_TOOL_DEFS, SIM_TOOL_TITLES, runSimTool } from "./simTools";
 import { PROCESSES } from "../mfg/profiles";
 import { processFromText } from "../mfg/spec";
-import { sheetFor, useDrawings } from "../drawing/engine";
+import { pmiNote, sheetFor, useDrawings } from "../drawing/engine";
 import { describeSheet, sheetToPng } from "../drawing/export";
 import { BUILD_TOOL, runBuildTool } from "../agents/tool";
 import { PLAN_TOOL, runPlanTool } from "./planTool";
@@ -1330,7 +1330,7 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         return {
           content: [
             { type: "image", source: { type: "base64", media_type: "image/png", data: url.split(",")[1] ?? "" } },
-            { type: "text", text: describeSheet(sheet) },
+            { type: "text", text: [describeSheet(sheet), pmiNote(sheet.name)].filter(Boolean).join("\n") },
           ],
           card: { title: `Looked at the ${sheet.title} drawing`, detail: `${sheet.size} · ${sheet.views.length} views · ${sheet.dims.length} dimensions`, image: url },
         };
