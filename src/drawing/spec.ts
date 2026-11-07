@@ -32,6 +32,41 @@ export interface ViewSpec {
   hidden?: boolean;
   /** sheet position of the view centre in mm from the top-left corner */
   at?: [number, number];
+  /** a crop view: only what lies inside this model box (two opposite corners) */
+  crop?: [V3, V3];
+  /** an exploded view: the parts spread out from the middle of the assembly, 1 the usual spread */
+  exploded?: number;
+  span?: Span;
+}
+
+/** An auxiliary view, looking square onto an inclined face. */
+export interface AuxSpec {
+  label: string;
+  /** the face's outward normal: the view looks against it */
+  normal: V3;
+  /** a point on the face, where the viewing arrow on the parent view points */
+  at?: V3;
+  /** view the arrow is drawn on (defaults to the first view that sees the face edge-on) */
+  view?: ViewKind;
+  scale?: number;
+  at2?: [number, number];
+  /** a partial auxiliary view: just this model box, with freehand edges */
+  crop?: [V3, V3];
+}
+
+/** A broken view: the stretch from..to along a model axis (0 X, 1 Y, 2 Z) is taken out of every view that shows that axis. */
+export interface BreakSpec {
+  axis: 0 | 1 | 2;
+  from: number;
+  to: number;
+}
+
+/** A broken-out section: inside a circle on one view, the material in front of the plane through at (square to the view) is cut away. */
+export interface CutawaySpec {
+  view: string;
+  at: V3;
+  /** radius of the cut-away region in model mm */
+  r: number;
 }
 
 export interface SectionSpec {
@@ -184,6 +219,11 @@ export interface DrawingSpec {
   views: ViewSpec[];
   sections: SectionSpec[];
   details: DetailSpec[];
+  aux: AuxSpec[];
+  /** stretches taken out of long views; automatic ones are added for long, plain parts unless autoBreak is false */
+  breaks: BreakSpec[];
+  autoBreak?: boolean;
+  cutaways: CutawaySpec[];
   dims: DimSpec[];
   /** tolerances and fits for automatic dimensions, by the dimension's id */
   tols: TolSpec[];
@@ -214,6 +254,9 @@ export function defaultSpec(name: string, title: string, of: string[]): DrawingS
     views: DEFAULT_VIEWS.map((kind) => ({ kind })),
     sections: [],
     details: [],
+    aux: [],
+    breaks: [],
+    cutaways: [],
     dims: [],
     tols: [],
     frames: [],
@@ -438,14 +481,18 @@ export const DRAWING_PROPS = [
   "gdt",
   "hole_table",
   "dim_style",
+  "breaks",
   "views",
 ] as const;
 
 /** Calls allowed as statements inside a drawing block, with their argument names in positional order. */
 export const DRAWING_CALLS: Record<string, string[]> = {
-  view: ["kind", "scale", "label", "hidden", "at"],
+  view: ["kind", "scale", "label", "hidden", "at", "crop", "exploded"],
   section: ["label", "at", "normal", "view", "scale"],
   detail: ["label", "view", "at", "r", "scale"],
+  aux_view: ["label", "normal", "at", "view", "scale", "crop"],
+  break_view: ["axis", "from", "to"],
+  broken_out: ["view", "at", "r"],
   dim: ["a", "b", "view", "align", "offset", "tol", "fit", "text", "ref", "basic"],
   diameter: ["at", "d", "view", "tol", "fit", "text", "ref"],
   tol: ["id", "tol", "fit"],
@@ -462,7 +509,10 @@ export const DRAWING_CALLS: Record<string, string[]> = {
 };
 
 export const DRAWING_DOCS: Record<string, string> = {
-  view: 'view("front", scale: 0.5, label: "VIEW B", hidden: true, at: (x, y)) — adds a view. Kinds: front, back, top, bottom, left, right, iso. at places the view centre on the sheet in mm from the top-left corner.',
+  view: 'view("front", scale: 0.5, label: "VIEW B", hidden: true, at: (x, y), crop: [(x0, y0, z0), (x1, y1, z1)], exploded: true) — adds a view. Kinds: front, back, top, bottom, left, right, iso. at places the view centre on the sheet in mm from the top-left corner. crop shows only what lies inside a model box (a crop view, drawn with freehand edges where it cuts the part); exploded spreads the parts of an assembly out from its middle (true or 1 is the usual spread, 2 twice as far; balloons go on it).',
+  aux_view: 'aux_view("B", normal: (1, 0, 1), at: (x, y, z), view: "front", scale: 1, crop: [(x0, y0, z0), (x1, y1, z1)]) — an auxiliary view looking square onto an inclined face with that outward normal, so its holes and outline show true size; an arrow marked B on the view that sees the face edge-on points at at. crop makes it a partial view of just that box. Kerf adds one for holes drilled at an angle, partial when the part is much bigger than the angled features.',
+  break_view: 'break_view(X, 40, 260) — a broken view: the stretch from 40 to 260 mm along X is taken out of every view that shows X, with break lines; dimensions across it keep their true length. Kerf breaks long plain parts (shafts, rails, tubes) by itself; breaks: false turns that off.',
+  broken_out: 'broken_out("front", at: (x, y, z), r: 10) — a broken-out section: inside a circle of radius r on the view, the material in front of the point is cut away and hatched to show what is inside, bounded by a freehand line.',
   section: 'section("A", at: (x, y, z), normal: X, view: "front") — a cutting plane through at with the given normal. The section view looks against the normal at the material behind the plane; cut faces are hatched and the cutting line is drawn on view.',
   detail: 'detail("B", view: "front", at: (x, y, z), r: 6, scale: 4) — an enlarged circle of radius r (model mm) around a model point on another view.',
   dim: 'dim(a, b, view: "top", align: "h"|"v"|"aligned"|"auto", offset: 10, tol: 0.1 or (0.1, -0.05), fit: "H7", text: "…", ref: true, basic: true) — a linear dimension between two model points, shown on the named view (or the best one).',

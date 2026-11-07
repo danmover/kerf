@@ -16,7 +16,7 @@ import { addMidRun, sendMessage, useChat } from "../../ai/chat";
 import { useAgents, isLive } from "../../agents/progress";
 import { closeDrawings, drawingSpecs, markAsked, openDrawings, selectSheetItem, setDrawingTheme, showDrawing, useDrawings } from "../../drawing/engine";
 import { exportDrawingDxf, exportDrawingPdf, exportDrawingsPdf, exportDrawingSvg } from "../../drawing/export";
-import { addBlockLine, ensureBlock, setBlockProp, setDimTolerance, type TolEdit } from "../../drawing/source";
+import { addBlockLine, ensureBlock, removeStatement, setBlockProp, setDimTolerance, type TolEdit } from "../../drawing/source";
 import { keyBoxes } from "../../drawing/compose";
 import { fmtNum, type Sheet, type SheetDim } from "../../drawing/sheet";
 import { generalClass, scaleText } from "../../drawing/spec";
@@ -228,6 +228,13 @@ function DrawingPane() {
 function AddMenu({ sheet }: { sheet: Sheet }) {
   const style = sheet.spec.dimStyle ?? "auto";
   const holes = !!sheet.spec.holeTable;
+  const exploded = sheet.spec.views.find((v) => v.exploded);
+  const broken = !!sheet.breaks?.length;
+  const assembly = sheet.bom.length > 0;
+  const ask = (close: () => void, text: string) => () => {
+    close();
+    void sendMessage(`On the ${sheet.title} drawing, ${text}`);
+  };
   return (
     <Menu
       align="right"
@@ -259,6 +266,31 @@ function AddMenu({ sheet }: { sheet: Sheet }) {
               selectSheetItem("tb");
             }}>
               Revision…
+            </MenuItem>
+            <div className="menu-sep" />
+            <div className="menu-label">Views</div>
+            {!assembly && (
+              <MenuItem icon={<Icon.Cube size={14} />} hint={broken ? "on" : undefined} onClick={go(broken ? "Drew long views whole" : "Let Kerf break long views", (src, block) => setBlockProp(src, block, "breaks", broken ? "false" : "true"))}>
+                Break long views
+              </MenuItem>
+            )}
+            {assembly && (
+              <MenuItem
+                icon={<Icon.Cube size={14} />}
+                hint={exploded ? "on" : undefined}
+                onClick={go(exploded ? "Took the exploded view off the drawing" : "Added an exploded view", (src, block) => (exploded?.span && src.slice(exploded.span.start, exploded.span.end).startsWith("view") ? removeStatement(src, exploded.span) : exploded ? src : addBlockLine(src, block, 'view("iso", exploded: true)')))}
+              >
+                Exploded view
+              </MenuItem>
+            )}
+            <MenuItem icon={<Icon.Cube size={14} />} onClick={ask(close, "add an auxiliary view (aux_view() in its drawing block) looking square onto the inclined face that needs one, so its features show true size.")}>
+              Auxiliary view… (ask Claude)
+            </MenuItem>
+            <MenuItem icon={<Icon.Cube size={14} />} onClick={ask(close, "add a broken-out section (broken_out() in its drawing block) where it shows a hidden feature best.")}>
+              Broken-out section… (ask Claude)
+            </MenuItem>
+            <MenuItem icon={<Icon.Cube size={14} />} onClick={ask(close, "add a crop view (view(..., crop: [...]) in its drawing block) of the area with the small features, so it can be drawn bigger.")}>
+              Crop view… (ask Claude)
             </MenuItem>
             <div className="menu-sep" />
             <div className="menu-label">Feature positions</div>
@@ -357,7 +389,7 @@ function describe(sheet: Sheet, key: string): Described | null {
   if (m) {
     const v = sheet.views[Number(m[1])];
     if (!v) return null;
-    return { kind: "View", title: v.label || `${v.name[0].toUpperCase()}${v.name.slice(1)} view`, about: `the ${viewName(Number(m[1]))}`, chips: ["Add a section through this view", "Add a detail of the small features", "Show hidden lines", "Move this view"] };
+    return { kind: "View", title: v.label || `${v.name[0].toUpperCase()}${v.name.slice(1)} view`, about: `the ${viewName(Number(m[1]))}${v.extras?.length ? ` (${v.extras.join(", ")})` : ""}`, chips: ["Add a section through this view", "Add a detail of the small features", "Cut away a corner to show inside", "Crop this view to what matters", "Show hidden lines"] };
   }
   m = /^b(\d+)$/.exec(key);
   if (m) {
@@ -371,6 +403,8 @@ function describe(sheet: Sheet, key: string): Described | null {
   if (key === "rev") return { kind: "Revisions", title: `${sheet.revisions.length} revisions`, about: "the revision table", chips: ["Add a revision for the last change"] };
   if (key.startsWith("sec:")) return { kind: "Cutting plane", title: `Section ${key.slice(4)}`, about: `the cutting plane of section ${key.slice(4)}`, chips: ["Move this section", "Cut through the bosses instead"] };
   if (key.startsWith("det:")) return { kind: "Detail", title: `Detail ${key.slice(4)}`, about: `the detail circle ${key.slice(4)}`, chips: ["Enlarge this detail more", "Move the detail circle"] };
+  if (key.startsWith("aux:")) return { kind: "Viewing arrow", title: `View ${key.slice(4)}`, about: `the arrow for auxiliary view ${key.slice(4)}`, chips: ["Show only the inclined face", "Dimension the holes on this face"] };
+  if (key.startsWith("cut:")) return { kind: "Broken-out section", title: "Broken-out section", about: "a broken-out section", chips: ["Cut deeper", "Make the cut-away bigger"] };
   return null;
 }
 
@@ -654,8 +688,10 @@ function ViewBody({ sheet, index }: { sheet: Sheet; index: number }) {
       <div className="big">{v.label || `${v.name[0].toUpperCase()}${v.name.slice(1)} view`}</div>
       <div className="label">
         Scale {scaleText(v.scale)}
+        {v.extras?.length ? ` · ${v.extras.join(", ")}` : ""}
         {v.state === "pending" ? " · projecting…" : v.state === "error" ? ` · ${v.error ?? "could not be projected"}` : ""}
       </div>
+      {v.extras?.includes("broken") && sheet.breaks && <div className="label">{`${sheet.breaks.map((b) => `${"XYZ"[b.axis]} ${fmtNum(b.from)} to ${fmtNum(b.to)}`).join(", ")} taken out${sheet.breaks[0].auto ? " by Kerf" : ""}; dimensions across it keep their true length.`}</div>}
       <div className="row" style={{ marginTop: 8 }}>
         <button className="btn sm" onClick={() => editDrawing(sheet, hidden === false ? "Showed hidden lines on the drawing" : "Hid hidden lines on the drawing", (src, block) => setBlockProp(src, block, "hidden_lines", hidden === false ? "true" : "false"))}>
           {hidden === false ? "Show hidden lines" : "Hide hidden lines"}

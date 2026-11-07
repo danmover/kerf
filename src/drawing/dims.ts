@@ -518,7 +518,8 @@ const AXES: { v: V3; name: string; word: string }[] = [
 ];
 
 function overallDims(ctx: DimContext, push: Push, paramFor: ParamFor, skip: Set<string>, what: string, ids: string[]) {
-  const views = principalViews(ctx.plan);
+  // a full section stands in for the view it replaced when no other view shows that size
+  const views = [...principalViews(ctx.plan), ...ctx.plan.views.flatMap((v, i) => (v.kind === "section" ? [i] : []))];
   for (const axis of AXES) {
     if (skip.has(axis.name)) continue;
     const size: Probe = (parts) => {
@@ -549,7 +550,8 @@ function assemblyDims(ctx: DimContext, push: Push, paramFor: ParamFor) {
 
 /** The first principal view that looks along a direction. */
 function viewAlong(ctx: DimContext, dir: V3): number {
-  for (const vi of principalViews(ctx.plan)) if (Math.abs(vdot(ctx.plan.views[vi].frame.dir, dir)) > 0.999) return vi;
+  // an auxiliary view is where features drilled at an angle show true size
+  for (const vi of [...principalViews(ctx.plan), ...ctx.plan.views.flatMap((v, i) => (v.kind === "aux" ? [i] : []))]) if (Math.abs(vdot(ctx.plan.views[vi].frame.dir, dir)) > 0.999) return vi;
   return -1;
 }
 
@@ -915,7 +917,7 @@ function datumFrame(
   }
   const nA: V3 = [n[0] * sign, n[1] * sign, n[2] * sign];
   // datum letters skip the ones sections and details use, and I, O and Q
-  const used = new Set(ctx.plan.views.filter((v) => v.kind === "section" || v.kind === "detail").map((v) => v.name.toUpperCase()));
+  const used = new Set(ctx.plan.views.filter((v) => v.kind === "section" || v.kind === "detail" || v.kind === "aux").map((v) => v.name.toUpperCase()));
   const free = "ABCDEFGHJKLMNPRSTUVWXYZ".split("").filter((l) => !used.has(l));
   const [LA, LB, LC] = free;
   const [lo, hi] = extent(nA);
@@ -1542,6 +1544,8 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
     list.sort((a, b) => span(a)[1] - span(a)[0] - (span(b)[1] - span(b)[0]));
     for (const d of list) {
       const s = span(d);
+      // text that does not fit between the arrows of a short vertical dimension stands above the view
+      if (side !== "bottom") margin.top = Math.max(margin.top, v.box[1] - s[0]);
       let r = 0;
       while (rows[r]?.some((o) => o[0] < s[1] && s[0] < o[1])) r++;
       (rows[r] ??= []).push(s);

@@ -252,7 +252,7 @@ export function edgeDims(ctx: DimContext, part: EvalPart, feats: Feature[], push
   type Seen = { vi: number; rounds: Round[]; chams: Cham[]; angs: Ang[]; centre: P2 };
   const seen: Seen[] = [];
   // principal views first, then sections (a bent bracket's bend radii may show only there)
-  const order = [...principalViews(plan), ...plan.views.flatMap((v, i) => (v.kind === "section" ? [i] : []))];
+  const order = [...principalViews(plan), ...plan.views.flatMap((v, i) => (v.kind === "section" || v.kind === "aux" ? [i] : []))];
   for (const vi of order) {
     const r = ctx.results[vi];
     const v = plan.views[vi];
