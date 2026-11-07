@@ -1,7 +1,7 @@
 // A small Markdown renderer that builds React elements directly. AI output
 // is never inserted as HTML, so it cannot inject markup or scripts.
 
-import { Fragment, type ReactNode } from "react";
+import { Fragment, memo, type ReactNode } from "react";
 
 function inline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -31,7 +31,8 @@ function inline(text: string, keyBase: string): ReactNode[] {
   return out;
 }
 
-export function Markdown({ text }: { text: string }) {
+/** Parsed once per text: a long chat does not parse every reply again when one changes. */
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let i = 0;
@@ -98,4 +99,4 @@ export function Markdown({ text }: { text: string }) {
     );
   }
   return <>{blocks}</>;
-}
+});

@@ -318,3 +318,15 @@
     display: none;
   }
 }
+
+/* ---------- the 3D view's build timings step back once the build is done ---------- */
+
+/* the status bar keeps them, so after a few seconds the model has the view to itself */
+.vp-hud-rest {
+  animation: m-hud-rest 0.8s 6s ease-out forwards;
+}
+@keyframes m-hud-rest {
+  to {
+    opacity: 0;
+  }
+}

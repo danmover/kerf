@@ -523,6 +523,18 @@ export const Icon = {
       <path d="m8 9 4-4 4 4M8 15l4 4 4-4" />
     </I>
   ),
+  /** a thought: a light bulb */
+  Bulb: (p: P) => (
+    <I {...p}>
+      <path d="M9 18h6M10 21h4" />
+      <path d="M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.1 2.2h5c0-.9.4-1.6 1.1-2.2A6 6 0 0 0 12 3z" />
+    </I>
+  ),
+  ArrowDown: (p: P) => (
+    <I {...p}>
+      <path d="M12 5v14M6 13l6 6 6-6" />
+    </I>
+  ),
 };
 
 export function StatusIcon({ status }: { status: "pass" | "fail" | "warn" | "pending" | "info" }) {

@@ -54,10 +54,12 @@ export interface ChatFile {
 
 export type ChatItem =
   /** midRun: sent while Claude worked; it joined that run at its next step instead of starting a turn */
-  | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[]; spot?: SpotRef; image?: string; midRun?: boolean }
-  /** started: when the step began, for the live "Thinking" line */
-  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[]; started?: number }
-  | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number; link?: { url: string; label: string }; web?: boolean }
+  /** optionsFirst: the user asked Claude to lay out options before building */
+  | { kind: "user"; id: string; text: string; ts: number; files?: ChatFile[]; spot?: SpotRef; image?: string; midRun?: boolean; optionsFirst?: boolean }
+  /** started: when the step began, for the live "Thinking" line; thoughtMs: how long Claude thought before it wrote or acted */
+  | { kind: "assistant"; id: string; text: string; thinking: string; streaming: boolean; model?: string; note?: string; sources?: { url: string; title: string }[]; started?: number; thoughtMs?: number }
+  /** ran: when Kerf started running the tool; ms: how long it took */
+  | { kind: "tool"; id: string; toolUseId: string; name: string; status: "running" | "done" | "error"; title: string; detail?: string; diff?: { before: string; after: string }; image?: string; inputChars?: number; link?: { url: string; label: string }; web?: boolean; ran?: number; ms?: number }
   | {
       kind: "choice";
       id: string;
@@ -177,10 +179,61 @@ const MAX_PAUSE_RESUMES = 5;
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 function patch(id: string, fn: (it: ChatItem) => ChatItem) {
+  flushDeltas();
   set((s) => ({ items: s.items.map((it) => (it.id === id ? fn(it) : it)) }));
 }
 function push(it: ChatItem) {
+  flushDeltas();
   set((s) => ({ items: [...s.items, it] }));
+}
+
+// ---------- streaming deltas ----------
+// Claude streams a few characters at a time. Each change to the chat copies
+// the item list and redraws the panel, so deltas wait for the next frame and
+// land together: one update per frame rather than one per token keeps a long
+// chat smooth while Claude writes. Anything else that changes the chat (and
+// the end of every response) applies the waiting deltas first.
+
+const pendingDeltas = new Map<string, { text: string; thinking: string; inputChars: number }>();
+let flushTimer: { raf?: number; timeout?: ReturnType<typeof setTimeout> } | null = null;
+
+function queueDelta(id: string, d: { text?: string; thinking?: string; inputChars?: number }) {
+  let p = pendingDeltas.get(id);
+  if (!p) pendingDeltas.set(id, (p = { text: "", thinking: "", inputChars: 0 }));
+  p.text += d.text ?? "";
+  p.thinking += d.thinking ?? "";
+  p.inputChars += d.inputChars ?? 0;
+  if (flushTimer) return;
+  // a hidden tab draws no frames: a timer still lets the text land
+  const visible = typeof document === "undefined" || document.visibilityState === "visible";
+  if (typeof requestAnimationFrame === "function" && visible) flushTimer = { raf: requestAnimationFrame(() => flushDeltas()) };
+  else flushTimer = { timeout: setTimeout(() => flushDeltas(), visible ? 32 : 250) };
+}
+
+/** Apply every streamed delta still waiting for a frame. */
+export function flushDeltas() {
+  if (flushTimer) {
+    if (flushTimer.raf !== undefined && typeof cancelAnimationFrame === "function") cancelAnimationFrame(flushTimer.raf);
+    if (flushTimer.timeout !== undefined) clearTimeout(flushTimer.timeout);
+    flushTimer = null;
+  }
+  if (!pendingDeltas.size) return;
+  const batch = new Map(pendingDeltas);
+  pendingDeltas.clear();
+  const now = Date.now();
+  set((s) => ({
+    items: s.items.map((it) => {
+      const d = batch.get(it.id);
+      if (!d) return it;
+      if (it.kind === "assistant") {
+        // the first words of the answer end the thinking
+        const thoughtMs = it.thoughtMs ?? (d.text && (it.thinking || d.thinking) && it.started ? now - it.started : undefined);
+        return { ...it, text: it.text + d.text, thinking: it.thinking + d.thinking, ...(thoughtMs !== undefined ? { thoughtMs } : {}) };
+      }
+      if (it.kind === "tool") return { ...it, inputChars: (it.inputChars ?? 0) + d.inputChars };
+      return it;
+    }),
+  }));
 }
 
 // ---------- spend ----------
@@ -785,7 +838,11 @@ export function stop() {
  * brief. With a spot, the message is about that place on the model (see
  * app/spot); `id` names the chat item so the caller can follow the replies.
  */
-export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: { url: string; note: string }; design?: boolean } = {}) {
+/** Added to a message sent with "Options first": Claude lays out the approaches and the user picks before anything is built. */
+export const OPTIONS_FIRST_NOTE =
+  "<options-first>The user asked to see options before you build. Before changing the design, work out two to four genuinely different ways to do what they asked (a different layout, mechanism, process or size, not small variations), then put them to the user with ask_user: each with its consequence, the parameter values in set where it comes down to values, and your recommendation marked. Build only the option they pick. If there is truly only one sensible way, say why in one sentence and go ahead.</options-first>";
+
+export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot?: SpotRef; id?: string; image?: { url: string; note: string }; design?: boolean; optionsFirst?: boolean } = {}) {
   const t = text.trim();
   const attached = opts.files ?? [];
   if (!t && !attached.length) return;
@@ -795,12 +852,12 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
     return;
   }
   // a plain command ("fillet 2", "hole M3 here", "wall 3") is done at once, without Claude; an open question from Claude takes the message instead
-  if (!attached.length && !opts.image && !opts.design && !get().pendingChoice && useSettings.getState().quickCommands && quickly(t, opts.spot, opts.id)) return;
+  if (!attached.length && !opts.image && !opts.design && !opts.optionsFirst && !get().pendingChoice && useSettings.getState().quickCommands && quickly(t, opts.spot, opts.id)) return;
   endPreview();
   const pending = get().pendingChoice;
   const lastReply = [...get().items].reverse().find((i): i is Extract<ChatItem, { kind: "assistant" }> => i.kind === "assistant" && !!i.text.trim())?.text ?? "";
   const files = addReferences(attached);
-  push({ kind: "user", id: opts.id ?? nid(), text: t, ts: Date.now(), files: files.length ? files : undefined, spot: opts.spot, image: opts.image?.url });
+  push({ kind: "user", id: opts.id ?? nid(), text: t, ts: Date.now(), files: files.length ? files : undefined, spot: opts.spot, image: opts.image?.url, optionsFirst: opts.optionsFirst || undefined });
   set({ lastUserText: t, busy: true });
   settlePausedTail();
   let blocks: BetaContentBlockParam[] = [];
@@ -810,7 +867,7 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
     set({ busy: false });
   }
   const typed = t || "(See the attached reference.)";
-  const said = opts.spot ? `<spot>${spotText(opts.spot)}</spot>\n${typed}` : opts.image ? `<markup>${opts.image.note}</markup>\n${typed}` : typed;
+  const said = (opts.spot ? `<spot>${spotText(opts.spot)}</spot>\n${typed}` : opts.image ? `<markup>${opts.image.note}</markup>\n${typed}` : typed) + (opts.optionsFirst ? `\n${OPTIONS_FIRST_NOTE}` : "");
   const pic: BetaContentBlockParam[] = opts.image ? [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: opts.image.url.split(",")[1] ?? "" } }] : [];
   const steer = steering();
   if (pending) {
@@ -824,7 +881,7 @@ export async function sendMessage(text: string, opts: { files?: ChatFile[]; spot
   persist();
   await runLoop({
     // a change asked for from one of Kerf's panels, not typed: always design work
-    route: opts.design ? designRoute("a change asked for from a panel", "rule") : undefined,
+    route: opts.optionsFirst ? designRoute("you asked for options first", "you") : opts.design ? designRoute("a change asked for from a panel", "rule") : undefined,
     facts: {
       text: t,
       lastReply,
@@ -1307,6 +1364,7 @@ function syncWeb(live: Live, content: readonly unknown[], finished: false | true
 
 /** Undo what a failed attempt showed, before it is retried. */
 function resetLive(live: Live) {
+  flushDeltas();
   const drop = new Set(live.created.filter((id) => id !== live.bubbles[0]));
   set((s) => ({ items: s.items.filter((i) => !drop.has(i.id)).map((it) => (it.id === live.bubbles[0] && it.kind === "assistant" ? { ...it, text: "", thinking: "" } : it)) }));
   live.bubbles = live.bubbles.slice(0, 1);
@@ -1623,8 +1681,9 @@ async function runLoop(opts: LoopOptions = {}) {
           continue;
         }
         const itemId = [...live.toolRows.values()].find((id) => (get().items.find((i) => i.id === id) as { toolUseId?: string } | undefined)?.toolUseId === u.id) ?? nid();
-        if (!get().items.some((i) => i.id === itemId)) push({ kind: "tool", id: itemId, toolUseId: u.id, name: u.name, status: "running", title: TOOL_TITLES[u.name] ?? u.name });
-        else patch(itemId, (it) => (it.kind === "tool" ? { ...it, status: "running", title: TOOL_TITLES[u.name] ?? u.name } : it));
+        const ran = Date.now();
+        if (!get().items.some((i) => i.id === itemId)) push({ kind: "tool", id: itemId, toolUseId: u.id, name: u.name, status: "running", title: TOOL_TITLES[u.name] ?? u.name, ran });
+        else patch(itemId, (it) => (it.kind === "tool" ? { ...it, status: "running", title: TOOL_TITLES[u.name] ?? u.name, ran } : it));
         const mirrored = u.name !== "update_plan" && u.name !== "suggest_next_steps";
         if (mirrored) mainActivityStart(itemId, TOOL_TITLES[u.name] ?? u.name);
         // the change card's "before" picture is taken before the first edit lands
@@ -1667,7 +1726,7 @@ async function runLoop(opts: LoopOptions = {}) {
         } else if (u.name === "get_design") sourceSeen = useDesign.getState().source;
         patch(itemId, (it) =>
           it.kind === "tool"
-            ? { ...it, status: outcome.card.status ?? (outcome.isError ? "error" : "done"), title: outcome.card.title, detail: outcome.card.detail, diff: outcome.card.diff, image: outcome.card.image }
+            ? { ...it, status: outcome.card.status ?? (outcome.isError ? "error" : "done"), title: outcome.card.title, detail: outcome.card.detail, diff: outcome.card.diff, image: outcome.card.image, ms: Date.now() - ran }
             : it,
         );
         results.push({ type: "tool_result", tool_use_id: u.id, content: outcome.content as BetaToolResultBlockParam["content"], is_error: outcome.isError || undefined });
@@ -2067,22 +2126,31 @@ async function streamOnce(anthropic: Anthropic, build: () => Record<string, unkn
             if (items[items.length - 1]?.id !== bubbleOf(live)) newBubble(live);
           }
         } else if (ev.type === "content_block_stop") {
+          const type = (snapshot.content[ev.index] as { type?: string } | undefined)?.type;
           // the search query or page address is complete: show it
-          if ((snapshot.content[ev.index] as { type?: string } | undefined)?.type === "server_tool_use") syncWeb(live, [...carried, ...snapshot.content]);
+          if (type === "server_tool_use") syncWeb(live, [...carried, ...snapshot.content]);
+          // how long Claude thought, for the "Thought for 8 s" line
+          else if (type === "thinking") {
+            const now = Date.now();
+            patch(bubbleOf(live), (it) => (it.kind === "assistant" && it.started ? { ...it, thoughtMs: now - it.started } : it));
+          }
         } else if (ev.type === "content_block_delta") {
           const d = ev.delta as { type: string; text?: string; thinking?: string; partial_json?: string };
           streamedChars += (d.text ?? d.thinking ?? d.partial_json ?? "").length;
           const bubble = bubbleOf(live);
-          if (d.type === "text_delta" && d.text) patch(bubble, (it) => (it.kind === "assistant" ? { ...it, text: it.text + d.text } : it));
-          else if (d.type === "thinking_delta" && d.thinking) patch(bubble, (it) => (it.kind === "assistant" ? { ...it, thinking: it.thinking + d.thinking } : it));
+          if (d.type === "text_delta" && d.text) queueDelta(bubble, { text: d.text });
+          else if (d.type === "thinking_delta" && d.thinking) queueDelta(bubble, { thinking: d.thinking });
           else if (d.type === "input_json_delta" && d.partial_json) {
             const id = live.toolRows.get(ev.index);
-            if (id) patch(id, (it) => (it.kind === "tool" ? { ...it, inputChars: (it.inputChars ?? 0) + d.partial_json!.length } : it));
+            if (id) queueDelta(id, { inputChars: d.partial_json.length });
           }
         }
       });
-      return { final: await stream.finalMessage(), params };
+      const final = await stream.finalMessage();
+      flushDeltas();
+      return { final, params };
     } catch (e) {
+      flushDeltas();
       if (stoppedFor) {
         // billed for what it read and wrote before stopping
         const u = stream.currentMessage?.usage;

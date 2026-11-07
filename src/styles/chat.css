@@ -1,0 +1,500 @@
+/* The chat feed: each turn's work log (steps on a line, with timings and
+   Claude's thinking), the reply under it, and the controls around them.
+   Colours are theme tokens only (see theme.css). */
+
+.chat {
+  position: relative;
+}
+.chat-feed {
+  gap: 0;
+}
+.chat-feed > * + * {
+  margin-top: 12px;
+}
+.feed-row {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* steps sit close together on their line */
+.chat-feed > .feed-row.step {
+  margin-top: 0;
+}
+.chat-feed > .log-row + .feed-row.step {
+  margin-top: 4px;
+}
+.chat-feed > .feed-row.step.last + * {
+  margin-top: 10px;
+}
+
+/* things arriving in the feed: CSS, so they stay smooth while the kernel works,
+   and never from fully transparent, so a starved frame is not a blank one */
+.feed-in {
+  animation: chat-in 0.28s var(--out, ease-out) backwards;
+}
+@keyframes chat-in {
+  from {
+    opacity: 0.25;
+    transform: translateY(4px);
+  }
+}
+
+/* ── the work log's header ─────────────────────────────────────────── */
+.log-row {
+  margin-top: 14px;
+}
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.log-head:hover {
+  background: var(--bg-3);
+  border-color: var(--line-2);
+  color: var(--text);
+}
+.log-row.live .log-head {
+  border-color: rgb(var(--accent-rgb) / 0.4);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.1), 0 0 20px -10px var(--accent-glow);
+}
+.log-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  flex: none;
+  color: var(--accent-2);
+}
+.log-icon .spinner {
+  width: 12px;
+  height: 12px;
+}
+.log-title {
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+.log-time {
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.log-meta {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.log-marks {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  flex-shrink: 1;
+}
+.log-marks i {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--pass);
+  opacity: 0.75;
+}
+.log-marks i.m-thought {
+  width: 4px;
+  height: 4px;
+  background: var(--violet);
+  opacity: 0.55;
+}
+.log-marks i.m-error {
+  background: var(--fail);
+  opacity: 0.9;
+}
+.log-marks i.m-running {
+  background: var(--accent);
+  opacity: 1;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.log-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.log-toggle svg {
+  transition: transform 0.2s var(--ease);
+}
+.log-head:hover .log-toggle {
+  color: var(--accent-2);
+}
+.log-now {
+  font-size: 11.5px;
+  padding: 5px 0 0 34px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── steps on a line ───────────────────────────────────────────────── */
+.feed-row.step {
+  position: relative;
+  padding-left: 30px;
+}
+.feed-row.step::before {
+  content: "";
+  position: absolute;
+  left: 15px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: linear-gradient(var(--line-2), var(--line-2));
+}
+/* the line ends at the last step's mark */
+.feed-row.step.last::before {
+  bottom: auto;
+  height: 14px;
+}
+.step-body {
+  position: relative;
+  padding: 5px 0 7px;
+  min-width: 0;
+}
+.step-node {
+  position: absolute;
+  left: -24px;
+  top: 5px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--bg-1);
+  border: 1px solid var(--line-2);
+  color: var(--text-3);
+  transition: border-color 0.25s, color 0.25s, box-shadow 0.25s;
+}
+.step-node.done {
+  color: var(--pass);
+  border-color: rgb(var(--pass-rgb) / 0.4);
+}
+.step-node.error {
+  color: var(--fail);
+  border-color: rgb(var(--fail-rgb) / 0.55);
+  background: color-mix(in srgb, var(--fail-soft), var(--bg-1));
+}
+.step-node.running {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.16);
+}
+.step-node.thought {
+  color: var(--violet);
+  border-color: rgb(var(--violet-rgb) / 0.4);
+}
+.step-node.note {
+  color: var(--accent-2);
+  border-color: rgb(var(--accent-rgb) / 0.4);
+}
+.step-node.quiet {
+  color: var(--text-4);
+}
+.node-spin {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid rgb(var(--accent-rgb) / 0.3);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text);
+}
+.step-head.can-open {
+  cursor: pointer;
+}
+.step-head.can-open:hover .step-title {
+  color: var(--accent-2);
+}
+.step-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.step-body.quiet .step-title {
+  color: var(--text-3);
+}
+.step-body.error .step-title {
+  color: color-mix(in srgb, var(--fail) 55%, var(--text));
+}
+.step-diff,
+.step-time {
+  flex: none;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.step-time {
+  color: var(--text-4);
+}
+.step-chev {
+  flex: none;
+  color: var(--text-3);
+  transition: transform 0.2s var(--ease);
+}
+.step-detail {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.step-detail:hover {
+  -webkit-line-clamp: unset;
+}
+.step-body .tc-link {
+  padding: 2px 0 0;
+}
+.step-open {
+  margin-top: 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  overflow: hidden;
+  max-width: 100%;
+  background: var(--bg-2);
+}
+img.step-open {
+  display: block;
+  width: 100%;
+}
+.step-note {
+  margin-top: 1px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.step-note p {
+  margin: 0 0 6px;
+}
+.step-note p:last-child {
+  margin-bottom: 0;
+}
+.step-note ul,
+.step-note ol {
+  margin: 2px 0 6px;
+  padding-left: 18px;
+}
+.step-note code {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--bg-3);
+}
+.step-body > .thought + .step-note {
+  margin-top: 4px;
+}
+
+/* ── Claude's thinking ─────────────────────────────────────────────── */
+.thought {
+  min-width: 0;
+  margin-bottom: 4px;
+}
+.thought.in-step {
+  margin-bottom: 0;
+}
+.thought .thinking-toggle {
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 20px;
+  text-align: left;
+}
+.thought .thinking-toggle:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.thought .thinking-toggle > span {
+  white-space: nowrap;
+}
+.th-titles {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-4);
+}
+.th-titles::before {
+  content: "· ";
+}
+.thought .thinking {
+  white-space: normal;
+  margin-top: 4px;
+}
+.th-sec + .th-sec {
+  margin-top: 8px;
+}
+.th-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 2px;
+}
+.thinking p {
+  margin: 0 0 6px;
+}
+.thinking p:last-child {
+  margin-bottom: 0;
+}
+.thinking ul,
+.thinking ol {
+  margin: 2px 0 6px;
+  padding-left: 16px;
+}
+
+/* ── back to the newest ────────────────────────────────────────────── */
+.jump-wrap {
+  position: sticky;
+  bottom: 0;
+  height: 0;
+  margin-top: 0 !important;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 3;
+}
+.jump-latest {
+  pointer-events: auto;
+  transform: translateY(calc(-100% - 10px));
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 14px;
+  border: 1px solid var(--line-2);
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--text-2);
+  font-size: 11.5px;
+  box-shadow: 0 6px 18px rgb(var(--shade-rgb) / 0.35);
+  animation: jump-in 0.22s var(--out, ease-out);
+  transition: color 0.15s, border-color 0.15s;
+}
+.jump-latest:hover,
+.jump-latest.unseen {
+  color: var(--text);
+  border-color: rgb(var(--accent-rgb) / 0.55);
+}
+.jump-latest.unseen svg {
+  color: var(--accent-2);
+}
+@keyframes jump-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-100% - 2px));
+  }
+}
+
+/* ── options first ─────────────────────────────────────────────────── */
+.opts-chip {
+  cursor: pointer;
+  gap: 4px;
+}
+.opts-chip:hover {
+  color: var(--text);
+  border-color: var(--line-3);
+}
+.opts-tag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  margin-bottom: 5px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1.2;
+  color: var(--violet-ink);
+  border: 1px solid rgb(var(--violet-rgb) / 0.45);
+  background: rgb(var(--violet-rgb) / 0.12);
+}
+@container composer (max-width: 330px) {
+  .opts-label {
+    display: none;
+  }
+}
+
+/* suggestion chips arrive one after another */
+.suggest-chip {
+  animation: chat-in 0.3s var(--out, ease-out) backwards;
+}
+.composer {
+  container: composer / inline-size;
+}
+/* what Claude is doing, beside the composer's buttons: one line, cut short when the panel is narrow */
+.composer-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* copy a reply: in its corner, while the pointer is over it */
+.msg-assistant {
+  position: relative;
+}
+.reply-copy {
+  position: absolute;
+  right: -4px;
+  bottom: -6px;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.msg-assistant:hover .reply-copy,
+.reply-copy:focus-visible {
+  opacity: 1;
+}
+.reply-copy:hover {
+  color: var(--text);
+}
+@media (pointer: coarse) {
+  .reply-copy {
+    opacity: 0.7;
+  }
+}
