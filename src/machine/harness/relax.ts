@@ -18,6 +18,8 @@ export interface SignedField {
   outside?(x: number, y: number, z: number): boolean;
   /** which closed-off space inside the assembly a point is in (0 outside it, or in a part) */
   region?(x: number, y: number, z: number): number;
+  /** whether a point is in a fan's intake or jet */
+  flow?(x: number, y: number, z: number): boolean;
 }
 
 export interface RelaxInput {
@@ -97,6 +99,13 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
   const clear = chains.map((c) => {
     const out = new Uint8Array(c.n);
     for (let i = 0; i < c.n; i++) out[i] = field.phi(c.p[i * 3], c.p[i * 3 + 1], c.p[i * 3 + 2]) >= 0 ? 1 : 0;
+    return out;
+  });
+  // likewise a point out of a fan's intake or jet stays out of it: smoothing a bend must not pull the cable back in
+  const flow = field.flow;
+  const calm = chains.map((c) => {
+    const out = new Uint8Array(c.n);
+    for (let i = 0; i < c.n; i++) out[i] = flow?.(c.p[i * 3], c.p[i * 3 + 1], c.p[i * 3 + 2]) ? 0 : 1;
     return out;
   });
 
@@ -188,6 +197,7 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
       const need = c.r + CLEAR;
       const was = prev[ci];
       const ok = clear[ci];
+      const still = calm[ci];
       const back = (i: number) => {
         for (let k = 0; k < 3; k++) c.p[i * 3 + k] = was[i * 3 + k];
       };
@@ -195,6 +205,10 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
         const x = c.p[i * 3],
           y = c.p[i * 3 + 1],
           z = c.p[i * 3 + 2];
+        if (flow && still[i] && flow(x, y, z)) {
+          back(i);
+          continue;
+        }
         const f = field.phi(x, y, z);
         if (f >= need + (exact ? h : 0)) continue;
         if (f < 0 && ok[i]) {
@@ -233,6 +247,7 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
       }
       for (let i = 0; i < c.n; i++) {
         if (!ok[i]) ok[i] = field.phi(c.p[i * 3], c.p[i * 3 + 1], c.p[i * 3 + 2]) >= 0 ? 1 : 0;
+        if (flow && !still[i]) still[i] = flow(c.p[i * 3], c.p[i * 3 + 1], c.p[i * 3 + 2]) ? 0 : 1;
       }
       was.set(c.p);
     });

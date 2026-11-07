@@ -10,6 +10,7 @@ import { PLUG_BACK, PULL, SPLICE_LEN, leadLength, plugBox, type Harness, type Ha
 import type { SignedField } from "./relax";
 import type { RoutedWire } from "./route";
 import type { OBox, Skip, SolidItem, Solids } from "./solids";
+import type { PivotCrossing } from "./pivots";
 import type { TravelPlan } from "./travel";
 
 /** A stretch of cable that runs into a part. */
@@ -113,6 +114,10 @@ export interface WiringFindings {
   outside: { wire: string; length: number; at: V3 }[];
   /** cables the router found no way for (drawn straight) */
   unrouted: string[];
+  /** cable left in a fan's intake or jet (filled in after routing, wiringRun.ts) */
+  flow?: { wire: string; zone: number; part: string; comp: string; kind: "intake" | "jet"; length: number; at: V3 }[];
+  /** where cables cross the design's pivots, and how far from each axis */
+  pivots?: (PivotCrossing & { at?: V3; r?: number })[];
   ms: number;
 }
 

@@ -16,6 +16,10 @@ import type { MountResult } from "./mounts";
 const CROWD = 20;
 /** Spans longer than this are a warning; shorter ones are listed with the ties, mm. */
 const LONG_SPAN = 150;
+/** A cable that crosses a pivot further than this from its axis needs a long slack loop, mm. */
+const PIVOT_FAR = 30;
+/** How far round a crossing point the router looks for room, in words (route.ts VIA_REACH). */
+const VIA_WORD = "40 mm";
 
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const at = (p: V3) => `(${p.map((v) => Math.round(v)).join(", ")})`;
@@ -236,6 +240,76 @@ export function wiringItems(h: Harness, f: WiringFindings | null, mounts: MountR
         detail: `${relief} of them within a few centimetres of a plug to take the pull off its contacts (strain relief), the rest about every 100 mm along the parts the cables run beside.${short.length ? ` Shorter loose stretches: ${list(short.map((s) => `${s.wire} ${s.length.toFixed(0)} mm`), 5)}.` : ""} Shown as ties in the wiring view.`,
         fix: `Give the parts tie points where the ties are (a slot or a pair of holes for a cable tie, or adhesive tie mounts), and add the cable ties to the parts list.`,
       });
+    }
+    // ---- cables in a fan's intake or jet, by fan
+    const byFan = new Map<string, NonNullable<typeof f.flow>>();
+    for (const x of f.flow ?? []) byFan.set(x.part, [...(byFan.get(x.part) ?? []), x]);
+    for (const [part, xs] of byFan) {
+      const ids = [...new Set(xs.map((x) => x.wire))];
+      const kinds = [...new Set(xs.map((x) => x.kind))];
+      const zone = kinds.length > 1 ? "intake and jet" : kinds[0];
+      add({
+        id: `wiring:flow:${part}`,
+        status: "fail",
+        title: `${ids.length === 1 ? `Cable ${ids[0]} runs` : `Cables ${list(ids, 4)} run`} through ${xs[0].comp}'s ${zone}`,
+        detail: `${xs.map((x) => `${wt(x.wire)}: ${x.length.toFixed(0)} mm in its ${x.kind} near ${at(x.at)}`).join("; ")}. A cable in front of an intake gets drawn into the blades; one in the jet flutters, wears through and costs thrust.`,
+        parts: [part],
+        fix: `Run the cables along the structure beside ${xs[0].comp}, not across its ends: take the motor leads out of the housing's side and along the mount, and leave the space in front of the intake and behind the exhaust open (move the parts in the way, or add a channel or tie points along the frame so the router has a path).`,
+      });
+    }
+    // ---- where cables cross the design's pivots
+    if (f.pivots?.length) {
+      const joints = [...new Set(f.pivots.map((c) => c.joint))];
+      const far = f.pivots.filter((c) => c.r !== undefined && c.r > PIVOT_FAR);
+      const lost = f.pivots.filter((c) => c.r === undefined);
+      // slack to leave at each crossing: the arc its far side moves through over the joint's travel, plus a little
+      const swing = (c: (typeof f.pivots)[number]) => {
+        const j = model.scenarios?.flatMap((sc) => sc.spec.mechanism?.items ?? []).find((it) => it.k === "pivot" && it.name === c.joint);
+        const [l0, l1] = (j?.k === "pivot" ? j.limits : undefined) ?? [-30, 30];
+        return Math.max(Math.abs(l0), Math.abs(l1)) * (Math.PI / 180);
+      };
+      const slack = (c: (typeof f.pivots)[number]) => Math.max(15, Math.ceil(((c.r ?? 0) * swing(c) * 2 + 10) / 5) * 5);
+      for (const j of joints) {
+        const cs = far.filter((c) => c.joint === j);
+        if (!cs.length) continue;
+        add({
+          id: `wiring:pivot:${j}`,
+          status: "warn",
+          title: `${cs.length === 1 ? `Cable ${cs[0].wire} crosses` : `Cables ${list(cs.map((c) => c.wire), 4)} cross`} pivot ${j} far from its axis`,
+          detail: `${cs.map((c) => `${wt(c.wire)} ${c.r!.toFixed(0)} mm from the axis`).join("; ")}. Turning the joint pulls a cable that far out through an arc, so it needs a long loop of slack that can catch, and it bends at the same place every time.`,
+          parts: [],
+          fix: `Leave a path for the cables right beside the bearing: a slot or notch next to the bearing seat on both sides of the joint, or a hollow pivot shaft they can run through.`,
+        });
+      }
+      for (const j of [...new Set(lost.map((c) => c.joint))]) {
+        const cs = lost.filter((c) => c.joint === j);
+        add({
+          id: `wiring:pivot-room:${j}`,
+          status: "warn",
+          title: `No room for ${cs.length === 1 ? `cable ${cs[0].wire}` : plural(cs.length, "cable")} to cross pivot ${j} beside its bearing`,
+          detail: `${list(cs.map((c) => wt(c.wire)), 6)}: there is no gap within ${VIA_WORD} of the bearing big enough for the cable, so the router took it across wherever it could.`,
+          fix: `Open a gap or slot beside the bearing for the cables, sized for the bundle with a few millimetres to spare.`,
+        });
+      }
+      const ok = f.pivots.filter((c) => c.r !== undefined && c.r <= PIVOT_FAR);
+      if (ok.length) {
+        const apart = ok.filter((c) => c.apart);
+        add({
+          id: "wiring:pivots",
+          status: "info",
+          title: `${plural(new Set(ok.map((c) => c.wire)).size, "cable")} cross ${plural(new Set(ok.map((c) => c.joint)).size, "pivot")} beside the bearings`,
+          detail: `${joints
+            .map((j) => {
+              const cs = ok.filter((c) => c.joint === j);
+              if (!cs.length) return "";
+              const sides = [...new Set(cs.map((c) => c.side))];
+              return `${j}: ${sides.map((sd) => `${list(cs.filter((c) => c.side === sd).map((c) => c.wire), 8)} at one end`).join(", ")} (${Math.min(...cs.map((c) => c.r!)).toFixed(0)} to ${Math.max(...cs.map((c) => c.r!)).toFixed(0)} mm from the axis)`;
+            })
+            .filter(Boolean)
+            .join("; ")}.${apart.length ? ` ${list([...new Set(apart.map((c) => c.wire))], 6)} cross at the other end from the motor leads, away from their switching current.` : ""} Leave a loop of slack at each crossing so the joint can reach the ends of its travel: about ${list([...new Set(ok.map(slack))].sort((a, b) => a - b).map((x) => `${x} mm`), 3)}.`,
+          fix: `Tie each cable to both sides of the joint just clear of the bearing, with the slack loop between the ties.`,
+        });
+      }
     }
     if (f.unrouted.length)
       add({

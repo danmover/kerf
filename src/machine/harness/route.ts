@@ -9,6 +9,7 @@
 // typed arrays: it runs in a worker and in Node tests.
 
 import type { V3 } from "../../kernel/recipe";
+import { inCone, zoneBounds, type FlowZone } from "./flow";
 import { relaxCables, type SignedField } from "./relax";
 import { Solids, invert, transform, type SolidRole } from "./solids";
 
@@ -45,6 +46,17 @@ export interface RouteWire {
   d: number;
   /** keep-out groups (bits of RouteKeepOut.bit) this cable stays out of where it can */
   avoid?: number;
+  /** places the cable passes on its way, in order: where it crosses a pivot, beside the axis */
+  via?: RouteVia[];
+  /** keep-out groups for each leg between a, the via points and b (in place of avoid) */
+  legAvoid?: number[];
+}
+
+/** Where a cable crosses a pivot: near `c`, as close to the axis (through `at`) as there is room for it. */
+export interface RouteVia {
+  c: V3;
+  axis: V3;
+  at: V3;
 }
 
 /** Space a cable should not be tied in: where a moving part or a drag chain goes (assembly coordinates). */
@@ -53,6 +65,8 @@ export interface RouteKeepOut {
   hi: V3;
   /** its group, one bit of 16 */
   bit: number;
+  /** lo and hi are in this frame (column-major), not the assembly's: a moving part's box at one place in its travel */
+  m?: number[];
 }
 
 export interface RouteInput {
@@ -60,6 +74,8 @@ export interface RouteInput {
   placed: RoutePlaced[];
   wires: RouteWire[];
   keepOut?: RouteKeepOut[];
+  /** fans' intakes and jets: no cable runs in them */
+  flow?: FlowZone[];
   /** grid cell size, mm (chosen from the region's size when left out) */
   cell?: number;
 }
@@ -76,6 +92,8 @@ export interface RoutedWire {
   straight: boolean;
   /** outer radius of the cable, mm */
   r: number;
+  /** where it crossed each pivot (the via cells' centres), and how far from the axis; null where there was no room beside the bearing */
+  via?: ({ p: V3; r: number } | null)[];
 }
 
 export interface RouteResult {
@@ -99,6 +117,10 @@ const OUT_REACH = 8;
 const COST_TIGHT = 30;
 /** a cell a moving part sweeps through: avoided, but a plug inside one can still get out */
 const COST_KEEP = 8;
+/** a cell in a fan's intake or jet: as good as closed to cables (a plug inside one can still get out) */
+const COST_FLOW = 60;
+/** how far round a pivot's crossing point to look for room for the cable, mm */
+const VIA_REACH = 40;
 const BUNDLE = 0.55;
 const TURN = 1.6;
 const MAX_CELLS = 2_400_000;
@@ -124,6 +146,8 @@ class Grid {
   readonly use: Uint16Array;
   /** keep-out groups covering each cell */
   readonly keep: Uint16Array;
+  /** cells in a fan's intake or jet (1) */
+  readonly flow: Uint8Array;
 
   constructor(
     readonly min: V3,
@@ -140,12 +164,116 @@ class Grid {
     this.region = new Int32Array(0);
     this.use = new Uint16Array(this.n);
     this.keep = new Uint16Array(this.n);
+    this.flow = new Uint8Array(this.n);
   }
 
   markKeepOut(k: RouteKeepOut) {
+    if (k.m) return this.markKeepBox(k);
     const [i0, j0, k0] = this.cellOf(k.lo);
     const [i1, j1, k1] = this.cellOf(k.hi);
     for (let z = k0; z <= k1; z++) for (let y = j0; y <= j1; y++) for (let x = i0; x <= i1; x++) this.keep[this.index(x, y, z)] |= k.bit;
+  }
+
+  /** a keep-out box in its own frame: the cells whose centres are inside it */
+  private markKeepBox(k: RouteKeepOut) {
+    const m = k.m!;
+    const inv = invert(m);
+    if (!inv) return;
+    const { lo, hi } = k;
+    const wlo: V3 = [Infinity, Infinity, Infinity];
+    const whi: V3 = [-Infinity, -Infinity, -Infinity];
+    for (let c = 0; c < 8; c++) {
+      const p = transform(m, c & 1 ? hi[0] : lo[0], c & 2 ? hi[1] : lo[1], c & 4 ? hi[2] : lo[2]);
+      for (let a = 0; a < 3; a++) {
+        wlo[a] = Math.min(wlo[a], p[a]);
+        whi[a] = Math.max(whi[a], p[a]);
+      }
+    }
+    const [i0, j0, k0] = this.cellOf(wlo);
+    const [i1, j1, k1] = this.cellOf(whi);
+    // half a cell of give, so a box no wider than a cell still marks the cells it runs through
+    const g = this.h / 2;
+    for (let z = k0; z <= k1; z++)
+      for (let y = j0; y <= j1; y++)
+        for (let x = i0; x <= i1; x++) {
+          const q = transform(inv, this.min[0] + (x + 0.5) * this.h, this.min[1] + (y + 0.5) * this.h, this.min[2] + (z + 0.5) * this.h);
+          if (q[0] >= lo[0] - g && q[0] <= hi[0] + g && q[1] >= lo[1] - g && q[1] <= hi[1] + g && q[2] >= lo[2] - g && q[2] <= hi[2] + g) this.keep[this.index(x, y, z)] |= k.bit;
+        }
+  }
+
+  /**
+   * Mark a fan's intake or jet: the free cells in its cone that the axis can see. A cell behind a wall (outside a
+   * duct, round the back of a lip) is out of the flow, so the march toward the axis stops at the first solid cell; it
+   * stops short of the axis itself, where the fan's own hub is.
+   */
+  markFlow(z: FlowZone) {
+    const [lo, hi] = zoneBounds(z);
+    const [i0, j0, k0] = this.cellOf(lo);
+    const [i1, j1, k1] = this.cellOf(hi);
+    const step = this.h * 0.8;
+    for (let kz = k0; kz <= k1; kz++)
+      for (let jy = j0; jy <= j1; jy++)
+        for (let ix = i0; ix <= i1; ix++) {
+          const c = this.index(ix, jy, kz);
+          if (this.solid[c] || this.flow[c]) continue;
+          const p = this.center(c);
+          const s = inCone(z, p);
+          if (s < 0) continue;
+          const foot: V3 = [z.o[0] + z.dir[0] * s, z.o[1] + z.dir[1] * s, z.o[2] + z.dir[2] * s];
+          const r = dist(p, foot);
+          const stop = Math.min(r, 0.5 * z.r0);
+          let open = true;
+          for (let t = step; t < r - stop; t += step) {
+            const q: V3 = [p[0] + ((foot[0] - p[0]) * t) / r, p[1] + ((foot[1] - p[1]) * t) / r, p[2] + ((foot[2] - p[2]) * t) / r];
+            if (this.solidAt(q)) {
+              open = false;
+              break;
+            }
+          }
+          if (open) this.flow[c] = 1;
+        }
+  }
+
+  private comps: Int32Array | null = null;
+  /** which connected piece of free space each cell is in (0 in a part), worked out the first time it is asked */
+  freeComp(): Int32Array {
+    if (this.comps) return this.comps;
+    const { nx, ny, nz, solid } = this;
+    const sxy = nx * ny;
+    const comp = new Int32Array(this.n);
+    const queue = new Int32Array(this.n);
+    let next = 0;
+    for (let c0 = 0; c0 < this.n; c0++) {
+      if (comp[c0] || solid[c0]) continue;
+      comp[c0] = ++next;
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = c0;
+      while (head < tail) {
+        const c = queue[head++];
+        const i = c % nx;
+        const j = Math.floor(c / nx) % ny;
+        const k = Math.floor(c / sxy);
+        const visit = (v: number) => {
+          if (comp[v] || solid[v]) return;
+          comp[v] = next;
+          queue[tail++] = v;
+        };
+        if (i > 0) visit(c - 1);
+        if (i < nx - 1) visit(c + 1);
+        if (j > 0) visit(c - nx);
+        if (j < ny - 1) visit(c + nx);
+        if (k > 0) visit(c - sxy);
+        if (k < nz - 1) visit(c + sxy);
+      }
+    }
+    this.comps = comp;
+    return comp;
+  }
+
+  flowAt(x: number, y: number, z: number): boolean {
+    const [i, j, k] = this.cellOf([x, y, z]);
+    return this.flow[this.index(i, j, k)] === 1;
   }
 
   index(i: number, j: number, k: number) {
@@ -653,18 +781,34 @@ export function routeWithField(input: RouteInput, solids?: Solids): { result: Ro
   grid.buildOutside(OUT_REACH);
   lap("field");
   for (const k of input.keepOut ?? []) grid.markKeepOut(k);
+  for (const z of input.flow ?? []) grid.markFlow(z);
+  if (input.flow?.length || input.keepOut?.length) lap("keep");
 
   const search = new Search(grid);
-  const paths: { wire: RouteWire; cells: number[] }[] = [];
+  const paths: { wire: RouteWire; cells: number[]; via: number[] }[] = [];
   for (const w of input.wires) {
-    const cells = search.find(w);
+    // a crossing point in the free space the cable's ends are in (not a sealed pocket beside the bearing)
+    const reach = w.via?.length ? search.ends(w).map((c) => grid.freeComp()[c]) : [];
+    const via = (w.via ?? []).map((v) => search.viaCell(v, w.d / 2 + CLEAR, reach));
+    const cells = search.find(w, via);
     for (const c of cells) if (grid.use[c] < 65535) grid.use[c]++;
-    paths.push({ wire: w, cells });
+    paths.push({ wire: w, cells, via });
   }
-  const wires = paths.map((p, n) => finish(grid, p.wire, p.cells, n, paths));
+  const wires = paths.map((p, n) => {
+    const r = finish(grid, p.wire, p.cells, n, paths);
+    if (p.via.length && !r.straight)
+      r.via = p.via.map((c, i) => {
+        if (c < 0) return null;
+        const v = p.wire.via![i];
+        const q = grid.center(c);
+        return { p: q, r: axisDistance(q, v.at, v.axis) };
+      });
+    return r;
+  });
   lap("search");
   // push the runs out of the parts by their radius and apart from each other
   const field: SignedField = { h, phi: (x, y, z) => grid.phiAt(x, y, z), outside: (x, y, z) => grid.outsideAt(x, y, z), region: (x, y, z) => grid.regionAt(x, y, z) };
+  if (input.flow?.length) field.flow = (x, y, z) => grid.flowAt(x, y, z);
   const live = wires.filter((w) => !w.straight);
   relaxCables(
     live.map((w) => ({ id: w.id, pts: w.points, r: w.r })),
@@ -676,6 +820,13 @@ export function routeWithField(input: RouteInput, solids?: Solids): { result: Ro
   });
   lap("relax");
   return { result: { wires, cell: h, ms: Date.now() - t0, stages }, field };
+}
+
+/** distance from p to the line through `at` along unit `axis` */
+function axisDistance(p: V3, at: V3, axis: V3): number {
+  const v: V3 = [p[0] - at[0], p[1] - at[1], p[2] - at[2]];
+  const s = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+  return Math.hypot(v[0] - axis[0] * s, v[1] - axis[1] * s, v[2] - axis[2] * s);
 }
 
 const pathLength = (pts: V3[]) => {
@@ -754,16 +905,89 @@ class Search {
     return [from];
   }
 
-  find(w: RouteWire): number[] {
+  /**
+   * The free cell to cross a pivot at: within reach of the crossing point, with room for the cable, as close to the
+   * axis as it can be (the nearer the axis, the less the cable stretches as the joint turns), and not far along it.
+   * -1 when there is none.
+   */
+  viaCell(v: RouteVia, need: number, comps: number[] = []): number {
     const gr = this.grid;
-    const { nx, ny, nz } = gr;
-    const sxy = nx * ny;
+    const reach = Math.ceil(VIA_REACH / gr.h);
+    const comp = comps.length ? gr.freeComp() : null;
+    const [ci, cj, ck] = gr.cellOf(v.c);
+    let best = -1;
+    let bestCost = Infinity;
+    for (let dk = -reach; dk <= reach; dk++)
+      for (let dj = -reach; dj <= reach; dj++)
+        for (let di = -reach; di <= reach; di++) {
+          const i = ci + di;
+          const j = cj + dj;
+          const k = ck + dk;
+          if (i < 0 || j < 0 || k < 0 || i >= gr.nx || j >= gr.ny || k >= gr.nz) continue;
+          const idx = gr.index(i, j, k);
+          if (gr.solid[idx] || gr.phi[idx] < need || gr.flow[idx] || (comp && !comps.includes(comp[idx]))) continue;
+          const p = gr.center(idx);
+          const along = Math.abs((p[0] - v.c[0]) * v.axis[0] + (p[1] - v.c[1]) * v.axis[1] + (p[2] - v.c[2]) * v.axis[2]);
+          if (along > VIA_REACH / 2) continue;
+          const cost = axisDistance(p, v.at, v.axis) + 0.5 * along;
+          if (cost < bestCost) {
+            bestCost = cost;
+            best = idx;
+          }
+        }
+    return best;
+  }
+
+  /** The free cells a cable's run starts and ends in. */
+  ends(w: RouteWire): number[] {
+    const a = this.entry(w.a);
+    const b = this.entry(w.b);
+    return [a[a.length - 1], b[b.length - 1]];
+  }
+
+  /**
+   * The cells from end a to end b of a cable, through its via cells in order (empty when no way was found). A via of
+   * -1 had no room: the legs either side of it join, keeping out of what both of them keep out of.
+   */
+  find(w: RouteWire, via: number[] = []): number[] {
+    const gr = this.grid;
     const leadA = this.entry(w.a);
     const leadB = this.entry(w.b);
     const start = leadA[leadA.length - 1];
     const goal = leadB[leadB.length - 1];
     const join = (core: number[]) => [...leadA.slice(0, -1), ...core, ...leadB.slice(0, -1).reverse()];
-    if (start === goal) return join([start]);
+    // a cable from inside the assembly to inside it stays inside
+    const outer = gr.outside;
+    const outCost = outer.length && gr.region[start] && gr.region[start] === gr.region[goal] ? COST_OUT : 0;
+    const avoidOf = (i: number) => w.legAvoid?.[i] ?? w.avoid ?? 0;
+    const stops: { cell: number; avoid: number }[] = [];
+    let avoid = avoidOf(0);
+    via.forEach((c, i) => {
+      if (c < 0) {
+        avoid &= avoidOf(i + 1);
+        return;
+      }
+      stops.push({ cell: c, avoid });
+      avoid = avoidOf(i + 1);
+    });
+    stops.push({ cell: goal, avoid });
+    const core: number[] = [start];
+    let from = start;
+    for (const st of stops) {
+      const leg = this.leg(from, st.cell, w.d, st.avoid, outCost);
+      if (!leg) return [];
+      core.push(...leg.slice(1));
+      from = st.cell;
+    }
+    return join(core);
+  }
+
+  /** A* from one cell to another for a cable of diameter d, keeping out of the keep-out groups in `avoid`. */
+  private leg(start: number, goal: number, d: number, avoid: number, outCost: number): number[] | null {
+    if (start === goal) return [start];
+    const gr = this.grid;
+    const { nx, ny, nz } = gr;
+    const sxy = nx * ny;
     if (++this.gen === 65535) {
       this.gen = 1;
       this.stamp.fill(0);
@@ -786,14 +1010,12 @@ class Search {
     stamp[start] = gen;
     heap.push(hcost(start), start);
     const steps = [1, -1, nx, -nx, sxy, -sxy];
-    const avoid = w.avoid ?? 0;
     // the room this cable needs from a part, and the band along a surface it is happy to run in
-    const need = w.d / 2 + CLEAR;
+    const need = d / 2 + CLEAR;
     const hugTo = need + gr.h;
     const phi = gr.phi;
-    // a cable from inside the assembly to inside it stays inside
     const outer = gr.outside;
-    const outCost = outer.length && gr.region[start] && gr.region[start] === gr.region[goal] ? COST_OUT : 0;
+    const flow = gr.flow;
     let expanded = 0;
     let found = false;
     while (heap.size) {
@@ -811,16 +1033,17 @@ class Search {
       const pu = parent[u];
       const inDir = pu < 0 ? 0 : u - pu;
       for (let s = 0; s < 6; s++) {
-        const d = steps[s];
+        const dd = steps[s];
         if ((s === 0 && ui === nx - 1) || (s === 1 && ui === 0) || (s === 2 && uj === ny - 1) || (s === 3 && uj === 0) || (s === 4 && uk === nz - 1) || (s === 5 && uk === 0)) continue;
-        const v = u + d;
+        const v = u + dd;
         if (closed[v] === gen) continue;
         const room = phi[v];
         let c = gr.solid[v] ? COST_SOLID : room < need ? COST_TIGHT : room < hugTo ? COST_HUG : COST_FREE;
         if (gr.use[v]) c *= BUNDLE;
         if (outCost && outer[v]) c += outCost;
         if (avoid && gr.keep[v] & avoid) c += COST_KEEP;
-        if (inDir && d !== inDir) c += TURN;
+        if (flow[v]) c += COST_FLOW;
+        if (inDir && dd !== inDir) c += TURN;
         const ng = g[u] + c;
         if (stamp[v] !== gen || ng < g[v]) {
           stamp[v] = gen;
@@ -830,10 +1053,10 @@ class Search {
         }
       }
     }
-    if (!found) return [];
+    if (!found) return null;
     const out: number[] = [];
     for (let c = goal; c >= 0; c = parent[c]) out.push(c);
-    return join(out.reverse());
+    return out.reverse();
   }
 }
 
