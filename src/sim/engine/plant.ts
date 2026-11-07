@@ -540,6 +540,15 @@ export class Plant implements PlantPort, PlantView {
       this.analogSrc.set(s, () => (vin ? (this.netV.get(vin.id) ?? 0) / ratio : 0));
       return;
     }
+    if (iface === "joystick") {
+      // a thumb stick at rest: both wipers at half its supply (a scenario's sim.signal moves them)
+      const vcc = this.netOf(mc.name, "VCC");
+      for (const axis of ["VRX", "VRY"]) {
+        const pin = this.mcuPinFor(mc.name, axis);
+        if (pin >= 0) this.analogSrc.set(pin, () => (vcc ? (this.netV.get(vcc.id) ?? 0) / 2 : 0));
+      }
+      return;
+    }
     if (iface === "hall") {
       const pin = this.mcuPinFor(mc.name, "S");
       if (pin >= 0) this.halls.push({ comp: mc.name, pin, vcc: this.netOf(mc.name, "VCC"), level: -1, hits: 0 });
@@ -723,6 +732,14 @@ export class Plant implements PlantPort, PlantView {
   press(comp: string): (() => void) | undefined {
     const mc = this.machine.components.find((c) => c.name === comp);
     const part = mc ? measuredPart(mc) : undefined;
+    if (part?.specs.iface === "joystick") {
+      // pressing a thumb stick down closes its SW contact to its GND
+      const pin = this.mcuPinFor(comp, "SW");
+      if (pin < 0) return undefined;
+      const was = this.hal.ext[pin];
+      this.hal.setExternal(pin, 0);
+      return () => this.hal.setExternal(pin, was);
+    }
     if (!part || part.kind !== "switch") return undefined;
     const undos: (() => void)[] = [];
     for (const p of part.pins) {

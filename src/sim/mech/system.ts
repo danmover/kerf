@@ -8,7 +8,7 @@ import { AxisFriction, AxisSpring, Ball, Pivot, Slider, Stops, Weld, type Joint 
 import { Cam, Clutch, Profile, RatioLink, Thread, ToothMesh, gearPitch, type Loss } from "./couplings";
 import { ActuatorDrive, AirCylinder, AxisForce, MotorDrive, ServoDrive, Solenoid, SpeedSource } from "./drives";
 import { BodyLoad, PointSpring } from "./forces";
-import { BodyContacts, PointContacts, TrackContact, WheelContact, type BoxShape, type Ground } from "./contact";
+import { BodyContacts, PointContacts, TrackContact, WheelContact, boxQuery, type BoxShape, type Ground } from "./contact";
 import { FRAME, type MechModel } from "./model";
 
 /** what changes between the pessimistic, expected and optimistic runs */
@@ -35,6 +35,10 @@ export interface JointStats {
   travel: number;
   /** most force across the joint (what its bearing carries), N */
   peakReaction: number;
+  /** most axis load averaged over any one second (what its drive carries steadily), N·m or N */
+  holdLoad: number;
+  /** tenth-of-a-second sums of |axis load| × dt behind holdLoad, newest last */
+  ring: { sum: number; t: number }[];
 }
 
 export class MechSystem {
@@ -95,7 +99,7 @@ export class MechSystem {
       const j = jd.kind === "pivot" ? new Pivot(jd.name, A, B, jd.at, jd.axis) : jd.kind === "slider" ? new Slider(jd.name, A, B, jd.at, jd.axis) : jd.kind === "ball" ? new Ball(jd.name, A, B, jd.at) : new Weld(jd.name, A, B, jd.at);
       s.add(j);
       this.joints.set(jd.name, j);
-      this.stats.set(jd.name, { min: 0, max: 0, maxSpeed: 0, peakLoad: 0, travel: 0, peakReaction: 0 });
+      this.stats.set(jd.name, { min: 0, max: 0, maxSpeed: 0, peakLoad: 0, travel: 0, peakReaction: 0, holdLoad: 0, ring: [{ sum: 0, t: 0 }] });
       if (jd.limits) this.stops.set(jd.name, s.add(new Stops(j, jd.limits[0], jd.limits[1], jd.kind === "pivot" ? 0.2 : 0.005)));
       if ((jd.friction ?? 0) > 0 || (jd.frictionPerLoad ?? 0) > 0) s.add(new AxisFriction(j, (jd.friction ?? 0) * f.friction, (jd.frictionPerLoad ?? 0) * f.friction));
       if ((jd.spring ?? 0) > 0 || (jd.damping ?? 0) > 0) s.add(new AxisSpring(j, jd.spring ?? 0, jd.damping ?? 0, jd.free ?? 0));
@@ -204,7 +208,19 @@ export class MechSystem {
     // the machine's bodies on the floor and blocks, and against loose boxes
     for (const bd of model.bodies) {
       const B = this.bodies.get(bd.id)!;
-      if (B.fixed) continue;
+      if (B.fixed) {
+        // loose boxes also rest on and slide against the frame's own parts (a base board, a tray, a stop),
+        // not only the floor: each part's box, leaving out any a loose box starts inside (it is not a surface it meets)
+        if (looseBoxes.length && bd.boxes.length) {
+          const mu = 0.5 * f.grip;
+          for (const lb of looseBoxes) {
+            const p0 = lb.body.x;
+            const mine: BoxShape[] = bd.boxes.filter((bx) => boxQuery(p0, bx.c, bx.h, bx.q).C > 0).map((bx) => ({ body: B, c: B.toLocal(bx.c), q: bx.q, h: bx.h }));
+            if (mine.length) s.add(new BodyContacts(lb.body, boxPoints([0, 0, 0], lb.h), mine, mu));
+          }
+        }
+        continue;
+      }
       const pts = bd.points.map((p) => B.toLocal(p));
       if (this.ground && pts.length) this.contacts.push(s.add(new PointContacts(B, pts, this.ground)));
       if (looseBoxes.length && pts.length) {
@@ -243,6 +259,21 @@ export class MechSystem {
       if (j.coord > st.max) st.max = j.coord;
       if (Math.abs(j.speed) > st.maxSpeed) st.maxSpeed = Math.abs(j.speed);
       if (Math.abs(j.axisLoad) > st.peakLoad) st.peakLoad = Math.abs(j.axisLoad);
+      // a one-second running average, from tenth-of-a-second buckets
+      const last = st.ring[st.ring.length - 1];
+      last.sum += Math.abs(j.axisLoad) * dt;
+      last.t += dt;
+      if (last.t >= 0.1) {
+        let sum = 0;
+        let t = 0;
+        for (const b of st.ring) {
+          sum += b.sum;
+          t += b.t;
+        }
+        if (t >= 0.999 && sum / t > st.holdLoad) st.holdLoad = sum / t;
+        st.ring.push({ sum: 0, t: 0 });
+        if (st.ring.length > 10) st.ring.shift();
+      }
       st.travel += Math.abs(j.speed) * dt;
       const rf = j.kind === "pivot" || j.kind === "slider" || j.kind === "ball" ? j.reaction(dt) : 0;
       if (rf > st.peakReaction) st.peakReaction = rf;

@@ -2,6 +2,7 @@
 
 import { CATALOG, catalogPart } from "../catalog";
 import type { MachineData } from "../types";
+import { ARM_WORDS, armFirmware } from "./arm";
 import { arduinoFirmware } from "./arduino";
 import { fwContext, oneLine, type GenFile } from "./common";
 import { klipperConfig } from "./klipper";
@@ -39,6 +40,10 @@ export function generateFirmware(m: MachineData, designName: string): FirmwareOu
     }
     if (VANE_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? "")) && ARDUINO_BOARDS.test(ctx.boardPart.id) && /esp32/i.test(String(ctx.boardPart.specs.mcu ?? ""))) {
       const r = vaneFirmware(ctx);
+      return { name: fw.name, board: ctx.board.name, target: "arduino", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
+    }
+    if ((fw.settings.app === "arm" || ARM_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? ""))) && ARDUINO_BOARDS.test(ctx.boardPart.id)) {
+      const r = armFirmware(ctx);
       return { name: fw.name, board: ctx.board.name, target: "arduino", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
     }
     if (ARDUINO_BOARDS.test(ctx.boardPart.id)) {

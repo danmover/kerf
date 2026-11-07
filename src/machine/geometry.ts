@@ -548,7 +548,12 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
           { op: "add", shape: { t: "cyl", d: 12, h: 2, at: [0, 0, -0.01], dir: ZP } },
         ],
       };
-      const spline: PartRecipe = { base: { t: "cyl", d: num(d, "spline_d", 5.8), h: 4, at: [0, 0, 1.9], dir: ZP }, ops: [] };
+      // the spline's tapped centre hole for the horn screw (M3 in a standard servo, M2 in a micro), on into the output shaft
+      const splineD = num(d, "spline_d", 5.8);
+      const hornScrew = num(d, "horn_screw", splineD >= 5.5 ? 3 : 2);
+      const tap = hornScrew >= 3 ? 2.5 : hornScrew * 0.8;
+      body.ops.push({ op: "cut", shape: { t: "cyl", d: tap, h: 4, at: [0, 0, -2], dir: ZP } });
+      const spline: PartRecipe = { base: { t: "cyl", d: splineD, h: 4, at: [0, 0, 1.9], dir: ZP }, ops: [{ op: "cut", shape: { t: "cyl", d: tap, h: 5, at: [0, 0, 1.4], dir: ZP } }] };
       // the case drops through a pocket in the plate and the tabs sit on it: screws through the tabs, nuts under
       const screw = screwFor(d, (g.hole_d ?? 4.5) >= 3.5 ? 3.6 : 2.3, false);
       const under = -fz - ft;
@@ -560,7 +565,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         placement: "axis",
         solids: [solid("", p.name, body, g.color ?? "#1b1f25", "ABS"), solid("horn", `${p.name} spline`, spline, "#e8e9eb", "POM", true)],
         fields: {
-          scalars: { w, d: dd, h, flange_z: fz, flange_t: ft, ...mountScalars(screw, 0) },
+          scalars: { w, d: dd, h, flange_z: fz, flange_t: ft, horn_screw: hornScrew, ...mountScalars(screw, 0) },
           points: { at: Z0, spline_top: [0, 0, 5.9], case_center: [-sx, 0, -h / 2], tab_under: [0, 0, under] },
           pointLists: { holes: holes.map(([x, y]) => [x, y, -fz] as V3) },
           dirs: { axis: ZP },
