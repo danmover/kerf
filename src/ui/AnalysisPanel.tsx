@@ -7,7 +7,10 @@ import { useDesign } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
 import { useAnalysis, showResults, runFine, runAccuracyCheck, type StructuralRun, type ResultField } from "../analysis/runtime";
 import { modeText, safetyAway, strengthVerdict, structuralVerdict } from "../analysis/summary";
-import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec } from "../analysis/spec";
+import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type StudySpec, type UciSpec } from "../analysis/spec";
+import { applyStudyRun, startStudy, stopStudy, useStudies, type StudyState } from "../analysis/studyRuntime";
+import type { StudyRun } from "../analysis/study";
+import { MEASURE_UNIT } from "../analysis/studyLang";
 import { uciItems, uciVerdict } from "../analysis/summary";
 import { uciResult, UCI_ROAD } from "../core/uciChecks";
 import type { CheckItem } from "../core/checks";
@@ -48,6 +51,7 @@ export function AnalysisPanel() {
   const selected = useAnalysis((s) => s.selected);
   const report = useDesign((s) => s.report);
   const airRuns = useAirflow((s) => s.runs);
+  const studies = useStudies((s) => s.runs);
   const specs = model?.analyses ?? [];
   const spec = specs.find((a) => a.label === selected) ?? specs.find((a) => a.label === shown) ?? specs[0];
 
@@ -57,7 +61,7 @@ export function AnalysisPanel() {
     <div className="an">
       <div className="an-head">
         {specs.map((a) => (
-          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} air={airRuns.get(a.label)} />
+          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} air={airRuns.get(a.label)} study={studies.get(a.label)} />
         ))}
         <AddAnalysis />
         <div className="grow" />
@@ -74,6 +78,7 @@ export function AnalysisPanel() {
             {spec?.kind === "drivetrain" && <DrivetrainView spec={spec} result={drivetrain.get(spec.label)} />}
             {spec?.kind === "uci" && <UciView spec={spec} items={uciItems(spec, report?.items ?? [])} />}
             {spec?.kind === "airflow" && <AirflowView spec={spec} run={airRuns.get(spec.label)} />}
+            {spec?.kind === "study" && <StudyView spec={spec} st={studies.get(spec.label)} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -83,10 +88,20 @@ export function AnalysisPanel() {
 
 // ---------- header ----------
 
-function Pick({ spec, active, run, dt, items, air }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult; items?: CheckItem[]; air?: AirflowRun }) {
+function Pick({ spec, active, run, dt, items, air, study }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult; items?: CheckItem[]; air?: AirflowRun; study?: StudyState }) {
   let status: Status = "pending";
   let val = "";
-  if (spec.kind === "uci") {
+  if (spec.kind === "study") {
+    const best = study?.result && study.result.best !== null ? study.result.runs[study.result.best] : null;
+    if (study?.status === "running") val = `${study.progress?.done ?? 0}/${spec.runs}`;
+    else if (study?.status === "error") {
+      status = "fail";
+      val = "error";
+    } else if (study?.result) {
+      status = best ? "pass" : "fail";
+      val = best && best.goal !== null ? `${fmtNum(best.goal, Math.abs(best.goal) < 10 ? 2 : 1)}${MEASURE_UNIT[spec.goal.what] ? ` ${MEASURE_UNIT[spec.goal.what]}` : ""}` : "none pass";
+    }
+  } else if (spec.kind === "uci") {
     const mine = uciItems(spec, items ?? []);
     status = uciVerdict(mine);
     const fails = mine.filter((i) => i.status === "fail").length;
@@ -217,7 +232,9 @@ function AskButton({ spec, run, dt, air }: { spec: AnalysisSpec; run?: Structura
     ? `The "${spec.label}" analysis can't run: ${err} Please fix the set-up.`
     : spec.kind === "uci"
       ? `Make the bike pass every item of the "${spec.label}" UCI rules check, keeping it as fast as you can.`
-      : spec.kind === "airflow"
+      : spec.kind === "study"
+        ? `Run the "${spec.label}" design study, tell me which design is best and why, and apply it if it still passes everything.`
+        : spec.kind === "airflow"
         ? `Look at the "${spec.label}" airflow results: where does the drag come from? Reshape the parts that cost the most to cut the drag (keep them strong, legal and makeable), re-run the airflow after each change and tell me what each change saved.`
         : `Explain the "${spec.label}" analysis results and suggest how to strengthen the weakest area without adding much material.`;
   return (
@@ -954,6 +971,216 @@ function ConvergenceBox({ run, r }: { run: StructuralRun; r?: StructuralResult }
         residual per iteration (log)
         {r && ` · ${r.mesh.levels} grid levels · ${r.mesh.dofs.toLocaleString()} unknowns`}
         {balance !== null && ` · reactions balance loads within ${balance < 1e-3 ? "0.1" : fmtNum(balance * 100, 1)}%`}
+      </div>
+    </div>
+  );
+}
+
+// ---------- design study ----------
+
+const studyNum = (v: number) => fmtNum(v, Math.abs(v) < 10 ? 3 : 1);
+
+/** A design study: run it, see the best design against the current one, every design it tried, and use any of them. */
+function StudyView({ spec, st }: { spec: StudySpec; st?: StudyState }) {
+  const source = useDesign((s) => s.source);
+  const r = st?.result;
+  const busy = st?.status === "running";
+  const unit = MEASURE_UNIT[spec.goal.what];
+  const withUnit = (v: number | null) => (v === null ? "–" : `${studyNum(v)}${unit && unit !== "×" ? ` ${unit}` : unit}`);
+  const best = r && r.best !== null ? r.runs[r.best] : null;
+  const cur = r?.runs.find((x) => x.current);
+  const sign = spec.goal.sense === "min" ? 1 : -1;
+  const rows = r ? [...r.runs].sort((a, b) => Number(b.feasible) - Number(a.feasible) || sign * ((a.goal ?? Infinity * sign) - (b.goal ?? Infinity * sign)) || a.index - b.index) : [];
+  const change = best && cur && best.goal !== null && cur.goal ? ((best.goal - cur.goal) / Math.abs(cur.goal)) * 100 : null;
+  return (
+    <>
+      <div className="an-box" style={{ marginBottom: 12 }}>
+        <div className="row" style={{ gap: 8, marginBottom: 6 }}>
+          <StatusIcon status={busy || !r ? "pending" : best ? "pass" : "fail"} />
+          <b>Design study: {spec.goal.text}</b>
+          <span className="dim mono">
+            {spec.vary.map((v) => `${v.name} ${studyNum(v.min)}–${studyNum(v.max)}${v.step ? ` by ${studyNum(v.step)}` : ""}`).join(" · ")}
+          </span>
+          <div className="grow" />
+          {busy ? (
+            <button className="btn sm" onClick={() => stopStudy(spec.label)}>
+              <Icon.Stop size={13} /> Stop
+            </button>
+          ) : (
+            <button className="btn sm primary" onClick={() => void startStudy(spec.label)} data-tip={`Build, check and solve up to ${spec.runs} designs`}>
+              <Icon.Play size={13} /> {r ? "Run again" : "Run study"}
+            </button>
+          )}
+        </div>
+        <div className="an-note">
+          <span className="dim">
+            Tries up to {spec.runs} designs: a spread across the ranges, then the ones a fitted model of the results says are most promising. Every design must meet each analysis&apos;s own targets
+            {spec.limits.length ? `, ${spec.limits.map((l) => l.text).join(", ")}` : ""} and keep passing every check that passes now. Each run builds the whole design and solves its analyses at draft resolution, and the best is confirmed at full resolution.
+          </span>
+        </div>
+        {busy && (
+          <>
+            <div className="mono dim" style={{ fontSize: 11, marginTop: 6 }}>
+              {st?.progress?.stage ?? "Starting"} · {st?.progress?.done ?? 0} of {spec.runs}
+            </div>
+            <div className="an-progress">
+              <div style={{ width: `${Math.round(((st?.progress?.done ?? 0) / spec.runs) * 100)}%` }} />
+            </div>
+          </>
+        )}
+        {st?.status === "error" && (
+          <div className="an-note" style={{ color: "var(--fail-ink)", marginTop: 6 }}>
+            <Icon.Alert size={13} />
+            <span>{st.error}</span>
+          </div>
+        )}
+      </div>
+      {r && (
+        <>
+          <div className="an-grid" style={{ marginBottom: 12 }}>
+            <div className={`an-stat ${best ? "pass" : "fail"}`}>
+              <div className="k">Best that passes</div>
+              <div className="v">
+                {best ? studyNum(best.goal ?? 0) : "none"}
+                <small>{best ? unit : ""}</small>
+              </div>
+              <div className="s">{best ? `${Object.entries(best.values).map(([k, v]) => `${k} ${studyNum(v)}`).join(", ")}${change !== null ? ` · ${change <= 0 ? "−" : "+"}${fmtNum(Math.abs(change), 0)} % against now` : ""}` : "no design met every target"}</div>
+            </div>
+            <div className="an-stat">
+              <div className="k">The design now</div>
+              <div className="v">
+                {cur?.goal !== null && cur?.goal !== undefined ? studyNum(cur.goal) : "–"}
+                <small>{unit}</small>
+              </div>
+              <div className="s">{cur ? (cur.feasible ? "passes" : "does not meet every target") : ""}</div>
+            </div>
+            <div className="an-stat">
+              <div className="k">Designs tried</div>
+              <div className="v">
+                {r.runs.length}
+                <small>{r.runs.filter((x) => x.feasible).length} pass</small>
+              </div>
+              <div className="s">
+                {fmtNum(r.ms / 1000, 0)} s{r.using.length ? ` · solving ${r.using.map((l) => `"${l}"`).join(", ")}` : " · mass only"}
+              </div>
+            </div>
+            {r.confirmed && (
+              <div className={`an-stat ${r.confirmed.feasible ? "pass" : "warn"}`}>
+                <div className="k">At full resolution</div>
+                <div className="v">
+                  {r.confirmed.goal !== null ? studyNum(r.confirmed.goal) : "–"}
+                  <small>{unit}</small>
+                </div>
+                <div className="s">{r.confirmed.feasible ? "the best design still passes" : "no longer meets every target"}</div>
+              </div>
+            )}
+          </div>
+          {r.base !== source && (
+            <div className="an-note" style={{ marginBottom: 8 }}>
+              <Icon.Info size={13} style={{ color: "var(--warn)" }} />
+              <span>The design changed since this study ran. Use still writes those parameter values; run the study again to measure them on the design as it is now.</span>
+            </div>
+          )}
+          <StudyChart spec={spec} runs={r.runs} />
+          {r.sensitivity.length > 0 && (
+            <div className="an-setup" style={{ margin: "8px 0" }}>
+              {r.sensitivity.map((x) => (
+                <div key={x.name}>
+                  <span className="tag">{x.name}</span>
+                  {x.effect >= 0 ? "+" : "−"}
+                  {withUnit(Math.abs(x.effect))} across its range
+                </div>
+              ))}
+            </div>
+          )}
+          <table className="an-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                {spec.vary.map((v) => (
+                  <th key={v.name} className="num">
+                    {v.name}
+                  </th>
+                ))}
+                <th className="num">{spec.goal.what}</th>
+                <th>Result</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((x) => (
+                <StudyRow key={x.index} spec={spec} run={x} best={x.index === r.best} withUnit={withUnit} />
+              ))}
+            </tbody>
+          </table>
+          {r.notes.map((n, i) => (
+            <div key={i} className="an-note" style={{ marginTop: 6 }}>
+              <Icon.Info size={13} style={{ color: "var(--text-3)" }} />
+              <span>{n}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </>
+  );
+}
+
+function StudyRow({ spec, run, best, withUnit }: { spec: StudySpec; run: StudyRun; best: boolean; withUnit: (v: number | null) => string }) {
+  const bad = run.checks.filter((c) => c.margin < 0);
+  const why = run.status === "error" ? run.error : [...bad.map((c) => c.text), ...run.newFails.map((t) => `fails ${t}`)].join("; ");
+  return (
+    <tr className={best ? "an-mode active" : ""}>
+      <td className="mono">
+        {run.index}
+        {run.current ? " now" : ""}
+      </td>
+      {spec.vary.map((v) => (
+        <td key={v.name} className="num">
+          {studyNum(run.values[v.name])}
+        </td>
+      ))}
+      <td className={`num ${run.feasible ? "" : "dim"}`}>{withUnit(run.goal)}</td>
+      <td className={run.feasible ? "" : run.status === "error" ? "fail" : "warn"} title={why || undefined}>
+        {best ? "best" : run.feasible ? "passes" : run.status === "error" ? "did not build" : (why ?? "").slice(0, 60) || "fails a check"}
+      </td>
+      <td>
+        {!run.current && run.status === "done" && (
+          <button className="btn sm ghost" style={{ height: 20 }} onClick={() => applyStudyRun(spec.label, run.index)} data-tip="Write these values into the design (undo takes them back)">
+            Use
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/** The goal of each design in the order tried: passing ones filled, the rest hollow, and the best so far as a line. */
+function StudyChart({ spec, runs }: { spec: StudySpec; runs: StudyRun[] }) {
+  const pts = runs.filter((x) => x.goal !== null);
+  if (pts.length < 2) return null;
+  const ys = pts.map((x) => x.goal!);
+  const lo = Math.min(...ys);
+  const hi = Math.max(...ys);
+  const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.05 || 1;
+  const X = (i: number) => (runs.length > 1 ? (i / (runs.length - 1)) * 100 : 50);
+  const Y = (v: number) => 4 + ((hi + pad - v) / (hi - lo + 2 * pad)) * 46;
+  const sign = spec.goal.sense === "min" ? 1 : -1;
+  let bestSoFar: number | null = null;
+  const line: string[] = [];
+  for (const x of runs) {
+    if (x.feasible && x.goal !== null && (bestSoFar === null || sign * x.goal < sign * bestSoFar)) bestSoFar = x.goal;
+    if (bestSoFar !== null) line.push(`${X(x.index).toFixed(2)},${Y(bestSoFar).toFixed(2)}`);
+  }
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <svg className="an-spark" viewBox="0 0 100 54" preserveAspectRatio="none" aria-label={`${spec.goal.what} of each design tried`}>
+        {line.length > 1 && <polyline points={line.join(" ")} fill="none" stroke="var(--pass)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />}
+        {pts.map((x) => (
+          <line key={x.index} x1={X(x.index)} x2={X(x.index)} y1={Y(x.goal!)} y2={Y(x.goal!)} stroke={x.feasible ? "var(--pass)" : "var(--fail)"} strokeOpacity={x.feasible ? 1 : 0.6} strokeWidth={x.current ? 8 : 6} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        ))}
+      </svg>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        {spec.goal.what} of each design in the order tried · green passes, red does not · line: best so far
       </div>
     </div>
   );

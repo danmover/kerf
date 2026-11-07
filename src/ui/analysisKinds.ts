@@ -6,14 +6,14 @@
 import type { AnalysisSpec } from "../analysis/spec";
 
 export interface AnalysisKind {
-  id: "strength" | "drop" | "vibration" | "heat" | "buckling" | "airflow" | "gears" | "uci";
+  id: "strength" | "drop" | "vibration" | "heat" | "buckling" | "study" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
   /** other words people use for it */
   keywords: string;
   /** key of ui/icons Icon */
-  icon: "Stress" | "Alert" | "Graph" | "Thermo" | "Buckle" | "Orbit" | "Gear" | "Check";
+  icon: "Stress" | "Alert" | "Graph" | "Thermo" | "Buckle" | "Sliders" | "Orbit" | "Gear" | "Check";
   /** which of the design's analyses are this kind */
   is: (a: AnalysisSpec) => boolean;
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
@@ -67,6 +67,15 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     icon: "Buckle",
     is: (a) => a.kind === "structural" && !!a.buckling,
     ask: "Set up a buckling check for this design: the loads that press on its slender walls, struts or tubes and how it is held, then run it and tell me how far it is from buckling and how to stiffen it.",
+  },
+  {
+    id: "study",
+    label: "Design study",
+    detail: "Try many sizes automatically and keep the lightest, stiffest or coolest design that still passes",
+    keywords: "optimise optimize optimisation optimization design study sweep parameters lightest best size dimensions what if trade off generative",
+    icon: "Sliders",
+    is: (a) => a.kind === "study",
+    ask: "Set up a design study for this design: vary the parameters that size the parts that matter most, aim for the lightest design (or what matters more here) and keep it passing its analyses and checks, then run it and tell me which design is best and what changed.",
   },
   {
     id: "airflow",

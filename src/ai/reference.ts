@@ -547,6 +547,15 @@ A part past its limit fails, within the last tenth of its headroom warns. The re
 analysis "Left in the sun" { parts: [bracket]  fix: [face(bracket, -X), face(bracket, +X)]  temperature: 60C  assembled_at: 20C }   // the whole model at one temperature: expansion against the supports, no heat solve
 Buckling: add buckling (3 shapes) or buckling: 1..6 to an analysis with loads; it finds how many times the loads it takes to buckle slender parts (columns, thin walls, tubes, struts) and their buckled shapes. Under 1 it fails, under buckling_safety: (default 3, since dents and print lines make real parts buckle sooner) it warns.
 Accuracy check: the converge flag (or the panel's Check accuracy button) solves twice, the second time with 1.5× smaller elements, and reports how far deflection, stress, safety, temperature and buckling moved: under 5 % has converged, over 15 % needs a smaller resolution:. A peak at a support or load that keeps rising is a singularity of the idealised fixing: judge the part by the stress a short way off.
+Design study (an optimiser): an analysis block with vary: changes parameters within their ranges, builds and checks each design away from the open one, solves the structural analyses that cover the parts they change, and finds the best design that still meets every analysis target and every check that passes now:
+analysis "Lightest bracket" {
+  vary: [thickness, bend_r(1mm, 6mm), ribs(0, 4, 1)]   // params by name; the range from the param's range a .. b unless given; a step (whole numbers for a count)
+  goal: "min mass"                 // or "max safety", "min deflection", "min stress", "max frequency", "min temperature", "max buckling", each optionally "of <part or analysis>"; "lightest", "stiffest", "strongest", "coolest"
+  keep: ["deflection <= 0.4mm"]    // optional extra limits: mass, safety, deflection, stress, frequency, temperature, buckling with <= or >=
+  using: ["Shelf load"]            // optional: the analyses to solve (default those the parameters reach)
+  runs: 16                         // the most designs to build, the current one included (default 12, at most 40)
+}
+It never runs on its own: run_analysis label: "<study>" runs it (about as long as building and solving the design once per run) and returns every design, the best, and how much each parameter matters. Apply one with edit_design alternative: "<study> #<n>". Prefer a study to trying sizes by hand; use compare_designs for different concepts.
 Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
 An airflow analysis puts the design in a virtual wind tunnel: a GPU lattice-Boltzmann flow solver with LES turbulence and a wall model, on a rolling road with the wheels spinning, re-run after each change:

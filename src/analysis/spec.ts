@@ -297,7 +297,55 @@ export interface AirflowSpec {
   span: Span;
 }
 
-export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec | AirflowSpec;
+/** A parameter a design study varies, between these values. */
+export interface StudyVariable {
+  /** the param's name */
+  name: string;
+  min: number;
+  max: number;
+  /** values snap to multiples of this from min (whole numbers for a count) */
+  step?: number;
+}
+
+/** What a design study's answer is judged by: a measured or analysed value to make as small or as large as it can. */
+export type StudyMeasure = "mass" | "safety" | "deflection" | "stress" | "frequency" | "temperature" | "buckling";
+
+export interface StudyGoal {
+  sense: "min" | "max";
+  what: StudyMeasure;
+  /** mass of one part (default every made part); the analysis a result comes from (default the worst of those it solves) */
+  of?: string;
+  text: string;
+}
+
+/** A limit every design the study picks must meet, beyond the analyses' own targets and the design's checks. */
+export interface StudyLimit {
+  what: StudyMeasure;
+  op: "<=" | ">=";
+  value: number;
+  of?: string;
+  text: string;
+}
+
+/**
+ * A design study: vary parameters within their ranges, build and check each design, solve the analyses that cover
+ * the parts they change, and find the best one that still passes: the lightest bracket that is strong enough, the
+ * stiffest frame for its mass. Run on demand (it builds many designs), never on every edit.
+ */
+export interface StudySpec {
+  kind: "study";
+  label: string;
+  vary: StudyVariable[];
+  goal: StudyGoal;
+  limits: StudyLimit[];
+  /** the structural analyses solved for every design; unset: those covering parts the parameters change */
+  using?: string[];
+  /** the most designs it may build, the current one included */
+  runs: number;
+  span: Span;
+}
+
+export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec | AirflowSpec | StudySpec;
 
 /** the smallest element size accepted from resolution:, in mm */
 export const MIN_ELEMENT_SIZE = 0.1;
