@@ -167,16 +167,74 @@ export interface PlanItem {
 }
 
 const CRITERION = /\b(must|should|stays?|below|under|above|over|at least|at most|no more than|less than|more than|within|exceeds?|not exceed|keeps?|survives?)\b|[<>≤≥±]/i;
+/** Words that say what passing looks like, wherever they sit in a clause. */
+const PASS_WORD = /\b(must|should|passes)\b/i;
+/** A limit: a comparison followed by a number, or something held. */
+const LIMIT = /\b(below|under|above|over|within|at least|at most|no more than|less than|more than|exceeds?|not exceed)\s+(?:about\s+|roughly\s+)?[-+±−]?\d|\b(?:stays?|keeps?|survives?)\b|[<>≤≥±]\s*\d/i;
+/** A clause that starts like an instruction is a step, whatever numbers it mentions. */
+const STEP_START =
+  /^(?:if|then|when|after|before|once|while|with|and|tip|push|pull|turn|run|set|fit|add|take|tighten|loosen|press|print|reprint|measure|time|film|power|repeat|type|plug|unplug|clamp|mount|check|paste|start|stop|let|leave|put|place|slide|screw|drive|spin|apply|use|record|write|remove|replace|connect|disconnect|open|close|hit|hold|tap|weigh|count|mark|cut|drill|glue|wait)\b/i;
 
-/** Splits a test into the steps and the pass criterion, when the wording allows. */
+/** A clause without its asides in brackets and its quoted commands ('arm', "save"). */
+const bare = (s: string) => s.replace(/\([^()]*\)/g, " ").replace(/(^|[\s(,])'[^']*'(?=[\s,.;:)]|$)/g, "$1 ").replace(/"[^"]*"/g, " ");
+
+/** Splits at "; " and at ". " before a capital, never inside brackets. */
+function clausesOf(t: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && t[i + 1] === " " && (ch === ";" || (ch === "." && /[A-Z]/.test(t[i + 2] ?? "")))) {
+      out.push(t.slice(from, i));
+      from = i + 2;
+    }
+  }
+  out.push(t.slice(from));
+  return out.map((s) => s.replace(/\.$/, "").trim()).filter(Boolean);
+}
+
+/** The first colon outside brackets, or -1. */
+function colonAt(s: string): number {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")") depth = Math.max(0, depth - 1);
+    else if (s[i] === ":" && depth === 0) return i;
+  }
+  return -1;
+}
+
+const isPass = (c: string) => {
+  const b = bare(c);
+  return PASS_WORD.test(b) || (!STEP_START.test(c) && LIMIT.test(b));
+};
+
+/**
+ * Splits a test into the steps and the pass criterion, when the wording allows. A clause like "push it 5° and let go: it
+ * should come back in under 1 s" is both: the action before the colon is a step, what follows is the criterion. Asides
+ * in brackets and quoted commands do not make a clause a criterion.
+ */
 export function splitTest(text: string): { steps: string; pass?: string } {
   const t = text.trim().replace(/\s+/g, " ");
-  const clauses = t.split(/;\s+|\.\s+(?=[A-Z])/).map((s) => s.replace(/\.$/, "").trim()).filter(Boolean);
-  if (clauses.length > 1) {
-    const pass = clauses.filter((c) => CRITERION.test(c));
-    const steps = clauses.filter((c) => !CRITERION.test(c));
-    if (pass.length && steps.length) return { steps: sentence(steps.join(". ")), pass: sentence(pass.join(". ")) };
+  const parts: { text: string; pass: boolean }[] = [];
+  for (const c of clausesOf(t)) {
+    const i = colonAt(c);
+    if (i > 0) {
+      const before = c.slice(0, i).trim();
+      const after = c.slice(i + 1).trim();
+      if (!PASS_WORD.test(bare(before)) && (PASS_WORD.test(bare(after)) || /^no\b/i.test(after))) {
+        parts.push({ text: before, pass: false }, { text: after, pass: true });
+        continue;
+      }
+    }
+    parts.push({ text: c, pass: isPass(c) });
   }
+  const steps = parts.filter((p) => !p.pass).map((p) => sentence(p.text));
+  const pass = parts.filter((p) => p.pass).map((p) => sentence(p.text));
+  if (pass.length && steps.length) return { steps: steps.join(" "), pass: pass.join(" ") };
   const m = t.replace(/\.$/, "").match(/^(.*?),?\s+and (?:then )?(?:check|make sure|confirm|verify)(?: that)?\s+(.*)$/i);
   if (m && CRITERION.test(m[2])) return { steps: sentence(m[1]), pass: sentence(m[2]) };
   return { steps: sentence(t) };
