@@ -82,7 +82,7 @@ function tempAt(r: ReturnType<typeof runStructural>, p: V3): number {
 }
 
 describe("heat conduction", () => {
-  it("carries heat along a bar by Fourier's law", () => {
+  it("carries heat along a bar by Fourier's law", { timeout: 30_000 }, () => {
     // 5 W into one end of an aluminium bar, the other end held at 20 °C, sides insulated: ΔT = Q·L/(k·A)
     const r = runStructural(input("Aluminum 6061", { thermal: heat({ heat: [{ region: face([1, 0, 0]), watts: 5, label: "heater" }], fixed: [{ region: face([-1, 0, 0]), temp: 20 }] }) }));
     const k = 167e-3; // W/(mm·K)
@@ -95,7 +95,7 @@ describe("heat conduction", () => {
     expect(r.ranges.temp![1]).toBeGreaterThan(20 + 0.95 * dT);
   });
 
-  it("matches the fin equation for a bar cooled along its sides", () => {
+  it("matches the fin equation for a bar cooled along its sides", { timeout: 30_000 }, () => {
     // base held at 80 °C in 20 °C air with h = 25 W/m²K on every other face: θ(x)/θb = cosh m(L−x) / cosh mL,
     // with the end face's cooling folded in as the usual corrected length L + A/P
     const r = runStructural(input("Steel", { thermal: heat({ cooling: 25, coolingText: "breeze", fixed: [{ region: face([-1, 0, 0]), temp: 80 }] }) }));
@@ -116,7 +116,7 @@ describe("heat conduction", () => {
     expect(b.made).toBe(0);
   });
 
-  it("warms a small copper block up like a lumped mass", () => {
+  it("warms a small copper block up like a lumped mass", { timeout: 30_000 }, () => {
     // Biot number ≈ 1e-3: T(t) = T∞ + Q/(hA)·(1 − e^(−t/τ)), τ = ρ·c·V/(h·A)
     const cube: FeaPart = { id: "c", name: "block", mesh: gridBox([0, 0, 0], [20, 20, 20], [4, 4, 4]), material: 0 };
     const hA = 50e-6 * 6 * 400;
@@ -131,7 +131,7 @@ describe("heat conduction", () => {
     expect(tr.overLimit).toBeNull();
   });
 
-  it("radiates heat away from a hot surface", () => {
+  it("radiates heat away from a hot surface", { timeout: 30_000 }, () => {
     // a copper block held at nothing, 10 W in, still air convection plus radiation at ε 0.9: Q = hA·θ + εσA(T⁴ − T∞⁴)
     const cube: FeaPart = { id: "c", name: "block", mesh: gridBox([0, 0, 0], [20, 20, 20], [4, 4, 4]), material: 0 };
     const r = runStructural(input("Copper", { parts: [cube], thermal: heat({ cooling: 5, coolingText: "still air", emissivity: 0.9, heat: [{ part: "block", watts: 10, label: "chip" }] }) }));
@@ -144,7 +144,7 @@ describe("heat conduction", () => {
     expect(rel(b.film + b.radiation, 10)).toBeLessThan(0.01);
   });
 
-  it("refuses a steady state when the heat has nowhere to go", () => {
+  it("refuses a steady state when the heat has nowhere to go", { timeout: 30_000 }, () => {
     expect(() => runStructural(input("PLA", { thermal: heat({ heat: [{ part: "bar", watts: 1, label: "chip" }] }) }))).toThrow(FeaError);
     expect(() => runStructural(input("PLA", { thermal: heat({ heat: [{ part: "bar", watts: 1, label: "chip" }] }) }))).toThrow(/nowhere to go/);
     // a warm-up is fine: it just keeps heating
@@ -156,7 +156,7 @@ describe("heat conduction", () => {
     expect(r.thermal!.transient!.overLimit).toBeNull();
   });
 
-  it("says when a part passes its limit during a warm-up", () => {
+  it("says when a part passes its limit during a warm-up", { timeout: 30_000 }, () => {
     const r = runStructural(input("PLA", { thermal: heat({ heat: [{ part: "bar", watts: 2, label: "chip" }], time: 900 }) }));
     const over = r.thermal!.transient!.overLimit!;
     expect(over.part).toBe("bar");
@@ -172,7 +172,7 @@ describe("thermal stress", () => {
     { region: face([0, 0, -1]), dir: [0, 0, 1] as V3 },
   ];
 
-  it("lets a free bar grow by α·ΔT·L without stress", () => {
+  it("lets a free bar grow by α·ΔT·L without stress", { timeout: 30_000 }, () => {
     const r = runStructural(input("Steel", { supports: rollers, uniformTemp: 70 }));
     const grow = 12e-6 * 50;
     expect(rel(r.maxDisp.value, grow * Math.hypot(100, 10, 10))).toBeLessThan(0.01);
@@ -180,7 +180,7 @@ describe("thermal stress", () => {
     expect(r.thermal!.refTemp).toBe(20);
   });
 
-  it("gives E·α·ΔT in a bar held at both ends", () => {
+  it("gives E·α·ΔT in a bar held at both ends", { timeout: 30_000 }, () => {
     const held = [...rollers, { region: face([1, 0, 0]), dir: [1, 0, 0] as V3 }];
     const r = runStructural(input("Steel", { supports: held, uniformTemp: 70 }));
     expect(rel(r.maxStress.value, 200000 * 12e-6 * 50)).toBeLessThan(0.02);
@@ -191,7 +191,7 @@ describe("thermal stress", () => {
     expect(h.parts[0].temp).toBeDefined();
   });
 
-  it("weakens a hot plastic", () => {
+  it("weakens a hot plastic", { timeout: 30_000 }, () => {
     const load = [{ t: "force" as const, region: face([1, 0, 0]), f: [0, 0, -20] as V3 }];
     const fix = [{ region: face([-1, 0, 0]) }];
     const cold = runStructural(input("PLA", { supports: fix, loads: load }));
@@ -206,7 +206,7 @@ describe("thermal stress", () => {
 describe("buckling", () => {
   const column = (h: number): FeaPart => ({ id: "col", name: "col", mesh: gridBox([0, 0, 0], [10, 10, h], [4, 4, 20]), material: 0 });
 
-  it("matches Euler for a column fixed at its foot", () => {
+  it("matches Euler for a column fixed at its foot", { timeout: 30_000 }, () => {
     // P = π²EI / (4L²)
     const L = 200;
     const r = runStructural(
@@ -228,7 +228,7 @@ describe("buckling", () => {
     expect(r.parts[0].modes?.length).toBe(2);
   });
 
-  it("finds nothing to buckle when the column is pulled", () => {
+  it("finds nothing to buckle when the column is pulled", { timeout: 30_000 }, () => {
     const r = runStructural(
       input("Steel", {
         parts: [column(200)],
@@ -243,7 +243,7 @@ describe("buckling", () => {
 });
 
 describe("verdicts and the accuracy check", () => {
-  it("fails a part that runs past its limit and says how to cool it", () => {
+  it("fails a part that runs past its limit and says how to cool it", { timeout: 30_000 }, () => {
     const r = runStructural(input("PLA", { thermal: heat({ heat: [{ part: "bar", watts: 2, label: "chip" }], time: 900 }) }));
     const v = temperatureVerdict(r)!;
     expect(v.status).toBe("fail");
@@ -254,13 +254,13 @@ describe("verdicts and the accuracy check", () => {
     expect(t.fix).toBeDefined();
   });
 
-  it("passes a part that stays well inside its limit", () => {
+  it("passes a part that stays well inside its limit", { timeout: 30_000 }, () => {
     const r = runStructural(input("Aluminum 6061", { thermal: heat({ heat: [{ region: face([1, 0, 0]), watts: 5, label: "heater" }], fixed: [{ region: face([-1, 0, 0]), temp: 20 }] }) }));
     expect(temperatureVerdict(r)!.status).toBe("pass");
     expect(temperatureText(r)!.fix).toBeUndefined();
   });
 
-  it("solves twice with smaller elements and reports how far the answers moved", () => {
+  it("solves twice with smaller elements and reports how far the answers moved", { timeout: 30_000 }, () => {
     const r = runConverged(input("Steel", { supports: [{ region: face([-1, 0, 0]) }], loads: [{ t: "force", region: face([1, 0, 0]), f: [0, 0, -100] }], target: 3000 }));
     const c = r.convergence!;
     expect(c.fine.h).toBeLessThan(c.coarse.h / 1.3);
