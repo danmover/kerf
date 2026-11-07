@@ -321,6 +321,29 @@ describe("test plan and readiness", () => {
     expect(splitTest("Time the first heat-up with a thermometer.")).toEqual({ steps: "Time the first heat-up with a thermometer." });
   });
 
+  it("keeps the action before a colon as a step, and asides and commands out of the criterion", () => {
+    // from the jet-vane rig: the action and its criterion share a clause, and the set-up mentions numbers in passing
+    expect(
+      splitTest(
+        "No ballast in the hub, both locks out (the load cell stays on the ring), 'arm', 't 40', 'hold', then 't 70'. The unit should hold ±1°. Push it 5° and let go: it should come back in under 1 s without ringing. Then 'gain 1.0', 'save' and repeat.",
+      ),
+    ).toEqual({
+      steps: "No ballast in the hub, both locks out (the load cell stays on the ring), 'arm', 't 40', 'hold', then 't 70'. Push it 5° and let go. Then 'gain 1.0', 'save' and repeat.",
+      pass: "The unit should hold ±1°. It should come back in under 1 s without ringing.",
+    });
+    expect(
+      splitTest("With a servo out, push its horn into the vane's pocket: it should go in with a firm push and not rock. Turn the vane by hand: no play you can feel at the trailing edge (under 0.3 mm). If it rocks, a drop of CA in the pocket."),
+    ).toEqual({
+      steps: "With a servo out, push its horn into the vane's pocket. Turn the vane by hand. If it rocks, a drop of CA in the pocket.",
+      pass: "It should go in with a firm push and not rock. No play you can feel at the trailing edge (under 0.3 mm).",
+    });
+    // a quoted command is not a comparison, and "; " inside brackets does not end the clause
+    expect(splitTest("'tare', 'arm', 'sweep'. It should be a straight line (I from the report; about 4 mm). Set the value with 'liftk <value>' and 'save'.")).toEqual({
+      steps: "'tare', 'arm', 'sweep'. Set the value with 'liftk <value>' and 'save'.",
+      pass: "It should be a straight line (I from the report; about 4 mm).",
+    });
+  });
+
   it("collects part, calculation and design tests", () => {
     const m = evaluate(PRINTER);
     const plan = testPlan(m.machine!);
