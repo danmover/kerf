@@ -207,6 +207,11 @@ export const PLUGS: Record<string, PlugTable> = {
     OUT_POS: { kind: "solder", at: [15.5, 9.5, 1.6], out: X, row: Y, ways: 1 },
     OUT_NEG: { kind: "solder", at: [15.5, -9.5, 1.6], out: X, row: Y, ways: 1 },
   },
+  // inline MAXI fuse holder: a 10 AWG pigtail out of each end
+  fuse_holder_maxi: {
+    IN: { kind: "lead", at: [-23, 0, 13], out: NX, row: Y, ways: 1 },
+    OUT: { kind: "lead", at: [23, 0, 13], out: X, row: Y, ways: 1 },
+  },
   // ATC blade fuse holder with a screw terminal at each end
   fuse_holder_atc: {
     IN: { kind: "ring", at: [-17, 0, 22], out: NX, row: Y, ways: 1 },
@@ -312,6 +317,43 @@ export function solderedPlug(part: CatalogPart, spec: PlugSpec): PlugSpec {
 }
 
 /**
+ * Where the leads leave the parts the box class draws in detail (geometry.ts
+ * boxLook): a LiPo's out of its +X end near the top, an ESC's battery
+ * leads out of its -X end and the motor and signal leads out of +X, a mated XT
+ * pair's A side out of the bottom and B side out of the top, a bar load
+ * cell's out of the side of its gauge potting.
+ */
+function sideLead(part: CatalogPart, pin: PinDef, w: number, dd: number, h: number): PlugSpec | undefined {
+  switch (part.geom.style) {
+    case "lipo": {
+      const k = part.pins.indexOf(pin);
+      return { kind: "lead", at: [w / 2, (k - (part.pins.length - 1) / 2) * 10, h - Math.min(8, h / 4)], out: X, row: Y, ways: 1 };
+    }
+    case "esc": {
+      const mid = (h - Math.min(1.6, h * 0.15) - 0.6) / 2;
+      const motor = part.pins.filter((p) => p.type === "motor_out");
+      const k = motor.indexOf(pin);
+      if (k >= 0) return { kind: "lead", at: [w / 2, (k - (motor.length - 1) / 2) * Math.min(8, dd / 4), mid], out: X, row: Y, ways: 1 };
+      const j = part.pins.filter((p) => p.type !== "motor_out").indexOf(pin);
+      // the two battery leads at the -X end; the thin signal / BEC lead goes with the motor leads (toward the motor and its controller)
+      if (j < 2) return { kind: "lead", at: [-w / 2, (j - 0.5) * Math.min(9, dd / 3.4), mid], out: NX, row: Y, ways: 1 };
+      return { kind: "lead", at: [w / 2, dd / 2 - 3.5, Math.min(2 + (j - 2) * 2.5, 2 * mid - 1)], out: X, row: Z, ways: 1 };
+    }
+    case "xt": {
+      const side = /_A$/.test(pin.id) ? 0 : 1;
+      const x = (/^NEG|MINUS/.test(pin.id) ? 1 : -1) * w * 0.24;
+      return side ? { kind: "lead", at: [x, 0, h], out: Z, row: X, ways: 1 } : { kind: "lead", at: [x, 0, 0], out: NZ, row: X, ways: 1 };
+    }
+    // a bar load cell's four fine wires come out of the gauge potting on its +Y side
+    case "load_cell": {
+      const k = part.pins.indexOf(pin);
+      return { kind: "lead", at: [(k - (part.pins.length - 1) / 2) * 1.6, dd / 2, h / 2], out: Y, row: X, ways: 1 };
+    }
+  }
+  return undefined;
+}
+
+/**
  * The plug for one pin of a part. Parts in PLUGS use their entry; others get
  * a place from their geometry: board pins line up along the long edges,
  * motors take their leads at the back, boxes on the top face, panel jacks and
@@ -400,6 +442,8 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): P
       const h = num(d, "h", 20);
       // a power brick's cord leaves the middle of its +X end
       if (part.kind === "psu" && part.geom.g === "brick") return { kind: "lead", at: [w / 2, 0, h / 2], out: X, row: Y, ways: 1 };
+      const look = part.geom.g === "box" ? sideLead(part, pin, w, num(d, "d", 30), h) : undefined;
+      if (look) return look;
       // spread along the +X end of the top face
       const dd = num(d, "d", 30);
       const y = -dd / 2 + (dd * (i + 0.5)) / Math.max(1, n);

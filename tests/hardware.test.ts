@@ -4,9 +4,10 @@
 // list's hardware prices and parts on hand.
 
 import { beforeAll, describe, expect, it } from "vitest";
-import { buildPart, buildShape, solidVolume } from "../src/kernel/build";
+import { bboxOf, buildPart, buildShape, solidVolume } from "../src/kernel/build";
 import { CATALOG } from "../src/machine/catalog";
 import { buildGeometry } from "../src/machine/geometry";
+import { plugFor } from "../src/machine/harness/plugs";
 import { initKernel } from "./helpers/kernel";
 
 const MOTOR_KINDS = new Set(["gearmotor", "stepper", "servo", "bldc", "actuator"]);
@@ -281,5 +282,46 @@ component n = lib.nut(M3) { at: (20, 0, 0), axis: Z }
     expect(some.total + some.saved).toBeCloseTo(all.total, 2);
     expect(some.saved).toBeGreaterThan(9);
     expect(rows.find((r) => r.item === "nut")?.haveAs).toBe("M3 nut");
+  });
+});
+
+describe("electronics drawn as the real part", () => {
+  beforeAll(() => initKernel(), 60_000);
+
+  it("details a LiPo, an ESC, a fuse holder, an XT pair and a load cell inside the same envelope", () => {
+    const styled = CATALOG.filter((p) => p.geom.g === "box" && p.geom.style);
+    expect(new Set(styled.map((p) => p.geom.style))).toEqual(new Set(["lipo", "esc", "fuse_maxi", "xt", "load_cell"]));
+    for (const p of styled) {
+      const { w, d, h } = p.geom.dims;
+      const g = buildGeometry(p, {});
+      expect(g.solids.length, p.id).toBeGreaterThan(1);
+      for (const s of g.solids) {
+        const shape = buildPart(s.recipe);
+        expect(solidVolume(shape), `${p.id} ${s.suffix || "body"}`).toBeGreaterThan(0.1);
+        const [lo, hi] = bboxOf(shape);
+        // a label may stand 0.15 mm proud, as the old wrap band did; nothing else leaves the box the checks see
+        for (const [i, half] of [[0, w / 2], [1, d / 2]] as const) {
+          expect(lo[i], `${p.id} ${s.suffix}`).toBeGreaterThanOrEqual(-half - 0.2);
+          expect(hi[i], `${p.id} ${s.suffix}`).toBeLessThanOrEqual(half + 0.2);
+        }
+        expect(lo[2], `${p.id} ${s.suffix}`).toBeGreaterThanOrEqual(-0.01);
+        expect(hi[2], `${p.id} ${s.suffix}`).toBeLessThanOrEqual(h + 0.01);
+      }
+    }
+  });
+
+  it("takes their leads off where the real ones leave", () => {
+    const part = (id: string) => CATALOG.find((p) => p.id === id)!;
+    const lipo = part("lipo_4s_5000_xt90");
+    expect(plugFor(lipo, "POS")).toMatchObject({ kind: "lead", out: [1, 0, 0] });
+    expect(plugFor(lipo, "POS")!.at[0]).toBeCloseTo(lipo.geom.dims.w / 2);
+    const esc = part("skywalker_60a_v2");
+    expect(plugFor(esc, "B_PLUS")!.out).toEqual([-1, 0, 0]);
+    for (const pin of ["PHASE_A", "PHASE_B", "PHASE_C", "SIG"]) expect(plugFor(esc, pin)!.out, pin).toEqual([1, 0, 0]);
+    const xt = part("xt90s_pair");
+    expect(plugFor(xt, "POS_A")!.out).toEqual([0, 0, -1]);
+    expect(plugFor(xt, "POS_B")!.at[2]).toBe(xt.geom.dims.h);
+    expect(plugFor(part("fuse_holder_maxi"), "OUT")!.out).toEqual([1, 0, 0]);
+    expect(plugFor(part("tal221_500g"), "EXC_P")!.out).toEqual([0, 1, 0]);
   });
 });

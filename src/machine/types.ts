@@ -187,6 +187,12 @@ export interface GeomSpec {
   /** colour of the secondary solid (heatsink, gearbox, wrap) */
   color2?: string;
   material?: string;
+  /**
+   * box class only: draw the details of a known kind of part inside the same
+   * envelope (lipo, esc, fuse_maxi, xt, load_cell), so mount and clash checks
+   * see the box they always did
+   */
+  style?: "lipo" | "esc" | "fuse_maxi" | "xt" | "load_cell";
 }
 
 export interface BuyLink {
