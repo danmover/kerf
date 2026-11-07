@@ -653,9 +653,60 @@ export interface MeshData {
   colors?: Uint8Array;
 }
 
-export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColors?: string[] | null): MeshData {
-  const opts = quality === "preview" ? { tolerance: 0.25, angularTolerance: 25 } : { tolerance: 0.03, angularTolerance: 10 };
-  const m = shape.mesh(opts);
+type RawMesh = ReturnType<Shape3D["mesh"]>;
+
+/** Signed volume and area of a triangle mesh. */
+function meshMeasure(m: RawMesh): { volume: number; area: number } {
+  const P = m.vertices;
+  const I = m.triangles;
+  let volume = 0;
+  let area = 0;
+  for (let t = 0; t + 2 < I.length; t += 3) {
+    const a = I[t] * 3;
+    const b = I[t + 1] * 3;
+    const c = I[t + 2] * 3;
+    volume += (P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c])) / 6;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    area += Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
+  }
+  return { volume, area };
+}
+
+/**
+ * How far a mesh's volume is from the solid's, as a share of what the tessellation's chord error allows (the mesh
+ * keeps within `tolerance` of every face, so it can gain or lose at most about its area times that). Over 1 means
+ * the mesh is not the solid.
+ */
+function meshMiss(m: RawMesh, volume: number, tolerance: number): number {
+  const s = meshMeasure(m);
+  return Math.abs(Math.abs(s.volume) - volume) / (1.5 * s.area * tolerance + 1e-3 * volume + 0.01);
+}
+
+/**
+ * Triangles for a solid. With the solid's volume, the mesh is checked against it: now and then the tessellator lays a
+ * small face's triangles across far more than the face (a sliver beside a spline face, at one particular deflection),
+ * which leaves an STL that is not the part, so it meshes finer until the volume agrees.
+ */
+export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColors?: string[] | null, volume?: number): MeshData {
+  const base = quality === "preview" ? { tolerance: 0.25, angularTolerance: 25 } : { tolerance: 0.03, angularTolerance: 10 };
+  let opts = base;
+  let m = shape.mesh(opts);
+  if (volume && volume > 0) {
+    let miss = meshMiss(m, volume, opts.tolerance);
+    for (const k of [0.7, 0.5, 0.35]) {
+      if (miss <= 1) break;
+      // finer each time: the tessellator keeps a face's triangles when asked for a coarser mesh
+      const finer = { ...base, tolerance: base.tolerance * k };
+      const again = shape.mesh(finer);
+      const missAgain = meshMiss(again, volume, finer.tolerance);
+      // no better finer either (a body that is not closed, say): the mesh is as good as it gets
+      if (missAgain > 0.9 * miss) break;
+      m = again;
+      miss = missAgain;
+      opts = finer;
+    }
+  }
   const e = shape.meshEdges(opts);
   const out: MeshData = {
     positions: new Float32Array(m.vertices),

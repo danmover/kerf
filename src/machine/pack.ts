@@ -5,6 +5,7 @@
 
 import { assembleReport, type CheckItem, type CheckReport } from "../core/checks";
 import type { EvalPart, Model } from "../core/model";
+import { copiesOf, sharedName } from "../drawing/copies";
 import type { MeshData } from "../kernel/build";
 import { xformMatrix } from "../kernel/recipe";
 import { fmtNum } from "../lang/values";
@@ -301,6 +302,10 @@ export interface MadePart {
   part: EvalPart;
   /** how many identical parts the design has (same geometry and material) */
   qty: number;
+  /** the names of the parts this file makes: the first, then its copies */
+  names: string[];
+  /** what to call them: the label they share (Vane for four vanes, Tower for Tower +X and Tower -X) */
+  title: string;
   file: string;
   printable: boolean;
   /** oriented for printing, sitting on z = 0 */
@@ -424,25 +429,33 @@ export function orientForPrint(mesh: MeshData, build?: [number, number, number])
 }
 
 export function madeParts(model: Model, meshFor?: (p: EvalPart) => MeshData | undefined): MadePart[] {
+  // process: false is bought or already on hand: nothing to print or make
+  const made = model.parts.filter((p) => p.kind === "part" && !p.processNone);
+  // copies (a pattern, the same part placed twice, or the same solid moved and turned, as the drawings find them) are
+  // one file, printed several times; without meshes only parts built from the same recipe count
+  const copyOf = copiesOf(made, meshFor);
+  const groups = new Map<string, EvalPart[]>();
+  for (const p of made) {
+    const first = copyOf.get(p.name) ?? p.name;
+    const g = groups.get(first);
+    if (g) g.push(p);
+    else groups.set(first, [p]);
+  }
   const out: MadePart[] = [];
   const used = new Set<string>();
-  // identical parts (a pattern, or the same part placed twice) are one file, printed several times
-  const same = new Map<string, MadePart>();
-  for (const p of model.parts) {
-    // process: false is bought or already on hand: nothing to print or make
-    if (p.kind !== "part" || p.processNone) continue;
-    const key = `${p.hash}|${p.material}`;
-    const twin = same.get(key);
-    if (twin) {
-      twin.qty++;
-      continue;
-    }
-    let file = fileSafe(p.name);
-    for (let i = 2; used.has(file.toLowerCase()); i++) file = `${fileSafe(p.name)}_${i}`;
+  for (const parts of groups.values()) {
+    const p = parts[0];
+    const names = [...new Set(parts.map((x) => x.name))];
+    const labels = [...new Set(parts.map((x) => x.label))];
+    // a group of differently named copies is filed under the name they share: vane for vane_1 to vane_4
+    const shared = names.length > 1 ? sharedName(names) : undefined;
+    const stem = shared ? (/^[a-z]/.test(p.name) ? shared[0].toLowerCase() + shared.slice(1) : shared).replace(/\s+/g, "_") : p.name;
+    let file = fileSafe(stem);
+    for (let i = 2; used.has(file.toLowerCase()); i++) file = `${fileSafe(stem)}_${i}`;
     used.add(file.toLowerCase());
     const printable = isPrinted(p);
-    const mp: MadePart = { part: p, qty: 1, file: `print/${file}.stl`, printable };
-    same.set(key, mp);
+    const title = labels.length > 1 ? (sharedName(labels) ?? p.label) : p.label;
+    const mp: MadePart = { part: p, qty: parts.length, names, title, file: `print/${file}.stl`, printable };
     const mesh = meshFor?.(p);
     if (mesh && mesh.indices.length) {
       const o = printable ? orientForPrint(mesh, buildDirection(p)) : { ...orientForPrint(mesh), face: "" };
@@ -456,6 +469,9 @@ export function madeParts(model: Model, meshFor?: (p: EvalPart) => MeshData | un
   }
   return out;
 }
+
+/** A made part's name in the pack: its own, or for differently named copies the name their file has (vane for vane_1 to vane_4). */
+const madeName = (p: MadePart) => (p.names.length > 1 ? p.file.replace(/^print\//, "").replace(/\.stl$/, "") : p.part.name);
 
 const MATERIAL_NOTES: Record<string, string> = {
   pla: "PLA is stiff and easy to print, but softens above about 55 °C: keep it away from motors that run warm, heaters and direct sun.",
@@ -475,9 +491,10 @@ function printReadme(parts: MadePart[], name: string): string {
     L.push("- 0.2 mm layers, 0.4 mm nozzle.", "- 4 walls (perimeters) and 5 top and bottom layers: machine parts take their strength from the walls.", "- 30 to 40 % gyroid or cubic infill for parts that carry load (motor mounts, brackets); 15 % is enough for covers.", "- Supports only where the slicer shows overhangs steeper than 50°.", "");
   }
   for (const p of printed) {
-    L.push(`## ${p.part.name}${p.part.label !== p.part.name ? ` (${p.part.label})` : ""}`, "");
+    const head = madeName(p);
+    L.push(`## ${head}${p.title !== head ? ` (${p.title})` : ""}`, "");
     L.push(`- File: \`${p.file.replace(/^print\//, "")}\`${p.stl ? "" : " (not included: the geometry was not available when the pack was made)"}`);
-    if (p.qty > 1) L.push(`- Print ${p.qty}: the design uses ${p.qty} identical copies`);
+    if (p.qty > 1) L.push(`- Print ${p.qty}: the design uses ${p.qty} identical copies${p.names.length > 1 ? ` (${listJoin(p.names)})` : ""}`);
     L.push(`- Material: ${p.part.material}`);
     if (p.size) L.push(`- Size as printed: ${p.size.map((v) => fmtNum(Math.round(v * 10) / 10)).join(" × ")} mm`);
     if (p.mass !== undefined) L.push(`- About ${fmtNum(Math.round(p.mass))} g of filament at full density (less with infill)`);
@@ -488,7 +505,7 @@ function printReadme(parts: MadePart[], name: string): string {
   }
   if (made.length) {
     L.push("## Parts to machine or cut", "", "These are not printable materials. The STL gives the shape; use `cad/assembly.step` for exact geometry when you send them to a machine shop or cut them yourself.", "");
-    for (const p of made) L.push(`- ${p.qty > 1 ? `${p.qty} × ` : ""}**${p.part.name}** in ${p.part.material}${p.size ? `, ${p.size.map((v) => fmtNum(Math.round(v * 10) / 10)).join(" × ")} mm` : ""}: \`${p.file.replace(/^print\//, "")}\``);
+    for (const p of made) L.push(`- ${p.qty > 1 ? `${p.qty} × ` : ""}**${madeName(p)}** in ${p.part.material}${p.size ? `, ${p.size.map((v) => fmtNum(Math.round(v * 10) / 10)).join(" × ")} mm` : ""}: \`${p.file.replace(/^print\//, "")}\``);
     L.push("");
   }
   return L.join("\n");
@@ -537,13 +554,13 @@ const h = (s: string | number | undefined) =>
     .replace(/"/g, "&quot;");
 const safeUrl = (u: string) => (/^https?:\/\//i.test(u) ? u : "#");
 
-function bomHtml(model: Model, name: string, date: Date): string {
+function bomHtml(model: Model, name: string, date: Date, made: MadePart[] = madeParts(model)): string {
   const sections = bomSections(model);
   const all = sections.flatMap((s) => s.rows);
   const { total, unpriced } = bomTotal(all);
   const bought = all.filter((r) => r.kind === "Buy").reduce((n, r) => n + r.qty, 0);
   const fileOf = new Map<string, string>();
-  for (const mp of madeParts(model)) if (!fileOf.has(mp.part.name)) fileOf.set(mp.part.name, mp.file);
+  for (const mp of made) for (const n of mp.names) if (!fileOf.has(n)) fileOf.set(n, mp.file);
   const body: string[] = [];
   for (const s of sections) {
     body.push(`<tr class="sec"><th colspan="6">${h(s.title)}</th></tr>`);
@@ -742,8 +759,8 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
   if (ctx.made.length) {
     L.push(`## ${step++}. Print and make the parts`, "");
     for (const p of ctx.made) {
-      if (p.printable) L.push(`- [ ] Print ${p.qty > 1 ? `${p.qty} × ` : ""}\`${p.file}\` (${p.part.label}) in ${p.part.material}.${p.orientation ? " " + p.orientation.split(".")[0] + "." : ""}`);
-      else L.push(`- [ ] Make ${p.qty > 1 ? `${p.qty} × ` : ""}**${p.part.label}** in ${p.part.material}: machine or cut it to \`${p.file}\` / \`cad/assembly.step\`.`);
+      if (p.printable) L.push(`- [ ] Print ${p.qty > 1 ? `${p.qty} × ` : ""}\`${p.file}\` (${p.title}) in ${p.part.material}.${p.orientation ? " " + p.orientation.split(".")[0] + "." : ""}`);
+      else L.push(`- [ ] Make ${p.qty > 1 ? `${p.qty} × ` : ""}**${p.title}** in ${p.part.material}: machine or cut it to \`${p.file}\` / \`cad/assembly.step\`.`);
     }
     L.push("", "Settings and orientation notes are in `print/README.md`. Remove supports and clean up holes with a drill of the right size before assembly.", "");
   }
@@ -956,7 +973,7 @@ export function buildPack(model: Model, report: CheckReport | null, opts: PackOp
   const files: PackFile[] = [];
   const add = (path: string, data: string | Uint8Array) => files.push({ path, data });
 
-  add("bom.html", bomHtml(model, name, date));
+  add("bom.html", bomHtml(model, name, date, made));
   add("bom.csv", bomCsvFull(model));
   if (cuts.length) add("cut_list.csv", cutListCsv(cuts));
   if (made.length) {
