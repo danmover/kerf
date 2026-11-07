@@ -280,6 +280,38 @@ component c = lib.controller("arduino_nano") { at: (0, 0, 50) }
     expect(readme).toContain("Print 2: the design uses 2 identical copies");
     expect(String(files.find((f) => f.path === "assembly.md")!.data)).toContain("Print 2 × `print/foot.stl`");
   });
+
+  it("prints copies turned into place from one file, and a left and a right hand from two", async () => {
+    await initKernel();
+    const m = evaluate(`
+design "Copies"
+part foot_1 { material: "PETG"  process: mfg.fdm()  body box(40, 30, 10, at: (-100, 0, 0), r: 3)  cut hole(d: 5, through: true, at: (-110, 5, 10), dir: -Z) }
+part foot_2 { material: "PETG"  process: mfg.fdm()  body box(40, 30, 10, at: (100, 0, 0), r: 3)  cut hole(d: 5, through: true, at: (90, 5, 10), dir: -Z) }
+part foot_3 { material: "PETG"  process: mfg.fdm()  rotate: (0, 0, 30)  body rotate(shape_of(foot_1), 30) }
+part bracket_left { material: "PETG"  process: mfg.fdm()  body box(40, 30, 10, at: (0, 80, 0))  add box(10, 30, 30, at: (15, 80, 10))  cut hole(d: 5, through: true, at: (-10, 72, 10), dir: -Z) }
+part bracket_right { material: "PETG"  process: mfg.fdm()  body mirror(shape_of(bracket_left), normal: X) }
+component c = lib.controller("arduino_nano") { at: (0, 0, 50) }
+`);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const meshes = new Map<string, MeshData>();
+    const meshFor = (p: { hash: string; recipe: Parameters<typeof buildPart>[0] }) => {
+      if (!meshes.has(p.hash)) meshes.set(p.hash, meshShape(buildPart(p.recipe), "preview"));
+      return meshes.get(p.hash);
+    };
+    // the feet typed out twice and turned into place are one file, named for what their names share
+    expect(madeParts(m, meshFor).map((p) => [p.file, p.qty, p.title])).toEqual([
+      ["print/foot.stl", 3, "Foot"],
+      ["print/bracket_left.stl", 1, "bracket_left"],
+      ["print/bracket_right.stl", 1, "bracket_right"],
+    ]);
+    const files = buildPack(m, null, { meshFor });
+    expect(files.filter((f) => f.path.endsWith(".stl")).map((f) => f.path)).toEqual(["print/foot.stl", "print/bracket_left.stl", "print/bracket_right.stl"]);
+    expect(text(files.find((f) => f.path === "print/README.md")!.data)).toContain("Print 3: the design uses 3 identical copies (foot_1, foot_2 and foot_3)");
+    // each foot's row in the parts list points at the one file
+    const bom = text(files.find((f) => f.path === "bom.html")!.data);
+    expect(bom.match(/STL in print\/foot\.stl/g)).toHaveLength(3);
+    expect(bom).not.toContain("print/foot_2.stl");
+  }, 120000);
 });
 
 describe("test plan and readiness", () => {

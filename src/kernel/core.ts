@@ -113,7 +113,7 @@ export class KernelCore {
   mesh(hash: string, quality: "preview" | "final"): MeshData {
     const e = (quality === "final" ? this.detailCache.get(hash) : undefined) ?? this.get(hash);
     if (!e) throw new Error("not built");
-    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors);
+    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors, e.volume);
     return e.meshes[quality]!;
   }
 
