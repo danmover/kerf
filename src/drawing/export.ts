@@ -106,6 +106,9 @@ export function describeSheet(sheet: Sheet): string {
     }
   }
   if (sheet.datums?.length) lines.push(`Datums: ${sheet.datums.map((d) => `${d.letter} = ${d.what}`).join("; ")}. Kerf picked them from how the part seats and how its features are located; gdt("id", "position", 0.2, "A B C") changes a frame, gdt: false removes them.`);
+  if (sheet.holeTable) lines.push(`Hole table (${sheet.views[sheet.holeTable.view]?.name ?? "?"} view, ${sheet.holeTable.origin}): ${sheet.holeTable.rows.map((r) => `${r.tag} (${r.x}, ${r.y}) ${r.size}${r.frame ? ` [${r.frame}]` : ""}`).join("; ")}. hole_table: false in the block goes back to position dimensions.`);
+  if (sheet.symbols.length) lines.push(`Symbols: ${sheet.symbols.map((s) => `${s.kind === "weld" ? "weld" : "surface texture"} ${s.text}${s.view !== undefined ? ` [${sheet.views[s.view]?.name ?? "?"}]` : ""}`).join("; ")}`);
+  if (sheet.revisions.length) lines.push(`Revisions: ${sheet.revisions.map((r) => `${r.rev} ${r.text}${r.date ? ` (${r.date}${r.by ? `, ${r.by}` : ""})` : ""}`).join("; ")}`);
   if (sheet.bom.length) lines.push(`Parts list: ${sheet.bom.map((b) => `${b.item}. ${b.qty}× ${b.name}`).join("; ")}`);
   if (sheet.notes.length) lines.push(`Notes: ${sheet.notes.map((n, i) => `${i + 1}. ${n}`).join(" ")}`);
   if (sheet.warnings.length) lines.push(`Warnings: ${sheet.warnings.join("; ")}`);

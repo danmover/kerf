@@ -8,7 +8,8 @@ import type { Edge2, ViewResult } from "../kernel/drawing";
 import { recipeHash, vcross, vdot, vnorm, type V3 } from "../kernel/recipe";
 import { MATERIALS, materialDensity } from "../library/standards";
 import { FINISHES, resolveFinish } from "../library/materials";
-import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DatumMark, type DimDef, type DimStyle } from "./dims";
+import { buildDims, dimStyle, edgeExtents, inkDim, stackDims, type DatumMark, type DimDef, type DimStyle, type Finish, type HoleTable } from "./dims";
+import { finishText as textureText, generalFinish, inkGeneralFinish, generalFinishSize, weldText } from "./annotate";
 import { datumExtent, fcfHeight, fcfText, fcfWidth, faceName, inkDatum, inkFcf } from "./gdt";
 import { processFamily } from "./intent";
 import { applyXformsToDir } from "../kernel/recipe";
@@ -19,7 +20,7 @@ import { gridCell, layoutSheet, type LayoutItem, type LayoutResult } from "./lay
 import { boxOk, emptyBox, fmtNum, growBox, Ink, shapeBox, type BomLine, type Box, type Sheet, type SheetDim, type SheetPart, type SheetView } from "./sheet";
 import { scaleText, SHEETS, STANDARD_SCALES, type DrawingSpec, type SheetSize } from "./spec";
 import { textWidth } from "./text";
-import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTitleBlock, inkToleranceStrip, partsListBoxes, TB_W } from "./titleblock";
+import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTable, inkTitleBlock, inkToleranceStrip, partsListBoxes, splitTable, tableSize, TB_W, type Table } from "./titleblock";
 import { boxExtents, humanize, toView, viewFrame, worldBox, type BBoxOf, type DrawingPlan, type PlannedView } from "./views";
 
 export interface ComposeInput {
@@ -69,9 +70,11 @@ export function composeSheet(inp: ComposeInput): Sheet {
   const itemOf = new Map<string, number>();
   for (const l of bom) for (const id of l.ids) itemOf.set(id, l.item);
 
-  // notes and tables in the bottom-left corner
-  const notes = defaultNotes(spec, plan, built);
-  const table = dataTable(plan);
+  // notes and tables in the bottom-left corner, revisions at the top right, the part's surface texture by the title block
+  const single = !plan.assembly ? plan.parts.find((p) => p.kind === "part") : undefined;
+  const general = generalFinish(spec, !!single && processFamily(single) === "subtractive");
+  const notes = defaultNotes(spec, plan, built, general);
+  const fur: Furniture = { data: dataTable(plan), holes: built.holeTable ? holeTableOf(built.holeTable, plan) : null, revisions: revisionTable(spec), general, others: built.dims.some((d) => d.finish) };
 
   // ---- sheet size and scale
   const portrait = spec.orientation === "portrait";
@@ -91,7 +94,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     for (const size of sizes) {
       const { w, h } = paperOf(size);
       const st = dimStyle(w);
-      const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, table);
+      const fixed = fixedRegions(w, h, bom.length, spec.tolerance, notes, st, fur);
       const area = inset(frameBox(w, h), 4);
       let found: Choice | null = null as Choice | null;
       search: for (const s of scales) {
@@ -228,6 +231,9 @@ export function composeSheet(inp: ComposeInput): Sheet {
     });
   });
 
+  // hole tags and the hole table's origin
+  if (built.holeTable && views[built.holeTable.view]) inkHoleTags(ink, built.holeTable, views[built.holeTable.view], st);
+
   // datum symbols on faces, where they find room
   if (built.marks.length) inkMarks(ink, built.marks, views, st, fixed, frameBox(w, h));
 
@@ -246,7 +252,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     checked: spec.checked ?? "",
     date: spec.date ?? inp.today ?? new Date().toISOString().slice(0, 10),
     number: spec.number ?? drawingNumber(spec),
-    revision: spec.revision ?? "A",
+    revision: spec.revision ?? spec.revisions[spec.revisions.length - 1]?.rev ?? "A",
     scale: scaleText(scale),
     size,
     sheet: "1 / 1",
@@ -256,12 +262,9 @@ export function composeSheet(inp: ComposeInput): Sheet {
   const strip = inkToleranceStrip(ink, top, spec.tolerance);
   if (strip) top = strip;
   const frame = frameBox(w, h);
-  if (bom.length) inkPartsList(ink, top, bom, frame);
-  let bottom = frame[3] - 4;
-  const notesW = tb[0] - frame[0] - 14;
-  const nb = inkNotes(ink, frame[0] + 4, bottom, notesW, notes, st.size);
-  if (nb) bottom = nb[1] - 4;
-  if (table) inkDataTable(ink, frame[0] + 4, bottom, table.title, table.rows, "n");
+  const rev = fur.revisions ? inkTable(ink, frame[2] - tableSize(fur.revisions).w, frame[1], fur.revisions) : null;
+  if (bom.length) inkPartsList(ink, top, bom, belowRevisions(frame, rev));
+  cornerItems(ink, frame, top, notes, st, fur, bom.length > 0);
 
   // final row assignment was done per view during layout at this scale
   const pending = views.filter((v) => v.state === "pending").length;
@@ -282,6 +285,12 @@ export function composeSheet(inp: ComposeInput): Sheet {
     notes,
     warnings,
     datums: built.datums,
+    holeTable: built.holeTable ? { view: built.holeTable.view, origin: built.holeTable.about, rows: built.holeTable.rows.map((r) => ({ tag: r.tag, x: round4(r.x), y: round4(r.y), size: r.size, frame: r.fcf ? fcfText(r.fcf) : undefined })) } : undefined,
+    revisions: spec.revisions.map((r) => ({ rev: r.rev, text: r.text, date: r.date ?? "", by: r.by ?? "" })),
+    symbols: [
+      ...(general ? [{ kind: "roughness" as const, text: `whole part ${textureText(general)}${dims.some((d) => d.finish) ? " unless marked" : ""}` }] : []),
+      ...dims.flatMap((d): Sheet["symbols"] => (d.weld ? [{ kind: "weld", text: weldText(d.weld), view: d.view }] : d.finish ? [{ kind: "roughness", text: `${textureText(d.finish)} on ${d.meta.label}`, view: d.view }] : [])),
+    ],
     pending,
     spec,
     titleBox: tb,
@@ -388,25 +397,106 @@ function gridFor(v: PlannedView, plan: DrawingPlan, spec: DrawingSpec): [number,
 }
 
 /** Fixed regions on the sheet: title block, tolerance strip, parts list, notes. */
-function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, notes: string[], st: DimStyle, table: DataTable | null): Box[] {
+/** What goes round the edges besides the title block and parts list. */
+interface Furniture {
+  data: DataTable | null;
+  holes: Table | null;
+  revisions: Table | null;
+  general: Finish | null;
+  /** features carry their own surface texture: the general symbol says so with a bracketed one */
+  others: boolean;
+}
+
+function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, notes: string[], st: DimStyle, fur: Furniture): Box[] {
   const f = frameBox(w, h);
   const tbH = 37 + (/2768/.test(tolerance) ? 9 : 0);
   const tb: Box = [f[2] - TB_W, f[3] - tbH, f[2], f[3]];
-  const out: Box[] = [tb, ...(bomRows ? partsListBoxes(bomRows, tb, f).boxes : [])];
+  let rev: Box | null = null;
+  if (fur.revisions) {
+    const { w: rw, h: rh } = tableSize(fur.revisions);
+    rev = [f[2] - rw, f[1], f[2], f[1] + rh];
+  }
+  const out: Box[] = [tb, ...(bomRows ? partsListBoxes(bomRows, tb, belowRevisions(f, rev)).boxes : []), ...(rev ? [[rev[0] - 2, rev[1], rev[2], rev[3] + 2] as Box] : [])];
   // notes and tables: measure them with a scratch ink
-  const scratch = new Ink();
-  const notesW = f[2] - TB_W - f[0] - 14;
+  out.push(...cornerItems(new Ink(), f, tb, notes, st, fur, bomRows > 0));
+  return out;
+}
+
+/** The frame the parts list may grow up into: below the revision table. */
+function belowRevisions(f: Box, rev: Box | null): Box {
+  return rev ? [f[0], rev[3] + 2, f[2], f[3]] : f;
+}
+
+/**
+ * Notes, then the data table and the hole table above them in the bottom-left
+ * corner, and the general surface texture symbol beside the title block.
+ * Returns the boxes they take, padded for layout.
+ */
+function cornerItems(ink: Ink, f: Box, tb: Box, notes: string[], st: DimStyle, fur: Furniture, listAbove = false): Box[] {
+  const out: Box[] = [];
+  // the general symbol stands on the title block, or beside it when the parts list is there
+  const gw = fur.general && listAbove ? generalFinishSize(fur.general, st.size, fur.others).w : 0;
+  const notesW = tb[0] - f[0] - 14 - (gw ? gw + 6 : 0);
   let bottom = f[3] - 4;
-  const nb = inkNotes(scratch, f[0] + 4, bottom, notesW, notes, st.size);
+  const nb = inkNotes(ink, f[0] + 4, bottom, notesW, notes, st.size);
   if (nb) {
     out.push([nb[0] - 2, nb[1] - 2, nb[2] + 2, f[3]]);
     bottom = nb[1] - 4;
   }
-  if (table) {
-    const gb = inkDataTable(scratch, f[0] + 4, bottom, table.title, table.rows, "n");
+  if (fur.data) {
+    const gb = inkDataTable(ink, f[0] + 4, bottom, fur.data.title, fur.data.rows, "n");
     out.push([gb[0] - 2, gb[1] - 2, gb[2] + 2, f[3]]);
+    bottom = gb[1] - 4;
+  }
+  if (fur.holes) {
+    // a long table runs on in columns to the right
+    const per = Math.max(4, Math.floor(((bottom - f[1]) * 0.6) / 5) - 2);
+    let x = f[0] + 4;
+    for (const t of splitTable(fur.holes, per)) {
+      const { w, h } = tableSize(t);
+      const b = inkTable(ink, x, bottom - h, t);
+      out.push([b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2]);
+      x += w + 4;
+    }
+  }
+  if (fur.general) {
+    const b = listAbove ? inkGeneralFinish(ink, tb[0] - 4, f[3] - 4, fur.general, st.size, fur.others) : inkGeneralFinish(ink, tb[0] + 3 + generalFinishSize(fur.general, st.size, fur.others).w, tb[1] - 2.5, fur.general, st.size, fur.others);
+    out.push([b[0] - 2, b[1] - 2, b[2] + 2, listAbove ? f[3] : tb[1]]);
   }
   return out;
+}
+
+/** The hole table: tag, position from the origin and size, with the position frame when the drawing has datums. */
+function holeTableOf(t: HoleTable, plan: DrawingPlan): Table {
+  const frames = t.rows.some((r) => r.fcf);
+  return {
+    title: `HOLE TABLE · ${plan.views[t.view].name.toUpperCase()} VIEW · X AND Y FROM 0,0${frames ? " (BASIC)" : ""}`,
+    head: ["TAG", "X", "Y", "SIZE", ...(frames ? ["TOLERANCE"] : [])],
+    rows: t.rows.map((r) => [r.tag, fmtNum(r.x), fmtNum(r.y), r.size, ...(frames ? [r.fcf ? { fcf: r.fcf } : ""] : [])]),
+    key: "ht",
+  };
+}
+
+function revisionTable(spec: DrawingSpec): Table | null {
+  if (!spec.revisions.length) return null;
+  return { title: "REVISIONS", head: ["REV", "DESCRIPTION", "DATE", "BY"], rows: spec.revisions.map((r) => [r.rev, r.text.toUpperCase(), r.date ?? "", (r.by ?? "").toUpperCase()]), key: "rev" };
+}
+
+/** Each tabled hole's tag beside it, and the table's origin. */
+function inkHoleTags(ink: Ink, t: HoleTable, v: SheetView, st: DimStyle) {
+  const at = (p: [number, number]): [number, number] => [v.origin[0] + p[0] * v.scale, v.origin[1] - p[1] * v.scale];
+  ink.with("ht", () => {
+    for (const r of t.rows) {
+      const [x, y] = at(r.at);
+      const o = r.r * v.scale * 0.75 + 0.6;
+      ink.text(x + o, y - o, r.tag, st.size * 0.75);
+    }
+    const [ox, oy] = at(t.origin);
+    ink.circle(ox, oy, 1.4, "thin");
+    ink.line(ox - 2.4, oy, ox + 2.4, oy);
+    ink.line(ox, oy - 2.4, ox, oy + 2.4);
+    ink.text(ox - 2, oy + st.size * 0.75 + 1.5, "0,0", st.size * 0.75, "end");
+  });
 }
 
 /** Views side by side in rows across the area, wrapping when a row is full: the last resort when no layout fits. */
@@ -935,13 +1025,14 @@ function sharedName(names: string[]): string {
   return `${names[0]} (+${names.length - 1})`;
 }
 
-function defaultNotes(spec: DrawingSpec, plan: DrawingPlan, built: { datums: unknown[]; notes: string[] }): string[] {
+function defaultNotes(spec: DrawingSpec, plan: DrawingPlan, built: { datums: unknown[]; notes: string[] }, general: Finish | null): string[] {
   const out = ["ALL DIMENSIONS IN MILLIMETRES."];
   if (/2768|8062/.test(spec.tolerance)) out.push(`UNLESS OTHERWISE STATED, TOLERANCES TO ${spec.tolerance.toUpperCase()}.`);
   else if (spec.tolerance) out.push(`GENERAL TOLERANCES: ${spec.tolerance.toUpperCase()}.`);
   if (built.datums.length) out.push(spec.projection === "third" ? "INTERPRET DIMENSIONS AND TOLERANCES PER ASME Y14.5-2018. BOXED DIMENSIONS ARE BASIC." : "GEOMETRICAL TOLERANCES TO ISO 1101, DATUMS TO ISO 5459. BOXED DIMENSIONS ARE THEORETICALLY EXACT.");
   const part = !plan.assembly ? plan.parts.find((p) => p.kind === "part") : undefined;
-  if (part) out.push(...processNotes(part));
+  // the general surface texture note follows the symbol by the title block
+  if (part) out.push(...processNotes(part).map((n) => (general?.ra !== undefined && n.startsWith("SURFACE TEXTURE") ? n.replace(/Ra [\d.]+/, `Ra ${fmtNum(general.ra, 3)}`) : n)));
   if (spec.flat) out.push("FLAT PATTERN SEEN FROM ABOVE: UP BENDS RISE TOWARD THE VIEWER. BEND LINES CHAIN-DOTTED, WITH ANGLES AND INSIDE RADII IN THE BEND TABLE.");
   return [...out, ...built.notes, ...spec.notes.map((n) => n.toUpperCase())];
 }
@@ -1119,7 +1210,9 @@ function drawingNumber(spec: DrawingSpec): string {
 }
 
 function dimLabel(d: DimDef): string {
+  if (d.weld) return `WELD: ${weldText(d.weld)}`;
   let s = d.text.main;
+  if (d.finish) s += `${s ? " · " : ""}${textureText(d.finish)}`;
   if (d.text.suffix) s += " " + d.text.suffix;
   if (d.text.up || d.text.lo) s += ` ${d.text.up ?? ""}/${d.text.lo ?? ""}`;
   if (d.lines?.length) s += " · " + d.lines.join(" · ");

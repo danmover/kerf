@@ -7,7 +7,8 @@ import { vdot, vnorm, vsub, type V3 } from "../kernel/recipe";
 import { applyProbes, holeCallout, holeKey, partFeatures, recipeSpan, type Feature } from "./features";
 import { arcPoints } from "./hatch";
 import { fmtDev, fmtNum, Ink, type Box, type Frame, type SheetDim } from "./sheet";
-import { fitLimits, generalDeviation, type DrawingSpec } from "./spec";
+import { fitLimits, generalDeviation, type DrawingSpec, type WeldKind } from "./spec";
+import { angleReach, applyRoughness, edgeDims, finishSize, finishText, inkAngle, inkFinish, inkWeld, markDims, symbolDims, weldSizeOnPaper } from "./annotate";
 import { textWidth } from "./text";
 import { partExtent, toView, type BBoxOf, type DrawingPlan } from "./views";
 import { designIntent, type Intent, type Role } from "./intent";
@@ -26,9 +27,30 @@ export interface DimText {
   boxed?: boolean;
 }
 
+/** A surface texture requirement drawn as the ISO 21920-1 symbol. */
+export interface Finish {
+  ra?: number;
+  rz?: number;
+  process?: string;
+  lay?: string;
+  removal: "required" | "prohibited" | "any";
+}
+
+/** What a weld symbol says (ISO 2553). */
+export interface WeldMark {
+  kind: WeldKind;
+  size?: number;
+  length?: string;
+  side: "arrow" | "other" | "both";
+  allRound: boolean;
+  field: boolean;
+  note?: string;
+}
+
 export interface DimDef {
   view: number;
-  kind: "h" | "v" | "aligned" | "inline" | "callout";
+  /** angle: between two legs from a vertex (a); arc: a length along an arc; ordinate: a position from an origin along one view axis */
+  kind: "h" | "v" | "aligned" | "inline" | "callout" | "angle" | "arc" | "ordinate";
   /** view-space points (model mm, y up) */
   a: [number, number];
   b: [number, number];
@@ -52,6 +74,21 @@ export interface DimDef {
   datum?: string;
   /** the features a dimension runs between ("o3.4", "2.4x26"), so its id doesn't depend on the order dimensions come in */
   tag?: string;
+  /** angle: unit directions of the two legs in view space, and their lengths */
+  legs?: [[number, number], [number, number]];
+  lens?: [number, number];
+  /** arc length: the arc in view space, angles counter-clockwise in radians */
+  arc?: { c: [number, number]; r: number; a0: number; a1: number };
+  /** ordinate: the view axis the value runs along */
+  axis?: 0 | 1;
+  /** ordinate: how far its text moves along the axis to clear its neighbours (sheet mm), set when stacking */
+  shift?: number;
+  /** callout: the view point the leader's arrow touches (an arc, a chamfer, a surface) instead of 45° round the circle */
+  touch?: [number, number];
+  /** a surface texture symbol under a callout's text, or after a dimension's */
+  finish?: Finish;
+  /** a weld symbol on the callout's leader in place of text */
+  weld?: WeldMark;
   meta: Omit<SheetDim, "view" | "box" | "value" | "text">;
 }
 
@@ -71,7 +108,7 @@ export function dimStyle(sheetW: number): DimStyle {
 
 const PRINCIPAL = ["front", "top", "right", "left", "back", "bottom"];
 
-function principalViews(plan: DrawingPlan): number[] {
+export function principalViews(plan: DrawingPlan): number[] {
   return plan.views
     .map((v, i) => ({ v, i }))
     .filter(({ v }) => PRINCIPAL.includes(v.kind))
@@ -128,7 +165,7 @@ function paramsByPart(model: Model): Map<string, Set<string>> {
   return out;
 }
 
-const close = (a: number, b: number, tol = 1e-4) => Math.abs(a - b) < tol;
+export const close = (a: number, b: number, tol = 1e-4) => Math.abs(a - b) < tol;
 
 export interface DimContext {
   plan: DrawingPlan;
@@ -263,6 +300,29 @@ export interface BuiltDims {
   datums: DatumInfo[];
   /** notes the features' functions call for */
   notes: string[];
+  /** holes listed by tag in a table instead of dimensioned (hole_table: true) */
+  holeTable?: HoleTable;
+}
+
+export interface HoleTableRow {
+  tag: string;
+  /** the hole's centre in view space, and its radius, for the tag */
+  at: [number, number];
+  r: number;
+  /** position from the table's origin */
+  x: number;
+  y: number;
+  size: string;
+  /** the position tolerance of this tag's holes, on its first row */
+  fcf?: Fcf;
+}
+
+export interface HoleTable {
+  view: number;
+  origin: [number, number];
+  /** where X and Y are measured from */
+  about: string;
+  rows: HoleTableRow[];
 }
 
 export function buildDims(ctx: DimContext): BuiltDims {
@@ -295,9 +355,9 @@ export function buildDims(ctx: DimContext): BuiltDims {
 
   const push = (d: Omit<DimDef, "meta"> & { meta: Partial<DimDef["meta"]> & { label: string } }) => {
     const meta: DimDef["meta"] = {
-      kind: d.kind === "callout" ? "callout" : d.kind === "inline" ? "diameter" : "linear",
+      kind: d.kind === "callout" ? "callout" : d.kind === "inline" ? "diameter" : d.kind === "angle" || d.kind === "arc" || d.kind === "ordinate" ? d.kind : "linear",
       auto: true,
-      general: d.text.suffix || d.text.up || d.text.boxed ? undefined : general(d.value),
+      general: d.text.suffix || d.text.up || d.text.boxed || d.kind === "angle" ? undefined : general(d.value),
       ...d.meta,
     };
     dims.push({ ...d, meta });
@@ -308,11 +368,35 @@ export function buildDims(ctx: DimContext): BuiltDims {
     else partDims(ctx, push, paramFor, warnings, dims, extra);
   }
   explicitDims(ctx, push, warnings);
-  const out = mergeExplicit(dims);
+  markDims(ctx, push, warnings);
+  symbolDims(ctx, push, warnings);
+  const out = dropCoveredOveralls(mergeExplicit(dims), ctx.ext);
   assignIds(out, plan);
   applyTols(out, spec.tols, warnings);
   applyFrames(out, spec.frames ?? [], warnings);
+  applyRoughness(out, spec, warnings);
   return { dims: out, warnings, ...extra };
+}
+
+/** Ordinates running edge to edge already give the overall size along their axis in that view. */
+function dropCoveredOveralls(dims: DimDef[], ext: [number, number, number, number][]): DimDef[] {
+  const covered = new Set<string>();
+  for (const d of dims) {
+    if (d.kind !== "ordinate" || d.axis === undefined || !d.meta.auto) continue;
+    const e = ext[d.view];
+    if (!e) continue;
+    const k = d.axis;
+    const at = d.value + (k === 0 ? d.b[0] : d.b[1]);
+    if (close(at, e[k], 0.05)) covered.add(`${d.view}|${k}|lo`);
+    if (close(at, e[k + 2], 0.05)) covered.add(`${d.view}|${k}|hi`);
+  }
+  return dims.filter((d) => {
+    if (!d.meta.auto || (d.kind !== "h" && d.kind !== "v")) return true;
+    const k = d.kind === "h" ? 0 : 1;
+    if (!covered.has(`${d.view}|${k}|lo`) || !covered.has(`${d.view}|${k}|hi`)) return true;
+    const e = ext[d.view];
+    return !(close(Math.min(d.a[k], d.b[k]), e[k], 0.05) && close(Math.max(d.a[k], d.b[k]), e[k + 2], 0.05));
+  });
 }
 
 /** gdt() calls in the drawing block set or replace the frames on automatic dimensions and callouts. */
@@ -425,7 +509,7 @@ function mergeExplicit(dims: DimDef[]): DimDef[] {
   return dims.filter((d) => !drop.has(d));
 }
 
-type Push = (d: Omit<DimDef, "meta"> & { meta: Partial<DimDef["meta"]> & { label: string } }) => void;
+export type Push = (d: Omit<DimDef, "meta"> & { meta: Partial<DimDef["meta"]> & { label: string } }) => void;
 
 const AXES: { v: V3; name: string; word: string }[] = [
   { v: [1, 0, 0], name: "X", word: "width" },
@@ -507,15 +591,15 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
   };
 
   // callouts are collected first so concentric ones can share a leader
-  type Callout = { vi: number; centers: [number, number][]; order: number; size: number; lines: string[]; r: number; label: string; param?: string; value: number; feats: Feature[]; role?: Role; fit?: { code: string; tol: [number, number] }; slot?: boolean; leader?: [number, number] };
+  type Callout = { vi: number; centers: [number, number][]; order: number; size: number; lines: string[]; r: number; label: string; param?: string; value: number; feats: Feature[]; role?: Role; fit?: { code: string; tol: [number, number] }; slot?: boolean; leader?: [number, number]; finish?: Finish };
   const callouts: Callout[] = [];
   const roleOf = (f: Feature) => intent.roles.get(feats.indexOf(f));
-  /** "H7 (+0.018/0)" after the diameter, and the role line, for a feature with a function */
+  /** "H7 (+0.018/0)" after the diameter, the role line and its surface texture symbol, for a feature with a function */
   const withRole = (c: Callout) => {
     const role = c.role;
     if (!role) return;
-    const ra = role.ra ? `, Ra ${fmtNum(role.ra)}` : "";
-    c.lines.push(role.text + ra);
+    if (role.ra) c.finish = { ra: role.ra, removal: "required" };
+    c.lines.push(role.text);
     if (!role.fit) return;
     const lim = fitLimits(role.fit, c.value);
     if (!lim) return;
@@ -660,6 +744,12 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     datumFrame(ctx, part, feats, main, modes, callouts.filter((c) => !c.slot), dims, extra, frameDatums, datumSets, intent.family, extent);
   }
 
+  // the hole table, when the block asks for one: in the view that sees most features end-on, from the same origin the dimensions would use
+  const table =
+    ctx.spec.holeTable && main >= 0 && !turned
+      ? { view: main, origin: [modes?.[0].value ?? ctx.ext[main][0], modes?.[1].value ?? ctx.ext[main][1]] as [number, number], letters: 0, rows: [] as Omit<HoleTableRow, "x" | "y">[], tabled: [] as [number, number][] }
+      : null;
+
   // one leader per set of concentric features: holes first, then bores by size, then bosses
   const used = new Set<Callout>();
   for (const c of callouts) {
@@ -689,12 +779,42 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
     }
     const fit = set.find((o) => o.fit)?.fit;
     const role = set.find((o) => o.role)?.role;
+    const finish = set.find((o) => o.finish)?.finish;
+    // a hole table lists the holes of the datum view by tag, instead of a callout and position dimensions for each pattern
+    const round = set.every((o) => o.feats[0].t === "hole" || (o.feats[0].t === "cyl" && o.feats[0].op === "cut"));
+    if (table && c.vi === table.view && !c.slot && !datum && round) {
+      const letter = String.fromCharCode(65 + table.letters++);
+      const size = set.flatMap((o) => o.lines).join(" ") + (finish ? ` ${finishText(finish)}` : "");
+      const order = [...c.centers].sort((p, q) => q[1] - p[1] || p[0] - q[0]);
+      order.forEach((p, k) => table.rows.push({ tag: `${letter}${k + 1}`, at: p, r: big.r, size, fcf: k === 0 ? frames?.[0] : undefined }));
+      table.tabled.push(...c.centers);
+      continue;
+    }
     const at = c.leader ?? c.centers[rep];
-    push({ view: c.vi, kind: "callout", a: at, b: at, value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: at, r: big.r }, anchors: c.leader ? [at] : c.centers, frames, datum, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined, fit: fit?.code, tol: fit?.tol, general: fit ? undefined : undefined, role: role?.text } });
+    push({ view: c.vi, kind: "callout", a: at, b: at, value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: at, r: big.r }, anchors: c.leader ? [at] : c.centers, frames, datum, finish, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined, fit: fit?.code, tol: fit?.tol, general: fit ? undefined : undefined, role: role?.text, finish: finish ? finishText(finish) : undefined } });
+  }
+  if (table?.rows.length) {
+    // tabled holes are located by the table, from its origin
+    const gone = (c: [number, number]) => table.tabled.some((t) => close(t[0], c[0], 0.01) && close(t[1], c[1], 0.01));
+    anchors.set(
+      table.view,
+      (anchors.get(table.view) ?? []).map((g) => g.filter((a) => !gone(a.c))).filter((g) => g.length),
+    );
+    const [ox, oy] = table.origin;
+    const where = (m: AxisMode, k: 0 | 1) => (m.mode === "centre" ? `the ${k ? "middle" : "centre"} of the part` : m.mode === "origin" ? "the design origin" : k ? "the lower edge" : "the left edge");
+    extra.holeTable = {
+      view: table.view,
+      origin: table.origin,
+      about: modes ? `X from ${where(modes[0], 0)}, Y from ${where(modes[1], 1)}` : "X and Y from the lower left corner",
+      rows: table.rows.map((r) => ({ ...r, x: r.at[0] - ox, y: r.at[1] - oy })),
+    };
   }
 
   // positions of the end-on features: basic where a frame holds their tolerance
   for (const [vi, gs] of anchors) positionDims(ctx, vi, gs, push, paramFor, warnings, what, gdt && vi === main && frameDatums.length > 0);
+
+  // fillets, rounded corners, chamfers and sloped edges the views show
+  edgeDims(ctx, part, feats, push, what, extra.notes);
 
   // the distance between axes that carry meshing gears sets their backlash: dimension it directly
   for (const cp of intent.centres) {
@@ -1033,6 +1153,7 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
     };
     const made = new Set<string>();
     const out: [number, number, number, string, string][] = [];
+    const tagAtVal = (val: number) => all.find((x) => close(x.c[axis], val, 0.01))?.tag;
     /** where a dimension end lands in a changed design: on its feature, the origin, or the moved outline */
     const dir = axis === 0 ? frame.x : frame.y;
     const endIn = (val: number, parts: Parts): number | undefined => {
@@ -1052,6 +1173,8 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
       out.push([a, b, value, text, label]);
     };
     const symmetricAbout = (list: number[], c: number) => list.every((v) => list.some((w) => close(w, 2 * c - v, 0.02)));
+    /** where this axis is measured from: the centre plane, the design origin or the lower edge */
+    let origin = mid;
     if (symmetricAbout(vals, mid)) {
       // centred features: a pitch for each even pattern, spacings for the rest
       const rest: number[] = [];
@@ -1066,6 +1189,7 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
     } else {
       const fromOrigin = lo < 1e-6 && hi > -1e-6 && vals.some((v) => close(v, 0, 0.01));
       const datum = fromOrigin ? 0 : lo;
+      origin = datum;
       const placed: number[] = [datum];
       const isPlaced = (v: number) => placed.some((w) => close(w, v, 0.01));
       const locate = (v: number) => {
@@ -1097,6 +1221,33 @@ function positionDims(ctx: DimContext, vi: number, anchorGroups: Anchor[][], pus
       }
       // tie the outline to a datum inside the part
       if (fromOrigin) mk(lo, datum, datum - lo, fmtNum(datum - lo), `Outline position (${word}) in ${what}`);
+    }
+    const style = ctx.spec.dimStyle ?? "auto";
+    // too many positions for rows of dimensions: ordinates from the same origin instead
+    if (style === "ordinate" || (style === "auto" && out.length > 7)) {
+      const edges = close(origin, lo, 0.05) ? [hi] : [lo, hi];
+      const marks = uniq([origin, ...vals, ...edges]);
+      const startOf = (val: number): [number, number] => {
+        if (axis === 0) return [val, near(val)];
+        // y ordinates run off to the left, from the leftmost feature on the line
+        const on = centers.filter((c) => close(c[1], val, 0.05));
+        return [on.length ? Math.min(...on.map((c) => c[0])) : u0, val];
+      };
+      const base: [number, number] = axis === 0 ? [origin, v0] : [u0, origin];
+      for (const val of marks) {
+        const value = val - origin;
+        const edge = edges.some((e) => close(e, val, 0.05)) || close(val, lo, 0.05);
+        const boxed = basic && !edge;
+        push({ view: vi, kind: "ordinate", a: startOf(val), b: base, axis, value: Math.abs(value) < 1e-9 ? 0 : value, text: boxed ? { main: fmtNum(value), boxed } : { main: fmtNum(value) }, side: axis === 0 ? "bottom" : "left", tag: tagAtVal(val), meta: { label: `${edge ? "Outline" : "Feature"} ordinate (${word}) in ${what}`, basic: boxed || undefined, general: boxed || close(value, 0, 1e-9) ? undefined : (generalDeviation(ctx.spec.tolerance, value) ?? undefined) } });
+      }
+      continue;
+    }
+    if (style === "chain") {
+      // feature to feature from the origin, each spacing on its own
+      out.length = 0;
+      made.clear();
+      const chain = uniq([origin, ...vals]);
+      for (let k = 1; k < chain.length; k++) mk(chain[k - 1], chain[k], chain[k] - chain[k - 1], fmtNum(chain[k] - chain[k - 1]), `Feature spacing (${word}) in ${what}`);
     }
     if (out.length > 7) {
       warnings.push(`Some ${word} feature positions in the ${ctx.plan.views[vi].name} view are not dimensioned`);
@@ -1401,6 +1552,43 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
     // a datum symbol on a dimension line sticks out past its row
     for (const d of list) if (d.datum) margin[side] = Math.max(margin[side], st.first + (d.row ?? 0) * st.step + datumReach(st));
   }
+  // ordinates end in a line of values past the rows on their side, spread apart where they crowd
+  for (const axis of [0, 1] as const) {
+    const list = defs.filter((d) => d.kind === "ordinate" && (d.axis ?? 0) === axis);
+    if (!list.length) continue;
+    const side: Side = axis === 0 ? "bottom" : "left";
+    const L = margin[side] > 0 ? margin[side] + 2 : 3;
+    const pos = (d: DimDef) => sheetPt(d.a, v)[axis];
+    list.sort((a, b) => pos(a) - pos(b));
+    const gap = st.size * 1.25;
+    const t = list.map(pos);
+    const spread = () => {
+      for (let i = 1; i < t.length; i++) t[i] = Math.max(t[i], t[i - 1] + gap);
+    };
+    spread();
+    const drift = t.reduce((a, x, i) => a + x - pos(list[i]), 0) / t.length;
+    for (let i = 0; i < t.length; i++) t[i] -= drift;
+    spread();
+    let jog = false;
+    list.forEach((d, i) => {
+      d.shift = Math.abs(t[i] - pos(d)) < 0.05 ? 0 : t[i] - pos(d);
+      d.row = L;
+      if (d.shift) jog = true;
+    });
+    const tw = Math.max(...list.map((d) => dimTextWidth(d.text, st.size)));
+    margin[side] = L + (jog ? ORD_JOG : 0) + 1.5 + tw + 1;
+  }
+  // angle and arc-length dimensions reach out from their vertex
+  const reach = { top: 0, bottom: 0, left: 0, right: 0 };
+  for (const d of defs) {
+    if (d.kind !== "angle" && d.kind !== "arc") continue;
+    for (const p of angleReach(d, sheetPt(d.a, v), v.scale, st)) {
+      reach.left = Math.max(reach.left, v.box[0] - p[0]);
+      reach.right = Math.max(reach.right, p[0] - v.box[2]);
+      reach.top = Math.max(reach.top, v.box[1] - p[1]);
+      reach.bottom = Math.max(reach.bottom, p[1] - v.box[3]);
+    }
+  }
   // frames and datums on diameters drawn across a turned part hang off one end of the line
   let k = 0;
   for (const d of defs) {
@@ -1416,8 +1604,15 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
   // callouts stack above the view, leaders running up-right or up-left
   const callouts = defs.filter((d) => d.kind === "callout");
   const mid = (v.box[0] + v.box[2]) / 2;
-  const height = (d: DimDef) => (1 + (d.lines?.length ?? 0)) * st.size * 1.5 + 1.5 + framesHeight(d, st);
-  const widthOf = (d: DimDef) => Math.max(dimTextWidth(d.text, st.size), ...(d.lines ?? []).map((l) => textWidth(l, st.size)), ...(d.frames ?? []).map((f) => fcfWidth(f, st.size)));
+  const height = (d: DimDef) => {
+    if (d.weld) return weldSizeOnPaper(d.weld, st.size).h + calloutBelow(d, st) + 1.5;
+    if (bare(d)) return (d.finish ? finishSize(d.finish, st.size).h : st.size) + 2.5;
+    return (1 + (d.lines?.length ?? 0)) * st.size * 1.5 + 1.5 + framesHeight(d, st) + finishBelow(d, st);
+  };
+  const widthOf = (d: DimDef) => {
+    if (d.weld) return weldSizeOnPaper(d.weld, st.size).w;
+    return Math.max(dimTextWidth(d.text, st.size), ...(d.lines ?? []).map((l) => textWidth(l, st.size)), ...(d.frames ?? []).map((f) => fcfWidth(f, st.size)), d.finish ? finishSize(d.finish, st.size).w + 1 : 0);
+  };
   const tally = { left: 0, right: 0 };
   const fixed: DimDef[] = [];
   const flexible: DimDef[] = [];
@@ -1473,7 +1668,7 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
     let h = st.first - st.size;
     for (const d of list) {
       const n = 1 + (d.lines?.length ?? 0);
-      d.row = h + framesHeight(d, st) + st.size * 0.4 + ((n - 1) * st.size * 1.5) / 2;
+      d.row = d.weld || bare(d) ? h + calloutBelow(d, st) + 0.5 : h + framesHeight(d, st) + finishBelow(d, st) + st.size * 0.4 + ((n - 1) * st.size * 1.5) / 2;
       h += height(d);
       const S = calloutStart(d, v);
       const rise = Math.max(S[1] - (v.box[1] - d.row), 0);
@@ -1482,10 +1677,28 @@ export function stackDims(defs: DimDef[], v: Placed, st: DimStyle): Record<Side,
     }
     if (list.length) top = Math.max(top, h);
   }
-  if (callouts.length) margin.top = top;
+  if (callouts.length) margin.top = Math.max(margin.top, top);
   margin.right = Math.max(margin.right, right);
   margin.left = Math.max(margin.left, left);
+  for (const k of ["top", "bottom", "left", "right"] as const) margin[k] = Math.max(margin[k], reach[k]);
   return margin;
+}
+
+/** How far an ordinate's line jogs sideways to reach its spread-out text. */
+const ORD_JOG = 3;
+
+/** A callout with no text of its own: a surface texture symbol or a weld on a leader. */
+const bare = (d: DimDef) => d.kind === "callout" && !d.text.main && !d.lines?.length;
+
+/** Height a callout's surface texture symbol takes under its text. */
+function finishBelow(d: DimDef, st: DimStyle): number {
+  return d.finish && !bare(d) ? finishSize(d.finish, st.size).h + 1 : 0;
+}
+
+/** What hangs below a bare callout's shoulder: the weld's dashed line and other-side text. */
+function calloutBelow(d: DimDef, st: DimStyle): number {
+  if (d.weld) return 1.2 + st.size * 0.85 + 1;
+  return 0;
 }
 
 /** Height the frames and datum symbol under a callout's text take. */
@@ -1525,8 +1738,9 @@ function pickAnchor(d: DimDef, v: Placed) {
   d.a = d.b = best;
 }
 
-/** Where a callout's leader touches its circle, at 45° toward its side. */
+/** Where a callout's leader touches its circle, at 45° toward its side (or the point it was given). */
 function calloutStart(d: DimDef, v: Placed): [number, number] {
+  if (d.touch) return sheetPt(d.touch, v);
   const c = sheetPt(d.circle?.c ?? d.a, v);
   const r = (d.circle?.r ?? 0) * v.scale;
   const sx = d.lead === "left" ? -1 : 1;
@@ -1642,11 +1856,44 @@ export function inkDim(ink: Ink, d: DimDef, v: Placed, st: DimStyle): Box {
       const [mx, my] = pt(lo + (hi - lo) * 0.2);
       inkDatum(ink, mx, my, out[0], out[1], d.datum, st.size, 1.5);
     }
+    // a surface texture given to a dimension stands on its line after the text (or above the top of a vertical one)
+    if (d.finish) {
+      const k = 0.577 * st.size;
+      if (horiz) {
+        const tx = textOutside ? hi + st.arrow + 2 + tw : (lo + hi) / 2 + tw / 2;
+        inkFinish(ink, tx + 1.5 + k, line, d.finish, st.size);
+      } else inkFinish(ink, line, lo - (textOutside ? tw + st.arrow + 3 : st.arrow + 1.5), d.finish, st.size);
+    }
     // a frame given to a linear dimension sits past its far end
     if (d.frames?.length) {
       const [ex, ey] = pt(hi + (horiz ? tail : ext) + 1.5);
       d.frames.forEach((f, i) => inkFcf(ink, horiz ? ex : ex - fcfHeight(st.size) / 2, (horiz ? ey - fcfHeight(st.size) / 2 : ey) + i * (fcfHeight(st.size) + 0.8), f, st.size));
     }
+  } else if (d.kind === "ordinate") {
+    // a thin line from the feature to its value, jogging aside where values crowd; the origin gets a small circle
+    const L = d.row ?? 3;
+    const shift = d.shift ?? 0;
+    const tw = dimTextWidth(d.text, st.size);
+    if ((d.axis ?? 0) === 0) {
+      const yb = v.box[3] + L;
+      ink.line(A[0], A[1] + gap, A[0], yb);
+      const x = A[0] + shift;
+      const y = shift ? yb + ORD_JOG : yb;
+      if (shift) ink.line(A[0], yb, x, y);
+      ink.line(x, y, x, y + 1);
+      inkDimText(ink, d.text, x + st.size * 0.36, y + 1.5 + tw, st.size, "start", 90);
+    } else {
+      const xb = v.box[0] - L;
+      ink.line(A[0] - gap, A[1], xb, A[1]);
+      const y = A[1] + shift;
+      const x = shift ? xb - ORD_JOG : xb;
+      if (shift) ink.line(xb, A[1], x, y);
+      ink.line(x, y, x - 1, y);
+      inkDimText(ink, d.text, x - 1.5 - tw, y + st.size * 0.36, st.size, "start", 0);
+    }
+    if (close(d.value, 0, 1e-9)) ink.circle(A[0], A[1], 0.9, "thin");
+  } else if (d.kind === "angle" || d.kind === "arc") {
+    inkAngle(ink, d, A, v.scale, st, (t, x, y, anchor) => inkDimText(ink, t, x, y, st.size, anchor, 0));
   } else if (d.kind === "aligned") {
     const dx = B[0] - A[0];
     const dy = B[1] - A[1];
@@ -1729,15 +1976,28 @@ export function inkDim(ink: Ink, d: DimDef, v: Placed, st: DimStyle): Box {
       ink.line(S[0], S[1], E[0], E[1]);
       ink.arrow(S[0], S[1], C[0] - S[0] || -sx, C[1] - S[1] || 1, st.arrow);
     }
-    ink.line(E[0], E[1], E[0] + sx * 3, E[1]);
+    if (d.weld) inkWeld(ink, E, sx, d.weld, st.size);
+    else if (bare(d)) {
+      // a surface texture symbol standing on the shoulder
+      const f = d.finish;
+      const fw = f ? finishSize(f, st.size).w : 0;
+      ink.line(E[0], E[1], E[0] + sx * (fw + 2.5), E[1]);
+      const k = 0.577 * st.size;
+      if (f) inkFinish(ink, sx > 0 ? E[0] + 1.5 + k : E[0] - 1.5 - fw + k, E[1], f, st.size);
+    } else ink.line(E[0], E[1], E[0] + sx * 3, E[1]);
     const n = 1 + (d.lines?.length ?? 0);
     const firstBase = rowY + st.size * 0.35 - ((n - 1) * st.size * 1.5) / 2;
     const w = Math.max(dimTextWidth(d.text, st.size), ...(d.lines ?? []).map((l) => textWidth(l, st.size)));
     const tx = sx > 0 ? E[0] + 4 : E[0] - 4 - w;
     inkDimText(ink, d.text, tx, firstBase, st.size, "start", 0);
     (d.lines ?? []).forEach((l, i) => ink.text(tx, firstBase + (i + 1) * st.size * 1.5, l, st.size));
-    // geometric tolerances under the text, the datum symbol hanging from the last frame
+    // the surface texture the feature needs, then geometric tolerances under the text, the datum symbol hanging from the last frame
     let fy = firstBase + (n - 1) * st.size * 1.5 + st.size * 0.6;
+    if (d.finish && !bare(d)) {
+      const h = finishSize(d.finish, st.size).h;
+      inkFinish(ink, tx + 0.577 * st.size, fy + h, d.finish, st.size);
+      fy += h + 1;
+    }
     let last: Box | null = null;
     for (const f of d.frames ?? []) {
       last = inkFcf(ink, tx, fy, f, st.size);
