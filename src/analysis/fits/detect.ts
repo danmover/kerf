@@ -63,7 +63,9 @@ const maxClearance = (d: number) => Math.max(1.0, 0.06 * d);
 
 function kindOf(hole: Cyl, shaft: Cyl, overlap: number): FitKind {
   if (shaft.role === "bearing-od") return "bearing-seat";
-  if (hole.role === "bearing-bore") return "bearing-shaft";
+  // a bolt through a bearing is an axle whose inner race the bolt clamps between its head and nut (the joint check
+  // sees that the stack meets): the clamp holds the race, so the shank only has to pass through the bore
+  if (hole.role === "bearing-bore") return shaft.role === "screw" ? "screw" : "bearing-shaft";
   if (hole.role === "gear-bore") return "gear-bore";
   if (shaft.role === "screw") return "screw";
   if (shaft.role === "head") return "head";

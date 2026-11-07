@@ -18,7 +18,7 @@ import { generateFirmware, type FirmwareOutput } from "./firmware";
 import type { RoutedBoard } from "./pcb";
 import { serviceMd, servicePlan, type UseFacts } from "./service";
 import type { CalcLine, CalcTrace, CatalogKind, CatalogPart, MachineData } from "./types";
-import { componentPositions, csvCell, wireList, wiresCsv, wiringDiagram, type WireRow } from "./wiring";
+import { componentBodies, componentPositions, csvCell, wireList, wiresCsv, wiringDiagram, type WireRow } from "./wiring";
 
 export interface PackFile {
   path: string;
@@ -949,7 +949,7 @@ export function buildPack(model: Model, report: CheckReport | null, opts: PackOp
   const items = checkItems(model, report);
   const plan = testPlan(m);
   const ready = readiness(model, items, plan);
-  const rows = wireList(m, componentPositions(model), opts.routed);
+  const rows = wireList(m, componentPositions(model), opts.routed, componentBodies(model));
   const made = madeParts(model, opts.meshFor);
   const cuts = cutList(model);
   const fw = opts.firmware ?? generateFirmware(m, model.name || name);

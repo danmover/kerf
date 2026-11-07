@@ -30,6 +30,8 @@ interface RigParts {
   cell: string;
   battery: string;
   fuse: string;
+  /** the fuse fitted in the holder, A (the holder's own when left out) */
+  fuseRating?: number;
 }
 const V2_PARTS: RigParts = { servo: "savox_sh0264mg", amp: "hx711_breakout", cell: "tal221_500g", battery: "lipo_4s_5000_xt90", fuse: "fuse_holder_maxi" };
 const V3_PARTS: RigParts = { servo: "mg90d", amp: "makerverse_load_cell_amp", cell: "beam_cell_1kg", battery: "lipo_4s_1800_xt60", fuse: "fuse_holder_atc" };
@@ -45,7 +47,7 @@ component fc = lib.controller("feather_esp32_v2") { at: (0, 0, 0) }
 component esc = lib.esc("skywalker_60a_v2") { at: (120, 0, 0) }
 component edf = lib.bldc("xfly_edf_64_12b_3200kv") { at: (0, 0, 200), axis: Z }
 component bat = lib.battery("${parts.battery}") { at: (250, 0, 0) }
-component fuse = lib.fuse("${parts.fuse}") { at: (200, 60, 0) }
+component fuse = lib.fuse("${parts.fuse}") { at: (200, 60, 0)${parts.fuseRating ? `, rating: ${parts.fuseRating}A` : ""} }
 component imu = lib.sensor("lsm6dsox_breakout") { ${imuAt} }
 component hx = lib.sensor("${parts.amp}") { at: (0, -60, 0) }
 component cell = lib.sensor("${parts.cell}") { at: (0, -120, 0) }
@@ -483,5 +485,50 @@ void loop() {
     expect(String(v.results.state)).toMatch(/IMU stopped answering/);
     expect(v.results.fault_reaction).toBeLessThan(0.1);
     expect(v.results["edf.thrust"]).toBeLessThan(0.5);
+  });
+
+  it("cuts the fan when the IMU freezes: its registers stop changing, noise and all", { timeout: 30_000 }, () => {
+    const m = design(`scenario "IMU freezes" {
+  world: sim.bench()
+  duration: 9s
+  console: [sim.type("arm", at: 3s), sim.type("t 60", at: 3.1s), sim.type("hold", at: 3.2s)]
+  faults: [sim.stuck(imu, at: 7s)]
+}`);
+    const def = m.scenarios![0];
+    const v = runSpec({ ...def.spec, mech: gimbal(), variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(String(v.results.state)).toMatch(/IMU frozen/);
+    expect(v.results.fault_reaction).toBeLessThan(0.2);
+    // the drive is cut for good while the rotor is still coasting down
+    expect(v.results.fault_cut).toBe(true);
+    expect(v.results.fault_cut_time).toBeLessThan(0.2);
+    expect(v.results.fault_stopped).toBe(false);
+  });
+
+  it("stops the fan when the pendant's plug is pulled: the throttle signal ran through its NC contact", { timeout: 30_000 }, () => {
+    const m = design(`scenario "Pendant unplugged" {
+  world: sim.bench()
+  duration: 9s
+  console: [sim.type("arm", at: 3s), sim.type("t 60", at: 3.1s)]
+  faults: [sim.unplug(estop, at: 6s)]
+}`);
+    const def = m.scenarios![0];
+    const v = runSpec({ ...def.spec, variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.notes.join(" ")).not.toMatch(/cannot simulate/);
+    expect(v.results["esc.signal_lost"]).toBe(true);
+    expect(v.results["edf.thrust"]).toBeLessThan(1);
+    expect(v.results.fault_cut).toBe(true);
+  });
+
+  it("blows the fuse the design fits, not the holder's own", () => {
+    const rating = (fuseRating?: number) => {
+      const m = design(`scenario "Bench" { world: sim.bench() duration: 1s }`, "", undefined, { ...V3_PARTS, fuseRating });
+      const w = m.scenarios![0].spec.world;
+      if (w.kind !== "bench") throw new Error("not a bench");
+      const plant = new Plant(m.machine!, "fc", FEATHER_ESP32_V2, new SimHal(FEATHER_ESP32_V2, { seed: 1 }), new Bench(m.machine!, w.bench, "expected"), { rng: () => 0.5 });
+      return plant.fuses.map((f) => f.rating);
+    };
+    // the ATC holder comes with a 20 A fuse
+    expect(rating()).toEqual([20]);
+    expect(rating(40)).toEqual([40]);
   });
 });

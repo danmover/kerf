@@ -188,6 +188,14 @@ export class FaultInjector {
       const o = world.orientation(comp);
       this.frozen.set(comp, { ...o, rate: [...o.rate], accel: [...o.accel] });
       undos.push(() => this.frozen.delete(comp));
+      // a chip on the bus that stops sampling: its registers keep the last reading, noise and all, so a
+      // firmware watching for readings that stop changing can tell
+      for (const d of plant.i2cDevs.values()) {
+        const dev = d.dev as { hold?: boolean };
+        if (d.comp !== comp || dev.hold !== false) continue;
+        dev.hold = true;
+        undos.push(() => (dev.hold = false));
+      }
       if (world.range) {
         this.frozenRange.set(comp, world.range(comp));
         undos.push(() => this.frozenRange.delete(comp));
@@ -357,6 +365,16 @@ export class FaultInjector {
         if (g) undos.push(this.swap(g, "vout", undefined));
         break;
       }
+      case "switch": {
+        // a lead off a switch, or its plug pulled out: whatever ran through its contacts is broken, as if it
+        // were pressed; a normally-open contact off its controller pin just never closes
+        if (!def?.through) break;
+        const n = plant.netOf(comp, pin);
+        if (!n || plant.cut.has(n.id)) break;
+        plant.cut.add(n.id);
+        undos.push(() => plant.cut.delete(n.id));
+        break;
+      }
       case "fuse": {
         const fz = plant.fuses.find((x) => x.comp === comp);
         if (fz && !fz.blown) {
@@ -446,6 +464,18 @@ export function copingResults(frames: FrameData, serial: SerialLine[], plant: Pl
     r.fault_stopped = true;
     r.fault_stop_time = Math.max(0, frames.t[from] - ft);
   } else r.fault_stopped = false;
+  // the drive cut for good: no motor, actuator or fan drawing current from some time to the end, while a fan
+  // with nothing driving it may still be coasting down
+  const driven = (i: number) =>
+    plant.motors.some((m) => Math.abs(frames.series[`${m.comp}.amps`]?.[i] ?? 0) > QUIET_A) ||
+    plant.acts.some((a) => Math.abs(frames.series[`${a.comp}.amps`]?.[i] ?? 0) > QUIET_A / 2) ||
+    plant.escs.some((e) => Math.abs(frames.series[`${e.fan?.name ?? e.comp}.amps`]?.[i] ?? 0) > QUIET_A);
+  let cut = n;
+  while (cut > 0 && !driven(cut - 1)) cut--;
+  if (cut < n) {
+    r.fault_cut = true;
+    r.fault_cut_time = Math.max(0, frames.t[cut] - ft);
+  } else r.fault_cut = false;
   // a pin the fault changes reads differently in the same millisecond, so a line from that step counts
   const said = serial.find((l) => l.dir === "out" && l.t >= ft - 0.0015 && NOTICED.test(l.text));
   r.fault_noticed = !!said;

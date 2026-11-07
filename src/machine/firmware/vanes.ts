@@ -997,7 +997,8 @@ void loop() {
   // safety, every pass
   bool running = mode == M_ARMED || mode == M_HOLD || mode == M_SWEEP || mode == M_COUPLE;
   if (estopPressed() && mode != M_FAULT) fault("e-stop pressed");
-  else if (running && now - lastImuOk > IMU_TIMEOUT_MS) fault("IMU stopped answering");
+  // a reading that has not changed for 50 samples (0.1 s) is a frozen sensor, not a still rig: the noise alone moves it
+  else if (running && now - lastImuOk > IMU_TIMEOUT_MS) fault(sameCount >= 50 ? "IMU frozen (the same reading 50 times)" : "IMU stopped answering");
   else if (running && (fabs(roll) > TILT_CUT_DEG * DEG || fabs(pitch) > TILT_CUT_DEG * DEG)) fault("tilted past the cut-off");
   running = mode == M_ARMED || mode == M_HOLD || mode == M_SWEEP || mode == M_COUPLE;
   if (stepAxis >= 0 && mode != M_HOLD) {

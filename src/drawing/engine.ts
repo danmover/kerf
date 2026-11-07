@@ -15,7 +15,7 @@ import { movePmi, partPmi, pmiSummary, type PartPmi } from "./pmi";
 import type { Sheet } from "./sheet";
 import type { DrawingSpec } from "./spec";
 import { layFlat } from "./flat";
-import { autoDrawings, planDrawing, withProcessTolerance, type DrawingPlan } from "./views";
+import { autoDrawings, drawnCopies, planDrawing, withProcessTolerance, type DrawingPlan } from "./views";
 
 export interface DrawingEntry {
   name: string;
@@ -157,11 +157,12 @@ function flatErrors(plan: DrawingPlan): string[] {
 
 const bboxOf = (p: EvalPart) => meshes.get(p.hash)?.bbox ?? flatGeo(p.hash)?.bbox;
 const volumeOf = (p: EvalPart) => meshes.get(p.hash)?.volume ?? flatGeo(p.hash)?.volume;
+const meshOf = (p: EvalPart) => meshes.get(p.hash)?.preview ?? meshes.get(p.hash)?.final;
 
 /** Every drawing of a model: its drawing blocks first, then the automatic ones. */
 export function drawingSpecs(model: Model | null): DrawingSpec[] {
   if (!model) return [];
-  return [...withProcessTolerance(model, model.drawings), ...autoDrawings(model, bboxOf)];
+  return [...withProcessTolerance(model, model.drawings), ...autoDrawings(model, bboxOf, meshOf)];
 }
 
 const specsCache = new WeakMap<Model, DrawingSpec[]>();
@@ -227,10 +228,18 @@ export function pmiNote(sheetName: string): string | null {
   return pmi ? `PMI (the same annotations on the 3D model, and written into "STEP with PMI (AP242)" exports tied to the faces): ${pmiSummary(pmi)}. pmi: false in the drawing block leaves the part out.` : null;
 }
 
-/** The drawing that shows these parts: a part's own drawing, or the assembly's for several. */
+/** The part whose drawing a part is on: itself, or the part it is a copy of. */
+export function sharedDrawingPart(model: Model, name: string): string {
+  return drawnCopies(model, meshOf).get(name) ?? name;
+}
+
+/** The drawing that shows these parts: a part's own drawing (a copy's is the one it shares), or the assembly's for several. */
 export function drawingFor(model: Model, partNames: string[]): DrawingSpec | undefined {
   const specs = drawingSpecs(model);
-  if (partNames.length === 1) return specs.find((s) => !s.flat && s.of.length === 1 && s.of[0] === partNames[0]);
+  if (partNames.length === 1) {
+    const name = sharedDrawingPart(model, partNames[0]);
+    return specs.find((s) => !s.flat && s.of.length === 1 && s.of[0] === name);
+  }
   return specs.find((s) => !s.flat && !s.of.length) ?? specs.find((s) => !s.flat && partNames.every((n) => s.of.includes(n)));
 }
 
@@ -247,7 +256,7 @@ function partsSettled(plan: DrawingPlan): boolean {
 function compose(plan: DrawingPlan, model: Model): Sheet {
   const { source } = useDesign.getState();
   const reevaluate = useDesign.getState().model === model ? (overrides: Record<string, number>) => evaluate(source, { overrides }) : undefined;
-  const sheet = composeSheet({ plan, model, result: resultOf, bboxOf, volumeOf, today: today(), reevaluate });
+  const sheet = composeSheet({ plan, model, result: resultOf, bboxOf, volumeOf, meshOf, today: today(), reevaluate });
   const failed = flatErrors(plan);
   return failed.length ? { ...sheet, warnings: [...sheet.warnings, ...failed] } : sheet;
 }

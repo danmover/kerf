@@ -12,7 +12,7 @@ import { toast } from "../app/ui";
 import { checkItems, cutList, madeParts, readiness, testPlan, type PlanItem, type Readiness } from "../machine/pack";
 import { showWire } from "./wiringView";
 import { routedRuns, updateHarness, useHarness } from "../machine/harness/runtime";
-import { componentPositions, wireList, wiresCsv, wiringDiagram, wireHex, type WireEnd, type WireKind, type WireRow } from "../machine/wiring";
+import { componentBodies, componentPositions, wireList, wiresCsv, wiringDiagram, wireHex, type WireEnd, type WireKind, type WireRow } from "../machine/wiring";
 import { generateFirmware, type FirmwareOutput } from "../machine/firmware";
 import { catalogPart, shopLinks } from "../machine/catalog";
 import { bomRows, bomTotal, download, safeFileName } from "../persist/files";
@@ -73,7 +73,7 @@ export function MachinePanel() {
     return () => clearTimeout(t);
   }, [model, stage, meshVersion]);
   const rows = useMemo(
-    () => (model && m ? wireList(m, componentPositions(model), routedRuns(model)) : []),
+    () => (model && m ? wireList(m, componentPositions(model), routedRuns(model), componentBodies(model)) : []),
     // the routes are read through routedRuns
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [model, m, routes, routeStatus],

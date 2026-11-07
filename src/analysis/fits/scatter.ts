@@ -14,6 +14,7 @@ import { vdot, vnorm, type V3 } from "../../kernel/recipe";
 import { isPrinted } from "../../library/materials";
 import { materialRecord } from "../../library/materialDb";
 import { fitLimits } from "../../drawing/spec";
+import { copySource } from "../../drawing/copies";
 import type { Cyl } from "./geometry";
 
 /**
@@ -143,8 +144,11 @@ function boughtScatter(c: Cyl): Scatter {
  * or close fit is asked for while the model stays at the nominal size.
  */
 export function calledTolerance(model: Model, c: Cyl): [number, number] | null {
+  // a part copied from another with shape_of() is made to that part's drawing
+  const src = copySource(c.part);
+  const shows = (n: string) => n === c.part.name || (!!src && JSON.stringify(model.parts.find((q) => q.name === n)?.recipe) === src);
   for (const dr of model.drawings ?? []) {
-    if (dr.of.length && !dr.of.includes(c.part.name)) continue;
+    if (dr.of.length && !dr.of.some(shows)) continue;
     for (const dim of dr.dims) {
       if (dim.kind !== "diameter" || dim.d === undefined || Math.abs(dim.d - c.d) > 0.01) continue;
       if (dim.tol) return [Math.min(dim.tol[0], dim.tol[1]), Math.max(dim.tol[0], dim.tol[1])];

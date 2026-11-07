@@ -516,6 +516,8 @@ export interface ImuNoise {
 export class Bno055 implements I2CDevice {
   regs = new Uint8Array(128);
   ptr = 0;
+  /** frozen (a sim.stuck() fault): the registers stop updating */
+  hold = false;
   mode = 0;
   fusionSince = 0;
   bootAt: number;
@@ -577,6 +579,7 @@ export class Bno055 implements I2CDevice {
     this.regs[reg + 1] = x >> 8;
   }
   private update(t: number) {
+    if (this.hold) return;
     const o = this.orient();
     const n = () => (this.rng() + this.rng() + this.rng() - 1.5) * this.noise.noise;
     const fusing = this.mode >= 0x08 && t - this.fusionSince > 0.02 * this.fcpu;
@@ -607,6 +610,8 @@ export class Bno055 implements I2CDevice {
 export class Mpu6050 implements I2CDevice {
   regs = new Uint8Array(128);
   ptr = 0;
+  /** frozen (a sim.stuck() fault): the registers stop updating */
+  hold = false;
   private bias: [number, number, number];
   constructor(
     public name: string,
@@ -643,6 +648,7 @@ export class Mpu6050 implements I2CDevice {
     this.regs[reg + 1] = x & 0xff;
   }
   private update() {
+    if (this.hold) return;
     if (this.regs[0x6b] & 0x40) {
       for (let r = 0x3b; r <= 0x48; r++) this.regs[r] = 0;
       return;
@@ -674,6 +680,8 @@ export class Mpu6050 implements I2CDevice {
 export class Lsm6dsox implements I2CDevice {
   regs = new Uint8Array(128);
   ptr = 0;
+  /** frozen (a sim.stuck() fault): the registers stop updating */
+  hold = false;
   private bias: [number, number, number];
   /** the chip answers 10 ms after power-up */
   private bootAt: number;
@@ -733,6 +741,8 @@ export class Lsm6dsox implements I2CDevice {
     return m ? m.map((c) => c[0] * v[0] + c[1] * v[1] + c[2] * v[2]) : v;
   }
   private update() {
+    // a frozen chip: its output registers keep the last sample
+    if (this.hold) return;
     const xlOn = this.regs[0x10] >> 4 !== 0;
     const gOn = this.regs[0x11] >> 4 !== 0;
     this.regs[0x1e] = (xlOn ? 1 : 0) | (gOn ? 2 : 0) | (xlOn || gOn ? 4 : 0);

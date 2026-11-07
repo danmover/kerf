@@ -13,7 +13,7 @@ import { projectView, type ViewResult } from "../src/kernel/drawing";
 import { evaluate } from "../src/lang/evaluator";
 import type { Model } from "../src/core/model";
 import { composeSheet } from "../src/drawing/compose";
-import { autoDrawings, planDrawing } from "../src/drawing/views";
+import { autoDrawings, drawnCopies, planDrawing } from "../src/drawing/views";
 import { dxfText, sheetsToPdf, sheetToDxf, sheetToSvg } from "../src/drawing/render";
 import type { Sheet } from "../src/drawing/sheet";
 import { fitText, textWidth } from "../src/drawing/text";
@@ -101,6 +101,44 @@ describe("automatic drawings", () => {
       if (spec.name === "auto:housing") expect(sheet.dims.some((d) => /Ø9 THRU/.test(d.text))).toBe(true);
     }
   }, 240_000);
+
+  it("draws copies once with how many to make, keeps a left and a right hand apart and leaves bought parts out", () => {
+    const ctx = load(`
+part foot_1 { material: "PETG"  process: mfg.fdm()  body box(40, 30, 10, at: (-100, 0, 0), r: 3)  cut hole(d: 5, through: true, at: (-110, 5, 10), dir: -Z) }
+part foot_2 { material: "PETG"  process: mfg.fdm()  body box(40, 30, 10, at: (100, 0, 0), r: 3)  cut hole(d: 5, through: true, at: (90, 5, 10), dir: -Z) }
+part foot_3 { material: "PETG"  process: mfg.fdm()  rotate: (0, 0, 30)  body rotate(shape_of(foot_1), 30) }
+part bracket_left { material: "PETG"  process: mfg.fdm()  body box(40, 30, 10, at: (0, 80, 0))  add box(10, 30, 30, at: (15, 80, 10))  cut hole(d: 5, through: true, at: (-10, 72, 10), dir: -Z) }
+part bracket_right { material: "PETG"  process: mfg.fdm()  body mirror(shape_of(bracket_left), normal: X) }
+part plate_a { material: "PETG"  process: mfg.fdm()  body box(60, 30, 4, at: (0, -80, 0))  cut hole(d: 5, through: true, at: (-20, -80, 4), dir: -Z) }
+part plate_b { material: "PETG"  process: mfg.fdm()  body box(60, 30, 4, at: (0, -140, 0))  cut hole(d: 5, through: true, at: (-10, -140, 4), dir: -Z) }
+part strap_left { material: "PETG"  process: mfg.fdm()  body box(50, 12, 3, at: (0, 200, 0))  cut hole(d: 4, through: true, at: (-15, 200, 3), dir: -Z) }
+part strap_right { material: "PETG"  process: mfg.fdm()  body mirror(shape_of(strap_left), normal: X) }
+part spacer { material: "Nylon"  process: false  body cylinder(d: 8, h: 5, at: (0, 150, 0)) }
+`);
+    const meshOf = (p: { hash: string }) => (ctx.core.get(p.hash) ? ctx.core.mesh(p.hash, "preview") : undefined);
+    const specs = autoDrawings(ctx.model, ctx.bboxOf, meshOf as never);
+    const titles = Object.fromEntries(specs.map((s) => [s.name, s.title]));
+    // the feet typed out twice and the one turned into place with shape_of() are one part
+    expect(titles["auto:foot_1"]).toBe("Foot (make 3)");
+    expect(titles["auto:foot_2"]).toBeUndefined();
+    expect(titles["auto:foot_3"]).toBeUndefined();
+    expect([...drawnCopies(ctx.model, meshOf as never)].sort()).toEqual([
+      ["foot_2", "foot_1"],
+      ["foot_3", "foot_1"],
+      ["strap_right", "strap_left"],
+    ]);
+    // the mirror image of a strap that is symmetric the other way is the same strap turned over
+    expect(titles["auto:strap_left"]).toBe("Strap (make 2)");
+    // a mirror image is another part, and so is a plate of the same size with its hole somewhere else
+    expect(titles["auto:bracket_left"]).toBe("Bracket left");
+    expect(titles["auto:bracket_right"]).toBe("Bracket right");
+    expect(titles["auto:plate_a"]).toBe("Plate a");
+    expect(titles["auto:plate_b"]).toBe("Plate b");
+    // bought or already on hand
+    expect(titles["auto:spacer"]).toBeUndefined();
+    const sheet = draw(ctx, specs.find((s) => s.name === "auto:foot_1")!);
+    expect(sheet.pending).toBe(0);
+  }, 120_000);
 });
 
 describe("parameter links", () => {

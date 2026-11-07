@@ -180,7 +180,7 @@ export class Plant implements PlantPort, PlantView {
   leds: LedSlot[] = [];
   escs: EscSlot[] = [];
   hxs: HxSlot[] = [];
-  /** nets broken by a pressed normally-closed switch */
+  /** nets broken by a pressed normally-closed switch, or by a switch unplugged */
   cut = new Set<number>();
   /** hall switches: the pin each pulls low while the world puts a magnet near it */
   halls: { comp: string; pin: number; vcc?: Net; level: number; hits: number }[] = [];
@@ -272,7 +272,8 @@ export class Plant implements PlantPort, PlantView {
           break;
         }
         case "fuse":
-          this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(part.specs.rating_a ?? 20), over2: 0, over35: 0, blown: false });
+          // the fuse fitted (rating:), else the one the holder comes with
+          this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(mc.rating ?? part.specs.rating_a ?? 20), over2: 0, over35: 0, blown: false });
           break;
         case "motor_driver":
           for (const ch of ["A", "B"]) {

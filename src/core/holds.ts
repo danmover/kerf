@@ -245,10 +245,12 @@ const ANGLES = 8;
 const ANGLE0 = 0.37;
 
 /**
- * Material of a part round the shank, measured on its mesh: rays parallel to the axis at two radii inside the
+ * Material of a part round the shank, measured on its mesh: rays parallel to the axis at three radii inside the
  * head's footprint, eight round. A part counts when it surrounds the shank (material on most of the rays): a
  * wall beside the head does not. Null when the part is not round the shank at all. minAngles: how many of the
  * eight directions must find material (1 to find anything in the way, like a probe for a tool's path).
+ * The innermost radius, just outside a clearance hole, finds a spigot or boss narrower than the head that the
+ * load goes through: the usual way to clamp a bearing's inner race without touching its shields.
  */
 export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s1: number, minAngles = 5): [number, number][] | null {
   const bvh = bvhOf(m);
@@ -265,6 +267,9 @@ export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s
   const { u, v } = frameFor(sh.axis);
   const r1 = Math.min(0.5 * (sh.d / 2 + sh.headD / 2) * 1.05, 0.9 * (sh.headD / 2));
   const r2 = 0.92 * (sh.headD / 2);
+  // midway between the shank and r1: outside a normal clearance hole (up to about 1.25 d), inside a narrow spigot
+  const r0 = sh.d > 0 ? 0.5 * (sh.d / 2 + r1) : r1;
+  const radii = r0 < r1 - 0.05 ? [r0, r1, r2] : [r1, r2];
   const dl = invDir(sh.axis);
   // how far back to start so the ray begins outside the part
   const lb = localBounds(m);
@@ -274,7 +279,7 @@ export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s
   for (let k = 0; k < ANGLES; k++) {
     const ang = ANGLE0 + (2 * Math.PI * k) / ANGLES;
     let hit = false;
-    for (const r of [r1, r2]) {
+    for (const r of radii) {
       const off = vadd(vscale(u, r * Math.cos(ang)), vscale(v, r * Math.sin(ang)));
       const startW = vadd(vadd(sh.seat, off), vscale(sh.axis, s0 - reach));
       const o = inv(startW);

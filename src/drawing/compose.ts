@@ -23,6 +23,7 @@ import { scaleText, SHEETS, STANDARD_SCALES, type DrawingSpec, type SheetSize } 
 import { textWidth } from "./text";
 import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTable, inkTitleBlock, inkToleranceStrip, partsListBoxes, splitTable, tableSize, TB_W, type Table } from "./titleblock";
 import { boxExtents, humanize, toView, viewFrame, worldBox, type BBoxOf, type DrawingPlan, type PlannedView } from "./views";
+import { copiesOf, sharedName, type MeshOf } from "./copies";
 
 export interface ComposeInput {
   plan: DrawingPlan;
@@ -32,6 +33,8 @@ export interface ComposeInput {
   bboxOf: BBoxOf;
   /** solid volume in mm³ */
   volumeOf?: (p: EvalPart) => number | undefined;
+  /** each part's built mesh, so copies of a part share its parts-list line */
+  meshOf?: MeshOf;
   /** ISO date for the title block */
   today?: string;
   /** the design evaluated with some parameters changed, so dimensions can find the parameter that drives them */
@@ -102,7 +105,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
   bands.forEach((b, i) => b && (lext[i] = warpExtents(b, lext[i])));
 
   // parts list
-  const bom = plan.assembly && spec.partsList !== false ? bomLines(plan.parts, inp.bboxOf, inp.volumeOf) : [];
+  const bom = plan.assembly && spec.partsList !== false ? bomLines(plan.parts, inp.bboxOf, inp.volumeOf, inp.meshOf) : [];
   const itemOf = new Map<string, number>();
   for (const l of bom) for (const id of l.ids) itemOf.set(id, l.item);
 
@@ -1249,9 +1252,13 @@ function shapeKey(p: EvalPart, bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) => numb
   return recipeHash({ structure, vol: Number(vol.toPrecision(7)), size: hi.map((h, k) => r(h - lo[k])), feats: feats.sort() });
 }
 
-function bomLines(parts: EvalPart[], bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) => number | undefined): BomLine[] {
+function bomLines(parts: EvalPart[], bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) => number | undefined, meshOf?: MeshOf): BomLine[] {
   const rows = new Map<string, BomLine & { kind: string; names: Set<string> }>();
   const seen = new Set<string>();
+  // a copy of a made part (the same solid turned or moved, see copies.ts) goes on that part's line
+  const made = new Map<string, EvalPart>();
+  for (const p of parts) if (p.kind === "part" && !made.has(p.name)) made.set(p.name, p);
+  const copies = meshOf ? copiesOf([...made.values()], meshOf) : new Map<string, string>();
   for (const p of parts) {
     const inst = p.id.split(".")[0];
     if (p.kind === "component" && seen.has(inst)) continue;
@@ -1260,8 +1267,9 @@ function bomLines(parts: EvalPart[], bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) =
     const kind = p.kind === "part" ? "Make" : "Buy";
     const name = p.kind === "part" ? humanize(p.label) : (LIB_NAMES[p.libKind ?? ""] ?? humanize(p.libKind ?? p.name));
     // made parts of the same shape, material and hand are one line, whatever they are called
-    const hand = (p.worldXf ?? p.xf).filter((x) => x.op === "mirror").length % 2;
-    const key = p.kind === "part" ? `${kind}|${shapeKey(p, bboxOf, volumeOf)}|${hand}|${p.material}|${description}` : `${kind}|${description}|${p.material}`;
+    const q = made.get(copies.get(p.name) ?? "") ?? p;
+    const hand = (q.worldXf ?? q.xf).filter((x) => x.op === "mirror").length % 2;
+    const key = p.kind === "part" ? `${kind}|${shapeKey(q, bboxOf, volumeOf)}|${hand}|${p.material}|${description}` : `${kind}|${description}|${p.material}`;
     const row = rows.get(key);
     const ids = parts.filter((q) => q.id.split(".")[0] === inst).map((q) => q.id);
     if (row) {
@@ -1270,27 +1278,10 @@ function bomLines(parts: EvalPart[], bboxOf?: BBoxOf, volumeOf?: (p: EvalPart) =
       row.names.add(name);
     } else rows.set(key, { item: 0, qty: 1, name, names: new Set([name]), description: p.bom?.standard ? `${description} (${p.bom.standard})` : description, material: MATERIALS[p.material]?.label ?? p.material, ids, kind });
   }
-  for (const r of rows.values()) if (r.names.size > 1) r.name = sharedName([...r.names]);
+  // one name for parts made alike: the words their names share ("Cup a1", "Cup b2" → "Cup"), else the first name and how many more
+  for (const r of rows.values()) if (r.names.size > 1) r.name = sharedName([...r.names]) ?? `${[...r.names][0]} (+${r.names.size - 1})`;
   const list = [...rows.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name, undefined, { numeric: true }) : a.kind === "Make" ? -1 : 1));
   return list.map((r, i) => ({ item: i + 1, qty: r.qty, name: r.name, description: r.description, material: r.material, ids: r.ids }));
-}
-
-/** One name for parts made alike: the words their names share ("Cup a1", "Cup b2" → "Cup"; "Left side", "Right side" → "Side"), else the first name and how many more. */
-function sharedName(names: string[]): string {
-  const words = names.map((n) => n.split(/[\s_]+/).filter(Boolean));
-  const common = (pick: (w: string[], i: number) => string | undefined) => {
-    const out: string[] = [];
-    for (let i = 0; ; i++) {
-      const w = pick(words[0], i);
-      if (w === undefined || !words.every((ws) => pick(ws, i)?.toLowerCase() === w.toLowerCase())) return out;
-      out.push(w);
-    }
-  };
-  const head = common((w, i) => w[i]);
-  if (head.length) return humanize(head.join(" "));
-  const tail = common((w, i) => w[w.length - 1 - i]).reverse();
-  if (tail.length) return humanize(tail.join(" "));
-  return `${names[0]} (+${names.length - 1})`;
 }
 
 function defaultNotes(spec: DrawingSpec, plan: DrawingPlan, built: { datums: unknown[]; notes: string[] }, general: Finish | null): string[] {
