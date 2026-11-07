@@ -371,8 +371,8 @@ export function geometryFromMeshes(model: Model, mesh: (hash: string) => { bbox:
 
 // ---------------------------------------------------------------- recipe reading
 
-/** Hex pockets cut into made parts (captive nuts): centre in assembly coordinates, across-flats and depth. */
-function hexPockets(made: EvalPart[]): { center: V3; af: number; depth: number }[] {
+/** Hex pockets cut into made parts (captive nuts and bolt heads): centre in assembly coordinates, across-flats and depth. */
+export function hexPockets(made: EvalPart[]): { center: V3; af: number; depth: number }[] {
   const out: { center: V3; af: number; depth: number }[] = [];
   const hexOf = (pts: V2[]): { c: V2; af: number } | null => {
     if (pts.length !== 6) return null;
@@ -392,8 +392,21 @@ function hexPockets(made: EvalPart[]): { center: V3; af: number; depth: number }
         return;
       }
       case "extrude": {
-        const h = s.p.t === "poly" ? hexOf(s.p.pts) : null;
-        if (!h) return;
+        // a hex outline, also turned or moved in its plane (rotate(ngon(6, ...), 30))
+        let pr = s.p;
+        let rot = 0;
+        let by: V2 = [0, 0];
+        while (pr.t === "place2") {
+          // outer placement first: the inner one's move turns with everything outside it
+          const r = (rot * Math.PI) / 180;
+          by = [by[0] + pr.by[0] * Math.cos(r) - pr.by[1] * Math.sin(r), by[1] + pr.by[0] * Math.sin(r) + pr.by[1] * Math.cos(r)];
+          rot += pr.rot;
+          pr = pr.p;
+        }
+        const h0 = pr.t === "poly" ? hexOf(pr.pts) : null;
+        if (!h0) return;
+        const r = (rot * Math.PI) / 180;
+        const h = { af: h0.af, c: [h0.c[0] * Math.cos(r) - h0.c[1] * Math.sin(r) + by[0], h0.c[0] * Math.sin(r) + h0.c[1] * Math.cos(r) + by[1]] as V2 };
         out.push({ center: applyXforms(vadd(framePoint(s.f, h.c[0], h.c[1]), vscale(vnorm(s.f.n), s.h / 2)), xf), af: h.af, depth: s.h });
         return;
       }

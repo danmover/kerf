@@ -1293,7 +1293,8 @@ export const ELECTRONICS: CatalogPart[] = [
       { id: "VRY", type: "analog_out", v: 5, label: "VRy", required: true, note: "Y axis wiper: about half the supply centred, needs an ADC pin" },
       { id: "SW", type: "out", v: 5, label: "SW", note: "Closes to GND while the stick is pressed down: read it on a pin with INPUT_PULLUP (the board has no pull-up)" },
     ],
-    // the pot cage and stick stand on the board; the five header pins point out of the -X end
+    // the pot cage and stick stand on the board; the five right-angle header pins point out of the -X end (their
+    // plugs: harness/plugs.ts)
     geom: { g: "board", dims: { w: 34, d: 26, t: 1.6 }, holes: [[-13.3, -10.2], [13.3, -10.2], [-13.3, 10.2], [13.3, 10.2]], hole_d: 3.2, color: "#1d3f8f", features: [{ kind: "module", x: 2, y: 0, w: 25, d: 25, h: 13 }, { kind: "module", x: 2, y: 0, w: 8, d: 8, h: 28 }, { kind: "header", x: -15.5, y: 0, w: 2.54, d: 12.7, h: 2.5 }] },
     price_usd: 3,
     buy: [{ vendor: "Marketplace", search: "KY-023 joystick module" }],

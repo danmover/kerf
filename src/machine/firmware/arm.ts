@@ -1147,11 +1147,13 @@ void setup() {
   cur[4] = 0;
   for (uint8_t i = 0; i < 5; i++) endP[i] = cur[i];
   writeArm(jq, 0);
-  const uint8_t order[5] = {0, 4, 3, 2, 1};
+  // the joints that carry the arm's weight first, so it does not sag while the rest start; 50 ms apart so their
+  // start currents do not all land on the supply at once
+  const uint8_t order[5] = {1, 2, 3, 0, 4};
   for (uint8_t i = 0; i < 5; i++) {
     svAttach(order[i]);
     writeArm(jq, 0);
-    delay(150);
+    delay(50);
   }
   attached = true;
   calibrateSticks();

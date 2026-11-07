@@ -167,6 +167,10 @@ describe("arm firmware", () => {
     expect(Math.hypot(p.x - 200 * Math.cos(30 * D2R), p.y - 200 * Math.sin(30 * D2R), p.z - 80)).toBeLessThan(4);
     expect(r["fw.moves"]).toBe(6);
     expect(String(r.state)).toBe("ready");
+    // the shoulder holds the arm up steadily, well under the moment's peaks as it starts and stops
+    const hold = Number(r["shoulder_j.hold_torque"]);
+    expect(hold).toBeGreaterThan(50);
+    expect(hold).toBeLessThan(Number(r["shoulder_j.peak_torque"]));
     expect(lines.filter((l) => l === "state: moving").length).toBe(1);
   });
 

@@ -24,6 +24,7 @@ import { sheetChecks } from "./sheetChecks";
 import { chainChecks } from "./chainChecks";
 import { uciChecks } from "./uciChecks";
 import type { SettingValue } from "../mfg/types";
+import { hexPockets } from "../mfg/dfa";
 
 export type CheckCategory =
   | "brief"
@@ -324,8 +325,32 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     if (!clashes) {
       items.push({ id: "int:none", category: "interference", status: "pass", title: "No solid interference", detail: `${solids} solids, ${kernel.pairsTested} touching pairs tested with exact booleans`, basis: "geometry" });
     }
+    // a hex head sitting in a hex pocket is held by it: it needs no tool, the nut at the other end is turned
+    const pockets = hexPockets(model.parts.filter((p) => p.kind === "part"));
+    const captiveHead = (p: EvalPart | undefined): boolean => {
+      const f = p?.fastener;
+      if (!f || f.head !== "hex") return false;
+      // headD is across the corners; a spanner fits across the flats
+      const af = (f.headD * Math.sqrt(3)) / 2;
+      const h = Math.max(1, af * 0.4);
+      const c: V3 = [f.headTop[0] - f.outward[0] * (h / 2), f.headTop[1] - f.outward[1] * (h / 2), f.headTop[2] - f.outward[2] * (h / 2)];
+      return pockets.some((pk) => pk.af >= af - 0.2 && pk.af <= af + 1.2 && vlen(vsub(pk.center, c)) <= pk.depth / 2 + h / 2 + 1);
+    };
     for (const k of kernel.access) {
       const p = partsById.get(k.id);
+      if (k.blockedBy.length && captiveHead(p)) {
+        items.push({
+          id: `access:${k.id}`,
+          category: "access",
+          status: "pass",
+          title: `Tool access: ${p?.label ?? k.id}`,
+          detail: "Its head sits in a hex pocket that stops it turning, so it needs no tool; the nut at the other end is the one turned",
+          parts: [k.id],
+          span: p?.span,
+          basis: "geometry",
+        });
+        continue;
+      }
       // a part that slides with an axis (or a screw that does) is moved out of the way by hand to reach the screw
       const slid = k.blockedBy.filter((b) => (carried.has(b) || carried.has(k.id)) && carried.get(b) !== carried.get(k.id));
       const a = slid.length ? { ...k, blockedBy: k.blockedBy.filter((b) => !slid.includes(b)) } : k;

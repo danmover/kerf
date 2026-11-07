@@ -493,6 +493,9 @@ export function scenarioSpec(
     mechanism = base.mechanism;
   } else {
     mechanism = mv instanceof MechSpecValue ? mv.spec : undefined;
+    // like: keeps the other scenario's mechanism when this one only changes the bench or floor (test signals, blocks)
+    const kind = world instanceof FloorValue ? "floor" : world instanceof SimSpec && world.what === "world" ? (world.data as { kind: string }).kind : undefined;
+    if (!mechanism && mv === undefined && base?.mechanism && (kind === "bench" || kind === "floor")) mechanism = base.mechanism;
     if (world === undefined && mechanism) world = mechanism.base === "free" ? new FloorValue({ surface: "concrete", grip: 0.8, roll: 0.015, slope: 0, uphill: [1, 0, 0], ambient: 20, blocks: [] }) : new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: 1, forces: {}, force: 0, range: 1000, ambient: 20, signals: [] } }, "bench");
     if (world === undefined) return fail(`Scenario "${label}" needs a world, like world: sim.sand_pit(length: 2m, width: 0.5m, depth: 5m), world: sim.bench() or world: sim.printer(print: sim.test_print("cube"))`, p.span("world"));
     if (world instanceof FloorValue) {
