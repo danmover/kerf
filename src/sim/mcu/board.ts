@@ -79,7 +79,7 @@ const atmega328p = (name: string, parts: string[], board: string, analog: number
   },
 });
 
-export const NANO = atmega328p("Arduino Nano", ["arduino_nano"], "ARDUINO_AVR_NANO", [14, 15, 16, 17, 18, 19, 20, 21], [20, 21]);
+export const NANO = atmega328p("Arduino Nano", ["arduino_nano", "arduino_nano_clone"], "ARDUINO_AVR_NANO", [14, 15, 16, 17, 18, 19, 20, 21], [20, 21]);
 export const UNO = atmega328p("Arduino Uno", ["arduino_uno"], "ARDUINO_AVR_UNO", [14, 15, 16, 17, 18, 19], []);
 
 // The Adafruit ESP32 Feather V2 (ESP32-PICO-MINI-02): every output GPIO does PWM (LEDC) and takes interrupts;

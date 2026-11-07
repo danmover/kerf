@@ -962,6 +962,22 @@ export const ELECTRONICS: CatalogPart[] = [
     source: "https://www.pololu.com/product/2851",
   },
   {
+    id: "d36v50f6",
+    kind: "regulator",
+    name: "Pololu 6 V 5.5 A step-down regulator D36V50F6",
+    maker: "Pololu",
+    mpn: "4092",
+    summary: "Fixed 6 V at up to 5.5 A from 6.5 to 50 V input, reverse-voltage protected. Servo power for standard-size servos that give their rated torque at 6 V.",
+    specs: { v_in_min: 6.5, v_in_max: 50, v_out: 6, i_out: 5.5, efficiency: 0.92, mass_g: 7 },
+    pins: [pwrIn("VIN", 6.5, 50, { vabs: 50, draw: 0.004 }), gnd(), pwrOut("VOUT", 6, 5.5), { id: "EN", type: "in", vmax: 50, vih: 1.2, note: "Leave unconnected to run; pull low to turn the output off" }, { id: "PG", type: "out", v: 6, label: "PG", note: "Power good: open drain, low while the output is out of regulation" }],
+    // 1 x 1 in board; three 2.2 mm holes for M2 screws (positions from the drill guide, assumed: check yours)
+    geom: { g: "board", dims: { w: 25.4, d: 25.4, t: 1.6 }, holes: [[-10.16, -10.16], [10.16, -10.16], [-10.16, 10.16]], hole_d: 2.2, features: [{ kind: "module", x: 2, y: 2, w: 12, d: 12, h: 7.9 }] },
+    price_usd: 36,
+    buy: [{ vendor: "Core Electronics (AU)", url: "https://core-electronics.com.au/pololu-6v-5-5a-step-down-voltage-regulator-d36v50f6.html" }, { vendor: "Pololu", url: "https://www.pololu.com/product/4092" }],
+    source: "https://www.pololu.com/product/4092",
+    notes: ["The output current it can give falls with input voltage and heat: about 5 A continuous from 12 V in free air.", "Add a 1000 µF capacitor across VOUT and GND near the servos: their current comes in sharp pulses."],
+  },
+  {
     id: "buck_24v_5v_3a",
     kind: "regulator",
     name: "24 V to 5 V 3 A buck module (USB output)",
@@ -1261,6 +1277,27 @@ export const ELECTRONICS: CatalogPart[] = [
     price_usd: 2,
     buy: [{ vendor: "Marketplace", search: "voltage sensor module 0-25V arduino" }],
     notes: ["On a 3.3 V controller the S pin can exceed 3.3 V above 16.5 V input: keep the measured voltage below that or add a resistor."],
+  },
+  {
+    id: "joystick_ky023",
+    kind: "sensor",
+    name: "Thumb joystick module KY-023 (two 10 kΩ pots and a push switch)",
+    generic: true,
+    summary: "Two-axis analog thumb stick on a 34 x 26 mm board: each axis is a 10 kΩ pot across +5V and GND, about half the supply when centred; pressing the stick down closes SW to GND. Jogging a robot arm or a camera head.",
+    // iface joystick: the simulator centres VRX and VRY at half the supply; a scenario moves them with sim.signal(on: "stick.VRX", volts: [...])
+    specs: { iface: "joystick", pot_ohm: 10000, v_min: 3.3, v_max: 5.5, mass_g: 12 },
+    pins: [
+      gnd("GND", "GND"),
+      pwrIn("VCC", 3.3, 5.5, { label: "+5V", draw: 0.001, note: "Feed it from the controller's own supply so the readings scale with its ADC reference" }),
+      { id: "VRX", type: "analog_out", v: 5, label: "VRx", required: true, note: "X axis wiper: about half the supply centred, needs an ADC pin" },
+      { id: "VRY", type: "analog_out", v: 5, label: "VRy", required: true, note: "Y axis wiper: about half the supply centred, needs an ADC pin" },
+      { id: "SW", type: "out", v: 5, label: "SW", note: "Closes to GND while the stick is pressed down: read it on a pin with INPUT_PULLUP (the board has no pull-up)" },
+    ],
+    // the pot cage and stick stand on the board; the five header pins point out of the -X end
+    geom: { g: "board", dims: { w: 34, d: 26, t: 1.6 }, holes: [[-13.3, -10.2], [13.3, -10.2], [-13.3, 10.2], [13.3, 10.2]], hole_d: 3.2, color: "#1d3f8f", features: [{ kind: "module", x: 2, y: 0, w: 25, d: 25, h: 13 }, { kind: "module", x: 2, y: 0, w: 8, d: 8, h: 28 }, { kind: "header", x: -15.5, y: 0, w: 2.54, d: 12.7, h: 2.5 }] },
+    price_usd: 3,
+    buy: [{ vendor: "Marketplace", search: "KY-023 joystick module" }],
+    notes: ["Screw it to the panel from behind through its four 3.2 mm holes on M3 standoffs, so the cage sits just under the panel and the stick comes up through a 26 mm hole.", "Centre readings vary a little from stick to stick: the firmware zeroes them at power-up."],
   },
   {
     id: "hc_sr04",

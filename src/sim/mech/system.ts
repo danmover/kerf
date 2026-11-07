@@ -8,7 +8,7 @@ import { AxisFriction, AxisSpring, Ball, Pivot, Slider, Stops, Weld, type Joint 
 import { Cam, Clutch, Profile, RatioLink, Thread, ToothMesh, gearPitch, type Loss } from "./couplings";
 import { ActuatorDrive, AirCylinder, AxisForce, MotorDrive, ServoDrive, Solenoid, SpeedSource } from "./drives";
 import { BodyLoad, PointSpring } from "./forces";
-import { BodyContacts, PointContacts, TrackContact, WheelContact, type BoxShape, type Ground } from "./contact";
+import { BodyContacts, PointContacts, TrackContact, WheelContact, boxQuery, type BoxShape, type Ground } from "./contact";
 import { FRAME, type MechModel } from "./model";
 
 /** what changes between the pessimistic, expected and optimistic runs */
@@ -204,7 +204,19 @@ export class MechSystem {
     // the machine's bodies on the floor and blocks, and against loose boxes
     for (const bd of model.bodies) {
       const B = this.bodies.get(bd.id)!;
-      if (B.fixed) continue;
+      if (B.fixed) {
+        // loose boxes also rest on and slide against the frame's own parts (a base board, a tray, a stop),
+        // not only the floor: each part's box, leaving out any a loose box starts inside (it is not a surface it meets)
+        if (looseBoxes.length && bd.boxes.length) {
+          const mu = 0.5 * f.grip;
+          for (const lb of looseBoxes) {
+            const p0 = lb.body.x;
+            const mine: BoxShape[] = bd.boxes.filter((bx) => boxQuery(p0, bx.c, bx.h, bx.q).C > 0).map((bx) => ({ body: B, c: B.toLocal(bx.c), q: bx.q, h: bx.h }));
+            if (mine.length) s.add(new BodyContacts(lb.body, boxPoints([0, 0, 0], lb.h), mine, mu));
+          }
+        }
+        continue;
+      }
       const pts = bd.points.map((p) => B.toLocal(p));
       if (this.ground && pts.length) this.contacts.push(s.add(new PointContacts(B, pts, this.ground)));
       if (looseBoxes.length && pts.length) {
