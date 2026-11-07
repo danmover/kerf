@@ -256,8 +256,10 @@ export function uciVerdict(items: CheckItem[]): "pass" | "warn" | "fail" | "pend
 }
 
 /** One line per analysis for the design overview. */
-export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = [], air?: AirflowRun): string {
+export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = [], air?: AirflowRun, study?: string): string {
   if (spec.kind === "airflow") return airflowLine(spec, air);
+  if (spec.kind === "study")
+    return `"${spec.label}" design study (${spec.goal.text}, varying ${spec.vary.map((v) => v.name).join(", ")}; up to ${spec.runs} designs): ${study ?? "not run yet; it runs only when asked (run_analysis label:)"}`;
   if (spec.kind === "uci") {
     const items = uciItems(spec, report);
     const bad = items.filter((i) => i.status === "fail" || i.status === "warn");

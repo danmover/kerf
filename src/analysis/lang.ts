@@ -45,6 +45,7 @@ import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
 import { COOLING } from "./thermalMaterials";
 import { buildAirflow } from "./aeroLang";
+import { buildStudy } from "./studyLang";
 
 /** supports plus loads in one analysis: each one is a pass over the model's surface */
 export const MAX_BOUNDARY_ITEMS = 200;
@@ -367,6 +368,8 @@ export interface AnalysisEnv {
   fail(msg: string, span: Span): never;
   /** the kind of a top-level name: "part", "component", or undefined */
   kindOf(name: string): string | undefined;
+  /** a param declared so far, for a design study's vary: */
+  param?(name: string): { value: number | string | boolean; text: string; min?: number; max?: number; locked: boolean } | undefined;
 }
 
 /** Turn the evaluated items of an analysis block into a spec. */
@@ -374,6 +377,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   const fail: (msg: string, span: Span) => never = env.fail;
   if (props.some((p) => p.name === "uci")) return buildUci(label, props, flags, span, env);
   if (props.some((p) => p.name === "airflow")) return buildAirflow(label, props, flags, span, env);
+  if (props.some((p) => p.name === "vary")) return buildStudy(label, props, flags, span, env);
   const isDrive = props.some((p) => p.name === "drive");
   const allowed = isDrive ? DRIVETRAIN_PROPS : STRUCTURAL_PROPS;
   for (const p of props) {
@@ -384,7 +388,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
           ? isDrive
             ? `"${p.name}:" belongs to a structural analysis. A drivetrain analysis (one with drive:) takes ${DRIVETRAIN_PROPS.join(", ")}.`
             : `"${p.name}:" belongs to a drivetrain analysis, which starts with drive: gear_name.`
-          : `Unknown analysis property "${p.name}". Use ${STRUCTURAL_PROPS.join(", ")} for stress, drive:, torque:, speed:, life: for a gear train, or airflow: 45kmh for drag and the flow round it.`,
+          : `Unknown analysis property "${p.name}". Use ${STRUCTURAL_PROPS.join(", ")} for stress, drive:, torque:, speed:, life: for a gear train, airflow: 45kmh for drag and the flow round it, or vary: [param, …] for a design study.`,
         p.span,
       );
     }

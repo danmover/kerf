@@ -72,7 +72,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   overview: { detail: "Status, the brief, the design at a glance and recent changes", keywords: "summary status dashboard home at a glance" },
   brief: { detail: "What it's for, where it's used and what it must survive: each becomes a check", keywords: "requirements uses spec specification purpose goals constraints" },
   checks: { detail: "Every check on the design, and why it passes or fails", keywords: "tests problems errors warnings failing issues interference validate verify" },
-  analysis: { detail: "Strength, drop, vibration, heat, buckling, airflow, gear and bike rule runs", keywords: "fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy" },
+  analysis: { detail: "Strength, drop, vibration, heat, buckling, design studies, airflow, gear and bike rule runs", keywords: "fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy design study optimise optimize sweep" },
   build: {
     title: "Build: electronics and wiring",
     detail: "Wiring, boards, power, calculations, firmware and tests for a machine",
@@ -206,7 +206,7 @@ export function findItems(ctx: FindContext): FindItem[] {
     }
     for (const k of kindsFor(model)) {
       const I = Icon[k.icon];
-      push(ask(`ask:analysis:${k.id}`, "Analyse", `Add ${k.id === "uci" ? "a UCI rules check" : `a${/^[aeiou]/i.test(k.label) ? "n" : ""} ${k.label.toLowerCase()} analysis`}`, k.detail, `${k.keywords} analysis analyse test`, k.ask, <I size={14} />));
+      push(ask(`ask:analysis:${k.id}`, "Analyse", `Add ${k.id === "uci" ? "a UCI rules check" : k.id === "study" ? "a design study" : `a${/^[aeiou]/i.test(k.label) ? "n" : ""} ${k.label.toLowerCase()} analysis`}`, k.detail, `${k.keywords} analysis analyse test`, k.ask, <I size={14} />));
     }
 
     // ── making ──

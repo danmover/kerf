@@ -48,6 +48,8 @@ import { FASTEN_TOOL_DEFS, FASTEN_TOOL_TITLES, runFastenTool } from "./fastenToo
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
 import { useAnalysis, whenAnalyzed, runFine, runAccuracyCheck, showResults, type ResultField } from "../analysis/runtime";
+import { startStudy, studyStatus, studySummary } from "../analysis/studyRuntime";
+import type { AnalysisSpec, StudySpec } from "../analysis/spec";
 import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict, uciSummary, uciItems, uciVerdict } from "../analysis/summary";
 import { airflowItems, showAirflow, startAirflowNow, useAirflow, whenAirflowDone, type SurfaceShown } from "../analysis/aeroRuntime";
 import { airflowSummary } from "../analysis/aeroSummary";
@@ -169,11 +171,11 @@ export const TOOL_DEFS = [
   {
     name: "run_analysis",
     description:
-      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Heat analyses (heat: or hold:) report each part's hottest point against its limit, where the heat comes from and goes, and for a warm-up (time:) when a part passes its limit; with fix: they also report the thermal stress, with hot plastics weakened. Analyses with buckling report how many times the loads it takes to buckle the parts and where. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. Airflow analyses (airflow: 45kmh) put the parts in a wind tunnel (lattice-Boltzmann LES on the GPU, rolling road, spinning wheels, an optional standard rider) and report drag, drag area CdA, side force, lift and watts at each yaw angle, the drag of each part, the surface patches that cause the most drag (pressure on fronts, suction behind backs, friction) and the change from the previous version; they take from under a minute to several minutes, and if one is still running when this returns, call run_analysis again later. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call, or check: true for an accuracy check (it solves again with 1.5× smaller elements and says how far each answer moved, and whether a peak stress is a singularity at a support).",
+      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Heat analyses (heat: or hold:) report each part's hottest point against its limit, where the heat comes from and goes, and for a warm-up (time:) when a part passes its limit; with fix: they also report the thermal stress, with hot plastics weakened. Analyses with buckling report how many times the loads it takes to buckle the parts and where. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. Airflow analyses (airflow: 45kmh) put the parts in a wind tunnel (lattice-Boltzmann LES on the GPU, rolling road, spinning wheels, an optional standard rider) and report drag, drag area CdA, side force, lift and watts at each yaw angle, the drag of each part, the surface patches that cause the most drag (pressure on fronts, suction behind backs, friction) and the change from the previous version; they take from under a minute to several minutes, and if one is still running when this returns, call run_analysis again later. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call, or check: true for an accuracy check (it solves again with 1.5× smaller elements and says how far each answer moved, and whether a peak stress is a singularity at a support). A design study (an analysis with vary:) runs only when named with label: it builds, checks and solves up to its runs: designs and returns the best one that passes, every design tried and how much each parameter matters; apply a design with edit_design alternative: \"<study> #<n>\".",
     input_schema: {
       type: "object" as const,
       properties: {
-        label: { type: "string", description: "Run only the analysis with this label; default all." },
+        label: { type: "string", description: "Run only the analysis with this label; default all except design studies, which run only when named." },
         fine: { type: "boolean", description: "Re-run structural analyses at the fine resolution (slower, closer answer)." },
         check: { type: "boolean", description: "Accuracy check: solve structural and heat analyses twice, the second time with smaller elements, and report how far the answers moved (about 4× the time)." },
       },
@@ -756,7 +758,7 @@ export function modelSummary(m: Model | null): string {
   if (m.analyses.length) {
     const a = useAnalysis.getState();
     const air = useAirflow.getState();
-    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label), useDesign.getState().report?.items, air.runs.get(x.label))}`).join("\n"));
+    lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label), useDesign.getState().report?.items, air.runs.get(x.label), x.kind === "study" ? studyStatus(x) : undefined)}`).join("\n"));
   }
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
@@ -1192,8 +1194,24 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           content: "This design has no analysis block yet. Add one with edit_design (see Analysis blocks in the language reference), then call run_analysis.",
           card: { title: "No analysis to run", status: "error" },
         };
-      const targets = p.data.label ? all.filter((a) => a.label === p.data.label) : all;
-      if (!targets.length) return { isError: true, content: `No analysis is labelled "${p.data.label}". Analyses: ${all.map((a) => `"${a.label}"`).join(", ")}.`, card: { title: "Analysis not found", status: "error" } };
+      const named = p.data.label ? all.filter((a) => a.label === p.data.label) : all;
+      if (!named.length) return { isError: true, content: `No analysis is labelled "${p.data.label}". Analyses: ${all.map((a) => `"${a.label}"`).join(", ")}.`, card: { title: "Analysis not found", status: "error" } };
+      // a design study builds many designs, so it runs only when it is named
+      const study = p.data.label ? named.find((a): a is StudySpec => a.kind === "study") : undefined;
+      if (study) {
+        const st = await startStudy(study.label);
+        const r = st.result;
+        const best = r && r.best !== null ? r.runs[r.best] : null;
+        return {
+          isError: st.status === "error" || undefined,
+          content: studySummary(study, st),
+          card: { title: best ? `${study.label}: best of ${r!.runs.length} designs` : `${study.label}: ${st.status === "error" ? "could not run" : "no design passes"}`, detail: studyStatus(study), status: st.status === "error" ? "error" : "done" },
+        };
+      }
+      const studies = named.filter((a) => a.kind === "study");
+      const targets = named.filter((a): a is Exclude<AnalysisSpec, StudySpec> => a.kind !== "study");
+      if (!targets.length)
+        return { isError: true, content: `Only design studies here (${studies.map((a) => `"${a.label}"`).join(", ")}); they build many designs, so they run only when named: run_analysis label: "<study>".`, card: { title: "Name the study to run", status: "error" } };
       if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
       if (p.data.check) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.check) runAccuracyCheck(a.label);
       if (targets.some((a) => a.kind === "airflow")) {
@@ -1252,7 +1270,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         content:
           text +
           (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : "") +
-          (airShown ? `\n\nThe airflow of "${airShown.label}" is shown on the user's model. Use capture_view with airflow: "pressure", "streamlines" or "wake" to look at it.` : ""),
+          (airShown ? `\n\nThe airflow of "${airShown.label}" is shown on the user's model. Use capture_view with airflow: "pressure", "streamlines" or "wake" to look at it.` : "") +
+          (studies.length ? `\n\nDesign studies (${studies.map((a) => `"${a.label}"`).join(", ")}) were not run: each builds many designs, so it runs only when named, with run_analysis label: "<study>".` : ""),
         card: { title, detail: verdicts.map((v, i) => `${targets[i].label}: ${v}`).join(" · "), status: fails ? "error" : "done" },
       };
     }
