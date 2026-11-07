@@ -8,6 +8,7 @@ import type { CompSolid, LocalFields, Placement } from "../library/components";
 import type { CatalogPart } from "./types";
 import { footprintSolids } from "./catalog/footprints";
 import { THREADS, type ThreadSpec } from "../library/standards";
+import { EDF_STUB, edfLeadExit } from "./harness/plugs";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -371,7 +372,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
     // edf: an electric ducted fan. `at` is the centre of the intake face and `axis` points out of the intake,
     // the way the fan pushes; the housing runs back along -Z to the exhaust. od housing outside diameter,
     // fan_d the bore, length intake to exhaust, hub_d the motor hub, blades rotor blades, stators stator
-    // vanes, lead_az where the three motor leads leave the rear (degrees from +X). The housing and stator
+    // vanes, lead_az where the three motor leads leave the housing's side over the stator (degrees from +X). The housing and stator
     // are the main solid, the rotor the second (it spins). tabs mounting tabs round the intake ring (tab_t
     // thick, through holes hole_d on tab_circle, first at tab_start degrees) take screws and nuts into the
     // seat behind them; `mount` is that seat's cut: the housing bore back along -Z and a hole per tab.
@@ -433,12 +434,14 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
           ...Array.from({ length: nb }, (_, i) => ({ op: "add" as const, shape: blade((360 * i) / nb) })),
         ],
       };
-      // the three motor leads leave the rear of the hub through the stator, bunched
-      const lr = (rh + ri) / 2;
+      // the three motor leads come out through a stator vane and leave the housing's side at lead_az, one behind
+      // the other along the axis, as short stubs: the harness carries them on from there (harness/plugs.ts)
+      const u: V3 = [Math.cos(laz), Math.sin(laz), 0];
       const leads: PartRecipe = {
-        base: { t: "union", shapes: [-1, 0, 1].map((k) => ({ t: "cyl" as const, d: 2.8, h: 26, at: [lr * Math.cos(laz) - k * 3 * Math.sin(laz), lr * Math.sin(laz) + k * 3 * Math.cos(laz), -L - 24] as V3, dir: ZP })) },
+        base: { t: "union", shapes: [0, 1, 2].map((k) => ({ t: "cyl" as const, d: 2.8, h: EDF_STUB + 2, at: edfLeadExit(d, k).p.map((v, i) => v - u[i] * (EDF_STUB + 2)) as V3, dir: u })) },
         ops: [],
       };
+      const lead1 = edfLeadExit(d, 1).p;
       return {
         placement: "axis",
         solids: [
@@ -448,7 +451,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         ],
         fields: {
           scalars: { od, fan_d: fd, hub_d: hd, length: L, tab_t: tt, ...mountScalars(screw, 0) },
-          points: { at: Z0, intake: Z0, exhaust: [0, 0, -L], center: [0, 0, -L / 2], leads: [lr * Math.cos(laz), lr * Math.sin(laz), -L - 24] },
+          points: { at: Z0, intake: Z0, exhaust: [0, 0, -L], center: [0, 0, -L / 2], leads: lead1 },
           // the tab holes on the back of the tabs, where the seat behind them starts
           pointLists: { holes: tabs.map(([x, y]) => [x, y, -tt] as V3) },
           dirs: { axis: ZP },

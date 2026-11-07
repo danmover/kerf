@@ -293,6 +293,22 @@ export function cableWires(port: string | undefined, color: string, gauge: numbe
 
 const num = (d: Record<string, number>, k: string, def: number) => (typeof d[k] === "number" ? d[k] : def);
 
+/**
+ * Where a ducted fan's k-th motor lead (0, 1, 2) leaves the housing, and the way it points: out of the side at
+ * lead_az over the stator (z = -0.7 length, the vanes' middle), one behind the other along the axis, at the end of
+ * the short stubs geometry.ts draws.
+ */
+export function edfLeadExit(d: Record<string, number>, k: number): { p: V3; out: V3 } {
+  const od = num(d, "od", 70);
+  const L = num(d, "length", 66);
+  const a = (num(d, "lead_az", 0) * Math.PI) / 180;
+  const u: V3 = [Math.cos(a), Math.sin(a), 0];
+  const r = od / 2 + EDF_STUB;
+  return { p: [u[0] * r, u[1] * r, -0.7 * L + (Math.max(0, Math.min(2, k)) - 1) * 3.4], out: u };
+}
+/** how far a ducted fan's motor leads stand out of its housing before the harness takes over, mm */
+export const EDF_STUB = 6;
+
 /** the part's natural plug kind when the catalog has no entry for it */
 function defaultKind(part: CatalogPart, pin: PinDef): PlugKind {
   if (pin.port === "usb") return "usb_micro";
@@ -432,6 +448,12 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): P
     }
     case "servo":
       return { kind: "lead", at: [num(d, "w", 40) / 2 - num(d, "shaft_x", 10), 0, -num(d, "h", 37) / 2], out: X, row: Z, ways: 3 };
+    case "edf": {
+      // the three motor leads leave the housing's side through a stator vane, at lead_az, one behind the other
+      // along the axis (geometry.ts edf), and run out sideways: never through the intake or the jet
+      const at = edfLeadExit(d, Math.max(0, part.pins.filter((q) => q.type === "motor").indexOf(pin)));
+      return { kind: "lead", at: at.p, out: at.out, row: Z, ways: 1 };
+    }
     case "fan": {
       const s = num(d, "size", 40);
       return { kind, at: [s / 2, s / 2 - 5, num(d, "t", 10) / 2], out: X, row: Z, ways };

@@ -65,6 +65,9 @@ interface Item {
   pins: NetPin[];
   /** for buses: the pin the star wiring starts from */
   hub?: NetPin;
+  /** for buses: pins wired straight to the battery or supply, and switch contacts that only sense (keys) */
+  fed?: string[];
+  sense?: string[];
   color: string;
   colorSuggested: boolean;
   gauge?: number;
@@ -147,13 +150,24 @@ function suggestGauge(kind: WireKind, pins: NetPin[], all: NetPin[]): number | u
   return heavy ? 18 : 22;
 }
 
-/** The pin a star-wired net starts from: its supply, else the power-side terminal, else the first pin. */
-function hubOf(pins: NetPin[]): NetPin {
+/** Amps a part's supply outputs give, the most of them (0 when it has none). */
+const sourceAmps = (p: NetPin) => Math.max(0, ...p.part.pins.filter((q) => q.type === "pwr_out" || q.type === "pwr_rail").map((q) => q.imax ?? 0.5));
+
+/**
+ * The pin a net's wiring starts from: its supply, else the power-side terminal (a battery connector, a fuse, a
+ * switch), else for a ground the return of the supply that gives the most current (an ESC's BEC), else the first
+ * pin. `skip` leaves pins out: a switch contact that only senses, when it is far from the rest (wireList).
+ */
+function hubOf(pins: NetPin[], skip?: (p: NetPin) => boolean): NetPin {
+  const ok = skip ? pins.filter((p) => !skip(p)) : pins;
+  const ground = ok.filter((p) => p.pin.type === "gnd");
   return (
-    pins.find((p) => p.pin.type === "pwr_out") ??
-    pins.find((p) => p.pin.type === "pwr_rail") ??
-    pins.find((p) => p.pin.type === "passive" && POWER_KINDS.includes(p.part.kind)) ??
-    pins.find((p) => p.pin.type === "gnd" && POWER_KINDS.includes(p.part.kind)) ??
+    ok.find((p) => p.pin.type === "pwr_out") ??
+    ok.find((p) => p.pin.type === "pwr_rail") ??
+    ok.find((p) => p.pin.type === "passive" && POWER_KINDS.includes(p.part.kind)) ??
+    ground.find((p) => POWER_KINDS.includes(p.part.kind)) ??
+    ground.filter((p) => sourceAmps(p) > 0).sort((a, b) => sourceAmps(b) - sourceAmps(a))[0] ??
+    ok[0] ??
     pins[0]
   );
 }
@@ -180,7 +194,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const gauge = o.gauge ?? suggestGauge(kind, pins, net?.pins ?? pins);
     const cable = kind === "cable" ? (CABLE_NAMES[pins.find((p) => p.pin.port)?.pin.port ?? ""] ?? "cable") : undefined;
     const name = o.name ?? net?.name ?? o.label ?? (cable ? `${instName(pins[0])}.${pins[0].pin.id}` : net ? netLabel(net) : `${instName(pins[0])}.${pins[0].pin.id}`);
-    items.push({ id: items.length, name, kind, bus, pins, hub: bus ? hubOf(pins) : undefined, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name) });
+    items.push({ id: items.length, name, kind, bus, pins, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name) });
   };
   for (const w of m.wires) {
     const a = resolve(w.a);
@@ -198,6 +212,21 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const boards = new Set(pins.map((p) => boardOf.get(p.comp) ?? ""));
     if (boards.size === 1 && !boards.has("")) continue;
     if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation });
+  }
+  // pins with a wire of their own straight to a battery's or supply's terminal, and switch contacts that only sense
+  // (an e-stop's spare contact tied to ground): neither is somewhere a trunk runs out to
+  const supply = (p: NetPin) => p.part.kind === "battery" || p.part.kind === "psu";
+  const fed = new Set<string>();
+  for (const it of items) if (!it.bus && it.pins.length === 2 && supply(it.pins[0]) !== supply(it.pins[1])) fed.add((supply(it.pins[0]) ? it.pins[1] : it.pins[0]).key);
+  const switchesSupply = (p: NetPin) => {
+    const other = p.pin.through ? nl.netOf.get(`${p.comp}[${p.index}].${p.pin.through}`) : undefined;
+    return !!other?.pins.some((q) => supply(q) || q.pin.type === "pwr_out" || q.pin.type === "pwr_rail");
+  };
+  for (const it of items) {
+    if (!it.bus) continue;
+    it.hub = hubOf(it.pins);
+    it.fed = it.pins.filter((p) => fed.has(p.key)).map((p) => p.key);
+    it.sense = it.pins.filter((p) => p.pin.type === "passive" && p.part.kind === "switch" && !switchesSupply(p)).map((p) => p.key);
   }
   return items;
 }
@@ -235,6 +264,104 @@ export const cutLength = (runMm: number) => Math.ceil((runMm + SLACK_MM) / 50) *
 
 const end = (p: NetPin): WireEnd => ({ comp: instName(p), index: p.index, pin: p.pin.id, label: pinText(p), part: p.part.name });
 
+/** Pins of a net this close together (mm along the axes) are one group that a single trunk can feed. */
+const GROUP_MM = 120;
+/** A group at least this far from the start of the net gets one trunk to it instead of a wire to every pin, mm. */
+const TRUNK_MM = 250;
+
+/** Amps a part takes through its supply and ground pins at most: its supply pins' draw, or most of a motor's stall current. */
+function partDraw(p: NetPin): number {
+  const draw = p.part.pins.filter((q) => q.type === "pwr_in" && typeof q.draw === "number").reduce((s, q) => s + q.draw!, 0);
+  const stall = typeof p.part.specs.i_stall === "number" ? p.part.specs.i_stall : 0;
+  return Math.max(draw, stall * 0.6, 0.05);
+}
+
+/** One wire of a net, and the pins it carries current for when it feeds more than its far end. */
+interface NetHop {
+  a: NetPin;
+  b: NetPin;
+  feeds?: NetPin[];
+}
+
+/**
+ * The wires that make up a net of many pins. Each pin gets its own wire from the start of the net (a star), except
+ * a group of pins close together far from the start: one trunk runs to the nearest of them and short branches
+ * split from there to the rest, the way a harness is made (a ground to every board on a gimbal is one wire across
+ * the joints, not one per board). Heavy supply nets keep the star so each load's current comes back on its own
+ * wire, and the trunks are used only when they save a good part of the cable.
+ */
+function netHops(it: Item, hub: NetPin, positions?: Map<string, V3[]>): NetHop[] {
+  const others = it.pins.filter((p) => p !== hub);
+  const star = others.map((b) => ({ a: hub, b }));
+  if (!positions || others.length < 3 || (it.kind !== "ground" && it.kind !== "power") || (it.gauge !== undefined && it.gauge <= 18)) return star;
+  const at = (p: NetPin) => positions.get(p.comp)?.[p.index];
+  if (!at(hub) || others.some((p) => !at(p))) return star;
+  const md = (a: NetPin, b: NetPin) => {
+    const pa = at(a)!;
+    const pb = at(b)!;
+    return Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) + Math.abs(pa[2] - pb[2]);
+  };
+  // groups: pins joined by steps of GROUP_MM or less
+  const group = others.map((_, i) => i);
+  const root = (i: number): number => (group[i] === i ? i : (group[i] = root(group[i])));
+  for (let i = 0; i < others.length; i++) for (let j = i + 1; j < others.length; j++) if (md(others[i], others[j]) <= GROUP_MM) group[root(i)] = root(j);
+  const groups = new Map<number, NetPin[]>();
+  others.forEach((p, i) => groups.set(root(i), [...(groups.get(root(i)) ?? []), p]));
+  const hops: NetHop[] = [];
+  for (const g of groups.values()) {
+    const entry = g.reduce((b, p) => (md(hub, p) < md(hub, b) ? p : b), g[0]);
+    // a trunk pays when it feeds four parts or more, and only downstream: not to the group the supply comes in at
+    if (new Set(g.map((p) => `${p.comp}[${p.index}]`)).size < 4 || md(hub, entry) < TRUNK_MM || g.some((p) => it.fed?.includes(p.key))) {
+      for (const b of g) hops.push({ a: hub, b });
+      continue;
+    }
+    // the trunk, then the shortest branches that reach the rest of the group from it (Prim's tree)
+    const parent = new Map<NetPin, NetPin>();
+    const inTree = new Set([entry]);
+    while (inTree.size < g.length) {
+      let best: [NetPin, NetPin] | null = null;
+      for (const u of inTree) for (const v of g) if (!inTree.has(v) && (!best || md(u, v) < md(best[0], best[1]))) best = [u, v];
+      parent.set(best![1], best![0]);
+      inTree.add(best![1]);
+    }
+    const below = (p: NetPin): NetPin[] => [p, ...g.filter((q) => parent.get(q) === p).flatMap(below)];
+    hops.push({ a: hub, b: entry, feeds: g });
+    for (const v of g) if (v !== entry) {
+      const sub = below(v);
+      hops.push({ a: parent.get(v)!, b: v, feeds: sub.length > 1 ? sub : undefined });
+    }
+  }
+  const total = (hs: NetHop[]) => hs.reduce((s, h) => s + md(h.a, h.b), 0);
+  return hops.some((h) => h.feeds) && total(hops) <= 0.8 * total(star) ? hops : star;
+}
+
+/**
+ * The pin a net's wiring starts from, where the parts are known: as hubOf picks it, except that a switch contact that
+ * only senses never starts it when it is far from the rest of the net (an e-stop on a pendant: starting the ground
+ * there would run every ground wire out to the pendant and back).
+ */
+function hubFor(it: Item, positions?: Map<string, V3[]>): NetPin {
+  const hub = it.hub!;
+  const at = (p: NetPin) => positions?.get(p.comp)?.[p.index];
+  const h = at(hub);
+  if (!h || !it.sense?.includes(hub.key)) return hub;
+  const near = Math.min(...it.pins.filter((p) => p !== hub && at(p)).map((p) => Math.abs(at(p)![0] - h[0]) + Math.abs(at(p)![1] - h[1]) + Math.abs(at(p)![2] - h[2])));
+  return near > TRUNK_MM ? hubOf(it.pins, (p) => !!it.sense?.includes(p.key)) : hub;
+}
+
+/**
+ * A hop's gauge: for one that feeds several parts, the thinnest that carries what they all take (never thinner than
+ * the net's) when Kerf chose the net's gauge, else the design's, with a note when that is too thin.
+ */
+function hopGauge(it: Item, h: NetHop): { gauge?: number; note?: string } {
+  if (it.gauge === undefined || !h.feeds) return { gauge: it.gauge };
+  const parts = new Map(h.feeds.map((p) => [`${p.comp}[${p.index}]`, p]));
+  const need = [...parts.values()].reduce((s, p) => s + partDraw(p), 0);
+  const fit = GAUGES.find((g) => awgAmpacity(g, it.insulation) >= need) ?? 10;
+  if (it.gaugeSuggested) return { gauge: Math.min(it.gauge, fit) };
+  return awgAmpacity(it.gauge, it.insulation) >= need ? { gauge: it.gauge } : { gauge: it.gauge, note: `It carries up to about ${need.toFixed(1)} A for the parts past it: ${it.gauge} AWG is thin for that, use ${fit} AWG.` };
+}
+
 const KIND_ORDER: Record<WireKind, number> = { ground: 0, signal: 1, motor: 2, cable: 3, power: 4 };
 
 /**
@@ -254,11 +381,17 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
   });
   items.forEach((it, order) => {
     const group = groupFirst.get(it.named ? `net:${it.name}` : `kind:${it.kind}`)!;
-    const pairs: [NetPin, NetPin][] = it.bus ? it.pins.filter((p) => p !== it.hub).map((p) => [it.hub!, p]) : [[it.pins[0], it.pins[1]]];
-    for (const [a, b] of pairs) {
+    const hub = it.bus ? hubFor(it, positions) : undefined;
+    const hops: NetHop[] = hub ? netHops(it, hub, positions) : [{ a: it.pins[0], b: it.pins[1] }];
+    const trunked = hops.some((h) => h.feeds);
+    for (const h of hops) {
+      const { a, b } = h;
       const notes: string[] = [];
       if (it.cable) notes.push(`Use the ${it.cable} supplied with the part, or one of the same type.`);
-      if (it.bus && it.pins.length > 3 && b === it.pins.find((p) => p !== it.hub)) notes.push(`${it.pins.length} pins on this net: a terminal block or lever connector near ${instName(a)} keeps it tidy.`);
+      if (it.bus && it.pins.length > 3 && !trunked && b === it.pins.find((p) => p !== hub)) notes.push(`${it.pins.length} pins on this net: a terminal block or lever connector near ${instName(a)} keeps it tidy.`);
+      if (h.feeds && a === hub) notes.push(`Trunk to ${[...new Set(h.feeds.map(instName))].join(", ")}: it splits at ${instName(b)} into the branches to the others.`);
+      const { gauge, note } = hopGauge(it, h);
+      if (note) notes.push(note);
       rows.push({
         order: KIND_ORDER[it.kind] * 1e6 + group * 1e3 + order,
         named: it.named,
@@ -266,7 +399,7 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
         to: end(b),
         net: it.name,
         kind: it.kind,
-        gauge: it.gauge,
+        gauge,
         gaugeSuggested: it.gaugeSuggested,
         insulation: it.insulation,
         color: it.color,

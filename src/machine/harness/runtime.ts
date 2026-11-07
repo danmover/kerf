@@ -21,6 +21,8 @@ import type { HarnessRouteRequest, HarnessRouteResponse, TravelInput } from "./c
 import { spliceKey, type SplicePlace, type WiringFindings } from "./clash";
 import type { MountResult } from "./mounts";
 import { mountParts, mountSpecs, screwSpecs, solidsInput } from "./inputs";
+import { flowZones } from "./flow";
+import { pivotJoints } from "./pivots";
 import { wiringItems } from "./checks";
 
 interface HarnessState {
@@ -169,12 +171,17 @@ export function updateHarness(model: Model) {
   };
   const specs = mountSpecs(model, (h) => meshes.get(h)?.bbox, mounts);
   const screws = screwSpecs(model);
+  // cables keep out of fans' airflow and cross the design's pivots beside their bearings
+  const pivots = pivotJoints(model);
+  const flow = flowZones(model);
   const key = hash(
     JSON.stringify(wires.map((w) => [w.id, w.a.p, w.b.p])) +
       parts.map((p) => `${p.id}:${p.hash}:${JSON.stringify(p.xf)}`).join("|") +
       (travel?.key ?? "") +
       JSON.stringify(specs.map((s) => [s.comp, s.held])) +
-      JSON.stringify(screws.map((s) => [s.id, s.seat, s.axis, s.length])),
+      JSON.stringify(screws.map((s) => [s.id, s.seat, s.axis, s.length])) +
+      JSON.stringify(pivots.map((j) => [j.name, j.at, j.axis, j.limits, j.parent, j.parts.length])) +
+      JSON.stringify(flow.map((z) => [z.partId, z.kind, z.o, z.dir])),
   );
   const st = useHarness.getState();
   if (key === st.key) {
@@ -193,7 +200,7 @@ export function updateHarness(model: Model) {
     // the worker takes the mesh buffers, so it gets its own copies
     input: { geos: geos.map((g) => ({ positions: g.positions.slice(), indices: g.indices.slice() })), placed, wires },
     travel: travel?.input,
-    wiring: { harness, mounts: specs, screws },
+    wiring: { harness, mounts: specs, screws, pivots, flow },
   };
   ensureWorker().postMessage(
     req,
