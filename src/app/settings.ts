@@ -43,6 +43,8 @@ export interface Settings {
   fasterFollowUps: boolean;
   /** how hard Claude works on each message, chosen beside Send (see SPEEDS) */
   speed: Speed;
+  /** chosen beside Send: Claude lays out two to four approaches for the user to pick before it builds */
+  optionsFirst: boolean;
   showThinking: boolean;
   reduceMotion: boolean;
   grid: boolean;
@@ -133,6 +135,7 @@ const DEFAULTS: Settings = {
   effort: "high",
   fasterFollowUps: true,
   speed: "normal",
+  optionsFirst: false,
   lessons: [],
   useLessons: true,
   leanPrompt: false,

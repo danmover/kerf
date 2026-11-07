@@ -279,6 +279,10 @@ export function findItems(ctx: FindContext): FindItem[] {
   // ── settings and help ──
   for (const x of SETTINGS_FIND) push({ id: `set:${x.tab}`, group: "Settings", title: x.title, detail: x.detail, keywords: `settings preferences options ${x.keywords}`, icon: <Icon.Settings size={14} />, run: () => openSettings(x.tab) });
   for (const x of SPEEDS) push({ id: `set:speed:${x.value}`, group: "Settings", title: `${x.label} speed`, detail: x.d, keywords: "speed fast quick slow careful thorough effort think claude ai", icon: <Icon.Bolt size={14} />, tag: s.speed === x.value ? "on" : undefined, run: () => updateSettings({ speed: x.value }) });
+  push(
+    { id: "set:options-first", group: "Settings", title: "Options first", detail: "Claude lays out two to four ways to do it for you to pick, before it builds anything", keywords: "options choices alternatives approaches choose pick ask first plan before building compare ideas variants claude ai", icon: <Icon.Fork size={14} />, tag: s.optionsFirst ? "on" : undefined, pane: "chat", run: () => updateSettings({ optionsFirst: !s.optionsFirst }) },
+    { id: "set:thinking", group: "Settings", title: "Claude's reasoning", detail: "Show a summary of Claude's thinking at each step of its work", keywords: "thinking reasoning thought process steps why explain show hide claude ai", icon: <Icon.Bulb size={14} />, tag: s.showThinking ? "on" : undefined, run: () => updateSettings({ showThinking: !s.showThinking }) },
+  );
   const light = currentTheme() === "light";
   push(
     { id: "set:theme", group: "Settings", title: light ? "Dark theme" : "Light theme", detail: "Switch the colours", keywords: "theme dark light mode night day colours colors", icon: <Icon.Sun size={14} />, run: () => setTheme(light ? "dark" : "light") },

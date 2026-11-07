@@ -302,6 +302,8 @@ export class SceneController {
   private raf = 0;
   private last = performance.now();
   private camAnim: { t0: number; dur: number; fromDir: THREE.Vector3; toDir: THREE.Vector3; fromDist: number; toDist: number; fromTarget: THREE.Vector3; toTarget: THREE.Vector3 } | null = null;
+  /** a mouse wheel's notch still to zoom, in wheel pixels, and where the pointer was */
+  private zoomGlide: { left: number; x: number; y: number } | null = null;
   private display: DisplayState = { hidden: new Set(), selected: new Set(), hovered: null, focus: new Set(), isolate: false, xray: false, edges: true, grid: true, reduceMotion: false };
   private section = { on: false, axis: "x" as "x" | "y" | "z", t: 0.5, flip: false };
   /** animated section position: slides in from the edge when switched on */
@@ -403,6 +405,9 @@ export class SceneController {
     this.controls.zoomToCursor = true;
     this.controls.screenSpacePanning = true;
     this.controls.autoRotateSpeed = 1.1;
+    // a mouse wheel's notch zooms over a few frames instead of in one jump; a
+    // trackpad's stream of small steps is smooth already and goes straight through
+    container.addEventListener("wheel", (e) => this.glideWheel(e), { capture: true, passive: false });
     this.controls.addEventListener("start", () => {
       this.camAnim = null;
       this.autoFit = false;
@@ -767,8 +772,25 @@ export class SceneController {
     this.changed = true;
   }
 
+  /** Take a mouse wheel's notch to zoom smoothly over the next frames (see animate). */
+  private glideWheel(e: WheelEvent) {
+    const c = this.controls as OrbitControls & { state?: number };
+    if (e.target !== this.renderer.domElement || this.display.reduceMotion || !c.enabled || !c.enableZoom || e.ctrlKey || (c.state !== undefined && c.state !== -1)) return;
+    // the same units the controls use: lines and pages as pixels
+    const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 100 : e.deltaY;
+    if (Math.abs(px) < 40) return;
+    e.preventDefault();
+    e.stopPropagation();
+    c.dispatchEvent({ type: "start" });
+    // turning the wheel the other way stops what is left of the last notch
+    const left = this.zoomGlide && Math.sign(this.zoomGlide.left) === Math.sign(px) ? this.zoomGlide.left : 0;
+    this.zoomGlide = { left: left + px, x: e.clientX, y: e.clientY };
+    this.changed = true;
+  }
+
   /** Swing the camera to a position and target (at once with reduced motion). */
   private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
+    this.zoomGlide = null;
     if (this.display.reduceMotion) {
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
@@ -1666,6 +1688,17 @@ export class SceneController {
     let moving = false;
     const rm = this.display.reduceMotion;
 
+    // a wheel notch, a fraction each frame, towards the pointer: zoom is
+    // multiplicative, so the pieces add up to exactly the notch's zoom
+    if (this.zoomGlide && !this.camAnim) {
+      const g = this.zoomGlide;
+      const part = Math.abs(g.left) < 3 ? g.left : g.left * Math.min(1, dt * 16);
+      g.left -= part;
+      (this.controls as unknown as { _handleMouseWheel(e: { deltaY: number; clientX: number; clientY: number }): void })._handleMouseWheel({ deltaY: part, clientX: g.x, clientY: g.y });
+      if (Math.abs(g.left) < 0.01) this.zoomGlide = null;
+      moving = true;
+    } else this.zoomGlide = null;
+
     if (this.camAnim) {
       const a = this.camAnim;
       const k = Math.min(1, (now - a.t0) / a.dur);
@@ -2528,10 +2561,15 @@ function gridMaterial() {
       uniform vec3 uMinor;
       uniform vec3 uMajor;
       uniform float uAlpha;
+      // a line of the grid, about a pixel wide, faded out where its cells
+      // shrink to a few pixels (far away or seen edge-on), where it would only
+      // shimmer as moire
       float line(vec2 p, float cell) {
         vec2 q = p / cell;
-        vec2 g = abs(fract(q - 0.5) - 0.5) / fwidth(q);
-        return 1.0 - min(min(g.x, g.y), 1.0);
+        vec2 w = fwidth(q);
+        vec2 g = abs(fract(q - 0.5) - 0.5) / w;
+        float l = 1.0 - min(min(g.x, g.y), 1.0);
+        return l * (1.0 - smoothstep(0.18, 0.45, max(w.x, w.y)));
       }
       void main() {
         vec2 p = vWorld.xy;
@@ -2540,12 +2578,15 @@ function gridMaterial() {
         float d = length(p - uCenter.xy);
         float fade = 1.0 - smoothstep(uFade * 0.25, uFade, d);
         vec3 col = mix(uMinor, uMajor, major);
-        float a = max(minor * 0.45, major * 0.8);
-        float ax = 1.0 - min(abs(p.y) / fwidth(p.y) / 1.5, 1.0);
-        float ay = 1.0 - min(abs(p.x) / fwidth(p.x) / 1.5, 1.0);
-        col = mix(col, vec3(0.9, 0.18, 0.22), ax);
-        col = mix(col, vec3(0.12, 0.72, 0.36), ay);
-        a = max(a, max(ax, ay) * 0.75);
+        float a = max(minor * 0.5, major * 0.85);
+        // the X and Y axes: softer than pure red and green, and gone well before the
+        // horizon so they do not slice the backdrop in two
+        float ax = 1.0 - min(abs(p.y) / fwidth(p.y) / 1.3, 1.0);
+        float ay = 1.0 - min(abs(p.x) / fwidth(p.x) / 1.3, 1.0);
+        float axFade = 1.0 - smoothstep(uFade * 0.12, uFade * 0.75, d);
+        col = mix(col, vec3(0.86, 0.3, 0.33), ax);
+        col = mix(col, vec3(0.32, 0.72, 0.45), ay);
+        a = max(a, max(ax, ay) * 0.6 * axFade);
         gl_FragColor = vec4(col, a * fade * uAlpha);
       }`,
   });

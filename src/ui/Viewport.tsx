@@ -483,7 +483,7 @@ function Hud({ stage, parts }: { stage: string; parts: number }) {
             <span className="shimmer-text">{stage === "building" ? `building solids ${progress.done}/${progress.total}` : "running checks"}</span>
           </motion.div>
         ) : (
-          <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="idle" className="vp-hud-rest" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <b>{parts}</b> solids · eval {fmtNum(timings.evalMs, 0)} ms · build {fmtNum(timings.buildMs, 0)} ms
             {timings.reused > 0 && (
               <>

@@ -7,6 +7,7 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "./styles/app.css";
+import "./styles/chat.css";
 import "./styles/brand.css";
 import "./styles/topbar.css";
 import "./styles/motion.css";

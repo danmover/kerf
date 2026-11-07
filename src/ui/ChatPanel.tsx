@@ -1,7 +1,8 @@
 // The AI chat panel: conversation, live tool activity, choices and diffs.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { create } from "zustand";
 import { useChat, sendMessage, stop, retryLast, clearChat, addMidRun, withdrawMidRun, sendQueuedNow, type ChatItem } from "../ai/chat";
 import { usePlan, messageState, anyBranchOpen } from "../ai/plan";
 import { useAgents, isLive } from "../agents/progress";
@@ -15,7 +16,7 @@ import { getApiKey, subscribeKey } from "../persist/vault";
 import { getOpenAIKey, subscribeOpenAIKey } from "../persist/openaiVault";
 import { useAccount } from "../cloud/account";
 import { useSettings, updateSettings, MODELS, SPEEDS } from "../app/settings";
-import { openSettings, confirmDialog } from "../app/ui";
+import { openSettings, confirmDialog, toast } from "../app/ui";
 import { useProject } from "../app/project";
 import { audienceById, templateById, TEMPLATES } from "../demos/templates";
 import { desktop } from "../app/desktop";
@@ -27,7 +28,8 @@ import { useView, select } from "../app/view";
 import { Markdown } from "./Markdown";
 import { Icon } from "./icons";
 import { Menu, MenuItem, mod } from "./common";
-import { useChatDraft } from "./chatDraft";
+import { useChatDraft, askClaude } from "./chatDraft";
+import { feedRows, fmtDur, thoughtSections, type LogSummary, type StepMark } from "./chatFeed";
 import { LogoMark } from "./Logo";
 import { MicButton, VoiceBar, VoiceNotice, useVoiceInput } from "./voice/VoiceInput";
 import { AgentRunCard } from "./agents/AgentRunCard";
@@ -59,6 +61,14 @@ export function ChatPanel() {
   const feed = useRef<HTMLDivElement>(null);
   const lastUser = useMemo(() => [...items].reverse().find((i) => i.kind === "user")?.id, [items]);
   const stick = useStickToBottom(feed, lastUser);
+  const rows = useMemo(() => feedRows(items, busy), [items, busy]);
+  const opened = useLogs((s) => s.open);
+  // the newest turn's work log is open; earlier ones fold to their summary line unless opened
+  const lastTurn = useMemo(() => {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i].kind === "log") return rows[i].turn;
+    return null;
+  }, [rows]);
+  const isOpen = (turn: string) => opened[turn] ?? turn === lastTurn;
   const settings = useSettings();
   const model = MODELS.find((m) => m.id === settings.model)!;
   const spend = useChatSpend();
@@ -167,8 +177,15 @@ export function ChatPanel() {
         <PlanPane />
         <div className="chat-feed" ref={feed} aria-live="polite">
           {!items.length && <Welcome hasKey={!!key} />}
-          {items.map((it) => (it.kind === "tool" && it.name === "update_plan" ? null : <Item key={it.id} it={it} />))}
+          {rows.map((r) =>
+            r.kind === "log" ? (
+              <LogHead key={`log-${r.turn}`} turn={r.turn} summary={r.summary} open={isOpen(r.turn)} />
+            ) : !r.step || isOpen(r.turn) ? (
+              <FeedItem key={r.it.id} it={r.it} step={r.step} last={!!r.lastStep} />
+            ) : null,
+          )}
           <Suggestions items={items} busy={busy} />
+          <JumpToLatest feed={feed} stick={stick} items={items} />
         </div>
         <Composer busy={busy} hasKey={!!key} />
       </div>
@@ -214,11 +231,103 @@ function Welcome({ hasKey }: { hasKey: boolean }) {
   );
 }
 
+/** Which turns' work logs the reader opened or closed by hand (the newest is open until they close it). */
+const useLogs = create<{ open: Record<string, boolean> }>(() => ({ open: {} }));
+const setLogOpen = (turn: string, open: boolean) => useLogs.setState((s) => ({ open: { ...s.open, [turn]: open } }));
+
+/**
+ * One row of the feed. Items never change in place (the chat replaces an item
+ * when it changes), so a row redraws only when its own item does: while
+ * Claude streams, only the bubble it is writing into redraws, however long
+ * the chat.
+ */
+const FeedItem = memo(function FeedItem({ it, step, last }: { it: ChatItem; step: boolean; last: boolean }) {
+  return (
+    <div className={`feed-row${step ? " step" : ""}${last ? " last" : ""}${step && it.kind === "tool" && it.status === "running" ? " live" : ""}`} data-kind={it.kind}>
+      {step ? it.kind === "tool" ? <ToolStep it={it} /> : it.kind === "assistant" ? <ThoughtStep it={it} /> : <Item it={it} /> : <Item it={it} />}
+    </div>
+  );
+});
+
+const MARK_TIP: Record<StepMark, string> = { done: "done", error: "did not work", running: "running", thought: "thought" };
+
+/** The line above a turn's steps: how long Claude worked and what it did, which opens and closes the steps. */
+function LogHead({ turn, summary: s, open }: { turn: string; summary: LogSummary; open: boolean }) {
+  const secs = useElapsed(s.from, s.running);
+  const took = s.running ? secs * 1000 : s.from !== undefined && s.to !== undefined ? s.to - s.from : NaN;
+  const parts = [`${s.steps} step${s.steps === 1 ? "" : "s"}`, s.edits ? `${s.edits} edit${s.edits === 1 ? "" : "s"}` : "", s.errors ? `${s.errors} failed` : ""].filter(Boolean);
+  // a long log shows the newest marks
+  const marks = s.marks.length > 28 ? s.marks.slice(-28) : s.marks;
+  return (
+    <div className={`feed-row log-row${s.running ? " live" : ""}`}>
+      <button className="log-head" onClick={() => setLogOpen(turn, !open)} aria-expanded={open} data-tip={open ? "Hide the steps" : "Show every step Claude took"} data-tip-pos="top">
+        <span className="log-icon">{s.running ? <span className="spinner sm" /> : <Icon.Steps size={13} />}</span>
+        <span className="log-title">{s.running ? <span className="shimmer-text">Working</span> : Number.isFinite(took) && took > 0 ? `Worked for ${fmtDur(took)}` : "Worked"}</span>
+        {s.running && secs >= 1 && <span className="log-time mono">{fmtDur(secs * 1000)}</span>}
+        <span className="log-meta">{parts.join(" · ")}</span>
+        <span className="log-marks" aria-hidden="true">
+          {marks.map((m, i) => (
+            <i key={i} className={`m-${m}`} title={MARK_TIP[m]} />
+          ))}
+        </span>
+        <span className="grow" />
+        <span className="log-toggle">
+          {open ? "hide" : "show"}
+          <Icon.ChevronDown size={11} style={{ transform: open ? "rotate(180deg)" : undefined }} />
+        </span>
+      </button>
+      {s.running && !open && s.now && <div className="log-now shimmer-text">{s.now}</div>}
+    </div>
+  );
+}
+
+/** Scrolled up while Claude writes: a button back to the newest, which shows when something new arrived below. */
+function JumpToLatest({ feed, stick, items }: { feed: React.RefObject<HTMLDivElement | null>; stick: React.MutableRefObject<boolean>; items: ChatItem[] }) {
+  const [away, setAway] = useState(false);
+  const [unseen, setUnseen] = useState(false);
+  useEffect(() => {
+    const el = feed.current;
+    if (!el) return;
+    const on = () => {
+      const a = el.scrollHeight - el.scrollTop - el.clientHeight > 160;
+      setAway(a);
+      if (!a) setUnseen(false);
+    };
+    el.addEventListener("scroll", on, { passive: true });
+    return () => el.removeEventListener("scroll", on);
+  }, [feed]);
+  useEffect(() => {
+    if (!stick.current) setUnseen(true);
+  }, [items, stick]);
+  if (!away) return null;
+  return (
+    <div className="jump-wrap">
+      <button
+        className={`jump-latest${unseen ? " unseen" : ""}`}
+        onClick={() => {
+          const el = feed.current;
+          if (!el) return;
+          stick.current = true;
+          el.scrollTo({ top: el.scrollHeight, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+        }}
+        aria-label="Jump to the newest message"
+      >
+        <Icon.ArrowDown size={13} /> {unseen ? "New below" : "Latest"}
+      </button>
+    </div>
+  );
+}
+
 function Item({ it }: { it: ChatItem }) {
   switch (it.kind) {
     case "user":
       return (
-        <motion.div className="msg-user" initial={{ opacity: 0, y: 6, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }}>
+        <div className="msg-user feed-in">
+          {it.optionsFirst && (
+            <span className="opts-tag" data-tip="You asked Claude to show you options before it builds">
+              <Icon.Fork size={10} /> options first
+            </span>
+          )}
           <MessageFiles files={it.files} />
           {it.spot && (
             <button
@@ -237,7 +346,7 @@ function Item({ it }: { it: ChatItem }) {
           {it.image && <img className="mark-img" src={it.image} alt="Your marked-up view" />}
           {it.text}
           {it.midRun && <MidRun id={it.id} />}
-        </motion.div>
+        </div>
       );
     case "assistant":
       return <AssistantMsg it={it} />;
@@ -248,7 +357,7 @@ function Item({ it }: { it: ChatItem }) {
       return <ChoiceCard it={it} />;
     case "notice":
       return (
-        <motion.div className={`notice ${it.level}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <div className={`notice ${it.level} feed-in`}>
           <div className="t">{it.title}</div>
           {it.detail && <div className="d">{it.detail}</div>}
           {it.action && (
@@ -270,7 +379,7 @@ function Item({ it }: { it: ChatItem }) {
               )}
             </div>
           )}
-        </motion.div>
+        </div>
       );
     case "turn":
       return <ChangeCard it={it} />;
@@ -345,14 +454,39 @@ function Suggestions({ items, busy }: { items: ChatItem[]; busy: boolean }) {
 
 export function SuggestionChips({ options, onSend }: { options: { label: string; prompt: string }[]; onSend?: (prompt: string) => void }) {
   return (
-    <motion.div className="suggest" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}>
+    <div className="suggest feed-in">
       <span className="mono dim">next</span>
       {options.map((o, i) => (
-        <motion.button key={o.label} className="suggest-chip" initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.05 * i }} onClick={() => (onSend ? onSend(o.prompt) : void sendMessage(o.prompt))} data-tip={o.prompt} data-tip-pos="top">
+        <button
+          key={o.label}
+          className="suggest-chip"
+          style={{ animationDelay: `${0.05 * i}s` }}
+          // shift-click puts it in the message box to change before sending
+          onClick={(e) => (e.shiftKey && !onSend ? askClaude(o.prompt) : onSend ? onSend(o.prompt) : void sendMessage(o.prompt))}
+          data-tip={`${o.prompt}${onSend ? "" : " · Shift-click to edit it first"}`}
+          data-tip-pos="top"
+        >
           <Icon.Sparkle size={11} /> {o.label}
-        </motion.button>
+        </button>
       ))}
-    </motion.div>
+    </div>
+  );
+}
+
+/** Beside Send: Claude shows two to four ways to do it, to pick from before it builds anything. */
+function OptionsFirst() {
+  const on = useSettings((s) => s.optionsFirst);
+  return (
+    <button
+      className={`chip opts-chip ${on ? "accent" : ""}`}
+      onClick={() => updateSettings({ optionsFirst: !on })}
+      aria-pressed={on}
+      data-tip={on ? "Options first is on: Claude lays out two to four ways to do it, you pick one (and can preview each in 3D), then it builds. Click to turn off." : "Options first: have Claude lay out two to four ways to do it for you to pick, before it builds anything"}
+      data-tip-pos="top"
+    >
+      <Icon.Fork size={11} />
+      <span className="opts-label">Options</span>
+    </button>
   );
 }
 
@@ -394,40 +528,11 @@ function currentActivity(items: ChatItem[]): string {
   return "";
 }
 
+/** The reply after a turn's last step: how long Claude thought (open it to read the thinking), then what it wrote. */
 function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) {
-  const [showThinking, setShowThinking] = useState(false);
-  const thinkingLive = it.streaming && !it.text;
-  const secs = useElapsed(it.started, thinkingLive);
   return (
-    <motion.div className="msg-assistant" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-      {(it.thinking || thinkingLive) && (
-        <div>
-          <button className="thinking-toggle" onClick={() => setShowThinking((s) => !s)} aria-expanded={showThinking}>
-            <Icon.Chevron size={11} style={{ transform: showThinking ? "rotate(90deg)" : undefined, transition: "transform .15s" }} />
-            {thinkingLive ? (
-              <>
-                <span className="shimmer-text">Thinking</span>
-                {secs >= 2 && <span className="dim">{secs} s</span>}
-              </>
-            ) : (
-              "Thought process"
-            )}
-          </button>
-          {/* while it thinks, the newest of its reasoning shows as it streams, so a long think does not look idle */}
-          {thinkingLive && !showThinking && it.thinking.trim() && (
-            <div className="thinking-live" aria-live="polite">
-              <div>{thinkingTail(it.thinking)}</div>
-            </div>
-          )}
-          <AnimatePresence>
-            {showThinking && it.thinking && (
-              <motion.div className="thinking" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
-                {it.thinking}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
+    <div className="msg-assistant feed-in">
+      {(it.thinking || (it.streaming && !it.text) || it.thoughtMs) && <ThinkingLine it={it} />}
       {it.text && (
         <div>
           <Markdown text={it.text} />
@@ -440,8 +545,181 @@ function AssistantMsg({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) 
           {it.note}
         </div>
       )}
-    </motion.div>
+      {!it.streaming && it.text.trim() && <CopyReply text={it.text} />}
+    </div>
   );
+}
+
+/** Copy a reply as written (Markdown), shown when the pointer is over it. */
+function CopyReply({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      className="reply-copy"
+      onClick={() =>
+        navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            setDone(true);
+            setTimeout(() => setDone(false), 1500);
+          })
+          .catch(() => toast({ kind: "warn", title: "Could not copy", detail: "The browser blocked the clipboard." }))
+      }
+      aria-label="Copy this reply"
+      data-tip={done ? "Copied" : "Copy this reply"}
+      data-tip-pos="left"
+    >
+      {done ? <Icon.Check size={12} /> : <Icon.Copy size={12} />}
+    </button>
+  );
+}
+
+/**
+ * Claude's thinking as one line: live, the heading it is on and its newest
+ * words; done, how long it thought and the headings it went through. Opens
+ * to the whole summary, section by section.
+ */
+function ThinkingLine({ it, step }: { it: Extract<ChatItem, { kind: "assistant" }>; step?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const live = it.streaming && !it.text && it.thoughtMs === undefined;
+  const secs = useElapsed(it.started, live);
+  const sections = useMemo(() => thoughtSections(it.thinking), [it.thinking]);
+  const titles = sections.map((x) => x.title).filter(Boolean);
+  const current = live ? titles[titles.length - 1] : undefined;
+  const can = !!it.thinking.trim();
+  const took = it.thoughtMs !== undefined ? fmtDur(it.thoughtMs) : "";
+  return (
+    <div className={`thought${step ? " in-step" : ""}${live ? " live" : ""}`}>
+      <button className="thinking-toggle" onClick={() => can && setOpen((o) => !o)} aria-expanded={can ? open : undefined} disabled={!can && !live}>
+        {can && <Icon.Chevron size={10} style={{ transform: open ? "rotate(90deg)" : undefined, transition: "transform .15s" }} />}
+        {live ? (
+          <>
+            <span className="shimmer-text">{current ?? "Thinking"}</span>
+            {secs >= 2 && <span className="dim">{secs} s</span>}
+          </>
+        ) : (
+          <>
+            <span>{took ? `Thought for ${took}` : "Thought process"}</span>
+            {!open && titles.length > 0 && <span className="th-titles">{titles.join(" · ")}</span>}
+          </>
+        )}
+      </button>
+      {/* while it thinks, the newest of its reasoning shows as it streams, so a long think does not look idle */}
+      {live && !open && it.thinking.trim() && (
+        <div className="thinking-live" aria-live="polite">
+          <div>{thinkingTail(sections.length ? sections[sections.length - 1].body || it.thinking : it.thinking)}</div>
+        </div>
+      )}
+      {open && can && (
+        <div className="thinking feed-in">
+          {sections.map((x, i) => (
+            <div key={i} className="th-sec">
+              {x.title && <div className="th-title">{x.title}</div>}
+              {x.body && <Markdown text={x.body} />}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A turn's thinking or note between its steps, on the work log's line. */
+function ThoughtStep({ it }: { it: Extract<ChatItem, { kind: "assistant" }> }) {
+  const hasThought = !!it.thinking.trim() || it.thoughtMs !== undefined || (it.streaming && !it.text);
+  return (
+    <div className="step-body">
+      <span className={`step-node ${it.text.trim() && !hasThought ? "note" : "thought"}`} aria-hidden="true">
+        {it.text.trim() && !hasThought ? <Icon.Chat size={10} /> : <Icon.Bulb size={10} />}
+      </span>
+      {hasThought && <ThinkingLine it={it} step />}
+      {it.text.trim() && (
+        <div className="step-note">
+          <Markdown text={it.text} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const STEP_ICON: Record<string, keyof typeof Icon> = {
+  edit_design: "Edit",
+  write_design: "Code",
+  get_design: "Code",
+  run_checks: "Shield",
+  explore_fixes: "Wand",
+  capture_view: "Eye",
+  view_drawing: "Eye",
+  view_reference: "Eye",
+  inspect_part: "Target",
+  update_brief: "Doc",
+  run_analysis: "Stress",
+  catalog_lookup: "Search",
+  engineering_calc: "Sliders",
+  web_search: "Search",
+  web_fetch: "Doc",
+  set_material: "Material",
+  compare_materials: "Material",
+  place_fasteners: "Screw",
+  run_scenario: "Play",
+  scenario_results: "Graph",
+  plan_manufacturing: "Factory",
+  process_guide: "Factory",
+  compare_processes: "Factory",
+  get_example: "Doc",
+  read_reference: "Doc",
+  get_sketch: "Edit",
+  record_asks: "List",
+  save_lesson: "Doc",
+};
+
+/** One tool call in the work log: what it did, how long it took, and the change or picture it made. */
+function ToolStep({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
+  const [open, setOpen] = useState(false);
+  const canOpen = !!it.diff || !!it.image;
+  const stats = useMemo(() => (it.diff ? diffStats(it.diff.before, it.diff.after) : null), [it.diff]);
+  const link = it.link ? safeUrl(it.link.url) : null;
+  // a web search or page that did not work is shown quietly: Claude carries on without it
+  const quiet = it.web && it.status === "error";
+  const Glyph = Icon[STEP_ICON[it.name] ?? "Wrench"] as (p: { size?: number }) => React.ReactElement;
+  const state = quiet ? "quiet" : it.status;
+  return (
+    <div className={`step-body tool ${state}`}>
+      <span className={`step-node ${state}`} aria-hidden="true">
+        {it.status === "running" ? <span className="node-spin" /> : it.status === "error" && !quiet ? <Icon.Alert size={10} /> : <Glyph size={10} />}
+      </span>
+      <div className={`step-head${canOpen ? " can-open" : ""}`} onClick={() => canOpen && setOpen((o) => !o)} role={canOpen ? "button" : undefined} aria-expanded={canOpen ? open : undefined} data-tip={it.name} data-tip-pos="left">
+        <span className="step-title">{it.status === "running" ? <span className="shimmer-text">{it.title}</span> : it.title}</span>
+        {stats && (
+          <span className="mono step-diff">
+            <span style={{ color: "var(--pass)" }}>+{stats.added}</span> <span style={{ color: "var(--fail)" }}>−{stats.removed}</span>
+          </span>
+        )}
+        <span className="mono step-time">{it.status === "running" ? (it.ran ? <RunningFor from={it.ran} /> : it.inputChars ? `writing · ${it.inputChars > 999 ? `${(it.inputChars / 1000).toFixed(1)}k` : it.inputChars} chars` : "") : it.ms !== undefined ? fmtDur(it.ms) : ""}</span>
+        {canOpen && <Icon.ChevronDown size={11} className="step-chev" style={{ transform: open ? "rotate(180deg)" : undefined }} />}
+      </div>
+      {it.detail && !it.diff && <div className="step-detail">{it.detail}</div>}
+      {link && (
+        <div className="tc-link">
+          <a href={link} target="_blank" rel="noopener noreferrer" title={link}>
+            {it.link!.label || domainOf(link)}
+          </a>
+        </div>
+      )}
+      {open && it.diff && (
+        <div className="step-open feed-in">
+          <DiffView before={it.diff.before} after={it.diff.after} />
+        </div>
+      )}
+      {open && it.image && <img className="step-open feed-in" src={it.image} alt="Rendered view of the model" />}
+    </div>
+  );
+}
+
+/** Seconds a running step has taken so far. */
+function RunningFor({ from }: { from: number }) {
+  const secs = useElapsed(from, true);
+  return <>{secs >= 1 ? `${secs} s` : ""}</>;
 }
 
 /** Pages Claude cited from its web searches. Links open in a new tab and never get access to this page. */
@@ -473,7 +751,7 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
   // a web search or page that did not work is shown quietly: Claude carries on without it
   const quiet = it.web && it.status === "error";
   return (
-    <motion.div className={`tool-card ${quiet ? "web-miss" : it.status}${it.web ? " web" : ""}`} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} layout="position">
+    <div className={`tool-card feed-in ${quiet ? "web-miss" : it.status}${it.web ? " web" : ""}`}>
       <div className="tc-head" onClick={() => canOpen && setOpen((o) => !o)} style={{ cursor: canOpen ? "pointer" : "default" }}>
         {it.status === "running" ? <div className="spinner" /> : quiet ? <span style={{ color: "var(--text-3)", display: "inline-grid" }}><Icon.Info size={14} /></span> : it.status === "error" ? <span style={{ color: "var(--fail)", display: "inline-grid" }}><Icon.Alert size={14} /></span> : <span style={{ color: "var(--pass)", display: "inline-grid" }}><Icon.Check size={14} /></span>}
         <span className="grow" style={{ minWidth: 0 }}>
@@ -504,7 +782,7 @@ function ToolCard({ it }: { it: Extract<ChatItem, { kind: "tool" }> }) {
         )}
       </AnimatePresence>
       {it.image && open && <img src={it.image} alt="Rendered view of the model" />}
-    </motion.div>
+    </div>
   );
 }
 
@@ -581,8 +859,9 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
     el.style.height = Math.min(200, el.scrollHeight) + "px";
   }, [text]);
   const quickOn = useSettings((s) => s.quickCommands);
+  const optionsFirst = useSettings((s) => s.optionsFirst);
   // a plain command is done at once, without Claude (see app/quickRun)
-  const command = useMemo(() => (quickOn && !att.files.length && !pending && text.trim() ? quickCommandOf(text) : null), [quickOn, att.files.length, pending, text, model]);
+  const command = useMemo(() => (quickOn && !optionsFirst && !att.files.length && !pending && text.trim() ? quickCommandOf(text) : null), [quickOn, optionsFirst, att.files.length, pending, text, model]);
   const canSend = (!!text.trim() || att.files.length > 0) && !att.loading;
   // while Claude works, a message joins the run at its next step; files wait for the run to end
   const midRun = busy || building;
@@ -592,7 +871,8 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
       if (addMidRun(text, { files: att.files })) setText("");
       return;
     }
-    void sendMessage(text, { files: att.files });
+    // an answer to Claude's open question is an answer, not a new request for options
+    void sendMessage(text, { files: att.files, optionsFirst: optionsFirst && !pending });
     setText("");
     att.clear();
   };
@@ -634,7 +914,9 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
                 ? "Add your API key in settings to chat with Claude, or type a command: fillet 2, hole M3, wall 3…"
                 : about.length
                   ? `What should change about ${about.length === 1 ? about[0] : "the selected parts"}?`
-                  : `Describe a part, a change or a question… (${touchScreen ? "press and hold" : "right-click"} the model to ask about a spot)`
+                  : optionsFirst
+                    ? "Describe what you want. Claude shows you options to pick from first…"
+                    : `Describe a part, a change or a question… (${touchScreen ? "press and hold" : "right-click"} the model to ask about a spot)`
           }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -648,7 +930,7 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
         />
         <div className="row">
           <AttachButton att={att} disabled={!hasKey} />
-          <span className="mono dim" style={{ fontSize: 10.5 }}>
+          <span className="mono dim composer-status">
             {busy ? (
               <>
                 <span className="shimmer-text">{routing ? "Choosing a model" : activity ? `Claude is working · ${activity}` : "Claude is working"}</span>
@@ -665,6 +947,8 @@ function Composer({ busy, hasKey }: { busy: boolean; hasKey: boolean }) {
             )}
           </span>
           <div className="grow" />
+          {/* a note added mid-run is not a new request, so options first does not apply to it */}
+          {!midRun && <OptionsFirst />}
           <SpeedMenu />
           <MicButton voice={voice} />
           {busy && (
