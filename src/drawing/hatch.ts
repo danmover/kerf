@@ -118,3 +118,35 @@ export function arcPoints(cx: number, cy: number, r: number, a0: number, a1: num
   }
   return p;
 }
+
+/** Clips a polyline (flat list) to the outside of a circle, returning the pieces outside it. */
+export function clipPolylineOutsideCircle(p: number[], cx: number, cy: number, r: number): number[][] {
+  const out: number[][] = [];
+  let cur: number[] = [];
+  const flush = () => {
+    if (cur.length >= 4) out.push(cur);
+    cur = [];
+  };
+  const push = (x: number, y: number) => {
+    const n = cur.length;
+    if (!n || Math.abs(cur[n - 2] - x) > 1e-9 || Math.abs(cur[n - 1] - y) > 1e-9) {
+      if (n) flush();
+      cur.push(x, y);
+    }
+  };
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const ax = p[i];
+    const ay = p[i + 1];
+    const bx = p[i + 2];
+    const by = p[i + 3];
+    const inside = clipSegmentToCircle(ax, ay, bx, by, cx, cy, r);
+    const ranges: [number, number][] = inside.length ? [[0, inside[0][0]], [inside[0][1], 1]] : [[0, 1]];
+    for (const [t0, t1] of ranges) {
+      if (t1 - t0 < 1e-9) continue;
+      push(ax + (bx - ax) * t0, ay + (by - ay) * t0);
+      cur.push(ax + (bx - ax) * t1, ay + (by - ay) * t1);
+    }
+  }
+  flush();
+  return out;
+}

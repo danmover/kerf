@@ -2241,6 +2241,11 @@ class Evaluator {
               case "hole_table":
                 spec.holeTable = bool(v, it.span, "hole_table");
                 break;
+              case "breaks":
+                if (v === "auto") spec.autoBreak = undefined;
+                else if (typeof v === "boolean") spec.autoBreak = v;
+                else throw new EvalError('breaks should be true, false or "auto" (Kerf breaks long plain parts so they draw bigger)', it.span);
+                break;
               case "dim_style": {
                 const t = str(v, it.span, "dim_style");
                 if (!(DIM_STYLES as readonly string[]).includes(t)) throw new EvalError(`dim_style should be one of ${DIM_STYLES.map((x) => `"${x}"`).join(", ")}: how feature positions are dimensioned`, it.span);
@@ -2285,7 +2290,7 @@ class Evaluator {
             break;
           }
           case "op":
-            throw new EvalError(`Drawings do not take ${it.op} shapes. Use view(), section(), detail(), dim(), diameter(), angle(), radius(), weld(), roughness() and note().`, it.span);
+            throw new EvalError(`Drawings do not take ${it.op} shapes. Use view(), section(), detail(), aux_view(), break_view(), broken_out(), dim(), diameter(), angle(), radius(), weld(), roughness() and note().`, it.span);
           case "modifier": {
             const callee = it.call.callee;
             const fname = callee.k === "ident" ? callee.name : "";
@@ -2313,9 +2318,47 @@ class Evaluator {
               if (v instanceof Vec && v.v.length === 2) return [v.v[0], v.v[1]];
               return ctx().error("tol should be a number for ± (tol: 0.1) or (upper, lower) such as tol: (0.1, -0.05)");
             };
+            const cropBox = (a: Args, call: string): [V3, V3] | undefined => {
+              if (!a.has("crop")) return undefined;
+              const pts = a.points3("crop");
+              if (pts.length !== 2) ctx().error(`${call}: crop should be two opposite corners of a model box, e.g. crop: [(0, 0, 0), (40, 30, 20)]`);
+              return [pts[0], pts[1]];
+            };
             switch (fname) {
-              case "view":
-                spec.views.push({ kind: viewKind(a.value("kind") ?? null, it.call.span, "view()"), label: optStr("label"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined, hidden: a.has("hidden") ? a.bool("hidden") : undefined, at: at2("at") });
+              case "view": {
+                const crop = cropBox(a, "view()");
+                const ex = a.value("exploded");
+                const exploded = ex === undefined || ex === false ? undefined : ex === true ? 1 : typeof ex === "number" && ex > 0 ? ex : ctx().error("view(): exploded should be true or how far apart, e.g. exploded: 1.5");
+                spec.views.push({ kind: viewKind(a.value("kind") ?? null, it.call.span, "view()"), label: optStr("label"), scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined, hidden: a.has("hidden") ? a.bool("hidden") : undefined, at: at2("at"), crop, exploded, span: it.call.span });
+                break;
+              }
+              case "aux_view":
+                spec.aux.push({
+                  label: a.str("label"),
+                  normal: a.dir("normal"),
+                  at: a.has("at") ? a.vec3("at") : undefined,
+                  view: a.has("view") ? viewKind(a.value("view")!, it.call.span, "aux_view(view:)") : undefined,
+                  scale: a.has("scale") ? scale(a.value("scale")!, it.call.span) : undefined,
+                  crop: cropBox(a, "aux_view()"),
+                });
+                break;
+              case "break_view": {
+                const v = a.value("axis");
+                let axis = -1;
+                if (typeof v === "string") axis = ["x", "y", "z"].indexOf(v.toLowerCase());
+                else if (v instanceof Vec && v.v.length === 3) {
+                  const k = v.v.map(Math.abs).indexOf(Math.max(...v.v.map(Math.abs)));
+                  if (Math.abs(v.v[k]) > 0.999 * Math.hypot(...v.v)) axis = k;
+                }
+                if (axis < 0) ctx().error("break_view() needs the axis to break along: X, Y or Z, e.g. break_view(X, 40, 260)");
+                const from = a.num("from");
+                const to = a.num("to");
+                if (!(Math.abs(to - from) > 1e-6)) ctx().error("break_view(): from and to should differ, e.g. break_view(X, 40, 260)");
+                spec.breaks.push({ axis: axis as 0 | 1 | 2, from: Math.min(from, to), to: Math.max(from, to) });
+                break;
+              }
+              case "broken_out":
+                spec.cutaways.push({ view: a.str("view", "front"), at: a.vec3("at"), r: a.positive("r") });
                 break;
               case "section":
                 spec.sections.push({

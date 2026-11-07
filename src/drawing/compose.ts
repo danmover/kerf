@@ -15,7 +15,8 @@ import { processFamily } from "./intent";
 import { applyXformsToDir } from "../kernel/recipe";
 import { partFeatures } from "./features";
 import { bendLabel, bendRows, bendWay, flatShift } from "./flat";
-import { arcPoints, clipPolylineToCircle, hatchLines } from "./hatch";
+import { arcPoints, clipPolylineOutsideCircle, clipPolylineToCircle, hatchLines } from "./hatch";
+import { clipSeg, cropRect, cropResult, freehand, freehandCircle, inBand, reachAcross, sheetBend, viewBands, warpExtents, warpPoint, zigzag, type Bands, type CropCuts, type Rect } from "./viewcut";
 import { gridCell, layoutSheet, type LayoutItem, type LayoutResult } from "./layout";
 import { boxOk, emptyBox, fmtNum, growBox, Ink, shapeBox, type BomLine, type Box, type Sheet, type SheetDim, type SheetPart, type SheetView } from "./sheet";
 import { scaleText, SHEETS, STANDARD_SCALES, type DrawingSpec, type SheetSize } from "./spec";
@@ -48,6 +49,16 @@ export function composeSheet(inp: ComposeInput): Sheet {
   const raw = plan.views.map((v) => (v.synthetic === "gear" ? gearSideView(plan.parts[0], v) : inp.result(v.key)));
   const results = raw.map((r) => (r instanceof Error ? undefined : r));
   const warnings = [...plan.errors];
+  // crop views keep only what lies inside their box
+  const crops: ({ rect: Rect; cuts: CropCuts } | null)[] = plan.views.map((v, i) => {
+    if (!v.crop || v.kind === "detail") return null;
+    const rect = cropRect(v.crop, v.frame);
+    const r = results[i];
+    if (!r) return { rect, cuts: [null, null, null, null] };
+    const c = cropResult(r, rect);
+    results[i] = c.result;
+    return { rect, cuts: c.cuts };
+  });
 
   // layout extents come from bounding boxes so views do not move as projections arrive
   const lext: Ext[] = plan.views.map((v, i) => {
@@ -58,12 +69,37 @@ export function composeSheet(inp: ComposeInput): Sheet {
     }
     // the box overestimates pictorial views a lot, so those use their projection once it is in
     const exact = v.kind === "iso" ? edgeExtents(results[i]) : null;
-    return exact ? pad(exact, 1) : boxExtents(plan.bbox, v.frame);
+    const e = exact ? pad(exact, 1) : boxExtents(v.exploded?.box ?? plan.bbox, v.frame);
+    const c = crops[i]?.rect;
+    return c ? [Math.max(e[0], c[0]), Math.max(e[1], c[1]), Math.min(e[2], c[2]), Math.min(e[3], c[3])] : e;
   });
   const xext: Ext[] = plan.views.map((v, i) => (v.kind === "detail" ? lext[i] : (edgeExtents(results[i]) ?? lext[i])));
+  // broken views: the bands each loses to the drawing's breaks
+  const bands: (Bands | null)[] = plan.views.map((v, i) => (plan.breaks.length && v.kind !== "iso" && v.kind !== "detail" && !v.exploded ? viewBands(plan.breaks, v.frame, xext[i]) : null));
   const built = buildDims({ plan, model, spec, ext: xext, results, bboxOf: inp.bboxOf, reevaluate: inp.reevaluate });
-  const dims = built.dims;
   warnings.push(...built.warnings);
+  // model points of a dimension in the view's plane, for writing it out as dim() or diameter()
+  const worldOf = (vi: number, p: [number, number]): V3 => {
+    const f = plan.views[vi].frame;
+    const depth = vdot([(plan.bbox[0][0] + plan.bbox[1][0]) / 2, (plan.bbox[0][1] + plan.bbox[1][1]) / 2, (plan.bbox[0][2] + plan.bbox[1][2]) / 2], f.dir);
+    return [0, 1, 2].map((k) => round4(p[0] * f.x[k] + p[1] * f.y[k] + depth * f.dir[k])) as V3;
+  };
+  const dims = fitDims(built.dims, crops, bands, xext, worldOf);
+  built.marks = built.marks.flatMap((m) => {
+    const b = bands[m.view];
+    const c = crops[m.view]?.rect;
+    if (c && ![m.a, m.b].every((p) => inRect(c, p))) return [];
+    if (!b) return [m];
+    if (inBand(b, m.a) && inBand(b, m.b)) return [];
+    return [{ ...m, a: warpPoint(b, m.a), b: warpPoint(b, m.b) }];
+  });
+  if (built.holeTable && bands[built.holeTable.view]) {
+    const b = bands[built.holeTable.view]!;
+    built.holeTable = { ...built.holeTable, origin: warpPoint(b, built.holeTable.origin), rows: built.holeTable.rows.map((r) => ({ ...r, at: warpPoint(b, r.at) })) };
+  }
+  // what the layout sees of a broken view is its closed-up size
+  const uext = lext.map((e) => [...e] as Ext);
+  bands.forEach((b, i) => b && (lext[i] = warpExtents(b, lext[i])));
 
   // parts list
   const bom = plan.assembly && spec.partsList !== false ? bomLines(plan.parts, inp.bboxOf, inp.volumeOf) : [];
@@ -98,9 +134,9 @@ export function composeSheet(inp: ComposeInput): Sheet {
       const area = inset(frameBox(w, h), 4);
       let found: Choice | null = null as Choice | null;
       search: for (const s of scales) {
-        // the pictorial view may drop one scale to make room
-        const smaller = STANDARD_SCALES.find((x) => x < s - 1e-9);
-        for (const iso of plan.views.some((v) => v.kind === "iso") && smaller ? [s, smaller] : [s]) {
+        // the pictorial view may drop one scale to make room (two beside a broken view, which it shows whole)
+        const below = STANDARD_SCALES.filter((x) => x < s - 1e-9).slice(0, plan.breaks.length ? 2 : 1);
+        for (const iso of plan.views.some((v) => v.kind === "iso") ? [s, ...below] : [s]) {
           const sc = { s, iso };
           const margins = plan.views.map((v, i) => viewMargins(v, i, sc, dims, lext, st, plan, spec, bom.length));
           const items = plan.views.map((v, i) => layoutItem(v, sc, lext[i], margins[i], spec, area, w, plan));
@@ -169,9 +205,20 @@ export function composeSheet(inp: ComposeInput): Sheet {
     state: raw[i] instanceof Error ? "error" : results[i] ? "ready" : "pending",
     error: raw[i] instanceof Error ? (raw[i] as Error).message : undefined,
     hint: viewHint(v),
+    extras: [v.crop && "crop", v.exploded && "exploded", bands[i] && "broken", v.cutaways?.length && "broken-out"].filter((x): x is string => !!x),
   }));
   const parts: SheetPart[] = plan.parts.map((p) => ({ id: p.id, name: p.name, label: p.label, item: itemOf.get(p.id) }));
 
+  // a broken view's own lines are cut at its bands and closed up as they are inked
+  const bent = (i: number | undefined, fn: () => void) => {
+    const b = i === undefined ? null : bands[i];
+    ink.bend = b ? sheetBend(b, views[i!].origin, views[i!].scale) : null;
+    try {
+      fn();
+    } finally {
+      ink.bend = null;
+    }
+  };
   plan.views.forEach((v, i) => {
     const sv = views[i];
     const r = v.kind === "detail" ? results[v.parent!] : results[i];
@@ -181,19 +228,22 @@ export function composeSheet(inp: ComposeInput): Sheet {
       return;
     }
     if (v.kind === "detail" && v.detail) inkDetail(ink, i, sv, r, v, views[v.parent!]);
-    else inkView(ink, i, sv, r, v, plan);
+    else bent(i, () => inkView(ink, i, sv, r, v, plan));
+    if (bands[i]) breakLines(ink, i, sv, r, bands[i]!);
+    if (crops[i]) cropEdges(ink, i, sv, crops[i]!);
   });
 
   // bend lines on a flat pattern
   if (spec.flat) plan.views.forEach((v, i) => results[i] && v.kind === "top" && bendLines(ink, i, views[i], v, plan, st));
 
   // centre lines for features seen end-on and along their axis
-  if (!plan.assembly && !spec.flat) plan.views.forEach((v, i) => results[i] && v.kind !== "detail" && v.kind !== "iso" && centreLines(ink, i, views[i], v, plan, inp.bboxOf));
+  if (!plan.assembly && !spec.flat) plan.views.forEach((v, i) => results[i] && v.kind !== "detail" && v.kind !== "iso" && bent(i, () => centreLines(ink, i, views[i], v, plan, inp.bboxOf, crops[i]?.rect)));
 
-  // cutting planes, detail circles and view labels
+  // cutting planes, detail circles, viewing arrows and view labels
   plan.views.forEach((v, i) => {
-    if (v.kind === "section" && v.section && v.parent !== undefined) cuttingLine(ink, v, views[v.parent], lext[v.parent], st);
-    if (v.kind === "detail" && v.detail && v.parent !== undefined) detailCircle(ink, v, views[v.parent], st);
+    if (v.kind === "section" && v.section && v.parent !== undefined) bent(v.parent, () => cuttingLine(ink, v, views[v.parent!], uext[v.parent!], st));
+    if (v.kind === "detail" && v.detail && v.parent !== undefined) bent(v.parent, () => detailCircle(ink, v, views[v.parent!], st));
+    if (v.kind === "aux" && v.aux && v.parent !== undefined) bent(v.parent, () => auxArrow(ink, v, views[v.parent!], uext[v.parent!], st));
     if (views[i].label) {
       ink.key = `v${i}`;
       const b = views[i].box;
@@ -212,9 +262,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     ink.key = `d${sheetDims.length}`;
     const box = inkDim(ink, d, placed, st);
     // model points for every dimension, so a drawing edit can write it out as dim() or diameter()
-    const f = plan.views[d.view].frame;
-    const depth = vdot([(plan.bbox[0][0] + plan.bbox[1][0]) / 2, (plan.bbox[0][1] + plan.bbox[1][1]) / 2, (plan.bbox[0][2] + plan.bbox[1][2]) / 2], f.dir);
-    const world = (p: [number, number]): V3 => [0, 1, 2].map((k) => round4(p[0] * f.x[k] + p[1] * f.y[k] + depth * f.dir[k])) as V3;
+    const world = (p: [number, number]): V3 => worldOf(d.view, p);
     const centre = d.circle?.c ?? d.a;
     sheetDims.push({
       ...d.meta,
@@ -287,6 +335,7 @@ export function composeSheet(inp: ComposeInput): Sheet {
     datums: built.datums,
     holeTable: built.holeTable ? { view: built.holeTable.view, origin: built.holeTable.about, rows: built.holeTable.rows.map((r) => ({ tag: r.tag, x: round4(r.x), y: round4(r.y), size: r.size, frame: r.fcf ? fcfText(r.fcf) : undefined })) } : undefined,
     revisions: spec.revisions.map((r) => ({ rev: r.rev, text: r.text, date: r.date ?? "", by: r.by ?? "" })),
+    breaks: plan.breaks.length ? plan.breaks.map((b) => ({ ...b, auto: !spec.breaks.length })) : undefined,
     symbols: [
       ...(general ? [{ kind: "roughness" as const, text: `whole part ${textureText(general)}${dims.some((d) => d.finish) ? " unless marked" : ""}` }] : []),
       ...dims.flatMap((d): Sheet["symbols"] => (d.weld ? [{ kind: "weld", text: weldText(d.weld), view: d.view }] : d.finish ? [{ kind: "roughness", text: `${textureText(d.finish)} on ${d.meta.label}`, view: d.view }] : [])),
@@ -315,13 +364,23 @@ function geomBox(e: Ext, o: [number, number], s: number): Box {
 
 type Scales = { s: number; iso: number };
 
-function viewScale(v: PlannedView, sc: Scales): number {
+/** how big a partial (crop) view with no scale of its own is drawn, in paper mm across */
+const PARTIAL_SIZE = 70;
+
+function viewScale(v: PlannedView, sc: Scales, e?: Ext): number {
   if (v.kind === "detail" && v.detail) return v.detail.scale;
-  return v.scale ?? (v.kind === "iso" ? sc.iso : sc.s);
+  if (v.scale) return v.scale;
+  if (v.crop && e && v.kind !== "iso") {
+    // a partial view of a small region is drawn up to a few scales bigger, like a detail
+    const across = Math.max(e[2] - e[0], e[3] - e[1], 1e-6);
+    const up = STANDARD_SCALES.filter((k) => k > sc.s + 1e-9 && k <= 5 * sc.s + 1e-9 && across * k <= PARTIAL_SIZE);
+    return up.length ? up[0] : sc.s;
+  }
+  return v.kind === "iso" ? sc.iso : sc.s;
 }
 
 function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext: Ext[], st: DimStyle, plan: DrawingPlan, spec: DrawingSpec, balloonCount = 0) {
-  const scale = viewScale(v, sc);
+  const scale = viewScale(v, sc, lext[i]);
   const s = sc.s;
   const e = lext[i];
   const box: Box = [e[0] * scale, -e[3] * scale, e[2] * scale, -e[1] * scale];
@@ -342,7 +401,7 @@ function viewMargins(v: PlannedView, i: number, sc: Scales, dims: DimDef[], lext
     }
   }
   // cutting-plane lines stick out of the views they are drawn on
-  if (plan.views.some((o) => o.kind === "section" && o.parent === i)) for (const k of ["top", "right", "bottom", "left"] as const) out[k] = Math.max(out[k], 10);
+  if (plan.views.some((o) => (o.kind === "section" || o.kind === "aux") && o.parent === i)) for (const k of ["top", "right", "bottom", "left"] as const) out[k] = Math.max(out[k], 10);
   if (plan.assembly && spec.balloons !== false && i === balloonView(plan)) {
     const ring = 16 + balloonRoom(balloonCount, box[2] - box[0] + 18, box[3] - box[1] + 18);
     for (const k of ["top", "right", "bottom", "left"] as const) out[k] += ring;
@@ -371,7 +430,7 @@ function balloonRoom(n: number, w: number, h: number): number {
 }
 
 function layoutItem(v: PlannedView, sc: Scales, e: Ext, margin: LayoutItem["margin"], spec: DrawingSpec, area: Box, sheetW: number, plan: DrawingPlan): LayoutItem {
-  const scale = viewScale(v, sc);
+  const scale = viewScale(v, sc, e);
   const grid = gridFor(v, plan, spec);
   const item: LayoutItem = { ext: e, scale, margin, grid, at: v.at };
   if (!grid) {
@@ -548,6 +607,8 @@ function viewLabel(v: PlannedView, scale: number, sheetScale: number): string {
   const sc = Math.abs(scale - sheetScale) > 1e-9 ? ` (${scaleText(scale)})` : "";
   if (v.kind === "section") return `SECTION ${v.name}-${v.name}${sc}`;
   if (v.kind === "detail") return `DETAIL ${v.name}${sc}`;
+  if (v.kind === "aux") return `VIEW ${v.name}${sc}`;
+  if (v.exploded) return v.label ? v.label.toUpperCase() + sc : `EXPLODED VIEW${sc}`;
   if (v.kind === "iso") return v.label ? v.label.toUpperCase() + sc : sc ? `ISOMETRIC${sc}` : "";
   if (v.label) return v.label.toUpperCase() + sc;
   return sc ? `VIEW ${v.name.toUpperCase()}${sc}` : "";
@@ -556,6 +617,8 @@ function viewLabel(v: PlannedView, scale: number, sheetScale: number): string {
 function viewHint(v: PlannedView): string {
   if (v.kind === "section") return `Section ${v.name}-${v.name}`;
   if (v.kind === "detail") return `Detail ${v.name}`;
+  if (v.kind === "aux") return `Auxiliary view ${v.name}`;
+  if (v.exploded) return "Exploded view";
   if (v.kind === "iso") return "Isometric view";
   return `${v.kind[0].toUpperCase()}${v.kind.slice(1)} view`;
 }
@@ -608,7 +671,62 @@ function inkView(ink: Ink, i: number, sv: SheetView, r: ViewResult, v: PlannedVi
       for (const [a, b, c, d] of hatchLines(loops, angle, spacing)) ink.line(a, b, c, d, "hatch");
     });
   }
-  inkEdges(ink, r.edges, i, tf, s);
+  if (!v.cutaways?.length || !r.cutaways) {
+    inkEdges(ink, r.edges, i, tf, s);
+    return;
+  }
+  // broken-out sections: the view outside each circle, the cut view inside it, and a freehand edge
+  const holes = v.cutaways.map((c) => {
+    const [cu, cw] = toView(c.at, v.frame);
+    return { c: tf(cu, cw), R: c.r * s };
+  });
+  const pointsOf = (g: Edge2["g"]): number[] => {
+    if (g.t === "L") return [...tf(g.p[0], g.p[1]), ...tf(g.p[2], g.p[3])];
+    if (g.t === "A") {
+      const [ax, ay] = tf(g.c[0], g.c[1]);
+      return arcPoints(ax, ay, g.r * s, g.a0, g.a1, 0.3);
+    }
+    const p: number[] = [];
+    for (let k = 0; k < g.p.length; k += 2) p.push(...tf(g.p[k], g.p[k + 1]));
+    return p;
+  };
+  const near = (p: number[]) => {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let k = 0; k < p.length; k += 2) (x0 = Math.min(x0, p[k])), (x1 = Math.max(x1, p[k])), (y0 = Math.min(y0, p[k + 1])), (y1 = Math.max(y1, p[k + 1]));
+    return holes.some((h) => x1 >= h.c[0] - h.R && x0 <= h.c[0] + h.R && y1 >= h.c[1] - h.R && y0 <= h.c[1] + h.R);
+  };
+  for (const e of r.edges) {
+    const pts = pointsOf(e.g);
+    if (!near(pts)) {
+      inkEdges(ink, [e], i, tf, s);
+      continue;
+    }
+    ink.key = `v${i}:p${e.part}`;
+    let pieces = [pts];
+    for (const h of holes) pieces = pieces.flatMap((q) => clipPolylineOutsideCircle(q, h.c[0], h.c[1], h.R));
+    for (const q of pieces) ink.poly(q, e.vis ? "visible" : "hidden");
+  }
+  v.cutaways.forEach((_, k) => {
+    const cut = r.cutaways![k];
+    const h = holes[k];
+    if (!cut) return;
+    for (const hh of cut.hatch) {
+      ink.key = `v${i}:p${hh.part}`;
+      const loops = hh.loops.map((l) => {
+        const out: number[] = [];
+        for (let j = 0; j < l.length; j += 2) out.push(...tf(l[j], l[j + 1]));
+        return out;
+      });
+      for (const [a, b, c, d] of hatchLines(loops, plan.assembly ? HATCH_ANGLES[hh.part % HATCH_ANGLES.length] : 45, 2.2)) for (const q of clipPolylineToCircle([a, b, c, d], h.c[0], h.c[1], h.R)) ink.poly(q, "hatch");
+    }
+    for (const e of cut.edges) {
+      ink.key = `v${i}:p${e.part}`;
+      for (const q of clipPolylineToCircle(pointsOf(e.g), h.c[0], h.c[1], h.R)) ink.poly(q, "visible");
+    }
+    ink.key = `cut:${k}`;
+    const e = edgeExtents(r);
+    freehandCircle(ink, h.c[0], h.c[1], h.R, e ? [ox + e[0] * s, oy - e[3] * s, ox + e[2] * s, oy - e[1] * s] : undefined);
+  });
 }
 
 function inkDetail(ink: Ink, i: number, sv: SheetView, r: ViewResult, v: PlannedView, parent: SheetView) {
@@ -648,7 +766,7 @@ function inkDetail(ink: Ink, i: number, sv: SheetView, r: ViewResult, v: Planned
   ink.circle(cx, cy, R, "thin");
 }
 
-function centreLines(ink: Ink, i: number, sv: SheetView, v: PlannedView, plan: DrawingPlan, bboxOf: BBoxOf) {
+function centreLines(ink: Ink, i: number, sv: SheetView, v: PlannedView, plan: DrawingPlan, bboxOf: BBoxOf, crop?: Rect) {
   ink.key = `v${i}`;
   const s = sv.scale;
   const [ox, oy] = sv.origin;
@@ -659,6 +777,18 @@ function centreLines(ink: Ink, i: number, sv: SheetView, v: PlannedView, plan: D
   const done = new Set<string>();
   const mark = (c: V3, r: number, axis: V3, length: number) => {
     const along = Math.abs(vdot(vnorm(axis), v.frame.dir));
+    // a crop view only marks what it shows
+    if (crop) {
+      const a = toView(c, v.frame);
+      const e = vnorm(axis);
+      const b = toView([c[0] + e[0] * length, c[1] + e[1] * length, c[2] + e[2] * length], v.frame);
+      if (along > 0.999 ? !inRect(crop, a) : !clipSeg(a, b, crop)) return;
+      if (along <= 0.999) {
+        const t = clipSeg(a, b, crop)!;
+        c = [c[0] + e[0] * length * t[0], c[1] + e[1] * length * t[0], c[2] + e[2] * length * t[0]];
+        length *= t[1] - t[0];
+      }
+    }
     if (along > 0.999) {
       const [x, y] = tf(c);
       const k = `${x.toFixed(2)},${y.toFixed(2)}`;
@@ -773,6 +903,142 @@ function cuttingLine(ink: Ink, v: PlannedView, parent: SheetView, pe: Ext, st: D
   }
 }
 
+/** The viewing arrow for an auxiliary view on the view that sees its face edge-on: pointing at the face, square to it, with the view's letter. */
+function auxArrow(ink: Ink, v: PlannedView, parent: SheetView, pe: Ext, st: DimStyle) {
+  const a = v.aux!;
+  const f = parent.frame;
+  const n = vnorm(a.normal);
+  const n2: [number, number] = [vdot(n, f.x), vdot(n, f.y)];
+  const L = Math.hypot(n2[0], n2[1]);
+  if (L < 1e-6) return;
+  n2[0] /= L;
+  n2[1] /= L;
+  const s = parent.scale;
+  const [ox, oy] = parent.origin;
+  // the arrow's tip stands just off the face (or the view's edge on that side), its tail further out
+  const centre: [number, number] = [(pe[0] + pe[2]) / 2, (pe[1] + pe[3]) / 2];
+  const at = a.at ? toView(a.at, f) : centre;
+  const half = Math.abs(n2[0]) * (pe[2] - pe[0]) * 0.5 + Math.abs(n2[1]) * (pe[3] - pe[1]) * 0.5;
+  const reach = a.at ? 0 : half;
+  const tip: [number, number] = [ox + (at[0] + n2[0] * reach) * s + n2[0] * 3, oy - (at[1] + n2[1] * reach) * s - n2[1] * 3];
+  const tail: [number, number] = [tip[0] + n2[0] * 12, tip[1] - n2[1] * 12];
+  ink.key = `aux:${v.name}`;
+  ink.line(tail[0], tail[1], tip[0], tip[1], "thin");
+  ink.arrow(tip[0], tip[1], -n2[0], n2[1], st.arrow * 1.2);
+  ink.text(tail[0] + n2[0] * 2.5, tail[1] - n2[1] * 2.5 + st.size * 0.6, v.name, st.size * 1.3, "middle", { bold: true });
+}
+
+/** Thin zigzag lines across a broken view where each band was taken out, as wide as the outline there. */
+function breakLines(ink: Ink, i: number, sv: SheetView, r: ViewResult, b: Bands) {
+  ink.key = `v${i}`;
+  const s = sv.scale;
+  const [ox, oy] = sv.origin;
+  const sheet = (p: [number, number]): [number, number] => [ox + p[0] * s, oy - p[1] * s];
+  for (const band of b.list) {
+    const across = [reachAcross(r.edges, b.axis, band.lo + 1e-6), reachAcross(r.edges, b.axis, band.hi - 1e-6)].filter((x): x is [number, number] => !!x);
+    if (!across.length) continue;
+    const m = 2.5 / s;
+    const lo = Math.min(...across.map((x) => x[0])) - m;
+    const hi = Math.max(...across.map((x) => x[1])) + m;
+    for (const at of [band.lo, band.hi]) {
+      // positions on the closed-up view: the band's near edge and the gap's far side
+      const w = warpPoint(b, b.axis ? [0, at] : [at, 0])[b.axis];
+      const p = (o: number): [number, number] => (b.axis ? [o, w] : [w, o]);
+      zigzag(ink, sheet(p(lo)), sheet(p(hi)));
+    }
+  }
+}
+
+/** Freehand lines along the sides of a crop view where it cuts through the part. */
+function cropEdges(ink: Ink, i: number, sv: SheetView, c: { rect: Rect; cuts: CropCuts }) {
+  ink.key = `v${i}`;
+  const s = sv.scale;
+  const [ox, oy] = sv.origin;
+  const sheet = (u: number, w: number): [number, number] => [ox + u * s, oy - w * s];
+  const [u0, v0, u1, v1] = c.rect;
+  const m = 2 / s;
+  c.cuts.forEach((range, k) => {
+    if (!range) return;
+    const a = Math.max(range[0] - m, k % 2 ? u0 : v0);
+    const b = Math.min(range[1] + m, k % 2 ? u1 : v1);
+    if (k === 0) freehand(ink, sheet(u0, a), sheet(u0, b));
+    if (k === 2) freehand(ink, sheet(u1, a), sheet(u1, b));
+    if (k === 1) freehand(ink, sheet(a, v0), sheet(b, v0));
+    if (k === 3) freehand(ink, sheet(a, v1), sheet(b, v1));
+  });
+}
+
+/** A dimension square to a broken view's axis that falls inside a band, moved just beside the band where there is more room; null when it is not one. */
+function slideOut(d: DimDef, b: Bands, e: Ext, worldOf: (vi: number, p: [number, number]) => V3): DimDef | null {
+  if (d.kind === "callout" || d.kind === "angle" || d.kind === "arc") return null;
+  const ax = b.axis;
+  if (Math.abs(d.a[ax] - d.b[ax]) > 1e-6) return null;
+  const k = b.list.findIndex((s) => d.a[ax] > s.lo + 1e-6 && d.a[ax] < s.hi - 1e-6);
+  if (k < 0) return null;
+  const s = b.list[k];
+  const left = s.lo - (k > 0 ? b.list[k - 1].hi : e[ax]);
+  const right = (k + 1 < b.list.length ? b.list[k + 1].lo : e[ax + 2]) - s.hi;
+  const at = right > left ? s.hi + Math.min(0.5 * s.gap, 0.5 * right) : s.lo - Math.min(0.5 * s.gap, 0.5 * left);
+  const move = (p: [number, number]): [number, number] => (ax ? [p[0], at] : [at, p[1]]);
+  return { ...d, a: move(d.a), b: move(d.b), meta: { ...d.meta, a: d.meta.a ?? worldOf(d.view, move(d.a)), b: d.meta.b ?? worldOf(d.view, move(d.b)) } };
+}
+
+const inRect = (r: Rect, p: [number, number], eps = 1e-3) => p[0] >= r[0] - eps && p[0] <= r[2] + eps && p[1] >= r[1] - eps && p[1] <= r[3] + eps;
+
+/**
+ * Dimensions fitted to views that show less than the whole part: a crop view
+ * keeps only those within it (and none to an edge the crop made), a broken
+ * view drops those inside a band and closes the rest up, keeping their true
+ * values (and the model points they were measured between).
+ */
+function fitDims(dims: DimDef[], crops: ({ rect: Rect; cuts: CropCuts } | null)[], bands: (Bands | null)[], ext: Ext[], worldOf: (vi: number, p: [number, number]) => V3): DimDef[] {
+  const pts = (d: DimDef): [number, number][] => (d.kind === "callout" ? [d.circle?.c ?? d.a] : d.kind === "angle" ? [d.a] : [d.a, d.b]);
+  /** a callout keeps the centres it still shows, its leader going to one of them */
+  const keepAnchors = (d: DimDef, ok: (p: [number, number]) => boolean): DimDef | null => {
+    if (d.kind !== "callout" || !d.anchors?.length) return pts(d).every(ok) ? d : null;
+    const anchors = d.anchors.filter(ok);
+    if (!anchors.length) return null;
+    const c = d.circle?.c ?? d.a;
+    if (ok(c)) return { ...d, anchors };
+    const shift = [anchors[0][0] - c[0], anchors[0][1] - c[1]];
+    const move = (p: [number, number]): [number, number] => [p[0] + shift[0], p[1] + shift[1]];
+    return { ...d, anchors, a: move(d.a), b: move(d.b), circle: d.circle && { ...d.circle, c: anchors[0] }, touch: d.touch && move(d.touch) };
+  };
+  const out: DimDef[] = [];
+  for (const d0 of dims) {
+    let d1: DimDef | null = d0;
+    const c = crops[d0.view];
+    if (c) {
+      const [u0, v0, u1, v1] = c.rect;
+      // an edge the crop made is not the part's
+      const onCut = (p: [number, number]) => (c.cuts[0] && Math.abs(p[0] - u0) < 1e-3) || (c.cuts[2] && Math.abs(p[0] - u1) < 1e-3) || (c.cuts[1] && Math.abs(p[1] - v0) < 1e-3) || (c.cuts[3] && Math.abs(p[1] - v1) < 1e-3);
+      d1 = keepAnchors(d0, (p) => inRect(c.rect, p) && !onCut(p));
+      if (!d1) continue;
+    }
+    const b = bands[d0.view];
+    if (!b) {
+      out.push(d1);
+      continue;
+    }
+    // a size across the axis (a diameter, a thickness) in the taken-out stretch moves beside it: the section is the same there
+    d1 = slideOut(d1, b, ext[d0.view], worldOf) ?? keepAnchors(d1, (p) => !inBand(b, p));
+    if (!d1) continue;
+    const d: DimDef = { ...d1, meta: { ...d1.meta } };
+    // the model points stay where they were measured
+    d.meta.a ??= worldOf(d.view, d.kind === "callout" ? (d.circle?.c ?? d.a) : d.a);
+    if (d.kind !== "callout") d.meta.b ??= worldOf(d.view, d.b);
+    const w = (p: [number, number]) => warpPoint(b, p);
+    d.a = w(d.a);
+    d.b = w(d.b);
+    if (d.circle) d.circle = { ...d.circle, c: w(d.circle.c) };
+    if (d.anchors) d.anchors = d.anchors.map(w);
+    if (d.touch) d.touch = w(d.touch);
+    if (d.arc) d.arc = { ...d.arc, c: w(d.arc.c) };
+    out.push(d);
+  }
+  return out;
+}
+
 function detailCircle(ink: Ink, v: PlannedView, parent: SheetView, st: DimStyle) {
   const d = v.detail!;
   const [u, w] = toView(d.at, parent.frame);
@@ -842,6 +1108,8 @@ function gearSideView(p: EvalPart, v: PlannedView): ViewResult {
 // ---------- balloons ----------
 
 function balloonView(plan: DrawingPlan): number {
+  const exploded = plan.views.findIndex((v) => v.exploded);
+  if (exploded >= 0) return exploded;
   const iso = plan.views.findIndex((v) => v.kind === "iso");
   return iso >= 0 ? iso : 0;
 }

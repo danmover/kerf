@@ -7,6 +7,7 @@ import type { Span } from "../lang/ast";
 import type { V3 } from "../kernel/recipe";
 import type { DrawingSpec, SheetSize, ViewKind } from "./spec";
 import { textWidth } from "./text";
+import { arcPoints } from "./hatch";
 
 /** ISO 128 line types. */
 export type Pen = "visible" | "hidden" | "center" | "thin" | "hatch" | "border" | "frame" | "phantom" | "fill" | "cutting";
@@ -53,13 +54,15 @@ export interface Frame {
 }
 
 export interface SheetView {
-  kind: ViewKind | "section" | "detail";
+  kind: ViewKind | "section" | "detail" | "aux";
   /** "front", "A" for SECTION A-A, "B" for DETAIL B */
   name: string;
   /** label printed under the view (empty for unlabeled principal views) */
   label: string;
   scale: number;
   frame: Frame;
+  /** what the view leaves out or adds: "crop", "exploded", "broken", "broken-out" */
+  extras?: string[];
   /** sheet position of the view-space origin */
   origin: [number, number];
   /** sheet box of the view geometry */
@@ -160,6 +163,8 @@ export interface Sheet {
   revisions: { rev: string; text: string; date: string; by: string }[];
   /** surface texture and weld symbols, as text */
   symbols: { kind: "roughness" | "weld"; text: string; view?: number }[];
+  /** stretches taken out of long views (model axis 0 X, 1 Y, 2 Z), and whether Kerf chose them */
+  breaks?: { axis: 0 | 1 | 2; from: number; to: number; auto: boolean }[];
   /** views still waiting for their projection */
   pending: number;
   spec: DrawingSpec;
@@ -169,8 +174,82 @@ export interface Sheet {
 
 // ---------- building shapes ----------
 
+/**
+ * A broken view closing up, in sheet coordinates: along axis (0 x, 1 y),
+ * with t = sign × that coordinate, each band [lo, hi] is taken out and what
+ * lies beyond it moves back to leave only gap. Bands sorted by lo.
+ */
+export interface Bend {
+  axis: 0 | 1;
+  sign: 1 | -1;
+  bands: [number, number, number][];
+}
+
+/** How far a point at t moves back along the bend, or null inside a band. */
+function bendShift(b: Bend, t: number): number | null {
+  let shift = 0;
+  for (const [lo, hi, gap] of b.bands) {
+    if (t >= hi) shift += hi - lo - gap;
+    else if (t > lo) return null;
+    else break;
+  }
+  return shift;
+}
+
+const bendT = (b: Bend, x: number, y: number) => b.sign * (b.axis ? y : x);
+const moved = (b: Bend, x: number, y: number, shift: number): [number, number] => (b.axis ? [x, y - b.sign * shift] : [x - b.sign * shift, y]);
+
+export function bendPoint(b: Bend, x: number, y: number): [number, number] | null {
+  const s = bendShift(b, bendT(b, x, y));
+  return s === null ? null : moved(b, x, y, s);
+}
+
+/** The pieces of a polyline (flat list) outside a bend's bands, moved to close them up. */
+export function bendPolyline(b: Bend, p: number[]): number[][] {
+  const out: number[][] = [];
+  let cur: number[] = [];
+  const flush = () => {
+    if (cur.length >= 4) out.push(cur);
+    cur = [];
+  };
+  const edges = b.bands.flatMap(([lo, hi]) => [lo, hi]);
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    const ax = p[i];
+    const ay = p[i + 1];
+    const bx = p[i + 2];
+    const by = p[i + 3];
+    const ta = bendT(b, ax, ay);
+    const tb = bendT(b, bx, by);
+    const ss = [0, 1];
+    if (Math.abs(tb - ta) > 1e-12) for (const e of edges) if ((e - ta) * (e - tb) < 0) ss.push((e - ta) / (tb - ta));
+    ss.sort((x, y) => x - y);
+    for (let k = 0; k + 1 < ss.length; k++) {
+      const s0 = ss[k];
+      const s1 = ss[k + 1];
+      if (s1 - s0 < 1e-12) continue;
+      const shift = bendShift(b, ta + ((s0 + s1) / 2) * (tb - ta));
+      if (shift === null) {
+        flush();
+        continue;
+      }
+      const P = moved(b, ax + (bx - ax) * s0, ay + (by - ay) * s0, shift);
+      const Q = moved(b, ax + (bx - ax) * s1, ay + (by - ay) * s1, shift);
+      const n = cur.length;
+      if (!n || Math.abs(cur[n - 2] - P[0]) > 1e-9 || Math.abs(cur[n - 1] - P[1]) > 1e-9) {
+        flush();
+        cur.push(...P);
+      }
+      cur.push(...Q);
+    }
+  }
+  flush();
+  return out;
+}
+
 export class Ink {
   shapes: Shape[] = [];
+  /** set while inking a broken view: everything drawn is cut at its bands and closed up */
+  bend: Bend | null = null;
   constructor(public key = "") {}
 
   with<T>(key: string, fn: () => T): T {
@@ -185,6 +264,10 @@ export class Ink {
 
   line(x1: number, y1: number, x2: number, y2: number, pen: Pen = "thin") {
     if (Math.hypot(x2 - x1, y2 - y1) < 1e-6) return;
+    if (this.bend) {
+      for (const q of bendPolyline(this.bend, [x1, y1, x2, y2])) this.shapes.push(q.length === 4 ? { t: "line", p: [q[0], q[1], q[2], q[3]], pen, key: this.key } : { t: "poly", p: q, pen, key: this.key });
+      return;
+    }
     this.shapes.push({ t: "line", p: [x1, y1, x2, y2], pen, key: this.key });
   }
 
@@ -193,11 +276,33 @@ export class Ink {
   }
 
   poly(p: number[], pen: Pen, closed = false) {
-    if (p.length >= 4) this.shapes.push({ t: "poly", p, closed, pen, key: this.key });
+    if (p.length < 4) return;
+    if (this.bend) {
+      const all = closed ? [...p, p[0], p[1]] : p;
+      const pieces = bendPolyline(this.bend, all);
+      // untouched: keep it as it was, closed or not
+      if (pieces.length === 1 && pieces[0].length === all.length) this.shapes.push({ t: "poly", p: closed ? pieces[0].slice(0, -2) : pieces[0], closed, pen, key: this.key });
+      else for (const q of pieces) this.shapes.push({ t: "poly", p: q, pen, key: this.key });
+      return;
+    }
+    this.shapes.push({ t: "poly", p, closed, pen, key: this.key });
   }
 
   arc(cx: number, cy: number, r: number, a0: number, a1: number, pen: Pen) {
-    if (r > 1e-6) this.shapes.push({ t: "arc", c: [cx, cy], r, a0, a1, pen, key: this.key });
+    if (r <= 1e-6) return;
+    if (this.bend) {
+      const b = this.bend;
+      const t = bendT(b, cx, cy);
+      // an arc clear of every band just moves; one that reaches into a band is cut as a polyline
+      if (b.bands.some(([lo, hi]) => t + r > lo && t - r < hi)) {
+        this.poly(arcPoints(cx, cy, r, a0, a1, 0.3), pen);
+        return;
+      }
+      const q = bendPoint(b, cx, cy);
+      if (q) this.shapes.push({ t: "arc", c: q, r, a0, a1, pen, key: this.key });
+      return;
+    }
+    this.shapes.push({ t: "arc", c: [cx, cy], r, a0, a1, pen, key: this.key });
   }
 
   circle(cx: number, cy: number, r: number, pen: Pen) {
@@ -205,11 +310,25 @@ export class Ink {
   }
 
   fill(p: number[]) {
+    if (this.bend) {
+      const q: number[] = [];
+      for (let i = 0; i + 1 < p.length; i += 2) {
+        const m = bendPoint(this.bend, p[i], p[i + 1]);
+        if (!m) return;
+        q.push(...m);
+      }
+      p = q;
+    }
     this.shapes.push({ t: "fill", p, pen: "fill", key: this.key });
   }
 
   text(x: number, y: number, s: string, size: number, anchor: "start" | "middle" | "end" = "start", opts: { rot?: number; bold?: boolean } = {}) {
     if (!s) return;
+    if (this.bend) {
+      const m = bendPoint(this.bend, x, y);
+      if (!m) return;
+      [x, y] = m;
+    }
     this.shapes.push({ t: "text", at: [x, y], s, size, anchor, rot: opts.rot, bold: opts.bold, pen: "thin", key: this.key });
   }
 

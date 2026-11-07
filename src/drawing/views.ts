@@ -7,8 +7,8 @@ import type { ProjItem, ViewRequest } from "../kernel/drawing";
 import { applyXforms, applyXformsToDir, recipeHash, vcross, vdot, vnorm, type ShapeRecipe, type V3, type Xform } from "../kernel/recipe";
 import type { Frame } from "./sheet";
 import type { Span } from "../lang/ast";
-import { partFeatures, probeSegments, shellOpenDir, type Extent, type Feature } from "./features";
-import { defaultSpec, type DetailSpec, type DrawingSpec, type SectionSpec, type ViewKind } from "./spec";
+import { partFeatures, probeSegments, recipeSpan, shellOpenDir, type Extent, type Feature } from "./features";
+import { defaultSpec, type AuxSpec, type BreakSpec, type CutawaySpec, type DetailSpec, type DrawingSpec, type SectionSpec, type ViewKind } from "./spec";
 import { generalToleranceFor } from "../mfg/profiles";
 import { layFlat } from "./flat";
 import { gdtWanted } from "./gdt";
@@ -56,7 +56,7 @@ export function isUncut(p: EvalPart): boolean {
 }
 
 export interface PlannedView {
-  kind: ViewKind | "section" | "detail";
+  kind: ViewKind | "section" | "detail" | "aux";
   name: string;
   frame: Frame;
   /** projection request and its cache key; details share their parent's */
@@ -72,6 +72,13 @@ export interface PlannedView {
   span?: Span;
   /** drawn by convention instead of projected (the side view of a gear, ISO 2203) */
   synthetic?: "gear";
+  aux?: AuxSpec;
+  /** a crop view's model box */
+  crop?: [V3, V3];
+  /** an exploded view's spread and the world box of its moved parts */
+  exploded?: { f: number; box: [V3, V3] };
+  /** broken-out sections in this view (the request carries their planes) */
+  cutaways?: CutawaySpec[];
 }
 
 export interface DrawingPlan {
@@ -84,6 +91,8 @@ export interface DrawingPlan {
   errors: string[];
   /** the view whose projection also measures the probe lines, and the feature each line belongs to */
   probes?: { view: number; segs: { i: number }[] };
+  /** stretches taken out of long views, written or chosen by Kerf */
+  breaks: BreakSpec[];
 }
 
 export type BBoxOf = (p: EvalPart) => [V3, V3] | undefined;
@@ -153,24 +162,24 @@ export function planDrawing(spec: DrawingSpec, model: Model, bboxOf: BBoxOf): Dr
   }
   const bbox: [V3, V3] = Number.isFinite(lo[0]) ? [lo, hi] : [[-10, -10, -10], [10, 10, 10]];
   const items: ProjItem[] = parts.map((p) => ({ id: p.id, hash: p.hash, xf: p.xf, cut: !isUncut(p) }));
-  const itemsKey = recipeHash(items);
   const hiddenDefault = spec.hidden ?? !assembly;
 
   const views: PlannedView[] = [];
   const add = (v: Omit<PlannedView, "key">) => {
-    const key = recipeHash({ i: itemsKey, d: v.req.dir, x: v.req.x, s: v.req.section ?? null, h: v.req.hidden });
+    const key = recipeHash({ i: recipeHash(v.req.items), d: v.req.dir, x: v.req.x, s: v.req.section ?? null, h: v.req.hidden, c: v.req.cutaways ?? null });
     views.push({ ...v, key });
   };
   const seen = new Set<string>();
   for (const vs of spec.views) {
-    const id = vs.kind + (vs.label ?? "");
+    const id = vs.kind + (vs.label ?? "") + (vs.crop ? "crop" : "") + (vs.exploded ? "exploded" : "");
     if (seen.has(id)) continue;
     seen.add(id);
     const frame = viewFrame(vs.kind);
-    const hidden = vs.hidden ?? (vs.kind === "iso" ? false : hiddenDefault);
+    const hidden = vs.hidden ?? (vs.kind === "iso" || vs.exploded ? false : hiddenDefault);
     const gear = parts.length === 1 && parts[0].gear ? vnorm(parts[0].gear.axis) : null;
     const synthetic = gear && vs.kind !== "iso" && Math.abs(vdot(frame.dir, gear)) < 1e-6 ? ("gear" as const) : undefined;
-    add({ kind: vs.kind, name: vs.kind, frame, req: { dir: frame.dir, x: frame.x, items, hidden }, scale: vs.scale, at: vs.at, label: vs.label, synthetic });
+    const ex = vs.exploded && parts.length > 1 ? explode(parts, bboxOf, vs.exploded) : null;
+    add({ kind: vs.kind, name: vs.kind, frame, req: { dir: frame.dir, x: frame.x, items: ex?.items ?? items, hidden }, scale: vs.scale, at: vs.at, label: vs.label, synthetic, crop: vs.crop, exploded: ex ? { f: vs.exploded!, box: ex.box } : undefined });
   }
   for (const s of spec.sections) {
     const frame = sectionFrame(s.normal);
@@ -188,6 +197,22 @@ export function planDrawing(spec: DrawingSpec, model: Model, bboxOf: BBoxOf): Dr
       parent: parent >= 0 ? parent : undefined,
     });
   }
+  // auxiliary views: square onto an inclined face, with an arrow on a view that sees the face edge-on
+  const aux = [...spec.aux];
+  if (spec.viewsAuto && !spec.auto && !assembly && parts.length === 1 && !aux.length) {
+    const local = bboxOf(parts[0]);
+    aux.push(...autoAux(parts[0], usedLetters(spec), gdtWanted(spec, processFamily(parts[0])) ? "D" : "A", local ? worldBox(parts[0], local) : undefined));
+  }
+  for (const a of aux) {
+    const frame = sectionFrame(a.normal);
+    let parent = a.view ? views.findIndex((v) => v.kind === a.view) : -1;
+    // a principal view (or a section standing in for one) that sees the face edge-on
+    const edgeOn = (v: PlannedView) => Math.abs(vdot(v.frame.dir, vnorm(a.normal))) < 1e-3;
+    if (parent < 0) parent = views.findIndex((v) => PRINCIPAL_KINDS.includes(v.kind) && edgeOn(v));
+    if (parent < 0) parent = views.findIndex((v) => v.kind === "section" && edgeOn(v));
+    if (parent < 0) parent = views.findIndex((v) => PRINCIPAL_KINDS.includes(v.kind));
+    add({ kind: "aux", name: a.label, frame, req: { dir: frame.dir, x: frame.x, items, hidden: hiddenDefault }, scale: a.scale, at: a.at2, aux: a, crop: a.crop, parent: parent >= 0 ? parent : undefined });
+  }
   for (const d of spec.details) {
     const parent = views.findIndex((v) => v.name === d.view || (v.kind === "section" && v.name === d.view));
     if (parent < 0) {
@@ -196,6 +221,20 @@ export function planDrawing(spec: DrawingSpec, model: Model, bboxOf: BBoxOf): Dr
     }
     const pv = views[parent];
     views.push({ kind: "detail", name: d.label, frame: pv.frame, req: pv.req, key: pv.key, scale: d.scale, detail: d, parent });
+  }
+  // broken-out sections: the view's projection also cuts away what lies in front of each point
+  for (const c of spec.cutaways) {
+    const k = views.findIndex((v) => v.kind !== "detail" && v.kind !== "iso" && (v.name === c.view || v.kind === c.view));
+    if (k < 0) {
+      errors.push(`Broken-out section: there is no "${c.view}" view to cut into`);
+      continue;
+    }
+    const v = views[k];
+    const cutaways = [...(v.cutaways ?? []), c];
+    const req = { ...v.req, cutaways: cutaways.map((x) => ({ at: x.at, normal: v.frame.dir })) };
+    const key = recipeHash({ k: v.key, c: req.cutaways });
+    views[k] = { ...v, req, key, cutaways };
+    views.forEach((d, j) => d.kind === "detail" && d.parent === k && (views[j] = { ...d, req, key }));
   }
 
   // a single part's cuts are probed for through or blind along with its first projected view
@@ -213,7 +252,210 @@ export function planDrawing(spec: DrawingSpec, model: Model, bboxOf: BBoxOf): Dr
       probes = { view: pi, segs };
     }
   }
-  return { spec, parts, assembly, views, bbox, errors, probes };
+  // long plain parts lose their featureless middle so they can be drawn bigger
+  const breaks = spec.breaks.length ? spec.breaks : spec.autoBreak !== false && !assembly && !spec.flat && parts.length === 1 ? autoBreaks(parts[0], bboxOf) : [];
+  return { spec, parts, assembly, views, bbox, errors, probes, breaks };
+}
+
+const PRINCIPAL_KINDS: string[] = ["front", "top", "right", "left", "back", "bottom"];
+
+/** Letters the drawing already uses for sections, details and auxiliary views. */
+function usedLetters(spec: DrawingSpec): Set<string> {
+  return new Set([...spec.sections.map((s) => s.label), ...spec.details.map((d) => d.label), ...spec.aux.map((a) => a.label)].map((l) => l.toUpperCase()));
+}
+
+/**
+ * Auxiliary views a part needs: one square onto each direction its holes,
+ * bores and slots are drilled along when that is not a principal axis but is
+ * square to one (so a principal view sees the face edge-on), at most two.
+ */
+export function autoAux(p: EvalPart, used: Set<string>, first = "A", box?: [V3, V3]): AuxSpec[] {
+  if (p.kind !== "part" || p.gear || p.sheet) return [];
+  const dirs: { n: V3; at: V3; feats: Feature[] }[] = [];
+  for (const f of partFeatures(p)) {
+    if (!(f.t === "hole" || f.t === "slot" || (f.t === "cyl" && f.op === "cut"))) continue;
+    // a cut points into the material; the face it opens looks the other way
+    const n = vnorm([-f.dir[0], -f.dir[1], -f.dir[2]]);
+    const big = Math.max(...n.map(Math.abs));
+    if (big > 0.999) continue;
+    // seen edge-on in a principal view: one component is zero
+    if (!n.some((c) => Math.abs(c) < 1e-3)) continue;
+    const same = dirs.find((d) => vdot(d.n, n) > 0.9995);
+    if (same) same.feats.push(f);
+    else dirs.push({ n, at: f.at, feats: [f] });
+  }
+  const out: AuxSpec[] = [];
+  let code = first.charCodeAt(0);
+  for (const d of dirs.sort((a, b) => b.feats.length - a.feats.length).slice(0, 2)) {
+    while (used.has(String.fromCharCode(code)) || "IOQ".includes(String.fromCharCode(code))) code++;
+    const label = String.fromCharCode(code++);
+    const normal = d.n.map((c) => Math.round(c * 1e6) / 1e6) as V3;
+    out.push({ label, normal, at: d.at, crop: auxCrop(p, normal, d.feats, box) });
+  }
+  return out;
+}
+
+/**
+ * A partial auxiliary view's box: the angled features and a margin round
+ * them, when the part is much bigger than they are (a clamp bore on a
+ * handlebar). A part about their size, or small anyway, is drawn whole.
+ */
+function auxCrop(p: EvalPart, normal: V3, feats: Feature[], box?: [V3, V3]): [V3, V3] | undefined {
+  const lo: V3 = [Infinity, Infinity, Infinity];
+  const hi: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const f of feats) {
+    if (!("at" in f) || !("dir" in f)) continue;
+    const size = "d" in f ? (f.t === "hole" && f.cbore ? Math.max(f.d, f.cbore[0]) : f.d) : f.t === "slot" ? Math.max(f.w, f.h) : 0;
+    const depth = f.t === "cyl" ? f.h : "depth" in f ? f.depth : 0;
+    const pad = 0.75 * size + 4;
+    for (const t of [0, Math.min(depth, 4 * size)]) for (let k = 0; k < 3; k++) {
+      const c = f.at[k] + f.dir[k] * t;
+      lo[k] = Math.min(lo[k], c - pad);
+      hi[k] = Math.max(hi[k], c + pad);
+    }
+  }
+  if (!Number.isFinite(lo[0])) return undefined;
+  const frame = sectionFrame(normal);
+  const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((i): V3 => [i & 1 ? hi[0] : lo[0], i & 2 ? hi[1] : lo[1], i & 4 ? hi[2] : lo[2]]);
+  const span = (pts: V3[], axis: V3) => {
+    const ds = pts.map((c) => vdot(c, axis));
+    return Math.max(...ds) - Math.min(...ds);
+  };
+  for (const axis of [frame.x, frame.y]) {
+    // the recipe's own span where it can tell, else the built part's box
+    const r = recipeSpan(p, axis);
+    const whole = r ? r[1] - r[0] : box ? span([0, 1, 2, 3, 4, 5, 6, 7].map((i): V3 => [box[i & 1][0], box[(i >> 1) & 1][1], box[(i >> 2) & 1][2]]), axis) : undefined;
+    if (!whole) return undefined;
+    // worth cropping only when a big part runs well past the features
+    if (whole >= 100 && span(corners, axis) < whole / 3) return [lo, hi];
+  }
+  return undefined;
+}
+
+/** Item placements for an exploded view: the parts spread out from the middle of the assembly, each moved by its distance from the middle and a little more, so stacked parts come apart. */
+function explode(parts: EvalPart[], bboxOf: BBoxOf, f: number): { items: ProjItem[]; box: [V3, V3] } {
+  const boxes = parts.map((p) => {
+    const local = bboxOf(p);
+    return local ? worldBox(p, local) : null;
+  });
+  const lo: V3 = [Infinity, Infinity, Infinity];
+  const hi: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const b of boxes) if (b) for (let k = 0; k < 3; k++) (lo[k] = Math.min(lo[k], b[0][k])), (hi[k] = Math.max(hi[k], b[1][k]));
+  const bc: V3 = [0, 1, 2].map((k) => (Number.isFinite(lo[k]) ? (lo[k] + hi[k]) / 2 : 0)) as V3;
+  const size = Number.isFinite(lo[0]) ? Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) : 1;
+  const out: ProjItem[] = [];
+  const blo: V3 = [Infinity, Infinity, Infinity];
+  const bhi: V3 = [-Infinity, -Infinity, -Infinity];
+  parts.forEach((p, i) => {
+    const b = boxes[i];
+    const c: V3 = b ? [0, 1, 2].map((k) => (b[0][k] + b[1][k]) / 2) as V3 : bc;
+    let d: V3 = [c[0] - bc[0], c[1] - bc[1], c[2] - bc[2]];
+    const dist = Math.hypot(...d);
+    d = dist < 1e-6 ? [0, 0, 1] : [d[0] / dist, d[1] / dist, d[2] / dist];
+    const m = f * (1.5 * dist + 0.15 * size);
+    const v: V3 = [d[0] * m, d[1] * m, d[2] * m];
+    out.push({ id: p.id, hash: p.hash, xf: [...p.xf, { op: "translate", v }], cut: !isUncut(p) });
+    if (b) for (let k = 0; k < 3; k++) (blo[k] = Math.min(blo[k], b[0][k] + v[k])), (bhi[k] = Math.max(bhi[k], b[1][k] + v[k]));
+  });
+  return { items: out, box: Number.isFinite(blo[0]) ? [blo, bhi] : [lo, hi] };
+}
+
+/**
+ * Breaks for a long, plain part (a shaft, rail, tube or bar): along its long
+ * axis, the stretches with nothing on them are taken out, keeping some plain
+ * length beside each feature and end. Only for shapes whose section is known
+ * to stay the same between features; none when it is not long enough to gain.
+ */
+export function autoBreaks(p: EvalPart, bboxOf: BBoxOf): BreakSpec[] {
+  if (p.kind !== "part" || p.gear || p.sheet || !p.recipe.base) return [];
+  const local = bboxOf(p);
+  if (!local) return [];
+  const [lo, hi] = worldBox(p, local);
+  const ext = [0, 1, 2].map((k) => hi[k] - lo[k]);
+  const axis = ext.indexOf(Math.max(...ext)) as 0 | 1 | 2;
+  const L = ext[axis];
+  const W = Math.max(...ext.filter((_, k) => k !== axis));
+  if (!(W > 0) || L < 4 * W || L < 60) return [];
+  const u: V3 = [0, 0, 0];
+  u[axis] = 1;
+  const busy: [number, number][] = [];
+  const along = (d: V3) => Math.abs(vdot(vnorm(d), u)) > 0.999;
+  // the body: its section must stay the same along the axis, apart from a turned profile's steps
+  const base = (s: ShapeRecipe, xf: Xform[]): boolean => {
+    const dir = (d: V3) => vnorm(applyXformsToDir(applyXformsToDir(d, xf), p.xf));
+    const pt = (q: V3) => applyXforms(applyXforms(q, xf), p.xf);
+    switch (s.t) {
+      case "xform":
+        return base(s.shape, [...s.xf, ...xf]);
+      case "box":
+        return true;
+      case "cyl":
+      case "tube":
+      case "prism":
+      case "rrect":
+        return along(dir(s.dir));
+      case "revolve": {
+        const a = dir(s.dir);
+        if (!along(a)) return false;
+        const n = vnorm(s.dir);
+        const z = (zz: number) => vdot(pt([s.at[0] + n[0] * zz, s.at[1] + n[1] * zz, s.at[2] + n[2] * zz]), u);
+        for (let i = 0; i < s.pts.length; i++) {
+          const [r0, z0] = s.pts[i];
+          const [r1, z1] = s.pts[(i + 1) % s.pts.length];
+          if (r0 < 1e-9 && r1 < 1e-9) continue;
+          // a step or taper in the profile is a feature; a plain cylinder is not
+          if (Math.abs(r1 - r0) > 1e-6) busy.push([Math.min(z(z0), z(z1)), Math.max(z(z0), z(z1))]);
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  };
+  if (!base(p.recipe.base, [])) return [];
+  for (const o of p.recipe.ops) {
+    if (o.op === "draft" || o.op === "intersect") return [];
+    if (o.op !== "add" && o.op !== "cut") continue;
+    const span = recipeSpan({ ...p, recipe: { base: o.shape, ops: [] } } as EvalPart, u);
+    if (span) busy.push(span);
+    else if (!holeSpans(p, o.shape, u, busy)) return [];
+  }
+  // plain length kept beside each feature and end
+  const pad = Math.max(0.6 * W, 0.05 * L, 3);
+  const taken = busy.map(([a, b]): [number, number] => [a - pad, b + pad]);
+  taken.push([lo[axis] - 1, lo[axis] + pad], [hi[axis] - pad, hi[axis] + 1]);
+  taken.sort((a, b) => a[0] - b[0]);
+  const free: [number, number][] = [];
+  let at = lo[axis];
+  for (const [a, b] of taken) {
+    if (a > at) free.push([at, a]);
+    at = Math.max(at, b);
+  }
+  if (at < hi[axis]) free.push([at, hi[axis]]);
+  const out = free
+    .filter(([a, b]) => b - a >= Math.max(0.2 * L, 2 * W))
+    .sort((x, y) => y[1] - y[0] - (x[1] - x[0]))
+    .slice(0, 2)
+    .sort((x, y) => x[0] - y[0]);
+  // not worth it unless the drawing gets noticeably shorter
+  if (out.reduce((t, [a, b]) => t + b - a, 0) < 0.3 * L) return [];
+  const r = (n: number) => Math.round(n * 100) / 100;
+  return out.map(([a, b]) => ({ axis, from: r(a), to: r(b) }));
+}
+
+/** The stretch along u a hole (or a union of them) takes up; false for any other shape. */
+function holeSpans(p: EvalPart, s: ShapeRecipe, u: V3, out: [number, number][], xf: Xform[] = []): boolean {
+  if (s.t === "xform") return holeSpans(p, s.shape, u, out, [...s.xf, ...xf]);
+  if (s.t === "union") return s.shapes.every((c) => holeSpans(p, c, u, out, xf));
+  if (s.t !== "hole") return false;
+  const at = applyXforms(applyXforms(s.at, xf), p.xf);
+  const dir = vnorm(applyXformsToDir(applyXformsToDir(s.dir, xf), p.xf));
+  const r = Math.max(s.d, s.cbore?.[0] ?? 0, s.csink ?? 0) / 2;
+  const c = vdot(at, u);
+  const reach = vdot(dir, u) * Math.min(s.depth, 1e4);
+  const side = r * Math.sqrt(Math.max(0, 1 - vdot(dir, u) ** 2));
+  out.push([Math.min(c, c + reach) - side, Math.max(c, c + reach) + side]);
+  return true;
 }
 
 /** World-space extent of a part along a direction, from its placed bounding box. */
@@ -279,6 +521,8 @@ export function autoDrawings(model: Model, bboxOf?: BBoxOf): DrawingSpec[] {
       const replaced = sec.normal[1] ? "front" : "right";
       s.views = s.views.filter((v) => v.kind !== replaced);
     }
+    // letters after the datums' and the section's
+    s.aux = autoAux(p, usedLetters(s), gdtWanted(s, processFamily(p)) ? "D" : "A", local ? worldBox(p, local) : undefined);
     out.push(s);
   }
   // the blank a sheet-metal part is cut from, with its bends

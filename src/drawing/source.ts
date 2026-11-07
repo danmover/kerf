@@ -29,7 +29,15 @@ export function specToSource(spec: DrawingSpec, name: string): string {
   if (spec.gdt !== undefined) lines.push(`  gdt: ${spec.gdt}`);
   if (spec.holeTable) lines.push("  hole_table: true");
   if (spec.dimStyle && spec.dimStyle !== "auto") lines.push(`  dim_style: ${str(spec.dimStyle)}`);
-  lines.push(`  views: [${spec.views.map((v) => str(v.kind)).join(", ")}]`);
+  if (spec.autoBreak === false) lines.push("  breaks: false");
+  // views with settings of their own are view() calls, the rest a plain list
+  const special = (v: DrawingSpec["views"][number]) => !!(v.crop || v.exploded || v.label || v.scale || v.at || v.hidden !== undefined);
+  const plain = spec.views.filter((v) => !special(v));
+  if (plain.length || !spec.views.length) lines.push(`  views: [${plain.map((v) => str(v.kind)).join(", ")}]`);
+  for (const v of spec.views.filter(special)) lines.push(`  ${viewCall(v)}`);
+  for (const a of spec.aux ?? []) lines.push(`  aux_view(${str(a.label)}, normal: ${vec(a.normal)}${a.at ? `, at: ${vec(a.at)}` : ""}${opt("view", a.view)}${a.scale ? `, scale: ${str(scaleText(a.scale))}` : ""}${a.crop ? `, crop: [${vec(a.crop[0])}, ${vec(a.crop[1])}]` : ""})`);
+  for (const b of spec.breaks ?? []) lines.push(`  break_view(${"XYZ"[b.axis]}, ${num(b.from)}, ${num(b.to)})`);
+  for (const c of spec.cutaways ?? []) lines.push(`  broken_out(${str(c.view)}, at: ${vec(c.at)}, r: ${num(c.r)})`);
   for (const s of spec.sections) lines.push(`  section(${str(s.label)}, at: ${vec(s.at)}, normal: ${vec(s.normal)}${s.view ? `, view: ${str(s.view)}` : ""})`);
   for (const d of spec.details) lines.push(`  detail(${str(d.label)}, view: ${str(d.view)}, at: ${vec(d.at)}, r: ${num(d.r)}, scale: ${num(d.scale)})`);
   for (const t of spec.tols) {
@@ -45,6 +53,18 @@ export function specToSource(spec: DrawingSpec, name: string): string {
   for (const n of spec.notes) lines.push(`  note(${str(n)})`);
   lines.push("}");
   return lines.join("\n");
+}
+
+/** A view() call with the view's own settings. */
+export function viewCall(v: DrawingSpec["views"][number]): string {
+  const parts = [str(v.kind)];
+  if (v.scale) parts.push(`scale: ${str(scaleText(v.scale))}`);
+  if (v.label) parts.push(`label: ${str(v.label)}`);
+  if (v.hidden !== undefined) parts.push(`hidden: ${v.hidden}`);
+  if (v.at) parts.push(`at: (${num(v.at[0])}, ${num(v.at[1])})`);
+  if (v.crop) parts.push(`crop: [${vec(v.crop[0])}, ${vec(v.crop[1])}]`);
+  if (v.exploded) parts.push(`exploded: ${v.exploded === 1 ? "true" : num(v.exploded)}`);
+  return `view(${parts.join(", ")})`;
 }
 
 const opt = (name: string, v: string | number | undefined) => (v === undefined ? "" : `, ${name}: ${typeof v === "number" ? num(v) : str(v)}`);
@@ -181,6 +201,11 @@ export function tolCall(id: string, t: TolEdit): string | null {
 }
 
 /** The source without the line holding [start, end), or just the range when the line holds more. */
+/** The source without the statement at a span (its whole line when it stands alone). */
+export function removeStatement(src: string, span: { start: number; end: number }): string {
+  return cutStatement(src, span.start, span.end);
+}
+
 function cutStatement(src: string, start: number, end: number): string {
   const ls = src.lastIndexOf("\n", start - 1) + 1;
   const le = src.indexOf("\n", end);

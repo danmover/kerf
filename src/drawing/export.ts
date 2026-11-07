@@ -92,7 +92,8 @@ const MAX_DESCRIPTION = 16_000;
 export function describeSheet(sheet: Sheet): string {
   const model = useDesign.getState().model;
   const lines = [`Drawing "${sheet.title}" (${sheet.name}${sheet.auto ? ", automatic" : ", drawing block in the source"}): ${sheet.size} ${sheet.orientation}, scale ${scaleText(sheet.scale)}.`];
-  lines.push(`Views: ${sheet.views.map((v, i) => `v${i} ${v.label || v.name}${v.scale !== sheet.scale ? ` (${scaleText(v.scale)})` : ""}${v.state !== "ready" ? ` [${v.state}${v.error ? `: ${v.error}` : ""}]` : ""}`).join("; ")}`);
+  lines.push(`Views: ${sheet.views.map((v, i) => `v${i} ${v.label || (v.kind === "aux" ? `auxiliary view ${v.name}` : v.name)}${v.scale !== sheet.scale ? ` (${scaleText(v.scale)})` : ""}${v.extras?.length ? ` (${v.extras.join(", ")})` : ""}${v.state !== "ready" ? ` [${v.state}${v.error ? `: ${v.error}` : ""}]` : ""}`).join("; ")}`);
+  if (sheet.breaks?.length) lines.push(`Broken views: ${sheet.breaks.map((b) => `${"XYZ"[b.axis]} ${b.from} to ${b.to} taken out`).join("; ")}${sheet.breaks[0].auto ? " (chosen by Kerf for a long plain part; breaks: false keeps it whole, break_view(X, from, to) sets your own)" : ""}. Dimensions across a break keep their true length.`);
   if (sheet.dims.length) {
     lines.push('Dimensions and callouts (key [view] description = text, then the id tol("id", …) takes for an automatic one):');
     for (const [i, d] of sheet.dims.entries()) {

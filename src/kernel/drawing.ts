@@ -28,6 +28,8 @@ export interface ViewRequest {
   hidden: boolean;
   /** world segments to measure the first item's material along (through-hole checks) */
   probes?: { a: V3; b: V3 }[];
+  /** broken-out sections: the view again with the material in front of each plane cut away, for the drawing to show inside a region */
+  cutaways?: { at: V3; normal: V3 }[];
 }
 
 /** 2D geometry in view coordinates (model millimetres, y up). */
@@ -52,6 +54,8 @@ export interface ViewResult {
   probes?: number[];
   /** items whose solid the kernel no longer holds (evicted or not built yet), left out of the view */
   missing?: number[];
+  /** each broken-out section's edges and cut faces, in the request's order */
+  cutaways?: { edges: Edge2[]; hatch: { part: number; loops: number[][] }[] }[];
   ms: number;
 }
 
@@ -71,39 +75,48 @@ function free(o: unknown) {
 
 export function projectView(req: ViewRequest, placed: Placed, meshOf?: MeshOf): ViewResult {
   // many parts and no cut: each part on its own, occlusion from a depth buffer
-  if (meshOf && !req.section && req.items.length >= FAST_ITEMS) return projectAssembly(req, placed, meshOf);
+  if (meshOf && !req.section && !req.cutaways?.length && req.items.length >= FAST_ITEMS) return projectAssembly(req, placed, meshOf);
   const t0 = performance.now();
   const dir = vnorm(req.dir);
   const xAxis = vnorm(req.x);
   const yAxis = vcross(dir, xAxis);
-  const shapes: { part: number; shape: AnyShape; temp: boolean }[] = [];
-  const hatch: ViewResult["hatch"] = [];
   let probes: number[] | undefined;
   const missing: number[] = [];
-
+  const solids: { part: number; w: Shape3D; cut: boolean }[] = [];
   req.items.forEach((it, part) => {
-    let w: Shape3D;
     try {
-      w = placed(it).shape;
+      const w = placed(it).shape;
+      if (part === 0 && req.probes?.length) probes = req.probes.map((s) => materialAlong(w, s.a, s.b));
+      solids.push({ part, w, cut: it.cut !== false });
     } catch {
       missing.push(part);
-      return;
     }
-    if (part === 0 && req.probes?.length) probes = req.probes.map((s) => materialAlong(w, s.a, s.b));
-    if (!req.section) {
+  });
+  const main = cutView(solids, req.section, dir, xAxis, yAxis, req.hidden);
+  // a broken-out section shows what lies behind its plane: no hidden lines there
+  const cutaways = req.cutaways?.map((c) => cutView(solids, c, dir, xAxis, yAxis, false));
+  return { edges: main.edges, hatch: main.hatch, probes, missing: missing.length ? missing : undefined, cutaways, ms: performance.now() - t0 };
+}
+
+/** Edges of some placed solids seen along dir, cut by a section plane when there is one (keeping the -normal side), with the cut faces as loops. */
+function cutView(solids: { part: number; w: Shape3D; cut: boolean }[], section: { at: V3; normal: V3 } | undefined, dir: V3, xAxis: V3, yAxis: V3, hidden: boolean): { edges: Edge2[]; hatch: ViewResult["hatch"] } {
+  const shapes: { part: number; shape: AnyShape; temp: boolean }[] = [];
+  const hatch: ViewResult["hatch"] = [];
+  for (const { part, w, cut } of solids) {
+    if (!section) {
       shapes.push({ part, shape: w, temp: false });
-      return;
+      continue;
     }
-    const n = vnorm(req.section.normal);
-    const offset = vdot(req.section.at, n);
-    if (it.cut === false) {
+    const n = vnorm(section.normal);
+    const offset = vdot(section.at, n);
+    if (!cut) {
       // whole standard parts stay unsectioned when their centre lies behind the plane
       const [lo, hi] = w.boundingBox.bounds;
       const c: V3 = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
       if (vdot(c, n) <= offset) shapes.push({ part, shape: w, temp: false });
-      return;
+      continue;
     }
-    const plane = new R.Plane(req.section.at, null, [-n[0], -n[1], -n[2]]);
+    const plane = new R.Plane(section.at, null, [-n[0], -n[1], -n[2]]);
     let kept: Shape3D | null = null;
     // cutPlane leaves the cached solid as it is and returns a new one
     try {
@@ -113,7 +126,7 @@ export function projectView(req: ViewRequest, placed: Placed, meshOf?: MeshOf): 
     }
     if (!kept) {
       free(plane);
-      return;
+      continue;
     }
     shapes.push({ part, shape: kept, temp: true });
     try {
@@ -128,11 +141,10 @@ export function projectView(req: ViewRequest, placed: Placed, meshOf?: MeshOf): 
       /* no cut faces: the plane missed the part */
     }
     free(plane);
-  });
-
-  const edges = shapes.length ? hlrEdges(shapes, dir, xAxis, req.hidden) : [];
+  }
+  const edges = shapes.length ? hlrEdges(shapes, dir, xAxis, hidden) : [];
   for (const s of shapes) if (s.temp) free(s.shape);
-  return { edges, hatch, probes, missing: missing.length ? missing : undefined, ms: performance.now() - t0 };
+  return { edges, hatch };
 }
 
 /** Exact hidden-line removal of some placed solids seen along dir, in view coordinates. */
