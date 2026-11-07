@@ -23,20 +23,32 @@ const D2R = Math.PI / 180;
 
 const PHI = [45, 135, 225, 315];
 
+/** the rig's parts: v2's, or the cheaper v3 set (MG90D servos, the Makerverse HX710 amplifier, a 1 kg beam cell, a 4S 1800 pack) */
+interface RigParts {
+  servo: string;
+  amp: string;
+  cell: string;
+  battery: string;
+  fuse: string;
+}
+const V2_PARTS: RigParts = { servo: "savox_sh0264mg", amp: "hx711_breakout", cell: "tal221_500g", battery: "lipo_4s_5000_xt90", fuse: "fuse_holder_maxi" };
+const V3_PARTS: RigParts = { servo: "mg90d", amp: "makerverse_load_cell_amp", cell: "beam_cell_1kg", battery: "lipo_4s_1800_xt60", fuse: "fuse_holder_atc" };
+
 /** the rig's electronics, wired as the jet-vane design wires them */
-function design(scenario: string, extra = "", imuAt = "at: (0, 60, 0)") {
-  const servos = [1, 2, 3, 4].map((i) => `component s${i} = lib.servo("savox_sh0264mg") { at: (${i * 40}, 60, 100), axis: Z }`).join("\n");
+function design(scenario: string, extra = "", imuAt = "at: (0, 60, 0)", parts: RigParts = V2_PARTS) {
+  const servos = [1, 2, 3, 4].map((i) => `component s${i} = lib.servo("${parts.servo}") { at: (${i * 40}, 60, 100), axis: Z }`).join("\n");
+  const ampVdd = catalogPart(parts.amp)!.pins.some((p) => p.id === "VDD") ? ", hx.VDD" : "";
   const sigs = ["D14", "D32", "D33", "D27"].map((p, i) => `wire fc.${p} -> s${i + 1}.SIG`).join("\n");
   return evaluate(
     `design "Jet vane rig"
 component fc = lib.controller("feather_esp32_v2") { at: (0, 0, 0) }
 component esc = lib.esc("skywalker_60a_v2") { at: (120, 0, 0) }
 component edf = lib.bldc("xfly_edf_64_12b_3200kv") { at: (0, 0, 200), axis: Z }
-component bat = lib.battery("lipo_4s_5000_xt90") { at: (250, 0, 0) }
-component fuse = lib.fuse("fuse_holder_maxi") { at: (200, 60, 0) }
+component bat = lib.battery("${parts.battery}") { at: (250, 0, 0) }
+component fuse = lib.fuse("${parts.fuse}") { at: (200, 60, 0) }
 component imu = lib.sensor("lsm6dsox_breakout") { ${imuAt} }
-component hx = lib.sensor("hx711_breakout") { at: (0, -60, 0) }
-component cell = lib.sensor("tal221_500g") { at: (0, -120, 0) }
+component hx = lib.sensor("${parts.amp}") { at: (0, -60, 0) }
+component cell = lib.sensor("${parts.cell}") { at: (0, -120, 0) }
 component estop = lib.switch("estop_jaycar_sp0786") { at: (300, 0, 0) }
 ${servos}
 wire bat.POS -> fuse.IN { gauge: 10 }
@@ -53,7 +65,7 @@ ${sigs}
 wire fc.QT_3V -> imu.VIN
 wire fc.SDA -> imu.SDA
 wire fc.SCL -> imu.SCL
-net LOGIC_3V: fc.V3, hx.VCC, hx.VDD
+net LOGIC_3V: fc.V3, hx.VCC${ampVdd}
 wire fc.A3 -> hx.DOUT
 wire fc.A5 -> hx.SCK
 wire hx.E_PLUS -> cell.EXC_P
@@ -113,7 +125,7 @@ function gimbal(opts: { lockRoll?: boolean; cell?: boolean } = {}): MechModel {
 
 describe("parts", () => {
   it("has the rig's parts in the catalogue with Australian shops to buy them from", () => {
-    for (const id of ["feather_esp32_v2", "skywalker_60a_v2", "xfly_edf_64_12b_3200kv", "savox_sh0264mg", "lsm6dsox_breakout", "hx711_breakout", "tal221_500g", "estop_jaycar_sp0786", "fuse_holder_maxi", "xt90s_pair", "lipo_4s_5000_xt90"]) {
+    for (const id of ["feather_esp32_v2", "skywalker_60a_v2", "xfly_edf_64_12b_3200kv", "savox_sh0264mg", "lsm6dsox_breakout", "hx711_breakout", "tal221_500g", "estop_jaycar_sp0786", "fuse_holder_maxi", "xt90s_pair", "lipo_4s_5000_xt90", "mg90d", "makerverse_load_cell_amp", "beam_cell_1kg", "lipo_4s_1800_xt60"]) {
       const p = catalogPart(id);
       expect(p, id).toBeDefined();
       expect(p!.buy?.some((b) => b.url && /\.au\b|amazon\.com\.au/.test(b.url)), id).toBe(true);
@@ -367,6 +379,33 @@ void loop() {
     const k = /set LIFT_K to ([\d.]+)/.exec(line);
     expect(line).toMatch(/mN m per deg/);
     // the sim's vanes are the design's prediction, so the test should find LIFT_K close to 1
+    expect(Number(k?.[1])).toBeGreaterThan(0.75);
+    expect(Number(k?.[1])).toBeLessThan(1.3);
+    expect(v.results["cell.peak_force"]).toBeGreaterThan(0.2);
+  });
+
+  it("reads the same vane moment with the cheaper parts: MG90D servos, the HX710 amplifier and a 1 kg beam cell", { timeout: 30_000 }, () => {
+    const m = design(
+      `scenario "Force test" {
+  world: sim.bench()
+  duration: 20s
+  console: [sim.type("tare", at: 2.9s), sim.type("arm", at: 3s), sim.type("t 70", at: 3.1s), sim.type("sweep", at: 6s)]
+}`,
+      "",
+      "at: (0, 60, 0)",
+      V3_PARTS,
+    );
+    const fw = generateFirmware(m.machine!, m.name)[0];
+    expect((fw.warnings ?? []).join(" ")).not.toMatch(/HX711|load cell|servo/i);
+    const config = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    // the MG90D moves about 90° on 1 to 2 ms, so about 11 µs a degree
+    expect(config).toMatch(/#define SERVO_US_PER_DEG 11\.1/);
+    const def = m.scenarios![0];
+    const mech = gimbal({ lockRoll: true, cell: true });
+    const v = runSpec({ ...def.spec, mech, variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.error).toBeUndefined();
+    const line = v.serial.find((l) => /vane moment:/.test(l.text))?.text ?? "";
+    const k = /set LIFT_K to ([\d.]+)/.exec(line);
     expect(Number(k?.[1])).toBeGreaterThan(0.75);
     expect(Number(k?.[1])).toBeLessThan(1.3);
     expect(v.results["cell.peak_force"]).toBeGreaterThan(0.2);

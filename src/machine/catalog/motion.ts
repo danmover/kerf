@@ -139,6 +139,26 @@ export const MOTION: CatalogPart[] = [
     notes: ["Mounting tab height, hole spacing and the spline offset are not published: measure one before printing the mounts.", "Screw it down through the tabs with the M2 screws in its bag, or M2 x 10 pan heads and nuts."],
   },
   {
+    id: "mg90d",
+    kind: "servo",
+    name: "MG90D high-torque metal-gear micro servo (Adafruit 1143)",
+    maker: "Tower Pro",
+    mpn: "MG90D",
+    summary: "Digital micro servo with metal gears and two ball bearings on the output: 2.1 kg·cm and 0.1 s/60° at 4.8 V (2.4 kg·cm and 0.08 s at 6 V), 20-tooth spline, 22.8 x 12.2 x 28.5 mm over the spline, 13.4 g. 1 to 2 ms pulses move it about 90°.",
+    specs: { t_stall: kgcm(2.1), v_min: 4.8, v_max: 6, speed_s_per_60: 0.1, i_stall: 0.75, i_run: 0.15, mass_g: 13.4, range_deg: 180, frame_hz_max: 333, spline: "20T", bearings: 2 },
+    pins: servoPins(4.8, 6, 0.15),
+    // MG90-size case: spline 5.9 mm off the case centre, tabs 4.5 mm below the top face, holes 27.8 mm apart (assumed: measure yours)
+    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8 }, holes: [[-19.8, 0], [8, 0]], hole_d: 2.2, color: "#23262b" },
+    price_usd: 12.5,
+    buy: [{ vendor: "Core Electronics (AU)", url: "https://core-electronics.com.au/micro-servo-high-torque-metal-gear.html" }, { vendor: "Adafruit", url: "https://www.adafruit.com/product/1143" }],
+    source: "https://www.adafruit.com/product/1143",
+    notes: [
+      "Its two output ball bearings carry a side load on the spline, so a light arm or vane can sit straight on its horn with no bearings of its own.",
+      "Tab height, hole spacing and the spline offset are the usual MG90 sizes, not published for this one: measure one before printing a mount.",
+      "Screw it down through the tabs with the two screws in its bag. Digital: it takes up to about 333 Hz frames; drop to 50 Hz if one buzzes or runs warm.",
+    ],
+  },
+  {
     id: "mg996r",
     kind: "servo",
     name: "MG996R metal-gear servo",

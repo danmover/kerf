@@ -40,6 +40,7 @@ const FDM_SHRINK: Record<string, number> = {
   ASA: 0.006,
   Nylon: 0.012,
   "Nylon CF": 0.004,
+  "PETG CF": 0.003,
   PC: 0.006,
   TPU: 0.005,
   PP: 0.015,
