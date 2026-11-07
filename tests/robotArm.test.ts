@@ -192,7 +192,7 @@ describe("arm firmware", () => {
   });
 
   it("records points from the pendant's button and plays them back with the grip", { timeout: 60_000 }, () => {
-    const { r, lines } = run(`scenario "Teach" {
+    const { v, r, lines } = run(`scenario "Teach" {
   world: sim.bench()
   duration: 22s
   console: [sim.type("clear", at: 1s), sim.type("goto 200 0 60", at: 1.2s), sim.type("grab", at: 4.5s), sim.type("goto 150 120 80", at: 5.5s), sim.type("release", at: 9s), sim.type("home", at: 10s), sim.type("list", at: 13.5s), sim.type("play", at: 14s)]
@@ -203,6 +203,11 @@ describe("arm firmware", () => {
     expect(Math.hypot(p.x - 150, p.y - 120, p.z - 80)).toBeLessThan(4);
     expect(String(r.state)).toBe("done");
     expect(r["fw.nPoints"]).toBe(2);
+    // played moves ease along like typed ones (a move started after its tick read the clock once jumped to its end)
+    const out = v.serial.filter((l) => l.dir === "out");
+    const played = out.find((l) => l.text === "state: playing the recorded points")!.t;
+    const done = out.find((l) => l.text === "state: done" && l.t > played)!.t;
+    expect(done - played).toBeGreaterThan(2);
   });
 
   it("runs the program in the design's firmware block at power-up", { timeout: 60_000 }, () => {

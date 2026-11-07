@@ -628,7 +628,9 @@ bool startMove() {
 
 // one tick of the move under way; true when it has finished
 bool stepMove(unsigned long now) {
-  float u = (now - mvStart) / 1000.0f / mvT;
+  // the move may have started after this tick's clock was read: unsigned, now - mvStart would wrap to ~50 days and
+  // the move would jump straight to its end
+  float u = now > mvStart ? (now - mvStart) / 1000.0f / mvT : 0;
   float s = smooth(u);
   if (mvType == Q_GRIP) {
     cur[4] = mvFrom[4] + s * (mvTo[4] - mvFrom[4]);
