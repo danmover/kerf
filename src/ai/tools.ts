@@ -47,7 +47,7 @@ import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./mat
 import { FASTEN_TOOL_DEFS, FASTEN_TOOL_TITLES, runFastenTool } from "./fastenTool";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
-import { useAnalysis, whenAnalyzed, runFine, showResults, type ResultField } from "../analysis/runtime";
+import { useAnalysis, whenAnalyzed, runFine, runAccuracyCheck, showResults, type ResultField } from "../analysis/runtime";
 import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict, uciSummary, uciItems, uciVerdict } from "../analysis/summary";
 import { airflowItems, showAirflow, startAirflowNow, useAirflow, whenAirflowDone, type SurfaceShown } from "../analysis/aeroRuntime";
 import { airflowSummary } from "../analysis/aeroSummary";
@@ -169,12 +169,13 @@ export const TOOL_DEFS = [
   {
     name: "run_analysis",
     description:
-      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. Airflow analyses (airflow: 45kmh) put the parts in a wind tunnel (lattice-Boltzmann LES on the GPU, rolling road, spinning wheels, an optional standard rider) and report drag, drag area CdA, side force, lift and watts at each yaw angle, the drag of each part, the surface patches that cause the most drag (pressure on fronts, suction behind backs, friction) and the change from the previous version; they take from under a minute to several minutes, and if one is still running when this returns, call run_analysis again later. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call.",
+      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Heat analyses (heat: or hold:) report each part's hottest point against its limit, where the heat comes from and goes, and for a warm-up (time:) when a part passes its limit; with fix: they also report the thermal stress, with hot plastics weakened. Analyses with buckling report how many times the loads it takes to buckle the parts and where. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. Airflow analyses (airflow: 45kmh) put the parts in a wind tunnel (lattice-Boltzmann LES on the GPU, rolling road, spinning wheels, an optional standard rider) and report drag, drag area CdA, side force, lift and watts at each yaw angle, the drag of each part, the surface patches that cause the most drag (pressure on fronts, suction behind backs, friction) and the change from the previous version; they take from under a minute to several minutes, and if one is still running when this returns, call run_analysis again later. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call, or check: true for an accuracy check (it solves again with 1.5× smaller elements and says how far each answer moved, and whether a peak stress is a singularity at a support).",
     input_schema: {
       type: "object" as const,
       properties: {
         label: { type: "string", description: "Run only the analysis with this label; default all." },
         fine: { type: "boolean", description: "Re-run structural analyses at the fine resolution (slower, closer answer)." },
+        check: { type: "boolean", description: "Accuracy check: solve structural and heat analyses twice, the second time with smaller elements, and report how far the answers moved (about 4× the time)." },
       },
       additionalProperties: false,
     },
@@ -207,7 +208,7 @@ export const TOOL_DEFS = [
         view: { type: "string", enum: [...VIEW_NAMES], description: "Camera direction. iso is a 3/4 view from the front right." },
         highlight: { type: "array", items: { type: "string" }, maxItems: 30, description: "Part or component names to emphasise; others are ghosted." },
         section: { type: "string", enum: ["x", "y", "z"], description: "Cut the model in half across this axis to see inside." },
-        results: { type: "string", enum: ["stress", "safety", "disp", "strain"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, or principal strain. Run run_analysis first." },
+        results: { type: "string", enum: ["stress", "safety", "disp", "strain", "temp"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, principal strain, or temperature (heat analyses). Run run_analysis first." },
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
         airflow: { type: "string", enum: ["pressure", "friction", "streamlines", "wake", "eddies"], description: "Draw an airflow analysis's result: surface pressure (red: pushed on, blue: suction), skin friction, streamlines coloured by speed, the wake (where the air lost its total pressure) or the eddies. Run run_analysis first." },
         yaw: { type: "number", description: "With airflow: the yaw angle to draw (default the first)." },
@@ -442,14 +443,14 @@ const ViewInput = z.object({
   view: z.enum(VIEW_NAMES),
   highlight: z.array(z.string().max(80)).max(30).optional(),
   section: z.enum(["x", "y", "z"]).optional(),
-  results: z.enum(["stress", "safety", "disp", "strain"]).optional(),
+  results: z.enum(["stress", "safety", "disp", "strain", "temp"]).optional(),
   analysis: z.string().max(200).optional(),
   airflow: z.enum(["pressure", "friction", "streamlines", "wake", "eddies"]).optional(),
   yaw: z.number().finite().optional(),
 });
 /** how long run_analysis waits for airflow runs before reporting them as still running */
 const AIRFLOW_WAIT_MS = 8 * 60_000;
-const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional() });
+const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional(), check: z.boolean().optional() });
 const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
 const InspectInput = z.object({
@@ -1194,6 +1195,7 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       const targets = p.data.label ? all.filter((a) => a.label === p.data.label) : all;
       if (!targets.length) return { isError: true, content: `No analysis is labelled "${p.data.label}". Analyses: ${all.map((a) => `"${a.label}"`).join(", ")}.`, card: { title: "Analysis not found", status: "error" } };
       if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
+      if (p.data.check) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.check) runAccuracyCheck(a.label);
       if (targets.some((a) => a.kind === "airflow")) {
         startAirflowNow();
         await whenAirflowDone(AIRFLOW_WAIT_MS);
@@ -1264,15 +1266,27 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       if (p.data.results) {
         await whenAnalyzed(60_000);
         const st = useAnalysis.getState();
-        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
+        const temp = p.data.results === "temp";
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs.get(a.label)?.result && (!temp || st.runs.get(a.label)?.result?.ranges.temp));
         const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === st.shown) ?? specs[0];
-        if (!pick) return { isError: true, content: "No structural analysis has results to draw. Add an analysis block and call run_analysis first.", card: { title: "No results to show", status: "error" } };
+        if (!pick)
+          return {
+            isError: true,
+            content: temp ? "No analysis has temperatures to draw. Add one with heat: (see Analysis blocks) and call run_analysis first." : "No structural analysis has results to draw. Add an analysis block and call run_analysis first.",
+            card: { title: "No results to show", status: "error" },
+          };
         if (p.data.analysis && pick.label !== p.data.analysis) resultNote = ` (no results for "${p.data.analysis}")`;
         useAnalysis.setState({ field: p.data.results as ResultField });
         showResults(pick.label);
         // let the viewport attach the overlay before capturing
         await new Promise((r) => setTimeout(r, 120));
-        const fieldText = { stress: "von Mises stress (blue low, red high)", safety: "factor of safety (red below 1, amber below the target, green to blue above)", disp: "deflection (blue none, red most)", strain: "principal strain (blue compression, red tension)" }[p.data.results];
+        const fieldText = {
+          stress: "von Mises stress (blue low, red high)",
+          safety: "factor of safety (red below 1, amber below the target, green to blue above)",
+          disp: "deflection (blue none, red most)",
+          strain: "principal strain (blue compression, red tension)",
+          temp: "temperature (blue coolest, red hottest)",
+        }[p.data.results];
         resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed supports (spheres are rollers), rings mark hot spots`;
       }
       if (p.data.airflow) {

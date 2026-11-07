@@ -8,6 +8,7 @@ import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type Drivetrain
 import type { CheckItem } from "../core/checks";
 import { airflowLine } from "./aeroSummary";
 import type { AirflowRun } from "./aeroRuntime";
+import { accuracyText, bucklingText, bucklingVerdict, degC, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
 export interface RunLike {
@@ -25,9 +26,11 @@ type Verdict = "pass" | "warn" | "fail";
 
 /** What a safety factor is judged against; the overall lowest one unless another is given. */
 export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.minSafety): string {
-  if (m.mode === "layers") return `strength between print layers of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
-  if (m.mode === "fatigue") return `fatigue strength of ${m.material} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
-  return `yield strength of ${m.material} (${fmtNum(m.allowable, 1)} MPa)`;
+  // a hot plastic's allowable is derated for the temperature there
+  const hot = m.tempC !== undefined && m.tempC > 30 ? ` at ${fmtNum(m.tempC, 0)} °C` : "";
+  if (m.mode === "layers") return `strength between print layers of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
+  if (m.mode === "fatigue") return `fatigue strength of ${m.material}${hot} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
+  return `yield strength of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
 }
 
 /** The lowest safety factor a short way from idealised supports and loads, when the overall lowest sits right on one. */
@@ -126,8 +129,32 @@ const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length &
 export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Verdict {
   if (modalOnly(spec)) return vibrationVerdict(spec, r);
   if (spec.drop) return dropVerdict(spec, r, strengthVerdict(spec, r).status);
-  const all = [strengthVerdict(spec, r).status, stiffnessVerdict(spec, r) ?? "pass", vibrationVerdict(spec, r), ...contactVerdicts(spec, r).map((c) => c.status)];
+  const temp = temperatureVerdict(r)?.status ?? "pass";
+  if (heatOnlySpec(spec)) return temp;
+  const all = [
+    strengthVerdict(spec, r).status,
+    stiffnessVerdict(spec, r) ?? "pass",
+    vibrationVerdict(spec, r),
+    ...contactVerdicts(spec, r).map((c) => c.status),
+    spec.thermal ? temp : temp === "fail" ? "fail" : "pass",
+    bucklingVerdict(spec, r)?.status ?? "pass",
+  ];
   return all.includes("fail") ? "fail" : all.includes("warn") ? "warn" : "pass";
+}
+
+/** Heat, buckling and the accuracy check, as summary lines. */
+function extraLines(spec: StructuralSpec, r: StructuralResult): string[] {
+  const out: string[] = [];
+  const tt = temperatureText(r);
+  const tv = temperatureVerdict(r);
+  if (tt && tv && (spec.thermal || tv.status !== "pass")) out.push(`Temperature: ${tv.status.toUpperCase()}. ${tt.detail}${tt.fix ? ` Fix: ${tt.fix}` : ""}`);
+  if (r.thermal && !r.heatOnly) out.push(`Thermal stress: the parts carry no thermal stress at ${degC(r.thermal.refTemp ?? 20)} (made and assembled); expansion beyond that pushes against the supports, and hot plastics are weaker and softer.`);
+  const bt = bucklingText(spec, r);
+  const bv = bucklingVerdict(spec, r);
+  if (bt && bv) out.push(`Buckling: ${bv.status.toUpperCase()}. ${bt.detail}${bt.fix ? ` Fix: ${bt.fix}` : ""}`);
+  const acc = accuracyText(r);
+  if (acc) out.push(`Accuracy check: ${acc.status.toUpperCase()}. ${acc.detail}`);
+  return out;
 }
 
 export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined): string {
@@ -143,6 +170,13 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
     `${head}: ${structuralVerdict(spec, r).toUpperCase()}.`,
     `Model: ${mats}${printed ? `, printed with layers stacked along ${p3(spec.buildDir)}` : ""}; ${run.resolution} resolution, ${r.mesh.elements.toLocaleString("en")} elements of ${r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm; solved in ${fmtNum(r.solve.ms.total / 1000, 1)} s (${r.solve.converged ? "converged" : "NOT fully converged"} in ${r.solve.iterations} iterations).`,
   ];
+  if (heatOnlySpec(spec)) {
+    lines[0] = `Analysis "${spec.label}" (heat; parts: ${spec.parts.join(", ")}): ${structuralVerdict(spec, r).toUpperCase()}.`;
+    lines.push(...extraLines(spec, r));
+    if (spec.thermal?.fixed.length) lines.push("Held temperatures: " + spec.thermal.fixed.map((f) => `${describeRegion(f.region)} at ${degC(f.temp)}`).join("; ") + ".");
+    if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
+    return lines.join("\n");
+  }
   if (spec.masses?.length) lines.push(`Carried masses: ${spec.masses.map((m) => `${fmtNum(m.grams, 0)} g on ${describeRegion(m.region)}`).join("; ")}.`);
   if (r.modal) {
     const t = vibrationText(spec, r);
@@ -186,6 +220,7 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
     );
   if (r.gravity && !r.drop) lines.push(`Body load: ${p3(spec.accel ?? [0, 0, -1])} g on ${fmtNum(r.mass, 1)} g of material.`);
   lines.push(`Reactions balance the loads to within ${r.equilibrium < 1e-3 ? "0.1" : fmtNum(r.equilibrium * 100, 2)} %.`);
+  lines.push(...extraLines(spec, r));
   if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
   return lines.join("\n");
 }
@@ -232,6 +267,18 @@ export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: D
     const state = !dt ? "not calculated" : dt.error ? `error: ${dt.error}` : `${dt.items.filter((i) => i.status === "fail").length} failing of ${dt.items.length} checks`;
     return `"${spec.label}" drivetrain (${spec.drive}, ${fmtNum(spec.torque / 1000, 3)} N·m at ${fmtNum(spec.speed, 0)} rpm): ${state}`;
   }
+  if (heatOnlySpec(spec)) {
+    const t = spec.thermal!;
+    const setup = `${spec.parts.join(", ")}; ${t.heat.length ? `${fmtNum(t.heat.reduce((a, h) => a + h.watts, 0), 2)} W made` : ""}${t.auto ? `${t.heat.length ? ", " : ""}electronics' own losses` : ""}${t.fixed.length ? `, ${t.fixed.length} held surface(s)` : ""}; ${t.coolingText}${t.time ? `; warm-up over ${fmtNum(t.time / 60, 1)} min` : ""}`;
+    let state = "not run yet";
+    if (run?.status === "running" || run?.status === "waiting") state = "running";
+    else if (run?.status === "error") state = `error: ${run.error ?? "did not finish"}`;
+    else if (run?.result?.thermal) {
+      const tv = temperatureVerdict(run.result);
+      state = `${structuralVerdict(spec, run.result)}, hottest ${degC(run.result.thermal.maxTemp.value)} on ${run.result.thermal.maxTemp.part}${tv ? ` (${tv.worst.name} ${degC(tv.worst.max)} against ${degC(tv.worst.limit)})` : ""}`;
+    }
+    return `"${spec.label}" heat (${setup}): ${state}`;
+  }
   const setup = spec.drop
     ? `${spec.parts.join(", ")}; ${spec.drop.tip ? `tips over toward ${p3(spec.drop.dir)}` : `falls ${fmtNum((spec.drop.height ?? 0) / 1000, 2)} m`} onto ${spec.drop.floor.name}; safety target ${fmtNum(spec.safety, 2)}`
     : modalOnly(spec)
@@ -241,6 +288,12 @@ export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: D
   if (run?.status === "running" || run?.status === "waiting") state = "running";
   else if (run?.status === "error") state = `error: ${run.error ?? "did not finish"}`;
   else if (run?.result && modalOnly(spec)) state = `${structuralVerdict(spec, run.result)}, first mode ${fmtNum(run.result.modal?.modes[0]?.freq ?? 0, 1)} Hz`;
-  else if (run?.result) state = `${structuralVerdict(spec, run.result)}${run.result.drop ? `, ${fmtNum(run.result.drop.g, 0)} g on landing` : ""}${run.result.modal ? `, first mode ${fmtNum(run.result.modal.modes[0]?.freq ?? 0, 1)} Hz` : ""}, safety ${sf(run.result.minSafety.value)}, peak ${fmtNum(run.result.maxStress.value, 1)} MPa, deflection ${fmtNum(run.result.maxDisp.value, 3)} mm`;
+  else if (run?.result) {
+    const r = run.result;
+    state = `${structuralVerdict(spec, r)}${r.drop ? `, ${fmtNum(r.drop.g, 0)} g on landing` : ""}${r.modal ? `, first mode ${fmtNum(r.modal.modes[0]?.freq ?? 0, 1)} Hz` : ""}, safety ${sf(r.minSafety.value)}, peak ${fmtNum(r.maxStress.value, 1)} MPa, deflection ${fmtNum(r.maxDisp.value, 3)} mm`;
+    if (r.thermal && spec.thermal) state += `, hottest ${degC(r.thermal.maxTemp.value)}`;
+    if (r.buckling) state += r.buckling.factors.length ? `, buckles at ${fmtNum(r.buckling.factors[0], 2)}× the loads` : ", does not buckle";
+    if (r.convergence) state += `, accuracy check ${r.convergence.verdict}`;
+  }
   return `"${spec.label}" structural (${setup}): ${state}`;
 }

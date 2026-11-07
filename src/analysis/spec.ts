@@ -111,6 +111,73 @@ export const FLOORS: Record<string, FloorSpec> = {
   grass: { name: "grass", soft: 0.02 },
 };
 
+/** Heat made inside the design: through a part's volume (part:) or over a region of its surface, in watts. */
+export interface HeatLoadSpec {
+  /** a part or component block name: every instance of it makes this heat, spread through its volume */
+  part?: string;
+  /** one placed instance (EvalPart.id), for heat worked out per component ("fans#2") */
+  id?: string;
+  region?: RegionSpec;
+  watts: number;
+  /** what to call it, and where the number came from */
+  label: string;
+  why?: string;
+}
+
+/** A surface held at a temperature: a heated bed, a chilled plate, a hot engine block it bolts to. */
+export interface FixedTempSpec {
+  region: RegionSpec;
+  /** °C */
+  temp: number;
+}
+
+/** Cooling on part of the surface: a film coefficient and the temperature of what flows past it. */
+export interface FilmSpec {
+  region: RegionSpec;
+  /** W/(m²·K) */
+  h: number;
+  /** a named cooling ("fan"): its convection alone, used instead of h when emissivity: works out radiation on its own */
+  conv?: number;
+  /** °C; unset: the analysis's ambient */
+  ambient?: number;
+}
+
+/**
+ * A heat analysis: where heat is made (watts), how the surface is cooled, and any surfaces held at a temperature.
+ * Solved by conduction through the parts on the same voxel grid as the stress analysis; with fix: as well, the
+ * temperatures then load the structure (thermal stress) and soften hot plastics.
+ */
+export interface ThermalSpec {
+  heat: HeatLoadSpec[];
+  /** heat: "auto": every electronic part's loss at its working current, from the machine's power budget */
+  auto: boolean;
+  fixed: FixedTempSpec[];
+  /** film coefficient on every surface no film() covers, W/(m²·K) */
+  cooling: number;
+  /** what that cooling is, for messages */
+  coolingText: string;
+  films: FilmSpec[];
+  /** the surrounding air, °C; unset: the brief's hottest service temperature, else 25 °C */
+  ambient?: number;
+  /** where the ambient came from, when the runtime filled it in */
+  ambientWhy?: string;
+  /** surface emissivity: radiation is then worked out on its own (cooling: is convection only) */
+  emissivity?: number;
+  /** warm-up over this long, s (a transient run); unset: the steady state it settles at */
+  time?: number;
+  /** temperature everything starts at, °C (default: ambient) */
+  start?: number;
+  /** highest allowed temperature for every part, °C (default: each material's long-use limit) */
+  maxTemp?: number;
+}
+
+/** Linear (eigenvalue) buckling: how many times the loads it takes to buckle the parts, and the shapes they buckle in. */
+export interface BucklingSpec {
+  modes: number;
+  /** required lowest buckling factor; buckling is sensitive to small imperfections, so this is larger than a strength safety factor */
+  safety: number;
+}
+
 export interface StructuralSpec {
   kind: "structural";
   label: string;
@@ -138,6 +205,16 @@ export interface StructuralSpec {
   modal?: ModalSpec;
   /** a drop, knock or tip-over instead of a static load */
   drop?: DropSpec;
+  /** heat: temperatures from heat loads and cooling; with supports, they load the structure too */
+  thermal?: ThermalSpec;
+  /** the whole model at this temperature, °C: thermal expansion against the supports without a heat solve */
+  uniformTemp?: number;
+  /** the temperature it was made and assembled at, where it has no thermal stress, °C */
+  refTemp?: number;
+  /** linear buckling: load factors and buckled shapes */
+  buckling?: BucklingSpec;
+  /** solve twice, the second time with smaller elements, and report how much the answers moved */
+  converge?: boolean;
   span: Span;
 }
 

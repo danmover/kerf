@@ -531,6 +531,22 @@ analysis "Desk drop" {
 }
 analysis "Knocked over" { parts: [tower]  tip: +X }   // tips over its bottom edge onto its +X side; the fall height comes from the shape
 The result gives the impact speed, how long the impact lasts, the peak g, the g the parts feel (a short impact loads flexible parts less, one about as long as their swing loads them more) and the stresses. A dent right where it lands is not counted as breaking. Safety defaults to 1.5 for drops.
+Heat (temperatures by conduction through the parts, cooled by the air and radiation) uses the same block with heat: or hold:. Without fix: it only finds temperatures; with fix: the temperatures then load the structure (thermal stress), and hot plastics are weaker and softer in the strength check:
+analysis "Motor mount heat" {
+  parts: [mount, motor, driver]
+  heat: ["auto", source(heater, 5W)]   // "auto": every electronic part's own loss at its working current (motors, drivers, regulators, batteries, boards); source(part, W) spreads heat through a part, source(face(...), W) over a surface
+  hold: temp(face(mount, -Z), 40C)     // optional: a surface held at a temperature (a heated bed, a hot engine block)
+  cooling: ["still air", film(face(driver, +Z), "fan")]   // sealed, still air (default), indoors, breeze, fan, wind, oil, water, flowing water, or W/m²K; film() cools part of the surface differently
+  ambient: 35C              // the surrounding air; default the brief's hottest temp:, else 25 °C
+  emissivity: 0.9           // optional: works radiation out on its own (0.9 paint, plastics, anodising; 0.1 bare metal)
+  time: 10min               // optional: a warm-up from start: (default ambient) over this long, instead of the steady state
+  max_temp: 80C             // optional: one limit for every part; default each material's long-use limit (85 °C for electronics)
+  fix: face(mount, -Z)      // optional: thermal stress, from assembled_at: (default the ambient)
+}
+A part past its limit fails, within the last tenth of its headroom warns. The result gives each part's hottest point, where the heat comes from, where it goes (air, radiation, held surfaces), and for a warm-up when each part passes its limit and where it would settle.
+analysis "Left in the sun" { parts: [bracket]  fix: [face(bracket, -X), face(bracket, +X)]  temperature: 60C  assembled_at: 20C }   // the whole model at one temperature: expansion against the supports, no heat solve
+Buckling: add buckling (3 shapes) or buckling: 1..6 to an analysis with loads; it finds how many times the loads it takes to buckle slender parts (columns, thin walls, tubes, struts) and their buckled shapes. Under 1 it fails, under buckling_safety: (default 3, since dents and print lines make real parts buckle sooner) it warns.
+Accuracy check: the converge flag (or the panel's Check accuracy button) solves twice, the second time with 1.5× smaller elements, and reports how far deflection, stress, safety, temperature and buckling moved: under 5 % has converged, over 15 % needs a smaller resolution:. A peak at a support or load that keeps rising is a singularity of the idealised fixing: judge the part by the stress a short way off.
 Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
 An airflow analysis puts the design in a virtual wind tunnel: a GPU lattice-Boltzmann flow solver with LES turbulence and a wall model, on a rolling road with the wheels spinning, re-run after each change:

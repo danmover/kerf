@@ -475,6 +475,22 @@ export const Icon = {
       <path d="m16.8 7.4 2.2 2.2 2.2-2.2" />
     </I>
   ),
+  /** a thermometer: heat and temperatures */
+  Thermo: (p: P) => (
+    <I {...p}>
+      <path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z" />
+      <path d="M12 9v7.5" />
+    </I>
+  ),
+  /** a column bowing sideways under a load from above: buckling */
+  Buckle: (p: P) => (
+    <I {...p}>
+      <path d="M6 21h12" />
+      <path d="M6 3h12" />
+      <path d="M12 3c-5 5.5-5 12.5 0 18" />
+      <path d="M15 3v18" strokeDasharray="1.5 2.5" opacity={0.5} />
+    </I>
+  ),
   /** copies in a row */
   Pattern: (p: P) => (
     <I {...p}>

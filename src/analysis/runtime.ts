@@ -14,14 +14,17 @@ import { xformMatrix } from "../kernel/recipe";
 import type { MeshData } from "../kernel/build";
 import { fmtNum } from "../lang/values";
 import { mechMaterial, type MechMaterial } from "./materials";
+import { thermalMaterial, type ThermalMaterial } from "./thermalMaterials";
+import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
-import { RESOLUTION_TARGET, type DrivetrainSpec, type StructuralSpec } from "./spec";
+import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, StructuralInput, StructuralResult } from "./fe/structural";
 import { contactVerdicts, modeText, stiffnessVerdict, strengthVerdict } from "./summary";
+import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { dynamicItems } from "./dynamics";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
-export type ResultField = "stress" | "safety" | "disp" | "strain";
+export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp";
 
 export interface StructuralRun {
   label: string;
@@ -44,6 +47,8 @@ export interface StructuralRun {
   /** element count target or size used */
   resolution: string;
   startedAt: number;
+  /** an accuracy check: solved twice, the second time with smaller elements */
+  check?: boolean;
 }
 
 interface AnalysisState {
@@ -96,6 +101,7 @@ let deadline: ReturnType<typeof setTimeout> | null = null;
 /** a run that takes longer than this is stopped, so one runaway analysis cannot hold up the others */
 export const RUN_TIME_LIMIT_MS = 180_000;
 const fineWanted = new Map<string, string>(); // label -> base key the fine run was asked for
+const checkWanted = new Map<string, string>(); // label -> base key the accuracy check was asked for
 
 function patchRun(label: string, patch: Partial<StructuralRun>) {
   const r = aGet().runs.get(label);
@@ -158,9 +164,11 @@ function pump() {
   patchRun(job.label, { status: "running", startedAt: performance.now(), stage: "Meshing", frac: 0, trace: [] });
   const transfer = job.input.parts.flatMap((p) => [p.mesh.positions.buffer, p.mesh.indices.buffer, ...(p.normals ? [p.normals.buffer] : [])]) as ArrayBuffer[];
   ensureWorker().postMessage({ id: job.id, input: job.input } satisfies FeaRequest, transfer);
+  // an accuracy check solves twice, the second time with about three times the elements
+  const limit = RUN_TIME_LIMIT_MS * (job.input.converge ? 2 : 1);
   deadline = setTimeout(() => {
-    if (current === job) failCurrent(`The analysis took longer than ${RUN_TIME_LIMIT_MS / 60_000} minutes and was stopped. Try a coarser resolution, such as "draft", or analyse fewer parts at once.`);
-  }, RUN_TIME_LIMIT_MS);
+    if (current === job) failCurrent(`The analysis took longer than ${limit / 60_000} minutes and was stopped. Try a coarser resolution, such as "draft", or analyse fewer parts at once.`);
+  }, limit);
 }
 
 /**
@@ -204,6 +212,33 @@ function cancel(label: string) {
 /** The design's own meshes, as the main view built them. */
 const shownMesh = (hash: string) => meshes.get(hash)?.preview ?? meshes.get(hash)?.final;
 
+/** Room temperature when neither the analysis nor the brief gives one, °C. */
+const ROOM_C = 25;
+
+/**
+ * A heat analysis with what the model decides filled in: heat: "auto" becomes each analysed electronic part's
+ * own loss at its working current (from the machine's power budget), and an unset ambient: the brief's hottest
+ * service temperature. A component that has its own source() keeps that instead of its worked-out loss.
+ */
+export function resolveThermal(spec: StructuralSpec, model: Model): StructuralSpec {
+  const t = spec.thermal;
+  if (!t) return spec;
+  let heat = t.heat;
+  if (t.auto) {
+    const ids = new Set(model.parts.filter((p) => spec.parts.includes(p.name)).map((p) => p.id));
+    const own = new Set(t.heat.flatMap((h) => (h.part ? [h.part] : [])));
+    const auto: HeatLoadSpec[] = componentLosses(model)
+      .filter((l) => ids.has(l.id) && !own.has(l.comp) && l.watts > 0)
+      .map((l) => ({ id: l.id, watts: l.watts, label: l.label, why: l.why }));
+    heat = [...t.heat, ...auto];
+  }
+  const brief = model.brief?.temp;
+  const ambient = t.ambient ?? (brief ? brief[1] : ROOM_C);
+  const ambientWhy =
+    t.ambient !== undefined ? "the analysis's ambient:" : brief ? `the brief's hottest service temperature${model.brief?.assumed.includes("temp") ? ", assumed" : ""}` : "room temperature on a warm day";
+  return { ...spec, thermal: { ...t, heat, ambient, ambientWhy } };
+}
+
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
 export function structuralInput(
   spec: StructuralSpec,
@@ -215,18 +250,27 @@ export function structuralInput(
   if (!parts.length) return { error: `None of ${spec.parts.join(", ")} has geometry to analyse.` };
   const broken = parts.find((p) => buildErrors.has(p.hash));
   if (broken) return { error: `${broken.label} did not build, so it cannot be analysed yet.` };
+  const th = spec.thermal;
+  if (th && !th.heat.length && !th.fixed.length)
+    return { error: `heat: "auto" found no electronics that use power among ${spec.parts.join(", ")}, so nothing makes heat. Add source(part, watts) for what gets hot.` };
+  const temps = !!th || spec.uniformTemp !== undefined;
   const fea: FeaPart[] = [];
   const mats: MechMaterial[] = [];
+  const thermalMats: ThermalMaterial[] = [];
   const matIndex = new Map<string, number>();
   for (const p of parts) {
     const data = meshOf(p.hash);
     if (!data) return null;
     const name = spec.material ?? p.material;
-    let mi = matIndex.get(name);
+    // with heat, a bought component of an unknown material is its own insides (copper, board and plastic), not a plastic
+    const component = p.kind === "component";
+    const key = temps ? `${name}|${component}` : name;
+    let mi = matIndex.get(key);
     if (mi === undefined) {
       mi = mats.length;
       mats.push(mechMaterial(name));
-      matIndex.set(name, mi);
+      if (temps) thermalMats.push(thermalMaterial(name, component));
+      matIndex.set(key, mi);
     }
     const m = xformMatrix(p.xf);
     const P = data.positions;
@@ -267,17 +311,39 @@ export function structuralInput(
     masses: spec.masses,
     modes: spec.modal?.modes,
     drop: spec.drop,
+    ...(th
+      ? {
+          thermal: {
+            heat: th.heat,
+            fixed: th.fixed,
+            cooling: th.cooling,
+            coolingText: th.coolingText,
+            films: th.films,
+            ambient: th.ambient ?? ROOM_C,
+            ...(th.ambientWhy ? { ambientWhy: th.ambientWhy } : {}),
+            ...(th.emissivity !== undefined ? { emissivity: th.emissivity } : {}),
+            ...(th.time !== undefined ? { time: th.time } : {}),
+            ...(th.start !== undefined ? { start: th.start } : {}),
+            ...(th.maxTemp !== undefined ? { maxTemp: th.maxTemp } : {}),
+          },
+        }
+      : {}),
+    ...(spec.uniformTemp !== undefined ? { uniformTemp: spec.uniformTemp } : {}),
+    ...(spec.refTemp !== undefined ? { refTemp: spec.refTemp } : {}),
+    ...(temps ? { thermalMaterials: thermalMats } : {}),
+    ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
+    ...(spec.converge ? { converge: true } : {}),
   };
   return { input };
 }
 
-function inputKey(spec: StructuralSpec, parts: EvalPart[], fine: boolean): string {
+function inputKey(spec: StructuralSpec, parts: EvalPart[], fine: boolean, check = false): string {
   const { span: _span, ...rest } = spec;
   void _span;
-  return JSON.stringify({ rest, fine, parts: parts.map((p) => [p.id, p.hash, p.xf, p.material]) });
+  return JSON.stringify({ rest, fine, check, parts: parts.map((p) => [p.id, p.hash, p.xf, p.material]) });
 }
 
-const baseKey = (key: string) => key.replace(/"fine":(true|false)/, "");
+const baseKey = (key: string) => key.replace(/"fine":(true|false)/, "").replace(/"check":(true|false)/, "");
 
 // ---------- scheduling ----------
 
@@ -297,21 +363,26 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
     runs.delete(label);
     if (shown === label) shown = null;
   }
-  for (const spec of specs) {
+  for (const written of specs) {
+    // heat: "auto" and the ambient come from the model, so a change to the wiring or the brief re-runs a heat analysis
+    const spec = resolveThermal(written, model);
     // compare input keys first: meshes are only copied into world space when something changed
     const parts = model.parts.filter((p) => spec.parts.includes(p.name));
     const plainKey = inputKey(spec, parts, false);
-    // a fine run stays fine until the inputs change
+    // a fine run (or an accuracy check) stays so until the inputs change
     const fine = fineWanted.get(spec.label) === baseKey(plainKey);
     if (!fine) fineWanted.delete(spec.label);
-    const key = fine ? inputKey(spec, parts, true) : plainKey;
+    const check = !!spec.converge || checkWanted.get(spec.label) === baseKey(plainKey);
+    if (!check) checkWanted.delete(spec.label);
+    const key = fine || check ? inputKey(spec, parts, fine, check) : plainKey;
     const run = runs.get(spec.label);
     if (run && run.key === key) continue;
     const prep = structuralInput(spec, parts, fine, state.buildErrors);
     if (!prep) continue;
+    if (prep.input && check) prep.input.converge = true;
     cancel(spec.label);
-    const resolution = fine ? "fine" : typeof spec.resolution === "string" ? spec.resolution : `${fmtNum(spec.resolution.h)} mm`;
-    const base: StructuralRun = { label: spec.label, key, fine, status: "waiting", stage: "Waiting", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() };
+    const resolution = (fine ? "fine" : typeof spec.resolution === "string" ? spec.resolution : `${fmtNum(spec.resolution.h)} mm`) + (check ? ", accuracy check" : "");
+    const base: StructuralRun = { label: spec.label, key, fine, check, status: "waiting", stage: "Waiting", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() };
     if (prep.error) runs.set(spec.label, { ...base, status: "error", error: prep.error, setup: true, result: undefined, stale: false });
     else {
       runs.set(spec.label, base);
@@ -320,6 +391,17 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
   }
   aSet({ runs, shown });
   pump();
+}
+
+/** Solve one analysis twice, the second time with smaller elements, to see how far the answers move. */
+export function runAccuracyCheck(label: string) {
+  const run = aGet().runs.get(label);
+  if (!run) return;
+  checkWanted.set(label, baseKey(run.key));
+  const s = useDesign.getState();
+  aSet({ runs: new Map(aGet().runs).set(label, { ...run, key: "" }) });
+  if (s.model) schedule({ model: s.model, rev: s.reportRev, buildErrors: s.buildErrors });
+  refreshReport();
 }
 
 /** Re-run one analysis at the fine resolution. */
@@ -382,16 +464,29 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const parts = model.parts.filter((p) => spec.parts.includes(p.name)).map((p) => p.id);
   const base = { category: "analysis" as const, basis: "simulation" as const, span: spec.span, parts };
   const id = (s: string) => `fea:${spec.label}:${s}`;
-  const what = spec.modal ? "vibration" : spec.drop ? "drop" : "stress";
+  const heatOnly = heatOnlySpec(spec);
+  const what = spec.modal ? "vibration" : spec.drop ? "drop" : heatOnly ? "heat" : "stress";
   const category = spec.modal ? ("vibration" as const) : spec.drop ? ("knocks" as const) : ("analysis" as const);
   if (!run || run.status === "waiting" || run.status === "running") {
-    return [{ ...base, category, id: id("strength"), status: "pending", title: `${spec.modal ? "Vibration" : spec.drop ? "Drop" : "Strength"}: ${spec.label}`, detail: run?.result ? `Re-running the ${what} analysis for the latest change…` : `Running the ${what} analysis…` }];
+    return [{ ...base, category, id: id(heatOnly ? "temperature" : "strength"), status: "pending", title: `${spec.modal ? "Vibration" : spec.drop ? "Drop" : heatOnly ? "Temperature" : "Strength"}: ${spec.label}`, detail: run?.result ? `Re-running the ${what} analysis for the latest change…` : `Running the ${what} analysis…` }];
   }
   if (run.status === "error" || !run.result) {
     return [{ ...base, category, id: id("setup"), status: "fail", title: `${what[0].toUpperCase()}${what.slice(1)} analysis: ${spec.label}`, detail: run.error ?? "The analysis did not finish." }];
   }
   const r = run.result;
   const out: CheckItem[] = [];
+  // temperatures: every heat analysis, and a set temperature: that takes a part past its limit
+  const tv = temperatureVerdict(r);
+  const tt = temperatureText(r);
+  if (tv && tt && (spec.thermal || tv.status !== "pass"))
+    out.push({ ...base, id: id("temperature"), status: tv.status, margin: tv.margin, title: `Temperature: ${spec.label}`, detail: tt.detail, ...(tt.fix ? { fix: tt.fix } : {}) });
+  const acc = accuracyText(r);
+  const accuracy = acc ? [{ ...base, id: id("accuracy"), status: acc.status, title: `Accuracy check: ${spec.label}`, detail: acc.detail }] : [];
+  if (heatOnly) {
+    out.push(...accuracy);
+    if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
+    return out;
+  }
   const sf = r.minSafety.value;
   const { status, note } = strengthVerdict(spec, r);
   out.push(...dynamicItems(spec, r, base, { status, note }));
@@ -409,8 +504,14 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
     detail:
       `Peak ${fmtNum(r.maxStress.value, 1)} MPa (von Mises) near ${fmtP(r.maxStress.at)}. Lowest safety factor ${fmtNum(sf, 2)} against the ${modeText(r, spec.cycles)}, target ${fmtNum(spec.safety, 2)}.` +
       ` Largest deflection ${fmtNum(r.maxDisp.value, 3)} mm.` +
+      (r.thermal ? ` Includes thermal expansion from ${fmtNum(r.thermal.refTemp ?? 20, 0)} °C (no stress there) and plastics weakened where they are hot.` : "") +
       note,
   });
+  const bv = bucklingVerdict(spec, r);
+  const bt = bucklingText(spec, r);
+  if (bv && bt)
+    out.push({ ...base, id: id("buckling"), status: bv.status, ...(Number.isFinite(bv.margin) ? { margin: bv.margin } : {}), title: `Buckling: ${spec.label}`, detail: bt.detail, ...(bt.fix ? { fix: bt.fix } : {}) });
+  out.push(...accuracy);
   if (spec.maxDeflection !== undefined) {
     const status = stiffnessVerdict(spec, r)!;
     out.push({

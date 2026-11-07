@@ -72,7 +72,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   overview: { detail: "Status, the brief, the design at a glance and recent changes", keywords: "summary status dashboard home at a glance" },
   brief: { detail: "What it's for, where it's used and what it must survive: each becomes a check", keywords: "requirements uses spec specification purpose goals constraints" },
   checks: { detail: "Every check on the design, and why it passes or fails", keywords: "tests problems errors warnings failing issues interference validate verify" },
-  analysis: { detail: "Strength, drop, vibration, airflow, gear and bike rule runs", keywords: "fea stress airflow aero wind results analyses" },
+  analysis: { detail: "Strength, drop, vibration, heat, buckling, airflow, gear and bike rule runs", keywords: "fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy" },
   build: {
     title: "Build: electronics and wiring",
     detail: "Wiring, boards, power, calculations, firmware and tests for a machine",
