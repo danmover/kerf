@@ -383,7 +383,9 @@ export async function sheetFor(name?: string, opts: { timeoutMs?: number; signal
       const { model, stage } = useDesign.getState();
       if (!model) throw new Error("There is no design yet");
       const specs = drawingSpecs(model);
-      const spec = name ? specs.find((s) => s.name === name || s.title.toLowerCase() === name.toLowerCase() || s.name === `auto:${name}`) : specs[0];
+      // a copy of a part is drawn on the sheet it shares (see copies.ts), so asking for the copy opens that sheet
+      const shared = name ? `auto:${sharedDrawingPart(model, name)}` : "";
+      const spec = name ? specs.find((s) => s.name === name || s.title.toLowerCase() === name.toLowerCase() || s.name === `auto:${name}` || s.name === shared) : specs[0];
       if (!spec) throw new Error(`There is no drawing called "${name}". Drawings: ${specs.map((s) => s.name).join(", ") || "none"}`);
       const plan = planDrawing(spec, model, bboxOf);
       if (partsSettled(plan) && stage !== "evaluating") {
