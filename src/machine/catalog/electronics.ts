@@ -1282,6 +1282,7 @@ export const ELECTRONICS: CatalogPart[] = [
     id: "joystick_ky023",
     kind: "sensor",
     name: "Thumb joystick module KY-023 (two 10 kΩ pots and a push switch)",
+    mpn: "KY-023",
     generic: true,
     summary: "Two-axis analog thumb stick on a 34 x 26 mm board: each axis is a 10 kΩ pot across +5V and GND, about half the supply when centred; pressing the stick down closes SW to GND. Jogging a robot arm or a camera head.",
     // iface joystick: the simulator centres VRX and VRY at half the supply; a scenario moves them with sim.signal(on: "stick.VRX", volts: [...])
