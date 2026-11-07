@@ -8,6 +8,7 @@
 import * as THREE from "three";
 import type { StructuralResult } from "../../analysis/fe/structural";
 import { safetyT, type ScaleMode } from "../../analysis/colormap";
+import { degC } from "../../analysis/thermalSummary";
 import type { ResultField } from "../../analysis/runtime";
 import type { SceneOverlay } from "./scene";
 import { fmtNum } from "../../lang/values";
@@ -82,6 +83,10 @@ export function fieldRange(r: StructuralResult, field: ResultField): [number, nu
   if (field === "strain") {
     const a = Math.max(Math.abs(r.ranges.strain[0]), Math.abs(r.ranges.strain[1]), 1e-12);
     return [-a, a];
+  }
+  if (field === "temp") {
+    const [lo, hi] = r.ranges.temp ?? [0, 0];
+    return [lo, Math.max(hi, lo + 0.1)];
   }
   return [0, 0];
 }
@@ -234,6 +239,7 @@ export class ResultsOverlay implements SceneOverlay {
         if (this.cfg.field === "safety") t = safetyT(f.safety[v], this.cfg.safetyTarget);
         else if (this.cfg.field === "disp") t = Math.hypot(f.disp[3 * v], f.disp[3 * v + 1], f.disp[3 * v + 2]) / hi;
         else if (this.cfg.field === "strain") t = 0.5 + (0.5 * f.strain[v]) / hi;
+        else if (this.cfg.field === "temp") t = f.temp ? (f.temp[v] - lo) / (hi - lo) : 0;
         else t = (f.stress[v] - lo) / (hi - lo);
         out[v] = Math.min(1, Math.max(0, t));
       }
@@ -308,6 +314,9 @@ export class ResultsOverlay implements SceneOverlay {
         // interpolate utilisation, as the solver does, so near-zero stress does not blow up
         const u = (i: number) => 1 / Math.max(f.safety[i], 1e-6);
         value = 1 / Math.max(u(a) * bary.x + u(b) * bary.y + u(c) * bary.z, 1e-9);
+      } else if (this.cfg.field === "temp") {
+        if (!f.temp) return null;
+        value = pick(f.temp);
       } else value = pick(this.cfg.field === "strain" ? f.strain : f.stress);
       return { value, field: this.cfg.field, part: f.name, point: h.point.clone() };
     }
@@ -429,8 +438,12 @@ export class ResultsOverlay implements SceneOverlay {
     const add = (text: string, at: number[]) => this.spotLabels.push(this.label(text, new THREE.Vector3(at[0], at[1], at[2]), this.look.text.value, 1, true));
     const mode = this.modeShown();
     if (mode !== null) {
-      const m = r.modal!.modes[mode];
-      add(`moves most here · ${fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz`, m.peak.at);
+      const m = r.modal?.modes[mode];
+      const b = r.buckling;
+      if (m) add(`moves most here · ${fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz`, m.peak.at);
+      else if (b?.peaks[mode]) add(`buckles here · ${fmtNum(b.factors[mode], 2)}× the loads`, b.peaks[mode]);
+    } else if (this.cfg.field === "temp") {
+      if (r.thermal) add(`hottest ${degC(r.thermal.maxTemp.value)}`, r.thermal.maxTemp.at);
     } else if (this.cfg.field === "stress") {
       add(`peak ${fmtNum(r.maxStress.value, 1)} MPa`, r.maxStress.at);
     } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" ? " (layers)" : ""}`, r.minSafety.at);

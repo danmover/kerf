@@ -23,6 +23,13 @@
 //     onto: "wood"
 //   }
 //
+//   analysis "Motor mount heat" {
+//     parts: [mount, motor]
+//     heat: [source(motor, 12W)]
+//     cooling: "still air"
+//     fix: face(mount, -Z)
+//   }
+//
 //   analysis "Gearbox duty" {
 //     drive: motor_gear
 //     torque: 0.3Nm
@@ -33,24 +40,58 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, DropSpec, Excitation, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, V3 } from "./spec";
+import type { AnalysisSpec, BucklingSpec, DropSpec, Excitation, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3 } from "./spec";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
+import { COOLING } from "./thermalMaterials";
 import { buildAirflow } from "./aeroLang";
 
 /** supports plus loads in one analysis: each one is a pass over the model's surface */
 export const MAX_BOUNDARY_ITEMS = 200;
 
-export const STRUCTURAL_PROPS = ["parts", "part", "material", "fix", "load", "gravity", "accel", "printed", "build", "cycles", "safety", "max_deflection", "resolution", "carries", "modes", "excite", "damping", "ringing", "drop", "tip", "impact", "onto"];
+/** heat: where heat is made and how the parts are cooled; with fix: the temperatures then load the structure */
+export const HEAT_PROPS = ["heat", "hold", "cooling", "ambient", "emissivity", "time", "start", "max_temp"];
+export const STRUCTURAL_PROPS = [
+  "parts",
+  "part",
+  "material",
+  "fix",
+  "load",
+  "gravity",
+  "accel",
+  "printed",
+  "build",
+  "cycles",
+  "safety",
+  "max_deflection",
+  "resolution",
+  "carries",
+  "modes",
+  "excite",
+  "damping",
+  "ringing",
+  "drop",
+  "tip",
+  "impact",
+  "onto",
+  ...HEAT_PROPS,
+  "temperature",
+  "assembled_at",
+  "buckling",
+  "buckling_safety",
+];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
 export const UCI_PROPS = ["uci", "bottom_bracket", "wheels", "saddle", "bars", "hoods", "forward", "parts", "rim_depth"];
-const FLAGS = ["gravity", "printed", "locked"];
+const FLAGS = ["gravity", "printed", "locked", "buckling", "converge"];
 
 const REGION = "region";
 const LOAD = "load";
 const SUPPORT = "support";
 const MASS = "mass";
 const EXCITE = "excitation";
+const HEAT = "heat source";
+const HELD = "held temperature";
+const FILM = "film";
 
 function def(name: string, params: string[], impl: (a: Args) => Value, doc: string): [string, Fn] {
   return [name, new Fn(name, (pos, named, ctx) => impl(new Args(name, pos, named, ctx, params)), doc)];
@@ -241,6 +282,56 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     "spin(1500rpm, name: \"fan\") → something turning at this speed shakes the design once a turn (a motor, a drill, an unbalanced wheel). spin(600rpm, to: 3000rpm) for a range it runs through. Use it in excite:.",
   ),
   def(
+    "source",
+    ["where", "power", "name", "why"],
+    (a) => {
+      const w = a.value("where");
+      const watts = a.num("power");
+      if (!(watts >= 0)) a.ctx.error("source(): the power should be 0 W or more, like source(motor, 12W)");
+      const why = a.has("why") ? { why: a.str("why") } : {};
+      if (w instanceof Obj && w.kind === REGION) {
+        const label = a.has("name") ? a.str("name") : "heat";
+        return wrap(HEAT, { region: w.fields.spec as unknown as RegionSpec, watts, label, ...why } satisfies HeatLoadSpec, label);
+      }
+      const part = refName(w, a, "where the heat is made");
+      const label = a.has("name") ? a.str("name") : part;
+      return wrap(HEAT, { part, watts, label, ...why } satisfies HeatLoadSpec, label);
+    },
+    'source(motor, 12W) → heat made inside a part or component, spread through its volume (each copy of it makes this much). source(face(plate, +Z), 3W, name: "heater") makes it over a region of the surface instead. Use it in heat:, with heat: "auto" for every electronic part\'s own loss.',
+  ),
+  def(
+    "temp",
+    ["where", "t"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      const t = a.num("t");
+      if (t < -273.15) a.ctx.error("temp(): the temperature is in °C, like temp(face(plate, -Z), 60C)");
+      return wrap(HELD, { region: r, temp: t } satisfies FixedTempSpec, "held temperature");
+    },
+    "temp(face(plate, -Z), 60C) → a surface held at a temperature: a heated bed, a chilled plate, the hot engine block it bolts to. Use it in hold:.",
+  ),
+  def(
+    "film",
+    ["where", "h", "air"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      const hv = a.value("h");
+      let h: number;
+      let conv: number | undefined;
+      if (typeof hv === "string") {
+        const c = COOLING[hv.toLowerCase()];
+        if (!c) a.ctx.error(`film(): "${hv}" is not a cooling Kerf knows; use one of ${Object.keys(COOLING).map((k) => `"${k}"`).join(", ")} or a film coefficient in W/m²K, like 50`);
+        h = c!.h;
+        conv = c!.conv;
+      } else {
+        h = a.num("h");
+        if (!(h >= 0)) a.ctx.error("film(): the film coefficient should be 0 or more, in W/m²K (still air about 10, a fan 50, water 800)");
+      }
+      return wrap(FILM, { region: r, h, ...(conv !== undefined ? { conv } : {}), ...(a.has("air") ? { ambient: a.num("air") } : {}) } satisfies FilmSpec, "film");
+    },
+    'film(face(heatsink, +Y), "fan", air: 35C) → different cooling on part of the surface: a named cooling ("fan", "water"...) or a film coefficient in W/m²K, and the temperature of what flows past it (default: ambient:). Use it in cooling:.',
+  ),
+  def(
     "band",
     ["lo", "hi", "name"],
     (a) => {
@@ -298,7 +389,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       );
     }
   }
-  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed.`, f.span);
+  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed, buckling, converge.`, f.span);
   const one = (name: string) => {
     const all = props.filter((p) => p.name === name);
     if (all.length > 1) fail(`"${name}:" is given twice`, all[1].span);
@@ -384,8 +475,39 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     }
     if (!parts.length) fail("parts: the list is empty", pp[0].span);
   }
+  // ---- heat: where it is made, surfaces held at a temperature, cooling ----
+  const heatP = one("heat");
+  const holdP = one("hold");
+  const coolP = one("cooling");
+  const heatLoads: HeatLoadSpec[] = [];
+  let auto = false;
+  if (heatP)
+    for (const x of listOf(heatP.value)) {
+      if (x === "auto") auto = true;
+      else if (x instanceof Obj && x.kind === HEAT) heatLoads.push(x.fields.spec as unknown as HeatLoadSpec);
+      else
+        fail(
+          typeof x === "number"
+            ? `heat: say where the ${x} W is made, like heat: [source(motor, ${x}W)], or use heat: "auto" for every electronic part's own loss`
+            : `heat: should list heat sources like source(motor, 12W) or source(face(plate, +Z), 3W), or "auto" for every electronic part's loss at its working current; got ${typeName(x)}`,
+          heatP.span,
+        );
+    }
+  const fixedTemps: FixedTempSpec[] = [];
+  if (holdP)
+    for (const x of listOf(holdP.value)) {
+      if (x instanceof Obj && x.kind === HELD) fixedTemps.push(x.fields.spec as unknown as FixedTempSpec);
+      else fail(`hold: should list held surfaces like temp(face(plate, -Z), 60C); got ${typeName(x)}`, holdP.span);
+    }
+  const thermalOn = !!heatP || !!holdP;
+  for (const n of HEAT_PROPS) {
+    const p = one(n);
+    if (p && !thermalOn && n !== "heat" && n !== "hold") fail(`${n}: goes with heat: (where heat is made) or hold: (a surface held at a temperature).`, p.span);
+  }
   const named = new Set<string>();
-  for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region)]) if (r.t === "face") named.add(r.part);
+  for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : []))])
+    if (r.t === "face") named.add(r.part);
+  for (const h of heatLoads) if (h.part) named.add(h.part);
   for (const n of named) {
     const k = env.kindOf(n);
     if (k !== "part" && k !== "component") fail(`face(${n}, …): "${n}" is not a part or component`, span);
@@ -455,9 +577,86 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     accel = dir;
   }
 
+  // ---- cooling, and the rest of the heat set-up ----
+  let thermal: ThermalSpec | undefined;
+  const plain = (name: string, what: string, check?: (v: number) => boolean): number | undefined => {
+    const p = one(name);
+    if (!p) return undefined;
+    if (typeof p.value !== "number" || !Number.isFinite(p.value) || (check && !check(p.value))) fail(`${name}: should be ${what}`, p.span);
+    return p.value as number;
+  };
+  const emissivity = plain("emissivity", "a number from 0 to 1 (0.9 for paint, plastics and anodised metal, 0.1 for bare polished metal)", (v) => v >= 0 && v <= 1);
+  if (thermalOn) {
+    if (drop) fail("Check heat in a separate analysis from the drop.", (heatP ?? holdP)!.span);
+    if (modal) fail("Check natural frequencies in a separate analysis from heat.", (heatP ?? holdP)!.span);
+    let cooling: number = emissivity !== undefined ? COOLING["still air"].conv : COOLING["still air"].h;
+    let coolingText = COOLING["still air"].text;
+    const films: FilmSpec[] = [];
+    if (coolP)
+      for (const x of listOf(coolP.value)) {
+        if (typeof x === "string") {
+          const c = COOLING[x.toLowerCase()];
+          if (!c) fail(`cooling: "${x}" is not one Kerf knows: use ${Object.keys(COOLING).map((k) => `"${k}"`).join(", ")}, or a film coefficient in W/m²K like cooling: 25`, coolP.span);
+          cooling = emissivity !== undefined ? c.conv : c.h;
+          coolingText = c.text;
+        } else if (typeof x === "number") {
+          if (!(x >= 0) || !Number.isFinite(x)) fail("cooling: a film coefficient should be 0 or more, in W/m²K", coolP.span);
+          cooling = x;
+          coolingText = `a film coefficient of ${Math.round(x * 10) / 10} W/m²K`;
+        } else if (x instanceof Obj && x.kind === FILM) {
+          const f = x.fields.spec as unknown as FilmSpec;
+          films.push(emissivity !== undefined && f.conv !== undefined ? { ...f, h: f.conv } : f);
+        } else fail(`cooling: should be how the surface is cooled ("still air", "fan", "water", a number in W/m²K) and any film(...) for parts of it; got ${typeName(x)}`, coolP.span);
+      }
+    const time = plain("time", "how long it warms up for, like time: 10min (a plain number is seconds)", (v) => v > 0);
+    const startT = plain("start", "the temperature everything starts at, like start: 20C");
+    const ambient = plain("ambient", "the surrounding air temperature, like ambient: 30C", (v) => v > -273.15);
+    const maxTemp = plain("max_temp", "the highest temperature allowed, like max_temp: 80C", (v) => v > -273.15);
+    if (startT !== undefined && time === undefined) fail("start: is the temperature a warm-up starts at; give time: too, like time: 10min", one("start")!.span);
+    thermal = {
+      heat: heatLoads,
+      auto,
+      fixed: fixedTemps,
+      cooling,
+      coolingText,
+      films,
+      ...(ambient !== undefined ? { ambient } : {}),
+      ...(emissivity !== undefined ? { emissivity } : {}),
+      ...(time !== undefined ? { time } : {}),
+      ...(startT !== undefined ? { start: startT } : {}),
+      ...(maxTemp !== undefined ? { maxTemp } : {}),
+    };
+    if (!heatLoads.length && !auto && !fixedTemps.length) fail('heat: lists no heat sources; add source(part, watts), or "auto"', heatP!.span);
+  } else if (emissivity !== undefined) fail("emissivity: goes with heat: (radiation from a hot surface).", one("emissivity")!.span);
+
+  // ---- one temperature for the whole model: expansion against the supports ----
+  const uniformTemp = plain("temperature", "the temperature of the whole model, like temperature: 60C", (v) => v > -273.15);
+  const refTemp = plain("assembled_at", "the temperature it is made and assembled at, like assembled_at: 20C", (v) => v > -273.15);
+  if (uniformTemp !== undefined && thermalOn) fail("temperature: sets the whole model to one temperature, while heat: and hold: work the temperatures out. Use one or the other.", one("temperature")!.span);
+  if (uniformTemp !== undefined && !supports.length) fail("temperature: stresses the parts against their supports as they expand; add fix: to say how they are held.", one("temperature")!.span);
+  if (uniformTemp !== undefined && drop) fail("Check a set temperature in a separate analysis from the drop.", one("temperature")!.span);
+  if (refTemp !== undefined && uniformTemp === undefined && !(thermalOn && supports.length)) fail("assembled_at: is the temperature with no thermal stress; it goes with temperature: or with heat: and fix:.", one("assembled_at")!.span);
+
+  // ---- buckling: how many times the loads it takes to buckle the parts ----
+  const buckP = one("buckling");
+  let buckling: BucklingSpec | undefined;
+  if (buckP || flags.some((f) => f.name === "buckling")) {
+    const at = buckP?.span ?? flags.find((f) => f.name === "buckling")!.span;
+    let modes = 3;
+    if (buckP) {
+      if (typeof buckP.value !== "number" || !Number.isInteger(buckP.value) || buckP.value < 1 || buckP.value > 6) fail("buckling: should be how many buckled shapes to find, 1 to 6 (or write buckling on its own for 3)", buckP.span);
+      modes = buckP.value as number;
+    }
+    if (modal || drop) fail(`Check buckling in a separate analysis from the ${modal ? "natural frequencies" : "drop"}.`, at);
+    if (!loads.length && !accel && !thermalOn && uniformTemp === undefined) fail("buckling needs loads to scale: add load: (or gravity) for what presses on the parts.", at);
+    buckling = { modes, safety: plain("buckling_safety", "the lowest buckling factor wanted, like buckling_safety: 3", (v) => v >= 1) ?? 3 };
+  } else if (one("buckling_safety")) fail("buckling_safety: goes with buckling.", one("buckling_safety")!.span);
+
   if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
-  if (!supports.length) fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead.', span);
-  if (!loads.length && !accel && !modal) fail("Add load: force(...), pressure(...) or torque(...), or gravity, so there is something to analyse; or excite: or modes: for natural frequencies.", span);
+  if (!supports.length && !thermalOn)
+    fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead; for temperatures alone use heat:.', span);
+  if (!loads.length && !accel && !modal && !thermalOn && uniformTemp === undefined)
+    fail("Add load: force(...), pressure(...) or torque(...), or gravity, so there is something to analyse; or excite: or modes: for natural frequencies, or heat: for temperatures.", span);
 
   const matP = one("material");
   let material: string | undefined;
@@ -498,6 +697,11 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(masses.length ? { masses } : {}),
     ...(modal ? { modal } : {}),
     ...(drop ? { drop } : {}),
+    ...(thermal ? { thermal } : {}),
+    ...(uniformTemp !== undefined ? { uniformTemp } : {}),
+    ...(refTemp !== undefined ? { refTemp } : {}),
+    ...(buckling ? { buckling } : {}),
+    ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
     span,
   };
 }

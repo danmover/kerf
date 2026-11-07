@@ -16,7 +16,7 @@ import type { CheckItem, CheckReport } from "../core/checks";
 import { materialDensity } from "../library/standards";
 import type { MeasuredResult } from "../agents/isolated";
 import type { PartInspection } from "../kernel/inspect";
-import { structuralChecks, structuralInput } from "../analysis/runtime";
+import { resolveThermal, structuralChecks, structuralInput } from "../analysis/runtime";
 import type { StructuralSpec } from "../analysis/spec";
 import type { StructuralInput, StructuralResult } from "../analysis/fe/structural";
 import { structuralVerdict } from "../analysis/summary";
@@ -234,7 +234,8 @@ export async function compareDesigns(input: unknown, deps: CompareDeps, signal?:
         }
         tree.step(i, "doing", `Analysing ${spec.label}`);
         // a part that did not build has no mesh, which structuralInput reports as null
-        const prep = structuralInput({ ...spec, resolution: "draft" }, d.model!.parts.filter((q) => spec.parts.includes(q.name)), false, new Map(), (h) => d.built!.parts.get(h)?.mesh);
+        // heat: "auto" and the surroundings come from the design, as they do for the analysis tab
+        const prep = structuralInput(resolveThermal({ ...spec, resolution: "draft" }, d.model!), d.model!.parts.filter((q) => spec.parts.includes(q.name)), false, new Map(), (h) => d.built!.parts.get(h)?.mesh);
         if (!prep) d.analyses.push({ spec, error: "its parts did not build" });
         else if (prep.error) d.analyses.push({ spec, error: prep.error });
         else

@@ -6,14 +6,14 @@
 import type { AnalysisSpec } from "../analysis/spec";
 
 export interface AnalysisKind {
-  id: "strength" | "drop" | "vibration" | "airflow" | "gears" | "uci";
+  id: "strength" | "drop" | "vibration" | "heat" | "buckling" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
   /** other words people use for it */
   keywords: string;
   /** key of ui/icons Icon */
-  icon: "Stress" | "Alert" | "Graph" | "Orbit" | "Gear" | "Check";
+  icon: "Stress" | "Alert" | "Graph" | "Thermo" | "Buckle" | "Orbit" | "Gear" | "Check";
   /** which of the design's analyses are this kind */
   is: (a: AnalysisSpec) => boolean;
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
@@ -29,7 +29,7 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "Stress, deflection and safety factor under the loads it will see",
     keywords: "fea finite element stress strain deflection safety factor load break bend sag strong",
     icon: "Stress",
-    is: (a) => a.kind === "structural" && !a.drop && !a.modal,
+    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !(a.thermal && !a.supports.length),
     ask: "Set up a strength analysis for this design from how it will be used: work out realistic loads and how it is held, then run it and tell me what you find.",
   },
   {
@@ -49,6 +49,24 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     icon: "Graph",
     is: (a) => a.kind === "structural" && !!a.modal,
     ask: "Set up a vibration analysis for this design: find its natural frequencies, compare them with what will shake it in use (motors, fans, the road), then run it and tell me if anything will resonate and how to fix it.",
+  },
+  {
+    id: "heat",
+    label: "Heat",
+    detail: "How hot each part runs from its electronics, motors or a hot surface, and the stress that heat causes",
+    keywords: "thermal temperature heat hot warm cooling fan heatsink overheat melt soften expansion thermal stress warm-up",
+    icon: "Thermo",
+    is: (a) => a.kind === "structural" && (!!a.thermal || a.uniformTemp !== undefined),
+    ask: "Set up a heat analysis for this design: where heat is made (electronics, motors, anything hot it touches), how it is cooled and the hottest surroundings it will see, then run it and tell me which parts run too hot and how to cool them.",
+  },
+  {
+    id: "buckling",
+    label: "Buckling",
+    detail: "How much more load the slender walls, struts and tubes take before they fold",
+    keywords: "buckle buckling collapse fold crumple column strut slender thin wall stability euler compression",
+    icon: "Buckle",
+    is: (a) => a.kind === "structural" && !!a.buckling,
+    ask: "Set up a buckling check for this design: the loads that press on its slender walls, struts or tubes and how it is held, then run it and tell me how far it is from buckling and how to stiffen it.",
   },
   {
     id: "airflow",

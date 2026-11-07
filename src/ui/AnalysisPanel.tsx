@@ -5,16 +5,17 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import { useDesign } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
-import { useAnalysis, showResults, runFine, type StructuralRun, type ResultField } from "../analysis/runtime";
+import { useAnalysis, showResults, runFine, runAccuracyCheck, type StructuralRun, type ResultField } from "../analysis/runtime";
 import { modeText, safetyAway, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec } from "../analysis/spec";
 import { uciItems, uciVerdict } from "../analysis/summary";
 import { uciResult, UCI_ROAD } from "../core/uciChecks";
 import type { CheckItem } from "../core/checks";
-import type { StructuralResult } from "../analysis/fe/structural";
+import type { StructuralResult, ThermalResult } from "../analysis/fe/structural";
 import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
-import { FIELD_INFO, FIELDS, autoDeform, shownMode } from "./ResultsLayer";
+import { FIELD_INFO, autoDeform, fieldFor, resultFields, shownMode } from "./ResultsLayer";
+import { accuracyText, bucklingText, bucklingVerdict, degC, duration, temperatureText, temperatureVerdict } from "../analysis/thermalSummary";
 import { dropVerdict, modeWords, resonances, vibrationText, vibrationVerdict } from "../analysis/dynamics";
 import { Menu, MenuItem, Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
@@ -61,6 +62,7 @@ export function AnalysisPanel() {
         <AddAnalysis />
         <div className="grow" />
         {spec?.kind === "structural" && <FineButton spec={spec} run={runs.get(spec.label)} />}
+        {spec?.kind === "structural" && <AccuracyButton spec={spec} run={runs.get(spec.label)} />}
         {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} air={spec.kind === "airflow" ? airRuns.get(spec.label) : undefined} />}
         {spec?.kind === "structural" && <StructuralControls spec={spec} run={runs.get(spec.label)} />}
         {spec?.kind === "airflow" && <AirflowControls spec={spec} run={airRuns.get(spec.label)} />}
@@ -105,7 +107,14 @@ function Pick({ spec, active, run, dt, items, air }: { spec: AnalysisSpec; activ
     } else if (run?.result && run.status === "done") {
       const r = run.result;
       status = structuralVerdict(spec, r);
-      val = r.drop ? `${fmtNum(r.drop.g, 0)} g · SF ${sfText(r.minSafety.value)}` : r.modal && !(r.maxDisp.value > 0) ? `${fmtNum(r.modal.modes[0]?.freq ?? 0, 0)} Hz` : `SF ${sfText(r.minSafety.value)}`;
+      const buckle = r.buckling?.factors[0];
+      val = r.heatOnly && r.thermal
+        ? degC(r.thermal.maxTemp.value)
+        : r.drop
+          ? `${fmtNum(r.drop.g, 0)} g · SF ${sfText(r.minSafety.value)}`
+          : r.modal && !(r.maxDisp.value > 0)
+            ? `${fmtNum(r.modal.modes[0]?.freq ?? 0, 0)} Hz`
+            : `SF ${sfText(r.minSafety.value)}${buckle !== undefined ? ` · buckles ×${fmtNum(buckle, buckle < 10 ? 1 : 0)}` : r.thermal && spec.thermal ? ` · ${degC(r.thermal.maxTemp.value)}` : ""}`;
     } else val = run ? `${Math.round((run.frac ?? 0) * 100)}%` : "";
   } else if (dt) {
     const fails = dt.items.filter((i) => i.status === "fail").length;
@@ -129,21 +138,34 @@ function StructuralControls({ spec, run }: { spec: StructuralSpec; run?: Structu
   const trueScale = useAnalysis((s) => s.trueScale);
   const animate = useAnalysis((s) => s.animate);
   const on = shown === spec.label;
-  const hasResult = !!run?.result;
+  const r = run?.result;
+  const hasResult = !!r;
+  const heatOnly = !!r?.heatOnly;
   return (
     <div className="an-ctl">
       <button className={`an-toggle ${on ? "on" : ""}`} disabled={!hasResult} onClick={() => showResults(on ? null : spec.label)} aria-pressed={on} data-tip="Colour the model by the results">
         {on ? <Icon.Eye size={13} /> : <Icon.EyeOff size={13} />} on model
       </button>
-      <Segmented<ResultField>
-        id="an-field"
-        value={field}
-        onChange={(f) => {
-          useAnalysis.setState({ field: f });
-          if (hasResult) showResults(spec.label);
-        }}
-        options={FIELDS.map((f) => ({ value: f, label: FIELD_INFO[f].short.toLowerCase(), title: FIELD_INFO[f].label }))}
-      />
+      {!heatOnly && (
+        <Segmented<ResultField>
+          id="an-field"
+          value={fieldFor(r, field)}
+          onChange={(f) => {
+            useAnalysis.setState({ field: f });
+            if (hasResult) showResults(spec.label);
+          }}
+          options={resultFields(r).map((f) => ({ value: f, label: FIELD_INFO[f].short.toLowerCase(), title: FIELD_INFO[f].label }))}
+        />
+      )}
+      {!heatOnly && <ShapeControls deform={deform} trueScale={trueScale} animate={animate} />}
+    </div>
+  );
+}
+
+/** How the deformed shape is drawn: exaggeration, true scale and animation. */
+function ShapeControls({ deform, trueScale, animate }: { deform: number; trueScale: boolean; animate: boolean }) {
+  return (
+    <>
       <span className="mono dim" style={{ fontSize: 10.5 }} data-tip="How much the deflection is exaggerated">
         shape
       </span>
@@ -165,7 +187,7 @@ function StructuralControls({ spec, run }: { spec: StructuralSpec; run?: Structu
       <button className={`an-toggle ${animate ? "on" : ""}`} onClick={() => useAnalysis.setState({ animate: !animate })} aria-pressed={animate} data-tip="Animate between the unloaded and loaded shape">
         {animate ? <Icon.Pause size={12} /> : <Icon.Play size={12} />} animate
       </button>
-    </div>
+    </>
   );
 }
 
@@ -174,6 +196,16 @@ function FineButton({ spec, run }: { spec: StructuralSpec; run?: StructuralRun }
   return (
     <button className="btn sm" disabled={busy || run?.fine || !run} onClick={() => runFine(spec.label)} data-tip={run?.fine ? "Already at fine resolution" : "Re-run with about 110,000 elements for a closer answer"}>
       <Icon.Refresh size={13} /> {run?.fine ? "fine mesh" : "Run fine"}
+    </button>
+  );
+}
+
+function AccuracyButton({ spec, run }: { spec: StructuralSpec; run?: StructuralRun }) {
+  const busy = run?.status === "running" || run?.status === "waiting";
+  const checked = !!run?.result?.convergence;
+  return (
+    <button className="btn sm" disabled={busy || checked || !run?.result} onClick={() => runAccuracyCheck(spec.label)} data-tip={checked ? "Solved twice: see Accuracy below" : "Solve again with smaller elements and show how far each answer moves"}>
+      <Icon.Target size={13} /> {checked ? "accuracy checked" : "Check accuracy"}
     </button>
   );
 }
@@ -206,10 +238,13 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
       {run?.status === "error" && <RunError spec={spec} run={run} />}
       {r?.modal && <ModesBox spec={spec} r={r} />}
       {r?.drop && <DropBox spec={spec} r={r} />}
-      {r && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
+      {r?.thermal && <HeatBox spec={spec} r={r} />}
+      {r?.buckling && <BucklingBox spec={spec} r={r} />}
+      {r && !r.heatOnly && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
       <div className="an-cols">
         <div>
           <SetupBox spec={spec} r={r} run={run} />
+          {r && <AccuracyBox spec={spec} r={r} run={run} />}
         </div>
         <div>
           {r && <NotesBox spec={spec} r={r} />}
@@ -306,6 +341,304 @@ function DropBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
   );
 }
 
+/** Temperatures: each part against its limit, where the heat comes from and goes, and the warm-up over time. */
+function HeatBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const t = r.thermal!;
+  const field = useAnalysis((s) => s.field);
+  const shown = useAnalysis((s) => s.shown);
+  const mode = useAnalysis((s) => s.mode);
+  const v = temperatureVerdict(r);
+  const text = temperatureText(r);
+  const on = shown === spec.label && fieldFor(r, field) === "temp" && shownMode(r, mode) === null;
+  const show = () => {
+    useAnalysis.setState({ field: "temp", mode: null });
+    showResults(spec.label);
+  };
+  const made = t.sources.reduce((a, s) => a + s.watts, 0);
+  const tr = t.transient;
+  const parts = [...t.parts].sort((a, b) => a.limit - a.max - (b.limit - b.max));
+  const b = t.balance;
+  const share = (x: number) => (b && b.made > 1e-6 ? Math.round(Math.max(0, (100 * x) / b.made)) : 0);
+  const goes = b && b.made > 1e-6 ? [`${share(b.film)} % into the air`, b.radiation > 1e-6 ? `${share(b.radiation)} % radiated` : "", Math.abs(b.held) > 0.01 * b.made ? `${share(b.held)} % into held surfaces` : ""].filter(Boolean).join(" · ") : "";
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <StatusIcon status={v?.status ?? "info"} />
+        <b>{spec.thermal ? (r.heatOnly ? "Temperatures" : "Temperatures and thermal stress") : `Everything at ${degC(spec.uniformTemp ?? t.maxTemp.value)}`}</b>
+        <span className="dim mono">
+          surroundings {degC(t.ambient)}
+          {t.cooling ? ` · ${t.cooling}` : ""}
+          {!r.heatOnly && t.refTemp !== undefined ? ` · no thermal stress at ${degC(t.refTemp)}` : ""}
+        </span>
+        <div className="grow" />
+        <button className={`an-toggle ${on ? "on" : ""}`} onClick={show} aria-pressed={on} data-tip="Colour the model by temperature">
+          {on ? <Icon.Eye size={13} /> : <Icon.EyeOff size={13} />} temperatures
+        </button>
+      </div>
+      <div className="an-grid" style={{ marginBottom: 10 }}>
+        <button className={`an-stat ${v?.status ?? ""} ${on ? "active" : ""}`} onClick={show}>
+          <div className="k">{tr ? `Hottest after ${duration(tr.time)}` : "Hottest"}</div>
+          <div className="v">
+            {fmtNum(t.maxTemp.value, 1)}
+            <small>°C</small>
+          </div>
+          <div className="s">
+            on {t.maxTemp.part} near {v3(t.maxTemp.at)}
+          </div>
+        </button>
+        {v && (
+          <div className={`an-stat ${v.status}`}>
+            <div className="k">Closest to its limit</div>
+            <div className="v">
+              {fmtNum(Math.abs(v.margin), 1)}
+              <small>°C {v.margin < 0 ? "over" : "to spare"}</small>
+            </div>
+            <div className="s">
+              {v.worst.name}: limit {degC(v.worst.limit)}, {v.worst.limitWhy}
+            </div>
+          </div>
+        )}
+        {t.sources.length > 0 && (
+          <div className="an-stat">
+            <div className="k">Heat made</div>
+            <div className="v">
+              {fmtNum(made, made < 10 ? 2 : 1)}
+              <small>W</small>
+            </div>
+            <div className="s">{goes || `${t.sources.length} source${t.sources.length > 1 ? "s" : ""}`}</div>
+          </div>
+        )}
+        {tr && (
+          <div className="an-stat">
+            <div className="k">Left running</div>
+            <div className="v">{tr.settles !== null ? <>{fmtNum(tr.settles, 1)}<small>°C</small></> : <small>keeps heating</small>}</div>
+            <div className="s">{tr.overLimit ? `${tr.overLimit.part} passes its limit after ${duration(tr.overLimit.time)}` : `from ${degC(tr.start)}; nothing passes its limit in ${duration(tr.time)}`}</div>
+          </div>
+        )}
+      </div>
+      {tr && tr.times.length > 1 && <WarmUpChart t={t} />}
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th>Part</th>
+            <th className="num">Hottest</th>
+            <th className="num">Average</th>
+            <th className="num">Limit</th>
+            <th>Used of the headroom</th>
+          </tr>
+        </thead>
+        <tbody>
+          {parts.slice(0, 12).map((p) => {
+            const room = Math.max(p.limit - t.ambient, 1);
+            const status = p.max > p.limit ? "fail" : p.limit - p.max < 0.1 * room ? "warn" : "";
+            const used = Math.min(1, Math.max(0, (p.max - t.ambient) / room));
+            return (
+              <tr key={p.name}>
+                <td>
+                  {p.name}
+                  <span className="dim">
+                    {" "}
+                    · {p.material}
+                    {p.assumed ? ", assumed" : ""}
+                  </span>
+                </td>
+                <td className={`num ${status}`}>{degC(p.max)}</td>
+                <td className="num">{degC(p.mean)}</td>
+                <td className="num" title={p.limitWhy}>
+                  {degC(p.limit)}
+                </td>
+                <td>
+                  <span className="an-meter" aria-label={`${Math.round(used * 100)} % of the headroom used`}>
+                    <div style={{ width: `${used * 100}%`, background: status === "fail" ? "var(--fail)" : status === "warn" ? "var(--warn)" : "var(--pass)" }} />
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {t.parts.length > 12 && <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>and {t.parts.length - 12} more parts</div>}
+      {t.sources.length > 0 && (
+        <div className="an-note" style={{ marginTop: 8 }}>
+          <Icon.Bolt size={13} style={{ color: "var(--text-3)" }} />
+          <span>
+            {t.sources
+              .slice(0, 8)
+              .map((s) => `${s.label} ${fmtNum(s.watts, 2)} W${s.why ? ` (${s.why})` : ""}`)
+              .join("; ")}
+            {t.sources.length > 8 ? `; ${t.sources.length - 8} more` : ""}
+          </span>
+        </div>
+      )}
+      {text?.fix && (
+        <div className="an-note">
+          <Icon.Info size={13} style={{ color: "var(--warn)" }} />
+          <span>{text.fix}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The hottest temperature over the warm-up, with the tightest part limit when it is in view. */
+function WarmUpChart({ t }: { t: ThermalResult }) {
+  const tr = t.transient!;
+  const chart = useMemo(() => {
+    const times = [0, ...tr.times];
+    const temps = [tr.start, ...tr.max];
+    const end = times[times.length - 1] || 1;
+    const lo = Math.min(...temps);
+    const top = Math.max(...temps);
+    const limit = Math.min(...t.parts.map((p) => p.limit));
+    // the limit only when it is near enough to read against the curve
+    const showLimit = Number.isFinite(limit) && limit <= top + 0.6 * Math.max(top - lo, 1);
+    const hi = Math.max(top, showLimit ? limit : -Infinity) + 0.04 * Math.max(top - lo, 1);
+    const y = (v: number) => 4 + ((hi - v) / Math.max(hi - lo, 1e-6)) * 46;
+    const pts = times.map((x, i) => `${((x / end) * 100).toFixed(2)},${y(temps[i]).toFixed(2)}`).join(" ");
+    return { pts, end, lo, hi, limit, limitY: showLimit ? y(limit) : null };
+  }, [t, tr]);
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <svg className="an-spark" viewBox="0 0 100 54" preserveAspectRatio="none" aria-label="Hottest temperature over the warm-up">
+        {chart.limitY !== null && <line x1={0} x2={100} y1={chart.limitY} y2={chart.limitY} stroke="var(--fail)" strokeDasharray="3 3" strokeWidth={1} vectorEffect="non-scaling-stroke" />}
+        <polyline points={chart.pts} fill="none" stroke="var(--warn)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        hottest point over {duration(chart.end)} · {degC(chart.lo)} to {degC(chart.hi)}
+        {chart.limitY !== null ? ` · dashed: the tightest limit, ${degC(chart.limit)}` : ""}
+      </div>
+    </div>
+  );
+}
+
+/** Buckling: the load factors and their shapes; picking one swings that shape on the model. */
+function BucklingBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const b = r.buckling!;
+  const picked = useAnalysis((s) => s.mode);
+  const shown = useAnalysis((s) => s.shown);
+  const active = shown === spec.label ? shownMode(r, picked) : null;
+  const v = bucklingVerdict(spec, r);
+  const text = bucklingText(spec, r);
+  const target = spec.buckling?.safety ?? 3;
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <StatusIcon status={v?.status ?? "info"} />
+        <b>Buckling</b>
+        <span className="dim mono">
+          target {fmtNum(target, 1)}× the loads{b.converged ? "" : " · rough: the solver stopped early"}
+        </span>
+      </div>
+      {b.factors.length > 0 && (
+        <table className="an-table">
+          <thead>
+            <tr>
+              <th>Shape</th>
+              <th className="num">Buckles at</th>
+              <th>Moves most near</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {b.factors.map((f, i) => (
+              <tr
+                key={i}
+                className={`an-mode ${active === i ? "active" : ""}`}
+                onClick={() => {
+                  showResults(spec.label);
+                  useAnalysis.setState({ mode: active === i ? null : i });
+                }}
+                style={{ cursor: "pointer" }}
+                aria-pressed={active === i}
+              >
+                <td className="mono">{i + 1}</td>
+                <td className={`num ${f < 1 ? "fail" : f < target ? "warn" : ""}`}>{fmtNum(f, 2)}× the loads</td>
+                <td className="mono">{v3(b.peaks[i])}</td>
+                <td className="dim">{active === i ? "on the model" : "show"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {text && (
+        <div className="an-note" style={{ marginTop: 8 }}>
+          {text.detail}
+        </div>
+      )}
+      {text?.fix && <div className="an-note">{text.fix}</div>}
+    </div>
+  );
+}
+
+/** The accuracy check: the answers from two element sizes side by side, and whether they have settled. */
+function AccuracyBox({ spec, r, run }: { spec: StructuralSpec; r: StructuralResult; run?: StructuralRun }) {
+  const c = r.convergence;
+  const busy = run?.status === "running" || run?.status === "waiting";
+  if (!c)
+    return (
+      <div className="an-box">
+        <h4>
+          Accuracy
+          <div className="grow" />
+          <button className="btn sm ghost" style={{ height: 20 }} disabled={busy} onClick={() => runAccuracyCheck(spec.label)}>
+            <Icon.Target size={12} /> check
+          </button>
+        </h4>
+        <div className="an-note">
+          <span className="dim">
+            Solved once with {fmtNum(r.mesh.h, 2)} mm elements. Check accuracy solves it again with smaller elements and shows how far each answer moves, so you know which numbers to trust.
+          </span>
+        </div>
+      </div>
+    );
+  const text = accuracyText(r)!;
+  const rows: { name: string; a?: number; b?: number; moved?: number; fmt: (x: number) => string }[] = [
+    ...(r.heatOnly
+      ? []
+      : [
+          { name: "Deflection", a: c.coarse.disp, b: c.fine.disp, moved: c.change.disp, fmt: (x: number) => `${fmtNum(x, x < 0.1 ? 4 : 3)} mm` },
+          { name: "Stress", a: c.coarse.stress, b: c.fine.stress, moved: c.change.stress, fmt: (x: number) => `${fmtNum(x, x < 10 ? 2 : 1)} MPa` },
+          { name: "Safety factor", a: c.coarse.safety, b: c.fine.safety, moved: c.change.safety, fmt: sfText },
+        ]),
+    ...(c.change.temp !== undefined ? [{ name: "Hottest", a: c.coarse.temp, b: c.fine.temp, moved: c.change.temp, fmt: degC }] : []),
+    ...(c.change.buckling !== undefined ? [{ name: "Buckling factor", a: c.coarse.buckling, b: c.fine.buckling, moved: c.change.buckling, fmt: (x: number) => `${fmtNum(x, 2)}×` }] : []),
+  ];
+  return (
+    <div className="an-box">
+      <h4>
+        Accuracy
+        <div className="grow" />
+        <span className={`chip ${text.status}`} style={{ height: 18, letterSpacing: 0, textTransform: "none" }}>
+          {c.verdict === "converged" ? "settled" : c.verdict === "close" ? "close to settled" : "not settled"}
+        </span>
+      </h4>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th />
+            <th className="num">{fmtNum(c.coarse.h, 2)} mm</th>
+            <th className="num">{fmtNum(c.fine.h, 2)} mm</th>
+            <th className="num">Moved</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.name}>
+              <td>{row.name}</td>
+              <td className="num">{row.a !== undefined ? row.fmt(row.a) : "–"}</td>
+              <td className="num">{row.b !== undefined ? row.fmt(row.b) : "–"}</td>
+              <td className={`num ${(row.moved ?? 0) > 0.15 ? "fail" : (row.moved ?? 0) > 0.05 ? "warn" : ""}`}>{fmtNum((row.moved ?? 0) * 100, (row.moved ?? 0) < 0.1 ? 1 : 0)} %</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="an-note" style={{ marginTop: 8 }}>
+        <span className="dim">{text.detail}</span>
+      </div>
+    </div>
+  );
+}
+
 function RunProgress({ run, updating }: { run: StructuralRun; updating: boolean }) {
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
@@ -317,7 +650,7 @@ function RunProgress({ run, updating }: { run: StructuralRun; updating: boolean 
     <div className="an-box" style={{ marginBottom: 12 }}>
       <div className="row" style={{ gap: 10 }}>
         <span className="spinner" />
-        <span style={{ fontSize: 12.5 }}>{updating ? "Updating the results for your latest change" : "Running the stress analysis"}</span>
+        <span style={{ fontSize: 12.5 }}>{updating ? "Updating the results for your latest change" : run.check ? "Checking accuracy: solving twice" : "Running the analysis"}</span>
         <span className="mono dim" style={{ fontSize: 11 }}>
           {run.status === "waiting" ? "queued" : run.stage.toLowerCase()}
           {run.iter ? ` · iteration ${run.iter}` : ""}
@@ -471,6 +804,19 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
             {v3(spec.accel)} g
           </div>
         )}
+        {spec.thermal && <HeatSetup spec={spec} r={r} />}
+        {spec.uniformTemp !== undefined && (
+          <div>
+            <span className="tag">temp</span>
+            everything at {degC(spec.uniformTemp)}, no thermal stress at {degC(spec.refTemp ?? 20)}
+          </div>
+        )}
+        {spec.buckling && (
+          <div>
+            <span className="tag">buckling</span>
+            {spec.buckling.modes} shape{spec.buckling.modes > 1 ? "s" : ""}, target {fmtNum(spec.buckling.safety, 1)}× the loads
+          </div>
+        )}
         {(spec.printed || r?.materials.some((m) => m.layerFactor < 1)) && (
           <div>
             <span className="tag">printed</span>
@@ -492,7 +838,64 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
   );
 }
 
+/** The heat set-up: where heat is made, how the parts are cooled, held temperatures and the warm-up. */
+function HeatSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) {
+  const th = spec.thermal!;
+  // the result knows the heat worked out from the parts (heat: "auto"); the spec only that it was asked for
+  const sources = r?.thermal?.sources ?? th.heat;
+  const ambient = r?.thermal?.ambient ?? th.ambient;
+  return (
+    <>
+      {sources.map((s, i) => (
+        <div key={`h${i}`}>
+          <span className="tag">heat</span>
+          {s.label} · {fmtNum(s.watts, 2)} W{s.why ? <span className="dim"> · {s.why}</span> : null}
+        </div>
+      ))}
+      {th.auto && !r?.thermal && (
+        <div>
+          <span className="tag">heat</span>
+          every electronic part&apos;s loss at its working current
+        </div>
+      )}
+      <div>
+        <span className="tag">cooling</span>
+        {th.coolingText} ({fmtNum(th.cooling, 0)} W/m²K){th.films.length ? ` · ${th.films.length} surface${th.films.length > 1 ? "s" : ""} cooled differently` : ""}
+        {th.emissivity !== undefined ? ` · radiation, emissivity ${fmtNum(th.emissivity, 2)}` : ""}
+      </div>
+      {th.fixed.map((f, i) => (
+        <div key={`f${i}`}>
+          <span className="tag">held</span>
+          {degC(f.temp)} on {describeRegion(f.region)}
+        </div>
+      ))}
+      <div>
+        <span className="tag">air</span>
+        {ambient !== undefined ? degC(ambient) : "the brief's hottest, else 25 °C"}
+        {r?.thermal?.ambientWhy ? <span className="dim"> · {r.thermal.ambientWhy}</span> : null}
+      </div>
+      {th.time !== undefined && (
+        <div>
+          <span className="tag">time</span>
+          warm-up over {duration(th.time)}
+          {th.start !== undefined ? ` from ${degC(th.start)}` : " from the surroundings"}
+        </div>
+      )}
+      {th.maxTemp !== undefined && (
+        <div>
+          <span className="tag">limit</span>
+          {degC(th.maxTemp)} for every part
+        </div>
+      )}
+    </>
+  );
+}
+
 function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const h = fmtNum(r.mesh.h, 2);
+  const heat = spec.thermal
+    ? `${spec.thermal.time !== undefined ? "Heat conduction over time" : "Steady heat conduction"} on the same grid: heat flows through the parts where they touch and leaves their outer surfaces by convection and radiation. Film coefficients are typical values for the cooling named; real airflow, gaps and contact between parts change the answer, so leave margin and measure a prototype.`
+    : "";
   return (
     <div className="an-box">
       <h4>What to keep in mind</h4>
@@ -505,7 +908,16 @@ function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
       <div className="an-note">
         <Icon.Info size={13} style={{ color: "var(--text-3)" }} />
         <span className="dim">
-          Linear elastic analysis on a {fmtNum(r.mesh.h, 2)} mm voxel grid: small deflections, no contact, buckling or creep. Peaks are smoothed at sharp corners and fillets smaller than a cell. Use it to compare designs and find weak spots; test a printed part before relying on it{spec.safety < 2 ? ", especially with a safety target under 2" : ""}.
+          {r.heatOnly ? (
+            `Temperatures on a ${h} mm voxel grid. ${heat}`
+          ) : (
+            <>
+              Linear elastic analysis on a {h} mm voxel grid: small deflections, no contact or creep
+              {r.buckling ? "; buckling assumes a perfect shape, so real parts buckle somewhat sooner" : ", and buckling only when buckling: is set"}. {heat}
+              {spec.thermal || spec.uniformTemp !== undefined ? " Hot plastics are softened and weakened at their temperature. " : ""}
+              Peaks are smoothed at sharp corners and fillets smaller than a cell. Use it to compare designs and find weak spots; test a printed part before relying on it{spec.safety < 2 ? ", especially with a safety target under 2" : ""}.
+            </>
+          )}
         </span>
       </div>
     </div>

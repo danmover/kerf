@@ -11,6 +11,9 @@ import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportS
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
+import { COMPONENT_THERMAL, strengthAt, type ThermalMaterial } from "../thermalMaterials";
+import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type ThermalInput } from "./thermal";
+import { bucklingModes } from "./buckling";
 
 export class FeaError extends Error {}
 
@@ -54,6 +57,63 @@ export interface StructuralInput {
    * peak deceleration the fall's energy gives against the body's and the floor's stiffness.
    */
   drop?: { height?: number; tip?: boolean; dir: V3; floor: FloorSpec };
+  /** heat: solve the temperatures first; with supports they then load the structure and soften hot plastics */
+  thermal?: ThermalInput;
+  /** the whole model at this temperature (°C), for thermal expansion without a heat solve */
+  uniformTemp?: number;
+  /** the temperature with no thermal stress (made and assembled), °C; default 20 */
+  refTemp?: number;
+  /** thermal properties per material (same order as materials); needed with thermal or uniformTemp */
+  thermalMaterials?: ThermalMaterial[];
+  /** linear buckling: how many buckling factors and shapes to find */
+  buckling?: { modes: number };
+  /** an accuracy check: solve again with smaller elements and compare (run by runConverged) */
+  converge?: boolean;
+}
+
+/** Temperatures from a heat analysis. */
+export interface ThermalResult {
+  /** surroundings, °C */
+  ambient: number;
+  ambientWhy?: string;
+  cooling: string;
+  maxTemp: Located & { part: string };
+  minTemp: Located;
+  /** hottest point of each part (by block name), against its limit */
+  parts: { name: string; max: number; mean: number; at: V3; limit: number; limitWhy: string; material: string; assumed: boolean }[];
+  /** the heat made, where it was made and what made it */
+  sources: { label: string; watts: number; why?: string }[];
+  /** in a steady state, where the heat goes, W */
+  balance: { made: number; film: number; radiation: number; held: number } | null;
+  /** a warm-up over time: the hottest temperature (overall and per part) after each step */
+  transient?: {
+    time: number;
+    start: number;
+    times: number[];
+    max: number[];
+    parts: { name: string; max: number[] }[];
+    /** where it would settle if it ran on (null: no way for the heat to leave, it keeps heating) */
+    settles: number | null;
+    /** the first part to pass its limit and when, s */
+    overLimit: { part: string; time: number } | null;
+  };
+  hotSpots: { at: V3; temp: number; part: string }[];
+  solve: { iterations: number; residual: number; converged: boolean; ms: number };
+  /** thermal stress: the temperature the parts carry no thermal stress at */
+  refTemp?: number;
+}
+
+/** Linear buckling: factors on the loads at which the parts buckle. */
+export interface BucklingResult {
+  /** load factors from the lowest up (only those that buckle under the loads as given) */
+  factors: number[];
+  /** where each buckled shape moves most */
+  peaks: V3[];
+  /** the lowest factor if the loads were reversed, when one was found */
+  reversed: number | null;
+  iterations: number;
+  converged: boolean;
+  ms: number;
 }
 
 export interface ModeResult {
@@ -143,8 +203,10 @@ export interface PartField {
   strain: Float32Array;
   /** per vertex: factor of safety */
   safety: Float32Array;
-  /** per mode: the mode shape at each vertex (xyz), scaled so the largest movement is 1 */
+  /** per mode: the mode shape at each vertex (xyz), scaled so the largest movement is 1 (buckled shapes when the analysis buckles) */
   modes?: Float32Array[];
+  /** per vertex: temperature (°C), when the analysis has heat or a set temperature */
+  temp?: Float32Array;
 }
 
 export interface Located {
@@ -173,14 +235,45 @@ export interface StructuralResult {
   supports: { region: string; dir?: V3; at: V3; nodes: number; reaction: V3; markers: Float32Array; contact?: ContactResult }[];
   gravity: { vector: V3; at: V3 } | null;
   parts: PartField[];
-  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number] };
+  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
   modal?: ModalResult;
   drop?: DropResult;
+  thermal?: ThermalResult;
+  buckling?: BucklingResult;
+  /** only temperatures were solved for (a heat analysis with no supports): the stress fields are empty */
+  heatOnly?: boolean;
+  /** a second, finer solve and how much the answers moved (an accuracy check) */
+  convergence?: ConvergenceResult;
 }
 
-export type SafetyAt = Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string };
+/** The same analysis solved twice, the second time with smaller elements. */
+export interface ConvergenceResult {
+  coarse: ConvergencePoint;
+  fine: ConvergencePoint;
+  /** relative change of each answer from the coarse to the fine solve */
+  change: { disp: number; stress: number; safety: number; temp?: number; buckling?: number };
+  verdict: "converged" | "close" | "not converged";
+  /** the peak sits at a support or load and keeps rising with smaller elements: a stress singularity */
+  singular: boolean;
+  /** the finer solve could not use smaller elements (memory limit) */
+  limited: boolean;
+}
+
+export interface ConvergencePoint {
+  h: number;
+  elements: number;
+  disp: number;
+  /** peak stress a short way from supports and loads (the peak itself when it is not at one) */
+  stress: number;
+  peak: number;
+  safety: number;
+  temp?: number;
+  buckling?: number;
+}
+
+export type SafetyAt = Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string; /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */ tempC?: number };
 
 export type Progress = (stage: string, frac: number, info?: { iter?: number; residual?: number }) => void;
 
@@ -287,8 +380,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const t0 = now();
   const warnings: string[] = [];
   if (!inp.parts.length) throw new FeaError("Nothing to analyse: the analysis names no parts with built geometry.");
-  if (!inp.supports.length) throw new FeaError("The analysis has no supports. Add fix: to say how the part is held, for example fix: face(bracket, -Y).");
-  if (!inp.loads.length && !inp.accel && !inp.modes) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+  /** temperatures only: a heat analysis with nothing holding the parts */
+  const heatOnly = !!inp.thermal && !inp.supports.length;
+  const temps = !!inp.thermal || inp.uniformTemp !== undefined;
+  if (temps && (!inp.thermalMaterials || inp.thermalMaterials.length !== inp.materials.length)) throw new FeaError("Thermal properties are missing for the analysed materials.");
+  if (!inp.supports.length && !heatOnly) throw new FeaError("The analysis has no supports. Add fix: to say how the part is held, for example fix: face(bracket, -Y).");
+  if (!heatOnly && !inp.loads.length && !inp.accel && !inp.modes && !temps) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+  if (inp.buckling && !inp.loads.length && !inp.accel && !temps) throw new FeaError("Buckling needs loads to scale: add load: (or gravity) to say what presses on the parts.");
+  if (inp.buckling && inp.modes) throw new FeaError("Check natural frequencies and buckling in separate analyses.");
+  if (inp.drop && (temps || inp.buckling)) throw new FeaError(`A drop works out its own forces from the fall; check ${temps ? "heat and temperatures" : "buckling"} in a separate analysis.`);
 
   // ---------- grid ----------
   // Cells fit the bounding box exactly (their size differs slightly per axis), so the outer faces of
@@ -331,8 +431,27 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const best = new Float32Array(ne);
   const owner = new Int16Array(ne).fill(-1);
   const grid = { h: hv, origin, n: [nx, ny, nz] as V3 };
+  /**
+   * Heat: each part's true surface area over the area of its voxel skin. A stepped voxel surface has more area than
+   * the smooth one it stands for (about 1.5× on a sphere), which would overstate cooling.
+   */
+  const areaScale = new Float64Array(inp.parts.length).fill(1);
   inp.parts.forEach((p, pi) => {
     const f = voxelizeMesh(p.mesh, grid, 3);
+    if (inp.thermal) {
+      let vox = 0;
+      const A = [hy * hz, hy * hz, hx * hz, hx * hz, hx * hy, hx * hy];
+      for (let k = 0; k < nz; k++)
+        for (let j = 0; j < ny; j++)
+          for (let i = 0; i < nx; i++) {
+            const e = i + nx * (j + ny * k);
+            if (f[e] < FILL_MIN) continue;
+            const nb = [i > 0 ? e - 1 : -1, i < nx - 1 ? e + 1 : -1, j > 0 ? e - nx : -1, j < ny - 1 ? e + nx : -1, k > 0 ? e - nx * ny : -1, k < nz - 1 ? e + nx * ny : -1];
+            for (let d = 0; d < 6; d++) if (nb[d] < 0 || f[nb[d]] < FILL_MIN) vox += A[d];
+          }
+      const true_ = meshArea(p.mesh);
+      if (vox > 0 && true_ > 0) areaScale[pi] = Math.min(1.5, Math.max(0.25, true_ / vox));
+    }
     for (let e = 0; e < ne; e++) {
       const v = f[e];
       if (v <= 0) continue;
@@ -503,6 +622,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     return sel;
   };
 
+  // ---------- heat only ----------
+  // A heat analysis with nothing holding the parts only wants temperatures: solve them and stop here.
+  if (heatOnly) return heatOnlyResult(runHeat());
+
   // ---------- supports and the pieces they hold ----------
   const supportSel = inp.supports.map((s, i) => {
     const sel = select(s.region);
@@ -561,6 +684,35 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     warnings.push(`Ignored ${loose} element${loose > 1 ? "s" : ""} in small loose pieces that no support holds (thin slivers at this element size).`);
     faces = exposed();
   }
+
+  // ---------- temperatures, for thermal stress ----------
+  if (inp.thermal) {
+    // the heat solve and then the stress solve share the progress bar
+    const outer = progress;
+    progress = (stage, frac, info) => outer(stage, stage.startsWith("Heat") ? 0.2 + 0.3 * frac : 0.5 + 0.5 * frac, info);
+  }
+  const heat = inp.thermal ? runHeat() : null;
+  /** per node, °C: the solved temperatures, or the one set for the whole model */
+  const nodeT: Float64Array | null = heat ? heat.T : inp.uniformTemp !== undefined ? new Float64Array(nn).fill(inp.uniformTemp) : null;
+  /** no thermal stress at this temperature: the surroundings of a heat analysis (the stress comes from the heat it makes), else 20 °C */
+  const refTemp = inp.refTemp ?? (inp.thermal ? inp.thermal.ambient : 20);
+  /** per element: its temperature (the mean of its corners), and the share of its stiffness a hot plastic keeps */
+  const cellT = nodeT ? new Float32Array(ne) : null;
+  const kfac = new Float32Array(ne).fill(1);
+  if (nodeT && cellT) {
+    const tms = inp.thermalMaterials!;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const n0 = elemNode0(e);
+      let s = 0;
+      for (let a = 0; a < 8; a++) s += nodeT[n0 + off[a]];
+      cellT[e] = s / 8;
+      const tm = tms[inp.parts[owner[e]].material];
+      if (tm.softens) kfac[e] = strengthAt(tm, cellT[e]);
+    }
+  }
+  /** the strength left at a node's temperature, as a share of the room-temperature value */
+  const derate = (n: number, mi: number) => (nodeT && n >= 0 ? strengthAt(inp.thermalMaterials![mi], nodeT[n]) : 1);
 
   // ---------- boundary conditions ----------
   const bc = new Uint8Array(3 * nn);
@@ -720,13 +872,45 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const applied: V3 = [0, 0, 0];
   for (let n = 0; n < nn; n++) for (let d = 0; d < 3; d++) applied[d] += f[3 * n + d];
 
+  // ---------- thermal expansion against the supports ----------
+  // Each element's thermal strain α·ΔT is uniform (from its corners' mean temperature), so the incompatible modes
+  // stay exactly condensed: the load is f = E·fill·α·ΔT·Σ_g T_gᵀ·D·(1, 1, 1, 0, 0, 0)·V/8 and the stress afterwards
+  // E·D·(T_g·u − ε_th). The loads of each element add up to nothing, so applied (the outside loads) is unchanged.
+  const em = elementMatrices(nu, hx, hy, hz);
+  const thermalStrain = (e: number) => (cellT ? inp.thermalMaterials![matOf(e)].alpha * (cellT[e] - refTemp) : 0);
+  if (cellT) {
+    const dv = new Float64Array(6);
+    for (let r = 0; r < 6; r++) dv[r] = em.D[r * 6] + em.D[r * 6 + 1] + em.D[r * 6 + 2];
+    const thv = new Float64Array(24);
+    const detJ = (hx * hy * hz) / 8;
+    for (const T of em.strainGauss)
+      for (let j = 0; j < 24; j++) {
+        let s = 0;
+        for (let r = 0; r < 6; r++) s += T[r * 24 + j] * dv[r];
+        thv[j] += detJ * s;
+      }
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const eth = thermalStrain(e);
+      if (!eth) continue;
+      const c = inp.materials[matOf(e)].E * kfac[e] * fill[e] * eth;
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++) {
+        const d = 3 * (n0 + off[a]);
+        f[d] += c * thv[3 * a];
+        f[d + 1] += c * thv[3 * a + 1];
+        f[d + 2] += c * thv[3 * a + 2];
+      }
+    }
+  }
+
   // ---------- rigid-body check per held piece ----------
   checkHeld();
 
   // ---------- solve ----------
   progress("Setting up the solver", 0.22);
   const dense = new Float64Array(ne);
-  for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e];
+  for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e] * kfac[e];
   const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc);
   const H = buildHierarchy(fine, plan.shifts, nu);
   const fs = Float64Array.from(f);
@@ -909,7 +1093,6 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const equilibrium = Math.hypot(applied[0] + reaction[0], applied[1] + reaction[1], applied[2] + reaction[2]) / appliedMag;
 
   // ---------- stress recovery ----------
-  const em = elementMatrices(nu, hx, hy, hz);
   const nodeS = new Float64Array(6 * nn);
   const nodeE = new Float64Array(6 * nn);
   const nodeW = new Float64Array(nn);
@@ -918,6 +1101,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const ue = new Float64Array(24);
   const sg = new Float64Array(48);
   const eg = new Float64Array(48);
+  /** buckling: each active element and its stress (at its centre, times its fill) */
+  const cellList = inp.buckling ? new Int32Array(nActive) : null;
+  const cellStress = inp.buckling ? new Float64Array(6 * nActive) : null;
+  let cellN = 0;
   for (let e = 0; e < ne; e++) {
     if (!active[e]) continue;
     const n0 = elemNode0(e);
@@ -927,19 +1114,30 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       ue[3 * a + 1] = u[d + 1];
       ue[3 * a + 2] = u[d + 2];
     }
-    const mat = inp.materials[matOf(e)];
+    const Ee = inp.materials[matOf(e)].E * kfac[e];
+    // the strain that makes stress: the total less the free thermal expansion
+    const eth = thermalStrain(e);
     for (let g = 0; g < 8; g++) {
       const T = em.strainGauss[g];
       for (let r = 0; r < 6; r++) {
         let s = 0;
         for (let j = 0; j < 24; j++) s += T[r * 24 + j] * ue[j];
-        eg[6 * g + r] = s;
+        eg[6 * g + r] = r < 3 ? s - eth : s;
       }
       for (let r = 0; r < 6; r++) {
         let s = 0;
         for (let c = 0; c < 6; c++) s += em.D[r * 6 + c] * eg[6 * g + c];
-        sg[6 * g + r] = mat.E * s;
+        sg[6 * g + r] = Ee * s;
       }
+    }
+    if (cellList && cellStress && cellN < cellList.length) {
+      cellList[cellN] = e;
+      for (let r = 0; r < 6; r++) {
+        let s = 0;
+        for (let g = 0; g < 8; g++) s += sg[6 * g + r];
+        cellStress[6 * cellN + r] = (s / 8) * fill[e];
+      }
+      cellN++;
     }
     const w = fill[e];
     for (let a = 0; a < 8; a++) {
@@ -963,6 +1161,38 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
   }
 
+  // ---------- buckling ----------
+  let buckling: BucklingResult | undefined;
+  if (inp.buckling && cellList && cellStress) {
+    progress("Finding buckling loads", 0.93);
+    const tb = now();
+    const sol = bucklingModes({
+      H,
+      cells: cellList.subarray(0, cellN),
+      stress: cellStress.subarray(0, 6 * cellN),
+      n: [nx, ny, nz],
+      h: hv,
+      modes: inp.buckling.modes,
+      onIter: (it, change) => progress("Finding buckling loads", 0.93 + 0.06 * Math.min(1, it / 40), { iter: it, residual: change }),
+    });
+    shapes = sol.shapes;
+    const peaks = sol.shapes.map((v): V3 => {
+      let big = 0,
+        at = 0;
+      for (let n = 0; n < nn; n++) {
+        const a = Math.hypot(v[3 * n], v[3 * n + 1], v[3 * n + 2]);
+        if (a > big) {
+          big = a;
+          at = n;
+        }
+      }
+      return nodePos(at);
+    });
+    buckling = { factors: sol.factors, peaks, reversed: sol.reversed, iterations: sol.iterations, converged: sol.converged, ms: now() - tb };
+    if (!sol.converged) warnings.push(`The buckling solver stopped after ${sol.iterations} rounds before the factors settled; treat them as rough.`);
+    if (!sol.factors.length) warnings.push(sol.reversed !== null ? `Nothing buckles under these loads; with the loads reversed it would buckle at ${fmt(sol.reversed, 2)}× them.` : "Nothing buckles under these loads: they stretch the parts rather than press them.");
+  }
+
   // ---------- nodal results ----------
   const allow = inp.materials.map((m) => allowableStress(m, inp.cycles));
   const bd = norm(inp.buildDir);
@@ -984,7 +1214,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const pe = principal(nodeE[o], nodeE[o + 1], nodeE[o + 2], nodeE[o + 3] / 2, nodeE[o + 4] / 2, nodeE[o + 5] / 2);
     strainN[n] = Math.abs(pe[0]) >= Math.abs(pe[2]) ? pe[0] : pe[2];
     const m = inp.materials[nodeMat[n]];
-    const al = allow[nodeMat[n]].value;
+    // a hot plastic is weaker: the allowable falls with the temperature there
+    const al = allow[nodeMat[n]].value * derate(n, nodeMat[n]);
     let sf = s > 1e-9 ? al / s : 1e6;
     let mode = 0;
     if (inp.printed && m.layerFactor < 1) {
@@ -1113,9 +1344,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     out[4] += w * strainN[n];
     // safety blends badly near zero stress; interpolate its inverse (utilisation)
     out[5] += w * (1 / Math.max(sfN[n], 1e-6));
+    if (nodeT) out[6] += w * nodeT[n];
   }
-  const tmp = new Float64Array(6);
-  const ranges = { stress: [Infinity, -Infinity] as [number, number], disp: [0, 0] as [number, number], strain: [Infinity, -Infinity] as [number, number], safety: [Infinity, -Infinity] as [number, number] };
+  const tmp = new Float64Array(7);
+  const ranges: StructuralResult["ranges"] = { stress: [Infinity, -Infinity], disp: [0, 0], strain: [Infinity, -Infinity], safety: [Infinity, -Infinity], ...(nodeT ? { temp: [Infinity, -Infinity] as [number, number] } : {}) };
   const parts: PartField[] = inp.parts.map((p) => {
     const P = p.mesh.positions;
     const nv = P.length / 3;
@@ -1123,8 +1355,14 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const stress = new Float32Array(nv);
     const strain = new Float32Array(nv);
     const safety = new Float32Array(nv);
+    const temp = nodeT ? new Float32Array(nv) : undefined;
     for (let v = 0; v < nv; v++) {
       sample(P[3 * v], P[3 * v + 1], P[3 * v + 2], tmp);
+      if (temp && ranges.temp) {
+        temp[v] = tmp[6];
+        ranges.temp[0] = Math.min(ranges.temp[0], tmp[6]);
+        ranges.temp[1] = Math.max(ranges.temp[1], tmp[6]);
+      }
       disp[3 * v] = tmp[0];
       disp[3 * v + 1] = tmp[1];
       disp[3 * v + 2] = tmp[2];
@@ -1140,7 +1378,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       ranges.safety[0] = Math.min(ranges.safety[0], safety[v]);
       ranges.safety[1] = Math.max(ranges.safety[1], safety[v]);
     }
-    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety };
+    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety, ...(temp ? { temp } : {}) };
   });
   // mode shapes on the CAD surface, each scaled so its largest movement is 1
   if (shapes.length) {
@@ -1204,7 +1442,11 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (dMax > 0.05 * Math.min(...ext.filter((e) => e > 0)) || dMax > 0.02 * diag)
     warnings.push("The part deflects a lot compared with its size: a linear analysis is no longer accurate, and the real part may buckle or bend further.");
   const yieldNode = iS >= 0 ? inp.materials[nodeMat[iS]] : null;
-  if (yieldNode && vm[iS] > yieldNode.yield) warnings.push(`Peak stress (${fmt(vm[iS], 1)} MPa) is above the yield strength of ${yieldNode.name} (${yieldNode.yield} MPa): the part would bend permanently or break, and stresses beyond yield are not physical.`);
+  const yieldThere = yieldNode ? yieldNode.yield * derate(iS, nodeMat[iS]) : 0;
+  if (yieldNode && vm[iS] > yieldThere)
+    warnings.push(
+      `Peak stress (${fmt(vm[iS], 1)} MPa) is above the yield strength of ${yieldNode.name} (${fmt(yieldThere, 1)} MPa${nodeT ? ` at ${fmt(nodeT[iS], 0)} °C` : ""}): the part would bend permanently or break, and stresses beyond yield are not physical.`,
+    );
   for (const m of inp.materials) if (m.assumed && matCount[inp.materials.indexOf(m)] > 0) warnings.push(m.note ?? `No strength data for ${m.name}.`);
   if (Math.hypot(...applied) > 0 && equilibrium > 0.02) warnings.push(`Reactions balance the loads only to ${fmt(equilibrium * 100, 1)}%.`);
 
@@ -1216,8 +1458,9 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       value: n >= 0 ? sfN[n] : Infinity,
       at: pos(n),
       mode: layers ? "layers" : allow[mi].basis,
-      allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1),
+      allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1) * derate(n, mi),
       material: inp.materials[mi].name,
+      ...(nodeT && n >= 0 ? { tempC: nodeT[n] } : {}),
     };
   };
   const safetyNearBC = iF >= 0 && !!nearBC[iF];
@@ -1249,6 +1492,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     materials: inp.materials.map((m, i) => ({ name: m.name, E: m.E, yield: m.yield, allowable: allow[i].value, basis: allow[i].basis, layerFactor: m.layerFactor, assumed: !!m.assumed })),
     modal,
     drop: dropResult,
+    ...(heat ? { thermal: { ...heat.result, refTemp } } : nodeT ? { thermal: uniformThermal(nodeT, refTemp) } : {}),
+    ...(buckling ? { buckling } : {}),
   };
 
   // ----- helpers that need the closure -----
@@ -1312,9 +1557,542 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
     }
   }
+
+  // ----- heat (runHeat is called before the supports are set up, so these use only what is declared above select) -----
+
+  /** The analysed parts' block names, and which name each part instance has. */
+  function partNames(): { names: string[]; nameOf: Int32Array } {
+    const names = [...partsByName.keys()];
+    const nameOf = new Int32Array(inp.parts.length);
+    names.forEach((nm, k) => partsByName.get(nm)!.forEach((pi) => (nameOf[pi] = k)));
+    return { names, nameOf };
+  }
+
+  /** The kept node nearest a point. */
+  function nearestKept(p: V3): number {
+    let bestN = 0,
+      bestD = Infinity;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++) {
+        const n = n0 + off[a];
+        const i = n % NX,
+          j = Math.floor(n / NX) % NY,
+          k = Math.floor(n / (NX * NY));
+        const d = (origin[0] + i * hx - p[0]) ** 2 + (origin[1] + j * hy - p[1]) ** 2 + (origin[2] + k * hz - p[2]) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          bestN = n;
+        }
+      }
+    }
+    return bestN;
+  }
+
+  /**
+   * Each block name's nodes (the corners of the elements its instances own), and per node the name it was last
+   * listed under. A part too small to own an element gets the kept node nearest its middle.
+   */
+  function nodesByName(names: string[], nameOf: Int32Array): { lists: Int32Array[]; nodeName: Int32Array } {
+    const cellsOf: number[][] = names.map(() => []);
+    for (let e = 0; e < ne; e++) if (active[e]) cellsOf[nameOf[owner[e]]].push(e);
+    const nodeName = new Int32Array(nn).fill(-1);
+    // name by name, so a node two names share is listed under both
+    const lists = cellsOf.map((cells, k) => {
+      const list: number[] = [];
+      for (const e of cells) {
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) {
+          const n = n0 + off[a];
+          if (nodeName[n] === k) continue;
+          nodeName[n] = k;
+          list.push(n);
+        }
+      }
+      if (!list.length) {
+        const [l, u] = meshBounds([inp.parts[partsByName.get(names[k])![0]].mesh]);
+        const n = nearestKept([(l[0] + u[0]) / 2, (l[1] + u[1]) / 2, (l[2] + u[2]) / 2]);
+        list.push(n);
+        if (nodeName[n] < 0) nodeName[n] = k;
+      }
+      return Int32Array.from(list);
+    });
+    return { lists, nodeName };
+  }
+
+  /** The temperature limit of a part: the analysis's max_temp:, or its material's long-use limit. */
+  function limitOf(tm: ThermalMaterial, maxTemp: number | undefined): { limit: number; why: string } {
+    if (maxTemp !== undefined) return { limit: maxTemp, why: "the analysis's max_temp:" };
+    if (tm.name === COMPONENT_THERMAL.name) return { limit: tm.maxC, why: "a typical rating for electronics" };
+    return { limit: tm.maxC, why: tm.softens ? `${tm.name} softens past it` : `${tm.name}'s long-use limit` };
+  }
+
+  /** Per part, the hottest point, the mean and the limit; overall the hottest and coolest points and the hottest surface spots. */
+  function tempStats(T: Float64Array, valid: Uint8Array, nb: { lists: Int32Array[]; nodeName: Int32Array }, names: string[], ambient: number, maxTemp: number | undefined): Pick<ThermalResult, "maxTemp" | "minTemp" | "parts" | "hotSpots"> {
+    const tms = inp.thermalMaterials!;
+    const parts = names.map((nm, k) => {
+      const list = nb.lists[k];
+      let mx = -Infinity,
+        at = list[0] ?? 0,
+        sum = 0;
+      for (let x = 0; x < list.length; x++) {
+        const v = T[list[x]];
+        sum += v;
+        if (v > mx) {
+          mx = v;
+          at = list[x];
+        }
+      }
+      const tm = tms[inp.parts[partsByName.get(nm)![0]].material];
+      const lim = limitOf(tm, maxTemp);
+      return { name: nm, max: mx, mean: sum / Math.max(1, list.length), at: nodePos(at), limit: lim.limit, limitWhy: lim.why, material: tm.name, assumed: !!tm.assumed };
+    });
+    let hot = 0;
+    parts.forEach((p, k) => {
+      if (p.max > parts[hot].max) hot = k;
+    });
+    let lowN = -1;
+    for (let n = 0; n < nn; n++) if (valid[n] && (lowN < 0 || T[n] < T[lowN])) lowN = n;
+    const maxT = parts.length ? parts[hot].max : ambient;
+    // the hottest surface spots, spread apart
+    const surf = new Uint8Array(nn);
+    for (let q = 0; q < faces.fe.length; q++) {
+      const n0 = elemNode0(faces.fe[q]);
+      for (const a of FACE_CORNERS[faces.fd[q]]) surf[n0 + off[a]] = 1;
+    }
+    const cand: number[] = [];
+    for (let n = 0; n < nn; n++) if (surf[n] && valid[n]) cand.push(n);
+    cand.sort((a, b) => T[b] - T[a]);
+    const spots: number[] = [];
+    for (const n of cand) {
+      if (spots.length >= 3 || T[n] - ambient < 0.5 * (maxT - ambient) || maxT - ambient < 0.5) break;
+      const p = nodePos(n);
+      if (spots.every((m) => dist(nodePos(m), p) > Math.max(6 * hmax, 0.12 * diag))) spots.push(n);
+    }
+    return {
+      maxTemp: { value: maxT, at: parts.length ? parts[hot].at : [0, 0, 0], part: parts.length ? parts[hot].name : "" },
+      minTemp: { value: lowN >= 0 ? T[lowN] : ambient, at: lowN >= 0 ? nodePos(lowN) : [0, 0, 0] },
+      parts,
+      hotSpots: spots.map((n) => ({ at: nodePos(n), temp: T[n], part: names[nb.nodeName[n]] ?? "" })),
+    };
+  }
+
+  /** A field on the grid nodes at a point (trilinear over the valid corners, else the nearest valid node). */
+  function sampleScalar(field: Float64Array, valid: Uint8Array, x: number, y: number, z: number, fallback: number): number {
+    const fx = (x - origin[0]) / hx,
+      fy = (y - origin[1]) / hy,
+      fz = (z - origin[2]) / hz;
+    const i = clampI(Math.floor(fx), 0, nx - 1),
+      j = clampI(Math.floor(fy), 0, ny - 1),
+      k = clampI(Math.floor(fz), 0, nz - 1);
+    const tx = clamp01(fx - i),
+      ty = clamp01(fy - j),
+      tz = clamp01(fz - k);
+    const n0 = i + NX * (j + NY * k);
+    let s = 0,
+      wsum = 0;
+    for (let a = 0; a < 8; a++) {
+      const n = n0 + off[a];
+      if (!valid[n]) continue;
+      const w = (a & 1 ? tx : 1 - tx) * (a & 2 ? ty : 1 - ty) * (a & 4 ? tz : 1 - tz) + 1e-9;
+      s += w * field[n];
+      wsum += w;
+    }
+    if (wsum > 1e-6) return s / wsum;
+    let bestN = -1,
+      bestD = Infinity;
+    for (let c = Math.max(0, k - 2); c <= Math.min(NZ - 1, k + 3); c++)
+      for (let b = Math.max(0, j - 2); b <= Math.min(NY - 1, j + 3); b++)
+        for (let a = Math.max(0, i - 2); a <= Math.min(NX - 1, i + 3); a++) {
+          const n = a + NX * (b + NY * c);
+          if (!valid[n]) continue;
+          const d = (a - fx) ** 2 + (b - fy) ** 2 + (c - fz) ** 2;
+          if (d < bestD) {
+            bestD = d;
+            bestN = n;
+          }
+        }
+    return bestN >= 0 ? field[bestN] : fallback;
+  }
+
+  /** Heat conduction through the active elements: films and radiation on the exposed faces, heat made, held temperatures. */
+  function runHeat(): { T: Float64Array; on: Uint8Array; result: ThermalResult; ms: number } {
+    const th = inp.thermal!;
+    const tms = inp.thermalMaterials!;
+    const tStart = now();
+    progress("Heat: setting up", 0.22);
+    const cellArr: number[] = [];
+    for (let e = 0; e < ne; e++) if (active[e]) cellArr.push(e);
+    const cells = Int32Array.from(cellArr);
+    const V = hx * hy * hz;
+    const kc = new Float64Array(cells.length);
+    const cap = new Float64Array(cells.length);
+    cells.forEach((e, c) => {
+      const tm = tms[inp.parts[owner[e]].material];
+      // W/(m·K) → W/(mm·K); g/cm³ → g/mm³, times J/(g·K) and mm³: J/K
+      kc[c] = (tm.k / 1000) * fill[e];
+      cap[c] = (tm.density / 1000) * tm.cp * V * fill[e];
+    });
+
+    // cooling: a quarter of each exposed cell face goes to each of its corners, its area corrected for the voxel staircase
+    const quarter = [(hy * hz) / 4, (hy * hz) / 4, (hx * hz) / 4, (hx * hz) / 4, (hx * hy) / 4, (hx * hy) / 4];
+    const rawArea = new Float64Array(nn);
+    const area = new Float64Array(nn);
+    for (let q = 0; q < faces.fe.length; q++) {
+      const e = faces.fe[q],
+        d = faces.fd[q];
+      const n0 = elemNode0(e);
+      for (const c of FACE_CORNERS[d]) {
+        rawArea[n0 + off[c]] += quarter[d];
+        area[n0 + off[c]] += quarter[d] * areaScale[owner[e]];
+      }
+    }
+    const hA = new Float64Array(nn);
+    const hAT = new Float64Array(nn);
+    // films replace the overall cooling where they reach; a later film only takes what earlier ones left
+    const covered = new Float64Array(nn);
+    th.films.forEach((fl, i) => {
+      const sel = select(fl.region);
+      if (!sel.nodes.length) throw new FeaError(`Cooling ${i + 1} (film on ${describeRegion(fl.region)}) does not touch the parts' surface. Move the zone onto the part.`);
+      const hm = fl.h / 1e6;
+      const ta = fl.ambient ?? th.ambient;
+      sel.nodes.forEach((n, s) => {
+        const a = Math.min(area[n] - covered[n], rawArea[n] > 0 ? (sel.w[s] * area[n]) / rawArea[n] : 0);
+        if (!(a > 0)) return;
+        covered[n] += a;
+        hA[n] += hm * a;
+        hAT[n] += hm * a * ta;
+      });
+    });
+    const hDef = th.cooling / 1e6;
+    const eps = th.emissivity !== undefined && th.emissivity > 0 ? Math.min(1, th.emissivity) : 0;
+    const epsA = eps ? new Float64Array(nn) : undefined;
+    for (let n = 0; n < nn; n++) {
+      if (!(area[n] > 0)) continue;
+      const rest = area[n] - covered[n];
+      if (hDef > 0 && rest > 0) {
+        hA[n] += hDef * rest;
+        hAT[n] += hDef * rest * th.ambient;
+      }
+      if (epsA) epsA[n] = eps * area[n];
+    }
+
+    // heat made: through a part's volume, or over a region of its surface
+    const q = new Float64Array(nn);
+    const sources: ThermalResult["sources"] = [];
+    const ownCells: number[][] = inp.parts.map(() => []);
+    for (const e of cells) ownCells[owner[e]].push(e);
+    const tooSmall = new Set<string>();
+    const spread = (pi: number, watts: number) => {
+      const list = ownCells[pi];
+      let vol = 0;
+      for (const e of list) vol += fill[e];
+      if (!(vol > 0)) {
+        const [l, u] = meshBounds([inp.parts[pi].mesh]);
+        q[nearestKept([(l[0] + u[0]) / 2, (l[1] + u[1]) / 2, (l[2] + u[2]) / 2])] += watts;
+        tooSmall.add(inp.parts[pi].name);
+        return;
+      }
+      for (const e of list) {
+        const w = (watts * fill[e]) / vol / 8;
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) q[n0 + off[a]] += w;
+      }
+    };
+    th.heat.forEach((hl, i) => {
+      if (!(Number.isFinite(hl.watts) && hl.watts >= 0)) throw new FeaError(`Heat ${i + 1} (${hl.label}): the power should be a number of watts, 0 or more.`);
+      const why = hl.why ? { why: hl.why } : {};
+      if (hl.id !== undefined || hl.part !== undefined) {
+        const idx = hl.id !== undefined ? inp.parts.flatMap((p, pi) => (p.id === hl.id ? [pi] : [])) : (partsByName.get(hl.part!) ?? []);
+        if (!idx.length) throw new FeaError(`Heat ${i + 1} (${hl.label}): "${hl.part ?? hl.id}" is not one of the analysed parts (${[...partsByName.keys()].join(", ")}). Add it to parts:.`);
+        for (const pi of idx) spread(pi, hl.watts);
+        sources.push({ label: hl.label, watts: hl.watts * idx.length, ...why });
+      } else if (hl.region) {
+        const sel = select(hl.region);
+        if (!sel.nodes.length) throw new FeaError(`Heat ${i + 1} (${hl.label} on ${describeRegion(hl.region)}) does not touch the parts' surface. Move the zone onto the part.`);
+        const tot = sel.w.reduce((s, v) => s + v, 0) || 1;
+        sel.nodes.forEach((n, s) => (q[n] += (hl.watts * sel.w[s]) / tot));
+        sources.push({ label: hl.label, watts: hl.watts, ...why });
+      }
+    });
+    if (tooSmall.size) {
+      const list = [...tooSmall];
+      warnings.push(`${list.join(", ")} ${list.length > 1 ? "are" : "is"} smaller than the ${fmt(h)} mm elements, so ${list.length > 1 ? "their" : "its"} heat is put at the nearest solid point. Use a smaller resolution: to see ${list.length > 1 ? "their" : "its"} own temperature.`);
+    }
+
+    // surfaces held at a temperature
+    const fixedT = new Float64Array(nn).fill(NaN);
+    th.fixed.forEach((ft, i) => {
+      const sel = select(ft.region);
+      if (!sel.nodes.length) throw new FeaError(`Held temperature ${i + 1} (${fmt(ft.temp, 0)} °C on ${describeRegion(ft.region)}) does not touch the parts' surface. Move the zone onto the part.`);
+      for (const n of sel.nodes) fixedT[n] = ft.temp;
+    });
+    // a held surface is pressed against what holds it, so the air does not cool it as well
+    for (let n = 0; n < nn; n++)
+      if (Number.isFinite(fixedT[n])) {
+        hA[n] = 0;
+        hAT[n] = 0;
+        if (epsA) epsA[n] = 0;
+      }
+    const g: HeatGrid = { n: [nx, ny, nz], h: hv, cells, kc, cap, hA, hAT, ...(epsA ? { epsA } : {}), ambient: th.ambient, q, fixedT };
+    const on = activeNodes(g);
+
+    // pieces heat cannot cross between (elements touching at an edge or a corner still conduct), and whether
+    // anything takes heat away from each: in a steady state a heated piece with no way out has no answer
+    const trapped: { names: string[]; watts: number }[] = [];
+    {
+      const piece = new Int32Array(ne).fill(-1);
+      const pieces: { path: boolean; watts: number; parts: Set<number> }[] = [];
+      const queue = new Int32Array(cells.length);
+      for (const e0 of cells) {
+        if (piece[e0] >= 0) continue;
+        const id = pieces.length;
+        const pc = { path: false, watts: 0, parts: new Set<number>() };
+        pieces.push(pc);
+        let head = 0,
+          tail = 0;
+        queue[tail++] = e0;
+        piece[e0] = id;
+        while (head < tail) {
+          const e = queue[head++];
+          pc.parts.add(owner[e]);
+          const i = e % nx,
+            j = Math.floor(e / nx) % ny,
+            k = Math.floor(e / (nx * ny));
+          for (let dk = -1; dk <= 1; dk++)
+            for (let dj = -1; dj <= 1; dj++)
+              for (let di = -1; di <= 1; di++) {
+                const a = i + di,
+                  b = j + dj,
+                  c = k + dk;
+                if (a < 0 || b < 0 || c < 0 || a >= nx || b >= ny || c >= nz) continue;
+                const e2 = eIndex(a, b, c);
+                if (active[e2] && piece[e2] < 0) {
+                  piece[e2] = id;
+                  queue[tail++] = e2;
+                }
+              }
+        }
+      }
+      const nodePiece = new Int32Array(nn).fill(-1);
+      for (const e of cells) {
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) nodePiece[n0 + off[a]] = piece[e];
+      }
+      for (let n = 0; n < nn; n++) {
+        const id = nodePiece[n];
+        if (id < 0) continue;
+        pieces[id].watts += q[n];
+        if (hA[n] > 0 || (epsA && epsA[n] > 0) || Number.isFinite(fixedT[n])) pieces[id].path = true;
+      }
+      for (const pc of pieces) if (!pc.path && pc.watts > 1e-9) trapped.push({ names: [...new Set([...pc.parts].map((pi) => inp.parts[pi].name))], watts: pc.watts });
+    }
+    if (trapped.length && !th.time)
+      throw new FeaError(
+        `The ${fmt(trapped[0].watts, 2)} W made in ${trapped[0].names.join(", ")} has nowhere to go: no cooling, film or held temperature reaches ${trapped[0].names.length > 1 ? "them" : "it"}, so it would heat up without limit. ` +
+          `Give it cooling: (for example cooling: "still air"), a film(...) or a held temperature, or run a warm-up with time: to see how hot it gets.`,
+      );
+
+    const { names, nameOf } = partNames();
+    const nb = nodesByName(names, nameOf);
+    const limits = names.map((nm) => limitOf(tms[inp.parts[partsByName.get(nm)![0]].material], th.maxTemp).limit);
+    let T: Float64Array;
+    let iterations = 0,
+      residual = 0,
+      converged = true;
+    let transient: ThermalResult["transient"];
+    let balance: ThermalResult["balance"] = null;
+    if (th.time !== undefined && th.time > 0) {
+      const time = th.time;
+      const start = th.start ?? th.ambient;
+      const times: number[] = [];
+      const maxs: number[] = [];
+      const per: number[][] = names.map(() => []);
+      progress("Heat: warming up", 0.25);
+      const s = solveTransient(g, time, start, (t, Tn) => {
+        times.push(t);
+        let m = -Infinity;
+        for (let n = 0; n < nn; n++) if (on[n] && Tn[n] > m) m = Tn[n];
+        maxs.push(m);
+        nb.lists.forEach((list, k) => {
+          let pm = -Infinity;
+          for (let x = 0; x < list.length; x++) if (Tn[list[x]] > pm) pm = Tn[list[x]];
+          per[k].push(pm);
+        });
+        progress("Heat: warming up", 0.25 + 0.6 * Math.min(1, t / time));
+      });
+      T = s.T;
+      iterations = s.iterations;
+      residual = s.residual;
+      converged = s.converged;
+      let settles: number | null = null;
+      if (!trapped.length) {
+        progress("Heat: where it settles", 0.87);
+        const ss = solveSteady(g, { start: T });
+        let m = -Infinity;
+        for (let n = 0; n < nn; n++) if (on[n] && ss.T[n] > m) m = ss.T[n];
+        settles = m;
+        iterations += ss.iterations;
+      }
+      let overLimit: { part: string; time: number } | null = null;
+      for (let k = 0; k < names.length; k++) {
+        const series = per[k];
+        const L = limits[k];
+        const i = series.findIndex((v) => v > L);
+        if (i < 0) continue;
+        const t = i === 0 ? 0 : times[i - 1] + ((L - series[i - 1]) / Math.max(series[i] - series[i - 1], 1e-12)) * (times[i] - times[i - 1]);
+        if (!overLimit || t < overLimit.time) overLimit = { part: names[k], time: t };
+      }
+      transient = { time, start, times, max: maxs, parts: names.map((nm, k) => ({ name: nm, max: per[k] })), settles, overLimit };
+    } else {
+      progress("Heat: solving", 0.3);
+      const s = solveSteady(g);
+      T = s.T;
+      iterations = s.iterations;
+      residual = s.residual;
+      converged = s.converged;
+      balance = heatBalance(g, T);
+    }
+    if (!converged) warnings.push(`The heat solver stopped at a relative residual of ${residual.toExponential(1)}; temperatures may be off by a few percent.`);
+    const notes = new Set<string>();
+    for (const p of inp.parts) {
+      const tm = tms[p.material];
+      if (tm.note) notes.add(tm.note);
+    }
+    for (const n of notes) warnings.push(n);
+    progress("Heat: done", 0.95);
+    const result: ThermalResult = {
+      ambient: th.ambient,
+      ...(th.ambientWhy ? { ambientWhy: th.ambientWhy } : {}),
+      cooling: th.coolingText,
+      ...tempStats(T, on, nb, names, th.ambient, th.maxTemp),
+      sources,
+      balance,
+      ...(transient ? { transient } : {}),
+      solve: { iterations, residual, converged, ms: now() - tStart },
+    };
+    return { T, on, result, ms: now() - tStart };
+  }
+
+  /** A heat analysis with nothing holding the parts: temperatures only, with empty stress fields. */
+  function heatOnlyResult(r: { T: Float64Array; on: Uint8Array; result: ThermalResult; ms: number }): StructuralResult {
+    const tPost = now();
+    const temp: [number, number] = [Infinity, -Infinity];
+    const parts: PartField[] = inp.parts.map((p) => {
+      const P = p.mesh.positions;
+      const nv = P.length / 3;
+      const t = new Float32Array(nv);
+      for (let v = 0; v < nv; v++) {
+        const x = sampleScalar(r.T, r.on, P[3 * v], P[3 * v + 1], P[3 * v + 2], r.result.ambient);
+        t[v] = x;
+        if (x < temp[0]) temp[0] = x;
+        if (x > temp[1]) temp[1] = x;
+      }
+      return {
+        id: p.id,
+        name: p.name,
+        positions: Float32Array.from(P),
+        normals: p.normals ?? null,
+        indices: p.mesh.indices,
+        disp: new Float32Array(3 * nv),
+        stress: new Float32Array(nv),
+        strain: new Float32Array(nv),
+        safety: new Float32Array(nv).fill(1e6),
+        temp: t,
+      };
+    });
+    temp[0] = Math.min(temp[0], r.result.minTemp.value);
+    temp[1] = Math.max(temp[1], r.result.maxTemp.value);
+    let mass = 0,
+      solid = 0,
+      partial = 0,
+      nodes = 0;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const v = fill[e] * hx * hy * hz;
+      solid += v;
+      mass += (v / 1000) * inp.materials[inp.parts[owner[e]].material].density;
+      if (fill[e] < 0.9) partial++;
+    }
+    for (let n = 0; n < nn; n++) if (r.on[n]) nodes++;
+    const tEnd = now();
+    progress("Done", 1);
+    return {
+      label: inp.label,
+      mesh: { h, cell: hv, grid: [nx, ny, nz], elements: nActive, nodes, dofs: nodes, levels: 1, partial: partial / Math.max(1, nActive) },
+      solve: { iterations: r.result.solve.iterations, residual: r.result.solve.residual, converged: r.result.solve.converged, history: [], ms: { mesh: tMesh - t0, setup: 0, solve: r.ms, post: tEnd - tPost, total: tEnd - t0 } },
+      maxDisp: { value: 0, at: [0, 0, 0] },
+      maxStress: { value: 0, at: [0, 0, 0], nearBoundary: false, away: null },
+      maxStrain: { value: 0, at: [0, 0, 0] },
+      minSafety: { value: 1e6, at: [0, 0, 0], mode: "yield", allowable: 0, material: inp.materials[0]?.name ?? "", nearBoundary: false, away: null },
+      layer: null,
+      hotSpots: [],
+      applied: [0, 0, 0],
+      reaction: [0, 0, 0],
+      equilibrium: 0,
+      mass,
+      volume: solid,
+      loads: [],
+      supports: [],
+      gravity: null,
+      parts,
+      ranges: { stress: [0, 0], disp: [0, 0], strain: [0, 0], safety: [1e6, 1e6], temp },
+      warnings,
+      materials: inp.materials.map((m) => {
+        const a = allowableStress(m, inp.cycles);
+        return { name: m.name, E: m.E, yield: m.yield, allowable: a.value, basis: a.basis, layerFactor: m.layerFactor, assumed: !!m.assumed };
+      }),
+      thermal: r.result,
+      heatOnly: true,
+    };
+  }
+
+  /** The whole model at one set temperature (temperature: 60C): what that means for each part's limit. */
+  function uniformThermal(T: Float64Array, ref: number): ThermalResult {
+    const on = new Uint8Array(nn);
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++) on[n0 + off[a]] = 1;
+    }
+    const { names, nameOf } = partNames();
+    const t = inp.uniformTemp ?? ref;
+    return {
+      ambient: t,
+      ambientWhy: "the temperature: set for the whole model",
+      cooling: "",
+      ...tempStats(T, on, nodesByName(names, nameOf), names, t, undefined),
+      hotSpots: [],
+      sources: [],
+      balance: null,
+      solve: { iterations: 0, residual: 0, converged: true, ms: 0 },
+      refTemp: ref,
+    };
+  }
 }
 
 const clampI = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
+
+/** Surface area of a triangle mesh, mm². */
+function meshArea(m: TriMesh): number {
+  const P = m.positions,
+    I = m.indices;
+  let a = 0;
+  for (let t = 0; t < I.length; t += 3) {
+    const i = 3 * I[t],
+      j = 3 * I[t + 1],
+      k = 3 * I[t + 2];
+    const ux = P[j] - P[i],
+      uy = P[j + 1] - P[i + 1],
+      uz = P[j + 2] - P[i + 2];
+    const vx = P[k] - P[i],
+      vy = P[k + 1] - P[i + 1],
+      vz = P[k + 2] - P[i + 2];
+    a += 0.5 * Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
+  }
+  return a;
+}
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());

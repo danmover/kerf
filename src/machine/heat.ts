@@ -523,6 +523,29 @@ const instanceIndex = (id: string) => {
   return m ? Number(m[1]) - 1 : 0;
 };
 
+/**
+ * Every placed electronic part's heat loss at its working current (W) and how that was worked out, by component
+ * instance: what a heat analysis's heat: "auto" makes inside each one.
+ */
+export function componentLosses(model: Model): HeatSource[] {
+  const m = model.machine;
+  if (!m?.components.length) return [];
+  const comps = new Map(m.components.map((c) => [c.name, c]));
+  const supplies = motorSupplies(m);
+  const current = motorCurrentFor(m, supplies);
+  const cx: Ctx = { model, current, supply: supplyFacts(m, current), ...driverCurrents(model, current) };
+  const out: HeatSource[] = [];
+  for (const p of model.parts) {
+    if (p.kind !== "component" || !p.bom) continue;
+    const mc = comps.get(p.name);
+    const cat = mc && catalogPart(mc.catalogId);
+    if (!mc || !cat || !(ELECTRONICS.has(cat.kind) || OTHER_SOURCES.has(cat.kind))) continue;
+    const l = loss(mc, cat, instanceIndex(p.id), cx);
+    out.push({ id: p.id, comp: mc.name, label: mc.role ? `${mc.name} (${mc.role})` : mc.name, kind: cat.kind, watts: l.w, why: l.why });
+  }
+  return out;
+}
+
 /** Every closed space that holds electronics, with its heat balance. */
 export function heatSpaces(model: Model, facts: HeatFacts): HeatSpace[] {
   const m = model.machine;

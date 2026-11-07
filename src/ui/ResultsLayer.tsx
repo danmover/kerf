@@ -14,6 +14,7 @@ import { followers } from "../analysis/carried";
 import { meshes, useDesign } from "../core/engine";
 import { useSettings } from "../app/settings";
 import { useTheme } from "../app/theme";
+import { degC, duration } from "../analysis/thermalSummary";
 import { fmtNum } from "../lang/values";
 import { Icon } from "./icons";
 import "../styles/analysis.css";
@@ -23,9 +24,22 @@ export const FIELD_INFO: Record<ResultField, { label: string; short: string; uni
   safety: { label: "Factor of safety", short: "Safety", unit: "" },
   disp: { label: "Deflection", short: "Deflection", unit: "mm" },
   strain: { label: "Principal strain", short: "Strain", unit: "%" },
+  temp: { label: "Temperature", short: "Temp", unit: "°C" },
 };
 
 export const FIELDS: ResultField[] = ["stress", "safety", "disp", "strain"];
+
+/** The fields a result can colour the model by: only temperatures for a heat analysis with nothing holding the parts. */
+export function resultFields(r?: StructuralResult): ResultField[] {
+  if (r?.heatOnly) return ["temp"];
+  return r?.ranges.temp ? [...FIELDS, "temp"] : FIELDS;
+}
+
+/** The field to draw: the one picked when the result has it, otherwise the result's first. */
+export function fieldFor(r: StructuralResult | undefined, field: ResultField): ResultField {
+  const fs = resultFields(r);
+  return fs.includes(field) ? field : fs[0];
+}
 
 const sizes = new WeakMap<StructuralResult, number>();
 
@@ -55,21 +69,27 @@ export function autoDeform(r: StructuralResult): number {
   return Math.max(1, (0.06 * resultSize(r)) / d);
 }
 
+/** How many shapes a result can swing on the model: its natural frequencies, or its buckled shapes. */
+export function shapeCount(r: StructuralResult): number {
+  return r.modal?.modes.length ?? r.buckling?.factors.length ?? 0;
+}
+
 /** The mode shape to draw: the one picked, or the first when the analysis only finds frequencies (nothing else moves). */
 export function shownMode(r: StructuralResult, picked: number | null): number | null {
-  const n = r.modal?.modes.length ?? 0;
+  const n = shapeCount(r);
   if (!n) return null;
   if (picked !== null) return picked < n ? picked : null;
   return r.maxDisp.value > 0 ? null : 0;
 }
 
 function ModeLegend({ result, mode, label }: { result: StructuralResult; mode: number; label: string }) {
-  const m = result.modal!.modes[mode];
+  const m = result.modal?.modes[mode];
+  const factor = result.buckling?.factors[mode] ?? 0;
   return (
     <>
       <div className="row" style={{ gap: 8, marginBottom: 6 }}>
-        <span className="res-legend-title">Mode {mode + 1}</span>
-        <span className="dim mono">{fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz</span>
+        <span className="res-legend-title">{m ? `Mode ${mode + 1}` : `Buckled shape ${mode + 1}`}</span>
+        <span className="dim mono">{m ? `${fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz` : `at ${fmtNum(factor, 2)}× the loads`}</span>
         <div className="grow" />
         <button className="icon-btn sm" onClick={() => showResults(null)} aria-label="Hide results" data-tip="Hide results">
           <Icon.X size={13} />
@@ -81,7 +101,7 @@ function ModeLegend({ result, mode, label }: { result: StructuralResult; mode: n
         <span style={{ left: "100%" }}>moves most</span>
       </div>
       <div className="res-meta mono">
-        {label} · {modeWords(m)} · shape exaggerated
+        {label} · {m ? modeWords(m) : "how it would buckle"} · shape exaggerated
       </div>
     </>
   );
@@ -95,17 +115,18 @@ export function deformScale(r: StructuralResult, deform: number, trueScale: bool
 export function ResultsLayer({ scene }: { scene: SceneController }) {
   const shown = useAnalysis((s) => s.shown);
   const run = useAnalysis((s) => (s.shown ? s.runs.get(s.shown) : undefined));
-  const field = useAnalysis((s) => s.field);
   const deform = useAnalysis((s) => s.deform);
   const trueScale = useAnalysis((s) => s.trueScale);
   const animate = useAnalysis((s) => s.animate);
   const pickedMode = useAnalysis((s) => s.mode);
+  const picked = useAnalysis((s) => s.field);
   const model = useDesign((s) => s.model);
   const reduceMotion = useSettings((s) => s.reduceMotion);
   const theme = useTheme();
   const spec = model?.analyses.find((a): a is StructuralSpec => a.label === shown && a.kind === "structural");
   const target = spec?.safety ?? 2;
   const result = run?.result;
+  const field = fieldFor(result, picked);
   const mode = result ? shownMode(result, pickedMode) : null;
   const ov = useRef<ResultsOverlay | null>(null);
   const [probe, setProbe] = useState<{ x: number; y: number; text: string; part: string } | null>(null);
@@ -183,6 +204,7 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
 }
 
 export function formatValue(field: ResultField, v: number): string {
+  if (field === "temp") return degC(v);
   if (field === "safety") return v >= 100 ? "safety > 100" : `safety ${fmtNum(v, 2)}`;
   if (field === "strain") return `${fmtNum(v * 100, 3)} %`;
   if (field === "disp") return `${fmtNum(v, v < 0.1 ? 4 : 3)} mm`;
@@ -194,6 +216,7 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
   const ticks = useMemo(() => {
     if (field === "safety") return [0, 0.25, 0.5, 1].map((t) => ({ t, text: t === 1 ? `≥${fmtNum(safetyAt(1, target), 1)}` : fmtNum(safetyAt(t, target), 2) }));
     const [lo, hi] = fieldRange(result, field);
+    if (field === "temp") return [0, 0.5, 1].map((t) => ({ t, text: fmtNum(lo + (hi - lo) * t, hi - lo < 2 ? 2 : 1) }));
     const mul = field === "strain" ? 100 : 1;
     return [0, 0.5, 1].map((t) => ({ t, text: fmtNum((lo + (hi - lo) * t) * mul, Math.abs(hi * mul) < 1 ? 4 : 2) }));
   }, [result, field, target]);
@@ -225,7 +248,7 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
         </div>
       )}
       <div className="res-meta mono">
-        {label} · {scale <= 0 ? "undeformed" : trueScale ? "true-scale shape" : `shape ×${fmtNum(scale, scale < 10 ? 1 : 0)}`}
+        {label} · {result.heatOnly ? (result.thermal?.transient ? `after ${duration(result.thermal.transient.time)}` : "settled temperatures") : scale <= 0 ? "undeformed" : trueScale ? "true-scale shape" : `shape ×${fmtNum(scale, scale < 10 ? 1 : 0)}`}
       </div>
     </>
   );
