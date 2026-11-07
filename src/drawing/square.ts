@@ -98,6 +98,12 @@ export function drawingFrame(p: EvalPart): { pt: (q: V3) => V3; dir: (d: V3) => 
   return mapper(p.worldXf, p.xf);
 }
 
+/** Maps points and directions of a part's drawing frame back to where the part sits in the world (identity for parts drawn where they sit). */
+export function worldFrame(p: EvalPart): { pt: (q: V3) => V3; dir: (d: V3) => V3 } {
+  if (!p.worldXf) return { pt: (q) => q, dir: (d) => d };
+  return mapper(p.xf, p.worldXf);
+}
+
 function mapper(from: Xform[], to: Xform[]) {
   const pt = (q: V3): V3 => applyXforms(inverseXforms(q, from), to);
   const o = pt([0, 0, 0]);

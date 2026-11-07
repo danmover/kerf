@@ -37,6 +37,7 @@ import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { SimLayer } from "./sim/SimLayer";
 import { WiringLayer } from "./WiringLayer";
 import { FitLayer, playFitting, useFitView } from "./FitLayer";
+import { PmiButton, PmiLayer } from "./PmiLayer";
 import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
 import { BoardDecorator } from "./viewport/boards/decorate";
@@ -287,6 +288,7 @@ export function Viewport() {
           <Icon.Target />
         </button>
         <MeasureButton />
+        <PmiButton />
         {hasWires && (
           <button className={`icon-btn ${wiring ? "active" : ""}`} onClick={() => toggleWiring()} data-tip="Wiring: every cable and plug (W)" aria-label="Wiring" aria-pressed={wiring}>
             <Icon.Plug />
@@ -371,6 +373,7 @@ export function Viewport() {
       {scene && !inSketch && <SimLayer scene={scene} />}
       {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
       {scene && !inSketch && canFit && <FitLayer scene={scene} />}
+      {scene && !inSketch && <PmiLayer scene={scene} />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 

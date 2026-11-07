@@ -19,6 +19,7 @@ import {
   exportReport,
   exportSource,
   exportStep,
+  exportStepWithPmi,
   exportStl,
   exportStlParts,
   exportUsdz,
@@ -65,6 +66,7 @@ export interface ExportFormat {
 
 export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "step", group: "model", label: "STEP assembly", detail: "Exact solids for any CAD tool", ext: ".step", icon: "Cube", selection: true, run: (o) => exportStep(o.selectionOnly) },
+  { id: "step-pmi", group: "model", label: "STEP with PMI (AP242)", detail: "Solids with each part's dimensions, fits, datums and tolerances on their faces, for CAM and inspection", ext: ".step", icon: "Target", selection: true, run: (o) => exportStepWithPmi(o.selectionOnly) },
   { id: "glb", group: "model", label: "glTF with materials", detail: "Blender, the web, game engines", ext: ".glb", icon: "Material", selection: true, run: (o) => exportGlb(o.selectionOnly) },
   { id: "usdz", group: "model", label: "USDZ for AR", detail: "Place it on your desk with an iPhone", ext: ".usdz", icon: "Orbit", selection: true, run: (o) => exportUsdz(o.selectionOnly) },
   { id: "obj", group: "model", label: "OBJ + materials", detail: "Renderers and mesh tools", ext: ".zip", icon: "Box", selection: true, run: (o) => exportObj(o.selectionOnly) },

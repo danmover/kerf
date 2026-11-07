@@ -89,6 +89,8 @@ export interface DimDef {
   finish?: Finish;
   /** a weld symbol on the callout's leader in place of text */
   weld?: WeldMark;
+  /** callout: each diameter it covers when it stacks several (a bore under a seat), with its own fit */
+  sizes?: { d: number; fit?: string; tol?: [number, number] }[];
   meta: Omit<SheetDim, "view" | "box" | "value" | "text">;
 }
 
@@ -793,7 +795,7 @@ function partDims(ctx: DimContext, push: Push, paramFor: ParamFor, warnings: str
       continue;
     }
     const at = c.leader ?? c.centers[rep];
-    push({ view: c.vi, kind: "callout", a: at, b: at, value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: at, r: big.r }, anchors: c.leader ? [at] : c.centers, frames, datum, finish, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined, fit: fit?.code, tol: fit?.tol, general: fit ? undefined : undefined, role: role?.text, finish: finish ? finishText(finish) : undefined } });
+    push({ view: c.vi, kind: "callout", a: at, b: at, value: set[0].value, text: { main: lines[0] }, lines: lines.slice(1), circle: { c: at, r: big.r }, anchors: c.leader ? [at] : c.centers, frames, datum, finish, sizes: set.length > 1 ? set.map((o) => ({ d: o.value, fit: o.fit?.code, tol: o.fit?.tol })) : undefined, meta: { label: set.map((o) => o.label).join(" + "), part: part.id, param: set.length === 1 ? set[0].param : undefined, fit: fit?.code, tol: fit?.tol, general: fit ? undefined : undefined, role: role?.text, finish: finish ? finishText(finish) : undefined } });
   }
   if (table?.rows.length) {
     // tabled holes are located by the table, from its origin

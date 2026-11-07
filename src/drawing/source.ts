@@ -30,6 +30,7 @@ export function specToSource(spec: DrawingSpec, name: string): string {
   if (spec.holeTable) lines.push("  hole_table: true");
   if (spec.dimStyle && spec.dimStyle !== "auto") lines.push(`  dim_style: ${str(spec.dimStyle)}`);
   if (spec.autoBreak === false) lines.push("  breaks: false");
+  if (spec.pmi === false) lines.push("  pmi: false");
   // views with settings of their own are view() calls, the rest a plain list
   const special = (v: DrawingSpec["views"][number]) => !!(v.crop || v.exploded || v.label || v.scale || v.at || v.hidden !== undefined);
   const plain = spec.views.filter((v) => !special(v));

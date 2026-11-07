@@ -223,6 +223,8 @@ export interface DrawingSpec {
   /** stretches taken out of long views; automatic ones are added for long, plain parts unless autoBreak is false */
   breaks: BreakSpec[];
   autoBreak?: boolean;
+  /** false keeps this drawing's annotations off the 3D model and out of STEP AP242 PMI */
+  pmi?: boolean;
   cutaways: CutawaySpec[];
   dims: DimSpec[];
   /** tolerances and fits for automatic dimensions, by the dimension's id */
@@ -482,6 +484,7 @@ export const DRAWING_PROPS = [
   "hole_table",
   "dim_style",
   "breaks",
+  "pmi",
   "views",
 ] as const;
 
