@@ -262,7 +262,11 @@ drawing asm {
     const plan = planDrawing(spec, ctx.model, ctx.bboxOf);
     const ex = plan.views.find((v) => v.exploded)!;
     expect(ex).toBeTruthy();
-    expect(ex.req.items.every((it) => it.xf.some((x) => x.op === "translate"))).toBe(true);
+    // the base stays; the block lifts off it and the lid off the block, further
+    const lift = (id: string) => ex.req.items.find((it) => it.id === id)!.xf.filter((x) => x.op === "translate").reduce((z, x) => z + (x.op === "translate" ? x.v[2] : 0), 0);
+    expect(ex.req.items.find((it) => it.id === "base")!.xf.length).toBe(ctx.model.parts.find((p) => p.id === "base")!.xf.length);
+    expect(lift("lid")).toBeGreaterThan(lift("block"));
+    expect(ex.req.items.find((it) => it.id === "block")!.xf.length).toBeGreaterThan(ctx.model.parts.find((p) => p.id === "block")!.xf.length);
     const { sheet } = draw(ctx, spec, "views-exploded");
     const vi = sheet.views.findIndex((v) => v.label.startsWith("EXPLODED"));
     expect(vi).toBeGreaterThanOrEqual(0);

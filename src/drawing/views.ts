@@ -15,6 +15,7 @@ import { gdtWanted } from "./gdt";
 import { processFamily } from "./intent";
 import { squareUp } from "./square";
 import { copiesOf, sharedName, type MeshOf } from "./copies";
+import { planExplode, spreadOffsets } from "../core/explode";
 
 const N = 1 / Math.sqrt(3);
 
@@ -179,7 +180,7 @@ export function planDrawing(spec: DrawingSpec, model: Model, bboxOf: BBoxOf): Dr
     const hidden = vs.hidden ?? (vs.kind === "iso" || vs.exploded ? false : hiddenDefault);
     const gear = parts.length === 1 && parts[0].gear ? vnorm(parts[0].gear.axis) : null;
     const synthetic = gear && vs.kind !== "iso" && Math.abs(vdot(frame.dir, gear)) < 1e-6 ? ("gear" as const) : undefined;
-    const ex = vs.exploded && parts.length > 1 ? explode(parts, bboxOf, vs.exploded) : null;
+    const ex = vs.exploded && parts.length > 1 ? explode(model, parts, bboxOf, vs.exploded) : null;
     add({ kind: vs.kind, name: vs.kind, frame, req: { dir: frame.dir, x: frame.x, items: ex?.items ?? items, hidden }, scale: vs.scale, at: vs.at, label: vs.label, synthetic, crop: vs.crop, exploded: ex ? { f: vs.exploded!, box: ex.box } : undefined });
   }
   for (const s of spec.sections) {
@@ -333,31 +334,33 @@ function auxCrop(p: EvalPart, normal: V3, feats: Feature[], box?: [V3, V3]): [V3
   return undefined;
 }
 
-/** Item placements for an exploded view: the parts spread out from the middle of the assembly, each moved by its distance from the middle and a little more, so stacked parts come apart. */
-function explode(parts: EvalPart[], bboxOf: BBoxOf, f: number): { items: ProjItem[]; box: [V3, V3] } {
-  const boxes = parts.map((p) => {
+/**
+ * Item placements for an exploded view: each part moved the way it comes off (core/explode.ts), screws out along
+ * their axes and parts off the stacks and fits they sit in, scaled by the view's spread.
+ */
+function explode(model: Model, parts: EvalPart[], bboxOf: BBoxOf, f: number): { items: ProjItem[]; box: [V3, V3] } {
+  const boxOf = (p: EvalPart) => {
     const local = bboxOf(p);
     return local ? worldBox(p, local) : null;
-  });
-  const lo: V3 = [Infinity, Infinity, Infinity];
-  const hi: V3 = [-Infinity, -Infinity, -Infinity];
-  for (const b of boxes) if (b) for (let k = 0; k < 3; k++) (lo[k] = Math.min(lo[k], b[0][k])), (hi[k] = Math.max(hi[k], b[1][k]));
-  const bc: V3 = [0, 1, 2].map((k) => (Number.isFinite(lo[k]) ? (lo[k] + hi[k]) / 2 : 0)) as V3;
-  const size = Number.isFinite(lo[0]) ? Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) : 1;
+  };
+  const offsets = spreadOffsets(planExplode(model, { parts, boxOf }), f);
   const out: ProjItem[] = [];
   const blo: V3 = [Infinity, Infinity, Infinity];
   const bhi: V3 = [-Infinity, -Infinity, -Infinity];
-  parts.forEach((p, i) => {
-    const b = boxes[i];
-    const c: V3 = b ? [0, 1, 2].map((k) => (b[0][k] + b[1][k]) / 2) as V3 : bc;
-    let d: V3 = [c[0] - bc[0], c[1] - bc[1], c[2] - bc[2]];
-    const dist = Math.hypot(...d);
-    d = dist < 1e-6 ? [0, 0, 1] : [d[0] / dist, d[1] / dist, d[2] / dist];
-    const m = f * (1.5 * dist + 0.15 * size);
-    const v: V3 = [d[0] * m, d[1] * m, d[2] * m];
-    out.push({ id: p.id, hash: p.hash, xf: [...p.xf, { op: "translate", v }], cut: !isUncut(p) });
-    if (b) for (let k = 0; k < 3; k++) (blo[k] = Math.min(blo[k], b[0][k] + v[k])), (bhi[k] = Math.max(bhi[k], b[1][k] + v[k]));
-  });
+  const lo: V3 = [Infinity, Infinity, Infinity];
+  const hi: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const p of parts) {
+    const b = boxOf(p);
+    const v = offsets.get(p.id) ?? [0, 0, 0];
+    out.push({ id: p.id, hash: p.hash, xf: v.some((x) => x) ? [...p.xf, { op: "translate", v }] : p.xf, cut: !isUncut(p) });
+    if (b)
+      for (let k = 0; k < 3; k++) {
+        blo[k] = Math.min(blo[k], b[0][k] + v[k]);
+        bhi[k] = Math.max(bhi[k], b[1][k] + v[k]);
+        lo[k] = Math.min(lo[k], b[0][k]);
+        hi[k] = Math.max(hi[k], b[1][k]);
+      }
+  }
   return { items: out, box: Number.isFinite(blo[0]) ? [blo, bhi] : [lo, hi] };
 }
 

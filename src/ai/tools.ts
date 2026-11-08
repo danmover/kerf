@@ -3,7 +3,9 @@
 // validated before it touches the design.
 
 import { z } from "zod";
-import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly, meshes } from "../core/engine";
+import { useDesign, whenChecked, whenRefined, solveWith, evaluateOnly, meshes, meshOf } from "../core/engine";
+import { planExplode } from "../core/explode";
+import { findHolds } from "../core/holds";
 import { whenWiringChecked } from "../machine/harness/runtime";
 import { whenSwept } from "../core/sweepRuntime";
 import { applyTextEdits, diffStats } from "../core/sourceEdit";
@@ -212,6 +214,7 @@ export const TOOL_DEFS = [
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
         airflow: { type: "string", enum: ["pressure", "friction", "streamlines", "wake", "eddies"], description: "Draw an airflow analysis's result: surface pressure (red: pushed on, blue: suction), skin friction, streamlines coloured by speed, the wake (where the air lost its total pressure) or the eddies. Run run_analysis first." },
         yaw: { type: "number", description: "With airflow: the yaw angle to draw (default the first)." },
+        exploded: { description: "Show the design exploded: true for all the way, or 0 to 1 to step part way through taking it apart (screws out first). The result says which way each part came off, so you can check the assembly order and fix a part sent the wrong way with explode: on it.", anyOf: [{ type: "boolean" }, { type: "number", minimum: 0, maximum: 1 }] },
       },
       required: ["view"],
       additionalProperties: false,
@@ -447,6 +450,7 @@ const ViewInput = z.object({
   analysis: z.string().max(200).optional(),
   airflow: z.enum(["pressure", "friction", "streamlines", "wake", "eddies"]).optional(),
   yaw: z.number().finite().optional(),
+  exploded: z.union([z.boolean(), z.number().min(0).max(1)]).optional(),
 });
 /** how long run_analysis waits for airflow runs before reporting them as still running */
 const AIRFLOW_WAIT_MS = 8 * 60_000;
@@ -1311,14 +1315,16 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         resultNote = `, showing ${what} from "${pick.label}" at ${fmtNum(r.yaws[yi].yaw, 1)}° yaw (the wind comes from the right at positive yaw)`;
       }
       const ids = expandNames(p.data.highlight ?? []);
-      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results || !!p.data.airflow });
+      const explode = p.data.exploded === true ? 1 : typeof p.data.exploded === "number" && p.data.exploded > 0 ? p.data.exploded : undefined;
+      if (explode) resultNote += explodeNote(explode);
+      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results || !!p.data.airflow, explode });
       const data = url.split(",")[1] ?? "";
       return {
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
           { type: "text", text: `Rendered ${p.data.view} view${p.data.section ? `, sectioned across ${p.data.section}` : ""}${ids.length ? `, highlighting ${p.data.highlight!.join(", ")}` : ""}${resultNote}. Z is up; X is red, Y is green in the axis triad.` },
         ],
-        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : p.data.airflow ? `Looked at the airflow (${p.data.airflow})` : `Looked at the ${p.data.view} view`, image: url },
+        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : p.data.airflow ? `Looked at the airflow (${p.data.airflow})` : explode ? `Looked at the exploded ${p.data.view} view` : `Looked at the ${p.data.view} view`, image: url },
       };
     }
     case "view_drawing": {
@@ -1685,4 +1691,25 @@ export function engineeringCalc(name: string, args: Record<string, number | stri
     content: text.join("\n"),
     card: { title: t.title, detail: t.outputs.slice(0, 3).map((l) => `${l.label.trim()} ${num4(l.value)}${l.unit ? ` ${l.unit}` : ""}`).join(" · ") },
   };
+}
+
+/** What an exploded capture shows: how many steps, what came off which way, and how to steer it. */
+function explodeNote(f: number): string {
+  const model = useDesign.getState().model;
+  if (!model) return "";
+  const plan = planExplode(model, { holds: findHolds(model, meshOf), mesh: meshOf });
+  const label = new Map(model.parts.map((p) => [p.id, p.label]));
+  const dir = (d: number[]) => {
+    const k = d.findIndex((x) => Math.abs(x) > 0.999);
+    return k >= 0 ? `${d[k] > 0 ? "+" : "-"}${"XYZ"[k]}` : `(${d.map((x) => fmtNum(x, 2)).join(", ")})`;
+  };
+  const moving = [...plan.moves.values()].filter((m) => m.dist > 0);
+  const hw = moving.filter((m) => m.via === "screw" || m.via === "nut" || m.via === "washer" || m.via === "set").length;
+  const parts = moving.filter((m) => m.via !== "screw" && m.via !== "nut" && m.via !== "washer" && m.via !== "set");
+  const bases = [...plan.moves.values()].filter((m) => m.via === "base").map((m) => label.get(m.id) ?? m.id);
+  const list = parts
+    .slice(0, 14)
+    .map((m) => `${label.get(m.id) ?? m.id} ${dir(m.dir)} off ${label.get(m.from ?? "") ?? m.from}${m.via === "contact" ? " (only touching)" : m.via === "fit" ? " (fit)" : ""}`)
+    .join("; ");
+  return `, exploded ${f >= 1 ? "all the way" : `${fmtNum(f * 100, 0)}% of the way`} in ${plan.stages} step${plan.stages === 1 ? "" : "s"}: ${bases.join(", ") || "nothing"} stays; ${hw} screws, nuts and washers back out along their axes${parts.length ? `; ${list}${parts.length > 14 ? `; and ${parts.length - 14} more` : ""}` : ""}. explode: (x, y, z) on a part sends it another way, explode: false keeps it on what it sits on`;
 }

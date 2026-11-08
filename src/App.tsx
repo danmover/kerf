@@ -192,7 +192,7 @@ function useShortcuts() {
         case "s":
           return useView.setState({ section: { ...v.section, on: !v.section.on } });
         case "e":
-          return useView.setState({ explode: v.explode > 0 ? 0 : 0.5 });
+          return useView.setState({ explode: v.explode > 0 ? 0 : 1 });
         case "x":
           return useView.setState({ xray: !v.xray });
         case "w":
