@@ -44,7 +44,7 @@ brief {
   reference propel "Giant Propel seatpost" { url: "https://www.giant-bicycles.com/", notes: "Giant publishes no section drawing of the aero seatpost: about 20 mm wide and 36 mm deep with a flat back, until it is measured" }
   reference lights "How rear lights hold on with one band" { notes: "dan's photo of a rear light: one rubber loop wraps the post with a strand high and a strand low, and each end hooks onto a double hook on the light's side, the upper hook turned up and the lower one down, so the band cannot rock the light about it. Garmin Varia's mount adds a rubber shim shaped to the post (round or aero), keyed into the bracket; riders on D-shaped posts report it turning unless the shim fits the post" }
   reference rings_rs "RS PRO EPDM O-rings, 3.5 mm cord" { url: "https://au.rs-online.com/web/p/gaskets-o-rings/2587581", notes: "44 × 3.5 mm (stock no. 258-7581), sold in bags of 20; 41 × 3.5 is 258-7572 and 37.5 × 3.5 is 258-7543. EPDM is the rubber that lasts outdoors" }
-  reference rings_autopro "Champion metric O-rings at Autopro, 3.5 mm cord" { url: "https://autopro.com.au/ap/Autopro-Category/Brands/Champion-Packs/Champion-46mm-x-3-5mm-Metric-O-Rings-Sold-Individually---C408-31/p/SP40358", notes: "Nitrile, sold one at a time in store: 36 (C408-27), 38 (C408-28), 41 (C408-29), 44 (C408-30) and 46 mm (C408-31). Nitrile cracks in sunlight, so swap it each season" }
+  reference rings_autopro "Champion metric O-rings at Autopro, 3.5 mm cord" { url: "https://autopro.com.au/ap/Autopro-Category/Brands/Champion-Packs/Champion-44mm-x-3-5mm-Metric-O-Rings-Sold-Individually---C408-30/p/SP40374", notes: "Nitrile, sold one at a time, click and collect: 44 mm (C408-30) $12.99, 41 mm (C408-29) and 36 mm (C408-27) $1.49 each. Nitrile cracks in sunlight, so swap it each season" }
 
   assume "The number is polypropylene, about 30 MPa yield"
   assume "Painted carbon post: EPDM grips it with μ 0.8 dry, 0.5 wet; the TPU pad about 0.5 wet; bare ASA only about 0.3"
@@ -519,9 +519,9 @@ decision oring_rubber "Which O-ring" {
   ask: "Find an O-ring or similar band that will work"
   chose: "Metric 3.5 mm EPDM O-ring"
   by: "claude"
-  why: "No joined double band like yours is sold on its own in Australia (Garmin's Varia bands are sold out), so it is a plain metric O-ring with a 3.5 mm cord, sized to the post, whose two strands do what your band's two loops do. EPDM lasts outdoors; RS Australia sells it in bags of 20. Autopro stores sell single nitrile ones for $1.99, fine to start with but they crack in the sun. A photo of your band, or its loop's length, would let it be designed round that instead."
+  why: "No joined double band like yours is sold on its own in Australia (Garmin's Varia bands are sold out), so it is a plain metric O-ring with a 3.5 mm cord, sized to the post, whose two strands do what your band's two loops do. EPDM lasts outdoors; RS Australia sells it in bags of 20. Autopro sells single nitrile ones ($1.49 for the 36 and 41 mm, $12.99 for the 44 mm), fine to start with but they crack in the sun. A photo of your band, or its loop's length, would let it be designed round that instead."
   option "Metric 3.5 mm EPDM O-ring" "RS Australia, a bag of 20 (44 × 3.5 is stock no. 258-7581)."
-  option "Metric 3.5 mm nitrile O-ring" "Autopro, $1.99 each in store: swap it each season."
+  option "Metric 3.5 mm nitrile O-ring" "Autopro, one at a time ($12.99 for the 44 mm, $1.49 for the 36 and 41 mm): swap it each season."
   option "Your double band" "Send a photo or its loop's length and the hooks are sized to it."
 }
 
@@ -649,4 +649,4 @@ require "The seat runs on past the pad's ends" for gust: bx - (pad_r + pad_t) * 
 test "Fit and remove": "Snap each arm's clip onto its boss (push it straight on along the neck until it clicks; it should swing freely). Put the pad's key into the seat's groove and hold the bracket on the post. Hook one end of the O-ring into the left arm's double hook (over the top prong, down behind, under the bottom one), wrap it round the post's front high and low and stretch the other end into the right arm's hook with one hand. Both arms should swing in until their fingers rest on the post. Slide the number's point into the jaw's slot, tail up, until it sits in its pocket and its centre hole lines up with the square hole; push the snap pin in until it clicks out the far side. To take it off, pinch the pin's two prong tips together and push it back out, slide the number out, then unhook the O-ring."
 test "Knock": "Push the number's tail up, down and sideways by hand: it must not tilt or rattle in the jaw, and the bracket must not move on the post."
 test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post, the arms must stay on their bosses and the number must not move in the jaw."
-buy "Metric O-rings, 3.5 mm cord, in the size the seatpost choice gives (spares)" { qty: 4, price: 2, url: "https://au.rs-online.com/web/p/gaskets-o-rings/2587581" }
+buy "EPDM O-rings, 3.5 mm cord, a bag of 20 in the size the seatpost choice gives (plus $20 delivery under $80 ex GST)" { qty: 1, price: 29.25, url: "https://au.rs-online.com/web/p/gaskets-o-rings/2587581" }
