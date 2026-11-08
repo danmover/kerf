@@ -10,6 +10,8 @@ import type { MeshData } from "../kernel/build";
 import { xformMatrix } from "../kernel/recipe";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
+import { bedTurn } from "../mfg/analyze";
+import { resolveRules } from "../mfg/profiles";
 import { bomRows, bomTotal, writeStl, type BomRow } from "../persist/files";
 import { beltTest } from "./belts";
 import { catalogPart } from "./catalog";
@@ -486,6 +488,49 @@ export function orientForPrint(mesh: MeshData, build?: [number, number, number])
   return { positions: out, indices: I, size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]], volume: Math.abs(volume), face: word, faceArea: best.area };
 }
 
+/** The bed (x, y) a printed part's process checks it against, for processes that print in a set build direction. */
+function printBed(p: EvalPart): [number, number] | undefined {
+  if (!p.process || (p.process.id !== "fdm" && p.process.id !== "sla")) return undefined;
+  const env = resolveRules(p.process, p.material).envelope;
+  return env && env.frame ? [env.size[0], env.size[1]] : undefined;
+}
+
+/**
+ * A print too long for its bed lies across it, as the print check allows: the STL turned about the vertical by the
+ * angle that leaves the most room, and centred again. Undefined when it fits square or fits no way.
+ */
+export function layAcross(positions: Float32Array, size: number[], bed: [number, number]): { positions: Float32Array; deg: number } | undefined {
+  const t = bedTurn(Math.max(size[0], size[1]), Math.min(size[0], size[1]), Math.max(bed[0], bed[1]), Math.min(bed[0], bed[1]));
+  if (!t) return undefined;
+  // the part's long side along the bed's long side, then t° off it
+  const deg = (size[0] >= size[1] ? 0 : -90) + (bed[0] >= bed[1] ? 0 : 90) + t;
+  const a = (deg * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  const out = new Float32Array(positions.length);
+  const lo = [Infinity, Infinity];
+  const hi = [-Infinity, -Infinity];
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i] * c - positions[i + 1] * s;
+    const y = positions[i] * s + positions[i + 1] * c;
+    out[i] = x;
+    out[i + 1] = y;
+    out[i + 2] = positions[i + 2];
+    lo[0] = Math.min(lo[0], x);
+    hi[0] = Math.max(hi[0], x);
+    lo[1] = Math.min(lo[1], y);
+    hi[1] = Math.max(hi[1], y);
+  }
+  if (hi[0] - lo[0] > bed[0] + 1e-3 || hi[1] - lo[1] > bed[1] + 1e-3) return undefined;
+  const cx = (lo[0] + hi[0]) / 2;
+  const cy = (lo[1] + hi[1]) / 2;
+  for (let i = 0; i < out.length; i += 3) {
+    out[i] -= cx;
+    out[i + 1] -= cy;
+  }
+  return { positions: out, deg: t };
+}
+
 export function madeParts(model: Model, meshFor?: (p: EvalPart) => MeshData | undefined): MadePart[] {
   // process: false is bought or already on hand: nothing to print or make
   const made = model.parts.filter((p) => p.kind === "part" && !p.processNone);
@@ -517,11 +562,16 @@ export function madeParts(model: Model, meshFor?: (p: EvalPart) => MeshData | un
     const mesh = meshFor?.(p);
     if (mesh && mesh.indices.length) {
       const o = printable ? orientForPrint(mesh, buildDirection(p)) : { ...orientForPrint(mesh), face: "" };
-      mp.stl = writeStl([{ mesh: { positions: o.positions, indices: o.indices, normals: new Float32Array(0), edges: new Float32Array(0) }, xf: [] }], `Kerf: ${p.name}`);
+      const bed = printable ? printBed(p) : undefined;
+      const across = bed ? layAcross(o.positions, o.size, bed) : undefined;
+      mp.stl = writeStl([{ mesh: { positions: across?.positions ?? o.positions, indices: o.indices, normals: new Float32Array(0), edges: new Float32Array(0) }, xf: [] }], `Kerf: ${p.name}`);
       mp.size = o.size;
       mp.volume = o.volume;
       mp.mass = (o.volume / 1000) * materialDensity(p.material);
-      if (printable) mp.orientation = `Lay it on ${o.face} (${fmtNum(Math.round(o.faceArea))} mm² flat). The STL is already turned that way and sits on the bed.`;
+      if (printable) {
+        mp.orientation = `Lay it on ${o.face} (${fmtNum(Math.round(o.faceArea))} mm² flat). The STL is already turned that way and sits on the bed.`;
+        if (across && bed) mp.orientation += ` It is longer than the ${fmtNum(bed[0])} × ${fmtNum(bed[1])} mm bed, so the STL also lies ${across.deg}° across it: keep that turn when you place it on the plate.`;
+      }
     }
     out.push(mp);
   }

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { evaluate } from "../src/lang/evaluator";
 import { buildPart, meshShape, type MeshData } from "../src/kernel/build";
 import { zip, crc32 } from "../src/machine/zip";
-import { buildPack, cutList, madeParts, orientForPrint, readiness, splitTest, testPlan, checkItems } from "../src/machine/pack";
+import { buildPack, cutList, layAcross, madeParts, orientForPrint, readiness, splitTest, testPlan, checkItems } from "../src/machine/pack";
 import { wireList, wiringDiagram, wiresCsv, componentPositions } from "../src/machine/wiring";
 import { generateFirmware } from "../src/machine/firmware";
 import { bomCsv, bomRows, bomTotal } from "../src/persist/files";
@@ -422,6 +422,37 @@ describe("build pack", () => {
     const standing = orientForPrint(mesh("fan_duct"), [0, 0, 1]);
     expect(standing.size[2]).toBeCloseTo(40, 3);
     expect(standing.face).toMatch(/points down/);
+  }, 120000);
+
+  it("lays a print too long for the bed across it in the STL", async () => {
+    await initKernel();
+    const m = evaluate(`
+part rail { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(269, 50, 20) }
+part short { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(200, 50, 20) }
+`);
+    const made = madeParts(m, (p) => meshShape(buildPart(p.recipe), "preview"));
+    const rail = made.find((p) => p.part.name === "rail")!;
+    // the part keeps its own size, the STL lies 45° across the 256 mm bed, which only that turn lets it fit
+    expect(rail.size![0]).toBeCloseTo(269, 3);
+    expect(rail.orientation).toMatch(/longer than the 256 × 256 mm bed, so the STL also lies 45° across it/);
+    const dv = new DataView(rail.stl!);
+    const lo = [Infinity, Infinity];
+    const hi = [-Infinity, -Infinity];
+    for (let t = 0; t < dv.getUint32(80, true); t++) {
+      for (let v = 0; v < 3; v++) {
+        for (let k = 0; k < 2; k++) {
+          const x = dv.getFloat32(84 + t * 50 + 12 + v * 12 + k * 4, true);
+          lo[k] = Math.min(lo[k], x);
+          hi[k] = Math.max(hi[k], x);
+        }
+      }
+    }
+    expect(hi[0] - lo[0]).toBeCloseTo((269 + 50) / Math.SQRT2, 1);
+    expect(hi[1] - lo[1]).toBeLessThan(256);
+    expect(Math.abs(hi[0] + lo[0])).toBeLessThan(1e-3);
+    // one that fits square stays square
+    expect(made.find((p) => p.part.name === "short")!.orientation).not.toMatch(/across it/);
+    expect(layAcross(new Float32Array([0, 0, 0, 200, 50, 0]), [200, 50, 20], [256, 256])).toBeUndefined();
   }, 120000);
 
   it("lays each tunneller part the way its process says it prints", async () => {
