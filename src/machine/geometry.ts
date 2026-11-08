@@ -409,7 +409,9 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
     // vanes, lead_az where the three motor leads leave the housing's side over the stator (degrees from +X). The housing and stator
     // are the main solid, the rotor the second (it spins). tabs mounting tabs round the intake ring (tab_t
     // thick, through holes hole_d on tab_circle, first at tab_start degrees) take screws and nuts into the
-    // seat behind them; `mount` is that seat's cut: the housing bore back along -Z and a hole per tab.
+    // seat behind them; `mount` is that seat's cut: the housing bore back along -Z and a hole per tab. tabs: 0 is a
+    // plain round housing, clamped by its ends. spinner_h sets the spinner's height in front of the rotor hub;
+    // can_d and can_l show an inrunner's rear end can_l behind the hub in place of the tail cone (look: geom.edf).
     case "edf": {
       const od = num(d, "od", 70);
       const fd = num(d, "fan_d", 64);
@@ -424,7 +426,10 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       // ring of vanes from the hub to the wall, the motor can, and the mounting tabs round the intake ring
       const lip = Math.min(1.2, (od - fd) / 6);
       const nt = Math.max(0, Math.round(num(d, "tabs", 4)));
-      const tt = num(d, "tab_t", 3);
+      const tt = nt ? num(d, "tab_t", 3) : 0;
+      const look = g.edf ?? {};
+      const canD = Math.min(hd - 1, num(d, "can_d", 0));
+      const canL = num(d, "can_l", 3);
       const tc = num(d, "tab_circle", od + 10);
       const thd = num(d, "hole_d", 3.2);
       const tabs = nt ? circlePts(nt, tc / 2, num(d, "tab_start", 45)).map((q) => [q[0], q[1]] as [number, number]) : [];
@@ -446,7 +451,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         ops: [
           { op: "chamfer", r: lip, edges: "top" },
           { op: "add", shape: { t: "cyl", d: hd, h: L * 0.72, at: [0, 0, -L], dir: ZP } },
-          { op: "add", shape: { t: "cone", d1: hd, d2: hd * 0.55, h: L * 0.06, at: [0, 0, -L + 0.01], dir: ZN } },
+          ...(canD > 0 ? [] : [{ op: "add" as const, shape: { t: "cone" as const, d1: hd, d2: hd * 0.55, h: L * 0.06, at: [0, 0, -L + 0.01] as V3, dir: ZN } }]),
           ...Array.from({ length: ns }, (_, i) => ({ op: "add" as const, shape: stator((360 * i) / ns + 90 / ns) })),
           ...tabs.map((q) => ({ op: "add" as const, shape: tab(q) })),
           ...tabs.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: thd, h: tt + 2, at: [x, y, -tt - 1] as V3, dir: ZP } })),
@@ -456,18 +461,28 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       // rotor: the hub under a rounded spinner, and twisted, tapered blades just behind the intake (steep at the
       // root, flatter at the tip), as many as the fan has, close to the wall
       const zr = -L * 0.08;
-      const sh = Math.min(L * 0.07, hd * 0.3);
-      const spinner: V2[] = [[0, zr - 0.01], ...Array.from({ length: 6 }, (_, i) => {
+      const sh = Math.min(num(d, "spinner_h", Math.min(L * 0.07, hd * 0.3)), -zr - 0.3);
+      // a metal spinner is its own solid sitting on the hub; a moulded one is part of the rotor
+      const zs = look.spinner ? zr : zr - 0.01;
+      const spinner: V2[] = [[0, zs], ...Array.from({ length: 6 }, (_, i) => {
         const t = i / 6;
-        return [(rh - 0.3) * Math.sqrt(Math.max(0, 1 - t * t)) * (1 - 0.12 * t), zr - 0.01 + sh * t] as V2;
-      }), [0, zr - 0.01 + sh]];
+        return [(rh - 0.3) * Math.sqrt(Math.max(0, 1 - t * t)) * (1 - 0.12 * t), zs + sh * t] as V2;
+      }), [0, zs + sh]];
       const rootC = Math.min(L * 0.2, (2 * Math.PI * rh * 1.6) / nb);
       const blade = (a: number): ShapeRecipe => radialBlade(a, rh - 0.8, ri - 0.6, -L * 0.18, rootC, rootC * 1.15, 52, 30, 0.08, 0.05);
       const rotor: PartRecipe = {
         base: { t: "cyl", d: hd - 0.6, h: L * 0.2, at: [0, 0, -L * 0.28], dir: ZP },
         ops: [
-          { op: "add", shape: { t: "revolve", pts: spinner, at: Z0, dir: ZP } },
+          ...(look.spinner ? [] : [{ op: "add" as const, shape: { t: "revolve" as const, pts: spinner, at: Z0, dir: ZP } }]),
           ...Array.from({ length: nb }, (_, i) => ({ op: "add" as const, shape: blade((360 * i) / nb) })),
+        ],
+      };
+      // an inrunner's rear end behind the hub: the can, its end bell and the bearing boss
+      const motor: PartRecipe = {
+        base: { t: "cyl", d: canD, h: canL + 1, at: [0, 0, -L - canL], dir: ZP },
+        ops: [
+          { op: "chamfer", r: Math.min(0.6, canL / 4), edges: "bottom" },
+          { op: "add", shape: { t: "cyl", d: canD * 0.36, h: 0.8, at: [0, 0, -L - canL - 0.8], dir: ZP } },
         ],
       };
       // the three motor leads come out through a stator vane and leave the housing's side at lead_az, one behind
@@ -483,7 +498,9 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         solids: [
           solid("", p.name, housing, g.color ?? "#2b2f36", "Nylon"),
           solid("rotor", `${p.name} rotor`, rotor, g.color2 ?? "#c9ced6", "Nylon", true),
-          solid("leads", `${p.name} motor leads`, leads, "#1e2a5c", "PVC"),
+          ...(look.spinner ? [{ ...solid("spinner", `${p.name} spinner`, { base: { t: "revolve", pts: spinner, at: Z0, dir: ZP }, ops: [] }, look.spinner, look.spinner_material ?? "Aluminum 6061", true), finish: "polished" }] : []),
+          ...(canD > 0 ? [solid("motor", `${p.name} motor`, motor, look.can ?? "#9aa0a8", look.can_material ?? "Aluminum 6061")] : []),
+          solid("leads", `${p.name} motor leads`, leads, look.leads ?? "#1e2a5c", "PVC"),
         ],
         fields: {
           scalars: { od, fan_d: fd, hub_d: hd, length: L, tab_t: tt, ...mountScalars(screw, 0) },

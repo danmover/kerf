@@ -199,6 +199,12 @@ export interface GeomSpec {
    * and material (white POM in a plastic-geared servo, metal in a metal-geared one)
    */
   servo?: { mid?: string; mid_material?: string; label?: string; text?: string; spline?: string; spline_material?: string };
+  /**
+   * edf class only: how the real fan looks. spinner makes the spinner its own solid in that colour and
+   * material (a machined metal one); can is the colour of the inrunner motor's rear end showing behind the
+   * hub (dims can_d, can_l); leads the colour of the motor wires
+   */
+  edf?: { spinner?: string; spinner_material?: string; can?: string; can_material?: string; leads?: string };
 }
 
 export interface BuyLink {

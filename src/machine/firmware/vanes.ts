@@ -134,6 +134,9 @@ export function vaneFirmware(c: FwContext): VaneResult {
     armLevel: setting(c.fw, "arm_level", 5),
     ramp: setting(c.fw, "ramp_per_s", 0.4),
     loopMin: setting(c.fw, "loop_min_thrust", 0.25),
+    // the share of the fan's own full static thrust the rig calls full (1: all of it). A fan bigger than the ESC,
+    // fuse or plug can carry runs capped: the throttle never passes sqrt(thrust_cap)
+    thrustCap: Math.min(1, Math.max(0.05, setting(c.fw, "thrust_cap", 1))),
     cellLever: setting(c.fw, "cell_lever_mm", 69.2) / 1000,
   };
   const name = ident(c.fw.name).toLowerCase() || "jet_vane";
@@ -178,6 +181,8 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 #define ESC_MAX_US 2000
 // the ESC arms after its signal sits at minimum this long from power-up; "arm" waits for it
 #define ESC_ARM_MS 2500
+// "full thrust" below is this share of the fan's own: the throttle stops at sqrt(THRUST_CAP)
+#define THRUST_CAP ${cFloat(S.thrustCap)}
 #define THRUST_RAMP_PER_S ${cFloat(S.ramp)}
 #define THRUST_LOOP_MIN ${cFloat(S.loopMin)}
 
@@ -424,9 +429,10 @@ void writeVanes(float *v) {
   }
 }
 
-// static thrust goes with fan speed squared and speed with throttle, so the throttle is sqrt(thrust)
+// static thrust goes with fan speed squared and speed with throttle, so the throttle is sqrt(thrust); frac is the
+// share of the rig's full thrust, THRUST_CAP of the fan's own
 void writeEsc(float frac) {
-  float u = frac <= 0 ? 0 : sqrt(frac);
+  float u = frac <= 0 ? 0 : sqrt(frac * THRUST_CAP);
   esc.writeMicroseconds(ESC_MIN_US + (int)(u * (ESC_MAX_US - ESC_MIN_US)));
 }
 
@@ -739,7 +745,7 @@ void loadSettings() {
 // ---------------------------------------------------------------- console
 void help() {
   Serial.println("arm            arm (level, still, e-stop out, IMU answering)");
-  Serial.println("t <percent>    thrust target, share of full static thrust");
+  Serial.println("t <percent>    thrust target, share of full thrust (THRUST_CAP of the fan's own)");
   Serial.println("hold           close the balance loop (vanes work from 25 % thrust)");
   Serial.println("stop           fan off, vanes centred, disarmed");
   Serial.println("reset          clear a fault once the e-stop is released");
