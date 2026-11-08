@@ -166,6 +166,35 @@ export const MOTORS: CatalogPart[] = [
     notes: ["Housing size and its mounting-tab pattern are not published: Kerf assumes 4 tabs with 3.2 mm holes on an 80 mm circle at the intake ring, on the diagonals. Measure the outside diameter, length and tab holes before printing a duct or mount for it.", "Never run it unclamped or without an intake guard: the rotor tips run near 150 m/s."],
     tests: ["Static thrust on a scale or load cell at 50, 70 and 100 % throttle"],
   },
+  {
+    id: "fms_edf_70_12b_3060_1900kv",
+    kind: "bldc",
+    name: "FMS 70 mm 12-blade EDF with 3060 1900 kV inrunner (6S)",
+    maker: "FMS",
+    mpn: "FMSEDF002",
+    summary: "70 mm electric ducted fan on 6S: about 2500 g (24.5 N) static thrust at 69 A and 25 V, 12-blade fibre-filled nylon rotor under a machined aluminium spinner, 3060 1900 kV inrunner, 73 mm across, 66 mm long, 255 g. Needs an 80 A ESC for full power.",
+    // thrust and current at full throttle at thrust_v (FMS); rpm_full from kV x volts at about 82 % loaded; rotor_j_gcm2 is
+    // the fan rotor, spinner and inrunner rotor's spinning inertia (an estimate); hub_d is assumed
+    specs: { kv: 1900, v_nom: 22.2, v_max: 25.2, thrust_g: 2500, thrust_v: 25, i_max: 69, i_free: 2.5, rpm_full: 39000, fan_d: 70, hub_d: 36, rotor_j_gcm2: 165, spin: "ccw_from_intake", poles: 4, mass_g: 255, esc_a: 80, blades: 12 },
+    pins: [
+      { id: "PHASE_A", label: "Phase A", type: "motor", v: 25.2, channel: "M", required: false, note: "Brushless: wire the three phases to an ESC" },
+      { id: "PHASE_B", label: "Phase B", type: "motor", v: 25.2, channel: "M", required: false },
+      { id: "PHASE_C", label: "Phase C", type: "motor", v: 25.2, channel: "M", required: false },
+    ],
+    // The fan as sold: a plain round black housing with no mounting tabs (clamp it by its ends), a dark 12-blade rotor,
+    // the polished aluminium spinner, and the inrunner's rear end showing behind the stator hub
+    geom: { g: "edf", dims: { od: 73, fan_d: 70, length: 66, hub_d: 36, blades: 12, stators: 6, lead_az: -150, tabs: 0, can_d: 30, can_l: 3 }, color: "#1d1f23", color2: "#2e3136", edf: { spinner: "#d6dadf", spinner_material: "Aluminum 6061", can: "#a7adb5", leads: "#17191c" } },
+    price_usd: 33,
+    buy: [{ vendor: "AliExpress", url: "https://www.aliexpress.com/item/1005008941479982.html" }, { vendor: "FMS", url: "https://fmshobby.com/products/edf-system-70mm-12-blade-6s-power-system-with-3060-kv1900-motor-pro" }],
+    source: "https://gliders.uk.com/products/fms-70mm-ducted-fan-system-12-blade-w-3060-kv1900-motor-rc-edf-fmsdf007-1",
+    notes: [
+      "FMS publishes the outside diameter (73 mm), length (66 mm), weight and thrust, not the hub size, stator count or lead connectors: measure the housing before printing a duct for it.",
+      "The housing has no mounting tabs: clamp it between its intake ring and its rear face, on a thin foam ring, with the leads in a slot so it cannot turn.",
+      "Full power is 69 A: an 80 A ESC, a 60 A or bigger fuse and an XT90 plug. Capping its throttle in firmware lets a smaller ESC run it.",
+      "Never run it unclamped or without an intake guard: the rotor tips run near 140 m/s.",
+    ],
+    tests: ["Static thrust on a scale or load cell at 25, 50 and 70 % throttle before any full-power run"],
+  },
   // ---- steppers ----
   stepper({ id: "nema8_8hs15_0604s", name: "NEMA 8 stepper 8HS15-0604S (38 mm, 0.6 A)", generic: true, frame: 8, len: 38, i: 0.6, r: 10.8, l: 5.5, hold: 18, mass: 60, price: 15, shaft_d: 4, shaft_l: 15, search: "NEMA 8 stepper motor 20x20x38mm 0.6A" }),
   stepper({ id: "nema11_11hs20_0674s", name: "NEMA 11 stepper 11HS20-0674S (51 mm, 0.67 A)", generic: true, frame: 11, len: 51, i: 0.67, r: 8, l: 6.5, hold: 95, mass: 200, price: 16, shaft_d: 5, shaft_l: 20, search: "NEMA 11 stepper motor 28x28x51mm" }),
@@ -257,7 +286,8 @@ export const MOTORS: CatalogPart[] = [
     summary: "Micro servo, about 0.18 N·m stall at 4.8 V, 4.8 to 6 V, plastic gears, 0.1 s per 60°.",
     specs: { t_stall: kgcm(1.8), v_min: 4.8, v_max: 6, speed_s_per_60: 0.1, i_stall: 0.65, i_run: 0.15, mass_g: 9, range_deg: 180 },
     pins: servoPins(4.8, 6, 0.15),
-    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2 },
+    // the usual blue case and white nylon output gear
+    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2, color: "#2f63d8", servo: { label: "#f1f2f4", text: "#1f3f99" } },
     price_usd: 2,
     buy: [{ vendor: "Marketplace", search: "SG90 micro servo" }],
     notes: ["The supplied screws are M2 self-tappers through the tabs into the plate."],
@@ -270,7 +300,7 @@ export const MOTORS: CatalogPart[] = [
     summary: "Micro servo, about 0.22 N·m stall at 4.8 V, 4.8 to 6 V, metal gears, 0.1 s per 60°.",
     specs: { t_stall: kgcm(2.2), v_min: 4.8, v_max: 6, speed_s_per_60: 0.1, i_stall: 0.7, i_run: 0.15, mass_g: 13.4, range_deg: 180 },
     pins: servoPins(4.8, 6, 0.15),
-    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2, color: "#22262c" },
+    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2, color: "#22262c", servo: { spline: "#cfb06a", spline_material: "Brass" } },
     price_usd: 4,
     buy: [{ vendor: "Marketplace", search: "MG90S metal gear servo" }],
   },

@@ -407,6 +407,22 @@ export function analyzeSolid(solid: AnalysisMesh | Ctx, rules: Rules, opts: Anal
 
 // ---------------- envelope ----------------
 
+/**
+ * The smallest turn on the bed, in whole degrees, that fits a w × d footprint (w ≥ d) on a W × D bed (W ≥ D): 0 when
+ * it fits square, undefined when no turn fits. A long part that is too long for the bed can lie across it, the way a
+ * slicer places it.
+ */
+export function bedTurn(w: number, d: number, W: number, D: number): number | undefined {
+  if (w <= W + 1e-6 && d <= D + 1e-6) return 0;
+  for (let deg = 1; deg < 90; deg++) {
+    const t = (deg * Math.PI) / 180;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    if (w * c + d * s <= W + 1e-6 && w * s + d * c <= D + 1e-6) return deg;
+  }
+  return undefined;
+}
+
 function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
   const ext: V3 = [c.hi[0] - c.lo[0], c.hi[1] - c.lo[1], c.hi[2] - c.lo[2]];
   const size = env.size;
@@ -418,8 +434,9 @@ function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
     const h = ext[ax];
     const foot = ext.filter((_, i) => i !== ax).sort((a, b2) => b2 - a);
     const bed = [size[0], size[1]].sort((a, b2) => b2 - a);
-    fits = h <= size[2] + 1e-6 && foot[0] <= bed[0] + 1e-6 && foot[1] <= bed[1] + 1e-6;
-    dims = `${fmt(foot[0], 1)} × ${fmt(foot[1], 1)} mm footprint, ${fmt(h, 1)} mm tall`;
+    const turn = h <= size[2] + 1e-6 ? bedTurn(foot[0], foot[1], bed[0], bed[1]) : undefined;
+    fits = turn !== undefined;
+    dims = `${fmt(foot[0], 1)} × ${fmt(foot[1], 1)} mm footprint, ${fmt(h, 1)} mm tall${turn ? `, laid ${turn}° across the bed` : ""}`;
   } else {
     const a = [...ext].sort((x, y) => y - x);
     const b2 = [...size].sort((x, y) => y - x);

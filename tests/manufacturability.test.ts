@@ -7,6 +7,7 @@ import { evaluate } from "../src/lang/evaluator";
 import { processItems, processProbes, rulesOnMachine } from "../src/mfg/report";
 import { resolveRules, specToSource } from "../src/mfg/profiles";
 import { processGuideText } from "../src/mfg/guide";
+import { bedTurn } from "../src/mfg/analyze";
 import { MACHINE_PRESETS, NO_MACHINES, findMachine, machinesText, sanitizeMachineFor, sanitizeMachines, type MachineContext } from "../src/mfg/machines";
 import type { ProcessFinding, ProcessResult } from "../src/mfg/types";
 import type { Model } from "../src/core/model";
@@ -92,6 +93,19 @@ part fine { process: "fdm" material: "PETG" body box(20, 20, 5) }
     expect(find("hot", "printer")?.status).toBe("fail");
     expect(find("open", "printer")?.status).toBe("warn");
     expect(find("fine", "printer")?.status).toBe("pass");
+  });
+
+  it("lays a part too long for the bed across it, and fails one that fits no way", () => {
+    expect(bedTurn(200, 100, 256, 256)).toBe(0);
+    expect(bedTurn(300, 40, 256, 256)).toBe(40);
+    expect(bedTurn(380, 40, 256, 256)).toBeUndefined();
+    const { find } = check(`
+part long { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(300, 40, 10) }
+part longer { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(380, 40, 10) }
+`);
+    expect(find("long", "envelope")?.status).toBe("pass");
+    expect(find("long", "envelope")?.detail).toMatch(/laid 40° across the bed/);
+    expect(find("longer", "envelope")?.status).toBe("fail");
   });
 });
 

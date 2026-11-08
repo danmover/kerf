@@ -33,7 +33,9 @@ describe("motor catalogue", () => {
       expect(typeof f.scalars?.screw_depth, p.id).toBe("number");
       expect(f.shapes?.mount, p.id).toBeDefined();
       expect(solidVolume(buildShape(f.shapes!.mount)), `${p.id} mount`).toBeGreaterThan(1);
-      expect(f.pointLists?.holes?.length, `${p.id} holes`).toBeGreaterThan(0);
+      // a ducted fan with no tabs is clamped by its housing's ends: its mount is the seat alone
+      if (p.geom.g === "edf" && p.geom.dims.tabs === 0) expect(f.pointLists?.holes ?? [], `${p.id} holes`).toEqual([]);
+      else expect(f.pointLists?.holes?.length, `${p.id} holes`).toBeGreaterThan(0);
     }
   }, 120_000);
 
