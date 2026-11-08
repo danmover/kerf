@@ -140,9 +140,11 @@ export interface BandInfo {
   shore: number;
   cs: number;
   id: number;
-  /** the parts it wraps, and the part its hooks are on */
+  /** the parts it wraps, and the part it holds there (its hooks are on it) */
   around: string[];
   holds?: string;
+  /** parts its hooks are on when they are not the holds part itself (arms that swing on it); they come and go with it */
+  hookedOn?: string[];
   layout: BandLayout;
   /** mass it holds on, g, and the bumps it rides, g */
   carries?: number;

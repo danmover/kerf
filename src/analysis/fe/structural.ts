@@ -572,7 +572,25 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         for (let v = 0; v < P.length; v += 3) maxProj = Math.max(maxProj, P[v] * dir[0] + P[v + 1] * dir[1] + P[v + 2] * dir[2]);
       }
     } else if (r.t === "cyl") axis = norm(r.axis);
+    // a zone kept to where it overlaps another
+    const within = r.t === "sphere" || r.t === "box" || r.t === "cyl" ? r.within : undefined;
+    const inZone = (z: NonNullable<typeof within>, p: V3): boolean => {
+      switch (z.t) {
+        case "sphere":
+          return Math.hypot(p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]) <= z.r + pad;
+        case "box":
+          return Math.abs(p[0] - z.at[0]) <= z.size[0] / 2 + pad && Math.abs(p[1] - z.at[1]) <= z.size[1] / 2 + pad && Math.abs(p[2] - z.at[2]) <= z.size[2] / 2 + pad;
+        case "cyl": {
+          const ax = norm(z.axis);
+          const v: V3 = [p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]];
+          const s = dot(v, ax);
+          if (s < -pad || s > z.length + pad) return false;
+          return Math.hypot(v[0] - s * ax[0], v[1] - s * ax[1], v[2] - s * ax[2]) <= z.d / 2 + pad;
+        }
+      }
+    };
     const inside = (p: V3): boolean => {
+      if (within && !inZone(within, p)) return false;
       switch (r.t) {
         case "face":
         case "extreme":

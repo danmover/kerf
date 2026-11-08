@@ -112,7 +112,7 @@ export function contactPairs(model: Model, visible: EvalPart[] = model.parts): [
     const board = onBoard.get(p.name);
     if (board && /\.(leads|pins|legs|headerpins)$/.test(p.id)) ignorePairs.push([p.id, board]);
     // a band presses on the tube it wraps and sits on its hooks
-    if (p.band) for (const other of [...p.band.around, ...(p.band.holds ? [p.band.holds] : [])]) for (const q of visible) if (q.name === other) ignorePairs.push([p.id, q.id]);
+    if (p.band) for (const other of [...p.band.around, ...(p.band.holds ? [p.band.holds] : []), ...(p.band.hookedOn ?? [])]) for (const q of visible) if (q.name === other) ignorePairs.push([p.id, q.id]);
     // a chain's rollers sit in its sprockets' tooth gaps (the chain checks look after the fit)
     if (p.chain) for (const n of p.chain.nodes) for (const q of visible) if (q.name === n.name) ignorePairs.push([p.id, q.id]);
   }

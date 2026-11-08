@@ -189,6 +189,22 @@ component b = lib.band("EPDM", id: 30, cs: 2.5, around: post, holds: bracket, fr
     expect(c.grip!.moment).toBeGreaterThan(0);
   });
 
+  it("keeps a curved seat zone to where it overlaps another zone", () => {
+    const m = evaluate(
+      banded +
+        `analysis "Held" {
+  parts: [bracket]
+  fix: contact(zone(at: (0, 0, -10), d: 32, axis: Z, length: 20, within: zone(at: (0, 0, 0), size: (21, 400, 400))), mu: 0.3, grip: [b])
+  load: pull(b)
+}`,
+    );
+    expect(m.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    const r = (m.analyses[0] as StructuralSpec).supports[0].region;
+    expect(r).toMatchObject({ t: "cyl", d: 32, within: { t: "box", size: [21, 400, 400] } });
+    const e = errors(banded + `analysis "Held" {\n  parts: [bracket]\n  fix: contact(zone(at: (0, 0, -10), d: 32, axis: Z, length: 20, within: face(bracket, -Y)))\n  load: pull(b)\n}`);
+    expect(e.join(" ")).toMatch(/within: takes another zone/);
+  });
+
   it("asks which way a seat in a box zone faces", () => {
     const e = errors(bracket + `analysis "Seat" {\n  parts: [plate]\n  fix: contact(zone(at: (0, 2, 0), size: (60, 4, 30)))\n  load: force(face(plate, +Y), (0, -10, 0))\n}`);
     expect(e.join(" ")).toMatch(/normal:/);
