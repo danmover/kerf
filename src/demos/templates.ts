@@ -85,14 +85,14 @@ export const TEMPLATES: Template[] = [
   {
     id: "seatpost-number",
     name: "Seatpost Number Bracket",
-    tagline: "Screwless 20 mm-tall ASA clip for a race number behind any seatpost (round, D-shaped aero or the Giant Propel's), held like a rear light: one O-ring on double hooks at the tips of two clip-on arms that swing in or out to follow the post, a TPU pad shaped to the post, and one solid jaw whose V pocket holds the number tight with its tail up 15°, with a push-in snap pin through its centre hole. Prints with no supports, with wind, knock and pothole checks.",
+    tagline: "Screwless 20 mm-tall ASA clip for a race number behind any seatpost (round, D-shaped aero or the Giant Propel's), held like a rear light: one O-ring whose ends slide into channels in the heads of two arms that click onto bosses and swing in or out to follow the post, a TPU pad shaped to the post, and one solid jaw whose V pocket holds the number tight with its tail up 15°, with a push-in snap pin through its centre hole. Prints with no supports, with wind, knock and pothole checks.",
     source: seatpost,
     prompts: [
       "My seatpost measures 24 × 34 mm with a 20 mm flat back: make the pad and O-ring fit it",
       "Make the O-ring easier to put on without losing grip",
       "Show me how the number goes in and what keeps it there",
     ],
-    stats: "11 parts · 19 requirements · wind, knock and pothole analysis",
+    stats: "11 parts · 22 requirements · wind, knock and pothole analysis",
     category: "parts",
     shows: ["wind and knocks", "snap pin", "no supports"],
   },
