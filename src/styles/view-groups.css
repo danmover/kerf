@@ -1,0 +1,71 @@
+/* Groups shown on their own: the key in the 3D view's corner, the toolbar menu and the Group form. */
+
+/* below the 3D / Drawings switch, which steps down under the toolbar in a narrow view */
+.vg-key {
+  left: 12px;
+  top: 100px;
+  width: 260px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.vg-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+}
+.vg-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vg-title b {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+.vg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.vg-chip {
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-3);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.vg-chip:hover {
+  color: var(--text);
+}
+.vg-chip.on {
+  border-color: var(--accent);
+  color: var(--text);
+  background: rgb(var(--accent-rgb) / 0.14);
+}
+.vg-menu-note {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-3);
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.vg-group-form {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+.vg-group-form .input {
+  flex: 1;
+  min-width: 0;
+}

@@ -170,6 +170,26 @@ function pattern(kind: Detail): Pattern | null {
         },
       };
     }
+    case Detail.Plywood: {
+      // rotary-cut face veneer: soft bands along u that wander across v, thin late-wood lines, fibres, blotches
+      const cells = 8;
+      const wob = periodicNoise(2, 3, 81);
+      const wob2 = periodicNoise(6, 10, 82);
+      const fib = periodicNoise(4, cells * 24, 83);
+      const blot = periodicNoise(2, 4, 84);
+      return {
+        cells,
+        tint: 0.5,
+        sample: (u, v) => {
+          const q = v * cells + (wob(u, v) - 0.5) * 2.6 + (wob2(u, v) - 0.5) * 0.6;
+          const band = ((q % 1) + 1) % 1;
+          const late = smooth(0.6, 0.86, band) * (1 - smooth(0.9, 1, band));
+          const f = fib(u, v);
+          const tone = Math.min(1, Math.max(0, 0.14 + late * 0.5 + (f - 0.5) * 0.2 + (blot(u, v) - 0.5) * 0.32));
+          return [late * 0.6 + f * 0.4, f, 1 - tone];
+        },
+      };
+    }
     default:
       return null;
   }

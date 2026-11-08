@@ -31,7 +31,7 @@ export type FeedRow =
   | { kind: "item"; it: ChatItem; turn: string; step: boolean; lastStep?: boolean }
   | { kind: "log"; turn: string; summary: LogSummary };
 
-const EDITS = new Set(["edit_design", "write_design", "set_material", "place_fasteners"]);
+const EDITS = new Set(["edit_design", "write_design", "set_material", "place_fasteners", "group_parts"]);
 
 /** Items the feed does not show at all. */
 export const hiddenItem = (it: ChatItem) => (it.kind === "tool" && it.name === "update_plan") || it.kind === "suggest";

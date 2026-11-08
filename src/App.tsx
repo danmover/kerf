@@ -204,6 +204,12 @@ function useShortcuts() {
         case "i":
           if (v.selected.length || v.isolate) useView.setState({ isolate: !v.isolate });
           return;
+        case "g": {
+          // the selected part's group on its own; again (or Shift+G) shows every group
+          const part = useDesign.getState().model?.parts.find((p) => p.id === v.selected[0]);
+          if (e.shiftKey || !part || (v.soloGroups.length === 1 && v.soloGroups[0] === part.group)) return useView.setState({ soloGroups: [] });
+          return useView.setState({ soloGroups: [part.group] });
+        }
         case "t":
           return useView.setState({ turntable: !v.turntable });
         case "p":

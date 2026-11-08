@@ -15,8 +15,8 @@ import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
 import { xformMatrix } from "../../kernel/recipe";
 import type { ViewPreset } from "../../app/view";
-import { appearanceFor, type Appearance } from "./render/appearance";
-import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, type PartUniforms } from "./render/partShader";
+import { appearanceFor, Detail, type Appearance } from "./render/appearance";
+import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
@@ -1041,6 +1041,7 @@ export class SceneController {
     const { mat, u } = this.newPartMaterial(obj.look);
     u.uNoiseScale.value = obj.u.uNoiseScale.value;
     u.uDetail.value.copy(obj.u.uDetail.value);
+    u.uPly.value.copy(obj.u.uPly.value);
     mat.clippingPlanes = obj.mat.clippingPlanes;
     const mesh = new THREE.Mesh(g.mesh, mat);
     mesh.castShadow = true;
@@ -1107,6 +1108,9 @@ export class SceneController {
       if (recompile) obj.mat.needsUpdate = true;
       this.changed = true;
     }
+    // plywood's plies run through the sheet's thickness, which its box tells
+    const bb = look.detail === Detail.Plywood ? obj.mesh.geometry.boundingBox : null;
+    if (bb) obj.u.uPly.value.fromArray(plyLayout(bb.min.toArray(), bb.max.toArray()));
     const selected = d.selected.has(obj.id);
     const hovered = d.hovered === obj.id;
     const focusSet = d.focus.size ? d.focus : d.isolate && d.selected.size ? d.selected : null;
@@ -1168,7 +1172,7 @@ export class SceneController {
     obj.cap$.mat.clippingPlanes = planes.length ? planes : null;
     obj.cap.visible = (this.sectionAnim.on || !!obj.reveal) && obj.opacity >= 0.999;
     obj.cap$.uGlowAmt.value = obj.reveal ? 1 : 0;
-    obj.cap$.mat.color.set(obj.part.color).multiplyScalar(0.85);
+    obj.cap$.mat.color.set(obj.look.color).multiplyScalar(0.85);
     if (changed) {
       obj.mat.needsUpdate = true;
       obj.edgeMat.needsUpdate = true;
@@ -2359,7 +2363,7 @@ export class SceneController {
   // ---------- capture ----------
 
   /** Render a finished, converged image of the model at any size, without touching the on-screen view. */
-  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean; explode?: number }): Promise<string> {
+  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean; explode?: number; only?: string[] }): Promise<string> {
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim }, replaced: this.replaced };
     // overlays (analysis results) are drawn unless the caller asks for the plain model
     const showOverlays = opts.overlays !== false && this.overlays.size > 0;
@@ -2395,6 +2399,19 @@ export class SceneController {
     try {
       this.camera.aspect = opts.width / opts.height;
       let box: THREE.Box3 | undefined = opts.box ? new THREE.Box3(new THREE.Vector3(...opts.box[0]), new THREE.Vector3(...opts.box[1])) : undefined;
+      // only some parts drawn (a group on its own): the rest hidden, those framed
+      if (opts.only?.length) {
+        const only = new Set(opts.only);
+        this.setDisplay({ ...this.display, hidden: new Set([...this.display.hidden, ...[...this.parts.keys()].filter((id) => !only.has(id))]) });
+        if (!box && !(opts.frame === "focus" && opts.focus?.length)) {
+          box = new THREE.Box3();
+          for (const id of only) {
+            const p = this.parts.get(id);
+            if (p && !p.removing) box.expandByObject(p.group);
+          }
+          if (box.isEmpty()) box = undefined;
+        }
+      }
       if (!box && unexploded && !(opts.frame === "focus" && opts.focus?.length)) {
         box = new THREE.Box3();
         for (const [id, p] of this.parts) if (!p.removing && !this.display.hidden.has(id)) box.expandByObject(p.group);

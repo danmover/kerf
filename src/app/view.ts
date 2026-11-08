@@ -22,6 +22,8 @@ interface ViewState {
   hiddenIds: string[];
   isolate: boolean;
   xray: boolean;
+  /** groups shown on their own, every other part hidden; empty shows every group */
+  soloGroups: string[];
   section: { on: boolean; axis: "x" | "y" | "z"; t: number; flip: boolean };
   explode: number;
   playing: boolean;
@@ -49,6 +51,7 @@ export const useView = create<ViewState>(() => ({
   hiddenIds: [],
   isolate: false,
   xray: false,
+  soloGroups: [],
   section: { on: false, axis: "x", t: 0.5, flip: false },
   explode: 0,
   playing: false,
@@ -69,7 +72,15 @@ export const requestCamera = (preset: ViewPreset | "fit") => useView.setState({ 
 export const select = (ids: string[]) => useView.setState({ selected: ids });
 export const showDecision = (name: string) => useView.setState({ leftTab: "decisions", decisionFocus: { name, nonce: ++nonce } });
 export const resetView = () =>
-  useView.setState({ selected: [], hovered: null, focusParts: [], focusCheck: null, hiddenIds: [], isolate: false, xray: false, section: { on: false, axis: "x", t: 0.5, flip: false }, explode: 0, playing: false, turntable: false });
+  useView.setState({ selected: [], hovered: null, focusParts: [], focusCheck: null, hiddenIds: [], isolate: false, xray: false, soloGroups: [], section: { on: false, axis: "x", t: 0.5, flip: false }, explode: 0, playing: false, turntable: false });
+/** Show only these groups of parts (the rest hidden); none shows every group again. */
+export const showGroups = (groups: string[]) => useView.setState({ soloGroups: [...new Set(groups)] });
+/** Show a group on its own, or add it to (or take it from) the groups shown with `add`. */
+export const soloGroup = (group: string, add = false) =>
+  useView.setState((s) => {
+    if (!add) return { soloGroups: s.soloGroups.length === 1 && s.soloGroups[0] === group ? [] : [group] };
+    return { soloGroups: s.soloGroups.includes(group) ? s.soloGroups.filter((g) => g !== group) : [...s.soloGroups, group] };
+  });
 /** Emphasise parts while something that shapes them is hovered (a focused check keeps the view). */
 export const hoverParts = (ids: string[]) => {
   if (useView.getState().focusCheck) return;

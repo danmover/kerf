@@ -71,6 +71,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["E"], "Toggle exploded view"],
       [["X"], "Toggle x-ray"],
       [["I"], "Isolate the selection"],
+      [["G"], "Show the selected part's group on its own (Shift+G: every group)"],
       [["M"], "Draw on the view for Claude"],
       [["R"], "Measure faces, edges and corners"],
       [["D"], "Switch between the 3D view and drawings"],

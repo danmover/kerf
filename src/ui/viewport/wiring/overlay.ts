@@ -4,7 +4,10 @@
 // Plugs and headers move with their parts; a cable stretches between its two
 // ends when the view is exploded. A cable to a moving part runs through drag
 // chains and loops (flex.ts) that flex as the machine moves. A picked cable
-// stands out and the rest fade.
+// stands out and the rest fade. Either covers over the wiring fade so it shows
+// (see-through), or every part stays solid and the cables behind them are
+// drawn faintly through them (solid), so the whole machine and all its wiring
+// show at once.
 
 import * as THREE from "three";
 import type { SceneOverlay, OverlayHit } from "../scene";
@@ -78,6 +81,8 @@ interface SocketObj {
 }
 
 const DIM = 0.16;
+/** how strongly a cable hidden behind a solid part shows through it */
+const XRAY = 0.42;
 /** heat-shrink over a splice, and a black nylon cable tie */
 const SLEEVE_COLOR = "#26282c";
 const TIE_COLOR = "#1a1a1a";
@@ -85,7 +90,13 @@ const TIE_COLOR = "#1a1a1a";
 export class WiringOverlay implements SceneOverlay {
   readonly object = new THREE.Group();
   readonly replaces = new Set<string>();
-  readonly ghosts = new Map<string, number>();
+  /** parts that fade so the wiring under them shows (see-through look) */
+  private fade = new Map<string, number>();
+  /** keep every part solid and draw hidden cables through them instead of fading covers */
+  private solid = false;
+  /** each wiring mesh's copy that draws only where something is in front of it */
+  private xrays: { src: THREE.Mesh; copy: THREE.Mesh; wire?: string }[] = [];
+  private xrayMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: XRAY, depthWrite: false, depthFunc: THREE.GreaterDepth, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
   private wires = new Map<string, WireObj>();
   private flexes: FlexObj[] = [];
   private sockets: SocketObj[] = [];
@@ -108,6 +119,18 @@ export class WiringOverlay implements SceneOverlay {
     return this.wires.size;
   }
 
+  get ghosts(): ReadonlyMap<string, number> {
+    return this.solid ? NO_GHOSTS : this.fade;
+  }
+
+  /** Solid: parts stay as they are and hidden cables show through them; otherwise covers over the wiring fade. Call the scene's overlaysChanged() after. */
+  setSolid(on: boolean) {
+    if (on === this.solid) return;
+    this.solid = on;
+    this.applyLook();
+    this.host.requestRender();
+  }
+
   /**
    * Draw a harness. Covers (removable parts) fade so the plugs under them show,
    * and so, less, do made parts that a plug sits inside (an electronics box, a
@@ -117,13 +140,13 @@ export class WiringOverlay implements SceneOverlay {
     this.clear();
     this.byWire = new Map(h.wires.map((w) => [w.id, w]));
     const byId = new Map(parts.map((p) => [p.id, p]));
-    for (const p of parts) if (p.removable) this.ghosts.set(p.id, 0.14);
+    for (const p of parts) if (p.removable) this.fade.set(p.id, 0.14);
     const ends = h.wires.flatMap((w) => w.ends);
     for (const p of parts) {
       const box = p.kind === "component" || p.removable || p.hidden ? undefined : boxOf?.(p);
       if (!box) continue;
       const [lo, hi] = worldBox(xformMatrix(p.xf), box);
-      if (ends.some((e) => e.partId !== p.id && e.frame.o.every((v, k) => v > lo[k] + 1 && v < hi[k] - 1))) this.ghosts.set(p.id, 0.3);
+      if (ends.some((e) => e.partId !== p.id && e.frame.o.every((v, k) => v > lo[k] + 1 && v < hi[k] - 1))) this.fade.set(p.id, 0.3);
     }
     const follow = (id: string): Follow => {
       let f = this.follows.get(id);
@@ -206,8 +229,30 @@ export class WiringOverlay implements SceneOverlay {
       this.object.add(group);
       this.sockets.push({ group, follow: follow(id) });
     }
+    this.addXrays();
     this.applyLook();
     this.host.requestRender();
+  }
+
+  /** A see-through copy of every wiring mesh, drawn only where a part is in front of it (the solid look). */
+  private addXrays() {
+    const meshes: THREE.Mesh[] = [];
+    this.object.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh && !o.userData.xray) meshes.push(o as THREE.Mesh);
+    });
+    for (const src of meshes) {
+      const copy = new THREE.Mesh(src.geometry, this.xrayMat);
+      copy.userData.xray = true;
+      copy.renderOrder = 6;
+      copy.raycast = () => undefined;
+      src.add(copy);
+      this.xrays.push({ src, copy, wire: src.userData.wire as string | undefined });
+    }
+  }
+
+  /** Copies follow their meshes' geometry, which chains and loops replace as they flex. */
+  private syncXrays() {
+    for (const x of this.xrays) if (x.copy.geometry !== x.src.geometry) x.copy.geometry = x.src.geometry;
   }
 
   private buildWire(w: HarnessWire, runs: { a: { end: SegEnd; follow: Follow }; b: { end: SegEnd; follow: Follow }; route?: RoutedWire }[], plugFollows: [Follow, Follow]): WireObj {
@@ -339,6 +384,10 @@ export class WiringOverlay implements SceneOverlay {
     for (const f of this.flexes) f.d.setLook((wire) => (wire ? this.dimmed(wire) : false), this.planes);
     this.plastic.clippingPlanes = this.planes;
     this.metal.clippingPlanes = this.planes;
+    if ((this.xrayMat.clippingPlanes?.length ?? 0) !== (this.planes?.length ?? 0)) this.xrayMat.needsUpdate = true;
+    this.xrayMat.clippingPlanes = this.planes;
+    // a faded cable does not show through: only the ones in focus do
+    for (const x of this.xrays) x.copy.visible = this.solid && !(x.wire && this.dimmed(x.wire));
   }
 
   setClipping(planes: THREE.Plane[] | null) {
@@ -422,6 +471,7 @@ export class WiringOverlay implements SceneOverlay {
       f.d.moving.matrixWorldNeedsUpdate = true;
       f.d.update([g.x, g.y, g.z]);
     }
+    this.syncXrays();
     return true;
   }
 
@@ -438,15 +488,19 @@ export class WiringOverlay implements SceneOverlay {
     this.wires.clear();
     this.sockets = [];
     this.follows.clear();
-    this.ghosts.clear();
+    this.fade.clear();
+    this.xrays = [];
   }
 
   dispose() {
     this.clear();
     this.plastic.dispose();
     this.metal.dispose();
+    this.xrayMat.dispose();
   }
 }
+
+const NO_GHOSTS: ReadonlyMap<string, number> = new Map();
 
 const add = (a: V3, b: V3, s = 1): V3 => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
 

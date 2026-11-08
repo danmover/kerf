@@ -14,7 +14,8 @@ import type { ReactNode } from "react";
 import type { Findable } from "../app/find";
 import { useDesign } from "../core/engine";
 import { turns } from "../core/model";
-import { useView, requestCamera, select, toggleCode, type ViewPreset } from "../app/view";
+import { useView, requestCamera, select, toggleCode, showGroups, soloGroup, type ViewPreset } from "../app/view";
+import { partGroups } from "../app/partGroups";
 import { useSettings, updateSettings, LIGHTING_IDS, SPEEDS } from "../app/settings";
 import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
 import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
@@ -92,7 +93,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   bom: { detail: "Quantities, make or buy, prices and where to buy", keywords: "bom bill of materials buy shopping order cost price suppliers" },
   graph: { detail: "How the parts and features depend on each other", keywords: "dependencies dependency structure network" },
   code: { title: "Design file (design.kerf)", detail: "The design as text: edit it by hand", keywords: "code source editor text script file kerf language" },
-  structure: { title: "Parts", detail: "Every part and component, grouped as in the design", keywords: "tree structure components assembly hierarchy outline" },
+  structure: { title: "Parts", detail: "Every part and component, grouped as in the design: show a group on its own or hide it", keywords: "tree structure components assembly hierarchy outline groups grouping solo only subassembly" },
   features: {
     title: "Feature tree",
     detail: "Each part's steps in build order: type over a value, suppress, reorder, delete, roll back, pattern or mirror a step",
@@ -244,9 +245,39 @@ export function findItems(ctx: FindContext): FindItem[] {
       { id: "view:grid", group: "View", title: "Grid", detail: "The floor grid under the model", keywords: "floor grid", icon: <Icon.Grid size={14} />, tag: s.grid ? "on" : undefined, run: () => updateSettings({ grid: !s.grid }) },
       { id: "view:edges", group: "View", title: "Edges", detail: "Outline every edge of the model", keywords: "outline lines wireframe", icon: <Icon.Box size={14} />, tag: s.edges ? "on" : undefined, run: () => updateSettings({ edges: !s.edges }) },
     );
+    if (model) {
+      const shownGroups = v.soloGroups;
+      for (const g of partGroups(model.parts))
+        push({
+          id: `view:group:${g.name}`,
+          group: "View",
+          title: `Show ${g.name} on its own`,
+          detail: `${g.ids.length} solid${g.ids.length === 1 ? "" : "s"}: ${g.blocks.slice(0, 5).join(", ")}${g.blocks.length > 5 ? "…" : ""}`,
+          keywords: "group groups only solo isolate subassembly sub-assembly assembly show hide part grouping section system",
+          icon: <Icon.Layers size={14} />,
+          tag: shownGroups.includes(g.name) ? "on" : undefined,
+          run: () => soloGroup(g.name),
+        });
+      if (shownGroups.length) push({ id: "view:group:all", group: "View", title: "Show every group", detail: `Now showing ${shownGroups.join(", ")}`, keywords: "group groups all unhide show everything reset", icon: <Icon.Eye size={14} />, run: () => showGroups([]) });
+    }
     if (v.selected.length || v.isolate) push({ id: "view:isolate", group: "View", title: "Isolate the selection", detail: "Show only the selected parts", keywords: "hide others solo only focus", icon: <Icon.Target size={14} />, keys: "I", tag: v.isolate ? "on" : undefined, run: () => useView.setState({ isolate: !v.isolate }) });
     if (hasMotion) push({ id: "view:play", group: "View", title: v.playing ? "Stop the mechanism" : "Run the mechanism", detail: "Turn the input and watch everything that moves", keywords: "play animate motion move run gears", icon: v.playing ? <Icon.Pause size={14} /> : <Icon.Play size={14} />, keys: "Space", tag: v.playing ? "on" : undefined, run: () => useView.setState({ playing: !v.playing }) });
-    if (hasWires) push({ id: "view:wiring", group: "Machines", title: "Wiring view", detail: "Every cable and plug, in place", keywords: "wires cables harness plugs connectors electrical", icon: <Icon.Plug size={14} />, keys: "W", run: () => toggleWiring() });
+    if (hasWires)
+      push(
+        { id: "view:wiring", group: "Machines", title: "Wiring view", detail: "Every cable and plug, in place", keywords: "wires cables harness plugs connectors electrical", icon: <Icon.Plug size={14} />, keys: "W", run: () => toggleWiring() },
+        {
+          id: "view:wiring-solid",
+          group: "Machines",
+          title: s.wiringSolid ? "Wiring with see-through covers" : "Wiring with solid parts",
+          detail: s.wiringSolid ? "Covers over the wiring fade so the plugs under them show" : "Every part stays solid; cables behind parts show faintly through them",
+          keywords: "wires cables wiring solid opaque transparent see through x-ray xray hidden behind show through whole complete covers fade",
+          icon: <Icon.Plug size={14} />,
+          run: () => {
+            updateSettings({ wiringSolid: !s.wiringSolid });
+            toggleWiring(true);
+          },
+        },
+      );
     if (model && hasFitting(model)) push({ id: "view:fitting", group: "View", title: "How it goes on", detail: "Watch it fitted, and what keeps it there", keywords: "fit fitting mount install clip band attach", icon: <Icon.Assemble size={14} />, tag: useFitView.getState().on ? "on" : undefined, run: () => (useFitView.getState().on ? useFitView.setState({ on: false }) : playFitting()) });
 
     // ── exports ──
