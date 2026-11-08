@@ -1,6 +1,6 @@
 design "Seatpost Number Bracket"
-note "A screwless race-number holder that fits round seatposts, D-shaped aero posts and the Giant Propel's, held on the way rear lights are. Its curved middle sits behind the post on a TPU grip pad shaped to that post, and an arm clips onto a boss at each side, free to swing in or out. One EPDM O-ring hooks onto a double hook at each arm's tip (over the top prong, down behind, under the bottom one) and wraps the post's front with a strand high and one low. Its pull swings each arm in until a rounded finger on the arm rests on the post's side, so the arms follow whatever shape the post is, and the pull presses the middle and its pad onto the post's back. The number's pointed end slides into a slot in the jaw only 0.2 mm wider than the number and nests in a V pocket of its own outline there, which holds it at one tilt, its tail 15° above level. A small snap pin pushed through one cheek, the number's centre hole (where the old bolt went) and the other cheek clicks out behind it, so the number cannot slide out; pinch the pin's two prong tips together to push it back out."
-note "Everything about the bracket, its arms and its pin is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); each arm is drawn about its own pivot, pointing forward, turned about the boss by th (worked out below for the post chosen) and leaned back with the rest, the left one the same print turned over. The number's outline is turned about its centre hole by tilt plus rise, so its tail rises rise degrees above level."
+note "A screwless race-number holder that fits round seatposts, D-shaped aero posts and the Giant Propel's, held on the way rear lights are. Its curved middle sits behind the post on a TPU grip pad shaped to that post, and an arm slides down onto a boss at each side and clicks there, free to swing in or out. One EPDM O-ring's ends drop into a rounded channel in the back of each arm's head (the end loops over the head's top and under its bottom and slides in from the side), and it wraps the post's front with a strand high and one low. Its pull swings each arm in until a rounded finger on the arm rests on the post's side, so the arms follow whatever shape the post is, and the pull presses the middle and its pad onto the post's back. The number's pointed end slides into a slot in the jaw only 0.2 mm wider than the number and nests in a V pocket of its own outline there, which holds it at one tilt, its tail 15° above level. A small snap pin pushed through one cheek, the number's centre hole (where the old bolt went) and the other cheek clicks out behind it, so the number cannot slide out; pinch the pin's two prong tips together to push it back out."
+note "Everything about the bracket, its arms and its pin is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); each arm is drawn about its own pivot, pointing forward, turned about the boss by th (worked out below for the post chosen) and leaned back with the rest, the left one its mirror image. The number's outline is turned about its centre hole by tilt plus rise, so its tail rises rise degrees above level."
 note "v4, from the printed v3 and its side-arm rework: the pin spans the whole slot and goes on into the far cheek, and every overhang prints without supports (the pin and its holes are teardrops)."
 note "v5: the number tilts up 30°, the bracket is 20 mm tall (the O-ring's double hooks as short as a 3.53 mm cord allows) and its seat fits a 20 mm flat back. The jaw is a plain block standing on the bed with the tilted pocket cut through it."
 note "v6: the tilt adjusts by hand and is firm at each click: the number sits in a dial (a third small print) that turns about its centre hole on a stub off the far cheek and is locked by a sprung latch whose wedge teeth take up all play. The centre hole sits 3.2 mm higher so the dial's teeth fit under it in the same 20 mm height."
@@ -8,6 +8,7 @@ note "v7: the tilt is changed by pulling one big arrow-shaped tab straight out, 
 note "v8: pulling v7's latch let the dial drop off its stub, because the latch was all that held it on. Now the dial goes on a keyed stub through a keyhole that only lines up 35° past the top click, which the number cannot reach (its corner meets the seatpost first), and there is nothing to pull: a spring blade outside the far cheek presses a V finger through a window into three grooves under the dial, preloaded so there is no play."
 note "v9, from the printed v8, which snapped: nothing bends and nothing turns. The number is held at the top tilt only, its point in a V pocket cut through a solid jaw, in a slot 0.2 mm wider than it, and a separate snap pin goes through the jaw and the number. The saddle is 5.3 mm thick behind its seat with nothing cut into it."
 note "v10: fits any seatpost, and the number sits flatter. The middle's seat is a 17.5 mm radius curve with a TPU pad shaped to the post in it (the one part that changes with the post), and the double hooks are on two arms that clip onto bosses either side and swing in or out to follow the post, the way you sketched it. Each arm's clip is a C that snaps over its boss and a bead in it rides in a groove round the boss, so the arm stays at its height. The clip's opening faces the neck that holds its boss, forward and in, so the O-ring's pull always presses the clip onto the back of its boss rather than out through the opening. The number's tail rises 15° instead of 30°, and its pin sits 2 mm higher so the jaw stays thick under the flatter number. The O-ring is a plain 3.5 mm metric one sized to the post (no joined double band was for sale)."
+note "v11, from the printed v10 arm: each arm is one solid piece that stands flat on the bed, with no groove under it to bridge, and its body runs full width from the clip to the head, where v10's joined the clip by a sliver. The O-ring no longer threads through narrow gaps between prongs: each end loops over the head and slides into a rounded channel in its back, which flares at the top and bottom so the cord bends gently, and the pull holds it three quarters of a cord deep. The clip slides down over its boss from the top and clicks into a groove near the boss's top, about 24 N on and off; its opening is 1.4 mm narrower than the boss, so it cannot come off sideways however the arm is knocked. The arms are now a right and a left, each the other's mirror image, so both slide on from the top."
 
 brief {
   purpose: "Hold a race number behind a seatpost with no screws: round posts, D-shaped aero posts and the Giant Propel's"
@@ -60,11 +61,10 @@ param tail_r   = 1.5mm  range 0 .. 4    "Radius of the post's back corners"
 param body_h   = 20mm   range 20 .. 30  "Height along the post of the bracket, its arms and the jaw"
 param pad_t    = 1.5mm  range 1.2 .. 2.5 "Grip pad thickness where the post comes closest (TPU)"
 
-// ── The O-ring and its double hooks ────────────────────
+// ── The O-ring and the arms' channels ──────────────────
 param oring_id = 44mm   range 30 .. 60  "O-ring inside diameter: the seatpost choice sets the size that stretches about 35 % on it"
 param oring_cs = 3.5mm  range 3 .. 3.5  "O-ring cord (3.5 mm metric)"
-param prong_d  = 5.5mm  range 4.5 .. 6  "Prong diameter: the bend the cord makes (at least 1.5 cords, so the O-ring does not wear through)"
-param lip      = 2.7mm  range 2.4 .. 3.5 "How far each double hook's walls stand proud of its prongs (the stretch to get the O-ring's end in)"
+param prong_d  = 5.5mm  range 5.25 .. 6 "The bend the O-ring makes over the top and bottom of each arm's channel, as a diameter (at least 1.5 cords, so it does not wear through)"
 
 // ── The jaw and its snap pin ───────────────────────────
 param pivot_y  = 16mm   range 14 .. 24  "From the seat's middle back to the number's centre hole, where the pin goes"
@@ -121,56 +121,86 @@ let key_w    = 3
 let key_d    = 1.2                                   // the pad's key and the stopped groove it sits in
 
 // ── The bosses, their necks and the arms' clips ───────
-// a boss each side on a neck that runs forward and in at neck_a below straight in. Each arm's clip is a C that wraps
-// the boss, its opening centred on the neck, so the arm swings swing degrees either way before the opening meets it
+// a boss each side on a neck that runs forward and in at neck_a below straight in. Each arm's clip is a C round its boss
+// with its opening over the neck, and the opening is narrower than the boss, so the clip cannot come off sideways. It
+// slides down over the boss from the top, the neck running in its opening, until a bead inside the clip's back clicks
+// into a groove round the boss near its top; pulled straight up, it comes off again
 let px       = 15.5
 let py       = 2
 let rb       = 3                                     // boss radius
 let neck_a   = 30
 let neck_l   = 8                                     // long enough that its end is lost in the seat
-let nw       = 3.4
+let nw       = 3                                     // narrow, so the clip's opening can be well under the boss's width
 let clr      = 0.2                                   // room between the boss and its clip
 let ri       = rb + clr
 let kw       = 1.8                                   // the clip's wall
 let ro       = ri + kw
 let relief   = 0.3                                   // room round each clip in the middle's side
-let mouth_c  = 180 + neck_a                          // the clip's opening, in the arm's frame
-let mouth_h  = 60.3                                  // half its angle: its edges stand 0.44 mm inside the boss's width
-let swing    = mouth_h - asin((nw / 2) / ri)         // how far the arm turns before the opening's edge meets the neck
-// a 45° groove round the boss's middle and a bead inside the clip that rides in it, so the arm stays at its height
-let gd       = 0.6
-let g0       = 0.6
-let g1       = g0 + 1.4 * gd                         // the groove's and the bead's flanks stand at 55°, so they print without support
-let bead     = 0.6
-let b0       = 0.5
-let b1       = b0 + 1.4 * bead
+// every post sets its arms between the D-shaped post's -2.4° and the 31.6 mm post's 25.2°, so the opening is centred on
+// the neck at th_c, halfway, and lets the arm turn swing degrees either way of it before its edge meets the neck
+let th_c     = 11.4
+let swing    = 18
+let mouth_c  = 180 + neck_a - th_c                   // the opening's middle, in the arm's frame
+let mouth_h  = asin((nw / 2) / ri) + swing           // half its angle
+let mouth_w  = 2 * ri * sin(mouth_h)                 // its width
+// the bead: the boss can move slack toward the opening before it meets the opening's edges, and the bead pushes it det
+// further, so the C springs open a little as the bead rides over the boss and closes as it drops into the groove. The
+// bead's inside face is the boss's own curve moved sh toward the opening, so it bears all along the boss as it rides
+let slack    = ri * cos(mouth_h) - sqrt(rb^2 - (ri * sin(mouth_h))^2)
+let det      = 0.12 * 20 / body_h                    // a taller clip is stiffer, so it rides less far for the same push
+let sh       = slack + det
+let bd       = clr + sh                              // how far the bead stands out of the clip's back
+let b0       = 0.4
+let b1       = b0 + 1.4 * bd                         // the bead's, the groove's and the boss's lead-in flanks stand at 55°, so they print without support
+let gd       = bd + 0.1                              // the groove, deep enough that the bead never bottoms in it
+let g0       = b0 + 0.1
+let g1       = g0 + 1.4 * gd
+let zg       = body_h / 2 - 1.4 * gd - 1 - g1        // the groove's and the bead's middle: under the boss's top chamfer and a 1 mm land
 
-// ── Each arm, in its own frame: pivot at (0, 0), pointing forward (-y), outward +x, as it prints ──
-// a beam on the outside from the clip to the head; in the head a groove between the beam and an inner wall, and the double
-// hook's block bridging the groove, its two rounded back corners the prongs. The inner wall's inside face is the finger,
-// an 8 mm radius, that rests on the post's side
-let reach    = 11.5                                  // from the pivot to the prongs' middle
-let yh       = -reach
-let pr       = prong_d / 2
-let spread   = body_h - prong_d - 2 * lip            // the prongs' centres apart: the walls come flush with the top and bottom
-let va       = -1                                    // the head's front, from the prongs' middle: the walls bridge the block's flat underside
-let vb       = pr + lip                              // the walls' back
-let xo       = 5.6                                   // the beam's outside
-let ta       = 2.6                                   // and its thickness
-let groove   = 4.5
-let stop     = 4.2                                   // the inner wall's thickness at the finger's middle
-let xb0      = xo - ta
-let xg0      = xb0 - groove
-let xi       = xg0 - stop                            // the finger's middle
-let rf       = 8                                     // the finger's radius
-let yf       = yh + (va + vb) / 2
-let hook_x   = (xg0 + xb0) / 2
-// seen from the side (v back toward the pivot from the prongs' middle, z up): the block, whose rounded back corners are
-// the prongs. The lower prong's underside is chamfered at 45° below its middle, so it prints without support
-let block    = outline([(va, -spread / 2 - pr), (0.414 * pr, -spread / 2 - pr), (0.707 * pr, -spread / 2 - 0.707 * pr), arc_to((pr, -spread / 2), via: (0.924 * pr, -spread / 2 - 0.383 * pr)), (pr, spread / 2), arc_to((0, spread / 2 + pr), via: (0.707 * pr, spread / 2 + 0.707 * pr)), (va, spread / 2 + pr)])
-let wedge    = polygon(points: [(0, 0), ((ro + 2) * cos(mouth_c - mouth_h), (ro + 2) * sin(mouth_c - mouth_h)), ((ro + 2) * 1.5 * cos(mouth_c), (ro + 2) * 1.5 * sin(mouth_c)), ((ro + 2) * cos(mouth_c + mouth_h), (ro + 2) * sin(mouth_c + mouth_h))])
-let arm_solid = [revolve(points: [(ri, -body_h / 2), (ro, -body_h / 2), (ro, body_h / 2), (ri, body_h / 2), (ri, b1), (ri - bead, b0), (ri - bead, -b0), (ri, -b1)], at: (0, 0, 0), dir: Z), box(ta, -ri - 0.3 - (yh + va), body_h, at: ((xo + xb0) / 2, (-ri - 0.3 + yh + va) / 2, -body_h / 2)), extrude(overlap(rect(xg0 - xi + 1, vb - va, at: ((xg0 + xi - 1) / 2, yh + (va + vb) / 2)), circle(2 * rf, at: (xi + rf, yf))), body_h, at: (0, 0, -body_h / 2)), extrude(block, groove + 0.02, at: (xg0 - 0.01, yh, 0), dir: X)]
-let arm_cuts = [extrude(wedge, body_h + 2, at: (0, 0, -body_h / 2 - 1))]
+// ── Each arm, in its own frame: pivot at (0, 0), pointing forward (-y), outward +x, standing on its bottom face as it
+// prints ──
+// one solid piece standing flat on the bed: the clip, a body running forward on the post's side of it, and a head across
+// its tip. The body's inside face is the finger, an 8 mm radius that rests on the post's side (where v10's was, so each
+// post sets the same arm angle). The O-ring's end drops into an upright channel in the back of the head from the side;
+// the channel flares out round prong_d / 2 at its top and bottom, so the cord bends gently over them whichever way the
+// post pulls it, and the bottom flare is a 50° cone with a rounded rim, so it prints without support
+let rf       = 8
+let xi       = -5.7                                  // the finger's middle
+let yf       = -9.275
+let yft      = -6.6                                  // the finger's upper end
+let ybf      = -8.5                                  // the head's back face
+let hd       = 6.8                                   // and its depth: 1.2 mm of solid in front of the top flare
+let yfront   = ybf - hd
+let ch_r     = oring_cs / 2 + 0.2                    // the channel: the cord and 0.2 of room
+let ch_e     = 0.9                                   // its middle sits this far into the head, so the cord sits three quarters of its thickness deep
+let xu       = 3.4
+let ny_c     = ybf - ch_e
+let xb       = xu - ch_r                             // the body's outside face, which runs on into the channel's inner side
+let xend     = xu + ch_r + 1.2                       // the head's outer end: a 1.2 mm wall outside the channel
+let rr       = prong_d / 2
+let lip      = ch_r + ch_e                           // how far the O-ring's end is pulled back to get it into the channel or out
+let aB       = mouth_c + mouth_h + 3.5               // where the body's inside face leaves the clip, just past its opening
+let fx_t     = xi + rf - sqrt(rf^2 - (yft - yf)^2)
+let fx_f     = xi + rf - sqrt(rf^2 - (yfront - yf)^2)
+let arm_plan = outline([(0, 0), (ro * cos(aB), ro * sin(aB)), (fx_t, yft), arc_to((fx_f, yfront), via: (xi, yf)), (xend, yfront), (xend, ybf), (xu, ybf), (xu, ny_c), (xb, ny_c), (xb, -ri + 0.2)])
+let arm_body = extrude(arm_plan, body_h, at: (0, 0, -body_h / 2))
+let knuckle  = extrude(circle(2 * ro), body_h, at: (0, 0, -body_h / 2))
+let bore_s   = extrude(circle(2 * ri), body_h + 2, at: (0, 0, -body_h / 2 - 1))
+let bead_r   = ri + sh + 0.35
+let bead_s   = revolve(points: [(rb, zg - b0), (ri + sh, zg - b1), (bead_r, zg - b1), (bead_r, zg + b1), (ri + sh, zg + b1), (rb, zg + b0)], at: (sh * cos(mouth_c), sh * sin(mouth_c), 0), dir: Z)
+let mouth_p  = overlap(polygon(points: [(0, 0), (2 * ro * cos(mouth_c - mouth_h), 2 * ro * sin(mouth_c - mouth_h)), (2 * ro * cos(mouth_c), 2 * ro * sin(mouth_c)), (2 * ro * cos(mouth_c + mouth_h), 2 * ro * sin(mouth_c + mouth_h))]), circle(2 * ro + 0.1))
+let mouth_s  = extrude(mouth_p, body_h + 2, at: (0, 0, -body_h / 2 - 1))
+// the channel, as a solid of revolution about its upright middle: straight from zb to zt, round at the top, and at the
+// bottom round to 40° from upright, then a 40° cone, then a rbed round into the bed
+let zt       = body_h / 2 - rr
+let zb       = -body_h / 2 + rr
+let rbed     = 1.2
+let rc       = ch_r + rr * (1 - cos(40) + (1 - sin(40)) * tan(40))
+let tb       = rbed * tan(25)
+let channel_s = revolve(outline([(0, -body_h / 2 - 1), (rc + tb, -body_h / 2 - 1), (rc + tb, -body_h / 2), arc_to((rc - tb * sin(40), -body_h / 2 + tb * cos(40)), via: (rc + tb - rbed * sin(25), -body_h / 2 + rbed - rbed * cos(25))), (ch_r + rr * (1 - cos(40)), zb - rr * sin(40)), arc_to((ch_r, zb), via: (ch_r + rr * (1 - cos(20)), zb - rr * sin(20))), (ch_r, zt), arc_to((ch_r + rr, body_h / 2), via: (ch_r + rr * (1 - cos(45)), zt + rr * sin(45))), (ch_r + rr, body_h / 2 + 1), (0, body_h / 2 + 1)]), at: (xu, ny_c, 0), axis: Z)
+// the flares stop at the channel's outer side, so the 1.2 mm wall outside the channel keeps its full height (the O-ring's
+// strands leave forward and in, never over that wall)
+let wall_s   = extrude(polygon(points: [(xu + ch_r, yfront), (xend, yfront), (xend, ybf), (xu + ch_r, ybf)]), body_h, at: (0, 0, -body_h / 2))
 
 // ── Where each arm rests: it swings in until its finger meets the post ──
 // the finger is a circle of radius rf (and 0.1 of room) about q in the arm's frame; turned by th about the boss it first
@@ -199,7 +229,7 @@ let side_l   = max(hypot(tkx - tnx, tky - tny), 0.01)
 let side_t   = ((qSx - fr * snx - tnx) * (tkx - tnx) + (qSy - fr * sny - tny) * (tky - tny)) / side_l
 let th_S     = round_post ? -999 : side_t < -0.01 || side_t > side_l + 0.01 ? -999 : th_S1
 let th_free  = max(th_N, th_K, th_S)
-let th       = clamp(th_free, -swing, swing)
+let th       = clamp(th_free, th_c - swing, th_c + swing)
 let on_N     = th_N >= th_K && th_N >= th_S
 let on_K     = th_K > th_N && th_K >= th_S
 // the finger's centre as it rests, the normal where it touches (from the post toward it) and the touching point
@@ -213,10 +243,21 @@ let fcx      = qx - rf * cnx
 let fcy      = qy - rf * cny
 // where on the finger it touches, from its middle: it must stay on the rounded face, short of the wall's ends
 let psi      = atan2(-cnx * sin(th) + cny * cos(th), cnx * cos(th) + cny * sin(th))
-let psi_max  = asin(((vb - va) / 2 - 1) / rf)
-// the prongs' middle of the right arm's double hook, in the bracket's frame (the left one is its mirror image)
-let hRx      = px + hook_x * cos(th) - yh * sin(th)
-let hRy      = py + hook_x * sin(th) + yh * cos(th)
+// it must touch at least 1 mm short of the finger's ends: its upper end and the head's front
+let psi_lo   = asin((yf - yft + 1) / rf)
+let psi_hi   = asin((yf - yfront - 1) / rf)
+// the O-ring's end in arm_r's channel: the strands leave it hook_a in from straight forward (about 8° on the D-shaped
+// post, 18° on the Propel's and 53° on round ones; 25° is a middle value), so they bend over the flares' rounds about
+// this far in front of the channel's middle. On round posts the real bend sits about 2 mm further in, which makes the
+// loop about 1.5 % shorter than reckoned here. In the bracket's frame; arm_l's is its mirror image
+let hook_a   = 25
+let hk_x     = xu - (ch_r + rr) * sin(hook_a)
+let hk_y     = ny_c - (ch_r + rr) * cos(hook_a)
+let hRx      = px + hk_x * cos(th) - hk_y * sin(th)
+let hRy      = py + hk_x * sin(th) + hk_y * cos(th)
+// the channel's middle, through which the O-ring's pull on the arm passes
+let nRx      = px + xu * cos(th) - ny_c * sin(th)
+let nRy      = py + xu * sin(th) + ny_c * cos(th)
 
 part post {
   label: "Seatpost"
@@ -298,7 +339,7 @@ part bracket {
   }
   for side in [-1, 1] {
     add extrude(rotate(rect(neck_l, nw, at: (-side * neck_l / 2, 0)), side * neck_a), body_h, at: (side * px, py, -body_h / 2)) as necks
-    add revolve(points: [(0, -body_h / 2), (rb, -body_h / 2), (rb, -g1), (rb - gd, -g0), (rb - gd, g0), (rb, g1), (rb, body_h / 2), (0, body_h / 2)], at: (side * px, py, 0), dir: Z) as bosses
+    add revolve(points: [(0, -body_h / 2), (rb, -body_h / 2), (rb, zg - g1), (rb - gd, zg - g0), (rb - gd, zg + g0), (rb, zg + g1), (rb, body_h / 2 - 1.4 * gd), (rb - gd, body_h / 2), (0, body_h / 2)], at: (side * px, py, 0), dir: Z) as bosses
   }
   // the jaw: one solid block standing on the bed from the middle's back to past the centre hole, the full height
   add extrude(jaw_sec, jaw_w, at: (-jaw_w / 2, 0, 0), dir: X) as jaw
@@ -332,34 +373,47 @@ part pad {
   add box(key_w, key_d + 0.3, body_h - 8, at: (0, pad_t + (key_d - 0.3) / 2, -(body_h - 8) / 2)) as key
 }
 
-// ── The arms: one print, made twice ─────────────────────
-// each prints lying on its bottom face as drawn: the clip, beam and head stand on the bed, the groove's walls carry the
-// block's flat underside across, and the clip's bead and the prong's chamfer slope at 45°
+// ── The arms: a right and a left, each the other's mirror image ──
+// each prints standing on its bottom face as drawn, flat on the bed: the bead's underside and the channel's bottom flare
+// slope at 55° and 50°, so nothing needs support. arm_r is on +x, which is the bike's left (seen from behind, +x is on
+// your left), so the labels name the bike's side
 part arm_r {
-  label: "Arm (right)"
+  label: "Arm (bike's left)"
   color: #222428
   material: "ASA"
   group: "Bracket"
   rotate: (atan2(sin(-tilt) * cos(th), cos(-tilt)), asin(-sin(-tilt) * sin(th)), atan2(cos(-tilt) * sin(th), cos(th)))
   at: (px, py * ct, -py * st)
-  held: "its clip snaps over the bracket's boss and its bead rides in the boss's groove; the O-ring's pull swings it in onto the post and keeps the clip seated"
-  body arm_solid as arm
-  cut arm_cuts as mouth_cut
-  fillet(0.6, edges: near((xi + 1, yh + va, 0), 1.2) + near((xg0, yh + va, 0), 0.6) + near((xo, yh + va, 0), 0.6))
+  held: "slid down over the bracket's boss until the bead inside its clip clicks into the boss's groove; its opening is narrower than the boss, so it cannot come off sideways, and the O-ring's pull swings it in onto the post"
+  body arm_body as arm
+  add knuckle as clip
+  cut bore_s as bore
+  add bead_s as bead
+  cut mouth_s as mouth_cut
+  cut channel_s as channel
+  add wall_s as outer_wall
+  fillet(1.5, edges: near((fx_t, yft, 0), 0.3))
+  fillet(1, edges: near((fx_f, yfront, 0), 0.3) + near((xend, yfront, 0), 0.3))
 }
 
 part arm_l {
-  label: "Arm (left)"
+  label: "Arm (bike's right)"
   color: #222428
   material: "ASA"
   group: "Bracket"
-  // the same print turned over
-  rotate: (atan2(sin(-tilt) * cos(th), -cos(-tilt)), asin(-sin(-tilt) * sin(th)), atan2(cos(-tilt) * sin(th), -cos(th)))
+  // the right arm's mirror image, so it too slides on from the top
+  rotate: (atan2(sin(-tilt) * cos(th), cos(-tilt)), asin(sin(-tilt) * sin(th)), atan2(-cos(-tilt) * sin(th), cos(th)))
   at: (-px, py * ct, -py * st)
-  held: "its clip snaps over the bracket's boss and its bead rides in the boss's groove; the O-ring's pull swings it in onto the post and keeps the clip seated"
-  body arm_solid as arm
-  cut arm_cuts as mouth_cut
-  fillet(0.6, edges: near((xi + 1, yh + va, 0), 1.2) + near((xg0, yh + va, 0), 0.6) + near((xo, yh + va, 0), 0.6))
+  held: "slid down over the bracket's boss until the bead inside its clip clicks into the boss's groove; its opening is narrower than the boss, so it cannot come off sideways, and the O-ring's pull swings it in onto the post"
+  body mirror(arm_body, normal: X) as arm
+  add mirror(knuckle, normal: X) as clip
+  cut mirror(bore_s, normal: X) as bore
+  add mirror(bead_s, normal: X) as bead
+  cut mirror(mouth_s, normal: X) as mouth_cut
+  cut mirror(channel_s, normal: X) as channel
+  add mirror(wall_s, normal: X) as outer_wall
+  fillet(1.5, edges: near((-fx_t, yft, 0), 0.3))
+  fillet(1, edges: near((-fx_f, yfront, 0), 0.3) + near((-xend, yfront, 0), 0.3))
 }
 
 // ── The snap pin ────────────────────────────────────────
@@ -448,10 +502,10 @@ part transponder {
   body extrude(sticker, 0.1, at: (-plate_t / 2 - 0.1, 0, 0), dir: X)
 }
 
-// ── The O-ring: its end on the left arm's double hook, round the post's front high and low, its other end into the right
-// arm's. The hooks are on the arms, so from: and to: are where the arms put them, in the bracket's frame, and each end
-// goes in from behind its block (open: the arm's way back)
-component oring = lib.band("EPDM", id: oring_id, cs: oring_cs, around: post, holds: bracket, hooked_on: [arm_l, arm_r], from: (-hRx, hRy, 0), to: (hRx, hRy, 0), pin: prong_d, lip: lip, spread: spread, open: [(sin(th), cos(th), 0), (-sin(th), cos(th), 0)], carries: 34g, shock: bump_g, saddle_mu: pad_mu) {
+// ── The O-ring: one end in the left arm's channel, round the post's front high and low, its other end into the right
+// arm's. The channels are on the arms, so from: and to: are where the arms put them, in the bracket's frame; each end slides
+// into its channel from the arm's outer side (open:), over the top and under the bottom of the head
+component oring = lib.band("EPDM", id: oring_id, cs: oring_cs, around: post, holds: bracket, hooked_on: [arm_l, arm_r], from: (-hRx, hRy, 0), to: (hRx, hRy, 0), pin: prong_d, lip: lip, spread: body_h - prong_d, open: [(-cos(th), sin(th), 0), (cos(th), sin(th), 0)], carries: 34g, shock: bump_g, saddle_mu: pad_mu) {
   group: "Bands"
 }
 
@@ -469,10 +523,10 @@ decision seatpost "Which seatpost" {
 
 decision holding "How it holds the post" {
   ask: "Hold the bracket on any seatpost without a screw"
-  chose: "Arms that swing, one O-ring on double hooks"
+  chose: "Arms that swing, one O-ring in their channels"
   by: "you"
-  why: "Your idea: a curved middle with TPU in it and ends that clip on and turn in or out to follow the post. Each arm swings on a boss until its finger meets the post's side, so one bracket fits round, aero and the Propel's post, and the O-ring's pull does the swinging. The O-ring hooks on the way a rear light's does: a strand high and one low round the post's front, so it also stops the bracket rocking about it. A closed band cannot get round a seatpost that carries on above and below, so the O-ring's end goes on one hook, wraps the post and is stretched into the other hook."
-  option "Arms that swing, one O-ring on double hooks" "One print for every post; only the pad and the O-ring change."
+  why: "Your idea: a curved middle with TPU in it and ends that clip on and turn in or out to follow the post. Each arm swings on a boss until its finger meets the post's side, so one bracket fits round, aero and the Propel's post, and the O-ring's pull does the swinging. The O-ring hooks on the way a rear light's does: a strand high and one low round the post's front, so it also stops the bracket rocking about it. A closed band cannot get round a seatpost that carries on above and below, so one end of the O-ring goes into one arm's channel, wraps the post and is stretched into the other arm's channel. v10's double hooks made you thread the cord through narrow gaps; the channels take it from the side."
+  option "Arms that swing, one O-ring in their channels" "One print for every post; only the pad and the O-ring change."
   option "Fixed hooks on the middle" "v9: simpler, but its seat fits one post only."
   option "Clamp with a screw" "Holds hardest, but needs a tool and can mark the post."
 }
@@ -522,11 +576,11 @@ decision oring_rubber "Which O-ring" {
   why: "No joined double band like yours is sold on its own in Australia (Garmin's Varia bands are sold out), so it is a plain metric O-ring with a 3.5 mm cord, sized to the post, whose two strands do what your band's two loops do. EPDM lasts outdoors; RS Australia sells it in bags of 20. Autopro sells single nitrile ones ($1.49 for the 36 and 41 mm, $12.99 for the 44 mm), fine to start with but they crack in the sun. A photo of your band, or its loop's length, would let it be designed round that instead."
   option "Metric 3.5 mm EPDM O-ring" "RS Australia, a bag of 20 (44 × 3.5 is stock no. 258-7581)."
   option "Metric 3.5 mm nitrile O-ring" "Autopro, one at a time ($12.99 for the 44 mm, $1.49 for the 36 and 41 mm): swap it each season."
-  option "Your double band" "Send a photo or its loop's length and the hooks are sized to it."
+  option "Your double band" "Send a photo or its loop's length and the channels are sized to it."
 }
 
 // ── What each arm passes to the bracket ───────────────
-// The O-ring pulls each arm's hook toward the post (Fb). The arm turns freely on its boss, so the post must push back on
+// The O-ring pulls each arm's head toward the post (Fb). The arm turns freely on its boss, so the post must push back on
 // its finger (along the contact's normal) just hard enough to balance that pull's turn about the boss; the boss then
 // takes the sum of the two (Fp), which is what the bracket feels. All in the bracket's own frame (x across, y back)
 let tpx      = oring.to_pull.x
@@ -535,20 +589,21 @@ let tpz      = oring.to_pull.y * st + oring.to_pull.z * ct
 let Fbx      = oring.pull * tpx
 let Fby      = oring.pull * tpy
 let Fbz      = oring.pull * tpz
-let Mb       = (hRx - px) * Fby - (hRy - py) * Fbx
+let Mb       = (nRx - px) * Fby - (nRy - py) * Fbx
 let Mf       = (fcx - px) * cny - (fcy - py) * cnx
 let finger   = -Mb / Mf
 let Fpx      = Fbx + finger * cnx
 let Fpy      = Fby + finger * cny
 let Fp       = hypot(Fpx, Fpy)
-// the clip is seated when the boss bears on the clip's back, away from its opening
-let seat_ok  = (Fpx * cos(mouth_c + th) + Fpy * sin(mouth_c + th)) / Fp
+// the boss bears on the clip's wall on the side away from the pull: how far round that is from the opening's middle
+// (it should be on solid wall, well clear of the opening's edges)
+let seat_a   = acos(clamp(-(Fpx * cos(mouth_c + th) + Fpy * sin(mouth_c + th)) / Fp, -1, 1))
 let lfpx     = oring.from_pull.x
 let lfpy     = oring.from_pull.y * ct - oring.from_pull.z * st
 let lfpz     = oring.from_pull.y * st + oring.from_pull.z * ct
 let FLbx     = oring.pull * lfpx
 let FLby     = oring.pull * lfpy
-let MbL      = (px - hRx) * FLby - (hRy - py) * FLbx
+let MbL      = (px - nRx) * FLby - (nRy - py) * FLbx
 let fingerL  = -MbL / ((px - fcx) * cny + (fcy - py) * cnx)
 let FLpx     = FLbx - fingerL * cnx
 let FLpy     = FLby + fingerL * cny
@@ -617,14 +672,30 @@ let body_mpa = 6 * max(abs(Fpy), abs(FLpy)) * px / (body_h * (body_back - seat_y
 // each neck is a short cantilever from the middle's side to its boss, bent by the boss's load across it
 let neck_root = (px - bx) / cos(neck_a)
 let neck_mpa = 6 * Fp * neck_root / (body_h * nw^2)
-// each arm's beam is bent where it leaves the clip by the O-ring's pull and the post's push on the finger
-let r0x      = px + (xb0 + ta / 2) * cos(th) - (-ri - 0.3) * sin(th)
-let r0y      = py + (xb0 + ta / 2) * sin(th) + (-ri - 0.3) * cos(th)
-let beam_M   = abs((hRx - r0x) * Fby - (hRy - r0y) * Fbx + finger * ((fcx - r0x) * cny - (fcy - r0y) * cnx))
-let beam_mpa = 6 * beam_M / (body_h * ta^2)
-// opening the clip over the boss: its opening is 0.44 mm narrower than the boss, and bending the C that far strains it
-let snap_d   = 2 * rb - 2 * ri * sin(mouth_h)
-let snap_strain = 2 * snap_d * kw / (3 * PI * ((ri + ro) / 2)^2)
+// each arm is bent where its body leaves the clip, across the body ro + 0.5 in front of the pivot, by the O-ring's pull
+// and the post's push on the finger, and pulled along by them too
+let y_rt     = -(ro + 0.5)
+let x_in     = ro * cos(aB) + (y_rt - ro * sin(aB)) * (fx_t - ro * cos(aB)) / (yft - ro * sin(aB))
+let root_w   = xb - x_in
+let r0x      = px + (x_in + xb) / 2 * cos(th) - y_rt * sin(th)
+let r0y      = py + (x_in + xb) / 2 * sin(th) + y_rt * cos(th)
+let root_M   = abs((nRx - r0x) * Fby - (nRy - r0y) * Fbx + finger * ((fcx - r0x) * cny - (fcy - r0y) * cnx))
+let root_mpa = 6 * root_M / (body_h * root_w^2) + Fp / (body_h * root_w)
+// the clip as a curved beam, a ring cut open by 2 · mouth_h (Castigliano): how far its opening springs wider for the bead
+// to ride over the boss, the strain that takes, the push on each edge of the opening (ASA, E about 2 GPa) and the push or
+// pull along the boss that gets the bead up the 55° flanks (ASA on ASA, μ about 0.3)
+let snap_open = 2 * (sqrt(rb^2 - (ri * cos(mouth_h) - sh)^2) - ri * sin(mouth_h))
+let Jc       = cos(mouth_h)^2 * (PI - mouth_h * PI / 180) + 2 * cos(mouth_h) * sin(mouth_h) + (PI - mouth_h * PI / 180) / 2 - sin(2 * mouth_h) / 4
+let Rk       = (ri + ro) / 2
+let snap_strain = snap_open * (1 + cos(mouth_h)) * kw / (4 * Rk^2 * Jc)
+let edge_f   = snap_open * 2000 * (body_h * kw^3 / 12) / (2 * Rk^3 * Jc)
+let psi_e    = atan2(sqrt(rb^2 - (ri * cos(mouth_h) - sh)^2), ri * cos(mouth_h) - sh)
+let edge_N   = edge_f / sin(psi_e)
+let bead_N   = 2 * edge_N * cos(psi_e)
+let slide_N  = bead_N * (1 / 1.4 + 0.3) / (1 - 0.3 / 1.4) + 2 * edge_N * 0.3
+// in use the O-ring's pull swings each arm (the strands leave the channel in the arm's own frame this far in from
+// straight back out of it), and keeps its end deep in the channel
+let pull_in  = -(-oring.to_pull.x * sin(th) + (oring.to_pull.y * ct - oring.to_pull.z * st) * cos(th)) / hypot(oring.to_pull.x, oring.to_pull.y * ct - oring.to_pull.z * st)
 
 require "The pin's corners pass through the number's centre hole" for fit: pin_s * sqrt(2) + 0.1 <= hole_cd
 require "The pin's prongs close far enough to pass through the holes" for fit: slit / 2 >= pass + 0.15
@@ -635,18 +706,21 @@ require "The number is tight in its slot: at most 0.3 mm of room" soft for knock
 require "The middle is solid behind its seat, at least 5 mm thick" for gust, bumps, fit: body_back - seat_y >= 5
 require "The middle takes the arms' pull three times over" for gust, bumps, fit: 34 / body_mpa >= 3
 require "Each neck takes its arm's pull three times over" for gust, bumps, fit: 34 / neck_mpa >= 3
-require "Each arm takes the O-ring's pull three times over" for gust, bumps, fit: 34 / beam_mpa >= 3
-require "Each arm rests on the post, not at the end of its swing" for fit: abs(th_free) <= swing - 2
+require "Each arm takes the O-ring's pull three times over where it leaves its clip" for gust, bumps, fit: 34 / root_mpa >= 3
+require "Each arm rests on the post, not at the end of its swing" for fit: abs(th_free - th_c) <= swing - 2
 require "The O-ring's pull presses each arm's finger onto the post" for fit, gust: finger >= 0.5N && fingerL >= 0.5N
-require "Each finger meets the post on its rounded face" for fit: abs(psi) <= psi_max
-require "The pull keeps each clip seated on the back of its boss, away from its opening" for fit, gust, bumps: seat_ok >= 0.1
-require "Snapping a clip onto its boss strains it less than ASA takes" for fit: snap_strain <= 0.02
+require "Each finger meets the post on its rounded face" for fit: psi >= psi_lo && psi <= psi_hi
+require "The pull presses each boss on its clip's solid wall, at least 15° clear of the opening" for fit, gust, bumps: seat_a >= mouth_h + 15
+require "A clip cannot come off its boss sideways: its opening is at least 1 mm narrower than the boss" for fit, gust, bumps: mouth_w <= 2 * rb - 1
+require "Sliding a clip on or off its boss strains it less than ASA takes" for fit: snap_strain <= 0.02
+require "Sliding an arm on or off its boss is a firm push or pull, 10 to 35 N" soft for fit: slide_N >= 10N && slide_N <= 35N
 require "The O-ring pulls firmly" soft for gust, bumps: oring.stretch >= 1.3
-require "Stretching the O-ring over its hook is a one-hand job" soft for fit: oring.fit_force <= 45N
-require "The hooks' walls keep the O-ring on" for fit: lip >= 0.75 * oring_cs
+require "Stretching the O-ring into its channel is a one-hand job" soft for fit: oring.fit_force <= 45N
+require "Each end of the O-ring sits at least three quarters of a cord deep in its channel, so a knock cannot flick it out" for fit, bumps: lip >= 0.75 * oring_cs
+require "The O-ring's pull keeps each end in its channel: within 60° of straight into it" for fit, gust: pull_in >= 0.5
 require "The seat runs on past the pad's ends" for gust: bx - (pad_r + pad_t) * sin(pad_end) >= 1
 
-test "Fit and remove": "Snap each arm's clip onto its boss (push it straight on along the neck until it clicks; it should swing freely). Put the pad's key into the seat's groove and hold the bracket on the post. Hook one end of the O-ring into the left arm's double hook (over the top prong, down behind, under the bottom one), wrap it round the post's front high and low and stretch the other end into the right arm's hook with one hand. Both arms should swing in until their fingers rest on the post. Slide the number's point into the jaw's slot, tail up, until it sits in its pocket and its centre hole lines up with the square hole; push the snap pin in until it clicks out the far side. To take it off, pinch the pin's two prong tips together and push it back out, slide the number out, then unhook the O-ring."
+test "Fit and remove": "Slide each arm's clip down over its boss from the top, its opening over the neck, until it clicks; it should swing freely and not come off sideways, and a firm pull straight up takes it off again. Put the pad's key into the seat's groove and hold the bracket on the post. Loop one end of the O-ring over the top and under the bottom of the left arm's head and slide it in from the side until it drops into the channel in the back of the head; wrap it round the post's front high and low and do the same with the other end on the right arm. Both arms should swing in until their fingers rest on the post. Slide the number's point into the jaw's slot, tail up, until it sits in its pocket and its centre hole lines up with the square hole; push the snap pin in until it clicks out the far side. To take it off, pinch the pin's two prong tips together and push it back out, slide the number out, then unhook the O-ring."
 test "Knock": "Push the number's tail up, down and sideways by hand: it must not tilt or rattle in the jaw, and the bracket must not move on the post."
 test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post, the arms must stay on their bosses and the number must not move in the jaw."
 buy "EPDM O-rings, 3.5 mm cord, a bag of 20 in the size the seatpost choice gives (plus $20 delivery under $80 ex GST)" { qty: 1, price: 29.25, url: "https://au.rs-online.com/web/p/gaskets-o-rings/2587581" }
