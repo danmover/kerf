@@ -54,6 +54,40 @@ const box = (w: number, d: number, h: number, at: V3, r = 0): ShapeRecipe => ({ 
 const diamond = (s: number, at: V3, h: number): ShapeRecipe => ({ t: "xform", shape: box(s, s, h, at), xf: [{ op: "rotate", angle: 45, origin: at, axis: ZP }] });
 
 /**
+ * A cambered thin airfoil (NACA 4-digit thickness t of the chord, parabolic camber), chord c along +x from the
+ * trailing edge at -c/2 to the leading edge at +c/2, mid-chord at the origin, camber towards +y.
+ */
+function airfoil(c: number, t: number, camber: number, n = 8): V2[] {
+  const yt = (s: number) => 5 * t * c * (0.2969 * Math.sqrt(s) - 0.126 * s - 0.3516 * s * s + 0.2843 * s ** 3 - 0.1036 * s ** 4);
+  const yc = (s: number) => camber * c * 4 * s * (1 - s);
+  const ss = Array.from({ length: n + 1 }, (_, i) => (1 - Math.cos((Math.PI * i) / n)) / 2);
+  const up = ss.map((s) => [c / 2 - s * c, yc(s) + yt(s)] as V2);
+  const lo = ss.slice(1, -1).reverse().map((s) => [c / 2 - s * c, yc(s) - yt(s)] as V2);
+  return [...up, ...lo];
+}
+
+/**
+ * A fan or stator blade on the Z axis at azimuth `a` (degrees), from radius r0 to r1, mid-chord at height z:
+ * root chord c0 pitched b0 degrees from the plane of rotation, tapering to c1 at b1 at the tip. The leading edge
+ * leads in +azimuth and sits towards +Z, so a rotor turning that way pushes air to -Z.
+ */
+function radialBlade(a: number, r0: number, r1: number, z: number, c0: number, c1: number, b0: number, b1: number, t: number, camber: number): ShapeRecipe {
+  const ar = (a * Math.PI) / 180;
+  const b = (b0 * Math.PI) / 180;
+  const er: V3 = [Math.cos(ar), Math.sin(ar), 0];
+  const et: V3 = [-Math.sin(ar), Math.cos(ar), 0];
+  const u: V3 = [et[0] * Math.cos(b), et[1] * Math.cos(b), Math.sin(b)];
+  return {
+    t: "extrude",
+    p: { t: "poly", pts: airfoil(c0, t, camber), r: 0 },
+    h: r1 - r0,
+    f: { o: [er[0] * r0, er[1] * r0, z], u, n: er },
+    twist: b1 - b0,
+    scale: c1 / c0,
+  };
+}
+
+/**
  * The look of a known kind of box-class part: the body's own cuts (seams,
  * pockets) and the extra solids (labels, heatsinks, lids, boots), all inside
  * the catalog envelope so mounts, trays and clash checks see the same box.
@@ -405,7 +439,8 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
           ],
         };
       };
-      const stator = (a: number): ShapeRecipe => ({ t: "xform", shape: { t: "box", w: ri - rh + 0.8, d: 1.4, h: L * 0.32, at: [(ri + rh) / 2, 0, -L * 0.86], r: 0 }, xf: [{ op: "rotate", angle: a, origin: Z0, axis: ZP }] });
+      // stator vanes: thin cambered blades from the hub to the wall, nearly axial, that take the swirl out of the jet
+      const stator = (a: number): ShapeRecipe => radialBlade(a, rh - 0.6, ri + 0.6, -L * 0.7, L * 0.3, L * 0.3, 78, 78, 0.07, 0.06);
       const housing: PartRecipe = {
         base: { t: "tube", od, id: fd, h: L, at: [0, 0, -L], dir: ZP },
         ops: [
@@ -418,19 +453,20 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         ],
       };
       const screw = screwFor(d, thd, false);
-      // rotor: hub with a spinner, and pitched blades just behind the intake
-      const blade = (a: number): ShapeRecipe => ({
-        t: "xform",
-        shape: { t: "box", w: ri - rh + 0.6, d: 1.2, h: 9, at: [(ri + rh - 1.4) / 2, 0, -L * 0.2 - 4.5], r: 0 },
-        xf: [
-          { op: "rotate", angle: 32, origin: [0, 0, -L * 0.2], axis: XP },
-          { op: "rotate", angle: a, origin: Z0, axis: ZP },
-        ],
-      });
+      // rotor: the hub under a rounded spinner, and twisted, tapered blades just behind the intake (steep at the
+      // root, flatter at the tip), as many as the fan has, close to the wall
+      const zr = -L * 0.08;
+      const sh = Math.min(L * 0.07, hd * 0.3);
+      const spinner: V2[] = [[0, zr - 0.01], ...Array.from({ length: 6 }, (_, i) => {
+        const t = i / 6;
+        return [(rh - 0.3) * Math.sqrt(Math.max(0, 1 - t * t)) * (1 - 0.12 * t), zr - 0.01 + sh * t] as V2;
+      }), [0, zr - 0.01 + sh]];
+      const rootC = Math.min(L * 0.2, (2 * Math.PI * rh * 1.6) / nb);
+      const blade = (a: number): ShapeRecipe => radialBlade(a, rh - 0.8, ri - 0.6, -L * 0.18, rootC, rootC * 1.15, 52, 30, 0.08, 0.05);
       const rotor: PartRecipe = {
         base: { t: "cyl", d: hd - 0.6, h: L * 0.2, at: [0, 0, -L * 0.28], dir: ZP },
         ops: [
-          { op: "add", shape: { t: "cone", d1: hd - 0.6, d2: hd * 0.25, h: L * 0.07, at: [0, 0, -L * 0.08 - 0.01], dir: ZP } },
+          { op: "add", shape: { t: "revolve", pts: spinner, at: Z0, dir: ZP } },
           ...Array.from({ length: nb }, (_, i) => ({ op: "add" as const, shape: blade((360 * i) / nb) })),
         ],
       };
@@ -530,7 +566,13 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
     // w (long side, along X), d, h (case height below the top face),
     // flange_w (tab length end to end), flange_t, flange_z (distance from
     // the top face down to the tab top), shaft_x (spline offset from the case
-    // centre along X), hole spacing from `holes`.
+    // centre along X), hole spacing from `holes`. Drawn as the real case is
+    // made: the top cover (output boss and the idler gear's bump), the middle
+    // case with the tabs (holes slotted out to the tab ends), the bottom cover
+    // with its long case screws, a sticker on each side, and the lead's boot
+    // where the harness takes the lead from (harness/plugs.ts). g.servo sets
+    // the colours (an alloy middle, a metal spline); all of it inside the
+    // envelope the mounts and clash checks have always seen.
     case "servo": {
       const w = num(d, "w", 40.7);
       const dd = num(d, "d", 19.7);
@@ -540,20 +582,77 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const fz = num(d, "flange_z", 10);
       const sx = num(d, "shaft_x", 10);
       const holes = g.holes ?? [];
+      const look = g.servo ?? {};
+      const cx = -sx;
+      const micro = dd < 15;
+      const hb = Math.min(8, Math.max(3, h * 0.2));
+      const zb = -h + hb;
+      // the middle case, tabs on its top: holes slotted out to the tab ends, and the recess the lead's boot sits in
+      const holeD = g.hole_d ?? 4.5;
+      const endX = w / 2 - sx;
+      const bootW = Math.min(micro ? 4.6 : 6.5, dd * 0.42);
+      const bootH = Math.min(micro ? 2.4 : 3.4, h * 0.12);
+      const boot = (grow: number, proud: number): ShapeRecipe => box(1.4 + proud + grow, bootW + grow, bootH + grow, [endX - 1.4 / 2 + proud / 2, 0, -h / 2 - (bootH + grow) / 2]);
       const body: PartRecipe = {
-        base: { t: "box", w, d: dd, h, at: [-sx, 0, -h], r: 0.8 },
+        base: box(w, dd, -fz - zb, [cx, 0, zb], 0.8),
         ops: [
-          { op: "add", shape: { t: "box", w: fw, d: dd, h: ft, at: [-sx, 0, -fz - ft], r: 0.5 } },
-          ...holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: g.hole_d ?? 4.5, h: ft + 2, at: [x, y, -fz - ft - 1] as V3, dir: ZP } })),
-          { op: "add", shape: { t: "cyl", d: 12, h: 2, at: [0, 0, -0.01], dir: ZP } },
+          { op: "chamfer", r: 0.25, edges: "bottom" },
+          { op: "add", shape: box(fw, dd, ft, [cx, 0, -fz - ft], 0.5) },
+          ...holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: holeD, h: ft + 2, at: [x, y, -fz - ft - 1] as V3, dir: ZP } })),
+          ...holes.map(([x, y]) => {
+            const end = x >= cx ? cx + fw / 2 + 1 : cx - fw / 2 - 1;
+            return { op: "cut" as const, shape: box(Math.abs(end - x), holeD * 0.45, ft + 2, [(x + end) / 2, y, -fz - ft - 1]) };
+          }),
+          { op: "cut", shape: boot(0.02, 0) },
         ],
       };
+      // the top cover: soft top edge, the output boss round the spline and the lower bump over the idler gear
+      const bossD = Math.min(12, dd - 0.2, 2 * endX - 0.4);
+      const bumpD = dd * 0.5;
+      const top: PartRecipe = {
+        base: box(w, dd, fz, [cx, 0, -fz], 0.8),
+        ops: [
+          { op: "chamfer", r: Math.min(0.5, fz / 6), edges: "top" },
+          { op: "chamfer", r: 0.25, edges: "bottom" },
+          { op: "add", shape: { t: "cyl", d: bossD, h: 2, at: [0, 0, -0.01], dir: ZP } },
+          { op: "add", shape: { t: "cyl", d: bumpD, h: 0.8, at: [-(bossD / 2 + bumpD / 2 - 2), 0, -0.01], dir: ZP } },
+        ],
+      };
+      // the bottom cover and its case screws (two in a micro, four in a standard case), heads sunk in it
+      const sd = Math.min(4.2, Math.max(2, dd * 0.22));
+      const sdepth = micro ? 0.7 : 1.2;
+      const inset = micro ? 1.9 : 2.6;
+      const screwsAt: V2[] = micro
+        ? [[cx + w / 2 - inset, 0], [cx - w / 2 + inset, 0]]
+        : [[cx + w / 2 - inset, dd / 2 - inset], [cx + w / 2 - inset, -dd / 2 + inset], [cx - w / 2 + inset, dd / 2 - inset], [cx - w / 2 + inset, -dd / 2 + inset]];
+      const bottom: PartRecipe = {
+        base: box(w, dd, hb, [cx, 0, -h], 0.8),
+        ops: [{ op: "chamfer", r: 0.4, edges: "bottom" }, { op: "chamfer", r: 0.25, edges: "top" }, ...screwsAt.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: sd, h: sdepth + 0.01, at: [x, y, -h - 0.01] as V3, dir: ZP } }))],
+      };
+      const hh = 0.45;
+      const slotL = sd * 0.55;
+      const caseScrews: PartRecipe = {
+        base: { t: "union", shapes: screwsAt.map(([x, y]) => ({ t: "cyl" as const, d: sd - 0.5, h: hh, at: [x, y, -h + sdepth - hh] as V3, dir: ZP })) },
+        ops: screwsAt.flatMap(([x, y]) => [box(slotL, 0.3, 0.3, [x, y, -h + sdepth - hh - 0.05]), box(0.3, slotL, 0.3, [x, y, -h + sdepth - hh - 0.05])].map((shape) => ({ op: "cut" as const, shape }))),
+      };
+      // a sticker on each side of the middle case, below the tabs, with the maker's and the model's names as bars
+      const lz0 = zb + 0.8;
+      const lh = -fz - ft - 0.7 - lz0;
+      const lw = w * 0.8;
+      const stickers: CompSolid[] = [];
+      if (lh > 3) {
+        // a thin plate on each face (0.12 mm proud, the print 0.24), both sunk a little into the case so no gap shows
+        const plate = (len: number, ph: number, x: number, z: number, proud: number, r: number) => [1, -1].map((sy) => box(len, proud + 0.1, ph, [x, sy * (dd / 2 + (proud - 0.1) / 2), z], r));
+        stickers.push(solid("label", `${p.name} label`, { base: { t: "union", shapes: plate(lw, lh, cx, lz0, 0.12, 0.3) }, ops: [] }, look.label ?? "#15171b", "PVC"));
+        const bar = (len: number, bh: number, z: number) => plate(len, bh, cx - lw / 2 + 1.2 + len / 2, z, 0.24, 0);
+        stickers.push(solid("label_text", `${p.name} label print`, { base: { t: "union", shapes: [...bar(lw * 0.52, Math.max(0.6, lh * 0.11), lz0 + lh * 0.66), ...bar(lw * 0.36, Math.max(0.9, lh * 0.17), lz0 + lh * 0.3)] }, ops: [] }, look.text ?? "#e9ecef", "PVC"));
+      }
       // the spline's tapped centre hole for the horn screw (M3 in a standard servo, M2 in a micro), on into the output shaft
       const splineD = num(d, "spline_d", 5.8);
       const hornScrew = num(d, "horn_screw", splineD >= 5.5 ? 3 : 2);
       const tap = hornScrew >= 3 ? 2.5 : hornScrew * 0.8;
-      body.ops.push({ op: "cut", shape: { t: "cyl", d: tap, h: 4, at: [0, 0, -2], dir: ZP } });
-      const spline: PartRecipe = { base: { t: "cyl", d: splineD, h: 4, at: [0, 0, 1.9], dir: ZP }, ops: [{ op: "cut", shape: { t: "cyl", d: tap, h: 5, at: [0, 0, 1.4], dir: ZP } }] };
+      top.ops.push({ op: "cut", shape: { t: "cyl", d: tap, h: 4, at: [0, 0, -2], dir: ZP } });
+      const spline: PartRecipe = { base: { t: "cyl", d: splineD, h: 4, at: [0, 0, 1.9], dir: ZP }, ops: [{ op: "chamfer", r: 0.3, edges: "top" }, { op: "cut", shape: { t: "cyl", d: tap, h: 5, at: [0, 0, 1.4], dir: ZP } }] };
       // the case drops through a pocket in the plate and the tabs sit on it: screws through the tabs, nuts under
       const screw = screwFor(d, (g.hole_d ?? 4.5) >= 3.5 ? 3.6 : 2.3, false);
       const under = -fz - ft;
@@ -563,7 +662,15 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       };
       return {
         placement: "axis",
-        solids: [solid("", p.name, body, g.color ?? "#1b1f25", "ABS"), solid("horn", `${p.name} spline`, spline, "#e8e9eb", "POM", true)],
+        solids: [
+          solid("", p.name, body, look.mid ?? g.color ?? "#1b1f25", look.mid_material ?? "ABS"),
+          solid("top", `${p.name} top cover`, top, g.color ?? "#1b1f25", "ABS"),
+          solid("bottom", `${p.name} bottom cover`, bottom, g.color ?? "#1b1f25", "ABS"),
+          solid("screws", `${p.name} case screws`, caseScrews, "#7d838c", "Steel"),
+          solid("boot", `${p.name} lead boot`, { base: boot(0, 0.2), ops: [] }, "#121417", "PVC"),
+          ...stickers,
+          solid("horn", `${p.name} spline`, spline, look.spline ?? "#e8e9eb", look.spline_material ?? "POM", true),
+        ],
         fields: {
           scalars: { w, d: dd, h, flange_z: fz, flange_t: ft, horn_screw: hornScrew, ...mountScalars(screw, 0) },
           points: { at: Z0, spline_top: [0, 0, 5.9], case_center: [-sx, 0, -h / 2], tab_under: [0, 0, under] },

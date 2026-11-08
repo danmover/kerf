@@ -193,6 +193,12 @@ export interface GeomSpec {
    * see the box they always did
    */
   style?: "lipo" | "esc" | "fuse_maxi" | "xt" | "load_cell";
+  /**
+   * servo class only: how the real case looks. mid is the middle case's colour (with the tabs; an alloy
+   * middle takes mid_material), label and text the sticker on its sides, spline the output shaft's colour
+   * and material (white POM in a plastic-geared servo, metal in a metal-geared one)
+   */
+  servo?: { mid?: string; mid_material?: string; label?: string; text?: string; spline?: string; spline_material?: string };
 }
 
 export interface BuyLink {

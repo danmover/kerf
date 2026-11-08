@@ -257,7 +257,8 @@ export const MOTORS: CatalogPart[] = [
     summary: "Micro servo, about 0.18 N·m stall at 4.8 V, 4.8 to 6 V, plastic gears, 0.1 s per 60°.",
     specs: { t_stall: kgcm(1.8), v_min: 4.8, v_max: 6, speed_s_per_60: 0.1, i_stall: 0.65, i_run: 0.15, mass_g: 9, range_deg: 180 },
     pins: servoPins(4.8, 6, 0.15),
-    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2 },
+    // the usual blue case and white nylon output gear
+    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2, color: "#2f63d8", servo: { label: "#f1f2f4", text: "#1f3f99" } },
     price_usd: 2,
     buy: [{ vendor: "Marketplace", search: "SG90 micro servo" }],
     notes: ["The supplied screws are M2 self-tappers through the tabs into the plate."],
@@ -270,7 +271,7 @@ export const MOTORS: CatalogPart[] = [
     summary: "Micro servo, about 0.22 N·m stall at 4.8 V, 4.8 to 6 V, metal gears, 0.1 s per 60°.",
     specs: { t_stall: kgcm(2.2), v_min: 4.8, v_max: 6, speed_s_per_60: 0.1, i_stall: 0.7, i_run: 0.15, mass_g: 13.4, range_deg: 180 },
     pins: servoPins(4.8, 6, 0.15),
-    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2, color: "#22262c" },
+    geom: { g: "servo", dims: { w: 22.8, d: 12.2, h: 22.7, flange_w: 32.3, flange_t: 2.5, flange_z: 4.5, shaft_x: 5.9, spline_d: 4.8, screw: 2 }, holes: [[8, 0], [-19.8, 0]], hole_d: 2, color: "#22262c", servo: { spline: "#cfb06a", spline_material: "Brass" } },
     price_usd: 4,
     buy: [{ vendor: "Marketplace", search: "MG90S metal gear servo" }],
   },
