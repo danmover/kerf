@@ -212,6 +212,8 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 #define TILT_CUT_DEG ${cFloat(S.tiltCut)}
 #define ARM_LEVEL_DEG ${cFloat(S.armLevel)}
 #define ARM_STILL_DPS 5.0f
+// the gyro's bias is only taken while no axis swings more than this either side of its mean
+#define CAL_STILL_DPS 1.0f
 #define IMU_TIMEOUT_MS 20
 #define LOOP_US 2000
 
@@ -378,18 +380,31 @@ bool imuSample(float *g, float *a) {
   return sameCount < 50;
 }
 
-void calibrateGyro() {
+// the gyro's bias: its mean over 0.5 s, kept only when the unit held still all through it. A bias taken while the
+// unit swings (it can still be settling on its pivots after power-up) is off by the swing's rate, and the attitude
+// filter turns that into a steady tilt the loop then holds. Returns whether it was still.
+bool calibrateGyro() {
   float s[3] = {0, 0, 0};
+  float lo[3] = {1e9f, 1e9f, 1e9f};
+  float hi[3] = {-1e9f, -1e9f, -1e9f};
   int n = 0;
   for (int k = 0; k < 250; k++) {
     float g[3], a[3];
     if (imuSample(g, a)) {
-      for (int i = 0; i < 3; i++) s[i] += g[i];
+      for (int i = 0; i < 3; i++) {
+        s[i] += g[i];
+        lo[i] = min(lo[i], g[i]);
+        hi[i] = max(hi[i], g[i]);
+      }
       n++;
     }
     delay(2);
   }
-  for (int i = 0; i < 3; i++) bias[i] = n ? s[i] / n : 0;
+  if (n < 100) return false;
+  for (int i = 0; i < 3; i++)
+    if (hi[i] - lo[i] > 2 * CAL_STILL_DPS * DEG) return false;
+  for (int i = 0; i < 3; i++) bias[i] = s[i] / n;
+  return true;
 }
 
 // ---------------------------------------------------------------- HX711
@@ -808,7 +823,12 @@ void command(const char *s, uint32_t now) {
     else if (fabs(roll) > ARM_LEVEL_DEG * DEG || fabs(pitch) > ARM_LEVEL_DEG * DEG) Serial.println("not level: within 5 deg to arm");
     else if (fabs(gxf) > ARM_STILL_DPS * DEG || fabs(gyf) > ARM_STILL_DPS * DEG) Serial.println("not still");
     else if (now < ESC_ARM_MS) Serial.println("ESC still arming: try again in a second");
+    // the gyro's bias again, now the unit sits still, and the attitude restarted from the accelerometer
+    else if (!calibrateGyro()) Serial.println("moved while the gyro was measured: hold it still and arm again");
     else {
+      estStarted = false;
+      lastImuOk = millis();
+      lastTick = micros();
       thrustTarget = 0;
       mode = M_ARMED;
     }
@@ -954,7 +974,8 @@ void setup() {
     fault("IMU not found");
   } else {
     delay(50);
-    calibrateGyro();
+    // up to 5 s for the unit to settle on its pivots; arming measures the bias again
+    for (int k = 0; k < 10 && !calibrateGyro(); k++) {}
     lastImuOk = millis();
   }
   Serial.println("jet vane balance ready: type help");
@@ -1072,7 +1093,7 @@ ${wiring}
 
 ## What it does
 
-A 500 Hz loop reads the LSM6DSOX (gyro and accelerometer in one burst), runs a complementary filter (0.5 s), and holds the fan unit level with a PD + I controller per axis in torque units: gains from the rig's inertia (I_ROLL, I_PITCH) for a ${cNum(S.wn)} rad/s, ζ ${cNum(S.zeta)} response, scaled by GAIN_SCALE (${cNum(S.gainScale)} for first runs). The fan rotor's gyroscopic push is cancelled (GYRO_K ${cNum(S.gyroK)}) and the two torques are mixed onto the four vanes in an X, all four scaled back together past ±${cNum(S.vaneMax)}°.
+A 500 Hz loop reads the LSM6DSOX (gyro and accelerometer in one burst), runs a complementary filter (0.5 s) on a gyro bias measured with the unit still (at power-up once it settles, and again at \`arm\`), and holds the fan unit level with a PD + I controller per axis in torque units: gains from the rig's inertia (I_ROLL, I_PITCH) for a ${cNum(S.wn)} rad/s, ζ ${cNum(S.zeta)} response, scaled by GAIN_SCALE (${cNum(S.gainScale)} for first runs). The fan rotor's gyroscopic push is cancelled (GYRO_K ${cNum(S.gyroK)}) and the two torques are mixed onto the four vanes in an X, all four scaled back together past ±${cNum(S.vaneMax)}°.
 
 Safety: the e-stop's normally-closed contact breaks the ESC signal in hardware, and its normally-open contact latches a fault in the firmware; the fan also cuts past ±${cNum(S.tiltCut)}°, when the IMU stops answering for ${20} ms, or on \`stop\`. It arms only within ±${cNum(S.armLevel)}° and still, after the ESC has had its signal at minimum for ${2.5} s.
 
