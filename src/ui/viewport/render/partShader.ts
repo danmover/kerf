@@ -22,6 +22,8 @@ export interface PartUniforms {
   uFlash: { value: number };
   /** extra strength for environment reflections (metals read brighter) */
   uEnvBoost: { value: number };
+  /** plywood: the part's thin axis (0 x, 1 y, 2 z), its grain axis, where the plies start along the thin axis and each ply's thickness (0: faces only) */
+  uPly: { value: THREE.Vector4 };
 }
 
 export function partUniforms(): PartUniforms {
@@ -35,7 +37,25 @@ export function partUniforms(): PartUniforms {
     uScan: { value: new THREE.Vector3() },
     uFlash: { value: 0 },
     uEnvBoost: { value: 1 },
+    uPly: { value: new THREE.Vector4(2, 0, 0, 0) },
   };
+}
+
+/**
+ * Where a plywood part's plies run, from its box in its own frame: the
+ * thinnest side is the sheet's thickness, split into an odd number of plies
+ * about 1.35 mm each (3 mm: 3, 9 mm: 7, 18 mm: 13), and the grain runs along
+ * the longest side. Returns the uPly value.
+ */
+export function plyLayout(min: [number, number, number], max: [number, number, number]): [number, number, number, number] {
+  const size = [0, 1, 2].map((k) => max[k] - min[k]);
+  const thin = size.indexOf(Math.min(...size));
+  const others = [0, 1, 2].filter((k) => k !== thin);
+  const grain = size[others[0]] >= size[others[1]] ? others[0] : others[1];
+  const t = size[thin];
+  let n = Math.max(3, Math.round(t / 1.35));
+  if (n % 2 === 0) n += 1;
+  return [thin, grain, min[thin], t > 0 ? t / n : 0];
 }
 
 const NOISE = /* glsl */ `
@@ -65,6 +85,7 @@ uniform vec3 uGlow;
 uniform vec3 uScan;
 uniform float uFlash;
 uniform float uEnvBoost;
+uniform vec4 uPly;
 varying vec3 vKObj;
 varying vec3 vKObjN;
 varying vec3 vKWorld;
@@ -136,6 +157,49 @@ vec3 kDetail(vec3 p, vec3 n) {
     float fade = 1.0 - smoothstep(0.6, 1.6, length(fwidth(p.yz / sc)));
     return vec3(amp * (late * 0.6 + pore * 0.4) * fade, (late * 0.85 + pore * 0.15) * mix(0.6, 1.0, fade), (pore - 0.5) * rv);
   }
+  if (kind == ${Detail.Plywood}) {
+    int ta = int(uPly.x + 0.5);
+    int ga = int(uPly.y + 0.5);
+    int oa = 3 - ta - ga;
+    float pt = ta == 0 ? p.x : (ta == 1 ? p.y : p.z);
+    float pg = ga == 0 ? p.x : (ga == 1 ? p.y : p.z);
+    float po = oa == 0 ? p.x : (oa == 1 ? p.y : p.z);
+    float nt = ta == 0 ? an.x : (ta == 1 ? an.y : an.z);
+    float ng = ga == 0 ? an.x : (ga == 1 ? an.y : an.z);
+    // the face veneer, peeled off the log: broad soft bands along the grain that wander across it,
+    // thin darker late-wood lines, fine fibres and big gentle blotches of tone
+    // the bands bunch up and spread out (q's spacing wanders), and each line has its own strength,
+    // so the face never reads as evenly ruled stripes
+    float wob = kNoise(vec3(pg * 0.004, po * 0.011, 1.3)) * 4.5 + kNoise(vec3(pg * 0.018, po * 0.045, 4.1)) * 1.1;
+    float q = po / sc + wob + pg * 0.002;
+    float band = fract(q);
+    float bi = floor(q);
+    float lineK = kHash(vec3(bi, 3.0, 9.0));
+    lineK = 0.12 + 0.88 * lineK * lineK;
+    float late = smoothstep(0.42, 0.84, band) * (1.0 - smoothstep(0.86, 1.0, band)) * lineK;
+    float ffade = 1.0 - smoothstep(0.25, 0.7, fwidth(q));
+    float fib = kNoise(vec3(pg * 0.11, po * 3.5, 2.0));
+    float fibFade = 1.0 - smoothstep(0.3, 0.9, fwidth(po * 3.5));
+    float blot = kNoise(vec3(pg * 0.006, po * 0.02, 7.7)) * 0.7 + kNoise(vec3(pg * 0.03, po * 0.08, 5.3)) * 0.3;
+    float faceTone = 0.12 + late * 0.34 * ffade + (fib - 0.5) * 0.16 * fibFade + (blot - 0.5) * 0.36;
+    float faceH = late * 0.6 * ffade + fib * 0.4 * fibFade;
+    float onFace = uPly.w > 0.0 ? smoothstep(0.62, 0.9, nt) : 1.0;
+    float plyW = max(uPly.w, 1e-3);
+    // the edges: the plies, each other one showing its end grain, with a dark glue line between each
+    float pl = (pt - uPly.z) / plyW;
+    float k = floor(pl);
+    float f = fract(pl);
+    float pfade = 1.0 - smoothstep(0.35, 1.1, fwidth(pl));
+    float glue = (1.0 - smoothstep(0.0, 0.05 + fwidth(pl), min(f, 1.0 - f))) * pfade;
+    bool along = mod(k, 2.0) < 0.5;
+    bool endGrain = (ng > 0.5) == along;
+    float pore = kNoise(vec3(pg * 2.4, po * 2.4, pt * 7.0));
+    float streak = kNoise(vec3(along ? pg * 0.12 : po * 0.12, pt * 9.0, k * 3.1));
+    float edgeTone = (endGrain ? 0.5 + (pore - 0.5) * 0.35 : 0.12 + (streak - 0.5) * 0.25) * pfade + 0.3 * (1.0 - pfade);
+    edgeTone = mix(edgeTone, 1.0, glue * 0.85);
+    float edgeH = (endGrain ? pore * 0.8 : streak * 0.5) - glue;
+    return vec3(amp * mix(edgeH, faceH, onFace), clamp(mix(edgeTone, faceTone, onFace), 0.0, 1.0), (mix(endGrain ? pore + 0.3 : streak, fib, onFace) - 0.5) * rv);
+  }
   return vec3(0.0);
 }
 
@@ -188,7 +252,7 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
   }`,
       );
   };
-  mat.customProgramCacheKey = () => "kerf-part-2";
+  mat.customProgramCacheKey = () => "kerf-part-4";
 }
 
 /** Copy an appearance into a material and its uniforms. */

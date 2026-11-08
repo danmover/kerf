@@ -93,6 +93,8 @@ export interface Settings {
   fastChanges: boolean;
   /** the modelling tools beside the 3D view (see ui/ModelTools) */
   advanced: boolean;
+  /** the wiring view keeps every part solid and shows the cables behind them faintly through (false: covers fade instead) */
+  wiringSolid: boolean;
   /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
   keepWarm: number;
   /** prompt tokens at which a long chat's older turns are summarised (see ai/compact) */
@@ -166,6 +168,7 @@ const DEFAULTS: Settings = {
   quickCommands: true,
   fastChanges: true,
   advanced: false,
+  wiringSolid: true,
   keepWarm: 30,
   compactAt: 500_000,
   showCost: true,

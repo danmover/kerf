@@ -420,8 +420,12 @@
 }
 .lp-group-head:hover .lp-group-eye,
 .lp-group-eye.on,
+.lp-group-eye.solo,
 .lp-group-eye:focus-visible {
   opacity: 1;
+}
+.lp-group-eye.solo {
+  color: var(--accent);
 }
 .lp-group-body {
   position: relative;

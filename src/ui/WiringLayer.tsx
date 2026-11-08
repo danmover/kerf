@@ -2,7 +2,9 @@
 // keeps its cable routes current, and draws the card for the picked cable
 // with a tag at each of its plugs, so you can see what plugs into what. On a
 // machine whose parts move, it can run the axes through their travel so the
-// cables can be watched flexing in their drag chains and loops.
+// cables can be watched flexing in their drag chains and loops. Parts either
+// stay solid with the hidden cables showing faintly through them, or covers
+// over the wiring fade (the setting is kept).
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +20,8 @@ import { travelOffsets, type TravelPlan } from "../machine/harness/travel";
 import { cutLength } from "../machine/wiring";
 import { useWiringView } from "./wiringView";
 import { useChatDraft } from "./chatDraft";
+import { useSettings, updateSettings } from "../app/settings";
+import { Segmented } from "./common";
 import { Icon } from "./icons";
 import "../styles/wiring.css";
 
@@ -35,6 +39,7 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
   const status = useHarness((s) => s.status);
   const plan = useHarness((s) => s.plan);
   const findings = useHarness((s) => s.findings);
+  const solid = useSettings((s) => s.wiringSolid);
   const ov = useRef<WiringOverlay | null>(null);
   const [drawn, setDrawn] = useState(0);
   const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
@@ -47,6 +52,7 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
       useWiringView.setState({ picked: hit?.wire || null, end: hit?.end ?? null, link: hit?.link ?? null });
     };
     o.onHover = (hit: WireHit | null) => useWiringView.setState({ hovered: hit?.wire || null });
+    o.setSolid(useSettings.getState().wiringSolid);
     ov.current = o;
     scene.addOverlay(o);
     return () => {
@@ -75,6 +81,14 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
   }, [harness, routes, plan, findings, on, scene]);
 
   useEffect(() => ov.current?.setFocus(picked, hovered, link), [picked, hovered, link, drawn]);
+
+  // solid parts with the cables showing through, or covers faded
+  useEffect(() => {
+    const o = ov.current;
+    if (!o) return;
+    o.setSolid(solid);
+    scene.overlaysChanged();
+  }, [solid, scene, on]);
 
   // a picked chain or loop that is gone is let go, and so is the travel run without one
   useEffect(() => {
@@ -113,14 +127,25 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
   return (
     <>
       {travel && plan && <TravelRun scene={scene} plan={plan} />}
-      {plan && plan.links.length > 0 && (status === "done" || routes) && (
-        <div className="wr-travel">
-          <button className={`btn sm${travel ? " on" : ""}`} onClick={() => useWiringView.setState({ travel: !travel })} data-tip="Move the axes end to end and watch the cables flex">
-            {travel ? <Icon.Pause size={13} /> : <Icon.Play size={13} />} {travel ? "Stop" : "Move through travel"}
-          </button>
-          <span className="wr-axes mono" id="wr-axes" />
-        </div>
-      )}
+      <div className="wr-travel">
+        <Segmented
+          id="wiring-look"
+          value={solid ? "solid" : "see"}
+          onChange={(v) => updateSettings({ wiringSolid: v === "solid" })}
+          options={[
+            { value: "solid", label: "Solid parts", title: "Every part stays solid; cables behind parts show faintly through them, so you see the whole thing and all its wiring" },
+            { value: "see", label: "See-through", title: "Covers and boxes over the wiring fade so the plugs under them show" },
+          ]}
+        />
+        {plan && plan.links.length > 0 && (status === "done" || routes) && (
+          <>
+            <button className={`btn sm${travel ? " on" : ""}`} onClick={() => useWiringView.setState({ travel: !travel })} data-tip="Move the axes end to end and watch the cables flex">
+              {travel ? <Icon.Pause size={13} /> : <Icon.Play size={13} />} {travel ? "Stop" : "Move through travel"}
+            </button>
+            <span className="wr-axes mono" id="wr-axes" />
+          </>
+        )}
+      </div>
       {wire && <EndTags scene={scene} overlay={ov} wire={wire} />}
       {hover && tip && (
         <div className="wr-tip" style={{ left: tip.x + 14, top: tip.y + 12 }}>

@@ -1270,7 +1270,7 @@ class NeedsDesignModel extends Error {
 }
 
 /** Tools that change the design: each one counts as an edit for the turn card, the "before" picture, revert and the self-review. */
-const EDIT_TOOLS = new Set(["edit_design", "write_design", "build_subassemblies", "set_material", "place_fasteners"]);
+const EDIT_TOOLS = new Set(["edit_design", "write_design", "build_subassemblies", "set_material", "place_fasteners", "group_parts"]);
 /** Tools whose result can carry the build and checks of their change (see runTool's check). */
 const CHECKED_TOOLS = new Set(["edit_design", "write_design", "update_brief", "set_material", "place_fasteners"]);
 

@@ -20,7 +20,7 @@ const CHAT_ONLY = new Set(["ask_user", "suggest_next_steps", "review_design", "b
 
 const GUIDE_TOOL = "kerf_instructions";
 /** Tools that change the design, so the person sees a toast in Kerf's window when Claude Code makes one. */
-const DESIGN_CHANGES = new Set(["edit_design", "write_design", "set_material", "place_fasteners"]);
+const DESIGN_CHANGES = new Set(["edit_design", "write_design", "set_material", "place_fasteners", "group_parts"]);
 
 const PREAMBLE = (clientName: string) => `You are working in Kerf through ${clientName}. Your tool calls run in Kerf, and the person watches the design change in Kerf's window. The guide below is written for Kerf's own chat, so read it with these differences:
 - There is no context note. Call get_design at the start of each task, and again whenever the person may have changed the design in Kerf.
