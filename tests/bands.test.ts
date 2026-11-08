@@ -7,6 +7,7 @@ import { carriedBy, fittingSteps, holdDetails } from "../src/analysis/fitting";
 import { vadd, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../src/kernel/recipe";
 import type { StructuralSpec } from "../src/analysis/spec";
 import { fullCheck, problems } from "./helpers/fullcheck";
+import { withValues } from "../src/core/decisions";
 
 const post = `design "t"
 part post { process: false  body cylinder(d: 30, h: 200, at: (0, 0, -100)) }
@@ -215,6 +216,25 @@ analysis "Held" {
   });
 });
 
+describe("a band whose hooks are on arms that swing on the part it holds", () => {
+  const arms = `part arm_l { body box(6, 6, 20, at: (-14, 20, -10)) }
+part arm_r { body box(6, 6, 20, at: (14, 20, -10)) }
+`;
+  const e = (src: string) => evaluate(src).diagnostics.filter((d) => d.severity === "error").map((d) => d.message).join(" ");
+
+  it("names the arms, which go on and come off with the part it holds", () => {
+    const m = model(`${post}${arms}component b = lib.band("EPDM", id: 30, cs: 2.5, around: post, holds: bracket, hooked_on: [arm_l, arm_r], from: (-14, 20, 0), to: (14, 20, 0), pin: 4, lip: 2, open: Z)`);
+    const b = m.parts.find((p) => p.name === "b")!.band!;
+    expect(b.holds).toBe("bracket");
+    expect(b.hookedOn).toEqual(["arm_l", "arm_r"]);
+  });
+
+  it("needs the part it holds, and arms defined above it", () => {
+    expect(e(`${post}${arms}component b = lib.band("EPDM", id: 30, cs: 2.5, around: post, hooked_on: arm_l, from: (-14, 20, 0), to: (14, 20, 0), pin: 4, lip: 2, open: Z)`)).toMatch(/needs holds: too/);
+    expect(e(`${post}component b = lib.band("EPDM", id: 30, cs: 2.5, around: post, holds: bracket, hooked_on: arm_l, from: (-14, 20, 0), to: (14, 20, 0), pin: 4, lip: 2, open: Z)\n${arms}`)).toMatch(/"arm_l" is not defined/);
+  });
+});
+
 describe("the seatpost number bracket", () => {
   const src = readFileSync(new URL("../src/demos/seatpost-number.kerf", import.meta.url), "utf8");
 
@@ -235,8 +255,9 @@ describe("the seatpost number bracket", () => {
     const seat = steps[0];
     if (seat.kind !== "seat") throw new Error("no seat step");
     expect(name(seat.part)).toBe("bracket");
-    // the pin sits inside the bracket's box, but it goes in later, on its own
-    expect(seat.riders.map(name)).toEqual(["pad"]);
+    // the pin sits inside the bracket's box, but it goes in later, on its own; the arms clip on first and come with it
+    expect(seat.riders.map(name).sort()).toEqual(["arm_l", "arm_r", "pad"]);
+    expect(seat.caption).toMatch(/^Hold Number bracket, its arms clipped on, against Seatpost/);
     expect(steps[1].title).toBe("Fit O-ring");
     const [slide, push] = steps.filter((s) => s.kind === "slide");
     if (slide.kind !== "slide" || push.kind !== "slide") throw new Error("no slide steps");
@@ -245,7 +266,7 @@ describe("the seatpost number bracket", () => {
     expect(slide.riders.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
     expect(slide.caption).toBe("Slide Race number (4004) in until it stops, with its hole in line with the hole for Snap pin.");
     // it slides in along its own length, tilted up with it, point first
-    const rise = (30 * Math.PI) / 180;
+    const rise = (15 * Math.PI) / 180;
     expect(vdot(vnorm(slide.from), [0, Math.cos(rise), Math.sin(rise)])).toBeCloseTo(1, 6);
     // then the pin goes in across the jaw, through the number's centre hole, and clicks out behind the far cheek
     expect(name(push.part)).toBe("pin");
@@ -254,10 +275,10 @@ describe("the seatpost number bracket", () => {
     const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
     expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);
     expect(Math.sign(push.peg[0])).toBe(-Math.sign(push.from[0]));
-    // in the stress results the bracket carries its pad and the pin, the pin the number, and the number its print, so
-    // they move with it
+    // in the stress results the bracket carries its arms, its pad and the pin, the pin the number, and the number its
+    // print, so they move with it
     const carried = carriedBy(r.model, (p) => r.core.get(p.hash)?.bbox as never);
-    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["pad", "pin"]);
+    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["arm_l", "arm_r", "pad", "pin"]);
     expect(carried.get(push.part)!.map(name)).toEqual(["number"]);
     expect(carried.get(slide.part)!.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
     const gust = steps.find((s) => s.kind === "hold" && s.title === "Crosswind gust")!;
@@ -271,4 +292,17 @@ describe("the seatpost number bracket", () => {
     expect(d.arrows[0].at[1]).toBeGreaterThan(box[0][1] + 40);
     expect(d.caption).toMatch(/still running/);
   }, 120_000);
+
+  it("fits every seatpost it offers, and every tilt: each choice passes every requirement", () => {
+    const m = evaluate(src);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    expect(m.decisions.find((d) => d.name === "seatpost")!.options.length).toBeGreaterThanOrEqual(5);
+    for (const name of ["seatpost", "number_angle"]) {
+      for (const o of m.decisions.find((d) => d.name === name)!.options) {
+        const alt = evaluate(withValues(src, m, Object.fromEntries(o.sets.map((s) => [s.param, s.value]))));
+        expect(alt.diagnostics.filter((x) => x.severity === "error"), o.label).toEqual([]);
+        expect(alt.requirements.filter((q) => q.status !== "pass").map((q) => `${q.label}: ${q.detail}`), o.label).toEqual([]);
+      }
+    }
+  });
 });

@@ -29,7 +29,7 @@ export type FitStep =
   | { kind: "seat"; part: string; riders: string[]; from: V3; title: string; caption: string; dur: number }
   | { kind: "band"; part: string; name: string; around: string; holds: string; layout: BandLayout; sections: Section[]; cord: BandCord; title: string; dur: number }
   | { kind: "slide"; part: string; riders: string[]; host: string; from: V3; peg: V3; title: string; caption: string; dur: number }
-  | { kind: "hold"; spec: StructuralSpec; parts: string[]; hooks: V3[]; centre: V3; title: string; dur: number };
+  | { kind: "hold"; spec: StructuralSpec; parts: string[]; hooks: V3[]; arms: [V3, V3][]; centre: V3; title: string; dur: number };
 
 const pct = (stretch: number) => `${fmtNum((stretch - 1) * 100, 0)} %`;
 /** A band's name as words: o_ring and oring read "O-ring". */
@@ -85,7 +85,11 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
     const aroundLabel = around.map((p) => p.label).join(" and ");
     if (holds && !seated.has(holds.id)) {
       seated.add(holds.id);
-      steps.push({ kind: "seat", part: holds.id, riders: riders.get(holds.id) ?? [], from: vscale(info.layout.u, -40), title: `Put ${holds.label} on`, caption: `Hold ${holds.label} against ${aroundLabel}.`, dur: 1.5 });
+      // the arms its hooks are on come with it, and what rides in them
+      const arms = hookedOn(info, byName).flatMap((a) => [a.id, ...(riders.get(a.id) ?? [])]);
+      const with_ = [...new Set([...(riders.get(holds.id) ?? []), ...arms])].filter((id) => id !== holds.id);
+      const clipped = arms.length ? `, its ${hookedOn(info, byName).length > 1 ? "arms" : "arm"} clipped on,` : "";
+      steps.push({ kind: "seat", part: holds.id, riders: with_, from: vscale(info.layout.u, -40), title: `Put ${holds.label} on`, caption: `Hold ${holds.label}${clipped} against ${aroundLabel}.`, dur: 1.5 });
     }
     steps.push({
       kind: "band",
@@ -166,12 +170,22 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
   const heldPart = model.parts.find((p) => p.id === held);
   const box = heldPart && bbox(heldPart);
   const centre = box ? applyXforms(vscale(vadd(box[0], box[1]), 0.5), heldPart.xf) : ([0, 0, 0] as V3);
+  // the arms the hooks are on, where they sit: what they pass on to the part they swing on is the bands' pull again
+  const arms = bands.flatMap((b) => hookedOn(b.band!, byName)).flatMap((a) => {
+    const ab = bbox(a);
+    return ab ? [placedBox(a, ab)] : [];
+  });
   if (steps.length)
     for (const spec of model.analyses) {
       if (spec.kind !== "structural" || !spec.supports.some((s) => s.contact)) continue;
-      steps.push({ kind: "hold", spec, parts: moving.map((p) => p.id), hooks, centre, title: spec.label, dur: 3 });
+      steps.push({ kind: "hold", spec, parts: moving.map((p) => p.id), hooks, arms, centre, title: spec.label, dur: 3 });
     }
   return steps;
+}
+
+/** The parts a band's hooks are on besides the part it holds (arms that swing on it). */
+function hookedOn(b: NonNullable<EvalPart["band"]>, byName: Map<string, EvalPart>): EvalPart[] {
+  return (b.hookedOn ?? []).map((n) => byName.get(n)).filter((p): p is EvalPart => !!p);
 }
 
 /**
@@ -229,8 +243,9 @@ function pegMates(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined, rid
 
 /**
  * What each part carries: the parts riding inside its box, the parts
- * clicked onto its pegs and everything its pins go through or into. Bands and
- * what they wrap are never carried.
+ * clicked onto its pegs, everything its pins go through or into, and the arms
+ * a band's hooks are on when it is the part the band holds. Bands and what
+ * they wrap are never carried.
  */
 export function carriedBy(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined): Map<string, string[]> {
   const out = riderMap(model, bbox);
@@ -238,6 +253,11 @@ export function carriedBy(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefi
   const add = (host: string, id: string) => {
     if (!out.get(host)?.includes(id)) out.set(host, [...(out.get(host) ?? []), id]);
   };
+  const byName = new Map(model.parts.map((p) => [p.name, p]));
+  for (const b of model.parts) {
+    const host = b.band?.holds ? byName.get(b.band.holds) : undefined;
+    if (host) for (const a of hookedOn(b.band!, byName)) if (a.id !== host.id && !riding.has(a.id)) add(host.id, a.id);
+  }
   for (const { host, through } of pegMates(model, bbox, riding)) for (const q of through) add(host.id, q.id);
   // a split pin goes with the part it clicks into and carries what it pins
   for (const s of splitPins(model, bbox, riding)) {
@@ -345,6 +365,8 @@ export function holdDetails(step: Extract<FitStep, { kind: "hold" }>, r: Structu
     // drawn where it really acts: a gust on the middle of a sign, not the zone that carries it in
     const at = l.from ?? (r && r.loads.length === spec.loads.length ? r.loads[i].at : regionCentre(l.region));
     if (!at || step.hooks.some((h) => vlen(vsub(h, at)) < 3)) return;
+    // an arm the band is hooked on hands its pull on where it pivots: the band already shows that pull
+    if (step.arms.some(([lo, hi]) => [0, 1, 2].every((d) => at[d] >= lo[d] - 1 && at[d] <= hi[d] + 1))) return;
     arrows.push({ at, dir: vnorm(l.f), size: vlen(l.f) });
   });
   // a shock throws the part's weight the way of the jolt (plain gravity is left out)

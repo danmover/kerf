@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FeaError, MAX_ELEMENTS, runStructural, shareTorque, sizeGrid, type FeaPart, type StructuralInput, type StructuralResult } from "../src/analysis/fe/structural";
 import type { TriMesh, V3 } from "../src/analysis/fe/voxel";
 import { mechMaterial, allowableStress } from "../src/analysis/materials";
+import type { RegionSpec } from "../src/analysis/spec";
 
 /** Closed box surface with its faces split into a grid, so results can be read at points along it. */
 function gridBox(lo: V3, hi: V3, div: V3): TriMesh {
@@ -155,6 +156,18 @@ describe("structural analysis", () => {
     const J = 0.1406 * 10 ** 4; // square section torsion constant
     const theta = (1000 * 100) / (G * J);
     expect(rel(r.maxDisp.value, theta * Math.SQRT2 * 5)).toBeLessThan(0.08);
+  });
+
+  it("keeps a zone to where it overlaps another", () => {
+    const top = (region: RegionSpec) => runStructural(base({ loads: [{ t: "force", region, f: [0, 0, -100] }] }));
+    const all = top({ t: "box", at: [50, 5, 10], size: [100, 12, 1] });
+    const end = top({ t: "box", at: [50, 5, 10], size: [100, 12, 1], within: { t: "box", at: [95, 5, 5], size: [10, 20, 20] } });
+    const direct = top({ t: "box", at: [95, 5, 10], size: [10, 12, 1] });
+    expect(end.loads[0].nodes).toBe(direct.loads[0].nodes);
+    expect(end.loads[0].nodes).toBeLessThan(all.loads[0].nodes / 3);
+    // pushed down at its end, the cantilever bends twice as hard at its root as when pushed all along
+    expect(end.maxStress.value).toBeCloseTo(direct.maxStress.value, 6);
+    expect(end.maxStress.value).toBeGreaterThan(1.5 * all.maxStress.value);
   });
 
   it("shares a torque over a lopsided zone as a pure couple", () => {

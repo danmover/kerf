@@ -9,11 +9,16 @@ export type V3 = [number, number, number];
 /** Where a load or support acts. Zones are grown by about one element so they always catch the voxel surface. */
 export type RegionSpec =
   | { t: "face"; part: string; dir: V3 }
-  | { t: "sphere"; at: V3; r: number }
-  | { t: "box"; at: V3; size: V3 }
-  | { t: "cyl"; at: V3; axis: V3; d: number; length: number }
+  | ({ t: "sphere"; at: V3; r: number } & Within)
+  | ({ t: "box"; at: V3; size: V3 } & Within)
+  | ({ t: "cyl"; at: V3; axis: V3; d: number; length: number } & Within)
   /** the outermost surface of the analysed parts along a direction (what hits the floor first) */
   | { t: "extreme"; dir: V3 };
+
+/** A zone kept to the part of it inside another zone (a curved seat that stops short of the necks beside it). */
+export interface Within {
+  within?: Extract<RegionSpec, { t: "sphere" | "box" | "cyl" }>;
+}
 
 export interface SupportSpec {
   region: RegionSpec;
@@ -319,11 +324,11 @@ export function describeRegion(r: RegionSpec): string {
     case "face":
       return `${r.part} ${d(r.dir)} face`;
     case "sphere":
-      return `zone r ${n(r.r)} mm at ${p(r.at)}`;
+      return `zone r ${n(r.r)} mm at ${p(r.at)}${r.within ? `, within the ${describeRegion(r.within)}` : ""}`;
     case "box":
-      return `zone ${r.size.map(n).join("×")} mm at ${p(r.at)}`;
+      return `zone ${r.size.map(n).join("×")} mm at ${p(r.at)}${r.within ? `, within the ${describeRegion(r.within)}` : ""}`;
     case "cyl":
-      return `zone ⌀${n(r.d)} mm along ${d(r.axis)} at ${p(r.at)}`;
+      return `zone ⌀${n(r.d)} mm along ${d(r.axis)} at ${p(r.at)}${r.within ? `, within the ${describeRegion(r.within)}` : ""}`;
     case "extreme":
       return `the side that lands first (${d(r.dir)})`;
   }

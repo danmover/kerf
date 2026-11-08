@@ -1668,7 +1668,11 @@ class Evaluator {
     };
     const around = (Array.isArray(aroundV) ? aroundV : [aroundV]).map((v) => partName(v, "around"));
     const holds = args.has("holds") ? partName(args.value("holds")!, "holds") : undefined;
-    for (const n of [...around, ...(holds ? [holds] : [])]) this.current?.add(n);
+    // hooks on parts that are not the holds part itself (arms that swing on it): from: and to: stay in the holds part's frame
+    const hookedV = args.value("hooked_on");
+    const hookedOn = hookedV === undefined ? [] : (Array.isArray(hookedV) ? hookedV : [hookedV]).map((v) => partName(v, "hooked_on"));
+    if (hookedOn.length && !holds) throw new EvalError("hooked_on: names the parts the hooks are on when they are not the part the band holds, so it needs holds: too", argSpan("hooked_on"));
+    for (const n of [...around, ...(holds ? [holds] : []), ...hookedOn]) this.current?.add(n);
     const pair = (name: string, def: number): [number, number] => {
       const v = args.value(name);
       if (v === undefined) return [def, def];
@@ -1717,6 +1721,7 @@ class Evaluator {
     const wrapped = around.map(sectionFor);
     const holdsXf = holds ? (this.parts.find((q) => q.name === holds)?.xf ?? []) : [];
     if (holds && !this.parts.some((q) => q.name === holds)) throw new EvalError(`holds: "${holds}" must be defined above the band`, argSpan("holds"));
+    for (const n of hookedOn) if (!this.parts.some((q) => q.name === n)) throw new EvalError(`hooked_on: "${n}" must be defined above the band`, argSpan("hooked_on"));
     const hasFrom = args.has("from");
     const hasTo = args.has("to");
     if (hasFrom !== hasTo) throw new EvalError("lib.band: give both from: and to: (the two hook pins), or neither for a loop that goes right round", argSpan(hasFrom ? "from" : "to"));
@@ -1749,7 +1754,7 @@ class Evaluator {
     }
     const carries = args.has("carries") ? args.positive("carries") : undefined;
     const shock = args.has("shock") ? args.num("shock") : undefined;
-    const band: BandInfo = { rubber: key, shore, cs, id, around, holds, layout, carries, shock, saddleMu: args.num("saddle_mu", 0.3) };
+    const band: BandInfo = { rubber: key, shore, cs, id, around, holds, ...(hookedOn.length ? { hookedOn } : {}), layout, carries, shock, saddleMu: args.num("saddle_mu", 0.3) };
     const hookPts: Record<string, V3> = {};
     const hookDirs: Record<string, V3> = {};
     if (layout.hooks.length === 2) {

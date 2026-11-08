@@ -194,14 +194,14 @@ export const BENCH: BenchCase[] = [
   },
   {
     id: "seatpost-tilt",
-    title: "Seatpost number at 15°",
+    title: "Seatpost number at 30°",
     kind: "small",
     core: false,
     template: "seatpost-number",
-    message: "Tilt the number up 15 degrees instead of 30.",
+    message: "Tilt the number up 30 degrees instead of 15.",
     expect: [
-      { label: "Tilted 15°", cond: "rise == 15" },
-      { label: "Same O-ring and fit", keep: true, cond: "oring_cs == 3.53 && fit_gap == 0.2" },
+      { label: "Tilted 30°", cond: "rise == 30" },
+      { label: "Same O-ring and fit", keep: true, cond: "oring_cs == 3.5 && fit_gap == 0.2" },
     ],
   },
   {
