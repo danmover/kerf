@@ -113,7 +113,7 @@ function fitItem(p: EvalPart, b: BandInfo): CheckItem {
     status,
     title: `Band ${p.name}: goes on by hand`,
     detail,
-    parts: [p.id, ...(b.holds ? [b.holds] : []), ...b.around],
+    parts: [p.id, ...(b.holds ? [b.holds] : []), ...(b.hookedOn ?? []), ...b.around],
     span: p.span,
     margin: L.captive || L.pastEnd ? -1 : (fitLimit(r) - L.fitStretch) / (fitLimit(r) - 1),
     fix: sentence(fixes),

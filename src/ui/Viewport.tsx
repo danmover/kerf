@@ -42,12 +42,16 @@ import { PmiButton, PmiLayer } from "./PmiLayer";
 import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
 import { BoardDecorator } from "./viewport/boards/decorate";
+import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
+import { soloHidden } from "../app/partGroups";
+import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
   const ctl = useRef<SceneController | null>(null);
   const mfgOverlay = useRef<ProcessOverlay | null>(null);
   const boardDecor = useRef<BoardDecorator | null>(null);
+  const decor = useRef<Decorators | null>(null);
   const processResults = useDesign((s) => s.process);
   const showProcessIssues = useMfgView((s) => s.overlay);
   const processPreview = useMfgView((s) => s.preview);
@@ -85,7 +89,10 @@ export function Viewport() {
     const boards = new BoardDecorator(() => c.redecorate());
     boardDecor.current = boards;
     boards.setModel(useDesign.getState().model);
-    c.setDecorator(boards);
+    // and bought electronics drawn as they look: printed labels, leads, moulded lettering
+    const detail = new PartDetailDecorator();
+    decor.current = new Decorators([boards, detail]);
+    c.setDecorator(decor.current);
     mfgOverlay.current = new ProcessOverlay(c);
     c.onHover = (id) => useView.setState({ hovered: id });
     c.onPick = (id, additive) => {
@@ -144,7 +151,9 @@ export function Viewport() {
       mfgOverlay.current = null;
       c.dispose();
       boards.dispose();
+      detail.dispose();
       boardDecor.current = null;
+      decor.current = null;
       ctl.current = null;
     };
   }, []);
@@ -183,9 +192,12 @@ export function Viewport() {
     ctl.current?.setModelSettling(stage !== "idle" && stage !== "done");
   }, [stage]);
 
+  // groups shown on their own: every other part hidden
+  const soloIds = useMemo(() => (model ? soloHidden(model.parts, view.soloGroups) : []), [model, view.soloGroups]);
+
   useEffect(() => {
     ctl.current?.setDisplay({
-      hidden: new Set(view.hiddenIds),
+      hidden: new Set([...view.hiddenIds, ...soloIds]),
       selected: new Set(view.selected),
       hovered: view.hovered,
       focus: new Set(view.focusParts),
@@ -195,7 +207,7 @@ export function Viewport() {
       grid: settings.grid,
       reduceMotion: settings.reduceMotion,
     });
-  }, [view.hiddenIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, settings.reduceMotion, model, meshVersion]);
+  }, [view.hiddenIds, soloIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, settings.reduceMotion, model, meshVersion]);
 
   useEffect(() => ctl.current?.setSection(view.section), [view.section, model]);
   useEffect(() => ctl.current?.setExplode(view.explode), [view.explode]);
@@ -298,6 +310,7 @@ export function Viewport() {
         <button className={`icon-btn ${view.isolate ? "active" : ""}`} disabled={!view.selected.length && !view.isolate} onClick={() => useView.setState({ isolate: !view.isolate })} data-tip="Isolate selection (I)" aria-label="Isolate selection">
           <Icon.Target />
         </button>
+        <GroupsMenu />
         <MeasureButton />
         <PmiButton />
         {hasWires && (
@@ -385,6 +398,7 @@ export function Viewport() {
       {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
       {scene && !inSketch && canFit && <FitLayer scene={scene} />}
       {scene && !inSketch && <PmiLayer scene={scene} />}
+      {!inSketch && <GroupsKey />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
@@ -631,6 +645,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
         <button className="btn sm" onClick={() => useView.setState((s) => ({ hiddenIds: [...new Set([...s.hiddenIds, ...ids])], selected: [] }))}>
           <Icon.EyeOff size={13} /> Hide
         </button>
+        <GroupButton key={ids.join(",")} ids={ids} />
         <button
           className="btn sm"
           onClick={() => (parts.length === 1 ? openSpot({ partId: p.id, label: p.label }) : setDraft(`About ${parts.map((q) => q.id).join(", ")}${gap ? ` (gap ${fmtNum(gap.distance, 2)} mm)` : ""}: `))}

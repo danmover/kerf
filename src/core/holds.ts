@@ -577,7 +577,7 @@ function compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined):
   for (const p of parts) if (p.kind === "component") byInstance.set(instanceOf(p), [...(byInstance.get(instanceOf(p)) ?? []), p]);
   for (const list of byInstance.values()) for (let i = 1; i < list.length; i++) join(list[0], list[i], "bought", list[0].name);
   // bands hold what they wrap; parts on a circuit board are soldered to it
-  for (const p of parts) if (p.band) for (const o of [...p.band.around, ...(p.band.holds ? [p.band.holds] : [])]) for (const q of parts) if (q.name === o) join(p, q, "band", p.name);
+  for (const p of parts) if (p.band) for (const o of [...p.band.around, ...(p.band.holds ? [p.band.holds] : []), ...(p.band.hookedOn ?? [])]) for (const q of parts) if (q.name === o) join(p, q, "band", p.name);
   const onBoard = new Map((model.machine?.components ?? []).filter((c) => c.pcb).map((c) => [c.name, c.pcb!.board]));
   for (const p of parts) {
     const board = onBoard.get(p.name);

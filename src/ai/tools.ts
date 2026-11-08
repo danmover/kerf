@@ -47,6 +47,8 @@ import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssump
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./materialTools";
 import { FASTEN_TOOL_DEFS, FASTEN_TOOL_TITLES, runFastenTool } from "./fastenTool";
+import { VIEW_TOOL_DEFS, VIEW_TOOL_TITLES, runViewTool } from "./viewTools";
+import { partGroups } from "../app/partGroups";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
 import { useAnalysis, whenAnalyzed, runFine, runAccuracyCheck, showResults, type ResultField } from "../analysis/runtime";
@@ -215,6 +217,7 @@ export const TOOL_DEFS = [
         airflow: { type: "string", enum: ["pressure", "friction", "streamlines", "wake", "eddies"], description: "Draw an airflow analysis's result: surface pressure (red: pushed on, blue: suction), skin friction, streamlines coloured by speed, the wake (where the air lost its total pressure) or the eddies. Run run_analysis first." },
         yaw: { type: "number", description: "With airflow: the yaw angle to draw (default the first)." },
         exploded: { description: "Show the design exploded: true for all the way, or 0 to 1 to step part way through taking it apart (screws out first). The result says which way each part came off, so you can check the assembly order and fix a part sent the wrong way with explode: on it.", anyOf: [{ type: "boolean" }, { type: "number", minimum: 0, maximum: 1 }] },
+        groups: { type: "array", items: { type: "string" }, maxItems: 20, description: "Draw only these groups of parts (by their group: names), framed to fit, e.g. to look at the nozzle on its own." },
       },
       required: ["view"],
       additionalProperties: false,
@@ -430,6 +433,7 @@ export const TOOL_DEFS = [
   ...IMPORT_TOOL_DEFS,
   ...MATERIAL_TOOL_DEFS,
   ...FASTEN_TOOL_DEFS,
+  ...VIEW_TOOL_DEFS,
 ];
 
 const EditInput = z
@@ -451,6 +455,7 @@ const ViewInput = z.object({
   airflow: z.enum(["pressure", "friction", "streamlines", "wake", "eddies"]).optional(),
   yaw: z.number().finite().optional(),
   exploded: z.union([z.boolean(), z.number().min(0).max(1)]).optional(),
+  groups: z.array(z.string().min(1).max(80)).max(20).optional(),
 });
 /** how long run_analysis waits for airflow runs before reporting them as still running */
 const AIRFLOW_WAIT_MS = 8 * 60_000;
@@ -1317,7 +1322,17 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       const ids = expandNames(p.data.highlight ?? []);
       const explode = p.data.exploded === true ? 1 : typeof p.data.exploded === "number" && p.data.exploded > 0 ? p.data.exploded : undefined;
       if (explode) resultNote += explodeNote(explode);
-      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results || !!p.data.airflow, explode });
+      // a group on its own
+      const vm = useDesign.getState().model;
+      let only: string[] | undefined;
+      if (p.data.groups?.length && vm) {
+        const want = new Set(p.data.groups.map((g) => g.trim().toLowerCase()));
+        const gs = partGroups(vm.parts).filter((g) => want.has(g.name.toLowerCase()));
+        if (!gs.length) return { isError: true, content: `No group named ${p.data.groups.map((g) => `"${g}"`).join(", ")}. Groups: ${partGroups(vm.parts).map((g) => g.name).join(", ")}. Use group_parts to make one.`, card: { title: "Group not found", status: "error" } };
+        only = gs.flatMap((g) => g.ids);
+        resultNote += `, only ${gs.map((g) => g.name).join(", ")}`;
+      }
+      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results || !!p.data.airflow, explode, only });
       const data = url.split(",")[1] ?? "";
       return {
         content: [
@@ -1462,6 +1477,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (material) return material;
   const fasten = await runFastenTool(name, input, ctx);
   if (fasten) return fasten;
+  const viewed = await runViewTool(name, input);
+  if (viewed) return viewed;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -1490,6 +1507,7 @@ export const TOOL_TITLES: Record<string, string> = {
   compare_designs: COMPARE_TITLE,
   ...MATERIAL_TOOL_TITLES,
   ...FASTEN_TOOL_TITLES,
+  ...VIEW_TOOL_TITLES,
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
   view_drawing: "Looking at the drawing",

@@ -15,6 +15,8 @@ export enum Detail {
   Weave = 5,
   Wood = 6,
   Machined = 7,
+  /** plywood: rotary-cut veneer on the faces, the plies and glue lines on the edges (needs the part's uPly) */
+  Plywood = 8,
 }
 
 export interface Appearance {
@@ -98,8 +100,9 @@ const METAL: Record<string, Look> = {
 
 const OTHER: Record<string, Look> = {
   "solder-mask": look({ roughness: 0.42, clearcoat: 0.8, clearcoatRoughness: 0.12, detail: Detail.Grain, detailAmp: 0.001, detailScale: 0.05, roughVar: 0.04 }),
-  raw: look({ roughness: 0.78, detail: Detail.Wood, detailAmp: 0.01, detailScale: 1.6, roughVar: 0.1, tintAmt: 0.55 }),
-  varnished: look({ roughness: 0.42, clearcoat: 0.65, clearcoatRoughness: 0.12, detail: Detail.Wood, detailAmp: 0.004, detailScale: 1.6, roughVar: 0.04, tintAmt: 0.6 }),
+  // plywood (the one wood material): the pattern sets how far each spot pulls toward the darker tone itself
+  raw: look({ roughness: 0.74, sheen: 0.25, sheenRoughness: 0.8, detail: Detail.Plywood, detailAmp: 0.012, detailScale: 7, roughVar: 0.12, tintAmt: 1 }),
+  varnished: look({ roughness: 0.4, clearcoat: 0.65, clearcoatRoughness: 0.12, detail: Detail.Plywood, detailAmp: 0.005, detailScale: 7, roughVar: 0.05, tintAmt: 1 }),
 };
 
 /** Per-material adjustments on top of the finish look. */
@@ -144,7 +147,7 @@ export function appearanceFor(material: string, finish: string | undefined, colo
   let l: Look = table[f] ?? OTHER[f] ?? PLASTIC[f] ?? METAL[f] ?? look({});
   const tweak = TWEAKS[material];
   if (tweak) l = { ...l, ...tweak(l, f) };
-  const tint2 = l.tint2 ?? (l.detail === Detail.Wood ? companion(color, 0.62) : l.detail === Detail.Weave ? companion(color, 1.9) : companion(color, 0.7));
+  const tint2 = l.tint2 ?? (l.detail === Detail.Plywood ? companion(color, 0.5) : l.detail === Detail.Wood ? companion(color, 0.62) : l.detail === Detail.Weave ? companion(color, 1.9) : companion(color, 0.7));
   const out: Appearance = {
     ...l,
     key,

@@ -40,7 +40,7 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, BucklingSpec, DropSpec, Excitation, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3 } from "./spec";
+import type { AnalysisSpec, BucklingSpec, DropSpec, Excitation, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3, Within } from "./spec";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
 import { COOLING } from "./thermalMaterials";
@@ -127,17 +127,25 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "zone",
-    ["at", "r", "size", "d", "axis", "length"],
+    ["at", "r", "size", "d", "axis", "length", "within"],
     (a) => {
       const at = a.vec3("at");
-      if (a.has("size")) return wrap(REGION, { t: "box", at, size: a.vec3("size") } satisfies RegionSpec, "box zone");
+      // kept to where it overlaps another zone
+      let within: Within["within"];
+      if (a.has("within")) {
+        const w = region(a.value("within"), a);
+        if (w.t !== "sphere" && w.t !== "box" && w.t !== "cyl") return a.ctx.error("zone(): within: takes another zone(...), not a face");
+        within = w;
+      }
+      const w = within ? { within } : {};
+      if (a.has("size")) return wrap(REGION, { t: "box", at, size: a.vec3("size"), ...w } satisfies RegionSpec, "box zone");
       if (a.has("d")) {
         const axis = clean(a.dir("axis", [0, 0, 1]));
-        return wrap(REGION, { t: "cyl", at, axis, d: a.positive("d"), length: a.num("length", 0) } satisfies RegionSpec, "cylinder zone");
+        return wrap(REGION, { t: "cyl", at, axis, d: a.positive("d"), length: a.num("length", 0), ...w } satisfies RegionSpec, "cylinder zone");
       }
-      return wrap(REGION, { t: "sphere", at, r: a.num("r", 1) } satisfies RegionSpec, "sphere zone");
+      return wrap(REGION, { t: "sphere", at, r: a.num("r", 1), ...w } satisfies RegionSpec, "sphere zone");
     },
-    "zone(at: p, r: 3) → the part surface within r of a point. zone(at: p, size: (x, y, z)) uses a box centred at p; zone(at: p, d: 8, axis: Z, length: 6) a cylinder starting at p (a bore or a boss).",
+    "zone(at: p, r: 3) → the part surface within r of a point. zone(at: p, size: (x, y, z)) uses a box centred at p; zone(at: p, d: 8, axis: Z, length: 6) a cylinder starting at p (a bore or a boss). within: zone(...) keeps it to where it overlaps another zone, like a curved seat zone kept clear of the arms beside it: zone(at: c, d: 36, axis: Z, length: 16, within: zone(at: c, size: (21, 100, 100))).",
   ),
   def(
     "roller",

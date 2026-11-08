@@ -27,6 +27,8 @@ export interface CaptureOptions {
   overlays?: boolean;
   /** show the design exploded this far (0 to 1, stepping through the plan in core/explode.ts), framed to fit */
   explode?: number;
+  /** draw only these parts (ids), framed to fit; the rest are hidden */
+  only?: string[];
 }
 
 /** What the photoreal view is doing (ui/viewport/scene's PhotoStatus). */

@@ -5,7 +5,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useDesign } from "../../core/engine";
-import { useView, revealSpan, select } from "../../app/view";
+import { useView, revealSpan, select, soloGroup } from "../../app/view";
 import type { EvalPart } from "../../core/model";
 import { fmtNum } from "../../lang/values";
 import { Icon } from "../icons";
@@ -49,6 +49,7 @@ export function PartsTab({ filter }: { filter: string }) {
   const report = useDesign((s) => s.report);
   const selected = useView((s) => s.selected);
   const hiddenIds = useView((s) => s.hiddenIds);
+  const soloGroups = useView((s) => s.soloGroups);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const groups = useMemo(() => {
@@ -152,6 +153,18 @@ export function PartsTab({ filter }: { filter: string }) {
               <span className="lp-group-count" data-tip={total !== rows.length ? `${rows.length} entries, ${total} solids` : ""}>
                 {total}
               </span>
+              <button
+                className={`lp-icon-btn lp-group-eye ${soloGroups.includes(group) ? "solo" : ""}`}
+                aria-label={soloGroups.includes(group) ? `Show every group` : `Show ${group} on its own`}
+                aria-pressed={soloGroups.includes(group)}
+                data-tip={soloGroups.includes(group) ? "Show every group again" : "Show this group on its own (Shift adds it to those shown)"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  soloGroup(group, e.shiftKey || e.metaKey || e.ctrlKey);
+                }}
+              >
+                <Icon.Target size={13} />
+              </button>
               <button
                 className={`lp-icon-btn lp-group-eye ${groupHidden ? "on" : ""}`}
                 aria-label={groupHidden ? `Show ${group}` : `Hide ${group}`}

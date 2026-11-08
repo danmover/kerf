@@ -1,17 +1,18 @@
 design "Seatpost Number Bracket"
-note "A screwless race-number holder for the back of a Giant Propel aero seatpost, held on the way rear lights are: one EPDM O-ring wraps the post with a strand at the top and one at the bottom, and each end turns round a double hook on the bracket's side (over the top prong, down behind, under the bottom one), pressing a contoured saddle and its TPU grip pad onto the post's flat back. The bracket is one solid print with nothing in it that bends. The number's pointed end slides into a slot in the jaw only 0.2 mm wider than the number and nests in a V pocket of its own outline there, which holds it at one tilt, its tail 30° above level, so it cannot tilt up or down. A small snap pin pushed through one cheek, the number's centre hole (where the old bolt went) and the other cheek clicks out behind it, so the number cannot slide out; pinch the pin's two prong tips together to push it back out."
-note "Everything about the bracket and its pin is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); the number's outline is turned about its centre hole by that angle plus rise, so its tail rises rise degrees above level."
+note "A screwless race-number holder that fits round seatposts, D-shaped aero posts and the Giant Propel's, held on the way rear lights are. Its curved middle sits behind the post on a TPU grip pad shaped to that post, and an arm clips onto a boss at each side, free to swing in or out. One EPDM O-ring hooks onto a double hook at each arm's tip (over the top prong, down behind, under the bottom one) and wraps the post's front with a strand high and one low. Its pull swings each arm in until a rounded finger on the arm rests on the post's side, so the arms follow whatever shape the post is, and the pull presses the middle and its pad onto the post's back. The number's pointed end slides into a slot in the jaw only 0.2 mm wider than the number and nests in a V pocket of its own outline there, which holds it at one tilt, its tail 15° above level. A small snap pin pushed through one cheek, the number's centre hole (where the old bolt went) and the other cheek clicks out behind it, so the number cannot slide out; pinch the pin's two prong tips together to push it back out."
+note "Everything about the bracket, its arms and its pin is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); each arm is drawn about its own pivot, pointing forward, turned about the boss by th (worked out below for the post chosen) and leaned back with the rest, the left one the same print turned over. The number's outline is turned about its centre hole by tilt plus rise, so its tail rises rise degrees above level."
 note "v4, from the printed v3 and its side-arm rework: the pin spans the whole slot and goes on into the far cheek, and every overhang prints without supports (the pin and its holes are teardrops)."
 note "v5: the number tilts up 30°, the bracket is 20 mm tall (the O-ring's double hooks as short as a 3.53 mm cord allows) and its seat fits a 20 mm flat back. The jaw is a plain block standing on the bed with the tilted pocket cut through it."
 note "v6: the tilt adjusts by hand and is firm at each click: the number sits in a dial (a third small print) that turns about its centre hole on a stub off the far cheek and is locked by a sprung latch whose wedge teeth take up all play. The centre hole sits 3.2 mm higher so the dial's teeth fit under it in the same 20 mm height."
 note "v7: the tilt is changed by pulling one big arrow-shaped tab straight out, about 7.5 N, rather than pressing a small tab sideways with about 27 N. The arrow points the way to pull, the latch springs back into the next click on its own, and a requirement keeps the pull light."
-note "v8: pulling v7's latch let the dial drop off its stub, because the latch was all that held it on. Now the dial goes on a keyed stub through a keyhole that only lines up 35° past the top click, which the number cannot reach (its corner meets the seatpost first), and there is nothing to pull: a spring blade outside the far cheek presses a V finger through a window into three grooves under the dial, preloaded so there is no play. It holds twice what a 12 g pothole turns the number with, yet clicks over at about 2 N on the tail, light enough that the push does not rock the bracket on the post: a soft blade with a lot of preload does that, where a stiff one with little would need a hard push. The end grooves rise higher on their outer sides, so the end clicks are firmer and spring back. The spring is drawn unbent, pressing into the dial by its preload (flexure preload: against:), which the overlap checks take as its squeeze."
-note "v9, from the printed v8, which snapped: v8's click spring and pin arm were rooted in the saddle between slits that left it only 1.3 mm thick there, and its dial could still be pushed up past the top click. Now nothing bends and nothing turns. The number is held at the top tilt only, its point in a V pocket cut through a solid jaw, in a slot 0.2 mm wider than it, and a separate snap pin goes through the jaw and the number. The saddle is 5.3 mm thick behind its seat with nothing cut into it, the hooks' rims are 2.4 mm thick (were 1.6), and the jaw is 7.2 mm wide where v8's dial, spring and arm took 20."
+note "v8: pulling v7's latch let the dial drop off its stub, because the latch was all that held it on. Now the dial goes on a keyed stub through a keyhole that only lines up 35° past the top click, which the number cannot reach (its corner meets the seatpost first), and there is nothing to pull: a spring blade outside the far cheek presses a V finger through a window into three grooves under the dial, preloaded so there is no play."
+note "v9, from the printed v8, which snapped: nothing bends and nothing turns. The number is held at the top tilt only, its point in a V pocket cut through a solid jaw, in a slot 0.2 mm wider than it, and a separate snap pin goes through the jaw and the number. The saddle is 5.3 mm thick behind its seat with nothing cut into it."
+note "v10: fits any seatpost, and the number sits flatter. The middle's seat is a 17.5 mm radius curve with a TPU pad shaped to the post in it (the one part that changes with the post), and the double hooks are on two arms that clip onto bosses either side and swing in or out to follow the post, the way you sketched it. Each arm's clip is a C that snaps over its boss and a bead in it rides in a groove round the boss, so the arm stays at its height. The clip's opening faces the neck that holds its boss, forward and in, so the O-ring's pull always presses the clip onto the back of its boss rather than out through the opening. The number's tail rises 15° instead of 30°, and its pin sits 2 mm higher so the jaw stays thick under the flatter number. The O-ring is a plain 3.5 mm metric one sized to the post (no joined double band was for sale)."
 
 brief {
-  purpose: "Hold a race number behind a Giant Propel aero seatpost with no screws"
+  purpose: "Hold a race number behind a seatpost with no screws: round posts, D-shaped aero posts and the Giant Propel's"
   setting: "Road and triathlon racing: fitted and taken off by hand at the bike, ridden in rain and sun"
-  priorities: ["strong: one solid print with no thin springs, arms or slits to snap", "the number never moves: its point nests in a pocket at one fixed tilt and a pin goes through it", "the number is tight in its slot: 0.2 mm of room", "really compact", "prints with no supports at all", "fits by hand with one O-ring", "does not rock or turn on the post"]
+  priorities: ["fits every common seatpost shape: arms that swing in or out to follow it, and a TPU pad shaped to it", "a gentle tilt: the number's tail 15° above level", "strong: solid prints with no thin springs or slits to snap", "the number never moves: its point nests in a pocket at one fixed tilt and a pin goes through it", "the number is tight in its slot: 0.2 mm of room", "compact", "prints with no supports at all", "fits by hand with one O-ring", "does not rock or turn on the post"]
   look: "Black, small, tucked in behind the post"
 
   temp: -5C .. 50C
@@ -25,11 +26,8 @@ brief {
   use gust "Holds the number in a 70 km/h crosswind gust" { on: bracket }
   use knock "Survives a leg or hand knocking the number's tail, and the number does not tilt" { on: bracket }
   use bumps "Stays put over potholes (about 12 g)" { on: bracket }
-  use fit "Goes on and comes off by hand, no tools" { on: bracket }
+  use fit "Goes on and comes off by hand, no tools, on any of the seatposts" { on: bracket }
 
-  given post_w = 20mm "Seatpost width, side to side at its widest (taken as no wider than its flat back)" assumed
-  given post_d = 36mm "Seatpost depth, front to back" assumed
-  given tail_w = 20mm "Width of the post's flat back: at least 20 mm, measured on the bike"
   given tilt = 16.5 "How far the seatpost leans back from vertical, degrees (73.5° seat angle)" assumed
   given plate_l = 122mm "Number length, read from the photo" assumed
   given plate_h = 69mm "Number height, read from the photo" assumed
@@ -43,32 +41,34 @@ brief {
   given hole_z = 19mm "Corner holes above and below the middle, read from the photo" assumed
 
   reference photo "The number on its old bolted bracket" { notes: "Race Result plate 4004, tag-shaped with a blunt pointed end; the old bracket's M5 bolt goes through the centre hole at the point, two more holes 38 mm apart about 7 mm behind it, two along the top edge; yellow stripe at the tail, timing transponder sticker across the top half, 4004 in heavy black digits with a small leading 4" }
-  reference propel "Giant Propel seatpost" { url: "https://www.giant-bicycles.com/", notes: "Giant publishes no section drawing of the aero seatpost: measure its width, depth and flat back and set the givens" }
+  reference propel "Giant Propel seatpost" { url: "https://www.giant-bicycles.com/", notes: "Giant publishes no section drawing of the aero seatpost: about 20 mm wide and 36 mm deep with a flat back, until it is measured" }
   reference lights "How rear lights hold on with one band" { notes: "dan's photo of a rear light: one rubber loop wraps the post with a strand high and a strand low, and each end hooks onto a double hook on the light's side, the upper hook turned up and the lower one down, so the band cannot rock the light about it. Garmin Varia's mount adds a rubber shim shaped to the post (round or aero), keyed into the bracket; riders on D-shaped posts report it turning unless the shim fits the post" }
+  reference rings_rs "RS PRO EPDM O-rings, 3.5 mm cord" { url: "https://au.rs-online.com/web/p/gaskets-o-rings/2587581", notes: "44 × 3.5 mm (stock no. 258-7581), sold in bags of 20; 41 × 3.5 is 258-7572 and 37.5 × 3.5 is 258-7543. EPDM is the rubber that lasts outdoors" }
+  reference rings_autopro "Champion metric O-rings at Autopro, 3.5 mm cord" { url: "https://autopro.com.au/ap/Autopro-Category/Brands/Champion-Packs/Champion-44mm-x-3-5mm-Metric-O-Rings-Sold-Individually---C408-30/p/SP40374", notes: "Nitrile, sold one at a time, click and collect: 44 mm (C408-30) $12.99, 41 mm (C408-29) and 36 mm (C408-27) $1.49 each. Nitrile cracks in sunlight, so swap it each season" }
 
   assume "The number is polypropylene, about 30 MPa yield"
   assume "Painted carbon post: EPDM grips it with μ 0.8 dry, 0.5 wet; the TPU pad about 0.5 wet; bare ASA only about 0.3"
 }
 
-// ── The saddle on the post ─────────────────────────────
-param saddle_h = 20mm   range 20 .. 50  "Height along the post of the saddle, its double hooks and the jaw: the whole bracket"
-param saddle_t = 7mm    range 5 .. 10   "Saddle thickness behind the post's flat back: solid, with nothing cut into it"
-param horn     = 4mm    range 0 .. 8    "How far the saddle wraps round the post's back corners"
-param wall     = 2.2mm  range 1.6 .. 4  "Wall beside the post"
-param pad_t    = 1.5mm  range 1.2 .. 2.5 "Grip pad thickness (TPU)"
+// ── The seatpost ───────────────────────────────────────
+param post_w   = 20mm   range 18 .. 32  "Seatpost width, side to side at its widest"
+param post_d   = 36mm   range 18 .. 45  "Seatpost depth, front to back (the width again for a round post)"
+param tail_w   = 20mm   range 0 .. 24   "Width across the post's back, corner to corner: 0 for a round post"
+param tail_r   = 1.5mm  range 0 .. 4    "Radius of the post's back corners"
+
+// ── The middle and its pad ─────────────────────────────
+param body_h   = 20mm   range 20 .. 30  "Height along the post of the bracket, its arms and the jaw"
+param pad_t    = 1.5mm  range 1.2 .. 2.5 "Grip pad thickness where the post comes closest (TPU)"
 
 // ── The O-ring and its double hooks ────────────────────
-param oring_id = 53.57mm range 40 .. 70 "O-ring inside diameter (AS568-227 is 53.57 mm)"
-param oring_cs = 3.53mm  range 2.62 .. 3.53 "O-ring cord (AS568-2xx is 3.53 mm)"
-param hook_x   = 18.5mm range 13 .. 24  "Double hooks out from the middle"
-param hook_y   = 4mm    range 2 .. 8    "Prongs behind the post's flat back"
-param prong_d  = 5.5mm  range 3 .. 8    "Prong diameter: the bend the cord makes (at least 1.5 cords, so the O-ring does not wear through)"
-param lip      = 2.7mm  range 1 .. 4    "Rim round each double hook (the stretch to get the O-ring's end over it)"
-param rim_t    = 2.4mm  range 1.6 .. 4  "Thickness of each double hook's outer rim, which the O-ring's end is stretched over"
+param oring_id = 44mm   range 30 .. 60  "O-ring inside diameter: the seatpost choice sets the size that stretches about 35 % on it"
+param oring_cs = 3.5mm  range 3 .. 3.5  "O-ring cord (3.5 mm metric)"
+param prong_d  = 5.5mm  range 4.5 .. 6  "Prong diameter: the bend the cord makes (at least 1.5 cords, so the O-ring does not wear through)"
+param lip      = 2.7mm  range 2.4 .. 3.5 "How far each double hook's walls stand proud of its prongs (the stretch to get the O-ring's end in)"
 
 // ── The jaw and its snap pin ───────────────────────────
-param pivot_y  = 23.5mm range 20 .. 32  "From the post's flat back to the number's centre hole, where the pin goes"
-param rise     = 30     range 0 .. 30   "How far the number's tail rises above level, degrees: the jaw's pocket holds it there and nowhere else (reprint to change it)"
+param pivot_y  = 16mm   range 14 .. 24  "From the seat's middle back to the number's centre hole, where the pin goes"
+param rise     = 15     range 0 .. 30   "How far the number's tail rises above level, degrees: the jaw's pocket holds it there and nowhere else (reprint to change it)"
 param fit_gap  = 0.2mm  range 0.1 .. 0.6 "Room for the number in its slot, both sides together: 0.2 holds it tight. If your printer prints narrow slots under size and the number will not go in, try 0.3"
 param cheek    = 3mm    range 2.4 .. 4  "Jaw cheek thickness either side of the number"
 param pin_s    = 3.5mm  range 3 .. 3.6  "Snap pin's square section: its corners still pass through the number's 5.2 mm centre hole"
@@ -78,59 +78,192 @@ param gust     = 70kmh  range 30kmh .. 120kmh "Crosswind gust"
 param knock    = 25N    range 5 .. 60   "A leg or hand knocking the number's tail"
 param bump_g   = 12     range 3 .. 25   "Pothole shock, in g"
 
-let slot     = plate_t + fit_gap                     // the number's slot through the jaw
-let jaw_w    = slot + 2 * cheek                      // the near cheek stands from slot / 2 to jaw_w / 2, the far one the other side
-let seat_off = pad_t + 0.2                           // the saddle's seat stands off the post by the pad and a little room
-let sw       = tail_w + 2 * (seat_off + wall)        // saddle width
 let pad_mu   = 0.5                                   // TPU on wet painted carbon
-// the number's outline: its point at (0, 0), running back along +u, up +v; and the same about its centre hole
-let tag      = polygon(points: [(0, -tip_h / 2), (taper_l, -plate_h / 2), (plate_l, -plate_h / 2), (plate_l, plate_h / 2), (taper_l, plate_h / 2), (0, tip_h / 2)], r: 3)
-let tag_h    = polygon(points: [(-hole_c, -tip_h / 2), (taper_l - hole_c, -plate_h / 2), (plate_l - hole_c, -plate_h / 2), (plate_l - hole_c, plate_h / 2), (taper_l - hole_c, plate_h / 2), (-hole_c, tip_h / 2)], r: 3)
-// the post's section: a round nose and a straight taper to its flat back at y = 0
-let nose_y   = -post_d + post_w / 2
-let post_sec = circle(post_w, at: (0, nose_y)) + polygon(points: [(-post_w / 2, nose_y), (post_w / 2, nose_y), (tail_w / 2, 0), (-tail_w / 2, 0)], r: 1.5)
+let ct       = cos(tilt)
+let st       = sin(tilt)
+let post_ax  = (0, st, ct)
 
+// ── The post's section: a round nose, straight sides and two round back corners (or just a circle) ──
+// x across, y back, its back touching the pad's curve. A flat back sits a little in front of the curve's middle so its
+// corners meet the curve; a round post touches it at the middle
+let pad_r    = 16                                    // the pad's curve: its post side, about (0, -pad_r)
+let round_post = tail_w < 0.5
+let Rn       = post_w / 2
+let kx0      = max(tail_w / 2 - tail_r, 0)
+let ys       = round_post ? 0 : -pad_r + tail_r + sqrt((pad_r - tail_r)^2 - kx0^2)
+let ny       = ys - post_d + Rn                      // the nose's centre
+let ky       = ys - tail_r                           // the back corners' centres
+// the straight side from the nose to the back corner: its outward normal and where it leaves each
+let sd       = hypot(kx0, ky - ny)
+let ex       = kx0 / sd
+let ey       = (ky - ny) / sd
+let s0       = (Rn - tail_r) / sd
+let c0       = sqrt(max(1 - s0^2, 0))
+let snx      = s0 * ex + c0 * ey
+let sny      = s0 * ey - c0 * ex
+let tnx      = Rn * snx
+let tny      = ny + Rn * sny
+let tkx      = kx0 + tail_r * snx
+let tky      = ky + tail_r * sny
+let post_sec = round_post ? circle(post_w, at: (0, ny)) : circle(post_w, at: (0, ny)) + polygon(points: [(-tnx, tny), (tnx, tny), (tkx, tky), (-tkx, tky)]) + rect(tail_w, 2 * tail_r + 0.4, at: (0, ky - 0.2), r: max(tail_r, 0.1))
+
+// ── The middle ─────────────────────────────────────────
+// a block behind the post with a curved seat; the pad between them is shaped to the post on its front and to the seat on
+// its back, so one bracket fits every post and only the pad changes
+let Rs       = pad_r + pad_t + 0.05                  // the seat: the pad's back and 0.05 of room
+let pad_half = 10.2                                  // the pad reaches at most this far either side of the middle
+let horn     = 1.2                                   // and the seat runs on at least this far past its ends
+let bx       = pad_half + horn
+let body_back = 7
+let seat_y   = Rs - pad_r                            // the seat's middle
+let seat_end_y = -pad_r + sqrt(Rs^2 - bx^2)
+let key_w    = 3
+let key_d    = 1.2                                   // the pad's key and the stopped groove it sits in
+
+// ── The bosses, their necks and the arms' clips ───────
+// a boss each side on a neck that runs forward and in at neck_a below straight in. Each arm's clip is a C that wraps
+// the boss, its opening centred on the neck, so the arm swings swing degrees either way before the opening meets it
+let px       = 15.5
+let py       = 2
+let rb       = 3                                     // boss radius
+let neck_a   = 30
+let neck_l   = 8                                     // long enough that its end is lost in the seat
+let nw       = 3.4
+let clr      = 0.2                                   // room between the boss and its clip
+let ri       = rb + clr
+let kw       = 1.8                                   // the clip's wall
+let ro       = ri + kw
+let relief   = 0.3                                   // room round each clip in the middle's side
+let mouth_c  = 180 + neck_a                          // the clip's opening, in the arm's frame
+let mouth_h  = 60.3                                  // half its angle: its edges stand 0.44 mm inside the boss's width
+let swing    = mouth_h - asin((nw / 2) / ri)         // how far the arm turns before the opening's edge meets the neck
+// a 45° groove round the boss's middle and a bead inside the clip that rides in it, so the arm stays at its height
+let gd       = 0.6
+let g0       = 0.6
+let g1       = g0 + 1.4 * gd                         // the groove's and the bead's flanks stand at 55°, so they print without support
+let bead     = 0.6
+let b0       = 0.5
+let b1       = b0 + 1.4 * bead
+
+// ── Each arm, in its own frame: pivot at (0, 0), pointing forward (-y), outward +x, as it prints ──
+// a beam on the outside from the clip to the head; in the head a groove between the beam and an inner wall, and the double
+// hook's block bridging the groove, its two rounded back corners the prongs. The inner wall's inside face is the finger,
+// an 8 mm radius, that rests on the post's side
+let reach    = 11.5                                  // from the pivot to the prongs' middle
+let yh       = -reach
+let pr       = prong_d / 2
+let spread   = body_h - prong_d - 2 * lip            // the prongs' centres apart: the walls come flush with the top and bottom
+let va       = -1                                    // the head's front, from the prongs' middle: the walls bridge the block's flat underside
+let vb       = pr + lip                              // the walls' back
+let xo       = 5.6                                   // the beam's outside
+let ta       = 2.6                                   // and its thickness
+let groove   = 4.5
+let stop     = 4.2                                   // the inner wall's thickness at the finger's middle
+let xb0      = xo - ta
+let xg0      = xb0 - groove
+let xi       = xg0 - stop                            // the finger's middle
+let rf       = 8                                     // the finger's radius
+let yf       = yh + (va + vb) / 2
+let hook_x   = (xg0 + xb0) / 2
+// seen from the side (v back toward the pivot from the prongs' middle, z up): the block, whose rounded back corners are
+// the prongs. The lower prong's underside is chamfered at 45° below its middle, so it prints without support
+let block    = outline([(va, -spread / 2 - pr), (0.414 * pr, -spread / 2 - pr), (0.707 * pr, -spread / 2 - 0.707 * pr), arc_to((pr, -spread / 2), via: (0.924 * pr, -spread / 2 - 0.383 * pr)), (pr, spread / 2), arc_to((0, spread / 2 + pr), via: (0.707 * pr, spread / 2 + 0.707 * pr)), (va, spread / 2 + pr)])
+let wedge    = polygon(points: [(0, 0), ((ro + 2) * cos(mouth_c - mouth_h), (ro + 2) * sin(mouth_c - mouth_h)), ((ro + 2) * 1.5 * cos(mouth_c), (ro + 2) * 1.5 * sin(mouth_c)), ((ro + 2) * cos(mouth_c + mouth_h), (ro + 2) * sin(mouth_c + mouth_h))])
+let arm_solid = [revolve(points: [(ri, -body_h / 2), (ro, -body_h / 2), (ro, body_h / 2), (ri, body_h / 2), (ri, b1), (ri - bead, b0), (ri - bead, -b0), (ri, -b1)], at: (0, 0, 0), dir: Z), box(ta, -ri - 0.3 - (yh + va), body_h, at: ((xo + xb0) / 2, (-ri - 0.3 + yh + va) / 2, -body_h / 2)), extrude(overlap(rect(xg0 - xi + 1, vb - va, at: ((xg0 + xi - 1) / 2, yh + (va + vb) / 2)), circle(2 * rf, at: (xi + rf, yf))), body_h, at: (0, 0, -body_h / 2)), extrude(block, groove + 0.02, at: (xg0 - 0.01, yh, 0), dir: X)]
+let arm_cuts = [extrude(wedge, body_h + 2, at: (0, 0, -body_h / 2 - 1))]
+
+// ── Where each arm rests: it swings in until its finger meets the post ──
+// the finger is a circle of radius rf (and 0.1 of room) about q in the arm's frame; turned by th about the boss it first
+// meets the post's nose, a back corner or the straight side between them, whichever comes at the widest swing
+let fr       = rf + 0.1
+let qx0      = xi + rf
+let qn       = hypot(qx0, yf)
+let aq       = atan2(yf, qx0)
+let dNx      = -px
+let dNy      = ny - py
+let dN       = hypot(dNx, dNy)
+let th_N0    = atan2(dNy, dNx) - aq + acos(clamp((qn^2 + dN^2 - (Rn + fr)^2) / (2 * qn * dN), -1, 1))
+let th_N     = th_N0 - 360 * round(th_N0 / 360)
+let dKx      = kx0 - px
+let dKy      = ky - py
+let dK       = hypot(dKx, dKy)
+let th_K0    = atan2(dKy, dKx) - aq + acos(clamp((qn^2 + dK^2 - (tail_r + fr)^2) / (2 * qn * dK), -1, 1))
+let th_K     = round_post ? -999 : th_K0 - 360 * round(th_K0 / 360)
+let an       = atan2(sny, snx)
+let c_side   = sny * ny + Rn
+let th_S0    = an - aq - acos(clamp((fr + c_side - (snx * px + sny * py)) / qn, -1, 1))
+let th_S1    = th_S0 - 360 * round(th_S0 / 360)
+let qSx      = px + qx0 * cos(th_S1) - yf * sin(th_S1)
+let qSy      = py + qx0 * sin(th_S1) + yf * cos(th_S1)
+let side_l   = max(hypot(tkx - tnx, tky - tny), 0.01)
+let side_t   = ((qSx - fr * snx - tnx) * (tkx - tnx) + (qSy - fr * sny - tny) * (tky - tny)) / side_l
+let th_S     = round_post ? -999 : side_t < -0.01 || side_t > side_l + 0.01 ? -999 : th_S1
+let th_free  = max(th_N, th_K, th_S)
+let th       = clamp(th_free, -swing, swing)
+let on_N     = th_N >= th_K && th_N >= th_S
+let on_K     = th_K > th_N && th_K >= th_S
+// the finger's centre as it rests, the normal where it touches (from the post toward it) and the touching point
+let qx       = px + qx0 * cos(th) - yf * sin(th)
+let qy       = py + qx0 * sin(th) + yf * cos(th)
+let cnx0     = on_N ? qx : on_K ? qx - kx0 : snx
+let cny0     = on_N ? qy - ny : on_K ? qy - ky : sny
+let cnx      = cnx0 / hypot(cnx0, cny0)
+let cny      = cny0 / hypot(cnx0, cny0)
+let fcx      = qx - rf * cnx
+let fcy      = qy - rf * cny
+// where on the finger it touches, from its middle: it must stay on the rounded face, short of the wall's ends
+let psi      = atan2(-cnx * sin(th) + cny * cos(th), cnx * cos(th) + cny * sin(th))
+let psi_max  = asin(((vb - va) / 2 - 1) / rf)
+// the prongs' middle of the right arm's double hook, in the bracket's frame (the left one is its mirror image)
+let hRx      = px + hook_x * cos(th) - yh * sin(th)
+let hRy      = py + hook_x * sin(th) + yh * cos(th)
+
+part post {
+  label: "Seatpost"
+  material: "Carbon fiber"
+  finish: "gloss"
+  color: #17181b
+  group: "Bike"
+  process: false
+  rotate: (-tilt, 0, 0)
+  body extrude(post_sec, 150, at: (0, 0, -70))
+}
+
+// ── The jaw ────────────────────────────────────────────
 // the number turns about its centre hole H: by the post's lean and on by rise, so its tail rises rise degrees above
-// level; its point J sits hole_c in front of H. H sits a little above the bracket's middle, so the jaw runs on under the
-// number's lower edge as far as it runs on in front of its upper one
-let H_z      = 1.5
-let H        = (0, pivot_y, H_z)
+// level; its point J sits hole_c in front of H. H sits above the bracket's middle, so the jaw runs on under the number's
+// lower edge as far back as the jaw goes
+let H_z      = 3.5
 let ja       = tilt + rise
 let ca       = cos(ja)
 let sa       = sin(ja)
 let jaw_y    = pivot_y - hole_c * ca
 let J        = (0, jaw_y, H_z - hole_c * sa)
-let ct       = cos(tilt)
-let st       = sin(tilt)
-// where J, H and the post's axis end up in the world once everything leans back
+// where J ends up in the world once everything leans back
 let J_w      = (0, jaw_y * ct + J.z * st, -jaw_y * st + J.z * ct)
-let H_w      = (0, pivot_y * ct + H_z * st, -pivot_y * st + H_z * ct)
-let post_ax  = (0, st, ct)
-let post_back = (0, ct, -st)
-let post_mid = (0, (nose_y / 2) * ct - (saddle_h / 2 - 1.5) * st, -(nose_y / 2) * st - (saddle_h / 2 - 1.5) * ct)
 // the way the number runs back, in the world
 let num_dir  = (0, cos(rise), sin(rise))
-// tilted up, the number's top front corner swings forward toward the post: how far behind the post's flat back it stays
+// tilted up, the number's top front corner swings forward toward the post: where it ends up, behind the seat's middle
 let corner_y = pivot_y + (taper_l - hole_c) * ca - plate_h / 2 * sa
-
-// the jaw: one solid block from the saddle's back to 4.5 mm past the centre hole, its top back corner rounded (the bottom
-// one stays square, on the bed). The number's slot is its outline, fit_gap / 2 bigger all round in its own plane, cut
-// through the jaw fit_gap wider than the number: its point nests in the V the slot ends in, so it cannot turn about its
-// centre hole, up or down
-let jaw_front = saddle_t - 1
+let jaw_front = body_back - 1
 let cheek_back = pivot_y + 4.5
 let jaw_r    = 3
-let jaw_sec  = outline([(jaw_front, -saddle_h / 2), (cheek_back, -saddle_h / 2), (cheek_back, saddle_h / 2 - jaw_r), arc_to((cheek_back - jaw_r, saddle_h / 2), via: (cheek_back - jaw_r + 0.7071 * jaw_r, saddle_h / 2 - jaw_r + 0.7071 * jaw_r)), (jaw_front, saddle_h / 2)])
+let jaw_sec  = outline([(jaw_front, -body_h / 2), (cheek_back, -body_h / 2), (cheek_back, body_h / 2 - jaw_r), arc_to((cheek_back - jaw_r, body_h / 2), via: (cheek_back - jaw_r + 0.7071 * jaw_r, body_h / 2 - jaw_r + 0.7071 * jaw_r)), (jaw_front, body_h / 2)])
+let slot     = plate_t + fit_gap                     // the number's slot through the jaw
+let jaw_w    = slot + 2 * cheek                      // the near cheek stands from slot / 2 to jaw_w / 2, the far one the other side
+// the number's outline: its point at (0, 0), running back along +u, up +v; and the same about its centre hole
+let tag      = polygon(points: [(0, -tip_h / 2), (taper_l, -plate_h / 2), (plate_l, -plate_h / 2), (plate_l, plate_h / 2), (taper_l, plate_h / 2), (0, tip_h / 2)], r: 3)
+let tag_h    = polygon(points: [(-hole_c, -tip_h / 2), (taper_l - hole_c, -plate_h / 2), (plate_l - hole_c, -plate_h / 2), (plate_l - hole_c, plate_h / 2), (taper_l - hole_c, plate_h / 2), (-hole_c, tip_h / 2)], r: 3)
 let pocket   = rotate(offset(tag_h, fit_gap / 2), ja)
 // where the number's upper edge leaves the top of the jaw, and how far the jaw runs on under its lower edge at the back
 let edge_y   = taper_l * ca - (plate_h - tip_h) / 2 * sa
 let edge_z   = taper_l * sa + (plate_h - tip_h) / 2 * ca
-let top_open = jaw_y - tip_h / 2 * sa + (saddle_h / 2 - J.z - tip_h / 2 * ca) * edge_y / edge_z
+let top_open = jaw_y - tip_h / 2 * sa + (body_h / 2 - J.z - tip_h / 2 * ca) * edge_y / edge_z
 let low_y    = jaw_y + tip_h / 2 * sa
 let low_z    = J.z - tip_h / 2 * ca
 let low_dy   = taper_l * ca + (plate_h - tip_h) / 2 * sa
 let low_dz   = taper_l * sa - (plate_h - tip_h) / 2 * ca
-let floor_t  = low_z + (cheek_back - low_y) * low_dz / low_dy + saddle_h / 2
+let floor_t  = low_z + (cheek_back - low_y) * low_dz / low_dy + body_h / 2
 
 // the snap pin: a square bar split down the middle into two prongs, side by side as it prints, each with a catch at its
 // tip. Pushed in at the near cheek, the prongs spring together through the square holes and the number's round one and
@@ -148,87 +281,85 @@ let head_w   = 9
 // the lead-ins run from the catches at 30° toward the tips; they are cut off square where the prongs are still 1.35 mm thick
 let tip_x    = jaw_w / 2 - prong_l - barb - 0.2 - (prong_t + barb - 1.35) / tan(30)
 
-// the saddle seat: a cylinder zone round the post's axis that takes in the seat but not the saddle's back or the wings
-let seat_r   = hypot(tail_w / 2, nose_y / 2) + seat_off
-// each double hook: a block in a groove between a wing off the saddle and an outer rim; the block's rounded back corners are its two prongs
-let groove   = oring_cs + 1.5
-let spread   = saddle_h - prong_d - 2 * lip            // the prongs' centres apart: the rims come flush with the saddle's top and bottom
-let block_d  = hook_y + prong_d / 2                    // the block's back face behind the post's flat back
-let hook_in  = sw / 2 - 1
-let hook_out = hook_x + groove / 2
-// seen from the side (y back, z up): the block, whose rounded back corners are the prongs, and the rim and stop round it,
-// lip proud. The lower prong's underside is chamfered at 45° below its middle, so it prints without support
-let pr       = prong_d / 2
-let block    = outline([(0, -spread / 2 - pr), (hook_y + 0.414 * pr, -spread / 2 - pr), (hook_y + 0.707 * pr, -spread / 2 - 0.707 * pr), arc_to((hook_y + pr, -spread / 2), via: (hook_y + 0.924 * pr, -spread / 2 - 0.383 * pr)), (hook_y + pr, spread / 2), arc_to((hook_y, spread / 2 + pr), via: (hook_y + 0.707 * pr, spread / 2 + 0.707 * pr)), (0, spread / 2 + pr)])
-// (the rims' tops already come flush with the saddle's, so the rect only trims their front). Under the lower prong's
-// back corner the offset rounds off into the bed; a step down to the bed there keeps that rounding from hanging out
-let corner_x = hook_y + 0.414 * pr + 0.7071 * lip
-let corner_z = -spread / 2 - pr - 0.7071 * lip
-let hook_face = overlap(offset(block, lip) + rect(corner_x, corner_z + saddle_h / 2 + 0.5, at: (corner_x / 2, (corner_z - saddle_h / 2 - 0.5) / 2)), rect(block_d + lip, saddle_h + 2, at: ((block_d + lip) / 2, 0)))
-// how far the saddle's front corner stands inside the strand that runs from a hook to the widest of the post's nose
-let run_x    = post_w / 2 - hook_x
-let run_y    = nose_y - hook_y
-let clear    = (run_y * (sw / 2 - hook_x) - run_x * (-horn - hook_y)) / hypot(run_x, run_y)
-
-part post {
-  label: "Seatpost (Giant Propel)"
-  material: "Carbon fiber"
-  finish: "gloss"
-  color: #17181b
-  group: "Bike"
-  process: false
-  rotate: (-tilt, 0, 0)
-  body extrude(post_sec, 150, at: (0, 0, -70))
-}
-
 part bracket {
   label: "Number bracket"
   color: #222428
   material: "ASA"
   group: "Bracket"
   rotate: (-tilt, 0, 0)
-  // printed standing up as drawn: the saddle's foot, both wings and the jaw stand on the bed, nothing hangs out
-  // saddle: a block behind the post with its front cut to the post's own shape, standing off it by the pad
-  body box(sw, saddle_t + horn, saddle_h, at: (0, (saddle_t - horn) / 2, -saddle_h / 2)) as saddle
-  fillet(1.5, edges: "vertical")
-  // a double hook on each side, the way a rear light's band holds: the O-ring's end goes over the top prong, down behind
-  // the block and under the bottom prong, between a stop and an outer rim that stand lip proud of it. The pull draws the
-  // end inward onto the stop; the rim keeps it from sliding off. Block, stop and rim stand on the bed and the block's
-  // underside bridges between them, so it prints without support
+  // printed standing up as drawn: the middle, the bosses on their necks and the jaw stand on the bed, nothing hangs out
+  body box(2 * bx, body_back - seat_end_y + 1, body_h, at: (0, (body_back + seat_end_y - 1) / 2, -body_h / 2)) as middle
+  fillet(1.5, edges: in_plane(Y, body_back) + near((bx, body_back, 0), 0.5) + near((-bx, body_back, 0), 0.5))
+  // room for each arm's clip to swing, then the neck and boss it clips onto
   for side in [-1, 1] {
-    add extrude(block, hook_out - hook_in, at: (side * (hook_in + hook_out) / 2 - (hook_out - hook_in) / 2, 0, 0), dir: X) as prongs
-    add extrude(hook_face, rim_t, at: (side * (hook_out + rim_t / 2) - rim_t / 2, 0, 0), dir: X) as rims
-    // the stop runs from the saddle's side to the groove and starts behind the prongs, so the strand running forward and in
-    // toward the post clears it
-    add extrude(overlap(hook_face, rect(block_d + lip - hook_y, saddle_h + 2, at: ((block_d + lip + hook_y) / 2, 0))), hook_x - groove / 2 - hook_in, at: (side * (hook_in + hook_x - groove / 2) / 2 - (hook_x - groove / 2 - hook_in) / 2, 0, 0), dir: X) as stops
+    cut extrude(circle(2 * (ro + relief), at: (side * px, py)), body_h + 2, at: (0, 0, -body_h / 2 - 1)) as relief_cut
+    // and the middle's corner under the neck, so the neck's underside runs straight into the seat with no sliver
+    cut extrude(rotate(rect(6, 4, at: (-side * 6.5, -nw / 2 + 0.05 - 2)), side * neck_a), body_h + 2, at: (side * px, py, -body_h / 2 - 1)) as corner_cut
   }
-  // the jaw: one solid block standing on the bed from the saddle's back to past the centre hole, the full height of the saddle
+  for side in [-1, 1] {
+    add extrude(rotate(rect(neck_l, nw, at: (-side * neck_l / 2, 0)), side * neck_a), body_h, at: (side * px, py, -body_h / 2)) as necks
+    add revolve(points: [(0, -body_h / 2), (rb, -body_h / 2), (rb, -g1), (rb - gd, -g0), (rb - gd, g0), (rb, g1), (rb, body_h / 2), (0, body_h / 2)], at: (side * px, py, 0), dir: Z) as bosses
+  }
+  // the jaw: one solid block standing on the bed from the middle's back to past the centre hole, the full height
   add extrude(jaw_sec, jaw_w, at: (-jaw_w / 2, 0, 0), dir: X) as jaw
   // the seat cut last of the solid, so nothing added reaches into it
-  cut extrude(offset(post_sec, seat_off), 2 * saddle_h + 2, at: (0, 0, -saddle_h - 1)) as seat
-  // a stopped groove for the pad's key, so the pad cannot slide or turn in the saddle
-  cut box(3.4, 1.3, saddle_h - 7.4, at: (0, seat_off + 0.55, -(saddle_h - 7.4) / 2)) as key_slot
+  cut extrude(circle(2 * Rs, at: (0, -pad_r)), body_h + 2, at: (0, 0, -body_h / 2 - 1)) as seat
+  // a stopped groove for the pad's key, so the pad cannot slide or turn in the seat
+  cut box(key_w + 0.4, key_d + 0.1, body_h - 7.4, at: (0, seat_y + (key_d - 0.1) / 2, -(body_h - 7.4) / 2)) as key_slot
   // the number's slot and the V pocket its point nests in; every edge of it faces up or back, so it prints without support
   cut extrude(pocket, slot, at: (-slot / 2, pivot_y, H_z), dir: X) as slot_cut
   // the pin's square hole through both cheeks and the number's centre hole: its top is a 3.7 mm bridge
   cut box(jaw_w + 2, ph, ph, at: (0, pivot_y, H_z - ph / 2)) as pin_hole
   chamfer(mouth, edges: both(pin_hole.edges, in_plane(X, jaw_w / 2)))
-  // flat underneath, level with the saddle's foot, so it stands on the bed
-  cut box(120, 120, 40, at: (0, 0, -saddle_h / 2 - 40)) as foot
 }
 
-// the rubber shim a rear light's bracket has: a TPU liner shaped to the post's back and corners
+// the rubber shim a rear light's bracket has: a TPU liner shaped to this post on its front and to the seat on its back.
+// Reprint it (a few grams) for another post. Its ends, as an angle either side of the middle: on a flat-backed post just short of where its corners meet the curve,
+// so it never wraps round them in a sliver
+let pad_end  = min(asin(pad_half / (pad_r + pad_t)), kx0 < 1 ? 90 : atan2(kx0, ky + pad_r) - 1)
+let pad_sec  = overlap(circle(2 * (pad_r + pad_t), at: (0, -pad_r)) - offset(post_sec, 0.05), polygon(points: [(0, -pad_r), (30 * sin(pad_end), -pad_r + 30 * cos(pad_end)), (0, -pad_r + 30), (-30 * sin(pad_end), -pad_r + 30 * cos(pad_end))]))
+
 part pad {
   label: "Grip pad"
   material: "TPU"
   color: #3b3e44
   group: "Bracket"
   rotate: (-tilt, 0, 0)
-  held: "squeezed between the saddle and the post by the O-ring, its key in the saddle's groove"
+  held: "squeezed between the bracket's seat and the post by the O-ring, its key in the seat's groove"
   // printed standing up as drawn, like the bracket
-  body extrude(overlap(offset(post_sec, 0.05 + pad_t) - offset(post_sec, 0.05), rect(sw + 2, horn + pad_t + 1, at: (0, (pad_t + 1 - horn) / 2))), saddle_h, at: (0, 0, -saddle_h / 2)) as liner
-  // a key down its back drops into the saddle's groove
-  add box(3, 1, saddle_h - 8, at: (0, pad_t + 0.5, -(saddle_h - 8) / 2)) as key
+  body extrude(pad_sec, body_h, at: (0, 0, -body_h / 2)) as liner
+  // a key down its back drops into the seat's groove
+  add box(key_w, key_d + 0.3, body_h - 8, at: (0, pad_t + (key_d - 0.3) / 2, -(body_h - 8) / 2)) as key
+}
+
+// ── The arms: one print, made twice ─────────────────────
+// each prints lying on its bottom face as drawn: the clip, beam and head stand on the bed, the groove's walls carry the
+// block's flat underside across, and the clip's bead and the prong's chamfer slope at 45°
+part arm_r {
+  label: "Arm (right)"
+  color: #222428
+  material: "ASA"
+  group: "Bracket"
+  rotate: (atan2(sin(-tilt) * cos(th), cos(-tilt)), asin(-sin(-tilt) * sin(th)), atan2(cos(-tilt) * sin(th), cos(th)))
+  at: (px, py * ct, -py * st)
+  held: "its clip snaps over the bracket's boss and its bead rides in the boss's groove; the O-ring's pull swings it in onto the post and keeps the clip seated"
+  body arm_solid as arm
+  cut arm_cuts as mouth_cut
+  fillet(0.6, edges: near((xi + 1, yh + va, 0), 1.2) + near((xg0, yh + va, 0), 0.6) + near((xo, yh + va, 0), 0.6))
+}
+
+part arm_l {
+  label: "Arm (left)"
+  color: #222428
+  material: "ASA"
+  group: "Bracket"
+  // the same print turned over
+  rotate: (atan2(sin(-tilt) * cos(th), -cos(-tilt)), asin(-sin(-tilt) * sin(th)), atan2(cos(-tilt) * sin(th), -cos(th)))
+  at: (-px, py * ct, -py * st)
+  held: "its clip snaps over the bracket's boss and its bead rides in the boss's groove; the O-ring's pull swings it in onto the post and keeps the clip seated"
+  body arm_solid as arm
+  cut arm_cuts as mouth_cut
+  fillet(0.6, edges: near((xi + 1, yh + va, 0), 1.2) + near((xg0, yh + va, 0), 0.6) + near((xo, yh + va, 0), 0.6))
 }
 
 // ── The snap pin ────────────────────────────────────────
@@ -317,50 +448,62 @@ part transponder {
   body extrude(sticker, 0.1, at: (-plate_t / 2 - 0.1, 0, 0), dir: X)
 }
 
-// ── The O-ring: its end on the left double hook, round the post high and low, its other end over the right hook's rim ──
-component oring = lib.band("EPDM", id: oring_id, cs: oring_cs, around: post, holds: bracket, from: (-hook_x, hook_y, 0), to: (hook_x, hook_y, 0), pin: prong_d, lip: lip, spread: spread, open: [(-1, 0, 0), (1, 0, 0)], carries: 30g, shock: bump_g, saddle_mu: pad_mu) {
+// ── The O-ring: its end on the left arm's double hook, round the post's front high and low, its other end into the right
+// arm's. The hooks are on the arms, so from: and to: are where the arms put them, in the bracket's frame, and each end
+// goes in from behind its block (open: the arm's way back)
+component oring = lib.band("EPDM", id: oring_id, cs: oring_cs, around: post, holds: bracket, hooked_on: [arm_l, arm_r], from: (-hRx, hRy, 0), to: (hRx, hRy, 0), pin: prong_d, lip: lip, spread: spread, open: [(sin(th), cos(th), 0), (-sin(th), cos(th), 0)], carries: 34g, shock: bump_g, saddle_mu: pad_mu) {
   group: "Bands"
 }
 
-decision holding "How it holds the post" {
-  ask: "Hold the bracket on without a screw"
-  chose: "One O-ring on double hooks"
+decision seatpost "Which seatpost" {
+  ask: "Fit the bracket to any seatpost"
+  chose: "Giant Propel"
   by: "you"
-  why: "How the rear light in your photo does it: one band wraps the post with a strand high and a strand low, and each end turns round a double hook on the bracket's side, so the band also stops the bracket rocking about it. A rubber pad shaped to the post lets one band's squeeze hold it. A closed band cannot get round a seatpost that carries on above and below, so the O-ring's end goes on one hook, wraps the post and is stretched over the other hook's rim."
-  option "One O-ring on double hooks" "One O-ring to fit; its two strands, 18 mm apart, hold the bracket square on the post."
-  option "One O-ring on two pins" "Simpler hooks, but both strands sit at mid-height, so the bracket can rock about them."
+  why: "The bracket and its arms are the same for every post: the arms swing in or out to follow the post's sides, and only the TPU pad (shaped to the post) and the O-ring's size change. Each choice here reshapes the pad and picks the metric 3.5 mm O-ring that stretches about 35 % on that post. Arms this long reach round posts from 25.4 to 31.6 mm (a 25.4 mm post takes a 34 × 3.5 mm O-ring), the Propel and D-shaped aero posts whose back is 18 mm or wider; a narrow teardrop tail would need longer arms."
+  option "Giant Propel" { post_w: 20mm, post_d: 36mm, tail_w: 20mm, tail_r: 1.5mm, oring_id: 44mm } "About 20 × 36 mm with a flat back (measure yours and set the sizes): a 44 × 3.5 mm O-ring."
+  option "Round 27.2 mm" { post_w: 27.2mm, post_d: 27.2mm, tail_w: 0mm, tail_r: 0mm, oring_id: 36mm } "The commonest round post: a 36 × 3.5 mm O-ring."
+  option "Round 30.9 mm" { post_w: 30.9mm, post_d: 30.9mm, tail_w: 0mm, tail_r: 0mm, oring_id: 41mm } "A wider round post: a 41 × 3.5 mm O-ring."
+  option "Round 31.6 mm" { post_w: 31.6mm, post_d: 31.6mm, tail_w: 0mm, tail_r: 0mm, oring_id: 41mm } "The widest common round post: a 41 × 3.5 mm O-ring."
+  option "D-shaped aero (22 × 38 mm)" { post_w: 22mm, post_d: 38mm, tail_w: 18mm, tail_r: 2mm, oring_id: 44mm } "A D-shaped aero post with an 18 mm flat back: a 44 × 3.5 mm O-ring."
+}
+
+decision holding "How it holds the post" {
+  ask: "Hold the bracket on any seatpost without a screw"
+  chose: "Arms that swing, one O-ring on double hooks"
+  by: "you"
+  why: "Your idea: a curved middle with TPU in it and ends that clip on and turn in or out to follow the post. Each arm swings on a boss until its finger meets the post's side, so one bracket fits round, aero and the Propel's post, and the O-ring's pull does the swinging. The O-ring hooks on the way a rear light's does: a strand high and one low round the post's front, so it also stops the bracket rocking about it. A closed band cannot get round a seatpost that carries on above and below, so the O-ring's end goes on one hook, wraps the post and is stretched into the other hook."
+  option "Arms that swing, one O-ring on double hooks" "One print for every post; only the pad and the O-ring change."
+  option "Fixed hooks on the middle" "v9: simpler, but its seat fits one post only."
   option "Clamp with a screw" "Holds hardest, but needs a tool and can mark the post."
 }
 
 decision seat_grip "What grips the post" {
   ask: "Stop the bracket turning on the post with only one O-ring"
-  chose: "Printed TPU pad"
-  by: "claude"
-  why: "Bare ASA on painted carbon grips at about μ 0.3; a rubbery pad about 0.5 even wet, so one O-ring holds what two did. Keyed into a groove so it cannot slip out, like the shim in a rear light's bracket."
-  option "Printed TPU pad" "A second small print in TPU; replaceable."
-  option "Strip of old inner tube" "Cut to fit and stick in with double-sided tape: no TPU needed, grips as well."
-  option "Bare plastic" "Nothing extra, but the knock check fails with one O-ring."
+  chose: "TPU pad shaped to the post"
+  by: "you"
+  why: "Bare ASA on painted carbon grips at about μ 0.3; a rubbery pad about 0.5 even wet, and shaped to the post it sits on it all over, so it cannot rock or turn. Keyed into a groove in the seat so it cannot slip out, like the shim in a rear light's bracket. It is the only part that changes with the post."
+  option "TPU pad shaped to the post" "A small TPU print per post; replaceable."
+  option "Strip of old inner tube" "Cut to fit and stick in with double-sided tape: no TPU needed, but it does not fill the seat round a narrow post."
 }
 
 decision number_hold "How the number is held" {
   ask: "Keep the number in without a screw"
   chose: "Snap pin through both cheeks"
   by: "claude"
-  why: "It mounts where the old bracket's bolt did, at the centre hole in the point. The point nests in a V pocket of its own outline in the jaw, so it cannot turn about the pin, and the pin goes right through the number and both cheeks, so the number cannot slip past it. v4 to v8 pinned it with a pin on a springy arm off the saddle, and the slits that let the arm bend left the saddle too thin: it snapped. A separate pin needs nothing on the bracket to bend. Only its own split end does, printed lying down so it bends along its layers, and a spare costs a few grams."
+  why: "It mounts where the old bracket's bolt did, at the centre hole in the point. The point nests in a V pocket of its own outline in the jaw, so it cannot turn about the pin, and the pin goes right through the number and both cheeks, so the number cannot slip past it. A separate pin needs nothing on the bracket to bend. Only its own split end does, printed lying down so it bends along its layers, and a spare costs a few grams."
   option "Snap pin through both cheeks" "Push it in until it clicks; pinch its prong tips to push it out."
-  option "Pin on a sprung arm" "v8: nothing loose to lose, but the arm's root weakened the saddle and it snapped."
   option "Bolt through the centre hole" "What it had: needs a nut and a spanner."
   option "Zip tie through the centre hole" "No print, but cut off and replaced every race."
 }
 
 decision number_angle "How the number sits" {
   ask: "Angle the number"
-  chose: "Tail up 30°"
+  chose: "Tail up 15°"
   by: "you"
-  why: "You asked for the number to tilt up about 30°, and then for it to be fixed at that, the top tilt. Tilted up, the number's top front corner swings toward the post, so its centre hole sits 23.5 mm behind the post's flat back to keep that corner clear."
-  option "Tail up 30°" { rise: 30 } "What you asked for."
-  option "Tail up 15°" { rise: 15 } "Flatter: reprint the bracket."
-  option "Level" { rise: 0 } "Straight back, as the old bracket held it: reprint the bracket."
+  why: "You asked for a less aggressive angle than v9's 30°. At 15° the number's top front corner swings less far toward the post, so its centre hole sits 16 mm behind the seat's middle, and the pin sits 2 mm above the bracket's middle so the jaw stays thick under the flatter number."
+  option "Tail up 15°" { rise: 15 } "What you asked for."
+  option "Tail up 30°" { rise: 30, pivot_y: 23.5mm } "v9's tilt: the jaw grows 7.5 mm longer to keep the corner clear; reprint the bracket."
+  option "Level" { rise: 0, body_h: 30mm } "Straight back, as the old bracket held it: the bracket and arms grow to 30 mm tall so the pocket still has solid under the number's point. Flatter than about 14° needs that; reprint them all."
 }
 
 decision tilt_lock "How the tilt is held" {
@@ -372,29 +515,67 @@ decision tilt_lock "How the tilt is held" {
   option "Push-to-click dial" "v8: three tilts, but its spring and the slits round it left the saddle too thin."
 }
 
-decision oring_size "O-ring size" {
-  chose: "AS568-227 (53.57 × 3.53 mm)"
+decision oring_rubber "Which O-ring" {
+  ask: "Find an O-ring or similar band that will work"
+  chose: "Metric 3.5 mm EPDM O-ring"
   by: "claude"
-  why: "Going round the double hooks takes a longer loop than two pins did. The thick 3.53 mm cord pulls about twice as hard as a 2.62 mm one at the same stretch, so one O-ring does the work of two; this size stretches about 35 % on the post, which fitting by hand can still manage."
-  option "AS568-226 (50.39 × 3.53 mm)" { oring_id: 50.39mm, oring_cs: 3.53mm } "Tighter: more grip, a hard pull to fit."
-  option "AS568-227 (53.57 × 3.53 mm)" { oring_id: 53.57mm, oring_cs: 3.53mm } "Balanced."
-  option "AS568-228 (56.74 × 3.53 mm)" { oring_id: 56.74mm, oring_cs: 3.53mm } "Looser: easier on, less grip once it relaxes."
-  option "AS568-130 (50.47 × 2.62 mm)" { oring_id: 50.47mm, oring_cs: 2.62mm } "Thin cord: easy on, but about half the grip."
+  why: "No joined double band like yours is sold on its own in Australia (Garmin's Varia bands are sold out), so it is a plain metric O-ring with a 3.5 mm cord, sized to the post, whose two strands do what your band's two loops do. EPDM lasts outdoors; RS Australia sells it in bags of 20. Autopro sells single nitrile ones ($1.49 for the 36 and 41 mm, $12.99 for the 44 mm), fine to start with but they crack in the sun. A photo of your band, or its loop's length, would let it be designed round that instead."
+  option "Metric 3.5 mm EPDM O-ring" "RS Australia, a bag of 20 (44 × 3.5 is stock no. 258-7581)."
+  option "Metric 3.5 mm nitrile O-ring" "Autopro, one at a time ($12.99 for the 44 mm, $1.49 for the 36 and 41 mm): swap it each season."
+  option "Your double band" "Send a photo or its loop's length and the hooks are sized to it."
 }
 
+// ── What each arm passes to the bracket ───────────────
+// The O-ring pulls each arm's hook toward the post (Fb). The arm turns freely on its boss, so the post must push back on
+// its finger (along the contact's normal) just hard enough to balance that pull's turn about the boss; the boss then
+// takes the sum of the two (Fp), which is what the bracket feels. All in the bracket's own frame (x across, y back)
+let tpx      = oring.to_pull.x
+let tpy      = oring.to_pull.y * ct - oring.to_pull.z * st
+let tpz      = oring.to_pull.y * st + oring.to_pull.z * ct
+let Fbx      = oring.pull * tpx
+let Fby      = oring.pull * tpy
+let Fbz      = oring.pull * tpz
+let Mb       = (hRx - px) * Fby - (hRy - py) * Fbx
+let Mf       = (fcx - px) * cny - (fcy - py) * cnx
+let finger   = -Mb / Mf
+let Fpx      = Fbx + finger * cnx
+let Fpy      = Fby + finger * cny
+let Fp       = hypot(Fpx, Fpy)
+// the clip is seated when the boss bears on the clip's back, away from its opening
+let seat_ok  = (Fpx * cos(mouth_c + th) + Fpy * sin(mouth_c + th)) / Fp
+let lfpx     = oring.from_pull.x
+let lfpy     = oring.from_pull.y * ct - oring.from_pull.z * st
+let lfpz     = oring.from_pull.y * st + oring.from_pull.z * ct
+let FLbx     = oring.pull * lfpx
+let FLby     = oring.pull * lfpy
+let MbL      = (px - hRx) * FLby - (hRy - py) * FLbx
+let fingerL  = -MbL / ((px - fcx) * cny + (fcy - py) * cnx)
+let FLpx     = FLbx - fingerL * cnx
+let FLpy     = FLby + fingerL * cny
+// in the world, at each boss
+let boss_r   = (px, py * ct - body_h / 2 * st, -py * st - body_h / 2 * ct)
+let boss_l   = (-px, py * ct - body_h / 2 * st, -py * st - body_h / 2 * ct)
+let F_r      = (Fpx, Fpy * ct + Fbz * st, -Fpy * st + Fbz * ct)
+let F_l      = (FLpx, FLpy * ct + oring.pull * lfpz * st, -FLpy * st + oring.pull * lfpz * ct)
+
 // ── Checks ─────────────────────────────────────────────
+// the seat: a cylinder zone round the seat's own axis that takes in the curve but not the middle's back, kept to the
+// pad's width so it stops short of the necks
+let seat_c   = (0, -pad_r * ct - (body_h - 3) / 2 * st, pad_r * st - (body_h - 3) / 2 * ct)
+let seat_zd  = 2 * (Rs + 0.3)
+let seat_w   = (2 * pad_half, 400, 400)
 // where the number bears on the jaw: the cheeks either side of it and the pocket it nests in, over a disc in the middle
-// of its face inside the jaw that stops short of the jaw's top and back faces (the pin sits clear of its holes, so the
-// loads go into the jaw here). The zone runs right across both cheeks, so the loads spread over their faces as well as the
-// slot's at any mesh size; a zone along X starts at its at:
-let grip_c   = (-(jaw_w / 2 + 0.3), 21.5 * ct + 2.5 * st, -21.5 * st + 2.5 * ct)
-let grip_d   = 10.5
+// of its face inside the jaw that stops short of the jaw's top and back faces; a zone along X starts at its at:
+let grip_c   = (-(jaw_w / 2 + 0.3), 14.5 * ct + H_z * st, -14.5 * st + H_z * ct)
+let grip_d   = 10
 
 analysis "Crosswind gust" {
   parts: [bracket]
-  // the saddle is only pressed on by the O-ring, through the pad: it must stay pressed and not turn on the post
-  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
-  load: pull(oring)
+  // the bracket is only pressed on by the O-ring, through its arms and the pad: it must stay pressed and not turn on the post
+  fix: contact(zone(at: seat_c, d: seat_zd, axis: post_ax, length: body_h - 3, within: zone(at: (0, 0, 0), size: seat_w)), mu: pad_mu, grip: [oring])
+  // each arm hands the O-ring's pull, and the post's push on its finger, to its boss
+  load: force(zone(at: boss_r, d: 2 * rb + 1, axis: post_ax, length: body_h), F_r)
+  load: force(zone(at: boss_l, d: 2 * rb + 1, axis: post_ax, length: body_h), F_l)
   // the wind on the number comes into the jaw as a force and its moment
   load: wind(zone(at: grip_c, d: grip_d, axis: X, length: jaw_w + 0.6), gust, dir: X, area: plate_l * plate_h - taper_l * (plate_h - tip_h) / 2, at: J_w + num_dir * (plate_l / 2))
   carries: mass(zone(at: grip_c, d: grip_d, axis: X, length: jaw_w + 0.6), 11g)
@@ -410,8 +591,9 @@ let knock_felt  = min(knock, number_bend / (plate_l - hole_c - (cheek_back - piv
 
 analysis "Leg knock" {
   parts: [bracket]
-  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
-  load: pull(oring)
+  fix: contact(zone(at: seat_c, d: seat_zd, axis: post_ax, length: body_h - 3, within: zone(at: (0, 0, 0), size: seat_w)), mu: pad_mu, grip: [oring])
+  load: force(zone(at: boss_r, d: 2 * rb + 1, axis: post_ax, length: body_h), F_r)
+  load: force(zone(at: boss_l, d: 2 * rb + 1, axis: post_ax, length: body_h), F_l)
   load: force(zone(at: grip_c, d: grip_d, axis: X, length: jaw_w + 0.6), knock_felt, dir: X, at: J_w + num_dir * plate_l)
   printed
   cycles: 1000
@@ -420,33 +602,51 @@ analysis "Leg knock" {
 
 analysis "Pothole" {
   parts: [bracket]
-  fix: contact(zone(at: post_mid, d: 2 * seat_r, axis: post_ax, length: saddle_h - 3), mu: pad_mu, grip: [oring])
-  load: pull(oring)
+  fix: contact(zone(at: seat_c, d: seat_zd, axis: post_ax, length: body_h - 3, within: zone(at: (0, 0, 0), size: seat_w)), mu: pad_mu, grip: [oring])
+  load: force(zone(at: boss_r, d: 2 * rb + 1, axis: post_ax, length: body_h), F_r)
+  load: force(zone(at: boss_l, d: 2 * rb + 1, axis: post_ax, length: body_h), F_l)
   carries: mass(zone(at: grip_c, d: grip_d, axis: X, length: jaw_w + 0.6), 11g)
   accel: (0, 0, -bump_g)
   printed
   safety: 2
 }
 
-// the O-ring pulls each hook toward the post and the post pushes back on the seat: at worst all of it at the middle,
-// which bends the saddle like a beam between its hooks (v8's slits left 1.3 mm of it there; now it is all solid)
-let saddle_mpa = 6 * oring.pull * hook_x / (saddle_h * (saddle_t - seat_off)^2)
+// the bosses pull the middle forward at its sides and the post pushes back on the seat: at worst all of it at the middle,
+// which bends the middle like a beam between its necks (its thinnest bit is behind the pad's key)
+let body_mpa = 6 * max(abs(Fpy), abs(FLpy)) * px / (body_h * (body_back - seat_y - key_d)^2)
+// each neck is a short cantilever from the middle's side to its boss, bent by the boss's load across it
+let neck_root = (px - bx) / cos(neck_a)
+let neck_mpa = 6 * Fp * neck_root / (body_h * nw^2)
+// each arm's beam is bent where it leaves the clip by the O-ring's pull and the post's push on the finger
+let r0x      = px + (xb0 + ta / 2) * cos(th) - (-ri - 0.3) * sin(th)
+let r0y      = py + (xb0 + ta / 2) * sin(th) + (-ri - 0.3) * cos(th)
+let beam_M   = abs((hRx - r0x) * Fby - (hRy - r0y) * Fbx + finger * ((fcx - r0x) * cny - (fcy - r0y) * cnx))
+let beam_mpa = 6 * beam_M / (body_h * ta^2)
+// opening the clip over the boss: its opening is 0.44 mm narrower than the boss, and bending the C that far strains it
+let snap_d   = 2 * rb - 2 * ri * sin(mouth_h)
+let snap_strain = 2 * snap_d * kw / (3 * PI * ((ri + ro) / 2)^2)
 
 require "The pin's corners pass through the number's centre hole" for fit: pin_s * sqrt(2) + 0.1 <= hole_cd
 require "The pin's prongs close far enough to pass through the holes" for fit: slit / 2 >= pass + 0.15
-require "The cheeks keep at least 2.5 mm round the pin's hole" for knock: cheek_back - pivot_y - ph / 2 >= 2.5 && saddle_h / 2 - H_z - ph / 2 >= 2.5
-require "At its tilt, the number's top front corner stays clear of the seatpost" for fit: corner_y >= 2
-require "The pocket holds the number's point: the jaw runs on 4 mm in front of its upper edge and 2.5 mm under its lower one" for knock: top_open - saddle_t >= 4 && floor_t >= 2.5
+require "The cheeks keep at least 2.5 mm round the pin's hole" for knock: cheek_back - pivot_y - ph / 2 >= 2.5 && body_h / 2 - H_z - ph / 2 >= 2.5
+require "At its tilt, the number's top front corner stays clear of the seatpost" for fit: corner_y - ys >= 2
+require "The pocket holds the number's point: solid runs on 4 mm in front of its upper edge and 2.5 mm under its lower one" for knock: top_open - (seat_y + key_d) >= 4 && floor_t >= 2.5
 require "The number is tight in its slot: at most 0.3 mm of room" soft for knock: fit_gap <= 0.3
-require "The saddle is solid behind its seat, at least 5 mm thick" for gust, bumps, fit: saddle_t - seat_off >= 5
-require "The saddle takes the O-ring's pull three times over" for gust, bumps, fit: 34 / saddle_mpa >= 3
+require "The middle is solid behind its seat, at least 5 mm thick" for gust, bumps, fit: body_back - seat_y >= 5
+require "The middle takes the arms' pull three times over" for gust, bumps, fit: 34 / body_mpa >= 3
+require "Each neck takes its arm's pull three times over" for gust, bumps, fit: 34 / neck_mpa >= 3
+require "Each arm takes the O-ring's pull three times over" for gust, bumps, fit: 34 / beam_mpa >= 3
+require "Each arm rests on the post, not at the end of its swing" for fit: abs(th_free) <= swing - 2
+require "The O-ring's pull presses each arm's finger onto the post" for fit, gust: finger >= 0.5N && fingerL >= 0.5N
+require "Each finger meets the post on its rounded face" for fit: abs(psi) <= psi_max
+require "The pull keeps each clip seated on the back of its boss, away from its opening" for fit, gust, bumps: seat_ok >= 0.1
+require "Snapping a clip onto its boss strains it less than ASA takes" for fit: snap_strain <= 0.02
 require "The O-ring pulls firmly" soft for gust, bumps: oring.stretch >= 1.3
 require "Stretching the O-ring over its hook is a one-hand job" soft for fit: oring.fit_force <= 45N
-require "The hooks' rim keeps the O-ring on" for fit: lip >= 0.75 * oring_cs
-require "The O-ring runs clear of the saddle's sides" for fit: clear >= oring.cord / 2 + 0.5
-require "The saddle hugs the post's back corners" for gust: horn >= 2 && horn <= post_d / 3
+require "The hooks' walls keep the O-ring on" for fit: lip >= 0.75 * oring_cs
+require "The seat runs on past the pad's ends" for gust: bx - (pad_r + pad_t) * sin(pad_end) >= 1
 
-test "Fit and remove": "Hook one end of the O-ring over one double hook (over the top prong, down behind, under the bottom one), wrap it round the post high and low and stretch the other end over the other hook's rim with one hand. Slide the number's point into the jaw's slot, tail up, until it sits in its pocket and its centre hole lines up with the square hole; push the snap pin in until it clicks out the far side. It must go in by hand, and the number must not move. To take it off, pinch the pin's two prong tips together and push it back out, then slide the number out."
+test "Fit and remove": "Snap each arm's clip onto its boss (push it straight on along the neck until it clicks; it should swing freely). Put the pad's key into the seat's groove and hold the bracket on the post. Hook one end of the O-ring into the left arm's double hook (over the top prong, down behind, under the bottom one), wrap it round the post's front high and low and stretch the other end into the right arm's hook with one hand. Both arms should swing in until their fingers rest on the post. Slide the number's point into the jaw's slot, tail up, until it sits in its pocket and its centre hole lines up with the square hole; push the snap pin in until it clicks out the far side. To take it off, pinch the pin's two prong tips together and push it back out, slide the number out, then unhook the O-ring."
 test "Knock": "Push the number's tail up, down and sideways by hand: it must not tilt or rattle in the jaw, and the bracket must not move on the post."
-test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post and the number must not move in the jaw."
-buy "AS568-227 EPDM O-rings (spares)" { qty: 4, price: 0.6 }
+test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post, the arms must stay on their bosses and the number must not move in the jaw."
+buy "EPDM O-rings, 3.5 mm cord, a bag of 20 in the size the seatpost choice gives (plus $20 delivery under $80 ex GST)" { qty: 1, price: 29.25, url: "https://au.rs-online.com/web/p/gaskets-o-rings/2587581" }
