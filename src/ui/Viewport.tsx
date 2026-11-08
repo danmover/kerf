@@ -8,6 +8,7 @@ import { useMfgView } from "./mfgView";
 import { meshes, meshOf, useDesign } from "../core/engine";
 import { turns } from "../core/model";
 import { findHolds } from "../core/holds";
+import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
 import { useTheme } from "../app/theme";
@@ -157,6 +158,16 @@ export function Viewport() {
     if (model) ctl.current?.setParts(model.parts, meshes);
   }, [model, meshVersion]);
 
+  // the exploded view: which way each part comes off and in what order, worked out when first needed
+  const [explodeSteps, setExplodeSteps] = useState(0);
+  const exploding = view.explode > 0;
+  useEffect(() => {
+    const c = ctl.current;
+    if (!c) return;
+    c.setExplodePlanner(model ? () => planExplode(model, { holds: findHolds(model, meshOf), mesh: meshOf }) : null);
+    if (exploding) setExplodeSteps(c.explodePlan()?.stages ?? 0);
+  }, [model, meshVersion, exploding]);
+
   // what moving parts carry with them (their screws, nuts and the parts bolted on), measured once the meshes settle
   useEffect(() => {
     if (!model?.parts.some((p) => turns(p.motion))) {
@@ -278,7 +289,7 @@ export function Viewport() {
         <button className={`icon-btn ${view.section.on ? "active" : ""}`} onClick={() => useView.setState({ section: { ...view.section, on: !view.section.on } })} data-tip="Section view (S)" aria-label="Section view">
           <Icon.Scissors />
         </button>
-        <button className={`icon-btn ${view.explode > 0 ? "active" : ""}`} onClick={() => useView.setState({ explode: view.explode > 0 ? 0 : 0.5 })} data-tip="Exploded view (E)" aria-label="Exploded view">
+        <button className={`icon-btn ${view.explode > 0 ? "active" : ""}`} onClick={() => useView.setState({ explode: view.explode > 0 ? 0 : 1 })} data-tip="Exploded view (E)" aria-label="Exploded view">
           <Icon.Explode />
         </button>
         <button className={`icon-btn ${view.xray ? "active" : ""}`} onClick={() => useView.setState({ xray: !view.xray })} data-tip="X-ray (X)" aria-label="X-ray">
@@ -342,14 +353,14 @@ export function Viewport() {
               {view.explode > 0 && (
                 <div>
                   <div className="row" style={{ justifyContent: "space-between", marginBottom: 6 }}>
-                    <span className="field-label" style={{ margin: 0 }}>
-                      Explode
+                    <span className="field-label" style={{ margin: 0 }} data-tip="Screws back out along their axes, then each part comes off the way it is fastened or fitted, after what is on it. Drag to step through.">
+                      Explode{explodeSteps > 1 ? ` · ${explodeSteps} steps` : ""}
                     </span>
-                    <button className="btn sm ghost" onClick={() => useView.setState((s) => ({ explode: 0, assemblyRequest: s.assemblyRequest + 1 }))} data-tip="Watch the parts go together in design order (A)">
+                    <button className="btn sm ghost" onClick={() => useView.setState((s) => ({ explode: 0, assemblyRequest: s.assemblyRequest + 1 }))} data-tip="Watch the parts go together in the order they fit (A)">
                       <Icon.Assemble size={13} /> Play assembly
                     </button>
                   </div>
-                  <Range value={view.explode} onChange={(explode) => useView.setState({ explode: Math.max(0.001, explode) })} label="Explode amount" />
+                  <Range value={view.explode} onChange={(explode) => useView.setState({ explode: Math.max(0.001, explode) })} label="Explode: step through taking it apart" />
                 </div>
               )}
               {view.playing && (

@@ -227,6 +227,8 @@ export interface EvalPart {
   mass?: number;
   /** how the part is held where the model cannot show it (`held: "glued"`, a catalog part's `held: "strap"`) */
   held?: string;
+  /** which way it comes off in an exploded view (world), or false to keep it on what it sits on (core/explode.ts) */
+  explode?: V3 | false;
   /** snap hooks and flexures in this part */
   flex?: FlexInfo[];
   /** a sheet() part: its bends and flanges, and the recipe of its flat pattern */

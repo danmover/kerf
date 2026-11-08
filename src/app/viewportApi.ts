@@ -25,6 +25,8 @@ export interface CaptureOptions {
   dir?: Vec3;
   /** draw overlays such as analysis results (default true) */
   overlays?: boolean;
+  /** show the design exploded this far (0 to 1, stepping through the plan in core/explode.ts), framed to fit */
+  explode?: number;
 }
 
 /** What the photoreal view is doing (ui/viewport/scene's PhotoStatus). */

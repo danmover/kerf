@@ -99,8 +99,8 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass"];
-const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode"];
+const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label", "explode"];
 
 /** Fields of the brief block, by the type of value each takes. */
 const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as const;
@@ -1008,7 +1008,7 @@ class Evaluator {
       } else if (it.k === "flag") {
         if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". Components accept locked, hidden and removable.`, it.span);
         flags.add(it.name);
-      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, rides:, slides:, swings:, links:, pins:, held:, color:, group:, material:, finish:) and flags (locked, hidden, removable)", it.span);
+      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, rides:, slides:, swings:, links:, pins:, held:, explode:, color:, group:, material:, finish:) and flags (locked, hidden, removable)", it.span);
     }
     this.checkMaterial(props, propSpans);
     checkHeld(props.held, propSpans.held);
@@ -1299,6 +1299,7 @@ class Evaluator {
 
     if (this.opts.skipGeometry) return;
     const anyMoving = def.solids.some((sd) => sd.moving);
+    const explodeDir = explodeProp(props.explode, ctx, propSpans.explode);
     const color = typeof props.color === "string" ? props.color : undefined;
     const group = typeof props.group === "string" ? props.group : def.catalog ? (groupForCatalog(def.catalog.id) ?? entry?.group ?? "Components") : (entry?.group ?? groupFor(key));
     xfs.forEach((xf, idx) => {
@@ -1326,6 +1327,7 @@ class Evaluator {
           deps: [],
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
           ...(typeof props.held === "string" ? { held: props.held.trim() } : {}),
+          ...(explodeDir !== undefined ? { explode: explodeDir } : {}),
           gear: sd.suffix ? undefined : gear,
           bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
@@ -1939,6 +1941,7 @@ class Evaluator {
       const flat: PartRecipe = { base: { t: "unfold", part: recipe, pieces: unfold.pieces, bends: unfold.bends }, ops: [] };
       sheet = { ...rest, flat, flatHash: recipeHash(flat) };
     }
+    const explodeDir = explodeProp(state.props.explode, ctx, state.propSpans.explode);
     this.parts.push({
       id: s.name,
       name: s.name,
@@ -1962,6 +1965,7 @@ class Evaluator {
       deps: [],
       motion,
       ...(typeof state.props.held === "string" ? { held: state.props.held.trim() } : {}),
+      ...(explodeDir !== undefined ? { explode: explodeDir } : {}),
       ...(typeof massV === "number" ? { mass: massV } : {}),
       features: [...state.feats].map(([name, f]) => ({ name, kind: f.kind, cosmetic: f.cosmetic })),
       detail: hasDetail(recipe),
@@ -2875,6 +2879,21 @@ function hasMachine(m: MachineData): boolean {
 }
 
 const spinLike = (props: Record<string, Value>) => ["spin", "mesh", "turns_with", "rides", "slides", "swings", "links"].some((k) => props[k] !== undefined);
+
+/** explode: is the way a part comes off in an exploded view, (x, y, z) in the assembly, or false to keep it on what it sits on; true leaves it to Kerf. */
+function explodeProp(v: Value | undefined, ctx: CallCtx, span: Span | undefined): V3 | false | undefined {
+  if (v === undefined || v === true) return undefined;
+  if (v === false) return false;
+  let d: V3;
+  try {
+    d = toV3(v, ctx, "explode");
+  } catch {
+    throw new EvalError("explode: is the way the part comes off in an exploded view, e.g. explode: (0, 0, 1) for up, or explode: false to keep it on what it sits on", span ?? { start: 0, end: 0 });
+  }
+  const n = Math.hypot(...d);
+  if (!(n > 1e-9)) throw new EvalError("explode: needs a direction that is not (0, 0, 0)", span ?? { start: 0, end: 0 });
+  return d.map((x) => x / n) as V3;
+}
 
 /** held: is plain words for how a part is held where the model cannot show it. */
 function checkHeld(v: Value | undefined, span: Span | undefined) {

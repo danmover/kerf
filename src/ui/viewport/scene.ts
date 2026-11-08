@@ -8,6 +8,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
 import { motionPose } from "../../core/kinematics";
+import { explodeOffsets, stepProgress, type ExplodePlan } from "../../core/explode";
 import { ChainLinks } from "./chainLinks";
 import type { MeshEntry } from "../../core/engine";
 import type { MeshData } from "../../kernel/build";
@@ -310,7 +311,14 @@ export class SceneController {
   private sectionAnim = { t: 1, on: false, fade: 0 };
   private sectionPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
   private explodeAmt = 0;
-  private assembly: { t0: number; order: string[] } | null = null;
+  /** the explode amount on screen: eases to explodeAmt when the view is switched, so the parts come off step by step */
+  private explodeShown = 0;
+  private explodeTween: { from: number; to: number; t0: number; dur: number } | null = null;
+  /** which way and in what order parts come off (core/explode.ts), made on first use after each model change */
+  private explodePlanner: (() => ExplodePlan | null) | null = null;
+  private plan: ExplodePlan | null = null;
+  private planStale = true;
+  private assembly: { t0: number; order: string[]; at: Map<string, number> } | null = null;
   private playing = false;
   private speed = 1;
   private angle = 0;
@@ -1388,8 +1396,72 @@ export class SceneController {
     const big = Math.abs(f - this.explodeAmt) > 0.15;
     this.explodeAmt = f;
     this.assembly = null;
-    if (big && !this.display.reduceMotion) this.staggerExplode(f > 0);
+    const plan = f > 0 || this.explodeShown > 0 ? this.explodePlan() : null;
+    if (big) this.frameExploded(f, plan);
+    if (big && !this.display.reduceMotion && plan?.stages) {
+      // switched on or off: play the steps in turn (fasteners first going out, last coming back)
+      this.explodeTween = { from: this.explodeShown, to: f, t0: performance.now(), dur: 1000 * Math.min(2.4, 0.5 + 0.22 * plan.stages) * Math.abs(f - this.explodeShown) };
+    } else {
+      this.explodeTween = null;
+      this.explodeShown = f;
+      if (big && !this.display.reduceMotion) this.staggerExplode(f > 0);
+    }
     this.changed = true;
+  }
+
+  /** the camera backed off to show an exploded view; it comes back in when the view closes */
+  private explodeFitted = false;
+
+  /** Back the camera off when the parts would come apart off screen, and in again when they go back together. */
+  private frameExploded(f: number, plan: ExplodePlan | null) {
+    if (f <= 0) {
+      if (this.explodeFitted) this.fit("current", true);
+      this.explodeFitted = false;
+      return;
+    }
+    if (!plan) return;
+    const at = explodeOffsets(plan, f);
+    const box = new THREE.Box3();
+    const b = new THREE.Box3();
+    for (const [id, o] of this.parts) {
+      if (o.removing || this.display.hidden.has(id)) continue;
+      b.setFromObject(o.group).translate(o.explode.pos.clone().negate());
+      const v = at.get(o.part.id);
+      if (v) b.translate(new THREE.Vector3(v[0], v[1], v[2]));
+      box.union(b);
+    }
+    if (box.isEmpty()) return;
+    this.camera.updateMatrixWorld();
+    const p = new THREE.Vector3();
+    let off = false;
+    for (let i = 0; i < 8 && !off; i++) {
+      p.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).project(this.camera);
+      off = p.z > 1 || Math.abs(p.x) > 0.96 || Math.abs(p.y) > 0.9;
+    }
+    if (!off) return;
+    this.fit("current", true, box.union(this.bounds));
+    this.explodeFitted = true;
+  }
+
+  /** How to work out the exploded view of what is shown; called when it is first needed after each change. */
+  setExplodePlanner(fn: (() => ExplodePlan | null) | null) {
+    this.explodePlanner = fn;
+    this.planStale = true;
+    if (this.explodeAmt > 0 || this.assembly) this.changed = true;
+  }
+
+  /** The exploded view's plan, worked out now if the design changed since. */
+  explodePlan(): ExplodePlan | null {
+    if (this.planStale) {
+      this.planStale = false;
+      try {
+        this.plan = this.explodePlanner?.() ?? null;
+      } catch (e) {
+        console.warn("exploded view plan failed", e);
+        this.plan = null;
+      }
+    }
+    return this.plan;
   }
 
   /** Parts start moving one after another: outermost first when opening, innermost first when closing. */
@@ -1404,11 +1476,18 @@ export class SceneController {
 
   /** Animate the assembly: start exploded, then bring the parts home one by one in design order. */
   playAssembly() {
-    const order = [...this.parts.values()].filter((o) => !o.removing).map((o) => o.id);
-    if (!order.length) return;
+    const here = [...this.parts.values()].filter((o) => !o.removing);
+    if (!here.length) return;
+    // in the order it goes together: each part after what it sits on, its screws once both sides are on
+    const plan = this.explodePlan();
+    const ids = new Set(here.map((o) => o.id));
+    const planned = plan ? plan.order.filter((id) => ids.has(id)) : [];
+    const order = [...planned, ...here.map((o) => o.id).filter((id) => !planned.includes(id))];
     const now = performance.now();
     for (const o of this.parts.values()) o.explode.hold = 0;
-    this.assembly = { t0: now + 450, order };
+    this.explodeTween = null;
+    this.explodeShown = this.explodeAmt;
+    this.assembly = { t0: now + 450, order, at: new Map(order.map((id, i) => [id, i])) };
     this.changed = true;
   }
 
@@ -1745,6 +1824,19 @@ export class SceneController {
 
     const bc = this.bounds.getCenter(new THREE.Vector3());
     const size = this.bounds.getSize(new THREE.Vector3()).length();
+    // exploded view: where each part sits along the plan, carried by what it comes off
+    const tw = this.explodeTween;
+    if (tw) {
+      const k = (now - tw.t0) / Math.max(1, tw.dur);
+      this.explodeShown = k >= 1 ? tw.to : tw.from + (tw.to - tw.from) * k;
+      if (k >= 1) this.explodeTween = null;
+      moving = true;
+    }
+    const shown = this.explodeShown;
+    const plan = shown > 0 || asm ? this.explodePlan() : null;
+    const asmStep = asm ? Math.min(160, 2600 / Math.max(1, asm.order.length)) : 0;
+    const homeAt = (id: string) => asm!.t0 + Math.max(0, asm!.at.get(id) ?? 0) * asmStep;
+    const planned = plan ? (asm ? explodeOffsets(plan, shown, (m) => (now < homeAt(m.id) ? 1 : stepProgress(m.stage, plan.stages, shown))) : explodeOffsets(plan, shown)) : null;
     for (const obj of [...this.parts.values()]) {
       // reveal sweep
       if (obj.reveal) {
@@ -1794,16 +1886,16 @@ export class SceneController {
       }
 
       // explode target
-      let amount = this.explodeAmt;
+      let amount = shown;
       if (asm) {
-        const idx = asm.order.indexOf(obj.id);
-        const step = Math.min(160, 2600 / Math.max(1, asm.order.length));
-        const home = asm.t0 + Math.max(0, idx) * step;
-        amount = now < home ? Math.max(this.explodeAmt, 0.6) : this.explodeAmt;
+        const home = homeAt(obj.id);
+        amount = now < home ? Math.max(shown, 0.6) : shown;
         if (now < home) assemblyDone = false;
       }
       const target = new THREE.Vector3();
-      if (amount > 0) {
+      const at = planned?.get(obj.part.id);
+      if (at) target.set(at[0], at[1], at[2]);
+      else if (amount > 0) {
         const worldC = obj.center.clone().applyMatrix4(obj.placement);
         target.copy(worldC).sub(bc);
         if (target.lengthSq() < 1e-6) target.set(0, 0, 1);
@@ -2267,7 +2359,7 @@ export class SceneController {
   // ---------- capture ----------
 
   /** Render a finished, converged image of the model at any size, without touching the on-screen view. */
-  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean }): Promise<string> {
+  async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean; explode?: number }): Promise<string> {
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim }, replaced: this.replaced };
     // overlays (analysis results) are drawn unless the caller asks for the plain model
     const showOverlays = opts.overlays !== false && this.overlays.size > 0;
@@ -2298,9 +2390,16 @@ export class SceneController {
         this.updateClipping(o);
       }
     }
+    // an exploded capture: every part where the plan puts it at that amount, framed to fit
+    const unexploded = opts.explode !== undefined ? this.poseExploded(opts.explode) : null;
     try {
       this.camera.aspect = opts.width / opts.height;
       let box: THREE.Box3 | undefined = opts.box ? new THREE.Box3(new THREE.Vector3(...opts.box[0]), new THREE.Vector3(...opts.box[1])) : undefined;
+      if (!box && unexploded && !(opts.frame === "focus" && opts.focus?.length)) {
+        box = new THREE.Box3();
+        for (const [id, p] of this.parts) if (!p.removing && !this.display.hidden.has(id)) box.expandByObject(p.group);
+        if (box.isEmpty()) box = undefined;
+      }
       if (!box && opts.frame === "focus" && opts.focus?.length) {
         box = new THREE.Box3();
         for (const id of opts.focus) {
@@ -2346,6 +2445,7 @@ export class SceneController {
     } finally {
       pipe.dispose();
       out.dispose();
+      if (unexploded) for (const [o, pos] of unexploded) o.explode.pos.copy(pos);
       this.renderer.setRenderTarget(null);
       this.placeKey(0);
       this.camera.position.copy(prev.pos);
@@ -2394,6 +2494,28 @@ export class SceneController {
       offset.multiplyScalar(Math.min(2, Math.max(0.3, m / 0.88)));
     }
     return target.clone().add(offset);
+  }
+
+  /** Put every part where the exploded view has it at amount f, for a capture; returns where they were. */
+  private poseExploded(f: number): Map<PartObj, THREE.Vector3> {
+    const was = new Map<PartObj, THREE.Vector3>();
+    const plan = f > 0 ? this.explodePlan() : null;
+    const at = plan ? explodeOffsets(plan, f) : null;
+    const bc = this.bounds.getCenter(new THREE.Vector3());
+    const size = this.bounds.getSize(new THREE.Vector3()).length();
+    for (const o of this.parts.values()) {
+      was.set(o, o.explode.pos.clone());
+      const v = at?.get(o.part.id);
+      if (v) o.explode.pos.set(v[0], v[1], v[2]);
+      else if (f > 0) {
+        const c = o.center.clone().applyMatrix4(o.placement);
+        const d = c.clone().sub(bc);
+        if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+        o.explode.pos.copy(d.normalize().multiplyScalar(f * size * 0.45 * (0.4 + c.distanceTo(bc) / (size || 1))));
+      } else o.explode.pos.set(0, 0, 0);
+    }
+    this.frameMatricesOnly();
+    return was;
   }
 
   /** update part matrices without advancing animations (for captures) */
