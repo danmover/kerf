@@ -408,19 +408,25 @@ export function analyzeSolid(solid: AnalysisMesh | Ctx, rules: Rules, opts: Anal
 // ---------------- envelope ----------------
 
 /**
- * The smallest turn on the bed, in whole degrees, that fits a w × d footprint (w ≥ d) on a W × D bed (W ≥ D): 0 when
- * it fits square, undefined when no turn fits. A long part that is too long for the bed can lie across it, the way a
- * slicer places it.
+ * The turn on the bed, in whole degrees, that fits a w × d footprint (w ≥ d) on a W × D bed (W ≥ D) with the most room
+ * to spare: 0 when it fits square, undefined when no turn fits. A part too long for the bed can lie across it, the way
+ * a slicer places it; the pack's STL is turned the same way.
  */
 export function bedTurn(w: number, d: number, W: number, D: number): number | undefined {
   if (w <= W + 1e-6 && d <= D + 1e-6) return 0;
+  let best: number | undefined;
+  let room = -1e-6;
   for (let deg = 1; deg < 90; deg++) {
     const t = (deg * Math.PI) / 180;
     const c = Math.cos(t);
     const s = Math.sin(t);
-    if (w * c + d * s <= W + 1e-6 && w * s + d * c <= D + 1e-6) return deg;
+    const r = Math.min(W - (w * c + d * s), D - (w * s + d * c));
+    if (r > room + 1e-9) {
+      room = r;
+      best = deg;
+    }
   }
-  return undefined;
+  return best;
 }
 
 function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {

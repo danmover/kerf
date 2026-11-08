@@ -97,14 +97,21 @@ part fine { process: "fdm" material: "PETG" body box(20, 20, 5) }
 
   it("lays a part too long for the bed across it, and fails one that fits no way", () => {
     expect(bedTurn(200, 100, 256, 256)).toBe(0);
-    expect(bedTurn(300, 40, 256, 256)).toBe(40);
+    // on a square bed the most room is along the diagonal
+    expect(bedTurn(300, 40, 256, 256)).toBe(45);
+    expect(bedTurn(269, 50, 256, 256)).toBe(45);
+    // on an oblong bed it lies as flat as the short side lets it
+    const t = bedTurn(280, 30, 270, 150)!;
+    expect(t).toBeGreaterThan(0);
+    expect(280 * Math.cos((t * Math.PI) / 180) + 30 * Math.sin((t * Math.PI) / 180)).toBeLessThanOrEqual(270);
+    expect(280 * Math.sin((t * Math.PI) / 180) + 30 * Math.cos((t * Math.PI) / 180)).toBeLessThanOrEqual(150);
     expect(bedTurn(380, 40, 256, 256)).toBeUndefined();
     const { find } = check(`
 part long { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(300, 40, 10) }
 part longer { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(380, 40, 10) }
 `);
     expect(find("long", "envelope")?.status).toBe("pass");
-    expect(find("long", "envelope")?.detail).toMatch(/laid 40° across the bed/);
+    expect(find("long", "envelope")?.detail).toMatch(/laid 45° across the bed/);
     expect(find("longer", "envelope")?.status).toBe("fail");
   });
 });
