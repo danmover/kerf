@@ -19,7 +19,7 @@ const pc = (x: number) => `${n1(x * 100)} %`;
 const big = (x: number) => (x >= 1e6 ? `${n1(x / 1e6)} million` : x.toLocaleString("en"));
 
 /** How much of the material's strain an arm keeps when printed: its layers run across the arm when it rises along the build direction. */
-function layerFactor(p: EvalPart, f: FlexInfo): { factor: number; across: boolean } {
+export function layerFactor(p: EvalPart, f: FlexInfo): { factor: number; across: boolean } {
   const fdm = p.process ? p.process.id === "fdm" : isPrinted(p.material);
   if (!fdm) return { factor: 1, across: false };
   const s = p.process?.settings ?? {};
@@ -31,6 +31,19 @@ function layerFactor(p: EvalPart, f: FlexInfo): { factor: number; across: boolea
 
 function worst(...s: CheckStatus[]): CheckStatus {
   return s.includes("fail") ? "fail" : s.includes("warn") ? "warn" : "pass";
+}
+
+/**
+ * The pull on a C-shaped clip's head (N) that takes its spine to yield: the catch holds the leg's end, so the spine is
+ * bent like a cantilever from the head with the leg pulling at its foot, pull × frame where it leaves the head (the leg
+ * holds its foot a little straighter, so this errs safe). Printed with its layers across the clip it yields sooner.
+ */
+export function clipTug(p: EvalPart, f: FlexInfo, factor: number): number | undefined {
+  if (!f.frame) return undefined;
+  const m = materialRecord(p.material);
+  if (!m) return undefined;
+  const ts = f.frameT ?? f.t;
+  return (m.mech.yield * factor * f.w * ts * ts) / (6 * f.frame);
 }
 
 function snapItem(p: EvalPart, f: FlexInfo): CheckItem {
@@ -66,6 +79,18 @@ function snapItem(p: EvalPart, f: FlexInfo): CheckItem {
     status = worst(status, "warn");
     problems.push("it is hard to push together by hand (over 50 N)");
     fixes.push("use a longer or thinner arm, or a shallower lead-in");
+  }
+  // a C-shaped clip pulled out by its head: the catch holds the leg's end, so the pull bends the spine (clipTug), and
+  // past yield it bends for good
+  const tug = f.frame ? clipTug(p, f, factor) : undefined;
+  if (tug !== undefined && Number.isFinite(tug) && r.pull! > tug) {
+    if (tug < 30) {
+      status = worst(status, "warn");
+      problems.push(`pulled by its head, its spine bends for good at about ${n1(tug)} N, before its catch lets go${Number.isFinite(r.pull!) ? ` at about ${n1(r.pull!)} N` : ""}`);
+      const m = materialRecord(p.material)!;
+      const need = Math.sqrt((6 * f.frame! * Math.min(r.pull!, 30)) / (m.mech.yield * factor * f.w));
+      fixes.push(`take it out by pressing its catch free, or thicken the spine to about ${n1(need + 0.1)} mm`);
+    } else detail += ` Pulled by its head it holds about ${n1(tug)} N before its spine bends for good, so it comes out by pressing its catch free.`;
   }
   // once latched: the catch sits on the other part's ledge, and both are a little off along the arm
   const sigma = Math.SQRT2 * positionSigma(sourceOf(p), f.length);

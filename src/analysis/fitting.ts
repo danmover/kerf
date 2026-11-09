@@ -13,6 +13,7 @@ import type { EvalPart, FlexInfo, Model } from "../core/model";
 import { applyXforms, applyXformsToDir, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
 import { fittingPose, rubberOf, sectionOf, type BandCord, type BandLayout, type FitPose, type Section } from "../library/bands";
 import { flexCalc } from "../library/springs";
+import { clipTug, layerFactor } from "./springs/report";
 import { fmtNum } from "../lang/values";
 import type { StructuralSpec } from "./spec";
 import type { StructuralResult } from "./fe/structural";
@@ -159,7 +160,7 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       title: `Push ${s.pin.label} in`,
       caption: `Push ${s.pin.label} in${s.mate ? ` through ${s.mate.label}` : ""} until it clicks: about ${fmtNum(s.push, 1)} N. ${
         s.clip
-          ? `To take it out, press its catch free and slide it back out${Number.isFinite(s.pull) ? `, or pull it straight out: about ${fmtNum(s.pull, 1)} N` : ""}.`
+          ? `To take it out, press its catch free and slide it back out${Number.isFinite(s.pull) && s.pull <= s.tug ? `, or pull it straight out: about ${fmtNum(s.pull, 1)} N` : ""}.`
           : "To take it out, pinch its prongs together and push it back."
       }`,
       dur: 3,
@@ -285,7 +286,7 @@ function splitPins(
   model: Model,
   bbox: (p: EvalPart) => [V3, V3] | undefined,
   riding: ReadonlySet<string>,
-): { pin: EvalPart; dir: V3; length: number; click: V3; mate?: EvalPart; mateAt: V3; host?: EvalPart; through: EvalPart[]; push: number; clip: boolean; pull: number }[] {
+): { pin: EvalPart; dir: V3; length: number; click: V3; mate?: EvalPart; mateAt: V3; host?: EvalPart; through: EvalPart[]; push: number; clip: boolean; pull: number; tug: number }[] {
   const wrapped = new Set(model.parts.flatMap((p) => p.band?.around ?? []));
   const out: ReturnType<typeof splitPins> = [];
   for (const p of model.parts) {
@@ -312,6 +313,8 @@ function splitPins(
     const onMate = hits.filter((h) => h.q.id === thin.q.id);
     const push = prongs.reduce((s, f) => s + (flexCalc(f, p.material, 1).push ?? 0), 0);
     const pull = prongs.reduce((s, f) => s + (flexCalc(f, p.material, 1).pull ?? 0), 0);
+    // a clip pulled by its head must let go before its spine bends for good
+    const tug = Math.min(...prongs.map((f) => clipTug(p, f, layerFactor(p, f).factor) ?? Infinity));
     out.push({
       pin: p,
       dir,
@@ -324,6 +327,7 @@ function splitPins(
       push,
       clip: prongs.length === 1,
       pull,
+      tug,
     });
   }
   return out;
