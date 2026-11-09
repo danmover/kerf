@@ -49,6 +49,33 @@ describe("springs, snap fits and flexures", () => {
     expect(flat.detail).toMatch(/does not let go/);
   });
 
+  it("springs a C-shaped clip's leg and spine together: much further for its strain than the leg alone", () => {
+    const clip = (extra: string) =>
+      checks(`part clip {
+  material: "ASA"
+  process: mfg.fdm(build: Y)
+  body box(2, 6, 14, at: (5.6, 0, -12))
+  add snap_hook(at: (4.6, 0, -10.8), length: 8, t: 2.4, w: 6, catch: 1, dir: -X, facing: Z, retain: 55, angle: 30, root_r: 0.8, cycles: 200${extra}) as leg
+}`);
+    const alone = clip("");
+    const framed = clip(", frame: 11, frame_t: 2");
+    const f = framed.m.parts[0].flex![0];
+    expect(f).toMatchObject({ kind: "snap", frame: 11, frameT: 2 });
+    // the leg alone: 1.5 × 1 × 2.4 / 8² = 5.6 %, far past what ASA takes
+    expect(alone.items[0].status).toBe("fail");
+    expect(alone.items[0].detail).toMatch(/^Bends 5\.6 %/);
+    // with its spine: a = 8 + 1 from the spine's middle, so the catch moves P (8³ / 3EI + 9² · 11 / E·Is) and the spine
+    // strains P · 9 · 2 / (2 E·Is) at 1 mm: about 0.95 %
+    expect(framed.items[0].status).toBe("pass");
+    expect(framed.items[0].detail).toMatch(/^Bends 0\.9 % passing its 1 mm catch, its 11 mm spine bending with it/);
+    const push = Number(/Push-in force about ([\d.]+) N/.exec(framed.items[0].detail)![1]);
+    const pull = Number(/pulls apart at about ([\d.]+) N/.exec(framed.items[0].detail)![1]);
+    expect(push).toBeGreaterThan(5);
+    expect(push).toBeLessThan(12);
+    expect(pull).toBeGreaterThan(2 * push);
+    expect(evaluate(`design "t"\npart p { body box(30, 20, 3)\n add snap_hook(at: (0, 0, 3), length: 8, t: 2, w: 5, frame_t: 2) }`).diagnostics.map((d) => d.message).join(" ")).toMatch(/give its length with frame:/);
+  });
+
   it("makes a peg that clicks into a hole and says what shears it", () => {
     const { m, items } = checks(`part clip {
   material: "ASA"

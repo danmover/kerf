@@ -146,20 +146,39 @@ export interface FlexResult {
   holdStrain: number;
 }
 
+/**
+ * A snap hook that is one leg of a C-shaped clip (frame:): a push P on its catch bends the arm (length L to the catch,
+ * t thick) and puts the same moment P·a on the whole spine it rises from (frame long, frameT thick, as wide as the arm,
+ * a = L + frameT / 2 from the spine's middle), so the catch moves P (L³ / 3EI + a²·frame / E·Is). The arm strains most
+ * at its root and the spine all along it. Its stiffness (N/mm at the catch) and the strain per mm the catch moves,
+ * which does not depend on E.
+ */
+export function snapFrame(f: Pick<FlexInfo, "length" | "t" | "w" | "frame" | "frameT">, E: number): { k: number; strainPerMm: number } {
+  const I = (f.w * f.t ** 3) / 12;
+  const ts = f.frameT ?? f.t;
+  const Is = (f.w * ts ** 3) / 12;
+  const a = f.length + ts / 2;
+  const k = 1 / (f.length ** 3 / (3 * E * I) + (a * a * (f.frame ?? 0)) / (E * Is));
+  return { k, strainPerMm: k * Math.max((f.length * f.t) / (2 * E * I), (a * ts) / (2 * E * Is)) };
+}
+
 export function flexCalc(f: FlexInfo, material: string, layersAcross: number): FlexResult {
   const E = materialRecord(material)?.mech.E ?? 2000;
   const limit = strainLimit(material, f.cycles ?? 10) * layersAcross;
   const I = (f.w * f.t ** 3) / 12;
   if (f.kind === "snap") {
-    const strain = (1.5 * f.deflection * f.t) / f.length ** 2;
+    // a C-shaped clip's spine bends with its arm, so it springs further for the same push
+    const framed = f.frame ? snapFrame(f, E) : undefined;
+    const strain = framed ? framed.strainPerMm * f.deflection : (1.5 * f.deflection * f.t) / f.length ** 2;
     // Bayer: deflection force P = (w t² / 6) E ε / L, mating force W = P (μ + tan α) / (1 − μ tan α)
-    const bend = ((f.w * f.t ** 2) / 6) * ((E * strain) / f.length);
+    const bend = framed ? framed.k * f.deflection : ((f.w * f.t ** 2) / 6) * ((E * strain) / f.length);
     const mu = snapFriction(material);
     const through = (deg: number) => {
       const t = Math.tan((deg * Math.PI) / 180);
       return mu * t >= 1 || deg >= 89.9 ? Infinity : (bend * (mu + t)) / (1 - mu * t);
     };
-    return { E, strain, limit, bend, push: through(f.leadIn ?? 30), pull: through(f.retain ?? 90), holdStrain: (1.5 * (f.preload ?? 0) * f.t) / f.length ** 2 };
+    const holdStrain = framed ? framed.strainPerMm * (f.preload ?? 0) : (1.5 * (f.preload ?? 0) * f.t) / f.length ** 2;
+    return { E, strain, limit, bend, push: through(f.leadIn ?? 30), pull: through(f.retain ?? 90), holdStrain };
   }
   if (f.angle !== undefined) {
     const th = (f.angle * Math.PI) / 180;

@@ -14,6 +14,7 @@ import { SEL_PRESETS, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, ty
 import { threadDepth, threadTurnsError } from "../kernel/threadMath";
 import { THREADS, parseThreadName } from "../library/standards";
 import { materialRecord } from "../library/materialDb";
+import { snapFrame } from "../library/springs";
 
 const Z: V3 = [0, 0, 1];
 const prof = (p: Profile) => new ProfileV(p);
@@ -750,7 +751,7 @@ const OWN_FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "snap_hook",
-    ["at", "length", "t", "w", "catch", "dir", "facing", "angle", "root_r", "retain", "preload", "cycles", "peg"],
+    ["at", "length", "t", "w", "catch", "dir", "facing", "angle", "root_r", "retain", "preload", "cycles", "peg", "frame", "frame_t"],
     (a) => {
       const at = a.vec3("at");
       const L = a.positive("length");
@@ -770,6 +771,10 @@ const OWN_FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
       const preload = a.num("preload", 0);
       if (preload < 0 || preload >= y) a.ctx.error("snap_hook(): preload (how far the hook stays bent once latched) must be 0 or more and less than the catch");
       const cycles = Math.max(1, Math.round(a.num("cycles", 10)));
+      // frame: the hook is one leg of a C-shaped clip whose spine, drawn with the rest of the part, bends with it
+      const spine = a.has("frame") ? a.positive("frame") : 0;
+      if (!spine && a.has("frame_t")) a.ctx.error("snap_hook(): frame_t is the thickness of the clip's spine: give its length with frame:");
+      const spineT = spine ? a.positive("frame_t", t) : 0;
       const land = Math.max(0.2, 0.25 * y);
       const tipX = Math.min(0.4 * t, t);
       // a catch face sloped back from square lets the hook be pulled out again
@@ -811,8 +816,8 @@ const OWN_FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
         ];
         steps.push({ op: "add", shape: { t: "diff", a: { t: "cyl", d: peg, h: y + 0.2, at: c, dir: u }, b: [{ t: "extrude", p: { t: "poly", pts: cutter, r: 0 }, h: 2 * peg, f: cutF, twist: 0, scale: 1 }] } });
       }
-      // Bayer cantilever: strain = 1.5 y t / L² for a beam of constant section
-      const strain = (1.5 * y * t) / (L * L);
+      // Bayer cantilever: strain = 1.5 y t / L² for a beam of constant section; a clip's spine shares the bending
+      const strain = spine ? snapFrame({ length: L, t, w, frame: spine, frameT: spineT }, 1).strainPerMm * y : (1.5 * y * t) / (L * L);
       const tip = vadd(at, vscale(dir, peg ? armL : L + back + land + slope));
       return new FeatureV("snap_hook", steps, { strain, deflection: y, length: L, tip: new Vec(tip) }, strain, {
         kind: "snap",
@@ -828,9 +833,10 @@ const OWN_FEATURE_FNS: Record<string, Fn> = Object.fromEntries([
         preload,
         cycles,
         ...(peg ? { peg } : {}),
+        ...(spine ? { frame: spine, frameT: spineT } : {}),
       });
     },
-    "snap_hook(at, length, t, w, catch: 1, dir: Z, facing: X, angle: 30, root_r: t/2, retain: 90, preload: 0, cycles: 10, peg:) — a cantilever snap-fit hook rising from `at` (the centre of its root) along dir, t thick (toward facing), w wide, with a catch lip `catch` mm deep on the facing side and a lead-in slope. retain is the catch face's slope (90: square, permanent; 30-45: it can be pulled apart again); preload is how far it stays bent once latched (0 rattles if the parts come out a little off); cycles is how often it is snapped. peg: d makes the catch a round peg of that diameter at the arm's tip that clicks into a hole (a race number, a strap or a sheet slid along the arm), square on its root side and sloped on its tip side (angle 40-50). The springs and clips checks give its push-in and pull-out forces, its strain against the material (and the print's layers) and whether it latches tight or goes slack. .strain gives the bending strain. Use with add.",
+    "snap_hook(at, length, t, w, catch: 1, dir: Z, facing: X, angle: 30, root_r: t/2, retain: 90, preload: 0, cycles: 10, peg:, frame:, frame_t: t) — a cantilever snap-fit hook rising from `at` (the centre of its root) along dir, t thick (toward facing), w wide, with a catch lip `catch` mm deep on the facing side and a lead-in slope. retain is the catch face's slope (90: square, permanent; 30-45: it can be pulled apart again); preload is how far it stays bent once latched (0 rattles if the parts come out a little off); cycles is how often it is snapped. peg: d makes the catch a round peg of that diameter at the arm's tip that clicks into a hole (a race number, a strap or a sheet slid along the arm), square on its root side and sloped on its tip side (angle 40-50). frame: b makes it one leg of a C-shaped clip that wraps round an edge: it rises from the inside face of a spine b mm long and frame_t thick (as wide as the hook, drawn with the rest of the part) that joins it to a rigid part such as a pin through a hole or a head, and the spine bends with it, so the clip springs much further for its strain than a hook alone; a lone framed hook pointing the way the clip goes on is shown pushed on in the fitting steps. The springs and clips checks give its push-in and pull-out forces, its strain against the material (and the print's layers) and whether it latches tight or goes slack. .strain gives the bending strain. Use with add.",
   ),
   def(
     "flexure",

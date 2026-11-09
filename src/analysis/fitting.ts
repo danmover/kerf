@@ -3,7 +3,8 @@
 // each band is hooked over its first pin, pulled round and stretched over the
 // second pin's head (with its real stretch and pull as it goes), a part that
 // clicks onto a peg slides along the arm until it clicks, a part held by a
-// split snap pin slides in before the pin is pushed through, and each analysis
+// split snap pin or a C-shaped clip slides in before the pin or clip is pushed
+// through, and each analysis
 // that checks a seat shows its loads and how much of the grip they use. Parts
 // that sit inside another's box (a pad in a seat, the print on a sign) ride
 // along with it.
@@ -38,15 +39,19 @@ const bandName = (name: string) => name.replace(/_/g, " ").replace(/\bo ?ring\b/
 /** Every part that moves when the given one does: the parts whose box lies inside its own. */
 export const moves = (s: Extract<FitStep, { kind: "seat" | "slide" }>) => [s.part, ...s.riders];
 
-/** Whether the design has anything that goes on by hand worth showing: a band hooked at both ends, a snap or a sprung pin that holds a part by a hole, or a split snap pin. */
+/** Whether the design has anything that goes on by hand worth showing: a band hooked at both ends, a snap or a sprung pin that holds a part by a hole, or a split snap pin or C-shaped clip. */
 export function hasFitting(model: Model): boolean {
   return model.parts.some((p) => p.band?.layout.doubled || p.flex?.some((f) => (f.kind === "snap" || f.kind === "flexure") && f.peg) || splitPin(p));
 }
 
-/** A split snap pin's prongs: two or more peg-less snap hooks, and nothing else that bends, rooted side by side and pointing the same way. */
+/**
+ * A split snap pin's prongs: two or more peg-less snap hooks, and nothing else that bends, rooted side by side and
+ * pointing the same way. Or a C-shaped clip's one hook (a snap_hook with frame:), which points the way the clip goes on.
+ */
 function splitPin(p: EvalPart): FlexInfo[] | undefined {
   const flex = p.flex ?? [];
-  if (flex.length < 2 || flex.some((f) => f.kind !== "snap" || f.peg)) return undefined;
+  if (!flex.length || flex.some((f) => f.kind !== "snap" || f.peg)) return undefined;
+  if (flex.length === 1) return flex[0].frame ? flex : undefined;
   const d = vnorm(flex[0].dir);
   const root = vdot(flex[0].at, d);
   return flex.every((f) => vdot(vnorm(f.dir), d) > 0.999 && Math.abs(vdot(f.at, d) - root) < 0.5) ? flex : undefined;
@@ -127,8 +132,8 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
     });
   }
 
-  // the part a split pin pins slides in first, along its own length, the end with the hole first; then the pin is
-  // pushed through it until it clicks
+  // the part a split pin or a clip pins slides in first, along its own length, the end with the hole first; then the
+  // pin or clip is pushed through it until it clicks
   for (const s of pins) {
     if (s.mate) {
       const along = slideAlong(s.mate, bbox(s.mate), s.dir, s.mateAt) ?? vscale(s.dir, -1);
@@ -152,7 +157,11 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       from: vscale(s.dir, -(s.length + 10)),
       peg: s.click,
       title: `Push ${s.pin.label} in`,
-      caption: `Push ${s.pin.label} in${s.mate ? ` through ${s.mate.label}` : ""} until it clicks: about ${fmtNum(s.push, 1)} N. To take it out, pinch its prongs together and push it back.`,
+      caption: `Push ${s.pin.label} in${s.mate ? ` through ${s.mate.label}` : ""} until it clicks: about ${fmtNum(s.push, 1)} N. ${
+        s.clip
+          ? `To take it out, press its catch free and slide it back out${Number.isFinite(s.pull) ? `, or pull it straight out: about ${fmtNum(s.pull, 1)} N` : ""}.`
+          : "To take it out, pinch its prongs together and push it back."
+      }`,
       dur: 3,
     });
   }
@@ -270,13 +279,13 @@ export function carriedBy(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefi
 /**
  * Each split snap pin and what its prongs go through, from their root to their catches: the part thinnest along it is
  * the one it pins (a number through its centre hole), the biggest the one it clicks into. Neither riders nor what the
- * bands wrap count.
+ * bands wrap count. A C-shaped clip is the same, along its one hook (the leg that runs across what it clicks onto).
  */
 function splitPins(
   model: Model,
   bbox: (p: EvalPart) => [V3, V3] | undefined,
   riding: ReadonlySet<string>,
-): { pin: EvalPart; dir: V3; length: number; click: V3; mate?: EvalPart; mateAt: V3; host?: EvalPart; through: EvalPart[]; push: number }[] {
+): { pin: EvalPart; dir: V3; length: number; click: V3; mate?: EvalPart; mateAt: V3; host?: EvalPart; through: EvalPart[]; push: number; clip: boolean; pull: number }[] {
   const wrapped = new Set(model.parts.flatMap((p) => p.band?.around ?? []));
   const out: ReturnType<typeof splitPins> = [];
   for (const p of model.parts) {
@@ -302,6 +311,7 @@ function splitPins(
     const big = [...hits].sort((a, b) => b.size - a.size)[0];
     const onMate = hits.filter((h) => h.q.id === thin.q.id);
     const push = prongs.reduce((s, f) => s + (flexCalc(f, p.material, 1).push ?? 0), 0);
+    const pull = prongs.reduce((s, f) => s + (flexCalc(f, p.material, 1).pull ?? 0), 0);
     out.push({
       pin: p,
       dir,
@@ -312,6 +322,8 @@ function splitPins(
       host: big.q,
       through: [...new Set(hits.map((h) => h.q))],
       push,
+      clip: prongs.length === 1,
+      pull,
     });
   }
   return out;

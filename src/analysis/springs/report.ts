@@ -24,7 +24,8 @@ function layerFactor(p: EvalPart, f: FlexInfo): { factor: number; across: boolea
   if (!fdm) return { factor: 1, across: false };
   const s = p.process?.settings ?? {};
   const build = Array.isArray(s.build) && typeof s.build[0] === "number" ? vnorm(s.build as V3) : ([0, 0, 1] as V3);
-  const across = Math.abs(vdot(vnorm(f.dir), build)) > 0.7;
+  // a clip's spine runs across its arm, the way the catch faces, and bends as hard
+  const across = Math.abs(vdot(vnorm(f.dir), build)) > 0.7 || (!!f.frame && Math.abs(vdot(vnorm(f.facing), build)) > 0.7);
   return { factor: across ? (materialRecord(p.material)?.mech.layerFactor ?? 0.6) : 1, across };
 }
 
@@ -40,12 +41,18 @@ function snapItem(p: EvalPart, f: FlexInfo): CheckItem {
   const problems: string[] = [];
   const fixes: string[] = [];
   let status: CheckStatus = "pass";
-  let detail = `Bends ${pc(r.strain)} passing its ${n2(f.deflection)} mm catch; ${p.material} takes about ${pc(plain)} for ${big(cycles)} snap${cycles === 1 ? "" : "s"}`;
-  detail += across ? `, and ${pc(r.limit)} printed with its layers across the arm.` : ".";
+  let detail = `Bends ${pc(r.strain)} passing its ${n2(f.deflection)} mm catch${f.frame ? `, its ${n1(f.frame)} mm spine bending with it` : ""}; ${p.material} takes about ${pc(plain)} for ${big(cycles)} snap${cycles === 1 ? "" : "s"}`;
+  detail += across ? `, and ${pc(r.limit)} printed with its layers across the ${f.frame ? "clip" : "arm"}.` : ".";
   if (r.strain > r.limit) {
     status = "fail";
     problems.push(across && r.strain <= plain ? "it breaks along a layer line when pushed in" : "it cracks or bends for good when pushed in");
-    fixes.push(across && r.strain <= plain ? "print the part so the arm lies along the bed (its layers then run along the arm)" : `make the arm longer (strain falls with length²: about ${n1(f.length * Math.sqrt(r.strain / r.limit) + 0.5)} mm), thinner, or give it a shallower catch`);
+    fixes.push(
+      across && r.strain <= plain
+        ? `print the part so the ${f.frame ? "clip" : "arm"} lies along the bed (its layers then run along the ${f.frame ? "clip" : "arm"})`
+        : f.frame
+          ? "make the spine longer or thinner, or give it a shallower catch"
+          : `make the arm longer (strain falls with length²: about ${n1(f.length * Math.sqrt(r.strain / r.limit) + 0.5)} mm), thinner, or give it a shallower catch`,
+    );
   }
   const push = r.push!;
   detail += ` Push-in force about ${n1(push)} N on its ${f.leadIn ?? 30}° lead-in`;

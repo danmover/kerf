@@ -118,6 +118,10 @@ export interface FlexInfo {
   retain?: number;
   /** snap: how far the arm stays bent once latched, mm (0: it just touches); flexure: how far the blade stays bent pressing on `against` */
   preload?: number;
+  /** snap: the hook is one leg of a C-shaped clip: it rises from a spine this long (mm), which bends with it, joining it to a rigid part such as a head or a pin */
+  frame?: number;
+  /** snap: that spine's thickness, mm (it is as wide as the hook) */
+  frameT?: number;
   /** flexure: the part the blade presses on with its preload (drawn overlapping it by that much along facing) */
   against?: string;
   /** times it bends in its life */
