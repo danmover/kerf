@@ -35,7 +35,8 @@ interface ViewState {
   /** request the editor to reveal a span */
   reveal: { span: Span; nonce: number } | null;
   /** request the viewport to move the camera */
-  cameraRequest: { preset: ViewPreset | "fit"; nonce: number } | null;
+  /** a view to move the camera to: a preset, a fit, or a direction to look from (the view cube's edges and corners) */
+  cameraRequest: { preset: ViewPreset | "fit"; dir?: [number, number, number]; nonce: number } | null;
   dockTab: DockTab;
   leftTab: LeftTab;
   dockOpen: boolean;
@@ -68,7 +69,7 @@ export const useView = create<ViewState>(() => ({
 
 let nonce = 0;
 export const revealSpan = (span: Span) => useView.setState({ reveal: { span, nonce: ++nonce } });
-export const requestCamera = (preset: ViewPreset | "fit") => useView.setState({ cameraRequest: { preset, nonce: ++nonce } });
+export const requestCamera = (preset: ViewPreset | "fit", dir?: [number, number, number]) => useView.setState({ cameraRequest: { preset, ...(dir ? { dir } : {}), nonce: ++nonce } });
 export const select = (ids: string[]) => useView.setState({ selected: ids });
 export const showDecision = (name: string) => useView.setState({ leftTab: "decisions", decisionFocus: { name, nonce: ++nonce } });
 export const resetView = () =>

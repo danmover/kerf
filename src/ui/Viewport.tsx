@@ -45,6 +45,7 @@ import { BoardDecorator } from "./viewport/boards/decorate";
 import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
 import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
+import { ViewCube } from "./viewport/ViewCube";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -226,7 +227,10 @@ export function Viewport() {
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
   useEffect(() => {
-    if (view.cameraRequest) ctl.current?.fit(view.cameraRequest.preset === "fit" ? "current" : view.cameraRequest.preset);
+    const r = view.cameraRequest;
+    if (!r) return;
+    if (r.dir) ctl.current?.lookFrom(r.dir);
+    else ctl.current?.fit(r.preset === "fit" ? "current" : r.preset);
   }, [view.cameraRequest]);
 
   const hasMotion = !!model?.parts.some((p) => turns(p.motion));
@@ -250,6 +254,7 @@ export function Viewport() {
     <div className={`viewport ${inSketch ? "sketching" : ""}`} data-backdrop={lightingPreset(settings.lighting, theme).light ? "light" : "dark"}>
       <div className="vp-mount" ref={mount} />
       {hold && <div key={hold.n} className="vp-hold" style={{ left: hold.x, top: hold.y }} aria-hidden="true" />}
+      {scene && <ViewCube scene={scene} />}
 
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
         {/* modelling it yourself comes first and is labelled, so it isn't lost among the view switches */}
@@ -286,7 +291,7 @@ export function Viewport() {
                     requestCamera(p);
                     close();
                   }}
-                  hint={{ iso: "1", front: "2", back: "", left: "", right: "3", top: "4", bottom: "" }[p]}
+                  hint={{ iso: "1", front: "2", back: "⇧2", left: "⇧3", right: "3", top: "4", bottom: "⇧4" }[p]}
                 >
                   {p[0].toUpperCase() + p.slice(1)}
                 </MenuItem>

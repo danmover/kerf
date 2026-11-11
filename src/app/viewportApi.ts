@@ -63,7 +63,7 @@ export interface ViewportApi {
   photoBlocker(): string | null;
   /** an export needs at least this photoreal quality until it ends (null) */
   photoFloor(q: { maxSamples: number; scale: number; bounces: number } | null): void;
-  /** the finished photoreal image on screen, without the selection outline or axis triad; null until it has converged */
+  /** the finished photoreal image on screen, without the selection outline; null until it has converged */
   photoSnapshot(): string | null;
 }
 

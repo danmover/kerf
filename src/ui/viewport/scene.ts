@@ -26,6 +26,8 @@ const ACCENT = new THREE.Color("#6d8bff");
 /** how long a finger or pen is held still to open the spot chat, ms */
 const HOLD_MS = 550;
 const HOVER = new THREE.Color("#a9bcff");
+/** how far a pixel of drag on the view cube turns the camera, radians */
+const ORBIT_PER_PX = 0.012;
 
 /** Layers used to draw subsets of the parts (selection mask). */
 const L_OPAQUE = 1;
@@ -290,8 +292,6 @@ export class SceneController {
   private groundMat: THREE.ShadowMaterial;
   private key: THREE.DirectionalLight;
   private keyDir = new THREE.Vector3();
-  private triadScene = new THREE.Scene();
-  private triadCam = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
   private sectionFrame: THREE.LineLoop;
   private sectionFill: THREE.Mesh;
   private depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false });
@@ -373,6 +373,9 @@ export class SceneController {
   onLightAngle: (deg: number) => void = () => undefined;
   /** the turntable stopped because the user took the camera */
   onTurntableStop: () => void = () => undefined;
+  /** the camera turned (the view cube follows it) */
+  onOrient: (q: THREE.Quaternion) => void = () => undefined;
+  private orient = new THREE.Quaternion(NaN, NaN, NaN, NaN);
   private renderListeners = new Set<() => void>();
   /** until the user moves the camera, the first complete build re-frames the model */
   private autoFit = true;
@@ -416,15 +419,7 @@ export class SceneController {
     // a mouse wheel's notch zooms over a few frames instead of in one jump; a
     // trackpad's stream of small steps is smooth already and goes straight through
     container.addEventListener("wheel", (e) => this.glideWheel(e), { capture: true, passive: false });
-    this.controls.addEventListener("start", () => {
-      this.camAnim = null;
-      this.autoFit = false;
-      if (this.turntable) {
-        this.turntable = false;
-        this.controls.autoRotate = false;
-        this.onTurntableStop();
-      }
-    });
+    this.controls.addEventListener("start", () => this.takeCamera());
 
     this.key = new THREE.DirectionalLight(0xffffff, 2);
     this.key.castShadow = true;
@@ -454,7 +449,6 @@ export class SceneController {
     hemi.position.set(0, 0, 1);
     this.overlayLights.add(hemi, this.overlayKey);
     this.overlay.add(this.overlayLights);
-    this.buildTriad();
     this.applyLighting();
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -660,7 +654,6 @@ export class SceneController {
       o.edgeMat.color.set(p.edge.color);
       this.applyMaterial(o);
     }
-    this.paintTriad(!!p.light);
     this.placeKey(0);
     this.swatchCache.clear();
     this.changed = true;
@@ -1678,6 +1671,42 @@ export class SceneController {
     this.changed = true;
   }
 
+  /** The user has taken the camera: stop any move towards a view, the first framing and the turntable. */
+  takeCamera() {
+    this.camAnim = null;
+    this.autoFit = false;
+    if (this.turntable) {
+      this.turntable = false;
+      this.controls.autoRotate = false;
+      this.onTurntableStop();
+    }
+  }
+
+  /** Look at the model from a direction (an edge or corner of the view cube), framing it. */
+  lookFrom(dir: [number, number, number]) {
+    const d = new THREE.Vector3(...dir);
+    if (d.lengthSq() < 1e-12) return;
+    d.normalize();
+    // straight down or up: lean a hair towards the front so up stays defined, as the top and bottom views do
+    if (Math.abs(d.z) > 0.99999) d.set(0, -0.0001, Math.sign(d.z)).normalize();
+    this.fit("current", true, undefined, d);
+  }
+
+  /** Turn the camera round its target as dragging the view cube does: across turns about Z, up and down tips it over the top. */
+  orbitBy(dx: number, dy: number) {
+    this.takeCamera();
+    const t = this.controls.target;
+    const off = this.camera.position.clone().sub(t);
+    const r = off.length();
+    if (r < 1e-9) return;
+    const theta = Math.atan2(off.y, off.x) - dx * ORBIT_PER_PX;
+    const phi = THREE.MathUtils.clamp(Math.acos(THREE.MathUtils.clamp(off.z / r, -1, 1)) - dy * ORBIT_PER_PX, 1e-4, Math.PI - 1e-4);
+    this.camera.position.set(t.x + r * Math.sin(phi) * Math.cos(theta), t.y + r * Math.sin(phi) * Math.sin(theta), t.z + r * Math.cos(phi));
+    this.camera.lookAt(t);
+    this.controls.update();
+    this.changed = true;
+  }
+
   // ---------- picking ----------
 
   private pick(e: MouseEvent): string | null {
@@ -1968,6 +1997,10 @@ export class SceneController {
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
     this.camera.updateMatrixWorld();
+    if (!this.orient.equals(this.camera.quaternion)) {
+      this.orient.copy(this.camera.quaternion);
+      this.onOrient(this.orient);
+    }
     // the photoreal look hides CAD edges and the grid, but only while it can run
     const look = this.render$.photoreal && !this.photoBlocked();
     if (look !== this.photoLookOn) {
@@ -2113,7 +2146,7 @@ export class SceneController {
     this.photo.restart(performance.now());
   }
 
-  /** The finished photoreal image on screen, without the selection outline or the axis triad, as a PNG data URL; null until it has converged and fully shows. */
+  /** The finished photoreal image on screen, without the selection outline, as a PNG data URL; null until it has converged and fully shows. */
   photoSnapshot(): string | null {
     const photo = this.photo;
     if (!photo || !photo.done || this.photoMix < 0.999) return null;
@@ -2125,7 +2158,7 @@ export class SceneController {
       this.overlayDepth();
       r.render(this.overlay, this.camera);
     }
-    // read back in the same task, before the browser clears the canvas; the next frame puts the outline and triad back
+    // read back in the same task, before the browser clears the canvas; the next frame puts the outline back
     const url = r.domElement.toDataURL("image/png");
     this.needComposite = true;
     return url;
@@ -2238,7 +2271,7 @@ export class SceneController {
     this.onPhotoStatus(s);
   }
 
-  /** Composite the accumulated image to the canvas, then overlays and the axis triad. */
+  /** Composite the accumulated image to the canvas, then the overlays. */
   private present(now: number) {
     const r = this.renderer;
     if (this.interferences.length) {
@@ -2264,19 +2297,6 @@ export class SceneController {
       r.shadowMap.autoUpdate = saveShadow;
     }
     r.render(this.overlay, this.camera);
-    // axis triad in the corner
-    const s = 86;
-    r.clearDepth();
-    r.setScissorTest(true);
-    r.setScissor(10, 10, s, s);
-    r.setViewport(10, 10, s, s);
-    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
-    this.triadCam.position.copy(dir.multiplyScalar(4));
-    this.triadCam.up.copy(this.camera.up);
-    this.triadCam.lookAt(0, 0, 0);
-    r.render(this.triadScene, this.triadCam);
-    r.setScissorTest(false);
-    r.setViewport(0, 0, this.container.clientWidth, this.container.clientHeight);
   }
 
   /** Selection mask: red = selected and visible, blue = selected but hidden behind others, green = hovered. */
@@ -2313,51 +2333,6 @@ export class SceneController {
     cam.layers.mask = prevMask;
     r.clippingPlanes = prevClip;
     r.setRenderTarget(null);
-  }
-
-  private triad: { line: THREE.LineBasicMaterial; tip: THREE.MeshBasicMaterial; ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; label: string; axis: number }[] = [];
-
-  private buildTriad() {
-    const axes: [THREE.Vector3, string][] = [
-      [new THREE.Vector3(1, 0, 0), "X"],
-      [new THREE.Vector3(0, 1, 0), "Y"],
-      [new THREE.Vector3(0, 0, 1), "Z"],
-    ];
-    axes.forEach(([v, label], axis) => {
-      const line = new THREE.LineBasicMaterial();
-      const tip = new THREE.MeshBasicMaterial();
-      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), v.clone().multiplyScalar(0.9)]);
-      this.triadScene.add(new THREE.Line(g, line));
-      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8), tip);
-      ball.position.copy(v.clone().multiplyScalar(0.9));
-      this.triadScene.add(ball);
-      const c = document.createElement("canvas");
-      c.width = c.height = 64;
-      const tex = new THREE.CanvasTexture(c);
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-      sp.position.copy(v.clone().multiplyScalar(1.28));
-      sp.scale.setScalar(0.5);
-      this.triadScene.add(sp);
-      this.triad.push({ line, tip, ctx: c.getContext("2d")!, tex, label, axis });
-    });
-    this.paintTriad(false);
-  }
-
-  /** Axis colours: the bright set on a dark backdrop, deeper ones that hold up on a light backdrop. */
-  private paintTriad(light: boolean) {
-    const colors = light ? ["#d63a4a", "#12985f", "#4763e6"] : ["#ff5d6c", "#3ddc97", "#6d8bff"];
-    for (const t of this.triad) {
-      const color = colors[t.axis];
-      t.line.color.set(color);
-      t.tip.color.set(color);
-      t.ctx.clearRect(0, 0, 64, 64);
-      t.ctx.fillStyle = color;
-      t.ctx.font = "600 40px 'IBM Plex Mono', monospace";
-      t.ctx.textAlign = "center";
-      t.ctx.textBaseline = "middle";
-      t.ctx.fillText(t.label, 32, 34);
-      t.tex.needsUpdate = true;
-    }
   }
 
   // ---------- capture ----------

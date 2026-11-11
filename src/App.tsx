@@ -125,6 +125,8 @@ function isTyping(t: EventTarget | null) {
 }
 
 const CAMERA_KEYS: Record<string, ViewPreset> = { "1": "iso", "2": "front", "3": "right", "4": "top" };
+/** with Shift, 2, 3 and 4 look from the other side (by key position, so any keyboard layout) */
+const OPPOSITE_KEYS: Record<string, ViewPreset> = { Digit2: "back", Digit3: "left", Digit4: "bottom" };
 
 function useShortcuts() {
   useEffect(() => {
@@ -185,6 +187,7 @@ function useShortcuts() {
         }
         return;
       }
+      if (e.shiftKey && OPPOSITE_KEYS[e.code]) return requestCamera(OPPOSITE_KEYS[e.code]);
       if (CAMERA_KEYS[key]) return requestCamera(CAMERA_KEYS[key]);
       switch (key) {
         case "f":
