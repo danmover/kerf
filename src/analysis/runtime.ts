@@ -332,6 +332,12 @@ export function structuralInput(
   if (th && !th.heat.length && !th.currents?.length && !th.fixed.length)
     return { error: `heat: "auto" found no electronics that use power among ${spec.parts.join(", ")}, so nothing makes heat. Add source(part, watts) for what gets hot.` };
   const temps = !!th || spec.uniformTemp !== undefined;
+  // a frame on its own is analysed as beams through its joints, unless asked for solids or for what beams cannot follow
+  const beamsCan = !spec.modal && !spec.drop && !temps && !spec.fatigue && !spec.topology && !spec.touching && !spec.preload && !spec.large;
+  const notBeam = parts.find((p) => !p.beam);
+  if (spec.elements === "beams" && notBeam)
+    return { error: `elements: "beams" analyses frame members, and ${notBeam.label} is not one. Analyse the frame on its own, or use elements: "solid" to analyse it with the other parts.` };
+  const beams = spec.elements === "beams" || (spec.elements === undefined && !notBeam && beamsCan);
   const fea: FeaPart[] = [];
   const mats: MechMaterial[] = [];
   const thermalMats: ThermalMaterial[] = [];
@@ -388,7 +394,8 @@ export function structuralInput(
     const headH = fi?.head && ts ? headDims(fi.head as HeadType, ts)?.h : undefined;
     const bolt = fi && fi.head !== "set" ? { headTop: fi.headTop, outward: fi.outward, size: fi.size, headD: fi.headD, ...(headH !== undefined ? { headH } : {}), ...(fi.grade ? { grade: fi.grade } : {}) } : undefined;
     const threads = p.libKind === "nut" || p.libKind === "standoff" ? ("nut" as const) : p.libKind === "insert" ? ("insert" as const) : undefined;
-    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
+    const beam = beams && p.beam ? { a: p.beam.a, b: p.beam.b, u: p.beam.u, v: p.beam.v, section: p.beam.section } : undefined;
+    fea.push({ id: p.id, name: p.name, ...(p.frame ? { group: p.frame } : {}), ...(beam ? { beam } : {}), mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
   }
   // bolts tightened before the loads: the ones named, and with all every other screw and bolt analysed
   let preload: BoltWant[] | undefined;
@@ -443,6 +450,7 @@ export function structuralInput(
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
     ...(spec.large !== undefined ? { large: spec.large } : {}),
+    ...(beams ? { elements: "beams" as const } : {}),
     ...(spec.topology ? { topology: spec.topology } : {}),
     ...(spec.touching ? { touching: spec.touching } : {}),
     ...(preload ? { preload } : {}),

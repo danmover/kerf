@@ -35,6 +35,8 @@ export interface Section {
   area: number;
   /** grams per metre for a catalog profile */
   massPerM?: number;
+  /** a catalog profile's second moment of area about its stronger axis, mm⁴ */
+  iyy?: number;
 }
 
 /** A catalog profile as the section parser needs it. */
@@ -44,6 +46,8 @@ export interface CatalogProfile {
   w: number;
   h: number;
   massPerM?: number;
+  /** second moment of area about its stronger axis, mm⁴ */
+  iyy?: number;
 }
 
 const SECTION_HELP =
@@ -66,7 +70,7 @@ export function parseSection(text: string, catalog: (id: string) => CatalogProfi
   const s = raw.toLowerCase().replace(/\s+/g, " ");
   const series = /^(?:v-?slot )?(\d{4})(?: (?:v-?slot|extrusion|profile))?$/.exec(s);
   const cp = catalog(series ? `vslot_${series[1]}` : raw) ?? catalog(s);
-  if (cp) return { kind: "extrusion", w: cp.w, h: cp.h, round: false, catalogId: cp.id, dims: `${n(cp.w)} × ${n(cp.h)} mm`, noun: cp.name, area: (cp.massPerM ?? 0) / 2.7, massPerM: cp.massPerM };
+  if (cp) return { kind: "extrusion", w: cp.w, h: cp.h, round: false, catalogId: cp.id, dims: `${n(cp.w)} × ${n(cp.h)} mm`, noun: cp.name, area: (cp.massPerM ?? 0) / 2.7, massPerM: cp.massPerM, ...(cp.iyy ? { iyy: cp.iyy } : {}) };
   if (series) return `There is no ${series[1]} profile in the parts catalog: use "2020" or "2040", or a section such as "box 40x40x3"`;
   const m = /^([a-z][a-z ]*?) ?(\d[\d.]*(?: ?mm)?(?: ?[x×*] ?\d[\d.]*(?: ?mm)?)*)$/.exec(s);
   const kind = m ? WORDS.find(([re]) => re.test(m[1].trim()))?.[1] : undefined;
@@ -154,6 +158,108 @@ export function sectionProfile(sec: Section): Profile {
       return { t: "circle", d: w, c: [0, 0] };
     default:
       return { t: "rect", w, h, r: 0, c: [0, 0] };
+  }
+}
+
+// ---------------------------------------------------------------- beam sections
+
+/**
+ * A section as a beam sees it, in the section's own (u, v) across the member (u along its width w, v along its
+ * height h, centred on the line).
+ */
+export interface BeamSection {
+  /** area, mm² */
+  A: number;
+  /** second moments about the centroid: Iu = ∫v² dA (bending that moves it along v), Iv = ∫u² dA (along u), Iuv = ∫uv dA */
+  Iu: number;
+  Iv: number;
+  Iuv: number;
+  /** torsion constant, mm⁴ */
+  J: number;
+  /** the centroid in (u, v): off the line for an angle */
+  c: [number, number];
+  /** share of the area that carries shear (Timoshenko) */
+  kappa: number;
+  /** the largest shear stress from twisting, per N·mm of torque, 1/mm³ */
+  tau: number;
+  kind: SectionKind;
+  w: number;
+  h: number;
+  t?: number;
+  round: boolean;
+  /** properties taken from the catalog or estimated (a slotted extrusion's twist) */
+  estimated?: string;
+}
+
+/** Torsion of a solid rectangle a × b (a ≥ b): its constant and the largest shear stress per unit torque (Roark). */
+function rectTorsion(w: number, h: number): { J: number; tau: number } {
+  const a = Math.max(w, h),
+    b = Math.min(w, h);
+  return { J: a * b ** 3 * (1 / 3 - 0.21 * (b / a) * (1 - b ** 4 / (12 * a ** 4))), tau: (3 * a + 1.8 * b) / (a * a * b * b) };
+}
+
+/** A section's beam properties: area, second moments, torsion, centroid. */
+export function sectionProps(sec: Section): BeamSection {
+  const { w, h } = sec;
+  const t = sec.t ?? 0;
+  const base = { kind: sec.kind, w, h, round: sec.round, ...(sec.t !== undefined ? { t: sec.t } : {}) };
+  switch (sec.kind) {
+    case "box": {
+      const wi = w - 2 * t,
+        hi = h - 2 * t;
+      // a closed thin wall twists by Bredt's formula on its mid-line
+      const am = (w - t) * (h - t);
+      return { ...base, A: w * h - wi * hi, Iu: (w * h ** 3 - wi * hi ** 3) / 12, Iv: (h * w ** 3 - hi * wi ** 3) / 12, Iuv: 0, J: (4 * am * am * t) / (2 * (w - t + h - t)), c: [0, 0], kappa: 0.44, tau: 1 / (2 * am * t) };
+    }
+    case "tube": {
+      const di = w - 2 * t;
+      const I = (Math.PI / 64) * (w ** 4 - di ** 4);
+      return { ...base, A: (Math.PI / 4) * (w * w - di * di), Iu: I, Iv: I, Iuv: 0, J: 2 * I, c: [0, 0], kappa: 0.53, tau: w / 2 / (2 * I) };
+    }
+    case "rod": {
+      const I = (Math.PI / 64) * w ** 4;
+      return { ...base, A: (Math.PI / 4) * w * w, Iu: I, Iv: I, Iuv: 0, J: 2 * I, c: [0, 0], kappa: 0.9, tau: w / 2 / (2 * I) };
+    }
+    case "angle": {
+      // two rectangles: the leg along u (full width, at the bottom) and the leg along v above it, heel at (-w/2, -h/2)
+      const r = [
+        { a: w * t, cu: 0, cv: -h / 2 + t / 2, iu: (w * t ** 3) / 12, iv: (t * w ** 3) / 12 },
+        { a: t * (h - t), cu: -w / 2 + t / 2, cv: -h / 2 + t + (h - t) / 2, iu: (t * (h - t) ** 3) / 12, iv: ((h - t) * t ** 3) / 12 },
+      ];
+      const A = r[0].a + r[1].a;
+      const cu = (r[0].a * r[0].cu + r[1].a * r[1].cu) / A,
+        cv = (r[0].a * r[0].cv + r[1].a * r[1].cv) / A;
+      let Iu = 0,
+        Iv = 0,
+        Iuv = 0;
+      for (const q of r) {
+        Iu += q.iu + q.a * (q.cv - cv) ** 2;
+        Iv += q.iv + q.a * (q.cu - cu) ** 2;
+        Iuv += q.a * (q.cu - cu) * (q.cv - cv);
+      }
+      const J = ((w + h - t) * t ** 3) / 3;
+      return { ...base, A, Iu, Iv, Iuv, J, c: [cu, cv], kappa: 0.4, tau: t / J };
+    }
+    case "extrusion": {
+      // a V-slot profile: the catalog gives the stronger axis; across it, each square cell bends about like a 2020
+      // (about half a solid square's stiffness: 7000 mm⁴ for 20 mm), and slotted profiles twist far more easily
+      // than a closed tube
+      const c = Math.min(w, h);
+      const cells = Math.max(1, Math.round(Math.max(w, h) / c));
+      const cell = 0.525 * (c ** 4 / 12);
+      const strong = sec.iyy ?? (cells === 1 ? cell : 0.42 * ((c * Math.max(w, h) ** 3) / 12));
+      const weak = cells === 1 ? strong : Math.min(strong, cells * cell);
+      const A = sec.area > 0 ? sec.area : 0.46 * w * h;
+      const Iu = h >= w ? strong : weak,
+        Iv = h >= w ? weak : strong;
+      const J = 0.1 * (Iu + Iv);
+      return { ...base, A, Iu, Iv, Iuv: 0, J, c: [0, 0], kappa: 0.5, tau: Math.max(w, h) / 2 / J, estimated: "the profile's twist is estimated (slotted extrusions twist far more easily than tubes)" };
+    }
+    default: {
+      // flat and solid bar
+      const tr = rectTorsion(w, h);
+      return { ...base, A: w * h, Iu: (w * h ** 3) / 12, Iv: (h * w ** 3) / 12, Iuv: 0, J: tr.J, c: [0, 0], kappa: 5 / 6, tau: tr.tau };
+    }
   }
 }
 

@@ -4,7 +4,7 @@
 import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
 import { parse, parseExpression, type Diagnostic } from "./parser";
 import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, SketchLineObj, SketchObj, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
-import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
+import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionProps, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
 import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
 import { BLOCK_FNS } from "./blocks";
@@ -142,7 +142,8 @@ function catalogProfile(id: string): CatalogProfile | undefined {
   const p = catalogPart(id);
   if (!p || p.kind !== "extrusion" || !p.cut_to_length) return undefined;
   const spec = (k: string) => (typeof p.specs[k] === "number" ? (p.specs[k] as number) : undefined);
-  return { id: p.id, name: p.name, w: spec("w") ?? 20, h: spec("h") ?? 20, massPerM: spec("mass_g_per_m") };
+  const iyy = spec("iyy_mm4");
+  return { id: p.id, name: p.name, w: spec("w") ?? 20, h: spec("h") ?? 20, massPerM: spec("mass_g_per_m"), ...(iyy ? { iyy } : {}) };
 }
 
 interface CompInfo {
@@ -2127,6 +2128,7 @@ class Evaluator {
     const vec = (p: V3): Expr => ({ k: "vec", items: p.map(num), span: sp });
     const prop = (name: string, value: Expr): Item => ({ k: "prop", name, value, span: sp });
     const counters: Record<string, number> = { post: 0, rail: 0, brace: 0 };
+    const beamSec = sectionProps(sec);
     const infos: FrameMemberInfo[] = [];
     const values: Value[] = [];
     let mass = 0;
@@ -2158,7 +2160,10 @@ class Evaluator {
           };
           const first = this.parts.length;
           this.component({ k: "component", name, call, items, span: sp, nameSpan: s.nameSpan });
-          for (let i = first; i < this.parts.length; i++) this.parts[i].frame = s.name;
+          for (let i = first; i < this.parts.length; i++) {
+            this.parts[i].frame = s.name;
+            this.parts[i].beam = { frame: s.name, a: m.from, b: m.to, u: m.u, v: m.v, section: beamSec };
+          }
           mass += ((sec.massPerM ?? 0) * m.length) / 1000;
         } else {
           this.define(name, "part", new Ref(name, "part"), s.nameSpan);
@@ -2193,6 +2198,7 @@ class Evaluator {
               features: [],
               detail: false,
               frame: s.name,
+              beam: { frame: s.name, a: m.from, b: m.to, u: m.u, v: m.v, section: beamSec },
               bom: {
                 description: `${sectionName(sec, material)}, cut to ${fmtNum(m.length, 1)} mm${cutText}`,
                 length: Math.round(m.length * 10) / 10,
@@ -3174,12 +3180,27 @@ class Evaluator {
       kindOf: (name) => {
         const k = this.defKind.get(name);
         if (k) this.current?.add(name);
+        // a frame's members are parts, edited (and depended on) through their frame
+        const frame = this.memberOf.get(name);
+        if (!k && frame) {
+          this.current?.add(frame);
+          return this.parts.find((p) => p.name === name)?.kind ?? "part";
+        }
         return k;
+      },
+      members: (name) => {
+        if (this.defKind.get(name) !== "frame") return undefined;
+        this.current?.add(name);
+        return [...this.memberOf].filter(([, f]) => f === name).map(([m]) => m);
       },
       param: (name) => this.params.find((p) => p.name === name),
     });
     // the parts it reads are dependencies, so the graph and incremental reruns see them
-    if (spec.kind === "structural") for (const p of spec.parts) if (this.defKind.has(p)) this.current?.add(p);
+    if (spec.kind === "structural")
+      for (const p of spec.parts) {
+        if (this.defKind.has(p)) this.current?.add(p);
+        else if (this.memberOf.has(p)) this.current?.add(this.memberOf.get(p)!);
+      }
     if (spec.kind === "airflow") for (const p of [...spec.parts, ...(spec.wheels ?? [])]) if (this.defKind.has(p)) this.current?.add(p);
     if (spec.kind === "drivetrain") {
       const k = this.defKind.get(spec.drive);

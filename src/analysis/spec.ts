@@ -376,6 +376,11 @@ export interface StructuralSpec {
   converge?: boolean;
   /** large deflection: true solves the parts bending and turning far, false keeps the small-deflection answer; unset, Kerf switches it on when that answer turns parts far or a strap stiffens as it stretches */
   large?: boolean;
+  /**
+   * how the parts are modelled: "beams" analyses frame members as beams through their joints (quick, and exact for
+   * slender members), "solid" as the real shape in small cubes; unset, a frame on its own is analysed as beams
+   */
+  elements?: "beams" | "solid";
   /** topology optimisation: find the stiffest shape for these loads that keeps a share of the parts' material */
   topology?: TopologySpec;
   /** touching parts as contacts (pressed, parting, sliding) instead of glued */

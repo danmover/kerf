@@ -24,6 +24,7 @@ import { COMPONENT_THERMAL, strengthAt, type ThermalMaterial } from "../thermalM
 import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type HeatSolve, type ThermalInput } from "./thermal";
 import { bucklingModes } from "./buckling";
 import { corotate, elementFrame, internalForce, largeEffect, maxTurn, solveLarge, turnVoigt } from "./large";
+import { runBeams, type BeamMember, type BeamResult } from "./beams";
 import { FINISHES, criticalStress, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
 
 export class FeaError extends Error {}
@@ -33,6 +34,10 @@ export interface FeaPart {
   id: string;
   /** block name in the design */
   name: string;
+  /** the frame (or other group) it belongs to: face() can name the group for all of its parts */
+  group?: string;
+  /** a frame member, analysed as a beam when the analysis uses beam elements */
+  beam?: BeamMember;
   /** world-space triangle mesh */
   mesh: TriMesh;
   /** world-space vertex normals, for display */
@@ -119,6 +124,8 @@ export interface StructuralInput {
    * the small-deflection answer, unset switches it on when that answer turns a part more than LARGE_TURN
    */
   large?: boolean;
+  /** "beams": every part is a frame member (FeaPart.beam), solved as beams through its joints */
+  elements?: "beams";
 }
 
 /** The large-deflection solve: how far the parts turned, and how it went. */
@@ -446,6 +453,8 @@ export interface StructuralResult {
   bolts?: BoltResult[];
   /** solved for large deflection (the parts turn as they bend): how far and how it went */
   large?: LargeResult;
+  /** a frame solved as beams: each member's forces and peak stress */
+  beams?: BeamResult;
 }
 
 /** The same analysis solved twice, the second time with smaller elements. */
@@ -607,9 +616,14 @@ export function sizeGrid(ext: V3, volume: number, target: number, h?: number): {
 }
 
 export function runStructural(inp: StructuralInput, progress: Progress = () => undefined): StructuralResult {
+  if (!inp.parts.length) throw new FeaError("Nothing to analyse: the analysis names no parts with built geometry.");
+  if (inp.elements === "beams") {
+    if (!inp.supports.length) throw new FeaError("The analysis has no supports. Add fix: to say how the frame is held, for example fix: face(stand, -Z).");
+    if (!inp.loads.length && !inp.accel && !inp.supports.some((s) => s.move)) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+    return runBeams(inp, progress);
+  }
   const t0 = now();
   const warnings: string[] = [];
-  if (!inp.parts.length) throw new FeaError("Nothing to analyse: the analysis names no parts with built geometry.");
   /** temperatures only: a heat analysis with nothing holding the parts */
   const heatOnly = !!inp.thermal && !inp.supports.length;
   const temps = !!inp.thermal || inp.uniformTemp !== undefined;
@@ -812,7 +826,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     area: number;
   }
   const partsByName = new Map<string, number[]>();
-  inp.parts.forEach((p, i) => partsByName.set(p.name, [...(partsByName.get(p.name) ?? []), i]));
+  // a frame's name stands for all its members in face()
+  const groupsByName = new Map<string, number[]>();
+  inp.parts.forEach((p, i) => {
+    partsByName.set(p.name, [...(partsByName.get(p.name) ?? []), i]);
+    if (p.group && p.group !== p.name) groupsByName.set(p.group, [...(groupsByName.get(p.group) ?? []), i]);
+  });
   const select = (r: RegionSpec): Sel => {
     const map = new Map<number, number>();
     const sel: Sel = { nodes: [], w: [], av: [], area: 0 };
@@ -823,7 +842,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     let faceTol = 0;
     let axis: V3 = [0, 0, 1];
     if (r.t === "face") {
-      const idx = partsByName.get(r.part);
+      const idx = partsByName.get(r.part) ?? groupsByName.get(r.part);
       if (!idx) throw new FeaError(`face(${r.part}, …): "${r.part}" is not one of the analysed parts (${[...partsByName.keys()].join(", ")}).`);
       partSet = new Set(idx);
       dir = norm(r.dir);

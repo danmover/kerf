@@ -283,14 +283,15 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
       {r?.buckling && <BucklingBox spec={spec} r={r} />}
       {r?.fatigue && <FatigueBox spec={spec} r={r} />}
       {r && !r.heatOnly && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
+      {r?.beams && <MembersBox r={r} />}
       <div className="an-cols">
         <div>
           <SetupBox spec={spec} r={r} run={run} />
-          {r && <AccuracyBox spec={spec} r={r} run={run} />}
+          {r && !r.beams && <AccuracyBox spec={spec} r={r} run={run} />}
         </div>
         <div>
           {r && <NotesBox spec={spec} r={r} />}
-          {(r || (run && run.trace.length > 1)) && <ConvergenceBox run={run!} r={r} />}
+          {!r?.beams && (r || (run && run.trace.length > 1)) && <ConvergenceBox run={run!} r={r} />}
         </div>
       </div>
     </>
@@ -1006,6 +1007,55 @@ function BucklingBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult })
 }
 
 /** The accuracy check: the answers from two element sizes side by side, and whether they have settled. */
+/** A frame solved as beams: what each member carries, hardest worked first. */
+function MembersBox({ r }: { r: StructuralResult }) {
+  const b = r.beams!;
+  const [all, setAll] = useState(false);
+  const rows = [...b.members].sort((x, y) => y.stress - x.stress);
+  const shown = all ? rows : rows.slice(0, 8);
+  const force = (N: number) => (Math.abs(N) < 0.05 ? "–" : `${N < 0 ? "push" : "pull"} ${fmtNum(Math.abs(N), Math.abs(N) < 10 ? 2 : 0)} N`);
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <b>Members</b>
+        <span className="dim mono">
+          {b.members.length} as beams · {b.joints} joint{b.joints === 1 ? "" : "s"}
+          {b.buckling ? ` · buckles at ${fmtNum(b.buckling.factor, 2)}× the loads` : ""}
+        </span>
+      </div>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th className="num">Length</th>
+            <th className="num">Axial</th>
+            <th className="num">Bending</th>
+            <th className="num">Stress</th>
+            <th className="num">Safety</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((m) => (
+            <tr key={m.part}>
+              <td className="mono">{m.part}</td>
+              <td className="num">{fmtNum(m.length, 0)} mm</td>
+              <td className="num">{force(m.axial)}</td>
+              <td className="num">{fmtNum(m.moment / 1000, 2)} N·m</td>
+              <td className="num">{fmtNum(m.stress, 1)} MPa</td>
+              <td className="num">{m.safety >= 100 ? "> 100" : fmtNum(m.safety, 2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 8 && (
+        <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setAll(!all)}>
+          {all ? "Show the 8 hardest worked" : `Show all ${rows.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function AccuracyBox({ spec, r, run }: { spec: StructuralSpec; r: StructuralResult; run?: StructuralRun }) {
   const c = r.convergence;
   const busy = run?.status === "running" || run?.status === "waiting";
@@ -1185,10 +1235,10 @@ function ResultCards({ spec, r }: { spec: StructuralSpec; r: StructuralResult })
         <div className="k">Model</div>
         <div className="v">
           {r.mesh.elements.toLocaleString()}
-          <small>elements</small>
+          <small>{r.beams ? "beam elements" : "elements"}</small>
         </div>
         <div className="s">
-          {r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm cells · {fmtNum(r.solve.ms.total / 1000, 1)} s
+          {r.beams ? `${r.beams.members.length} members, ${r.beams.joints} joints` : `${r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm cells`} · {fmtNum(r.solve.ms.total / 1000, 1)} s
         </div>
       </div>
     </div>
@@ -1397,7 +1447,12 @@ function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
       <div className="an-note">
         <Icon.Info size={13} style={{ color: "var(--text-3)" }} />
         <span className="dim">
-          {r.heatOnly ? (
+          {r.beams ? (
+            <>
+              Linear elastic beams through the members&apos; centre lines: small deflections, {r.beams.notes.slice(1).join("; ") || "joints rigid as welds are"}. Beams follow bending, stretching and twisting exactly, but not what happens inside a joint, at holes or welds, or thin walls crumpling locally; check a joint that matters with elements: &quot;solid&quot;.
+              {r.buckling ? " Buckling assumes straight members, so real ones buckle somewhat sooner." : ""}
+            </>
+          ) : r.heatOnly ? (
             `Temperatures on a ${h} mm voxel grid. ${heat}`
           ) : (
             <>
