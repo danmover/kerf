@@ -3,6 +3,7 @@
 // drivetrain calculator consume. Units: mm, N, MPa, N·mm, rpm, hours.
 
 import type { Span } from "../lang/ast";
+import type { Finish, LoadCycle, MeanStress } from "./fe/fatigue";
 
 export type V3 = [number, number, number];
 
@@ -176,6 +177,31 @@ export interface ThermalSpec {
   maxTemp?: number;
 }
 
+/**
+ * Fatigue: how the loads repeat over the part's life. The loads as written are the peak; each counted cycle runs
+ * between a min and a max scale of them. Judged against each material's S-N curve after a mean-stress correction,
+ * with the damage added up by Miner's rule.
+ */
+export interface FatigueSpec {
+  /** the counted cycles of one pass of the history (constant amplitude: one kind, counted cycles: times) */
+  cycles: LoadCycle[];
+  /** how many times the history happens in the part's life (constant amplitude: 1) */
+  repeats: number;
+  /** what the life is counted in */
+  unit: "cycles" | "repeats";
+  /** how the loads repeat, in words: "fully reversed", "on-off (0 to peak)", "R = 0.2", "a history of 3 load blocks" */
+  loading: string;
+  meanStress: MeanStress;
+  /** surface finish for every part; unset: from how each part is made (machined, cast, printed...) */
+  finish?: Finish;
+  /** chance of lasting the life (0.5 = the mean S-N curve) */
+  reliability: number;
+  /** where the cycles came from */
+  source: "constant" | "blocks" | "trace";
+  /** a trace as written (load scales), for showing it */
+  trace?: number[];
+}
+
 /** Linear (eigenvalue) buckling: how many times the loads it takes to buckle the parts, and the shapes they buckle in. */
 export interface BucklingSpec {
   modes: number;
@@ -200,6 +226,8 @@ export interface StructuralSpec {
   maxDeflection?: number;
   /** load cycles in service: above about 1000 the fatigue strength is used */
   cycles?: number;
+  /** fatigue over the part's life: set when cycles: passes 1000, or a load history or the way the loads repeat is given */
+  fatigue?: FatigueSpec;
   /** FDM print: weaker between layers stacked along buildDir */
   printed?: boolean;
   buildDir: V3;

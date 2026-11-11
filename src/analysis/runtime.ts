@@ -19,12 +19,14 @@ import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, StructuralInput, StructuralResult } from "./fe/structural";
-import { contactVerdicts, modeText, stiffnessVerdict, strengthVerdict } from "./summary";
+import type { Finish } from "./fe/fatigue";
+import { contactVerdicts, modeText, staticSafety, stiffnessVerdict, strengthVerdict } from "./summary";
+import { fatigueText, fatigueVerdict } from "./fatigueSummary";
 import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { dynamicItems } from "./dynamics";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
-export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp";
+export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp" | "life";
 
 export interface StructuralRun {
   label: string;
@@ -239,6 +241,26 @@ export function resolveThermal(spec: StructuralSpec, model: Model): StructuralSp
   return { ...spec, thermal: { ...t, heat, ambient, ambientWhy } };
 }
 
+/**
+ * The surface a part is made with, for its fatigue strength: machined, cast, rolled sheet or printed, from its process.
+ * Bought parts (no process) count as machined.
+ */
+export function partFinish(p: EvalPart): Finish {
+  switch (p.process?.id) {
+    case "die_cast":
+    case "sand_cast":
+    case "investment_cast":
+      return "cast";
+    case "metal_print":
+    case "fdm":
+    case "sla":
+    case "sls":
+      return "printed";
+    default:
+      return "machined";
+  }
+}
+
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
 export function structuralInput(
   spec: StructuralSpec,
@@ -257,6 +279,7 @@ export function structuralInput(
   const fea: FeaPart[] = [];
   const mats: MechMaterial[] = [];
   const thermalMats: ThermalMaterial[] = [];
+  const finishes: Finish[] = [];
   const matIndex = new Map<string, number>();
   for (const p of parts) {
     const data = meshOf(p.hash);
@@ -264,12 +287,15 @@ export function structuralInput(
     const name = spec.material ?? p.material;
     // with heat, a bought component of an unknown material is its own insides (copper, board and plastic), not a plastic
     const component = p.kind === "component";
-    const key = temps ? `${name}|${component}` : name;
+    // with fatigue, the same material machined and cast has two S-N curves
+    const finish = spec.fatigue ? (spec.fatigue.finish ?? partFinish(p)) : undefined;
+    const key = (temps ? `${name}|${component}` : name) + (finish ? `|${finish}` : "");
     let mi = matIndex.get(key);
     if (mi === undefined) {
       mi = mats.length;
       mats.push(mechMaterial(name));
       if (temps) thermalMats.push(thermalMaterial(name, component));
+      if (finish) finishes.push(finish);
       matIndex.set(key, mi);
     }
     const m = xformMatrix(p.xf);
@@ -333,6 +359,19 @@ export function structuralInput(
     ...(temps ? { thermalMaterials: thermalMats } : {}),
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
+    ...(spec.fatigue
+      ? {
+          fatigue: {
+            cycles: spec.fatigue.cycles,
+            repeats: spec.fatigue.repeats,
+            unit: spec.fatigue.unit,
+            meanStress: spec.fatigue.meanStress,
+            finishes,
+            reliability: spec.fatigue.reliability,
+            loading: spec.fatigue.loading,
+          },
+        }
+      : {}),
   };
   return { input };
 }
@@ -487,7 +526,8 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
     if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
     return out;
   }
-  const sf = r.minSafety.value;
+  const st = staticSafety(r);
+  const sf = st.value;
   const { status, note } = strengthVerdict(spec, r);
   out.push(...dynamicItems(spec, r, base, { status, note }));
   // modal and drop analyses report through their own items; a static strength line only when there are loads
@@ -502,11 +542,14 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
     margin: sf - spec.safety,
     title: `Strength: ${spec.label}`,
     detail:
-      `Peak ${fmtNum(r.maxStress.value, 1)} MPa (von Mises) near ${fmtP(r.maxStress.at)}. Lowest safety factor ${fmtNum(sf, 2)} against the ${modeText(r, spec.cycles)}, target ${fmtNum(spec.safety, 2)}.` +
+      `Peak ${fmtNum(r.maxStress.value, 1)} MPa (von Mises) near ${fmtP(r.maxStress.at)}${r.fatigue && Math.abs(r.fatigue.peak - 1) > 1e-6 ? ` under the loads as written; the history peaks at ${fmtNum(r.fatigue.peak, 2)}× them` : ""}. Lowest ${r.fatigue ? "static " : ""}safety factor ${fmtNum(sf, 2)} against the ${modeText(r, spec.cycles, st)}, target ${fmtNum(spec.safety, 2)}.` +
       ` Largest deflection ${fmtNum(r.maxDisp.value, 3)} mm.` +
       (r.thermal ? ` Includes thermal expansion from ${fmtNum(r.thermal.refTemp ?? 20, 0)} °C (no stress there) and plastics weakened where they are hot.` : "") +
       note,
   });
+  const fv = fatigueVerdict(spec, r);
+  const ft = fatigueText(spec, r);
+  if (fv && ft) out.push({ ...base, id: id("fatigue"), status: fv.status, margin: fv.margin, title: `Fatigue: ${spec.label}`, detail: ft.detail, ...(ft.fix ? { fix: ft.fix } : {}) });
   const bv = bucklingVerdict(spec, r);
   const bt = bucklingText(spec, r);
   if (bv && bt)

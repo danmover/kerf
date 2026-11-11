@@ -9,6 +9,7 @@ import type { CheckItem } from "../core/checks";
 import { airflowLine } from "./aeroSummary";
 import type { AirflowRun } from "./aeroRuntime";
 import { accuracyText, bucklingText, bucklingVerdict, degC, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
+import { fatigueModeText, fatigueText, fatigueVerdict } from "./fatigueSummary";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
 export interface RunLike {
@@ -28,7 +29,8 @@ type Verdict = "pass" | "warn" | "fail";
 export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.minSafety): string {
   // a hot plastic's allowable is derated for the temperature there
   const hot = m.tempC !== undefined && m.tempC > 30 ? ` at ${fmtNum(m.tempC, 0)} °C` : "";
-  if (m.mode === "layers") return `strength between print layers of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
+  if ((m.mode === "fatigue" || m.mode === "layer fatigue") && r.fatigue) return fatigueModeText(m, r.fatigue);
+  if (m.mode === "layers" || m.mode === "layer fatigue") return `strength between print layers of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
   if (m.mode === "fatigue") return `fatigue strength of ${m.material}${hot} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
   return `yield strength of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
 }
@@ -36,6 +38,11 @@ export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.m
 /** The lowest safety factor a short way from idealised supports and loads, when the overall lowest sits right on one. */
 export function safetyAway(r: StructuralResult): SafetyAt | null {
   return r.minSafety.nearBoundary ? r.minSafety.away : null;
+}
+
+/** The static strength's lowest safety factor (yield and print layers at the loads' peak): with fatigue it is reported apart. */
+export function staticSafety(r: StructuralResult): StructuralResult["minSafety"] {
+  return r.staticSafety ?? r.minSafety;
 }
 
 /** Reasons not to trust a result to pass: materials without strength data, or a solve that did not converge. */
@@ -49,10 +56,11 @@ export function doubts(r: StructuralResult): { assumed: string[]; unreliable: bo
  * solve fails nothing either.
  */
 export function strengthVerdict(spec: StructuralSpec, r: StructuralResult): { status: Verdict; note: string } {
-  const s = r.minSafety.value;
+  const st = staticSafety(r);
+  const s = st.value;
   let status: Verdict = s >= spec.safety ? "pass" : s >= 1 ? "warn" : "fail";
   let note = "";
-  const away = safetyAway(r);
+  const away = st.nearBoundary ? st.away : null;
   if (status !== "pass" && away && away.value >= spec.safety) {
     status = "warn";
     note += ` The lowest value sits right at a support or load, where the idealised fixing exaggerates stress; a short way off the lowest safety factor is ${sf(away.value)} at ${p3(away.at)}, against the ${modeText(r, spec.cycles, away)}. Check how that area is really held.`;
@@ -138,6 +146,7 @@ export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Ve
     ...contactVerdicts(spec, r).map((c) => c.status),
     spec.thermal ? temp : temp === "fail" ? "fail" : "pass",
     bucklingVerdict(spec, r)?.status ?? "pass",
+    fatigueVerdict(spec, r)?.status ?? "pass",
   ];
   return all.includes("fail") ? "fail" : all.includes("warn") ? "warn" : "pass";
 }
@@ -152,6 +161,9 @@ function extraLines(spec: StructuralSpec, r: StructuralResult): string[] {
   const bt = bucklingText(spec, r);
   const bv = bucklingVerdict(spec, r);
   if (bt && bv) out.push(`Buckling: ${bv.status.toUpperCase()}. ${bt.detail}${bt.fix ? ` Fix: ${bt.fix}` : ""}`);
+  const ft = fatigueText(spec, r);
+  const fv = fatigueVerdict(spec, r);
+  if (ft && fv) out.push(`Fatigue: ${fv.status.toUpperCase()}. ${ft.detail}${ft.fix ? ` Fix: ${ft.fix}` : ""}`);
   const acc = accuracyText(r);
   if (acc) out.push(`Accuracy check: ${acc.status.toUpperCase()}. ${acc.detail}`);
   return out;
@@ -188,8 +200,9 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
     if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
     return lines.join("\n");
   }
+  const st = staticSafety(r);
   lines.push(
-    `Lowest safety factor ${sf(r.minSafety.value)} at ${p3(r.minSafety.at)}, judged against the ${modeText(r, spec.cycles)}; target ${fmtNum(spec.safety, 2)}.${strengthVerdict(spec, r).note}`,
+    `Lowest ${r.fatigue ? "static " : ""}safety factor ${sf(st.value)} at ${p3(st.at)}, judged against the ${modeText(r, spec.cycles, st)}${r.fatigue ? ` at the loads' peak (${fmtNum(r.fatigue.peak, 2)}× them)` : ""}; target ${fmtNum(spec.safety, 2)}.${strengthVerdict(spec, r).note}`,
   );
   lines.push(
     `Peak von Mises stress ${fmtNum(r.maxStress.value, 2)} MPa near ${p3(r.maxStress.at)}.` +

@@ -4,11 +4,11 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SceneController } from "./viewport/scene";
-import { ResultsOverlay, fieldMode, fieldRange } from "./viewport/resultsOverlay";
+import { ResultsOverlay, fieldMode, fieldRange, lifeWords } from "./viewport/resultsOverlay";
 import { useAnalysis, showResults, type ResultField } from "../analysis/runtime";
 import type { StructuralResult } from "../analysis/fe/structural";
 import type { StructuralSpec } from "../analysis/spec";
-import { gradientCss, safetyAt } from "../analysis/colormap";
+import { gradientCss, lifeAt, safetyAt } from "../analysis/colormap";
 import { modeWords } from "../analysis/dynamics";
 import { followers } from "../analysis/carried";
 import { meshes, useDesign } from "../core/engine";
@@ -25,6 +25,7 @@ export const FIELD_INFO: Record<ResultField, { label: string; short: string; uni
   disp: { label: "Deflection", short: "Deflection", unit: "mm" },
   strain: { label: "Principal strain", short: "Strain", unit: "%" },
   temp: { label: "Temperature", short: "Temp", unit: "°C" },
+  life: { label: "Fatigue life", short: "Life", unit: "" },
 };
 
 export const FIELDS: ResultField[] = ["stress", "safety", "disp", "strain"];
@@ -32,7 +33,7 @@ export const FIELDS: ResultField[] = ["stress", "safety", "disp", "strain"];
 /** The fields a result can colour the model by: only temperatures for a heat analysis with nothing holding the parts. */
 export function resultFields(r?: StructuralResult): ResultField[] {
   if (r?.heatOnly) return ["temp"];
-  return r?.ranges.temp ? [...FIELDS, "temp"] : FIELDS;
+  return [...FIELDS, ...(r?.ranges.temp ? (["temp"] as const) : []), ...(r?.ranges.life ? (["life"] as const) : [])];
 }
 
 /** The field to draw: the one picked when the result has it, otherwise the result's first. */
@@ -167,7 +168,7 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
           if (!ev || !ov.current) return;
           const hit = ov.current.probe(scene.raycasterAt(ev.clientX, ev.clientY), scene.activeSection());
           const rect = el.getBoundingClientRect();
-          setProbe(hit ? { x: ev.clientX - rect.left, y: ev.clientY - rect.top, text: formatValue(hit.field, hit.value), part: hit.part } : null);
+          setProbe(hit ? { x: ev.clientX - rect.left, y: ev.clientY - rect.top, text: formatValue(hit.field, hit.value, result), part: hit.part } : null);
         });
       pending = e;
     };
@@ -203,8 +204,14 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
   );
 }
 
-export function formatValue(field: ResultField, v: number): string {
+export function formatValue(field: ResultField, v: number, r?: StructuralResult): string {
   if (field === "temp") return degC(v);
+  if (field === "life") {
+    const f = r?.fatigue;
+    if (v >= 9) return "no fatigue limit";
+    const ratio = Math.pow(10, v);
+    return f ? `life ${lifeWords(ratio * f.design, f.unit)} (${fmtNum(ratio, ratio < 10 ? 2 : 0)}× the target)` : `${fmtNum(ratio, 2)}× the target life`;
+  }
   if (field === "safety") return v >= 100 ? "safety > 100" : `safety ${fmtNum(v, 2)}`;
   if (field === "strain") return `${fmtNum(v * 100, 3)} %`;
   if (field === "disp") return `${fmtNum(v, v < 0.1 ? 4 : 3)} mm`;
@@ -215,6 +222,7 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
   const mode = fieldMode(field);
   const ticks = useMemo(() => {
     if (field === "safety") return [0, 0.25, 0.5, 1].map((t) => ({ t, text: t === 1 ? `≥${fmtNum(safetyAt(1, target), 1)}` : fmtNum(safetyAt(t, target), 2) }));
+    if (field === "life") return [0, 0.25, 0.5, 1].map((t) => ({ t, text: t === 0 ? "≤0.001×" : t === 1 ? "≥10⁵×" : `${fmtNum(Math.pow(10, lifeAt(t)), 0)}×` }));
     const [lo, hi] = fieldRange(result, field);
     if (field === "temp") return [0, 0.5, 1].map((t) => ({ t, text: fmtNum(lo + (hi - lo) * t, hi - lo < 2 ? 2 : 1) }));
     const mul = field === "strain" ? 100 : 1;
@@ -245,6 +253,13 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
           <span className="fail">below 1: fails</span>
           <span className="warn">below target {fmtNum(target, 1)}</span>
           <span className="pass">meets target</span>
+        </div>
+      )}
+      {field === "life" && result.fatigue && (
+        <div className="res-safety-key">
+          <span className="fail">breaks before {lifeWords(result.fatigue.design, result.fatigue.unit)}</span>
+          <span className="warn">within 10× of it</span>
+          <span className="pass">lasts</span>
         </div>
       )}
       <div className="res-meta mono">

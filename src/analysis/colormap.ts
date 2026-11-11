@@ -53,6 +53,24 @@ export function safetyAt(t: number, target: number): number {
   return Math.max(target, 1) * Math.pow(4, (t - 0.5) / 0.5);
 }
 
+/**
+ * Position of a fatigue life on the safety scale, from its log10 over the life asked for: red short of it, amber within
+ * ten times it, green beyond (deepest from 10⁵ times, or no limit at all below the endurance limit).
+ */
+export function lifeT(log: number): number {
+  if (!(log > -3)) return 0;
+  if (log < 0) return (0.25 * (log + 3)) / 3;
+  if (log < 1) return 0.25 + 0.25 * log;
+  return 0.5 + 0.5 * Math.min(1, (log - 1) / 4);
+}
+
+/** The log10 life over the target at a position on the safety scale (inverse of lifeT), for legend ticks. */
+export function lifeAt(t: number): number {
+  if (t < 0.25) return (t / 0.25) * 3 - 3;
+  if (t < 0.5) return (t - 0.25) / 0.25;
+  return 1 + ((t - 0.5) / 0.5) * 4;
+}
+
 export function colorAt(mode: ScaleMode, t: number): RGB {
   return mode === "safety" ? safetyColor(t) : mode === "diverging" ? divergingColor(t) : turbo(t);
 }

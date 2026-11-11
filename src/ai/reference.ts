@@ -484,7 +484,7 @@ analysis "Shelf load" {
   gravity                                   // self-weight; or accel: (0, 0, -3) for 3 g
   material: "PETG"                          // optional: overrides the parts' material
   printed                                   // FDM part: layer bonds are weaker; build: Z gives the stacking direction (default Z)
-  cycles: 1e5                               // repeated loading: judged against fatigue strength
+  cycles: 1e5                               // repeated loading: over 1000 adds a fatigue check (see Fatigue below)
   safety: 2                                 // required lowest factor of safety (default 2)
   max_deflection: 0.5mm                     // optional stiffness limit
   resolution: "standard"                    // "draft" ~8k elements, "standard" ~30k (default), "fine" ~110k, or a cell size like 0.6mm
@@ -546,6 +546,15 @@ analysis "Motor mount heat" {
 A part past its limit fails, within the last tenth of its headroom warns. The result gives each part's hottest point, where the heat comes from, where it goes (air, radiation, held surfaces), and for a warm-up when each part passes its limit and where it would settle.
 analysis "Left in the sun" { parts: [bracket]  fix: [face(bracket, -X), face(bracket, +X)]  temperature: 60C  assembled_at: 20C }   // the whole model at one temperature: expansion against the supports, no heat solve
 Buckling: add buckling (3 shapes) or buckling: 1..6 to an analysis with loads; it finds how many times the loads it takes to buckle slender parts (columns, thin walls, tubes, struts) and their buckled shapes. Under 1 it fails, under buckling_safety: (default 3, since dents and print lines make real parts buckle sooner) it warns.
+Fatigue: cycles: over 1000, or history:, adds a fatigue check to a structural analysis. Each point's stress under the loads as written is scaled through the load cycles and judged against its material's S-N curve (Shigley's estimate from the ultimate and fatigue strengths, lowered for the surface finish and the reliability asked for; steels, irons and titanium keep an endurance limit past 10⁷ cycles, aluminium and plastics keep weakening), with a mean-stress correction and the damage added by Miner's rule; printed parts are also checked between layers, where only a pull across them counts. It reports the lowest fatigue safety factor (the factor on the loads at which the part breaks at the end of its life) against safety:, the shortest life and where, which cycles do the damage, and a life map; the strength check then uses yield at the history's peak. Under 1 it fails, between 1 and safety: it warns. Keep fatigue in its own analysis, apart from drops, frequencies and heat.
+  cycles: 1e6                // a constant load cycle this many times in the part's life
+  loading: "on-off"          // "reversed" (the loads swing both ways, the default), "on-off" (from nothing to the loads: a shelf loaded and unloaded) or a load ratio R = min/max like 0.2
+  history: [block(1e5, 1), block(500, 2.5, min: 0)]   // instead of cycles: load blocks, or a trace of load scales like [0, 1, 0.3, 1.4, 0] (rainflow counted)
+  repeats: 200               // with history: how many times the history happens in the part's life
+  mean_stress: "goodman"     // the default; "gerber", "soderberg", "swt" or "none"
+  finish: "machined"         // polished, ground, machined, hot-rolled, forged, cast, printed; default from how each part is made
+  reliability: 99%           // the chance it lasts the life; default 50 % (the average part)
+The fix is lower stress where the life is shortest: more material along the load path, a bigger fillet, holes and steps moved away, a smoother finish on metal, or a material with a higher fatigue strength.
 Accuracy check: the converge flag (or the panel's Check accuracy button) solves twice, the second time with 1.5× smaller elements, and reports how far deflection, stress, safety, temperature and buckling moved: under 5 % has converged, over 15 % needs a smaller resolution:. A peak at a support or load that keeps rising is a singularity of the idealised fixing: judge the part by the stress a short way off.
 Design study (an optimiser): an analysis block with vary: changes parameters within their ranges, builds and checks each design away from the open one, solves the structural analyses that cover the parts they change, and finds the best design that still meets every analysis target and every check that passes now:
 analysis "Lightest bracket" {

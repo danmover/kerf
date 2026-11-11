@@ -7,7 +7,7 @@
 
 import * as THREE from "three";
 import type { StructuralResult } from "../../analysis/fe/structural";
-import { safetyT, type ScaleMode } from "../../analysis/colormap";
+import { lifeT, safetyT, type ScaleMode } from "../../analysis/colormap";
 import { degC } from "../../analysis/thermalSummary";
 import type { ResultField } from "../../analysis/runtime";
 import type { SceneOverlay } from "./scene";
@@ -72,8 +72,15 @@ interface PartMesh {
   index: number;
 }
 
+/** A fatigue life in words: "4.2e6 cycles", "about 3,000 repeats". */
+export function lifeWords(v: number, unit: "cycles" | "repeats"): string {
+  if (!Number.isFinite(v)) return "no limit";
+  const n = v >= 1e5 ? v.toExponential(1).replace("e+", "e") : fmtNum(v, v < 10 ? 1 : 0);
+  return `${n} ${unit === "cycles" ? "cycles" : v === 1 ? "pass of the history" : "passes of the history"}`;
+}
+
 export function fieldMode(field: ResultField): ScaleMode {
-  return field === "safety" ? "safety" : field === "strain" ? "diverging" : "sequential";
+  return field === "safety" || field === "life" ? "safety" : field === "strain" ? "diverging" : "sequential";
 }
 
 /** The value range a field's colour scale spans. */
@@ -88,6 +95,7 @@ export function fieldRange(r: StructuralResult, field: ResultField): [number, nu
     const [lo, hi] = r.ranges.temp ?? [0, 0];
     return [lo, Math.max(hi, lo + 0.1)];
   }
+  if (field === "life") return r.ranges.life ?? [0, 0];
   return [0, 0];
 }
 
@@ -192,7 +200,7 @@ export class ResultsOverlay implements SceneOverlay {
       this.moveCarried();
       return;
     }
-    this.uniforms.uMode.value = cfg.field === "safety" ? 1 : cfg.field === "strain" ? 2 : 0;
+    this.uniforms.uMode.value = cfg.field === "safety" || cfg.field === "life" ? 1 : cfg.field === "strain" ? 2 : 0;
     if (fieldChanged || !this.filled) this.fill();
     this.uniforms.uScale.value = cfg.animate ? this.uniforms.uScale.value : cfg.scale;
     if (!cfg.animate) for (const s of this.spots) s.scale.setScalar(s.userData.base);
@@ -240,6 +248,7 @@ export class ResultsOverlay implements SceneOverlay {
         else if (this.cfg.field === "disp") t = Math.hypot(f.disp[3 * v], f.disp[3 * v + 1], f.disp[3 * v + 2]) / hi;
         else if (this.cfg.field === "strain") t = 0.5 + (0.5 * f.strain[v]) / hi;
         else if (this.cfg.field === "temp") t = f.temp ? (f.temp[v] - lo) / (hi - lo) : 0;
+        else if (this.cfg.field === "life") t = f.life ? lifeT(f.life[v]) : 1;
         else t = (f.stress[v] - lo) / (hi - lo);
         out[v] = Math.min(1, Math.max(0, t));
       }
@@ -317,6 +326,9 @@ export class ResultsOverlay implements SceneOverlay {
       } else if (this.cfg.field === "temp") {
         if (!f.temp) return null;
         value = pick(f.temp);
+      } else if (this.cfg.field === "life") {
+        if (!f.life) return null;
+        value = pick(f.life);
       } else value = pick(this.cfg.field === "strain" ? f.strain : f.stress);
       return { value, field: this.cfg.field, part: f.name, point: h.point.clone() };
     }
@@ -446,7 +458,11 @@ export class ResultsOverlay implements SceneOverlay {
       if (r.thermal) add(`hottest ${degC(r.thermal.maxTemp.value)}`, r.thermal.maxTemp.at);
     } else if (this.cfg.field === "stress") {
       add(`peak ${fmtNum(r.maxStress.value, 1)} MPa`, r.maxStress.at);
-    } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" ? " (layers)" : ""}`, r.minSafety.at);
+    } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" || r.minSafety.mode === "layer fatigue" ? " (layers)" : ""}${r.minSafety.mode === "fatigue" || r.minSafety.mode === "layer fatigue" ? " (fatigue)" : ""}`, r.minSafety.at);
+    else if (this.cfg.field === "life") {
+      const f = r.fatigue;
+      if (f) add(Number.isFinite(f.life.value) ? `shortest life ${lifeWords(f.life.value, f.unit)}` : "no fatigue limit", f.life.at);
+    }
     else if (this.cfg.field === "disp") add(`${fmtNum(r.maxDisp.value, 3)} mm`, r.maxDisp.at);
     else add(`${fmtNum(r.maxStrain.value * 100, 3)} % strain`, r.maxStrain.at);
   }

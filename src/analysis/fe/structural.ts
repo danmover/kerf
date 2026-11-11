@@ -14,6 +14,7 @@ import { allowableStress, type MechMaterial } from "../materials";
 import { COMPONENT_THERMAL, strengthAt, type ThermalMaterial } from "../thermalMaterials";
 import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type ThermalInput } from "./thermal";
 import { bucklingModes } from "./buckling";
+import { FINISHES, criticalStress, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
 
 export class FeaError extends Error {}
 
@@ -69,6 +70,34 @@ export interface StructuralInput {
   buckling?: { modes: number };
   /** an accuracy check: solve again with smaller elements and compare (run by runConverged) */
   converge?: boolean;
+  /** fatigue over the part's life: the loads as written scaled by a history, against each material's S-N curve */
+  fatigue?: FatigueInput;
+}
+
+/** Fatigue: the life and safety factor of every point under the load history, against each material's S-N curve. */
+export interface FatigueResult {
+  /** what the life is counted in, and the life asked for */
+  unit: "cycles" | "repeats";
+  design: number;
+  /** how the loads repeat, in words */
+  loading: string;
+  meanStress: MeanStress;
+  /** the counted cycles of one pass of the history, largest range first */
+  cycles: LoadCycle[];
+  repeats: number;
+  /** the largest scale of the loads in the history (the static check is at this) */
+  peak: number;
+  /** the lowest fatigue safety factor: the factor on the loads at which the damage over the design life reaches 1 */
+  minSafety: SafetyAt & { nearBoundary: boolean; away: SafetyAt | null };
+  /** the shortest life (in unit), at the weakest point; Infinity below the endurance limit */
+  life: Located;
+  /** Miner's damage at the weakest point over the design life (1 = it breaks at the end of it) */
+  damage: number;
+  /** at the point with the shortest life: the share of its damage each kind of cycle does (largest first) */
+  shares: { cycle: LoadCycle; share: number }[];
+  /** the S-N curve used for each material, after the surface and reliability factors */
+  curves: { material: string; finish: Finish; finishText: string; ka: number; ke: number; su: number; s3: number; se: number; tail: "flat" | "falling"; equivalent: "signed von Mises" | "signed largest principal stress" | "the pull across the layers"; layers?: boolean }[];
+  reliability: number;
 }
 
 /** Temperatures from a heat analysis. */
@@ -207,6 +236,8 @@ export interface PartField {
   modes?: Float32Array[];
   /** per vertex: temperature (°C), when the analysis has heat or a set temperature */
   temp?: Float32Array;
+  /** per vertex: fatigue life over the design life, as log10 (0: it lasts exactly the life asked for), when the analysis has fatigue */
+  life?: Float32Array;
 }
 
 export interface Located {
@@ -235,7 +266,7 @@ export interface StructuralResult {
   supports: { region: string; dir?: V3; at: V3; nodes: number; reaction: V3; markers: Float32Array; contact?: ContactResult }[];
   gravity: { vector: V3; at: V3 } | null;
   parts: PartField[];
-  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number] };
+  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number]; life?: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
   modal?: ModalResult;
@@ -246,6 +277,10 @@ export interface StructuralResult {
   heatOnly?: boolean;
   /** a second, finer solve and how much the answers moved (an accuracy check) */
   convergence?: ConvergenceResult;
+  /** fatigue over the design life, when the analysis has it */
+  fatigue?: FatigueResult;
+  /** with fatigue: the lowest safety factor against yield (and print layers) at the peak of the history, apart from fatigue */
+  staticSafety?: SafetyAt & { nearBoundary: boolean; away: SafetyAt | null };
 }
 
 /** The same analysis solved twice, the second time with smaller elements. */
@@ -273,7 +308,14 @@ export interface ConvergencePoint {
   buckling?: number;
 }
 
-export type SafetyAt = Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string; /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */ tempC?: number };
+export type SafetyAt = Located & {
+  /** what it is judged against: yield, the strength between print layers, fatigue (in the bulk or between layers) */
+  mode: "yield" | "fatigue" | "layers" | "layer fatigue";
+  allowable: number;
+  material: string;
+  /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */
+  tempC?: number;
+};
 
 export type Progress = (stage: string, frac: number, info?: { iter?: number; residual?: number }) => void;
 
@@ -389,6 +431,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (inp.buckling && !inp.loads.length && !inp.accel && !temps) throw new FeaError("Buckling needs loads to scale: add load: (or gravity) to say what presses on the parts.");
   if (inp.buckling && inp.modes) throw new FeaError("Check natural frequencies and buckling in separate analyses.");
   if (inp.drop && (temps || inp.buckling)) throw new FeaError(`A drop works out its own forces from the fall; check ${temps ? "heat and temperatures" : "buckling"} in a separate analysis.`);
+  if (inp.fatigue && (inp.drop || temps || inp.modes)) throw new FeaError(`Check fatigue in a separate analysis from the ${inp.drop ? "drop" : temps ? "heat and temperatures" : "natural frequencies"}.`);
+  if (inp.fatigue && !inp.fatigue.cycles.length) throw new FeaError("The fatigue history has no load cycles in it.");
 
   // ---------- grid ----------
   // Cells fit the bounding box exactly (their size differs slightly per axis), so the outer faces of
@@ -1212,12 +1256,25 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   }
 
   // ---------- nodal results ----------
-  const allow = inp.materials.map((m) => allowableStress(m, inp.cycles));
+  const fat = inp.fatigue ? fatigueSetup(inp.fatigue) : null;
+  // with fatigue, the static check is against yield at the history's peak, and fatigue gets its own life and safety
+  const allow = inp.materials.map((m) => (fat ? { value: m.yield, basis: "yield" as const } : allowableStress(m, inp.cycles)));
+  /** the largest and smallest scale of the loads over the history (1 and 1 for a static load) */
+  const sHi = fat ? fat.hi : 1,
+    sLo = fat ? fat.lo : 1;
+  const sAbs = Math.max(Math.abs(sHi), Math.abs(sLo));
   const bd = norm(inp.buildDir);
   const vm = new Float32Array(nn);
   const strainN = new Float32Array(nn);
+  /** per node: the lowest safety factor (static, or fatigue when it is lower), and what it is judged against (0 yield, 1 layers, 2 fatigue, 3 fatigue between layers) */
   const sfN = new Float32Array(nn);
   const sfMode = new Uint8Array(nn);
+  /** with fatigue: the static safety factor and the fatigue one apart, and the life in the design's units */
+  const sfStatic = fat ? new Float32Array(nn) : sfN;
+  const staticMode = fat ? new Uint8Array(nn) : sfMode;
+  const sfFat = fat ? new Float32Array(nn) : null;
+  const fatMode = fat ? new Uint8Array(nn) : null;
+  const lifeN = fat ? new Float64Array(nn) : null;
   const layerN = new Float32Array(nn);
   for (let n = 0; n < nn; n++) {
     const w = nodeW[n];
@@ -1231,29 +1288,54 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     vm[n] = s;
     const pe = principal(nodeE[o], nodeE[o + 1], nodeE[o + 2], nodeE[o + 3] / 2, nodeE[o + 4] / 2, nodeE[o + 5] / 2);
     strainN[n] = Math.abs(pe[0]) >= Math.abs(pe[2]) ? pe[0] : pe[2];
-    const m = inp.materials[nodeMat[n]];
+    const mi = nodeMat[n];
+    const m = inp.materials[mi];
     // a hot plastic is weaker: the allowable falls with the temperature there
-    const al = allow[nodeMat[n]].value * derate(n, nodeMat[n]);
-    let sf = s > 1e-9 ? al / s : 1e6;
+    const al = allow[mi].value * derate(n, mi);
+    let sf = s > 1e-9 ? al / (s * sAbs) : 1e6;
     let mode = 0;
-    if (inp.printed && m.layerFactor < 1) {
+    let sn = 0;
+    const layered = inp.printed && m.layerFactor < 1;
+    if (layered) {
       // normal stress across the layers: n·σ·n along the build direction
-      const sn =
+      sn =
         bd[0] * bd[0] * nodeS[o] +
         bd[1] * bd[1] * nodeS[o + 1] +
         bd[2] * bd[2] * nodeS[o + 2] +
         2 * (bd[0] * bd[1] * nodeS[o + 3] + bd[1] * bd[2] * nodeS[o + 4] + bd[2] * bd[0] * nodeS[o + 5]);
-      layerN[n] = sn;
-      if (sn > 1e-9) {
-        const sfl = (al * m.layerFactor) / sn;
+      // the most it pulls the layers apart over the history
+      const pull = Math.max(sn * sHi, sn * sLo);
+      layerN[n] = pull;
+      if (pull > 1e-9) {
+        const sfl = (al * m.layerFactor) / pull;
         if (sfl < sf) {
           sf = sfl;
           mode = 1;
         }
       }
     }
-    sfN[n] = Math.min(sf, 1e6);
-    sfMode[n] = mode;
+    sfStatic[n] = Math.min(sf, 1e6);
+    staticMode[n] = mode;
+    if (fat && sfFat && fatMode && lifeN) {
+      const bulk = fat.at(mi, false, fat.equivalent(mi, nodeS, o, s));
+      let fsf = bulk.sf;
+      let dmg = bulk.damage;
+      let fm = 2;
+      if (layered) {
+        const lay = fat.at(mi, true, sn);
+        if (lay.sf < fsf) {
+          fsf = lay.sf;
+          fm = 3;
+        }
+        dmg = Math.max(dmg, lay.damage);
+      }
+      sfFat[n] = Math.min(fsf, 1e6);
+      fatMode[n] = fm;
+      lifeN[n] = dmg > 0 ? fat.design / dmg : Infinity;
+      const useFat = sfFat[n] < sfStatic[n];
+      sfN[n] = useFat ? sfFat[n] : sfStatic[n];
+      sfMode[n] = useFat ? fm : mode;
+    }
   }
 
   // nodes next to supports and loads, where idealised boundary conditions distort stress
@@ -1278,7 +1360,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     iF = -1,
     iA = -1,
     iFA = -1,
-    iL = -1;
+    iL = -1,
+    // with fatigue: the lowest static and fatigue safety factors (overall and away from supports and loads), the shortest life
+    iSt = -1,
+    iStA = -1,
+    iFt = -1,
+    iFtA = -1,
+    iLife = -1;
   let dMax = 0;
   for (let n = 0; n < nn; n++) {
     if (!(nodeW[n] > 0)) continue;
@@ -1293,6 +1381,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     if (!nearBC[n] && (iA < 0 || vm[n] > vm[iA])) iA = n;
     if (!nearBC[n] && (iFA < 0 || sfN[n] < sfN[iFA])) iFA = n;
     if (inp.printed && (iL < 0 || layerN[n] > layerN[iL])) iL = n;
+    if (fat && sfFat && lifeN) {
+      if (iSt < 0 || sfStatic[n] < sfStatic[iSt]) iSt = n;
+      if (!nearBC[n] && (iStA < 0 || sfStatic[n] < sfStatic[iStA])) iStA = n;
+      if (iFt < 0 || sfFat[n] < sfFat[iFt]) iFt = n;
+      if (!nearBC[n] && (iFtA < 0 || sfFat[n] < sfFat[iFtA])) iFtA = n;
+      if (iLife < 0 || lifeN[n] < lifeN[iLife]) iLife = n;
+    }
   }
 
   // hot spots: the highest-stress surface regions, spread apart
@@ -1363,9 +1458,17 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     // safety blends badly near zero stress; interpolate its inverse (utilisation)
     out[5] += w * (1 / Math.max(sfN[n], 1e-6));
     if (nodeT) out[6] += w * nodeT[n];
+    if (lifeN && fat) out[7] += w * lifeLog(lifeN[n] / fat.design);
   }
-  const tmp = new Float64Array(7);
-  const ranges: StructuralResult["ranges"] = { stress: [Infinity, -Infinity], disp: [0, 0], strain: [Infinity, -Infinity], safety: [Infinity, -Infinity], ...(nodeT ? { temp: [Infinity, -Infinity] as [number, number] } : {}) };
+  const tmp = new Float64Array(8);
+  const ranges: StructuralResult["ranges"] = {
+    stress: [Infinity, -Infinity],
+    disp: [0, 0],
+    strain: [Infinity, -Infinity],
+    safety: [Infinity, -Infinity],
+    ...(nodeT ? { temp: [Infinity, -Infinity] as [number, number] } : {}),
+    ...(lifeN ? { life: [Infinity, -Infinity] as [number, number] } : {}),
+  };
   const parts: PartField[] = inp.parts.map((p) => {
     const P = p.mesh.positions;
     const nv = P.length / 3;
@@ -1374,12 +1477,18 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const strain = new Float32Array(nv);
     const safety = new Float32Array(nv);
     const temp = nodeT ? new Float32Array(nv) : undefined;
+    const life = lifeN ? new Float32Array(nv) : undefined;
     for (let v = 0; v < nv; v++) {
       sample(P[3 * v], P[3 * v + 1], P[3 * v + 2], tmp);
       if (temp && ranges.temp) {
         temp[v] = tmp[6];
         ranges.temp[0] = Math.min(ranges.temp[0], tmp[6]);
         ranges.temp[1] = Math.max(ranges.temp[1], tmp[6]);
+      }
+      if (life && ranges.life) {
+        life[v] = tmp[7];
+        ranges.life[0] = Math.min(ranges.life[0], tmp[7]);
+        ranges.life[1] = Math.max(ranges.life[1], tmp[7]);
       }
       disp[3 * v] = tmp[0];
       disp[3 * v + 1] = tmp[1];
@@ -1396,7 +1505,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       ranges.safety[0] = Math.min(ranges.safety[0], safety[v]);
       ranges.safety[1] = Math.max(ranges.safety[1], safety[v]);
     }
-    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety, ...(temp ? { temp } : {}) };
+    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety, ...(temp ? { temp } : {}), ...(life ? { life } : {}) };
   });
   // mode shapes on the CAD surface, each scaled so its largest movement is 1
   if (shapes.length) {
@@ -1469,21 +1578,64 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (Math.hypot(...applied) > 0 && equilibrium > 0.02) warnings.push(`Reactions balance the loads only to ${fmt(equilibrium * 100, 1)}%.`);
 
   const pos = (n: number): V3 => (n >= 0 ? nodePos(n) : [0, 0, 0]);
-  const safetyAt = (n: number): SafetyAt => {
+  /** a node's safety factor and what it is judged against: the lowest of all, the static one or the fatigue one */
+  const safetyAt = (n: number, which: "all" | "static" | "fatigue" = "all"): SafetyAt => {
     const mi = n >= 0 ? nodeMat[n] : mainMat;
-    const layers = n >= 0 && sfMode[n] === 1;
+    const md = n < 0 ? 0 : which === "static" ? staticMode[n] : which === "fatigue" && fatMode ? fatMode[n] : sfMode[n];
+    const value = n < 0 ? Infinity : which === "static" ? sfStatic[n] : which === "fatigue" && sfFat ? sfFat[n] : sfN[n];
+    const temp = nodeT && n >= 0 ? { tempC: nodeT[n] } : {};
+    if (md >= 2 && fat) {
+      const c = md === 3 ? fat.layerCurves[mi] ?? fat.curves[mi] : fat.curves[mi];
+      return { value, at: pos(n), mode: md === 3 ? "layer fatigue" : "fatigue", allowable: snStrengthAt(c, fat.total), material: inp.materials[mi].name, ...temp };
+    }
+    const layers = md === 1;
     return {
-      value: n >= 0 ? sfN[n] : Infinity,
+      value,
       at: pos(n),
       mode: layers ? "layers" : allow[mi].basis,
       allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1) * derate(n, mi),
       material: inp.materials[mi].name,
-      ...(nodeT && n >= 0 ? { tempC: nodeT[n] } : {}),
+      ...temp,
     };
   };
   const safetyNearBC = iF >= 0 && !!nearBC[iF];
-  if (iF >= 0 && sfMode[iF] !== 1 && allow[nodeMat[iF]].basis === "fatigue")
+  if (!fat && iF >= 0 && sfMode[iF] !== 1 && allow[nodeMat[iF]].basis === "fatigue")
     warnings.push("Fatigue strengths are for polished test pieces. Rough, printed or machined surfaces, notches and threads lower them, often by half, so keep a generous margin.");
+  let fatigue: FatigueResult | undefined;
+  let staticSafety: StructuralResult["staticSafety"];
+  if (fat && iFt >= 0 && lifeN && sfFat && fatMode) {
+    const nb = !!nearBC[iFt];
+    const stNb = iSt >= 0 && !!nearBC[iSt];
+    staticSafety = { ...safetyAt(iSt, "static"), nearBoundary: stNb, away: stNb && iStA >= 0 ? safetyAt(iStA, "static") : null };
+    // what does the damage where the life is shortest
+    let shares: FatigueResult["shares"] = [];
+    if (iLife >= 0 && Number.isFinite(lifeN[iLife])) {
+      const mi = nodeMat[iLife];
+      const o = 6 * iLife;
+      const layer = fatMode[iLife] === 3 && !!fat.layerCurves[mi];
+      const sigma = layer ? layerSigma(o) : fat.equivalent(mi, nodeS, o, vm[iLife]);
+      shares = fat.shares(mi, layer, sigma).slice(0, 6);
+    }
+    fatigue = {
+      unit: inp.fatigue!.unit,
+      design: fat.design,
+      loading: inp.fatigue!.loading,
+      meanStress: inp.fatigue!.meanStress,
+      cycles: inp.fatigue!.cycles,
+      repeats: inp.fatigue!.repeats,
+      peak: peakScale(inp.fatigue!.cycles),
+      minSafety: { ...safetyAt(iFt, "fatigue"), nearBoundary: nb, away: nb && iFtA >= 0 ? safetyAt(iFtA, "fatigue") : null },
+      life: { value: iLife >= 0 ? lifeN[iLife] : Infinity, at: pos(iLife) },
+      damage: iLife >= 0 && Number.isFinite(lifeN[iLife]) ? fat.design / lifeN[iLife] : 0,
+      shares,
+      curves: fat.curveInfo(),
+      reliability: inp.fatigue!.reliability,
+    };
+    if (fatigue.minSafety.value < 1e5)
+      warnings.push(
+        "Fatigue lives come from S-N curves estimated from each material's strengths (Shigley), with the surface and reliability factors shown; sharp notches smaller than the elements, threads and welds shorten them further. Treat a life within a few times the target as uncertain.",
+      );
+  }
   const tEnd = now();
   progress("Done", 1);
   return {
@@ -1512,9 +1664,81 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     drop: dropResult,
     ...(heat ? { thermal: { ...heat.result, refTemp } } : nodeT ? { thermal: uniformThermal(nodeT, refTemp) } : {}),
     ...(buckling ? { buckling } : {}),
+    ...(fatigue ? { fatigue, staticSafety } : {}),
   };
 
   // ----- helpers that need the closure -----
+  /** normal stress across the print layers at a node (n·σ·n along the build direction) */
+  function layerSigma(o: number): number {
+    return (
+      bd[0] * bd[0] * nodeS[o] +
+      bd[1] * bd[1] * nodeS[o + 1] +
+      bd[2] * bd[2] * nodeS[o + 2] +
+      2 * (bd[0] * bd[1] * nodeS[o + 3] + bd[1] * bd[2] * nodeS[o + 4] + bd[2] * bd[0] * nodeS[o + 5])
+    );
+  }
+
+  /** The S-N curves and the per-point fatigue sums for the history. */
+  function fatigueSetup(fi: FatigueInput) {
+    const total = fi.cycles.reduce((a, c) => a + c.count, 0) * fi.repeats;
+    const design = fi.unit === "cycles" ? total : fi.repeats;
+    let hi = -Infinity,
+      lo = Infinity;
+    for (const c of fi.cycles) {
+      hi = Math.max(hi, c.max);
+      lo = Math.min(lo, c.min);
+    }
+    const finishOf = (i: number): Finish => fi.finishes[i] ?? "machined";
+    const curves: SnCurve[] = inp.materials.map((m, i) => snCurve(m, finishOf(i), fi.reliability));
+    const layerCurves: (SnCurve | null)[] = inp.materials.map((m, i) => (inp.printed && m.layerFactor < 1 ? snCurve(m, finishOf(i), fi.reliability, m.layerFactor) : null));
+    // brittle materials crack from the largest tension; ductile ones by von Mises, signed by the largest principal stress
+    const brittle = inp.materials.map((m) => m.elongation < 5);
+    const crit = new Map<string, number>();
+    const critical = (mi: number, layer: boolean, sign: 1 | -1) => {
+      const key = `${mi}|${layer}|${sign}`;
+      let v = crit.get(key);
+      if (v === undefined) crit.set(key, (v = criticalStress(sign, fi.cycles, fi.repeats, layer ? layerCurves[mi]! : curves[mi], fi.meanStress, layer)));
+      return v;
+    };
+    return {
+      design,
+      total,
+      hi,
+      lo,
+      curves,
+      layerCurves,
+      equivalent(mi: number, S: Float64Array, o: number, vmv: number): number {
+        const p = principal(S[o], S[o + 1], S[o + 2], S[o + 3], S[o + 4], S[o + 5]);
+        const big = Math.abs(p[0]) >= Math.abs(p[2]) ? p[0] : p[2];
+        return brittle[mi] ? big : (big < 0 ? -1 : 1) * vmv;
+      },
+      at(mi: number, layer: boolean, sigma: number): { sf: number; damage: number } {
+        if (!(Math.abs(sigma) > 1e-9)) return { sf: 1e6, damage: 0 };
+        const c = layer ? layerCurves[mi]! : curves[mi];
+        const damage = fi.repeats * damageOf(sigma, fi.cycles, c, fi.meanStress, layer);
+        return { sf: critical(mi, layer, sigma > 0 ? 1 : -1) / Math.abs(sigma), damage };
+      },
+      shares(mi: number, layer: boolean, sigma: number) {
+        return damageShares(sigma, fi.cycles, layer ? layerCurves[mi]! : curves[mi], fi.meanStress, layer);
+      },
+      curveInfo(): FatigueResult["curves"] {
+        const out: FatigueResult["curves"] = [];
+        const seen = new Set<string>();
+        inp.materials.forEach((m, i) => {
+          if (!matCount[i]) return;
+          const key = `${m.name}|${finishOf(i)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          const c = curves[i];
+          const equivalent = brittle[i] ? "signed largest principal stress" : "signed von Mises";
+          out.push({ material: m.name, finish: c.finish, finishText: FINISHES[c.finish], ka: c.ka, ke: c.ke, su: c.su, s3: c.s3, se: c.se, tail: c.tail, equivalent });
+          const lc = layerCurves[i];
+          if (lc) out.push({ material: m.name, finish: lc.finish, finishText: FINISHES[lc.finish], ka: lc.ka, ke: lc.ke, su: lc.su, s3: lc.s3, se: lc.se, tail: lc.tail, equivalent: "the pull across the layers", layers: true });
+        });
+        return out;
+      },
+    };
+  }
   function checkHeld() {
     // gather held dofs per piece and test whether they stop all six rigid motions
     const pieces = new Map<number, { nodes: number[]; comps: number[] }>();
@@ -2112,6 +2336,8 @@ function meshArea(m: TriMesh): number {
   return a;
 }
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+/** Fatigue life over the design life as log10, kept to -6..9 (9: no limit, below the endurance limit). */
+export const lifeLog = (ratio: number) => (ratio === Infinity || !(ratio < 1e9) ? 9 : ratio <= 1e-6 ? -6 : Math.log10(ratio));
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 

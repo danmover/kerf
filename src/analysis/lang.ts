@@ -30,6 +30,14 @@
 //     fix: face(mount, -Z)
 //   }
 //
+//   analysis "Crank arm fatigue" {
+//     parts: [crank]
+//     fix: zone(at: (0, 0, 0), d: 12, axis: Y, length: 10)
+//     load: force(face(crank, +X), (0, 0, -900N))
+//     cycles: 1e7
+//     loading: "on-off"
+//   }
+//
 //   analysis "Gearbox duty" {
 //     drive: motor_gear
 //     torque: 0.3Nm
@@ -40,7 +48,8 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, BucklingSpec, DropSpec, Excitation, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3, Within } from "./spec";
+import type { AnalysisSpec, BucklingSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3, Within } from "./spec";
+import { FINISHES, MEAN_STRESS, mergeCycles, rainflow, type Finish, type LoadCycle, type MeanStress } from "./fe/fatigue";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
 import { COOLING } from "./thermalMaterials";
@@ -52,6 +61,8 @@ export const MAX_BOUNDARY_ITEMS = 200;
 
 /** heat: where heat is made and how the parts are cooled; with fix: the temperatures then load the structure */
 export const HEAT_PROPS = ["heat", "hold", "cooling", "ambient", "emissivity", "time", "start", "max_temp"];
+/** fatigue: how the loads repeat over the part's life, and what lowers the material's fatigue strength */
+export const FATIGUE_PROPS = ["loading", "history", "repeats", "mean_stress", "finish", "reliability"];
 export const STRUCTURAL_PROPS = [
   "parts",
   "part",
@@ -63,6 +74,7 @@ export const STRUCTURAL_PROPS = [
   "printed",
   "build",
   "cycles",
+  ...FATIGUE_PROPS,
   "safety",
   "max_deflection",
   "resolution",
@@ -93,6 +105,7 @@ const EXCITE = "excitation";
 const HEAT = "heat source";
 const HELD = "held temperature";
 const FILM = "film";
+const BLOCK = "load block";
 
 function def(name: string, params: string[], impl: (a: Args) => Value, doc: string): [string, Fn] {
   return [name, new Fn(name, (pos, named, ctx) => impl(new Args(name, pos, named, ctx, params)), doc)];
@@ -351,6 +364,19 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
       return wrap(EXCITE, { lo, hi, label } satisfies Excitation, label);
     },
     "band(20Hz, 60Hz, name: \"road\") → shaking anywhere between two frequencies (a vehicle, footsteps, a vibrating table). A plain number like 50Hz in excite: is one frequency. Use it in excite:.",
+  ),
+  def(
+    "block",
+    ["cycles", "peak", "min"],
+    (a) => {
+      const n = a.positive("cycles");
+      const peak = a.num("peak", 1);
+      if (!Number.isFinite(peak) || peak === 0) a.ctx.error("block(): the peak is a scale of the analysis's loads, like 1 (the loads as written) or 1.5, not 0");
+      const min = a.has("min") ? a.num("min") : undefined;
+      if (min !== undefined && min >= peak) a.ctx.error("block(): min: should be lower than the peak");
+      return wrap(BLOCK, { count: n, peak, ...(min !== undefined ? { min } : {}) }, "load block");
+    },
+    'block(1e5, 1.5, min: 0) → a block of load cycles in a fatigue history: this many cycles that peak at this scale of the loads as written, down to min: (default from loading:, e.g. -1.5 when fully reversed, 0 for "on-off"). Use them in history: [block(1e6, 1), block(1e3, 2)].',
   ),
 ]);
 
@@ -649,6 +675,9 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   if (uniformTemp !== undefined && drop) fail("Check a set temperature in a separate analysis from the drop.", one("temperature")!.span);
   if (refTemp !== undefined && uniformTemp === undefined && !(thermalOn && supports.length)) fail("assembled_at: is the temperature with no thermal stress; it goes with temperature: or with heat: and fix:.", one("assembled_at")!.span);
 
+  // ---- fatigue: how the loads repeat over the part's life ----
+  const fatigue = buildFatigue(props, one, fail, span, { drop: !!drop, modal: !!modal, heat: thermalOn || uniformTemp !== undefined });
+
   // ---- buckling: how many times the loads it takes to buckle the parts ----
   const buckP = one("buckling");
   let buckling: BucklingSpec | undefined;
@@ -713,8 +742,123 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(uniformTemp !== undefined ? { uniformTemp } : {}),
     ...(refTemp !== undefined ? { refTemp } : {}),
     ...(buckling ? { buckling } : {}),
+    ...(fatigue ? { fatigue } : {}),
     ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
     span,
+  };
+}
+
+const LOADING_WORDS: Record<string, number> = {
+  reversed: -1,
+  "fully reversed": -1,
+  alternating: -1,
+  "on-off": 0,
+  "on off": 0,
+  pulsating: 0,
+  "zero-based": 0,
+  "zero based": 0,
+  repeated: 0,
+};
+
+const loadingText = (R: number) => (R === -1 ? "fully reversed (−1 to 1× the loads)" : R === 0 ? "on-off (0 to 1× the loads)" : `between ${fmtR(R)} and 1× the loads (R = ${fmtR(R)})`);
+const fmtR = (v: number) => String(Math.round(v * 1000) / 1000).replace("-", "−");
+
+/**
+ * Fatigue from cycles: (constant amplitude), history: (load blocks or a trace of load scales, rainflow counted) and how
+ * the loads repeat. undefined when the analysis has no fatigue: cycles: up to 1000 alone keeps the static check.
+ */
+function buildFatigue(
+  props: AnalysisItem[],
+  one: (name: string) => AnalysisItem | undefined,
+  fail: (msg: string, span: Span) => never,
+  span: Span,
+  other: { drop: boolean; modal: boolean; heat: boolean },
+): FatigueSpec | undefined {
+  const cyclesP = one("cycles");
+  const histP = one("history");
+  const repP = one("repeats");
+  const loadP = one("loading");
+  const meanP = one("mean_stress");
+  const finP = one("finish");
+  const relP = one("reliability");
+  const extras = [loadP, meanP, finP, relP].filter((p): p is AnalysisItem => !!p);
+  const cycles = cyclesP && typeof cyclesP.value === "number" ? cyclesP.value : undefined;
+  if (!histP && !extras.length && !(cycles !== undefined && cycles > 1000)) {
+    if (repP) fail("repeats: is how many times a history: happens in the part's life; give history: too.", repP.span);
+    return undefined;
+  }
+  // a drop, the natural frequencies or heat with only a cycle count keep the fatigue strength as their allowable
+  if (!histP && !extras.length && (other.drop || other.modal || other.heat)) return undefined;
+  if (!histP && cycles === undefined) fail(`${extras[0]!.name}: goes with cycles: (how many load cycles the part sees in its life, like cycles: 1e6) or history: (a list of load blocks or load scales).`, extras[0]!.span);
+  if (histP && cyclesP) fail("With history:, the counts are in the history. Leave out cycles: and use repeats: for how many times the history happens in the part's life.", cyclesP.span);
+  if (repP && !histP) fail("repeats: goes with history:; for a constant load cycle give its count with cycles:.", repP.span);
+  const at = (histP ?? cyclesP ?? extras[0])!.span;
+  if (other.drop || other.modal || other.heat) fail(`Check fatigue in a separate analysis from the ${other.drop ? "drop" : other.modal ? "natural frequencies" : "heat and temperatures"}.`, at);
+
+  // how the loads repeat: R = min/max of each cycle
+  let R = -1;
+  if (loadP) {
+    if (typeof loadP.value === "number") {
+      R = loadP.value;
+      if (!(R < 1) || R < -5) fail("loading: as a number is the load ratio R = min/max of each cycle, below 1: -1 fully reversed, 0 on-off, 0.5 between half and full load", loadP.span);
+    } else if (typeof loadP.value === "string" && Object.hasOwn(LOADING_WORDS, loadP.value.toLowerCase())) R = LOADING_WORDS[loadP.value.toLowerCase()];
+    else fail('loading: should be "reversed" (the loads swing both ways, the default), "on-off" (from nothing to the loads) or a load ratio R = min/max like 0.2', loadP.span);
+  }
+  let meanStress: MeanStress = "goodman";
+  if (meanP) {
+    const v = typeof meanP.value === "string" ? meanP.value.toLowerCase() : "";
+    if (!Object.hasOwn(MEAN_STRESS, v)) fail(`mean_stress: should be one of ${Object.keys(MEAN_STRESS).map((k) => `"${k}"`).join(", ")} (Goodman is the usual, safe choice)`, meanP.span);
+    meanStress = v as MeanStress;
+  }
+  let finish: Finish | undefined;
+  if (finP) {
+    const v = typeof finP.value === "string" ? finP.value.toLowerCase().replace(/^as[- ]/, "") : "";
+    const key = v === "rolled" ? "hot-rolled" : v;
+    if (!Object.hasOwn(FINISHES, key)) fail(`finish: the surface it is made with, one of ${Object.keys(FINISHES).map((k) => `"${k}"`).join(", ")}; leave it out to take it from how each part is made`, finP.span);
+    finish = key as Finish;
+  }
+  let reliability = 0.5;
+  if (relP) {
+    if (typeof relP.value !== "number" || !(relP.value >= 0.5 && relP.value < 1)) fail("reliability: the chance it lasts the life, from 50% (the average part) to 99.99%, like reliability: 99%", relP.span);
+    reliability = relP.value as number;
+  }
+
+  if (!histP) {
+    const n = cycles!;
+    if (!(n >= 1)) fail("cycles: should be 1 or more", cyclesP!.span);
+    return { cycles: [{ max: 1, min: R, count: n }], repeats: 1, unit: "cycles", loading: loadingText(R), meanStress, ...(finish ? { finish } : {}), reliability, source: "constant" };
+  }
+  let repeats = 1;
+  if (repP) {
+    if (typeof repP.value !== "number" || !(repP.value >= 1)) fail("repeats: how many times the history happens in the part's life, 1 or more", repP.span);
+    repeats = repP.value as number;
+  }
+  const list = Array.isArray(histP.value) ? histP.value : [histP.value];
+  if (!list.length) fail("history: is empty", histP.span);
+  if (list.every((x) => typeof x === "number")) {
+    const trace = list as number[];
+    if (trace.length < 2) fail("history: as numbers is a trace of the load over time (scales of the loads as written), like [0, 1, 0.2, 0.8, 0]; give at least two", histP.span);
+    if (trace.some((v) => !Number.isFinite(v))) fail("history: the values should be numbers", histP.span);
+    const counted = rainflow(trace, true);
+    if (!counted.length) fail("history: the trace never changes, so there are no load cycles in it", histP.span);
+    return { cycles: counted, repeats, unit: "repeats", loading: `a load trace of ${trace.length} points (${counted.reduce((a, c) => a + c.count, 0)} cycles counted by rainflow)`, meanStress, ...(finish ? { finish } : {}), reliability, source: "trace", trace };
+  }
+  const blocks: LoadCycle[] = [];
+  for (const x of list) {
+    if (!(x instanceof Obj) || x.kind !== BLOCK) fail(`history: should list load blocks like block(1e5, 1.5) or be a trace of load scales like [0, 1, 0.3, 1]; got ${typeName(x)}`, histP.span);
+    const b = (x as Obj).fields.spec as unknown as { count: number; peak: number; min?: number };
+    const lo = b.min ?? R * b.peak;
+    blocks.push({ max: Math.max(b.peak, lo), min: Math.min(b.peak, lo), count: b.count });
+  }
+  return {
+    cycles: mergeCycles(blocks),
+    repeats,
+    unit: "repeats",
+    loading: `${blocks.length} load block${blocks.length > 1 ? "s" : ""}${loadP ? `, ${loadingText(R).replace(/ \(.*$/, "")} unless a block gives its min:` : ""}`,
+    meanStress,
+    ...(finish ? { finish } : {}),
+    reliability,
+    source: "blocks",
   };
 }
 

@@ -6,7 +6,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useDesign } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
 import { useAnalysis, showResults, runFine, runAccuracyCheck, type StructuralRun, type ResultField } from "../analysis/runtime";
-import { modeText, safetyAway, strengthVerdict, structuralVerdict } from "../analysis/summary";
+import { modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
+import { count, designWords, fatigueText, fatigueVerdict, lifeText } from "../analysis/fatigueSummary";
+import { cycleWords, cyclesAt, MEAN_STRESS, type SnCurve } from "../analysis/fe/fatigue";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type StudySpec, type UciSpec } from "../analysis/spec";
 import { applyStudyRun, startStudy, stopStudy, useStudies, type StudyState } from "../analysis/studyRuntime";
 import type { StudyRun } from "../analysis/study";
@@ -257,6 +259,7 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
       {r?.drop && <DropBox spec={spec} r={r} />}
       {r?.thermal && <HeatBox spec={spec} r={r} />}
       {r?.buckling && <BucklingBox spec={spec} r={r} />}
+      {r?.fatigue && <FatigueBox spec={spec} r={r} />}
       {r && !r.heatOnly && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
       <div className="an-cols">
         <div>
@@ -528,6 +531,135 @@ function WarmUpChart({ t }: { t: ThermalResult }) {
   );
 }
 
+/** Fatigue: the lowest fatigue safety factor, the shortest life, the S-N curves and what does the damage. */
+function FatigueBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const f = r.fatigue!;
+  const field = useAnalysis((s) => s.field);
+  const shown = useAnalysis((s) => s.shown);
+  const v = fatigueVerdict(spec, r);
+  const text = fatigueText(spec, r);
+  const pick = (fl: ResultField) => {
+    useAnalysis.setState({ field: fl, mode: null });
+    showResults(spec.label);
+  };
+  const on = (fl: ResultField) => shown === spec.label && field === fl;
+  const sfv = f.minSafety.value;
+  const lifeShort = Number.isFinite(f.life.value) && f.life.value < f.design;
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <StatusIcon status={v?.status ?? "info"} />
+        <b>Fatigue</b>
+        <span className="dim mono">
+          {designWords(f)} · {MEAN_STRESS[f.meanStress]}
+          {f.reliability > 0.5 ? ` · ${fmtNum(f.reliability * 100, 2)} % reliability` : ""}
+        </span>
+      </div>
+      <div className="an-grid" style={{ marginBottom: 8 }}>
+        <button className={`an-stat ${sfStatus(sfv, spec.safety)} ${on("safety") ? "active" : ""}`} onClick={() => pick("safety")}>
+          <div className="k">Fatigue safety</div>
+          <div className="v">
+            {sfText(sfv)}
+            <small>target {fmtNum(spec.safety, 1)}</small>
+          </div>
+          <div className="s">the factor on the loads that breaks it at the end of its life{f.minSafety.mode === "layer fatigue" ? ", between print layers" : ""}</div>
+        </button>
+        <button className={`an-stat ${lifeShort ? "fail" : ""} ${on("life") ? "active" : ""}`} onClick={() => pick("life")}>
+          <div className="k">Shortest life</div>
+          <div className="v" style={{ fontSize: Number.isFinite(f.life.value) ? undefined : 15 }}>
+            {Number.isFinite(f.life.value) ? count(f.life.value) : "no limit"}
+            <small>{f.unit === "cycles" ? "cycles" : "passes"}</small>
+          </div>
+          <div className="s">at {v3(f.life.at)} · target {count(f.design)}</div>
+        </button>
+        <div className="an-stat">
+          <div className="k">Damage</div>
+          <div className="v">
+            {Number.isFinite(f.life.value) ? fmtNum(f.damage, f.damage < 0.01 ? 4 : 3) : "0"}
+            <small>Miner</small>
+          </div>
+          <div className="s">over the life asked for; 1 breaks it</div>
+        </div>
+      </div>
+      <SnChart f={f} />
+      {(f.cycles.length > 1 || f.repeats > 1) && (
+        <table className="an-table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th className="num">Count</th>
+              <th>Cycle</th>
+              <th className="num">Share of the damage</th>
+            </tr>
+          </thead>
+          <tbody>
+            {f.cycles.slice(0, 8).map((c, i) => {
+              const share = f.shares.find((s) => s.cycle.max === c.max && s.cycle.min === c.min && s.cycle.count === c.count)?.share ?? 0;
+              return (
+                <tr key={i}>
+                  <td className="num mono">{count(c.count * f.repeats)}</td>
+                  <td>{cycleWords(c)}</td>
+                  <td className="num mono">{share > 0 ? `${fmtNum(share * 100, share < 0.1 ? 1 : 0)} %` : "none"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {text && (
+        <div className="an-note" style={{ marginTop: 8 }}>
+          {text.detail}
+        </div>
+      )}
+      {text?.fix && <div className="an-note">{text.fix}</div>}
+    </div>
+  );
+}
+
+/** The S-N curves used, on log-log axes, with the design life marked. */
+function SnChart({ f }: { f: NonNullable<StructuralResult["fatigue"]> }) {
+  const chart = useMemo(() => {
+    const curves = f.curves.slice(0, 3);
+    const top = Math.max(...curves.map((c) => c.su));
+    const bottom = Math.min(...curves.map((c) => c.se)) * 0.6;
+    const n0 = 1,
+      n1 = 9;
+    const x = (logN: number) => ((logN - n0) / (n1 - n0)) * 100;
+    const y = (s: number) => 4 + ((Math.log10(top) - Math.log10(Math.max(s, bottom))) / Math.max(Math.log10(top) - Math.log10(bottom), 1e-6)) * 46;
+    const lines = curves.map((c) => {
+      const curve: SnCurve = { su: c.su, sy: c.su, s3: c.s3, se: c.se, ka: c.ka, ke: c.ke, tail: c.tail, finish: c.finish };
+      const pts: string[] = [];
+      for (let k = 0; k <= 60; k++) {
+        const s = top * Math.pow(bottom / top, k / 60);
+        const n = cyclesAt(curve, s);
+        const ln = Number.isFinite(n) ? Math.log10(Math.max(n, 1)) : n1;
+        if (ln > n1) {
+          pts.push(`${x(n1).toFixed(2)},${y(s).toFixed(2)}`);
+          break;
+        }
+        pts.push(`${x(ln).toFixed(2)},${y(s).toFixed(2)}`);
+      }
+      if (c.tail === "flat") pts.push(`${x(n1).toFixed(2)},${y(c.se).toFixed(2)}`);
+      return { pts: pts.join(" "), label: `${c.material}${c.layers ? " (layers)" : ""}` };
+    });
+    const design = Math.log10(Math.max(f.unit === "cycles" ? f.design : f.cycles.reduce((a, c) => a + c.count, 0) * f.repeats, 1));
+    return { lines, designX: Math.min(100, x(design)), top, bottom };
+  }, [f]);
+  const colors = ["var(--accent)", "var(--warn)", "var(--pass)"];
+  return (
+    <div>
+      <svg className="an-spark" viewBox="0 0 100 54" preserveAspectRatio="none" aria-label="S-N curves">
+        <line x1={chart.designX} x2={chart.designX} y1={0} y2={54} stroke="var(--fail)" strokeDasharray="3 3" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        {chart.lines.map((l, i) => (
+          <polyline key={i} points={l.pts} fill="none" stroke={colors[i % colors.length]} strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+        ))}
+      </svg>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        S-N: stress amplitude {fmtNum(chart.bottom, 0)} to {fmtNum(chart.top, 0)} MPa against 10 to 10⁹ cycles · {chart.lines.map((l) => l.label).join(", ")} · dashed: the cycles in the life asked for ({lifeText(f.unit === "cycles" ? f.design : f.cycles.reduce((a, c) => a + c.count, 0) * f.repeats, { ...f, unit: "cycles" })})
+      </div>
+    </div>
+  );
+}
+
 /** Buckling: the load factors and their shapes; picking one swings that shape on the model. */
 function BucklingBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
   const b = r.buckling!;
@@ -706,22 +838,24 @@ function ResultCards({ spec, r }: { spec: StructuralSpec; r: StructuralResult })
     showResults(spec.label);
   };
   const on = (f: ResultField) => shown === spec.label && field === f;
-  const sf = r.minSafety.value;
+  const stat = staticSafety(r);
+  const sf = stat.value;
   const st = strengthVerdict(spec, r).status;
-  const away = safetyAway(r);
+  const away = stat.nearBoundary ? stat.away : null;
   const dispStatus: Status | "" = spec.maxDeflection === undefined ? "" : r.maxDisp.value <= spec.maxDeflection ? "pass" : "fail";
   const sfBar = safetyColor(safetyT(sf, spec.safety)).map((c) => Math.round(c * 255)).join(",");
   const exag = autoDeform(r);
   return (
     <div className="an-grid">
       <button className={`an-stat ${st} ${on("safety") ? "active" : ""}`} onClick={() => pick("safety")}>
-        <div className="k">Safety factor</div>
+        <div className="k">{r.fatigue ? "Static safety" : "Safety factor"}</div>
         <div className="v">
           {sfText(sf)}
           <small>target {fmtNum(spec.safety, 1)}</small>
         </div>
         <div className="s">
-          against {modeText(r, spec.cycles)}
+          against {modeText(r, spec.cycles, stat)}
+          {r.fatigue && Math.abs(r.fatigue.peak - 1) > 1e-6 ? ` at ${fmtNum(r.fatigue.peak, 2)}× the loads` : ""}
           {away && ` · ${sfText(away.value)} a short way from the support or load`}
         </div>
         <div className="bar" style={{ background: `rgb(${sfBar})` }} />
@@ -840,11 +974,20 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
             layers stacked along {v3(spec.buildDir)}
           </div>
         )}
-        {spec.cycles !== undefined && (
+        {spec.fatigue ? (
           <div>
-            <span className="tag">cycles</span>
-            {spec.cycles.toExponential(0)}
+            <span className="tag">fatigue</span>
+            {spec.fatigue.unit === "cycles" ? `${count(spec.fatigue.cycles[0].count)} cycles, ` : `${spec.fatigue.repeats > 1 ? `${count(spec.fatigue.repeats)} × ` : ""}`}
+            {spec.fatigue.loading} · {MEAN_STRESS[spec.fatigue.meanStress]}
+            {spec.fatigue.finish ? ` · ${spec.fatigue.finish}` : " · finish from how each part is made"}
           </div>
+        ) : (
+          spec.cycles !== undefined && (
+            <div>
+              <span className="tag">cycles</span>
+              {spec.cycles.toExponential(0)}
+            </div>
+          )
         )}
         <div>
           <span className="tag">mesh</span>

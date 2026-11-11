@@ -6,14 +6,14 @@
 import type { AnalysisSpec } from "../analysis/spec";
 
 export interface AnalysisKind {
-  id: "strength" | "drop" | "vibration" | "heat" | "buckling" | "study" | "airflow" | "gears" | "uci";
+  id: "strength" | "fatigue" | "drop" | "vibration" | "heat" | "buckling" | "study" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
   /** other words people use for it */
   keywords: string;
   /** key of ui/icons Icon */
-  icon: "Stress" | "Alert" | "Graph" | "Thermo" | "Buckle" | "Sliders" | "Orbit" | "Gear" | "Check";
+  icon: "Stress" | "Refresh" | "Alert" | "Graph" | "Thermo" | "Buckle" | "Sliders" | "Orbit" | "Gear" | "Check";
   /** which of the design's analyses are this kind */
   is: (a: AnalysisSpec) => boolean;
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
@@ -29,8 +29,17 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "Stress, deflection and safety factor under the loads it will see",
     keywords: "fea finite element stress strain deflection safety factor load break bend sag strong",
     icon: "Stress",
-    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !(a.thermal && !a.supports.length),
+    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !a.fatigue && !(a.thermal && !a.supports.length),
     ask: "Set up a strength analysis for this design from how it will be used: work out realistic loads and how it is held, then run it and tell me what you find.",
+  },
+  {
+    id: "fatigue",
+    label: "Fatigue",
+    detail: "How many load cycles it lasts, and where repeated loading cracks it first",
+    keywords: "fatigue life cycles repeated loading s-n sn curve endurance durability crack wear out goodman rainflow load history miner",
+    icon: "Refresh",
+    is: (a) => a.kind === "structural" && !!a.fatigue && !a.buckling,
+    ask: "Set up a fatigue check for this design: how often each load repeats over its life (on-off, or swinging both ways, with any bigger occasional loads as a load history) and each part's surface finish, then run it and tell me how long it lasts, where it cracks first and how to make it last.",
   },
   {
     id: "drop",
