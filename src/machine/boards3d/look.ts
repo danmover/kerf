@@ -46,6 +46,8 @@ export type Look =
   | "crystal"
   | "wroom"
   | "transducer"
+  // a small camera's lens: a square holder with a threaded barrel and a glass front
+  | "lens"
   | "microswitch"
   | "oled";
 
@@ -320,6 +322,14 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
     marks: ["3A1"],
     looks: ["soic", "jst_sh", "jst_sh"],
     socket: "#efece2",
+    smd: 0.8,
+  },
+  usb_cam_fit0701: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["USB Camera", "FIT0701"],
+    looks: ["lens"],
     smd: 0.8,
   },
   ina3221_breakout: {

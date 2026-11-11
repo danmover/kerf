@@ -247,6 +247,40 @@ export const FIELDS: CatalogPart[] = [
     ],
   },
 
+  // ---------------- a camera to watch the model ----------------
+  {
+    id: "usb_cam_fit0701",
+    kind: "sensor",
+    name: "DFRobot FIT0701 USB camera module, 640 x 480",
+    maker: "DFRobot",
+    mpn: "FIT0701",
+    summary: "A 0.3 megapixel colour camera on a 30 x 25 mm board, 21.4 mm deep with its lens. It plugs into a computer's USB port and shows up as a webcam with no driver: 640 x 480 as MJPG or YUV, automatic exposure, gain and white balance. 5 V from the port. For watching a mechanism from the bench and measuring from the picture.",
+    specs: { iface: "usb", measures: "pictures", res_x: 640, res_y: 480, v_min: 4.75, v_max: 5.25, temp_min: -20, temp_max: 70, depth: 21.4, mass_g: 12 },
+    // its only lead is its own USB cable to the computer: nothing joins the machine's harness
+    pins: [],
+    geom: {
+      g: "board",
+      dims: { w: 30, d: 25, t: 1.6 },
+      features: [
+        { kind: "module", x: 0, y: 0, w: 14, d: 14, h: 19.8 },
+      ],
+      color: "#16181b",
+    },
+    price_usd: 12.9,
+    buy: [
+      { vendor: "Core Electronics (AU)", url: "https://core-electronics.com.au/usb-camera-for-raspberry-pi-and-nvidia.html" },
+      { vendor: "Little Bird (AU)", url: "https://littlebirdelectronics.com.au/products/usb-camera-for-raspberry-pi-and-nvidia" },
+      { vendor: "DFRobot", search: "DFRobot FIT0701 USB camera 0.3 megapixel" },
+    ],
+    source: "DFRobot's listing for FIT0701: 640 x 480, MJPG and YUV, USB 2.0, 5 V, 30 x 25 x 21.4 mm.",
+    notes: [
+      "The maker gives the outline but no hole pattern, lens angle or focus range: hold the board by its edges, and check the picture's scale against something of known size in view.",
+      "Its USB lead goes to the computer, not to the controller: a microcontroller cannot read a USB camera.",
+      "The lens holder's screws and the USB plug's shell are steel. Keep it 60 mm or more from a levitated magnet.",
+      "Drawn from the listing's outline alone: the board's colour is a guess and the USB lead's socket is left off, because the maker does not say where it sits.",
+    ],
+  },
+
   // ---------------- a driver for one coil ----------------
   {
     id: "drv8871_breakout",

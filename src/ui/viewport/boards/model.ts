@@ -432,6 +432,17 @@ function item(k: Kit, part: CatalogPart, L: BoardLayout, it: BoardItem) {
       k.plastic.cyl(f, 0, 0, it.h + 0.05, it.h + 0.08, r * 0.3, "#3a3d42", 20);
       return;
     }
+    case "lens": {
+      // the holder is a third of the height, the barrel screws into it, and the glass sits just inside the barrel's rim
+      const r = Math.min(it.w, it.d) / 2;
+      const base = Math.min(it.h * 0.36, r * 1.1);
+      k.plastic.box(f, -it.w / 2, it.w / 2, -it.d / 2, it.d / 2, 0, base, "#131416");
+      k.plastic.cyl(f, 0, 0, base, it.h, r * 0.86, "#18191c", 36);
+      k.plastic.cyl(f, 0, 0, it.h - 1.6, it.h + 0.02, r * 0.93, "#101113", 36);
+      k.plastic.cyl(f, 0, 0, it.h + 0.02, it.h + 0.05, r * 0.62, "#1a2340", 32);
+      k.plastic.cyl(f, 0, 0, it.h + 0.05, it.h + 0.08, r * 0.3, "#3b4f8f", 24);
+      return;
+    }
     case "microswitch": {
       k.plastic.box(f, -it.w / 2, it.w / 2, -it.d / 2, it.d / 2, 0.3, it.h * 0.8, BLACK);
       k.plastic.box(f, -0.8, 0.8, -0.8, 0.8, it.h * 0.8, it.h * 0.88, "#c43a2e");

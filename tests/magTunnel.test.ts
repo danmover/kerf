@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { catalogPart } from "../src/machine/catalog";
+import { boardItems } from "../src/machine/boards3d/pins";
 import { buildNetlist } from "../src/machine/erc";
 import { generateFirmware } from "../src/machine/firmware";
 import { FIELD_PLUGS } from "../src/machine/harness/fieldPlugs";
@@ -329,6 +330,21 @@ describe("the chips on the bus", () => {
     // no supply: it stops
     for (let i = 0; i < 20000; i++) fan.step(1, 0, 0.001);
     expect(fan.rpm).toBeLessThan(50);
+  });
+});
+
+describe("the camera that watches the model", () => {
+  it("is a board with a lens and no pins: its only lead is its own USB cable to the computer", () => {
+    const cam = catalogPart("usb_cam_fit0701")!;
+    expect(cam.pins).toEqual([]);
+    expect(cam.geom.dims).toMatchObject({ w: 30, d: 25 });
+    // the lens stands 21.4 mm proud of the board's back, as the maker's outline gives
+    const lens = boardItems(cam).find((it) => it.look === "lens")!;
+    expect(lens.h + cam.geom.dims.t).toBeCloseTo(21.4, 6);
+  });
+  it("takes its place in a design without joining the harness", () => {
+    const r = evaluate(`design "t"\ncomponent cam = lib.sensor("usb_cam_fit0701") { at: (0, -96.4, 0), rotate: (-90, 0, 0) }\n`, { skipGeometry: true });
+    expect(r.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
   });
 });
 
