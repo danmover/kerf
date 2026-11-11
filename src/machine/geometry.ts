@@ -1041,6 +1041,59 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         [-hs, -hs, 0],
         [hs, -hs, 0],
       ];
+      // with `blades` the fan is drawn as the real part: a barrel between two square flanges, the impeller
+      // (blades, hub_d hub) on the intake side and the motor on `struts` struts at the outlet (bore_d bore,
+      // flange_t flanges). Air goes in at z = 0 and out at z = t, as for the plain shape below.
+      const nb = Math.round(num(d, "blades", 0));
+      if (nb >= 3) {
+        const hd = num(d, "hole_d", 3.4);
+        const bore = num(d, "bore_d", s * 0.96);
+        const hub = num(d, "hub_d", s * 0.5);
+        const ft = num(d, "flange_t", Math.min(4.5, t / 5));
+        const ns = Math.max(3, Math.round(num(d, "struts", 4)));
+        const sz = Math.min(8, t * 0.22);
+        const rb = bore / 2;
+        const rh = hub / 2;
+        const flange = (z: number): ShapeRecipe => ({ t: "box", w: s, d: s, h: ft, at: [0, 0, z], r: Math.min(6, s / 16) });
+        const strut = (a: number, w: number): ShapeRecipe => ({ t: "xform", shape: { t: "box", w: rb - rh + 2, d: w, h: sz, at: [(rb + rh) / 2, 0, t - sz - 0.6], r: 0 }, xf: [{ op: "rotate", angle: a, origin: Z0, axis: ZP }] });
+        const frame: PartRecipe = {
+          base: { t: "tube", od: s, id: bore, h: t, at: Z0, dir: ZP },
+          ops: [
+            { op: "add", shape: flange(0) },
+            { op: "add", shape: flange(t - ft) },
+            // a tube round each screw hole joins the flanges, so a long screw clamps solid plastic
+            ...holes.map((h) => ({ op: "add" as const, shape: { t: "cyl" as const, d: hd + 4.6, h: t, at: [h[0], h[1], 0] as V3, dir: ZP } })),
+            { op: "cut", shape: { t: "cyl", d: bore, h: t + 2, at: [0, 0, -1], dir: ZP } },
+            ...holes.map((h) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: hd, h: t + 2, at: [h[0], h[1], -1] as V3, dir: ZP } })),
+            // the motor's seat and the struts that carry it; the widest strut carries the cable
+            { op: "add", shape: { t: "cyl", d: hub, h: sz + 2.4, at: [0, 0, t - sz - 2.6], dir: ZP } },
+            ...Array.from({ length: ns }, (_, i) => ({ op: "add" as const, shape: strut((360 * i) / ns + 45, i === 0 ? 7 : 3.2) })),
+          ],
+        };
+        const zb = (t - sz - 2.6) * 0.5 + 0.6;
+        const c0 = Math.min((2 * Math.PI * rh * 1.25) / nb, (t - sz - 5) / Math.sin((40 * Math.PI) / 180));
+        const blade = (a: number): ShapeRecipe => radialBlade(a, rh - 1, rb - 1, zb, c0, c0 * 1.5, -40, -24, 0.07, -0.06);
+        const rotor: PartRecipe = {
+          base: { t: "cyl", d: hub, h: t - sz - 4.2, at: [0, 0, 1], dir: ZP },
+          ops: [
+            { op: "chamfer", r: Math.min(2, hub / 12), edges: "bottom" },
+            ...Array.from({ length: nb }, (_, i) => ({ op: "add" as const, shape: blade((360 * i) / nb) })),
+            // the blades' flat sections reach past the barrel at their corners: turn the tips to a round, 1.2 mm clear of it
+            { op: "cut", shape: { t: "tube", od: s * 2, id: bore - 2.4, h: t + 2, at: [0, 0, -1], dir: ZP } },
+          ],
+        };
+        // the maker's label on the motor seat, on the outlet side
+        const label: PartRecipe = { base: { t: "cyl", d: hub * 0.82, h: 0.15, at: [0, 0, t - 0.2], dir: ZP }, ops: [] };
+        return {
+          placement: "axis",
+          solids: [
+            solid("", p.name, frame, g.color ?? BLACK, "PBT"),
+            solid("rotor", `${p.name} impeller`, rotor, g.color2 ?? "#1c1e22", "PBT", true),
+            solid("label", `${p.name} label`, label, "#c9ccd1", "PET"),
+          ],
+          fields: { scalars: { size: s, t }, points: { at: Z0, outlet: [0, 0, t] }, pointLists: { holes }, dirs: { axis: ZP } },
+        };
+      }
       return {
         placement: "axis",
         solids: [
@@ -1133,6 +1186,54 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         { t: "box", w: 2.5, d: 0.4, h: 6, at: [-bw / 4, 0, -pt - bl - 5.5], r: 0 },
         { t: "box", w: 2.5, d: 0.4, h: 6, at: [bw / 4, 0, -pt - bl - 5.5], r: 0 },
       ];
+      // with `lip_d` it is a moulded barrel jack (DC-022 and its kin): a round threaded body that goes in from the
+      // front until its lip (lip_d across, nut_t thick) meets the panel, a hex nut (nut_af, rear_nut_t) behind the
+      // panel, the plug's socket (socket_d, with a pin_d pin) in the front and solder eyes at the back
+      const lipD = num(d, "lip_d", 0);
+      if (lipD) {
+        const sd = num(d, "socket_d", 6.3);
+        const pd = num(d, "pin_d", 2.1);
+        const rn = num(d, "rear_nut_t", 3);
+        const sock = Math.min(11, bl + pt - 2);
+        const body: PartRecipe = {
+          base: { t: "cyl", d: lipD, h: nt, at: Z0, dir: ZP },
+          ops: [
+            { op: "chamfer", r: Math.min(0.6, nt / 3), edges: "top" },
+            { op: "add", shape: { t: "cyl", d: bd, h: pt + bl, at: [0, 0, -pt - bl], dir: ZP } },
+            // the flat plate at the back that carries the solder eyes
+            { op: "add", shape: { t: "box", w: bw, d: bdd, h: 1.6, at: [0, 0, -pt - bl - 1.6], r: 1 } },
+            { op: "cut", shape: { t: "cyl", d: sd, h: sock + 1, at: [0, 0, nt - sock], dir: ZP } },
+          ],
+        };
+        const nut: PartRecipe = {
+          base: { t: "prism", pts: hex, h: rn, at: [0, 0, -pt - rn], dir: ZP, rot: 0 },
+          ops: [{ op: "cut", shape: { t: "cyl", d: bd, h: rn + 2, at: [0, 0, -pt - rn - 1], dir: ZP } }],
+        };
+        // the centre pin, and the sleeve spring that presses on the plug's barrel
+        const contacts: ShapeRecipe[] = [
+          { t: "cyl", d: pd, h: sock - 1.5, at: [0, 0, nt - sock], dir: ZP },
+          { t: "box", w: 1.6, d: 0.4, h: sock - 4, at: [0, sd / 2 - 0.3, nt - sock], r: 0 },
+        ];
+        const eyes: ShapeRecipe[] = [
+          { t: "box", w: 2.5, d: 0.4, h: 6, at: [-bw / 4, 0, -pt - bl - 7.1], r: 0 },
+          { t: "box", w: 2.5, d: 0.4, h: 6, at: [bw / 4, 0, -pt - bl - 7.1], r: 0 },
+          { t: "box", w: 0.4, d: 2.5, h: 5, at: [0, bdd / 2 - 1.2, -pt - bl - 6.1], r: 0 },
+        ];
+        return {
+          placement: "axis",
+          solids: [
+            solid("", p.name, body, g.color ?? BLACK, "Nylon"),
+            solid("nut", `${p.name} nut`, nut, g.color ?? BLACK, "Nylon"),
+            solid("pin", `${p.name} contacts`, { base: { t: "union", shapes: contacts }, ops: [] }, "#c9ced6", "Brass"),
+            solid("lugs", `${p.name} solder eyes`, { base: { t: "union", shapes: eyes }, ops: [] }, "#c9ced6", "Brass"),
+          ],
+          fields: {
+            scalars: { hole_d: num(d, "hole_d", bd + 0.2), panel_t: pt, body_l: bl, depth: pt + bl + 7.5 },
+            points: { at: Z0, front: Z0, back: [0, 0, -pt - bl], lug_a: [-bw / 4, 0, -pt - bl - 6.5], lug_b: [bw / 4, 0, -pt - bl - 6.5] },
+            dirs: { axis: ZP },
+          },
+        };
+      }
       // a push button's cap (a mushroom for an emergency stop) stands on the nut, in the part's colour
       const capD = num(d, "cap_d", 0);
       const solids = [
@@ -1312,6 +1413,44 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       const w = num(d, "w", 100);
       const dd = num(d, "d", 48);
       const h = num(d, "h", 32);
+      // `inlet: 1` draws a desktop supply as sold: a three-pin mains inlet (IEC C14) in the end away from the
+      // cord, a power light, the split line of the two shell halves and a ribbed strain relief, with the
+      // maker's rating label in the recess on top. Without it, the plain brick below.
+      if (num(d, "inlet", 0)) {
+        const xi = -w / 2;
+        const shell: PartRecipe = {
+          base: { t: "box", w, d: dd, h, at: Z0, r: Math.min(6, h / 5) },
+          ops: [
+            { op: "cut", shape: { t: "box", w: w * 0.62, d: dd * 0.66, h: 1, at: [-w * 0.04, 0, h - 0.5], r: 2 } },
+            // the seam where the two halves of the shell meet
+            { op: "cut", shape: { t: "box", w: w + 2, d: dd + 2, h: 0.5, at: [0, 0, h / 2 - 0.25], r: 0 } },
+            { op: "add", shape: { t: "box", w: w - 0.9, d: dd - 0.9, h: 0.7, at: [0, 0, h / 2 - 0.35], r: Math.min(5.5, h / 5) } },
+            // the inlet's well: 24 x 16.5, 16 deep
+            { op: "cut", shape: { t: "box", w: 16, d: 24, h: 16.5, at: [xi + 7.99, 0, h / 2 - 8.25], r: 0 } },
+          ],
+        };
+        const pins: ShapeRecipe[] = [
+          { t: "box", w: 11, d: 4, h: 2, at: [xi + 9.5, -7, h / 2 - 2.5], r: 0 },
+          { t: "box", w: 11, d: 4, h: 2, at: [xi + 9.5, 7, h / 2 - 2.5], r: 0 },
+          { t: "box", w: 13, d: 4, h: 2, at: [xi + 8.5, 0, h / 2 + 1.5], r: 0 },
+        ];
+        // the strain relief: a ribbed boot that tapers onto the output lead
+        const boot: ShapeRecipe[] = [
+          { t: "cone", d1: 10.5, d2: 6.4, h: 22, at: [w / 2 - 1, 0, h / 2], dir: XP },
+          ...Array.from({ length: 5 }, (_, i): ShapeRecipe => ({ t: "cyl", d: 10.4 - i * 0.75, h: 1.4, at: [w / 2 + 2.5 + i * 3.6, 0, h / 2], dir: XP })),
+        ];
+        return {
+          placement: "free",
+          solids: [
+            solid("", p.name, shell, g.color ?? BLACK, "PC"),
+            solid("cord", `${p.name} cord`, { base: { t: "cyl", d: 4.6, h: 60, at: [w / 2 - 1, 0, h / 2], dir: XP }, ops: boot.map((shape) => ({ op: "add" as const, shape })) }, BLACK, "PVC"),
+            solid("pins", `${p.name} mains inlet pins`, { base: { t: "union", shapes: pins }, ops: [] }, "#c9ced6", "Brass"),
+            solid("label", `${p.name} rating label`, { base: { t: "box", w: w * 0.6, d: dd * 0.62, h: 0.15, at: [-w * 0.04, 0, h - 0.5], r: 1.5 }, ops: [] }, "#d9dce1", "PET"),
+            solid("light", `${p.name} power light`, { base: { t: "cyl", d: 3, h: 0.6, at: [w / 2 - 12, 0, h - 0.3], dir: ZP }, ops: [] }, "#3ddc97", "PC"),
+          ],
+          fields: { scalars: { w, d: dd, h }, points: { top: [0, 0, h], bottom: Z0, cord_end: [w / 2 + 59, 0, h / 2], inlet: [xi, 0, h / 2] } },
+        };
+      }
       return {
         placement: "free",
         solids: [

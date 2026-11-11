@@ -326,6 +326,35 @@ function item(k: Kit, part: CatalogPart, L: BoardLayout, it: BoardItem) {
       k.gloss.cyl(nose, 0, 0, 2.49, 2.52, 1.8, "#040404", 20);
       return;
     }
+    case "jst_sh": {
+      // a side-entry JST SH socket: a cream shroud open towards the board's edge, four contacts inside, two tin hold-downs
+      const g = F([it.x, it.y, t], open);
+      const [a, b] = extents(it, open);
+      const c = L.style.socket ?? "#e6dfcb";
+      k.plastic.box(g, -a, a, -b, b, 0, 0.5, c);
+      k.plastic.box(g, -a, a, -b, b, it.h - 0.5, it.h, c);
+      k.plastic.box(g, -a, a, -b, -b + 0.6, 0.5, it.h - 0.5, c);
+      k.plastic.box(g, -a, a, b - 0.6, b, 0.5, it.h - 0.5, c);
+      k.plastic.box(g, -a, -a + 1, -b + 0.6, b - 0.6, 0.5, it.h - 0.5, c);
+      for (let i = 0; i < 4; i++) k.metal.box(g, -a + 1, a - 0.5, i - 1.5 - 0.15, i - 1.5 + 0.15, 1.0, 1.3, GOLD);
+      for (let i = 0; i < 4; i++) k.metal.box(g, -a - 0.7, -a, i - 1.5 - 0.15, i - 1.5 + 0.15, 0.02, 0.2, TIN);
+      k.metal.box(g, a - 1.9, a - 0.5, -b - 0.6, -b, 0.02, 0.35, TIN);
+      k.metal.box(g, a - 1.9, a - 0.5, b, b + 0.6, 0.02, 0.35, TIN);
+      return;
+    }
+    case "shunt": {
+      // a current-sense resistor: a black body between two tinned ends, its value printed on top
+      const alongX = it.w >= it.d;
+      const g = F([it.x, it.y, t], alongX ? [1, 0] : [0, 1]);
+      const lh = (alongX ? it.w : it.d) / 2;
+      const wh = (alongX ? it.d : it.w) / 2;
+      const h = Math.max(0.55, it.h);
+      k.plastic.box(g, -lh + 0.7, lh - 0.7, -wh, wh, 0.04, h, "#17181b");
+      k.metal.box(g, -lh, -lh + 0.75, -wh, wh, 0, h + 0.02, TIN);
+      k.metal.box(g, lh - 0.75, lh, -wh, wh, 0, h + 0.02, TIN);
+      mark(k, it, t + h + 0.03, it.w * 0.5, it.d * 0.55, false);
+      return;
+    }
     case "sdcard": {
       const g = F([it.x, it.y, t], open);
       const [a, b] = extents(it, open);

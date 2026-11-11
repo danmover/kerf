@@ -359,12 +359,40 @@ export const FIELDS: CatalogPart[] = [
     summary: "Sealed desktop brick, 100 to 240 V AC in, 12 V 8 A out (96 W). Room for a 3 A fan starting while coils are at their peak, with no mains wiring inside the design.",
     specs: { v_out: 12, i_out: 8, power_w: 96, plug: "5.5 × 2.1 mm centre positive" },
     pins: [pwrOut("VPOS", 12, 8, { label: "+12 V (centre)" }), gnd("VNEG", "0 V (sleeve)")],
-    geom: { g: "brick", dims: { w: 150, d: 60, h: 36 }, color: "#1b1d21" },
+    geom: { g: "brick", dims: { w: 150, d: 60, h: 36, inlet: 1 }, color: "#1b1d21" },
     sim: { k: "supply", pos: "VPOS", neg: "VNEG", v: 12, r: 0.06 },
     external: true,
     price_usd: 24,
     buy: [{ vendor: "Marketplace", search: "12V 8A power adapter 5.5x2.1mm center positive" }],
-    notes: ["Buy one with a safety mark (RCM in Australia, UL, CE, UKCA) from a known seller: it is the only mains part.", "A panel jack is good for about 5 A: keep what the design really draws under that."],
+    notes: [
+      "Buy one with a safety mark (RCM in Australia, UL, CE, UKCA) from a known seller: it is the only mains part.",
+      "A panel jack is good for about 5 A: keep what the design really draws under that.",
+      "Drawn as the usual 96 W desktop brick: a three-pin mains inlet at one end, the 12 V lead with its 5.5 × 2.1 mm plug at the other. Sellers say the case may vary, so nothing in a design should depend on its size.",
+    ],
+  },
+
+  // ---------------- the socket that supply plugs into ----------------
+  {
+    id: "dc_jack_dc022",
+    kind: "jack",
+    name: "Panel mount 2.1 mm DC barrel jack (Adafruit 610, Kaweei DC-022)",
+    maker: "Adafruit",
+    mpn: "610",
+    summary: "Moulded black 5.5 × 2.1 mm DC socket that goes through an 11 mm hole from the front and is held by its own nut from behind, in panels up to 8 mm thick. A lip hides the hole; three solder eyes at the back.",
+    specs: { hole_d: 11, panel_max_t: 8, rating_a: 5, plug: "5.5 × 2.1 mm" },
+    pins: [{ id: "PIN", label: "+ (centre pin)", type: "passive", required: true }, gnd("SLEEVE", "− (sleeve)")],
+    geom: { g: "panel_jack", dims: { bush_d: 11, lip_d: 14, nut_t: 2, nut_af: 14, rear_nut_t: 3, socket_d: 6.3, pin_d: 2.1, body_w: 9, body_d: 9, body_l: 17, hole_d: 11.2 }, color: "#1c1e22" },
+    price_usd: 2.95,
+    buy: [
+      { vendor: "Adafruit", url: "https://www.adafruit.com/products/610" },
+      { vendor: "Marketplace", search: "Adafruit 610 panel mount 2.1mm DC barrel jack" },
+    ],
+    source: "https://www.adafruit.com/products/610",
+    notes: [
+      "Most adapters are centre positive: check the symbol on yours.",
+      "The third solder eye is the switched contact: leave it empty.",
+      "The maker's drawing gives its thread as a picture only: try the nut on the printed hole before you solder, and ream the hole if the thread is tight.",
+    ],
   },
 
   // ---------------- tunnel fan ----------------
@@ -382,7 +410,7 @@ export const FIELDS: CatalogPart[] = [
       input("PWM", 5.25, 2.0, { label: "PWM", needs: "pwm", note: "Pin 4, blue: 25 kHz, 3.3 or 5 V. Pulled up inside the fan, so left open it runs flat out" }),
       { id: "TACH", type: "out", v: 3.3, label: "TACH", needs: "irq", note: "Pin 3, green: open collector, two pulses a turn. Needs a pull-up to the controller's logic voltage (its input's own is enough)" },
     ],
-    geom: { g: "fan", dims: { size: 120, t: 38, hole_spacing: 105, hole_d: 4.3 }, color: "#15171a" },
+    geom: { g: "fan", dims: { size: 120, t: 38, hole_spacing: 105, hole_d: 4.3, blades: 7, hub_d: 62, bore_d: 116, flange_t: 4.5, struts: 4 }, color: "#15171a", color2: "#1b1d21" },
     price_usd: 22,
     buy: [{ vendor: "Arctic", url: "https://www.arctic.de/en/S12038-8K" }, { vendor: "Marketplace", search: "Arctic S12038-8K 120mm server fan" }],
     source: "https://www.arctic.de/en/S12038-8K",
