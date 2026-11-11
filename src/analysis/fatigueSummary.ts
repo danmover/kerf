@@ -49,7 +49,7 @@ const curveText = (f: FatigueResult) =>
 
 /** What a fatigue safety factor is judged against, in words. */
 export function fatigueModeText(m: SafetyAt, f: FatigueResult): string {
-  return `${m.mode === "layer fatigue" ? "fatigue strength between print layers" : "fatigue strength"} of ${m.material} over ${designWords(f)}, ${f.loading}, ${MEAN_STRESS[f.meanStress]} mean stress (${fmtNum(m.allowable, 1)} MPa fully reversed at that life)`;
+  return `${m.mode === "layer fatigue" ? "fatigue strength between print layers" : "fatigue strength"} of ${m.material}${m.infill ? " in its infill" : ""} over ${designWords(f)}, ${f.loading}, ${MEAN_STRESS[f.meanStress]} mean stress (${fmtNum(m.allowable, 1)} MPa fully reversed at that life)`;
 }
 
 /** The check's text and a fix when it falls short. */

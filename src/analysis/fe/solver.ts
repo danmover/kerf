@@ -6,8 +6,16 @@
 // independent of the element count, which is what makes a 100k-element
 // model practical in a browser worker.
 
-import { elementMatrices } from "./element";
+import { elementMatrices, type ElementMatrices } from "./element";
 import { ebeProduct } from "./ebe.gen";
+
+/** Elements of a level that use another element matrix (a printed plastic, stiffer along its layers than across). */
+export interface ElemClass {
+  K: Float64Array;
+  Kdiag: Float64Array;
+  act: Int32Array;
+  stiff: Float64Array;
+}
 
 export interface Level {
   /** element counts */
@@ -29,6 +37,8 @@ export interface Level {
   act: Int32Array;
   /** E·fill of each active element */
   stiff: Float64Array;
+  /** elements with their own element matrices (fine level only); act and stiff above hold the rest */
+  extra: ElemClass[];
   /** per dof: 1 when held by a support (kept apart from activity so it can be carried to coarser grids) */
   bc: Uint8Array;
   /** per dof: 1 when the dof is solved for (active node, not held) */
@@ -58,29 +68,48 @@ function offsets(L: { NX: number; NY: number }): Int32Array {
   return Int32Array.from([0, 1, NX, NX + 1, NXY, NXY + 1, NXY + NX, NXY + NX + 1]);
 }
 
-export function makeLevel(nx: number, ny: number, nz: number, dims: [number, number, number], nu: number, dense: Float64Array, bc: Uint8Array, shift: [number, number, number] = [0, 0, 0]): Level {
+/**
+ * A grid level. classes: elements whose class c (cls[e] ≥ 1) uses mats[c − 1] instead of the isotropic element, for
+ * materials that are stiffer one way than another; coarser levels re-discretise them as isotropic (they only
+ * precondition).
+ */
+export function makeLevel(
+  nx: number,
+  ny: number,
+  nz: number,
+  dims: [number, number, number],
+  nu: number,
+  dense: Float64Array,
+  bc: Uint8Array,
+  shift: [number, number, number] = [0, 0, 0],
+  classes?: { cls: Uint8Array; mats: ElementMatrices[] },
+): Level {
   const NX = nx + 1,
     NY = ny + 1,
     NZ = nz + 1;
   const nn = NX * NY * NZ;
-  let count = 0;
-  for (let e = 0; e < dense.length; e++) if (dense[e] > 0) count++;
-  const act = new Int32Array(count);
-  const stiff = new Float64Array(count);
+  const nc = classes ? classes.mats.length + 1 : 1;
+  const counts = new Int32Array(nc);
+  for (let e = 0; e < dense.length; e++) if (dense[e] > 0) counts[classes ? classes.cls[e] : 0]++;
+  const acts = Array.from(counts, (c) => new Int32Array(c));
+  const stiffs = Array.from(counts, (c) => new Float64Array(c));
+  const qs = new Int32Array(nc);
   const nodeOn = new Uint8Array(nn);
   const off = offsets({ NX, NY });
-  let q = 0;
   for (let k = 0; k < nz; k++)
     for (let j = 0; j < ny; j++)
       for (let i = 0; i < nx; i++) {
         const e = i + nx * (j + ny * k);
         if (!(dense[e] > 0)) continue;
         const n0 = i + NX * (j + NY * k);
-        act[q] = n0;
-        stiff[q] = dense[e];
-        q++;
+        const c = classes ? classes.cls[e] : 0;
+        acts[c][qs[c]] = n0;
+        stiffs[c][qs[c]++] = dense[e];
         for (let a = 0; a < 8; a++) nodeOn[n0 + off[a]] = 1;
       }
+  const act = acts[0];
+  const stiff = stiffs[0];
+  const extra: ElemClass[] = classes ? classes.mats.map((m, c) => ({ K: m.K, Kdiag: m.diag, act: acts[c + 1], stiff: stiffs[c + 1] })).filter((x) => x.act.length) : [];
   const free = new Uint8Array(3 * nn);
   const fixed: number[] = [];
   for (let n = 0; n < nn; n++) {
@@ -105,6 +134,7 @@ export function makeLevel(nx: number, ny: number, nz: number, dims: [number, num
     dense,
     act,
     stiff,
+    extra,
     bc,
     free,
     fixedList: Int32Array.from(fixed),
@@ -122,25 +152,31 @@ export function makeLevel(nx: number, ny: number, nz: number, dims: [number, num
 export function applyK(L: Level, x: Float64Array, y: Float64Array, masked = true) {
   y.fill(0);
   ebeProduct(L.K, L.act, L.stiff, L.NX, L.NX * L.NY, x, y);
+  for (const c of L.extra) ebeProduct(c.K, c.act, c.stiff, L.NX, L.NX * L.NY, x, y);
   if (masked) {
     const fl = L.fixedList;
     for (let i = 0; i < fl.length; i++) y[fl[i]] = 0;
   }
 }
 
+/** Every group of elements on a level that shares an element matrix. */
+const groups = (L: Level): ElemClass[] => [{ K: L.K, Kdiag: L.Kdiag, act: L.act, stiff: L.stiff }, ...L.extra];
+
 function computeDiag(L: Level) {
   const off = offsets(L);
   const dg = L.invDiag;
-  const Kd = L.Kdiag;
   dg.fill(0);
-  for (let e = 0; e < L.act.length; e++) {
-    const n0 = L.act[e];
-    const s = L.stiff[e];
-    for (let a = 0; a < 8; a++) {
-      const d = (n0 + off[a]) * 3;
-      dg[d] += s * Kd[3 * a];
-      dg[d + 1] += s * Kd[3 * a + 1];
-      dg[d + 2] += s * Kd[3 * a + 2];
+  for (const g of groups(L)) {
+    const Kd = g.Kdiag;
+    for (let e = 0; e < g.act.length; e++) {
+      const n0 = g.act[e];
+      const s = g.stiff[e];
+      for (let a = 0; a < 8; a++) {
+        const d = (n0 + off[a]) * 3;
+        dg[d] += s * Kd[3 * a];
+        dg[d + 1] += s * Kd[3 * a + 1];
+        dg[d + 2] += s * Kd[3 * a + 2];
+      }
     }
   }
   for (let i = 0; i < dg.length; i++) dg[i] = L.free[i] && dg[i] > 0 ? 1 / dg[i] : 0;
@@ -379,24 +415,26 @@ export class BandCholesky {
     const band = new Float64Array(this.n * W);
     this.band = band;
     const off = offsets(L);
-    const K = L.K;
-    for (let e = 0; e < L.act.length; e++) {
-      const n0 = L.act[e];
-      const s = L.stiff[e];
-      for (let a = 0; a < 8; a++)
-        for (let ca = 0; ca < 3; ca++) {
-          const na = 3 * (n0 + off[a]) + ca;
-          if (!L.free[na]) continue;
-          const gi = this.perm[na];
-          for (let b = 0; b < 8; b++)
-            for (let cb = 0; cb < 3; cb++) {
-              const nb = 3 * (n0 + off[b]) + cb;
-              if (!L.free[nb]) continue;
-              const gj = this.perm[nb];
-              if (gj > gi) continue;
-              band[gi * W + (gi - gj)] += s * K[(3 * a + ca) * 24 + 3 * b + cb];
-            }
-        }
+    for (const g of groups(L)) {
+      const K = g.K;
+      for (let e = 0; e < g.act.length; e++) {
+        const n0 = g.act[e];
+        const s = g.stiff[e];
+        for (let a = 0; a < 8; a++)
+          for (let ca = 0; ca < 3; ca++) {
+            const na = 3 * (n0 + off[a]) + ca;
+            if (!L.free[na]) continue;
+            const gi = this.perm[na];
+            for (let b = 0; b < 8; b++)
+              for (let cb = 0; cb < 3; cb++) {
+                const nb = 3 * (n0 + off[b]) + cb;
+                if (!L.free[nb]) continue;
+                const gj = this.perm[nb];
+                if (gj > gi) continue;
+                band[gi * W + (gi - gj)] += s * K[(3 * a + ca) * 24 + 3 * b + cb];
+              }
+          }
+      }
     }
     let maxDiag = 0;
     for (let i = 0; i < this.n; i++) maxDiag = Math.max(maxDiag, band[i * W]);

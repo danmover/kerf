@@ -734,6 +734,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     cycles,
     printed: bool("printed"),
     buildDir,
+    ...(buildP ? { buildGiven: true } : {}),
     resolution,
     ...(masses.length ? { masses } : {}),
     ...(modal ? { modal } : {}),

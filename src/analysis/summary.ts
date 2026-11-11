@@ -22,6 +22,11 @@ export interface RunLike {
 
 const p3 = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
 const sf = (v: number) => (!Number.isFinite(v) || v >= 100 ? "over 100" : fmtNum(v, 2));
+/** A direction in words: +Z, −X, or its components when it is at an angle. */
+export const dirWords = (d: number[]) => {
+  const k = [0, 1, 2].find((i) => Math.abs(d[i]) > 0.999);
+  return k === undefined ? `(${d.map((v) => fmtNum(v, 2)).join(", ")})` : `${d[k] > 0 ? "+" : "−"}${"XYZ"[k]}`;
+};
 
 type Verdict = "pass" | "warn" | "fail";
 
@@ -30,9 +35,11 @@ export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.m
   // a hot plastic's allowable is derated for the temperature there
   const hot = m.tempC !== undefined && m.tempC > 30 ? ` at ${fmtNum(m.tempC, 0)} °C` : "";
   if ((m.mode === "fatigue" || m.mode === "layer fatigue") && r.fatigue) return fatigueModeText(m, r.fatigue);
-  if (m.mode === "layers" || m.mode === "layer fatigue") return `strength between print layers of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
-  if (m.mode === "fatigue") return `fatigue strength of ${m.material}${hot} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
-  return `yield strength of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
+  // a printed part's sparse infill has a share of the solid's strength
+  const inf = m.infill ? " in its infill" : "";
+  if (m.mode === "layers" || m.mode === "layer fatigue") return `strength between print layers of ${m.material}${inf}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
+  if (m.mode === "fatigue") return `fatigue strength of ${m.material}${inf}${hot} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
+  return `yield strength of ${m.material}${inf}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
 }
 
 /** The lowest safety factor a short way from idealised supports and loads, when the overall lowest sits right on one. */
@@ -152,8 +159,23 @@ export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Ve
 }
 
 /** Heat, buckling and the accuracy check, as summary lines. */
+/** How each printed part was modelled, in words: its print settings, how much is solid, its infill and its layers. */
+export function printingText(r: StructuralResult): string | null {
+  if (!r.printing?.length) return null;
+  const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
+  const from = { analysis: "as the analysis's build: says", process: "as its process's build: says", bed: "the way it lies on the bed" } as const;
+  return r.printing
+    .map(
+      (p) =>
+        `${p.part} printed with ${p.words}: ${pc(p.solid)} of it solid walls and skin${p.infillStiffness < 0.999 ? `, the infill ${pc(p.infillStiffness)} as stiff and ${pc(p.infillStrength)} as strong as solid` : ""}; layers stack along ${dirWords(p.build)} (${from[p.from]})${p.across < 0.999 ? `, ${pc(p.across)} as stiff across them` : ""}.`,
+    )
+    .join(" ");
+}
+
 function extraLines(spec: StructuralSpec, r: StructuralResult): string[] {
   const out: string[] = [];
+  const pt = printingText(r);
+  if (pt) out.push(`Printed parts: ${pt}`);
   const tt = temperatureText(r);
   const tv = temperatureVerdict(r);
   if (tt && tv && (spec.thermal || tv.status !== "pass")) out.push(`Temperature: ${tv.status.toUpperCase()}. ${tt.detail}${tt.fix ? ` Fix: ${tt.fix}` : ""}`);

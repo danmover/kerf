@@ -228,9 +228,14 @@ export interface StructuralSpec {
   cycles?: number;
   /** fatigue over the part's life: set when cycles: passes 1000, or a load history or the way the loads repeat is given */
   fatigue?: FatigueSpec;
-  /** FDM print: weaker between layers stacked along buildDir */
+  /**
+   * FDM print: true treats every plastic part as printed, false none; unset, the parts with an fdm process or a filament
+   * material are. Each printed part gets walls, skins and infill from its process and is weaker and softer across its layers.
+   */
   printed?: boolean;
+  /** the way the layers stack, for every printed part; unset (buildGiven false) each part's own way on the bed */
   buildDir: V3;
+  buildGiven?: boolean;
   resolution: Resolution;
   /** extra masses (mass(region, 350g)): weight under gravity and in drops, inertia in vibration */
   masses?: MassSpec[];

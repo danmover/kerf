@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useDesign } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
 import { useAnalysis, showResults, runFine, runAccuracyCheck, type StructuralRun, type ResultField } from "../analysis/runtime";
-import { modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
+import { dirWords, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { count, designWords, fatigueText, fatigueVerdict, lifeText } from "../analysis/fatigueSummary";
 import { cycleWords, cyclesAt, MEAN_STRESS, type SnCurve } from "../analysis/fe/fatigue";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type StudySpec, type UciSpec } from "../analysis/spec";
@@ -968,12 +968,26 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
             {spec.buckling.modes} shape{spec.buckling.modes > 1 ? "s" : ""}, target {fmtNum(spec.buckling.safety, 1)}× the loads
           </div>
         )}
-        {(spec.printed || r?.materials.some((m) => m.layerFactor < 1)) && (
-          <div>
-            <span className="tag">printed</span>
-            layers stacked along {v3(spec.buildDir)}
-          </div>
-        )}
+        {r?.printing?.length
+          ? r.printing.map((p) => (
+              <div key={p.part}>
+                <span className="tag">printed</span>
+                {p.part}: {p.words}, layers along {dirWords(p.build)}
+                {p.from === "bed" ? " (as it lies on the bed)" : p.from === "process" ? " (its process's build:)" : ""}
+                <span className="dim">
+                  {" "}
+                  · {fmtNum(p.solid * 100, 0)} % solid walls and skin
+                  {p.infillStiffness < 0.999 ? ` · infill ${fmtNum(p.infillStiffness * 100, 0)} % as stiff, ${fmtNum(p.infillStrength * 100, 0)} % as strong` : ""}
+                  {p.across < 0.999 ? ` · ${fmtNum(p.across * 100, 0)} % as stiff across its layers` : ""}
+                </span>
+              </div>
+            ))
+          : (spec.printed || r?.materials.some((m) => m.layerFactor < 1)) && (
+              <div>
+                <span className="tag">printed</span>
+                layers stacked along {v3(spec.buildDir)}
+              </div>
+            )}
         {spec.fatigue ? (
           <div>
             <span className="tag">fatigue</span>

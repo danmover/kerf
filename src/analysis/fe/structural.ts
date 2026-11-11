@@ -3,7 +3,8 @@
 // sampled back onto the real CAD surface for display. Environment-agnostic
 // so it runs in the analysis worker and in Node tests.
 
-import { CORNERS, principal, vonMises, elementMatrices } from "./element";
+import { CORNERS, principal, vonMises, elementMatrices, elementMatricesFor, layeredConstitutive, type ElementMatrices } from "./element";
+import { infillStiffness, infillStrength, layerStiffness, type InfillPattern } from "../../mfg/infill";
 import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg } from "./solver";
 import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
@@ -29,6 +30,24 @@ export interface FeaPart {
   normals?: Float32Array;
   /** index into materials */
   material: number;
+  /** printed on an FDM printer: which way its layers stack and what is solid inside it */
+  print?: PartPrint;
+}
+
+/** How a printed part is printed, as the analysis models it. */
+export interface PartPrint {
+  /** the way its layers stack, world frame */
+  build: V3;
+  /** solid walls round each layer's outline, and the solid skin under its tops and over its bottoms, mm */
+  wall: number;
+  skin: number;
+  /** sparse infill share inside (1: solid) and its pattern */
+  infill: number;
+  pattern: InfillPattern;
+  /** the settings in words ("4 walls, 5 top and bottom layers, 40 % gyroid infill") */
+  words: string;
+  /** where the build direction comes from: the analysis's build:, the part's process build:, or how it lies on the bed */
+  from: "analysis" | "process" | "bed";
 }
 
 export interface StructuralInput {
@@ -269,6 +288,8 @@ export interface StructuralResult {
   ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number]; life?: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
+  /** printed parts: how each is printed, the share of it that is solid walls and skin, and its stiffness across its layers */
+  printing?: { part: string; build: V3; from: PartPrint["from"]; words: string; solid: number; infillStiffness: number; infillStrength: number; across: number }[];
   modal?: ModalResult;
   drop?: DropResult;
   thermal?: ThermalResult;
@@ -315,11 +336,15 @@ export type SafetyAt = Located & {
   material: string;
   /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */
   tempC?: number;
+  /** in a printed part's sparse infill, whose strength is a share of the solid's (the allowable is lowered for it) */
+  infill?: boolean;
 };
 
 export type Progress = (stage: string, frac: number, info?: { iter?: number; residual?: number }) => void;
 
 const FILL_MIN = 0.12;
+/** strength of the bond between print layers in shear, as a share of its strength in tension */
+const LAYER_SHEAR = 0.7;
 const MAX_CELLS = 3_500_000;
 /** solid elements, about three times the "fine" target: beyond this memory and time grow past what a browser tab should spend */
 export const MAX_ELEMENTS = 350_000;
@@ -855,6 +880,35 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     else loadInfo.push({ kind: ld.t, region: describeRegion(ld.region), at: c, vector: R, magnitude: Math.hypot(...R), area: sel.area, nodes: sel.nodes.length });
   });
 
+  // ---------- printed parts: solid walls and skins round a sparse infill ----------
+  // A part printed on an FDM printer is solid only in its walls (round every layer's outline) and its skins (under
+  // tops, over bottoms); inside, the infill is a lattice with a share of the solid's stiffness and strength. Without
+  // print settings per part, printed: and build: of the analysis make every part solid and layered (as before).
+  const legacyPrint = inp.printed && !inp.parts.some((p) => p.print);
+  const prints: (PartPrint | null)[] = inp.parts.map(
+    (p) => p.print ?? (legacyPrint ? { build: norm(inp.buildDir), wall: 0, skin: 0, infill: 1, pattern: "gyroid", words: "solid", from: "analysis" } : null),
+  );
+  const anyLayered = prints.some((pp, i) => pp && inp.materials[inp.parts[i].material].layerFactor < 1);
+  /** per element: the share of it that is solid wall or skin, and of the solid's stiffness, strength and mass it has (1 outside printed parts) */
+  const solidShare = new Float32Array(ne).fill(1);
+  const kPrint = new Float32Array(ne).fill(1);
+  const sPrint = new Float32Array(ne).fill(1);
+  const mPrint = new Float32Array(ne).fill(1);
+  prints.forEach((pp, pi) => {
+    if (!pp || pp.infill >= 0.999) return;
+    const share = shellShare(pi, pp);
+    const kI = infillStiffness(pp.infill, pp.pattern),
+      sI = infillStrength(pp.infill, pp.pattern);
+    for (let e = 0; e < ne; e++) {
+      if (!active[e] || owner[e] !== pi) continue;
+      const sh = share[e];
+      solidShare[e] = sh;
+      kPrint[e] = sh + (1 - sh) * kI;
+      sPrint[e] = sh + (1 - sh) * sI;
+      mPrint[e] = sh + (1 - sh) * pp.infill;
+    }
+  });
+
   // ---------- materials ----------
   const matOf = (e: number) => inp.parts[owner[e]].material;
   const matCount = new Array(inp.materials.length).fill(0);
@@ -865,7 +919,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     matCount[matOf(e)]++;
     const v = fill[e] * hx * hy * hz;
     solidVolume += v;
-    mass += (v / 1000) * inp.materials[matOf(e)].density;
+    mass += (v / 1000) * inp.materials[matOf(e)].density * mPrint[e];
   }
   // ---------- carried masses (kg per node) ----------
   const extra = new Float64Array(nn);
@@ -895,7 +949,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
       const p = nodePos(elemNode0(e));
-      add(fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6, [p[0] + hx / 2, p[1] + hy / 2, p[2] + hz / 2]);
+      add(fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6, [p[0] + hx / 2, p[1] + hy / 2, p[2] + hz / 2]);
     }
     for (let n = 0; n < nn; n++) if (extra[n]) add(extra[n], nodePos(n));
     const at = supportInfo[0].at;
@@ -911,7 +965,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     let mtot = 0;
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
-      const m = fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6; // kg
+      const m = fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6; // kg
       const n0 = elemNode0(e);
       for (let q = 0; q < 8; q++) {
         const n = n0 + off[q];
@@ -939,23 +993,55 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   // stay exactly condensed: the load is f = E·fill·α·ΔT·Σ_g T_gᵀ·D·(1, 1, 1, 0, 0, 0)·V/8 and the stress afterwards
   // E·D·(T_g·u − ε_th). The loads of each element add up to nothing, so applied (the outside loads) is unchanged.
   const em = elementMatrices(nu, hx, hy, hz);
+  // printed plastics are stiffer along their layers than across them: the solid walls and skins of each printed part
+  // get an element of their own, turned to its build direction (its infill stays isotropic)
+  const classMats: ElementMatrices[] = [];
+  const cls = new Uint8Array(ne);
+  {
+    const keys = new Map<string, number>();
+    prints.forEach((pp, pi) => {
+      if (!pp) return;
+      const { rE, rG } = layerStiffness(inp.materials[inp.parts[pi].material]);
+      if (rE >= 0.999 && rG >= 0.999) return;
+      const b = norm(pp.build);
+      const key = `${nu}|${rE.toFixed(3)}|${rG.toFixed(3)}|${b.map((x) => x.toFixed(4)).join(",")}`;
+      let c = keys.get(key);
+      if (c === undefined) {
+        if (classMats.length >= 15) return;
+        classMats.push(elementMatricesFor(layeredConstitutive(nu, rE, rG, b), key, nu, hx, hy, hz));
+        c = classMats.length;
+        keys.set(key, c);
+      }
+      for (let e = 0; e < ne; e++) if (active[e] && owner[e] === pi && solidShare[e] >= 0.5) cls[e] = c;
+    });
+  }
+  /** the element matrices an element uses */
+  const emOf = (e: number): ElementMatrices => (cls[e] ? classMats[cls[e] - 1] : em);
   const thermalStrain = (e: number) => (cellT ? inp.thermalMaterials![matOf(e)].alpha * (cellT[e] - refTemp) : 0);
   if (cellT) {
-    const dv = new Float64Array(6);
-    for (let r = 0; r < 6; r++) dv[r] = em.D[r * 6] + em.D[r * 6 + 1] + em.D[r * 6 + 2];
-    const thv = new Float64Array(24);
     const detJ = (hx * hy * hz) / 8;
-    for (const T of em.strainGauss)
-      for (let j = 0; j < 24; j++) {
-        let s = 0;
-        for (let r = 0; r < 6; r++) s += T[r * 24 + j] * dv[r];
-        thv[j] += detJ * s;
-      }
+    const thvOf = new Map<ElementMatrices, Float64Array>();
+    const thermalLoad = (m: ElementMatrices) => {
+      let thv = thvOf.get(m);
+      if (thv) return thv;
+      const dv = new Float64Array(6);
+      for (let r = 0; r < 6; r++) dv[r] = m.D[r * 6] + m.D[r * 6 + 1] + m.D[r * 6 + 2];
+      thv = new Float64Array(24);
+      for (const T of m.strainGauss)
+        for (let j = 0; j < 24; j++) {
+          let s = 0;
+          for (let r = 0; r < 6; r++) s += T[r * 24 + j] * dv[r];
+          thv[j] += detJ * s;
+        }
+      thvOf.set(m, thv);
+      return thv;
+    };
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
       const eth = thermalStrain(e);
       if (!eth) continue;
-      const c = inp.materials[matOf(e)].E * kfac[e] * fill[e] * eth;
+      const thv = thermalLoad(emOf(e));
+      const c = inp.materials[matOf(e)].E * kfac[e] * kPrint[e] * fill[e] * eth;
       const n0 = elemNode0(e);
       for (let a = 0; a < 8; a++) {
         const d = 3 * (n0 + off[a]);
@@ -972,8 +1058,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   // ---------- solve ----------
   progress("Setting up the solver", 0.22);
   const dense = new Float64Array(ne);
-  for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e] * kfac[e];
-  const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc);
+  for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e] * kfac[e] * kPrint[e];
+  const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], classMats.length ? { cls, mats: classMats } : undefined);
   const H = buildHierarchy(fine, plan.shifts, nu);
   const fs = Float64Array.from(f);
   for (let i = 0; i < fs.length; i++) if (!fine.free[i]) fs[i] = 0;
@@ -985,7 +1071,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const nodeMass = new Float64Array(nn);
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
-      const m = (fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-9) / 8;
+      const m = (fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-9) / 8;
       const n0 = elemNode0(e);
       for (let q = 0; q < 8; q++) nodeMass[n0 + off[q]] += m;
     }
@@ -1160,6 +1246,9 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const nodeW = new Float64Array(nn);
   const nodeMat = new Int16Array(nn).fill(-1);
   const nodeMatW = new Float32Array(nn);
+  /** the part that has the most of each node, and the share of the solid's strength there (a printed part's infill is weaker) */
+  const nodePart = new Int16Array(nn).fill(-1);
+  const nodeStr = new Float64Array(nn);
   const ue = new Float64Array(24);
   const sg = new Float64Array(48);
   const eg = new Float64Array(48);
@@ -1176,11 +1265,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       ue[3 * a + 1] = u[d + 1];
       ue[3 * a + 2] = u[d + 2];
     }
-    const Ee = inp.materials[matOf(e)].E * kfac[e];
+    const Ee = inp.materials[matOf(e)].E * kfac[e] * kPrint[e];
+    const me = emOf(e);
     // the strain that makes stress: the total less the free thermal expansion
     const eth = thermalStrain(e);
     for (let g = 0; g < 8; g++) {
-      const T = em.strainGauss[g];
+      const T = me.strainGauss[g];
       for (let r = 0; r < 6; r++) {
         let s = 0;
         for (let j = 0; j < 24; j++) s += T[r * 24 + j] * ue[j];
@@ -1188,7 +1278,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
       for (let r = 0; r < 6; r++) {
         let s = 0;
-        for (let c = 0; c < 6; c++) s += em.D[r * 6 + c] * eg[6 * g + c];
+        for (let c = 0; c < 6; c++) s += me.D[r * 6 + c] * eg[6 * g + c];
         sg[6 * g + r] = Ee * s;
       }
     }
@@ -1216,9 +1306,11 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         nodeE[6 * n + r] += w * t;
       }
       nodeW[n] += w;
+      nodeStr[n] += w * sPrint[e];
       if (w > nodeMatW[n]) {
         nodeMatW[n] = w;
         nodeMat[n] = matOf(e);
+        nodePart[n] = owner[e];
       }
     }
   }
@@ -1263,7 +1355,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const sHi = fat ? fat.hi : 1,
     sLo = fat ? fat.lo : 1;
   const sAbs = Math.max(Math.abs(sHi), Math.abs(sLo));
-  const bd = norm(inp.buildDir);
+  /** each part's build direction (null: not printed in layers) */
+  const buildOf = prints.map((pp) => (pp ? norm(pp.build) : null));
+  /** the layers' build direction at a node, when its part is printed in a plastic with weaker layers */
+  const layerDir = (n: number): V3 | null => {
+    const pi = nodePart[n];
+    if (pi < 0) return null;
+    const b = buildOf[pi];
+    return b && inp.materials[nodeMat[n]].layerFactor < 1 ? b : null;
+  };
   const vm = new Float32Array(nn);
   const strainN = new Float32Array(nn);
   /** per node: the lowest safety factor (static, or fatigue when it is lower), and what it is judged against (0 yield, 1 layers, 2 fatigue, 3 fatigue between layers) */
@@ -1276,6 +1376,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const fatMode = fat ? new Uint8Array(nn) : null;
   const lifeN = fat ? new Float64Array(nn) : null;
   const layerN = new Float32Array(nn);
+  /** per node: the share of the solid's strength (1, or less in a printed part's infill) */
+  const strN = new Float32Array(nn).fill(1);
   for (let n = 0; n < nn; n++) {
     const w = nodeW[n];
     if (!(w > 0)) continue;
@@ -1284,30 +1386,31 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       nodeS[o + r] /= w;
       nodeE[o + r] /= w;
     }
+    const str = Math.min(1, nodeStr[n] / w);
+    strN[n] = str;
     const s = vonMises(nodeS, o);
     vm[n] = s;
     const pe = principal(nodeE[o], nodeE[o + 1], nodeE[o + 2], nodeE[o + 3] / 2, nodeE[o + 4] / 2, nodeE[o + 5] / 2);
     strainN[n] = Math.abs(pe[0]) >= Math.abs(pe[2]) ? pe[0] : pe[2];
     const mi = nodeMat[n];
     const m = inp.materials[mi];
-    // a hot plastic is weaker: the allowable falls with the temperature there
-    const al = allow[mi].value * derate(n, mi);
+    // a hot plastic is weaker: the allowable falls with the temperature there; so is a printed part's infill
+    const al = allow[mi].value * derate(n, mi) * str;
     let sf = s > 1e-9 ? al / (s * sAbs) : 1e6;
     let mode = 0;
     let sn = 0;
-    const layered = inp.printed && m.layerFactor < 1;
-    if (layered) {
-      // normal stress across the layers: n·σ·n along the build direction
-      sn =
-        bd[0] * bd[0] * nodeS[o] +
-        bd[1] * bd[1] * nodeS[o + 1] +
-        bd[2] * bd[2] * nodeS[o + 2] +
-        2 * (bd[0] * bd[1] * nodeS[o + 3] + bd[1] * bd[2] * nodeS[o + 4] + bd[2] * bd[0] * nodeS[o + 5]);
-      // the most it pulls the layers apart over the history
+    const lb = layerDir(n);
+    if (lb) {
+      // the pull across the layers (n·σ·n along the build direction) and the slide along them (the rest of σ·n)
+      const { normal, shear } = layerStress(o, lb);
+      sn = normal;
+      // the most it pulls the layers apart over the history, and the most it slides them
       const pull = Math.max(sn * sHi, sn * sLo);
       layerN[n] = pull;
-      if (pull > 1e-9) {
-        const sfl = (al * m.layerFactor) / pull;
+      const Sn = al * m.layerFactor;
+      const q = (Math.max(pull, 0) / Sn) ** 2 + ((shear * sAbs) / (LAYER_SHEAR * Sn)) ** 2;
+      if (q > 1e-18) {
+        const sfl = 1 / Math.sqrt(q);
         if (sfl < sf) {
           sf = sfl;
           mode = 1;
@@ -1317,12 +1420,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     sfStatic[n] = Math.min(sf, 1e6);
     staticMode[n] = mode;
     if (fat && sfFat && fatMode && lifeN) {
-      const bulk = fat.at(mi, false, fat.equivalent(mi, nodeS, o, s));
+      // a weaker infill takes the same damage at a stress lowered by its share of the strength (the S-N curve scales with it)
+      const bulk = fat.at(mi, false, fat.equivalent(mi, nodeS, o, s) / str);
       let fsf = bulk.sf;
       let dmg = bulk.damage;
       let fm = 2;
-      if (layered) {
-        const lay = fat.at(mi, true, sn);
+      if (lb) {
+        const lay = fat.at(mi, true, sn / str);
         if (lay.sf < fsf) {
           fsf = lay.sf;
           fm = 3;
@@ -1380,7 +1484,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     if (iF < 0 || sfN[n] < sfN[iF]) iF = n;
     if (!nearBC[n] && (iA < 0 || vm[n] > vm[iA])) iA = n;
     if (!nearBC[n] && (iFA < 0 || sfN[n] < sfN[iFA])) iFA = n;
-    if (inp.printed && (iL < 0 || layerN[n] > layerN[iL])) iL = n;
+    if (anyLayered && (iL < 0 || layerN[n] > layerN[iL])) iL = n;
     if (fat && sfFat && lifeN) {
       if (iSt < 0 || sfStatic[n] < sfStatic[iSt]) iSt = n;
       if (!nearBC[n] && (iStA < 0 || sfStatic[n] < sfStatic[iStA])) iStA = n;
@@ -1586,16 +1690,19 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const temp = nodeT && n >= 0 ? { tempC: nodeT[n] } : {};
     if (md >= 2 && fat) {
       const c = md === 3 ? fat.layerCurves[mi] ?? fat.curves[mi] : fat.curves[mi];
-      return { value, at: pos(n), mode: md === 3 ? "layer fatigue" : "fatigue", allowable: snStrengthAt(c, fat.total), material: inp.materials[mi].name, ...temp };
+      const fstr = n >= 0 ? strN[n] : 1;
+      return { value, at: pos(n), mode: md === 3 ? "layer fatigue" : "fatigue", allowable: snStrengthAt(c, fat.total) * fstr, material: inp.materials[mi].name, ...temp, ...(fstr < 0.95 ? { infill: true } : {}) };
     }
     const layers = md === 1;
+    const str = n >= 0 ? strN[n] : 1;
     return {
       value,
       at: pos(n),
       mode: layers ? "layers" : allow[mi].basis,
-      allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1) * derate(n, mi),
+      allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1) * derate(n, mi) * str,
       material: inp.materials[mi].name,
       ...temp,
+      ...(str < 0.95 ? { infill: true } : {}),
     };
   };
   const safetyNearBC = iF >= 0 && !!nearBC[iF];
@@ -1613,7 +1720,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const mi = nodeMat[iLife];
       const o = 6 * iLife;
       const layer = fatMode[iLife] === 3 && !!fat.layerCurves[mi];
-      const sigma = layer ? layerSigma(o) : fat.equivalent(mi, nodeS, o, vm[iLife]);
+      const lb = layerDir(iLife);
+      const sigma = (layer && lb ? layerStress(o, lb).normal : fat.equivalent(mi, nodeS, o, vm[iLife])) / strN[iLife];
       shares = fat.shares(mi, layer, sigma).slice(0, 6);
     }
     fatigue = {
@@ -1636,6 +1744,29 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         "Fatigue lives come from S-N curves estimated from each material's strengths (Shigley), with the surface and reliability factors shown; sharp notches smaller than the elements, threads and welds shorten them further. Treat a life within a few times the target as uncertain.",
       );
   }
+  // how each printed part was modelled: the share of it that is solid, and how its infill and layers compare to the solid
+  const printing: NonNullable<StructuralResult["printing"]> = [];
+  prints.forEach((pp, pi) => {
+    if (!pp || (pp.words === "solid" && legacyPrint)) return;
+    let solid = 0,
+      all = 0;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e] || owner[e] !== pi) continue;
+      solid += fill[e] * solidShare[e];
+      all += fill[e];
+    }
+    if (!all) return;
+    printing.push({
+      part: inp.parts[pi].name,
+      build: norm(pp.build),
+      from: pp.from,
+      words: pp.words,
+      solid: solid / all,
+      infillStiffness: pp.infill >= 0.999 ? 1 : infillStiffness(pp.infill, pp.pattern),
+      infillStrength: pp.infill >= 0.999 ? 1 : infillStrength(pp.infill, pp.pattern),
+      across: layerStiffness(inp.materials[inp.parts[pi].material]).rE,
+    });
+  });
   const tEnd = now();
   progress("Done", 1);
   return {
@@ -1646,7 +1777,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     maxStress: { value: iS >= 0 ? vm[iS] : 0, at: pos(iS), nearBoundary: iS >= 0 && !!nearBC[iS], away: iA >= 0 ? { value: vm[iA], at: pos(iA) } : null },
     maxStrain: { value: iE >= 0 ? strainN[iE] : 0, at: pos(iE) },
     minSafety: { ...safetyAt(iF), nearBoundary: safetyNearBC, away: safetyNearBC && iFA >= 0 ? safetyAt(iFA) : null },
-    layer: inp.printed && iL >= 0 ? { value: layerN[iL], at: pos(iL) } : null,
+    layer: anyLayered && iL >= 0 ? { value: layerN[iL], at: pos(iL) } : null,
     hotSpots: spots.map((n) => ({ at: nodePos(n), stress: vm[n], safety: sfN[n] })),
     applied,
     reaction,
@@ -1660,6 +1791,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     ranges,
     warnings,
     materials: inp.materials.map((m, i) => ({ name: m.name, E: m.E, yield: m.yield, allowable: allow[i].value, basis: allow[i].basis, layerFactor: m.layerFactor, assumed: !!m.assumed })),
+    ...(printing.length ? { printing } : {}),
     modal,
     drop: dropResult,
     ...(heat ? { thermal: { ...heat.result, refTemp } } : nodeT ? { thermal: uniformThermal(nodeT, refTemp) } : {}),
@@ -1668,14 +1800,92 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   };
 
   // ----- helpers that need the closure -----
-  /** normal stress across the print layers at a node (n·σ·n along the build direction) */
-  function layerSigma(o: number): number {
-    return (
-      bd[0] * bd[0] * nodeS[o] +
-      bd[1] * bd[1] * nodeS[o + 1] +
-      bd[2] * bd[2] * nodeS[o + 2] +
-      2 * (bd[0] * bd[1] * nodeS[o + 3] + bd[1] * bd[2] * nodeS[o + 4] + bd[2] * bd[0] * nodeS[o + 5])
-    );
+  /** the stress on a node's print layers: the pull across them (n·σ·n along the build direction) and the slide along them */
+  function layerStress(o: number, b: V3): { normal: number; shear: number } {
+    const S = nodeS;
+    // traction on the layer plane, t = σ·b (Voigt: xx, yy, zz, xy, yz, zx)
+    const tx = S[o] * b[0] + S[o + 3] * b[1] + S[o + 5] * b[2];
+    const ty = S[o + 3] * b[0] + S[o + 1] * b[1] + S[o + 4] * b[2];
+    const tz = S[o + 5] * b[0] + S[o + 4] * b[1] + S[o + 2] * b[2];
+    const normal = tx * b[0] + ty * b[1] + tz * b[2];
+    return { normal, shear: Math.hypot(tx - normal * b[0], ty - normal * b[1], tz - normal * b[2]) };
+  }
+
+  /**
+   * The share of each element of a printed part that is solid wall or skin: walls run round the outline of every layer
+   * (measured within the layer, across the build direction) and skins lie under tops and over bottoms (measured along
+   * it). The grid's axis nearest the build direction stands in for it.
+   */
+  function shellShare(pi: number, pp: PartPrint): Float32Array {
+    const out = new Float32Array(ne);
+    const b = norm(pp.build);
+    const ax = Math.abs(b[0]) >= Math.abs(b[1]) && Math.abs(b[0]) >= Math.abs(b[2]) ? 0 : Math.abs(b[1]) >= Math.abs(b[2]) ? 1 : 2;
+    const dims = [nx, ny, nz];
+    const hs = [hx, hy, hz];
+    const stride = [1, nx, nx * ny];
+    const u = (ax + 1) % 3,
+      v = (ax + 2) % 3;
+    const inside = (e: number) => active[e] === 1 && owner[e] === pi;
+    // the depth of a cell's centre below the surface where it is the first cell in: a partly filled cell holds its
+    // material on the inner side, so its centre sits nearer the surface (or past it)
+    const first = (e: number, h: number) => (fill[e] < 0.99 ? fill[e] * h - h / 2 : h / 2);
+    // within each layer: chamfer distance (depth below the outline, mm) of every cell centre
+    const dW = new Float32Array(ne);
+    const hu = hs[u],
+      hvv = hs[v],
+      hd = Math.hypot(hu, hvv);
+    const hw = (hu + hvv) / 2;
+    const nu_ = dims[u],
+      nv_ = dims[v];
+    for (let w = 0; w < dims[ax]; w++) {
+      const at = (a: number, c: number) => w * stride[ax] + a * stride[u] + c * stride[v];
+      // outside the part (and past the grid) a centre lies half a cell out
+      const get = (a: number, c: number) => (a < 0 || c < 0 || a >= nu_ || c >= nv_ ? -hw / 2 : dW[at(a, c)]);
+      for (let c = 0; c < nv_; c++)
+        for (let a = 0; a < nu_; a++) {
+          const e = at(a, c);
+          dW[e] = inside(e) ? (fill[e] < 0.99 ? first(e, hw) : Infinity) : -hw / 2;
+        }
+      for (let c = 0; c < nv_; c++)
+        for (let a = 0; a < nu_; a++) {
+          const e = at(a, c);
+          if (!inside(e)) continue;
+          dW[e] = Math.min(dW[e], get(a - 1, c) + hu, get(a, c - 1) + hvv, get(a - 1, c - 1) + hd, get(a + 1, c - 1) + hd);
+        }
+      for (let c = nv_ - 1; c >= 0; c--)
+        for (let a = nu_ - 1; a >= 0; a--) {
+          const e = at(a, c);
+          if (!inside(e)) continue;
+          dW[e] = Math.min(dW[e], get(a + 1, c) + hu, get(a, c + 1) + hvv, get(a + 1, c + 1) + hd, get(a - 1, c + 1) + hd);
+        }
+    }
+    // along the build direction: the depth below the nearer top or bottom
+    const ha = hs[ax];
+    const up = new Float32Array(ne);
+    for (let c = 0; c < nv_; c++)
+      for (let a = 0; a < nu_; a++) {
+        let run = -Infinity;
+        for (let w = 0; w < dims[ax]; w++) {
+          const e = w * stride[ax] + a * stride[u] + c * stride[v];
+          run = inside(e) ? (run === -Infinity ? first(e, ha) : run + ha) : -Infinity;
+          up[e] = run;
+        }
+        run = -Infinity;
+        for (let w = dims[ax] - 1; w >= 0; w--) {
+          const e = w * stride[ax] + a * stride[u] + c * stride[v];
+          if (!inside(e)) {
+            run = -Infinity;
+            continue;
+          }
+          run = run === -Infinity ? first(e, ha) : run + ha;
+          // how much of the cell lies within the skin, and within the walls
+          const depthV = Math.min(up[e], run);
+          const sV = Math.min(1, Math.max(0, (pp.skin - (depthV - ha / 2)) / ha));
+          const sW = Math.min(1, Math.max(0, (pp.wall - (dW[e] - hw / 2)) / hw));
+          out[e] = Math.max(sV, sW);
+        }
+      }
+    return out;
   }
 
   /** The S-N curves and the per-point fatigue sums for the history. */
@@ -1690,7 +1900,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
     const finishOf = (i: number): Finish => fi.finishes[i] ?? "machined";
     const curves: SnCurve[] = inp.materials.map((m, i) => snCurve(m, finishOf(i), fi.reliability));
-    const layerCurves: (SnCurve | null)[] = inp.materials.map((m, i) => (inp.printed && m.layerFactor < 1 ? snCurve(m, finishOf(i), fi.reliability, m.layerFactor) : null));
+    const layerCurves: (SnCurve | null)[] = inp.materials.map((m, i) => (anyLayered && m.layerFactor < 1 ? snCurve(m, finishOf(i), fi.reliability, m.layerFactor) : null));
     // brittle materials crack from the largest tension; ductile ones by von Mises, signed by the largest principal stress
     const brittle = inp.materials.map((m) => m.elongation < 5);
     const crit = new Map<string, number>();
