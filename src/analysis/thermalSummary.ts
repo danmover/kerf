@@ -10,6 +10,15 @@ type Verdict = "pass" | "warn" | "fail";
 const p3 = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
 export const degC = (t: number) => `${fmtNum(t, Math.abs(t) < 100 ? 1 : 0)} °C`;
 const pct = (x: number) => `${fmtNum(x * 100, x < 0.1 ? 1 : 0)} %`;
+/** Three significant figures, without trailing zeros past the point. */
+const sig = (x: number) => (x === 0 ? "0" : String(Number(x.toPrecision(3))));
+/** Resistance, current, voltage and power in the units that read best at their size. */
+export const ohms = (r: number) => (r < 1e-4 ? `${sig(r * 1e6)} µΩ` : r < 1 ? `${sig(r * 1000)} mΩ` : r < 1000 ? `${sig(r)} Ω` : `${sig(r / 1000)} kΩ`);
+export const amps = (a: number) => (a < 1 ? `${sig(a * 1000)} mA` : `${sig(a)} A`);
+export const volts = (v: number) => (v < 1 ? `${sig(v * 1000)} mV` : `${sig(v)} V`);
+export const watts = (w: number) => (w < 0.1 ? `${sig(w * 1000)} mW` : `${sig(w)} W`);
+/** Current density, A/mm². */
+export const density = (j: number) => `${sig(j)} A/mm²`;
 
 /** How long, in words. */
 export function duration(s: number): string {
@@ -79,14 +88,41 @@ export function temperatureText(r: StructuralResult): { detail: string; fix?: st
     const share = (x: number) => fmtNum(Math.max(0, (100 * x) / b.made), 0);
     detail += ` Where it goes: ${share(b.film)} % into the air${b.radiation > 1e-6 ? `, ${share(b.radiation)} % radiated` : ""}${Math.abs(b.held) > 0.01 * b.made ? `, ${share(b.held)} % into held surfaces` : ""}.`;
   }
+  detail += currentText(r);
   let fix: string | undefined;
   if (v.status !== "pass") {
     const soft = t.parts.find((p) => p.name === v.worst.name && /softens/.test(p.limitWhy));
+    const carries = t.currents?.find((c) => c.parts.some((p) => p.name === v.worst.name && p.share > 0.2));
     fix = soft
       ? `Keep the heat away from ${v.worst.name}: more cooling (cooling: "fan" or vents), a metal plate or heatsink between it and the source, standoffs, or a plastic rated hotter (PETG, ASA, PC or PA-CF).`
-      : `Give ${v.worst.name} more cooling: airflow (cooling: "fan"), a heatsink or a metal plate to spread the heat into, or less power through it.`;
+      : carries
+        ? `Give the current through ${v.worst.name} more metal: its heat goes with the square of the current over the cross-section, so twice the section halves it (and a narrow neck heats most); or a better conductor (copper, then aluminium), or more cooling (cooling: "fan").`
+        : `Give ${v.worst.name} more cooling: airflow (cooling: "fan"), a heatsink or a metal plate to spread the heat into, or less power through it.`;
   }
   return { detail, fix };
+}
+
+/**
+ * Each current() through the parts in words: what it meets, the voltage across it, the heat it makes once warm and
+ * cold, the parts that heat, and where it runs densest. Empty when nothing carries current.
+ */
+export function currentText(r: StructuralResult): string {
+  const t = r.thermal;
+  const cs = t?.currents;
+  if (!t || !cs?.length) return "";
+  const each = cs.slice(0, 4).map((c) => {
+    const head = c.driven === "amps" ? `${amps(c.amps)} from ${c.from} to ${c.to} through ${ohms(c.ohms)} drops ${volts(c.volts)}` : `${volts(c.volts)} from ${c.from} to ${c.to} across ${ohms(c.ohms)} drives ${amps(c.amps)}`;
+    const warmed = Math.abs(c.ohms - c.cold.ohms) > 0.005 * c.cold.ohms;
+    const parts = c.parts.length > 1 ? `, ${c.parts.slice(0, 4).map((p) => `${pct(p.share)} of it in ${p.name}`).join(", ")}` : "";
+    return `${c.label}: ${head} and makes ${watts(c.watts)}${warmed ? ` (${ohms(c.cold.ohms)} and ${watts(c.cold.watts)} at 20 °C, before it warms)` : ""}${parts}`;
+  });
+  let out = ` Current: ${each.join("; ")}${cs.length > 4 ? `; ${cs.length - 4} more` : ""}.`;
+  const pk = t.currentPeak;
+  if (pk) {
+    const crowd = pk.typical > 0 ? pk.value / pk.typical : 1;
+    out += crowd < 1.2 ? ` It runs about evenly, at ${density(pk.typical)}.` : ` It runs densest in ${pk.part} near ${p3(pk.at)}: ${density(pk.value)}, ${fmtNum(crowd, 1)}× its typical ${density(pk.typical)}, so it crowds there and heats most.`;
+  }
+  return out;
 }
 
 /** The lowest buckling factor against the target: under 1 the loads as given buckle the parts. */

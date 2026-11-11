@@ -138,8 +138,26 @@ export function elementMatrices(nuIn: number, sx = 1, sy = sx, sz = sx): Element
   const key = `${nu}|${sx}|${sy}|${sz}`;
   const hit = cache.get(key);
   if (hit) return hit;
+  const m = buildElement(constitutive(nu), nu, sx, sy, sz);
+  cache.set(key, m);
+  return m;
+}
+
+/**
+ * The element for any constitutive matrix D (6×6, Voigt order, engineering shear), such as a printed plastic that is
+ * stiffer along its layers than across them. key names D for the cache.
+ */
+export function elementMatricesFor(D: Float64Array, key: string, nu: number, sx = 1, sy = sx, sz = sx): ElementMatrices {
+  const k = `D:${key}|${sx}|${sy}|${sz}`;
+  const hit = cache.get(k);
+  if (hit) return hit;
+  const m = buildElement(D, nu, sx, sy, sz);
+  cache.set(k, m);
+  return m;
+}
+
+function buildElement(D: Float64Array, nu: number, sx: number, sy: number, sz: number): ElementMatrices {
   const detJ = (sx * sy * sz) / 8;
-  const D = constitutive(nu);
   const Kuu = new Float64Array(24 * 24);
   const Kua = new Float64Array(24 * 9);
   const Kaa = new Float64Array(9 * 9);
@@ -205,9 +223,87 @@ export function elementMatrices(nuIn: number, sx = 1, sy = sx, sz = sx): Element
     });
   });
 
-  const m: ElementMatrices = { nu, dims: [sx, sy, sz], K, diag, D, strainGauss, strainCenter, extrap };
-  cache.set(key, m);
-  return m;
+  return { nu, dims: [sx, sy, sz], K, diag, D, strainGauss, strainCenter, extrap };
+}
+
+/**
+ * Constitutive matrix (for an in-plane E of 1) of a transversely isotropic solid whose odd axis is `axis`: a printed
+ * plastic, with Young's modulus rE and shear modulus rG (as shares of the in-plane values) across its layers.
+ */
+export function layeredConstitutive(nu: number, rE: number, rG: number, axis: [number, number, number]): Float64Array {
+  // compliance in a frame whose third axis is the build direction
+  const S = new Float64Array(36);
+  const Ez = rE,
+    G = 1 / (2 * (1 + nu)),
+    Gz = rG * G;
+  S[0] = 1;
+  S[7] = 1;
+  S[14] = 1 / Ez;
+  S[1] = S[6] = -nu;
+  // an in-plane stress shrinks it across the layers by ν (ν_pz = ν); symmetry then gives ν_zp = ν·rE
+  S[2] = S[12] = S[8] = S[13] = -nu;
+  // engineering shear: γ = τ / G; Voigt order xx, yy, zz, xy, yz, zx
+  S[21] = 1 / G;
+  S[28] = 1 / Gz;
+  S[35] = 1 / Gz;
+  const Dl = invert(S, 6);
+  // rotate the tensor so the frame's third axis lies along `axis`
+  const z = normalize(axis);
+  const helper: [number, number, number] = Math.abs(z[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const x = normalize(cross(helper, z));
+  const y = cross(z, x);
+  // R: columns are the local axes in global coordinates
+  const R = [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]];
+  return rotateVoigt(Dl, R);
+}
+
+const VOIGT: [number, number][] = [
+  [0, 0],
+  [1, 1],
+  [2, 2],
+  [0, 1],
+  [1, 2],
+  [2, 0],
+];
+const voigtIndex = (i: number, j: number) => (i === j ? i : (i === 0 && j === 1) || (i === 1 && j === 0) ? 3 : (i === 1 && j === 2) || (i === 2 && j === 1) ? 4 : 5);
+
+/** C'_ijkl = R_ip R_jq R_kr R_ls C_pqrs on a Voigt stiffness (engineering shear strains, tensor shear stresses). */
+function rotateVoigt(D: Float64Array, R: number[]): Float64Array {
+  const C = (p: number, q: number, r: number, s: number) => D[voigtIndex(p, q) * 6 + voigtIndex(r, s)];
+  const out = new Float64Array(36);
+  for (let I = 0; I < 6; I++)
+    for (let J = 0; J < 6; J++) {
+      const [i, j] = VOIGT[I];
+      const [k, l] = VOIGT[J];
+      let v = 0;
+      for (let p = 0; p < 3; p++)
+        for (let q = 0; q < 3; q++) {
+          const a = R[i * 3 + p] * R[j * 3 + q];
+          if (!a) continue;
+          for (let r = 0; r < 3; r++)
+            for (let s = 0; s < 3; s++) {
+              const b = R[k * 3 + r] * R[l * 3 + s];
+              if (b) v += a * b * C(p, q, r, s);
+            }
+        }
+      out[I * 6 + J] = v;
+    }
+  // symmetrise round-off
+  for (let I = 0; I < 6; I++)
+    for (let J = I + 1; J < 6; J++) {
+      const m = 0.5 * (out[I * 6 + J] + out[J * 6 + I]);
+      out[I * 6 + J] = m;
+      out[J * 6 + I] = m;
+    }
+  return out;
+}
+
+function normalize(v: [number, number, number]): [number, number, number] {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
+function cross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
 /** Von Mises equivalent stress of a Voigt stress vector. */

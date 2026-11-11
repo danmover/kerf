@@ -254,6 +254,16 @@ component nut = lib.nut(M4) { at: (0, 0, -2), axis: -Z }`);
     expect(ids).toContain("fail held:rests:block");
     expect(it.find((i) => i.id === "clamp:nut:bolt:nut")!.fix).toMatch(/Move nut to at: \(0, 0, 0\)/);
   }, 60_000);
+
+  it("holds a printed foot on a plywood board with a countersunk wood screw", async () => {
+    const board = `part board { material: "Wood" process: false held: "on the bench" body box(100, 100, 12) cut hole(d: 3, depth: 10.5, at: (20, 0, 12), dir: -Z) }
+part foot { material: "PETG CF" body box(40, 40, 10, at: (20, 0, 12)) cut hole(d: 4.5, depth: 10.1, at: (20, 0, 22), dir: -Z, csink: 8.4) }
+`;
+    const loose = await items(board);
+    expect(loose.map((i) => `${i.status} ${i.id}`)).toEqual(["fail held:rests:foot"]);
+    const screwed = await items(`${board}component s = lib.screw("8G", 20) { at: (20, 0, 22), axis: -Z }`);
+    expect(screwed.map((i) => `${i.status} ${i.id}`).sort()).toEqual(["pass clamp:ok", "pass held:ok"]);
+  }, 60_000);
 });
 
 describe("riding parts in the mechanism simulation", () => {

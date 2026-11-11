@@ -6,6 +6,7 @@
 
 import type { V3 } from "../kernel/recipe";
 import { materialRecord } from "../library/materialDb";
+import { FDM_DEFAULTS, INFILL_PATTERNS } from "./infill";
 import { CUTTER_SOURCES, cutterFit, fdmNeeds, flowRatio, frameFit, isMetal, materialInfo, millClass, mouldPressure, suggestMaterials } from "./materials";
 import type { ProcessId, ProcessSpec, Rules, SettingValue, Tool } from "./types";
 
@@ -60,6 +61,10 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "nozzle", kind: "number", def: 0.4, doc: "nozzle diameter, mm", machine: true },
       { key: "layer", kind: "number", def: 0.2, doc: "layer height, mm" },
       { key: "build", kind: "dir", def: Z, doc: "build direction in the part's frame (Z: printed as modelled; -Z: upside down)" },
+      { key: "walls", kind: "number", def: FDM_DEFAULTS.walls, doc: "walls (perimeters) round every outline; strength analyses count them as solid" },
+      { key: "top", kind: "number", def: FDM_DEFAULTS.top, doc: "solid layers under every top face and over every bottom face" },
+      { key: "infill", kind: "number", def: FDM_DEFAULTS.infill, doc: "sparse infill inside the walls, as a share like 40% (100% is solid)" },
+      { key: "pattern", kind: "choice", def: FDM_DEFAULTS.pattern, options: INFILL_PATTERNS, doc: "infill pattern: gyroid (about as strong every way), grid, cubic, honeycomb, lines or lightning (only holds up top faces)" },
       { key: "overhang", kind: "number", def: 45, doc: "steepest unsupported overhang, degrees from vertical", machine: true },
       { key: "supports", kind: "bool", def: true, doc: "support material allowed (false makes overhangs failures)" },
       { key: "bed", kind: "size", def: [250, 210, 210], doc: "build volume (x, y, z), mm", machine: true },

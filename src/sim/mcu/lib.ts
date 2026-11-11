@@ -1595,9 +1595,30 @@ const neoPixel: LibClass = {
   }),
 };
 
+// ---------- BluetoothSerial (ESP32) ----------
+// A sketch's second console over Bluetooth Classic. The simulator has one console, the USB serial port, and
+// nothing is paired here: begin() succeeds, nothing ever arrives and what the sketch prints to it is dropped
+// (the arguments still cost their cycles).
+const btQuiet = (ret: (ctx: Ctx) => C["t"], value: number, cyc: number): LibMethod => (_obj, args, ctx, pos) => ({ t: ret(ctx), ev: () => value, cost: sumCost(args) + cyc, pos });
+const btSerial: LibClass = {
+  methods: dict<LibMethod>({
+    begin: btQuiet(() => BOOL, 1, 200),
+    end: btQuiet(() => VOID, 0, 20),
+    available: btQuiet((c) => c.T.int, 0, 20),
+    read: btQuiet((c) => c.T.int, -1, 20),
+    peek: btQuiet((c) => c.T.int, -1, 20),
+    hasClient: btQuiet(() => BOOL, 0, 20),
+    connected: btQuiet(() => BOOL, 0, 20),
+    flush: btQuiet(() => VOID, 0, 20),
+    print: btQuiet((c) => c.T.sizeT, 0, 40),
+    println: btQuiet((c) => c.T.sizeT, 0, 40),
+    write: btQuiet((c) => c.T.sizeT, 0, 40),
+  }),
+};
+
 export const LIB_FUNCS: Record<string, LibFn> = dict(libFuncs);
 export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Serial1: serialObject(1), Serial2: serialObject(2), Wire: wire, EEPROM: eeprom });
-export const LIB_CLASSES: Record<string, LibClass> = dict({ Servo: servo, Adafruit_NeoPixel: neoPixel });
+export const LIB_CLASSES: Record<string, LibClass> = dict({ Servo: servo, Adafruit_NeoPixel: neoPixel, BluetoothSerial: btSerial });
 /** Library class names the parser accepts as types. */
 export const CLASS_NAMES = new Set(Object.keys(LIB_CLASSES));
 

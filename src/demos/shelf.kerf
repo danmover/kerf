@@ -1,6 +1,6 @@
 design "Wall Shelf Bracket"
 note "3D-printed PETG bracket for a wall shelf, held by two M4 screws. The analysis block below checks it under the shelf's load after every change."
-note "Printed on its side (layers stacked along X) so the bending stress in the arm and the wall plate runs along the layers, not across them."
+note "Printed on its side (layers stacked along X) so the bending stress in the arm and the wall plate runs along the layers, not across them, with 6 walls, 6 top and bottom layers and 60 % gyroid infill: the gusset is mostly skin and infill, so a lighter print bends past the 1 mm limit."
 
 // ── Size ───────────────────────────────────────────────
 param arm_len  = 150mm  range 80 .. 250  "How far the arm reaches out from the wall"
@@ -21,6 +21,7 @@ let screws   = [(-screw_x, t, screw_z), (screw_x, t, screw_z)]
 part bracket {
   color: #4f7cff
   material: "PETG"
+  process: mfg.fdm(build: X, walls: 6, top: 6, infill: 60%)
   group: "Bracket"
   body box(width, t, height, at: (0, t / 2, 0))                      // wall plate
   add box(width, arm_len, t, at: (0, arm_len / 2, height - t))       // arm
@@ -46,7 +47,6 @@ analysis "Shelf load" {
   load: force(face(bracket, +Z), (0, 0, -load_kg * 9.81N))
   gravity
   printed
-  build: X
   safety: 2.5
   max_deflection: 1mm
 }

@@ -3,7 +3,7 @@
 // the result and converts local fields to world coordinates.
 
 import type { PartRecipe, ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/recipe";
-import { BEARINGS, THREADS, threadSpec, type ThreadSpec } from "./standards";
+import { BEARINGS, THREADS, isWoodGauge, threadSpec, type ThreadSpec } from "./standards";
 import {
   CIRCLIPS,
   GRADES,
@@ -192,14 +192,15 @@ export const LIBRARY: Record<string, LibEntry> = {
 
   screw: {
     signature: 'lib.screw(M3, 12, head: "socket", grade: "A2-70", load: 0, shear: 0) { at: seat_point, axis: -Z }',
-    doc: `Machine screw from the fastener catalogue. Args: size (M1.6 to M20 as M3, M2_5…, or inch sizes as text: "#4-40", "#6-32", "#8-32", "#10-24", "#10-32", "1/4-20", "5/16-18", "3/8-16", "1/2-13"), length (mm; for a countersunk head it includes the head), head, grade, load (tension it carries in use, N each), shear (N each). Or pass a fastener chosen by calc.fastener as the size: lib.screw(joint) takes its size, length, head, grade and load. head: ${HEAD_TYPES.map((h) => `"${h}" (${HEADS[h].standard})`).join(", ")}. grade: "12.9" (black steel, the socket default), "A2-70" (stainless, most other heads' default), "A4-80" (marine), "8.8", "10.9", "4.8", "brass", "nylon". \`at\` is where the underside of the head seats (the surface, for a countersunk head; the top of a set screw), \`axis\` points along the shank into the material. Fields: seat, tip, head_top, axis, length, size, head, head_d, head_h, key. Tool access, thread engagement and (with load:) strength are checked automatically; the parts list gets its price and where to buy.`,
+    doc: `Machine screw from the fastener catalogue. Args: size (M1.6 to M20 as M3, M2_5…, or inch sizes as text: "#4-40", "#6-32", "#8-32", "#10-24", "#10-32", "1/4-20", "5/16-18", "3/8-16", "1/2-13"; or a wood screw gauge as text, "4G", "6G", "8G", "10G", "12G": a countersunk timber screw that cuts its own thread in a pilot hole in wood or plywood, lib.screw("8G", 20)), length (mm; for a countersunk head it includes the head), head, grade, load (tension it carries in use, N each), shear (N each). Or pass a fastener chosen by calc.fastener as the size: lib.screw(joint) takes its size, length, head, grade and load. head: ${HEAD_TYPES.map((h) => `"${h}" (${HEADS[h].standard})`).join(", ")}. grade: "12.9" (black steel, the socket default), "A2-70" (stainless, most other heads' default), "A4-80" (marine), "8.8", "10.9", "4.8", "brass", "nylon". \`at\` is where the underside of the head seats (the surface, for a countersunk head; the top of a set screw), \`axis\` points along the shank into the material. Fields: seat, tip, head_top, axis, length, size, head, head_d, head_h, key. Tool access, thread engagement and (with load:) strength are checked automatically; the parts list gets its price and where to buy.`,
     params: ["size", "length", "head", "grade", "load", "shear"],
     make(a) {
       const c = chosen(a);
       const t = c ? threadSpec(String(c.size))! : a.thread("size", "M3");
-      const head = (a.has("head") ? a.str("head") : typeof c?.head === "string" ? c.head : "socket") as HeadType;
+      const head = (a.has("head") ? a.str("head") : typeof c?.head === "string" ? c.head : isWoodGauge(t) ? "wood" : "socket") as HeadType;
       const hd = HEAD_TYPES.includes(head) ? headDims(head, t) : null;
       if (!HEAD_TYPES.includes(head)) throw new Error(`head: should be one of ${HEAD_TYPES.map((h) => `"${h}"`).join(", ")}`);
+      if (head === "wood" && !isWoodGauge(t)) throw new Error(`A wood screw comes in gauge sizes, written as text: lib.screw("8G", ${a.has("length") ? fmt(a.num("length")) : 20}) (4G, 6G, 8G, 10G or 12G)`);
       if (!hd) throw new Error(`${HEADS[head].noun} is not made in ${t.name}. ${t.name} comes as ${headsFor(t).map((h) => `"${h}"`).join(", ")}`);
       const L = a.has("length") ? a.num("length") : typeof c?.length === "number" ? c.length : 10;
       if (!(L > 0)) throw new Error("length must be greater than 0");
@@ -209,7 +210,7 @@ export const LIBRARY: Record<string, LibEntry> = {
       const lengths = stockLengths(head, t);
       const stocked = lengths.some((x) => Math.abs(x - L) < 0.05);
       const g = GRADES[grade];
-      const flat = head === "flat";
+      const flat = head === "flat" || head === "wood";
       const set = head === "set";
       // the shank starts under the head (in the material for a countersunk head)
       const z0 = flat ? hd.h : 0;
@@ -240,6 +241,11 @@ export const LIBRARY: Record<string, LibEntry> = {
         case "flat":
           base = { t: "cone", d1: hd.d, d2: t.d, h: hd.h, at: Z0, dir: ZP };
           ops.push(socket(hd.key, Math.min(hd.h * 0.9, hd.key), 0));
+          break;
+        case "wood":
+          base = { t: "cone", d1: hd.d, d2: t.d, h: hd.h, at: Z0, dir: ZP };
+          // Phillips recess: two crossed slots
+          for (const [w, d] of [[hd.d * 0.5, hd.d * 0.11], [hd.d * 0.11, hd.d * 0.5]]) ops.push({ op: "cut", shape: { t: "box", w, d, h: hd.h * 0.7, at: [0, 0, -0.01], r: 0 } });
           break;
         case "hex":
           base = { t: "prism", pts: hexPoints(hd.af!), h: hd.h, at: [0, 0, -hd.h], dir: ZP, rot: 0 };

@@ -161,6 +161,20 @@ describe("hardware in a design", () => {
     expect(hw.find((r) => /Hex head/i.test(r.description))?.standard).toMatch(/4017/);
   });
 
+  it("draws countersunk wood screws in gauge sizes, with a price and where to buy them", () => {
+    expect(threadSpec("8G")).toMatchObject({ d: 4.2, clearance: 4.5, tap: 3, head_d: 8.4 });
+    const src = `design "wood"\ncomponent s = lib.screw("8G", 20) { at: [(0, 0, 0), (20, 0, 0)], axis: -Z }\n`;
+    expect(errors(src)).toEqual([]);
+    const row = bomRows(evaluate(src)).find((r) => r.kind === "Buy")!;
+    expect(row.description).toMatch(/Countersunk wood screw 8G × 20 mm/);
+    expect(row.qty).toBe(2);
+    expect(row.price).toBeGreaterThan(0);
+    expect(row.links.length).toBeGreaterThan(0);
+    // a gauge size is a wood screw and nothing else, and a metric size is never one
+    expect(errors(`design "x"\ncomponent s = lib.screw("8G", 20, head: "pan") { at: (0, 0, 0), axis: -Z }`)[0]).toMatch(/not made in 8G/);
+    expect(errors(`design "x"\ncomponent s = lib.screw(M4, 12, head: "wood") { at: (0, 0, 0), axis: -Z }`)[0]).toMatch(/gauge sizes/);
+  });
+
   it("places the chosen screw and insert straight from calc.fastener", () => {
     const src = `design "lid"
 let j = calc.fastener(grip: 3, into: "insert", material: "PETG", size: M3)
@@ -236,6 +250,27 @@ component s = lib.screw(M3, 8, load: ${load}) { at: (0, 0, 7), axis: -Z }
     const heavy = fastenerChecks(evaluate(src(1500))).find((x) => /carries its load/.test(x.title))!;
     expect(heavy.status).toBe("fail");
     expect(heavy.detail).toMatch(/insert pull-out/);
+  });
+});
+
+describe("wood screws", () => {
+  const src = (load: number, depth = 10.5) => `design "foot on a board"
+part base { material: "Wood" process: false body box(100, 100, 12) cut hole(d: 3, depth: ${depth}, at: (20, 0, 12), dir: -Z) }
+part foot { material: "PETG CF" body box(40, 40, 10, at: (20, 0, 12)) cut hole(d: 4.5, depth: 10.1, at: (20, 0, 22), dir: -Z, csink: 8.4) }
+component s = lib.screw("8G", 20, load: ${load}) { at: (20, 0, 22), axis: -Z }
+`;
+
+  it("counts a pilot hole in wood as thread and checks the pull-out against the load", () => {
+    expect(errors(src(130))).toEqual([]);
+    const items = fastenerChecks(evaluate(src(130)));
+    expect(items.map((i) => `${i.status} ${i.title}`).sort()).toEqual(["pass 8G×20 s carries its load", "pass Every screw has thread to hold"]);
+    expect(items.find((i) => i.id === "fasten:ok")!.detail).toMatch(/1 into pilot holes in wood/);
+    // 10 mm of 4.2 mm thread in softwood: 108.25 × 0.5² × 4.2 × 10 / 3 = 379 N
+    const load = items.find((i) => /carries its load/.test(i.title))!;
+    expect(load.detail).toMatch(/378\.88 N before wood screw pull-out in softwood/);
+    const heavy = fastenerChecks(evaluate(src(900))).find((i) => /carries its load/.test(i.title))!;
+    expect(heavy.status).toBe("fail");
+    expect(heavy.detail).toMatch(/wood screw pull-out/);
   });
 });
 

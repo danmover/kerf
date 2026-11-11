@@ -66,7 +66,8 @@ describe("springs, snap fits and flexures", () => {
     expect(alone.items[0].detail).toMatch(/^Bends 5\.6 %/);
     // with its spine: a = 8 + 1 from the spine's middle, so the catch moves P (8³ / 3EI + 9² · 11 / E·Is) and the spine
     // strains P · 9 · 2 / (2 E·Is) at 1 mm: about 0.95 %
-    expect(framed.items[0].status).toBe("pass");
+    // (its thin spine bends for good if the clip is pulled out by its head: see the next test)
+    expect(framed.items[0].status).toBe("warn");
     expect(framed.items[0].detail).toMatch(/^Bends 0\.9 % passing its 1 mm catch, its 11 mm spine bending with it/);
     const push = Number(/Push-in force about ([\d.]+) N/.exec(framed.items[0].detail)![1]);
     const pull = Number(/pulls apart at about ([\d.]+) N/.exec(framed.items[0].detail)![1]);
@@ -74,6 +75,58 @@ describe("springs, snap fits and flexures", () => {
     expect(push).toBeLessThan(12);
     expect(pull).toBeGreaterThan(2 * push);
     expect(evaluate(`design "t"\npart p { body box(30, 20, 3)\n add snap_hook(at: (0, 0, 3), length: 8, t: 2, w: 5, frame_t: 2) }`).diagnostics.map((d) => d.message).join(" ")).toMatch(/give its length with frame:/);
+  });
+
+  it("warns when pulling a C-shaped clip out by its head would bend its spine for good before its catch lets go", () => {
+    const clip = (leg: string, spine: number) =>
+      checks(`part clip {
+  material: "ASA"
+  process: mfg.fdm(build: Y)
+  body box(${spine}, 6, 14, at: (4.6 + ${spine} / 2, 0, -12))
+  add snap_hook(at: (4.6, 0, -10.8), ${leg}, w: 6, dir: -X, facing: Z, root_r: 0.8, cycles: 200, frame: 11, frame_t: ${spine}) as leg
+}`).items[0];
+    // the pull bends a 2 mm spine like an 11 mm cantilever: ASA's 34 MPa at 34 · 6 · 2² / (6 · 11) = 12.4 N,
+    // before its 55° catch lets go at about 23 N
+    const thin = clip("length: 8, t: 2.4, catch: 1, retain: 55, angle: 30", 2);
+    expect(thin.status).toBe("warn");
+    expect(thin.detail).toMatch(/pulled by its head, its spine bends for good at about 12\.4 N, before its catch lets go at about 2\d(\.\d)? N/);
+    expect(thin.fix).toMatch(/^Take it out by pressing its catch free \(about [\d.]+ N on the hook's tip\), or thicken the spine to about [\d.]+ mm/);
+    // a 3.5 mm one takes 37.9 N: past that the 70° catch still holds, so it comes out by pressing the catch free
+    const thick = clip("length: 16, t: 1.8, catch: 1.6, preload: 0.3, retain: 70, angle: 35", 3.5);
+    expect(thick.status).toBe("pass");
+    expect(thick.detail).toMatch(/Pulled by its head it holds about 37\.9 N before its spine bends for good, so it comes out by pressing its catch free \(about [\d.]+ N on the hook's tip\)\./);
+  });
+
+  it("tries a hard pull on a slim C-shaped clip's tab instead of its head, and says what press on the hook's tip frees it", () => {
+    const clip = (grip: string) =>
+      checks(`part clip {
+  material: "ASA"
+  process: mfg.fdm(build: Y)
+  body box(2, 6, 18, at: (5.8, 0, -16))
+  add snap_hook(at: (4.8, 0, -11), length: 8.3, t: 2, w: 6, catch: 1.25, preload: 0.25, retain: 70, angle: 40, dir: -X, facing: Z, root_r: 0.8, cycles: 200, frame: 9.4, frame_t: 2${grip}) as leg
+}`);
+    // pulled by a head, a slim 2 mm spine would bend like a 9.4 mm cantilever at 34 · 6 · 2² / (6 · 9.4) = 14.5 N,
+    // long before its 70° catch lets go
+    const head = clip("").items[0];
+    expect(head.status).toBe("warn");
+    expect(head.detail).toMatch(/pulled by its head, its spine bends for good at about 14\.5 N, before its catch lets go/);
+    // pulled by a tab 3 mm below the leg's axis instead, the pull and the catch make a couple W · (3 + 1) at the spine's
+    // foot. The spine (4 · 2³ / 9.4 = 3.40, held square at its head) and the leg (3 · 2³ / 8.3 = 2.89, held at the
+    // catch) share it 54 : 46, so the spine sees 6 · 0.54 · 4 / (6 · 2²) = 0.54 MPa a newton and the leg, which the
+    // pull also stretches, 6 · 0.46 · 4 / (6 · 2²) + 1 / 12 = 0.54: ASA's 34 MPa at about 63 N
+    const tab = clip(", grip: 3");
+    expect(tab.m.parts[0].flex![0]).toMatchObject({ kind: "snap", frame: 9.4, grip: 3 });
+    expect(tab.items[0].status).toBe("pass");
+    const held = Number(/A pull on its tab does not bend its spine for good until about ([\d.]+) N;/.exec(tab.items[0].detail)![1]);
+    expect(held).toBeGreaterThan(60);
+    expect(held).toBeLessThan(65);
+    // a press halfway along the hook's lead-in, d = 8.3 + 0.45 + 0.31 + 1.46 = 10.5 mm from the spine, moves the catch
+    // 8.3² (3d − 8.3) / 6EI + 9.3 (d + 1) 9.4 / E·Is = 0.17 mm a newton: 1.35 mm, the catch and 0.1 mm more, at 8 N
+    const press = Number(/it comes out by pressing its catch free \(about ([\d.]+) N on the hook's tip\)/.exec(tab.items[0].detail)![1]);
+    expect(press).toBeGreaterThan(7.5);
+    expect(press).toBeLessThan(8.5);
+    // a pull tab is a C-shaped clip's
+    expect(evaluate(`design "t"\npart p { body box(30, 20, 3)\n add snap_hook(at: (0, 0, 3), length: 8, t: 2, w: 5, grip: 3) }`).diagnostics.map((d) => d.message).join(" ")).toMatch(/grip is where a C-shaped clip's pull tab is held/);
   });
 
   it("makes a peg that clicks into a hole and says what shears it", () => {

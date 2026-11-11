@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mechMaterial } from "../src/analysis/materials";
 import { materialInfo } from "../src/mfg/materials";
+import { MATERIALS } from "../src/library/standards";
 
 describe("material strength data by name", () => {
   it("knows exact names and aliases", () => {
@@ -39,6 +40,12 @@ describe("material strength data by name", () => {
     expect(materialInfo("Wood PLA").processes).toContain("fdm");
     expect(materialInfo("Glass-filled nylon resin").family).toBe("thermoplastic");
     expect(materialInfo("6 mm birch plywood").family).toBe("wood");
+  });
+
+  it("prints the wood material as plywood, whatever the panel's species", () => {
+    // a pine panel from the hardware shop was listed as birch on its drawing
+    expect(MATERIALS["Wood"].label).toBe("Plywood");
+    expect(mechMaterial("12 mm pine plywood").name).toBe(mechMaterial("Wood").name);
   });
 
   it("gives every aluminium grade in the material list its own data, and cast aluminium the weakest", () => {

@@ -13,6 +13,8 @@ import type { EvalPart, FlexInfo, Model } from "../core/model";
 import { applyXforms, applyXformsToDir, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../kernel/recipe";
 import { fittingPose, rubberOf, sectionOf, type BandCord, type BandLayout, type FitPose, type Section } from "../library/bands";
 import { flexCalc } from "../library/springs";
+import { materialRecord } from "../library/materialDb";
+import { clipPress, clipTug, layerFactor } from "./springs/report";
 import { fmtNum } from "../lang/values";
 import type { StructuralSpec } from "./spec";
 import type { StructuralResult } from "./fe/structural";
@@ -159,7 +161,7 @@ export function fittingSteps(model: Model, bbox: (p: EvalPart) => [V3, V3] | und
       title: `Push ${s.pin.label} in`,
       caption: `Push ${s.pin.label} in${s.mate ? ` through ${s.mate.label}` : ""} until it clicks: about ${fmtNum(s.push, 1)} N. ${
         s.clip
-          ? `To take it out, press its catch free and slide it back out${Number.isFinite(s.pull) ? `, or pull it straight out: about ${fmtNum(s.pull, 1)} N` : ""}.`
+          ? `To take it out, press its catch free${Number.isFinite(s.press) ? ` (about ${fmtNum(s.press, 1)} N on the hook's tip)` : ""} and ${s.tab ? "pull it out by its tab" : "slide it back out"}${Number.isFinite(s.pull) && s.pull <= s.tug ? `, or pull it straight out: about ${fmtNum(s.pull, 1)} N` : ""}.`
           : "To take it out, pinch its prongs together and push it back."
       }`,
       dur: 3,
@@ -285,7 +287,7 @@ function splitPins(
   model: Model,
   bbox: (p: EvalPart) => [V3, V3] | undefined,
   riding: ReadonlySet<string>,
-): { pin: EvalPart; dir: V3; length: number; click: V3; mate?: EvalPart; mateAt: V3; host?: EvalPart; through: EvalPart[]; push: number; clip: boolean; pull: number }[] {
+): { pin: EvalPart; dir: V3; length: number; click: V3; mate?: EvalPart; mateAt: V3; host?: EvalPart; through: EvalPart[]; push: number; clip: boolean; pull: number; tug: number; press: number; tab: boolean }[] {
   const wrapped = new Set(model.parts.flatMap((p) => p.band?.around ?? []));
   const out: ReturnType<typeof splitPins> = [];
   for (const p of model.parts) {
@@ -312,6 +314,8 @@ function splitPins(
     const onMate = hits.filter((h) => h.q.id === thin.q.id);
     const push = prongs.reduce((s, f) => s + (flexCalc(f, p.material, 1).push ?? 0), 0);
     const pull = prongs.reduce((s, f) => s + (flexCalc(f, p.material, 1).pull ?? 0), 0);
+    // a clip pulled by its head (or its tab) must let go before its spine bends for good
+    const tug = Math.min(...prongs.map((f) => clipTug(p, f, layerFactor(p, f).factor) ?? Infinity));
     out.push({
       pin: p,
       dir,
@@ -324,6 +328,9 @@ function splitPins(
       push,
       clip: prongs.length === 1,
       pull,
+      tug,
+      press: prongs.length === 1 ? (clipPress(p, prongs[0]) ?? NaN) : NaN,
+      tab: prongs.some((f) => !!f.grip),
     });
   }
   return out;
@@ -347,8 +354,10 @@ function contains(p: EvalPart, box: [V3, V3] | undefined, world: V3): boolean {
 /**
  * Which parts ride along with which: a part whose placed box lies inside
  * another's (within 1 mm) goes where the smallest such part goes, like a pad
- * in a seat or the print and stickers on a sign. Bands and what they wrap
- * stay put.
+ * in a seat or the print and stickers on a sign. So does a rubbery part that
+ * lies on a face of another, standing out from it one way only (a rubber
+ * strip stuck into a seat, a foot under a case, a gasket on a lid). Bands and
+ * what they wrap stay put.
  */
 function riderMap(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined): Map<string, string[]> {
   const wrapped = new Set(model.parts.flatMap((p) => p.band?.around ?? []));
@@ -357,11 +366,18 @@ function riderMap(model: Model, bbox: (p: EvalPart) => [V3, V3] | undefined): Ma
     .map((p) => ({ p, box: bbox(p) }))
     .filter((x): x is { p: EvalPart; box: [V3, V3] } => !!x.box)
     .map((x) => ({ p: x.p, box: placedBox(x.p, x.box) }));
-  const inside = (a: [V3, V3], b: [V3, V3]) => [0, 1, 2].every((d) => a[0][d] >= b[0][d] - 1 && a[1][d] <= b[1][d] + 1);
+  const within = (a: [V3, V3], b: [V3, V3], d: number) => a[0][d] >= b[0][d] - 1 && a[1][d] <= b[1][d] + 1;
+  const inside = (a: [V3, V3], b: [V3, V3]) => [0, 1, 2].every((d) => within(a, b, d));
+  // softer than any plastic that holds a shape of its own: rubber, TPU, silicone, foam
+  const soft = (p: EvalPart) => (materialRecord(p.material)?.mech.E ?? Infinity) < 100;
+  const liesOn = (a: [V3, V3], b: [V3, V3]) => {
+    const out = [0, 1, 2].filter((d) => !within(a, b, d));
+    return out.length === 1 && a[0][out[0]] <= b[1][out[0]] && a[1][out[0]] >= b[0][out[0]];
+  };
   const out = new Map<string, string[]>();
   for (const a of boxes) {
     const host = boxes
-      .filter((b) => b.p.id !== a.p.id && volumeOf(b.box) > volumeOf(a.box) && inside(a.box, b.box))
+      .filter((b) => b.p.id !== a.p.id && volumeOf(b.box) > volumeOf(a.box) && (inside(a.box, b.box) || (soft(a.p) && !soft(b.p) && liesOn(a.box, b.box))))
       .sort((x, y) => volumeOf(x.box) - volumeOf(y.box))[0];
     if (host) out.set(host.p.id, [...(out.get(host.p.id) ?? []), a.p.id]);
   }

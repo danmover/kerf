@@ -6,14 +6,14 @@
 // corrosion, cost, what the user already has) and ranks the ones that pass.
 // Sizes are mm; loads N; prices US dollars each, bought in packs.
 
-import { ALL_THREADS, THREADS, isUnified, threadSpec, type ThreadSpec } from "./standards";
+import { ALL_THREADS, THREADS, isUnified, isWoodGauge, threadSpec, type ThreadSpec } from "./standards";
 import { materialRecord } from "./materialDb";
 import { isPrinted } from "./materials";
 
 // ---------------------------------------------------------------- heads
 
-export type HeadType = "socket" | "button" | "flat" | "low" | "pan" | "hex" | "set" | "forming";
-export const HEAD_TYPES: HeadType[] = ["socket", "button", "flat", "low", "pan", "hex", "set", "forming"];
+export type HeadType = "socket" | "button" | "flat" | "low" | "pan" | "hex" | "set" | "forming" | "wood";
+export const HEAD_TYPES: HeadType[] = ["socket", "button", "flat", "low", "pan", "hex", "set", "forming", "wood"];
 
 export interface HeadDims {
   /** head diameter (across corners for hex heads: the circle it needs) */
@@ -58,7 +58,11 @@ export const HEADS: Record<HeadType, HeadInfo> = {
   hex: { label: "hex head bolt", noun: "Hex head bolt", standard: "ISO 4017", inchStandard: "ASME B18.2.1", grades: ["8.8", "A2-70", "A4-80", "10.9"], priceFactor: 0.85, note: "Hex head, fully threaded: the cheapest strong fastener from M6 up, turned with a spanner or socket, so it needs room round the head." },
   set: { label: "set screw", noun: "Socket set screw, cup point", standard: "ISO 4029", inchStandard: "ASME B18.3", grades: ["12.9", "A2-70"], priceFactor: 0.9, note: "Headless grub screw that locks a hub, collar or pulley to a shaft: point it at the shaft's flat." },
   forming: { label: "thread-forming screw for plastics", noun: "Thread-forming screw for plastics, Torx pan head", standard: "DIN 7500 / WN 1411 (PT style)", grades: ["A2-70", "8.8"], priceFactor: 1.6, note: "30° thread that forms its own thread in a plain pilot hole in plastic (no insert, no tap): the pilot is about 0.8 × the screw size. Holds well for a few re-assemblies." },
+  wood: { label: "countersunk wood screw", noun: "Countersunk wood screw", standard: "gauge sizes (AS 3566)", lengthFromTop: true, flush: true, grades: ["4.8", "A2-70"], priceFactor: 0.5, note: "Countersunk timber screw in gauge sizes (\"8G\"), Phillips drive: it cuts its own thread in a pilot hole in wood or plywood and holds a part down through a clearance hole. Length includes the head. Give it thread in the wood of at least twice its diameter." },
 };
+
+// wood screw gauges: stocked lengths [shortest, longest]
+const WOOD_RANGE: Record<string, [number, number]> = { "4G": [9, 25], "6G": [12, 40], "8G": [12, 75], "10G": [16, 100], "12G": [20, 100] };
 
 // head dimensions per metric size: [diameter, height, hex key or drive size]
 const SOCKET: Record<string, [number, number, number]> = {
@@ -95,6 +99,11 @@ const UNIFIED_HEADS: HeadType[] = ["socket", "button", "flat", "hex", "set"];
 /** Head shape and drive for a thread, or null when that head is not made in that size. */
 export function headDims(head: HeadType, t: ThreadSpec): HeadDims | null {
   const k = keyOf(t);
+  if (isWoodGauge(t)) {
+    // a gauge size only comes as a wood screw: Phillips No. 1 up to 4G, No. 2 from 6G to 10G, No. 3 above
+    const ph = t.d < 3.2 ? 1 : t.d < 5.2 ? 2 : 3;
+    return head === "wood" ? { d: t.head_d, h: t.head_h, drive: `Phillips No. ${ph} screwdriver`, toolD: ph === 1 ? 5 : ph === 2 ? 6.5 : 8, key: 0, lengths: WOOD_RANGE[t.name] ?? [12, 50] } : null;
+  }
   if (isUnified(t)) {
     if (!UNIFIED_HEADS.includes(head)) return null;
     // inch lengths run from about 2 × d to 2"; heads scale from the socket head (ASME B18.3 proportions)
@@ -151,6 +160,8 @@ export function headDims(head: HeadType, t: ThreadSpec): HeadDims | null {
       const key = SET_KEY[k];
       return { d: t.d, h: 0, drive: `${fmt(key)} mm hex key`, toolD: t.d, key, lengths: range };
     }
+    case "wood":
+      return null;
   }
 }
 
@@ -481,6 +492,7 @@ const HEAD_WORDS: [RegExp, HeadType][] = [
   [/hex.?head|bolt|4017|4014|933|931/, "hex"],
   [/set|grub|4029|4026/, "set"],
   [/form|plastite|pt\b|self.?tap/, "forming"],
+  [/wood|timber|chipboard/, "wood"],
   [/socket|cap|shcs|4762|912/, "socket"],
 ];
 
@@ -650,6 +662,8 @@ export function engagementFor(req: FastenRequest, t: ThreadSpec, head: HeadType)
       return { min, ideal: need, max: req.depth ?? need + 1.5 * t.d };
     }
     case "plastic": {
+      // a wood screw wants thread in the wood of at least twice its diameter, and all the depth there is
+      if (head === "wood") return { min: 2 * t.d, ideal: 3 * t.d, max: req.depth ?? 8 * t.d };
       // thread-forming screws want about 2 × d in plastic; a machine screw cut into it, more
       const k = head === "forming" ? 2 : 2.5;
       return { min: 1.6 * t.d, ideal: k * t.d, max: req.depth ?? (k + 1) * t.d };
@@ -678,6 +692,13 @@ export function threadCapacity(req: FastenRequest, t: ThreadSpec, engage: number
     }
     case "plastic": {
       const rec = materialRecord(req.material ?? "PLA");
+      if (isWoodGauge(t)) {
+        // withdrawal from side grain, USDA Wood Handbook: 108.25 G² D L newtons at failure (G: specific gravity,
+        // D and L in mm). A third of it is what a short load such as a knock may use. A design seldom says which
+        // timber a board is, so it is worked out for softwood (G = 0.5) unless the wood is lighter still.
+        const G = Math.min(rec?.family === "wood" ? rec.density : 0.5, 0.5);
+        return { n: (108.25 * G * G * t.d * engage) / 3, what: "wood screw pull-out in softwood" };
+      }
       // printed plastic strips at about half the moulded figure
       const tau = 0.6 * (rec?.mech.yield ?? 50) * (isPrinted(req.material ?? "PLA") ? 0.5 : 0.8);
       return { n: 0.6 * Math.PI * t.d * engage * tau, what: "formed plastic thread" };

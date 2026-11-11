@@ -149,6 +149,7 @@ ${b.abi.intBits === 32 ? "#define INT_MIN (-2147483647-1)\n#define INT_MAX 21474
     "Servo.h": empty,
     // the ESP32Servo library (Kevin Harrington, John K. Bennett): Servo on the LEDC timers, any output pin
     "ESP32Servo.h": empty,
+    "BluetoothSerial.h": empty,
     "Preferences.h": empty,
     "Adafruit_NeoPixel.h": `#pragma once
 #define NEO_RGB ((0 << 6) | (0 << 4) | (1 << 2) | (2))

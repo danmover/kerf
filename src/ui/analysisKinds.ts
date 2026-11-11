@@ -4,22 +4,23 @@
 // that already has a strength run) without the user knowing the syntax.
 
 import type { AnalysisSpec } from "../analysis/spec";
+import { electricMaterial } from "../analysis/electricMaterials";
 
 export interface AnalysisKind {
-  id: "strength" | "drop" | "vibration" | "heat" | "buckling" | "airflow" | "gears" | "uci";
+  id: "strength" | "fatigue" | "drop" | "vibration" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
   /** other words people use for it */
   keywords: string;
   /** key of ui/icons Icon */
-  icon: "Stress" | "Alert" | "Graph" | "Thermo" | "Buckle" | "Orbit" | "Gear" | "Check";
+  icon: "Stress" | "Refresh" | "Alert" | "Graph" | "Thermo" | "Bolt" | "Buckle" | "Wand" | "Sliders" | "Orbit" | "Gear" | "Check";
   /** which of the design's analyses are this kind */
   is: (a: AnalysisSpec) => boolean;
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
   ask: string;
   /** only offered when the design looks like it needs it */
-  fits?: "gears" | "bike";
+  fits?: "gears" | "bike" | "metal";
 }
 
 export const ANALYSIS_KINDS: AnalysisKind[] = [
@@ -29,8 +30,17 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "Stress, deflection and safety factor under the loads it will see",
     keywords: "fea finite element stress strain deflection safety factor load break bend sag strong",
     icon: "Stress",
-    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !(a.thermal && !a.supports.length),
+    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !a.fatigue && !a.topology && !(a.thermal && !a.supports.length),
     ask: "Set up a strength analysis for this design from how it will be used: work out realistic loads and how it is held, then run it and tell me what you find.",
+  },
+  {
+    id: "fatigue",
+    label: "Fatigue",
+    detail: "How many load cycles it lasts, and where repeated loading cracks it first",
+    keywords: "fatigue life cycles repeated loading s-n sn curve endurance durability crack wear out goodman rainflow load history miner",
+    icon: "Refresh",
+    is: (a) => a.kind === "structural" && !!a.fatigue && !a.buckling,
+    ask: "Set up a fatigue check for this design: how often each load repeats over its life (on-off, or swinging both ways, with any bigger occasional loads as a load history) and each part's surface finish, then run it and tell me how long it lasts, where it cracks first and how to make it last.",
   },
   {
     id: "drop",
@@ -56,8 +66,18 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "How hot each part runs from its electronics, motors or a hot surface, and the stress that heat causes",
     keywords: "thermal temperature heat hot warm cooling fan heatsink overheat melt soften expansion thermal stress warm-up",
     icon: "Thermo",
-    is: (a) => a.kind === "structural" && (!!a.thermal || a.uniformTemp !== undefined),
+    is: (a) => a.kind === "structural" && ((!!a.thermal && !a.thermal.currents?.length) || a.uniformTemp !== undefined),
     ask: "Set up a heat analysis for this design: where heat is made (electronics, motors, anything hot it touches), how it is cooled and the hottest surroundings it will see, then run it and tell me which parts run too hot and how to cool them.",
+  },
+  {
+    id: "current",
+    label: "Current",
+    detail: "Joule heating: the resistance, voltage drop and heat of the current through busbars, straps, heater elements and terminals",
+    keywords: "joule heating electric current busbar bus bar resistance resistive heater element i2r voltage drop current density ampacity fuse wire strap terminal conductor",
+    icon: "Bolt",
+    is: (a) => a.kind === "structural" && !!a.thermal?.currents?.length,
+    ask: "Set up a current analysis for this design: the real currents (or voltages) through its metal conductors (busbars, battery straps, heater elements, terminals) from where each goes in to where it comes out, how they are cooled and the hottest surroundings, then run it and tell me the resistance, voltage drop and heat of each, where the current crowds and whether anything runs too hot.",
+    fits: "metal",
   },
   {
     id: "buckling",
@@ -67,6 +87,24 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     icon: "Buckle",
     is: (a) => a.kind === "structural" && !!a.buckling,
     ask: "Set up a buckling check for this design: the loads that press on its slender walls, struts or tubes and how it is held, then run it and tell me how far it is from buckling and how to stiffen it.",
+  },
+  {
+    id: "topology",
+    label: "Topology optimisation",
+    detail: "The stiffest shape for the loads from a share of the material: where to cut it away, as a shape to model, print or cut from plate",
+    keywords: "topology optimisation optimization generative design lightweight lighten weight reduction remove material cut away truss organic shape simp lattice skeleton pockets lightening holes",
+    icon: "Wand",
+    is: (a) => a.kind === "structural" && !!a.topology,
+    ask: "Set up a topology optimisation for the main load-carrying part of this design: how it is held and the real loads it carries, the share of its material to keep (about 30 to 40 %), and preserve: for its mounting faces and holes; use extrusion: (the axis through the plate) when it is cut from plate. Run it, then tell me the shape it finds, how much lighter and how much less stiff it is, and model that shape as a real part.",
+  },
+  {
+    id: "study",
+    label: "Design study",
+    detail: "Try many sizes automatically and keep the lightest, stiffest or coolest design that still passes",
+    keywords: "optimise optimize optimisation optimization design study sweep parameters lightest best size dimensions what if trade off generative",
+    icon: "Sliders",
+    is: (a) => a.kind === "study",
+    ask: "Set up a design study for this design: vary the parameters that size the parts that matter most, aim for the lightest design (or what matters more here) and keep it passing its analyses and checks, then run it and tell me which design is best and what changed.",
   },
   {
     id: "airflow",
@@ -99,9 +137,11 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
   },
 ];
 
-/** The kinds worth offering for a design: everything general, plus gears or bike rules when it has them. */
-export function kindsFor(m: { parts: { gear?: unknown; chain?: unknown; tubes?: unknown[] }[]; analyses: AnalysisSpec[] } | null | undefined): AnalysisKind[] {
+/** The kinds worth offering for a design: everything general, plus gears, bike rules or current when it has them. */
+export function kindsFor(m: { parts: { gear?: unknown; chain?: unknown; tubes?: unknown[]; material?: string; kind?: string }[]; analyses: AnalysisSpec[] } | null | undefined): AnalysisKind[] {
   const gears = !!m?.parts.some((p) => p.gear);
   const bike = !!m?.parts.some((p) => p.chain || p.tubes?.length) || !!m?.analyses.some((a) => a.kind === "uci");
-  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : bike));
+  // a part of its own in a metal (a bought component's body says little about what carries its current)
+  const metal = !!m?.parts.some((p) => p.kind !== "component" && electricMaterial(p.material).conductor) || !!m?.analyses.some((a) => a.kind === "structural" && a.thermal?.currents?.length);
+  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : k.fits === "bike" ? bike : metal));
 }

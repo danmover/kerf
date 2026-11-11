@@ -74,7 +74,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   overview: { detail: "Status, the brief, the design at a glance and recent changes", keywords: "summary status dashboard home at a glance" },
   brief: { detail: "What it's for, where it's used and what it must survive: each becomes a check", keywords: "requirements uses spec specification purpose goals constraints" },
   checks: { detail: "Every check on the design, and why it passes or fails", keywords: "tests problems errors warnings failing issues interference validate verify" },
-  analysis: { detail: "Strength, drop, vibration, heat, buckling, airflow, gear and bike rule runs", keywords: "fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy" },
+  analysis: { detail: "Strength, fatigue life, drop, vibration, heat and current (Joule heating), buckling, topology optimisation, design studies, airflow, gear and bike rule runs", keywords: "topology optimisation optimization generative design lightweighting lighten remove material truss organic shape simp preserve min member dxf profile fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy design study optimise optimize sweep fatigue life cycles s-n sn curve endurance goodman rainflow load history miner durability infill walls perimeters print settings printed layers anisotropic orthotropic pin hinge pinned support bearing load bore spring elastic support rubber feet pad foundation set displacement prescribed displacement push snap fit clip force to push joule heating electric current busbar bus bar resistance resistive heating heater element i2r i²r voltage drop current density ampacity fuse wire" },
   build: {
     title: "Build: electronics and wiring",
     detail: "Wiring, boards, power, calculations, firmware and tests for a machine",
@@ -208,7 +208,7 @@ export function findItems(ctx: FindContext): FindItem[] {
     }
     for (const k of kindsFor(model)) {
       const I = Icon[k.icon];
-      push(ask(`ask:analysis:${k.id}`, "Analyse", `Add ${k.id === "uci" ? "a UCI rules check" : `a${/^[aeiou]/i.test(k.label) ? "n" : ""} ${k.label.toLowerCase()} analysis`}`, k.detail, `${k.keywords} analysis analyse test`, k.ask, <I size={14} />));
+      push(ask(`ask:analysis:${k.id}`, "Analyse", `Add ${k.id === "uci" ? "a UCI rules check" : k.id === "study" ? "a design study" : `a${/^[aeiou]/i.test(k.label) ? "n" : ""} ${k.label.toLowerCase()} analysis`}`, k.detail, `${k.keywords} analysis analyse test`, k.ask, <I size={14} />));
     }
 
     // ── making ──
@@ -228,7 +228,7 @@ export function findItems(ctx: FindContext): FindItem[] {
     push(
       { id: "view:fit", group: "View", title: "Fit to view", detail: "Frame the whole model", keywords: "zoom all frame reset camera", icon: <Icon.Fit size={14} />, keys: "F", run: () => requestCamera("fit") },
       ...cams.map(([p, label, k]): FindItem => ({ id: `view:cam:${p}`, group: "View", title: `${label} view`, detail: "Camera", keywords: "camera angle look from orientation", icon: <Icon.Cube size={14} />, keys: p === "iso" ? "1" : k, run: () => requestCamera(p) })),
-      { id: "view:section", group: "View", title: "Section view", detail: "Cut the model open along X, Y or Z", keywords: "cut cross section slice clip inside", icon: <Icon.Scissors size={14} />, keys: "S", tag: v.section.on ? "on" : undefined, run: () => useView.setState({ section: { ...v.section, on: !v.section.on } }) },
+      { id: "view:section", group: "View", title: "Section view", detail: "Cut the model open along X, Y or Z; with results showing, the cut face shows the values inside", keywords: "cut cross section slice clip inside section through results stress inside interior cut plane internal stress temperature inside", icon: <Icon.Scissors size={14} />, keys: "S", tag: v.section.on ? "on" : undefined, run: () => useView.setState({ section: { ...v.section, on: !v.section.on } }) },
       { id: "view:explode", group: "View", title: "Exploded view", detail: "Take it apart step by step: screws out along their axes, then each part off what it sits on", keywords: "explode exploded apart spread assembly disassemble take apart steps smart exploded view fasteners screws out", icon: <Icon.Explode size={14} />, keys: "E", tag: v.explode > 0 ? "on" : undefined, run: () => useView.setState({ explode: v.explode > 0 ? 0 : 1 }) },
       { id: "view:assembly", group: "View", title: "Play the assembly", detail: "Watch the parts go together in the order they fit, screws once both sides are on", keywords: "assemble animation build order instructions", icon: <Icon.Assemble size={14} />, keys: "A", run: () => useView.setState({ explode: 0, assemblyRequest: v.assemblyRequest + 1 }) },
       { id: "view:xray", group: "View", title: "X-ray", detail: "See through the parts", keywords: "transparent see through ghost inside", icon: <Icon.Xray size={14} />, keys: "X", tag: v.xray ? "on" : undefined, run: () => useView.setState({ xray: !v.xray }) },
