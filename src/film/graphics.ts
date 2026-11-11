@@ -433,10 +433,15 @@ function tiles(ctx: Ctx, s: FilmStyle, p: Palette, g: Extract<Graphic, { g: "til
     spacing(ctx, 0);
     const value = tileValue(t, (g.k * 1.5 - i * 0.12) / 0.9);
     const long = typeof t.value === "string" && value.length > 12;
-    ctx.font = long ? `600 ${36 * u}px ${SANS}` : `600 ${62 * u}px ${SANS}`;
+    const size = long ? 36 * u : 62 * u;
+    ctx.font = `600 ${size}px ${SANS}`;
+    // a long value shrinks to fit the card (down to two thirds) before it is cut short
+    const room = tw - 56 * u;
+    const wide = ctx.measureText(value).width;
+    if (wide > room) ctx.font = `600 ${Math.max(size * 0.66, (size * room) / wide)}px ${SANS}`;
     ctx.fillStyle = p.text;
     const vy = y + (long ? 78 : 62) * u;
-    const vt = fit(ctx, value, tw - 56 * u);
+    const vt = fit(ctx, value, room);
     ctx.fillText(vt, x + 28 * u, vy);
     if (t.unit && t.unit !== "$") {
       const vw = ctx.measureText(vt).width;

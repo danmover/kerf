@@ -230,7 +230,7 @@ function blendCamera(a: FilmCamera, b: FilmCamera, k: number): FilmCamera {
 }
 
 const MOVES: Partial<Record<SectionKind, Move>> = {
-  title: { az: [32, 22], el: [5, 11], dist: [0.78, 0.64], fov: 26 },
+  title: { az: [32, 22], el: [8, 12], dist: [1, 0.86], fov: 26 },
   reveal: { az: [72, -12], el: [24, 15], dist: [1.02, 0.9], fov: 32 },
   build: { az: [22, 58], el: [28, 22], dist: [1, 0.95], fov: 34 },
   explode: { az: [38, 76], el: [24, 30], dist: [1, 0.96], fov: 34 },

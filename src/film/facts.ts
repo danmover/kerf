@@ -78,7 +78,7 @@ export function fmtMass(g: number): string {
 }
 
 export function fmtSize(s: V3): string {
-  const r = (v: number) => (v >= 100 ? Math.round(v) : Math.round(v * 10) / 10);
+  const r = (v: number) => (v >= 20 ? Math.round(v) : Math.round(v * 10) / 10);
   return `${r(s[0])} × ${r(s[1])} × ${r(s[2])} mm`;
 }
 
