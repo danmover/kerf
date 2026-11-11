@@ -139,6 +139,8 @@ export type GeomClass =
   | "edf"
   | "stepper"
   | "servo"
+  // serial bus servo: a flat case with an output horn and an idler horn on one axis (geometryBusServo.ts)
+  | "bus_servo"
   | "actuator"
   | "box"
   | "extrusion"

@@ -43,7 +43,9 @@ export type Look =
   | "wroom"
   | "transducer"
   | "microswitch"
-  | "oled";
+  | "oled"
+  // a camera's lens: its square holder on the board, the barrel and the glass
+  | "lens";
 
 /** A part drawn on a board that its catalog geometry has no feature for. */
 export interface Extra {
@@ -354,6 +356,29 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
     ],
   },
   ssd1306_oled_096: { mask: BLUE, silk: WHITE_SILK, finish: "hasl", looks: ["oled"], extras: [{ look: "header_m", x: 0, y: 12, w: 10.2, d: 2.54, h: 8.5 }] },
+  // Waveshare Bus Servo Adapter (A): DC jack and screw terminal at one end, USB-C at the other, the UART header
+  // and the A/B jumper beside it; the servo port is drawn from the plug table
+  waveshare_bus_servo_adapter_a: {
+    mask: "#1d4f9c",
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["Bus Servo Adapter (A)", "Waveshare"],
+    marks: ["CH343P"],
+    looks: ["barrel", "terminal", "usb_c", "header_m", null, "soic", "header_m"],
+    terminal: "#2c8a4a",
+    extras: [{ look: "elcap", x: -3, y: 9, w: 6.3, d: 6.3, h: 7.7 }],
+    smd: 0.9,
+  },
+  // Arducam B0196: the lens in the middle, the 4-pin lead socket at one edge, the UVC bridge chip beside it
+  arducam_b0196: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["ARDUCAM", "UC-626 Rev.B"],
+    marks: ["", "SPCA\n2080A"],
+    looks: ["lens", "box_header", "qfn"],
+    smd: 1.2,
+  },
   tpa3116_mono: {
     mask: "#1f4a8a",
     silk: WHITE_SILK,

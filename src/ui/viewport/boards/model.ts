@@ -420,6 +420,16 @@ function item(k: Kit, part: CatalogPart, L: BoardLayout, it: BoardItem) {
       k.plastic.box(f, -it.w * 0.3, it.w * 0.3, -it.d / 2 - 1.2, -it.d / 2, -0.05, it.h * 0.6, "#c98a2b");
       return;
     }
+    case "lens": {
+      // a camera lens: the square holder on the sensor, the threaded barrel and the front glass
+      const r = Math.min(it.w, it.d) / 2;
+      const hb = Math.min(it.h * 0.45, 2.6);
+      k.plastic.box(f, -it.w / 2, it.w / 2, -it.d / 2, it.d / 2, 0, hb, "#101113");
+      k.plastic.cyl(f, 0, 0, hb, it.h, r * 0.86, "#17181b", 32);
+      k.gloss.cyl(f, 0, 0, it.h, it.h + 0.04, r * 0.5, "#0a0d16", 28);
+      k.gloss.cyl(f, 0, 0, it.h + 0.04, it.h + 0.07, r * 0.26, "#1c2440", 24);
+      return;
+    }
     case "drivers":
       return;
   }

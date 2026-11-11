@@ -195,8 +195,48 @@ function slipLeads(n: number, len: number): PlugTable {
   return out;
 }
 
+// ESP32-DevKitC V4 (54.4 × 27.9, antenna at +X): its two 19-pin rows by Espressif's pinout, pin 1 of each at
+// the antenna end. J2 is the +Y row (3V3, EN, 36, 39, 34, 35, 32, 33, 25, 26, 27, 14, 12, GND, 13, 9, 10, 11, 5V),
+// J3 the -Y row (GND, 23, 22, TX0, RX0, 21, GND, 19, 18, 5, 17, 16, 4, 0, 2, 15, 8, 7, 6). The pins point down
+// through the board, so Dupont housings push on from underneath (or from above with the board turned over).
+function devkitcPins(): PlugTable {
+  const out: PlugTable = {};
+  const row = (ids: (string | null)[], y: number) =>
+    ids.forEach((id, i) => {
+      if (id && !out[id]) out[id] = { kind: "dupont", at: [-2 + (9 - i) * 2.54, y, -2.5], out: NZ, row: X, ways: 1 };
+    });
+  row(["V3V3", null, "IO36", "IO39", "IO34", "IO35", "IO32", "IO33", "IO25", "IO26", "IO27", "IO14", "IO12", "GND", "IO13", null, null, null, "V5"], 12.7);
+  row([null, "IO23", "IO22", null, null, "IO21", null, "IO19", "IO18", "IO5", "IO17", "IO16", "IO4", "IO0", "IO2", "IO15", null, null, null], -12.7);
+  // the two more ground pins, for further wires on GND
+  out.GND.more = [[-2 + 9 * 2.54, -12.7, -2.5], [-2 + 3 * 2.54, -12.7, -2.5]];
+  return out;
+}
+
+// Waveshare ST3215 / Feetech STS3215 (bus_servo frame: origin on the output axis at the case top): two 3-pin
+// 2.5 mm sockets side by side in the recess in the bottom face, GND, VCC, signal across each. A lead comes in on
+// one and the next servo's lead leaves from the other, so a pin's second wire takes the second socket.
+const BUS_SERVO: PlugTable = Object.fromEntries(
+  (["GND", "V_PLUS", "SIG"] as const).map((id, k): [string, PlugSpec] => [id, { kind: "xh", at: [-14.05, 5.2 + (k - 1) * 2.4, -28.2], out: NZ, row: Y, ways: 1, pitch: 2.4, more: [[-14.05, -5.2 + (k - 1) * 2.4, -28.2]] }]),
+);
+
 /** Plugs for catalog parts, by catalog id and pin id. */
 export const PLUGS: Record<string, PlugTable> = {
+  esp32_devkitc: devkitcPins(),
+  waveshare_st3215: BUS_SERVO,
+  // Bus Servo Adapter (A) (42 × 33, top at 1.6): supply screw terminal on the -X edge, the UART header along the
+  // +Y edge, the servo port a 3-way socket near the +X edge (positions approximate, from the product photos)
+  waveshare_bus_servo_adapter_a: {
+    VIN: { kind: "ferrule", at: [-20.3, -4, 5.4], out: NX, row: Y, ways: 1, more: [[-20.3, -4, 5.4]] },
+    GND: { kind: "ferrule", at: [-20.3, -9, 5.4], out: NX, row: Y, ways: 1, more: [[-20.3, -9, 5.4]] },
+    TX: { kind: "dupont", at: [3.46, 13.5, 4.1], out: Z, row: X, ways: 1 },
+    RX: { kind: "dupont", at: [6, 13.5, 4.1], out: Z, row: X, ways: 1 },
+    UART_G: { kind: "dupont", at: [8.54, 13.5, 4.1], out: Z, row: X, ways: 1 },
+    SERVO_G: { kind: "xh", at: [16, 3.5, 1.6], out: Z, row: Y, ways: 1, socket: true },
+    SERVO_V: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 1, socket: true },
+    SERVO_S: { kind: "xh", at: [16, 8.5, 1.6], out: Z, row: Y, ways: 1, socket: true },
+  },
+  // Arducam B0196 (38 × 38): the 4-pin lead leaves its socket on the -Y edge
+  arducam_b0196: { USB: { kind: "lead", at: [0, -17.5, 3.4], out: NY, row: X, ways: 1 } },
   skr_mini_e3_v3: SKR,
   // KY-023 thumb stick (34 × 26): its five right-angle header pins stick out of the -X end on the top side, in the
   // board's order GND, +5V, VRx, VRy, SW, so Dupont plugs go on along -X

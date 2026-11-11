@@ -9,6 +9,7 @@ import type { CatalogPart } from "./types";
 import { footprintSolids } from "./catalog/footprints";
 import { THREADS, type ThreadSpec } from "../library/standards";
 import { EDF_STUB, edfLeadExit } from "./harness/plugs";
+import { busServoGeometry } from "./geometryBusServo";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -697,6 +698,10 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         },
       };
     }
+
+    // bus_servo: a serial bus servo with an output horn and an idler horn (geometryBusServo.ts)
+    case "bus_servo":
+      return busServoGeometry(p);
 
     // box: batteries, power supplies, modules. w (X), d (Y), h (Z), r corner
     // radius; `at` is the centre of the bottom face. band: a wrap band height.
