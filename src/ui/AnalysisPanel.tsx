@@ -1249,6 +1249,7 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
             {loadText(i)}
           </div>
         ))}
+        {spec.touching && <TouchingSetup spec={spec} r={r} />}
         {spec.accel && (
           <div>
             <span className="tag">accel</span>
@@ -1393,7 +1394,7 @@ function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
             `Temperatures on a ${h} mm voxel grid. ${heat}`
           ) : (
             <>
-              Linear elastic analysis on a {h} mm voxel grid: small deflections, no contact or creep
+              Linear elastic analysis on a {h} mm voxel grid: small deflections, {spec.touching ? "contact only where touching: says (other touching parts glued)" : "no contact"} or creep
               {r.buckling ? "; buckling assumes a perfect shape, so real parts buckle somewhat sooner" : ", and buckling only when buckling: is set"}. {heat}
               {spec.thermal || spec.uniformTemp !== undefined ? " Hot plastics are softened and weakened at their temperature. " : ""}
               Peaks are smoothed at sharp corners and fillets smaller than a cell. Use it to compare designs and find weak spots; test a printed part before relying on it{spec.safety < 2 ? ", especially with a safety target under 2" : ""}.
@@ -2013,5 +2014,43 @@ function EmptyState() {
         </pre>
       </div>
     </div>
+  );
+}
+
+/** The touching: pairs of an analysis, with what each pressed, parted and slid in the last result. */
+function TouchingSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) {
+  const t = spec.touching!;
+  const how = (mu: number | "rough" | "glued", lift: boolean) => `${mu === "rough" ? "rough" : mu === "glued" ? "glued" : mu === 0 ? "frictionless" : `μ ${fmtNum(mu, 2)}`}${lift || mu === "glued" ? "" : ", never parting"}`;
+  const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
+  const res = (a: string, b: string) => r?.touching?.find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a));
+  const line = (x: NonNullable<StructuralResult["touching"]>[number]) =>
+    !x.cells
+      ? " · not touching"
+      : x.held
+        ? x.held === "apart"
+          ? " · pulled apart: held together for the answer"
+          : " · slides away: held for the answer"
+        : ` · pressed ${pc(x.pressed)}${x.open > 0.005 ? `, apart ${pc(x.open)}` : ""}${x.sliding > 0.005 ? `, sliding ${pc(x.sliding)}` : ""} · ${fmtNum(x.force, 1)} N, peak ${fmtNum(x.peak.value, 2)} MPa`;
+  const auto = r?.touching?.filter((x) => x.auto) ?? [];
+  return (
+    <>
+      {t.pairs.map((p, i) => {
+        const x = res(p.a, p.b);
+        return (
+          <div key={`t${i}`}>
+            <span className="tag">touching</span>
+            {p.a} and {p.b} · {how(p.mu, p.lift)}
+            {x ? <span className="dim">{line(x)}</span> : null}
+          </div>
+        );
+      })}
+      {t.all && (
+        <div>
+          <span className="tag">touching</span>
+          every other pair that touches · {how(t.all.mu, t.all.lift)} (screws, nuts and inserts stay glued)
+          {auto.length ? <span className="dim"> · {auto.map((x) => `${x.a} and ${x.b}${line(x)}`).join("; ")}</span> : null}
+        </div>
+      )}
+    </>
   );
 }

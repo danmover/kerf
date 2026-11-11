@@ -491,7 +491,7 @@ decision wall_thickness "Wall thickness" {
 An option's { param: value } list names parameters only; switching to that option writes those values into the params. Options without values are structural (switching them needs a design change). The chosen option's values should match the params; the panel shows any difference as "adjusted".
 
 ## Analysis blocks
-A structural analysis says how parts are held and what loads them. After every build the app solves a finite-element model of the named parts (bonded where they touch) and adds strength and stiffness checks.
+A structural analysis says how parts are held and what loads them. After every build the app solves a finite-element model of the named parts (bonded where they touch, unless touching: makes them contacts) and adds strength and stiffness checks.
 analysis "Shelf load" {
   parts: [bracket, gusset]                  // optional: defaults to the parts that face() names
   fix: face(bracket, -Y)                    // held in every direction (screwed or glued to the wall)
@@ -500,6 +500,7 @@ analysis "Shelf load" {
   fix: pin(zone(at: pivot, d: 6, axis: Y, length: 8))   // a pin through a bore: holds it across and along the pin, turns freely, bears only where pressed (tight: true holds all round)
   fix: spring(face(foot, -Z), 800)          // an elastic support: rubber feet or a soft mount, 800 N/mm in all (axis: Z for one way; per_area: 1.5 for a pad)
   fix: displace(face(hook, +X), 1.5mm, dir: -Z)   // a set displacement instead of a force: push a snap hook or clip this far; the result gives the force it takes
+  touching: touch(bracket, gusset, mu: 0.3) // optional: touching parts as contacts instead of glued (they press, part and slide); "all" for every pair that touches
   load: force(face(bracket, +Z), (0, 0, -shelf_kg * 9.81N))   // total force spread over the region
   load: bearing(zone(at: axle, d: 22, axis: Y, length: 7), 300N, dir: -Z)   // a shaft or bearing pushing on a bore: cosine-spread over the side it presses (prefer it to force() on bores)
   load: pressure(face(lid, +Z), 0.02MPa)
@@ -512,6 +513,7 @@ analysis "Shelf load" {
   max_deflection: 0.5mm                     // optional stiffness limit
   resolution: "standard"                    // "draft" ~8k elements, "standard" ~30k (default), "fine" ~110k, or a cell size like 0.6mm
 }
+Touching parts are glued where they touch unless touching: says otherwise. touch(a, b, mu: 0.3) makes a pair a contact: it bears when pressed, comes apart when pulled (lift: false stops that) and slides once friction lets go (mu: 0 slides freely, "rough" never slides). touching: "all" does that for every pair that touches except screws, nuts and inserts (they stay glued); touch(a, b, mu: "glued") keeps one pair glued under it, and touch("all", mu: 0.2) sets the friction for all. The result gives each pair's share pressed, apart and sliding, the force across and along the faces and the peak contact pressure, and fails when the loads pull a part off or slide it away with nothing else holding it. Use it where the joint's behaviour matters (a lid resting on a box, a part clamped between others, a block pushed sideways); it takes several solves, so leave it out where glued is close enough. It does not go with modes:, drop:, buckling, fatigue or topology:.
 fix: and load: may repeat or take lists. Units: N, kN, lbf, kgf (weight of a kilogram: 5kgf = 49 N; kg is a mass in grams, so never kg × 9.81N), Nm, Nmm, MPa, kPa, bar, psi, GPa, and speeds in kmh or mph. Inside an analysis block these functions exist:
 ${analysisFns}
 Look at a result with capture_view results: ("stress", "safety", "disp", "strain", "temp", "current" or "life"); add section: to cut it open, and the cut face shows the field inside the parts (whether stress or heat runs through a section or stays near the surface).

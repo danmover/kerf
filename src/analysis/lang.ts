@@ -48,7 +48,7 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, TopologySpec, V3, Within } from "./spec";
+import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, TopologySpec, TouchingSpec, TouchSpec, V3, Within } from "./spec";
 import { FINISHES, MEAN_STRESS, mergeCycles, rainflow, type Finish, type LoadCycle, type MeanStress } from "./fe/fatigue";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
@@ -92,6 +92,7 @@ export const STRUCTURAL_PROPS = [
   ...HEAT_PROPS,
   "temperature",
   "assembled_at",
+  "touching",
   "buckling",
   "buckling_safety",
   ...TOPOLOGY_PROPS,
@@ -110,6 +111,7 @@ const CURRENT = "electric current";
 const HELD = "held temperature";
 const FILM = "film";
 const BLOCK = "load block";
+const TOUCH = "touching pair";
 
 function def(name: string, params: string[], impl: (a: Args) => Value, doc: string): [string, Fn] {
   return [name, new Fn(name, (pos, named, ctx) => impl(new Args(name, pos, named, ctx, params)), doc)];
@@ -269,6 +271,32 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
       return wrap(SUPPORT, spec, "contact");
     },
     "contact(region, mu: 0.3, grip: [band]) → a seat that is only pressed on (by bands, springs or its own weight), not glued: it holds like fix:, then the result checks that the seat stays pressed (no edge lifts off) and that friction holds what would slide or turn it. A cylinder zone round a tube (zone(at:, d:, axis:, length:)) is a saddle on that tube; grip: adds the friction of bands round the same tube.",
+  ),
+  def(
+    "touch",
+    ["a", "b", "mu", "lift"],
+    (a) => {
+      const first = a.value("a");
+      const muV = a.value("mu");
+      let mu: TouchSpec["mu"] = 0.3;
+      if (muV !== undefined) {
+        if (muV === "rough" || muV === "glued") mu = muV;
+        else if (muV === "bonded") mu = "glued";
+        else if (typeof muV === "number" && muV >= 0 && muV <= 2) mu = muV;
+        else a.ctx.error('touch(): mu: is the friction coefficient from 0 (slides freely) to 2, "rough" (never slides) or "glued" (bonded, to keep one pair glued under touching: "all")');
+      }
+      const lift = a.bool("lift", true);
+      // touch("all", mu: 0.2): every touching pair, with this friction
+      if ((first === "all" || (first instanceof Ref && first.name === "all")) && a.value("b") === undefined) {
+        if (mu === "glued") a.ctx.error('touch("all", mu: "glued") is how parts are anyway: leave out touching:');
+        return wrap(TOUCH, { a: "all", b: "", mu, lift } satisfies TouchSpec, "every touching pair");
+      }
+      const pa = refName(first, a, "the first part");
+      const pb = refName(a.value("b"), a, "the second part");
+      if (pa === pb) a.ctx.error(`touch(): name two different parts, like touch(lid, box); got ${pa} twice`);
+      return wrap(TOUCH, { a: pa, b: pb, mu, lift } satisfies TouchSpec, "touching pair");
+    },
+    'touch(a, b, mu: 0.3, lift: true) → in touching:, two analysed parts that touch as a contact instead of glued: pressed together they bear on each other, pulled they come apart, and along the faces they slide once friction (mu) lets go. mu: 0 slides freely, "rough" never slides, "glued" keeps the pair bonded (an exception under touching: "all"). lift: false lets them slide but never part (held by something not analysed). touch("all", mu: 0.2) sets the friction for every touching pair.',
   ),
   def(
     "spring",
@@ -636,7 +664,42 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     const p = one(n);
     if (p && !thermalOn && n !== "heat" && n !== "hold") fail(`${n}: goes with heat: (where heat is made) or hold: (a surface held at a temperature).`, p.span);
   }
+  // ---- touching parts: contacts that press, part and slide, instead of glued ----
+  const touchP = one("touching");
+  let touching: TouchingSpec | undefined;
+  if (touchP) {
+    const isName = (x: Value) => x instanceof Ref || (x instanceof Obj && x.kind === "component");
+    const nameOf = (x: Value) => (x instanceof Ref ? x.name : String((x as Obj).fields.name));
+    const v = touchP.value;
+    const pairsT: TouchSpec[] = [];
+    let all: TouchingSpec["all"];
+    // touching: [lid, box] is one pair; otherwise a list of touch(...) and "all"
+    const items: Value[] = Array.isArray(v) && v.length === 2 && v.every(isName) ? [v] : Array.isArray(v) ? v : [v];
+    for (const x of items) {
+      if (Array.isArray(x) && x.length === 2 && x.every(isName)) pairsT.push({ a: nameOf(x[0]), b: nameOf(x[1]), mu: 0.3, lift: true });
+      else if (x === "all") all = { mu: 0.3, lift: true };
+      else if (x === "glued" || x === "bonded") continue;
+      else if (x instanceof Obj && x.kind === TOUCH) {
+        const t = x.fields.spec as unknown as TouchSpec;
+        if (t.a === "all") all = { mu: t.mu === "glued" ? 0.3 : t.mu, lift: t.lift };
+        else pairsT.push(t);
+      } else fail(`touching: lists the parts that touch as contacts instead of glued: touch(lid, box, mu: 0.3), a pair like [lid, box], or "all" for every pair that touches; got ${typeName(x)}`, touchP.span);
+    }
+    for (const t of pairsT) {
+      for (const n of [t.a, t.b]) {
+        const k = env.kindOf(n);
+        if (k !== "part" && k !== "component") fail(`touching: "${n}" is not a part or component`, touchP.span);
+      }
+      if (pairsT.filter((q) => (q.a === t.a && q.b === t.b) || (q.a === t.b && q.b === t.a)).length > 1) fail(`touching: ${t.a} and ${t.b} are given twice`, touchP.span);
+    }
+    if (pairsT.length || all) touching = { pairs: pairsT, ...(all ? { all } : {}) };
+  }
+
   const named = new Set<string>();
+  for (const t of touching?.pairs ?? []) {
+    named.add(t.a);
+    named.add(t.b);
+  }
   for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : [])), ...currents.flatMap((c) => [c.from, c.to])])
     if (r.t === "face") named.add(r.part);
   for (const h of heatLoads) if (h.part) named.add(h.part);
@@ -795,6 +858,11 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     moved: supports.some((s) => s.move),
   });
 
+  if (touching) {
+    const other = modal ? "natural frequencies" : drop ? "a drop" : buckling ? "buckling" : fatigue ? "fatigue" : topology ? "topology optimisation" : null;
+    if (other) fail(`touching: lets touching parts press, part and slide under the loads, which ${other} cannot follow. Check ${other} with the parts glued, in an analysis of its own.`, touchP!.span);
+    if (parts.length < 2) fail("touching: needs two or more analysed parts that touch; list them in parts:", touchP!.span);
+  }
   if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
   if (!supports.length && !thermalOn)
     fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead; for temperatures alone use heat:.', span);
@@ -851,6 +919,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(fatigue ? { fatigue } : {}),
     ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
     ...(topology ? { topology } : {}),
+    ...(touching ? { touching } : {}),
     span,
   };
 }

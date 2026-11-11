@@ -23,7 +23,7 @@ import type { FeaPart, PartPrint, StructuralInput, StructuralResult, TopologyPre
 import { fdmPrint, printWords } from "../mfg/infill";
 import { printUp } from "../mfg/printOrientation";
 import type { Finish } from "./fe/fatigue";
-import { contactVerdicts, modeText, printingText, staticSafety, stiffnessVerdict, strengthVerdict } from "./summary";
+import { contactVerdicts, modeText, printingText, staticSafety, stiffnessVerdict, strengthVerdict, touchingText } from "./summary";
 import { fatigueText, fatigueVerdict } from "./fatigueSummary";
 import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { dynamicItems } from "./dynamics";
@@ -311,6 +311,9 @@ export function partPrint(spec: StructuralSpec, p: EvalPart, m: MechMaterial, me
   };
 }
 
+/** Library parts that join others (and stay glued to them under touching: "all"). */
+const JOINING_KINDS = new Set(["screw", "bolt", "nut", "insert", "washer", "standoff", "rivet"]);
+
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
 export function structuralInput(
   spec: StructuralSpec,
@@ -371,7 +374,9 @@ export function structuralInput(
       nrm[i + 2] = m[2] * a + m[6] * b + m[10] * c;
     }
     const print = partPrint(spec, p, mats[mi], data, (v) => [m[0] * v[0] + m[4] * v[1] + m[8] * v[2], m[1] * v[0] + m[5] * v[1] + m[9] * v[2], m[2] * v[0] + m[6] * v[1] + m[10] * v[2]]);
-    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}) });
+    // fasteners, nuts and inserts stay glued under touching: "all" (bolts are modelled bonded)
+    const joining = !!p.fastener || JOINING_KINDS.has(p.libKind ?? "");
+    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}) });
   }
   const res = fine ? "fine" : spec.resolution;
   const input: StructuralInput = {
@@ -417,6 +422,7 @@ export function structuralInput(
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
     ...(spec.topology ? { topology: spec.topology } : {}),
+    ...(spec.touching ? { touching: spec.touching } : {}),
     ...(spec.fatigue
       ? {
           fatigue: {
@@ -663,6 +669,8 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
     });
   }
   for (const c of contactVerdicts(spec, r)) out.push({ ...base, id: id(`contact${c.i}`), status: c.status, margin: c.margin, title: c.title, detail: c.detail, ...(c.fix ? { fix: c.fix } : {}) });
+  const tc = touchingText(spec, r);
+  if (tc) out.push({ ...base, id: id("touching"), status: tc.status, title: `Touching parts: ${spec.label}`, detail: tc.detail, ...(tc.fix ? { fix: tc.fix } : {}) });
   if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
   return out;
 }

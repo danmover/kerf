@@ -244,6 +244,58 @@ export interface BucklingSpec {
   safety: number;
 }
 
+/**
+ * Two analysed parts that touch, as a contact instead of glued: pressed together they bear on each other, pulled
+ * apart they part (unless lift is false), and along the faces they slide once friction lets go.
+ */
+export interface TouchSpec {
+  a: string;
+  b: string;
+  /** friction coefficient (0 slides freely); rough never slides; glued keeps the pair bonded (an exception to "all") */
+  mu: number | "rough" | "glued";
+  /** false: the faces may slide but never come apart (something not analysed holds them together) */
+  lift: boolean;
+}
+
+/** touching: how analysed parts that touch meet, instead of glued where they touch. */
+export interface TouchingSpec {
+  pairs: TouchSpec[];
+  /** touching: "all": every other pair that touches, except fasteners, nuts and inserts (they stay glued) */
+  all?: { mu: number | "rough"; lift: boolean };
+}
+
+/** How a contact between two parts fared. */
+export interface TouchResult {
+  a: string;
+  b: string;
+  mu: number | "rough";
+  lift: boolean;
+  /** found by touching: "all" */
+  auto: boolean;
+  /** area of the faces in touch, mm² */
+  area: number;
+  /** shares of that area pressed together, come apart, and sliding along each other */
+  pressed: number;
+  open: number;
+  sliding: number;
+  /** total force pressing the faces together, N, and the shear force along them, N */
+  force: number;
+  shear: number;
+  /** highest contact pressure, MPa, and where */
+  peak: { value: number; at: V3 };
+  /** widest gap where they came apart and longest slide, mm */
+  gap: number;
+  slip: number;
+  /** elements in the contact layer, solves it took, and whether what presses, parts and slides settled */
+  cells: number;
+  rounds: number;
+  settled: boolean;
+  /** held together for the answer, as nothing else holds them: they come right apart, or slide away */
+  held?: "apart" | "slides";
+  /** one element thick where they touch: the stress there is rough */
+  thin?: boolean;
+}
+
 export interface StructuralSpec {
   kind: "structural";
   label: string;
@@ -290,6 +342,8 @@ export interface StructuralSpec {
   converge?: boolean;
   /** topology optimisation: find the stiffest shape for these loads that keeps a share of the parts' material */
   topology?: TopologySpec;
+  /** touching parts as contacts (pressed, parting, sliding) instead of glued */
+  touching?: TouchingSpec;
   span: Span;
 }
 

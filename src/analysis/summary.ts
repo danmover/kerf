@@ -154,6 +154,45 @@ export function contactVerdicts(spec: StructuralSpec, r: StructuralResult): { i:
   return out;
 }
 
+/**
+ * Touching parts as contacts: what each pair presses, parts and slides. It fails only when a contact lets a part go
+ * entirely (the loads pull it off, or it slides away with nothing to stop it): the answer then holds them together
+ * there, so it is not what would happen.
+ */
+export function touchingText(spec: StructuralSpec, r: StructuralResult): { status: "info" | "fail"; detail: string; fix?: string } | null {
+  if (!spec.touching || !r.touching?.length) return null;
+  const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
+  const lines: string[] = [];
+  const fixes: string[] = [];
+  let fail = false;
+  for (const t of r.touching) {
+    const mu = t.mu === "rough" ? "rough" : t.mu === 0 ? "frictionless" : `μ ${fmtNum(t.mu, 2)}`;
+    const how = `${mu}${t.lift ? "" : ", never parting"}`;
+    if (!t.cells) {
+      if (!t.auto) lines.push(`${t.a} and ${t.b} do not touch at this element size, so nothing passes between them.`);
+      continue;
+    }
+    if (t.held === "apart") {
+      fail = true;
+      lines.push(`The loads pull ${t.b} and ${t.a} apart (${how}): nothing holds them together but where they touch, so this answer keeps them together there, as if glued, and is not what would happen.`);
+      fixes.push(`hold ${t.b} on ${t.a} (screws, a clip, a lip that hooks it, or its own weight from below), or change the load so it presses them together`);
+      continue;
+    }
+    if (t.held === "slides") {
+      fail = true;
+      lines.push(`Friction cannot hold ${t.b} on ${t.a} (${how}): it slides away with nothing to stop it, so this answer holds them stuck there and is not what would happen.`);
+      fixes.push(`stop ${t.b} sliding on ${t.a} with something that keys it (a lip, a pin, a pocket, screws), or press them together harder`);
+      continue;
+    }
+    const parts = [`pressed together over ${pc(t.pressed)} of the ${fmtNum(t.area, 0)} mm² they share (peak ${fmtNum(t.peak.value, 2)} MPa near ${p3(t.peak.at)})`];
+    if (t.open > 0.005) parts.push(`apart over ${pc(t.open)} (a gap of up to ${fmtNum(t.gap * 1000, 1)} µm)`);
+    if (t.sliding > 0.005) parts.push(`sliding over ${pc(t.sliding)} (up to ${fmtNum(t.slip * 1000, 1)} µm)`);
+    lines.push(`${t.a} and ${t.b} (${how}): ${parts.join(", ")}; ${fmtNum(t.force, 1)} N presses them together and ${fmtNum(t.shear, 1)} N passes along the faces.${t.settled ? "" : " Where they press, part and slide had not quite settled."}`);
+  }
+  if (!lines.length) return null;
+  return { status: fail ? "fail" : "info", detail: lines.join(" "), ...(fixes.length ? { fix: fixes.map((f, i) => (i ? f : f[0].toUpperCase() + f.slice(1))).join("; ") + "." } : {}) };
+}
+
 /** Only natural frequencies: no loads, so no stresses to judge. */
 const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length && !spec.accel;
 
@@ -168,6 +207,7 @@ export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Ve
     stiffnessVerdict(spec, r) ?? "pass",
     vibrationVerdict(spec, r),
     ...contactVerdicts(spec, r).map((c) => c.status),
+    touchingText(spec, r)?.status === "fail" ? "fail" : "pass",
     spec.thermal ? temp : temp === "fail" ? "fail" : "pass",
     bucklingVerdict(spec, r)?.status ?? "pass",
     fatigueVerdict(spec, r)?.status ?? "pass",
@@ -257,6 +297,8 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   if (moves.length && !r.loads.length && !r.gravity)
     lines.push(`The parts are loaded only by the set displacement${moves.length > 1 ? "s" : ""}, so the safety factor is how many times further ${moves.length > 1 ? "they" : "it"} could be pushed before the part fails (stresses are linear, so this holds for small movements).`);
   for (const c of contactVerdicts(spec, r)) lines.push(`${c.title}: ${c.status.toUpperCase()}. ${c.detail}${c.fix ? ` Fix: ${c.fix}` : ""}`);
+  const tt = touchingText(spec, r);
+  if (tt) lines.push(`Touching parts (contacts, not glued): ${tt.status === "fail" ? "FAIL. " : ""}${tt.detail}${tt.fix ? ` Fix: ${tt.fix}` : ""}`);
   if (r.loads.length)
     lines.push(
       "Loads: " +
