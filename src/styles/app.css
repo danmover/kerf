@@ -2680,6 +2680,193 @@ a:hover {
   color: var(--fail);
 }
 
+/* CNC toolpaths panel */
+.cam-panel {
+  right: 12px;
+  top: 56px;
+  width: 318px;
+  /* clear of the timeline bar along the bottom */
+  max-height: calc(100% - 136px);
+  overflow-y: auto;
+  font-size: 12px;
+  display: grid;
+  gap: 6px;
+}
+.cam-panel .mt-head {
+  margin-bottom: 0;
+}
+.cam-panel .mt-num {
+  grid-template-columns: 82px 1fr auto;
+}
+.cam-panel .input.bad {
+  border-color: var(--fail);
+}
+.cam-more {
+  justify-self: start;
+  gap: 4px;
+}
+.cam-fold {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11px;
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.cam-fold .grow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cam-fold:hover {
+  color: var(--text);
+  background: rgb(var(--line-rgb) / 0.35);
+}
+.cam-nums-row {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.cam-small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  font-size: 10.5px;
+}
+.cam-small .input {
+  height: 28px;
+  min-width: 0;
+  width: 100%;
+  padding-left: 6px;
+  padding-right: 2px;
+}
+.cam-panel .cam-machine .select {
+  grid-column: auto;
+}
+.cam-machine .cam-small {
+  flex: none;
+  width: 98px;
+}
+.cam-bar {
+  left: 128px;
+  right: 14px;
+  bottom: 12px;
+  margin: 0 auto;
+  max-width: 860px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+}
+.cam-track {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  min-width: 120px;
+}
+.cam-segs {
+  display: flex;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  gap: 2px;
+  opacity: 0.85;
+}
+.cam-segs > span {
+  flex-basis: 0;
+  min-width: 2px;
+}
+.cam-track .slider {
+  width: 100%;
+}
+.cam-now {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cam-bar .cam-clock {
+  min-width: 84px;
+  font-size: 11.5px;
+}
+.cam-note {
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: rgb(var(--line-rgb) / 0.35);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.cam-note.warn {
+  color: var(--warn);
+}
+.cam-note.fail {
+  color: var(--fail);
+}
+.cam-result {
+  display: grid;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+  transition: opacity 0.2s;
+}
+.cam-result.stale {
+  opacity: 0.6;
+}
+.cam-sum {
+  font-size: 12.5px;
+}
+.cam-ops {
+  display: grid;
+  gap: 2px;
+}
+.cam-op {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cam-op:hover {
+  background: rgb(var(--line-rgb) / 0.4);
+  color: var(--text);
+}
+.cam-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+.cam-scrub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cam-clock {
+  text-align: right;
+  white-space: nowrap;
+}
+
 /* frames' cut list, under the parts list */
 .frame-cuts {
   border-top: 1px solid var(--line);

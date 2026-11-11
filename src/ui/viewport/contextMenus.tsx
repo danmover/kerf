@@ -19,6 +19,7 @@ import { openModelTool } from "../ModelTools";
 import { askMaterialPicker } from "../MaterialPicker";
 import { toggleMarkup } from "../Markup";
 import { toggleMeasure } from "./MeasureTool";
+import { openCam } from "../../cam/job";
 import { openContextMenu, type CtxEntry } from "../ContextMenu";
 
 export interface MenuHit {
@@ -110,6 +111,7 @@ export function partMenuEntries(hit: MenuHit): CtxEntry[] {
     { label: `Pattern ${them}…`, icon: <Icon.Pattern size={14} />, run: () => (select(ids), openModelTool("pattern")) },
     "sep",
     { label: "Material…", icon: <Icon.Material size={14} />, run: () => (select(ids), askMaterialPicker()) },
+    ...(part.kind === "part" ? [{ label: "CNC toolpaths…", icon: <Icon.EndMill size={14} />, run: () => openCam(part.id) }] : []),
     lockItem(part),
     { label: "Show its code", icon: <Icon.Code size={14} />, run: () => revealSpan(part.span) },
     { label: "Copy its name", icon: <Icon.Copy size={14} />, run: () => void navigator.clipboard?.writeText(part.name).catch(() => undefined) },

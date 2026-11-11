@@ -26,6 +26,7 @@ import { MaterialCompareHost } from "./materials/CompareOverlay";
 import { SpotChat } from "./SpotChat";
 import { ModelTools } from "./ModelTools";
 import { FrameDialog } from "./FrameDialog";
+import { CamLayer } from "./CamPanel";
 import { Markup, toggleMarkup, useMarkup } from "./Markup";
 import { openSpot, closeSpot, useSpot } from "../app/spot";
 import { useGap, type Gap } from "./useGap";
@@ -420,6 +421,7 @@ export function Viewport() {
       {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
       {scene && !inSketch && canFit && <FitLayer scene={scene} />}
       {scene && !inSketch && <PmiLayer scene={scene} />}
+      {scene && !inSketch && <CamLayer scene={scene} />}
       {!inSketch && <GroupsKey />}
 
       <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && !picking && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>

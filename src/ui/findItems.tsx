@@ -23,6 +23,7 @@ import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
 import { openFilmMaker } from "../film/store";
 import { openFrameDialog } from "./FrameDialog";
+import { openCam } from "../cam/job";
 import { startMatePick } from "./viewport/PickLayer";
 import { fastenFrames } from "../app/frameFasten";
 import { importStepFiles } from "../app/imports";
@@ -257,6 +258,7 @@ export function findItems(ctx: FindContext): FindItem[] {
       ask("ask:sheet", "Make", "Make it from sheet metal", "Bent parts with sheet(): bend radii, reliefs, flat patterns and a laser DXF", "sheet metal bend fold brake laser flat pattern dxf aluminium steel chassis", "Rebuild the parts that suit it as bent sheet metal with sheet(): real bend radii and reliefs, flat patterns with bend tables and a DXF for laser cutting, and check every bend and flange.", <Icon.Layers size={14} />),
       ask("ask:carbon", "Make", "Plan a carbon fibre layup", "Ply book, orientations, weights and how it comes out of the mould", "carbon fibre fiber composite layup ply prepreg monocoque", "Plan the carbon fibre layup for the carbon parts: a ply book with orientations and weights, where the mould splits, and how each part comes out of it.", <Icon.Layers size={14} />),
       ask("ask:factory", "Make", "Get it ready for a factory", "Drawings, materials, tolerances and a list of what to send for a quote", "factory quote manufacturer production supplier rfq send order batch", "Get this design ready to send to a factory for a quote: the processes and materials, drawings with the tolerances that matter, quantities, and a list of what to send and what to ask them.", <Icon.Factory size={14} />),
+      { id: "make:toolpaths", group: "Make", title: "CNC toolpaths", detail: "Plan the cuts for a part on a router or mill, watch them on the model and save G-code for GRBL, LinuxCNC or Mach", keywords: "cnc cam toolpath toolpaths tool path g-code gcode nc ngc tap mill milling router routing grbl linuxcnc mach3 mach4 shapeoko x-carve onefinity 3018 pocket pocketing facing roughing finishing contour profile cut out rest machining tabs vise spoilboard end mill feeds speeds post processor simulate simulation stock machining", icon: <Icon.EndMill size={14} />, run: () => openCam() },
       { id: "make:tools", group: "Make", title: "Tools you have", detail: "Your printer, laser, CNC and the processes you can order, so the checks fit what you can really make", keywords: "workshop machines processes own printer 3d printer cnc laser parts on hand inventory", icon: <Icon.Wrench size={14} />, run: () => openSettings("making") },
     );
 
