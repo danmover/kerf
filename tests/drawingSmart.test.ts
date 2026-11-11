@@ -19,6 +19,7 @@ import { sheetsToPdf, sheetToSvg } from "../src/drawing/render";
 import type { Sheet } from "../src/drawing/sheet";
 import type { DrawingSpec } from "../src/drawing/spec";
 import { holePosition } from "../src/drawing/gdt";
+import { textWidth } from "../src/drawing/text";
 
 const require = createRequire(import.meta.url);
 const OUT = process.env.DRAWING_OUT;
@@ -296,6 +297,26 @@ describe("assembly sheets with many parts", () => {
     const bom = sheet.shapes.filter((x) => x.key === "bom");
     const ys = bom.flatMap((x) => (x.t === "line" || x.t === "poly" ? x.p.filter((_, i) => i % 2 === 1) : x.t === "text" ? [x.at[1]] : []));
     expect(Math.min(...ys)).toBeGreaterThan(9);
+  });
+
+  it.each(["A2", "A3"])("keeps long notes clear of a parts list that runs on in columns beside them (%s)", (size) => {
+    const long = "Clamp the base to the bench with two G-clamps before running, keep hands clear of the intake, and check every lock screw, servo horn and cable tie before each run.";
+    const ctx = load(rig(`drawing ga { title: "Rig" sheet: "${size}" note("${long}") note("${long} ${long}") note("${long}") }`));
+    const sheet = draw(ctx, ctx.model.drawings.find((d) => d.name === "ga")!, `rig-notes-${size}`);
+    const pts = sheet.shapes.filter((x) => x.key === "bom").flatMap((x) => (x.t === "line" || x.t === "poly" ? x.p : x.t === "text" ? x.at : []));
+    const left = Math.min(...pts.filter((_, i) => i % 2 === 0));
+    const bottom = Math.max(...pts.filter((_, i) => i % 2 === 1));
+    const tb = sheet.shapes.filter((x) => x.key === "tb").flatMap((x) => (x.t === "line" || x.t === "poly" ? x.p.filter((_, i) => i % 2 === 0) : []));
+    // the list is wider than the title block, so it comes down beside the notes
+    expect(left).toBeLessThan(Math.min(...tb) - 50);
+    const notes = sheet.shapes.filter((x): x is Extract<typeof x, { t: "text" }> => x.key === "n" && x.t === "text");
+    expect(notes.length).toBeGreaterThan(8);
+    const top = Math.min(...pts.filter((_, i) => i % 2 === 1));
+    // each line beside the list, below it or above it, and on the sheet
+    for (const t of notes) {
+      expect(t.at[1] - t.size >= bottom || t.at[0] + textWidth(t.s, t.size) < left || t.at[1] < top).toBe(true);
+      expect(t.at[1] - t.size).toBeGreaterThan(10);
+    }
   });
 
   it("falls back to a scale that fits when the one asked for does not", () => {
