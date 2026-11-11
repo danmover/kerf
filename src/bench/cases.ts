@@ -201,7 +201,7 @@ export const BENCH: BenchCase[] = [
     message: "Tilt the number up 30 degrees instead of 15.",
     expect: [
       { label: "Tilted 30°", cond: "rise == 30" },
-      { label: "Same O-ring and fit", keep: true, cond: "oring_cs == 3.5 && fit_gap == 0.2" },
+      { label: "Same O-ring and fit", keep: true, cond: "oring_cs == 3.53 && fit_gap == 0.2" },
     ],
   },
   {

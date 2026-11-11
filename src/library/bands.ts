@@ -881,24 +881,53 @@ export function fittingPose(layout: BandLayout, around: Section[], c: BandCord, 
 
 // ---------------------------------------------------------------- solid
 
-/** The band as drawn: its cord swept round the loop, closed on itself. */
+/** The gap left where the swept cord's two ends meet, mm: too fine to see, print or measure. */
+const SEAM_GAP = 0.02;
+
+/** The band as drawn: its cord swept round the loop, its two ends meeting in the middle of its longest straight run. */
 export function bandRecipe(layout: BandLayout): PartRecipe {
-  const pts = dedupe(layout.loop);
-  // a closed run of short straight pieces with rounded joints: a closed spline sweeps into a broken solid in OpenCASCADE.
-  // The seam sits in the middle of a strand.
-  const path = { t: "poly" as const, pts: [...pts, pts[0]], r: 0 };
+  const loop = dedupe(layout.loop);
+  // a run of short straight pieces joined by tangent arcs, swept from one side of a hairline gap round to the other.
+  // OpenCASCADE's pipe is only dependable along a smooth open path: a closed spline sweeps into a broken solid, a closed
+  // run with sharp corners now and then cannot be built at all, and a closed smooth one that does not lie in a plane
+  // comes out capped and invalid, which the volume integral then never finishes.
+  // The arcs are as round as the cord where the pieces are long enough, and as round as the shortest pieces allow
+  let r = layout.cord * 0.75;
+  for (let i = 0; i < loop.length; i++) {
+    const a = loop[(i + loop.length - 1) % loop.length];
+    const b = loop[i];
+    const c = loop[(i + 1) % loop.length];
+    const lenIn = vlen(vsub(b, a));
+    const lenOut = vlen(vsub(c, b));
+    const cos = Math.max(-1, Math.min(1, vdot(vsub(b, a), vsub(c, b)) / (lenIn * lenOut)));
+    const turn = Math.acos(cos);
+    if (turn > 1e-4) r = Math.min(r, (0.49 * Math.min(lenIn, lenOut)) / Math.tan(turn / 2));
+  }
+  // loop[0] is the seam, in line with the points either side of it
+  const along = vnorm(vsub(loop[1], loop[0]));
+  const pts = [vadd(loop[0], vscale(along, SEAM_GAP / 2)), ...loop.slice(1), vsub(loop[0], vscale(along, SEAM_GAP / 2))];
+  const path = { t: "poly" as const, pts, r };
   const swept: ShapeRecipe = { t: "sweep", p: { t: "circle", d: layout.cord * 0.96, c: [0, 0] }, path, rot: 0, frenet: false };
   return { base: swept, ops: [] };
 }
 
+/** The loop's points about a millimetre apart, starting half way along its longest straight run. */
 function dedupe(pts: V3[]): V3[] {
   const out: V3[] = [];
   // about a millimetre apart: finer only slows the sweep down
   for (const p of pts) if (!out.length || vlen(vsub(p, out[out.length - 1])) > 1.2) out.push(p);
   if (out.length > 2 && vlen(vsub(out[0], out[out.length - 1])) < 1.2) out.pop();
-  // start half way along the first strand so the seam is on a straight run
-  const k = Math.floor(out.length / 8);
-  return [...out.slice(k), ...out.slice(0, k)];
+  let k = 0;
+  let longest = 0;
+  for (let i = 0; i < out.length; i++) {
+    const l = vlen(vsub(out[(i + 1) % out.length], out[i]));
+    if (l > longest) {
+      longest = l;
+      k = i;
+    }
+  }
+  const mid = vscale(vadd(out[k], out[(k + 1) % out.length]), 0.5);
+  return [mid, ...out.slice(k + 1), ...out.slice(0, k + 1)];
 }
 
 /** One line per thing the band does, for its BOM entry and the reference. */
