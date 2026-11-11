@@ -144,6 +144,7 @@ export function Viewport() {
       photoSnapshot: () => c.photoSnapshot(),
       focus: (ids) => c.focusOn(ids),
       sectionThrough: (point, normal) => c.sectionThrough(point, normal),
+      film: (o) => c.beginFilm(o),
     });
     setScene(c);
     return () => {

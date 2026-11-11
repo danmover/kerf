@@ -39,6 +39,52 @@ export interface PhotoState {
   max: number;
 }
 
+/** One picture of a film: the camera and what the design is doing (src/film/timeline.ts writes these). */
+export interface FilmShot {
+  camera: { pos: Vec3; target: Vec3; fov: number };
+  /** how far exploded along the plan, 0 to 1 */
+  explode: number;
+  /** assembly progress 0 to 1 (parts arrive in the plan's order), or null */
+  build: number | null;
+  /** turning parts' driver angle, degrees */
+  angle: number;
+  section: { axis: "x" | "y" | "z"; t: number; flip: boolean } | null;
+  /** parts kept solid, the rest ghosted */
+  focus: string[] | null;
+  /** draw the overlays on (wiring, analysis results, a simulation) */
+  overlays: boolean;
+  /** seconds into the shot, for the overlays' own animations */
+  clock: number;
+}
+
+/** Where everything is, for planning a film's shots. */
+export interface FilmLayout {
+  box: Box;
+  parts: Map<string, Box>;
+  /** each part's centre with the design fully exploded */
+  exploded: Map<string, Vec3>;
+  explodedBox: Box | null;
+  /** the order parts go together in */
+  order: string[];
+  /** the shown simulation's box (its world), when one is on */
+  simBox: Box | null;
+}
+
+/** The viewport handed to the film maker: the interactive view pauses until end(). */
+export interface FilmView {
+  readonly width: number;
+  readonly height: number;
+  layout(): FilmLayout;
+  /** draw one picture, rows top first; with `to`, what moves is blurred toward that state across the samples */
+  render(shot: FilmShot, samples: number, to?: FilmShot): ImageData;
+  resize(width: number, height: number): void;
+  /** the time the simulation overlay shows, seconds */
+  simTime(t: number): void;
+  /** start the overlays' own animations again (at the start of a shot) */
+  restartOverlays(): void;
+  end(): void;
+}
+
 export interface ViewportApi {
   capture(opts: CaptureOptions): Promise<string>;
   /** a rendered ball of a material under the current lighting (data URL, transparent background) */
@@ -69,6 +115,8 @@ export interface ViewportApi {
   focus(ids: string[]): void;
   /** the section that best shows the inside at a spot on a face: its axis, where along it (0 to 1) and which side is cut away */
   sectionThrough(point: Vec3, normal: Vec3): { axis: "x" | "y" | "z"; t: number; flip: boolean };
+  /** hand the view to the film maker, drawing at this size in this lighting (a LIGHTING id) */
+  film(opts: { width: number; height: number; look?: string; fine?: boolean }): FilmView;
 }
 
 let api: ViewportApi | null = null;

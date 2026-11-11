@@ -212,6 +212,7 @@ uniform float uHoverAmt;
 uniform float uMask;
 uniform float uPx;
 uniform float uTime;
+uniform float uLinearOut;
 varying vec2 vUv;
 
 // Khronos PBR Neutral: keeps product colours true while rolling off highlights
@@ -232,6 +233,10 @@ vec3 neutral(vec3 color) {
 vec3 toSRGB(vec3 c) {
   c = clamp(c, 0.0, 1.0);
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+vec3 fromSRGB(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
 }
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -277,6 +282,8 @@ void main() {
   outc *= 1.0 - uVignette * smoothstep(0.35, 1.05, v);
 
   vec3 srgb = toSRGB(outc) + (hash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) / 255.0;
+  // an sRGB target encodes what is written: hand it linear values (dithered as sRGB, so the bands still break up)
+  if (uLinearOut > 0.5) srgb = fromSRGB(srgb);
   gl_FragColor = uTransparent > 0.5 ? vec4(srgb, a) : vec4(srgb, 1.0);
 }`;
 
@@ -406,6 +413,7 @@ export class RenderPipeline {
     uMask: { value: 0 },
     uPx: { value: 1 },
     uTime: { value: 0 },
+    uLinearOut: { value: 0 },
   });
   private black: THREE.DataTexture;
   private savedProj = new THREE.Matrix4();
@@ -590,6 +598,8 @@ export class RenderPipeline {
    * leaves the background clear (material swatches).
    */
   composite(target: THREE.WebGLRenderTarget | null, opts: { mask?: boolean; selAmt?: number; selFill?: number; hoverAmt?: number; transparent?: boolean; time?: number } = {}) {
+    // a target that stores sRGB (as captures do, so the overlays drawn after are encoded too) encodes on write itself
+    const linearOut = !!target && target.texture.colorSpace === THREE.SRGBColorSpace;
     const look = this.look;
     const useBloom = look.bloom > 0.001;
     if (useBloom) this.updateBloom();
@@ -614,6 +624,7 @@ export class RenderPipeline {
     u.uHoverAmt.value = opts.hoverAmt ?? 0;
     u.uPx.value = this.pixelRatio;
     u.uTime.value = opts.time ?? 0;
+    u.uLinearOut.value = linearOut ? 1 : 0;
     this.pass(this.compMat, target);
   }
 

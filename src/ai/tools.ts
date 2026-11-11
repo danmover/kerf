@@ -48,6 +48,7 @@ import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } f
 import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./materialTools";
 import { FASTEN_TOOL_DEFS, FASTEN_TOOL_TITLES, runFastenTool } from "./fastenTool";
 import { VIEW_TOOL_DEFS, VIEW_TOOL_TITLES, runViewTool } from "./viewTools";
+import { FILM_TOOL_DEFS, FILM_TOOL_TITLES, runFilmTool } from "./filmTool";
 import { partGroups } from "../app/partGroups";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
@@ -436,6 +437,7 @@ export const TOOL_DEFS = [
   ...MATERIAL_TOOL_DEFS,
   ...FASTEN_TOOL_DEFS,
   ...VIEW_TOOL_DEFS,
+  ...FILM_TOOL_DEFS,
 ];
 
 const EditInput = z
@@ -1530,6 +1532,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (fasten) return fasten;
   const viewed = await runViewTool(name, input);
   if (viewed) return viewed;
+  const filmed = await runFilmTool(name, input);
+  if (filmed) return filmed;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -1559,6 +1563,7 @@ export const TOOL_TITLES: Record<string, string> = {
   ...MATERIAL_TOOL_TITLES,
   ...FASTEN_TOOL_TITLES,
   ...VIEW_TOOL_TITLES,
+  ...FILM_TOOL_TITLES,
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
   view_drawing: "Looking at the drawing",

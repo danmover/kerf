@@ -23,6 +23,7 @@ import { Workspace } from "./screens/Workspace";
 import { Legal } from "./screens/Legal";
 import { SettingsModal } from "./ui/Settings";
 import { ConfirmDialog, ShortcutsModal, Toasts } from "./ui/Dialogs";
+import { FilmMaker } from "./ui/film/FilmMaker";
 import { FindPalette } from "./ui/FindPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { LogoMark } from "./ui/Logo";
@@ -77,6 +78,7 @@ export function App() {
         <AuthDialog />
         <ShortcutsModal />
         <FindPalette />
+        <FilmMaker />
         <ConfirmDialog />
         <ContextMenuHost />
         <Toasts />

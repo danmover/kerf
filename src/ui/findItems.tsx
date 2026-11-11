@@ -21,6 +21,7 @@ import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
 import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
 import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
+import { openFilmMaker } from "../film/store";
 import { importStepFiles } from "../app/imports";
 import { TEMPLATES } from "../demos/templates";
 import { openDrawings, closeDrawings, useDrawings } from "../drawing/engine";
@@ -307,6 +308,8 @@ export function findItems(ctx: FindContext): FindItem[] {
     if (model && hasFitting(model)) push({ id: "view:fitting", group: "View", title: "How it goes on", detail: "Watch it fitted, and what keeps it there", keywords: "fit fitting mount install clip band attach", icon: <Icon.Assemble size={14} />, tag: useFitView.getState().on ? "on" : undefined, run: () => (useFitView.getState().on ? useFitView.setState({ on: false }) : playFitting()) });
 
     // ── exports ──
+    if (model?.parts.length)
+      push({ id: "film:make", group: "Export", title: "Make a showcase film", detail: "A short film of the design with captions, cards and music: pick the sections, then render an MP4", keywords: "film video showcase movie animation trailer reel promo turntable mp4 linkedin youtube instagram tiktok shorts reels presentation demo render animation exploded assembly", icon: <Icon.Film size={14} />, run: () => openFilmMaker() });
     for (const f of EXPORT_FORMATS) {
       if (f.shown && !f.shown()) continue;
       const I = (Icon as Record<string, (p: { size?: number }) => JSX.Element>)[f.icon] ?? Icon.Download;
