@@ -108,6 +108,35 @@ export function runQuickCommand(cmd: QuickCommand, spot?: SpotRef | null): Quick
   return { ok: true, kind: cmd.k, title, detail, before: src, after: next, targets: changed, built: buildError(changed) };
 }
 
+/**
+ * Fillet or chamfer edges picked in the view (the selection filter), each
+ * part's edges in one statement, as one undoable change. `groups` gives each
+ * part block and a point along each of its edges, in the part's own frame.
+ */
+export function roundPicked(k: "fillet" | "chamfer", r: number, groups: { block: string; edges: Vec3[] }[]): QuickOutcome {
+  const { src, model } = current();
+  let next = src;
+  let nextModel = model;
+  const titles: string[] = [];
+  const changed: string[] = [];
+  for (const g of groups) {
+    if (!g.edges.length) continue;
+    const res = applyQuick({ k, r }, { src: next, model: nextModel, target: g.block, spot: { local: g.edges[0], edges: g.edges } });
+    if (!res.ok) return res;
+    next = res.src;
+    titles.push(res.title);
+    changed.push(g.block);
+    nextModel = evaluateOnly(next);
+  }
+  if (next === src) return { ok: false, why: "Pick an edge first.", ai: false };
+  const errorsIn = (m: Model) => m.diagnostics.filter((d) => d.severity === "error");
+  const broke = errorsIn(nextModel).filter((e) => !errorsIn(model).some((o) => o.message === e.message));
+  if (broke.length) return { ok: false, why: `That would break the design: ${broke[0].message}`, ai: true };
+  const title = titles.length > 2 ? `${titles[0]}, and ${titles.length - 1} more` : titles.join("; ");
+  commitSource(next, "you", title);
+  return { ok: true, kind: k, title, before: src, after: next, targets: changed, built: buildError(changed) };
+}
+
 /** Which parts a command means: the one it names, the one pointed at, the selected ones, or the only part. */
 function targetsFor(cmd: QuickCommand, model: Model, spotBlock: string | undefined): string[] {
   if ("target" in cmd && cmd.target) return [cmd.target];

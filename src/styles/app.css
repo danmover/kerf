@@ -1172,6 +1172,42 @@ a:hover {
   width: 260px;
   z-index: 5;
 }
+/* picking faces, edges and corners: the box a drag draws (left to right takes what is wholly inside, right to left what it touches) */
+.vp-boxsel {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  border-radius: 2px;
+}
+.vp-boxsel.window {
+  border: 1px solid rgb(var(--accent-2-rgb) / 0.95);
+  background: rgb(var(--accent-2-rgb) / 0.12);
+}
+.vp-boxsel.crossing {
+  border: 1px dashed rgb(var(--pass-rgb) / 0.95);
+  background: rgb(var(--pass-rgb) / 0.1);
+}
+.pick-svg {
+  z-index: 3;
+}
+.pick-namer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  z-index: 7;
+}
+.pick-namer .input {
+  width: 170px;
+}
+.pick-set {
+  gap: 2px;
+  padding-right: 4px;
+}
+.pick-set > .menu-item {
+  flex: 1;
+  min-width: 0;
+}
 .vp-empty {
   position: absolute;
   inset: 0;

@@ -10,6 +10,7 @@ import { updateSettings, useSettings, type Settings } from "../app/settings";
 import { useDesign, evaluateOnly, whenChecked } from "../core/engine";
 import { whenWiringChecked } from "../machine/harness/runtime";
 import { useView } from "../app/view";
+import { picksSummary } from "../app/picks";
 import { drawingContext } from "../drawing/engine";
 import { commitSource, useProject, endPreview } from "../app/project";
 import { systemPrompt } from "./prompt";
@@ -590,6 +591,7 @@ function contextNote(): string {
     takeQuickNote(),
     reportSummary(report, 12),
     selected.length ? `The user has selected: ${selected.slice(0, 20).join(", ")}` : "",
+    picksSummary(model),
     drawingContext(),
     sourceNote(source),
     `</context>`,

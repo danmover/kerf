@@ -40,7 +40,7 @@ export interface MeasureHost {
   controls?: { addEventListener(type: "change", fn: () => void): void; removeEventListener(type: "change", fn: () => void): void };
 }
 
-interface Snap {
+export interface Snap {
   partId: string;
   kind: "face" | "edge" | "vertex";
   id?: number;
@@ -398,7 +398,7 @@ function shown(o: THREE.Object3D): boolean {
   return true;
 }
 
-function partMeshes(scene: THREE.Object3D): Map<string, THREE.Mesh> {
+export function partMeshes(scene: THREE.Object3D): Map<string, THREE.Mesh> {
   const out = new Map<string, THREE.Mesh>();
   scene.traverse((o) => {
     const id = o.userData.partId as string | undefined;
@@ -414,7 +414,7 @@ function toNdc(h: MeasureHost, x: number, y: number) {
   return { rect: r, ndc: new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1) };
 }
 
-function meshData(part: EvalPart, mesh: THREE.Mesh): MeshData | undefined {
+export function meshData(part: EvalPart, mesh: THREE.Mesh): MeshData | undefined {
   const e = meshes.get(part.hash);
   if (!e) return undefined;
   const n = mesh.geometry.index?.count;
@@ -423,20 +423,25 @@ function meshData(part: EvalPart, mesh: THREE.Mesh): MeshData | undefined {
   return e.final ?? e.preview;
 }
 
-/** What is under the cursor: a corner or an edge within a few pixels, else the face. */
-function snapAt(h: MeasureHost, x: number, y: number): Snap | null {
+/** What is under the cursor: a corner or an edge within a few pixels, else the face; `only` keeps to one kind (the selection filter). */
+export function snapAt(h: MeasureHost, x: number, y: number, only?: Snap["kind"]): Snap | null {
   const { rect, ndc } = toNdc(h, x, y);
   raycaster.setFromCamera(ndc, h.camera);
   const byId = partMeshes(h.scene);
   const target = h.hit ? h.hit(x, y) : undefined;
-  if (target === null) return null;
+  const camPos = new THREE.Vector3().setFromMatrixPosition(h.camera.matrixWorld);
+  const per = pixelSize(h, rect);
   const list = target ? [byId.get(target.id)].filter((m): m is THREE.Mesh => !!m) : [...byId.values()].filter(shown);
-  const hit = raycaster.intersectObjects(list, false).find((i) => {
-    const m = (i.object as THREE.Mesh).material as THREE.Material;
-    if (m.transparent && m.opacity <= 0.5) return false;
-    return !m.clippingPlanes?.some((p) => p.distanceToPoint(i.point) < 0);
-  });
-  if (!hit) return null;
+  const hit =
+    target === null
+      ? undefined
+      : raycaster.intersectObjects(list, false).find((i) => {
+          const m = (i.object as THREE.Mesh).material as THREE.Material;
+          if (m.transparent && m.opacity <= 0.5) return false;
+          return !m.clippingPlanes?.some((p) => p.distanceToPoint(i.point) < 0);
+        });
+  // just off a part's outline: its edges and corners there can still be picked
+  if (!hit) return only === "face" ? null : outlineSnap(h, x, y, rect, byId, only, camPos, per);
   const mesh = hit.object as THREE.Mesh;
   const partId = mesh.userData.partId as string;
   const part = useDesign.getState().model?.parts.find((p) => p.id === partId);
@@ -444,52 +449,13 @@ function snapAt(h: MeasureHost, x: number, y: number): Snap | null {
   if (!part || !data) return null;
   const local = mesh.worldToLocal(hit.point.clone());
 
-  // edges and corners near the cursor, in front of (or on) the surface hit
-  const toScreen = (v: THREE.Vector3) => {
-    const p = v.clone().applyMatrix4(mesh.matrixWorld).project(h.camera);
-    return [(p.x * 0.5 + 0.5) * rect.width + rect.left, (-p.y * 0.5 + 0.5) * rect.height + rect.top, p.z] as const;
-  };
-  const camPos = new THREE.Vector3().setFromMatrixPosition(h.camera.matrixWorld);
+  // edges and corners near the cursor, in front of (or on) the surface hit; how far behind it still counts grows
+  // with the few pixels the cursor may be off them
   const size = mesh.geometry.boundingSphere?.radius ?? 10;
-  const visible = (lp: THREE.Vector3) => lp.clone().applyMatrix4(mesh.matrixWorld).distanceTo(camPos) <= hit.distance + Math.max(0.05, size * 0.01);
-  let best: { d: number; kind: "edge" | "vertex"; id: number; local: THREE.Vector3; range: [number, number] } | null = null;
-  const eg = data.edgeGroups;
-  const pts = data.edges;
-  if (eg && pts.length) {
-    const a = new THREE.Vector3();
-    const b = new THREE.Vector3();
-    for (let g = 0; g < eg.length; g += 3) {
-      const start = eg[g];
-      const count = eg[g + 1];
-      const id = eg[g + 2];
-      for (let k = start; k + 1 < start + count; k += 2) {
-        a.fromArray(pts, k * 3);
-        b.fromArray(pts, (k + 1) * 3);
-        const sa = toScreen(a);
-        const sb = toScreen(b);
-        // corners: the ends of the edge
-        for (const [s, p, end] of [
-          [sa, a, k === start],
-          [sb, b, k + 2 >= start + count],
-        ] as const) {
-          if (!end) continue;
-          const d = Math.hypot(s[0] - x, s[1] - y);
-          if (d < 9 && (!best || best.kind !== "vertex" || d < best.d) && visible(p)) best = { d, kind: "vertex", id, local: p.clone(), range: [start, count] };
-        }
-        if (best?.kind === "vertex") continue;
-        const dx = sb[0] - sa[0];
-        const dy = sb[1] - sa[1];
-        const L2 = dx * dx + dy * dy;
-        const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - sa[0]) * dx + (y - sa[1]) * dy) / L2)) : 0;
-        const d = Math.hypot(sa[0] + dx * t - x, sa[1] + dy * t - y);
-        if (d < 6 && (!best || d < best.d)) {
-          const p = a.clone().lerp(b, t);
-          if (visible(p)) best = { d, kind: "edge", id, local: p, range: [start, count] };
-        }
-      }
-    }
-  }
-  if (best) return { partId, kind: best.kind, id: best.kind === "edge" ? best.id : undefined, local: best.local, data, range: best.range };
+  const tol = Math.max(0.05, size * 0.01, hit.distance * per * 10);
+  const near = nearEdges(h, mesh, data, x, y, rect, only, camPos).find((c) => c.dist <= hit.distance + tol);
+  if (near) return { partId, kind: near.kind, id: near.kind === "edge" ? near.id : undefined, local: near.local, data, range: near.range };
+  if (only && only !== "face") return null;
 
   // the face: its group in the mesh by triangle
   let range: [number, number] | undefined;
@@ -506,11 +472,138 @@ function snapAt(h: MeasureHost, x: number, y: number): Snap | null {
   return { partId, kind: "face", id, local, data, range };
 }
 
+/** The size of a pixel, in mm per mm away from the camera (0 for a camera without perspective). */
+function pixelSize(h: MeasureHost, rect: DOMRect): number {
+  const cam = h.camera as THREE.PerspectiveCamera;
+  return cam.isPerspectiveCamera && rect.height > 0 ? (2 * Math.tan(((cam.fov / cam.zoom) * Math.PI) / 360)) / rect.height : 0;
+}
+
+interface NearEdge {
+  /** pixels from the cursor */
+  d: number;
+  kind: "edge" | "vertex";
+  id: number;
+  local: THREE.Vector3;
+  range: [number, number];
+  /** from the camera, in the world */
+  dist: number;
+}
+
+/**
+ * A part's corners within 9 pixels of the cursor, nearest first, then its
+ * edges within 6. The point on an edge is where the pick ray passes closest
+ * to it: in perspective, the fraction along the edge on screen is not the
+ * fraction along the edge itself.
+ */
+function nearEdges(h: MeasureHost, mesh: THREE.Mesh, data: MeshData, x: number, y: number, rect: DOMRect, only: Snap["kind"] | undefined, camPos: THREE.Vector3): NearEdge[] {
+  const eg = data.edgeGroups;
+  const pts = data.edges;
+  if (!eg || !pts.length || only === "face") return [];
+  const M = mesh.matrixWorld;
+  const toScreen = (v: THREE.Vector3) => {
+    const p = v.clone().applyMatrix4(M).project(h.camera);
+    return [(p.x * 0.5 + 0.5) * rect.width + rect.left, (-p.y * 0.5 + 0.5) * rect.height + rect.top, p.z] as const;
+  };
+  const corners: NearEdge[] = [];
+  const edges: NearEdge[] = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const wa = new THREE.Vector3();
+  const wb = new THREE.Vector3();
+  const on = new THREE.Vector3();
+  for (let g = 0; g < eg.length; g += 3) {
+    const start = eg[g];
+    const count = eg[g + 1];
+    const id = eg[g + 2];
+    let best: NearEdge | null = null;
+    for (let k = start; k + 1 < start + count; k += 2) {
+      a.fromArray(pts, k * 3);
+      b.fromArray(pts, (k + 1) * 3);
+      const sa = toScreen(a);
+      const sb = toScreen(b);
+      // behind the camera
+      if (sa[2] > 1 || sb[2] > 1) continue;
+      if (only !== "edge")
+        for (const [s, p, end] of [
+          [sa, a, k === start],
+          [sb, b, k + 2 >= start + count],
+        ] as const) {
+          if (!end) continue;
+          const d = Math.hypot(s[0] - x, s[1] - y);
+          if (d < 9) corners.push({ d, kind: "vertex", id, local: p.clone(), range: [start, count], dist: p.clone().applyMatrix4(M).distanceTo(camPos) });
+        }
+      if (only === "vertex") continue;
+      const dx = sb[0] - sa[0];
+      const dy = sb[1] - sa[1];
+      const L2 = dx * dx + dy * dy;
+      const t = L2 > 0 ? Math.max(0, Math.min(1, ((x - sa[0]) * dx + (y - sa[1]) * dy) / L2)) : 0;
+      const d = Math.hypot(sa[0] + dx * t - x, sa[1] + dy * t - y);
+      if (d < 6 && (!best || d < best.d)) {
+        wa.copy(a).applyMatrix4(M);
+        wb.copy(b).applyMatrix4(M);
+        raycaster.ray.distanceSqToSegment(wa, wb, undefined, on);
+        best = { d, kind: "edge", id, local: mesh.worldToLocal(on.clone()), range: [start, count], dist: on.distanceTo(camPos) };
+      }
+    }
+    if (best) edges.push(best);
+  }
+  corners.sort((p, q) => p.d - q.d);
+  edges.sort((p, q) => p.d - q.d);
+  return [...corners, ...edges];
+}
+
+const seeRay = new THREE.Raycaster();
+
+/**
+ * With the cursor just outside every part: an edge or corner of a part's
+ * outline within a few pixels, if nothing stands in front of it.
+ */
+function outlineSnap(h: MeasureHost, x: number, y: number, rect: DOMRect, byId: Map<string, THREE.Mesh>, only: Snap["kind"] | undefined, camPos: THREE.Vector3, per: number): Snap | null {
+  const model = useDesign.getState().model;
+  if (!model) return null;
+  const solid = [...byId.values()].filter((m) => {
+    const mat = m.material as THREE.Material;
+    return shown(m) && !(mat.transparent && mat.opacity <= 0.5);
+  });
+  const c = new THREE.Vector3();
+  const found: (NearEdge & { mesh: THREE.Mesh; data: MeshData; partId: string })[] = [];
+  for (const mesh of solid) {
+    // only parts whose outline comes near the cursor
+    const sphere = mesh.geometry.boundingSphere;
+    if (sphere && per > 0) {
+      c.copy(sphere.center).applyMatrix4(mesh.matrixWorld);
+      const dist = c.distanceTo(camPos);
+      const p = c.clone().project(h.camera);
+      const sx = (p.x * 0.5 + 0.5) * rect.width + rect.left;
+      const sy = (-p.y * 0.5 + 0.5) * rect.height + rect.top;
+      const reach = dist > sphere.radius ? sphere.radius / ((dist - sphere.radius) * per) : Infinity;
+      if (Math.hypot(sx - x, sy - y) > reach + 12) continue;
+    }
+    const partId = mesh.userData.partId as string;
+    const part = model.parts.find((p) => p.id === partId);
+    const data = part && meshData(part, mesh);
+    if (!data) continue;
+    for (const n of nearEdges(h, mesh, data, x, y, rect, only, camPos)) found.push({ ...n, mesh, data, partId });
+  }
+  found.sort((p, q) => (p.kind === q.kind ? p.d - q.d : p.kind === "vertex" ? -1 : 1));
+  for (const n of found.slice(0, 8)) {
+    const w = n.local.clone().applyMatrix4(n.mesh.matrixWorld);
+    const mat = n.mesh.material as THREE.Material;
+    if (mat.clippingPlanes?.some((p) => p.distanceToPoint(w) < 0)) continue;
+    seeRay.set(camPos, w.clone().sub(camPos).normalize());
+    seeRay.far = n.dist;
+    const first = seeRay.intersectObjects(solid, false)[0];
+    if (first && first.distance < n.dist - Math.max(0.05, n.dist * per * 4)) continue;
+    return { partId: n.partId, kind: n.kind, id: n.kind === "edge" ? n.id : undefined, local: n.local, data: n.data, range: n.range };
+  }
+  return null;
+}
+
 function placement(part: EvalPart) {
   return new THREE.Matrix4().fromArray(xformMatrix(part.xf));
 }
 
-function pickRef(s: Snap, part: EvalPart | undefined): PickRef | null {
+export function pickRef(s: Snap, part: EvalPart | undefined): PickRef | null {
   if (!part) return null;
   const p = s.local.clone().applyMatrix4(placement(part));
   // a detailed mesh comes from the detail worker, whose face and edge ids mean nothing to the main kernel that
@@ -596,6 +689,6 @@ function drawOverlay(h: MeasureHost, hover: Snap | null, picks: Snap[], r: PickM
   };
 }
 
-function sameSnap(a: Snap, b: Snap) {
+export function sameSnap(a: Snap, b: Snap) {
   return a.partId === b.partId && a.kind === b.kind && a.id === b.id && (a.kind !== "vertex" || a.local.distanceTo(b.local) < 1e-6);
 }

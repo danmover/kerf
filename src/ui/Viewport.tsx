@@ -35,6 +35,8 @@ import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
 import { AirflowLayer } from "./AirflowLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
+import { PickFilterMenu, PickLayer } from "./viewport/PickLayer";
+import { usePicks } from "../app/picks";
 import { SimLayer } from "./sim/SimLayer";
 import { WiringLayer } from "./WiringLayer";
 import { FitLayer, playFitting, useFitView } from "./FitLayer";
@@ -73,6 +75,11 @@ export function Viewport() {
   const sketching = useSketch((s) => !!s.active || s.picking);
   const inSketch = useSketch((s) => !!s.active);
   const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
+  const pickHost = useCallback(() => {
+    const h = measureHost();
+    return h && ctl.current ? { ...h, orbit: ctl.current.controls } : null;
+  }, [measureHost]);
+  const picking = usePicks((s) => s.picks.length > 0);
   const [photo, setPhoto] = useState<PhotoStatus>({ state: "off", samples: 0, max: 0 });
   const wiring = useWiringView((s) => s.on);
   const hasWires = !!model?.machine && model.machine.wires.length + model.machine.nets.length > 0;
@@ -96,9 +103,10 @@ export function Viewport() {
     decor.current = new Decorators([boards, detail]);
     c.setDecorator(decor.current);
     mfgOverlay.current = new ProcessOverlay(c);
-    c.onHover = (id) => useView.setState({ hovered: id });
+    // with the selection filter on faces, edges or corners, a click picks those (the pick layer does), not the part
+    c.onHover = (id) => useView.setState({ hovered: usePicks.getState().filter === "part" ? id : null });
     c.onPick = (id, additive) => {
-      if (measuring()) return;
+      if (measuring() || usePicks.getState().filter !== "part") return;
       const s = useView.getState();
       if (!id) {
         closeSpot();
@@ -318,6 +326,7 @@ export function Viewport() {
           <Icon.Target />
         </button>
         <GroupsMenu />
+        <PickFilterMenu />
         <MeasureButton />
         <PmiButton />
         {hasWires && (
@@ -397,6 +406,7 @@ export function Viewport() {
       {/* the "How it goes on" card sits where this line is; the status bar still shows the same counts */}
       {!fitting && <Hud stage={stage} parts={visibleParts} />}
       <MeasureTool host={measureHost} />
+      <PickLayer host={pickHost} />
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
@@ -407,7 +417,7 @@ export function Viewport() {
       {scene && !inSketch && <PmiLayer scene={scene} />}
       {!inSketch && <GroupsKey />}
 
-      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
+      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && !picking && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
       {settings.advanced && !inSketch && <ModelTools host={mount} />}
       <SpotChat />

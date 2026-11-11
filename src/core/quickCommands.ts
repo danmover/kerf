@@ -594,6 +594,8 @@ export interface QuickSpot {
   normal?: Vec3;
   /** the middle of the edge nearest the spot, and how far the spot is from it */
   edge?: { mid: Vec3; dist: number };
+  /** edges picked in the view with the selection filter: a point along each, away from its ends */
+  edges?: Vec3[];
   /** the same spot in assembly coordinates, with its normal there */
   point?: Vec3;
   worldNormal?: Vec3;
@@ -764,6 +766,12 @@ function applyEdges(cmd: Extract<QuickCommand, { k: "fillet" | "chamfer" }>, stm
   const r = cmd.r ?? 1;
   const verb = cmd.k === "fillet" ? "Filleted" : "Chamfered";
   const spot = ctx.spot;
+  if (spot?.edges?.length && !cmd.edges) {
+    const one = (m: Vec3) => `near(${vec(m, 3)}, 0.2)`;
+    const sel = spot.edges.length === 1 ? one(spot.edges[0]) : `[${spot.edges.map(one).join(", ")}]`;
+    const src = insertItem(ctx.src, stmt, `${cmd.k}(${f(r)}, edges: ${sel})`, null);
+    return { ok: true, src, title: `${verb} ${spot.edges.length === 1 ? "the edge" : `the ${spot.edges.length} edges`} you picked on ${label} (${mm(r)})`, target: stmt.name };
+  }
   if (cmd.edges || !spot) {
     const edges = cmd.edges ?? "all";
     const src = insertItem(ctx.src, stmt, `${cmd.k}(${f(r)}, edges: "${edges}")`, afterLastAdd(stmt));

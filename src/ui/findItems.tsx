@@ -33,6 +33,8 @@ import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
 import { RulerIcon, toggleMeasure } from "./viewport/MeasureTool";
+import { FilterIcon, openSetNamer, recallSet } from "./viewport/PickLayer";
+import { FILTERS, FILTER_WORD, savedSets, setFilter, toggleBox, usePicks } from "../app/picks";
 import { playFitting, useFitView } from "./FitLayer";
 import { togglePmi, usePmiView } from "./PmiLayer";
 import { hasFitting } from "../analysis/fitting";
@@ -260,6 +262,18 @@ export function findItems(ctx: FindContext): FindItem[] {
       { id: "view:assembly", group: "View", title: "Play the assembly", detail: "Watch the parts go together in the order they fit, screws once both sides are on", keywords: "assemble animation build order instructions", icon: <Icon.Assemble size={14} />, keys: "A", run: () => useView.setState({ explode: 0, assemblyRequest: v.assemblyRequest + 1 }) },
       { id: "view:xray", group: "View", title: "X-ray", detail: "See through the parts", keywords: "transparent see through ghost inside", icon: <Icon.Xray size={14} />, keys: "X", tag: v.xray ? "on" : undefined, run: () => useView.setState({ xray: !v.xray }) },
       { id: "view:measure", group: "View", title: "Measure", detail: "Distances, angles and sizes between what you click", keywords: "ruler distance dimension size gap angle", icon: <RulerIcon size={14} />, keys: "R", run: () => toggleMeasure() },
+      ...FILTERS.map((f): FindItem => ({
+        id: `view:pick:${f}`,
+        group: "View",
+        title: f === "part" ? "Pick whole parts" : `Pick ${FILTER_WORD[f]}`,
+        detail: f === "part" ? "Clicks select parts again (the selection filter)" : `Clicks pick ${FILTER_WORD[f]} of the parts: fillet or chamfer the picked edges, sketch on a picked face, copy them as near() selectors or ask Claude about them`,
+        keywords: "selection filter select faces edges corners vertices vertex bodies parts pick face pick edge pick corner sub-part sub part entity topology filter faces only edges only",
+        icon: <FilterIcon filter={f} box={false} size={14} />,
+        keys: "Q",
+        tag: usePicks.getState().filter === f ? "on" : undefined,
+        run: () => setFilter(f),
+      })),
+      { id: "view:boxselect", group: "View", title: "Box select", detail: "Drag a box to pick parts, faces, edges or corners: left to right takes what is wholly inside, right to left whatever it touches", keywords: "box select window selection crossing selection drag select marquee rubber band lasso area select many multiple", icon: <FilterIcon filter={usePicks.getState().filter} box size={14} />, keys: "B", tag: usePicks.getState().box ? "on" : undefined, run: () => toggleBox() },
       { id: "view:drawings", group: "View", title: drawings ? "Back to the 3D view" : "Engineering drawings", detail: drawings ? "Leave the drawing sheets" : "Dimensioned sheets for each part, ready to print or send", keywords: "drawing drawings blueprint 2d dimensions sheet pdf tolerance print", icon: <Icon.Doc size={14} />, keys: "D", run: () => (drawings ? closeDrawings() : openDrawings()) },
       { id: "view:drawings-gdt", group: "View", title: "Datums and GD&T on drawings", detail: "Geometric tolerances, fits for bearing seats and dowels, gear centre distances", keywords: "gd&t gdt geometric tolerancing datum datums feature control frame position flatness perpendicularity runout basic dimension fit fits h7 k6 bearing seat dowel centre distance backlash iso 1101 asme y14.5 surface finish ra", icon: <Icon.Doc size={14} />, run: () => openDrawings() },
       { id: "view:drawings-annotate", group: "View", title: "Radii, chamfers, angles and ordinates on drawings", detail: "Read off the views; dim_style: ordinate or chain, or write angle(), radius(), chamfer(), arc_length()", keywords: "angle angular dimension radius radii fillet round chamfer bevel ordinate baseline chain dimensioning arc length datum dimension style", icon: <Icon.Doc size={14} />, run: () => openDrawings() },
@@ -286,6 +300,11 @@ export function findItems(ctx: FindContext): FindItem[] {
           run: () => soloGroup(g.name),
         });
       if (shownGroups.length) push({ id: "view:group:all", group: "View", title: "Show every group", detail: `Now showing ${shownGroups.join(", ")}`, keywords: "group groups all unhide show everything reset", icon: <Icon.Eye size={14} />, run: () => showGroups([]) });
+    }
+    if (model) {
+      for (const set of savedSets(model.name))
+        push({ id: `view:set:${set.name}`, group: "View", title: `Pick the set “${set.name}”`, detail: "A saved selection set", keywords: "selection set saved selection named selection group of faces edges recall", icon: <FilterIcon filter={set.parts?.length ? "part" : (set.picks?.[0]?.kind ?? "part")} box={false} size={14} />, run: () => recallSet(set) });
+      if (v.selected.length || usePicks.getState().picks.length) push({ id: "view:set:save", group: "View", title: "Save the selection as a set", detail: "Name it, to pick the same parts, faces or edges again later", keywords: "selection set save selection named selection remember group", icon: <Icon.Plus size={14} />, run: () => openSetNamer() });
     }
     if (v.selected.length || v.isolate) push({ id: "view:isolate", group: "View", title: "Isolate the selection", detail: "Show only the selected parts", keywords: "hide others solo only focus", icon: <Icon.Target size={14} />, keys: "I", tag: v.isolate ? "on" : undefined, run: () => useView.setState({ isolate: !v.isolate }) });
     if (hasMotion) push({ id: "view:play", group: "View", title: v.playing ? "Stop the mechanism" : "Run the mechanism", detail: "Turn the input and watch everything that moves", keywords: "play animate motion move run gears", icon: v.playing ? <Icon.Pause size={14} /> : <Icon.Play size={14} />, keys: "Space", tag: v.playing ? "on" : undefined, run: () => useView.setState({ playing: !v.playing }) });
