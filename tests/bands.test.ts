@@ -305,7 +305,7 @@ describe("the seatpost number bracket", () => {
     expect(bands.every((i) => i.status === "pass")).toBe(true);
   }, 120_000);
 
-  it("plays the bracket and its rubber strip on, the O-ring, the number slid in with its print, the number clip pushed through it, and each load it is checked for", async () => {
+  it("plays the bracket with its arms and rubber on, the O-ring, the number slid in with its print, the number clip pushed through it, and each load it is checked for", async () => {
     const r = await fullCheck(src);
     const steps = fittingSteps(r.model, (p) => r.core.get(p.hash)?.bbox as never);
     expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "slide", "slide", "hold", "hold", "hold"]);
@@ -313,10 +313,10 @@ describe("the seatpost number bracket", () => {
     const seat = steps[0];
     if (seat.kind !== "seat") throw new Error("no seat step");
     expect(name(seat.part)).toBe("bracket");
-    // the number clip goes in later, on its own; the rubber strip is stuck into the seat and comes with the bracket,
-    // though it stands out in front of it
-    expect(seat.riders.map(name).sort()).toEqual(["strip"]);
-    expect(seat.caption).toBe("Hold Number bracket against Seatpost.");
+    // the number clip goes in later, on its own; the arms are printed on and come with the bracket, as does the rubber:
+    // the strip stuck into the seat (though it stands out in front of it) and the patch on each arm's finger
+    expect(seat.riders.map(name).sort()).toEqual(["arm_l", "arm_r", "grip_l", "grip_r", "strip"]);
+    expect(seat.caption).toMatch(/^Hold Number bracket, its arms clipped on, against Seatpost/);
     expect(steps[1].title).toBe("Fit O-ring");
     const [slide, push] = steps.filter((s) => s.kind === "slide");
     if (slide.kind !== "slide" || push.kind !== "slide") throw new Error("no slide steps");
@@ -336,10 +336,12 @@ describe("the seatpost number bracket", () => {
     const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
     expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);
     expect(Math.sign(push.peg[0])).toBe(-Math.sign(push.from[0]));
-    // in the stress results the bracket carries its rubber strip and the number clip, the clip the number, and the
-    // number its print, so they move with it
+    // in the stress results the bracket carries its arms, its rubber strip and the number clip, the clip the number,
+    // and the number its print, so they move with it
     const carried = carriedBy(r.model, (p) => r.core.get(p.hash)?.bbox as never);
-    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["number_clip", "strip"]);
+    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["arm_l", "arm_r", "number_clip", "strip"]);
+    // and each arm carries the rubber on its finger
+    for (const side of ["l", "r"]) expect(carried.get(r.model.parts.find((p) => p.name === `arm_${side}`)!.id)!.map(name)).toEqual([`grip_${side}`]);
     expect(carried.get(push.part)!.map(name)).toEqual(["number"]);
     expect(carried.get(slide.part)!.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
     const gust = steps.find((s) => s.kind === "hold" && s.title === "Crosswind gust")!;
@@ -361,7 +363,7 @@ describe("the seatpost number bracket", () => {
     const round = (d: number) => ({ post_w: d, post_d: d, tail_w: 0, tail_r: 0 });
     // the first is the template as it stands, whose sharp-cornered closed pipe could not be built; the second a
     // closed smooth pipe that came out capped and invalid, and whose volume was never worked out
-    const sets: Record<string, number>[] = [{}, { ...round(27.2), oring_id: 50.39, rubber_t: 1 }, { ...round(31.6), oring_id: 50.39 }, { ...round(25.4), oring_id: 44, oring_cs: 3.5, rubber_t: 3 }, { oring_id: 44 }];
+    const sets: Record<string, number>[] = [{}, { ...round(27.2), oring_id: 36, rubber_t: 1 }, { ...round(31.6), oring_id: 41, oring_cs: 3.53 }, { ...round(25.4), oring_id: 34, rubber_t: 3, finger_t: 2 }, { oring_id: 41 }];
     for (const set of sets) {
       const alt = evaluate(withValues(src, m, set));
       expect(alt.diagnostics.filter((x) => x.severity === "error")).toEqual([]);
