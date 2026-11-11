@@ -1495,6 +1495,18 @@ export class SceneController {
     this.changed = true;
   }
 
+  /** The mechanism's driver angle (degrees) the view shows. */
+  get motionAngle() {
+    return this.angle;
+  }
+
+  /** Show the mechanism at a driver angle (degrees): a part the mechanism moves, dragged by hand. */
+  setMotionAngle(deg: number) {
+    if (!Number.isFinite(deg) || deg === this.angle) return;
+    this.angle = deg;
+    this.changed = true;
+  }
+
   /** The group carrying a part's placement, explode offset and motion, for overlays that should move with it. */
   partGroup(id: string): THREE.Group | undefined {
     const obj = this.parts.get(id);

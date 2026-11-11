@@ -199,3 +199,31 @@ describe("free motions in words", () => {
     expect(freedomWords([{ w: [0, 0, 0], v: [1, 0, 0] }], [0, 0, 0], 10)).toBe("slides along X");
   });
 });
+
+describe("parts drawn far from where their mates put them", () => {
+  const blockCat: PlacedCatalogue[] = [{ cat: boxCat([0, 0, 0], [20, 20, 20]), xf: [{ op: "translate", v: [100, 0, 0] }] }];
+  const two = () => [body("box", box), body("block", blockCat)];
+  const top = () => geom(pickPlane("box", box, [0, 0, 1]));
+
+  it("turns a part over when its face is drawn facing the wrong way for against()", () => {
+    // the block's top against the box's top: it has to be turned upside down
+    const s = solveMates(two(), [mate("against", ["block", geom(pickPlane("block", blockCat, [0, 0, 1]))], ["box", top()])]);
+    expect(s.outcomes[0].status).toBe("ok");
+    const n = moveDir(s.moves.get("block")!, [0, 0, 1]);
+    expect(n[2]).toBeCloseTo(-1, 6);
+  });
+
+  it("stands a part square when it is drawn parallel and has to be perpendicular", () => {
+    const s = solveMates(two(), [mate("perpendicular", ["block", geom(pickPlane("block", blockCat, [0, 0, 1]))], ["box", top()])]);
+    expect(s.outcomes[0].status).toBe("ok");
+    expect(Math.abs(moveDir(s.moves.get("block")!, [0, 0, 1])[2])).toBeLessThan(1e-6);
+  });
+
+  it("lines up axes drawn a quarter turn apart", () => {
+    const s = solveMates(two(), [mate("concentric", ["block", { t: "axis", p: [110, 10, 10], d: [1, 0, 0] }], ["box", { t: "axis", p: [10, 10, 25], d: [0, 0, 1] }])]);
+    expect(s.outcomes[0].status).toBe("ok");
+    expect(Math.abs(moveDir(s.moves.get("block")!, [1, 0, 0])[2])).toBeCloseTo(1, 6);
+    const p = movePoint(s.moves.get("block")!, [110, 10, 10]);
+    expect(Math.hypot(p[0] - 10, p[1] - 10)).toBeLessThan(1e-6);
+  });
+});

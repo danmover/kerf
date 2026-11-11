@@ -1363,6 +1363,7 @@ class Evaluator {
           label: (typeof props.label === "string" && (!sd.suffix || imported) ? (imported && def.solids.length > 1 ? `${props.label}: ${imported.ref.meta.bodies[sdIdx].name}` : props.label) : sd.label) + (multi ? ` #${idx + 1}` : ""),
           kind: "component",
           libKind: key,
+          placement: onBoard ? "board" : def.placement,
           group,
           color: ((!sd.suffix || imported) && color) || sd.color,
           material: (typeof props.material === "string" && (!sd.suffix || imported) ? props.material : undefined) ?? sd.material,

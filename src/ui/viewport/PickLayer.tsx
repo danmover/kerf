@@ -11,7 +11,9 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { create } from "zustand";
-import { meshes, useDesign } from "../../core/engine";
+import { facesFor, meshes, useDesign } from "../../core/engine";
+import { addMate, mateChoices, pickedRef, type MateChoice } from "../../core/mateTool";
+import { commitSource, realSource } from "../../app/project";
 import type { EvalPart } from "../../core/model";
 import { kernel } from "../../kernel/client";
 import type { EntityInfo } from "../../kernel/drawing";
@@ -29,6 +31,17 @@ import { createSketch, useSketch } from "../sketch/session";
 import { planeForFace } from "../sketch/SketchPanels";
 import { useMarkup } from "../Markup";
 import { measuring, meshData, partMeshes, pickRef, snapAt, useMeasure, type MeasureHost, type Snap } from "./MeasureTool";
+
+/** Picking two faces, holes or corners for a mate: each click adds a pick, up to two. */
+export const useMatePick = create<{ on: boolean }>(() => ({ on: false }));
+
+/** Start the mate tool: pick on the part that moves, then on the part it meets. */
+export function startMatePick() {
+  clearPicks();
+  setFilter("face");
+  useMatePick.setState({ on: true });
+  toast({ kind: "info", title: "Mate: click a face, hole or corner on the part that moves, then one on the part it meets" }, 5000);
+}
 
 export interface PickHost extends MeasureHost {
   /** the view's orbit controls, held still while a box is dragged */
@@ -187,6 +200,11 @@ export function PickLayer({ host }: { host: () => PickHost | null }) {
   const [, setFrame] = useState(0);
   const active = (filter !== "part" || box) && !measureOn && !sketching;
 
+  // back to picking parts ends the mate tool
+  useEffect(() => {
+    if (filter === "part") useMatePick.setState({ on: false });
+  }, [filter]);
+
   // Q steps through the filters (Shift+Q back), B turns box select on and off, Esc lets go of the picks
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -200,7 +218,10 @@ export function PickLayer({ host }: { host: () => PickHost | null }) {
       } else if (e.key === "b" || e.key === "B") {
         toggleBox();
         toast({ kind: "info", title: usePicks.getState().box ? "Box select: drag to pick (left to right: wholly inside; right to left: touching)" : "Box select off: dragging turns the view" }, 2400);
-      } else if (e.key === "Escape" && usePicks.getState().picks.length && !measuring()) clearPicks();
+      } else if (e.key === "Escape" && (usePicks.getState().picks.length || useMatePick.getState().on) && !measuring()) {
+        clearPicks();
+        useMatePick.setState({ on: false });
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -293,7 +314,9 @@ export function PickLayer({ host }: { host: () => PickHost | null }) {
         if (!additive) clearPicks();
         return;
       }
-      if (additive) addPicks([toPick(s)], true);
+      // the mate tool takes two picks with plain clicks
+      const mating = useMatePick.getState().on && usePicks.getState().picks.length === 1;
+      if (additive || mating) addPicks([toPick(s)], true);
       else setPicks([toPick(s)]);
     };
     const leave = () => setHover(null);
@@ -691,6 +714,37 @@ function PickCard({ picks }: { picks: Pick[] }) {
     clearPicks();
     void res.built.then((err) => err && toast({ kind: "warn", title: `The ${k} doesn't build`, detail: err }, 9000));
   };
+  // two picks on two parts: the mates that fit them
+  const [mate, setMate] = useState<{ a: { part: string; label: string; text: string }; b: { part: string; label: string; text: string }; choices: MateChoice[] } | { why: string } | null>(null);
+  useEffect(() => {
+    setMate(null);
+    if (picks.length !== 2 || !model) return;
+    const A = model.parts.find((p) => p.id === picks[0].partId);
+    const B = model.parts.find((p) => p.id === picks[1].partId);
+    if (!A || !B || A.name === B.name) return;
+    let alive = true;
+    facesFor(model.parts.filter((p) => p.name === A.name || p.name === B.name).map((p) => p.hash)).then(
+      (cats) => {
+        if (!alive) return;
+        const ra = pickedRef(model, A, cats, picks[0].kind, picks[0].at);
+        const rb = pickedRef(model, B, cats, picks[1].kind, picks[1].at);
+        if (typeof ra === "string" || typeof rb === "string") return setMate({ why: typeof ra === "string" ? ra : (rb as string) });
+        setMate({ a: { part: A.name, label: A.label, text: ra.text }, b: { part: B.name, label: B.label, text: rb.text }, choices: mateChoices(ra.geom, rb.geom) });
+      },
+      () => alive && setMate({ why: "The parts' faces could not be listed: try again once they have built" }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [picks, model]);
+  const makeMate = (c: MateChoice) => {
+    if (!mate || "why" in mate || !model) return;
+    const r = addMate(realSource(), model, c, mate.a, mate.b);
+    commitSource(r.src, "you", `Mate ${mate.a.label} to ${mate.b.label}: ${c.kind}`);
+    useMatePick.setState({ on: false });
+    clearPicks();
+    toast({ kind: "success", title: `Added ${r.line}` }, 5000);
+  };
   const code = groups.map((g) => `${g.block}: ${selectorFor(g.picks)}`).join("\n");
   const ask = () => setDraft(`About ${groups.map((g) => `${countText(g.picks)} of ${g.block} (${selectorFor(g.picks)})`).join(" and ")}: `);
 
@@ -717,6 +771,30 @@ function PickCard({ picks }: { picks: Pick[] }) {
         ))}
         {picks.length > 6 && <div>and {picks.length - 6} more</div>}
       </div>
+      {mate && "why" in mate && (
+        <div className="muted" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.4 }}>
+          Mate: {mate.why}
+        </div>
+      )}
+      {mate && !("why" in mate) && (
+        <div className="pick-mate">
+          <div className="row" style={{ gap: 6 }}>
+            <span className="muted grow" style={{ fontSize: 12 }}>
+              Mate: {mate.a.label} moves to meet {mate.b.label}
+            </span>
+            <button className="icon-btn sm" onClick={() => usePicks.setState({ picks: [picks[1], picks[0]] })} data-tip={`Swap: ${mate.b.label} moves instead`} aria-label="Swap which part moves">
+              <Icon.Refresh size={13} />
+            </button>
+          </div>
+          <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
+            {mate.choices.map((c, i) => (
+              <button key={c.kind} className={`btn sm ${i === 0 ? "primary" : ""}`} onClick={() => makeMate(c)} data-tip={`${c.tip}: mate … = ${c.kind}(${mate.a.text}, ${mate.b.text}${c.arg ? `, ${c.arg}` : ""})`}>
+                {c.kind}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {edges.length > 0 && (
         <div className="row" style={{ marginTop: 10, gap: 6, flexWrap: "wrap" }}>
           <label className="row" style={{ gap: 4 }} data-tip="Fillet radius or chamfer size, in mm">

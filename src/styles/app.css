@@ -5721,3 +5721,38 @@ button.mp-stat:hover {
   gap: 3px;
   font-size: 10.5px;
 }
+
+/* dragging parts through their mates and the mechanism (DragLayer) */
+.drag-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+.drag-bar .dim {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drag-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  z-index: 4;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: rgb(var(--bg-1-rgb) / 0.72);
+  border: 1px solid var(--line-2);
+  pointer-events: none;
+  max-width: calc(100% - 32px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick-card .pick-mate {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-2);
+}

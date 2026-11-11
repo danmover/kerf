@@ -201,6 +201,21 @@ export function evaluateOnly(src: string): Model {
   return evaluate(src, { parsed: parse(src) });
 }
 
+/** The kernel's lists of built solids' faces, by geometry hash (the mate tool asks before any mate needs them). */
+export async function facesFor(hashes: string[]): Promise<Map<string, FaceCatalogue>> {
+  const need = [...new Set(hashes)].filter((h) => !faceCats.has(h) && meshes.has(h));
+  if (need.length) {
+    const cats = await kernel.faceCatalogues(need);
+    for (const [h, c] of Object.entries(cats)) if (!("error" in c)) faceCats.set(h, c);
+  }
+  const out = new Map<string, FaceCatalogue>();
+  for (const h of hashes) {
+    const c = faceCats.get(h);
+    if (c) out.set(h, c);
+  }
+  return out;
+}
+
 /** The design read again with the faces its mates need, once the kernel has listed them; null when nothing changed. */
 async function withFaces(rev: number, src: string, model: Model, parsed: ReturnType<typeof parse>): Promise<Model | null> {
   const need = [...new Set(model.mateQueries ?? [])].filter((h) => !faceCats.has(h) && meshes.has(h));

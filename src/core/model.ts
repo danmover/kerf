@@ -201,6 +201,8 @@ export interface EvalPart {
   label: string;
   kind: "part" | "component";
   libKind?: string;
+  /** how a component's at:, axis:, facing: and rotate: place it (on a board: by the board) */
+  placement?: "axis" | "facing" | "free" | "board";
   group: string;
   color: string;
   material: string;

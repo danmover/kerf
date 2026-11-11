@@ -374,6 +374,12 @@ function residuals(s: MateSpec, A: MateGeom, B: MateGeom, L: number, side: numbe
   const nA = dirOf(A),
     nB = dirOf(B);
   const v = target ?? s.value ?? 0;
+  // two directions made the same (either way round, as drawn): a − ±b, which still pulls them together from a
+  // quarter turn apart, where a × b does not
+  const da = dirOf(s.a.geom),
+    db = dirOf(s.b.geom);
+  const al = da && db && dot(da, db) < 0 ? -1 : 1;
+  const same = (a: V3, b: V3): number[] => [(a[0] - al * b[0]) * L, (a[1] - al * b[1]) * L, (a[2] - al * b[2]) * L];
   switch (s.kind) {
     case "against":
     case "flush": {
@@ -386,37 +392,26 @@ function residuals(s: MateSpec, A: MateGeom, B: MateGeom, L: number, side: numbe
     case "pin": {
       const a = A as Extract<MateGeom, { t: "axis" }>,
         b = B as Extract<MateGeom, { t: "axis" }>;
-      const c = cross(a.d, b.d);
       const off = cross(sub(a.p, b.p), b.d);
-      const r = [c[0] * L, c[1] * L, c[2] * L, ...off];
+      const r = [...same(a.d, b.d), ...off];
       if (s.kind === "pin") r.push(dot(sub(a.p, b.p), b.d) * side - v);
       return r;
     }
     case "parallel": {
       if (A.t === "axis" && B.t === "plane") return [dot(A.d, B.n) * L];
       if (A.t === "plane" && B.t === "axis") return [dot(A.n, B.d) * L];
-      const c = cross(nA!, nB!);
-      return [c[0] * L, c[1] * L, c[2] * L];
+      return same(nA!, nB!);
     }
     case "perpendicular": {
-      if ((A.t === "axis") !== (B.t === "axis")) {
-        const c = cross(nA!, nB!);
-        return [c[0] * L, c[1] * L, c[2] * L];
-      }
+      if ((A.t === "axis") !== (B.t === "axis")) return same(nA!, nB!);
       return [dot(nA!, nB!) * L];
     }
     case "angle":
       return [(dot(nA!, nB!) - Math.cos(v)) * L];
     case "distance": {
       if (A.t === "point" && B.t === "point") return [len(sub(A.p, B.p)) - v];
-      if (A.t === "plane" && B.t === "plane") {
-        const c = cross(A.n, B.n);
-        return [c[0] * L, c[1] * L, c[2] * L, dot(sub(A.p, B.p), B.n) * side - v];
-      }
-      if (A.t === "axis" && B.t === "axis") {
-        const c = cross(A.d, B.d);
-        return [c[0] * L, c[1] * L, c[2] * L, len(cross(sub(A.p, B.p), B.d)) - v];
-      }
+      if (A.t === "plane" && B.t === "plane") return [...same(A.n, B.n), dot(sub(A.p, B.p), B.n) * side - v];
+      if (A.t === "axis" && B.t === "axis") return [...same(A.d, B.d), len(cross(sub(A.p, B.p), B.d)) - v];
       if (A.t === "axis" && B.t === "plane") return [dot(A.d, B.n) * L, dot(sub(A.p, B.p), B.n) * side - v];
       if (A.t === "plane" && B.t === "axis") return [dot(B.d, A.n) * L, dot(sub(B.p, A.p), A.n) * side - v];
       if (B.t === "plane") return [dot(sub((A as { p: V3 }).p, B.p), B.n) * side - v];
@@ -426,10 +421,7 @@ function residuals(s: MateSpec, A: MateGeom, B: MateGeom, L: number, side: numbe
       return [];
     }
     case "tangent": {
-      if (A.t === "axis" && B.t === "axis") {
-        const c = cross(A.d, B.d);
-        return [c[0] * L, c[1] * L, c[2] * L, len(cross(sub(A.p, B.p), B.d)) - (A.r ?? 0) - (B.r ?? 0)];
-      }
+      if (A.t === "axis" && B.t === "axis") return [...same(A.d, B.d), len(cross(sub(A.p, B.p), B.d)) - (A.r ?? 0) - (B.r ?? 0)];
       const pl = (A.t === "plane" ? A : B) as Extract<MateGeom, { t: "plane" }>;
       const ax = (A.t === "axis" ? A : B) as Extract<MateGeom, { t: "axis" }>;
       return [dot(ax.d, pl.n) * L, dot(sub(ax.p, pl.p), pl.n) * side - (ax.r ?? 0)];
@@ -440,14 +432,8 @@ function residuals(s: MateSpec, A: MateGeom, B: MateGeom, L: number, side: numbe
       if (A.t === "plane" && B.t === "point") return [dot(sub(B.p, A.p), A.n)];
       if (A.t === "point" && B.t === "axis") return cross(sub(A.p, B.p), B.d);
       if (A.t === "axis" && B.t === "point") return cross(sub(B.p, A.p), A.d);
-      if (A.t === "plane" && B.t === "plane") {
-        const c = cross(A.n, B.n);
-        return [c[0] * L, c[1] * L, c[2] * L, dot(sub(A.p, B.p), B.n)];
-      }
-      if (A.t === "axis" && B.t === "axis") {
-        const c = cross(A.d, B.d);
-        return [c[0] * L, c[1] * L, c[2] * L, ...cross(sub(A.p, B.p), B.d)];
-      }
+      if (A.t === "plane" && B.t === "plane") return [...same(A.n, B.n), dot(sub(A.p, B.p), B.n)];
+      if (A.t === "axis" && B.t === "axis") return [...same(A.d, B.d), ...cross(sub(A.p, B.p), B.d)];
       return [];
     }
     case "rigid":
@@ -672,6 +658,7 @@ function solveGroup(
     return x;
   };
   const dragRes = (M: Map<string, BodyMove>) => (drag ? sub(movePoint(poseOf(drag.body, M), drag.point), drag.target) : []);
+  let kicks = 0;
   for (let round = 0; round < 6; round++) {
     for (let it = 0; it < 80; it++) {
       const r = eqs(cur);
@@ -706,6 +693,15 @@ function solveGroup(
         }
       }
       const moved = Math.hypot(...Array.from(x));
+      // stuck where the equations do not say which way to turn (faces drawn facing the same way for against(), or
+      // parallel for perpendicular()): turn the bodies a little and go on
+      if (!drag && moved < 1e-7 * L && err >= TOL * L && kicks < 6) {
+        kicks++;
+        const w: V3 = [0, 0, 0];
+        w[kicks % 3] = 0.6;
+        cur = new Map([...cur].map(([b, mv]) => [b, { R: mm(expRot(w), mv.R), c: mv.c, t: mv.t }]));
+        continue;
+      }
       cur = step(cur, x);
       if (moved < 1e-9 * L && err < TOL * L) break;
     }
