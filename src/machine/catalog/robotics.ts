@@ -182,7 +182,7 @@ export const ROBOTICS: CatalogPart[] = [
     maker: "DFRobot",
     mpn: "FIT0819",
     summary: "Driverless (UVC) USB camera in a sealed black 8 mm head on a 5 m semi-rigid lead that ends in a micro USB plug with USB-A and USB-C adapters: 1600 × 1200, 70° field of view, lights round the lens, IP67. Shows up on a computer as a webcam with no driver.",
-    specs: { iface: "usb_uvc", w_px: 1600, h_px: 1200, fov_h: 70, d: 8, h: 40, lead_m: 5, ip: 67, mass_g: 90 },
+    specs: { iface: "usb_uvc", w_px: 1600, h_px: 1200, fov_h: 70, d: 8, h: 40, lead_m: 5, ip: 67, mass_g: 12 },
     pins: [port("USB", "usb", "sink", { label: "USB 2.0 (5 m lead: micro USB, with USB-A and USB-C adapters)", note: "Plugs into the computer that runs the robot, not into the controller" })],
     geom: { g: "endoscope", dims: { d: 8, h: 40, cable_d: 5, cable_l: 34, boot_l: 9 }, color: "#1b1c1f", material: "Aluminum 6061" },
     price_usd: 19.9,
@@ -193,6 +193,7 @@ export const ROBOTICS: CatalogPart[] = [
     source: "https://www.dfrobot.com/product-2328.html",
     notes: [
       "The head's length is not in DFRobot's listing: measure it before printing a cradle (40 mm drawn).",
+      "The weight given is an estimate of the head and the first of its lead, which is what a moving arm carries; the rest of the 5 m lead weighs several times that and should be tied off so the arm does not carry it.",
       "The lead is semi-rigid and holds the shape it is bent to: on a moving arm, tie it down just behind the head, leave a wide loop at every joint, and coil the spare length away from the arm.",
     ],
   },
