@@ -13,6 +13,7 @@ import type { Model } from "../core/model";
 import { xformMatrix, type V3 } from "../kernel/recipe";
 import { awgAmpacity } from "./calcs";
 import { catalogPart } from "./catalog";
+import { connOf } from "./catalog/conns";
 import { buildNetlist, netLabel, type Net, type NetPin, type Netlist } from "./erc";
 import type { CatalogKind, CatalogPart, MachineComponent, MachineData, PinRef, WireInsulation } from "./types";
 
@@ -26,6 +27,10 @@ export interface WireEnd {
   /** label printed on the part, or the pin id when it has none */
   label: string;
   part: string;
+  /** where on the part the wire meets the pin, when that is not the pin's own place (the catalog part's spot id) */
+  spot?: string;
+  /** the connector or lead of the part it is in (the catalog part's conn id) */
+  conn?: string;
 }
 
 export interface WireRow {
@@ -53,6 +58,19 @@ export interface WireRow {
   label?: string;
   /** cables between connector ports (stepper, fan, heater...) */
   cable?: string;
+  /**
+   * The wire is not cut from a reel: it runs in a lead fixed to one of its parts ("servo_1's own lead") or is one
+   * conductor of a bought cable ("STEMMA QT cable 100 mm"). `fixedMm` is how long that lead or cable is (both
+   * leads together when one part's lead plugs into the other's), and `runMm` the run it has to cover along its 3D
+   * route, when the cables have been routed.
+   */
+  lead?: string;
+  fixedMm?: number;
+  runMm?: number;
+  /** the bought cable it is a conductor of, as the design names it; on a part's own lead it is an extension of that lead */
+  bought?: string;
+  /** the ends that are a part's own lead: the wire needs no plug made there */
+  own?: ("from" | "to")[];
   note?: string;
 }
 
@@ -77,6 +95,13 @@ interface Item {
   cable?: string;
   /** the net has a name in the design (not one Kerf made up from a pin) */
   named: boolean;
+  /** where on its part a pin's wire lands, by pin key, when not the pin's own place */
+  spots?: Map<string, string>;
+  /** the bought cable the wire is a conductor of, and its length in mm */
+  bought?: string;
+  boughtMm?: number;
+  /** the wire is a part's own lead from end to end (the design gave it no gauge of its own) */
+  own?: boolean;
 }
 
 // ---------------------------------------------------------------- items
@@ -181,12 +206,13 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
   const items: Item[] = [];
   const seenPairs = new Set<string>();
   let signals = 0;
-  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; insulation?: WireInsulation; label?: string }) => {
+  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; insulation?: WireInsulation; label?: string; spots?: Map<string, string>; bought?: string; boughtMm?: number; own?: boolean }) => {
     const net = pins[0].pin.type === "port" ? undefined : nl.netOf.get(pins[0].key);
     const kind = classify(pins, net);
     const bus = pins.length > 2;
     if (!bus) {
-      const pair = pins.map((p) => p.key).sort().join("|");
+      // two wires between the same two pins are one wire, unless they land on different spots of them
+      const pair = pins.map((p) => `${p.key}@${o.spots?.get(p.key) ?? ""}`).sort().join("|");
       if (seenPairs.has(pair)) return;
       seenPairs.add(pair);
     }
@@ -194,7 +220,15 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const gauge = o.gauge ?? suggestGauge(kind, pins, net?.pins ?? pins);
     const cable = kind === "cable" ? (CABLE_NAMES[pins.find((p) => p.pin.port)?.pin.port ?? ""] ?? "cable") : undefined;
     const name = o.name ?? net?.name ?? o.label ?? (cable ? `${instName(pins[0])}.${pins[0].pin.id}` : net ? netLabel(net) : `${instName(pins[0])}.${pins[0].pin.id}`);
-    items.push({ id: items.length, name, kind, bus, pins, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name) });
+    items.push({ id: items.length, name, kind, bus, pins, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name), spots: o.spots?.size ? o.spots : undefined, bought: o.bought, boughtMm: o.boughtMm, own: o.own });
+  };
+  const spotsOf = (refs: PinRef[], pins: (NetPin | undefined)[]) => {
+    const out = new Map<string, string>();
+    refs.forEach((r, i) => {
+      const p = pins[i];
+      if (r.spot && p && !out.has(p.key)) out.set(p.key, r.spot);
+    });
+    return out;
   };
   for (const w of m.wires) {
     const a = resolve(w.a);
@@ -202,16 +236,17 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     if (!a || !b || a.key === b.key) continue;
     // the two halves of a connector pair, or a fuse or switch, join inside the part: no wire to make
     if (a.comp === b.comp && a.index === b.index && a.pin.through === b.pin.id) continue;
-    add([a, b], { color: w.color, gauge: w.gauge, insulation: w.insulation, label: w.label });
+    add([a, b], { color: w.color, gauge: w.gauge, insulation: w.insulation, label: w.label, spots: spotsOf([w.a, w.b], [a, b]), bought: w.cable, boughtMm: w.length, own: w.own });
   }
   // a net joining pins on one circuit board is copper on that board, not a wire to make
   const boardOf = new Map(m.components.filter((c) => c.pcb).map((c) => [c.name, c.pcb!.board]));
   for (const n of m.nets) {
     const seen = new Set<string>();
-    const pins = n.pins.map(resolve).filter((p): p is NetPin => !!p && !seen.has(p.key) && !!seen.add(p.key));
+    const all = n.pins.map(resolve);
+    const pins = all.filter((p): p is NetPin => !!p && !seen.has(p.key) && !!seen.add(p.key));
     const boards = new Set(pins.map((p) => boardOf.get(p.comp) ?? ""));
     if (boards.size === 1 && !boards.has("")) continue;
-    if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation });
+    if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation, spots: spotsOf(n.pins, all) });
   }
   // pins with a wire of their own straight to a battery's or supply's terminal, and switch contacts that only sense
   // (an e-stop's spare contact tied to ground): neither is somewhere a trunk runs out to
@@ -276,7 +311,13 @@ function estimateLength(a: NetPin, b: NetPin, pos?: Map<string, V3[]>): number |
 /** The length to cut for a run of this many mm: slack for the ends and a service loop, rounded up to 50 mm. */
 export const cutLength = (runMm: number) => Math.ceil((runMm + SLACK_MM) / 50) * 50;
 
-const end = (p: NetPin): WireEnd => ({ comp: instName(p), index: p.index, pin: p.pin.id, label: pinText(p), part: p.part.name });
+const end = (p: NetPin, spot?: string): WireEnd => {
+  const sp = spot ? p.part.spots?.find((x) => x.id === spot) : undefined;
+  return { comp: instName(p), index: p.index, pin: p.pin.id, label: sp ? (sp.label ?? sp.id) : pinText(p), part: p.part.name, spot: sp?.id, conn: connOf(p.part, sp?.id ?? p.pin.id)?.conn.id };
+};
+
+/** The part's own lead a wire end runs in, when it has one there. */
+const leadAt = (p: NetPin, e: WireEnd) => (e.conn ? p.part.conns?.find((c) => c.id === e.conn)?.lead : undefined);
 
 /** Pins of a net this close together (mm along the axes) are one group that a single trunk can feed. */
 const GROUP_MM = 120;
@@ -412,11 +453,27 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
       if (h.feeds && a === hub) notes.push(`Trunk to ${[...new Set(h.feeds.map(instName))].join(", ")}: it splits at ${instName(b)} into the branches to the others.`);
       const { gauge, note } = hopGauge(it, h);
       if (note) notes.push(note);
+      const from = end(a, it.spots?.get(a.key));
+      const to = end(b, it.spots?.get(b.key));
+      // a part's own lead, or a bought cable: nothing to cut, but it has to reach. A wire the design sized itself is
+      // one to make, joined to the end of the part's lead
+      const there = [leadAt(a, from), leadAt(b, to)];
+      const leads = it.own ? there : [undefined, undefined];
+      const own = (["from", "to"] as const).filter((_, k) => leads[k]);
+      if (!it.own) there.forEach((l, k) => l && notes.push(`It joins ${(k ? to : from).comp}'s own lead (${l.mm} mm, ${l.end}).`));
+      // a bought cable on a part's own lead is an extension of it: the two together have to reach
+      const fixedMm = own.length ? leads.reduce((sum, l) => sum + (l?.mm ?? 0), 0) + (it.boughtMm ?? 0) : it.boughtMm;
+      const ownLead = own.map((k) => `${(k === "from" ? from : to).comp}'s own lead`).join(" into ");
+      const lead = own.length ? (it.bought ? `${ownLead} and the ${it.bought}` : ownLead) : it.bought;
       rows.push({
         order: KIND_ORDER[it.kind] * 1e6 + group * 1e3 + order,
         named: it.named,
-        from: end(a),
-        to: end(b),
+        from,
+        to,
+        lead,
+        fixedMm,
+        bought: it.bought,
+        own: own.length ? own : undefined,
         net: it.name,
         kind: it.kind,
         gauge,
@@ -424,7 +481,7 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
         insulation: it.insulation,
         color: it.color,
         colorSuggested: it.colorSuggested,
-        lengthMm: estimateLength(a, b, positions),
+        lengthMm: fixedMm ?? estimateLength(a, b, positions),
         label: it.label,
         cable: it.cable,
         note: notes.join(" ") || undefined,
@@ -435,7 +492,8 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
   return rows.map(({ order: _o, ...r }, i) => {
     const id = `W${i + 1}`;
     const run = routed?.get(id);
-    return run === undefined ? { id, ...r } : { id, ...r, lengthMm: cutLength(run), lengthRouted: true };
+    if (run === undefined) return { id, ...r };
+    return r.fixedMm !== undefined ? { id, ...r, runMm: Math.round(run) } : { id, ...r, lengthMm: cutLength(run), lengthRouted: true };
   });
 }
 
@@ -450,8 +508,11 @@ export function wiresCsv(rows: WireRow[]): string {
   const head = ["Wire", "From", "From label", "To", "To label", "Net", "Gauge (AWG)", "Colour", "Length (mm)", "Type", "Label", "Notes"];
   const lines = [head.join(",")];
   for (const r of rows) {
-    const notes = [r.insulation === "silicone" ? "Silicone wire" : "", r.gaugeSuggested ? "Gauge suggested by Kerf" : "", r.colorSuggested ? "Colour suggested by Kerf" : "", r.note ?? ""].filter(Boolean).join(". ");
-    lines.push([r.id, `${r.from.comp}.${r.from.pin}`, r.from.label, `${r.to.comp}.${r.to.pin}`, r.to.label, r.net, r.cable ? "" : r.gauge, r.cable ? "" : r.color, r.lengthMm, r.cable ?? r.kind, r.label, notes].map(csvCell).join(","));
+    // a wire in a part's own lead or a bought cable is not cut: say which it is, and how far it has to reach
+    const fixed = r.lead ? `${r.own?.length ? `In ${r.lead}` : `One wire of the ${r.lead}`}: not cut from a reel${r.runMm !== undefined ? `, its run is about ${r.runMm} mm` : ""}` : "";
+    const notes = [fixed, r.insulation === "silicone" ? "Silicone wire" : "", r.lead ? "" : r.gaugeSuggested ? "Gauge suggested by Kerf" : "", r.lead ? "" : r.colorSuggested ? "Colour suggested by Kerf" : "", r.note ?? ""].filter(Boolean).join(". ");
+    const at = (e: WireEnd) => `${e.comp}.${e.spot ?? e.pin}`;
+    lines.push([r.id, at(r.from), r.from.label, at(r.to), r.to.label, r.net, r.cable ? "" : r.gauge, r.cable ? "" : r.color, r.lengthMm, r.cable ?? r.kind, r.label, notes].map(csvCell).join(","));
   }
   return lines.join("\n") + "\n";
 }

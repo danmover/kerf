@@ -17,6 +17,8 @@ export interface BoardItem {
   d: number;
   h: number;
   mark?: string;
+  /** a header's plastic colour, when not black */
+  color?: string;
 }
 
 export type V2 = [number, number];
@@ -85,6 +87,9 @@ export function boardItems(part: CatalogPart): BoardItem[] {
 export const PIN_LOOKS = new Set<Look>(["header_m", "header_f", "header_down"]);
 export const PITCH_HEADER = 2.54;
 export const PITCH_TERMINAL = 5.0;
+/** Screw terminal blocks, by the spacing of their terminals. */
+export const TERMINAL_LOOKS = new Set<Look>(["terminal", "terminal35"]);
+const terminalPitch = (look: Look) => (look === "terminal35" ? 3.5 : PITCH_TERMINAL);
 
 /** Rows of pins in a header: positions on the board, in order along its length (both rows of a double header interleaved). */
 export function headerPins(it: BoardItem): V2[] {
@@ -108,9 +113,10 @@ export function headerPins(it: BoardItem): V2[] {
 export function terminalContacts(it: BoardItem): V2[] {
   const alongX = it.w >= it.d;
   const long = alongX ? it.w : it.d;
-  const n = Math.max(1, Math.round(long / PITCH_TERMINAL));
+  const pitch = terminalPitch(it.look);
+  const n = Math.max(1, Math.round(long / pitch));
   return Array.from({ length: n }, (_, i): V2 => {
-    const a = (i - (n - 1) / 2) * PITCH_TERMINAL;
+    const a = (i - (n - 1) / 2) * pitch;
     return alongX ? [it.x + a, it.y] : [it.x, it.y + a];
   });
 }
@@ -158,7 +164,7 @@ export function pinSpots(part: CatalogPart): Map<string, PinSpot> {
   }
   const terminals: PinSpot[] = [];
   for (const it of items) {
-    if (it.look !== "terminal") continue;
+    if (!TERMINAL_LOOKS.has(it.look)) continue;
     const alongX = it.w >= it.d;
     const [ex, ey] = edgeDir(part, it.x, it.y);
     // wires enter on the side facing the nearer edge, across the block's length

@@ -325,9 +325,9 @@ component n = lib.nut(M3) { at: (20, 0, 0), axis: Z }
 describe("electronics drawn as the real part", () => {
   beforeAll(() => initKernel(), 60_000);
 
-  it("details a LiPo, an ESC, a fuse holder, an XT pair and a load cell inside the same envelope", () => {
+  it("details a LiPo, an ESC, a fuse holder, an XT pair, a lever connector and a load cell inside the same envelope", () => {
     const styled = CATALOG.filter((p) => p.geom.g === "box" && p.geom.style);
-    expect(new Set(styled.map((p) => p.geom.style))).toEqual(new Set(["lipo", "esc", "fuse_maxi", "xt", "load_cell"]));
+    expect(new Set(styled.map((p) => p.geom.style))).toEqual(new Set(["lipo", "esc", "fuse_maxi", "xt", "wago", "load_cell"]));
     for (const p of styled) {
       const { w, d, h } = p.geom.dims;
       const g = buildGeometry(p, {});
@@ -353,8 +353,9 @@ describe("electronics drawn as the real part", () => {
     expect(plugFor(lipo, "POS")).toMatchObject({ kind: "lead", out: [1, 0, 0] });
     expect(plugFor(lipo, "POS")!.at[0]).toBeCloseTo(lipo.geom.dims.w / 2);
     const esc = part("skywalker_60a_v2");
-    expect(plugFor(esc, "B_PLUS")!.out).toEqual([-1, 0, 0]);
-    for (const pin of ["PHASE_A", "PHASE_B", "PHASE_C", "SIG"]) expect(plugFor(esc, pin)!.out, pin).toEqual([1, 0, 0]);
+    // the battery leads and the thin signal lead leave one end, the three motor leads the other
+    for (const pin of ["B_PLUS", "B_MINUS", "SIG", "BEC_5V", "BEC_GND"]) expect(plugFor(esc, pin)!.out, pin).toEqual([-1, 0, 0]);
+    for (const pin of ["PHASE_A", "PHASE_B", "PHASE_C"]) expect(plugFor(esc, pin)!.out, pin).toEqual([1, 0, 0]);
     const xt = part("xt90s_pair");
     expect(plugFor(xt, "POS_A")!.out).toEqual([0, 0, -1]);
     expect(plugFor(xt, "POS_B")!.at[2]).toBe(xt.geom.dims.h);

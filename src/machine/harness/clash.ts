@@ -118,7 +118,18 @@ export interface WiringFindings {
   flow?: { wire: string; zone: number; part: string; comp: string; kind: "intake" | "jet"; length: number; at: V3 }[];
   /** where cables cross the design's pivots, and how far from each axis */
   pivots?: (PivotCrossing & { at?: V3; r?: number })[];
+  /** a part's own lead or a bought cable that is shorter than the run it has to cover (filled in after routing, wiringRun.ts) */
+  reach?: Reach[];
   ms: number;
+}
+
+/** A lead or bought cable of fixed length against the run it has to cover, mm. */
+export interface Reach {
+  wire: string;
+  /** "servo_1's own lead", "STEMMA QT cable, 100 mm" */
+  lead: string;
+  have: number;
+  need: number;
 }
 
 /** The cable's outside may press this far into a part, or into another cable, before it counts (mm, or a share of the radius). */

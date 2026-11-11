@@ -19,10 +19,16 @@ export type Look =
   | "header_m"
   | "header_f"
   | "header_down"
+  /** a right-angle pin header at the board's edge, its pins pointing out past the edge */
+  | "header_ra"
   | "box_header"
   | "fpc"
   // connectors
   | "terminal"
+  /** a screw terminal block with 3.5 mm between terminals */
+  | "terminal35"
+  /** a STEMMA QT (JST SH 4-way) socket lying on the board, open toward the nearer edge */
+  | "qt"
   | "usb_c"
   | "usb_micro"
   | "usb_mini"
@@ -60,6 +66,8 @@ export interface Extra {
   d: number;
   h: number;
   mark?: string;
+  /** a header's plastic, when it is not black (servo boards colour their rows) */
+  color?: string;
 }
 
 export interface BoardStyle {
@@ -88,6 +96,10 @@ export interface BoardStyle {
   sockets?: boolean;
   /** how many small surface-mount parts, relative to the usual for its size */
   smd?: number;
+  /** the board's pins are where its plug table has them (harness/plugs.ts): print their names there, not in header order */
+  pinsFromPlugs?: boolean;
+  /** more silkscreen, where the board prints it: channel numbers, row names */
+  labels?: { text: string; x: number; y: number; size?: number; rot?: number }[];
 }
 
 const GREEN = "#1f5e3a";
@@ -378,9 +390,47 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
     finish: "enig",
     title: ["LSM6DSOX", "6-DoF IMU"],
     marks: ["LSM6\nDSOX"],
-    looks: ["qfn", "box_header", "box_header"],
+    looks: ["qfn", "qt", "qt"],
     extras: [{ look: "soic", x: -4.5, y: 4.5, w: 3, d: 1.6, h: 1, mark: "3V3" }],
     smd: 0.9,
+  },
+  nau7802_breakout: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["NAU7802", "24-bit ADC"],
+    marks: ["NAU\n7802"],
+    looks: ["soic", "qt", "qt", "terminal35"],
+    terminal: "#2a62c9",
+    pinsFromPlugs: true,
+    smd: 0.9,
+  },
+  // the assembled 16-channel servo board: blue, with each channel's three pins in a black (GND), red (V+) and
+  // yellow (pulse) row, the control header's pins pointing out of one end and the power terminal in the middle
+  pca9685_servo_16: {
+    mask: BLUE,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["16-Channel 12-bit", "PWM/Servo Driver"],
+    marks: ["PCA9685"],
+    looks: ["soic", "terminal", null, null, null, null, null],
+    terminal: "#2a62c9",
+    extras: [
+      ...[-19.05, -6.35, 6.35, 19.05].flatMap((x): Extra[] => [
+        { look: "header_m", x, y: -10.16, w: 10.16, d: 2.54, h: 8.5, color: "#17181b" },
+        { look: "header_m", x, y: -7.62, w: 10.16, d: 2.54, h: 8.5, color: "#c8322b" },
+        { look: "header_m", x, y: -5.08, w: 10.16, d: 2.54, h: 8.5, color: "#e3c020" },
+      ]),
+      { look: "header_ra", x: -30, y: 0, w: 2.5, d: 15.24, h: 2.5 },
+      { look: "power", x: 12, y: 8, w: 6.5, d: 6, h: 2.3 },
+    ],
+    pinsFromPlugs: true,
+    labels: [
+      ...Array.from({ length: 16 }, (_, k) => ({ text: String(k), x: -22.86 + 2.54 * (k + Math.floor(k / 4)), y: -2.6, size: 0.9 })),
+      { text: "V+", x: -5.2, y: 3.4, size: 1 },
+      { text: "GND", x: 5.6, y: 3.4, size: 1 },
+    ],
+    smd: 1.3,
   },
   hx711_breakout: {
     mask: RED,

@@ -156,6 +156,22 @@ export function plugBody(p: MeshBuilder, m: MeshBuilder, f: Frame, look: PlugLoo
       p.cyl(f, 0, 0, 14, 26, 3.4, BLACK, 16, "z", 2.1);
       return;
     }
+    case "sh": {
+      // the little JST SH housing: its nose goes into the socket, the wires leave the back through their slots
+      const w = span / 2 + 1.5;
+      p.box(f, -w + 0.3, w - 0.3, -1.1, 1.1, -2.9, 0, "#2a2c31");
+      p.box(f, -w, w, -1.45, 1.45, 0, 4.6, "#2a2c31");
+      p.box(f, -w + 0.5, w - 0.5, 1.45, 1.75, 0.6, 3.6, "#2a2c31");
+      for (let i = 0; i < Math.max(spec.ways ?? n, n); i++) p.box(f, -span / 2 + i * pitch - 0.3, -span / 2 + i * pitch + 0.3, -0.45, 0.45, 4.6, 4.68, "#0f1012");
+      return;
+    }
+    case "lever":
+    case "bare": {
+      // the stripped end: tinned strands going into the clamp
+      const deep = spec.kind === "lever" ? 11 : 6;
+      wires.forEach((wi, i) => m.cyl(f, xs[i], 0, -deep, 0.6, Math.max(0.3, wi.d * 0.3), spec.kind === "lever" ? "#c98d5a" : TIN, 10));
+      return;
+    }
   }
 }
 

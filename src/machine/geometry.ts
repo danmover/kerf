@@ -175,6 +175,23 @@ function boxLook(style: NonNullable<CatalogPart["geom"]["style"]>, p: CatalogPar
         solids: [solid("male", `${p.name} male`, { base: box(w - 0.8, dd - 0.8, hm, [0, 0, h - hm], r), ops: ch(hm, h - hm).map((shape) => ({ op: "cut" as const, shape })) }, g.color2 ?? "#e3a81e", "PA66")],
       };
     }
+    // a Wago 221 lever connector: the clear case with a wire port for each lever in its -Y end, and the orange
+    // levers lying closed along the top
+    case "wago": {
+      const n = Math.max(2, Number(p.specs?.ways) || 2);
+      const pitch = w / n;
+      const lev = Math.min(2.4, h * 0.28);
+      const bodyH = h - lev;
+      const port = Math.min(pitch * 0.62, bodyH * 0.6);
+      const xs = Array.from({ length: n }, (_, k) => (k - (n - 1) / 2) * pitch);
+      return {
+        base: box(w, dd, bodyH, Z0, r),
+        cuts: xs.map((x): ShapeRecipe => ({ t: "hole", d: port, depth: dd * 0.45, at: [x, -dd / 2, bodyH * 0.45], dir: YP })),
+        solids: [
+          solid("levers", `${p.name} levers`, one({ t: "union", shapes: xs.map((x) => box(pitch * 0.72, dd * 0.7, lev, [x, dd * 0.13, bodyH], 0.5)) }), g.color2 ?? "#f08a1c", "PA66"),
+        ],
+      };
+    }
     // a bar load cell: the strain gauges under a pad of white potting in a pocket in the middle of the top
     case "load_cell": {
       const pw = Math.min(14, w * 0.3);

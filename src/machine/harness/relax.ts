@@ -250,11 +250,17 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
         if (exact) {
           const hit = solids!.nearest([x, y, z], need + h);
           if (!hit) continue;
-          if (hit.inside && ok[i]) {
-            back(i);
-            continue;
-          }
-          if (!hit.inside && hit.d >= need) continue;
+          if (hit.inside) {
+            // moved in this round from a place that was truly clear: back there
+            const before = ok[i] ? solids!.nearest([was[i * 3], was[i * 3 + 1], was[i * 3 + 2]], need + h) : null;
+            if (ok[i] && !before?.inside) {
+              back(i);
+              continue;
+            }
+            // it was in already. Grazing a face the grid's field is too coarse to see (the rounded side of a part,
+            // a sharp edge): out through that face. Deep in, where the search had to cut through a part: left there
+            if (hit.d > Math.max(1, need)) continue;
+          } else if (hit.d >= need) continue;
           let ux = hit.inside ? hit.at[0] - x : x - hit.at[0];
           let uy = hit.inside ? hit.at[1] - y : y - hit.at[1];
           let uz = hit.inside ? hit.at[2] - z : z - hit.at[2];

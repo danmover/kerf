@@ -105,6 +105,9 @@ export const PLUG_BACK: Record<PlugKind, number> = {
   lug: 6,
   barrel: 26,
   spade: 15,
+  sh: 4.6,
+  lever: 1.5,
+  bare: 1.5,
 };
 
 /** How many wires one terminal of each kind takes: a crimp housing holds one, a twin ferrule, a screw or a solder joint two. */
@@ -123,6 +126,9 @@ export const SPOT_WIRES: Record<PlugKind, number> = {
   lug: 2,
   barrel: 1,
   spade: 1,
+  sh: 1,
+  lever: 1,
+  bare: 2,
 };
 
 /** Length of a splice's heat-shrink sleeve, mm. */
@@ -210,19 +216,22 @@ export function buildHarness(model: Model, m: MachineData | undefined = model.ma
   const endOf = (e: WireEnd, other: WireEnd): (PlugEnd & { spot: string }) | undefined => {
     const it = inst.get(e.comp);
     const part = it && catalogPart(it.catalogId);
-    const plug = part && plugFor(part, e.pin, catalogOf(other));
+    const plug = part && plugFor(part, e.pin, catalogOf(other), e.spot);
     if (!it || !part || !plug) return undefined;
-    const spec = soldered.has(e.comp.replace(/\[\d+\]$/, "")) ? solderedPlug(part, plug) : plug;
-    const key = `${e.comp}.${e.pin}`;
+    // a part's own lead and the sockets a plug goes into whole stay as they are; only wires to its bare pins are soldered on
+    const spec = soldered.has(e.comp.replace(/\[\d+\]$/, "")) && !e.conn ? solderedPlug(part, plug) : plug;
+    // a wire landing on one of the pin's other places (a socket's contact) has its own terminal there
+    const at = e.spot ?? e.pin;
+    const key = `${e.comp}.${at}`;
     const n = taken.get(key) ?? 0;
     taken.set(key, n + 1);
     const spots = [spec.at, ...(spec.more ?? [])];
     // a pin with several identical terminals (a supply's −V screws) fills them in turn
     const k = n % spots.length;
-    usedSpots.add(`${it.partId}|${e.pin}|${k}`);
+    usedSpots.add(`${it.partId}|${at}|${k}`);
     parts.add(e.comp);
     const local = localFrame(spots[k], spec.out, spec.row);
-    return { partId: it.partId, comp: e.comp, pin: e.pin, label: e.label, part: e.part, spec, local, frame: placeFrame(it.m, local), spot: `${it.partId}|${e.pin}|${k}` };
+    return { partId: it.partId, comp: e.comp, pin: e.pin, label: e.label, part: e.part, spec, local, frame: placeFrame(it.m, local), spot: `${it.partId}|${at}|${k}` };
   };
   for (const r of rows) {
     const a = endOf(r.from, r.to);
@@ -307,6 +316,8 @@ export function plugBox(spec: PlugSpec, wires: { d: number }[]): [V3, V3] | null
       return [[x0 - 3.7, -2.3, 0], [x1 + 3.7, 2.3, 15]];
     case "barrel":
       return [[-5, -5, 0], [5, 5, 26]];
+    case "sh":
+      return [[-(span / 2 + 1.5), -1.45, 0], [span / 2 + 1.5, 1.45, 4.6]];
     default:
       return null;
   }
@@ -328,6 +339,9 @@ export const PULL: Record<PlugKind, number> = {
   lug: 0,
   barrel: 9.5,
   spade: 7,
+  sh: 3,
+  lever: 0,
+  bare: 0,
 };
 
 /** The straight lead out of a plug before the cable is free to bend, mm. */

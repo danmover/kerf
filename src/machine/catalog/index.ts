@@ -153,6 +153,13 @@ export function describePart(p: CatalogPart): string {
       .map(([k, v]) => `${k}=${v}`)
       .join(", ")}`,
     p.pins.length ? `pins:\n  ${pins}` : "pins: none (mechanical)",
+    // connectors and leads: `wire a.LEAD -> b.CH0` joins them contact by contact, with the lead's own colours and gauge
+    p.conns?.length
+      ? `connectors (wire a whole one with \`wire part.NAME -> other.NAME\`):\n  ${p.conns
+          .map((c) => `${c.id} "${c.name}": ${c.pins.join(", ")}${c.lead ? ` (its own ${c.lead.mm} mm lead, ${c.lead.gauge} AWG ${[...new Set(c.lead.colors)].join("/")}, ${c.lead.end}: it has to reach)` : c.cable ? ` (takes a made-up cable: give it with cable: and length:)` : ""}`)
+          .join("\n  ")}`
+      : "",
+    p.spots?.length ? `more places its pins can be wired at: ${p.spots.map((x) => `${x.id} = ${x.pin}`).join(", ")}` : "",
     `shape: ${p.geom.g} ${Object.entries(p.geom.dims)
       .map(([k, v]) => `${k}=${v}`)
       .join(" ")}${p.geom.holes ? `, holes ${JSON.stringify(p.geom.holes)}` : ""}`,

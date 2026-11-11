@@ -25,8 +25,9 @@ import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
+import { connOf, findConn, findPin, wiringNames } from "../machine/catalog/conns";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
-import { emptyMachine, type BeltDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
+import { emptyMachine, type BeltDef, type CatalogPart, type LeadDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
 import { ChainError, chainAsBelt, chainRecipe, chainSpec, linksFor, type ChainInfo, type ChainNode } from "../machine/chains";
 import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
@@ -909,7 +910,8 @@ class Evaluator {
 
   // ---------------- machines: wiring, firmware, tests, purchases ----------------
 
-  pinRef(e: Expr): PinRef {
+  /** The component a wiring name like ctrl.D5 or ctrl[2].D5 is on, with its catalog part. */
+  private wiringPart(e: Expr): { comp: string; index: number | undefined; part: CatalogPart; name: string } {
     if (e.k !== "member") throw new EvalError("Expected a pin like ctrl.D5", e.span);
     let comp: string;
     let index: number | undefined;
@@ -926,17 +928,43 @@ class Evaluator {
     this.current?.add(comp);
     const part = info.def.catalog ? catalogPart(info.def.catalog.id) : undefined;
     if (!part) throw new EvalError(`"${comp}" is not a catalog part, so it has no pins to wire`, e.obj.span);
-    const want = e.name.toLowerCase();
-    const pin = part.pins.find((p) => p.id.toLowerCase() === want) ?? part.pins.find((p) => p.label?.toLowerCase() === want);
-    if (!pin) {
-      const sugg = suggest(e.name, part.pins.map((p) => p.id));
-      throw new EvalError(`${part.name} has no pin "${e.name}"${sugg ? `. Did you mean "${sugg}"?` : `. Pins: ${part.pins.map((p) => p.id).join(", ")}`}`, e.span);
-    }
     const count = info.value.fields.count;
     if (index !== undefined && (typeof count !== "number" || index < 0 || index >= count || !Number.isInteger(index))) {
       throw new EvalError(`"${comp}" has ${typeof count === "number" ? count : 1} instance(s): index ${index} is out of range`, e.obj.span);
     }
-    return { comp, index, pin: pin.id, span: e.span };
+    return { comp, index, part, name: e.name };
+  }
+
+  pinRef(e: Expr): PinRef {
+    const { comp, index, part, name } = this.wiringPart(e);
+    const hit = findPin(part, name);
+    if (!hit) {
+      const sugg = suggest(name, wiringNames(part));
+      throw new EvalError(`${part.name} has no pin "${name}"${sugg ? `. Did you mean "${sugg}"?` : `. Pins: ${part.pins.map((p) => p.id).join(", ")}`}`, e.span);
+    }
+    return { comp, index, pin: hit.pin.id, spot: hit.spot?.id, span: e.span };
+  }
+
+  /**
+   * One end of a wire statement: a pin, or a whole connector or lead of the part (`servo.LEAD`, `hub.CH0`), which
+   * stands for its pins in contact order. `lead` is the part's own lead the wires run in, when it is one.
+   */
+  wireEnd(e: Expr): { refs: PinRef[]; lead?: LeadDef; cable?: { colors: string[]; gauge: number }; what: string } {
+    const { comp, index, part, name } = this.wiringPart(e);
+    // a pin's own id comes first, then a connector's, then the names printed on the part (pin and spot labels)
+    const exact = part.pins.some((p) => p.id.toLowerCase() === name.toLowerCase());
+    const conn = exact ? undefined : findConn(part, name);
+    if (!conn) {
+      const ref = this.pinRef(e);
+      const own = connOf(part, ref.spot ?? ref.pin);
+      const one = <T extends { colors: string[] }>(x: T | undefined) => x && { ...x, colors: [x.colors[own!.k]] };
+      return { refs: [ref], lead: one(own?.conn.lead), cable: one(own?.conn.cable), what: `${comp}.${name}` };
+    }
+    const refs = conn.pins.map((id): PinRef => {
+      const hit = findPin(part, id)!;
+      return { comp, index, pin: hit.pin.id, spot: hit.spot?.id, span: e.span };
+    });
+    return { refs, lead: conn.lead, cable: conn.cable, what: `${part.name}'s ${conn.name}` };
   }
 
   machineProps(items: Item[], allowed: string[] | null, what: string): Record<string, number | string | boolean> {
@@ -965,10 +993,34 @@ class Evaluator {
     const numv = (v: unknown) => (typeof v === "number" ? v : undefined);
     switch (s.k) {
       case "wire": {
-        const refs = s.path.map((e) => this.pinRef(e));
-        const pr = this.machineProps(s.items, ["gauge", "insulation", "color", "label"], "wire");
+        const ends = s.path.map((e) => this.wireEnd(e));
+        const pr = this.machineProps(s.items, ["gauge", "insulation", "color", "label", "cable", "length"], "wire");
         const insulation = this.insulationOf(pr.insulation, s.span);
-        for (let i = 0; i + 1 < refs.length; i++) this.machine.wires.push({ a: refs[i], b: refs[i + 1], gauge: numv(pr.gauge), insulation, color: str(pr.color), label: str(pr.label), span: s.span });
+        if (pr.length !== undefined && !(typeof pr.length === "number" && pr.length > 0)) throw new EvalError("length: is how long the bought cable is, e.g. length: 100mm", s.span);
+        if (pr.cable !== undefined && typeof pr.cable !== "string") throw new EvalError('cable: names the bought cable the wires are part of, e.g. cable: "STEMMA QT cable 100 mm"', s.span);
+        for (let i = 0; i + 1 < ends.length; i++) {
+          const a = ends[i];
+          const b = ends[i + 1];
+          if (a.refs.length !== b.refs.length) throw new EvalError(`${a.what} has ${a.refs.length} ${a.refs.length === 1 ? "wire" : "wires"} and ${b.what} has ${b.refs.length}: join connectors with the same number of contacts, or wire the pins one by one`, s.span);
+          // a part's own lead brings its wire size and colours with it; so does the cable made for a socket,
+          // when the wires are named as one (cable:)
+          const lead = a.lead ?? b.lead;
+          const made = pr.cable !== undefined ? (a.cable ?? b.cable) : undefined;
+          a.refs.forEach((ra, k) =>
+            this.machine.wires.push({
+              a: ra,
+              b: b.refs[k],
+              gauge: numv(pr.gauge) ?? lead?.gauge ?? made?.gauge,
+              insulation: insulation ?? lead?.insulation,
+              color: str(pr.color) ?? a.lead?.colors[k] ?? b.lead?.colors[k] ?? (pr.cable !== undefined ? (a.cable?.colors[k] ?? b.cable?.colors[k]) : undefined),
+              label: str(pr.label),
+              cable: str(pr.cable),
+              length: numv(pr.length),
+              own: lead !== undefined && pr.gauge === undefined ? true : undefined,
+              span: s.span,
+            }),
+          );
+        }
         return;
       }
       case "net": {

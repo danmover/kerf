@@ -8,7 +8,7 @@
 import type { CatalogPart } from "../types";
 import { PLUGS, PITCH, type PlugKind } from "../harness/plugs";
 import { textBox, textStrokes } from "../pcb/font";
-import { boardItems, boardSize, boardStyle, edgeDir, headerPins, pinSpots, PIN_LOOKS, terminalContacts, type BoardItem, type V2 } from "./pins";
+import { boardItems, boardSize, boardStyle, edgeDir, headerPins, pinSpots, PIN_LOOKS, TERMINAL_LOOKS, terminalContacts, type BoardItem, type PinSpot, type V2 } from "./pins";
 import type { BoardStyle } from "./look";
 
 export type SmdKind = "r0402" | "c0402" | "r0603" | "c0603" | "c0805" | "sot23" | "led" | "sma";
@@ -155,6 +155,23 @@ function socketRect(s: BoardSocket): Rect {
   return ox < 0 ? [ax, ay - half, ax + back, ay + half] : [ax - back, ay - half, ax, ay + half];
 }
 
+/**
+ * Where a board's pins meet their wires when its plug table places them all (BoardStyle.pinsFromPlugs): each pin's
+ * own entry, for the names printed beside the pins. A housing several pins share (a servo channel) has its names
+ * printed by the board's own labels instead.
+ */
+function tableSpots(part: CatalogPart): Map<string, PinSpot> {
+  const out = new Map<string, PinSpot>();
+  const table = PLUGS[part.id] ?? {};
+  for (const pin of part.pins) {
+    const s = table[pin.id];
+    if (!s || s.used) continue;
+    if (s.kind === "dupont") out.set(pin.id, { kind: "dupont", at: s.at, out: s.out, row: s.row });
+    else if (s.kind === "ferrule" || s.kind === "bare") out.set(pin.id, { kind: "ferrule", at: s.at, out: s.out, row: s.row });
+  }
+  return out;
+}
+
 function sockets(part: CatalogPart, style: BoardStyle): BoardSocket[] {
   const table = PLUGS[part.id];
   if (!table || style.sockets === false) return [];
@@ -266,13 +283,25 @@ export function boardLayout(part: CatalogPart): BoardLayout {
   };
   const pins: V2[] = [];
   for (const it of drawn) {
-    if (PIN_LOOKS.has(it.look)) for (const [x, y] of headerPins(it)) {
+    if (PIN_LOOKS.has(it.look) || it.look === "header_ra") for (const [x, y] of headerPins(it)) {
       tht(x, y, 1.7, it.look === "header_down");
       pins.push([x, y]);
     }
-    if (it.look === "terminal") for (const [x, y] of terminalContacts(it)) {
-      tht(x, y, 2.4);
+    if (TERMINAL_LOOKS.has(it.look)) for (const [x, y] of terminalContacts(it)) {
+      tht(x, y, it.look === "terminal35" ? 1.9 : 2.4);
       pins.push([x, y]);
+    }
+    // a STEMMA QT socket's four signal pads behind it, and the two that hold it down
+    if (it.look === "qt") {
+      const [ox, oy] = edgeDir(part, it.x, it.y);
+      const deep = (Math.abs(ox) > 0.5 ? it.w : it.d) / 2;
+      for (let i = 0; i < 4; i++) {
+        const a = (i - 1.5) * 1.0;
+        const px = it.x - ox * (deep + 0.3) + (ox ? 0 : a);
+        const py = it.y - oy * (deep + 0.3) + (oy ? 0 : a);
+        top.pads.push(ox ? { x: px, y: py, w: 1.1, h: 0.6 } : { x: px, y: py, w: 0.6, h: 1.1 });
+        pins.push([px, py]);
+      }
     }
     if (it.look === "box_header") {
       const n = Math.max(2, Math.round((it.w - 5) / 2.54));
@@ -321,7 +350,7 @@ export function boardLayout(part: CatalogPart): BoardLayout {
     return true;
   };
   // pin names beside the headers and terminals, from the same spots the wiring uses
-  const spots = pinSpots(part);
+  const spots = style.pinsFromPlugs ? tableSpots(part) : pinSpots(part);
   for (const [id, s] of spots) {
     const pin = part.pins.find((p) => p.id === id);
     const text = (pin?.label ?? id).replace(/\s*\(.*\)$/, "").slice(0, 6);
@@ -374,11 +403,13 @@ export function boardLayout(part: CatalogPart): BoardLayout {
       const rr = Math.min(it.w, it.d) / 2 + 0.4;
       top.silk.push(Array.from({ length: 33 }, (_, k): V2 => [it.x + Math.cos((k / 32) * Math.PI * 2) * rr, it.y + Math.sin((k / 32) * Math.PI * 2) * rr]));
       label("+", it.x + rr + 0.9, it.y + rr * 0.6, 1.2, 0, top, true);
-    } else if (it.look === "terminal" || it.look === "inductor" || it.look === "usb_c" || it.look === "usb_micro" || it.look === "button") {
+    } else if (TERMINAL_LOOKS.has(it.look) || it.look === "inductor" || it.look === "usb_c" || it.look === "usb_micro" || it.look === "button") {
       const [x0, y0, x1, y1] = grow(r, 0.3);
       top.silk.push([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]);
     }
   }
+  // what the board prints at fixed places: channel numbers, row names
+  for (const l of style.labels ?? []) label(l.text, l.x, l.y, l.size ?? 1, l.rot ?? 0, top, true);
   // the board's name, as large as fits
   const title = style.title ?? [part.mpn ?? part.name.split(/[,(]/)[0].trim().toUpperCase()];
   for (const line of title) {

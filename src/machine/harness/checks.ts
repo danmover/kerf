@@ -180,6 +180,30 @@ export function wiringItems(h: Harness, f: WiringFindings | null, mounts: MountR
     };
     blocked(f.leadBlocked, "lead");
     blocked(f.pullBlocked, "pull");
+    // ---- a part's own lead, or a bought cable, that does not reach
+    const short = new Map<string, NonNullable<typeof f.reach>>();
+    for (const r of f.reach ?? []) {
+      const w = wires.get(r.wire);
+      if (!w) continue;
+      // the wires of one lead or cable between the same two parts are one finding
+      const k = `${r.lead}|${w.ends[0].comp}|${w.ends[1].comp}`;
+      short.set(k, [...(short.get(k) ?? []), r]);
+    }
+    for (const [k, rs] of short) {
+      const w = wires.get(rs[0].wire)!;
+      const need = Math.max(...rs.map((r) => r.need));
+      const have = rs[0].have;
+      const own = /own lead/.test(rs[0].lead);
+      const lead = own ? rs[0].lead.replace(/'s own lead/g, "'s lead") : `The ${rs[0].lead}`;
+      add({
+        id: `wiring:reach:${k}`,
+        status: "fail",
+        title: `${lead} does not reach from ${w.ends[0].comp} to ${w.ends[1].comp}`,
+        detail: `${own ? `${lead} is` : `It is`} ${have.toFixed(0)} mm long and the run between ${endText(w.ends[0])} and ${endText(w.ends[1])} is ${need.toFixed(0)} mm (${list(rs.map((r) => r.wire), 6)}), ${(need - have).toFixed(0)} mm too far.`,
+        parts: [w.ends[0].partId, w.ends[1].partId],
+        fix: own ? `Move ${w.ends[0].comp} and ${w.ends[1].comp} closer or turn one so its connector faces the other, or add an extension lead and say so in the wiring.` : `Move the two closer, or use a longer cable (change cable: and length: on the wire).`,
+      });
+    }
     // ---- cables that leave the assembly on the way between two places inside it
     if (f.outside.length)
       add({

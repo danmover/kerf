@@ -25,6 +25,7 @@ import { serviceMd, servicePlan, type UseFacts } from "./service";
 import type { CalcLine, CalcTrace, CatalogKind, CatalogPart, MachineData } from "./types";
 import { componentBodies, componentPositions, csvCell, wireList, wiresCsv, wiringDiagram, type WireRow } from "./wiring";
 import { schematicSheet, schematicSvg } from "./schematic";
+import { stepLines, wiringSteps } from "./wiringSteps";
 
 export interface PackFile {
   path: string;
@@ -881,22 +882,37 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
   // wiring
   if (ctx.rows.length) {
     L.push(`## ${step++}. Wiring`, "");
-    L.push("Wire with every power source disconnected: battery unplugged, power supply switched off at the wall. Ground wires go in first, then signals, then motors and cables, and power last. Use the wire size given or thicker, and label both ends of each wire with its number.", "");
+    const ws = wiringSteps(m, ctx.rows);
+    const plugIn = ws.steps.filter((s) => !s.power);
+    const powerUp = ws.steps.filter((s) => s.power);
+    L.push(`Wire with every power source disconnected: battery unplugged, power supply switched off at the wall.${ws.cut.length ? " Ground wires go in first, then signals, then motors and cables, and power last. Use the wire size given or thicker, and label both ends of each wire with its number." : ""}`, "");
+    if (plugIn.length) {
+      L.push("### Leads and cables that plug in", "");
+      L.push("These come with their ends on: nothing to cut to length or solder. Each step says what to pick up and where it goes. Where a plug could go on the wrong way round, or the ends are loose wires, the lines under the step give each wire's colour and the name printed where it goes.", "");
+      for (const s of plugIn) L.push(...stepLines(s));
+      L.push("");
+    }
     const groups = new Map<string, WireRow[]>();
-    for (const r of ctx.rows) {
+    for (const r of ws.cut) {
       const g = r.named ? `net:${r.net}` : `kind:${r.kind}`;
       groups.set(g, [...(groups.get(g) ?? []), r]);
     }
     const KIND_HEAD: Record<string, string> = { ground: "Ground wires", power: "Power wires", signal: "Signal wires", motor: "Motor leads", cable: "Cables" };
     const spec = (r: WireRow) => (r.cable ? r.cable : `${r.gauge ? `${r.gauge} AWG${r.insulation === "silicone" ? " silicone" : ""}` : "wire"} ${r.color}`);
     const end = (e: WireRow["from"]) => `${e.comp}.${e.pin}${e.label !== e.pin ? ` ("${e.label}")` : ""}`;
+    // what goes on the wire's two ends, in the order the line names them
+    const fit = (r: WireRow) => {
+      const [a, b] = ws.fits.get(r.id) ?? ["", ""];
+      if (r.cable || (!a && !b)) return "";
+      return a === b ? `; ${a} at both ends` : `; ${a || "as the part needs"} → ${b || "as the part needs"}`;
+    };
     for (const [key, rows] of groups) {
       const r0 = rows[0];
       const same = rows.every((r) => spec(r) === spec(r0));
       const head = key.startsWith("net:") ? `${r0.net} (${r0.kind})` : KIND_HEAD[r0.kind];
       L.push(`### ${head}${same && !r0.cable ? `: ${spec(r0)}` : ""}`, "");
       if (r0.cable) L.push("Plug in the cable that comes with each part (or one of the same type), and route it so it cannot rub or catch on anything that moves.", "");
-      for (const r of rows) L.push(`- [ ] **${r.id}**: ${end(r.from)} → ${end(r.to)}${same || r.cable ? "" : `, ${spec(r)}`}${r.cable ? `, ${r.cable}` : ""}${r.lengthMm ? `, about ${r.lengthMm} mm` : ""}.${r.label ? ` ${sentence(r.label)}` : ""}`);
+      for (const r of rows) L.push(`- [ ] **${r.id}**: ${end(r.from)} → ${end(r.to)}${same || r.cable ? "" : `, ${spec(r)}`}${r.cable ? `, ${r.cable}` : ""}${r.lengthMm ? `, about ${r.lengthMm} mm` : ""}${fit(r)}.${r.label ? ` ${sentence(r.label)}` : ""}`);
       const note = rows.find((r) => r.note && !r.cable)?.note;
       if (note) L.push("", note);
       L.push("");
@@ -906,6 +922,12 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
     if (powerNets.length && groundNets.length) {
       const or = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} or ${xs[xs.length - 1]}`);
       L.push(`Before connecting any power, set the multimeter to continuity and check there is no connection from ${or(powerNets)} to ${or(groundNets)}. A beep means a short: find it before going on.`, "");
+    }
+    if (powerUp.length) {
+      L.push("### Power, last", "");
+      L.push("Leave these until everything above is in and checked, and until the test plan says to connect power.", "");
+      for (const s of powerUp) L.push(...stepLines(s));
+      L.push("");
     }
   }
 
