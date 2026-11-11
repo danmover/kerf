@@ -8,7 +8,7 @@
 import type { V3 } from "../../kernel/recipe";
 import { PLUG_BACK, PULL, SPLICE_LEN, leadLength, plugBox, type Harness, type HarnessWire, type PlugEnd, type Splice } from "./harness";
 import type { SignedField } from "./relax";
-import type { RoutedWire } from "./route";
+import { TIE_REACH, type RoutedWire } from "./route";
 import type { OBox, Skip, SolidItem, Solids } from "./solids";
 import type { PivotCrossing } from "./pivots";
 import type { TravelPlan } from "./travel";
@@ -126,8 +126,6 @@ const PRESS = 0.3;
 /** Ties every this far along a surface, mm; and the first one this close to a plug, for strain relief. */
 const TIE_EVERY = 100;
 const RELIEF_WITHIN = 60;
-/** A cable may reach this far from a surface and still be tied to it, mm. */
-const TIE_REACH = 6;
 /** how far a part's own multi-wire lead carries its wires together before they part, mm */
 const OWN_LEAD = 60;
 /** Longer than this with nothing to tie to: it hangs free, mm. */

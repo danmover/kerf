@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { V3 } from "../src/kernel/recipe";
-import { routeWithField, type RouteGeometry, type RoutePlaced } from "../src/machine/harness/route";
+import { routeWithField, type RouteGeometry, type RoutePlaced, type RouteWire } from "../src/machine/harness/route";
 import { Solids } from "../src/machine/harness/solids";
 import { runWiring } from "../src/machine/harness/wiringRun";
 import { flowZones, inCone, type FlowZone } from "../src/machine/harness/flow";
@@ -82,6 +82,102 @@ describe("cables and a ducted fan's airflow", () => {
     const it = items.find((i) => i.id === "wiring:flow:edf")!;
     expect(it.status).toBe("fail");
     expect(it.title).toContain("jet");
+  });
+});
+
+describe("wires dressed as a harness", () => {
+  // a plate with a block standing on it and a low box either side of the block
+  const geos = [box([-100, -80, -6], [100, 80, 0]), box([-15, -80, 0], [15, 20, 40]), box([-96, -30, 0], [-80, 30, 12]), box([80, -30, 0], [96, 30, 12])];
+  const placed: RoutePlaced[] = ["plate", "block", "left", "right"].map((id, geo) => ({ geo, m: IDENTITY, id }));
+  const Z: V3 = [0, 0, 1];
+  const route = (wires: RouteWire[]) => routeWithField({ geos, placed, wires }, new Solids(geos, placed)).result.wires;
+  const middle = (pts: V3[]) => pts.slice(Math.floor(pts.length * 0.2), Math.floor(pts.length * 0.8));
+  const nearest = (p: V3, pts: V3[]) => Math.min(...pts.map((q) => dist(p, q)));
+  // the point a given length along a run
+  const along = (pts: V3[], s: number): V3 => {
+    for (let i = 1; i < pts.length; i++) {
+      const l = dist(pts[i - 1], pts[i]);
+      if (s <= l) return [0, 1, 2].map((k) => pts[i - 1][k] + ((pts[i][k] - pts[i - 1][k]) * s) / (l || 1)) as V3;
+      s -= l;
+    }
+    return pts[pts.length - 1];
+  };
+  // the tightest bend of a run: the circle through points 2 mm apart along it
+  const tightest = (pts: V3[]) => {
+    const total = pts.slice(1).reduce((t, p, i) => t + dist(pts[i], p), 0);
+    let r = Infinity;
+    for (let s = 0; s + 4 <= total; s += 0.5) {
+      const [a, b, c] = [along(pts, s), along(pts, s + 2), along(pts, s + 4)];
+      const [ab, bc, ca] = [dist(a, b), dist(b, c), dist(c, a)];
+      const h = (ab + bc + ca) / 2;
+      const area = Math.sqrt(Math.max(0, h * (h - ab) * (h - bc) * (h - ca)));
+      if (area > 1e-9) r = Math.min(r, (ab * bc * ca) / (4 * area));
+    }
+    return r;
+  };
+  // three wires between a three-pin plug on each box, the block in the way
+  const three: RouteWire[] = [0, 1, 2].map((k) => ({ id: `W${k + 1}`, a: { p: [-74, (k - 1) * 2.54, 6], dir: X }, b: { p: [74, (k - 1) * 2.54, 6], dir: neg(X) }, d: 1.5 }));
+
+  it("runs the wires between two plugs as one cable, side by side all the way", () => {
+    const runs = route(three);
+    expect(runs.map((r) => r.id)).toEqual(["W1", "W2", "W3"]);
+    for (const [a, b] of [[0, 1], [0, 2], [1, 2]]) {
+      const gaps = middle(runs[a].points).map((p) => nearest(p, runs[b].points));
+      // touching: never through each other, never drifting apart
+      expect(Math.min(...gaps)).toBeGreaterThan(1.5 - 0.05);
+      expect(Math.max(...gaps)).toBeLessThan(1.5 + 0.6);
+    }
+    for (const r of runs) {
+      expect(r.straight).toBe(false);
+      // each ends on its own pin
+      const w = three.find((x) => x.id === r.id)!;
+      expect(dist(r.points[0], w.a.p)).toBeLessThan(1e-6);
+      expect(dist(r.points[r.points.length - 1], w.b.p)).toBeLessThan(1e-6);
+      // round the block's end on the plate, not up over it
+      expect(Math.max(...r.points.map((p) => p[2]))).toBeLessThan(12);
+      expect(tightest(r.points)).toBeGreaterThan(3);
+    }
+  });
+
+  it("gathers wires that run the other way into the same cable", () => {
+    const mixed = three.map((w, k) => (k === 1 ? { ...w, a: w.b, b: w.a } : w));
+    const runs = route(mixed);
+    const gaps = middle(runs[0].points).map((p) => nearest(p, runs[1].points));
+    expect(Math.max(...gaps)).toBeLessThan(1.5 + 0.6);
+    // the turned-round wire still runs from its own a to its own b
+    expect(dist(runs[1].points[0], mixed[1].a.p)).toBeLessThan(1e-6);
+    expect(dist(runs[1].points[runs[1].points.length - 1], mixed[1].b.p)).toBeLessThan(1e-6);
+  });
+
+  it("leaves wires that only start together to go their own ways", () => {
+    const apart: RouteWire[] = [three[0], { ...three[1], b: { p: [0, 60, 6], dir: neg(Y) } }];
+    const runs = route(apart);
+    const gaps = middle(runs[0].points).map((p) => nearest(p, runs[1].points));
+    expect(Math.max(...gaps)).toBeGreaterThan(20);
+  });
+
+  it("leaves a plug straight, and comes back past it in a bend the cable can make", () => {
+    // a heavy lead out of the top of the left box to a plug that faces up on the plate, behind the block
+    const lead: RouteWire = { id: "W1", a: { p: [-88, 20, 18], dir: Z }, b: { p: [60, -60, 6], dir: Z }, d: 3.6 };
+    const [run] = route([lead]);
+    const pts = run.points;
+    const out = along(pts, 2);
+    expect((out[2] - pts[0][2]) / dist(out, pts[0])).toBeGreaterThan(0.9);
+    const back = [...pts].reverse();
+    const into = along(back, 2);
+    expect((into[2] - back[0][2]) / dist(into, back[0])).toBeGreaterThan(0.9);
+    // no fold anywhere: the old dressing left bends of well under a millimetre at the plugs
+    expect(tightest(pts)).toBeGreaterThan(3);
+  });
+
+  it("lays a heavy cable down on the plate it runs along", () => {
+    const [run] = route([{ id: "W1", a: { p: [-60, 50, 2.5], dir: X }, b: { p: [60, 50, 2.5], dir: neg(X) }, d: 3.6 }]);
+    const zs = middle(run.points).map((p) => p[2]);
+    // its underside a quarter of a millimetre off the plate, not a grid cell above it
+    expect(Math.min(...zs)).toBeGreaterThan(1.8);
+    expect(Math.max(...zs)).toBeLessThan(1.8 + 0.25 + 0.5);
+    // and dead straight
+    expect(run.length).toBeLessThan(120 + 1);
   });
 });
 

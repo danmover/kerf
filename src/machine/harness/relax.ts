@@ -2,9 +2,11 @@
 // chain of points that keeps its ends at the plugs, smooths its bends, keeps
 // its own radius clear of every part, and pushes apart from the cables
 // around it, so bundles sit side by side and crossings pass over each other
-// instead of through. The parts are felt through the router's signed
-// distance field, then exactly (nearest point on the meshes) for the last
-// rounds. Plain arithmetic: it runs in the cable worker and in Node tests.
+// instead of through. Each point is pushed from the nearest place on the
+// cables around it (between their points, so a run is moved evenly along
+// its length and stays smooth). The parts are felt through the router's
+// signed distance field, then exactly (nearest point on the meshes) for the
+// last rounds. Plain arithmetic: it runs in the cable worker and in Node tests.
 
 import type { V3 } from "../../kernel/recipe";
 import type { Solids } from "./solids";
@@ -92,6 +94,7 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
     return s;
   };
   const delta = chains.map((c) => new Float64Array(c.p.length));
+  const best = new Map<number, { j: number; d2: number }>();
   const g: V3 = [0, 0, 0];
   // where each point was at the end of the last round, and whether that was clear of the parts:
   // a point that was clear never moves into one (a thin wall would let it out the other side)
@@ -134,6 +137,8 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
         const cx = Math.floor(x / cell),
           cy = Math.floor(y / cell),
           cz = Math.floor(z / cell);
+        // the nearest point of each cable around this one
+        best.clear();
         for (let dx = -1; dx <= 1; dx++)
           for (let dy = -1; dy <= 1; dy++)
             for (let dz = -1; dz <= 1; dz++) {
@@ -141,44 +146,71 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
               if (!list) continue;
               for (let m = 0; m < list.length; m += 2) {
                 const bi = list[m];
-                // each pair once, and never a cable against itself
-                if (bi <= ai) continue;
+                if (bi === ai) continue;
                 const b = chains[bi];
                 const j = list[m + 1];
                 const ex = x - b.p[j * 3],
                   ey = y - b.p[j * 3 + 1],
                   ez = z - b.p[j * 3 + 2];
-                const need = a.r + b.r + GAP;
                 const d2 = ex * ex + ey * ey + ez * ez;
-                if (d2 >= need * need) continue;
-                const near = sharedOf(ai, bi);
-                if (near.length && near.some((e) => Math.hypot(x - e[0], y - e[1], z - e[2]) < 4 * need + 4 && Math.hypot(b.p[j * 3] - e[0], b.p[j * 3 + 1] - e[1], b.p[j * 3 + 2] - e[2]) < 4 * need + 4)) continue;
-                const d = Math.sqrt(d2);
-                let ux: number, uy: number, uz: number;
-                if (d > 1e-6) {
-                  ux = ex / d;
-                  uy = ey / d;
-                  uz = ez / d;
-                } else {
-                  // on top of each other: split them across the run, the same way every round
-                  const tx = a.p[(i + 1) * 3] - a.p[(i - 1) * 3],
-                    ty = a.p[(i + 1) * 3 + 1] - a.p[(i - 1) * 3 + 1],
-                    tz = a.p[(i + 1) * 3 + 2] - a.p[(i - 1) * 3 + 2];
-                  const s = Math.abs(tz) < 0.9 * Math.hypot(tx, ty, tz) ? [ty, -tx, 0] : [0, tz, -ty];
-                  const l = Math.hypot(s[0], s[1], s[2]) || 1;
-                  ux = s[0] / l;
-                  uy = s[1] / l;
-                  uz = s[2] / l;
-                }
-                const push = (need - d) / 2;
-                delta[ai][i * 3] += ux * push;
-                delta[ai][i * 3 + 1] += uy * push;
-                delta[ai][i * 3 + 2] += uz * push;
-                delta[bi][j * 3] -= ux * push;
-                delta[bi][j * 3 + 1] -= uy * push;
-                delta[bi][j * 3 + 2] -= uz * push;
+                const was = best.get(bi);
+                if (!was || d2 < was.d2) best.set(bi, { j, d2 });
               }
             }
+        for (const [bi, hit] of best) {
+          const b = chains[bi];
+          const need = a.r + b.r + GAP;
+          // the nearest place on that cable's centre line, between its points
+          const j = hit.j;
+          let qx = b.p[j * 3],
+            qy = b.p[j * 3 + 1],
+            qz = b.p[j * 3 + 2];
+          let d2 = hit.d2;
+          for (const o of [-1, 1]) {
+            const k = j + o;
+            if (k < 0 || k > b.n - 1) continue;
+            const sx = b.p[k * 3] - b.p[j * 3],
+              sy = b.p[k * 3 + 1] - b.p[j * 3 + 1],
+              sz = b.p[k * 3 + 2] - b.p[j * 3 + 2];
+            const l2 = sx * sx + sy * sy + sz * sz;
+            if (l2 < 1e-12) continue;
+            const t = Math.max(0, Math.min(1, ((x - b.p[j * 3]) * sx + (y - b.p[j * 3 + 1]) * sy + (z - b.p[j * 3 + 2]) * sz) / l2));
+            const px = b.p[j * 3] + sx * t,
+              py = b.p[j * 3 + 1] + sy * t,
+              pz = b.p[j * 3 + 2] + sz * t;
+            const e2 = (x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2;
+            if (e2 < d2) {
+              d2 = e2;
+              qx = px;
+              qy = py;
+              qz = pz;
+            }
+          }
+          if (d2 >= need * need) continue;
+          const near = sharedOf(ai, bi);
+          if (near.length && near.some((e) => Math.hypot(x - e[0], y - e[1], z - e[2]) < 4 * need + 4 && Math.hypot(qx - e[0], qy - e[1], qz - e[2]) < 4 * need + 4)) continue;
+          const d = Math.sqrt(d2);
+          const tx = a.p[(i + 1) * 3] - a.p[(i - 1) * 3],
+            ty = a.p[(i + 1) * 3 + 1] - a.p[(i - 1) * 3 + 1],
+            tz = a.p[(i + 1) * 3 + 2] - a.p[(i - 1) * 3 + 2];
+          let ux: number, uy: number, uz: number;
+          if (d > 1e-6) {
+            ux = (x - qx) / d;
+            uy = (y - qy) / d;
+            uz = (z - qz) / d;
+          } else {
+            // on top of each other: split them across the run, the same way every round (the later cable gives way to +s)
+            const s = Math.abs(tz) < 0.9 * Math.hypot(tx, ty, tz) ? [ty, -tx, 0] : [0, tz, -ty];
+            const l = (Math.hypot(s[0], s[1], s[2]) || 1) * (ai < bi ? 1 : -1);
+            ux = s[0] / l;
+            uy = s[1] / l;
+            uz = s[2] / l;
+          }
+          const push = (need - d) / 2;
+          delta[ai][i * 3] += ux * push;
+          delta[ai][i * 3 + 1] += uy * push;
+          delta[ai][i * 3 + 2] += uz * push;
+        }
       }
     });
     chains.forEach((c, ci) => {
