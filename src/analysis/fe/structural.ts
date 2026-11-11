@@ -8,6 +8,8 @@ import { infillStiffness, infillStrength, layerStiffness, type InfillPattern } f
 import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg, type NodeSprings } from "./solver";
 import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
+import { sampleInterior, type ResultVolume } from "./volume";
+export type { ResultVolume } from "./volume";
 import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
@@ -264,6 +266,7 @@ export interface Located {
   at: V3;
 }
 
+
 export interface StructuralResult {
   label: string;
   mesh: { h: number; cell: V3; grid: V3; elements: number; nodes: number; dofs: number; levels: number; partial: number };
@@ -305,6 +308,8 @@ export interface StructuralResult {
   }[];
   gravity: { vector: V3; at: V3 } | null;
   parts: PartField[];
+  /** the fields inside the parts, for a section through them */
+  interior?: ResultVolume;
   ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number]; life?: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
@@ -2115,10 +2120,23 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       across: layerStiffness(inp.materials[inp.parts[pi].material]).rE,
     });
   });
+  // ---------- the fields inside, for a section through the result ----------
+  const interior = (() => {
+    const v = sampleInterior(
+      { n: [NX, NY, NZ], origin, h: hv },
+      (n) => nodeW[n] > 0,
+      [(n) => vm[n], (n) => strainN[n], (n) => 1 / Math.max(sfN[n], 1e-6), ...(nodeT ? [(n: number) => nodeT[n]] : []), ...(lifeN && fat ? [(n: number) => lifeLog(lifeN[n] / fat.design)] : [])],
+      u,
+    );
+    const [stress, strain, util, ...rest] = v.scalars;
+    return { origin: v.origin, step: v.step, n: v.n, disp: v.vec!, stress, strain, util, ...(nodeT ? { temp: rest.shift()! } : {}), ...(lifeN && fat ? { life: rest.shift()! } : {}) } satisfies ResultVolume;
+  })();
+
   const tEnd = now();
   progress("Done", 1);
   return {
     label: inp.label,
+    interior,
     mesh: { h, cell: hv, grid: [nx, ny, nz], elements: nActive, nodes: fine.free.length / 3, dofs: fine.free.reduce((s, v) => s + v, 0), levels: H.levels.length, partial: partialShare },
     solve: { iterations: stats.iterations, residual: stats.residual, converged: stats.converged, history: stats.history, ms: { mesh: tMesh - t0, setup: tSetup - tMesh, solve: tSolve - tSetup, post: tEnd - tSolve, total: tEnd - t0 } },
     maxDisp: { value: dMax, at: pos(iD) },
@@ -2823,10 +2841,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       if (fill[e] < 0.9) partial++;
     }
     for (let n = 0; n < nn; n++) if (r.on[n]) nodes++;
+    const inside = sampleInterior({ n: [NX, NY, NZ], origin, h: hv }, (n) => r.on[n] > 0, [(n) => r.T[n]]);
     const tEnd = now();
     progress("Done", 1);
     return {
       label: inp.label,
+      interior: { origin: inside.origin, step: inside.step, n: inside.n, temp: inside.scalars[0] },
       mesh: { h, cell: hv, grid: [nx, ny, nz], elements: nActive, nodes, dofs: nodes, levels: 1, partial: partial / Math.max(1, nActive) },
       solve: { iterations: r.result.solve.iterations, residual: r.result.solve.residual, converged: r.result.solve.converged, history: [], ms: { mesh: tMesh - t0, setup: 0, solve: r.ms, post: tEnd - tPost, total: tEnd - t0 } },
       maxDisp: { value: 0, at: [0, 0, 0] },
@@ -2902,6 +2922,7 @@ function meshArea(m: TriMesh): number {
 }
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 /** Fatigue life over the design life as log10, kept to -6..9 (9: no limit, below the endurance limit). */
+
 export const lifeLog = (ratio: number) => (ratio === Infinity || !(ratio < 1e9) ? 9 : ratio <= 1e-6 ? -6 : Math.log10(ratio));
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());

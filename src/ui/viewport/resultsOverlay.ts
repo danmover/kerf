@@ -7,6 +7,7 @@
 
 import * as THREE from "three";
 import type { StructuralResult } from "../../analysis/fe/structural";
+import { sampleVolume, type ResultVolume } from "../../analysis/fe/volume";
 import { lifeT, safetyT, type ScaleMode } from "../../analysis/colormap";
 import { degC } from "../../analysis/thermalSummary";
 import type { ResultField } from "../../analysis/runtime";
@@ -105,7 +106,24 @@ export class ResultsOverlay implements SceneOverlay {
   private parts: PartMesh[] = [];
   private material: THREE.MeshStandardMaterial;
   private ghostMat: THREE.LineBasicMaterial;
-  private uniforms = { uScale: { value: 0 }, uMode: { value: 0 }, uBands: { value: BANDS } };
+  private uniforms = {
+    uScale: { value: 0 },
+    uMode: { value: 0 },
+    uBands: { value: BANDS },
+    // a section cut: the face it leaves is coloured by the field inside, read from a 3D texture of the result
+    uCapOn: { value: 0 },
+    uPlane: { value: new THREE.Vector4(1, 0, 0, 0) },
+    uVolT: { value: null as THREE.Data3DTexture | null },
+    uVolD: { value: null as THREE.Data3DTexture | null },
+    uVolHasD: { value: 0 },
+    uVolO: { value: new THREE.Vector3() },
+    uVolS: { value: new THREE.Vector3(1, 1, 1) },
+    uVolN: { value: new THREE.Vector3(1, 1, 1) },
+  };
+  /** the result inside the parts as textures: each sample's place on the colour scale, and its displacement */
+  private vol: { t: Uint8Array; tTex: THREE.Data3DTexture; dTex: THREE.Data3DTexture | null } | null = null;
+  /** the section plane while a section is on (the scene moves it; it is read each frame) */
+  private cut: THREE.Plane | null = null;
   private cfg: OverlayConfig = { field: "stress", scale: 1, animate: false, safetyTarget: 2 };
   private t0 = performance.now();
   private markers = new THREE.Group();
@@ -136,14 +154,19 @@ export class ResultsOverlay implements SceneOverlay {
     this.material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, this.uniforms);
       shader.vertexShader = shader.vertexShader
-        .replace("#include <common>", "#include <common>\nattribute vec3 aDisp;\nattribute float aT;\nuniform float uScale;\nvarying float vT;")
-        .replace("#include <begin_vertex>", "#include <begin_vertex>\ntransformed += aDisp * uScale;\nvT = aT;");
+        .replace("#include <common>", "#include <common>\nattribute vec3 aDisp;\nattribute float aT;\nuniform float uScale;\nvarying float vT;\nvarying vec3 vWorldR;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\ntransformed += aDisp * uScale;\nvT = aT;")
+        .replace("#include <project_vertex>", "#include <project_vertex>\nvWorldR = (modelMatrix * vec4(transformed, 1.0)).xyz;");
       shader.fragmentShader = shader.fragmentShader
-        .replace("#include <common>", "#include <common>\nuniform float uMode;\nuniform float uBands;\nvarying float vT;\n" + GLSL_COLORMAPS)
-        .replace("vec4 diffuseColor = vec4( diffuse, opacity );", "vec4 diffuseColor = vec4( kerfResultColor(vT, uMode, uBands), opacity );\nif (!gl_FrontFacing) diffuseColor.rgb = vec3(0.09, 0.1, 0.13);")
+        .replace("#include <common>", "#include <common>\nuniform float uMode;\nuniform float uBands;\nvarying float vT;\n" + GLSL_COLORMAPS + GLSL_CAP)
+        .replace("vec4 diffuseColor = vec4( diffuse, opacity );", "vec4 diffuseColor = vec4( kerfResultColor(vT, uMode, uBands), opacity );\nfloat kerfCap = 0.0;\nif (!gl_FrontFacing) kerfCap = kerfCapColor(diffuseColor.rgb);")
+        .replace("#include <normal_fragment_begin>", "#include <normal_fragment_begin>\nif (kerfCap > 0.5) normal = normalize((viewMatrix * vec4(-uPlane.xyz, 0.0)).xyz);")
+        // the cut face is drawn on the far wall behind it, so that wall's shadows would speckle it: it takes none
+        .replace("#include <lights_fragment_begin>", THREE.ShaderChunk.lights_fragment_begin.replaceAll("&& receiveShadow )", "&& receiveShadow && kerfCap < 0.5 )"))
         .replace("vec3 totalEmissiveRadiance = emissive;", "vec3 totalEmissiveRadiance = emissive + diffuseColor.rgb * 0.22;");
     };
-    this.material.customProgramCacheKey = () => "kerf-results-v1";
+    this.material.customProgramCacheKey = () => "kerf-results-v2";
+    this.buildVolume();
     this.disposables.push(this.material, this.ghostMat);
 
     result.parts.forEach((p, index) => {
@@ -160,6 +183,7 @@ export class ResultsOverlay implements SceneOverlay {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.userData.partIndex = index;
+      mesh.onBeforeRender = () => this.syncCut();
       const eg = new THREE.EdgesGeometry(g, 28);
       const ghost = new THREE.LineSegments(eg, this.ghostMat);
       ghost.renderOrder = 2;
@@ -191,6 +215,7 @@ export class ResultsOverlay implements SceneOverlay {
     this.cfg = cfg;
     if (modeChanged || !this.filled)
       for (const p of this.parts) p.mesh.geometry.setAttribute("aDisp", new THREE.BufferAttribute(mode !== null ? this.result.parts[p.index].modes![mode] : this.result.parts[p.index].disp, 3));
+    this.uniforms.uCapOn.value = this.cut && this.vol && mode === null ? 1 : 0;
     if (mode !== null) {
       this.uniforms.uMode.value = 0;
       if (fieldChanged || !this.filled) this.fill();
@@ -254,6 +279,89 @@ export class ResultsOverlay implements SceneOverlay {
       }
       p.tAttr.needsUpdate = true;
     }
+    this.fillVolume();
+  }
+
+  /** the result inside the parts, as 3D textures for the section's face */
+  private buildVolume() {
+    const v = this.result.interior;
+    if (!v) return;
+    const [nx, ny, nz] = v.n;
+    const nv = nx * ny * nz;
+    const tex = (data: Uint8Array<ArrayBuffer> | Uint16Array<ArrayBuffer>, format: THREE.PixelFormat, type: THREE.TextureDataType) => {
+      const t = new THREE.Data3DTexture(data, nx, ny, nz);
+      t.format = format;
+      t.type = type;
+      t.minFilter = t.magFilter = THREE.LinearFilter;
+      t.wrapS = t.wrapT = t.wrapR = THREE.ClampToEdgeWrapping;
+      t.unpackAlignment = 1;
+      t.needsUpdate = true;
+      this.disposables.push(t);
+      return t;
+    };
+    const t = new Uint8Array(nv);
+    const tTex = tex(t, THREE.RedFormat, THREE.UnsignedByteType);
+    let dTex: THREE.Data3DTexture | null = null;
+    let dMax = 0;
+    if (v.disp) {
+      // half floats keep about 3 figures and lose tiny numbers, so store each displacement as a share of the largest
+      for (let i = 0; i < v.disp.length; i++) dMax = Math.max(dMax, Math.abs(v.disp[i]));
+      const h = new Uint16Array(4 * nv);
+      if (dMax > 0) for (let q = 0; q < nv; q++) for (let c = 0; c < 3; c++) h[4 * q + c] = THREE.DataUtils.toHalfFloat(v.disp[3 * q + c] / dMax);
+      dTex = tex(h, THREE.RGBAFormat, THREE.HalfFloatType);
+    }
+    this.vol = { t, tTex, dTex };
+    const u = this.uniforms;
+    u.uVolT.value = tTex;
+    u.uVolD.value = dTex;
+    u.uVolHasD.value = dTex && dMax > 0 ? dMax : 0;
+    u.uVolO.value.set(...v.origin);
+    u.uVolS.value.set(...v.step);
+    u.uVolN.value.set(nx, ny, nz);
+  }
+
+  /** each sample's place on the colour scale of the field on show, as fill() does on the surface */
+  private fillVolume() {
+    const v = this.result.interior;
+    const vol = this.vol;
+    if (!v || !vol || this.modeShown() !== null) return;
+    const field = this.cfg.field;
+    const [lo, hi] = fieldRange(this.result, field);
+    const out = vol.t;
+    for (let q = 0; q < out.length; q++) {
+      const t = volumeT(v, field, q, lo, hi, this.cfg.safetyTarget);
+      out[q] = Math.round(255 * Math.min(1, Math.max(0, t)));
+    }
+    vol.tTex.needsUpdate = true;
+  }
+
+  /** the section plane into the shader, as the scene has moved it */
+  private syncCut() {
+    const c = this.cut;
+    if (c) this.uniforms.uPlane.value.set(c.normal.x, c.normal.y, c.normal.z, c.constant);
+  }
+
+  /** The field's value at a point inside the parts, undoing the drawn displacement (x = x₀ + scale·d(x₀)). */
+  valueInside(x: THREE.Vector3): number | null {
+    const v = this.result.interior;
+    if (!v) return null;
+    const k = this.uniforms.uScale.value;
+    let p: [number, number, number] = [x.x, x.y, x.z];
+    if (v.disp && k)
+      for (let it = 0; it < 3; it++) {
+        const d = [0, 1, 2].map((c) => sampleVolume(v, (q) => v.disp![3 * q + c], p));
+        p = [x.x - k * d[0], x.y - k * d[1], x.z - k * d[2]];
+      }
+    const f = this.cfg.field;
+    if (f === "disp") {
+      if (!v.disp) return null;
+      const d = [0, 1, 2].map((c) => sampleVolume(v, (q) => v.disp![3 * q + c], p));
+      return Math.hypot(d[0], d[1], d[2]);
+    }
+    const arr = f === "stress" ? v.stress : f === "strain" ? v.strain : f === "safety" ? v.util : f === "temp" ? v.temp : v.life;
+    if (!arr) return null;
+    const val = sampleVolume(v, (q) => arr[q], p);
+    return f === "safety" ? 1 / Math.max(val, 1e-9) : val;
   }
 
   tick(now: number): boolean {
@@ -292,6 +400,9 @@ export class ResultsOverlay implements SceneOverlay {
     this.ghostMat.clippingPlanes = planes;
     this.material.needsUpdate = true;
     this.ghostMat.needsUpdate = true;
+    this.cut = planes?.[0] ?? null;
+    this.uniforms.uCapOn.value = this.cut && this.vol && this.modeShown() === null ? 1 : 0;
+    this.syncCut();
   }
 
   /** The field value under a ray, interpolated inside the triangle hit. */
@@ -307,6 +418,12 @@ export class ResultsOverlay implements SceneOverlay {
       if (!h.face) continue;
       const pi = h.object.userData.partIndex as number;
       const f = this.result.parts[pi];
+      // through a section, the first face left is the inside of the far wall: read the cut face, where the ray meets the plane
+      if (section && this.result.interior && h.face.normal.dot(ray.ray.direction) > 0) {
+        const at = ray.ray.intersectPlane(section, new THREE.Vector3());
+        const value = at ? this.valueInside(at) : null;
+        if (at && value !== null) return { value, field: this.cfg.field, part: `${f.name}, inside`, point: at };
+      }
       const { a, b, c } = h.face;
       const P = f.positions;
       const pa = new THREE.Vector3(P[3 * a], P[3 * a + 1], P[3 * a + 2]);
@@ -597,6 +714,52 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
+
+/** A sample's place on the colour scale of a field, as the surface's fill() works it out. */
+function volumeT(v: ResultVolume, field: ResultField, q: number, lo: number, hi: number, target: number): number {
+  switch (field) {
+    case "safety":
+      return v.util ? safetyT(1 / Math.max(v.util[q], 1e-9), target) : 1;
+    case "disp":
+      return v.disp ? Math.hypot(v.disp[3 * q], v.disp[3 * q + 1], v.disp[3 * q + 2]) / hi : 0;
+    case "strain":
+      return v.strain ? 0.5 + (0.5 * v.strain[q]) / hi : 0.5;
+    case "temp":
+      return v.temp ? (v.temp[q] - lo) / (hi - lo) : 0;
+    case "life":
+      return v.life ? lifeT(v.life[q]) : 1;
+    default:
+      return v.stress ? (v.stress[q] - lo) / (hi - lo) : 0;
+  }
+}
+
+// The face a section cut leaves: a back face seen through the cut is coloured by the field where the view ray meets
+// the plane, read from the result's 3D texture after undoing the drawn displacement, and lit as the flat cut face.
+const GLSL_CAP = /* glsl */ `
+uniform float uCapOn;
+uniform vec4 uPlane;
+uniform highp sampler3D uVolT;
+uniform highp sampler3D uVolD;
+uniform float uVolHasD; // the largest displacement, which the texture's values are shares of (0 when none)
+uniform vec3 uVolO;
+uniform vec3 uVolS;
+uniform vec3 uVolN;
+uniform float uScale;
+varying vec3 vWorldR;
+vec3 kerfVolUV(vec3 x) { return ((x - uVolO) / uVolS + 0.5) / uVolN; }
+float kerfCapColor(inout vec3 rgb) {
+  rgb = vec3(0.09, 0.1, 0.13);
+  if (uCapOn < 0.5) return 0.0;
+  vec3 ray = vWorldR - cameraPosition;
+  float den = dot(uPlane.xyz, ray);
+  if (abs(den) < 1e-12) return 0.0;
+  vec3 xp = cameraPosition - ((dot(uPlane.xyz, cameraPosition) + uPlane.w) / den) * ray;
+  vec3 x0 = xp;
+  if (uVolHasD > 0.0) for (int k = 0; k < 3; k++) x0 = xp - uScale * uVolHasD * texture(uVolD, kerfVolUV(x0)).xyz;
+  rgb = kerfResultColor(texture(uVolT, kerfVolUV(x0)).r, uMode, uBands);
+  return 1.0;
+}
+`;
 
 // GLSL copies of src/analysis/colormap.ts; colours are converted to linear for lighting
 const GLSL_COLORMAPS = /* glsl */ `

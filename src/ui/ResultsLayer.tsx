@@ -13,6 +13,7 @@ import { modeWords } from "../analysis/dynamics";
 import { followers } from "../analysis/carried";
 import { meshes, useDesign } from "../core/engine";
 import { useSettings } from "../app/settings";
+import { useView } from "../app/view";
 import { useTheme } from "../app/theme";
 import { degC, duration } from "../analysis/thermalSummary";
 import { fmtNum } from "../lang/values";
@@ -229,6 +230,7 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
     return [0, 0.5, 1].map((t) => ({ t, text: fmtNum((lo + (hi - lo) * t) * mul, Math.abs(hi * mul) < 1 ? 4 : 2) }));
   }, [result, field, target]);
   const info = FIELD_INFO[field];
+  const section = useView((v) => v.section);
   return (
     <>
       <div className="row" style={{ gap: 8, marginBottom: 6 }}>
@@ -236,6 +238,17 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
         {info.unit && <span className="dim mono">{info.unit}</span>}
         <div className="grow" />
         {stale && <span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} aria-label="Updating" />}
+        {result.interior && (
+          <button
+            className={`icon-btn sm ${section.on ? "active" : ""}`}
+            onClick={() => useView.setState({ section: { ...section, on: !section.on } })}
+            aria-label="Section through the result"
+            aria-pressed={section.on}
+            data-tip={section.on ? "Close the section" : `Cut it open to see the ${info.short.toLowerCase()} inside (S)`}
+          >
+            <Icon.Scissors size={13} />
+          </button>
+        )}
         <button className="icon-btn sm" onClick={() => showResults(null)} aria-label="Hide results" data-tip="Hide results">
           <Icon.X size={13} />
         </button>
@@ -264,6 +277,7 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
       )}
       <div className="res-meta mono">
         {label} · {result.heatOnly ? (result.thermal?.transient ? `after ${duration(result.thermal.transient.time)}` : "settled temperatures") : scale <= 0 ? "undeformed" : trueScale ? "true-scale shape" : `shape ×${fmtNum(scale, scale < 10 ? 1 : 0)}`}
+        {section.on && result.interior && " · the cut face shows inside"}
       </div>
     </>
   );
