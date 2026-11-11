@@ -21,7 +21,7 @@ import { gridCell, layoutSheet, type LayoutItem, type LayoutResult } from "./lay
 import { boxOk, emptyBox, fmtNum, growBox, Ink, shapeBox, type BomLine, type Box, type Sheet, type SheetDim, type SheetPart, type SheetView } from "./sheet";
 import { scaleText, SHEETS, STANDARD_SCALES, type DrawingSpec, type SheetSize } from "./spec";
 import { textWidth } from "./text";
-import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, inkTable, inkTitleBlock, inkToleranceStrip, partsListBoxes, splitTable, tableSize, TB_W, type Table } from "./titleblock";
+import { frameBox, inkDataTable, inkFrame, inkNotes, inkPartsList, notesHit, inkTable, inkTitleBlock, inkToleranceStrip, partsListBoxes, splitTable, tableSize, TB_W, type Table } from "./titleblock";
 import { boxExtents, humanize, toView, viewFrame, worldBox, type BBoxOf, type DrawingPlan, type PlannedView } from "./views";
 import { copiesOf, sharedName, type MeshOf } from "./copies";
 
@@ -314,8 +314,8 @@ export function composeSheet(inp: ComposeInput): Sheet {
   if (strip) top = strip;
   const frame = frameBox(w, h);
   const rev = fur.revisions ? inkTable(ink, frame[2] - tableSize(fur.revisions).w, frame[1], fur.revisions) : null;
-  if (bom.length) inkPartsList(ink, top, bom, belowRevisions(frame, rev));
-  cornerItems(ink, frame, top, notes, st, fur, bom.length > 0);
+  const list = bom.length ? inkPartsList(ink, top, bom, belowRevisions(frame, rev)) : null;
+  cornerItems(ink, frame, top, notes, st, fur, list);
 
   // final row assignment was done per view during layout at this scale
   const pending = views.filter((v) => v.state === "pending").length;
@@ -478,9 +478,10 @@ function fixedRegions(w: number, h: number, bomRows: number, tolerance: string, 
     const { w: rw, h: rh } = tableSize(fur.revisions);
     rev = [f[2] - rw, f[1], f[2], f[1] + rh];
   }
-  const out: Box[] = [tb, ...(bomRows ? partsListBoxes(bomRows, tb, belowRevisions(f, rev)).boxes : []), ...(rev ? [[rev[0] - 2, rev[1], rev[2], rev[3] + 2] as Box] : [])];
+  const list = bomRows ? partsListBoxes(bomRows, tb, belowRevisions(f, rev)).boxes : [];
+  const out: Box[] = [tb, ...list, ...(rev ? [[rev[0] - 2, rev[1], rev[2], rev[3] + 2] as Box] : [])];
   // notes and tables: measure them with a scratch ink
-  out.push(...cornerItems(new Ink(), f, tb, notes, st, fur, bomRows > 0));
+  out.push(...cornerItems(new Ink(), f, tb, notes, st, fur, list.length ? [Math.min(...list.map((b) => b[0])), Math.min(...list.map((b) => b[1])), tb[2], tb[1]] : null));
   return out;
 }
 
@@ -492,22 +493,36 @@ function belowRevisions(f: Box, rev: Box | null): Box {
 /**
  * Notes, then the data table and the hole table above them in the bottom-left
  * corner, and the general surface texture symbol beside the title block.
- * Returns the boxes they take, padded for layout.
+ * Returns the boxes they take, padded for layout. list is the parts list's
+ * extent, when there is one.
  */
-function cornerItems(ink: Ink, f: Box, tb: Box, notes: string[], st: DimStyle, fur: Furniture, listAbove = false): Box[] {
+function cornerItems(ink: Ink, f: Box, tb: Box, notes: string[], st: DimStyle, fur: Furniture, list: Box | null = null): Box[] {
   const out: Box[] = [];
+  const listAbove = !!list;
   // the general symbol stands on the title block, or beside it when the parts list is there
   const gw = fur.general && listAbove ? generalFinishSize(fur.general, st.size, fur.others).w : 0;
-  const notesW = tb[0] - f[0] - 14 - (gw ? gw + 6 : 0);
+  let notesW = tb[0] - f[0] - 14 - (gw ? gw + 6 : 0);
   let bottom = f[3] - 4;
+  let floor = f[3];
+  // a parts list wider than the title block comes down beside the notes: wrap them short of it,
+  // or, when that leaves them too narrow, put them above it
+  if (list && list[0] < tb[0] && notesHit(f[0] + 4, bottom, notesW, notes, st.size, [list[0] - 3, list[1], list[2], list[3] + 1])) {
+    const clear = list[0] - 6 - (f[0] + 4);
+    if (clear >= 90) notesW = Math.min(notesW, clear);
+    else {
+      bottom = list[1] - 4;
+      floor = list[1] - 2;
+      notesW = list[2] - f[0] - 8;
+    }
+  }
   const nb = inkNotes(ink, f[0] + 4, bottom, notesW, notes, st.size);
   if (nb) {
-    out.push([nb[0] - 2, nb[1] - 2, nb[2] + 2, f[3]]);
+    out.push([nb[0] - 2, nb[1] - 2, nb[2] + 2, floor]);
     bottom = nb[1] - 4;
   }
   if (fur.data) {
     const gb = inkDataTable(ink, f[0] + 4, bottom, fur.data.title, fur.data.rows, "n");
-    out.push([gb[0] - 2, gb[1] - 2, gb[2] + 2, f[3]]);
+    out.push([gb[0] - 2, gb[1] - 2, gb[2] + 2, floor]);
     bottom = gb[1] - 4;
   }
   if (fur.holes) {

@@ -13,6 +13,8 @@ import type { CatalogPart, MachineComponent, MachineData } from "../../machine/t
 import type { Board } from "../mcu/board";
 import { ADAPTER, Actuator, BENCH_SUPPLY, Battery, Bno055, DCMotor, EscFan, Lsm6dsox, Mpu6050, Regulator, Servo, Ssd1306, Supply, USB_PORT, quadrature, type ImuNoise } from "./devices";
 import { BRIDGE_OHMS, CoilLoad, Ina3221, PwmFan, Sdp8xx, Tmag5273, stepCoilString, type ShuntTap } from "./fielddevs";
+import { BusServo, ServoBus } from "./busServo";
+import { servoBuses } from "../../machine/busServos";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
@@ -172,7 +174,14 @@ interface RegSlot {
 interface FuseSlot {
   comp: string;
   net?: Net;
+  /**
+   * What sits after this fuse, when other fuses share its net (one fuse for each branch off the same supply):
+   * the pins and parts it feeds, so each fuse carries its own branch and not the whole supply.
+   */
+  side?: { keys: Set<string>; comps: Set<string> };
   rating: number;
+  /** the most it carried, A */
+  peak: number;
   over2: number;
   over35: number;
   blown: boolean;
@@ -211,6 +220,10 @@ export class Plant implements PlantPort, PlantView {
   motors: MotorSlot[] = [];
   acts: ActSlot[] = [];
   servos: ServoSlot[] = [];
+  /** smart-servo buses, one for each adapter */
+  buses: ServoBus[] = [];
+  /** parts whose model reports all they draw, standby included: their supply pin's catalog draw is not added again */
+  private selfDrawn = new Set<string>();
   leds: LedSlot[] = [];
   escs: EscSlot[] = [];
   hxs: HxSlot[] = [];
@@ -313,7 +326,7 @@ export class Plant implements PlantPort, PlantView {
         }
         case "fuse":
           // the fuse fitted (rating:), else the one the holder comes with
-          this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(mc.rating ?? part.specs.rating_a ?? 20), over2: 0, over35: 0, blown: false });
+          this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(mc.rating ?? part.specs.rating_a ?? 20), peak: 0, over2: 0, over35: 0, blown: false });
           break;
         case "motor_driver":
           for (const ch of ["A", "B"]) {
@@ -336,7 +349,10 @@ export class Plant implements PlantPort, PlantView {
           break;
         }
         case "servo": {
-          this.servos.push({ comp: mc.name, s: new Servo(mc.name, part), pin: this.mcuPinFor(mc.name, "SIG"), sig: this.netOf(mc.name, "SIG"), vcc: this.netOf(mc.name, "V_PLUS") });
+          // a smart servo takes packets on its bus, not a pulse on a pin
+          const smart = part.specs.bus === "feetech_sts";
+          if (smart) this.selfDrawn.add(mc.name);
+          this.servos.push({ comp: mc.name, s: smart ? new BusServo(mc.name, part) : new Servo(mc.name, part), pin: smart ? -1 : this.mcuPinFor(mc.name, "SIG"), sig: this.netOf(mc.name, "SIG"), vcc: this.netOf(mc.name, "V_PLUS") });
           break;
         }
         case "esc":
@@ -375,6 +391,24 @@ export class Plant implements PlantPort, PlantView {
           break;
       }
     }
+    // smart servos: each adapter's chain is a bus on the controller's UART pins, numbered in the order it is wired
+    for (const b of servoBuses(machine)) {
+      const bus = new ServoBus(b.adapter);
+      for (const m of b.servos) {
+        const dev = this.servos.find((x) => x.comp === m.comp)?.s;
+        if (!(dev instanceof BusServo)) continue;
+        dev.id = m.id;
+        dev.mem[5] = m.id;
+        bus.servos.push(dev);
+      }
+      const tx = this.mcuPinFor(b.adapter, "TX");
+      const rx = this.mcuPinFor(b.adapter, "RX");
+      if (tx >= 0) hal.attachUart(tx, rx, bus);
+      else this.notes.push(`${b.adapter} hears nothing: wire its TX pin to a transmit pin of the ${this.board.name}.`);
+      if (rx < 0) this.notes.push(`${b.adapter} cannot answer: wire its RX pin to a receive pin of the ${this.board.name}.`);
+      this.buses.push(bus);
+    }
+    this.fuseBranches();
     // the data line to each LED board: straight from a controller pin, or on from the board before it in a chain
     for (let pass = 0; pass < this.leds.length; pass++)
       for (const l of this.leds) {
@@ -1176,6 +1210,7 @@ export class Plant implements PlantPort, PlantView {
       const powered = s.vcc ? (this.netV.get(s.vcc.id) ?? 0) > 4 : false;
       const us = this.pulse(s.pin, s.sig);
       const mv = moved?.get(s.comp);
+      if (s.s instanceof BusServo) s.s.tick(dt, powered, s.vcc ? (this.netV.get(s.vcc.id) ?? 0) : 0);
       if (mv) s.s.follow(us, mv.pos, mv.load, powered);
       else s.s.step(us, this.world.servoLoad?.(s.comp) ?? 0, powered, dt);
     }
@@ -1226,7 +1261,8 @@ export class Plant implements PlantPort, PlantView {
     }
     for (const f of this.fuses) {
       if (f.blown) continue;
-      const i = f.net ? onNet(f.net) : ib;
+      const i = f.side && f.net ? this.branchDraw(f.net, f.side) : f.net ? onNet(f.net) : ib;
+      if (i > f.peak) f.peak = i;
       f.over2 = i > 2 * f.rating ? f.over2 + dt : Math.max(0, f.over2 - dt * 0.2);
       f.over35 = i > 3.5 * f.rating ? f.over35 + dt : 0;
       if (f.over2 > 2 || f.over35 > 0.2) {
@@ -1358,10 +1394,78 @@ export class Plant implements PlantPort, PlantView {
     }
   }
 
-  /** what the parts on a net draw just by being powered, A */
-  private staticDraw(rail: Net): number {
+  /**
+   * Fuses that share a net each protect a branch of it (an arm each, say). Work out what each one feeds: the
+   * pins reached from its far side without going back through it, the far side being the one no supply is on.
+   */
+  private fuseBranches() {
+    const byNet = new Map<number, FuseSlot[]>();
+    for (const f of this.fuses) if (f.net) byNet.set(f.net.id, [...(byNet.get(f.net.id) ?? []), f]);
+    for (const fs of byNet.values()) {
+      if (fs.length < 2) continue;
+      const n = fs[0].net!;
+      // pin to pin: the wire runs, and across each closed switch, fuse or connector
+      const next = new Map<string, string[]>();
+      const link = (a: string, b: string) => {
+        next.set(a, [...(next.get(a) ?? []), b]);
+        next.set(b, [...(next.get(b) ?? []), a]);
+      };
+      for (const sg of n.segs) link(sg.a.key, sg.b.key);
+      const byKey = new Map(n.pins.map((p) => [p.key, p]));
+      for (const p of n.pins) {
+        if (p.pin.type !== "passive" || !p.pin.through) continue;
+        const o = n.pins.find((q) => q.comp === p.comp && q.index === p.index && q.pin.id === p.pin.through);
+        if (o && p.key < o.key) link(p.key, o.key);
+      }
+      const source = (p: NetPin) => (p.part.kind === "battery" || p.part.kind === "psu" || p.part.kind === "regulator") && p.pin.type !== "gnd" && p.pin.type !== "pwr_in";
+      for (const f of fs) {
+        const own = n.pins.filter((p) => p.comp === f.comp && p.pin.type === "passive");
+        if (own.length !== 2) continue;
+        const reach = (from: NetPin) => {
+          const seen = new Set([from.key]);
+          const todo = [from.key];
+          while (todo.length) {
+            const k = todo.pop()!;
+            for (const q of next.get(k) ?? []) {
+              // not back through this fuse
+              if (seen.has(q) || (byKey.get(k)?.comp === f.comp && byKey.get(q)?.comp === f.comp)) continue;
+              seen.add(q);
+              todo.push(q);
+            }
+          }
+          return seen;
+        };
+        const sides = own.map(reach);
+        const fed = sides.map((s) => [...s].some((k) => source(byKey.get(k)!)));
+        // a branch has the supply on one side only; a fuse in a loop, or with no supply in sight, carries the whole net
+        if (fed[0] === fed[1] || sides[0].has(own[1].key)) continue;
+        const keys = sides[fed[0] ? 1 : 0];
+        f.side = { keys, comps: new Set([...keys].map((k) => byKey.get(k)!.comp)) };
+      }
+    }
+  }
+
+  /** current through a fuse that feeds one branch of its net: what the parts after it draw, A */
+  private branchDraw(n: Net, side: { keys: Set<string>; comps: Set<string> }): number {
+    const v = this.netV.get(n.id) ?? 0;
+    if (v <= 0.5) return 0;
+    const on = (net: Net | undefined, comp: string) => net?.id === n.id && side.comps.has(comp);
+    let i = this.staticDraw(n, side.keys);
+    for (const c of this.chans) if (on(c.supply, c.comp)) i += c.supplyCurrent;
+    for (const e of this.escs) if (on(e.vin, e.comp)) i += e.dev.current;
+    for (const s of this.servos) if (on(s.vcc, s.comp)) i += s.s.current;
+    for (const l of this.leds) if (on(l.vcc, l.comp)) i += l.current;
+    if (this.mcuSupply === "VIN" && on(this.netOf(this.mcu, "VIN"), this.mcu)) i += this.logicLoad;
+    for (const g of this.regs) if (on(g.vin, g.r.name)) i += g.r.inputCurrent(v);
+    return i;
+  }
+
+  /** what the parts on a net draw just by being powered, A (`only`: just these pins of it) */
+  private staticDraw(rail: Net, only?: Set<string>): number {
     let i = 0;
     for (const p of rail.pins) {
+      if (only && !only.has(p.key)) continue;
+      if (this.selfDrawn.has(p.comp)) continue;
       if (p.comp === this.mcu) {
         // the controller counts once, on the pin it runs from: VIN's share is in logicLoad
         if (p.pin.id !== "VIN" && (p.pin.type === "pwr_rail" || p.pin.type === "pwr_in")) i += 0.03;
@@ -1420,7 +1524,14 @@ export class Plant implements PlantPort, PlantView {
       out[`${s.comp}.amps`] = s.a.current;
       out[`${s.comp}.force`] = s.a.force;
     }
-    for (const s of this.servos) out[`${s.comp}.angle`] = s.s.angle;
+    for (const s of this.servos) {
+      out[`${s.comp}.angle`] = s.s.angle;
+      if (s.s instanceof BusServo) {
+        out[`${s.comp}.amps`] = s.s.current;
+        out[`${s.comp}.load`] = s.s.load;
+        out[`${s.comp}.temp`] = s.s.temp;
+      }
+    }
     for (const e of this.escs) {
       out[`${e.comp}.amps`] = e.dev.current;
       out[`${e.comp}.throttle`] = e.dev.throttle * 100;

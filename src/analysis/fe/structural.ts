@@ -3,17 +3,25 @@
 // sampled back onto the real CAD surface for display. Environment-agnostic
 // so it runs in the analysis worker and in Node tests.
 
-import { CORNERS, principal, vonMises, elementMatrices } from "./element";
-import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg } from "./solver";
+import { CORNERS, principal, vonMises, elementMatrices, elementMatricesFor, layeredConstitutive, type ElementMatrices } from "./element";
+import { infillStiffness, infillStrength, layerStiffness, type InfillPattern } from "../../mfg/infill";
+import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg, restiffen, type Hierarchy, type NodeSprings } from "./solver";
 import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
-import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
+import { sampleInterior, type ResultVolume } from "./volume";
+import { joulePower, solveCurrent, type CurrentGrid, type CurrentSolve } from "./electric";
+import { rhoAt, type ElectricMaterial } from "../electricMaterials";
+import { amps, ohms } from "../thermalSummary";
+export type { ResultVolume } from "./volume";
+import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec, TopologySpec } from "../spec";
+import { isoSurface, optimise, profileLoops, smoothSurface, surfaceStats, TopologyError, type Loop, type TopologyRun } from "./topology";
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
 import { COMPONENT_THERMAL, strengthAt, type ThermalMaterial } from "../thermalMaterials";
-import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type ThermalInput } from "./thermal";
+import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type HeatSolve, type ThermalInput } from "./thermal";
 import { bucklingModes } from "./buckling";
+import { FINISHES, criticalStress, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
 
 export class FeaError extends Error {}
 
@@ -28,6 +36,24 @@ export interface FeaPart {
   normals?: Float32Array;
   /** index into materials */
   material: number;
+  /** printed on an FDM printer: which way its layers stack and what is solid inside it */
+  print?: PartPrint;
+}
+
+/** How a printed part is printed, as the analysis models it. */
+export interface PartPrint {
+  /** the way its layers stack, world frame */
+  build: V3;
+  /** solid walls round each layer's outline, and the solid skin under its tops and over its bottoms, mm */
+  wall: number;
+  skin: number;
+  /** sparse infill share inside (1: solid) and its pattern */
+  infill: number;
+  pattern: InfillPattern;
+  /** the settings in words ("4 walls, 5 top and bottom layers, 40 % gyroid infill") */
+  words: string;
+  /** where the build direction comes from: the analysis's build:, the part's process build:, or how it lies on the bed */
+  from: "analysis" | "process" | "bed";
 }
 
 export interface StructuralInput {
@@ -65,10 +91,83 @@ export interface StructuralInput {
   refTemp?: number;
   /** thermal properties per material (same order as materials); needed with thermal or uniformTemp */
   thermalMaterials?: ThermalMaterial[];
+  /** electrical properties per material (same order as materials); needed with thermal currents */
+  electricMaterials?: ElectricMaterial[];
   /** linear buckling: how many buckling factors and shapes to find */
   buckling?: { modes: number };
   /** an accuracy check: solve again with smaller elements and compare (run by runConverged) */
   converge?: boolean;
+  /** fatigue over the part's life: the loads as written scaled by a history, against each material's S-N curve */
+  fatigue?: FatigueInput;
+  /** topology optimisation: find the stiffest shape that keeps a share of the material, then analyse that shape */
+  topology?: TopologySpec;
+}
+
+/** Topology optimisation: the shape found, against the parts it was cut from. */
+export interface TopologyResult {
+  /** share of the material asked to keep, and of the shape found */
+  keep: number;
+  kept: number;
+  /** grams: the parts as designed, and the shape found */
+  massBefore: number;
+  massAfter: number;
+  /** the shape's stiffness under these loads as a share of the parts as designed (their compliance over its) */
+  stiffness: number;
+  iterations: number;
+  converged: boolean;
+  /** per iteration: compliance (N·mm), share of the material in use, largest change of a density, solver iterations */
+  history: { compliance: number; volume: number; change: number; solver: number }[];
+  /** the thinnest member it was set to leave, mm */
+  minMember: number;
+  /** openings through the shape, and its separate pieces */
+  openings: number;
+  pieces: number;
+  /** share of the material kept solid where the parts are held and loaded (and by preserve:) */
+  preserved: number;
+  symmetry: string[];
+  cut?: string;
+  /** bits too thin or cut off from the supports that the final shape leaves out, share of the material */
+  trimmed: number;
+  /** with cut:, the profile to cut from plate: closed outlines in the plane across the cut axis, and the plate's span along it */
+  outline?: { axis: "X" | "Y" | "Z"; plane: ["X" | "Y" | "Z", "X" | "Y" | "Z"]; from: number; to: number; loops: Loop[] };
+  ms: number;
+  /** of which solving, the energies and updating the design, ms */
+  time: { solve: number; energy: number; update: number };
+}
+
+/** The shape so far, while a topology optimisation runs. */
+export interface TopologyPreview {
+  positions: Float32Array;
+  indices: Uint32Array;
+  iteration: number;
+  /** share of the material in use */
+  volume: number;
+}
+
+/** Fatigue: the life and safety factor of every point under the load history, against each material's S-N curve. */
+export interface FatigueResult {
+  /** what the life is counted in, and the life asked for */
+  unit: "cycles" | "repeats";
+  design: number;
+  /** how the loads repeat, in words */
+  loading: string;
+  meanStress: MeanStress;
+  /** the counted cycles of one pass of the history, largest range first */
+  cycles: LoadCycle[];
+  repeats: number;
+  /** the largest scale of the loads in the history (the static check is at this) */
+  peak: number;
+  /** the lowest fatigue safety factor: the factor on the loads at which the damage over the design life reaches 1 */
+  minSafety: SafetyAt & { nearBoundary: boolean; away: SafetyAt | null };
+  /** the shortest life (in unit), at the weakest point; Infinity below the endurance limit */
+  life: Located;
+  /** Miner's damage at the weakest point over the design life (1 = it breaks at the end of it) */
+  damage: number;
+  /** at the point with the shortest life: the share of its damage each kind of cycle does (largest first) */
+  shares: { cycle: LoadCycle; share: number }[];
+  /** the S-N curve used for each material, after the surface and reliability factors */
+  curves: { material: string; finish: Finish; finishText: string; ka: number; ke: number; su: number; s3: number; se: number; tail: "flat" | "falling"; equivalent: "signed von Mises" | "signed largest principal stress" | "the pull across the layers"; layers?: boolean }[];
+  reliability: number;
 }
 
 /** Temperatures from a heat analysis. */
@@ -101,6 +200,29 @@ export interface ThermalResult {
   solve: { iterations: number; residual: number; converged: boolean; ms: number };
   /** thermal stress: the temperature the parts carry no thermal stress at */
   refTemp?: number;
+  /** current through conductors (current() in heat:): what each did, at the temperatures they settle at */
+  currents?: CurrentResult[];
+  /** where the current runs densest, A/mm², over all of them together, and the typical density (the median where it runs) */
+  currentPeak?: Located & { part: string; typical: number };
+}
+
+/** One current() through the parts: resistance, voltage, power and where it goes. */
+export interface CurrentResult {
+  label: string;
+  /** where it goes in and comes out, in words */
+  from: string;
+  to: string;
+  /** at the temperatures the parts settle at: A through, V across, Ω, and the heat it makes (I²R), W */
+  amps: number;
+  volts: number;
+  ohms: number;
+  watts: number;
+  /** the same at 20 °C, before it warms */
+  cold: { amps: number; volts: number; ohms: number; watts: number };
+  /** given: the current through it, or the voltage across it */
+  driven: "amps" | "volts";
+  /** the parts it heats, with their share of its heat */
+  parts: { name: string; share: number }[];
 }
 
 /** Linear buckling: factors on the loads at which the parts buckle. */
@@ -207,12 +329,17 @@ export interface PartField {
   modes?: Float32Array[];
   /** per vertex: temperature (°C), when the analysis has heat or a set temperature */
   temp?: Float32Array;
+  /** per vertex: fatigue life over the design life, as log10 (0: it lasts exactly the life asked for), when the analysis has fatigue */
+  life?: Float32Array;
+  /** per vertex: current density (A/mm²), when the analysis has current through conductors */
+  current?: Float32Array;
 }
 
 export interface Located {
   value: number;
   at: V3;
 }
+
 
 export interface StructuralResult {
   label: string;
@@ -231,13 +358,37 @@ export interface StructuralResult {
   mass: number;
   volume: number;
   /** at: centroid of the loaded surface (a torque's centre for torques); vector: net force; axis: a torque's axis */
-  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3 }[];
-  supports: { region: string; dir?: V3; at: V3; nodes: number; reaction: V3; markers: Float32Array; contact?: ContactResult }[];
+  /** pressure: for a bearing load, the peak of its cosine spread (in the middle of the side it presses), MPa */
+  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3; pressure?: number }[];
+  supports: {
+    region: string;
+    dir?: V3;
+    at: V3;
+    nodes: number;
+    reaction: V3;
+    markers: Float32Array;
+    contact?: ContactResult;
+    /** an elastic support, a pin through a bore, or a region moved a set distance (unset: fixed, a roller or a contact seat) */
+    kind?: "spring" | "pin" | "move";
+    /** an elastic support: its stiffness (N/mm in all, or N/mm per mm² of surface) and how far it gives on average, mm */
+    spring?: { rate?: number; perArea?: number; give: number };
+    /**
+     * A pin: held all round (tight) or only where the loads press the bore onto it, free to slide along it or not; the
+     * share of the bore that presses on it, and the bearing pressure (its force over the bore's projected area d × length).
+     */
+    pin?: { tight: boolean; slide: boolean; share: number; pressure: number; d: number; length: number; axis: V3; rounds: number };
+    /** the set displacement, mm */
+    moved?: V3;
+  }[];
   gravity: { vector: V3; at: V3 } | null;
   parts: PartField[];
-  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number] };
+  /** the fields inside the parts, for a section through them */
+  interior?: ResultVolume;
+  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number]; life?: [number, number]; current?: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
+  /** printed parts: how each is printed, the share of it that is solid walls and skin, and its stiffness across its layers */
+  printing?: { part: string; build: V3; from: PartPrint["from"]; words: string; solid: number; infillStiffness: number; infillStrength: number; across: number }[];
   modal?: ModalResult;
   drop?: DropResult;
   thermal?: ThermalResult;
@@ -246,6 +397,12 @@ export interface StructuralResult {
   heatOnly?: boolean;
   /** a second, finer solve and how much the answers moved (an accuracy check) */
   convergence?: ConvergenceResult;
+  /** fatigue over the design life, when the analysis has it */
+  fatigue?: FatigueResult;
+  /** with fatigue: the lowest safety factor against yield (and print layers) at the peak of the history, apart from fatigue */
+  staticSafety?: SafetyAt & { nearBoundary: boolean; away: SafetyAt | null };
+  /** topology optimisation: the parts are the shape found, and the stresses are that shape's */
+  topology?: TopologyResult;
 }
 
 /** The same analysis solved twice, the second time with smaller elements. */
@@ -273,11 +430,30 @@ export interface ConvergencePoint {
   buckling?: number;
 }
 
-export type SafetyAt = Located & { mode: "yield" | "fatigue" | "layers"; allowable: number; material: string; /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */ tempC?: number };
+export type SafetyAt = Located & {
+  /** what it is judged against: yield, the strength between print layers, fatigue (in the bulk or between layers) */
+  mode: "yield" | "fatigue" | "layers" | "layer fatigue";
+  allowable: number;
+  material: string;
+  /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */
+  tempC?: number;
+  /** in a printed part's sparse infill, whose strength is a share of the solid's (the allowable is lowered for it) */
+  infill?: boolean;
+};
 
-export type Progress = (stage: string, frac: number, info?: { iter?: number; residual?: number }) => void;
+export type Progress = (stage: string, frac: number, info?: { iter?: number; residual?: number; preview?: TopologyPreview }) => void;
 
 const FILL_MIN = 0.12;
+/** strength of the bond between print layers in shear, as a share of its strength in tension */
+const LAYER_SHEAR = 0.7;
+/**
+ * A pin is held by springs across its bore (and along it), this many times stiffer than a layer of the part's own
+ * material one element thick: rigid enough that the pin gives about 1 % as much as the part next to it, soft enough
+ * that the solver still converges quickly.
+ */
+const PIN_STIFF = 100;
+/** rounds of the solve that finds where each pin presses on its bore */
+const PIN_ROUNDS = 10;
 const MAX_CELLS = 3_500_000;
 /** solid elements, about three times the "fine" target: beyond this memory and time grow past what a browser tab should spend */
 export const MAX_ELEMENTS = 350_000;
@@ -385,10 +561,20 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const temps = !!inp.thermal || inp.uniformTemp !== undefined;
   if (temps && (!inp.thermalMaterials || inp.thermalMaterials.length !== inp.materials.length)) throw new FeaError("Thermal properties are missing for the analysed materials.");
   if (!inp.supports.length && !heatOnly) throw new FeaError("The analysis has no supports. Add fix: to say how the part is held, for example fix: face(bracket, -Y).");
-  if (!heatOnly && !inp.loads.length && !inp.accel && !inp.modes && !temps) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
-  if (inp.buckling && !inp.loads.length && !inp.accel && !temps) throw new FeaError("Buckling needs loads to scale: add load: (or gravity) to say what presses on the parts.");
+  const moved = inp.supports.some((s) => s.move);
+  if (!heatOnly && !inp.loads.length && !inp.accel && !inp.modes && !temps && !moved) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+  if (inp.buckling && !inp.loads.length && !inp.accel && !temps && !moved) throw new FeaError("Buckling needs loads to scale: add load: (or gravity) to say what presses on the parts.");
   if (inp.buckling && inp.modes) throw new FeaError("Check natural frequencies and buckling in separate analyses.");
   if (inp.drop && (temps || inp.buckling)) throw new FeaError(`A drop works out its own forces from the fall; check ${temps ? "heat and temperatures" : "buckling"} in a separate analysis.`);
+  if (inp.fatigue && (inp.drop || temps || inp.modes)) throw new FeaError(`Check fatigue in a separate analysis from the ${inp.drop ? "drop" : temps ? "heat and temperatures" : "natural frequencies"}.`);
+  if (inp.fatigue && !inp.fatigue.cycles.length) throw new FeaError("The fatigue history has no load cycles in it.");
+  if (inp.topology) {
+    const other = temps ? "heat and temperatures" : inp.drop ? "a drop" : inp.modes ? "natural frequencies" : inp.buckling ? "buckling" : inp.fatigue ? "fatigue" : inp.converge ? "an accuracy check" : null;
+    if (other) throw new FeaError(`Optimise the shape (topology:) in an analysis of its own, apart from ${other}; then check the shape you make from it with those.`);
+    if (moved) throw new FeaError("topology: finds the stiffest shape under loads; a support that moves a set distance (displace) has no load to be stiff against. Use a force instead.");
+    if (!inp.loads.length) throw new FeaError("topology: needs loads to be stiff against: add load: force(...), pressure(...) or torque(...).");
+    if (!(inp.topology.keep > 0 && inp.topology.keep < 1)) throw new FeaError("topology: is the share of the material to keep, between 0 % and 100 %, like topology: 30%.");
+  }
 
   // ---------- grid ----------
   // Cells fit the bounding box exactly (their size differs slightly per axis), so the outer faces of
@@ -734,19 +920,144 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
 
   // ---------- boundary conditions ----------
   const bc = new Uint8Array(3 * nn);
+  /** where a support moves its region a set distance: the displacement of each dof it holds, mm */
+  let uSet: Float64Array | null = null;
+  /** springs to the ground that stay as they are: elastic supports, and the springs holding pins along their axis */
+  const springAcc = new Map<number, Float64Array>();
+  /** each support's own springs, to add up the force it carries afterwards */
+  const springOf: { node: number; k: Float64Array }[][] = inp.supports.map(() => []);
+  /**
+   * The springs across each pin's bore, one per node: on while the bore presses on the pin (all the time for a tight
+   * pin). side is +1 where the part is the shaft inside (moving out presses), −1 where it is the bore round the pin.
+   */
+  const pinSprings: { sup: number; node: number; rho: V3; side: number; k: number; w: number; on: boolean }[] = [];
+  /** directions springs and pins hold each node along, for the check that the supports stop every rigid motion */
+  const heldDirs = new Map<number, V3[]>();
+  const holdAlong = (n: number, d: V3) => {
+    const l = heldDirs.get(n);
+    if (l) l.push(d);
+    else heldDirs.set(n, [d]);
+  };
+  /** k·d·dᵀ as (xx, yy, zz, xy, yz, zx) */
+  const outer = (k: number, d: V3) => Float64Array.of(k * d[0] * d[0], k * d[1] * d[1], k * d[2] * d[2], k * d[0] * d[1], k * d[1] * d[2], k * d[2] * d[0]);
+  const addSpring = (si: number, n: number, k6: Float64Array) => {
+    springOf[si].push({ node: n, k: k6 });
+    const v = springAcc.get(n);
+    if (v) for (let c = 0; c < 6; c++) v[c] += k6[c];
+    else springAcc.set(n, Float64Array.from(k6));
+  };
+  /** the stiffest material round a node */
+  const stiffestAt = (n: number) => {
+    const i = n % NX,
+      j = Math.floor(n / NX) % NY,
+      k = Math.floor(n / (NX * NY));
+    let E = 0;
+    for (let dk = -1; dk <= 0; dk++)
+      for (let dj = -1; dj <= 0; dj++)
+        for (let di = -1; di <= 0; di++) {
+          const a = i + di,
+            b = j + dj,
+            c = k + dk;
+          if (a < 0 || b < 0 || c < 0 || a >= nx || b >= ny || c >= nz) continue;
+          const e = eIndex(a, b, c);
+          if (active[e]) E = Math.max(E, inp.materials[inp.parts[owner[e]].material].E);
+        }
+    return E;
+  };
   const supportInfo: StructuralResult["supports"] = [];
   inp.supports.forEach((s, i) => {
     const sel = select(s.region);
     if (!sel.nodes.length) throw new FeaError(`Support ${i + 1} (${describeRegion(s.region)}) does not touch the part's surface.`);
     let comps = [0, 1, 2];
     let dir: V3 | undefined;
-    if (s.dir) {
-      const d = norm(s.dir);
+    const extra: Partial<StructuralResult["supports"][number]> = {};
+    const along = (what: string): [number, V3] => {
+      const d = norm(s.dir!);
       const k = [0, 1, 2].reduce((a, b) => (Math.abs(d[b]) > Math.abs(d[a]) ? b : a), 0);
-      if (Math.abs(Math.abs(d[k]) - 1) > 0.02) warnings.push(`Support ${i + 1}: rollers act along X, Y or Z; ${fmtP(d)} was treated as ${"XYZ"[k]}.`);
+      if (Math.abs(Math.abs(d[k]) - 1) > 0.02) warnings.push(`Support ${i + 1}: ${what} act along X, Y or Z; ${fmtP(d)} was treated as ${"XYZ"[k]}.`);
+      const a: V3 = [0, 0, 0];
+      a[k] = 1;
+      return [k, a];
+    };
+    if (s.spring) {
+      // an elastic support: springs spread over the region by area, along one direction or every way
+      comps = [];
+      const tot = sel.w.reduce((a, b) => a + b, 0) || 1;
+      const d = s.dir ? norm(s.dir) : undefined;
+      if (d) dir = d;
+      sel.nodes.forEach((n, q) => {
+        const nrm = norm([sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]]);
+        const k = s.spring!.rate !== undefined ? (s.spring!.rate * sel.w[q]) / tot : (s.spring!.perArea ?? 0) * sel.w[q];
+        if (!(k > 0)) return;
+        const way = d ?? (s.spring!.rate !== undefined ? undefined : nrm);
+        if (way) {
+          addSpring(i, n, outer(k, way));
+          holdAlong(n, way);
+        } else {
+          addSpring(i, n, Float64Array.of(k, k, k, 0, 0, 0));
+          holdAlong(n, [1, 0, 0]);
+          holdAlong(n, [0, 1, 0]);
+          holdAlong(n, [0, 0, 1]);
+        }
+      });
+      extra.kind = "spring";
+      extra.spring = { ...(s.spring.rate !== undefined ? { rate: s.spring.rate } : { perArea: s.spring.perArea }), give: 0 };
+    } else if (s.pin) {
+      // a pin through a bore (or a bushing round a shaft): stiff springs across it at every node, and along it unless
+      // it slides; nothing round it, so the part turns freely about the pin
+      comps = [];
+      if (s.region.t !== "cyl") throw new FeaError(`Support ${i + 1}: a pin needs a cylinder zone round the bore, like pin(zone(at: c, d: 6, axis: Y, length: 10)).`);
+      const z = s.region;
+      const ax = norm(z.axis);
+      dir = ax;
+      const rows: { n: number; q: number; rho: V3 }[] = [];
+      let lean = 0;
+      let sMin = Infinity,
+        sMax = -Infinity;
+      sel.nodes.forEach((n, q) => {
+        const p = nodePos(n);
+        const v: V3 = [p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]];
+        const sa = dot(v, ax);
+        const rv: V3 = [v[0] - sa * ax[0], v[1] - sa * ax[1], v[2] - sa * ax[2]];
+        const rl = Math.hypot(...rv);
+        const a: V3 = [sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]];
+        const al = Math.hypot(...a) || 1;
+        // the flat faces either side of the bore are not on the pin
+        if (rl < 1e-9 || Math.abs(dot(a, ax)) / al > 0.9) return;
+        const rho: V3 = [rv[0] / rl, rv[1] / rl, rv[2] / rl];
+        lean += dot(a, rho);
+        rows.push({ n, q, rho });
+        sMin = Math.min(sMin, sa);
+        sMax = Math.max(sMax, sa);
+      });
+      if (!rows.length) throw new FeaError(`Support ${i + 1}: the pin zone (${describeRegion(s.region)}) finds no bore or shaft surface round its axis. Give the zone the bore's diameter and put it on the bore's axis.`);
+      // the part's surface faces out of the axis on a shaft, in toward it in a bore
+      const side = lean > 0 ? 1 : -1;
+      const hAvg = (hx + hy + hz) / 3;
+      for (const r of rows) {
+        const k = (PIN_STIFF * (stiffestAt(r.n) || inp.materials[0].E) * sel.w[r.q]) / hAvg;
+        pinSprings.push({ sup: i, node: r.n, rho: r.rho, side, k, w: sel.w[r.q], on: true });
+        holdAlong(r.n, r.rho);
+        if (!s.pin.slide) {
+          addSpring(i, r.n, outer(k, ax));
+          holdAlong(r.n, ax);
+        }
+      }
+      extra.kind = "pin";
+      extra.pin = { tight: s.pin.tight, slide: s.pin.slide, share: 1, pressure: 0, d: z.d, length: Math.max(sMax - sMin, Math.min(hx, hy, hz)), axis: ax, rounds: 0 };
+    } else if (s.dir) {
+      const [k, a] = along(s.move ? "set displacements" : "rollers");
       comps = [k];
-      dir = [0, 0, 0];
-      dir[k] = 1;
+      dir = a;
+    }
+    if (s.move && !s.spring && !s.pin) {
+      // the region moves this far and is held there (along one axis only when a direction is given)
+      const mv: V3 = s.dir ? [0, 0, 0] : [...s.move];
+      if (s.dir) mv[comps[0]] = Math.hypot(...s.move) * (Math.sign(s.move[comps[0]]) || 1);
+      uSet ??= new Float64Array(3 * nn);
+      for (const n of sel.nodes) for (const k of comps) uSet[3 * n + k] = mv[k];
+      extra.kind = "move";
+      extra.moved = mv;
     }
     let c: V3 = [0, 0, 0];
     for (const n of sel.nodes) {
@@ -763,8 +1074,27 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const a: V3 = norm([sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]]);
       markers.push(p[0], p[1], p[2], a[0], a[1], a[2]);
     }
-    supportInfo.push({ region: describeRegion(s.region), dir, at: [c[0] / m, c[1] / m, c[2] / m], nodes: m, reaction: [0, 0, 0], markers: Float32Array.from(markers) });
+    supportInfo.push({ region: describeRegion(s.region), dir, at: [c[0] / m, c[1] / m, c[2] / m], nodes: m, reaction: [0, 0, 0], markers: Float32Array.from(markers), ...extra });
   });
+  // every spring as the solver takes it: one 3×3 per node, the pins' springs across their bores added while they press
+  const springNodes = [...new Set([...springAcc.keys(), ...pinSprings.map((p) => p.node)])].sort((a, b) => a - b);
+  const springAt = new Map(springNodes.map((n, q) => [n, q]));
+  const springs: NodeSprings | null = springNodes.length ? { node: Int32Array.from(springNodes), k: new Float64Array(6 * springNodes.length) } : null;
+  const assembleSprings = () => {
+    if (!springs) return;
+    springs.k.fill(0);
+    for (const [n, v] of springAcc) {
+      const o = 6 * springAt.get(n)!;
+      for (let c = 0; c < 6; c++) springs.k[o + c] += v[c];
+    }
+    for (const p of pinSprings) {
+      if (!p.on) continue;
+      const o = 6 * springAt.get(p.node)!;
+      const v = outer(p.k, p.rho);
+      for (let c = 0; c < 6; c++) springs.k[o + c] += v[c];
+    }
+  };
+  assembleSprings();
 
   // ---------- loads ----------
   const f = new Float64Array(3 * nn);
@@ -796,6 +1126,80 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
           R[d] += v;
         }
       });
+    } else if (ld.t === "bearing") {
+      // what turns in a bore (or a bushing round a shaft) presses on the side it is pushed toward, hardest in the middle
+      // and not at all at the sides: a cosine spread over that half, pushing straight into the surface. A share along
+      // the axis (a thrust) is spread evenly.
+      if (ld.region.t !== "cyl") throw new FeaError(`Load ${i + 1}: a bearing load needs a cylinder zone round the bore or shaft, like bearing(zone(at: c, d: 22, axis: Y, length: 7), 300N, dir: -Z).`);
+      const z = ld.region;
+      const ax = norm(z.axis);
+      const fa = dot(ld.f, ax);
+      const fr: V3 = [ld.f[0] - fa * ax[0], ld.f[1] - fa * ax[1], ld.f[2] - fa * ax[2]];
+      const frL = Math.hypot(...fr);
+      const rows: { n: number; q: number; rho: V3 }[] = [];
+      let lean = 0;
+      let sMin = Infinity,
+        sMax = -Infinity;
+      sel.nodes.forEach((n, q) => {
+        const p = nodePos(n);
+        const v: V3 = [p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]];
+        const sa = dot(v, ax);
+        const rv: V3 = [v[0] - sa * ax[0], v[1] - sa * ax[1], v[2] - sa * ax[2]];
+        const rl = Math.hypot(...rv);
+        const a: V3 = [sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]];
+        const al = Math.hypot(...a) || 1;
+        if (rl < 1e-9 || Math.abs(dot(a, ax)) / al > 0.9) return;
+        const rho: V3 = [rv[0] / rl, rv[1] / rl, rv[2] / rl];
+        lean += dot(a, rho);
+        rows.push({ n, q, rho });
+        sMin = Math.min(sMin, sa);
+        sMax = Math.max(sMax, sa);
+      });
+      if (!rows.length) throw new FeaError(`Load ${i + 1}: the bearing zone (${describeRegion(ld.region)}) finds no bore or shaft surface round its axis. Give the zone the bore's diameter and put it on the bore's axis.`);
+      // the surface's outward normal: away from the axis on a shaft, toward it in a bore
+      const side = lean > 0 ? 1 : -1;
+      let peak = 0;
+      let loadedArea = 0;
+      if (frL > 1e-12) {
+        const fd: V3 = [fr[0] / frL, fr[1] / frL, fr[2] / frL];
+        // the load presses where the surface faces against it: cos θ = −n·f̂
+        const cosOf = rows.map((r) => Math.max(0, -side * dot(r.rho, fd)));
+        let sum = 0;
+        rows.forEach((r, j) => (sum += sel.w[r.q] * cosOf[j] * cosOf[j]));
+        if (!(sum > 0)) throw new FeaError(`Load ${i + 1}: the bearing zone has no surface facing the load. Check the zone's axis and the load's direction.`);
+        peak = frL / sum;
+        const got: V3 = [0, 0, 0];
+        let wsum = 0;
+        rows.forEach((r, j) => {
+          const c = cosOf[j];
+          if (!c) return;
+          // pressure peak·cos θ over the node's area, straight into the surface (−n)
+          const k = peak * sel.w[r.q] * c;
+          for (let d = 0; d < 3; d++) {
+            const v = -side * r.rho[d] * k;
+            f[3 * r.n + d] += v;
+            got[d] += v;
+          }
+          wsum += sel.w[r.q] * c;
+          loadedArea += sel.w[r.q];
+        });
+        // the stepped surface leaves a little off the total: share the rest out like the load
+        const miss: V3 = [fr[0] - got[0], fr[1] - got[1], fr[2] - got[2]];
+        rows.forEach((r, j) => {
+          const c = cosOf[j];
+          if (!c) return;
+          for (let d = 0; d < 3; d++) f[3 * r.n + d] += (miss[d] * sel.w[r.q] * c) / wsum;
+        });
+      }
+      if (Math.abs(fa) > 1e-12) sel.nodes.forEach((n, q) => {
+        for (let d = 0; d < 3; d++) f[3 * n + d] += (fa * ax[d] * sel.w[q]) / tot;
+      });
+      R = [...ld.f] as V3;
+      // the peak of a cosine spread over half the cylinder, 4F / (π·d·L), from the true bore rather than its stepped voxel skin
+      const len = Math.max(sMax - sMin, Math.min(hx, hy, hz));
+      const pressure = peak > 0 ? (4 * frL) / (Math.PI * z.d * len) : 0;
+      loadInfo.push({ kind: "bearing", region: describeRegion(ld.region), at: c, vector: R, magnitude: Math.hypot(...R), area: loadedArea || sel.area, nodes: sel.nodes.length, axis: ax, pressure });
+      return;
     } else {
       const ax = norm(ld.axis);
       const pushes = shareTorque(sel.nodes.map(nodePos), sel.w, [ld.torque * ax[0], ld.torque * ax[1], ld.torque * ax[2]]);
@@ -811,6 +1215,36 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     else loadInfo.push({ kind: ld.t, region: describeRegion(ld.region), at: c, vector: R, magnitude: Math.hypot(...R), area: sel.area, nodes: sel.nodes.length });
   });
 
+  // ---------- printed parts: solid walls and skins round a sparse infill ----------
+  // A part printed on an FDM printer is solid only in its walls (round every layer's outline) and its skins (under
+  // tops, over bottoms); inside, the infill is a lattice with a share of the solid's stiffness and strength. Without
+  // print settings per part, printed: and build: of the analysis make every part solid and layered (as before).
+  const legacyPrint = inp.printed && !inp.parts.some((p) => p.print);
+  const prints: (PartPrint | null)[] = inp.parts.map(
+    (p) => p.print ?? (legacyPrint ? { build: norm(inp.buildDir), wall: 0, skin: 0, infill: 1, pattern: "gyroid", words: "solid", from: "analysis" } : null),
+  );
+  const anyLayered = prints.some((pp, i) => pp && inp.materials[inp.parts[i].material].layerFactor < 1);
+  /** per element: the share of it that is solid wall or skin, and of the solid's stiffness, strength and mass it has (1 outside printed parts) */
+  const solidShare = new Float32Array(ne).fill(1);
+  const kPrint = new Float32Array(ne).fill(1);
+  const sPrint = new Float32Array(ne).fill(1);
+  const mPrint = new Float32Array(ne).fill(1);
+  prints.forEach((pp, pi) => {
+    // a shape being optimised has no walls yet: it is taken as solid, to print solid (or with enough walls to fill it)
+    if (!pp || pp.infill >= 0.999 || inp.topology) return;
+    const share = shellShare(pi, pp);
+    const kI = infillStiffness(pp.infill, pp.pattern),
+      sI = infillStrength(pp.infill, pp.pattern);
+    for (let e = 0; e < ne; e++) {
+      if (!active[e] || owner[e] !== pi) continue;
+      const sh = share[e];
+      solidShare[e] = sh;
+      kPrint[e] = sh + (1 - sh) * kI;
+      sPrint[e] = sh + (1 - sh) * sI;
+      mPrint[e] = sh + (1 - sh) * pp.infill;
+    }
+  });
+
   // ---------- materials ----------
   const matOf = (e: number) => inp.parts[owner[e]].material;
   const matCount = new Array(inp.materials.length).fill(0);
@@ -821,7 +1255,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     matCount[matOf(e)]++;
     const v = fill[e] * hx * hy * hz;
     solidVolume += v;
-    mass += (v / 1000) * inp.materials[matOf(e)].density;
+    mass += (v / 1000) * inp.materials[matOf(e)].density * mPrint[e];
   }
   // ---------- carried masses (kg per node) ----------
   const extra = new Float64Array(nn);
@@ -851,7 +1285,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
       const p = nodePos(elemNode0(e));
-      add(fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6, [p[0] + hx / 2, p[1] + hy / 2, p[2] + hz / 2]);
+      add(fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6, [p[0] + hx / 2, p[1] + hy / 2, p[2] + hz / 2]);
     }
     for (let n = 0; n < nn; n++) if (extra[n]) add(extra[n], nodePos(n));
     const at = supportInfo[0].at;
@@ -867,7 +1301,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     let mtot = 0;
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
-      const m = fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6; // kg
+      const m = fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6; // kg
       const n0 = elemNode0(e);
       for (let q = 0; q < 8; q++) {
         const n = n0 + off[q];
@@ -895,23 +1329,55 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   // stay exactly condensed: the load is f = E·fill·α·ΔT·Σ_g T_gᵀ·D·(1, 1, 1, 0, 0, 0)·V/8 and the stress afterwards
   // E·D·(T_g·u − ε_th). The loads of each element add up to nothing, so applied (the outside loads) is unchanged.
   const em = elementMatrices(nu, hx, hy, hz);
+  // printed plastics are stiffer along their layers than across them: the solid walls and skins of each printed part
+  // get an element of their own, turned to its build direction (its infill stays isotropic)
+  const classMats: ElementMatrices[] = [];
+  const cls = new Uint8Array(ne);
+  {
+    const keys = new Map<string, number>();
+    prints.forEach((pp, pi) => {
+      if (!pp) return;
+      const { rE, rG } = layerStiffness(inp.materials[inp.parts[pi].material]);
+      if (rE >= 0.999 && rG >= 0.999) return;
+      const b = norm(pp.build);
+      const key = `${nu}|${rE.toFixed(3)}|${rG.toFixed(3)}|${b.map((x) => x.toFixed(4)).join(",")}`;
+      let c = keys.get(key);
+      if (c === undefined) {
+        if (classMats.length >= 15) return;
+        classMats.push(elementMatricesFor(layeredConstitutive(nu, rE, rG, b), key, nu, hx, hy, hz));
+        c = classMats.length;
+        keys.set(key, c);
+      }
+      for (let e = 0; e < ne; e++) if (active[e] && owner[e] === pi && solidShare[e] >= 0.5) cls[e] = c;
+    });
+  }
+  /** the element matrices an element uses */
+  const emOf = (e: number): ElementMatrices => (cls[e] ? classMats[cls[e] - 1] : em);
   const thermalStrain = (e: number) => (cellT ? inp.thermalMaterials![matOf(e)].alpha * (cellT[e] - refTemp) : 0);
   if (cellT) {
-    const dv = new Float64Array(6);
-    for (let r = 0; r < 6; r++) dv[r] = em.D[r * 6] + em.D[r * 6 + 1] + em.D[r * 6 + 2];
-    const thv = new Float64Array(24);
     const detJ = (hx * hy * hz) / 8;
-    for (const T of em.strainGauss)
-      for (let j = 0; j < 24; j++) {
-        let s = 0;
-        for (let r = 0; r < 6; r++) s += T[r * 24 + j] * dv[r];
-        thv[j] += detJ * s;
-      }
+    const thvOf = new Map<ElementMatrices, Float64Array>();
+    const thermalLoad = (m: ElementMatrices) => {
+      let thv = thvOf.get(m);
+      if (thv) return thv;
+      const dv = new Float64Array(6);
+      for (let r = 0; r < 6; r++) dv[r] = m.D[r * 6] + m.D[r * 6 + 1] + m.D[r * 6 + 2];
+      thv = new Float64Array(24);
+      for (const T of m.strainGauss)
+        for (let j = 0; j < 24; j++) {
+          let s = 0;
+          for (let r = 0; r < 6; r++) s += T[r * 24 + j] * dv[r];
+          thv[j] += detJ * s;
+        }
+      thvOf.set(m, thv);
+      return thv;
+    };
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
       const eth = thermalStrain(e);
       if (!eth) continue;
-      const c = inp.materials[matOf(e)].E * kfac[e] * fill[e] * eth;
+      const thv = thermalLoad(emOf(e));
+      const c = inp.materials[matOf(e)].E * kfac[e] * kPrint[e] * fill[e] * eth;
       const n0 = elemNode0(e);
       for (let a = 0; a < 8; a++) {
         const d = 3 * (n0 + off[a]);
@@ -928,9 +1394,11 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   // ---------- solve ----------
   progress("Setting up the solver", 0.22);
   const dense = new Float64Array(ne);
-  for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e] * kfac[e];
-  const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc);
-  const H = buildHierarchy(fine, plan.shifts, nu);
+  for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e] * kfac[e] * kPrint[e];
+  // ---------- topology optimisation: the shape to keep, which the rest of the analysis then checks ----------
+  const topo = inp.topology ? shapeFor(inp.topology) : null;
+  const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], classMats.length ? { cls, mats: classMats } : undefined, springs);
+  let H = buildHierarchy(fine, plan.shifts, nu);
   const fs = Float64Array.from(f);
   for (let i = 0; i < fs.length; i++) if (!fine.free[i]) fs[i] = 0;
   const tSetup = now();
@@ -941,7 +1409,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const nodeMass = new Float64Array(nn);
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
-      const m = (fill[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-9) / 8;
+      const m = (fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-9) / 8;
       const n0 = elemNode0(e);
       for (let q = 0; q < 8; q++) nodeMass[n0 + off[q]] += m;
     }
@@ -992,11 +1460,61 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   }
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
-  const { u, stats } = pcg(H, fs, {
-    tol,
-    maxIter: 300,
-    onIter: (it, rel) => progress("Solving", 0.3 + 0.6 * Math.min(1, Math.log(rel) / Math.log(tol)), { iter: it, residual: rel }),
-  });
+  /** the loads, less what a region moved a set distance pulls on the rest (the moved dofs then join the answer) */
+  const rhs = (): Float64Array => {
+    if (!uSet) return fs;
+    const g = new Float64Array(3 * nn);
+    applyK(fine, uSet, g, false);
+    const out = new Float64Array(3 * nn);
+    for (let i = 0; i < out.length; i++) out[i] = fine.free[i] ? fs[i] - g[i] : 0;
+    return out;
+  };
+  const solveOnce = (stage: string, x0?: Float64Array, to = tol) =>
+    pcg(H, rhs(), {
+      tol: to,
+      maxIter: 300,
+      x0,
+      onIter: (it, rel) => progress(stage, 0.3 + 0.6 * Math.min(1, Math.log(rel) / Math.log(to)), { iter: it, residual: rel }),
+    });
+  // A pin with clearance bears only on the side the loads press the bore onto it: solve, let go where the bore pulls
+  // away from the pin, hold where it pushes in, and solve again until that settles (roughly at first, then to the
+  // full accuracy). Loads that reverse in a fatigue history press the other side half the time, so there each pin
+  // holds all round, as a linear answer must.
+  const reverses = !!inp.fatigue && inp.fatigue.cycles.some((cy) => cy.min < 0 || cy.max < 0);
+  const freePins = reverses ? [] : pinSprings.filter((p) => !inp.supports[p.sup].pin!.tight);
+  if (reverses && pinSprings.some((p) => !inp.supports[p.sup].pin!.tight)) warnings.push("The loads reverse, so each pin is taken as fitting its bore all round (a pin with clearance bears on one side, then the other).");
+  const rough = Math.max(tol, 1e-4);
+  let { u, stats } = solveOnce("Solving", undefined, freePins.length ? rough : tol);
+  let pinRounds = 1;
+  if (freePins.length && stats.iterations > 0) {
+    let iterations = stats.iterations;
+    let settled = false;
+    for (; pinRounds < PIN_ROUNDS; pinRounds++) {
+      let changed = 0;
+      for (const p of freePins) {
+        const n = p.node;
+        const ur = u[3 * n] * p.rho[0] + u[3 * n + 1] * p.rho[1] + u[3 * n + 2] * p.rho[2];
+        const on = p.side * ur > 0;
+        if (on !== p.on) {
+          p.on = on;
+          changed++;
+        }
+      }
+      if (!changed) {
+        settled = true;
+        break;
+      }
+      // the springs changed: the coarse grids and smoothers follow them
+      assembleSprings();
+      H = buildHierarchy(fine, plan.shifts, nu);
+      ({ u, stats } = solveOnce(`Solving where the pins bear (round ${pinRounds + 1})`, u, rough));
+      iterations += stats.iterations;
+    }
+    if (!settled) warnings.push(`Where the pins bear on their bores had not quite settled after ${PIN_ROUNDS} rounds; the stress next to them may be a little off.`);
+    ({ u, stats } = solveOnce("Solving", u));
+    stats = { ...stats, iterations: iterations + stats.iterations };
+  }
+  if (uSet) for (let i = 0; i < u.length; i++) if (uSet[i]) u[i] = uSet[i];
   if (stats.residual > UNRELIABLE_RESIDUAL) warnings.push(`The solver did not converge (relative residual ${stats.residual.toExponential(1)} after ${stats.iterations} iterations), so these numbers are unreliable. Check that supports hold every part, or try another resolution.`);
   else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
   const tSolve = now();
@@ -1093,20 +1611,71 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const Ku = new Float64Array(3 * nn);
   applyK(fine, u, Ku, false);
   const reaction: V3 = [0, 0, 0];
-  inp.supports.forEach((_, si) => {
-    const sel = select(inp.supports[si].region);
+  /** the force springs push back on the body with */
+  const springPush: V3 = [0, 0, 0];
+  inp.supports.forEach((sp, si) => {
+    const sel = select(sp.region);
     const R: V3 = [0, 0, 0];
-    const seen = new Set<number>();
-    for (const n of sel.nodes) {
-      if (seen.has(n)) continue;
-      seen.add(n);
-      for (let d = 0; d < 3; d++) if (bc[3 * n + d]) R[d] += Ku[3 * n + d] - f[3 * n + d];
+    const info = supportInfo[si];
+    if (sp.spring || sp.pin) {
+      // springs push back with −k·u
+      let give = 0,
+        wsum = 0;
+      for (const { node: n, k } of springOf[si]) {
+        const a = u[3 * n],
+          b = u[3 * n + 1],
+          c = u[3 * n + 2];
+        R[0] -= k[0] * a + k[3] * b + k[5] * c;
+        R[1] -= k[3] * a + k[1] * b + k[4] * c;
+        R[2] -= k[5] * a + k[4] * b + k[2] * c;
+      }
+      let onW = 0,
+        allW = 0;
+      for (const p of pinSprings) {
+        if (p.sup !== si) continue;
+        allW += p.w;
+        if (!p.on) continue;
+        onW += p.w;
+        const n = p.node;
+        const ur = u[3 * n] * p.rho[0] + u[3 * n + 1] * p.rho[1] + u[3 * n + 2] * p.rho[2];
+        for (let d = 0; d < 3; d++) R[d] -= p.k * ur * p.rho[d];
+      }
+      if (info.spring) {
+        // how far it gives: the mean movement along its direction (into the surface for a pad), or overall
+        sel.nodes.forEach((n, q) => {
+          const w = sel.w[q];
+          const uu: V3 = [u[3 * n], u[3 * n + 1], u[3 * n + 2]];
+          const nrm = norm([sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]]);
+          // along its axis, into the surface for a pad (it presses in along the surface's outward normal), or overall
+          give += w * (sp.dir ? dot(uu, norm(sp.dir)) : sp.spring!.perArea !== undefined ? dot(uu, nrm) : Math.hypot(...uu));
+          wsum += w;
+        });
+        const g = wsum > 0 ? give / wsum : 0;
+        info.spring.give = sp.dir ? Math.abs(g) : g;
+        if (sp.spring?.perArea !== undefined && !sp.dir && g < 0) warnings.push(`Support ${si + 1}: the pad is pulled rather than pressed; a real pad would let go there.`);
+      }
+      if (info.pin) {
+        info.pin.share = allW > 0 ? onW / allW : 0;
+        const ax = info.pin.axis;
+        const across = Math.hypot(R[0] - dot(R, ax) * ax[0], R[1] - dot(R, ax) * ax[1], R[2] - dot(R, ax) * ax[2]);
+        info.pin.pressure = across / Math.max(info.pin.d * info.pin.length, 1e-9);
+        info.pin.rounds = pinRounds;
+      }
+      for (let d = 0; d < 3; d++) springPush[d] += R[d];
+    } else {
+      const seen = new Set<number>();
+      for (const n of sel.nodes) {
+        if (seen.has(n)) continue;
+        seen.add(n);
+        for (let d = 0; d < 3; d++) if (bc[3 * n + d]) R[d] += Ku[3 * n + d] - f[3 * n + d];
+      }
     }
-    supportInfo[si].reaction = R;
-    const ct = inp.supports[si].contact;
-    if (ct) supportInfo[si].contact = contactCheck(inp.supports[si], ct, sel, Ku, f, bc, nodePos);
+    info.reaction = R;
+    const ct = sp.contact;
+    if (ct) info.contact = contactCheck(sp, ct, sel, Ku, f, bc, nodePos);
   });
   for (let n = 0; n < nn; n++) for (let d = 0; d < 3; d++) if (bc[3 * n + d] && fine.free[3 * n + d] === 0 && Ku[3 * n + d] !== 0) reaction[d] += Ku[3 * n + d] - f[3 * n + d];
+  for (let d = 0; d < 3; d++) reaction[d] += springPush[d];
   const appliedMag = Math.hypot(...applied) || 1;
   const equilibrium = Math.hypot(applied[0] + reaction[0], applied[1] + reaction[1], applied[2] + reaction[2]) / appliedMag;
 
@@ -1116,6 +1685,9 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const nodeW = new Float64Array(nn);
   const nodeMat = new Int16Array(nn).fill(-1);
   const nodeMatW = new Float32Array(nn);
+  /** the part that has the most of each node, and the share of the solid's strength there (a printed part's infill is weaker) */
+  const nodePart = new Int16Array(nn).fill(-1);
+  const nodeStr = new Float64Array(nn);
   const ue = new Float64Array(24);
   const sg = new Float64Array(48);
   const eg = new Float64Array(48);
@@ -1132,11 +1704,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       ue[3 * a + 1] = u[d + 1];
       ue[3 * a + 2] = u[d + 2];
     }
-    const Ee = inp.materials[matOf(e)].E * kfac[e];
+    const Ee = inp.materials[matOf(e)].E * kfac[e] * kPrint[e];
+    const me = emOf(e);
     // the strain that makes stress: the total less the free thermal expansion
     const eth = thermalStrain(e);
     for (let g = 0; g < 8; g++) {
-      const T = em.strainGauss[g];
+      const T = me.strainGauss[g];
       for (let r = 0; r < 6; r++) {
         let s = 0;
         for (let j = 0; j < 24; j++) s += T[r * 24 + j] * ue[j];
@@ -1144,7 +1717,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
       for (let r = 0; r < 6; r++) {
         let s = 0;
-        for (let c = 0; c < 6; c++) s += em.D[r * 6 + c] * eg[6 * g + c];
+        for (let c = 0; c < 6; c++) s += me.D[r * 6 + c] * eg[6 * g + c];
         sg[6 * g + r] = Ee * s;
       }
     }
@@ -1172,9 +1745,11 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         nodeE[6 * n + r] += w * t;
       }
       nodeW[n] += w;
+      nodeStr[n] += w * sPrint[e];
       if (w > nodeMatW[n]) {
         nodeMatW[n] = w;
         nodeMat[n] = matOf(e);
+        nodePart[n] = owner[e];
       }
     }
   }
@@ -1212,13 +1787,36 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   }
 
   // ---------- nodal results ----------
-  const allow = inp.materials.map((m) => allowableStress(m, inp.cycles));
-  const bd = norm(inp.buildDir);
+  const fat = inp.fatigue ? fatigueSetup(inp.fatigue) : null;
+  // with fatigue, the static check is against yield at the history's peak, and fatigue gets its own life and safety
+  const allow = inp.materials.map((m) => (fat ? { value: m.yield, basis: "yield" as const } : allowableStress(m, inp.cycles)));
+  /** the largest and smallest scale of the loads over the history (1 and 1 for a static load) */
+  const sHi = fat ? fat.hi : 1,
+    sLo = fat ? fat.lo : 1;
+  const sAbs = Math.max(Math.abs(sHi), Math.abs(sLo));
+  /** each part's build direction (null: not printed in layers) */
+  const buildOf = prints.map((pp) => (pp ? norm(pp.build) : null));
+  /** the layers' build direction at a node, when its part is printed in a plastic with weaker layers */
+  const layerDir = (n: number): V3 | null => {
+    const pi = nodePart[n];
+    if (pi < 0) return null;
+    const b = buildOf[pi];
+    return b && inp.materials[nodeMat[n]].layerFactor < 1 ? b : null;
+  };
   const vm = new Float32Array(nn);
   const strainN = new Float32Array(nn);
+  /** per node: the lowest safety factor (static, or fatigue when it is lower), and what it is judged against (0 yield, 1 layers, 2 fatigue, 3 fatigue between layers) */
   const sfN = new Float32Array(nn);
   const sfMode = new Uint8Array(nn);
+  /** with fatigue: the static safety factor and the fatigue one apart, and the life in the design's units */
+  const sfStatic = fat ? new Float32Array(nn) : sfN;
+  const staticMode = fat ? new Uint8Array(nn) : sfMode;
+  const sfFat = fat ? new Float32Array(nn) : null;
+  const fatMode = fat ? new Uint8Array(nn) : null;
+  const lifeN = fat ? new Float64Array(nn) : null;
   const layerN = new Float32Array(nn);
+  /** per node: the share of the solid's strength (1, or less in a printed part's infill) */
+  const strN = new Float32Array(nn).fill(1);
   for (let n = 0; n < nn; n++) {
     const w = nodeW[n];
     if (!(w > 0)) continue;
@@ -1227,33 +1825,60 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       nodeS[o + r] /= w;
       nodeE[o + r] /= w;
     }
+    const str = Math.min(1, nodeStr[n] / w);
+    strN[n] = str;
     const s = vonMises(nodeS, o);
     vm[n] = s;
     const pe = principal(nodeE[o], nodeE[o + 1], nodeE[o + 2], nodeE[o + 3] / 2, nodeE[o + 4] / 2, nodeE[o + 5] / 2);
     strainN[n] = Math.abs(pe[0]) >= Math.abs(pe[2]) ? pe[0] : pe[2];
-    const m = inp.materials[nodeMat[n]];
-    // a hot plastic is weaker: the allowable falls with the temperature there
-    const al = allow[nodeMat[n]].value * derate(n, nodeMat[n]);
-    let sf = s > 1e-9 ? al / s : 1e6;
+    const mi = nodeMat[n];
+    const m = inp.materials[mi];
+    // a hot plastic is weaker: the allowable falls with the temperature there; so is a printed part's infill
+    const al = allow[mi].value * derate(n, mi) * str;
+    let sf = s > 1e-9 ? al / (s * sAbs) : 1e6;
     let mode = 0;
-    if (inp.printed && m.layerFactor < 1) {
-      // normal stress across the layers: n·σ·n along the build direction
-      const sn =
-        bd[0] * bd[0] * nodeS[o] +
-        bd[1] * bd[1] * nodeS[o + 1] +
-        bd[2] * bd[2] * nodeS[o + 2] +
-        2 * (bd[0] * bd[1] * nodeS[o + 3] + bd[1] * bd[2] * nodeS[o + 4] + bd[2] * bd[0] * nodeS[o + 5]);
-      layerN[n] = sn;
-      if (sn > 1e-9) {
-        const sfl = (al * m.layerFactor) / sn;
+    let sn = 0;
+    const lb = layerDir(n);
+    if (lb) {
+      // the pull across the layers (n·σ·n along the build direction) and the slide along them (the rest of σ·n)
+      const { normal, shear } = layerStress(o, lb);
+      sn = normal;
+      // the most it pulls the layers apart over the history, and the most it slides them
+      const pull = Math.max(sn * sHi, sn * sLo);
+      layerN[n] = pull;
+      const Sn = al * m.layerFactor;
+      const q = (Math.max(pull, 0) / Sn) ** 2 + ((shear * sAbs) / (LAYER_SHEAR * Sn)) ** 2;
+      if (q > 1e-18) {
+        const sfl = 1 / Math.sqrt(q);
         if (sfl < sf) {
           sf = sfl;
           mode = 1;
         }
       }
     }
-    sfN[n] = Math.min(sf, 1e6);
-    sfMode[n] = mode;
+    sfStatic[n] = Math.min(sf, 1e6);
+    staticMode[n] = mode;
+    if (fat && sfFat && fatMode && lifeN) {
+      // a weaker infill takes the same damage at a stress lowered by its share of the strength (the S-N curve scales with it)
+      const bulk = fat.at(mi, false, fat.equivalent(mi, nodeS, o, s) / str);
+      let fsf = bulk.sf;
+      let dmg = bulk.damage;
+      let fm = 2;
+      if (lb) {
+        const lay = fat.at(mi, true, sn / str);
+        if (lay.sf < fsf) {
+          fsf = lay.sf;
+          fm = 3;
+        }
+        dmg = Math.max(dmg, lay.damage);
+      }
+      sfFat[n] = Math.min(fsf, 1e6);
+      fatMode[n] = fm;
+      lifeN[n] = dmg > 0 ? fat.design / dmg : Infinity;
+      const useFat = sfFat[n] < sfStatic[n];
+      sfN[n] = useFat ? sfFat[n] : sfStatic[n];
+      sfMode[n] = useFat ? fm : mode;
+    }
   }
 
   // nodes next to supports and loads, where idealised boundary conditions distort stress
@@ -1278,7 +1903,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     iF = -1,
     iA = -1,
     iFA = -1,
-    iL = -1;
+    iL = -1,
+    // with fatigue: the lowest static and fatigue safety factors (overall and away from supports and loads), the shortest life
+    iSt = -1,
+    iStA = -1,
+    iFt = -1,
+    iFtA = -1,
+    iLife = -1;
   let dMax = 0;
   for (let n = 0; n < nn; n++) {
     if (!(nodeW[n] > 0)) continue;
@@ -1292,7 +1923,14 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     if (iF < 0 || sfN[n] < sfN[iF]) iF = n;
     if (!nearBC[n] && (iA < 0 || vm[n] > vm[iA])) iA = n;
     if (!nearBC[n] && (iFA < 0 || sfN[n] < sfN[iFA])) iFA = n;
-    if (inp.printed && (iL < 0 || layerN[n] > layerN[iL])) iL = n;
+    if (anyLayered && (iL < 0 || layerN[n] > layerN[iL])) iL = n;
+    if (fat && sfFat && lifeN) {
+      if (iSt < 0 || sfStatic[n] < sfStatic[iSt]) iSt = n;
+      if (!nearBC[n] && (iStA < 0 || sfStatic[n] < sfStatic[iStA])) iStA = n;
+      if (iFt < 0 || sfFat[n] < sfFat[iFt]) iFt = n;
+      if (!nearBC[n] && (iFtA < 0 || sfFat[n] < sfFat[iFtA])) iFtA = n;
+      if (iLife < 0 || lifeN[n] < lifeN[iLife]) iLife = n;
+    }
   }
 
   // hot spots: the highest-stress surface regions, spread apart
@@ -1363,23 +2001,38 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     // safety blends badly near zero stress; interpolate its inverse (utilisation)
     out[5] += w * (1 / Math.max(sfN[n], 1e-6));
     if (nodeT) out[6] += w * nodeT[n];
+    if (lifeN && fat) out[7] += w * lifeLog(lifeN[n] / fat.design);
   }
-  const tmp = new Float64Array(7);
-  const ranges: StructuralResult["ranges"] = { stress: [Infinity, -Infinity], disp: [0, 0], strain: [Infinity, -Infinity], safety: [Infinity, -Infinity], ...(nodeT ? { temp: [Infinity, -Infinity] as [number, number] } : {}) };
-  const parts: PartField[] = inp.parts.map((p) => {
-    const P = p.mesh.positions;
+  const tmp = new Float64Array(8);
+  const ranges: StructuralResult["ranges"] = {
+    stress: [Infinity, -Infinity],
+    disp: [0, 0],
+    strain: [Infinity, -Infinity],
+    safety: [Infinity, -Infinity],
+    ...(nodeT ? { temp: [Infinity, -Infinity] as [number, number] } : {}),
+    ...(lifeN ? { life: [Infinity, -Infinity] as [number, number] } : {}),
+    ...(heat?.J ? { current: [0, 0] as [number, number] } : {}),
+  };
+  /** the fields on a surface: a part's own, or the shape a topology optimisation found */
+  const fieldOn = (p: { id: string; name: string }, P: Float32Array | Float64Array, indices: Uint32Array, normals: Float32Array | null): PartField => {
     const nv = P.length / 3;
     const disp = new Float32Array(3 * nv);
     const stress = new Float32Array(nv);
     const strain = new Float32Array(nv);
     const safety = new Float32Array(nv);
     const temp = nodeT ? new Float32Array(nv) : undefined;
+    const life = lifeN ? new Float32Array(nv) : undefined;
     for (let v = 0; v < nv; v++) {
       sample(P[3 * v], P[3 * v + 1], P[3 * v + 2], tmp);
       if (temp && ranges.temp) {
         temp[v] = tmp[6];
         ranges.temp[0] = Math.min(ranges.temp[0], tmp[6]);
         ranges.temp[1] = Math.max(ranges.temp[1], tmp[6]);
+      }
+      if (life && ranges.life) {
+        life[v] = tmp[7];
+        ranges.life[0] = Math.min(ranges.life[0], tmp[7]);
+        ranges.life[1] = Math.max(ranges.life[1], tmp[7]);
       }
       disp[3 * v] = tmp[0];
       disp[3 * v + 1] = tmp[1];
@@ -1396,8 +2049,50 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       ranges.safety[0] = Math.min(ranges.safety[0], safety[v]);
       ranges.safety[1] = Math.max(ranges.safety[1], safety[v]);
     }
-    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety, ...(temp ? { temp } : {}) };
-  });
+    const current = heat?.J ? currentAt(heat.J, heat.on, P, ranges) : undefined;
+    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals, indices, disp, stress, strain, safety, ...(temp ? { temp } : {}), ...(life ? { life } : {}), ...(current ? { current } : {}) };
+  };
+  // a topology optimisation shows the shape it found (each part's share of it, smoothed), in place of the parts
+  let topology: TopologyResult | undefined;
+  let parts: PartField[];
+  if (topo) {
+    const surfaces = inp.parts.map((_, pi) => topo.surfaceOf(topo.xbar, pi, 10));
+    parts = inp.parts.map((p, pi) => fieldOn(p, surfaces[pi].positions, surfaces[pi].indices, null));
+    let openings = 0,
+      pieces = 0;
+    for (const sf of surfaces) {
+      const st = surfaceStats(sf.indices, sf.positions.length / 3);
+      openings += st.openings;
+      pieces += st.pieces;
+    }
+    const r = topo.run;
+    const last = r.history[r.history.length - 1];
+    topology = {
+      keep: topo.spec.keep,
+      kept: solidVolume / Math.max(topo.space, 1e-12),
+      massBefore: topo.massBefore,
+      massAfter: mass,
+      stiffness: 0,
+      iterations: r.iterations,
+      converged: r.converged,
+      history: r.history,
+      minMember: topo.minMember,
+      openings,
+      pieces,
+      preserved: r.preserved,
+      symmetry: topo.spec.symmetry,
+      ...(topo.spec.cut ? { cut: topo.spec.cut } : {}),
+      trimmed: topo.trimmed,
+      ...(topo.spec.cut ? { outline: plateOutline(topo.spec.cut, topo.xbar, topo.state, topo.gone) } : {}),
+      ms: now() - topo.tTopo,
+      time: r.ms,
+    };
+    // the shape's own compliance (the check solve, on the elements kept) against the parts left solid
+    let c = 0;
+    for (let i = 0; i < u.length; i++) c += fs[i] * u[i];
+    topology.stiffness = c > 0 ? r.solidCompliance / c : last ? r.solidCompliance / last.compliance : 0;
+  } else parts = inp.parts.map((p) => fieldOn(p, p.mesh.positions, p.mesh.indices, p.normals ?? null));
+  if (ranges.current && heat?.result.currentPeak) ranges.current[1] = Math.max(ranges.current[1], heat.result.currentPeak.value);
   // mode shapes on the CAD surface, each scaled so its largest movement is 1
   if (shapes.length) {
     const sampleVec = (vec: Float64Array, x: number, y: number, z: number, out: Float64Array) => {
@@ -1469,32 +2164,134 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (Math.hypot(...applied) > 0 && equilibrium > 0.02) warnings.push(`Reactions balance the loads only to ${fmt(equilibrium * 100, 1)}%.`);
 
   const pos = (n: number): V3 => (n >= 0 ? nodePos(n) : [0, 0, 0]);
-  const safetyAt = (n: number): SafetyAt => {
+  /** a node's safety factor and what it is judged against: the lowest of all, the static one or the fatigue one */
+  const safetyAt = (n: number, which: "all" | "static" | "fatigue" = "all"): SafetyAt => {
     const mi = n >= 0 ? nodeMat[n] : mainMat;
-    const layers = n >= 0 && sfMode[n] === 1;
+    const md = n < 0 ? 0 : which === "static" ? staticMode[n] : which === "fatigue" && fatMode ? fatMode[n] : sfMode[n];
+    const value = n < 0 ? Infinity : which === "static" ? sfStatic[n] : which === "fatigue" && sfFat ? sfFat[n] : sfN[n];
+    const temp = nodeT && n >= 0 ? { tempC: nodeT[n] } : {};
+    if (md >= 2 && fat) {
+      const c = md === 3 ? fat.layerCurves[mi] ?? fat.curves[mi] : fat.curves[mi];
+      const fstr = n >= 0 ? strN[n] : 1;
+      return { value, at: pos(n), mode: md === 3 ? "layer fatigue" : "fatigue", allowable: snStrengthAt(c, fat.total) * fstr, material: inp.materials[mi].name, ...temp, ...(fstr < 0.95 ? { infill: true } : {}) };
+    }
+    const layers = md === 1;
+    const str = n >= 0 ? strN[n] : 1;
     return {
-      value: n >= 0 ? sfN[n] : Infinity,
+      value,
       at: pos(n),
       mode: layers ? "layers" : allow[mi].basis,
-      allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1) * derate(n, mi),
+      allowable: allow[mi].value * (layers ? inp.materials[mi].layerFactor : 1) * derate(n, mi) * str,
       material: inp.materials[mi].name,
-      ...(nodeT && n >= 0 ? { tempC: nodeT[n] } : {}),
+      ...temp,
+      ...(str < 0.95 ? { infill: true } : {}),
     };
   };
   const safetyNearBC = iF >= 0 && !!nearBC[iF];
-  if (iF >= 0 && sfMode[iF] !== 1 && allow[nodeMat[iF]].basis === "fatigue")
+  if (!fat && iF >= 0 && sfMode[iF] !== 1 && allow[nodeMat[iF]].basis === "fatigue")
     warnings.push("Fatigue strengths are for polished test pieces. Rough, printed or machined surfaces, notches and threads lower them, often by half, so keep a generous margin.");
+  let fatigue: FatigueResult | undefined;
+  let staticSafety: StructuralResult["staticSafety"];
+  if (fat && iFt >= 0 && lifeN && sfFat && fatMode) {
+    const nb = !!nearBC[iFt];
+    const stNb = iSt >= 0 && !!nearBC[iSt];
+    staticSafety = { ...safetyAt(iSt, "static"), nearBoundary: stNb, away: stNb && iStA >= 0 ? safetyAt(iStA, "static") : null };
+    // what does the damage where the life is shortest
+    let shares: FatigueResult["shares"] = [];
+    if (iLife >= 0 && Number.isFinite(lifeN[iLife])) {
+      const mi = nodeMat[iLife];
+      const o = 6 * iLife;
+      const layer = fatMode[iLife] === 3 && !!fat.layerCurves[mi];
+      const lb = layerDir(iLife);
+      const sigma = (layer && lb ? layerStress(o, lb).normal : fat.equivalent(mi, nodeS, o, vm[iLife])) / strN[iLife];
+      shares = fat.shares(mi, layer, sigma).slice(0, 6);
+    }
+    fatigue = {
+      unit: inp.fatigue!.unit,
+      design: fat.design,
+      loading: inp.fatigue!.loading,
+      meanStress: inp.fatigue!.meanStress,
+      cycles: inp.fatigue!.cycles,
+      repeats: inp.fatigue!.repeats,
+      peak: peakScale(inp.fatigue!.cycles),
+      minSafety: { ...safetyAt(iFt, "fatigue"), nearBoundary: nb, away: nb && iFtA >= 0 ? safetyAt(iFtA, "fatigue") : null },
+      life: { value: iLife >= 0 ? lifeN[iLife] : Infinity, at: pos(iLife) },
+      damage: iLife >= 0 && Number.isFinite(lifeN[iLife]) ? fat.design / lifeN[iLife] : 0,
+      shares,
+      curves: fat.curveInfo(),
+      reliability: inp.fatigue!.reliability,
+    };
+    if (fatigue.minSafety.value < 1e5)
+      warnings.push(
+        "Fatigue lives come from S-N curves estimated from each material's strengths (Shigley), with the surface and reliability factors shown; sharp notches smaller than the elements, threads and welds shorten them further. Treat a life within a few times the target as uncertain.",
+      );
+  }
+  // how each printed part was modelled: the share of it that is solid, and how its infill and layers compare to the solid
+  const printing: NonNullable<StructuralResult["printing"]> = [];
+  prints.forEach((pp, pi) => {
+    if (!pp || (pp.words === "solid" && legacyPrint)) return;
+    let solid = 0,
+      all = 0;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e] || owner[e] !== pi) continue;
+      solid += fill[e] * solidShare[e];
+      all += fill[e];
+    }
+    if (!all) return;
+    printing.push({
+      part: inp.parts[pi].name,
+      build: norm(pp.build),
+      from: pp.from,
+      words: pp.words,
+      solid: solid / all,
+      infillStiffness: pp.infill >= 0.999 ? 1 : infillStiffness(pp.infill, pp.pattern),
+      infillStrength: pp.infill >= 0.999 ? 1 : infillStrength(pp.infill, pp.pattern),
+      across: layerStiffness(inp.materials[inp.parts[pi].material]).rE,
+    });
+  });
+  // ---------- the fields inside, for a section through the result ----------
+  const interior = (() => {
+    const v = sampleInterior(
+      { n: [NX, NY, NZ], origin, h: hv },
+      (n) => nodeW[n] > 0,
+      [
+        (n) => vm[n],
+        (n) => strainN[n],
+        (n) => 1 / Math.max(sfN[n], 1e-6),
+        ...(nodeT ? [(n: number) => nodeT[n]] : []),
+        ...(lifeN && fat ? [(n: number) => lifeLog(lifeN[n] / fat.design)] : []),
+        ...(heat?.J ? [(n: number) => heat.J![n]] : []),
+      ],
+      u,
+    );
+    const [stress, strain, util, ...rest] = v.scalars;
+    return {
+      origin: v.origin,
+      step: v.step,
+      n: v.n,
+      disp: v.vec!,
+      stress,
+      strain,
+      util,
+      ...(nodeT ? { temp: rest.shift()! } : {}),
+      ...(lifeN && fat ? { life: rest.shift()! } : {}),
+      ...(heat?.J ? { current: rest.shift()! } : {}),
+    } satisfies ResultVolume;
+  })();
+
   const tEnd = now();
   progress("Done", 1);
   return {
     label: inp.label,
+    ...(topology ? { topology } : {}),
+    interior,
     mesh: { h, cell: hv, grid: [nx, ny, nz], elements: nActive, nodes: fine.free.length / 3, dofs: fine.free.reduce((s, v) => s + v, 0), levels: H.levels.length, partial: partialShare },
     solve: { iterations: stats.iterations, residual: stats.residual, converged: stats.converged, history: stats.history, ms: { mesh: tMesh - t0, setup: tSetup - tMesh, solve: tSolve - tSetup, post: tEnd - tSolve, total: tEnd - t0 } },
     maxDisp: { value: dMax, at: pos(iD) },
     maxStress: { value: iS >= 0 ? vm[iS] : 0, at: pos(iS), nearBoundary: iS >= 0 && !!nearBC[iS], away: iA >= 0 ? { value: vm[iA], at: pos(iA) } : null },
     maxStrain: { value: iE >= 0 ? strainN[iE] : 0, at: pos(iE) },
     minSafety: { ...safetyAt(iF), nearBoundary: safetyNearBC, away: safetyNearBC && iFA >= 0 ? safetyAt(iFA) : null },
-    layer: inp.printed && iL >= 0 ? { value: layerN[iL], at: pos(iL) } : null,
+    layer: anyLayered && iL >= 0 ? { value: layerN[iL], at: pos(iL) } : null,
     hotSpots: spots.map((n) => ({ at: nodePos(n), stress: vm[n], safety: sfN[n] })),
     applied,
     reaction,
@@ -1508,27 +2305,524 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     ranges,
     warnings,
     materials: inp.materials.map((m, i) => ({ name: m.name, E: m.E, yield: m.yield, allowable: allow[i].value, basis: allow[i].basis, layerFactor: m.layerFactor, assumed: !!m.assumed })),
+    ...(printing.length ? { printing } : {}),
     modal,
     drop: dropResult,
     ...(heat ? { thermal: { ...heat.result, refTemp } } : nodeT ? { thermal: uniformThermal(nodeT, refTemp) } : {}),
     ...(buckling ? { buckling } : {}),
+    ...(fatigue ? { fatigue, staticSafety } : {}),
   };
 
   // ----- helpers that need the closure -----
+  /** the stress on a node's print layers: the pull across them (n·σ·n along the build direction) and the slide along them */
+  /**
+   * Topology optimisation: the elements to keep for the stiffest shape with the share of material asked for. Where the
+   * parts are held and loaded (and preserve:) stays solid; the rest is optimised, then the elements under one half and
+   * any bits cut off from the supports are left out of the model, and the loads, weight and mass follow.
+   */
+  function shapeFor(spec: TopologySpec) {
+    const tTopo = now();
+    const names = new Set(inp.parts.map((p) => p.name));
+    for (const n of spec.preserveParts) if (!names.has(n)) throw new FeaError(`preserve: "${n}" is not one of the analysed parts (${[...names].join(", ")}).`);
+    // which elements may change: 1 in the design, 2 kept solid
+    const state = new Uint8Array(ne);
+    for (let e = 0; e < ne; e++) if (active[e]) state[e] = 1;
+    const heldNodes = new Uint8Array(nn);
+    for (const sel of supportSel) for (const n of sel.nodes) heldNodes[n] = 1;
+    const keepNodes = Uint8Array.from(heldNodes);
+    for (const n of loadNodes) keepNodes[n] = 1;
+    for (let n = 0; n < nn; n++) if (extra[n]) keepNodes[n] = 1;
+    const centre = (e: number): V3 => {
+      const p = nodePos(elemNode0(e));
+      return [p[0] + hx / 2, p[1] + hy / 2, p[2] + hz / 2];
+    };
+    spec.preserve.forEach((r) => {
+      const sel = select(r);
+      for (const n of sel.nodes) keepNodes[n] = 1;
+      // a zone keeps every element whose middle is in it (a boss round a hole), not just the surface it touches
+      let inside = 0;
+      if (r.t === "sphere" || r.t === "box" || r.t === "cyl")
+        for (let e = 0; e < ne; e++)
+          if (active[e] && inZone(r, centre(e))) {
+            state[e] = 2;
+            inside++;
+          }
+      if (!sel.nodes.length && !inside) throw new FeaError(`preserve: ${describeRegion(r)} does not touch the parts. Move it onto them.`);
+    });
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      if (spec.preserveParts.includes(inp.parts[owner[e]].name)) {
+        state[e] = 2;
+        continue;
+      }
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++)
+        if (keepNodes[n0 + off[a]]) {
+          state[e] = 2;
+          break;
+        }
+    }
+    const vol = new Float64Array(ne);
+    for (let e = 0; e < ne; e++) if (active[e]) vol[e] = fill[e] * hx * hy * hz;
+    const classes = classMats.length ? { cls, mats: classMats } : undefined;
+    let fsT: Float64Array | null = null;
+    // one set of grids for the whole run: each step only changes the stiffness of the cells. The coarse
+    // factorisation is redone when the stiffness has moved a long way from the one it was made for (the first
+    // steps), when the solver starts needing more iterations, or every few steps.
+    let Ht: Hierarchy | null = null;
+    let made = 0,
+      since = 0,
+      base = 0,
+      last = 0;
+    const total = (s: Float64Array) => {
+      let t = 0;
+      for (let e = 0; e < s.length; e++) t += s[e];
+      return t;
+    };
+    const solveAt = (stiff: Float64Array, u0: Float64Array | null, tol: number) => {
+      if (!Ht) {
+        const L = makeLevel(nx, ny, nz, hv, nu, stiff, bc, [0, 0, 0], classes, springs);
+        Ht = buildHierarchy(L, plan.shifts, nu);
+        made = total(stiff);
+        since = 0;
+        fsT = Float64Array.from(f);
+        for (let i = 0; i < fsT.length; i++) if (!L.free[i]) fsT[i] = 0;
+      } else {
+        const sum = total(stiff);
+        const refresh = since >= 6 || Math.abs(sum / made - 1) > 0.15 || last > 1.5 * base + 3;
+        restiffen(Ht, stiff, refresh);
+        if (refresh) {
+          made = sum;
+          since = 0;
+        } else since++;
+      }
+      const { u, stats } = pcg(Ht, fsT!, { tol, maxIter: 300, ...(u0 ? { x0: u0 } : {}) });
+      if (since === 0) base = stats.iterations;
+      last = stats.iterations;
+      let c = 0;
+      for (let i = 0; i < u.length; i++) c += fsT![i] * u[i];
+      return { u, compliance: c, iterations: stats.iterations };
+    };
+    const ue = new Float64Array(24);
+    const energy = (u: Float64Array, out: Float64Array) => {
+      for (let e = 0; e < ne; e++) {
+        if (!active[e]) {
+          out[e] = 0;
+          continue;
+        }
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) {
+          const d = 3 * (n0 + off[a]);
+          ue[3 * a] = u[d];
+          ue[3 * a + 1] = u[d + 1];
+          ue[3 * a + 2] = u[d + 2];
+        }
+        const K = emOf(e).K;
+        let w = 0;
+        for (let r = 0; r < 24; r++) {
+          let t = 0;
+          const o = 24 * r;
+          for (let c = 0; c < 24; c++) t += K[o + c] * ue[c];
+          w += ue[r] * t;
+        }
+        out[e] = w;
+      }
+    };
+    const surfaceOf = (xbar: Float64Array, only: number | null, passes: number, iso = 0.5) => {
+      const v = new Float64Array(ne);
+      for (let e = 0; e < ne; e++) if (active[e] && (only === null || owner[e] === only)) v[e] = xbar[e] * fill[e];
+      const sf = isoSurface(v, [nx, ny, nz], origin, hv, iso);
+      if (passes) smoothSurface(sf.positions, sf.indices, passes);
+      return sf;
+    };
+    // early on the densities are still grey (all near the share kept), so the shape so far is drawn where the
+    // densest elements holding that share of the material are, not at one half
+    const previewIso = (xbar: Float64Array) => {
+      const bins = new Float64Array(201);
+      let total = 0;
+      for (let e = 0; e < ne; e++)
+        if (active[e]) {
+          bins[Math.min(200, Math.max(0, Math.round(xbar[e] * 200)))] += vol[e];
+          total += vol[e];
+        }
+      let acc = 0;
+      for (let b = 200; b > 0; b--) {
+        acc += bins[b];
+        if (acc >= spec.keep * total) return Math.min(0.5, Math.max(0.05, (b - 0.5) / 200));
+      }
+      return 0.05;
+    };
+    const minMember = Math.max(1.5 * hmax, spec.minMember ?? 2.5 * hmax);
+    const iterations = Math.max(5, Math.min(300, Math.round(spec.iterations ?? 80)));
+    const axes = { X: 0, Y: 1, Z: 2 } as const;
+    let run: TopologyRun;
+    try {
+      run = optimise(
+        {
+          n: [nx, ny, nz],
+          h: hv,
+          cells: [cellsN![0], cellsN![1], cellsN![2]],
+          state,
+          E0: Float64Array.from(dense),
+          vol,
+          solve: solveAt,
+          energy,
+          progress: (it, of, c, v, change) => progress(`Optimising the shape: iteration ${it}, ${Math.round(v * 100)} % of the material`, 0.22 + 0.63 * Math.min(1, it / of), { iter: it, residual: Math.max(change, 1e-9) }),
+          preview: (xbar, it, v) => {
+            const sf = surfaceOf(xbar, null, 2, previewIso(xbar));
+            progress(`Optimising the shape: iteration ${it}, ${Math.round(v * 100)} % of the material`, 0.22 + 0.63 * Math.min(1, it / iterations), { preview: { positions: sf.positions, indices: sf.indices, iteration: it, volume: v } });
+          },
+        },
+        { keep: spec.keep, radius: minMember, symmetry: spec.symmetry.map((a) => axes[a]), ...(spec.cut ? { cut: axes[spec.cut] } : {}), iterations },
+      );
+    } catch (e) {
+      if (e instanceof TopologyError) throw new FeaError(e.message);
+      throw e;
+    }
+    progress("Checking the shape found", 0.86);
+    // ---------- the shape: what is under one half goes, then any bit cut off from the supports ----------
+    const x = run.xbar;
+    let space = 0;
+    for (let e = 0; e < ne; e++) if (active[e]) space += vol[e];
+    const gone = new Uint8Array(ne);
+    for (let e = 0; e < ne; e++)
+      if (active[e] && state[e] === 1 && x[e] < 0.5) {
+        active[e] = 0;
+        dense[e] = 0;
+        gone[e] = 1;
+      }
+    const reached = new Uint8Array(ne);
+    const queue = new Int32Array(ne);
+    let head = 0,
+      tail = 0;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++)
+        if (heldNodes[n0 + off[a]]) {
+          reached[e] = 1;
+          queue[tail++] = e;
+          break;
+        }
+    }
+    while (head < tail) {
+      const e = queue[head++];
+      const i = e % nx,
+        j = Math.floor(e / nx) % ny,
+        k = Math.floor(e / (nx * ny));
+      const nb = [i > 0 ? e - 1 : -1, i < nx - 1 ? e + 1 : -1, j > 0 ? e - nx : -1, j < ny - 1 ? e + nx : -1, k > 0 ? e - nx * ny : -1, k < nz - 1 ? e + nx * ny : -1];
+      for (const g of nb)
+        if (g >= 0 && active[g] && !reached[g]) {
+          reached[g] = 1;
+          queue[tail++] = g;
+        }
+    }
+    let trimmed = 0,
+      keptCut = 0;
+    for (let e = 0; e < ne; e++)
+      if (active[e] && !reached[e]) {
+        if (state[e] === 2) keptCut += vol[e];
+        active[e] = 0;
+        dense[e] = 0;
+        gone[e] = 1;
+        trimmed += vol[e];
+      }
+    // a region kept solid that nothing loads can end up on its own: it cannot stay in a part that is held
+    if (keptCut > 0)
+      warnings.push(
+        `Some of what preserve: keeps solid (${fmt(keptCut / 1000, 2)} cm³) ended up cut off from the rest of the shape, as nothing loads it, so the shape found leaves it out. Load it (a bolt's pull, the weight it carries) or join it to the shape when modelling the part.`,
+      );
+    // every load still has the shape under it
+    inp.loads.forEach((ld, i) => {
+      const nodes = select(ld.region).nodes;
+      const touches = nodes.some((n) => {
+        const ii = n % NX,
+          jj = Math.floor(n / NX) % NY,
+          kk = Math.floor(n / (NX * NY));
+        for (let dk = -1; dk <= 0; dk++)
+          for (let dj = -1; dj <= 0; dj++)
+            for (let di = -1; di <= 0; di++) {
+              const a = ii + di,
+                b = jj + dj,
+                c = kk + dk;
+              if (a >= 0 && b >= 0 && c >= 0 && a < nx && b < ny && c < nz && active[eIndex(a, b, c)]) return true;
+            }
+        return false;
+      });
+      if (!touches)
+        throw new FeaError(`With ${Math.round(spec.keep * 100)} % of the material the shape found does not join load ${i + 1} (${ld.t} on ${describeRegion(ld.region)}) to the supports. Keep more material, like topology: ${Math.min(90, Math.round(spec.keep * 100) + 15)}%.`);
+    });
+    // the weight of what went no longer pulls on the shape
+    if (gravity && inp.accel) {
+      const a = dropDir ?? inp.accel;
+      for (let e = 0; e < ne; e++) {
+        if (!gone[e]) continue;
+        const m = fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6;
+        const n0 = elemNode0(e);
+        for (let q = 0; q < 8; q++) for (let d = 0; d < 3; d++) f[3 * (n0 + off[q]) + d] -= (m * a[d] * G0) / 8;
+      }
+      let c: V3 = [0, 0, 0];
+      let mt = 0;
+      for (let e = 0; e < ne; e++) {
+        if (!active[e]) continue;
+        const m = fill[e] * mPrint[e] * hx * hy * hz * inp.materials[matOf(e)].density * 1e-6;
+        const p = centre(e);
+        c = [c[0] + m * p[0], c[1] + m * p[1], c[2] + m * p[2]];
+        mt += m;
+      }
+      for (let n = 0; n < nn; n++)
+        if (extra[n]) {
+          const p = nodePos(n);
+          c = [c[0] + extra[n] * p[0], c[1] + extra[n] * p[1], c[2] + extra[n] * p[2]];
+          mt += extra[n];
+        }
+      if (mt > 0) gravity = { vector: [mt * a[0] * G0, mt * a[1] * G0, mt * a[2] * G0], at: [c[0] / mt, c[1] / mt, c[2] / mt] };
+      for (let d = 0; d < 3; d++) applied[d] = 0;
+      for (let n = 0; n < nn; n++) for (let d = 0; d < 3; d++) applied[d] += f[3 * n + d];
+    }
+    const massBefore = mass;
+    nActive = 0;
+    mass = extraKg * 1000;
+    solidVolume = 0;
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      nActive++;
+      solidVolume += vol[e];
+      mass += (vol[e] / 1000) * inp.materials[matOf(e)].density * mPrint[e];
+    }
+    faces = exposed();
+    return { spec, run, xbar: x, state, gone, surfaceOf, space, trimmed: trimmed / Math.max(space, 1e-12), massBefore, minMember, tTopo };
+  }
+
+  /**
+   * The profile of a shape cut from plate: per column across the cut axis, the most material along it (the density
+   * times how much of the cell is inside the parts, leaving out bits cut off from the supports), outlined at one half.
+   */
+  function plateOutline(cut: "X" | "Y" | "Z", xbar: Float64Array, state: Uint8Array, gone: Uint8Array): NonNullable<TopologyResult["outline"]> {
+    const c = cut === "X" ? 0 : cut === "Y" ? 1 : 2;
+    const [ua, va] = c === 0 ? [1, 2] : c === 1 ? [0, 2] : [0, 1];
+    const n = [nx, ny, nz];
+    const na = n[ua],
+      nb = n[va];
+    const col = new Float64Array(na * nb);
+    const ijk = [0, 0, 0];
+    for (let k = 0; k < nz; k++)
+      for (let j = 0; j < ny; j++)
+        for (let i = 0; i < nx; i++) {
+          const e = i + nx * (j + ny * k);
+          if (!state[e] || (gone[e] && xbar[e] >= 0.5)) continue;
+          ijk[0] = i;
+          ijk[1] = j;
+          ijk[2] = k;
+          const q = ijk[ua] + na * ijk[va];
+          col[q] = Math.max(col[q], xbar[e] * fill[e]);
+        }
+    const hu = hv[ua],
+      hw = hv[va];
+    const loops = profileLoops(col, [na, nb], [origin[ua], origin[va]], [hu, hw], 0.3 * Math.min(hu, hw), 2.25 * hu * hw);
+    let from = Infinity,
+      to = -Infinity;
+    for (const p of inp.parts)
+      for (let i = c; i < p.mesh.positions.length; i += 3) {
+        from = Math.min(from, p.mesh.positions[i]);
+        to = Math.max(to, p.mesh.positions[i]);
+      }
+    const AX = ["X", "Y", "Z"] as const;
+    const r = (v: number) => Math.round(v * 100) / 100;
+    return { axis: cut, plane: [AX[ua], AX[va]], from: r(from), to: r(to), loops: loops.map((l) => ({ ...l, points: l.points.map(([a, b]) => [r(a), r(b)] as [number, number]), area: r(l.area) })) };
+  }
+
+  /** Whether a point is inside a zone (a sphere, box or cylinder), for regions kept solid. */
+  function inZone(z: RegionSpec, p: V3): boolean {
+    if ("within" in z && z.within && !inZone(z.within, p)) return false;
+    switch (z.t) {
+      case "sphere":
+        return Math.hypot(p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]) <= z.r;
+      case "box":
+        return Math.abs(p[0] - z.at[0]) <= z.size[0] / 2 && Math.abs(p[1] - z.at[1]) <= z.size[1] / 2 && Math.abs(p[2] - z.at[2]) <= z.size[2] / 2;
+      case "cyl": {
+        const ax = norm(z.axis);
+        const v: V3 = [p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]];
+        const s = dot(v, ax);
+        if (s < 0 || s > z.length) return false;
+        return Math.hypot(v[0] - s * ax[0], v[1] - s * ax[1], v[2] - s * ax[2]) <= z.d / 2;
+      }
+      default:
+        return false;
+    }
+  }
+
+  function layerStress(o: number, b: V3): { normal: number; shear: number } {
+    const S = nodeS;
+    // traction on the layer plane, t = σ·b (Voigt: xx, yy, zz, xy, yz, zx)
+    const tx = S[o] * b[0] + S[o + 3] * b[1] + S[o + 5] * b[2];
+    const ty = S[o + 3] * b[0] + S[o + 1] * b[1] + S[o + 4] * b[2];
+    const tz = S[o + 5] * b[0] + S[o + 4] * b[1] + S[o + 2] * b[2];
+    const normal = tx * b[0] + ty * b[1] + tz * b[2];
+    return { normal, shear: Math.hypot(tx - normal * b[0], ty - normal * b[1], tz - normal * b[2]) };
+  }
+
+  /**
+   * The share of each element of a printed part that is solid wall or skin: walls run round the outline of every layer
+   * (measured within the layer, across the build direction) and skins lie under tops and over bottoms (measured along
+   * it). The grid's axis nearest the build direction stands in for it.
+   */
+  function shellShare(pi: number, pp: PartPrint): Float32Array {
+    const out = new Float32Array(ne);
+    const b = norm(pp.build);
+    const ax = Math.abs(b[0]) >= Math.abs(b[1]) && Math.abs(b[0]) >= Math.abs(b[2]) ? 0 : Math.abs(b[1]) >= Math.abs(b[2]) ? 1 : 2;
+    const dims = [nx, ny, nz];
+    const hs = [hx, hy, hz];
+    const stride = [1, nx, nx * ny];
+    const u = (ax + 1) % 3,
+      v = (ax + 2) % 3;
+    const inside = (e: number) => active[e] === 1 && owner[e] === pi;
+    // the depth of a cell's centre below the surface where it is the first cell in: a partly filled cell holds its
+    // material on the inner side, so its centre sits nearer the surface (or past it)
+    const first = (e: number, h: number) => (fill[e] < 0.99 ? fill[e] * h - h / 2 : h / 2);
+    // within each layer: chamfer distance (depth below the outline, mm) of every cell centre
+    const dW = new Float32Array(ne);
+    const hu = hs[u],
+      hvv = hs[v],
+      hd = Math.hypot(hu, hvv);
+    const hw = (hu + hvv) / 2;
+    const nu_ = dims[u],
+      nv_ = dims[v];
+    for (let w = 0; w < dims[ax]; w++) {
+      const at = (a: number, c: number) => w * stride[ax] + a * stride[u] + c * stride[v];
+      // outside the part (and past the grid) a centre lies half a cell out
+      const get = (a: number, c: number) => (a < 0 || c < 0 || a >= nu_ || c >= nv_ ? -hw / 2 : dW[at(a, c)]);
+      for (let c = 0; c < nv_; c++)
+        for (let a = 0; a < nu_; a++) {
+          const e = at(a, c);
+          dW[e] = inside(e) ? (fill[e] < 0.99 ? first(e, hw) : Infinity) : -hw / 2;
+        }
+      for (let c = 0; c < nv_; c++)
+        for (let a = 0; a < nu_; a++) {
+          const e = at(a, c);
+          if (!inside(e)) continue;
+          dW[e] = Math.min(dW[e], get(a - 1, c) + hu, get(a, c - 1) + hvv, get(a - 1, c - 1) + hd, get(a + 1, c - 1) + hd);
+        }
+      for (let c = nv_ - 1; c >= 0; c--)
+        for (let a = nu_ - 1; a >= 0; a--) {
+          const e = at(a, c);
+          if (!inside(e)) continue;
+          dW[e] = Math.min(dW[e], get(a + 1, c) + hu, get(a, c + 1) + hvv, get(a + 1, c + 1) + hd, get(a - 1, c + 1) + hd);
+        }
+    }
+    // along the build direction: the depth below the nearer top or bottom
+    const ha = hs[ax];
+    const up = new Float32Array(ne);
+    for (let c = 0; c < nv_; c++)
+      for (let a = 0; a < nu_; a++) {
+        let run = -Infinity;
+        for (let w = 0; w < dims[ax]; w++) {
+          const e = w * stride[ax] + a * stride[u] + c * stride[v];
+          run = inside(e) ? (run === -Infinity ? first(e, ha) : run + ha) : -Infinity;
+          up[e] = run;
+        }
+        run = -Infinity;
+        for (let w = dims[ax] - 1; w >= 0; w--) {
+          const e = w * stride[ax] + a * stride[u] + c * stride[v];
+          if (!inside(e)) {
+            run = -Infinity;
+            continue;
+          }
+          run = run === -Infinity ? first(e, ha) : run + ha;
+          // how much of the cell lies within the skin, and within the walls
+          const depthV = Math.min(up[e], run);
+          const sV = Math.min(1, Math.max(0, (pp.skin - (depthV - ha / 2)) / ha));
+          const sW = Math.min(1, Math.max(0, (pp.wall - (dW[e] - hw / 2)) / hw));
+          out[e] = Math.max(sV, sW);
+        }
+      }
+    return out;
+  }
+
+  /** The S-N curves and the per-point fatigue sums for the history. */
+  function fatigueSetup(fi: FatigueInput) {
+    const total = fi.cycles.reduce((a, c) => a + c.count, 0) * fi.repeats;
+    const design = fi.unit === "cycles" ? total : fi.repeats;
+    let hi = -Infinity,
+      lo = Infinity;
+    for (const c of fi.cycles) {
+      hi = Math.max(hi, c.max);
+      lo = Math.min(lo, c.min);
+    }
+    const finishOf = (i: number): Finish => fi.finishes[i] ?? "machined";
+    const curves: SnCurve[] = inp.materials.map((m, i) => snCurve(m, finishOf(i), fi.reliability));
+    const layerCurves: (SnCurve | null)[] = inp.materials.map((m, i) => (anyLayered && m.layerFactor < 1 ? snCurve(m, finishOf(i), fi.reliability, m.layerFactor) : null));
+    // brittle materials crack from the largest tension; ductile ones by von Mises, signed by the largest principal stress
+    const brittle = inp.materials.map((m) => m.elongation < 5);
+    const crit = new Map<string, number>();
+    const critical = (mi: number, layer: boolean, sign: 1 | -1) => {
+      const key = `${mi}|${layer}|${sign}`;
+      let v = crit.get(key);
+      if (v === undefined) crit.set(key, (v = criticalStress(sign, fi.cycles, fi.repeats, layer ? layerCurves[mi]! : curves[mi], fi.meanStress, layer)));
+      return v;
+    };
+    return {
+      design,
+      total,
+      hi,
+      lo,
+      curves,
+      layerCurves,
+      equivalent(mi: number, S: Float64Array, o: number, vmv: number): number {
+        const p = principal(S[o], S[o + 1], S[o + 2], S[o + 3], S[o + 4], S[o + 5]);
+        const big = Math.abs(p[0]) >= Math.abs(p[2]) ? p[0] : p[2];
+        return brittle[mi] ? big : (big < 0 ? -1 : 1) * vmv;
+      },
+      at(mi: number, layer: boolean, sigma: number): { sf: number; damage: number } {
+        if (!(Math.abs(sigma) > 1e-9)) return { sf: 1e6, damage: 0 };
+        const c = layer ? layerCurves[mi]! : curves[mi];
+        const damage = fi.repeats * damageOf(sigma, fi.cycles, c, fi.meanStress, layer);
+        return { sf: critical(mi, layer, sigma > 0 ? 1 : -1) / Math.abs(sigma), damage };
+      },
+      shares(mi: number, layer: boolean, sigma: number) {
+        return damageShares(sigma, fi.cycles, layer ? layerCurves[mi]! : curves[mi], fi.meanStress, layer);
+      },
+      curveInfo(): FatigueResult["curves"] {
+        const out: FatigueResult["curves"] = [];
+        const seen = new Set<string>();
+        inp.materials.forEach((m, i) => {
+          if (!matCount[i]) return;
+          const key = `${m.name}|${finishOf(i)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          const c = curves[i];
+          const equivalent = brittle[i] ? "signed largest principal stress" : "signed von Mises";
+          out.push({ material: m.name, finish: c.finish, finishText: FINISHES[c.finish], ka: c.ka, ke: c.ke, su: c.su, s3: c.s3, se: c.se, tail: c.tail, equivalent });
+          const lc = layerCurves[i];
+          if (lc) out.push({ material: m.name, finish: lc.finish, finishText: FINISHES[lc.finish], ka: lc.ka, ke: lc.ke, su: lc.su, s3: lc.s3, se: lc.se, tail: lc.tail, equivalent: "the pull across the layers", layers: true });
+        });
+        return out;
+      },
+    };
+  }
   function checkHeld() {
-    // gather held dofs per piece and test whether they stop all six rigid motions
-    const pieces = new Map<number, { nodes: number[]; comps: number[] }>();
+    // gather the directions each piece is held along (held dofs, springs and pins) and test whether they stop all six rigid motions
+    const pieces = new Map<number, { nodes: number[]; dirs: V3[][] }>();
     const tmpSet = new Set<number>();
-    for (let n = 0; n < nn; n++) {
-      if (!(bc[3 * n] | bc[3 * n + 1] | bc[3 * n + 2])) continue;
+    const AXES: V3[] = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    const visit = (n: number, dirs: V3[]) => {
       tmpSet.clear();
       nodeIslands(n, tmpSet);
       for (const id of tmpSet) {
-        const p = pieces.get(id) ?? { nodes: [], comps: [] };
+        const p = pieces.get(id) ?? { nodes: [], dirs: [] };
         p.nodes.push(n);
-        p.comps.push(bc[3 * n] | (bc[3 * n + 1] << 1) | (bc[3 * n + 2] << 2));
+        p.dirs.push(dirs);
         pieces.set(id, p);
       }
+    };
+    for (let n = 0; n < nn; n++) {
+      const held = [0, 1, 2].filter((d) => bc[3 * n + d]).map((d) => AXES[d]);
+      const more = heldDirs.get(n);
+      if (held.length || more) visit(n, more ? [...held, ...more] : held);
     }
     for (const [id, p] of pieces) {
       if (!islandHeld[id] || islandSize[id] < 1) continue;
@@ -1543,24 +2837,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const m = new Float64Array(6);
       p.nodes.forEach((n, q) => {
         const pp = nodePos(n);
-        const x = (pp[0] - c[0]) / Lc,
-          y = (pp[1] - c[1]) / Lc,
-          z = (pp[2] - c[2]) / Lc;
-        for (let d = 0; d < 3; d++) {
-          if (!(p.comps[q] & (1 << d))) continue;
-          // the d-component of the six rigid modes: Tx, Ty, Tz, Rx, Ry, Rz
-          m.fill(0);
-          m[d] = 1;
-          if (d === 0) {
-            m[4] = z;
-            m[5] = -y;
-          } else if (d === 1) {
-            m[3] = -z;
-            m[5] = x;
-          } else {
-            m[3] = y;
-            m[4] = -x;
-          }
+        const r: V3 = [(pp[0] - c[0]) / Lc, (pp[1] - c[1]) / Lc, (pp[2] - c[2]) / Lc];
+        for (const g of p.dirs[q]) {
+          // how far each of the six rigid modes (Tx, Ty, Tz, Rx, Ry, Rz) moves this node along g: g, and r × g
+          m[0] = g[0];
+          m[1] = g[1];
+          m[2] = g[2];
+          m[3] = r[1] * g[2] - r[2] * g[1];
+          m[4] = r[2] * g[0] - r[0] * g[2];
+          m[5] = r[0] * g[1] - r[1] * g[0];
           for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) G[a * 6 + b] += m[a] * m[b];
         }
       });
@@ -1570,6 +2855,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       if (values[k] < 1e-7 * maxV || values[k] < 1e-10) {
         const v = vectors.slice(k * 6, k * 6 + 6);
         const big = [0, 1, 2, 3, 4, 5].sort((a, b) => Math.abs(v[b]) - Math.abs(v[a]))[0];
+        // a free turn about a pin's own axis is what a pin is for: say so
+        const rot: V3 = norm([v[3], v[4], v[5]]);
+        const onPin = big >= 3 && inp.supports.find((sp) => sp.pin && sp.region.t === "cyl" && Math.abs(dot(norm(sp.region.axis), rot)) > 0.95);
+        if (onPin && onPin.region.t === "cyl")
+          throw new FeaError(
+            `The supports do not hold the part still: it can swing about the pin at ${fmtP(onPin.region.at)}, since a pin lets it turn. Add a second pin, a spring or a fix: away from it, or hold what the load turns it with.`,
+          );
         const what = big < 3 ? `slide along ${"XYZ"[big]}` : `spin about ${"XYZ"[big - 3]} (around ${fmtP(c)})`;
         throw new FeaError(`The supports do not hold the part still: it can ${what}. Fix a larger area, or add another support (fix: or roller(…)) away from the first.`);
       }
@@ -1735,7 +3027,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   }
 
   /** Heat conduction through the active elements: films and radiation on the exposed faces, heat made, held temperatures. */
-  function runHeat(): { T: Float64Array; on: Uint8Array; result: ThermalResult; ms: number } {
+  function runHeat(): { T: Float64Array; on: Uint8Array; J: Float64Array | null; result: ThermalResult; ms: number } {
     const th = inp.thermal!;
     const tms = inp.thermalMaterials!;
     const tStart = now();
@@ -1839,6 +3131,17 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       warnings.push(`${list.join(", ")} ${list.length > 1 ? "are" : "is"} smaller than the ${fmt(h)} mm elements, so ${list.length > 1 ? "their" : "its"} heat is put at the nearest solid point. Use a smaller resolution: to see ${list.length > 1 ? "their" : "its"} own temperature.`);
     }
 
+    // current through conductors: its Joule heat, worked out from the potential across them at each pass's temperatures
+    const qBase = Float64Array.from(q);
+    const joule = th.currents?.length ? currentSetup() : null;
+    const startT = th.time !== undefined && th.time > 0 ? (th.start ?? th.ambient) : th.ambient;
+    let jl = joule ? jouleAt(joule, null, startT) : null;
+    const jouleCold = joule ? jouleAt(joule, null, 20) : null;
+    const addJoule = () => {
+      if (jl) for (let n = 0; n < nn; n++) q[n] = qBase[n] + jl.qJ[n];
+    };
+    addJoule();
+
     // surfaces held at a temperature
     const fixedT = new Float64Array(nn).fill(NaN);
     th.fixed.forEach((ft, i) => {
@@ -1927,27 +3230,56 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const times: number[] = [];
       const maxs: number[] = [];
       const per: number[][] = names.map(() => []);
-      progress("Heat: warming up", 0.25);
-      const s = solveTransient(g, time, start, (t, Tn) => {
-        times.push(t);
-        let m = -Infinity;
-        for (let n = 0; n < nn; n++) if (on[n] && Tn[n] > m) m = Tn[n];
-        maxs.push(m);
-        nb.lists.forEach((list, k) => {
-          let pm = -Infinity;
-          for (let x = 0; x < list.length; x++) if (Tn[list[x]] > pm) pm = Tn[list[x]];
-          per[k].push(pm);
+      const warm = () => {
+        times.length = 0;
+        maxs.length = 0;
+        for (const p of per) p.length = 0;
+        progress("Heat: warming up", 0.25);
+        return solveTransient(g, time, start, (t, Tn) => {
+          times.push(t);
+          let m = -Infinity;
+          for (let n = 0; n < nn; n++) if (on[n] && Tn[n] > m) m = Tn[n];
+          maxs.push(m);
+          nb.lists.forEach((list, k) => {
+            let pm = -Infinity;
+            for (let x = 0; x < list.length; x++) if (Tn[list[x]] > pm) pm = Tn[list[x]];
+            per[k].push(pm);
+          });
+          progress("Heat: warming up", 0.25 + 0.6 * Math.min(1, t / time));
         });
-        progress("Heat: warming up", 0.25 + 0.6 * Math.min(1, t / time));
-      });
+      };
+      let s = warm();
+      // the current's heat was worked out at the starting temperature: if the resistance moves much as it warms, run
+      // the warm-up again with the resistance halfway between its start and its end
+      if (joule && jl) {
+        const end = jouleAt(joule, s.T, 0);
+        if (Math.abs(end.total - jl.total) > 0.03 * Math.max(jl.total, 1e-12)) {
+          const mid = Float64Array.from(s.T, (v) => (v + start) / 2);
+          jl = jouleAt(joule, mid, 0);
+          addJoule();
+          iterations += s.iterations;
+          s = warm();
+          warnings.push("The current's resistance changes as the conductors warm, so the warm-up takes it halfway between its value at the start and at the end.");
+        }
+      }
       T = s.T;
-      iterations = s.iterations;
+      iterations += s.iterations;
       residual = s.residual;
       converged = s.converged;
       let settles: number | null = null;
       if (!trapped.length) {
         progress("Heat: where it settles", 0.87);
-        const ss = solveSteady(g, { start: T });
+        // where it settles, with the current's heat at the settled temperatures
+        const qWarm = Float64Array.from(q);
+        const jlWarm = jl;
+        let ss = solveSteady(g, { start: T });
+        if (joule && jl) {
+          const st = settleCurrent(ss);
+          ss = st.s;
+          iterations += st.iterations;
+        }
+        q.set(qWarm);
+        jl = jlWarm;
         let m = -Infinity;
         for (let n = 0; n < nn; n++) if (on[n] && ss.T[n] > m) m = ss.T[n];
         settles = m;
@@ -1965,9 +3297,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       transient = { time, start, times, max: maxs, parts: names.map((nm, k) => ({ name: nm, max: per[k] })), settles, overLimit };
     } else {
       progress("Heat: solving", 0.3);
-      const s = solveSteady(g);
-      T = s.T;
+      let s = solveSteady(g);
       iterations = s.iterations;
+      // the current's heat at the temperatures it makes, until they agree: a conductor's resistance rises as it warms
+      if (joule && jl) {
+        const settledS = settleCurrent(s);
+        s = settledS.s;
+        iterations += settledS.iterations;
+      }
+      T = s.T;
       residual = s.residual;
       converged = s.converged;
       balance = heatBalance(g, T);
@@ -1980,6 +3318,57 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
     for (const n of notes) warnings.push(n);
     progress("Heat: done", 0.95);
+    // what each current did, at the temperatures it ended at, and how dense it runs (the field shown on the parts)
+    let currents: CurrentResult[] | undefined;
+    let currentPeak: ThermalResult["currentPeak"];
+    let J: Float64Array | null = null;
+    if (joule && jl && jouleCold) {
+      const fin = th.time !== undefined && th.time > 0 ? jouleAt(joule, T, 0) : jl;
+      currents = joule.terminals.map((tm, i) => {
+        const p = fin.per[i];
+        const shares = new Map<string, number>();
+        const own = joulePower(joule.grid, Float64Array.from(tm.phi!, (v) => v * p.volts));
+        own.power.forEach((w, k) => {
+          const nm = inp.parts[owner[joule.grid.cells[k]]].name;
+          shares.set(nm, (shares.get(nm) ?? 0) + w);
+        });
+        const parts = [...shares]
+          .map(([name, w]) => ({ name, share: w / Math.max(own.total, 1e-30) }))
+          .filter((x) => x.share >= 0.01)
+          .sort((a, b) => b.share - a.share);
+        sources.push({ label: tm.cs.label, watts: p.watts, why: `I²R, ${amps(p.amps)} through ${ohms(p.ohms)}` });
+        return { label: tm.cs.label, from: describeRegion(tm.cs.from), to: describeRegion(tm.cs.to), amps: p.amps, volts: p.volts, ohms: p.ohms, watts: p.watts, cold: jouleCold.per[i], driven: tm.cs.amps !== undefined ? "amps" : "volts", parts };
+      });
+      // per node: the current density of the conducting cells around it (none in the parts that do not conduct)
+      J = new Float64Array(nn);
+      const wsum = new Float64Array(nn);
+      let best = -1;
+      fin.density.forEach((d, k) => {
+        const e = joule.grid.cells[k];
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) {
+          J![n0 + off[a]] += fill[e] * d;
+          wsum[n0 + off[a]] += fill[e];
+        }
+        if (best < 0 || d > fin.density[best]) best = k;
+      });
+      for (let n = 0; n < nn; n++) if (wsum[n] > 0) J[n] /= wsum[n];
+      if (best >= 0) {
+        const e = joule.grid.cells[best];
+        const i = e % nx,
+          j = Math.floor(e / nx) % ny,
+          k = Math.floor(e / (nx * ny));
+        // the median density over the cells the current really runs through, to say how much it crowds at its peak
+        const run = Float64Array.from(fin.density.filter((d) => d > 0.02 * fin.density[best])).sort();
+        const typical = run.length ? run[run.length >> 1] : fin.density[best];
+        currentPeak = { value: fin.density[best], at: [origin[0] + (i + 0.5) * hx, origin[1] + (j + 0.5) * hy, origin[2] + (k + 0.5) * hz], part: inp.parts[owner[e]].name, typical };
+      }
+      const made = currents.reduce((a, c) => a + c.watts, 0);
+      if (Math.abs(made - fin.total) > 0.02 * Math.max(fin.total, 1e-12))
+        warnings.push(`The currents share conductors, so their heat together (${fmt(fin.total, 3)} W) is not the sum of each one's I²R (${fmt(made, 3)} W); the temperatures use the heat together.`);
+      const notes = new Set(joule.grid.cells.length ? inp.electricMaterials!.flatMap((m) => (m.note && m.conductor ? [m.note] : [])) : []);
+      for (const n of notes) warnings.push(n);
+    }
     const result: ThermalResult = {
       ambient: th.ambient,
       ...(th.ambientWhy ? { ambientWhy: th.ambientWhy } : {}),
@@ -1988,15 +3377,151 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       sources,
       balance,
       ...(transient ? { transient } : {}),
+      ...(currents ? { currents } : {}),
+      ...(currentPeak ? { currentPeak } : {}),
       solve: { iterations, residual, converged, ms: now() - tStart },
     };
-    return { T, on, result, ms: now() - tStart };
+    return { T, on, J, result, ms: now() - tStart };
+
+    /** The conducting cells, and each current's two ends checked: on the parts, on metal, apart. */
+    function currentSetup() {
+      const ems = inp.electricMaterials;
+      if (!ems || ems.length !== inp.materials.length) throw new FeaError("Electrical properties are missing for the analysed materials.");
+      const list: number[] = [];
+      for (const e of cells) if (ems[inp.parts[owner[e]].material].conductor) list.push(e);
+      const grid: CurrentGrid = { n: [nx, ny, nz], h: hv, cells: Int32Array.from(list), sigma: new Float64Array(list.length), bulk: new Float64Array(list.length) };
+      const cond = new Uint8Array(nn);
+      for (const e of grid.cells) {
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) cond[n0 + off[a]] = 1;
+      }
+      const onWhat = (r: RegionSpec) => {
+        if (r.t === "face") {
+          const pi = partsByName.get(r.part)?.[0];
+          if (pi !== undefined) return `${r.part} (${inp.materials[inp.parts[pi].material].name})`;
+        }
+        return "a part";
+      };
+      const terminals = th.currents!.map((cs, i) => {
+        const name = `Current ${i + 1} (${cs.label})`;
+        const ends = [cs.from, cs.to].map((r, k) => {
+          const sel = select(r);
+          const where = k ? "where it comes out" : "where it goes in";
+          if (!sel.nodes.length) throw new FeaError(`${name}: ${where} (${describeRegion(r)}) does not touch the parts' surface. Move the zone onto the part.`);
+          const at = sel.nodes.filter((n) => cond[n]);
+          if (!at.length) throw new FeaError(`${name}: ${where} (${describeRegion(r)}) is on ${onWhat(r)}, which does not conduct. Put it on a metal part, or give the part a metal material.`);
+          return at;
+        });
+        const out = new Set(ends[1]);
+        if (ends[0].some((n) => out.has(n))) throw new FeaError(`${name}: where it goes in (${describeRegion(cs.from)}) and where it comes out (${describeRegion(cs.to)}) overlap. Pick two separate ends, like face(bar, -X) and face(bar, +X).`);
+        return { cs, name, from: Int32Array.from(ends[0]), to: Int32Array.from(ends[1]), phi: null as Float64Array | null, ref: 0 };
+      });
+      let sMax = 0;
+      for (const e of grid.cells) sMax = Math.max(sMax, 1 / (ems[inp.parts[owner[e]].material].rho * 1000));
+      return { ems, grid, cond, terminals, tiny: 1e-12 * sMax * Math.min(hx, hy, hz) };
+    }
+
+    /** Each current's resistance and power, and the heat it makes at each node, with the conductors at these temperatures (per node, or T0 everywhere). */
+    function jouleAt(jx: NonNullable<ReturnType<typeof currentSetup>>, Tn: Float64Array | null, T0: number) {
+      const { ems, grid, cond, terminals } = jx;
+      for (let k = 0; k < grid.cells.length; k++) {
+        const e = grid.cells[k];
+        let t = T0;
+        if (Tn) {
+          const n0 = elemNode0(e);
+          let sum = 0;
+          for (let a = 0; a < 8; a++) sum += Tn[n0 + off[a]];
+          t = sum / 8;
+        }
+        // Ω·m → Ω·mm, so σ is in S/mm
+        grid.bulk[k] = 1 / (rhoAt(ems[inp.parts[owner[e]].material], t) * 1000);
+        grid.sigma[k] = grid.bulk[k] * fill[e];
+      }
+      const phi = new Float64Array(nn);
+      const per = terminals.map((tm) => {
+        const sol: CurrentSolve = solveCurrent(grid, tm.from, tm.to, tm.phi ? { phi: tm.phi, ref: tm.ref } : undefined);
+        tm.phi = sol.phi;
+        tm.ref = sol.ref;
+        if (!(sol.conductance > jx.tiny))
+          throw new FeaError(`${tm.name}: no metal joins where it goes in (${describeRegion(tm.cs.from)}) to where it comes out (${describeRegion(tm.cs.to)}), so it has nowhere to flow. The conducting parts must touch along the way.`);
+        const short = `${tm.name}: the current solve stopped short of full accuracy; its resistance may be off by a percent or so.`;
+        if (!sol.converged && !warnings.includes(short)) warnings.push(short);
+        const ohms = 1 / sol.conductance;
+        const volts = tm.cs.amps !== undefined ? tm.cs.amps * ohms : tm.cs.volts!;
+        for (let n = 0; n < nn; n++) if (cond[n]) phi[n] += volts * sol.phi[n];
+        return { amps: volts / ohms, volts, ohms, watts: (volts * volts) / ohms };
+      });
+      const jp = joulePower(grid, phi);
+      const qJ = new Float64Array(nn);
+      for (let k = 0; k < grid.cells.length; k++) {
+        const n0 = elemNode0(grid.cells[k]);
+        const w = jp.power[k] / 8;
+        for (let a = 0; a < 8; a++) qJ[n0 + off[a]] += w;
+      }
+      return { per, qJ, total: jp.total, density: jp.density };
+    }
+
+    /**
+     * Steady temperatures and the current's heat that agree: the heat at the latest temperatures sets the next solve,
+     * by a secant step on (heat made − heat assumed) once there are two passes, so a conductor whose resistance rises
+     * linearly with temperature settles in three or four. A current whose heat outruns the cooling runs away.
+     */
+    function settleCurrent(s0: HeatSolve): { s: HeatSolve; iterations: number } {
+      let s = s0;
+      let iterations = 0;
+      const cold = jl!.total;
+      let used = jl!.total;
+      let usedPrev = 0;
+      let gapPrev: number | null = null;
+      for (let pass = 0; pass < 14; pass++) {
+        jl = jouleAt(joule!, s.T, 0);
+        const made = jl.total;
+        const gap = made - used;
+        if (Math.abs(gap) <= 0.003 * Math.max(made, 1e-12)) {
+          addJoule();
+          return { s, iterations };
+        }
+        if (made > 20 * Math.max(cold, 1e-12))
+          throw new FeaError(
+            `The current runs away: its heat keeps rising as the conductor warms (${fmt(cold, 2)} W cold, over ${fmt(made, 1)} W and climbing), because its resistance grows faster than the cooling can take the heat away. It would overheat until it fuses. ` +
+              `Use a thicker conductor or a better conducting metal, less current, or more cooling.`,
+          );
+        let next = made;
+        if (gapPrev !== null && Math.abs(gap - gapPrev) > 1e-12 * made) {
+          const step = used - (gap * (used - usedPrev)) / (gap - gapPrev);
+          if (step > 0 && step < 4 * made) next = step;
+        }
+        usedPrev = used;
+        gapPrev = gap;
+        used = next;
+        const k = next / made;
+        for (let n = 0; n < nn; n++) q[n] = qBase[n] + k * jl.qJ[n];
+        progress("Heat: current and temperature", Math.min(0.85, 0.3 + 0.05 * pass));
+        s = solveSteady(g, { start: s.T });
+        iterations += s.iterations;
+      }
+      warnings.push("The current's heat and the temperatures it makes had not quite settled after 14 passes; the temperatures may be off by a degree or two.");
+      return { s, iterations };
+    }
+  }
+
+  /** Current density at each vertex of a surface (A/mm²), widening ranges.current to take it in. */
+  function currentAt(J: Float64Array, valid: Uint8Array, P: ArrayLike<number>, ranges: { current?: [number, number] }): Float32Array {
+    const nv = P.length / 3;
+    const out = new Float32Array(nv);
+    for (let v = 0; v < nv; v++) {
+      const x = sampleScalar(J, valid, P[3 * v], P[3 * v + 1], P[3 * v + 2], 0);
+      out[v] = x;
+      if (ranges.current) ranges.current[1] = Math.max(ranges.current[1], x);
+    }
+    return out;
   }
 
   /** A heat analysis with nothing holding the parts: temperatures only, with empty stress fields. */
-  function heatOnlyResult(r: { T: Float64Array; on: Uint8Array; result: ThermalResult; ms: number }): StructuralResult {
+  function heatOnlyResult(r: { T: Float64Array; on: Uint8Array; J: Float64Array | null; result: ThermalResult; ms: number }): StructuralResult {
     const tPost = now();
     const temp: [number, number] = [Infinity, -Infinity];
+    const cur: { current?: [number, number] } = r.J ? { current: [0, 0] } : {};
     const parts: PartField[] = inp.parts.map((p) => {
       const P = p.mesh.positions;
       const nv = P.length / 3;
@@ -2018,10 +3543,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         strain: new Float32Array(nv),
         safety: new Float32Array(nv).fill(1e6),
         temp: t,
+        ...(r.J ? { current: currentAt(r.J, r.on, P, cur) } : {}),
       };
     });
     temp[0] = Math.min(temp[0], r.result.minTemp.value);
     temp[1] = Math.max(temp[1], r.result.maxTemp.value);
+    // the legend reaches the densest cell, as the label on it says
+    if (cur.current && r.result.currentPeak) cur.current[1] = Math.max(cur.current[1], r.result.currentPeak.value);
     let mass = 0,
       solid = 0,
       partial = 0,
@@ -2034,10 +3562,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       if (fill[e] < 0.9) partial++;
     }
     for (let n = 0; n < nn; n++) if (r.on[n]) nodes++;
+    const inside = sampleInterior({ n: [NX, NY, NZ], origin, h: hv }, (n) => r.on[n] > 0, [(n) => r.T[n], ...(r.J ? [(n: number) => r.J![n]] : [])]);
     const tEnd = now();
     progress("Done", 1);
     return {
       label: inp.label,
+      interior: { origin: inside.origin, step: inside.step, n: inside.n, temp: inside.scalars[0], ...(r.J ? { current: inside.scalars[1] } : {}) },
       mesh: { h, cell: hv, grid: [nx, ny, nz], elements: nActive, nodes, dofs: nodes, levels: 1, partial: partial / Math.max(1, nActive) },
       solve: { iterations: r.result.solve.iterations, residual: r.result.solve.residual, converged: r.result.solve.converged, history: [], ms: { mesh: tMesh - t0, setup: 0, solve: r.ms, post: tEnd - tPost, total: tEnd - t0 } },
       maxDisp: { value: 0, at: [0, 0, 0] },
@@ -2055,7 +3585,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       supports: [],
       gravity: null,
       parts,
-      ranges: { stress: [0, 0], disp: [0, 0], strain: [0, 0], safety: [1e6, 1e6], temp },
+      ranges: { stress: [0, 0], disp: [0, 0], strain: [0, 0], safety: [1e6, 1e6], temp, ...cur },
       warnings,
       materials: inp.materials.map((m) => {
         const a = allowableStress(m, inp.cycles);
@@ -2112,6 +3642,9 @@ function meshArea(m: TriMesh): number {
   return a;
 }
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+/** Fatigue life over the design life as log10, kept to -6..9 (9: no limit, below the endurance limit). */
+
+export const lifeLog = (ratio: number) => (ratio === Infinity || !(ratio < 1e9) ? 9 : ratio <= 1e-6 ? -6 : Math.log10(ratio));
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 

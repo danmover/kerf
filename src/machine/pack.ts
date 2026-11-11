@@ -12,6 +12,8 @@ import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
 import { bedTurn } from "../mfg/analyze";
 import { resolveRules } from "../mfg/profiles";
+import { fdmPrint, printWords } from "../mfg/infill";
+import { restFace } from "../mfg/printOrientation";
 import { bomRows, bomTotal, writeStl, type BomRow } from "../persist/files";
 import { beltTest } from "./belts";
 import { catalogPart } from "./catalog";
@@ -412,58 +414,16 @@ const DIR_WORDS: [number[], string][] = [
 export function orientForPrint(mesh: MeshData, build?: [number, number, number]): { positions: Float32Array; indices: Uint32Array; size: [number, number, number]; volume: number; face: string; faceArea: number } {
   const P = mesh.positions;
   const I = mesh.indices;
-  const nTri = I.length / 3;
-  const area = new Float64Array(nTri);
-  const nrm = new Float64Array(nTri * 3);
-  const buckets = new Map<string, { n: [number, number, number]; area: number }>();
   let volume = 0;
-  for (let t = 0; t < nTri; t++) {
-    const a = I[t * 3] * 3;
-    const b = I[t * 3 + 1] * 3;
-    const c = I[t * 3 + 2] * 3;
-    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
-    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
-    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    const l = Math.hypot(nx, ny, nz);
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t] * 3;
+    const b = I[t + 1] * 3;
+    const c = I[t + 2] * 3;
     volume += (P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c])) / 6;
-    if (l < 1e-12) continue;
-    area[t] = l / 2;
-    nrm[t * 3] = nx / l;
-    nrm[t * 3 + 1] = ny / l;
-    nrm[t * 3 + 2] = nz / l;
-    const key = `${Math.round((nx / l) * 50)},${Math.round((ny / l) * 50)},${Math.round((nz / l) * 50)}`;
-    const e = buckets.get(key) ?? { n: [nx / l, ny / l, nz / l], area: 0 };
-    e.area += l / 2;
-    buckets.set(key, e);
   }
-  // area of the flat face on the outside in each candidate direction (pockets and steps do not count)
-  const restArea = (n: [number, number, number]) => {
-    let support = -Infinity;
-    for (let i = 0; i < P.length; i += 3) support = Math.max(support, P[i] * n[0] + P[i + 1] * n[1] + P[i + 2] * n[2]);
-    let a = 0;
-    for (let t = 0; t < nTri; t++) {
-      if (!area[t] || nrm[t * 3] * n[0] + nrm[t * 3 + 1] * n[1] + nrm[t * 3 + 2] * n[2] < 0.999) continue;
-      const v = I[t * 3] * 3;
-      if (Math.abs(P[v] * n[0] + P[v + 1] * n[1] + P[v + 2] * n[2] - support) < 0.05) a += area[t];
-    }
-    return a;
-  };
-  const candidates = [...buckets.values()].sort((x, y) => y.area - x.area).slice(0, 12);
-  const down: [number, number, number] = [0, 0, -1];
-  if (!candidates.some((c) => c.n[2] < -0.999)) candidates.push({ n: down, area: 0 });
-  let best = { n: down, area: restArea(down) };
-  const asModelled = best.area;
-  for (const c of candidates) {
-    const a = restArea(c.n);
-    if (a > best.area + 1e-6) best = { n: c.n, area: a };
-  }
-  // keep the modelled orientation when it is nearly as good: designers often model printed parts the way they print
-  if (asModelled >= best.area * 0.9) best = { n: down, area: asModelled };
-  if (build) {
-    const n: [number, number, number] = [-build[0], -build[1], -build[2]];
-    best = { n, area: restArea(n) };
-  }
-  const R = rotationTo(best.n, down);
+  // the strength analysis lays its print layers the same way
+  const best = restFace(P, I, build);
+  const R = rotationTo(best.n, [0, 0, -1]);
   const out = new Float32Array(P.length);
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
@@ -596,7 +556,7 @@ function printReadme(parts: MadePart[], name: string): string {
   const made = parts.filter((p) => !p.printable);
   if (printed.length) {
     L.push("Each STL is in millimetres, turned so its largest flat face is on the bed and centred on the origin. Slice them with your usual profile and these settings as a starting point:", "");
-    L.push("- 0.2 mm layers, 0.4 mm nozzle.", "- 4 walls (perimeters) and 5 top and bottom layers: machine parts take their strength from the walls.", "- 30 to 40 % gyroid or cubic infill for parts that carry load (motor mounts, brackets); 15 % is enough for covers.", "- Supports only where the slicer shows overhangs steeper than 50°.", "");
+    L.push("- 0.2 mm layers, 0.4 mm nozzle.", "- 4 walls (perimeters) and 5 top and bottom layers: machine parts take their strength from the walls.", "- 40 % gyroid infill for parts that carry load (motor mounts, brackets), or what a part lists below; 15 % is enough for covers.", "- Supports only where the slicer shows overhangs steeper than 50°.", "");
   }
   for (const p of printed) {
     const head = madeName(p);
@@ -604,6 +564,7 @@ function printReadme(parts: MadePart[], name: string): string {
     L.push(`- File: \`${p.file.replace(/^print\//, "")}\`${p.stl ? "" : " (not included: the geometry was not available when the pack was made)"}`);
     if (p.qty > 1) L.push(`- Print ${p.qty}: the design uses ${p.qty} identical copies${p.names.length > 1 ? ` (${listJoin(p.names)})` : ""}`);
     L.push(`- Material: ${p.part.material}`);
+    if (!p.part.process || p.part.process.id === "fdm") L.push(`- Slicer: ${printWords(fdmPrint(p.part.process))} (the strength checks assume this)`);
     if (p.size) L.push(`- Size as printed: ${p.size.map((v) => fmtNum(Math.round(v * 10) / 10)).join(" × ")} mm`);
     if (p.mass !== undefined) L.push(`- About ${fmtNum(Math.round(p.mass))} g of filament at full density (less with infill)`);
     if (p.orientation) L.push(`- Orientation: ${p.orientation}`);

@@ -4,15 +4,17 @@ import { fmtNum } from "../lang/values";
 import type { SafetyAt, StructuralResult } from "./fe/structural";
 import type { DrivetrainResult } from "./drivetrain";
 import { dropText, dropVerdict, vibrationText, vibrationVerdict } from "./dynamics";
-import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec } from "./spec";
+import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
 import type { CheckItem } from "../core/checks";
 import { airflowLine } from "./aeroSummary";
 import type { AirflowRun } from "./aeroRuntime";
 import { accuracyText, bucklingText, bucklingVerdict, degC, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
+import { fatigueModeText, fatigueText, fatigueVerdict } from "./fatigueSummary";
+import { topologyLine, topologySummary } from "./topologySummary";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
 export interface RunLike {
-  status: "waiting" | "running" | "done" | "error";
+  status: "idle" | "waiting" | "running" | "done" | "error";
   result?: StructuralResult;
   error?: string;
   setup?: boolean;
@@ -21,21 +23,50 @@ export interface RunLike {
 
 const p3 = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
 const sf = (v: number) => (!Number.isFinite(v) || v >= 100 ? "over 100" : fmtNum(v, 2));
+/** A direction in words: +Z, −X, or its components when it is at an angle. */
+export const dirWords = (d: number[]) => {
+  const k = [0, 1, 2].find((i) => Math.abs(d[i]) > 0.999);
+  return k === undefined ? `(${d.map((v) => fmtNum(v, 2)).join(", ")})` : `${d[k] > 0 ? "+" : "−"}${"XYZ"[k]}`;
+};
 
 type Verdict = "pass" | "warn" | "fail";
 
 /** What a safety factor is judged against; the overall lowest one unless another is given. */
+/** One support in words, with what it carries: "pin zone ⌀6 mm … bears on 48 % of its bore, 12.3 MPa bearing pressure, carries 150 N". */
+export function supportLine(spec: StructuralSpec, r: StructuralResult, i: number): string {
+  const s = r.supports[i];
+  const sp = spec.supports[i];
+  const where = describeRegion(sp.region);
+  const F = fmtNum(Math.hypot(...s.reaction), 1);
+  if (s.spring) {
+    const k = s.spring.rate !== undefined ? `${fmtNum(s.spring.rate, 1)} N/mm` : `${fmtNum(s.spring.perArea ?? 0, 3)} N/mm per mm²`;
+    return `spring ${where} (${k}${sp.dir ? ` along ${p3(sp.dir)}` : ""}) gives ${fmtNum(s.spring.give, 4)} mm and carries ${F} N`;
+  }
+  if (s.pin)
+    return `pin ${where} (${s.pin.tight ? "tight all round" : `bears on ${fmtNum(s.pin.share * 100, 0)} % of its bore`}${s.pin.slide ? ", free to slide along it" : ""}, ${fmtNum(s.pin.pressure, 2)} MPa bearing pressure over ⌀${fmtNum(s.pin.d, 2)} × ${fmtNum(s.pin.length, 1)} mm) carries ${F} N`;
+  if (s.moved) return `${where} moved (${s.moved.map((v) => fmtNum(v, 3)).join(", ")}) mm${sp.dir ? " (free to slide the other ways)" : ""} takes ${F} N`;
+  return `${s.contact ? "contact" : s.dir ? "roller" : "fixed"} ${where} (${s.nodes} nodes) carries ${F} N`;
+}
+
 export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.minSafety): string {
   // a hot plastic's allowable is derated for the temperature there
   const hot = m.tempC !== undefined && m.tempC > 30 ? ` at ${fmtNum(m.tempC, 0)} °C` : "";
-  if (m.mode === "layers") return `strength between print layers of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
-  if (m.mode === "fatigue") return `fatigue strength of ${m.material}${hot} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
-  return `yield strength of ${m.material}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
+  if ((m.mode === "fatigue" || m.mode === "layer fatigue") && r.fatigue) return fatigueModeText(m, r.fatigue);
+  // a printed part's sparse infill has a share of the solid's strength
+  const inf = m.infill ? " in its infill" : "";
+  if (m.mode === "layers" || m.mode === "layer fatigue") return `strength between print layers of ${m.material}${inf}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
+  if (m.mode === "fatigue") return `fatigue strength of ${m.material}${inf}${hot} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
+  return `yield strength of ${m.material}${inf}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
 }
 
 /** The lowest safety factor a short way from idealised supports and loads, when the overall lowest sits right on one. */
 export function safetyAway(r: StructuralResult): SafetyAt | null {
   return r.minSafety.nearBoundary ? r.minSafety.away : null;
+}
+
+/** The static strength's lowest safety factor (yield and print layers at the loads' peak): with fatigue it is reported apart. */
+export function staticSafety(r: StructuralResult): StructuralResult["minSafety"] {
+  return r.staticSafety ?? r.minSafety;
 }
 
 /** Reasons not to trust a result to pass: materials without strength data, or a solve that did not converge. */
@@ -49,10 +80,11 @@ export function doubts(r: StructuralResult): { assumed: string[]; unreliable: bo
  * solve fails nothing either.
  */
 export function strengthVerdict(spec: StructuralSpec, r: StructuralResult): { status: Verdict; note: string } {
-  const s = r.minSafety.value;
+  const st = staticSafety(r);
+  const s = st.value;
   let status: Verdict = s >= spec.safety ? "pass" : s >= 1 ? "warn" : "fail";
   let note = "";
-  const away = safetyAway(r);
+  const away = st.nearBoundary ? st.away : null;
   if (status !== "pass" && away && away.value >= spec.safety) {
     status = "warn";
     note += ` The lowest value sits right at a support or load, where the idealised fixing exaggerates stress; a short way off the lowest safety factor is ${sf(away.value)} at ${p3(away.at)}, against the ${modeText(r, spec.cycles, away)}. Check how that area is really held.`;
@@ -138,13 +170,29 @@ export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Ve
     ...contactVerdicts(spec, r).map((c) => c.status),
     spec.thermal ? temp : temp === "fail" ? "fail" : "pass",
     bucklingVerdict(spec, r)?.status ?? "pass",
+    fatigueVerdict(spec, r)?.status ?? "pass",
   ];
   return all.includes("fail") ? "fail" : all.includes("warn") ? "warn" : "pass";
 }
 
 /** Heat, buckling and the accuracy check, as summary lines. */
+/** How each printed part was modelled, in words: its print settings, how much is solid, its infill and its layers. */
+export function printingText(r: StructuralResult): string | null {
+  if (!r.printing?.length) return null;
+  const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
+  const from = { analysis: "as the analysis's build: says", process: "as its process's build: says", bed: "the way it lies on the bed" } as const;
+  return r.printing
+    .map(
+      (p) =>
+        `${p.part} printed with ${p.words}: ${pc(p.solid)} of it solid walls and skin${p.infillStiffness < 0.999 ? `, the infill ${pc(p.infillStiffness)} as stiff and ${pc(p.infillStrength)} as strong as solid` : ""}; layers stack along ${dirWords(p.build)} (${from[p.from]})${p.across < 0.999 ? `, ${pc(p.across)} as stiff across them` : ""}.`,
+    )
+    .join(" ");
+}
+
 function extraLines(spec: StructuralSpec, r: StructuralResult): string[] {
   const out: string[] = [];
+  const pt = printingText(r);
+  if (pt) out.push(`Printed parts: ${pt}`);
   const tt = temperatureText(r);
   const tv = temperatureVerdict(r);
   if (tt && tv && (spec.thermal || tv.status !== "pass")) out.push(`Temperature: ${tv.status.toUpperCase()}. ${tt.detail}${tt.fix ? ` Fix: ${tt.fix}` : ""}`);
@@ -152,14 +200,18 @@ function extraLines(spec: StructuralSpec, r: StructuralResult): string[] {
   const bt = bucklingText(spec, r);
   const bv = bucklingVerdict(spec, r);
   if (bt && bv) out.push(`Buckling: ${bv.status.toUpperCase()}. ${bt.detail}${bt.fix ? ` Fix: ${bt.fix}` : ""}`);
+  const ft = fatigueText(spec, r);
+  const fv = fatigueVerdict(spec, r);
+  if (ft && fv) out.push(`Fatigue: ${fv.status.toUpperCase()}. ${ft.detail}${ft.fix ? ` Fix: ${ft.fix}` : ""}`);
   const acc = accuracyText(r);
   if (acc) out.push(`Accuracy check: ${acc.status.toUpperCase()}. ${acc.detail}`);
   return out;
 }
 
 export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined): string {
+  if (spec.topology) return topologySummary(spec, run);
   const head = `Analysis "${spec.label}" (structural; parts: ${spec.parts.join(", ")})`;
-  if (!run || run.status === "waiting" || run.status === "running") return `${head}: still running.`;
+  if (!run || run.status === "idle" || run.status === "waiting" || run.status === "running") return `${head}: still running.`;
   if (run.status === "error" || !run.result) {
     return `${head}: ${run.setup ? "the set-up cannot be solved as written" : "did not finish"}. ${run.error ?? ""}${run.setup ? " Fix the analysis block and run it again." : ""}`.trim();
   }
@@ -188,8 +240,9 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
     if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
     return lines.join("\n");
   }
+  const st = staticSafety(r);
   lines.push(
-    `Lowest safety factor ${sf(r.minSafety.value)} at ${p3(r.minSafety.at)}, judged against the ${modeText(r, spec.cycles)}; target ${fmtNum(spec.safety, 2)}.${strengthVerdict(spec, r).note}`,
+    `Lowest ${r.fatigue ? "static " : ""}safety factor ${sf(st.value)} at ${p3(st.at)}, judged against the ${modeText(r, spec.cycles, st)}${r.fatigue ? ` at the loads' peak (${fmtNum(r.fatigue.peak, 2)}× them)` : ""}; target ${fmtNum(spec.safety, 2)}.${strengthVerdict(spec, r).note}`,
   );
   lines.push(
     `Peak von Mises stress ${fmtNum(r.maxStress.value, 2)} MPa near ${p3(r.maxStress.at)}.` +
@@ -199,11 +252,10 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   lines.push(`Largest principal strain ${fmtNum(Math.abs(r.maxStrain.value) * 100, 4)} % (${fmtNum(Math.abs(r.maxStrain.value) * 1e6, 0)} microstrain). Mass ${fmtNum(r.mass, 2)} g.`);
   if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");
   if (r.layer) lines.push(`Worst stress across print layers: ${fmtNum(r.layer.value, 2)} MPa at ${p3(r.layer.at)}.`);
-  lines.push(
-    "Supports: " +
-      r.supports.map((s, i) => `${s.contact ? "contact" : s.dir ? "roller" : "fixed"} ${describeRegion(spec.supports[i].region)} (${s.nodes} nodes) carries ${fmtNum(Math.hypot(...s.reaction), 1)} N`).join("; ") +
-      ".",
-  );
+  lines.push("Supports: " + r.supports.map((s, i) => supportLine(spec, r, i)).join("; ") + ".");
+  const moves = r.supports.filter((s) => s.moved);
+  if (moves.length && !r.loads.length && !r.gravity)
+    lines.push(`The parts are loaded only by the set displacement${moves.length > 1 ? "s" : ""}, so the safety factor is how many times further ${moves.length > 1 ? "they" : "it"} could be pushed before the part fails (stresses are linear, so this holds for small movements).`);
   for (const c of contactVerdicts(spec, r)) lines.push(`${c.title}: ${c.status.toUpperCase()}. ${c.detail}${c.fix ? ` Fix: ${c.fix}` : ""}`);
   if (r.loads.length)
     lines.push(
@@ -213,6 +265,7 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
             const where = describeRegion(spec.loads[i].region);
             const L = spec.loads[i];
             if (L.t === "torque") return `torque ${fmtNum(L.torque / 1000, 3)} N·m about ${p3(L.axis)} through ${p3(l.at)} on ${where} (${fmtNum(l.area, 0)} mm²)`;
+            if (L.t === "bearing") return `bearing load ${fmtNum(l.magnitude, 1)} N along ${p3(l.vector.map((x) => x / (l.magnitude || 1)) as V3)} on ${where}, spread with a cosine over the side it presses (peak ${fmtNum(l.pressure ?? 0, 2)} MPa)`;
             return `${l.kind} totalling ${fmtNum(l.magnitude, 1)} N on ${where} (${fmtNum(l.area, 0)} mm², centred ${p3(l.at)})`;
           })
           .join("; ") +
@@ -256,8 +309,10 @@ export function uciVerdict(items: CheckItem[]): "pass" | "warn" | "fail" | "pend
 }
 
 /** One line per analysis for the design overview. */
-export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = [], air?: AirflowRun): string {
+export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = [], air?: AirflowRun, study?: string): string {
   if (spec.kind === "airflow") return airflowLine(spec, air);
+  if (spec.kind === "study")
+    return `"${spec.label}" design study (${spec.goal.text}, varying ${spec.vary.map((v) => v.name).join(", ")}; up to ${spec.runs} designs): ${study ?? "not run yet; it runs only when asked (run_analysis label:)"}`;
   if (spec.kind === "uci") {
     const items = uciItems(spec, report);
     const bad = items.filter((i) => i.status === "fail" || i.status === "warn");
@@ -267,6 +322,7 @@ export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: D
     const state = !dt ? "not calculated" : dt.error ? `error: ${dt.error}` : `${dt.items.filter((i) => i.status === "fail").length} failing of ${dt.items.length} checks`;
     return `"${spec.label}" drivetrain (${spec.drive}, ${fmtNum(spec.torque / 1000, 3)} N·m at ${fmtNum(spec.speed, 0)} rpm): ${state}`;
   }
+  if (spec.topology) return topologyLine(spec, run);
   if (heatOnlySpec(spec)) {
     const t = spec.thermal!;
     const setup = `${spec.parts.join(", ")}; ${t.heat.length ? `${fmtNum(t.heat.reduce((a, h) => a + h.watts, 0), 2)} W made` : ""}${t.auto ? `${t.heat.length ? ", " : ""}electronics' own losses` : ""}${t.fixed.length ? `, ${t.fixed.length} held surface(s)` : ""}; ${t.coolingText}${t.time ? `; warm-up over ${fmtNum(t.time / 60, 1)} min` : ""}`;

@@ -66,6 +66,91 @@ interface PartProps {
   max: V3;
   /** world vertices, for cam profiles and wheel radii */
   verts: Float32Array;
+  /**
+   * World boxes that follow its shape, for loose objects to press on: its own box when it fills most of it, else
+   * slices of it (an L-shaped finger is its rack and its blade, not the corner between them).
+   */
+  boxes: { min: V3; max: V3 }[];
+  /** a part that is all but a box (a pad, a plate): its corners, which are on its faces */
+  corners?: V3[];
+}
+
+/**
+ * A mesh cut into n slices along one axis, each slice in its own box. The box of a slice is exact: the triangle
+ * corners inside it and the points where triangle edges cross its two faces.
+ */
+function sliceBoxes(verts: Float32Array, idx: ArrayLike<number>, min: V3, max: V3, ax: number, n: number): { min: V3; max: V3 }[] {
+  const w = (max[ax] - min[ax]) / n;
+  if (!(w > 1e-9)) return [{ min, max }];
+  const out = Array.from({ length: n }, () => ({ min: [Infinity, Infinity, Infinity] as V3, max: [-Infinity, -Infinity, -Infinity] as V3 }));
+  const grow = (k: number, x: number, y: number, z: number) => {
+    const b = out[k];
+    if (x < b.min[0]) b.min[0] = x;
+    if (y < b.min[1]) b.min[1] = y;
+    if (z < b.min[2]) b.min[2] = z;
+    if (x > b.max[0]) b.max[0] = x;
+    if (y > b.max[1]) b.max[1] = y;
+    if (z > b.max[2]) b.max[2] = z;
+  };
+  const slice = (x: number) => Math.max(0, Math.min(n - 1, Math.floor((x - min[ax]) / w)));
+  for (let t = 0; t + 2 < idx.length; t += 3) {
+    const i = [idx[t] * 3, idx[t + 1] * 3, idx[t + 2] * 3];
+    const lo = Math.min(verts[i[0] + ax], verts[i[1] + ax], verts[i[2] + ax]);
+    const hi = Math.max(verts[i[0] + ax], verts[i[1] + ax], verts[i[2] + ax]);
+    for (let k = slice(lo); k <= slice(hi); k++) {
+      const a = min[ax] + k * w;
+      const b = a + w;
+      for (let j = 0; j < 3; j++) {
+        const p = i[j];
+        const q = i[(j + 1) % 3];
+        const pa = verts[p + ax];
+        const qa = verts[q + ax];
+        if (pa >= a - 1e-9 && pa <= b + 1e-9) grow(k, verts[p], verts[p + 1], verts[p + 2]);
+        for (const cut of [a, b]) {
+          if ((pa - cut) * (qa - cut) >= 0) continue;
+          const u = (cut - pa) / (qa - pa);
+          grow(k, verts[p] + u * (verts[q] - verts[p]), verts[p + 1] + u * (verts[q + 1] - verts[p + 1]), verts[p + 2] + u * (verts[q + 2] - verts[p + 2]));
+        }
+      }
+    }
+  }
+  // neighbours with the same section are one box
+  const merged: { min: V3; max: V3 }[] = [];
+  for (const b of out) {
+    if (b.min[0] > b.max[0]) continue;
+    const last = merged[merged.length - 1];
+    const same = last && [0, 1, 2].every((c) => c === ax || (Math.abs(last.min[c] - b.min[c]) < 0.3 && Math.abs(last.max[c] - b.max[c]) < 0.3));
+    if (same && Math.abs(last.max[ax] - b.min[ax]) < 1e-6) last.max[ax] = b.max[ax];
+    else merged.push(b);
+  }
+  return merged;
+}
+
+/** The boxes a part's shape is taken as: see PartProps.boxes. */
+function shapeBoxes(verts: Float32Array, idx: ArrayLike<number>, min: V3, max: V3, volume: number): { boxes: { min: V3; max: V3 }[]; corners?: V3[] } {
+  const ext = sub(max, min);
+  const full = ext[0] * ext[1] * ext[2];
+  const one = [{ min, max }];
+  if (!(full > 1e-9) || !(volume > 0)) return { boxes: one };
+  const fill = volume / full;
+  if (fill > 0.85) {
+    const corners: V3[] = [];
+    for (const x of [min[0], max[0]]) for (const y of [min[1], max[1]]) for (const z of [min[2], max[2]]) corners.push([x, y, z]);
+    return { boxes: one, corners };
+  }
+  if (fill > 0.6 || Math.max(...ext) < 8) return { boxes: one };
+  // sliced along whichever axis leaves the least empty space in the boxes
+  let best = one;
+  let bestV = full;
+  for (let ax = 0; ax < 3; ax++) {
+    const bs = sliceBoxes(verts, idx, min, max, ax, 8);
+    const v = bs.reduce((a, b) => a + (b.max[0] - b.min[0]) * (b.max[1] - b.min[1]) * (b.max[2] - b.min[2]), 0);
+    if (v < bestV * 0.9) {
+      best = bs;
+      bestV = v;
+    }
+  }
+  return { boxes: best };
 }
 
 const DIRS: V3[] = (() => {
@@ -156,7 +241,7 @@ function partProps(p: EvalPart, e: MeshEntry): PartProps | null {
     }
     return [verts[bi * 3], verts[bi * 3 + 1], verts[bi * 3 + 2]] as V3;
   });
-  const out: PartProps = { volume: exact, com, cov, support, min, max, verts };
+  const out: PartProps = { volume: exact, com, cov, support, min, max, verts, ...shapeBoxes(verts, idx, min, max, V > 0.3 * exact ? exact : 0) };
   if (propsCache.size > 400) propsCache.clear();
   propsCache.set(key, out);
   return out;
@@ -421,19 +506,24 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       }
       if (bp && !pts.some((q) => len(sub(q, bp!)) < 2)) pts.push(bp);
     });
+    // a box-shaped part's corners too: a gripper's pad sits inside its finger's outline, so none of the body's
+    // outermost points is on the face that does the gripping
+    for (const p of ps) for (const c of props.get(p.id)?.corners ?? []) if (pts.length < 96 && !pts.some((q) => len(sub(q, c)) < 2)) pts.push(c);
     return pts.map(SI);
   };
-  const boxesOf = (ps: EvalPart[]) =>
+  // a moving body's parts by their shape; the frame's by one box each (there are many, and loose things lie on them)
+  const boxesOf = (ps: EvalPart[], fixed: boolean) =>
     ps.flatMap((p) => {
       const pr = props.get(p.id);
       if (!pr) return [];
-      return [{ c: SI(scl(add(pr.min, pr.max), 0.5)), h: SI(scl(sub(pr.max, pr.min), 0.5)), q: [1, 0, 0, 0] as [number, number, number, number] }];
+      const bs = fixed ? [{ min: pr.min, max: pr.max }] : pr.boxes;
+      return bs.map((b) => ({ c: SI(scl(add(b.min, b.max), 0.5)), h: SI(scl(sub(b.max, b.min), 0.5)), q: [1, 0, 0, 0] as [number, number, number, number] }));
     });
   const massLines: string[] = [];
   const addBody = (id: string, ps: EvalPart[], label: string, fixed: boolean) => {
     const mp = massOf(id, ps);
     const touches = !fixed && !wheelBodies.has(id) && !trackBodies.has(id);
-    bodies.push({ id, label, parts: ps.map((p) => p.id), mass: mp.mass, com: mp.com, inertia: mp.inertia, points: touches ? supportOf(ps) : [], boxes: boxesOf(ps), fixed: fixed || undefined });
+    bodies.push({ id, label, parts: ps.map((p) => p.id), mass: mp.mass, com: mp.com, inertia: mp.inertia, points: touches ? supportOf(ps) : [], boxes: boxesOf(ps, fixed), fixed: fixed || undefined });
     if (!fixed || id === FRAME) massLines.push(`${id} ${fmtMass(mp.grams)}`);
   };
   addBody(FRAME, frameParts, "the frame", base === "fixed");

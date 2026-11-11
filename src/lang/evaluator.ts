@@ -34,6 +34,7 @@ import { sketchFns } from "../sketch/fns";
 import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
+import { studyVariable } from "../analysis/studyLang";
 import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
@@ -2781,6 +2782,7 @@ class Evaluator {
         if (k) this.current?.add(name);
         return k;
       },
+      param: (name) => this.params.find((p) => p.name === name),
     });
     // the parts it reads are dependencies, so the graph and incremental reruns see them
     if (spec.kind === "structural") for (const p of spec.parts) if (this.defKind.has(p)) this.current?.add(p);
@@ -2793,12 +2795,26 @@ class Evaluator {
     this.analyses.push(spec);
   }
 
+  /** vary: [thickness, bend_r(1mm, 6mm), ribs(0, 4, 1)]: parameters by name, each with an optional range and step. */
+  varyList(e: Expr, scope: Scope): Value {
+    const items = e.k === "list" ? e.items : [e];
+    return items.map((x) => {
+      if (x.k === "ident") return studyVariable(x.name, []);
+      if (x.k === "call" && x.callee.k === "ident" && x.args.length <= 3 && x.args.every((a) => !a.name)) {
+        const nums = x.args.map((a) => this.num(this.expr(a.value, scope), a.value.span));
+        return studyVariable(x.callee.name, nums);
+      }
+      throw new EvalError("vary: lists parameters by name, each with an optional range and step, like vary: [thickness, rib_h(2mm, 8mm), ribs(0, 4, 1)]", x.span);
+    });
+  }
+
   analysisItems(items: Item[], scope: Scope, props: AnalysisItem[], flags: AnalysisItem[], depth: number) {
     if (depth > 20) throw new EvalError("Blocks are nested too deeply", items[0]?.span ?? { start: 0, end: 0 });
     for (const it of items) {
       switch (it.k) {
         case "prop":
-          props.push({ name: it.name, value: this.expr(it.value, scope), span: it.span });
+          // a design study names parameters (vary: [thickness, rib_h(2mm, 8mm)]), so they are read as names, not values
+          props.push({ name: it.name, value: it.name === "vary" ? this.varyList(it.value, scope) : this.expr(it.value, scope), span: it.span });
           break;
         case "flag":
           flags.push({ name: it.name, value: true, span: it.span });

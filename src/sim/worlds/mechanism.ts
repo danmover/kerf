@@ -166,6 +166,9 @@ export class MechWorld implements World {
         const want = (d.dev as Servo).wanted(d.us);
         sd.goal = want === null ? null : a.sign * (want - a.zero) * D2R;
         sd.powered = d.powered;
+        // a smart servo's torque limit is set over its bus
+        const lim = (d.dev as { limit?: () => number }).limit?.();
+        if (lim !== undefined) sd.stall = lim;
       } else (a.drive as ActuatorDrive).v = d.v;
     }
     this.magnetics?.currents(io, dt);

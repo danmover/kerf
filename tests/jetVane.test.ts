@@ -224,6 +224,40 @@ describe("balance firmware", () => {
     expect(lf.staticRam).toBeLessThan(FEATHER_ESP32_V2.ramBytes / 10);
   });
 
+  it("puts the console on Bluetooth serial as well as USB, so a free run has no cable on the gimbal", { timeout: 30_000 }, () => {
+    const fw = generateFirmware(bench.machine!, bench.name)[0];
+    const cfg = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    const ino = fw.files.find((f) => f.path.endsWith(".ino"))!.content;
+    // the Feather V2 is a classic ESP32 with Bluetooth: the console is on both ports
+    expect(cfg).toMatch(/#define BT_CONSOLE 1/);
+    expect(cfg).toMatch(/#define BT_NAME "JetVane"/);
+    expect(ino).toMatch(/#include <BluetoothSerial.h>/);
+    expect(ino).toMatch(/SerialBT\.begin\(BT_NAME\)/);
+    expect(ino).toMatch(/while \(SerialBT\.available\(\)\) feed\(SerialBT\.read\(\), now\)/);
+    // every line the sketch prints goes through the two-port macros
+    expect(ino.split("\n").filter((l) => /Serial\.print(ln)?\(/.test(l) && !/#define OUT/.test(l))).toEqual([]);
+    expect(fw.files.find((f) => f.path.endsWith("README.md"))!.content).toMatch(/No cable on the gimbal/);
+    // bt_console: 0 in the firmware block leaves it out
+    const usbOnly = design(`scenario "Bench" { world: sim.bench() duration: 1s }`, ", bt_console: 0");
+    expect(usbOnly.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const cfg2 = generateFirmware(usbOnly.machine!, usbOnly.name)[0].files.find((f) => f.path.endsWith("config.h"))!.content;
+    expect(cfg2).toMatch(/#define BT_CONSOLE 0/);
+  });
+
+  it("sets the integral's limit from the vanes' own moment and reads the accelerometer at 8 g", () => {
+    const fw = generateFirmware(bench.machine!, bench.name)[0];
+    const cfg = fw.files.find((f) => f.path.endsWith("config.h"))!.content;
+    const ino = fw.files.find((f) => f.path.endsWith(".ino"))!.content;
+    expect(cfg).toMatch(/#define I_SHARE 0\.6f/);
+    expect(cfg).toMatch(/#define REF_WN 14\.0f/);
+    expect(cfg).not.toMatch(/I_TORQUE_MAX/);
+    expect(ino).toMatch(/float tmax = I_SHARE \* 1\.414f \* VANE_MAX_DEG \* mDeg;/);
+    // while the vanes are at their limit the integral may only unwind
+    expect(ino).toMatch(/if \(saturated && err\[i\] \* integ\[i\] >= 0\) continue;/);
+    expect(ino).toMatch(/imuWrite\(0x10, 0x8E\)/);
+    expect(ino).toMatch(/0\.000244f/);
+  });
+
   it("reads every ADC pin of the Feather, the battery monitor too", { timeout: 30_000 }, () => {
     const w = bench.scenarios![0].spec.world;
     if (w.kind !== "bench") throw new Error("not a bench");
@@ -460,8 +494,9 @@ void loop() {
       const r = /rise ([\d.]+) s, overshoot (\d+) %, within 10 % after ([\d.]+) s, error (-?[\d.]+) deg/.exec(l);
       expect(r, l).not.toBeNull();
       expect(Number(r![1])).toBeLessThan(0.6);
-      expect(Number(r![2])).toBeLessThan(40);
-      expect(Number(r![3])).toBeLessThan(1.5);
+      // the set point moves along a critically damped path that is fed forward: the unit follows it without overshooting
+      expect(Number(r![2])).toBeLessThan(10);
+      expect(Number(r![3])).toBeLessThan(1);
       expect(Math.abs(Number(r![4]))).toBeLessThan(0.5);
     }
     // the log ran through each step: roll, pitch, gx, gy, four vanes, thrust, cell

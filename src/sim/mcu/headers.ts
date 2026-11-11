@@ -18,7 +18,7 @@ export function systemHeaders(b: Board): Record<string, string> {
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-${esp ? "#include <pgmspace.h>\n#define IRAM_ATTR\n#define DRAM_ATTR\n#define ESP_OK 0\n#define portTICK_PERIOD_MS 1" : "#include <avr/pgmspace.h>\n#include <avr/io.h>\n#include <avr/interrupt.h>"}
+${esp ? "#include <pgmspace.h>\n#define IRAM_ATTR\n#define DRAM_ATTR\n#define ESP_OK 0\n#define portTICK_PERIOD_MS 1\n#define SERIAL_8N1 0x800001c" : "#include <avr/pgmspace.h>\n#include <avr/io.h>\n#include <avr/interrupt.h>"}
 
 #define HIGH 0x1
 #define LOW  0x0
@@ -149,6 +149,7 @@ ${b.abi.intBits === 32 ? "#define INT_MIN (-2147483647-1)\n#define INT_MAX 21474
     "Servo.h": empty,
     // the ESP32Servo library (Kevin Harrington, John K. Bennett): Servo on the LEDC timers, any output pin
     "ESP32Servo.h": empty,
+    "BluetoothSerial.h": empty,
     "Preferences.h": empty,
     "Adafruit_NeoPixel.h": `#pragma once
 #define NEO_RGB ((0 << 6) | (0 << 4) | (1 << 2) | (2))

@@ -3,6 +3,7 @@
 // drivetrain calculator consume. Units: mm, N, MPa, N·mm, rpm, hours.
 
 import type { Span } from "../lang/ast";
+import type { Finish, LoadCycle, MeanStress } from "./fe/fatigue";
 
 export type V3 = [number, number, number];
 
@@ -22,10 +23,23 @@ export interface Within {
 
 export interface SupportSpec {
   region: RegionSpec;
-  /** undefined: held in every direction; otherwise held along this axis only (a roller or sliding support) */
+  /** undefined: held in every direction; otherwise held along this axis only (a roller or sliding support); a spring's direction */
   dir?: V3;
   /** a seat only pressed on (by bands, springs or weight), not bonded: the solve checks it stays pressed and does not slide or turn */
   contact?: ContactSpec;
+  /**
+   * An elastic support instead of a rigid one: rubber feet, a soft mount, the flex of what it bolts to. rate: the
+   * springs' total stiffness, N/mm, spread over the region by area (every way, or along dir); perArea: stiffness per
+   * mm² of surface, N/mm³, pressing along the surface's normal (a pad: its modulus over its thickness).
+   */
+  spring?: { rate?: number; perArea?: number };
+  /**
+   * A pin through a bore (or a bushing round a shaft), the region a cylinder zone: held across the pin and, unless
+   * slide, along it, free to turn about it. It bears only where the loads press the bore onto it unless tight.
+   */
+  pin?: { slide: boolean; tight: boolean };
+  /** a set displacement, mm: the region is moved this far and held there (along dir only, when dir is given) */
+  move?: V3;
 }
 
 export interface ContactSpec {
@@ -61,7 +75,12 @@ export type LoadSpec =
   /** pressure in MPa pushing into the region's surface */
   | { t: "pressure"; region: RegionSpec; p: number }
   /** torque in N·mm about an axis through a point (default: the centre of the loaded surface) */
-  | { t: "torque"; region: RegionSpec; torque: number; axis: V3; at?: V3 };
+  | { t: "torque"; region: RegionSpec; torque: number; axis: V3; at?: V3 }
+  /**
+   * a force in N pushed onto a bore by what turns in it (or onto a shaft by its bearing), the region a cylinder zone:
+   * spread over the half it presses on with a cosine, none at the sides; a share along the axis is spread evenly
+   */
+  | { t: "bearing"; region: RegionSpec; f: V3 };
 
 export type Resolution = "draft" | "standard" | "fine" | { h: number };
 
@@ -129,6 +148,21 @@ export interface HeatLoadSpec {
   why?: string;
 }
 
+/**
+ * Current through conducting parts (a busbar, a heater element, a battery strap): it goes in over one region and out
+ * over another, and makes heat wherever it flows (Joule heating, I²R), worked out from the parts' shape and resistivity,
+ * which rises as they warm. Either the current through (amps) or the voltage across (volts) is given.
+ */
+export interface CurrentSpec {
+  from: RegionSpec;
+  to: RegionSpec;
+  /** A through it */
+  amps?: number;
+  /** V across it */
+  volts?: number;
+  label: string;
+}
+
 /** A surface held at a temperature: a heated bed, a chilled plate, a hot engine block it bolts to. */
 export interface FixedTempSpec {
   region: RegionSpec;
@@ -154,6 +188,8 @@ export interface FilmSpec {
  */
 export interface ThermalSpec {
   heat: HeatLoadSpec[];
+  /** current through conductors, whose Joule heat adds to the heat made */
+  currents?: CurrentSpec[];
   /** heat: "auto": every electronic part's loss at its working current, from the machine's power budget */
   auto: boolean;
   fixed: FixedTempSpec[];
@@ -174,6 +210,31 @@ export interface ThermalSpec {
   start?: number;
   /** highest allowed temperature for every part, °C (default: each material's long-use limit) */
   maxTemp?: number;
+}
+
+/**
+ * Fatigue: how the loads repeat over the part's life. The loads as written are the peak; each counted cycle runs
+ * between a min and a max scale of them. Judged against each material's S-N curve after a mean-stress correction,
+ * with the damage added up by Miner's rule.
+ */
+export interface FatigueSpec {
+  /** the counted cycles of one pass of the history (constant amplitude: one kind, counted cycles: times) */
+  cycles: LoadCycle[];
+  /** how many times the history happens in the part's life (constant amplitude: 1) */
+  repeats: number;
+  /** what the life is counted in */
+  unit: "cycles" | "repeats";
+  /** how the loads repeat, in words: "fully reversed", "on-off (0 to peak)", "R = 0.2", "a history of 3 load blocks" */
+  loading: string;
+  meanStress: MeanStress;
+  /** surface finish for every part; unset: from how each part is made (machined, cast, printed...) */
+  finish?: Finish;
+  /** chance of lasting the life (0.5 = the mean S-N curve) */
+  reliability: number;
+  /** where the cycles came from */
+  source: "constant" | "blocks" | "trace";
+  /** a trace as written (load scales), for showing it */
+  trace?: number[];
 }
 
 /** Linear (eigenvalue) buckling: how many times the loads it takes to buckle the parts, and the shapes they buckle in. */
@@ -200,9 +261,16 @@ export interface StructuralSpec {
   maxDeflection?: number;
   /** load cycles in service: above about 1000 the fatigue strength is used */
   cycles?: number;
-  /** FDM print: weaker between layers stacked along buildDir */
+  /** fatigue over the part's life: set when cycles: passes 1000, or a load history or the way the loads repeat is given */
+  fatigue?: FatigueSpec;
+  /**
+   * FDM print: true treats every plastic part as printed, false none; unset, the parts with an fdm process or a filament
+   * material are. Each printed part gets walls, skins and infill from its process and is weaker and softer across its layers.
+   */
   printed?: boolean;
+  /** the way the layers stack, for every printed part; unset (buildGiven false) each part's own way on the bed */
   buildDir: V3;
+  buildGiven?: boolean;
   resolution: Resolution;
   /** extra masses (mass(region, 350g)): weight under gravity and in drops, inertia in vibration */
   masses?: MassSpec[];
@@ -220,7 +288,30 @@ export interface StructuralSpec {
   buckling?: BucklingSpec;
   /** solve twice, the second time with smaller elements, and report how much the answers moved */
   converge?: boolean;
+  /** topology optimisation: find the stiffest shape for these loads that keeps a share of the parts' material */
+  topology?: TopologySpec;
   span: Span;
+}
+
+/**
+ * Topology optimisation (topology: 30%): the shape, cut from the analysed parts, that is stiffest under the loads and
+ * supports for the share of their material kept. It runs on demand, and its result is that shape, checked.
+ */
+export interface TopologySpec {
+  /** share of the material to keep, 0–1 */
+  keep: number;
+  /** regions kept solid beyond where the parts are held and loaded (bosses round holes, mounting faces) */
+  preserve: RegionSpec[];
+  /** analysed parts kept as they are (in the analysis, not reshaped) */
+  preserveParts: string[];
+  /** the thinnest member it may leave, mm (unset: about three elements) */
+  minMember?: number;
+  /** mirror planes through the middle of the parts, by the axis across them */
+  symmetry: ("X" | "Y" | "Z")[];
+  /** extrusion: the same profile all the way through along this axis, to cut from plate (laser, waterjet, 2-axis milling) */
+  cut?: "X" | "Y" | "Z";
+  /** most design iterations (default 80) */
+  iterations?: number;
 }
 
 export interface DrivetrainSpec {
@@ -297,7 +388,55 @@ export interface AirflowSpec {
   span: Span;
 }
 
-export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec | AirflowSpec;
+/** A parameter a design study varies, between these values. */
+export interface StudyVariable {
+  /** the param's name */
+  name: string;
+  min: number;
+  max: number;
+  /** values snap to multiples of this from min (whole numbers for a count) */
+  step?: number;
+}
+
+/** What a design study's answer is judged by: a measured or analysed value to make as small or as large as it can. */
+export type StudyMeasure = "mass" | "safety" | "deflection" | "stress" | "frequency" | "temperature" | "buckling";
+
+export interface StudyGoal {
+  sense: "min" | "max";
+  what: StudyMeasure;
+  /** mass of one part (default every made part); the analysis a result comes from (default the worst of those it solves) */
+  of?: string;
+  text: string;
+}
+
+/** A limit every design the study picks must meet, beyond the analyses' own targets and the design's checks. */
+export interface StudyLimit {
+  what: StudyMeasure;
+  op: "<=" | ">=";
+  value: number;
+  of?: string;
+  text: string;
+}
+
+/**
+ * A design study: vary parameters within their ranges, build and check each design, solve the analyses that cover
+ * the parts they change, and find the best one that still passes: the lightest bracket that is strong enough, the
+ * stiffest frame for its mass. Run on demand (it builds many designs), never on every edit.
+ */
+export interface StudySpec {
+  kind: "study";
+  label: string;
+  vary: StudyVariable[];
+  goal: StudyGoal;
+  limits: StudyLimit[];
+  /** the structural analyses solved for every design; unset: those covering parts the parameters change */
+  using?: string[];
+  /** the most designs it may build, the current one included */
+  runs: number;
+  span: Span;
+}
+
+export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec | AirflowSpec | StudySpec;
 
 /** the smallest element size accepted from resolution:, in mm */
 export const MIN_ELEMENT_SIZE = 0.1;

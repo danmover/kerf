@@ -138,7 +138,16 @@ export function vaneFirmware(c: FwContext): VaneResult {
     // fuse or plug can carry runs capped: the throttle never passes sqrt(thrust_cap)
     thrustCap: Math.min(1, Math.max(0.05, setting(c.fw, "thrust_cap", 1))),
     cellLever: setting(c.fw, "cell_lever_mm", 69.2) / 1000,
+    // set-point steps follow a critically damped model at this rate; the loop tracks it with feed-forward
+    refWn: Math.min(40, Math.max(2, setting(c.fw, "ref_wn", 14))),
+    // how hard the unit's own weight pulls it back level, N m per radian of tilt (0: balanced on the pivot)
+    pendRoll: setting(c.fw, "pend_roll", 0),
+    pendPitch: setting(c.fw, "pend_pitch", 0),
+    // the share of the vanes' full moment about one axis the integral term may hold
+    iShare: Math.min(0.9, Math.max(0.05, setting(c.fw, "i_share", 0.6))),
   };
+  // Bluetooth serial console (classic ESP32 only: the S2, S3 and C3 have no Bluetooth Classic)
+  const btConsole = setting(c.fw, "bt_console", 1) > 0 && bp.specs.bluetooth === true && /^esp32$/i.test(String(bp.specs.mcu ?? ""));
   const name = ident(c.fw.name).toLowerCase() || "jet_vane";
   const dir0 = `firmware/${name}`;
   const nV = Math.min(4, servos.length);
@@ -194,6 +203,10 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 #define H_FULL ${cFloat(S.hFull)}
 // +1 when the rotor turns anticlockwise seen from the intake; the coupling test checks it
 #define ROTOR_DIR ${S.rotorDir}
+// the unit hangs bottom-heavy: its weight pulls it back level with this moment per radian of tilt, N m/rad.
+// From the swing test's period T: K = I (2 pi / T)^2. A set-point step feeds it forward.
+#define K_ROLL ${cFloat(S.pendRoll)}
+#define K_PITCH ${cFloat(S.pendPitch)}
 
 // ---- controller
 #define WN ${cFloat(S.wn)}
@@ -206,7 +219,16 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 #define GAIN_SCALE ${cFloat(S.gainScale)}
 #define D_FILTER_HZ 80.0f
 #define COMP_TAU_S 0.5f
-#define I_TORQUE_MAX 0.02f
+// set-point steps follow a critically damped model at this rate, rad/s; the loop tracks it with feed-forward
+#define REF_WN ${cFloat(S.refWn)}
+// the integral term may hold up to this share of the vanes' full moment about one axis at the running thrust:
+// enough to trim out an off-centre mass or a steady push, with the rest left for catching knocks
+#define I_SHARE ${cFloat(S.iShare)}
+
+// ---- console: USB serial, and the same console over Bluetooth serial so no cable hangs off the gimbal
+// (pair with BT_NAME, then open its serial port in any terminal)
+#define BT_CONSOLE ${btConsole ? 1 : 0}
+#define BT_NAME "JetVane"
 
 // ---- safety
 #define TILT_CUT_DEG ${cFloat(S.tiltCut)}
@@ -239,7 +261,7 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 // units with the fan rotor's gyroscopic coupling cancelled -> X mix -> four vane servos at SERVO_HZ.
 // Safety: the e-stop latches a fault (its normally-closed contact also breaks the ESC signal in hardware),
 // the fan cuts past TILT_CUT_DEG or when the IMU stops answering, the throttle ramps, and it arms only
-// level and still. Console: USB serial 115200, type "help".
+// level and still. Console: USB serial 115200${btConsole ? ' and Bluetooth serial ("JetVane")' : ""}, type "help".
 //
 // Board: ${cComment(String(bp.specs.fqbn ?? bp.name))}. Library: ESP32Servo (Kevin Harrington).
 #include <Arduino.h>
@@ -247,6 +269,17 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 #include <ESP32Servo.h>
 #include <EEPROM.h>
 #include "config.h"
+#if BT_CONSOLE
+// the same console over Bluetooth serial: USB is for uploading and bench tests with the locks in, and a free run
+// has no cable on the gimbal
+#include <BluetoothSerial.h>
+BluetoothSerial SerialBT;
+#define OUT(...) do { Serial.print(__VA_ARGS__); SerialBT.print(__VA_ARGS__); } while (0)
+#define OUTLN(...) do { Serial.println(__VA_ARGS__); SerialBT.println(__VA_ARGS__); } while (0)
+#else
+#define OUT(...) Serial.print(__VA_ARGS__)
+#define OUTLN(...) Serial.println(__VA_ARGS__)
+#endif
 
 #define DEG 0.01745329252f
 
@@ -286,7 +319,10 @@ float thrust = 0;
 float vaneCmd[4] = {0, 0, 0, 0};
 float manualVane[4] = {0, 0, 0, 0};
 float integ[2] = {0, 0};
+// the set point asked for, and where its model is on the way there
+float cmd[2] = {0, 0};
 float ref[2] = {0, 0};
+float refRate[2] = {0, 0};
 bool saturated = false;
 uint32_t lastTick = 0;
 uint32_t lastLog = 0;
@@ -348,7 +384,7 @@ bool imuBegin() {
   imuWrite(0x12, 0x01);     // software reset
   delay(20);
   bool ok = imuWrite(0x12, 0x44);   // block data update, address auto-increment
-  ok = ok && imuWrite(0x10, 0x8A);  // accel 1.66 kHz, +-4 g, LPF2 on
+  ok = ok && imuWrite(0x10, 0x8E);  // accel 1.66 kHz, +-8 g (room for the fan's vibration), LPF2 on
   ok = ok && imuWrite(0x17, 0x60);  // accel LPF2 at ODR/45: tilt only, fan vibration out
   ok = ok && imuWrite(0x11, 0x88);  // gyro 1.66 kHz, +-1000 dps
   ok = ok && imuWrite(0x13, 0x02);  // gyro LPF1 on
@@ -371,7 +407,7 @@ bool imuSample(float *g, float *a) {
   float gc[3], ac[3];
   for (uint8_t i = 0; i < 3; i++) {
     gc[i] = raw[i] * (0.035f * DEG);
-    ac[i] = raw[i + 3] * 0.000122f;
+    ac[i] = raw[i + 3] * 0.000244f;
   }
   for (uint8_t j = 0; j < 3; j++) {
     g[j] = imuR[j][0] * gc[0] + imuR[j][1] * gc[1] + imuR[j][2] * gc[2];
@@ -458,17 +494,17 @@ void centre() {
 
 // ---------------------------------------------------------------- states
 void say(const char *what) {
-  Serial.print("state: ");
-  Serial.println(what);
+  OUT("state: ");
+  OUTLN(what);
 }
 
 void fault(const char *why) {
   if (mode != M_FAULT) {
     strncpy(faultText, why, sizeof(faultText) - 1);
     faultText[sizeof(faultText) - 1] = 0;
-    Serial.print("FAULT: ");
-    Serial.print(why);
-    Serial.println(". Fan off, vanes centred. Fix it, release the e-stop, then reset.");
+    OUT("FAULT: ");
+    OUT(why);
+    OUTLN(". Fan off, vanes centred. Fix it, release the e-stop, then reset.");
   }
   mode = M_FAULT;
   thrustTarget = 0;
@@ -487,9 +523,9 @@ void showMode() {
   else if (mode == M_SWEEP) say("force test");
   else if (mode == M_COUPLE) say("coupling test");
   else {
-    Serial.print("state: fault (");
-    Serial.print(faultText);
-    Serial.println(")");
+    OUT("state: fault (");
+    OUT(faultText);
+    OUTLN(")");
   }
 }
 
@@ -513,29 +549,40 @@ bool mixVanes(float tx, float ty, float mDeg, float *v) {
 
 void control(float gx, float gy, float dt, float *v) {
   float I[2] = {I_ROLL, I_PITCH};
+  float K[2] = {K_ROLL, K_PITCH};
   float est[2] = {roll, pitch};
   float rate[2] = {gxf, gyf};
   float t[2];
   float err[2];
   for (int i = 0; i < 2; i++) {
+    // the set point moves along a critically damped path (REF_WN), so a step asks for a moment the vanes have;
+    // the path's own acceleration and the weight's pull at that tilt are fed forward, and the loop only
+    // corrects what is left
+    float acc = REF_WN * REF_WN * (cmd[i] - ref[i]) - 2 * REF_WN * refRate[i];
+    refRate[i] += acc * dt;
+    ref[i] += refRate[i] * dt;
     float kp = I[i] * WN * WN * gainScale;
     float kd = 2 * ZETA * WN * I[i] * gainScale;
     float ki = kp * WN * KI_RATIO;
     err[i] = ref[i] - est[i];
-    t[i] = kp * err[i] - kd * rate[i] + ki * integ[i];
+    t[i] = I[i] * acc + K[i] * ref[i] + kp * err[i] + kd * (refRate[i] - rate[i]) + ki * integ[i];
   }
   // the rotor's momentum along +Z pushes back with (-H wy, +H wx): add the opposite
   float H = rotorDir * H_FULL * sqrt(thrust > 0 ? thrust : 0) * gyroK;
   t[0] += H * gy;
   t[1] -= H * gx;
   float th = thrust < 0.3f ? 0.3f : thrust;
-  saturated = mixVanes(t[0], t[1], M_DEG_MIX_FULL * liftK * th, v);
-  if (saturated) return;
+  float mDeg = M_DEG_MIX_FULL * liftK * th;
+  saturated = mixVanes(t[0], t[1], mDeg, v);
+  // the integral holds at most I_SHARE of one axis's full moment (all four vanes at VANE_MAX_DEG give
+  // 1.414 x VANE_MAX_DEG x mDeg), and while the vanes are at their limit it may only unwind
+  float tmax = I_SHARE * 1.414f * VANE_MAX_DEG * mDeg;
   for (int i = 0; i < 2; i++) {
     float kp = I[i] * WN * WN * gainScale;
     float ki = kp * WN * KI_RATIO;
+    if (saturated && err[i] * integ[i] >= 0) continue;
     integ[i] += err[i] * dt;
-    float lim = ki > 1e-9f ? I_TORQUE_MAX / ki : 0;
+    float lim = ki > 1e-9f ? tmax / ki : 0;
     integ[i] = constrain(integ[i], -lim, lim);
   }
 }
@@ -558,13 +605,13 @@ void sweepStep(uint32_t now) {
   if (into < 1500) return;
   float f = sweepN ? sweepSum / sweepN : 0;
   float m = f * CELL_LEVER_M;
-  Serial.print("sweep ");
-  Serial.print(sweepDeg, 0);
-  Serial.print(" deg: ");
-  Serial.print(f, 3);
-  Serial.print(" N, ");
-  Serial.print(m * 1000, 2);
-  Serial.println(" mN m");
+  OUT("sweep ");
+  OUT(sweepDeg, 0);
+  OUT(" deg: ");
+  OUT(f, 3);
+  OUT(" N, ");
+  OUT(m * 1000, 2);
+  OUTLN(" mN m");
   sx += sweepDeg;
   sy += m;
   sxx += sweepDeg * sweepDeg;
@@ -577,12 +624,12 @@ void sweepStep(uint32_t now) {
   if (sweepDeg <= 12.5f) return;
   float slope = (sn * sxy - sx * sy) / (sn * sxx - sx * sx);
   float predicted = M_DEG_MIX_FULL * liftK * thrust;
-  Serial.print("vane moment: ");
-  Serial.print(slope * 1000, 3);
-  Serial.print(" mN m per deg, predicted ");
-  Serial.print(predicted * 1000, 3);
-  Serial.print(": set LIFT_K to ");
-  Serial.println(predicted > 0 ? liftK * fabs(slope) / predicted : 0, 2);
+  OUT("vane moment: ");
+  OUT(slope * 1000, 3);
+  OUT(" mN m per deg, predicted ");
+  OUT(predicted * 1000, 3);
+  OUT(": set LIFT_K to ");
+  OUTLN(predicted > 0 ? liftK * fabs(slope) / predicted : 0, 2);
   mode = M_ARMED;
   centre();
 }
@@ -594,24 +641,26 @@ void sweepStep(uint32_t now) {
 // the roll rate, each sample against the rate averaged over its conversion. The slope is the rotor's momentum.
 void coupleEnd() {
   ref[0] = 0;
+  cmd[0] = 0;
+  refRate[0] = 0;
   integ[0] = 0;
   thrustTarget = 0;
   mode = M_ARMED;
   centre();
   float fp = cpN ? cp / cpN : 0;
   float fm = cmN ? cm / cmN : 0;
-  Serial.print("coupling: pitch nudge +");
-  Serial.print(COUPLE_NUDGE_DEG, 0);
-  Serial.print(" deg reads ");
-  Serial.print(fp, 3);
-  Serial.print(" N, -");
-  Serial.print(COUPLE_NUDGE_DEG, 0);
-  Serial.print(" deg reads ");
-  Serial.print(fm, 3);
-  Serial.println(" N; fan back to 0");
+  OUT("coupling: pitch nudge +");
+  OUT(COUPLE_NUDGE_DEG, 0);
+  OUT(" deg reads ");
+  OUT(fp, 3);
+  OUT(" N, -");
+  OUT(COUPLE_NUDGE_DEG, 0);
+  OUT(" deg reads ");
+  OUT(fm, 3);
+  OUTLN(" N; fan back to 0");
   float den = sn * sxx - sx * sx;
   if (sn < 10 || den <= 1e-9f || fabs(fp - fm) < 0.02f) {
-    Serial.println("coupling: the load cell did not follow: fit the cell link, tare, and run it at 50 % thrust or more");
+    OUTLN("coupling: the load cell did not follow: fit the cell link, tare, and run it at 50 % thrust or more");
     return;
   }
   int sgn = fp > fm ? 1 : -1;
@@ -620,23 +669,23 @@ void coupleEnd() {
   float vy = sn * syy - sy * sy;
   float r2 = vy > 1e-12f ? num * num / (den * vy) : 0;
   float predicted = rotorDir * H_FULL * sqrt(thrust);
-  Serial.print("rotor momentum: ");
-  Serial.print(H * 1000, 1);
-  Serial.print(" mN m s at ");
-  Serial.print(thrust * 100, 0);
-  Serial.print(" % thrust, predicted ");
-  Serial.print(predicted * 1000, 1);
-  Serial.print(" (fit r2 ");
-  Serial.print(r2, 2);
-  Serial.println(")");
-  if (H * rotorDir >= 0) Serial.println("rotor direction matches ROTOR_DIR");
+  OUT("rotor momentum: ");
+  OUT(H * 1000, 1);
+  OUT(" mN m s at ");
+  OUT(thrust * 100, 0);
+  OUT(" % thrust, predicted ");
+  OUT(predicted * 1000, 1);
+  OUT(" (fit r2 ");
+  OUT(r2, 2);
+  OUTLN(")");
+  if (H * rotorDir >= 0) OUTLN("rotor direction matches ROTOR_DIR");
   else {
-    Serial.print("the rotor turns the other way: rotor ");
-    Serial.print(-rotorDir);
-    Serial.println(", then save");
+    OUT("the rotor turns the other way: rotor ");
+    OUT(-rotorDir);
+    OUTLN(", then save");
   }
-  Serial.print("H_FULL from this run: ");
-  Serial.println(thrust > 0 ? fabs(H) / sqrt(thrust) : 0, 4);
+  OUT("H_FULL from this run: ");
+  OUTLN(thrust > 0 ? fabs(H) / sqrt(thrust) : 0, 4);
 }
 
 void coupleStep(uint32_t now, float dt) {
@@ -648,10 +697,10 @@ void coupleStep(uint32_t now, float dt) {
   float kd = 2 * ZETA * WN * I_ROLL * gainScale;
   float ki = kp * WN * KI_RATIO;
   float err = ref[0] - roll;
-  integ[0] += err * dt;
-  float lim = ki > 1e-9f ? I_TORQUE_MAX / ki : 0;
-  integ[0] = constrain(integ[0], -lim, lim);
   float mDeg = M_DEG_MIX_FULL * liftK * (thrust < 0.3f ? 0.3f : thrust);
+  integ[0] += err * dt;
+  float lim = ki > 1e-9f ? I_SHARE * 1.414f * VANE_MAX_DEG * mDeg / ki : 0;
+  integ[0] = constrain(integ[0], -lim, lim);
   float v[4];
   mixVanes(kp * err - kd * gxf + ki * integ[0], nudge * mDeg, mDeg, v);
   writeVanes(v);
@@ -692,34 +741,34 @@ void stepWatch(uint32_t now) {
   if (y > stepPeak) stepPeak = y;
   if (fabs(y - 1) > 0.1f) stepSettle = t;
   if (t < STEP_S) return;
-  Serial.print("step ");
-  Serial.print(stepAxis ? "pitch " : "roll ");
-  Serial.print(stepDeg, 1);
-  Serial.print(" deg: ");
-  if (stepT90 < 0) Serial.print("never reached 90 %");
+  OUT("step ");
+  OUT(stepAxis ? "pitch " : "roll ");
+  OUT(stepDeg, 1);
+  OUT(" deg: ");
+  if (stepT90 < 0) OUT("never reached 90 %");
   else {
-    Serial.print("rise ");
-    Serial.print(stepT90 - stepT10, 2);
-    Serial.print(" s");
+    OUT("rise ");
+    OUT(stepT90 - stepT10, 2);
+    OUT(" s");
   }
-  Serial.print(", overshoot ");
-  Serial.print(stepPeak > 1 ? (stepPeak - 1) * 100 : 0, 0);
-  Serial.print(" %, ");
-  if (stepSettle >= STEP_S) Serial.print("not settled");
+  OUT(", overshoot ");
+  OUT(stepPeak > 1 ? (stepPeak - 1) * 100 : 0, 0);
+  OUT(" %, ");
+  if (stepSettle >= STEP_S) OUT("not settled");
   else {
-    Serial.print("within 10 % after ");
-    Serial.print(stepSettle, 2);
-    Serial.print(" s");
+    OUT("within 10 % after ");
+    OUT(stepSettle, 2);
+    OUT(" s");
   }
-  Serial.print(", error ");
-  Serial.print((1 - y) * stepDeg, 2);
-  Serial.println(" deg");
-  ref[stepAxis] -= stepDeg * DEG;
+  OUT(", error ");
+  OUT((1 - y) * stepDeg, 2);
+  OUTLN(" deg");
+  cmd[stepAxis] -= stepDeg * DEG;
   logOn = stepLogWas;
   stepAxis = -1;
 }
 
-void logHeader() { Serial.println("log: roll, pitch (deg), gx, gy (deg/s), vane 1-4 (deg), thrust (%), cell (N)"); }
+void logHeader() { OUTLN("log: roll, pitch (deg), gx, gy (deg/s), vane 1-4 (deg), thrust (%), cell (N)"); }
 
 // ---------------------------------------------------------------- flash
 void putLong(int a, long v) {
@@ -742,7 +791,7 @@ void saveSettings() {
   putLong(36, cellOffset);
   putLong(40, (long)cellCountsPerN);
   EEPROM.commit();
-  Serial.println("saved");
+  OUTLN("saved");
 }
 
 void loadSettings() {
@@ -759,40 +808,40 @@ void loadSettings() {
 
 // ---------------------------------------------------------------- console
 void help() {
-  Serial.println("arm            arm (level, still, e-stop out, IMU answering)");
-  Serial.println("t <percent>    thrust target, share of full thrust (THRUST_CAP of the fan's own)");
-  Serial.println("hold           close the balance loop (vanes work from 25 % thrust)");
-  Serial.println("stop           fan off, vanes centred, disarmed");
-  Serial.println("reset          clear a fault once the e-stop is released");
-  Serial.println("servo <1-4> <deg> / servo off   move one vane, fan off");
-  Serial.println("sign           each vane to +10 deg in turn: check the push matches the README");
-  Serial.println("trim <1-4> <us>  a servo's centre pulse");
-  Serial.println("sweep          static force test (roll locked, load cell fitted, armed at thrust)");
-  Serial.println("couple         gyroscopic coupling test (roll free, Y on the load cell link, armed at thrust)");
-  Serial.println("step roll|pitch <deg>  a setpoint step while holding: prints rise, overshoot, settling");
-  Serial.println("tare / cal <grams>  zero the load cell / scale it with a known weight");
-  Serial.println("gain <x>  liftk <x>  gyrok <x>  rotor <1|-1>  save  show");
-  Serial.println("log            50 Hz log on/off: roll, pitch, gyro rates, vanes, thrust, load cell");
+  OUTLN("arm            arm (level, still, e-stop out, IMU answering)");
+  OUTLN("t <percent>    thrust target, share of full thrust (THRUST_CAP of the fan's own)");
+  OUTLN("hold           close the balance loop (vanes work from 25 % thrust)");
+  OUTLN("stop           fan off, vanes centred, disarmed");
+  OUTLN("reset          clear a fault once the e-stop is released");
+  OUTLN("servo <1-4> <deg> / servo off   move one vane, fan off");
+  OUTLN("sign           each vane to +10 deg in turn: check the push matches the README");
+  OUTLN("trim <1-4> <us>  a servo's centre pulse");
+  OUTLN("sweep          static force test (roll locked, load cell fitted, armed at thrust)");
+  OUTLN("couple         gyroscopic coupling test (roll free, Y on the load cell link, armed at thrust)");
+  OUTLN("step roll|pitch <deg>  a setpoint step while holding: prints rise, overshoot, settling");
+  OUTLN("tare / cal <grams>  zero the load cell / scale it with a known weight");
+  OUTLN("gain <x>  liftk <x>  gyrok <x>  rotor <1|-1>  save  show");
+  OUTLN("log            50 Hz log on/off: roll, pitch, gyro rates, vanes, thrust, load cell");
 }
 
 void show() {
-  Serial.print("gain ");
-  Serial.print(gainScale, 2);
-  Serial.print(" liftk ");
-  Serial.print(liftK, 2);
-  Serial.print(" gyrok ");
-  Serial.print(gyroK, 2);
-  Serial.print(" rotor ");
-  Serial.println(rotorDir);
-  Serial.print("roll ");
-  Serial.print(roll / DEG, 2);
-  Serial.print(" pitch ");
-  Serial.print(pitch / DEG, 2);
-  Serial.print(" thrust ");
-  Serial.print(thrust * 100, 0);
-  Serial.print(" % cell ");
-  Serial.print(cellN, 3);
-  Serial.println(" N");
+  OUT("gain ");
+  OUT(gainScale, 2);
+  OUT(" liftk ");
+  OUT(liftK, 2);
+  OUT(" gyrok ");
+  OUT(gyroK, 2);
+  OUT(" rotor ");
+  OUTLN(rotorDir);
+  OUT("roll ");
+  OUT(roll / DEG, 2);
+  OUT(" pitch ");
+  OUT(pitch / DEG, 2);
+  OUT(" thrust ");
+  OUT(thrust * 100, 0);
+  OUT(" % cell ");
+  OUT(cellN, 3);
+  OUTLN(" N");
 }
 
 float arg(const char *s) {
@@ -814,17 +863,17 @@ void command(const char *s, uint32_t now) {
     centre();
     if (mode != M_FAULT) mode = M_DISARMED;
   } else if (!strcmp(s, "reset")) {
-    if (estopPressed()) Serial.println("release the e-stop first");
+    if (estopPressed()) OUTLN("release the e-stop first");
     else if (mode == M_FAULT) mode = M_DISARMED;
   } else if (!strcmp(s, "arm")) {
-    if (mode == M_FAULT) Serial.println("clear the fault first: reset");
-    else if (estopPressed()) Serial.println("e-stop is pressed");
-    else if (!imuFound || now - lastImuOk > IMU_TIMEOUT_MS) Serial.println("IMU not answering");
-    else if (fabs(roll) > ARM_LEVEL_DEG * DEG || fabs(pitch) > ARM_LEVEL_DEG * DEG) Serial.println("not level: within 5 deg to arm");
-    else if (fabs(gxf) > ARM_STILL_DPS * DEG || fabs(gyf) > ARM_STILL_DPS * DEG) Serial.println("not still");
-    else if (now < ESC_ARM_MS) Serial.println("ESC still arming: try again in a second");
+    if (mode == M_FAULT) OUTLN("clear the fault first: reset");
+    else if (estopPressed()) OUTLN("e-stop is pressed");
+    else if (!imuFound || now - lastImuOk > IMU_TIMEOUT_MS) OUTLN("IMU not answering");
+    else if (fabs(roll) > ARM_LEVEL_DEG * DEG || fabs(pitch) > ARM_LEVEL_DEG * DEG) OUTLN("not level: within 5 deg to arm");
+    else if (fabs(gxf) > ARM_STILL_DPS * DEG || fabs(gyf) > ARM_STILL_DPS * DEG) OUTLN("not still");
+    else if (now < ESC_ARM_MS) OUTLN("ESC still arming: try again in a second");
     // the gyro's bias again, now the unit sits still, and the attitude restarted from the accelerometer
-    else if (!calibrateGyro()) Serial.println("moved while the gyro was measured: hold it still and arm again");
+    else if (!calibrateGyro()) OUTLN("moved while the gyro was measured: hold it still and arm again");
     else {
       estStarted = false;
       lastImuOk = millis();
@@ -834,15 +883,17 @@ void command(const char *s, uint32_t now) {
     }
   } else if (!strncmp(s, "t ", 2)) {
     if (mode == M_ARMED || mode == M_HOLD) thrustTarget = constrain(arg(s) / 100.0f, 0.0f, 1.0f);
-    else Serial.println("arm first");
+    else OUTLN("arm first");
   } else if (!strcmp(s, "hold")) {
     if (mode == M_ARMED) {
       integ[0] = integ[1] = 0;
       ref[0] = ref[1] = 0;
+      cmd[0] = cmd[1] = 0;
+      refRate[0] = refRate[1] = 0;
       mode = M_HOLD;
-    } else Serial.println("arm first");
+    } else OUTLN("arm first");
   } else if (!strcmp(s, "sweep")) {
-    if (mode != M_ARMED || thrust < THRUST_LOOP_MIN) Serial.println("arm and set a thrust first (t 70)");
+    if (mode != M_ARMED || thrust < THRUST_LOOP_MIN) OUTLN("arm and set a thrust first (t 70)");
     else {
       sweepDeg = -12;
       sweepAt = now;
@@ -853,7 +904,7 @@ void command(const char *s, uint32_t now) {
       mode = M_SWEEP;
     }
   } else if (!strcmp(s, "couple")) {
-    if (mode != M_ARMED || thrust < THRUST_LOOP_MIN) Serial.println("arm and set a thrust first (t 70)");
+    if (mode != M_ARMED || thrust < THRUST_LOOP_MIN) OUTLN("arm and set a thrust first (t 70)");
     else {
       coupleAt = now;
       coupleSeen = cellSamples;
@@ -865,48 +916,50 @@ void command(const char *s, uint32_t now) {
       sn = 0;
       integ[0] = integ[1] = 0;
       ref[0] = ref[1] = 0;
+      cmd[0] = cmd[1] = 0;
+      refRate[0] = refRate[1] = 0;
       mode = M_COUPLE;
-      Serial.println("coupling test: pitch nudges for 3 s, then the roll wave");
+      OUTLN("coupling test: pitch nudges for 3 s, then the roll wave");
     }
   } else if (!strncmp(s, "step ", 5)) {
     int ax = !strncmp(s + 5, "roll", 4) ? 0 : !strncmp(s + 5, "pitch", 5) ? 1 : -1;
     float d = arg(s + 5);
-    if (mode != M_HOLD || thrust < THRUST_LOOP_MIN) Serial.println("hold at thrust first");
-    else if (stepAxis >= 0) Serial.println("a step is running");
-    else if (ax < 0 || d == 0 || fabs(d) > 10) Serial.println("step roll <deg> or step pitch <deg>, up to 10 deg");
+    if (mode != M_HOLD || thrust < THRUST_LOOP_MIN) OUTLN("hold at thrust first");
+    else if (stepAxis >= 0) OUTLN("a step is running");
+    else if (ax < 0 || d == 0 || fabs(d) > 10) OUTLN("step roll <deg> or step pitch <deg>, up to 10 deg");
     else {
       stepAxis = ax;
       stepDeg = d;
       stepAt = now;
       // measured from the setpoint it leaves, so a unit still settling from a knock does not skew it
-      stepY0 = ref[ax] / DEG;
+      stepY0 = cmd[ax] / DEG;
       stepPeak = 0;
       stepT10 = stepT90 = -1;
       stepSettle = 0;
       stepLogWas = logOn;
       if (!logOn) logHeader();
       logOn = true;
-      ref[ax] += d * DEG;
+      cmd[ax] += d * DEG;
     }
   } else if (!strcmp(s, "servo off")) {
     if (mode == M_SERVO) mode = M_DISARMED;
     centre();
   } else if (!strncmp(s, "servo ", 6)) {
     int i = atoi(s + 6) - 1;
-    if (mode != M_DISARMED && mode != M_SERVO) Serial.println("fan off first: stop");
-    else if (i < 0 || i > 3) Serial.println("servo 1 to 4");
+    if (mode != M_DISARMED && mode != M_SERVO) OUTLN("fan off first: stop");
+    else if (i < 0 || i > 3) OUTLN("servo 1 to 4");
     else {
       for (int k = 0; k < 4; k++) manualVane[k] = 0;
       manualVane[i] = arg(s + 6);
       mode = M_SERVO;
     }
   } else if (!strcmp(s, "sign")) {
-    if (mode != M_DISARMED && mode != M_SERVO) Serial.println("fan off first: stop");
+    if (mode != M_DISARMED && mode != M_SERVO) OUTLN("fan off first: stop");
     else {
       for (int k = 0; k < 4; k++) manualVane[k] = 0;
       manualVane[0] = 10;
       mode = M_SERVO;
-      Serial.println("vane 1 at +10 deg; servo 2 10, servo 3 10, servo 4 10 for the others, servo off to finish");
+      OUTLN("vane 1 at +10 deg; servo 2 10, servo 3 10, servo 4 10 for the others, servo off to finish");
     }
   } else if (!strncmp(s, "trim ", 5)) {
     int i = atoi(s + 5) - 1;
@@ -921,24 +974,31 @@ void command(const char *s, uint32_t now) {
   else if (!strncmp(s, "gyrok ", 6)) gyroK = constrain(arg(s), 0.0f, 1.5f);
   else if (!strncmp(s, "rotor ", 6)) rotorDir = arg(s) < 0 ? -1 : 1;
   else if (!strcmp(s, "save")) saveSettings();
-  else if (s[0]) Serial.println("? type help");
+  else if (s[0]) OUTLN("? type help");
+}
+
+void feed(char ch, uint32_t now) {
+  if (ch == '\\r') return;
+  if (ch == '\\n') {
+    line[lineLen] = 0;
+    command(line, now);
+    lineLen = 0;
+  } else if (lineLen < sizeof(line) - 1) line[lineLen++] = ch;
 }
 
 void console(uint32_t now) {
-  while (Serial.available()) {
-    char ch = Serial.read();
-    if (ch == '\\r') continue;
-    if (ch == '\\n') {
-      line[lineLen] = 0;
-      command(line, now);
-      lineLen = 0;
-    } else if (lineLen < sizeof(line) - 1) line[lineLen++] = ch;
-  }
+  while (Serial.available()) feed(Serial.read(), now);
+#if BT_CONSOLE
+  while (SerialBT.available()) feed(SerialBT.read(), now);
+#endif
 }
 
 // ---------------------------------------------------------------- setup and loop
 void setup() {
   Serial.begin(115200);
+#if BT_CONSOLE
+  SerialBT.begin(BT_NAME);
+#endif
   if (PIN_I2C_POWER >= 0) {
     // the STEMMA QT socket's power switch
     pinMode(PIN_I2C_POWER, OUTPUT);
@@ -970,7 +1030,7 @@ void setup() {
   delay(20);
   imuFound = imuBegin();
   if (!imuFound) {
-    Serial.println("LSM6DSOX not found at 0x6A: check the STEMMA QT cable");
+    OUTLN("LSM6DSOX not found at 0x6A: check the STEMMA QT cable");
     fault("IMU not found");
   } else {
     delay(50);
@@ -978,7 +1038,7 @@ void setup() {
     for (int k = 0; k < 10 && !calibrateGyro(); k++) {}
     lastImuOk = millis();
   }
-  Serial.println("jet vane balance ready: type help");
+  OUTLN("jet vane balance ready: type help");
   lastTick = micros();
 }
 
@@ -1057,21 +1117,21 @@ void loop() {
 
   if (logOn && now - lastLog >= 20) {
     lastLog = now;
-    Serial.print(roll / DEG, 2);
-    Serial.print(",");
-    Serial.print(pitch / DEG, 2);
-    Serial.print(",");
-    Serial.print(gxf / DEG, 1);
-    Serial.print(",");
-    Serial.print(gyf / DEG, 1);
+    OUT(roll / DEG, 2);
+    OUT(",");
+    OUT(pitch / DEG, 2);
+    OUT(",");
+    OUT(gxf / DEG, 1);
+    OUT(",");
+    OUT(gyf / DEG, 1);
     for (int i = 0; i < 4; i++) {
-      Serial.print(",");
-      Serial.print(vaneCmd[i], 1);
+      OUT(",");
+      OUT(vaneCmd[i], 1);
     }
-    Serial.print(",");
-    Serial.print(thrust * 100, 0);
-    Serial.print(",");
-    Serial.println(cellN, 3);
+    OUT(",");
+    OUT(thrust * 100, 0);
+    OUT(",");
+    OUTLN(cellN, 3);
   }
 }
 `;
@@ -1083,7 +1143,9 @@ Jet-vane balance firmware for the ${oneLine(bp.name)}, generated by Kerf from th
 
 ## Build
 
-Arduino IDE 2: board **${oneLine(String(bp.specs.fqbn ?? bp.name))}** (arduino-esp32 core), library **ESP32Servo**. USB serial at 115200; type \`help\`.
+Arduino IDE 2: board **${oneLine(String(bp.specs.fqbn ?? bp.name))}** (arduino-esp32 core), library **ESP32Servo**. USB serial at 115200; type \`help\`.${btConsole ? `
+
+**No cable on the gimbal.** The same console runs over Bluetooth serial: pair with **JetVane** from a laptop or a phone, open its serial port in any terminal (115200 is ignored) and type the same commands. Use USB to upload and for bench tests with the lock screws in; unplug it before a free run, because a USB lead hanging off the fan unit pulls it off level.` : ""}
 
 ## Pins
 
@@ -1093,7 +1155,7 @@ ${wiring}
 
 ## What it does
 
-A 500 Hz loop reads the LSM6DSOX (gyro and accelerometer in one burst), runs a complementary filter (0.5 s) on a gyro bias measured with the unit still (at power-up once it settles, and again at \`arm\`), and holds the fan unit level with a PD + I controller per axis in torque units: gains from the rig's inertia (I_ROLL, I_PITCH) for a ${cNum(S.wn)} rad/s, ζ ${cNum(S.zeta)} response, scaled by GAIN_SCALE (${cNum(S.gainScale)} for first runs). The fan rotor's gyroscopic push is cancelled (GYRO_K ${cNum(S.gyroK)}) and the two torques are mixed onto the four vanes in an X, all four scaled back together past ±${cNum(S.vaneMax)}°.
+A 500 Hz loop reads the LSM6DSOX (gyro and accelerometer in one burst), runs a complementary filter (0.5 s) on a gyro bias measured with the unit still (at power-up once it settles, and again at \`arm\`), and holds the fan unit level with a PD + I controller per axis in torque units: gains from the rig's inertia (I_ROLL, I_PITCH) for a ${cNum(S.wn)} rad/s, ζ ${cNum(S.zeta)} response, scaled by GAIN_SCALE (${cNum(S.gainScale)} for first runs). The integral term may hold up to ${cNum(Math.round(S.iShare * 100))} % of the vanes' full moment about an axis, which trims out an off-centre mass or a steady push, and it only unwinds while the vanes are at their limit. A set-point step (\`step\`) moves along a critically damped path at ${cNum(S.refWn)} rad/s whose acceleration is fed forward, so the unit follows it without overshooting. The fan rotor's gyroscopic push is cancelled (GYRO_K ${cNum(S.gyroK)}) and the two torques are mixed onto the four vanes in an X, all four scaled back together past ±${cNum(S.vaneMax)}°.
 
 Safety: the e-stop's normally-closed contact breaks the ESC signal in hardware, and its normally-open contact latches a fault in the firmware; the fan also cuts past ±${cNum(S.tiltCut)}°, when the IMU stops answering for ${20} ms, or on \`stop\`. It arms only within ±${cNum(S.armLevel)}° and still, after the ESC has had its signal at minimum for ${2.5} s.
 

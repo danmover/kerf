@@ -57,7 +57,9 @@ export interface Hal {
   tone(pin: number, freq: number, ms: number): void;
   noTone(pin: number): void;
 
-  serialBegin(port: number, baud: number): void;
+  serialBegin(port: number, baud: number, rx?: number, tx?: number): void;
+  /** wait for n bytes on a port, at most ms: how many are there */
+  serialWait?(port: number, n: number, ms: number): number;
   serialWrite(port: number, bytes: number[]): number;
   serialAvailable(port: number): number;
   serialRead(port: number): number;

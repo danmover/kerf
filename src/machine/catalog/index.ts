@@ -8,8 +8,9 @@ import { FIELDS } from "./fields";
 import { LIGHTS } from "./lights";
 import { MOTION } from "./motion";
 import { MOTORS } from "./motors";
+import { ROBOTICS } from "./robotics";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS, ...ROBOTICS];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 

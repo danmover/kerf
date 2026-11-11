@@ -29,10 +29,33 @@ import { errorText, toast } from "./ui";
 import { useDesign } from "../core/engine";
 import { viewport } from "./viewportApi";
 import { exportDrawingsPdf, exportFlatPatternsDxf } from "../drawing/export";
+import { useAnalysis } from "../analysis/runtime";
+import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
+import { download } from "../persist/files";
 
 async function exportDrawings() {
   await exportDrawingsPdf();
   toast({ kind: "success", title: "Drawings exported", detail: "Every sheet in one PDF, with dimensions and tolerances." });
+}
+
+/** The shapes the design's topology optimisations have found, with each one's plate profile when it has one. */
+function topologyShapes() {
+  const runs = useAnalysis.getState().runs;
+  return (useDesign.getState().model?.analyses ?? []).flatMap((a) => {
+    const r = a.kind === "structural" && a.topology ? runs.get(a.label)?.result : undefined;
+    return r?.topology ? [{ label: a.label, r, dxf: outlineDxf(r) }] : [];
+  });
+}
+
+/** The same files the Analysis tab's STL and DXF profile buttons give, one per topology optimisation. */
+function exportTopology(kind: "stl" | "dxf") {
+  const shapes = topologyShapes().filter((s) => kind === "stl" || s.dxf);
+  for (const s of shapes) {
+    if (kind === "stl") download(shapeStl(s.r, `Kerf: ${s.label}`), `${fileStem(s.label)}.stl`, "model/stl");
+    else download(s.dxf!, `${fileStem(s.label)}.dxf`, "application/dxf");
+  }
+  const what = kind === "stl" ? "shape" : "profile";
+  toast({ kind: "success", title: shapes.length === 1 ? `Topology ${what} exported` : `${shapes.length} topology ${what}s exported`, detail: kind === "stl" ? "The shape found, in millimetres, to print or to model over." : "The profile 1:1 in millimetres, for a laser, waterjet or router." });
 }
 
 export type ExportGroup = "model" | "print" | "image" | "document" | "project";
@@ -89,6 +112,8 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, turned to print, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
   { id: "stl-parts", group: "print", label: "STL per part", detail: "One file per part, named with how many", ext: ".zip", icon: "Layers", selection: true, run: (o) => exportStlParts(o.selectionOnly) },
   { id: "stl", group: "print", label: "STL, one mesh", detail: "The whole assembly in place", ext: ".stl", icon: "Layers", selection: true, run: (o) => exportStl(o.selectionOnly) },
+  { id: "topology-stl", group: "print", label: "Topology shape", detail: "The shape a topology optimisation found, to print or to model over", ext: ".stl", icon: "Wand", shown: () => topologyShapes().length > 0, run: () => exportTopology("stl") },
+  { id: "topology-dxf", group: "print", label: "Topology profile", detail: "The found shape's plate profile 1:1, for a laser, waterjet or router", ext: ".dxf", icon: "Wand", shown: () => topologyShapes().some((s) => s.dxf), run: () => exportTopology("dxf") },
 
   { id: "png", group: "image", label: "Picture of this view", detail: "1920 × 1200, fully refined", ext: ".png", icon: "Eye", run: () => exportPng() },
   { id: "png-4k", group: "image", label: "4K picture", detail: "3840 × 2400 for print and slides", ext: ".png", icon: "Eye", run: () => exportPngSized(3840, 2400, "4K") },

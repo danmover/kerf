@@ -131,6 +131,31 @@ drawing shaft_dwg {
     expect(found.fits.some((f) => f.instances.some((i) => i.hole.part.name.startsWith("seal") || i.shaft.part.name.startsWith("seal") || i.hole.part.name === "boot"))).toBe(false);
   });
 
+  it("does not let washers set where a pattern of screws goes", () => {
+    const src = `
+part foot {
+  material: "PETG"
+  process: mfg.fdm()
+  body box(80, 20, 10, at: (0, 0, 5))
+  cut hole(M4, depth: 8, at: (-30, 0, 0), dir: Z, fit: "insert")
+  cut hole(M4, depth: 8, at: (30, 0, 0), dir: Z, fit: "insert")
+}
+part board {
+  material: "Wood"
+  body box(120, 60, 12, at: (0, 0, -6))
+  cut cylinder(d: 5.5, h: 14, at: (-30, 0, -13), dir: Z)
+  cut cylinder(d: 5.5, h: 14, at: (30, 0, -13), dir: Z)
+}
+component inserts = lib.insert(M4) { at: [(-30, 0, 0), (30, 0, 0)], axis: Z }
+component washers = lib.washer(M4) { at: [(-30, 0, -12), (30, 0, -12)], axis: -Z }
+component screws = lib.screw(M4, 20) { at: [(-30, 0, -12.8), (30, 0, -12.8)], axis: Z }
+`;
+    const { report } = run(src);
+    // a washer is loose until its screw is tight: it is not judged as a part the screws have to line up with
+    expect(report.outcomes.filter((o) => o.status !== "pass").map((o) => `${o.title}: ${o.detail}`)).toEqual([]);
+    expect(report.outcomes.filter((o) => o.kind === "screw-pattern" && /washers/.test(o.title))).toEqual([]);
+  });
+
   it("adds a summary and the gear meshes to the report", () => {
     const model = evaluate(demo("reducer"));
     const items = fitItems([], { model });

@@ -482,7 +482,7 @@ function stackOf(screw: EvalPart, parts: EvalPart[], mesh: MeshLookup | undefine
     x = ahead.a;
   }
   // a countersunk head sits down in its cone, so its seat is not a face to meet
-  const csk = f.head === "flat";
+  const csk = f.head === "flat" || f.head === "wood";
   const real = gaps.filter((g) => !(g.at === "head" && csk));
   // a lock nut (nyloc, or a thin nut with threadlocker) left with running clearance is a hinge: it holds the parts
   // on the screw and lets them turn

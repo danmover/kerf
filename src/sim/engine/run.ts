@@ -10,6 +10,7 @@ import { measuredPart } from "../../machine/measured";
 import { generateFirmware } from "../../machine/firmware";
 import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
 import { Plant, fieldResults } from "./plant";
+import { BusServo } from "./busServo";
 import { SimHal, type SerialLine, type SimFault } from "./hal";
 import type { DisplayFrame } from "./devices";
 import type { PrintTrace } from "../printer/run";
@@ -349,6 +350,16 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results[`${l.comp}.colours`] = l.seen.size;
   }
   Object.assign(results, fieldResults(plant));
+  // smart servos: where each horn ended up (degrees, 180 the middle of its turn) and the hottest it got
+  for (const s of plant.servos) {
+    if (!(s.s instanceof BusServo)) continue;
+    results[`${s.comp}.angle`] = s.s.angle;
+    results[`${s.comp}.peak_temp`] = s.s.peakTemp;
+  }
+  if (plant.buses.length) {
+    results.bus_packets = plant.buses.reduce((n, b) => n + b.packets, 0);
+    results.bus_bad_packets = plant.buses.reduce((n, b) => n + b.bad, 0);
+  }
   Object.assign(results, copingResults(frames, hal.serial, plant, inj));
   if (fwRef) for (const g of watch) {
     const v = fwRef.fw.read(g);

@@ -30,6 +30,14 @@
 //     fix: face(mount, -Z)
 //   }
 //
+//   analysis "Crank arm fatigue" {
+//     parts: [crank]
+//     fix: zone(at: (0, 0, 0), d: 12, axis: Y, length: 10)
+//     load: force(face(crank, +X), (0, 0, -900N))
+//     cycles: 1e7
+//     loading: "on-off"
+//   }
+//
 //   analysis "Gearbox duty" {
 //     drive: motor_gear
 //     torque: 0.3Nm
@@ -40,17 +48,23 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, BucklingSpec, DropSpec, Excitation, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3, Within } from "./spec";
+import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, TopologySpec, V3, Within } from "./spec";
+import { FINISHES, MEAN_STRESS, mergeCycles, rainflow, type Finish, type LoadCycle, type MeanStress } from "./fe/fatigue";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
 import { COOLING } from "./thermalMaterials";
 import { buildAirflow } from "./aeroLang";
+import { buildStudy } from "./studyLang";
 
 /** supports plus loads in one analysis: each one is a pass over the model's surface */
 export const MAX_BOUNDARY_ITEMS = 200;
 
 /** heat: where heat is made and how the parts are cooled; with fix: the temperatures then load the structure */
 export const HEAT_PROPS = ["heat", "hold", "cooling", "ambient", "emissivity", "time", "start", "max_temp"];
+/** fatigue: how the loads repeat over the part's life, and what lowers the material's fatigue strength */
+export const FATIGUE_PROPS = ["loading", "history", "repeats", "mean_stress", "finish", "reliability"];
+/** topology optimisation: the stiffest shape for the loads from a share of the material, and what it must keep */
+export const TOPOLOGY_PROPS = ["topology", "preserve", "min_member", "symmetry", "extrusion", "iterations"];
 export const STRUCTURAL_PROPS = [
   "parts",
   "part",
@@ -62,6 +76,7 @@ export const STRUCTURAL_PROPS = [
   "printed",
   "build",
   "cycles",
+  ...FATIGUE_PROPS,
   "safety",
   "max_deflection",
   "resolution",
@@ -79,6 +94,7 @@ export const STRUCTURAL_PROPS = [
   "assembled_at",
   "buckling",
   "buckling_safety",
+  ...TOPOLOGY_PROPS,
 ];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
 export const UCI_PROPS = ["uci", "bottom_bracket", "wheels", "saddle", "bars", "hoods", "forward", "parts", "rim_depth"];
@@ -90,8 +106,10 @@ const SUPPORT = "support";
 const MASS = "mass";
 const EXCITE = "excitation";
 const HEAT = "heat source";
+const CURRENT = "electric current";
 const HELD = "held temperature";
 const FILM = "film";
+const BLOCK = "load block";
 
 function def(name: string, params: string[], impl: (a: Args) => Value, doc: string): [string, Fn] {
   return [name, new Fn(name, (pos, named, ctx) => impl(new Args(name, pos, named, ctx, params)), doc)];
@@ -112,6 +130,10 @@ function region(v: Value | undefined, a: Args): RegionSpec {
 const wrap = (kind: string, spec: unknown, label: string) => new Obj({ spec: spec as Value }, kind, label);
 /** -Y evaluates to (-0, -1, -0); store plain zeros */
 const clean = (v: V3): V3 => [v[0] || 0, v[1] || 0, v[2] || 0];
+const norm3 = (v: V3): V3 => {
+  const l = Math.hypot(...v) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+};
 
 /** Functions that only exist inside analysis blocks; they take precedence there when called. */
 export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
@@ -249,6 +271,63 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     "contact(region, mu: 0.3, grip: [band]) → a seat that is only pressed on (by bands, springs or its own weight), not glued: it holds like fix:, then the result checks that the seat stays pressed (no edge lifts off) and that friction holds what would slide or turn it. A cylinder zone round a tube (zone(at:, d:, axis:, length:)) is a saddle on that tube; grip: adds the friction of bands round the same tube.",
   ),
   def(
+    "spring",
+    ["where", "rate", "axis", "per_area"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      const hasRate = a.has("rate"),
+        hasPer = a.has("per_area");
+      if (hasRate === hasPer) a.ctx.error("spring(): give rate: (the springs' total stiffness in N/mm, like spring(face(base, -Z), 500)) or per_area: (N/mm per mm² of surface, for a pad), one of them");
+      const v = hasRate ? a.positive("rate") : a.positive("per_area");
+      const spec: SupportSpec = { region: r, ...(a.has("axis") ? { dir: clean(a.dir("axis")) } : {}), spring: hasRate ? { rate: v } : { perArea: v } };
+      return wrap(SUPPORT, spec, "spring");
+    },
+    "spring(region, 500, axis: Z) → an elastic support instead of a rigid one: rubber feet, a soft mount, the give of a shelf or wall it bolts to. rate: the springs' total stiffness in N/mm (it gives 1 mm per 500 N here), spread over the region by area, every way or only along axis:. per_area: 1.5 is a pad pressing along the surface's normal, in N/mm per mm² (a rubber pad: its compression modulus over its thickness, about 5 MPa / 3 mm ≈ 1.7). Use it in fix:; the result says how far it gives.",
+  ),
+  def(
+    "pin",
+    ["where", "slide", "tight"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      if (r.t !== "cyl") a.ctx.error("pin(): give the bore (or the shaft) as a cylinder zone, like pin(zone(at: (0, 0, 10), d: 6, axis: Y, length: 12))");
+      return wrap(SUPPORT, { region: r, pin: { slide: a.bool("slide", false), tight: a.bool("tight", false) } } satisfies SupportSpec, "pin");
+    },
+    "pin(zone(at:, d:, axis:, length:)) → a pin through a bore, or a bushing or bearing round a shaft: holds it across the pin and along it while it turns freely about it (a hinge). It bears only on the side the loads press the bore onto it, like a pin with a little clearance; tight: true holds all round (a press fit), slide: true lets the part slide along the pin too. A part on one pin can swing about it, so add a second pin or another support. Use it in fix:; the result gives the bearing pressure.",
+  ),
+  def(
+    "displace",
+    ["where", "by", "dir"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      const v = a.value("by");
+      if (typeof v === "number") {
+        if (!a.has("dir")) a.ctx.error("displace(): with a distance, give the way it moves, like displace(face(hook, +Z), 1.5mm, dir: -Z); or give a vector, like (0, 0, -1.5mm)");
+        const d = norm3(a.dir("dir"));
+        return wrap(SUPPORT, { region: r, dir: clean(d), move: clean([d[0] * v, d[1] * v, d[2] * v]) } satisfies SupportSpec, "set displacement");
+      }
+      const m = clean(a.vec3("by"));
+      if (Math.hypot(...m) < 1e-12) a.ctx.error("displace(): the displacement is zero; use fix: for a region held still");
+      return wrap(SUPPORT, { region: r, move: m } satisfies SupportSpec, "set displacement");
+    },
+    "displace(region, (0, 0, -1.5mm)) → a set displacement instead of a force: the region is pushed this far and held there, every way. displace(face(hook, +X), 1.5mm, dir: -Z) pushes it along one axis only and lets it slide the other ways, like a finger. For snap fits, clips and clamps (how hard is it to push 1.5 mm, and what strain does that make?): use it in fix:; the result gives the force it takes. Stresses are linear, so they suit small movements.",
+  ),
+  def(
+    "bearing",
+    ["where", "f", "dir"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      if (r.t !== "cyl") a.ctx.error("bearing(): give the bore (or the shaft seat) as a cylinder zone, like bearing(zone(at: c, d: 22, axis: Y, length: 7), 300N, dir: -Z)");
+      const fv = a.value("f");
+      let f: V3;
+      if (typeof fv === "number") {
+        const d = a.dir("dir", [0, 0, -1]);
+        f = [d[0] * fv, d[1] * fv, d[2] * fv];
+      } else f = a.vec3("f");
+      return wrap(LOAD, { t: "bearing", region: r, f: clean(f) } satisfies LoadSpec, "bearing load");
+    },
+    "bearing(zone(at:, d:, axis:, length:), 300N, dir: -Z) → the load a shaft, pin or bearing pushes onto a bore (or a bearing onto its shaft): spread over the half of the cylinder it presses on, most in the middle and none at the sides (a cosine), as a pin or bearing really loads a hole, rather than evenly over the whole bore like force(). A share along the axis (a thrust) is spread evenly. Use it in load:.",
+  ),
+  def(
     "pressure",
     ["where", "p"],
     (a) => {
@@ -308,6 +387,32 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     'source(motor, 12W) → heat made inside a part or component, spread through its volume (each copy of it makes this much). source(face(plate, +Z), 3W, name: "heater") makes it over a region of the surface instead. Use it in heat:, with heat: "auto" for every electronic part\'s own loss.',
   ),
   def(
+    "current",
+    ["from", "to", "amps", "volts", "name"],
+    (a) => {
+      const from = region(a.value("from"), a);
+      const to = region(a.value("to"), a);
+      const hasA = a.has("amps"),
+        hasV = a.has("volts");
+      if (hasA === hasV)
+        a.ctx.error(
+          hasA
+            ? "current(): give the current through it or the voltage across it, not both"
+            : "current(): say how much flows, like current(face(bar, -X), face(bar, +X), 40A), or the voltage across it with volts: 12V",
+        );
+      const label = a.has("name") ? a.str("name") : "current";
+      if (hasA) {
+        const amps = a.num("amps");
+        if (!(amps > 0)) a.ctx.error("current(): the current should be more than 0 A, like 40A");
+        return wrap(CURRENT, { from, to, amps, label } satisfies CurrentSpec, label);
+      }
+      const volts = a.num("volts");
+      if (!(volts > 0)) a.ctx.error("current(): volts: should be more than 0 V, like volts: 12V");
+      return wrap(CURRENT, { from, to, volts, label } satisfies CurrentSpec, label);
+    },
+    'current(face(busbar, -X), face(busbar, +X), 60A) → current that goes in over the first region and out over the second, heating whatever conducts it on the way (Joule heating, I²R): a busbar, a battery strap, a heater element. Kerf works out the resistance from the parts\' shape and metal, rising as they warm, and reports it with the voltage drop, the power and where the current crowds. volts: 12V instead of the current gives the voltage across it (a heater: the current follows). Use it in heat:.',
+  ),
+  def(
     "temp",
     ["where", "t"],
     (a) => {
@@ -351,6 +456,19 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     },
     "band(20Hz, 60Hz, name: \"road\") → shaking anywhere between two frequencies (a vehicle, footsteps, a vibrating table). A plain number like 50Hz in excite: is one frequency. Use it in excite:.",
   ),
+  def(
+    "block",
+    ["cycles", "peak", "min"],
+    (a) => {
+      const n = a.positive("cycles");
+      const peak = a.num("peak", 1);
+      if (!Number.isFinite(peak) || peak === 0) a.ctx.error("block(): the peak is a scale of the analysis's loads, like 1 (the loads as written) or 1.5, not 0");
+      const min = a.has("min") ? a.num("min") : undefined;
+      if (min !== undefined && min >= peak) a.ctx.error("block(): min: should be lower than the peak");
+      return wrap(BLOCK, { count: n, peak, ...(min !== undefined ? { min } : {}) }, "load block");
+    },
+    'block(1e5, 1.5, min: 0) → a block of load cycles in a fatigue history: this many cycles that peak at this scale of the loads as written, down to min: (default from loading:, e.g. -1.5 when fully reversed, 0 for "on-off"). Use them in history: [block(1e6, 1), block(1e3, 2)].',
+  ),
 ]);
 
 /** A force at a point off the analysed parts, carried into a zone as the same force plus its moment about the zone's centre. */
@@ -375,6 +493,8 @@ export interface AnalysisEnv {
   fail(msg: string, span: Span): never;
   /** the kind of a top-level name: "part", "component", or undefined */
   kindOf(name: string): string | undefined;
+  /** a param declared so far, for a design study's vary: */
+  param?(name: string): { value: number | string | boolean; text: string; min?: number; max?: number; locked: boolean } | undefined;
 }
 
 /** Turn the evaluated items of an analysis block into a spec. */
@@ -382,6 +502,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   const fail: (msg: string, span: Span) => never = env.fail;
   if (props.some((p) => p.name === "uci")) return buildUci(label, props, flags, span, env);
   if (props.some((p) => p.name === "airflow")) return buildAirflow(label, props, flags, span, env);
+  if (props.some((p) => p.name === "vary")) return buildStudy(label, props, flags, span, env);
   const isDrive = props.some((p) => p.name === "drive");
   const allowed = isDrive ? DRIVETRAIN_PROPS : STRUCTURAL_PROPS;
   for (const p of props) {
@@ -392,7 +513,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
           ? isDrive
             ? `"${p.name}:" belongs to a structural analysis. A drivetrain analysis (one with drive:) takes ${DRIVETRAIN_PROPS.join(", ")}.`
             : `"${p.name}:" belongs to a drivetrain analysis, which starts with drive: gear_name.`
-          : `Unknown analysis property "${p.name}". Use ${STRUCTURAL_PROPS.join(", ")} for stress, drive:, torque:, speed:, life: for a gear train, or airflow: 45kmh for drag and the flow round it.`,
+          : `Unknown analysis property "${p.name}". Use ${STRUCTURAL_PROPS.join(", ")} for stress, drive:, torque:, speed:, life: for a gear train, airflow: 45kmh for drag and the flow round it, or vary: [param, …] for a design study.`,
         p.span,
       );
     }
@@ -450,10 +571,11 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       if (as === "fix") {
         if (x instanceof Obj && x.kind === REGION) supports.push({ region: x.fields.spec as unknown as RegionSpec });
         else if (x instanceof Obj && x.kind === SUPPORT) supports.push(x.fields.spec as unknown as SupportSpec);
-        else fail(`fix: should be a region like face(bracket, -Y), zone(at: p, r: 3), roller(face(base, -Z), Z) or contact(region, mu: 0.3); got ${typeName(x)}`, p.span);
+        else fail(`fix: should be a region like face(bracket, -Y), zone(at: p, r: 3), roller(face(base, -Z), Z), contact(region, mu: 0.3), spring(region, 500), pin(zone(...)) or displace(region, (0, 0, -1mm)); got ${typeName(x)}`, p.span);
       } else {
         if (x instanceof Obj && x.kind === LOAD) loads.push(x.fields.spec as unknown as LoadSpec);
-        else fail(`load: should be force(...), pressure(...), torque(...), wind(...) or pull(band); got ${typeName(x)}`, p.span);
+        else if (x instanceof Obj && x.kind === SUPPORT) fail(`load: takes loads; ${x.label ?? "a support"} goes in fix:`, p.span);
+        else fail(`load: should be force(...), pressure(...), torque(...), bearing(...), wind(...) or pull(band); got ${typeName(x)}`, p.span);
       }
     }
   };
@@ -488,16 +610,18 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   const holdP = one("hold");
   const coolP = one("cooling");
   const heatLoads: HeatLoadSpec[] = [];
+  const currents: CurrentSpec[] = [];
   let auto = false;
   if (heatP)
     for (const x of listOf(heatP.value)) {
       if (x === "auto") auto = true;
       else if (x instanceof Obj && x.kind === HEAT) heatLoads.push(x.fields.spec as unknown as HeatLoadSpec);
+      else if (x instanceof Obj && x.kind === CURRENT) currents.push(x.fields.spec as unknown as CurrentSpec);
       else
         fail(
           typeof x === "number"
             ? `heat: say where the ${x} W is made, like heat: [source(motor, ${x}W)], or use heat: "auto" for every electronic part's own loss`
-            : `heat: should list heat sources like source(motor, 12W) or source(face(plate, +Z), 3W), or "auto" for every electronic part's loss at its working current; got ${typeName(x)}`,
+            : `heat: should list heat sources like source(motor, 12W) or source(face(plate, +Z), 3W), current through a conductor like current(face(bar, -X), face(bar, +X), 40A), or "auto" for every electronic part's loss at its working current; got ${typeName(x)}`,
           heatP.span,
         );
     }
@@ -513,7 +637,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     if (p && !thermalOn && n !== "heat" && n !== "hold") fail(`${n}: goes with heat: (where heat is made) or hold: (a surface held at a temperature).`, p.span);
   }
   const named = new Set<string>();
-  for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : []))])
+  for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : [])), ...currents.flatMap((c) => [c.from, c.to])])
     if (r.t === "face") named.add(r.part);
   for (const h of heatLoads) if (h.part) named.add(h.part);
   for (const n of named) {
@@ -623,6 +747,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     if (startT !== undefined && time === undefined) fail("start: is the temperature a warm-up starts at; give time: too, like time: 10min", one("start")!.span);
     thermal = {
       heat: heatLoads,
+      ...(currents.length ? { currents } : {}),
       auto,
       fixed: fixedTemps,
       cooling,
@@ -634,7 +759,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       ...(startT !== undefined ? { start: startT } : {}),
       ...(maxTemp !== undefined ? { maxTemp } : {}),
     };
-    if (!heatLoads.length && !auto && !fixedTemps.length) fail('heat: lists no heat sources; add source(part, watts), or "auto"', heatP!.span);
+    if (!heatLoads.length && !currents.length && !auto && !fixedTemps.length) fail('heat: lists no heat sources; add source(part, watts), current(from, to, amps) or "auto"', heatP!.span);
   } else if (emissivity !== undefined) fail("emissivity: goes with heat: (radiation from a hot surface).", one("emissivity")!.span);
 
   // ---- one temperature for the whole model: expansion against the supports ----
@@ -644,6 +769,9 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   if (uniformTemp !== undefined && !supports.length) fail("temperature: stresses the parts against their supports as they expand; add fix: to say how they are held.", one("temperature")!.span);
   if (uniformTemp !== undefined && drop) fail("Check a set temperature in a separate analysis from the drop.", one("temperature")!.span);
   if (refTemp !== undefined && uniformTemp === undefined && !(thermalOn && supports.length)) fail("assembled_at: is the temperature with no thermal stress; it goes with temperature: or with heat: and fix:.", one("assembled_at")!.span);
+
+  // ---- fatigue: how the loads repeat over the part's life ----
+  const fatigue = buildFatigue(props, one, fail, span, { drop: !!drop, modal: !!modal, heat: thermalOn || uniformTemp !== undefined });
 
   // ---- buckling: how many times the loads it takes to buckle the parts ----
   const buckP = one("buckling");
@@ -656,15 +784,25 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       modes = buckP.value as number;
     }
     if (modal || drop) fail(`Check buckling in a separate analysis from the ${modal ? "natural frequencies" : "drop"}.`, at);
-    if (!loads.length && !accel && !thermalOn && uniformTemp === undefined) fail("buckling needs loads to scale: add load: (or gravity) for what presses on the parts.", at);
+    if (!loads.length && !accel && !thermalOn && uniformTemp === undefined && !supports.some((s) => s.move)) fail("buckling needs loads to scale: add load: (or gravity) for what presses on the parts.", at);
     buckling = { modes, safety: plain("buckling_safety", "the lowest buckling factor wanted, like buckling_safety: 3", (v) => v >= 1) ?? 3 };
   } else if (one("buckling_safety")) fail("buckling_safety: goes with buckling.", one("buckling_safety")!.span);
+
+  // ---- topology optimisation: on its own, with the loads it must carry ----
+  const topology = buildTopology(props, one, fail, env, parts, {
+    with: drop ? "the drop" : modal ? "the natural frequencies" : thermalOn ? "heat" : uniformTemp !== undefined ? "a set temperature" : buckling ? "buckling" : fatigue ? "fatigue" : flags.some((f) => f.name === "converge") ? "the accuracy check (converge)" : undefined,
+    loads: loads.length,
+    moved: supports.some((s) => s.move),
+  });
 
   if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
   if (!supports.length && !thermalOn)
     fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead; for temperatures alone use heat:.', span);
-  if (!loads.length && !accel && !modal && !thermalOn && uniformTemp === undefined)
-    fail("Add load: force(...), pressure(...) or torque(...), or gravity, so there is something to analyse; or excite: or modes: for natural frequencies, or heat: for temperatures.", span);
+  const moved = supports.some((s) => s.move);
+  if (!loads.length && !accel && !modal && !thermalOn && uniformTemp === undefined && !moved)
+    fail("Add load: force(...), pressure(...) or torque(...), or gravity, so there is something to analyse; or displace(...) in fix: to push a region a set distance, excite: or modes: for natural frequencies, or heat: for temperatures.", span);
+  if (supports.length && supports.every((s) => s.move))
+    fail("displace() pushes a region and holds it there, but nothing else holds the part, so it would just move along with it. Add where it is held to fix:, like fix: [face(hook, -Y), displace(face(hook, +Z), 1mm, dir: -Z)].", span);
 
   const matP = one("material");
   let material: string | undefined;
@@ -701,6 +839,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     cycles,
     printed: bool("printed"),
     buildDir,
+    ...(buildP ? { buildGiven: true } : {}),
     resolution,
     ...(masses.length ? { masses } : {}),
     ...(modal ? { modal } : {}),
@@ -709,8 +848,214 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(uniformTemp !== undefined ? { uniformTemp } : {}),
     ...(refTemp !== undefined ? { refTemp } : {}),
     ...(buckling ? { buckling } : {}),
+    ...(fatigue ? { fatigue } : {}),
     ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
+    ...(topology ? { topology } : {}),
     span,
+  };
+}
+
+const AXES = ["X", "Y", "Z"] as const;
+
+/** An axis named by a direction (X, -Y) or its letter ("Z"); null when it is neither. */
+function axisOf(v: Value): "X" | "Y" | "Z" | null {
+  if (typeof v === "string") {
+    const k = v.trim().toUpperCase().replace(/^[+-]/, "");
+    return (AXES as readonly string[]).includes(k) ? (k as "X" | "Y" | "Z") : null;
+  }
+  if (v instanceof Vec) {
+    const a = v.v.map((x) => Math.abs(x ?? 0));
+    const big = a.indexOf(Math.max(...a));
+    if (big < 0 || !(a[big] > 0)) return null;
+    // along one axis only
+    return a.every((x, i) => i === big || x < 1e-9 * a[big]) ? AXES[big] : null;
+  }
+  return null;
+}
+
+/**
+ * Topology optimisation from topology: (the share of the material to keep), with what it must keep (preserve:), the
+ * thinnest member (min_member:), mirror planes (symmetry:), a profile cut from plate (extrusion:) and how long it may run
+ * (iterations:). undefined when the analysis has none of these.
+ */
+function buildTopology(
+  props: AnalysisItem[],
+  one: (name: string) => AnalysisItem | undefined,
+  fail: (msg: string, span: Span) => never,
+  env: AnalysisEnv,
+  parts: string[],
+  other: { with?: string; loads: number; moved: boolean },
+): TopologySpec | undefined {
+  const tp = one("topology");
+  if (!tp) {
+    for (const n of TOPOLOGY_PROPS) {
+      const p = one(n);
+      if (p) fail(`${n}: goes with topology: (the share of the material to keep, like topology: 35%).`, p.span);
+    }
+    return undefined;
+  }
+  if (typeof tp.value !== "number" || !(tp.value >= 0.05 && tp.value <= 0.95))
+    fail("topology: is the share of the parts' material to keep, from 5% to 95%, like topology: 35%", tp.span);
+  const keep = tp.value as number;
+  if (other.with) fail(`Find the shape in an analysis of its own: topology: goes with fix: and load:, not with ${other.with}. Check that in a second analysis.`, tp.span);
+  if (!other.loads) fail("topology: finds the shape that carries the loads best, so it needs load: (what the shape must carry). Gravity alone moves with the material, so give it as a load too.", tp.span);
+  if (other.moved) fail("topology: finds the stiffest shape under loads; a displace() support sets a movement instead. Use load: force(...) for what pushes on it.", tp.span);
+  const preserve: RegionSpec[] = [];
+  const preserveParts: string[] = [];
+  const pres = one("preserve");
+  if (pres)
+    for (const x of Array.isArray(pres.value) ? pres.value.flat() : [pres.value]) {
+      if (x instanceof Obj && x.kind === REGION) preserve.push(x.fields.spec as unknown as RegionSpec);
+      else if (x instanceof Ref || (x instanceof Obj && x.kind === "component")) {
+        const n = x instanceof Ref ? x.name : String(x.fields.name);
+        const k = env.kindOf(n);
+        if (k !== "part" && k !== "component") fail(`preserve: "${n}" is not a part or component`, pres.span);
+        if (!parts.includes(n)) fail(`preserve: ${n} is not one of the analysed parts (${parts.join(", ")}). Add it to parts: to keep it as it is in the shape.`, pres.span);
+        if (!preserveParts.includes(n)) preserveParts.push(n);
+      } else fail(`preserve: should list what the shape must keep: regions like zone(at: (10, 0, 5), r: 4) or face(bracket, +Z), or whole parts; got ${typeName(x)}`, pres.span);
+    }
+  if (preserveParts.length && preserveParts.length >= parts.length) fail("preserve: keeps every analysed part as it is, so there is nothing left to shape. Leave out the part to reshape.", pres!.span);
+  let minMember: number | undefined;
+  const mm = one("min_member");
+  if (mm) {
+    if (typeof mm.value !== "number" || !(mm.value > 0)) fail("min_member: the thinnest member the shape may have, like min_member: 4mm", mm.span);
+    minMember = mm.value as number;
+  }
+  const symmetry: ("X" | "Y" | "Z")[] = [];
+  const sym = one("symmetry");
+  if (sym)
+    for (const x of Array.isArray(sym.value) ? sym.value.flat() : [sym.value]) {
+      const a = axisOf(x);
+      if (!a) fail(`symmetry: should name the axes across the mirror planes, like symmetry: X or symmetry: [X, Z] (the planes go through the middle of the parts); got ${typeName(x)}`, sym.span);
+      if (!symmetry.includes(a)) symmetry.push(a);
+    }
+  let cut: "X" | "Y" | "Z" | undefined;
+  const cp = one("extrusion");
+  if (cp) {
+    const a = axisOf(cp.value);
+    if (!a) fail("extrusion: the axis the shape runs straight through along, the same all the way, like extrusion: Y for a profile cut from plate lying in X and Z", cp.span);
+    cut = a;
+  }
+  let iterations: number | undefined;
+  const ip = one("iterations");
+  if (ip) {
+    if (typeof ip.value !== "number" || !Number.isInteger(ip.value) || ip.value < 5 || ip.value > 300) fail("iterations: the most design steps to take, a whole number from 5 to 300 (default 80; most shapes settle in 30 to 60)", ip.span);
+    iterations = ip.value as number;
+  }
+  return { keep, preserve, preserveParts, ...(minMember !== undefined ? { minMember } : {}), symmetry, ...(cut ? { cut } : {}), ...(iterations !== undefined ? { iterations } : {}) };
+}
+
+const LOADING_WORDS: Record<string, number> = {
+  reversed: -1,
+  "fully reversed": -1,
+  alternating: -1,
+  "on-off": 0,
+  "on off": 0,
+  pulsating: 0,
+  "zero-based": 0,
+  "zero based": 0,
+  repeated: 0,
+};
+
+const loadingText = (R: number) => (R === -1 ? "fully reversed (−1 to 1× the loads)" : R === 0 ? "on-off (0 to 1× the loads)" : `between ${fmtR(R)} and 1× the loads (R = ${fmtR(R)})`);
+const fmtR = (v: number) => String(Math.round(v * 1000) / 1000).replace("-", "−");
+
+/**
+ * Fatigue from cycles: (constant amplitude), history: (load blocks or a trace of load scales, rainflow counted) and how
+ * the loads repeat. undefined when the analysis has no fatigue: cycles: up to 1000 alone keeps the static check.
+ */
+function buildFatigue(
+  props: AnalysisItem[],
+  one: (name: string) => AnalysisItem | undefined,
+  fail: (msg: string, span: Span) => never,
+  span: Span,
+  other: { drop: boolean; modal: boolean; heat: boolean },
+): FatigueSpec | undefined {
+  const cyclesP = one("cycles");
+  const histP = one("history");
+  const repP = one("repeats");
+  const loadP = one("loading");
+  const meanP = one("mean_stress");
+  const finP = one("finish");
+  const relP = one("reliability");
+  const extras = [loadP, meanP, finP, relP].filter((p): p is AnalysisItem => !!p);
+  const cycles = cyclesP && typeof cyclesP.value === "number" ? cyclesP.value : undefined;
+  if (!histP && !extras.length && !(cycles !== undefined && cycles > 1000)) {
+    if (repP) fail("repeats: is how many times a history: happens in the part's life; give history: too.", repP.span);
+    return undefined;
+  }
+  // a drop, the natural frequencies or heat with only a cycle count keep the fatigue strength as their allowable
+  if (!histP && !extras.length && (other.drop || other.modal || other.heat)) return undefined;
+  if (!histP && cycles === undefined) fail(`${extras[0]!.name}: goes with cycles: (how many load cycles the part sees in its life, like cycles: 1e6) or history: (a list of load blocks or load scales).`, extras[0]!.span);
+  if (histP && cyclesP) fail("With history:, the counts are in the history. Leave out cycles: and use repeats: for how many times the history happens in the part's life.", cyclesP.span);
+  if (repP && !histP) fail("repeats: goes with history:; for a constant load cycle give its count with cycles:.", repP.span);
+  const at = (histP ?? cyclesP ?? extras[0])!.span;
+  if (other.drop || other.modal || other.heat) fail(`Check fatigue in a separate analysis from the ${other.drop ? "drop" : other.modal ? "natural frequencies" : "heat and temperatures"}.`, at);
+
+  // how the loads repeat: R = min/max of each cycle
+  let R = -1;
+  if (loadP) {
+    if (typeof loadP.value === "number") {
+      R = loadP.value;
+      if (!(R < 1) || R < -5) fail("loading: as a number is the load ratio R = min/max of each cycle, below 1: -1 fully reversed, 0 on-off, 0.5 between half and full load", loadP.span);
+    } else if (typeof loadP.value === "string" && Object.hasOwn(LOADING_WORDS, loadP.value.toLowerCase())) R = LOADING_WORDS[loadP.value.toLowerCase()];
+    else fail('loading: should be "reversed" (the loads swing both ways, the default), "on-off" (from nothing to the loads) or a load ratio R = min/max like 0.2', loadP.span);
+  }
+  let meanStress: MeanStress = "goodman";
+  if (meanP) {
+    const v = typeof meanP.value === "string" ? meanP.value.toLowerCase() : "";
+    if (!Object.hasOwn(MEAN_STRESS, v)) fail(`mean_stress: should be one of ${Object.keys(MEAN_STRESS).map((k) => `"${k}"`).join(", ")} (Goodman is the usual, safe choice)`, meanP.span);
+    meanStress = v as MeanStress;
+  }
+  let finish: Finish | undefined;
+  if (finP) {
+    const v = typeof finP.value === "string" ? finP.value.toLowerCase().replace(/^as[- ]/, "") : "";
+    const key = v === "rolled" ? "hot-rolled" : v;
+    if (!Object.hasOwn(FINISHES, key)) fail(`finish: the surface it is made with, one of ${Object.keys(FINISHES).map((k) => `"${k}"`).join(", ")}; leave it out to take it from how each part is made`, finP.span);
+    finish = key as Finish;
+  }
+  let reliability = 0.5;
+  if (relP) {
+    if (typeof relP.value !== "number" || !(relP.value >= 0.5 && relP.value < 1)) fail("reliability: the chance it lasts the life, from 50% (the average part) to 99.99%, like reliability: 99%", relP.span);
+    reliability = relP.value as number;
+  }
+
+  if (!histP) {
+    const n = cycles!;
+    if (!(n >= 1)) fail("cycles: should be 1 or more", cyclesP!.span);
+    return { cycles: [{ max: 1, min: R, count: n }], repeats: 1, unit: "cycles", loading: loadingText(R), meanStress, ...(finish ? { finish } : {}), reliability, source: "constant" };
+  }
+  let repeats = 1;
+  if (repP) {
+    if (typeof repP.value !== "number" || !(repP.value >= 1)) fail("repeats: how many times the history happens in the part's life, 1 or more", repP.span);
+    repeats = repP.value as number;
+  }
+  const list = Array.isArray(histP.value) ? histP.value : [histP.value];
+  if (!list.length) fail("history: is empty", histP.span);
+  if (list.every((x) => typeof x === "number")) {
+    const trace = list as number[];
+    if (trace.length < 2) fail("history: as numbers is a trace of the load over time (scales of the loads as written), like [0, 1, 0.2, 0.8, 0]; give at least two", histP.span);
+    if (trace.some((v) => !Number.isFinite(v))) fail("history: the values should be numbers", histP.span);
+    const counted = rainflow(trace, true);
+    if (!counted.length) fail("history: the trace never changes, so there are no load cycles in it", histP.span);
+    return { cycles: counted, repeats, unit: "repeats", loading: `a load trace of ${trace.length} points (${counted.reduce((a, c) => a + c.count, 0)} cycles counted by rainflow)`, meanStress, ...(finish ? { finish } : {}), reliability, source: "trace", trace };
+  }
+  const blocks: LoadCycle[] = [];
+  for (const x of list) {
+    if (!(x instanceof Obj) || x.kind !== BLOCK) fail(`history: should list load blocks like block(1e5, 1.5) or be a trace of load scales like [0, 1, 0.3, 1]; got ${typeName(x)}`, histP.span);
+    const b = (x as Obj).fields.spec as unknown as { count: number; peak: number; min?: number };
+    const lo = b.min ?? R * b.peak;
+    blocks.push({ max: Math.max(b.peak, lo), min: Math.min(b.peak, lo), count: b.count });
+  }
+  return {
+    cycles: mergeCycles(blocks),
+    repeats,
+    unit: "repeats",
+    loading: `${blocks.length} load block${blocks.length > 1 ? "s" : ""}${loadP ? `, ${loadingText(R).replace(/ \(.*$/, "")} unless a block gives its min:` : ""}`,
+    meanStress,
+    ...(finish ? { finish } : {}),
+    reliability,
+    source: "blocks",
   };
 }
 

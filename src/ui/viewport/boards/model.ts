@@ -432,17 +432,6 @@ function item(k: Kit, part: CatalogPart, L: BoardLayout, it: BoardItem) {
       k.plastic.cyl(f, 0, 0, it.h + 0.05, it.h + 0.08, r * 0.3, "#3a3d42", 20);
       return;
     }
-    case "lens": {
-      // the holder is a third of the height, the barrel screws into it, and the glass sits just inside the barrel's rim
-      const r = Math.min(it.w, it.d) / 2;
-      const base = Math.min(it.h * 0.36, r * 1.1);
-      k.plastic.box(f, -it.w / 2, it.w / 2, -it.d / 2, it.d / 2, 0, base, "#131416");
-      k.plastic.cyl(f, 0, 0, base, it.h, r * 0.86, "#18191c", 36);
-      k.plastic.cyl(f, 0, 0, it.h - 1.6, it.h + 0.02, r * 0.93, "#101113", 36);
-      k.plastic.cyl(f, 0, 0, it.h + 0.02, it.h + 0.05, r * 0.62, "#1a2340", 32);
-      k.plastic.cyl(f, 0, 0, it.h + 0.05, it.h + 0.08, r * 0.3, "#3b4f8f", 24);
-      return;
-    }
     case "microswitch": {
       k.plastic.box(f, -it.w / 2, it.w / 2, -it.d / 2, it.d / 2, 0.3, it.h * 0.8, BLACK);
       k.plastic.box(f, -0.8, 0.8, -0.8, 0.8, it.h * 0.8, it.h * 0.88, "#c43a2e");
@@ -458,6 +447,16 @@ function item(k: Kit, part: CatalogPart, L: BoardLayout, it: BoardItem) {
       k.gloss.box(f, -it.w / 2, it.w / 2, -it.d / 2, it.d / 2, 0, it.h, "#06080c");
       k.gloss.box(f, -it.w / 2 + 1.2, it.w / 2 - 1.2, -it.d / 2 + 2.4, it.d / 2 - 1.2, it.h, it.h + 0.02, "#0b1220");
       k.plastic.box(f, -it.w * 0.3, it.w * 0.3, -it.d / 2 - 1.2, -it.d / 2, -0.05, it.h * 0.6, "#c98a2b");
+      return;
+    }
+    case "lens": {
+      // a camera lens: the square holder on the sensor, the threaded barrel and the front glass
+      const r = Math.min(it.w, it.d) / 2;
+      const hb = Math.min(it.h * 0.45, 2.6);
+      k.plastic.box(f, -it.w / 2, it.w / 2, -it.d / 2, it.d / 2, 0, hb, "#101113");
+      k.plastic.cyl(f, 0, 0, hb, it.h, r * 0.86, "#17181b", 32);
+      k.gloss.cyl(f, 0, 0, it.h, it.h + 0.04, r * 0.5, "#0a0d16", 28);
+      k.gloss.cyl(f, 0, 0, it.h + 0.04, it.h + 0.07, r * 0.26, "#1c2440", 24);
       return;
     }
     case "drivers":
