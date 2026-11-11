@@ -9,7 +9,7 @@ import type { MachineData } from "../../machine/types";
 import { measuredPart } from "../../machine/measured";
 import { generateFirmware } from "../../machine/firmware";
 import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
-import { Plant } from "./plant";
+import { Plant, fieldResults } from "./plant";
 import { SimHal, type SerialLine, type SimFault } from "./hal";
 import type { DisplayFrame } from "./devices";
 import type { PrintTrace } from "../printer/run";
@@ -348,6 +348,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results[`${l.comp}.lit_time`] = l.litTime;
     results[`${l.comp}.colours`] = l.seen.size;
   }
+  Object.assign(results, fieldResults(plant));
   Object.assign(results, copingResults(frames, hal.serial, plant, inj));
   if (fwRef) for (const g of watch) {
     const v = fwRef.fw.read(g);

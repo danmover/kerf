@@ -8,6 +8,7 @@
 
 import type { Actuator, DCMotor, EscFan, Servo } from "../engine/devices";
 import { JetForces } from "../mech/forces";
+import { FieldForces, TunnelAir } from "../mech/magnetics";
 import { ActuatorDrive, MotorDrive, ServoDrive } from "../mech/drives";
 import { FRAME, type MechModel } from "../mech/model";
 import { qconj, qrot, sub, type Body, type V3 } from "../mech/solver";
@@ -51,6 +52,9 @@ export class MechWorld implements World {
   private topZ = new Map<string, number>();
   private peakPower = new Map<string, number>();
   jets: JetForces[] = [];
+  /** the design's coils, magnets and field sensors, and its wind tunnel test sections */
+  magnetics?: FieldForces;
+  tunnels: TunnelAir[] = [];
   unstable = false;
 
   constructor(
@@ -64,6 +68,23 @@ export class MechWorld implements World {
     this.sys = new MechSystem(model, MECH_FACTORS[variant]);
     for (const [id, b] of this.sys.bodies) this.start.set(id, [...b.x]);
     this.assumptions.push(...model.notes);
+    if (model.field && (model.field.coils.length || model.field.magnets.length)) {
+      this.magnetics = new FieldForces(this.sys, model.field);
+      this.assumptions.push(...this.magnetics.notes);
+      this.limits.push(
+        "Magnets: a point dipole at each magnet's centre for the force and torque a coil's field puts on it (good from about two magnet lengths away), and a stack of current loops for the field it makes at a sensor. Coils are air-core, from the Biot-Savart law. Magnets do not pull on each other or on steel, and nothing is modelled of iron, eddy currents or the coils' own heat reaching the magnet.",
+      );
+    }
+    const seeds: Record<VariantName, number> = { pessimistic: 1109, expected: 2311, optimistic: 3701 };
+    for (const tn of model.tunnels ?? []) {
+      const air = new TunnelAir(this.sys, tn, MECH_FACTORS[variant], seeds[variant] + this.tunnels.length * 97);
+      this.tunnels.push(air);
+      this.assumptions.push(...air.notes.splice(0));
+    }
+    if (this.tunnels.length)
+      this.limits.push(
+        "Tunnel air: one speed across the test section, where the fan's curve meets the circuit's losses. The model's drag is its drag area times the dynamic pressure, with the solid-blockage correction, plus buffeting and vortex shedding from typical numbers; the air puts no torque on it but a little damping. The airflow analysis shows the flow's shape.",
+      );
     const coupled = new Set(model.drives.flatMap((d) => ("comp" in d ? [d.comp] : [])));
     if (inner) {
       // the inner world's word on a motor the mechanism now drives no longer holds
@@ -125,6 +146,10 @@ export class MechWorld implements World {
       const state = () => ({ thrust: fan.thrust, omega: fan.omega, alpha: fan.alpha, drag: fan.dragTorque, J: fan.J, spin: fan.spin, area: fan.fanArea });
       this.jets.push(this.sys.solver.add(new JetForces(jt.name, body, jt.at, jt.axis, vanes, jt.stall, jt.recovery, state)));
     }
+    for (const tn of this.tunnels) {
+      tn.attach(io);
+      this.assumptions.push(...tn.notes.splice(0));
+    }
   }
 
   couple(io: DriveIO[], dt: number, t: number): Map<string, DriveMotion> {
@@ -143,9 +168,14 @@ export class MechWorld implements World {
         sd.powered = d.powered;
       } else (a.drive as ActuatorDrive).v = d.v;
     }
+    this.magnetics?.currents(io, dt);
     if (!this.unstable) {
       const h = dt / this.substeps;
-      for (let i = 0; i < this.substeps; i++) this.sys.step(h);
+      for (let i = 0; i < this.substeps; i++) {
+        this.magnetics?.apply();
+        for (const tn of this.tunnels) tn.apply(h, t + i * h);
+        this.sys.step(h);
+      }
       this.checkStable(t + dt);
       for (const [id, b] of this.sys.bodies) if (!b.fixed && b.x[2] > (this.topZ.get(id) ?? -Infinity)) this.topZ.set(id, b.x[2]);
     }
@@ -215,6 +245,25 @@ export class MechWorld implements World {
       for (const g of m.magnets) if (Math.hypot(...sub(this.placed(g.comp, g.at), ps)) <= s.range) return true;
     }
     return false;
+  }
+
+  /** what a field sensor's chip sees: the coils' and magnets' fields where the bodies have moved them */
+  field(comp: string) {
+    return this.magnetics?.reading(comp) ?? this.inner?.field?.(comp);
+  }
+
+  /** volts induced in a coil by magnets moving near it and by the other coils */
+  coilEmf(comp: string): number {
+    return this.magnetics?.emf(comp) ?? this.inner?.coilEmf?.(comp) ?? 0;
+  }
+
+  /** the pressure a tunnel's gauge sees across its contraction, Pa */
+  pressure(comp: string): number {
+    for (const tn of this.tunnels) {
+      const p = tn.pressure(comp);
+      if (p !== undefined) return p;
+    }
+    return this.inner?.pressure?.(comp) ?? 0;
   }
 
   /** the pull on a load cell that is a spring link of the mechanism, N */
@@ -335,6 +384,8 @@ export class MechWorld implements World {
       }
     }
     for (const w of s.wheels) out[`${w.name}.slip_speed`] = w.slipSpeed * 1000;
+    this.magnetics?.channels(out);
+    for (const tn of this.tunnels) tn.channels(out);
     for (const inp of s.inputs) {
       const lin = inp.joint.kind === "slider";
       out[`${inp.name}.${lin ? "force" : "torque"}`] = inp.load;
@@ -394,6 +445,8 @@ export class MechWorld implements World {
       r[`${jt.name}.peak_gyro`] = jt.peakGyro * 1000;
     }
     for (const w of s.wheels) r[`${w.name}.slip_time`] = w.slipTime;
+    this.magnetics?.results(r);
+    for (const tn of this.tunnels) tn.results(r);
     for (const inp of s.inputs) {
       const lin = inp.joint.kind === "slider";
       if (lin) r[`${inp.name}.peak_force`] = inp.peak;

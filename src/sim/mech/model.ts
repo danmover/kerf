@@ -108,6 +108,85 @@ export interface MechJet {
   recovery: number;
 }
 
+/** A wound air-core coil's winding in the design pose: its centre, the way its field points for positive current, radii and length, m. */
+export interface MechCoil {
+  comp: string;
+  body: string;
+  c: V3;
+  axis: V3;
+  ri: number;
+  ro: number;
+  h: number;
+  turns: number;
+}
+
+/** A permanent magnet: its centre, the unit vector from its south pole to its north, its moment (A·m²) and size, m. */
+export interface MechMagnet {
+  comp: string;
+  body: string;
+  at: V3;
+  axis: V3;
+  moment: number;
+  radius: number;
+  length: number;
+}
+
+/** A magnetic field sensor: where its Hall elements are and the chip's own X, Y and Z in the design's axes. */
+export interface MechFieldSensor {
+  comp: string;
+  body: string;
+  at: V3;
+  axes: [V3, V3, V3];
+}
+
+/** The design's coils, magnets and field sensors, for the forces between them and what the sensors read. */
+export interface MechField {
+  coils: MechCoil[];
+  magnets: MechMagnet[];
+  sensors: MechFieldSensor[];
+  /** the earth's field in the design's axes, tesla */
+  earth: V3;
+}
+
+/** A small wind tunnel's test section with a model in it. */
+export interface MechTunnel {
+  name: string;
+  /** the body in the air stream */
+  body: string;
+  /** the four-wire fan that moves the air (a component), or the air speed over time, m/s */
+  fan?: string;
+  speed?: Schedule;
+  /** the test section: its centre, the way the air goes, which way is up, and its width, height and length, m */
+  at: V3;
+  flow: V3;
+  up: V3;
+  width: number;
+  height: number;
+  length: number;
+  /** the model: drag, lift and side-force areas (coefficient × frontal area), m²; frontal area, m²; width across the flow, m */
+  cda: number;
+  cla: number;
+  cya: number;
+  area: number;
+  d: number;
+  /** pressure lost round the whole circuit, in dynamic heads of the test section */
+  loss: number;
+  /** the contraction's area ratio (inlet over test section), and the pressure sensor across it */
+  contraction: number;
+  gauge?: string;
+  /** turbulence intensity (a share), the rms unsteady side-force coefficient from vortex shedding, and its Strouhal number */
+  turbulence: number;
+  shed: number;
+  strouhal: number;
+  /** points on the model (design coordinates) that can touch the test section's walls; friction on them */
+  points: V3[];
+  mu: number;
+  /** air density, kg/m³ */
+  rho: number;
+  /** a launch pad standing on the floor under the section's centre: its width (square) and height, m */
+  pad?: { w: number; h: number };
+}
+
 export interface MechLoad {
   name: string;
   body: string;
@@ -174,6 +253,10 @@ export interface MechModel {
   mounts: Record<string, string>;
   /** where a hall sensor senses and where each magnet sits, design pose, m, with its range for sensors (m) */
   magnets?: { sensors: { comp: string; at: V3; range: number }[]; magnets: { comp: string; at: V3 }[] };
+  /** coils, magnets and field sensors, when the design has them */
+  field?: MechField;
+  /** wind tunnel test sections */
+  tunnels?: MechTunnel[];
   /** runs without firmware: volts on a motor or actuator over time, or a servo's angle (deg) over time */
   power: Record<string, Schedule>;
   /** the body the camera follows (the frame when it stands free) */

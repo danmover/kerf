@@ -41,6 +41,13 @@ export interface Hal {
   analogMilliVolts(pin: number): number;
   analogWrite(pin: number, v: number): void;
   analogReference(mode: number): void;
+  /** ESP32 LEDC: set a pin's PWM rate (Hz) and resolution (bits); false when the timer cannot make them */
+  pwmAttach?(pin: number, hz: number, bits: number, what?: string): boolean;
+  /** ESP32 LEDC: write a duty in the pin's own resolution */
+  pwmWrite?(pin: number, duty: number): boolean;
+  pwmRead?(pin: number): number;
+  /** the PWM rate on a pin, Hz */
+  pwmHz?(pin: number): number;
   attachInterrupt(n: number, fn: FnRef, mode: number): void;
   detachInterrupt(n: number): void;
   digitalPinToInterrupt(pin: number): number;

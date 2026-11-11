@@ -4,11 +4,12 @@
 import type { CatalogKind, CatalogPart } from "../types";
 import { AUDIO } from "./audio";
 import { ELECTRONICS } from "./electronics";
+import { FIELDS } from "./fields";
 import { LIGHTS } from "./lights";
 import { MOTION } from "./motion";
 import { MOTORS } from "./motors";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 

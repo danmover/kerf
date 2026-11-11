@@ -16,7 +16,8 @@ import type { BeltDef, BeltNode } from "../../machine/types";
 import { MATERIALS, materialDensity } from "../../library/standards";
 import type { ScenarioSpec } from "../scenario";
 import type { MechItem, MechJointItem, MechSpec } from "./lang";
-import { FRAME, type MechBody, type MechDrive, type MechGround, type MechJet, type MechJoint, type MechLink, type MechModel } from "./model";
+import { magnetMoment, remanenceOf } from "./field";
+import { FRAME, type MechBody, type MechDrive, type MechField, type MechGround, type MechJet, type MechJoint, type MechLink, type MechModel, type MechTunnel } from "./model";
 import type { M3, V3 } from "./solver";
 
 export type Resolved = { mech: MechModel } | { error: string } | { waiting: string[] };
@@ -911,12 +912,130 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       }
     }
   }
+  // wound coils, magnets and field sensors: where each is and which way it points in the design pose
+  const earthItem = spec.items.find((i): i is Extract<MechItem, { k: "field" }> => i.k === "field");
+  const field: MechField = { coils: [], magnets: [], sensors: [], earth: scl(earthItem?.earth ?? [0, 20, -45], 1e-6) };
+  for (const mc of comps.values()) {
+    const cat = catalogPart(mc.catalogId);
+    if (!cat) continue;
+    const fieldSensor = cat.kind === "sensor" && /magnetic field/.test(String(cat.specs.measures ?? ""));
+    if (cat.kind !== "coil" && cat.kind !== "magnet" && !fieldSensor) continue;
+    const main = (byName.get(mc.name) ?? []).find((p) => p.id.replace(/#\d+$/, "") === mc.name);
+    if (!main) continue;
+    const o = applyXforms([0, 0, 0], main.xf);
+    const ax = ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]).map((e) => unit(sub(applyXforms(e, main.xf), o))) as [V3, V3, V3];
+    const body = mounts[mc.name] ?? FRAME;
+    const n = (k: string, d: number) => (typeof cat.specs[k] === "number" ? (cat.specs[k] as number) : d);
+    if (cat.kind === "coil") {
+      // a ring from `at` along its axis: positive current (in at START) makes the field point that way
+      const h = n("h", Number(cat.geom?.dims?.l ?? 10));
+      field.coils.push({ comp: mc.name, body, c: SI(applyXforms([0, 0, h / 2], main.xf)), axis: ax[2], ri: n("id", 10) / 2000, ro: n("od", 30) / 2000, h: h / 1000, turns: n("turns", 100) });
+    } else if (cat.kind === "magnet") {
+      // a disc or block magnetised along its axis, north at its `end` face
+      const dims = cat.geom?.dims ?? {};
+      const h = n("h", Number(dims.h ?? dims.l ?? 3));
+      const d = n("d", Number(dims.d ?? dims.w ?? 6));
+      const vol = (Math.PI / 4) * d * d * h * 1e-9;
+      const moment = n("moment_am2", magnetMoment(n("br_t", remanenceOf(String(cat.specs.grade ?? "N35"))), vol));
+      field.magnets.push({ comp: mc.name, body, at: SI(applyXforms([0, 0, h / 2], main.xf)), axis: ax[2], moment, radius: d / 2000, length: h / 1000 });
+    } else field.sensors.push({ comp: mc.name, body, at: SI(applyXforms([n("sense_x", 0), n("sense_y", 0), n("sense_z", 0)], main.xf)), axes: ax });
+  }
+  const hasField = field.coils.length > 0 || field.sensors.length > 0;
+  if (hasField) {
+    const said = (xs: { comp: string }[], what: string) => (xs.length ? `${xs.length} ${what}${xs.length > 1 ? "s" : ""} (${xs.map((x) => x.comp).join(", ")})` : "");
+    notes.push(`Magnetic field: ${[said(field.coils, "coil"), said(field.magnets, "magnet"), said(field.sensors, "field sensor")].filter(Boolean).join(", ")}; the earth's field ${earthItem ? "as given" : "assumed (0, 20, -45) µT"}`);
+  }
+
+  // ---- wind tunnel test sections
+  const tunnels: MechTunnel[] = [];
+  for (const it of spec.items) {
+    if (it.k !== "tunnel") continue;
+    const id = bodyIdOf(it.model, `sim.tunnel(${it.name})`);
+    if (id === FRAME) fail(`sim.tunnel(${it.name}): ${it.model} is part of the frame, so the air cannot move it; put it on a joint or make it loose with sim.free(${it.model})`);
+    const b = bodyById.get(id)!;
+    if (it.fan) {
+      const cat = comps.get(it.fan) ? catalogPart(comps.get(it.fan)!.catalogId) : undefined;
+      if (cat?.specs.iface !== "pwm_fan") fail(`sim.tunnel(${it.name}): fan: ${it.fan} is not a four-wire PWM fan component (lib.fan) in the design`);
+    }
+    if (it.gauge) {
+      const cat = comps.get(it.gauge) ? catalogPart(comps.get(it.gauge)!.catalogId) : undefined;
+      if (!cat || !/pressure/.test(String(cat.specs.measures ?? ""))) fail(`sim.tunnel(${it.name}): gauge: ${it.gauge} is not a pressure sensor in the design`);
+    }
+    const across = cross(it.up, it.flow);
+    // the model's outline square to the flow, and a close set of its outermost points to touch the walls with
+    let w0 = Infinity;
+    let w1 = -Infinity;
+    let h0 = Infinity;
+    let h1 = -Infinity;
+    const dirs: V3[] = [[0, 0, 1], [0, 0, -1]];
+    for (let pol = 15; pol < 180; pol += 15) for (let az = 0; az < 360; az += 15) dirs.push([Math.sin(pol * D2R) * Math.cos(az * D2R), Math.sin(pol * D2R) * Math.sin(az * D2R), Math.cos(pol * D2R)]);
+    const best = dirs.map(() => ({ s: -Infinity, p: null as V3 | null }));
+    for (const pid of b.parts) {
+      const vs = props.get(pid)?.verts;
+      if (!vs) continue;
+      for (let k = 0; k < vs.length; k += 3) {
+        const v: V3 = [vs[k], vs[k + 1], vs[k + 2]];
+        const a = dot(v, across);
+        const u = dot(v, it.up);
+        if (a < w0) w0 = a;
+        if (a > w1) w1 = a;
+        if (u < h0) h0 = u;
+        if (u > h1) h1 = u;
+        for (let i = 0; i < dirs.length; i++) {
+          const sp = dot(v, dirs[i]);
+          if (sp > best[i].s) {
+            best[i].s = sp;
+            best[i].p = v;
+          }
+        }
+      }
+    }
+    if (!Number.isFinite(w0) && (it.area === undefined || it.d === undefined)) fail(`sim.tunnel(${it.name}): ${it.model} has no shape to size it from; give area: and d:`);
+    const pts: V3[] = [];
+    for (const x of best) if (x.p && !pts.some((q) => len(sub(q, x.p!)) < 0.3)) pts.push(x.p);
+    const d = it.d ?? w1 - w0;
+    // an ellipse filling the outline's box: exact for a sphere or a disc face-on
+    const area = it.area ?? (Math.PI / 4) * (w1 - w0) * (h1 - h0);
+    const ambient = scn.world.kind === "bench" ? scn.world.bench.ambient : scn.world.kind === "floor" ? scn.world.floor.ambient : 20;
+    const rho = it.density ?? 101325 / (287.05 * (ambient + 273.15));
+    const [sw, sh] = it.section;
+    if (area > 0.5 * sw * sh) fail(`sim.tunnel(${it.name}): ${it.model} fills ${Math.round((100 * area) / (sw * sh))} % of the ${sw} × ${sh} mm test section; a model should fill under 10 %`);
+    tunnels.push({
+      name: it.name,
+      body: id,
+      fan: it.fan,
+      speed: it.speed,
+      at: it.at ? SI(it.at) : b.com,
+      flow: it.flow,
+      up: it.up,
+      width: sw / 1000,
+      height: sh / 1000,
+      length: (it.length ?? 2 * Math.max(sw, sh)) / 1000,
+      cda: (it.cd * area) / 1e6,
+      cla: (it.lift * area) / 1e6,
+      cya: (it.side * area) / 1e6,
+      area: area / 1e6,
+      d: d / 1000,
+      loss: it.loss,
+      contraction: it.contraction,
+      gauge: it.gauge,
+      turbulence: it.turbulence,
+      shed: it.shed,
+      strouhal: it.strouhal,
+      points: pts.map(SI),
+      mu: it.grip,
+      rho,
+      pad: it.pad ? { w: it.pad[0] / 1000, h: it.pad[1] / 1000 } : undefined,
+    });
+    if (it.area === undefined) notes.push(`${it.name}: ${it.model}'s frontal area ${area.toFixed(0)} mm² and width ${d.toFixed(1)} mm from its shape (an ellipse filling its outline), drag coefficient ${it.cd}`);
+  }
+
   const power: Record<string, [number, number][]> = {};
   for (const it of spec.items) if (it.k === "power") power[it.comp] = it.value;
   const follow = spec.follow ? bodyIdOf(spec.follow, "follow") : base === "free" ? FRAME : undefined;
 
   return {
-    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, power, follow, notes },
+    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, field: hasField ? field : undefined, tunnels: tunnels.length ? tunnels : undefined, power, follow, notes },
   };
 }
 

@@ -8,9 +8,11 @@
 import { buildNetlist, type Net, type NetPin, type Netlist } from "../../machine/erc";
 import { catalogPart } from "../../machine/catalog";
 import { measuredPart } from "../../machine/measured";
+import { coilChain, shuntFacing, shuntSides } from "../../machine/shunts";
 import type { CatalogPart, MachineComponent, MachineData } from "../../machine/types";
 import type { Board } from "../mcu/board";
 import { ADAPTER, Actuator, BENCH_SUPPLY, Battery, Bno055, DCMotor, EscFan, Lsm6dsox, Mpu6050, Regulator, Servo, Ssd1306, Supply, USB_PORT, quadrature, type ImuNoise } from "./devices";
+import { BRIDGE_OHMS, CoilLoad, Ina3221, PwmFan, Sdp8xx, Tmag5273, stepCoilString, type ShuntTap } from "./fielddevs";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
@@ -129,6 +131,38 @@ export interface LedSlot {
   orderWarned: boolean;
 }
 
+/** A wound coil on a driver channel. */
+export interface CoilSlot {
+  comp: string;
+  part: CatalogPart;
+  c: CoilLoad;
+  chan?: Channel;
+  polarity: number;
+  /** the bridge's switches and a current shunt in series with the winding, Ω */
+  rPath: number;
+  hot: boolean;
+  /**
+   * Coils wired lead to lead on one driver channel carry one current. `lead` is the first of the string (itself
+   * for a coil on its own), which holds the string in `string`; `polarity` is then the way the string's current
+   * (from the channel's first output to its second) runs through this coil.
+   */
+  lead: CoilSlot;
+  string?: CoilSlot[];
+}
+
+/** A four-wire fan: its supply, and the controller pins its PWM and tacho wires reach (-1: none). */
+export interface BlowerSlot {
+  comp: string;
+  part: CatalogPart;
+  f: PwmFan;
+  vin?: Net;
+  pwm: number;
+  tach: number;
+  /** tacho edges sent so far, and whether its PWM rate has been remarked on */
+  edges: number;
+  said: boolean;
+}
+
 interface RegSlot {
   r: Regulator;
   vin?: Net;
@@ -180,6 +214,12 @@ export class Plant implements PlantPort, PlantView {
   leds: LedSlot[] = [];
   escs: EscSlot[] = [];
   hxs: HxSlot[] = [];
+  coils: CoilSlot[] = [];
+  blowers: BlowerSlot[] = [];
+  /** current monitors, field sensors and pressure sensors on the I2C bus, for the run's results */
+  shuntMonitors: { comp: string; dev: Ina3221; part: CatalogPart }[] = [];
+  fieldSensors: { comp: string; dev: Tmag5273 }[] = [];
+  gauges: { comp: string; dev: Sdp8xx }[] = [];
   /** nets broken by a pressed normally-closed switch, or by a switch unplugged */
   cut = new Set<number>();
   /** hall switches: the pin each pulls low while the world puts a magnet near it */
@@ -302,6 +342,20 @@ export class Plant implements PlantPort, PlantView {
         case "esc":
           this.esc(mc, part);
           break;
+        case "coil": {
+          // which driver channel it is on (alone or in a string) is found once every part is in place (bindCoils)
+          const slot = { comp: mc.name, part, c: new CoilLoad(mc.name, part, ambient), polarity: 1, rPath: 0, hot: false } as CoilSlot;
+          slot.lead = slot;
+          this.coils.push(slot);
+          break;
+        }
+        case "fan":
+          if (part.specs.iface === "pwm_fan") {
+            const pwm = this.mcuPinFor(mc.name, "PWM");
+            this.blowers.push({ comp: mc.name, part, f: new PwmFan(mc.name, part), vin: this.netOf(mc.name, "V12") ?? this.netOf(mc.name, "VIN"), pwm, tach: this.mcuPinFor(mc.name, "TACH"), edges: 0, said: false });
+            if (pwm < 0) this.assumptions.push(`${mc.name}: its PWM wire reaches no ${this.board.name} pin, so it runs flat out whenever it has power`);
+          }
+          break;
         case "sensor":
           this.sensor(mc, part, opts);
           break;
@@ -338,6 +392,9 @@ export class Plant implements PlantPort, PlantView {
           l.offset = up.offset + up.n;
         }
       }
+    this.bindCoils();
+    this.bindShunts();
+    for (const c of this.coils) this.assumptions.push(...c.c.assumed);
     for (const l of this.leds) if (l.pin < 0) this.notes.push(`${l.comp} gets no data: wire its DIN to a ${this.board.name} pin, or to the DOUT of the board before it in the chain.`);
     // current sense outputs of the drivers
     for (const c of this.chans) {
@@ -525,7 +582,22 @@ export class Plant implements PlantPort, PlantView {
       if (part.id === "bno055") this.i2cDevs.set(addr, { dev: new Bno055(mc.name, this.board.fcpu, orient, noise, opts.rng), vcc, comp: mc.name });
       else if (part.id === "mpu6050") this.i2cDevs.set(addr, { dev: new Mpu6050(mc.name, orient, noise, opts.rng), vcc, comp: mc.name });
       else if (part.id === "lsm6dsox_breakout") this.i2cDevs.set(addr, { dev: new Lsm6dsox(mc.name, this.board.fcpu, orient, { driftPerMin: 0.3, noise: 0.05 }, opts.rng, mc.axes), vcc, comp: mc.name });
-      else this.unsupported.push(`${mc.name} (${part.name})`);
+      else if (part.specs.chip === "INA3221") {
+        // what each channel measures is found once every part is in place (bindShunts)
+        const taps: (() => ShuntTap | undefined)[] = [() => undefined, () => undefined, () => undefined];
+        const dev = new Ina3221(mc.name, this.board.fcpu, Number(part.specs.shunt_ohm ?? 0.1), [0, 1, 2].map((k) => () => taps[k]()), opts.rng);
+        this.shuntTaps.set(mc.name, taps);
+        this.shuntMonitors.push({ comp: mc.name, dev, part });
+        this.i2cDevs.set(addr, { dev, vcc, comp: mc.name });
+      } else if (/^TMAG5273/.test(String(part.specs.chip ?? ""))) {
+        const dev = new Tmag5273(mc.name, this.board.fcpu, part, () => this.world.field?.(mc.name), () => this.world.thermal().ambient + 2, opts.rng);
+        this.fieldSensors.push({ comp: mc.name, dev });
+        this.i2cDevs.set(addr, { dev, vcc, comp: mc.name });
+      } else if (/^SDP8/.test(String(part.specs.chip ?? ""))) {
+        const dev = new Sdp8xx(mc.name, this.board.fcpu, part, () => this.world.pressure?.(mc.name) ?? 0, () => this.world.thermal().ambient, opts.rng);
+        this.gauges.push({ comp: mc.name, dev });
+        this.i2cDevs.set(addr, { dev, vcc: vcc ?? this.netOf(mc.name, "VDD"), comp: mc.name });
+      } else this.unsupported.push(`${mc.name} (${part.name})`);
       return;
     }
     if (iface === "hx711") {
@@ -577,6 +649,81 @@ export class Plant implements PlantPort, PlantView {
       });
       return;
     }
+  }
+
+  private shuntTaps = new Map<string, (() => ShuntTap | undefined)[]>();
+
+  /**
+   * Which driver channel each coil is on. A channel's two outputs may have one coil between them or several
+   * wired lead to lead, which then share one current.
+   */
+  private bindCoils() {
+    if (!this.coils.length) return;
+    const names = this.coils.map((c) => c.comp);
+    for (const chan of this.chans) {
+      if (!chan.plus || !chan.minus) continue;
+      const chain = coilChain(this.net, chan.plus.key, chan.minus.key, names);
+      if (!chain) continue;
+      const slots = chain.map((m) => {
+        const slot = this.coils.find((c) => c.comp === m.comp)!;
+        slot.chan = chan;
+        slot.polarity = m.sign;
+        return slot;
+      });
+      const lead = slots[0];
+      for (const slot of slots) slot.lead = lead;
+      lead.string = slots;
+      lead.rPath = Number(chan.part.specs.r_on ?? BRIDGE_OHMS[chan.part.id] ?? 0);
+      if (slots.length > 1) this.notes.push(`${slots.map((x) => x.comp).join(", ")} are wired in series on one driver output and carry one current.`);
+    }
+    for (const c of this.coils) if (!c.chan) this.notes.push(`${c.comp} is on no driver output: wire its START and END to one driver channel's two outputs (a current shunt, or another coil in series, may sit between).`);
+  }
+
+  /**
+   * Which coil or motor each current monitor channel sits in series with, and which way round. A shunt joins
+   * the two nets it is wired between into one, so the wires themselves say which terminal faces the load: a
+   * reading is positive when the load's current (in at its + terminal, out at its −) runs from the channel's +
+   * to its −.
+   */
+  private bindShunts() {
+    for (const { comp, part } of this.shuntMonitors) {
+      const taps = this.shuntTaps.get(comp)!;
+      const shunt = Number(part.specs.shunt_ohm ?? 0.1);
+      for (let ch = 0; ch < 3; ch++) {
+        const net = this.netOf(comp, `CH${ch + 1}P`);
+        const other = this.netOf(comp, `CH${ch + 1}N`);
+        if (!net || !other) continue;
+        const sides = shuntSides(this.net, comp, ch + 1);
+        const facing = (load: string) => shuntFacing(sides, load);
+        // the node's own voltage: the bridge output it joins is switched high for the share of the time it drives
+        const node = (v: number | null, atMinus: boolean) => (v === null ? 0 : Math.max(0, atMinus ? -v : v));
+        let bound = false;
+        for (const s of this.coils) {
+          const f = facing(s.comp);
+          if (!f) continue;
+          s.lead.rPath += shunt;
+          taps[ch] = () => ({ amps: f.sign * s.c.current, ripple: s.c.ripple, pwmHz: s.c.pwmHz, bus: node(s.chan && s.chan.vOut !== null ? s.polarity * s.chan.vOut : null, f.atMinus) });
+          bound = true;
+          break;
+        }
+        if (bound) continue;
+        for (const s of this.motors) {
+          const f = facing(s.comp);
+          if (!f) continue;
+          taps[ch] = () => ({ amps: f.sign * s.m.current, ripple: 0, pwmHz: 0, bus: node(s.chan && s.chan.vOut !== null ? s.polarity * s.chan.vOut : null, f.atMinus) });
+          bound = true;
+          break;
+        }
+        if (!bound) this.notes.push(`${comp} channel ${ch + 1} is in series with nothing the simulation models as a load (a coil or a DC motor), so it reads zero.`);
+      }
+    }
+  }
+
+  /** the PWM rate a driver channel is being switched at now, Hz (0: held steadily on or off) */
+  private chanPwmHz(c: Channel): number {
+    for (const list of Object.values(c.src))
+      for (const src of list) if (src.kind === "mcu" && this.hal.duty[src.pin] >= 0) return this.hal.pwmHz(src.pin);
+    return 0;
   }
 
   /** the board's Wire pins, as its pinout names them */
@@ -835,6 +982,8 @@ export class Plant implements PlantPort, PlantView {
       out.push({ comp: s.comp, kind: "servo", v: null, ilim: 0, us: this.pulse(s.pin, s.sig), powered, dev: s.s });
     }
     for (const e of this.escs) if (e.fan) out.push({ comp: e.fan.name, kind: "fan", v: null, ilim: 0, us: null, powered: e.dev.armed, dev: e.dev });
+    for (const s of this.coils) out.push({ comp: s.comp, kind: "coil", v: s.c.volts, ilim: s.chan?.ilim ?? 99, us: null, powered: true, dev: s.c });
+    for (const b of this.blowers) out.push({ comp: b.comp, kind: "blower", v: null, ilim: 0, us: null, powered: b.f.rpm > 0, dev: b.f });
     return out;
   }
 
@@ -973,6 +1122,28 @@ export class Plant implements PlantPort, PlantView {
       e.dev.step(e.fan ? this.pulse(e.pin, e.sig) : null, vin, dt, t);
       for (const text of e.dev.said.splice(0)) this.events.push({ t, kind: /lost|stopped/.test(text) ? "warn" : "info", text });
     }
+    // coils and PWM fans too: the world works out this step's magnetic forces and air speed from them
+    for (const s of this.coils) {
+      if (s.lead === s) {
+        // one current through the whole string, + from the channel's first output to its second
+        const c = s.chan;
+        const string = s.string ?? [s];
+        const vs = c?.supply ? (this.netV.get(c.supply.id) ?? 0) : 0;
+        const v = c ? c.vOut : null;
+        let emf = 0;
+        for (const m of string) emf += m.polarity * (this.world.coilEmf?.(m.comp) ?? 0);
+        const i = stepCoilString(string.map((m) => ({ c: m.c, sign: m.polarity })), v, vs, s.rPath, emf, c?.ilim ?? 99, c ? this.chanPwmHz(c) : 0, dt, ambient, cooling);
+        if (c) {
+          c.current += Math.abs(i);
+          if (v !== null && vs > 0) c.supplyCurrent += Math.max(0, (v * i) / vs);
+        }
+      }
+      if (!s.hot && s.c.temp > s.c.tempMax) {
+        s.hot = true;
+        this.events.push({ t, kind: "warn", text: `${s.comp} passed ${s.c.tempMax} °C: its enamel and a printed bobbin will not last at that. It is carrying ${Math.abs(s.c.current).toFixed(2)} A` });
+      }
+    }
+    for (const b of this.blowers) this.stepBlower(b, t0, t1, dt, t);
     // a world that simulates the machine's mechanism moves its motors itself
     const moved = this.world.couple?.(this.driveIO(), dt, t);
     // motors against the world's loads
@@ -1072,6 +1243,33 @@ export class Plant implements PlantPort, PlantView {
     this.afterStep?.(t1 / fcpu);
   }
 
+  /** a four-wire fan follows its PWM wire and sends its tacho pulses, each edge at its own moment */
+  private stepBlower(b: BlowerSlot, t0: number, t1: number, dt: number, t: number) {
+    const volts = b.vin ? (this.netV.get(b.vin.id) ?? 0) : 0;
+    const duty = b.pwm >= 0 ? this.hal.drive(b.pwm) : -1;
+    if (!b.said && b.pwm >= 0 && this.hal.duty[b.pwm] >= 0) {
+      const hz = this.hal.pwmHz(b.pwm);
+      if (hz < b.f.pwmHz * 0.6 || hz > b.f.pwmHz * 1.4) {
+        b.said = true;
+        this.events.push({ t, kind: "warn", text: `${b.comp}'s PWM wire is switched at ${hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 ? 1 : 0)} kHz` : `${hz} Hz`}; a four-wire fan expects about ${(b.f.pwmHz / 1000).toFixed(0)} kHz and may run unevenly or whine. On an ESP32 set it with ledcAttach(pin, ${b.f.pwmHz}, 8)` });
+      }
+    }
+    const turns0 = b.f.turns;
+    b.f.step(duty, volts, dt);
+    if (b.tach < 0 || b.f.ppr <= 0) return;
+    // open collector: low for half of each pulse, released (the input's pull-up takes it high) for the other half
+    const e0 = turns0 * b.f.ppr * 2;
+    const e1 = b.f.turns * b.f.ppr * 2;
+    const k1 = Math.floor(e1);
+    const n = Math.min(64, k1 - Math.floor(e0));
+    for (let j = 1; j <= n; j++) {
+      const edge = Math.floor(e0) + j;
+      const frac = Math.max(0, Math.min(1, (edge - e0) / (e1 - e0)));
+      this.hal.schedulePin(Math.round(t0 + frac * (t1 - t0)), b.tach, edge % 2 === 1 ? 0 : -1);
+      b.edges++;
+    }
+  }
+
   private encoder(s: MotorSlot, c0: number, t0: number, t1: number) {
     if (s.m.cpr <= 0) return;
     const c1 = s.m.angle * s.m.countsPerRad;
@@ -1167,7 +1365,7 @@ export class Plant implements PlantPort, PlantView {
       if (p.comp === this.mcu) {
         // the controller counts once, on the pin it runs from: VIN's share is in logicLoad
         if (p.pin.id !== "VIN" && (p.pin.type === "pwr_rail" || p.pin.type === "pwr_in")) i += 0.03;
-      } else if (p.pin.type === "pwr_in" && p.part.kind !== "led") i += p.pin.draw ?? 0.01;
+      } else if (p.pin.type === "pwr_in" && p.part.kind !== "led" && p.part.specs.iface !== "pwm_fan") i += p.pin.draw ?? 0.01;
     }
     return i;
   }
@@ -1193,6 +1391,7 @@ export class Plant implements PlantPort, PlantView {
     for (const e of this.escs) add(e.vin, e.dev.current);
     for (const s of this.servos) add(s.vcc, s.s.current);
     for (const l of this.leds) add(l.vcc, l.current);
+    for (const b of this.blowers) add(b.vin, b.f.current);
     if (this.mcuSupply === "VIN") add(this.netOf(this.mcu, "VIN"), this.logicLoad);
     for (const g of this.regOrder) {
       g.r.load = g.vout ? this.staticDraw(g.vout) + (d.get(g.vout.id) ?? 0) : 0;
@@ -1232,6 +1431,24 @@ export class Plant implements PlantPort, PlantView {
       out[`${e.fan.name}.amps`] = e.dev.motorCurrent;
     }
     for (const h of this.hxs) if (h.cell) out[`${h.cell}.force`] = h.force;
+    for (const s of this.coils) {
+      out[`${s.comp}.amps`] = s.c.current;
+      out[`${s.comp}.volts`] = s.c.volts;
+      out[`${s.comp}.temp`] = s.c.temp;
+      out[`${s.comp}.ripple`] = s.c.ripple;
+    }
+    for (const b of this.blowers) {
+      out[`${b.comp}.rpm`] = b.f.rpm;
+      out[`${b.comp}.amps`] = b.f.current;
+    }
+    for (const g of this.gauges) out[`${g.comp}.pressure`] = this.world.pressure?.(g.comp) ?? 0;
+    for (const f of this.fieldSensors) {
+      const b = this.world.field?.(f.comp)?.b;
+      if (!b) continue;
+      out[`${f.comp}.bx`] = b[0] * 1000;
+      out[`${f.comp}.by`] = b[1] * 1000;
+      out[`${f.comp}.bz`] = b[2] * 1000;
+    }
     // each LED's colour as 0xRRGGBB, for the playback to light it
     for (const l of this.leds) {
       out[`${l.comp}.amps`] = l.current;
@@ -1249,6 +1466,33 @@ export class Plant implements PlantPort, PlantView {
     if (this.mcuSupply === "USB") out["usb.amps"] = this.usb.current;
     out["logic.volts"] = this.mcuV;
   }
+}
+
+/** What the coils, fans and field, current and pressure sensors did over a run, for the scenario's expectations. */
+export function fieldResults(plant: Plant): Record<string, number | boolean | string> {
+  const r: Record<string, number | boolean | string> = {};
+  for (const s of plant.coils) {
+    r[`${s.comp}.amps`] = s.c.current;
+    r[`${s.comp}.peak_amps`] = s.c.peakCurrent;
+    r[`${s.comp}.max_temp`] = s.c.maxTemp;
+    r[`${s.comp}.heat`] = s.c.energy;
+  }
+  for (const b of plant.blowers) {
+    r[`${b.comp}.rpm`] = b.f.rpm;
+    r[`${b.comp}.max_rpm`] = b.f.maxRpm;
+    r[`${b.comp}.peak_amps`] = b.f.peakCurrent;
+    r[`${b.comp}.tach_edges`] = b.edges;
+  }
+  for (const f of plant.fieldSensors) {
+    r[`${f.comp}.samples`] = f.dev.samples;
+    r[`${f.comp}.clipped`] = f.dev.clipped;
+  }
+  for (const m of plant.shuntMonitors) r[`${m.comp}.reads`] = m.dev.reads;
+  for (const g of plant.gauges) {
+    r[`${g.comp}.reads`] = g.dev.reads;
+    r[`${g.comp}.pressure`] = g.dev.last;
+  }
+  return r;
 }
 
 const listOf = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : xs[0] ?? "");

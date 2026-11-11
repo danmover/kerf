@@ -291,12 +291,28 @@ export class FaultInjector {
         else undos.push(this.swap(s, "vcc", undefined));
         break;
       }
+      case "coil": {
+        // a winding off its wire: the whole string it is wired in carries nothing
+        const s = plant.coils.find((x) => x.comp === comp);
+        if (s && def?.type === "motor") undos.push(this.swap(s.lead, "chan", undefined));
+        break;
+      }
+      case "fan": {
+        const b = plant.blowers.find((x) => x.comp === comp);
+        if (!b) break;
+        // no supply: it stops. No PWM wire: its own pull-up runs it flat out. No tacho wire: no pulses.
+        if (def?.type === "pwr_in" || def?.type === "gnd") undos.push(this.swap(b, "vin", undefined));
+        else if (pin === "PWM") undos.push(this.swap(b, "pwm", -1));
+        else if (pin === "TACH") undos.push(this.swap(b, "tach", -1));
+        break;
+      }
       case "motor_driver": {
         for (const c of plant.chans.filter((x) => x.comp === comp)) {
           if (def?.type === "motor_out" && (def.channel ?? "A") === c.ch) {
-            // the motor or actuator on this output loses its feed
+            // the motor, actuator or coil on this output loses its feed
             for (const m of plant.motors) if (m.chan === c) undos.push(this.swap(m, "chan", undefined));
             for (const a of plant.acts) if (a.chan === c) undos.push(this.swap(a, "chan", undefined));
+            for (const k of plant.coils) if (k.lead === k && k.chan === c) undos.push(this.swap(k, "chan", undefined));
             continue;
           }
           if (def?.type === "pwr_in" || def?.type === "gnd") {

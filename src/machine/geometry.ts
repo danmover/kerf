@@ -1322,6 +1322,45 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       };
     }
 
+    // dp_sensor: a differential pressure sensor lying flat, `at` the centre of its underside. w × d × h housing,
+    // two tube ports port_d × port_l standing on top port_pitch apart along X (high side at +X, by the
+    // connector), a screw lug lug_w wide on the +Y side with a hole_d hole, the pin connector on the −Y side.
+    case "dp_sensor": {
+      const w = num(d, "w", 29);
+      const dd = num(d, "d", 18);
+      const h = num(d, "h", 12.5);
+      const pd = num(d, "port_d", 5.2);
+      const pl = num(d, "port_l", 11);
+      const pp = num(d, "port_pitch", 12.8) / 2;
+      const lw = num(d, "lug_w", 9);
+      const hd = num(d, "hole_d", 3.4);
+      const lug: V3 = [0, dd / 2 + lw / 2 - 0.5, 0];
+      const port = (x: number): ShapeRecipe => ({ t: "union", shapes: [{ t: "cyl", d: pd, h: pl, at: [x, 0, h - 0.01], dir: ZP }, { t: "cone", d1: pd + 0.9, d2: pd - 0.6, h: 2.2, at: [x, 0, h + pl - 4.4], dir: ZP }, { t: "cone", d1: pd + 0.9, d2: pd - 0.6, h: 2.2, at: [x, 0, h + pl - 2.2], dir: ZP }] });
+      const body: PartRecipe = {
+        base: { t: "box", w, d: dd, h, at: Z0, r: 1.5 },
+        ops: [
+          { op: "add", shape: { t: "box", w: lw, d: lw, h: 3, at: lug, r: 2 } },
+          { op: "cut", shape: { t: "cyl", d: hd, h: 5, at: [lug[0], lug[1] + 1, -1], dir: ZP } },
+          { op: "add", shape: port(pp) },
+          { op: "add", shape: port(-pp) },
+          { op: "cut", shape: { t: "cyl", d: pd - 2.2, h: pl + 2, at: [pp, 0, h], dir: ZP } },
+          { op: "cut", shape: { t: "cyl", d: pd - 2.2, h: pl + 2, at: [-pp, 0, h], dir: ZP } },
+        ],
+      };
+      return {
+        placement: "free",
+        solids: [
+          solid("", p.name, body, g.color ?? "#1d2024", g.material ?? "PA66"),
+          solid("plug", `${p.name} connector`, { base: { t: "box", w: 9, d: 4.5, h: 5.5, at: [pp - 2, -dd / 2 - 2, 3], r: 0.4 }, ops: [] }, "#e9e6dc", "PA66"),
+        ],
+        fields: {
+          scalars: { w, d: dd, h, port_d: pd },
+          points: { top: [0, 0, h], bottom: Z0, center: [0, 0, h / 2], port_hi: [pp, 0, h + pl], port_lo: [-pp, 0, h + pl], plug: [pp - 2, -dd / 2 - 4.2, 5.7] },
+          pointLists: { holes: [[lug[0], lug[1] + 1, 0]] },
+        },
+      };
+    }
+
     // belt: laid out from its path by lib.belt (machine/belts.ts), never from the catalog alone
     case "belt":
       throw new Error(`${p.name} follows the pulleys it runs round: use lib.belt("${p.id}", path: [...])`);
