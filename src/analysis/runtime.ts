@@ -185,7 +185,7 @@ function pump() {
   ensureWorker().postMessage({ id: job.id, input: job.input } satisfies FeaRequest, transfer);
   // an accuracy check solves twice, the second time with about three times the elements; a topology run solves once
   // per design step
-  const limit = RUN_TIME_LIMIT_MS * (job.input.topology ? TOPOLOGY_TIME_FACTOR : job.input.converge ? 2 : 1);
+  const limit = RUN_TIME_LIMIT_MS * (job.input.topology ? TOPOLOGY_TIME_FACTOR : job.input.converge ? 2 : 1) * (job.input.large ? 1.5 : 1);
   deadline = setTimeout(() => {
     if (current === job)
       failCurrent(
@@ -442,6 +442,7 @@ export function structuralInput(
     ...(currents ? { electricMaterials: electricMats } : {}),
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
+    ...(spec.large !== undefined ? { large: spec.large } : {}),
     ...(spec.topology ? { topology: spec.topology } : {}),
     ...(spec.touching ? { touching: spec.touching } : {}),
     ...(preload ? { preload } : {}),

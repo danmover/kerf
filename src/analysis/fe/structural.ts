@@ -23,6 +23,7 @@ import { allowableStress, type MechMaterial } from "../materials";
 import { COMPONENT_THERMAL, strengthAt, type ThermalMaterial } from "../thermalMaterials";
 import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type HeatSolve, type ThermalInput } from "./thermal";
 import { bucklingModes } from "./buckling";
+import { corotate, elementFrame, internalForce, largeEffect, maxTurn, solveLarge, turnVoigt } from "./large";
 import { FINISHES, criticalStress, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
 
 export class FeaError extends Error {}
@@ -113,6 +114,30 @@ export interface StructuralInput {
   touching?: TouchingSpec;
   /** bolts tightened before the loads (each part by name); the parts they clamp touch as contacts unless touching: says */
   preload?: BoltWant[];
+  /**
+   * large deflection: true solves with the parts free to bend and turn far (snap fits, flexures, springs), false keeps
+   * the small-deflection answer, unset switches it on when that answer turns a part more than LARGE_TURN
+   */
+  large?: boolean;
+}
+
+/** The large-deflection solve: how far the parts turned, and how it went. */
+export interface LargeResult {
+  /** switched on because the small-deflection answer turned a part more than LARGE_TURN (not asked for) */
+  auto: boolean;
+  converged: boolean;
+  /** the share of the loads it balanced */
+  reached: number;
+  steps: number;
+  newton: number;
+  iterations: number;
+  /** the most any part of the model turns, degrees, and how far the small-deflection answer had it turn */
+  turn: number;
+  linearTurn: number;
+  /** the small-deflection answer's largest deflection, mm, to compare */
+  linearDisp: number;
+  ms: number;
+  why?: string;
 }
 
 /** Topology optimisation: the shape found, against the parts it was cut from. */
@@ -419,6 +444,8 @@ export interface StructuralResult {
   touching?: TouchResult[];
   /** tightened bolts: what each was tightened to and carries under the loads */
   bolts?: BoltResult[];
+  /** solved for large deflection (the parts turn as they bend): how far and how it went */
+  large?: LargeResult;
 }
 
 /** The same analysis solved twice, the second time with smaller elements. */
@@ -475,6 +502,13 @@ const TOUCH_ROUNDS = 16;
 /** rounds for tightening the bolts before the loads (each tunes the prestress to the tension wanted) */
 const BOLT_ROUNDS = 12;
 const MAX_CELLS = 3_500_000;
+/** a small-deflection answer that turns any part of the model more than this (radians, 10°) is solved again for large deflection */
+export const LARGE_TURN = (10 * Math.PI) / 180;
+/** past this turn (1°), one large-deflection step from the small-deflection answer checks it; a change over LARGE_EFFECT solves again */
+const LARGE_LOOK = Math.PI / 180;
+const LARGE_EFFECT = 0.03;
+/** the large-deflection solve stops by this long after the analysis started, ms */
+const LARGE_BUDGET_MS = 150_000;
 /** solid elements, about three times the "fine" target: beyond this memory and time grow past what a browser tab should spend */
 export const MAX_ELEMENTS = 350_000;
 const G0 = 9.80665;
@@ -1942,6 +1976,51 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         };
       })
     : undefined;
+  // ---------- large deflection ----------
+  // The small-deflection answer moves every point straight along its first direction; a part that turns far (a snap
+  // arm pushed home, a flexure, a spring) instead swings round, shortens and stiffens or softens with the stress it
+  // carries. Solved again with each element turning as it bends, when asked, when that answer turns a part > 10°, or
+  // when one large-deflection step from it moves the answer more than 3 % (a strap or plate stiffening as it stretches).
+  let largeResult: LargeResult | undefined;
+  const largeBlock = touchOn ? "touching faces" : freePins.length ? "pins with clearance" : bolts.length ? "tightened bolts" : inp.modes ? "natural frequencies" : inp.drop ? "a drop" : inp.buckling ? "buckling" : inp.fatigue ? "fatigue" : inp.topology ? "topology optimisation" : inp.thermal || inp.uniformTemp !== undefined ? "temperatures" : null;
+  if (inp.large !== false && stats.residual <= UNRELIABLE_RESIDUAL) {
+    const uLin = Float64Array.from(u);
+    if (uSet) for (let i = 0; i < uLin.length; i++) if (uSet[i]) uLin[i] = uSet[i];
+    const linearTurn = maxTurn(fine, uLin);
+    if (largeBlock) {
+      if (inp.large) warnings.push(`large_deflection: is not solved with ${largeBlock} yet, so this is the small-deflection answer.`);
+      else if (linearTurn > LARGE_TURN) warnings.push(`Parts turn up to ${Math.round((linearTurn * 180) / Math.PI)}° under the loads, where a small-deflection answer is only rough; with ${largeBlock} Kerf cannot solve it for large deflection yet.`);
+    } else if (inp.large || linearTurn > LARGE_TURN || (linearTurn > LARGE_LOOK && largeEffect(H, fs, uSet ?? null, uLin) > LARGE_EFFECT)) {
+      const tL = now();
+      let linearDisp = 0;
+      for (let k = 0; k < nn; k++) linearDisp = Math.max(linearDisp, Math.hypot(uLin[3 * k], uLin[3 * k + 1], uLin[3 * k + 2]));
+      const sol = solveLarge({
+        H,
+        f: fs,
+        set: uSet ?? null,
+        guess: uLin,
+        steps: Math.min(10, Math.max(1, Math.ceil(linearTurn / 0.2))),
+        deadline: t0 + (inp.large ? LARGE_BUDGET_MS + 80_000 : LARGE_BUDGET_MS),
+        onProgress: (reached, it, res) => progress(`Large deflection: ${Math.round(reached * 100)} % of the loads${it ? ` (iteration ${it + 1})` : ""}`, 0.5 + 0.4 * reached, { iter: it, residual: res }),
+      });
+      largeResult = {
+        auto: !inp.large,
+        converged: sol.converged,
+        reached: sol.reached,
+        steps: sol.steps,
+        newton: sol.newton,
+        iterations: sol.iterations,
+        turn: (sol.turn * 180) / Math.PI,
+        linearTurn: (linearTurn * 180) / Math.PI,
+        linearDisp,
+        ms: now() - tL,
+        ...(sol.why ? { why: sol.why } : {}),
+      };
+      if (sol.converged) u = sol.u;
+      else warnings.push(`The large-deflection solve stopped at ${Math.round(sol.reached * 100)} % of the loads because ${sol.why ?? "it did not settle"}, so these are the small-deflection results, which can be well off when parts turn this far (up to ${Math.round((linearTurn * 180) / Math.PI)}°).`);
+    }
+  }
+  const large = !!largeResult?.converged;
   if (uSet) for (let i = 0; i < u.length; i++) if (uSet[i]) u[i] = uSet[i];
   if (stats.residual > UNRELIABLE_RESIDUAL) warnings.push(`The solver did not converge (relative residual ${stats.residual.toExponential(1)} after ${stats.iterations} iterations), so these numbers are unreliable. Check that supports hold every part, or try another resolution.`);
   else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
@@ -2035,9 +2114,9 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   }
   progress("Recovering stresses", 0.92);
 
-  // reactions: full K·u at held dofs
-  const Ku = new Float64Array(3 * nn);
-  applyK(fine, u, Ku, false);
+  // reactions: full K·u at held dofs (with large deflection, the force the turned elements push back with)
+  const Ku = large ? internalForce(H, u) : new Float64Array(3 * nn);
+  if (!large) applyK(fine, u, Ku, false);
   // the friction sliding faces carry pushes on the nodes too
   if (fT) for (let i = 0; i < Ku.length; i++) Ku[i] -= fT[i];
   // and the tightened bolts' prestress, which pulls on the nodes inside them
@@ -2126,6 +2205,9 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const ue = new Float64Array(24);
   const sg = new Float64Array(48);
   const eg = new Float64Array(48);
+  // large deflection: each element's strain is what is left once its turn is taken off, turned back after
+  const frame = large ? elementFrame(hv, nx + 1, ny + 1) : null;
+  const Rot = new Float64Array(9);
   /** buckling: each active element and its stress (at its centre, times its fill) */
   const cellList = inp.buckling ? new Int32Array(nActive) : null;
   const cellStress = inp.buckling ? new Float64Array(6 * nActive) : null;
@@ -2141,6 +2223,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
     const Ee = inp.materials[matOf(e)].E * kfac[e] * kPrint[e];
     const me = emOf(e);
+    const turned = frame ? corotate(frame, ue, Rot) : false;
     // the strain that makes stress: the total less the free thermal expansion
     const eth = thermalStrain(e);
     for (let g = 0; g < 8; g++) {
@@ -2154,6 +2237,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         let s = 0;
         for (let c = 0; c < 6; c++) s += me.D[r * 6 + c] * eg[6 * g + c];
         sg[6 * g + r] = Ee * s;
+      }
+      if (turned) {
+        turnVoigt(eg, 6 * g, Rot, 2);
+        turnVoigt(sg, 6 * g, Rot, 1);
       }
     }
     // a contact layer cell: the friction it carries along sliding faces, and no strain of its own while it slides or is apart
@@ -2604,8 +2691,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (partialShare > 0.55) warnings.push(`Many elements are only partly filled: walls are thin compared with the ${fmt(h)} mm elements, so stiffness and stress are rough. Use resolution: "fine" before relying on the numbers.`);
   if (iS >= 0 && nearBC[iS] && iA >= 0 && vm[iA] < 0.85 * vm[iS])
     warnings.push(`The peak stress sits right at a support or load, where the idealised fixing exaggerates it. A short way off it is ${fmt(vm[iA], 1)} MPa; real fixings spread load and are somewhat gentler.`);
-  if (dMax > 0.05 * Math.min(...ext.filter((e) => e > 0)) || dMax > 0.02 * diag)
-    warnings.push("The part deflects a lot compared with its size: a linear analysis is no longer accurate, and the real part may buckle or bend further.");
+  if (!large && (dMax > 0.05 * Math.min(...ext.filter((e) => e > 0)) || dMax > 0.02 * diag))
+    warnings.push(`The part deflects a lot compared with its size: a linear analysis is no longer accurate, and the real part may buckle or bend further.${largeBlock || largeResult ? "" : " large_deflection: true solves it with the parts turning as they bend."}`);
   const yieldNode = iS >= 0 ? inp.materials[nodeMat[iS]] : null;
   const yieldThere = yieldNode ? yieldNode.yield * derate(iS, nodeMat[iS]) : 0;
   if (yieldNode && vm[iS] > yieldThere)
@@ -2765,6 +2852,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     ...(fatigue ? { fatigue, staticSafety } : {}),
     ...(touching ? { touching } : {}),
     ...(boltResults ? { bolts: boltResults } : {}),
+    ...(largeResult ? { large: largeResult } : {}),
   };
 
   // ----- helpers that need the closure -----

@@ -374,6 +374,8 @@ export interface StructuralSpec {
   buckling?: BucklingSpec;
   /** solve twice, the second time with smaller elements, and report how much the answers moved */
   converge?: boolean;
+  /** large deflection: true solves the parts bending and turning far, false keeps the small-deflection answer; unset, Kerf switches it on when that answer turns parts far or a strap stiffens as it stretches */
+  large?: boolean;
   /** topology optimisation: find the stiffest shape for these loads that keeps a share of the parts' material */
   topology?: TopologySpec;
   /** touching parts as contacts (pressed, parting, sliding) instead of glued */

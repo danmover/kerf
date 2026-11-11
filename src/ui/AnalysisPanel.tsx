@@ -9,7 +9,7 @@ import { useAnalysis, showResults, runFine, runAccuracyCheck, runTopology, stopT
 import { topologyText } from "../analysis/topologySummary";
 import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
 import { download } from "../persist/files";
-import { dirWords, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
+import { dirWords, largeText, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { count, designWords, fatigueText, fatigueVerdict, lifeText } from "../analysis/fatigueSummary";
 import { cycleWords, cyclesAt, MEAN_STRESS, type SnCurve } from "../analysis/fe/fatigue";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type StudySpec, type UciSpec } from "../analysis/spec";
@@ -1388,6 +1388,12 @@ function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
           <span>{w}</span>
         </div>
       ))}
+      {largeText(r) && (
+        <div className="an-note">
+          <Icon.Info size={13} style={{ color: "var(--cyan)" }} />
+          <span>Large deflection: {largeText(r)}</span>
+        </div>
+      )}
       <div className="an-note">
         <Icon.Info size={13} style={{ color: "var(--text-3)" }} />
         <span className="dim">
@@ -1395,7 +1401,7 @@ function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
             `Temperatures on a ${h} mm voxel grid. ${heat}`
           ) : (
             <>
-              Linear elastic analysis on a {h} mm voxel grid: small deflections, {spec.touching ? "contact only where touching: says (other touching parts glued)" : "no contact"} or creep
+              {r.large?.converged ? `Elastic analysis on a ${h} mm voxel grid with large deflection (parts turn as they bend; strains small)` : `Linear elastic analysis on a ${h} mm voxel grid: small deflections`}, {spec.touching ? "contact only where touching: says (other touching parts glued)" : "no contact"} or creep
               {r.buckling ? "; buckling assumes a perfect shape, so real parts buckle somewhat sooner" : ", and buckling only when buckling: is set"}. {heat}
               {spec.thermal || spec.uniformTemp !== undefined ? " Hot plastics are softened and weakened at their temperature. " : ""}
               Peaks are smoothed at sharp corners and fillets smaller than a cell. Use it to compare designs and find weak spots; test a printed part before relying on it{spec.safety < 2 ? ", especially with a safety target under 2" : ""}.

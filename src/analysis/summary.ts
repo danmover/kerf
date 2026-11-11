@@ -279,6 +279,14 @@ export function printingText(r: StructuralResult): string | null {
     .join(" ");
 }
 
+/** The large-deflection solve, in words: how far the parts turned and how far the small-deflection answer was off. */
+export function largeText(r: StructuralResult): string | null {
+  const L = r.large;
+  if (!L || !L.converged) return null;
+  const why = L.auto ? `, switched on because the small-deflection answer ${L.linearTurn > 10 ? `turned parts ${Math.round(L.linearTurn)}°` : "was off by more than 3 % here (it stiffens or softens as it deflects)"}` : "";
+  return `solved with the parts turning as they bend (up to ${fmtNum(L.turn, 1)}°)${why}, in ${L.steps} load step${L.steps === 1 ? "" : "s"}; the small-deflection answer would have it move ${fmtNum(L.linearDisp, 3)} mm at most, this one ${fmtNum(r.maxDisp.value, 3)} mm. Strains are taken as small, as they are in elastic metal and plastic parts.`;
+}
+
 function extraLines(spec: StructuralSpec, r: StructuralResult): string[] {
   const out: string[] = [];
   const pt = printingText(r);
@@ -339,13 +347,15 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
       (r.maxStress.nearBoundary && r.maxStress.away ? ` It sits right at a support or load; a short way off the peak is ${fmtNum(r.maxStress.away.value, 2)} MPa.` : ""),
   );
   lines.push(`Largest deflection ${fmtNum(r.maxDisp.value, 4)} mm at ${p3(r.maxDisp.at)}${spec.maxDeflection !== undefined ? ` (limit ${fmtNum(spec.maxDeflection, 3)} mm: ${r.maxDisp.value <= spec.maxDeflection ? "passes" : "FAILS"})` : ""}.`);
+  const lt = largeText(r);
+  if (lt) lines.push(`Large deflection: ${lt}`);
   lines.push(`Largest principal strain ${fmtNum(Math.abs(r.maxStrain.value) * 100, 4)} % (${fmtNum(Math.abs(r.maxStrain.value) * 1e6, 0)} microstrain). Mass ${fmtNum(r.mass, 2)} g.`);
   if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");
   if (r.layer) lines.push(`Worst stress across print layers: ${fmtNum(r.layer.value, 2)} MPa at ${p3(r.layer.at)}.`);
   lines.push("Supports: " + r.supports.map((s, i) => supportLine(spec, r, i)).join("; ") + ".");
   const moves = r.supports.filter((s) => s.moved);
   if (moves.length && !r.loads.length && !r.gravity)
-    lines.push(`The parts are loaded only by the set displacement${moves.length > 1 ? "s" : ""}, so the safety factor is how many times further ${moves.length > 1 ? "they" : "it"} could be pushed before the part fails (stresses are linear, so this holds for small movements).`);
+    lines.push(`The parts are loaded only by the set displacement${moves.length > 1 ? "s" : ""}, so the safety factor is how many times further ${moves.length > 1 ? "they" : "it"} could be pushed before the part fails (${r.large?.converged ? "from the large-deflection solve, so only rough for pushing much further" : "stresses are linear, so this holds for small movements"}).`);
   for (const c of contactVerdicts(spec, r)) lines.push(`${c.title}: ${c.status.toUpperCase()}. ${c.detail}${c.fix ? ` Fix: ${c.fix}` : ""}`);
   const tt = touchingText(spec, r);
   if (tt) lines.push(`Touching parts (contacts, not glued): ${tt.status === "fail" ? "FAIL. " : ""}${tt.detail}${tt.fix ? ` Fix: ${tt.fix}` : ""}`);

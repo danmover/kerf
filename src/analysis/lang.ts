@@ -96,11 +96,12 @@ export const STRUCTURAL_PROPS = [
   "preload",
   "buckling",
   "buckling_safety",
+  "large_deflection",
   ...TOPOLOGY_PROPS,
 ];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
 export const UCI_PROPS = ["uci", "bottom_bracket", "wheels", "saddle", "bars", "hoods", "forward", "parts", "rim_depth"];
-const FLAGS = ["gravity", "printed", "locked", "buckling", "converge"];
+const FLAGS = ["gravity", "printed", "locked", "buckling", "converge", "large_deflection"];
 
 const REGION = "region";
 const LOAD = "load";
@@ -566,7 +567,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       );
     }
   }
-  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed, buckling, converge.`, f.span);
+  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed, buckling, converge, large_deflection.`, f.span);
   const one = (name: string) => {
     const all = props.filter((p) => p.name === name);
     if (all.length > 1) fail(`"${name}:" is given twice`, all[1].span);
@@ -914,6 +915,13 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     const other = modal ? "natural frequencies" : drop ? "a drop" : buckling ? "buckling" : fatigue ? "fatigue" : topology ? "topology optimisation" : null;
     if (other) fail(`preload: tightens the bolts so the parts they clamp press together, part and slide, which ${other} cannot follow. Check ${other} in an analysis of its own.`, preP!.span);
   }
+  // ---- large deflection: parts that bend and turn far (snap fits, flexures, springs, straps that stretch as they sag) ----
+  const large = bool("large_deflection");
+  if (large) {
+    const at = (one("large_deflection") ?? flags.find((f) => f.name === "large_deflection"))!.span;
+    const other = modal ? "natural frequencies" : drop ? "a drop" : buckling ? "buckling" : fatigue ? "fatigue" : topology ? "topology optimisation" : touching ? "touching parts" : preload ? "tightened bolts" : thermalOn || uniformTemp !== undefined ? "temperatures" : null;
+    if (other) fail(`large_deflection solves the parts bending and turning far under the loads as given, which ${other} cannot follow yet. Check ${other} in an analysis of its own.`, at);
+  }
   if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
   if (!supports.length && !thermalOn)
     fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead; for temperatures alone use heat:.', span);
@@ -969,6 +977,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(buckling ? { buckling } : {}),
     ...(fatigue ? { fatigue } : {}),
     ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
+    ...(large !== undefined ? { large } : {}),
     ...(topology ? { topology } : {}),
     ...(touching ? { touching } : {}),
     ...(preload ? { preload } : {}),
