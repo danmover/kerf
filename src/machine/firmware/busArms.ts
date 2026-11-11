@@ -148,8 +148,8 @@ static const uint16_t TORQUE[N_ARMS * MAX_J] = {
 #define ACCEL ${accel}             // the servos' own acceleration, x 100 steps/s² (${cNum(Math.round(accel * 8.79))} deg/s²)
 #define MAX_SPEED ${maxSpeed}        // steps/s (${cNum(Math.round((maxSpeed * 360) / 4096))} deg/s); 4096 steps to a turn
 #define SOFT_TORQUE 250       // what every servo starts on (0.1 %), until it has taken hold
-#define ARM_MA_MAX ${armMa}       // an arm drawing more than this for ARM_MA_MS lets go: its fuse is next
-#define ARM_MA_MS 1500
+#define ARM_MA_MAX ${armMa}       // what an arm may draw all day: its fuse's rating
+#define ARM_HEAT_S 4          // how far past that it may go, as a fuse does: 110 % for 19 s, 135 % for 5 s, twice for 1.3 s
 #define LOOP_MS 20            // every servo is read this often
 `;
 
@@ -212,7 +212,7 @@ static unsigned long lastPoll = 0;
 static unsigned long lastStream = 0;
 static unsigned long moveStart = 0;
 static unsigned long moveMs = 0;
-static unsigned long overSince[N_ARMS];
+static long heat[N_ARMS];
 
 static uint8_t tx[96];
 static uint8_t rx[160];
@@ -448,7 +448,7 @@ static uint8_t hold(uint8_t arm) {
   delay(150);
   allTorque(arm, 0);
   holding[arm] = 1;
-  overSince[arm] = 0;
+  heat[arm] = 0;
   return 1;
 }
 
@@ -882,10 +882,10 @@ static void watch() {
       if (holding[a] && !faulted && (err[x] & 0x20)) fault("overloaded", a, (uint8_t)(j + 1));
       else if (holding[a] && !faulted && (err[x] & 0x04)) fault("too hot", a, (uint8_t)(j + 1));
     }
-    if (holding[a] && arm_ma[a] > ARM_MA_MAX) {
-      if (overSince[a] == 0) overSince[a] = now ? now : 1;
-      else if (now - overSince[a] > ARM_MA_MS && !faulted) fault("too much current", a, 0);
-    } else overSince[a] = 0;
+    // the arm's wiring and fuse warm with the square of the current: over the rating they gain, under it they cool
+    heat[a] += ((arm_ma[a] * arm_ma[a] - (long)ARM_MA_MAX * ARM_MA_MAX) / 1000) * LOOP_MS / 1000;
+    if (heat[a] < 0 || !holding[a]) heat[a] = 0;
+    if (heat[a] > ((long)ARM_MA_MAX * ARM_MA_MAX / 1000) * ARM_HEAT_S && !faulted) fault("too much current", a, 0);
   }
   hottest = hot;
   volts_x10 = v;
@@ -921,7 +921,7 @@ void setup() {
     holding[a] = 0;
     wheel[a] = 0;
     wheelSpeed[a] = 0;
-    overSince[a] = 0;
+    heat[a] = 0;
     arm_ma[a] = 0;
   }
   delay(400);
@@ -977,7 +977,8 @@ ${chain}
 4. \`mv <arm> <ms> <angles>\` moves every joint of an arm to arrive together; \`rd\` reads them back.
 
 A move past a joint's limit, with the e-stop pressed or with the arm limp is refused with \`err\`. The board lets go of
-both arms if a servo reports overload or overheating, or an arm draws more than ${cNum(armMa / 1000)} A for ${1.5} s.
+both arms if a servo reports overload or overheating, or an arm draws more than ${cNum(armMa / 1000)} A for long (it allows what a
+fuse of that rating does: 110 % for about 19 s, 135 % for 5 s, twice the rating for just over a second).
 
 ## Joints
 

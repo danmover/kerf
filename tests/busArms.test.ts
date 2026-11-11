@@ -262,6 +262,14 @@ describe("two-arm firmware", () => {
     expect(String(r.state)).toBe("waiting");
     const order = lines.filter((l) => l.startsWith("state: ")).map((l) => l.slice(7));
     expect(order).toEqual(["limp", "waiting", "moving", "waiting"]);
+    // each arm's fuse carries its own arm, not the whole supply: the arm that moved six servos drew more
+    const fl = Number(r["fuse_l.peak_draw"]);
+    const fr = Number(r["fuse_r.peak_draw"]);
+    expect(fl).toBeGreaterThan(0.3);
+    expect(fr).toBeGreaterThan(0.1);
+    expect(fl).toBeGreaterThan(fr);
+    expect(Math.max(fl, fr)).toBeLessThan(Number(r.supply_peak_amps));
+    expect(r.fuse_blown).toBe(false);
   });
 
   it("refuses a move past a limit or while limp, and lets go when the e-stop is pressed", { timeout: 60_000 }, () => {

@@ -146,6 +146,8 @@ interface FuseSlot {
    */
   side?: { keys: Set<string>; comps: Set<string> };
   rating: number;
+  /** the most it carried, A */
+  peak: number;
   over2: number;
   over35: number;
   blown: boolean;
@@ -284,7 +286,7 @@ export class Plant implements PlantPort, PlantView {
         }
         case "fuse":
           // the fuse fitted (rating:), else the one the holder comes with
-          this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(mc.rating ?? part.specs.rating_a ?? 20), over2: 0, over35: 0, blown: false });
+          this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(mc.rating ?? part.specs.rating_a ?? 20), peak: 0, over2: 0, over35: 0, blown: false });
           break;
         case "motor_driver":
           for (const ch of ["A", "B"]) {
@@ -1089,6 +1091,7 @@ export class Plant implements PlantPort, PlantView {
     for (const f of this.fuses) {
       if (f.blown) continue;
       const i = f.side && f.net ? this.branchDraw(f.net, f.side) : f.net ? onNet(f.net) : ib;
+      if (i > f.peak) f.peak = i;
       f.over2 = i > 2 * f.rating ? f.over2 + dt : Math.max(0, f.over2 - dt * 0.2);
       f.over35 = i > 3.5 * f.rating ? f.over35 + dt : 0;
       if (f.over2 > 2 || f.over35 > 0.2) {

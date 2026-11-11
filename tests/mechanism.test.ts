@@ -313,6 +313,29 @@ scenario "Falls on its stop" {
 }
 `;
 
+  it("gives an L-shaped moving part boxes that follow its shape, so a thing can sit in its corner", () => {
+    const model = evaluate(SRC.replace("body box(200, 20, 10, at: (100, 0, 245))", "body box(200, 20, 10, at: (100, 0, 245))  add box(10, 20, 60, at: (195, 0, 210))"));
+    expect(model.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    const def = model.scenarios![0];
+    // the arm as an L: a long bar with a short leg hanging from its far end
+    const geom = (hash: string): MeshEntry | undefined => {
+      const p = model.parts.find((x) => x.hash === hash)!;
+      if (p.name === "base") return boxMesh([120, 60, 10], [0, 0, 5]);
+      return joinMeshes(boxMesh([200, 20, 10], [100, 0, 245]), boxMesh([10, 20, 60], [195, 0, 210]));
+    };
+    const r = resolveMechanism(def.spec, model, geom, true);
+    if (!("mech" in r)) throw new Error(JSON.stringify(r));
+    const arm = r.mech.bodies.find((b) => b.id === "arm")!;
+    expect(arm.boxes.length).toBeGreaterThan(1);
+    // nothing of it fills the open corner under the bar (x 0..190, z 180..240): one box round the lot would
+    const inside = (b: (typeof arm.boxes)[number], q: V3) => Math.abs(q[0] - b.c[0]) < b.h[0] && Math.abs(q[1] - b.c[1]) < b.h[1] && Math.abs(q[2] - b.c[2]) < b.h[2];
+    expect(arm.boxes.some((b) => inside(b, [0.1, 0, 0.2]))).toBe(false);
+    expect(arm.boxes.some((b) => inside(b, [0.195, 0, 0.2]))).toBe(true);
+    expect(arm.boxes.some((b) => inside(b, [0.05, 0, 0.245]))).toBe(true);
+    // the frame's parts stay one box each: loose things lie on them
+    expect(r.mech.bodies.find((b) => b.id === "frame")!.boxes.length).toBe(1);
+  });
+
   it("reads the items and runs without firmware", () => {
     const model = evaluate(SRC);
     expect(model.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
@@ -335,6 +358,9 @@ scenario "Falls on its stop" {
     const arm = r.mech.bodies.find((b) => b.id === "arm")!;
     // 200 × 20 × 10 mm of aluminium (2.7 g/cm³) is 108 g, plus the 200 g payload
     expect(arm.mass).toBeCloseTo(0.308, 3);
+    // a plain bar touches things as one box, and its corners are among the points it lands on
+    expect(arm.boxes.length).toBe(1);
+    expect(arm.points.some((q) => Math.abs(q[0] - 0.2) < 1e-6 && Math.abs(q[1] - 0.01) < 1e-6 && Math.abs(q[2] - 0.245) < 1e-6)).toBe(true);
     expect(r.mech.joints[0].limits![0]).toBeCloseTo(-Math.PI / 2, 5);
     expect(r.mech.notes.join(" ")).toMatch(/plain 8 mm pin/);
     // released level, the arm swings down (negative about -Y) onto its -90° stop, clear of the bench top
@@ -468,6 +494,22 @@ scenario "Front screw on the bench" {
 });
 
 /** a closed box mesh centred on the origin, the way the kernel would mesh `box(...)` centred */
+/** two box meshes as one part's mesh (an L or a U, say) */
+function joinMeshes(a: MeshEntry, b: MeshEntry): MeshEntry {
+  const pa = a.preview!;
+  const pb = b.preview!;
+  const n = pa.positions.length / 3;
+  const mesh = {
+    positions: Float32Array.from([...pa.positions, ...pb.positions]),
+    normals: new Float32Array(pa.positions.length + pb.positions.length),
+    indices: Uint32Array.from([...pa.indices, ...Array.from(pb.indices, (i) => i + n)]),
+    edges: new Float32Array(0),
+  };
+  const lo = a.bbox[0].map((v, i) => Math.min(v, b.bbox[0][i])) as V3;
+  const hi = a.bbox[1].map((v, i) => Math.max(v, b.bbox[1][i])) as V3;
+  return { preview: mesh, volume: a.volume + b.volume, bbox: [lo, hi], rev: 0 };
+}
+
 function boxMesh(s: V3, at: V3 = [0, 0, 0]): MeshEntry {
   const [a, b, c] = [s[0] / 2, s[1] / 2, s[2] / 2];
   const p: number[] = [];

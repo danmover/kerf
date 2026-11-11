@@ -151,11 +151,17 @@ export class BodyContacts implements Constraint {
     public mu: number,
   ) {}
   build(s: Solver, dt: number, emit: (r: Row) => void) {
+    // where each box is this step, and the sphere round it: a point outside the sphere is not touching the box
+    const at = this.boxes.map((b) => ({ c: b.body.point(b.c), q: qmulq(b.body.q, b.q), r: Math.hypot(b.h[0], b.h[1], b.h[2]) + MARGIN }));
     this.points.forEach((lp, i) => {
       const p = this.body.point(lp);
       this.boxes.forEach((b, j) => {
-        const c = b.body.point(b.c);
-        const q = boxQuery(p, c, b.h, qmulq(b.body.q, b.q));
+        const { c, q: bq, r } = at[j];
+        const dx = p[0] - c[0];
+        const dy = p[1] - c[1];
+        const dz = p[2] - c[2];
+        if (dx * dx + dy * dy + dz * dz >= r * r) return;
+        const q = boxQuery(p, c, b.h, bq);
         if (q.C >= MARGIN) return;
         const k = i * this.boxes.length + j;
         let sl = this.slots.get(k);
