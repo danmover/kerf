@@ -5,6 +5,7 @@
 
 import { evaluateOnly, meshOf, useDesign, whenChecked } from "../core/engine";
 import { applyQuick, parseQuick, vocabOf, type QuickCommand, type QuickSpot, type Vec3 } from "../core/quickCommands";
+import { directEdit, type DirectAsk, type DirectGroup } from "../core/directEdits";
 import type { Model } from "../core/model";
 import type { Xform } from "../kernel/recipe";
 import { materialRecord } from "../library/materialDb";
@@ -135,6 +136,21 @@ export function roundPicked(k: "fillet" | "chamfer", r: number, groups: { block:
   const title = titles.length > 2 ? `${titles[0]}, and ${titles.length - 1} more` : titles.join("; ");
   commitSource(next, "you", title);
   return { ok: true, kind: k, title, before: src, after: next, targets: changed, built: buildError(changed) };
+}
+
+/**
+ * Push or pull, delete or move picked faces (core/directEdits): one line at the end of each part, an imported file
+ * made a part first, as one undoable change.
+ */
+export function directPicked(ask: DirectAsk, groups: DirectGroup[]): { ok: true; title: string; built: Promise<string | null> } | { ok: false; why: string } {
+  const { src, model } = current();
+  const res = directEdit(src, model, ask, groups);
+  if (!res.ok) return res;
+  const errorsIn = (m: Model) => m.diagnostics.filter((d) => d.severity === "error");
+  const broke = errorsIn(evaluateOnly(res.src)).filter((e) => !errorsIn(model).some((o) => o.message === e.message));
+  if (broke.length) return { ok: false, why: `That would break the design: ${broke[0].message}` };
+  commitSource(res.src, "you", res.title);
+  return { ok: true, title: res.title, built: buildError(res.targets) };
 }
 
 /** Which parts a command means: the one it names, the one pointed at, the selected ones, or the only part. */

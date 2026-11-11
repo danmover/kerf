@@ -3,8 +3,9 @@
 // toolbar) says what a click picks; with box select on (B) a drag draws a
 // box instead of turning the view: dragged left to right it takes what is
 // wholly inside, right to left whatever it touches. Picked edges can be
-// filleted or chamfered in one go, a flat face sketched on, and any
-// selection kept as a named set. Claude is told what is picked, as
+// filleted or chamfered in one go, picked faces pushed, pulled, deleted or
+// moved (direct editing), a flat face sketched on, and any selection kept
+// as a named set. Claude is told what is picked, as
 // selectors it can use.
 
 import { AnimatePresence, motion } from "framer-motion";
@@ -21,7 +22,8 @@ import type { MeshData } from "../../kernel/build";
 import type { V3 } from "../../kernel/recipe";
 import { fmtNum } from "../../lang/values";
 import { FILTERS, FILTER_WORD, addPicks, anchorOf, clearPicks, countText, cycleFilter, deleteSet, picksByBlock, resolvePick, savedSets, saveSet, selectorFor, setFilter, setPicks, toggleBox, usePicks, useSets, type Pick, type PickFilter, type SelectionSet } from "../../app/picks";
-import { roundPicked } from "../../app/quickRun";
+import { directPicked, roundPicked } from "../../app/quickRun";
+import type { DirectAsk } from "../../core/directEdits";
 import { select, useView } from "../../app/view";
 import { toast, useUi } from "../../app/ui";
 import { useChatDraft } from "../chatDraft";
@@ -672,6 +674,33 @@ function PickCard({ picks }: { picks: Pick[] }) {
   const edges = picks.filter((p) => p.kind === "edge");
   const edgeGroups = groups.map((g) => ({ ...g, picks: g.picks.filter((p) => p.kind === "edge") })).filter((g) => g.picks.length);
   const roundable = edgeGroups.length > 0 && edgeGroups.every((g) => g.local);
+  // picked faces: push or pull, delete or move them (an imported file becomes a part first)
+  const faces = picks.filter((p) => p.kind === "face");
+  const faceGroups = groups.map((g) => ({ ...g, picks: g.picks.filter((p) => p.kind === "face") })).filter((g) => g.picks.length);
+  const faceEditable = faceGroups.length > 0 && faceGroups.every((g) => g.local || !!model?.parts.find((p) => p.name === g.block)?.imported);
+  const [dist, setDist] = useState("2");
+  const [moveBy, setMoveBy] = useState<string | null>(null);
+  const [copy, setCopy] = useState(false);
+  const direct = (ask: DirectAsk) => {
+    const res = directPicked(
+      ask,
+      faceGroups.map((g) => ({ block: g.block, faces: selectorFor(g.picks), count: g.picks.length })),
+    );
+    if (!res.ok) return toast({ kind: "warn", title: res.why }, 7000);
+    toast({ kind: "success", title: res.title }, 5000);
+    clearPicks();
+    void res.built.then((err) => err && toast({ kind: "warn", title: "That edit doesn't build: undo (Ctrl+Z) to take it back", detail: err }, 12000));
+  };
+  const push = () => {
+    const d = Number(dist);
+    if (!Number.isFinite(d) || d === 0) return toast({ kind: "warn", title: "Give a distance in mm: positive pushes the faces out, negative pulls them in" });
+    direct({ k: "push_pull", by: d });
+  };
+  const move = () => {
+    const v = (moveBy ?? "").split(/[\s,]+/).filter(Boolean).map(Number);
+    if (v.length > 3 || v.some((x) => !Number.isFinite(x)) || !v.some((x) => x !== 0)) return toast({ kind: "warn", title: "Give the move as x, y, z in mm, like 10, 0, 0" });
+    direct({ k: "move_faces", by: [v[0] ?? 0, v[1] ?? 0, v[2] ?? 0], copy });
+  };
 
   // what each pick is, from the exact geometry (the first few)
   useEffect(() => {
@@ -808,6 +837,36 @@ function PickCard({ picks }: { picks: Pick[] }) {
             <Icon.Chamfer size={13} /> Chamfer
           </button>
         </div>
+      )}
+      {faces.length > 0 && (
+        <>
+          <div className="row" style={{ marginTop: 10, gap: 6, flexWrap: "wrap" }}>
+            <label className="row" style={{ gap: 4 }} data-tip="How far to push the faces out, in mm (negative pulls them in)">
+              <input className="input mono" style={{ width: 44 }} value={dist} onChange={(e) => setDist(e.target.value)} onKeyDown={(e) => e.key === "Enter" && faceEditable && push()} aria-label="Push or pull distance" />
+              <span className="muted">mm</span>
+            </label>
+            <button className="btn sm" disabled={!faceEditable} onClick={push} data-tip={faceEditable ? "Push the faces out by that much, or pull them in: the faces round them stretch to follow, and a hole or boss gets bigger or smaller" : "Only parts made in this design and imported files can be changed"}>
+              <Icon.ArrowDown size={13} style={{ transform: "rotate(180deg)" }} /> Push/pull
+            </button>
+            <button className="btn sm" disabled={!faceEditable} onClick={() => direct({ k: "delete_faces" })} data-tip={faceEditable ? "Take the faces away and close the solid up: fill a hole or pocket, cut off a boss, make a round or chamfer a sharp edge again" : "Only parts made in this design and imported files can be changed"}>
+              <Icon.Trash size={13} /> Delete
+            </button>
+            <button className={`btn sm ${moveBy !== null ? "primary" : ""}`} disabled={!faceEditable} onClick={() => setMoveBy(moveBy === null ? "10, 0, 0" : null)} data-tip={faceEditable ? "Move or copy the feature these faces make (a hole, pocket, slot or boss), closing up where it was" : "Only parts made in this design and imported files can be changed"}>
+              <Icon.Move size={13} /> Move…
+            </button>
+          </div>
+          {moveBy !== null && (
+            <div className="row" style={{ marginTop: 6, gap: 6 }}>
+              <input className="input mono grow" style={{ minWidth: 0 }} value={moveBy} onChange={(e) => setMoveBy(e.target.value)} onKeyDown={(e) => e.key === "Enter" && move()} placeholder="x, y, z" aria-label="Move by x, y, z in mm" data-tip="How far to move it: x, y, z in mm, in the part's own directions" autoFocus />
+              <label className="row muted" style={{ gap: 4, fontSize: 12 }} data-tip="Leave the original where it is">
+                <input type="checkbox" checked={copy} onChange={(e) => setCopy(e.target.checked)} /> copy
+              </label>
+              <button className="btn sm primary" onClick={move}>
+                {copy ? "Copy" : "Move"}
+              </button>
+            </div>
+          )}
+        </>
       )}
       <div className="row" style={{ marginTop: 10, gap: 6, flexWrap: "wrap" }}>
         {face?.type === "plane" && face.normal && (

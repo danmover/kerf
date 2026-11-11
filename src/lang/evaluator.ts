@@ -343,6 +343,7 @@ class Evaluator {
         return new Pending([key]);
       },
       machine: () => this.machine,
+      imports: () => this.opts.imports ?? evalImports(),
       tick: (n: number) => this.tick(n, this.callSpan),
       partShape: (name: string) => {
         const p = this.parts.find((q) => q.name === name && q.kind === "part");
@@ -2350,7 +2351,7 @@ class Evaluator {
         case "modifier": {
           const callee = it.call.callee;
           if (callee.k !== "ident" || !(callee.name in MODIFIER_PARAMS)) {
-            throw new EvalError("Only shell(), fillet(), chamfer() and draft() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
+            throw new EvalError("Only shell(), fillet(), chamfer(), draft() and the direct edits push_pull(), replace_faces(), delete_faces() and move_faces() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
           }
           if (!st.base) throw new EvalError(`${callee.name}() needs a body first`, it.span);
           const pos: Value[] = [];
@@ -2385,6 +2386,31 @@ class Evaluator {
             const faces = toSel(a.value("faces") ?? "vertical", ctx, "draft(): faces");
             this.checkSelFeatures(st, faces, it.call.span);
             this.pushOp(st, { op: "draft", angle, faces, pull: a.dir("pull", [0, 0, 1]), neutral: a.vec3("neutral", [0, 0, 0]) }, it.span);
+          } else if (callee.name === "push_pull" || callee.name === "replace_faces" || callee.name === "delete_faces" || callee.name === "move_faces") {
+            const fv = a.value("faces");
+            if (fv === undefined) ctx.error(`${callee.name}(): faces: says which faces, e.g. faces: near((x, y, z)) or facing(Z)`);
+            const faces = toSel(fv, ctx, `${callee.name}(): faces`);
+            this.checkSelFeatures(st, faces, it.call.span);
+            if (callee.name === "push_pull") {
+              const d = a.num("by");
+              if (!Number.isFinite(d) || Math.abs(d) < 1e-6) ctx.error("push_pull(): by is how far to move the faces in mm, out when positive and in when negative, and can't be 0");
+              if (Math.abs(d) > 10_000) ctx.error("push_pull(): by is limited to 10 m");
+              this.pushOp(st, { op: "push_pull", d, faces }, it.span);
+            } else if (callee.name === "replace_faces") {
+              const wv = a.value("with");
+              if (wv === undefined) ctx.error("replace_faces(): with: picks the flat face to line the faces up with, e.g. with: near((x, y, z))");
+              const target = toSel(wv, ctx, "replace_faces(): with");
+              this.checkSelFeatures(st, target, it.call.span);
+              this.pushOp(st, { op: "replace_faces", faces, with: target }, it.span);
+            } else if (callee.name === "delete_faces") {
+              this.pushOp(st, { op: "delete_faces", faces }, it.span);
+            } else {
+              const by = a.vec3("by", [0, 0, 0]);
+              const turn = a.num("turn", 0);
+              if (!(Math.hypot(...by) > 1e-9) && !(Math.abs(turn) > 1e-9)) ctx.error("move_faces(): give by: (x, y, z) to move the feature, turn: degrees to turn it, or both");
+              const about = a.value("about") === undefined ? undefined : a.vec3("about");
+              this.pushOp(st, { op: "move_faces", faces, by, turn, axis: a.dir("axis", [0, 0, 1]), about, copy: a.bool("copy", false) }, it.span);
+            }
           } else {
             const edges = toSel(a.value("edges") ?? "all", ctx, `${callee.name}(): edges`);
             this.checkSelFeatures(st, edges, it.call.span);

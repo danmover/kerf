@@ -359,6 +359,7 @@ ${shapes}
 
 ### Modifiers (inside a part)
 ${mods}
+Direct edits (push_pull, delete_faces, move_faces, replace_faces) change the solid by its faces, as it is at that step, the way a direct modeller does. Use them on an imported body (part bracket { body step("bracket") push_pull(2, faces: facing(Z)) delete_faces(faces: circles(6)) }) or for a late change to a shape built in many steps. On Kerf's own features, changing the number in the step that made them is cleaner. Rounds and chamfers on a face's edges stop push_pull: delete_faces them first and round again after.
 
 ## Detailed modelling
 

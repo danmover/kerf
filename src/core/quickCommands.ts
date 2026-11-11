@@ -727,7 +727,7 @@ function addsMaterial(it: Item): boolean {
 }
 
 /** Insert a statement into a part after `after` (null: at the end), on its own line with the part's indentation. */
-function insertItem(src: string, stmt: PartStmt, text: string, after: Item | null): string {
+export function insertItem(src: string, stmt: PartStmt, text: string, after: Item | null): string {
   const items = stmt.items;
   const close = stmt.span.end - 1;
   const open = src.indexOf("{", stmt.nameSpan.end);

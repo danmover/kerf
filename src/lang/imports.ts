@@ -28,8 +28,22 @@ export class ImportFn extends Fn {
   constructor() {
     super(
       "step",
-      (_p, _n, ctx) => ctx.error('step() places an imported file (STEP, STL, OBJ or 3MF) as a component: component board = step("name") { at: (x, y, z) }'),
-      'step("name") { at:, rotate:, origin: } places an imported file (STEP, or an STL, OBJ or 3MF mesh) as a component',
+      // in an expression (a part's body) it is the file's solid, to change with direct edits
+      (pos, named, ctx) => {
+        const name = pos[0] ?? named.name;
+        if (typeof name !== "string") return ctx.error('step("name") names an imported file: component board = step("name") { at: (x, y, z) } places it, and part bracket { body step("name") } makes it a part to change');
+        const table = ctx.imports?.() ?? evalImports();
+        const ref = findImport(table, name);
+        if (!ref) return ctx.error(missingImportMessage(table, name));
+        const origin = named.origin ?? "base";
+        if (origin !== "base" && origin !== "center" && origin !== "file") return ctx.error('step(): origin is "base", "center" or "file"');
+        const n = ref.meta.bodies.length;
+        const b = named.body;
+        if (b !== undefined && (typeof b !== "number" || !Number.isInteger(b) || b < 1 || b > n)) return ctx.error(`step(): body is the body's number from 1 to ${n}`);
+        const shift = sub([0, 0, 0], originOffset(ref.meta, origin));
+        return new ShapeV(bodyRecipe(ref, b !== undefined ? b - 1 : n === 1 ? 0 : -1, shift));
+      },
+      'step("name") { at:, rotate:, origin: } places an imported file (STEP, or an STL, OBJ or 3MF mesh) as a component; in a part, body step("name", origin: "base", body: 1) makes the file (or one of its bodies) the part\'s solid, to change with push_pull(), delete_faces(), move_faces() and the other modelling steps',
     );
   }
 }
