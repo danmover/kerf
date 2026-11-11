@@ -126,6 +126,10 @@ function region(v: Value | undefined, a: Args): RegionSpec {
 const wrap = (kind: string, spec: unknown, label: string) => new Obj({ spec: spec as Value }, kind, label);
 /** -Y evaluates to (-0, -1, -0); store plain zeros */
 const clean = (v: V3): V3 => [v[0] || 0, v[1] || 0, v[2] || 0];
+const norm3 = (v: V3): V3 => {
+  const l = Math.hypot(...v) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+};
 
 /** Functions that only exist inside analysis blocks; they take precedence there when called. */
 export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
@@ -261,6 +265,63 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
       return wrap(SUPPORT, spec, "contact");
     },
     "contact(region, mu: 0.3, grip: [band]) → a seat that is only pressed on (by bands, springs or its own weight), not glued: it holds like fix:, then the result checks that the seat stays pressed (no edge lifts off) and that friction holds what would slide or turn it. A cylinder zone round a tube (zone(at:, d:, axis:, length:)) is a saddle on that tube; grip: adds the friction of bands round the same tube.",
+  ),
+  def(
+    "spring",
+    ["where", "rate", "axis", "per_area"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      const hasRate = a.has("rate"),
+        hasPer = a.has("per_area");
+      if (hasRate === hasPer) a.ctx.error("spring(): give rate: (the springs' total stiffness in N/mm, like spring(face(base, -Z), 500)) or per_area: (N/mm per mm² of surface, for a pad), one of them");
+      const v = hasRate ? a.positive("rate") : a.positive("per_area");
+      const spec: SupportSpec = { region: r, ...(a.has("axis") ? { dir: clean(a.dir("axis")) } : {}), spring: hasRate ? { rate: v } : { perArea: v } };
+      return wrap(SUPPORT, spec, "spring");
+    },
+    "spring(region, 500, axis: Z) → an elastic support instead of a rigid one: rubber feet, a soft mount, the give of a shelf or wall it bolts to. rate: the springs' total stiffness in N/mm (it gives 1 mm per 500 N here), spread over the region by area, every way or only along axis:. per_area: 1.5 is a pad pressing along the surface's normal, in N/mm per mm² (a rubber pad: its compression modulus over its thickness, about 5 MPa / 3 mm ≈ 1.7). Use it in fix:; the result says how far it gives.",
+  ),
+  def(
+    "pin",
+    ["where", "slide", "tight"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      if (r.t !== "cyl") a.ctx.error("pin(): give the bore (or the shaft) as a cylinder zone, like pin(zone(at: (0, 0, 10), d: 6, axis: Y, length: 12))");
+      return wrap(SUPPORT, { region: r, pin: { slide: a.bool("slide", false), tight: a.bool("tight", false) } } satisfies SupportSpec, "pin");
+    },
+    "pin(zone(at:, d:, axis:, length:)) → a pin through a bore, or a bushing or bearing round a shaft: holds it across the pin and along it while it turns freely about it (a hinge). It bears only on the side the loads press the bore onto it, like a pin with a little clearance; tight: true holds all round (a press fit), slide: true lets the part slide along the pin too. A part on one pin can swing about it, so add a second pin or another support. Use it in fix:; the result gives the bearing pressure.",
+  ),
+  def(
+    "displace",
+    ["where", "by", "dir"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      const v = a.value("by");
+      if (typeof v === "number") {
+        if (!a.has("dir")) a.ctx.error("displace(): with a distance, give the way it moves, like displace(face(hook, +Z), 1.5mm, dir: -Z); or give a vector, like (0, 0, -1.5mm)");
+        const d = norm3(a.dir("dir"));
+        return wrap(SUPPORT, { region: r, dir: clean(d), move: clean([d[0] * v, d[1] * v, d[2] * v]) } satisfies SupportSpec, "set displacement");
+      }
+      const m = clean(a.vec3("by"));
+      if (Math.hypot(...m) < 1e-12) a.ctx.error("displace(): the displacement is zero; use fix: for a region held still");
+      return wrap(SUPPORT, { region: r, move: m } satisfies SupportSpec, "set displacement");
+    },
+    "displace(region, (0, 0, -1.5mm)) → a set displacement instead of a force: the region is pushed this far and held there, every way. displace(face(hook, +X), 1.5mm, dir: -Z) pushes it along one axis only and lets it slide the other ways, like a finger. For snap fits, clips and clamps (how hard is it to push 1.5 mm, and what strain does that make?): use it in fix:; the result gives the force it takes. Stresses are linear, so they suit small movements.",
+  ),
+  def(
+    "bearing",
+    ["where", "f", "dir"],
+    (a) => {
+      const r = region(a.value("where"), a);
+      if (r.t !== "cyl") a.ctx.error("bearing(): give the bore (or the shaft seat) as a cylinder zone, like bearing(zone(at: c, d: 22, axis: Y, length: 7), 300N, dir: -Z)");
+      const fv = a.value("f");
+      let f: V3;
+      if (typeof fv === "number") {
+        const d = a.dir("dir", [0, 0, -1]);
+        f = [d[0] * fv, d[1] * fv, d[2] * fv];
+      } else f = a.vec3("f");
+      return wrap(LOAD, { t: "bearing", region: r, f: clean(f) } satisfies LoadSpec, "bearing load");
+    },
+    "bearing(zone(at:, d:, axis:, length:), 300N, dir: -Z) → the load a shaft, pin or bearing pushes onto a bore (or a bearing onto its shaft): spread over the half of the cylinder it presses on, most in the middle and none at the sides (a cosine), as a pin or bearing really loads a hole, rather than evenly over the whole bore like force(). A share along the axis (a thrust) is spread evenly. Use it in load:.",
   ),
   def(
     "pressure",
@@ -480,10 +541,11 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       if (as === "fix") {
         if (x instanceof Obj && x.kind === REGION) supports.push({ region: x.fields.spec as unknown as RegionSpec });
         else if (x instanceof Obj && x.kind === SUPPORT) supports.push(x.fields.spec as unknown as SupportSpec);
-        else fail(`fix: should be a region like face(bracket, -Y), zone(at: p, r: 3), roller(face(base, -Z), Z) or contact(region, mu: 0.3); got ${typeName(x)}`, p.span);
+        else fail(`fix: should be a region like face(bracket, -Y), zone(at: p, r: 3), roller(face(base, -Z), Z), contact(region, mu: 0.3), spring(region, 500), pin(zone(...)) or displace(region, (0, 0, -1mm)); got ${typeName(x)}`, p.span);
       } else {
         if (x instanceof Obj && x.kind === LOAD) loads.push(x.fields.spec as unknown as LoadSpec);
-        else fail(`load: should be force(...), pressure(...), torque(...), wind(...) or pull(band); got ${typeName(x)}`, p.span);
+        else if (x instanceof Obj && x.kind === SUPPORT) fail(`load: takes loads; ${x.label ?? "a support"} goes in fix:`, p.span);
+        else fail(`load: should be force(...), pressure(...), torque(...), bearing(...), wind(...) or pull(band); got ${typeName(x)}`, p.span);
       }
     }
   };
@@ -689,15 +751,18 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       modes = buckP.value as number;
     }
     if (modal || drop) fail(`Check buckling in a separate analysis from the ${modal ? "natural frequencies" : "drop"}.`, at);
-    if (!loads.length && !accel && !thermalOn && uniformTemp === undefined) fail("buckling needs loads to scale: add load: (or gravity) for what presses on the parts.", at);
+    if (!loads.length && !accel && !thermalOn && uniformTemp === undefined && !supports.some((s) => s.move)) fail("buckling needs loads to scale: add load: (or gravity) for what presses on the parts.", at);
     buckling = { modes, safety: plain("buckling_safety", "the lowest buckling factor wanted, like buckling_safety: 3", (v) => v >= 1) ?? 3 };
   } else if (one("buckling_safety")) fail("buckling_safety: goes with buckling.", one("buckling_safety")!.span);
 
   if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
   if (!supports.length && !thermalOn)
     fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead; for temperatures alone use heat:.', span);
-  if (!loads.length && !accel && !modal && !thermalOn && uniformTemp === undefined)
-    fail("Add load: force(...), pressure(...) or torque(...), or gravity, so there is something to analyse; or excite: or modes: for natural frequencies, or heat: for temperatures.", span);
+  const moved = supports.some((s) => s.move);
+  if (!loads.length && !accel && !modal && !thermalOn && uniformTemp === undefined && !moved)
+    fail("Add load: force(...), pressure(...) or torque(...), or gravity, so there is something to analyse; or displace(...) in fix: to push a region a set distance, excite: or modes: for natural frequencies, or heat: for temperatures.", span);
+  if (supports.length && supports.every((s) => s.move))
+    fail("displace() pushes a region and holds it there, but nothing else holds the part, so it would just move along with it. Add where it is held to fix:, like fix: [face(hook, -Y), displace(face(hook, +Z), 1mm, dir: -Z)].", span);
 
   const matP = one("material");
   let material: string | undefined;

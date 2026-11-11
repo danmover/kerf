@@ -371,8 +371,10 @@ export class ResultsOverlay implements SceneOverlay {
       }
       const n = keep.length;
       if (!n) continue;
-      const geo = sup.dir ? new THREE.SphereGeometry(mk * 0.45, 10, 8) : new THREE.ConeGeometry(mk * 0.5, mk, 10);
-      if (!sup.dir) geo.translate(0, -mk / 2, 0); // tip at the origin
+      // fixed and moved regions press cones into the surface; rollers, pins and springs, which let it move some way, are balls
+      const ball = sup.kind === "pin" || sup.kind === "spring" || (!!sup.dir && sup.kind !== "move");
+      const geo = ball ? new THREE.SphereGeometry(mk * 0.45, 10, 8) : new THREE.ConeGeometry(mk * 0.5, mk, 10);
+      if (!ball) geo.translate(0, -mk / 2, 0); // tip at the origin
       const mat = new THREE.MeshStandardMaterial({ color: this.look.support, emissive: this.look.support, emissiveIntensity: 0.35, roughness: 0.4 });
       const inst = new THREE.InstancedMesh(geo, mat, n);
       const m = new THREE.Matrix4();
@@ -386,13 +388,22 @@ export class ResultsOverlay implements SceneOverlay {
         nrm.normalize();
         // the cone's tip points along -Y in its own frame: turn it to point into the surface
         q.setFromUnitVectors(up, nrm.clone().negate());
-        m.compose(sup.dir ? pos.clone().addScaledVector(nrm, mk * 0.45) : pos, q, new THREE.Vector3(1, 1, 1));
+        m.compose(ball ? pos.clone().addScaledVector(nrm, mk * 0.45) : pos, q, new THREE.Vector3(1, 1, 1));
         inst.setMatrixAt(i, m);
       }
       this.markers.add(inst);
       this.disposables.push(geo, mat);
       // one label per kind of support: several screw zones all saying "fixed" only crowd the view
-      const text = sup.dir ? `roller ${axisName(sup.dir)}` : "fixed";
+      const text =
+        sup.kind === "pin"
+          ? `pin${sup.pin?.tight ? " (tight)" : ""}`
+          : sup.kind === "spring"
+            ? `spring ${sup.spring?.rate !== undefined ? `${fmtNum(sup.spring.rate, 0)} N/mm` : "pad"}`
+            : sup.kind === "move"
+              ? `moved ${fmtNum(Math.hypot(...(sup.moved ?? [0, 0, 0])), 3)} mm`
+              : sup.dir
+                ? `roller ${axisName(sup.dir)}`
+                : "fixed";
       if (!supportLabels.has(text)) {
         supportLabels.add(text);
         this.label(text, new THREE.Vector3(...sup.at), this.look.text.support, 0.8, false, "left");
@@ -410,7 +421,12 @@ export class ResultsOverlay implements SceneOverlay {
       const dir = v.clone().normalize();
       const len = s * 0.16;
       this.arrow(at.clone().addScaledVector(dir, -len), dir, len, this.look.load);
-      const text = ld.kind === "pressure" ? `${fmtNum(ld.magnitude / Math.max(ld.area, 1e-9), 3)} MPa · ${fmtNum(ld.magnitude, 1)} N` : `${fmtNum(ld.magnitude, 1)} N`;
+      const text =
+        ld.kind === "pressure"
+          ? `${fmtNum(ld.magnitude / Math.max(ld.area, 1e-9), 3)} MPa · ${fmtNum(ld.magnitude, 1)} N`
+          : ld.kind === "bearing"
+            ? `${fmtNum(ld.magnitude, 1)} N bearing · ${fmtNum(ld.pressure ?? 0, 2)} MPa peak`
+            : `${fmtNum(ld.magnitude, 1)} N`;
       this.label(text, at.clone().addScaledVector(dir, -len * 0.6), this.look.text.load, 1);
     }
     // self-weight gets an arrow only when it matters next to the other loads

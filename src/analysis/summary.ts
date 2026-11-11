@@ -4,7 +4,7 @@ import { fmtNum } from "../lang/values";
 import type { SafetyAt, StructuralResult } from "./fe/structural";
 import type { DrivetrainResult } from "./drivetrain";
 import { dropText, dropVerdict, vibrationText, vibrationVerdict } from "./dynamics";
-import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec } from "./spec";
+import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
 import type { CheckItem } from "../core/checks";
 import { airflowLine } from "./aeroSummary";
 import type { AirflowRun } from "./aeroRuntime";
@@ -31,6 +31,22 @@ export const dirWords = (d: number[]) => {
 type Verdict = "pass" | "warn" | "fail";
 
 /** What a safety factor is judged against; the overall lowest one unless another is given. */
+/** One support in words, with what it carries: "pin zone ⌀6 mm … bears on 48 % of its bore, 12.3 MPa bearing pressure, carries 150 N". */
+export function supportLine(spec: StructuralSpec, r: StructuralResult, i: number): string {
+  const s = r.supports[i];
+  const sp = spec.supports[i];
+  const where = describeRegion(sp.region);
+  const F = fmtNum(Math.hypot(...s.reaction), 1);
+  if (s.spring) {
+    const k = s.spring.rate !== undefined ? `${fmtNum(s.spring.rate, 1)} N/mm` : `${fmtNum(s.spring.perArea ?? 0, 3)} N/mm per mm²`;
+    return `spring ${where} (${k}${sp.dir ? ` along ${p3(sp.dir)}` : ""}) gives ${fmtNum(s.spring.give, 4)} mm and carries ${F} N`;
+  }
+  if (s.pin)
+    return `pin ${where} (${s.pin.tight ? "tight all round" : `bears on ${fmtNum(s.pin.share * 100, 0)} % of its bore`}${s.pin.slide ? ", free to slide along it" : ""}, ${fmtNum(s.pin.pressure, 2)} MPa bearing pressure over ⌀${fmtNum(s.pin.d, 2)} × ${fmtNum(s.pin.length, 1)} mm) carries ${F} N`;
+  if (s.moved) return `${where} moved (${s.moved.map((v) => fmtNum(v, 3)).join(", ")}) mm${sp.dir ? " (free to slide the other ways)" : ""} takes ${F} N`;
+  return `${s.contact ? "contact" : s.dir ? "roller" : "fixed"} ${where} (${s.nodes} nodes) carries ${F} N`;
+}
+
 export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.minSafety): string {
   // a hot plastic's allowable is derated for the temperature there
   const hot = m.tempC !== undefined && m.tempC > 30 ? ` at ${fmtNum(m.tempC, 0)} °C` : "";
@@ -234,11 +250,10 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   lines.push(`Largest principal strain ${fmtNum(Math.abs(r.maxStrain.value) * 100, 4)} % (${fmtNum(Math.abs(r.maxStrain.value) * 1e6, 0)} microstrain). Mass ${fmtNum(r.mass, 2)} g.`);
   if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");
   if (r.layer) lines.push(`Worst stress across print layers: ${fmtNum(r.layer.value, 2)} MPa at ${p3(r.layer.at)}.`);
-  lines.push(
-    "Supports: " +
-      r.supports.map((s, i) => `${s.contact ? "contact" : s.dir ? "roller" : "fixed"} ${describeRegion(spec.supports[i].region)} (${s.nodes} nodes) carries ${fmtNum(Math.hypot(...s.reaction), 1)} N`).join("; ") +
-      ".",
-  );
+  lines.push("Supports: " + r.supports.map((s, i) => supportLine(spec, r, i)).join("; ") + ".");
+  const moves = r.supports.filter((s) => s.moved);
+  if (moves.length && !r.loads.length && !r.gravity)
+    lines.push(`The parts are loaded only by the set displacement${moves.length > 1 ? "s" : ""}, so the safety factor is how many times further ${moves.length > 1 ? "they" : "it"} could be pushed before the part fails (stresses are linear, so this holds for small movements).`);
   for (const c of contactVerdicts(spec, r)) lines.push(`${c.title}: ${c.status.toUpperCase()}. ${c.detail}${c.fix ? ` Fix: ${c.fix}` : ""}`);
   if (r.loads.length)
     lines.push(
@@ -248,6 +263,7 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
             const where = describeRegion(spec.loads[i].region);
             const L = spec.loads[i];
             if (L.t === "torque") return `torque ${fmtNum(L.torque / 1000, 3)} N·m about ${p3(L.axis)} through ${p3(l.at)} on ${where} (${fmtNum(l.area, 0)} mm²)`;
+            if (L.t === "bearing") return `bearing load ${fmtNum(l.magnitude, 1)} N along ${p3(l.vector.map((x) => x / (l.magnitude || 1)) as V3)} on ${where}, spread with a cosine over the side it presses (peak ${fmtNum(l.pressure ?? 0, 2)} MPa)`;
             return `${l.kind} totalling ${fmtNum(l.magnitude, 1)} N on ${where} (${fmtNum(l.area, 0)} mm², centred ${p3(l.at)})`;
           })
           .join("; ") +

@@ -5,7 +5,7 @@
 
 import { CORNERS, principal, vonMises, elementMatrices, elementMatricesFor, layeredConstitutive, type ElementMatrices } from "./element";
 import { infillStiffness, infillStrength, layerStiffness, type InfillPattern } from "../../mfg/infill";
-import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg } from "./solver";
+import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg, type NodeSprings } from "./solver";
 import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
 import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
@@ -281,8 +281,28 @@ export interface StructuralResult {
   mass: number;
   volume: number;
   /** at: centroid of the loaded surface (a torque's centre for torques); vector: net force; axis: a torque's axis */
-  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3 }[];
-  supports: { region: string; dir?: V3; at: V3; nodes: number; reaction: V3; markers: Float32Array; contact?: ContactResult }[];
+  /** pressure: for a bearing load, the peak of its cosine spread (in the middle of the side it presses), MPa */
+  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3; pressure?: number }[];
+  supports: {
+    region: string;
+    dir?: V3;
+    at: V3;
+    nodes: number;
+    reaction: V3;
+    markers: Float32Array;
+    contact?: ContactResult;
+    /** an elastic support, a pin through a bore, or a region moved a set distance (unset: fixed, a roller or a contact seat) */
+    kind?: "spring" | "pin" | "move";
+    /** an elastic support: its stiffness (N/mm in all, or N/mm per mm² of surface) and how far it gives on average, mm */
+    spring?: { rate?: number; perArea?: number; give: number };
+    /**
+     * A pin: held all round (tight) or only where the loads press the bore onto it, free to slide along it or not; the
+     * share of the bore that presses on it, and the bearing pressure (its force over the bore's projected area d × length).
+     */
+    pin?: { tight: boolean; slide: boolean; share: number; pressure: number; d: number; length: number; axis: V3; rounds: number };
+    /** the set displacement, mm */
+    moved?: V3;
+  }[];
   gravity: { vector: V3; at: V3 } | null;
   parts: PartField[];
   ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number]; life?: [number, number] };
@@ -345,6 +365,14 @@ export type Progress = (stage: string, frac: number, info?: { iter?: number; res
 const FILL_MIN = 0.12;
 /** strength of the bond between print layers in shear, as a share of its strength in tension */
 const LAYER_SHEAR = 0.7;
+/**
+ * A pin is held by springs across its bore (and along it), this many times stiffer than a layer of the part's own
+ * material one element thick: rigid enough that the pin gives about 1 % as much as the part next to it, soft enough
+ * that the solver still converges quickly.
+ */
+const PIN_STIFF = 100;
+/** rounds of the solve that finds where each pin presses on its bore */
+const PIN_ROUNDS = 10;
 const MAX_CELLS = 3_500_000;
 /** solid elements, about three times the "fine" target: beyond this memory and time grow past what a browser tab should spend */
 export const MAX_ELEMENTS = 350_000;
@@ -452,8 +480,9 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const temps = !!inp.thermal || inp.uniformTemp !== undefined;
   if (temps && (!inp.thermalMaterials || inp.thermalMaterials.length !== inp.materials.length)) throw new FeaError("Thermal properties are missing for the analysed materials.");
   if (!inp.supports.length && !heatOnly) throw new FeaError("The analysis has no supports. Add fix: to say how the part is held, for example fix: face(bracket, -Y).");
-  if (!heatOnly && !inp.loads.length && !inp.accel && !inp.modes && !temps) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
-  if (inp.buckling && !inp.loads.length && !inp.accel && !temps) throw new FeaError("Buckling needs loads to scale: add load: (or gravity) to say what presses on the parts.");
+  const moved = inp.supports.some((s) => s.move);
+  if (!heatOnly && !inp.loads.length && !inp.accel && !inp.modes && !temps && !moved) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+  if (inp.buckling && !inp.loads.length && !inp.accel && !temps && !moved) throw new FeaError("Buckling needs loads to scale: add load: (or gravity) to say what presses on the parts.");
   if (inp.buckling && inp.modes) throw new FeaError("Check natural frequencies and buckling in separate analyses.");
   if (inp.drop && (temps || inp.buckling)) throw new FeaError(`A drop works out its own forces from the fall; check ${temps ? "heat and temperatures" : "buckling"} in a separate analysis.`);
   if (inp.fatigue && (inp.drop || temps || inp.modes)) throw new FeaError(`Check fatigue in a separate analysis from the ${inp.drop ? "drop" : temps ? "heat and temperatures" : "natural frequencies"}.`);
@@ -803,19 +832,144 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
 
   // ---------- boundary conditions ----------
   const bc = new Uint8Array(3 * nn);
+  /** where a support moves its region a set distance: the displacement of each dof it holds, mm */
+  let uSet: Float64Array | null = null;
+  /** springs to the ground that stay as they are: elastic supports, and the springs holding pins along their axis */
+  const springAcc = new Map<number, Float64Array>();
+  /** each support's own springs, to add up the force it carries afterwards */
+  const springOf: { node: number; k: Float64Array }[][] = inp.supports.map(() => []);
+  /**
+   * The springs across each pin's bore, one per node: on while the bore presses on the pin (all the time for a tight
+   * pin). side is +1 where the part is the shaft inside (moving out presses), −1 where it is the bore round the pin.
+   */
+  const pinSprings: { sup: number; node: number; rho: V3; side: number; k: number; w: number; on: boolean }[] = [];
+  /** directions springs and pins hold each node along, for the check that the supports stop every rigid motion */
+  const heldDirs = new Map<number, V3[]>();
+  const holdAlong = (n: number, d: V3) => {
+    const l = heldDirs.get(n);
+    if (l) l.push(d);
+    else heldDirs.set(n, [d]);
+  };
+  /** k·d·dᵀ as (xx, yy, zz, xy, yz, zx) */
+  const outer = (k: number, d: V3) => Float64Array.of(k * d[0] * d[0], k * d[1] * d[1], k * d[2] * d[2], k * d[0] * d[1], k * d[1] * d[2], k * d[2] * d[0]);
+  const addSpring = (si: number, n: number, k6: Float64Array) => {
+    springOf[si].push({ node: n, k: k6 });
+    const v = springAcc.get(n);
+    if (v) for (let c = 0; c < 6; c++) v[c] += k6[c];
+    else springAcc.set(n, Float64Array.from(k6));
+  };
+  /** the stiffest material round a node */
+  const stiffestAt = (n: number) => {
+    const i = n % NX,
+      j = Math.floor(n / NX) % NY,
+      k = Math.floor(n / (NX * NY));
+    let E = 0;
+    for (let dk = -1; dk <= 0; dk++)
+      for (let dj = -1; dj <= 0; dj++)
+        for (let di = -1; di <= 0; di++) {
+          const a = i + di,
+            b = j + dj,
+            c = k + dk;
+          if (a < 0 || b < 0 || c < 0 || a >= nx || b >= ny || c >= nz) continue;
+          const e = eIndex(a, b, c);
+          if (active[e]) E = Math.max(E, inp.materials[inp.parts[owner[e]].material].E);
+        }
+    return E;
+  };
   const supportInfo: StructuralResult["supports"] = [];
   inp.supports.forEach((s, i) => {
     const sel = select(s.region);
     if (!sel.nodes.length) throw new FeaError(`Support ${i + 1} (${describeRegion(s.region)}) does not touch the part's surface.`);
     let comps = [0, 1, 2];
     let dir: V3 | undefined;
-    if (s.dir) {
-      const d = norm(s.dir);
+    const extra: Partial<StructuralResult["supports"][number]> = {};
+    const along = (what: string): [number, V3] => {
+      const d = norm(s.dir!);
       const k = [0, 1, 2].reduce((a, b) => (Math.abs(d[b]) > Math.abs(d[a]) ? b : a), 0);
-      if (Math.abs(Math.abs(d[k]) - 1) > 0.02) warnings.push(`Support ${i + 1}: rollers act along X, Y or Z; ${fmtP(d)} was treated as ${"XYZ"[k]}.`);
+      if (Math.abs(Math.abs(d[k]) - 1) > 0.02) warnings.push(`Support ${i + 1}: ${what} act along X, Y or Z; ${fmtP(d)} was treated as ${"XYZ"[k]}.`);
+      const a: V3 = [0, 0, 0];
+      a[k] = 1;
+      return [k, a];
+    };
+    if (s.spring) {
+      // an elastic support: springs spread over the region by area, along one direction or every way
+      comps = [];
+      const tot = sel.w.reduce((a, b) => a + b, 0) || 1;
+      const d = s.dir ? norm(s.dir) : undefined;
+      if (d) dir = d;
+      sel.nodes.forEach((n, q) => {
+        const nrm = norm([sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]]);
+        const k = s.spring!.rate !== undefined ? (s.spring!.rate * sel.w[q]) / tot : (s.spring!.perArea ?? 0) * sel.w[q];
+        if (!(k > 0)) return;
+        const way = d ?? (s.spring!.rate !== undefined ? undefined : nrm);
+        if (way) {
+          addSpring(i, n, outer(k, way));
+          holdAlong(n, way);
+        } else {
+          addSpring(i, n, Float64Array.of(k, k, k, 0, 0, 0));
+          holdAlong(n, [1, 0, 0]);
+          holdAlong(n, [0, 1, 0]);
+          holdAlong(n, [0, 0, 1]);
+        }
+      });
+      extra.kind = "spring";
+      extra.spring = { ...(s.spring.rate !== undefined ? { rate: s.spring.rate } : { perArea: s.spring.perArea }), give: 0 };
+    } else if (s.pin) {
+      // a pin through a bore (or a bushing round a shaft): stiff springs across it at every node, and along it unless
+      // it slides; nothing round it, so the part turns freely about the pin
+      comps = [];
+      if (s.region.t !== "cyl") throw new FeaError(`Support ${i + 1}: a pin needs a cylinder zone round the bore, like pin(zone(at: c, d: 6, axis: Y, length: 10)).`);
+      const z = s.region;
+      const ax = norm(z.axis);
+      dir = ax;
+      const rows: { n: number; q: number; rho: V3 }[] = [];
+      let lean = 0;
+      let sMin = Infinity,
+        sMax = -Infinity;
+      sel.nodes.forEach((n, q) => {
+        const p = nodePos(n);
+        const v: V3 = [p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]];
+        const sa = dot(v, ax);
+        const rv: V3 = [v[0] - sa * ax[0], v[1] - sa * ax[1], v[2] - sa * ax[2]];
+        const rl = Math.hypot(...rv);
+        const a: V3 = [sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]];
+        const al = Math.hypot(...a) || 1;
+        // the flat faces either side of the bore are not on the pin
+        if (rl < 1e-9 || Math.abs(dot(a, ax)) / al > 0.9) return;
+        const rho: V3 = [rv[0] / rl, rv[1] / rl, rv[2] / rl];
+        lean += dot(a, rho);
+        rows.push({ n, q, rho });
+        sMin = Math.min(sMin, sa);
+        sMax = Math.max(sMax, sa);
+      });
+      if (!rows.length) throw new FeaError(`Support ${i + 1}: the pin zone (${describeRegion(s.region)}) finds no bore or shaft surface round its axis. Give the zone the bore's diameter and put it on the bore's axis.`);
+      // the part's surface faces out of the axis on a shaft, in toward it in a bore
+      const side = lean > 0 ? 1 : -1;
+      const hAvg = (hx + hy + hz) / 3;
+      for (const r of rows) {
+        const k = (PIN_STIFF * (stiffestAt(r.n) || inp.materials[0].E) * sel.w[r.q]) / hAvg;
+        pinSprings.push({ sup: i, node: r.n, rho: r.rho, side, k, w: sel.w[r.q], on: true });
+        holdAlong(r.n, r.rho);
+        if (!s.pin.slide) {
+          addSpring(i, r.n, outer(k, ax));
+          holdAlong(r.n, ax);
+        }
+      }
+      extra.kind = "pin";
+      extra.pin = { tight: s.pin.tight, slide: s.pin.slide, share: 1, pressure: 0, d: z.d, length: Math.max(sMax - sMin, Math.min(hx, hy, hz)), axis: ax, rounds: 0 };
+    } else if (s.dir) {
+      const [k, a] = along(s.move ? "set displacements" : "rollers");
       comps = [k];
-      dir = [0, 0, 0];
-      dir[k] = 1;
+      dir = a;
+    }
+    if (s.move && !s.spring && !s.pin) {
+      // the region moves this far and is held there (along one axis only when a direction is given)
+      const mv: V3 = s.dir ? [0, 0, 0] : [...s.move];
+      if (s.dir) mv[comps[0]] = Math.hypot(...s.move) * (Math.sign(s.move[comps[0]]) || 1);
+      uSet ??= new Float64Array(3 * nn);
+      for (const n of sel.nodes) for (const k of comps) uSet[3 * n + k] = mv[k];
+      extra.kind = "move";
+      extra.moved = mv;
     }
     let c: V3 = [0, 0, 0];
     for (const n of sel.nodes) {
@@ -832,8 +986,27 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const a: V3 = norm([sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]]);
       markers.push(p[0], p[1], p[2], a[0], a[1], a[2]);
     }
-    supportInfo.push({ region: describeRegion(s.region), dir, at: [c[0] / m, c[1] / m, c[2] / m], nodes: m, reaction: [0, 0, 0], markers: Float32Array.from(markers) });
+    supportInfo.push({ region: describeRegion(s.region), dir, at: [c[0] / m, c[1] / m, c[2] / m], nodes: m, reaction: [0, 0, 0], markers: Float32Array.from(markers), ...extra });
   });
+  // every spring as the solver takes it: one 3×3 per node, the pins' springs across their bores added while they press
+  const springNodes = [...new Set([...springAcc.keys(), ...pinSprings.map((p) => p.node)])].sort((a, b) => a - b);
+  const springAt = new Map(springNodes.map((n, q) => [n, q]));
+  const springs: NodeSprings | null = springNodes.length ? { node: Int32Array.from(springNodes), k: new Float64Array(6 * springNodes.length) } : null;
+  const assembleSprings = () => {
+    if (!springs) return;
+    springs.k.fill(0);
+    for (const [n, v] of springAcc) {
+      const o = 6 * springAt.get(n)!;
+      for (let c = 0; c < 6; c++) springs.k[o + c] += v[c];
+    }
+    for (const p of pinSprings) {
+      if (!p.on) continue;
+      const o = 6 * springAt.get(p.node)!;
+      const v = outer(p.k, p.rho);
+      for (let c = 0; c < 6; c++) springs.k[o + c] += v[c];
+    }
+  };
+  assembleSprings();
 
   // ---------- loads ----------
   const f = new Float64Array(3 * nn);
@@ -865,6 +1038,80 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
           R[d] += v;
         }
       });
+    } else if (ld.t === "bearing") {
+      // what turns in a bore (or a bushing round a shaft) presses on the side it is pushed toward, hardest in the middle
+      // and not at all at the sides: a cosine spread over that half, pushing straight into the surface. A share along
+      // the axis (a thrust) is spread evenly.
+      if (ld.region.t !== "cyl") throw new FeaError(`Load ${i + 1}: a bearing load needs a cylinder zone round the bore or shaft, like bearing(zone(at: c, d: 22, axis: Y, length: 7), 300N, dir: -Z).`);
+      const z = ld.region;
+      const ax = norm(z.axis);
+      const fa = dot(ld.f, ax);
+      const fr: V3 = [ld.f[0] - fa * ax[0], ld.f[1] - fa * ax[1], ld.f[2] - fa * ax[2]];
+      const frL = Math.hypot(...fr);
+      const rows: { n: number; q: number; rho: V3 }[] = [];
+      let lean = 0;
+      let sMin = Infinity,
+        sMax = -Infinity;
+      sel.nodes.forEach((n, q) => {
+        const p = nodePos(n);
+        const v: V3 = [p[0] - z.at[0], p[1] - z.at[1], p[2] - z.at[2]];
+        const sa = dot(v, ax);
+        const rv: V3 = [v[0] - sa * ax[0], v[1] - sa * ax[1], v[2] - sa * ax[2]];
+        const rl = Math.hypot(...rv);
+        const a: V3 = [sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]];
+        const al = Math.hypot(...a) || 1;
+        if (rl < 1e-9 || Math.abs(dot(a, ax)) / al > 0.9) return;
+        const rho: V3 = [rv[0] / rl, rv[1] / rl, rv[2] / rl];
+        lean += dot(a, rho);
+        rows.push({ n, q, rho });
+        sMin = Math.min(sMin, sa);
+        sMax = Math.max(sMax, sa);
+      });
+      if (!rows.length) throw new FeaError(`Load ${i + 1}: the bearing zone (${describeRegion(ld.region)}) finds no bore or shaft surface round its axis. Give the zone the bore's diameter and put it on the bore's axis.`);
+      // the surface's outward normal: away from the axis on a shaft, toward it in a bore
+      const side = lean > 0 ? 1 : -1;
+      let peak = 0;
+      let loadedArea = 0;
+      if (frL > 1e-12) {
+        const fd: V3 = [fr[0] / frL, fr[1] / frL, fr[2] / frL];
+        // the load presses where the surface faces against it: cos θ = −n·f̂
+        const cosOf = rows.map((r) => Math.max(0, -side * dot(r.rho, fd)));
+        let sum = 0;
+        rows.forEach((r, j) => (sum += sel.w[r.q] * cosOf[j] * cosOf[j]));
+        if (!(sum > 0)) throw new FeaError(`Load ${i + 1}: the bearing zone has no surface facing the load. Check the zone's axis and the load's direction.`);
+        peak = frL / sum;
+        const got: V3 = [0, 0, 0];
+        let wsum = 0;
+        rows.forEach((r, j) => {
+          const c = cosOf[j];
+          if (!c) return;
+          // pressure peak·cos θ over the node's area, straight into the surface (−n)
+          const k = peak * sel.w[r.q] * c;
+          for (let d = 0; d < 3; d++) {
+            const v = -side * r.rho[d] * k;
+            f[3 * r.n + d] += v;
+            got[d] += v;
+          }
+          wsum += sel.w[r.q] * c;
+          loadedArea += sel.w[r.q];
+        });
+        // the stepped surface leaves a little off the total: share the rest out like the load
+        const miss: V3 = [fr[0] - got[0], fr[1] - got[1], fr[2] - got[2]];
+        rows.forEach((r, j) => {
+          const c = cosOf[j];
+          if (!c) return;
+          for (let d = 0; d < 3; d++) f[3 * r.n + d] += (miss[d] * sel.w[r.q] * c) / wsum;
+        });
+      }
+      if (Math.abs(fa) > 1e-12) sel.nodes.forEach((n, q) => {
+        for (let d = 0; d < 3; d++) f[3 * n + d] += (fa * ax[d] * sel.w[q]) / tot;
+      });
+      R = [...ld.f] as V3;
+      // the peak of a cosine spread over half the cylinder, 4F / (π·d·L), from the true bore rather than its stepped voxel skin
+      const len = Math.max(sMax - sMin, Math.min(hx, hy, hz));
+      const pressure = peak > 0 ? (4 * frL) / (Math.PI * z.d * len) : 0;
+      loadInfo.push({ kind: "bearing", region: describeRegion(ld.region), at: c, vector: R, magnitude: Math.hypot(...R), area: loadedArea || sel.area, nodes: sel.nodes.length, axis: ax, pressure });
+      return;
     } else {
       const ax = norm(ld.axis);
       const pushes = shareTorque(sel.nodes.map(nodePos), sel.w, [ld.torque * ax[0], ld.torque * ax[1], ld.torque * ax[2]]);
@@ -1059,8 +1306,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   progress("Setting up the solver", 0.22);
   const dense = new Float64Array(ne);
   for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e] * kfac[e] * kPrint[e];
-  const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], classMats.length ? { cls, mats: classMats } : undefined);
-  const H = buildHierarchy(fine, plan.shifts, nu);
+  const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], classMats.length ? { cls, mats: classMats } : undefined, springs);
+  let H = buildHierarchy(fine, plan.shifts, nu);
   const fs = Float64Array.from(f);
   for (let i = 0; i < fs.length; i++) if (!fine.free[i]) fs[i] = 0;
   const tSetup = now();
@@ -1122,11 +1369,61 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   }
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
-  const { u, stats } = pcg(H, fs, {
-    tol,
-    maxIter: 300,
-    onIter: (it, rel) => progress("Solving", 0.3 + 0.6 * Math.min(1, Math.log(rel) / Math.log(tol)), { iter: it, residual: rel }),
-  });
+  /** the loads, less what a region moved a set distance pulls on the rest (the moved dofs then join the answer) */
+  const rhs = (): Float64Array => {
+    if (!uSet) return fs;
+    const g = new Float64Array(3 * nn);
+    applyK(fine, uSet, g, false);
+    const out = new Float64Array(3 * nn);
+    for (let i = 0; i < out.length; i++) out[i] = fine.free[i] ? fs[i] - g[i] : 0;
+    return out;
+  };
+  const solveOnce = (stage: string, x0?: Float64Array, to = tol) =>
+    pcg(H, rhs(), {
+      tol: to,
+      maxIter: 300,
+      x0,
+      onIter: (it, rel) => progress(stage, 0.3 + 0.6 * Math.min(1, Math.log(rel) / Math.log(to)), { iter: it, residual: rel }),
+    });
+  // A pin with clearance bears only on the side the loads press the bore onto it: solve, let go where the bore pulls
+  // away from the pin, hold where it pushes in, and solve again until that settles (roughly at first, then to the
+  // full accuracy). Loads that reverse in a fatigue history press the other side half the time, so there each pin
+  // holds all round, as a linear answer must.
+  const reverses = !!inp.fatigue && inp.fatigue.cycles.some((cy) => cy.min < 0 || cy.max < 0);
+  const freePins = reverses ? [] : pinSprings.filter((p) => !inp.supports[p.sup].pin!.tight);
+  if (reverses && pinSprings.some((p) => !inp.supports[p.sup].pin!.tight)) warnings.push("The loads reverse, so each pin is taken as fitting its bore all round (a pin with clearance bears on one side, then the other).");
+  const rough = Math.max(tol, 1e-4);
+  let { u, stats } = solveOnce("Solving", undefined, freePins.length ? rough : tol);
+  let pinRounds = 1;
+  if (freePins.length && stats.iterations > 0) {
+    let iterations = stats.iterations;
+    let settled = false;
+    for (; pinRounds < PIN_ROUNDS; pinRounds++) {
+      let changed = 0;
+      for (const p of freePins) {
+        const n = p.node;
+        const ur = u[3 * n] * p.rho[0] + u[3 * n + 1] * p.rho[1] + u[3 * n + 2] * p.rho[2];
+        const on = p.side * ur > 0;
+        if (on !== p.on) {
+          p.on = on;
+          changed++;
+        }
+      }
+      if (!changed) {
+        settled = true;
+        break;
+      }
+      // the springs changed: the coarse grids and smoothers follow them
+      assembleSprings();
+      H = buildHierarchy(fine, plan.shifts, nu);
+      ({ u, stats } = solveOnce(`Solving where the pins bear (round ${pinRounds + 1})`, u, rough));
+      iterations += stats.iterations;
+    }
+    if (!settled) warnings.push(`Where the pins bear on their bores had not quite settled after ${PIN_ROUNDS} rounds; the stress next to them may be a little off.`);
+    ({ u, stats } = solveOnce("Solving", u));
+    stats = { ...stats, iterations: iterations + stats.iterations };
+  }
+  if (uSet) for (let i = 0; i < u.length; i++) if (uSet[i]) u[i] = uSet[i];
   if (stats.residual > UNRELIABLE_RESIDUAL) warnings.push(`The solver did not converge (relative residual ${stats.residual.toExponential(1)} after ${stats.iterations} iterations), so these numbers are unreliable. Check that supports hold every part, or try another resolution.`);
   else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
   const tSolve = now();
@@ -1223,20 +1520,71 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const Ku = new Float64Array(3 * nn);
   applyK(fine, u, Ku, false);
   const reaction: V3 = [0, 0, 0];
-  inp.supports.forEach((_, si) => {
-    const sel = select(inp.supports[si].region);
+  /** the force springs push back on the body with */
+  const springPush: V3 = [0, 0, 0];
+  inp.supports.forEach((sp, si) => {
+    const sel = select(sp.region);
     const R: V3 = [0, 0, 0];
-    const seen = new Set<number>();
-    for (const n of sel.nodes) {
-      if (seen.has(n)) continue;
-      seen.add(n);
-      for (let d = 0; d < 3; d++) if (bc[3 * n + d]) R[d] += Ku[3 * n + d] - f[3 * n + d];
+    const info = supportInfo[si];
+    if (sp.spring || sp.pin) {
+      // springs push back with −k·u
+      let give = 0,
+        wsum = 0;
+      for (const { node: n, k } of springOf[si]) {
+        const a = u[3 * n],
+          b = u[3 * n + 1],
+          c = u[3 * n + 2];
+        R[0] -= k[0] * a + k[3] * b + k[5] * c;
+        R[1] -= k[3] * a + k[1] * b + k[4] * c;
+        R[2] -= k[5] * a + k[4] * b + k[2] * c;
+      }
+      let onW = 0,
+        allW = 0;
+      for (const p of pinSprings) {
+        if (p.sup !== si) continue;
+        allW += p.w;
+        if (!p.on) continue;
+        onW += p.w;
+        const n = p.node;
+        const ur = u[3 * n] * p.rho[0] + u[3 * n + 1] * p.rho[1] + u[3 * n + 2] * p.rho[2];
+        for (let d = 0; d < 3; d++) R[d] -= p.k * ur * p.rho[d];
+      }
+      if (info.spring) {
+        // how far it gives: the mean movement along its direction (into the surface for a pad), or overall
+        sel.nodes.forEach((n, q) => {
+          const w = sel.w[q];
+          const uu: V3 = [u[3 * n], u[3 * n + 1], u[3 * n + 2]];
+          const nrm = norm([sel.av[3 * q], sel.av[3 * q + 1], sel.av[3 * q + 2]]);
+          // along its axis, into the surface for a pad (it presses in along the surface's outward normal), or overall
+          give += w * (sp.dir ? dot(uu, norm(sp.dir)) : sp.spring!.perArea !== undefined ? dot(uu, nrm) : Math.hypot(...uu));
+          wsum += w;
+        });
+        const g = wsum > 0 ? give / wsum : 0;
+        info.spring.give = sp.dir ? Math.abs(g) : g;
+        if (sp.spring?.perArea !== undefined && !sp.dir && g < 0) warnings.push(`Support ${si + 1}: the pad is pulled rather than pressed; a real pad would let go there.`);
+      }
+      if (info.pin) {
+        info.pin.share = allW > 0 ? onW / allW : 0;
+        const ax = info.pin.axis;
+        const across = Math.hypot(R[0] - dot(R, ax) * ax[0], R[1] - dot(R, ax) * ax[1], R[2] - dot(R, ax) * ax[2]);
+        info.pin.pressure = across / Math.max(info.pin.d * info.pin.length, 1e-9);
+        info.pin.rounds = pinRounds;
+      }
+      for (let d = 0; d < 3; d++) springPush[d] += R[d];
+    } else {
+      const seen = new Set<number>();
+      for (const n of sel.nodes) {
+        if (seen.has(n)) continue;
+        seen.add(n);
+        for (let d = 0; d < 3; d++) if (bc[3 * n + d]) R[d] += Ku[3 * n + d] - f[3 * n + d];
+      }
     }
-    supportInfo[si].reaction = R;
-    const ct = inp.supports[si].contact;
-    if (ct) supportInfo[si].contact = contactCheck(inp.supports[si], ct, sel, Ku, f, bc, nodePos);
+    info.reaction = R;
+    const ct = sp.contact;
+    if (ct) info.contact = contactCheck(sp, ct, sel, Ku, f, bc, nodePos);
   });
   for (let n = 0; n < nn; n++) for (let d = 0; d < 3; d++) if (bc[3 * n + d] && fine.free[3 * n + d] === 0 && Ku[3 * n + d] !== 0) reaction[d] += Ku[3 * n + d] - f[3 * n + d];
+  for (let d = 0; d < 3; d++) reaction[d] += springPush[d];
   const appliedMag = Math.hypot(...applied) || 1;
   const equilibrium = Math.hypot(applied[0] + reaction[0], applied[1] + reaction[1], applied[2] + reaction[2]) / appliedMag;
 
@@ -1950,19 +2298,28 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     };
   }
   function checkHeld() {
-    // gather held dofs per piece and test whether they stop all six rigid motions
-    const pieces = new Map<number, { nodes: number[]; comps: number[] }>();
+    // gather the directions each piece is held along (held dofs, springs and pins) and test whether they stop all six rigid motions
+    const pieces = new Map<number, { nodes: number[]; dirs: V3[][] }>();
     const tmpSet = new Set<number>();
-    for (let n = 0; n < nn; n++) {
-      if (!(bc[3 * n] | bc[3 * n + 1] | bc[3 * n + 2])) continue;
+    const AXES: V3[] = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    const visit = (n: number, dirs: V3[]) => {
       tmpSet.clear();
       nodeIslands(n, tmpSet);
       for (const id of tmpSet) {
-        const p = pieces.get(id) ?? { nodes: [], comps: [] };
+        const p = pieces.get(id) ?? { nodes: [], dirs: [] };
         p.nodes.push(n);
-        p.comps.push(bc[3 * n] | (bc[3 * n + 1] << 1) | (bc[3 * n + 2] << 2));
+        p.dirs.push(dirs);
         pieces.set(id, p);
       }
+    };
+    for (let n = 0; n < nn; n++) {
+      const held = [0, 1, 2].filter((d) => bc[3 * n + d]).map((d) => AXES[d]);
+      const more = heldDirs.get(n);
+      if (held.length || more) visit(n, more ? [...held, ...more] : held);
     }
     for (const [id, p] of pieces) {
       if (!islandHeld[id] || islandSize[id] < 1) continue;
@@ -1977,24 +2334,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const m = new Float64Array(6);
       p.nodes.forEach((n, q) => {
         const pp = nodePos(n);
-        const x = (pp[0] - c[0]) / Lc,
-          y = (pp[1] - c[1]) / Lc,
-          z = (pp[2] - c[2]) / Lc;
-        for (let d = 0; d < 3; d++) {
-          if (!(p.comps[q] & (1 << d))) continue;
-          // the d-component of the six rigid modes: Tx, Ty, Tz, Rx, Ry, Rz
-          m.fill(0);
-          m[d] = 1;
-          if (d === 0) {
-            m[4] = z;
-            m[5] = -y;
-          } else if (d === 1) {
-            m[3] = -z;
-            m[5] = x;
-          } else {
-            m[3] = y;
-            m[4] = -x;
-          }
+        const r: V3 = [(pp[0] - c[0]) / Lc, (pp[1] - c[1]) / Lc, (pp[2] - c[2]) / Lc];
+        for (const g of p.dirs[q]) {
+          // how far each of the six rigid modes (Tx, Ty, Tz, Rx, Ry, Rz) moves this node along g: g, and r × g
+          m[0] = g[0];
+          m[1] = g[1];
+          m[2] = g[2];
+          m[3] = r[1] * g[2] - r[2] * g[1];
+          m[4] = r[2] * g[0] - r[0] * g[2];
+          m[5] = r[0] * g[1] - r[1] * g[0];
           for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) G[a * 6 + b] += m[a] * m[b];
         }
       });
@@ -2004,6 +2352,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       if (values[k] < 1e-7 * maxV || values[k] < 1e-10) {
         const v = vectors.slice(k * 6, k * 6 + 6);
         const big = [0, 1, 2, 3, 4, 5].sort((a, b) => Math.abs(v[b]) - Math.abs(v[a]))[0];
+        // a free turn about a pin's own axis is what a pin is for: say so
+        const rot: V3 = norm([v[3], v[4], v[5]]);
+        const onPin = big >= 3 && inp.supports.find((sp) => sp.pin && sp.region.t === "cyl" && Math.abs(dot(norm(sp.region.axis), rot)) > 0.95);
+        if (onPin && onPin.region.t === "cyl")
+          throw new FeaError(
+            `The supports do not hold the part still: it can swing about the pin at ${fmtP(onPin.region.at)}, since a pin lets it turn. Add a second pin, a spring or a fix: away from it, or hold what the load turns it with.`,
+          );
         const what = big < 3 ? `slide along ${"XYZ"[big]}` : `spin about ${"XYZ"[big - 3]} (around ${fmtP(c)})`;
         throw new FeaError(`The supports do not hold the part still: it can ${what}. Fix a larger area, or add another support (fix: or roller(…)) away from the first.`);
       }

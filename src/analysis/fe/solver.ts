@@ -17,6 +17,16 @@ export interface ElemClass {
   stiff: Float64Array;
 }
 
+/**
+ * Springs from nodes to the ground: an elastic support, or the stiff springs that hold a pin's bore across and along
+ * the pin while it turns. A symmetric 3×3 stiffness per node, as (xx, yy, zz, xy, yz, zx), N/mm.
+ */
+export interface NodeSprings {
+  node: Int32Array;
+  /** 6 per node */
+  k: Float64Array;
+}
+
 export interface Level {
   /** element counts */
   nx: number;
@@ -41,6 +51,11 @@ export interface Level {
   extra: ElemClass[];
   /** per dof: 1 when held by a support (kept apart from activity so it can be carried to coarser grids) */
   bc: Uint8Array;
+  /** springs to the ground, or null */
+  springs: NodeSprings | null;
+  /** nodes smoothed as a 3×3 block (where springs couple a node's directions), and the inverse of each block, 9 each */
+  blockNode: Int32Array;
+  blockInv: Float64Array;
   /** per dof: 1 when the dof is solved for (active node, not held) */
   free: Uint8Array;
   fixedList: Int32Array;
@@ -83,6 +98,7 @@ export function makeLevel(
   bc: Uint8Array,
   shift: [number, number, number] = [0, 0, 0],
   classes?: { cls: Uint8Array; mats: ElementMatrices[] },
+  springs?: NodeSprings | null,
 ): Level {
   const NX = nx + 1,
     NY = ny + 1,
@@ -136,6 +152,9 @@ export function makeLevel(
     stiff,
     extra,
     bc,
+    springs: springs && springs.node.length ? springs : null,
+    blockNode: new Int32Array(0),
+    blockInv: new Float64Array(0),
     free,
     fixedList: Int32Array.from(fixed),
     invDiag: new Float64Array(nd),
@@ -153,6 +172,21 @@ export function applyK(L: Level, x: Float64Array, y: Float64Array, masked = true
   y.fill(0);
   ebeProduct(L.K, L.act, L.stiff, L.NX, L.NX * L.NY, x, y);
   for (const c of L.extra) ebeProduct(c.K, c.act, c.stiff, L.NX, L.NX * L.NY, x, y);
+  const S = L.springs;
+  if (S) {
+    const nd = S.node,
+      k = S.k;
+    for (let q = 0; q < nd.length; q++) {
+      const d = 3 * nd[q],
+        o = 6 * q;
+      const a = x[d],
+        b = x[d + 1],
+        c = x[d + 2];
+      y[d] += k[o] * a + k[o + 3] * b + k[o + 5] * c;
+      y[d + 1] += k[o + 3] * a + k[o + 1] * b + k[o + 4] * c;
+      y[d + 2] += k[o + 5] * a + k[o + 4] * b + k[o + 2] * c;
+    }
+  }
   if (masked) {
     const fl = L.fixedList;
     for (let i = 0; i < fl.length; i++) y[fl[i]] = 0;
@@ -179,7 +213,120 @@ function computeDiag(L: Level) {
       }
     }
   }
+  const S = L.springs;
+  if (S)
+    for (let q = 0; q < S.node.length; q++) {
+      const d = 3 * S.node[q];
+      dg[d] += S.k[6 * q];
+      dg[d + 1] += S.k[6 * q + 1];
+      dg[d + 2] += S.k[6 * q + 2];
+    }
   for (let i = 0; i < dg.length; i++) dg[i] = L.free[i] && dg[i] > 0 ? 1 / dg[i] : 0;
+  blockSmoother(L);
+}
+
+/**
+ * Where springs couple a node's three directions (a pin's springs lie across the bore, not along X, Y or Z), plain
+ * Jacobi barely moves the node along the free direction: those nodes are smoothed as 3×3 blocks instead.
+ */
+function blockSmoother(L: Level) {
+  L.blockNode = new Int32Array(0);
+  L.blockInv = new Float64Array(0);
+  const S = L.springs;
+  if (!S) return;
+  const nn = L.NX * L.NY * L.NZ;
+  const which: number[] = [];
+  for (let q = 0; q < S.node.length; q++) {
+    const o = 6 * q;
+    const off = Math.abs(S.k[o + 3]) + Math.abs(S.k[o + 4]) + Math.abs(S.k[o + 5]);
+    if (off > 1e-9 * (S.k[o] + S.k[o + 1] + S.k[o + 2])) which.push(q);
+  }
+  if (!which.length) return;
+  const idx = new Int32Array(nn).fill(-1);
+  which.forEach((q, b) => (idx[S.node[q]] = b));
+  const B = new Float64Array(9 * which.length);
+  const off = offsets(L);
+  // the elastic part of each block: every element's 3×3 block at that corner
+  for (const g of groups(L)) {
+    const K = g.K;
+    for (let e = 0; e < g.act.length; e++) {
+      const n0 = g.act[e];
+      const s = g.stiff[e];
+      for (let a = 0; a < 8; a++) {
+        const b = idx[n0 + off[a]];
+        if (b < 0) continue;
+        for (let ca = 0; ca < 3; ca++) for (let cb = 0; cb < 3; cb++) B[9 * b + 3 * ca + cb] += s * K[(3 * a + ca) * 24 + 3 * a + cb];
+      }
+    }
+  }
+  const nodes = new Int32Array(which.length);
+  const inv = new Float64Array(9 * which.length);
+  const M = new Float64Array(9);
+  let kept = 0;
+  which.forEach((q, b) => {
+    const o = 6 * q;
+    const k = S.k;
+    const n = S.node[q];
+    for (let i = 0; i < 9; i++) M[i] = B[9 * b + i];
+    M[0] += k[o];
+    M[4] += k[o + 1];
+    M[8] += k[o + 2];
+    M[1] += k[o + 3];
+    M[3] += k[o + 3];
+    M[5] += k[o + 4];
+    M[7] += k[o + 4];
+    M[2] += k[o + 5];
+    M[6] += k[o + 5];
+    // a held direction drops out of the block
+    for (let c = 0; c < 3; c++)
+      if (!L.free[3 * n + c]) {
+        for (let j = 0; j < 3; j++) M[3 * c + j] = M[3 * j + c] = 0;
+        M[4 * c] = 1;
+      }
+    const det = M[0] * (M[4] * M[8] - M[5] * M[7]) - M[1] * (M[3] * M[8] - M[5] * M[6]) + M[2] * (M[3] * M[7] - M[4] * M[6]);
+    if (!(Math.abs(det) > 1e-30) || !Number.isFinite(det)) return;
+    const o9 = 9 * kept;
+    inv[o9] = (M[4] * M[8] - M[5] * M[7]) / det;
+    inv[o9 + 1] = (M[2] * M[7] - M[1] * M[8]) / det;
+    inv[o9 + 2] = (M[1] * M[5] - M[2] * M[4]) / det;
+    inv[o9 + 3] = (M[5] * M[6] - M[3] * M[8]) / det;
+    inv[o9 + 4] = (M[0] * M[8] - M[2] * M[6]) / det;
+    inv[o9 + 5] = (M[2] * M[3] - M[0] * M[5]) / det;
+    inv[o9 + 6] = (M[3] * M[7] - M[4] * M[6]) / det;
+    inv[o9 + 7] = (M[1] * M[6] - M[0] * M[7]) / det;
+    inv[o9 + 8] = (M[0] * M[4] - M[1] * M[3]) / det;
+    for (let c = 0; c < 3; c++)
+      if (!L.free[3 * n + c]) for (let j = 0; j < 3; j++) inv[o9 + 3 * c + j] = inv[o9 + 3 * j + c] = 0;
+    nodes[kept++] = n;
+    // the block replaces plain Jacobi at this node
+    L.invDiag[3 * n] = L.invDiag[3 * n + 1] = L.invDiag[3 * n + 2] = 0;
+  });
+  L.blockNode = nodes.slice(0, kept);
+  L.blockInv = inv.slice(0, 9 * kept);
+}
+
+/** out = ω·D⁻¹·(r − t), or with t null out = ω·D⁻¹·r: one damped Jacobi step, by blocks where springs couple a node. */
+function jacobi(L: Level, r: Float64Array, t: Float64Array | null, out: Float64Array, add: boolean, w = L.omega) {
+  const inv = L.invDiag,
+    n = out.length;
+  if (t) {
+    if (add) for (let i = 0; i < n; i++) out[i] += w * inv[i] * (r[i] - t[i]);
+    else for (let i = 0; i < n; i++) out[i] = w * inv[i] * (r[i] - t[i]);
+  } else if (add) for (let i = 0; i < n; i++) out[i] += w * inv[i] * r[i];
+  else for (let i = 0; i < n; i++) out[i] = w * inv[i] * r[i];
+  const bn = L.blockNode;
+  if (!bn.length) return;
+  const B = L.blockInv;
+  for (let q = 0; q < bn.length; q++) {
+    const d = 3 * bn[q],
+      o = 9 * q;
+    const a = t ? r[d] - t[d] : r[d],
+      b = t ? r[d + 1] - t[d + 1] : r[d + 1],
+      c = t ? r[d + 2] - t[d + 2] : r[d + 2];
+    out[d] += w * (B[o] * a + B[o + 1] * b + B[o + 2] * c);
+    out[d + 1] += w * (B[o + 3] * a + B[o + 4] * b + B[o + 5] * c);
+    out[d + 2] += w * (B[o + 6] * a + B[o + 7] * b + B[o + 8] * c);
+  }
 }
 
 /** Largest eigenvalue of D⁻¹K by power iteration, for the Jacobi damping factor. */
@@ -192,12 +339,13 @@ function estimateLambda(L: Level): number {
     x[i] = L.free[i] ? seed / 0x7fffffff - 0.5 : 0;
   }
   let lam = 1;
+  const z = L.s;
   for (let it = 0; it < 10; it++) {
-    applyK(L, x, y);
+    applyK(L, x, z);
+    jacobi(L, z, null, y, false, 1);
     let nx = 0,
       ny = 0;
     for (let i = 0; i < x.length; i++) {
-      y[i] *= L.invDiag[i];
       nx += x[i] * x[i];
       ny += y[i] * y[i];
     }
@@ -285,7 +433,48 @@ export function coarsen(F: Level, shift: [number, number, number], nu: number): 
             }
       }
   const dims: [number, number, number] = [F.dims[0] * (1 << sx), F.dims[1] * (1 << sy), F.dims[2] * (1 << sz)];
-  return makeLevel(nx, ny, nz, dims, nu, dense, bc, shift);
+  return makeLevel(nx, ny, nz, dims, nu, dense, bc, shift, undefined, F.springs ? coarseSprings(F, F.springs, shift, NX, NY) : null);
+}
+
+/**
+ * Springs on the next coarser grid: each fine spring shared out to the coarse nodes it interpolates from, by the
+ * interpolation weights. That is the coarse (Galerkin) spring with its rows lumped, so the total stiffness is kept.
+ */
+function coarseSprings(F: Level, S: NodeSprings, shift: [number, number, number], NX: number, NY: number): NodeSprings {
+  const [sx, sy, sz] = shift;
+  const acc = new Map<number, Float64Array>();
+  const ix = [0, 0],
+    iw = [0, 0],
+    jx = [0, 0],
+    jw = [0, 0],
+    kx = [0, 0],
+    kw = [0, 0];
+  for (let q = 0; q < S.node.length; q++) {
+    const n = S.node[q];
+    const i = n % F.NX,
+      j = Math.floor(n / F.NX) % F.NY,
+      k = Math.floor(n / (F.NX * F.NY));
+    const ni = split(i, sx, ix, iw),
+      nj = split(j, sy, jx, jw),
+      nk = split(k, sz, kx, kw);
+    for (let p = 0; p < nk; p++)
+      for (let a = 0; a < nj; a++)
+        for (let b = 0; b < ni; b++) {
+          const w = kw[p] * jw[a] * iw[b];
+          const cn = ix[b] + NX * (jx[a] + NY * kx[p]);
+          let v = acc.get(cn);
+          if (!v) acc.set(cn, (v = new Float64Array(6)));
+          for (let c = 0; c < 6; c++) v[c] += w * S.k[6 * q + c];
+        }
+  }
+  const node = new Int32Array(acc.size);
+  const kk = new Float64Array(6 * acc.size);
+  let q = 0;
+  for (const [n, v] of [...acc].sort((a, b) => a[0] - b[0])) {
+    node[q] = n;
+    kk.set(v, 6 * q++);
+  }
+  return { node, k: kk };
 }
 
 /** Interpolation weights from coarse nodes to fine node index i along one axis. */
@@ -436,6 +625,24 @@ export class BandCholesky {
           }
       }
     }
+    const S = L.springs;
+    if (S)
+      for (let q = 0; q < S.node.length; q++) {
+        const n = S.node[q];
+        const o = 6 * q;
+        // (xx, yy, zz, xy, yz, zx) as a 3×3
+        const kab = [S.k[o], S.k[o + 3], S.k[o + 5], S.k[o + 3], S.k[o + 1], S.k[o + 4], S.k[o + 5], S.k[o + 4], S.k[o + 2]];
+        for (let ca = 0; ca < 3; ca++)
+          for (let cb = 0; cb < 3; cb++) {
+            const na = 3 * n + ca,
+              nb = 3 * n + cb;
+            if (!L.free[na] || !L.free[nb]) continue;
+            const gi = this.perm[na],
+              gj = this.perm[nb];
+            if (gj > gi) continue;
+            band[gi * W + (gi - gj)] += kab[3 * ca + cb];
+          }
+      }
     let maxDiag = 0;
     for (let i = 0; i < this.n; i++) maxDiag = Math.max(maxDiag, band[i * W]);
     for (let n = 0; n < this.n; n++) if (!L.free[n]) band[this.perm[n] * W] = 1;
@@ -511,14 +718,12 @@ function vcycle(H: Hierarchy, l: number, r: Float64Array, out: Float64Array) {
     H.coarse.solve(L, r, out);
     return;
   }
-  const inv = L.invDiag,
-    w = L.omega,
-    t = L.t,
+  const t = L.t,
     n = out.length;
-  for (let i = 0; i < n; i++) out[i] = w * inv[i] * r[i];
+  jacobi(L, r, null, out, false);
   for (let s = 1; s < H.smooth; s++) {
     applyK(L, out, t);
-    for (let i = 0; i < n; i++) out[i] += w * inv[i] * (r[i] - t[i]);
+    jacobi(L, r, t, out, true);
   }
   applyK(L, out, t);
   const res = L.s;
@@ -529,7 +734,7 @@ function vcycle(H: Hierarchy, l: number, r: Float64Array, out: Float64Array) {
   prolongAdd(L, C, C.x, out);
   for (let s = 0; s < H.smooth; s++) {
     applyK(L, out, t);
-    for (let i = 0; i < n; i++) out[i] += w * inv[i] * (r[i] - t[i]);
+    jacobi(L, r, t, out, true);
   }
 }
 
@@ -546,7 +751,11 @@ export interface SolveStats {
 }
 
 /** Preconditioned conjugate gradients on the fine level. f must be zero on dofs that are not free. */
-export function pcg(H: Hierarchy, f: Float64Array, opts: { tol?: number; maxIter?: number; onIter?: (it: number, rel: number) => void } = {}): { u: Float64Array; stats: SolveStats } {
+export function pcg(
+  H: Hierarchy,
+  f: Float64Array,
+  opts: { tol?: number; maxIter?: number; onIter?: (it: number, rel: number) => void; x0?: Float64Array } = {},
+): { u: Float64Array; stats: SolveStats } {
   const L = H.levels[0];
   const n = f.length;
   const tol = opts.tol ?? 1e-6;
@@ -561,6 +770,17 @@ export function pcg(H: Hierarchy, f: Float64Array, opts: { tol?: number; maxIter
   fn = Math.sqrt(fn);
   const history: number[] = [];
   if (fn === 0) return { u, stats: { iterations: 0, residual: 0, converged: true, history } };
+  // a warm start (the last solve of a problem that has changed a little): carry on from it
+  if (opts.x0) {
+    for (let i = 0; i < n; i++) u[i] = L.free[i] ? opts.x0[i] : 0;
+    applyK(L, u, q);
+    let rr = 0;
+    for (let i = 0; i < n; i++) {
+      r[i] -= q[i];
+      rr += r[i] * r[i];
+    }
+    if (Math.sqrt(rr) / fn < tol) return { u, stats: { iterations: 0, residual: Math.sqrt(rr) / fn, converged: true, history } };
+  }
   vcycle(H, 0, r, z);
   p.set(z);
   let rz = 0;

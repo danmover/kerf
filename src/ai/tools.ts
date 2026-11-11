@@ -1315,7 +1315,7 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           strain: "principal strain (blue compression, red tension)",
           temp: "temperature (blue coolest, red hottest)",
         }[p.data.results];
-        resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed supports (spheres are rollers), rings mark hot spots`;
+        resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed or moved supports (spheres are rollers, pins and springs), rings mark hot spots`;
       }
       if (p.data.airflow) {
         const air = useAirflow.getState();

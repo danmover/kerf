@@ -915,7 +915,22 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
     const info = r?.loads[i];
     if (l.t === "force") return `${fmtNum(Math.hypot(...l.f), 1)} N along ${v3(l.f.map((x) => x / (Math.hypot(...l.f) || 1)))} on ${describeRegion(l.region)}`;
     if (l.t === "pressure") return `${fmtNum(l.p, 3)} MPa on ${describeRegion(l.region)}${info ? ` (${fmtNum(info.magnitude, 1)} N over ${fmtNum(info.area, 0)} mm²)` : ""}`;
+    if (l.t === "bearing")
+      return `${fmtNum(Math.hypot(...l.f), 1)} N along ${v3(l.f.map((x) => x / (Math.hypot(...l.f) || 1)))} on ${describeRegion(l.region)}, spread round the side it presses${info?.pressure ? ` (peak ${fmtNum(info.pressure, 2)} MPa)` : ""}`;
     return `${fmtNum(l.torque / 1000, 2)} N·m about ${v3(l.axis)} on ${describeRegion(l.region)}`;
+  };
+  const supportTag = (s: StructuralSpec["supports"][number]) => (s.spring ? "spring" : s.pin ? "pin" : s.move ? "moved" : s.contact ? "contact" : s.dir ? "roller" : "fixed");
+  const supportText = (i: number) => {
+    const s = spec.supports[i];
+    const info = r?.supports[i];
+    if (s.spring) {
+      const k = s.spring.rate !== undefined ? `${fmtNum(s.spring.rate, 1)} N/mm` : `${fmtNum(s.spring.perArea ?? 0, 3)} N/mm per mm²`;
+      return `${describeRegion(s.region)} · ${k}${s.dir ? ` along ${v3(s.dir)}` : ""}${info?.spring ? ` · gives ${fmtNum(info.spring.give, 3)} mm` : ""}`;
+    }
+    if (s.pin)
+      return `${describeRegion(s.region)} · ${s.pin.tight ? "tight all round" : "bears where pressed"}${s.pin.slide ? ", slides along it" : ""}${info?.pin ? ` · ${fmtNum(info.pin.pressure, 2)} MPa bearing pressure${s.pin.tight ? "" : `, ${fmtNum(info.pin.share * 100, 0)} % of the bore pressing`}` : ""}`;
+    if (s.move) return `${describeRegion(s.region)} · moved ${v3(info?.moved ?? s.move)} mm${s.dir ? " (free the other ways)" : ""}`;
+    return `${describeRegion(s.region)}${s.dir ? ` · held along ${v3(s.dir)}` : ""}`;
   };
   return (
     <div className="an-box">
@@ -937,10 +952,9 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
         </div>
         {spec.supports.map((s, i) => (
           <div key={`s${i}`}>
-            <span className="tag">{s.dir ? "roller" : "fixed"}</span>
-            {describeRegion(s.region)}
-            {s.dir ? ` · held along ${v3(s.dir)}` : ""}
-            {r?.supports[i] ? <span className="dim"> · reaction {fmtNum(Math.hypot(...r.supports[i].reaction), 1)} N</span> : null}
+            <span className="tag">{supportTag(s)}</span>
+            {supportText(i)}
+            {r?.supports[i] ? <span className="dim"> · {s.move ? "takes" : "reaction"} {fmtNum(Math.hypot(...r.supports[i].reaction), 1)} N</span> : null}
           </div>
         ))}
         {spec.loads.map((_, i) => (

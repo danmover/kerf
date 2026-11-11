@@ -478,7 +478,11 @@ analysis "Shelf load" {
   fix: face(bracket, -Y)                    // held in every direction (screwed or glued to the wall)
   fix: zone(at: hole_pos, d: M4.clearance + 2, axis: Z, length: 5)   // a bolt hole: the bore surface
   fix: roller(face(bracket, -Z), Z)         // only stops movement along Z (resting on a surface)
+  fix: pin(zone(at: pivot, d: 6, axis: Y, length: 8))   // a pin through a bore: holds it across and along the pin, turns freely, bears only where pressed (tight: true holds all round)
+  fix: spring(face(foot, -Z), 800)          // an elastic support: rubber feet or a soft mount, 800 N/mm in all (axis: Z for one way; per_area: 1.5 for a pad)
+  fix: displace(face(hook, +X), 1.5mm, dir: -Z)   // a set displacement instead of a force: push a snap hook or clip this far; the result gives the force it takes
   load: force(face(bracket, +Z), (0, 0, -shelf_kg * 9.81N))   // total force spread over the region
+  load: bearing(zone(at: axle, d: 22, axis: Y, length: 7), 300N, dir: -Z)   // a shaft or bearing pushing on a bore: cosine-spread over the side it presses (prefer it to force() on bores)
   load: pressure(face(lid, +Z), 0.02MPa)
   load: torque(zone(at: hub_pos, d: 8, axis: Z, length: 6), 0.5Nm, axis: Z)
   gravity                                   // self-weight; or accel: (0, 0, -3) for 3 g

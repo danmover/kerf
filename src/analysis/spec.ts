@@ -23,10 +23,23 @@ export interface Within {
 
 export interface SupportSpec {
   region: RegionSpec;
-  /** undefined: held in every direction; otherwise held along this axis only (a roller or sliding support) */
+  /** undefined: held in every direction; otherwise held along this axis only (a roller or sliding support); a spring's direction */
   dir?: V3;
   /** a seat only pressed on (by bands, springs or weight), not bonded: the solve checks it stays pressed and does not slide or turn */
   contact?: ContactSpec;
+  /**
+   * An elastic support instead of a rigid one: rubber feet, a soft mount, the flex of what it bolts to. rate: the
+   * springs' total stiffness, N/mm, spread over the region by area (every way, or along dir); perArea: stiffness per
+   * mm² of surface, N/mm³, pressing along the surface's normal (a pad: its modulus over its thickness).
+   */
+  spring?: { rate?: number; perArea?: number };
+  /**
+   * A pin through a bore (or a bushing round a shaft), the region a cylinder zone: held across the pin and, unless
+   * slide, along it, free to turn about it. It bears only where the loads press the bore onto it unless tight.
+   */
+  pin?: { slide: boolean; tight: boolean };
+  /** a set displacement, mm: the region is moved this far and held there (along dir only, when dir is given) */
+  move?: V3;
 }
 
 export interface ContactSpec {
@@ -62,7 +75,12 @@ export type LoadSpec =
   /** pressure in MPa pushing into the region's surface */
   | { t: "pressure"; region: RegionSpec; p: number }
   /** torque in N·mm about an axis through a point (default: the centre of the loaded surface) */
-  | { t: "torque"; region: RegionSpec; torque: number; axis: V3; at?: V3 };
+  | { t: "torque"; region: RegionSpec; torque: number; axis: V3; at?: V3 }
+  /**
+   * a force in N pushed onto a bore by what turns in it (or onto a shaft by its bearing), the region a cylinder zone:
+   * spread over the half it presses on with a cosine, none at the sides; a share along the axis is spread evenly
+   */
+  | { t: "bearing"; region: RegionSpec; f: V3 };
 
 export type Resolution = "draft" | "standard" | "fine" | { h: number };
 
