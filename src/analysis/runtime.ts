@@ -19,7 +19,7 @@ import { electricMaterial, type ElectricMaterial } from "./electricMaterials";
 import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
-import type { FeaPart, PartPrint, StructuralInput, StructuralResult } from "./fe/structural";
+import type { FeaPart, PartPrint, StructuralInput, StructuralResult, TopologyPreview } from "./fe/structural";
 import { fdmPrint, printWords } from "../mfg/infill";
 import { printUp } from "../mfg/printOrientation";
 import type { Finish } from "./fe/fatigue";
@@ -27,6 +27,7 @@ import { contactVerdicts, modeText, printingText, staticSafety, stiffnessVerdict
 import { fatigueText, fatigueVerdict } from "./fatigueSummary";
 import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { dynamicItems } from "./dynamics";
+import { topologyNext, topologyText } from "./topologySummary";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
 export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp" | "life" | "current";
@@ -36,7 +37,8 @@ export interface StructuralRun {
   /** identity of the inputs: a run with the same key gives the same answer */
   key: string;
   fine: boolean;
-  status: "waiting" | "running" | "done" | "error";
+  /** idle: set up but not run (topology runs only when asked) */
+  status: "idle" | "waiting" | "running" | "done" | "error";
   stage: string;
   frac: number;
   iter?: number;
@@ -54,6 +56,8 @@ export interface StructuralRun {
   startedAt: number;
   /** an accuracy check: solved twice, the second time with smaller elements */
   check?: boolean;
+  /** topology optimisation: the shape so far, while it runs */
+  preview?: TopologyPreview;
 }
 
 interface AnalysisState {
@@ -107,6 +111,9 @@ let deadline: ReturnType<typeof setTimeout> | null = null;
 export const RUN_TIME_LIMIT_MS = 180_000;
 const fineWanted = new Map<string, string>(); // label -> base key the fine run was asked for
 const checkWanted = new Map<string, string>(); // label -> base key the accuracy check was asked for
+const topoWanted = new Map<string, string>(); // label -> base key a topology run was asked for
+/** topology runs take many solves: they may run this many times longer than a plain analysis */
+const TOPOLOGY_TIME_FACTOR = 4;
 
 function patchRun(label: string, patch: Partial<StructuralRun>) {
   const r = aGet().runs.get(label);
@@ -127,7 +134,7 @@ function stopWorker() {
 function failCurrent(error: string, setup = false) {
   const job = current;
   stopWorker();
-  if (job) patchRun(job.label, { status: "error", error, setup, result: undefined, stale: false });
+  if (job) patchRun(job.label, { status: "error", error, setup, result: undefined, stale: false, preview: undefined });
   refreshReport();
   pump();
 }
@@ -142,6 +149,10 @@ function ensureWorker(): Worker {
     if (msg.type === "progress") {
       const r = aGet().runs.get(label);
       if (!r) return;
+      if (msg.preview) {
+        patchRun(label, { stage: msg.stage, frac: msg.frac, preview: msg.preview });
+        return;
+      }
       const trace = msg.iter !== undefined && msg.residual !== undefined ? [...r.trace.slice(0, msg.iter - 1), msg.residual] : r.trace;
       patchRun(label, { stage: msg.stage, frac: msg.frac, iter: msg.iter, residual: msg.residual, trace });
       return;
@@ -150,7 +161,7 @@ function ensureWorker(): Worker {
     if (deadline) clearTimeout(deadline);
     deadline = null;
     current = null;
-    patchRun(label, { status: "done", result: msg.result, stale: false, error: undefined, setup: undefined, frac: 1, stage: "Done", trace: msg.result.solve.history });
+    patchRun(label, { status: "done", result: msg.result, stale: false, error: undefined, setup: undefined, frac: 1, stage: "Done", trace: msg.result.solve.history, preview: undefined });
     refreshReport();
     pump();
   };
@@ -169,10 +180,16 @@ function pump() {
   patchRun(job.label, { status: "running", startedAt: performance.now(), stage: "Meshing", frac: 0, trace: [] });
   const transfer = job.input.parts.flatMap((p) => [p.mesh.positions.buffer, p.mesh.indices.buffer, ...(p.normals ? [p.normals.buffer] : [])]) as ArrayBuffer[];
   ensureWorker().postMessage({ id: job.id, input: job.input } satisfies FeaRequest, transfer);
-  // an accuracy check solves twice, the second time with about three times the elements
-  const limit = RUN_TIME_LIMIT_MS * (job.input.converge ? 2 : 1);
+  // an accuracy check solves twice, the second time with about three times the elements; a topology run solves once
+  // per design step
+  const limit = RUN_TIME_LIMIT_MS * (job.input.topology ? TOPOLOGY_TIME_FACTOR : job.input.converge ? 2 : 1);
   deadline = setTimeout(() => {
-    if (current === job) failCurrent(`The analysis took longer than ${limit / 60_000} minutes and was stopped. Try a coarser resolution, such as "draft", or analyse fewer parts at once.`);
+    if (current === job)
+      failCurrent(
+        job.input.topology
+          ? `Finding the shape took longer than ${limit / 60_000} minutes and was stopped. Try resolution: "draft" for a first shape, or fewer iterations:.`
+          : `The analysis took longer than ${limit / 60_000} minutes and was stopped. Try a coarser resolution, such as "draft", or analyse fewer parts at once.`,
+      );
   }, limit);
 }
 
@@ -399,6 +416,7 @@ export function structuralInput(
     ...(currents ? { electricMaterials: electricMats } : {}),
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
+    ...(spec.topology ? { topology: spec.topology } : {}),
     ...(spec.fatigue
       ? {
           fatigue: {
@@ -457,6 +475,15 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
     const key = fine || check ? inputKey(spec, parts, fine, check) : plainKey;
     const run = runs.get(spec.label);
     if (run && run.key === key) continue;
+    // a topology run takes many solves, so it runs only when asked; a change to the design leaves the last shape
+    // found as it was, marked out of date, until it is asked for again
+    if (spec.topology && topoWanted.get(spec.label) !== baseKey(plainKey)) {
+      topoWanted.delete(spec.label);
+      cancel(spec.label);
+      const resolution = fine ? "fine" : typeof spec.resolution === "string" ? spec.resolution : `${fmtNum(spec.resolution.h)} mm`;
+      runs.set(spec.label, { label: spec.label, key, fine, status: "idle", stage: "Ready to run", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() });
+      continue;
+    }
     const prep = structuralInput(spec, parts, fine, state.buildErrors);
     if (!prep) continue;
     if (prep.input && check) prep.input.converge = true;
@@ -495,6 +522,32 @@ export function runFine(label: string) {
   if (s.model) schedule({ model: s.model, rev: s.reportRev, buildErrors: s.buildErrors });
   refreshReport();
 }
+
+/** Find the shape of a topology analysis (it runs only when asked, as it takes many solves). */
+export function runTopology(label: string) {
+  const run = aGet().runs.get(label);
+  if (!run) return;
+  topoWanted.set(label, baseKey(run.key));
+  const s = useDesign.getState();
+  aSet({ runs: new Map(aGet().runs).set(label, { ...run, key: "" }) });
+  if (s.model) schedule({ model: s.model, rev: s.reportRev, buildErrors: s.buildErrors });
+  refreshReport();
+}
+
+/** Stop a topology run (or one waiting to start): it goes back to ready, keeping any earlier shape. */
+export function stopTopology(label: string) {
+  const run = aGet().runs.get(label);
+  if (!run || (run.status !== "running" && run.status !== "waiting")) return;
+  topoWanted.delete(label);
+  const wasCurrent = current?.label === label;
+  cancel(label);
+  patchRun(label, { status: "idle", stage: "Stopped", frac: 0, preview: undefined, stale: !!run.result });
+  refreshReport();
+  if (wasCurrent) pump();
+}
+
+/** Whether a topology analysis would run now, or is waiting to be asked. */
+export const topologyIdle = (label: string) => aGet().runs.get(label)?.status === "idle";
 
 // ---------- check items ----------
 
@@ -544,6 +597,7 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const parts = model.parts.filter((p) => spec.parts.includes(p.name)).map((p) => p.id);
   const base = { category: "analysis" as const, basis: "simulation" as const, span: spec.span, parts };
   const id = (s: string) => `fea:${spec.label}:${s}`;
+  if (spec.topology) return topologyItems(spec, run, base, id);
   const heatOnly = heatOnlySpec(spec);
   const what = spec.modal ? "vibration" : spec.drop ? "drop" : heatOnly ? "heat" : "stress";
   const category = spec.modal ? ("vibration" as const) : spec.drop ? ("knocks" as const) : ("analysis" as const);
@@ -613,6 +667,22 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   return out;
 }
 
+/**
+ * A topology optimisation is a suggestion, not the design: its items say what shape it found and how that shape holds
+ * up, as information. Only a set-up that cannot be solved fails.
+ */
+function topologyItems(spec: StructuralSpec, run: StructuralRun | undefined, base: Omit<CheckItem, "id" | "status" | "title" | "detail">, id: (s: string) => string): CheckItem[] {
+  const title = `Topology: ${spec.label}`;
+  if (!run || run.status === "idle") {
+    if (run?.result?.topology) return [{ ...base, id: id("topology"), status: "info", title, detail: `Out of date: the design changed since this shape was found; run it again to update it. ${topologyText(spec, run.result).detail}` }];
+    return [{ ...base, id: id("topology"), status: "info", title, detail: "Ready to find the shape: press Run in the Analysis tab, or ask Claude to run it. It runs only when asked, as it takes many solves." }];
+  }
+  if (run.status === "waiting" || run.status === "running") return [{ ...base, id: id("topology"), status: "info", title, detail: "Finding the shape; the Analysis tab shows it as it forms." }];
+  if (run.status === "error" || !run.result?.topology) return [{ ...base, id: id("setup"), status: "fail", title: `Topology optimisation: ${spec.label}`, detail: run.error ?? "Finding the shape did not finish." }];
+  const tx = topologyText(spec, run.result);
+  return [{ ...base, id: id("topology"), status: "info", title, detail: `${tx.detail} ${topologyNext(run.result.topology)}`, ...(tx.fix ? { fix: tx.fix } : {}) }];
+}
+
 // ---------- start-up and waiting ----------
 
 let started = false;
@@ -626,13 +696,21 @@ export function startAnalysisRuntime() {
   refreshReport();
 }
 
-/** Resolves when every structural analysis of the current design has a result or an error. */
-export function whenAnalyzed(timeoutMs = 180_000): Promise<void> {
+/**
+ * Resolves when every structural analysis of the current design has a result or an error. A topology run counts only
+ * when it is one of the labels given to wait for: it takes long and runs only when asked.
+ */
+export function whenAnalyzed(timeoutMs = 180_000, topology: string[] = []): Promise<void> {
   const done = () => {
     const d = useDesign.getState();
     if (!d.model || d.reportRev < d.rev) return false;
     if (scheduledRev < d.reportRev) return false;
-    return d.model.analyses.every((a) => a.kind !== "structural" || ["done", "error"].includes(aGet().runs.get(a.label)?.status ?? ""));
+    return d.model.analyses.every((a) => {
+      if (a.kind !== "structural") return true;
+      const st = aGet().runs.get(a.label)?.status ?? "";
+      if (a.topology && !topology.includes(a.label)) return st !== "";
+      return ["done", "error", "idle"].includes(st) && !(a.topology && st === "idle" && topoWanted.has(a.label));
+    });
   };
   return new Promise((resolve) => {
     if (done()) return resolve();

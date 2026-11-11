@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SceneController } from "./viewport/scene";
 import { ResultsOverlay, fieldMode, fieldRange, lifeWords } from "./viewport/resultsOverlay";
+import { TopologyPreviewOverlay } from "./viewport/topologyPreview";
 import { useAnalysis, showResults, type ResultField } from "../analysis/runtime";
 import type { StructuralResult } from "../analysis/fe/structural";
 import type { StructuralSpec } from "../analysis/spec";
@@ -132,11 +133,33 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
   const theme = useTheme();
   const spec = model?.analyses.find((a): a is StructuralSpec => a.label === shown && a.kind === "structural");
   const target = spec?.safety ?? 2;
-  const result = run?.result;
+  // while a topology run finds a new shape, the shape so far is drawn instead of the last one found
+  const preview = run?.status === "running" ? run.preview : undefined;
+  const result = preview ? undefined : run?.result;
   const field = fieldFor(result, picked);
   const mode = result ? shownMode(result, pickedMode) : null;
   const ov = useRef<ResultsOverlay | null>(null);
   const [probe, setProbe] = useState<{ x: number; y: number; text: string; part: string } | null>(null);
+  const pv = useRef<TopologyPreviewOverlay | null>(null);
+  const previewing = !!preview;
+  const previewParts = spec && previewing ? (model?.parts ?? []).filter((p) => spec.parts.includes(p.name)).map((p) => p.id).join("|") : "";
+
+  useEffect(() => {
+    if (!previewing) return;
+    const o = new TopologyPreviewOverlay(previewParts ? previewParts.split("|") : [], theme === "light" ? "#6b7f9e" : "#a9bde0");
+    pv.current = o;
+    scene.addOverlay(o);
+    return () => {
+      scene.removeOverlay(o);
+      o.dispose();
+      if (pv.current === o) pv.current = null;
+    };
+  }, [previewing, previewParts, scene, theme]);
+  useEffect(() => {
+    if (!preview || !pv.current) return;
+    pv.current.update(preview);
+    scene.invalidate();
+  }, [preview, previewParts, scene, theme]);
 
   // rebuilt on a theme change, as its markers and labels are drawn in the theme's colours; the parts the analysed ones
   // carry (a number clicked into a bracket) move with them
@@ -191,6 +214,21 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
   return (
     <>
       <AnimatePresence>
+        {preview && shown && (
+          <motion.div key="topo" className="vp-float res-legend" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}>
+            <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+              <span className="spinner xs" />
+              <span className="res-legend-title">Finding the shape</span>
+              <div className="grow" />
+              <button className="icon-btn sm" onClick={() => showResults(null)} aria-label="Hide" data-tip="Hide">
+                <Icon.X size={13} />
+              </button>
+            </div>
+            <div className="res-meta mono">
+              {shown} · step {preview.iteration} · {Math.round(preview.volume * 100)} % of the material
+            </div>
+          </motion.div>
+        )}
         {result && shown && (
           <motion.div key="legend" className="vp-float res-legend" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}>
             {mode !== null ? (

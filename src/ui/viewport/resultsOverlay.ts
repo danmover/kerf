@@ -101,9 +101,14 @@ export function fieldRange(r: StructuralResult, field: ResultField): [number, nu
   return [0, 0];
 }
 
+/** how faintly the parts a topology shape was cut from stay in view */
+export const TOPOLOGY_GHOST = 0.13;
+
 export class ResultsOverlay implements SceneOverlay {
   readonly object = new THREE.Group();
   readonly replaces: Set<string>;
+  /** a topology optimisation draws the shape it found inside the parts as designed, which stay faintly in view */
+  readonly ghosts?: ReadonlyMap<string, number>;
   private parts: PartMesh[] = [];
   private material: THREE.MeshStandardMaterial;
   private ghostMat: THREE.LineBasicMaterial;
@@ -141,7 +146,8 @@ export class ResultsOverlay implements SceneOverlay {
   ) {
     this.look = LOOK[theme];
     this.ghostMat = new THREE.LineBasicMaterial({ color: this.look.ghost, transparent: true, opacity: this.look.ghostOpacity, depthWrite: false });
-    this.replaces = new Set(result.parts.map((p) => p.id));
+    this.replaces = result.topology ? new Set() : new Set(result.parts.map((p) => p.id));
+    if (result.topology) this.ghosts = new Map(result.parts.map((p) => [p.id, TOPOLOGY_GHOST]));
     const lo = new THREE.Vector3(Infinity, Infinity, Infinity);
     const hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
     for (const p of result.parts)

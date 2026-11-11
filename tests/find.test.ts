@@ -104,6 +104,17 @@ analysis "Warm" { parts: [bar]  heat: [source(bar, 2W)] }`);
     const kinds = m.analyses.map((a) => ANALYSIS_KINDS.filter((k) => k.is(a)).map((k) => k.id));
     expect(kinds).toEqual([["current"], ["heat"]]);
   });
+
+  it("tells a topology optimisation from a strength analysis", () => {
+    const m = evaluate(`part plate {
+  material: "Aluminum 6061"
+  body box(80, 4, 40)
+}
+analysis "Strong" { fix: face(plate, -X)  load: force(face(plate, +X), (0, 0, -500N)) }
+analysis "Lighter" { fix: face(plate, -X)  load: force(face(plate, +X), (0, 0, -500N))  topology: 35%  extrusion: Y }`);
+    const kinds = m.analyses.map((a) => ANALYSIS_KINDS.filter((k) => k.is(a)).map((k) => k.id));
+    expect(kinds).toEqual([["strength"], ["topology"]]);
+  });
 });
 
 describe("starting a design from a description", () => {

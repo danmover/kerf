@@ -48,7 +48,7 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3, Within } from "./spec";
+import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, TopologySpec, V3, Within } from "./spec";
 import { FINISHES, MEAN_STRESS, mergeCycles, rainflow, type Finish, type LoadCycle, type MeanStress } from "./fe/fatigue";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
@@ -63,6 +63,8 @@ export const MAX_BOUNDARY_ITEMS = 200;
 export const HEAT_PROPS = ["heat", "hold", "cooling", "ambient", "emissivity", "time", "start", "max_temp"];
 /** fatigue: how the loads repeat over the part's life, and what lowers the material's fatigue strength */
 export const FATIGUE_PROPS = ["loading", "history", "repeats", "mean_stress", "finish", "reliability"];
+/** topology optimisation: the stiffest shape for the loads from a share of the material, and what it must keep */
+export const TOPOLOGY_PROPS = ["topology", "preserve", "min_member", "symmetry", "extrusion", "iterations"];
 export const STRUCTURAL_PROPS = [
   "parts",
   "part",
@@ -92,6 +94,7 @@ export const STRUCTURAL_PROPS = [
   "assembled_at",
   "buckling",
   "buckling_safety",
+  ...TOPOLOGY_PROPS,
 ];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
 export const UCI_PROPS = ["uci", "bottom_bracket", "wheels", "saddle", "bars", "hoods", "forward", "parts", "rim_depth"];
@@ -785,6 +788,13 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     buckling = { modes, safety: plain("buckling_safety", "the lowest buckling factor wanted, like buckling_safety: 3", (v) => v >= 1) ?? 3 };
   } else if (one("buckling_safety")) fail("buckling_safety: goes with buckling.", one("buckling_safety")!.span);
 
+  // ---- topology optimisation: on its own, with the loads it must carry ----
+  const topology = buildTopology(props, one, fail, env, parts, {
+    with: drop ? "the drop" : modal ? "the natural frequencies" : thermalOn ? "heat" : uniformTemp !== undefined ? "a set temperature" : buckling ? "buckling" : fatigue ? "fatigue" : flags.some((f) => f.name === "converge") ? "the accuracy check (converge)" : undefined,
+    loads: loads.length,
+    moved: supports.some((s) => s.move),
+  });
+
   if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
   if (!supports.length && !thermalOn)
     fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead; for temperatures alone use heat:.', span);
@@ -840,8 +850,99 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(buckling ? { buckling } : {}),
     ...(fatigue ? { fatigue } : {}),
     ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
+    ...(topology ? { topology } : {}),
     span,
   };
+}
+
+const AXES = ["X", "Y", "Z"] as const;
+
+/** An axis named by a direction (X, -Y) or its letter ("Z"); null when it is neither. */
+function axisOf(v: Value): "X" | "Y" | "Z" | null {
+  if (typeof v === "string") {
+    const k = v.trim().toUpperCase().replace(/^[+-]/, "");
+    return (AXES as readonly string[]).includes(k) ? (k as "X" | "Y" | "Z") : null;
+  }
+  if (v instanceof Vec) {
+    const a = v.v.map((x) => Math.abs(x ?? 0));
+    const big = a.indexOf(Math.max(...a));
+    if (big < 0 || !(a[big] > 0)) return null;
+    // along one axis only
+    return a.every((x, i) => i === big || x < 1e-9 * a[big]) ? AXES[big] : null;
+  }
+  return null;
+}
+
+/**
+ * Topology optimisation from topology: (the share of the material to keep), with what it must keep (preserve:), the
+ * thinnest member (min_member:), mirror planes (symmetry:), a profile cut from plate (extrusion:) and how long it may run
+ * (iterations:). undefined when the analysis has none of these.
+ */
+function buildTopology(
+  props: AnalysisItem[],
+  one: (name: string) => AnalysisItem | undefined,
+  fail: (msg: string, span: Span) => never,
+  env: AnalysisEnv,
+  parts: string[],
+  other: { with?: string; loads: number; moved: boolean },
+): TopologySpec | undefined {
+  const tp = one("topology");
+  if (!tp) {
+    for (const n of TOPOLOGY_PROPS) {
+      const p = one(n);
+      if (p) fail(`${n}: goes with topology: (the share of the material to keep, like topology: 35%).`, p.span);
+    }
+    return undefined;
+  }
+  if (typeof tp.value !== "number" || !(tp.value >= 0.05 && tp.value <= 0.95))
+    fail("topology: is the share of the parts' material to keep, from 5% to 95%, like topology: 35%", tp.span);
+  const keep = tp.value as number;
+  if (other.with) fail(`Find the shape in an analysis of its own: topology: goes with fix: and load:, not with ${other.with}. Check that in a second analysis.`, tp.span);
+  if (!other.loads) fail("topology: finds the shape that carries the loads best, so it needs load: (what the shape must carry). Gravity alone moves with the material, so give it as a load too.", tp.span);
+  if (other.moved) fail("topology: finds the stiffest shape under loads; a displace() support sets a movement instead. Use load: force(...) for what pushes on it.", tp.span);
+  const preserve: RegionSpec[] = [];
+  const preserveParts: string[] = [];
+  const pres = one("preserve");
+  if (pres)
+    for (const x of Array.isArray(pres.value) ? pres.value.flat() : [pres.value]) {
+      if (x instanceof Obj && x.kind === REGION) preserve.push(x.fields.spec as unknown as RegionSpec);
+      else if (x instanceof Ref || (x instanceof Obj && x.kind === "component")) {
+        const n = x instanceof Ref ? x.name : String(x.fields.name);
+        const k = env.kindOf(n);
+        if (k !== "part" && k !== "component") fail(`preserve: "${n}" is not a part or component`, pres.span);
+        if (!parts.includes(n)) fail(`preserve: ${n} is not one of the analysed parts (${parts.join(", ")}). Add it to parts: to keep it as it is in the shape.`, pres.span);
+        if (!preserveParts.includes(n)) preserveParts.push(n);
+      } else fail(`preserve: should list what the shape must keep: regions like zone(at: (10, 0, 5), r: 4) or face(bracket, +Z), or whole parts; got ${typeName(x)}`, pres.span);
+    }
+  if (preserveParts.length && preserveParts.length >= parts.length) fail("preserve: keeps every analysed part as it is, so there is nothing left to shape. Leave out the part to reshape.", pres!.span);
+  let minMember: number | undefined;
+  const mm = one("min_member");
+  if (mm) {
+    if (typeof mm.value !== "number" || !(mm.value > 0)) fail("min_member: the thinnest member the shape may have, like min_member: 4mm", mm.span);
+    minMember = mm.value as number;
+  }
+  const symmetry: ("X" | "Y" | "Z")[] = [];
+  const sym = one("symmetry");
+  if (sym)
+    for (const x of Array.isArray(sym.value) ? sym.value.flat() : [sym.value]) {
+      const a = axisOf(x);
+      if (!a) fail(`symmetry: should name the axes across the mirror planes, like symmetry: X or symmetry: [X, Z] (the planes go through the middle of the parts); got ${typeName(x)}`, sym.span);
+      if (!symmetry.includes(a)) symmetry.push(a);
+    }
+  let cut: "X" | "Y" | "Z" | undefined;
+  const cp = one("extrusion");
+  if (cp) {
+    const a = axisOf(cp.value);
+    if (!a) fail("extrusion: the axis the shape runs straight through along, the same all the way, like extrusion: Y for a profile cut from plate lying in X and Z", cp.span);
+    cut = a;
+  }
+  let iterations: number | undefined;
+  const ip = one("iterations");
+  if (ip) {
+    if (typeof ip.value !== "number" || !Number.isInteger(ip.value) || ip.value < 5 || ip.value > 300) fail("iterations: the most design steps to take, a whole number from 5 to 300 (default 80; most shapes settle in 30 to 60)", ip.span);
+    iterations = ip.value as number;
+  }
+  return { keep, preserve, preserveParts, ...(minMember !== undefined ? { minMember } : {}), symmetry, ...(cut ? { cut } : {}), ...(iterations !== undefined ? { iterations } : {}) };
 }
 
 const LOADING_WORDS: Record<string, number> = {

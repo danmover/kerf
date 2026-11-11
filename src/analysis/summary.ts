@@ -10,10 +10,11 @@ import { airflowLine } from "./aeroSummary";
 import type { AirflowRun } from "./aeroRuntime";
 import { accuracyText, bucklingText, bucklingVerdict, degC, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { fatigueModeText, fatigueText, fatigueVerdict } from "./fatigueSummary";
+import { topologyLine, topologySummary } from "./topologySummary";
 
 /** What the assistant needs of a structural run (a subset of the runtime's StructuralRun). */
 export interface RunLike {
-  status: "waiting" | "running" | "done" | "error";
+  status: "idle" | "waiting" | "running" | "done" | "error";
   result?: StructuralResult;
   error?: string;
   setup?: boolean;
@@ -208,8 +209,9 @@ function extraLines(spec: StructuralSpec, r: StructuralResult): string[] {
 }
 
 export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined): string {
+  if (spec.topology) return topologySummary(spec, run);
   const head = `Analysis "${spec.label}" (structural; parts: ${spec.parts.join(", ")})`;
-  if (!run || run.status === "waiting" || run.status === "running") return `${head}: still running.`;
+  if (!run || run.status === "idle" || run.status === "waiting" || run.status === "running") return `${head}: still running.`;
   if (run.status === "error" || !run.result) {
     return `${head}: ${run.setup ? "the set-up cannot be solved as written" : "did not finish"}. ${run.error ?? ""}${run.setup ? " Fix the analysis block and run it again." : ""}`.trim();
   }
@@ -320,6 +322,7 @@ export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: D
     const state = !dt ? "not calculated" : dt.error ? `error: ${dt.error}` : `${dt.items.filter((i) => i.status === "fail").length} failing of ${dt.items.length} checks`;
     return `"${spec.label}" drivetrain (${spec.drive}, ${fmtNum(spec.torque / 1000, 3)} N·m at ${fmtNum(spec.speed, 0)} rpm): ${state}`;
   }
+  if (spec.topology) return topologyLine(spec, run);
   if (heatOnlySpec(spec)) {
     const t = spec.thermal!;
     const setup = `${spec.parts.join(", ")}; ${t.heat.length ? `${fmtNum(t.heat.reduce((a, h) => a + h.watts, 0), 2)} W made` : ""}${t.auto ? `${t.heat.length ? ", " : ""}electronics' own losses` : ""}${t.fixed.length ? `, ${t.fixed.length} held surface(s)` : ""}; ${t.coolingText}${t.time ? `; warm-up over ${fmtNum(t.time / 60, 1)} min` : ""}`;

@@ -7,14 +7,14 @@ import type { AnalysisSpec } from "../analysis/spec";
 import { electricMaterial } from "../analysis/electricMaterials";
 
 export interface AnalysisKind {
-  id: "strength" | "fatigue" | "drop" | "vibration" | "heat" | "current" | "buckling" | "study" | "airflow" | "gears" | "uci";
+  id: "strength" | "fatigue" | "drop" | "vibration" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
   /** other words people use for it */
   keywords: string;
   /** key of ui/icons Icon */
-  icon: "Stress" | "Refresh" | "Alert" | "Graph" | "Thermo" | "Bolt" | "Buckle" | "Sliders" | "Orbit" | "Gear" | "Check";
+  icon: "Stress" | "Refresh" | "Alert" | "Graph" | "Thermo" | "Bolt" | "Buckle" | "Wand" | "Sliders" | "Orbit" | "Gear" | "Check";
   /** which of the design's analyses are this kind */
   is: (a: AnalysisSpec) => boolean;
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
@@ -30,7 +30,7 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "Stress, deflection and safety factor under the loads it will see",
     keywords: "fea finite element stress strain deflection safety factor load break bend sag strong",
     icon: "Stress",
-    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !a.fatigue && !(a.thermal && !a.supports.length),
+    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !a.fatigue && !a.topology && !(a.thermal && !a.supports.length),
     ask: "Set up a strength analysis for this design from how it will be used: work out realistic loads and how it is held, then run it and tell me what you find.",
   },
   {
@@ -87,6 +87,15 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     icon: "Buckle",
     is: (a) => a.kind === "structural" && !!a.buckling,
     ask: "Set up a buckling check for this design: the loads that press on its slender walls, struts or tubes and how it is held, then run it and tell me how far it is from buckling and how to stiffen it.",
+  },
+  {
+    id: "topology",
+    label: "Topology optimisation",
+    detail: "The stiffest shape for the loads from a share of the material: where to cut it away, as a shape to model, print or cut from plate",
+    keywords: "topology optimisation optimization generative design lightweight lighten weight reduction remove material cut away truss organic shape simp lattice skeleton pockets lightening holes",
+    icon: "Wand",
+    is: (a) => a.kind === "structural" && !!a.topology,
+    ask: "Set up a topology optimisation for the main load-carrying part of this design: how it is held and the real loads it carries, the share of its material to keep (about 30 to 40 %), and preserve: for its mounting faces and holes; use extrusion: (the axis through the plate) when it is cut from plate. Run it, then tell me the shape it finds, how much lighter and how much less stiff it is, and model that shape as a real part.",
   },
   {
     id: "study",

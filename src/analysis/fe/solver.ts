@@ -711,6 +711,54 @@ export function buildHierarchy(fine: Level, shifts: [number, number, number][], 
   return { levels: out, coarse, smooth };
 }
 
+/** Each active element's stiffness from its cell in L.dense (after L.dense has changed; the same cells active). */
+function restiff(L: Level) {
+  const NX = L.NX,
+    NXY = L.NX * L.NY;
+  for (const g of groups(L))
+    for (let q = 0; q < g.act.length; q++) {
+      const n0 = g.act[q];
+      const k = (n0 / NXY) | 0;
+      const r = n0 - k * NXY;
+      const j = (r / NX) | 0;
+      g.stiff[q] = L.dense[r - j * NX + L.nx * (j + L.ny * k)];
+    }
+}
+
+/**
+ * New element stiffnesses on the same grids, for a solve repeated while the material changes a little each time (the
+ * topology optimiser): every level takes the new stiffness and its smoother follows it, which is cheap. The same
+ * cells must stay in use (dense > 0 in the same cells). The coarsest grid's factorisation and the smoothing factors
+ * are only redone when refresh is set: they only precondition, so a slightly old one costs a few iterations, not
+ * accuracy, and the factorisation is most of the cost of building the hierarchy.
+ */
+export function restiffen(H: Hierarchy, dense: Float64Array, refresh = false) {
+  let F = H.levels[0];
+  if (dense !== F.dense) F.dense.set(dense);
+  restiff(F);
+  for (let l = 1; l < H.levels.length; l++) {
+    const C = H.levels[l];
+    const [sx, sy, sz] = C.shift;
+    const children = (1 << sx) * (1 << sy) * (1 << sz);
+    const d = C.dense;
+    d.fill(0);
+    for (let k = 0; k < F.nz; k++)
+      for (let j = 0; j < F.ny; j++)
+        for (let i = 0; i < F.nx; i++) {
+          const v = F.dense[i + F.nx * (j + F.ny * k)];
+          if (v > 0) d[(i >> sx) + C.nx * ((j >> sy) + C.ny * (k >> sz))] += v / children;
+        }
+    restiff(C);
+    F = C;
+  }
+  for (let l = 0; l < H.levels.length - 1; l++) {
+    const L = H.levels[l];
+    computeDiag(L);
+    if (refresh) L.omega = 4 / (3 * Math.max(estimateLambda(L) * 1.1, 1e-12));
+  }
+  if (refresh) H.coarse = new BandCholesky(H.levels[H.levels.length - 1]);
+}
+
 /** One symmetric V-cycle: out ≈ K⁻¹ r on level l. */
 function vcycle(H: Hierarchy, l: number, r: Float64Array, out: Float64Array) {
   const L = H.levels[l];

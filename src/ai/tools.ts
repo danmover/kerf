@@ -51,9 +51,9 @@ import { VIEW_TOOL_DEFS, VIEW_TOOL_TITLES, runViewTool } from "./viewTools";
 import { partGroups } from "../app/partGroups";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
-import { useAnalysis, whenAnalyzed, runFine, runAccuracyCheck, showResults, type ResultField } from "../analysis/runtime";
+import { useAnalysis, whenAnalyzed, runFine, runAccuracyCheck, runTopology, showResults, type ResultField } from "../analysis/runtime";
 import { startStudy, studyStatus, studySummary } from "../analysis/studyRuntime";
-import type { AnalysisSpec, StudySpec } from "../analysis/spec";
+import type { AnalysisSpec, StructuralSpec, StudySpec } from "../analysis/spec";
 import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict, uciSummary, uciItems, uciVerdict } from "../analysis/summary";
 import { airflowItems, showAirflow, startAirflowNow, useAirflow, whenAirflowDone, type SurfaceShown } from "../analysis/aeroRuntime";
 import { airflowSummary } from "../analysis/aeroSummary";
@@ -461,6 +461,8 @@ const ViewInput = z.object({
 });
 /** how long run_analysis waits for airflow runs before reporting them as still running */
 const AIRFLOW_WAIT_MS = 8 * 60_000;
+/** and for a topology optimisation */
+const TOPOLOGY_WAIT_MS = 10 * 60_000;
 const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional(), check: z.boolean().optional() });
 const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
@@ -1218,16 +1220,28 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         };
       }
       const studies = named.filter((a) => a.kind === "study");
-      const targets = named.filter((a): a is Exclude<AnalysisSpec, StudySpec> => a.kind !== "study");
+      // a topology optimisation takes many solves, so it too runs only when named
+      const isTopo = (a: AnalysisSpec) => a.kind === "structural" && !!a.topology;
+      const topos = p.data.label ? [] : named.filter(isTopo);
+      const targets = named.filter((a): a is Exclude<AnalysisSpec, StudySpec> => a.kind !== "study" && (!!p.data.label || !isTopo(a)));
       if (!targets.length)
-        return { isError: true, content: `Only design studies here (${studies.map((a) => `"${a.label}"`).join(", ")}); they build many designs, so they run only when named: run_analysis label: "<study>".`, card: { title: "Name the study to run", status: "error" } };
+        return {
+          isError: true,
+          content: `Only ${studies.length ? `design studies (${studies.map((a) => `"${a.label}"`).join(", ")})` : ""}${studies.length && topos.length ? " and " : ""}${topos.length ? `topology optimisations (${topos.map((a) => `"${a.label}"`).join(", ")})` : ""} here; they run only when named: run_analysis label: "<label>".`,
+          card: { title: "Name the analysis to run", status: "error" },
+        };
+      const topoTarget = targets.find((a): a is StructuralSpec => a.kind === "structural" && !!a.topology);
+      if (topoTarget) {
+        const run = useAnalysis.getState().runs.get(topoTarget.label);
+        if (run?.status === "idle") runTopology(topoTarget.label);
+      }
       if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
       if (p.data.check) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.check) runAccuracyCheck(a.label);
       if (targets.some((a) => a.kind === "airflow")) {
         startAirflowNow();
         await whenAirflowDone(AIRFLOW_WAIT_MS);
       }
-      if (targets.some((a) => a.kind !== "airflow")) await whenAnalyzed();
+      if (targets.some((a) => a.kind !== "airflow")) await whenAnalyzed(topoTarget ? TOPOLOGY_WAIT_MS : undefined, topoTarget ? [topoTarget.label] : []);
       const st = useAnalysis.getState();
       const report = useDesign.getState().report?.items ?? [];
       const air = useAirflow.getState();
@@ -1257,6 +1271,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           return !r || r.error || r.items.some((i) => i.status === "fail") ? "fail" : r.items.some((i) => i.status === "warn") ? "warn" : "pass";
         }
         const r = st.runs.get(a.label);
+        // the shape a topology optimisation finds is a suggestion: it passes once found
+        if (a.topology) return r?.result?.topology && r.status === "done" ? "pass" : r?.status === "running" || r?.status === "waiting" ? "warn" : "fail";
         return r?.result && r.status === "done" ? structuralVerdict(a, r.result) : "fail";
       });
       const firstShown = targets.find((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
@@ -1269,7 +1285,9 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         const a = targets[0];
         const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
         const ar = a.kind === "airflow" ? air.runs.get(a.label)?.result : undefined;
-        title = r
+        title = r?.topology
+          ? `${a.label}: kept ${fmtNum(r.topology.kept * 100, 0)} %, ${fmtNum(r.topology.stiffness * 100, 0)} % as stiff`
+          : r
           ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.kind === "structural" ? a.safety : 0, 1)})`
           : ar
             ? `${a.label}: CdA ${fmtNum(ar.yaws.reduce((t, y) => t + y.cda, 0) / ar.yaws.length, 3)} m²`
@@ -1280,7 +1298,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           text +
           (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : "") +
           (airShown ? `\n\nThe airflow of "${airShown.label}" is shown on the user's model. Use capture_view with airflow: "pressure", "streamlines" or "wake" to look at it.` : "") +
-          (studies.length ? `\n\nDesign studies (${studies.map((a) => `"${a.label}"`).join(", ")}) were not run: each builds many designs, so it runs only when named, with run_analysis label: "<study>".` : ""),
+          (studies.length ? `\n\nDesign studies (${studies.map((a) => `"${a.label}"`).join(", ")}) were not run: each builds many designs, so it runs only when named, with run_analysis label: "<study>".` : "") +
+          (topos.length ? `\n\nTopology optimisations (${topos.map((a) => `"${a.label}"`).join(", ")}) were not run: each takes many solves, so it runs only when named, with run_analysis label: "<label>".` : ""),
         card: { title, detail: verdicts.map((v, i) => `${targets[i].label}: ${v}`).join(" · "), status: fails ? "error" : "done" },
       };
     }

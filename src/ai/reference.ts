@@ -573,6 +573,18 @@ analysis "Lightest bracket" {
   runs: 16                         // the most designs to build, the current one included (default 12, at most 40)
 }
 It never runs on its own: run_analysis label: "<study>" runs it (about as long as building and solving the design once per run) and returns every design, the best, and how much each parameter matters. Apply one with edit_design alternative: "<study> #<n>". Prefer a study to trying sizes by hand; use compare_designs for different concepts.
+Topology optimisation (where to cut material away): topology: in a strength analysis finds the stiffest shape for its loads and supports that keeps that share of the parts' material (SIMP with a density filter, a sharpening step and optimality-criteria updates), then checks that shape under the same loads:
+analysis "Lighter bracket" {
+  fix: face(bracket, -Y)
+  load: force(face(bracket, +Z), (0, 0, -400N))
+  topology: 35%                 // the share of the material to keep, 5 % to 95 %
+  preserve: [zone(at: (20, 0, 8), r: 6), boss]   // optional: kept solid (bosses round holes, mounting faces, whole parts); where it is held and loaded always stays
+  min_member: 4mm               // optional: the thinnest member (default about 2.5 elements)
+  symmetry: [X]                 // optional: mirror planes through the middle of the parts, by the axis across them
+  extrusion: Y                  // optional: the same all the way through along Y, to cut from plate (laser, waterjet, router)
+  iterations: 80                // optional: most design steps (most settle in 30 to 60)
+}
+It takes many solves (about half a minute at the standard resolution, use resolution: "draft" for a first look), so it never runs on its own: run_analysis label: "<label>" runs it and returns the material and mass kept, the stiffness kept against the solid parts, openings, the shape's own stress and safety factor, and with extrusion: the profile as point lists (outsides anticlockwise, holes clockwise) to extrude; capture_view results shows the shape inside the faded parts. The shape is a suggestion: model it as a real part (follow its members, round it off, keep the mounting faces), then check that part in an analysis of its own. Keep it in its own analysis, not with drops, frequencies, heat, buckling or fatigue.
 Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
 An airflow analysis puts the design in a virtual wind tunnel: a GPU lattice-Boltzmann flow solver with LES turbulence and a wall model, on a rolling road with the wheels spinning, re-run after each change:

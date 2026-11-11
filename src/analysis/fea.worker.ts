@@ -14,6 +14,11 @@ self.onmessage = (ev: MessageEvent<FeaRequest>) => {
   try {
     const result = (input.converge ? runConverged : runStructural)(input, (stage, frac, info) => {
       const t = performance.now();
+      // a topology run's shape so far is always sent (a few per second at most)
+      if (info?.preview) {
+        post({ id, type: "progress", stage, frac, preview: info.preview }, [info.preview.positions.buffer as ArrayBuffer, info.preview.indices.buffer as ArrayBuffer]);
+        return;
+      }
       if (t - last < 50 && frac < 1) return;
       last = t;
       post({ id, type: "progress", stage, frac, ...info });
