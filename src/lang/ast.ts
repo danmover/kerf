@@ -152,6 +152,8 @@ export type SketchItem =
       name: string;
       refs: Expr[];
       value?: Expr;
+      /** named options after the geometry, for mirror, pattern and offset: about: l5, count: 4 */
+      opts?: { name: string; value: Expr; span: Span; nameSpan: Span }[];
       span: Span;
       nameSpan: Span;
     };

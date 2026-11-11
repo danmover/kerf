@@ -1729,13 +1729,13 @@ export class SceneController {
     return this.rayHit(e.clientX, e.clientY)?.object.userData.partId ?? null;
   }
 
-  private rayHit(clientX: number, clientY: number): THREE.Intersection | null {
+  private rayHit(clientX: number, clientY: number, ghosts = false): THREE.Intersection | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    // parts drawn by an overlay (analysis results) are hidden but still pickable
+    // parts drawn by an overlay (analysis results) are hidden but still pickable; see-through parts only when asked
     const pickable = (p: PartObj) => p.group.visible || (this.replaced.has(p.id) && !this.display.hidden.has(p.id) && !p.part.hidden);
-    const meshes = [...this.parts.values()].filter((p) => pickable(p) && !p.removing && p.opacityTarget > 0.5).map((p) => p.mesh);
+    const meshes = [...this.parts.values()].filter((p) => pickable(p) && !p.removing && (ghosts || p.opacityTarget > 0.5)).map((p) => p.mesh);
     const hits = this.raycaster.intersectObjects(meshes, false);
     for (const h of hits) {
       if (this.sectionAnim.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
@@ -1755,9 +1755,9 @@ export class SceneController {
     return best;
   }
 
-  /** The part and spot under a screen position. */
-  hitAt(clientX: number, clientY: number): Hit | null {
-    const h = this.rayHit(clientX, clientY);
+  /** The part and spot under a screen position. With ghosts, parts shown see-through (x-ray, sketching) count too. */
+  hitAt(clientX: number, clientY: number, opts: { ghosts?: boolean } = {}): Hit | null {
+    const h = this.rayHit(clientX, clientY, opts.ghosts);
     const obj = h && this.parts.get(h.object.userData.partId as string);
     if (!h || !obj) return null;
     const local = h.point.clone().applyMatrix4(h.object.matrixWorld.clone().invert());

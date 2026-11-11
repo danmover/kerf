@@ -15,10 +15,15 @@ import type { EvalSketch, SkConstraint, SkCurve, SkPoint } from "./types";
 export const fmt = (v: number) => fmtNum(v, 3);
 export const fmtPt = (p: V2) => `(${fmt(p[0])}, ${fmt(p[1])})`;
 
-interface Change {
+export interface Change {
   from: number;
   to: number;
   insert: string;
+}
+
+/** Apply text changes given against the same source (they must not overlap). */
+export function applyChanges(src: string, changes: Change[]): string {
+  return apply(src, changes);
 }
 
 function apply(src: string, changes: Change[]): string {
@@ -35,7 +40,7 @@ function apply(src: string, changes: Change[]): string {
 }
 
 /** A span widened to its whole line(s) when nothing else is on them, so removing it leaves no blank line. */
-function lineSpan(src: string, span: Span): Span {
+export function lineSpan(src: string, span: Span): Span {
   const ls = src.lastIndexOf("\n", span.start - 1) + 1;
   let le = src.indexOf("\n", span.end);
   if (le < 0) le = src.length;
@@ -51,7 +56,7 @@ function lineSpan(src: string, span: Span): Span {
 }
 
 /** Past the rest of the line when only a ; or a comment follows, so a trailing comment stays with its statement. */
-function lineEnd(src: string, at: number): number {
+export function lineEnd(src: string, at: number): number {
   let le = src.indexOf("\n", at);
   if (le < 0) le = src.length;
   return /^[ \t;]*(\/\/.*)?$/.test(src.slice(at, le)) ? le : at;
@@ -105,7 +110,7 @@ export function addSketch(src: string, model: Model | null, opts: { name?: strin
 
 // ---------------- adding statements ----------------
 
-function bodyInsertAt(src: string, sk: EvalSketch): number {
+export function bodyInsertAt(src: string, sk: EvalSketch): number {
   let p = sk.bodyEnd;
   while (p > 0 && /\s/.test(src[p - 1])) p--;
   return p;
@@ -162,7 +167,36 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
   for (const id of sel) {
     const p = sk.points.find((q) => q.id === id);
     if (p && !p.implicit) removedPoints.add(p.id);
+    // a copy goes with the mirror, pattern or offset that made it
+    const d = sk.curves.find((c) => c.id === id)?.derived ?? p?.derived;
+    if (d !== undefined) removedCons.add(d);
   }
+  // copies of what goes go too: the whole statement when nothing is left to copy (or an offset's chain breaks,
+  // or its line or centre goes), otherwise just those copies; a copy of a copy follows, so repeat until settled
+  const gone = (name: string) => removedCurves.has(name.split(".")[0]) || removedPoints.has(name);
+  const copies = sk.constraints.filter((c) => c.made);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const c of copies) {
+      const drop = (ids: string[]) => {
+        for (const id of ids)
+          if (!removedCurves.has(id)) {
+            removedCurves.add(id);
+            changed = true;
+          }
+      };
+      if (!removedCons.has(c.index)) {
+        const lost = c.args.filter(gone);
+        if (!lost.length && !c.opts?.some((o) => o.ids.some(gone))) continue;
+        if (c.kind === "offset" || lost.length === c.args.length || c.opts?.some((o) => o.ids.some(gone))) {
+          removedCons.add(c.index);
+          changed = true;
+        } else drop(c.made!.filter((_, i) => lost.includes(c.madeFrom![i])));
+      }
+      if (removedCons.has(c.index)) drop(c.made!);
+    }
+  }
+  for (const p of sk.points) if (p.derived !== undefined && removedCons.has(p.derived)) removedPoints.add(p.id);
   for (const c of sk.curves) if (removedCurves.has(c.id)) for (const pid of c.pts) if (pid.startsWith(c.id + ".")) removedPoints.add(pid);
   const removedSpans: Span[] = [];
   const changes: Change[] = [];
@@ -172,7 +206,7 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
     removedSpans.push(s);
     changes.push({ from: s.start, to: s.end, insert: "" });
   };
-  for (const c of sk.curves) if (removedCurves.has(c.id)) removeStmt(c.span);
+  for (const c of sk.curves) if (removedCurves.has(c.id) && c.derived === undefined) removeStmt(c.span);
   for (const p of sk.points) if (removedPoints.has(p.id) && !p.implicit && p.span) removeStmt(p.span);
   // a removed point that kept curves start, end or are centred at lives on: the first of them
   // takes it over as plain coordinates, and the others share it under that curve's name
@@ -188,10 +222,16 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
     });
   }
   // constraints are judged by the names they are written with: "l2.start" still exists after l1 (whose end it shares) is deleted
-  const writtenGone = (name: string) => removedCurves.has(name.split(".")[0]) || removedPoints.has(name);
+  const writtenGone = gone;
   for (const c of sk.constraints) {
     if (removedCons.has(c.index)) {
       removeStmt(c.span);
+      continue;
+    }
+    if (c.made) {
+      // a mirror or pattern of what is left, with its options as written
+      const keep = c.args.filter((a) => !writtenGone(a));
+      if (keep.length < c.args.length) changes.push({ from: c.span.start, to: c.span.end, insert: `${c.kind} ${[...keep, ...(c.opts ?? []).map((o) => o.text)].join(", ")}` });
       continue;
     }
     const args = c.args.map((a, i) => (writtenGone(a) ? (survivor.get(c.ids[i]) ?? null) : a));

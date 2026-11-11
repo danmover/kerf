@@ -11,12 +11,13 @@ import { commitSource } from "../../app/project";
 import { select } from "../../app/view";
 import { toast } from "../../app/ui";
 import { addFeature, addStatements, deleteSelection, entitiesOf, extrudeExpr, suggestionsFor, toggleConstruction, fmt, type FeatureSpec } from "../../sketch/edits";
-import { sketchStatusText } from "../../sketch/evaluate";
+import { MAX_PATTERN, sketchStatusText } from "../../sketch/evaluate";
+import { copyable } from "../../sketch/modify";
 import type { EvalSketch } from "../../sketch/types";
 import { useChatDraft } from "../chatDraft";
 import { Icon } from "../icons";
 import { Segmented } from "../common";
-import { editSketch, exitSketch, createSketch, setSelection, setTool, useSketch, type SketchTool } from "./session";
+import { editSketch, exitSketch, createSketch, makePattern, setSelection, setTool, useSketch, type PatternUi, type SketchTool } from "./session";
 import { SketchOverlay, faceSketch } from "./SketchOverlay";
 import { T } from "./glyphs";
 import "./sketch.css";
@@ -118,28 +119,45 @@ const TOOLS: { id: SketchTool; label: string; key: string; icon: ReactNode; help
   { id: "polygon", label: "Polygon", key: "H", icon: <T.Polygon />, help: "Click the centre, then a corner. Type the number of sides (3 to 32) first; 6 makes a hexagon. The sides stay equal and the corners on a construction circle, so dimension the circle for the size across the corners." },
   { id: "point", label: "Point", key: "P", icon: <T.Point />, help: "Click to place a reference point." },
   { id: "dimension", label: "Dimension", key: "D", icon: <T.Dim />, help: "Click one item to size it, or two to measure between them. Type the value, or a formula like w / 2." },
+  { id: "trim", label: "Trim", key: "T", icon: <T.Trim />, help: "Click the piece of a curve to cut away, back to where other curves cross it. A curve nothing crosses is deleted. Press T again (or E) to extend instead." },
+  { id: "extend", label: "Extend", key: "E", icon: <T.Extend />, help: "Click near a loose end of a line or arc to run it on to the next curve it meets." },
+  { id: "offset", label: "Offset", key: "F", icon: <T.Offset />, help: "Click a curve: the chain it is part of is offset. Move to the side the copy goes and click, or type the distance and press Enter. The copy stays that far away as the original changes." },
+  { id: "mirror", label: "Mirror", key: "M", icon: <T.Mirror />, help: "Select what to mirror (click, or box-select first), then click the line to mirror across, or the x or y axis. The copy stays mirrored as the original changes." },
+  { id: "pattern", label: "Pattern", key: "K", icon: <T.Pattern />, help: "Select what to repeat, set a row or a ring in the panel, and press Make pattern. The copies follow the original." },
+  { id: "project", label: "Project", key: "J", icon: <T.Project />, help: "Click a face of a part to bring its edges into this sketch, fixed where they are, to draw and dimension from." },
 ];
 
 const RECTS: SketchTool[] = ["rect", "crect", "rect3"];
 let lastRect: SketchTool = "rect";
+// trim and extend share a button the same way
+const CUTS: SketchTool[] = ["trim", "extend"];
+let lastCut: SketchTool = "trim";
+/** the tools that change geometry already drawn sit below a divider */
+const MODIFY: SketchTool[] = ["trim", "extend", "offset", "mirror", "pattern", "project"];
 
 function ToolPalette() {
   const tool = useSketch((s) => s.tool);
   const construction = useSketch((s) => s.construction);
   // the three rectangles share one button: it shows the one in use, and a second click (or R again) moves to the next
   if (RECTS.includes(tool)) lastRect = tool;
+  if (CUTS.includes(tool)) lastCut = tool;
+  const button = (t: (typeof TOOLS)[number]) => {
+    const group = RECTS.includes(t.id) ? RECTS : CUTS.includes(t.id) ? CUTS : null;
+    const on = tool === t.id;
+    const click = () => setTool(group && on ? group[(group.indexOf(t.id) + 1) % group.length] : t.id);
+    const tip = group ? `${t.label} (${t.key}; click again for ${group.filter((x) => x !== t.id).map((x) => TOOLS.find((q) => q.id === x)!.label.toLowerCase()).join(" or ")})` : `${t.label} (${t.key})`;
+    return (
+      <button key={group ? group[0] : t.id} className={`icon-btn ${on ? "active" : ""}`} onClick={click} data-tip={tip} aria-label={t.label} aria-pressed={on}>
+        {t.icon}
+      </button>
+    );
+  };
+  const shown = (t: (typeof TOOLS)[number]) => (!RECTS.includes(t.id) || t.id === lastRect) && (!CUTS.includes(t.id) || t.id === lastCut);
   return (
     <motion.div className="sk-ui sk-tools vp-float" style={{ y: "-50%" }} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} role="toolbar" aria-label="Sketch tools">
-      {TOOLS.filter((t) => !RECTS.includes(t.id) || t.id === lastRect).map((t) => {
-        const rect = RECTS.includes(t.id);
-        const on = tool === t.id;
-        const click = () => setTool(rect && on ? RECTS[(RECTS.indexOf(t.id) + 1) % RECTS.length] : t.id);
-        return (
-          <button key={rect ? "rect" : t.id} className={`icon-btn ${on ? "active" : ""}`} onClick={click} data-tip={rect ? `${t.label} (R; click or press R again for ${RECTS.filter((x) => x !== t.id).map((x) => TOOLS.find((q) => q.id === x)!.label.toLowerCase()).join(" or ")})` : `${t.label} (${t.key})`} aria-label={t.label} aria-pressed={on}>
-            {t.icon}
-          </button>
-        );
-      })}
+      {TOOLS.filter((t) => shown(t) && !MODIFY.includes(t.id)).map(button)}
+      <div className="sep" />
+      {TOOLS.filter((t) => shown(t) && MODIFY.includes(t.id)).map(button)}
       <div className="sep" />
       <button className={`icon-btn ${construction ? "active warnish" : ""}`} onClick={() => useSketch.setState({ construction: !construction })} data-tip="Draw construction geometry (G)" aria-label="Construction geometry" aria-pressed={construction}>
         <T.Construction />
@@ -173,9 +191,80 @@ function HintBar() {
 function SidePanel({ sk }: { sk: EvalSketch }) {
   const feature = useSketch((s) => s.feature);
   const selection = useSketch((s) => s.selection);
+  const tool = useSketch((s) => s.tool);
   if (feature) return <FeaturePanel sk={sk} />;
+  if (tool === "pattern") return <PatternPanel sk={sk} selection={selection} />;
   if (selection.length) return <SelectionPanel sk={sk} selection={selection} />;
   return null;
+}
+
+function PatternPanel({ sk, selection }: { sk: EvalSketch; selection: string[] }) {
+  const p = useSketch((s) => s.pattern);
+  const set = (q: Partial<PatternUi>) => useSketch.setState({ pattern: { ...p, ...q } });
+  const ids = copyable(sk, selection);
+  const n = (v: string, min: number) => Math.max(min, Math.min(MAX_PATTERN, Math.round(Number(v) || min)));
+  const x = (v: string) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const num = (label: string, value: number, onChange: (v: string) => void, tip: string, w = 52) => (
+    <label className="row" style={{ gap: 4 }} data-tip={tip}>
+      <span className="muted">{label}</span>
+      <input className="input mono" style={{ width: w }} defaultValue={fmt(value)} key={`${label}${value}`} onBlur={(e) => onChange(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} aria-label={label} />
+    </label>
+  );
+  return (
+    <motion.div className="sk-ui sk-side vp-float" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 12 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <b className="grow">Pattern</b>
+        <button className="icon-btn sm" onClick={() => setTool("select")} aria-label="Close pattern">
+          <Icon.X size={14} />
+        </button>
+      </div>
+      <div className="mono muted sk-desc">{ids.length ? `${ids.slice(0, 6).join(", ")}${ids.length > 6 ? ` and ${ids.length - 6} more` : ""}` : "Select what to repeat: click it, or drag a box round it"}</div>
+      <Segmented
+        id="sk-pattern-mode"
+        value={p.mode}
+        onChange={(mode) => set({ mode })}
+        options={[
+          { value: "row", label: "Row" },
+          { value: "ring", label: "Ring" },
+        ]}
+      />
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+        {num("Count", p.count, (v) => set({ count: n(v, 2) }), "How many in all, counting the original", 44)}
+        {p.mode === "row" ? (
+          <>
+            {num("Step x", p.step[0], (v) => set({ step: [x(v), p.step[1]] }), "How far each copy moves across, in mm")}
+            {num("y", p.step[1], (v) => set({ step: [p.step[0], x(v)] }), "How far each copy moves up, in mm")}
+          </>
+        ) : (
+          <>
+            {num("Angle", p.angle, (v) => set({ angle: Math.max(-360, Math.min(360, x(v) || 360)) }), "How far round the copies spread; 360 spaces them evenly all the way round", 48)}
+            <button className={`btn sm ${p.pickCentre ? "active" : ""}`} onClick={() => set({ pickCentre: !p.pickCentre })} data-tip="Then click a point, or a circle or arc for its centre">
+              Centre <span className="mono muted">{p.around}</span>
+            </button>
+          </>
+        )}
+      </div>
+      {p.mode === "row" && (
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+          <label className="sk-check" data-tip="A second direction, for a grid">
+            <input type="checkbox" checked={p.grid} onChange={(e) => set({ grid: e.target.checked })} /> grid
+          </label>
+          {p.grid && (
+            <>
+              {num("Rows", p.count2, (v) => set({ count2: n(v, 1) }), "How many rows", 40)}
+              {num("Step x", p.step2[0], (v) => set({ step2: [x(v), p.step2[1]] }), "How far each row moves across, in mm")}
+              {num("y", p.step2[1], (v) => set({ step2: [p.step2[0], x(v)] }), "How far each row moves up, in mm")}
+            </>
+          )}
+        </div>
+      )}
+      <div className="row sk-actions" style={{ marginTop: 10 }}>
+        <button className="btn sm primary" onClick={() => makePattern()} disabled={!ids.length} data-tip="Or press Enter">
+          <T.Pattern size={13} /> Make pattern
+        </button>
+      </div>
+    </motion.div>
+  );
 }
 
 function describe(sk: EvalSketch, id: string): string {
@@ -262,6 +351,19 @@ function SelectionPanel({ sk, selection }: { sk: EvalSketch; selection: string[]
               {s.label} <span className="mono muted">{s.stmt.split("= ")[1]}</span>
             </button>
           ))}
+        </Group>
+      )}
+      {curves.length > 0 && (
+        <Group title="Copy">
+          <button className="btn sm" onClick={() => setTool("mirror")} data-tip="Then click the line to mirror across, or the x or y axis (M)">
+            <T.Mirror size={13} /> Mirror
+          </button>
+          <button className="btn sm" onClick={() => setTool("pattern")} data-tip="Repeat in a row, a grid or a ring (K)">
+            <T.Pattern size={13} /> Pattern
+          </button>
+          <button className="btn sm" onClick={() => setTool("offset")} data-tip="Then click one of them and move to the side the copy goes (F)">
+            <T.Offset size={13} /> Offset
+          </button>
         </Group>
       )}
       <div className="row sk-actions">

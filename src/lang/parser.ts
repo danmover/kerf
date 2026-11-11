@@ -745,16 +745,27 @@ class Parser {
       return { k: "entity", kind, name: nameTk.value, construction, args, size, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
     if (construction) throw new ParseError('"construction" must be followed by point, line, circle or arc', tk.start, tk.end);
-    // constraint or dimension: name ref, ref [= value]
+    // constraint or dimension: name ref, ref [, key: value …] [= value]
     this.next();
     const refs: Expr[] = [];
+    const opts: { name: string; value: Expr; span: Span; nameSpan: Span }[] = [];
     if (!this.atLineStart() && !this.isOp("}") && !this.isOp("=")) {
-      refs.push(this.expr());
-      while (this.eat("op", ",")) refs.push(this.expr());
+      do {
+        const at = this.peek();
+        if (at.kind === "ident" && this.isOp(":", 1)) {
+          this.next();
+          this.next();
+          const value = this.expr();
+          opts.push({ name: at.value, value, span: { start: at.start, end: this.prevEnd() }, nameSpan: { start: at.start, end: at.end } });
+        } else {
+          if (opts.length) throw new ParseError(`Put the geometry before the named options (${opts[0].name}: …)`, at.start, Math.max(at.end, at.start + 1));
+          refs.push(this.expr());
+        }
+      } while (this.eat("op", ","));
     }
     let value: Expr | undefined;
     if (this.eat("op", "=")) value = this.expr();
-    return { k: "constraint", name: tk.value, refs, value, span: { start, end: this.prevEnd() }, nameSpan: { start: tk.start, end: tk.end } };
+    return { k: "constraint", name: tk.value, refs, value, opts: opts.length ? opts : undefined, span: { start, end: this.prevEnd() }, nameSpan: { start: tk.start, end: tk.end } };
   }
 
   // ---- expressions ----

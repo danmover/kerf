@@ -36,6 +36,8 @@ export interface SkPoint {
   span?: Span;
   /** projected from another sketch (side.l3.end): fixed reference, not editable here */
   external?: boolean;
+  /** made by a mirror, pattern or offset statement: the index of that statement among the constraints */
+  derived?: number;
 }
 
 export interface SkCurve {
@@ -58,6 +60,8 @@ export interface SkCurve {
   writtenR?: number;
   /** a line projected from another sketch (side.l3): reference only */
   external?: boolean;
+  /** made by a mirror, pattern or offset statement: the index of that statement among the constraints */
+  derived?: number;
 }
 
 export interface SkConstraint {
@@ -77,6 +81,12 @@ export interface SkConstraint {
   status: "ok" | "redundant" | "conflict" | "involved";
   /** a dimension (has a value) rather than a geometric relation */
   dimension: boolean;
+  /** named options as written (mirror, pattern, offset): about: l5, count: 4 */
+  opts?: { name: string; text: string; span: Span; ids: string[] }[];
+  /** the curves a mirror, pattern or offset statement made */
+  made?: string[];
+  /** the original each of those copies was made from */
+  madeFrom?: string[];
 }
 
 export interface EvalSketch {

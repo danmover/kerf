@@ -11,7 +11,11 @@ import { budgetMs, solveSketch } from "../../sketch/solver";
 import { buildProfile } from "../../sketch/regions";
 import { addStatements, consId, deleteSelection, dimensionFor, fmt, fmtPt, nextName, setConstraintValue, suggestionsFor, takenNames, toggleConstruction, writePositions } from "../../sketch/edits";
 import type { EvalSketch, SkConstraint } from "../../sketch/types";
-import { MAX_POLYGON_SIDES, activeSketch, editSketch, exitSketch, flash, setSelection, setTool, useSketch, type LiveSolve } from "./session";
+import { MAX_POLYGON_SIDES, activeSketch, editSketch, exitSketch, flash, makePattern, patternSpec, setSelection, setTool, useSketch, type LiveSolve, type SketchTool } from "./session";
+import { chainFrom, copyable, extendAt, extensionAt, mirrorStatement, offsetFor, offsetStatement, patternMoves, pieceAt, reflectAcross, trimAt } from "../../sketch/modify";
+import { projectEdges } from "../../sketch/project";
+import { kernel } from "../../kernel/client";
+import { applyXforms } from "../../kernel/recipe";
 import { Projector, add, arcPoints, ccwThrough, circlePoints, circleThrough, closestOnSeg, curvePoints, dist, len, mul, niceStep, positionsOf, pxDist, radiusOf, roundTo, snapAt, sub, type Positions, type Px, type Snap } from "./geom";
 import { labelWidth, layoutDims, layoutGlyphs, type DimGfx } from "./dims";
 import { commitSource } from "../../app/project";
@@ -30,9 +34,15 @@ type Draft =
   | { t: "dim"; first: string }
   | { t: "box"; from: Px; to: Px; additive: boolean }
   | { t: "drag"; ids: string[]; circle?: string; from: V2; base: Positions; moved: boolean }
-  | { t: "scrub"; index: number; fromX: number; start: number; moved: boolean; step: number; angle: boolean; base: string };
+  | { t: "scrub"; index: number; fromX: number; start: number; moved: boolean; step: number; angle: boolean; base: string }
+  /** offset: the chain picked, waiting for the side and distance */
+  | { t: "offset"; ids: string[] }
+  /** mirror: what to copy is chosen, waiting for the line to mirror across */
+  | { t: "mirror" };
 
 const HIDDEN_POINTS = new Set(["x_axis.end", "y_axis.end"]);
+/** tools that change geometry already drawn: no snapping, the cursor picks curves */
+const MODIFY = new Set<SketchTool>(["trim", "extend", "offset", "mirror", "pattern", "project"]);
 
 export function SketchOverlay({ ctl }: { ctl: SceneController }) {
   const s = useSketch();
@@ -87,7 +97,12 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
   }, [ctl, s.active]);
 
   useEffect(() => {
-    setDraft(null);
+    // mirror with something already selected goes straight to picking the line to mirror across
+    const st = useSketch.getState();
+    const cur = activeSketch();
+    const ready = st.tool === "mirror" && !!cur && copyable(cur, st.selection).length > 0;
+    setDraft(ready ? { t: "mirror" } : null);
+    if (ready) flash("Click the line to mirror across, or the x or y axis.");
     setTyped("");
   }, [s.tool, s.active]);
 
@@ -109,12 +124,12 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
-  const hitTest = useCallback((px: Px): string | null => {
+  const hitTest = useCallback((px: Px, curvesOnly = false): string | null => {
     const { sk, P, proj } = state.current;
     if (!sk || !proj) return null;
     let best: { d: number; id: string } | null = null;
     for (const p of sk.points) {
-      if (HIDDEN_POINTS.has(p.id)) continue;
+      if (curvesOnly || HIDDEN_POINTS.has(p.id)) continue;
       const d = pxDist(proj.S(P[p.id]), px);
       if (d < 9 && (!best || d < best.d)) best = { d, id: p.id };
     }
@@ -258,6 +273,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       }
       return;
     }
+    if (MODIFY.has(tool)) return modifyDown(e, px);
     const snap = draftSnap(px);
     if (!snap) return;
     switch (tool) {
@@ -381,9 +397,10 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       perFrame(() => useSketch.setState({ live: dragSolve(sk, draft, d, raw, step) }));
       return;
     }
-    const hover = s.tool === "select" || s.tool === "dimension" ? hitTest(px) : null;
+    const modify = MODIFY.has(s.tool);
+    const hover = s.tool === "select" || s.tool === "dimension" ? hitTest(px) : modify ? modifyHover(px) : null;
     if (hover !== s.hover) useSketch.setState({ hover });
-    const snap = s.tool === "select" ? null : draftSnap(px);
+    const snap = s.tool === "select" || modify ? null : draftSnap(px);
     setCursor({ px, snap });
   }
 
@@ -661,12 +678,176 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     applySuggestion(sug.stmt, true);
   }
 
+  // ---------------- changing geometry already drawn ----------------
+
+  /** The x or y axis under the cursor, for mirroring across. */
+  function axisAt(px: Px): "x_axis" | "y_axis" | null {
+    const raw = sketchAt(px);
+    const proj = state.current.proj;
+    if (!raw || !proj) return null;
+    const k = proj.scale(raw);
+    const toX = Math.abs(raw[1]) * k;
+    const toY = Math.abs(raw[0]) * k;
+    if (Math.min(toX, toY) > 7) return null;
+    return toX <= toY ? "x_axis" : "y_axis";
+  }
+
+  /** What a click would act on with the trim, extend, offset, mirror and pattern tools. */
+  function modifyHover(px: Px): string | null {
+    const { s, draft, sk } = state.current;
+    switch (s.tool) {
+      case "trim":
+      case "extend":
+        return hitTest(px, true);
+      case "offset":
+        return draft?.t === "offset" ? null : hitTest(px, true);
+      case "mirror": {
+        if (draft?.t !== "mirror") return hitTest(px);
+        // waiting for the line to mirror across: a line, or else the x or y axis
+        const h = hitTest(px, true);
+        if (h) return sk?.curves.find((c) => c.id === h)?.kind === "line" ? h : null;
+        return axisAt(px);
+      }
+      case "pattern":
+        return hitTest(px);
+      default:
+        return null;
+    }
+  }
+
+  function modifyDown(e: PointerEvent, px: Px) {
+    const { sk, s, draft } = state.current;
+    const raw = sketchAt(px);
+    if (!sk || !raw) return;
+    switch (s.tool) {
+      case "trim":
+      case "extend": {
+        const hit = hitTest(px, true);
+        if (!hit) return flash(s.tool === "trim" ? "Click the piece of a curve to cut away." : "Click a line or arc near the loose end to extend.");
+        const cur = activeSketch();
+        if (!cur) return;
+        const r = (s.tool === "trim" ? trimAt : extendAt)(useDesign.getState().source, cur, hit, raw);
+        if ("error" in r) return flash(r.error);
+        editSketch(() => r.src, r.message);
+        useSketch.setState({ hover: null, selection: [] });
+        return;
+      }
+      case "offset": {
+        if (draft?.t === "offset") return commitOffset(draft.ids, raw);
+        const hit = hitTest(px, true);
+        if (!hit) return flash("Click the curve to offset; the curves joined to it come too.");
+        setDraft({ t: "offset", ids: chainFrom(sk, hit) });
+        setTyped("");
+        return flash("Move to the side the copy goes and click, or type the distance and press Enter.");
+      }
+      case "mirror": {
+        if (draft?.t === "mirror" && !e.shiftKey) {
+          const about = modifyHover(px);
+          if (!about) return flash("Click the line to mirror across, or the x or y axis. Esc to change what is mirrored.");
+          const ids = copyable(sk, s.selection).filter((id) => id !== about);
+          if (!ids.length) {
+            setDraft(null);
+            return flash("Select what to mirror first, then press Enter.");
+          }
+          if (addCopy(mirrorStatement(ids, about), `mirrored ${ids.join(", ")} across ${about}`)) {
+            setSelection([]);
+            setTool("select");
+          }
+          return;
+        }
+        const hit = hitTest(px);
+        if (hit) return setSelection(toggle(s.selection, hit));
+        setDraft({ t: "box", from: px, to: px, additive: true });
+        return;
+      }
+      case "pattern": {
+        const pu = useSketch.getState().pattern;
+        const hit = hitTest(px);
+        if (pu.pickCentre) {
+          const c = hit ? sk.curves.find((q) => q.id === hit) : undefined;
+          if (!hit || c?.kind === "line") return flash("Click a point, or a circle or arc for its centre.");
+          useSketch.setState({ pattern: { ...pu, mode: "ring", around: hit, pickCentre: false } });
+          return;
+        }
+        if (hit) return setSelection(toggle(s.selection, hit));
+        setDraft({ t: "box", from: px, to: px, additive: true });
+        return;
+      }
+      case "project":
+        void projectAt(e.clientX, e.clientY);
+        return;
+    }
+  }
+
+  /** Offset the chain to the cursor's side, by the typed distance or the cursor's own (on round numbers for the zoom). */
+  function commitOffset(ids: string[], raw: V2, distance?: number) {
+    const cur = activeSketch();
+    const proj = state.current.proj;
+    if (!cur || !proj) return;
+    const o = offsetFor(cur, ids, raw, { distance, step: niceStep(proj.scale(raw)) });
+    if (!o) return flash("Move the cursor off the curve, to the side the copy goes.");
+    if (addCopy(offsetStatement(ids, o.by), `offset ${ids.join(", ")} by ${fmt(Math.abs(o.by))}`)) {
+      setDraft(null);
+      setTyped("");
+      setTool("select");
+    }
+  }
+
+  /** Add a mirror or offset statement, unless it would not work out: then say why and leave the sketch alone. */
+  function addCopy(stmt: string, message: string): boolean {
+    const cur = activeSketch();
+    if (!cur) return false;
+    const { source, model } = useDesign.getState();
+    const next = addStatements(source, cur, { geometry: [stmt] });
+    const had = new Set((model?.diagnostics ?? []).filter((d) => d.severity === "error").map((d) => d.message));
+    const fresh = evaluate(next).diagnostics.find((d) => d.severity === "error" && !had.has(d.message));
+    if (fresh) {
+      flash(fresh.message.split(". ")[0] + ".");
+      return false;
+    }
+    editSketch(() => next, message);
+    return true;
+  }
+
+  /** Bring the edges of the face under the cursor into the sketch, fixed where they are. */
+  async function projectAt(x: number, y: number) {
+    // the parts are see-through while sketching, and still there to project from
+    const hit = ctl.hitAt(x, y, { ghosts: true });
+    const part = hit ? useDesign.getState().model?.parts.find((p) => p.id === hit.id) : undefined;
+    if (!hit || !part) return flash("Click a face of a part to bring its edges into this sketch.");
+    flash(`Reading that face of ${part.id}…`);
+    try {
+      await kernel.ready();
+      const res = await kernel.inspectPart({ hash: part.hash, recipe: part.recipe, label: part.id, at: hit.local, outline: true });
+      const cur = activeSketch();
+      if (!cur) return;
+      const r = projectEdges(cur, res.pick?.outline ?? [], (p) => applyXforms(p, part.xf), `a face of ${part.id}`);
+      if (!r.curves) return flash("That face is edge on to this sketch, so it has nothing to project.");
+      const what = `${r.curves} edge${r.curves === 1 ? "" : "s"} of ${part.id}`;
+      editSketch((src, s2) => addStatements(src, s2, r), `projected ${what}`);
+      flash(`Projected ${what}, fixed where they are now. They stay put if the part changes.`);
+    } catch (err) {
+      flash(`Could not read that face: ${(err as Error).message}`);
+    }
+  }
+
   // ---------------- keyboard ----------------
 
   function keyDown(e: KeyboardEvent): boolean {
     const { draft, typed, s, sk, cursor } = state.current;
     if (!sk) return false;
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    // offset: type the distance, Enter puts it on the cursor's side
+    if (draft?.t === "offset" && /^[0-9.]$/.test(key)) {
+      setTyped(typed + key);
+      return true;
+    }
+    if (key === "Enter" && draft?.t === "offset") {
+      const raw = cursor ? sketchAt(cursor.px) : null;
+      if (!raw) flash("Point to the side the copy goes, then press Enter.");
+      else commitOffset(draft.ids, raw, Number(typed) || undefined);
+      return true;
+    }
     // typed sizes while drawing
     // the polygon tool takes its number of sides as typed, before or after the centre
     if (s.tool === "polygon" && /^[0-9]$/.test(key)) {
@@ -714,6 +895,18 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       setTyped("");
       return true;
     }
+    if (key === "Enter" && s.tool === "mirror" && !draft) {
+      if (!copyable(sk, s.selection).length) flash("Select what to mirror first: click it, or drag a box round it.");
+      else {
+        setDraft({ t: "mirror" });
+        flash("Now click the line to mirror across, or the x or y axis.");
+      }
+      return true;
+    }
+    if (key === "Enter" && s.tool === "pattern" && !draft) {
+      makePattern();
+      return true;
+    }
     if (key === "Enter") {
       if (draft) {
         setDraft(null);
@@ -744,7 +937,13 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       setTool(rects[(rects.indexOf(s.tool as (typeof rects)[number]) + 1) % rects.length]);
       return true;
     }
-    const tools: Record<string, typeof s.tool> = { l: "line", r: "rect", c: "circle", a: "arc", o: "slot", h: "polygon", p: "point", d: "dimension", v: "select" };
+    // T again swaps trim for extend, and back
+    if (key === "t" && (s.tool === "trim" || s.tool === "extend")) {
+      setTool(s.tool === "trim" ? "extend" : "trim");
+      return true;
+    }
+    // M is mirror here, so the view's markup shortcut stays off while sketching
+    const tools: Record<string, typeof s.tool> = { l: "line", r: "rect", c: "circle", a: "arc", o: "slot", h: "polygon", p: "point", d: "dimension", v: "select", t: "trim", e: "extend", f: "offset", m: "mirror", k: "pattern", j: "project" };
     if (tools[key]) {
       setTool(tools[key]);
       return true;
@@ -758,8 +957,6 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       faceSketch(ctl, sk);
       return true;
     }
-    // view markup (M) takes the pointer, so it stays off while sketching
-    if (key === "m") return true;
     return false;
   }
 
@@ -774,6 +971,8 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
   if (s.hover) hoverIds.add(s.hover);
   if (hoverDim !== null) for (const id of sk.constraints.find((c) => c.index === hoverDim)?.ids ?? []) hoverIds.add(id);
   for (const id of s.selection) if (id.startsWith("#")) for (const x of sk.constraints.find((c) => `#${c.index}` === id)?.ids ?? []) hoverIds.add(x);
+  // offset takes the whole chain the curve is part of
+  if (s.tool === "offset") for (const id of draft?.t === "offset" ? draft.ids : s.hover ? chainFrom(sk, s.hover) : []) hoverIds.add(id);
   const conflictIds = new Set(sk.profile.error?.refs ?? []);
 
   const path = (pts: Px[]) => pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join("");
@@ -799,7 +998,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         {/* curves */}
         {sk.curves.map((c) => {
           const pts = curvePoints(sk, c, P, radii).map(S);
-          const cls = ["sk-curve", `st-${c.status}`, c.external ? "external" : c.construction ? "construction" : "", sel.has(c.id) ? "selected" : "", hoverIds.has(c.id) ? "hover" : "", conflictIds.has(c.id) ? "problem" : ""].join(" ");
+          const cls = ["sk-curve", `st-${c.status}`, c.external ? "external" : c.construction ? "construction" : "", c.derived !== undefined ? "copy" : "", sel.has(c.id) ? "selected" : "", hoverIds.has(c.id) ? "hover" : "", conflictIds.has(c.id) ? "problem" : ""].join(" ");
           return <path key={c.id} className={cls} d={path(pts)} />;
         })}
         {/* rounded corners from fillet / chamfer statements */}
@@ -834,6 +1033,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         ))}
         {/* drafting preview */}
         <DraftPreview draft={draft} cursor={cursor} typed={typed} proj={proj} sk={sk} lineEnd={lineEnd} />
+        {MODIFY.has(s.tool) && <ModifyPreview sk={sk} P={P} proj={proj} tool={s.tool} hover={s.hover} cursor={cursor} draft={draft} typed={typed} selection={s.selection} />}
       </svg>
       {s.editDim !== null && <DimEditor sk={sk} index={s.editDim} dims={dims} />}
       {draft?.t === "box" && <div className="sk-box" style={{ left: Math.min(draft.from.x, draft.to.x), top: Math.min(draft.from.y, draft.to.y), width: Math.abs(draft.to.x - draft.from.x), height: Math.abs(draft.to.y - draft.from.y) }} />}
@@ -1041,6 +1241,76 @@ function DraftPreview({ draft, cursor, typed, proj, sk, lineEnd }: { draft: Draf
   if (draft?.t === "dim") {
     const c = sk.curves.find((x) => x.id === draft.first);
     void c;
+  }
+  return <g className="sk-drafting">{out}</g>;
+}
+
+/** What trim, extend, offset, mirror and pattern would do: the piece that goes, where an end runs to, the copies. */
+function ModifyPreview({ sk, P, proj, tool, hover, cursor, draft, typed, selection }: { sk: EvalSketch; P: Positions; proj: Projector; tool: SketchTool; hover: string | null; cursor: { px: Px } | null; draft: Draft | null; typed: string; selection: string[] }) {
+  const pattern = useSketch((x) => x.pattern);
+  const S = proj.S;
+  const path = (pts: V2[]) => pts.map((p, i) => `${i ? "L" : "M"}${S(p).x.toFixed(1)},${S(p).y.toFixed(1)}`).join("");
+  const out: JSX.Element[] = [];
+  let readout = "";
+  // the selection moved by each of `moves`
+  const ghosts = (moves: ((p: V2) => V2)[]) => {
+    const ids = copyable(sk, selection);
+    moves.forEach((mv, k) => {
+      for (const id of ids) {
+        const c = sk.curves.find((q) => q.id === id);
+        if (c) out.push(<path key={`g${k}-${id}`} className="sk-ghost" d={path(curvePoints(sk, c, P).map(mv))} />);
+        else if (P[id]) {
+          const q = S(mv(P[id]));
+          out.push(<circle key={`g${k}-${id}`} className="sk-ghost" cx={q.x} cy={q.y} r={3.2} />);
+        }
+      }
+    });
+  };
+  if (tool === "pattern" && selection.length) {
+    const moves = patternMoves(sk, patternSpec(pattern));
+    ghosts(moves);
+    if (pattern.mode === "ring" && moves.length) {
+      const c = sk.curves.find((q) => q.id === pattern.around);
+      const at = P[c ? (c.kind === "arc" ? c.pts[2] : c.pts[0]) : pattern.around];
+      if (at) out.push(<circle key="ctr" className="sk-ghost" cx={S(at).x} cy={S(at).y} r={6} />);
+    }
+  }
+  const raw = cursor ? proj.toSketch(cursor.px.x, cursor.px.y) : null;
+  if (raw) {
+    if (tool === "trim" && hover) {
+      const piece = pieceAt(sk, hover, raw);
+      if (piece) out.push(<path key="cut" className="sk-cutaway" d={path(piece.pts)} />);
+      if (piece?.kind === "whole") readout = "nothing crosses it: trimming deletes it";
+    } else if (tool === "extend" && hover) {
+      const ext = extensionAt(sk, hover, raw);
+      if (ext) out.push(<path key="ext" className="sk-ghost" d={path(ext.pts)} />);
+      readout = ext ? `to ${ext.cut.with}` : "nothing in the way";
+    } else if (tool === "offset" && draft?.t === "offset") {
+      const o = offsetFor(sk, draft.ids, raw, { distance: Number(typed) || undefined, step: niceStep(proj.scale(raw)) });
+      if (o) o.pts.forEach((pts, i) => out.push(<path key={`o${i}`} className="sk-ghost" d={path(pts)} />));
+      readout = typed ? `distance ${typed}▌` : o ? `distance ${fmt(Math.abs(o.by))}` : "";
+    } else if (tool === "mirror" && draft?.t === "mirror" && hover) {
+      const line = sk.curves.find((q) => q.id === hover && q.kind === "line");
+      const [a, b]: [V2, V2] = line ? [P[line.pts[0]], P[line.pts[1]]] : hover === "x_axis" ? [[0, 0], [1, 0]] : [[0, 0], [0, 1]];
+      if (!line) {
+        // the axis, along the stretch round the cursor
+        const half = 400 / proj.scale(raw);
+        const foot = hover === "x_axis" ? raw[0] : raw[1];
+        const along = (t: number): V2 => (hover === "x_axis" ? [t, 0] : [0, t]);
+        out.push(<path key="axis" className="sk-ghost axis" d={path([along(foot - half), along(foot + half)])} />);
+      }
+      ghosts([reflectAcross(a, b)]);
+      readout = `across ${hover}`;
+    }
+    if (readout && cursor)
+      out.push(
+        <g key="ro" className="sk-readout" transform={`translate(${(cursor.px.x + 16).toFixed(1)},${(cursor.px.y + 22).toFixed(1)})`}>
+          <rect x={0} y={-10} width={readout.length * 6.6 + 14} height={19} rx={5} />
+          <text x={7} y={0.5}>
+            {readout}
+          </text>
+        </g>,
+      );
   }
   return <g className="sk-drafting">{out}</g>;
 }

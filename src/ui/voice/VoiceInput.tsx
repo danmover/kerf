@@ -12,6 +12,7 @@ import { joinText, serviceName, providerName, clock, desktopDictationHint } from
 import { desktop } from "../../app/desktop";
 import { allowOnlineSpeech, cancelVoice, dismissVoice, downloadSpeechModel, holdSend, sendNow, stopVoice, toggleVoice, useVoice, type VoiceClient, type VoicePhase } from "../../voice/voice";
 import { Icon } from "../icons";
+import { useSketch } from "../sketch/session";
 import "../../styles/voice.css";
 
 export interface VoiceHandle {
@@ -110,6 +111,9 @@ export function useVoiceInput(o: Options): VoiceHandle {
       const ui = useUi.getState();
       if (e.key.toLowerCase() !== "v" || e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTyping(e.target)) return;
       if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || ui.screen.name !== "workspace") return;
+      // in the sketch editor V is the select tool
+      const sketch = useSketch.getState();
+      if (sketch.active || sketch.picking) return;
       e.preventDefault();
       toggleVoice(client);
     };

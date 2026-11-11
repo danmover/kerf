@@ -98,6 +98,55 @@ export const T = {
       <path d="M7 9.5L4 12l3 2.5M17 9.5l3 2.5-3 2.5" />
     </I>
   ),
+  /** a line cut back where another crosses it */
+  Trim: (p: P) => (
+    <I {...p}>
+      <path d="M3 12h9" />
+      <path d="M12 12h9" strokeDasharray="2 2.6" opacity="0.55" />
+      <path d="M12 4v16" />
+    </I>
+  ),
+  /** a line run on to a wall */
+  Extend: (p: P) => (
+    <I {...p}>
+      <path d="M3 12h7" />
+      <path d="M10 12h9" strokeDasharray="2 2.6" />
+      <path d="M19 4v16" />
+      <path d="M15 9l3 3-3 3" />
+    </I>
+  ),
+  /** an outline and a copy just outside it */
+  Offset: (p: P) => (
+    <I {...p}>
+      <rect x="8" y="8" width="8" height="8" rx="1" />
+      <rect x="4" y="4" width="16" height="16" rx="3" strokeDasharray="2.5 2.5" />
+    </I>
+  ),
+  /** a shape and its mirror image across a dashed line */
+  Mirror: (p: P) => (
+    <I {...p}>
+      <path d="M12 3v18" strokeDasharray="2 2.4" />
+      <path d="M9 7L4 17h5z" />
+      <path d="M15 7l5 10h-5z" opacity="0.6" />
+    </I>
+  ),
+  /** the same hole repeated in a row */
+  Pattern: (p: P) => (
+    <I {...p}>
+      <circle cx="5.5" cy="12" r="2.5" />
+      <circle cx="12" cy="12" r="2.5" opacity="0.75" />
+      <circle cx="18.5" cy="12" r="2.5" opacity="0.5" />
+    </I>
+  ),
+  /** a face's outline dropped onto the sketch plane */
+  Project: (p: P) => (
+    <I {...p}>
+      <path d="M7 4h10l3 4H4z" />
+      <path d="M12 9v6" strokeDasharray="1.6 2" />
+      <path d="M9.5 13l2.5 2.5 2.5-2.5" />
+      <path d="M4 19h16" />
+    </I>
+  ),
   Construction: (p: P) => (
     <I {...p}>
       <path d="M4 20L20 4" strokeDasharray="3 3" />
