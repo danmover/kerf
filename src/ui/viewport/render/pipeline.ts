@@ -212,6 +212,7 @@ uniform float uHoverAmt;
 uniform float uMask;
 uniform float uPx;
 uniform float uTime;
+uniform float uEncode;
 varying vec2 vUv;
 
 // Khronos PBR Neutral: keeps product colours true while rolling off highlights
@@ -276,7 +277,8 @@ void main() {
   float v = length((vUv - 0.5) * vec2(aspect * 0.8, 1.0));
   outc *= 1.0 - uVignette * smoothstep(0.35, 1.05, v);
 
-  vec3 srgb = toSRGB(outc) + (hash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) / 255.0;
+  // an sRGB render target encodes on write (a capture): hand it linear colour, or it is encoded twice and comes out pale
+  vec3 srgb = uEncode > 0.5 ? toSRGB(outc) + (hash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) / 255.0 : clamp(outc, 0.0, 1.0);
   gl_FragColor = uTransparent > 0.5 ? vec4(srgb, a) : vec4(srgb, 1.0);
 }`;
 
@@ -406,6 +408,7 @@ export class RenderPipeline {
     uMask: { value: 0 },
     uPx: { value: 1 },
     uTime: { value: 0 },
+    uEncode: { value: 1 },
   });
   private black: THREE.DataTexture;
   private savedProj = new THREE.Matrix4();
@@ -614,6 +617,7 @@ export class RenderPipeline {
     u.uHoverAmt.value = opts.hoverAmt ?? 0;
     u.uPx.value = this.pixelRatio;
     u.uTime.value = opts.time ?? 0;
+    u.uEncode.value = target?.texture.colorSpace === THREE.SRGBColorSpace ? 0 : 1;
     this.pass(this.compMat, target);
   }
 
