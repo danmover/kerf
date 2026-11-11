@@ -73,7 +73,9 @@ type Ent =
   | { kind: "point"; id: string }
   | { kind: "line"; id: string; a: string; b: string }
   | { kind: "circle"; id: string; c: string }
-  | { kind: "arc"; id: string; c: string; a: string; b: string };
+  | { kind: "arc"; id: string; c: string; a: string; b: string }
+  | { kind: "spline"; id: string; pts: string[]; closed: boolean }
+  | { kind: "ellipse"; id: string; c: string };
 
 const solveCache = new Map<string, { res: SolveResult; culprit: number | null }>();
 /**
@@ -226,6 +228,20 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     return id;
   };
 
+  /** A spline's or ellipse's named options, each allowed once. */
+  const entityOpts = (it: Extract<SketchItem, { k: "entity" }>, allowed: string[]) => {
+    const out: Record<string, NonNullable<typeof it.opts>[number]> = {};
+    for (const o of it.opts ?? []) {
+      if (!allowed.includes(o.name)) {
+        const sg = suggest(o.name, allowed);
+        host.fail(`${it.kind} has no option "${o.name}:"${sg ? `; did you mean "${sg}:"` : `; it takes ${allowed.map((a) => a + ":").join(", ")}`}`, o.nameSpan);
+      }
+      if (out[o.name]) host.fail(`${o.name}: is given twice`, o.nameSpan);
+      out[o.name] = o;
+    }
+    return out;
+  };
+
   const declare = (name: string, span: Span) => {
     if (FIELD_RESERVED.has(name)) host.fail(`"${name}" is a built-in sketch name; choose another`, span);
     if (ents.has(name) || pointIdx.has(name)) host.fail(`"${name}" is already defined in this sketch`, span);
@@ -325,6 +341,52 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
           curves.push({ id: it.name, kind: "circle", construction: it.construction, pts: [c], r, status: "free", span: it.span, argSpans, sizeSpan: it.size!.value.span, sizeWhich: it.size!.which, sizeLiteral: isLiteral(it.size!.value), writtenR: r });
           break;
         }
+        if (it.kind === "spline") {
+          const o = entityOpts(it, ["closed"]);
+          const cv = o.closed ? host.expr(o.closed.value, scope) : false;
+          if (typeof cv !== "boolean") host.fail(`closed: should be true or false, got ${typeName(cv)}`, o.closed!.value.span);
+          const closed = cv as boolean;
+          if (it.args.length < 3) host.fail(`spline ${it.name} needs at least 3 points to pass through${it.args.length === 2 ? "; for 2, use a line" : ""}`, it.span);
+          const pts = it.args.map((e, i) => pointArg(e, it.name, `p${i + 1}`));
+          pts.forEach((id, i) => i && id === pts[i - 1] && host.fail(`spline ${it.name} passes through ${id} twice in a row`, it.args[i].span));
+          if (closed && pts[0] === pts[pts.length - 1]) host.fail(`closed spline ${it.name} runs back to its first point by itself; leave the last point off`, it.args[it.args.length - 1].span);
+          if (!closed) {
+            alias.set(`${it.name}.start`, pts[0]);
+            alias.set(`${it.name}.end`, pts[pts.length - 1]);
+          }
+          ents.set(it.name, { kind: "spline", id: it.name, pts, closed });
+          curves.push({ id: it.name, kind: "spline", construction: it.construction, pts, closed, status: "free", span: it.span, argSpans, optSpans: o.closed ? { closed: o.closed.value.span } : {} });
+          break;
+        }
+        if (it.kind === "ellipse") {
+          const o = entityOpts(it, ["rx", "ry", "angle"]);
+          const size = (k: "rx" | "ry") => {
+            const opt = o[k] ?? host.fail(`ellipse ${it.name} needs ${k}: its radius along its ${k === "rx" ? "first" : "second"} axis, like ellipse ${it.name} = (0, 0), rx: 20, ry: 10`, it.span);
+            const v = num(opt.value, `ellipse ${it.name}'s ${k}`);
+            if (!(v > 0)) host.fail(`ellipse ${it.name}'s ${k} must be greater than 0`, opt.value.span);
+            return v;
+          };
+          const rx = size("rx");
+          const ry = size("ry");
+          const angle = o.angle ? num(o.angle.value, `ellipse ${it.name}'s angle`) : 0;
+          const c = pointArg(it.args[0], it.name, "center");
+          ents.set(it.name, { kind: "ellipse", id: it.name, c });
+          curves.push({
+            id: it.name,
+            kind: "ellipse",
+            construction: it.construction,
+            pts: [c],
+            rx,
+            ry,
+            angle,
+            status: "free",
+            span: it.span,
+            argSpans,
+            optSpans: { rx: o.rx!.value.span, ry: o.ry!.value.span, ...(o.angle ? { angle: o.angle.value.span } : {}) },
+            optLiteral: { rx: isLiteral(o.rx!.value), ry: isLiteral(o.ry!.value), angle: o.angle ? isLiteral(o.angle.value) : true },
+          });
+          break;
+        }
         const a = pointArg(it.args[0], it.name, "start");
         const b = pointArg(it.args[1], it.name, "end");
         const c = pointArg(it.args[2], it.name, "center");
@@ -397,10 +459,15 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
       return n;
     };
     const tie = (k: ConsKind, refs: string[], v?: number) => plan.cons.push({ k, refs, v });
-    const ROLES = { line: ["start", "end"], circle: ["center"], arc: ["start", "end", "center"] } as const;
+    const ROLES = { line: ["start", "end"], circle: ["center"], arc: ["start", "end", "center"], ellipse: ["center"] } as const;
+    const role = (kind: Exclude<Ent["kind"], "point">, k: number) => (kind === "spline" ? `p${k + 1}` : ROLES[kind][k]);
+    const curveOf = (id: string) => curves.find((c) => c.id === id);
 
-    /** One copy of everything listed: `name` names each copy, `at` places a copied point, `hold` ties it to the original. Mirroring flips arcs. */
-    const copyOnce = (name: (id: string) => string, at: (p: V2) => V2, hold: (from: string, to: string) => void, flip: boolean) => {
+    /**
+     * One copy of everything listed: `name` names each copy, `at` places a copied point, `hold` ties it to the
+     * original, `turn` turns an ellipse's axes (degrees). Mirroring flips arcs.
+     */
+    const copyOnce = (name: (id: string) => string, at: (p: V2) => V2, hold: (from: string, to: string) => void, flip: boolean, turn: (deg: number) => number = (d) => d) => {
       const map = new Map<string, string>();
       for (const e of E) {
         if (e.kind !== "point") continue;
@@ -412,21 +479,33 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
       for (const e of E) {
         if (e.kind === "point") continue;
         const cid = name(e.id);
-        const src = e.kind === "line" ? [e.a, e.b] : e.kind === "circle" ? [e.c] : flip ? [e.b, e.a, e.c] : [e.a, e.b, e.c];
+        const src = e.kind === "line" ? [e.a, e.b] : e.kind === "circle" || e.kind === "ellipse" ? [e.c] : e.kind === "spline" ? e.pts : flip ? [e.b, e.a, e.c] : [e.a, e.b, e.c];
         const pts = src.map((pid, k) => {
-          const role = ROLES[e.kind][k];
+          const r = role(e.kind, k);
           const hit = map.get(pid);
           if (hit) {
-            plan.aliases.push([`${cid}.${role}`, hit]);
+            plan.aliases.push([`${cid}.${r}`, hit]);
             return hit;
           }
-          const id = `${cid}.${role}`;
+          const id = `${cid}.${r}`;
           plan.points.push({ id, xy: at(xy(pid)), owner: cid });
           map.set(pid, id);
           hold(pid, id);
           return id;
         });
-        plan.curves.push({ id: cid, kind: e.kind, pts, construction: construction(e.id), r: e.kind === "circle" ? radii.get(e.id) : undefined, rigid: e.kind === "arc", from: e.id });
+        const orig = curveOf(e.id);
+        if (e.kind === "spline" && !e.closed) plan.aliases.push([`${cid}.start`, pts[0]], [`${cid}.end`, pts[pts.length - 1]]);
+        plan.curves.push({
+          id: cid,
+          kind: e.kind,
+          pts,
+          construction: construction(e.id),
+          r: e.kind === "circle" ? radii.get(e.id) : undefined,
+          rigid: e.kind === "arc",
+          from: e.id,
+          closed: e.kind === "spline" ? e.closed : undefined,
+          ...(e.kind === "ellipse" && orig ? { rx: orig.rx, ry: orig.ry, angle: turn(orig.angle ?? 0) } : {}),
+        });
         if (e.kind === "circle") tie("equal_radius", [e.id, cid]);
       }
     };
@@ -452,7 +531,8 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
         const t = L2 > 0 ? ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / L2 : 0;
         return [2 * (a[0] + t * d[0]) - p[0], 2 * (a[1] + t * d[1]) - p[1]];
       };
-      copyOnce((id) => unique(`${id}_m`), across, (p, q) => tie("symmetric_line", [p, q, ax.id]), true);
+      const axisDeg = (Math.atan2(d[1], d[0]) * 180) / Math.PI;
+      copyOnce((id) => unique(`${id}_m`), across, (p, q) => tie("symmetric_line", [p, q, ax.id]), true, (deg) => 2 * axisDeg - deg);
     } else if (kind === "pattern") {
       const n = countOpt(opt.get("count") ?? bad("needs count: how many there are in all, counting the original"), 2);
       const around = opt.get("around");
@@ -463,7 +543,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
       if (around) {
         for (const o of ["count2", "step2"]) if (opt.has(o)) bad(`${o}: makes a grid, so it goes with step:, not around:`, opt.get(o)!.nameSpan);
         const c = entOf(around.value);
-        const cp = c.kind === "point" ? c.id : c.kind === "circle" || c.kind === "arc" ? c.c : bad(`around: should be a point (or a circle, for its centre), got line ${c.id}`, around.value.span);
+        const cp = c.kind === "point" ? c.id : c.kind === "circle" || c.kind === "arc" || c.kind === "ellipse" ? c.c : bad(`around: should be a point (or a circle, for its centre), got ${c.kind} ${c.id}`, around.value.span);
         optIds.around = [c.id];
         const total = opt.has("angle") ? numOpt(opt.get("angle")!, "angle:") : 360;
         if (!(Math.abs(total) > 1e-9 && Math.abs(total) <= 360 + 1e-9)) bad("angle: is how far round the copies spread, between -360 and 360 degrees, and not 0", opt.get("angle")!.value.span);
@@ -475,7 +555,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
           const co = Math.cos(th);
           const si = Math.sin(th);
           const turn = (p: V2): V2 => [c0[0] + co * (p[0] - c0[0]) - si * (p[1] - c0[1]), c0[1] + si * (p[0] - c0[0]) + co * (p[1] - c0[1])];
-          copyOnce(name(k + 1), turn, (p, q) => tie("rotate", [p, q, cp], dt * k), false);
+          copyOnce(name(k + 1), turn, (p, q) => tie("rotate", [p, q, cp], dt * k), false, (deg) => deg + dt * k);
         }
       } else {
         if (opt.has("angle")) bad("angle: goes with around:, for a ring", opt.get("angle")!.nameSpan);
@@ -519,10 +599,19 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     for (const [a, id] of plan.aliases) alias.set(a, id);
     const made: string[] = [];
     for (const c of plan.curves) {
-      ents.set(c.id, c.kind === "line" ? { kind: "line", id: c.id, a: c.pts[0], b: c.pts[1] } : c.kind === "circle" ? { kind: "circle", id: c.id, c: c.pts[0] } : { kind: "arc", id: c.id, a: c.pts[0], b: c.pts[1], c: c.pts[2] });
+      ents.set(
+        c.id,
+        c.kind === "line"
+          ? { kind: "line", id: c.id, a: c.pts[0], b: c.pts[1] }
+          : c.kind === "circle" || c.kind === "ellipse"
+            ? { kind: c.kind, id: c.id, c: c.pts[0] }
+            : c.kind === "spline"
+              ? { kind: "spline", id: c.id, pts: c.pts, closed: !!c.closed }
+              : { kind: "arc", id: c.id, a: c.pts[0], b: c.pts[1], c: c.pts[2] },
+      );
       if (c.kind === "circle") radii.set(c.id, c.r!);
       if (c.rigid) rigidArcs.add(c.id);
-      curves.push({ id: c.id, kind: c.kind, construction: c.construction, pts: c.pts, r: c.r, status: "free", span: it.span, argSpans: [], derived: index });
+      curves.push({ id: c.id, kind: c.kind, construction: c.construction, pts: c.pts, r: c.r, closed: c.closed, rx: c.rx, ry: c.ry, angle: c.angle, status: "free", span: it.span, argSpans: [], derived: index });
       made.push(c.id);
     }
     for (const c of plan.cons) defCons.push({ kind: c.k, refs: c.refs, value: c.v, src: index });
@@ -543,7 +632,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
 
   type Plan = {
     points: { id: string; xy: V2; owner?: string; named?: boolean }[];
-    curves: { id: string; kind: "line" | "circle" | "arc"; pts: string[]; construction: boolean; r?: number; rigid?: boolean; from: string }[];
+    curves: { id: string; kind: SkCurve["kind"]; pts: string[]; construction: boolean; r?: number; rigid?: boolean; from: string; closed?: boolean; rx?: number; ry?: number; angle?: number }[];
     aliases: [string, string][];
     cons: { k: ConsKind; refs: string[]; v?: number }[];
   };
@@ -570,6 +659,8 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     const { bad, xy, construction, unique, tie, plan } = K;
     if (!(Math.abs(d) > 1e-9)) bad("by: can't be 0", by.value.span);
     if (E.some((e) => e.kind === "point")) bad("offsets lines, arcs and circles, not points");
+    const curved = E.find((e) => e.kind === "spline" || e.kind === "ellipse");
+    if (curved) bad(`offsets lines, arcs and circles; ${curved.id} is a${curved.kind === "ellipse" ? "n" : ""} ${curved.kind}, which can't be offset yet`);
     if (E.some((e) => e.kind === "circle")) {
       if (E.length > 1) bad("offsets one circle on its own, or one chain of lines and arcs");
       const c = E[0] as Extract<Ent, { kind: "circle" }>;
@@ -854,6 +945,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
         for (const e of E) {
           if (e.kind === "point") fixedIds.add(e.id);
           else if (e.kind === "line") fixedIds.add(e.a).add(e.b);
+          else if (e.kind === "spline") for (const id of e.pts) fixedIds.add(id);
           else fixedIds.add(e.c);
         }
         break;
@@ -866,6 +958,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
           const c = p === a ? b : a;
           if (c.kind === "line") add("on_line", [p.id, c.id]);
           else if (isCirc(c)) add("on_circle", [p.id, c.id]);
+          else bad(`puts a point on a line, circle or arc; to join ${c.id}, name one of its points (${c.kind === "spline" ? `${c.id}.start, ${c.id}.end or ${c.id}.p2` : `${c.id}.center`})`);
         }
         break;
       }
@@ -906,6 +999,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
         const [a, b] = E;
         if (a.kind === "point" || b.kind === "point") bad("takes curves, not points");
         if (a.kind === "line" && b.kind === "line") bad("needs a circle or arc; two lines cannot be tangent");
+        if (a.kind === "spline" || b.kind === "spline" || a.kind === "ellipse" || b.kind === "ellipse") bad(`works between lines, circles and arcs; a spline already runs smoothly through its points`);
         add("tangent", [a.id, b.id]);
         break;
       }
@@ -928,9 +1022,8 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
       }
       case "concentric": {
         need(2);
-        const a = circ(E[0]);
-        const b = circ(E[1]);
-        add("coincident", [centerOf(a), centerOf(b)]);
+        const centre = (e: Ent) => (e.kind === "ellipse" ? e.c : centerOf(circ(e)));
+        add("coincident", [centre(E[0]), centre(E[1])]);
         break;
       }
       case "distance": {
@@ -946,6 +1039,15 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
         else if (isCirc(a) && isCirc(b)) add("distance", [centerOf(a), centerOf(b)], value);
         else if (isCirc(a) && b.kind === "line") add("distance_pl", [centerOf(a), b.id], value);
         else if (a.kind === "line" && isCirc(b)) add("distance_pl", [centerOf(b), a.id], value);
+        else if (a.kind === "ellipse" || b.kind === "ellipse") {
+          // from an ellipse's centre
+          const pid = (e: Ent) => (e.kind === "ellipse" || isCirc(e) ? e.c : e.kind === "point" ? e.id : null);
+          const [pa, pb] = [pid(a), pid(b)];
+          if (pa && pb) add("distance", [pa, pb], value);
+          else if (pa && b.kind === "line") add("distance_pl", [pa, b.id], value);
+          else if (pb && a.kind === "line") add("distance_pl", [pb, a.id], value);
+          else bad("measures between points, lines, circles and ellipses (from their centres)");
+        } else bad(`measures between points, lines, circles and arcs; ${(a.kind === "spline" ? a : b).id} is a spline, so measure to one of its points`);
         break;
       }
       case "hdistance":
@@ -958,7 +1060,7 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
           pb = l.b;
         } else {
           need(2);
-          const ids = E.map((e) => (e.kind === "point" ? e.id : isCirc(e) ? e.c : bad("measures between points (or circle centres)")));
+          const ids = E.map((e) => (e.kind === "point" ? e.id : isCirc(e) || e.kind === "ellipse" ? e.c : bad("measures between points (or circle and ellipse centres)")));
           pa = ids[0];
           pb = ids[1];
         }
@@ -1104,6 +1206,10 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
     solid.filter((c) => c.kind === "arc").map((c) => ({ id: c.id, a: c.pts[0], b: c.pts[1], c: c.pts[2] })),
     solid.filter((c) => c.kind === "circle").map((c) => ({ id: c.id, c: c.pts[0], r: c.r! })),
     corners,
+    {
+      splines: solid.filter((c) => c.kind === "spline").map((c) => ({ id: c.id, pts: c.pts, closed: !!c.closed })),
+      ellipses: solid.filter((c) => c.kind === "ellipse").map((c) => ({ id: c.id, c: c.pts[0], rx: c.rx!, ry: c.ry!, rot: c.angle ?? 0 })),
+    },
   );
   for (const issue of profile.cornerIssues) host.diag(issue.message, cons[issue.src].span, "error");
 
@@ -1142,6 +1248,15 @@ export function evaluateSketch(host: SketchHost, s: Extract<Stmt, { k: "sketch" 
       fields[c.id] = lineObj(c.id, a, b);
     } else if (c.kind === "circle") {
       fields[c.id] = new Obj({ center: W(P(c.pts[0])), r: c.r!, d: 2 * c.r! }, "sketch circle", `${s.name}.${c.id}`);
+    } else if (c.kind === "ellipse") {
+      fields[c.id] = new Obj({ center: W(P(c.pts[0])), rx: c.rx!, ry: c.ry!, angle: c.angle ?? 0 }, "sketch ellipse", `${s.name}.${c.id}`);
+    } else if (c.kind === "spline") {
+      const ps = c.pts.map(P);
+      fields[c.id] = new Obj(
+        { points: ps.map(W), closed: !!c.closed, ...(c.closed ? {} : { start: W(ps[0]), end: W(ps[ps.length - 1]) }), ...Object.fromEntries(ps.map((p, i) => [`p${i + 1}`, W(p)])) },
+        "sketch spline",
+        `${s.name}.${c.id}`,
+      );
     } else {
       const [a, b, cc] = c.pts.map(P);
       fields[c.id] = new Obj({ start: W(a), end: W(b), center: W(cc), r: Math.hypot(a[0] - cc[0], a[1] - cc[1]) }, "sketch arc", `${s.name}.${c.id}`);

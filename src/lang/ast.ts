@@ -127,8 +127,8 @@ export type Stmt =
     }
   | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span };
 
-/** Geometry declared in a sketch: points, lines, circles and arcs. */
-export type SketchEntityKind = "point" | "line" | "circle" | "arc";
+/** Geometry declared in a sketch: points, lines, circles, arcs, splines and ellipses. */
+export type SketchEntityKind = "point" | "line" | "circle" | "arc" | "spline" | "ellipse";
 
 /** Statements inside a sketch block. */
 export type SketchItem =
@@ -140,10 +140,12 @@ export type SketchItem =
       kind: SketchEntityKind;
       name: string;
       construction: boolean;
-      /** point: [position]; line: [start, end]; circle: [center]; arc: [start, end, center] */
+      /** point: [position]; line: [start, end]; circle: [center]; arc: [start, end, center]; spline: its points in order; ellipse: [center] */
       args: Expr[];
       /** circle size as written: r: or d: */
       size?: { which: "r" | "d"; value: Expr };
+      /** named options after the points: spline closed:, ellipse rx:, ry:, angle: */
+      opts?: { name: string; value: Expr; span: Span; nameSpan: Span }[];
       span: Span;
       nameSpan: Span;
     }

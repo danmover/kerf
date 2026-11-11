@@ -81,6 +81,21 @@ export const T = {
       <circle cx="20" cy="18" r="1.4" fill="currentColor" />
     </I>
   ),
+  /** a smooth curve through its points */
+  Spline: (p: P) => (
+    <I {...p}>
+      <path d="M3 17c3-9 6-9 9-5s6 4 9-5" />
+      <circle cx="3" cy="17" r="1.4" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" />
+      <circle cx="21" cy="7" r="1.4" fill="currentColor" />
+    </I>
+  ),
+  Ellipse: (p: P) => (
+    <I {...p}>
+      <ellipse cx="12" cy="12" rx="9" ry="5.5" transform="rotate(-20 12 12)" />
+      <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+    </I>
+  ),
   Slot: (p: P) => (
     <I {...p}>
       <rect x="3" y="8" width="18" height="8" rx="4" />

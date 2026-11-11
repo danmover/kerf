@@ -14,7 +14,7 @@ import { copyable, patternStatement, type PatternSpec } from "../../sketch/modif
 import type { EvalSketch } from "../../sketch/types";
 import { revealSpan } from "../../app/view";
 
-export type SketchTool = "select" | "line" | "rect" | "crect" | "rect3" | "circle" | "arc" | "slot" | "polygon" | "point" | "dimension" | "trim" | "extend" | "offset" | "mirror" | "pattern" | "project";
+export type SketchTool = "select" | "line" | "rect" | "crect" | "rect3" | "circle" | "ellipse" | "arc" | "spline" | "slot" | "polygon" | "point" | "dimension" | "trim" | "extend" | "offset" | "mirror" | "pattern" | "project";
 
 /** The pattern tool's settings: a row (or grid) or a ring, and how many. */
 export interface PatternUi {

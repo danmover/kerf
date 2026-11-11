@@ -7,6 +7,7 @@
 // the next curve it meets.
 
 import type { V2 } from "../kernel/recipe";
+import { sampleEllipse, splinePolyline } from "./curves";
 import { applyChanges, bodyInsertAt, deleteSelection, fmt, fmtPt, lineEnd, lineSpan, nextName, PREFIX, takenNames, type Change } from "./edits";
 import type { EvalSketch, SkConstraint, SkCurve } from "./types";
 
@@ -20,6 +21,19 @@ const pos = (sk: EvalSketch, id: string): V2 => {
   const p = sk.points.find((q) => q.id === id) ?? sk.points.find((q) => q.id === sk.aliases[id]);
   return p ? [p.x, p.y] : [0, 0];
 };
+
+/** Splines and ellipses: drawn through their points or round their axes, not trimmed, extended or offset. */
+export const smoothCurve = (c: SkCurve) => c.kind === "spline" || c.kind === "ellipse";
+
+/** A spline's or an ellipse's outline as short straight pieces, for finding where other curves cross it. */
+function outlineSegments(sk: EvalSketch, c: SkCurve): Geo[] {
+  const poly =
+    c.kind === "spline" ? splinePolyline(c.pts.map((id) => pos(sk, id)), !!c.closed) : [...sampleEllipse({ c: pos(sk, c.pts[0]), rx: c.rx ?? 1, ry: c.ry ?? 1, rot: c.angle ?? 0 }, 180)];
+  const loop = c.kind === "ellipse" || !!c.closed;
+  const out: Geo[] = [];
+  for (let i = 0; i + (loop ? 0 : 1) < poly.length; i++) out.push({ kind: "line", a: poly[i], b: poly[(i + 1) % poly.length] });
+  return out;
+}
 
 export function geoOf(sk: EvalSketch, c: SkCurve): Geo {
   if (c.kind === "line") return { kind: "line", a: pos(sk, c.pts[0]), b: pos(sk, c.pts[1]) };
@@ -124,19 +138,20 @@ export interface Cut {
 /** Every crossing of curve `id`'s carrier with the other curves (construction and projected ones too), by parameter. */
 export function cutsOn(sk: EvalSketch, id: string): Cut[] {
   const c = sk.curves.find((q) => q.id === id);
-  if (!c) return [];
+  if (!c || smoothCurve(c)) return [];
   const g = geoOf(sk, c);
   const size = scaleOf(sk);
   const tol = 1e-7 * size;
   const out: Cut[] = [];
   for (const o of sk.curves) {
     if (o.id === id) continue;
-    const h = geoOf(sk, o);
-    for (const p of crossings(g, h, tol)) {
+    // a spline or an ellipse cuts where its outline crosses, piece by piece
+    const hs: Geo[] = smoothCurve(o) ? outlineSegments(sk, o) : [geoOf(sk, o)];
+    for (const p of hs.flatMap((h) => crossings(g, h, tol))) {
       let t = paramOf(g, p);
       // arcs: before the start reads as a large parameter; the editor wants the nearer way round
       if (g.kind === "arc" && t > 1 && t - 1 > TAU / g.sweep - t) t -= TAU / g.sweep;
-      const ends = o.kind === "circle" ? [] : [0, 1].map((k) => ({ name: `${o.id}.${k ? "end" : "start"}`, at: pos(sk, o.pts[k]) }));
+      const ends = o.kind === "circle" || o.kind === "ellipse" || (o.kind === "spline" && o.closed) ? [] : [0, 1].map((k) => ({ name: `${o.id}.${k ? "end" : "start"}`, at: pos(sk, o.kind === "spline" ? o.pts[k ? o.pts.length - 1 : 0] : o.pts[k]) }));
       const land = ends.find((e) => Math.hypot(e.at[0] - p[0], e.at[1] - p[1]) < 1e-6 * size);
       out.push({ t, p, with: o.id, at: land?.name });
     }
@@ -165,7 +180,7 @@ export interface Piece {
 
 export function pieceAt(sk: EvalSketch, id: string, p: V2): Piece | null {
   const c = sk.curves.find((q) => q.id === id);
-  if (!c) return null;
+  if (!c || smoothCurve(c)) return null;
   const g = geoOf(sk, c);
   const tc = paramOf(g, p);
   const cuts = cutsOn(sk, id);
@@ -285,7 +300,15 @@ function editor(src: string, sk: EvalSketch) {
 }
 
 const editable = (c: SkCurve | undefined): string | null =>
-  !c ? "Nothing to trim there" : c.external ? `${c.id} is projected from another sketch; change it there` : c.derived !== undefined ? `${c.id} is a copy made by a mirror, pattern or offset; trim the original, or delete the copy` : null;
+  !c
+    ? "Nothing to trim there"
+    : c.external
+      ? `${c.id} is projected from another sketch; change it there`
+      : c.derived !== undefined
+        ? `${c.id} is a copy made by a mirror, pattern or offset; trim the original, or delete the copy`
+        : smoothCurve(c)
+          ? `${c.id} is a${c.kind === "ellipse" ? "n" : ""} ${c.kind}; trim and extend work on lines, arcs and circles (move its points to reshape it)`
+          : null;
 
 /** Trim the piece of curve `id` a click at p is on, back to the crossings either side of it (the whole curve when nothing crosses it). */
 export function trimAt(src: string, sk: EvalSketch, id: string, p: V2): Result {
@@ -338,7 +361,7 @@ export function trimAt(src: string, sk: EvalSketch, id: string, p: V2): Result {
 /** Where extending curve `id` from the end nearer p would reach: the end, and the first crossing past it. */
 export function extensionAt(sk: EvalSketch, id: string, p: V2): { end: 0 | 1; cut: Cut; pts: V2[] } | null {
   const c = sk.curves.find((q) => q.id === id);
-  if (!c || c.kind === "circle") return null;
+  if (!c || c.kind === "circle" || smoothCurve(c)) return null;
   const g = geoOf(sk, c);
   const a = pos(sk, c.pts[0]);
   const b = pos(sk, c.pts[1]);
@@ -373,9 +396,9 @@ export function extendAt(src: string, sk: EvalSketch, id: string, p: V2): Result
 export function chainFrom(sk: EvalSketch, id: string): string[] {
   const c = sk.curves.find((q) => q.id === id);
   if (!c) return [];
-  if (c.kind === "circle") return [id];
+  if (c.kind === "circle" || smoothCurve(c)) return [id];
   const ends = (x: SkCurve) => [x.pts[0], x.pts[1]];
-  const same = sk.curves.filter((x) => x.kind !== "circle" && x.construction === c.construction);
+  const same = sk.curves.filter((x) => (x.kind === "line" || x.kind === "arc") && x.construction === c.construction);
   const at = (pid: string) => same.filter((x) => ends(x).includes(pid));
   const chain = [c];
   const walk = (pid: string, push: (x: SkCurve) => void) => {
@@ -404,7 +427,7 @@ export function chainFrom(sk: EvalSketch, id: string): string[] {
  */
 export function offsetFor(sk: EvalSketch, ids: string[], p: V2, opts: { distance?: number; step?: number } = {}): { by: number; pts: V2[][] } | null {
   const curves = ids.map((id) => sk.curves.find((q) => q.id === id)).filter((c): c is SkCurve => !!c);
-  if (!curves.length) return null;
+  if (!curves.length || curves.some(smoothCurve)) return null;
   // how far: as typed, or the cursor's distance on round numbers for the zoom
   const far = (d: number) => (opts.distance && opts.distance > 0 ? opts.distance : opts.step ? Math.max(opts.step, Math.round(d / opts.step) * opts.step) : d);
   if (curves[0].kind === "circle") {

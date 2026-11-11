@@ -285,12 +285,24 @@ function loopSketch(plane: R.Plane, segs: Seg2[]): R.Sketch {
       .threePointsArcTo([c[0] + r, c[1]], [c[0], c[1] - r])
       .close();
   }
+  if (segs.length === 1 && segs[0].k === "e") {
+    // two halves from one end of the long axis to the other and back
+    const { c, rx, ry, rot } = segs[0];
+    const long = rx >= ry;
+    const t = ((rot + (long ? 0 : 90)) * Math.PI) / 180;
+    const R0 = long ? rx : ry;
+    const r1 = long ? ry : rx;
+    const p0: [number, number] = [c[0] + R0 * Math.cos(t), c[1] + R0 * Math.sin(t)];
+    const p1: [number, number] = [c[0] - R0 * Math.cos(t), c[1] - R0 * Math.sin(t)];
+    return new R.Sketcher(plane.clone()).movePointerTo(p0).halfEllipseTo(p1, r1, false).halfEllipseTo(p0, r1, false).close();
+  }
   const first = segs[0];
-  if (first.k === "c") throw new BuildError("A circle must be a loop on its own");
+  if (first.k === "c" || first.k === "e") throw new BuildError(`${first.k === "c" ? "A circle" : "An ellipse"} must be a loop on its own`);
   let pen = new R.Sketcher(plane.clone()).movePointerTo(first.a);
   for (const s of segs) {
     if (s.k === "l") pen = pen.lineTo(s.b);
     else if (s.k === "a") pen = pen.threePointsArcTo(s.b, s.m);
+    else if (s.k === "b") pen = pen.cubicBezierCurveTo(s.b, s.c1, s.c2);
   }
   return pen.close();
 }

@@ -104,7 +104,8 @@ export const MAX_TAPER = 80;
 export const UNTIL_LIMIT = 2000;
 
 /** One piece of a closed sketch loop, in sketch-plane coordinates. Arcs pass through m. */
-export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number };
+/** A sketch loop's pieces: line, three-point arc, full circle, cubic Bézier (a spline's piece) and full ellipse (rot in degrees). */
+export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number } | { k: "b"; a: V2; c1: V2; c2: V2; b: V2 } | { k: "e"; c: V2; rx: number; ry: number; rot: number };
 
 /** A face to build: one outer loop (counter-clockwise) and the holes inside it. */
 export interface ProfileRegion {

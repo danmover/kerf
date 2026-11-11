@@ -58,7 +58,12 @@ const extrudeOf = (before: Fn | undefined) =>
 function loopProfile(segs: Seg2[]): Profile {
   const first = segs[0];
   if (first.k === "c") return { t: "circle", d: 2 * first.r, c: first.c };
-  return { t: "path2", start: first.a, segs: segs.map((s) => (s.k === "a" ? { s: "arc", via: s.m, to: s.b } : { s: "line", to: (s as { b: V2 }).b })) };
+  if (first.k === "e") return { t: "place2", p: { t: "ellipse", w: 2 * first.rx, h: 2 * first.ry, c: [0, 0] }, rot: first.rot, by: first.c };
+  return {
+    t: "path2",
+    start: first.a,
+    segs: segs.map((s) => (s.k === "a" ? { s: "arc", via: s.m, to: s.b } : s.k === "b" ? { s: "bezier", c1: s.c1, c2: s.c2, to: s.b } : { s: "line", to: (s as { b: V2 }).b })),
+  };
 }
 
 /** A sketch's closed regions as one profile: each outline less its holes. */

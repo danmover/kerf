@@ -4,6 +4,7 @@
 // the names of the geometry involved so the editor can point at them.
 
 import type { ProfileRegion, Seg2, V2 } from "../kernel/recipe";
+import { bezierArea, reverseBezier, sampleBezier, sampleEllipse, splineBeziers, type Bez } from "./curves";
 
 export interface ProfileLine {
   id: string;
@@ -20,6 +21,20 @@ export interface ProfileCircle {
   id: string;
   c: string;
   r: number;
+}
+/** A spline through its points in order; closed ones are loops on their own. */
+export interface ProfileSpline {
+  id: string;
+  pts: string[];
+  closed: boolean;
+}
+export interface ProfileEllipse {
+  id: string;
+  c: string;
+  rx: number;
+  ry: number;
+  /** degrees */
+  rot: number;
 }
 
 export interface Loop {
@@ -57,7 +72,17 @@ export interface Profile {
 
 const EPS = 1e-5;
 
-export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], arcs: ProfileArc[], circles: ProfileCircle[], cornerSpecs: CornerSpec[] = []): Profile {
+export function buildProfile(
+  points: Record<string, V2>,
+  lines: ProfileLine[],
+  arcs: ProfileArc[],
+  circles: ProfileCircle[],
+  cornerSpecs: CornerSpec[] = [],
+  more: { splines?: ProfileSpline[]; ellipses?: ProfileEllipse[] } = {},
+): Profile {
+  const splines = more.splines ?? [];
+  const ellipses = more.ellipses ?? [];
+  const openSplines = splines.filter((q) => !q.closed);
   const empty: Profile = { regions: [], fills: [], area: 0, loops: 0, corners: [], cornerIssues: [] };
   // merge points that sit on top of each other into one node
   const ids = Object.keys(points);
@@ -69,6 +94,7 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
   const used = new Set<string>();
   for (const l of lines) used.add(l.a).add(l.b);
   for (const a of arcs) used.add(a.a).add(a.b);
+  for (const q of openSplines) used.add(q.pts[0]).add(q.pts[q.pts.length - 1]);
   const usedList = [...used];
   for (let i = 0; i < usedList.length; i++) {
     for (let j = 0; j < i; j++) {
@@ -87,6 +113,8 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
     a: string;
     b: string;
     arc?: ProfileArc;
+    /** a spline's pieces, from a to b */
+    bez?: Bez[];
   }
   const edges: Edge[] = [];
   for (const l of lines) {
@@ -96,6 +124,14 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
   for (const a of arcs) {
     if (N(a.a) === N(a.b)) return { ...empty, error: { message: `Arc ${a.id} starts and ends at the same point; use a circle for a full round`, refs: [a.id] } };
     edges.push({ id: a.id, a: N(a.a), b: N(a.b), arc: a });
+  }
+  for (const q of openSplines) {
+    const a = q.pts[0];
+    const b = q.pts[q.pts.length - 1];
+    if (N(a) === N(b)) return { ...empty, error: { message: `Spline ${q.id} starts and ends at the same point; give it closed: true to run it round`, refs: [q.id] } };
+    const bez = splineBeziers(q.pts.map((id) => points[id]), false);
+    if (!bez.length) return { ...empty, error: { message: `Spline ${q.id} has all its points on top of each other`, refs: [q.id] } };
+    edges.push({ id: q.id, a: N(a), b: N(b), bez });
   }
   let at = new Map<string, Edge[]>();
   const link = () => {
@@ -120,7 +156,7 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
   if (firstOpen) {
     const [n, list] = firstOpen;
     const msg = `The profile is open at ${n}: only ${list[0].id} ends there. Close the loop, or make the curve construction geometry.`;
-    if (!edges.length && !circles.length) return { ...empty, error: { message: msg, refs: [n, list[0].id] } };
+    if (!edges.length && !circles.length && !ellipses.length && !splines.some((q) => q.closed)) return { ...empty, error: { message: msg, refs: [n, list[0].id] } };
     open = { message: `${openIds.join(", ")} ${openIds.length > 1 ? "are" : "is"} not part of a closed loop and ${openIds.length > 1 ? "are" : "is"} left out of the profile.`, refs: openIds };
   }
   for (const [n, list] of at) {
@@ -158,6 +194,16 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
         const c = points[cur.arc.c];
         const fwd = from === N(cur.arc.a);
         segs.push(arcSeg(c, pa, pb, fwd));
+      } else if (cur.bez) {
+        // a spline's pieces in the walking direction; its inner points are not corners
+        const zs = from === cur.a ? cur.bez : [...cur.bez].reverse().map(reverseBezier);
+        zs.forEach((z, k) => {
+          segs.push({ k: "b", a: k ? z.a : pa, c1: z.c1, c2: z.c2, b: k === zs.length - 1 ? pb : z.b });
+          if (k) {
+            curves.push(cur.id);
+            starts.push(`${cur.id}#${k}`);
+          }
+        });
       } else segs.push({ k: "l", a: pa, b: pb });
       if (to === start) break;
       const next = at.get(to)!.find((x) => x !== cur && !seen.has(x.id));
@@ -173,6 +219,20 @@ export function buildProfile(points: Record<string, V2>, lines: ProfileLine[], a
   for (const c of circles) {
     if (!(c.r > 1e-9)) return { ...empty, error: { message: `Circle ${c.id} has no size`, refs: [c.id] } };
     loops.push(makeLoop([{ k: "c", c: points[c.c], r: c.r }], [c.id]));
+  }
+  for (const e of ellipses) {
+    if (!(e.rx > 1e-9 && e.ry > 1e-9)) return { ...empty, error: { message: `Ellipse ${e.id} needs both radii greater than 0`, refs: [e.id] } };
+    loops.push(makeLoop([{ k: "e", c: points[e.c], rx: e.rx, ry: e.ry, rot: e.rot }], [e.id]));
+  }
+  for (const q of splines.filter((x) => x.closed)) {
+    const zs = splineBeziers(q.pts.map((id) => points[id]), true);
+    if (zs.length < 2) return { ...empty, error: { message: `Closed spline ${q.id} needs at least 3 points apart from each other`, refs: [q.id] } };
+    loops.push(
+      makeLoop(
+        zs.map((z) => ({ k: "b", a: z.a, c1: z.c1, c2: z.c2, b: z.b })),
+        zs.map(() => q.id),
+      ),
+    );
   }
   if (!loops.length) return empty;
 
@@ -355,6 +415,8 @@ const norm = (a: number) => {
 /** Points along a segment, excluding its end point. */
 export function sampleSeg(s: Seg2, stepDeg = 3): V2[] {
   if (s.k === "l") return [s.a];
+  if (s.k === "b") return sampleBezier(s);
+  if (s.k === "e") return sampleEllipse(s, ELLIPSE_STEPS);
   if (s.k === "c") {
     const n = 120;
     return Array.from({ length: n }, (_, i) => [s.c[0] + s.r * Math.cos((2 * Math.PI * i) / n), s.c[1] + s.r * Math.sin((2 * Math.PI * i) / n)] as V2);
@@ -367,12 +429,17 @@ export function sampleSeg(s: Seg2, stepDeg = 3): V2[] {
   });
 }
 
+/** Straight pieces round an ellipse's outline (2° each): its polygon stays within 0.00015 of the larger radius. */
+const ELLIPSE_STEPS = 180;
+
 function makeLoop(segs: Seg2[], curves: string[]): Loop {
   const poly = segs.flatMap((s) => sampleSeg(s));
   let area = 0;
   for (const s of segs) {
     if (s.k === "l") area += (s.a[0] * s.b[1] - s.b[0] * s.a[1]) / 2;
     else if (s.k === "c") area += Math.PI * s.r * s.r;
+    else if (s.k === "e") area += Math.PI * s.rx * s.ry;
+    else if (s.k === "b") area += bezierArea(s);
     else {
       const g = arcGeometry(s);
       const t1 = g.t0 + g.sweep;
@@ -383,7 +450,7 @@ function makeLoop(segs: Seg2[], curves: string[]): Loop {
 }
 
 function reverseLoop(L: Loop): Loop {
-  const segs: Seg2[] = [...L.segs].reverse().map((s) => (s.k === "l" ? { k: "l", a: s.b, b: s.a } : s.k === "a" ? { k: "a", a: s.b, b: s.a, m: s.m } : { k: "c", c: s.c, r: s.r }));
+  const segs: Seg2[] = [...L.segs].reverse().map((s): Seg2 => (s.k === "l" ? { k: "l", a: s.b, b: s.a } : s.k === "a" ? { k: "a", a: s.b, b: s.a, m: s.m } : s.k === "b" ? { k: "b", ...reverseBezier(s) } : s));
   // a full circle has no direction in its recipe; its polygon is reversed for consistency
   return { segs, curves: [...L.curves].reverse(), area: -L.area, poly: [...L.poly].reverse() };
 }
@@ -462,7 +529,12 @@ function loopsCross(A: Loop, B: Loop): V2 | null {
 /** How far an arc's polygon can sit inside the true arc (arcs are sampled every 3° or less). */
 function sag(L: Loop): number {
   let s = 0;
-  for (const g of L.segs) if (g.k !== "l") s = Math.max(s, (g.k === "c" ? g.r : arcGeometry(g).r) * (1 - Math.cos((1.5 * Math.PI) / 180)));
+  for (const g of L.segs) {
+    if (g.k === "l") continue;
+    if (g.k === "b") s = Math.max(s, 0.02);
+    else if (g.k === "e") s = Math.max(s, Math.max(g.rx, g.ry) * (1 - Math.cos(Math.PI / ELLIPSE_STEPS)));
+    else s = Math.max(s, (g.k === "c" ? g.r : arcGeometry(g).r) * (1 - Math.cos((1.5 * Math.PI) / 180)));
+  }
   return s;
 }
 
@@ -490,7 +562,7 @@ function nearestCurve(L: Loop, p: V2): string {
   let best = L.curves[0];
   let bestD = Infinity;
   L.segs.forEach((s, i) => {
-    const pts = [...sampleSeg(s), s.k === "c" ? sampleSeg(s)[0] : s.b];
+    const pts = [...sampleSeg(s), s.k === "c" || s.k === "e" ? sampleSeg(s)[0] : s.b];
     for (let k = 0; k + 1 < pts.length; k++) {
       const d = distToSeg(p, pts[k], pts[k + 1]);
       if (d < bestD) {

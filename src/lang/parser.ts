@@ -30,7 +30,7 @@ const MACHINE_STMTS = new Set(["wire", "net", "firmware", "test", "buy", "scenar
 
 /** Entries inside `brief { ... }` that are not `field: value` pairs. Not keywords, so they stay usable as names elsewhere. */
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
-const SKETCH_ENTITIES = new Set<SketchEntityKind>(["point", "line", "circle", "arc"]);
+const SKETCH_ENTITIES = new Set<SketchEntityKind>(["point", "line", "circle", "arc", "spline", "ellipse"]);
 
 export function parse(src: string): { program: Program; diagnostics: Diagnostic[] } {
   let tokens: Token[];
@@ -697,7 +697,7 @@ class Parser {
     }
     if (tk.kind !== "ident") {
       throw new ParseError(
-        `Unexpected "${tk.value || "end of file"}" inside sketch. Use point, line, circle or arc to add geometry, a constraint like horizontal l1, a dimension like length l1 = 20, or a property like plane: XY.`,
+        `Unexpected "${tk.value || "end of file"}" inside sketch. Use point, line, circle, arc, spline or ellipse to add geometry, a constraint like horizontal l1, a dimension like length l1 = 20, or a property like plane: XY.`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -722,8 +722,36 @@ class Parser {
       this.next(); // "="
       const args: Expr[] = [];
       let size: { which: "r" | "d"; value: Expr } | undefined;
+      let opts: { name: string; value: Expr; span: Span; nameSpan: Span }[] | undefined;
+      /** name: value pairs after the points, until the end of the statement */
+      const namedOpts = () => {
+        const out: { name: string; value: Expr; span: Span; nameSpan: Span }[] = [];
+        do {
+          const at = this.peek();
+          if (!(at.kind === "ident" && this.isOp(":", 1))) throw new ParseError(`Expected a named option like ${kind === "ellipse" ? "rx: 20" : "closed: true"}`, at.start, Math.max(at.end, at.start + 1));
+          this.next();
+          this.next();
+          const value = this.expr();
+          out.push({ name: at.value, value, span: { start: at.start, end: this.prevEnd() }, nameSpan: { start: at.start, end: at.end } });
+        } while (this.eat("op", ","));
+        return out;
+      };
       if (kind === "point") args.push(this.expr());
-      else if (kind === "line" || kind === "arc") {
+      else if (kind === "spline") {
+        // its points in order, then options: spline s1 = (0, 0), (10, 8), p3, closed: true
+        do {
+          const at = this.peek();
+          if (at.kind === "ident" && this.isOp(":", 1)) {
+            opts = namedOpts();
+            break;
+          }
+          args.push(this.expr());
+        } while (this.eat("op", ","));
+      } else if (kind === "ellipse") {
+        args.push(this.expr());
+        this.expect("op", ",", '", rx: ..., ry: ..." after the ellipse\'s center');
+        opts = namedOpts();
+      } else if (kind === "line" || kind === "arc") {
         args.push(this.expr());
         this.expect("op", "->", `"->" between the ${kind}'s start and end`);
         args.push(this.expr());
@@ -742,9 +770,9 @@ class Parser {
         this.expect("op", ":");
         size = { which: w.value, value: this.expr() };
       }
-      return { k: "entity", kind, name: nameTk.value, construction, args, size, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+      return { k: "entity", kind, name: nameTk.value, construction, args, size, opts, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
-    if (construction) throw new ParseError('"construction" must be followed by point, line, circle or arc', tk.start, tk.end);
+    if (construction) throw new ParseError('"construction" must be followed by point, line, circle, arc, spline or ellipse', tk.start, tk.end);
     // constraint or dimension: name ref, ref [, key: value …] [= value]
     this.next();
     const refs: Expr[] = [];

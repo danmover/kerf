@@ -848,7 +848,16 @@ export function sketchDetail(sk: EvalSketch): string {
     sk.curves,
     SKETCH_DETAIL_MAX.curves,
     (c) => {
-      const extra = c.kind === "circle" ? ` r ${f(c.r ?? 0)}` : c.kind === "line" ? ` length ${f(Math.hypot(at(c.pts[1]).x - at(c.pts[0]).x, at(c.pts[1]).y - at(c.pts[0]).y))}` : "";
+      const extra =
+        c.kind === "circle"
+          ? ` r ${f(c.r ?? 0)}`
+          : c.kind === "line"
+            ? ` length ${f(Math.hypot(at(c.pts[1]).x - at(c.pts[0]).x, at(c.pts[1]).y - at(c.pts[0]).y))}`
+            : c.kind === "ellipse"
+              ? ` rx ${f(c.rx ?? 0)} ry ${f(c.ry ?? 0)} angle ${f(c.angle ?? 0)}`
+              : c.kind === "spline" && c.closed
+                ? " closed"
+                : "";
       return `${c.construction ? "construction " : ""}${c.kind} ${c.id} [${c.pts.join(", ")}]${extra} ${c.status}${c.external ? " (reference)" : ""}`;
     },
     (c) => (c.status === "free" || c.status === "conflict" ? c.id : null),

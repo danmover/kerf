@@ -78,7 +78,7 @@ export function nextName(taken: Set<string>, prefix: string): string {
   }
 }
 
-export const PREFIX: Record<SkCurve["kind"] | "point", string> = { line: "l", circle: "c", arc: "a", point: "p" };
+export const PREFIX: Record<SkCurve["kind"] | "point", string> = { line: "l", circle: "c", arc: "a", spline: "s", ellipse: "e", point: "p" };
 
 // ---------------- creating sketches ----------------
 
@@ -155,7 +155,9 @@ export function writePositions(src: string, sk: EvalSketch, positions: Record<st
 /** Selection ids: geometry ids (l1, c2, p1, l1.end) and constraint indices as "#3". */
 export const consId = (c: SkConstraint) => `#${c.index}`;
 
-const END_NAMES: Record<SkCurve["kind"], string[]> = { line: ["start", "end"], arc: ["start", "end", "center"], circle: ["center"] };
+const END_NAMES: Record<Exclude<SkCurve["kind"], "spline">, string[]> = { line: ["start", "end"], arc: ["start", "end", "center"], circle: ["center"], ellipse: ["center"] };
+/** The name a curve gives its k-th point: a spline's are p1, p2, … in order. */
+const pointRole = (c: SkCurve, k: number) => (c.kind === "spline" ? `p${k + 1}` : END_NAMES[c.kind][k]);
 
 const LIST_KINDS: Record<string, number> = { fix: 1, parallel: 2, equal: 2, horizontal: 1, vertical: 1, fillet: 1, chamfer: 1 };
 
@@ -218,7 +220,7 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
       const p = P(pid);
       const owner = survivor.get(pid);
       changes.push({ from: c.argSpans[k].start, to: c.argSpans[k].end, insert: owner ?? fmtPt([p.x, p.y]) });
-      if (!owner) survivor.set(pid, `${c.id}.${END_NAMES[c.kind][k]}`);
+      if (!owner) survivor.set(pid, `${c.id}.${pointRole(c, k)}`);
     });
   }
   // constraints are judged by the names they are written with: "l2.start" still exists after l1 (whose end it shares) is deleted
@@ -299,7 +301,7 @@ export interface Suggestion {
   key?: string;
 }
 
-type Ent = { id: string; type: "point" | "line" | "circle" | "arc"; p?: SkPoint; c?: SkCurve };
+type Ent = { id: string; type: "point" | SkCurve["kind"]; p?: SkPoint; c?: SkCurve };
 
 export function entitiesOf(sk: EvalSketch, ids: string[]): Ent[] {
   const out: Ent[] = [];
@@ -333,7 +335,7 @@ const ptOf = (sk: EvalSketch, id: string): V2 => {
   const p = sk.points.find((q) => q.id === id)!;
   return [p.x, p.y];
 };
-const centerOf = (sk: EvalSketch, c: SkCurve) => ptOf(sk, c.kind === "circle" ? c.pts[0] : c.pts[2]);
+const centerOf = (sk: EvalSketch, c: SkCurve) => ptOf(sk, c.kind === "circle" || c.kind === "ellipse" ? c.pts[0] : c.pts[2]);
 const radiusOf = (sk: EvalSketch, c: SkCurve) => (c.kind === "circle" ? c.r! : Math.hypot(...sub(ptOf(sk, c.pts[0]), centerOf(sk, c))));
 const sub = (a: V2, b: V2): [number, number] => [a[0] - b[0], a[1] - b[1]];
 const cross = (a: V2, b: V2) => a[0] * b[1] - a[1] * b[0];
@@ -467,6 +469,14 @@ export function suggestionsFor(sk: EvalSketch, ids: string[]): Suggestion[] {
     g("Tangent", "tangent", `tangent ${l.id}, ${c.id}`, "t");
     d("Distance", "distance", `${c.id}, ${l.id}`, pointLineDist(centerOf(sk, c), lineEnds(sk, l.id)), "d");
   }
+  if (E.length === 1 && (T[0] === "spline" || T[0] === "ellipse") && !E[0].c?.external) {
+    g(T[0] === "ellipse" ? "Fix centre" : "Fix points", "fix", `fix ${E[0].id}`, "f");
+  }
+  const rounds = E.filter((e) => e.type === "circle" || e.type === "arc" || e.type === "ellipse");
+  if (E.length === 2 && rounds.length === 2 && count("ellipse") >= 1) {
+    g("Concentric", "concentric", `concentric ${names}`, "o");
+    d("Centre distance", "distance", names, Math.hypot(...sub(centerOf(sk, E[1].c!), centerOf(sk, E[0].c!))), "d");
+  }
   if (circ.length === E.length && E.length >= 1) {
     if (E.length === 1) {
       const c = circ[0].c!;
@@ -482,6 +492,16 @@ export function suggestionsFor(sk: EvalSketch, ids: string[]): Suggestion[] {
     }
   }
   return out;
+}
+
+/**
+ * Set an ellipse's rx:, ry: or angle:, or a spline's closed:, where its
+ * statement writes it (added on the end when it is not written yet).
+ */
+export function setCurveOption(src: string, c: SkCurve, name: "rx" | "ry" | "angle" | "closed", text: string): string {
+  const sp = c.optSpans?.[name];
+  if (sp) return src.slice(0, sp.start) + text + src.slice(sp.end);
+  return src.slice(0, c.span.end) + `, ${name}: ${text}` + src.slice(c.span.end);
 }
 
 /** The single best dimension for a selection, used by the dimension tool. */

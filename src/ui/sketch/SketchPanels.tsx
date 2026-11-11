@@ -10,10 +10,10 @@ import { useDesign } from "../../core/engine";
 import { commitSource } from "../../app/project";
 import { select } from "../../app/view";
 import { toast } from "../../app/ui";
-import { addFeature, addStatements, deleteSelection, entitiesOf, extrudeExpr, suggestionsFor, toggleConstruction, fmt, type FeatureSpec } from "../../sketch/edits";
+import { addFeature, addStatements, deleteSelection, entitiesOf, extrudeExpr, setCurveOption, suggestionsFor, toggleConstruction, fmt, type FeatureSpec } from "../../sketch/edits";
 import { MAX_PATTERN, sketchStatusText } from "../../sketch/evaluate";
 import { copyable } from "../../sketch/modify";
-import type { EvalSketch } from "../../sketch/types";
+import type { EvalSketch, SkCurve } from "../../sketch/types";
 import { useChatDraft } from "../chatDraft";
 import { Icon } from "../icons";
 import { Segmented } from "../common";
@@ -113,8 +113,10 @@ const TOOLS: { id: SketchTool; label: string; key: string; icon: ReactNode; help
   { id: "rect", label: "Rectangle", key: "R", icon: <T.Rect />, help: "Click two corners. Type width, height (40,25) and press Enter for an exact size. Press R again for a centre or 3-point rectangle." },
   { id: "crect", label: "Centre rectangle", key: "R", icon: <T.RectCenter />, help: "Click the centre, then a corner. Type width, height (40,25) and press Enter for an exact size. Centre it on the origin to keep it centred." },
   { id: "rect3", label: "3-point rectangle", key: "R", icon: <T.Rect3 />, help: "Click two corners along one side (at any angle), then a point for the width." },
-  { id: "circle", label: "Circle", key: "C", icon: <T.Circle />, help: "Click the centre, then the radius. Type a diameter and press Enter for an exact size." },
+  { id: "circle", label: "Circle", key: "C", icon: <T.Circle />, help: "Click the centre, then the radius. Type a diameter and press Enter for an exact size. Press C again for an ellipse." },
+  { id: "ellipse", label: "Ellipse", key: "C", icon: <T.Ellipse />, help: "Click the centre, then the end of one axis (its length and turn), then a point for the other axis. Type width, height (40,20) and press Enter for an exact size. Its sizes are in the panel when it is selected." },
   { id: "arc", label: "Arc", key: "A", icon: <T.Arc />, help: "Click the start, the end, then a point the arc passes through. Starting on a line end makes it tangent." },
+  { id: "spline", label: "Spline", key: "S", icon: <T.Spline />, help: "Click the points the curve passes through; it bends smoothly through each one. Enter or double-click to finish, click the first point to close it round, Backspace to take the last point back. Drag the points afterwards to reshape it." },
   { id: "slot", label: "Slot", key: "O", icon: <T.Slot />, help: "Click the two centres, then the width." },
   { id: "polygon", label: "Polygon", key: "H", icon: <T.Polygon />, help: "Click the centre, then a corner. Type the number of sides (3 to 32) first; 6 makes a hexagon. The sides stay equal and the corners on a construction circle, so dimension the circle for the size across the corners." },
   { id: "point", label: "Point", key: "P", icon: <T.Point />, help: "Click to place a reference point." },
@@ -129,6 +131,9 @@ const TOOLS: { id: SketchTool; label: string; key: string; icon: ReactNode; help
 
 const RECTS: SketchTool[] = ["rect", "crect", "rect3"];
 let lastRect: SketchTool = "rect";
+// the circle and the ellipse share one too
+const ROUNDS: SketchTool[] = ["circle", "ellipse"];
+let lastRound: SketchTool = "circle";
 // trim and extend share a button the same way
 const CUTS: SketchTool[] = ["trim", "extend"];
 let lastCut: SketchTool = "trim";
@@ -140,9 +145,10 @@ function ToolPalette() {
   const construction = useSketch((s) => s.construction);
   // the three rectangles share one button: it shows the one in use, and a second click (or R again) moves to the next
   if (RECTS.includes(tool)) lastRect = tool;
+  if (ROUNDS.includes(tool)) lastRound = tool;
   if (CUTS.includes(tool)) lastCut = tool;
   const button = (t: (typeof TOOLS)[number]) => {
-    const group = RECTS.includes(t.id) ? RECTS : CUTS.includes(t.id) ? CUTS : null;
+    const group = RECTS.includes(t.id) ? RECTS : ROUNDS.includes(t.id) ? ROUNDS : CUTS.includes(t.id) ? CUTS : null;
     const on = tool === t.id;
     const click = () => setTool(group && on ? group[(group.indexOf(t.id) + 1) % group.length] : t.id);
     const tip = group ? `${t.label} (${t.key}; click again for ${group.filter((x) => x !== t.id).map((x) => TOOLS.find((q) => q.id === x)!.label.toLowerCase()).join(" or ")})` : `${t.label} (${t.key})`;
@@ -152,7 +158,7 @@ function ToolPalette() {
       </button>
     );
   };
-  const shown = (t: (typeof TOOLS)[number]) => (!RECTS.includes(t.id) || t.id === lastRect) && (!CUTS.includes(t.id) || t.id === lastCut);
+  const shown = (t: (typeof TOOLS)[number]) => (!RECTS.includes(t.id) || t.id === lastRect) && (!ROUNDS.includes(t.id) || t.id === lastRound) && (!CUTS.includes(t.id) || t.id === lastCut);
   return (
     <motion.div className="sk-ui sk-tools vp-float" style={{ y: "-50%" }} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} role="toolbar" aria-label="Sketch tools">
       {TOOLS.filter((t) => shown(t) && !MODIFY.includes(t.id)).map(button)}
@@ -280,6 +286,8 @@ function describe(sk: EvalSketch, id: string): string {
     return `line · ${fmt(Math.hypot(b.x - a.x, b.y - a.y))} mm`;
   }
   if (c?.kind === "circle") return `circle · ⌀${fmt(2 * c.r!)}`;
+  if (c?.kind === "ellipse") return `ellipse · ${fmt(2 * (c.rx ?? 0))} × ${fmt(2 * (c.ry ?? 0))}${c.angle ? ` · turned ${fmt(c.angle)}°` : ""}`;
+  if (c?.kind === "spline") return `spline · through ${c.pts.length} points${c.closed ? ", closed" : ""}`;
   if (c?.kind === "arc") {
     const a = P(c.pts[0]);
     const m = P(c.pts[2]);
@@ -325,6 +333,7 @@ function SelectionPanel({ sk, selection }: { sk: EvalSketch; selection: string[]
         ))}
         {status && <div className={`sk-st st-${status}`}>{STATUS_WORD[status]}</div>}
       </div>
+      {curves.length === 1 && (curves[0].c!.kind === "ellipse" || curves[0].c!.kind === "spline") && !curves[0].c!.derived && <CurveShape c={curves[0].c!} />}
       {relations.length > 0 && (
         <Group title="Relations">
           {relations.map((s) => (
@@ -361,9 +370,11 @@ function SelectionPanel({ sk, selection }: { sk: EvalSketch; selection: string[]
           <button className="btn sm" onClick={() => setTool("pattern")} data-tip="Repeat in a row, a grid or a ring (K)">
             <T.Pattern size={13} /> Pattern
           </button>
-          <button className="btn sm" onClick={() => setTool("offset")} data-tip="Then click one of them and move to the side the copy goes (F)">
-            <T.Offset size={13} /> Offset
-          </button>
+          {curves.every((c) => c.c!.kind !== "spline" && c.c!.kind !== "ellipse") && (
+            <button className="btn sm" onClick={() => setTool("offset")} data-tip="Then click one of them and move to the side the copy goes (F)">
+              <T.Offset size={13} /> Offset
+            </button>
+          )}
         </Group>
       )}
       <div className="row sk-actions">
@@ -388,6 +399,44 @@ function SelectionPanel({ sk, selection }: { sk: EvalSketch; selection: string[]
       </div>
       {cons.length === 0 && relations.length === 0 && dims.length === 0 && <div className="muted" style={{ fontSize: 12 }}>Select a second item to relate it to this one.</div>}
     </motion.div>
+  );
+}
+
+/** An ellipse's radii and turn, or whether a spline closes round, written straight into its statement. */
+function CurveShape({ c }: { c: SkCurve }) {
+  const set = (name: "rx" | "ry" | "angle" | "closed", text: string, what: string) =>
+    editSketch((src, cur) => {
+      const cc = cur.curves.find((q) => q.id === c.id);
+      return cc ? setCurveOption(src, cc, name, text) : src;
+    }, what);
+  if (c.kind === "spline")
+    return (
+      <Group title="Shape">
+        <label className="sk-check" data-tip="Run the curve on from its last point back round to its first, so it makes a loop on its own">
+          <input type="checkbox" checked={!!c.closed} onChange={(e) => set("closed", e.target.checked ? "true" : "false", `${e.target.checked ? "closed" : "opened"} spline ${c.id}`)} /> closed round
+        </label>
+      </Group>
+    );
+  const field = (k: "rx" | "ry" | "angle", label: string, value: number, tip: string) => {
+    const literal = c.optLiteral?.[k] !== false;
+    const commit = (text: string) => {
+      const v = Number(text);
+      if (!Number.isFinite(v) || Math.abs(v - value) < 1e-9 || (k !== "angle" && !(v > 0))) return;
+      set(k, fmt(v), `ellipse ${c.id} ${k} = ${fmt(v)}`);
+    };
+    return (
+      <label className="row" style={{ gap: 4 }} data-tip={literal ? tip : `${tip}; it is written as a formula, so change it in the code`}>
+        <span className="muted">{label}</span>
+        <input className="input mono" style={{ width: 52 }} disabled={!literal} defaultValue={fmt(value)} key={`${k}${value}`} onBlur={(e) => commit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} aria-label={`${c.id} ${k}`} />
+      </label>
+    );
+  };
+  return (
+    <Group title="Size">
+      {field("rx", "rx", c.rx ?? 0, "Radius along its first axis, in mm")}
+      {field("ry", "ry", c.ry ?? 0, "Radius along its second axis, in mm")}
+      {field("angle", "turn °", c.angle ?? 0, "How far the first axis turns from the sketch's x axis, counter-clockwise")}
+    </Group>
   );
 }
 
