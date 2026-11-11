@@ -175,6 +175,12 @@ export function busServoGeometry(p: CatalogPart): GeomResult {
     shapes: [box(l + 2 * fit, w + 2 * fit, h + 2 * fit, [cxm, 0, -h - fit]), box(coverL + 2 * fit, w + 2 * fit, tc + bc + h + 2 * fit, [x0 + coverL / 2, 0, -h - bc - fit])],
   };
   const z3 = (pts: [number, number][], z: number) => pts.map(([x, y]) => [x, y, z] as V3);
+  // what to cut from a plate that lies on the top cover: room for the output horn to turn, and a clearance hole for
+  // each of the cover's M2 screws
+  const mount: ShapeRecipe = {
+    t: "union",
+    shapes: [{ t: "cyl", d: L.hornD + 2, h: 20, at: [0, 0, tc - 0.01], dir: ZP }, ...L.topHoles.map(([x, y]) => ({ t: "cyl" as const, d: 2.4, h: 20, at: [x, y, tc - 0.01] as V3, dir: ZP }))],
+  };
   return {
     placement: "axis",
     solids: [
@@ -209,7 +215,7 @@ export function busServoGeometry(p: CatalogPart): GeomResult {
       points: { at: [0, 0, 0], horn: [0, 0, L.hornZ], idler: [0, 0, L.idlerZ], case_center: [cxm, 0, -h / 2], plug: [L.sockets[0][0], 0, -h] },
       pointLists: { horn_holes: z3(L.hornHoles, L.hornZ), idler_holes: z3(L.hornHoles, L.idlerZ), top_holes: z3(L.topHoles, tc), bottom_holes: z3(L.bottomHoles, L.bottomZ), holes: z3(L.topHoles, tc) },
       dirs: { axis: ZP, back: [-1, 0, 0], side: [0, 1, 0] },
-      shapes: { pocket },
+      shapes: { pocket, mount },
     },
   };
 }

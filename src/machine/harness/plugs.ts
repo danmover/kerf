@@ -233,12 +233,13 @@ export const PLUGS: Record<string, PlugTable> = {
     RX: { kind: "dupont", at: [6, 13.5, 4.1], out: Z, row: X, ways: 1 },
     UART_G: { kind: "dupont", at: [8.54, 13.5, 4.1], out: Z, row: X, ways: 1 },
     // the servo port: one 3-way housing for the lead's three wires, each pin on its own contact
-    SERVO_G: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [0], socket: true },
-    SERVO_V: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [1], socket: true },
-    SERVO_S: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [2], socket: true },
+    // (a second port beside it is on the same three nets, for a second chain)
+    SERVO_G: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [0], socket: true, more: [[9.6, 6, 1.6]] },
+    SERVO_V: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [1], socket: true, more: [[9.6, 6, 1.6]] },
+    SERVO_S: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [2], socket: true, more: [[9.6, 6, 1.6]] },
   },
-  // Arducam B0196 (38 × 38): the 4-pin lead leaves its socket on the -Y edge
-  arducam_b0196: { USB: { kind: "lead", at: [0, -17.5, 3.4], out: NY, row: X, ways: 1 } },
+  // Arducam B0196 (38 × 38): the 4-pin lead stands out of its socket on the back of the board
+  arducam_b0196: { USB: { kind: "lead", at: [0, -8.5, -4.5], out: NZ, row: X, ways: 1 } },
   skr_mini_e3_v3: SKR,
   // KY-023 thumb stick (34 × 26): its five right-angle header pins stick out of the -X end on the top side, in the
   // board's order GND, +5V, VRx, VRy, SW, so Dupont plugs go on along -X
@@ -476,7 +477,7 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): P
       return STEPPER_PLUG(num(d, "l", 40), num(d, "size", 42.3));
     case "panel_jack": {
       // the lugs behind the body (geometry.ts): a brick's cord plugs into the front instead
-      if (peer?.geom.g === "brick") return { kind: "barrel", at: [0, 0, num(d, "nut_t", 2.4)], out: Z, row: X, ways: 1 };
+      if (peer?.geom.g === "brick" || peer?.geom.g === "desk_supply") return { kind: "barrel", at: [0, 0, num(d, "nut_t", 2.4)], out: Z, row: X, ways: 1 };
       const bw = num(d, "body_w", 13);
       const x = n > 1 ? -bw / 4 + (bw / 2) * (i / (n - 1)) : 0;
       return { kind: "lug", at: [x, 0, -num(d, "panel_t", 3) - num(d, "body_l", 20) - 5.5], out: NZ, row: X, ways: 1 };
@@ -495,6 +496,12 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): P
     }
     case "servo":
       return { kind: "lead", at: [num(d, "w", 40) / 2 - num(d, "shaft_x", 10), 0, -num(d, "h", 37) / 2], out: X, row: Z, ways: 3 };
+    case "desk_supply": {
+      // a desktop supply's DC lead leaves the middle of its +X end, above the feet (geometryBenchParts.ts)
+      const h = num(d, "h", 40);
+      const foot = Math.min(num(d, "foot_h", 1), h / 10);
+      return { kind: "lead", at: [num(d, "w", 170) / 2, 0, foot + (h - foot) / 2], out: X, row: Y, ways: 1 };
+    }
     case "edf": {
       // the three motor leads leave the housing's side through a stator vane, at lead_az, one behind the other
       // along the axis (geometry.ts edf), and run out sideways: never through the intake or the jet

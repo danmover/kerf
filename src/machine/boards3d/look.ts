@@ -356,27 +356,27 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
     ],
   },
   ssd1306_oled_096: { mask: BLUE, silk: WHITE_SILK, finish: "hasl", looks: ["oled"], extras: [{ look: "header_m", x: 0, y: 12, w: 10.2, d: 2.54, h: 8.5 }] },
-  // Waveshare Bus Servo Adapter (A): DC jack and screw terminal at one end, USB-C at the other, the UART header
-  // and the A/B jumper beside it; the servo port is drawn from the plug table
+  // Waveshare Bus Servo Adapter (A): DC jack and green screw terminal at one end, USB-C at the other, the UART header
+  // and the A/B jumper beside it, the buck converter's inductor and the supply switch; the two servo ports are drawn
+  // from the plug table
   waveshare_bus_servo_adapter_a: {
     mask: "#1d4f9c",
     silk: WHITE_SILK,
     finish: "hasl",
     title: ["Bus Servo Adapter (A)", "Waveshare"],
-    marks: ["CH343P"],
-    looks: ["barrel", "terminal", "usb_c", "header_m", null, "soic", "header_m"],
+    marks: ["CH343P", "4R7", "AO4407"],
+    looks: ["barrel", "terminal", "usb_c", "header_m", null, "qfn", "header_m", null, "inductor", "soic"],
     terminal: "#2c8a4a",
-    extras: [{ look: "elcap", x: -3, y: 9, w: 6.3, d: 6.3, h: 7.7 }],
     smd: 0.9,
   },
-  // Arducam B0196: the lens in the middle, the 4-pin lead socket at one edge, the UVC bridge chip beside it
+  // Arducam B0196: the lens in the middle and the UVC bridge chip beside it; the lead's socket is on the back
   arducam_b0196: {
     mask: BLACK,
     silk: WHITE_SILK,
     finish: "enig",
     title: ["ARDUCAM", "UC-626 Rev.B"],
     marks: ["", "SPCA\n2080A"],
-    looks: ["lens", "box_header", "qfn"],
+    looks: ["lens", "qfn", null],
     smd: 1.2,
   },
   tpa3116_mono: {

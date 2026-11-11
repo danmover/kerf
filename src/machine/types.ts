@@ -162,6 +162,9 @@ export type GeomClass =
   | "speaker"
   | "knob"
   | "brick"
+  // a desktop supply with a mains inlet and a fixed DC lead, and a USB endoscope's head (geometryBenchParts.ts)
+  | "desk_supply"
+  | "endoscope"
   // addressable LED boards (rings, sticks, jewels) and plain discs (magnets, slip rings)
   | "led"
   | "disc";
@@ -175,6 +178,10 @@ export interface BoardFeature {
   d: number;
   h: number;
   /** overhang past the board edge is fine (USB, jacks) */
+  /** on the underside of the board, hanging down from it (a lead socket on the back of a camera board); drawn as its own solid */
+  side?: "bottom";
+  /** an underside feature's colour */
+  color?: string;
 }
 
 export interface GeomSpec {
