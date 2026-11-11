@@ -534,6 +534,22 @@ const libFuncs: Record<string, LibFn> = {
   }),
   analogWrite: def("analogWrite", ["u8", "int"], "void", 70, ([p, v], c) => c.hal.analogWrite(p, v)),
   analogReference: def("analogReference", ["u8"], "void", 10, ([m], c) => c.hal.analogReference(m)),
+  // the ESP32 core's PWM (LEDC, core 3.x: by pin). A board without it reports that the sketch would not compile
+  ledcAttach: def("ledcAttach", ["u8", "ulong", "u8"], "bool", 400, ([p, hz, bits], c) => (c.hal.pwmAttach ? c.hal.pwmAttach(p, hz, bits) : 0)),
+  ledcWrite: def("ledcWrite", ["u8", "ulong"], "bool", 90, ([p, d], c) => (c.hal.pwmWrite ? c.hal.pwmWrite(p, d) : 0)),
+  ledcRead: def("ledcRead", ["u8"], "ulong", 30, ([p], c) => c.hal.pwmRead?.(p) ?? 0),
+  ledcReadFreq: def("ledcReadFreq", ["u8"], "ulong", 30, ([p], c) => c.hal.pwmHz?.(p) ?? 0),
+  ledcChangeFrequency: def("ledcChangeFrequency", ["u8", "ulong", "u8"], "ulong", 400, ([p, hz, bits], c) => (c.hal.pwmAttach?.(p, hz, bits, "ledcChangeFrequency") ? hz : 0)),
+  ledcDetach: def("ledcDetach", ["u8"], "bool", 60, ([p], c) => {
+    c.hal.pinMode(p, 0);
+    return 1;
+  }),
+  analogWriteFrequency: def("analogWriteFrequency", ["u8", "ulong"], "void", 400, ([p, hz], c) => {
+    c.hal.pwmAttach?.(p, hz, -1, "analogWriteFrequency");
+  }),
+  analogWriteResolution: def("analogWriteResolution", ["u8", "u8"], "void", 400, ([p, bits], c) => {
+    c.hal.pwmAttach?.(p, -1, bits, "analogWriteResolution");
+  }),
   millis: def("millis", [], "ulong", 30, (_v, c) => c.hal.millis()),
   micros: def("micros", [], "ulong", 40, (_v, c) => c.hal.micros()),
   delay: def("delay", ["ulong"], "void", 20, ([ms], c) => c.hal.spend((ms * c.hal.fcpu) / 1000)),

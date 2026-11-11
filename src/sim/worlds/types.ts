@@ -33,7 +33,8 @@ export interface PlantView {
  */
 export interface DriveIO {
   comp: string;
-  kind: "motor" | "actuator" | "servo" | "fan";
+  /** "coil": a wound coil (dev is its model, with its current now); "blower": a four-wire PWM fan */
+  kind: "motor" | "actuator" | "servo" | "fan" | "coil" | "blower";
   /** volts on the terminals (+ forward; null: open), the driver's current limit, A */
   v: number | null;
   ilim: number;
@@ -146,6 +147,15 @@ export interface World {
   magnet?(comp: string): boolean;
   /** the force on a load cell, N (+ pulling on it) */
   force?(comp: string): number;
+  /**
+   * what a magnetic field sensor's chip sees: flux density on its own X, Y and Z, tesla, the peak-to-peak swing
+   * coil PWM ripple puts on each, and the slowest of those PWM rates, Hz
+   */
+  field?(comp: string): { b: [number, number, number]; ripple: [number, number, number]; hz: number } | undefined;
+  /** the pressure difference across a differential pressure sensor's ports, Pa (+ when its high port is higher) */
+  pressure?(comp: string): number;
+  /** volts a moving magnet and the other coils' changing currents induce in a coil, against its positive current */
+  coilEmf?(comp: string): number;
   /** signals the world puts on nets (by name or "component.PIN"): volts at a time in seconds */
   drives?(): { on: string; v: (t: number) => number }[];
   /** a bench supply that powers the machine in place of its own batteries and supplies */

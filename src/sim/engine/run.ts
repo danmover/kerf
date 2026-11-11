@@ -9,7 +9,7 @@ import type { MachineData } from "../../machine/types";
 import { measuredPart } from "../../machine/measured";
 import { generateFirmware } from "../../machine/firmware";
 import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
-import { Plant } from "./plant";
+import { Plant, fieldResults } from "./plant";
 import { BusServo } from "./busServo";
 import { SimHal, type SerialLine, type SimFault } from "./hal";
 import type { DisplayFrame } from "./devices";
@@ -349,6 +349,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results[`${l.comp}.lit_time`] = l.litTime;
     results[`${l.comp}.colours`] = l.seen.size;
   }
+  Object.assign(results, fieldResults(plant));
   // smart servos: where each horn ended up (degrees, 180 the middle of its turn) and the hottest it got
   for (const s of plant.servos) {
     if (!(s.s instanceof BusServo)) continue;

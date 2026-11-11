@@ -212,7 +212,7 @@ uniform float uHoverAmt;
 uniform float uMask;
 uniform float uPx;
 uniform float uTime;
-uniform float uLinearOut;
+uniform float uEncode;
 varying vec2 vUv;
 
 // Khronos PBR Neutral: keeps product colours true while rolling off highlights
@@ -282,8 +282,8 @@ void main() {
   outc *= 1.0 - uVignette * smoothstep(0.35, 1.05, v);
 
   vec3 srgb = toSRGB(outc) + (hash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) / 255.0;
-  // an sRGB target encodes what is written: hand it linear values (dithered as sRGB, so the bands still break up)
-  if (uLinearOut > 0.5) srgb = fromSRGB(srgb);
+  // an sRGB render target encodes on write (a capture): hand it linear colour, or it is encoded twice and comes out pale (dithered as sRGB first, so gradients still break up)
+  if (uEncode < 0.5) srgb = fromSRGB(srgb);
   gl_FragColor = uTransparent > 0.5 ? vec4(srgb, a) : vec4(srgb, 1.0);
 }`;
 
@@ -413,7 +413,7 @@ export class RenderPipeline {
     uMask: { value: 0 },
     uPx: { value: 1 },
     uTime: { value: 0 },
-    uLinearOut: { value: 0 },
+    uEncode: { value: 1 },
   });
   private black: THREE.DataTexture;
   private savedProj = new THREE.Matrix4();
@@ -598,8 +598,6 @@ export class RenderPipeline {
    * leaves the background clear (material swatches).
    */
   composite(target: THREE.WebGLRenderTarget | null, opts: { mask?: boolean; selAmt?: number; selFill?: number; hoverAmt?: number; transparent?: boolean; time?: number } = {}) {
-    // a target that stores sRGB (as captures do, so the overlays drawn after are encoded too) encodes on write itself
-    const linearOut = !!target && target.texture.colorSpace === THREE.SRGBColorSpace;
     const look = this.look;
     const useBloom = look.bloom > 0.001;
     if (useBloom) this.updateBloom();
@@ -624,7 +622,7 @@ export class RenderPipeline {
     u.uHoverAmt.value = opts.hoverAmt ?? 0;
     u.uPx.value = this.pixelRatio;
     u.uTime.value = opts.time ?? 0;
-    u.uLinearOut.value = linearOut ? 1 : 0;
+    u.uEncode.value = target?.texture.colorSpace === THREE.SRGBColorSpace ? 0 : 1;
     this.pass(this.compMat, target);
   }
 

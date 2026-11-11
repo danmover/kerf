@@ -13,6 +13,7 @@
 import type { V3 } from "../../kernel/recipe";
 import type { CatalogPart, PinDef } from "../types";
 import { pinSpots } from "../boards3d/pins";
+import { FIELD_PLUGS } from "./fieldPlugs";
 
 export type PlugKind =
   /** JST XH 2.50 mm: printer board headers, stepper and fan leads */
@@ -222,6 +223,7 @@ const BUS_SERVO: PlugTable = Object.fromEntries(
 
 /** Plugs for catalog parts, by catalog id and pin id. */
 export const PLUGS: Record<string, PlugTable> = {
+  ...FIELD_PLUGS,
   esp32_devkitc: devkitcPins(),
   waveshare_st3215: BUS_SERVO,
   // Bus Servo Adapter (A) (42 × 33, top at 1.6): supply screw terminal on the -X edge, the UART header along the
