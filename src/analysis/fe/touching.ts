@@ -139,7 +139,7 @@ export function touchLayer(g: TouchGrid, parts: TouchPartInfo[], spec: TouchingS
     let k = -1;
     if (t.mu !== "glued") {
       k = pairs.length;
-      pairs.push({ a: t.a, b: t.b, mu: typeof t.mu === "number" ? t.mu : 0, rough: t.mu === "rough", lift: t.lift, auto: false, thin: false, other: [] });
+      pairs.push({ a: t.a, b: t.b, mu: typeof t.mu === "number" ? t.mu : 0, rough: t.mu === "rough", lift: t.lift, auto: !!t.auto, thin: false, other: [] });
       sideA.push(new Set(ia));
       sideB.push(new Set(ib));
     }

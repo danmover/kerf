@@ -20,10 +20,13 @@ import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, PartPrint, StructuralInput, StructuralResult, TopologyPreview } from "./fe/structural";
+import type { BoltWant } from "./fe/bolts";
+import { GRADES, gradeFrom, headDims, type HeadType } from "../library/fasteners";
+import { threadSpec } from "../library/standards";
 import { fdmPrint, printWords } from "../mfg/infill";
 import { printUp } from "../mfg/printOrientation";
 import type { Finish } from "./fe/fatigue";
-import { contactVerdicts, modeText, printingText, staticSafety, stiffnessVerdict, strengthVerdict, touchingText } from "./summary";
+import { boltText, contactVerdicts, modeText, printingText, staticSafety, stiffnessVerdict, strengthVerdict, touchingText } from "./summary";
 import { fatigueText, fatigueVerdict } from "./fatigueSummary";
 import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { dynamicItems } from "./dynamics";
@@ -344,11 +347,14 @@ export function structuralInput(
     const component = p.kind === "component";
     // with fatigue, the same material machined and cast has two S-N curves
     const finish = spec.fatigue ? (spec.fatigue.finish ?? partFinish(p)) : undefined;
-    const key = (temps ? `${name}|${component}` : name) + (finish ? `|${finish}` : "");
+    // a screw or bolt of a known grade is as strong as that grade says (an 8.8 bolt is not mild steel)
+    const grade = !spec.material && p.fastener ? gradeFrom(p.fastener.grade) : undefined;
+    const key = (temps ? `${name}|${component}` : name) + (finish ? `|${finish}` : "") + (grade ? `|${grade}` : "");
     let mi = matIndex.get(key);
     if (mi === undefined) {
       mi = mats.length;
-      mats.push(mechMaterial(name));
+      const mm = mechMaterial(name);
+      mats.push(grade ? { ...mm, name: `${mm.name}, grade ${grade}`, yield: GRADES[grade].proof, uts: Math.max(GRADES[grade].uts, GRADES[grade].proof), assumed: false } : mm);
       if (temps) thermalMats.push(thermalMaterial(name, component));
       if (currents) electricMats.push(electricMaterial(name));
       if (finish) finishes.push(finish);
@@ -376,7 +382,22 @@ export function structuralInput(
     const print = partPrint(spec, p, mats[mi], data, (v) => [m[0] * v[0] + m[4] * v[1] + m[8] * v[2], m[1] * v[0] + m[5] * v[1] + m[9] * v[2], m[2] * v[0] + m[6] * v[1] + m[10] * v[2]]);
     // fasteners, nuts and inserts stay glued under touching: "all" (bolts are modelled bonded)
     const joining = !!p.fastener || JOINING_KINDS.has(p.libKind ?? "");
-    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}) });
+    // a screw or bolt can be tightened (preload:); a nut, insert or standoff is what its thread holds in
+    const fi = p.fastener;
+    const ts = fi ? threadSpec(fi.size) : undefined;
+    const headH = fi?.head && ts ? headDims(fi.head as HeadType, ts)?.h : undefined;
+    const bolt = fi && fi.head !== "set" ? { headTop: fi.headTop, outward: fi.outward, size: fi.size, headD: fi.headD, ...(headH !== undefined ? { headH } : {}), ...(fi.grade ? { grade: fi.grade } : {}) } : undefined;
+    const threads = p.libKind === "nut" || p.libKind === "standoff" ? ("nut" as const) : p.libKind === "insert" ? ("insert" as const) : undefined;
+    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
+  }
+  // bolts tightened before the loads: the ones named, and with all every other screw and bolt analysed
+  let preload: BoltWant[] | undefined;
+  if (spec.preload) {
+    const want = new Map<string, BoltWant>();
+    for (const b of spec.preload.bolts) want.set(b.part, { ...b });
+    if (spec.preload.all) for (const p of parts) if (p.fastener && p.fastener.head !== "set" && !want.has(p.name)) want.set(p.name, { part: p.name, ...spec.preload.all });
+    if (!want.size) return { error: 'preload: "all" tightens every screw and bolt the analysis has, and it has none: name them in parts:, or list them, like preload: [screw_1, screw_2].' };
+    preload = [...want.values()];
   }
   const res = fine ? "fine" : spec.resolution;
   const input: StructuralInput = {
@@ -423,6 +444,7 @@ export function structuralInput(
     ...(spec.converge ? { converge: true } : {}),
     ...(spec.topology ? { topology: spec.topology } : {}),
     ...(spec.touching ? { touching: spec.touching } : {}),
+    ...(preload ? { preload } : {}),
     ...(spec.fatigue
       ? {
           fatigue: {
@@ -671,6 +693,8 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   for (const c of contactVerdicts(spec, r)) out.push({ ...base, id: id(`contact${c.i}`), status: c.status, margin: c.margin, title: c.title, detail: c.detail, ...(c.fix ? { fix: c.fix } : {}) });
   const tc = touchingText(spec, r);
   if (tc) out.push({ ...base, id: id("touching"), status: tc.status, title: `Touching parts: ${spec.label}`, detail: tc.detail, ...(tc.fix ? { fix: tc.fix } : {}) });
+  const tb = boltText(spec, r);
+  if (tb) out.push({ ...base, id: id("bolts"), status: tb.status, title: `Tightened bolts: ${spec.label}`, detail: tb.detail, ...(tb.fix ? { fix: tb.fix } : {}) });
   if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
   return out;
 }

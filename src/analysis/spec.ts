@@ -251,6 +251,8 @@ export interface BucklingSpec {
 export interface TouchSpec {
   a: string;
   b: string;
+  /** found by the analysis (the parts a tightened bolt clamps), not written: no warning when they do not touch */
+  auto?: boolean;
   /** friction coefficient (0 slides freely); rough never slides; glued keeps the pair bonded (an exception to "all") */
   mu: number | "rough" | "glued";
   /** false: the faces may slide but never come apart (something not analysed holds them together) */
@@ -265,6 +267,38 @@ export interface TouchingSpec {
 }
 
 /** How a contact between two parts fared. */
+/**
+ * Bolts tightened before the loads, by part name: to a tension (N), by a torque on the thread (N·mm), or (neither) as
+ * such a bolt usually is; all: every other fastener in the analysis.
+ */
+export interface PreloadSpec {
+  bolts: { part: string; force?: number; torque?: number }[];
+  all?: { force?: number; torque?: number };
+}
+
+/** A tightened bolt: what it was tightened to, and what it carries under the loads. */
+export interface BoltResult {
+  part: string;
+  size: string;
+  grade?: string;
+  /** the tension it is tightened to, N, and how that was chosen */
+  preload: number;
+  why: string;
+  /** the tension in it under the loads, N */
+  force: number;
+  /** its tensile stress area (mm²), the stress there under the loads (MPa), and its proof load (N) */
+  area: number;
+  stress: number;
+  proof: number;
+  /** the free length stretched between its head and where its thread holds, mm */
+  grip: number;
+  /** what its thread holds in, and whether that is plastic, wood or an insert in them */
+  into: string;
+  soft: boolean;
+  /** the parts it clamps */
+  clamps: string[];
+}
+
 export interface TouchResult {
   a: string;
   b: string;
@@ -344,6 +378,8 @@ export interface StructuralSpec {
   topology?: TopologySpec;
   /** touching parts as contacts (pressed, parting, sliding) instead of glued */
   touching?: TouchingSpec;
+  /** bolts tightened before the loads */
+  preload?: PreloadSpec;
   span: Span;
 }
 

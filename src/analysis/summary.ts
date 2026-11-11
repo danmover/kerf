@@ -160,7 +160,7 @@ export function contactVerdicts(spec: StructuralSpec, r: StructuralResult): { i:
  * there, so it is not what would happen.
  */
 export function touchingText(spec: StructuralSpec, r: StructuralResult): { status: "info" | "fail"; detail: string; fix?: string } | null {
-  if (!spec.touching || !r.touching?.length) return null;
+  if ((!spec.touching && !spec.preload) || !r.touching?.length) return null;
   const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
   const lines: string[] = [];
   const fixes: string[] = [];
@@ -193,6 +193,55 @@ export function touchingText(spec: StructuralSpec, r: StructuralResult): { statu
   return { status: fail ? "fail" : "info", detail: lines.join(" "), ...(fixes.length ? { fix: fixes.map((f, i) => (i ? f : f[0].toUpperCase() + f.slice(1))).join("; ") + "." } : {}) };
 }
 
+/** Tightened bolts: what each was tightened to, what it carries under the loads, and whether it holds that. */
+export function boltText(spec: StructuralSpec, r: StructuralResult): { status: "info" | "fail"; detail: string; fix?: string } | null {
+  if (!spec.preload || !r.bolts?.length) return null;
+  const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
+  const N = (v: number) => (Math.abs(v) >= 1000 ? `${fmtNum(v / 1000, 2)} kN` : `${fmtNum(v, 0)} N`);
+  const lines: string[] = [];
+  const over: string[] = [];
+  for (const b of r.bolts) {
+    if (!(b.preload > 0)) continue;
+    const name = `${b.part} (${b.size}${b.grade ? ` ${b.grade}` : ""} into ${b.into})`;
+    const change = (b.force - b.preload) / b.preload;
+    const use = b.proof > 0 ? b.force / b.proof : 0;
+    lines.push(
+      `${name}: tightened to ${N(b.preload)} (${b.why})${b.clamps.length ? `, clamping ${b.clamps.join(" and ")}` : ""}; ${N(b.force)} in it under the loads (${change >= 0 ? "+" : ""}${pc(change)}), ${fmtNum(b.stress, 0)} MPa on its stress area${b.proof > 0 ? `, ${pc(use)} of its proof load` : ""}.`,
+    );
+    if (b.proof > 0 && b.force > b.proof) over.push(b.part);
+  }
+  if (!lines.length) return null;
+  // the joints they clamp, judged as a bolted joint is: it must stay clamped (not open all the way) and the friction
+  // its clamping gives must carry the load along it (or it slips until the bolts bear on the sides of their holes)
+  const fails: string[] = [];
+  const fixes: string[] = [];
+  if (over.length) {
+    fails.push(`${over.join(" and ")} ${over.length > 1 ? "are" : "is"} stretched past ${over.length > 1 ? "their" : "its"} proof load, so ${over.length > 1 ? "they" : "it"} would yield and lose the preload.`);
+    fixes.push("use a stronger grade or a bigger bolt, tighten it less, or share the load between more bolts");
+  }
+  for (const t of r.touching ?? []) {
+    if (!t.cells || t.held) continue;
+    const by = r.bolts.filter((b) => b.preload > 0 && [b.into, ...b.clamps].includes(t.a) && [b.into, ...b.clamps].includes(t.b));
+    if (!by.length) continue;
+    const pre = by.reduce((s, b) => s + b.preload, 0);
+    const many = by.length > 1;
+    const who = many ? by.map((b) => b.part).join(" and ") : by[0].part;
+    if (t.force < 0.05 * pre) {
+      fails.push(`The loads open the joint between ${t.a} and ${t.b} all the way: ${who} no longer clamp${many ? "" : "s"} it, and ${many ? "they carry" : "it carries"} the load alone.`);
+      fixes.push("tighten the bolts more, or use more or bigger bolts nearer the load, so the joint stays clamped");
+      continue;
+    }
+    if (typeof t.mu !== "number" || !(t.mu > 0)) continue;
+    const used = t.shear / (t.mu * t.force);
+    if (used >= 0.95) {
+      fails.push(`The joint between ${t.a} and ${t.b} slips: the ${N(t.shear)} along it uses up the friction ${who} clamp${many ? "" : "s"} it with (μ ${fmtNum(t.mu, 2)} × ${N(t.force)}), so it moves until the bolts bear on the sides of their holes and take the load across them.`);
+      fixes.push("tighten the bolts more or add bolts, or key the parts so they cannot slide (a dowel pin, a lip or a shoulder)");
+    } else lines.push(`The load along the joint between ${t.a} and ${t.b} uses ${pc(used)} of the friction its clamping gives.`);
+  }
+  if (fails.length) return { status: "fail", detail: `${fails.join(" ")} ${lines.join(" ")}`, fix: [...new Set(fixes)].map((f, i) => (i ? f : f[0].toUpperCase() + f.slice(1))).join("; ") + "." };
+  return { status: "info", detail: lines.join(" ") };
+}
+
 /** Only natural frequencies: no loads, so no stresses to judge. */
 const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length && !spec.accel;
 
@@ -208,6 +257,7 @@ export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Ve
     vibrationVerdict(spec, r),
     ...contactVerdicts(spec, r).map((c) => c.status),
     touchingText(spec, r)?.status === "fail" ? "fail" : "pass",
+    boltText(spec, r)?.status === "fail" ? "fail" : "pass",
     spec.thermal ? temp : temp === "fail" ? "fail" : "pass",
     bucklingVerdict(spec, r)?.status ?? "pass",
     fatigueVerdict(spec, r)?.status ?? "pass",
@@ -299,6 +349,8 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   for (const c of contactVerdicts(spec, r)) lines.push(`${c.title}: ${c.status.toUpperCase()}. ${c.detail}${c.fix ? ` Fix: ${c.fix}` : ""}`);
   const tt = touchingText(spec, r);
   if (tt) lines.push(`Touching parts (contacts, not glued): ${tt.status === "fail" ? "FAIL. " : ""}${tt.detail}${tt.fix ? ` Fix: ${tt.fix}` : ""}`);
+  const bt = boltText(spec, r);
+  if (bt) lines.push(`Tightened bolts: ${bt.status === "fail" ? "FAIL. " : ""}${bt.detail}${bt.fix ? ` Fix: ${bt.fix}` : ""}`);
   if (r.loads.length)
     lines.push(
       "Loads: " +

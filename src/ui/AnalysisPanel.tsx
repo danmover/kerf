@@ -1249,7 +1249,8 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
             {loadText(i)}
           </div>
         ))}
-        {spec.touching && <TouchingSetup spec={spec} r={r} />}
+        {spec.preload && <BoltsSetup spec={spec} r={r} />}
+        {(spec.touching || spec.preload) && <TouchingSetup spec={spec} r={r} />}
         {spec.accel && (
           <div>
             <span className="tag">accel</span>
@@ -2017,9 +2018,45 @@ function EmptyState() {
   );
 }
 
-/** The touching: pairs of an analysis, with what each pressed, parted and slid in the last result. */
+/** The preload: bolts of an analysis, with what each was tightened to and carries in the last result. */
+function BoltsSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) {
+  const p = spec.preload!;
+  const kN = (v: number) => (Math.abs(v) >= 1000 ? `${fmtNum(v / 1000, 2)} kN` : `${fmtNum(v, 0)} N`);
+  const how = (w: { force?: number; torque?: number }) => (w.force !== undefined ? `to ${kN(w.force)}` : w.torque !== undefined ? `by ${fmtNum(w.torque / 1000, 2)} N·m on its thread` : "as it usually is");
+  type B = NonNullable<StructuralResult["bolts"]>[number];
+  const line = (b: B) =>
+    !(b.preload > 0)
+      ? "left untightened"
+      : `${b.size}${b.grade ? ` ${b.grade}` : ""} into ${b.into}: ${kN(b.preload)} (${b.why}), ${kN(b.force)} under the loads${b.proof > 0 ? `, ${fmtNum((100 * b.force) / b.proof, 0)} % of its proof load` : ""}`;
+  const base = (b: B) => b.part.replace(/ #\d+$/, "");
+  const named = new Set(p.bolts.map((w) => w.part));
+  const others = r?.bolts?.filter((b) => !named.has(base(b))) ?? [];
+  return (
+    <>
+      {p.bolts.map((w, i) => {
+        const done = r?.bolts?.filter((b) => base(b) === w.part) ?? [];
+        return (
+          <div key={`b${i}`}>
+            <span className="tag">preload</span>
+            {w.part} · tightened {how(w)}
+            {done.length ? <span className="dim"> · {done.map((b) => `${done.length > 1 ? `${b.part}: ` : ""}${line(b)}`).join("; ")}</span> : null}
+          </div>
+        );
+      })}
+      {p.all && (
+        <div>
+          <span className="tag">preload</span>
+          {p.bolts.length ? "every other" : "every"} screw and bolt · tightened {how(p.all)}
+          {others.length ? <span className="dim"> · {others.map((b) => `${b.part}: ${line(b)}`).join("; ")}</span> : null}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The touching: pairs of an analysis (and the parts its tightened bolts clamp), with what each pressed, parted and slid in the last result. */
 function TouchingSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) {
-  const t = spec.touching!;
+  const t = spec.touching ?? { pairs: [] };
   const how = (mu: number | "rough" | "glued", lift: boolean) => `${mu === "rough" ? "rough" : mu === "glued" ? "glued" : mu === 0 ? "frictionless" : `μ ${fmtNum(mu, 2)}`}${lift || mu === "glued" ? "" : ", never parting"}`;
   const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
   const res = (a: string, b: string) => r?.touching?.find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a));
@@ -2044,13 +2081,19 @@ function TouchingSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult
           </div>
         );
       })}
-      {t.all && (
+      {t.all ? (
         <div>
           <span className="tag">touching</span>
           every other pair that touches · {how(t.all.mu, t.all.lift)} (screws, nuts and inserts stay glued)
           {auto.length ? <span className="dim"> · {auto.map((x) => `${x.a} and ${x.b}${line(x)}`).join("; ")}</span> : null}
         </div>
-      )}
+      ) : spec.preload ? (
+        <div>
+          <span className="tag">touching</span>
+          what the tightened bolts clamp · {how(0.3, true)}
+          {auto.length ? <span className="dim"> · {auto.map((x) => `${x.a} and ${x.b}${line(x)}`).join("; ")}</span> : null}
+        </div>
+      ) : null}
     </>
   );
 }
