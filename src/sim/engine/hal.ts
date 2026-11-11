@@ -142,6 +142,8 @@ export class SimHal implements Hal {
   /** level driven onto the pin from outside, -1 when nothing drives it */
   ext: Int8Array;
   servoUs = new Map<number, number>();
+  /** PWM rate (Hz) and resolution (bits) of pins the firmware set up itself (the ESP32's LEDC), in place of the board's */
+  pwmSet = new Map<number, { hz: number; bits: number }>();
   /** called when the firmware writes a pin a module watches (ultrasonic trigger) */
   onWrite = new Map<number, (level: number, t: number) => void>();
   toneHz = new Map<number, number>();
@@ -365,9 +367,14 @@ export class SimHal implements Hal {
   pwmLevel(pin: number, t: number): number {
     const d = this.duty[pin];
     if (d < 0) return this.latch[pin];
-    const f = this.board.pwm[pin] ?? 490;
+    const f = this.pwmHz(pin);
     const phase = ((t * f) / this.fcpu) % 1;
     return phase < d ? 1 : 0;
+  }
+
+  /** the PWM rate on a pin, Hz: what the firmware set (LEDC), else the board's own */
+  pwmHz(pin: number): number {
+    return this.pwmSet.get(pin)?.hz ?? this.board.pwm[pin] ?? 490;
   }
 
   /** What an MCU pin drives into a module input: 0..1 (PWM duty), or -1 when it drives nothing. */
@@ -458,13 +465,70 @@ export class SimHal implements Hal {
       if (!(pin in this.board.pwm)) this.fault(`analogWrite(${pin}): pin ${pin} has no PWM on the ${this.board.name}, so it just switches fully on or off`, "firmware", 0);
       return;
     }
+    // 8 bits unless analogWriteResolution() set another
+    const max = (1 << (this.pwmSet.get(pin)?.bits ?? 8)) - 1;
     if (v <= 0) {
       this.duty[pin] = -1;
       this.latch[pin] = 0;
-    } else if (v >= 255) {
+    } else if (v >= max) {
       this.duty[pin] = -1;
       this.latch[pin] = 1;
-    } else this.duty[pin] = v / 255;
+    } else this.duty[pin] = v / max;
+  }
+
+  /**
+   * The ESP32 core's ledcAttach() (and analogWriteFrequency / analogWriteResolution): a pin's PWM rate and
+   * resolution. The LEDC timer divides its 80 MHz clock, so rate × 2^bits cannot pass 80 MHz; false when it does.
+   */
+  pwmAttach(pin: number, hz: number, bits: number, what = "ledcAttach"): boolean {
+    if (this.board.arch !== "esp32") {
+      this.fault(`${what}() is part of the ESP32 core: the ${this.board.name} has no such function, so this sketch would not compile for it`, "firmware", 0);
+      return false;
+    }
+    if (!this.validPin(pin, what)) return false;
+    // analogWriteFrequency() and analogWriteResolution() each keep the other setting
+    if (hz < 0) hz = this.pwmHz(pin);
+    if (bits < 0) bits = this.pwmSet.get(pin)?.bits ?? 8;
+    if (!(pin in this.board.pwm)) {
+      this.fault(`${what}(${pin}): GPIO${pin} cannot be an output on the ${this.board.name}, so it has no PWM`, "firmware", 0);
+      return false;
+    }
+    if (!(hz >= 1) || !(bits >= 1 && bits <= 16) || hz * 2 ** bits > 80e6) {
+      const most = Math.max(1, Math.min(16, Math.floor(Math.log2(80e6 / Math.max(1, hz)))));
+      this.fault(`${what}(${pin}, ${hz}, ${bits}): the ESP32's PWM timer cannot make ${hz} Hz at ${bits} bits (rate × 2^bits must stay under its 80 MHz clock; at ${hz} Hz that is ${most} bits at most), so the pin gets no PWM`, "firmware", 0);
+      return false;
+    }
+    this.pwmSet.set(pin, { hz, bits: Math.round(bits) });
+    this.mode[pin] = Mode.OUTPUT;
+    if (this.duty[pin] < 0) this.latch[pin] = 0;
+    return true;
+  }
+
+  /** ledcWrite(): a duty in the pin's own resolution (all bits set means fully on, as the core does it) */
+  pwmWrite(pin: number, duty: number): boolean {
+    const set = this.pwmSet.get(pin);
+    if (!set) {
+      this.fault(`ledcWrite(${pin}) before ledcAttach(${pin}, ...): the pin has no PWM channel, so nothing changes`, "firmware", 0);
+      return false;
+    }
+    const full = 2 ** set.bits;
+    this.mode[pin] = Mode.OUTPUT;
+    if (duty <= 0) {
+      this.duty[pin] = -1;
+      this.latch[pin] = 0;
+    } else if (duty >= full - 1) {
+      this.duty[pin] = -1;
+      this.latch[pin] = 1;
+    } else this.duty[pin] = duty / full;
+    return true;
+  }
+
+  /** the duty last written to a pin, in its own resolution */
+  pwmRead(pin: number): number {
+    const set = this.pwmSet.get(pin);
+    const full = 2 ** (set?.bits ?? 8);
+    if (this.mode[pin] !== Mode.OUTPUT) return 0;
+    return this.duty[pin] >= 0 ? Math.round(this.duty[pin] * full) : this.latch[pin] ? full - 1 : 0;
   }
 
   analogReference(mode: number): void {

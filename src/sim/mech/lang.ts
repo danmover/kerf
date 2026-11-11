@@ -44,6 +44,36 @@ export type MechItem =
   | { k: "clutch"; name: string; a: string | null; b: string; torque: number; oneWay: boolean; engaged?: Schedule }
   | { k: "spring"; name: string; a: string | null; b: string | null; atA: V3; atB: V3; rate: number; free?: number; damping: number; push: number; cell?: string }
   | { k: "jet"; name: string; fan: string; vanes: string[]; chord?: number; span?: number; lift?: number; stall: number; recovery: number }
+  | {
+      k: "tunnel";
+      name: string;
+      model: string;
+      fan?: string;
+      speed?: Schedule;
+      /** width across the flow and height, mm */
+      section: [number, number];
+      length?: number;
+      at?: V3;
+      flow: V3;
+      up: V3;
+      cd: number;
+      /** frontal area, mm², and width across the flow, mm (from the model's shape when left out) */
+      area?: number;
+      d?: number;
+      lift: number;
+      side: number;
+      loss: number;
+      contraction: number;
+      gauge?: string;
+      turbulence: number;
+      shed: number;
+      strouhal: number;
+      grip: number;
+      density?: number;
+      /** a launch pad on the floor under the section's centre: (width, height), mm */
+      pad?: [number, number];
+    }
+  | { k: "field"; earth: V3 }
   | { k: "payload"; name: string; on: string; mass: number; at?: V3 }
   | { k: "load"; name: string; on: string; at?: V3; dir: V3; value: Schedule; torque: boolean; turns: boolean }
   | { k: "turn"; name: string; joint: string; speed: Schedule; limit: number }
@@ -375,6 +405,71 @@ export const MECH_FNS: [string, Fn][] = [
       );
     },
   ),
+  mechFn(
+    "tunnel",
+    ["model", "fan", "speed", "section", "length", "at", "flow", "up", "cd", "area", "d", "lift", "side", "loss", "contraction", "gauge", "turbulence", "shed", "strouhal", "grip", "pad", "density", "name"],
+    "A small wind tunnel's test section with a model in it. model: the part in the air stream, on a joint or loose (sim.free); fan: the four-wire PWM fan (lib.fan) that moves the air, run by the scenario's firmware: the air speed is where the fan's curve meets the circuit's losses; or speed: the air speed itself in m/s, steady or over time like [(0s, 0), (2s, 12)]. section: the test section's (width, height), mm; length: along the flow (twice its larger side); at: its centre (the model's centre of mass); flow: the way the air goes (X); up: (Z). cd: the model's drag coefficient (0.47, a smooth sphere below Re 200 000); area: its frontal area, mm², and d: its width across the flow, mm (both from its shape when left out); lift, side: lift and side-force coefficients on the same area (0). loss: pressure lost round the whole circuit (inlet, screens, diffuser, the fan's guard and the exit) in dynamic heads of the test section (2.2); contraction: the inlet's area ratio (6); gauge: the differential pressure sensor across the contraction, which then reads the test section's dynamic pressure × (1 − 1/contraction²). turbulence: the stream's turbulence (0.8 %); shed: the rms side-force coefficient of vortex shedding (0.06) at strouhal: (0.2); grip: friction where the model touches a wall (0.3); pad: a launch pad standing on the floor under the section's centre for the model to rest on, as (width, height) in mm; density: air, kg/m³ (from the room temperature). The model's drag includes the solid-blockage correction for the share of the section it fills, and it can touch the section's floor, roof, walls and pad. Results: <name>.speed and .max_speed (m/s), .q (Pa), .drag and .peak_drag (N), .reynolds, .float_time (s clear of every wall), .landings, .floating, .x .y .z (the model's place from the section's centre, mm, along the flow, across and up), .wander (how far a floating model moves about its own average place, rms over the last full second, mm).",
+    (a) => {
+      const model = nameOf(a.value("model"), a.ctx, "sim.tunnel(): model");
+      const sv = a.value("section");
+      if (!(sv instanceof Vec && sv.v.length === 2 && sv.v[0] > 0 && sv.v[1] > 0)) return a.ctx.error("sim.tunnel(): section should be the test section's (width, height), like (60, 50)");
+      const fan = a.has("fan") ? nameOf(a.value("fan"), a.ctx, "sim.tunnel(): fan") : undefined;
+      const speed = schedule(a, "speed");
+      if (!fan === !speed) return a.ctx.error("sim.tunnel(): give fan: (the fan that moves the air) or speed: (the air speed, m/s)");
+      const flow = dirOf(a, "flow", [1, 0, 0])!;
+      const upRaw = dirOf(a, "up", [0, 0, 1])!;
+      const along = upRaw[0] * flow[0] + upRaw[1] * flow[1] + upRaw[2] * flow[2];
+      if (Math.abs(along) > 0.9) return a.ctx.error("sim.tunnel(): up must not lie along flow");
+      const u: V3 = [upRaw[0] - along * flow[0], upRaw[1] - along * flow[1], upRaw[2] - along * flow[2]];
+      const ul = Math.hypot(...u);
+      const cd = a.num("cd", 0.47);
+      if (!(cd > 0 && cd < 5)) a.ctx.error("sim.tunnel(): cd is a drag coefficient, usually 0.04 (streamlined) to 1.2 (a flat plate)");
+      const tu = a.num("turbulence", 0.008);
+      if (!(tu >= 0 && tu < 0.5)) a.ctx.error("sim.tunnel(): turbulence is a share, like 0.8%");
+      const pv = a.has("pad") ? a.value("pad") : undefined;
+      if (pv !== undefined && !(pv instanceof Vec && pv.v.length === 2 && pv.v[0] > 0 && pv.v[1] > 0 && pv.v[0] <= sv.v[0] && pv.v[1] < sv.v[1] / 2))
+        return a.ctx.error("sim.tunnel(): pad should be the launch pad's (width, height) in mm, like (14, 3): no wider than the section and under half its height");
+      return new MechValue(
+        {
+          k: "tunnel",
+          name: a.has("name") ? a.str("name") : "tunnel",
+          model,
+          fan,
+          speed,
+          section: [sv.v[0], sv.v[1]],
+          length: a.has("length") ? a.positive("length") : undefined,
+          at: optV3(a, "at"),
+          flow,
+          up: [u[0] / ul, u[1] / ul, u[2] / ul],
+          cd,
+          area: a.has("area") ? a.positive("area") : undefined,
+          d: a.has("d") ? a.positive("d") : undefined,
+          lift: a.num("lift", 0),
+          side: a.num("side", 0),
+          loss: a.positive("loss", 2.2),
+          contraction: a.positive("contraction", 6),
+          gauge: a.has("gauge") ? nameOf(a.value("gauge"), a.ctx, "sim.tunnel(): gauge") : undefined,
+          turbulence: tu,
+          shed: a.num("shed", 0.06),
+          strouhal: a.positive("strouhal", 0.2),
+          grip: a.num("grip", 0.3),
+          density: a.has("density") ? a.positive("density") : undefined,
+          pad: pv instanceof Vec ? [pv.v[0], pv.v[1]] : undefined,
+        },
+        "wind tunnel",
+      );
+    },
+  ),
+  mechFn(
+    "field",
+    ["earth"],
+    "Magnetic fields are simulated whenever the design has wound coils (lib.coil), magnets (lib.magnet) or field sensors: each coil's current, from its driver and the scenario's firmware, pulls and turns the magnets, and the sensors read every coil and magnet. This item only sets the earth's field the sensors also read. earth: (x, y, z) in microtesla in the design's axes ((0, 20, -45) when left out: 49 µT dipping north, as in mid northern latitudes; southern Australia is about (0, 22, 55) with Y north).",
+    (a) => {
+      const e = optV3(a, "earth") ?? [0, 20, -45];
+      if (Math.hypot(...e) > 200) a.ctx.error("sim.field(): earth is in microtesla; the earth's field is 25 to 65 µT");
+      return new MechValue({ k: "field", earth: e }, "magnetic field");
+    },
+  ),
   mechFn("turn", ["joint", "speed", "limit", "name"], "Turns a pivot (or moves a slider) at a speed, like a hand on a crank or a test rig: speed: rpm (mm/s on a slider), steady or over time like [(0s, 0rpm), (1s, 60rpm)]; limit: the most torque (N·mm) or force (N) it gives (no limit when left out). Results: <name>.peak_torque or .peak_force, .peak_power.", (a) => {
     const j = nameOf(a.value("joint"), a.ctx, "sim.turn(): joint");
     return new MechValue({ k: "turn", name: a.has("name") ? a.str("name") : `turn ${j}`, joint: j, speed: schedule(a, "speed")!, limit: a.positive("limit", 1e9) }, "turn");
@@ -455,7 +550,7 @@ export const MECHANISM_FN = new Fn(
     const spec: MechSpec = { items, base: base as MechSpec["base"], auto, follow };
     return new MechSpecValue(spec);
   },
-  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.jet, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
+  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.jet, sim.tunnel, sim.field, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
 );
 
 export class MechSpecValue extends Obj {

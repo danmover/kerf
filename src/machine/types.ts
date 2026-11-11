@@ -113,6 +113,8 @@ export type CatalogKind =
   | "seal"
   | "led"
   | "magnet"
+  /** a wound coil with two leads: an electromagnet a driver feeds (its field is worked out from the winding) */
+  | "coil"
   // circuit-board parts and audio
   | "resistor"
   | "capacitor"
@@ -167,7 +169,9 @@ export type GeomClass =
   | "endoscope"
   // addressable LED boards (rings, sticks, jewels) and plain discs (magnets, slip rings)
   | "led"
-  | "disc";
+  | "disc"
+  // differential pressure sensor: a housing with two tube ports and a screw lug
+  | "dp_sensor";
 
 export interface BoardFeature {
   kind: "usb" | "jack" | "header" | "terminal" | "chip" | "heatsink" | "cap" | "socket" | "module";
@@ -312,6 +316,8 @@ export interface MachineComponent {
   role?: string;
   /** the component's own X, Y and Z axes in design coordinates, when its placement turns it (an IMU's chip axes) */
   axes?: [[number, number, number], [number, number, number], [number, number, number]];
+  /** where the component's own origin (its `at` point) sits in design coordinates, mm: its first instance */
+  at?: [number, number, number];
   /** mechanical load on a motor in N·mm (component prop `load:`) */
   load?: number;
   /** cut length for stock items */

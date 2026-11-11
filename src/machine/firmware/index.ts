@@ -7,6 +7,7 @@ import { busArmFirmware, hasServoBus } from "./busArms";
 import { arduinoFirmware } from "./arduino";
 import { fwContext, oneLine, type GenFile } from "./common";
 import { klipperConfig } from "./klipper";
+import { MAGLEV_WORDS, maglevFirmware } from "./maglev";
 import { marlinConfig } from "./marlin";
 import { FLAVOR_NAME, type PrinterFlavor, PRINTER_FLAVORS, boardFlavors, flavorOf } from "./printer";
 import { rrfConfig } from "./rrf";
@@ -42,6 +43,10 @@ export function generateFirmware(m: MachineData, designName: string): FirmwareOu
     if (VANE_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? "")) && ARDUINO_BOARDS.test(ctx.boardPart.id) && /esp32/i.test(String(ctx.boardPart.specs.mcu ?? ""))) {
       const r = vaneFirmware(ctx);
       return { name: fw.name, board: ctx.board.name, target: "arduino", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
+    }
+    if (MAGLEV_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? "")) && ARDUINO_BOARDS.test(ctx.boardPart.id) && /esp32/i.test(String(ctx.boardPart.specs.mcu ?? ""))) {
+      const r = maglevFirmware(ctx);
+      return { name: fw.name, board: ctx.board.name, target: r.files.length ? "arduino" : "none", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
     }
     // smart servos on a bus adapter: the board is a bridge between a computer and the servo buses
     if (ARDUINO_BOARDS.test(ctx.boardPart.id) && hasServoBus(ctx)) {

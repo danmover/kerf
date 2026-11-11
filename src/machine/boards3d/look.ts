@@ -32,6 +32,10 @@ export type Look =
   | "barrel"
   | "jack35"
   | "sdcard"
+  // a side-entry JST SH socket (STEMMA QT, Qwiic)
+  | "jst_sh"
+  // a wide current-sense resistor
+  | "shunt"
   // everything else
   | "heatsink"
   | "elcap"
@@ -76,6 +80,8 @@ export interface BoardStyle {
   terminal?: string;
   /** heatsink colour */
   heatsink?: string;
+  /** JST SH socket housing colour */
+  socket?: string;
   /** female headers on top (Arduino Uno and Mega) */
   female?: boolean;
   /** draw the headers and terminals of the board's plug table (harness/plugs.ts); false when an extra already draws them */
@@ -305,6 +311,66 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
       { look: "crystal", x: 1.5, y: -5, w: 2, d: 2, h: 0.6 },
     ],
     smd: 1.1,
+  },
+  // Adafruit's field and current sensors and coil drivers (catalog/fields.ts), as sold: the newer ones black with
+  // gold pads, the two older motor drivers blue; green screw terminals, cream STEMMA QT sockets
+  tmag5273_breakout: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["TMAG5273A1", "3D Magnetometer"],
+    marks: ["3A1"],
+    looks: ["soic", "jst_sh", "jst_sh"],
+    socket: "#efece2",
+    smd: 0.8,
+  },
+  usb_cam_fit0701: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    looks: ["lens"],
+    smd: 0.8,
+  },
+  ina3221_breakout: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["INA3221", "Triple Power Monitor"],
+    marks: ["INA\n3221", "R050", "R050", "R050"],
+    looks: ["qfn", "terminal", "terminal", "terminal", "shunt", "shunt", "shunt", "jst_sh", "jst_sh"],
+    terminal: "#2f9a57",
+    socket: "#d9cba8",
+    smd: 0.8,
+  },
+  ina3221_breakout_41: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["INA3221", "Triple Power Monitor"],
+    marks: ["INA\n3221", "R050", "R050", "R050"],
+    looks: ["qfn", "terminal", "terminal", "terminal", "shunt", "shunt", "shunt", "jst_sh", "jst_sh"],
+    terminal: "#2f9a57",
+    socket: "#d9cba8",
+    smd: 0.8,
+  },
+  drv8871_breakout: {
+    mask: BLUE,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["DRV8871", "Motor Driver"],
+    marks: ["DRV\n8871"],
+    looks: ["soic", "terminal", "terminal", "header_down"],
+    terminal: "#2f9a57",
+    smd: 0.7,
+  },
+  tb6612_breakout: {
+    mask: BLUE,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["TB6612", "Motor Driver"],
+    marks: ["TB6612\nFNG"],
+    looks: ["soic", "header_down", "header_down"],
+    smd: 0.9,
   },
   lsm6dsox_breakout: {
     mask: BLACK,
