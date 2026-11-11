@@ -97,12 +97,18 @@ export function fieldRange(r: StructuralResult, field: ResultField): [number, nu
     return [lo, Math.max(hi, lo + 0.1)];
   }
   if (field === "life") return r.ranges.life ?? [0, 0];
+  if (field === "current") return [0, Math.max(r.ranges.current?.[1] ?? 0, 1e-9)];
   return [0, 0];
 }
+
+/** how faintly the parts a topology shape was cut from stay in view */
+export const TOPOLOGY_GHOST = 0.13;
 
 export class ResultsOverlay implements SceneOverlay {
   readonly object = new THREE.Group();
   readonly replaces: Set<string>;
+  /** a topology optimisation draws the shape it found inside the parts as designed, which stay faintly in view */
+  readonly ghosts?: ReadonlyMap<string, number>;
   private parts: PartMesh[] = [];
   private material: THREE.MeshStandardMaterial;
   private ghostMat: THREE.LineBasicMaterial;
@@ -140,7 +146,8 @@ export class ResultsOverlay implements SceneOverlay {
   ) {
     this.look = LOOK[theme];
     this.ghostMat = new THREE.LineBasicMaterial({ color: this.look.ghost, transparent: true, opacity: this.look.ghostOpacity, depthWrite: false });
-    this.replaces = new Set(result.parts.map((p) => p.id));
+    this.replaces = result.topology ? new Set() : new Set(result.parts.map((p) => p.id));
+    if (result.topology) this.ghosts = new Map(result.parts.map((p) => [p.id, TOPOLOGY_GHOST]));
     const lo = new THREE.Vector3(Infinity, Infinity, Infinity);
     const hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
     for (const p of result.parts)
@@ -273,6 +280,7 @@ export class ResultsOverlay implements SceneOverlay {
         else if (this.cfg.field === "disp") t = Math.hypot(f.disp[3 * v], f.disp[3 * v + 1], f.disp[3 * v + 2]) / hi;
         else if (this.cfg.field === "strain") t = 0.5 + (0.5 * f.strain[v]) / hi;
         else if (this.cfg.field === "temp") t = f.temp ? (f.temp[v] - lo) / (hi - lo) : 0;
+        else if (this.cfg.field === "current") t = f.current ? f.current[v] / hi : 0;
         else if (this.cfg.field === "life") t = f.life ? lifeT(f.life[v]) : 1;
         else t = (f.stress[v] - lo) / (hi - lo);
         out[v] = Math.min(1, Math.max(0, t));
@@ -358,7 +366,7 @@ export class ResultsOverlay implements SceneOverlay {
       const d = [0, 1, 2].map((c) => sampleVolume(v, (q) => v.disp![3 * q + c], p));
       return Math.hypot(d[0], d[1], d[2]);
     }
-    const arr = f === "stress" ? v.stress : f === "strain" ? v.strain : f === "safety" ? v.util : f === "temp" ? v.temp : v.life;
+    const arr = f === "stress" ? v.stress : f === "strain" ? v.strain : f === "safety" ? v.util : f === "temp" ? v.temp : f === "current" ? v.current : v.life;
     if (!arr) return null;
     const val = sampleVolume(v, (q) => arr[q], p);
     return f === "safety" ? 1 / Math.max(val, 1e-9) : val;
@@ -443,6 +451,9 @@ export class ResultsOverlay implements SceneOverlay {
       } else if (this.cfg.field === "temp") {
         if (!f.temp) return null;
         value = pick(f.temp);
+      } else if (this.cfg.field === "current") {
+        if (!f.current) return null;
+        value = pick(f.current);
       } else if (this.cfg.field === "life") {
         if (!f.life) return null;
         value = pick(f.life);
@@ -589,6 +600,9 @@ export class ResultsOverlay implements SceneOverlay {
       else if (b?.peaks[mode]) add(`buckles here · ${fmtNum(b.factors[mode], 2)}× the loads`, b.peaks[mode]);
     } else if (this.cfg.field === "temp") {
       if (r.thermal) add(`hottest ${degC(r.thermal.maxTemp.value)}`, r.thermal.maxTemp.at);
+    } else if (this.cfg.field === "current") {
+      const pk = r.thermal?.currentPeak;
+      if (pk && pk.value >= 1.2 * pk.typical) add(`densest ${fmtNum(pk.value, pk.value < 10 ? 2 : 1)} A/mm²`, pk.at);
     } else if (this.cfg.field === "stress") {
       add(`peak ${fmtNum(r.maxStress.value, 1)} MPa`, r.maxStress.at);
     } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" || r.minSafety.mode === "layer fatigue" ? " (layers)" : ""}${r.minSafety.mode === "fatigue" || r.minSafety.mode === "layer fatigue" ? " (fatigue)" : ""}`, r.minSafety.at);
@@ -726,6 +740,8 @@ function volumeT(v: ResultVolume, field: ResultField, q: number, lo: number, hi:
       return v.strain ? 0.5 + (0.5 * v.strain[q]) / hi : 0.5;
     case "temp":
       return v.temp ? (v.temp[q] - lo) / (hi - lo) : 0;
+    case "current":
+      return v.current ? v.current[q] / hi : 0;
     case "life":
       return v.life ? lifeT(v.life[q]) : 1;
     default:

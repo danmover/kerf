@@ -7,11 +7,13 @@
 // symmetric and, with any cooling or fixed temperature, positive definite).
 // Units: mm, W, °C (kelvin for radiation), J.
 
-import type { FilmSpec, FixedTempSpec, HeatLoadSpec } from "../spec";
+import type { CurrentSpec, FilmSpec, FixedTempSpec, HeatLoadSpec } from "../spec";
 
 /** What a heat analysis asks for, as the solver input carries it (heat loads already resolved to part names and instances). */
 export interface ThermalInput {
   heat: HeatLoadSpec[];
+  /** current through conductors: their Joule heat is worked out on the grid and added to the heat made */
+  currents?: CurrentSpec[];
   fixed: FixedTempSpec[];
   /** film coefficient on every surface no film covers, W/(m²·K) */
   cooling: number;
@@ -61,6 +63,8 @@ export interface HeatSolve {
   iterations: number;
   residual: number;
   converged: boolean;
+  /** what the residual was judged against (pass it back as ref: to warm-start a similar solve to the same accuracy) */
+  scale?: number;
 }
 
 /** Stefan–Boltzmann constant per mm²: 5.670e-8 W/(m²·K⁴) */
@@ -138,7 +142,7 @@ export function activeNodes(g: HeatGrid): Uint8Array {
  * Solve (K + diag)·T = b on the free active nodes by Jacobi-preconditioned CG, starting from T (fixed nodes keep
  * their values in T). Returns the iteration count and the relative residual reached.
  */
-function pcgHeat(g: HeatGrid, Ke: Float64Array, off: Int32Array, diag: Float64Array, b: Float64Array, T: Float64Array, free: Uint8Array, tol: number, maxIter: number) {
+function pcgHeat(g: HeatGrid, Ke: Float64Array, off: Int32Array, diag: Float64Array, b: Float64Array, T: Float64Array, free: Uint8Array, tol: number, maxIter: number, ref = 0) {
   const nn = T.length;
   // the diagonal of K for the preconditioner
   const dK = Float64Array.from(diag);
@@ -169,7 +173,9 @@ function pcgHeat(g: HeatGrid, Ke: Float64Array, off: Int32Array, diag: Float64Ar
   bn = Math.sqrt(bn);
   let rn = 0;
   for (let n = 0; n < nn; n++) rn += r[n] * r[n];
-  const scale = Math.max(bn, Math.sqrt(rn), 1e-30);
+  // the residual is judged against the right-hand side, or the first residual of a cold start (ref:) when a warm
+  // start begins close to the answer and the right-hand side is all held values
+  const scale = Math.max(bn, Math.sqrt(rn), ref, 1e-30);
   let rz = 0;
   for (let n = 0; n < nn; n++) {
     if (!free[n]) continue;
@@ -205,7 +211,7 @@ function pcgHeat(g: HeatGrid, Ke: Float64Array, off: Int32Array, diag: Float64Ar
     rz = rzNew;
     for (let n = 0; n < nn; n++) p[n] = free[n] ? z[n] + beta * p[n] : 0;
   }
-  return { iterations: it, residual: rel };
+  return { iterations: it, residual: rel, scale };
 }
 
 /**
@@ -245,7 +251,7 @@ export function hasHeatPath(g: HeatGrid): boolean {
 }
 
 /** The steady state: conduction balances the heat made against the films, radiation and held temperatures. */
-export function solveSteady(g: HeatGrid, opts: { tol?: number; maxIter?: number; start?: Float64Array } = {}): HeatSolve {
+export function solveSteady(g: HeatGrid, opts: { tol?: number; maxIter?: number; start?: Float64Array; ref?: number } = {}): HeatSolve {
   const nn = g.q.length;
   const Ke = conductionMatrix(...g.h);
   const off = cornerOffsets(g.n[0], g.n[1]);
@@ -261,6 +267,7 @@ export function solveSteady(g: HeatGrid, opts: { tol?: number; maxIter?: number;
   const b = new Float64Array(nn);
   let iterations = 0;
   let residual = 0;
+  let scale = 0;
   // radiation is nonlinear: re-linearise about the latest temperatures until they stop moving
   const passes = g.epsA ? 14 : 1;
   for (let pass = 0; pass < passes; pass++) {
@@ -270,16 +277,17 @@ export function solveSteady(g: HeatGrid, opts: { tol?: number; maxIter?: number;
       b[n] = g.q[n] + g.hAT[n] + rb[n];
     }
     const before = pass ? Float64Array.from(T) : null;
-    const s = pcgHeat(g, Ke, off, diag, b, T, free, tol, maxIter);
+    const s = pcgHeat(g, Ke, off, diag, b, T, free, tol, maxIter, opts.ref);
     iterations += s.iterations;
     residual = s.residual;
+    scale = Math.max(scale, s.scale);
     if (before) {
       let moved = 0;
       for (let n = 0; n < nn; n++) if (on[n]) moved = Math.max(moved, Math.abs(T[n] - before[n]));
       if (moved < 0.01) break;
     }
   }
-  return { T, iterations, residual, converged: residual <= tol * 10 };
+  return { T, iterations, residual, converged: residual <= tol * 10, scale };
 }
 
 /** Time steps for a warm-up: short ones first (heat spreads fast near sources), growing by a fixed ratio to the end. */

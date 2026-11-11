@@ -51,9 +51,9 @@ import { VIEW_TOOL_DEFS, VIEW_TOOL_TITLES, runViewTool } from "./viewTools";
 import { partGroups } from "../app/partGroups";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
-import { useAnalysis, whenAnalyzed, runFine, runAccuracyCheck, showResults, type ResultField } from "../analysis/runtime";
+import { useAnalysis, whenAnalyzed, runFine, runAccuracyCheck, runTopology, showResults, type ResultField } from "../analysis/runtime";
 import { startStudy, studyStatus, studySummary } from "../analysis/studyRuntime";
-import type { AnalysisSpec, StudySpec } from "../analysis/spec";
+import type { AnalysisSpec, StructuralSpec, StudySpec } from "../analysis/spec";
 import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict, uciSummary, uciItems, uciVerdict } from "../analysis/summary";
 import { airflowItems, showAirflow, startAirflowNow, useAirflow, whenAirflowDone, type SurfaceShown } from "../analysis/aeroRuntime";
 import { airflowSummary } from "../analysis/aeroSummary";
@@ -214,7 +214,7 @@ export const TOOL_DEFS = [
         view: { type: "string", enum: [...VIEW_NAMES], description: "Camera direction. iso is a 3/4 view from the front right." },
         highlight: { type: "array", items: { type: "string" }, maxItems: 30, description: "Part or component names to emphasise; others are ghosted." },
         section: { type: "string", enum: ["x", "y", "z"], description: "Cut the model in half across this axis to see inside. With results, the cut face is coloured by the field inside the parts, so you can see whether stress or heat runs through the section or stays at the surface." },
-        results: { type: "string", enum: ["stress", "safety", "disp", "strain", "temp", "life"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, principal strain, temperature (heat analyses) or fatigue life (analyses with cycles: or history:). Run run_analysis first." },
+        results: { type: "string", enum: ["stress", "safety", "disp", "strain", "temp", "current", "life"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, principal strain, temperature (heat analyses), current density (heat analyses with current(...) in heat:) or fatigue life (analyses with cycles: or history:). Run run_analysis first." },
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
         airflow: { type: "string", enum: ["pressure", "friction", "streamlines", "wake", "eddies"], description: "Draw an airflow analysis's result: surface pressure (red: pushed on, blue: suction), skin friction, streamlines coloured by speed, the wake (where the air lost its total pressure) or the eddies. Run run_analysis first." },
         yaw: { type: "number", description: "With airflow: the yaw angle to draw (default the first)." },
@@ -452,7 +452,7 @@ const ViewInput = z.object({
   view: z.enum(VIEW_NAMES),
   highlight: z.array(z.string().max(80)).max(30).optional(),
   section: z.enum(["x", "y", "z"]).optional(),
-  results: z.enum(["stress", "safety", "disp", "strain", "temp", "life"]).optional(),
+  results: z.enum(["stress", "safety", "disp", "strain", "temp", "current", "life"]).optional(),
   analysis: z.string().max(200).optional(),
   airflow: z.enum(["pressure", "friction", "streamlines", "wake", "eddies"]).optional(),
   yaw: z.number().finite().optional(),
@@ -461,6 +461,8 @@ const ViewInput = z.object({
 });
 /** how long run_analysis waits for airflow runs before reporting them as still running */
 const AIRFLOW_WAIT_MS = 8 * 60_000;
+/** and for a topology optimisation */
+const TOPOLOGY_WAIT_MS = 10 * 60_000;
 const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional(), check: z.boolean().optional() });
 const DrawingInput = z.object({ name: z.string().max(120).optional() });
 const SetInput = z.record(z.string().min(1).max(80), z.union([z.number().finite(), z.string().max(200), z.boolean()]));
@@ -1218,16 +1220,28 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         };
       }
       const studies = named.filter((a) => a.kind === "study");
-      const targets = named.filter((a): a is Exclude<AnalysisSpec, StudySpec> => a.kind !== "study");
+      // a topology optimisation takes many solves, so it too runs only when named
+      const isTopo = (a: AnalysisSpec) => a.kind === "structural" && !!a.topology;
+      const topos = p.data.label ? [] : named.filter(isTopo);
+      const targets = named.filter((a): a is Exclude<AnalysisSpec, StudySpec> => a.kind !== "study" && (!!p.data.label || !isTopo(a)));
       if (!targets.length)
-        return { isError: true, content: `Only design studies here (${studies.map((a) => `"${a.label}"`).join(", ")}); they build many designs, so they run only when named: run_analysis label: "<study>".`, card: { title: "Name the study to run", status: "error" } };
+        return {
+          isError: true,
+          content: `Only ${studies.length ? `design studies (${studies.map((a) => `"${a.label}"`).join(", ")})` : ""}${studies.length && topos.length ? " and " : ""}${topos.length ? `topology optimisations (${topos.map((a) => `"${a.label}"`).join(", ")})` : ""} here; they run only when named: run_analysis label: "<label>".`,
+          card: { title: "Name the analysis to run", status: "error" },
+        };
+      const topoTarget = targets.find((a): a is StructuralSpec => a.kind === "structural" && !!a.topology);
+      if (topoTarget) {
+        const run = useAnalysis.getState().runs.get(topoTarget.label);
+        if (run?.status === "idle") runTopology(topoTarget.label);
+      }
       if (p.data.fine) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.fine) runFine(a.label);
       if (p.data.check) for (const a of targets) if (a.kind === "structural" && !useAnalysis.getState().runs.get(a.label)?.check) runAccuracyCheck(a.label);
       if (targets.some((a) => a.kind === "airflow")) {
         startAirflowNow();
         await whenAirflowDone(AIRFLOW_WAIT_MS);
       }
-      if (targets.some((a) => a.kind !== "airflow")) await whenAnalyzed();
+      if (targets.some((a) => a.kind !== "airflow")) await whenAnalyzed(topoTarget ? TOPOLOGY_WAIT_MS : undefined, topoTarget ? [topoTarget.label] : []);
       const st = useAnalysis.getState();
       const report = useDesign.getState().report?.items ?? [];
       const air = useAirflow.getState();
@@ -1257,6 +1271,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           return !r || r.error || r.items.some((i) => i.status === "fail") ? "fail" : r.items.some((i) => i.status === "warn") ? "warn" : "pass";
         }
         const r = st.runs.get(a.label);
+        // the shape a topology optimisation finds is a suggestion: it passes once found
+        if (a.topology) return r?.result?.topology && r.status === "done" ? "pass" : r?.status === "running" || r?.status === "waiting" ? "warn" : "fail";
         return r?.result && r.status === "done" ? structuralVerdict(a, r.result) : "fail";
       });
       const firstShown = targets.find((a) => a.kind === "structural" && st.runs.get(a.label)?.result);
@@ -1269,7 +1285,9 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         const a = targets[0];
         const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
         const ar = a.kind === "airflow" ? air.runs.get(a.label)?.result : undefined;
-        title = r
+        title = r?.topology
+          ? `${a.label}: kept ${fmtNum(r.topology.kept * 100, 0)} %, ${fmtNum(r.topology.stiffness * 100, 0)} % as stiff`
+          : r
           ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.kind === "structural" ? a.safety : 0, 1)})`
           : ar
             ? `${a.label}: CdA ${fmtNum(ar.yaws.reduce((t, y) => t + y.cda, 0) / ar.yaws.length, 3)} m²`
@@ -1280,7 +1298,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           text +
           (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : "") +
           (airShown ? `\n\nThe airflow of "${airShown.label}" is shown on the user's model. Use capture_view with airflow: "pressure", "streamlines" or "wake" to look at it.` : "") +
-          (studies.length ? `\n\nDesign studies (${studies.map((a) => `"${a.label}"`).join(", ")}) were not run: each builds many designs, so it runs only when named, with run_analysis label: "<study>".` : ""),
+          (studies.length ? `\n\nDesign studies (${studies.map((a) => `"${a.label}"`).join(", ")}) were not run: each builds many designs, so it runs only when named, with run_analysis label: "<study>".` : "") +
+          (topos.length ? `\n\nTopology optimisations (${topos.map((a) => `"${a.label}"`).join(", ")}) were not run: each takes many solves, so it runs only when named, with run_analysis label: "<label>".` : ""),
         card: { title, detail: verdicts.map((v, i) => `${targets[i].label}: ${v}`).join(" · "), status: fails ? "error" : "done" },
       };
     }
@@ -1296,7 +1315,11 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         const st = useAnalysis.getState();
         const temp = p.data.results === "temp";
         const life = p.data.results === "life";
-        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs.get(a.label)?.result && (!temp || st.runs.get(a.label)?.result?.ranges.temp) && (!life || st.runs.get(a.label)?.result?.ranges.life));
+        const current = p.data.results === "current";
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => {
+          const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
+          return r && (!temp || r.ranges.temp) && (!life || r.ranges.life) && (!current || r.ranges.current);
+        });
         const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === st.shown) ?? specs[0];
         if (!pick)
           return {
@@ -1305,7 +1328,9 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
               ? "No analysis has temperatures to draw. Add one with heat: (see Analysis blocks) and call run_analysis first."
               : life
                 ? "No analysis has a fatigue life to draw. Give one cycles: over 1000 or history: (see Analysis blocks) and call run_analysis first."
-                : "No structural analysis has results to draw. Add an analysis block and call run_analysis first.",
+                : current
+                  ? "No analysis has a current to draw. Put current(from, to, 40A) in a heat analysis's heat: (see Analysis blocks) and call run_analysis first."
+                  : "No structural analysis has results to draw. Add an analysis block and call run_analysis first.",
             card: { title: "No results to show", status: "error" },
           };
         if (p.data.analysis && pick.label !== p.data.analysis) resultNote = ` (no results for "${p.data.analysis}")`;
@@ -1319,6 +1344,7 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           disp: "deflection (blue none, red most)",
           strain: "principal strain (blue compression, red tension)",
           temp: "temperature (blue coolest, red hottest)",
+          current: "current density (blue none, red densest, where it crowds and heats most)",
           life: "fatigue life against the target (red breaks before it, amber within 10× of it, green and blue last)",
         }[p.data.results];
         resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed or moved supports (spheres are rollers, pins and springs), rings mark hot spots${p.data.section ? "; the cut face shows the field inside the parts" : ""}`;

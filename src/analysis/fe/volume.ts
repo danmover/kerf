@@ -22,6 +22,8 @@ export interface ResultVolume {
   /** °C, and fatigue life over the design life as log10, when the result has them */
   temp?: Float32Array;
   life?: Float32Array;
+  /** current density, A/mm², when current runs through the parts */
+  current?: Float32Array;
 }
 
 /**

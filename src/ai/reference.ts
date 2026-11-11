@@ -495,7 +495,7 @@ analysis "Shelf load" {
 }
 fix: and load: may repeat or take lists. Units: N, kN, lbf, kgf (weight of a kilogram: 5kgf = 49 N; kg is a mass in grams, so never kg × 9.81N), Nm, Nmm, MPa, kPa, bar, psi, GPa, and speeds in kmh or mph. Inside an analysis block these functions exist:
 ${analysisFns}
-Look at a result with capture_view results: ("stress", "safety", "disp", "strain", "temp" or "life"); add section: to cut it open, and the cut face shows the field inside the parts (whether stress or heat runs through a section or stays near the surface).
+Look at a result with capture_view results: ("stress", "safety", "disp", "strain", "temp", "current" or "life"); add section: to cut it open, and the cut face shows the field inside the parts (whether stress or heat runs through a section or stays near the surface).
 A drivetrain analysis gives a gear train's duty instead; the app checks tooth bending (Lewis), bearing L10 life and shaft torsion for every gear and bearing the driver turns:
 analysis "Gearbox duty" {
   drive: motor_gear        // the component that drives the train
@@ -549,6 +549,8 @@ analysis "Motor mount heat" {
   fix: face(mount, -Z)      // optional: thermal stress, from assembled_at: (default the ambient)
 }
 A part past its limit fails, within the last tenth of its headroom warns. The result gives each part's hottest point, where the heat comes from, where it goes (air, radiation, held surfaces), and for a warm-up when each part passes its limit and where it would settle.
+Current through the parts (Joule heating: busbars, battery straps, heater elements, fuse links, wire and terminals) goes in heat: too. current(from, to, 40A) sends a current in at one region and out at another through the parts that conduct (metals, carbon fibre; plastics carry none); current(from, to, 12V) puts a voltage across them instead. Kerf solves where the current runs, finds the resistance from each metal's resistivity, makes the I²R heat where it flows (most in narrow necks and round holes, where it crowds) and settles the resistance at the temperatures that heat brings (metals resist more as they warm, so a set current heats more and a set voltage drives less). The result gives each current's resistance, voltage drop, heat cold and warm, the parts it heats, the densest current (A/mm²) and where; capture_view results: "current" colours the parts by it.
+analysis "Busbar" { parts: [bar, strap]  heat: [current(face(bar, -X), face(strap, +X), 120A, name: "Pack current")]  cooling: "still air" }
 analysis "Left in the sun" { parts: [bracket]  fix: [face(bracket, -X), face(bracket, +X)]  temperature: 60C  assembled_at: 20C }   // the whole model at one temperature: expansion against the supports, no heat solve
 Buckling: add buckling (3 shapes) or buckling: 1..6 to an analysis with loads; it finds how many times the loads it takes to buckle slender parts (columns, thin walls, tubes, struts) and their buckled shapes. Under 1 it fails, under buckling_safety: (default 3, since dents and print lines make real parts buckle sooner) it warns.
 Printed parts: a part with an fdm process, or of a filament material and no process, is analysed as printed: solid walls (walls: lines of about 1.1 nozzle widths) round each layer's outline and solid skins (top: layers) under its tops and over its bottoms, round a sparse infill (infill:, pattern:) with a share of the solid's stiffness and strength (40 % gyroid: about 16 % as stiff and 20 % as strong). Its layers are weaker to pull apart and to slide (the layer check counts both) and a little softer across (fibre-filled filaments much softer). They stack the way the build pack lays the part on the bed (its largest flat face, unless the process gives build:); build: in the analysis overrides that for every part. Kerf assumes 4 walls, 5 top and bottom layers and 40 % gyroid infill unless the part says what it is printed with, like process: mfg.fdm(build: X, walls: 6, top: 6, infill: 60%), and the build pack lists each part's settings. A thin wall is all walls; a thick block or a narrow web between two skins is mostly infill, so give load-bearing printed parts more walls or infill when they bend too much.
@@ -571,6 +573,18 @@ analysis "Lightest bracket" {
   runs: 16                         // the most designs to build, the current one included (default 12, at most 40)
 }
 It never runs on its own: run_analysis label: "<study>" runs it (about as long as building and solving the design once per run) and returns every design, the best, and how much each parameter matters. Apply one with edit_design alternative: "<study> #<n>". Prefer a study to trying sizes by hand; use compare_designs for different concepts.
+Topology optimisation (where to cut material away): topology: in a strength analysis finds the stiffest shape for its loads and supports that keeps that share of the parts' material (SIMP with a density filter, a sharpening step and optimality-criteria updates), then checks that shape under the same loads:
+analysis "Lighter bracket" {
+  fix: face(bracket, -Y)
+  load: force(face(bracket, +Z), (0, 0, -400N))
+  topology: 35%                 // the share of the material to keep, 5 % to 95 %
+  preserve: [zone(at: (20, 0, 8), r: 6), boss]   // optional: kept solid (bosses round holes, mounting faces, whole parts); where it is held and loaded always stays
+  min_member: 4mm               // optional: the thinnest member (default about 2.5 elements)
+  symmetry: [X]                 // optional: mirror planes through the middle of the parts, by the axis across them
+  extrusion: Y                  // optional: the same all the way through along Y, to cut from plate (laser, waterjet, router)
+  iterations: 80                // optional: most design steps (most settle in 30 to 60)
+}
+It takes many solves (about half a minute at the standard resolution, use resolution: "draft" for a first look), so it never runs on its own: run_analysis label: "<label>" runs it and returns the material and mass kept, the stiffness kept against the solid parts, openings, the shape's own stress and safety factor, and with extrusion: the profile as point lists (outsides anticlockwise, holes clockwise) to extrude; capture_view results shows the shape inside the faded parts. The shape is a suggestion: model it as a real part (follow its members, round it off, keep the mounting faces), then check that part in an analysis of its own. Keep it in its own analysis, not with drops, frequencies, heat, buckling or fatigue.
 Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
 An airflow analysis puts the design in a virtual wind tunnel: a GPU lattice-Boltzmann flow solver with LES turbulence and a wall model, on a rolling road with the wheels spinning, re-run after each change:

@@ -5,7 +5,10 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 import { useDesign } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
-import { useAnalysis, showResults, runFine, runAccuracyCheck, type StructuralRun, type ResultField } from "../analysis/runtime";
+import { useAnalysis, showResults, runFine, runAccuracyCheck, runTopology, stopTopology, type StructuralRun, type ResultField } from "../analysis/runtime";
+import { topologyText } from "../analysis/topologySummary";
+import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
+import { download } from "../persist/files";
 import { dirWords, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { count, designWords, fatigueText, fatigueVerdict, lifeText } from "../analysis/fatigueSummary";
 import { cycleWords, cyclesAt, MEAN_STRESS, type SnCurve } from "../analysis/fe/fatigue";
@@ -20,7 +23,7 @@ import type { StructuralResult, ThermalResult } from "../analysis/fe/structural"
 import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
 import { FIELD_INFO, autoDeform, fieldFor, resultFields, shownMode } from "./ResultsLayer";
-import { accuracyText, bucklingText, bucklingVerdict, degC, duration, temperatureText, temperatureVerdict } from "../analysis/thermalSummary";
+import { accuracyText, amps, bucklingText, bucklingVerdict, degC, density, duration, ohms, temperatureText, temperatureVerdict, volts, watts } from "../analysis/thermalSummary";
 import { dropVerdict, modeWords, resonances, vibrationText, vibrationVerdict } from "../analysis/dynamics";
 import { Menu, MenuItem, Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
@@ -67,8 +70,8 @@ export function AnalysisPanel() {
         ))}
         <AddAnalysis />
         <div className="grow" />
-        {spec?.kind === "structural" && <FineButton spec={spec} run={runs.get(spec.label)} />}
-        {spec?.kind === "structural" && <AccuracyButton spec={spec} run={runs.get(spec.label)} />}
+        {spec?.kind === "structural" && !spec.topology && <FineButton spec={spec} run={runs.get(spec.label)} />}
+        {spec?.kind === "structural" && !spec.topology && <AccuracyButton spec={spec} run={runs.get(spec.label)} />}
         {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} air={spec.kind === "airflow" ? airRuns.get(spec.label) : undefined} />}
         {spec?.kind === "structural" && <StructuralControls spec={spec} run={runs.get(spec.label)} />}
         {spec?.kind === "airflow" && <AirflowControls spec={spec} run={airRuns.get(spec.label)} />}
@@ -117,6 +120,19 @@ function Pick({ spec, active, run, dt, items, air, study }: { spec: AnalysisSpec
       status = spec.maxCda !== undefined ? (cda <= spec.maxCda ? "pass" : "fail") : "info";
       val = `CdA ${fmtNum(cda, 3)}`;
     } else val = air?.status === "running" ? `${Math.round(air.frac * 100)}%` : air ? "waiting" : "";
+  } else if (spec.kind === "structural" && spec.topology) {
+    const t = run?.result?.topology;
+    if (run?.status === "error") {
+      status = "fail";
+      val = "error";
+    } else if (run?.status === "running" || run?.status === "waiting") val = `${Math.round((run.frac ?? 0) * 100)}%`;
+    else if (t) {
+      status = "info";
+      val = `${Math.round(t.kept * 100)} % · ${Math.round(t.stiffness * 100)} % stiff${run?.status === "idle" ? " · old" : ""}`;
+    } else {
+      status = "info";
+      val = "ready";
+    }
   } else if (spec.kind === "structural") {
     if (run?.status === "error") {
       status = "fail";
@@ -236,6 +252,10 @@ function AskButton({ spec, run, dt, air }: { spec: AnalysisSpec; run?: Structura
       ? `Make the bike pass every item of the "${spec.label}" UCI rules check, keeping it as fast as you can.`
       : spec.kind === "study"
         ? `Run the "${spec.label}" design study, tell me which design is best and why, and apply it if it still passes everything.`
+        : spec.kind === "structural" && spec.topology
+        ? run?.result?.topology
+          ? `Model the shape the "${spec.label}" topology optimisation found as a real part: follow its members and openings${run.result.topology.outline ? " (use its profile outline)" : ""}, round it for making it, keep the mounting faces and holes, then check the new part in its own analysis against the same loads and tell me its mass and safety factor.`
+          : `Run the "${spec.label}" topology optimisation and tell me what shape it finds.`
         : spec.kind === "airflow"
         ? `Look at the "${spec.label}" airflow results: where does the drag come from? Reshape the parts that cost the most to cut the drag (keep them strong, legal and makeable), re-run the airflow after each change and tell me what each change saved.`
         : `Explain the "${spec.label}" analysis results and suggest how to strengthen the weakest area without adding much material.`;
@@ -251,6 +271,7 @@ function AskButton({ spec, run, dt, air }: { spec: AnalysisSpec; run?: Structura
 function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralRun }) {
   const r = run?.result;
   const busy = run?.status === "running" || run?.status === "waiting";
+  if (spec.topology) return <TopologyView spec={spec} run={run} />;
   return (
     <>
       {busy && <RunProgress run={run!} updating={!!r} />}
@@ -258,6 +279,7 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
       {r?.modal && <ModesBox spec={spec} r={r} />}
       {r?.drop && <DropBox spec={spec} r={r} />}
       {r?.thermal && <HeatBox spec={spec} r={r} />}
+      {r?.thermal?.currents?.length ? <CurrentBox spec={spec} r={r} /> : null}
       {r?.buckling && <BucklingBox spec={spec} r={r} />}
       {r?.fatigue && <FatigueBox spec={spec} r={r} />}
       {r && !r.heatOnly && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
@@ -272,6 +294,184 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
         </div>
       </div>
     </>
+  );
+}
+
+// ---------- topology optimisation ----------
+
+const pctText = (x: number) => `${fmtNum(x * 100, x < 0.1 ? 1 : 0)} %`;
+const gramsText = (g: number) => (g >= 1000 ? `${fmtNum(g / 1000, 2)} kg` : `${fmtNum(g, g < 10 ? 1 : 0)} g`);
+
+function TopologyView({ spec, run }: { spec: StructuralSpec; run?: StructuralRun }) {
+  const r = run?.result?.topology ? run.result : undefined;
+  return (
+    <>
+      <TopologyBox spec={spec} run={run} />
+      {r && <ResultCards spec={spec} r={r} />}
+      <div className="an-cols">
+        <div>
+          <SetupBox spec={spec} r={r} run={run} />
+        </div>
+        <div>{r && <NotesBox spec={spec} r={r} />}</div>
+      </div>
+    </>
+  );
+}
+
+/** Find the stiffest shape for the loads from a share of the material: run it, watch it, and take the shape away. */
+function TopologyBox({ spec, run }: { spec: StructuralSpec; run?: StructuralRun }) {
+  const t = spec.topology!;
+  const r = run?.result?.topology ? run.result : undefined;
+  const topo = r?.topology;
+  const busy = run?.status === "running" || run?.status === "waiting";
+  const old = !!r && run?.status === "idle";
+  const setDraft = useChatDraft((s) => s.set);
+  const [now, setNow] = useState(() => performance.now());
+  useEffect(() => {
+    if (!busy) return;
+    const i = setInterval(() => setNow(performance.now()), 250);
+    return () => clearInterval(i);
+  }, [busy]);
+  const start = () => {
+    runTopology(spec.label);
+    showResults(spec.label);
+  };
+  const tx = r ? topologyText(spec, r) : null;
+  const dxf = r ? outlineDxf(r) : null;
+  const sf = r ? staticSafety(r).value : 0;
+  const what = [`keep ${pctText(t.keep)}`, t.cut ? `cut through ${t.cut}` : "", t.symmetry.length ? `mirrored across ${t.symmetry.join(", ")}` : "", t.preserve.length || t.preserveParts.length ? `${t.preserve.length + t.preserveParts.length} kept solid` : ""].filter(Boolean).join(" · ");
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 6 }}>
+        <Icon.Wand size={14} style={{ color: "var(--text-3)" }} />
+        <b>Topology optimisation</b>
+        <span className="dim mono">{what}</span>
+        <div className="grow" />
+        {busy ? (
+          <button className="btn sm" onClick={() => stopTopology(spec.label)}>
+            <Icon.Stop size={13} /> Stop
+          </button>
+        ) : (
+          <button className="btn sm primary" onClick={start} disabled={!run} data-tip="Find the stiffest shape for these loads with this much of the material">
+            <Icon.Play size={13} /> {r ? "Run again" : "Find the shape"}
+          </button>
+        )}
+      </div>
+      {!r && !busy && (
+        <div className="an-note">
+          <span className="dim">
+            Finds the stiffest shape for these loads that keeps {pctText(t.keep)} of the parts&apos; material, cutting away what carries little. Where the parts are held and loaded stays solid
+            {t.preserve.length || t.preserveParts.length ? ", and so does what preserve: names" : ""}. It runs only when asked, about half a minute at the standard resolution, and the shape forms on the model as it goes.
+          </span>
+        </div>
+      )}
+      {busy && run && (
+        <>
+          <div className="mono dim" style={{ fontSize: 11, marginTop: 4 }}>
+            {run.status === "waiting" ? "queued" : run.stage.toLowerCase()} · {fmtNum(Math.max(0, (now - run.startedAt) / 1000), 1)} s
+          </div>
+          <div className="an-progress">
+            <div style={{ width: `${Math.round(run.frac * 100)}%` }} />
+          </div>
+        </>
+      )}
+      {old && (
+        <div className="an-note" style={{ marginBottom: 8 }}>
+          <Icon.Alert size={13} />
+          <span>The design changed since this shape was found. Run it again to update it.</span>
+        </div>
+      )}
+      {r && topo && (
+        <>
+          <div className="an-grid" style={{ margin: "6px 0 10px" }}>
+            <div className="an-stat">
+              <div className="k">Material kept</div>
+              <div className="v">
+                {fmtNum(topo.kept * 100, 0)}
+                <small>%</small>
+              </div>
+              <div className="s">
+                {gramsText(topo.massBefore)} down to {gramsText(topo.massAfter)}
+              </div>
+            </div>
+            <div className="an-stat">
+              <div className="k">Stiffness kept</div>
+              <div className="v">
+                {fmtNum(topo.stiffness * 100, 0)}
+                <small>%</small>
+              </div>
+              <div className="s">of the solid parts&apos;; spread evenly about {pctText(Math.pow(topo.kept, 3))}</div>
+            </div>
+            <div className="an-stat">
+              <div className="k">Openings</div>
+              <div className="v">{topo.openings}</div>
+              <div className="s">
+                {topo.pieces > 1 ? `${topo.pieces} pieces` : "one piece"} · members ≥ {fmtNum(topo.minMember, 1)} mm
+              </div>
+            </div>
+            <div className={`an-stat ${tx?.weak ? "fail" : "pass"}`}>
+              <div className="k">The shape&apos;s safety</div>
+              <div className="v">
+                {sfText(sf)}
+                <small>target {fmtNum(spec.safety, 1)}</small>
+              </div>
+              <div className="s">{tx?.weak ? "too weak as it is: keep more or thicken it" : "as found, under these loads"}</div>
+            </div>
+          </div>
+          <TopologyChart history={topo.history} />
+          {tx?.fix && <div className="an-note">{tx.fix}</div>}
+          <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+            <button className="btn sm" onClick={() => download(shapeStl(r, `Kerf: ${spec.label}`), `${fileStem(spec.label)}.stl`, "model/stl")} data-tip="The shape as a mesh, to print or to model over">
+              <Icon.Download size={13} /> STL
+            </button>
+            {dxf && (
+              <button className="btn sm" onClick={() => download(dxf, `${fileStem(spec.label)}.dxf`, "application/dxf")} data-tip={`The profile 1:1 for a laser, waterjet or router (${fmtNum((topo.outline?.to ?? 0) - (topo.outline?.from ?? 0), 1)} mm plate)`}>
+                <Icon.Download size={13} /> DXF profile
+              </button>
+            )}
+            <button
+              className="btn sm ghost"
+              onClick={() =>
+                setDraft(
+                  `Model the shape the "${spec.label}" topology optimisation found as a real part: follow its members and openings${topo.outline ? " (use its profile outline)" : ""}, round it for making it, keep the mounting faces and holes, then check the new part in its own analysis against the same loads and tell me its mass and safety factor.`,
+                )
+              }
+            >
+              <Icon.Sparkle size={13} /> Model it with Claude
+            </button>
+            <div className="grow" />
+            <span className="mono dim" style={{ fontSize: 10.5 }}>
+              {topo.converged ? "settled" : "stopped"} after {topo.iterations} steps · {fmtNum(topo.ms / 1000, 1)} s
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** How the stiffness improved step by step (compliance against the parts left solid), with the material in use. */
+function TopologyChart({ history }: { history: NonNullable<StructuralResult["topology"]>["history"] }) {
+  const chart = useMemo(() => {
+    const n = history.length;
+    if (n < 2) return null;
+    const c = history.map((h) => Math.log(h.compliance));
+    const lo = Math.min(...c),
+      hi = Math.max(...c);
+    const y = (v: number) => 4 + ((hi - v) / Math.max(hi - lo, 1e-9)) * 42;
+    const pts = c.map((v, i) => `${((i / (n - 1)) * 100).toFixed(2)},${(50 - y(v) + 4).toFixed(2)}`).join(" ");
+    return { pts, n };
+  }, [history]);
+  if (!chart) return null;
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <svg className="an-spark" viewBox="0 0 100 54" preserveAspectRatio="none" aria-label="Stiffness over the design steps">
+        <polyline points={chart.pts} fill="none" stroke="var(--accent)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        stiffness at each of {chart.n} design steps, as the material moves to where it carries the loads
+      </div>
+    </div>
   );
 }
 
@@ -496,6 +696,92 @@ function HeatBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
           <span>{text.fix}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Current through the parts (Joule heating): each current's resistance, voltage and heat, cold and warm, and how dense it runs. */
+function CurrentBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const t = r.thermal!;
+  const cs = t.currents!;
+  const field = useAnalysis((s) => s.field);
+  const shown = useAnalysis((s) => s.shown);
+  const mode = useAnalysis((s) => s.mode);
+  const on = shown === spec.label && fieldFor(r, field) === "current" && shownMode(r, mode) === null;
+  const show = () => {
+    useAnalysis.setState({ field: "current", mode: null });
+    showResults(spec.label);
+  };
+  const pk = t.currentPeak;
+  const made = cs.reduce((a, c) => a + c.watts, 0);
+  const cold = cs.reduce((a, c) => a + c.cold.watts, 0);
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <Icon.Bolt size={14} style={{ color: "var(--text-3)" }} />
+        <b>Current through the parts</b>
+        <span className="dim mono">Joule heating, I²R</span>
+        <div className="grow" />
+        <button className={`an-toggle ${on ? "on" : ""}`} onClick={show} aria-pressed={on} data-tip="Colour the model by current density">
+          {on ? <Icon.Eye size={13} /> : <Icon.EyeOff size={13} />} current density
+        </button>
+      </div>
+      <div className="an-grid" style={{ marginBottom: 10 }}>
+        {pk && (
+          <button className={`an-stat ${on ? "active" : ""}`} onClick={show}>
+            <div className="k">Densest</div>
+            <div className="v">
+              {fmtNum(pk.value, pk.value < 10 ? 2 : 1)}
+              <small>A/mm²</small>
+            </div>
+            <div className="s">{pk.value < 1.2 * pk.typical ? "about even through the metal" : `in ${pk.part} near ${v3(pk.at)}, ${fmtNum(pk.value / pk.typical, 1)}× its typical ${density(pk.typical)}`}</div>
+          </button>
+        )}
+        <div className="an-stat">
+          <div className="k">Heat made</div>
+          <div className="v">
+            {fmtNum(made, made < 10 ? 2 : 1)}
+            <small>W</small>
+          </div>
+          <div className="s">{Math.abs(made - cold) > 0.005 * Math.max(cold, 1e-12) ? `${watts(cold)} at 20 °C, before it warms` : "barely warms, so the same cold"}</div>
+        </div>
+      </div>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th>Current</th>
+            <th className="num">Through</th>
+            <th className="num">Across</th>
+            <th className="num">Resistance</th>
+            <th className="num">Heat</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cs.map((c) => (
+            <tr key={c.label}>
+              <td>
+                {c.label}
+                <span className="dim">
+                  {" "}
+                  · {c.from} to {c.to}
+                  {c.parts.length > 1 ? ` · ${c.parts.slice(0, 3).map((p) => `${Math.round(p.share * 100)} % ${p.name}`).join(", ")}` : ""}
+                </span>
+              </td>
+              <td className="num">{amps(c.amps)}</td>
+              <td className="num">{volts(c.volts)}</td>
+              <td className="num" title={`${ohms(c.cold.ohms)} at 20 °C`}>
+                {ohms(c.ohms)}
+              </td>
+              <td className="num" title={`${watts(c.cold.watts)} at 20 °C`}>
+                {watts(c.watts)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        at the temperatures the parts reach; {cs.some((c) => c.driven === "volts") ? "a set voltage drives less current as the metal warms" : "a set current makes more heat as the metal warms"}
+      </div>
     </div>
   );
 }
@@ -1040,6 +1326,13 @@ function HeatSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) 
           {s.label} · {fmtNum(s.watts, 2)} W{s.why ? <span className="dim"> · {s.why}</span> : null}
         </div>
       ))}
+      {!r?.thermal &&
+        (th.currents ?? []).map((c, i) => (
+          <div key={`c${i}`}>
+            <span className="tag">current</span>
+            {c.label} · {c.amps !== undefined ? `${fmtNum(c.amps, 2)} A` : `${fmtNum(c.volts ?? 0, 2)} V`} from {describeRegion(c.from)} to {describeRegion(c.to)}
+          </div>
+        ))}
       {th.auto && !r?.thermal && (
         <div>
           <span className="tag">heat</span>

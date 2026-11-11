@@ -1,6 +1,6 @@
 // Messages between the app and the analysis worker.
 
-import type { StructuralInput, StructuralResult } from "./fe/structural";
+import type { StructuralInput, StructuralResult, TopologyPreview } from "./fe/structural";
 import type { AirflowInput, AirflowProgress, AirflowResult } from "./aero/types";
 
 export interface FeaRequest {
@@ -9,7 +9,8 @@ export interface FeaRequest {
 }
 
 export type FeaResponse =
-  | { id: number; type: "progress"; stage: string; frac: number; iter?: number; residual?: number }
+  /** preview: a topology optimisation's shape so far */
+  | { id: number; type: "progress"; stage: string; frac: number; iter?: number; residual?: number; preview?: TopologyPreview }
   | { id: number; type: "done"; result: StructuralResult }
   /** setup: the set-up cannot be solved (missing support, loose part...), as opposed to a crash */
   | { id: number; type: "error"; message: string; setup: boolean };
