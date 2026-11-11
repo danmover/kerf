@@ -271,8 +271,8 @@ describe("the seatpost number bracket", () => {
     // then the clip's pin goes in across the jaw, through the number's centre hole, and its leg's catch clicks up behind
     // the far cheek
     expect(name(push.part)).toBe("number_clip");
-    // its catch holds harder than a pull on its head that would bend its spine, so it comes out only by its catch
-    expect(push.caption).toMatch(/^Push Number clip in through Race number \(4004\) until it clicks: about \d+(\.\d)? N\. To take it out, press its catch free and slide it back out\.$/);
+    // its catch holds harder than a pull on its tab that would bend its spine, so it comes out only by its catch
+    expect(push.caption).toMatch(/^Push Number clip in through Race number \(4004\) until it clicks: about \d+(\.\d)? N\. To take it out, press its catch free \(about \d+(\.\d)? N on the hook's tip\) and pull it out by its tab\.$/);
     expect(Math.abs(vnorm(push.from)[0])).toBeCloseTo(1, 6);
     const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
     expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);

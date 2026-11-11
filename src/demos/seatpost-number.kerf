@@ -1,5 +1,5 @@
 design "Seatpost Number Bracket"
-note "A screwless race-number holder that fits round seatposts, D-shaped aero posts and the Giant Propel's, held on the way rear lights are. Its curved middle sits behind the post on a TPU grip pad shaped to that post, and an arm at each side, printed in place round a boss, swings in or out on it and cannot come off. One EPDM O-ring's ends drop into a rounded channel in the back of each arm's head (the end loops over the head's top and under its bottom and slides in from the side), and it wraps the post's front with a strand high and one low. Its pull swings each arm in until a rounded finger on the arm rests on the post's side, so the arms follow whatever shape the post is, and the pull presses the middle and its pad onto the post's back. The number's pointed end slides into a slot in the jaw only 0.2 mm wider than the number and nests in a V pocket of its own outline there, which holds it at one tilt, its tail 15° above level. A one-piece number clip keeps it there: its square pin pushes through one cheek, the number's centre hole (where the old bolt went) and the other cheek, and its leg runs under the jaw and clicks up behind the far cheek's bottom edge. No pull on its head takes it out: press the tab past the far cheek down and push it toward the jaw, and it slides out."
+note "A screwless race-number holder that fits round seatposts, D-shaped aero posts and the Giant Propel's, held on the way rear lights are. Its curved middle sits behind the post on a TPU grip pad shaped to that post, and an arm at each side, printed in place round a boss, swings in or out on it and cannot come off. One EPDM O-ring's ends drop into a rounded channel in the back of each arm's head (the end loops over the head's top and under its bottom and slides in from the side), and it wraps the post's front with a strand high and one low. Its pull swings each arm in until a rounded finger on the arm rests on the post's side, so the arms follow whatever shape the post is, and the pull presses the middle and its pad onto the post's back. The number's pointed end slides into a slot in the jaw only 0.2 mm wider than the number and nests in a V pocket of its own outline there, which holds it at one tilt, its tail 15° above level. A slim one-piece number clip keeps it there, hugging the jaw: its round pin, which fills the number's centre hole (where the old bolt went), pushes through one cheek, the number and the other cheek, and its leg runs under the jaw and clicks up behind the far cheek's bottom edge. No pull on its head and no knock on its pin takes it out: press the hook's nose, past the far cheek, down with a fingertip and pull the clip out by the small tab under it."
 note "Everything about the bracket, its arms and its clip is drawn in the seatpost's own frame and leaned back with it (rotate: (-tilt, 0, 0)); each arm is drawn about its own pivot, pointing forward, turned about the boss by th (worked out below for the post chosen) and leaned back with the rest, the left one its mirror image. The number's outline is turned about its centre hole by tilt plus rise, so its tail rises rise degrees above level."
 note "v4, from the printed v3 and its side-arm rework: the pin spans the whole slot and goes on into the far cheek, and every overhang prints without supports (the pin and its holes are teardrops)."
 note "v5: the number tilts up 30°, the bracket is 20 mm tall (the O-ring's double hooks as short as a 3.53 mm cord allows) and its seat fits a 20 mm flat back. The jaw is a plain block standing on the bed with the tilted pocket cut through it."
@@ -11,11 +11,12 @@ note "v10: fits any seatpost, and the number sits flatter. The middle's seat is 
 note "v11, from the printed v10 arm: each arm is one solid piece that stands flat on the bed, with no groove under it to bridge, and its body runs full width from the clip to the head, where v10's joined the clip by a sliver. The O-ring no longer threads through narrow gaps between prongs: each end loops over the head and slides into a rounded channel in its back, which flares at the top and bottom so the cord bends gently, and the pull holds it three quarters of a cord deep. The clip slides down over its boss from the top and clicks into a groove near the boss's top, about 24 N on and off; its opening is 1.4 mm narrower than the boss, so it cannot come off sideways however the arm is knocked. The arms are now a right and a left, each the other's mirror image, so both slide on from the top."
 note "v12, from your ask for a number clip that is easier to use, clicks in stronger and is easy to take out: v11's snap pin is now a one-piece clip. Its square pin is solid rather than split, its head stands 7 mm out of the near cheek to push and pull it by, and its leg runs under the jaw's flat bottom and clicks up behind the far cheek's bottom edge. Its spine and leg bend together, so it pushes in with about 9 N and takes about 25 N to pull out, where the pin let go at about 7 N; pressing the leg's sloped end, below the far cheek, down and in lets it go and pushes it out. Latched, its catch stays bent a quarter of a millimetre, so the clip sits tight. The bracket is v11's, unchanged, so only the clip needs printing."
 note "v13, from your printed v11 and v12, which came apart too easily: both clips are now far tighter. The arms print in place, standing on the bed round their bosses with 0.4 mm of room all round: a groove 1.2 mm deep runs round each boss's middle and a ring inside the arm's clip runs in it, reaching 0.8 mm under the boss's edge, so an arm swings freely but cannot be pulled off up, down or sideways; one firm turn after printing breaks it free. The number clip has a catch 1.3 mm deep (v12's was 0.8) with a 70° face, which no pull on the head can open (it would take about 84 N), on a leg twice as long so it still bends gently, and its pin runs on 4 mm past the far cheek. To take it out, press the tab past the catch down (about 4 N) and push it toward the jaw. v12's thin spine would have started to bend for good if its head was pulled hard (from about 20 N); this one is thick enough for 40 N. Bracket, arms and clip all need reprinting; the pad is unchanged."
+note "v14, from your asks for a clip that is less in the way but still easy to pull out, with a round pin that fits the number's hole, and a better clip altogether: the clip is rethought as a slim C that hugs the jaw. It is about half v13's size (14 × 23 mm against 27 × 21, 0.7 g) and nothing on it stands more than 4 mm out from the jaw, where v13's head stood out 12 mm and its tab 7. The pin is round, 4.8 mm for the number's 5.2 mm hole, cut flat only along the side it prints on, with a pointed tip that finds the hole; the jaw's hole is round to match, with a small flat in its top so it prints clean. The catch is as steep as v13's (70°) and 1 mm deep, so no pull on the clip's head and no knock on its pin opens it. To take it out, press the hook's sloped nose down with a fingertip (about 8 N) and pull the clip out by the tab under the jaw, which takes almost nothing; on a smooth print a firm pull on the tab alone peels it off. Ideas tried in simulation and dropped: a catch shallow enough to pull straight off (it would feel loose again), a twist lock (a leg brushing it could turn it), and a latch built into the jaw (too short to bend safely). The bracket's only change is the round hole, so the bracket with its arms and the clip need reprinting; the pad is unchanged."
 
 brief {
   purpose: "Hold a race number behind a seatpost with no screws: round posts, D-shaped aero posts and the Giant Propel's"
   setting: "Road and triathlon racing: fitted and taken off by hand at the bike, ridden in rain and sun"
-  priorities: ["fits every common seatpost shape: arms that swing in or out to follow it, and a TPU pad shaped to it", "a gentle tilt: the number's tail 15° above level", "strong: solid prints with no thin springs or slits to snap", "the number never moves: its point nests in a pocket at one fixed tilt and a pin goes through it", "arms that swing freely on the bracket but cannot come off", "a number clip that clicks in, stays in until you press its tab, and then slides out easily", "the number is tight in its slot: 0.2 mm of room", "compact", "prints with no supports at all", "fits by hand with one O-ring", "does not rock or turn on the post"]
+  priorities: ["fits every common seatpost shape: arms that swing in or out to follow it, and a TPU pad shaped to it", "a gentle tilt: the number's tail 15° above level", "strong: solid prints with no thin springs or slits to snap", "the number never moves: its point nests in a pocket at one fixed tilt and a pin goes through it", "arms that swing freely on the bracket but cannot come off", "a slim number clip that hugs the jaw, clicks in, stays in until you press its nose, and then pulls out easily by its tab", "a round pin that fills the number's centre hole", "the number is tight in its slot: 0.2 mm of room", "compact", "prints with no supports at all", "fits by hand with one O-ring", "does not rock or turn on the post"]
   look: "Black, small, tucked in behind the post"
 
   temp: -5C .. 50C
@@ -73,7 +74,7 @@ param pivot_y  = 16mm   range 14 .. 24  "From the seat's middle back to the numb
 param rise     = 15     range 0 .. 30   "How far the number's tail rises above level, degrees: the jaw's pocket holds it there and nowhere else (reprint to change it)"
 param fit_gap  = 0.2mm  range 0.1 .. 0.6 "Room for the number in its slot, both sides together: 0.2 holds it tight. If your printer prints narrow slots under size and the number will not go in, try 0.3"
 param cheek    = 3mm    range 2.4 .. 4  "Jaw cheek thickness either side of the number"
-param pin_s    = 3.5mm  range 3 .. 3.6  "The number clip's square pin: its corners still pass through the number's 5.2 mm centre hole"
+param pin_d    = 4.8mm  range 4 .. 5    "The number clip's round pin: 0.4 mm smaller than the number's centre hole (5.2 mm), so it fills it"
 
 // ── Duty ───────────────────────────────────────────────
 param gust     = 70kmh  range 30kmh .. 120kmh "Crosswind gust"
@@ -308,63 +309,93 @@ let low_dy   = taper_l * ca + (plate_h - tip_h) / 2 * sa
 let low_dz   = taper_l * sa - (plate_h - tip_h) / 2 * ca
 let floor_t  = low_z + (cheek_back - low_y) * low_dz / low_dy + body_h / 2
 
-// the number clip: one solid C, printed lying flat. A square pin runs through the near cheek, the number's centre hole
-// and the far cheek and on past it; a head stands out of the near cheek to push it in by; a thick spine runs down from
-// the head's outer end and a long leg back under the jaw's flat bottom, whose catch clicks up behind the far cheek's
-// bottom edge, and a tab carries on past the catch. The long leg and the spine bend together as the catch rides under
-// the jaw, so the deep catch strains them little. The catch face stands at 70°: latched, the jaw's edge sits on it with
-// the leg still bent a little, which draws the head tight against the near cheek, and no pull on the head opens it, so
-// the clip stays in until the tab is pressed down, which frees the catch, and pushed toward the jaw, which slides the
-// clip out. The spine is thick enough that a hard pull on the head cannot bend it
-let ph       = pin_s + 0.2                           // the pin's square hole through the jaw: 0.1 mm all round
-let mouth    = 0.6                                   // the hole's mouth at the near cheek is chamfered round the pin's root fillet
-let clip_y   = pivot_y - pin_s / 2                   // the clip's flat side, on the bed: the pin's front face
+// the number clip: one slim solid C that hugs the jaw, printed lying flat. A round pin, 0.4 mm smaller than the
+// number's centre hole, runs through the near cheek, the number and the far cheek and on past it; a thin spine runs down
+// the outside of the near cheek to a leg that runs back under the jaw's flat bottom, whose catch clicks up behind the
+// far cheek's bottom edge; and a short tab hangs below the spine to pull the clip out by. The spine and the leg bend
+// together as the catch rides under the jaw, so the deep catch strains them little. The catch face stands at 70°:
+// latched, the jaw's edge sits on it with the leg still bent a little, which draws the head against the near cheek, and
+// no pull on the clip's head and no knock on its pin opens it. Pressing the hook's sloped nose, past the far cheek, down frees
+// the catch, and the clip then slides out by its tab
+let pin_r    = pin_d / 2
+let ph       = pin_d + 0.3                           // the pin's round hole through the jaw: 0.15 mm all round
+let ph_roof  = 0.15                                  // the hole's top is a flat this far above the round, on 45° sides, so it prints clean and cannot sag onto the pin
+let ph_s     = ph / 2 / sqrt(2)                      // where those sides leave the round
+let ph_f     = 2 * ph_s - ph / 2 - ph_roof           // and half the flat's width
+let pin_fl   = 0.3                                   // the pin flares by this where it leaves the head
+let mouth    = 0.4                                   // and the hole's mouth at the near cheek is countersunk round the flare
+let pin_c    = 0.8                                   // the pin's pointed tip
+// the clip's flat side, on the bed: the pin is cut flat there, where its side reaches 45°, so it prints without support
+let clip_y   = pivot_y - pin_r / sqrt(2)
 let clip_w   = cheek_back - 0.25 - clip_y            // as wide as the jaw lets it be behind the pin
-let pin_bot  = H_z - pin_s / 2
-let pin_top  = H_z + pin_s / 2
-let pin_far  = 4                                     // the pin runs on 4 mm past the far cheek, so it is in its hole before the catch meets the jaw
-let pin_tip  = -jaw_w / 2 - pin_far
-let head_top = pin_top + 4.25
-let sp_gap   = 9                                     // between the spine and the near cheek: room for a leg long enough to bend gently over its deep catch
-let leg_t    = 1.8                                   // the leg under the jaw
-let sp_x     = jaw_w / 2 + sp_gap                    // the spine's inside face, which the leg rises from
+let pin_bot  = H_z - pin_r
+let pin_top  = H_z + pin_r
 let jaw_bot  = -body_h / 2
-let sp_len   = pin_bot - jaw_bot                     // the spine, from the head down to the leg
+let sp_gap   = 1.2                                   // between the spine and the near cheek
+let sp_t     = 2 + 0.03 * (body_h - 20)              // the spine: thicker where a taller jaw makes it longer
+let leg_t    = 2                                     // the leg under the jaw
+let sp_x     = jaw_w / 2 + sp_gap                    // the spine's inside face, which the leg rises from
+let hx       = sp_x + sp_t                           // and its outside face
+let head_top = pin_top + 1
+let head_bot = pin_bot - 0.8                         // the head stops against the near cheek round the pin, from here up
 let r_in     = 0.9                                   // the spine's root fillet under the head
-// the spine: pulled by the head while the catch holds the leg, it bends like a cantilever from the head with the leg
-// pulling at its foot, so it is made thick enough that a 40 N pull does not bend it for good (ASA yields at about 34 MPa)
-let sp_t     = sqrt(6 * (sp_len - r_in) * 40 / (34 * clip_w))
-let clip_pre = 0.3                                   // latched, the catch stays bent this much on the jaw's edge, so the clip sits tight
-let catch_d  = 1.3                                   // and holds this deep behind the far cheek
+let sp_len   = head_bot - r_in - jaw_bot             // the spine's thin length, from that fillet down to the leg
+let clip_pre = 0.25                                  // latched, the catch stays bent this much on the jaw's edge, so the clip sits tight
+let catch_d  = 1                                     // and holds this deep behind the far cheek
+let catch_y  = clip_pre + catch_d                    // how far the catch rides down as it passes under the jaw
 let clip_ret = 70                                    // the catch face's slope: steep enough that no pull opens it
-let clip_in  = 35                                    // the catch's lead-in
+let clip_in  = 40                                    // the hook's lead-in
 // from the spine to the catch face's foot: latched, the far cheek's bottom edge sits on the face clip_pre above the leg
 let leg_l    = sp_x + jaw_w / 2 - clip_pre / tan(clip_ret)
+// the hook past the catch face's foot, as snap_hook draws it: the face's lean, its flat top, then its lead-in slope
+let hook_back = catch_y / tan(clip_ret)
+let hook_land = max(0.2, 0.25 * catch_y)
+let hook_run = (catch_y + 0.6 * leg_t) / tan(clip_in)
+// where the lead-in meets the jaw's bottom, latched: pushed in, it reaches the jaw's near edge there
+let clip_lead = sp_x - leg_l - hook_back - hook_land - catch_y / tan(clip_in)
+let nose_x   = sp_x - leg_l - hook_back - hook_land - hook_run    // the hook's tip
+// the pin runs on just past the hook's tip, so a knock from that side lands on the pin, which cannot open the catch
+let pin_far  = -jaw_w / 2 - nose_x + 0.2
+let pin_tip  = -jaw_w / 2 - pin_far
+let tab_l    = 4                                     // the pull tab below the leg
+let tab_bot  = jaw_bot - leg_t - tab_l
+let tab_r    = sp_t / 2                              // its rounded end
 let k2       = 1 - 1 / sqrt(2)                       // where a 90° round's arc passes its corner, per mm of radius
-let hx       = sp_x + sp_t                           // the head's outer end, in line with the spine's outer face
-let clip_sec = outline([(jaw_w / 2, pin_bot), (sp_x - r_in, pin_bot), arc_to((sp_x, pin_bot - r_in), via: (sp_x - k2 * r_in, pin_bot - k2 * r_in)), (sp_x, jaw_bot - leg_t), arc_to((hx, jaw_bot - leg_t + sp_t), via: (sp_x + sp_t / sqrt(2), jaw_bot - leg_t + sp_t - sp_t / sqrt(2))), (hx, head_top - 2), arc_to((hx - 2, head_top), via: (hx - 2 * k2, head_top - 2 * k2)), (jaw_w / 2 + 1, head_top), arc_to((jaw_w / 2, head_top - 1), via: (jaw_w / 2 + k2, head_top - k2))])
-// the pin, chamfered at its tip, with a 0.5 mm fillet along its top where it leaves the head (inside the cheek's mouth)
-let pin_sec  = outline([(pin_tip, pin_bot + 0.5), (pin_tip + 0.5, pin_bot), (jaw_w / 2 + 0.5, pin_bot), (jaw_w / 2 + 0.5, pin_top + 0.5), (jaw_w / 2, pin_top + 0.5), arc_to((jaw_w / 2 - 0.5, pin_top), via: (jaw_w / 2 - 0.5 * k2, pin_top + 0.5 * k2)), (pin_tip + 0.5, pin_top), (pin_tip, pin_top - 0.5)])
-// where the catch's lead-in meets the jaw's bottom, latched: pushed in, it reaches the jaw's near edge there
-let clip_lead = sp_x - leg_l - (clip_pre + catch_d) / tan(clip_ret) - max(0.2, 0.25 * (clip_pre + catch_d)) - (clip_pre + catch_d) / tan(clip_in)
-// the tab: the leg carries on 4 mm past the lead-in, 0.3 mm under the jaw's bottom so it slides in under the near
-// cheek, with its end chamfered
-let tab_x    = clip_lead - 4
-let tab_sec  = polygon(points: [(tab_x, jaw_bot - leg_t), (clip_lead + 0.5, jaw_bot - leg_t), (clip_lead + 0.5, jaw_bot - 0.3), (tab_x + 0.75, jaw_bot - 0.3), (tab_x, jaw_bot - 1.05)])
+// the head round the pin, the spine down the near cheek and the tab below the leg, as one outline (the leg is the hook)
+let clip_sec = outline([(jaw_w / 2, head_bot), (sp_x - r_in, head_bot), arc_to((sp_x, head_bot - r_in), via: (sp_x - k2 * r_in, head_bot - k2 * r_in)), (sp_x, tab_bot + tab_r), arc_to((sp_x + tab_r, tab_bot), via: (sp_x + k2 * tab_r, tab_bot + k2 * tab_r)), arc_to((hx, tab_bot + tab_r), via: (hx - k2 * tab_r, tab_bot + k2 * tab_r)), (hx, head_top - 1.5), arc_to((hx - 1.5, head_top), via: (hx - 1.5 * k2, head_top - 1.5 * k2)), (jaw_w / 2 + 0.6, head_top), arc_to((jaw_w / 2, head_top - 0.6), via: (jaw_w / 2 + 0.6 * k2, head_top - 0.6 * k2))])
+// the pin, turned about its own axis from inside the head: flared where it leaves the head, pointed at its tip
+let pin_x0   = sp_x + sp_t / 2
 // the catch's spring, as the springs check works it out (a C: the leg and the spine bend under one moment), for the
 // requirements: its push in, its pull out, ASA on ASA (μ about 0.3, E about 1.9 GPa)
 let clip_I   = clip_w * leg_t^3 / 12
 let clip_Is  = clip_w * sp_t^3 / 12
 let clip_a   = leg_l + sp_t / 2
-let clip_k   = 1 / (leg_l^3 / (3 * 1900 * clip_I) + clip_a^2 * (sp_len - r_in) / (1900 * clip_Is))
-let clip_P   = clip_k * (clip_pre + catch_d)
+let clip_k   = 1 / (leg_l^3 / (3 * 1900 * clip_I) + clip_a^2 * sp_len / (1900 * clip_Is))
+let clip_P   = clip_k * catch_y
 let clip_push = clip_P * (0.3 + tan(clip_in)) / (1 - 0.3 * tan(clip_in))
 let clip_pull = clip_P * (0.3 + tan(clip_ret)) / (1 - 0.3 * tan(clip_ret))
-// the pull on the head that would start to bend the spine for good
-let clip_tug = 34 * clip_w * sp_t^2 / (6 * (sp_len - r_in))
-// pressed down at its middle, the tab bends the leg and the spine until the catch is 0.1 mm clear of the far cheek
-let tab_l    = sp_x - (tab_x + clip_lead) / 2
-let tab_N    = (clip_pre + catch_d + 0.1) / (leg_l^2 * (3 * tab_l - leg_l) / (6 * 1900 * clip_I) + clip_a * (tab_l + sp_t / 2) * (sp_len - r_in) / (1900 * clip_Is))
+// pressed down halfway along its lead-in, the hook bends the leg and the spine until the catch is 0.1 mm clear of the
+// far cheek
+let nose_d   = leg_l + hook_back + hook_land + hook_run / 2
+let nose_N   = (catch_y + 0.1) / (leg_l^2 * (3 * nose_d - leg_l) / (6 * 1900 * clip_I) + clip_a * (nose_d + sp_t / 2) * sp_len / (1900 * clip_Is))
+// a hard pull on the tab while the catch holds: the pull and the catch make a couple at the spine's foot, which the
+// spine (held square at the head) and the leg (held at the catch) share by their stiffness. The pull that would start to
+// bend the spine or the leg for good (ASA yields at about 34 MPa), as the springs check works it out
+let tab_grip = leg_t / 2 + tab_l / 2                 // from the leg's middle to the tab's
+let tab_share = (4 * sp_t^3 / sp_len) / (4 * sp_t^3 / sp_len + 3 * leg_t^3 / leg_l)
+let tab_arm  = tab_grip + leg_t / 2
+let tab_sp   = 6 * tab_share * tab_arm / (clip_w * sp_t^2)                                   // MPa in the spine per newton
+let tab_leg  = 6 * (1 - tab_share) * tab_arm / (clip_w * leg_t^2) + 1 / (clip_w * leg_t)     // and in the leg, which the pull also stretches
+let tab_tug  = 34 / max(tab_sp, tab_leg)
+// a knock on the pin's tip from the far side: the catch holds the leg, the pin holds the head square and the leg bears
+// on the jaw's near edge, poke_s from the spine's middle, so the spine bends in an S, about half as hard as a plain
+// cantilever would. The push that would start to bend it for good
+let poke_s   = sp_gap + sp_t / 2
+let poke_kt  = leg_t^3 / poke_s * (4 - 4 / (4 + 3 * poke_s / jaw_w))
+let poke_ks  = 2 * sp_t^3 / sp_len
+let clip_poke = 34 * clip_w * sp_t^2 / (6 * sp_len) * (poke_ks + 2 * poke_kt) / (poke_ks + poke_kt)
+// how far the clip stands out from the jaw: its spine at the near cheek, its pin and hook past the far one, its tab below
+let clip_out = max(hx - jaw_w / 2, pin_far, tab_l)
 
 part bracket {
   label: "Number bracket"
@@ -393,9 +424,11 @@ part bracket {
   cut box(key_w + 0.4, key_d + 0.1, body_h - 7.4, at: (0, seat_y + (key_d - 0.1) / 2, -(body_h - 7.4) / 2)) as key_slot
   // the number's slot and the V pocket its point nests in; every edge of it faces up or back, so it prints without support
   cut extrude(pocket, slot, at: (-slot / 2, pivot_y, H_z), dir: X) as slot_cut
-  // the pin's square hole through both cheeks and the number's centre hole: its top is a 3.7 mm bridge
-  cut box(jaw_w + 2, ph, ph, at: (0, pivot_y, H_z - ph / 2)) as pin_hole
-  chamfer(mouth, edges: both(pin_hole.edges, in_plane(X, jaw_w / 2)))
+  // the pin's round hole through both cheeks, in line with the number's centre hole: its top is a short flat on 45°
+  // sides (a bridge under 2 mm), so it prints clean with no support
+  cut extrude(circle(ph, at: (pivot_y, H_z)) + polygon(points: [(pivot_y - ph_s, H_z + ph_s), (pivot_y + ph_s, H_z + ph_s), (pivot_y + ph_f, H_z + ph / 2 + ph_roof), (pivot_y - ph_f, H_z + ph / 2 + ph_roof)]), jaw_w + 2, at: (-jaw_w / 2 - 1, 0, 0), dir: X) as pin_hole
+  // its mouth at the near cheek, countersunk round the pin's flare
+  cut revolve(points: [(0, -0.5), (ph / 2 + mouth + 0.5, -0.5), (ph / 2, mouth), (0, mouth)], at: (jaw_w / 2, pivot_y, H_z), dir: -X) as pin_mouth
 }
 
 // the rubber shim a rear light's bracket has: a TPU liner shaped to this post on its front and to the seat on its back.
@@ -469,14 +502,13 @@ part number_clip {
   group: "Bracket"
   process: mfg.fdm(build: Y)
   rotate: (-tilt, 0, 0)
-  held: "clicks on: its pin goes through the jaw and the number, its leg runs under the jaw and its catch springs up behind the far cheek's bottom edge, and its head stops it at the near cheek; pressing the tab past the far cheek down frees it"
-  // printed lying on its flat side (the pin's front face) as drawn, so the spine and the leg bend along their layers and
-  // nothing hangs out. Print a spare
-  body extrude(clip_sec, clip_w, at: (0, clip_y + clip_w, 0), dir: -Y) as head
-  add extrude(pin_sec, pin_s, at: (0, clip_y + pin_s, 0), dir: -Y) as pin_bar
-  add snap_hook(at: (sp_x, clip_y + clip_w / 2, jaw_bot - leg_t / 2), length: leg_l, t: leg_t, w: clip_w, catch: clip_pre + catch_d, dir: -X, facing: Z, angle: clip_in, retain: clip_ret, preload: clip_pre, root_r: 0.8, cycles: 200, frame: sp_len - r_in, frame_t: sp_t) as clip_catch
-  // the tab past the catch, to press it free
-  add extrude(tab_sec, clip_w, at: (0, clip_y + clip_w, 0), dir: -Y) as tab
+  held: "clicks on: its pin goes through the jaw and the number, its leg runs under the jaw and its catch springs up behind the far cheek's bottom edge, and its head stops it at the near cheek; pressing the hook's nose past the far cheek down frees it"
+  // printed lying on its flat side as drawn, so the spine and the leg bend along their layers and nothing hangs out: the
+  // round pin is cut flat on that side where it reaches 45°. Print a spare
+  body revolve(points: [(0, 0), (pin_r + pin_fl, 0), (pin_r + pin_fl, pin_x0 - jaw_w / 2), (pin_r, pin_x0 - jaw_w / 2 + pin_fl), (pin_r, pin_x0 - pin_tip - pin_c), (pin_r - pin_c, pin_x0 - pin_tip), (0, pin_x0 - pin_tip)], at: (pin_x0, pivot_y, H_z), dir: -X) as pin_bar
+  cut box(hx - pin_tip + 2, 4, 2 * pin_r + 4, at: ((hx + pin_tip) / 2, clip_y - 2, H_z - pin_r - 2)) as pin_flat
+  add extrude(clip_sec, clip_w, at: (0, clip_y + clip_w, 0), dir: -Y) as head
+  add snap_hook(at: (sp_x, clip_y + clip_w / 2, jaw_bot - leg_t / 2), length: leg_l, t: leg_t, w: clip_w, catch: catch_y, dir: -X, facing: Z, angle: clip_in, retain: clip_ret, preload: clip_pre, root_r: 0.8, cycles: 200, frame: sp_len, frame_t: sp_t, grip: tab_grip) as clip_catch
 }
 
 // ── The race number, as the Race Result plate it is ─────
@@ -587,8 +619,8 @@ decision number_hold "How the number is held" {
   ask: "Keep the number in without a screw"
   chose: "One-piece clip round the jaw"
   by: "claude"
-  why: "You asked for a clip that clicks in stronger, reaches further and does not come out unless you want it to. It still pins the number where the old bolt did, through the centre hole in its point, and the point still nests in its V pocket, so it cannot turn. Its solid square pin runs on 4 mm past the far cheek. Its leg runs under the jaw's flat bottom and its catch clicks up 1.3 mm behind the far cheek's bottom edge, on a face so steep (70°) that no pull on the head opens it: it would take about 84 N, and the spine is thick enough that a 40 N tug cannot bend it. The leg is long and its spine bends with it, so about 6 N pushes it in. To take it out, press the tab past the catch down (about 4 N) and push it toward the jaw. A spare clip is about a gram."
-  option "One-piece clip round the jaw" "Push it in by its head until it clicks; press its tab down and push it toward the jaw to take it out."
+  why: "You asked for a clip that is less in the way, still easy to pull out, with a round pin that fits the number's hole, and that does not come out unless you want it to. It still pins the number where the old bolt did, through the centre hole in its point, and the point still nests in its V pocket, so it cannot turn. The clip is a slim C that hugs the jaw: a round 4.8 mm pin that fills the number's 5.2 mm hole, a 2 mm spine 1.2 mm off the near cheek, a leg under the jaw's flat bottom and a 4 mm tab below it, with nothing standing more than 4 mm out. Its catch clicks up 1 mm behind the far cheek's bottom edge on a face so steep (70°) that no pull on the clip's head and no knock on its pin opens it. About 14 N pushes it in. To take it out, press the hook's sloped nose, past the far cheek, down with a fingertip (about 8 N) and pull the clip out by its tab. A catch shallow enough to pull straight off would feel loose again; a twist lock could be turned by a leg brushing it; a latch built into the jaw is too short to bend safely. A spare clip is under a gram."
+  option "One-piece clip round the jaw" "Push it in until it clicks; press its nose down and pull it out by its tab."
   option "Snap pin through both cheeks" "v11's: a small push-in pin; pinch its two prong tips to push it out."
   option "Bolt through the centre hole" "What it had: needs a nut and a spanner."
   option "Zip tie through the centre hole" "No print, but cut off and replaced every race."
@@ -735,13 +767,15 @@ let ring_gap_e = ring_r * sin(ring_h - swing) - nw / 2
 // straight back out of it), and keeps its end deep in the channel
 let pull_in  = -(-oring.to_pull.x * sin(th) + (oring.to_pull.y * ct - oring.to_pull.z * st) * cos(th)) / hypot(oring.to_pull.x, oring.to_pull.y * ct - oring.to_pull.z * st)
 
-require "The pin's corners pass through the number's centre hole" for fit: pin_s * sqrt(2) + 0.1 <= hole_cd
+require "The round pin fills the number's centre hole: 0.3 to 0.6 mm smaller, so it goes through and the number cannot rattle on it" for fit, knock: hole_cd - pin_d >= 0.3 && hole_cd - pin_d <= 0.6
 require "The number clip's pin is in its hole before the catch meets the jaw, so it goes in straight" for fit: clip_lead - pin_tip >= 0.5
 require "Pushing the number clip in is easy: under 15 N" soft for fit: clip_push <= 15N
-require "The number clip stays in until its tab is pressed: its catch takes over 50 N to pull past" for fit, bumps, knock: clip_pull >= 50N
-require "A hard pull on the number clip's head does not bend it: its spine takes at least 30 N" for fit, knock: clip_tug >= 30N
-require "Pressing the number clip's tab down frees its catch with a light press: under 10 N" soft for fit: tab_N <= 10N
-require "The cheeks keep at least 2.5 mm round the pin's hole" for knock: cheek_back - pivot_y - ph / 2 >= 2.5 && body_h / 2 - H_z - ph / 2 >= 2.5
+require "The number clip stays in until its nose is pressed: its catch takes over 50 N to pull past" for fit, bumps, knock: clip_pull >= 50N
+require "A hard pull on the number clip's tab does not bend it: its spine takes at least 30 N" for fit: tab_tug >= 30N
+require "A knock on the pin's tip does not bend the number clip: its spine takes at least 20 N" for knock: clip_poke >= 20N
+require "Pressing the number clip's nose down frees its catch with a light press: under 10 N" soft for fit: nose_N <= 10N
+require "The number clip is slim: nothing on it stands more than 4 mm out from the jaw" soft for fit: clip_out <= 4
+require "The cheeks keep at least 1.9 mm of wall behind the pin's hole and 2.5 mm above it" for knock: cheek_back - pivot_y - ph / 2 >= 1.9 && body_h / 2 - H_z - ph / 2 - ph_roof >= 2.5
 require "At its tilt, the number's top front corner stays clear of the seatpost" for fit: corner_y - ys >= 2
 require "The pocket holds the number's point: solid runs on 4 mm in front of its upper edge and 2.5 mm under its lower one" for knock: top_open - (seat_y + key_d) >= 4 && floor_t >= 2.5
 require "The number is tight in its slot: at most 0.3 mm of room" soft for knock: fit_gap <= 0.3
@@ -763,7 +797,7 @@ require "Each end of the O-ring sits at least three quarters of a cord deep in i
 require "The O-ring's pull keeps each end in its channel: within 60° of straight into it" for fit, gust: pull_in >= 0.5
 require "The seat runs on past the pad's ends" for gust: bx - (pad_r + pad_t) * sin(pad_end) >= 1
 
-test "Fit and remove": "The arms come off the printer on their bosses: turn each one firmly in and out once to break it free. It should then swing freely and not come off up, down or sideways. Put the pad's key into the seat's groove and hold the bracket on the post. Loop one end of the O-ring over the top and under the bottom of the left arm's head and slide it in from the side until it drops into the channel in the back of the head; wrap it round the post's front high and low and do the same with the other end on the right arm. Both arms should swing in until their fingers rest on the post. Slide the number's point into the jaw's slot, tail up, until it sits in its pocket and its centre hole lines up with the square hole; push the number clip's pin in through the near cheek by its head until the catch on its leg clicks up behind the far cheek's bottom edge. It should not rattle, and a firm pull on the head should not take it out. Press the tab past the far cheek down and push it toward the jaw, and it should slide out. To take it all off, take the clip out, slide the number out, then unhook the O-ring."
+test "Fit and remove": "The arms come off the printer on their bosses: turn each one firmly in and out once to break it free. It should then swing freely and not come off up, down or sideways. Put the pad's key into the seat's groove and hold the bracket on the post. Loop one end of the O-ring over the top and under the bottom of the left arm's head and slide it in from the side until it drops into the channel in the back of the head; wrap it round the post's front high and low and do the same with the other end on the right arm. Both arms should swing in until their fingers rest on the post. Slide the number's point into the jaw's slot, tail up, until it sits in its pocket and its centre hole lines up with the round hole; push the number clip's pin in through the near cheek, with your thumb on the clip over the pin, until the catch on its leg clicks up behind the far cheek's bottom edge. It should not rattle, and a push on the pin's tip from the far side should not move it. Press the hook's sloped nose, past the far cheek, down with a fingertip and pull the clip out by the tab under the jaw: it should slide out with almost no force. To take it all off, take the clip out, slide the number out, then unhook the O-ring."
 test "Knock": "Push the number's tail up, down and sideways by hand: it must not tilt or rattle in the jaw, and the bracket must not move on the post."
 test "Shake test": "Ride 10 minutes of rough road and a 50 km/h descent; the bracket must not turn on the post, the arms must stay on their bosses and the number must not move in the jaw."
 buy "EPDM O-rings, 3.5 mm cord, a bag of 20 in the size the seatpost choice gives (plus $20 delivery under $80 ex GST)" { qty: 1, price: 29.25, url: "https://au.rs-online.com/web/p/gaskets-o-rings/2587581" }
