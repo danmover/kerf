@@ -461,11 +461,38 @@ export interface FeatureSpec {
   reverse?: boolean;
   symmetric?: boolean;
   through?: boolean;
+  /** run until the part's next face instead of a depth (added to or cut from a part) */
+  until?: "next";
+  /** degrees the sides lean in (out when negative) */
+  taper?: number;
+  /** only a wall this thick along the outline */
+  thin?: number;
+  thinSide?: "inside" | "outside" | "center";
   /** revolve: a line of the sketch */
   axis?: string;
   angle?: number;
   /** keep the depth as a named parameter (shows up as a slider) */
   param?: boolean;
+}
+
+/** The extrude() call for a feature spec, with the depth written as `depthText`. */
+export function extrudeExpr(sketch: string, spec: FeatureSpec, depthText: string): string {
+  const args: string[] = [sketch];
+  if (spec.through) args.push("through: true");
+  else if (spec.until) {
+    args.push(`until: "${spec.until}"`);
+    if (spec.reverse) args.push("reverse: true");
+  } else {
+    args.push(depthText);
+    if (spec.symmetric) args.push("symmetric: true");
+    else if (spec.reverse) args.push("reverse: true");
+  }
+  if (spec.taper && !spec.through) args.push(`taper: ${fmt(spec.taper)}`);
+  if (spec.thin) {
+    args.push(`thin: ${fmt(spec.thin)}`);
+    if (spec.thinSide && spec.thinSide !== "inside") args.push(`thin_side: "${spec.thinSide}"`);
+  }
+  return `extrude(${args.join(", ")})`;
 }
 
 function freeName(model: Model, base: string): string {
@@ -491,7 +518,7 @@ export function addFeature(src: string, sk: EvalSketch, spec: FeatureSpec): { sr
   }
   let depthText = spec.depth !== undefined ? fmt(spec.depth) : "10";
   let param: string | undefined;
-  if (spec.kind === "extrude" && !spec.through && spec.param && spec.depth !== undefined) {
+  if (spec.kind === "extrude" && !spec.through && !spec.until && spec.param && spec.depth !== undefined) {
     param = freeName(model, `${sk.name}_depth`);
     const d = spec.depth;
     const line = `param ${param} = ${fmt(d)} range ${fmt(Math.max(0.1, Math.round((d / 10) * 10) / 10))}..${fmt(Math.max(d * 5, 20))} "${spec.op === "cut" ? "Cut depth" : "Depth"} of ${sk.name}"`;
@@ -509,14 +536,8 @@ export function addFeature(src: string, sk: EvalSketch, spec: FeatureSpec): { sr
   }
   const extras: string[] = [];
   let expr: string;
-  if (spec.kind === "extrude") {
-    if (spec.through) expr = `extrude(${sk.name}, through: true)`;
-    else {
-      if (spec.symmetric) extras.push("symmetric: true");
-      else if (spec.reverse) extras.push("reverse: true");
-      expr = `extrude(${sk.name}, ${depthText}${extras.map((e) => ", " + e).join("")})`;
-    }
-  } else {
+  if (spec.kind === "extrude") expr = extrudeExpr(sk.name, spec, depthText);
+  else {
     if (spec.axis) extras.push(`axis: ${sk.name}.${spec.axis}`);
     if (spec.angle !== undefined && Math.abs(spec.angle - 360) > 1e-9) extras.push(`angle: ${fmt(spec.angle)}`);
     expr = `revolve(${sk.name}${extras.map((e) => ", " + e).join("")})`;

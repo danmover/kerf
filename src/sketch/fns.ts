@@ -8,8 +8,8 @@
 import { Args } from "../lang/args";
 import { Fn, ShapeV, SketchLineObj, SketchObj, typeName, type CallCtx, type Value } from "../lang/values";
 import { SHAPE_FNS } from "../lang/builtins";
-import { MODELLING_FNS } from "../lang/modelling";
-import type { V2 } from "../kernel/recipe";
+import { MODELLING_FNS, extrudeOptions, extrudeRecipe } from "../lang/modelling";
+import { UNTIL_LIMIT, type Profile, type ProfileRegion, type Seg2, type ShapeRecipe, type V2 } from "../kernel/recipe";
 import { makeFrame, planeValue } from "./planes";
 import type { SketchGeom } from "./types";
 
@@ -33,9 +33,10 @@ const extrudeOf = (before: Fn | undefined) =>
     "extrude",
     (pos, named, ctx) => {
       if (before && !isSketchCall(pos, named)) return before.call(pos, named, ctx);
-      const a = new Args("extrude", pos, named, ctx, ["profile", "h", "start", "symmetric", "reverse", "through"]);
+      const a = new Args("extrude", pos, named, ctx, ["profile", "h", "start", "symmetric", "reverse", "through", "taper", "thin", "thin_side", "until"]);
       const g = profileOf(a.value("profile"), ctx, "extrude");
       const through = a.bool("through");
+      if (a.has("taper") || a.has("thin") || a.has("until")) return new ShapeV(extrudeMore(a, g, through));
       let h = through ? 2000 : a.num("h");
       if (!through && Math.abs(h) < 1e-9) ctx.error("extrude(): h must not be 0");
       let start = a.num("start", 0);
@@ -48,9 +49,46 @@ const extrudeOf = (before: Fn | undefined) =>
     },
     joinDocs(
       before,
-      "extrude(sketch, h, start: 0, symmetric: false, reverse: false, through: false) — pushes the sketch's closed profile h along the plane's normal (negative h or reverse: true goes the other way). symmetric centres it on the plane; through: true makes a cutting tool through everything.",
+      'extrude(sketch, h, start: 0, symmetric: false, reverse: false, through: false, taper: 0, thin: 0, thin_side: "inside", until: "next") — pushes the sketch\'s closed profile h along the plane\'s normal (negative h or reverse: true goes the other way). symmetric centres it on the plane; through: true makes a cutting tool through everything. taper, thin and until work as in extrude() of a profile: draft on the sides, only a wall along the outline, or up to the next face of the part it is added to or cut from.',
+
     ),
   );
+
+/** One closed sketch loop as a profile. */
+function loopProfile(segs: Seg2[]): Profile {
+  const first = segs[0];
+  if (first.k === "c") return { t: "circle", d: 2 * first.r, c: first.c };
+  return { t: "path2", start: first.a, segs: segs.map((s) => (s.k === "a" ? { s: "arc", via: s.m, to: s.b } : { s: "line", to: (s as { b: V2 }).b })) };
+}
+
+/** A sketch's closed regions as one profile: each outline less its holes. */
+export function regionsProfile(regions: ProfileRegion[]): Profile {
+  const each = regions.map((r): Profile => (r.holes.length ? { t: "diff2", a: loopProfile(r.outer), b: r.holes.map(loopProfile) } : loopProfile(r.outer)));
+  return each.length === 1 ? each[0] : { t: "union2", ps: each };
+}
+
+/** A sketch extrusion with a taper, a thin wall or up to the next face: made as an extrusion of the sketch's profile. */
+function extrudeMore(a: Args, g: SketchGeom, through: boolean): ShapeRecipe {
+  const o = extrudeOptions(a, regionsProfile(g.regions));
+  const start = a.num("start", 0);
+  const symmetric = a.bool("symmetric");
+  let span: [number, number];
+  if (o.until) {
+    if (through) a.ctx.error('extrude(): give through: true or until: "next", not both');
+    if (symmetric) a.ctx.error('extrude(): until: "next" runs one way from the sketch; leave out symmetric');
+    span = a.bool("reverse") ? [start, start - UNTIL_LIMIT] : [start, start + UNTIL_LIMIT];
+  } else if (through) {
+    if (o.taper) a.ctx.error("extrude(): a taper through everything would close the profile up; give the depth it needs");
+    span = [start - UNTIL_LIMIT / 2, start + UNTIL_LIMIT / 2];
+  } else {
+    const h = a.num("h");
+    if (Math.abs(h) < 1e-9) a.ctx.error("extrude(): h must not be 0");
+    const d = Math.abs(h);
+    const reverse = a.bool("reverse") !== h < 0;
+    span = symmetric ? [start - d / 2, start + d / 2] : reverse ? [start - d, start] : [start, start + d];
+  }
+  return extrudeRecipe(o.p, g.frame, span, { taper: o.taper, until: o.until });
+}
 
 const revolveOf = (before: Fn | undefined) =>
   new Fn(

@@ -3,9 +3,9 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { frameFor, rotateAbout, vadd, vcross, vnorm, vscale, type OpenSpec, type PartOp, type PartRecipe, type ProfileRegion, type Seg2, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
+import { frameFor, rotateAbout, vadd, vcross, vdot, vnorm, vscale, vsub, type OpenSpec, type PartOp, type PartRecipe, type ProfileRegion, type Seg2, type ShapeRecipe, type V2, type V3, type Xform } from "./recipe";
 import { gearOutline } from "../library/gears";
-import { extrudeProfile, loftProfiles, revolveProfile2, sweepProfile } from "./profiles";
+import { draftFaces, extrudeProfile, loftProfiles, planeOf, revolveProfile2, shapeValid, sweepProfile } from "./profiles";
 import { buildKnurl, buildThread } from "./threads";
 import { describeSel, Topo, type FeatureTools } from "./topology";
 import { buildMould } from "./mould";
@@ -172,7 +172,8 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
       return out;
     }
     case "extrude":
-      return extrudeProfile(r.p, r.h, r.f, r.twist, r.scale);
+      if (r.until) throw new BuildError(`until: "${r.until}" works only on an extrusion added or cut straight onto a part (add extrude(..., until: "${r.until}")), not inside another shape`);
+      return extrudeProfile(r.p, r.h, r.f, r.twist, r.scale, r.taper ?? 0);
     case "sweep":
       return sweepProfile(r.p, r.path, r.rot, r.frenet);
     case "loft":
@@ -339,7 +340,7 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
   if (p.baseName) features.set(p.baseName, { name: p.baseName, kind: "body", tools: [shape] });
   let topo: Topo | null = null;
   const topoNow = () => (topo && topo.shape === shape ? topo : (topo?.dispose(), (topo = new Topo(shape, features))));
-  const batchable = (op: PartOp | undefined, kind: string): op is BoolOp => !!op && op.op === kind && "shape" in op && !op.cosmetic && (kind === "add" || !(detail && threadEnvelope(op.shape)));
+  const batchable = (op: PartOp | undefined, kind: string): op is BoolOp => !!op && op.op === kind && "shape" in op && !op.cosmetic && !runsUntil(op.shape) && (kind === "add" || !(detail && threadEnvelope(op.shape)));
   let skip = 0;
   p.ops.forEach((op, i) => {
     if (skip) return void skip--;
@@ -449,7 +450,7 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
     case "add":
     case "cut":
     case "intersect": {
-      const tool = buildShape(op.shape, detail);
+      const tool = runsUntil(op.shape) ? upToNext(shape, op.shape, op.op) : buildShape(op.shape, detail);
       if (op.name) {
         const f = features.get(op.name);
         if (f) f.tools.push(tool);
@@ -502,8 +503,9 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       const idx = t.selectFaces(op.faces);
       if (!idx.size) throw new BuildError(`faces: ${describeSel(op.faces)} matched no faces`);
       const faces = [...idx].map((i) => t.faces[i]);
-      const plane = new R.Plane(op.neutral, frameFor(op.pull).u, op.pull);
-      return checked(shape.draft(op.angle, (f) => f.inList(faces), plane));
+      const out = draftFaces(shape, faces, op.angle, op.neutral, op.pull);
+      if (!out) throw new BuildError(faces.some((f) => !["PLANE", "CYLINDRE", "CONE"].includes(f.geomType)) ? "only flat, cylindrical and conical faces can be drafted, and the selection has others" : "the faces could not be tilted that far");
+      return out;
     }
   }
 }
@@ -618,12 +620,62 @@ const MAX_ROUNDED_EDGES = 200;
 
 /** Fillet, chamfer, draft and shell can return a solid that looks right but is broken (later booleans fail). */
 function checked(s: Shape3D): Shape3D {
-  const oc = R.getOC();
-  const check = new oc.BRepCheck_Analyzer(s.wrapped, true, false);
-  const ok = check.IsValid();
-  check.delete();
-  if (!ok) throw new BuildError("it made an invalid solid");
+  if (!shapeValid(s)) throw new BuildError("it made an invalid solid");
   return s;
+}
+
+type ExtrudeRecipe = Extract<ShapeRecipe, { t: "extrude" }>;
+
+/** An extrusion whose end the part's shape decides (until: "next"). */
+function runsUntil(r: ShapeRecipe): r is ExtrudeRecipe {
+  return r.t === "extrude" && !!r.until;
+}
+
+/**
+ * The tool for an extrusion that runs up to the next face. Added: it grows from its plane until it meets the part
+ * (the pieces of a long extrusion outside the part that start on the plane). Cut: it cuts from its plane through
+ * the first wall it meets and stops where it comes out (the pieces of the extrusion inside the part that start on
+ * the plane, or the nearest ones when the plane is off the part).
+ */
+function upToNext(body: Shape3D, r: ExtrudeRecipe, op: "add" | "cut" | "intersect"): Shape3D {
+  if (op === "intersect") throw new BuildError('until: "next" works with add and cut, not intersect');
+  // the way it runs: along the plane's normal, or against it for a negative h (the profile is never mirrored)
+  const sign = r.h < 0 ? -1 : 1;
+  const n = vscale(vnorm(r.f.n), sign);
+  const [lo, hi] = body.boundingBox.bounds as [V3, V3];
+  let ahead = -Infinity;
+  for (const x of [lo[0], hi[0]]) for (const y of [lo[1], hi[1]]) for (const z of [lo[2], hi[2]]) ahead = Math.max(ahead, vdot(vsub([x, y, z], r.f.o), n));
+  if (!(ahead > 1e-6)) throw new BuildError('until: "next" found nothing ahead of the sketch plane: the part lies behind it. Turn the extrusion round (reverse: true) or give a depth.');
+  const len = ahead + 1;
+  const long = extrudeProfile(r.p, sign * len, r.f, r.twist, r.scale, r.taper ?? 0);
+  const pieces = (op === "add" ? long.cut(body) : (long.intersect(body) as Shape3D)).solids;
+  long.delete();
+  const face = (at: number) => (R.drawRectangle(1e5, 1e5).sketchOnPlane(planeOf({ ...r.f, o: vadd(r.f.o, vscale(n, at)) })) as R.Sketch).face();
+  const start = face(0);
+  const gap = pieces.map((s) => R.measureDistanceBetween(s, start));
+  start.delete();
+  const touching = pieces.filter((_, i) => gap[i] < 1e-4);
+  let keep = touching;
+  if (op === "cut" && !keep.length && pieces.length) {
+    const near = Math.min(...gap);
+    keep = pieces.filter((_, i) => gap[i] < near + 1e-4);
+  }
+  if (!keep.length) {
+    throw new BuildError(
+      op === "add"
+        ? 'until: "next" has nowhere to grow: the profile starts inside the part. Sketch on the face it should grow from, or turn it round (reverse: true).'
+        : 'until: "next" cuts nothing: the profile never reaches the part.',
+    );
+  }
+  if (op === "add") {
+    const end = face(len);
+    const runsOn = keep.some((s) => R.measureDistanceBetween(s, end) < 1e-4);
+    end.delete();
+    if (runsOn) throw new BuildError('until: "next" has nothing to stop at for some of the profile: it would run on past the part. Give a depth, or move the sketch so the part is in the way of all of it.');
+  }
+  let tool = keep[0];
+  for (let i = 1; i < keep.length; i++) tool = tool.fuse(keep[i]);
+  return tool;
 }
 
 /** A WebAssembly trap (out of memory, an abort): unlike an OpenCASCADE exception, the kernel cannot carry on. */

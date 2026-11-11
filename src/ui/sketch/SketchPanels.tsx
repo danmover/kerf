@@ -10,7 +10,7 @@ import { useDesign } from "../../core/engine";
 import { commitSource } from "../../app/project";
 import { select } from "../../app/view";
 import { toast } from "../../app/ui";
-import { addFeature, addStatements, deleteSelection, entitiesOf, suggestionsFor, toggleConstruction, fmt, type FeatureSpec } from "../../sketch/edits";
+import { addFeature, addStatements, deleteSelection, entitiesOf, extrudeExpr, suggestionsFor, toggleConstruction, fmt, type FeatureSpec } from "../../sketch/edits";
 import { sketchStatusText } from "../../sketch/evaluate";
 import type { EvalSketch } from "../../sketch/types";
 import { useChatDraft } from "../chatDraft";
@@ -294,25 +294,67 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
   const [part, setPart] = useState(sk.usedBy[0] ?? parts[0] ?? "");
   const [depth, setDepth] = useState("10");
   const [dir, setDir] = useState<"normal" | "reverse" | "both">("normal");
-  const [through, setThrough] = useState(false);
+  const [end, setEnd] = useState<"depth" | "next" | "through">("depth");
+  const through = end === "through";
+  const next = end === "next";
+  const [taper, setTaper] = useState("0");
+  const [thin, setThin] = useState(false);
+  const [wall, setWall] = useState("2");
+  const [side, setSide] = useState<"inside" | "outside" | "center">("inside");
   const [asParam, setAsParam] = useState(true);
   const [axis, setAxis] = useState(lines.find((l) => l.construction)?.id ?? "y_axis");
   const [angle, setAngle] = useState("360");
   const depthRef = useRef<HTMLInputElement>(null);
   useEffect(() => depthRef.current?.focus(), []);
   useEffect(() => {
-    if (op === "cut") setThrough(true);
+    if (op === "cut") setEnd("through");
+    else if (op === "new") setEnd((e) => (e === "next" ? "depth" : e));
   }, [op]);
+  useEffect(() => {
+    if (next) setDir((v) => (v === "both" ? "normal" : v));
+  }, [next]);
   const d = Number(depth);
   const a = Number(angle);
-  const bad = !sk.profile.regions.length ? sk.profile.error?.message ?? "The sketch has no closed profile yet." : op !== "new" && !part ? "Pick a part." : kind === "extrude" && !through && !(d > 0) ? "Depth must be a positive number." : kind === "revolve" && !(a > 0 && a <= 360) ? "Angle must be between 0 and 360." : "";
+  const tp = Number(taper);
+  const w = Number(wall);
+  const extrude = kind === "extrude";
+  const bad = !sk.profile.regions.length
+    ? sk.profile.error?.message ?? "The sketch has no closed profile yet."
+    : op !== "new" && !part
+      ? "Pick a part."
+      : extrude && end === "depth" && !(d > 0)
+        ? "Depth must be a positive number."
+        : extrude && next && op === "new"
+          ? "Up to next stops at a part's face: add to or cut from a part."
+          : extrude && !through && !(Math.abs(tp) < 80)
+            ? "Taper must be between -80 and 80 degrees."
+            : extrude && thin && !(w > 0)
+              ? "The wall must be thicker than 0."
+              : kind === "revolve" && !(a > 0 && a <= 360)
+                ? "Angle must be between 0 and 360."
+                : "";
+  const spec: FeatureSpec = {
+    kind,
+    op,
+    part: op === "new" ? undefined : part,
+    depth: d,
+    reverse: dir === "reverse",
+    symmetric: dir === "both" && end === "depth",
+    through: extrude && through,
+    until: extrude && next ? "next" : undefined,
+    taper: extrude && !through && tp ? tp : undefined,
+    thin: extrude && thin ? w : undefined,
+    thinSide: side,
+    axis,
+    angle: a,
+    param: asParam,
+  };
   const create = () => {
     if (bad) return;
-    const spec: FeatureSpec = { kind, op, part: op === "new" ? undefined : part, depth: d, reverse: dir === "reverse", symmetric: dir === "both", through: kind === "extrude" && through, axis, angle: a, param: asParam };
     try {
       const src = useDesign.getState().source;
       const r = addFeature(src, sk, spec);
-      const what = kind === "extrude" ? (through ? "through all" : `${fmt(d)} mm`) : `${fmt(a)}°`;
+      const what = extrude ? (through ? "through all" : next ? "up to the next face" : `${fmt(d)} mm`) : `${fmt(a)}°`;
       const m = commitSource(r.src, "you", `${kind === "extrude" ? "Extruded" : "Revolved"} ${sk.name} ${what} ${op === "new" ? `into new part ${r.part}` : op === "add" ? `onto ${r.part}` : `out of ${r.part}`}`);
       exitSketch();
       const err = m.diagnostics.find((x) => x.severity === "error");
@@ -365,15 +407,27 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
       {kind === "extrude" ? (
         <>
           <div className="sk-field">
-            <span className="field-label">Depth</span>
-            <div className="row" style={{ gap: 6 }}>
-              <input ref={depthRef} className="input mono" style={{ width: 90 }} value={through ? "" : depth} placeholder={through ? "through all" : ""} disabled={through} onChange={(e) => setDepth(e.target.value)} aria-label="Depth in mm" />
-              <span className="muted">mm</span>
-              <label className="sk-check">
-                <input type="checkbox" checked={through} onChange={(e) => setThrough(e.target.checked)} /> through all
-              </label>
-            </div>
+            <span className="field-label">Ends</span>
+            <Segmented
+              id="sk-end"
+              value={end}
+              onChange={setEnd}
+              options={[
+                { value: "depth", label: "Depth" },
+                { value: "next", label: "Up to next", title: op === "new" ? "Add to or cut from a part first" : "Runs until it meets the part (cut: through the first wall)" },
+                { value: "through", label: "Through all" },
+              ]}
+            />
           </div>
+          {end === "depth" && (
+            <div className="sk-field">
+              <span className="field-label">Depth</span>
+              <div className="row" style={{ gap: 6 }}>
+                <input ref={depthRef} className="input mono" style={{ width: 90 }} value={depth} onChange={(e) => setDepth(e.target.value)} aria-label="Depth in mm" />
+                <span className="muted">mm</span>
+              </div>
+            </div>
+          )}
           {!through && (
             <div className="sk-field">
               <span className="field-label">Direction</span>
@@ -384,12 +438,42 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
                 options={[
                   { value: "normal", label: "Out", title: "Along the plane's normal" },
                   { value: "reverse", label: "In", title: "Against the plane's normal" },
-                  { value: "both", label: "Both sides", title: "Half each way" },
+                  ...(next ? [] : [{ value: "both" as const, label: "Both sides", title: "Half each way" }]),
                 ]}
               />
             </div>
           )}
           {!through && (
+            <div className="sk-field">
+              <span className="field-label">Taper</span>
+              <div className="row" style={{ gap: 6 }}>
+                <input className="input mono" style={{ width: 90 }} value={taper} onChange={(e) => setTaper(e.target.value)} aria-label="Taper in degrees" data-tip="Draft on the sides: they lean in by this angle (out when negative), so a moulded part comes out of its mould" />
+                <span className="muted">degrees</span>
+              </div>
+            </div>
+          )}
+          <div className="sk-field">
+            <label className="sk-check">
+              <input type="checkbox" checked={thin} onChange={(e) => setThin(e.target.checked)} /> thin wall only
+            </label>
+            {thin && (
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                <input className="input mono" style={{ width: 70 }} value={wall} onChange={(e) => setWall(e.target.value)} aria-label="Wall thickness in mm" />
+                <span className="muted">mm</span>
+                <Segmented
+                  id="sk-thin"
+                  value={side}
+                  onChange={setSide}
+                  options={[
+                    { value: "inside", label: "In", title: "Inside the outline: the outer size stays" },
+                    { value: "outside", label: "Out", title: "Outside the outline" },
+                    { value: "center", label: "Centre", title: "Centred on the outline" },
+                  ]}
+                />
+              </div>
+            )}
+          </div>
+          {end === "depth" && (
             <label className="sk-check">
               <input type="checkbox" checked={asParam} onChange={(e) => setAsParam(e.target.checked)} /> keep the depth as a parameter (slider)
             </label>
@@ -419,7 +503,7 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
           </div>
         </>
       )}
-      <div className="sk-preview mono">{previewCode(sk, { kind, op, part, depth: d, dir, through, axis, angle: a, asParam })}</div>
+      <div className="sk-preview mono">{previewCode(sk, spec, asParam)}</div>
       {bad && <div className="sk-problem warn">{bad}</div>}
       <button className="btn primary" style={{ width: "100%", marginTop: 8 }} disabled={!!bad} onClick={create}>
         <Icon.Check size={14} /> {op === "new" ? "Create part" : op === "add" ? `Add to ${part}` : `Cut from ${part}`}
@@ -428,14 +512,10 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
   );
 }
 
-function previewCode(sk: EvalSketch, o: { kind: string; op: string; part: string; depth: number; dir: string; through: boolean; axis: string; angle: number; asParam: boolean }) {
-  const depth = o.asParam ? `${sk.name}_depth` : fmt(o.depth || 0);
-  const expr =
-    o.kind === "extrude"
-      ? o.through
-        ? `extrude(${sk.name}, through: true)`
-        : `extrude(${sk.name}, ${depth}${o.dir === "reverse" ? ", reverse: true" : o.dir === "both" ? ", symmetric: true" : ""})`
-      : `revolve(${sk.name}, axis: ${sk.name}.${o.axis}${o.angle !== 360 ? `, angle: ${fmt(o.angle)}` : ""})`;
+function previewCode(sk: EvalSketch, o: FeatureSpec, asParam: boolean) {
+  const depth = asParam ? `${sk.name}_depth` : fmt(o.depth || 0);
+  const angle = o.angle ?? 360;
+  const expr = o.kind === "extrude" ? extrudeExpr(sk.name, o, depth) : `revolve(${sk.name}, axis: ${sk.name}.${o.axis}${angle !== 360 ? `, angle: ${fmt(angle)}` : ""})`;
   return o.op === "new" ? `body ${expr}` : `${o.op} ${expr}   // in ${o.part}`;
 }
 
