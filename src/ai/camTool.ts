@@ -28,8 +28,8 @@ export const CAM_TOOL_DEFS = [
         tools: {
           type: "array",
           maxItems: 6,
-          description: "End mills to use, largest first: diameter and how deep each can cut below the stock top (mm).",
-          items: { type: "object", properties: { d: { type: "number", exclusiveMinimum: 0, maximum: 60 }, reach: { type: "number", exclusiveMinimum: 0, maximum: 300 } }, required: ["d"], additionalProperties: false },
+          description: "End mills to use, largest first: diameter and how deep each can cut below the stock top (mm). Add twist drills (drill: true) for round holes smaller than the smallest end mill: each drills the holes its own size.",
+          items: { type: "object", properties: { d: { type: "number", exclusiveMinimum: 0, maximum: 60 }, reach: { type: "number", exclusiveMinimum: 0, maximum: 300 }, drill: { type: "boolean" } }, required: ["d"], additionalProperties: false },
         },
         material: { type: "string", description: "The stock's material (default the part's): it sets speeds and feeds." },
         machine: { type: "string", enum: ["router", "benchtop", "vmc"] },
@@ -52,9 +52,9 @@ const Input = z.object({
   setup: z.enum(["+Z", "-Z", "+X", "-X", "+Y", "-Y"]).optional(),
   hold: z.enum(["tabs", "base", "none"]).optional(),
   tools: z
-    .array(z.object({ d: z.number().positive().max(60), reach: z.number().positive().max(300).optional() }))
+    .array(z.object({ d: z.number().positive().max(60), reach: z.number().positive().max(300).optional(), drill: z.boolean().optional() }))
     .min(1)
-    .max(6)
+    .max(8)
     .optional(),
   material: z.string().min(1).max(80).optional(),
   machine: z.enum(["router", "benchtop", "vmc"]).optional(),
@@ -80,7 +80,7 @@ export function camSummary(job: CamJob, r: CamResult, part: EvalPart): string {
   lines.push(`CNC toolpaths for ${part.label}, ${setupName(job, part)} (tool from ${axis}), ${HOLD_WORDS[job.hold]}, on ${FRAME_WORDS[job.frame]} (spindle to ${job.rpm} rpm), in ${job.material}.`);
   lines.push(`Stock ${n(st.hi[0] - st.lo[0], 1)} × ${n(st.hi[1] - st.lo[1], 1)} × ${n(st.top - st.bottom, 1)} mm; the part as set up is ${r.size.map((x) => n(x, 1)).join(" × ")} mm. Work zero: X0 Y0 at the stock's front-left corner, Z0 on its top.`);
   if (!p.ops.length) lines.push("Nothing to cut.");
-  p.ops.forEach((o, i) => lines.push(`${i + 1}. ${o.label}: T${o.tool + 1} Ø${n(o.d)} mm, ${o.cut.flutes} flutes, ${o.cut.rpm} rpm, feed ${o.cut.feed} mm/min (plunge ${o.cut.plunge}), ${n(o.length / 1000, 2)} m of cutting, ${mins(o.seconds)}.`));
+  p.ops.forEach((o, i) => lines.push(o.kind === "drill" ? `${i + 1}. ${o.label}: T${o.tool + 1} Ø${n(o.d)} mm drill, ${o.cut.rpm} rpm, feed ${o.cut.feed} mm/min, ${mins(o.seconds)}.` : `${i + 1}. ${o.label}: T${o.tool + 1} Ø${n(o.d)} mm, ${o.cut.flutes} flutes, ${o.cut.rpm} rpm, feed ${o.cut.feed} mm/min (plunge ${o.cut.plunge}), ${n(o.length / 1000, 2)} m of cutting, ${mins(o.seconds)}.`));
   if (p.ops.length) lines.push(`About ${mins(p.seconds)} of cutting in all, levels from ${n(p.levels[0] ?? st.top)} down to ${n(p.levels[p.levels.length - 1] ?? st.bottom)} mm.`);
   if (p.tabs.length) lines.push(`${p.tabs.length} tabs, ${n(job.tabs.width)} mm wide and ${n(job.tabs.height)} mm tall, hold the part in the sheet: cut them after.`);
   if (p.warnings.length) lines.push(`Warnings: ${p.warnings.join(" ")}`);
@@ -108,7 +108,7 @@ export async function runCamTool(name: string, input: unknown): Promise<ToolOutc
     ...base,
     setup: a.setup ? DIRS[a.setup] : base.setup,
     hold,
-    tools: a.tools ? a.tools.map((t) => ({ d: t.d, reach: t.reach ?? Math.round(4 * t.d) })) : base.tools,
+    tools: a.tools ? a.tools.map((t) => ({ d: t.d, reach: t.reach ?? Math.round((t.drill ? 8 : 4) * t.d), ...(t.drill ? { drill: true } : {}) })) : base.tools,
     material: a.material ?? base.material,
     frame: a.machine ?? base.frame,
     rpm: a.rpm ?? base.rpm,

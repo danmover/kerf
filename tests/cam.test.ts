@@ -137,6 +137,34 @@ describe("planning the cuts", () => {
     expect(cut.h[0]).toBeCloseTo(0, 3);
   });
 
+  it("drills holes too small for the end mills with a drill their size, pecking", () => {
+    const sl = slicerFor(PLATE);
+    const plan = planCam(camPart(sl), base({ tools: [{ d: 6, reach: 25 }, { d: 3, reach: 15 }, { d: 2, reach: 16, drill: true }] }));
+    expect(plan.ops.map((o) => `${o.kind} ${o.d}`)).toEqual(["rough 6", "finish 6", "drill 2"]);
+    expect(plan.warnings.join(" ")).not.toMatch(/hole/);
+    expect(plan.left.holes).toHaveLength(0);
+    const drill = plan.ops[2];
+    // through the 12 mm plate and the point out the bottom, in 6 mm pecks with the chips cleared between
+    expect(Math.min(...drill.moves.map((m) => m.p[2]))).toBeCloseTo(-0.3 - 0.6, 6);
+    expect(drill.moves.filter((m) => m.k === "plunge")).toHaveLength(3);
+    for (const m of drill.moves) {
+      expect(m.p[0]).toBeCloseTo(25, 3);
+      expect(m.p[1]).toBeCloseTo(-20, 3);
+    }
+    const cell = 0.25;
+    const cut = simulate(plan, cell);
+    expect(compare(cut, partHeights(sl, plan.stock, cell), -Infinity).gouge).toBeLessThan(0.02);
+    expect(cut.h[Math.floor((-20 - cut.y0) / cell) * cut.nx + Math.floor((25 - cut.x0) / cell)]).toBeLessThan(0);
+    // its own file for GRBL, named as a drill
+    const files = writeGcode(plan, "grbl", "plate", "setup 1 of 1: top up");
+    expect(files.map((f) => f.name)).toEqual(["plate setup 1 of 1 - 1 T1 6mm.nc", "plate setup 1 of 1 - 2 T3 2mm drill.nc"]);
+    expect(files[1].text).toMatch(/\(T3: 2 mm twist drill\)/);
+    // a drill too big for the hole leaves it
+    const big = planCam(camPart(sl), base({ tools: [{ d: 6, reach: 25 }, { d: 2.5, reach: 16, drill: true }] }));
+    expect(big.ops.some((o) => o.kind === "drill")).toBe(false);
+    expect(big.warnings.join(" ")).toMatch(/add a Ø2 mm drill to the tools/);
+  });
+
   it("clears inside corners with a smaller tool when the larger does not fit", () => {
     const sl = slicerFor(`design "slot"
 part plate {
@@ -233,6 +261,12 @@ describe("the toolpaths panel's job", () => {
       { d: 6, reach: 24 },
       { d: 1.5, reach: 6 },
     ]);
+    expect(parseTools("6 x 20, drill 2 × 15, 1.5 drill")).toEqual([
+      { d: 6, reach: 20 },
+      { d: 2, reach: 15, drill: true },
+      { d: 1.5, reach: 12, drill: true },
+    ]);
+    expect(toolsText([{ d: 2, reach: 15, drill: true }])).toBe("drill 2 × 15");
     expect(parseTools("six")).toBeNull();
     expect(parseTools("")).toBeNull();
     expect(toolsText([{ d: 3.175, reach: 12.5 }])).toBe("3.175 × 12.5");

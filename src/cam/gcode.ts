@@ -25,7 +25,7 @@ const f3 = (x: number) => {
   return v.toFixed(3).replace(/\.?0+$/, "") || "0";
 };
 
-const toolLabel = (op: CamOp) => `${f3(op.d)} mm flat end mill, ${op.cut.flutes} flutes`;
+const toolLabel = (op: CamOp) => (op.kind === "drill" ? `${f3(op.d)} mm twist drill` : `${f3(op.d)} mm flat end mill, ${op.cut.flutes} flutes`);
 
 /** Comment text a controller accepts: no brackets or semicolons inside. */
 const say = (s: string) => `(${s.replace(/[()]/g, "").replace(/;/g, ",")})`;
@@ -131,9 +131,9 @@ export function writeGcode(plan: CamPlan, post: Post, title: string, setup: stri
     return runs.map((ops, i) => {
       const w = new Writer(ox, oy, oz);
       head(w, ops);
-      if (i > 0) w.lines.splice(4, 0, say(`Fit the ${f3(ops[0].d)} mm tool and zero Z on the stock top again before running this`));
+      if (i > 0) w.lines.splice(4, 0, say(`Fit the ${f3(ops[0].d)} mm ${ops[0].kind === "drill" ? "drill" : "tool"} and zero Z on the stock top again before running this`));
       body(w, ops, false);
-      return { name: `${stem} - ${i + 1} T${ops[0].tool + 1} ${f3(ops[0].d)}mm.nc`, text: w.lines.join("\n") + "\n", tools: [ops[0].tool], seconds: ops.reduce((a, o) => a + o.seconds, 0) };
+      return { name: `${stem} - ${i + 1} T${ops[0].tool + 1} ${f3(ops[0].d)}mm${ops[0].kind === "drill" ? " drill" : ""}.nc`, text: w.lines.join("\n") + "\n", tools: [ops[0].tool], seconds: ops.reduce((a, o) => a + o.seconds, 0) };
     });
   }
   const w = new Writer(ox, oy, oz);

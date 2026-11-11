@@ -7,13 +7,15 @@
 // near the bottom. Whatever no tool can reach is measured and reported, small round holes as holes to drill.
 
 import { area, bounds, diff, inside, inter, islands, loopArea, offset, pathLength, rect, segmentInside, union, type Loop, type Pt, type Region } from "./clip";
-import { cutting, FRAME_SPEED, type Cutting, type Frame } from "./feeds";
+import { cutting, drilling, FRAME_SPEED, type Cutting, type Frame } from "./feeds";
 
 export interface CamTool {
   d: number;
   /** flute or neck length: how deep below the stock top it can cut, mm */
   reach: number;
   flutes?: number;
+  /** a twist drill: it only drills round holes of its own size, straight down */
+  drill?: boolean;
 }
 
 /** tabs: cut through, held by tabs at the bottom; base: leave the stock under the part (a vise holds it); none: cut through */
@@ -76,7 +78,7 @@ export interface CamMove {
   p: [number, number, number];
 }
 
-export type OpKind = "face" | "rough" | "finish" | "rest";
+export type OpKind = "face" | "rough" | "finish" | "rest" | "drill";
 
 export interface CamOp {
   kind: OpKind;
@@ -89,6 +91,8 @@ export interface CamOp {
   seconds: number;
   /** length of cutting moves, mm */
   length: number;
+  /** the width the simulation cuts, when not d: a drill no wider than its hole as the part's facets have it */
+  stampD?: number;
 }
 
 export interface CamPlan {
@@ -351,8 +355,8 @@ function straighten(moves: CamMove[]): CamMove[] {
 }
 
 /** Round pieces of an area that look like holes: about as wide as tall and nearly a disc. */
-function roundPieces(r: Region): { c: Pt; d: number }[] {
-  const out: { c: Pt; d: number }[] = [];
+function roundPieces(r: Region): { c: Pt; d: number; inner: number; a: number }[] {
+  const out: { c: Pt; d: number; inner: number; a: number }[] = [];
   for (const isl of islands(r)) {
     if (isl.holes.length) continue;
     const b = bounds([isl.outer]);
@@ -363,9 +367,33 @@ function roundPieces(r: Region): { c: Pt; d: number }[] {
     const a = area([isl.outer]);
     const disc = (Math.PI * w * h) / 4;
     if (Math.abs(a - disc) > 0.1 * disc) continue;
-    out.push({ c: [(b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2], d: +((w + h) / 2).toFixed(1) });
+    // the centre as the area's centroid: the bounding box of a faceted circle sits a little off it
+    const l0 = isl.outer;
+    let cx = 0,
+      cy = 0,
+      a2 = 0;
+    for (let i = 0, j = l0.length - 1; i < l0.length; j = i++) {
+      const cr = l0[j][0] * l0[i][1] - l0[i][0] * l0[j][1];
+      a2 += cr;
+      cx += (l0[j][0] + l0[i][0]) * cr;
+      cy += (l0[j][1] + l0[i][1]) * cr;
+    }
+    const c: Pt = Math.abs(a2) > 1e-12 ? [cx / (3 * a2), cy / (3 * a2)] : [(b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2];
+    // the widest circle inside it (the facets sit inside the true circle)
+    let inner = Infinity;
+    const l = isl.outer;
+    for (let i = 0, j = l.length - 1; i < l.length; j = i++) inner = Math.min(inner, segDist(c, l[j], l[i]));
+    out.push({ c, d: +((w + h) / 2).toFixed(1), inner: 2 * inner, a });
   }
   return out;
+}
+
+function segDist(p: Pt, a: Pt, b: Pt): number {
+  const dx = b[0] - a[0],
+    dy = b[1] - a[1];
+  const L2 = dx * dx + dy * dy;
+  const t = L2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2)) : 0;
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
 }
 
 export function planCam(part: CamPart, s: CamSettings): CamPlan {
@@ -373,7 +401,7 @@ export function planCam(part: CamPart, s: CamSettings): CamPlan {
   const st = s.stock;
   const safeZ = st.top + s.safe;
   const empty: CamPlan = { ops: [], seconds: 0, warnings, left: { area: 0, depth: 0, holes: [] }, stock: st, safeZ, tabs: [], levels: [] };
-  const tools = s.tools.map((t, i) => ({ ...t, i })).filter((t) => t.d > 0 && t.reach > 0);
+  const tools = s.tools.map((t, i) => ({ ...t, i })).filter((t) => !t.drill && t.d > 0 && t.reach > 0);
   tools.sort((a, b) => b.d - a.d);
   if (!tools.length) {
     warnings.push("No end mills to cut with: give the process a tools list or a tool_d");
@@ -515,7 +543,9 @@ export function planCam(part: CamPart, s: CamSettings): CamPlan {
   let leftArea = 0,
     leftTop = -Infinity,
     leftBottom = Infinity;
-  const holes = new Map<string, { c: Pt; d: number; top: number; bottom: number }>();
+  const holes = new Map<string, { c: Pt; d: number; inner: number; top: number; bottom: number }>();
+  /** the most material left at a level that is not a hole to drill */
+  let otherArea = 0;
   for (const z of allZ) {
     if (z > st.top - EPS) continue;
     const rem = opened(diff(diff(target, keepAt(z)), sweptBefore(swept.length, z)), 0.03);
@@ -524,23 +554,83 @@ export function planCam(part: CamPart, s: CamSettings): CamPlan {
     leftArea = Math.max(leftArea, ar);
     leftTop = Math.max(leftTop, z);
     leftBottom = Math.min(leftBottom, z);
-    for (const h of roundPieces(rem)) {
-      const key = `${Math.round(h.c[0] * 5)},${Math.round(h.c[1] * 5)}`;
+    const round = roundPieces(rem);
+    otherArea = Math.max(otherArea, ar - round.reduce((x, h) => x + h.a, 0));
+    for (const { c, d, inner } of round) {
+      const key = `${Math.round(c[0] * 5)},${Math.round(c[1] * 5)}`;
       const was = holes.get(key);
       if (was) {
         was.top = Math.max(was.top, z);
         was.bottom = Math.min(was.bottom, z);
-      } else holes.set(key, { ...h, top: z, bottom: z });
+        was.inner = Math.min(was.inner, inner);
+      } else holes.set(key, { c, d, inner, top: z, bottom: z });
     }
   }
-  const reachMax = Math.max(...tools.map((t) => t.reach));
-  if (st.top - deep > reachMax + EPS) warnings.push(`The cut goes ${+(st.top - deep).toFixed(2)} mm deep but the longest tool reaches ${reachMax} mm: the deepest ${+(st.top - deep - reachMax).toFixed(2)} mm is left`);
+  const reachMax = tools.length ? Math.max(...tools.map((t) => t.reach)) : 0;
+  if (tools.length && st.top - deep > reachMax + EPS) warnings.push(`The cut goes ${+(st.top - deep).toFixed(2)} mm deep but the longest tool reaches ${reachMax} mm: the deepest ${+(st.top - deep - reachMax).toFixed(2)} mm is left`);
   const holeList = [...holes.values()];
-  if (holeList.length) {
-    const sizes = [...new Set(holeList.map((h) => h.d))].sort((x, y) => x - y);
-    warnings.push(`${holeList.length} hole${holeList.length > 1 ? "s" : ""} (Ø${sizes.join(", Ø")} mm) ${holeList.length > 1 ? "are" : "is"} smaller than the smallest end mill: drill ${holeList.length > 1 ? "them" : "it"} after, or add a smaller tool`);
+
+  // drills take the holes their own size, last so the end mills need no second change
+  const drills = s.tools
+    .map((t, i) => ({ ...t, i }))
+    .filter((t) => t.drill && t.d > 0 && t.reach > 0)
+    .sort((a, b) => b.d - a.d);
+  const drilled = new Set<(typeof holeList)[number]>();
+  const R = st.top + 1;
+  for (const dr of drills) {
+    const fits = (h: (typeof holeList)[number]) => !drilled.has(h) && h.d >= dr.d - 0.06 && h.d - dr.d <= Math.max(0.25, 0.08 * h.d);
+    let mine = holeList.filter(fits);
+    if (!mine.length) continue;
+    const cut = drilling(dr.d, s.material, s.frame, s.rpmMax);
+    const moves: CamMove[] = [];
+    let at: Pt = Number.isFinite(pos[0]) ? [pos[0], pos[1]] : [st.lo[0], st.lo[1]];
+    let short = 0;
+    const taken: typeof holeList = [];
+    while (mine.length) {
+      // the nearest hole next
+      let bi = 0;
+      for (let i = 1; i < mine.length; i++) if (Math.hypot(mine[i].c[0] - at[0], mine[i].c[1] - at[1]) < Math.hypot(mine[bi].c[0] - at[0], mine[bi].c[1] - at[1])) bi = i;
+      const h = mine[bi];
+      mine = mine.filter((_, i) => i !== bi);
+      drilled.add(h);
+      taken.push(h);
+      // through holes: the point goes on through; blind ones stop at their floor
+      const through = h.bottom <= deep + EPS;
+      let end = through ? h.bottom - 0.3 * dr.d : h.bottom;
+      if (st.top - end > dr.reach + EPS) {
+        end = st.top - dr.reach;
+        short++;
+      }
+      const [x, y] = h.c;
+      moves.push({ k: "rapid", p: [x, y, moves.length ? R : safeZ] });
+      if (moves.length === 1) moves.push({ k: "rapid", p: [x, y, R] });
+      let z = Math.min(st.top, R);
+      let first = true;
+      while (z > end + EPS) {
+        const next = Math.max(end, z - cut.stepdown);
+        if (!first) moves.push({ k: "rapid", p: [x, y, z + 0.5] });
+        moves.push({ k: "plunge", p: [x, y, next] });
+        // out to clear the chips
+        moves.push({ k: "rapid", p: [x, y, R] });
+        z = next;
+        first = false;
+      }
+      at = h.c;
+    }
+    moves.push({ k: "rapid", p: [at[0], at[1], safeZ] });
+    const tm = seconds(moves, cut, s.frame, pos);
+    const stampD = Math.min(dr.d, ...taken.map((h) => h.inner));
+    ops.push({ kind: "drill", label: `Drill ${taken.length} hole${taken.length > 1 ? "s" : ""} with the Ø${+dr.d.toFixed(2)} mm drill, ${+cut.stepdown.toFixed(2)} mm pecks`, tool: dr.i, d: dr.d, cut, moves, seconds: tm.s, length: tm.length, stampD });
+    pos = moves[moves.length - 1].p;
+    if (short) warnings.push(`The Ø${+dr.d.toFixed(2)} mm drill reaches ${dr.reach} mm: ${short} hole${short > 1 ? "s are" : " is"} not drilled to the bottom`);
   }
-  if (leftArea > 0.05 && holeList.length === 0) warnings.push(`Some material is left where no tool fits (up to ${+leftArea.toFixed(1)} mm² at a level, inside corners or narrow slots): add a smaller tool, or round those corners`);
+  const undrilled = holeList.filter((h) => !drilled.has(h));
+  if (undrilled.length) {
+    const sizes = [...new Set(undrilled.map((h) => h.d))].sort((x, y) => x - y);
+    const many = undrilled.length > 1;
+    warnings.push(`${undrilled.length} hole${many ? "s" : ""} (Ø${sizes.join(", Ø")} mm) ${many ? "are" : "is"} smaller than the smallest end mill: add ${sizes.length > 1 ? "drills that size" : `a Ø${sizes[0]} mm drill`} to the tools to drill ${many ? "them" : "it"} here, or drill ${many ? "them" : "it"} after`);
+  }
+  if (otherArea > 0.05) warnings.push(`Some material is left where no tool fits (up to ${+otherArea.toFixed(1)} mm² at a level, inside corners or narrow slots): add a smaller tool, or round those corners`);
   const levels = [...new Set(plans.flatMap((p) => p.levels))].sort((a, b) => b - a);
-  return { ops, seconds: ops.reduce((x, o) => x + o.seconds, 0), warnings, left: { area: leftArea, depth: leftTop > -Infinity ? leftTop - leftBottom : 0, holes: holeList }, stock: st, safeZ, tabs, levels };
+  return { ops, seconds: ops.reduce((x, o) => x + o.seconds, 0), warnings, left: { area: leftArea, depth: leftTop > -Infinity ? leftTop - leftBottom : 0, holes: undrilled.map(({ c, d, top, bottom }) => ({ c, d, top, bottom })) }, stock: st, safeZ, tabs, levels };
 }

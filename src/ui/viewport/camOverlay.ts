@@ -15,7 +15,7 @@ import type { SceneOverlay } from "./scene";
 
 type V3 = [number, number, number];
 
-export const OP_COLORS: Record<OpKind, string> = { face: "#7dd3fc", rough: "#f5a524", rest: "#f472b6", finish: "#34d399" };
+export const OP_COLORS: Record<OpKind, string> = { face: "#7dd3fc", rough: "#f5a524", rest: "#f472b6", finish: "#34d399", drill: "#c084fc" };
 const RAPID = "#ff6b6b";
 /** other parts while the toolpaths show */
 const OTHERS = 0.1;
@@ -250,10 +250,10 @@ class StockSurface {
   }
 }
 
-/** A flat end mill with its shank and the collet nut above, its tip at the origin, pointing down -Z. */
-function endMill(d: number, reach: number): { group: THREE.Group; dispose(): void } {
+/** A flat end mill (or a twist drill, with its point) with its shank and the collet nut above, its tip at the origin, pointing down -Z. */
+function endMill(d: number, reach: number, drill = false): { group: THREE.Group; dispose(): void } {
   const r = d / 2;
-  const flute = Math.max(2 * d, Math.min(reach, 4 * d + 6, 40));
+  const flute = Math.max(2 * d, Math.min(reach, (drill ? 8 : 4) * d + 6, 40));
   const shankR = Math.max(r, 1.5);
   const shank = 22;
   const group = new THREE.Group();
@@ -269,7 +269,16 @@ function endMill(d: number, reach: number): { group: THREE.Group; dispose(): voi
     group.add(m);
     return g;
   };
-  const geos = [cyl(r, flute, 0, steel), cyl(shankR, shank, flute, steel), cyl(shankR * 1.6 + 4, 12, flute + shank, dark)];
+  // a drill's 118° point
+  const tip = drill ? 0.3 * d : 0;
+  const geos = [cyl(r, flute - tip, tip, steel), cyl(shankR, shank, flute, steel), cyl(shankR * 1.6 + 4, 12, flute + shank, dark)];
+  if (drill) {
+    const g = new THREE.ConeGeometry(r, tip, 28, 1);
+    g.rotateX(-Math.PI / 2);
+    g.translate(0, 0, tip / 2);
+    group.add(new THREE.Mesh(g, steel));
+    geos.push(g);
+  }
   // two flutes' helices on the cutting length
   const pts: THREE.Vector3[][] = [[], []];
   const turns = flute / (Math.PI * d * 0.58);
@@ -469,7 +478,7 @@ export class CamOverlay implements SceneOverlay {
     const op = ops[k];
     let tool = this.tools.get(op.tool);
     if (!tool) {
-      tool = endMill(op.d, this.toolList[op.tool]?.reach ?? 4 * op.d);
+      tool = endMill(op.d, this.toolList[op.tool]?.reach ?? 4 * op.d, op.kind === "drill");
       this.tools.set(op.tool, tool);
       this.disposables.push(tool);
     }
@@ -498,12 +507,12 @@ export class CamOverlay implements SceneOverlay {
         const g = first + j - 1;
         return g >= 0 ? [tl.p[3 * g], tl.p[3 * g + 1], tl.p[3 * g + 2]] : undefined;
       };
-      if (upto > this.cutDone) cutMoves(this.hm, op.moves.slice(this.cutDone, upto), op.d, startOf(this.cutDone));
+      if (upto > this.cutDone) cutMoves(this.hm, op.moves.slice(this.cutDone, upto), op.stampD ?? op.d, startOf(this.cutDone));
       this.cutDone = Math.max(this.cutDone, upto);
       const mv = op.moves[upto];
       if (mv && mv.k !== "rapid") {
         const part: CamMove = { k: mv.k, p: at.p };
-        cutMoves(this.hm, [part], op.d, startOf(upto));
+        cutMoves(this.hm, [part], op.stampD ?? op.d, startOf(upto));
       }
     }
     this.cutTime = s;

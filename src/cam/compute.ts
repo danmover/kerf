@@ -60,7 +60,7 @@ export function computeCam(req: CamRequest): CamResult {
   const after: Float32Array[] = [];
   let at: V3 | undefined;
   for (const op of plan.ops) {
-    cutMoves(hm, op.moves, op.d, at);
+    cutMoves(hm, op.moves, op.stampD ?? op.d, at);
     at = op.moves[op.moves.length - 1]?.p;
     after.push(hm.h.slice());
   }

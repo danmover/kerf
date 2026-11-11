@@ -58,3 +58,19 @@ export function cutting(d: number, material: string, frame: Frame, rpmMax: numbe
   const metal = cls !== "wood" && cls !== "plastic";
   return { rpm, feed, plunge: Math.round(feed * (metal ? 0.25 : 0.35)), ramp: Math.round(feed * 0.6), stepdown, stepover, rampDeg: metal ? 3 : 8, flutes, chip: +chip.toFixed(4) };
 }
+
+/** feed per revolution of a twist drill as a share of its diameter, by material */
+const DRILL_FEED: Record<CutClass, number> = { wood: 0.02, plastic: 0.015, "light metal": 0.012, steel: 0.008, "tough metal": 0.005 };
+
+/** Cutting values for a twist drill of diameter d: slower than an end mill, fed straight down in pecks. */
+export function drilling(d: number, material: string, frame: Frame, rpmMax: number): Cutting {
+  const { cls, speed } = millClass(material);
+  const lim = FRAME_SPEED[frame];
+  const ideal = (speed * 0.6 * 1000) / (Math.PI * d);
+  const rpm = Math.round(Math.max(Math.min(ideal, rpmMax), Math.min(lim.minRpm, rpmMax)));
+  const perRev = Math.max(0.01, DRILL_FEED[cls] * d);
+  const feed = Math.round(Math.min(lim.feed * 0.25, rpm * perRev));
+  // wood and plastic clear chips easily: deeper pecks
+  const peck = +(d * (cls === "wood" || cls === "plastic" ? 3 : 1.5)).toFixed(2);
+  return { rpm, feed, plunge: feed, ramp: feed, stepdown: peck, stepover: 0, rampDeg: 90, flutes: 2, chip: +(perRev / 2).toFixed(4) };
+}

@@ -116,7 +116,7 @@ export function simulate(plan: CamPlan, cell: number): HeightMap {
   const m = heightMap(plan.stock, cell, plan.stock.top);
   let at: [number, number, number] | undefined;
   for (const op of plan.ops) {
-    cutMoves(m, op.moves, op.d, at);
+    cutMoves(m, op.moves, op.stampD ?? op.d, at);
     at = op.moves[op.moves.length - 1]?.p;
   }
   return m;

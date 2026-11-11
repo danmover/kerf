@@ -27,7 +27,7 @@ const FRAMES: { value: Frame; label: string }[] = [
   { value: "vmc", label: "Machining centre" },
 ];
 const MATERIALS = ["Plywood", "MDF", "Hardwood", "HDPE", "Acrylic", "Delrin (POM)", "Nylon", "Aluminum 6061", "Aluminum 7075", "Brass", "Mild steel", "Stainless 304"];
-const OP_NAME: Record<OpKind, string> = { face: "Face", rough: "Rough", rest: "Rest", finish: "Finish" };
+const OP_NAME: Record<OpKind, string> = { face: "Face", rough: "Rough", rest: "Rest", finish: "Finish", drill: "Drill" };
 /** how long a play through takes, s */
 const PLAY_SECONDS = 24;
 
@@ -41,23 +41,24 @@ export function fmtDuration(s: number): string {
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-/** "6 × 22, 3 × 12" (diameter × reach, mm) as tools, or null when it does not read as that. A diameter alone reaches 4 of itself. */
+/** "6 × 22, 3 × 12, drill 2 × 15" (diameter × reach, mm) as tools, or null when it does not read as that. A diameter alone reaches 4 of itself. */
 export function parseTools(text: string): CamTool[] | null {
   const parts = text.split(/[,;]+/).map((s) => s.trim()).filter(Boolean);
   if (!parts.length) return null;
   const out: CamTool[] = [];
   for (const p of parts) {
-    const m = /^(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:[x×*]\s*(\d+(?:\.\d+)?)\s*(?:mm)?)?$/i.exec(p);
+    const drill = /\bdrill\b/i.test(p);
+    const m = /^(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:[x×*]\s*(\d+(?:\.\d+)?)\s*(?:mm)?)?$/i.exec(p.replace(/\bdrill\b/i, "").trim());
     if (!m) return null;
     const d = parseFloat(m[1]);
-    const reach = m[2] ? parseFloat(m[2]) : Math.round(4 * d);
+    const reach = m[2] ? parseFloat(m[2]) : Math.round((drill ? 8 : 4) * d);
     if (!(d > 0 && d <= 60 && reach > 0 && reach <= 300)) return null;
-    out.push({ d, reach });
+    out.push(drill ? { d, reach, drill } : { d, reach });
   }
-  return out.slice(0, 6);
+  return out.slice(0, 8);
 }
 
-export const toolsText = (tools: CamTool[]) => tools.map((t) => `${num(t.d, 3)} × ${num(t.reach)}`).join(", ");
+export const toolsText = (tools: CamTool[]) => tools.map((t) => `${t.drill ? "drill " : ""}${num(t.d, 3)} × ${num(t.reach)}`).join(", ");
 
 function NumIn({ label, value, onChange, unit = "mm", step = 1, min = 0, max, tip }: { label: string; value: number; onChange: (v: number) => void; unit?: string; step?: number; min?: number; max?: number; tip?: string }) {
   const [text, setText] = useState(num(value));
@@ -141,7 +142,7 @@ function SmallNum({ value, onChange, word, tip, min = 0 }: { value: number; onCh
   );
 }
 
-const OP_SHORT: Record<OpKind, string> = { face: "facing", rough: "roughing", rest: "clearing corners", finish: "finishing walls" };
+const OP_SHORT: Record<OpKind, string> = { face: "facing", rough: "roughing", rest: "clearing corners", finish: "finishing walls", drill: "drilling" };
 
 function CamPanel({ stop }: { stop: () => void }) {
   const { job, result, busy, error, planned } = useCam();
@@ -249,8 +250,8 @@ function CamPanel({ stop }: { stop: () => void }) {
               ]}
             />
           )}
-          <label className="mt-num" data-tip="End mills as diameter × how deep it reaches, mm, largest used first: 6 × 22, 3 × 12">
-            <span className="mono">End mills</span>
+          <label className="mt-num" data-tip="End mills as diameter × how deep it reaches, mm, largest used first, and any twist drills for small holes: 6 × 22, 3 × 12, drill 2 × 15">
+            <span className="mono">Tools</span>
             <input
               className={`input mono ${parseTools(toolText) ? "" : "bad"}`}
               value={toolText}
