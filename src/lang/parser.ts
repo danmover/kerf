@@ -125,7 +125,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.machineStmtAhead()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.atMate() || this.machineStmtAhead()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -148,6 +148,11 @@ class Parser {
   /** `frame <name> {` starts a frame of structural members; elsewhere "frame" is an ordinary name. */
   atFrame() {
     return this.is("ident", "frame") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
+  }
+
+  /** `mate against(...)` or `mate name = against(...)`: how two parts meet; elsewhere "mate" is an ordinary name. */
+  atMate() {
+    return this.is("ident", "mate") && this.is("ident", undefined, 1) && (this.is("op", "(", 2) || this.is("op", "=", 2));
   }
 
   /** wire a.X -> b.Y, net NAME: ..., firmware NAME { }, test "label": ... */
@@ -296,10 +301,25 @@ class Parser {
       const items = this.block();
       return { k: "frame", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
+    if (this.atMate()) {
+      const start = tk.start;
+      this.next();
+      let name: string | undefined;
+      let nameSpan: Span | undefined;
+      if (this.is("op", "=", 1)) {
+        const nameTk = this.expect("ident", undefined, "a mate name");
+        name = nameTk.value;
+        nameSpan = { start: nameTk.start, end: nameTk.end };
+        this.expect("op", "=");
+      }
+      const call = this.expr();
+      if (call.k !== "call") throw new ParseError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), like mate against(face(lid, -Z), face(box, +Z))", call.span.start, call.span.end);
+      return { k: "mate", ...(name ? { name, nameSpan } : {}), call, span: { start, end: this.prevEnd() } };
+    }
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, frame, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, frame, mate, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );

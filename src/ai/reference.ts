@@ -287,6 +287,7 @@ let name = expr                                              // derived values: 
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
 component name = lib.kind(args) { props and flags }           // standard parts from the library, and purchasable catalog parts
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
+mate name = against(face(a, -Z), face(b, +Z))                 // how two parts meet: the first moves to meet the second (see Mates); after both parts
 frame name { profile: "2020", box: (w, d, h) or path: [...] }   // structural members along lines (2020 extrusion, steel box, tube, angle), trimmed where they meet, with a cut list (see Frames and weldments)
 require "Label" [hard|soft] [for use_id, ...]: condition      // checked every rebuild; hard by default; for links it to brief uses
 brief { ... }                                                 // the design brief, once, near the top (see below)
@@ -442,6 +443,17 @@ Props: at (a point, or a LIST of points to make a pattern of identical instances
 Component fields are world-space after placement (motor.holes is a list of world points). Moving components get .speed (rotation ratio relative to the driver). Pattern components expose fields of the first instance plus .all and .count; shape fields (like usb.opening) become lists so \`cut usb.opening\` works.
 
 ${lib}
+
+## Mates
+Place a part by how it meets another instead of working out its at: and rotate:. Mates come after the parts they join, and the part can be drawn roughly where it goes:
+part lid { at: (0, 0, 60) body box(80, 50, 4) }
+mate seat = against(face(lid, -Z), face(box, +Z))        // the lid's bottom face on the box's top face
+mate front = flush(face(lid, -Y), face(box, -Y))         // front faces level
+mate hinge = pin(axis(lid, d: 3), axis(box, d: 3))       // in line with the box's 3 mm hinge holes, centred along them
+mate stop = angle(face(lid, +Z), face(box, +Z), min: 0deg, max: 110deg)   // free to open between these
+What a mate holds by: face(part, -Z) (the flat face facing that way, the one farthest out that way; near: (x, y, z) takes the face nearest a point instead), axis(part, d: 5) (the axis of a round face: a hole, shaft, boss or countersink; d: its diameter, near: a point by it and along: its direction tell them apart; axis(part, at: (x, y, z), dir: Z) is a line fixed to the part), point(part, (x, y, z)), plane(part, at: (x, y, z), normal: +Z) (a centre plane or datum the part has no face on). Every point is where the part is drawn. Parts and components can be mated; mate one instance of a pattern on its own.
+Kinds: against (two flat faces touching, facing each other; gap: leaves a space), flush (level, facing the same way; offset:), concentric (two axes in line: it can still turn and slide), pin (in line and centred along each other: it can still turn; offset:), parallel, perpendicular, angle (two faces or two axes, an angle or min:/max:), distance (faces, axes or points, mm or min:/max:), tangent (a flat face on a round one, or two round ones), coincident (two points, a point on a face or an axis, two faces in one plane or two axes in line), rigid(a, b) (fastened together: a moves with b).
+The first part named moves to meet the second, which stays where it is drawn unless its own mates move it; parts are solved from the ones nothing moves, and parts that move each other are solved together. Each part moves as little as it can, so whatever its mates leave free (a hinge's turn, a carriage's slide) stays as drawn: draw a lid open to show it open, and the user can drag it in the 3D view. A mate that cannot hold with the mates before it is left out and reported with how far off it is (fix or remove one of the two); a part held at a min:/max: is noted. Each part's mates, and what it can still do in words, are in the design's mates. Fields of a mated component (motor.holes, a shaft's axis) read by the design stay where it is drawn, so place a component that other parts are cut from with at: and mate those parts to it. Mates place parts for the checks, drawings and exports; spin:, swings: and links: still drive the mechanism.
 
 ## Frames and weldments
 frame stand {

@@ -20,6 +20,8 @@ import { useSettings } from "../app/settings";
 import type { ProcessResult } from "../mfg/types";
 import { detailImportsLoaded, importsLoaded, modelUsesImports, onImportsChanged, recipeUsesImport, reloadImports } from "./imports";
 import { evalImports } from "../lang/imports";
+import { setEvalFaces } from "../lang/mates";
+import type { FaceCatalogue } from "./mates";
 
 export interface MeshEntry {
   preview?: MeshData;
@@ -59,6 +61,13 @@ export interface DesignState {
 
 /** Mesh cache by geometry hash. Mutable, outside React state; meshVersion signals changes. */
 export const meshes = new Map<string, MeshEntry>();
+/**
+ * The kernel's lists of built solids' flat and round faces, by geometry hash, which mates pick from; and the last
+ * list each part had, so a mated part stays in place while an edit to it is built.
+ */
+const faceCats = new Map<string, FaceCatalogue>();
+const faceCatsByName = new Map<string, FaceCatalogue>();
+setEvalFaces((hash, name) => faceCats.get(hash) ?? faceCatsByName.get(name));
 /** A part's fast mesh (or its fine one), for measuring the design: what each screw clamps. */
 export const meshOf = (hash: string): MeshData | undefined => {
   const e = meshes.get(hash);
@@ -161,6 +170,8 @@ export function loadSource(src: string) {
   for (const j of activeJobs) j.cancel();
   activeJobs = [];
   meshes.clear();
+  faceCats.clear();
+  faceCatsByName.clear();
   detailFailed.clear();
   kernel.evict([]);
   reportBase = null;
@@ -188,6 +199,32 @@ export function setSource(src: string, opts: { force?: boolean } = {}): Model {
 /** Evaluate without committing (used by the AI to preview an edit). */
 export function evaluateOnly(src: string): Model {
   return evaluate(src, { parsed: parse(src) });
+}
+
+/** The design read again with the faces its mates need, once the kernel has listed them; null when nothing changed. */
+async function withFaces(rev: number, src: string, model: Model, parsed: ReturnType<typeof parse>): Promise<Model | null> {
+  const need = [...new Set(model.mateQueries ?? [])].filter((h) => !faceCats.has(h) && meshes.has(h));
+  if (!need.length) return null;
+  try {
+    const cats = await kernel.faceCatalogues(need);
+    for (const [h, c] of Object.entries(cats)) if (!("error" in c)) faceCats.set(h, c);
+  } catch {
+    // the mates wait for the faces, as drawn
+    return null;
+  }
+  if (get().rev !== rev) return null;
+  for (const p of model.parts) {
+    const c = faceCats.get(p.hash);
+    if (c) faceCatsByName.set(p.name, c);
+  }
+  // keep the lists of what this design is made of, once there are many
+  if (faceCats.size > 600) {
+    const keep = new Set(model.parts.map((p) => p.hash));
+    for (const h of faceCats.keys()) if (!keep.has(h)) faceCats.delete(h);
+  }
+  const next = evaluate(src, { parsed });
+  set({ model: next });
+  return next;
 }
 
 function uniqueParts(model: Model): Map<string, EvalPart> {
@@ -244,6 +281,11 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     if (r.cancelled || get().rev !== rev) return;
   }
   const buildMs = performance.now() - tBuild;
+
+  // mates pick from the built solids' faces: have the kernel list any not listed yet, then read the design again
+  const mated = await withFaces(rev, src, model, parsed);
+  if (get().rev !== rev) return;
+  if (mated) model = mated;
 
   // checks need every solid in the worker's cache
   set({ stage: "checking", timings: { ...get().timings, buildMs, built: todo.length, reused } });

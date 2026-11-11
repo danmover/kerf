@@ -240,6 +240,15 @@ async function run(msg: ToWorker) {
           throw e;
         }
         return;
+      case "faces":
+        // faces() reports each part's own error; only a trap gets out
+        try {
+          post({ type: "faces", jobId: msg.jobId, result: core.faces(msg.hashes) });
+        } catch (e) {
+          if (isTrap(e)) return fatal(msg.jobId, e);
+          throw e;
+        }
+        return;
       case "import-step": {
         try {
           const loaded = readStep(new Uint8Array(msg.data), msg.file, { analyse: msg.analyse, hash: msg.hash });

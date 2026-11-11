@@ -10,6 +10,7 @@ import { processProbes } from "../../src/mfg/report";
 import type { ProcessResult } from "../../src/mfg/types";
 import type { Model } from "../../src/core/model";
 import { initKernel } from "./kernel";
+import type { FaceLookup } from "../../src/lang/mates";
 import { buildHarness } from "../../src/machine/harness/harness";
 import { mountParts, mountSpecs, screwSpecs, solidsInput } from "../../src/machine/harness/inputs";
 import { runWiring } from "../../src/machine/harness/wiringRun";
@@ -37,7 +38,7 @@ export interface FullCheckOptions {
 export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promise<FullCheck> {
   const t0 = Date.now();
   await initKernel();
-  const model = evaluate(src);
+  let model = evaluate(src);
   const core = new KernelCore();
   const buildErrors = new Map<string, string>();
   const built = new Set<string>();
@@ -50,8 +51,18 @@ export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promi
       buildErrors.set(p.hash, e instanceof Error ? e.message : String(e));
     }
   }
+  // mates pick from the built solids' faces: as the app does, the design is read again once they are listed
+  let faces: FaceLookup | undefined;
+  if (model.mateQueries?.length) {
+    const cats = core.faces(model.mateQueries.filter((h) => built.has(h)));
+    faces = (h) => {
+      const c = cats[h];
+      return c && !("error" in c) ? c : undefined;
+    };
+    model = evaluate(src, { faces });
+  }
   const result = core.checks(buildChecksRequest(model, built));
-  const geoModel = model.geoQueries.length ? evaluate(src, { geo: result.geo }) : null;
+  const geoModel = model.geoQueries.length ? evaluate(src, { geo: result.geo, faces }) : null;
   const geom = (h: string) => {
     const e = core.get(h);
     return e ? { volume: e.volume, bbox: e.bbox } : undefined;

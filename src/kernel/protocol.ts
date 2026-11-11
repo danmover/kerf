@@ -6,6 +6,7 @@ import type { GeoQuery } from "../lang/values";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { PickMeasure, PickRef, ViewRequest, ViewResult } from "./drawing";
 import type { PartInspection } from "./inspect";
+import type { FaceCatalogue } from "../core/mates";
 import type { ImportMeta } from "./imports";
 import type { MeasureResult } from "./core";
 
@@ -161,6 +162,8 @@ export type ToWorker =
   | { type: "project"; jobId: number; req: ViewRequest }
   | { type: "pick-measure"; jobId: number; req: { a: PickRef; b?: PickRef } }
   | { type: "inspect"; jobId: number; hashes: string[] }
+  /** built parts' flat and round faces, for mates */
+  | { type: "faces"; jobId: number; hashes: string[] }
   /** named features, sharp edges and a selection of one part (for inspect_part) */
   | { type: "inspect-part"; jobId: number; req: InspectRequest }
   /** read a STEP file and keep its bodies for "import" recipes; `analyse` false skips the hole search for a file analysed before */
@@ -184,6 +187,7 @@ export type FromWorker =
   | { type: "pick-measured"; jobId: number; result: PickMeasure }
   | { type: "job-error"; jobId: number; message: string }
   | { type: "inspected"; jobId: number; result: Record<string, PartInspection | { error: string }> }
+  | { type: "faces"; jobId: number; result: Record<string, FaceCatalogue | { error: string }> }
   | { type: "imported"; jobId: number; hash: string; meta: ImportMeta }
   | { type: "import-error"; jobId: number; hash: string; message: string }
   | { type: "measured"; jobId: number; result: MeasureResult }

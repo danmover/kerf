@@ -12,6 +12,8 @@ import { geoKey, type GeoQuery } from "../lang/values";
 import { ProcessAnalyzer } from "../mfg/analyzer";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { FeatureTools } from "./topology";
+import { faceCatalogue } from "./faces";
+import type { FaceCatalogue } from "../core/mates";
 import { CONTACT_GAP, apart, closedSurface, placeSurface, touching, type PlacedSurface, type Touch } from "./apart";
 
 interface CacheEntry {
@@ -20,6 +22,8 @@ interface CacheEntry {
   bbox: [V3, V3];
   meshes: Partial<Record<"preview" | "final", MeshData>>;
   inspection?: PartInspection;
+  /** its flat and round faces, for mates */
+  faces?: FaceCatalogue;
   /** the separate solids it is made of, worked out on the first check that needs them */
   pieces?: PartInspection["pieces"] | null;
   /** colours of each face, for imported bodies that carry them */
@@ -129,6 +133,25 @@ export class KernelCore {
       try {
         e.inspection ??= inspectForReview(e.shape, e.meshes.final ?? e.meshes.preview ?? this.mesh(h, "preview"));
         out[h] = e.inspection;
+      } catch (err) {
+        out[h] = { error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    return out;
+  }
+
+  /** Each built part's flat and round faces in its own coordinates, for mates; cached with the solid. */
+  faces(hashes: string[]): Record<string, FaceCatalogue | { error: string }> {
+    const out: Record<string, FaceCatalogue | { error: string }> = {};
+    for (const h of hashes) {
+      const e = this.get(h);
+      if (!e) {
+        out[h] = { error: "not built" };
+        continue;
+      }
+      try {
+        e.faces ??= faceCatalogue(e.shape);
+        out[h] = e.faces;
       } catch (err) {
         out[h] = { error: err instanceof Error ? err.message : String(err) };
       }
