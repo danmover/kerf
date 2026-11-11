@@ -45,6 +45,29 @@ export const T = {
       <rect x="4" y="6" width="16" height="12" rx="0.5" />
     </I>
   ),
+  /** a rectangle drawn out from its centre */
+  RectCenter: (p: P) => (
+    <I {...p}>
+      <rect x="4" y="6" width="16" height="12" rx="0.5" />
+      <path d="M4 6l16 12M20 6L4 18" strokeDasharray="2 2.5" strokeWidth={1.2} />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" />
+    </I>
+  ),
+  /** a rectangle at any angle, from three corners */
+  Rect3: (p: P) => (
+    <I {...p}>
+      <path d="M3 14l8-9 10 8-8 9z" />
+      <circle cx="3" cy="14" r="1.4" fill="currentColor" />
+      <circle cx="11" cy="5" r="1.4" fill="currentColor" />
+      <circle cx="21" cy="13" r="1.4" fill="currentColor" />
+    </I>
+  ),
+  Polygon: (p: P) => (
+    <I {...p}>
+      <path d="M12 3.5l7.4 4.25v8.5L12 20.5l-7.4-4.25v-8.5z" />
+      <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+    </I>
+  ),
   Circle: (p: P) => (
     <I {...p}>
       <circle cx="12" cy="12" r="8" />

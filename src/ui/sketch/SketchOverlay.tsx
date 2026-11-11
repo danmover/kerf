@@ -11,7 +11,7 @@ import { budgetMs, solveSketch } from "../../sketch/solver";
 import { buildProfile } from "../../sketch/regions";
 import { addStatements, consId, deleteSelection, dimensionFor, fmt, fmtPt, nextName, setConstraintValue, suggestionsFor, takenNames, toggleConstruction, writePositions } from "../../sketch/edits";
 import type { EvalSketch, SkConstraint } from "../../sketch/types";
-import { activeSketch, editSketch, exitSketch, flash, setSelection, setTool, useSketch, type LiveSolve } from "./session";
+import { MAX_POLYGON_SIDES, activeSketch, editSketch, exitSketch, flash, setSelection, setTool, useSketch, type LiveSolve } from "./session";
 import { Projector, add, arcPoints, ccwThrough, circlePoints, circleThrough, closestOnSeg, curvePoints, dist, len, mul, niceStep, positionsOf, pxDist, radiusOf, roundTo, snapAt, sub, type Positions, type Px, type Snap } from "./geom";
 import { labelWidth, layoutDims, layoutGlyphs, type DimGfx } from "./dims";
 import { commitSource } from "../../app/project";
@@ -21,6 +21,9 @@ import { evaluate } from "../../lang/evaluator";
 type Draft =
   | { t: "line"; start: Snap }
   | { t: "rect"; a: Snap }
+  | { t: "crect"; c: Snap }
+  | { t: "rect3"; a: Snap; b?: Snap }
+  | { t: "polygon"; c: Snap }
   | { t: "circle"; c: Snap }
   | { t: "arc"; a: Snap; b?: Snap }
   | { t: "slot"; a: Snap; b?: Snap }
@@ -291,13 +294,33 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         } else if (draft?.t === "slot") setDraft({ ...draft, b: snap });
         else setDraft({ t: "slot", a: snap });
         return;
+      case "crect":
+        if (draft?.t === "crect") {
+          addCenterRect(draft.c, snap);
+          setDraft(null);
+        } else setDraft({ t: "crect", c: snap });
+        return;
+      case "rect3":
+        if (draft?.t === "rect3" && draft.b) {
+          addRect3(draft.a, draft.b, snap.p);
+          setDraft(null);
+        } else if (draft?.t === "rect3") setDraft({ ...draft, b: snap });
+        else setDraft({ t: "rect3", a: snap });
+        return;
+      case "polygon":
+        if (draft?.t === "polygon") {
+          addPolygon(draft.c, snap, useSketch.getState().polygonSides);
+          setDraft(null);
+          setTyped("");
+        } else setDraft({ t: "polygon", c: snap });
+        return;
     }
   }
 
   /** Snap for drawing tools, with horizontal/vertical inference for lines. */
   function draftSnap(px: Px): Snap | null {
     const { draft } = state.current;
-    const from = draft?.t === "line" ? draft.start.p : draft?.t === "rect" ? draft.a.p : undefined;
+    const from = draft?.t === "line" ? draft.start.p : draft?.t === "rect" ? draft.a.p : draft?.t === "crect" || draft?.t === "polygon" ? draft.c.p : draft?.t === "rect3" && !draft.b ? draft.a.p : undefined;
     const snap = snapFor(px, { from });
     if (!snap) return null;
     return snap;
@@ -489,6 +512,87 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added rectangle ${l1}–${l4}`);
   }
 
+  /** A rectangle drawn out from its centre: the corner clicked and the one opposite stay symmetric about the centre. */
+  function addCenterRect(c: Snap, k: Snap, size?: [number, number]) {
+    const cur = activeSketch();
+    if (!cur) return;
+    let K = k;
+    if (size) K = { p: [c.p[0] + (size[0] / 2) * Math.sign(k.p[0] - c.p[0] || 1), c.p[1] + (size[1] / 2) * Math.sign(k.p[1] - c.p[1] || 1)], guides: [] };
+    if (Math.abs(K.p[0] - c.p[0]) < 1e-6 || Math.abs(K.p[1] - c.p[1]) < 1e-6) return;
+    const taken = takenNames(cur);
+    const [l1, l2, l3, l4] = [nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l")];
+    const P1: V2 = [2 * c.p[0] - K.p[0], 2 * c.p[1] - K.p[1]];
+    const cp = consPrefix();
+    const geometry = [
+      `${cp}line ${l1} = ${fmtPt(P1)} -> ${fmtPt([K.p[0], P1[1]])}`,
+      `${cp}line ${l2} = ${l1}.end -> ${arg(K)}`,
+      `${cp}line ${l3} = ${l2}.end -> ${fmtPt([P1[0], K.p[1]])}`,
+      `${cp}line ${l4} = ${l3}.end -> ${l1}.start`,
+    ];
+    const cons = [`horizontal ${l1}, ${l3}`, `vertical ${l2}, ${l4}`, ...extras(K, `${l2}.end`)];
+    // the centre: a point already there (the origin, a line end), or a new construction point
+    let centre = c.ref;
+    if (!centre) {
+      centre = nextName(taken, "p");
+      geometry.push(`point ${centre} = ${fmtPt(c.p)}`);
+      cons.push(...extras(c, centre));
+    }
+    cons.push(`symmetric ${l1}.start, ${l2}.end, ${centre}`);
+    if (size) cons.push(`length ${l1} = ${fmt(size[0])}`, `length ${l2} = ${fmt(size[1])}`);
+    editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added centre rectangle ${l1}–${l4}`);
+  }
+
+  /** A rectangle at any angle: one side from a to b, the width out to m. */
+  function addRect3(a: Snap, b: Snap, m: V2) {
+    const cur = activeSketch();
+    if (!cur) return;
+    const d0 = sub(b.p, a.p);
+    const L = len(d0);
+    if (L < 1e-6) return;
+    const nrm: V2 = [-d0[1] / L, d0[0] / L];
+    const scale = state.current.proj?.scale(a.p) ?? 1;
+    const w = roundTo((m[0] - a.p[0]) * nrm[0] + (m[1] - a.p[1]) * nrm[1], niceStep(scale));
+    if (Math.abs(w) < 1e-6) return flash("Move the last point off the first side to give the rectangle a width.");
+    const taken = takenNames(cur);
+    const [l1, l2, l3, l4] = [nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l")];
+    const cp = consPrefix();
+    const geometry = [
+      `${cp}line ${l1} = ${arg(a)} -> ${arg(b)}`,
+      `${cp}line ${l2} = ${l1}.end -> ${fmtPt(add(b.p, mul(nrm, w)))}`,
+      `${cp}line ${l3} = ${l2}.end -> ${fmtPt(add(a.p, mul(nrm, w)))}`,
+      `${cp}line ${l4} = ${l3}.end -> ${l1}.start`,
+    ];
+    const cons = [`perpendicular ${l1}, ${l2}`, `parallel ${l1}, ${l3}`, `parallel ${l2}, ${l4}`, ...extras(a, `${l1}.start`), ...extras(b, `${l1}.end`)];
+    const way = hv(a.p, b.p);
+    if (way) cons.push(`${way === "h" ? "horizontal" : "vertical"} ${l1}`);
+    editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added rectangle ${l1}–${l4}`);
+  }
+
+  /** A regular polygon: equal sides with their corners on a construction circle round the centre. */
+  function addPolygon(c: Snap, k: Snap, n: number) {
+    const cur = activeSketch();
+    if (!cur) return;
+    const R = dist(c.p, k.p);
+    if (R < 1e-6 || n < 3) return;
+    const taken = takenNames(cur);
+    const circ = nextName(taken, "c");
+    const lines = Array.from({ length: n }, () => nextName(taken, "l"));
+    const a0 = Math.atan2(k.p[1] - c.p[1], k.p[0] - c.p[0]);
+    const corner = (i: number): V2 => [c.p[0] + R * Math.cos(a0 + (2 * Math.PI * i) / n), c.p[1] + R * Math.sin(a0 + (2 * Math.PI * i) / n)];
+    const cp = consPrefix();
+    const geometry = [`construction circle ${circ} = ${arg(c)}, d: ${fmt(2 * R)}`];
+    lines.forEach((l, i) => {
+      const from = i === 0 ? arg(k) : `${lines[i - 1]}.end`;
+      const to = i === n - 1 ? `${lines[0]}.start` : fmtPt(corner(i + 1));
+      geometry.push(`${cp}line ${l} = ${from} -> ${to}`);
+    });
+    const cons = [...extras(c, `${circ}.center`), ...extras(k, `${lines[0]}.start`), ...lines.map((l) => `coincident ${l}.start, ${circ}`), `equal ${lines.join(", ")}`];
+    // a corner straight across or up from the centre keeps the polygon from turning
+    const way = hv(c.p, k.p);
+    if (way) cons.push(`${way === "h" ? "horizontal" : "vertical"} ${circ}.center, ${lines[0]}.start`);
+    editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added ${n}-sided polygon ${lines[0]}–${lines[n - 1]}`);
+  }
+
   function addCircle(c: Snap, r: number, exact?: number) {
     const cur = activeSketch();
     const scale = state.current.proj?.scale(c.p) ?? 1;
@@ -564,7 +668,16 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     if (!sk) return false;
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     // typed sizes while drawing
-    if (draft && ["line", "rect", "circle"].includes(draft.t) && (/^[0-9.]$/.test(key) || (key === "," && draft.t === "rect") || (key === "x" && draft.t === "rect" && typed))) {
+    // the polygon tool takes its number of sides as typed, before or after the centre
+    if (s.tool === "polygon" && /^[0-9]$/.test(key)) {
+      const next = (typed + key).replace(/^0+/, "").slice(-2);
+      setTyped(next);
+      const n = Number(next);
+      if (n >= 3 && n <= MAX_POLYGON_SIDES) useSketch.setState({ polygonSides: n });
+      return true;
+    }
+    const sized = draft?.t === "rect" || draft?.t === "crect";
+    if (draft && ["line", "rect", "crect", "circle"].includes(draft.t) && (/^[0-9.]$/.test(key) || (key === "," && sized) || (key === "x" && sized && typed))) {
       setTyped(typed + (key === "x" ? "," : key));
       return true;
     }
@@ -582,6 +695,10 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       }
       if (draft.t === "rect" && nums.length === 2 && cursor?.snap) {
         addRect(draft.a, cursor.snap, [nums[0], nums[1]]);
+        setDraft(null);
+      }
+      if (draft.t === "crect" && nums.length === 2 && cursor?.snap) {
+        addCenterRect(draft.c, cursor.snap, [nums[0], nums[1]]);
         setDraft(null);
       }
       void snap;
@@ -621,7 +738,13 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         return true;
       }
     }
-    const tools: Record<string, typeof s.tool> = { l: "line", r: "rect", c: "circle", a: "arc", o: "slot", p: "point", d: "dimension", v: "select" };
+    // R again steps through the corner, centre and 3-point rectangles
+    const rects = ["rect", "crect", "rect3"] as const;
+    if (key === "r" && (rects as readonly string[]).includes(s.tool)) {
+      setTool(rects[(rects.indexOf(s.tool as (typeof rects)[number]) + 1) % rects.length]);
+      return true;
+    }
+    const tools: Record<string, typeof s.tool> = { l: "line", r: "rect", c: "circle", a: "arc", o: "slot", h: "polygon", p: "point", d: "dimension", v: "select" };
     if (tools[key]) {
       setTool(tools[key]);
       return true;
@@ -844,6 +967,35 @@ function DraftPreview({ draft, cursor, typed, proj, sk, lineEnd }: { draft: Draf
       const c = snap.p;
       out.push(<path key="pr" className="sk-draft" d={path([a, [c[0], a[1]], c, [a[0], c[1]], a])} />);
       readout = typed ? `size ${typed}▌` : `${fmt(Math.abs(c[0] - a[0]))} × ${fmt(Math.abs(c[1] - a[1]))}`;
+    } else if (draft?.t === "crect") {
+      const c = draft.c.p;
+      const k = snap.p;
+      const o: V2 = [2 * c[0] - k[0], 2 * c[1] - k[1]];
+      out.push(<path key="pr" className="sk-draft" d={path([o, [k[0], o[1]], k, [o[0], k[1]], o])} />);
+      out.push(<path key="pd" className="sk-draft dash" d={path([o, k])} />);
+      readout = typed ? `size ${typed}▌` : `${fmt(2 * Math.abs(k[0] - c[0]))} × ${fmt(2 * Math.abs(k[1] - c[1]))}`;
+    } else if (draft?.t === "rect3") {
+      if (!draft.b) {
+        out.push(<path key="pr" className="sk-draft" d={path([draft.a.p, snap.p])} />);
+        readout = fmt(dist(draft.a.p, snap.p));
+      } else {
+        const a = draft.a.p;
+        const b = draft.b.p;
+        const d0 = sub(b, a);
+        const L = len(d0) || 1;
+        const nrm: V2 = [-d0[1] / L, d0[0] / L];
+        const w = (snap.p[0] - a[0]) * nrm[0] + (snap.p[1] - a[1]) * nrm[1];
+        out.push(<path key="pr" className="sk-draft" d={path([a, b, add(b, mul(nrm, w)), add(a, mul(nrm, w)), a])} />);
+        readout = `${fmt(L)} × ${fmt(Math.abs(w))}`;
+      }
+    } else if (draft?.t === "polygon") {
+      const n = useSketch.getState().polygonSides;
+      const R = dist(draft.c.p, snap.p);
+      const a0 = Math.atan2(snap.p[1] - draft.c.p[1], snap.p[0] - draft.c.p[0]);
+      const pts = Array.from({ length: n + 1 }, (_, i): V2 => [draft.c.p[0] + R * Math.cos(a0 + (2 * Math.PI * i) / n), draft.c.p[1] + R * Math.sin(a0 + (2 * Math.PI * i) / n)]);
+      out.push(<path key="pp" className="sk-draft" d={path(pts)} />);
+      out.push(<path key="pc" className="sk-draft dash" d={path(circlePoints(draft.c.p, R))} />);
+      readout = `${n} sides · ⌀${fmt(2 * R)} across corners`;
     } else if (draft?.t === "circle") {
       const r = dist(draft.c.p, snap.p);
       out.push(<path key="pc" className="sk-draft" d={path(circlePoints(draft.c.p, r))} />);
@@ -872,7 +1024,7 @@ function DraftPreview({ draft, cursor, typed, proj, sk, lineEnd }: { draft: Draf
         out.push(<path key="ps" className="sk-draft" d={path([A1, B1, ...arcPoints(draft.b.p, B1, B2), A2, ...arcPoints(draft.a.p, A2, A1)])} />);
         readout = `width ${fmt(2 * r)}`;
       }
-    }
+    } else if (!draft && useSketch.getState().tool === "polygon") readout = `${useSketch.getState().polygonSides} sides (type a number to change)`;
     const q = S(snap.p);
     out.push(<circle key="snap" className={`sk-snap ${snap.ref || snap.on || snap.mid ? "hit" : ""}`} cx={q.x} cy={q.y} r={snap.ref ? 6 : 3.5} />);
     const label = [snap.label, readout].filter(Boolean).join(" · ");

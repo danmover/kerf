@@ -12,7 +12,10 @@ import { addSketch, writePositions } from "../../sketch/edits";
 import type { EvalSketch } from "../../sketch/types";
 import { revealSpan } from "../../app/view";
 
-export type SketchTool = "select" | "line" | "rect" | "circle" | "arc" | "slot" | "point" | "dimension";
+export type SketchTool = "select" | "line" | "rect" | "crect" | "rect3" | "circle" | "arc" | "slot" | "polygon" | "point" | "dimension";
+
+/** Most sides the polygon tool draws. */
+export const MAX_POLYGON_SIDES = 32;
 
 export interface LiveSolve {
   points: Record<string, V2>;
@@ -39,6 +42,8 @@ interface SketchSession {
   feature: boolean;
   /** a short hint shown in the sketch header */
   hint: string;
+  /** sides the polygon tool draws */
+  polygonSides: number;
 }
 
 export const useSketch = create<SketchSession>(() => ({
@@ -52,6 +57,7 @@ export const useSketch = create<SketchSession>(() => ({
   editDim: null,
   feature: false,
   hint: "",
+  polygonSides: 6,
 }));
 
 const set = useSketch.setState;

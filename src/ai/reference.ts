@@ -426,6 +426,7 @@ Every sketch has origin, x_axis and y_axis (fixed). Coordinates are starting gue
 Constraints and dimensions (refs are names, the value after = is any expression):
 ${constraints}
 A good sketch is fully defined (0 degrees of freedom): every point is fixed by constraints, usually by dimensions driven from params plus horizontal/vertical/coincident relations and one point tied to the origin. Redundant constraints are warned about; conflicting ones fail and name the culprit. A closed profile is one or more non-crossing loops; inner loops become holes. Sketch values expose .area, .plane, .normal and each named entity in world coordinates (side.l1.mid, side.c1.center), so other statements can position things from a sketch.
+Shapes the editor's tools write, the same way by hand: a centred rectangle is four lines with horizontal l1, l3 and vertical l2, l4 plus symmetric l1.start, l2.end, origin; a rectangle at an angle uses perpendicular l1, l2 with parallel l1, l3 and parallel l2, l4; a regular polygon is n lines in a loop with every start on a construction circle (coincident l1.start, c1 …), equal l1, l2, … and the circle's diameter as its size across the corners; a slot is two lines and two arcs, all tangent, with equal arcs.
 Use sketches for profiles that are awkward to build from primitives (bent plates, cams, levers, gussets, custom outlines, turned parts) and whenever the user wants to edit a profile by hand. Primitives are still fine for plain boxes, cylinders and holes.
 
 ${processReference()}

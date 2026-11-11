@@ -109,24 +109,37 @@ function SketchHeader({ sk, ctl }: { sk: EvalSketch; ctl: SceneController }) {
 const TOOLS: { id: SketchTool; label: string; key: string; icon: ReactNode; help: string }[] = [
   { id: "select", label: "Select", key: "V", icon: <T.Pointer />, help: "Click or box-select geometry. Drag points and curves; the constraints keep holding." },
   { id: "line", label: "Line", key: "L", icon: <T.Line />, help: "Click points to draw connected lines. Type a length and press Enter. Double-click or Esc to stop." },
-  { id: "rect", label: "Rectangle", key: "R", icon: <T.Rect />, help: "Click two corners. Type width, height (40,25) and press Enter for an exact size." },
+  { id: "rect", label: "Rectangle", key: "R", icon: <T.Rect />, help: "Click two corners. Type width, height (40,25) and press Enter for an exact size. Press R again for a centre or 3-point rectangle." },
+  { id: "crect", label: "Centre rectangle", key: "R", icon: <T.RectCenter />, help: "Click the centre, then a corner. Type width, height (40,25) and press Enter for an exact size. Centre it on the origin to keep it centred." },
+  { id: "rect3", label: "3-point rectangle", key: "R", icon: <T.Rect3 />, help: "Click two corners along one side (at any angle), then a point for the width." },
   { id: "circle", label: "Circle", key: "C", icon: <T.Circle />, help: "Click the centre, then the radius. Type a diameter and press Enter for an exact size." },
   { id: "arc", label: "Arc", key: "A", icon: <T.Arc />, help: "Click the start, the end, then a point the arc passes through. Starting on a line end makes it tangent." },
   { id: "slot", label: "Slot", key: "O", icon: <T.Slot />, help: "Click the two centres, then the width." },
+  { id: "polygon", label: "Polygon", key: "H", icon: <T.Polygon />, help: "Click the centre, then a corner. Type the number of sides (3 to 32) first; 6 makes a hexagon. The sides stay equal and the corners on a construction circle, so dimension the circle for the size across the corners." },
   { id: "point", label: "Point", key: "P", icon: <T.Point />, help: "Click to place a reference point." },
   { id: "dimension", label: "Dimension", key: "D", icon: <T.Dim />, help: "Click one item to size it, or two to measure between them. Type the value, or a formula like w / 2." },
 ];
 
+const RECTS: SketchTool[] = ["rect", "crect", "rect3"];
+let lastRect: SketchTool = "rect";
+
 function ToolPalette() {
   const tool = useSketch((s) => s.tool);
   const construction = useSketch((s) => s.construction);
+  // the three rectangles share one button: it shows the one in use, and a second click (or R again) moves to the next
+  if (RECTS.includes(tool)) lastRect = tool;
   return (
     <motion.div className="sk-ui sk-tools vp-float" style={{ y: "-50%" }} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} role="toolbar" aria-label="Sketch tools">
-      {TOOLS.map((t) => (
-        <button key={t.id} className={`icon-btn ${tool === t.id ? "active" : ""}`} onClick={() => setTool(t.id)} data-tip={`${t.label} (${t.key})`} aria-label={t.label} aria-pressed={tool === t.id}>
-          {t.icon}
-        </button>
-      ))}
+      {TOOLS.filter((t) => !RECTS.includes(t.id) || t.id === lastRect).map((t) => {
+        const rect = RECTS.includes(t.id);
+        const on = tool === t.id;
+        const click = () => setTool(rect && on ? RECTS[(RECTS.indexOf(t.id) + 1) % RECTS.length] : t.id);
+        return (
+          <button key={rect ? "rect" : t.id} className={`icon-btn ${on ? "active" : ""}`} onClick={click} data-tip={rect ? `${t.label} (R; click or press R again for ${RECTS.filter((x) => x !== t.id).map((x) => TOOLS.find((q) => q.id === x)!.label.toLowerCase()).join(" or ")})` : `${t.label} (${t.key})`} aria-label={t.label} aria-pressed={on}>
+            {t.icon}
+          </button>
+        );
+      })}
       <div className="sep" />
       <button className={`icon-btn ${construction ? "active warnish" : ""}`} onClick={() => useSketch.setState({ construction: !construction })} data-tip="Draw construction geometry (G)" aria-label="Construction geometry" aria-pressed={construction}>
         <T.Construction />
