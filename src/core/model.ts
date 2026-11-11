@@ -122,6 +122,8 @@ export interface FlexInfo {
   frame?: number;
   /** snap: that spine's thickness, mm (it is as wide as the hook) */
   frameT?: number;
+  /** snap: a C-shaped clip is pulled by a tab, this far from the hook's axis on the side away from the head (mm), rather than by its head */
+  grip?: number;
   /** flexure: the part the blade presses on with its preload (drawn overlapping it by that much along facing) */
   against?: string;
   /** times it bends in its life */
