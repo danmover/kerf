@@ -790,20 +790,23 @@ float dragMn = 0;           // air forces on the model, mN: along the flow, acro
 float sideMn = 0;
 float liftMn = 0;
 float airspeed = 0;         // m/s in the test section
-float dpPa = 0;             // the gauge's reading
 float fanRpm = 0;
 float fanPct = 0;
 float cdNow = 0;            // drag coefficient
 float reynolds = 0;
-float fieldMt = 0;          // the magnet's field at the sensor
 float modelGrams = 0;       // the model's weight, from the current that holds it
 float liftTempC = 25;       // coil temperatures (estimated from their currents)
 float steerTempC = 25;
 float swayUm = 0;           // how far it wanders from where it is held, rms
 float steerMn = 0;          // sideways force the steering coils are making
 float loopUs = 0;           // the longest loop pass lately
+float sweepCdLo = 0;        // the lowest and highest drag coefficient of the last sweep
+float sweepCdHi = 0;
 uint8_t mode = 0;
 uint32_t overruns = 0;
+// (the simulator plots the first two dozen numbers: these two it leaves out)
+float dpPa = 0;             // the gauge's reading
+float fieldMt = 0;          // the magnet's field at the sensor
 
 enum Mode : uint8_t { M_IDLE, M_LAUNCH, M_FLOAT, M_LAND, M_COILCAL, M_FAULT };
 uint8_t shownMode = 255;
@@ -902,7 +905,6 @@ int sweepI = -2;
 uint32_t sweepAt = 0;
 float sweepAcc[8];
 int sweepN = 0;
-float sweepCdLo = 0, sweepCdHi = 0;
 int stepAxis = -1;
 float stepMm = 0, stepY0 = 0, stepPeak = 0, stepT10 = -1, stepT90 = -1, stepSettle = 0;
 float stepPos = 0, stepEnd = 0;

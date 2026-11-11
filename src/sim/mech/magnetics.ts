@@ -282,6 +282,12 @@ export class TunnelAir {
   landings = 0;
   touching = 0;
   private clearFor = 0;
+  /** how far the floating model moves about its own average place, rms over the last full second, mm */
+  wander = 0;
+  private wanderT = 0;
+  private wanderN = 0;
+  private wanderSum: V3 = [0, 0, 0];
+  private wanderSq = 0;
   private fan?: PwmFan;
   private body: Body;
   private walls: PointContacts;
@@ -358,10 +364,24 @@ export class TunnelAir {
     if (this.touching === 0) {
       this.floatTime += dt;
       this.clearFor += dt;
+      // its wander, a second at a time: the spread of its place about that second's mean
+      const r = sub(B.x, s.at);
+      this.wanderT += dt;
+      this.wanderN++;
+      for (let i = 0; i < 3; i++) this.wanderSum[i] += r[i];
+      this.wanderSq += dot(r, r);
+      if (this.wanderT >= 1) {
+        const m: V3 = [this.wanderSum[0] / this.wanderN, this.wanderSum[1] / this.wanderN, this.wanderSum[2] / this.wanderN];
+        this.wander = Math.sqrt(Math.max(0, this.wanderSq / this.wanderN - dot(m, m))) * 1000;
+        this.wanderT = this.wanderN = this.wanderSq = 0;
+        this.wanderSum = [0, 0, 0];
+      }
     } else {
       // a landing is coming down after really floating, not a rock on the pad as it lifts off
       if (this.clearFor > 0.25) this.landings++;
       this.clearFor = 0;
+      this.wanderT = this.wanderN = this.wanderSq = 0;
+      this.wanderSum = [0, 0, 0];
     }
     if (B.fixed) return;
     // drag on the air's speed past the model, so the model's own motion is damped by it
@@ -426,6 +446,7 @@ export class TunnelAir {
     r[`${n}.float_time`] = this.floatTime;
     r[`${n}.landings`] = this.landings;
     r[`${n}.floating`] = this.touching === 0;
+    r[`${n}.wander`] = this.wander;
     const d = sub(this.body.x, this.spec.at);
     r[`${n}.x`] = dot(d, this.spec.flow) * 1000;
     r[`${n}.y`] = dot(d, this.across) * 1000;

@@ -13,6 +13,7 @@
 import type { V3 } from "../../kernel/recipe";
 import type { CatalogPart, PinDef } from "../types";
 import { pinSpots } from "../boards3d/pins";
+import { FIELD_PLUGS } from "./fieldPlugs";
 
 export type PlugKind =
   /** JST XH 2.50 mm: printer board headers, stepper and fan leads */
@@ -197,6 +198,7 @@ function slipLeads(n: number, len: number): PlugTable {
 
 /** Plugs for catalog parts, by catalog id and pin id. */
 export const PLUGS: Record<string, PlugTable> = {
+  ...FIELD_PLUGS,
   skr_mini_e3_v3: SKR,
   // KY-023 thumb stick (34 × 26): its five right-angle header pins stick out of the -X end on the top side, in the
   // board's order GND, +5V, VRx, VRy, SW, so Dupont plugs go on along -X

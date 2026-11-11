@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 import { catalogPart } from "../src/machine/catalog";
 import { buildNetlist } from "../src/machine/erc";
 import { generateFirmware } from "../src/machine/firmware";
+import { FIELD_PLUGS } from "../src/machine/harness/fieldPlugs";
+import { plugFor } from "../src/machine/harness/plugs";
 import { coilChain, shuntFacing, shuntSides } from "../src/machine/shunts";
 import { evaluate } from "../src/lang/evaluator";
 import { Ina3221, PwmFan, Sdp8xx, Tmag5273, type ShuntTap } from "../src/sim/engine/fielddevs";
@@ -38,7 +40,7 @@ wire nullc.M_MINUS -> inaA.CH1P`, magZ = -18.46) {
 component fc = lib.controller("feather_esp32_v2") { at: (0, -80, -80) }
 component psu = lib.psu("psu_12v_5a") { at: (200, 0, -80) }
 component lift = lib.coil("coil_lift_84x18") { at: (0, 0, 29) }
-component nullc = lib.coil("coil_null_39x4") { at: (0, 0, -28), axis: -Z }
+component nullc = lib.coil("coil_null_39x3") { at: (0, 0, -28.5), axis: -Z }
 component s1 = lib.coil("coil_steer_29x18") { at: (15, 15, -52) }
 component s2 = lib.coil("coil_steer_29x18") { at: (-15, 15, -52) }
 component s3 = lib.coil("coil_steer_29x18") { at: (-15, -15, -52) }
@@ -123,7 +125,7 @@ function rig(opts: { model?: boolean; mass?: number; moment?: number } = {}): Me
     field: {
       coils: [
         { comp: "lift", body: FRAME, c: [0, 0, 0.038], axis: [0, 0, 1], ri: 0.022, ro: 0.042, h: 0.018, turns: 548 },
-        { comp: "nullc", body: FRAME, c: [0, 0, -0.03], axis: [0, 0, -1], ri: 0.0176, ro: 0.0194, h: 0.004, turns: 25 },
+        { comp: "nullc", body: FRAME, c: [0, 0, -0.03], axis: [0, 0, -1], ri: 0.0174, ro: 0.0196, h: 0.003, turns: 25 },
         steer("s1", 0.015, 0.015),
         steer("s2", -0.015, 0.015),
         steer("s3", -0.015, -0.015),
@@ -201,7 +203,7 @@ describe("field maths", () => {
   });
 
   it("a nulling winding round the sensor cancels the lift coil's field there", () => {
-    const nullc = new CoilField({ c: [0, 0, -0.03], axis: [0, 0, -1], ri: 0.0176, ro: 0.0194, h: 0.004, turns: 25 });
+    const nullc = new CoilField({ c: [0, 0, -0.03], axis: [0, 0, -1], ri: 0.0174, ro: 0.0196, h: 0.003, turns: 25 });
     const s: Vec3 = [0, 0, -0.03];
     const own = lift.at(s)[2];
     expect(own * 1000).toBeCloseTo(0.845, 2);
@@ -507,6 +509,10 @@ describe("the generated firmware flying the simulated rig", () => {
       expect(r[7]).toBeLessThan(0.5);
     }
     expect(f.said.join("\n")).toMatch(/sweep done/);
+    // and keeps the range of them where a design's scenario can ask for it
+    expect(f.r["fw.sweepCdLo"]).toBeGreaterThan(0.43);
+    expect(f.r["fw.sweepCdHi"]).toBeLessThan(0.5);
+    expect(f.r["fw.sweepCdHi"]).toBeGreaterThanOrEqual(f.r["fw.sweepCdLo"]);
   });
 
   it("flies a build that is not quite the design: a heavier model with a weaker magnet", { timeout: 120_000 }, () => {
@@ -514,6 +520,9 @@ describe("the generated firmware flying the simulated rig", () => {
     expect(f.said.join("\n")).not.toMatch(/FAULT/);
     expect(Math.abs(f.over("tunnel.z", 3.5, 5).mean)).toBeLessThan(0.2);
     expect(f.over("tunnel.z", 3.5, 5).sd).toBeLessThan(0.04);
+    // the tunnel's own measure of how far it moves about where it sits, over the last full second
+    expect(f.r["tunnel.wander"]).toBeGreaterThan(0);
+    expect(f.r["tunnel.wander"]).toBeLessThan(0.05);
   });
 
   it("drops the coils when the field sensor stops answering, a coil comes off or a monitor freezes", { timeout: 120_000 }, () => {
@@ -533,9 +542,51 @@ describe("the generated firmware flying the simulated rig", () => {
     const f = fly('sim.type("zero", at: 1s), sim.type("coilcal", at: 2s), sim.type("launch", at: 6.5s)', 7, { rig: { model: false } });
     const text = f.said.join("\n");
     expect(text).toMatch(/zero: .* mT stored/);
-    expect(text).toMatch(/coil 0 \(lift\): 0\.0\d+ mT\/A at the sensor with its nulling winding \(worth 0\.845 mT\/A\): stored/);
+    expect(text).toMatch(/coil 0 \(lift\): 0\.0\d+ mT\/A at the sensor with its nulling winding \(worth 0\.84\d mT\/A\): stored/);
     expect(text).toMatch(/coil 4 \(steering\): 1\.[78]\d+ mT\/A at the sensor, the design says 1\.810: stored/);
     expect(text).not.toMatch(/BACKWARDS|WRONG WAY/);
     expect(text).toMatch(/no model on the pad/);
+  });
+});
+
+describe("where the wires leave the coils, sensor boards and gauge", () => {
+  it("has a place on the real part for every wire it lists", () => {
+    for (const [id, table] of Object.entries(FIELD_PLUGS)) {
+      const part = catalogPart(id);
+      expect(part, id).toBeDefined();
+      for (const pin of Object.keys(table)) {
+        expect(part!.pins.some((p) => p.id === pin), `${id}.${pin}`).toBe(true);
+        expect(plugFor(part!, pin)).toBe(table[pin]);
+      }
+    }
+  });
+
+  it("puts the current monitor's power and data on its header pads and each coil's wires in its screw terminals", () => {
+    const ina = catalogPart("ina3221_breakout")!;
+    expect(plugFor(ina, "VIN")).toMatchObject({ kind: "solder", out: [0, 0, 1] });
+    expect(plugFor(ina, "CH1P")).toMatchObject({ kind: "ferrule", out: [0, 1, 0] });
+    // a channel's two contacts are 3.5 mm apart, on the board's far edge from the header
+    expect(plugFor(ina, "CH1N")!.at[0] - plugFor(ina, "CH1P")!.at[0]).toBeCloseTo(3.5);
+    expect(plugFor(ina, "CH3N")!.at[1]).toBeGreaterThan(0);
+    expect(plugFor(ina, "SDA")!.at[1]).toBeLessThan(0);
+  });
+
+  it("brings a coil's two ends out of its winding, not its bore, and the Hall board's lead out of its socket", () => {
+    const steer = catalogPart("coil_steer_29x18")!;
+    for (const pin of ["M_PLUS", "M_MINUS"]) {
+      const p = plugFor(steer, pin)!;
+      expect(p.kind).toBe("lead");
+      // outside the bobbin's 5.5 mm core, leaving downwards past its lower flange
+      expect(Math.hypot(p.at[0], p.at[1])).toBeGreaterThan(14.5);
+      expect(p.out).toEqual([0, 0, -1]);
+    }
+    const lift = catalogPart("coil_lift_84x18")!;
+    expect(Math.hypot(...plugFor(lift, "M_PLUS")!.at.slice(0, 2))).toBeGreaterThanOrEqual(42);
+    const hall = catalogPart("tmag5273_breakout")!;
+    const ends = ["GND", "VIN", "SDA", "SCL"].map((pin) => plugFor(hall, pin)!);
+    for (const e of ends) expect(e).toMatchObject({ kind: "lead", out: [1, 0, 0] });
+    // four wires a millimetre apart, beyond the board's end
+    expect(ends[0].at[1] - ends[3].at[1]).toBeCloseTo(3);
+    expect(ends[0].at[0]).toBeGreaterThan(12.65);
   });
 });
