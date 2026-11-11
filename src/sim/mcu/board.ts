@@ -43,6 +43,8 @@ export interface Board {
   adcPins?: number[];
   /** a pin the board wires to its battery through a divider (the Feather's BATT_MONITOR), and the divider's ratio */
   battMonitor?: { pin: number; ratio: number };
+  /** the pins Serial1, Serial2 use when begin() names none (ESP32: any pins can be given) */
+  uarts?: ({ rx: number; tx: number } | undefined)[];
 }
 
 const atmega328p = (name: string, parts: string[], board: string, analog: number[], analogOnly: number[]): Board => ({
@@ -101,6 +103,8 @@ export const FEATHER_ESP32_V2: Board = {
   analog: [26, 25, 34, 39, 36, 4],
   adcPins: [26, 25, 34, 39, 36, 4, 12, 13, 14, 15, 27, 32, 33, 35, 37],
   battMonitor: { pin: 35, ratio: 2 },
+  // the pins marked RX and TX are Serial1
+  uarts: [{ rx: 7, tx: 8 }],
   analogOnly: [],
   interrupts: Object.fromEntries([...FEATHER_GPIO, ...FEATHER_INPUTS, 0, 2, 38].map((p) => [p, p])),
   pwm: Object.fromEntries([...FEATHER_GPIO, 0, 2].map((p) => [p, 1000])),

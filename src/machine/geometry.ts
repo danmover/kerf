@@ -9,6 +9,8 @@ import type { CatalogPart } from "./types";
 import { footprintSolids } from "./catalog/footprints";
 import { THREADS, type ThreadSpec } from "../library/standards";
 import { EDF_STUB, edfLeadExit } from "./harness/plugs";
+import { busServoGeometry } from "./geometryBusServo";
+import { deskSupplyGeometry, endoscopeGeometry } from "./geometryBenchParts";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -201,15 +203,20 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         base: { t: "box", w, d: dd, h: t, at: Z0, r: Math.min(1, w / 10, dd / 10) },
         ops: holes.map(([x, y]) => ({ op: "cut" as const, shape: { t: "cyl" as const, d: hd, h: t + 2, at: [x, y, -1] as V3, dir: ZP } })),
       };
-      const feats: ShapeRecipe[] = (g.features ?? []).map((f) => ({ t: "box", w: f.w, d: f.d, h: f.h, at: [f.x, f.y, t] as V3, r: 0 }));
+      const above = (g.features ?? []).filter((f) => f.side !== "bottom");
+      const under = (g.features ?? []).filter((f) => f.side === "bottom");
+      const feats: ShapeRecipe[] = above.map((f) => ({ t: "box", w: f.w, d: f.d, h: f.h, at: [f.x, f.y, t] as V3, r: 0 }));
       const solids = [solid("", p.name, board, g.color ?? PCB, "FR4")];
       if (feats.length) solids.push(solid("parts", `${p.name} components`, { base: feats.length === 1 ? feats[0] : { t: "union", shapes: feats }, ops: [] }, g.color2 ?? DARK, "FR4"));
-      const height = t + Math.max(0, ...(g.features ?? []).map((f) => f.h));
+      // what hangs under the board is drawn part by part, so a detailed drawing of the top leaves it showing
+      under.forEach((f, i) => solids.push(solid(`under${i + 1}`, `${p.name} ${f.kind} on the back`, { base: { t: "box", w: f.w, d: f.d, h: f.h, at: [f.x, f.y, -f.h] as V3, r: 0.3 }, ops: [] }, f.color ?? DARK, "PA66")));
+      const height = t + Math.max(0, ...above.map((f) => f.h));
+      const below = Math.max(0, ...under.map((f) => f.h));
       return {
         placement: "free",
         solids,
         fields: {
-          scalars: { w, d: dd, t, height, hole_d: hd },
+          scalars: { w, d: dd, t, height, below, hole_d: hd },
           points: { top: [0, 0, t], bottom: Z0, center: [0, 0, t / 2] },
           pointLists: {
             holes: holes.map(([x, y]) => [x, y, 0] as V3),
@@ -697,6 +704,16 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         },
       };
     }
+
+    // bus_servo: a serial bus servo with an output horn and an idler horn (geometryBusServo.ts)
+    case "bus_servo":
+      return busServoGeometry(p);
+
+    // desk_supply and endoscope: a desktop power supply and a USB endoscope's head (geometryBenchParts.ts)
+    case "desk_supply":
+      return deskSupplyGeometry(p);
+    case "endoscope":
+      return endoscopeGeometry(p);
 
     // box: batteries, power supplies, modules. w (X), d (Y), h (Z), r corner
     // radius; `at` is the centre of the bottom face. band: a wrap band height.

@@ -71,6 +71,8 @@ export function boardItems(part: CatalogPart): BoardItem[] {
   const out: BoardItem[] = [];
   let chip = 0;
   (part.geom.features ?? []).forEach((f, i) => {
+    // a part on the underside is a solid of its own (geometry.ts), not part of the drawn top
+    if (f.side === "bottom") return;
     const look = style.looks && i < style.looks.length ? style.looks[i] : guessLook(f.kind, f.w, f.d, f.h, !!style.female);
     if (!look) return;
     const mark = f.kind === "chip" || f.kind === "module" ? style.marks?.[chip++] : undefined;

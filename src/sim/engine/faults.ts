@@ -452,6 +452,7 @@ export function copingResults(frames: FrameData, serial: SerialLine[], plant: Pl
     r[`${m.comp}.stall_time`] = k * dt;
   }
   r.fuse_blown = plant.fuses.some((f) => f.blown);
+  for (const f of plant.fuses) r[`${f.comp}.peak_draw`] = f.peak;
   r.driver_overheated = !!inj?.driverOverheated || plant.chans.some((c) => c.shutdown) || plant.events.some((e) => /overheated and shut down/.test(e.text));
   r.still_at_end = n > 0 && quiet(n - 1);
   const ft = inj?.firstAt;
