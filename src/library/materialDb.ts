@@ -1394,7 +1394,9 @@ export const MATERIAL_DB: MaterialRecord[] = [
   },
   {
     name: "Wood",
-    label: "Birch plywood",
+    // the one wood material stands for any plywood panel, so drawings and lists must not call a pine sheet birch;
+    // the grade says where the numbers come from
+    label: "Plywood",
     grade: "Birch plywood",
     category: "other",
     family: "wood",

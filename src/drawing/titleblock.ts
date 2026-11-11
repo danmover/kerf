@@ -265,12 +265,25 @@ export function wrap(s: string, size: number, maxW: number): string[] {
 }
 
 /** Numbered general notes, bottom-aligned at a corner. Returns the box used. */
-export function inkNotes(ink: Ink, x0: number, bottom: number, maxW: number, notes: string[], size: number): Box | null {
-  if (!notes.length) return null;
+function notesLayout(notes: string[], size: number, maxW: number) {
   const lh = size * 1.55;
   const body: { num: string; s: string }[] = [];
   notes.forEach((n, i) => wrap(n, size, maxW - 6).forEach((s, k) => body.push({ num: k === 0 ? `${i + 1}.` : "", s })));
-  const h = (body.length + 1) * lh + 1;
+  return { lh, body, h: (body.length + 1) * lh + 1 };
+}
+
+/** Whether any line of notes inked at x0 above bottom, wrapped to maxW, would run into a box. */
+export function notesHit(x0: number, bottom: number, maxW: number, notes: string[], size: number, b: Box): boolean {
+  if (!notes.length) return false;
+  const { lh, body, h } = notesLayout(notes, size, maxW);
+  const y0 = bottom - h;
+  const lines = [{ y: y0 + size, x1: x0 + textWidth("NOTES", size, true) }, ...body.map((l, i) => ({ y: y0 + size + (i + 1) * lh, x1: x0 + 6 + textWidth(l.s, size) }))];
+  return lines.some((l) => l.y > b[1] && l.y - size < b[3] && l.x1 > b[0]);
+}
+
+export function inkNotes(ink: Ink, x0: number, bottom: number, maxW: number, notes: string[], size: number): Box | null {
+  if (!notes.length) return null;
+  const { lh, body, h } = notesLayout(notes, size, maxW);
   const y0 = bottom - h;
   ink.with("n", () => {
     ink.text(x0, y0 + size, "NOTES", size, "start", { bold: true });

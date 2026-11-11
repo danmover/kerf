@@ -173,7 +173,9 @@ export function fastenerChecks(model: Model): CheckItem[] {
     // the main thread: a nut, insert or standoff on the axis before the hole it sits in, then the most engagement
     const rank = (x: Engagement) => (x.host.libKind === "nut" || x.host.libKind === "insert" || x.host.libKind === "standoff" ? 1000 : 0) + x.engaged;
     const e = threads.reduce((a, b) => (rank(b) > rank(a) ? b : a));
-    counts.set(e.into, (counts.get(e.into) ?? 0) + 1);
+    // a pilot hole in wood is counted as wood, whatever screw is in it
+    const kind = e.into === "plastic" && materialRecord(e.host.material)?.family === "wood" ? "wood" : e.into;
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
     let fine = true;
 
     if (blind(e.host, e.into) && e.past > 0.25) {
@@ -276,7 +278,7 @@ export function fastenerChecks(model: Model): CheckItem[] {
   for (const g of groups.values()) out.push({ ...g.item, detail: g.item.detail(g.n, listNames(g.names)), parts: [...g.parts], id: g.n > 1 ? `${g.item.id}#${g.n}` : g.item.id });
 
   if (ok > 0 && ok === screws.filter((s) => partCylinders(s).some((c) => c.role === "screw")).length) {
-    const label: Record<string, string> = { nut: "nuts", nyloc: "nyloc nuts", insert: "inserts", tapped: "tapped holes", plastic: "plastic pilot holes", standoff: "standoffs" };
+    const label: Record<string, string> = { nut: "nuts", nyloc: "nyloc nuts", insert: "inserts", tapped: "tapped holes", plastic: "plastic pilot holes", wood: "pilot holes in wood", standoff: "standoffs" };
     const parts = [...counts].map(([k, n]) => `${n} into ${label[k] ?? k}`);
     out.push({ id: "fasten:ok", category: "assembly", status: "pass", title: "Every screw has thread to hold", detail: `${plural(ok, "screw")}: ${parts.join(", ")}, with enough thread engaged and none bottoming out.`, basis: "geometry" });
   }
