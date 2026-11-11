@@ -60,7 +60,7 @@ export function parseTools(text: string): CamTool[] | null {
 
 export const toolsText = (tools: CamTool[]) => tools.map((t) => `${t.drill ? "drill " : ""}${num(t.d, 3)} × ${num(t.reach)}`).join(", ");
 
-function NumIn({ label, value, onChange, unit = "mm", step = 1, min = 0, max, tip }: { label: string; value: number; onChange: (v: number) => void; unit?: string; step?: number; min?: number; max?: number; tip?: string }) {
+export function NumIn({ label, value, onChange, unit = "mm", step = 1, min = 0, max, tip }: { label: string; value: number; onChange: (v: number) => void; unit?: string; step?: number; min?: number; max?: number; tip?: string }) {
   const [text, setText] = useState(num(value));
   useEffect(() => setText(num(value)), [value]);
   return (
@@ -84,7 +84,7 @@ function NumIn({ label, value, onChange, unit = "mm", step = 1, min = 0, max, ti
   );
 }
 
-function Pick<T extends string>({ label, value, options, onChange, tip }: { label: string; value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; tip?: string }) {
+export function Pick<T extends string>({ label, value, options, onChange, tip }: { label: string; value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; tip?: string }) {
   return (
     <label className="mt-num" data-tip={tip}>
       <span className="mono">{label}</span>
@@ -119,7 +119,7 @@ function Nums({ label, items, tip }: { label: string; items: { value: number; on
   );
 }
 
-function SmallNum({ value, onChange, word, tip, min = 0 }: { value: number; onChange: (v: number) => void; word: string; tip: string; min?: number }) {
+export function SmallNum({ value, onChange, word, tip, min = 0, step = 0.5 }: { value: number; onChange: (v: number) => void; word: string; tip: string; min?: number; step?: number }) {
   const [text, setText] = useState(num(value));
   useEffect(() => setText(num(value)), [value]);
   return (
@@ -127,7 +127,7 @@ function SmallNum({ value, onChange, word, tip, min = 0 }: { value: number; onCh
       <input
         className="input mono"
         type="number"
-        step={0.5}
+        step={step}
         min={min}
         value={text}
         aria-label={tip}

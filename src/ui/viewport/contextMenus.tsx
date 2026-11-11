@@ -20,6 +20,7 @@ import { askMaterialPicker } from "../MaterialPicker";
 import { toggleMarkup } from "../Markup";
 import { toggleMeasure } from "./MeasureTool";
 import { openCam } from "../../cam/job";
+import { openSheets } from "../../cam/sheetJob";
 import { openContextMenu, type CtxEntry } from "../ContextMenu";
 
 export interface MenuHit {
@@ -112,6 +113,7 @@ export function partMenuEntries(hit: MenuHit): CtxEntry[] {
     "sep",
     { label: "Material…", icon: <Icon.Material size={14} />, run: () => (select(ids), askMaterialPicker()) },
     ...(part.kind === "part" ? [{ label: "CNC toolpaths…", icon: <Icon.EndMill size={14} />, run: () => openCam(part.id) }] : []),
+    ...(part.kind === "part" && (part.sheet || part.process?.id === "laser_cut") ? [{ label: "Cut from sheet…", icon: <Icon.LaserCut size={14} />, run: () => void openSheets(part.id) }] : []),
     lockItem(part),
     { label: "Show its code", icon: <Icon.Code size={14} />, run: () => revealSpan(part.span) },
     { label: "Copy its name", icon: <Icon.Copy size={14} />, run: () => void navigator.clipboard?.writeText(part.name).catch(() => undefined) },

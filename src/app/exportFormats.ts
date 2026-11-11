@@ -35,6 +35,7 @@ import { download, safeFileName } from "../persist/files";
 import { openFilmMaker } from "../film/store";
 import { frameCutsCsv } from "../ui/FrameCuts";
 import { camParts, openCam } from "../cam/job";
+import { hasSheetParts, openSheets } from "../cam/sheetJob";
 
 async function exportDrawings() {
   await exportDrawingsPdf();
@@ -112,6 +113,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
       toast({ kind: "success", title: n === 1 ? "Flat pattern exported" : `${n} flat patterns exported`, detail: "Outlines and holes on the CUT layer, bend lines on BEND, 1:1 in millimetres." });
     },
   },
+  { id: "sheets", group: "print", label: "Laser, plasma or waterjet sheets", detail: "The flat parts nested on sheets with kerf and lead-ins: watch the cut, then save DXF, SVG or G-code", ext: ".dxf", icon: "LaserCut", shown: () => hasSheetParts(useDesign.getState().model), run: () => void openSheets() },
   { id: "cnc", group: "print", label: "CNC toolpaths", detail: "G-code for a router or mill (GRBL, LinuxCNC, Mach): set the stock and tools, watch the cuts, then save", ext: ".nc", icon: "EndMill", shown: () => camParts(useDesign.getState().model).length > 0, run: () => openCam() },
   { id: "3mf-plate", group: "print", label: "Print plate", detail: "Every part to make, turned to print, in colour", ext: ".3mf", icon: "Grid", selection: true, run: (o) => export3mfPlate(o.selectionOnly) },
   { id: "stl-parts", group: "print", label: "STL per part", detail: "One file per part, named with how many", ext: ".zip", icon: "Layers", selection: true, run: (o) => exportStlParts(o.selectionOnly) },
