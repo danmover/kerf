@@ -26,6 +26,9 @@ export const MEASURED: Record<string, Record<string, { spec: string; doc: string
     r_int: { spec: "r_int_mohm", doc: "the whole pack's internal resistance, with its leads (Ohm)", toSpec: (v, s) => (v * 1000) / (typeof s.cells === "number" && s.cells > 0 ? s.cells : 1) },
     capacity: { spec: "capacity_mah", doc: "capacity (mAh)" },
   },
+  motor_driver: {
+    osc: { spec: "osc_mhz", doc: "a PCA9685 servo board's own oscillator (MHz): 25 on paper, 23 to 27 on real chips, and every pulse it makes is out by the same share" },
+  },
 };
 
 /** A component's catalog part with any measured values in place of its specs. */

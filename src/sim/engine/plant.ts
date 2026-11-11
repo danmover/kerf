@@ -11,7 +11,7 @@ import { measuredPart } from "../../machine/measured";
 import { coilChain, shuntFacing, shuntSides } from "../../machine/shunts";
 import type { CatalogPart, MachineComponent, MachineData } from "../../machine/types";
 import type { Board } from "../mcu/board";
-import { ADAPTER, Actuator, BENCH_SUPPLY, Battery, Bno055, DCMotor, EscFan, Lsm6dsox, Mpu6050, Regulator, Servo, Ssd1306, Supply, USB_PORT, quadrature, type ImuNoise } from "./devices";
+import { ADAPTER, Actuator, BENCH_SUPPLY, Battery, Bno055, DCMotor, EscFan, Lsm6dsox, Mpu6050, Nau7802, Pca9685, Regulator, Servo, Ssd1306, Supply, USB_PORT, quadrature, type ImuNoise } from "./devices";
 import { BRIDGE_OHMS, CoilLoad, Ina3221, PwmFan, Sdp8xx, Tmag5273, stepCoilString, type ShuntTap } from "./fielddevs";
 import { BusServo, ServoBus } from "./busServo";
 import { servoBuses } from "../../machine/busServos";
@@ -65,16 +65,23 @@ interface ActSlot {
   fbVcc?: Net;
 }
 
+/**
+ * Pulses that come from a servo board's output instead of a controller pin are numbered from here: sixteen to a
+ * board, in the order the boards come in the design.
+ */
+export const HUB_PIN = 1000;
+
 interface ServoSlot {
   comp: string;
   s: Servo;
+  /** the controller pin its pulse comes from, a servo board's output (HUB_PIN and up), or -1 */
   pin: number;
   /** the signal's net, which a pressed normally-closed switch in it can break */
   sig?: Net;
   vcc?: Net;
 }
 
-/** A brushless ESC: the controller pin its signal comes from, its battery feed and the fan it spins. */
+/** A brushless ESC: where its signal comes from (a controller pin or a servo board's output), its battery feed and the fan it spins. */
 export interface EscSlot {
   comp: string;
   part: CatalogPart;
@@ -109,6 +116,39 @@ export interface HxSlot {
   peak: number;
   samples: number;
   on: boolean;
+}
+
+/** The load cell bridge on an amplifier's or ADC's channel A. */
+interface BridgeOn {
+  /** the load cell, its polarity, rated load (N) and output (mV/V) */
+  cell?: string;
+  sign: number;
+  ratedN: number;
+  mvPerV: number;
+}
+
+/** A load cell ADC on the I2C bus (an NAU7802) and the bridge on its inputs. */
+export interface AdcSlot extends BridgeOn {
+  comp: string;
+  dev: Nau7802;
+  vcc?: Net;
+  force: number;
+  peak: number;
+  on: boolean;
+}
+
+/** A PCA9685 servo board: its chip, its logic supply and its output-enable pin. */
+export interface HubSlot {
+  comp: string;
+  dev: Pca9685;
+  vcc?: Net;
+  oe: Src;
+  /** on the controller's I2C bus, whose pull-ups (the board's own go to its logic supply) feed it a little when that supply is cut */
+  onBus: boolean;
+  /** the other powered devices on the bus: their boards' pull-ups are what feeds it then */
+  others?: { vcc?: Net; comp: string }[];
+  /** outputs wired back to a controller pin, which then sees their pulses */
+  sense: { ch: number; pin: number }[];
 }
 
 /** An addressable LED board (or a chain of them) and what it is showing. */
@@ -169,6 +209,8 @@ export interface BlowerSlot {
 
 interface RegSlot {
   r: Regulator;
+  /** the part the regulator is, or is in */
+  comp: string;
   vin?: Net;
   vout?: Net;
 }
@@ -238,8 +280,14 @@ export class Plant implements PlantPort, PlantView {
   shuntMonitors: { comp: string; dev: Ina3221; part: CatalogPart }[] = [];
   fieldSensors: { comp: string; dev: Tmag5273 }[] = [];
   gauges: { comp: string; dev: Sdp8xx }[] = [];
-  /** nets broken by a pressed normally-closed switch, or by a switch unplugged */
+  adcs: AdcSlot[] = [];
+  hubs: HubSlot[] = [];
+  /** signal nets broken by a pressed normally-closed switch, or by a switch unplugged */
   cut = new Set<number>();
+  /** switches whose normally-closed contacts are open */
+  private opened = new Set<string>();
+  /** parts cut off from every supply on a net by an open contact, as "net|part" */
+  private dead = new Set<string>();
   /** hall switches: the pin each pulls low while the world puts a magnet near it */
   halls: { comp: string; pin: number; vcc?: Net; level: number; hits: number }[] = [];
   i2cDevs = new Map<number, { dev: I2CDevice & { ready?(t: number): boolean }; vcc?: Net; comp: string }>();
@@ -326,7 +374,7 @@ export class Plant implements PlantPort, PlantView {
         case "regulator": {
           const vin = this.netOf(mc.name, "VIN") ?? this.netOf(mc.name, "IN_POS");
           const vout = this.netOf(mc.name, "VOUT") ?? this.netOf(mc.name, "OUT_POS");
-          this.regs.push({ r: new Regulator(mc.name, part), vin, vout });
+          this.regs.push({ r: new Regulator(mc.name, part), comp: mc.name, vin, vout });
           break;
         }
         case "fuse":
@@ -334,6 +382,10 @@ export class Plant implements PlantPort, PlantView {
           this.fuses.push({ comp: mc.name, net: this.netOf(mc.name, "IN") ?? this.netOf(mc.name, "OUT"), rating: Number(mc.rating ?? part.specs.rating_a ?? 20), peak: 0, over2: 0, over35: 0, blown: false });
           break;
         case "motor_driver":
+          if (part.specs.driver === "PCA9685") {
+            this.hub(mc, part);
+            break;
+          }
           for (const ch of ["A", "B"]) {
             const c = this.channel(mc.name, part, ch);
             if (c) this.chans.push(c);
@@ -357,7 +409,7 @@ export class Plant implements PlantPort, PlantView {
           // a smart servo takes packets on its bus, not a pulse on a pin
           const smart = part.specs.bus === "feetech_sts";
           if (smart) this.selfDrawn.add(mc.name);
-          this.servos.push({ comp: mc.name, s: smart ? new BusServo(mc.name, part) : new Servo(mc.name, part), pin: smart ? -1 : this.mcuPinFor(mc.name, "SIG"), sig: this.netOf(mc.name, "SIG"), vcc: this.netOf(mc.name, "V_PLUS") });
+          this.servos.push({ comp: mc.name, s: smart ? new BusServo(mc.name, part) : new Servo(mc.name, part), pin: smart ? -1 : this.signalPin(mc.name, "SIG"), sig: this.netOf(mc.name, "SIG"), vcc: this.netOf(mc.name, "V_PLUS") });
           break;
         }
         case "esc":
@@ -459,8 +511,7 @@ export class Plant implements PlantPort, PlantView {
     for (const s of this.acts) {
       if (s.fbPin < 0) continue;
       this.analogSrc.set(s.fbPin, () => {
-        const vcc = s.fbVcc ? (this.netV.get(s.fbVcc.id) ?? 0) : 0;
-        return (s.a.pos / s.a.stroke) * vcc;
+        return (s.a.pos / s.a.stroke) * this.volts(s.fbVcc, s.comp);
       });
     }
     // test signals from the world, onto the analog inputs their nets reach
@@ -520,6 +571,7 @@ export class Plant implements PlantPort, PlantView {
     hal.plant = this;
     this.updateRails();
     this.steppers.bind();
+    this.powerHubs(0);
     if (this.mcuSupply === "USB") this.assumptions.push(`Nothing in the wiring powers ${mcu}, so it runs from its USB port: 5 V, with its 500 mA polyfuse`);
   }
 
@@ -548,6 +600,29 @@ export class Plant implements PlantPort, PlantView {
     const n = this.netOf(comp, pin);
     if (!n) return -1;
     return this.mcuPinOfNet.get(n.id) ?? -1;
+  }
+
+  /**
+   * Where a servo's or an ESC's pulse comes from: the controller pin on its signal's net, else a servo board's
+   * output on it (HUB_PIN and up), else -1.
+   */
+  private signalPin(comp: string, pin: string): number {
+    const direct = this.mcuPinFor(comp, pin);
+    if (direct >= 0) return direct;
+    const n = this.netOf(comp, pin);
+    if (!n) return -1;
+    for (let h = 0; h < this.hubs.length; h++) {
+      const out = n.pins.find((p) => p.comp === this.hubs[h].comp && /^P\d+$/.test(p.pin.id));
+      if (out) return HUB_PIN + 16 * h + Number(out.pin.id.slice(1));
+    }
+    return -1;
+  }
+
+  /** volts a part sees on a net: nothing when an open contact has cut it off from the net's supplies */
+  volts(net: Net | undefined, comp: string): number {
+    if (!net) return 0;
+    if (this.dead.size && this.dead.has(`${net.id}|${comp}`)) return 0;
+    return this.netV.get(net.id) ?? 0;
   }
 
   private source(comp: string, part: CatalogPart, id: string): Src {
@@ -642,6 +717,18 @@ export class Plant implements PlantPort, PlantView {
         const dev = new Sdp8xx(mc.name, this.board.fcpu, part, () => this.world.pressure?.(mc.name) ?? 0, () => this.world.thermal().ambient, opts.rng);
         this.gauges.push({ comp: mc.name, dev });
         this.i2cDevs.set(addr, { dev, vcc: vcc ?? this.netOf(mc.name, "VDD"), comp: mc.name });
+      } else if (part.specs.chip === "NAU7802") {
+        const slot: AdcSlot = { comp: mc.name, dev: undefined as unknown as Nau7802, vcc, ...this.bridgeOn(mc.name), force: 0, peak: 0, on: true };
+        if (!slot.cell) this.notes.push(`${mc.name} has no load cell on A+ and A-: it reads only its own offset and noise.`);
+        const ratio = () => {
+          const f = slot.cell ? (this.world.force?.(slot.cell) ?? 0) : 0;
+          slot.force = f;
+          if (Math.abs(f) > slot.peak) slot.peak = Math.abs(f);
+          return slot.cell ? (slot.sign * slot.mvPerV * 1e-3 * f) / slot.ratedN : 0;
+        };
+        slot.dev = new Nau7802(mc.name, this.board.fcpu, ratio, (opts.rng() - 0.5) * 2 * 0.05e-3, opts.rng);
+        this.adcs.push(slot);
+        this.i2cDevs.set(addr, { dev: slot.dev, vcc, comp: mc.name });
       } else this.unsupported.push(`${mc.name} (${part.name})`);
       return;
     }
@@ -654,7 +741,7 @@ export class Plant implements PlantPort, PlantView {
       if (s < 0) return;
       const vin = this.netOf(mc.name, "VCC_IN") ?? this.netOf(mc.name, "PLUS");
       const ratio = Number(part.specs.ratio ?? 5);
-      this.analogSrc.set(s, () => (vin ? (this.netV.get(vin.id) ?? 0) / ratio : 0));
+      this.analogSrc.set(s, () => this.volts(vin, mc.name) / ratio);
       return;
     }
     if (iface === "joystick") {
@@ -662,7 +749,7 @@ export class Plant implements PlantPort, PlantView {
       const vcc = this.netOf(mc.name, "VCC");
       for (const axis of ["VRX", "VRY"]) {
         const pin = this.mcuPinFor(mc.name, axis);
-        if (pin >= 0) this.analogSrc.set(pin, () => (vcc ? (this.netV.get(vcc.id) ?? 0) / 2 : 0));
+        if (pin >= 0) this.analogSrc.set(pin, () => this.volts(vcc, mc.name) / 2);
       }
       return;
     }
@@ -682,7 +769,7 @@ export class Plant implements PlantPort, PlantView {
           highAt = t;
           return;
         }
-        if (highAt < 0 || (vcc && (this.netV.get(vcc.id) ?? 0) < 4)) return;
+        if (highAt < 0 || (vcc && this.volts(vcc, mc.name) < 4)) return;
         const us = ((t - highAt) * 1e6) / this.board.fcpu;
         highAt = -1;
         if (us < 9) return;
@@ -787,29 +874,62 @@ export class Plant implements PlantPort, PlantView {
       if (mine.length >= 3 && mine.every((id) => id !== undefined && phases.some((n) => n?.id === id))) fan = { name: other.name, part: op };
     }
     const sig = this.netOf(mc.name, "SIG");
-    const slot: EscSlot = { comp: mc.name, part, pin: this.mcuPinFor(mc.name, "SIG"), sig, vin: this.netOf(mc.name, "B_PLUS"), fan, dev: new EscFan(fan?.name ?? mc.name, part, fan?.part) };
+    const slot: EscSlot = { comp: mc.name, part, pin: this.signalPin(mc.name, "SIG"), sig, vin: this.netOf(mc.name, "B_PLUS"), fan, dev: new EscFan(fan?.name ?? mc.name, part, fan?.part) };
     this.escs.push(slot);
     if (!fan) this.notes.push(`${mc.name} spins nothing: wire its three phase leads to a brushless motor's.`);
-    if (slot.pin < 0) this.notes.push(`${mc.name}'s signal comes from no ${this.board.name} pin, so it never arms.`);
+    if (slot.pin < 0) this.notes.push(`${mc.name}'s signal comes from no ${this.board.name} pin${this.hubs.length ? " or servo board output" : ""}, so it never arms.`);
     const bec = this.netOf(mc.name, "BEC_5V");
-    if (bec) this.regs.push({ r: new Regulator(`${mc.name} BEC`, part), vin: slot.vin, vout: bec });
+    if (bec) this.regs.push({ r: new Regulator(`${mc.name} BEC`, part), comp: mc.name, vin: slot.vin, vout: bec });
   }
 
-  /** an HX711 on DOUT and SCK, reading the load cell bridge on its channel A */
-  private hx711(mc: MachineComponent, part: CatalogPart, opts: PlantOptions) {
-    const dout = this.mcuPinFor(mc.name, "DOUT");
-    const sck = this.mcuPinFor(mc.name, "SCK");
-    if (dout < 0 || sck < 0) {
-      this.notes.push(`${mc.name}: wire DOUT and SCK to ${this.board.name} pins to read it.`);
+  /** a PCA9685 servo board: on the bus when its SDA and SCL reach the controller's */
+  private hub(mc: MachineComponent, part: CatalogPart) {
+    const sda = this.mcuPinFor(mc.name, "SDA");
+    const scl = this.mcuPinFor(mc.name, "SCL");
+    const onBus = sda === this.board.sda && scl === this.board.scl;
+    const sense: HubSlot["sense"] = [];
+    for (let ch = 0; ch < 16; ch++) {
+      const pin = this.mcuPinFor(mc.name, `P${ch}`);
+      if (pin >= 0) sense.push({ ch, pin });
+    }
+    const slot: HubSlot = { comp: mc.name, dev: new Pca9685(mc.name, this.board.fcpu, part), vcc: this.netOf(mc.name, "VCC"), oe: this.source(mc.name, part, "OE"), onBus, sense };
+    this.hubs.push(slot);
+    if (!onBus) {
+      this.notes.push(`${mc.name}: SDA and SCL must go to ${this.board.name} pins ${this.i2cPins()} for Wire; it is not on the bus, so its outputs never start.`);
       return;
     }
-    const ap = this.netOf(mc.name, "A_PLUS");
-    const am = this.netOf(mc.name, "A_MINUS");
-    const ep = this.netOf(mc.name, "E_PLUS");
-    let cell: string | undefined;
-    let sign = 1;
-    let ratedN = 4.9;
-    let mvPerV = 1;
+    // no supply net here: the chip says itself whether it can answer (it does, asleep, on the pull-ups alone)
+    this.i2cDevs.set(parseInt(String(part.specs.i2c_addr ?? "0x40"), 16), { dev: slot.dev, comp: mc.name });
+    this.assumptions.push(
+      `${mc.name}: with its logic supply cut while another board on the I2C bus still has power, it is taken to stay alive on the bus's pull-ups, asleep with every output off and its settings gone, still answering; a real board may go silent instead, so the firmware should handle both`,
+    );
+  }
+
+  /** each servo board's supply and output enable, and its outputs' frame clock, for the step from cycle t to t1 */
+  private powerHubs(t: number, t1 = t) {
+    for (const h of this.hubs) {
+      // With its own supply cut the chip can only live on what the bus's pull-ups pass, and those belong to the
+      // other boards on the bus (or, with none, to the controller): all of them unpowered and it is dead.
+      h.others ??= [...this.i2cDevs.values()].filter((d) => d.vcc && d.comp !== h.comp);
+      const fed = h.others.length ? h.others.some((d) => this.volts(d.vcc, d.comp) >= 2.5) : this.mcuV > 2.5;
+      h.dev.power(this.volts(h.vcc, h.comp), h.onBus && fed);
+      h.dev.oe = this.level(h.oe) >= 0.5;
+      h.dev.tick(t);
+      // an output wired back to a controller pin: the pin sees each edge at its own moment
+      for (const l of h.sense) {
+        const held = h.dev.held(l.ch);
+        if (held >= 0) this.hal.setExternal(l.pin, held);
+        else for (const [at, level] of h.dev.edges(l.ch, t, t1)) this.hal.schedulePin(at, l.pin, level);
+      }
+    }
+  }
+
+  /** the load cell bridge wired to an amplifier's channel A (A+, A- and the excitation E+) */
+  private bridgeOn(comp: string): BridgeOn {
+    const ap = this.netOf(comp, "A_PLUS");
+    const am = this.netOf(comp, "A_MINUS");
+    const ep = this.netOf(comp, "E_PLUS");
+    const out: BridgeOn = { sign: 1, ratedN: 4.9, mvPerV: 1 };
     for (const other of this.machine.components) {
       const cp = measuredPart(other);
       if (!cp || cp.specs.iface !== "bridge") continue;
@@ -821,14 +941,26 @@ export class Plant implements PlantPort, PlantView {
       const crossed = sp.id === am.id && sn.id === ap.id;
       if (!straight && !crossed) continue;
       if (!ex || !ep || ex.id !== ep.id) {
-        this.notes.push(`${other.name}'s excitation (red, E+) is not on ${mc.name}'s E+: the bridge gives no signal.`);
+        this.notes.push(`${other.name}'s excitation (red, E+) is not on ${comp}'s E+: the bridge gives no signal.`);
         continue;
       }
-      cell = other.name;
-      sign = straight ? 1 : -1;
-      ratedN = (Number(cp.specs.capacity_g ?? 500) / 1000) * 9.80665;
-      mvPerV = Number(cp.specs.rated_mv_per_v ?? 1);
+      out.cell = other.name;
+      out.sign = straight ? 1 : -1;
+      out.ratedN = (Number(cp.specs.capacity_g ?? 500) / 1000) * 9.80665;
+      out.mvPerV = Number(cp.specs.rated_mv_per_v ?? 1);
     }
+    return out;
+  }
+
+  /** an HX711 on DOUT and SCK, reading the load cell bridge on its channel A */
+  private hx711(mc: MachineComponent, part: CatalogPart, opts: PlantOptions) {
+    const dout = this.mcuPinFor(mc.name, "DOUT");
+    const sck = this.mcuPinFor(mc.name, "SCK");
+    if (dout < 0 || sck < 0) {
+      this.notes.push(`${mc.name}: wire DOUT and SCK to ${this.board.name} pins to read it.`);
+      return;
+    }
+    const { cell, sign, ratedN, mvPerV } = this.bridgeOn(mc.name);
     if (!cell) this.notes.push(`${mc.name} has no load cell on A+ and A-: it reads only its own offset and noise.`);
     const rate = Number(part.specs.rate_sps ?? 10);
     const fcpu = this.board.fcpu;
@@ -895,7 +1027,7 @@ export class Plant implements PlantPort, PlantView {
 
   private stepHx(t1: number, rng: () => number) {
     for (const h of this.hxs) {
-      const powered = h.on && (h.vcc ? (this.netV.get(h.vcc.id) ?? 0) > 2.6 : false);
+      const powered = h.on && this.volts(h.vcc, h.comp) > 2.6;
       if (!powered) {
         // an unpowered chip holds DOUT low: a sketch waiting for a sample reads zeros
         h.ready = false;
@@ -934,13 +1066,8 @@ export class Plant implements PlantPort, PlantView {
     }
     if (!part || part.kind !== "switch") return undefined;
     const undos: (() => void)[] = [];
-    for (const p of part.pins) {
-      if (!p.through) continue;
-      const n = this.netOf(comp, p.id);
-      if (!n || this.cut.has(n.id)) continue;
-      this.cut.add(n.id);
-      undos.push(() => this.cut.delete(n.id));
-    }
+    const opened = this.openContacts(comp, part.pins.filter((p) => p.through).map((p) => p.id));
+    if (opened) undos.push(opened);
     const open = part.pins.filter((p) => p.type === "passive" && !p.through).map((p) => this.netOf(comp, p.id));
     if (open.length >= 2)
       open.forEach((a, i) => {
@@ -957,9 +1084,67 @@ export class Plant implements PlantPort, PlantView {
     return () => undos.reverse().forEach((u) => u());
   }
 
+  /**
+   * Open a switch's normally-closed contacts, at the pins given (all of them when pressed, one when a lead comes
+   * off). On a net with a supply, the parts the wiring reaches only through those contacts lose it and the rest
+   * keep it; a net with none (a signal) is broken whole. Returns how to close them again, or undefined when
+   * nothing ran through them.
+   */
+  openContacts(comp: string, pins: string[]): (() => void) | undefined {
+    const undos: (() => void)[] = [];
+    let supplied = false;
+    for (const id of pins) {
+      const n = this.netOf(comp, id);
+      if (!n) continue;
+      if (n.pins.some(feeds)) supplied = true;
+      else if (!this.cut.has(n.id)) {
+        this.cut.add(n.id);
+        undos.push(() => this.cut.delete(n.id));
+      }
+    }
+    if (supplied && !this.opened.has(comp)) {
+      this.opened.add(comp);
+      this.findDead();
+      undos.push(() => {
+        this.opened.delete(comp);
+        this.findDead();
+      });
+    }
+    if (!undos.length) return undefined;
+    return () => undos.reverse().forEach((u) => u());
+  }
+
+  /** which parts each open contact has cut off: those the wiring no longer reaches from any supply on their net */
+  private findDead() {
+    this.dead.clear();
+    for (const n of this.net.nets) {
+      if (!n.pins.some((p) => p.pin.through && this.opened.has(p.comp))) continue;
+      const reached = new Set<string>(n.pins.filter(feeds).map((p) => p.key));
+      if (!reached.size) continue;
+      const next = new Map<string, string[]>();
+      const link = (a: string, b: string) => {
+        next.set(a, [...(next.get(a) ?? []), b]);
+        next.set(b, [...(next.get(b) ?? []), a]);
+      };
+      for (const sg of n.segs) link(sg.a.key, sg.b.key);
+      // every other fuse, switch and connector on the net still conducts
+      for (const p of n.pins) if (p.pin.type === "passive" && p.pin.through && !this.opened.has(p.comp)) link(p.key, `${p.comp}[${p.index}].${p.pin.through}`);
+      const todo = [...reached];
+      for (let k = todo.pop(); k !== undefined; k = todo.pop())
+        for (const o of next.get(k) ?? [])
+          if (!reached.has(o)) {
+            reached.add(o);
+            todo.push(o);
+          }
+      const fed = new Set(n.pins.filter((p) => reached.has(p.key)).map((p) => p.comp));
+      for (const p of n.pins) if (!fed.has(p.comp)) this.dead.add(`${n.id}|${p.comp}`);
+    }
+  }
+
   /** a signal pulse that reaches a device: none when its wire is broken */
   private pulse(pin: number, sig: Net | undefined): number | null {
     if (pin < 0 || (sig && this.cut.has(sig.id))) return null;
+    if (pin >= HUB_PIN) return this.hubs[(pin - HUB_PIN) >> 4]?.dev.pulseUs((pin - HUB_PIN) & 15) ?? null;
     return this.hal.servoUs.get(pin) ?? null;
   }
 
@@ -995,7 +1180,7 @@ export class Plant implements PlantPort, PlantView {
   i2c(addr: number): I2CDevice | undefined {
     const d = this.i2cDevs.get(addr);
     if (!d) return undefined;
-    if (d.vcc && (this.netV.get(d.vcc.id) ?? 0) < 2.5) return undefined;
+    if (d.vcc && this.volts(d.vcc, d.comp) < 2.5) return undefined;
     if (d.dev.ready && !d.dev.ready(this.hal.cyc)) return undefined;
     return d.dev;
   }
@@ -1023,7 +1208,7 @@ export class Plant implements PlantPort, PlantView {
     for (const s of this.motors) out.push({ comp: s.comp, kind: "motor", v: s.chan ? (s.chan.vOut === null ? null : s.polarity * s.chan.vOut) : null, ilim: s.chan?.ilim ?? 99, us: null, powered: true, dev: s.m });
     for (const s of this.acts) out.push({ comp: s.comp, kind: "actuator", v: s.chan ? (s.chan.vOut === null ? null : s.polarity * s.chan.vOut) : null, ilim: s.chan?.ilim ?? 99, us: null, powered: true, dev: s.a });
     for (const s of this.servos) {
-      const powered = s.vcc ? (this.netV.get(s.vcc.id) ?? 0) > 4 : false;
+      const powered = this.volts(s.vcc, s.comp) > 4;
       out.push({ comp: s.comp, kind: "servo", v: null, ilim: 0, us: this.pulse(s.pin, s.sig), powered, dev: s.s });
     }
     for (const e of this.escs) if (e.fan) out.push({ comp: e.fan.name, kind: "fan", v: null, ilim: 0, us: null, powered: e.dev.armed, dev: e.dev });
@@ -1057,7 +1242,7 @@ export class Plant implements PlantPort, PlantView {
   /** average output volts of a driver channel (+ drives plus to minus), or null when its outputs are open */
   private command(c: Channel): number | null {
     if (c.shutdown) return null;
-    const vs = c.supply ? (this.netV.get(c.supply.id) ?? 0) : 0;
+    const vs = this.volts(c.supply, c.comp);
     if (vs < 1) return null;
     const v = Math.max(0, vs - c.vdrop);
     const s = c.src;
@@ -1102,7 +1287,7 @@ export class Plant implements PlantPort, PlantView {
     // regulators, in order (one may feed another)
     for (let pass = 0; pass < 2; pass++)
       for (const g of this.regs) {
-        const vin = g.vin ? (this.netV.get(g.vin.id) ?? 0) : 0;
+        const vin = this.volts(g.vin, g.comp);
         if (g.vout && live(g.vout)) this.netV.set(g.vout.id, g.r.out(vin));
       }
     for (const n of this.net.nets) {
@@ -1112,10 +1297,12 @@ export class Plant implements PlantPort, PlantView {
     // the microcontroller: from its 5 V pin, else its VIN through the on-board regulator, else USB
     const v5 = this.netOf(this.mcu, "V5") ?? this.netOf(this.mcu, "5V");
     const vin = this.netOf(this.mcu, "VIN");
-    const v5v = v5 ? this.netV.get(v5.id) : undefined;
-    const vinv = vin ? this.netV.get(vin.id) : undefined;
+    // (a rail an open contact has cut the controller off from is as good as not there)
+    const at = (n: Net | undefined) => (n && this.netV.has(n.id) ? this.volts(n, this.mcu) : undefined);
+    const v5v = at(v5);
+    const vinv = at(vin);
     const bat = this.netOf(this.mcu, "BAT");
-    const batv = bat ? this.netV.get(bat.id) : undefined;
+    const batv = at(bat);
     if (v5v !== undefined && v5v > 0.5) {
       this.mcuV = v5v;
       this.mcuSupply = "5 V pin";
@@ -1156,6 +1343,7 @@ export class Plant implements PlantPort, PlantView {
     this.t = t;
     const { ambient, cooling } = this.world.thermal();
     this.updateRails();
+    this.powerHubs(t0, t1);
     for (const c of this.chans) {
       c.vOut = this.command(c);
       c.current = 0;
@@ -1163,8 +1351,7 @@ export class Plant implements PlantPort, PlantView {
     }
     // ESCs and their fans, ahead of the mechanism so it pushes with this step's thrust
     for (const e of this.escs) {
-      const vin = e.vin ? (this.netV.get(e.vin.id) ?? 0) : 0;
-      e.dev.step(e.fan ? this.pulse(e.pin, e.sig) : null, vin, dt, t);
+      e.dev.step(e.fan ? this.pulse(e.pin, e.sig) : null, this.volts(e.vin, e.comp), dt, t);
       for (const text of e.dev.said.splice(0)) this.events.push({ t, kind: /lost|stopped/.test(text) ? "warn" : "info", text });
     }
     // coils and PWM fans too: the world works out this step's magnetic forces and air speed from them
@@ -1201,7 +1388,7 @@ export class Plant implements PlantPort, PlantView {
       if (s.chan) {
         const i = s.polarity * s.m.current;
         s.chan.current += Math.abs(i);
-        const vs = s.chan.supply ? (this.netV.get(s.chan.supply.id) ?? 0) : 0;
+        const vs = this.volts(s.chan.supply, s.chan.comp);
         if (s.chan.vOut !== null && vs > 0) s.chan.supplyCurrent += Math.max(0, (s.chan.vOut * i) / vs);
       }
       this.encoder(s, c0, t0, t1);
@@ -1213,12 +1400,12 @@ export class Plant implements PlantPort, PlantView {
       else s.a.step(v, this.world.actuatorLoad(s.comp), dt);
       if (s.chan) {
         s.chan.current += s.a.current;
-        const vs = s.chan.supply ? (this.netV.get(s.chan.supply.id) ?? 0) : 0;
+        const vs = this.volts(s.chan.supply, s.chan.comp);
         if (s.chan.vOut !== null && vs > 0) s.chan.supplyCurrent += (Math.abs(s.chan.vOut) / vs) * s.a.current;
       }
     }
     for (const s of this.servos) {
-      const powered = s.vcc ? (this.netV.get(s.vcc.id) ?? 0) > 4 : false;
+      const powered = this.volts(s.vcc, s.comp) > 4;
       const us = this.pulse(s.pin, s.sig);
       const mv = moved?.get(s.comp);
       if (s.s instanceof BusServo) s.s.tick(dt, powered, s.vcc ? (this.netV.get(s.vcc.id) ?? 0) : 0);
@@ -1238,8 +1425,9 @@ export class Plant implements PlantPort, PlantView {
     }
     this.world.step(dt, t, this);
     this.stepHx(t1, this.rng);
+    for (const a of this.adcs) a.dev.tick(t1, a.on && this.volts(a.vcc, a.comp) > 2.6);
     for (const h of this.halls) {
-      const powered = h.vcc ? (this.netV.get(h.vcc.id) ?? 0) > 4 : false;
+      const powered = this.volts(h.vcc, h.comp) > 4;
       // open collector with the module's pull-up: low while a magnet is near, and low unpowered
       const level = powered && !this.world.magnet?.(h.comp) ? 1 : 0;
       if (level === h.level) continue;
@@ -1323,7 +1511,7 @@ export class Plant implements PlantPort, PlantView {
     const c1 = s.m.angle * s.m.countsPerRad;
     s.m.counts = c1;
     if (s.encA < 0 && s.encB < 0) return;
-    const powered = s.encVcc ? (this.netV.get(s.encVcc.id) ?? 0) > 3 : true;
+    const powered = s.encVcc ? this.volts(s.encVcc, s.comp) > 3 : true;
     if (!powered) {
       if (s.lastA !== -1) {
         if (s.encA >= 0) this.hal.setExternal(s.encA, 1);
@@ -1366,7 +1554,7 @@ export class Plant implements PlantPort, PlantView {
    */
   private stepLeds(t: number, dt: number) {
     for (const l of this.leds) {
-      const powered = l.vcc ? (this.netV.get(l.vcc.id) ?? 0) > 3.5 : false;
+      const powered = this.volts(l.vcc, l.comp) > 3.5;
       if (!powered) l.colours.fill(0);
       const f = l.pin >= 0 ? this.hal.pixelFrames.get(l.pin) : undefined;
       if (f && f.seq !== l.seq) {
@@ -1481,7 +1669,7 @@ export class Plant implements PlantPort, PlantView {
       if (p.comp === this.mcu) {
         // the controller counts once, on the pin it runs from: VIN's share is in logicLoad
         if (p.pin.id !== "VIN" && (p.pin.type === "pwr_rail" || p.pin.type === "pwr_in")) i += 0.03;
-      } else if (p.pin.type === "pwr_in" && p.part.kind !== "led" && p.part.specs.iface !== "pwm_fan") i += p.pin.draw ?? 0.01;
+      } else if (p.pin.type === "pwr_in" && p.part.kind !== "led" && p.part.specs.iface !== "pwm_fan" && !(this.dead.size && this.dead.has(`${rail.id}|${p.comp}`))) i += p.pin.draw ?? 0.01;
     }
     return i;
   }
@@ -1512,7 +1700,7 @@ export class Plant implements PlantPort, PlantView {
     if (this.mcuSupply === "VIN") add(this.netOf(this.mcu, "VIN"), this.logicLoad);
     for (const g of this.regOrder) {
       g.r.load = g.vout ? this.staticDraw(g.vout) + (d.get(g.vout.id) ?? 0) : 0;
-      add(g.vin, g.r.inputCurrent(g.vin ? (this.netV.get(g.vin.id) ?? 0) : 0));
+      add(g.vin, g.r.inputCurrent(this.volts(g.vin, g.comp)));
     }
     return d;
   }
@@ -1554,7 +1742,7 @@ export class Plant implements PlantPort, PlantView {
       out[`${e.fan.name}.thrust`] = e.dev.thrust;
       out[`${e.fan.name}.amps`] = e.dev.motorCurrent;
     }
-    for (const h of this.hxs) if (h.cell) out[`${h.cell}.force`] = h.force;
+    for (const h of [...this.hxs, ...this.adcs]) if (h.cell) out[`${h.cell}.force`] = h.force;
     for (const s of this.coils) {
       out[`${s.comp}.amps`] = s.c.current;
       out[`${s.comp}.volts`] = s.c.volts;
@@ -1621,5 +1809,8 @@ export function fieldResults(plant: Plant): Record<string, number | boolean | st
   Object.assign(r, plant.steppers.results(), plant.sensing.results());
   return r;
 }
+
+/** a pin that puts power on its net */
+const feeds = (p: NetPin) => p.pin.type === "pwr_out" || p.pin.type === "pwr_rail";
 
 const listOf = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : xs[0] ?? "");

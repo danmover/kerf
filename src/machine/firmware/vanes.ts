@@ -10,6 +10,13 @@
 // a vane sign test, a servo check, the static force test and the gyroscopic
 // coupling test on the load cell, and setpoint steps while holding.
 // Plain C, so the simulator runs exactly what goes on the board.
+//
+// From the wiring it also takes: a PCA9685 servo board making the pulses over
+// I2C in place of controller pins (then the e-stop is the board's logic supply,
+// and a board that goes quiet or loses its settings is the e-stop pressed); an
+// NAU7802 load cell board in place of an HX711; and, when the firmware block
+// gives i_yaw, a third axis: the unit turning about its own jet, its heading
+// held from the gyro with all four vanes turned the same way.
 
 import { catalogPart } from "../catalog";
 import type { MachineComponent } from "../types";
@@ -58,15 +65,49 @@ export function vaneFirmware(c: FwContext): VaneResult {
 
   // ---- the parts, from the wiring
   const servos = componentsOfKind(c, "servo").sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-  const vanePins = servos.map((s, i) => note(`vane ${i + 1} servo`, s.name, "SIG"));
   const escs = componentsOfKind(c, "esc");
   const esc = escs[0];
-  const escPin = esc ? note("ESC signal", esc.name, "SIG") : -1;
+  const escPart = esc ? catalogPart(esc.catalogId) : undefined;
+  // a PCA9685 servo board on the I2C bus: the pulses come from its outputs, not from controller pins
+  const hub = c.m.components.find((x) => catalogPart(x.catalogId)?.specs.driver === "PCA9685");
+  const hubPart = hub ? catalogPart(hub.catalogId) : undefined;
+  const hubChOf = (comp: string) => {
+    const out = hub ? c.nl.netOf.get(`${comp}[0].SIG`)?.pins.find((p) => p.comp === hub.name && /^P\d+$/.test(p.pin.id)) : undefined;
+    return out ? Number(out.pin.id.slice(1)) : -1;
+  };
+  const viaHub = !!hub && (servos.some((s) => hubChOf(s.name) >= 0) || (!!esc && hubChOf(esc.name) >= 0));
+  const onHub = (signal: string, comp: string) => {
+    const ch = hubChOf(comp);
+    if (ch >= 0) pinTable.push({ signal, pin: `${hub!.name} channel ${ch}`, wire: `${comp}.SIG` });
+    return ch;
+  };
+  const vanePins = viaHub ? servos.map(() => -1) : servos.map((s, i) => note(`vane ${i + 1} servo`, s.name, "SIG"));
+  const vaneCh = viaHub ? servos.map((s, i) => onHub(`vane ${i + 1} servo`, s.name)) : servos.map(() => -1);
+  const escPin = esc && !viaHub ? note("ESC signal", esc.name, "SIG") : -1;
+  const escCh = esc && viaHub ? onHub("ESC signal", esc.name) : -1;
+  const from = viaHub ? `channel of ${hub!.name}` : `${board} pin`;
   if (!esc) warnings.push("No ESC in the design: the fan never runs.");
-  else if (escPin < 0) warnings.push(`${esc.name}'s signal wire reaches no ${board} pin: the fan never runs.`);
+  else if (escPin < 0 && escCh < 0) warnings.push(`${esc.name}'s signal wire reaches no ${from}: the fan never runs.`);
   if (servos.length !== 4) warnings.push(`The X mix drives four vanes and the design has ${servos.length} servo${servos.length === 1 ? "" : "s"}: ${servos.length < 4 ? "the missing ones are left out" : "the extra ones stay centred"}.`);
-  const missing = vanePins.flatMap((p, i) => (p < 0 ? [servos[i].name] : []));
-  if (missing.length) warnings.push(`${missing.join(", ")}: signal not wired to a ${board} pin.`);
+  const missing = servos.flatMap((sv, i) => (vanePins[i] < 0 && vaneCh[i] < 0 ? [sv.name] : []));
+  if (missing.length) warnings.push(`${missing.join(", ")}: signal not wired to a ${from}.`);
+  // a spare output of the servo board wired back to a controller pin: the firmware times the board's frame on it
+  let senseCh = -1;
+  let sensePin = -1;
+  if (viaHub) {
+    note("servo board SDA", hub!.name, "SDA");
+    note("servo board SCL", hub!.name, "SCL");
+    if (!pinOf(hub!.name, "SDA") || !pinOf(hub!.name, "SCL")) warnings.push(`${hub!.name}: SDA and SCL must reach the ${board}'s I2C pins, or it makes no pulses.`);
+    for (let n = 0; n < 16 && senseCh < 0; n++) {
+      if (!pinOf(hub!.name, `P${n}`)) continue;
+      senseCh = n;
+      sensePin = note(`servo board clock check (its channel ${n})`, hub!.name, `P${n}`);
+    }
+    if (sensePin < 0)
+      warnings.push(
+        `${hub!.name}'s own clock can be 8 % out, and every pulse with it (the fan's thrust too). Wire the signal pin of a spare channel back to a free ${board} pin and the firmware times the board at start-up and corrects for it; without that, measure a channel's frame rate and set hub_osc_hz.`,
+      );
+  }
 
   // the e-stop's normally-open contact, read on a pin with its pull-up
   let estopPin = -1;
@@ -81,7 +122,20 @@ export function vaneFirmware(c: FwContext): VaneResult {
       }
     }
   }
-  if (estopPin < 0) warnings.push("No switch's normally-open contact reaches a controller pin: the firmware cannot see the e-stop (its normally-closed contact may still cut the ESC).");
+  // with a servo board, a switch whose normally-closed contact is in the board's logic supply stops every pulse
+  // when pressed, and the firmware sees the board go quiet
+  const hubVcc = viaHub ? c.nl.netOf.get(`${hub!.name}[0].VCC`) : undefined;
+  const estopCut = hubVcc?.pins.find((p) => p.part.kind === "switch" && p.pin.type === "passive" && !!p.pin.through)?.mc;
+  if (estopCut) {
+    estop ??= estopCut;
+    pinTable.push({ signal: "e-stop (cuts the servo board's logic supply)", pin: `${hub!.name} VCC`, wire: `${estopCut.name} NC contact` });
+  }
+  if (estopPin < 0 && !estopCut)
+    warnings.push(
+      viaHub
+        ? `No e-stop: put a switch's normally-closed contact in ${hub!.name}'s VCC wire (pressing it stops every pulse and the firmware sees the board go quiet), or wire its normally-open contact to a controller pin.`
+        : "No switch's normally-open contact reaches a controller pin: the firmware cannot see the e-stop (its normally-closed contact may still cut the ESC).",
+    );
 
   const imu = c.m.components.find((x) => catalogPart(x.catalogId)?.id === "lsm6dsox_breakout");
   const imuPart = imu ? catalogPart(imu.catalogId) : undefined;
@@ -103,6 +157,14 @@ export function vaneFirmware(c: FwContext): VaneResult {
   const hxDout = hx ? note("HX711 DOUT", hx.name, "DOUT") : -1;
   const hxSck = hx ? note("HX711 SCK", hx.name, "SCK") : -1;
   if (hx && (hxDout < 0 || hxSck < 0)) warnings.push(`${hx.name}: DOUT and SCK must both reach ${board} pins for the force test.`);
+  // an NAU7802 load cell board on the I2C bus, when there is no HX711
+  const nau = hx ? undefined : c.m.components.find((x) => catalogPart(x.catalogId)?.specs.chip === "NAU7802");
+  const nauAddr = Number(nau ? (catalogPart(nau.catalogId)?.specs.i2c_addr ?? 0x2a) : 0x2a);
+  if (nau) {
+    note("load cell board SDA", nau.name, "SDA");
+    note("load cell board SCL", nau.name, "SCL");
+    if (!pinOf(nau.name, "SDA") || !pinOf(nau.name, "SCL")) warnings.push(`${nau.name}: SDA and SCL must reach the ${board}'s I2C pins for the force test.`);
+  }
   const cellComp = c.m.components.find((x) => catalogPart(x.catalogId)?.specs.iface === "bridge");
   const cellPart = cellComp ? catalogPart(cellComp.catalogId) : undefined;
   const ratedN = (Number(cellPart?.specs.capacity_g ?? 500) / 1000) * 9.80665;
@@ -116,8 +178,19 @@ export function vaneFirmware(c: FwContext): VaneResult {
   const usPerDeg = setting(c.fw, "servo_us_per_deg", 2000 / range);
   const phi = listSetting(c, "vane_phi", 4, [45, 135, 225, 315], warnings);
   const dir = listSetting(c, "vane_dir", 4, [1, 1, 1, 1], warnings).map((x) => (x < 0 ? -1 : 1));
+  // the ESC's own pulse range (as it leaves the factory, or after its throttle calibration), and a stop pulse safely
+  // under its bottom end so it arms whatever the range
+  const escMin = Math.round(Number(escPart?.specs.pwm_min_us ?? 1000));
+  const escMax = Math.round(Number(escPart?.specs.pwm_max_us ?? 2000));
+  const escStop = Math.min(1000, escMin - 100);
+  const hubAddr = Number(hubPart?.specs.i2c_addr ?? 0x40);
+  const hubOsc = Math.round(setting(c.fw, "hub_osc_hz", Number(hubPart?.specs.osc_mhz ?? 25) * 1e6));
+  // the third axis: the unit turning about its own jet. Off until the design gives its inertia
+  const iYaw = setting(c.fw, "i_yaw", 0);
+  const yawOn = iYaw > 0;
   const S = {
-    servoHz: setting(c.fw, "servo_hz", 333),
+    // a servo board gives every output one frame rate, the ESC's too: 200 Hz suits digital servos and most ESCs
+    servoHz: setting(c.fw, "servo_hz", viaHub ? 200 : 333),
     vaneMax: setting(c.fw, "vane_max", 18),
     iRoll: setting(c.fw, "i_roll", 0.003),
     iPitch: setting(c.fw, "i_pitch", 0.0025),
@@ -145,6 +218,20 @@ export function vaneFirmware(c: FwContext): VaneResult {
     pendPitch: setting(c.fw, "pend_pitch", 0),
     // the share of the vanes' full moment about one axis the integral term may hold
     iShare: Math.min(0.9, Math.max(0.05, setting(c.fw, "i_share", 0.6))),
+    // yaw: moment per degree of all four vanes turned the same way at full thrust, N m; the loop's speed and
+    // damping; how much vane angle it may use; how far the heading may be asked to go; the heading at arming
+    mYaw: setting(c.fw, "m_deg_yaw_full", 0.003),
+    wnYaw: setting(c.fw, "wn_yaw", 6),
+    zetaYaw: setting(c.fw, "zeta_yaw", 0.9),
+    yawVane: setting(c.fw, "yaw_vane_max", 8),
+    yawRange: setting(c.fw, "yaw_range", 40),
+    yawHome: Number(c.fw.settings.yaw_home ?? 0) || 0,
+    refWnYaw: Math.min(20, Math.max(1, setting(c.fw, "ref_wn_yaw", 4))),
+    yawDir: setting(c.fw, "yaw_dir", 1) < 0 ? -1 : 1,
+    // the common vane angle that holds off the jet's left-over swirl, to start from; and how fast the thrust may
+    // change while the heading is held (the rotor changing speed twists the unit)
+    yawTrim: Number(c.fw.settings.yaw_trim ?? 0) || 0,
+    rampHold: Math.min(1, Math.max(0.01, setting(c.fw, "ramp_hold_per_s", 0.1))),
   };
   // Bluetooth serial console (classic ESP32 only: the S2, S3 and C3 have no Bluetooth Classic)
   const btConsole = setting(c.fw, "bt_console", 1) > 0 && bp.specs.bluetooth === true && /^esp32$/i.test(String(bp.specs.mcu ?? ""));
@@ -152,6 +239,7 @@ export function vaneFirmware(c: FwContext): VaneResult {
   const dir0 = `firmware/${name}`;
   const nV = Math.min(4, servos.length);
   const vPin = (i: number) => (i < nV && vanePins[i] >= 0 ? vanePins[i] : -1);
+  const vCh = (i: number) => (i < nV && vaneCh[i] >= 0 ? vaneCh[i] : 255);
 
   const config = `// ${cComment(c.designName)}: pins, rig numbers and controller settings for ${cComment(c.fw.name)}.
 // Generated by Kerf from the design's wiring and its firmware block. Scenarios change the #defines.
@@ -159,21 +247,37 @@ export function vaneFirmware(c: FwContext): VaneResult {
 #include <Arduino.h>
 
 // ---- pins (${cComment(bp.name)}), from the wiring
-#define PIN_VANE_1 ${vPin(0)}
+${viaHub ? "" : `#define PIN_VANE_1 ${vPin(0)}
 #define PIN_VANE_2 ${vPin(1)}
 #define PIN_VANE_3 ${vPin(2)}
 #define PIN_VANE_4 ${vPin(3)}
 #define PIN_ESC ${escPin}
-#define PIN_ESTOP ${estopPin}
-#define PIN_HX_DOUT ${hxDout}
+`}#define PIN_ESTOP ${estopPin}
+${nau ? `#define CELL_ADDR 0x${nauAddr.toString(16).toUpperCase()}
+` : `#define PIN_HX_DOUT ${hxDout}
 #define PIN_HX_SCK ${hxSck}
-#define PIN_I2C_POWER ${qtPower}
+`}#define PIN_I2C_POWER ${qtPower}
 #define PIN_LED ${pinNum(String(Number(bp.specs.led_builtin ?? 13)))}
 #define IMU_ADDR 0x${imuAddr.toString(16).toUpperCase()}
 // the chip's axes to the rig's (X, Y, Z) as the design mounts the board${turned ? "" : " (flat, its X along the rig's X)"}: rig = IMU_R x chip
 #define IMU_R { ${imuR.map((r) => `{ ${r.map((v) => cFloat(v)).join(", ")} }`).join(", ")} }
 
-// ---- vane servos${servoPart ? ` (${cComment(servoPart.name)})` : ""}
+${viaHub ? `// ---- servo board (${cComment(hubPart?.name ?? hub!.name)}) on I2C: it makes the pulses, on these channels (255: none)
+#define HUB_ADDR 0x${hubAddr.toString(16).toUpperCase()}
+#define HUB_CH_VANE_1 ${vCh(0)}
+#define HUB_CH_VANE_2 ${vCh(1)}
+#define HUB_CH_VANE_3 ${vCh(2)}
+#define HUB_CH_VANE_4 ${vCh(3)}
+#define HUB_CH_ESC ${escCh >= 0 ? escCh : 255}
+// The chip's own oscillator, Hz: 25 MHz on paper, a few percent out on a real one, and every pulse is out by the
+// same share.${sensePin >= 0 ? ` The firmware times it at start-up: channel HUB_CH_SENSE gives a half-frame pulse, a jumper carries it to
+// PIN_HUB_SENSE, and the controller's crystal is the clock it is timed against. This value is only where it starts.` : ` A multimeter on Hz between a channel's signal pin and GND should read the frame rate the README
+// gives; if it reads f, set this to ${hubOsc} x f / that rate.`}
+#define HUB_OSC_HZ ${hubOsc}
+#define HUB_CH_SENSE ${senseCh >= 0 ? senseCh : 255}
+#define PIN_HUB_SENSE ${sensePin}
+
+` : ""}// ---- vane servos${servoPart ? ` (${cComment(servoPart.name)})` : ""}${viaHub ? "\n// the servo board gives every output this one frame rate, the ESC's too" : ""}
 #define SERVO_HZ ${S.servoHz}
 #define SERVO_US_PER_DEG ${cFloat(usPerDeg)}
 #define SERVO_CENTER_US 1500
@@ -185,9 +289,11 @@ static const float VANE_PHI_DEG[4] = {${phi.map(cFloat).join(", ")}};
 static const int VANE_DIR[4] = {${dir.join(", ")}};
 
 // ---- ESC${esc ? ` (${cComment(catalogPart(esc.catalogId)?.name ?? esc.name)})` : ""}
-#define ESC_HZ 50
-#define ESC_MIN_US 1000
-#define ESC_MAX_US 2000
+#define ESC_HZ ${viaHub ? "SERVO_HZ" : "50"}
+// its throttle range, and the pulse that means stop: under the bottom of the range, so it arms whatever it is
+#define ESC_MIN_US ${escMin}
+#define ESC_MAX_US ${escMax}
+#define ESC_STOP_US ${escStop}
 // the ESC arms after its signal sits at minimum this long from power-up; "arm" waits for it
 #define ESC_ARM_MS 2500
 // "full thrust" below is this share of the fan's own: the throttle stops at sqrt(THRUST_CAP)
@@ -208,7 +314,27 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 #define K_ROLL ${cFloat(S.pendRoll)}
 #define K_PITCH ${cFloat(S.pendPitch)}
 
-// ---- controller
+${yawOn ? `// ---- the third axis: the unit turns about its own jet (yaw), steered by all four vanes turned the same way
+#define I_YAW ${cFloat(iYaw)}
+// moment per degree of that common vane angle at full thrust, N m, and which way a positive one turns the unit
+#define M_DEG_YAW_FULL ${cFloat(S.mYaw)}
+#define YAW_DIR ${S.yawDir}
+#define WN_YAW ${cFloat(S.wnYaw)}
+#define ZETA_YAW ${cFloat(S.zetaYaw)}
+#define REF_WN_YAW ${cFloat(S.refWnYaw)}
+// the most common vane angle the yaw loop may use (roll and pitch keep the rest), and how far either side of
+// the middle a heading may be asked for, degrees
+#define YAW_VANE_MAX_DEG ${cFloat(Math.min(S.yawVane, S.vaneMax * 0.6))}
+#define YAW_RANGE_DEG ${cFloat(S.yawRange)}
+// where the unit points when it is armed, degrees from the middle of its travel
+#define YAW_HOME_DEG ${cFloat(S.yawHome)}
+// the vane angle that holds off the jet's left-over swirl, to start from: the loop finds its own and "save" keeps it
+#define YAW_TRIM_DEG ${cFloat(S.yawTrim)}
+// while the heading is held the thrust moves at this rate, share of full thrust a second: the rotor changing
+// speed twists the unit, and this keeps the twist inside what the vanes can hold
+#define THRUST_RAMP_HOLD_PER_S ${cFloat(S.rampHold)}
+
+` : ""}// ---- controller
 #define WN ${cFloat(S.wn)}
 #define ZETA ${cFloat(S.zeta)}
 #define KI_RATIO ${cFloat(S.kiRatio)}
@@ -253,21 +379,510 @@ static const int VANE_DIR[4] = {${dir.join(", ")}};
 
 // ---- setpoint steps ("step roll 5"): how long each step is watched, seconds
 #define STEP_S 2.5f
+${yawOn ? "#define STEP_YAW_S 4.0f\n" : ""}`;
+
+  // the servo board's logic supply is the controller's switched STEMMA QT 3.3 V, so the firmware can reset the chip
+  // through it when the chip does not answer
+  const hubOnQt = viaHub && qtPower >= 0 && !!hubVcc?.pins.some((p) => p.comp === board && /^QT/.test(p.pin.id));
+  const estopSays = viaHub ? "e-stop pressed or servo board unplugged" : "e-stop pressed";
+  const zeros = yawOn ? "0, 0, 0" : "0, 0";
+  const nAx = yawOn ? 3 : 2;
+
+  // ---- the load cell's chip
+  const cellCode = nau
+    ? `// ---------------------------------------------------------------- load cell board (NAU7802 registers)
+bool cellFound = false;
+
+bool cellWrite(uint8_t reg, uint8_t v) {
+  Wire.beginTransmission(CELL_ADDR);
+  Wire.write(reg);
+  Wire.write(v);
+  return Wire.endTransmission() == 0;
+}
+
+int cellReg(uint8_t reg) {
+  Wire.beginTransmission(CELL_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return -1;
+  if (Wire.requestFrom(CELL_ADDR, 1) != 1) return -1;
+  return Wire.read();
+}
+
+bool cellBegin() {
+  bool ok = cellWrite(0x00, 0x01);    // PU_CTRL: registers back to their defaults
+  ok = ok && cellWrite(0x00, 0x02);   // digital side on
+  delay(1);
+  int pu = ok ? cellReg(0x00) : -1;
+  ok = pu >= 0 && (pu & 0x08) != 0;   // powered up
+  ok = ok && cellWrite(0x00, 0x86);   // analogue side on, the cell fed from the chip's own regulator
+  ok = ok && cellWrite(0x01, 0x2F);   // regulator at 3.0 V, gain 128
+  ok = ok && cellWrite(0x02, 0x30);   // 80 samples a second
+  ok = ok && cellWrite(0x15, 0x30);   // the chopper clock off
+  ok = ok && cellWrite(0x1C, 0x80);   // the amplifier's stabilising capacitor on
+  ok = ok && cellWrite(0x00, 0x96);   // start converting
+  cellFound = ok;
+  return ok;
+}
+
+// a new sample is waiting (asked once a pass at most: each ask is a message on the bus)
+bool cellReady() {
+  if (!cellFound) return false;
+  int pu = cellReg(0x00);
+  return pu >= 0 && (pu & 0x20) != 0;
+}
+
+long cellRead() {
+  Wire.beginTransmission(CELL_ADDR);
+  Wire.write((uint8_t)0x12);
+  if (Wire.endTransmission(false) != 0) return cellRaw;
+  if (Wire.requestFrom(CELL_ADDR, 3) != 3) return cellRaw;
+  long v = 0;
+  for (int i = 0; i < 3; i++) v = (v << 8) | Wire.read();
+  if (v & 0x800000L) v -= 0x1000000L;
+  return v;
+}
+`
+    : `// ---------------------------------------------------------------- HX711
+bool cellReady() { return PIN_HX_DOUT >= 0 && digitalRead(PIN_HX_DOUT) == LOW; }
+
+long cellRead() {
+  long v = 0;
+  for (int i = 0; i < 24; i++) {
+    digitalWrite(PIN_HX_SCK, HIGH);
+    delayMicroseconds(1);
+    v = (v << 1) | digitalRead(PIN_HX_DOUT);
+    digitalWrite(PIN_HX_SCK, LOW);
+    delayMicroseconds(1);
+  }
+  // a 25th pulse: channel A, gain 128 for the next sample
+  digitalWrite(PIN_HX_SCK, HIGH);
+  delayMicroseconds(1);
+  digitalWrite(PIN_HX_SCK, LOW);
+  if (v & 0x800000L) v -= 0x1000000L;
+  return v;
+}
+`;
+
+  // ---- the servo board's driver
+  const hubCode = viaHub
+    ? `// ---------------------------------------------------------------- servo board (PCA9685 registers)
+// The board makes every pulse, the four vanes' and the ESC's, at one frame rate (SERVO_HZ). A pulse is set in
+// steps of 1/4096 of the frame.
+const uint8_t hubCh[5] = {HUB_CH_VANE_1, HUB_CH_VANE_2, HUB_CH_VANE_3, HUB_CH_VANE_4, HUB_CH_ESC};
+uint16_t hubUs[5] = {0, 0, 0, 0, 0};
+uint8_t hubPrescale = 30;
+float hubOsc = HUB_OSC_HZ;
+bool hubTimed = false;
+float hubStepsPerUs = 0.8f;
+bool hubUp = false;
+uint32_t hubUpAt = 0;
+uint8_t hubMiss = 0;
+
+bool hubWrite(uint8_t reg, uint8_t v) {
+  Wire.beginTransmission(HUB_ADDR);
+  Wire.write(reg);
+  Wire.write(v);
+  return Wire.endTransmission() == 0;
+}
+
+int hubRead(uint8_t reg) {
+  Wire.beginTransmission(HUB_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return -1;
+  if (Wire.requestFrom(HUB_ADDR, 1) != 1) return -1;
+  return Wire.read();
+}
+
+// one channel's four registers: on at count 0, off at this count (4096 and over: off all the time)
+bool hubSet(uint8_t ch, uint16_t off) {
+  Wire.beginTransmission(HUB_ADDR);
+  Wire.write((uint8_t)(0x06 + 4 * ch));
+  Wire.write((uint8_t)0);
+  Wire.write((uint8_t)0);
+  Wire.write((uint8_t)(off & 0xFF));
+  Wire.write((uint8_t)(off > 4095 ? 0x10 : (off >> 8)));
+  return Wire.endTransmission() == 0;
+}
+
+// The chip's oscillator is a few percent out, and every pulse with it. With a jumper from channel HUB_CH_SENSE
+// back to PIN_HUB_SENSE, that channel gives a pulse of half a frame (2048 counts) and the controller times it
+// against its own crystal: the oscillator's real rate, Hz, or 0 when no pulse came. The middle of five
+// readings, so one stretched by an interrupt does not count.
+float hubClock() {
+  if (PIN_HUB_SENSE < 0 || HUB_CH_SENSE > 15) return 0;
+  pinMode(PIN_HUB_SENSE, INPUT);
+  if (!hubSet(HUB_CH_SENSE, 2048)) return 0;
+  delay(15);
+  unsigned long t[5];
+  for (int i = 0; i < 5; i++) t[i] = pulseIn(PIN_HUB_SENSE, HIGH, 30000);
+  hubSet(HUB_CH_SENSE, 4096);
+  for (int i = 1; i < 5; i++)
+    for (int k = i; k > 0 && t[k] < t[k - 1]; k--) {
+      unsigned long swap = t[k];
+      t[k] = t[k - 1];
+      t[k - 1] = swap;
+    }
+  if (t[2] == 0) return 0;
+  return 2048.0f * (hubPrescale + 1) * 1000000.0f / t[2];
+}
+
+// Sets the frame rate (the chip only takes it while asleep), wakes the chip with every output off and times
+// its oscillator.
+bool hubBegin() {
+  hubPrescale = (uint8_t)(HUB_OSC_HZ / (4096.0f * SERVO_HZ) + 0.5f) - 1;
+  bool ok = hubWrite(0x00, 0x30);          // MODE1: asleep, register addresses step on by themselves
+  ok = ok && hubWrite(0xFD, 0x10);         // ALL_LED_OFF_H: every output off
+  ok = ok && hubWrite(0xFE, hubPrescale);  // PRE_SCALE
+  ok = ok && hubWrite(0x01, 0x04);         // MODE2: outputs drive high and low
+  ok = ok && hubWrite(0x00, 0x20);         // awake
+  delay(1);                                // its oscillator takes 0.5 ms to start
+  ok = ok && hubWrite(0x00, 0xA0);         // clear the restart flag
+  ok = ok && hubRead(0xFE) == hubPrescale && (hubRead(0x00) & 0x7F) == 0x20;
+  hubOsc = HUB_OSC_HZ;
+  hubTimed = false;
+  if (ok) {
+    float f = hubClock();
+    // a real chip is within 10 % of its 25 MHz; anything else is a bad reading
+    if (f > 0.88f * HUB_OSC_HZ && f < 1.12f * HUB_OSC_HZ) {
+      hubOsc = f;
+      hubTimed = true;
+    }
+  }
+  hubStepsPerUs = hubOsc / ((hubPrescale + 1) * 1000000.0f);
+  hubUp = ok;
+  hubMiss = 0;
+  if (ok) hubUpAt = millis();
+  return ok;
+}
+
+// Sends every pulse. Channels next to each other go in one message (the chip steps through its registers by
+// itself): four bytes a channel, on at the start of the frame and off after the pulse.
+bool hubSend() {
+  bool ok = true;
+  uint8_t i = 0;
+  while (i < 5) {
+    if (hubCh[i] > 15) {
+      i++;
+      continue;
+    }
+    Wire.beginTransmission(HUB_ADDR);
+    Wire.write((uint8_t)(0x06 + 4 * hubCh[i]));
+    uint8_t k = i;
+    do {
+      uint16_t off = (uint16_t)(hubUs[k] * hubStepsPerUs + 0.5f);
+      Wire.write((uint8_t)0);
+      Wire.write((uint8_t)0);
+      Wire.write((uint8_t)(off & 0xFF));
+      Wire.write((uint8_t)(hubUs[k] ? ((off >> 8) & 0x0F) : 0x10));
+      k++;
+    } while (k < 5 && hubCh[k] == hubCh[k - 1] + 1);
+    if (Wire.endTransmission() != 0) ok = false;
+    i = k;
+  }
+  return ok;
+}
+
+${hubOnQt ? `// The board's logic supply is the STEMMA QT socket's switched 3.3 V. Off for 150 ms, the chip comes back with
+// every output off, whatever it was doing. The IMU${nau ? " and the load cell board share" : " shares"} that supply and ${nau ? "are" : "is"} set up again when it returns.
+uint32_t hubCutAt = 0;
+
+void hubCut() {
+  digitalWrite(PIN_I2C_POWER, LOW);
+  hubCutAt = millis() | 1;
+}
+
+void hubRestore() {
+  digitalWrite(PIN_I2C_POWER, HIGH);
+  hubCutAt = 0;
+  delay(20);
+  imuFound = imuBegin();
+${nau ? "  cellBegin();\n" : ""}  lastTick = micros();
+}
+
+` : ""}// A board that is not up must not be left sending pulses.
+void hubSafe() {
+  int m = hubRead(0x00);
+  if (m >= 0 && (m & 0x10)) return;  // it answers, asleep: no pulses
+  if (m >= 0) {
+    // it answers, awake: every output off, then asleep
+    hubWrite(0xFD, 0x10);
+    hubWrite(0x00, 0x30);
+    return;
+  }
+${hubOnQt ? "  // quiet: its data wires may be off while it still sends its last pulses, so its supply goes off (the loop\n  // brings it back)\n  hubCut();\n" : "  // quiet: nothing more can be done from here. If its data wires are off it keeps its last pulses: press the e-stop\n"}}
+
+// One pass sends the pulses, the next asks the chip whether it is still set up. Three misses in a row (under
+// 15 ms) and the board is taken as gone: the e-stop pressed, or its lead off.
+void hubService() {
+  if (!hubUp) return;
+  bool ok = turn ? hubSend() : (hubRead(0x00) & 0x7F) == 0x20;
+  if (!ok) hubMiss++;
+  else if (!turn) hubMiss = 0;
+  if (hubMiss >= 3) {
+    hubUp = false;
+    hubSafe();
+  }
+}
+
+`
+    : "";
+
+  // ---- pulses out: through the servo board, or straight from the controller's pins
+  const outCode = viaHub
+    ? `void servoUs(int i, int us) { hubUs[i] = us; }
+`
+    : `void servoUs(int i, int us) {
+  if (i == 0) vane1.writeMicroseconds(us);
+  if (i == 1) vane2.writeMicroseconds(us);
+  if (i == 2) vane3.writeMicroseconds(us);
+  if (i == 3) vane4.writeMicroseconds(us);
+}
+`;
+  const escOut = viaHub ? "hubUs[4] = us;" : "esc.writeMicroseconds(us);";
+
+  // ---- the controller: two axes, or three with the heading
+  const controlCode = yawOn
+    ? `// X mix: vane i (hinge at phi_i) makes roll moment ~cos(phi) and pitch moment ~sin(phi) per degree, so
+// delta_i = (tx cos + ty sin) / m_deg gives (tx, ty). The heading loop's angle (yawVane) goes on all four
+// alike: that turns the unit about its jet and tilts nothing. It is kept whole, and past what is left of
+// VANE_MAX_DEG the roll and pitch parts scale down together so their moment keeps its direction.
+bool mixVanes(float tx, float ty, float mDeg, float *v) {
+  float room = VANE_MAX_DEG - fabs(yawVane);
+  float worst = 0;
+  for (int i = 0; i < 4; i++) {
+    float ph = VANE_PHI_DEG[i] * DEG;
+    v[i] = (tx * cos(ph) + ty * sin(ph)) / mDeg;
+    if (fabs(v[i]) > worst) worst = fabs(v[i]);
+  }
+  bool over = worst > room;
+  for (int i = 0; i < 4; i++) v[i] = (over ? v[i] * room / worst : v[i]) + yawVane;
+  return over;
+}
+
+void control(float gx, float gy, float dt, float *v) {
+  float I[2] = {I_ROLL, I_PITCH};
+  float est[2] = {roll, pitch};
+  float rate[2] = {gxf, gyf};
+  float a[2];
+  float err[2];
+  for (int i = 0; i < 2; i++) {
+    // the set point moves along a critically damped path (REF_WN), so a step asks for a moment the vanes have;
+    // the path's own acceleration and the weight's pull at that tilt are fed forward, and the loop only
+    // corrects what is left
+    float acc = REF_WN * REF_WN * (cmd[i] - ref[i]) - 2 * REF_WN * refRate[i];
+    refRate[i] += acc * dt;
+    ref[i] += refRate[i] * dt;
+    err[i] = ref[i] - est[i];
+    // the angular acceleration wanted about the unit's own X and Y
+    a[i] = acc + gainScale * (WN * WN * err[i] + 2 * ZETA * WN * (refRate[i] - rate[i]));
+  }
+  // The IMU and the vanes turn with the unit; the roll ring and the pitch arch do not, and the inertias and the
+  // weight's pull belong to them. So the wanted accelerations go into the gimbal's axes by the heading, become
+  // moments there, and come back into the unit's.
+  float c = cos(yaw), s = sin(yaw);
+  float tgx = I_ROLL * (c * a[0] - s * a[1]) + K_ROLL * (c * ref[0] - s * ref[1]);
+  float tgy = I_PITCH * (s * a[0] + c * a[1]) + K_PITCH * (s * ref[0] + c * ref[1]);
+  float t[2];
+  t[0] = c * tgx + s * tgy + I[0] * WN * WN * gainScale * WN * KI_RATIO * integ[0];
+  t[1] = c * tgy - s * tgx + I[1] * WN * WN * gainScale * WN * KI_RATIO * integ[1];
+  // the rotor's momentum along +Z pushes back with (-H wy, +H wx): add the opposite
+  float H = rotorDir * H_FULL * sqrt(thrust > 0 ? thrust : 0) * gyroK;
+  t[0] += H * gy;
+  t[1] -= H * gx;
+  float th = thrust < 0.3f ? 0.3f : thrust;
+  float mDeg = M_DEG_MIX_FULL * liftK * th;
+
+  // The heading: the same kind of path and PD about the jet, in the same torque units. The path's acceleration
+  // is held to what half the heading's vane travel can give, so a big turn never asks for more than there is.
+  float mYaw = M_DEG_YAW_FULL * liftK * th;
+  float aMax = 0.5f * YAW_VANE_MAX_DEG * mYaw / I_YAW;
+  float accZ = constrain(REF_WN_YAW * REF_WN_YAW * (cmd[2] - ref[2]) - 2 * REF_WN_YAW * refRate[2], -aMax, aMax);
+  refRate[2] += accZ * dt;
+  ref[2] += refRate[2] * dt;
+  float errZ = ref[2] - yaw;
+  float kpZ = I_YAW * WN_YAW * WN_YAW * gainScale;
+  float kdZ = 2 * ZETA_YAW * WN_YAW * I_YAW * gainScale;
+  // speeding the rotor up twists the unit the other way, by the rate its momentum grows: the vanes push back
+  float tz = I_YAW * accZ + kpZ * errZ + kdZ * (refRate[2] - gzf) + rotorDir * H_FULL * spool;
+  // The jet's left-over swirl twists the unit as well. It and the vanes' moment both go with thrust, so one
+  // vane angle holds it off at every thrust: yawTrim, the loop's integral, kept in degrees of vane. It winds
+  // only while there is travel left, or to come back.
+  float want = YAW_DIR * tz / mYaw + yawTrim;
+  if (fabs(want) <= YAW_VANE_MAX_DEG || YAW_DIR * errZ * want < 0)
+    yawTrim = constrain(yawTrim + YAW_DIR * kpZ * WN_YAW * KI_RATIO * errZ * dt / mYaw, -YAW_VANE_MAX_DEG, YAW_VANE_MAX_DEG);
+  yawVane = constrain(want, -YAW_VANE_MAX_DEG, YAW_VANE_MAX_DEG);
+
+  saturated = mixVanes(t[0], t[1], mDeg, v);
+  // the integral holds at most I_SHARE of one axis's full moment with the heading's share of the travel left
+  // out, and while the vanes are at their limit it may only unwind
+  float tmax = I_SHARE * 1.414f * (VANE_MAX_DEG - YAW_VANE_MAX_DEG) * mDeg;
+  for (int i = 0; i < 2; i++) {
+    float ki = I[i] * WN * WN * gainScale * WN * KI_RATIO;
+    if (saturated && err[i] * integ[i] >= 0) continue;
+    integ[i] += err[i] * dt;
+    float lim = ki > 1e-9f ? tmax / ki : 0;
+    integ[i] = constrain(integ[i], -lim, lim);
+  }
+}
+`
+    : `// X mix: vane i (hinge at phi_i) makes roll moment ~cos(phi) and pitch moment ~sin(phi) per degree, so
+// delta_i = (tx cos + ty sin) / m_deg gives (tx, ty) with no yaw. Past VANE_MAX_DEG all four scale down
+// together so the moment keeps its direction.
+bool mixVanes(float tx, float ty, float mDeg, float *v) {
+  float worst = 0;
+  for (int i = 0; i < 4; i++) {
+    float ph = VANE_PHI_DEG[i] * DEG;
+    v[i] = (tx * cos(ph) + ty * sin(ph)) / mDeg;
+    if (fabs(v[i]) > worst) worst = fabs(v[i]);
+  }
+  if (worst <= VANE_MAX_DEG) return false;
+  for (int i = 0; i < 4; i++) v[i] *= VANE_MAX_DEG / worst;
+  return true;
+}
+
+void control(float gx, float gy, float dt, float *v) {
+  float I[2] = {I_ROLL, I_PITCH};
+  float K[2] = {K_ROLL, K_PITCH};
+  float est[2] = {roll, pitch};
+  float rate[2] = {gxf, gyf};
+  float t[2];
+  float err[2];
+  for (int i = 0; i < 2; i++) {
+    // the set point moves along a critically damped path (REF_WN), so a step asks for a moment the vanes have;
+    // the path's own acceleration and the weight's pull at that tilt are fed forward, and the loop only
+    // corrects what is left
+    float acc = REF_WN * REF_WN * (cmd[i] - ref[i]) - 2 * REF_WN * refRate[i];
+    refRate[i] += acc * dt;
+    ref[i] += refRate[i] * dt;
+    float kp = I[i] * WN * WN * gainScale;
+    float kd = 2 * ZETA * WN * I[i] * gainScale;
+    float ki = kp * WN * KI_RATIO;
+    err[i] = ref[i] - est[i];
+    t[i] = I[i] * acc + K[i] * ref[i] + kp * err[i] + kd * (refRate[i] - rate[i]) + ki * integ[i];
+  }
+  // the rotor's momentum along +Z pushes back with (-H wy, +H wx): add the opposite
+  float H = rotorDir * H_FULL * sqrt(thrust > 0 ? thrust : 0) * gyroK;
+  t[0] += H * gy;
+  t[1] -= H * gx;
+  float th = thrust < 0.3f ? 0.3f : thrust;
+  float mDeg = M_DEG_MIX_FULL * liftK * th;
+  saturated = mixVanes(t[0], t[1], mDeg, v);
+  // the integral holds at most I_SHARE of one axis's full moment (all four vanes at VANE_MAX_DEG give
+  // 1.414 x VANE_MAX_DEG x mDeg), and while the vanes are at their limit it may only unwind
+  float tmax = I_SHARE * 1.414f * VANE_MAX_DEG * mDeg;
+  for (int i = 0; i < 2; i++) {
+    float kp = I[i] * WN * WN * gainScale;
+    float ki = kp * WN * KI_RATIO;
+    if (saturated && err[i] * integ[i] >= 0) continue;
+    integ[i] += err[i] * dt;
+    float lim = ki > 1e-9f ? tmax / ki : 0;
+    integ[i] = constrain(integ[i], -lim, lim);
+  }
+}
+`;
+
+  // ---- set-point steps
+  const stepCode = yawOn
+    ? `// "step roll 5" while holding: the setpoint jumps, the log runs, and after STEP_S (STEP_YAW_S for the heading) it
+// prints the 10-90 % rise, the overshoot, when it last left the 10 % band and the error left, then the setpoint
+// goes back.
+void stepWatch(uint32_t now) {
+  float est[3] = {roll, pitch, yaw};
+  float y = (est[stepAxis] / DEG - stepY0) / stepDeg;
+  float t = (now - stepAt) * 0.001f;
+  float watch = stepAxis == 2 ? STEP_YAW_S : STEP_S;
+  if (stepT10 < 0 && y >= 0.1f) stepT10 = t;
+  if (stepT90 < 0 && y >= 0.9f) stepT90 = t;
+  if (y > stepPeak) stepPeak = y;
+  if (fabs(y - 1) > 0.1f) stepSettle = t;
+  if (t < watch) return;
+  OUT("step ");
+  OUT(stepAxis == 2 ? "yaw " : stepAxis ? "pitch " : "roll ");
+  OUT(stepDeg, 1);
+  OUT(" deg: ");
+  if (stepT90 < 0) OUT("never reached 90 %");
+  else {
+    OUT("rise ");
+    OUT(stepT90 - stepT10, 2);
+    OUT(" s");
+  }
+  OUT(", overshoot ");
+  OUT(stepPeak > 1 ? (stepPeak - 1) * 100 : 0, 0);
+  OUT(" %, ");
+  if (stepSettle >= watch) OUT("not settled");
+  else {
+    OUT("within 10 % after ");
+    OUT(stepSettle, 2);
+    OUT(" s");
+  }
+  OUT(", error ");
+  OUT((1 - y) * stepDeg, 2);
+  OUTLN(" deg");
+  cmd[stepAxis] -= stepDeg * DEG;
+  logOn = stepLogWas;
+  stepAxis = -1;
+}
+
+void logHeader() { OUTLN("log: roll, pitch, yaw (deg), gx, gy, gz (deg/s), vane 1-4 (deg), thrust (%), cell (N)"); }
+`
+    : `// "step roll 5" while holding: the setpoint jumps, the log runs, and after STEP_S it prints the 10-90 % rise,
+// the overshoot, when it last left the 10 % band and the error left, then the setpoint goes back.
+void stepWatch(uint32_t now) {
+  float y = ((stepAxis ? pitch : roll) / DEG - stepY0) / stepDeg;
+  float t = (now - stepAt) * 0.001f;
+  if (stepT10 < 0 && y >= 0.1f) stepT10 = t;
+  if (stepT90 < 0 && y >= 0.9f) stepT90 = t;
+  if (y > stepPeak) stepPeak = y;
+  if (fabs(y - 1) > 0.1f) stepSettle = t;
+  if (t < STEP_S) return;
+  OUT("step ");
+  OUT(stepAxis ? "pitch " : "roll ");
+  OUT(stepDeg, 1);
+  OUT(" deg: ");
+  if (stepT90 < 0) OUT("never reached 90 %");
+  else {
+    OUT("rise ");
+    OUT(stepT90 - stepT10, 2);
+    OUT(" s");
+  }
+  OUT(", overshoot ");
+  OUT(stepPeak > 1 ? (stepPeak - 1) * 100 : 0, 0);
+  OUT(" %, ");
+  if (stepSettle >= STEP_S) OUT("not settled");
+  else {
+    OUT("within 10 % after ");
+    OUT(stepSettle, 2);
+    OUT(" s");
+  }
+  OUT(", error ");
+  OUT((1 - y) * stepDeg, 2);
+  OUTLN(" deg");
+  cmd[stepAxis] -= stepDeg * DEG;
+  logOn = stepLogWas;
+  stepAxis = -1;
+}
+
+void logHeader() { OUTLN("log: roll, pitch (deg), gx, gy (deg/s), vane 1-4 (deg), thrust (%), cell (N)"); }
 `;
 
   const ino = `// ${cComment(c.designName)}: jet-vane balance firmware for the ${cComment(bp.name)}, generated by Kerf.
 //
 // 500 Hz loop: ${imu ? "LSM6DSOX" : "IMU"} gyro and accelerometer -> complementary filter -> PD + I per axis in torque
-// units with the fan rotor's gyroscopic coupling cancelled -> X mix -> four vane servos at SERVO_HZ.
-// Safety: the e-stop latches a fault (its normally-closed contact also breaks the ESC signal in hardware),
+// units with the fan rotor's gyroscopic coupling cancelled -> X mix -> four vane servos at SERVO_HZ${viaHub ? `, their
+// pulses and the ESC's made by the servo board (PCA9685) over I2C` : ""}.
+${yawOn ? `// Third axis: the unit also turns about its own jet. The gyro's Z rate gives the heading, and all four vanes
+// turned the same way hold it against the jet's swirl and the rotor's spin-up.
+` : ""}${estopCut ? `// Safety: the e-stop's contact is in the servo board's logic supply, so pressing it stops every pulse in
+// hardware (the ESC cuts on losing its signal) and the firmware latches a fault when the board goes quiet or
+// answers with its settings gone; the fan also cuts past TILT_CUT_DEG or when the IMU stops answering, the
+// throttle ramps, and it arms only level and still.` : `// Safety: the e-stop latches a fault (its normally-closed contact also breaks the ESC signal in hardware),
 // the fan cuts past TILT_CUT_DEG or when the IMU stops answering, the throttle ramps, and it arms only
-// level and still. Console: USB serial 115200${btConsole ? ' and Bluetooth serial ("JetVane")' : ""}, type "help".
+// level and still.`} Console: USB serial 115200${btConsole ? ' and Bluetooth serial ("JetVane")' : ""}, type "help".
 //
-// Board: ${cComment(String(bp.specs.fqbn ?? bp.name))}. Library: ESP32Servo (Kevin Harrington).
+// Board: ${cComment(String(bp.specs.fqbn ?? bp.name))}. ${viaHub ? "No libraries beyond the board's core." : "Library: ESP32Servo (Kevin Harrington)."}
 #include <Arduino.h>
 #include <Wire.h>
-#include <ESP32Servo.h>
-#include <EEPROM.h>
+${viaHub ? "" : "#include <ESP32Servo.h>\n"}#include <EEPROM.h>
 #include "config.h"
 #if BT_CONSOLE
 // the same console over Bluetooth serial: USB is for uploading and bench tests with the locks in, and a free run
@@ -283,13 +898,13 @@ BluetoothSerial SerialBT;
 
 #define DEG 0.01745329252f
 
-Servo vane1;
+${viaHub ? "" : `Servo vane1;
 Servo vane2;
 Servo vane3;
 Servo vane4;
 Servo esc;
 
-enum Mode : uint8_t { M_DISARMED, M_ARMED, M_HOLD, M_SERVO, M_SWEEP, M_COUPLE, M_FAULT };
+`}enum Mode : uint8_t { M_DISARMED, M_ARMED, M_HOLD, M_SERVO, M_SWEEP, M_COUPLE, M_FAULT };
 uint8_t mode = M_DISARMED;
 uint8_t shownMode = 255;
 char faultText[48];
@@ -306,7 +921,10 @@ float cellCountsPerN = CELL_COUNTS_PER_N;
 // attitude
 float roll = 0, pitch = 0;
 float gxf = 0, gyf = 0;
-float bias[3] = {0, 0, 0};
+${yawOn ? `// the heading: the gyro's Z rate summed from YAW_HOME_DEG at arming (it drifts by a degree or so a minute)
+float yaw = 0;
+float gzf = 0;
+` : ""}float bias[3] = {0, 0, 0};
 bool estStarted = false;
 uint32_t lastImuOk = 0;
 int16_t lastRaw[6];
@@ -320,15 +938,21 @@ float vaneCmd[4] = {0, 0, 0, 0};
 float manualVane[4] = {0, 0, 0, 0};
 float integ[2] = {0, 0};
 // the set point asked for, and where its model is on the way there
-float cmd[2] = {0, 0};
-float ref[2] = {0, 0};
-float refRate[2] = {0, 0};
-bool saturated = false;
+float cmd[${nAx}] = {${zeros}};
+float ref[${nAx}] = {${zeros}};
+float refRate[${nAx}] = {${zeros}};
+${yawOn ? `// the vane angle the heading loop puts on all four, degrees; the part of it that holds off the jet's swirl
+// ("save" keeps it); and how fast the rotor is being asked to speed up
+float yawVane = 0;
+float yawTrim = YAW_TRIM_DEG;
+float spool = 0;
+float rootWas = 0;
+` : ""}bool saturated = false;
 uint32_t lastTick = 0;
 uint32_t lastLog = 0;
 bool logOn = false;
 uint32_t overruns = 0;
-
+${viaHub || nau ? "// the passes take turns on the I2C bus\nuint8_t turn = 0;\n" : ""}
 // load cell
 long cellRaw = 0;
 float cellN = 0;
@@ -443,34 +1067,9 @@ bool calibrateGyro() {
   return true;
 }
 
-// ---------------------------------------------------------------- HX711
-bool cellReady() { return PIN_HX_DOUT >= 0 && digitalRead(PIN_HX_DOUT) == LOW; }
-
-long cellRead() {
-  long v = 0;
-  for (int i = 0; i < 24; i++) {
-    digitalWrite(PIN_HX_SCK, HIGH);
-    delayMicroseconds(1);
-    v = (v << 1) | digitalRead(PIN_HX_DOUT);
-    digitalWrite(PIN_HX_SCK, LOW);
-    delayMicroseconds(1);
-  }
-  // a 25th pulse: channel A, gain 128 for the next sample
-  digitalWrite(PIN_HX_SCK, HIGH);
-  delayMicroseconds(1);
-  digitalWrite(PIN_HX_SCK, LOW);
-  if (v & 0x800000L) v -= 0x1000000L;
-  return v;
-}
-
-// ---------------------------------------------------------------- outputs
-void servoUs(int i, int us) {
-  if (i == 0) vane1.writeMicroseconds(us);
-  if (i == 1) vane2.writeMicroseconds(us);
-  if (i == 2) vane3.writeMicroseconds(us);
-  if (i == 3) vane4.writeMicroseconds(us);
-}
-
+${cellCode}
+${hubCode}// ---------------------------------------------------------------- outputs
+${outCode}
 void writeVanes(float *v) {
   for (int i = 0; i < 4; i++) {
     float a = constrain(v[i], -VANE_MAX_DEG, VANE_MAX_DEG);
@@ -481,10 +1080,11 @@ void writeVanes(float *v) {
 }
 
 // static thrust goes with fan speed squared and speed with throttle, so the throttle is sqrt(thrust); frac is the
-// share of the rig's full thrust, THRUST_CAP of the fan's own
+// share of the rig's full thrust, THRUST_CAP of the fan's own. No thrust is the stop pulse, under the ESC's range
 void writeEsc(float frac) {
   float u = frac <= 0 ? 0 : sqrt(frac * THRUST_CAP);
-  esc.writeMicroseconds(ESC_MIN_US + (int)(u * (ESC_MAX_US - ESC_MIN_US)));
+  int us = u <= 0 ? ESC_STOP_US : ESC_MIN_US + (int)(u * (ESC_MAX_US - ESC_MIN_US));
+  ${escOut}
 }
 
 void centre() {
@@ -511,7 +1111,7 @@ void fault(const char *why) {
   thrust = 0;
   writeEsc(0);
   centre();
-}
+${viaHub ? "  if (hubUp) hubSend();\n" : ""}}
 
 void showMode() {
   if (mode == shownMode) return;
@@ -529,64 +1129,12 @@ void showMode() {
   }
 }
 
-bool estopPressed() { return PIN_ESTOP >= 0 && digitalRead(PIN_ESTOP) == LOW; }
+${viaHub ? `// the e-stop's contact is in the servo board's logic supply: a board that is not up is the e-stop pressed (or
+// its lead off). A switch contact on a pin counts too
+bool estopPressed() { return !hubUp || (PIN_ESTOP >= 0 && digitalRead(PIN_ESTOP) == LOW); }` : "bool estopPressed() { return PIN_ESTOP >= 0 && digitalRead(PIN_ESTOP) == LOW; }"}
 
 // ---------------------------------------------------------------- the controller
-// X mix: vane i (hinge at phi_i) makes roll moment ~cos(phi) and pitch moment ~sin(phi) per degree, so
-// delta_i = (tx cos + ty sin) / m_deg gives (tx, ty) with no yaw. Past VANE_MAX_DEG all four scale down
-// together so the moment keeps its direction.
-bool mixVanes(float tx, float ty, float mDeg, float *v) {
-  float worst = 0;
-  for (int i = 0; i < 4; i++) {
-    float ph = VANE_PHI_DEG[i] * DEG;
-    v[i] = (tx * cos(ph) + ty * sin(ph)) / mDeg;
-    if (fabs(v[i]) > worst) worst = fabs(v[i]);
-  }
-  if (worst <= VANE_MAX_DEG) return false;
-  for (int i = 0; i < 4; i++) v[i] *= VANE_MAX_DEG / worst;
-  return true;
-}
-
-void control(float gx, float gy, float dt, float *v) {
-  float I[2] = {I_ROLL, I_PITCH};
-  float K[2] = {K_ROLL, K_PITCH};
-  float est[2] = {roll, pitch};
-  float rate[2] = {gxf, gyf};
-  float t[2];
-  float err[2];
-  for (int i = 0; i < 2; i++) {
-    // the set point moves along a critically damped path (REF_WN), so a step asks for a moment the vanes have;
-    // the path's own acceleration and the weight's pull at that tilt are fed forward, and the loop only
-    // corrects what is left
-    float acc = REF_WN * REF_WN * (cmd[i] - ref[i]) - 2 * REF_WN * refRate[i];
-    refRate[i] += acc * dt;
-    ref[i] += refRate[i] * dt;
-    float kp = I[i] * WN * WN * gainScale;
-    float kd = 2 * ZETA * WN * I[i] * gainScale;
-    float ki = kp * WN * KI_RATIO;
-    err[i] = ref[i] - est[i];
-    t[i] = I[i] * acc + K[i] * ref[i] + kp * err[i] + kd * (refRate[i] - rate[i]) + ki * integ[i];
-  }
-  // the rotor's momentum along +Z pushes back with (-H wy, +H wx): add the opposite
-  float H = rotorDir * H_FULL * sqrt(thrust > 0 ? thrust : 0) * gyroK;
-  t[0] += H * gy;
-  t[1] -= H * gx;
-  float th = thrust < 0.3f ? 0.3f : thrust;
-  float mDeg = M_DEG_MIX_FULL * liftK * th;
-  saturated = mixVanes(t[0], t[1], mDeg, v);
-  // the integral holds at most I_SHARE of one axis's full moment (all four vanes at VANE_MAX_DEG give
-  // 1.414 x VANE_MAX_DEG x mDeg), and while the vanes are at their limit it may only unwind
-  float tmax = I_SHARE * 1.414f * VANE_MAX_DEG * mDeg;
-  for (int i = 0; i < 2; i++) {
-    float kp = I[i] * WN * WN * gainScale;
-    float ki = kp * WN * KI_RATIO;
-    if (saturated && err[i] * integ[i] >= 0) continue;
-    integ[i] += err[i] * dt;
-    float lim = ki > 1e-9f ? tmax / ki : 0;
-    integ[i] = constrain(integ[i], -lim, lim);
-  }
-}
-
+${controlCode}
 // ---------------------------------------------------------------- the force test
 // Roll locked, the load cell link fitted: vane pitch commands from -12 to +12 deg in 3 deg steps, 1.5 s
 // each, the cell averaged over the last 0.5 s. Moment = force x lever; slope against the prediction.
@@ -731,45 +1279,7 @@ void coupleStep(uint32_t now, float dt) {
 }
 
 // ---------------------------------------------------------------- setpoint steps
-// "step roll 5" while holding: the setpoint jumps, the log runs, and after STEP_S it prints the 10-90 % rise,
-// the overshoot, when it last left the 10 % band and the error left, then the setpoint goes back.
-void stepWatch(uint32_t now) {
-  float y = ((stepAxis ? pitch : roll) / DEG - stepY0) / stepDeg;
-  float t = (now - stepAt) * 0.001f;
-  if (stepT10 < 0 && y >= 0.1f) stepT10 = t;
-  if (stepT90 < 0 && y >= 0.9f) stepT90 = t;
-  if (y > stepPeak) stepPeak = y;
-  if (fabs(y - 1) > 0.1f) stepSettle = t;
-  if (t < STEP_S) return;
-  OUT("step ");
-  OUT(stepAxis ? "pitch " : "roll ");
-  OUT(stepDeg, 1);
-  OUT(" deg: ");
-  if (stepT90 < 0) OUT("never reached 90 %");
-  else {
-    OUT("rise ");
-    OUT(stepT90 - stepT10, 2);
-    OUT(" s");
-  }
-  OUT(", overshoot ");
-  OUT(stepPeak > 1 ? (stepPeak - 1) * 100 : 0, 0);
-  OUT(" %, ");
-  if (stepSettle >= STEP_S) OUT("not settled");
-  else {
-    OUT("within 10 % after ");
-    OUT(stepSettle, 2);
-    OUT(" s");
-  }
-  OUT(", error ");
-  OUT((1 - y) * stepDeg, 2);
-  OUTLN(" deg");
-  cmd[stepAxis] -= stepDeg * DEG;
-  logOn = stepLogWas;
-  stepAxis = -1;
-}
-
-void logHeader() { OUTLN("log: roll, pitch (deg), gx, gy (deg/s), vane 1-4 (deg), thrust (%), cell (N)"); }
-
+${stepCode}
 // ---------------------------------------------------------------- flash
 void putLong(int a, long v) {
   for (int i = 0; i < 4; i++) EEPROM.write(a + i, (v >> (8 * i)) & 0xFF);
@@ -790,7 +1300,7 @@ void saveSettings() {
   putLong(32, rotorDir);
   putLong(36, cellOffset);
   putLong(40, (long)cellCountsPerN);
-  EEPROM.commit();
+${yawOn ? "  EEPROM.write(1, 0x59);\n  putLong(44, (long)(yawTrim * 1000));\n" : ""}  EEPROM.commit();
   OUTLN("saved");
 }
 
@@ -804,7 +1314,7 @@ void loadSettings() {
   rotorDir = getLong(32) < 0 ? -1 : 1;
   cellOffset = getLong(36);
   cellCountsPerN = (float)getLong(40);
-}
+${yawOn ? "  if (EEPROM.read(1) == 0x59) yawTrim = constrain(getLong(44) / 1000.0f, -YAW_VANE_MAX_DEG, YAW_VANE_MAX_DEG);\n" : ""}}
 
 // ---------------------------------------------------------------- console
 void help() {
@@ -818,11 +1328,14 @@ void help() {
   OUTLN("trim <1-4> <us>  a servo's centre pulse");
   OUTLN("sweep          static force test (roll locked, load cell fitted, armed at thrust)");
   OUTLN("couple         gyroscopic coupling test (roll free, Y on the load cell link, armed at thrust)");
-  OUTLN("step roll|pitch <deg>  a setpoint step while holding: prints rise, overshoot, settling");
-  OUTLN("tare / cal <grams>  zero the load cell / scale it with a known weight");
+${yawOn ? `  OUTLN("step roll|pitch|yaw <deg>  a setpoint step while holding: prints rise, overshoot, settling");
+  OUTLN("yaw <deg>      turn to a heading while holding (0 is the middle of the travel)");
+` : `  OUTLN("step roll|pitch <deg>  a setpoint step while holding: prints rise, overshoot, settling");
+`}  OUTLN("tare / cal <grams>  zero the load cell / scale it with a known weight");
   OUTLN("gain <x>  liftk <x>  gyrok <x>  rotor <1|-1>  save  show");
-  OUTLN("log            50 Hz log on/off: roll, pitch, gyro rates, vanes, thrust, load cell");
-}
+${yawOn ? `  OUTLN("log            50 Hz log on/off: roll, pitch, heading, gyro rates, vanes, thrust, load cell");
+` : `  OUTLN("log            50 Hz log on/off: roll, pitch, gyro rates, vanes, thrust, load cell");
+`}}
 
 void show() {
   OUT("gain ");
@@ -837,12 +1350,20 @@ void show() {
   OUT(roll / DEG, 2);
   OUT(" pitch ");
   OUT(pitch / DEG, 2);
-  OUT(" thrust ");
+${yawOn ? `  OUT(" yaw ");
+  OUT(yaw / DEG, 1);
+` : ""}  OUT(" thrust ");
   OUT(thrust * 100, 0);
   OUT(" % cell ");
   OUT(cellN, 3);
   OUTLN(" N");
-}
+${yawOn ? `  OUT("heading trim ");
+  OUT(yawTrim, 2);
+  OUTLN(" deg of vane");
+` : ""}${viaHub ? `  OUT("servo board clock ");
+  OUT(hubOsc / 1000000.0f, 3);
+  OUTLN(hubTimed ? " MHz (timed)" : " MHz (not timed: the value in config.h)");
+` : ""}}
 
 float arg(const char *s) {
   while (*s && *s != ' ') s++;
@@ -863,20 +1384,23 @@ void command(const char *s, uint32_t now) {
     centre();
     if (mode != M_FAULT) mode = M_DISARMED;
   } else if (!strcmp(s, "reset")) {
-    if (estopPressed()) OUTLN("release the e-stop first");
+${viaHub ? `    // the servo board comes back with its settings gone once the e-stop is released: set it up again
+    if ((!hubUp${sensePin >= 0 ? " || !hubTimed" : ""}) && hubBegin()) hubSend();
+    if (estopPressed()) OUTLN("release the e-stop first (the servo board has to answer)");` : `    if (estopPressed()) OUTLN("release the e-stop first");`}
     else if (mode == M_FAULT) mode = M_DISARMED;
   } else if (!strcmp(s, "arm")) {
     if (mode == M_FAULT) OUTLN("clear the fault first: reset");
     else if (estopPressed()) OUTLN("e-stop is pressed");
     else if (!imuFound || now - lastImuOk > IMU_TIMEOUT_MS) OUTLN("IMU not answering");
     else if (fabs(roll) > ARM_LEVEL_DEG * DEG || fabs(pitch) > ARM_LEVEL_DEG * DEG) OUTLN("not level: within 5 deg to arm");
-    else if (fabs(gxf) > ARM_STILL_DPS * DEG || fabs(gyf) > ARM_STILL_DPS * DEG) OUTLN("not still");
-    else if (now < ESC_ARM_MS) OUTLN("ESC still arming: try again in a second");
+    else if (fabs(gxf) > ARM_STILL_DPS * DEG || fabs(gyf) > ARM_STILL_DPS * DEG${yawOn ? " || fabs(gzf) > ARM_STILL_DPS * DEG" : ""}) OUTLN("not still");
+${viaHub && sensePin >= 0 ? `    else if (!hubTimed) OUTLN("servo board clock not timed: check the jumper from its channel ${senseCh} to pin ${sensePin}, then reset");
+` : ""}    else if (${viaHub ? "now - hubUpAt < ESC_ARM_MS" : "now < ESC_ARM_MS"}) OUTLN("ESC still arming: try again in a second");
     // the gyro's bias again, now the unit sits still, and the attitude restarted from the accelerometer
     else if (!calibrateGyro()) OUTLN("moved while the gyro was measured: hold it still and arm again");
     else {
       estStarted = false;
-      lastImuOk = millis();
+${yawOn ? "      // the heading counts from here: the unit sits where YAW_HOME_DEG says\n      yaw = YAW_HOME_DEG * DEG;\n      gzf = 0;\n" : ""}      lastImuOk = millis();
       lastTick = micros();
       thrustTarget = 0;
       mode = M_ARMED;
@@ -890,7 +1414,7 @@ void command(const char *s, uint32_t now) {
       ref[0] = ref[1] = 0;
       cmd[0] = cmd[1] = 0;
       refRate[0] = refRate[1] = 0;
-      mode = M_HOLD;
+${yawOn ? "      // the heading goes from wherever the unit sits to the middle of its travel\n      cmd[2] = 0;\n" : ""}      mode = M_HOLD;
     } else OUTLN("arm first");
   } else if (!strcmp(s, "sweep")) {
     if (mode != M_ARMED || thrust < THRUST_LOOP_MIN) OUTLN("arm and set a thrust first (t 70)");
@@ -922,11 +1446,16 @@ void command(const char *s, uint32_t now) {
       OUTLN("coupling test: pitch nudges for 3 s, then the roll wave");
     }
   } else if (!strncmp(s, "step ", 5)) {
-    int ax = !strncmp(s + 5, "roll", 4) ? 0 : !strncmp(s + 5, "pitch", 5) ? 1 : -1;
+${yawOn ? `    int ax = !strncmp(s + 5, "roll", 4) ? 0 : !strncmp(s + 5, "pitch", 5) ? 1 : !strncmp(s + 5, "yaw", 3) ? 2 : -1;
     float d = arg(s + 5);
     if (mode != M_HOLD || thrust < THRUST_LOOP_MIN) OUTLN("hold at thrust first");
     else if (stepAxis >= 0) OUTLN("a step is running");
-    else if (ax < 0 || d == 0 || fabs(d) > 10) OUTLN("step roll <deg> or step pitch <deg>, up to 10 deg");
+    else if (ax < 0 || d == 0 || fabs(d) > (ax == 2 ? 30 : 10)) OUTLN("step roll <deg> or step pitch <deg>, up to 10 deg; step yaw <deg>, up to 30");
+    else if (ax == 2 && fabs(cmd[2] / DEG + d) > YAW_RANGE_DEG) OUTLN("that heading is past YAW_RANGE_DEG");` : `    int ax = !strncmp(s + 5, "roll", 4) ? 0 : !strncmp(s + 5, "pitch", 5) ? 1 : -1;
+    float d = arg(s + 5);
+    if (mode != M_HOLD || thrust < THRUST_LOOP_MIN) OUTLN("hold at thrust first");
+    else if (stepAxis >= 0) OUTLN("a step is running");
+    else if (ax < 0 || d == 0 || fabs(d) > 10) OUTLN("step roll <deg> or step pitch <deg>, up to 10 deg");`}
     else {
       stepAxis = ax;
       stepDeg = d;
@@ -941,7 +1470,11 @@ void command(const char *s, uint32_t now) {
       logOn = true;
       cmd[ax] += d * DEG;
     }
-  } else if (!strcmp(s, "servo off")) {
+${yawOn ? `  } else if (!strncmp(s, "yaw ", 4)) {
+    if (mode != M_HOLD) OUTLN("hold first");
+    else if (stepAxis == 2) OUTLN("a step is running");
+    else cmd[2] = constrain(arg(s), -YAW_RANGE_DEG, YAW_RANGE_DEG) * DEG;
+` : ""}  } else if (!strcmp(s, "servo off")) {
     if (mode == M_SERVO) mode = M_DISARMED;
     centre();
   } else if (!strncmp(s, "servo ", 6)) {
@@ -995,7 +1528,38 @@ void console(uint32_t now) {
 
 // ---------------------------------------------------------------- setup and loop
 void setup() {
+${viaHub ? `  if (PIN_I2C_POWER >= 0) {
+    // the STEMMA QT socket's power switch
+    pinMode(PIN_I2C_POWER, OUTPUT);
+    digitalWrite(PIN_I2C_POWER, HIGH);
+  }
+  loadSettings();
+  // The servo board before anything slow: every output off, then the ESC's stop pulse so it arms. After a reset
+  // of the controller alone, this is also what ends the pulses the board was still sending.
+  Wire.begin();
+  Wire.setClock(400000);
+  delay(20);
+  writeEsc(0);
+  centre();
+  if (hubBegin()) hubSend();
   Serial.begin(115200);
+#if BT_CONSOLE
+  SerialBT.begin(BT_NAME);
+#endif
+  if (PIN_ESTOP >= 0) pinMode(PIN_ESTOP, INPUT_PULLUP);
+${hx ? `  if (PIN_HX_SCK >= 0) {
+    pinMode(PIN_HX_SCK, OUTPUT);
+    digitalWrite(PIN_HX_SCK, LOW);
+  }
+  if (PIN_HX_DOUT >= 0) pinMode(PIN_HX_DOUT, INPUT);
+` : ""}  pinMode(PIN_LED, OUTPUT);
+  // not answering: the loop's first pass latches the e-stop fault; until then make sure it sends nothing
+  if (!hubUp) hubSafe();
+${hubOnQt ? `  if (hubCutAt) {
+    delay(150);
+    hubRestore();
+  }
+` : ""}` : `  Serial.begin(115200);
 #if BT_CONSOLE
   SerialBT.begin(BT_NAME);
 #endif
@@ -1005,16 +1569,16 @@ void setup() {
     digitalWrite(PIN_I2C_POWER, HIGH);
   }
   if (PIN_ESTOP >= 0) pinMode(PIN_ESTOP, INPUT_PULLUP);
-  if (PIN_HX_SCK >= 0) {
+${nau ? "" : `  if (PIN_HX_SCK >= 0) {
     pinMode(PIN_HX_SCK, OUTPUT);
     digitalWrite(PIN_HX_SCK, LOW);
   }
   if (PIN_HX_DOUT >= 0) pinMode(PIN_HX_DOUT, INPUT);
-  pinMode(PIN_LED, OUTPUT);
+`}  pinMode(PIN_LED, OUTPUT);
   loadSettings();
-  // the ESC first, at minimum, so it arms
+  // the ESC first, at its stop pulse, so it arms
   esc.setPeriodHertz(ESC_HZ);
-  esc.attach(PIN_ESC, ESC_MIN_US, ESC_MAX_US);
+  esc.attach(PIN_ESC, ESC_STOP_US, ESC_MAX_US);
   writeEsc(0);
   vane1.setPeriodHertz(SERVO_HZ);
   vane2.setPeriodHertz(SERVO_HZ);
@@ -1028,7 +1592,8 @@ void setup() {
   Wire.begin();
   Wire.setClock(400000);
   delay(20);
-  imuFound = imuBegin();
+`}${nau ? `  if (!cellBegin()) OUTLN("load cell board (NAU7802) not found at 0x${nauAddr.toString(16).toUpperCase()}: the force tests need it");
+` : ""}  imuFound = imuBegin();
   if (!imuFound) {
     OUTLN("LSM6DSOX not found at 0x6A: check the STEMMA QT cable");
     fault("IMU not found");
@@ -1045,12 +1610,12 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   console(now);
-  if (cellReady()) {
+${hubOnQt ? "  if (hubCutAt && now - hubCutAt >= 150) hubRestore();\n" : ""}${nau ? "" : `  if (cellReady()) {
     cellRaw = cellRead();
     cellN = (cellRaw - cellOffset) / cellCountsPerN;
     cellSamples++;
   }
-  uint32_t us = micros();
+`}  uint32_t us = micros();
   if ((uint32_t)(us - lastTick) < LOOP_US) return;
   float dt = (us - lastTick) * 1e-6f;
   if (dt > 0.01f) {
@@ -1058,7 +1623,13 @@ void loop() {
     overruns++;
   }
   lastTick = us;
-
+${viaHub || nau ? "  turn ^= 1;\n" : ""}${nau ? `  // the load cell board is asked on every other pass${viaHub ? ", the one the servo board is not sent its pulses on" : ""}
+  if (!turn && cellReady()) {
+    cellRaw = cellRead();
+    cellN = (cellRaw - cellOffset) / cellCountsPerN;
+    cellSamples++;
+  }
+` : ""}
   float g[3] = {0, 0, 0};
   float a[3] = {0, 0, 1};
   if (imuFound && imuSample(g, a)) {
@@ -1068,7 +1639,7 @@ void loop() {
     float b = exp(-2.0f * PI * D_FILTER_HZ * dt);
     gxf = b * gxf + (1 - b) * g[0];
     gyf = b * gyf + (1 - b) * g[1];
-    float ra = atan2(a[1], a[2]);
+${yawOn ? "    gzf = b * gzf + (1 - b) * g[2];\n" : ""}    float ra = atan2(a[1], a[2]);
     float pa = atan2(-a[0], sqrt(a[1] * a[1] + a[2] * a[2]));
     if (!estStarted) {
       roll = ra;
@@ -1076,14 +1647,20 @@ void loop() {
       estStarted = true;
     } else {
       float k = COMP_TAU_S / (COMP_TAU_S + dt);
-      roll = k * (roll + g[0] * dt) + (1 - k) * ra;
+${yawOn ? `      // turning about the jet swings a tilt from one of the unit's axes to the other
+      float r0 = roll;
+      roll = k * (roll + (g[0] + pitch * g[2]) * dt) + (1 - k) * ra;
+      pitch = k * (pitch + (g[1] - r0 * g[2]) * dt) + (1 - k) * pa;
+    }
+    yaw += g[2] * dt;
+` : `      roll = k * (roll + g[0] * dt) + (1 - k) * ra;
       pitch = k * (pitch + g[1] * dt) + (1 - k) * pa;
     }
-  }
+`}  }
 
   // safety, every pass
   bool running = mode == M_ARMED || mode == M_HOLD || mode == M_SWEEP || mode == M_COUPLE;
-  if (estopPressed() && mode != M_FAULT) fault("e-stop pressed");
+  if (estopPressed() && mode != M_FAULT) fault("${estopSays}");
   // a reading that has not changed for 50 samples (0.1 s) is a frozen sensor, not a still rig: the noise alone moves it
   else if (running && now - lastImuOk > IMU_TIMEOUT_MS) fault(sameCount >= 50 ? "IMU frozen (the same reading 50 times)" : "IMU stopped answering");
   else if (running && (fabs(roll) > TILT_CUT_DEG * DEG || fabs(pitch) > TILT_CUT_DEG * DEG)) fault("tilted past the cut-off");
@@ -1094,12 +1671,32 @@ void loop() {
     logOn = stepLogWas;
   }
 
-  // throttle: ramps up, drops at once
+${yawOn ? `  // throttle: ramps up, drops at once. While the loop holds the heading it moves both ways at the slower
+  // THRUST_RAMP_HOLD_PER_S, so the twist from the rotor changing speed stays inside what the vanes can hold
+  if (!running) thrustTarget = 0;
+  bool looping = mode == M_HOLD && thrust >= THRUST_LOOP_MIN;
+  float ramp = looping ? THRUST_RAMP_HOLD_PER_S : THRUST_RAMP_PER_S;
+  if (thrustTarget > thrust) thrust = min(thrustTarget, thrust + ramp * dt);
+  else if (looping && thrustTarget >= THRUST_LOOP_MIN) thrust = max(thrustTarget, thrust - ramp * dt);
+  else thrust = thrustTarget;
+  writeEsc(running ? thrust : 0);
+  // how fast the rotor is being asked to change speed (speed goes with sqrt(thrust)), smoothed over the 0.1 s
+  // or so it takes to follow
+  float root = sqrt(thrust > 0 ? thrust : 0);
+  spool += ((root - rootWas) / dt - spool) * dt / (0.1f + dt);
+  rootWas = root;
+  if (!(mode == M_HOLD && thrust >= THRUST_LOOP_MIN)) {
+    // the heading loop is open: no common angle, and its path starts from wherever the unit sits when it closes
+    yawVane = 0;
+    ref[2] = yaw;
+    refRate[2] = 0;
+  }
+` : `  // throttle: ramps up, drops at once
   if (!running) thrustTarget = 0;
   if (thrustTarget > thrust) thrust = min(thrustTarget, thrust + THRUST_RAMP_PER_S * dt);
   else thrust = thrustTarget;
   writeEsc(running ? thrust : 0);
-
+`}
   float v[4] = {0, 0, 0, 0};
   if (mode == M_HOLD && thrust >= THRUST_LOOP_MIN) {
     control(g[0], g[1], dt, v);
@@ -1112,7 +1709,7 @@ void loop() {
     integ[0] = integ[1] = 0;
     writeVanes(v);
   }
-  digitalWrite(PIN_LED, running ? HIGH : LOW);
+${viaHub ? "  hubService();\n" : ""}  digitalWrite(PIN_LED, running ? HIGH : LOW);
   showMode();
 
   if (logOn && now - lastLog >= 20) {
@@ -1121,10 +1718,14 @@ void loop() {
     OUT(",");
     OUT(pitch / DEG, 2);
     OUT(",");
-    OUT(gxf / DEG, 1);
+${yawOn ? `    OUT(yaw / DEG, 1);
+    OUT(",");
+` : ""}    OUT(gxf / DEG, 1);
     OUT(",");
     OUT(gyf / DEG, 1);
-    for (int i = 0; i < 4; i++) {
+${yawOn ? `    OUT(",");
+    OUT(gzf / DEG, 1);
+` : ""}    for (int i = 0; i < 4; i++) {
       OUT(",");
       OUT(vaneCmd[i], 1);
     }
@@ -1137,13 +1738,16 @@ void loop() {
 `;
 
   const wiring = pinTable.map((p) => `| ${p.signal} | ${p.pin} | ${p.wire} |`).join("\n");
+  const hubLabel = hub ? oneLine(hubPart?.name ?? hub.name) : "";
+  const prescale = Math.max(3, Math.round(hubOsc / (4096 * S.servoHz)) - 1);
+  const frameHz = Math.round((hubOsc / (4096 * (prescale + 1))) * 10) / 10;
   const readme = `# ${oneLine(c.designName)}: ${oneLine(c.fw.name)}
 
 Jet-vane balance firmware for the ${oneLine(bp.name)}, generated by Kerf from the design's wiring. Everything you calibrate lives in \`config.h\` or in flash (\`save\`).
 
 ## Build
 
-Arduino IDE 2: board **${oneLine(String(bp.specs.fqbn ?? bp.name))}** (arduino-esp32 core), library **ESP32Servo**. USB serial at 115200; type \`help\`.${btConsole ? `
+Arduino IDE 2: board **${oneLine(String(bp.specs.fqbn ?? bp.name))}** (arduino-esp32 core)${viaHub ? ", no extra libraries" : ", library **ESP32Servo**"}. USB serial at 115200; type \`help\`.${btConsole ? `
 
 **No cable on the gimbal.** The same console runs over Bluetooth serial: pair with **JetVane** from a laptop or a phone, open its serial port in any terminal (115200 is ignored) and type the same commands. Use USB to upload and for bench tests with the lock screws in; unplug it before a free run, because a USB lead hanging off the fan unit pulls it off level.` : ""}
 
@@ -1156,25 +1760,29 @@ ${wiring}
 ## What it does
 
 A 500 Hz loop reads the LSM6DSOX (gyro and accelerometer in one burst), runs a complementary filter (0.5 s) on a gyro bias measured with the unit still (at power-up once it settles, and again at \`arm\`), and holds the fan unit level with a PD + I controller per axis in torque units: gains from the rig's inertia (I_ROLL, I_PITCH) for a ${cNum(S.wn)} rad/s, ζ ${cNum(S.zeta)} response, scaled by GAIN_SCALE (${cNum(S.gainScale)} for first runs). The integral term may hold up to ${cNum(Math.round(S.iShare * 100))} % of the vanes' full moment about an axis, which trims out an off-centre mass or a steady push, and it only unwinds while the vanes are at their limit. A set-point step (\`step\`) moves along a critically damped path at ${cNum(S.refWn)} rad/s whose acceleration is fed forward, so the unit follows it without overshooting. The fan rotor's gyroscopic push is cancelled (GYRO_K ${cNum(S.gyroK)}) and the two torques are mixed onto the four vanes in an X, all four scaled back together past ±${cNum(S.vaneMax)}°.
-
-Safety: the e-stop's normally-closed contact breaks the ESC signal in hardware, and its normally-open contact latches a fault in the firmware; the fan also cuts past ±${cNum(S.tiltCut)}°, when the IMU stops answering for ${20} ms, or on \`stop\`. It arms only within ±${cNum(S.armLevel)}° and still, after the ESC has had its signal at minimum for ${2.5} s.
+${yawOn ? `
+**The third axis.** The unit also turns about its own jet. Its heading is the gyro's Z rate summed from YAW_HOME_DEG at \`arm\` (it drifts by a degree or so a minute, which a run does not notice), and the loop holds it with all four vanes turned the same way: a common angle turns the unit about the jet and tilts nothing. It is a PD in torque units (${cNum(S.wnYaw)} rad/s, ζ ${cNum(S.zetaYaw)}) with two things fed forward: the heading path's own acceleration, and the twist the rotor gives the unit whenever it changes speed. What is left of the fan's swirl after its stators twists the unit steadily; that and the vanes' moment both go with thrust, so one vane angle holds it off at any thrust. The loop finds that angle (\`show\` prints it as the heading trim) and \`save\` keeps it. The heading may use up to ±${cNum(Math.min(S.yawVane, S.vaneMax * 0.6))}° of vane; roll and pitch always keep the rest. Roll and pitch are still measured and steered in the unit's own axes (the IMU and the vanes turn with it), and the controller turns the wanted accelerations into the gimbal's axes by the heading before it applies the inertias, because the roll ring and the pitch arch do not turn with the unit.
+` : ""}${viaHub ? `
+**Pulses.** The ${hubLabel} makes all five pulses (four vanes and the ESC) and the controller sets them over I2C, so the servos and the ESC plug straight onto the board. One frame rate serves every output: SERVO_HZ ${cNum(S.servoHz)} asks for it and the chip's divider gives about ${cNum(frameHz)} Hz. The chip's oscillator is 25 MHz on paper and up to 8 % out on a real one, and every pulse is out by the same share, the ESC's too: uncorrected, that is the fan running well over or under the thrust asked for. ${sensePin >= 0 ? `So the firmware measures it: channel ${senseCh} gives a pulse of half a frame, the jumper carries it to pin ${sensePin}, and the controller times it against its own crystal at every start-up and \`reset\`. \`show\` prints the clock it found, and \`arm\` refuses until it has one (check the jumper).` : `Measure it once: a multimeter on Hz between a channel's signal pin and GND reads the frame rate; set HUB_OSC_HZ as \`config.h\` says. Better, wire a spare channel's signal pin back to a free controller pin in the design and the firmware times the board itself.`} The ESC's stop pulse (${escStop} µs) sits under its range (${escMin} to ${escMax} µs), so it arms either way. If the ESC will not arm at this frame rate, set \`servo_hz: 50\` in the design's firmware block (slower vanes, but every ESC takes 50 Hz).
+` : ""}
+Safety: ${estopCut ? `the e-stop's normally-closed contact is in the ${hubLabel}'s logic supply. Pressing it stops every pulse in hardware: the ESC stops the fan ${cNum(Number(escPart?.specs.signal_loss_ms ?? 250) / 1000)} s after its pulses end, whatever the firmware is doing. The firmware asks the board every 4 ms whether it is still set up, and a board that has gone quiet or answers with its settings gone latches a fault; after the e-stop is released, \`reset\` sets the board up again and \`arm\` waits for the ESC to arm.${hubOnQt ? " If the board stops answering while its pulses may still be running (a data wire off), the firmware switches the STEMMA QT socket's 3.3 V off for 0.15 s, which resets the board with every output off." : ""} The` : estopPin >= 0 ? "the e-stop's normally-closed contact breaks the ESC signal in hardware, and its normally-open contact latches a fault in the firmware; the" : "the"} fan also cuts past ±${cNum(S.tiltCut)}°, when the IMU stops answering for ${20} ms, or on \`stop\`. It arms only within ±${cNum(S.armLevel)}° and still, after the ESC has had its ${viaHub ? "stop pulse" : "signal at minimum"} for ${2.5} s.
 
 ## Bench order
 
 1. **Servos** (fan off): \`servo 1 10\` … check each vane turns +10° with the vane gauge; \`trim\` and \`save\`. SERVO_US_PER_DEG is ${cNum(Math.round(usPerDeg * 100) / 100)} µs/° from the servo's catalogue range: measure yours.
 2. **Sign test** (fan off): \`sign\`, then \`servo 2 10\` and so on. Each vane at +10° should push the unit the way the design's drawing shows; flip VANE_DIR for any that do not.
-3. **Static force test**: roll locked, the load cell link fitted, \`tare\`, \`arm\`, \`t 70\`, \`sweep\`. It prints the vane moment per degree and the LIFT_K to set.
-4. **Coupling test**: roll free, pitch still on the load cell link, \`tare\`, \`arm\`, \`t 70\`, \`couple\`. Two pitch nudges give the cell's sign, then the vanes rock the unit ±5° in roll at 1 Hz for 8 s while the cell feels the rotor's gyroscopic push on pitch. It prints the rotor's momentum against the prediction, whether ROTOR_DIR is right (\`rotor\` and \`save\` if not) and the H_FULL it measured. The fan goes back to 0 at the end.
-5. **First free run**: both axes free, \`arm\`, \`t 50\`, \`hold\`, then up to 70 %. GAIN_SCALE ${cNum(S.gainScale)} first, 1.0 after the force test.
-6. **Steps**: holding, \`step roll 5\` and \`step pitch 5\` (one axis locked for a locked step test). Each prints the 10–90 % rise time, the overshoot and when it settled within 10 %, with the log running.
+3. **Static force test**: roll ${yawOn ? "and yaw " : ""}locked, the load cell link fitted, \`tare\`, \`arm\`, \`t 70\`, \`sweep\`. It prints the vane moment per degree and the LIFT_K to set.
+4. **Coupling test**: roll free, ${yawOn ? "yaw locked, " : ""}pitch still on the load cell link, \`tare\`, \`arm\`, \`t 70\`, \`couple\`. Two pitch nudges give the cell's sign, then the vanes rock the unit ±5° in roll at 1 Hz for 8 s while the cell feels the rotor's gyroscopic push on pitch. It prints the rotor's momentum against the prediction, whether ROTOR_DIR is right (\`rotor\` and \`save\` if not) and the H_FULL it measured. The fan goes back to 0 at the end.
+5. **First free run**: ${yawOn ? `every axis free. Turn the unit onto its yaw stop on the side the fan's start-up twists it toward (${S.rotorDir > 0 ? "clockwise" : "anticlockwise"} seen from above; YAW_HOME_DEG ${cNum(S.yawHome)}° is that stop), then \`arm\`, \`t 50\`, \`hold\`: the loop levels the unit and walks the heading to the middle. Then \`t 70\`, which climbs slowly while the heading is held. If the heading runs to a stop instead of settling, flip YAW_DIR.` : "both axes free, `arm`, `t 50`, `hold`, then up to 70 %."} GAIN_SCALE ${cNum(S.gainScale)} first, 1.0 after the force test.
+6. **Steps**: holding, \`step roll 5\` and \`step pitch 5\` (one axis locked for a locked step test)${yawOn ? ", and `step yaw 20`" : ""}. Each prints the 10–90 % rise time, the overshoot and when it settled within 10 %, with the log running.${yawOn ? " `yaw 30` turns the unit to a heading and holds it there." : ""}
 
 ## Log
 
-\`log\` prints a line every 20 ms: roll and pitch (°), the filtered gyro rates gx and gy (°/s), the four vane commands (°), thrust (% of full) and the load cell (N). Paste it into a spreadsheet to plot a run.
+\`log\` prints a line every 20 ms: roll and pitch${yawOn ? " and the heading" : ""} (°), the filtered gyro rates gx and gy${yawOn ? " and gz" : ""} (°/s), the four vane commands (°), thrust (% of full) and the load cell (N). Paste it into a spreadsheet to plot a run.
 
 ## Settings in flash
 
-\`trim\`, \`gain\`, \`liftk\`, \`gyrok\`, \`rotor\` and the load cell's \`tare\`/\`cal\` are kept by \`save\` (ESP32 flash, through EEPROM).
+\`trim\`, \`gain\`, \`liftk\`, \`gyrok\`, \`rotor\`${yawOn ? ", the heading trim the loop has found" : ""} and the load cell's \`tare\`/\`cal\` are kept by \`save\` (ESP32 flash, through EEPROM).
 `;
   return {
     files: [
@@ -1184,6 +1792,6 @@ Safety: the e-stop's normally-closed contact breaks the ESC signal in hardware, 
     ],
     warnings,
     pinTable,
-    summary: `ESP32 sketch for ${bp.name}: jet-vane balance at 500 Hz with gyroscopic decoupling, e-stop latch, tilt cut and IMU watchdog, plus servo, sign, force, coupling and step tests${estop ? "" : " (no e-stop wired)"}`,
+    summary: `ESP32 sketch for ${bp.name}: jet-vane balance at 500 Hz with gyroscopic decoupling${yawOn ? ", heading hold on the third axis" : ""}${viaHub ? `, pulses through ${hub!.name}` : ""}, e-stop latch, tilt cut and IMU watchdog, plus servo, sign, force, coupling and step tests${estop ? "" : " (no e-stop wired)"}`,
   };
 }

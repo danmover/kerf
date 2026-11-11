@@ -1,8 +1,9 @@
 // Models of the parts the plant is built from, each from its catalog specs:
 // battery (open-circuit curve, internal resistance, polarisation), buck
 // regulator, DC gearmotor with encoder and heating, linear actuator with its
-// potentiometer, hobby servo, and the I2C IMUs. Where a datasheet number is
-// missing the model says what it assumed.
+// potentiometer, hobby servo, the I2C IMUs, a PCA9685 servo board and an
+// NAU7802 load cell ADC. Where a datasheet number is missing the model says
+// what it assumed.
 
 import type { CatalogPart } from "../../machine/types";
 import type { I2CDevice } from "./hal";
@@ -772,6 +773,373 @@ export class Lsm6dsox implements I2CDevice {
       this.put16le(0x26, (w[2] + this.bias[2] + n()) * lsb);
     }
     this.put16le(0x20, 0);
+  }
+}
+
+// ---------- PCA9685 servo board ----------
+
+/**
+ * NXP PCA9685: sixteen 12-bit PWM outputs set over I2C. It powers up asleep with every output off. One
+ * prescaler gives all sixteen the same frame rate from the chip's own oscillator (25 MHz, only good to a few
+ * percent, so every pulse comes out that much shorter or longer than asked), and a new pulse width takes over at
+ * the end of the frame it arrived in, so no pulse is cut short. With its supply gone it forgets everything.
+ * Fed only through the board's I2C pull-ups it can still answer, asleep and with its registers at their
+ * power-up values, but it cannot run: waking it there browns it out again.
+ */
+export class Pca9685 implements I2CDevice {
+  regs = new Uint8Array(256);
+  /** on its supply; or alive only through the I2C pull-ups */
+  powered = false;
+  starved = false;
+  /** OE held high: every output off */
+  oe = false;
+  /** times it lost its settings after the firmware had set it up */
+  resets = 0;
+  readonly osc: number;
+  private ptr = 0;
+  /** µs of pulse each output gives per frame, as taken at the last frame's end (0: none) */
+  private out = new Float64Array(16);
+  /** the counts each output rises and falls at in the frame, taken with it; -1: held low, -2: held high */
+  private rise = new Int16Array(16).fill(-1);
+  private fall = new Int16Array(16);
+  private frameAt = 0;
+  /** when the frames began after the last wake */
+  private firstAt = 0;
+  private running = false;
+  /** put to sleep with outputs going: they wait for RESTART, or for a new value */
+  private parked = false;
+  constructor(
+    public name: string,
+    private fcpu: number,
+    part: CatalogPart,
+  ) {
+    this.osc = num(part, "osc_mhz", 25) * 1e6;
+    this.reset();
+  }
+  private reset() {
+    this.regs.fill(0);
+    // MODE1: asleep, answering the all-call address; MODE2: totem-pole outputs
+    this.regs[0x00] = 0x11;
+    this.regs[0x01] = 0x04;
+    this.regs.set([0xe2, 0xe4, 0xe8, 0xe0], 0x02);
+    // every output full off
+    for (let ch = 0; ch < 16; ch++) this.regs[0x09 + 4 * ch] = 0x10;
+    // 200 Hz
+    this.regs[0xfe] = 0x1e;
+    this.out.fill(0);
+    this.rise.fill(-1);
+    this.running = this.parked = false;
+    this.ptr = 0;
+  }
+  /** its supply this step: volts on VDD, and whether the bus's pull-ups still feed the board with VDD cut */
+  power(v: number, backfed: boolean) {
+    if (v >= 2.3) {
+      this.powered = true;
+      this.starved = false;
+      return;
+    }
+    if (this.powered) {
+      if (!(this.regs[0] & 0x10)) this.resets++;
+      this.reset();
+    }
+    this.powered = false;
+    this.starved = backfed;
+  }
+  ready() {
+    return this.powered || this.starved;
+  }
+  /** frame rate, Hz */
+  hz() {
+    return this.osc / (4096 * (this.regs[0xfe] + 1));
+  }
+  asleep() {
+    return (this.regs[0] & 0x10) !== 0;
+  }
+  write(bytes: number[], t: number) {
+    if (!bytes.length) return;
+    this.ptr = bytes[0];
+    for (let i = 1; i < bytes.length; i++) {
+      this.put(this.ptr, bytes[i], t);
+      this.advance();
+    }
+  }
+  read(n: number): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      // the all-channel registers read as zero
+      out.push(this.ptr >= 0xfa && this.ptr <= 0xfd ? 0 : this.regs[this.ptr]);
+      this.advance();
+    }
+    return out;
+  }
+  private advance() {
+    // auto-increment is a MODE1 bit; past the last channel register, and past the prescaler, it wraps to MODE1
+    if (!(this.regs[0] & 0x20)) return;
+    this.ptr = this.ptr === 0x45 || this.ptr >= 0xfe ? 0 : this.ptr + 1;
+  }
+  private put(reg: number, v: number, t: number) {
+    if (reg === 0x00) {
+      const was = this.regs[0];
+      const sleep = (v & 0x10) !== 0;
+      let restart = (was & 0x80) !== 0;
+      if (sleep && !(was & 0x10) && this.running) {
+        // put to sleep with outputs going: RESTART reads 1, and they wait for it
+        restart = true;
+        this.parked = true;
+      }
+      if (!sleep && v & 0x80 && restart) {
+        restart = false;
+        this.parked = false;
+      }
+      this.regs[0] = (v & 0x7f) | (restart ? 0x80 : 0);
+      if (sleep) this.running = false;
+      else if (was & 0x10) {
+        if (this.starved) {
+          // the pull-ups cannot run the oscillator: the supply collapses and the chip resets
+          this.reset();
+          return;
+        }
+        // the oscillator takes up to 500 µs to start
+        this.running = true;
+        this.frameAt = this.firstAt = t + 0.0005 * this.fcpu;
+      }
+      return;
+    }
+    if (reg === 0xfe) {
+      // the prescaler only takes a new value while the chip sleeps
+      if (this.regs[0] & 0x10) this.regs[0xfe] = Math.max(3, v);
+      return;
+    }
+    if (reg >= 0xfa && reg <= 0xfd) {
+      const k = reg - 0xfa;
+      for (let ch = 0; ch < 16; ch++) this.regs[0x06 + 4 * ch + k] = k & 1 ? v & 0x1f : v;
+      this.unpark();
+      return;
+    }
+    if (reg >= 0x06 && reg <= 0x45) {
+      this.regs[reg] = (reg - 0x06) & 1 ? v & 0x1f : v;
+      this.unpark();
+      return;
+    }
+    if (reg <= 0x05) this.regs[reg] = v;
+  }
+  /** a new value for any output clears RESTART: the outputs go by their registers again */
+  private unpark() {
+    this.parked = false;
+    this.regs[0] &= 0x7f;
+  }
+  /** every plant step: the outputs take their registers' values at the end of each frame */
+  tick(t: number) {
+    if (!this.powered || !this.running) {
+      this.out.fill(0);
+      this.rise.fill(-1);
+      return;
+    }
+    if (t < this.frameAt) return;
+    const count = (this.regs[0xfe] + 1) / this.osc;
+    const frame = count * 4096 * this.fcpu;
+    this.frameAt += frame * (Math.floor((t - this.frameAt) / frame) + 1);
+    if (this.parked) {
+      this.out.fill(0);
+      this.rise.fill(-1);
+      return;
+    }
+    for (let ch = 0; ch < 16; ch++) {
+      const b = 0x06 + 4 * ch;
+      const on = this.regs[b] | ((this.regs[b + 1] & 0x0f) << 8);
+      const off = this.regs[b + 2] | ((this.regs[b + 3] & 0x0f) << 8);
+      // full off wins over full on; held high all frame is no pulse to a servo either
+      const steady = (this.regs[b + 1] | this.regs[b + 3]) & 0x10;
+      this.out[ch] = steady ? 0 : ((off - on + 4096) % 4096) * count * 1e6;
+      this.rise[ch] = this.regs[b + 3] & 0x10 || on === off ? -1 : this.regs[b + 1] & 0x10 ? -2 : on;
+      this.fall[ch] = off;
+    }
+  }
+  /** the level an output holds while it is not pulsing (0 or 1), or -1 while it pulses */
+  held(ch: number): number {
+    if (!this.powered || !this.running || this.oe) return 0;
+    return this.rise[ch] === -1 ? 0 : this.rise[ch] === -2 ? 1 : -1;
+  }
+  /**
+   * A pulsing output's edges in the cycles from t0 up to t1, as [cycle, level] in order, for a controller pin
+   * wired to it: each frame it rises at its on count and falls at its off count.
+   */
+  edges(ch: number, t0: number, t1: number): [number, number][] {
+    const out: [number, number][] = [];
+    if (this.held(ch) >= 0) return out;
+    const count = ((this.regs[0xfe] + 1) / this.osc) * this.fcpu;
+    const frame = count * 4096;
+    for (let f = this.frameAt - frame * Math.ceil((this.frameAt - t0) / frame); f < t1; f += frame) {
+      if (f < this.firstAt - 1) continue;
+      const up = f + this.rise[ch] * count;
+      const down = f + this.fall[ch] * count;
+      if (up >= t0 && up < t1) out.push([Math.round(up), 1]);
+      if (down >= t0 && down < t1) out.push([Math.round(down), 0]);
+    }
+    return out.sort((a, b) => a[0] - b[0]);
+  }
+  /** the pulse an output gives each frame, µs, or null while it gives none */
+  pulseUs(ch: number): number | null {
+    if (!this.powered || !this.running || this.oe) return null;
+    const us = this.out[ch];
+    return us > 0 ? us : null;
+  }
+}
+
+// ---------- NAU7802 bridge ADC ----------
+
+/** samples a second for each CRS setting of CTRL2 */
+const NAU_RATES = [10, 20, 40, 80, 80, 80, 80, 320];
+
+/**
+ * Nuvoton NAU7802: a 24-bit ADC for a load cell bridge, on I2C. The firmware powers up its digital and analog
+ * halves, turns on the regulator that excites the bridge, picks the gain and the sample rate and starts it
+ * converting; a status bit says when each sample is ready. A sample is the bridge's output as a share of its
+ * excitation, times the gain, in counts of 2^-24 of full scale, with the bridge's own zero offset and the
+ * chip's noise (about 16 counts rms at 10 samples a second and a gain of 128, more at faster rates).
+ */
+export class Nau7802 implements I2CDevice {
+  regs = new Uint8Array(32);
+  /** frozen (a sim.stuck() fault): it stops sampling and its registers keep the last reading */
+  hold = false;
+  samples = 0;
+  private ptr = 0;
+  private on = false;
+  private pudAt = Infinity;
+  private nextAt = Infinity;
+  private calUntil = -1;
+  /** what a system offset calibration took off, counts */
+  private zero = 0;
+  private last = 0;
+  constructor(
+    public name: string,
+    private fcpu: number,
+    /** the bridge's output over its excitation (V/V) right now */
+    private bridge: () => number,
+    /** the bridge's zero offset, V/V */
+    private offset: number,
+    private rng: () => number,
+  ) {
+    this.clear();
+  }
+  private clear() {
+    this.regs.fill(0);
+    // the chip's revision
+    this.regs[0x1f] = 0x0f;
+    this.pudAt = this.nextAt = Infinity;
+    this.calUntil = -1;
+    this.zero = 0;
+  }
+  private rate() {
+    return NAU_RATES[(this.regs[0x02] >> 4) & 7];
+  }
+  private gain() {
+    return 1 << (this.regs[0x01] & 7);
+  }
+  /** a change of gain, rate or supply: the next four conversions are not to be trusted, so none comes out */
+  private settle(t: number) {
+    this.regs[0x00] &= ~0x20;
+    this.nextAt = t + (4 * this.fcpu) / this.rate();
+  }
+  private converting() {
+    // digital and analog on, and the cycle started
+    return (this.regs[0x00] & 0x16) === 0x16;
+  }
+  write(bytes: number[], t: number) {
+    if (!bytes.length) return;
+    this.ptr = bytes[0] & 0x1f;
+    for (let i = 1; i < bytes.length; i++) {
+      this.put(this.ptr, bytes[i], t);
+      this.ptr = (this.ptr + 1) & 0x1f;
+    }
+  }
+  read(n: number, t: number): number[] {
+    const out: number[] = [];
+    for (let i = 0; i < n; i++) {
+      out.push(this.get(this.ptr, t));
+      this.ptr = (this.ptr + 1) & 0x1f;
+    }
+    return out;
+  }
+  private put(reg: number, v: number, t: number) {
+    if (reg === 0x00) {
+      if (v & 0x01) {
+        // RR: every register back to its default, held there until RR is written 0
+        this.clear();
+        this.regs[0] = 0x01;
+        return;
+      }
+      const was = this.regs[0];
+      // PUR and CR are the chip's to set
+      this.regs[0] = (v & 0xd6) | (was & 0x20);
+      if (v & 0x02 && !(was & 0x02)) this.pudAt = t;
+      if (!(v & 0x02)) this.pudAt = Infinity;
+      if (this.converting()) {
+        if ((was & 0x96) !== (v & 0x96)) this.settle(t);
+      } else {
+        this.regs[0] &= ~0x20;
+        this.nextAt = Infinity;
+      }
+      return;
+    }
+    if (reg === 0x02) {
+      const was = this.regs[2];
+      this.regs[2] = v & 0xf7;
+      // CALS starts a calibration, which takes a few conversions
+      if (v & 0x04 && this.converting()) this.calUntil = t + (6 * this.fcpu) / this.rate();
+      else this.regs[2] &= ~0x04;
+      if (((was ^ v) & 0xf0) !== 0 && this.converting()) this.settle(t);
+      return;
+    }
+    if (reg === 0x01) {
+      const was = this.regs[1];
+      this.regs[1] = v;
+      if (was !== v && this.converting()) this.settle(t);
+      return;
+    }
+    // the result and the revision are read-only
+    if ((reg >= 0x12 && reg <= 0x14) || reg === 0x1f) return;
+    this.regs[reg] = v;
+  }
+  private get(reg: number, t: number): number {
+    if (reg === 0x00) return (this.regs[0] & ~0x08) | (this.regs[0] & 0x02 && t >= this.pudAt + 0.0002 * this.fcpu ? 0x08 : 0);
+    // reading the result's first byte takes the sample: CR falls until the next one
+    if (reg === 0x12) this.regs[0] &= ~0x20;
+    return this.regs[reg];
+  }
+  /** every plant step, with whether the board has its supply */
+  tick(t: number, powered: boolean) {
+    if (!powered) {
+      if (this.on) this.clear();
+      this.on = false;
+      return;
+    }
+    this.on = true;
+    if (!this.converting()) return;
+    if (this.calUntil >= 0 && t >= this.calUntil) {
+      // an internal offset calibration takes out the chip's own offset, which this model does not have; a system
+      // one zeroes on whatever the bridge gives at that moment
+      if ((this.regs[2] & 0x03) === 0x02) this.zero += this.last;
+      this.regs[2] &= ~0x04;
+      this.calUntil = -1;
+      this.settle(t);
+    }
+    if (t < this.nextAt) return;
+    const period = this.fcpu / this.rate();
+    this.nextAt += period * (Math.floor((t - this.nextAt) / period) + 1);
+    if (this.hold || this.calUntil >= 0) return;
+    // the bridge is excited by the chip's regulator: with it off there is nothing to measure
+    const excited = (this.regs[0] & 0x80) !== 0;
+    const gain = this.gain();
+    const noise = (this.rng() + this.rng() - 1) * 2.45 * 16 * Math.sqrt(this.rate() / 10) * Math.max(gain / 128, 0.05);
+    const code = Math.round((excited ? this.bridge() + this.offset : 0) * gain * 2 ** 24 + noise) - this.zero;
+    this.last = Math.max(-(2 ** 23), Math.min(2 ** 23 - 1, code));
+    const u = this.last & 0xffffff;
+    this.regs[0x12] = u >> 16;
+    this.regs[0x13] = (u >> 8) & 0xff;
+    this.regs[0x14] = u & 0xff;
+    this.regs[0] |= 0x20;
+    this.samples++;
   }
 }
 
