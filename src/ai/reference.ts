@@ -478,19 +478,24 @@ analysis "Shelf load" {
   fix: face(bracket, -Y)                    // held in every direction (screwed or glued to the wall)
   fix: zone(at: hole_pos, d: M4.clearance + 2, axis: Z, length: 5)   // a bolt hole: the bore surface
   fix: roller(face(bracket, -Z), Z)         // only stops movement along Z (resting on a surface)
+  fix: pin(zone(at: pivot, d: 6, axis: Y, length: 8))   // a pin through a bore: holds it across and along the pin, turns freely, bears only where pressed (tight: true holds all round)
+  fix: spring(face(foot, -Z), 800)          // an elastic support: rubber feet or a soft mount, 800 N/mm in all (axis: Z for one way; per_area: 1.5 for a pad)
+  fix: displace(face(hook, +X), 1.5mm, dir: -Z)   // a set displacement instead of a force: push a snap hook or clip this far; the result gives the force it takes
   load: force(face(bracket, +Z), (0, 0, -shelf_kg * 9.81N))   // total force spread over the region
+  load: bearing(zone(at: axle, d: 22, axis: Y, length: 7), 300N, dir: -Z)   // a shaft or bearing pushing on a bore: cosine-spread over the side it presses (prefer it to force() on bores)
   load: pressure(face(lid, +Z), 0.02MPa)
   load: torque(zone(at: hub_pos, d: 8, axis: Z, length: 6), 0.5Nm, axis: Z)
   gravity                                   // self-weight; or accel: (0, 0, -3) for 3 g
   material: "PETG"                          // optional: overrides the parts' material
-  printed                                   // FDM part: layer bonds are weaker; build: Z gives the stacking direction (default Z)
-  cycles: 1e5                               // repeated loading: judged against fatigue strength
+  printed                                   // plastic parts are FDM printed (an fdm process or a filament material already is; printed: false for moulded); build: Z sets the layers' direction for every part
+  cycles: 1e5                               // repeated loading: over 1000 adds a fatigue check (see Fatigue below)
   safety: 2                                 // required lowest factor of safety (default 2)
   max_deflection: 0.5mm                     // optional stiffness limit
   resolution: "standard"                    // "draft" ~8k elements, "standard" ~30k (default), "fine" ~110k, or a cell size like 0.6mm
 }
 fix: and load: may repeat or take lists. Units: N, kN, lbf, kgf (weight of a kilogram: 5kgf = 49 N; kg is a mass in grams, so never kg × 9.81N), Nm, Nmm, MPa, kPa, bar, psi, GPa, and speeds in kmh or mph. Inside an analysis block these functions exist:
 ${analysisFns}
+Look at a result with capture_view results: ("stress", "safety", "disp", "strain", "temp" or "life"); add section: to cut it open, and the cut face shows the field inside the parts (whether stress or heat runs through a section or stays near the surface).
 A drivetrain analysis gives a gear train's duty instead; the app checks tooth bending (Lewis), bearing L10 life and shaft torsion for every gear and bearing the driver turns:
 analysis "Gearbox duty" {
   drive: motor_gear        // the component that drives the train
@@ -546,7 +551,26 @@ analysis "Motor mount heat" {
 A part past its limit fails, within the last tenth of its headroom warns. The result gives each part's hottest point, where the heat comes from, where it goes (air, radiation, held surfaces), and for a warm-up when each part passes its limit and where it would settle.
 analysis "Left in the sun" { parts: [bracket]  fix: [face(bracket, -X), face(bracket, +X)]  temperature: 60C  assembled_at: 20C }   // the whole model at one temperature: expansion against the supports, no heat solve
 Buckling: add buckling (3 shapes) or buckling: 1..6 to an analysis with loads; it finds how many times the loads it takes to buckle slender parts (columns, thin walls, tubes, struts) and their buckled shapes. Under 1 it fails, under buckling_safety: (default 3, since dents and print lines make real parts buckle sooner) it warns.
+Printed parts: a part with an fdm process, or of a filament material and no process, is analysed as printed: solid walls (walls: lines of about 1.1 nozzle widths) round each layer's outline and solid skins (top: layers) under its tops and over its bottoms, round a sparse infill (infill:, pattern:) with a share of the solid's stiffness and strength (40 % gyroid: about 16 % as stiff and 20 % as strong). Its layers are weaker to pull apart and to slide (the layer check counts both) and a little softer across (fibre-filled filaments much softer). They stack the way the build pack lays the part on the bed (its largest flat face, unless the process gives build:); build: in the analysis overrides that for every part. Kerf assumes 4 walls, 5 top and bottom layers and 40 % gyroid infill unless the part says what it is printed with, like process: mfg.fdm(build: X, walls: 6, top: 6, infill: 60%), and the build pack lists each part's settings. A thin wall is all walls; a thick block or a narrow web between two skins is mostly infill, so give load-bearing printed parts more walls or infill when they bend too much.
+Fatigue: cycles: over 1000, or history:, adds a fatigue check to a structural analysis. Each point's stress under the loads as written is scaled through the load cycles and judged against its material's S-N curve (Shigley's estimate from the ultimate and fatigue strengths, lowered for the surface finish and the reliability asked for; steels, irons and titanium keep an endurance limit past 10⁷ cycles, aluminium and plastics keep weakening), with a mean-stress correction and the damage added by Miner's rule; printed parts are also checked between layers, where only a pull across them counts. It reports the lowest fatigue safety factor (the factor on the loads at which the part breaks at the end of its life) against safety:, the shortest life and where, which cycles do the damage, and a life map; the strength check then uses yield at the history's peak. Under 1 it fails, between 1 and safety: it warns. Keep fatigue in its own analysis, apart from drops, frequencies and heat.
+  cycles: 1e6                // a constant load cycle this many times in the part's life
+  loading: "on-off"          // "reversed" (the loads swing both ways, the default), "on-off" (from nothing to the loads: a shelf loaded and unloaded) or a load ratio R = min/max like 0.2
+  history: [block(1e5, 1), block(500, 2.5, min: 0)]   // instead of cycles: load blocks, or a trace of load scales like [0, 1, 0.3, 1.4, 0] (rainflow counted)
+  repeats: 200               // with history: how many times the history happens in the part's life
+  mean_stress: "goodman"     // the default; "gerber", "soderberg", "swt" or "none"
+  finish: "machined"         // polished, ground, machined, hot-rolled, forged, cast, printed; default from how each part is made
+  reliability: 99%           // the chance it lasts the life; default 50 % (the average part)
+The fix is lower stress where the life is shortest: more material along the load path, a bigger fillet, holes and steps moved away, a smoother finish on metal, or a material with a higher fatigue strength.
 Accuracy check: the converge flag (or the panel's Check accuracy button) solves twice, the second time with 1.5× smaller elements, and reports how far deflection, stress, safety, temperature and buckling moved: under 5 % has converged, over 15 % needs a smaller resolution:. A peak at a support or load that keeps rising is a singularity of the idealised fixing: judge the part by the stress a short way off.
+Design study (an optimiser): an analysis block with vary: changes parameters within their ranges, builds and checks each design away from the open one, solves the structural analyses that cover the parts they change, and finds the best design that still meets every analysis target and every check that passes now:
+analysis "Lightest bracket" {
+  vary: [thickness, bend_r(1mm, 6mm), ribs(0, 4, 1)]   // params by name; the range from the param's range a .. b unless given; a step (whole numbers for a count)
+  goal: "min mass"                 // or "max safety", "min deflection", "min stress", "max frequency", "min temperature", "max buckling", each optionally "of <part or analysis>"; "lightest", "stiffest", "strongest", "coolest"
+  keep: ["deflection <= 0.4mm"]    // optional extra limits: mass, safety, deflection, stress, frequency, temperature, buckling with <= or >=
+  using: ["Shelf load"]            // optional: the analyses to solve (default those the parameters reach)
+  runs: 16                         // the most designs to build, the current one included (default 12, at most 40)
+}
+It never runs on its own: run_analysis label: "<study>" runs it (about as long as building and solving the design once per run) and returns every design, the best, and how much each parameter matters. Apply one with edit_design alternative: "<study> #<n>". Prefer a study to trying sizes by hand; use compare_designs for different concepts.
 Strength data: ${mech}. Parts in ${printedList} count as FDM-printed by default; write printed: false for a moulded or machined plastic part.
 
 An airflow analysis puts the design in a virtual wind tunnel: a GPU lattice-Boltzmann flow solver with LES turbulence and a wall model, on a rolling road with the wheels spinning, re-run after each change:

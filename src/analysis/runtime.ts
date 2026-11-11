@@ -18,13 +18,17 @@ import { thermalMaterial, type ThermalMaterial } from "./thermalMaterials";
 import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
-import type { FeaPart, StructuralInput, StructuralResult } from "./fe/structural";
-import { contactVerdicts, modeText, stiffnessVerdict, strengthVerdict } from "./summary";
+import type { FeaPart, PartPrint, StructuralInput, StructuralResult } from "./fe/structural";
+import { fdmPrint, printWords } from "../mfg/infill";
+import { printUp } from "../mfg/printOrientation";
+import type { Finish } from "./fe/fatigue";
+import { contactVerdicts, modeText, printingText, staticSafety, stiffnessVerdict, strengthVerdict } from "./summary";
+import { fatigueText, fatigueVerdict } from "./fatigueSummary";
 import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { dynamicItems } from "./dynamics";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
-export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp";
+export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp" | "life";
 
 export interface StructuralRun {
   label: string;
@@ -239,6 +243,56 @@ export function resolveThermal(spec: StructuralSpec, model: Model): StructuralSp
   return { ...spec, thermal: { ...t, heat, ambient, ambientWhy } };
 }
 
+/**
+ * The surface a part is made with, for its fatigue strength: machined, cast, rolled sheet or printed, from its process.
+ * Bought parts (no process) count as machined.
+ */
+export function partFinish(p: EvalPart): Finish {
+  switch (p.process?.id) {
+    case "die_cast":
+    case "sand_cast":
+    case "investment_cast":
+      return "cast";
+    case "metal_print":
+    case "fdm":
+    case "sla":
+    case "sls":
+      return "printed";
+    default:
+      return "machined";
+  }
+}
+
+/**
+ * How a part is printed for an analysis, or undefined when it is not printed in layers: an fdm process, or no process
+ * and a filament material (any plastic with printed:, none with printed: false). Walls, skins and infill come from its
+ * process settings (Kerf's defaults otherwise); its layers stack the way the analysis's build: says, else its process's
+ * build:, else the way the build pack lays it on the bed. rot turns a direction from the part's frame to the world.
+ */
+export function partPrint(spec: StructuralSpec, p: EvalPart, m: MechMaterial, mesh: MeshData, rot: (v: [number, number, number]) => [number, number, number]): PartPrint | undefined {
+  if (spec.printed === false) return undefined;
+  const proc = p.process?.id;
+  const fdm = proc === "fdm" || (!proc && (m.printedByDefault || (spec.printed === true && m.layerFactor < 1)));
+  if (!fdm) return undefined;
+  const fp = fdmPrint(p.process);
+  const given = p.process?.settings.build;
+  const own = Array.isArray(given) && typeof given[0] === "number" ? (given as [number, number, number]) : undefined;
+  const unit = (v: [number, number, number]): [number, number, number] => {
+    const l = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0] / l, v[1] / l, v[2] / l];
+  };
+  const build = spec.buildGiven ? unit(spec.buildDir) : unit(rot(own ?? printUp(mesh.positions, mesh.indices)));
+  return {
+    build,
+    wall: fp.walls * fp.line,
+    skin: fp.top * fp.layer,
+    infill: fp.infill,
+    pattern: fp.pattern,
+    words: printWords(fp),
+    from: spec.buildGiven ? "analysis" : own ? "process" : "bed",
+  };
+}
+
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
 export function structuralInput(
   spec: StructuralSpec,
@@ -257,6 +311,7 @@ export function structuralInput(
   const fea: FeaPart[] = [];
   const mats: MechMaterial[] = [];
   const thermalMats: ThermalMaterial[] = [];
+  const finishes: Finish[] = [];
   const matIndex = new Map<string, number>();
   for (const p of parts) {
     const data = meshOf(p.hash);
@@ -264,12 +319,15 @@ export function structuralInput(
     const name = spec.material ?? p.material;
     // with heat, a bought component of an unknown material is its own insides (copper, board and plastic), not a plastic
     const component = p.kind === "component";
-    const key = temps ? `${name}|${component}` : name;
+    // with fatigue, the same material machined and cast has two S-N curves
+    const finish = spec.fatigue ? (spec.fatigue.finish ?? partFinish(p)) : undefined;
+    const key = (temps ? `${name}|${component}` : name) + (finish ? `|${finish}` : "");
     let mi = matIndex.get(key);
     if (mi === undefined) {
       mi = mats.length;
       mats.push(mechMaterial(name));
       if (temps) thermalMats.push(thermalMaterial(name, component));
+      if (finish) finishes.push(finish);
       matIndex.set(key, mi);
     }
     const m = xformMatrix(p.xf);
@@ -291,7 +349,8 @@ export function structuralInput(
       nrm[i + 1] = m[1] * a + m[5] * b + m[9] * c;
       nrm[i + 2] = m[2] * a + m[6] * b + m[10] * c;
     }
-    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi });
+    const print = partPrint(spec, p, mats[mi], data, (v) => [m[0] * v[0] + m[4] * v[1] + m[8] * v[2], m[1] * v[0] + m[5] * v[1] + m[9] * v[2], m[2] * v[0] + m[6] * v[1] + m[10] * v[2]]);
+    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}) });
   }
   const res = fine ? "fine" : spec.resolution;
   const input: StructuralInput = {
@@ -303,7 +362,8 @@ export function structuralInput(
     accel: spec.accel,
     target: typeof res === "string" ? RESOLUTION_TARGET[res] : RESOLUTION_TARGET.standard,
     h: typeof res === "string" ? undefined : res.h,
-    printed: spec.printed ?? mats.some((m) => m.printedByDefault),
+    // each printed part carries its own print; the whole-analysis flag is only for callers that give none
+    printed: fea.some((p) => !!p.print),
     buildDir: spec.buildDir,
     cycles: spec.cycles,
     safety: spec.safety,
@@ -333,6 +393,19 @@ export function structuralInput(
     ...(temps ? { thermalMaterials: thermalMats } : {}),
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
+    ...(spec.fatigue
+      ? {
+          fatigue: {
+            cycles: spec.fatigue.cycles,
+            repeats: spec.fatigue.repeats,
+            unit: spec.fatigue.unit,
+            meanStress: spec.fatigue.meanStress,
+            finishes,
+            reliability: spec.fatigue.reliability,
+            loading: spec.fatigue.loading,
+          },
+        }
+      : {}),
   };
   return { input };
 }
@@ -340,7 +413,8 @@ export function structuralInput(
 function inputKey(spec: StructuralSpec, parts: EvalPart[], fine: boolean, check = false): string {
   const { span: _span, ...rest } = spec;
   void _span;
-  return JSON.stringify({ rest, fine, check, parts: parts.map((p) => [p.id, p.hash, p.xf, p.material]) });
+  // how a part is made sets its print (walls, infill, layers) and its fatigue finish
+  return JSON.stringify({ rest, fine, check, parts: parts.map((p) => [p.id, p.hash, p.xf, p.material, p.process ?? null]) });
 }
 
 const baseKey = (key: string) => key.replace(/"fine":(true|false)/, "").replace(/"check":(true|false)/, "");
@@ -487,7 +561,8 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
     if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
     return out;
   }
-  const sf = r.minSafety.value;
+  const st = staticSafety(r);
+  const sf = st.value;
   const { status, note } = strengthVerdict(spec, r);
   out.push(...dynamicItems(spec, r, base, { status, note }));
   // modal and drop analyses report through their own items; a static strength line only when there are loads
@@ -502,11 +577,15 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
     margin: sf - spec.safety,
     title: `Strength: ${spec.label}`,
     detail:
-      `Peak ${fmtNum(r.maxStress.value, 1)} MPa (von Mises) near ${fmtP(r.maxStress.at)}. Lowest safety factor ${fmtNum(sf, 2)} against the ${modeText(r, spec.cycles)}, target ${fmtNum(spec.safety, 2)}.` +
+      `Peak ${fmtNum(r.maxStress.value, 1)} MPa (von Mises) near ${fmtP(r.maxStress.at)}${r.fatigue && Math.abs(r.fatigue.peak - 1) > 1e-6 ? ` under the loads as written; the history peaks at ${fmtNum(r.fatigue.peak, 2)}× them` : ""}. Lowest ${r.fatigue ? "static " : ""}safety factor ${fmtNum(sf, 2)} against the ${modeText(r, spec.cycles, st)}, target ${fmtNum(spec.safety, 2)}.` +
       ` Largest deflection ${fmtNum(r.maxDisp.value, 3)} mm.` +
       (r.thermal ? ` Includes thermal expansion from ${fmtNum(r.thermal.refTemp ?? 20, 0)} °C (no stress there) and plastics weakened where they are hot.` : "") +
+      (r.printing?.length ? ` ${printingText(r)}` : "") +
       note,
   });
+  const fv = fatigueVerdict(spec, r);
+  const ft = fatigueText(spec, r);
+  if (fv && ft) out.push({ ...base, id: id("fatigue"), status: fv.status, margin: fv.margin, title: `Fatigue: ${spec.label}`, detail: ft.detail, ...(ft.fix ? { fix: ft.fix } : {}) });
   const bv = bucklingVerdict(spec, r);
   const bt = bucklingText(spec, r);
   if (bv && bt)

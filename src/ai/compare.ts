@@ -113,6 +113,11 @@ export function forgetAlternatives() {
   last = null;
 }
 
+/** Offer designs measured elsewhere (a design study's runs) to edit_design's alternative:, as compare_designs does. */
+export function offerAlternatives(base: string, sources: [string, string][]) {
+  last = { base, sources: new Map(sources.map(([l, src]) => [l.trim().toLowerCase(), src])) };
+}
+
 interface Design {
   label: string;
   idea?: string;

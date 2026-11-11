@@ -96,7 +96,10 @@ describe("demo designs", () => {
     expect(a.supports).toHaveLength(3);
     expect(a.supports[2].dir).toEqual([0, 1, 0]);
     expect(a.loads[0]).toMatchObject({ t: "force", f: [0, 0, -8 * 9.81] });
-    expect(a.buildDir).toEqual([1, 0, 0]);
+    // printed on its side: the bracket's own process says so, and the analysis takes its layers from it
+    expect(m.parts[0].process?.id).toBe("fdm");
+    expect(m.parts[0].process?.settings.build).toEqual([1, 0, 0]);
+    expect(a.buildGiven).toBeFalsy();
     expect(a.printed).toBe(true);
   });
 

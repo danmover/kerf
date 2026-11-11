@@ -21,6 +21,8 @@ self.onmessage = (ev: MessageEvent<FeaRequest>) => {
     const buffers = new Set<ArrayBuffer>();
     for (const p of result.parts) for (const a of [p.positions, p.normals, p.indices, p.disp, p.stress, p.strain, p.safety, p.temp]) if (a) buffers.add(a.buffer as ArrayBuffer);
     for (const s of result.supports) buffers.add(s.markers.buffer as ArrayBuffer);
+    const v = result.interior;
+    if (v) for (const a of [v.disp, v.stress, v.strain, v.util, v.temp, v.life]) if (a) buffers.add(a.buffer as ArrayBuffer);
     post({ id, type: "done", result }, [...buffers]);
   } catch (e) {
     post({ id, type: "error", message: e instanceof Error ? e.message : String(e), setup: e instanceof FeaError });
