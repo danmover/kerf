@@ -27,14 +27,19 @@ export const FIELD_INFO: Record<ResultField, { label: string; short: string; uni
   strain: { label: "Principal strain", short: "Strain", unit: "%" },
   temp: { label: "Temperature", short: "Temp", unit: "°C" },
   life: { label: "Fatigue life", short: "Life", unit: "" },
+  current: { label: "Current density", short: "Current", unit: "A/mm²" },
 };
 
 export const FIELDS: ResultField[] = ["stress", "safety", "disp", "strain"];
 
-/** The fields a result can colour the model by: only temperatures for a heat analysis with nothing holding the parts. */
+/**
+ * The fields a result can colour the model by: only temperatures (and the current, when one flows) for a heat analysis
+ * with nothing holding the parts.
+ */
 export function resultFields(r?: StructuralResult): ResultField[] {
-  if (r?.heatOnly) return ["temp"];
-  return [...FIELDS, ...(r?.ranges.temp ? (["temp"] as const) : []), ...(r?.ranges.life ? (["life"] as const) : [])];
+  const current = r?.ranges.current ? (["current"] as const) : [];
+  if (r?.heatOnly) return ["temp", ...current];
+  return [...FIELDS, ...(r?.ranges.temp ? (["temp"] as const) : []), ...current, ...(r?.ranges.life ? (["life"] as const) : [])];
 }
 
 /** The field to draw: the one picked when the result has it, otherwise the result's first. */
@@ -207,6 +212,7 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
 
 export function formatValue(field: ResultField, v: number, r?: StructuralResult): string {
   if (field === "temp") return degC(v);
+  if (field === "current") return `${fmtNum(v, v < 10 ? 2 : 1)} A/mm²`;
   if (field === "life") {
     const f = r?.fatigue;
     if (v >= 9) return "no fatigue limit";
@@ -226,6 +232,7 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
     if (field === "life") return [0, 0.25, 0.5, 1].map((t) => ({ t, text: t === 0 ? "≤0.001×" : t === 1 ? "≥10⁵×" : `${fmtNum(Math.pow(10, lifeAt(t)), 0)}×` }));
     const [lo, hi] = fieldRange(result, field);
     if (field === "temp") return [0, 0.5, 1].map((t) => ({ t, text: fmtNum(lo + (hi - lo) * t, hi - lo < 2 ? 2 : 1) }));
+    if (field === "current") return [0, 0.5, 1].map((t) => ({ t, text: fmtNum(hi * t, hi < 10 ? 2 : 1) }));
     const mul = field === "strain" ? 100 : 1;
     return [0, 0.5, 1].map((t) => ({ t, text: fmtNum((lo + (hi - lo) * t) * mul, Math.abs(hi * mul) < 1 ? 4 : 2) }));
   }, [result, field, target]);

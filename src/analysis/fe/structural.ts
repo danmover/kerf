@@ -9,13 +9,16 @@ import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg, type NodeSpring
 import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
 import { sampleInterior, type ResultVolume } from "./volume";
+import { joulePower, solveCurrent, type CurrentGrid, type CurrentSolve } from "./electric";
+import { rhoAt, type ElectricMaterial } from "../electricMaterials";
+import { amps, ohms } from "../thermalSummary";
 export type { ResultVolume } from "./volume";
 import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec } from "../spec";
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
 import { COMPONENT_THERMAL, strengthAt, type ThermalMaterial } from "../thermalMaterials";
-import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type ThermalInput } from "./thermal";
+import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type HeatSolve, type ThermalInput } from "./thermal";
 import { bucklingModes } from "./buckling";
 import { FINISHES, criticalStress, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
 
@@ -87,6 +90,8 @@ export interface StructuralInput {
   refTemp?: number;
   /** thermal properties per material (same order as materials); needed with thermal or uniformTemp */
   thermalMaterials?: ThermalMaterial[];
+  /** electrical properties per material (same order as materials); needed with thermal currents */
+  electricMaterials?: ElectricMaterial[];
   /** linear buckling: how many buckling factors and shapes to find */
   buckling?: { modes: number };
   /** an accuracy check: solve again with smaller elements and compare (run by runConverged) */
@@ -151,6 +156,29 @@ export interface ThermalResult {
   solve: { iterations: number; residual: number; converged: boolean; ms: number };
   /** thermal stress: the temperature the parts carry no thermal stress at */
   refTemp?: number;
+  /** current through conductors (current() in heat:): what each did, at the temperatures they settle at */
+  currents?: CurrentResult[];
+  /** where the current runs densest, A/mm², over all of them together, and the typical density (the median where it runs) */
+  currentPeak?: Located & { part: string; typical: number };
+}
+
+/** One current() through the parts: resistance, voltage, power and where it goes. */
+export interface CurrentResult {
+  label: string;
+  /** where it goes in and comes out, in words */
+  from: string;
+  to: string;
+  /** at the temperatures the parts settle at: A through, V across, Ω, and the heat it makes (I²R), W */
+  amps: number;
+  volts: number;
+  ohms: number;
+  watts: number;
+  /** the same at 20 °C, before it warms */
+  cold: { amps: number; volts: number; ohms: number; watts: number };
+  /** given: the current through it, or the voltage across it */
+  driven: "amps" | "volts";
+  /** the parts it heats, with their share of its heat */
+  parts: { name: string; share: number }[];
 }
 
 /** Linear buckling: factors on the loads at which the parts buckle. */
@@ -259,6 +287,8 @@ export interface PartField {
   temp?: Float32Array;
   /** per vertex: fatigue life over the design life, as log10 (0: it lasts exactly the life asked for), when the analysis has fatigue */
   life?: Float32Array;
+  /** per vertex: current density (A/mm²), when the analysis has current through conductors */
+  current?: Float32Array;
 }
 
 export interface Located {
@@ -310,7 +340,7 @@ export interface StructuralResult {
   parts: PartField[];
   /** the fields inside the parts, for a section through them */
   interior?: ResultVolume;
-  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number]; life?: [number, number] };
+  ranges: { stress: [number, number]; disp: [number, number]; strain: [number, number]; safety: [number, number]; temp?: [number, number]; life?: [number, number]; current?: [number, number] };
   warnings: string[];
   materials: { name: string; E: number; yield: number; allowable: number; basis: "yield" | "fatigue"; layerFactor: number; assumed: boolean }[];
   /** printed parts: how each is printed, the share of it that is solid walls and skin, and its stiffness across its layers */
@@ -1925,6 +1955,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     safety: [Infinity, -Infinity],
     ...(nodeT ? { temp: [Infinity, -Infinity] as [number, number] } : {}),
     ...(lifeN ? { life: [Infinity, -Infinity] as [number, number] } : {}),
+    ...(heat?.J ? { current: [0, 0] as [number, number] } : {}),
   };
   const parts: PartField[] = inp.parts.map((p) => {
     const P = p.mesh.positions;
@@ -1962,8 +1993,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       ranges.safety[0] = Math.min(ranges.safety[0], safety[v]);
       ranges.safety[1] = Math.max(ranges.safety[1], safety[v]);
     }
-    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety, ...(temp ? { temp } : {}), ...(life ? { life } : {}) };
+    const current = heat?.J ? currentAt(heat.J, heat.on, P, ranges) : undefined;
+    return { id: p.id, name: p.name, positions: Float32Array.from(P), normals: p.normals ?? null, indices: p.mesh.indices, disp, stress, strain, safety, ...(temp ? { temp } : {}), ...(life ? { life } : {}), ...(current ? { current } : {}) };
   });
+  if (ranges.current && heat?.result.currentPeak) ranges.current[1] = Math.max(ranges.current[1], heat.result.currentPeak.value);
   // mode shapes on the CAD surface, each scaled so its largest movement is 1
   if (shapes.length) {
     const sampleVec = (vec: Float64Array, x: number, y: number, z: number, out: Float64Array) => {
@@ -2125,11 +2158,29 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const v = sampleInterior(
       { n: [NX, NY, NZ], origin, h: hv },
       (n) => nodeW[n] > 0,
-      [(n) => vm[n], (n) => strainN[n], (n) => 1 / Math.max(sfN[n], 1e-6), ...(nodeT ? [(n: number) => nodeT[n]] : []), ...(lifeN && fat ? [(n: number) => lifeLog(lifeN[n] / fat.design)] : [])],
+      [
+        (n) => vm[n],
+        (n) => strainN[n],
+        (n) => 1 / Math.max(sfN[n], 1e-6),
+        ...(nodeT ? [(n: number) => nodeT[n]] : []),
+        ...(lifeN && fat ? [(n: number) => lifeLog(lifeN[n] / fat.design)] : []),
+        ...(heat?.J ? [(n: number) => heat.J![n]] : []),
+      ],
       u,
     );
     const [stress, strain, util, ...rest] = v.scalars;
-    return { origin: v.origin, step: v.step, n: v.n, disp: v.vec!, stress, strain, util, ...(nodeT ? { temp: rest.shift()! } : {}), ...(lifeN && fat ? { life: rest.shift()! } : {}) } satisfies ResultVolume;
+    return {
+      origin: v.origin,
+      step: v.step,
+      n: v.n,
+      disp: v.vec!,
+      stress,
+      strain,
+      util,
+      ...(nodeT ? { temp: rest.shift()! } : {}),
+      ...(lifeN && fat ? { life: rest.shift()! } : {}),
+      ...(heat?.J ? { current: rest.shift()! } : {}),
+    } satisfies ResultVolume;
   })();
 
   const tEnd = now();
@@ -2542,7 +2593,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   }
 
   /** Heat conduction through the active elements: films and radiation on the exposed faces, heat made, held temperatures. */
-  function runHeat(): { T: Float64Array; on: Uint8Array; result: ThermalResult; ms: number } {
+  function runHeat(): { T: Float64Array; on: Uint8Array; J: Float64Array | null; result: ThermalResult; ms: number } {
     const th = inp.thermal!;
     const tms = inp.thermalMaterials!;
     const tStart = now();
@@ -2646,6 +2697,17 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       warnings.push(`${list.join(", ")} ${list.length > 1 ? "are" : "is"} smaller than the ${fmt(h)} mm elements, so ${list.length > 1 ? "their" : "its"} heat is put at the nearest solid point. Use a smaller resolution: to see ${list.length > 1 ? "their" : "its"} own temperature.`);
     }
 
+    // current through conductors: its Joule heat, worked out from the potential across them at each pass's temperatures
+    const qBase = Float64Array.from(q);
+    const joule = th.currents?.length ? currentSetup() : null;
+    const startT = th.time !== undefined && th.time > 0 ? (th.start ?? th.ambient) : th.ambient;
+    let jl = joule ? jouleAt(joule, null, startT) : null;
+    const jouleCold = joule ? jouleAt(joule, null, 20) : null;
+    const addJoule = () => {
+      if (jl) for (let n = 0; n < nn; n++) q[n] = qBase[n] + jl.qJ[n];
+    };
+    addJoule();
+
     // surfaces held at a temperature
     const fixedT = new Float64Array(nn).fill(NaN);
     th.fixed.forEach((ft, i) => {
@@ -2734,27 +2796,56 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       const times: number[] = [];
       const maxs: number[] = [];
       const per: number[][] = names.map(() => []);
-      progress("Heat: warming up", 0.25);
-      const s = solveTransient(g, time, start, (t, Tn) => {
-        times.push(t);
-        let m = -Infinity;
-        for (let n = 0; n < nn; n++) if (on[n] && Tn[n] > m) m = Tn[n];
-        maxs.push(m);
-        nb.lists.forEach((list, k) => {
-          let pm = -Infinity;
-          for (let x = 0; x < list.length; x++) if (Tn[list[x]] > pm) pm = Tn[list[x]];
-          per[k].push(pm);
+      const warm = () => {
+        times.length = 0;
+        maxs.length = 0;
+        for (const p of per) p.length = 0;
+        progress("Heat: warming up", 0.25);
+        return solveTransient(g, time, start, (t, Tn) => {
+          times.push(t);
+          let m = -Infinity;
+          for (let n = 0; n < nn; n++) if (on[n] && Tn[n] > m) m = Tn[n];
+          maxs.push(m);
+          nb.lists.forEach((list, k) => {
+            let pm = -Infinity;
+            for (let x = 0; x < list.length; x++) if (Tn[list[x]] > pm) pm = Tn[list[x]];
+            per[k].push(pm);
+          });
+          progress("Heat: warming up", 0.25 + 0.6 * Math.min(1, t / time));
         });
-        progress("Heat: warming up", 0.25 + 0.6 * Math.min(1, t / time));
-      });
+      };
+      let s = warm();
+      // the current's heat was worked out at the starting temperature: if the resistance moves much as it warms, run
+      // the warm-up again with the resistance halfway between its start and its end
+      if (joule && jl) {
+        const end = jouleAt(joule, s.T, 0);
+        if (Math.abs(end.total - jl.total) > 0.03 * Math.max(jl.total, 1e-12)) {
+          const mid = Float64Array.from(s.T, (v) => (v + start) / 2);
+          jl = jouleAt(joule, mid, 0);
+          addJoule();
+          iterations += s.iterations;
+          s = warm();
+          warnings.push("The current's resistance changes as the conductors warm, so the warm-up takes it halfway between its value at the start and at the end.");
+        }
+      }
       T = s.T;
-      iterations = s.iterations;
+      iterations += s.iterations;
       residual = s.residual;
       converged = s.converged;
       let settles: number | null = null;
       if (!trapped.length) {
         progress("Heat: where it settles", 0.87);
-        const ss = solveSteady(g, { start: T });
+        // where it settles, with the current's heat at the settled temperatures
+        const qWarm = Float64Array.from(q);
+        const jlWarm = jl;
+        let ss = solveSteady(g, { start: T });
+        if (joule && jl) {
+          const st = settleCurrent(ss);
+          ss = st.s;
+          iterations += st.iterations;
+        }
+        q.set(qWarm);
+        jl = jlWarm;
         let m = -Infinity;
         for (let n = 0; n < nn; n++) if (on[n] && ss.T[n] > m) m = ss.T[n];
         settles = m;
@@ -2772,9 +2863,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       transient = { time, start, times, max: maxs, parts: names.map((nm, k) => ({ name: nm, max: per[k] })), settles, overLimit };
     } else {
       progress("Heat: solving", 0.3);
-      const s = solveSteady(g);
-      T = s.T;
+      let s = solveSteady(g);
       iterations = s.iterations;
+      // the current's heat at the temperatures it makes, until they agree: a conductor's resistance rises as it warms
+      if (joule && jl) {
+        const settledS = settleCurrent(s);
+        s = settledS.s;
+        iterations += settledS.iterations;
+      }
+      T = s.T;
       residual = s.residual;
       converged = s.converged;
       balance = heatBalance(g, T);
@@ -2787,6 +2884,57 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
     for (const n of notes) warnings.push(n);
     progress("Heat: done", 0.95);
+    // what each current did, at the temperatures it ended at, and how dense it runs (the field shown on the parts)
+    let currents: CurrentResult[] | undefined;
+    let currentPeak: ThermalResult["currentPeak"];
+    let J: Float64Array | null = null;
+    if (joule && jl && jouleCold) {
+      const fin = th.time !== undefined && th.time > 0 ? jouleAt(joule, T, 0) : jl;
+      currents = joule.terminals.map((tm, i) => {
+        const p = fin.per[i];
+        const shares = new Map<string, number>();
+        const own = joulePower(joule.grid, Float64Array.from(tm.phi!, (v) => v * p.volts));
+        own.power.forEach((w, k) => {
+          const nm = inp.parts[owner[joule.grid.cells[k]]].name;
+          shares.set(nm, (shares.get(nm) ?? 0) + w);
+        });
+        const parts = [...shares]
+          .map(([name, w]) => ({ name, share: w / Math.max(own.total, 1e-30) }))
+          .filter((x) => x.share >= 0.01)
+          .sort((a, b) => b.share - a.share);
+        sources.push({ label: tm.cs.label, watts: p.watts, why: `I²R, ${amps(p.amps)} through ${ohms(p.ohms)}` });
+        return { label: tm.cs.label, from: describeRegion(tm.cs.from), to: describeRegion(tm.cs.to), amps: p.amps, volts: p.volts, ohms: p.ohms, watts: p.watts, cold: jouleCold.per[i], driven: tm.cs.amps !== undefined ? "amps" : "volts", parts };
+      });
+      // per node: the current density of the conducting cells around it (none in the parts that do not conduct)
+      J = new Float64Array(nn);
+      const wsum = new Float64Array(nn);
+      let best = -1;
+      fin.density.forEach((d, k) => {
+        const e = joule.grid.cells[k];
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) {
+          J![n0 + off[a]] += fill[e] * d;
+          wsum[n0 + off[a]] += fill[e];
+        }
+        if (best < 0 || d > fin.density[best]) best = k;
+      });
+      for (let n = 0; n < nn; n++) if (wsum[n] > 0) J[n] /= wsum[n];
+      if (best >= 0) {
+        const e = joule.grid.cells[best];
+        const i = e % nx,
+          j = Math.floor(e / nx) % ny,
+          k = Math.floor(e / (nx * ny));
+        // the median density over the cells the current really runs through, to say how much it crowds at its peak
+        const run = Float64Array.from(fin.density.filter((d) => d > 0.02 * fin.density[best])).sort();
+        const typical = run.length ? run[run.length >> 1] : fin.density[best];
+        currentPeak = { value: fin.density[best], at: [origin[0] + (i + 0.5) * hx, origin[1] + (j + 0.5) * hy, origin[2] + (k + 0.5) * hz], part: inp.parts[owner[e]].name, typical };
+      }
+      const made = currents.reduce((a, c) => a + c.watts, 0);
+      if (Math.abs(made - fin.total) > 0.02 * Math.max(fin.total, 1e-12))
+        warnings.push(`The currents share conductors, so their heat together (${fmt(fin.total, 3)} W) is not the sum of each one's I²R (${fmt(made, 3)} W); the temperatures use the heat together.`);
+      const notes = new Set(joule.grid.cells.length ? inp.electricMaterials!.flatMap((m) => (m.note && m.conductor ? [m.note] : [])) : []);
+      for (const n of notes) warnings.push(n);
+    }
     const result: ThermalResult = {
       ambient: th.ambient,
       ...(th.ambientWhy ? { ambientWhy: th.ambientWhy } : {}),
@@ -2795,15 +2943,151 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       sources,
       balance,
       ...(transient ? { transient } : {}),
+      ...(currents ? { currents } : {}),
+      ...(currentPeak ? { currentPeak } : {}),
       solve: { iterations, residual, converged, ms: now() - tStart },
     };
-    return { T, on, result, ms: now() - tStart };
+    return { T, on, J, result, ms: now() - tStart };
+
+    /** The conducting cells, and each current's two ends checked: on the parts, on metal, apart. */
+    function currentSetup() {
+      const ems = inp.electricMaterials;
+      if (!ems || ems.length !== inp.materials.length) throw new FeaError("Electrical properties are missing for the analysed materials.");
+      const list: number[] = [];
+      for (const e of cells) if (ems[inp.parts[owner[e]].material].conductor) list.push(e);
+      const grid: CurrentGrid = { n: [nx, ny, nz], h: hv, cells: Int32Array.from(list), sigma: new Float64Array(list.length), bulk: new Float64Array(list.length) };
+      const cond = new Uint8Array(nn);
+      for (const e of grid.cells) {
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) cond[n0 + off[a]] = 1;
+      }
+      const onWhat = (r: RegionSpec) => {
+        if (r.t === "face") {
+          const pi = partsByName.get(r.part)?.[0];
+          if (pi !== undefined) return `${r.part} (${inp.materials[inp.parts[pi].material].name})`;
+        }
+        return "a part";
+      };
+      const terminals = th.currents!.map((cs, i) => {
+        const name = `Current ${i + 1} (${cs.label})`;
+        const ends = [cs.from, cs.to].map((r, k) => {
+          const sel = select(r);
+          const where = k ? "where it comes out" : "where it goes in";
+          if (!sel.nodes.length) throw new FeaError(`${name}: ${where} (${describeRegion(r)}) does not touch the parts' surface. Move the zone onto the part.`);
+          const at = sel.nodes.filter((n) => cond[n]);
+          if (!at.length) throw new FeaError(`${name}: ${where} (${describeRegion(r)}) is on ${onWhat(r)}, which does not conduct. Put it on a metal part, or give the part a metal material.`);
+          return at;
+        });
+        const out = new Set(ends[1]);
+        if (ends[0].some((n) => out.has(n))) throw new FeaError(`${name}: where it goes in (${describeRegion(cs.from)}) and where it comes out (${describeRegion(cs.to)}) overlap. Pick two separate ends, like face(bar, -X) and face(bar, +X).`);
+        return { cs, name, from: Int32Array.from(ends[0]), to: Int32Array.from(ends[1]), phi: null as Float64Array | null, ref: 0 };
+      });
+      let sMax = 0;
+      for (const e of grid.cells) sMax = Math.max(sMax, 1 / (ems[inp.parts[owner[e]].material].rho * 1000));
+      return { ems, grid, cond, terminals, tiny: 1e-12 * sMax * Math.min(hx, hy, hz) };
+    }
+
+    /** Each current's resistance and power, and the heat it makes at each node, with the conductors at these temperatures (per node, or T0 everywhere). */
+    function jouleAt(jx: NonNullable<ReturnType<typeof currentSetup>>, Tn: Float64Array | null, T0: number) {
+      const { ems, grid, cond, terminals } = jx;
+      for (let k = 0; k < grid.cells.length; k++) {
+        const e = grid.cells[k];
+        let t = T0;
+        if (Tn) {
+          const n0 = elemNode0(e);
+          let sum = 0;
+          for (let a = 0; a < 8; a++) sum += Tn[n0 + off[a]];
+          t = sum / 8;
+        }
+        // Ω·m → Ω·mm, so σ is in S/mm
+        grid.bulk[k] = 1 / (rhoAt(ems[inp.parts[owner[e]].material], t) * 1000);
+        grid.sigma[k] = grid.bulk[k] * fill[e];
+      }
+      const phi = new Float64Array(nn);
+      const per = terminals.map((tm) => {
+        const sol: CurrentSolve = solveCurrent(grid, tm.from, tm.to, tm.phi ? { phi: tm.phi, ref: tm.ref } : undefined);
+        tm.phi = sol.phi;
+        tm.ref = sol.ref;
+        if (!(sol.conductance > jx.tiny))
+          throw new FeaError(`${tm.name}: no metal joins where it goes in (${describeRegion(tm.cs.from)}) to where it comes out (${describeRegion(tm.cs.to)}), so it has nowhere to flow. The conducting parts must touch along the way.`);
+        const short = `${tm.name}: the current solve stopped short of full accuracy; its resistance may be off by a percent or so.`;
+        if (!sol.converged && !warnings.includes(short)) warnings.push(short);
+        const ohms = 1 / sol.conductance;
+        const volts = tm.cs.amps !== undefined ? tm.cs.amps * ohms : tm.cs.volts!;
+        for (let n = 0; n < nn; n++) if (cond[n]) phi[n] += volts * sol.phi[n];
+        return { amps: volts / ohms, volts, ohms, watts: (volts * volts) / ohms };
+      });
+      const jp = joulePower(grid, phi);
+      const qJ = new Float64Array(nn);
+      for (let k = 0; k < grid.cells.length; k++) {
+        const n0 = elemNode0(grid.cells[k]);
+        const w = jp.power[k] / 8;
+        for (let a = 0; a < 8; a++) qJ[n0 + off[a]] += w;
+      }
+      return { per, qJ, total: jp.total, density: jp.density };
+    }
+
+    /**
+     * Steady temperatures and the current's heat that agree: the heat at the latest temperatures sets the next solve,
+     * by a secant step on (heat made − heat assumed) once there are two passes, so a conductor whose resistance rises
+     * linearly with temperature settles in three or four. A current whose heat outruns the cooling runs away.
+     */
+    function settleCurrent(s0: HeatSolve): { s: HeatSolve; iterations: number } {
+      let s = s0;
+      let iterations = 0;
+      const cold = jl!.total;
+      let used = jl!.total;
+      let usedPrev = 0;
+      let gapPrev: number | null = null;
+      for (let pass = 0; pass < 14; pass++) {
+        jl = jouleAt(joule!, s.T, 0);
+        const made = jl.total;
+        const gap = made - used;
+        if (Math.abs(gap) <= 0.003 * Math.max(made, 1e-12)) {
+          addJoule();
+          return { s, iterations };
+        }
+        if (made > 20 * Math.max(cold, 1e-12))
+          throw new FeaError(
+            `The current runs away: its heat keeps rising as the conductor warms (${fmt(cold, 2)} W cold, over ${fmt(made, 1)} W and climbing), because its resistance grows faster than the cooling can take the heat away. It would overheat until it fuses. ` +
+              `Use a thicker conductor or a better conducting metal, less current, or more cooling.`,
+          );
+        let next = made;
+        if (gapPrev !== null && Math.abs(gap - gapPrev) > 1e-12 * made) {
+          const step = used - (gap * (used - usedPrev)) / (gap - gapPrev);
+          if (step > 0 && step < 4 * made) next = step;
+        }
+        usedPrev = used;
+        gapPrev = gap;
+        used = next;
+        const k = next / made;
+        for (let n = 0; n < nn; n++) q[n] = qBase[n] + k * jl.qJ[n];
+        progress("Heat: current and temperature", Math.min(0.85, 0.3 + 0.05 * pass));
+        s = solveSteady(g, { start: s.T });
+        iterations += s.iterations;
+      }
+      warnings.push("The current's heat and the temperatures it makes had not quite settled after 14 passes; the temperatures may be off by a degree or two.");
+      return { s, iterations };
+    }
+  }
+
+  /** Current density at each vertex of a surface (A/mm²), widening ranges.current to take it in. */
+  function currentAt(J: Float64Array, valid: Uint8Array, P: ArrayLike<number>, ranges: { current?: [number, number] }): Float32Array {
+    const nv = P.length / 3;
+    const out = new Float32Array(nv);
+    for (let v = 0; v < nv; v++) {
+      const x = sampleScalar(J, valid, P[3 * v], P[3 * v + 1], P[3 * v + 2], 0);
+      out[v] = x;
+      if (ranges.current) ranges.current[1] = Math.max(ranges.current[1], x);
+    }
+    return out;
   }
 
   /** A heat analysis with nothing holding the parts: temperatures only, with empty stress fields. */
-  function heatOnlyResult(r: { T: Float64Array; on: Uint8Array; result: ThermalResult; ms: number }): StructuralResult {
+  function heatOnlyResult(r: { T: Float64Array; on: Uint8Array; J: Float64Array | null; result: ThermalResult; ms: number }): StructuralResult {
     const tPost = now();
     const temp: [number, number] = [Infinity, -Infinity];
+    const cur: { current?: [number, number] } = r.J ? { current: [0, 0] } : {};
     const parts: PartField[] = inp.parts.map((p) => {
       const P = p.mesh.positions;
       const nv = P.length / 3;
@@ -2825,10 +3109,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         strain: new Float32Array(nv),
         safety: new Float32Array(nv).fill(1e6),
         temp: t,
+        ...(r.J ? { current: currentAt(r.J, r.on, P, cur) } : {}),
       };
     });
     temp[0] = Math.min(temp[0], r.result.minTemp.value);
     temp[1] = Math.max(temp[1], r.result.maxTemp.value);
+    // the legend reaches the densest cell, as the label on it says
+    if (cur.current && r.result.currentPeak) cur.current[1] = Math.max(cur.current[1], r.result.currentPeak.value);
     let mass = 0,
       solid = 0,
       partial = 0,
@@ -2841,12 +3128,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       if (fill[e] < 0.9) partial++;
     }
     for (let n = 0; n < nn; n++) if (r.on[n]) nodes++;
-    const inside = sampleInterior({ n: [NX, NY, NZ], origin, h: hv }, (n) => r.on[n] > 0, [(n) => r.T[n]]);
+    const inside = sampleInterior({ n: [NX, NY, NZ], origin, h: hv }, (n) => r.on[n] > 0, [(n) => r.T[n], ...(r.J ? [(n: number) => r.J![n]] : [])]);
     const tEnd = now();
     progress("Done", 1);
     return {
       label: inp.label,
-      interior: { origin: inside.origin, step: inside.step, n: inside.n, temp: inside.scalars[0] },
+      interior: { origin: inside.origin, step: inside.step, n: inside.n, temp: inside.scalars[0], ...(r.J ? { current: inside.scalars[1] } : {}) },
       mesh: { h, cell: hv, grid: [nx, ny, nz], elements: nActive, nodes, dofs: nodes, levels: 1, partial: partial / Math.max(1, nActive) },
       solve: { iterations: r.result.solve.iterations, residual: r.result.solve.residual, converged: r.result.solve.converged, history: [], ms: { mesh: tMesh - t0, setup: 0, solve: r.ms, post: tEnd - tPost, total: tEnd - t0 } },
       maxDisp: { value: 0, at: [0, 0, 0] },
@@ -2864,7 +3151,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       supports: [],
       gravity: null,
       parts,
-      ranges: { stress: [0, 0], disp: [0, 0], strain: [0, 0], safety: [1e6, 1e6], temp },
+      ranges: { stress: [0, 0], disp: [0, 0], strain: [0, 0], safety: [1e6, 1e6], temp, ...cur },
       warnings,
       materials: inp.materials.map((m) => {
         const a = allowableStress(m, inp.cycles);

@@ -15,6 +15,7 @@ import type { MeshData } from "../kernel/build";
 import { fmtNum } from "../lang/values";
 import { mechMaterial, type MechMaterial } from "./materials";
 import { thermalMaterial, type ThermalMaterial } from "./thermalMaterials";
+import { electricMaterial, type ElectricMaterial } from "./electricMaterials";
 import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
@@ -28,7 +29,7 @@ import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureT
 import { dynamicItems } from "./dynamics";
 import type { FeaRequest, FeaResponse } from "./protocol";
 
-export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp" | "life";
+export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp" | "life" | "current";
 
 export interface StructuralRun {
   label: string;
@@ -305,12 +306,14 @@ export function structuralInput(
   const broken = parts.find((p) => buildErrors.has(p.hash));
   if (broken) return { error: `${broken.label} did not build, so it cannot be analysed yet.` };
   const th = spec.thermal;
-  if (th && !th.heat.length && !th.fixed.length)
+  if (th && !th.heat.length && !th.currents?.length && !th.fixed.length)
     return { error: `heat: "auto" found no electronics that use power among ${spec.parts.join(", ")}, so nothing makes heat. Add source(part, watts) for what gets hot.` };
   const temps = !!th || spec.uniformTemp !== undefined;
   const fea: FeaPart[] = [];
   const mats: MechMaterial[] = [];
   const thermalMats: ThermalMaterial[] = [];
+  const electricMats: ElectricMaterial[] = [];
+  const currents = !!th?.currents?.length;
   const finishes: Finish[] = [];
   const matIndex = new Map<string, number>();
   for (const p of parts) {
@@ -327,6 +330,7 @@ export function structuralInput(
       mi = mats.length;
       mats.push(mechMaterial(name));
       if (temps) thermalMats.push(thermalMaterial(name, component));
+      if (currents) electricMats.push(electricMaterial(name));
       if (finish) finishes.push(finish);
       matIndex.set(key, mi);
     }
@@ -375,6 +379,7 @@ export function structuralInput(
       ? {
           thermal: {
             heat: th.heat,
+            ...(th.currents?.length ? { currents: th.currents } : {}),
             fixed: th.fixed,
             cooling: th.cooling,
             coolingText: th.coolingText,
@@ -391,6 +396,7 @@ export function structuralInput(
     ...(spec.uniformTemp !== undefined ? { uniformTemp: spec.uniformTemp } : {}),
     ...(spec.refTemp !== undefined ? { refTemp: spec.refTemp } : {}),
     ...(temps ? { thermalMaterials: thermalMats } : {}),
+    ...(currents ? { electricMaterials: electricMats } : {}),
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
     ...(spec.fatigue

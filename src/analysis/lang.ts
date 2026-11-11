@@ -48,7 +48,7 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, BucklingSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3, Within } from "./spec";
+import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, RegionSpec, Resolution, SupportSpec, ThermalSpec, V3, Within } from "./spec";
 import { FINISHES, MEAN_STRESS, mergeCycles, rainflow, type Finish, type LoadCycle, type MeanStress } from "./fe/fatigue";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
@@ -103,6 +103,7 @@ const SUPPORT = "support";
 const MASS = "mass";
 const EXCITE = "excitation";
 const HEAT = "heat source";
+const CURRENT = "electric current";
 const HELD = "held temperature";
 const FILM = "film";
 const BLOCK = "load block";
@@ -383,6 +384,32 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     'source(motor, 12W) → heat made inside a part or component, spread through its volume (each copy of it makes this much). source(face(plate, +Z), 3W, name: "heater") makes it over a region of the surface instead. Use it in heat:, with heat: "auto" for every electronic part\'s own loss.',
   ),
   def(
+    "current",
+    ["from", "to", "amps", "volts", "name"],
+    (a) => {
+      const from = region(a.value("from"), a);
+      const to = region(a.value("to"), a);
+      const hasA = a.has("amps"),
+        hasV = a.has("volts");
+      if (hasA === hasV)
+        a.ctx.error(
+          hasA
+            ? "current(): give the current through it or the voltage across it, not both"
+            : "current(): say how much flows, like current(face(bar, -X), face(bar, +X), 40A), or the voltage across it with volts: 12V",
+        );
+      const label = a.has("name") ? a.str("name") : "current";
+      if (hasA) {
+        const amps = a.num("amps");
+        if (!(amps > 0)) a.ctx.error("current(): the current should be more than 0 A, like 40A");
+        return wrap(CURRENT, { from, to, amps, label } satisfies CurrentSpec, label);
+      }
+      const volts = a.num("volts");
+      if (!(volts > 0)) a.ctx.error("current(): volts: should be more than 0 V, like volts: 12V");
+      return wrap(CURRENT, { from, to, volts, label } satisfies CurrentSpec, label);
+    },
+    'current(face(busbar, -X), face(busbar, +X), 60A) → current that goes in over the first region and out over the second, heating whatever conducts it on the way (Joule heating, I²R): a busbar, a battery strap, a heater element. Kerf works out the resistance from the parts\' shape and metal, rising as they warm, and reports it with the voltage drop, the power and where the current crowds. volts: 12V instead of the current gives the voltage across it (a heater: the current follows). Use it in heat:.',
+  ),
+  def(
     "temp",
     ["where", "t"],
     (a) => {
@@ -580,16 +607,18 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   const holdP = one("hold");
   const coolP = one("cooling");
   const heatLoads: HeatLoadSpec[] = [];
+  const currents: CurrentSpec[] = [];
   let auto = false;
   if (heatP)
     for (const x of listOf(heatP.value)) {
       if (x === "auto") auto = true;
       else if (x instanceof Obj && x.kind === HEAT) heatLoads.push(x.fields.spec as unknown as HeatLoadSpec);
+      else if (x instanceof Obj && x.kind === CURRENT) currents.push(x.fields.spec as unknown as CurrentSpec);
       else
         fail(
           typeof x === "number"
             ? `heat: say where the ${x} W is made, like heat: [source(motor, ${x}W)], or use heat: "auto" for every electronic part's own loss`
-            : `heat: should list heat sources like source(motor, 12W) or source(face(plate, +Z), 3W), or "auto" for every electronic part's loss at its working current; got ${typeName(x)}`,
+            : `heat: should list heat sources like source(motor, 12W) or source(face(plate, +Z), 3W), current through a conductor like current(face(bar, -X), face(bar, +X), 40A), or "auto" for every electronic part's loss at its working current; got ${typeName(x)}`,
           heatP.span,
         );
     }
@@ -605,7 +634,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     if (p && !thermalOn && n !== "heat" && n !== "hold") fail(`${n}: goes with heat: (where heat is made) or hold: (a surface held at a temperature).`, p.span);
   }
   const named = new Set<string>();
-  for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : []))])
+  for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : [])), ...currents.flatMap((c) => [c.from, c.to])])
     if (r.t === "face") named.add(r.part);
   for (const h of heatLoads) if (h.part) named.add(h.part);
   for (const n of named) {
@@ -715,6 +744,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     if (startT !== undefined && time === undefined) fail("start: is the temperature a warm-up starts at; give time: too, like time: 10min", one("start")!.span);
     thermal = {
       heat: heatLoads,
+      ...(currents.length ? { currents } : {}),
       auto,
       fixed: fixedTemps,
       cooling,
@@ -726,7 +756,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       ...(startT !== undefined ? { start: startT } : {}),
       ...(maxTemp !== undefined ? { maxTemp } : {}),
     };
-    if (!heatLoads.length && !auto && !fixedTemps.length) fail('heat: lists no heat sources; add source(part, watts), or "auto"', heatP!.span);
+    if (!heatLoads.length && !currents.length && !auto && !fixedTemps.length) fail('heat: lists no heat sources; add source(part, watts), current(from, to, amps) or "auto"', heatP!.span);
   } else if (emissivity !== undefined) fail("emissivity: goes with heat: (radiation from a hot surface).", one("emissivity")!.span);
 
   // ---- one temperature for the whole model: expansion against the supports ----

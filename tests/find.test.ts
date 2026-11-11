@@ -92,6 +92,18 @@ describe("analysis kinds", () => {
     expect(ids("aero-road-bike")).toContain("uci");
     expect(ids("shelf")).toEqual(expect.arrayContaining(["strength", "drop", "vibration", "airflow"]));
   });
+
+  it("offers a current analysis only with a metal part, and tells it from a heat one", () => {
+    const ids = (parts: { material?: string; kind?: string }[]) => kindsFor({ parts, analyses: [] }).map((k) => k.id);
+    expect(ids([{ material: "Copper", kind: "part" }])).toContain("current");
+    expect(ids([{ material: "PETG", kind: "part" }])).not.toContain("current");
+    expect(ids([{ material: "Aluminum 6061", kind: "component" }])).not.toContain("current");
+    const m = evaluate(`part bar { box(100, 10, 2)  material: "Copper" }
+analysis "Bus" { parts: [bar]  heat: [current(face(bar, -X), face(bar, +X), 100A)] }
+analysis "Warm" { parts: [bar]  heat: [source(bar, 2W)] }`);
+    const kinds = m.analyses.map((a) => ANALYSIS_KINDS.filter((k) => k.is(a)).map((k) => k.id));
+    expect(kinds).toEqual([["current"], ["heat"]]);
+  });
 });
 
 describe("starting a design from a description", () => {

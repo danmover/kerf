@@ -20,7 +20,7 @@ import type { StructuralResult, ThermalResult } from "../analysis/fe/structural"
 import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
 import { FIELD_INFO, autoDeform, fieldFor, resultFields, shownMode } from "./ResultsLayer";
-import { accuracyText, bucklingText, bucklingVerdict, degC, duration, temperatureText, temperatureVerdict } from "../analysis/thermalSummary";
+import { accuracyText, amps, bucklingText, bucklingVerdict, degC, density, duration, ohms, temperatureText, temperatureVerdict, volts, watts } from "../analysis/thermalSummary";
 import { dropVerdict, modeWords, resonances, vibrationText, vibrationVerdict } from "../analysis/dynamics";
 import { Menu, MenuItem, Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
@@ -258,6 +258,7 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
       {r?.modal && <ModesBox spec={spec} r={r} />}
       {r?.drop && <DropBox spec={spec} r={r} />}
       {r?.thermal && <HeatBox spec={spec} r={r} />}
+      {r?.thermal?.currents?.length ? <CurrentBox spec={spec} r={r} /> : null}
       {r?.buckling && <BucklingBox spec={spec} r={r} />}
       {r?.fatigue && <FatigueBox spec={spec} r={r} />}
       {r && !r.heatOnly && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
@@ -496,6 +497,92 @@ function HeatBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
           <span>{text.fix}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Current through the parts (Joule heating): each current's resistance, voltage and heat, cold and warm, and how dense it runs. */
+function CurrentBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const t = r.thermal!;
+  const cs = t.currents!;
+  const field = useAnalysis((s) => s.field);
+  const shown = useAnalysis((s) => s.shown);
+  const mode = useAnalysis((s) => s.mode);
+  const on = shown === spec.label && fieldFor(r, field) === "current" && shownMode(r, mode) === null;
+  const show = () => {
+    useAnalysis.setState({ field: "current", mode: null });
+    showResults(spec.label);
+  };
+  const pk = t.currentPeak;
+  const made = cs.reduce((a, c) => a + c.watts, 0);
+  const cold = cs.reduce((a, c) => a + c.cold.watts, 0);
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <Icon.Bolt size={14} style={{ color: "var(--text-3)" }} />
+        <b>Current through the parts</b>
+        <span className="dim mono">Joule heating, I²R</span>
+        <div className="grow" />
+        <button className={`an-toggle ${on ? "on" : ""}`} onClick={show} aria-pressed={on} data-tip="Colour the model by current density">
+          {on ? <Icon.Eye size={13} /> : <Icon.EyeOff size={13} />} current density
+        </button>
+      </div>
+      <div className="an-grid" style={{ marginBottom: 10 }}>
+        {pk && (
+          <button className={`an-stat ${on ? "active" : ""}`} onClick={show}>
+            <div className="k">Densest</div>
+            <div className="v">
+              {fmtNum(pk.value, pk.value < 10 ? 2 : 1)}
+              <small>A/mm²</small>
+            </div>
+            <div className="s">{pk.value < 1.2 * pk.typical ? "about even through the metal" : `in ${pk.part} near ${v3(pk.at)}, ${fmtNum(pk.value / pk.typical, 1)}× its typical ${density(pk.typical)}`}</div>
+          </button>
+        )}
+        <div className="an-stat">
+          <div className="k">Heat made</div>
+          <div className="v">
+            {fmtNum(made, made < 10 ? 2 : 1)}
+            <small>W</small>
+          </div>
+          <div className="s">{Math.abs(made - cold) > 0.005 * Math.max(cold, 1e-12) ? `${watts(cold)} at 20 °C, before it warms` : "barely warms, so the same cold"}</div>
+        </div>
+      </div>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th>Current</th>
+            <th className="num">Through</th>
+            <th className="num">Across</th>
+            <th className="num">Resistance</th>
+            <th className="num">Heat</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cs.map((c) => (
+            <tr key={c.label}>
+              <td>
+                {c.label}
+                <span className="dim">
+                  {" "}
+                  · {c.from} to {c.to}
+                  {c.parts.length > 1 ? ` · ${c.parts.slice(0, 3).map((p) => `${Math.round(p.share * 100)} % ${p.name}`).join(", ")}` : ""}
+                </span>
+              </td>
+              <td className="num">{amps(c.amps)}</td>
+              <td className="num">{volts(c.volts)}</td>
+              <td className="num" title={`${ohms(c.cold.ohms)} at 20 °C`}>
+                {ohms(c.ohms)}
+              </td>
+              <td className="num" title={`${watts(c.cold.watts)} at 20 °C`}>
+                {watts(c.watts)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        at the temperatures the parts reach; {cs.some((c) => c.driven === "volts") ? "a set voltage drives less current as the metal warms" : "a set current makes more heat as the metal warms"}
+      </div>
     </div>
   );
 }
@@ -1040,6 +1127,13 @@ function HeatSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) 
           {s.label} · {fmtNum(s.watts, 2)} W{s.why ? <span className="dim"> · {s.why}</span> : null}
         </div>
       ))}
+      {!r?.thermal &&
+        (th.currents ?? []).map((c, i) => (
+          <div key={`c${i}`}>
+            <span className="tag">current</span>
+            {c.label} · {c.amps !== undefined ? `${fmtNum(c.amps, 2)} A` : `${fmtNum(c.volts ?? 0, 2)} V`} from {describeRegion(c.from)} to {describeRegion(c.to)}
+          </div>
+        ))}
       {th.auto && !r?.thermal && (
         <div>
           <span className="tag">heat</span>

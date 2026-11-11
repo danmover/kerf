@@ -4,22 +4,23 @@
 // that already has a strength run) without the user knowing the syntax.
 
 import type { AnalysisSpec } from "../analysis/spec";
+import { electricMaterial } from "../analysis/electricMaterials";
 
 export interface AnalysisKind {
-  id: "strength" | "fatigue" | "drop" | "vibration" | "heat" | "buckling" | "study" | "airflow" | "gears" | "uci";
+  id: "strength" | "fatigue" | "drop" | "vibration" | "heat" | "current" | "buckling" | "study" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
   /** other words people use for it */
   keywords: string;
   /** key of ui/icons Icon */
-  icon: "Stress" | "Refresh" | "Alert" | "Graph" | "Thermo" | "Buckle" | "Sliders" | "Orbit" | "Gear" | "Check";
+  icon: "Stress" | "Refresh" | "Alert" | "Graph" | "Thermo" | "Bolt" | "Buckle" | "Sliders" | "Orbit" | "Gear" | "Check";
   /** which of the design's analyses are this kind */
   is: (a: AnalysisSpec) => boolean;
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
   ask: string;
   /** only offered when the design looks like it needs it */
-  fits?: "gears" | "bike";
+  fits?: "gears" | "bike" | "metal";
 }
 
 export const ANALYSIS_KINDS: AnalysisKind[] = [
@@ -65,8 +66,18 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "How hot each part runs from its electronics, motors or a hot surface, and the stress that heat causes",
     keywords: "thermal temperature heat hot warm cooling fan heatsink overheat melt soften expansion thermal stress warm-up",
     icon: "Thermo",
-    is: (a) => a.kind === "structural" && (!!a.thermal || a.uniformTemp !== undefined),
+    is: (a) => a.kind === "structural" && ((!!a.thermal && !a.thermal.currents?.length) || a.uniformTemp !== undefined),
     ask: "Set up a heat analysis for this design: where heat is made (electronics, motors, anything hot it touches), how it is cooled and the hottest surroundings it will see, then run it and tell me which parts run too hot and how to cool them.",
+  },
+  {
+    id: "current",
+    label: "Current",
+    detail: "Joule heating: the resistance, voltage drop and heat of the current through busbars, straps, heater elements and terminals",
+    keywords: "joule heating electric current busbar bus bar resistance resistive heater element i2r voltage drop current density ampacity fuse wire strap terminal conductor",
+    icon: "Bolt",
+    is: (a) => a.kind === "structural" && !!a.thermal?.currents?.length,
+    ask: "Set up a current analysis for this design: the real currents (or voltages) through its metal conductors (busbars, battery straps, heater elements, terminals) from where each goes in to where it comes out, how they are cooled and the hottest surroundings, then run it and tell me the resistance, voltage drop and heat of each, where the current crowds and whether anything runs too hot.",
+    fits: "metal",
   },
   {
     id: "buckling",
@@ -117,9 +128,11 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
   },
 ];
 
-/** The kinds worth offering for a design: everything general, plus gears or bike rules when it has them. */
-export function kindsFor(m: { parts: { gear?: unknown; chain?: unknown; tubes?: unknown[] }[]; analyses: AnalysisSpec[] } | null | undefined): AnalysisKind[] {
+/** The kinds worth offering for a design: everything general, plus gears, bike rules or current when it has them. */
+export function kindsFor(m: { parts: { gear?: unknown; chain?: unknown; tubes?: unknown[]; material?: string; kind?: string }[]; analyses: AnalysisSpec[] } | null | undefined): AnalysisKind[] {
   const gears = !!m?.parts.some((p) => p.gear);
   const bike = !!m?.parts.some((p) => p.chain || p.tubes?.length) || !!m?.analyses.some((a) => a.kind === "uci");
-  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : bike));
+  // a part of its own in a metal (a bought component's body says little about what carries its current)
+  const metal = !!m?.parts.some((p) => p.kind !== "component" && electricMaterial(p.material).conductor) || !!m?.analyses.some((a) => a.kind === "structural" && a.thermal?.currents?.length);
+  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : k.fits === "bike" ? bike : metal));
 }

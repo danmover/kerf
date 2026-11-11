@@ -148,6 +148,21 @@ export interface HeatLoadSpec {
   why?: string;
 }
 
+/**
+ * Current through conducting parts (a busbar, a heater element, a battery strap): it goes in over one region and out
+ * over another, and makes heat wherever it flows (Joule heating, I²R), worked out from the parts' shape and resistivity,
+ * which rises as they warm. Either the current through (amps) or the voltage across (volts) is given.
+ */
+export interface CurrentSpec {
+  from: RegionSpec;
+  to: RegionSpec;
+  /** A through it */
+  amps?: number;
+  /** V across it */
+  volts?: number;
+  label: string;
+}
+
 /** A surface held at a temperature: a heated bed, a chilled plate, a hot engine block it bolts to. */
 export interface FixedTempSpec {
   region: RegionSpec;
@@ -173,6 +188,8 @@ export interface FilmSpec {
  */
 export interface ThermalSpec {
   heat: HeatLoadSpec[];
+  /** current through conductors, whose Joule heat adds to the heat made */
+  currents?: CurrentSpec[];
   /** heat: "auto": every electronic part's loss at its working current, from the machine's power budget */
   auto: boolean;
   fixed: FixedTempSpec[];

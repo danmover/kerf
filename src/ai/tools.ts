@@ -214,7 +214,7 @@ export const TOOL_DEFS = [
         view: { type: "string", enum: [...VIEW_NAMES], description: "Camera direction. iso is a 3/4 view from the front right." },
         highlight: { type: "array", items: { type: "string" }, maxItems: 30, description: "Part or component names to emphasise; others are ghosted." },
         section: { type: "string", enum: ["x", "y", "z"], description: "Cut the model in half across this axis to see inside. With results, the cut face is coloured by the field inside the parts, so you can see whether stress or heat runs through the section or stays at the surface." },
-        results: { type: "string", enum: ["stress", "safety", "disp", "strain", "temp", "life"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, principal strain, temperature (heat analyses) or fatigue life (analyses with cycles: or history:). Run run_analysis first." },
+        results: { type: "string", enum: ["stress", "safety", "disp", "strain", "temp", "current", "life"], description: "Colour by an analysis result: von Mises stress, factor of safety (red below 1, amber below the target, green above), deflection, principal strain, temperature (heat analyses), current density (heat analyses with current(...) in heat:) or fatigue life (analyses with cycles: or history:). Run run_analysis first." },
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
         airflow: { type: "string", enum: ["pressure", "friction", "streamlines", "wake", "eddies"], description: "Draw an airflow analysis's result: surface pressure (red: pushed on, blue: suction), skin friction, streamlines coloured by speed, the wake (where the air lost its total pressure) or the eddies. Run run_analysis first." },
         yaw: { type: "number", description: "With airflow: the yaw angle to draw (default the first)." },
@@ -452,7 +452,7 @@ const ViewInput = z.object({
   view: z.enum(VIEW_NAMES),
   highlight: z.array(z.string().max(80)).max(30).optional(),
   section: z.enum(["x", "y", "z"]).optional(),
-  results: z.enum(["stress", "safety", "disp", "strain", "temp", "life"]).optional(),
+  results: z.enum(["stress", "safety", "disp", "strain", "temp", "current", "life"]).optional(),
   analysis: z.string().max(200).optional(),
   airflow: z.enum(["pressure", "friction", "streamlines", "wake", "eddies"]).optional(),
   yaw: z.number().finite().optional(),
@@ -1296,7 +1296,11 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         const st = useAnalysis.getState();
         const temp = p.data.results === "temp";
         const life = p.data.results === "life";
-        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "structural" && st.runs.get(a.label)?.result && (!temp || st.runs.get(a.label)?.result?.ranges.temp) && (!life || st.runs.get(a.label)?.result?.ranges.life));
+        const current = p.data.results === "current";
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => {
+          const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
+          return r && (!temp || r.ranges.temp) && (!life || r.ranges.life) && (!current || r.ranges.current);
+        });
         const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === st.shown) ?? specs[0];
         if (!pick)
           return {
@@ -1305,7 +1309,9 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
               ? "No analysis has temperatures to draw. Add one with heat: (see Analysis blocks) and call run_analysis first."
               : life
                 ? "No analysis has a fatigue life to draw. Give one cycles: over 1000 or history: (see Analysis blocks) and call run_analysis first."
-                : "No structural analysis has results to draw. Add an analysis block and call run_analysis first.",
+                : current
+                  ? "No analysis has a current to draw. Put current(from, to, 40A) in a heat analysis's heat: (see Analysis blocks) and call run_analysis first."
+                  : "No structural analysis has results to draw. Add an analysis block and call run_analysis first.",
             card: { title: "No results to show", status: "error" },
           };
         if (p.data.analysis && pick.label !== p.data.analysis) resultNote = ` (no results for "${p.data.analysis}")`;
@@ -1319,6 +1325,7 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           disp: "deflection (blue none, red most)",
           strain: "principal strain (blue compression, red tension)",
           temp: "temperature (blue coolest, red hottest)",
+          current: "current density (blue none, red densest, where it crowds and heats most)",
           life: "fatigue life against the target (red breaks before it, amber within 10× of it, green and blue last)",
         }[p.data.results];
         resultNote = `, coloured by ${fieldText} from "${pick.label}"${resultNote}, deformed shape exaggerated with the unloaded outline ghosted; orange arrows are loads, teal cones are fixed or moved supports (spheres are rollers, pins and springs), rings mark hot spots${p.data.section ? "; the cut face shows the field inside the parts" : ""}`;
