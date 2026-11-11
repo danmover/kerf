@@ -107,7 +107,7 @@ function rig(opts: { model?: boolean; mass?: number; moment?: number } = {}): Me
   for (let k = 0; k < 8; k++) pts.push([c[0] + 0.003 * Math.cos((k * Math.PI) / 4), c[1] + 0.003 * Math.sin((k * Math.PI) / 4), c[2] + flatZ]);
   const model: MechBody = { id: "model", label: "model", parts: [], mass: opts.mass ?? 0.0145, com: c, inertia: diag(5e-7), points: pts, boxes: [] };
   const area = (Math.PI / 4) * 0.02 * 0.02;
-  const steer = (name: string, x: number, y: number) => ({ comp: name, body: FRAME, c: [x, y, -0.043] as V3, axis: [0, 0, 1] as V3, ri: 0.004, ro: 0.0145, h: 0.018, turns: 665 });
+  const steer = (name: string, x: number, y: number) => ({ comp: name, body: FRAME, c: [x, y, -0.043] as V3, axis: [0, 0, 1] as V3, ri: 0.004, ro: 0.0145, h: 0.018, turns: 821 });
   return {
     bodies: [model],
     joints: [],
@@ -407,12 +407,12 @@ describe("the levitation firmware generator", () => {
 
   it("works the magnetic constants out from where the parts sit", () => {
     // the lift string is the lift coil and its nulling winding: their resistances add
-    expect(list("COIL_R")[0]).toBeCloseTo(4.79 + 0.314, 2);
+    expect(list("COIL_R")[0]).toBeCloseTo(4.79 + 0.398, 2);
     expect(file("config.h")).toMatch(/Coil 0 lifts \(lift \+ nullc\)/);
     // nulled at the sensor; a steering coil is not
     const cb = list("COIL_B");
     expect(Math.hypot(cb[0], cb[1], cb[2])).toBeLessThan(0.02);
-    expect(Math.hypot(cb[3], cb[4], cb[5])).toBeCloseTo(1.81, 1);
+    expect(Math.hypot(cb[3], cb[4], cb[5])).toBeCloseTo(2.23, 1);
     expect(list("COIL_NULL_TURNS")).toEqual([25, 0, 0, 0, 0]);
     expect(def("FIELD_HOVER_MT")).toBeCloseTo(10.96, 1);
     expect(def("FIELD_REST_MT")).toBeCloseTo(55, 0);
@@ -422,9 +422,9 @@ describe("the levitation firmware generator", () => {
     expect(kl[k0]).toBeCloseTo(0.2055, 2);
     // the tables keep their precision (metres need more than four decimals)
     expect(def("Z_TAB_STEP")).toBeCloseTo((0.012 + 0.01546) / 32, 6);
-    // each steering coil pushes 15 mN per amp sideways and pulls 15 down
+    // each steering coil pushes 19 mN per amp sideways and pulls 19 down
     const sf = list("STEER_F");
-    expect(sf.slice(0, 3).map((x) => Math.round(x * 1000))).toEqual([15, 15, -15]);
+    expect(sf.slice(0, 3).map((x) => Math.round(x * 1000))).toEqual([19, 19, -19]);
     // a leaning magnet makes the steering push harder than its plain constants say
     expect(def("STEER_EFF")).toBeGreaterThan(1.2);
     expect(def("STEER_EFF")).toBeLessThan(1.5);
@@ -543,7 +543,7 @@ describe("the generated firmware flying the simulated rig", () => {
     const text = f.said.join("\n");
     expect(text).toMatch(/zero: .* mT stored/);
     expect(text).toMatch(/coil 0 \(lift\): 0\.0\d+ mT\/A at the sensor with its nulling winding \(worth 0\.84\d mT\/A\): stored/);
-    expect(text).toMatch(/coil 4 \(steering\): 1\.[78]\d+ mT\/A at the sensor, the design says 1\.810: stored/);
+    expect(text).toMatch(/coil 4 \(steering\): 2\.[23]\d+ mT\/A at the sensor, the design says 2\.234: stored/);
     expect(text).not.toMatch(/BACKWARDS|WRONG WAY/);
     expect(text).toMatch(/no model on the pad/);
   });

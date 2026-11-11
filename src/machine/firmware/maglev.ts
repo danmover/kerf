@@ -369,6 +369,9 @@ export function maglevFirmware(c: FwContext): MaglevResult {
   const sweep = listSetting(c, "sweep", [30, 45, 60, 80, 100], warnings)
     .map((x) => Math.max(0, Math.min(100, x)))
     .slice(0, 12);
+  // how hard the steering coils are driven follows their own rating: up to their continuous current, idling at
+  // a little over a quarter of it
+  const steerRated = Math.min(0.9, ...steer.flatMap((k) => k.members.map((m) => Number(m.w.part.specs.i_cont) || 0.9)));
   if (c.fw.settings.model_g === undefined) warnings.push(`model_g: not given, so the firmware starts from 14.5 g for the floating model (it weighs the model itself once it floats).`);
   const S = {
     modelG: setting(c.fw, "model_g", 14.5),
@@ -386,9 +389,9 @@ export function maglevFirmware(c: FwContext): MaglevResult {
     kxD: setting(c.fw, "kx_d", 0.25),
     kxI: setting(c.fw, "kx_i", 8),
     kxHz: setting(c.fw, "kx_d_hz", 15),
-    bias: setting(c.fw, "steer_bias", 0.25),
+    bias: setting(c.fw, "steer_bias", Math.round(28 * steerRated) / 100),
     liftMax: setting(c.fw, "lift_i_max", 2),
-    steerMax: setting(c.fw, "steer_i_max", 0.9),
+    steerMax: setting(c.fw, "steer_i_max", steerRated),
     launchS: setting(c.fw, "launch_s", 1.5),
     settleS: setting(c.fw, "sweep_settle_s", 3),
     avgS: setting(c.fw, "sweep_avg_s", 2),
