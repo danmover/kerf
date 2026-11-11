@@ -3039,7 +3039,7 @@ class Evaluator {
     } finally {
       this.callOverride = saved;
     }
-    if (!(v instanceof MateV)) throw new EvalError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid()", s.call.span);
+    if (!(v instanceof MateV)) throw new EvalError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), or a joint: revolute(), slider(), cylindrical(), planar() or ball()", s.call.span);
     for (const r of [v.a, v.b]) this.current?.add(r.ref.body);
     const info: NonNullable<Model["mates"]>["list"][number] = { name, kind: v.kind, a: v.a.label ?? v.a.ref.body, b: v.b.label ?? v.b.ref.body, bodies: [v.a.ref.body, v.b.ref.body], span: s.span, status: "waiting" };
     const ga = this.mateGeom(v.a, s.call.span);

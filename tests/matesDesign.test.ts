@@ -173,3 +173,21 @@ mate shaft = pin(axis(pin), axis(base, d: 5))
     expect(core.faces([part(m, "base").hash])[part(m, "base").hash]).toBe(cats[part(m, "base").hash]);
   });
 });
+
+describe("joints in a design", () => {
+  it("reads slider, revolute, ball and planar, and says what each takes", () => {
+    const m = evaluate(`design "j"
+part rail { body box(200, 20, 20) }
+part carriage { at: (40, 0, 30) rotate: (5, 0, 0) body box(30, 30, 10) }
+mate run = slider(axis(carriage, at: (40, 0, 30), dir: X), axis(rail, at: (0, 0, 30), dir: X))
+`);
+    expect(errors(m)).toEqual([]);
+    expect(m.mates?.list.map((x) => [x.name, x.kind, x.status])).toEqual([["run", "slider", "ok"]]);
+    expect(m.mates?.free.find((f) => f.body === "carriage")?.words).toBe("slides along X");
+    const bad = (src: string) => errors(evaluate(`design "j"\npart a { body box(10, 10, 10) }\npart b { at: (0, 0, 30) body box(10, 10, 10) }\n${src}\n`));
+    expect(bad("mate slider(plane(b, at: (0, 0, 30), normal: -Z), plane(a, at: (0, 0, 10), normal: +Z))")[0]).toMatch(/slider\(\) takes two axes/);
+    expect(bad("mate ball(plane(b, at: (0, 0, 30), normal: -Z), point(a, (0, 0, 10)))")[0]).toMatch(/ball\(\) takes two points/);
+    expect(bad("mate planar(point(b, (0, 0, 30)), plane(a, at: (0, 0, 10), normal: +Z))")[0]).toMatch(/planar\(\) takes two flat faces/);
+    expect(bad("mate revolute(axis(b, at: (0, 0, 30), dir: Z), axis(a, at: (0, 0, 10), dir: Z), offset: 5)")).toEqual([]);
+  });
+});

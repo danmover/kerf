@@ -155,6 +155,7 @@ export function mateChoices(a: Picked, b: Picked): MateChoice[] {
     return [
       { kind: "concentric", tip: "In line: still turns and slides along it" },
       { kind: "pin", tip: "In line and centred along each other: still turns" },
+      { kind: "slider", tip: "In line and kept from turning: only slides along (a carriage on a rod)" },
       { kind: "tangent", tip: "Side by side, touching (rollers, wheels)" },
       { kind: "parallel", tip: "The axes the same way" },
       { kind: "perpendicular", tip: "The axes square to each other" },
@@ -177,7 +178,7 @@ export function mateChoices(a: Picked, b: Picked): MateChoice[] {
   const p = a.t === "point" ? a.p : (b as Extract<Picked, { t: "point" }>).p;
   const other = a.t === "point" ? b : a;
   return [
-    { kind: "coincident", tip: other.t === "point" ? "The two points together" : other.t === "plane" ? "The point on the face" : "The point on the axis" },
+    { kind: other.t === "point" ? "ball" : "coincident", tip: other.t === "point" ? "The two points together: a ball joint, it turns every way" : other.t === "plane" ? "The point on the face" : "The point on the axis" },
     { kind: "distance", arg: `${num(dist(p, other))}mm`, tip: "This far apart" },
   ];
 }

@@ -18,7 +18,8 @@ export interface FaceCatalogue {
 }
 
 /** Geometry a mate holds, where the part is drawn (world coordinates). */
-export type MateGeom = { t: "plane"; p: V3; n: V3 } | { t: "axis"; p: V3; d: V3; r?: number } | { t: "point"; p: V3 } | { t: "body" };
+/** u: a direction square to an axis, fixed to its part (a slider keeps it from turning about the axis) */
+export type MateGeom = { t: "plane"; p: V3; n: V3 } | { t: "axis"; p: V3; d: V3; r?: number; u?: V3 } | { t: "point"; p: V3 } | { t: "body" };
 
 export interface MateRef {
   body: string;
@@ -27,7 +28,25 @@ export interface MateRef {
   label: string;
 }
 
-export type MateKind = "against" | "flush" | "concentric" | "pin" | "parallel" | "perpendicular" | "angle" | "distance" | "tangent" | "coincident" | "rigid";
+export type MateKind =
+  | "against"
+  | "flush"
+  | "concentric"
+  | "pin"
+  | "parallel"
+  | "perpendicular"
+  | "angle"
+  | "distance"
+  | "tangent"
+  | "coincident"
+  | "rigid"
+  // joints, by the names other CAD gives them: revolute is pin, cylindrical concentric, planar two faces in one
+  // plane, ball two points together; a slider is in line and does not turn
+  | "revolute"
+  | "slider"
+  | "cylindrical"
+  | "planar"
+  | "ball";
 
 export interface MateSpec {
   /** the mate's name (given, or "mate 3") */
@@ -324,7 +343,13 @@ export function pickAxis(body: string, solids: PlacedCatalogue[], opts: { near?:
 // ---------- the mates' equations ----------
 
 const placed = (g: MateGeom, m: BodyMove): MateGeom =>
-  g.t === "plane" ? { t: "plane", p: movePoint(m, g.p), n: moveDir(m, g.n) } : g.t === "axis" ? { ...g, p: movePoint(m, g.p), d: moveDir(m, g.d) } : g.t === "point" ? { t: "point", p: movePoint(m, g.p) } : g;
+  g.t === "plane"
+    ? { t: "plane", p: movePoint(m, g.p), n: moveDir(m, g.n) }
+    : g.t === "axis"
+      ? { ...g, p: movePoint(m, g.p), d: moveDir(m, g.d), ...(g.u ? { u: moveDir(m, g.u) } : {}) }
+      : g.t === "point"
+        ? { t: "point", p: movePoint(m, g.p) }
+        : g;
 const dirOf = (g: MateGeom): V3 | null => (g.t === "plane" ? g.n : g.t === "axis" ? g.d : null);
 
 /** What a mate measures (for limits and messages): an angle (radians) or a distance (mm). */
@@ -351,7 +376,14 @@ export function mateFits(k: MateKind, a: MateGeom, b: MateGeom, value?: number):
       return t === "plane-plane" ? null : `${k}() takes two flat faces, like ${k}(face(lid, -Z), face(box, +Z))`;
     case "concentric":
     case "pin":
-      return t === "axis-axis" ? null : `${k}() takes two axes (holes, shafts or bosses), like ${k}(axis(pin, d: 5), axis(hinge, d: 5))`;
+    case "revolute":
+    case "slider":
+    case "cylindrical":
+      return t === "axis-axis" ? null : `${k}() takes two axes (holes, shafts, bosses or rods), like ${k}(axis(pin, d: 5), axis(hinge, d: 5))`;
+    case "planar":
+      return t === "plane-plane" ? null : "planar() takes two flat faces (or plane()s), like planar(face(puck, -Z), face(table, +Z))";
+    case "ball":
+      return t === "point-point" ? null : "ball() takes two points, the ball's centre on each part, like ball(point(rod, (0, 0, 40)), point(arm, (0, 0, 40)))";
     case "parallel":
     case "perpendicular":
     case "angle":
@@ -389,14 +421,23 @@ function residuals(s: MateSpec, A: MateGeom, B: MateGeom, L: number, side: numbe
       return [n[0] * L, n[1] * L, n[2] * L, dot(sub(a.p, b.p), b.n) - v];
     }
     case "concentric":
-    case "pin": {
+    case "cylindrical":
+    case "pin":
+    case "revolute":
+    case "slider": {
       const a = A as Extract<MateGeom, { t: "axis" }>,
         b = B as Extract<MateGeom, { t: "axis" }>;
       const off = cross(sub(a.p, b.p), b.d);
       const r = [...same(a.d, b.d), ...off];
-      if (s.kind === "pin") r.push(dot(sub(a.p, b.p), b.d) * side - v);
+      if (s.kind === "pin" || s.kind === "revolute") r.push(dot(sub(a.p, b.p), b.d) * side - v);
+      // not turned about the axis from where it is drawn: the two square directions stay together
+      if (s.kind === "slider" && a.u && b.u) r.push(dot(a.u, cross(b.d, b.u)) * L);
       return r;
     }
+    case "planar":
+      return [...same(nA!, nB!), dot(sub((A as { p: V3 }).p, (B as { p: V3 }).p), nB!) - v];
+    case "ball":
+      return sub((A as { p: V3 }).p, (B as { p: V3 }).p);
     case "parallel": {
       if (A.t === "axis" && B.t === "plane") return [dot(A.d, B.n) * L];
       if (A.t === "plane" && B.t === "axis") return [dot(A.n, B.d) * L];
@@ -445,12 +486,24 @@ function residuals(s: MateSpec, A: MateGeom, B: MateGeom, L: number, side: numbe
 function sideOf(s: MateSpec): number {
   const A = s.a.geom,
     B = s.b.geom;
-  if (s.kind === "pin" && A.t === "axis" && B.t === "axis") return dot(A.d, B.d) < 0 ? -1 : 1;
+  if ((s.kind === "pin" || s.kind === "revolute") && A.t === "axis" && B.t === "axis") return dot(A.d, B.d) < 0 ? -1 : 1;
   if (s.kind !== "distance" && s.kind !== "tangent") return 1;
   let d = 0;
   if (B.t === "plane" && A.t !== "body") d = dot(sub(A.p, B.p), B.n);
   else if (A.t === "plane" && B.t !== "body") d = dot(sub(B.p, A.p), A.n);
   return d < 0 ? -1 : 1;
+}
+
+/** A slider holds the turn about its axis too: a direction square to each axis, the same way where they are drawn. */
+function withTurnRefs(s: MateSpec): MateSpec {
+  const A = s.a.geom,
+    B = s.b.geom;
+  if (s.kind !== "slider" || A.t !== "axis" || B.t !== "axis") return s;
+  // the world axis farthest from lying along either
+  const lean = (e: V3) => Math.max(Math.abs(dot(e, A.d)), Math.abs(dot(e, B.d)));
+  const e = ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]).reduce((best, x) => (lean(x) < lean(best) - 1e-9 ? x : best));
+  const square = (d: V3) => unit(sub(e, scl(d, dot(e, d))));
+  return { ...s, a: { ...s.a, geom: { ...A, u: square(A.d) } }, b: { ...s.b, geom: { ...B, u: square(B.d) } } };
 }
 
 // ---------- solving ----------
@@ -508,7 +561,8 @@ export interface SolveOptions {
 }
 
 /** Solve every mate: where each mated body goes, which mates hold, and what each body can still do. */
-export function solveMates(bodies: MateBody[], mates: MateSpec[], opts: SolveOptions = {}): MateSolution {
+export function solveMates(bodies: MateBody[], specs: MateSpec[], opts: SolveOptions = {}): MateSolution {
+  const mates = specs.map(withTurnRefs);
   const info = new Map(bodies.map((b) => [b.name, b]));
   const moves = new Map<string, BodyMove>();
   const outcomes: MateOutcome[] = mates.map((s) => ({ name: s.name, status: "ok" }));

@@ -227,3 +227,51 @@ describe("parts drawn far from where their mates put them", () => {
     expect(Math.hypot(p[0] - 10, p[1] - 10)).toBeLessThan(1e-6);
   });
 });
+
+describe("joints by the names other CAD gives them", () => {
+  // a carriage drawn on its rod a little turned about it and off to one side; the rod runs along X at y 10, z 25
+  const rod: PlacedCatalogue[] = [{ cat: boxCat([0, 0, 0], [200, 20, 20], [{ p: [100, 10, 25], d: [1, 0, 0], r: 4, len: 200, area: 5000 }]), xf: [] }];
+  const carXf: Xform[] = [
+    { op: "rotate", angle: 12, origin: [0, 10, 25], axis: [1, 0, 0] },
+    { op: "translate", v: [60, 3, 2] },
+  ];
+  const car: PlacedCatalogue[] = [{ cat: boxCat([-15, -5, 15], [15, 25, 35], [{ p: [0, 10, 25], d: [1, 0, 0], r: 4, len: 30, area: 750 }]), xf: carXf }];
+  const two = () => [body("rod", rod), body("car", car)];
+  const axes = (): [[string, MateGeom], [string, MateGeom]] => [["car", geom(pickAxis("car", car, {}))], ["rod", geom(pickAxis("rod", rod, {}))]];
+
+  it("a slider only slides: in line, kept from turning about the rod as drawn", () => {
+    const [a, b] = axes();
+    const s = solveMates(two(), [mate("slider", a, b)]);
+    expect(s.outcomes[0].status).toBe("ok");
+    const mv = s.moves.get("car")!;
+    // on the rod's axis, and still turned 12° about it as it is drawn (a slider keeps the turn it is drawn with)
+    const c = movePoint(mv, applyXforms([0, 10, 25], carXf));
+    expect(Math.hypot(c[1] - 10, c[2] - 25)).toBeLessThan(1e-6);
+    const f = s.free.find((x) => x.body === "car")!;
+    expect(f.dof).toBe(1);
+    expect(f.words).toBe("slides along X");
+    // dragged up and round, it only slides along
+    const grab = movePoint(mv, applyXforms([0, 10, 35], carXf));
+    const d = solveMates(two(), [mate("slider", a, b)], { start: s.moves, drag: { body: "car", point: grab, target: [grab[0] + 40, grab[1] - 30, grab[2] + 30] } });
+    const moved = movePoint(d.moves.get("car")!, applyXforms([0, 10, 35], carXf));
+    expect(moved[0] - grab[0]).toBeCloseTo(40, 4);
+    expect(moved[1]).toBeCloseTo(grab[1], 6);
+    expect(moved[2]).toBeCloseTo(grab[2], 6);
+    // a concentric (cylindrical) mate would let it turn as well
+    expect(solveMates(two(), [mate("cylindrical", a, b)]).free.find((x) => x.body === "car")!.dof).toBe(2);
+  });
+
+  it("a revolute joint is a pin, a ball joint is two points together, a planar joint two faces in one plane", () => {
+    const [a, b] = axes();
+    const rev = solveMates(two(), [mate("revolute", a, b)]);
+    const pin = solveMates(two(), [mate("pin", a, b)]);
+    const at = (s: ReturnType<typeof solveMates>) => movePoint(s.moves.get("car")!, applyXforms([0, 10, 25], carXf));
+    expect(at(rev)).toEqual(at(pin));
+    expect(rev.free.find((x) => x.body === "car")!.words).toMatch(/^turns about an axis along X/);
+    const ball = solveMates(two(), [mate("ball", ["car", { t: "point", p: applyXforms([0, 10, 25], carXf) }], ["rod", { t: "point", p: [0, 10, 25] }])]);
+    expect(ball.free.find((x) => x.body === "car")!.words).toMatch(/^turns every way/);
+    const puck = solveMates(two(), [mate("planar", ["car", geom(pickPlane("car", car, undefined, applyXforms([0, 10, 15], carXf)))], ["rod", geom(pickPlane("rod", rod, [0, 0, 1]))])]);
+    expect(puck.outcomes[0].status).toBe("ok");
+    expect(puck.free.find((x) => x.body === "car")!.dof).toBe(3);
+  });
+});

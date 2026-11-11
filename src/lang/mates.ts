@@ -176,6 +176,12 @@ export const MATE_FNS: Record<string, Fn> = Object.fromEntries([
   mateFn("tangent", [], "tangent(face(belt, +Z), axis(roller)) → a flat face touching a round one (or two round ones touching), on the side they are drawn."),
   mateFn("coincident", [], "coincident(point(rod, (0, 0, 40)), point(arm, (0, 0, 40))) → points together (a ball joint), a point on a face or an axis, or two faces or axes in one plane or line."),
   mateFn("rigid", [], "rigid(screws, lid) → the first part moves with the second as drawn (its screws, a part glued to it): whatever moves the second moves it too."),
+  // joints, by the names other CAD gives them
+  mateFn("revolute", ["offset"], "revolute(axis(lid, d: 4), axis(base, d: 4), offset: 0) → a hinge joint: in line and centred along each other, so it only turns (the same as pin()).", (a) => ({ value: a.has("offset") ? a.num("offset") : 0 })),
+  mateFn("slider", [], "slider(axis(carriage, d: 8), axis(rail, d: 8)) → a slider joint: in line and kept from turning about it, so it only slides along (a carriage on a rod, a drawer on its runner). Give its travel with distance(..., min:, max:)."),
+  mateFn("cylindrical", [], "cylindrical(axis(shaft), axis(bearing)) → in line; it still turns and slides along it (the same as concentric())."),
+  mateFn("planar", ["offset"], "planar(face(puck, -Z), face(table, +Z), offset: 0) → the two faces in one plane (facing as they are drawn): it slides about on it and turns about its normal.", (a) => ({ value: a.has("offset") ? a.num("offset") : 0 })),
+  mateFn("ball", [], "ball(point(rod, (0, 0, 40)), point(arm, (0, 0, 40))) → a ball joint: the two points together, so it turns every way about them."),
 ]);
 
-export const MATE_KINDS = ["against", "flush", "concentric", "pin", "parallel", "perpendicular", "angle", "distance", "tangent", "coincident", "rigid"] as const;
+export const MATE_KINDS = ["against", "flush", "concentric", "pin", "parallel", "perpendicular", "angle", "distance", "tangent", "coincident", "rigid", "revolute", "slider", "cylindrical", "planar", "ball"] as const;
