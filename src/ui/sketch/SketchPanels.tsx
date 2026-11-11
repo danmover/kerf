@@ -534,7 +534,29 @@ function previewCode(sk: EvalSketch, o: FeatureSpec, asParam: boolean) {
 
 // ---------------- plane picker ----------------
 
-type PlanePick = { plane: string; offset?: number; label: string; poly: { x: number; y: number }[] };
+type PlanePick = { plane: string; offset?: number; label: string; poly: { x: number; y: number }[]; n?: [number, number, number] };
+
+const NAMED_PLANES = new Set(["XY", "-XY", "XZ", "-XZ", "YZ", "-YZ"]);
+
+/** Reference-plane settings the plane picker applies to what is clicked. */
+interface PickOpts {
+  offset: number;
+  tilt: number;
+  about: "x" | "y";
+  midway: boolean;
+}
+
+/** The plane text for a pick, moved and tilted as asked: a named plane stays a name with an offset when it can. */
+function pickedPlane(h: PlanePick, o: PickOpts, base?: string): { plane: string; offset?: number } {
+  const turn = o.tilt ? `, turn: ${fmt(o.tilt)}${o.about === "y" ? ', about: "y"' : ""}` : "";
+  if (!base && NAMED_PLANES.has(h.plane)) {
+    const off = (h.offset ?? 0) + o.offset;
+    if (!turn) return { plane: h.plane, offset: off || undefined };
+    return { plane: `plane(${h.plane}${off ? `, offset: ${fmt(off)}` : ""}${turn})` };
+  }
+  const b = base ?? (h.offset ? `plane(${h.plane}, offset: ${fmt(h.offset)})` : h.plane);
+  return { plane: o.offset || turn ? `plane(${b}${o.offset ? `, offset: ${fmt(o.offset)}` : ""}${turn})` : b };
+}
 
 const NAMED: { n: [number, number, number]; plane: string }[] = [
   { n: [0, 0, 1], plane: "XY" },
@@ -581,6 +603,32 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
     };
   }, [ctl]);
 
+  const [offset, setOffset] = useState("0");
+  const [tilt, setTilt] = useState("0");
+  const [about, setAbout] = useState<"x" | "y">("x");
+  const [midway, setMidway] = useState(false);
+  const [first, setFirst] = useState<PlanePick | null>(null);
+  const opts: PickOpts = { offset: Number(offset) || 0, tilt: Number(tilt) || 0, about, midway };
+  const pick = (h: PlanePick) => {
+    if (!opts.midway) {
+      const r = pickedPlane(h, opts);
+      return createSketch(r.plane, r.offset);
+    }
+    if (!first) return setFirst(h);
+    const na = first.n ?? NAMED.find((k) => k.plane === first.plane)?.n;
+    const nb = h.n ?? NAMED.find((k) => k.plane === h.plane)?.n;
+    if (na && nb && Math.abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]) < Math.cos(Math.PI / 180)) {
+      toast({ kind: "warn", title: "Those two aren't parallel", detail: "Pick two faces (or planes) that face the same or opposite ways, or use Tilt for a plane at an angle." });
+      return;
+    }
+    const expr = (q: PlanePick) => (q.offset ? `plane(${q.plane}, offset: ${fmt(q.offset)})` : q.plane);
+    setFirst(null);
+    const r = pickedPlane(h, opts, `plane(between: [${expr(first)}, ${expr(h)}])`);
+    createSketch(r.plane, r.offset);
+  };
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
+
   const planes = (): PlanePick[] => {
     const o = ctl.toScreen([0, 0, 0]);
     const ux = ctl.toScreen([1, 0, 0]);
@@ -589,9 +637,9 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
     const q = (pts: [number, number, number][]) => pts.map((p) => ctl.toScreen(p));
     const g = s * 0.08;
     return [
-      { plane: "XY", label: "Top · XY", poly: q([[g, g, 0], [s, g, 0], [s, s, 0], [g, s, 0]]) },
-      { plane: "XZ", label: "Front · XZ", poly: q([[g, 0, g], [s, 0, g], [s, 0, s], [g, 0, s]]) },
-      { plane: "YZ", label: "Right · YZ", poly: q([[0, g, g], [0, s, g], [0, s, s], [0, g, s]]) },
+      { plane: "XY", label: "Top · XY", poly: q([[g, g, 0], [s, g, 0], [s, s, 0], [g, s, 0]]), n: [0, 0, 1] },
+      { plane: "XZ", label: "Front · XZ", poly: q([[g, 0, g], [s, 0, g], [s, 0, s], [g, 0, s]]), n: [0, -1, 0] },
+      { plane: "YZ", label: "Right · YZ", poly: q([[0, g, g], [0, s, g], [0, s, s], [0, g, s]]), n: [1, 0, 0] },
     ];
   };
 
@@ -619,7 +667,7 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
           [1, 1],
           [-1, 1],
         ].map(([a, b]) => ctl.toScreen(add3(face.point, add3(scale3(u, a * k), scale3(v, b * k)))));
-        return { ...f, poly };
+        return { ...f, poly, n: face.normal };
       }
       for (const pl of planes()) if (inPoly(p, pl.poly)) return pl;
       return null;
@@ -631,7 +679,7 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
       if (t.closest(".sk-ui, .vp-toolbar, .vp-float")) return;
       e.stopPropagation();
       const h = find(e);
-      if (h) createSketch(h.plane, h.offset);
+      if (h) pickRef.current(h);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -673,7 +721,7 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
           <span className="sk-badge">
             <T.Sketch size={13} /> new sketch
           </span>
-          <span className="grow">{hover ? <span className="mono">{hover.label}</span> : "Click a plane, or a flat face of a part"}</span>
+          <span className="grow">{midway && first ? <>Now the face or plane opposite <span className="mono muted">{first.label}</span></> : hover ? <span className="mono">{hover.label}</span> : midway ? "Click the first of two parallel faces or planes" : "Click a plane, or a flat face of a part"}</span>
           <button className="btn sm ghost" onClick={() => useSketch.setState({ picking: false })}>
             Cancel
           </button>
@@ -684,10 +732,42 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
             ["XZ", "Front"],
             ["YZ", "Right"],
           ].map(([p, l]) => (
-            <button key={p} className="btn sm" onClick={() => createSketch(p)}>
+            <button key={p} className="btn sm" onClick={() => pick({ plane: p, label: `${l} · ${p}`, poly: [], n: NAMED.find((k) => k.plane === p)?.n })}>
               {l} <span className="mono muted">{p}</span>
             </button>
           ))}
+        </div>
+        <div className="row sk-ref" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+          <label className="row" style={{ gap: 4 }} data-tip="Moves the sketch plane this far off what you click, along its normal">
+            <span className="muted">Offset</span>
+            <input className="input mono" style={{ width: 56 }} value={offset} onChange={(e) => setOffset(e.target.value)} aria-label="Offset in mm" />
+            <span className="muted">mm</span>
+          </label>
+          <label className="row" style={{ gap: 4 }} data-tip="Tilts the sketch plane by this angle about its own x or y axis">
+            <span className="muted">Tilt</span>
+            <input className="input mono" style={{ width: 48 }} value={tilt} onChange={(e) => setTilt(e.target.value)} aria-label="Tilt in degrees" />
+            <span className="muted">° about</span>
+          </label>
+          <Segmented
+            id="sk-about"
+            value={about}
+            onChange={setAbout}
+            options={[
+              { value: "x", label: "x" },
+              { value: "y", label: "y" },
+            ]}
+          />
+          <label className="sk-check" data-tip="A plane halfway between two parallel faces: pick both">
+            <input
+              type="checkbox"
+              checked={midway}
+              onChange={(e) => {
+                setMidway(e.target.checked);
+                setFirst(null);
+              }}
+            />{" "}
+            midway between two
+          </label>
         </div>
       </motion.div>
     </div>
