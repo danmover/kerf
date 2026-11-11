@@ -9,7 +9,7 @@ import type { Item, Stmt } from "../lang/ast";
 import { parse } from "../lang/parser";
 import { fmtNum } from "../lang/values";
 import { MATERIAL_DB } from "../library/materialDb";
-import type { EvalParam, Model } from "./model";
+import type { EvalParam, EvalPart, Model } from "./model";
 import { formatParamValue, setBlockProps } from "./sourceEdit";
 
 export type Vec3 = [number, number, number];
@@ -631,6 +631,20 @@ function blockStmt(src: string, name: string): PartStmt | CompStmt | undefined {
   return program.stmts.find((s): s is PartStmt | CompStmt => (s.k === "part" || s.k === "component") && s.name === name);
 }
 
+/** A frame member moves and takes a colour with its whole frame; the rest of it (profile, length, ends) is set by the frame block. */
+function applyFrameMember(cmd: QuickCommand, part: EvalPart, ctx: QuickContext): QuickResult {
+  const { program } = parse(ctx.src);
+  const fr = program.stmts.find((s): s is Extract<Stmt, { k: "frame" }> => s.k === "frame" && s.name === part.frame);
+  if (!fr) return fail(`There is no frame called ${part.frame}.`);
+  if (fr.items.some((i) => i.k === "flag" && i.name === "locked")) return fail(`Frame ${fr.name} is locked. Unlock it in the parts list first.`);
+  if (cmd.k === "move") {
+    const src = setBlockProps(ctx.src, fr.name, { at: shiftedAt(ctx.src, fr as unknown as PartStmt, cmd.by) });
+    return { ok: true, src, title: `Moved frame ${fr.name} ${dirWords(cmd.by)}`, target: part.name };
+  }
+  if (cmd.k === "color") return { ok: true, src: setBlockProps(ctx.src, fr.name, { color: cmd.color }), title: `Coloured frame ${fr.name} ${cmd.name}`, target: part.name };
+  return fail(`${part.label} is one member of frame ${fr.name}: change the frame's profile, size or lines in its block instead.`, true);
+}
+
 /** Props on a block that tie it to a mechanism: moving it by hand would leave its axis or pins behind. */
 const MECHANISM = ["spin", "axis_at", "rides", "pins", "links", "slides", "swings", "mesh"];
 
@@ -650,6 +664,7 @@ export function applyQuick(cmd: QuickCommand, ctx: QuickContext): QuickResult {
   if (!target) return fail(`Click a part first (or name it, like “${example(cmd)} on ${ctx.model.parts.find((p) => p.kind === "part")?.name ?? "bracket"}”), then say it again.`, true);
   const part = ctx.model.parts.find((p) => p.name === target && !p.id.startsWith(`${target}.`)) ?? ctx.model.parts.find((p) => p.name === target);
   const stmt = blockStmt(ctx.src, target);
+  if (part?.frame && !stmt) return applyFrameMember(cmd, part, ctx);
   if (!part || !stmt) return fail(`There is no part called ${target}.`);
   if (part.locked) return fail(`${part.label} is locked. Unlock it in the parts list first.`);
   switch (cmd.k) {

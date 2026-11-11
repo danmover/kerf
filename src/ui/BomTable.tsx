@@ -8,6 +8,7 @@ import { isPrinted } from "../library/materials";
 import { fmtNum } from "../lang/values";
 import { Icon } from "./icons";
 import { partMaterialCost } from "../materials/context";
+import { FrameCuts } from "./FrameCuts";
 import { cleanOnHand, updateSettings, useSettings } from "../app/settings";
 
 const money = (n: number) => `$${n.toFixed(2)}`;
@@ -185,6 +186,7 @@ export function BomTable() {
           No parts yet.
         </div>
       )}
+      <FrameCuts model={model} />
     </div>
   );
 }

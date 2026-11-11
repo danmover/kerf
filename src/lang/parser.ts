@@ -125,7 +125,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.machineStmtAhead()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.machineStmtAhead()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -139,6 +139,11 @@ class Parser {
   /** `drawing <name> {` starts a drawing block; elsewhere "drawing" is an ordinary name. */
   atDrawing() {
     return this.is("ident", "drawing") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
+  }
+
+  /** `frame <name> {` starts a frame of structural members; elsewhere "frame" is an ordinary name. */
+  atFrame() {
+    return this.is("ident", "frame") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
   }
 
   /** wire a.X -> b.Y, net NAME: ..., firmware NAME { }, test "label": ... */
@@ -273,10 +278,17 @@ class Parser {
       const items = this.block();
       return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
+    if (this.atFrame()) {
+      const start = tk.start;
+      this.next();
+      const nameTk = this.expect("ident", undefined, "a frame name");
+      const items = this.block();
+      return { k: "frame", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+    }
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, wire, net, firmware, test, buy, scenario) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, frame, wire, net, firmware, test, buy, scenario) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );

@@ -2,7 +2,8 @@
 
 import { Args } from "./args";
 import { Fn, Obj, Pending, ProfileV, Ref, ShapeV, Vec, typeName, type CallCtx, type Value } from "./values";
-import type { ShapeRecipe, ThreadSpec3, V2, V3 } from "../kernel/recipe";
+import { frameAt, vlen, vnorm, vsub, type ShapeRecipe, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
+import { parseSection, sectionProfile } from "./frames";
 import { THREADS } from "../library/standards";
 import { centerDistance } from "../library/gears";
 import { LIBRARY } from "../library/components";
@@ -237,6 +238,23 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
       return new ShapeV({ t: "union", shapes });
     },
     "union([shape, ...])",
+  ),
+  def(
+    "beam",
+    ["profile", "from", "to", "rotate"],
+    (a) => {
+      const text = a.str("profile");
+      const series = /^\s*(?:v-?slot\s*)?(\d{4})\b/i.exec(text);
+      if (series) a.ctx.error(`beam(): ${series[1]} is bought aluminium extrusion: use lib.extrusion("vslot_${series[1]}", length: ...) or a frame block`);
+      const sec = parseSection(text, () => undefined);
+      if (typeof sec === "string") return a.ctx.error(`beam(): ${sec}`);
+      const from = a.vec3("from");
+      const to = a.vec3("to");
+      const L = vlen(vsub(to, from));
+      if (L < 0.01) a.ctx.error("beam(): from and to are the same point");
+      return new ShapeV({ t: "extrude", p: sectionProfile(sec), h: L, f: frameAt(from, vnorm(vsub(to, from)), a.num("rotate", 0)), twist: 0, scale: 1 });
+    },
+    'beam(profile, from:, to:, rotate: 0) — a straight length of stock section between two points on its centre line, cut square: "box 40x40x3" (width x height x wall), "tube 26.9x2.6" (outside diameter x wall), "angle 30x30x3", "flat 40x5", "bar 20x20" or "rod 12". rotate turns the section about its line. Members that meet belong in a frame block, which trims them to fit and makes a cut list.',
   ),
 ]);
 

@@ -30,7 +30,7 @@ const STATEMENTS = new Set(["design", "note", "brief", "param", "let", "componen
 // brief entries are ordinary names elsewhere, so they only read as keywords at the start of a line
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
 // "drawing" starts a block only at the start of a line; elsewhere it is an ordinary name
-const LINE_KEYWORDS = new Set(["drawing"]);
+const LINE_KEYWORDS = new Set(["drawing", "frame"]);
 const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
 const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MODELLING_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step", ...Object.keys(ANALYSIS_FNS)]);
@@ -217,12 +217,14 @@ export function kerfCompletions(getModel: () => Model | null) {
       .map(([k, d]) => ({ label: k, type: "function", info: d, detail: "drawing", apply: k + "(" })),
   ];
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
+  kw.push({ label: "frame", type: "keyword", detail: "structural frame", info: 'frame name { profile: "2020", box: (w, d, h) } or path: [(x, y, z), ...]: 2020 extrusion or steel sections along lines, trimmed where they meet, with a cut list' });
+  const profiles: Completion[] = ["2020", "2040", "box 40x40x3", "box 50x25x2.5", "tube 26.9x2.6", "angle 30x30x3", "flat 40x5", "bar 20x20", "rod 12"].map((p) => ({ label: `"${p}"`, type: "text", detail: /^\d/.test(p) ? "V-slot extrusion" : "section" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
   const libItems: Completion[] = Object.entries(LIBRARY).map(([k, e]) => ({ label: k, type: "class", info: `${e.signature}\n\n${e.doc}`, detail: "library", apply: k + "(" }));
   const mfgItems: Completion[] = PROCESS_IDS.map((id) => ({ label: id, type: "class", info: `${PROCESSES[id].label}. ${PROCESSES[id].summary}\n\nSettings: ${PROCESSES[id].settings.map((s) => `${s.key}: ${s.doc}`).join("; ") || "none"}`, detail: "process", apply: id + "(" }));
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
-  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "chain", "label", "axis_at", "plane", "offset", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "chain", "label", "axis_at", "plane", "offset", "profile", "box", "path", "levels", "ends", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 
@@ -236,6 +238,10 @@ export function kerfCompletions(getModel: () => Model | null) {
     if (/process:\s*"[A-Za-z_]*$/.test(line.slice(0, ctx.pos - ctx.state.doc.lineAt(ctx.pos).from))) {
       const m = ctx.matchBefore(/"[A-Za-z_]*/);
       return { from: m ? m.from : ctx.pos, options: processNames };
+    }
+    if (/profile:\s*"?[A-Za-z0-9 .x]*$/.test(line.slice(0, ctx.pos - ctx.state.doc.lineAt(ctx.pos).from))) {
+      const m = ctx.matchBefore(/"?[A-Za-z0-9 .x]*/);
+      return { from: m ? m.from : ctx.pos, options: profiles };
     }
     if (/material:\s*"?[A-Za-z ]*$/.test(line.slice(0, ctx.pos - ctx.state.doc.lineAt(ctx.pos).from))) {
       const m = ctx.matchBefore(/"?[A-Za-z0-9 ]*/);

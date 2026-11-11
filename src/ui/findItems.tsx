@@ -22,6 +22,8 @@ import { undo, redo, closeProject, duplicateProject, flushPending, useProject, c
 import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
 import { openFilmMaker } from "../film/store";
+import { openFrameDialog } from "./FrameDialog";
+import { fastenFrames } from "../app/frameFasten";
 import { importStepFiles } from "../app/imports";
 import { TEMPLATES } from "../demos/templates";
 import { openDrawings, closeDrawings, useDrawings } from "../drawing/engine";
@@ -207,6 +209,9 @@ export function findItems(ctx: FindContext): FindItem[] {
           ]
         : []),
       { id: "model:markup", group: "Model", title: "Draw on the view for Claude", detail: "Circle or scribble on the model and say what to change there", keywords: "markup annotate scribble sketch on screen pen highlight", icon: <Icon.Edit size={14} />, keys: "M", run: () => toggleMarkup() },
+      { id: "model:frame", group: "Model", title: "New frame", detail: "A box frame or rectangle of 2020 extrusion or steel box, tube or angle: members cut to fit where they meet, with a cut list", keywords: "frame weldment weldments structural members 2020 2040 extrusion v-slot t-slot aluminium profile steel box section rhs shs square tube round tube chs angle iron flat bar chassis stand table cube cage rack trim extend mitre miter cope cut list", icon: <Icon.Grid size={14} />, run: () => openFrameDialog() },
+      { id: "model:fasten-frames", group: "Model", title: "Fasten frame joints", detail: "Corner brackets with screws and T-nuts at every 2020 or 2040 frame joint nothing holds yet, without Claude", keywords: "fasten frame joints corner brackets gusset t-nuts tee nuts screws extrusion v-slot 2020 2040 join profiles", icon: <Icon.Screw size={14} />, run: () => void fastenFrames() },
+      { id: "model:cutlist", group: "Model", title: "Cut list", detail: "Lengths to cut for every frame, their end cuts and the bars to buy (under the parts list)", keywords: "cut list cutting list saw lengths stock bars frame members weldment extrusion", icon: <Icon.List size={14} />, run: () => useView.setState({ dockTab: "bom", dockOpen: true }) },
       { id: "model:step", group: "Model", title: "Import a STEP file", detail: "Bring in a part from another CAD tool to design around", keywords: "import step stp cad file part load open", icon: <Icon.Upload size={14} />, run: pickStep },
       ask("ask:fix-up", "Model", "Fix it up", "After modelling by hand: Claude makes it fit, build and pass the checks", "tidy clean repair hand made manual", FIX_IT_UP, <Icon.Sparkle size={14} />),
       ask("ask:buildable", "Model", "Make it a buildable product", "Real fasteners and fits, processes you have, an assembly order and where to buy each part", "product real manufacture production ready buildable", MAKE_BUILDABLE, <Icon.Sparkle size={14} />),

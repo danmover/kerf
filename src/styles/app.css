@@ -2646,6 +2646,82 @@ a:hover {
   width: 50px;
 }
 
+/* New frame dialog */
+.frame-panel {
+  right: 12px;
+  top: 56px;
+  width: 300px;
+  max-height: calc(100% - 72px);
+  overflow-y: auto;
+  font-size: 12px;
+  display: grid;
+  gap: 7px;
+}
+.frame-panel .mt-head {
+  margin-bottom: 0;
+}
+.frame-panel .mt-num {
+  grid-template-columns: 74px 1fr auto;
+}
+.frame-panel-intro {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.frame-dialog-sum {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgb(var(--line-rgb) / 0.35);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.frame-dialog-sum.bad {
+  color: var(--fail);
+}
+
+/* frames' cut list, under the parts list */
+.frame-cuts {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+}
+.frame-cuts-h {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-right: 10px;
+}
+.frame-cut {
+  padding-bottom: 8px;
+}
+.frame-cut-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 2px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.frame-cut-title:hover b {
+  text-decoration: underline;
+}
+.frame-cut .bom th {
+  position: static;
+}
+.frame-cut-row {
+  cursor: pointer;
+}
+.frame-cut-row:hover td {
+  background: rgb(var(--line-rgb) / 0.35);
+}
+
 .graph-wrap {
   position: absolute;
   inset: 0;

@@ -88,6 +88,8 @@ export type Stmt =
     }
   | { k: "part"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | { k: "drawing"; name: string; items: Item[]; span: Span; nameSpan: Span }
+  /** `frame name { profile:, box:, path: ... }`: structural members along lines, trimmed where they meet */
+  | { k: "frame"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | {
       k: "require";
       label: string;
@@ -188,6 +190,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "part":
     case "sketch":
     case "drawing":
+    case "frame":
       return s.name;
     case "require":
     case "scenario":

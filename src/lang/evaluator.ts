@@ -3,7 +3,8 @@
 
 import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
 import { parse, parseExpression, type Diagnostic } from "./parser";
-import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
+import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, SketchLineObj, SketchObj, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
+import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
 import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
 import { BLOCK_FNS } from "./blocks";
@@ -13,10 +14,12 @@ import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
 import type { ImportRef, ImportTable } from "../kernel/imports";
-import { frameFor, hasDetail, recipeHash, rotateAbout, vdot, vnorm, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
+import { frameFor, hasDetail, recipeHash, rotateAbout, vadd, vdot, vlen, vnorm, vscale, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
-import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, GearInfo, Link, Model, Motion } from "../core/model";
+import { materialDensity } from "../library/standards";
+import { materialRecord, pricePerKg } from "../library/materialDb";
+import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, Link, Model, Motion } from "../core/model";
 import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
@@ -115,6 +118,26 @@ const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "
 const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
+
+const FRAME_PROPS = ["profile", "box", "path", "levels", "top", "bottom", "at", "rotate", "ends", "material", "finish", "color", "group", "label", "held", "explode"];
+/** short lengths of stock section from a hardware store or a metal merchant's offcuts cost about this many times the bulk price per kg */
+const SECTION_PRICE_FACTOR = 4;
+
+/** How a bare section looks: mill-finish steel, aluminium or stainless. */
+function sectionColor(material: string): string {
+  if (/^stainless/i.test(material)) return "#b8bec6";
+  if (/^alumin/i.test(material)) return "#c9d1dc";
+  if (/^steel/i.test(material)) return "#7d848d";
+  return "#8a9099";
+}
+
+/** A catalog extrusion as frames read it: its size across and weight per metre. */
+function catalogProfile(id: string): CatalogProfile | undefined {
+  const p = catalogPart(id);
+  if (!p || p.kind !== "extrusion" || !p.cut_to_length) return undefined;
+  const spec = (k: string) => (typeof p.specs[k] === "number" ? (p.specs[k] as number) : undefined);
+  return { id: p.id, name: p.name, w: spec("w") ?? 20, h: spec("h") ?? 20, massPerM: spec("mass_g_per_m") };
+}
 
 interface CompInfo {
   def: CompDef;
@@ -256,6 +279,9 @@ class Evaluator {
   brief: Brief | null = null;
   geoQueries: GeoQuery[] = [];
   drawings: DrawingSpec[] = [];
+  frames: FrameInfo[] = [];
+  /** frame members by name, to the frame they belong to (references to a member depend on its frame) */
+  memberOf = new Map<string, string>();
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
@@ -308,13 +334,13 @@ class Evaluator {
       partShape: (name: string) => {
         const p = this.parts.find((q) => q.name === name && q.kind === "part");
         if (!p) return undefined;
-        this.current?.add(name);
+        this.current?.add(this.memberOf.get(name) ?? name);
         return { recipe: p.recipe, xf: p.xf, material: p.material };
       },
       partShapes: (name: string) => {
         const ps = this.parts.filter((q) => q.name === name);
         if (!ps.length) return undefined;
-        this.current?.add(name);
+        this.current?.add(this.memberOf.get(name) ?? name);
         this.shapeRefs++;
         return ps.map((p) => ({ recipe: p.recipe, xf: p.xf, kind: p.kind }));
       },
@@ -339,7 +365,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "frame" ? `In frame "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -430,6 +456,9 @@ class Evaluator {
         return;
       case "drawing":
         this.drawing(s);
+        return;
+      case "frame":
+        this.frame(s);
         return;
       case "decision":
         this.decision(s);
@@ -762,7 +791,7 @@ class Evaluator {
     const local = scope?.get(name);
     if (local !== undefined) return local;
     if (this.globals.has(name)) {
-      this.current?.add(name);
+      this.current?.add(this.memberOf.get(name) ?? name);
       return this.globals.get(name)!;
     }
     if (this.builtins.has(name)) return this.builtins.get(name)!;
@@ -1981,6 +2010,221 @@ class Evaluator {
     });
   }
 
+  // ---------------- frames: structural members along lines ----------------
+
+  /**
+   * `frame name { profile:, box: | path: ... }`: one member per line, each a
+   * catalog profile (a component) or a stock section (a part), trimmed and
+   * lengthened where they meet (see frames.ts), and a cut list.
+   */
+  frame(s: Extract<Stmt, { k: "frame" }>) {
+    const props: Record<string, Value> = {};
+    const spans: Record<string, Span> = {};
+    const paths: { v: Value; span: Span }[] = [];
+    const flags = new Set<string>();
+    for (const it of s.items) {
+      if (it.k === "prop") {
+        if (!FRAME_PROPS.includes(it.name)) {
+          const sugg = suggest(it.name, FRAME_PROPS);
+          throw new EvalError(`Unknown frame property "${it.name}"${sugg ? `. Did you mean "${sugg}"?` : ""}. Frames take ${FRAME_PROPS.map((p) => p + ":").join(", ")}`, it.span);
+        }
+        const v = this.expr(it.value, null);
+        if (v instanceof Pending) throw new EvalError("A frame's lines and sizes cannot depend on measured geometry", it.span);
+        if (it.name === "path") paths.push({ v, span: it.span });
+        else {
+          if (props[it.name] !== undefined) throw new EvalError(`${it.name}: is given twice`, it.span);
+          props[it.name] = v;
+          spans[it.name] = it.span;
+        }
+      } else if (it.k === "flag") {
+        if (it.name !== "locked" && it.name !== "hidden") throw new EvalError(`Unknown flag "${it.name}". Frames accept locked and hidden.`, it.span);
+        flags.add(it.name);
+      } else throw new EvalError("A frame takes properties (profile:, box:, path:, rotate:, ends:, material: and the like) and the flags locked and hidden", it.span);
+    }
+    this.blocks.push({ name: s.name, kind: "frame", span: s.span, locked: flags.has("locked") });
+    const ctx = this.ctx();
+    const v3 = (v: Value, span: Span, what: string): V3 => {
+      this.callSpan = span;
+      return toV3(v, ctx, what);
+    };
+
+    const profileText = props.profile ?? "2020";
+    if (typeof profileText !== "string") throw new EvalError('profile: should be text in quotes, like profile: "2020" or profile: "box 40x40x3"', spans.profile);
+    const sec = parseSection(profileText, catalogProfile);
+    if (typeof sec === "string") throw new EvalError(sec, spans.profile ?? s.nameSpan);
+    const endsV = props.ends ?? "butt";
+    if (endsV !== "butt" && endsV !== "miter" && endsV !== "mitre") throw new EvalError('ends: should be "butt" (members stop against each other: the default) or "miter" (two sections meeting at a corner are cut at half the angle)', spans.ends);
+    const miter = endsV !== "butt";
+    if (miter && sec.catalogId) this.diags.push({ message: `In frame "${s.name}": ${sec.noun} is cut square and joined with brackets, so its corners stay butt joints. ends: "miter" is for welded sections such as "box 40x40x3".`, start: spans.ends.start, end: spans.ends.end, severity: "warning" });
+    if (props.material !== undefined && sec.catalogId && !(typeof props.material === "string" && /^alumin/i.test(props.material))) throw new EvalError(`${sec.noun} is aluminium: give it an aluminium alloy, or use a steel section such as "box 40x40x3"`, spans.material);
+    this.checkMaterial({ material: props.material, finish: props.finish }, { material: spans.material, finish: spans.finish });
+    const material = typeof props.material === "string" ? props.material : sec.catalogId ? "Aluminum 6061" : "Steel";
+    const finish = typeof props.finish === "string" ? props.finish : undefined;
+    const rot = props.rotate === undefined ? 0 : this.num(props.rotate, spans.rotate, "rotate (degrees: turns each member's section about its own line)");
+    const at: V3 = props.at === undefined ? [0, 0, 0] : v3(props.at, spans.at, "at");
+    for (const k of ["levels", "top", "bottom"]) if (props[k] !== undefined && props.box === undefined) throw new EvalError(`${k}: is for box frames (box: (width, depth, height))`, spans[k]);
+    for (const k of ["top", "bottom"]) if (props[k] !== undefined && typeof props[k] !== "boolean") throw new EvalError(`${k}: should be true or false (leave out the ${k} ring of rails with ${k}: false)`, spans[k]);
+
+    const lines: FrameLine[] = [];
+    let box: [number, number, number] | undefined;
+    if (props.box !== undefined) {
+      const b = props.box instanceof Vec ? props.box.v : null;
+      if (!b || (b.length !== 2 && b.length !== 3) || !(b[0] > 0 && b[1] > 0 && (b[2] ?? 0) >= 0)) throw new EvalError("box: is the frame's outside size: (width, depth, height), or (width, depth) for a flat rectangle", spans.box);
+      box = [b[0], b[1], b[2] ?? 0];
+      const big = Math.max(sec.w, sec.h);
+      if (box[0] < 2 * big + 1 || box[1] < 2 * big + 1 || (box[2] > 0 && box[2] < 2 * big + 1)) throw new EvalError(`box: ${fmtNum(box[0])} × ${fmtNum(box[1])}${box[2] ? ` × ${fmtNum(box[2])}` : ""} mm is too small for ${fmtNum(sec.w)} × ${fmtNum(sec.h)} mm members: each side needs room for two of them`, spans.box);
+      let levels: number[] = [];
+      if (props.levels !== undefined) {
+        if (!box[2]) throw new EvalError("levels: are heights of extra rings of rails, so the box needs a height: box: (width, depth, height)", spans.levels);
+        const lv = props.levels instanceof Vec ? props.levels.v : Array.isArray(props.levels) ? props.levels : typeof props.levels === "number" ? [props.levels] : null;
+        if (!lv || lv.some((x) => typeof x !== "number" || !(x > big && x < box![2] - big))) throw new EvalError(`levels: should be heights (to the middle of the rails) between ${fmtNum(big)} and ${fmtNum(box[2] - big)} mm, like levels: [150]`, spans.levels);
+        levels = lv as number[];
+      }
+      lines.push(...boxFrameLines(box[0], box[1], box[2], sec, rot, { levels, top: props.top !== false, bottom: props.bottom !== false }));
+    }
+    for (const p of paths) lines.push(...this.framePath(p.v, p.span, rot, v3));
+    if (!lines.length) throw new EvalError('A frame needs its lines: box: (width, depth, height) for a box frame, or path: [(x, y, z), ...] through the middle of the members (repeat path: for more runs)', s.nameSpan);
+    if (lines.length > 200) throw new EvalError(`A frame is limited to 200 members (this one has ${lines.length}): split it into several frames`, s.nameSpan);
+    const placed = lines.map((l) => ({ ...l, a: vadd(l.a, at), b: vadd(l.b, at) }));
+    const plan = planFrame(placed, sec, { miter: miter && !sec.catalogId });
+    for (const w of plan.warnings) this.diags.push({ message: `In frame "${s.name}": ${w}`, start: s.nameSpan.start, end: s.nameSpan.end, severity: "warning" });
+
+    const label = typeof props.label === "string" ? props.label : s.name;
+    const group = typeof props.group === "string" ? props.group : label;
+    if (props.color !== undefined && typeof props.color !== "string") throw new EvalError("color: should be a colour like #8a9099", spans.color);
+    const color = typeof props.color === "string" ? props.color : undefined;
+    checkHeld(props.held, spans.held);
+    const held = typeof props.held === "string" ? props.held.trim() : undefined;
+    const explode = explodeProp(props.explode, ctx, spans.explode);
+    const density = materialDensity(material);
+    const rec = sec.catalogId ? undefined : materialRecord(material);
+    const perKg = rec ? pricePerKg(rec, undefined)?.price : undefined;
+    const sp = s.span;
+    const num = (v: number): Expr => ({ k: "num", v: Math.round(v * 1e6) / 1e6, span: sp });
+    const str = (v: string): Expr => ({ k: "str", v, span: sp });
+    const vec = (p: V3): Expr => ({ k: "vec", items: p.map(num), span: sp });
+    const prop = (name: string, value: Expr): Item => ({ k: "prop", name, value, span: sp });
+    const counters: Record<string, number> = { post: 0, rail: 0, brace: 0 };
+    const infos: FrameMemberInfo[] = [];
+    const values: Value[] = [];
+    let mass = 0;
+    const blocksBefore = this.blocks.length;
+    try {
+      for (const m of plan.members) {
+        const name = `${s.name}_${m.index + 1}`;
+        const mlabel = `${label} ${m.role} ${++counters[m.role]}`;
+        // a member used up by its end cuts was warned about; there is nothing to make
+        if (m.length < 1) continue;
+        const ends = m.ends.map(endWords) as [string, string];
+        if (sec.catalogId) {
+          const items: Item[] = [prop("at", vec(m.start)), prop("axis", vec(m.dir)), prop("label", str(mlabel)), prop("group", str(group))];
+          if (m.rot) items.push(prop("rotate", num(m.rot)));
+          if (color) items.push(prop("color", str(color)));
+          if (typeof props.material === "string") items.push(prop("material", str(material)));
+          if (finish) items.push(prop("finish", str(finish)));
+          if (held) items.push(prop("held", str(held)));
+          if (explode !== undefined) items.push(prop("explode", explode === false ? { k: "bool", v: false, span: sp } : vec(explode)));
+          for (const f of flags) items.push({ k: "flag", name: f, span: sp });
+          const call: Expr & { k: "call" } = {
+            k: "call",
+            callee: { k: "member", obj: { k: "ident", name: "lib", span: sp }, name: "extrusion", span: sp },
+            args: [
+              { value: str(sec.catalogId), span: sp },
+              { name: "length", value: num(m.length), span: sp },
+            ],
+            span: sp,
+          };
+          const first = this.parts.length;
+          this.component({ k: "component", name, call, items, span: sp, nameSpan: s.nameSpan });
+          for (let i = first; i < this.parts.length; i++) this.parts[i].frame = s.name;
+          mass += ((sec.massPerM ?? 0) * m.length) / 1000;
+        } else {
+          this.define(name, "part", new Ref(name, "part"), s.nameSpan);
+          // what the piece weighs as bought (its price), and finished (the frame's weight)
+          const g = (sec.area * m.length * density) / 1000;
+          mass += (sec.area * m.axial * density) / 1000;
+          if (!this.opts.skipGeometry) {
+            const recipe = memberRecipe(sec, m);
+            const cutText = ends[0] === "square" && ends[1] === "square" ? "" : ends[0] === ends[1] ? ` (${ends[0]} both ends)` : ` (${ends.filter((e) => e !== "square").join(" and ")}${ends.includes("square") ? ", other end square" : ""})`;
+            const price = perKg ? Math.round(perKg * SECTION_PRICE_FACTOR * (g / 1000) * 100) / 100 : undefined;
+            this.parts.push({
+              id: name,
+              name,
+              label: mlabel,
+              kind: "part",
+              group,
+              color: color ?? sectionColor(material),
+              material,
+              ...(finish ? { finish } : {}),
+              materialSpan: spans.material,
+              processNone: true,
+              recipe,
+              hash: recipeHash(recipe),
+              xf: [],
+              locked: flags.has("locked"),
+              hidden: flags.has("hidden"),
+              removable: false,
+              span: s.span,
+              deps: [],
+              held: held ?? "welded to the rest of the frame",
+              ...(explode !== undefined ? { explode } : {}),
+              features: [],
+              detail: false,
+              frame: s.name,
+              bom: {
+                description: `${sectionName(sec, material)}, cut to ${fmtNum(m.length, 1)} mm${cutText}`,
+                length: Math.round(m.length * 10) / 10,
+                price,
+                priceNote: price !== undefined ? `Estimate: ${fmtNum(g / 1000, 2)} kg of ${materialWord(material)} at about $${fmtNum(perKg! * SECTION_PRICE_FACTOR, 1)}/kg for short lengths (check your supplier)` : undefined,
+                search: sectionSearch(sec, material),
+              },
+            });
+          }
+        }
+        this.memberOf.set(name, s.name);
+        // members show in the dependency graph as their frame
+        this.defKind.delete(name);
+        const mid = vscale(vadd(m.start, m.end), 0.5);
+        values.push(new Obj({ name, role: m.role, start: new Vec(m.start), end: new Vec(m.end), from: new Vec(m.from), to: new Vec(m.to), mid: new Vec(mid), dir: new Vec(m.dir), length: m.length }, "frame member", name));
+        infos.push({ name, label: mlabel, role: m.role, from: m.from, to: m.to, start: m.start, end: m.end, length: Math.round(m.length * 10) / 10, ends, joints: [m.ends[0].joint, m.ends[1].joint] });
+      }
+    } finally {
+      // the members are edited through the frame block, not blocks of their own
+      this.blocks.splice(blocksBefore);
+    }
+    const cuts = cutRows(plan.members.filter((m) => m.length >= 1).map((m) => ({ name: `${s.name}_${m.index + 1}`, length: m.length, ends: m.ends })));
+    const total = Math.round(infos.reduce((t, m) => t + m.length, 0) * 10) / 10;
+    const stock = stockPlan(cuts);
+    this.frames.push({ name: s.name, label, profile: profileText, section: sectionName(sec, material), catalogId: sec.catalogId, material, ends: miter && !sec.catalogId ? "miter" : "butt", members: infos, cuts, total, stock: { length: stock.stock, bars: stock.bars }, mass: Math.round(mass), span: s.span });
+    const fields: Record<string, Value> = { name: s.name, profile: profileText, members: values, count: values.length, length: total };
+    if (box) Object.assign(fields, { w: box[0], d: box[1], h: box[2] });
+    this.define(s.name, "frame", new Obj(fields, "frame", s.name), s.nameSpan, `frame ${label}`);
+  }
+
+  /** The lines of one path: a list of points (one member per step), a sketch's lines, a sketch line, or a list of those. */
+  framePath(v: Value, span: Span, rot: number, v3: (v: Value, span: Span, what: string) => V3): FrameLine[] {
+    const seg = (a: V3, b: V3, i?: number): FrameLine => {
+      if (vlen(vsub(b, a)) < 0.5) throw new EvalError(`path: ${i !== undefined ? `points ${i + 1} and ${i + 2} are` : "this line is"} less than 0.5 mm apart: a member needs a length`, span);
+      return { a, b, rot };
+    };
+    const line = (l: SketchLineObj) => seg(v3(l.fields.start, span, "the sketch line's start"), v3(l.fields.end, span, "the sketch line's end"));
+    if (v instanceof SketchObj) {
+      const sk = this.sketches.find((k) => k.name === v.label);
+      const ids = (sk?.curves ?? []).filter((c) => c.kind === "line" && !c.construction && !c.external).map((c) => c.id);
+      const out = ids.map((id) => v.fields[id]).filter((l): l is SketchLineObj => l instanceof SketchLineObj).map(line);
+      if (!out.length) throw new EvalError(`path: sketch "${v.label}" has no lines to put members on (construction lines are left out)`, span);
+      return out;
+    }
+    if (v instanceof SketchLineObj) return [line(v)];
+    if (!Array.isArray(v) || !v.length) throw new EvalError("path: should be a list of points [(x, y, z), ...] through the middle of the members, a sketch, or a sketch line like base.l1", span);
+    if (v.every((x) => x instanceof SketchLineObj)) return (v as SketchLineObj[]).map(line);
+    if (v.every((x) => Array.isArray(x))) return v.flatMap((x) => this.framePath(x, span, rot, v3));
+    if (!v.every((x) => x instanceof Vec)) throw new EvalError("path: a list should hold points, or sketch lines, or lists of points, not a mix", span);
+    if (v.length < 2) throw new EvalError("path: needs at least two points", span);
+    const pts = v.map((p, i) => v3(p, span, `path point ${i + 1}`));
+    return pts.slice(1).map((b, i) => seg(pts[i], b, i));
+  }
+
   /** Register `as name` for an operation; returns the feature name to put in the recipe. */
   nameFeature(st: PartState, name: string, kind: string, span: Span): string {
     const prev = st.feats.get(name);
@@ -2858,7 +3102,7 @@ class Evaluator {
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
     for (const p of this.params) p.usedBy = usedBy.get(p.name) ?? [];
     for (const g of this.brief?.givens ?? []) g.usedBy = usedBy.get(g.name) ?? [];
-    for (const p of this.parts) p.deps = [...(this.deps.get(p.name) ?? [])];
+    for (const p of this.parts) p.deps = [...(this.deps.get(p.frame ?? p.name) ?? [])];
     // an option may name only parameters (defined anywhere in the file)
     const paramNames = new Set(this.params.map((p) => p.name));
     this.assignRefs();
@@ -2885,6 +3129,7 @@ class Evaluator {
       evalMs: 0,
       machine: hasMachine(this.machine) ? this.machine : undefined,
       scenarios: this.scenarios,
+      ...(this.frames.length ? { frames: this.frames } : {}),
     };
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;
