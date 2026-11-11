@@ -63,6 +63,8 @@ interface SketchSession {
   /** sides the polygon tool draws */
   polygonSides: number;
   pattern: PatternUi;
+  /** counts requests to look straight at the whole sketch again (after geometry comes in from a file) */
+  face: number;
 }
 
 export const useSketch = create<SketchSession>(() => ({
@@ -78,6 +80,7 @@ export const useSketch = create<SketchSession>(() => ({
   hint: "",
   polygonSides: 6,
   pattern: { mode: "row", count: 4, step: [10, 0], grid: false, count2: 2, step2: [0, 10], around: "origin", angle: 360, pickCentre: false },
+  face: 0,
 }));
 
 const set = useSketch.setState;
@@ -120,6 +123,11 @@ export function setSelection(selection: string[]) {
 
 export function flash(hint: string) {
   set({ hint });
+}
+
+/** Look straight at the open sketch again, all of it in view. */
+export function faceAgain() {
+  set({ face: useSketch.getState().face + 1 });
 }
 
 /** Create a sketch on a plane and open it. */

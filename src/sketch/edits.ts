@@ -82,15 +82,21 @@ export const PREFIX: Record<SkCurve["kind"] | "point", string> = { line: "l", ci
 
 // ---------------- creating sketches ----------------
 
-/** Add an empty sketch before the first part (parts use sketches, so sketches come first). */
-export function addSketch(src: string, model: Model | null, opts: { name?: string; plane: string; offset?: number; origin?: string }): { src: string; name: string } {
-  const used = new Set(model?.blocks.map((b) => b.name) ?? []);
-  let name = opts.name ?? "";
-  if (!name || used.has(name)) for (let i = 1; ; i++) if (!used.has((name = `sketch${i}`))) break;
+/** A sketch block's text: its plane (and offset or origin), then any statements given. */
+export function sketchText(name: string, opts: { plane: string; offset?: number; origin?: string; body?: string[] }): string {
   const body = [`  plane: ${opts.plane}`];
   if (opts.offset) body.push(`  offset: ${fmt(opts.offset)}`);
   if (opts.origin) body.push(`  origin: ${opts.origin}`);
-  const text = `sketch ${name} {\n${body.join("\n")}\n}\n`;
+  for (const l of opts.body ?? []) body.push(`  ${l}`);
+  return `sketch ${name} {\n${body.join("\n")}\n}\n`;
+}
+
+/** Add an empty sketch before the first part (parts use sketches, so sketches come first). */
+export function addSketch(src: string, model: Model | null, opts: { name?: string; plane: string; offset?: number; origin?: string; body?: string[] }): { src: string; name: string } {
+  const used = new Set(model?.blocks.map((b) => b.name) ?? []);
+  let name = opts.name ?? "";
+  if (!name || used.has(name)) for (let i = 1; ; i++) if (!used.has((name = `sketch${i}`))) break;
+  const text = sketchText(name, opts);
   const firstPart = model?.blocks.filter((b) => b.kind === "part").sort((a, b) => a.span.start - b.span.start)[0];
   if (firstPart) {
     // above the comments over the part (its note, or a section heading), so they stay with it

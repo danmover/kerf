@@ -9,7 +9,7 @@ import { importUsers, useImports } from "../core/imports";
 import type { EvalPart } from "../core/model";
 import { importKind, mountingHoles, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { fmtNum } from "../lang/values";
-import { IMPORT_ACCEPT, downloadImport, importStepFiles, isImportFile, placeImport, removeImport, replaceImport } from "../app/imports";
+import { ANY_IMPORT_ACCEPT, IMPORT_ACCEPT, downloadImport, importAnyFiles, isAnyImportFile, placeImport, removeImport, replaceImport } from "../app/imports";
 import { select, useView } from "../app/view";
 import { useChatDraft } from "./chatDraft";
 import { toast } from "../app/ui";
@@ -46,11 +46,11 @@ export function ImportsSection() {
       <div className="tree-group-head imports-head">
         Imported files
         <span className="imports-count">{list.length || ""}</span>
-        <button className="btn sm ghost imports-add" onClick={() => pick.current?.click()} data-tip="Import a part: a STEP file (.step, .stp) or a mesh (.stl, .obj, .3mf), which Kerf turns into a solid">
+        <button className="btn sm ghost imports-add" onClick={() => pick.current?.click()} data-tip="Import a part: a STEP file (.step, .stp) or a mesh (.stl, .obj, .3mf), which Kerf turns into a solid. A DXF drawing (.dxf) comes in as a sketch">
           <Icon.Upload size={12} /> Import
         </button>
       </div>
-      <input ref={pick} type="file" accept={STEP_ACCEPT} multiple hidden onChange={(e) => void importStepFiles([...(e.target.files ?? [])]).finally(() => (e.target.value = ""))} />
+      <input ref={pick} type="file" accept={ANY_IMPORT_ACCEPT} multiple hidden onChange={(e) => void importAnyFiles([...(e.target.files ?? [])]).finally(() => (e.target.value = ""))} />
       <input
         ref={swap}
         type="file"
@@ -64,7 +64,7 @@ export function ImportsSection() {
         }}
       />
       {list.length === 0 ? (
-        <div className="imports-empty">Design around a bought part, a circuit board or a model you downloaded: import its STEP file or mesh (STL, OBJ, 3MF) here, or drop it on the 3D view.</div>
+        <div className="imports-empty">Design around a bought part, a circuit board or a model you downloaded: import its STEP file or mesh (STL, OBJ, 3MF) here, or drop it on the 3D view. A DXF drawing comes in as a sketch to make solid.</div>
       ) : (
         <AnimatePresence initial={false}>
           {list.map((i) => (
@@ -241,10 +241,10 @@ export function useStepDrop() {
         if (!hasFiles(e) || e.defaultPrevented) return;
         e.preventDefault();
         const files = [...e.dataTransfer.files];
-        if (files.some(isImportFile)) void importStepFiles(files);
+        if (files.some(isAnyImportFile)) void importAnyFiles(files.filter(isAnyImportFile));
         else if (files.length && files.every((f) => f.type.startsWith("image/") || f.type === "application/pdf"))
-          toast({ kind: "info", title: "Drop photos and PDFs on the chat box or the brief", detail: "There they become references Claude can see. The 3D view takes STEP files and meshes (STL, OBJ, 3MF)." });
-        else void importStepFiles([]);
+          toast({ kind: "info", title: "Drop photos and PDFs on the chat box or the brief", detail: "There they become references Claude can see. The 3D view takes STEP files, meshes (STL, OBJ, 3MF) and DXF drawings." });
+        else void importAnyFiles([]);
       },
     },
   };
@@ -257,8 +257,8 @@ export function StepDropOverlay({ show }: { show: boolean }) {
         <motion.div className="step-drop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <div className="step-drop-card">
             <Icon.Upload size={22} />
-            <div className="step-drop-title">Drop STEP files or meshes to import</div>
-            <div className="step-drop-sub">Kerf reads the solids, their names and colours, and finds the holes to align to. STL, OBJ and 3MF meshes are repaired and turned into solids.</div>
+            <div className="step-drop-title">Drop STEP files, meshes or DXF drawings to import</div>
+            <div className="step-drop-sub">Kerf reads the solids, their names and colours, and finds the holes to align to. STL, OBJ and 3MF meshes are repaired and turned into solids; a DXF drawing becomes a sketch.</div>
           </div>
         </motion.div>
       )}

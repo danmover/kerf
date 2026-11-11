@@ -28,6 +28,7 @@ import { openSheets } from "../cam/sheetJob";
 import { startMatePick } from "./viewport/PickLayer";
 import { fastenFrames } from "../app/frameFasten";
 import { importStepFiles } from "../app/imports";
+import { DXF_ACCEPT, importDxfFiles, insertDxfIntoSketch, pickDxf } from "../app/dxf";
 import { TEMPLATES } from "../demos/templates";
 import { openDrawings, closeDrawings, useDrawings } from "../drawing/engine";
 import { ANALYSIS_KINDS, kindsFor } from "./analysisKinds";
@@ -146,6 +147,15 @@ function pickStep() {
   input.click();
 }
 
+function pickDxfSketch() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = DXF_ACCEPT;
+  input.multiple = true;
+  input.onchange = () => void importDxfFiles([...(input.files ?? [])]);
+  input.click();
+}
+
 function duplicateOpen() {
   const id = useProject.getState().current?.id;
   if (id) void duplicateProject(id);
@@ -224,6 +234,7 @@ export function findItems(ctx: FindContext): FindItem[] {
             { id: "sketch:mirror", group: "Model" as const, title: "Mirror in the sketch", detail: "Copy geometry across a line or axis, kept symmetric", keywords: "mirror symmetric symmetry flip reflect half", icon: <T.Mirror size={14} />, keys: "M", run: () => setTool("mirror") },
             { id: "sketch:pattern", group: "Model" as const, title: "Pattern in the sketch", detail: "Repeat geometry in a row, a grid or a ring round a point", keywords: "pattern array linear circular polar grid bolt circle repeat holes", icon: <T.Pattern size={14} />, keys: "K", run: () => setTool("pattern") },
             { id: "sketch:project", group: "Model" as const, title: "Project a face", detail: "Bring the edges of a part's face into the sketch, fixed, to draw from", keywords: "project convert entities include use edges reference geometry outline from part face", icon: <T.Project size={14} />, keys: "J", run: () => setTool("project") },
+            { id: "sketch:dxf", group: "Model" as const, title: "Insert a DXF drawing", detail: "Add a drawing's lines, arcs, circles and curves to this sketch, joined and fixed where they were drawn", keywords: "insert import dxf dwg drawing outline profile autocad librecad inkscape illustrator laser cut file vector 2d trace logo", icon: <T.Insert size={14} />, keys: "I", run: () => pickDxf((f) => void insertDxfIntoSketch(f)) },
           ]
         : []),
       { id: "model:markup", group: "Model", title: "Draw on the view for Claude", detail: "Circle or scribble on the model and say what to change there", keywords: "markup annotate scribble sketch on screen pen highlight", icon: <Icon.Edit size={14} />, keys: "M", run: () => toggleMarkup() },
@@ -233,6 +244,7 @@ export function findItems(ctx: FindContext): FindItem[] {
       { id: "model:fasten-frames", group: "Model", title: "Fasten frame joints", detail: "Corner brackets with screws and T-nuts at every 2020 or 2040 frame joint nothing holds yet, without Claude", keywords: "fasten frame joints corner brackets gusset t-nuts tee nuts screws extrusion v-slot 2020 2040 join profiles", icon: <Icon.Screw size={14} />, run: () => void fastenFrames() },
       { id: "model:cutlist", group: "Model", title: "Cut list", detail: "Lengths to cut for every frame, their end cuts and the bars to buy (under the parts list)", keywords: "cut list cutting list saw lengths stock bars frame members weldment extrusion", icon: <Icon.List size={14} />, run: () => useView.setState({ dockTab: "bom", dockOpen: true }) },
       { id: "model:step", group: "Model", title: "Import a STEP file", detail: "Bring in a part from another CAD tool to design around", keywords: "import step stp cad file part load open", icon: <Icon.Upload size={14} />, run: pickStep },
+      { id: "model:dxf", group: "Model", title: "Import a DXF drawing as a sketch", detail: "A laser-cut part, a flat pattern or an outline from another CAD tool: its lines, arcs, circles and curves come in joined and fixed, ready to make solid", keywords: "import dxf dwg drawing 2d outline profile sketch autocad librecad qcad inkscape illustrator laser cut cnc router waterjet plasma flat pattern sheet vector logo trace extrude plate", icon: <Icon.Upload size={14} />, run: pickDxfSketch },
       { id: "model:mesh", group: "Model", title: "Import a mesh (STL, OBJ or 3MF)", detail: "A downloaded model, a print or a scan: Kerf repairs the mesh, makes it a solid you can cut, fasten to and check, and finds its holes", keywords: "import mesh stl obj 3mf wavefront triangles printables thingiverse makerworld download scan scanned 3d scan photogrammetry bambu prusa slicer model print convert mesh to solid brep repair fix holes", icon: <Icon.Upload size={14} />, run: pickStep },
       ask("ask:fix-up", "Model", "Fix it up", "After modelling by hand: Claude makes it fit, build and pass the checks", "tidy clean repair hand made manual", FIX_IT_UP, <Icon.Sparkle size={14} />),
       ask("ask:buildable", "Model", "Make it a buildable product", "Real fasteners and fits, processes you have, an assembly order and where to buy each part", "product real manufacture production ready buildable", MAKE_BUILDABLE, <Icon.Sparkle size={14} />),

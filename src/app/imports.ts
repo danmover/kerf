@@ -13,6 +13,7 @@ import { fmtNum } from "../lang/values";
 import { getBlob, putBlob, sha256Hex } from "../persist/blobs";
 import { download, safeFileName } from "../persist/files";
 import { useChatDraft } from "../ui/chatDraft";
+import { DXF_ACCEPT, importDxfFiles, isDxfFile } from "./dxf";
 import { commitSource, setProjectImports, useProject } from "./project";
 import { confirmDialog, dismissToast, errorText, toast } from "./ui";
 
@@ -22,6 +23,10 @@ export const isStepFile = (f: File) => STEP_FILE.test(f.name);
 export const isImportFile = (f: File) => IMPORT_FILE.test(f.name);
 /** What the file pickers offer. */
 export const IMPORT_ACCEPT = ".step,.stp,.p21,.stl,.obj,.3mf";
+/** What the Import button and the 3D view take: those, and DXF drawings, which become sketches. */
+export const ANY_IMPORT_ACCEPT = `${IMPORT_ACCEPT},${DXF_ACCEPT}`;
+/** A file the Import button or the 3D view takes. */
+export const isAnyImportFile = (f: File) => isImportFile(f) || isDxfFile(f);
 
 const stem = (file: string) => file.replace(IMPORT_FILE, "") || file;
 
@@ -131,7 +136,7 @@ export async function importStepFiles(files: File[], opts: { place?: boolean } =
   if (!cur) return;
   const steps = files.filter(isImportFile);
   if (!steps.length) {
-    toast({ kind: "warn", title: "Not a file Kerf can import", detail: "Kerf imports parts as STEP files (.step or .stp), which most CAD tools and part suppliers offer, and meshes (.stl, .obj or .3mf), which it turns into solids." });
+    toast({ kind: "warn", title: "Not a file Kerf can import", detail: "Kerf imports parts as STEP files (.step or .stp), which most CAD tools and part suppliers offer, and meshes (.stl, .obj or .3mf), which it turns into solids. DXF drawings (.dxf) come in as sketches." });
     return;
   }
   for (const file of steps) {
@@ -172,6 +177,14 @@ export async function importStepFiles(files: File[], opts: { place?: boolean } =
       dismissToast(progress);
     }
   }
+}
+
+/** Import whatever was dropped or picked: DXF drawings as sketches, STEP files and meshes as parts. */
+export async function importAnyFiles(files: File[], opts: { place?: boolean; open?: boolean } = {}) {
+  const dxfs = files.filter(isDxfFile);
+  const rest = files.filter((f) => !isDxfFile(f));
+  if (dxfs.length) await importDxfFiles(dxfs, { open: opts.open });
+  if (rest.length || !dxfs.length) await importStepFiles(rest, { place: opts.place });
 }
 
 /** Swap in a new version of a file: designs keep their step("name") and pick up the new geometry. */

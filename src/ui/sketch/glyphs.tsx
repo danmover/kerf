@@ -162,6 +162,17 @@ export const T = {
       <path d="M4 19h16" />
     </I>
   ),
+  /** a drawing file coming into the sketch */
+  Insert: (p: P) => (
+    <I {...p}>
+      <path d="M6 3h8l4 4v6" />
+      <path d="M14 3v4h4" />
+      <path d="M6 3v9" />
+      <path d="M12 11v7" />
+      <path d="M9 15.5l3 3 3-3" />
+      <path d="M4 21h16" />
+    </I>
+  ),
   Construction: (p: P) => (
     <I {...p}>
       <path d="M4 20L20 4" strokeDasharray="3 3" />
