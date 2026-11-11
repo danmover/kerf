@@ -328,7 +328,6 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
     mask: BLACK,
     silk: WHITE_SILK,
     finish: "enig",
-    title: ["USB Camera", "FIT0701"],
     looks: ["lens"],
     smd: 0.8,
   },
