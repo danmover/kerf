@@ -14,6 +14,8 @@ import { G } from "./glyphs";
 import { describePart } from "./insights";
 import { Highlight, CodeSample } from "./bits";
 import { ImportsSection } from "../ImportsPanel";
+import { openContextMenu } from "../ContextMenu";
+import { partRowMenuEntries } from "../viewport/contextMenus";
 
 interface Row {
   name: string;
@@ -234,6 +236,12 @@ function PartRow({ r, filter, delay, selected, hidden, fails }: { r: Row; filter
         else select(r.ids);
       }}
       onDoubleClick={() => revealSpan(r.part.span)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        // from the keyboard (the menu key, Shift+F10) there is no pointer: open it by the row
+        const at = e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : (({ left, bottom }) => ({ x: left + 24, y: bottom }))(e.currentTarget.getBoundingClientRect());
+        openContextMenu(at, partRowMenuEntries(r.ids));
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") select(r.ids);
       }}

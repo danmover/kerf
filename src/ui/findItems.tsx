@@ -40,6 +40,7 @@ import { STEP_ACCEPT } from "./ImportsPanel";
 import { FIX_IT_UP, MAKE_BUILDABLE, openModelTool } from "./ModelTools";
 import { askClaude, REVIEW_ASK } from "./chatDraft";
 import { Icon } from "./icons";
+import { openViewportMenu } from "./viewport/contextMenus";
 import { T } from "./sketch/glyphs";
 
 export type FindGroup = "Panels" | "View" | "Model" | "Analyse" | "Make" | "Machines" | "Export" | "Parts" | "Checks" | "New design" | "Project" | "Settings";
@@ -227,6 +228,18 @@ export function findItems(ctx: FindContext): FindItem[] {
     const cams: [ViewPreset, string, string?][] = [["iso", "Iso"], ["front", "Front", "2"], ["back", "Back", "Shift+2"], ["left", "Left", "Shift+3"], ["right", "Right", "3"], ["top", "Top", "4"], ["bottom", "Bottom", "Shift+4"]];
     push(
       { id: "view:fit", group: "View", title: "Fit to view", detail: "Frame the whole model", keywords: "zoom all frame reset camera", icon: <Icon.Fit size={14} />, keys: "F", run: () => requestCamera("fit") },
+      {
+        id: "view:context",
+        group: "View",
+        title: "Right-click menus",
+        detail: "Right-click a part for what you can do at that spot (ask Claude, zoom, look square at the face, section here, hide, sketch on it, hole, fillet, material, lock, delete), empty space for the view, or a row of the parts list",
+        keywords: "context menu right click marking menu actions shortcut menu lock unlock part locked hide show only section here look at face normal to sketch on face",
+        icon: <Icon.List size={14} />,
+        run: () => {
+          const r = document.querySelector(".viewport")?.getBoundingClientRect();
+          if (r) openViewportMenu(null, r.left + r.width / 2, r.top + r.height / 2);
+        },
+      },
       { id: "view:cube", group: "View", title: "View cube", detail: "Bottom left of the view: click a face, edge or corner to look from that side, drag it to turn the view, the arrows step to the next face, the house goes home", keywords: "viewcube view cube navigation cube orientation home view standard views corner edge isometric look from turn rotate orbit next face", icon: <Icon.Cube size={14} />, run: () => requestCamera("iso") },
       ...cams.map(([p, label, k]): FindItem => ({ id: `view:cam:${p}`, group: "View", title: `${label} view`, detail: "Camera", keywords: "camera angle look from orientation", icon: <Icon.Cube size={14} />, keys: p === "iso" ? "1" : k, run: () => requestCamera(p) })),
       { id: "view:section", group: "View", title: "Section view", detail: "Cut the model open along X, Y or Z; with results showing, the cut face shows the values inside", keywords: "cut cross section slice clip inside section through results stress inside interior cut plane internal stress temperature inside", icon: <Icon.Scissors size={14} />, keys: "S", tag: v.section.on ? "on" : undefined, run: () => useView.setState({ section: { ...v.section, on: !v.section.on } }) },

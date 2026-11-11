@@ -453,7 +453,7 @@ const NAMED: { n: [number, number, number]; plane: string }[] = [
 ];
 
 /** A face under the cursor as a sketch plane: a named plane with an offset when it is axis-aligned. */
-function planeForFace(point: [number, number, number], normal: [number, number, number]): { plane: string; offset?: number; label: string } {
+export function planeForFace(point: [number, number, number], normal: [number, number, number]): { plane: string; offset?: number; label: string } {
   for (const k of NAMED) {
     const dot = k.n[0] * normal[0] + k.n[1] * normal[1] + k.n[2] * normal[2];
     if (dot > 0.9999) {

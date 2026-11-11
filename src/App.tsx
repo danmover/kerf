@@ -35,6 +35,7 @@ import { startMaterialChecks } from "./materials/runtime";
 import { startAssemblyChecks } from "./mfg/dfaRuntime";
 import { startHeatAndWearChecks } from "./machine/runtime";
 import { useThemeSync } from "./app/theme";
+import { ContextMenuHost } from "./ui/ContextMenu";
 
 // each opened project brings its own conversation
 onProjectOpen((p) => void loadChat(p.id));
@@ -77,6 +78,7 @@ export function App() {
         <ShortcutsModal />
         <FindPalette />
         <ConfirmDialog />
+        <ContextMenuHost />
         <Toasts />
       </ErrorBoundary>
     </MotionConfig>

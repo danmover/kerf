@@ -46,6 +46,7 @@ import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
 import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
 import { ViewCube } from "./viewport/ViewCube";
+import { openViewportMenu } from "./viewport/contextMenus";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -120,14 +121,12 @@ export function Viewport() {
       const r = mount.current?.getBoundingClientRect();
       setHold(at && r ? { x: at.x - r.left, y: at.y - r.top, n: Date.now() } : null);
     };
-    c.onContext = (hit) => {
-      // the right button pans in a sketch; the spot chat waits until it is closed
+    c.onContext = (hit, x, y) => {
+      // the right button pans in a sketch; the menu waits until it is closed
       const sk = useSketch.getState();
       if (sk.active || sk.picking) return;
-      const part = hit && useDesign.getState().model?.parts.find((p) => p.id === hit.id);
-      if (!hit || !part) return closeSpot();
-      select([hit.id]);
-      openSpot({ partId: hit.id, label: part.label, local: hit.local, point: hit.point, normal: hit.normal, localNormal: hit.localNormal });
+      closeSpot();
+      openViewportMenu(hit, x, y);
     };
     registerViewport({
       capture: (o) => c.capture(o),
@@ -143,6 +142,8 @@ export function Viewport() {
       photoBlocker: () => c.photoBlocker(),
       photoFloor: (q) => c.setPhotoFloor(q),
       photoSnapshot: () => c.photoSnapshot(),
+      focus: (ids) => c.focusOn(ids),
+      sectionThrough: (point, normal) => c.sectionThrough(point, normal),
     });
     setScene(c);
     return () => {
@@ -668,7 +669,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
             ))}
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
-        Right-click a spot on the model to ask about it
+        Right-click a spot on the model to ask about it or work on it there
       </div>
     </motion.div>
   );

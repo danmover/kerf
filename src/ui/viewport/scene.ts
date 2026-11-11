@@ -1625,6 +1625,22 @@ export class SceneController {
     this.fit("iso", true);
   }
 
+  /**
+   * The section that best shows the inside at a spot on a face: through the spot, across the axis the view looks
+   * along most (other than the face's own, which would only skim the surface), cutting away the side nearest the camera.
+   */
+  sectionThrough(point: [number, number, number], normal: [number, number, number]): { axis: "x" | "y" | "z"; t: number; flip: boolean } {
+    const view = this.camera.position.clone().sub(this.controls.target);
+    const own = [0, 1, 2].reduce((a, b) => (Math.abs(normal[b]) > Math.abs(normal[a]) ? b : a), 0);
+    const ax = [0, 1, 2].filter((k) => k !== own).reduce((a, b) => (Math.abs(view.getComponent(b)) > Math.abs(view.getComponent(a)) ? b : a));
+    const lo = this.bounds.min.getComponent(ax);
+    const hi = this.bounds.max.getComponent(ax);
+    // as placeSection() maps t to a position
+    const pad = (hi - lo) * 0.002 + 0.01;
+    const t = THREE.MathUtils.clamp((point[ax] - lo + pad) / (hi - lo + 2 * pad), 0, 1);
+    return { axis: (["x", "y", "z"] as const)[ax], t, flip: this.camera.position.getComponent(ax) < point[ax] };
+  }
+
   /** Frame the given parts from the current viewing direction. */
   focusOn(ids: string[]) {
     const box = new THREE.Box3();

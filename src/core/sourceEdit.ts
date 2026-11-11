@@ -225,6 +225,29 @@ export function setBlockProps(src: string, blockName: string, props: Record<stri
   return out;
 }
 
+/** Lock a part or component block (Claude then keeps it as it is) or unlock it. Returns the source unchanged if the block is missing. */
+export function setBlockLocked(src: string, blockName: string, locked: boolean): string {
+  const { program } = parse(src);
+  const stmt = program.stmts.find((s) => (s.k === "part" || s.k === "component") && s.name === blockName);
+  if (!stmt || (stmt.k !== "part" && stmt.k !== "component")) return src;
+  const flag = stmt.items.find((i) => i.k === "flag" && i.name === "locked");
+  if (!locked) {
+    if (!flag) return src;
+    const r = removal(src, flag.span.start, flag.span.end);
+    return src.slice(0, r.start) + src.slice(r.end);
+  }
+  if (flag) return src;
+  const headEnd = stmt.k === "component" ? stmt.call.span.end : stmt.nameSpan.end;
+  const open = src.indexOf("{", headEnd);
+  if (open < 0 || open >= stmt.span.end) return src.slice(0, headEnd) + " { locked }" + src.slice(headEnd);
+  const body = src.slice(open + 1, stmt.span.end - 1);
+  if (!body.includes("\n")) return src.slice(0, open + 1) + (body.trim() ? " locked," : " locked ") + src.slice(open + 1);
+  const first = stmt.items[0];
+  const lineStart = src.lastIndexOf("\n", (first?.span.start ?? open) - 1) + 1;
+  const indent = first ? /^[ \t]*/.exec(src.slice(lineStart))![0] : /^[ \t]*/.exec(src.slice(src.lastIndexOf("\n", stmt.span.start - 1) + 1))![0] + "  ";
+  return src.slice(0, open + 1) + `\n${indent}locked` + src.slice(open + 1);
+}
+
 /** The text range to delete for one property: its whole line, or the item and its separating comma. */
 function removal(src: string, start: number, end: number) {
   const ls = src.lastIndexOf("\n", start - 1) + 1;

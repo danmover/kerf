@@ -1902,6 +1902,30 @@ a:hover {
   background: var(--line);
   margin: 4px 2px;
 }
+.ctx-menu {
+  min-width: 220px;
+  z-index: 1000;
+}
+.ctx-icon {
+  width: 16px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-3);
+}
+.ctx-menu .menu-item[aria-checked="true"] .ctx-icon {
+  color: var(--accent-2);
+}
+.ctx-menu .menu-item:focus-visible {
+  outline: none;
+  background: var(--bg-4);
+}
+.ctx-type {
+  margin: 4px 2px 0;
+  padding: 7px 7px 3px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-4);
+}
 .menu-label {
   padding: 6px 9px 4px;
   font-family: var(--mono);

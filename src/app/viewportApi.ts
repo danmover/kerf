@@ -65,6 +65,10 @@ export interface ViewportApi {
   photoFloor(q: { maxSamples: number; scale: number; bounces: number } | null): void;
   /** the finished photoreal image on screen, without the selection outline; null until it has converged */
   photoSnapshot(): string | null;
+  /** frame these parts from the current direction */
+  focus(ids: string[]): void;
+  /** the section that best shows the inside at a spot on a face: its axis, where along it (0 to 1) and which side is cut away */
+  sectionThrough(point: Vec3, normal: Vec3): { axis: "x" | "y" | "z"; t: number; flip: boolean };
 }
 
 let api: ViewportApi | null = null;
