@@ -63,12 +63,28 @@ export const UNIFIED_THREADS: Record<string, ThreadSpec> = Object.fromEntries(
   ].map((t) => [t.name, t]),
 );
 
-/** A thread by its key or name: "M3", "M2_5", "M2.5", "#10-24", "1/4-20" (metric first). */
+/**
+ * Wood (timber) screw gauges, by the name on the box: "8G" is the 4.2 mm screw a hardware store sells as 8 gauge.
+ * clearance: the hole through the part being held; tap: the pilot hole in softwood or plywood; head: the 90°
+ * countersunk head. They are written as text, lib.screw("8G", 20), and only come as wood screws.
+ */
+function gauge(name: string, d: number, clearance: number, pilot: number, head: number, pitch: number): ThreadSpec {
+  return { name, d, clearance, close: Math.round((d + 0.1) * 10) / 10, tap: pilot, head_d: head, head_h: Math.round(((head - d) / 2) * 100) / 100, key: 0, nut_af: 0, nut_h: 0, insert_d: 0, insert_l: 0, pitch };
+}
+
+export const WOOD_THREADS: Record<string, ThreadSpec> = Object.fromEntries(
+  [gauge("4G", 2.9, 3.2, 2, 5.6, 1.1), gauge("6G", 3.5, 3.8, 2.5, 6.9, 1.4), gauge("8G", 4.2, 4.5, 3, 8.4, 1.6), gauge("10G", 4.8, 5.2, 3.5, 9.6, 1.8), gauge("12G", 5.5, 6, 4, 10.8, 2.1)].map((t) => [t.name, t]),
+);
+
+/** Wood screw gauges are written as a number and G. */
+export const isWoodGauge = (t: ThreadSpec) => /^\d+G$/.test(t.name);
+
+/** A thread by its key or name: "M3", "M2_5", "M2.5", "#10-24", "1/4-20", or a wood screw gauge "8G" (metric first). */
 export function threadSpec(name: string | undefined): ThreadSpec | undefined {
   if (!name) return undefined;
   const s = name.trim().replace(/\s+/g, "");
   const key = s.replace(".", "_").toUpperCase();
-  return THREADS[key] ?? UNIFIED_THREADS[s] ?? Object.values(THREADS).find((t) => t.name === s);
+  return THREADS[key] ?? UNIFIED_THREADS[s] ?? WOOD_THREADS[key] ?? Object.values(THREADS).find((t) => t.name === s);
 }
 
 /** Every thread size Kerf has hardware for, metric then unified. */
