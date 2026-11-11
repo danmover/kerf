@@ -8,6 +8,7 @@ import { KernelCore } from "./core";
 import { measure as measurePick, projectView } from "./drawing";
 import { dropImport, errMsg, isTrap, registerImport } from "./build";
 import { readStep } from "./stepImport";
+import { meshFormat, readMesh } from "./meshImport";
 import type { FromWorker, ToWorker } from "./protocol";
 import { fontsIn, type FontName } from "./recipe";
 import { fontLoaded, loadFontData } from "./profiles";
@@ -251,8 +252,9 @@ async function run(msg: ToWorker) {
         return;
       case "import-step": {
         try {
-          const loaded = readStep(new Uint8Array(msg.data), msg.file, { analyse: msg.analyse, hash: msg.hash });
-          registerImport(msg.hash, loaded.bodies, loaded.faceColors);
+          const opts = { analyse: msg.analyse, hash: msg.hash };
+          const loaded = meshFormat(msg.file) ? await readMesh(new Uint8Array(msg.data), msg.file, opts) : readStep(new Uint8Array(msg.data), msg.file, opts);
+          registerImport(msg.hash, loaded.bodies, loaded.faceColors, !!meshFormat(msg.file));
           post({ type: "imported", jobId: msg.jobId, hash: msg.hash, meta: loaded.meta });
         } catch (e) {
           if (isTrap(e)) return fatal(msg.jobId, e);

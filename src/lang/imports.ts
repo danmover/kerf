@@ -1,5 +1,6 @@
-// Imported STEP files in the design language: `step("name")` places an
-// imported file as a component, with fields for its size, bodies and holes.
+// Imported files in the design language: `step("name")` places an imported
+// file (a STEP file, or a mesh Kerf turned into solids) as a component, with
+// fields for its size, bodies and holes.
 // Everything here works from the analysis stored with the project, so a
 // design evaluates before the kernel has loaded the geometry again.
 
@@ -27,8 +28,8 @@ export class ImportFn extends Fn {
   constructor() {
     super(
       "step",
-      (_p, _n, ctx) => ctx.error('step() places an imported STEP file as a component: component board = step("name") { at: (x, y, z) }'),
-      'step("name") { at:, rotate:, origin: } places an imported STEP file as a component',
+      (_p, _n, ctx) => ctx.error('step() places an imported file (STEP, STL, OBJ or 3MF) as a component: component board = step("name") { at: (x, y, z) }'),
+      'step("name") { at:, rotate:, origin: } places an imported file (STEP, or an STL, OBJ or 3MF mesh) as a component',
     );
   }
 }
@@ -44,15 +45,15 @@ export function findImport(table: ImportTable, name: string): ImportRef | undefi
   const lower = name.toLowerCase();
   return (
     all.find((r) => r.name.toLowerCase() === lower) ??
-    all.find((r) => r.meta.file.toLowerCase() === lower || r.meta.file.replace(/\.(step|stp|p21)$/i, "").toLowerCase() === lower)
+    all.find((r) => r.meta.file.toLowerCase() === lower || r.meta.file.replace(/\.(step|stp|p21|stl|obj|3mf)$/i, "").toLowerCase() === lower)
   );
 }
 
 export function missingImportMessage(table: ImportTable, name: string): string {
-  if (pending.has(name)) return `The STEP file "${name}" is still being read. The design updates when it is ready.`;
+  if (pending.has(name)) return `The imported file "${name}" is still being read. The design updates when it is ready.`;
   const names = Object.keys(table);
-  if (!names.length) return `No STEP file named "${name}" is imported. Import one from the Structure panel (Imported files), or drop a .step file on the 3D view.`;
-  return `No STEP file named "${name}" is imported. Imported files: ${names.map((n) => `"${n}"`).join(", ")}.`;
+  if (!names.length) return `No file named "${name}" is imported. Import one from the Structure panel (Imported files), or drop a STEP file or a mesh (.stl, .obj, .3mf) on the 3D view.`;
+  return `No file named "${name}" is imported. Imported files: ${names.map((n) => `"${n}"`).join(", ")}.`;
 }
 
 /** The point of the file that `at` places: centre of the bottom of its box, its centre, or the file's own origin. */

@@ -454,10 +454,10 @@ export class KernelClient {
     this.post({ type: "evict", keep });
   }
 
-  /** Load a STEP file into the kernel. The bytes are copied, so the caller keeps its own. */
+  /** Load an imported file (STEP, or an STL, OBJ or 3MF mesh) into the kernel. The bytes are copied, so the caller keeps its own. */
   importStep(hash: string, file: string, bytes: Uint8Array, analyse: boolean) {
     const data = bytes.slice().buffer;
-    return this.value<ImportMeta>("import", (s) => `Reading the STEP file ran for more than ${s} s, so Kerf stopped it.`, { hash, file, analyse }, (jobId) => ({ type: "import-step", jobId, hash, file, data, analyse }), [data]);
+    return this.value<ImportMeta>("import", (s) => `Reading ${file} ran for more than ${s} s, so Kerf stopped it.`, { hash, file, analyse }, (jobId) => ({ type: "import-step", jobId, hash, file, data, analyse }), [data]);
   }
 
   dropImport(hash: string) {

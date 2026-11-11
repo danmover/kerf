@@ -65,7 +65,7 @@ export type ShapeRecipe =
   | { t: "hole"; d: number; depth: number; at: V3; dir: V3; cbore?: V2; csink?: number; lead?: number; thread?: ThreadSpec3; threadName?: string; fit?: string }
   | { t: "xform"; shape: ShapeRecipe; xf: Xform[] }
   | { t: "union"; shapes: ShapeRecipe[] }
-  /** a body of an imported STEP file (by content hash); body -1 is the whole file */
+  /** a body of an imported file, STEP or mesh (by content hash); body -1 is the whole file */
   | { t: "import"; asset: string; body: number }
   /** sketch profile pushed along the plane normal from `start` to `start + h` */
   | { t: "sk_extrude"; o: V3; u: V3; n: V3; regions: ProfileRegion[]; h: number; start: number }

@@ -9,6 +9,7 @@ import { draftFaces, extrudeProfile, loftProfiles, planeOf, revolveProfile2, sha
 import { buildKnurl, buildThread } from "./threads";
 import { describeSel, Topo, type FeatureTools } from "./topology";
 import { buildMould } from "./mould";
+import { smoothFaceted } from "./meshSmooth";
 
 export class BuildError extends Error {}
 
@@ -156,7 +157,7 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     }
     case "import": {
       const file = imported.get(r.asset);
-      if (!file) throw new BuildError("The imported STEP file is not loaded yet.");
+      if (!file) throw new BuildError("The imported file is not loaded yet.");
       if (r.body < 0) {
         file.whole ??= R.makeCompound(file.bodies) as unknown as Shape3D;
         return file.whole.clone();
@@ -231,14 +232,16 @@ interface LoadedImport {
   bodies: Shape3D[];
   faceColors: (string[] | null)[];
   whole?: Shape3D;
+  /** bodies made of a mesh's flat facets: shown smooth where the facets meet gently */
+  faceted?: boolean;
 }
 
 /** Bodies of imported files by content hash, loaded once per kernel. */
 const imported = new Map<string, LoadedImport>();
 
-export function registerImport(hash: string, bodies: Shape3D[], faceColors: (string[] | null)[]) {
+export function registerImport(hash: string, bodies: Shape3D[], faceColors: (string[] | null)[], faceted = false) {
   dropImport(hash);
-  imported.set(hash, { bodies, faceColors });
+  imported.set(hash, { bodies, faceColors, faceted });
 }
 
 export function dropImport(hash: string) {
@@ -250,6 +253,14 @@ export function dropImport(hash: string) {
 }
 
 export const hasImport = (hash: string) => imported.has(hash);
+
+/** Whether a part is exactly one body of an imported mesh (moved, not modified), whose facets are shown smooth. */
+export function importFaceted(p: PartRecipe): boolean {
+  if (p.ops.length || !p.base) return false;
+  let r: ShapeRecipe = p.base;
+  while (r.t === "xform") r = r.shape;
+  return r.t === "import" && r.body >= 0 && !!imported.get(r.asset)?.faceted;
+}
 
 /** Per-face colours for a part that is exactly one imported body (moved, not modified). */
 export function importFaceColors(p: PartRecipe): string[] | null {
@@ -752,7 +763,7 @@ function meshMiss(m: RawMesh, volume: number, tolerance: number): number {
  * small face's triangles across far more than the face (a sliver beside a spline face, at one particular deflection),
  * which leaves an STL that is not the part, so it meshes finer until the volume agrees.
  */
-export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColors?: string[] | null, volume?: number): MeshData {
+export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColors?: string[] | null, volume?: number, faceted = false): MeshData {
   const base = quality === "preview" ? { tolerance: 0.25, angularTolerance: 25 } : { tolerance: 0.03, angularTolerance: 10 };
   let opts = base;
   let m = shape.mesh(opts);
@@ -781,7 +792,7 @@ export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColo
     edgeGroups: new Int32Array(e.edgeGroups.flatMap((g) => [g.start, g.count, g.edgeId])),
   };
   if (faceColors?.length) out.colors = vertexColors(shape, m, faceColors);
-  return out;
+  return faceted ? smoothFaceted(out) : out;
 }
 
 /** Colour each face's vertices. Mesh face groups are keyed by face hash; faces are matched to the explorer order the colours use. */

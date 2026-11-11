@@ -1,14 +1,15 @@
-// Imported STEP files: the list in the Structure tab, the facts shown for a
-// selected imported body, and dropping STEP files onto the workspace.
+// Imported files (STEP, and STL, OBJ or 3MF meshes turned into solids): the list
+// in the Structure tab, the facts shown for a selected imported body, and
+// dropping files onto the workspace.
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo, useRef, useState, type DragEvent } from "react";
 import { useDesign } from "../core/engine";
 import { importUsers, useImports } from "../core/imports";
 import type { EvalPart } from "../core/model";
-import { mountingHoles, type ImportMeta, type ProjectImport } from "../kernel/imports";
+import { importKind, mountingHoles, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { fmtNum } from "../lang/values";
-import { downloadImport, importStepFiles, isStepFile, placeImport, removeImport, replaceImport } from "../app/imports";
+import { IMPORT_ACCEPT, downloadImport, importStepFiles, isImportFile, placeImport, removeImport, replaceImport } from "../app/imports";
 import { select, useView } from "../app/view";
 import { useChatDraft } from "./chatDraft";
 import { toast } from "../app/ui";
@@ -16,7 +17,8 @@ import { Menu, MenuItem } from "./common";
 import { Icon } from "./icons";
 import "../styles/imports.css";
 
-export const STEP_ACCEPT = ".step,.stp,.p21";
+/** Every file the Import pickers take: STEP files and meshes. */
+export const STEP_ACCEPT = IMPORT_ACCEPT;
 
 const sizeText = (m: ImportMeta) => m.bbox[1].map((v, k) => fmtNum(v - m.bbox[0][k], 1)).join(" × ") + " mm";
 
@@ -44,8 +46,8 @@ export function ImportsSection() {
       <div className="tree-group-head imports-head">
         Imported files
         <span className="imports-count">{list.length || ""}</span>
-        <button className="btn sm ghost imports-add" onClick={() => pick.current?.click()} data-tip="Import a STEP file (.step, .stp)">
-          <Icon.Upload size={12} /> STEP
+        <button className="btn sm ghost imports-add" onClick={() => pick.current?.click()} data-tip="Import a part: a STEP file (.step, .stp) or a mesh (.stl, .obj, .3mf), which Kerf turns into a solid">
+          <Icon.Upload size={12} /> Import
         </button>
       </div>
       <input ref={pick} type="file" accept={STEP_ACCEPT} multiple hidden onChange={(e) => void importStepFiles([...(e.target.files ?? [])]).finally(() => (e.target.value = ""))} />
@@ -62,7 +64,7 @@ export function ImportsSection() {
         }}
       />
       {list.length === 0 ? (
-        <div className="imports-empty">Design around a bought part or a circuit board: import its STEP file here, or drop it on the 3D view.</div>
+        <div className="imports-empty">Design around a bought part, a circuit board or a model you downloaded: import its STEP file or mesh (STL, OBJ, 3MF) here, or drop it on the 3D view.</div>
       ) : (
         <AnimatePresence initial={false}>
           {list.map((i) => (
@@ -153,7 +155,7 @@ function ImportRow({ imp, state, error, users, onReplace }: { imp: ProjectImport
                 <MenuItem icon={<Icon.Refresh size={14} />} onClick={() => (close(), onReplace())}>
                   Replace with a new version…
                 </MenuItem>
-                <MenuItem icon={<Icon.Download size={14} />} onClick={() => (close(), void downloadImport(imp.name))} hint=".step">
+                <MenuItem icon={<Icon.Download size={14} />} onClick={() => (close(), void downloadImport(imp.name))} hint={`.${(importKind(imp.file) ?? "step").toLowerCase()}`}>
                   Download the original
                 </MenuItem>
                 <div className="menu-sep" />
@@ -211,7 +213,7 @@ export function ImportFacts({ part }: { part: EvalPart }) {
   );
 }
 
-/** Drag-and-drop of STEP files onto the workspace. */
+/** Drag-and-drop of STEP files and meshes onto the workspace. */
 export function useStepDrop() {
   const [over, setOver] = useState(false);
   const hasFiles = (e: DragEvent) => [...e.dataTransfer.types].includes("Files");
@@ -239,9 +241,9 @@ export function useStepDrop() {
         if (!hasFiles(e) || e.defaultPrevented) return;
         e.preventDefault();
         const files = [...e.dataTransfer.files];
-        if (files.some(isStepFile)) void importStepFiles(files);
+        if (files.some(isImportFile)) void importStepFiles(files);
         else if (files.length && files.every((f) => f.type.startsWith("image/") || f.type === "application/pdf"))
-          toast({ kind: "info", title: "Drop photos and PDFs on the chat box or the brief", detail: "There they become references Claude can see. The 3D view takes STEP files." });
+          toast({ kind: "info", title: "Drop photos and PDFs on the chat box or the brief", detail: "There they become references Claude can see. The 3D view takes STEP files and meshes (STL, OBJ, 3MF)." });
         else void importStepFiles([]);
       },
     },
@@ -255,8 +257,8 @@ export function StepDropOverlay({ show }: { show: boolean }) {
         <motion.div className="step-drop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
           <div className="step-drop-card">
             <Icon.Upload size={22} />
-            <div className="step-drop-title">Drop STEP files to import</div>
-            <div className="step-drop-sub">Kerf reads the solids, their names and colours, and finds the holes to align to.</div>
+            <div className="step-drop-title">Drop STEP files or meshes to import</div>
+            <div className="step-drop-sub">Kerf reads the solids, their names and colours, and finds the holes to align to. STL, OBJ and 3MF meshes are repaired and turned into solids.</div>
           </div>
         </motion.div>
       )}

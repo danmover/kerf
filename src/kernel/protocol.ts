@@ -166,7 +166,7 @@ export type ToWorker =
   | { type: "faces"; jobId: number; hashes: string[] }
   /** named features, sharp edges and a selection of one part (for inspect_part) */
   | { type: "inspect-part"; jobId: number; req: InspectRequest }
-  /** read a STEP file and keep its bodies for "import" recipes; `analyse` false skips the hole search for a file analysed before */
+  /** read a STEP file or a mesh (by the file's extension) and keep its bodies for "import" recipes; `analyse` false skips the hole search for a file analysed before */
   | { type: "import-step"; jobId: number; hash: string; file: string; data: ArrayBuffer; analyse: boolean }
   | { type: "drop-import"; hash: string }
   | { type: "measure"; jobId: number; a: { hash: string; xf: Xform[] }[]; b: { hash: string; xf: Xform[] }[] };
