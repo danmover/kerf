@@ -6,7 +6,10 @@ import { fittingPose, freeLength, rubberOf, sectionOf, shoreToE, strandTension, 
 import { carriedBy, fittingSteps, holdDetails } from "../src/analysis/fitting";
 import { vadd, vdot, vlen, vnorm, vscale, vsub, type V3 } from "../src/kernel/recipe";
 import type { StructuralSpec } from "../src/analysis/spec";
+import * as R from "replicad";
+import { KernelCore } from "../src/kernel/core";
 import { fullCheck, problems } from "./helpers/fullcheck";
+import { initKernel } from "./helpers/kernel";
 import { withValues } from "../src/core/decisions";
 
 const post = `design "t"
@@ -235,6 +238,61 @@ part arm_r { body box(6, 6, 20, at: (14, 20, -10)) }
   });
 });
 
+describe("the band as drawn", () => {
+  const dbl = hooked().replace("open: Z", "spread: 12, open: [(-1, 0, 0), (1, 0, 0)]");
+
+  it("is swept along straight runs joined by tangent arcs, from one side of a hairline gap in its longest run to the other", () => {
+    for (const src of [hooked(), dbl]) {
+      const base = model(src).parts.find((p) => p.name === "b")!.recipe.base;
+      if (base?.t !== "sweep" || base.path.t !== "poly") throw new Error("not swept along a run of points");
+      const { pts, r } = base.path;
+      const last = pts.length - 1;
+      // the seam: its two ends face each other across a gap too fine to see, in line with the runs either side, and
+      // those two runs together are the longest
+      const gap = vsub(pts[0], pts[last]);
+      expect(vlen(gap)).toBeGreaterThan(0.005);
+      expect(vlen(gap)).toBeLessThan(0.05);
+      expect(vdot(vnorm(gap), vnorm(vsub(pts[1], pts[0])))).toBeCloseTo(1, 9);
+      expect(vdot(vnorm(gap), vnorm(vsub(pts[last], pts[last - 1])))).toBeCloseTo(1, 9);
+      const runs = pts.slice(1).map((q, i) => vlen(vsub(q, pts[i])));
+      expect(Math.max(...runs)).toBeLessThanOrEqual(runs[0] + runs[runs.length - 1] + vlen(gap) + 1e-9);
+      // sharp corners now and then leave OpenCASCADE unable to build the pipe: every bend is an arc, and each arc fits
+      // inside half of the runs either side of it
+      expect(r).toBeGreaterThan(0);
+      for (let i = 1; i < last; i++) {
+        const a = vsub(pts[i], pts[i - 1]);
+        const c = vsub(pts[i + 1], pts[i]);
+        const turn = Math.acos(Math.max(-1, Math.min(1, vdot(vnorm(a), vnorm(c)))));
+        expect(r * Math.tan(turn / 2)).toBeLessThanOrEqual(0.5 * Math.min(vlen(a), vlen(c)) + 1e-9);
+      }
+    }
+  });
+});
+
+describe("what goes on with the part a band holds", () => {
+  const boxes: Record<string, [V3, V3]> = {
+    post: [[-15, -15, -100], [15, 15, 100]],
+    bracket: [[-20, 20, -10], [20, 26, 10]],
+    liner: [[-15, 17, -10], [15, 20, 10]],
+  };
+  const lined = (material: string) => hooked().replace("component b", `part liner { material: "${material}"  held: "stuck on"  body box(30, 3, 20, at: (0, 18.5, -10)) }\ncomponent b`);
+  const riders = (material: string) => {
+    const m = model(lined(material));
+    const seat = fittingSteps(m, (p) => boxes[p.name] as never)[0];
+    if (seat.kind !== "seat") throw new Error("no seat step");
+    return seat.riders.map((id) => m.parts.find((p) => p.id === id)!.name);
+  };
+
+  it("takes a rubber strip stuck on its face along, though the strip stands out in front of it", () => {
+    expect(riders("EPDM")).toEqual(["liner"]);
+    expect(riders("TPU")).toEqual(["liner"]);
+  });
+
+  it("leaves a rigid part lying on its face to its own step", () => {
+    expect(riders("PETG")).toEqual([]);
+  });
+});
+
 describe("the seatpost number bracket", () => {
   const src = readFileSync(new URL("../src/demos/seatpost-number.kerf", import.meta.url), "utf8");
 
@@ -247,7 +305,7 @@ describe("the seatpost number bracket", () => {
     expect(bands.every((i) => i.status === "pass")).toBe(true);
   }, 120_000);
 
-  it("plays the bracket and its pad on, the O-ring, the number slid in with its print, the number clip pushed through it, and each load it is checked for", async () => {
+  it("plays the bracket with its arms and rubber on, the O-ring, the number slid in with its print, the number clip pushed through it, and each load it is checked for", async () => {
     const r = await fullCheck(src);
     const steps = fittingSteps(r.model, (p) => r.core.get(p.hash)?.bbox as never);
     expect(steps.map((s) => s.kind)).toEqual(["seat", "band", "slide", "slide", "hold", "hold", "hold"]);
@@ -255,8 +313,9 @@ describe("the seatpost number bracket", () => {
     const seat = steps[0];
     if (seat.kind !== "seat") throw new Error("no seat step");
     expect(name(seat.part)).toBe("bracket");
-    // the number clip goes in later, on its own; the arms clip on first and come with it
-    expect(seat.riders.map(name).sort()).toEqual(["arm_l", "arm_r", "pad"]);
+    // the number clip goes in later, on its own; the arms are printed on and come with the bracket, as does the rubber:
+    // the strip stuck into the seat (though it stands out in front of it) and the patch on each arm's finger
+    expect(seat.riders.map(name).sort()).toEqual(["arm_l", "arm_r", "grip_l", "grip_r", "strip"]);
     expect(seat.caption).toMatch(/^Hold Number bracket, its arms clipped on, against Seatpost/);
     expect(steps[1].title).toBe("Fit O-ring");
     const [slide, push] = steps.filter((s) => s.kind === "slide");
@@ -271,15 +330,18 @@ describe("the seatpost number bracket", () => {
     // then the clip's pin goes in across the jaw, through the number's centre hole, and its leg's catch clicks up behind
     // the far cheek
     expect(name(push.part)).toBe("number_clip");
-    expect(push.caption).toMatch(/^Push Number clip in through Race number \(4004\) until it clicks: about \d+(\.\d)? N\. To take it out, press its catch free and slide it back out, or pull it straight out: about \d+(\.\d)? N\.$/);
+    // its catch holds harder than a pull on its tab that would bend its spine, so it comes out only by its catch
+    expect(push.caption).toMatch(/^Push Number clip in through Race number \(4004\) until it clicks: about \d+(\.\d)? N\. To take it out, press its catch free \(about \d+(\.\d)? N on the hook's tip\) and pull it out by its tab\.$/);
     expect(Math.abs(vnorm(push.from)[0])).toBeCloseTo(1, 6);
     const numberBox = r.core.get(r.model.parts.find((p) => p.name === "number")!.hash)!.bbox;
     expect(Math.abs(slide.peg[0])).toBeLessThan(numberBox[1][0] + 1);
     expect(Math.sign(push.peg[0])).toBe(-Math.sign(push.from[0]));
-    // in the stress results the bracket carries its arms, its pad and the number clip, the clip the number, and the
-    // number its print, so they move with it
+    // in the stress results the bracket carries its arms, its rubber strip and the number clip, the clip the number,
+    // and the number its print, so they move with it
     const carried = carriedBy(r.model, (p) => r.core.get(p.hash)?.bbox as never);
-    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["arm_l", "arm_r", "number_clip", "pad"]);
+    expect(carried.get(seat.part)!.map(name).sort()).toEqual(["arm_l", "arm_r", "number_clip", "strip"]);
+    // and each arm carries the rubber on its finger
+    for (const side of ["l", "r"]) expect(carried.get(r.model.parts.find((p) => p.name === `arm_${side}`)!.id)!.map(name)).toEqual([`grip_${side}`]);
     expect(carried.get(push.part)!.map(name)).toEqual(["number"]);
     expect(carried.get(slide.part)!.map(name).sort()).toEqual(["number_print", "number_stripe", "transponder"]);
     const gust = steps.find((s) => s.kind === "hold" && s.title === "Crosswind gust")!;
@@ -293,6 +355,28 @@ describe("the seatpost number bracket", () => {
     expect(d.arrows[0].at[1]).toBeGreaterThan(box[0][1] + 40);
     expect(d.caption).toMatch(/still running/);
   }, 120_000);
+
+  it("draws the O-ring as one sound solid whatever the post, the O-ring's size and the rubber's thickness", async () => {
+    await initKernel();
+    const oc = R.getOC() as unknown as { BRepCheck_Analyzer: new (s: unknown, geom: boolean, par: boolean) => { IsValid(): boolean; delete(): void } };
+    const m = evaluate(src);
+    const round = (d: number) => ({ post_w: d, post_d: d, tail_w: 0, tail_r: 0 });
+    // the first is the template as it stands, whose sharp-cornered closed pipe could not be built; the second a
+    // closed smooth pipe that came out capped and invalid, and whose volume was never worked out
+    const sets: Record<string, number>[] = [{}, { ...round(27.2), oring_id: 36, rubber_t: 1 }, { ...round(31.6), oring_id: 41, oring_cs: 3.53 }, { ...round(25.4), oring_id: 34, rubber_t: 3, finger_t: 2 }, { oring_id: 41 }];
+    for (const set of sets) {
+      const alt = evaluate(withValues(src, m, set));
+      expect(alt.diagnostics.filter((x) => x.severity === "error")).toEqual([]);
+      const band = alt.parts.find((p) => p.band)!;
+      const core = new KernelCore();
+      const e = core.build({ hash: band.hash, recipe: band.recipe, label: band.label });
+      const check = new oc.BRepCheck_Analyzer(e.shape.wrapped, true, false);
+      expect(check.IsValid(), JSON.stringify(set)).toBe(true);
+      check.delete();
+      const L = band.band!.layout;
+      expect(e.volume / ((Math.PI / 4) * (0.96 * L.cord) ** 2 * L.length), JSON.stringify(set)).toBeCloseTo(1, 1);
+    }
+  }, 60_000);
 
   it("fits every seatpost it offers, and every tilt: each choice passes every requirement", () => {
     const m = evaluate(src);
