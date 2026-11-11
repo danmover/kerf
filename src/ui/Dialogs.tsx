@@ -79,6 +79,7 @@ const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
       [["R"], "Measure faces, edges and corners"],
       [["Q"], "Selection filter: click picks parts, faces, edges or corners (Shift+Q: back)"],
       [["B"], "Box select: dragging draws a box instead of turning the view"],
+      [["H"], "Drag handles on a selected part: pull its sizes, slide it along X, Y or Z"],
       [["D"], "Switch between the 3D view and drawings"],
       [["Space"], "Play or pause the mechanism"],
       [["A"], "Play the assembly animation"],

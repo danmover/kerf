@@ -36,7 +36,7 @@ export interface PickHost extends MeasureHost {
 }
 
 const LABEL: Record<PickFilter, string> = { part: "Parts", face: "Faces", edge: "Edges", vertex: "Corners" };
-const isTyping = (t: EventTarget | null) => {
+export const isTyping = (t: EventTarget | null) => {
   const el = t as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable || !!el.closest?.(".cm-editor"));
 };

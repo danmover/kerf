@@ -36,6 +36,7 @@ import { ResultsLayer } from "./ResultsLayer";
 import { AirflowLayer } from "./AirflowLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { PickFilterMenu, PickLayer } from "./viewport/PickLayer";
+import { HandlesLayer } from "./viewport/HandlesLayer";
 import { usePicks } from "../app/picks";
 import { SimLayer } from "./sim/SimLayer";
 import { WiringLayer } from "./WiringLayer";
@@ -407,6 +408,7 @@ export function Viewport() {
       {!fitting && <Hud stage={stage} parts={visibleParts} />}
       <MeasureTool host={measureHost} />
       <PickLayer host={pickHost} />
+      <HandlesLayer host={pickHost} />
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}

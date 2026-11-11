@@ -34,6 +34,7 @@ import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
 import { RulerIcon, toggleMeasure } from "./viewport/MeasureTool";
 import { FilterIcon, openSetNamer, recallSet } from "./viewport/PickLayer";
+import { toggleHandles, useHandles } from "./viewport/HandlesLayer";
 import { FILTERS, FILTER_WORD, savedSets, setFilter, toggleBox, usePicks } from "../app/picks";
 import { playFitting, useFitView } from "./FitLayer";
 import { togglePmi, usePmiView } from "./PmiLayer";
@@ -273,6 +274,7 @@ export function findItems(ctx: FindContext): FindItem[] {
         tag: usePicks.getState().filter === f ? "on" : undefined,
         run: () => setFilter(f),
       })),
+      { id: "view:handles", group: "View", title: "Drag handles", detail: "With a part selected: arrows on its sizes to pull them (or click a value on the model to type it) and arrows in its middle to slide it along X, Y or Z", keywords: "drag handles push pull press pull instant3d arrows resize stretch on-model dimensions edit dimension on model triad move manipulator gizmo slide", icon: <Icon.Move size={14} />, keys: "H", tag: useHandles.getState().on ? "on" : undefined, run: () => toggleHandles() },
       { id: "view:boxselect", group: "View", title: "Box select", detail: "Drag a box to pick parts, faces, edges or corners: left to right takes what is wholly inside, right to left whatever it touches", keywords: "box select window selection crossing selection drag select marquee rubber band lasso area select many multiple", icon: <FilterIcon filter={usePicks.getState().filter} box size={14} />, keys: "B", tag: usePicks.getState().box ? "on" : undefined, run: () => toggleBox() },
       { id: "view:drawings", group: "View", title: drawings ? "Back to the 3D view" : "Engineering drawings", detail: drawings ? "Leave the drawing sheets" : "Dimensioned sheets for each part, ready to print or send", keywords: "drawing drawings blueprint 2d dimensions sheet pdf tolerance print", icon: <Icon.Doc size={14} />, keys: "D", run: () => (drawings ? closeDrawings() : openDrawings()) },
       { id: "view:drawings-gdt", group: "View", title: "Datums and GD&T on drawings", detail: "Geometric tolerances, fits for bearing seats and dowels, gear centre distances", keywords: "gd&t gdt geometric tolerancing datum datums feature control frame position flatness perpendicularity runout basic dimension fit fits h7 k6 bearing seat dowel centre distance backlash iso 1101 asme y14.5 surface finish ra", icon: <Icon.Doc size={14} />, run: () => openDrawings() },
