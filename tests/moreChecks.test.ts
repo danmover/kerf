@@ -148,6 +148,27 @@ wire ctrl.D9 -> s.SIG
     expect(items.find((i) => /^erc:budget:/.test(i.id))?.fix).toMatch(/supply of their own/);
   });
 
+  it("sizes a fuse by a bus servo's stated load, not its catalog draw", () => {
+    const chain = (load: string) => `
+component psu = lib.part("psu_12v_10a") { at: (0, 200, 0) }
+component f = lib.part("fuse_holder_atc") { at: (0, 120, 0), rating: 2A }
+component drv = lib.part("waveshare_bus_servo_adapter_a") { at: (0, 80, 0) }
+component s = lib.servo("waveshare_st3215") { at: (0, 50, 0)${load} }
+wire psu.VPOS -> f.IN { gauge: 18 }
+wire f.OUT -> drv.VIN { gauge: 18 }
+net PGND: psu.VNEG, drv.GND { gauge: 18 }
+wire drv.SERVO_V -> s.V_PLUS { gauge: 22 }
+wire drv.SERVO_G -> s.GND { gauge: 22 }
+wire drv.SERVO_S -> s.SIG { gauge: 22 }
+`;
+    const fuse = (load: string) => erc(chain(load)).find((i) => /^erc:fuse-load:/.test(i.id));
+    // 0.5 A from the catalog with no load given; 2.5 N·m of its 2.9 N·m stall is 2.3 A of its 2.7 A
+    expect(fuse("")).toBeUndefined();
+    expect(fuse(", load: 0.5Nm")).toBeUndefined();
+    expect(fuse(", load: 2.5Nm")?.status).toBe("fail");
+    expect(fuse(", load: 2.5Nm")?.detail).toMatch(/About 2\.3 A flows through the 2 A fuse/);
+  });
+
   it("fails a pin used for two signals, naming free pins to move one to", () => {
     const items = erc(`
 component s = lib.servo("mg996r") { at: (0, 50, 0) }

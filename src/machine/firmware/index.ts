@@ -3,6 +3,7 @@
 import { CATALOG, catalogPart } from "../catalog";
 import type { MachineData } from "../types";
 import { ARM_WORDS, armFirmware } from "./arm";
+import { busArmFirmware, hasServoBus } from "./busArms";
 import { arduinoFirmware } from "./arduino";
 import { fwContext, oneLine, type GenFile } from "./common";
 import { klipperConfig } from "./klipper";
@@ -40,6 +41,11 @@ export function generateFirmware(m: MachineData, designName: string): FirmwareOu
     }
     if (VANE_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? "")) && ARDUINO_BOARDS.test(ctx.boardPart.id) && /esp32/i.test(String(ctx.boardPart.specs.mcu ?? ""))) {
       const r = vaneFirmware(ctx);
+      return { name: fw.name, board: ctx.board.name, target: "arduino", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
+    }
+    // smart servos on a bus adapter: the board is a bridge between a computer and the servo buses
+    if (ARDUINO_BOARDS.test(ctx.boardPart.id) && hasServoBus(ctx)) {
+      const r = busArmFirmware(ctx);
       return { name: fw.name, board: ctx.board.name, target: "arduino", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
     }
     if ((fw.settings.app === "arm" || ARM_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? ""))) && ARDUINO_BOARDS.test(ctx.boardPart.id)) {

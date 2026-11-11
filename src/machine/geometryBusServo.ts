@@ -95,7 +95,8 @@ export function busServoGeometry(p: CatalogPart): GeomResult {
   const hornT = num(d, "horn_t", 2.5);
   const idlerT = num(d, "idler_t", 2.1);
   const hornHole = num(d, "horn_hole", 2.5);
-  const m2 = g.hole_d ?? 1.5;
+  // the pilot of an M2 thread-forming screw (the maker's CAD draws these holes 1.5 mm)
+  const m2 = g.hole_d ?? 1.6;
   const depth = num(d, "hole_depth", 5);
   const cxm = (x0 + x1) / 2;
   const look = g.servo ?? {};
@@ -127,10 +128,12 @@ export function busServoGeometry(p: CatalogPart): GeomResult {
       ...seam(-h + 6),
     ],
   };
-  // the long case screws at the motor end, their heads flush in the top cover (drawn a hair proud so they show)
+  // the long case screws at the motor end, their heads just under the top cover's face in square recesses (square, so
+  // they are not taken for mounting holes)
+  for (const [x, y] of caseScrewAt) body.ops.push({ op: "cut", shape: box(3.3, 3.3, 0.5, [x, y, tc - 0.49]) });
   const caseScrews: PartRecipe = {
-    base: { t: "union", shapes: caseScrewAt.map(([x, y]) => ({ t: "cyl" as const, d: 3, h: 0.5, at: [x, y, tc - 0.45] as V3, dir: ZP })) },
-    ops: caseScrewAt.flatMap(([x, y]) => [box(1.8, 0.35, 0.3, [x, y, tc - 0.2]), box(0.35, 1.8, 0.3, [x, y, tc - 0.2])].map((shape) => ({ op: "cut" as const, shape, cosmetic: true }))),
+    base: { t: "union", shapes: caseScrewAt.map(([x, y]) => ({ t: "cyl" as const, d: 3, h: 0.4, at: [x, y, tc - 0.49] as V3, dir: ZP })) },
+    ops: caseScrewAt.flatMap(([x, y]) => [box(1.8, 0.35, 0.25, [x, y, tc - 0.3]), box(0.35, 1.8, 0.25, [x, y, tc - 0.3])].map((shape) => ({ op: "cut" as const, shape, cosmetic: true }))),
   };
   // the horns: a 2.5 mm disc with four tapped holes, on the output spline and on the idler's stub
   const horn = (z0: number, t: number, dir: V3, screwHead: boolean): PartRecipe => {

@@ -213,10 +213,11 @@ function devkitcPins(): PlugTable {
 }
 
 // Waveshare ST3215 / Feetech STS3215 (bus_servo frame: origin on the output axis at the case top): two 3-pin
-// 2.5 mm sockets side by side in the recess in the bottom face, GND, VCC, signal across each. A lead comes in on
-// one and the next servo's lead leaves from the other, so a pin's second wire takes the second socket.
+// 2.5 mm sockets side by side in the recess in the bottom face, GND, VCC, signal across each. The three wires of a
+// lead share one 3-way housing, so the three pins sit at the socket's centre, each on its own contact. A lead comes
+// in on one socket and the next servo's lead leaves from the other, so a pin's second wire takes the second socket.
 const BUS_SERVO: PlugTable = Object.fromEntries(
-  (["GND", "V_PLUS", "SIG"] as const).map((id, k): [string, PlugSpec] => [id, { kind: "xh", at: [-14.05, 5.2 + (k - 1) * 2.4, -28.2], out: NZ, row: Y, ways: 1, pitch: 2.4, more: [[-14.05, -5.2 + (k - 1) * 2.4, -28.2]] }]),
+  (["GND", "V_PLUS", "SIG"] as const).map((id, k): [string, PlugSpec] => [id, { kind: "xh", at: [-14.05, 5.2, -25.6], out: NZ, row: Y, ways: 3, used: [k], more: [[-14.05, -5.2, -25.6]] }]),
 );
 
 /** Plugs for catalog parts, by catalog id and pin id. */
@@ -231,9 +232,10 @@ export const PLUGS: Record<string, PlugTable> = {
     TX: { kind: "dupont", at: [3.46, 13.5, 4.1], out: Z, row: X, ways: 1 },
     RX: { kind: "dupont", at: [6, 13.5, 4.1], out: Z, row: X, ways: 1 },
     UART_G: { kind: "dupont", at: [8.54, 13.5, 4.1], out: Z, row: X, ways: 1 },
-    SERVO_G: { kind: "xh", at: [16, 3.5, 1.6], out: Z, row: Y, ways: 1, socket: true },
-    SERVO_V: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 1, socket: true },
-    SERVO_S: { kind: "xh", at: [16, 8.5, 1.6], out: Z, row: Y, ways: 1, socket: true },
+    // the servo port: one 3-way housing for the lead's three wires, each pin on its own contact
+    SERVO_G: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [0], socket: true },
+    SERVO_V: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [1], socket: true },
+    SERVO_S: { kind: "xh", at: [16, 6, 1.6], out: Z, row: Y, ways: 3, used: [2], socket: true },
   },
   // Arducam B0196 (38 × 38): the 4-pin lead leaves its socket on the -Y edge
   arducam_b0196: { USB: { kind: "lead", at: [0, -17.5, 3.4], out: NY, row: X, ways: 1 } },

@@ -1051,6 +1051,8 @@ function serialObject(port: number): Record<string, LibFn> {
   const waitByte = (ctx: Ctx): number => {
     const hal = ctx.hal;
     const start = hal.millis();
+    // a device on Serial1 or Serial2 answers within a millisecond: wait for the byte itself, not in 1 ms steps
+    if (port && hal.serialWait) return hal.serialWait(port, 1, ctx.lib.serialTimeout) > 0 ? hal.serialPeek(port) : -1;
     while (hal.serialAvailable(port) === 0) {
       if (((hal.millis() - start) >>> 0) >= ctx.lib.serialTimeout) return -1;
       hal.spend((hal.fcpu * BLOCK_STEP_MS) / 1000);
@@ -1058,7 +1060,9 @@ function serialObject(port: number): Record<string, LibFn> {
     return hal.serialPeek(port);
   };
   return dict({
-    begin: def("Serial.begin", ["ulong", "u8"], "void", 200, ([baud], c) => c.hal.serialBegin(port, baud), [6]),
+    begin: port
+      ? def("Serial.begin", ["ulong", "ulong", "int", "int"], "void", 200, ([baud, , rx, tx], c) => c.hal.serialBegin(port, baud, rx, tx), [6, -1, -1])
+      : def("Serial.begin", ["ulong", "u8"], "void", 200, ([baud], c) => c.hal.serialBegin(port, baud), [6]),
     end: def("Serial.end", [], "void", 20, () => undefined),
     print: serialPrint(port, false),
     println: serialPrint(port, true),
@@ -1592,7 +1596,7 @@ const neoPixel: LibClass = {
 };
 
 export const LIB_FUNCS: Record<string, LibFn> = dict(libFuncs);
-export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Wire: wire, EEPROM: eeprom });
+export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Serial1: serialObject(1), Serial2: serialObject(2), Wire: wire, EEPROM: eeprom });
 export const LIB_CLASSES: Record<string, LibClass> = dict({ Servo: servo, Adafruit_NeoPixel: neoPixel });
 /** Library class names the parser accepts as types. */
 export const CLASS_NAMES = new Set(Object.keys(LIB_CLASSES));

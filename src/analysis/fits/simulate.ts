@@ -521,8 +521,17 @@ function runPatterns(joints: ScrewJoint[], samples: Map<FitInstance, Float64Arra
       for (const t of j.through) partsByName.set(t.hole.part.name, t.hole.part);
       for (const p of j.threads) partsByName.set(p.name, p);
     }
+    // a washer is loose on its screw until the screw is tight: it never sets where a screw goes
+    let loose = false;
+    for (const [name, p] of partsByName)
+      if (p.libKind === "washer") {
+        partsByName.delete(name);
+        loose = true;
+      }
     // a nut floats on the screw, and an insert sits in its host's pocket and moves with it: neither sets where the screw goes
     for (const [name, p] of partsByName) if (FOLLOWERS.has(p.libKind ?? "") && partsByName.size > 2) partsByName.delete(name);
+    // with the washers gone, one part and the nuts or inserts that follow it leave nothing to line up
+    if (loose && [...partsByName.values()].filter((p) => !FOLLOWERS.has(p.libKind ?? "")).length < 2) continue;
     const names = [...partsByName.keys()];
     if (names.length < 2) continue;
     const pos = list.map((j) => j.through[0].shaft.at);

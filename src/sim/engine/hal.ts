@@ -39,6 +39,23 @@ export interface SerialLine {
   text: string;
 }
 
+/** What hangs on a hardware UART other than the console (a servo bus adapter). */
+export interface UartPeer {
+  /** a byte from the chip, complete at t (seconds); when it ends a request, the answer and how long after t it starts (seconds) */
+  byte(b: number, t: number): { after: number; bytes: number[] } | null;
+}
+
+interface Uart {
+  baud: number;
+  rx: number;
+  tx: number;
+  txEnds: number[];
+  txHead: number;
+  rxQueue: { t: number; b: number }[];
+  rxBuf: number[];
+  overflowed: boolean;
+}
+
 /** pin modes as the AVR has them */
 const Mode = { INPUT: 0, OUTPUT: 1, PULLUP: 2 } as const;
 
@@ -155,6 +172,11 @@ export class SimHal implements Hal {
   private outLineT = 0;
   serial: SerialLine[] = [];
   serialBytes = 0;
+  /** Serial1, Serial2: each on its own pins, with whatever the design wires to them */
+  private uarts = new Map<number, Uart>();
+  private uartLinks: { tx: number; rx: number; peer: UartPeer }[] = [];
+  /** bytes sent on Serial1 and Serial2 */
+  uartBytes = 0;
 
   // I2C
   private wireOn = false;
@@ -685,7 +707,8 @@ export class SimHal implements Hal {
 
   // ---------- serial ----------
 
-  serialBegin(_port: number, baud: number): void {
+  serialBegin(_port: number, baud: number, rx = -1, tx = -1): void {
+    if (_port) return this.uartBegin(_port, baud, rx, tx);
     this.baud = baud;
   }
 
@@ -694,6 +717,7 @@ export class SimHal implements Hal {
   }
 
   serialWrite(_port: number, bytes: number[]): number {
+    if (_port) return this.uartWrite(_port, bytes);
     if (!this.baud) {
       this.fault("Serial is used before Serial.begin(): nothing goes out", "firmware", 0);
       return 0;
@@ -764,24 +788,107 @@ export class SimHal implements Hal {
     }
   }
 
-  serialAvailable(): number {
+  serialAvailable(port = 0): number {
+    if (port) return this.uartRx(port).length;
     this.deliverSerial();
     return this.rxBuf.length;
   }
 
-  serialRead(): number {
+  serialRead(port = 0): number {
+    if (port) return this.uartRx(port).shift() ?? -1;
     this.deliverSerial();
     return this.rxBuf.length ? this.rxBuf.shift()! : -1;
   }
 
-  serialPeek(): number {
+  serialPeek(port = 0): number {
+    if (port) return this.uartRx(port)[0] ?? -1;
     this.deliverSerial();
     return this.rxBuf.length ? this.rxBuf[0] : -1;
   }
 
-  serialFlush(): void {
-    const last = this.txEnds.length > this.txHead ? this.txEnds[this.txEnds.length - 1] : this.cyc;
+  serialFlush(port = 0): void {
+    const u = port ? this.uarts.get(port) : undefined;
+    if (port && !u) return;
+    const ends = u ? u.txEnds : this.txEnds;
+    const head = u ? u.txHead : this.txHead;
+    const last = ends.length > head ? ends[ends.length - 1] : this.cyc;
     if (last > this.cyc) this.spend(last - this.cyc);
+  }
+
+  // ---------- Serial1, Serial2: a peer on the pins instead of the console ----------
+
+  /** put something on a pair of UART pins (a servo bus adapter): it sees what the chip sends on tx and answers on rx */
+  attachUart(tx: number, rx: number, peer: UartPeer) {
+    this.uartLinks.push({ tx, rx, peer });
+  }
+
+  private uartBegin(port: number, baud: number, rx: number, tx: number) {
+    if (this.board.arch !== "esp32") {
+      this.fault(`Serial${port} does not exist on the ${this.board.name}: it has one UART, Serial`, "firmware", 0);
+      return;
+    }
+    const d = this.board.uarts?.[port - 1];
+    this.uarts.set(port, { baud: baud || 115200, rx: rx >= 0 ? rx : (d?.rx ?? -1), tx: tx >= 0 ? tx : (d?.tx ?? -1), txEnds: [], txHead: 0, rxQueue: [], rxBuf: [], overflowed: false });
+  }
+
+  private uartWrite(port: number, bytes: number[]): number {
+    const u = this.uarts.get(port);
+    if (!u) {
+      this.fault(`Serial${port} is used before Serial${port}.begin(): nothing goes out`, "firmware", 0);
+      return 0;
+    }
+    const bc = Math.round((10 * this.fcpu) / u.baud);
+    const cap = this.board.serialTx;
+    const link = this.uartLinks.find((l) => l.tx === u.tx);
+    for (const b of bytes) {
+      while (u.txHead < u.txEnds.length && u.txEnds[u.txHead] <= this.cyc) u.txHead++;
+      while (u.txEnds.length - u.txHead >= cap) {
+        this.spend(u.txEnds[u.txHead] - this.cyc);
+        while (u.txHead < u.txEnds.length && u.txEnds[u.txHead] <= this.cyc) u.txHead++;
+      }
+      const last = u.txEnds.length > u.txHead ? u.txEnds[u.txEnds.length - 1] : this.cyc;
+      const end = Math.max(last, this.cyc) + bc;
+      u.txEnds.push(end);
+      if (u.txHead > 4096) {
+        u.txEnds = u.txEnds.slice(u.txHead);
+        u.txHead = 0;
+      }
+      this.uartBytes++;
+      const ans = link?.peer.byte(b & 255, end / this.fcpu);
+      if (ans && link && link.rx === u.rx) {
+        // the answer comes back a byte at a time, after whatever is already on its way
+        let t = Math.max(end + Math.round(ans.after * this.fcpu), u.rxQueue.length ? u.rxQueue[u.rxQueue.length - 1].t : 0);
+        for (const r of ans.bytes) u.rxQueue.push({ t: (t += bc), b: r });
+      }
+    }
+    return bytes.length;
+  }
+
+  /** a port's receive buffer, with every byte that has arrived by now */
+  private uartRx(port: number): number[] {
+    const u = this.uarts.get(port);
+    if (!u) return [];
+    while (u.rxQueue.length && u.rxQueue[0].t <= this.cyc) {
+      const { b } = u.rxQueue.shift()!;
+      if (u.rxBuf.length < this.board.serialRx) u.rxBuf.push(b);
+      else if (!u.overflowed) {
+        u.overflowed = true;
+        this.fault(`Serial${port} receive buffer overflowed (${this.board.serialRx} bytes): read it more often`, "firmware", 0);
+      }
+    }
+    return u.rxBuf;
+  }
+
+  /** wait until n bytes have come in on a port or ms have passed, and say how many are there: chip time goes by, nothing is polled */
+  serialWait(port: number, n: number, ms: number): number {
+    const end = this.cyc + Math.round((ms / 1000) * this.fcpu);
+    for (;;) {
+      const have = this.serialAvailable(port);
+      if (have >= n || this.cyc >= end) return have;
+      const q = port ? this.uarts.get(port)?.rxQueue : this.rxQueue;
+      const next = q && q.length ? q[0].t : end;
+      this.spend(Math.max(1, Math.min(next, end) - this.cyc));
+    }
   }
 
   // ---------- I2C ----------

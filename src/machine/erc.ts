@@ -540,12 +540,14 @@ function protection(c: Ctx) {
 function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined, peak = false, surging?: Set<string>) {
   // a servo or actuator powered straight from a supply draws its stall current as it starts
   const drawOf = (p: NetPin): number => {
-    const run = p.pin.draw ?? 0;
     const stall = p.part.specs.i_stall;
     // (a gearmotor's power pins feed its encoder: its motor current comes through its driver)
-    if (!peak || p.pin.type !== "pwr_in" || typeof stall !== "number" || stall <= run || !STARTS_HARD.has(p.part.kind) || p.part.pins.some((q) => q.type === "motor")) return run;
+    const direct = p.pin.type === "pwr_in" && typeof stall === "number" && STARTS_HARD.has(p.part.kind) && !p.part.pins.some((q) => q.type === "motor");
+    // a servo with a stated load: draws what that torque takes, as a DC motor does through its driver
+    const run = (direct && !peak ? motorCurrent?.(p.comp) : undefined) ?? p.pin.draw ?? 0;
+    if (!peak || !direct || (stall as number) <= run) return run;
     surging?.add(p.comp);
-    return stall;
+    return stall as number;
   };
   const memo = new Map<number, number>();
   const visiting = new Set<number>();
@@ -615,7 +617,7 @@ function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined, 
     }
     return a;
   };
-  return { load, downstream };
+  return { load, downstream, drawOf };
 }
 
 /** Parts that draw their stall current from the supply each time they start. */
@@ -770,7 +772,7 @@ export function supplyFacts(m: MachineData, motorCurrent?: (comp: string) => num
 }
 
 function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
-  const { load, downstream } = loadModel(c, motorCurrent);
+  const { load, downstream, drawOf } = loadModel(c, motorCurrent);
   for (const n of c.nl.nets) {
     const src = sourcesOf(n)[0];
     if (!src || src.pin.imax === undefined) continue;
@@ -782,7 +784,7 @@ function budget(c: Ctx, motorCurrent?: (comp: string) => number | undefined) {
     if (pct > 1) item(c, `budget:${n.id}`, "fail", `${who(src)} overloaded`, `Everything on ${name} draws about ${fmtNum(a, 2)} A; ${src.part.name} supplies ${fmtNum(src.pin.imax)} A.`, [src.comp], n.spans[0], `Move the heavy loads (motors, servos, heaters, LED strips) to a supply of their own rated for at least ${fmtNum(Math.ceil(a * 1.25))} A, with its ground joined to this one, or use a bigger supply here.`);
     else item(c, `budget:${n.id}`, pct > 0.8 ? "warn" : "pass", `Power budget: ${name}`, `About ${fmtNum(a, 2)} A of ${fmtNum(src.pin.imax)} A available from ${who(src)} (${fmtNum(pct * 100, 0)} %).`, [src.comp], n.spans[0]);
   }
-  wireChecks(c, load, downstream, motorCurrent);
+  wireChecks(c, load, downstream, drawOf, motorCurrent);
 }
 
 const isSupplyPart = (p: NetPin) => p.part.kind === "battery" || p.part.kind === "psu";
@@ -794,7 +796,7 @@ const wireName = (sg: NetSeg) => `${fmtNum(sg.gauge!)} AWG${sg.insulation === "s
  * motor and ground nets each have a source side (the supply, the driver output, the battery's negative);
  * a run carries what is on its far side. A `net` statement is a bus: each of its runs carries the bus total.
  */
-function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) => number, motorCurrent?: (comp: string) => number | undefined) {
+function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) => number, drawOf: (p: NetPin) => number, motorCurrent?: (comp: string) => number | undefined) {
   // a motor lead carries the motor's working current, and at least what it can draw continuously (half stall)
   const leadA = (mp: NetPin) => Math.max(motorCurrent?.(mp.comp) ?? Number(mp.part.specs.i_free ?? 0.2), 0.5 * Number(mp.part.specs.i_stall ?? 0));
   const wired = (p: NetPin) => c.nl.netOf.has(p.key);
@@ -803,7 +805,7 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
   const supplyOf = (p: NetPin) =>
     siblings(p)
       .filter((q) => wired(q) && (q.pin.type === "pwr_in" || (q.pin.type === "pwr_rail" && supplies(c.nl.netOf.get(q.key)!).length > 0)))
-      .reduce((a, q) => a + (q.pin.draw ?? 0) + downstream(q), 0);
+      .reduce((a, q) => a + drawOf(q) + downstream(q), 0);
   // a part with several grounds returns its supply current through its power ground (GND_PWR, V−), else its first
   const powerGround = (p: NetPin) => {
     const gs = siblings(p).filter((q) => q.pin.type === "gnd" && wired(q));
@@ -812,9 +814,9 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
   const pinLoad = (p: NetPin, n: Net): number => {
     switch (p.pin.type) {
       case "pwr_in":
-        return (p.pin.draw ?? 0) + downstream(p);
+        return drawOf(p) + downstream(p);
       case "pwr_rail":
-        return supplies(n).length ? (p.pin.draw ?? 0) + downstream(p) : 0;
+        return supplies(n).length ? drawOf(p) + downstream(p) : 0;
       case "motor":
         return leadA(p);
       case "gnd":
