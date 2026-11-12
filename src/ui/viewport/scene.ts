@@ -15,6 +15,8 @@ import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
 import { xformMatrix } from "../../kernel/recipe";
 import type { ViewPreset } from "../../app/view";
+import type { FilmLayout, FilmShot, FilmView } from "../../app/viewportApi";
+import { buildShare } from "../../film/timeline";
 import { appearanceFor, Detail, type Appearance } from "./render/appearance";
 import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
@@ -26,6 +28,8 @@ const ACCENT = new THREE.Color("#6d8bff");
 /** how long a finger or pen is held still to open the spot chat, ms */
 const HOLD_MS = 550;
 const HOVER = new THREE.Color("#a9bcff");
+/** how far a pixel of drag on the view cube turns the camera, radians */
+const ORBIT_PER_PX = 0.012;
 
 /** Layers used to draw subsets of the parts (selection mask). */
 const L_OPAQUE = 1;
@@ -290,8 +294,6 @@ export class SceneController {
   private groundMat: THREE.ShadowMaterial;
   private key: THREE.DirectionalLight;
   private keyDir = new THREE.Vector3();
-  private triadScene = new THREE.Scene();
-  private triadCam = new THREE.OrthographicCamera(-1.6, 1.6, 1.6, -1.6, 0.1, 10);
   private sectionFrame: THREE.LineLoop;
   private sectionFill: THREE.Mesh;
   private depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false });
@@ -373,6 +375,9 @@ export class SceneController {
   onLightAngle: (deg: number) => void = () => undefined;
   /** the turntable stopped because the user took the camera */
   onTurntableStop: () => void = () => undefined;
+  /** the camera turned (the view cube follows it) */
+  onOrient: (q: THREE.Quaternion) => void = () => undefined;
+  private orient = new THREE.Quaternion(NaN, NaN, NaN, NaN);
   private renderListeners = new Set<() => void>();
   /** until the user moves the camera, the first complete build re-frames the model */
   private autoFit = true;
@@ -416,15 +421,7 @@ export class SceneController {
     // a mouse wheel's notch zooms over a few frames instead of in one jump; a
     // trackpad's stream of small steps is smooth already and goes straight through
     container.addEventListener("wheel", (e) => this.glideWheel(e), { capture: true, passive: false });
-    this.controls.addEventListener("start", () => {
-      this.camAnim = null;
-      this.autoFit = false;
-      if (this.turntable) {
-        this.turntable = false;
-        this.controls.autoRotate = false;
-        this.onTurntableStop();
-      }
-    });
+    this.controls.addEventListener("start", () => this.takeCamera());
 
     this.key = new THREE.DirectionalLight(0xffffff, 2);
     this.key.castShadow = true;
@@ -454,7 +451,6 @@ export class SceneController {
     hemi.position.set(0, 0, 1);
     this.overlayLights.add(hemi, this.overlayKey);
     this.overlay.add(this.overlayLights);
-    this.buildTriad();
     this.applyLighting();
 
     this.ro = new ResizeObserver(() => this.resize());
@@ -660,7 +656,6 @@ export class SceneController {
       o.edgeMat.color.set(p.edge.color);
       this.applyMaterial(o);
     }
-    this.paintTriad(!!p.light);
     this.placeKey(0);
     this.swatchCache.clear();
     this.changed = true;
@@ -1354,9 +1349,8 @@ export class SceneController {
   }
 
   /** Fill the depth buffer of the current target with the visible opaque parts, so overlays hide behind them. */
-  private overlayDepth() {
+  private overlayDepth(cam: THREE.PerspectiveCamera = this.camera) {
     const r = this.renderer;
-    const cam = this.camera;
     const prevMask = cam.layers.mask;
     const prevClip = r.clippingPlanes;
     const saveShadow = r.shadowMap.autoUpdate;
@@ -1632,6 +1626,22 @@ export class SceneController {
     this.fit("iso", true);
   }
 
+  /**
+   * The section that best shows the inside at a spot on a face: through the spot, across the axis the view looks
+   * along most (other than the face's own, which would only skim the surface), cutting away the side nearest the camera.
+   */
+  sectionThrough(point: [number, number, number], normal: [number, number, number]): { axis: "x" | "y" | "z"; t: number; flip: boolean } {
+    const view = this.camera.position.clone().sub(this.controls.target);
+    const own = [0, 1, 2].reduce((a, b) => (Math.abs(normal[b]) > Math.abs(normal[a]) ? b : a), 0);
+    const ax = [0, 1, 2].filter((k) => k !== own).reduce((a, b) => (Math.abs(view.getComponent(b)) > Math.abs(view.getComponent(a)) ? b : a));
+    const lo = this.bounds.min.getComponent(ax);
+    const hi = this.bounds.max.getComponent(ax);
+    // as placeSection() maps t to a position
+    const pad = (hi - lo) * 0.002 + 0.01;
+    const t = THREE.MathUtils.clamp((point[ax] - lo + pad) / (hi - lo + 2 * pad), 0, 1);
+    return { axis: (["x", "y", "z"] as const)[ax], t, flip: this.camera.position.getComponent(ax) < point[ax] };
+  }
+
   /** Frame the given parts from the current viewing direction. */
   focusOn(ids: string[]) {
     const box = new THREE.Box3();
@@ -1678,19 +1688,55 @@ export class SceneController {
     this.changed = true;
   }
 
+  /** The user has taken the camera: stop any move towards a view, the first framing and the turntable. */
+  takeCamera() {
+    this.camAnim = null;
+    this.autoFit = false;
+    if (this.turntable) {
+      this.turntable = false;
+      this.controls.autoRotate = false;
+      this.onTurntableStop();
+    }
+  }
+
+  /** Look at the model from a direction (an edge or corner of the view cube), framing it. */
+  lookFrom(dir: [number, number, number]) {
+    const d = new THREE.Vector3(...dir);
+    if (d.lengthSq() < 1e-12) return;
+    d.normalize();
+    // straight down or up: lean a hair towards the front so up stays defined, as the top and bottom views do
+    if (Math.abs(d.z) > 0.99999) d.set(0, -0.0001, Math.sign(d.z)).normalize();
+    this.fit("current", true, undefined, d);
+  }
+
+  /** Turn the camera round its target as dragging the view cube does: across turns about Z, up and down tips it over the top. */
+  orbitBy(dx: number, dy: number) {
+    this.takeCamera();
+    const t = this.controls.target;
+    const off = this.camera.position.clone().sub(t);
+    const r = off.length();
+    if (r < 1e-9) return;
+    const theta = Math.atan2(off.y, off.x) - dx * ORBIT_PER_PX;
+    const phi = THREE.MathUtils.clamp(Math.acos(THREE.MathUtils.clamp(off.z / r, -1, 1)) - dy * ORBIT_PER_PX, 1e-4, Math.PI - 1e-4);
+    this.camera.position.set(t.x + r * Math.sin(phi) * Math.cos(theta), t.y + r * Math.sin(phi) * Math.sin(theta), t.z + r * Math.cos(phi));
+    this.camera.lookAt(t);
+    this.controls.update();
+    this.changed = true;
+  }
+
   // ---------- picking ----------
 
   private pick(e: MouseEvent): string | null {
     return this.rayHit(e.clientX, e.clientY)?.object.userData.partId ?? null;
   }
 
-  private rayHit(clientX: number, clientY: number): THREE.Intersection | null {
+  private rayHit(clientX: number, clientY: number, ghosts = false): THREE.Intersection | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
-    // parts drawn by an overlay (analysis results) are hidden but still pickable
+    // parts drawn by an overlay (analysis results) are hidden but still pickable; see-through parts only when asked
     const pickable = (p: PartObj) => p.group.visible || (this.replaced.has(p.id) && !this.display.hidden.has(p.id) && !p.part.hidden);
-    const meshes = [...this.parts.values()].filter((p) => pickable(p) && !p.removing && p.opacityTarget > 0.5).map((p) => p.mesh);
+    const meshes = [...this.parts.values()].filter((p) => pickable(p) && !p.removing && (ghosts || p.opacityTarget > 0.5)).map((p) => p.mesh);
     const hits = this.raycaster.intersectObjects(meshes, false);
     for (const h of hits) {
       if (this.sectionAnim.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
@@ -1710,9 +1756,9 @@ export class SceneController {
     return best;
   }
 
-  /** The part and spot under a screen position. */
-  hitAt(clientX: number, clientY: number): Hit | null {
-    const h = this.rayHit(clientX, clientY);
+  /** The part and spot under a screen position. With ghosts, parts shown see-through (x-ray, sketching) count too. */
+  hitAt(clientX: number, clientY: number, opts: { ghosts?: boolean } = {}): Hit | null {
+    const h = this.rayHit(clientX, clientY, opts.ghosts);
     const obj = h && this.parts.get(h.object.userData.partId as string);
     if (!h || !obj) return null;
     const local = h.point.clone().applyMatrix4(h.object.matrixWorld.clone().invert());
@@ -1959,6 +2005,8 @@ export class SceneController {
   }
 
   private frame() {
+    // the film maker has the renderer: it draws its own frames
+    if (this.filming) return;
     const now = performance.now();
     const frameMs = now - this.last;
     const dt = Math.min(0.05, frameMs / 1000);
@@ -1968,6 +2016,10 @@ export class SceneController {
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
     this.camera.updateMatrixWorld();
+    if (!this.orient.equals(this.camera.quaternion)) {
+      this.orient.copy(this.camera.quaternion);
+      this.onOrient(this.orient);
+    }
     // the photoreal look hides CAD edges and the grid, but only while it can run
     const look = this.render$.photoreal && !this.photoBlocked();
     if (look !== this.photoLookOn) {
@@ -2113,7 +2165,7 @@ export class SceneController {
     this.photo.restart(performance.now());
   }
 
-  /** The finished photoreal image on screen, without the selection outline or the axis triad, as a PNG data URL; null until it has converged and fully shows. */
+  /** The finished photoreal image on screen, without the selection outline, as a PNG data URL; null until it has converged and fully shows. */
   photoSnapshot(): string | null {
     const photo = this.photo;
     if (!photo || !photo.done || this.photoMix < 0.999) return null;
@@ -2125,7 +2177,7 @@ export class SceneController {
       this.overlayDepth();
       r.render(this.overlay, this.camera);
     }
-    // read back in the same task, before the browser clears the canvas; the next frame puts the outline and triad back
+    // read back in the same task, before the browser clears the canvas; the next frame puts the outline back
     const url = r.domElement.toDataURL("image/png");
     this.needComposite = true;
     return url;
@@ -2238,7 +2290,7 @@ export class SceneController {
     this.onPhotoStatus(s);
   }
 
-  /** Composite the accumulated image to the canvas, then overlays and the axis triad. */
+  /** Composite the accumulated image to the canvas, then the overlays. */
   private present(now: number) {
     const r = this.renderer;
     if (this.interferences.length) {
@@ -2264,19 +2316,6 @@ export class SceneController {
       r.shadowMap.autoUpdate = saveShadow;
     }
     r.render(this.overlay, this.camera);
-    // axis triad in the corner
-    const s = 86;
-    r.clearDepth();
-    r.setScissorTest(true);
-    r.setScissor(10, 10, s, s);
-    r.setViewport(10, 10, s, s);
-    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
-    this.triadCam.position.copy(dir.multiplyScalar(4));
-    this.triadCam.up.copy(this.camera.up);
-    this.triadCam.lookAt(0, 0, 0);
-    r.render(this.triadScene, this.triadCam);
-    r.setScissorTest(false);
-    r.setViewport(0, 0, this.container.clientWidth, this.container.clientHeight);
   }
 
   /** Selection mask: red = selected and visible, blue = selected but hidden behind others, green = hovered. */
@@ -2313,51 +2352,6 @@ export class SceneController {
     cam.layers.mask = prevMask;
     r.clippingPlanes = prevClip;
     r.setRenderTarget(null);
-  }
-
-  private triad: { line: THREE.LineBasicMaterial; tip: THREE.MeshBasicMaterial; ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; label: string; axis: number }[] = [];
-
-  private buildTriad() {
-    const axes: [THREE.Vector3, string][] = [
-      [new THREE.Vector3(1, 0, 0), "X"],
-      [new THREE.Vector3(0, 1, 0), "Y"],
-      [new THREE.Vector3(0, 0, 1), "Z"],
-    ];
-    axes.forEach(([v, label], axis) => {
-      const line = new THREE.LineBasicMaterial();
-      const tip = new THREE.MeshBasicMaterial();
-      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), v.clone().multiplyScalar(0.9)]);
-      this.triadScene.add(new THREE.Line(g, line));
-      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8), tip);
-      ball.position.copy(v.clone().multiplyScalar(0.9));
-      this.triadScene.add(ball);
-      const c = document.createElement("canvas");
-      c.width = c.height = 64;
-      const tex = new THREE.CanvasTexture(c);
-      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-      sp.position.copy(v.clone().multiplyScalar(1.28));
-      sp.scale.setScalar(0.5);
-      this.triadScene.add(sp);
-      this.triad.push({ line, tip, ctx: c.getContext("2d")!, tex, label, axis });
-    });
-    this.paintTriad(false);
-  }
-
-  /** Axis colours: the bright set on a dark backdrop, deeper ones that hold up on a light backdrop. */
-  private paintTriad(light: boolean) {
-    const colors = light ? ["#d63a4a", "#12985f", "#4763e6"] : ["#ff5d6c", "#3ddc97", "#6d8bff"];
-    for (const t of this.triad) {
-      const color = colors[t.axis];
-      t.line.color.set(color);
-      t.tip.color.set(color);
-      t.ctx.clearRect(0, 0, 64, 64);
-      t.ctx.fillStyle = color;
-      t.ctx.font = "600 40px 'IBM Plex Mono', monospace";
-      t.ctx.textAlign = "center";
-      t.ctx.textBaseline = "middle";
-      t.ctx.fillText(t.label, 32, 34);
-      t.tex.needsUpdate = true;
-    }
   }
 
   // ---------- capture ----------
@@ -2543,6 +2537,347 @@ export class SceneController {
       obj.group.matrix.copy(m.multiply(obj.placement));
       obj.group.matrixWorldNeedsUpdate = true;
     }
+  }
+
+  // ---------- films ----------
+
+  private filming = false;
+
+  /**
+   * Hand the renderer to the film maker (src/film/render.ts). The interactive
+   * view stops drawing until end(); each picture is drawn from the film's own
+   * camera at the film's size, in the photoreal look (no CAD edges or grid),
+   * with the design posed as the shot asks: exploded, assembling, turning,
+   * cut or focused. Everything is put back as it was by end().
+   */
+  beginFilm(opts: { width: number; height: number; look?: string; fine?: boolean }): FilmView {
+    if (this.filming) throw new Error("A film is already being made");
+    this.filming = true;
+    const saved = {
+      photoLookOn: this.photoLookOn,
+      grid: this.grid.visible,
+      render: this.render$,
+      section: { ...this.section },
+      sectionAnim: { ...this.sectionAnim },
+      display: this.display,
+      angle: this.angle,
+      springs: new Map([...this.parts.values()].map((o) => [o, { pos: o.explode.pos.clone(), vel: o.explode.vel.clone() }])),
+      shadowSize: this.key.shadow.mapSize.x,
+      inter: this.interGroup.visible,
+      measure: this.measure.group.visible,
+      frameOpacity: (this.sectionFrame.material as THREE.LineBasicMaterial).opacity,
+      fillOpacity: (this.sectionFill.material as THREE.MeshBasicMaterial).opacity,
+    };
+    // finish what was animating: a part still sweeping in, or fading
+    for (const o of this.parts.values()) {
+      if (o.reveal) {
+        o.reveal = null;
+        o.u.uScan.value.x = 0;
+      }
+      if (o.dissolve && !o.removing) {
+        o.dissolve = null;
+        o.u.uDissolve.value = 0;
+      }
+      o.flash = null;
+      o.u.uFlash.value = 0;
+    }
+    this.interGroup.visible = false;
+    this.measure.group.visible = false;
+    // a film's look is the lighting set as it is, whatever the app's theme
+    const look = opts.look ?? this.render$.lighting;
+    if (look !== this.render$.lighting || this.render$.theme === "light") {
+      this.render$ = { ...this.render$, lighting: look, theme: "dark" };
+      this.applyLighting();
+    }
+    this.photoLookOn = true;
+    this.display = { ...this.display, selected: new Set(), hovered: null, focus: new Set(), isolate: false, xray: false };
+    for (const o of this.parts.values()) this.applyMaterial(o);
+    this.grid.visible = false;
+    // sharper shadows for a film rendered clean (the preview and drafts keep the view's own)
+    if (opts.fine && this.key.shadow.mapSize.x < 4096) {
+      this.key.shadow.mapSize.setScalar(4096);
+      this.key.shadow.map?.dispose();
+      this.key.shadow.map = null;
+    }
+
+    const cam = new THREE.PerspectiveCamera(32, opts.width / opts.height, 1, 1000);
+    cam.up.set(0, 0, 1);
+    const pipe = new RenderPipeline(this.renderer);
+    Object.assign(pipe.look, this.pipe.look);
+    pipe.maxSamples = 4096;
+    let out: THREE.WebGLRenderTarget | null = null;
+    let width = 0;
+    let height = 0;
+    let px = new Uint8Array(0);
+    const resize = (w: number, h: number) => {
+      if (w === width && h === height) return;
+      width = w;
+      height = h;
+      pipe.setSize(w, h, 1);
+      out?.dispose();
+      out = new THREE.WebGLRenderTarget(w, h, { type: THREE.UnsignedByteType, depthBuffer: true });
+      out.texture.colorSpace = THREE.SRGBColorSpace;
+      px = new Uint8Array(w * h * 4);
+    };
+    resize(opts.width, opts.height);
+
+    const plan = this.explodePlan();
+    const orderIdx = new Map((plan?.order ?? []).map((id, i) => [id, i]));
+    const bc = this.bounds.getCenter(new THREE.Vector3());
+    const size = this.bounds.getSize(new THREE.Vector3()).length();
+    const radius = Math.max(size / 2, 10);
+    // the shadow's box covers the design exploded too
+    const lay = (() => {
+      const parts = new Map<string, [[number, number, number], [number, number, number]]>();
+      const exploded = new Map<string, [number, number, number]>();
+      const at = plan ? explodeOffsets(plan, 1) : null;
+      const ebox = new THREE.Box3();
+      for (const [id, o] of this.parts) {
+        if (o.removing || !o.group.visible) continue;
+        const g = o.mesh.geometry;
+        if (!g.boundingBox) g.computeBoundingBox();
+        const b = g.boundingBox!.clone().applyMatrix4(o.placement);
+        parts.set(id, [b.min.toArray() as [number, number, number], b.max.toArray() as [number, number, number]]);
+        const v = at?.get(o.part.id);
+        const c = b.getCenter(new THREE.Vector3());
+        if (v) {
+          exploded.set(id, [c.x + v[0], c.y + v[1], c.z + v[2]]);
+          ebox.union(b.clone().translate(new THREE.Vector3(v[0], v[1], v[2])));
+        } else ebox.union(b);
+      }
+      return { parts, exploded, ebox: at && exploded.size ? ebox : null };
+    })();
+    {
+      const sc = this.key.shadow.camera as THREE.OrthographicCamera;
+      const all = this.bounds.clone();
+      if (lay.ebox) all.union(lay.ebox);
+      const ext = Math.max(all.getSize(new THREE.Vector3()).length(), 20) * 0.85;
+      sc.left = -ext;
+      sc.right = ext;
+      sc.top = ext;
+      sc.bottom = -ext;
+      sc.far = Math.max(ext * 5, sc.far);
+      sc.updateProjectionMatrix();
+    }
+
+    let focusKey = "";
+    let overlaysOn = true;
+    let clock0 = performance.now();
+    let lastTick = -1;
+    const ghost = 0.14;
+    const T = new THREE.Matrix4();
+    const pose = (s: FilmShot) => {
+      // camera
+      cam.position.set(...s.camera.pos);
+      cam.lookAt(new THREE.Vector3(...s.camera.target));
+      cam.fov = s.camera.fov;
+      cam.aspect = width / height;
+      const dist = cam.position.distanceTo(new THREE.Vector3(...s.camera.target));
+      cam.near = Math.max(0.05, Math.min(dist * 0.05, Math.max(0.5, dist - radius * 3)));
+      cam.far = dist + radius * 40;
+      cam.updateProjectionMatrix();
+      cam.updateMatrixWorld();
+      // where each part is: exploded or on its way home, turned by its motion
+      let offsets: Map<string, [number, number, number]> | null = null;
+      if (plan && s.build !== null) {
+        const n = Math.max(1, plan.order.length);
+        offsets = explodeOffsets(plan, 1, (m) => 1 - buildShare(orderIdx.get(m.id) ?? n - 1, n, s.build!));
+      } else if (plan && s.explode > 0) offsets = explodeOffsets(plan, s.explode);
+      this.angle = s.angle;
+      for (const o of this.parts.values()) {
+        const v = offsets?.get(o.part.id);
+        const p = o.explode.pos;
+        if (v) p.set(v[0], v[1], v[2]);
+        else if (!plan && (s.explode > 0 || (s.build !== null && s.build < 1))) {
+          const f = s.build !== null ? 1 - s.build : s.explode;
+          const c = o.center.clone().applyMatrix4(o.placement);
+          const d = c.clone().sub(bc);
+          if (d.lengthSq() < 1e-6) d.set(0, 0, 1);
+          p.copy(d.normalize().multiplyScalar(f * size * 0.45 * (0.4 + c.distanceTo(bc) / (size || 1))));
+        } else p.set(0, 0, 0);
+        const po = this.pose?.get(o.part.id);
+        const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(p.x, p.y, p.z).multiply(po) : new THREE.Matrix4().makeTranslation(p.x + (po?.[0] ?? 0), p.y + (po?.[1] ?? 0), p.z + (po?.[2] ?? 0));
+        const mo = turns(o.part.motion) ? o.part.motion : this.carried?.get(o.part.id)?.motion;
+        if (mo && Math.abs(s.angle) > 1e-9 && turns(mo)) m.multiply(T.fromArray(motionPose(mo, s.angle)));
+        const lo = this.loose?.get(o.part.id);
+        if (lo && Math.abs(s.angle) > 1e-9) {
+          const k = (lo.play / 2) * Math.sin(THREE.MathUtils.degToRad(s.angle * 8));
+          m.multiply(T.makeTranslation(lo.axis[0] * k, lo.axis[1] * k, lo.axis[2] * k));
+        }
+        m.multiply(o.placement);
+        if (o.part.chain) this.chainLinks(o);
+        o.group.matrix.copy(m);
+        o.group.matrixWorldNeedsUpdate = true;
+      }
+      // the section plane
+      if (s.section) {
+        const was = this.sectionAnim.on;
+        this.section = { on: true, axis: s.section.axis, t: s.section.t, flip: s.section.flip };
+        this.sectionAnim = { t: s.section.t, on: true, fade: 1 };
+        this.placeSection();
+        if (!was) {
+          for (const o of this.parts.values()) this.updateClipping(o);
+          this.clipOverlays();
+        }
+        (this.sectionFrame.material as THREE.LineBasicMaterial).opacity = 0.5;
+        (this.sectionFill.material as THREE.MeshBasicMaterial).opacity = 0.03;
+      } else if (this.sectionAnim.on) {
+        this.section = { ...this.section, on: false };
+        this.sectionAnim = { ...this.sectionAnim, on: false, fade: 0 };
+        for (const o of this.parts.values()) this.updateClipping(o);
+        this.clipOverlays();
+        (this.sectionFrame.material as THREE.LineBasicMaterial).opacity = 0;
+        (this.sectionFill.material as THREE.MeshBasicMaterial).opacity = 0;
+      }
+    };
+    const showOverlays = (on: boolean) => {
+      if (on === overlaysOn || !this.overlays.size) {
+        overlaysOn = on;
+        return;
+      }
+      overlaysOn = on;
+      for (const o of this.overlays) o.object.visible = on;
+      if (on) this.syncOverlays();
+      else {
+        this.replaced = new Set(this.decorHidden);
+        this.ghosted = new Map();
+        for (const o of this.parts.values()) this.applyMaterial(o);
+      }
+      focusKey = "\u0000";
+    };
+    const focus = (ids: string[] | null) => {
+      const key = ids?.join("|") ?? "";
+      if (key === focusKey) return;
+      focusKey = key;
+      this.display = { ...this.display, focus: new Set(ids ?? []) };
+      const keep = ids ? new Set(ids) : null;
+      for (const o of this.parts.values()) {
+        this.applyMaterial(o);
+        if (keep && !keep.has(o.id)) o.opacityTarget = ghost;
+        o.opacity = o.opacityTarget;
+        this.applyOpacity(o);
+        this.updateClipping(o);
+      }
+    };
+    const lerp3 = (a: [number, number, number], b: [number, number, number], k: number): [number, number, number] => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+    const mix = (a: FilmShot, b: FilmShot, k: number): FilmShot => ({
+      ...a,
+      camera: { pos: lerp3(a.camera.pos, b.camera.pos, k), target: lerp3(a.camera.target, b.camera.target, k), fov: a.camera.fov + (b.camera.fov - a.camera.fov) * k },
+      explode: a.explode + (b.explode - a.explode) * k,
+      build: a.build !== null && b.build !== null ? a.build + (b.build - a.build) * k : a.build,
+      angle: a.angle + (b.angle - a.angle) * k,
+      section: a.section && b.section && a.section.axis === b.section.axis ? { ...a.section, t: a.section.t + (b.section.t - a.section.t) * k } : a.section,
+    });
+
+    const view: FilmView = {
+      get width() {
+        return width;
+      },
+      get height() {
+        return height;
+      },
+      layout: (): FilmLayout => {
+        const b = this.bounds;
+        let simBox: FilmLayout["simBox"] = null;
+        for (const o of this.overlays) {
+          const fb = (o as unknown as { frameBox?: (whole?: boolean) => THREE.Box3 }).frameBox?.(true);
+          if (fb && !fb.isEmpty()) simBox = [fb.min.toArray() as [number, number, number], fb.max.toArray() as [number, number, number]];
+        }
+        return {
+          box: [b.min.toArray() as [number, number, number], b.max.toArray() as [number, number, number]],
+          parts: lay.parts,
+          exploded: lay.exploded,
+          explodedBox: lay.ebox ? [lay.ebox.min.toArray() as [number, number, number], lay.ebox.max.toArray() as [number, number, number]] : null,
+          order: plan?.order ?? [],
+          simBox,
+        };
+      },
+      render: (shot, samples, to) => {
+        if (!this.filming || !out) throw new Error("The film has ended");
+        showOverlays(shot.overlays);
+        focus(shot.focus);
+        // the overlays' own animations, on the film's clock
+        const now = clock0 + shot.clock * 1000;
+        const dt = lastTick < 0 ? 0 : Math.min(0.1, Math.max(0, (now - lastTick) / 1000));
+        lastTick = now;
+        if (shot.overlays) for (const o of this.overlays) o.tick?.(now, dt);
+        pipe.reset();
+        const n = Math.max(1, Math.round(samples));
+        for (let i = 0; i < n; i++) {
+          // with a shutter, each sample is a moment a little later: what moves smears
+          pose(to ? mix(shot, to, n > 1 ? i / (n - 1) : 0) : shot);
+          pipe.renderSample(this.scene, cam, (k) => this.placeKey(k));
+        }
+        if (to) pose(shot);
+        pipe.composite(out, { time: shot.clock });
+        this.renderer.setRenderTarget(out);
+        if (shot.overlays && this.overlays.size) {
+          this.overlayDepth(cam);
+          this.renderer.render(this.overlay, cam);
+        }
+        this.renderer.readRenderTargetPixels(out, 0, 0, width, height, px);
+        this.renderer.setRenderTarget(null);
+        // rows come bottom first
+        const img = new ImageData(width, height);
+        const row = width * 4;
+        for (let y = 0; y < height; y++) img.data.set(px.subarray((height - 1 - y) * row, (height - y) * row), y * row);
+        return img;
+      },
+      resize,
+      simTime: (t) => {
+        for (const o of this.overlays) (o as unknown as { setTime?: (t: number) => void }).setTime?.(t);
+      },
+      restartOverlays: () => {
+        clock0 = performance.now();
+        lastTick = -1;
+      },
+      end: () => {
+        if (!this.filming) return;
+        pipe.dispose();
+        out?.dispose();
+        out = null;
+        this.renderer.setRenderTarget(null);
+        if (!overlaysOn) {
+          for (const o of this.overlays) o.object.visible = true;
+        }
+        this.interGroup.visible = saved.inter;
+        this.measure.group.visible = saved.measure;
+        for (const [o, sp] of saved.springs) {
+          o.explode.pos.copy(sp.pos);
+          o.explode.vel.copy(sp.vel);
+        }
+        this.angle = saved.angle;
+        this.section = saved.section;
+        this.sectionAnim = saved.sectionAnim;
+        (this.sectionFrame.material as THREE.LineBasicMaterial).opacity = saved.frameOpacity;
+        (this.sectionFill.material as THREE.MeshBasicMaterial).opacity = saved.fillOpacity;
+        this.placeSection();
+        if (this.key.shadow.mapSize.x !== saved.shadowSize) {
+          this.key.shadow.mapSize.setScalar(saved.shadowSize);
+          this.key.shadow.map?.dispose();
+          this.key.shadow.map = null;
+        }
+        if (this.render$.lighting !== saved.render.lighting || this.render$.theme !== saved.render.theme) {
+          this.render$ = { ...this.render$, lighting: saved.render.lighting, theme: saved.render.theme };
+          this.applyLighting();
+        }
+        this.photoLookOn = saved.photoLookOn;
+        this.filming = false;
+        this.layoutStage();
+        this.syncOverlays();
+        this.setDisplay(saved.display);
+        for (const o of this.parts.values()) {
+          o.opacity = o.opacityTarget;
+          this.applyOpacity(o);
+          this.updateClipping(o);
+        }
+        this.clipOverlays();
+        this.grid.visible = saved.grid;
+        this.changed = true;
+        this.needComposite = true;
+      },
+    };
+    return view;
   }
 
   // ---------- material swatches ----------

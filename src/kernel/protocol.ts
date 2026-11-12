@@ -110,6 +110,8 @@ export interface InspectRequest {
   selKind?: "edges" | "faces";
   /** a point in the part's own coordinates: report the face and edge there */
   at?: V3;
+  /** with at: also list the edges round the face there, sampled, for projecting into a sketch */
+  outline?: boolean;
   /** most items to list */
   limit?: number;
 }
@@ -130,6 +132,12 @@ export interface InspectFace {
   features: string[];
 }
 
+/** An edge of a face, in the part's own coordinates: a line's two ends, five points along a circle or arc, or samples along anything else. */
+export interface OutlineEdge {
+  kind: "line" | "circle" | "other";
+  pts: V3[];
+}
+
 export interface InspectResult {
   bbox: [V3, V3];
   volume: number;
@@ -138,7 +146,7 @@ export interface InspectResult {
   features: { name: string; kind: string; faces: number; root: number; tip: number }[];
   edgeStats: { convex: number; concave: number; smooth: number };
   selection?: { kind: "edges" | "faces"; count: number; edges?: InspectEdge[]; faces?: InspectFace[] };
-  pick?: { edge?: InspectEdge & { distance: number }; face?: InspectFace & { distance: number }; selectors: string[] };
+  pick?: { edge?: InspectEdge & { distance: number }; face?: InspectFace & { distance: number }; selectors: string[]; outline?: OutlineEdge[] };
   ms: number;
 }
 

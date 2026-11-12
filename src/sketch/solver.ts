@@ -41,6 +41,8 @@ export interface DefArc {
   c: string;
   a: string;
   b: string;
+  /** a mirrored, patterned or offset copy: its points are set by the copy's constraints, which keep |b - c| = |a - c| already */
+  rigid?: boolean;
 }
 
 export type ConsKind =
@@ -64,7 +66,13 @@ export type ConsKind =
   | "vdistance"
   | "length"
   | "radius"
-  | "angle";
+  | "angle"
+  /** copies made by mirror, pattern and offset statements */
+  | "rotate"
+  | "radius_offset"
+  | "radius_diff"
+  | "perp_foot"
+  | "radial";
 
 export interface DefConstraint {
   kind: ConsKind;
@@ -194,6 +202,7 @@ function build(def: SketchDef, heavy: Set<string>): System {
 
   // structural: an arc's end stays on its radius
   for (const a of def.arcs) {
+    if (a.rigid) continue;
     const c = pi(a.c);
     const p = pi(a.a);
     const q = pi(a.b);
@@ -401,6 +410,47 @@ function build(def: SketchDef, heavy: Set<string>): System {
       case "radius": {
         const c = circ(r0);
         eq([c.c, c.c + 1, ...c.rVars], (x) => c.r(x) - v, k);
+        return;
+      }
+      case "rotate": {
+        // r1 is r0 turned by v degrees about r2
+        const p = pi(r0);
+        const q = pi(r1);
+        const c = pi(r2);
+        const co = Math.cos((v * Math.PI) / 180);
+        const si = Math.sin((v * Math.PI) / 180);
+        eq([p, p + 1, q, c, c + 1], (x) => x[q] - x[c] - (co * (x[p] - x[c]) - si * (x[p + 1] - x[c + 1])), k);
+        eq([p, p + 1, q + 1, c, c + 1], (x) => x[q + 1] - x[c + 1] - (si * (x[p] - x[c]) + co * (x[p + 1] - x[c + 1])), k);
+        return;
+      }
+      case "radius_offset": {
+        // point r0 is v further from centre r1 than the circle or arc r2's radius
+        const p = pi(r0);
+        const c = pi(r1);
+        const src = circ(r2);
+        eq([p, p + 1, c, c + 1, src.c, src.c + 1, ...src.rVars], (x) => Math.hypot(x[p] - x[c], x[p + 1] - x[c + 1]) - src.r(x) - v, k);
+        return;
+      }
+      case "radius_diff": {
+        const c1 = circ(r0);
+        const c2 = circ(r1);
+        eq([c1.c, c1.c + 1, ...c1.rVars, c2.c, c2.c + 1, ...c2.rVars], (x) => c2.r(x) - c1.r(x) - v, k);
+        return;
+      }
+      case "perp_foot": {
+        // r1 - r0 runs square to line r2 (an offset line's loose end stays opposite the original's)
+        const p = pi(r0);
+        const q = pi(r1);
+        const l = line(r2);
+        eq([p, p + 1, q, q + 1, l.a, l.a + 1, l.b, l.b + 1], (x) => ((x[q] - x[p]) * (x[l.b] - x[l.a]) + (x[q + 1] - x[p + 1]) * (x[l.b + 1] - x[l.a + 1])) / len(x, l.a, l.b), k);
+        return;
+      }
+      case "radial": {
+        // r1 lies on the ray from centre r2 through r0
+        const p = pi(r0);
+        const q = pi(r1);
+        const c = pi(r2);
+        eq([p, p + 1, q, q + 1, c, c + 1], (x) => ((x[p] - x[c]) * (x[q + 1] - x[c + 1]) - (x[p + 1] - x[c + 1]) * (x[q] - x[c])) / len(x, c, p), k);
         return;
       }
       case "angle": {

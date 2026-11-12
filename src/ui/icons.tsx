@@ -557,6 +557,13 @@ export const Icon = {
       <path d="M12 5v14M6 13l6 6 6-6" />
     </I>
   ),
+  Film: (p: P) => (
+    <I {...p}>
+      <rect x="3" y="7" width="18" height="13" rx="2" />
+      <path d="m3.5 7 2.6-3.6L21 3.5l-.4 3.3M8.6 3.6 7.4 7M13.6 3.5 12.2 7M18.4 3.5 17.2 7" />
+      <path d="m10.5 11.2 4.2 2.4-4.2 2.4z" fill="currentColor" stroke="none" />
+    </I>
+  ),
 };
 
 export function StatusIcon({ status }: { status: "pass" | "fail" | "warn" | "pending" | "info" }) {

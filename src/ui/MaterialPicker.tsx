@@ -5,6 +5,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { create } from "zustand";
 import type { EvalPart } from "../core/model";
 import { meshes, useDesign } from "../core/engine";
 import { setBlockProps } from "../core/sourceEdit";
@@ -96,6 +97,10 @@ function tileColor(m: MaterialDef, cur: Look): string {
   return m.color;
 }
 
+/** A right-click menu asked for the material picker: the selection card's button opens it once it shows. */
+const useMaterialAsk = create<{ pending: boolean }>(() => ({ pending: false }));
+export const askMaterialPicker = () => useMaterialAsk.setState({ pending: true });
+
 export function MaterialButton({ parts }: { parts: EvalPart[] }) {
   const [open, setOpen] = useState(false);
   const p = parts[0];
@@ -106,6 +111,12 @@ export function MaterialButton({ parts }: { parts: EvalPart[] }) {
   // a component's extra solids (motor.shaft) keep the library's look: the block's material reaches only its main solid
   const fixed = parts.some((q) => q.id.startsWith(`${q.name}.`) && !q.imported);
   useEffect(() => setOpen(false), [key]);
+  const asked = useMaterialAsk((s) => s.pending);
+  useEffect(() => {
+    if (!asked) return;
+    useMaterialAsk.setState({ pending: false });
+    if (!fixed) setOpen(true);
+  }, [asked, fixed]);
   // The picker lives in the viewport layer, not inside the selection card,
   // so it can sit beside the card and use the viewport's full height.
   const btn = useRef<HTMLButtonElement>(null);

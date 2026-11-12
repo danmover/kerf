@@ -227,6 +227,10 @@
 .app.phone .vn-inner .btn {
   min-height: 40px;
 }
+.app.phone .vp-cube {
+  transform: scale(0.85);
+  transform-origin: 0 100%;
+}
 .app.phone .vp-hud {
   top: auto !important;
   bottom: 8px !important;

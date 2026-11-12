@@ -16,6 +16,8 @@ export interface SpotRef {
   normal?: Vec3;
   /** the same normal in the part's own frame */
   localNormal?: Vec3;
+  /** words already typed for it (typing into a right-click menu starts the question) */
+  draft?: string;
 }
 
 export interface Spot extends SpotRef {

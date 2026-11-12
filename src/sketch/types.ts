@@ -36,14 +36,25 @@ export interface SkPoint {
   span?: Span;
   /** projected from another sketch (side.l3.end): fixed reference, not editable here */
   external?: boolean;
+  /** made by a mirror, pattern or offset statement: the index of that statement among the constraints */
+  derived?: number;
 }
 
 export interface SkCurve {
   id: string;
-  kind: "line" | "circle" | "arc";
+  kind: "line" | "circle" | "arc" | "spline" | "ellipse";
   construction: boolean;
-  /** line: [start, end]; circle: [center]; arc: [start, end, center] */
+  /** line: [start, end]; circle: [center]; arc: [start, end, center]; spline: the points it passes through, in order; ellipse: [center] */
   pts: string[];
+  /** a spline that runs back round to its first point */
+  closed?: boolean;
+  /** ellipse: its radii along its own axes and the turn of the rx axis (degrees counter-clockwise) */
+  rx?: number;
+  ry?: number;
+  angle?: number;
+  /** ellipse: where rx:, ry: and angle: are written, and whether each is a plain number the editor may rewrite */
+  optSpans?: Partial<Record<"rx" | "ry" | "angle" | "closed", Span>>;
+  optLiteral?: Partial<Record<"rx" | "ry" | "angle", boolean>>;
   /** circle radius (solved) */
   r?: number;
   status: SkStatus;
@@ -58,6 +69,8 @@ export interface SkCurve {
   writtenR?: number;
   /** a line projected from another sketch (side.l3): reference only */
   external?: boolean;
+  /** made by a mirror, pattern or offset statement: the index of that statement among the constraints */
+  derived?: number;
 }
 
 export interface SkConstraint {
@@ -77,6 +90,12 @@ export interface SkConstraint {
   status: "ok" | "redundant" | "conflict" | "involved";
   /** a dimension (has a value) rather than a geometric relation */
   dimension: boolean;
+  /** named options as written (mirror, pattern, offset): about: l5, count: 4 */
+  opts?: { name: string; text: string; span: Span; ids: string[] }[];
+  /** the curves a mirror, pattern or offset statement made */
+  made?: string[];
+  /** the original each of those copies was made from */
+  madeFrom?: string[];
 }
 
 export interface EvalSketch {

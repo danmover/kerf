@@ -15,10 +15,15 @@ import type { EvalSketch, SkConstraint, SkCurve, SkPoint } from "./types";
 export const fmt = (v: number) => fmtNum(v, 3);
 export const fmtPt = (p: V2) => `(${fmt(p[0])}, ${fmt(p[1])})`;
 
-interface Change {
+export interface Change {
   from: number;
   to: number;
   insert: string;
+}
+
+/** Apply text changes given against the same source (they must not overlap). */
+export function applyChanges(src: string, changes: Change[]): string {
+  return apply(src, changes);
 }
 
 function apply(src: string, changes: Change[]): string {
@@ -35,7 +40,7 @@ function apply(src: string, changes: Change[]): string {
 }
 
 /** A span widened to its whole line(s) when nothing else is on them, so removing it leaves no blank line. */
-function lineSpan(src: string, span: Span): Span {
+export function lineSpan(src: string, span: Span): Span {
   const ls = src.lastIndexOf("\n", span.start - 1) + 1;
   let le = src.indexOf("\n", span.end);
   if (le < 0) le = src.length;
@@ -51,7 +56,7 @@ function lineSpan(src: string, span: Span): Span {
 }
 
 /** Past the rest of the line when only a ; or a comment follows, so a trailing comment stays with its statement. */
-function lineEnd(src: string, at: number): number {
+export function lineEnd(src: string, at: number): number {
   let le = src.indexOf("\n", at);
   if (le < 0) le = src.length;
   return /^[ \t;]*(\/\/.*)?$/.test(src.slice(at, le)) ? le : at;
@@ -73,7 +78,7 @@ export function nextName(taken: Set<string>, prefix: string): string {
   }
 }
 
-export const PREFIX: Record<SkCurve["kind"] | "point", string> = { line: "l", circle: "c", arc: "a", point: "p" };
+export const PREFIX: Record<SkCurve["kind"] | "point", string> = { line: "l", circle: "c", arc: "a", spline: "s", ellipse: "e", point: "p" };
 
 // ---------------- creating sketches ----------------
 
@@ -105,7 +110,7 @@ export function addSketch(src: string, model: Model | null, opts: { name?: strin
 
 // ---------------- adding statements ----------------
 
-function bodyInsertAt(src: string, sk: EvalSketch): number {
+export function bodyInsertAt(src: string, sk: EvalSketch): number {
   let p = sk.bodyEnd;
   while (p > 0 && /\s/.test(src[p - 1])) p--;
   return p;
@@ -150,7 +155,9 @@ export function writePositions(src: string, sk: EvalSketch, positions: Record<st
 /** Selection ids: geometry ids (l1, c2, p1, l1.end) and constraint indices as "#3". */
 export const consId = (c: SkConstraint) => `#${c.index}`;
 
-const END_NAMES: Record<SkCurve["kind"], string[]> = { line: ["start", "end"], arc: ["start", "end", "center"], circle: ["center"] };
+const END_NAMES: Record<Exclude<SkCurve["kind"], "spline">, string[]> = { line: ["start", "end"], arc: ["start", "end", "center"], circle: ["center"], ellipse: ["center"] };
+/** The name a curve gives its k-th point: a spline's are p1, p2, … in order. */
+const pointRole = (c: SkCurve, k: number) => (c.kind === "spline" ? `p${k + 1}` : END_NAMES[c.kind][k]);
 
 const LIST_KINDS: Record<string, number> = { fix: 1, parallel: 2, equal: 2, horizontal: 1, vertical: 1, fillet: 1, chamfer: 1 };
 
@@ -162,7 +169,36 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
   for (const id of sel) {
     const p = sk.points.find((q) => q.id === id);
     if (p && !p.implicit) removedPoints.add(p.id);
+    // a copy goes with the mirror, pattern or offset that made it
+    const d = sk.curves.find((c) => c.id === id)?.derived ?? p?.derived;
+    if (d !== undefined) removedCons.add(d);
   }
+  // copies of what goes go too: the whole statement when nothing is left to copy (or an offset's chain breaks,
+  // or its line or centre goes), otherwise just those copies; a copy of a copy follows, so repeat until settled
+  const gone = (name: string) => removedCurves.has(name.split(".")[0]) || removedPoints.has(name);
+  const copies = sk.constraints.filter((c) => c.made);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const c of copies) {
+      const drop = (ids: string[]) => {
+        for (const id of ids)
+          if (!removedCurves.has(id)) {
+            removedCurves.add(id);
+            changed = true;
+          }
+      };
+      if (!removedCons.has(c.index)) {
+        const lost = c.args.filter(gone);
+        if (!lost.length && !c.opts?.some((o) => o.ids.some(gone))) continue;
+        if (c.kind === "offset" || lost.length === c.args.length || c.opts?.some((o) => o.ids.some(gone))) {
+          removedCons.add(c.index);
+          changed = true;
+        } else drop(c.made!.filter((_, i) => lost.includes(c.madeFrom![i])));
+      }
+      if (removedCons.has(c.index)) drop(c.made!);
+    }
+  }
+  for (const p of sk.points) if (p.derived !== undefined && removedCons.has(p.derived)) removedPoints.add(p.id);
   for (const c of sk.curves) if (removedCurves.has(c.id)) for (const pid of c.pts) if (pid.startsWith(c.id + ".")) removedPoints.add(pid);
   const removedSpans: Span[] = [];
   const changes: Change[] = [];
@@ -172,7 +208,7 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
     removedSpans.push(s);
     changes.push({ from: s.start, to: s.end, insert: "" });
   };
-  for (const c of sk.curves) if (removedCurves.has(c.id)) removeStmt(c.span);
+  for (const c of sk.curves) if (removedCurves.has(c.id) && c.derived === undefined) removeStmt(c.span);
   for (const p of sk.points) if (removedPoints.has(p.id) && !p.implicit && p.span) removeStmt(p.span);
   // a removed point that kept curves start, end or are centred at lives on: the first of them
   // takes it over as plain coordinates, and the others share it under that curve's name
@@ -184,14 +220,20 @@ export function deleteSelection(src: string, sk: EvalSketch, sel: string[]): str
       const p = P(pid);
       const owner = survivor.get(pid);
       changes.push({ from: c.argSpans[k].start, to: c.argSpans[k].end, insert: owner ?? fmtPt([p.x, p.y]) });
-      if (!owner) survivor.set(pid, `${c.id}.${END_NAMES[c.kind][k]}`);
+      if (!owner) survivor.set(pid, `${c.id}.${pointRole(c, k)}`);
     });
   }
   // constraints are judged by the names they are written with: "l2.start" still exists after l1 (whose end it shares) is deleted
-  const writtenGone = (name: string) => removedCurves.has(name.split(".")[0]) || removedPoints.has(name);
+  const writtenGone = gone;
   for (const c of sk.constraints) {
     if (removedCons.has(c.index)) {
       removeStmt(c.span);
+      continue;
+    }
+    if (c.made) {
+      // a mirror or pattern of what is left, with its options as written
+      const keep = c.args.filter((a) => !writtenGone(a));
+      if (keep.length < c.args.length) changes.push({ from: c.span.start, to: c.span.end, insert: `${c.kind} ${[...keep, ...(c.opts ?? []).map((o) => o.text)].join(", ")}` });
       continue;
     }
     const args = c.args.map((a, i) => (writtenGone(a) ? (survivor.get(c.ids[i]) ?? null) : a));
@@ -259,7 +301,7 @@ export interface Suggestion {
   key?: string;
 }
 
-type Ent = { id: string; type: "point" | "line" | "circle" | "arc"; p?: SkPoint; c?: SkCurve };
+type Ent = { id: string; type: "point" | SkCurve["kind"]; p?: SkPoint; c?: SkCurve };
 
 export function entitiesOf(sk: EvalSketch, ids: string[]): Ent[] {
   const out: Ent[] = [];
@@ -293,7 +335,7 @@ const ptOf = (sk: EvalSketch, id: string): V2 => {
   const p = sk.points.find((q) => q.id === id)!;
   return [p.x, p.y];
 };
-const centerOf = (sk: EvalSketch, c: SkCurve) => ptOf(sk, c.kind === "circle" ? c.pts[0] : c.pts[2]);
+const centerOf = (sk: EvalSketch, c: SkCurve) => ptOf(sk, c.kind === "circle" || c.kind === "ellipse" ? c.pts[0] : c.pts[2]);
 const radiusOf = (sk: EvalSketch, c: SkCurve) => (c.kind === "circle" ? c.r! : Math.hypot(...sub(ptOf(sk, c.pts[0]), centerOf(sk, c))));
 const sub = (a: V2, b: V2): [number, number] => [a[0] - b[0], a[1] - b[1]];
 const cross = (a: V2, b: V2) => a[0] * b[1] - a[1] * b[0];
@@ -427,6 +469,14 @@ export function suggestionsFor(sk: EvalSketch, ids: string[]): Suggestion[] {
     g("Tangent", "tangent", `tangent ${l.id}, ${c.id}`, "t");
     d("Distance", "distance", `${c.id}, ${l.id}`, pointLineDist(centerOf(sk, c), lineEnds(sk, l.id)), "d");
   }
+  if (E.length === 1 && (T[0] === "spline" || T[0] === "ellipse") && !E[0].c?.external) {
+    g(T[0] === "ellipse" ? "Fix centre" : "Fix points", "fix", `fix ${E[0].id}`, "f");
+  }
+  const rounds = E.filter((e) => e.type === "circle" || e.type === "arc" || e.type === "ellipse");
+  if (E.length === 2 && rounds.length === 2 && count("ellipse") >= 1) {
+    g("Concentric", "concentric", `concentric ${names}`, "o");
+    d("Centre distance", "distance", names, Math.hypot(...sub(centerOf(sk, E[1].c!), centerOf(sk, E[0].c!))), "d");
+  }
   if (circ.length === E.length && E.length >= 1) {
     if (E.length === 1) {
       const c = circ[0].c!;
@@ -442,6 +492,16 @@ export function suggestionsFor(sk: EvalSketch, ids: string[]): Suggestion[] {
     }
   }
   return out;
+}
+
+/**
+ * Set an ellipse's rx:, ry: or angle:, or a spline's closed:, where its
+ * statement writes it (added on the end when it is not written yet).
+ */
+export function setCurveOption(src: string, c: SkCurve, name: "rx" | "ry" | "angle" | "closed", text: string): string {
+  const sp = c.optSpans?.[name];
+  if (sp) return src.slice(0, sp.start) + text + src.slice(sp.end);
+  return src.slice(0, c.span.end) + `, ${name}: ${text}` + src.slice(c.span.end);
 }
 
 /** The single best dimension for a selection, used by the dimension tool. */
@@ -461,11 +521,38 @@ export interface FeatureSpec {
   reverse?: boolean;
   symmetric?: boolean;
   through?: boolean;
+  /** run until the part's next face instead of a depth (added to or cut from a part) */
+  until?: "next";
+  /** degrees the sides lean in (out when negative) */
+  taper?: number;
+  /** only a wall this thick along the outline */
+  thin?: number;
+  thinSide?: "inside" | "outside" | "center";
   /** revolve: a line of the sketch */
   axis?: string;
   angle?: number;
   /** keep the depth as a named parameter (shows up as a slider) */
   param?: boolean;
+}
+
+/** The extrude() call for a feature spec, with the depth written as `depthText`. */
+export function extrudeExpr(sketch: string, spec: FeatureSpec, depthText: string): string {
+  const args: string[] = [sketch];
+  if (spec.through) args.push("through: true");
+  else if (spec.until) {
+    args.push(`until: "${spec.until}"`);
+    if (spec.reverse) args.push("reverse: true");
+  } else {
+    args.push(depthText);
+    if (spec.symmetric) args.push("symmetric: true");
+    else if (spec.reverse) args.push("reverse: true");
+  }
+  if (spec.taper && !spec.through) args.push(`taper: ${fmt(spec.taper)}`);
+  if (spec.thin) {
+    args.push(`thin: ${fmt(spec.thin)}`);
+    if (spec.thinSide && spec.thinSide !== "inside") args.push(`thin_side: "${spec.thinSide}"`);
+  }
+  return `extrude(${args.join(", ")})`;
 }
 
 function freeName(model: Model, base: string): string {
@@ -491,7 +578,7 @@ export function addFeature(src: string, sk: EvalSketch, spec: FeatureSpec): { sr
   }
   let depthText = spec.depth !== undefined ? fmt(spec.depth) : "10";
   let param: string | undefined;
-  if (spec.kind === "extrude" && !spec.through && spec.param && spec.depth !== undefined) {
+  if (spec.kind === "extrude" && !spec.through && !spec.until && spec.param && spec.depth !== undefined) {
     param = freeName(model, `${sk.name}_depth`);
     const d = spec.depth;
     const line = `param ${param} = ${fmt(d)} range ${fmt(Math.max(0.1, Math.round((d / 10) * 10) / 10))}..${fmt(Math.max(d * 5, 20))} "${spec.op === "cut" ? "Cut depth" : "Depth"} of ${sk.name}"`;
@@ -509,14 +596,8 @@ export function addFeature(src: string, sk: EvalSketch, spec: FeatureSpec): { sr
   }
   const extras: string[] = [];
   let expr: string;
-  if (spec.kind === "extrude") {
-    if (spec.through) expr = `extrude(${sk.name}, through: true)`;
-    else {
-      if (spec.symmetric) extras.push("symmetric: true");
-      else if (spec.reverse) extras.push("reverse: true");
-      expr = `extrude(${sk.name}, ${depthText}${extras.map((e) => ", " + e).join("")})`;
-    }
-  } else {
+  if (spec.kind === "extrude") expr = extrudeExpr(sk.name, spec, depthText);
+  else {
     if (spec.axis) extras.push(`axis: ${sk.name}.${spec.axis}`);
     if (spec.angle !== undefined && Math.abs(spec.angle - 360) > 1e-9) extras.push(`angle: ${fmt(spec.angle)}`);
     expr = `revolve(${sk.name}${extras.map((e) => ", " + e).join("")})`;

@@ -2,6 +2,7 @@
 // screen and back, sampling curves, snapping and inference.
 
 import type { V2, V3 } from "../../kernel/recipe";
+import { sampleEllipse, splinePolyline } from "../../sketch/curves";
 import { toLocal, toWorld } from "../../sketch/planes";
 import type { EvalSketch, Frame, SkCurve } from "../../sketch/types";
 
@@ -117,8 +118,19 @@ export function radiusOf(sk: EvalSketch, c: SkCurve, P: Positions, radii?: Recor
 export function curvePoints(sk: EvalSketch, c: SkCurve, P: Positions, radii?: Record<string, number>): V2[] {
   if (c.kind === "line") return [P[c.pts[0]], P[c.pts[1]]];
   if (c.kind === "circle") return circlePoints(P[c.pts[0]], radiusOf(sk, c, P, radii));
+  if (c.kind === "spline") {
+    const pts = splinePolyline(c.pts.map((id) => P[id]), !!c.closed, 0.01);
+    return c.closed && pts.length ? [...pts, pts[0]] : pts;
+  }
+  if (c.kind === "ellipse") {
+    const pts = sampleEllipse({ c: P[c.pts[0]], rx: c.rx ?? 0, ry: c.ry ?? 0, rot: c.angle ?? 0 }, 120);
+    return [...pts, pts[0]];
+  }
   return arcPoints(P[c.pts[2]], P[c.pts[0]], P[c.pts[1]]);
 }
+
+/** Splines and ellipses: drawn and picked by their outline, but not cut, extended, offset or snapped onto. */
+export const smoothKind = (c: SkCurve) => c.kind === "spline" || c.kind === "ellipse";
 
 // ---------------- snapping ----------------
 
@@ -172,7 +184,7 @@ export function snapAt(sk: EvalSketch, P: Positions, proj: Projector, cursor: Px
   ];
   const onCandidates: { id: string; q: V2 }[] = [];
   for (const c of sk.curves) {
-    if (c.pts.some((id) => ex.has(id))) continue;
+    if (c.pts.some((id) => ex.has(id)) || smoothKind(c)) continue;
     if (c.kind === "line") onCandidates.push({ id: c.id, q: closestOnSeg(raw, P[c.pts[0]], P[c.pts[1]]).q });
     else {
       const ctr = P[c.kind === "circle" ? c.pts[0] : c.pts[2]];

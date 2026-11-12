@@ -234,6 +234,10 @@ vec3 toSRGB(vec3 c) {
   c = clamp(c, 0.0, 1.0);
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
 }
+vec3 fromSRGB(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
 float hash(vec2 p) {
   return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
 }
@@ -277,8 +281,9 @@ void main() {
   float v = length((vUv - 0.5) * vec2(aspect * 0.8, 1.0));
   outc *= 1.0 - uVignette * smoothstep(0.35, 1.05, v);
 
-  // an sRGB render target encodes on write (a capture): hand it linear colour, or it is encoded twice and comes out pale
-  vec3 srgb = uEncode > 0.5 ? toSRGB(outc) + (hash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) / 255.0 : clamp(outc, 0.0, 1.0);
+  vec3 srgb = toSRGB(outc) + (hash(gl_FragCoord.xy + fract(uTime) * 61.0) - 0.5) / 255.0;
+  // an sRGB render target encodes on write (a capture): hand it linear colour, or it is encoded twice and comes out pale (dithered as sRGB first, so gradients still break up)
+  if (uEncode < 0.5) srgb = fromSRGB(srgb);
   gl_FragColor = uTransparent > 0.5 ? vec4(srgb, a) : vec4(srgb, 1.0);
 }`;
 

@@ -24,12 +24,12 @@ import { Icon } from "./icons";
 
 export type ToolId = "box" | "cylinder" | "hole" | "fillet" | "chamfer" | "shell" | "move" | "rotate" | "copy" | "pattern" | "mirror" | "subtract" | "delete";
 
-/** The open modelling tool, so other places (the find palette) can open one. */
-export const useModelTool = create<{ tool: ToolId | null }>(() => ({ tool: null }));
-/** Show the modelling tools with one of them open. */
-export function openModelTool(tool: ToolId) {
+/** The open modelling tool, so other places (the find palette, right-click menus) can open one, at a spot already picked. */
+export const useModelTool = create<{ tool: ToolId | null; pick: SpotRef | null }>(() => ({ tool: null, pick: null }));
+/** Show the modelling tools with one of them open, working at a spot when one is given. */
+export function openModelTool(tool: ToolId, pick: SpotRef | null = null) {
   updateSettings({ advanced: true });
-  useModelTool.setState({ tool });
+  useModelTool.setState({ tool, pick });
 }
 
 const TOOLS: { id: ToolId; label: string; icon: (p: { size?: number }) => ReactNode; hint: string }[] = [
@@ -111,6 +111,13 @@ export function ModelTools({ host }: { host: RefObject<HTMLDivElement | null> })
   const working = busy || building;
   const pin = useRef<HTMLDivElement>(null);
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }));
+  // a spot picked before the tool opened (a right-click on the model)
+  const given = useModelTool((s) => s.pick);
+  useEffect(() => {
+    if (!given) return;
+    setPick(given);
+    useModelTool.setState({ pick: null });
+  }, [given]);
 
   const picking = tool ? PICKS[tool] : undefined;
 

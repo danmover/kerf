@@ -30,7 +30,7 @@ const MACHINE_STMTS = new Set(["wire", "net", "firmware", "test", "buy", "scenar
 
 /** Entries inside `brief { ... }` that are not `field: value` pairs. Not keywords, so they stay usable as names elsewhere. */
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
-const SKETCH_ENTITIES = new Set<SketchEntityKind>(["point", "line", "circle", "arc"]);
+const SKETCH_ENTITIES = new Set<SketchEntityKind>(["point", "line", "circle", "arc", "spline", "ellipse"]);
 
 export function parse(src: string): { program: Program; diagnostics: Diagnostic[] } {
   let tokens: Token[];
@@ -125,7 +125,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.machineStmtAhead()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.machineStmtAhead()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -144,6 +144,10 @@ class Parser {
   /** app "Control room" { ... } */
   atApp() {
     return this.is("ident", "app") && this.is("str", undefined, 1);
+  }
+  /** `frame <name> {` starts a frame of structural members; elsewhere "frame" is an ordinary name. */
+  atFrame() {
+    return this.is("ident", "frame") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
   }
 
   /** wire a.X -> b.Y, net NAME: ..., firmware NAME { }, test "label": ... */
@@ -285,10 +289,17 @@ class Parser {
       const items = this.block();
       return { k: "app", label: labelTk.value, items, span: { start, end: this.prevEnd() }, labelSpan: { start: labelTk.start, end: labelTk.end } };
     }
+    if (this.atFrame()) {
+      const start = tk.start;
+      this.next();
+      const nameTk = this.expect("ident", undefined, "a frame name");
+      const items = this.block();
+      return { k: "frame", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+    }
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, frame, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -709,7 +720,7 @@ class Parser {
     }
     if (tk.kind !== "ident") {
       throw new ParseError(
-        `Unexpected "${tk.value || "end of file"}" inside sketch. Use point, line, circle or arc to add geometry, a constraint like horizontal l1, a dimension like length l1 = 20, or a property like plane: XY.`,
+        `Unexpected "${tk.value || "end of file"}" inside sketch. Use point, line, circle, arc, spline or ellipse to add geometry, a constraint like horizontal l1, a dimension like length l1 = 20, or a property like plane: XY.`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -734,8 +745,36 @@ class Parser {
       this.next(); // "="
       const args: Expr[] = [];
       let size: { which: "r" | "d"; value: Expr } | undefined;
+      let opts: { name: string; value: Expr; span: Span; nameSpan: Span }[] | undefined;
+      /** name: value pairs after the points, until the end of the statement */
+      const namedOpts = () => {
+        const out: { name: string; value: Expr; span: Span; nameSpan: Span }[] = [];
+        do {
+          const at = this.peek();
+          if (!(at.kind === "ident" && this.isOp(":", 1))) throw new ParseError(`Expected a named option like ${kind === "ellipse" ? "rx: 20" : "closed: true"}`, at.start, Math.max(at.end, at.start + 1));
+          this.next();
+          this.next();
+          const value = this.expr();
+          out.push({ name: at.value, value, span: { start: at.start, end: this.prevEnd() }, nameSpan: { start: at.start, end: at.end } });
+        } while (this.eat("op", ","));
+        return out;
+      };
       if (kind === "point") args.push(this.expr());
-      else if (kind === "line" || kind === "arc") {
+      else if (kind === "spline") {
+        // its points in order, then options: spline s1 = (0, 0), (10, 8), p3, closed: true
+        do {
+          const at = this.peek();
+          if (at.kind === "ident" && this.isOp(":", 1)) {
+            opts = namedOpts();
+            break;
+          }
+          args.push(this.expr());
+        } while (this.eat("op", ","));
+      } else if (kind === "ellipse") {
+        args.push(this.expr());
+        this.expect("op", ",", '", rx: ..., ry: ..." after the ellipse\'s center');
+        opts = namedOpts();
+      } else if (kind === "line" || kind === "arc") {
         args.push(this.expr());
         this.expect("op", "->", `"->" between the ${kind}'s start and end`);
         args.push(this.expr());
@@ -754,19 +793,30 @@ class Parser {
         this.expect("op", ":");
         size = { which: w.value, value: this.expr() };
       }
-      return { k: "entity", kind, name: nameTk.value, construction, args, size, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
+      return { k: "entity", kind, name: nameTk.value, construction, args, size, opts, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
-    if (construction) throw new ParseError('"construction" must be followed by point, line, circle or arc', tk.start, tk.end);
-    // constraint or dimension: name ref, ref [= value]
+    if (construction) throw new ParseError('"construction" must be followed by point, line, circle, arc, spline or ellipse', tk.start, tk.end);
+    // constraint or dimension: name ref, ref [, key: value …] [= value]
     this.next();
     const refs: Expr[] = [];
+    const opts: { name: string; value: Expr; span: Span; nameSpan: Span }[] = [];
     if (!this.atLineStart() && !this.isOp("}") && !this.isOp("=")) {
-      refs.push(this.expr());
-      while (this.eat("op", ",")) refs.push(this.expr());
+      do {
+        const at = this.peek();
+        if (at.kind === "ident" && this.isOp(":", 1)) {
+          this.next();
+          this.next();
+          const value = this.expr();
+          opts.push({ name: at.value, value, span: { start: at.start, end: this.prevEnd() }, nameSpan: { start: at.start, end: at.end } });
+        } else {
+          if (opts.length) throw new ParseError(`Put the geometry before the named options (${opts[0].name}: …)`, at.start, Math.max(at.end, at.start + 1));
+          refs.push(this.expr());
+        }
+      } while (this.eat("op", ","));
     }
     let value: Expr | undefined;
     if (this.eat("op", "=")) value = this.expr();
-    return { k: "constraint", name: tk.value, refs, value, span: { start, end: this.prevEnd() }, nameSpan: { start: tk.start, end: tk.end } };
+    return { k: "constraint", name: tk.value, refs, value, opts: opts.length ? opts : undefined, span: { start, end: this.prevEnd() }, nameSpan: { start: tk.start, end: tk.end } };
   }
 
   // ---- expressions ----

@@ -610,3 +610,29 @@
 .sk-section .sk-list {
   padding: 2px 8px 10px;
 }
+
+/* trim: the piece that goes; extend: where the end runs to */
+.sk-cutaway {
+  fill: none;
+  stroke: var(--fail);
+  stroke-width: 3;
+  stroke-dasharray: 5 4;
+  opacity: 0.9;
+}
+/* mirror, pattern and offset: where the copies will go */
+.sk-ghost {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent-2) 85%, var(--accent-ink));
+  stroke-width: 1.4;
+  stroke-dasharray: 4 3;
+  opacity: 0.85;
+}
+.sk-ghost.axis {
+  stroke-width: 2.4;
+  stroke-dasharray: none;
+  opacity: 0.6;
+}
+/* copies made by mirror, pattern and offset follow their original; drawn a little lighter */
+.sk-curve.copy {
+  opacity: 0.8;
+}

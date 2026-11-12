@@ -88,6 +88,8 @@ export type Stmt =
     }
   | { k: "part"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | { k: "drawing"; name: string; items: Item[]; span: Span; nameSpan: Span }
+  /** `frame name { profile:, box:, path: ... }`: structural members along lines, trimmed where they meet */
+  | { k: "frame"; name: string; items: Item[]; span: Span; nameSpan: Span }
   | {
       k: "require";
       label: string;
@@ -129,8 +131,8 @@ export type Stmt =
   // a control room or live view for the machine: panels that read its signals, controls that send it commands
   | { k: "app"; label: string; items: Item[]; span: Span; labelSpan: Span };
 
-/** Geometry declared in a sketch: points, lines, circles and arcs. */
-export type SketchEntityKind = "point" | "line" | "circle" | "arc";
+/** Geometry declared in a sketch: points, lines, circles, arcs, splines and ellipses. */
+export type SketchEntityKind = "point" | "line" | "circle" | "arc" | "spline" | "ellipse";
 
 /** Statements inside a sketch block. */
 export type SketchItem =
@@ -142,10 +144,12 @@ export type SketchItem =
       kind: SketchEntityKind;
       name: string;
       construction: boolean;
-      /** point: [position]; line: [start, end]; circle: [center]; arc: [start, end, center] */
+      /** point: [position]; line: [start, end]; circle: [center]; arc: [start, end, center]; spline: its points in order; ellipse: [center] */
       args: Expr[];
       /** circle size as written: r: or d: */
       size?: { which: "r" | "d"; value: Expr };
+      /** named options after the points: spline closed:, ellipse rx:, ry:, angle: */
+      opts?: { name: string; value: Expr; span: Span; nameSpan: Span }[];
       span: Span;
       nameSpan: Span;
     }
@@ -154,6 +158,8 @@ export type SketchItem =
       name: string;
       refs: Expr[];
       value?: Expr;
+      /** named options after the geometry, for mirror, pattern and offset: about: l5, count: 4 */
+      opts?: { name: string; value: Expr; span: Span; nameSpan: Span }[];
       span: Span;
       nameSpan: Span;
     };
@@ -186,6 +192,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "part":
     case "sketch":
     case "drawing":
+    case "frame":
       return s.name;
     case "require":
     case "scenario":

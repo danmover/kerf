@@ -73,8 +73,12 @@ export type ShapeRecipe =
   | { t: "sk_revolve"; o: V3; u: V3; n: V3; regions: ProfileRegion[]; axis: [V2, V2]; angle: number }
   /** a with every b removed (hollow lofts) */
   | { t: "diff"; a: ShapeRecipe; b: ShapeRecipe[] }
-  /** a profile pushed along n by h; twist turns it (degrees over h), scale shrinks or grows the far end */
-  | { t: "extrude"; p: Profile; h: number; f: Frame; twist: number; scale: number }
+  /**
+   * a profile pushed along n by h; twist turns it (degrees over h), scale shrinks or grows the far end, taper leans
+   * the sides in by that many degrees (out when negative). until "next": h is only a limit, and the part's shape
+   * where the extrusion is added or cut decides where it stops (the kernel trims it there)
+   */
+  | { t: "extrude"; p: Profile; h: number; f: Frame; twist: number; scale: number; taper?: number; until?: "next" }
   | { t: "sweep"; p: Profile; path: Path3; rot: number; frenet: boolean }
   /** matched: the sections already have the same edges from the same start (aero tubes), so they are skinned as drawn, not resampled */
   | { t: "loft"; secs: { p: Profile; f: Frame }[]; ruled: boolean; matched?: boolean }
@@ -94,8 +98,14 @@ export type ShapeRecipe =
   /** another part's solid where it sits (xf), brought into the frame of the part that uses it (into: that part's placement undone) */
   | { t: "part"; part: PartRecipe; xf: Xform[]; into?: Xform[] };
 
+/** Steepest taper an extrusion takes, degrees from straight. */
+export const MAX_TAPER = 80;
+/** How far an extrusion that runs until: "next" may reach, mm (the kernel stops it at the part long before). */
+export const UNTIL_LIMIT = 2000;
+
 /** One piece of a closed sketch loop, in sketch-plane coordinates. Arcs pass through m. */
-export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number };
+/** A sketch loop's pieces: line, three-point arc, full circle, cubic Bézier (a spline's piece) and full ellipse (rot in degrees). */
+export type Seg2 = { k: "l"; a: V2; b: V2 } | { k: "a"; a: V2; m: V2; b: V2 } | { k: "c"; c: V2; r: number } | { k: "b"; a: V2; c1: V2; c2: V2; b: V2 } | { k: "e"; c: V2; rx: number; ry: number; rot: number };
 
 /** A face to build: one outer loop (counter-clockwise) and the holes inside it. */
 export interface ProfileRegion {

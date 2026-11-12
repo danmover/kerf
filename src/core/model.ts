@@ -255,6 +255,8 @@ export interface EvalPart {
   detail?: boolean;
   /** set for bodies of an imported STEP file */
   imported?: ImportedBody;
+  /** the frame block this member belongs to: edits to it go to that block */
+  frame?: string;
 }
 
 /** A sheet-metal part's data: flanges, bends and regions (part coordinates), and its flat pattern as a part of its own. */
@@ -341,7 +343,7 @@ export interface EvalDecision {
 
 export interface DepNode {
   id: string;
-  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "require" | "analysis";
+  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "frame" | "require" | "analysis";
   label: string;
 }
 
@@ -457,4 +459,47 @@ export interface Model {
   scenarios?: ScenarioDef[];
   /** control rooms and live views for the machine (app blocks) */
   apps?: AppSpec[];
+  /** frames of structural members (frame blocks), with their cut lists */
+  frames?: FrameInfo[];
+}
+
+/** One member of a frame: the part or component it became, and how its piece is cut. */
+export interface FrameMemberInfo {
+  /** the part or component name, e.g. stand_3 */
+  name: string;
+  label: string;
+  role: "post" | "rail" | "brace";
+  /** the line it was drawn on, and where its piece's centre line starts and ends */
+  from: V3;
+  to: V3;
+  start: V3;
+  end: V3;
+  /** cut length, long point to long point, mm */
+  length: number;
+  /** each end in words: "square", "45° mitre", "30° slant", "coped" */
+  ends: [string, string];
+  /** what each end does: runs through a corner, butts against a member, stops on a member's face, a mitre, a splice or free */
+  joints: [string, string];
+}
+
+/** A frame block: its members and the cut list for them. */
+export interface FrameInfo {
+  name: string;
+  label: string;
+  /** the profile as written ("2020", "box 40x40x3") and in words */
+  profile: string;
+  section: string;
+  /** a bought catalog profile, cut square */
+  catalogId?: string;
+  material: string;
+  ends: "butt" | "miter";
+  members: FrameMemberInfo[];
+  /** identical pieces together, longest first */
+  cuts: { length: number; qty: number; ends: [string, string]; members: string[] }[];
+  /** total length of stock, mm, and the bars to buy if you cut them yourself */
+  total: number;
+  stock: { length: number; bars: number };
+  /** grams, from the section's area and the material */
+  mass: number;
+  span: Span;
 }

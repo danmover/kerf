@@ -40,6 +40,47 @@ function pointField(o: Obj, name: string): V3 | undefined {
   return v instanceof Vec && v.v.length >= 3 ? [v.x, v.y, v.v[2]] : undefined;
 }
 
+/** A honeycomb of hexagonal holes, `slot` across the flats on centres `pitch` apart, all inside w × h. */
+function honeycomb(a: Args, w: number, h: number, slot: number, pitch: number): { p: Profile; count: number; area: number } {
+  const R = slot / Math.sqrt(3);
+  const rowH = (pitch * Math.sqrt(3)) / 2;
+  const ps: Profile[] = [];
+  const rows = Math.floor((h - 2 * R) / rowH + 1e-9) + 1;
+  if (h < 2 * R || w < slot) a.ctx.error("vents(): the area is smaller than one opening");
+  for (let j = 0; j < rows; j++) {
+    const y = (j - (rows - 1) / 2) * rowH;
+    const shift = j % 2 ? pitch / 2 : 0;
+    const span = w - slot - shift;
+    const n = span < -1e-9 ? 0 : Math.floor(span / pitch + 1e-9) + 1;
+    for (let i = 0; i < n; i++) {
+      const x = -(w - slot) / 2 + shift + i * pitch;
+      ps.push({ t: "poly", pts: Array.from({ length: 6 }, (_, k): V2 => [x + R * Math.cos(rad(30 + 60 * k)), y + R * Math.sin(rad(30 + 60 * k))]), r: 0 });
+    }
+    if (ps.length > 400) a.ctx.error("vents(): more than 400 openings is too many; use a bigger pitch or a smaller area");
+  }
+  return { p: { t: "union2", ps }, count: ps.length, area: ps.length * ((3 * Math.sqrt(3)) / 2) * R * R };
+}
+
+/** A round fan grille: a hole in the middle and rings `slot` wide on `pitch`, inside a circle `d` across, crossed by spokes. */
+function grille(a: Args, d: number, slot: number, pitch: number): { p: Profile; count: number; area: number } {
+  const spokes = intIn(a, "spokes", 4, 0, 12);
+  const bar = pitch - slot;
+  const rings = Math.floor((d / 2 - slot / 2) / pitch + 1e-9);
+  if (d < slot) a.ctx.error("vents(): the area is smaller than one opening");
+  const ps: Profile[] = [{ t: "circle", d: slot, c: [0, 0] }];
+  let area = Math.PI * (slot / 2) ** 2;
+  for (let i = 1; i <= rings; i++) {
+    const ri = slot / 2 + bar + (i - 1) * pitch;
+    ps.push({ t: "diff2", a: { t: "circle", d: 2 * (ri + slot), c: [0, 0] }, b: [{ t: "circle", d: 2 * ri, c: [0, 0] }] });
+    area += Math.PI * ((ri + slot) ** 2 - ri ** 2);
+  }
+  const reach = d / 2 + 1;
+  const cuts: Profile[] = Array.from({ length: spokes }, (_, k) => ({ t: "place2", p: rect(slot / 2 + bar / 2, reach, -bar / 2, bar / 2), rot: (360 * k) / spokes, by: [0, 0] }));
+  // each spoke crosses every ring once (near enough: the rings are thin next to their radius)
+  area -= spokes * bar * rings * slot;
+  return { p: cuts.length ? { t: "diff2", a: { t: "union2", ps }, b: cuts } : { t: "union2", ps }, count: rings + 1, area: Math.max(0, area) };
+}
+
 export const BLOCK_FNS: Record<string, Fn> = Object.fromEntries([
   def(
     "hinge",
@@ -105,7 +146,7 @@ export const BLOCK_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "vents",
-    ["at", "facing", "size", "slot", "pitch", "depth", "along", "style"],
+    ["at", "facing", "size", "slot", "pitch", "depth", "along", "style", "spokes"],
     (a) => {
       const at = a.vec3("at");
       const n = a.dir("facing", Z);
@@ -116,9 +157,15 @@ export const BLOCK_FNS: Record<string, Fn> = Object.fromEntries([
       const pitch = a.positive("pitch", r2(slot * 2));
       if (pitch <= slot + 0.4) a.ctx.error(`vents(): pitch ${pitch} leaves bars under 0.4 mm between ${slot} mm openings`);
       const depth = a.positive("depth", 3);
-      const style = a.oneOf("style", ["slots", "holes"] as const, "slots");
+      const style = a.oneOf("style", ["slots", "holes", "hex", "rings"] as const, "slots");
       const along = across(a, "along", a.dir("along", Math.abs(n[2]) > 0.9 ? [0, 1, 0] : Z), n);
       const u = vcross(along, n);
+      if (style === "hex" || style === "rings") {
+        const g = style === "hex" ? honeycomb(a, w, h, slot, pitch) : grille(a, w, slot, pitch);
+        const shape = extrude(g.p, vsub(at, vscale(n, depth)), u, n, depth + 0.1);
+        return new FeatureV("vents", [{ op: "cut", shape }], { count: g.count, open_area: r2(g.area) });
+      }
+      if (a.has("spokes")) a.ctx.error('vents(): spokes go with style: "rings"');
       const nx = Math.floor((w - slot) / pitch + 1e-9) + 1;
       const ny = style === "holes" ? Math.floor((h - slot) / pitch + 1e-9) + 1 : 1;
       if (w < slot || (style === "holes" ? h < slot : h < slot * 1.5)) a.ctx.error("vents(): the area is smaller than one opening");
@@ -133,7 +180,35 @@ export const BLOCK_FNS: Record<string, Fn> = Object.fromEntries([
       const shape = extrude({ t: "union2", ps }, vsub(at, vscale(n, depth)), u, n, depth + 0.1);
       return new FeatureV("vents", [{ op: "cut", shape }], { count: nx * ny, open_area: r2(area) });
     },
-    'vents(at, facing: Z, size: (across, along), slot: 2, pitch: 2 × slot, depth: 3, along:, style: "slots"|"holes") — cuts a row of rounded slots running along `along` (default Y on a top or bottom face, Z on a side wall), or a grid of round holes, filling size on the face at `at` whose outside faces `facing`, depth deep (the wall thickness, or more to cut through). Keep slot under 2 mm where fingers or parts must not get in. Fields: count, open_area (mm²).',
+    'vents(at, facing: Z, size: (across, along), slot: 2, pitch: 2 × slot, depth: 3, along:, style: "slots"|"holes"|"hex"|"rings", spokes: 4) — cuts a row of rounded slots running along `along` (default Y on a top or bottom face, Z on a side wall), a grid of round holes, a honeycomb of hexagonal holes (slot across the flats), or for a fan, a round grille: rings slot wide on pitch filling a circle size across, crossed by spokes bars as wide as the bars between rings. On the face at `at` whose outside faces `facing`, depth deep (the wall thickness, or more to cut through). Keep slot under 2 mm where fingers or parts must not get in. Fields: count, open_area (mm²).',
+  ),
+  def(
+    "lip_groove",
+    ["outline", "wall", "h", "gap", "at", "dir", "rot", "side", "style"],
+    (a) => {
+      const p = a.profile("outline");
+      const wall = a.positive("wall");
+      const h = a.positive("h", r2(Math.max(1.5, wall)));
+      const gap = a.num("gap", 0.15);
+      if (gap < 0 || gap > 1) a.ctx.error("lip_groove(): gap (a side) must be 0..1 mm; 0.15 suits printed parts");
+      const side = a.oneOf("side", ["lip", "groove"] as const, "lip");
+      const style = a.oneOf("style", ["step", "tongue"] as const, "step");
+      const at = a.vec3("at", [0, 0, 0]);
+      const dir = a.dir("dir", Z);
+      const f = frameAt(at, dir, a.num("rot", 0));
+      // bands of the wall measured in from the outline: the lip is the groove's band less the gap on each side it touches
+      const [lipIn, lipOut, grooveIn, grooveOut] = style === "step" ? [wall / 2 + gap, wall, wall / 2, wall + gap] : [wall / 3 + gap, (2 * wall) / 3 - gap, wall / 3, (2 * wall) / 3];
+      const lipW = lipOut - lipIn;
+      if (lipW < 0.6) a.ctx.error(`lip_groove(): a ${wall} mm wall leaves the ${style === "step" ? "lip" : "tongue"} ${r2(lipW)} mm thick; it needs 0.6 mm or more, so use a thicker wall${style === "tongue" ? ' or style: "step"' : " or a smaller gap"}`);
+      const band = (from: number, to: number): Profile => ({ t: "diff2", a: { t: "offset", p, d: -from }, b: [{ t: "offset", p, d: -to }] });
+      const back = vsub(at, vscale(dir, 0.05));
+      const shape: ShapeRecipe =
+        side === "lip"
+          ? { t: "extrude", p: band(lipIn, lipOut), h: h + 0.05, f: { ...f, o: back }, twist: 0, scale: 1 }
+          : { t: "extrude", p: band(grooveIn, grooveOut), h: h + gap + 0.05, f: { ...f, o: back }, twist: 0, scale: 1 };
+      return new FeatureV("lip_groove", [{ op: side === "lip" ? "add" : "cut", shape }], { lip_w: r2(lipW), h, depth: r2(h + gap), gap });
+    },
+    'lip_groove(outline, wall, h: wall, gap: 0.15, at:, dir: Z, rot: 0, side: "lip"|"groove", style: "step"|"tongue") — the joint where two shells of an enclosure meet: give both parts the same outline (the shells\' outside at the parting plane through `at`), wall, h, at and dir, one side: "lip" and the other side: "groove". The lip stands h out of the parting plane along dir from the inner half of the wall (style "tongue": from its middle third); the groove is cut that deep plus gap into the other shell, gap wider on each side. dir points from the lip\'s shell to the groove\'s. Fields: lip_w, h, depth, gap.',
   ),
   def(
     "cable_clip",
