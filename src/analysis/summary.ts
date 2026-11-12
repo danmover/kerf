@@ -290,6 +290,16 @@ export function beamMembersText(r: StructuralResult, n = 6): string | null {
   return `${rows.join("; ")}${b.members.length > n ? `; the other ${b.members.length - n} carry less` : ""}.`;
 }
 
+/** Thin walls solved as shells: each wall's thickness, its peak stress on either face and safety. */
+export function shellWallsText(r: StructuralResult): string | null {
+  const s = r.shells;
+  if (!s) return null;
+  const what = (k: string) => (k === "laminate" ? "laminate" : k === "sheet" ? "sheet" : "wall");
+  const thick = (p: { t: number; tMin: number; tMax: number }) => (p.tMax - p.tMin > 0.1 * p.t ? `${fmtNum(p.tMin, 2)}–${fmtNum(p.tMax, 2)} mm` : `${fmtNum(p.t, 2)} mm`);
+  const rows = [...s.parts].sort((a, b) => a.safety - b.safety).map((p) => `${p.part} (${thick(p)} ${what(p.kind)}, ${fmtNum(p.area / 100, 0)} cm²): peak ${fmtNum(p.stress, 1)} MPa on a face near ${p3(p.at)}, safety ${sf(p.safety)}`);
+  return `${rows.join("; ")}.`;
+}
+
 export function largeText(r: StructuralResult): string | null {
   const L = r.large;
   if (!L || !L.converged) return null;
@@ -330,7 +340,9 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
     `${head}: ${structuralVerdict(spec, r).toUpperCase()}.`,
     r.beams
       ? `Model: ${mats}; ${r.beams.notes.join("; ")}; solved in ${fmtNum(r.solve.ms.total / 1000, 2)} s.`
-      : `Model: ${mats}${printed ? `, printed with layers stacked along ${p3(spec.buildDir)}` : ""}; ${run.resolution} resolution, ${r.mesh.elements.toLocaleString("en")} elements of ${r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm; solved in ${fmtNum(r.solve.ms.total / 1000, 1)} s (${r.solve.converged ? "converged" : "NOT fully converged"} in ${r.solve.iterations} iterations).`,
+      : r.shells
+        ? `Model: ${mats}; ${r.shells.notes.join("; ")}; ${r.shells.elements.toLocaleString("en")} shell triangles of up to ${fmtNum(r.mesh.h, 2)} mm; solved in ${fmtNum(r.solve.ms.total / 1000, 1)} s.`
+        : `Model: ${mats}${printed ? `, printed with layers stacked along ${p3(spec.buildDir)}` : ""}; ${run.resolution} resolution, ${r.mesh.elements.toLocaleString("en")} elements of ${r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm; solved in ${fmtNum(r.solve.ms.total / 1000, 1)} s (${r.solve.converged ? "converged" : "NOT fully converged"} in ${r.solve.iterations} iterations).`,
   ];
   if (heatOnlySpec(spec)) {
     lines[0] = `Analysis "${spec.label}" (heat; parts: ${spec.parts.join(", ")}): ${structuralVerdict(spec, r).toUpperCase()}.`;
@@ -364,6 +376,9 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   const members = beamMembersText(r);
   if (members) lines.push(`Members: ${members}`);
   if (r.beams?.buckling && !r.buckling) lines.push(`Buckling (members as beams): the lowest factor is ${fmtNum(r.beams.buckling.factor, 2)}, with ${r.beams.buckling.member} moving most; add buckling to see the shape.`);
+  const walls = shellWallsText(r);
+  if (walls) lines.push(`Walls: ${walls}`);
+  if (r.shells?.buckling && !r.buckling) lines.push(`Buckling (a quick check of the walls): about ${fmtNum(r.shells.buckling.factor, 2)}× these loads, with ${r.shells.buckling.part} rippling most; add buckling to see the shape.`);
   lines.push(`Largest principal strain ${fmtNum(Math.abs(r.maxStrain.value) * 100, 4)} % (${fmtNum(Math.abs(r.maxStrain.value) * 1e6, 0)} microstrain). Mass ${fmtNum(r.mass, 2)} g.`);
   if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");
   if (r.layer) lines.push(`Worst stress across print layers: ${fmtNum(r.layer.value, 2)} MPa at ${p3(r.layer.at)}.`);

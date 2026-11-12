@@ -454,12 +454,20 @@ function buildSheet(baseProfile: Profile, o: SheetOpts, flanges: FlangeArgs[], e
   // the base: the outline less each bend's zone, the corners between bends, and reliefs
   const zones: Profile[] = [];
   const exact: Profile[] = [];
+  // a corner the outline turns through 90° or more (a rect's): no base lies past it beside the edge, so a bend that
+  // runs out to it cuts on past it, not along the next edge (OpenCASCADE loses the plate when the two lines coincide)
+  const clearPast = (j: number, i: number) => {
+    const [a, b] = [edges[j].e, edges[i].e];
+    return a[0] * b[1] - a[1] * b[0] > 1e-9 && a[0] * b[0] + a[1] * b[1] <= 1e-9;
+  };
   for (const p of placed) {
     const i = p.edge;
     const sb = p.chain.sb;
+    const prev = (i + n - 1) % n;
+    const next = (i + 1) % n;
     // through a corner shared with another bend, so the corner between them is open
-    const a0 = !p.relief[0] && onEdge[(i + n - 1) % n] ? Math.min(p.bend[0], 0) - M : p.bend[0];
-    const a1 = !p.relief[1] && onEdge[(i + 1) % n] ? Math.max(p.bend[1], edges[i].len) + M : p.bend[1];
+    const a0 = !p.relief[0] && onEdge[prev] ? Math.min(p.bend[0], 0) - M : !p.relief[0] && p.bend[0] <= 1e-9 && clearPast(prev, i) ? -M : p.bend[0];
+    const a1 = !p.relief[1] && onEdge[next] ? Math.max(p.bend[1], edges[i].len) + M : !p.relief[1] && p.bend[1] >= edges[i].len - 1e-9 && clearPast(i, next) ? edges[i].len + M : p.bend[1];
     zones.push({ t: "poly", pts: rectXY(i, a0, a1, sb, M), r: 0 });
     if (p.relief[0]) zones.push({ t: "poly", pts: rectXY(i, p.bend[0] - rw, p.bend[0], sb - t, M), r: 0 });
     if (p.relief[1]) zones.push({ t: "poly", pts: rectXY(i, p.bend[1], p.bend[1] + rw, sb - t, M), r: 0 });

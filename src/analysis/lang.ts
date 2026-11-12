@@ -972,17 +972,23 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     else if (typeof resP.value === "number") fail(`resolution: the element size must be at least ${MIN_ELEMENT_SIZE}mm`, resP.span);
     else fail('resolution: should be "draft", "standard", "fine" or an element size like 0.8mm', resP.span);
   }
-  // ---- elements: frame members as beams (the default for a frame on its own), or as solids ----
+  // ---- elements: frame members as beams (the default for a frame on its own), thin walls as shells (the default for
+  // carbon layups and sheet metal on their own), or the real shape as solids ----
   const elemP = one("elements");
-  let elements: "beams" | "solid" | undefined;
+  let elements: "beams" | "solid" | "shells" | undefined;
   if (elemP) {
     const v = typeof elemP.value === "string" ? elemP.value.toLowerCase() : "";
     if (v === "beams" || v === "beam") elements = "beams";
     else if (v === "solid" || v === "solids") elements = "solid";
-    else fail('elements: should be "beams" (frame members as beams through their joints: quick, and exact for slender members) or "solid" (the real shape in small cubes, for joints, holes and short stubby parts)', elemP.span);
-    if (elements === "beams") {
+    else if (v === "shells" || v === "shell") elements = "shells";
+    else
+      fail(
+        'elements: should be "beams" (frame members as beams through their joints: quick, and exact for slender members), "shells" (thin walls as their surface: carbon layups, sheet metal, thin moulded walls) or "solid" (the real shape in small cubes, for joints, holes and short stubby parts)',
+        elemP.span,
+      );
+    if (elements === "beams" || elements === "shells") {
       const other = modal ? "natural frequencies" : drop ? "a drop" : thermalOn || uniformTemp !== undefined ? "temperatures" : fatigue ? "fatigue" : topology ? "topology optimisation" : touching ? "touching parts" : preload ? "tightened bolts" : large ? "large deflection" : null;
-      if (other) fail(`elements: "beams" cannot follow ${other} yet; use elements: "solid" for it.`, elemP.span);
+      if (other) fail(`elements: "${elements}" cannot follow ${other} yet; use elements: "solid" for it.`, elemP.span);
     }
   }
   const cycles = num("cycles", 0);

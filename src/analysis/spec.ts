@@ -378,9 +378,11 @@ export interface StructuralSpec {
   large?: boolean;
   /**
    * how the parts are modelled: "beams" analyses frame members as beams through their joints (quick, and exact for
-   * slender members), "solid" as the real shape in small cubes; unset, a frame on its own is analysed as beams
+   * slender members), "shells" thin walls as their surface (a carbon layup as its laminate, a sheet() part as its
+   * sheet, any other part as the thin wall it measures), "solid" as the real shape in small cubes; unset, a frame on
+   * its own is analysed as beams, and carbon layups and sheet parts on their own as shells
    */
-  elements?: "beams" | "solid";
+  elements?: "beams" | "solid" | "shells";
   /** topology optimisation: find the stiffest shape for these loads that keeps a share of the parts' material */
   topology?: TopologySpec;
   /** touching parts as contacts (pressed, parting, sliding) instead of glued */

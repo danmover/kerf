@@ -25,6 +25,7 @@ import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, t
 import { bucklingModes } from "./buckling";
 import { corotate, elementFrame, internalForce, largeEffect, maxTurn, solveLarge, turnVoigt } from "./large";
 import { runBeams, type BeamMember, type BeamResult } from "./beams";
+import { runShells, ShellFallback, type ShellPart, type ShellResult } from "./shells";
 import { FINISHES, criticalStress, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
 
 export class FeaError extends Error {}
@@ -38,6 +39,8 @@ export interface FeaPart {
   group?: string;
   /** a frame member, analysed as a beam when the analysis uses beam elements */
   beam?: BeamMember;
+  /** a thin wall (a laminate, a sheet), analysed as a shell when the analysis uses shell elements */
+  shell?: ShellPart;
   /** world-space triangle mesh */
   mesh: TriMesh;
   /** world-space vertex normals, for display */
@@ -124,8 +127,15 @@ export interface StructuralInput {
    * the small-deflection answer, unset switches it on when that answer turns a part more than LARGE_TURN
    */
   large?: boolean;
-  /** "beams": every part is a frame member (FeaPart.beam), solved as beams through its joints */
-  elements?: "beams";
+  /**
+   * "beams": every part is a frame member (FeaPart.beam), solved as beams through its joints; "shells": every part is
+   * a thin wall (FeaPart.shell), solved as shells on its surface
+   */
+  elements?: "beams" | "shells";
+  /** the element type was chosen, not asked for: a part that turns out not to be one wall falls back to solids */
+  elementsAuto?: boolean;
+  /** warnings the input step found (a carbon layup solved as solid), put in front of the result's own */
+  inputWarnings?: string[];
 }
 
 /** The large-deflection solve: how far the parts turned, and how it went. */
@@ -455,6 +465,8 @@ export interface StructuralResult {
   large?: LargeResult;
   /** a frame solved as beams: each member's forces and peak stress */
   beams?: BeamResult;
+  /** the walls as shells, when the analysis used shell elements */
+  shells?: ShellResult;
 }
 
 /** The same analysis solved twice, the second time with smaller elements. */
@@ -617,10 +629,25 @@ export function sizeGrid(ext: V3, volume: number, target: number, h?: number): {
 
 export function runStructural(inp: StructuralInput, progress: Progress = () => undefined): StructuralResult {
   if (!inp.parts.length) throw new FeaError("Nothing to analyse: the analysis names no parts with built geometry.");
+  if (inp.inputWarnings?.length) {
+    const r = runStructural({ ...inp, inputWarnings: undefined }, progress);
+    return { ...r, warnings: [...inp.inputWarnings, ...r.warnings] };
+  }
   if (inp.elements === "beams") {
     if (!inp.supports.length) throw new FeaError("The analysis has no supports. Add fix: to say how the frame is held, for example fix: face(stand, -Z).");
     if (!inp.loads.length && !inp.accel && !inp.supports.some((s) => s.move)) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
     return runBeams(inp, progress);
+  }
+  if (inp.elements === "shells") {
+    if (!inp.supports.length) throw new FeaError("The analysis has no supports. Add fix: to say how the part is held, for example fix: face(bracket, -Z).");
+    if (!inp.loads.length && !inp.accel && !inp.supports.some((s) => s.move)) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
+    try {
+      return runShells(inp, progress);
+    } catch (e) {
+      if (!(e instanceof ShellFallback) || !inp.elementsAuto) throw e instanceof ShellFallback ? new FeaError(`${e.message}. Use elements: "solid" to analyse it with solid elements.`) : e;
+      const r = runStructural({ ...inp, elements: undefined, elementsAuto: undefined }, progress);
+      return { ...r, warnings: [`${e.message}, so it was solved with solid elements.`, ...r.warnings] };
+    }
   }
   const t0 = now();
   const warnings: string[] = [];
