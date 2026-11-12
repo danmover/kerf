@@ -21,6 +21,9 @@ import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
 import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
 import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
+import { openFilmMaker } from "../film/store";
+import { openFrameDialog } from "./FrameDialog";
+import { fastenFrames } from "../app/frameFasten";
 import { importStepFiles } from "../app/imports";
 import { TEMPLATES } from "../demos/templates";
 import { openDrawings, closeDrawings, useDrawings } from "../drawing/engine";
@@ -35,14 +38,18 @@ import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
 import { RulerIcon, toggleMeasure } from "./viewport/MeasureTool";
+import { FilterIcon, openSetNamer, recallSet } from "./viewport/PickLayer";
+import { toggleHandles, useHandles } from "./viewport/HandlesLayer";
+import { FILTERS, FILTER_WORD, savedSets, setFilter, toggleBox, usePicks } from "../app/picks";
 import { playFitting, useFitView } from "./FitLayer";
 import { togglePmi, usePmiView } from "./PmiLayer";
 import { hasFitting } from "../analysis/fitting";
-import { exitSketch, startPicking, useSketch } from "./sketch/session";
+import { exitSketch, setTool, startPicking, useSketch } from "./sketch/session";
 import { STEP_ACCEPT } from "./ImportsPanel";
 import { FIX_IT_UP, MAKE_BUILDABLE, openModelTool } from "./ModelTools";
 import { askClaude, REVIEW_ASK } from "./chatDraft";
 import { Icon } from "./icons";
+import { openViewportMenu } from "./viewport/contextMenus";
 import { T } from "./sketch/glyphs";
 
 export type FindGroup = "Panels" | "View" | "Model" | "Analyse" | "Make" | "Machines" | "Export" | "Parts" | "Checks" | "New design" | "Project" | "Settings";
@@ -204,8 +211,22 @@ export function findItems(ctx: FindContext): FindItem[] {
       { id: "model:pattern", group: "Model", title: "Pattern parts", detail: "Copies of the selected parts in a row or round an axis (a hole or boss inside a part: the feature tree)", keywords: "pattern array linear circular polar repeat copies rectangular radial duplicate", icon: <Icon.Pattern size={14} />, run: () => openModelTool("pattern") },
       { id: "model:mirror", group: "Model", title: "Mirror a part", detail: "The other hand of a part, linked so it follows every change", keywords: "mirror symmetric symmetry flip reflect opposite left right hand", icon: <Icon.Mirror size={14} />, run: () => openModelTool("mirror") },
       { id: "model:subtract", group: "Model", title: "Cut one part out of another", detail: "A pocket or opening exactly where another part sits, linked to it", keywords: "subtract boolean combine difference cut out pocket cavity recess negative", icon: <Icon.Subtract size={14} />, run: () => openModelTool("subtract") },
-      { id: "model:sketch", group: "Model", title: sketching.active || sketching.picking ? "Leave the sketch" : "New sketch", detail: "Draw a 2D profile on a face or plane, with dimensions, and extrude or revolve it", keywords: "sketch draw profile 2d extrude revolve constraint", icon: <T.Sketch size={14} />, run: () => (sketching.active || sketching.picking ? exitSketch() : startPicking()) },
+      { id: "model:sketch", group: "Model", title: sketching.active || sketching.picking ? "Leave the sketch" : "New sketch", detail: "Draw a 2D profile on a face or plane, with dimensions, and extrude or revolve it: a depth, up to the next face or through all, with a taper or as a thin wall", keywords: "sketch draw profile 2d extrude revolve constraint boss cut pocket taper draft angle thin wall feature up to next face through all two sided mid plane rectangle centre center rectangle 3 point rotated rectangle polygon hexagon octagon slot circle arc spline bezier curve freeform smooth curve aerofoil airfoil ellipse oval trim extend offset mirror pattern circular pattern linear pattern bolt circle project edges convert entities include geometry", icon: <T.Sketch size={14} />, run: () => (sketching.active || sketching.picking ? exitSketch() : startPicking()) },
+      { id: "model:refplane", group: "Model", title: "Sketch on a reference plane", detail: "Pick a plane or face, then move it off by a distance, tilt it by an angle, or put it midway between two parallel faces. In code, plane() also goes through three points, square to a path or tilted about an edge", keywords: "reference plane datum plane work plane construction plane offset plane angled plane tilted plane inclined plane midplane mid plane between two faces three points normal to path perpendicular to line at angle", icon: <T.Sketch size={14} />, run: () => startPicking() },
+      ...(sketching.active
+        ? [
+            { id: "sketch:trim", group: "Model" as const, title: "Trim", detail: "Cut a curve back to where others cross it, or delete one nothing crosses", keywords: "trim cut break split power trim delete segment", icon: <T.Trim size={14} />, keys: "T", run: () => setTool("trim") },
+            { id: "sketch:extend", group: "Model" as const, title: "Extend", detail: "Run a loose end of a line or arc on to the next curve", keywords: "extend lengthen stretch reach", icon: <T.Extend size={14} />, keys: "E", run: () => setTool("extend") },
+            { id: "sketch:offset", group: "Model" as const, title: "Offset", detail: "A copy of an outline a set distance in or out, that follows it", keywords: "offset parallel copy wall thickness clearance inset outset", icon: <T.Offset size={14} />, keys: "F", run: () => setTool("offset") },
+            { id: "sketch:mirror", group: "Model" as const, title: "Mirror in the sketch", detail: "Copy geometry across a line or axis, kept symmetric", keywords: "mirror symmetric symmetry flip reflect half", icon: <T.Mirror size={14} />, keys: "M", run: () => setTool("mirror") },
+            { id: "sketch:pattern", group: "Model" as const, title: "Pattern in the sketch", detail: "Repeat geometry in a row, a grid or a ring round a point", keywords: "pattern array linear circular polar grid bolt circle repeat holes", icon: <T.Pattern size={14} />, keys: "K", run: () => setTool("pattern") },
+            { id: "sketch:project", group: "Model" as const, title: "Project a face", detail: "Bring the edges of a part's face into the sketch, fixed, to draw from", keywords: "project convert entities include use edges reference geometry outline from part face", icon: <T.Project size={14} />, keys: "J", run: () => setTool("project") },
+          ]
+        : []),
       { id: "model:markup", group: "Model", title: "Draw on the view for Claude", detail: "Circle or scribble on the model and say what to change there", keywords: "markup annotate scribble sketch on screen pen highlight", icon: <Icon.Edit size={14} />, keys: "M", run: () => toggleMarkup() },
+      { id: "model:frame", group: "Model", title: "New frame", detail: "A box frame or rectangle of 2020 extrusion or steel box, tube or angle: members cut to fit where they meet, with a cut list", keywords: "frame weldment weldments structural members 2020 2040 extrusion v-slot t-slot aluminium profile steel box section rhs shs square tube round tube chs angle iron flat bar chassis stand table cube cage rack trim extend mitre miter cope cut list", icon: <Icon.Grid size={14} />, run: () => openFrameDialog() },
+      { id: "model:fasten-frames", group: "Model", title: "Fasten frame joints", detail: "Corner brackets with screws and T-nuts at every 2020 or 2040 frame joint nothing holds yet, without Claude", keywords: "fasten frame joints corner brackets gusset t-nuts tee nuts screws extrusion v-slot 2020 2040 join profiles", icon: <Icon.Screw size={14} />, run: () => void fastenFrames() },
+      { id: "model:cutlist", group: "Model", title: "Cut list", detail: "Lengths to cut for every frame, their end cuts and the bars to buy (under the parts list)", keywords: "cut list cutting list saw lengths stock bars frame members weldment extrusion", icon: <Icon.List size={14} />, run: () => useView.setState({ dockTab: "bom", dockOpen: true }) },
       { id: "model:step", group: "Model", title: "Import a STEP file", detail: "Bring in a part from another CAD tool to design around", keywords: "import step stp cad file part load open", icon: <Icon.Upload size={14} />, run: pickStep },
       ask("ask:fix-up", "Model", "Fix it up", "After modelling by hand: Claude makes it fit, build and pass the checks", "tidy clean repair hand made manual", FIX_IT_UP, <Icon.Sparkle size={14} />),
       ask("ask:buildable", "Model", "Make it a buildable product", "Real fasteners and fits, processes you have, an assembly order and where to buy each part", "product real manufacture production ready buildable", MAKE_BUILDABLE, <Icon.Sparkle size={14} />),
@@ -229,6 +250,7 @@ export function findItems(ctx: FindContext): FindItem[] {
     // ── making ──
     push(
       ask("ask:mould", "Make", "Make a mould", "A two-part printed mould made from the part with mould(): keys, bolts, pour hole and vents", "mould mold casting cast resin silicone urethane polyurethane", "Make a two-part mould for the part I want to cast (ask me which if it isn't clear) with mould(): registration keys, clamping bolts, a pour hole and vents, split where it releases cleanly, and check it opens.", <Icon.Factory size={14} />),
+      ask("ask:enclosure", "Make", "Make an enclosure", "Two printed shells with a lip and groove, screw posts, vents and openings for the connectors", "enclosure case box housing shell lid lip groove tongue joint parting line vents honeycomb fan grille", "Make a printed enclosure for the electronics in this design (ask me which board if it isn't clear): two shells split where it assembles easily, joined with lip_groove(), screw_boss posts with inserts, vents() where parts get warm, openings for every connector, and check every board mounts and fits.", <Icon.Cube size={14} />),
       ask("ask:sheet", "Make", "Make it from sheet metal", "Bent parts with sheet(): bend radii, reliefs, flat patterns and a laser DXF", "sheet metal bend fold brake laser flat pattern dxf aluminium steel chassis", "Rebuild the parts that suit it as bent sheet metal with sheet(): real bend radii and reliefs, flat patterns with bend tables and a DXF for laser cutting, and check every bend and flange.", <Icon.Layers size={14} />),
       ask("ask:carbon", "Make", "Plan a carbon fibre layup", "Ply book, orientations, weights and how it comes out of the mould", "carbon fibre fiber composite layup ply prepreg monocoque", "Plan the carbon fibre layup for the carbon parts: a ply book with orientations and weights, where the mould splits, and how each part comes out of it.", <Icon.Layers size={14} />),
       ask("ask:factory", "Make", "Get it ready for a factory", "Drawings, materials, tolerances and a list of what to send for a quote", "factory quote manufacturer production supplier rfq send order batch", "Get this design ready to send to a factory for a quote: the processes and materials, drawings with the tolerances that matter, quantities, and a list of what to send and what to ask them.", <Icon.Factory size={14} />),
@@ -239,15 +261,41 @@ export function findItems(ctx: FindContext): FindItem[] {
     const hasMotion = !!model?.parts.some((p) => turns(p.motion));
     const hasWires = !!model?.machine && model.machine.wires.length + model.machine.nets.length > 0;
     const drawings = useDrawings.getState().open;
-    const cams: [ViewPreset, string, string?][] = [["iso", "Iso"], ["front", "Front", "2"], ["back", "Back"], ["left", "Left"], ["right", "Right", "3"], ["top", "Top", "4"], ["bottom", "Bottom"]];
+    const cams: [ViewPreset, string, string?][] = [["iso", "Iso"], ["front", "Front", "2"], ["back", "Back", "Shift+2"], ["left", "Left", "Shift+3"], ["right", "Right", "3"], ["top", "Top", "4"], ["bottom", "Bottom", "Shift+4"]];
     push(
       { id: "view:fit", group: "View", title: "Fit to view", detail: "Frame the whole model", keywords: "zoom all frame reset camera", icon: <Icon.Fit size={14} />, keys: "F", run: () => requestCamera("fit") },
+      {
+        id: "view:context",
+        group: "View",
+        title: "Right-click menus",
+        detail: "Right-click a part for what you can do at that spot (ask Claude, zoom, look square at the face, section here, hide, sketch on it, hole, fillet, material, lock, delete), empty space for the view, or a row of the parts list",
+        keywords: "context menu right click marking menu actions shortcut menu lock unlock part locked hide show only section here look at face normal to sketch on face",
+        icon: <Icon.List size={14} />,
+        run: () => {
+          const r = document.querySelector(".viewport")?.getBoundingClientRect();
+          if (r) openViewportMenu(null, r.left + r.width / 2, r.top + r.height / 2);
+        },
+      },
+      { id: "view:cube", group: "View", title: "View cube", detail: "Bottom left of the view: click a face, edge or corner to look from that side, drag it to turn the view, the arrows step to the next face, the house goes home", keywords: "viewcube view cube navigation cube orientation home view standard views corner edge isometric look from turn rotate orbit next face", icon: <Icon.Cube size={14} />, run: () => requestCamera("iso") },
       ...cams.map(([p, label, k]): FindItem => ({ id: `view:cam:${p}`, group: "View", title: `${label} view`, detail: "Camera", keywords: "camera angle look from orientation", icon: <Icon.Cube size={14} />, keys: p === "iso" ? "1" : k, run: () => requestCamera(p) })),
       { id: "view:section", group: "View", title: "Section view", detail: "Cut the model open along X, Y or Z; with results showing, the cut face shows the values inside", keywords: "cut cross section slice clip inside section through results stress inside interior cut plane internal stress temperature inside", icon: <Icon.Scissors size={14} />, keys: "S", tag: v.section.on ? "on" : undefined, run: () => useView.setState({ section: { ...v.section, on: !v.section.on } }) },
       { id: "view:explode", group: "View", title: "Exploded view", detail: "Take it apart step by step: screws out along their axes, then each part off what it sits on", keywords: "explode exploded apart spread assembly disassemble take apart steps smart exploded view fasteners screws out", icon: <Icon.Explode size={14} />, keys: "E", tag: v.explode > 0 ? "on" : undefined, run: () => useView.setState({ explode: v.explode > 0 ? 0 : 1 }) },
       { id: "view:assembly", group: "View", title: "Play the assembly", detail: "Watch the parts go together in the order they fit, screws once both sides are on", keywords: "assemble animation build order instructions", icon: <Icon.Assemble size={14} />, keys: "A", run: () => useView.setState({ explode: 0, assemblyRequest: v.assemblyRequest + 1 }) },
       { id: "view:xray", group: "View", title: "X-ray", detail: "See through the parts", keywords: "transparent see through ghost inside", icon: <Icon.Xray size={14} />, keys: "X", tag: v.xray ? "on" : undefined, run: () => useView.setState({ xray: !v.xray }) },
       { id: "view:measure", group: "View", title: "Measure", detail: "Distances, angles and sizes between what you click", keywords: "ruler distance dimension size gap angle", icon: <RulerIcon size={14} />, keys: "R", run: () => toggleMeasure() },
+      ...FILTERS.map((f): FindItem => ({
+        id: `view:pick:${f}`,
+        group: "View",
+        title: f === "part" ? "Pick whole parts" : `Pick ${FILTER_WORD[f]}`,
+        detail: f === "part" ? "Clicks select parts again (the selection filter)" : `Clicks pick ${FILTER_WORD[f]} of the parts: fillet or chamfer the picked edges, sketch on a picked face, copy them as near() selectors or ask Claude about them`,
+        keywords: "selection filter select faces edges corners vertices vertex bodies parts pick face pick edge pick corner sub-part sub part entity topology filter faces only edges only",
+        icon: <FilterIcon filter={f} box={false} size={14} />,
+        keys: "Q",
+        tag: usePicks.getState().filter === f ? "on" : undefined,
+        run: () => setFilter(f),
+      })),
+      { id: "view:handles", group: "View", title: "Drag handles", detail: "With a part selected: arrows on its sizes to pull them (or click a value on the model to type it) and arrows in its middle to slide it along X, Y or Z", keywords: "drag handles push pull press pull instant3d arrows resize stretch on-model dimensions edit dimension on model triad move manipulator gizmo slide", icon: <Icon.Move size={14} />, keys: "H", tag: useHandles.getState().on ? "on" : undefined, run: () => toggleHandles() },
+      { id: "view:boxselect", group: "View", title: "Box select", detail: "Drag a box to pick parts, faces, edges or corners: left to right takes what is wholly inside, right to left whatever it touches", keywords: "box select window selection crossing selection drag select marquee rubber band lasso area select many multiple", icon: <FilterIcon filter={usePicks.getState().filter} box size={14} />, keys: "B", tag: usePicks.getState().box ? "on" : undefined, run: () => toggleBox() },
       { id: "view:drawings", group: "View", title: drawings ? "Back to the 3D view" : "Engineering drawings", detail: drawings ? "Leave the drawing sheets" : "Dimensioned sheets for each part, ready to print or send", keywords: "drawing drawings blueprint 2d dimensions sheet pdf tolerance print", icon: <Icon.Doc size={14} />, keys: "D", run: () => (drawings ? closeDrawings() : openDrawings()) },
       { id: "view:drawings-gdt", group: "View", title: "Datums and GD&T on drawings", detail: "Geometric tolerances, fits for bearing seats and dowels, gear centre distances", keywords: "gd&t gdt geometric tolerancing datum datums feature control frame position flatness perpendicularity runout basic dimension fit fits h7 k6 bearing seat dowel centre distance backlash iso 1101 asme y14.5 surface finish ra", icon: <Icon.Doc size={14} />, run: () => openDrawings() },
       { id: "view:drawings-annotate", group: "View", title: "Radii, chamfers, angles and ordinates on drawings", detail: "Read off the views; dim_style: ordinate or chain, or write angle(), radius(), chamfer(), arc_length()", keywords: "angle angular dimension radius radii fillet round chamfer bevel ordinate baseline chain dimensioning arc length datum dimension style", icon: <Icon.Doc size={14} />, run: () => openDrawings() },
@@ -275,6 +323,11 @@ export function findItems(ctx: FindContext): FindItem[] {
         });
       if (shownGroups.length) push({ id: "view:group:all", group: "View", title: "Show every group", detail: `Now showing ${shownGroups.join(", ")}`, keywords: "group groups all unhide show everything reset", icon: <Icon.Eye size={14} />, run: () => showGroups([]) });
     }
+    if (model) {
+      for (const set of savedSets(model.name))
+        push({ id: `view:set:${set.name}`, group: "View", title: `Pick the set “${set.name}”`, detail: "A saved selection set", keywords: "selection set saved selection named selection group of faces edges recall", icon: <FilterIcon filter={set.parts?.length ? "part" : (set.picks?.[0]?.kind ?? "part")} box={false} size={14} />, run: () => recallSet(set) });
+      if (v.selected.length || usePicks.getState().picks.length) push({ id: "view:set:save", group: "View", title: "Save the selection as a set", detail: "Name it, to pick the same parts, faces or edges again later", keywords: "selection set save selection named selection remember group", icon: <Icon.Plus size={14} />, run: () => openSetNamer() });
+    }
     if (v.selected.length || v.isolate) push({ id: "view:isolate", group: "View", title: "Isolate the selection", detail: "Show only the selected parts", keywords: "hide others solo only focus", icon: <Icon.Target size={14} />, keys: "I", tag: v.isolate ? "on" : undefined, run: () => useView.setState({ isolate: !v.isolate }) });
     if (hasMotion) push({ id: "view:play", group: "View", title: v.playing ? "Stop the mechanism" : "Run the mechanism", detail: "Turn the input and watch everything that moves", keywords: "play animate motion move run gears", icon: v.playing ? <Icon.Pause size={14} /> : <Icon.Play size={14} />, keys: "Space", tag: v.playing ? "on" : undefined, run: () => useView.setState({ playing: !v.playing }) });
     if (hasWires)
@@ -296,6 +349,8 @@ export function findItems(ctx: FindContext): FindItem[] {
     if (model && hasFitting(model)) push({ id: "view:fitting", group: "View", title: "How it goes on", detail: "Watch it fitted, and what keeps it there", keywords: "fit fitting mount install clip band attach", icon: <Icon.Assemble size={14} />, tag: useFitView.getState().on ? "on" : undefined, run: () => (useFitView.getState().on ? useFitView.setState({ on: false }) : playFitting()) });
 
     // ── exports ──
+    if (model?.parts.length)
+      push({ id: "film:make", group: "Export", title: "Make a showcase film", detail: "A short film of the design with captions, cards and music: pick the sections, then render an MP4", keywords: "film video showcase movie animation trailer reel promo turntable mp4 linkedin youtube instagram tiktok shorts reels presentation demo render animation exploded assembly", icon: <Icon.Film size={14} />, run: () => openFilmMaker() });
     for (const f of EXPORT_FORMATS) {
       if (f.shown && !f.shown()) continue;
       const I = (Icon as Record<string, (p: { size?: number }) => JSX.Element>)[f.icon] ?? Icon.Download;

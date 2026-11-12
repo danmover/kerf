@@ -25,6 +25,7 @@ import { MaterialButton } from "./MaterialPicker";
 import { MaterialCompareHost } from "./materials/CompareOverlay";
 import { SpotChat } from "./SpotChat";
 import { ModelTools } from "./ModelTools";
+import { FrameDialog } from "./FrameDialog";
 import { Markup, toggleMarkup, useMarkup } from "./Markup";
 import { openSpot, closeSpot, useSpot } from "../app/spot";
 import { useGap, type Gap } from "./useGap";
@@ -35,6 +36,9 @@ import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
 import { AirflowLayer } from "./AirflowLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
+import { PickFilterMenu, PickLayer } from "./viewport/PickLayer";
+import { HandlesLayer } from "./viewport/HandlesLayer";
+import { usePicks } from "../app/picks";
 import { SimLayer } from "./sim/SimLayer";
 import { WiringLayer } from "./WiringLayer";
 import { FitLayer, playFitting, useFitView } from "./FitLayer";
@@ -45,6 +49,8 @@ import { BoardDecorator } from "./viewport/boards/decorate";
 import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
 import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
+import { ViewCube } from "./viewport/ViewCube";
+import { openViewportMenu } from "./viewport/contextMenus";
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -71,6 +77,11 @@ export function Viewport() {
   const sketching = useSketch((s) => !!s.active || s.picking);
   const inSketch = useSketch((s) => !!s.active);
   const measureHost = useCallback(() => (ctl.current ? { canvas: ctl.current.renderer.domElement, camera: ctl.current.camera, scene: ctl.current.scene, controls: ctl.current.controls, hit: (x: number, y: number) => ctl.current?.hitAt(x, y) ?? null } : null), []);
+  const pickHost = useCallback(() => {
+    const h = measureHost();
+    return h && ctl.current ? { ...h, orbit: ctl.current.controls } : null;
+  }, [measureHost]);
+  const picking = usePicks((s) => s.picks.length > 0);
   const [photo, setPhoto] = useState<PhotoStatus>({ state: "off", samples: 0, max: 0 });
   const wiring = useWiringView((s) => s.on);
   const hasWires = !!model?.machine && model.machine.wires.length + model.machine.nets.length > 0;
@@ -94,9 +105,10 @@ export function Viewport() {
     decor.current = new Decorators([boards, detail]);
     c.setDecorator(decor.current);
     mfgOverlay.current = new ProcessOverlay(c);
-    c.onHover = (id) => useView.setState({ hovered: id });
+    // with the selection filter on faces, edges or corners, a click picks those (the pick layer does), not the part
+    c.onHover = (id) => useView.setState({ hovered: usePicks.getState().filter === "part" ? id : null });
     c.onPick = (id, additive) => {
-      if (measuring()) return;
+      if (measuring() || usePicks.getState().filter !== "part") return;
       const s = useView.getState();
       if (!id) {
         closeSpot();
@@ -119,14 +131,12 @@ export function Viewport() {
       const r = mount.current?.getBoundingClientRect();
       setHold(at && r ? { x: at.x - r.left, y: at.y - r.top, n: Date.now() } : null);
     };
-    c.onContext = (hit) => {
-      // the right button pans in a sketch; the spot chat waits until it is closed
+    c.onContext = (hit, x, y) => {
+      // the right button pans in a sketch; the menu waits until it is closed
       const sk = useSketch.getState();
       if (sk.active || sk.picking) return;
-      const part = hit && useDesign.getState().model?.parts.find((p) => p.id === hit.id);
-      if (!hit || !part) return closeSpot();
-      select([hit.id]);
-      openSpot({ partId: hit.id, label: part.label, local: hit.local, point: hit.point, normal: hit.normal, localNormal: hit.localNormal });
+      closeSpot();
+      openViewportMenu(hit, x, y);
     };
     registerViewport({
       capture: (o) => c.capture(o),
@@ -142,6 +152,9 @@ export function Viewport() {
       photoBlocker: () => c.photoBlocker(),
       photoFloor: (q) => c.setPhotoFloor(q),
       photoSnapshot: () => c.photoSnapshot(),
+      focus: (ids) => c.focusOn(ids),
+      sectionThrough: (point, normal) => c.sectionThrough(point, normal),
+      film: (o) => c.beginFilm(o),
     });
     setScene(c);
     return () => {
@@ -226,7 +239,10 @@ export function Viewport() {
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
   useEffect(() => {
-    if (view.cameraRequest) ctl.current?.fit(view.cameraRequest.preset === "fit" ? "current" : view.cameraRequest.preset);
+    const r = view.cameraRequest;
+    if (!r) return;
+    if (r.dir) ctl.current?.lookFrom(r.dir);
+    else ctl.current?.fit(r.preset === "fit" ? "current" : r.preset);
   }, [view.cameraRequest]);
 
   const hasMotion = !!model?.parts.some((p) => turns(p.motion));
@@ -250,6 +266,7 @@ export function Viewport() {
     <div className={`viewport ${inSketch ? "sketching" : ""}`} data-backdrop={lightingPreset(settings.lighting, theme).light ? "light" : "dark"}>
       <div className="vp-mount" ref={mount} />
       {hold && <div key={hold.n} className="vp-hold" style={{ left: hold.x, top: hold.y }} aria-hidden="true" />}
+      {scene && <ViewCube scene={scene} />}
 
       <div className="vp-toolbar" role="toolbar" aria-label="View controls">
         {/* modelling it yourself comes first and is labelled, so it isn't lost among the view switches */}
@@ -286,7 +303,7 @@ export function Viewport() {
                     requestCamera(p);
                     close();
                   }}
-                  hint={{ iso: "1", front: "2", back: "", left: "", right: "3", top: "4", bottom: "" }[p]}
+                  hint={{ iso: "1", front: "2", back: "⇧2", left: "⇧3", right: "3", top: "4", bottom: "⇧4" }[p]}
                 >
                   {p[0].toUpperCase() + p.slice(1)}
                 </MenuItem>
@@ -311,6 +328,7 @@ export function Viewport() {
           <Icon.Target />
         </button>
         <GroupsMenu />
+        <PickFilterMenu />
         <MeasureButton />
         <PmiButton />
         {hasWires && (
@@ -390,6 +408,8 @@ export function Viewport() {
       {/* the "How it goes on" card sits where this line is; the status bar still shows the same counts */}
       {!fitting && <Hud stage={stage} parts={visibleParts} />}
       <MeasureTool host={measureHost} />
+      <PickLayer host={pickHost} />
+      <HandlesLayer host={pickHost} />
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
@@ -400,9 +420,10 @@ export function Viewport() {
       {scene && !inSketch && <PmiLayer scene={scene} />}
       {!inSketch && <GroupsKey />}
 
-      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
+      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && !picking && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
 
       {settings.advanced && !inSketch && <ModelTools host={mount} />}
+      <FrameDialog />
       <SpotChat />
       <Markup />
       <MaterialCompareHost />
@@ -663,7 +684,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
             ))}
       </div>
       <div className="dim" style={{ fontSize: 10.5, marginTop: 8 }}>
-        Right-click a spot on the model to ask about it
+        Right-click a spot on the model to ask about it or work on it there
       </div>
     </motion.div>
   );

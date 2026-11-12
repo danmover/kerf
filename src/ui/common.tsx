@@ -81,10 +81,10 @@ export function Modal({ open, onClose, title, children, footer, width = 720, ico
   );
 }
 
-const menuItems = (root: HTMLElement | null) => [...(root?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])];
+export const menuItems = (root: HTMLElement | null) => [...(root?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled), [role="menuitemcheckbox"]:not(:disabled)') ?? [])];
 
 /** Arrow keys between menu items: up and down in order, left and right to the nearest item in the next column. */
-function menuKey(e: ReactKeyboardEvent<HTMLElement>) {
+export function menuKey(e: ReactKeyboardEvent<HTMLElement>) {
   const items = menuItems(e.currentTarget);
   if (!items.length) return;
   const at = items.indexOf(document.activeElement as HTMLElement);

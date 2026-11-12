@@ -287,6 +287,7 @@ let name = expr                                              // derived values: 
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
 component name = lib.kind(args) { props and flags }           // standard parts from the library, and purchasable catalog parts
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
+frame name { profile: "2020", box: (w, d, h) or path: [...] }   // structural members along lines (2020 extrusion, steel box, tube, angle), trimmed where they meet, with a cut list (see Frames and weldments)
 require "Label" [hard|soft] [for use_id, ...]: condition      // checked every rebuild; hard by default; for links it to brief uses
 brief { ... }                                                 // the design brief, once, near the top (see below)
 decision name "Title" { ask, chose, by, why, option ... }      // a recorded design choice and its alternatives (below)
@@ -428,6 +429,9 @@ Every sketch has origin, x_axis and y_axis (fixed). Coordinates are starting gue
 Constraints and dimensions (refs are names, the value after = is any expression):
 ${constraints}
 A good sketch is fully defined (0 degrees of freedom): every point is fixed by constraints, usually by dimensions driven from params plus horizontal/vertical/coincident relations and one point tied to the origin. Redundant constraints are warned about; conflicting ones fail and name the culprit. A closed profile is one or more non-crossing loops; inner loops become holes. Sketch values expose .area, .plane, .normal and each named entity in world coordinates (side.l1.mid, side.c1.center), so other statements can position things from a sketch.
+Shapes the editor's tools write, the same way by hand: a centred rectangle is four lines with horizontal l1, l3 and vertical l2, l4 plus symmetric l1.start, l2.end, origin; a rectangle at an angle uses perpendicular l1, l2 with parallel l1, l3 and parallel l2, l4; a regular polygon is n lines in a loop with every start on a construction circle (coincident l1.start, c1 …), equal l1, l2, … and the circle's diameter as its size across the corners; a slot is two lines and two arcs, all tangent, with equal arcs.
+Splines and ellipses: spline s1 = (60, 0), (70, 12), (80, 6), (90, 18) is a smooth curve through its points in order (s1.start, s1.end, s1.p2 …; closed: true runs it round to the first point); ellipse e1 = (25, 10), rx: 8, ry: 4, angle: 30 has radii along its own axes, turned counter-clockwise in degrees, and its centre is e1.center. A spline bends smoothly through every point (no loops or kinks between them) and joins lines and arcs by sharing points (spline top = l2.end, (40, 32), (20, 24), l4.start), so aerofoils, cams, handles and organic outlines are a few points plus dimensions on those points. An ellipse's rx:, ry: and angle: are written values (params work), not solver unknowns; constrain or dimension its centre like a point (concentric e1, c1; distance e1, p). Neither can be tangent, trimmed, extended or offset yet, and a point can't be put on one: share a spline's own points instead.
+Copies: mirror, pattern and offset (above) make geometry that follows its original, with the constraints that hold it, so a fully defined original gives fully defined copies: don't dimension the copies again. Put the statement after the geometry it copies; later lines can start on a copy's points (l1_m.end). Use them for symmetric outlines (draw half, mirror about y_axis), hole rows and bolt circles (pattern c1, count: 6, around: origin) and walls or clearances round an outline (offset l1, l2, l3, l4, by: -2). The editor's Project tool brings a part's face in as lines, arcs and circles under one fix statement: fixed copies that do not follow the part.
 Use sketches for profiles that are awkward to build from primitives (bent plates, cams, levers, gussets, custom outlines, turned parts) and whenever the user wants to edit a profile by hand. Primitives are still fine for plain boxes, cylinders and holes.
 
 ${processReference()}
@@ -438,6 +442,19 @@ Props: at (a point, or a LIST of points to make a pattern of identical instances
 Component fields are world-space after placement (motor.holes is a list of world points). Moving components get .speed (rotation ratio relative to the driver). Pattern components expose fields of the first instance plus .all and .count; shape fields (like usb.opening) become lists so \`cut usb.opening\` works.
 
 ${lib}
+
+## Frames and weldments
+frame stand {
+  profile: "2020"               // "2020" or "2040" V-slot (bought, cut square, joined with corner brackets: call place_fasteners after), or a welded section: "box 40x40x3" (width x height x wall), "tube 26.9x2.6" (outside diameter x wall), "angle 30x30x3", "flat 40x5", "bar 20x20", "rod 12"
+  box: (400, 300, 250)          // outside size: 4 full-height posts and rings of rails along X and Y at the bottom and top, centred on x and y, standing on z = 0; box: (w, d) is one flat rectangle
+  levels: [120]                 // more rings of rails, at these heights (to the rails' centre lines)
+  path: [(x, y, z), ...]        // or members along lines through their middles, one per step; repeat path: for more runs. path: side takes a sketch's lines (not construction lines), path: side.l2 one line
+  rotate: 90                    // turns every member's section about its own line (2040 lying flat)
+  ends: "miter"                 // sections only: two members meeting at a corner are cut at half the angle (default "butt")
+  material: "Steel"             // sections: "Steel" (default), "Aluminum 6061", "Stainless 304"; profiles are aluminium
+}
+More props: at (moves the whole frame), color, finish, group, label, held (sections default to "welded to the rest of the frame"), explode; flags locked, hidden.
+Where lines end together an upright runs through, then the longer member, and the others stop against it. A line that ends on another member (on its centre line or on its face) stops at that member's face. Sections meeting at an angle are cut on the slant to sit flat, and tubes are coped round the tube they meet. Each member becomes a component (2020/2040: lib.extrusion, on the parts list and the cut list as stock cut to length) or a part (sections: bought stock) named stand_1, stand_2... in order (a box frame: the 4 posts, then the rails ring by ring). Edits to a member go to its frame block. Read the frame as stand.members[i] (.start, .end, .from, .to, .mid, .dir, .length, .role: "post", "rail" or "brace"), stand.count, stand.length (total stock, mm) and, for a box frame, stand.w, stand.d, stand.h. The parts list shows each frame's cut list (lengths, end cuts and bars to buy). Members that cross or lie along each other are warned about: end one line on the other instead.
 
 ${drawingReference()}
 ${importsReference()}

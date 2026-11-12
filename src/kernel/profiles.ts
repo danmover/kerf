@@ -4,7 +4,7 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { framePoint, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type FontName, type Frame, type Path3, type Profile, type V2, type V3 } from "./recipe";
+import { MAX_TAPER, framePoint, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type FontName, type Frame, type Path3, type Profile, type V2, type V3 } from "./recipe";
 
 
 export class ProfileError extends Error {}
@@ -112,12 +112,128 @@ export function profileRegions(p: Profile, f: Frame): { outer: R.Wire; inner: R.
   return regions;
 }
 
-export function extrudeProfile(p: Profile, h: number, f: Frame, twist: number, scale: number): Shape3D {
+export function extrudeProfile(p: Profile, h: number, f: Frame, twist: number, scale: number, taper = 0): Shape3D {
+  if (Math.abs(taper) > 1e-9) {
+    if (Math.abs(twist) > 1e-9 || Math.abs(scale - 1) > 1e-9) throw new ProfileError("extrude(): taper can't be combined with twist or scale");
+    return taperedExtrude(p, h, f, taper);
+  }
   const sk = sketchProfile(p, f);
   const opts: { twistAngle?: number; extrusionProfile?: { profile: "linear"; endFactor: number } } = {};
   if (Math.abs(twist) > 1e-9) opts.twistAngle = twist;
   if (Math.abs(scale - 1) > 1e-9) opts.extrusionProfile = { profile: "linear", endFactor: scale };
   return sk.extrude(h, opts) as Shape3D;
+}
+
+/** True when OpenCASCADE's checker finds nothing wrong with the shape (a broken one makes later booleans fail). */
+export function shapeValid(s: Shape3D): boolean {
+  const oc = R.getOC();
+  const check = new oc.BRepCheck_Analyzer(s.wrapped, true, false);
+  try {
+    return check.IsValid();
+  } finally {
+    check.delete();
+  }
+}
+
+/**
+ * OpenCASCADE's draft: tilts each face by `angle` degrees about its line on the neutral plane (through `origin`,
+ * square to `pull`); a positive angle takes material away on the pull side. Faces tangent to one go with it.
+ * Only flat, cylindrical and conical faces tilt: null when one of them can't, or the result is broken.
+ */
+export function draftFaces(shape: Shape3D, faces: R.Face[], angle: number, origin: V3, pull: V3): Shape3D | null {
+  const oc = R.getOC();
+  const b = new oc.BRepOffsetAPI_DraftAngle(shape.wrapped);
+  const at = new oc.gp_Pnt(origin[0], origin[1], origin[2]);
+  const n = vnorm(pull);
+  const dir = new oc.gp_Dir(n[0], n[1], n[2]);
+  const pln = new oc.gp_Pln(at, dir);
+  try {
+    for (const f of faces) {
+      // (the kernel's default: tangent faces are tilted too, which is what lets round sides draft)
+      b.Add(f.wrapped, dir, (angle * Math.PI) / 180, pln, true);
+      if (!b.AddDone()) return null;
+    }
+    b.Build();
+    if (!b.IsDone()) return null;
+    const out = R.cast(b.ModifiedShape(shape.wrapped));
+    return R.isShape3D(out) && shapeValid(out) ? out : null;
+  } catch (e) {
+    if (e instanceof WebAssembly.RuntimeError) throw e;
+    return null;
+  } finally {
+    b.delete();
+    pln.delete();
+    dir.delete();
+    at.delete();
+  }
+}
+
+/**
+ * A straight extrusion whose sides lean in by `taper` degrees (out for a negative taper), measured from the
+ * sketch plane: the draft a moulded or cast part needs to come out of its mould, or a tapered boss. Holes in the
+ * profile open up as the outline closes in. Flat, round and conical sides are tilted exactly; others (ellipses,
+ * splines) are made by skinning each outline to its offset copy at the far end.
+ */
+function taperedExtrude(p: Profile, h: number, f: Frame, taper: number): Shape3D {
+  if (!(Math.abs(taper) < MAX_TAPER)) throw new ProfileError(`extrude(): taper must be between -${MAX_TAPER} and ${MAX_TAPER} degrees (got ${taper})`);
+  const inset = Math.abs(h) * Math.tan((taper * Math.PI) / 180);
+  const prism = sketchProfile(p, f).extrude(h) as Shape3D;
+  const plane = planeOf(f);
+  const sides = new R.FaceFinder().not((q) => q.parallelTo(plane)).find(prism);
+  const drafted = draftFaces(prism, sides, taper, f.o, h < 0 ? vscale(f.n, -1) : f.n);
+  if (drafted && volumeLeans(prism, drafted, taper)) {
+    prism.delete();
+    return drafted;
+  }
+  drafted?.delete();
+  prism.delete();
+  const shift = vscale(vnorm(f.n), h);
+  try {
+    const pieces = profileRegions(p, f).map(({ outer, inner }) => {
+      let s = skinToOffset(outer, -inset, shift);
+      for (const w of inner) s = s.cut(skinToOffset(w, inset, shift));
+      return s;
+    });
+    let out = pieces[0];
+    for (let i = 1; i < pieces.length; i++) out = out.fuse(pieces[i]);
+    if (!shapeValid(out)) throw new ProfileError("the tapered solid came out broken");
+    return out;
+  } catch (e) {
+    if (e instanceof WebAssembly.RuntimeError) throw e;
+    const mm = Math.round(inset * 100) / 100;
+    throw new ProfileError(`extrude(): a ${taper}° taper over ${Math.round(Math.abs(h) * 100) / 100} mm moves every side ${taper > 0 ? "in" : "out"} by ${mm} mm, and the profile ${taper > 0 ? "closes up or turns inside out" : "runs into itself"} before the far end. Use a smaller taper or a shorter extrusion.`);
+  }
+}
+
+/** A tapered solid lost material for a positive taper and gained it for a negative one (a broken draft does neither). */
+function volumeLeans(prism: Shape3D, out: Shape3D, taper: number): boolean {
+  const a = R.measureVolume(prism);
+  const b = R.measureVolume(out);
+  return b > 1e-9 && (taper > 0 ? b < a : b > a);
+}
+
+/** A closed outline skinned with straight lines to its copy grown by `out` (shrunk when negative) and moved by `shift`. */
+function skinToOffset(w: R.Wire, out: number, shift: V3): Shape3D {
+  const top = offsetLoop(w, out).translate(shift);
+  return R.loft([w.clone(), top], { ruled: true }) as Shape3D;
+}
+
+/** A closed planar outline grown by `out` (shrunk when negative), corners kept sharp. */
+function offsetLoop(w: R.Wire, out: number): R.Wire {
+  if (Math.abs(out) < 1e-9) return w.clone();
+  const size = (x: R.Wire) => {
+    const b = x.boundingBox;
+    return b.width + b.height + b.depth;
+  };
+  const before = size(w);
+  // the kernel's sign depends on which way the outline runs: keep the copy that went the right way
+  let o = w.clone().offset2D(out, "intersection");
+  if (size(o) > before !== out > 0) {
+    o.delete();
+    o = w.clone().offset2D(-out, "intersection");
+    if (size(o) > before !== out > 0) throw new ProfileError("the outline could not be offset");
+  }
+  return o;
 }
 
 export function revolveProfile2(p: Profile, f: Frame, angle: number): Shape3D {

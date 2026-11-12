@@ -415,7 +415,7 @@ const PHOTO_EXPORT = { maxSamples: 512, scale: 1, bounces: 5 };
 /**
  * The current view, path traced: the photoreal view runs (turned on for the
  * export if it was off) until the path tracer has converged, then the image
- * is saved at the view's size without the selection outline or axis triad.
+ * is saved at the view's size without the selection outline.
  * Pressing P or Cancel stops it. The panel greys it out while the photoreal
  * view can't run (software graphics, section view, a sketch...).
  */

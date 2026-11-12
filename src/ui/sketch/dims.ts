@@ -143,7 +143,8 @@ export function layoutDims(sk: EvalSketch, P: Positions, radii: Record<string, n
         const corner = sk.profile.corners.find((k) => k.src === c.index);
         if (!corner) continue;
         const seg = corner.seg;
-        const m = seg.k === "a" ? seg.m : seg.k === "l" ? mul(add(seg.a, seg.b), 0.5) : seg.c;
+        // a corner is a line or an arc
+        const m = seg.k === "a" ? seg.m : seg.k === "l" || seg.k === "b" ? mul(add(seg.a, seg.b), 0.5) : seg.c;
         const M = S(m);
         const out2 = pnorm(pv(M, sc));
         base.lines.push([M, pa(M, pm(out2, 16))]);

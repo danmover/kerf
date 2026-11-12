@@ -11,7 +11,12 @@ import { budgetMs, solveSketch } from "../../sketch/solver";
 import { buildProfile } from "../../sketch/regions";
 import { addStatements, consId, deleteSelection, dimensionFor, fmt, fmtPt, nextName, setConstraintValue, suggestionsFor, takenNames, toggleConstruction, writePositions } from "../../sketch/edits";
 import type { EvalSketch, SkConstraint } from "../../sketch/types";
-import { activeSketch, editSketch, exitSketch, flash, setSelection, setTool, useSketch, type LiveSolve } from "./session";
+import { MAX_POLYGON_SIDES, activeSketch, editSketch, exitSketch, flash, makePattern, patternSpec, setSelection, setTool, useSketch, type LiveSolve, type SketchTool } from "./session";
+import { chainFrom, copyable, extendAt, extensionAt, mirrorStatement, offsetFor, offsetStatement, patternMoves, pieceAt, reflectAcross, trimAt } from "../../sketch/modify";
+import { projectEdges } from "../../sketch/project";
+import { sampleEllipse, splinePolyline } from "../../sketch/curves";
+import { kernel } from "../../kernel/client";
+import { applyXforms } from "../../kernel/recipe";
 import { Projector, add, arcPoints, ccwThrough, circlePoints, circleThrough, closestOnSeg, curvePoints, dist, len, mul, niceStep, positionsOf, pxDist, radiusOf, roundTo, snapAt, sub, type Positions, type Px, type Snap } from "./geom";
 import { labelWidth, layoutDims, layoutGlyphs, type DimGfx } from "./dims";
 import { commitSource } from "../../app/project";
@@ -21,15 +26,28 @@ import { evaluate } from "../../lang/evaluator";
 type Draft =
   | { t: "line"; start: Snap }
   | { t: "rect"; a: Snap }
+  | { t: "crect"; c: Snap }
+  | { t: "rect3"; a: Snap; b?: Snap }
+  | { t: "polygon"; c: Snap }
   | { t: "circle"; c: Snap }
+  /** ellipse: the centre, then the end of its first axis */
+  | { t: "ellipse"; c: Snap; a?: Snap }
   | { t: "arc"; a: Snap; b?: Snap }
+  /** spline: the points clicked so far */
+  | { t: "spline"; pts: Snap[] }
   | { t: "slot"; a: Snap; b?: Snap }
   | { t: "dim"; first: string }
   | { t: "box"; from: Px; to: Px; additive: boolean }
   | { t: "drag"; ids: string[]; circle?: string; from: V2; base: Positions; moved: boolean }
-  | { t: "scrub"; index: number; fromX: number; start: number; moved: boolean; step: number; angle: boolean; base: string };
+  | { t: "scrub"; index: number; fromX: number; start: number; moved: boolean; step: number; angle: boolean; base: string }
+  /** offset: the chain picked, waiting for the side and distance */
+  | { t: "offset"; ids: string[] }
+  /** mirror: what to copy is chosen, waiting for the line to mirror across */
+  | { t: "mirror" };
 
 const HIDDEN_POINTS = new Set(["x_axis.end", "y_axis.end"]);
+/** tools that change geometry already drawn: no snapping, the cursor picks curves */
+const MODIFY = new Set<SketchTool>(["trim", "extend", "offset", "mirror", "pattern", "project"]);
 
 export function SketchOverlay({ ctl }: { ctl: SceneController }) {
   const s = useSketch();
@@ -84,7 +102,12 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
   }, [ctl, s.active]);
 
   useEffect(() => {
-    setDraft(null);
+    // mirror with something already selected goes straight to picking the line to mirror across
+    const st = useSketch.getState();
+    const cur = activeSketch();
+    const ready = st.tool === "mirror" && !!cur && copyable(cur, st.selection).length > 0;
+    setDraft(ready ? { t: "mirror" } : null);
+    if (ready) flash("Click the line to mirror across, or the x or y axis.");
     setTyped("");
   }, [s.tool, s.active]);
 
@@ -106,12 +129,12 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
-  const hitTest = useCallback((px: Px): string | null => {
+  const hitTest = useCallback((px: Px, curvesOnly = false): string | null => {
     const { sk, P, proj } = state.current;
     if (!sk || !proj) return null;
     let best: { d: number; id: string } | null = null;
     for (const p of sk.points) {
-      if (HIDDEN_POINTS.has(p.id)) continue;
+      if (curvesOnly || HIDDEN_POINTS.has(p.id)) continue;
       const d = pxDist(proj.S(P[p.id]), px);
       if (d < 9 && (!best || d < best.d)) best = { d, id: p.id };
     }
@@ -155,6 +178,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       e.stopPropagation();
       const { draft } = state.current;
       if (draft?.t === "line") setDraft(null);
+      if (draft?.t === "spline") finishSpline(draft.pts, false);
     };
     host.addEventListener("pointerdown", onDown, true);
     host.addEventListener("pointermove", onMove, true);
@@ -255,6 +279,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       }
       return;
     }
+    if (MODIFY.has(tool)) return modifyDown(e, px);
     const snap = draftSnap(px);
     if (!snap) return;
     switch (tool) {
@@ -277,6 +302,28 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
           setDraft(null);
         } else setDraft({ t: "circle", c: snap });
         return;
+      case "ellipse":
+        if (draft?.t === "ellipse" && draft.a) {
+          addEllipse(draft.c, ellipseFrom(draft.c.p, draft.a.p, snap.p));
+          setDraft(null);
+          setTyped("");
+        } else if (draft?.t === "ellipse") {
+          if (pxDist(state.current.proj!.S(draft.c.p), px) < 4) return;
+          setDraft({ ...draft, a: snap });
+        } else setDraft({ t: "ellipse", c: snap });
+        return;
+      case "spline": {
+        if (draft?.t !== "spline") return setDraft({ t: "spline", pts: [snap] });
+        const proj = state.current.proj!;
+        const last = draft.pts[draft.pts.length - 1];
+        // the same place again (the second click of a double-click): nothing new
+        if ((snap.ref && snap.ref === last.ref) || pxDist(proj.S(last.p), px) < 4) return;
+        // back on the first point: the curve closes round
+        const first = draft.pts[0];
+        if (draft.pts.length >= 3 && ((snap.ref && snap.ref === first.ref) || pxDist(proj.S(first.p), px) < 8)) return finishSpline(draft.pts, true);
+        setDraft({ t: "spline", pts: [...draft.pts, snap] });
+        return;
+      }
       case "arc":
         if (draft?.t === "arc" && draft.b) {
           addArc(draft.a, draft.b, snap.p);
@@ -291,13 +338,33 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         } else if (draft?.t === "slot") setDraft({ ...draft, b: snap });
         else setDraft({ t: "slot", a: snap });
         return;
+      case "crect":
+        if (draft?.t === "crect") {
+          addCenterRect(draft.c, snap);
+          setDraft(null);
+        } else setDraft({ t: "crect", c: snap });
+        return;
+      case "rect3":
+        if (draft?.t === "rect3" && draft.b) {
+          addRect3(draft.a, draft.b, snap.p);
+          setDraft(null);
+        } else if (draft?.t === "rect3") setDraft({ ...draft, b: snap });
+        else setDraft({ t: "rect3", a: snap });
+        return;
+      case "polygon":
+        if (draft?.t === "polygon") {
+          addPolygon(draft.c, snap, useSketch.getState().polygonSides);
+          setDraft(null);
+          setTyped("");
+        } else setDraft({ t: "polygon", c: snap });
+        return;
     }
   }
 
   /** Snap for drawing tools, with horizontal/vertical inference for lines. */
   function draftSnap(px: Px): Snap | null {
     const { draft } = state.current;
-    const from = draft?.t === "line" ? draft.start.p : draft?.t === "rect" ? draft.a.p : undefined;
+    const from = draft?.t === "line" ? draft.start.p : draft?.t === "rect" ? draft.a.p : draft?.t === "crect" || draft?.t === "polygon" || (draft?.t === "ellipse" && !draft.a) ? draft.c.p : draft?.t === "rect3" && !draft.b ? draft.a.p : draft?.t === "spline" ? draft.pts[draft.pts.length - 1].p : undefined;
     const snap = snapFor(px, { from });
     if (!snap) return null;
     return snap;
@@ -358,9 +425,10 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       perFrame(() => useSketch.setState({ live: dragSolve(sk, draft, d, raw, step) }));
       return;
     }
-    const hover = s.tool === "select" || s.tool === "dimension" ? hitTest(px) : null;
+    const modify = MODIFY.has(s.tool);
+    const hover = s.tool === "select" || s.tool === "dimension" ? hitTest(px) : modify ? modifyHover(px) : null;
     if (hover !== s.hover) useSketch.setState({ hover });
-    const snap = s.tool === "select" ? null : draftSnap(px);
+    const snap = s.tool === "select" || modify ? null : draftSnap(px);
     setCursor({ px, snap });
   }
 
@@ -489,6 +557,87 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added rectangle ${l1}–${l4}`);
   }
 
+  /** A rectangle drawn out from its centre: the corner clicked and the one opposite stay symmetric about the centre. */
+  function addCenterRect(c: Snap, k: Snap, size?: [number, number]) {
+    const cur = activeSketch();
+    if (!cur) return;
+    let K = k;
+    if (size) K = { p: [c.p[0] + (size[0] / 2) * Math.sign(k.p[0] - c.p[0] || 1), c.p[1] + (size[1] / 2) * Math.sign(k.p[1] - c.p[1] || 1)], guides: [] };
+    if (Math.abs(K.p[0] - c.p[0]) < 1e-6 || Math.abs(K.p[1] - c.p[1]) < 1e-6) return;
+    const taken = takenNames(cur);
+    const [l1, l2, l3, l4] = [nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l")];
+    const P1: V2 = [2 * c.p[0] - K.p[0], 2 * c.p[1] - K.p[1]];
+    const cp = consPrefix();
+    const geometry = [
+      `${cp}line ${l1} = ${fmtPt(P1)} -> ${fmtPt([K.p[0], P1[1]])}`,
+      `${cp}line ${l2} = ${l1}.end -> ${arg(K)}`,
+      `${cp}line ${l3} = ${l2}.end -> ${fmtPt([P1[0], K.p[1]])}`,
+      `${cp}line ${l4} = ${l3}.end -> ${l1}.start`,
+    ];
+    const cons = [`horizontal ${l1}, ${l3}`, `vertical ${l2}, ${l4}`, ...extras(K, `${l2}.end`)];
+    // the centre: a point already there (the origin, a line end), or a new construction point
+    let centre = c.ref;
+    if (!centre) {
+      centre = nextName(taken, "p");
+      geometry.push(`point ${centre} = ${fmtPt(c.p)}`);
+      cons.push(...extras(c, centre));
+    }
+    cons.push(`symmetric ${l1}.start, ${l2}.end, ${centre}`);
+    if (size) cons.push(`length ${l1} = ${fmt(size[0])}`, `length ${l2} = ${fmt(size[1])}`);
+    editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added centre rectangle ${l1}–${l4}`);
+  }
+
+  /** A rectangle at any angle: one side from a to b, the width out to m. */
+  function addRect3(a: Snap, b: Snap, m: V2) {
+    const cur = activeSketch();
+    if (!cur) return;
+    const d0 = sub(b.p, a.p);
+    const L = len(d0);
+    if (L < 1e-6) return;
+    const nrm: V2 = [-d0[1] / L, d0[0] / L];
+    const scale = state.current.proj?.scale(a.p) ?? 1;
+    const w = roundTo((m[0] - a.p[0]) * nrm[0] + (m[1] - a.p[1]) * nrm[1], niceStep(scale));
+    if (Math.abs(w) < 1e-6) return flash("Move the last point off the first side to give the rectangle a width.");
+    const taken = takenNames(cur);
+    const [l1, l2, l3, l4] = [nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l"), nextName(taken, "l")];
+    const cp = consPrefix();
+    const geometry = [
+      `${cp}line ${l1} = ${arg(a)} -> ${arg(b)}`,
+      `${cp}line ${l2} = ${l1}.end -> ${fmtPt(add(b.p, mul(nrm, w)))}`,
+      `${cp}line ${l3} = ${l2}.end -> ${fmtPt(add(a.p, mul(nrm, w)))}`,
+      `${cp}line ${l4} = ${l3}.end -> ${l1}.start`,
+    ];
+    const cons = [`perpendicular ${l1}, ${l2}`, `parallel ${l1}, ${l3}`, `parallel ${l2}, ${l4}`, ...extras(a, `${l1}.start`), ...extras(b, `${l1}.end`)];
+    const way = hv(a.p, b.p);
+    if (way) cons.push(`${way === "h" ? "horizontal" : "vertical"} ${l1}`);
+    editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added rectangle ${l1}–${l4}`);
+  }
+
+  /** A regular polygon: equal sides with their corners on a construction circle round the centre. */
+  function addPolygon(c: Snap, k: Snap, n: number) {
+    const cur = activeSketch();
+    if (!cur) return;
+    const R = dist(c.p, k.p);
+    if (R < 1e-6 || n < 3) return;
+    const taken = takenNames(cur);
+    const circ = nextName(taken, "c");
+    const lines = Array.from({ length: n }, () => nextName(taken, "l"));
+    const a0 = Math.atan2(k.p[1] - c.p[1], k.p[0] - c.p[0]);
+    const corner = (i: number): V2 => [c.p[0] + R * Math.cos(a0 + (2 * Math.PI * i) / n), c.p[1] + R * Math.sin(a0 + (2 * Math.PI * i) / n)];
+    const cp = consPrefix();
+    const geometry = [`construction circle ${circ} = ${arg(c)}, d: ${fmt(2 * R)}`];
+    lines.forEach((l, i) => {
+      const from = i === 0 ? arg(k) : `${lines[i - 1]}.end`;
+      const to = i === n - 1 ? `${lines[0]}.start` : fmtPt(corner(i + 1));
+      geometry.push(`${cp}line ${l} = ${from} -> ${to}`);
+    });
+    const cons = [...extras(c, `${circ}.center`), ...extras(k, `${lines[0]}.start`), ...lines.map((l) => `coincident ${l}.start, ${circ}`), `equal ${lines.join(", ")}`];
+    // a corner straight across or up from the centre keeps the polygon from turning
+    const way = hv(c.p, k.p);
+    if (way) cons.push(`${way === "h" ? "horizontal" : "vertical"} ${circ}.center, ${lines[0]}.start`);
+    editSketch((src, s2) => addStatements(src, s2, { geometry, constraints: cons }), `added ${n}-sided polygon ${lines[0]}–${lines[n - 1]}`);
+  }
+
   function addCircle(c: Snap, r: number, exact?: number) {
     const cur = activeSketch();
     const scale = state.current.proj?.scale(c.p) ?? 1;
@@ -498,6 +647,33 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     const cons = extras(c, `${n}.center`);
     if (exact) cons.push(`diameter ${n} = ${fmt(exact)}`);
     editSketch((src, s2) => addStatements(src, s2, { geometry: [`${consPrefix()}circle ${n} = ${arg(c)}, d: ${fmt(2 * rr)}`], constraints: cons }), `added circle ${n}`);
+  }
+
+  /** An ellipse round c: the radii and turn come from where its axes were clicked (or a typed width and height). */
+  function addEllipse(c: Snap, e: { rx: number; ry: number; angle: number }) {
+    const cur = activeSketch();
+    if (!cur) return;
+    if (!(e.rx > 0) || !(e.ry > 0)) return flash("Move the last point away from the first axis to give the ellipse its width.");
+    const n = nextName(takenNames(cur), "e");
+    const turn = e.angle ? `, angle: ${fmt(e.angle)}` : "";
+    editSketch((src, s2) => addStatements(src, s2, { geometry: [`${consPrefix()}ellipse ${n} = ${arg(c)}, rx: ${fmt(e.rx)}, ry: ${fmt(e.ry)}${turn}`], constraints: extras(c, `${n}.center`) }), `added ellipse ${n}`);
+  }
+
+  const ellipseFrom = (c: V2, a: V2, m: V2 | null) => ellipseThrough(c, a, m, niceStep(state.current.proj?.scale(c) ?? 1));
+
+  /** A spline through the points clicked; closed when the last click went back to the first point. */
+  function finishSpline(pts: Snap[], closed: boolean) {
+    const cur = activeSketch();
+    if (!cur) return;
+    if (pts.length < 3) {
+      if (pts.length === 2) flash("A spline needs three points or more; for two, draw a line.");
+      setDraft(null);
+      return;
+    }
+    const n = nextName(takenNames(cur), "s");
+    const cons = pts.flatMap((sn, k) => extras(sn, `${n}.p${k + 1}`));
+    editSketch((src, s2) => addStatements(src, s2, { geometry: [`${consPrefix()}spline ${n} = ${pts.map(arg).join(", ")}${closed ? ", closed: true" : ""}`], constraints: cons }), `added spline ${n}`);
+    setDraft(null);
   }
 
   function addArc(a: Snap, b: Snap, m: V2) {
@@ -557,14 +733,196 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     applySuggestion(sug.stmt, true);
   }
 
+  // ---------------- changing geometry already drawn ----------------
+
+  /** The x or y axis under the cursor, for mirroring across. */
+  function axisAt(px: Px): "x_axis" | "y_axis" | null {
+    const raw = sketchAt(px);
+    const proj = state.current.proj;
+    if (!raw || !proj) return null;
+    const k = proj.scale(raw);
+    const toX = Math.abs(raw[1]) * k;
+    const toY = Math.abs(raw[0]) * k;
+    if (Math.min(toX, toY) > 7) return null;
+    return toX <= toY ? "x_axis" : "y_axis";
+  }
+
+  /** What a click would act on with the trim, extend, offset, mirror and pattern tools. */
+  function modifyHover(px: Px): string | null {
+    const { s, draft, sk } = state.current;
+    switch (s.tool) {
+      case "trim":
+      case "extend":
+        return hitTest(px, true);
+      case "offset":
+        return draft?.t === "offset" ? null : hitTest(px, true);
+      case "mirror": {
+        if (draft?.t !== "mirror") return hitTest(px);
+        // waiting for the line to mirror across: a line, or else the x or y axis
+        const h = hitTest(px, true);
+        if (h) return sk?.curves.find((c) => c.id === h)?.kind === "line" ? h : null;
+        return axisAt(px);
+      }
+      case "pattern":
+        return hitTest(px);
+      default:
+        return null;
+    }
+  }
+
+  function modifyDown(e: PointerEvent, px: Px) {
+    const { sk, s, draft } = state.current;
+    const raw = sketchAt(px);
+    if (!sk || !raw) return;
+    switch (s.tool) {
+      case "trim":
+      case "extend": {
+        const hit = hitTest(px, true);
+        if (!hit) return flash(s.tool === "trim" ? "Click the piece of a curve to cut away." : "Click a line or arc near the loose end to extend.");
+        const cur = activeSketch();
+        if (!cur) return;
+        const r = (s.tool === "trim" ? trimAt : extendAt)(useDesign.getState().source, cur, hit, raw);
+        if ("error" in r) return flash(r.error);
+        editSketch(() => r.src, r.message);
+        useSketch.setState({ hover: null, selection: [] });
+        return;
+      }
+      case "offset": {
+        if (draft?.t === "offset") return commitOffset(draft.ids, raw);
+        const hit = hitTest(px, true);
+        if (!hit) return flash("Click the curve to offset; the curves joined to it come too.");
+        setDraft({ t: "offset", ids: chainFrom(sk, hit) });
+        setTyped("");
+        return flash("Move to the side the copy goes and click, or type the distance and press Enter.");
+      }
+      case "mirror": {
+        if (draft?.t === "mirror" && !e.shiftKey) {
+          const about = modifyHover(px);
+          if (!about) return flash("Click the line to mirror across, or the x or y axis. Esc to change what is mirrored.");
+          const ids = copyable(sk, s.selection).filter((id) => id !== about);
+          if (!ids.length) {
+            setDraft(null);
+            return flash("Select what to mirror first, then press Enter.");
+          }
+          if (addCopy(mirrorStatement(ids, about), `mirrored ${ids.join(", ")} across ${about}`)) {
+            setSelection([]);
+            setTool("select");
+          }
+          return;
+        }
+        const hit = hitTest(px);
+        if (hit) return setSelection(toggle(s.selection, hit));
+        setDraft({ t: "box", from: px, to: px, additive: true });
+        return;
+      }
+      case "pattern": {
+        const pu = useSketch.getState().pattern;
+        const hit = hitTest(px);
+        if (pu.pickCentre) {
+          const c = hit ? sk.curves.find((q) => q.id === hit) : undefined;
+          if (!hit || c?.kind === "line") return flash("Click a point, or a circle or arc for its centre.");
+          useSketch.setState({ pattern: { ...pu, mode: "ring", around: hit, pickCentre: false } });
+          return;
+        }
+        if (hit) return setSelection(toggle(s.selection, hit));
+        setDraft({ t: "box", from: px, to: px, additive: true });
+        return;
+      }
+      case "project":
+        void projectAt(e.clientX, e.clientY);
+        return;
+    }
+  }
+
+  /** Offset the chain to the cursor's side, by the typed distance or the cursor's own (on round numbers for the zoom). */
+  function commitOffset(ids: string[], raw: V2, distance?: number) {
+    const cur = activeSketch();
+    const proj = state.current.proj;
+    if (!cur || !proj) return;
+    const o = offsetFor(cur, ids, raw, { distance, step: niceStep(proj.scale(raw)) });
+    if (!o) return flash("Move the cursor off the curve, to the side the copy goes.");
+    if (addCopy(offsetStatement(ids, o.by), `offset ${ids.join(", ")} by ${fmt(Math.abs(o.by))}`)) {
+      setDraft(null);
+      setTyped("");
+      setTool("select");
+    }
+  }
+
+  /** Add a mirror or offset statement, unless it would not work out: then say why and leave the sketch alone. */
+  function addCopy(stmt: string, message: string): boolean {
+    const cur = activeSketch();
+    if (!cur) return false;
+    const { source, model } = useDesign.getState();
+    const next = addStatements(source, cur, { geometry: [stmt] });
+    const had = new Set((model?.diagnostics ?? []).filter((d) => d.severity === "error").map((d) => d.message));
+    const fresh = evaluate(next).diagnostics.find((d) => d.severity === "error" && !had.has(d.message));
+    if (fresh) {
+      flash(fresh.message.split(". ")[0] + ".");
+      return false;
+    }
+    editSketch(() => next, message);
+    return true;
+  }
+
+  /** Bring the edges of the face under the cursor into the sketch, fixed where they are. */
+  async function projectAt(x: number, y: number) {
+    // the parts are see-through while sketching, and still there to project from
+    const hit = ctl.hitAt(x, y, { ghosts: true });
+    const part = hit ? useDesign.getState().model?.parts.find((p) => p.id === hit.id) : undefined;
+    if (!hit || !part) return flash("Click a face of a part to bring its edges into this sketch.");
+    flash(`Reading that face of ${part.id}…`);
+    try {
+      await kernel.ready();
+      const res = await kernel.inspectPart({ hash: part.hash, recipe: part.recipe, label: part.id, at: hit.local, outline: true });
+      const cur = activeSketch();
+      if (!cur) return;
+      const r = projectEdges(cur, res.pick?.outline ?? [], (p) => applyXforms(p, part.xf), `a face of ${part.id}`);
+      if (!r.curves) return flash("That face is edge on to this sketch, so it has nothing to project.");
+      const what = `${r.curves} edge${r.curves === 1 ? "" : "s"} of ${part.id}`;
+      editSketch((src, s2) => addStatements(src, s2, r), `projected ${what}`);
+      flash(`Projected ${what}, fixed where they are now. They stay put if the part changes.`);
+    } catch (err) {
+      flash(`Could not read that face: ${(err as Error).message}`);
+    }
+  }
+
   // ---------------- keyboard ----------------
 
   function keyDown(e: KeyboardEvent): boolean {
     const { draft, typed, s, sk, cursor } = state.current;
     if (!sk) return false;
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    // offset: type the distance, Enter puts it on the cursor's side
+    if (draft?.t === "offset" && /^[0-9.]$/.test(key)) {
+      setTyped(typed + key);
+      return true;
+    }
+    if (key === "Enter" && draft?.t === "offset") {
+      const raw = cursor ? sketchAt(cursor.px) : null;
+      if (!raw) flash("Point to the side the copy goes, then press Enter.");
+      else commitOffset(draft.ids, raw, Number(typed) || undefined);
+      return true;
+    }
     // typed sizes while drawing
-    if (draft && ["line", "rect", "circle"].includes(draft.t) && (/^[0-9.]$/.test(key) || (key === "," && draft.t === "rect") || (key === "x" && draft.t === "rect" && typed))) {
+    // the polygon tool takes its number of sides as typed, before or after the centre
+    if (s.tool === "polygon" && /^[0-9]$/.test(key)) {
+      const next = (typed + key).replace(/^0+/, "").slice(-2);
+      setTyped(next);
+      const n = Number(next);
+      if (n >= 3 && n <= MAX_POLYGON_SIDES) useSketch.setState({ polygonSides: n });
+      return true;
+    }
+    // spline: Enter finishes it open, Backspace takes the last point back
+    if (draft?.t === "spline" && key === "Enter") {
+      finishSpline(draft.pts, false);
+      return true;
+    }
+    if (draft?.t === "spline" && key === "Backspace") {
+      setDraft(draft.pts.length > 1 ? { t: "spline", pts: draft.pts.slice(0, -1) } : null);
+      return true;
+    }
+    const sized = draft?.t === "rect" || draft?.t === "crect" || draft?.t === "ellipse";
+    if (draft && ["line", "rect", "crect", "circle", "ellipse"].includes(draft.t) && (/^[0-9.]$/.test(key) || (key === "," && sized) || (key === "x" && sized && typed))) {
       setTyped(typed + (key === "x" ? "," : key));
       return true;
     }
@@ -584,6 +942,16 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         addRect(draft.a, cursor.snap, [nums[0], nums[1]]);
         setDraft(null);
       }
+      if (draft.t === "crect" && nums.length === 2 && cursor?.snap) {
+        addCenterRect(draft.c, cursor.snap, [nums[0], nums[1]]);
+        setDraft(null);
+      }
+      if (draft.t === "ellipse" && nums.length === 2) {
+        // width and height along its own axes; the turn from the first axis when it was clicked
+        const angle = draft.a ? ellipseFrom(draft.c.p, draft.a.p, null).angle : 0;
+        addEllipse(draft.c, { rx: nums[0] / 2, ry: nums[1] / 2, angle });
+        setDraft(null);
+      }
       void snap;
       setTyped("");
       return true;
@@ -595,6 +963,18 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       else if (s.selection.length) setSelection([]);
       else exitSketch();
       setTyped("");
+      return true;
+    }
+    if (key === "Enter" && s.tool === "mirror" && !draft) {
+      if (!copyable(sk, s.selection).length) flash("Select what to mirror first: click it, or drag a box round it.");
+      else {
+        setDraft({ t: "mirror" });
+        flash("Now click the line to mirror across, or the x or y axis.");
+      }
+      return true;
+    }
+    if (key === "Enter" && s.tool === "pattern" && !draft) {
+      makePattern();
       return true;
     }
     if (key === "Enter") {
@@ -621,7 +1001,24 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         return true;
       }
     }
-    const tools: Record<string, typeof s.tool> = { l: "line", r: "rect", c: "circle", a: "arc", o: "slot", p: "point", d: "dimension", v: "select" };
+    // R again steps through the corner, centre and 3-point rectangles
+    const rects = ["rect", "crect", "rect3"] as const;
+    if (key === "r" && (rects as readonly string[]).includes(s.tool)) {
+      setTool(rects[(rects.indexOf(s.tool as (typeof rects)[number]) + 1) % rects.length]);
+      return true;
+    }
+    // C again swaps the circle for the ellipse, and back
+    if (key === "c" && (s.tool === "circle" || s.tool === "ellipse")) {
+      setTool(s.tool === "circle" ? "ellipse" : "circle");
+      return true;
+    }
+    // T again swaps trim for extend, and back
+    if (key === "t" && (s.tool === "trim" || s.tool === "extend")) {
+      setTool(s.tool === "trim" ? "extend" : "trim");
+      return true;
+    }
+    // M is mirror here, so the view's markup shortcut stays off while sketching
+    const tools: Record<string, typeof s.tool> = { l: "line", r: "rect", c: "circle", a: "arc", s: "spline", o: "slot", h: "polygon", p: "point", d: "dimension", v: "select", t: "trim", e: "extend", f: "offset", m: "mirror", k: "pattern", j: "project" };
     if (tools[key]) {
       setTool(tools[key]);
       return true;
@@ -635,8 +1032,6 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       faceSketch(ctl, sk);
       return true;
     }
-    // view markup (M) takes the pointer, so it stays off while sketching
-    if (key === "m") return true;
     return false;
   }
 
@@ -651,6 +1046,8 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
   if (s.hover) hoverIds.add(s.hover);
   if (hoverDim !== null) for (const id of sk.constraints.find((c) => c.index === hoverDim)?.ids ?? []) hoverIds.add(id);
   for (const id of s.selection) if (id.startsWith("#")) for (const x of sk.constraints.find((c) => `#${c.index}` === id)?.ids ?? []) hoverIds.add(x);
+  // offset takes the whole chain the curve is part of
+  if (s.tool === "offset") for (const id of draft?.t === "offset" ? draft.ids : s.hover ? chainFrom(sk, s.hover) : []) hoverIds.add(id);
   const conflictIds = new Set(sk.profile.error?.refs ?? []);
 
   const path = (pts: Px[]) => pts.map((p, i) => `${i ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join("");
@@ -676,7 +1073,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         {/* curves */}
         {sk.curves.map((c) => {
           const pts = curvePoints(sk, c, P, radii).map(S);
-          const cls = ["sk-curve", `st-${c.status}`, c.external ? "external" : c.construction ? "construction" : "", sel.has(c.id) ? "selected" : "", hoverIds.has(c.id) ? "hover" : "", conflictIds.has(c.id) ? "problem" : ""].join(" ");
+          const cls = ["sk-curve", `st-${c.status}`, c.external ? "external" : c.construction ? "construction" : "", c.derived !== undefined ? "copy" : "", sel.has(c.id) ? "selected" : "", hoverIds.has(c.id) ? "hover" : "", conflictIds.has(c.id) ? "problem" : ""].join(" ");
           return <path key={c.id} className={cls} d={path(pts)} />;
         })}
         {/* rounded corners from fillet / chamfer statements */}
@@ -711,6 +1108,7 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
         ))}
         {/* drafting preview */}
         <DraftPreview draft={draft} cursor={cursor} typed={typed} proj={proj} sk={sk} lineEnd={lineEnd} />
+        {MODIFY.has(s.tool) && <ModifyPreview sk={sk} P={P} proj={proj} tool={s.tool} hover={s.hover} cursor={cursor} draft={draft} typed={typed} selection={s.selection} />}
       </svg>
       {s.editDim !== null && <DimEditor sk={sk} index={s.editDim} dims={dims} />}
       {draft?.t === "box" && <div className="sk-box" style={{ left: Math.min(draft.from.x, draft.to.x), top: Math.min(draft.from.y, draft.to.y), width: Math.abs(draft.to.x - draft.from.x), height: Math.abs(draft.to.y - draft.from.y) }} />}
@@ -844,10 +1242,53 @@ function DraftPreview({ draft, cursor, typed, proj, sk, lineEnd }: { draft: Draf
       const c = snap.p;
       out.push(<path key="pr" className="sk-draft" d={path([a, [c[0], a[1]], c, [a[0], c[1]], a])} />);
       readout = typed ? `size ${typed}▌` : `${fmt(Math.abs(c[0] - a[0]))} × ${fmt(Math.abs(c[1] - a[1]))}`;
+    } else if (draft?.t === "crect") {
+      const c = draft.c.p;
+      const k = snap.p;
+      const o: V2 = [2 * c[0] - k[0], 2 * c[1] - k[1]];
+      out.push(<path key="pr" className="sk-draft" d={path([o, [k[0], o[1]], k, [o[0], k[1]], o])} />);
+      out.push(<path key="pd" className="sk-draft dash" d={path([o, k])} />);
+      readout = typed ? `size ${typed}▌` : `${fmt(2 * Math.abs(k[0] - c[0]))} × ${fmt(2 * Math.abs(k[1] - c[1]))}`;
+    } else if (draft?.t === "rect3") {
+      if (!draft.b) {
+        out.push(<path key="pr" className="sk-draft" d={path([draft.a.p, snap.p])} />);
+        readout = fmt(dist(draft.a.p, snap.p));
+      } else {
+        const a = draft.a.p;
+        const b = draft.b.p;
+        const d0 = sub(b, a);
+        const L = len(d0) || 1;
+        const nrm: V2 = [-d0[1] / L, d0[0] / L];
+        const w = (snap.p[0] - a[0]) * nrm[0] + (snap.p[1] - a[1]) * nrm[1];
+        out.push(<path key="pr" className="sk-draft" d={path([a, b, add(b, mul(nrm, w)), add(a, mul(nrm, w)), a])} />);
+        readout = `${fmt(L)} × ${fmt(Math.abs(w))}`;
+      }
+    } else if (draft?.t === "polygon") {
+      const n = useSketch.getState().polygonSides;
+      const R = dist(draft.c.p, snap.p);
+      const a0 = Math.atan2(snap.p[1] - draft.c.p[1], snap.p[0] - draft.c.p[0]);
+      const pts = Array.from({ length: n + 1 }, (_, i): V2 => [draft.c.p[0] + R * Math.cos(a0 + (2 * Math.PI * i) / n), draft.c.p[1] + R * Math.sin(a0 + (2 * Math.PI * i) / n)]);
+      out.push(<path key="pp" className="sk-draft" d={path(pts)} />);
+      out.push(<path key="pc" className="sk-draft dash" d={path(circlePoints(draft.c.p, R))} />);
+      readout = `${n} sides · ⌀${fmt(2 * R)} across corners`;
     } else if (draft?.t === "circle") {
       const r = dist(draft.c.p, snap.p);
       out.push(<path key="pc" className="sk-draft" d={path(circlePoints(draft.c.p, r))} />);
       readout = typed ? `⌀ ${typed}▌` : `⌀${fmt(2 * r)}`;
+    } else if (draft?.t === "ellipse") {
+      const e = ellipseThrough(draft.c.p, draft.a ? draft.a.p : snap.p, draft.a ? snap.p : null, niceStep(proj.scale(draft.c.p)));
+      const pts = sampleEllipse({ c: draft.c.p, rx: e.rx, ry: e.ry, rot: e.angle }, 120);
+      out.push(<path key="pe" className={`sk-draft ${draft.a ? "" : "dash"}`} d={path([...pts, pts[0]])} />);
+      const t = (e.angle * Math.PI) / 180;
+      const ax: V2 = [Math.cos(t) * e.rx, Math.sin(t) * e.rx];
+      out.push(<path key="pa" className="sk-draft dash" d={path([sub(draft.c.p, ax), add(draft.c.p, ax)])} />);
+      readout = typed ? `size ${typed}▌` : `${fmt(2 * e.rx)} × ${draft.a ? fmt(2 * e.ry) : "…"}${e.angle ? `  ${fmt(e.angle)}°` : ""}`;
+    } else if (draft?.t === "spline") {
+      const pts = [...draft.pts.map((q) => q.p), snap.p];
+      const closing = draft.pts.length >= 3 && dist(snap.p, draft.pts[0].p) * proj.scale(snap.p) < 8;
+      out.push(<path key="ps" className="sk-draft" d={path(closing ? [...splinePolyline(pts.slice(0, -1), true, 0.01), pts[0]] : splinePolyline(pts, false, 0.01))} />);
+      for (const [i, q] of draft.pts.entries()) out.push(<circle key={`sp${i}`} className="sk-snap" cx={S(q.p).x} cy={S(q.p).y} r={2.6} />);
+      readout = closing ? "close it round" : `${draft.pts.length + 1} points · Enter to finish${draft.pts.length >= 2 ? ", or click the first point to close" : ""}`;
     } else if (draft?.t === "arc") {
       if (!draft.b) out.push(<path key="pa" className="sk-draft dash" d={path([draft.a.p, snap.p])} />);
       else {
@@ -872,7 +1313,9 @@ function DraftPreview({ draft, cursor, typed, proj, sk, lineEnd }: { draft: Draf
         out.push(<path key="ps" className="sk-draft" d={path([A1, B1, ...arcPoints(draft.b.p, B1, B2), A2, ...arcPoints(draft.a.p, A2, A1)])} />);
         readout = `width ${fmt(2 * r)}`;
       }
-    }
+    } else if (!draft && useSketch.getState().tool === "polygon") readout = `${useSketch.getState().polygonSides} sides (type a number to change)`;
+    else if (!draft && useSketch.getState().tool === "spline") readout = "first point";
+    else if (!draft && useSketch.getState().tool === "ellipse") readout = "centre";
     const q = S(snap.p);
     out.push(<circle key="snap" className={`sk-snap ${snap.ref || snap.on || snap.mid ? "hit" : ""}`} cx={q.x} cy={q.y} r={snap.ref ? 6 : 3.5} />);
     const label = [snap.label, readout].filter(Boolean).join(" · ");
@@ -889,6 +1332,76 @@ function DraftPreview({ draft, cursor, typed, proj, sk, lineEnd }: { draft: Draf
   if (draft?.t === "dim") {
     const c = sk.curves.find((x) => x.id === draft.first);
     void c;
+  }
+  return <g className="sk-drafting">{out}</g>;
+}
+
+/** What trim, extend, offset, mirror and pattern would do: the piece that goes, where an end runs to, the copies. */
+function ModifyPreview({ sk, P, proj, tool, hover, cursor, draft, typed, selection }: { sk: EvalSketch; P: Positions; proj: Projector; tool: SketchTool; hover: string | null; cursor: { px: Px } | null; draft: Draft | null; typed: string; selection: string[] }) {
+  const pattern = useSketch((x) => x.pattern);
+  const S = proj.S;
+  const path = (pts: V2[]) => pts.map((p, i) => `${i ? "L" : "M"}${S(p).x.toFixed(1)},${S(p).y.toFixed(1)}`).join("");
+  const out: JSX.Element[] = [];
+  let readout = "";
+  // the selection moved by each of `moves`
+  const ghosts = (moves: ((p: V2) => V2)[]) => {
+    const ids = copyable(sk, selection);
+    moves.forEach((mv, k) => {
+      for (const id of ids) {
+        const c = sk.curves.find((q) => q.id === id);
+        if (c) out.push(<path key={`g${k}-${id}`} className="sk-ghost" d={path(curvePoints(sk, c, P).map(mv))} />);
+        else if (P[id]) {
+          const q = S(mv(P[id]));
+          out.push(<circle key={`g${k}-${id}`} className="sk-ghost" cx={q.x} cy={q.y} r={3.2} />);
+        }
+      }
+    });
+  };
+  if (tool === "pattern" && selection.length) {
+    const moves = patternMoves(sk, patternSpec(pattern));
+    ghosts(moves);
+    if (pattern.mode === "ring" && moves.length) {
+      const c = sk.curves.find((q) => q.id === pattern.around);
+      const at = P[c ? (c.kind === "arc" ? c.pts[2] : c.pts[0]) : pattern.around];
+      if (at) out.push(<circle key="ctr" className="sk-ghost" cx={S(at).x} cy={S(at).y} r={6} />);
+    }
+  }
+  const raw = cursor ? proj.toSketch(cursor.px.x, cursor.px.y) : null;
+  if (raw) {
+    if (tool === "trim" && hover) {
+      const piece = pieceAt(sk, hover, raw);
+      if (piece) out.push(<path key="cut" className="sk-cutaway" d={path(piece.pts)} />);
+      if (piece?.kind === "whole") readout = "nothing crosses it: trimming deletes it";
+    } else if (tool === "extend" && hover) {
+      const ext = extensionAt(sk, hover, raw);
+      if (ext) out.push(<path key="ext" className="sk-ghost" d={path(ext.pts)} />);
+      readout = ext ? `to ${ext.cut.with}` : "nothing in the way";
+    } else if (tool === "offset" && draft?.t === "offset") {
+      const o = offsetFor(sk, draft.ids, raw, { distance: Number(typed) || undefined, step: niceStep(proj.scale(raw)) });
+      if (o) o.pts.forEach((pts, i) => out.push(<path key={`o${i}`} className="sk-ghost" d={path(pts)} />));
+      readout = typed ? `distance ${typed}▌` : o ? `distance ${fmt(Math.abs(o.by))}` : "";
+    } else if (tool === "mirror" && draft?.t === "mirror" && hover) {
+      const line = sk.curves.find((q) => q.id === hover && q.kind === "line");
+      const [a, b]: [V2, V2] = line ? [P[line.pts[0]], P[line.pts[1]]] : hover === "x_axis" ? [[0, 0], [1, 0]] : [[0, 0], [0, 1]];
+      if (!line) {
+        // the axis, along the stretch round the cursor
+        const half = 400 / proj.scale(raw);
+        const foot = hover === "x_axis" ? raw[0] : raw[1];
+        const along = (t: number): V2 => (hover === "x_axis" ? [t, 0] : [0, t]);
+        out.push(<path key="axis" className="sk-ghost axis" d={path([along(foot - half), along(foot + half)])} />);
+      }
+      ghosts([reflectAcross(a, b)]);
+      readout = `across ${hover}`;
+    }
+    if (readout && cursor)
+      out.push(
+        <g key="ro" className="sk-readout" transform={`translate(${(cursor.px.x + 16).toFixed(1)},${(cursor.px.y + 22).toFixed(1)})`}>
+          <rect x={0} y={-10} width={readout.length * 6.6 + 14} height={19} rx={5} />
+          <text x={7} y={0.5}>
+            {readout}
+          </text>
+        </g>,
+      );
   }
   return <g className="sk-drafting">{out}</g>;
 }
@@ -959,9 +1472,10 @@ export function faceSketch(ctl: SceneController, sk: EvalSketch) {
     return;
   }
   const pts = sk.points.filter((p) => !HIDDEN_POINTS.has(p.id)).map((p) => P[p.id]);
-  for (const c of sk.curves) if (c.kind === "circle") {
+  for (const c of sk.curves) if (c.kind === "circle" || c.kind === "ellipse") {
     const ctr = P[c.pts[0]];
-    pts.push([ctr[0] - c.r!, ctr[1] - c.r!], [ctr[0] + c.r!, ctr[1] + c.r!]);
+    const r = c.kind === "circle" ? c.r! : Math.max(c.rx ?? 0, c.ry ?? 0);
+    pts.push([ctr[0] - r, ctr[1] - r], [ctr[0] + r, ctr[1] + r]);
   }
   const xs = pts.map((p) => p[0]);
   const ys = pts.map((p) => p[1]);
@@ -990,6 +1504,21 @@ function dragSolve(sk: EvalSketch, draft: Extract<Draft, { t: "drag" }>, d: V2, 
   return { points: res.points, radii: res.radii, ok: res.ok };
 }
 
+/** Radii and turn for an ellipse round c, from the end of its first axis (a) and a point the other axis reaches (m), on round numbers of `step`. */
+function ellipseThrough(c: V2, a: V2, m: V2 | null, step: number): { rx: number; ry: number; angle: number } {
+  const d = sub(a, c);
+  let ang = (Math.atan2(d[1], d[0]) * 180) / Math.PI;
+  // near level or upright: exactly so; otherwise whole degrees, kept between -90 and 90 (the axis runs both ways)
+  const k = Math.round(ang / 90) * 90;
+  ang = Math.abs(ang - k) < 3 ? k : Math.round(ang);
+  ang = ((((ang + 90) % 180) + 180) % 180) - 90;
+  if (ang === -90) ang = 90;
+  const rx = Math.max(step, roundTo(len(d), step));
+  const u: V2 = [-Math.sin((ang * Math.PI) / 180), Math.cos((ang * Math.PI) / 180)];
+  const ry = m ? Math.max(step, roundTo(Math.abs((m[0] - c[0]) * u[0] + (m[1] - c[1]) * u[1]), step)) : rx / 2;
+  return { rx, ry, angle: ang === 0 ? 0 : ang };
+}
+
 function liveFills(sk: EvalSketch, P: Positions, live: LiveSolve | null): { outer: V2[]; holes: V2[][] }[] {
   if (!live) return sk.profile.fills;
   const solid = sk.curves.filter((c) => !c.construction);
@@ -1003,6 +1532,10 @@ function liveFills(sk: EvalSketch, P: Positions, live: LiveSolve | null): { oute
     solid.filter((c) => c.kind === "arc").map((c) => ({ id: c.id, a: c.pts[0], b: c.pts[1], c: c.pts[2] })),
     solid.filter((c) => c.kind === "circle").map((c) => ({ id: c.id, c: c.pts[0], r: live.radii[c.id] ?? c.r! })),
     corners,
+    {
+      splines: solid.filter((c) => c.kind === "spline").map((c) => ({ id: c.id, pts: c.pts, closed: !!c.closed })),
+      ellipses: solid.filter((c) => c.kind === "ellipse").map((c) => ({ id: c.id, c: c.pts[0], rx: c.rx!, ry: c.ry!, rot: c.angle ?? 0 })),
+    },
   );
   return pr.fills;
 }

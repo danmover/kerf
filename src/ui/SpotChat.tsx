@@ -60,7 +60,7 @@ function SpotPopover({ spot }: { spot: Spot }) {
   const hasKey = !!useApiKey();
   const report = useDesign((s) => s.report);
   const part = real?.parts.find((p) => p.id === spot.partId) ?? model?.parts.find((p) => p.id === spot.partId);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(spot.draft ?? "");
   const wrap = useRef<HTMLDivElement>(null);
   const pin = useRef<HTMLDivElement>(null);
   const feed = useRef<HTMLDivElement>(null);
@@ -106,9 +106,16 @@ function SpotPopover({ spot }: { spot: Spot }) {
     return () => cancelAnimationFrame(raf);
   }, [spot.partId, spot.local]);
 
+  // typing into a right-click menu opened it: take the keys that follow straight away, after what was typed
+  useLayoutEffect(() => {
+    const el = input.current;
+    if (!spot.draft || !el) return;
+    el.focus({ preventScroll: true });
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
   useEffect(() => {
     // on a touch screen the keyboard would cover the card before it is read
-    if (matchMedia("(pointer: coarse)").matches) return;
+    if (spot.draft || matchMedia("(pointer: coarse)").matches) return;
     requestAnimationFrame(() => input.current?.focus());
   }, []);
   useEffect(() => () => endPreview(previewKey), [previewKey]);

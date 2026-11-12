@@ -8,11 +8,32 @@ import { commitSource, endComparison } from "../../app/project";
 import { setSource, useDesign } from "../../core/engine";
 import { evaluate } from "../../lang/evaluator";
 import type { V2 } from "../../kernel/recipe";
-import { addSketch, writePositions } from "../../sketch/edits";
+import { addSketch, addStatements, writePositions } from "../../sketch/edits";
+import { MAX_PATTERN } from "../../sketch/evaluate";
+import { copyable, patternStatement, type PatternSpec } from "../../sketch/modify";
 import type { EvalSketch } from "../../sketch/types";
 import { revealSpan } from "../../app/view";
 
-export type SketchTool = "select" | "line" | "rect" | "circle" | "arc" | "slot" | "point" | "dimension";
+export type SketchTool = "select" | "line" | "rect" | "crect" | "rect3" | "circle" | "ellipse" | "arc" | "spline" | "slot" | "polygon" | "point" | "dimension" | "trim" | "extend" | "offset" | "mirror" | "pattern" | "project";
+
+/** The pattern tool's settings: a row (or grid) or a ring, and how many. */
+export interface PatternUi {
+  mode: "row" | "ring";
+  count: number;
+  step: V2;
+  /** a second direction makes a grid */
+  grid: boolean;
+  count2: number;
+  step2: V2;
+  /** ring: the point to go round, and how far round */
+  around: string;
+  angle: number;
+  /** the next click picks the ring's centre */
+  pickCentre: boolean;
+}
+
+/** Most sides the polygon tool draws. */
+export const MAX_POLYGON_SIDES = 32;
 
 export interface LiveSolve {
   points: Record<string, V2>;
@@ -39,6 +60,9 @@ interface SketchSession {
   feature: boolean;
   /** a short hint shown in the sketch header */
   hint: string;
+  /** sides the polygon tool draws */
+  polygonSides: number;
+  pattern: PatternUi;
 }
 
 export const useSketch = create<SketchSession>(() => ({
@@ -52,6 +76,8 @@ export const useSketch = create<SketchSession>(() => ({
   editDim: null,
   feature: false,
   hint: "",
+  polygonSides: 6,
+  pattern: { mode: "row", count: 4, step: [10, 0], grid: false, count2: 2, step2: [0, 10], around: "origin", angle: 360, pickCentre: false },
 }));
 
 const set = useSketch.setState;
@@ -123,4 +149,31 @@ export function editSketch(fn: (src: string, sk: EvalSketch) => string, message:
   if (sk2?.solved) next = writePositions(next, sk2);
   const m3 = opts.live ? setSource(next) : commitSource(next, "you", `Sketch ${name}: ${message}`);
   return m3?.sketches.find((s) => s.name === name) ?? null;
+}
+
+/** The pattern the panel's settings describe. */
+export function patternSpec(p: PatternUi): PatternSpec {
+  return p.mode === "row" ? { count: p.count, step: p.step, count2: p.grid ? p.count2 : undefined, step2: p.grid ? p.step2 : undefined } : { count: p.count, around: p.around, angle: p.angle };
+}
+
+/** Repeat the selection as the pattern panel is set: the panel's button and Enter both come here. */
+export function makePattern(): boolean {
+  const sk = activeSketch();
+  if (!sk) return false;
+  const { pattern: p, selection } = useSketch.getState();
+  const ids = copyable(sk, selection);
+  if (!ids.length) {
+    flash("Select what to repeat first: click it, or drag a box round it");
+    return false;
+  }
+  const total = p.mode === "row" ? p.count * (p.grid ? p.count2 : 1) : p.count;
+  if (total > MAX_PATTERN) {
+    flash(`That is ${total} in all; a pattern makes at most ${MAX_PATTERN}`);
+    return false;
+  }
+  const stmt = patternStatement(ids, patternSpec(p));
+  editSketch((src, cur) => addStatements(src, cur, { geometry: [stmt] }), `patterned ${ids.join(", ")}`);
+  set({ selection: [] });
+  setTool("select");
+  return true;
 }

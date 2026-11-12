@@ -10,13 +10,14 @@ import { useDesign } from "../../core/engine";
 import { commitSource } from "../../app/project";
 import { select } from "../../app/view";
 import { toast } from "../../app/ui";
-import { addFeature, addStatements, deleteSelection, entitiesOf, suggestionsFor, toggleConstruction, fmt, type FeatureSpec } from "../../sketch/edits";
-import { sketchStatusText } from "../../sketch/evaluate";
-import type { EvalSketch } from "../../sketch/types";
+import { addFeature, addStatements, deleteSelection, entitiesOf, extrudeExpr, setCurveOption, suggestionsFor, toggleConstruction, fmt, type FeatureSpec } from "../../sketch/edits";
+import { MAX_PATTERN, sketchStatusText } from "../../sketch/evaluate";
+import { copyable } from "../../sketch/modify";
+import type { EvalSketch, SkCurve } from "../../sketch/types";
 import { useChatDraft } from "../chatDraft";
 import { Icon } from "../icons";
 import { Segmented } from "../common";
-import { editSketch, exitSketch, createSketch, setSelection, setTool, useSketch, type SketchTool } from "./session";
+import { editSketch, exitSketch, createSketch, makePattern, setSelection, setTool, useSketch, type PatternUi, type SketchTool } from "./session";
 import { SketchOverlay, faceSketch } from "./SketchOverlay";
 import { T } from "./glyphs";
 import "./sketch.css";
@@ -109,24 +110,60 @@ function SketchHeader({ sk, ctl }: { sk: EvalSketch; ctl: SceneController }) {
 const TOOLS: { id: SketchTool; label: string; key: string; icon: ReactNode; help: string }[] = [
   { id: "select", label: "Select", key: "V", icon: <T.Pointer />, help: "Click or box-select geometry. Drag points and curves; the constraints keep holding." },
   { id: "line", label: "Line", key: "L", icon: <T.Line />, help: "Click points to draw connected lines. Type a length and press Enter. Double-click or Esc to stop." },
-  { id: "rect", label: "Rectangle", key: "R", icon: <T.Rect />, help: "Click two corners. Type width, height (40,25) and press Enter for an exact size." },
-  { id: "circle", label: "Circle", key: "C", icon: <T.Circle />, help: "Click the centre, then the radius. Type a diameter and press Enter for an exact size." },
+  { id: "rect", label: "Rectangle", key: "R", icon: <T.Rect />, help: "Click two corners. Type width, height (40,25) and press Enter for an exact size. Press R again for a centre or 3-point rectangle." },
+  { id: "crect", label: "Centre rectangle", key: "R", icon: <T.RectCenter />, help: "Click the centre, then a corner. Type width, height (40,25) and press Enter for an exact size. Centre it on the origin to keep it centred." },
+  { id: "rect3", label: "3-point rectangle", key: "R", icon: <T.Rect3 />, help: "Click two corners along one side (at any angle), then a point for the width." },
+  { id: "circle", label: "Circle", key: "C", icon: <T.Circle />, help: "Click the centre, then the radius. Type a diameter and press Enter for an exact size. Press C again for an ellipse." },
+  { id: "ellipse", label: "Ellipse", key: "C", icon: <T.Ellipse />, help: "Click the centre, then the end of one axis (its length and turn), then a point for the other axis. Type width, height (40,20) and press Enter for an exact size. Its sizes are in the panel when it is selected." },
   { id: "arc", label: "Arc", key: "A", icon: <T.Arc />, help: "Click the start, the end, then a point the arc passes through. Starting on a line end makes it tangent." },
+  { id: "spline", label: "Spline", key: "S", icon: <T.Spline />, help: "Click the points the curve passes through; it bends smoothly through each one. Enter or double-click to finish, click the first point to close it round, Backspace to take the last point back. Drag the points afterwards to reshape it." },
   { id: "slot", label: "Slot", key: "O", icon: <T.Slot />, help: "Click the two centres, then the width." },
+  { id: "polygon", label: "Polygon", key: "H", icon: <T.Polygon />, help: "Click the centre, then a corner. Type the number of sides (3 to 32) first; 6 makes a hexagon. The sides stay equal and the corners on a construction circle, so dimension the circle for the size across the corners." },
   { id: "point", label: "Point", key: "P", icon: <T.Point />, help: "Click to place a reference point." },
   { id: "dimension", label: "Dimension", key: "D", icon: <T.Dim />, help: "Click one item to size it, or two to measure between them. Type the value, or a formula like w / 2." },
+  { id: "trim", label: "Trim", key: "T", icon: <T.Trim />, help: "Click the piece of a curve to cut away, back to where other curves cross it. A curve nothing crosses is deleted. Press T again (or E) to extend instead." },
+  { id: "extend", label: "Extend", key: "E", icon: <T.Extend />, help: "Click near a loose end of a line or arc to run it on to the next curve it meets." },
+  { id: "offset", label: "Offset", key: "F", icon: <T.Offset />, help: "Click a curve: the chain it is part of is offset. Move to the side the copy goes and click, or type the distance and press Enter. The copy stays that far away as the original changes." },
+  { id: "mirror", label: "Mirror", key: "M", icon: <T.Mirror />, help: "Select what to mirror (click, or box-select first), then click the line to mirror across, or the x or y axis. The copy stays mirrored as the original changes." },
+  { id: "pattern", label: "Pattern", key: "K", icon: <T.Pattern />, help: "Select what to repeat, set a row or a ring in the panel, and press Make pattern. The copies follow the original." },
+  { id: "project", label: "Project", key: "J", icon: <T.Project />, help: "Click a face of a part to bring its edges into this sketch, fixed where they are, to draw and dimension from." },
 ];
+
+const RECTS: SketchTool[] = ["rect", "crect", "rect3"];
+let lastRect: SketchTool = "rect";
+// the circle and the ellipse share one too
+const ROUNDS: SketchTool[] = ["circle", "ellipse"];
+let lastRound: SketchTool = "circle";
+// trim and extend share a button the same way
+const CUTS: SketchTool[] = ["trim", "extend"];
+let lastCut: SketchTool = "trim";
+/** the tools that change geometry already drawn sit below a divider */
+const MODIFY: SketchTool[] = ["trim", "extend", "offset", "mirror", "pattern", "project"];
 
 function ToolPalette() {
   const tool = useSketch((s) => s.tool);
   const construction = useSketch((s) => s.construction);
+  // the three rectangles share one button: it shows the one in use, and a second click (or R again) moves to the next
+  if (RECTS.includes(tool)) lastRect = tool;
+  if (ROUNDS.includes(tool)) lastRound = tool;
+  if (CUTS.includes(tool)) lastCut = tool;
+  const button = (t: (typeof TOOLS)[number]) => {
+    const group = RECTS.includes(t.id) ? RECTS : ROUNDS.includes(t.id) ? ROUNDS : CUTS.includes(t.id) ? CUTS : null;
+    const on = tool === t.id;
+    const click = () => setTool(group && on ? group[(group.indexOf(t.id) + 1) % group.length] : t.id);
+    const tip = group ? `${t.label} (${t.key}; click again for ${group.filter((x) => x !== t.id).map((x) => TOOLS.find((q) => q.id === x)!.label.toLowerCase()).join(" or ")})` : `${t.label} (${t.key})`;
+    return (
+      <button key={group ? group[0] : t.id} className={`icon-btn ${on ? "active" : ""}`} onClick={click} data-tip={tip} aria-label={t.label} aria-pressed={on}>
+        {t.icon}
+      </button>
+    );
+  };
+  const shown = (t: (typeof TOOLS)[number]) => (!RECTS.includes(t.id) || t.id === lastRect) && (!ROUNDS.includes(t.id) || t.id === lastRound) && (!CUTS.includes(t.id) || t.id === lastCut);
   return (
     <motion.div className="sk-ui sk-tools vp-float" style={{ y: "-50%" }} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} role="toolbar" aria-label="Sketch tools">
-      {TOOLS.map((t) => (
-        <button key={t.id} className={`icon-btn ${tool === t.id ? "active" : ""}`} onClick={() => setTool(t.id)} data-tip={`${t.label} (${t.key})`} aria-label={t.label} aria-pressed={tool === t.id}>
-          {t.icon}
-        </button>
-      ))}
+      {TOOLS.filter((t) => shown(t) && !MODIFY.includes(t.id)).map(button)}
+      <div className="sep" />
+      {TOOLS.filter((t) => shown(t) && MODIFY.includes(t.id)).map(button)}
       <div className="sep" />
       <button className={`icon-btn ${construction ? "active warnish" : ""}`} onClick={() => useSketch.setState({ construction: !construction })} data-tip="Draw construction geometry (G)" aria-label="Construction geometry" aria-pressed={construction}>
         <T.Construction />
@@ -160,9 +197,80 @@ function HintBar() {
 function SidePanel({ sk }: { sk: EvalSketch }) {
   const feature = useSketch((s) => s.feature);
   const selection = useSketch((s) => s.selection);
+  const tool = useSketch((s) => s.tool);
   if (feature) return <FeaturePanel sk={sk} />;
+  if (tool === "pattern") return <PatternPanel sk={sk} selection={selection} />;
   if (selection.length) return <SelectionPanel sk={sk} selection={selection} />;
   return null;
+}
+
+function PatternPanel({ sk, selection }: { sk: EvalSketch; selection: string[] }) {
+  const p = useSketch((s) => s.pattern);
+  const set = (q: Partial<PatternUi>) => useSketch.setState({ pattern: { ...p, ...q } });
+  const ids = copyable(sk, selection);
+  const n = (v: string, min: number) => Math.max(min, Math.min(MAX_PATTERN, Math.round(Number(v) || min)));
+  const x = (v: string) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const num = (label: string, value: number, onChange: (v: string) => void, tip: string, w = 52) => (
+    <label className="row" style={{ gap: 4 }} data-tip={tip}>
+      <span className="muted">{label}</span>
+      <input className="input mono" style={{ width: w }} defaultValue={fmt(value)} key={`${label}${value}`} onBlur={(e) => onChange(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} aria-label={label} />
+    </label>
+  );
+  return (
+    <motion.div className="sk-ui sk-side vp-float" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 12 }}>
+      <div className="row" style={{ marginBottom: 6 }}>
+        <b className="grow">Pattern</b>
+        <button className="icon-btn sm" onClick={() => setTool("select")} aria-label="Close pattern">
+          <Icon.X size={14} />
+        </button>
+      </div>
+      <div className="mono muted sk-desc">{ids.length ? `${ids.slice(0, 6).join(", ")}${ids.length > 6 ? ` and ${ids.length - 6} more` : ""}` : "Select what to repeat: click it, or drag a box round it"}</div>
+      <Segmented
+        id="sk-pattern-mode"
+        value={p.mode}
+        onChange={(mode) => set({ mode })}
+        options={[
+          { value: "row", label: "Row" },
+          { value: "ring", label: "Ring" },
+        ]}
+      />
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+        {num("Count", p.count, (v) => set({ count: n(v, 2) }), "How many in all, counting the original", 44)}
+        {p.mode === "row" ? (
+          <>
+            {num("Step x", p.step[0], (v) => set({ step: [x(v), p.step[1]] }), "How far each copy moves across, in mm")}
+            {num("y", p.step[1], (v) => set({ step: [p.step[0], x(v)] }), "How far each copy moves up, in mm")}
+          </>
+        ) : (
+          <>
+            {num("Angle", p.angle, (v) => set({ angle: Math.max(-360, Math.min(360, x(v) || 360)) }), "How far round the copies spread; 360 spaces them evenly all the way round", 48)}
+            <button className={`btn sm ${p.pickCentre ? "active" : ""}`} onClick={() => set({ pickCentre: !p.pickCentre })} data-tip="Then click a point, or a circle or arc for its centre">
+              Centre <span className="mono muted">{p.around}</span>
+            </button>
+          </>
+        )}
+      </div>
+      {p.mode === "row" && (
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+          <label className="sk-check" data-tip="A second direction, for a grid">
+            <input type="checkbox" checked={p.grid} onChange={(e) => set({ grid: e.target.checked })} /> grid
+          </label>
+          {p.grid && (
+            <>
+              {num("Rows", p.count2, (v) => set({ count2: n(v, 1) }), "How many rows", 40)}
+              {num("Step x", p.step2[0], (v) => set({ step2: [x(v), p.step2[1]] }), "How far each row moves across, in mm")}
+              {num("y", p.step2[1], (v) => set({ step2: [p.step2[0], x(v)] }), "How far each row moves up, in mm")}
+            </>
+          )}
+        </div>
+      )}
+      <div className="row sk-actions" style={{ marginTop: 10 }}>
+        <button className="btn sm primary" onClick={() => makePattern()} disabled={!ids.length} data-tip="Or press Enter">
+          <T.Pattern size={13} /> Make pattern
+        </button>
+      </div>
+    </motion.div>
+  );
 }
 
 function describe(sk: EvalSketch, id: string): string {
@@ -178,6 +286,8 @@ function describe(sk: EvalSketch, id: string): string {
     return `line · ${fmt(Math.hypot(b.x - a.x, b.y - a.y))} mm`;
   }
   if (c?.kind === "circle") return `circle · ⌀${fmt(2 * c.r!)}`;
+  if (c?.kind === "ellipse") return `ellipse · ${fmt(2 * (c.rx ?? 0))} × ${fmt(2 * (c.ry ?? 0))}${c.angle ? ` · turned ${fmt(c.angle)}°` : ""}`;
+  if (c?.kind === "spline") return `spline · through ${c.pts.length} points${c.closed ? ", closed" : ""}`;
   if (c?.kind === "arc") {
     const a = P(c.pts[0]);
     const m = P(c.pts[2]);
@@ -223,6 +333,7 @@ function SelectionPanel({ sk, selection }: { sk: EvalSketch; selection: string[]
         ))}
         {status && <div className={`sk-st st-${status}`}>{STATUS_WORD[status]}</div>}
       </div>
+      {curves.length === 1 && (curves[0].c!.kind === "ellipse" || curves[0].c!.kind === "spline") && !curves[0].c!.derived && <CurveShape c={curves[0].c!} />}
       {relations.length > 0 && (
         <Group title="Relations">
           {relations.map((s) => (
@@ -251,6 +362,21 @@ function SelectionPanel({ sk, selection }: { sk: EvalSketch; selection: string[]
           ))}
         </Group>
       )}
+      {curves.length > 0 && (
+        <Group title="Copy">
+          <button className="btn sm" onClick={() => setTool("mirror")} data-tip="Then click the line to mirror across, or the x or y axis (M)">
+            <T.Mirror size={13} /> Mirror
+          </button>
+          <button className="btn sm" onClick={() => setTool("pattern")} data-tip="Repeat in a row, a grid or a ring (K)">
+            <T.Pattern size={13} /> Pattern
+          </button>
+          {curves.every((c) => c.c!.kind !== "spline" && c.c!.kind !== "ellipse") && (
+            <button className="btn sm" onClick={() => setTool("offset")} data-tip="Then click one of them and move to the side the copy goes (F)">
+              <T.Offset size={13} /> Offset
+            </button>
+          )}
+        </Group>
+      )}
       <div className="row sk-actions">
         {curves.length > 0 && (
           <button className="btn sm" onClick={() => editSketch((src, cur) => toggleConstruction(src, cur, curves.map((c) => c.id)), "toggled construction")} data-tip="Construction geometry guides the sketch but is not part of the profile (G)">
@@ -276,6 +402,44 @@ function SelectionPanel({ sk, selection }: { sk: EvalSketch; selection: string[]
   );
 }
 
+/** An ellipse's radii and turn, or whether a spline closes round, written straight into its statement. */
+function CurveShape({ c }: { c: SkCurve }) {
+  const set = (name: "rx" | "ry" | "angle" | "closed", text: string, what: string) =>
+    editSketch((src, cur) => {
+      const cc = cur.curves.find((q) => q.id === c.id);
+      return cc ? setCurveOption(src, cc, name, text) : src;
+    }, what);
+  if (c.kind === "spline")
+    return (
+      <Group title="Shape">
+        <label className="sk-check" data-tip="Run the curve on from its last point back round to its first, so it makes a loop on its own">
+          <input type="checkbox" checked={!!c.closed} onChange={(e) => set("closed", e.target.checked ? "true" : "false", `${e.target.checked ? "closed" : "opened"} spline ${c.id}`)} /> closed round
+        </label>
+      </Group>
+    );
+  const field = (k: "rx" | "ry" | "angle", label: string, value: number, tip: string) => {
+    const literal = c.optLiteral?.[k] !== false;
+    const commit = (text: string) => {
+      const v = Number(text);
+      if (!Number.isFinite(v) || Math.abs(v - value) < 1e-9 || (k !== "angle" && !(v > 0))) return;
+      set(k, fmt(v), `ellipse ${c.id} ${k} = ${fmt(v)}`);
+    };
+    return (
+      <label className="row" style={{ gap: 4 }} data-tip={literal ? tip : `${tip}; it is written as a formula, so change it in the code`}>
+        <span className="muted">{label}</span>
+        <input className="input mono" style={{ width: 52 }} disabled={!literal} defaultValue={fmt(value)} key={`${k}${value}`} onBlur={(e) => commit(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} aria-label={`${c.id} ${k}`} />
+      </label>
+    );
+  };
+  return (
+    <Group title="Size">
+      {field("rx", "rx", c.rx ?? 0, "Radius along its first axis, in mm")}
+      {field("ry", "ry", c.ry ?? 0, "Radius along its second axis, in mm")}
+      {field("angle", "turn °", c.angle ?? 0, "How far the first axis turns from the sketch's x axis, counter-clockwise")}
+    </Group>
+  );
+}
+
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="sk-group">
@@ -294,25 +458,67 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
   const [part, setPart] = useState(sk.usedBy[0] ?? parts[0] ?? "");
   const [depth, setDepth] = useState("10");
   const [dir, setDir] = useState<"normal" | "reverse" | "both">("normal");
-  const [through, setThrough] = useState(false);
+  const [end, setEnd] = useState<"depth" | "next" | "through">("depth");
+  const through = end === "through";
+  const next = end === "next";
+  const [taper, setTaper] = useState("0");
+  const [thin, setThin] = useState(false);
+  const [wall, setWall] = useState("2");
+  const [side, setSide] = useState<"inside" | "outside" | "center">("inside");
   const [asParam, setAsParam] = useState(true);
   const [axis, setAxis] = useState(lines.find((l) => l.construction)?.id ?? "y_axis");
   const [angle, setAngle] = useState("360");
   const depthRef = useRef<HTMLInputElement>(null);
   useEffect(() => depthRef.current?.focus(), []);
   useEffect(() => {
-    if (op === "cut") setThrough(true);
+    if (op === "cut") setEnd("through");
+    else if (op === "new") setEnd((e) => (e === "next" ? "depth" : e));
   }, [op]);
+  useEffect(() => {
+    if (next) setDir((v) => (v === "both" ? "normal" : v));
+  }, [next]);
   const d = Number(depth);
   const a = Number(angle);
-  const bad = !sk.profile.regions.length ? sk.profile.error?.message ?? "The sketch has no closed profile yet." : op !== "new" && !part ? "Pick a part." : kind === "extrude" && !through && !(d > 0) ? "Depth must be a positive number." : kind === "revolve" && !(a > 0 && a <= 360) ? "Angle must be between 0 and 360." : "";
+  const tp = Number(taper);
+  const w = Number(wall);
+  const extrude = kind === "extrude";
+  const bad = !sk.profile.regions.length
+    ? sk.profile.error?.message ?? "The sketch has no closed profile yet."
+    : op !== "new" && !part
+      ? "Pick a part."
+      : extrude && end === "depth" && !(d > 0)
+        ? "Depth must be a positive number."
+        : extrude && next && op === "new"
+          ? "Up to next stops at a part's face: add to or cut from a part."
+          : extrude && !through && !(Math.abs(tp) < 80)
+            ? "Taper must be between -80 and 80 degrees."
+            : extrude && thin && !(w > 0)
+              ? "The wall must be thicker than 0."
+              : kind === "revolve" && !(a > 0 && a <= 360)
+                ? "Angle must be between 0 and 360."
+                : "";
+  const spec: FeatureSpec = {
+    kind,
+    op,
+    part: op === "new" ? undefined : part,
+    depth: d,
+    reverse: dir === "reverse",
+    symmetric: dir === "both" && end === "depth",
+    through: extrude && through,
+    until: extrude && next ? "next" : undefined,
+    taper: extrude && !through && tp ? tp : undefined,
+    thin: extrude && thin ? w : undefined,
+    thinSide: side,
+    axis,
+    angle: a,
+    param: asParam,
+  };
   const create = () => {
     if (bad) return;
-    const spec: FeatureSpec = { kind, op, part: op === "new" ? undefined : part, depth: d, reverse: dir === "reverse", symmetric: dir === "both", through: kind === "extrude" && through, axis, angle: a, param: asParam };
     try {
       const src = useDesign.getState().source;
       const r = addFeature(src, sk, spec);
-      const what = kind === "extrude" ? (through ? "through all" : `${fmt(d)} mm`) : `${fmt(a)}°`;
+      const what = extrude ? (through ? "through all" : next ? "up to the next face" : `${fmt(d)} mm`) : `${fmt(a)}°`;
       const m = commitSource(r.src, "you", `${kind === "extrude" ? "Extruded" : "Revolved"} ${sk.name} ${what} ${op === "new" ? `into new part ${r.part}` : op === "add" ? `onto ${r.part}` : `out of ${r.part}`}`);
       exitSketch();
       const err = m.diagnostics.find((x) => x.severity === "error");
@@ -365,15 +571,27 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
       {kind === "extrude" ? (
         <>
           <div className="sk-field">
-            <span className="field-label">Depth</span>
-            <div className="row" style={{ gap: 6 }}>
-              <input ref={depthRef} className="input mono" style={{ width: 90 }} value={through ? "" : depth} placeholder={through ? "through all" : ""} disabled={through} onChange={(e) => setDepth(e.target.value)} aria-label="Depth in mm" />
-              <span className="muted">mm</span>
-              <label className="sk-check">
-                <input type="checkbox" checked={through} onChange={(e) => setThrough(e.target.checked)} /> through all
-              </label>
-            </div>
+            <span className="field-label">Ends</span>
+            <Segmented
+              id="sk-end"
+              value={end}
+              onChange={setEnd}
+              options={[
+                { value: "depth", label: "Depth" },
+                { value: "next", label: "Up to next", title: op === "new" ? "Add to or cut from a part first" : "Runs until it meets the part (cut: through the first wall)" },
+                { value: "through", label: "Through all" },
+              ]}
+            />
           </div>
+          {end === "depth" && (
+            <div className="sk-field">
+              <span className="field-label">Depth</span>
+              <div className="row" style={{ gap: 6 }}>
+                <input ref={depthRef} className="input mono" style={{ width: 90 }} value={depth} onChange={(e) => setDepth(e.target.value)} aria-label="Depth in mm" />
+                <span className="muted">mm</span>
+              </div>
+            </div>
+          )}
           {!through && (
             <div className="sk-field">
               <span className="field-label">Direction</span>
@@ -384,12 +602,42 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
                 options={[
                   { value: "normal", label: "Out", title: "Along the plane's normal" },
                   { value: "reverse", label: "In", title: "Against the plane's normal" },
-                  { value: "both", label: "Both sides", title: "Half each way" },
+                  ...(next ? [] : [{ value: "both" as const, label: "Both sides", title: "Half each way" }]),
                 ]}
               />
             </div>
           )}
           {!through && (
+            <div className="sk-field">
+              <span className="field-label">Taper</span>
+              <div className="row" style={{ gap: 6 }}>
+                <input className="input mono" style={{ width: 90 }} value={taper} onChange={(e) => setTaper(e.target.value)} aria-label="Taper in degrees" data-tip="Draft on the sides: they lean in by this angle (out when negative), so a moulded part comes out of its mould" />
+                <span className="muted">degrees</span>
+              </div>
+            </div>
+          )}
+          <div className="sk-field">
+            <label className="sk-check">
+              <input type="checkbox" checked={thin} onChange={(e) => setThin(e.target.checked)} /> thin wall only
+            </label>
+            {thin && (
+              <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                <input className="input mono" style={{ width: 70 }} value={wall} onChange={(e) => setWall(e.target.value)} aria-label="Wall thickness in mm" />
+                <span className="muted">mm</span>
+                <Segmented
+                  id="sk-thin"
+                  value={side}
+                  onChange={setSide}
+                  options={[
+                    { value: "inside", label: "In", title: "Inside the outline: the outer size stays" },
+                    { value: "outside", label: "Out", title: "Outside the outline" },
+                    { value: "center", label: "Centre", title: "Centred on the outline" },
+                  ]}
+                />
+              </div>
+            )}
+          </div>
+          {end === "depth" && (
             <label className="sk-check">
               <input type="checkbox" checked={asParam} onChange={(e) => setAsParam(e.target.checked)} /> keep the depth as a parameter (slider)
             </label>
@@ -419,7 +667,7 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
           </div>
         </>
       )}
-      <div className="sk-preview mono">{previewCode(sk, { kind, op, part, depth: d, dir, through, axis, angle: a, asParam })}</div>
+      <div className="sk-preview mono">{previewCode(sk, spec, asParam)}</div>
       {bad && <div className="sk-problem warn">{bad}</div>}
       <button className="btn primary" style={{ width: "100%", marginTop: 8 }} disabled={!!bad} onClick={create}>
         <Icon.Check size={14} /> {op === "new" ? "Create part" : op === "add" ? `Add to ${part}` : `Cut from ${part}`}
@@ -428,20 +676,38 @@ function FeaturePanel({ sk }: { sk: EvalSketch }) {
   );
 }
 
-function previewCode(sk: EvalSketch, o: { kind: string; op: string; part: string; depth: number; dir: string; through: boolean; axis: string; angle: number; asParam: boolean }) {
-  const depth = o.asParam ? `${sk.name}_depth` : fmt(o.depth || 0);
-  const expr =
-    o.kind === "extrude"
-      ? o.through
-        ? `extrude(${sk.name}, through: true)`
-        : `extrude(${sk.name}, ${depth}${o.dir === "reverse" ? ", reverse: true" : o.dir === "both" ? ", symmetric: true" : ""})`
-      : `revolve(${sk.name}, axis: ${sk.name}.${o.axis}${o.angle !== 360 ? `, angle: ${fmt(o.angle)}` : ""})`;
+function previewCode(sk: EvalSketch, o: FeatureSpec, asParam: boolean) {
+  const depth = asParam ? `${sk.name}_depth` : fmt(o.depth || 0);
+  const angle = o.angle ?? 360;
+  const expr = o.kind === "extrude" ? extrudeExpr(sk.name, o, depth) : `revolve(${sk.name}, axis: ${sk.name}.${o.axis}${angle !== 360 ? `, angle: ${fmt(angle)}` : ""})`;
   return o.op === "new" ? `body ${expr}` : `${o.op} ${expr}   // in ${o.part}`;
 }
 
 // ---------------- plane picker ----------------
 
-type PlanePick = { plane: string; offset?: number; label: string; poly: { x: number; y: number }[] };
+type PlanePick = { plane: string; offset?: number; label: string; poly: { x: number; y: number }[]; n?: [number, number, number] };
+
+const NAMED_PLANES = new Set(["XY", "-XY", "XZ", "-XZ", "YZ", "-YZ"]);
+
+/** Reference-plane settings the plane picker applies to what is clicked. */
+interface PickOpts {
+  offset: number;
+  tilt: number;
+  about: "x" | "y";
+  midway: boolean;
+}
+
+/** The plane text for a pick, moved and tilted as asked: a named plane stays a name with an offset when it can. */
+function pickedPlane(h: PlanePick, o: PickOpts, base?: string): { plane: string; offset?: number } {
+  const turn = o.tilt ? `, turn: ${fmt(o.tilt)}${o.about === "y" ? ', about: "y"' : ""}` : "";
+  if (!base && NAMED_PLANES.has(h.plane)) {
+    const off = (h.offset ?? 0) + o.offset;
+    if (!turn) return { plane: h.plane, offset: off || undefined };
+    return { plane: `plane(${h.plane}${off ? `, offset: ${fmt(off)}` : ""}${turn})` };
+  }
+  const b = base ?? (h.offset ? `plane(${h.plane}, offset: ${fmt(h.offset)})` : h.plane);
+  return { plane: o.offset || turn ? `plane(${b}${o.offset ? `, offset: ${fmt(o.offset)}` : ""}${turn})` : b };
+}
 
 const NAMED: { n: [number, number, number]; plane: string }[] = [
   { n: [0, 0, 1], plane: "XY" },
@@ -453,7 +719,7 @@ const NAMED: { n: [number, number, number]; plane: string }[] = [
 ];
 
 /** A face under the cursor as a sketch plane: a named plane with an offset when it is axis-aligned. */
-function planeForFace(point: [number, number, number], normal: [number, number, number]): { plane: string; offset?: number; label: string } {
+export function planeForFace(point: [number, number, number], normal: [number, number, number]): { plane: string; offset?: number; label: string } {
   for (const k of NAMED) {
     const dot = k.n[0] * normal[0] + k.n[1] * normal[1] + k.n[2] * normal[2];
     if (dot > 0.9999) {
@@ -488,6 +754,32 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
     };
   }, [ctl]);
 
+  const [offset, setOffset] = useState("0");
+  const [tilt, setTilt] = useState("0");
+  const [about, setAbout] = useState<"x" | "y">("x");
+  const [midway, setMidway] = useState(false);
+  const [first, setFirst] = useState<PlanePick | null>(null);
+  const opts: PickOpts = { offset: Number(offset) || 0, tilt: Number(tilt) || 0, about, midway };
+  const pick = (h: PlanePick) => {
+    if (!opts.midway) {
+      const r = pickedPlane(h, opts);
+      return createSketch(r.plane, r.offset);
+    }
+    if (!first) return setFirst(h);
+    const na = first.n ?? NAMED.find((k) => k.plane === first.plane)?.n;
+    const nb = h.n ?? NAMED.find((k) => k.plane === h.plane)?.n;
+    if (na && nb && Math.abs(na[0] * nb[0] + na[1] * nb[1] + na[2] * nb[2]) < Math.cos(Math.PI / 180)) {
+      toast({ kind: "warn", title: "Those two aren't parallel", detail: "Pick two faces (or planes) that face the same or opposite ways, or use Tilt for a plane at an angle." });
+      return;
+    }
+    const expr = (q: PlanePick) => (q.offset ? `plane(${q.plane}, offset: ${fmt(q.offset)})` : q.plane);
+    setFirst(null);
+    const r = pickedPlane(h, opts, `plane(between: [${expr(first)}, ${expr(h)}])`);
+    createSketch(r.plane, r.offset);
+  };
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
+
   const planes = (): PlanePick[] => {
     const o = ctl.toScreen([0, 0, 0]);
     const ux = ctl.toScreen([1, 0, 0]);
@@ -496,9 +788,9 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
     const q = (pts: [number, number, number][]) => pts.map((p) => ctl.toScreen(p));
     const g = s * 0.08;
     return [
-      { plane: "XY", label: "Top · XY", poly: q([[g, g, 0], [s, g, 0], [s, s, 0], [g, s, 0]]) },
-      { plane: "XZ", label: "Front · XZ", poly: q([[g, 0, g], [s, 0, g], [s, 0, s], [g, 0, s]]) },
-      { plane: "YZ", label: "Right · YZ", poly: q([[0, g, g], [0, s, g], [0, s, s], [0, g, s]]) },
+      { plane: "XY", label: "Top · XY", poly: q([[g, g, 0], [s, g, 0], [s, s, 0], [g, s, 0]]), n: [0, 0, 1] },
+      { plane: "XZ", label: "Front · XZ", poly: q([[g, 0, g], [s, 0, g], [s, 0, s], [g, 0, s]]), n: [0, -1, 0] },
+      { plane: "YZ", label: "Right · YZ", poly: q([[0, g, g], [0, s, g], [0, s, s], [0, g, s]]), n: [1, 0, 0] },
     ];
   };
 
@@ -526,7 +818,7 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
           [1, 1],
           [-1, 1],
         ].map(([a, b]) => ctl.toScreen(add3(face.point, add3(scale3(u, a * k), scale3(v, b * k)))));
-        return { ...f, poly };
+        return { ...f, poly, n: face.normal };
       }
       for (const pl of planes()) if (inPoly(p, pl.poly)) return pl;
       return null;
@@ -538,7 +830,7 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
       if (t.closest(".sk-ui, .vp-toolbar, .vp-float")) return;
       e.stopPropagation();
       const h = find(e);
-      if (h) createSketch(h.plane, h.offset);
+      if (h) pickRef.current(h);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -580,7 +872,7 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
           <span className="sk-badge">
             <T.Sketch size={13} /> new sketch
           </span>
-          <span className="grow">{hover ? <span className="mono">{hover.label}</span> : "Click a plane, or a flat face of a part"}</span>
+          <span className="grow">{midway && first ? <>Now the face or plane opposite <span className="mono muted">{first.label}</span></> : hover ? <span className="mono">{hover.label}</span> : midway ? "Click the first of two parallel faces or planes" : "Click a plane, or a flat face of a part"}</span>
           <button className="btn sm ghost" onClick={() => useSketch.setState({ picking: false })}>
             Cancel
           </button>
@@ -591,10 +883,42 @@ function PlanePicker({ ctl }: { ctl: SceneController }) {
             ["XZ", "Front"],
             ["YZ", "Right"],
           ].map(([p, l]) => (
-            <button key={p} className="btn sm" onClick={() => createSketch(p)}>
+            <button key={p} className="btn sm" onClick={() => pick({ plane: p, label: `${l} · ${p}`, poly: [], n: NAMED.find((k) => k.plane === p)?.n })}>
               {l} <span className="mono muted">{p}</span>
             </button>
           ))}
+        </div>
+        <div className="row sk-ref" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+          <label className="row" style={{ gap: 4 }} data-tip="Moves the sketch plane this far off what you click, along its normal">
+            <span className="muted">Offset</span>
+            <input className="input mono" style={{ width: 56 }} value={offset} onChange={(e) => setOffset(e.target.value)} aria-label="Offset in mm" />
+            <span className="muted">mm</span>
+          </label>
+          <label className="row" style={{ gap: 4 }} data-tip="Tilts the sketch plane by this angle about its own x or y axis">
+            <span className="muted">Tilt</span>
+            <input className="input mono" style={{ width: 48 }} value={tilt} onChange={(e) => setTilt(e.target.value)} aria-label="Tilt in degrees" />
+            <span className="muted">° about</span>
+          </label>
+          <Segmented
+            id="sk-about"
+            value={about}
+            onChange={setAbout}
+            options={[
+              { value: "x", label: "x" },
+              { value: "y", label: "y" },
+            ]}
+          />
+          <label className="sk-check" data-tip="A plane halfway between two parallel faces: pick both">
+            <input
+              type="checkbox"
+              checked={midway}
+              onChange={(e) => {
+                setMidway(e.target.checked);
+                setFirst(null);
+              }}
+            />{" "}
+            midway between two
+          </label>
         </div>
       </motion.div>
     </div>

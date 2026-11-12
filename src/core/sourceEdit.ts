@@ -4,6 +4,7 @@
 import type { EvalParam, Model } from "./model";
 import { fmtNum } from "../lang/values";
 import { parse } from "../lang/parser";
+import type { Stmt } from "../lang/ast";
 import { UNITS } from "../lang/lexer";
 
 // Units a parameter keeps when its value is rewritten (the value is written back in that unit), and units
@@ -189,8 +190,8 @@ export function toggleParamLock(src: string, p: EvalParam): string {
  */
 export function setBlockProps(src: string, blockName: string, props: Record<string, string | null>): string {
   const { program } = parse(src);
-  const stmt = program.stmts.find((s) => (s.k === "part" || s.k === "component") && s.name === blockName);
-  if (!stmt || (stmt.k !== "part" && stmt.k !== "component")) return src;
+  const stmt = editableBlock(program.stmts, blockName);
+  if (!stmt) return src;
   const edits: { start: number; end: number; text: string }[] = [];
   const missing: [string, string][] = [];
   for (const [name, value] of Object.entries(props)) {
@@ -223,6 +224,37 @@ export function setBlockProps(src: string, blockName: string, props: Record<stri
   let out = src;
   for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
   return out;
+}
+
+/** Lock a part or component block (Claude then keeps it as it is) or unlock it. Returns the source unchanged if the block is missing. */
+export function setBlockLocked(src: string, blockName: string, locked: boolean): string {
+  const { program } = parse(src);
+  const stmt = editableBlock(program.stmts, blockName);
+  if (!stmt) return src;
+  const flag = stmt.items.find((i) => i.k === "flag" && i.name === "locked");
+  if (!locked) {
+    if (!flag) return src;
+    const r = removal(src, flag.span.start, flag.span.end);
+    return src.slice(0, r.start) + src.slice(r.end);
+  }
+  if (flag) return src;
+  const headEnd = stmt.k === "component" ? stmt.call.span.end : stmt.nameSpan.end;
+  const open = src.indexOf("{", headEnd);
+  if (open < 0 || open >= stmt.span.end) return src.slice(0, headEnd) + " { locked }" + src.slice(headEnd);
+  const body = src.slice(open + 1, stmt.span.end - 1);
+  if (!body.includes("\n")) return src.slice(0, open + 1) + (body.trim() ? " locked," : " locked ") + src.slice(open + 1);
+  const first = stmt.items[0];
+  const lineStart = src.lastIndexOf("\n", (first?.span.start ?? open) - 1) + 1;
+  const indent = first ? /^[ \t]*/.exec(src.slice(lineStart))![0] : /^[ \t]*/.exec(src.slice(src.lastIndexOf("\n", stmt.span.start - 1) + 1))![0] + "  ";
+  return src.slice(0, open + 1) + `\n${indent}locked` + src.slice(open + 1);
+}
+
+/** A part, component or frame block by name; a frame member (stand_3) is edited through its frame block (stand). */
+function editableBlock(stmts: Stmt[], name: string) {
+  const own = stmts.find((s): s is Extract<Stmt, { k: "part" | "component" | "frame" }> => (s.k === "part" || s.k === "component" || s.k === "frame") && s.name === name);
+  if (own) return own;
+  const member = /^(.+)_\d+$/.exec(name);
+  return member ? stmts.find((s): s is Extract<Stmt, { k: "frame" }> => s.k === "frame" && s.name === member[1]) : undefined;
 }
 
 /** The text range to delete for one property: its whole line, or the item and its separating comma. */

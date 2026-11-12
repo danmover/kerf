@@ -884,6 +884,196 @@ a:hover {
   color: var(--text-2);
   font-weight: 500;
 }
+/* the view cube: turns with the camera; faces, edges and corners look from that side, dragging it turns the view */
+.vp-cube {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  width: 100px;
+  height: 100px;
+  z-index: 4;
+  user-select: none;
+  -webkit-user-select: none;
+  --vc-x: #ff5d6c;
+  --vc-y: #3ddc97;
+  --vc-z: #6d8bff;
+}
+.viewport[data-backdrop="light"] .vp-cube {
+  --vc-x: #d63a4a;
+  --vc-y: #12985f;
+  --vc-z: #4763e6;
+}
+.vc-stage {
+  position: absolute;
+  inset: 12px;
+  cursor: pointer;
+  touch-action: none;
+}
+.vc-stage:active {
+  cursor: grabbing;
+}
+.vc-cube {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+}
+.vc-face {
+  position: absolute;
+  left: -25px;
+  top: -25px;
+  width: 50px;
+  height: 50px;
+  display: grid;
+  grid-template-columns: 10px 1fr 10px;
+  grid-template-rows: 10px 1fr 10px;
+  backface-visibility: hidden;
+  border: 1px solid rgb(var(--text-2-rgb) / 0.34);
+  border-radius: 3px;
+  /* opaque, so the axes on the far side stay hidden behind it */
+  background: var(--bg-3);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.vc-cell {
+  transition: background 0.12s;
+}
+.vc-cell.edge,
+.vc-cell.corner {
+  background: rgb(var(--text-2-rgb) / 0.07);
+}
+.vc-cell.corner {
+  background: rgb(var(--text-2-rgb) / 0.12);
+}
+.vc-cell.hot {
+  background: rgb(var(--accent-rgb) / 0.55);
+}
+.vc-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  font-family: var(--sans);
+  font-size: 7.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  color: var(--text-2);
+}
+.vc-label small {
+  font-family: var(--mono);
+  font-size: 7px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.vc-axis {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 0;
+  transform-origin: 0 0;
+  transform-style: preserve-3d;
+  pointer-events: none;
+}
+.vc-axis i {
+  position: absolute;
+  left: 0;
+  top: -0.9px;
+  width: 100%;
+  height: 1.8px;
+  border-radius: 1px;
+  background: var(--vc-axis);
+}
+.vc-axis i + i {
+  transform: rotateX(90deg);
+}
+.vc-axis.x,
+.vc-tip.x {
+  --vc-axis: var(--vc-x);
+}
+.vc-axis.y,
+.vc-tip.y {
+  --vc-axis: var(--vc-y);
+}
+.vc-axis.z,
+.vc-tip.z {
+  --vc-axis: var(--vc-z);
+}
+.vc-tip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--vc-axis);
+}
+.vp-cube .vc-home,
+.vp-cube .vc-step {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    opacity 0.12s;
+}
+.vc-home {
+  left: 2px;
+  top: 2px;
+  width: 18px;
+  height: 18px;
+  opacity: 0;
+}
+.vp-cube:hover .vc-home,
+.vc-home:focus-visible {
+  opacity: 1;
+}
+.vc-home:hover,
+.vc-step:hover {
+  color: var(--accent-2);
+}
+.vc-step {
+  width: 16px;
+  height: 14px;
+}
+.vc-step.up {
+  left: 42px;
+  top: 0;
+}
+.vc-step.down {
+  left: 42px;
+  bottom: 0;
+}
+.vc-step.left {
+  left: 0;
+  top: 43px;
+}
+.vc-step.right {
+  right: 0;
+  top: 43px;
+}
+/* the arrow turns, not the button, so its tooltip reads straight */
+.vc-step.down svg {
+  transform: rotate(180deg);
+}
+.vc-step.left svg {
+  transform: rotate(-90deg);
+}
+.vc-step.right svg {
+  transform: rotate(90deg);
+}
 .vp-photo {
   position: absolute;
   right: 14px;
@@ -981,6 +1171,125 @@ a:hover {
   top: 12px;
   width: 260px;
   z-index: 5;
+}
+/* picking faces, edges and corners: the box a drag draws (left to right takes what is wholly inside, right to left what it touches) */
+.vp-boxsel {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  border-radius: 2px;
+}
+.vp-boxsel.window {
+  border: 1px solid rgb(var(--accent-2-rgb) / 0.95);
+  background: rgb(var(--accent-2-rgb) / 0.12);
+}
+.vp-boxsel.crossing {
+  border: 1px dashed rgb(var(--pass-rgb) / 0.95);
+  background: rgb(var(--pass-rgb) / 0.1);
+}
+.pick-svg {
+  z-index: 3;
+}
+.pick-namer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  z-index: 7;
+}
+.pick-namer .input {
+  width: 170px;
+}
+.pick-set {
+  gap: 2px;
+  padding-right: 4px;
+}
+.pick-set > .menu-item {
+  flex: 1;
+  min-width: 0;
+}
+/* drag handles: arrows on a selected part's sizes and the move arrows in its middle */
+.hd-svg .hd-grip {
+  pointer-events: auto;
+  cursor: grab;
+}
+.hd-svg .hd-grip:active {
+  cursor: grabbing;
+}
+.hd-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16;
+}
+.hd-shaft {
+  fill: none;
+  stroke-width: 2.2;
+}
+.hd-head {
+  stroke: rgb(var(--bg-1-rgb) / 0.85);
+  stroke-width: 1;
+}
+.hd-size .hd-shaft {
+  stroke: var(--cyan);
+}
+.hd-size .hd-head {
+  fill: var(--cyan);
+}
+.hd-grip:hover .hd-shaft {
+  stroke-width: 3.2;
+}
+.hd-label rect {
+  fill: rgb(var(--bg-1-rgb) / 0.9);
+  stroke: rgb(var(--cyan-rgb) / 0.55);
+  stroke-width: 1;
+}
+.hd-label text {
+  fill: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-anchor: middle;
+}
+.hd-label.fixed rect {
+  stroke: var(--line-2);
+  stroke-dasharray: 3 2;
+}
+.hd-label.fixed text {
+  fill: var(--text-3);
+}
+.hd-size.busy .hd-label rect,
+.hd-label.move rect {
+  fill: rgb(var(--cyan-rgb) / 0.22);
+  stroke: var(--cyan);
+}
+.hd-x .hd-shaft {
+  stroke: #e5484d;
+}
+.hd-x .hd-head {
+  fill: #e5484d;
+}
+.hd-y .hd-shaft {
+  stroke: #30a46c;
+}
+.hd-y .hd-head {
+  fill: #30a46c;
+}
+.hd-z .hd-shaft {
+  stroke: #3e63dd;
+}
+.hd-z .hd-head {
+  fill: #3e63dd;
+}
+.hd-hub {
+  fill: rgb(var(--bg-1-rgb) / 0.9);
+  stroke: var(--text-3);
+  stroke-width: 1.2;
+}
+.hd-edit {
+  position: absolute;
+  z-index: 6;
+  width: 78px;
+  transform: translate(-50%, -50%);
+  text-align: center;
 }
 .vp-empty {
   position: absolute;
@@ -1712,6 +2021,30 @@ a:hover {
   background: var(--line);
   margin: 4px 2px;
 }
+.ctx-menu {
+  min-width: 220px;
+  z-index: 1000;
+}
+.ctx-icon {
+  width: 16px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-3);
+}
+.ctx-menu .menu-item[aria-checked="true"] .ctx-icon {
+  color: var(--accent-2);
+}
+.ctx-menu .menu-item:focus-visible {
+  outline: none;
+  background: var(--bg-4);
+}
+.ctx-type {
+  margin: 4px 2px 0;
+  padding: 7px 7px 3px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-4);
+}
 .menu-label {
   padding: 6px 9px 4px;
   font-family: var(--mono);
@@ -2311,6 +2644,82 @@ a:hover {
   font-family: var(--mono);
   color: var(--text);
   width: 50px;
+}
+
+/* New frame dialog */
+.frame-panel {
+  right: 12px;
+  top: 56px;
+  width: 300px;
+  max-height: calc(100% - 72px);
+  overflow-y: auto;
+  font-size: 12px;
+  display: grid;
+  gap: 7px;
+}
+.frame-panel .mt-head {
+  margin-bottom: 0;
+}
+.frame-panel .mt-num {
+  grid-template-columns: 74px 1fr auto;
+}
+.frame-panel-intro {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.frame-dialog-sum {
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgb(var(--line-rgb) / 0.35);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.frame-dialog-sum.bad {
+  color: var(--fail);
+}
+
+/* frames' cut list, under the parts list */
+.frame-cuts {
+  border-top: 1px solid var(--line);
+  margin-top: 6px;
+}
+.frame-cuts-h {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-right: 10px;
+}
+.frame-cut {
+  padding-bottom: 8px;
+}
+.frame-cut-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 2px;
+  background: none;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+.frame-cut-title:hover b {
+  text-decoration: underline;
+}
+.frame-cut .bom th {
+  position: static;
+}
+.frame-cut-row {
+  cursor: pointer;
+}
+.frame-cut-row:hover td {
+  background: rgb(var(--line-rgb) / 0.35);
 }
 
 .graph-wrap {

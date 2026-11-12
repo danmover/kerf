@@ -4,7 +4,7 @@
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
 import { bboxOf } from "./build";
-import type { InspectEdge, InspectFace, InspectRequest, InspectResult } from "./protocol";
+import type { InspectEdge, InspectFace, InspectRequest, InspectResult, OutlineEdge } from "./protocol";
 import type { V3 } from "./recipe";
 import { Topo, type FeatureTools } from "./topology";
 
@@ -110,6 +110,7 @@ export function inspectShape(shape: Shape3D, features: Map<string, FeatureTools>
       if (bestF >= 0) {
         pick.face = { ...faceOut(bestF), distance: r2(bestFd) };
         for (const f of topo.featuresOfFace(bestF)) selectors.push(`${f}.faces`);
+        if (req.outline) pick.outline = outlineOf(topo.faces[bestF]);
       }
       result.pick = pick;
     }
@@ -118,4 +119,23 @@ export function inspectShape(shape: Shape3D, features: Map<string, FeatureTools>
   } finally {
     topo.dispose();
   }
+}
+
+/** The edges round a face, sampled: two points for a line, five along a circle or arc, seventeen along anything else. */
+function outlineOf(face: R.Face): OutlineEdge[] {
+  const out: OutlineEdge[] = [];
+  for (const e of face.edges) {
+    const kind = String(e.geomType);
+    const at = (t: number): V3 => {
+      const v = e.pointAt(t);
+      const p: V3 = [v.x, v.y, v.z];
+      v.delete();
+      return p;
+    };
+    if (kind === "LINE") out.push({ kind: "line", pts: [at(0), at(1)] });
+    else if (kind === "CIRCLE") out.push({ kind: "circle", pts: [0, 0.25, 0.5, 0.75, 1].map(at) });
+    else out.push({ kind: "other", pts: Array.from({ length: 17 }, (_, k) => at(k / 16)) });
+    e.delete();
+  }
+  return out;
 }

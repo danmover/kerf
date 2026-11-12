@@ -10,7 +10,7 @@ import { MOULD_FNS } from "./mould";
 import { AERO_FNS } from "./aero";
 import { BLOCK_FNS } from "./blocks";
 import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, Ref, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
-import { SEL_PRESETS, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
+import { MAX_TAPER, SEL_PRESETS, UNTIL_LIMIT, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
 import { threadDepth, threadTurnsError } from "../kernel/threadMath";
 import { THREADS, parseThreadName } from "../library/standards";
 import { materialRecord } from "../library/materialDb";
@@ -395,25 +395,68 @@ function shiftFrame(f: Frame, d: number): Frame {
   return { ...f, o: vadd(f.o, vscale(f.n, d)) };
 }
 
+export const THIN_SIDES = ["inside", "outside", "center"] as const;
+export type ThinSide = (typeof THIN_SIDES)[number];
+
+/** Only the wall of a profile, t thick along its outline (and its holes): inside it (the outer size stays), outside it, or centred on it. */
+export function thinProfile(p: Profile, t: number, side: ThinSide): Profile {
+  if (side === "inside") return { t: "diff2", a: p, b: [{ t: "offset", p, d: -t }] };
+  if (side === "outside") return { t: "diff2", a: { t: "offset", p, d: t }, b: [p] };
+  return { t: "diff2", a: { t: "offset", p, d: t / 2 }, b: [{ t: "offset", p, d: -t / 2 }] };
+}
+
+/** taper, thin and until, shared by extrude() of a profile and of a sketch. */
+export function extrudeOptions(a: Args, p: Profile): { p: Profile; taper: number; until?: "next" } {
+  const fname = a.fname;
+  const until = a.has("until") ? a.oneOf("until", ["next"] as const, "next") : undefined;
+  if (until && a.has("h")) a.ctx.error(`${fname}(): give a depth or until: "next", not both`);
+  const taper = a.num("taper", 0);
+  if (!(Math.abs(taper) < MAX_TAPER)) a.ctx.error(`${fname}(): taper must be between -${MAX_TAPER} and ${MAX_TAPER} degrees (got ${taper})`);
+  let out = p;
+  if (a.has("thin")) out = thinProfile(p, a.positive("thin"), a.oneOf("thin_side", THIN_SIDES, "inside"));
+  else if (a.has("thin_side")) a.ctx.error(`${fname}(): thin_side goes with thin: (the wall thickness)`);
+  return { p: out, taper, ...(until ? { until } : {}) };
+}
+
+/**
+ * The recipe for a profile pushed from `span[0]` to `span[1]` along the frame's normal (either may be negative).
+ * A taper leans the sides in from where the extrusion starts, the end nearer the frame's plane; a span across the
+ * plane tapers both ways from it, as two halves.
+ */
+export function extrudeRecipe(p: Profile, f: Frame, span: [number, number], o: { twist?: number; scale?: number; taper?: number; until?: "next" } = {}): ShapeRecipe {
+  const twist = o.twist ?? 0;
+  const scale = o.scale ?? 1;
+  const extra = { ...(o.taper ? { taper: o.taper } : {}), ...(o.until ? { until: o.until } : {}) };
+  const [a, b] = span;
+  if (!o.taper || o.until) return { t: "extrude", p, h: b - a, f: a ? shiftFrame(f, a) : f, twist, scale, ...extra };
+  if (a < 0 && b > 0) return { t: "union", shapes: [extrudeRecipe(p, f, [0, b], o), extrudeRecipe(p, f, [0, a], o)] };
+  // a taper measured from the frame's plane: start there, or from the end nearer it when the span is off the plane
+  const near = Math.abs(a) <= Math.abs(b) ? a : b;
+  const far = near === a ? b : a;
+  return { t: "extrude", p, h: far - near, f: near ? shiftFrame(f, near) : f, twist, scale, ...extra };
+}
+
 const pointRevolve = SHAPE_FNS.revolve;
 
 export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
   def(
     "extrude",
-    ["profile", "h", "at", "dir", "rot", "twist", "scale", "symmetric"],
+    ["profile", "h", "at", "dir", "rot", "twist", "scale", "symmetric", "taper", "thin", "thin_side", "until"],
     (a) => {
-      const p = a.profile("profile");
-      const h = a.positive("h");
+      const o = extrudeOptions(a, a.profile("profile"));
+      const symmetric = a.bool("symmetric");
+      if (o.until && symmetric) a.ctx.error('extrude(): until: "next" runs one way from where it starts; leave out symmetric');
+      const h = o.until ? UNTIL_LIMIT : a.positive("h");
       const dir = a.dir("dir", Z);
-      let f = frameAt(a.vec3("at", [0, 0, 0]), dir, a.num("rot", 0));
-      if (a.bool("symmetric")) f = shiftFrame(f, -h / 2);
+      const f = frameAt(a.vec3("at", [0, 0, 0]), dir, a.num("rot", 0));
       const scale = a.num("scale", 1);
       if (!(scale > 0)) a.ctx.error("extrude(): scale must be greater than 0");
       const twist = a.num("twist", 0);
       if (Math.abs(twist) > MAX_TWIST) a.ctx.error(`extrude(): twist ${twist}° is more than ${MAX_TWIST / 360} full turns; for a coil, sweep() a profile along a helix()`);
-      return new ShapeV({ t: "extrude", p, h, f, twist, scale });
+      if (o.taper && (twist || scale !== 1)) a.ctx.error("extrude(): taper can't be combined with twist or scale");
+      return new ShapeV(extrudeRecipe(o.p, f, symmetric ? [-h / 2, h / 2] : [0, h], { twist, scale, taper: o.taper, until: o.until }));
     },
-    "extrude(profile, h, at: (0, 0, 0), dir: Z, rot: 0, twist: 0, scale: 1, symmetric: false) — pushes a profile h along dir. The profile's (x, y) map to X, Y for dir Z; for a horizontal dir, y is up. twist turns it (degrees over h); scale shrinks the far end (tapered bosses, nozzles).",
+    'extrude(profile, h, at: (0, 0, 0), dir: Z, rot: 0, twist: 0, scale: 1, symmetric: false, taper: 0, thin: 0, thin_side: "inside", until: "next") — pushes a profile h along dir. The profile\'s (x, y) map to X, Y for dir Z; for a horizontal dir, y is up. twist turns it (degrees over h); scale shrinks the far end (nozzles). taper leans the sides in by that many degrees from the start (out when negative; holes open up): mould and casting draft, tapered bosses and pins; with symmetric it tapers both ways from the middle. thin: t makes only a wall t thick along the outline (an open box or tube from a rectangle or circle), inside it ("inside", the outer size stays), "outside" or "center". until: "next" (in place of h) runs it until it meets the part it is added to (a boss up to a curved wall) or, cut, through the first wall it meets.',
   ),
   [
     "revolve",

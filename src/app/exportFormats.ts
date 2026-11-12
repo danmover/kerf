@@ -32,6 +32,7 @@ import { exportDrawingsPdf, exportFlatPatternsDxf } from "../drawing/export";
 import { useAnalysis } from "../analysis/runtime";
 import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
 import { download } from "../persist/files";
+import { openFilmMaker } from "../film/store";
 
 async function exportDrawings() {
   await exportDrawingsPdf();
@@ -119,6 +120,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "png-4k", group: "image", label: "4K picture", detail: "3840 × 2400 for print and slides", ext: ".png", icon: "Eye", run: () => exportPngSized(3840, 2400, "4K") },
   { id: "photoreal", group: "image", label: "Photoreal picture", detail: "Path traced until clean, at the view's size", ext: ".png", icon: "Aperture", unavailable: () => viewport()?.photoBlocker() ?? null, run: () => exportPhotoreal() },
   { id: "sheet", group: "image", label: "Four-view sheet", detail: "Iso, front, top and right on one image", ext: ".png", icon: "Grid", run: () => exportViewSheet() },
+  { id: "film", group: "image", label: "Showcase film", detail: "A short film of the design: pick what's in it, then render", ext: ".mp4", icon: "Film", unavailable: () => (useDesign.getState().model?.parts.length ? null : "The design has no parts yet"), run: () => openFilmMaker() },
   { id: "copy", group: "image", label: "Copy view", detail: "Paste into a chat, doc or email", ext: "clipboard", icon: "Copy", run: () => copyViewImage() },
 
   { id: "drawings", group: "document", label: "Engineering drawings", detail: "Every sheet, dimensioned, in one PDF", ext: ".pdf", icon: "Doc", run: () => exportDrawings() },
