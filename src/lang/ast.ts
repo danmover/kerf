@@ -34,7 +34,8 @@ export type Item =
   | { k: "op"; op: "body" | "add" | "cut" | "intersect"; shape: Expr; name?: string; nameSpan?: Span; span: Span }
   /** detail that only builds in the full-quality pass */
   | { k: "cosmetic"; body: Item[]; span: Span }
-  | { k: "modifier"; call: Expr & { k: "call" }; span: Span }
+  /** a modifier (shell(2), fillet(1, edges: ...)) or a use of the design's own feature, which `as name` can name */
+  | { k: "modifier"; call: Expr & { k: "call" }; name?: string; nameSpan?: Span; span: Span }
   | { k: "for"; varName: string; iter: Expr; body: Item[]; span: Span }
   | { k: "if"; cond: Expr; then: Item[]; else?: Item[]; span: Span }
   | { k: "let"; name: string; value: Expr; span: Span };
@@ -54,8 +55,19 @@ export type BriefItem =
   | { k: "reference"; id: string; title: string; props: BriefProp[]; span: Span; idSpan: Span }
   | { k: "assume"; text: string; confirmed: boolean; span: Span };
 
+/** A parameter of the design's own function or feature: `d` or `d: 8` (a default, worked out when it is used). */
+export interface DefParam {
+  name: string;
+  default?: Expr;
+  span: Span;
+}
+
 export type Stmt =
   | { k: "design"; name: string; span: Span }
+  /** `fn name(a, b: 2) = expr` or `fn name(a) { let t = ...  expr }`: the design's own function, callable after it */
+  | { k: "fn"; name: string; params: DefParam[]; doc?: string; lets: { name: string; value: Expr; span: Span }[]; body: Expr; span: Span; nameSpan: Span }
+  /** `feature name(at, d: 8) { add ... cut ... fillet ... }`: the design's own feature, used in parts as name(...) [as label] */
+  | { k: "feature"; name: string; params: DefParam[]; doc?: string; items: Item[]; span: Span; nameSpan: Span }
   | { k: "brief"; items: BriefItem[]; span: Span }
   | { k: "note"; text: string; span: Span }
   | {
@@ -215,6 +227,8 @@ export function stmtName(s: Stmt): string | undefined {
     case "sketch":
     case "drawing":
     case "frame":
+    case "fn":
+    case "feature":
       return s.name;
     case "mate":
       return s.name;

@@ -1,7 +1,7 @@
 // Recursive-descent parser for the Kerf design language.
 // Recovers at statement boundaries so the editor can show several errors.
 
-import type { Arg, BriefItem, BriefProp, ConfigRowNode, DecisionOptionNode, Expr, Item, Program, SketchEntityKind, ScenarioItem, SketchItem, Span, Stmt } from "./ast";
+import type { Arg, BriefItem, BriefProp, ConfigRowNode, DecisionOptionNode, DefParam, Expr, Item, Program, SketchEntityKind, ScenarioItem, SketchItem, Span, Stmt } from "./ast";
 import { lex, LexError, type Token } from "./lexer";
 
 export interface Diagnostic {
@@ -27,6 +27,9 @@ const TOP_LEVEL = new Set(["design", "param", "let", "component", "interface", "
 
 /** Machine statements. They are contextual words, not keywords, so older designs can still use them as names. */
 const MACHINE_STMTS = new Set(["wire", "net", "firmware", "test", "buy", "scenario"]);
+
+/** The design's own functions and features: `fn name(`, `function name(` and `feature name(`. Contextual words, not keywords. */
+const DEF_WORDS = new Set(["fn", "function", "feature"]);
 
 /** Entries inside `brief { ... }` that are not `field: value` pairs. Not keywords, so they stay usable as names elsewhere. */
 const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
@@ -116,6 +119,9 @@ class Parser {
   /** Skip to the next top-level keyword that is outside any braces. */
   recover(startIdx: number) {
     if (this.i === startIdx) this.i++;
+    // look again from the start of the line that went wrong: a statement there (fn twice(v) = ...) may have been read
+    // as part of the unfinished one above
+    while (this.i > startIdx + 1 && this.t[this.i - 1].line === this.peek().line) this.i--;
     let depth = 0;
     // re-scan from statement start to compute depth correctly
     for (let j = startIdx; j < this.i; j++) {
@@ -125,7 +131,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.atMate() || this.atConfigs() || this.machineStmtAhead()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.atMate() || this.atConfigs() || this.atDef() || this.machineStmtAhead()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -153,6 +159,69 @@ class Parser {
   /** `configs "Sizes" {` (or `configs {`) starts the design's configurations; elsewhere "configs" is an ordinary name. */
   atConfigs() {
     return this.is("ident", "configs") && ((this.is("str", undefined, 1) && this.is("op", "{", 2)) || this.is("op", "{", 1));
+  }
+
+  /** `fn name(`, `function name(` or `feature name(`: the design's own function or feature; elsewhere these are ordinary names. */
+  atDef() {
+    return this.is("ident") && DEF_WORDS.has(this.peek().value) && this.is("ident", undefined, 1) && this.is("op", "(", 2);
+  }
+
+  /** The parameters of a function or feature: `(at, d: 8, h = 10)`. A default is worked out each time it is used. */
+  defParams(what: string): DefParam[] {
+    this.expect("op", "(");
+    const out: DefParam[] = [];
+    while (!this.isOp(")")) {
+      const tk = this.expect("ident", undefined, `a parameter name for ${what}`);
+      let def: Expr | undefined;
+      if (this.eat("op", ":") || this.eat("op", "=")) def = this.expr();
+      if (out.some((p) => p.name === tk.value)) throw new ParseError(`${what} has two parameters named ${tk.value}`, tk.start, tk.end);
+      out.push({ name: tk.value, ...(def ? { default: def } : {}), span: { start: tk.start, end: this.prevEnd() } });
+      if (!this.eat("op", ",")) break;
+    }
+    this.expect("op", ")", `")" after ${what}'s parameters`);
+    return out;
+  }
+
+  /**
+   * fn area(w, h) = w * h
+   * fn web(len, h: 8) "A stiffening web" { let t = max(1.2, h / 6)  box(len, t, h) }
+   * feature boss(at, d: 8, h: 10) "A screw boss" { add cylinder(d: d, h: h, at: at) as post  fillet(0.5, edges: post.root) }
+   */
+  defStmt(): Stmt {
+    const kw = this.next();
+    const start = kw.start;
+    const nameTk = this.expect("ident", undefined, kw.value === "feature" ? "a feature name" : "a function name");
+    const what = `${nameTk.value}()`;
+    const params = this.defParams(what);
+    const doc = this.is("str") ? this.next().value : undefined;
+    const nameSpan = { start: nameTk.start, end: nameTk.end };
+    if (kw.value === "feature") {
+      if (this.isOp("=")) throw new ParseError(`A feature is a block of steps: feature ${nameTk.value}(...) { add ... cut ... }. For a value, write fn ${nameTk.value}(...) = ...`, this.peek().start, this.peek().end);
+      const items = this.block();
+      return { k: "feature", name: nameTk.value, params, ...(doc !== undefined ? { doc } : {}), items, span: { start, end: this.prevEnd() }, nameSpan };
+    }
+    const lets: { name: string; value: Expr; span: Span }[] = [];
+    let body: Expr;
+    if (this.eat("op", "=")) body = this.expr();
+    else {
+      const open = this.expect("op", "{", `"=" and the value it gives, or "{" with lets and the value last, like fn area(w, h) = w * h`);
+      for (;;) {
+        while (this.eat("op", ";") || this.eat("op", ","));
+        if (!this.is("kw", "let")) break;
+        const l = this.next();
+        const n = this.expect("ident");
+        this.expect("op", "=");
+        const value = this.expr();
+        lets.push({ name: n.value, value, span: { start: l.start, end: this.prevEnd() } });
+      }
+      if (this.isOp("}") || this.is("eof")) throw new ParseError(`${what} needs the value it gives back as its last line, after its lets`, open.start, open.end);
+      // `return x` reads as x
+      if (this.is("ident", "return") && !this.isOp("}", 1) && !this.is("eof", undefined, 1) && this.peek(1).line === this.peek().line) this.next();
+      body = this.expr();
+      while (this.eat("op", ";") || this.eat("op", ","));
+      this.expect("op", "}", `"}" to close ${what}: a function's last line is the value it gives back, and nothing comes after it`);
+    }
+    return { k: "fn", name: nameTk.value, params, ...(doc !== undefined ? { doc } : {}), lets, body, span: { start, end: this.prevEnd() }, nameSpan };
   }
 
   /** `mate against(...)` or `mate name = against(...)`: how two parts meet; elsewhere "mate" is an ordinary name. */
@@ -326,10 +395,11 @@ class Parser {
       if (call.k !== "call") throw new ParseError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), like mate against(face(lid, -Z), face(box, +Z))", call.span.start, call.span.end);
       return { k: "mate", ...(name ? { name, nameSpan } : {}), call, span: { start, end: this.prevEnd() } };
     }
+    if (this.atDef()) return this.defStmt();
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, frame, mate, configs, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, fn, feature, component, interface, part, sketch, require, decision, analysis, drawing, frame, mate, configs, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -758,6 +828,11 @@ class Parser {
       if (this.isOp("(", 1)) {
         const call = this.expr();
         if (call.k !== "call") throw new ParseError("Expected a modifier call like shell(2)", call.span.start, call.span.end);
+        // a use of the design's own feature can be named: boss((10, 10, 3)) as big
+        if (this.eat("kw", "as")) {
+          const n = this.expect("ident", undefined, 'a name after "as"');
+          return { k: "modifier", call, name: n.value, nameSpan: { start: n.start, end: n.end }, span: { start, end: this.prevEnd() } };
+        }
         return { k: "modifier", call, span: { start, end: this.prevEnd() } };
       }
       this.next();

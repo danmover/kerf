@@ -392,7 +392,7 @@ export interface EvalDecision {
 
 export interface DepNode {
   id: string;
-  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "frame" | "require" | "analysis";
+  kind: "param" | "given" | "let" | "fn" | "feature" | "interface" | "sketch" | "component" | "part" | "frame" | "require" | "analysis";
   label: string;
 }
 
@@ -496,7 +496,15 @@ export interface Model {
   /** dependency graph: edges from a definition to what reads it */
   graph: { nodes: DepNode[]; edges: { from: string; to: string }[] };
   /** names of top-level blocks with their source spans (for editing and locks) */
-  blocks: { name: string; kind: string; span: Span; locked: boolean }[];
+  blocks: {
+    name: string;
+    kind: string;
+    span: Span;
+    locked: boolean;
+    /** the design's own functions and features: their parameters as written ("at, d: 8") and what they are for */
+    sig?: string;
+    doc?: string;
+  }[];
   /** geometric queries requested by requirements */
   geoQueries: GeoQuery[];
   /** engineering drawings defined in the source */

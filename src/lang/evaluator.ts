@@ -1,7 +1,7 @@
 // Evaluates a parsed Kerf program into a Model: parameters, placed parts and
 // components with geometry recipes, requirement results and a dependency graph.
 
-import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
+import type { BriefItem, BriefProp, DefParam, Expr, Item, Program, Span, Stmt } from "./ast";
 import { parse, parseExpression, type Diagnostic } from "./parser";
 import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, SketchLineObj, SketchObj, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
 import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionProps, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
@@ -83,6 +83,39 @@ class EvalError extends Error {
     super(message);
   }
 }
+
+type FnStmt = Extract<Stmt, { k: "fn" }>;
+type FeatureStmt = Extract<Stmt, { k: "feature" }>;
+
+/** The design's own function (fn name(a, b: 2) = ...): a value like any other function, callable after it. */
+class UserFn extends Fn {
+  constructor(
+    name: string,
+    call: Fn["call"],
+    doc: string,
+    public stmt: FnStmt,
+  ) {
+    super(name, call, doc);
+  }
+}
+
+/** The design's own feature (feature name(...) { steps }): its steps go into a part where it is used. */
+class UserFeature extends Fn {
+  constructor(
+    name: string,
+    call: Fn["call"],
+    doc: string,
+    public stmt: FeatureStmt,
+  ) {
+    super(name, call, doc);
+  }
+}
+
+/** How deep the design's own functions may call themselves. */
+const MAX_FN_DEPTH = 100;
+
+/** The parameters as written: "at, d: 8, h: 10". */
+const sigText = (src: string, params: DefParam[]) => params.map((p) => (p.default ? `${p.name}: ${src.slice(p.default.span.start, p.default.span.end)}` : p.name)).join(", ");
 
 const POSITIONAL: Record<string, string[]> = {
   bearing: ["code"],
@@ -186,6 +219,8 @@ interface PartState {
   flex: FlexInfo[];
   /** the part's sheet() body */
   sheet?: SheetInfo;
+  /** inside a use of the design's own feature: the name its steps go under (boss#1), its scope (where its own as-names live) and the feature */
+  inst?: { name: string; scope: Scope; feature: string };
   /** aero_tube()s it is built from */
   tubes: AeroTube[];
 }
@@ -250,6 +285,7 @@ export function evaluateSelector(text: string, features: string[], design?: stri
   if (design) ev.run(parse(design).program);
   const scope = new Scope();
   for (const f of features) scope.vars.set(f, new FeatRef(f, "feature"));
+  ev.stepNames = new Map(features.map((f) => [f, "feature"]));
   try {
     const v = ev.expr(parsed.expr, scope);
     ev.callSpan = parsed.expr.span;
@@ -325,6 +361,11 @@ class Evaluator {
   pendingRefs: { mc: MachineComponent; prefix: string }[] = [];
   scenarios: ScenarioDef[] = [];
   apps: AppSpec[] = [];
+  /** how deep the design's own functions are calling, and which of its features are being used inside which */
+  fnDepth = 0;
+  featStack: string[] = [];
+  /** the named steps of the part being read (or those a selector is read against), so big.post finds a step named inside a use */
+  stepNames: Map<string, string> | null = null;
 
   constructor(
     private src: string,
@@ -390,6 +431,209 @@ class Evaluator {
     this.globals.set(name, value);
     this.defKind.set(name, kind);
     this.defLabel.set(name, label ?? name);
+  }
+
+  // ---------------- the design's own functions and features ----------------
+
+  /** A name for the design's own function or feature: not one of Kerf's (should a later Kerf add the same name, the design's wins). */
+  ownName(name: string, what: string, span: Span) {
+    if (this.builtins.has(name) || name in MODIFIER_PARAMS || name === "step") throw new EvalError(`"${name}" is one of Kerf's own names: give your ${what} another name`, span);
+  }
+
+  /** The design's names a function or feature reads, for the dependency graph: what it makes depends on them. */
+  defDeps(exprs: Expr[], items: Item[], bound: Set<string>) {
+    const names = new Set<string>();
+    const ex = (e: Expr | undefined): void => {
+      if (!e) return;
+      switch (e.k) {
+        case "ident":
+          names.add(e.name);
+          return;
+        case "vec":
+        case "list":
+          e.items.forEach(ex);
+          return;
+        case "unary":
+          ex(e.arg);
+          return;
+        case "binary":
+          ex(e.left);
+          ex(e.right);
+          return;
+        case "ternary":
+          ex(e.cond);
+          ex(e.a);
+          ex(e.b);
+          return;
+        case "member":
+          ex(e.obj);
+          return;
+        case "index":
+          ex(e.obj);
+          ex(e.index);
+          return;
+        case "call":
+          ex(e.callee);
+          for (const a of e.args) ex(a.value);
+          return;
+      }
+    };
+    const walk = (list: Item[]): void => {
+      for (const i of list) {
+        if (i.k === "prop") ex(i.value);
+        else if (i.k === "let") (ex(i.value), bound.add(i.name));
+        else if (i.k === "op") (ex(i.shape), i.name && bound.add(i.name));
+        else if (i.k === "modifier") (ex(i.call), i.name && bound.add(i.name));
+        else if (i.k === "cosmetic") walk(i.body);
+        else if (i.k === "for") (bound.add(i.varName), ex(i.iter), walk(i.body));
+        else if (i.k === "if") (ex(i.cond), walk(i.then), i.else && walk(i.else));
+      }
+    };
+    exprs.forEach(ex);
+    walk(items);
+    for (const n of names) if (!bound.has(n) && this.globals.has(n)) this.current?.add(this.memberOf.get(n) ?? n);
+  }
+
+  /** fn name(a, b: 2) = expr, or with lets in braces: a function of the design's own. */
+  userFn(s: FnStmt) {
+    const sig = sigText(this.src, s.params);
+    this.blocks.push({ name: s.name, kind: "fn", span: s.span, locked: false, sig, ...(s.doc ? { doc: s.doc } : {}) });
+    this.ownName(s.name, "function", s.nameSpan);
+    const defaults = s.params.map((p) => p.default).filter((e): e is Expr => !!e);
+    this.defDeps([...defaults, ...s.lets.map((l) => l.value), s.body], [], new Set([...s.params.map((p) => p.name), ...s.lets.map((l) => l.name)]));
+    const f: UserFn = new UserFn(s.name, (pos, named) => this.callUserFn(f, pos, named), `${s.name}(${sig})${s.doc ? `: ${s.doc}` : ""} (the design's own function)`, s);
+    this.define(s.name, "fn", f, s.nameSpan);
+  }
+
+  /** feature name(at, d: 8) { steps }: steps of the design's own, used in parts. */
+  userFeature(s: FeatureStmt) {
+    const sig = sigText(this.src, s.params);
+    this.blocks.push({ name: s.name, kind: "feature", span: s.span, locked: false, sig, ...(s.doc ? { doc: s.doc } : {}) });
+    this.ownName(s.name, "feature", s.nameSpan);
+    const prop = s.items.find((i) => i.k === "prop" || i.k === "flag");
+    if (prop) throw new EvalError(`A feature is steps (add, cut, fillet, for, if, let), and ${prop.k === "prop" ? `${prop.name}:` : (prop as { name: string }).name} belongs to the part it is used in. Give it as a parameter if the feature needs it.`, prop.span);
+    const defaults = s.params.map((p) => p.default).filter((e): e is Expr => !!e);
+    this.defDeps(defaults, s.items, new Set(s.params.map((p) => p.name)));
+    const f = new UserFeature(
+      s.name,
+      () => {
+        throw new EvalError(`${s.name}() is a feature: use it on its own line in a part, like ${s.name}(...) or ${s.name}(...) as label. For a value or a shape, make it a function: fn ${s.name}(...) = ...`, this.callSpan);
+      },
+      `${s.name}(${sig})${s.doc ? `: ${s.doc}` : ""} (the design's own feature: use it in a part on its own line)`,
+      s,
+    );
+    this.define(s.name, "feature", f, s.nameSpan);
+  }
+
+  /** Bind a call's values to a function's or feature's parameters; a default is worked out from the ones before it. */
+  bindArgs(what: string, params: DefParam[], pos: Value[], named: Record<string, Value>, at: Span): Scope {
+    const list = params.map((p) => p.name);
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(named, k);
+    if (pos.length > params.length) throw new EvalError(`${what}() takes ${params.length ? `${params.length} value${params.length === 1 ? "" : "s"} (${list.join(", ")})` : "no values"}, not ${pos.length}`, at);
+    for (const k of Object.keys(named))
+      if (!list.includes(k)) {
+        const sugg = suggest(k, list);
+        throw new EvalError(`${what}() has no parameter "${k}"${sugg ? `. Did you mean "${sugg}"?` : list.length ? `: its parameters are ${list.join(", ")}` : ""}`, at);
+      }
+    const scope = new Scope();
+    params.forEach((p, i) => {
+      if (i < pos.length) {
+        if (has(p.name)) throw new EvalError(`${what}(): ${p.name} is given twice, in its place and as ${p.name}:`, at);
+        scope.vars.set(p.name, pos[i]);
+      } else if (has(p.name)) scope.vars.set(p.name, named[p.name]);
+      else if (p.default) scope.vars.set(p.name, this.expr(p.default, scope));
+      else throw new EvalError(`${what}() needs ${p.name}: ${what}(${sigText(this.src, params)})`, at);
+    });
+    return scope;
+  }
+
+  callUserFn(f: UserFn, pos: Value[], named: Record<string, Value>): Value {
+    const s = f.stmt;
+    const at = this.callSpan;
+    if (this.fnDepth >= MAX_FN_DEPTH) throw new EvalError(`${s.name}() calls itself more than ${MAX_FN_DEPTH} deep: give it a case that stops, like n <= 0 ? 0 : ${s.name}(n - 1)`, at);
+    const scope = this.bindArgs(s.name, s.params, pos, named, at);
+    this.fnDepth++;
+    try {
+      for (const l of s.lets) scope.vars.set(l.name, this.expr(l.value, scope));
+      return this.expr(s.body, scope);
+    } catch (e) {
+      throw this.inDef(e, `${s.name}()`, at);
+    } finally {
+      this.fnDepth--;
+    }
+  }
+
+  /** An error inside the design's own function or feature, told with where it was used. */
+  inDef(e: unknown, what: string, at: Span): unknown {
+    if (!(e instanceof EvalError) || e.message.startsWith("In ")) return e;
+    return new EvalError(`In ${what}, used on line ${this.lineOf(at.start)}: ${e.message}`, e.span);
+  }
+
+  lineOf(offset: number): number {
+    let n = 1;
+    for (let i = 0; i < offset && i < this.src.length; i++) if (this.src.charCodeAt(i) === 10) n++;
+    return n;
+  }
+
+  /** The design's own feature a step in a part uses, when that is what the name is. */
+  ownFeature(name: string, scope: Scope): UserFeature | undefined {
+    const local = scope.get(name);
+    if (local !== undefined) return local instanceof UserFeature ? local : undefined;
+    const g = this.globals.get(name);
+    if (!(g instanceof UserFeature)) return undefined;
+    this.current?.add(name);
+    return g;
+  }
+
+  /**
+   * A use of the design's own feature in a part: its steps run there with the values given, and everything they make
+   * is named for the use (as label, or boss#1), so label.root, label.edges and label.faces pick it like any named step.
+   * Inside, names given with as belong to that use (label.post), so two uses never share a name.
+   */
+  applyFeature(f: UserFeature, call: Expr & { k: "call" }, scope: Scope, st: PartState, depth: number, as: string | undefined, asSpan: Span | undefined, span: Span) {
+    const s = f.stmt;
+    if (this.featStack.includes(s.name)) throw new EvalError(`${s.name}() is used inside itself (${[...this.featStack.slice(this.featStack.indexOf(s.name)), s.name].join(" → ")}): a feature can't be made of itself`, call.span);
+    const pos: Value[] = [];
+    const named: Record<string, Value> = {};
+    for (const a of call.args) {
+      const v = this.expr(a.value, scope);
+      if (a.name) {
+        if (Object.prototype.hasOwnProperty.call(named, a.name)) throw new EvalError(`Argument "${a.name}" given twice`, a.span);
+        named[a.name] = v;
+      } else {
+        if (Object.keys(named).length) throw new EvalError("Positional arguments must come before named ones", a.span);
+        pos.push(v);
+      }
+    }
+    const saved = this.callSpan;
+    this.callSpan = call.span;
+    try {
+      const fscope = this.bindArgs(s.name, s.params, pos, named, call.span);
+      const name = as ? this.nameFeature(st, as, s.name, asSpan ?? span) : this.autoName(st, s.name);
+      const outer = st.inst;
+      st.inst = { name, scope: fscope, feature: s.name };
+      this.featStack.push(s.name);
+      try {
+        this.items(s.items, fscope, st, depth + 1);
+      } catch (e) {
+        throw this.inDef(e, `${s.name}()`, call.span);
+      } finally {
+        st.inst = outer;
+        this.featStack.pop();
+      }
+    } finally {
+      this.callSpan = saved;
+    }
+  }
+
+  /** The name an unnamed ready-made feature or a use of the design's own feature goes under: screw_boss#1, boss#2. */
+  autoName(st: PartState, kind: string): string {
+    const key = st.inst ? `${st.inst.name}.${kind}` : kind;
+    const k = (st.auto.get(key) ?? 0) + 1;
+    st.auto.set(key, k);
+    const name = `${key}#${k}`;
+    st.feats.set(name, { kind, cosmetic: st.cosmetic });
+    return name;
   }
 
   run(program: Program) {
@@ -566,6 +810,12 @@ class Evaluator {
         if (v instanceof CalcObj) this.machine.calcs.push({ ...v.trace, name: s.name, span: s.span });
         return;
       }
+      case "fn":
+        this.userFn(s);
+        return;
+      case "feature":
+        this.userFeature(s);
+        return;
       case "interface": {
         this.blocks.push({ name: s.name, kind: "interface", span: s.span, locked: false });
         const scope = new Scope();
@@ -1001,7 +1251,9 @@ class Evaluator {
       }
       case "call": {
         const override = e.callee.k === "ident" ? this.callOverride?.[e.callee.name] : undefined;
-        const callee = override ?? this.expr(e.callee, scope);
+        let callee = override ?? this.expr(e.callee, scope);
+        // a value named like one of Kerf's functions (a feature's hole: 3 parameter) leaves hole(...) calling the function
+        if (!(callee instanceof Fn) && e.callee.k === "ident" && this.builtins.get(e.callee.name) instanceof Fn) callee = this.builtins.get(e.callee.name)!;
         if (!(callee instanceof Fn)) throw new EvalError(`${show(callee)} is not a function`, e.callee.span);
         const pos: Value[] = [];
         const named: Record<string, Value> = {};
@@ -1044,7 +1296,12 @@ class Evaluator {
     if (o instanceof FeatRef) {
       const m = featMember(o, name);
       if (m !== undefined) return m;
-      throw new EvalError(`Feature "${o.name}" has root, tip, edges, faces, convex and concave, not "${name}"`, span);
+      // a step named inside a use of the design's own feature: big.post
+      const sub = `${o.name}.${name}`;
+      const kind = this.stepNames?.get(sub);
+      if (kind !== undefined) return new FeatRef(sub, kind);
+      const inside = [...(this.stepNames?.keys() ?? [])].filter((n) => n.startsWith(`${o.name}.`) && !n.slice(o.name.length + 1).includes(".") && !n.includes("#", o.name.length)).map((n) => n.slice(o.name.length + 1));
+      throw new EvalError(`Feature "${o.name}" has root, tip, edges, faces, convex and concave${inside.length ? `, and the steps named inside it: ${inside.join(", ")}` : ""}, not "${name}"`, span);
     }
     if (o instanceof SelV) {
       const m = selMember(o, name);
@@ -2056,7 +2313,13 @@ class Evaluator {
       // properties can still matter for motion
       return;
     }
-    this.items(s.items, scope, state, 0);
+    const outerSteps = this.stepNames;
+    this.stepNames = new Map();
+    try {
+      this.items(s.items, scope, state, 0);
+    } finally {
+      this.stepNames = outerSteps;
+    }
     if (!state.base) throw new EvalError(`Part "${s.name}" has no geometry. Start with: body box(...) or body cylinder(...)`, s.nameSpan);
     const ctx = this.ctx();
     const xf: Xform[] = [];
@@ -2557,6 +2820,22 @@ class Evaluator {
 
   /** Register `as name` for an operation; returns the feature name to put in the recipe. */
   nameFeature(st: PartState, name: string, kind: string, span: Span): string {
+    if (st.inst) {
+      // inside a use of the design's own feature: the name belongs to that use (boss#1.post)
+      const full = `${st.inst.name}.${name}`;
+      const had = st.feats.get(full);
+      const own = st.inst.scope.vars.get(name);
+      if (had) {
+        if (!st.cosmetic) had.cosmetic = false;
+        if (own === undefined) st.inst.scope.vars.set(name, new FeatRef(full, kind));
+        return full;
+      }
+      if (own !== undefined) throw new EvalError(`"${name}" is already used in feature ${st.inst.feature}()`, span);
+      st.feats.set(full, { kind, cosmetic: st.cosmetic });
+      st.inst.scope.vars.set(name, new FeatRef(full, kind));
+      this.stepNames?.set(full, kind);
+      return full;
+    }
     const prev = st.feats.get(name);
     if (prev) {
       // the same name again (often in a loop) adds more tools to the same feature
@@ -2568,6 +2847,7 @@ class Evaluator {
     if (st.root.vars.has(name)) throw new EvalError(`"${name}" is already used in this part`, span);
     st.feats.set(name, { kind, cosmetic: st.cosmetic });
     st.root.vars.set(name, new FeatRef(name, kind));
+    this.stepNames?.set(name, kind);
     return name;
   }
 
@@ -2589,6 +2869,7 @@ class Evaluator {
     for (const it of items) {
       switch (it.k) {
         case "prop": {
+          if (st.inst) throw new EvalError(`${it.name}: belongs to the part, not to feature ${st.inst.feature}(): give it as a parameter if the feature needs it`, it.span);
           if (st.cosmetic) throw new EvalError("Properties belong outside the cosmetic { } block", it.span);
           if (!PART_PROPS.includes(it.name)) throw new EvalError(`Unknown part property "${it.name}". Use: ${PART_PROPS.join(", ")}`, it.span);
           const saved = this.callOverride;
@@ -2603,6 +2884,7 @@ class Evaluator {
           break;
         }
         case "flag":
+          if (st.inst) throw new EvalError(`"${it.name}" is not a step: a feature is made of add, cut, fillet and the other steps, for, if and let`, it.span);
           if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". Parts accept the flags locked, hidden and removable.`, it.span);
           st.flags.add(it.name);
           break;
@@ -2610,20 +2892,21 @@ class Evaluator {
           scope.vars.set(it.name, this.expr(it.value, scope));
           break;
         case "op": {
+          // add boss(...) reads as boss(...): the design's own feature adds and cuts on its own
+          const shapeCall = it.shape.k === "call" ? it.shape : undefined;
+          const own = shapeCall && shapeCall.callee.k === "ident" ? this.ownFeature(shapeCall.callee.name, scope) : undefined;
+          if (own && shapeCall) {
+            if (it.op !== "add" && it.op !== "body") throw new EvalError(`${own.name}() is a feature: it adds and cuts on its own, so write ${own.name}(...) on its own line`, it.span);
+            this.applyFeature(own, shapeCall, scope, st, depth, it.name, it.nameSpan, it.span);
+            break;
+          }
           const v = this.expr(it.shape, scope);
           const feats = flattenFeatures(v);
           if (feats) {
             if (it.op !== "add") throw new EvalError(`${feats[0].kind}() adds and cuts on its own: write add ${feats[0].kind}(...)`, it.span);
             if (!st.base) throw new EvalError(`${feats[0].kind}() needs a body to stand on; start the part with body ...`, it.span);
             for (const f of feats) {
-              let name: string;
-              if (it.name) name = this.nameFeature(st, it.name, f.kind, it.nameSpan ?? it.span);
-              else {
-                const k = (st.auto.get(f.kind) ?? 0) + 1;
-                st.auto.set(f.kind, k);
-                name = `${f.kind}#${k}`;
-                st.feats.set(name, { kind: f.kind, cosmetic: st.cosmetic });
-              }
+              const name = it.name ? this.nameFeature(st, it.name, f.kind, it.nameSpan ?? it.span) : this.autoName(st, f.kind);
               for (const step of f.steps) {
                 if ("shape" in step) this.pushOp(st, { op: step.op, shape: step.shape, name }, it.span);
                 else st.ops.push({ op: step.op, r: step.r, edges: { s: "feat", f: name, part: step.part }, cosmetic: true });
@@ -2641,14 +2924,17 @@ class Evaluator {
               st.sheet = sh.info;
             }
             if (sh instanceof TubeV && (it.op === "body" || it.op === "add") && !st.cosmetic) st.tubes.push(sh.tube);
+            // inside a use of the design's own feature, every step it makes goes under the use's name
+            const opName = (kind: string) => (it.name ? this.nameFeature(st, it.name, kind, it.nameSpan ?? it.span) : st.inst?.name);
             if (it.op === "body" || (it.op === "add" && !st.base)) {
               if (!st.base) {
                 st.base = sh.recipe;
-                if (it.name) st.baseName = this.nameFeature(st, it.name, "body", it.nameSpan ?? it.span);
-              } else this.pushOp(st, { op: "add", shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, "add", it.nameSpan ?? it.span) }, it.span);
+                const bn = opName("body");
+                if (bn) st.baseName = bn;
+              } else this.pushOp(st, { op: "add", shape: sh.recipe, name: opName("add") }, it.span);
             } else {
               if (!st.base) throw new EvalError(`"${it.op}" needs a body first (start the part with body ...)`, it.span);
-              this.pushOp(st, { op: it.op, shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, it.op, it.nameSpan ?? it.span) }, it.span);
+              this.pushOp(st, { op: it.op, shape: sh.recipe, name: opName(it.op) }, it.span);
             }
           }
           break;
@@ -2665,7 +2951,16 @@ class Evaluator {
         }
         case "modifier": {
           const callee = it.call.callee;
+          const own = callee.k === "ident" ? this.ownFeature(callee.name, scope) : undefined;
+          if (own) {
+            this.applyFeature(own, it.call, scope, st, depth, it.name, it.nameSpan, it.span);
+            break;
+          }
+          const calleeName = callee.k === "ident" ? callee.name : undefined;
+          if (it.name) throw new EvalError(`Only a use of one of the design's own features can be named here: ${calleeName ? `${calleeName}() makes no feature of its own` : "this is not one"}`, it.nameSpan ?? it.span);
           if (callee.k !== "ident" || !(callee.name in MODIFIER_PARAMS)) {
+            const fn = calleeName ? scope.get(calleeName) ?? this.globals.get(calleeName) : undefined;
+            if (fn instanceof UserFn) throw new EvalError(`${calleeName}() is a function: it gives a value, so put body, add, cut or intersect in front (add ${calleeName}(...)). To use steps on their own line, make it a feature: feature ${calleeName}(...) { add ... }`, it.span);
             throw new EvalError("Only shell(), fillet(), chamfer(), full_round(), draft() and the direct edits push_pull(), replace_faces(), delete_faces() and move_faces() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
           }
           if (!st.base) throw new EvalError(`${callee.name}() needs a body first`, it.span);

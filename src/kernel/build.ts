@@ -386,7 +386,7 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
     if (isTrap(e) || e instanceof BuildError) throw e;
     throw new BuildError(`The kernel could not build the body ${p.base.t}${p.baseName ? ` as ${p.baseName}` : ""} (step 1): ${errMsg(e)}.`);
   }
-  if (p.baseName) features.set(p.baseName, { name: p.baseName, kind: "body", tools: [shape] });
+  if (p.baseName) recordTool(features, p.baseName, "body", shape);
   let topo: Topo | null = null;
   const topoNow = () => (topo && topo.shape === shape ? topo : (topo?.dispose(), (topo = new Topo(shape, features))));
   const batchable = (op: PartOp | undefined, kind: string): op is BoolOp => !!op && op.op === kind && "shape" in op && !op.cosmetic && !runsUntil(op.shape) && (kind === "add" || !(detail && threadEnvelope(op.shape)));
@@ -437,6 +437,21 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
 type BoolOp = PartOp & { op: "add" | "cut"; shape: ShapeRecipe; name?: string };
 
 /** Several adds or several cuts in one go. If the kernel balks, they are applied one at a time so the error names the step. */
+/**
+ * Keep a named step's tool for picking its edges and faces later. A step inside a use of the design's own feature is
+ * named for where it sits (boss#1.post: the post of the first boss), and counts toward each name it sits in (boss#1).
+ */
+function recordTool(features: Map<string, FeatureTools>, name: string, kind: string, tool: Shape3D) {
+  for (let n = name; ; ) {
+    const f = features.get(n);
+    if (f) f.tools.push(tool);
+    else features.set(n, { name: n, kind, tools: [tool] });
+    const dot = n.lastIndexOf(".");
+    if (dot <= 0) return;
+    n = n.slice(0, dot);
+  }
+}
+
 function applyBatch(shape: Shape3D, ops: BoolOp[], first: number, detail: boolean, features: Map<string, FeatureTools>): Shape3D {
   const tools = ops.map((op, k) => {
     try {
@@ -447,10 +462,7 @@ function applyBatch(shape: Shape3D, ops: BoolOp[], first: number, detail: boolea
     }
   });
   ops.forEach((op, k) => {
-    if (!op.name) return;
-    const f = features.get(op.name);
-    if (f) f.tools.push(tools[k]);
-    else features.set(op.name, { name: op.name, kind: op.op, tools: [tools[k]] });
+    if (op.name) recordTool(features, op.name, op.op, tools[k]);
   });
   const oc = R.getOC();
   const args = new oc.NCollection_List_TopoDS_Shape();
@@ -516,11 +528,7 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
     case "cut":
     case "intersect": {
       const tool = runsUntil(op.shape) ? upToNext(shape, op.shape, op.op) : buildShape(op.shape, detail);
-      if (op.name) {
-        const f = features.get(op.name);
-        if (f) f.tools.push(tool);
-        else features.set(op.name, { name: op.name, kind: op.op, tools: [tool] });
-      }
+      if (op.name) recordTool(features, op.name, op.op, tool);
       if (op.op === "add") return shape.fuse(tool);
       if (op.op === "cut") {
         const env = detail ? threadEnvelope(op.shape) : null;

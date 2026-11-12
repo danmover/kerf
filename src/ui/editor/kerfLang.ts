@@ -89,6 +89,8 @@ const parser: StreamParser<St> = {
       if ((w === "configs" || w === "config") && !stream.string.slice(0, stream.start).trim() && stream.match(w === "configs" ? /^\s*("(?:[^"\\]|\\.)*"\s*)?\{/ : /^\s+"(?:[^"\\]|\\.)*"\s*\{/, false)) return "keyword";
       // mate name = against(...) and mate against(...): a statement only at the start of a line
       if (w === "mate" && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*[(=]/, false)) return "keyword";
+      // the design's own functions and features: fn name(...), function name(...), feature name(...) at the start of a line
+      if ((w === "fn" || w === "function" || w === "feature") && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/, false)) return "keyword";
       if (BRIEF_FLAGS.has(w) && stream.peek() !== ":" && !stream.string.slice(stream.pos).trim()) return "controlKeyword";
       if (first && state.depth === state.sketchDepth && SKETCH_WORDS.has(w) && /^\s+[A-Za-z_(]/.test(stream.string.slice(stream.pos))) return "operatorKeyword";
       if (OPS_KW.has(w)) return "operatorKeyword";
@@ -227,6 +229,8 @@ export function kerfCompletions(getModel: () => Model | null) {
   for (const f of Object.values(MATE_FNS)) if (!fnCompletions.some((c) => c.label === f.name)) fnCompletions.push({ label: f.name, type: "function", info: f.doc, detail: "mate", apply: f.name + "(" });
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
   kw.push({ label: "mate", type: "keyword", detail: "how two parts meet", info: "mate name = against(face(lid, -Z), face(box, +Z)): places the first part by how its faces, holes and points meet the second's (against, flush, concentric, pin, distance, angle, parallel, perpendicular, tangent, coincident, rigid); what the mates leave free can be dragged" });
+  kw.push({ label: "fn", type: "keyword", detail: "your own function", info: "fn name(a, b: 2) = expr, or fn name(a) { let t = ...  value }: works out a number, vector, shape or profile from its values, callable anywhere after it; b: 2 is a default" });
+  kw.push({ label: "feature", type: "keyword", detail: "your own feature", info: 'feature name(at, d: 8) "what it is" { add ... as post  cut ...  fillet(0.5, edges: post.root) }: steps used in any part on their own line, name(...) or name(...) as label; label.root, label.tip, label.edges and label.faces pick what it made' });
   kw.push({ label: "frame", type: "keyword", detail: "structural frame", info: 'frame name { profile: "2020", box: (w, d, h) } or path: [(x, y, z), ...]: 2020 extrusion or steel sections along lines, trimmed where they meet, with a cut list' });
   const profiles: Completion[] = ["2020", "2040", "box 40x40x3", "box 50x25x2.5", "tube 26.9x2.6", "angle 30x30x3", "flat 40x5", "bar 20x20", "rod 12"].map((p) => ({ label: `"${p}"`, type: "text", detail: /^\d/.test(p) ? "V-slot extrusion" : "section" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
@@ -262,7 +266,11 @@ export function kerfCompletions(getModel: () => Model | null) {
     const defined: Completion[] = [];
     if (model) {
       for (const p of model.params) defined.push({ label: p.name, type: "variable", detail: `param = ${typeof p.value === "number" ? +p.value.toFixed(3) : String(p.value)}`, info: p.desc });
-      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require" && b.kind !== "decision") defined.push({ label: b.name, type: b.kind === "let" || b.kind === "given" ? "variable" : "class", detail: b.kind });
+      for (const b of model.blocks) {
+        if (b.kind === "param" || b.kind === "require" || b.kind === "decision") continue;
+        if (b.kind === "fn" || b.kind === "feature") defined.push({ label: b.name, type: "function", detail: `your ${b.kind === "fn" ? "function" : "feature"} (${b.sig ?? ""})`, info: b.doc, apply: b.name + "(" });
+        else defined.push({ label: b.name, type: b.kind === "let" || b.kind === "given" ? "variable" : "class", detail: b.kind });
+      }
       for (const u of model.brief?.uses ?? []) defined.push({ label: u.id, type: "constant", detail: "use", info: u.text });
     }
     // imported STEP files place like library components

@@ -285,6 +285,8 @@ note "Free text shown to the user"
 param name = expr [range lo .. hi] ["description"] [locked]   // tunable inputs; locked means the user froze it. The description is the label the user reads in the params panel; a "// ── Title ──" comment above a run of params becomes its heading there
 sketch name { plane, geometry, constraints }                  // constrained 2D profile (see Sketches)
 let name = expr                                              // derived values: layout skeleton, positions, lists of points; let x = calc.<fn>(...) records a calculation
+fn name(a, b: 2) = expr   or   fn name(a) { let t = ...  value }   // your own function: a number, vector, shape or profile worked out the same way in many places, callable after it
+feature name(at, d: 8) "what it is" { steps }                 // your own feature: adds, cuts, rounds, for, if and let used in any part as one step, name(...) [as label] (see Your own features and functions)
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
 component name = lib.kind(args) { props and flags }           // standard parts from the library, and purchasable catalog parts
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
@@ -405,6 +407,22 @@ Use inspect_part to see a part's features and to test a selector before you rely
 
 ### Cosmetic detail
 cosmetic { ... } holds steps that only build in the full-quality pass (final meshes, renders, STEP export): small chamfers, edge breaks, lettering, decorative grooves. Fast builds (previews, interference and clearance checks, measurements) skip them, and if one fails it is left out with a warning instead of breaking the part. Threads and knurls are always detailed in the full-quality pass and plain cylinders in fast builds. A step outside cosmetic must not refer to a feature named inside it.
+
+### Your own features and functions
+When a detail appears more than once (screw bosses, mounting tabs, a rib with its fillets, a vent row), write it once as a feature and use it where it goes:
+feature boss(at, d: 8, h: 10, screw: M3) "Screw boss for a self-tapping screw" {
+  add cylinder(d: d, h: h, at: at) as post
+  cut hole(screw, depth: h - 1, at: at + (0, 0, h), fit: "tap")
+  fillet(0.6, edges: post.root)
+}
+part case {
+  body box(80, 60, 2)
+  boss((-30, -20, 2))
+  boss((30, 20, 2), d: 10) as big
+  chamfer(0.4, edges: big.tip)
+}
+A use is one step on its own line (add boss(...) reads the same). Give its values in place or by name; one with a default (d: 8) can be left out, and a default may use the parameters before it (h: 2 * d). Everything a use makes goes under its name, as label or else boss#1, boss#2 in order, and label.root, label.tip, label.edges and label.faces pick it like any named step, so one use can be rounded or chamfered from the part. Names given with as inside the feature belong to each use (post is that boss's own post, which the part picks as big.post), so two uses never share one. A feature sees its parameters, its lets and the design's params, lets, functions and features, but not the part's lets: pass what it needs, a named step of the part (round_off(of: fin)) or another feature (pegs(3, f: peg)) included. It is steps only (color:, material: and the other properties belong to the part), and it can use other features but not itself.
+For a value, write a function: fn wall_for(span, min: 1.6) = max(min, span / 40), or with lets in braces and the value last: fn web(len, h: 8) { let t = wall_for(len)  box(len, t, h) }, used as add web(40). A function can call itself (fn fact(n) = n <= 1 ? 1 : n * fact(n - 1)), up to 100 deep. Kerf's own names (box, hole, rib, max...) can't be used for either. An error inside one is marked where it went wrong and says which use it came from.
 
 ### Math and helpers
 ${math}
