@@ -1,9 +1,11 @@
-// History tab: every saved version, newest first and grouped by day, with
-// who made it, how much it changed, its diff and a one-click restore.
+// History tab: every saved version of the open branch, newest first and grouped by day, with who made it, how much
+// it changed, its diff and a one-click restore; the branch bar on top (see Branches.tsx) switches and merges branches.
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
-import { useProject, restoreVersion, undo, redo, previewSource, endPreview } from "../../app/project";
+import { useProject, restoreVersion, undo, redo, previewSource, endPreview, openBranch } from "../../app/project";
+import { MAIN, branchLine, branchList, branchOf } from "../../core/branches";
+import { BranchBar, startNewBranch } from "./Branches";
 import { hoverParts } from "../../app/view";
 import { changesBetween } from "../../core/changes";
 import { useChat } from "../../ai/chat";
@@ -18,7 +20,11 @@ import { dayLabel, shortHash } from "./insights";
 export function HistoryTools() {
   const undoN = useProject((s) => s.undo.length);
   const redoN = useProject((s) => s.redo.length);
-  const versions = useProject((s) => s.versions.length);
+  // the open branch's own versions
+  const versions = useProject((s) => {
+    const b = openBranch(s.current);
+    return s.versions.reduce((n, v) => n + (branchOf(v) === b ? 1 : 0), 0);
+  });
   return (
     <div className="lp-histtools">
       <button className="lp-tool-btn" disabled={!undoN} onClick={undo} data-tip={`Undo (${mod}Z)`}>
@@ -36,26 +42,37 @@ export function HistoryTools() {
 export function HistoryTab() {
   useTick();
   const versions = useProject((s) => s.versions);
+  const project = useProject((s) => s.current);
   // the real design, not a version being previewed
   const { source } = useRealModel();
   const [open, setOpen] = useState<string | null>(null);
-  const list = useMemo(() => [...versions].reverse(), [versions]);
+  const branch = openBranch(project);
+  const branches = useMemo(() => (project ? branchList(project) : []), [project]);
+  // the open branch's versions, after those of the branches it was made from up to when it was
+  const line = useMemo(() => branchLine(versions, branches, branch), [versions, branches, branch]);
+  const list = useMemo(() => [...line.versions].reverse(), [line]);
   const currentId = list.find((v) => v.source === source)?.id;
+  const names = useMemo(() => new Map(branches.map((b) => [b.id, b.name])), [branches]);
   const days = useMemo(() => {
-    const out: { label: string; items: { v: VersionRecord; prev?: VersionRecord }[] }[] = [];
+    const out: { label: string; items: { v: VersionRecord; prev?: VersionRecord; fork?: { branch: string; from: string } }[] }[] = [];
+    // newest first: a fork shows above the last version made before it
+    const forks = [...line.forks];
     list.forEach((v, i) => {
       const label = dayLabel(v.ts);
       let d = out[out.length - 1];
       if (!d || d.label !== label) out.push((d = { label, items: [] }));
-      d.items.push({ v, prev: list[i + 1] });
+      let fork: { branch: string; from: string } | undefined;
+      while (forks.length && v.ts <= forks[0].at) fork = forks.shift();
+      d.items.push({ v, prev: list[i + 1], ...(fork ? { fork } : {}) });
     });
     return out;
-  }, [list]);
+  }, [list, line]);
 
-  if (!list.length) return <div className="lp-empty">No versions yet. Every change you or Claude make is saved here.</div>;
   return (
     <div className="lp-history">
-      {source !== list[0]?.source && !currentId && (
+      <BranchBar />
+      {!list.length && <div className="lp-empty">No versions yet. Every change you or Claude make is saved here.</div>}
+      {list.length > 0 && source !== list[0]?.source && !currentId && (
         <div className="lp-unsaved">
           <span className="lp-dot pending" /> Live edits, not saved as a version yet
         </div>
@@ -64,9 +81,14 @@ export function HistoryTab() {
         <section key={d.label} className="lp-day">
           <div className="lp-day-head">{d.label}</div>
           <AnimatePresence initial={false}>
-            {d.items.map(({ v, prev }) => (
+            {d.items.map(({ v, prev, fork }) => (
               <motion.div key={v.id} initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }} style={{ overflow: "hidden" }}>
-                <VersionRow v={v} prev={prev} current={v.id === currentId} open={open === v.id} onToggle={() => setOpen(open === v.id ? null : v.id)} />
+                {fork && (
+                  <div className="lp-fork">
+                    <Icon.Branch size={11} /> {fork.branch === MAIN ? "main" : `“${names.get(fork.branch) ?? "This branch"}”`} was made from {fork.from === MAIN ? "main" : `“${names.get(fork.from) ?? "?"}”`} here
+                  </div>
+                )}
+                <VersionRow v={v} prev={prev} current={v.id === currentId} open={open === v.id} onToggle={() => setOpen(open === v.id ? null : v.id)} on={branchOf(v) === branch ? undefined : (names.get(branchOf(v)) ?? "main")} />
               </motion.div>
             ))}
           </AnimatePresence>
@@ -78,7 +100,7 @@ export function HistoryTab() {
 
 const AUTHOR = { claude: "Claude", you: "You", system: "Kerf" } as const;
 
-function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; prev?: VersionRecord; current: boolean; open: boolean; onToggle: () => void }) {
+function VersionRow({ v, prev, current, open, onToggle, on }: { v: VersionRecord; prev?: VersionRecord; current: boolean; open: boolean; onToggle: () => void; on?: string }) {
   const stats = useMemo(() => (prev ? diffStats(prev.source, v.source) : null), [prev, v]);
   const diff = useMemo(() => (open ? lineDiff(prev?.source ?? "", v.source, 1) : []), [open, prev, v]);
   const hash = useMemo(() => shortHash(v.source), [v.source]);
@@ -89,7 +111,7 @@ function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; pr
   const busy = useChat((s) => s.busy);
   useEffect(() => () => endPreview(key), [key]);
   return (
-    <div className={`lp-ver ${current ? "current" : ""} ${open ? "open" : ""} ${v.author}`}>
+    <div className={`lp-ver ${current ? "current" : ""} ${open ? "open" : ""} ${on ? "inherited" : ""} ${v.author}`}>
       <div className="lp-ver-rail" aria-hidden="true">
         <span className="lp-ver-node">{v.author === "claude" ? <Icon.Sparkle size={11} /> : v.author === "you" ? <Icon.Edit size={10} /> : <span className="lp-ver-pip" />}</span>
       </div>
@@ -99,6 +121,7 @@ function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; pr
           <span className="lp-ver-meta">
             <span className={`lp-ver-who ${v.author}`}>{AUTHOR[v.author]}</span>
             <span>{timeAgo(v.ts)}</span>
+            {on && <span className="lp-ver-branch">on {on}</span>}
             <span className="lp-ver-hash">{hash}</span>
             {stats && (stats.added > 0 || stats.removed > 0) && (
               <span className="lp-ver-stat">
@@ -155,11 +178,16 @@ function VersionRow({ v, prev, current, open, onToggle }: { v: VersionRecord; pr
                   </div>
                 )}
               </div>
-              {!current && (
-                <button className="btn sm lp-ver-restore-btn" onClick={() => restoreVersion(v)}>
-                  <G.Restore size={12} /> Restore this version
+              <div className="lp-ver-acts">
+                {!current && (
+                  <button className="btn sm lp-ver-restore-btn" onClick={() => restoreVersion(v)}>
+                    <G.Restore size={12} /> Restore this version
+                  </button>
+                )}
+                <button className="btn sm ghost lp-ver-branch-btn" disabled={busy} onClick={() => startNewBranch(v)} data-tip="Start a branch from this version, to try something from here without changing this line">
+                  <Icon.Branch size={12} /> Branch from here
                 </button>
-              )}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>

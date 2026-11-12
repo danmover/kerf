@@ -18,7 +18,8 @@ import { useView, requestCamera, select, toggleCode, showGroups, soloGroup, type
 import { partGroups } from "../app/partGroups";
 import { useSettings, updateSettings, LIGHTING_IDS, SPEEDS } from "../app/settings";
 import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
-import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
+import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject, openBranch, projectBranches } from "../app/project";
+import { openBranchNamed, startMerge, startNewBranch } from "./left/Branches";
 import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
 import { showConfiguration } from "../app/configs";
@@ -127,7 +128,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   params: { title: "Parameters", detail: "The sizes you can scrub, grouped as in the design", keywords: "params dimensions sizes variables sliders values" },
   sketches: { detail: "2D profiles with dimensions and constraints", keywords: "sketch profile 2d constraints outline" },
   decisions: { title: "Design decisions", detail: "The choices made, and the options not taken", keywords: "options alternatives choices tradeoffs trade offs" },
-  history: { detail: "Every version: compare and restore", keywords: "versions undo restore compare timeline revisions changes" },
+  history: { detail: "Every version: compare and restore, and branches to try things on and merge", keywords: "versions undo restore compare timeline revisions changes branch branches merge" },
 };
 
 const SETTINGS_FIND: { tab: SettingsTab; title: string; detail: string; keywords: string }[] = [
@@ -219,6 +220,35 @@ export function findItems(ctx: FindContext): FindItem[] {
     for (const t of LEFT_TABS) {
       const f = TAB_FIND[t.id];
       push({ id: `left:${t.id}`, group: "Panels", title: f?.title ?? cap(t.label), detail: f?.detail, keywords: f?.keywords, icon: t.icon, pane: "model", run: () => useView.setState({ leftTab: t.id }) });
+    }
+
+    // ── branches ──
+    const proj = useProject.getState().current;
+    if (proj) {
+      const list = projectBranches(proj);
+      const open = openBranch(proj);
+      const here = list.find((b) => b.id === open);
+      const toHistory = () => useView.setState({ leftTab: "history" });
+      push({
+        id: "branch:new",
+        group: "Project",
+        title: "New branch",
+        detail: "Try something on a branch of its own: what you do there stays off this line until you merge it back",
+        keywords: "branch branches new branch fork try idea experiment alternative variant option workspace sandbox git version control what if",
+        icon: <Icon.Branch size={14} />,
+        pane: "model",
+        run: () => (toHistory(), startNewBranch()),
+      });
+      for (const b of list)
+        if (b.id !== open)
+          push({ id: `branch:open:${b.id}`, group: "Project", title: `Switch to the branch “${b.name}”`, detail: b.from ? `Made from ${list.find((x) => x.id === b.from)?.name ?? "main"}` : "The design's main line", keywords: "branch switch checkout open change branch", icon: <Icon.Branch size={14} />, pane: "model", run: () => (toHistory(), void openBranchNamed(b.id)) });
+      const parent = here?.from ? list.find((b) => b.id === here.from) : undefined;
+      if (here && parent) {
+        push(
+          { id: "branch:merge", group: "Project", title: `Merge “${here.name}” into ${parent.name}`, detail: "Bring what changed on this branch into the one it came from; places both changed ask which to keep", keywords: "merge branch merge into main combine bring back integrate pull request three way 3-way", icon: <Icon.Merge size={14} />, pane: "model", run: () => (toHistory(), void startMerge(here.id, parent.id)) },
+          { id: "branch:take", group: "Project", title: `Take ${parent.name}'s changes into “${here.name}”`, detail: "Bring what changed on the branch this came from into it, so it stays up to date", keywords: "update branch rebase sync pull merge from main catch up", icon: <Icon.Merge size={14} />, pane: "model", run: () => (toHistory(), void startMerge(parent.id, here.id)) },
+        );
+      }
     }
 
     // ── modelling ──

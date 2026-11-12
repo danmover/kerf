@@ -123,6 +123,10 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX mcp_grants_user ON mcp_grants(user_id);
   `,
+  // the branch a version was made on ('' for main)
+  `
+  ALTER TABLE versions ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 export class Db {

@@ -581,6 +581,24 @@ export const Icon = {
       <path d="m10.5 11.2 4.2 2.4-4.2 2.4z" fill="currentColor" stroke="none" />
     </I>
   ),
+  /** a line of work split off another (History's branches) */
+  Branch: (p: P) => (
+    <I {...p}>
+      <circle cx="6.5" cy="5.5" r="2" />
+      <circle cx="6.5" cy="18.5" r="2" />
+      <circle cx="17.5" cy="7.5" r="2" />
+      <path d="M6.5 7.5v9M17.5 9.5c0 4-5.5 3.2-9.6 7.4" />
+    </I>
+  ),
+  /** two lines of work coming together */
+  Merge: (p: P) => (
+    <I {...p}>
+      <circle cx="6.5" cy="5.5" r="2" />
+      <circle cx="6.5" cy="18.5" r="2" />
+      <circle cx="17.5" cy="15.5" r="2" />
+      <path d="M6.5 7.5v9M8 6.9c4.6 1.2 7.8 3.8 9 6.7" />
+    </I>
+  ),
 };
 
 export function StatusIcon({ status }: { status: "pass" | "fail" | "warn" | "pending" | "info" }) {

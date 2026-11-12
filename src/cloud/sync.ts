@@ -10,14 +10,15 @@
 
 import { create } from "zustand";
 import * as db from "../persist/db";
-import type { AssetRecord, BlobRecord, ProjectRecord, VersionRecord, ChatRecord } from "../persist/db";
+import type { AssetRecord, BlobRecord, BranchRecord, ProjectRecord, VersionRecord, ChatRecord } from "../persist/db";
 import { collectUnusedBlobs, gunzip, sha256Hex } from "../persist/blobs";
 import { onAssetAdded } from "../persist/assets";
 import type { ProjectImport } from "../kernel/imports";
 import { retryMissingImports } from "../core/imports";
 import { api, ApiError, getFile, putFile, type RemoteProject, type RemoteProjectSummary, type RemoteVersion, type StoredFile } from "./api";
 import { onAccount, sessionEnded, useAccount } from "./account";
-import { applyRemoteProject, closeProject, onProjectDeleted, onProjectOpen, refreshProjects, useProject } from "../app/project";
+import { adoptBranches, applyRemoteProject, closeProject, onProjectDeleted, onProjectOpen, refreshProjects, useProject } from "../app/project";
+import { MAIN, joinBranches } from "../core/branches";
 import { loadChat, resetChat, useChat } from "../ai/chat";
 import { toast } from "../app/ui";
 
@@ -256,7 +257,22 @@ async function markAllUnsynced(projectId: string) {
   for (const v of (await db.versionsFor(projectId)) as SyncedVersion[]) if (v.synced) await db.put("versions", { ...v, synced: false });
 }
 
-const wire = (v: VersionRecord): RemoteVersion => ({ id: v.id, ts: v.ts, author: v.author, message: v.message.slice(0, 2000), source: v.source });
+const wire = (v: VersionRecord): RemoteVersion => ({ id: v.id, ts: v.ts, author: v.author, message: v.message.slice(0, 2000), source: v.source, ...(v.branch ? { branch: v.branch } : {}) });
+
+/** A version from the account, as this device keeps it (main has no branch). */
+const fromWire = (v: RemoteVersion, projectId: string): SyncedVersion => {
+  const { branch, ...rest } = v;
+  return { ...rest, projectId, synced: true, ...(branch && branch !== MAIN ? { branch } : {}) };
+};
+
+/** The other device's branches, as far as they are well formed. */
+function branchesOf(extra: Record<string, unknown> | undefined): BranchRecord[] {
+  const list = Array.isArray(extra?.branches) ? (extra.branches as unknown[]) : [];
+  return list.filter((b): b is BranchRecord => {
+    const r = b as Partial<BranchRecord> | null;
+    return !!r && typeof r.id === "string" && typeof r.name === "string" && typeof r.from === "string" && typeof r.base === "string" && typeof r.head === "string" && typeof r.createdAt === "number";
+  });
+}
 
 /** The server won't take this as it is (too large, or not valid); a full account is about every project, so it isn't one of these. */
 const refusal = (e: unknown): e is ApiError => e instanceof ApiError && (e.status === 400 || (e.status === 413 && e.code !== "quota"));
@@ -345,13 +361,21 @@ async function merge(local: ProjectRecord, m: ProjectMeta, depth = 0) {
     return push(local, m, depth + 1);
   }
   const have = new Set((await db.versionsFor(local.id)).map((v) => v.id));
-  for (const v of versions) if (!have.has(v.id)) await db.put("versions", { ...v, projectId: local.id, synced: true });
+  for (const v of versions) if (!have.has(v.id)) await db.put("versions", fromWire(v, local.id));
+  // branches made there join this device's, which are sent next
+  const joined = joinBranches(local, branchesOf(project.extra));
+  if (joined) {
+    local = { ...local, branches: joined };
+    await db.put("projects", local);
+    adoptBranches(local.id, joined);
+  }
   // reference files added there stay with the project (this device's list is sent next)
   if (!(await fetchFiles(local.id, [], filesOf(project.extra).assets))) m.filesPending = Date.now();
   // the other device really changed the design (not just its thumbnail or name)
   const changedThere = project.source !== local.source && srcHash(project.source) !== m.src;
   if (changedThere && !versions.some((v) => v.source === project.source)) {
-    await db.put("versions", { id: db.newId("ver"), projectId: local.id, ts: project.updatedAt, author: "system", message: "The design as it was on another device", source: project.source, synced: false });
+    const there = typeof project.extra?.branch === "string" && project.extra.branch !== MAIN ? project.extra.branch : undefined;
+    await db.put("versions", { id: db.newId("ver"), projectId: local.id, ts: project.updatedAt, author: "system", message: "The design as it was on another device", source: project.source, synced: false, ...(there ? { branch: there } : {}) });
   }
   m.rev = project.rev;
   m.vdirty = true;
@@ -366,7 +390,7 @@ async function download(id: string, local: ProjectRecord | null) {
   const m = meta.projects[id];
   const { project, versions } = await api<{ project: RemoteProject; versions: RemoteVersion[] }>("GET", `/projects/${encodeURIComponent(id)}?since=${local && m ? m.rev : 0}`);
   const have = new Set((await db.versionsFor(id)).map((v) => v.id));
-  for (const v of versions) if (!have.has(v.id)) await db.put("versions", { ...v, projectId: id, synced: true });
+  for (const v of versions) if (!have.has(v.id)) await db.put("versions", fromWire(v, id));
   await pruneVersions(id);
   // the files first, so the design builds with them when it opens
   const files = filesOf(project.extra);
