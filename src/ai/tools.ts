@@ -52,6 +52,7 @@ import { VIEW_TOOL_DEFS, VIEW_TOOL_TITLES, runViewTool } from "./viewTools";
 import { FILM_TOOL_DEFS, FILM_TOOL_TITLES, runFilmTool } from "./filmTool";
 import { CAM_TOOL_DEFS, CAM_TOOL_TITLES, runCamTool } from "./camTool";
 import { BRANCH_TOOL_DEFS, BRANCH_TOOL_TITLES, runBranchTool } from "./branchTool";
+import { SCRIPT_TOOL_DEFS, SCRIPT_TOOL_TITLES, runScriptTool } from "./scriptTool";
 import { partGroups } from "../app/partGroups";
 import { sketchStatusText } from "../sketch/evaluate";
 import type { EvalSketch } from "../sketch/types";
@@ -444,6 +445,7 @@ export const TOOL_DEFS = [
   ...FILM_TOOL_DEFS,
   ...CAM_TOOL_DEFS,
   ...BRANCH_TOOL_DEFS,
+  ...SCRIPT_TOOL_DEFS,
 ];
 
 const EditInput = z
@@ -1031,7 +1033,7 @@ const compareDeps = {
 // ---------- handlers ----------
 
 /** Tools that change the source: given check, the result carries the build and check results of the change. */
-const SOURCE_TOOLS = new Set(["edit_design", "write_design", "update_brief", "set_material", "place_fasteners"]);
+const SOURCE_TOOLS = new Set(["edit_design", "write_design", "update_brief", "set_material", "place_fasteners", "scripts"]);
 
 interface ToolContext {
   signal?: AbortSignal;
@@ -1561,6 +1563,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (milled) return milled;
   const branched = await runBranchTool(name, input);
   if (branched) return branched;
+  const scripted = await runScriptTool(name, input, ctx);
+  if (scripted) return scripted;
   return { isError: true, content: `Unknown tool ${name}`, card: { title: `Unknown tool ${name}`, status: "error" } };
 }
 
@@ -1593,6 +1597,7 @@ export const TOOL_TITLES: Record<string, string> = {
   ...FILM_TOOL_TITLES,
   ...CAM_TOOL_TITLES,
   ...BRANCH_TOOL_TITLES,
+  ...SCRIPT_TOOL_TITLES,
   get_sketch: "Reading a sketch",
   capture_view: "Looking at the model",
   view_drawing: "Looking at the drawing",

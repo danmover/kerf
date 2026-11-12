@@ -1,0 +1,21 @@
+// Topology optimisation: a bracket cut from 6 mm aluminium plate, bolted to the side of a post by two bolts
+// and carrying 20 kg on an axle at its far end, keeping 35 % of the material where it carries the load
+// best. The shape forms on the model as it solves, and comes out as a DXF profile for the waterjet.
+design "Lighter post bracket"
+
+part plate {
+  material: "Aluminum 6061"
+  color: #9db4c0
+  body box(140, 6, 80)
+  for z in [12, 68] { cut hole(d: 6.6, through: true, at: (-60, 3, z), dir: -Y) }
+  cut hole(d: 8.5, through: true, at: (58, 3, 62), dir: -Y)
+}
+
+analysis "Lighter" {
+  parts: [plate]
+  fix: [zone(at: (-60, 0, 12), d: 8.6, axis: Y, length: 8), zone(at: (-60, 0, 68), d: 8.6, axis: Y, length: 8)]
+  load: bearing(zone(at: (58, 0, 62), d: 10.5, axis: Y, length: 8), 200N, dir: -Z)
+  topology: 35%
+  preserve: [zone(at: (-60, 0, 12), r: 9), zone(at: (-60, 0, 68), r: 9), zone(at: (58, 0, 62), r: 10)]
+  extrusion: Y
+}

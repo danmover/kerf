@@ -1,0 +1,15 @@
+// Rounds the way a designer draws them: a fillet growing from 2 to 10 mm along the root of a rib, the rib's
+// top rounded right over, and an uneven chamfer for a lead-in along the plate's front edge.
+design "Rounded bracket"
+
+part bracket {
+  material: "Aluminum 6061"
+  color: #a9b7c6
+  body box(120, 80, 8) as plate
+  add box(100, 8, 40, at: (0, 0, 8)) as fin
+  fillet([2, 10], edges: near((0, 4, 8), 0.5), from: (-50, 4, 8))
+  fillet([2, 10], edges: near((0, -4, 8), 0.5), from: (-50, -4, 8))
+  full_round(faces: in_plane(Z, 48))
+  chamfer((4, 1.5), edges: near((0, -40, 8), 0.5), on: facing(Z))
+  for x in [-45, 45] { for y in [-28, 28] { cut hole(d: 6.6, through: true, at: (x, y, 8)) } }
+}

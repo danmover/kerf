@@ -1,0 +1,22 @@
+// The design's own feature and function: a screw boss made once and used four times as one step each,
+// and a function that picks the wall for the box's size. Change boss() once and every boss follows.
+design "Case with own features"
+
+fn wall_for(span) "The wall a printed box of this span needs" = span > 100 ? 2.4 : 1.8
+
+feature boss(at, d: 8, h: 10, screw: M3) "Screw boss for a self-tapping screw" {
+  add cylinder(d: d, h: h, at: at) as post
+  cut hole(screw, depth: h - 1, at: at + (0, 0, h), fit: "tap")
+  fillet(0.6, edges: post.root)
+}
+
+param size = 120 range 80 .. 200 "Length"
+
+part case {
+  material: "PETG"
+  process: mfg.fdm()
+  color: #3d5a80
+  body box(size, 80, 30, r: 6)
+  shell(wall_for(size), open: facing(Z))
+  for x in [-size / 2 + 10, size / 2 - 10] { for y in [-30, 30] { boss((x, y, wall_for(size)), h: 14) } }
+}

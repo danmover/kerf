@@ -20,6 +20,7 @@ import { PhoneWorkspace } from "./PhoneWorkspace";
 import { gridFor, useWindowSize, useWorkspaceLayout, type WorkspaceLayout } from "../app/layout";
 import { LeftRail } from "../ui/LeftRail";
 import { PlanHud } from "../ui/PlanHud";
+import { Coach } from "../ui/learn/Coach";
 import { RefViewer } from "../ui/RefViewer";
 import { SketchPad } from "../ui/SketchPad";
 import { PreviewBanner } from "../ui/PreviewBanner";
@@ -75,6 +76,7 @@ export function Workspace() {
             <div className="plan-hud-anchor" style={{ bottom: dockOpen ? dock : 37 }}>
               <PlanHud />
             </div>
+            <Coach bottom={dockOpen ? dock : 37} />
             <div className="center-stage">
               <ErrorBoundary label="3D view">
                 <Viewport />

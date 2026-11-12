@@ -1,0 +1,10 @@
+// A vented aluminium enclosure bent from one sheet: hemmed front and back edges, rolled side edges, louvres
+// pressed into the floor and the back wall, a cable hole, and its flat pattern for the laser.
+design "Vented enclosure"
+
+part chassis {
+  material: "Aluminum 5052"
+  color: #a3b3c2
+  body sheet(rect(220, 150), t: 1.2, r: 1.2, flanges: [flange("front", 60, hem: 8), flange("back", 60, hem: 8), flange("left", 60, roll: 3), flange("right", 60, roll: 3)], louvres: [louvre(70, 6, 3, count: 6), louvre(50, 5, 2.5, on: "back", count: 4)])
+  cut hole(d: 16, depth: 10, at: (-104, 40, 30), dir: -X)
+}

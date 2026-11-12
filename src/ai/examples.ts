@@ -8,7 +8,8 @@ import { z } from "zod";
 import { TEMPLATES } from "../demos/templates";
 import { parse } from "../lang/parser";
 
-const EXAMPLES = TEMPLATES.filter((t) => t.id !== "blank");
+// the tutorials start from the examples (or from nothing), so they would only repeat them
+const EXAMPLES = TEMPLATES.filter((t) => t.id !== "blank" && t.category !== "learn");
 
 /** The most source one call returns, so a big example does not crowd out the design. */
 export const EXAMPLE_MAX_CHARS = 24_000;

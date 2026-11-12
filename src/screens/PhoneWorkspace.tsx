@@ -17,6 +17,7 @@ import { useUi } from "../app/ui";
 import { useVoice } from "../voice/voice";
 import { PreviewBanner } from "../ui/PreviewBanner";
 import { PlanHud } from "../ui/PlanHud";
+import { Coach } from "../ui/learn/Coach";
 import { RefViewer } from "../ui/RefViewer";
 import { SketchPad } from "../ui/SketchPad";
 import { OverviewGlyph } from "../ui/Overview";
@@ -115,6 +116,7 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
           <div className="plan-hud-anchor" style={{ bottom: 0 }}>
             <PlanHud />
           </div>
+          <Coach bottom={0} />
           <ErrorBoundary label="3D view">
             <Viewport />
           </ErrorBoundary>

@@ -12,7 +12,8 @@ import type { CatalogPart } from "../machine/types";
 import { IMPORT_META_VERSION, MAX_BODIES, MAX_STEP_BYTES, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { cleanName } from "../kernel/stepText";
 import { fromBase64, gunzip, sha256Hex } from "./blobs";
-import type { BranchRecord } from "./db";
+import type { BranchRecord, ScriptRecord } from "./db";
+import { MAX_SCRIPTS, MAX_SCRIPT_CHARS, SCRIPT_ID, cleanScripts } from "../scripts/records";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -52,6 +53,15 @@ const BranchSchema = z.object({
     .array(z.object({ kind: z.enum(["merged", "took"]), source: z.string().max(MAX_SOURCE_CHARS), base: z.string().max(MAX_SOURCE_CHARS), ts: z.number().finite() }))
     .max(20)
     .optional(),
+});
+
+// a script saved with the project (see src/scripts/)
+const ScriptSchema = z.object({
+  id: z.string().regex(SCRIPT_ID),
+  name: z.string().min(1).max(60),
+  code: z.string().max(MAX_SCRIPT_CHARS),
+  onChange: z.boolean().optional(),
+  updatedAt: z.number().finite(),
 });
 
 // a reference photo, sketch or PDF from the brief
@@ -124,6 +134,7 @@ const ProjectFileSchema = z.object({
   importFiles: z.array(ImportFileSchema).max(60).optional(),
   branches: z.array(BranchSchema).max(50).optional(),
   branch: BranchIdSchema.optional(),
+  scripts: z.array(ScriptSchema).max(MAX_SCRIPTS).optional(),
 });
 
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
@@ -146,6 +157,8 @@ export interface ImportedProject {
   /** its branches, main first, and the one that was open (absent: main) */
   branches?: BranchRecord[];
   branch?: string;
+  /** its scripts; none runs after each change until the user turns that on here */
+  scripts?: ScriptRecord[];
 }
 
 /** What reading a file produced: projects, the bytes of the STEP files they import, and anything that was dropped. */
@@ -182,6 +195,7 @@ const cleanProject = (p: ProjectFile, files: Map<string, Uint8Array>, warnings: 
   }
   const branches = cleanBranches(p);
   const known = new Set(branches?.map((b) => b.id) ?? ["main"]);
+  const scripts = cleanScripts(p.scripts, { keepOnChange: false });
   return {
     name: cleanText(p.name, 120),
     source: cleanText(p.source, MAX_SOURCE_CHARS),
@@ -191,6 +205,7 @@ const cleanProject = (p: ProjectFile, files: Map<string, Uint8Array>, warnings: 
     assets: (p.assets ?? []).map((a) => ({ ...a, name: cleanText(a.name, 160) })),
     imports,
     ...(branches ? { branches, ...(p.branch && p.branch !== "main" && known.has(p.branch) ? { branch: p.branch } : {}) } : {}),
+    ...(scripts ? { scripts } : {}),
   };
 };
 
@@ -292,13 +307,14 @@ export interface PackedFile {
   data: string;
 }
 
-/** Extra content for a project file: brief references, imported STEP files with their bytes, and branches. */
+/** Extra content for a project file: brief references, imported STEP files with their bytes, branches and scripts. */
 export interface ProjectFileExtras {
   assets?: ProjectFile["assets"];
   imports?: ProjectImport[];
   importFiles?: PackedFile[];
   branches?: BranchRecord[];
   branch?: string;
+  scripts?: ScriptRecord[];
 }
 
 export function projectFile(
@@ -307,10 +323,10 @@ export function projectFile(
   template: string,
   createdAt: number,
   versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string; branch?: string }[],
-  { assets = [], imports = [], importFiles = [], branches = [], branch }: ProjectFileExtras = {},
+  { assets = [], imports = [], importFiles = [], branches = [], branch, scripts = [] }: ProjectFileExtras = {},
 ): string {
   // version 1 stays readable by older Kerf builds when nothing is imported (they skip the branches)
-  const f: ProjectFile = { format: "kerf-project", version: imports.length ? 2 : 1, name, source, template, createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports, importFiles } : {}), ...(branches.length > 1 ? { branches, ...(branch ? { branch } : {}) } : {}) };
+  const f: ProjectFile = { format: "kerf-project", version: imports.length ? 2 : 1, name, source, template, createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports, importFiles } : {}), ...(branches.length > 1 ? { branches, ...(branch ? { branch } : {}) } : {}), ...(scripts.length ? { scripts } : {}) };
   return JSON.stringify(f, null, 1);
 }
 

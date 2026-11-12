@@ -1737,7 +1737,7 @@ class Evaluator {
           const mv = props.measured;
           if (!(mv instanceof SimSpec) || mv.what !== "measured") throw new EvalError("measured: should be sim.measured(...), like measured: sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm)", propSpans.measured);
           const keys = MEASURED[cp.kind];
-          if (!keys) throw new EvalError(`measured: works on gearmotors and batteries; ${s.name} is a ${cp.kind.replace(/_/g, " ")}`, propSpans.measured);
+          if (!keys) throw new EvalError(`measured: works on ${Object.keys(MEASURED).map((k) => `${k.replace(/_/g, " ")}s`).join(", ")}; ${s.name} is a ${cp.kind.replace(/_/g, " ")}`, propSpans.measured);
           measured = {};
           for (const [k, x] of Object.entries(mv.data as Record<string, number>)) {
             const f = keys[k];

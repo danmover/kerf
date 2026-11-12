@@ -57,6 +57,11 @@
 /app-sandbox.html
   Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; frame-ancestors 'self'
 
+# The page your scripts run in: framed by Kerf only, in a sandbox with no origin of its own. It starts the script
+# in a worker made from a blob (which keeps this policy); the script may use eval, and reach nothing.
+/script-sandbox.html
+  Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; worker-src blob:; frame-ancestors 'self'
+
 # An app's simulated twin: firmware compiled to closures on a virtual chip, no eval, no network.
 /assets/twin.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'

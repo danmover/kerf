@@ -1,0 +1,13 @@
+// A monitor riser too long for a 256 mm print bed: Kerf cuts it into the fewest pieces that fit, puts
+// dowel holes across each cut and the dowels on the parts list, and checks each piece prints. It prints
+// upside down (build: -Z), so the tunnel under it needs no support.
+design "Monitor riser"
+
+part riser {
+  material: "PETG"
+  process: mfg.fdm(bed: (256, 256, 256), build: -Z)
+  color: #2f7d6d
+  body box(560, 220, 90, r: 12)
+  cut box(470, 230, 70)
+  split: X
+}

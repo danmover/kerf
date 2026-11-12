@@ -19,6 +19,19 @@ export interface ProjectRecord {
   branch?: string;
   /** the project's branches, main first, once it has more than main */
   branches?: BranchRecord[];
+  /** the user's own scripts for this design (see src/scripts/): automation run by hand, by Claude or after each change */
+  scripts?: ScriptRecord[];
+}
+
+/** A script saved with a project: JavaScript that drives Kerf through the `kerf` API in a sandbox. */
+export interface ScriptRecord {
+  /** stays when the script is renamed */
+  id: string;
+  name: string;
+  code: string;
+  /** run again after each change to the design, as checks of the user's own */
+  onChange?: boolean;
+  updatedAt: number;
 }
 
 /** A line of work in a project: made from another branch, merged back into it, or left as an alternative. */

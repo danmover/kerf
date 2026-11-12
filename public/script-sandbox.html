@@ -1,0 +1,31 @@
+<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; worker-src blob:">
+<title>Kerf script</title></head><body><script>
+// Where your scripts run: Kerf frames this page in a sandbox with no origin of its own, and it starts the script in a
+// worker made from the code Kerf sends. The worker has no storage and, by this page's policy, no network; it talks
+// only to Kerf, through this page.
+(function () {
+  var w = null;
+  addEventListener("message", function (ev) {
+    if (ev.source !== parent) return;
+    var m = ev.data;
+    if (!m || typeof m !== "object") return;
+    if (m.kind === "run" && !w) {
+      var src = String(m.prelude) + "\nself.__kerfRun(" + JSON.stringify(String(m.code)) + ");";
+      try {
+        w = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })), { name: "kerf-script" });
+      } catch (e) {
+        parent.postMessage({ kind: "done", ok: false, error: "The script could not start: " + (e && e.message || e) }, "*");
+        return;
+      }
+      w.onmessage = function (e) { parent.postMessage(e.data, "*"); };
+      w.onerror = function (e) {
+        e.preventDefault();
+        parent.postMessage({ kind: "done", ok: false, error: String(e.message || "The script stopped with an error.") }, "*");
+      };
+    } else if (m.kind === "reply" && w) {
+      w.postMessage(m);
+    }
+  });
+  parent.postMessage({ kind: "ready" }, "*");
+})();
+</script></body></html>

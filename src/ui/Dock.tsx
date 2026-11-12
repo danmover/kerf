@@ -5,7 +5,7 @@
 // file behind it all, one click (or C) away. Features add a tab with an
 // entry in DOCK_TABS, the way they add left-panel tabs through LEFT_TABS.
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { useDesign } from "../core/engine";
 import { useView } from "../app/view";
@@ -28,6 +28,9 @@ import { Icon } from "./icons";
 import { AppsPanel } from "./apps/AppsPanel";
 import { AppGlyph } from "./apps/actions";
 import { lineCol } from "../lang/lexer";
+import { ScriptGlyph, ScriptsPanel } from "./scripts/ScriptsPanel";
+import { useScripts } from "../scripts/runtime";
+import { useProject } from "../app/project";
 
 export interface DockTabDef {
   id: string;
@@ -110,6 +113,26 @@ function useAppsBadge() {
 
 const useHasSims = () => useDesign((s) => !!s.model?.machine || !!s.model?.scenarios?.length);
 
+/** scripts show once the design has one, or the tab was opened (from Find or the Tools menu) */
+function useHasScripts() {
+  const n = useProject((s) => s.current?.scripts?.length ?? 0);
+  const opened = useScripts((s) => s.opened);
+  return n > 0 || opened;
+}
+
+function useScriptsBadge() {
+  const n = useProject((s) => s.current?.scripts?.length ?? 0);
+  const fails = useScripts((s) => (s.checks ? Object.values(s.checks.byScript).reduce((k, r) => k + r.checks.filter((c) => c.status === "fail").length + (r.error ? 1 : 0), 0) : 0));
+  if (fails) return { count: fails, tone: "fail" as const };
+  return n ? { count: n } : null;
+}
+
+/** the scripts tab's icon turns into a spinner while a script runs */
+function ScriptsIcon() {
+  const running = useScripts((s) => !!s.running);
+  return running ? <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} /> : <ScriptGlyph size={13} />;
+}
+
 export const DOCK_TABS: DockTabDef[] = [
   { id: "overview", label: "overview", icon: <OverviewGlyph size={13} />, Body: Overview },
   { id: "brief", label: "brief", icon: <BIcon.Brief size={13} />, useBadge: useBriefBadge, Body: BriefPanel },
@@ -121,15 +144,21 @@ export const DOCK_TABS: DockTabDef[] = [
   { id: "make", label: "make", icon: <Icon.Factory size={13} />, useShown: useHasMadeParts, Body: MakePanel },
   { id: "bom", label: "parts list", icon: <Icon.List size={13} />, Body: BomTable },
   { id: "graph", label: "graph", icon: <Icon.Graph size={13} />, Body: GraphView },
+  { id: "scripts", label: "scripts", icon: <ScriptsIcon />, useBadge: useScriptsBadge, useShown: useHasScripts, Body: ScriptsPanel },
   { id: "code", label: "design.kerf", icon: <Icon.Code size={13} />, useBadge: useCodeBadge, Body: () => null, file: true },
 ];
 
 function TabButton({ t, active, onClick }: { t: DockTabDef; active: boolean; onClick: () => void }) {
   const shown = t.useShown?.() ?? true;
   const badge = t.useBadge?.() ?? null;
+  const ref = useRef<HTMLButtonElement>(null);
+  // a tab opened from elsewhere (Find, a button) scrolls into the row's view
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [active]);
   if (!shown) return null;
   return (
-    <button role="tab" aria-selected={active} className={`tab ${t.file ? "file-tab" : ""} ${active ? "active" : ""}`} onClick={onClick}>
+    <button ref={ref} role="tab" aria-selected={active} data-tab={t.id} className={`tab ${t.file ? "file-tab" : ""} ${active ? "active" : ""}`} onClick={onClick}>
       {t.icon}
       {t.label}
       {badge?.count !== undefined && (

@@ -16,6 +16,7 @@ import { catalogPart } from "../catalog";
 import type { CatalogPart, MachineComponent } from "../types";
 import { type FwContext, type GenFile, cComment, cNum, cString, ident, setting } from "./common";
 import { RIDE_WORDS, type RideOutput, rideFirmware } from "./ride";
+import { type BenchParts, benchParts, withBenchParts } from "./benchParts";
 
 export interface Io {
   /** the C expression for the pin: 9, A2 */
@@ -260,6 +261,9 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
   }
   if (servoUse && isEsp32) warnings.push("ESP32 has no bundled Servo library: install ESP32Servo, or drive the servo with ledc PWM.");
 
+  // ---- steppers on StepStick drivers, distance and temperature sensors ----
+  const extra = benchParts(c, io, used, warnings);
+
   // ---- behaviour and settings ----
   const behaviourText = setting(c.fw, "behaviour", setting(c.fw, "behavior", ""));
   const ride = RIDE_WORDS.test(behaviourText);
@@ -341,6 +345,7 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     P.push("");
   }
   if (imu) P.push(`// ${imu.name} (${catalogPart(imu.catalogId)?.name}) on the I2C pins (Wire)`, "");
+  extra.pins(def, P);
   P.push(`#define STATUS_LED             ${ledPin}${ledPin === "-1" ? " // pin 13 is used by the wiring" : ""}`);
 
   // ---- config.h ----
@@ -419,6 +424,7 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     C.push(`#define LOW_BATTERY_V    ${cNum(cells ? cells * S.LOW_CELL_V : 0)}${cells ? `   // ${cells} cells × ${cNum(S.LOW_CELL_V)} V` : ""}`);
     C.push("");
   }
+  C.push(...extra.config);
   C.push(`#define LOG_INTERVAL_MS  ${cNum(S.LOG_S * 1000)}`);
   if (bno) C.push("#define BNO_ADDR         0x28    // 0x29 if ADR is tied high", "#define BNO_AXIS_MAP     0x24    // default: chip flat, dot towards the front left. See the BNO055 datasheet 3.4", "#define BNO_AXIS_SIGN    0x00");
   if (mpu) C.push("#define MPU_ADDR         0x68");
@@ -429,11 +435,11 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
     // the ride controller's own pins and settings go after the motors'
     rideOut = rideFirmware({ c, motors, encs, io, def, P, C, warnings, vsense: vsense ? { comp: vsense, pin: vsPin, ratio: vsRatio } : undefined, adcMax, boardV });
   }
-  const ino = rideOut ? rideOut.ino : sketch({ c, outs, motors, front, rear, steer, steerServo, servos, encs, bno: !!bno, mpu: !!mpu, vsense: !!vsPin, tunneller, isEsp32 });
+  const ino = rideOut ? rideOut.ino : sketch({ c, outs, motors, front, rear, steer, steerServo, servos, encs, bno: !!bno, mpu: !!mpu, vsense: !!vsPin, tunneller, isEsp32, extra });
 
   const name = ident(c.fw.name).toLowerCase() || "firmware";
   const dir = `firmware/${name}`;
-  const readme = arduinoReadme({ c, name, outs, servos, imu, vsense: !!vsPin, tunneller, ride: rideOut, warnings, pinTable, isEsp32, steer, front, rear });
+  const readme = withBenchParts(arduinoReadme({ c, name, outs, servos, imu, vsense: !!vsPin, tunneller, ride: rideOut, warnings, pinTable, isEsp32, steer, front, rear }), extra);
   return {
     files: [
       { path: `${dir}/${name}.ino`, content: ino },
@@ -463,6 +469,7 @@ interface SketchArgs {
   vsense: boolean;
   tunneller: boolean;
   isEsp32: boolean;
+  extra: BenchParts;
 }
 
 function sketch(a: SketchArgs): string {
@@ -478,7 +485,7 @@ function sketch(a: SketchArgs): string {
   L.push("// Open the Serial Monitor at 115200 baud and type h for the commands.");
   L.push("");
   L.push("#include <Arduino.h>");
-  if (imu) L.push("#include <Wire.h>");
+  if (imu || a.extra.wire) L.push("#include <Wire.h>");
   if (servos.length) L.push("#include <Servo.h>");
   L.push("#if defined(ARDUINO_ARCH_AVR)", "#include <EEPROM.h>", "#define HAVE_LOG 1", "#else", "#define HAVE_LOG 0", "#endif");
   L.push('#include "config.h"', '#include "pins.h"', "");
@@ -510,6 +517,7 @@ function sketch(a: SketchArgs): string {
   L.push(`const uint8_t N_MOTORS = ${outs.length};`);
   for (const o of outs) L.push(`const uint8_t ${o.key}_IDX = ${outs.indexOf(o)};`);
   L.push("");
+  if (a.extra.code) L.push(a.extra.code);
   L.push(
     `void pinOut(int16_t p) { if (p >= 0) pinMode(p, OUTPUT); }
 void writeD(int16_t p, bool v) { if (p >= 0) digitalWrite(p, v ? HIGH : LOW); }
@@ -535,7 +543,7 @@ void motorWrite(Motor &m, int s) {
   }
 }
 
-void stopAll() { for (uint8_t i = 0; i < N_MOTORS; i++) motorWrite(motors[i], 0); }
+void stopAll() { for (uint8_t i = 0; i < N_MOTORS; i++) motorWrite(motors[i], 0);${a.extra.stopAll} }
 
 // Driver current sense, if wired: -1 = no sensor, -2 = this sample says nothing. Some drivers (the G2)
 // sense only while driving and read about 0 V, below their offset, in the PWM off-time. Those samples
@@ -843,7 +851,7 @@ float hottest() { float h = 0; for (uint8_t i = 0; i < N_MOTORS; i++) if (motors
   Serial.print(F("  yaw ")); Serial.print(yaw, 1); Serial.print(F("  roll ")); Serial.print(roll, 1); Serial.print(F("  pitch ")); Serial.print(pitch, 1);
   for (uint8_t i = 0; i < N_MOTORS; i++) { Serial.print(F("  ")); Serial.print(motors[i].name); Serial.print(F(" ")); Serial.print(motors[i].cmd); if (motors[i].amps >= 0) { Serial.print(F("/")); Serial.print(motors[i].amps, 1); Serial.print(F("A")); } if (motors[i].heat >= 1) { Serial.print(F(" +")); Serial.print(motors[i].heat, 0); Serial.print(F("K")); } }
   for (uint8_t i = 0; i < N_ENC; i++) { Serial.print(F("  rpm")); Serial.print(i); Serial.print(F(" ")); Serial.print(encRpm[i], 1); }
-  if (vbat > 0) { Serial.print(F("  battery ")); Serial.print(vbat, 2); Serial.print(F(" V")); }
+  if (vbat > 0) { Serial.print(F("  battery ")); Serial.print(vbat, 2); Serial.print(F(" V")); }${a.extra.status}
   Serial.println();
 }`);
   L.push("");
@@ -912,7 +920,7 @@ void help() {
   Serial.println(F("  l            print the run log as CSV"));
   Serial.println(F("  c            clear the run log"));
   Serial.println(F("  b            bench test for Kerf's Calibrate panel (hold the machine still)"));
-  for (uint8_t i = 0; i < N_MOTORS; i++) { Serial.print(F("  motor ")); Serial.print(i); Serial.print(F(" = ")); Serial.println(motors[i].name); }
+${a.extra.help}  for (uint8_t i = 0; i < N_MOTORS; i++) { Serial.print(F("  motor ")); Serial.print(i); Serial.print(F(" = ")); Serial.println(motors[i].name); }
 }
 
 char line[32];
@@ -939,7 +947,7 @@ void command(char *s) {
     case 'l': logDump(); break;
     case 'c': logClear(); Serial.println(F("Log cleared")); break;
     case 'b': benchTest(); break;
-    default: if (cmd) Serial.println(F("? (h for help)"));
+${a.extra.cases}    default: if (cmd) Serial.println(F("? (h for help)"));
   }
 }
 void console() {
@@ -958,7 +966,7 @@ void setup() {
   if (STATUS_LED >= 0) pinMode(STATUS_LED, OUTPUT);
   for (uint8_t i = 0; i < N_MOTORS; i++) motorSetup(motors[i]);
   stopAll();
-  encSetup();${steerServo ? `\n  steerServo.attach(${steerServo.key}_SIG);\n  steerTo(0);` : ""}${otherServos.length ? `\n  for (uint8_t i = 0; i < ${otherServos.length}; i++) servos[i].attach(servoPins[i]);` : ""}
+  encSetup();${a.extra.setup}${steerServo ? `\n  steerServo.attach(${steerServo.key}_SIG);\n  steerTo(0);` : ""}${otherServos.length ? `\n  for (uint8_t i = 0; i < ${otherServos.length}; i++) servos[i].attach(servoPins[i]);` : ""}
   imuOk = imuBegin();
   Serial.println(F("${cString(c.designName)}: ${c.fw.name} ready"));
   if (!imuOk) Serial.println(F("IMU not found${imu ? ": check SDA/SCL and power" : " (none in the wiring)"}"));
@@ -971,7 +979,7 @@ void setup() {
   loopBody.push(`void loop() {
   static unsigned long tFast = 0, tSlow = 0;
   unsigned long now = millis();
-  console();
+  console();${a.extra.loop}
   if (now - tFast >= 20) {
     tFast = now;
     // an IMU that stops answering mid-run (a wire off, a brown-out) is lost after 10 misses in a row
