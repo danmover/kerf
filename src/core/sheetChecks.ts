@@ -1,7 +1,7 @@
 // Checks on sheet() parts made as sheet metal, from what sheet() recorded:
 // every flange is long enough for the press brake to grip, no two flanges
 // run into each other once bent, the flat pattern does not overlap itself,
-// and it fits on a standard sheet. Thickness, bend radius against the
+// it fits on a standard sheet, and louvres have room to form. Thickness, bend radius against the
 // material and holes near bends are checked on the geometry by the process
 // checks (mfg/analyze).
 
@@ -13,6 +13,10 @@ import type { V2, V3 } from "../kernel/recipe";
 
 /** Shortest outside flange length a press brake bends reliably, in sheet thicknesses. */
 export const MIN_FLANGE_T = 4;
+/** Flat a louvre tool wants round a louvre (to edges, bends and the next louvre), in sheet thicknesses. */
+export const LOUVRE_ROOM_T = 3;
+/** How far out a louvre stands before its ends risk splitting, in sheet thicknesses. */
+export const LOUVRE_DEEP_T = 5;
 /** A standard full sheet, mm. */
 const STOCK: V2 = [2500, 1250];
 /** Overlap that counts as a collision, mm. */
@@ -82,11 +86,18 @@ function partChecks(p: EvalPart): CheckItem[] {
   const mm = (n: number) => `${fmtNum(n, 1)} mm`;
   const min = MIN_FLANGE_T * s.t;
 
-  // flange lengths
-  const strips = s.flanges.flatMap((f) => [
-    { name: `${f.name} flange`, h: f.h, flat: f.flat, key: "h" },
-    ...(f.lip ? [{ name: `${f.name} lip`, h: f.lip.length, flat: f.lip.flat, key: "lip" }] : []),
-  ]);
+  // flange lengths (a hem's folded-back part is gripped and flattened too; a roll is curled, not bent on a brake)
+  const strips = s.flanges.flatMap((f) =>
+    f.kind === "roll"
+      ? []
+      : f.kind === "hem"
+        ? [{ name: `${f.name} hem`, h: f.h, flat: f.hem?.flat ?? f.flat, key: "hem" }]
+        : [
+            { name: `${f.name} flange`, h: f.h, flat: f.flat, key: "h" },
+            ...(f.lip ? [{ name: `${f.name} lip`, h: f.lip.length, flat: f.lip.flat, key: "lip" }] : []),
+            ...(f.hem ? [{ name: `${f.name} hem`, h: f.hem.length, flat: f.hem.flat, key: "hem" }] : []),
+          ],
+  );
   const grip = strips.filter((x) => x.flat < s.t);
   const short = strips.filter((x) => x.flat >= s.t && x.h < min - 1e-6);
   if (grip.length)
@@ -162,6 +173,47 @@ function partChecks(p: EvalPart): CheckItem[] {
         : `${size} laid flat, larger than a ${STOCK[0]} × ${STOCK[1]} mm sheet, so it needs a special order or a welded joint.`,
       ...(fits ? {} : { fix: "Split it into parts joined with screws, rivets or welds, or make the flanges shorter." }),
     });
+  }
+
+  // louvres: flat round each for the tool to clamp, and not drawn deeper than the metal stretches
+  const forms = s.forms ?? [];
+  if (forms.length) {
+    const room = (f: (typeof forms)[number]) => Math.min(f.margin, f.web ?? Infinity);
+    const where = (f: (typeof forms)[number]) => (f.web !== undefined && f.web < f.margin ? `${mm(f.web)} from the next louvre` : `${mm(f.margin)} from ${f.near}`);
+    const tight = forms.filter((f) => room(f) < s.t - 1e-9);
+    const close = forms.filter((f) => room(f) >= s.t - 1e-9 && room(f) < LOUVRE_ROOM_T * s.t - 1e-9);
+    const deep = forms.filter((f) => f.height > LOUVRE_DEEP_T * s.t + 1e-9);
+    const id = `sheet:louvre:${p.name}`;
+    const many = forms.length === 1 ? "louvre" : "louvres";
+    if (tight.length)
+      out.push({
+        ...base,
+        id,
+        status: "fail",
+        title: `${p.label} has louvres too close to an edge or bend`,
+        detail: `${tight.map((f) => `${f.name} is ${where(f)}`).join("; ")}: the louvre tool needs at least the sheet's ${mm(s.t)} of flat round it to clamp, or the metal tears and the bend beside it distorts.`,
+        fix: `Move ${tight.length === 1 ? "it" : "them"} to leave ${mm(LOUVRE_ROOM_T * s.t)} (${LOUVRE_ROOM_T} × the sheet) round each, or make ${tight.length === 1 ? "it" : "them"} smaller.`,
+      });
+    else if (close.length || deep.length)
+      out.push({
+        ...base,
+        id,
+        status: "warn",
+        title: deep.length && !close.length ? `${p.label} has deep louvres` : `${p.label} has louvres close to an edge or bend`,
+        detail: [
+          ...close.map((f) => `${f.name} is ${where(f)}, under ${mm(LOUVRE_ROOM_T * s.t)} (${LOUVRE_ROOM_T} × the sheet), so the flat beside it may buckle as it forms`),
+          ...deep.map((f) => `${f.name} stands ${mm(f.height)} out, more than ${mm(LOUVRE_DEEP_T * s.t)} (${LOUVRE_DEEP_T} × the sheet), so its ends may split as they stretch`),
+        ].join("; "),
+        fix: `${close.length ? `Leave ${mm(LOUVRE_ROOM_T * s.t)} round each louvre. ` : ""}${deep.length ? `Keep louvres under ${mm(LOUVRE_DEEP_T * s.t)} high, or use a thicker or softer sheet.` : ""}`.trim(),
+      });
+    else
+      out.push({
+        ...base,
+        id,
+        status: "pass",
+        title: `${p.label}'s ${forms.length} ${many} have room to form`,
+        detail: `At least ${mm(Math.min(...forms.map(room)))} of flat round each (${LOUVRE_ROOM_T} × the sheet is ${mm(LOUVRE_ROOM_T * s.t)}), at most ${mm(Math.max(...forms.map((f) => f.height)))} high; pressed with a louvre tool on a turret punch after the blank is cut.`,
+      });
   }
   return out;
 }
