@@ -60,3 +60,10 @@
 # An app's simulated twin: firmware compiled to closures on a virtual chip, no eval, no network.
 /assets/twin.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
+
+# The CNC toolpath and sheet nesting workers: slicing, offsets and nesting on outlines, no network.
+/assets/cam.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
+/assets/sheet.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
