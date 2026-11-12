@@ -80,7 +80,66 @@ export type LoadSpec =
    * a force in N pushed onto a bore by what turns in it (or onto a shaft by its bearing), the region a cylinder zone:
    * spread over the half it presses on with a cosine, none at the sides; a share along the axis is spread evenly
    */
-  | { t: "bearing"; region: RegionSpec; f: V3 };
+  | { t: "bearing"; region: RegionSpec; f: V3 }
+  /** the air's pressure and friction from an airflow analysis's run, on every analysed part that was in the air */
+  | AirLoadSpec;
+
+/**
+ * air("Aero at 45 km/h"): an airflow analysis's surface pressures and skin friction as loads. One-way: the flow is the
+ * one the run found round the unbent parts.
+ */
+export interface AirLoadSpec {
+  t: "air";
+  /** the airflow analysis's label */
+  analysis: string;
+  /** which of the run's yaw angles, degrees (unset: its first) */
+  yaw?: number;
+  /** the air speed to load at, mm/s (unset: the run's own); pressures go as the speed squared */
+  speed?: number;
+  /** a factor on the air's loads, such as a gust factor */
+  scale: number;
+  /** the run's pressures on the analysed parts, filled in from the run before the solve */
+  field?: AirField;
+}
+
+/** One airflow run's pressures and friction on the analysed parts, ready for the solver. */
+export interface AirField {
+  /** the run's yaw, degrees, and the air speed the loads are at, m/s */
+  yaw: number;
+  speed: number;
+  /** the air speed the run itself was at, m/s */
+  runSpeed: number;
+  /** dynamic pressure ½ρv² times the scale, N/mm² */
+  q: number;
+  parts: AirPartField[];
+  /** parts in the air that this analysis leaves out, with the force the air puts on each at this speed, N */
+  left: { name: string; force: number }[];
+}
+
+export interface AirPartField {
+  /** the analysed part's name */
+  name: string;
+  /** its surface in the run (world mm, outward normals) with the pressure coefficient and the skin friction coefficient (xyz) at each point */
+  positions: Float32Array;
+  indices: Uint32Array;
+  normals?: Float32Array;
+  cp: Float32Array;
+  cf: Float32Array;
+  /** the force the run measured on it from the flow, N, world axes, at this speed and scale */
+  force: V3;
+}
+
+/** How an air load went on: the force on each part, and the factor that matched it to what the run measured. */
+export interface AirLoadResult {
+  analysis: string;
+  yaw: number;
+  /** the air speed the loads are at and the one the run was at, m/s; dynamic pressure with the scale, N/mm² */
+  speed: number;
+  runSpeed: number;
+  q: number;
+  parts: { name: string; force: V3; measured: V3; scale: number; area: number }[];
+  left: { name: string; force: number }[];
+}
 
 export type Resolution = "draft" | "standard" | "fine" | { h: number };
 

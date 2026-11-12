@@ -9,7 +9,7 @@ import { useAnalysis, showResults, runFine, runAccuracyCheck, runTopology, stopT
 import { topologyText } from "../analysis/topologySummary";
 import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
 import { download } from "../persist/files";
-import { dirWords, largeText, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
+import { airLoadText, dirWords, largeText, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { count, designWords, fatigueText, fatigueVerdict, lifeText } from "../analysis/fatigueSummary";
 import { cycleWords, cyclesAt, MEAN_STRESS, type SnCurve } from "../analysis/fe/fatigue";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type StudySpec, type UciSpec } from "../analysis/spec";
@@ -1488,6 +1488,11 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
     if (l.t === "pressure") return `${fmtNum(l.p, 3)} MPa on ${describeRegion(l.region)}${info ? ` (${fmtNum(info.magnitude, 1)} N over ${fmtNum(info.area, 0)} mm²)` : ""}`;
     if (l.t === "bearing")
       return `${fmtNum(Math.hypot(...l.f), 1)} N along ${v3(l.f.map((x) => x / (Math.hypot(...l.f) || 1)))} on ${describeRegion(l.region)}, spread round the side it presses${info?.pressure ? ` (peak ${fmtNum(info.pressure, 2)} MPa)` : ""}`;
+    if (l.t === "air") {
+      if (info?.air) return airLoadText(info.air, info.magnitude);
+      const how = [l.yaw !== undefined ? `at ${fmtNum(l.yaw, 0)}° yaw` : "", l.speed !== undefined ? `at ${fmtNum(l.speed * 0.0036, 0)} km/h` : "", l.scale !== 1 ? `×${fmtNum(l.scale, 2)}` : ""].filter(Boolean).join(", ");
+      return `the pressure and friction from "${l.analysis}"${how ? ` (${how})` : ""}, once it has run`;
+    }
     return `${fmtNum(l.torque / 1000, 2)} N·m about ${v3(l.axis)} on ${describeRegion(l.region)}`;
   };
   const supportTag = (s: StructuralSpec["supports"][number]) => (s.spring ? "spring" : s.pin ? "pin" : s.move ? "moved" : s.contact ? "contact" : s.dir ? "roller" : "fixed");

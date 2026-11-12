@@ -12,7 +12,7 @@ import { commitSource, realSource } from "../app/project";
 import { withValues } from "../core/decisions";
 import { fmtNum } from "../lang/values";
 import { offerAlternatives } from "../ai/compare";
-import { resolveThermal, solveOnce, structuralInput } from "./runtime";
+import { liveAirSource, resolveThermal, solveOnce, structuralInput } from "./runtime";
 import { runStudy, StudyError, type StudyDeps, type StudyProgress, type StudyResult, type StudyRun } from "./study";
 import { MEASURE_UNIT } from "./studyLang";
 import type { StudySpec } from "./spec";
@@ -37,9 +37,11 @@ const deps = (onProgress: (p: StudyProgress) => void): StudyDeps => ({
   measure: (src, onStage) => measureIsolated(src, () => [], onStage),
   analyse: async (spec, model, built, draft, signal) => {
     const parts = model.parts.filter((q) => spec.parts.includes(q.name));
-    const prep = structuralInput(resolveThermal(draft ? { ...spec, resolution: "draft" } : spec, model), parts, false, new Map(), (h) => built.parts.get(h)?.mesh);
+    // air loads take the design's own airflow run for every design the study tries
+    const prep = structuralInput(resolveThermal(draft ? { ...spec, resolution: "draft" } : spec, model), parts, false, new Map(), (h) => built.parts.get(h)?.mesh, liveAirSource(model));
     if (!prep) throw new Error("its parts did not build");
     if (prep.error) throw new Error(prep.error);
+    if (prep.wait) throw new Error(`${prep.wait}: run the study once the airflow analysis is done`);
     return solveOnce(prep.input!, undefined, signal);
   },
   parallel: Math.max(1, pool.size),

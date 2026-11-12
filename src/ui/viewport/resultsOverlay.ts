@@ -554,7 +554,9 @@ export class ResultsOverlay implements SceneOverlay {
           ? `${fmtNum(ld.magnitude / Math.max(ld.area, 1e-9), 3)} MPa · ${fmtNum(ld.magnitude, 1)} N`
           : ld.kind === "bearing"
             ? `${fmtNum(ld.magnitude, 1)} N bearing · ${fmtNum(ld.pressure ?? 0, 2)} MPa peak`
-            : `${fmtNum(ld.magnitude, 1)} N`;
+            : ld.kind === "air"
+              ? `${fmtNum(ld.magnitude, ld.magnitude < 10 ? 2 : 1)} N of air`
+              : `${fmtNum(ld.magnitude, 1)} N`;
       this.label(text, at.clone().addScaledVector(dir, -len * 0.6), this.look.text.load, 1);
     }
     // self-weight gets an arrow only when it matters next to the other loads

@@ -15,7 +15,8 @@ import { joulePower, solveCurrent, type CurrentGrid, type CurrentSolve } from ".
 import { rhoAt, type ElectricMaterial } from "../electricMaterials";
 import { amps, ohms } from "../thermalSummary";
 export type { ResultVolume } from "./volume";
-import type { BoltResult, ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec, TopologySpec, TouchingSpec, TouchResult } from "../spec";
+import type { AirLoadResult, AirLoadSpec, BoltResult, ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec, TopologySpec, TouchingSpec, TouchResult } from "../spec";
+import { airSamples, airScale, nearestSample } from "./airLoads";
 import { isoSurface, optimise, profileLoops, smoothSurface, surfaceStats, TopologyError, type Loop, type TopologyRun } from "./topology";
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
@@ -467,7 +468,7 @@ export interface StructuralResult {
   volume: number;
   /** at: centroid of the loaded surface (a torque's centre for torques); vector: net force; axis: a torque's axis */
   /** pressure: for a bearing load, the peak of its cosine spread (in the middle of the side it presses), MPa */
-  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3; pressure?: number }[];
+  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3; pressure?: number; air?: AirLoadResult }[];
   supports: {
     region: string;
     dir?: V3;
@@ -1307,7 +1308,75 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const f = new Float64Array(3 * nn);
   const loadInfo: StructuralResult["loads"] = [];
   const loadNodes: number[] = [];
+  // the air on the parts from an airflow run: each face of the grid's surface takes the pressure and friction nearest it
+  const faceArea = [hy * hz, hy * hz, hx * hz, hx * hz, hx * hy, hx * hy];
+  const halfStep = [hx / 2, hx / 2, hy / 2, hy / 2, hz / 2, hz / 2];
+  const airLoad = (ld: AirLoadSpec, i: number) => {
+    const fld = ld.field;
+    if (!fld) throw new FeaError(`Load ${i + 1} (air from "${ld.analysis}") has no airflow result to take its pressures from: the airflow analysis "${ld.analysis}" has to run first.`);
+    const R: V3 = [0, 0, 0];
+    const at: V3 = [0, 0, 0];
+    let atW = 0;
+    let area = 0;
+    const touched = new Set<number>();
+    const parts: AirLoadResult["parts"] = [];
+    for (const ap of fld.parts) {
+      const idx = partsByName.get(ap.name);
+      if (!idx) continue;
+      const mine = new Set(idx);
+      const S = airSamples(ap, hmax, 2.5 * hmax);
+      const nodeF = new Map<number, V3>();
+      const got: V3 = [0, 0, 0];
+      let wet = 0;
+      for (let k = 0; k < faces.fe.length; k++) {
+        const e = faces.fe[k];
+        if (!mine.has(owner[e])) continue;
+        const d = faces.fd[k];
+        const nrm = FACE_NORMAL[d];
+        const ei = e % nx,
+          ej = Math.floor(e / nx) % ny,
+          ek = Math.floor(e / (nx * ny));
+        const c: V3 = [origin[0] + (ei + 0.5) * hx + nrm[0] * halfStep[d], origin[1] + (ej + 0.5) * hy + nrm[1] * halfStep[d], origin[2] + (ek + 0.5) * hz + nrm[2] * halfStep[d]];
+        const s = nearestSample(S, c, nrm);
+        if (s < 0) continue;
+        const A = faceArea[d];
+        // pressure pushes into the surface; friction drags along it over the true surface's share of the stepped face
+        const share = Math.abs(S.nrm[3 * s] * nrm[0] + S.nrm[3 * s + 1] * nrm[1] + S.nrm[3 * s + 2] * nrm[2]);
+        const cp = S.cp[s];
+        const F: V3 = [fld.q * A * (-cp * nrm[0] + share * S.cf[3 * s]), fld.q * A * (-cp * nrm[1] + share * S.cf[3 * s + 1]), fld.q * A * (-cp * nrm[2] + share * S.cf[3 * s + 2])];
+        for (let q = 0; q < 3; q++) got[q] += F[q];
+        wet += A * share;
+        const n0 = elemNode0(e);
+        for (const a of FACE_CORNERS[d]) {
+          const n = n0 + off[a];
+          let v = nodeF.get(n);
+          if (!v) nodeF.set(n, (v = [0, 0, 0]));
+          for (let q = 0; q < 3; q++) v[q] += F[q] / 4;
+        }
+      }
+      // surface pressures read low next to the force the run measured from the flow: scale them to it
+      const sc = airScale(got, ap.force);
+      for (const [n, v] of nodeF) {
+        for (let q = 0; q < 3; q++) {
+          f[3 * n + q] += v[q] * sc;
+          R[q] += v[q] * sc;
+        }
+        const m = Math.hypot(v[0], v[1], v[2]) * sc;
+        const p = nodePos(n);
+        for (let q = 0; q < 3; q++) at[q] += p[q] * m;
+        atW += m;
+        touched.add(n);
+        loadNodes.push(n);
+      }
+      area += wet;
+      parts.push({ name: ap.name, force: [got[0] * sc, got[1] * sc, got[2] * sc], measured: ap.force, scale: sc, area: wet });
+    }
+    if (!touched.size) throw new FeaError(`Load ${i + 1} (air from "${ld.analysis}"): none of the analysed parts' surface was in that run's air. Analyse the parts it puts in the air.`);
+    const centre: V3 = atW > 0 ? [at[0] / atW, at[1] / atW, at[2] / atW] : nodePos(touched.values().next().value as number);
+    loadInfo.push({ kind: "air", region: `the air from ${ld.analysis}`, at: centre, vector: R, magnitude: Math.hypot(...R), area, nodes: touched.size, air: { analysis: ld.analysis, yaw: fld.yaw, speed: fld.speed, runSpeed: fld.runSpeed, q: fld.q, parts, left: fld.left } });
+  };
   inp.loads.forEach((ld, i) => {
+    if (ld.t === "air") return airLoad(ld, i);
     const sel = select(ld.region);
     if (!sel.nodes.length) throw new FeaError(`Load ${i + 1} (${ld.t} on ${describeRegion(ld.region)}) does not touch the part's surface. Move the zone onto the part.`);
     const tot = sel.w.reduce((s, v) => s + v, 0);
@@ -3321,6 +3390,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       );
     // every load still has the shape under it
     inp.loads.forEach((ld, i) => {
+      // the air presses on whatever surface the shape has
+      if (ld.t === "air") return;
       const nodes = select(ld.region).nodes;
       const touches = nodes.some((n) => {
         const ii = n % NX,

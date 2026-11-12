@@ -695,6 +695,13 @@ analysis "Aero at 45 km/h" {
   max_cda: 0.25           // targets: max_cda (m²), max_drag (N), max_watts (W to push the air), max_lift (N, downforce is negative lift)
 }
 Also: ground: false for free air with no road, temperature: 20C or density: 1.2 for the air, resolution: "draft" (quick look), "standard" (default) or "fine", or a cell size like 4mm, and time: 10min to cap the run. The result gives drag, CdA, side force, lift and the watts at each yaw (mean too), the drag of every part, and the surface patches with the most drag, saying whether each is pressure on a blunt front, suction behind a back where the flow separates, or skin friction. The viewport shows surface pressure or friction, animated streamlines, the wake, eddies, cuts through the flow and a version history. To cut drag: round or point the fronts that stop the air, taper the backs where it separates (a tail about three times as long as it is thick, or a truncated aerofoil), close gaps between parts that let air in behind, and shrink the frontal area; then compare the new CdA with the last version and keep the change only if it helped across the yaws.
+Air loads (one-way fluid to structure): air("<airflow label>") in a strength analysis's load: puts that run's surface pressure and skin friction on every analysed part that was in its air, scaled so each part's load adds up to the force the run measured on it. The strength analysis waits for the airflow run and runs again after each new one:
+analysis "Sign in a gale" {
+  parts: [post, sign]
+  fix: face(post, -Z)
+  load: air("Gale")                     // optional: yaw: 5 (one of the run's angles), speed: 120kmh (pressures go as the speed squared), scale: 1.5 (a gust factor)
+}
+It is one-way: the flow is the one round the unbent parts, so it suits stiff parts (signs, wings, fairings, brackets in the wind), not flapping ones. Solid parts only (not frames analysed as beams or walls as shells). The result's loads list the force on each part and the factor that matched it to the run; parts in the air that the strength analysis leaves out are named with the force on them.
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins
 - exact solid interference between every pair of nearby parts (OpenCASCADE booleans); parts of one multi-solid component are not checked against each other; gears are checked by tooth geometry instead

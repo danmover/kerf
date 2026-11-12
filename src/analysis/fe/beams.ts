@@ -759,6 +759,7 @@ export function runBeams(inp: StructuralInput, progress: Progress = () => undefi
     });
   };
   for (const ld of inp.loads) {
+    if (ld.t === "air") throw new FeaError(`air("${ld.analysis}") loads solid parts; it does not go on a frame analysed as beams yet. Analyse the parts as solids for the air's loads.`);
     const sel = select(ld.region);
     const c = centroid(sel);
     if (ld.t === "force" || ld.t === "bearing") {

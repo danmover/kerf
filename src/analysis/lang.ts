@@ -236,6 +236,27 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
     'wind(region, 70kmh, cd: 1.2) → wind pressure ½ρv²·cd pushing on a face (cd 1.2 for a flat plate square to the wind, 0.5 for a tube). wind(zone(...), 70kmh, dir: X, area: 8400, at: p) is the wind on a sheet or sign that is not analysed (area in mm², centre of pressure p), carried into the zone that holds it as a force plus its moment. Speeds take kmh or mph.',
   ),
   def(
+    "air",
+    ["analysis", "yaw", "speed", "scale"],
+    (a) => {
+      const analysis = a.str("analysis");
+      if (!analysis.trim()) a.ctx.error('air(): name the airflow analysis, like air("Aero at 45 km/h")');
+      let speed: number | undefined;
+      if (a.has("speed")) {
+        speed = a.positive("speed");
+        if (speed < 1000) a.ctx.error("air(): give the speed with its unit, like 60kmh or 40mph (a plain number is mm/s)");
+      }
+      let yaw: number | undefined;
+      if (a.has("yaw")) {
+        yaw = a.num("yaw");
+        if (Math.abs(yaw) > 45) a.ctx.error("air(): yaw: is one of the airflow analysis's yaw angles, from -45 to 45 degrees");
+      }
+      const scale = a.positive("scale", 1);
+      return wrap(LOAD, { t: "air", analysis, ...(yaw !== undefined ? { yaw } : {}), ...(speed !== undefined ? { speed } : {}), scale } satisfies LoadSpec, "air load");
+    },
+    'air("Aero at 45 km/h") → the pressure and skin friction an airflow analysis found, as loads on every analysed part that was in its air (one-way: the flow is the one round the unbent parts). It waits for that analysis\'s run and runs again after each new one. yaw: picks one of its yaw angles (default its first), speed: 60kmh loads it at another speed (pressures go as the speed squared), scale: 1.5 is a gust factor. Each part\'s pressures are scaled so they add up to the force the run measured on that part. Use it in load:, with fix: for what holds the parts.',
+  ),
+  def(
     "pull",
     ["band"],
     (a) => {
@@ -730,7 +751,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       } else {
         if (x instanceof Obj && x.kind === LOAD) loads.push(x.fields.spec as unknown as LoadSpec);
         else if (x instanceof Obj && x.kind === SUPPORT) fail(`load: takes loads; ${x.label ?? "a support"} goes in fix:`, p.span);
-        else fail(`load: should be force(...), pressure(...), torque(...), bearing(...), wind(...) or pull(band); got ${typeName(x)}`, p.span);
+        else fail(`load: should be force(...), pressure(...), torque(...), bearing(...), wind(...), air("airflow analysis") or pull(band); got ${typeName(x)}`, p.span);
       }
     }
   };
@@ -858,7 +879,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     named.add(t.a);
     named.add(t.b);
   }
-  for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : [])), ...currents.flatMap((c) => [c.from, c.to])])
+  for (const r of [...supports.map((s) => s.region), ...loads.flatMap((l) => (l.t === "air" ? [] : [l.region])), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : [])), ...currents.flatMap((c) => [c.from, c.to])])
     if (r.t === "face") named.add(r.part);
   for (const h of heatLoads) if (h.part) named.add(h.part);
   // a frame named in face() stands for its members, and a part made in pieces for its pieces

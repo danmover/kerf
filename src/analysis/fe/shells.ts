@@ -660,6 +660,7 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     if (len(rest) > 1e-6 * (len(M) + 1e-30)) for (const n of sel.nodes) for (let k = 0; k < 3; k++) F[6 * n + 3 + k] += rest[k] / sel.nodes.length;
   };
   for (const ld of inp.loads) {
+    if (ld.t === "air") throw new FeaError(`air("${ld.analysis}") loads solid parts; it does not go on thin walls analysed as shells yet. Analyse the parts as solids for the air's loads.`);
     const sel = select(ld.region);
     const c = centroid(sel);
     if (ld.t === "force") {

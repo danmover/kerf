@@ -37,6 +37,8 @@ import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureT
 import { dynamicItems } from "./dynamics";
 import { topologyNext, topologyText } from "./topologySummary";
 import type { FeaRequest, FeaResponse } from "./protocol";
+import { useAirflow } from "./aeroRuntime";
+import { airflowNamed, airKey, isAirLoad, resultId, withAirFields, type AirSource } from "./airLoads";
 
 export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp" | "life" | "current";
 
@@ -350,16 +352,36 @@ function shellsCannot(spec: StructuralSpec): string {
 const JOINING_KINDS = new Set(["screw", "bolt", "nut", "insert", "washer", "standoff", "rivet"]);
 
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
+/**
+ * The design's own airflow runs, as air loads take them: a run that is done and up to date, or why the load waits (the
+ * run is still to come, or is going) or cannot go on.
+ */
+export function liveAirSource(model: Pick<Model, "analyses">): AirSource {
+  return (label) => {
+    const aero = airflowNamed(model, label);
+    if (typeof aero === "string") return { error: aero };
+    const run = useAirflow.getState().runs.get(aero.label);
+    if (run?.status === "error") return { error: `The airflow analysis "${aero.label}" did not finish (${run.error ?? "it stopped"}), so its air cannot load this analysis yet.` };
+    if (!run || run.status !== "done" || run.stale || !run.result) return { wait: `Waiting for the airflow run "${aero.label}" to finish` };
+    return { result: run.result, aero, id: resultId(run.result) };
+  };
+}
+
 export function structuralInput(
   spec: StructuralSpec,
   parts: EvalPart[],
   fine: boolean,
   buildErrors: Map<string, string>,
   meshOf: (hash: string) => MeshData | undefined = shownMesh,
-): { input?: StructuralInput; error?: string } | null {
+  air?: AirSource,
+): { input?: StructuralInput; error?: string; wait?: string } | null {
   if (!parts.length) return { error: `None of ${spec.parts.join(", ")} has geometry to analyse.` };
   const broken = parts.find((p) => buildErrors.has(p.hash));
   if (broken) return { error: `${broken.label} did not build, so it cannot be analysed yet.` };
+  // air loads take their pressures from an airflow run, which may still be to come
+  const withAir = withAirFields(spec, parts, air);
+  if ("error" in withAir) return { error: withAir.error };
+  if ("wait" in withAir) return { wait: withAir.wait };
   const th = spec.thermal;
   if (th && !th.heat.length && !th.currents?.length && !th.fixed.length)
     return { error: `heat: "auto" found no electronics that use power among ${spec.parts.join(", ")}, so nothing makes heat. Add source(part, watts) for what gets hot.` };
@@ -503,7 +525,7 @@ export function structuralInput(
     parts: fea,
     materials: mats,
     supports: spec.supports,
-    loads: spec.loads,
+    loads: withAir.loads,
     accel: spec.accel,
     target: typeof res === "string" ? RESOLUTION_TARGET[res] : RESOLUTION_TARGET.standard,
     h: typeof res === "string" ? undefined : res.h,
@@ -600,18 +622,21 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
     runs.delete(label);
     if (shown === label) shown = null;
   }
+  const air = liveAirSource(model);
   for (const written of specs) {
     // heat: "auto" and the ambient come from the model, so a change to the wiring or the brief re-runs a heat analysis
     const spec = resolveThermal(written, model);
     // compare input keys first: meshes are only copied into world space when something changed
     const parts = model.parts.filter((p) => spec.parts.includes(p.name));
-    const plainKey = inputKey(spec, parts, false);
+    // an air load runs again with each new airflow run
+    const airK = airKey(spec, air);
+    const plainKey = inputKey(spec, parts, false) + airK;
     // a fine run (or an accuracy check) stays so until the inputs change
     const fine = fineWanted.get(spec.label) === baseKey(plainKey);
     if (!fine) fineWanted.delete(spec.label);
     const check = !!spec.converge || checkWanted.get(spec.label) === baseKey(plainKey);
     if (!check) checkWanted.delete(spec.label);
-    const key = fine || check ? inputKey(spec, parts, fine, check) : plainKey;
+    const key = fine || check ? inputKey(spec, parts, fine, check) + airK : plainKey;
     const run = runs.get(spec.label);
     if (run && run.key === key) continue;
     // a topology run takes many solves, so it runs only when asked; a change to the design leaves the last shape
@@ -623,13 +648,15 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
       runs.set(spec.label, { label: spec.label, key, fine, status: "idle", stage: "Ready to run", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() });
       continue;
     }
-    const prep = structuralInput(spec, parts, fine, state.buildErrors);
+    const prep = structuralInput(spec, parts, fine, state.buildErrors, shownMesh, air);
     if (!prep) continue;
     if (prep.input && check) prep.input.converge = true;
     cancel(spec.label);
     const resolution = (fine ? "fine" : typeof spec.resolution === "string" ? spec.resolution : `${fmtNum(spec.resolution.h)} mm`) + (check ? ", accuracy check" : "");
     const base: StructuralRun = { label: spec.label, key, fine, check, status: "waiting", stage: "Waiting", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() };
     if (prep.error) runs.set(spec.label, { ...base, status: "error", error: prep.error, setup: true, result: undefined, stale: false });
+    // its air is still to come: it runs when the airflow run it takes its pressures from is done
+    else if (prep.wait) runs.set(spec.label, { ...base, stage: prep.wait });
     else {
       runs.set(spec.label, base);
       queue.push({ id: ++nextId, label: spec.label, key, input: prep.input! });
@@ -741,7 +768,8 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const what = spec.modal ? "vibration" : spec.drop ? "drop" : heatOnly ? "heat" : "stress";
   const category = spec.modal ? ("vibration" as const) : spec.drop ? ("knocks" as const) : ("analysis" as const);
   if (!run || run.status === "waiting" || run.status === "running") {
-    return [{ ...base, category, id: id(heatOnly ? "temperature" : "strength"), status: "pending", title: `${spec.modal ? "Vibration" : spec.drop ? "Drop" : heatOnly ? "Temperature" : "Strength"}: ${spec.label}`, detail: run?.result ? `Re-running the ${what} analysis for the latest change…` : `Running the ${what} analysis…` }];
+    const airWait = run?.status === "waiting" && run.stage.startsWith("Waiting for the airflow") ? `${run.stage}; the ${what} analysis takes its pressures from it, then runs.` : undefined;
+    return [{ ...base, category, id: id(heatOnly ? "temperature" : "strength"), status: "pending", title: `${spec.modal ? "Vibration" : spec.drop ? "Drop" : heatOnly ? "Temperature" : "Strength"}: ${spec.label}`, detail: airWait ?? (run?.result ? `Re-running the ${what} analysis for the latest change…` : `Running the ${what} analysis…`) }];
   }
   if (run.status === "error" || !run.result) {
     return [{ ...base, category, id: id("setup"), status: "fail", title: `${what[0].toUpperCase()}${what.slice(1)} analysis: ${spec.label}`, detail: run.error ?? "The analysis did not finish." }];
@@ -835,6 +863,33 @@ export function startAnalysisRuntime() {
   if (started) return;
   started = true;
   registerReportPass("analyses", analysisItems, 20);
+  // an air load waits for its airflow run: one that finishes, fails or starts again schedules the strength runs again
+  let airSeen = "";
+  useAirflow.subscribe((st) => {
+    const d = useDesign.getState();
+    if (!d.model) return;
+    const model = d.model;
+    const labels = new Set(
+      model.analyses.flatMap((a) =>
+        a.kind === "structural"
+          ? a.loads.filter(isAirLoad).map((l) => {
+              const aero = airflowNamed(model, l.analysis);
+              return typeof aero === "string" ? l.analysis : aero.label;
+            })
+          : [],
+      ),
+    );
+    if (!labels.size) return;
+    const seen = [...labels]
+      .map((l) => {
+        const r = st.runs.get(l);
+        return `${l}:${r?.status ?? "-"}:${r?.stale ? 1 : 0}:${r?.result ? resultId(r.result) : 0}`;
+      })
+      .join("|");
+    if (seen === airSeen) return;
+    airSeen = seen;
+    schedule({ model, rev: d.reportRev, buildErrors: d.buildErrors });
+  });
   // a report composed before the runtime started has no analysis items yet
   refreshReport();
 }

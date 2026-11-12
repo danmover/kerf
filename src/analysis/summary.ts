@@ -5,7 +5,7 @@ import type { SafetyAt, StructuralResult } from "./fe/structural";
 import { failureWords, type PlyFailure } from "./fe/laminate";
 import type { DrivetrainResult } from "./drivetrain";
 import { dropText, dropVerdict, lifeWords, shakingText, shakingVerdict, vibrationText, vibrationVerdict } from "./dynamics";
-import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
+import { describeRegion, UNRELIABLE_RESIDUAL, type AirLoadResult, type AnalysisSpec, type DrivetrainSpec, type LoadSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
 import type { CheckItem } from "../core/checks";
 import { airflowLine } from "./aeroSummary";
 import type { AirflowRun } from "./aeroRuntime";
@@ -23,6 +23,24 @@ export interface RunLike {
 }
 
 const p3 = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
+
+/** Where a load acts, in words: its region, or the air of the airflow analysis it comes from. */
+export const loadWhere = (l: LoadSpec): string => (l.t === "air" ? `the air from "${l.analysis}"` : describeRegion(l.region));
+
+const kmh = (ms: number) => `${fmtNum(ms * 3.6, ms * 3.6 < 10 ? 1 : 0)} km/h`;
+
+/** An air load as it went on: the force on each part, how its pressures were matched to the run, and what was left out. */
+export function airLoadText(a: AirLoadResult, magnitude: number): string {
+  const at = `${fmtNum(a.yaw, 0)}° yaw, ${kmh(a.speed)}${Math.abs(a.speed - a.runSpeed) > 1e-6 ? ` (the run was at ${kmh(a.runSpeed)}; pressures go as the speed squared)` : ""}`;
+  const parts = a.parts.map((p) => {
+    const f = Math.hypot(...p.force);
+    const m = Math.hypot(...p.measured);
+    const matched = Math.abs(p.scale - 1) < 0.005 ? "" : `, pressures ×${fmtNum(p.scale, 2)} to match the ${fmtNum(m, m < 10 ? 2 : 1)} N the run measured from the flow`;
+    return `${fmtNum(f, f < 10 ? 2 : 1)} N on ${p.name} over ${fmtNum(p.area, 0)} mm²${matched}`;
+  });
+  const left = a.left.length ? `; not in this analysis: ${a.left.map((l) => `${fmtNum(l.force, l.force < 10 ? 2 : 1)} N on ${l.name}`).join(", ")}` : "";
+  return `air from "${a.analysis}" (${at}) totalling ${fmtNum(magnitude, magnitude < 10 ? 2 : 1)} N: ${parts.join("; ")}${left}`;
+}
 const sf = (v: number) => (!Number.isFinite(v) || v >= 100 ? "over 100" : fmtNum(v, 2));
 /** A direction in words: +Z, −X, or its components when it is at an angle. */
 export const dirWords = (d: number[]) => {
@@ -394,7 +412,7 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
     lines.push(`Shaking: ${shakingVerdict(spec, r, strengthVerdict(spec, r).status).toUpperCase()}. ${t.detail}${t.fix ? ` Fix: ${t.fix}` : ""}`);
     if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");
     lines.push("Supports: " + spec.supports.map((s) => describeRegion(s.region)).join("; ") + ".");
-    if (spec.loads.length) lines.push(`Loads going up and down: ${spec.loads.map((l) => describeRegion(l.region)).join("; ")}.`);
+    if (spec.loads.length) lines.push(`Loads going up and down: ${spec.loads.map(loadWhere).join("; ")}.`);
     lines.push(...extraLines(spec, r));
     if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
     return lines.join("\n");
@@ -440,8 +458,9 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
       "Loads: " +
         r.loads
           .map((l, i) => {
-            const where = describeRegion(spec.loads[i].region);
             const L = spec.loads[i];
+            if (L.t === "air" && l.air) return airLoadText(l.air, l.magnitude);
+            const where = loadWhere(L);
             if (L.t === "torque") return `torque ${fmtNum(L.torque / 1000, 3)} N·m about ${p3(L.axis)} through ${p3(l.at)} on ${where} (${fmtNum(l.area, 0)} mm²)`;
             if (L.t === "bearing") return `bearing load ${fmtNum(l.magnitude, 1)} N along ${p3(l.vector.map((x) => x / (l.magnitude || 1)) as V3)} on ${where}, spread with a cosine over the side it presses (peak ${fmtNum(l.pressure ?? 0, 2)} MPa)`;
             return `${l.kind} totalling ${fmtNum(l.magnitude, 1)} N on ${where} (${fmtNum(l.area, 0)} mm², centred ${p3(l.at)})`;
