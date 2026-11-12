@@ -37,6 +37,8 @@ import { openFilmMaker } from "../film/store";
 import { frameCutsCsv } from "../ui/FrameCuts";
 import { camParts, openCam } from "../cam/job";
 import { hasSheetParts, openSheets } from "../cam/sheetJob";
+import { hasSchematic } from "../machine/pack";
+import { schematicSheet, schematicSvg } from "../machine/schematic";
 
 async function exportDrawings() {
   await exportDrawingsPdf();
@@ -101,6 +103,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
 
   { id: "build-pack", group: "print", label: "Build pack", detail: "Parts to buy and make, wiring, firmware and tests", ext: ".zip", icon: "Wrench", shown: () => !!useDesign.getState().model?.machine, run: () => exportBuildPack() },
   { id: "gerbers", group: "print", label: "Circuit board Gerbers", detail: "Copper, mask, silkscreen and drill files for a board house", ext: ".zip", icon: "Chip", shown: () => !!useDesign.getState().model?.machine?.boards.length, run: () => exportGerbers() },
+  { id: "schematic", group: "document", label: "Schematic", detail: "The circuit as a schematic sheet: every electronic part as a symbol, wired pin to pin", ext: ".svg", icon: "Chip", shown: () => { const m = useDesign.getState().model?.machine; return !!m && hasSchematic(m); }, run: () => exportSchematic() },
   {
     id: "flat-patterns",
     group: "print",
@@ -207,4 +210,13 @@ function exportCutList() {
   const model = useDesign.getState().model;
   if (!model?.frames?.length) return;
   download(frameCutsCsv(model.frames), safeFileName(model.name + " cut list", "csv"), "text/csv");
+}
+
+/** The circuit as a schematic sheet, the same SVG the Schematic view saves. */
+function exportSchematic() {
+  const model = useDesign.getState().model;
+  const m = model?.machine;
+  if (!model || !m) return;
+  const name = model.name || "Design";
+  download(schematicSvg(schematicSheet(m, model.schematic), name), safeFileName(`${name} schematic`, "svg"), "image/svg+xml");
 }
