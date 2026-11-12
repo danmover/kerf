@@ -63,11 +63,14 @@ import { askClaude, REVIEW_ASK } from "./chatDraft";
 import { Icon } from "./icons";
 import { openViewportMenu } from "./viewport/contextMenus";
 import { T } from "./sketch/glyphs";
+import { LearnGlyph } from "./learn/glyph";
+import { LESSONS } from "../learn/lessons";
+import { lessonToResume, resumeLesson, startLesson } from "../learn/runtime";
 
-export type FindGroup = "Panels" | "View" | "Model" | "Analyse" | "Make" | "Machines" | "Export" | "Parts" | "Checks" | "New design" | "Project" | "Settings";
+export type FindGroup = "Panels" | "View" | "Model" | "Analyse" | "Make" | "Machines" | "Export" | "Parts" | "Checks" | "New design" | "Learn" | "Project" | "Settings";
 
 /** the order groups are listed in when nothing is typed */
-export const GROUP_ORDER: FindGroup[] = ["Checks", "Panels", "Model", "Analyse", "Make", "Machines", "View", "Export", "Parts", "Project", "New design", "Settings"];
+export const GROUP_ORDER: FindGroup[] = ["Checks", "Panels", "Model", "Analyse", "Make", "Machines", "View", "Export", "Parts", "Project", "New design", "Learn", "Settings"];
 
 export interface FindItem extends Findable {
   id: string;
@@ -539,7 +542,23 @@ export function findItems(ctx: FindContext): FindItem[] {
 
   // ── starting points ──
   for (const t of TEMPLATES)
-    push({ id: `new:${t.id}`, group: "New design", title: t.id === "blank" ? "New blank design" : `New: ${t.name}`, detail: t.tagline, keywords: `new create start template example ${t.stats} ${(t.shows ?? []).join(" ")}`, icon: <Icon.Plus size={14} />, run: () => void createProject(t.id).then((p) => openProject(p.id)) });
+    if (t.category !== "learn" && t.category !== "samples")
+      push({ id: `new:${t.id}`, group: "New design", title: t.id === "blank" ? "New blank design" : `New: ${t.name}`, detail: t.tagline, keywords: `new create start template example ${t.stats} ${(t.shows ?? []).join(" ")}`, icon: <Icon.Plus size={14} />, run: () => void createProject(t.id).then((p) => openProject(p.id)) });
+
+  // ── tutorials and feature samples ──
+  const again = lessonToResume();
+  if (again)
+    push({ id: "learn:again", group: "Learn", title: `Show the ${again.kind === "tutorial" ? "tutorial" : "tour"} again`, detail: again.name, keywords: "lesson tutorial tour steps guide coach help again resume continue show", icon: <LearnGlyph size={14} />, run: resumeLesson });
+  for (const l of LESSONS)
+    push({
+      id: `learn:${l.id}`,
+      group: "Learn",
+      title: `${l.kind === "tutorial" ? "Tutorial" : "Feature sample"}: ${l.name}`,
+      detail: l.about,
+      keywords: `learn lesson tutorial guide how to help teach start beginner walkthrough ${l.kind === "sample" ? "sample example tour" : ""} ${l.shows.join(" ")}`,
+      icon: <LearnGlyph size={14} />,
+      run: () => void startLesson(l.id),
+    });
 
   // ── settings and help ──
   for (const x of SETTINGS_FIND) push({ id: `set:${x.tab}`, group: "Settings", title: x.title, detail: x.detail, keywords: `settings preferences options ${x.keywords}`, icon: <Icon.Settings size={14} />, run: () => openSettings(x.tab) });

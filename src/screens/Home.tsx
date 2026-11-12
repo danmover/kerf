@@ -5,6 +5,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { useProject, openProject, createProject, duplicateProject, deleteProject, exportProject, importProject, renameProject } from "../app/project";
 import { confirmDialog, go, openSettings, toast } from "../app/ui";
 import { TEMPLATES, TEMPLATE_CATEGORIES, audienceById, templateById, type TemplateCategory } from "../demos/templates";
+import { LessonArt, isLessonArt } from "../ui/learn/LessonArt";
 import { useSettings } from "../app/settings";
 import { startDesign } from "../app/startDesign";
 import { Logo, LogoMark } from "../ui/Logo";
@@ -372,6 +373,7 @@ function ProjectCard({ p, index }: { p: ProjectRecord; index: number }) {
 
 /** Small animated line drawings for templates without a thumbnail. */
 export function TemplateArt({ id }: { id: string }) {
+  if (isLessonArt(id)) return <LessonArt id={id} />;
   // theme tokens, set as styles: SVG colour attributes do not take var()
   const accent = { stroke: "var(--accent)" };
   const violet = { stroke: "var(--violet)" };

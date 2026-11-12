@@ -1,0 +1,30 @@
+// A welding table: a frame of 40 × 40 box section trimmed where its members meet, a shelf rail round the
+// bottom, a 6 mm steel top welded on, the frame's cut list on the parts list, and the frame analysed as
+// beams under a 300 kg load.
+design "Welding table"
+
+param width = 1200 range 800 .. 1800 "Table width"
+param depth = 600 range 400 .. 900 "Table depth"
+param height = 850 range 700 .. 1000 "Height to the top"
+param top_t = 6 "Top plate thickness"
+
+frame stand {
+  profile: "box 40x40x2"
+  material: "Steel"
+  box: (width, depth, height - top_t)
+  levels: [180]
+  color: #3b4a5a
+}
+
+part top {
+  material: "Steel"
+  color: #8d949b
+  held: "Welded to the frame's top rails"
+  body box(width + 40, depth + 40, top_t, at: (0, 0, height - top_t), r: 8)
+}
+
+analysis "Table load" {
+  parts: [stand]
+  fix: face(stand, -Z)
+  load: force(face(stand, +Z), (0, 0, -3000N))
+}

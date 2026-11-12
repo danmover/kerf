@@ -1,0 +1,17 @@
+// An aluminium motor plate for a benchtop CNC mill, cut from a block in a vise with a 6 mm and a 3 mm end
+// mill: facing, roughing, finishing and rest passes, played back on the stock, and G-code to save.
+design "CNC motor plate"
+
+part plate {
+  material: "Aluminum 6061"
+  process: mfg.cnc_mill(tools: [(6, 25), (3, 12)], frame: "benchtop")
+  color: #b9c3cc
+  body box(90, 70, 10, r: 6)
+  // the motor's boss sits in a pocket, held by four M3 screws
+  cut cylinder(d: 23, h: 3, at: (0, 0, 7))
+  for x in [-15.5, 15.5] { for y in [-15.5, 15.5] { cut hole(d: 3.4, through: true, at: (x, y, 10)) } }
+  // a slot for the belt, two lightening pockets and four mounting holes
+  cut box(56, 9, 10, at: (0, -27, 0), r: 4)
+  for x in [-32, 32] { cut box(12, 34, 5, at: (x, 4, 5), r: 3) }
+  for x in [-38, 38] { for y in [-28, 28] { cut hole(d: 5.5, through: true, at: (x, y, 10)) } }
+}

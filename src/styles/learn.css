@@ -1,0 +1,234 @@
+/* The lesson card beside the model (ui/learn/Coach.tsx) and its pointer. */
+
+.coach-anchor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 7;
+  container: coach / size;
+}
+.coach {
+  pointer-events: auto;
+  position: absolute;
+  left: 12px;
+  bottom: 116px; /* above the view cube */
+  width: 316px;
+  max-width: calc(100% - 24px);
+  border-radius: 12px;
+  border: 1px solid rgb(var(--accent-rgb) / 0.35);
+  background: rgb(var(--bg-1-rgb) / 0.92);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+  padding: 10px 12px 10px;
+  font-size: 12.5px;
+  transition:
+    left 0.2s ease,
+    bottom 0.2s ease;
+}
+/* beside the sketch tools, which sit on the left while sketching */
+.coach.beside-tools {
+  left: 62px;
+}
+/* a short view: beside the view cube rather than above it */
+@container coach (max-height: 430px) {
+  .coach {
+    left: 112px;
+    bottom: 10px;
+  }
+  .coach.beside-tools {
+    left: 112px;
+  }
+}
+.coach.folded {
+  width: auto;
+  padding: 0;
+  border-radius: 999px;
+}
+.coach-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 300px;
+  padding: 6px 12px 6px 10px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.coach-pill svg:first-child {
+  color: var(--accent);
+  flex: none;
+}
+.coach-pill-n {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.coach-pill-t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.coach-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.coach-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.coach-what {
+  flex: 1;
+  min-width: 0;
+}
+.coach-kind {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+}
+.coach-count {
+  color: var(--text-3);
+  font-weight: 500;
+}
+.coach-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coach-steps {
+  display: flex;
+  gap: 3px;
+  margin: 9px 0 8px;
+}
+.coach-steps span {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line-2);
+  transition: background 0.25s ease;
+}
+.coach-steps span.now {
+  background: rgb(var(--accent-rgb) / 0.55);
+}
+.coach-steps span.done {
+  background: var(--accent);
+}
+.coach-steps span.done.now {
+  background: var(--pass);
+}
+.coach-body {
+  min-height: 54px;
+}
+.coach-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 3px;
+}
+.coach-title.passed {
+  color: var(--pass);
+}
+.coach-text {
+  color: var(--text-2);
+  line-height: 1.5;
+  max-height: 168px;
+  overflow: auto;
+}
+.coach-text code {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgb(var(--accent-rgb) / 0.1);
+  color: var(--text);
+  white-space: pre-wrap;
+}
+.coach-note {
+  margin-top: 7px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: rgb(var(--warn-rgb) / 0.12);
+  color: var(--text-2);
+}
+.coach .link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.coach-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* the pointer: a ring over the element the step is about */
+.coach-ring {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  border-radius: 9px;
+  border: 2px solid var(--accent);
+  box-shadow:
+    0 0 0 4px rgb(var(--accent-rgb) / 0.18),
+    0 0 18px rgb(var(--accent-rgb) / 0.45);
+  transition:
+    left 0.2s ease,
+    top 0.2s ease,
+    width 0.2s ease,
+    height 0.2s ease;
+  animation: coach-ring 1.6s ease-in-out 3;
+}
+@keyframes coach-ring {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 4px rgb(var(--accent-rgb) / 0.18),
+      0 0 18px rgb(var(--accent-rgb) / 0.45);
+  }
+  50% {
+    box-shadow:
+      0 0 0 9px rgb(var(--accent-rgb) / 0.06),
+      0 0 26px rgb(var(--accent-rgb) / 0.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .coach-ring {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* phones: across the bottom of the view */
+.phone .coach {
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  width: auto;
+}
+.phone .coach.folded {
+  right: auto;
+}
+.phone .coach-text {
+  max-height: 76px;
+}

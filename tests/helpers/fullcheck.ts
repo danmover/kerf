@@ -11,6 +11,7 @@ import type { ProcessResult } from "../../src/mfg/types";
 import type { Model } from "../../src/core/model";
 import { initKernel } from "./kernel";
 import type { FaceLookup } from "../../src/lang/mates";
+import { splitTable } from "../../src/core/splitGeom";
 import { buildHarness } from "../../src/machine/harness/harness";
 import { mountParts, mountSpecs, screwSpecs, solidsInput } from "../../src/machine/harness/inputs";
 import { runWiring } from "../../src/machine/harness/wiringRun";
@@ -42,14 +43,25 @@ export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promi
   const core = new KernelCore();
   const buildErrors = new Map<string, string>();
   const built = new Set<string>();
-  for (const p of model.parts) {
-    if (built.has(p.hash) || buildErrors.has(p.hash)) continue;
-    try {
-      core.build({ hash: p.hash, recipe: p.recipe, label: p.label });
-      built.add(p.hash);
-    } catch (e) {
-      buildErrors.set(p.hash, e instanceof Error ? e.message : String(e));
+  const buildAll = () => {
+    for (const p of model.parts) {
+      if (built.has(p.hash) || buildErrors.has(p.hash)) continue;
+      try {
+        core.build({ hash: p.hash, recipe: p.recipe, label: p.label });
+        built.add(p.hash);
+      } catch (e) {
+        buildErrors.set(p.hash, e instanceof Error ? e.message : String(e));
+      }
     }
+  };
+  buildAll();
+  // split parts: as the app does, each is built whole, its cuts worked out from that mesh, then the design is read
+  // again with the pieces in its place
+  const splits = model.splitQueries?.length ? splitTable() : undefined;
+  for (let pass = 0; splits && pass < 3; pass++) {
+    if (!splits.resolve(model, (h) => (built.has(h) ? core.mesh(h, "preview") : undefined))) break;
+    model = evaluate(src, { splits: splits.lookup });
+    buildAll();
   }
   // mates pick from the built solids' faces: as the app does, the design is read again once they are listed
   let faces: FaceLookup | undefined;
@@ -59,10 +71,10 @@ export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promi
       const c = cats[h];
       return c && !("error" in c) ? c : undefined;
     };
-    model = evaluate(src, { faces });
+    model = evaluate(src, { faces, ...(splits ? { splits: splits.lookup } : {}) });
   }
   const result = core.checks(buildChecksRequest(model, built));
-  const geoModel = model.geoQueries.length ? evaluate(src, { geo: result.geo, faces }) : null;
+  const geoModel = model.geoQueries.length ? evaluate(src, { geo: result.geo, faces, ...(splits ? { splits: splits.lookup } : {}) }) : null;
   const geom = (h: string) => {
     const e = core.get(h);
     return e ? { volume: e.volume, bbox: e.bbox } : undefined;

@@ -1,0 +1,18 @@
+// A carbon fibre seatpost laid up from a ply schedule: a woven outer ply, a 16-ply UD stack, and extra plies
+// where the frame clamps it and where the saddle clamp grips its head. The ply book, its weight, and every
+// ply checked by Tsai–Wu with the post held in the frame and a rider's weight on the saddle.
+design "Carbon seatpost"
+
+part post {
+  material: "Carbon fiber"
+  process: mfg.carbon_layup(pull: Y, plies: [plies("0", "carbon woven"), plies("[0/±45/0]2s"), plies("[0/90]2", zone: zone(at: (0, 0, 100), r: 30), name: "frame clamp"), plies("[±45]", zone: zone(at: (0, 0, 335), r: 25), name: "saddle clamp")])
+  body cylinder(d: 31.6, h: 350)
+  chamfer(1, edges: near((0, 15.8, 350), 0.5))
+}
+
+analysis "Rider load" {
+  parts: [post]
+  // held by the frame over the 100 mm it is pushed into the seat tube
+  fix: zone(at: (0, 0, 50), d: 34, axis: Z, length: 100)
+  load: force(face(post, +Z), (0, -250N, -900N))
+}

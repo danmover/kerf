@@ -126,5 +126,6 @@ describe("starting a design from a description", () => {
     expect(nameFrom("make a 2.5 mm thick washer")).toBe("2.5 mm thick washer");
     expect(nameFrom("   ")).toBe("Untitled design");
     expect(nameFrom("I need a very long description of a thing that goes on and on without stopping anywhere at all").length).toBeLessThanOrEqual(48);
-  });
+    // importing startDesign loads most of the app (the chat, the project store, the templates), close to 5 s cold
+  }, 30_000);
 });

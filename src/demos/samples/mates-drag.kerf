@@ -1,0 +1,37 @@
+// A printed box with a hinged lid: two knuckle hinges, each on a steel dowel glued into the box, and mates
+// that say how the lid moves: round the hinge axis, kept from sliding along it, and stopped at 110°.
+// Select the lid and drag it: it swings only the way the hinge lets it.
+design "Hinged box"
+
+part base {
+  material: "PETG"
+  color: #2f6f8f
+  body box(120, 80, 40, r: 4)
+  shell(2.5, open: facing(Z))
+  // the box's half of each hinge: a knuckle behind the back wall, its pin glued in
+  for x in [-42, 42] {
+    add cylinder(d: 8, h: 12, at: (x - 6, 44, 40), dir: X)
+    add box(12, 4, 8, at: (x, 42, 32))
+    cut cylinder(d: 3.4, h: 12, at: (x - 6, 44, 40), dir: X)
+  }
+}
+
+part lid {
+  material: "PETG"
+  color: #e9c46a
+  at: (0, 0, 40)
+  body box(120, 80, 6, r: 4)
+  // the lid's half: a knuckle beside each of the box's, turning on the pin
+  for x in [-52.25, 52.25] {
+    add cylinder(d: 8, h: 7.5, at: (x - 3.75, 44, 0), dir: X)
+    add box(7.5, 4, 4, at: (x, 42, 0))
+    cut cylinder(d: 3.4, h: 7.5, at: (x - 3.75, 44, 0), dir: X)
+  }
+}
+
+component pin_l = lib.dowel(d: 3, length: 16) { at: (-54, 44, 40), axis: X, held: "A drop of superglue in the box's knuckle" }
+component pin_r = lib.dowel(d: 3, length: 16) { at: (38, 44, 40), axis: X, held: "A drop of superglue in the box's knuckle" }
+
+mate hinge = concentric(axis(lid, at: (0, 44, 40), dir: X), axis(base, at: (0, 44, 40), dir: X))
+mate side = flush(plane(lid, at: (60, 0, 43), normal: +X), plane(base, at: (60, 0, 20), normal: +X))
+mate stop = angle(face(lid, +Z), face(base, +Z), min: 0deg, max: 110deg)

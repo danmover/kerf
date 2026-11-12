@@ -17,15 +17,18 @@ import ferrisWheel from "./ferris-wheel.kerf?raw";
 import sheetChassis from "./sheet-chassis.kerf?raw";
 import castKnob from "./cast-knob.kerf?raw";
 import aeroBike from "./aero-road-bike.kerf?raw";
+import { LESSONS, type Lesson } from "../learn/lessons";
 
 /** What kind of thing a starting point is, for grouping them on the home screen. */
-export type TemplateCategory = "parts" | "mechanisms" | "machines" | "processes";
+export type TemplateCategory = "parts" | "mechanisms" | "machines" | "processes" | "learn" | "samples";
 
 export const TEMPLATE_CATEGORIES: { id: TemplateCategory; label: string }[] = [
   { id: "parts", label: "Parts and products" },
   { id: "mechanisms", label: "Mechanisms" },
   { id: "machines", label: "Machines and electronics" },
   { id: "processes", label: "Sheet, cast and carbon" },
+  { id: "learn", label: "Tutorials" },
+  { id: "samples", label: "Feature samples" },
 ];
 
 export interface Template {
@@ -279,7 +282,13 @@ export const TEMPLATES: Template[] = [
     category: "machines",
     shows: ["circuit you can hear", "circuit board", "firmware"],
   },
+  // tutorials and feature samples: opening one starts its steps beside the model (src/learn)
+  ...LESSONS.map(lessonTemplate),
 ];
+
+function lessonTemplate(l: Lesson): Template {
+  return { id: l.id, name: l.name, tagline: l.about, source: l.source, prompts: l.prompts, stats: `${l.minutes} min · ${l.steps.length} ${l.steps.length === 1 ? "step" : "steps"}`, category: l.kind === "tutorial" ? "learn" : "samples", shows: l.shows };
+}
 
 export const templateById = (id: string) => TEMPLATES.find((t) => t.id === id);
 
@@ -291,7 +300,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "maker",
     label: "Making things at home",
     detail: "3D printing, electronics and projects for yourself",
-    order: ["parts", "machines", "mechanisms", "processes"],
+    order: ["parts", "machines", "mechanisms", "processes", "learn", "samples"],
     recommended: "enclosure",
     briefs: [
       "A wall mount that holds my bike by the top tube, printed in PETG with two screws",
@@ -303,7 +312,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "engineer",
     label: "Engineering and product design",
     detail: "Real loads, fits and tolerances, for work",
-    order: ["mechanisms", "machines", "parts", "processes"],
+    order: ["mechanisms", "machines", "parts", "processes", "samples", "learn"],
     recommended: "reducer",
     briefs: [
       "A 3:1 spur gearbox on 8 mm shafts for a NEMA 17, with bearings and a printed housing",
@@ -315,7 +324,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "student",
     label: "Learning and school projects",
     detail: "See how things work and why they're shaped that way",
-    order: ["mechanisms", "machines", "parts", "processes"],
+    order: ["mechanisms", "machines", "learn", "parts", "processes", "samples"],
     recommended: "engine",
     briefs: [
       "A see-through model of a four-stroke engine I can print and turn by hand",
@@ -327,7 +336,7 @@ export const AUDIENCES: { id: Audience; label: string; detail: string; order: Te
     id: "manufacturer",
     label: "Making products to sell",
     detail: "Batches, processes, costs and drawings for a factory",
-    order: ["processes", "parts", "machines", "mechanisms"],
+    order: ["processes", "parts", "machines", "mechanisms", "samples", "learn"],
     recommended: "sheet-chassis",
     briefs: [
       "A two-part injection-moulded case for a handheld sensor, 5,000 a year",

@@ -158,7 +158,7 @@ function TabButton({ t, active, onClick }: { t: DockTabDef; active: boolean; onC
   }, [active]);
   if (!shown) return null;
   return (
-    <button ref={ref} role="tab" aria-selected={active} className={`tab ${t.file ? "file-tab" : ""} ${active ? "active" : ""}`} onClick={onClick}>
+    <button ref={ref} role="tab" aria-selected={active} data-tab={t.id} className={`tab ${t.file ? "file-tab" : ""} ${active ? "active" : ""}`} onClick={onClick}>
       {t.icon}
       {t.label}
       {badge?.count !== undefined && (

@@ -15,6 +15,7 @@ import { startCableRuntime } from "./machine/harness/runtime";
 import "./core/sweepRuntime";
 import { startSimRuntime } from "./sim/runtime";
 import { startScripts } from "./scripts/runtime";
+import { startLearn } from "./learn/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadOpenAIKey } from "./persist/openaiVault";
 import { loadChat, useChat } from "./ai/chat";
@@ -110,6 +111,7 @@ function useBoot() {
     startCableRuntime();
     startSimRuntime();
     startScripts(() => useChat.getState().busy);
+    startLearn();
     void Promise.allSettled([loadRememberedKey(), loadOpenAIKey(), refreshProjects(), initAccount()]).then(() => {
       startSync();
       if (!live) return;

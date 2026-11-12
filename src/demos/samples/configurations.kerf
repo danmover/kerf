@@ -1,0 +1,29 @@
+// A drawer organiser in three sizes from one design: the configurations set the sizes, every check runs on
+// each size, and each size's chip shows whether it passes.
+design "Drawer organiser"
+
+param width = 160mm range 80 .. 260 "Outer width"
+param depth = 110mm range 60 .. 200 "Outer depth"
+param height = 40mm range 20 .. 70 "Height"
+param wall = 2mm range 1.2 .. 4 "Wall"
+
+part tray {
+  material: "PETG"
+  process: mfg.fdm()
+  color: #e07a3f
+  body box(width, depth, height, r: 6)
+  shell(wall, open: facing(Z))
+  // two dividers across, and a short one along the middle bay
+  for x in [-width / 6, width / 6] { add box(wall, depth - wall, height - 6, at: (x, 0, 0)) }
+  add box(width / 3, wall, height - 12, at: (0, 0, 0))
+}
+
+require "Fits the drawer": width <= 250
+require "Wall is printable" soft: wall >= 1.6
+
+configs "Sizes" {
+  show: "Medium"
+  config "Small" { width: 100, depth: 70, height: 30 } "For the desk drawer"
+  config "Medium" { width: 160, depth: 110 } "The one most people buy"
+  config "Large" { width: 240, depth: 170, height: 60, wall: 2.4 } "For the big drill set"
+}

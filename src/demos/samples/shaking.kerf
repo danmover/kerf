@@ -1,0 +1,22 @@
+// A sensor bracket on a shaker table: its natural frequencies and mode shapes, how hard it answers a
+// 10 to 500 Hz sweep at 2 g, and the fatigue life of two hours of shaking.
+design "Sensor bracket on a shaker"
+
+part bracket {
+  material: "Aluminum 6061"
+  color: #8ea4ba
+  body box(10, 70, 90)
+  add box(130, 50, 8, at: (70, 0, 82))
+  fillet(6, edges: near((5, 0, 82), 0.5))
+  // the sensor hangs under the end of the arm
+  add box(30, 50, 24, at: (120, 0, 58))
+}
+
+analysis "Shaker table" {
+  parts: [bracket]
+  fix: face(bracket, -X)
+  shake: sine(10Hz, 500Hz, 2g, Z)
+  damping: 3%
+  duration: 2h
+  resolution: "draft"
+}

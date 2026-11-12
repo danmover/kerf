@@ -5,9 +5,9 @@ import { EXAMPLE_MAX_CHARS, EXAMPLE_TOOL, exampleText } from "../src/ai/examples
 import { TEMPLATES } from "../src/demos/templates";
 
 describe("worked examples", () => {
-  it("offers every template but the blank one, by id, with what each shows", () => {
+  it("offers every template but the blank one and the tutorials, by id, with what each shows", () => {
     const ids = (EXAMPLE_TOOL.input_schema.properties.id as { enum: string[] }).enum;
-    expect(ids).toEqual(TEMPLATES.filter((t) => t.id !== "blank").map((t) => t.id));
+    expect(ids).toEqual(TEMPLATES.filter((t) => t.id !== "blank" && t.category !== "learn").map((t) => t.id));
     expect(EXAMPLE_TOOL.description).toContain("reducer (Two-Stage Spur Reducer: gears, bearings, strength)");
   });
 

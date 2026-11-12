@@ -1,0 +1,89 @@
+// A flat-pack shelf cut from 6 mm plywood on a CO2 laser, with two steel hanging plates for a fibre
+// laser: the flat parts are found, grouped by material and thickness, nested on sheets and the cut played back.
+design "Flat-pack shelf"
+
+param w = 420 "Width"
+param h = 480 "Height"
+param d = 200 "Depth"
+param t = 6 "Plywood thickness"
+
+// the sides and the back are drawn flat, then stood up
+part side_l {
+  material: "Wood"
+  process: mfg.laser_cut()
+  color: #d8bb8e
+  rotate: (0, 90, 0)
+  at: (-w / 2, 0, h / 2)
+  body box(h, d, t, r: 14)
+  cut box(36, 90, t, at: (-h / 2 + 50, 0, 0), r: 17)
+}
+part side_r {
+  material: "Wood"
+  process: mfg.laser_cut()
+  color: #d8bb8e
+  rotate: (0, 90, 0)
+  at: (w / 2 - t, 0, h / 2)
+  body box(h, d, t, r: 14)
+  cut box(36, 90, t, at: (-h / 2 + 50, 0, 0), r: 17)
+}
+part back {
+  material: "Wood"
+  process: mfg.laser_cut()
+  color: #cfae7c
+  held: "Glued to the back edges of the sides and shelves"
+  rotate: (90, 0, 0)
+  at: (0, d / 2 + t, h / 2)
+  body box(w, h, t, r: 14)
+  for x in [-130, -65, 0, 65, 130] { for y in [-150, 90] { cut cylinder(d: 44, h: t, at: (x, y, 0)) } }
+  // the hanging plates' screws
+  for x in [-150, 150] { for y in [h / 2 - 14, h / 2 - 26] { cut cylinder(d: 4.5, h: t, at: (x, y, 0)) } }
+}
+part shelf_1 {
+  material: "Wood"
+  process: mfg.laser_cut()
+  color: #e2c79c
+  held: "Glued between the sides"
+  body box(w - 2 * t, d, t, at: (0, 0, 20))
+}
+part shelf_2 {
+  material: "Wood"
+  process: mfg.laser_cut()
+  color: #e2c79c
+  held: "Glued between the sides"
+  body box(w - 2 * t, d, t, at: (0, 0, h / 2))
+  for x in [-120, -60, 0, 60, 120] { cut box(30, 120, t, at: (x, 0, h / 2), r: 14) }
+}
+part shelf_3 {
+  material: "Wood"
+  process: mfg.laser_cut()
+  color: #e2c79c
+  held: "Glued between the sides"
+  body box(w - 2 * t, d, t, at: (0, 0, h - t))
+}
+// two hanging plates screwed to the back, their keyholes standing above the top for the wall screws
+part hanger_l {
+  material: "Steel"
+  process: mfg.laser_cut(source: "fiber")
+  color: #6f7780
+  rotate: (90, 0, 0)
+  at: (-150, d / 2 + t + 2, h)
+  body box(36, 64, 2, r: 8)
+  cut cylinder(d: 10, h: 2, at: (0, 18, 0))
+  cut box(5.2, 12, 2, at: (0, 12, 0), r: 2.5)
+  for y in [-14, -26] { cut cylinder(d: 4.5, h: 2, at: (0, y, 0)) }
+}
+part hanger_r {
+  material: "Steel"
+  process: mfg.laser_cut(source: "fiber")
+  color: #6f7780
+  rotate: (90, 0, 0)
+  at: (150, d / 2 + t + 2, h)
+  body box(36, 64, 2, r: 8)
+  cut cylinder(d: 10, h: 2, at: (0, 18, 0))
+  cut box(5.2, 12, 2, at: (0, 12, 0), r: 2.5)
+  for y in [-14, -26] { cut cylinder(d: 4.5, h: 2, at: (0, y, 0)) }
+}
+
+// each plate is held by two M4 button-head screws through the back, with nuts inside the shelf
+component plate_screws = lib.screw(M4, 12, head: "button") { at: [(-150, d / 2 + t + 2, h - 14), (-150, d / 2 + t + 2, h - 26), (150, d / 2 + t + 2, h - 14), (150, d / 2 + t + 2, h - 26)], axis: -Y }
+component plate_nuts = lib.nut(M4) { at: [(-150, d / 2, h - 14), (-150, d / 2, h - 26), (150, d / 2, h - 14), (150, d / 2, h - 26)], axis: -Y }
