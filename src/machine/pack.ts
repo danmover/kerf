@@ -345,7 +345,7 @@ const PRINTABLE = ["PLA", "PETG", "ABS", "ASA", "Nylon", "TPU", "PC", "CF-PETG",
 const PRINT_PROCESSES = ["fdm", "sla", "sls"];
 
 /** Printed when the part names a printing process, or, without one, when its material is a filament. */
-function isPrinted(p: EvalPart): boolean {
+export function isPrinted(p: EvalPart): boolean {
   if (p.process) return PRINT_PROCESSES.includes(p.process.id);
   return PRINTABLE.some((m) => m.toLowerCase() === p.material.toLowerCase());
 }

@@ -7,6 +7,7 @@
 // Which processes count is set here, in Settings, or in the brief.
 
 import { AnimatePresence, motion } from "framer-motion";
+import { create } from "zustand";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDesign } from "../../core/engine";
 import { useView } from "../../app/view";
@@ -24,13 +25,34 @@ import { applyRoute, previewRoute, usePartPlan } from "./live";
 import { CostChart, chartRoutes } from "./CostChart";
 import { AccessEditor, accessSummary, useAccess } from "./AccessEditor";
 import { DesignView } from "./DesignView";
+import { PlatesView } from "./PlatesView";
+import { printedParts } from "../../app/printPlates";
 import "../../styles/make.css";
+
+/** The print plates view's scope */
+const PLATES = ":plates";
+
+/** A scope asked for from outside the tab (the find palette), taken when the tab shows. */
+const scopeAsk = create<{ ask: string | null }>(() => ({ ask: null }));
+
+/** The make tab's print plates, from the find palette. */
+export function openPrintPlates() {
+  scopeAsk.setState({ ask: PLATES });
+  useView.setState({ dockTab: "make", dockOpen: true });
+}
 
 export function MakePanel() {
   const model = useDesign((s) => s.model);
   const selected = useView((s) => s.selected);
   const blocks = useMemo(() => madeBlocks(model), [model]);
+  const prints = useMemo(() => printedParts(model).fdm.length > 0, [model]);
   const [scope, setScope] = useState<string>("design");
+  const ask = scopeAsk((s) => s.ask);
+  useEffect(() => {
+    if (!ask) return;
+    setScope(ask);
+    scopeAsk.setState({ ask: null });
+  }, [ask]);
   const [editing, setEditing] = useState(false);
   const { access, fromBrief } = useAccess();
   const body = useRef<HTMLDivElement>(null);
@@ -40,8 +62,8 @@ export function MakePanel() {
     const p = model?.parts.find((x) => x.id === selected[0]);
     if (p && blocks.some((b) => b.name === p.name)) setScope(p.name);
   }, [selected]);
-  // a part that went away falls back to the design
-  const shown = scope !== "design" && !blocks.some((b) => b.name === scope) ? "design" : scope;
+  // a part that went away falls back to the design (":plates" is no block name: block names are identifiers)
+  const shown = scope === PLATES ? (prints ? PLATES : "design") : scope !== "design" && !blocks.some((b) => b.name === scope) ? "design" : scope;
 
   if (!model) return <div className="mk-body mono dim">Building the design…</div>;
   if (!blocks.length)
@@ -61,6 +83,11 @@ export function MakePanel() {
           <button role="tab" aria-selected={shown === "design"} className={`an-pick ${shown === "design" ? "active" : ""}`} onClick={() => setScope("design")}>
             <Icon.Layers size={12} /> Whole design
           </button>
+          {prints && (
+            <button role="tab" aria-selected={shown === PLATES} className={`an-pick ${shown === PLATES ? "active" : ""}`} onClick={() => setScope(PLATES)} data-tip="Your printed parts packed onto print plates, with their supports, filament and time">
+              <Icon.Grid size={12} /> Print plates
+            </button>
+          )}
           {blocks.map((b) => (
             <button key={b.name} role="tab" aria-selected={shown === b.name} className={`an-pick ${shown === b.name ? "active" : ""}`} onClick={() => setScope(b.name)} onMouseEnter={() => useView.setState({ hovered: blockIds(b.name)[0] ?? null })} onMouseLeave={() => useView.setState({ hovered: null })}>
               {b.label}
@@ -90,7 +117,7 @@ export function MakePanel() {
             </motion.div>
           )}
         </AnimatePresence>
-        {shown === "design" ? <DesignView onPart={setScope} /> : <PartView key={shown} block={shown} />}
+        {shown === "design" ? <DesignView onPart={setScope} /> : shown === PLATES ? <PlatesView /> : <PartView key={shown} block={shown} />}
       </div>
     </div>
   );

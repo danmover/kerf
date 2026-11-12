@@ -173,7 +173,8 @@ export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "
 const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref", "measured", "held", "leads", "brightness"];
 const GRAVITY = 9.81;
 
-const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
+/** the colours parts take in turn when they give none */
+export const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
 
 /** what a design(...) insert takes: where it goes, and what is said of all of it */
 const INSERT_PROPS = ["at", "rotate", "group", "label", "held", "explode"];

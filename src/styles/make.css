@@ -1033,3 +1033,176 @@
 .machine-field input.bad {
   border-color: var(--fail);
 }
+
+/* print plates: printed parts packed onto the printer's beds */
+.mk-plates {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mk-plates .mk-basis {
+  margin-bottom: 0;
+}
+.mk-plate-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mk-plate-printer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 0;
+}
+.mk-plate-printer select {
+  height: 26px;
+  max-width: 230px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.mk-plate-printer .mono {
+  font-size: 10.5px;
+}
+.mk-hint.warn svg {
+  color: var(--warn);
+}
+.mk-plate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+.mk-plate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-1);
+}
+.mk-plate.is-big {
+  border-color: rgb(var(--warn-rgb) / 0.55);
+}
+.mk-plate-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+.mk-plate-mat {
+  padding: 1px 7px;
+  border-radius: 20px;
+  border: 1px solid var(--line-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.btn.sm.mk-plate-dl {
+  height: 22px;
+  padding: 0 7px;
+  gap: 4px;
+  font-size: 11px;
+}
+.mk-plate-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.mk-bed {
+  fill: var(--bg-2);
+  stroke: var(--line-2);
+  stroke-width: 1;
+}
+.mk-bed-grid {
+  stroke: var(--line);
+  stroke-width: 0.5;
+}
+.mk-foot {
+  fill-opacity: 0.82;
+  shape-rendering: crispEdges;
+}
+.mk-edge {
+  fill: none;
+  stroke: var(--text-2);
+  stroke-opacity: 0.7;
+  stroke-width: 0.6;
+  stroke-linecap: square;
+}
+.mk-copy.is-hover .mk-foot,
+.mk-copy:hover .mk-foot {
+  fill-opacity: 1;
+}
+.mk-copy.is-hover .mk-edge,
+.mk-copy:hover .mk-edge {
+  stroke: var(--accent);
+  stroke-opacity: 1;
+  stroke-width: 1.4;
+}
+.mk-sup {
+  fill: var(--warn);
+  stroke: rgb(0 0 0 / 0.7);
+  stroke-width: 0.35;
+}
+.mk-sup.off {
+  fill: var(--fail);
+}
+.mk-copy-n circle {
+  fill: rgb(0 0 0 / 0.6);
+  stroke: rgb(255 255 255 / 0.75);
+  stroke-width: 0.6;
+}
+.mk-copy-n text {
+  fill: #fff;
+  text-anchor: middle;
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.mk-plate-sum {
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+.mk-plate-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+.mk-plate-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.mk-plate-part i,
+.mk-plate-k {
+  display: inline-grid;
+  place-items: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--bg-3);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+}
+.mk-plate-table .mk-proc {
+  gap: 6px;
+}
+.mk-plate-table td.num {
+  white-space: nowrap;
+}
+.mk-plate-off {
+  color: var(--fail-ink);
+}
