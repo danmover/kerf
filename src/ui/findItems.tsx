@@ -43,6 +43,7 @@ import { BUILD_APP_ASK } from "./apps/AppsPanel";
 import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
+import { openSchematic } from "./MachinePanel";
 import { RulerIcon, toggleMeasure } from "./viewport/MeasureTool";
 import { FilterIcon, openSetNamer, recallSet } from "./viewport/PickLayer";
 import { toggleHandles, useHandles } from "./viewport/HandlesLayer";
@@ -416,6 +417,16 @@ export function findItems(ctx: FindContext): FindItem[] {
           },
         },
       );
+    if (model?.machine?.components.length)
+      push({
+        id: "build:schematic",
+        group: "Machines",
+        title: "Schematic",
+        detail: "The circuit as a schematic sheet: drag symbols, click two pins to wire them, save as SVG",
+        keywords: "schematic circuit diagram symbols schematic capture ecad eda electrical drawing netlist draw wire connect pins kicad",
+        icon: <Icon.Chip size={14} />,
+        run: () => openSchematic(),
+      });
     if (model && hasFitting(model)) push({ id: "view:fitting", group: "View", title: "How it goes on", detail: "Watch it fitted, and what keeps it there", keywords: "fit fitting mount install clip band attach", icon: <Icon.Assemble size={14} />, tag: useFitView.getState().on ? "on" : undefined, run: () => (useFitView.getState().on ? useFitView.setState({ on: false }) : playFitting()) });
 
     // ── exports ──

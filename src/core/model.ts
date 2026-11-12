@@ -330,6 +330,14 @@ export interface ConfigRow {
 }
 
 /** configs { }: the design's variants in one file. */
+/** The schematic block: where each part's symbol sits on the sheet (mm from the sheet's top-left corner) and its turn. */
+export interface SchematicLayout {
+  places: Record<string, { x: number; y: number; rot: 0 | 90 | 180 | 270 }>;
+  entries: { name: string; span: Span }[];
+  span: Span;
+  bodyStart: number;
+}
+
 export interface ConfigTable {
   title: string;
   rows: ConfigRow[];
@@ -540,6 +548,8 @@ export interface Model {
   splitQueries?: SplitQuery[];
   /** other designs placed in this one (component mount = design("Motor mount")) */
   inserts?: InsertInfo[];
+  /** the schematic sheet's layout (schematic { ctrl: (40, 60) }) */
+  schematic?: SchematicLayout;
 }
 
 /** Another design placed in this one: what it was read with, and what it brought. */

@@ -145,6 +145,8 @@ export type Stmt =
   // a control room or live view for the machine: panels that read its signals, controls that send it commands
   | { k: "app"; label: string; items: Item[]; span: Span; labelSpan: Span }
   /** configurations: variants of the design in one file (S/M/L), each a row of parameter values; show: picks one */
+  /** where each part's symbol sits on the schematic sheet: schematic { ctrl: (40, 60)  drv: (160, 60, 90) } */
+  | { k: "schematic"; places: { name: string; value: Expr; span: Span }[]; span: Span; bodyStart: number }
   | {
       k: "configs";
       title: string;

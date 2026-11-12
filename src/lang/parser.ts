@@ -131,7 +131,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.atMate() || this.atConfigs() || this.atDef() || this.machineStmtAhead()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.atMate() || this.atConfigs() || this.atSchematic() || this.atDef() || this.machineStmtAhead()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -154,6 +154,11 @@ class Parser {
   /** `frame <name> {` starts a frame of structural members; elsewhere "frame" is an ordinary name. */
   atFrame() {
     return this.is("ident", "frame") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
+  }
+
+  /** `schematic {` lays out the design's schematic sheet; elsewhere "schematic" is an ordinary name. */
+  atSchematic() {
+    return this.is("ident", "schematic") && this.is("op", "{", 1);
   }
 
   /** `configs "Sizes" {` (or `configs {`) starts the design's configurations; elsewhere "configs" is an ordinary name. */
@@ -380,6 +385,11 @@ class Parser {
       this.next();
       return this.configs(start);
     }
+    if (this.atSchematic()) {
+      const start = tk.start;
+      this.next();
+      return this.schematic(start);
+    }
     if (this.atMate()) {
       const start = tk.start;
       this.next();
@@ -399,7 +409,7 @@ class Parser {
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, fn, feature, component, interface, part, sketch, require, decision, analysis, drawing, frame, mate, configs, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, fn, feature, component, interface, part, sketch, require, decision, analysis, drawing, frame, mate, configs, schematic, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -744,6 +754,32 @@ class Parser {
     }
     this.expect("op", "}");
     return { k: "configs", title, props, rows, span: { start, end: this.prevEnd() }, bodyStart: open.end };
+  }
+
+  schematic(start: number): Stmt {
+    const open = this.expect("op", "{");
+    const places: { name: string; value: Expr; span: Span }[] = [];
+    while (!this.isOp("}")) {
+      if (this.is("eof")) throw new ParseError('Unclosed schematic block: missing "}"', open.start, open.end);
+      const tk = this.peek();
+      // one of a patterned part's copies: leds[2]: (40, 60)
+      const copy = tk.kind === "ident" && this.isOp("[", 1) && this.is("num", undefined, 2) && this.isOp("]", 3) && this.isOp(":", 4);
+      if (((tk.kind === "ident" || tk.kind === "kw") && this.isOp(":", 1)) || copy) {
+        this.next();
+        let name = tk.value;
+        if (copy) {
+          this.next();
+          name = `${tk.value}[${Number(this.next().value)}]`;
+          this.next();
+        }
+        this.next();
+        const value = this.expr();
+        places.push({ name, value, span: { start: tk.start, end: this.prevEnd() } });
+      } else throw new ParseError(`Unexpected "${tk.value || "end of file"}" inside schematic. Give each part's place on the sheet, like ctrl: (40, 60), or drv: (160, 60, 90) to turn it a quarter turn.`, tk.start, Math.max(tk.end, tk.start + 1));
+      while (this.eat("op", ",") || this.eat("op", ";"));
+    }
+    this.expect("op", "}");
+    return { k: "schematic", places, span: { start, end: this.prevEnd() }, bodyStart: open.end };
   }
 
   block(): Item[] {

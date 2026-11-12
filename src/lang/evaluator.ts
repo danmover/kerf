@@ -20,7 +20,7 @@ import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import { materialDensity } from "../library/standards";
 import { materialRecord, pricePerKg } from "../library/materialDb";
-import type { BandInfo, Brief, BriefUse, ConfigRow, ConfigTable, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, InsertInfo, Link, Model, Motion, SplitRecord } from "../core/model";
+import type { BandInfo, Brief, BriefUse, ConfigRow, ConfigTable, SchematicLayout, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, InsertInfo, Link, Model, Motion, SplitRecord } from "../core/model";
 import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
@@ -372,6 +372,7 @@ class Evaluator {
   splitWhole = new Map<string, EvalPart>();
   /** configs { }: the table, and the values of the row the design is read as */
   configTable: ConfigTable | undefined;
+  schematic: SchematicLayout | undefined;
   configValues = new Map<string, ConfigRow["sets"][number] & { row: string }>();
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
@@ -880,6 +881,9 @@ class Evaluator {
       case "configs":
         // read before everything else (prepareConfigs)
         return;
+      case "schematic":
+        this.schematicStmt(s);
+        return;
       case "scenario":
         this.scenario(s);
         return;
@@ -1132,6 +1136,42 @@ class Evaluator {
   }
 
   // ---------------- decisions ----------------
+
+  /** The schematic layout, with a warning for each name that is not a part with pins. */
+  schematicChecked(): SchematicLayout {
+    const sch = this.schematic!;
+    const withPins = this.machine.components.filter((c) => catalogPart(c.catalogId)?.pins.length);
+    const names = new Set(withPins.map((c) => c.name));
+    const count = new Map(withPins.map((c) => [c.name, c.count]));
+    for (const e of sch.entries) {
+      const copy = /^(\w+)\[(\d+)\]$/.exec(e.name);
+      if (copy && count.has(copy[1])) {
+        const n = count.get(copy[1])!;
+        if (Number(copy[2]) >= n) this.diags.push({ message: `schematic: ${copy[1]} has ${n} ${n === 1 ? "copy" : "copies"}, numbered from 0 to ${n - 1}, so ${e.name} has no symbol on the sheet`, start: e.span.start, end: e.span.end, severity: "warning" });
+        continue;
+      }
+      if (!names.has(e.name))
+        this.diags.push({ message: `schematic: "${e.name}" is not one of the design's electronic parts${names.size ? ` (${[...names].slice(0, 8).join(", ")}${names.size > 8 ? ", …" : ""})` : ""}, so it has no symbol on the sheet`, start: e.span.start, end: e.span.end, severity: "warning" });
+    }
+    return sch;
+  }
+
+  /** schematic { ctrl: (40, 60)  drv: (160, 60, 90) }: where each part's symbol sits on the sheet, and its turn */
+  schematicStmt(s: Extract<Stmt, { k: "schematic" }>) {
+    if (this.schematic) throw new EvalError("A design has one schematic block: put every part's place in the first one", { start: s.span.start, end: s.span.start + 9 });
+    const out: SchematicLayout = { places: {}, entries: [], span: s.span, bodyStart: s.bodyStart };
+    for (const p of s.places) {
+      const v = this.expr(p.value, null);
+      const xs = v instanceof Vec ? v.v : null;
+      if (!xs || (xs.length !== 2 && xs.length !== 3) || !xs.every((x) => Number.isFinite(x))) throw new EvalError(`schematic: ${p.name} takes its place on the sheet as (x, y), or (x, y, turn) with the turn in degrees, like ${p.name}: (40, 60)`, p.value.span);
+      const turn = xs.length === 3 ? (((Math.round(xs[2] / 90) * 90) % 360) + 360) % 360 : 0;
+      if (xs.length === 3 && Math.abs(xs[2] - Math.round(xs[2] / 90) * 90) > 1e-6) this.diags.push({ message: `schematic: ${p.name} turns in quarter turns (0, 90, 180 or 270), so ${fmtNum(xs[2])} is read as ${turn}`, start: p.value.span.start, end: p.value.span.end, severity: "warning" });
+      if (out.places[p.name]) this.diags.push({ message: `schematic: ${p.name} is placed twice; the last place is used`, start: p.span.start, end: p.span.end, severity: "warning" });
+      out.places[p.name] = { x: xs[0], y: xs[1], rot: turn as 0 | 90 | 180 | 270 };
+      out.entries.push({ name: p.name, span: p.span });
+    }
+    this.schematic = out;
+  }
 
   decision(s: Extract<Stmt, { k: "decision" }>) {
     this.blocks.push({ name: s.name, kind: "decision", span: s.span, locked: false });
@@ -4211,6 +4251,7 @@ class Evaluator {
         this.machine.firmware.map((f) => f.name),
       ))
         this.diags.push({ message: d.message, start: d.span.start, end: Math.max(d.span.end, d.span.start + 1), severity: d.severity });
+    const schematic = this.schematic ? this.schematicChecked() : undefined;
     const model: Model = {
       name: this.name,
       notes: this.notes,
@@ -4234,6 +4275,7 @@ class Evaluator {
       ...(this.mateResult ? { mates: this.mateResult } : {}),
       ...(this.mateQueries.size ? { mateQueries: [...this.mateQueries] } : {}),
       ...(this.configTable ? { configs: this.configTable } : {}),
+      ...(schematic ? { schematic } : {}),
       ...(this.splits.length ? { splits: this.splits } : {}),
       ...(this.splitQueries.length ? { splitQueries: this.splitQueries } : {}),
       ...(this.inserts.length ? { inserts: this.inserts } : {}),
