@@ -11,6 +11,7 @@ import { describeSel, Topo, type FeatureTools } from "./topology";
 import { buildMould } from "./mould";
 import { smoothFaceted } from "./meshSmooth";
 import { deleteFaces, moveFaces, pushPull, replaceFaces, targetPlane } from "./direct";
+import { fullRound, unevenChamfer, variableFillet } from "./rounds";
 
 export class BuildError extends Error {}
 
@@ -417,7 +418,9 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
       const hint =
         op.op === "fillet" || op.op === "chamfer"
           ? " Try a smaller radius, pick fewer edges, or round the edges before cutting features that cross them."
-          : op.op === "shell"
+          : op.op === "full_round"
+            ? " A full round needs a wall or rim with two long sides the same distance apart; round it before cutting holes across it."
+            : op.op === "shell"
             ? " Shell needs a simple body; apply it before adding bosses or cutting holes."
             : op.op === "draft"
               ? " Draft planar or cylindrical faces before rounding their edges, and keep the angle small."
@@ -486,8 +489,12 @@ function opLabel(op: PartOp): string {
     case "shell":
       return `shell(${op.t})`;
     case "fillet":
-    case "chamfer":
-      return `${op.op}(${Array.isArray(op.r) ? `(${op.r.join(", ")})` : op.r}, edges: ${describeSel(op.edges)})`;
+    case "chamfer": {
+      const size = op.op === "fillet" && op.vary ? `[${op.vary.r.join(", ")}]` : Array.isArray(op.r) ? `(${op.r.join(", ")})` : String(op.r);
+      return `${op.op}(${size}${op.angle !== undefined ? `, angle: ${op.angle}` : ""}, edges: ${describeSel(op.edges)}${op.on ? `, on: ${describeSel(op.on)}` : ""})`;
+    }
+    case "full_round":
+      return `full_round(faces: ${describeSel(op.faces)})`;
     case "draft":
       return `draft(${op.angle}, faces: ${describeSel(op.faces)})`;
     case "push_pull":
@@ -550,11 +557,20 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       for (const e of chosen) byHash.set(e.hashCode, [...(byHash.get(e.hashCode) ?? []), e]);
       const has = (e: R.Edge) => !!byHash.get(e.hashCode)?.some((x) => x.isSame(e));
       if (op.op === "fillet") {
+        if (op.vary) return checked(variableFillet(shape, chosen, op.vary));
         const r = op.r;
         return checked(shape.fillet((e) => (has(e) ? r : null)));
       }
+      if (op.on && (Array.isArray(op.r) || op.angle !== undefined)) return checked(unevenChamfer(shape, t, [...idx], op.r, op.on, op.angle));
       const r = Array.isArray(op.r) ? op.r[0] : op.r;
       return checked(shape.chamfer((e) => (has(e) ? r : null)));
+    }
+    case "full_round": {
+      const t = topo();
+      const idx = t.selectFaces(op.faces);
+      if (!idx.size) throw new BuildError(`faces: ${describeSel(op.faces)} matched no faces`);
+      if (idx.size > MAX_FULL_ROUNDS) throw new BuildError(`faces: ${describeSel(op.faces)} picks ${idx.size} faces, more than the ${MAX_FULL_ROUNDS} Kerf rounds over in one step`);
+      return checked(fullRound(shape, t, [...idx]));
     }
     case "draft": {
       const t = topo();
@@ -696,6 +712,8 @@ export function solidVolume(s: Shape3D): number {
 
 /** Most edges one fillet or chamfer takes: a knurl's 720 ridge edges take over a minute. */
 const MAX_ROUNDED_EDGES = 200;
+/** Most faces one full_round() rounds over. */
+const MAX_FULL_ROUNDS = 40;
 
 /** Fillet, chamfer, draft and shell can return a solid that looks right but is broken (later booleans fail). */
 function checked(s: Shape3D): Shape3D {

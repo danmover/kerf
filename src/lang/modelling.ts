@@ -1005,6 +1005,8 @@ export function selFeatures(sel: Sel): string[] {
       return [sel.f];
     case "between":
       return [sel.a, sel.b];
+    case "meet":
+      return [...selFeatures(sel.a), ...selFeatures(sel.b)];
     case "or":
     case "and":
       return sel.a.flatMap(selFeatures);
@@ -1038,7 +1040,18 @@ export const SELECT_FNS: Record<string, Fn> = Object.fromEntries([
     },
     "inside((x0, y0, z0), (x1, y1, z1)) — edges or faces entirely inside a box.",
   ),
-  def("between", ["a", "b"], (a) => sel({ s: "between", a: featName(a.value("a"), a.ctx, "between() a"), b: featName(a.value("b"), a.ctx, "between() b") }), "between(a, b) — the edges where two named features meet."),
+  def(
+    "between",
+    ["a", "b"],
+    (a) => {
+      const va = a.value("a");
+      const vb = a.value("b");
+      if (va instanceof FeatRef && vb instanceof FeatRef) return sel({ s: "between", a: featName(va, a.ctx, "between() a"), b: featName(vb, a.ctx, "between() b") });
+      // face selections (or a feature and a selection): the edges where a face of one set meets a face of the other
+      return sel({ s: "meet", a: toSel(va, a.ctx, "between() a"), b: toSel(vb, a.ctx, "between() b") });
+    },
+    "between(a, b) — the edges where two named features meet, or where two sets of faces meet: between(facing(Z), boss), between(in_plane(Z, 10), circles(d: 8)). Fillet these for a face fillet.",
+  ),
   def(
     "both",
     ["a", "b", "c"],

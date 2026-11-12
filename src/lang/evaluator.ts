@@ -14,7 +14,7 @@ import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
 import type { ImportRef, ImportTable } from "../kernel/imports";
-import { frameFor, hasDetail, recipeHash, rotateAbout, vadd, vdot, vlen, vnorm, vscale, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
+import { frameFor, hasDetail, recipeHash, rotateAbout, vadd, vdot, vlen, vnorm, vscale, vsub, vcross, type FilletLaw, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import { materialDensity } from "../library/standards";
@@ -2540,7 +2540,7 @@ class Evaluator {
         case "modifier": {
           const callee = it.call.callee;
           if (callee.k !== "ident" || !(callee.name in MODIFIER_PARAMS)) {
-            throw new EvalError("Only shell(), fillet(), chamfer(), draft() and the direct edits push_pull(), replace_faces(), delete_faces() and move_faces() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
+            throw new EvalError("Only shell(), fillet(), chamfer(), full_round(), draft() and the direct edits push_pull(), replace_faces(), delete_faces() and move_faces() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
           }
           if (!st.base) throw new EvalError(`${callee.name}() needs a body first`, it.span);
           const pos: Value[] = [];
@@ -2600,10 +2600,17 @@ class Evaluator {
               const about = a.value("about") === undefined ? undefined : a.vec3("about");
               this.pushOp(st, { op: "move_faces", faces, by, turn, axis: a.dir("axis", [0, 0, 1]), about, copy: a.bool("copy", false) }, it.span);
             }
+          } else if (callee.name === "full_round") {
+            const fv = a.value("faces");
+            if (fv === undefined) ctx.error("full_round(): faces: picks the face to round right over, such as the top of a rib: faces: in_plane(Z, 16) or near((x, y, z), 0.2)");
+            const faces = toSel(fv, ctx, "full_round(): faces");
+            this.checkSelFeatures(st, faces, it.call.span);
+            this.pushOp(st, { op: "full_round", faces }, it.span);
           } else {
             const edges = toSel(a.value("edges") ?? "all", ctx, `${callee.name}(): edges`);
             this.checkSelFeatures(st, edges, it.call.span);
-            this.pushOp(st, { op: callee.name as "fillet" | "chamfer", r: a.positive("r"), edges }, it.span);
+            if (callee.name === "fillet") this.pushOp(st, { op: "fillet", ...filletSize(a, ctx), edges }, it.span);
+            else this.pushOp(st, { op: "chamfer", ...chamferSize(a, ctx, (v) => this.checkSelFeatures(st, v, it.call.span)), edges }, it.span);
           }
           break;
         }
@@ -3563,6 +3570,58 @@ function explodeProp(v: Value | undefined, ctx: CallCtx, span: Span | undefined)
 /** held: is plain words for how a part is held where the model cannot show it. */
 function checkHeld(v: Value | undefined, span: Span | undefined) {
   if (v !== undefined && (typeof v !== "string" || !v.trim())) throw new EvalError('held: says how the part is held where the model cannot show it, e.g. held: "glued with epoxy" or held: "hook-and-loop strap"', span ?? { start: 0, end: 0 });
+}
+
+/** fillet()'s size: one radius, or a list that changes along each run of edges (at: how far along, from: which end). */
+function filletSize(a: Args, ctx: CallCtx): { r: number; vary?: FilletLaw } {
+  const rv = a.value("r");
+  if (!Array.isArray(rv)) {
+    if (a.has("at") || a.has("from")) ctx.error("fillet(): at: and from: go with a list of radii that changes along the edges, like fillet([1, 4], edges: …, from: (x, y, z))");
+    return { r: a.positive("r") };
+  }
+  if (rv.length < 2 || rv.length > 12) ctx.error(`fillet(): a list of radii needs 2 to 12 of them, from one end of the edges to the other (got ${rv.length})`);
+  const radii = rv.map((v, i) => (typeof v === "number" && v > 0 && Number.isFinite(v) ? v : ctx.error(`fillet(): radius ${i + 1} in the list should be a size in mm above 0, got ${typeName(v)}`)));
+  let at = radii.map((_, i) => i / (radii.length - 1));
+  const atV = a.value("at");
+  if (atV !== undefined) {
+    const list = Array.isArray(atV) ? atV : atV instanceof Vec ? atV.v : null;
+    if (!list || list.length !== radii.length) ctx.error(`fillet(): at: gives how far along the edges each radius is, from 0 (the start) to 1 (the end): ${radii.length} numbers, one for each radius`);
+    at = list.map((v, i) => (typeof v === "number" && v >= 0 && v <= 1 ? v : ctx.error(`fillet(): at: ${i + 1} should be a fraction of the way along, 0 to 1, got ${typeName(v)}`)));
+    if (at.some((u, i) => i > 0 && u <= at[i - 1])) ctx.error("fillet(): at: should go up along the edges, like [0, 0.3, 1]");
+  }
+  const r = [...radii];
+  // the ends are held level past the first and last points
+  if (at[0] > 0) {
+    at = [0, ...at];
+    r.unshift(r[0]);
+  }
+  if (at[at.length - 1] < 1) {
+    at = [...at, 1];
+    r.push(r[r.length - 1]);
+  }
+  const from = a.has("from") ? a.vec3("from") : undefined;
+  return { r: Math.min(...r), vary: { r, at, ...(from ? { from } : {}) } };
+}
+
+/** chamfer()'s size: one, two (the first along the face on: picks at each edge), or one and angle: from that face. */
+function chamferSize(a: Args, ctx: CallCtx, check: (sel: Sel) => void): { r: number | V2; on?: Sel; angle?: number } {
+  const rv = a.value("r");
+  const onV = a.value("on");
+  const on = onV === undefined ? undefined : toSel(onV, ctx, "chamfer(): on");
+  if (on) check(on);
+  const hasAngle = a.has("angle");
+  if (rv instanceof Vec) {
+    if (rv.v.length !== 2 || !rv.v.every((x) => x > 0 && Number.isFinite(x))) ctx.error("chamfer(): two sizes go as (d1, d2) in mm, both above 0");
+    if (hasAngle) ctx.error("chamfer(): give two sizes, or one size and angle:, not both");
+    if (!on) ctx.error("chamfer(): two sizes need on: to say which face the first runs along at each edge, like chamfer((3, 1), edges: …, on: facing(Z))");
+    return { r: [rv.v[0], rv.v[1]], on };
+  }
+  const r = a.positive("r");
+  if (!hasAngle) return on ? { r, on } : { r };
+  const angle = a.num("angle");
+  if (!(angle > 0 && angle < 90)) ctx.error("chamfer(): angle: is the slope from the on: face in degrees, between 0 and 90 (45 is an even chamfer)");
+  if (!on) ctx.error("chamfer(): angle: needs on: to say which face the size runs along and the angle is measured from, like on: facing(Z)");
+  return { r, on, angle };
 }
 
 function truthy(v: Value): boolean {

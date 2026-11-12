@@ -276,6 +276,7 @@ function stepOf(it: Item, index: number, src: string, suppressed = false): Step 
       if (fn === "fillet" || fn === "chamfer") title += `${a("r") ? ` ${t("r")}` : ""}${a("edges") ? ` · ${t("edges")}` : " · all edges"}`;
       else if (fn === "shell") title += `${a("t") ? ` ${t("t")}` : ""}${a("open") ? ` · open ${t("open")}` : ""}`;
       else if (fn === "draft") title += a("angle") ? ` ${t("angle")}°` : "";
+      else if (fn === "full_round") title += a("faces") ? ` · ${t("faces")}` : "";
       return {
         index,
         kind: "modifier",

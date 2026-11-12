@@ -18,7 +18,10 @@ export const EDGE_PRESETS = ["all", "top", "bottom", "vertical", "horizontal", "
 export type EdgePreset = (typeof EDGE_PRESETS)[number];
 
 export type QuickCommand =
-  | { k: "fillet" | "chamfer"; r?: number; edges?: EdgePreset; target?: string }
+  /** to: a fillet that grows (or shrinks) from r to this along the edges, from the end nearest the spot */
+  | { k: "fillet" | "chamfer"; r?: number; to?: number; edges?: EdgePreset; target?: string }
+  /** the face pointed at rounded right over (full_round()): the top of a rib, a rim */
+  | { k: "full_round"; target?: string }
   /** open: a face direction ("Z", "-Y"), "here" for the face the user points at, or null for a closed shell */
   | { k: "shell"; t?: number; open?: string | null; target?: string }
   | { k: "hole"; size?: string; d?: number; depth?: number; through?: boolean; fit?: "clearance" | "close" | "tap" | "insert" | "thread"; csink?: boolean; cbore?: boolean; target?: string }
@@ -284,8 +287,18 @@ function parseCommand(tokens: string[], verbAt: number, target: string | undefin
 const EDGE_WORDS = new Set(["add", "make", "give", "put", "apply", "edge", "edges", "corner", "corners", "off", "around", "all", "the", "r", "radius", "size", "everywhere", "outside_edges"]);
 
 function parseEdges(k: "fillet" | "chamfer", rest: string[], target: string | undefined): QuickCommand | null {
+  // "full round", "round it over": the face pointed at, rounded right over
+  if (k === "fillet" && (rest.includes("full") || rest.includes("over")) && onlyWords(rest, FULL_ROUND_WORDS)) return { k: "full_round", target };
   // "r2" and "r 2" are the radius
-  const { nums, rest: words } = takeNumbers(rest.map((w) => /^r\d/.test(w) ? w.slice(1) : w));
+  const taken = takeNumbers(rest.map((w) => /^r\d/.test(w) ? w.slice(1) : w));
+  let { nums, rest: words } = taken;
+  // "fillet 2 to 5": a radius that changes along the edge
+  let to: number | undefined;
+  if (k === "fillet" && nums.length === 2 && words.includes("to") && nums.every((n) => n.unit !== "angle" && n.v > 0)) {
+    to = nums[1].v;
+    nums = [nums[0]];
+    words = words.filter((w) => w !== "to");
+  }
   // without a size it is Claude's call how big ("round the corners")
   if (nums.length !== 1 || nums[0].unit === "angle" || nums[0].v <= 0) return null;
   const said = new Set<EdgePreset>();
@@ -301,8 +314,10 @@ function parseEdges(k: "fillet" | "chamfer", rest: string[], target: string | un
   if (said.size > 1) said.delete("all");
   if (corners && !said.size) said.add("vertical");
   if (said.size > 1 || !onlyWords(left, EDGE_WORDS)) return null;
-  return { k, r: nums[0]?.v, edges: [...said][0], target };
+  return { k, r: nums[0]?.v, ...(to !== undefined ? { to } : {}), edges: [...said][0], target };
 }
+
+const FULL_ROUND_WORDS = new Set(["full", "fully", "over", "it", "this", "that", "the", "top", "face", "rib", "wall", "rim", "edge", "lip", "make", "give", "a", "right", "here"]);
 
 const SHELL_WORDS = new Set(["out", "wall", "walls", "thick", "thickness", "shell", "leave", "leaving", "make", "it", "inside", "face", "side", "open", "opening", "closed", "sealed", "solid", "with", "and", "at", "into", "a"]);
 
@@ -703,6 +718,9 @@ export function applyQuick(cmd: QuickCommand, ctx: QuickContext): QuickResult {
     case "chamfer":
       if (stmt.k !== "part") return fail(`${part.label} is a library part, so its edges can't be changed. Only parts made in this design can be ${cmd.k === "fillet" ? "filleted" : "chamfered"}.`);
       return applyEdges(cmd, stmt, part.label, ctx);
+    case "full_round":
+      if (stmt.k !== "part") return fail(`${part.label} is a library part, so it can't be rounded over here.`);
+      return applyFullRound(stmt, part.label, ctx);
     case "shell":
       if (stmt.k !== "part") return fail(`${part.label} is a library part, so it can't be shelled.`);
       return applyShell(cmd, stmt, part.label, ctx);
@@ -765,6 +783,8 @@ function example(cmd: QuickCommand): string {
     case "fillet":
     case "chamfer":
       return `${cmd.k} ${cmd.r ?? 1}`;
+    case "full_round":
+      return "full round";
     case "move":
       return "move 10 up";
     case "rotate":
@@ -840,16 +860,21 @@ function applyEdges(cmd: Extract<QuickCommand, { k: "fillet" | "chamfer" }>, stm
   const r = cmd.r ?? 1;
   const verb = cmd.k === "fillet" ? "Filleted" : "Chamfered";
   const spot = ctx.spot;
+  // a fillet that changes along the edge starts from the end nearest the spot
+  const grow = cmd.k === "fillet" ? cmd.to : undefined;
+  const size = grow !== undefined ? `[${f(r)}, ${f(grow)}]` : f(r);
+  const from = grow !== undefined && spot ? `, from: ${vec(spot.local)}` : "";
+  const sizeText = grow !== undefined ? `${mm(r)} to ${mm(grow)}${spot ? ", from the end you picked" : ""}` : mm(r);
   if (spot?.edges?.length && !cmd.edges) {
     const one = (m: Vec3) => `near(${vec(m, 3)}, 0.2)`;
     const sel = spot.edges.length === 1 ? one(spot.edges[0]) : `[${spot.edges.map(one).join(", ")}]`;
-    const src = insertItem(ctx.src, stmt, `${cmd.k}(${f(r)}, edges: ${sel})`, null);
-    return { ok: true, src, title: `${verb} ${spot.edges.length === 1 ? "the edge" : `the ${spot.edges.length} edges`} you picked on ${label} (${mm(r)})`, target: stmt.name };
+    const src = insertItem(ctx.src, stmt, `${cmd.k}(${size}, edges: ${sel}${from})`, null);
+    return { ok: true, src, title: `${verb} ${spot.edges.length === 1 ? "the edge" : `the ${spot.edges.length} edges`} you picked on ${label} (${sizeText})`, target: stmt.name };
   }
   if (cmd.edges || !spot) {
     const edges = cmd.edges ?? "all";
-    const src = insertItem(ctx.src, stmt, `${cmd.k}(${f(r)}, edges: "${edges}")`, afterLastAdd(stmt));
-    return { ok: true, src, title: `${verb} ${PRESET_TEXT[edges]} of ${label} (${mm(r)})`, target: stmt.name };
+    const src = insertItem(ctx.src, stmt, `${cmd.k}(${size}, edges: "${edges}"${from})`, afterLastAdd(stmt));
+    return { ok: true, src, title: `${verb} ${PRESET_TEXT[edges]} of ${label} (${sizeText})`, target: stmt.name };
   }
   const box = ctx.box?.(stmt.name);
   const diag = box ? Math.hypot(box[1][0] - box[0][0], box[1][1] - box[0][1], box[1][2] - box[0][2]) : 50;
@@ -857,17 +882,27 @@ function applyEdges(cmd: Extract<QuickCommand, { k: "fillet" | "chamfer" }>, stm
   const flat = n ? axisName(n) : null;
   // pointing at an edge: that edge; pointing at the middle of a flat face: the edges around that face
   if (spot.edge && (spot.edge.dist <= Math.max(2, diag * 0.05) || !flat)) {
-    const src = insertItem(ctx.src, stmt, `${cmd.k}(${f(r)}, edges: near(${vec(spot.edge.mid)}, 0.2))`, null);
-    return { ok: true, src, title: `${verb} the edge you picked on ${label} (${mm(r)})`, target: stmt.name };
+    const src = insertItem(ctx.src, stmt, `${cmd.k}(${size}, edges: near(${vec(spot.edge.mid)}, 0.2)${from})`, null);
+    return { ok: true, src, title: `${verb} the edge you picked on ${label} (${sizeText})`, target: stmt.name };
   }
   if (flat && n) {
     const i = axisIndex(n);
     const sel = `both(facing(${flat}), in_plane(${AXES[i]}, ${f(spot.local[i])}))`;
-    const src = insertItem(ctx.src, stmt, `${cmd.k}(${f(r)}, edges: ${sel})`, null);
-    return { ok: true, src, title: `${verb} the edges of the ${FACE_WORD[flat] ?? "picked"} face of ${label} (${mm(r)})`, detail: "Point closer to an edge to round just that edge.", target: stmt.name };
+    const src = insertItem(ctx.src, stmt, `${cmd.k}(${size}, edges: ${sel}${from})`, null);
+    return { ok: true, src, title: `${verb} the edges of the ${FACE_WORD[flat] ?? "picked"} face of ${label} (${sizeText})`, detail: "Point closer to an edge to round just that edge.", target: stmt.name };
   }
-  const src = insertItem(ctx.src, stmt, `${cmd.k}(${f(r)}, edges: near(${vec(spot.local)}, 3))`, null);
-  return { ok: true, src, title: `${verb} the edges near the spot on ${label} (${mm(r)})`, target: stmt.name };
+  const src = insertItem(ctx.src, stmt, `${cmd.k}(${size}, edges: near(${vec(spot.local)}, 3)${from})`, null);
+  return { ok: true, src, title: `${verb} the edges near the spot on ${label} (${sizeText})`, target: stmt.name };
+}
+
+/** full_round() on the face pointed at. */
+function applyFullRound(stmt: PartStmt, label: string, ctx: QuickContext): QuickResult {
+  const spot = ctx.spot;
+  if (!spot?.normal) return fail("Right-click the face to round over (the top of a rib or wall, a rim, a plate's edge), then say it again.");
+  const flat = axisName(spot.normal);
+  const sel = flat ? `both(facing(${flat}), near(${vec(spot.local)}, 0.2))` : `near(${vec(spot.local)}, 0.2)`;
+  const src = insertItem(ctx.src, stmt, `full_round(faces: ${sel})`, null);
+  return { ok: true, src, title: `Rounded over the ${flat ? `${FACE_WORD[flat] ?? "picked"} face` : "face"} you picked on ${label}`, detail: "It becomes a half-round between its two long sides, which must be the same distance apart.", target: stmt.name };
 }
 
 function applyShell(cmd: Extract<QuickCommand, { k: "shell" }>, stmt: PartStmt, label: string, ctx: QuickContext): QuickResult {
@@ -1300,7 +1335,9 @@ export function describeQuick(cmd: QuickCommand): string {
   switch (cmd.k) {
     case "fillet":
     case "chamfer":
-      return `${cmd.k === "fillet" ? "Fillet" : "Chamfer"} ${cmd.edges ? PRESET_TEXT[cmd.edges] : "edges"} · ${mm(cmd.r ?? 1)}`;
+      return `${cmd.k === "fillet" ? "Fillet" : "Chamfer"} ${cmd.edges ? PRESET_TEXT[cmd.edges] : "edges"} · ${mm(cmd.r ?? 1)}${cmd.k === "fillet" && cmd.to !== undefined ? ` to ${mm(cmd.to)}` : ""}`;
+    case "full_round":
+      return "Round the face right over";
     case "shell":
       return `Shell to ${mm(cmd.t ?? 2)} walls${cmd.open === null ? ", closed" : cmd.open && cmd.open !== "here" ? `, open ${FACE_WORD[cmd.open] ?? cmd.open}` : ""}`;
     case "hole":
