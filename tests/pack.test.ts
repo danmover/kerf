@@ -381,6 +381,10 @@ describe("build pack", () => {
     const readme = text(files[0].data);
     expect(readme).toMatch(/^# Sand Tunneller: build pack\n\n\*\*(Ready to order and build|Not ready: )/);
     expect(readme).toContain("| `bom.html` |");
+    // the circuit's schematic sheet, described in the read-me
+    const sch = text(files.find((f) => f.path === "wiring/schematic.svg")!.data);
+    expect(sch.startsWith("<svg") || sch.startsWith("<?xml")).toBe(true);
+    expect(readme).toContain("| `wiring/schematic.svg` |");
     const assembly = text(files.find((f) => f.path === "assembly.md")!.data);
     // ground first, power last
     expect(assembly.indexOf("### GND")).toBeLessThan(assembly.indexOf("### VBAT"));
