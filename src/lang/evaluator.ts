@@ -4,7 +4,7 @@
 import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
 import { parse, parseExpression, type Diagnostic } from "./parser";
 import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, SketchLineObj, SketchObj, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
-import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
+import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionProps, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
 import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
 import { BLOCK_FNS } from "./blocks";
@@ -142,7 +142,8 @@ function catalogProfile(id: string): CatalogProfile | undefined {
   const p = catalogPart(id);
   if (!p || p.kind !== "extrusion" || !p.cut_to_length) return undefined;
   const spec = (k: string) => (typeof p.specs[k] === "number" ? (p.specs[k] as number) : undefined);
-  return { id: p.id, name: p.name, w: spec("w") ?? 20, h: spec("h") ?? 20, massPerM: spec("mass_g_per_m") };
+  const iyy = spec("iyy_mm4");
+  return { id: p.id, name: p.name, w: spec("w") ?? 20, h: spec("h") ?? 20, massPerM: spec("mass_g_per_m"), ...(iyy ? { iyy } : {}) };
 }
 
 interface CompInfo {
@@ -343,6 +344,7 @@ class Evaluator {
         return new Pending([key]);
       },
       machine: () => this.machine,
+      imports: () => this.opts.imports ?? evalImports(),
       tick: (n: number) => this.tick(n, this.callSpan),
       partShape: (name: string) => {
         const p = this.parts.find((q) => q.name === name && q.kind === "part");
@@ -2126,6 +2128,7 @@ class Evaluator {
     const vec = (p: V3): Expr => ({ k: "vec", items: p.map(num), span: sp });
     const prop = (name: string, value: Expr): Item => ({ k: "prop", name, value, span: sp });
     const counters: Record<string, number> = { post: 0, rail: 0, brace: 0 };
+    const beamSec = sectionProps(sec);
     const infos: FrameMemberInfo[] = [];
     const values: Value[] = [];
     let mass = 0;
@@ -2157,7 +2160,10 @@ class Evaluator {
           };
           const first = this.parts.length;
           this.component({ k: "component", name, call, items, span: sp, nameSpan: s.nameSpan });
-          for (let i = first; i < this.parts.length; i++) this.parts[i].frame = s.name;
+          for (let i = first; i < this.parts.length; i++) {
+            this.parts[i].frame = s.name;
+            this.parts[i].beam = { frame: s.name, a: m.from, b: m.to, u: m.u, v: m.v, section: beamSec };
+          }
           mass += ((sec.massPerM ?? 0) * m.length) / 1000;
         } else {
           this.define(name, "part", new Ref(name, "part"), s.nameSpan);
@@ -2192,6 +2198,7 @@ class Evaluator {
               features: [],
               detail: false,
               frame: s.name,
+              beam: { frame: s.name, a: m.from, b: m.to, u: m.u, v: m.v, section: beamSec },
               bom: {
                 description: `${sectionName(sec, material)}, cut to ${fmtNum(m.length, 1)} mm${cutText}`,
                 length: Math.round(m.length * 10) / 10,
@@ -2350,7 +2357,7 @@ class Evaluator {
         case "modifier": {
           const callee = it.call.callee;
           if (callee.k !== "ident" || !(callee.name in MODIFIER_PARAMS)) {
-            throw new EvalError("Only shell(), fillet(), chamfer() and draft() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
+            throw new EvalError("Only shell(), fillet(), chamfer(), draft() and the direct edits push_pull(), replace_faces(), delete_faces() and move_faces() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
           }
           if (!st.base) throw new EvalError(`${callee.name}() needs a body first`, it.span);
           const pos: Value[] = [];
@@ -2385,6 +2392,31 @@ class Evaluator {
             const faces = toSel(a.value("faces") ?? "vertical", ctx, "draft(): faces");
             this.checkSelFeatures(st, faces, it.call.span);
             this.pushOp(st, { op: "draft", angle, faces, pull: a.dir("pull", [0, 0, 1]), neutral: a.vec3("neutral", [0, 0, 0]) }, it.span);
+          } else if (callee.name === "push_pull" || callee.name === "replace_faces" || callee.name === "delete_faces" || callee.name === "move_faces") {
+            const fv = a.value("faces");
+            if (fv === undefined) ctx.error(`${callee.name}(): faces: says which faces, e.g. faces: near((x, y, z)) or facing(Z)`);
+            const faces = toSel(fv, ctx, `${callee.name}(): faces`);
+            this.checkSelFeatures(st, faces, it.call.span);
+            if (callee.name === "push_pull") {
+              const d = a.num("by");
+              if (!Number.isFinite(d) || Math.abs(d) < 1e-6) ctx.error("push_pull(): by is how far to move the faces in mm, out when positive and in when negative, and can't be 0");
+              if (Math.abs(d) > 10_000) ctx.error("push_pull(): by is limited to 10 m");
+              this.pushOp(st, { op: "push_pull", d, faces }, it.span);
+            } else if (callee.name === "replace_faces") {
+              const wv = a.value("with");
+              if (wv === undefined) ctx.error("replace_faces(): with: picks the flat face to line the faces up with, e.g. with: near((x, y, z))");
+              const target = toSel(wv, ctx, "replace_faces(): with");
+              this.checkSelFeatures(st, target, it.call.span);
+              this.pushOp(st, { op: "replace_faces", faces, with: target }, it.span);
+            } else if (callee.name === "delete_faces") {
+              this.pushOp(st, { op: "delete_faces", faces }, it.span);
+            } else {
+              const by = a.vec3("by", [0, 0, 0]);
+              const turn = a.num("turn", 0);
+              if (!(Math.hypot(...by) > 1e-9) && !(Math.abs(turn) > 1e-9)) ctx.error("move_faces(): give by: (x, y, z) to move the feature, turn: degrees to turn it, or both");
+              const about = a.value("about") === undefined ? undefined : a.vec3("about");
+              this.pushOp(st, { op: "move_faces", faces, by, turn, axis: a.dir("axis", [0, 0, 1]), about, copy: a.bool("copy", false) }, it.span);
+            }
           } else {
             const edges = toSel(a.value("edges") ?? "all", ctx, `${callee.name}(): edges`);
             this.checkSelFeatures(st, edges, it.call.span);
@@ -3148,12 +3180,27 @@ class Evaluator {
       kindOf: (name) => {
         const k = this.defKind.get(name);
         if (k) this.current?.add(name);
+        // a frame's members are parts, edited (and depended on) through their frame
+        const frame = this.memberOf.get(name);
+        if (!k && frame) {
+          this.current?.add(frame);
+          return this.parts.find((p) => p.name === name)?.kind ?? "part";
+        }
         return k;
+      },
+      members: (name) => {
+        if (this.defKind.get(name) !== "frame") return undefined;
+        this.current?.add(name);
+        return [...this.memberOf].filter(([, f]) => f === name).map(([m]) => m);
       },
       param: (name) => this.params.find((p) => p.name === name),
     });
     // the parts it reads are dependencies, so the graph and incremental reruns see them
-    if (spec.kind === "structural") for (const p of spec.parts) if (this.defKind.has(p)) this.current?.add(p);
+    if (spec.kind === "structural")
+      for (const p of spec.parts) {
+        if (this.defKind.has(p)) this.current?.add(p);
+        else if (this.memberOf.has(p)) this.current?.add(this.memberOf.get(p)!);
+      }
     if (spec.kind === "airflow") for (const p of [...spec.parts, ...(spec.wheels ?? [])]) if (this.defKind.has(p)) this.current?.add(p);
     if (spec.kind === "drivetrain") {
       const k = this.defKind.get(spec.drive);

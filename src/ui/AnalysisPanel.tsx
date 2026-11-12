@@ -9,7 +9,7 @@ import { useAnalysis, showResults, runFine, runAccuracyCheck, runTopology, stopT
 import { topologyText } from "../analysis/topologySummary";
 import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
 import { download } from "../persist/files";
-import { dirWords, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
+import { dirWords, largeText, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { count, designWords, fatigueText, fatigueVerdict, lifeText } from "../analysis/fatigueSummary";
 import { cycleWords, cyclesAt, MEAN_STRESS, type SnCurve } from "../analysis/fe/fatigue";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type StudySpec, type UciSpec } from "../analysis/spec";
@@ -283,14 +283,16 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
       {r?.buckling && <BucklingBox spec={spec} r={r} />}
       {r?.fatigue && <FatigueBox spec={spec} r={r} />}
       {r && !r.heatOnly && !(r.modal && !(r.maxDisp.value > 0)) && <ResultCards spec={spec} r={r} />}
+      {r?.beams && <MembersBox r={r} />}
+      {r?.shells && <WallsBox r={r} />}
       <div className="an-cols">
         <div>
           <SetupBox spec={spec} r={r} run={run} />
-          {r && <AccuracyBox spec={spec} r={r} run={run} />}
+          {r && !r.beams && <AccuracyBox spec={spec} r={r} run={run} />}
         </div>
         <div>
           {r && <NotesBox spec={spec} r={r} />}
-          {(r || (run && run.trace.length > 1)) && <ConvergenceBox run={run!} r={r} />}
+          {!r?.beams && !r?.shells && (r || (run && run.trace.length > 1)) && <ConvergenceBox run={run!} r={r} />}
         </div>
       </div>
     </>
@@ -1006,6 +1008,98 @@ function BucklingBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult })
 }
 
 /** The accuracy check: the answers from two element sizes side by side, and whether they have settled. */
+/** A frame solved as beams: what each member carries, hardest worked first. */
+function MembersBox({ r }: { r: StructuralResult }) {
+  const b = r.beams!;
+  const [all, setAll] = useState(false);
+  const rows = [...b.members].sort((x, y) => y.stress - x.stress);
+  const shown = all ? rows : rows.slice(0, 8);
+  const force = (N: number) => (Math.abs(N) < 0.05 ? "–" : `${N < 0 ? "push" : "pull"} ${fmtNum(Math.abs(N), Math.abs(N) < 10 ? 2 : 0)} N`);
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <b>Members</b>
+        <span className="dim mono">
+          {b.members.length} as beams · {b.joints} joint{b.joints === 1 ? "" : "s"}
+          {b.buckling ? ` · buckles at ${fmtNum(b.buckling.factor, 2)}× the loads` : ""}
+        </span>
+      </div>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th className="num">Length</th>
+            <th className="num">Axial</th>
+            <th className="num">Bending</th>
+            <th className="num">Stress</th>
+            <th className="num">Safety</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((m) => (
+            <tr key={m.part}>
+              <td className="mono">{m.part}</td>
+              <td className="num">{fmtNum(m.length, 0)} mm</td>
+              <td className="num">{force(m.axial)}</td>
+              <td className="num">{fmtNum(m.moment / 1000, 2)} N·m</td>
+              <td className="num">{fmtNum(m.stress, 1)} MPa</td>
+              <td className="num">{m.safety >= 100 ? "> 100" : fmtNum(m.safety, 2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length > 8 && (
+        <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setAll(!all)}>
+          {all ? "Show the 8 hardest worked" : `Show all ${rows.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Thin walls solved as shells: each wall's thickness, its peak stress on either face and its safety, weakest first. */
+function WallsBox({ r }: { r: StructuralResult }) {
+  const s = r.shells!;
+  const rows = [...s.parts].sort((x, y) => x.safety - y.safety);
+  const kind = (k: string) => (k === "laminate" ? "laminate" : k === "sheet" ? "sheet" : "wall");
+  const thick = (p: { t: number; tMin: number; tMax: number }) => (p.tMax - p.tMin > 0.1 * p.t ? `${fmtNum(p.tMin, 2)}–${fmtNum(p.tMax, 2)} mm` : `${fmtNum(p.t, 2)} mm`);
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <b>Walls</b>
+        <span className="dim mono">
+          {s.elements.toLocaleString()} shell triangles{s.ties ? ` · joined at ${s.ties} points` : ""}
+          {s.buckling && !r.buckling ? ` · buckles at about ${fmtNum(s.buckling.factor, 2)}× the loads` : ""}
+        </span>
+      </div>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th>Part</th>
+            <th>Wall</th>
+            <th className="num">Area</th>
+            <th className="num">Peak stress</th>
+            <th className="num">Safety</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((p) => (
+            <tr key={p.part}>
+              <td className="mono">{p.part}</td>
+              <td>
+                {thick(p)} {kind(p.kind)}
+              </td>
+              <td className="num">{fmtNum(p.area / 100, 0)} cm²</td>
+              <td className="num">{fmtNum(p.stress, 1)} MPa</td>
+              <td className="num">{p.safety >= 100 ? "> 100" : fmtNum(p.safety, 2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function AccuracyBox({ spec, r, run }: { spec: StructuralSpec; r: StructuralResult; run?: StructuralRun }) {
   const c = r.convergence;
   const busy = run?.status === "running" || run?.status === "waiting";
@@ -1185,10 +1279,10 @@ function ResultCards({ spec, r }: { spec: StructuralSpec; r: StructuralResult })
         <div className="k">Model</div>
         <div className="v">
           {r.mesh.elements.toLocaleString()}
-          <small>elements</small>
+          <small>{r.beams ? "beam elements" : r.shells ? "shell triangles" : "elements"}</small>
         </div>
         <div className="s">
-          {r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm cells · {fmtNum(r.solve.ms.total / 1000, 1)} s
+          {r.beams ? `${r.beams.members.length} members, ${r.beams.joints} joints` : r.shells ? `up to ${fmtNum(r.mesh.h, 2)} mm, on ${r.shells.parts.length} wall${r.shells.parts.length === 1 ? "" : "s"}` : `${r.mesh.cell.map((c) => fmtNum(c, 2)).join(" × ")} mm cells`} · {fmtNum(r.solve.ms.total / 1000, 1)} s
         </div>
       </div>
     </div>
@@ -1388,14 +1482,30 @@ function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
           <span>{w}</span>
         </div>
       ))}
+      {largeText(r) && (
+        <div className="an-note">
+          <Icon.Info size={13} style={{ color: "var(--cyan)" }} />
+          <span>Large deflection: {largeText(r)}</span>
+        </div>
+      )}
       <div className="an-note">
         <Icon.Info size={13} style={{ color: "var(--text-3)" }} />
         <span className="dim">
-          {r.heatOnly ? (
+          {r.beams ? (
+            <>
+              Linear elastic beams through the members&apos; centre lines: small deflections, {r.beams.notes.slice(1).join("; ") || "joints rigid as welds are"}. Beams follow bending, stretching and twisting exactly, but not what happens inside a joint, at holes or welds, or thin walls crumpling locally; check a joint that matters with elements: &quot;solid&quot;.
+              {r.buckling ? " Buckling assumes straight members, so real ones buckle somewhat sooner." : ""}
+            </>
+          ) : r.shells ? (
+            <>
+              Linear elastic shells on the walls&apos; surfaces: small deflections, {r.shells.notes.filter((n) => !r.shells!.parts.some((p) => n.startsWith(`${p.part} as `))).join("; ") || "each wall as thick as it measures"}. Shells follow a thin wall&apos;s bending, stretching and rippling, but not what happens through its thickness at a hole, a bonded joint or a thick lug; check a part like that with elements: &quot;solid&quot;.
+              {r.buckling ? " Buckling assumes a perfect shape, so real walls buckle somewhat sooner." : ""}
+            </>
+          ) : r.heatOnly ? (
             `Temperatures on a ${h} mm voxel grid. ${heat}`
           ) : (
             <>
-              Linear elastic analysis on a {h} mm voxel grid: small deflections, {spec.touching ? "contact only where touching: says (other touching parts glued)" : "no contact"} or creep
+              {r.large?.converged ? `Elastic analysis on a ${h} mm voxel grid with large deflection (parts turn as they bend; strains small)` : `Linear elastic analysis on a ${h} mm voxel grid: small deflections`}, {spec.touching ? "contact only where touching: says (other touching parts glued)" : "no contact"} or creep
               {r.buckling ? "; buckling assumes a perfect shape, so real parts buckle somewhat sooner" : ", and buckling only when buckling: is set"}. {heat}
               {spec.thermal || spec.uniformTemp !== undefined ? " Hot plastics are softened and weakened at their temperature. " : ""}
               Peaks are smoothed at sharp corners and fillets smaller than a cell. Use it to compare designs and find weak spots; test a printed part before relying on it{spec.safety < 2 ? ", especially with a safety target under 2" : ""}.

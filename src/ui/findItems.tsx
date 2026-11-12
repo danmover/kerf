@@ -88,7 +88,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   overview: { detail: "Status, the brief, the design at a glance and recent changes", keywords: "summary status dashboard home at a glance" },
   brief: { detail: "What it's for, where it's used and what it must survive: each becomes a check", keywords: "requirements uses spec specification purpose goals constraints" },
   checks: { detail: "Every check on the design, and why it passes or fails", keywords: "tests problems errors warnings failing issues interference validate verify" },
-  analysis: { detail: "Strength, contact between touching parts, tightened bolts, fatigue life, drop, vibration, heat and current (Joule heating), buckling, topology optimisation, design studies, airflow, gear and bike rule runs", keywords: "preload bolt preload bolt tension pretension pre-tension tightened bolts tightening torque bolted joint clamp load clamping force joint separation joint opening joint slip slip resistance proof load vdi 2230 contact touching parts touch frictional frictionless friction coefficient mu sliding slip separation gap lift off no separation rough bonded glued contact pressure contact status nonlinear contact assembly contact topology optimisation optimization generative design lightweighting lighten remove material truss organic shape simp preserve min member dxf profile fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy design study optimise optimize sweep fatigue life cycles s-n sn curve endurance goodman rainflow load history miner durability infill walls perimeters print settings printed layers anisotropic orthotropic pin hinge pinned support bearing load bore spring elastic support rubber feet pad foundation set displacement prescribed displacement push snap fit clip force to push joule heating electric current busbar bus bar resistance resistive heating heater element i2r i²r voltage drop current density ampacity fuse wire" },
+  analysis: { detail: "Strength (frames as beams, carbon layups and sheet metal as shells), contact between touching parts, tightened bolts, fatigue life, drop, vibration, heat and current (Joule heating), buckling, topology optimisation, design studies, airflow, gear and bike rule runs", keywords: "preload bolt preload bolt tension pretension pre-tension tightened bolts tightening torque bolted joint clamp load clamping force joint separation joint opening joint slip slip resistance proof load vdi 2230 contact touching parts touch frictional frictionless friction coefficient mu sliding slip separation gap lift off no separation rough bonded glued contact pressure contact status nonlinear contact assembly contact topology optimisation optimization generative design lightweighting lighten remove material truss organic shape simp preserve min member dxf profile fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy design study optimise optimize sweep fatigue life cycles s-n sn curve endurance goodman rainflow load history miner durability infill walls perimeters print settings printed layers anisotropic orthotropic pin hinge pinned support bearing load bore spring elastic support rubber feet pad foundation set displacement prescribed displacement push snap fit clip force to push large deflection geometric nonlinearity nonlinear geometry big deflection flexure bending far corotational beam elements beams frame analysis truss weldment analysis member forces axial force bending moment euler buckling strut column shell elements shells thin wall thin-walled laminate carbon layup composite monocoque carbon frame stiffness sheet metal bracket stress panel buckling plate buckling skin ripple wrinkling joule heating electric current busbar bus bar resistance resistive heating heater element i2r i²r voltage drop current density ampacity fuse wire" },
   build: {
     title: "Build: electronics and wiring",
     detail: "Wiring, boards, power, calculations, firmware and tests for a machine",
@@ -307,12 +307,30 @@ export function findItems(ctx: FindContext): FindItem[] {
         id: `view:pick:${f}`,
         group: "View",
         title: f === "part" ? "Pick whole parts" : `Pick ${FILTER_WORD[f]}`,
-        detail: f === "part" ? "Clicks select parts again (the selection filter)" : `Clicks pick ${FILTER_WORD[f]} of the parts: fillet or chamfer the picked edges, sketch on a picked face, copy them as near() selectors or ask Claude about them`,
+        detail: f === "part" ? "Clicks select parts again (the selection filter)" : `Clicks pick ${FILTER_WORD[f]} of the parts: fillet or chamfer the picked edges, push, pull, delete or move picked faces, sketch on a flat one, copy them as near() selectors or ask Claude about them`,
         keywords: "selection filter select faces edges corners vertices vertex bodies parts pick face pick edge pick corner sub-part sub part entity topology filter faces only edges only",
         icon: <FilterIcon filter={f} box={false} size={14} />,
         keys: "Q",
         tag: usePicks.getState().filter === f ? "on" : undefined,
         run: () => setFilter(f),
+      })),
+      ...(
+        [
+          ["push-pull", "Push or pull faces", "Pick faces, give a distance and Push/pull: the faces round them stretch to follow, a hole or boss gets bigger or smaller. Imported STEP and mesh files too", "push pull press pull offset face move face direct edit direct modelling direct editing thicken extend lengthen shorten resize hole resize boss taper draft imported step edit dumb solid", <Icon.Move size={14} key="i" />],
+          ["delete-faces", "Delete faces and heal", "Pick a feature's faces and Delete: a hole or pocket is filled, a boss cut off, a round or chamfer made a sharp edge again", "delete face remove face remove feature defeature defeaturing heal fill hole remove hole remove fillet remove round remove chamfer remove boss simplify direct edit imported step", <Icon.Trash size={14} key="i" />],
+          ["move-faces", "Move or copy a feature by its faces", "Pick a hole's, pocket's or boss's faces and Move…: it moves by x, y, z and closes up where it was, or copy leaves the original", "move face move faces move hole move feature copy feature reposition relocate shift hole direct edit imported step", <Icon.Move size={14} key="i" />],
+        ] as const
+      ).map(([id, title, detail, keywords, icon]): FindItem => ({
+        id: `model:${id}`,
+        group: "Model",
+        title,
+        detail,
+        keywords,
+        icon,
+        run: () => {
+          setFilter("face");
+          toast({ kind: "info", title: "Click the faces to change (Shift adds more), then use the buttons on the card", detail: "Picks faces for now: Q changes what a click picks" }, 6000);
+        },
       })),
       { id: "view:handles", group: "View", title: "Drag handles", detail: "With a part selected: arrows on its sizes to pull them (or click a value on the model to type it) and arrows in its middle to slide it along X, Y or Z", keywords: "drag handles push pull press pull instant3d arrows resize stretch on-model dimensions edit dimension on model triad move manipulator gizmo slide", icon: <Icon.Move size={14} />, keys: "H", tag: useHandles.getState().on ? "on" : undefined, run: () => toggleHandles() },
       { id: "view:boxselect", group: "View", title: "Box select", detail: "Drag a box to pick parts, faces, edges or corners: left to right takes what is wholly inside, right to left whatever it touches", keywords: "box select window selection crossing selection drag select marquee rubber band lasso area select many multiple", icon: <FilterIcon filter={usePicks.getState().filter} box size={14} />, keys: "B", tag: usePicks.getState().box ? "on" : undefined, run: () => toggleBox() },

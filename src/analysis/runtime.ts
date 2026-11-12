@@ -20,6 +20,8 @@ import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, PartPrint, StructuralInput, StructuralResult, TopologyPreview } from "./fe/structural";
+import type { ShellPart } from "./fe/shells";
+import { resolvedSettings } from "../mfg/profiles";
 import type { BoltWant } from "./fe/bolts";
 import { GRADES, gradeFrom, headDims, type HeadType } from "../library/fasteners";
 import { threadSpec } from "../library/standards";
@@ -185,7 +187,7 @@ function pump() {
   ensureWorker().postMessage({ id: job.id, input: job.input } satisfies FeaRequest, transfer);
   // an accuracy check solves twice, the second time with about three times the elements; a topology run solves once
   // per design step
-  const limit = RUN_TIME_LIMIT_MS * (job.input.topology ? TOPOLOGY_TIME_FACTOR : job.input.converge ? 2 : 1);
+  const limit = RUN_TIME_LIMIT_MS * (job.input.topology ? TOPOLOGY_TIME_FACTOR : job.input.converge ? 2 : 1) * (job.input.large ? 1.5 : 1);
   deadline = setTimeout(() => {
     if (current === job)
       failCurrent(
@@ -314,6 +316,20 @@ export function partPrint(spec: StructuralSpec, p: EvalPart, m: MechMaterial, me
   };
 }
 
+const numberOr = (v: unknown, d: number) => (typeof v === "number" && v > 0 ? v : d);
+
+/** What an analysis asks for that thin-wall shells do not solve, in words. */
+function shellsCannot(spec: StructuralSpec): string {
+  if (spec.modal) return "modal: (vibration modes)";
+  if (spec.drop) return "drop:";
+  if (spec.thermal || spec.uniformTemp !== undefined) return "heat";
+  if (spec.fatigue) return "fatigue:";
+  if (spec.topology) return "topology:";
+  if (spec.touching) return "touching:";
+  if (spec.preload) return "preload:";
+  return "large:";
+}
+
 /** Library parts that join others (and stay glued to them under touching: "all"). */
 const JOINING_KINDS = new Set(["screw", "bolt", "nut", "insert", "washer", "standoff", "rivet"]);
 
@@ -332,6 +348,33 @@ export function structuralInput(
   if (th && !th.heat.length && !th.currents?.length && !th.fixed.length)
     return { error: `heat: "auto" found no electronics that use power among ${spec.parts.join(", ")}, so nothing makes heat. Add source(part, watts) for what gets hot.` };
   const temps = !!th || spec.uniformTemp !== undefined;
+  // a frame on its own is analysed as beams through its joints, unless asked for solids or for what beams cannot follow
+  const beamsCan = !spec.modal && !spec.drop && !temps && !spec.fatigue && !spec.topology && !spec.touching && !spec.preload && !spec.large;
+  const notBeam = parts.find((p) => !p.beam);
+  if (spec.elements === "beams" && notBeam)
+    return { error: `elements: "beams" analyses frame members, and ${notBeam.label} is not one. Analyse the frame on its own, or use elements: "solid" to analyse it with the other parts.` };
+  const beams = spec.elements === "beams" || (spec.elements === undefined && !notBeam && beamsCan);
+  // a carbon layup is a laminate under its outer surface and a sheet() part a sheet of its thickness: both are analysed as shells
+  // when everything analysed is one, unless asked for solids or for what shells cannot follow (the same list as beams)
+  const shellOf = (p: EvalPart): ShellPart | undefined =>
+    p.process?.id === "carbon_layup"
+      ? { kind: "laminate", t: numberOr(resolvedSettings(p.process).wall, 1.2) }
+      : p.sheet
+        ? { kind: "sheet", t: p.sheet.t }
+        : spec.elements === "shells"
+          ? { kind: "wall" }
+          : undefined;
+  const shellsAuto = spec.elements === undefined && !beams && beamsCan && parts.every((p) => shellOf(p));
+  const shells = spec.elements === "shells" || shellsAuto;
+  // a carbon layup solved as solid looks far stiffer and stronger than its laminate: say so, and how to see it as one
+  const solidLayups = shells ? [] : parts.filter((p) => p.process?.id === "carbon_layup");
+  const layupWarning = solidLayups.length
+    ? `${solidLayups.map((p) => p.label).join(", ")} ${solidLayups.length > 1 ? "are carbon layups" : "is a carbon layup"}, solved here as if solid carbon, which looks far stiffer and stronger than its ${fmtNum(numberOr(resolvedSettings(solidLayups[0].process!).wall, 1.2))} mm laminate: ${
+        spec.elements === "solid" ? "leave elements: out to analyse it as a laminate shell" : !beamsCan ? `${shellsCannot(spec)} needs solid elements, so check its strength in an analysis without it` : "analyse it on its own (or with other layups and sheet parts) to see it as a laminate shell"
+      }.`
+    : undefined;
+  if (spec.elements === "shells" && !beamsCan)
+    return { error: `elements: "shells" solves strength, stiffness and buckling of thin walls; ${shellsCannot(spec)} needs solid elements. Use elements: "solid", or leave elements: out.` };
   const fea: FeaPart[] = [];
   const mats: MechMaterial[] = [];
   const thermalMats: ThermalMaterial[] = [];
@@ -388,7 +431,9 @@ export function structuralInput(
     const headH = fi?.head && ts ? headDims(fi.head as HeadType, ts)?.h : undefined;
     const bolt = fi && fi.head !== "set" ? { headTop: fi.headTop, outward: fi.outward, size: fi.size, headD: fi.headD, ...(headH !== undefined ? { headH } : {}), ...(fi.grade ? { grade: fi.grade } : {}) } : undefined;
     const threads = p.libKind === "nut" || p.libKind === "standoff" ? ("nut" as const) : p.libKind === "insert" ? ("insert" as const) : undefined;
-    fea.push({ id: p.id, name: p.name, mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
+    const beam = beams && p.beam ? { a: p.beam.a, b: p.beam.b, u: p.beam.u, v: p.beam.v, section: p.beam.section } : undefined;
+    const shell = shells ? shellOf(p) : undefined;
+    fea.push({ id: p.id, name: p.name, ...(p.frame ? { group: p.frame } : {}), ...(beam ? { beam } : {}), ...(shell ? { shell } : {}), mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
   }
   // bolts tightened before the loads: the ones named, and with all every other screw and bolt analysed
   let preload: BoltWant[] | undefined;
@@ -442,6 +487,10 @@ export function structuralInput(
     ...(currents ? { electricMaterials: electricMats } : {}),
     ...(spec.buckling ? { buckling: { modes: spec.buckling.modes } } : {}),
     ...(spec.converge ? { converge: true } : {}),
+    ...(spec.large !== undefined ? { large: spec.large } : {}),
+    ...(beams ? { elements: "beams" as const } : {}),
+    ...(shells ? { elements: "shells" as const, ...(shellsAuto ? { elementsAuto: true } : {}) } : {}),
+    ...(layupWarning ? { inputWarnings: [layupWarning] } : {}),
     ...(spec.topology ? { topology: spec.topology } : {}),
     ...(spec.touching ? { touching: spec.touching } : {}),
     ...(preload ? { preload } : {}),

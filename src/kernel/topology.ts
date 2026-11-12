@@ -582,14 +582,12 @@ export class Topo {
         return pick((i) => this.face(i).normals.every((n) => Math.abs(vdot(n, d)) < 0.02));
       }
       case "circle":
+        // the sides of holes and bosses: cylinders of that diameter (a hole into a round bar has no round rim)
         return pick((i) => {
           const s = this.face(i);
-          if (s.kind !== "CYLINDER") return false;
+          if (s.kind !== "CYLINDRE") return false;
           if (sel.d <= 0) return true;
-          const es = this.adj()
-            .map((fs, ei) => (fs.includes(i) ? ei : -1))
-            .filter((ei) => ei >= 0 && this.edge(ei).kind === "CIRCLE");
-          return es.some((ei) => Math.abs((this.edge(ei).radius ?? 0) * 2 - sel.d) < 0.01);
+          return Math.abs(cylinderRadius(this.faces[i]) * 2 - sel.d) < 0.01;
         });
       case "box":
         return pick((i) => this.face(i).pts.every((p) => inBox(p, [sel.lo, sel.hi], TOL)));
@@ -627,6 +625,21 @@ export class Topo {
     });
     const top = flat.reduce((m, f) => Math.max(m, f.h), -Infinity);
     return flat.filter((f) => f.h > top - TOL).map((f) => f.i);
+  }
+}
+
+/** A cylindrical face's radius, from its surface. */
+function cylinderRadius(f: R.Face): number {
+  const ad = new (R.getOC().BRepAdaptor_Surface)(f.wrapped, false);
+  try {
+    const c = ad.Cylinder();
+    const r = c.Radius();
+    c.delete();
+    return r;
+  } catch {
+    return 0;
+  } finally {
+    ad.delete();
   }
 }
 

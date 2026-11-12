@@ -10,6 +10,7 @@ import { buildKnurl, buildThread } from "./threads";
 import { describeSel, Topo, type FeatureTools } from "./topology";
 import { buildMould } from "./mould";
 import { smoothFaceted } from "./meshSmooth";
+import { deleteFaces, moveFaces, pushPull, replaceFaces, targetPlane } from "./direct";
 
 export class BuildError extends Error {}
 
@@ -254,9 +255,9 @@ export function dropImport(hash: string) {
 
 export const hasImport = (hash: string) => imported.has(hash);
 
-/** Whether a part is exactly one body of an imported mesh (moved, not modified), whose facets are shown smooth. */
+/** Whether a part is one body of an imported mesh (moved, or changed with direct edits), whose facets are shown smooth. */
 export function importFaceted(p: PartRecipe): boolean {
-  if (p.ops.length || !p.base) return false;
+  if (!p.base || p.ops.some((o) => !DIRECT_OPS.has(o.op))) return false;
   let r: ShapeRecipe = p.base;
   while (r.t === "xform") r = r.shape;
   return r.t === "import" && r.body >= 0 && !!imported.get(r.asset)?.faceted;
@@ -396,7 +397,9 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
             ? " Shell needs a simple body; apply it before adding bosses or cutting holes."
             : op.op === "draft"
               ? " Draft planar or cylindrical faces before rounding their edges, and keep the angle small."
-              : "";
+              : DIRECT_OPS.has(op.op)
+                ? " A direct edit works on the solid as it is at that step: check the faces: selection picks the faces meant (near() points in the part's own coordinates)."
+                : "";
       throw new BuildError(`The kernel could not apply ${what} (${step}): ${errMsg(e)}.${hint}`);
     }
   });
@@ -463,6 +466,14 @@ function opLabel(op: PartOp): string {
       return `${op.op}(${Array.isArray(op.r) ? `(${op.r.join(", ")})` : op.r}, edges: ${describeSel(op.edges)})`;
     case "draft":
       return `draft(${op.angle}, faces: ${describeSel(op.faces)})`;
+    case "push_pull":
+      return `push_pull(${op.d}, faces: ${describeSel(op.faces)})`;
+    case "replace_faces":
+      return `replace_faces(faces: ${describeSel(op.faces)}, with: ${describeSel(op.with)})`;
+    case "delete_faces":
+      return `delete_faces(faces: ${describeSel(op.faces)})`;
+    case "move_faces":
+      return `move_faces(faces: ${describeSel(op.faces)}${op.by.some((x) => x) ? `, by: (${op.by.join(", ")})` : ""}${op.turn ? `, turn: ${op.turn}` : ""}${op.copy ? ", copy: true" : ""})`;
     default:
       return `${op.op} ${op.shape.t}${op.name ? ` as ${op.name}` : ""}`;
   }
@@ -530,8 +541,29 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       if (!out) throw new BuildError(faces.some((f) => !["PLANE", "CYLINDRE", "CONE"].includes(f.geomType)) ? "only flat, cylindrical and conical faces can be drafted, and the selection has others" : "the faces could not be tilted that far");
       return out;
     }
+    case "push_pull":
+    case "replace_faces":
+    case "delete_faces":
+    case "move_faces": {
+      const t = topo();
+      const idx = t.selectFaces(op.faces);
+      if (!idx.size) throw new BuildError(`faces: ${describeSel(op.faces)} matched no faces`);
+      if (idx.size > MAX_DIRECT_FACES) throw new BuildError(`faces: ${describeSel(op.faces)} picks ${idx.size} faces, more than the ${MAX_DIRECT_FACES} Kerf edits in one step`);
+      const faces = [...idx].map((i) => t.faces[i]);
+      if (op.op === "push_pull") return pushPull(shape, faces, op.d);
+      if (op.op === "delete_faces") return deleteFaces(shape, faces);
+      if (op.op === "move_faces") return moveFaces(shape, faces, { by: op.by, turn: op.turn, axis: op.axis, about: op.about, copy: op.copy });
+      const onto = [...t.selectFaces(op.with)].filter((i) => !idx.has(i));
+      if (!onto.length) throw new BuildError(`with: ${describeSel(op.with)} matched no face other than the ones being replaced`);
+      return replaceFaces(shape, faces, targetPlane(onto.map((i) => t.faces[i])));
+    }
   }
 }
+
+/** The direct edits: they change faces of the solid as it is, whatever made it. */
+const DIRECT_OPS = new Set(["push_pull", "replace_faces", "delete_faces", "move_faces"]);
+/** Most faces one direct edit takes (each is its own boolean or two). */
+export const MAX_DIRECT_FACES = 60;
 
 interface Envelope {
   at: V3;

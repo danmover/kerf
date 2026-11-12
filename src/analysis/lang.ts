@@ -96,11 +96,13 @@ export const STRUCTURAL_PROPS = [
   "preload",
   "buckling",
   "buckling_safety",
+  "large_deflection",
+  "elements",
   ...TOPOLOGY_PROPS,
 ];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
 export const UCI_PROPS = ["uci", "bottom_bracket", "wheels", "saddle", "bars", "hoods", "forward", "parts", "rim_depth"];
-const FLAGS = ["gravity", "printed", "locked", "buckling", "converge"];
+const FLAGS = ["gravity", "printed", "locked", "buckling", "converge", "large_deflection"];
 
 const REGION = "region";
 const LOAD = "load";
@@ -122,6 +124,8 @@ function def(name: string, params: string[], impl: (a: Args) => Value, doc: stri
 function refName(v: Value | undefined, a: Args, what: string): string {
   if (v instanceof Ref) return v.name;
   if (v instanceof Obj && v.kind === "component" && typeof v.fields.name === "string") return v.fields.name;
+  // a frame: face(stand, -Z) is the side of all its members furthest that way
+  if (v instanceof Obj && v.kind === "frame" && typeof v.fields.name === "string") return v.fields.name;
   if (typeof v === "string") return v;
   return a.ctx.error(`${a.fname}(): ${what} should be a part or component name, got ${v === undefined ? "nothing" : typeName(v)}`);
 }
@@ -541,6 +545,8 @@ export interface AnalysisEnv {
   fail(msg: string, span: Span): never;
   /** the kind of a top-level name: "part", "component", or undefined */
   kindOf(name: string): string | undefined;
+  /** a frame's member parts, when the name is a frame */
+  members?(name: string): string[] | undefined;
   /** a param declared so far, for a design study's vary: */
   param?(name: string): { value: number | string | boolean; text: string; min?: number; max?: number; locked: boolean } | undefined;
 }
@@ -566,7 +572,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       );
     }
   }
-  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed, buckling, converge.`, f.span);
+  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed, buckling, converge, large_deflection.`, f.span);
   const one = (name: string) => {
     const all = props.filter((p) => p.name === name);
     if (all.length > 1) fail(`"${name}:" is given twice`, all[1].span);
@@ -647,6 +653,12 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   if (pp.length) {
     const list = Array.isArray(pp[0].value) ? pp[0].value : [pp[0].value];
     for (const v of list) {
+      // a frame stands for all its members
+      const members = v instanceof Obj && v.kind === "frame" ? env.members?.(String(v.fields.name)) : undefined;
+      if (members) {
+        for (const m of members) if (!parts.includes(m)) parts.push(m);
+        continue;
+      }
       const n = v instanceof Ref ? v.name : v instanceof Obj && v.kind === "component" ? String(v.fields.name) : null;
       if (!n) fail(`parts: should list part or component names, got ${typeName(v)}`, pp[0].span);
       if (!parts.includes(n)) parts.push(n);
@@ -748,13 +760,22 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : [])), ...currents.flatMap((c) => [c.from, c.to])])
     if (r.t === "face") named.add(r.part);
   for (const h of heatLoads) if (h.part) named.add(h.part);
+  // a frame named in face() stands for its members
+  const namedParts: string[] = [];
   for (const n of named) {
+    const members = env.members?.(n);
+    if (members) {
+      if (!parts.length) namedParts.push(...members.filter((m) => !namedParts.includes(m)));
+      else if (members.some((m) => !parts.includes(m))) fail(`face(${n}, …) is every member of the frame ${n}, and parts: leaves some out. Give parts: [${n}], or name single members, like face(${members[0]}, -Z).`, span);
+      continue;
+    }
     const k = env.kindOf(n);
     if (k !== "part" && k !== "component") fail(`face(${n}, …): "${n}" is not a part or component`, span);
+    if (!namedParts.includes(n)) namedParts.push(n);
   }
-  if (!parts.length) parts = [...named];
+  if (!parts.length) parts = namedParts;
   else {
-    const missing = [...named].filter((n) => !parts.includes(n));
+    const missing = namedParts.filter((n) => !parts.includes(n));
     if (missing.length) fail(`face(${missing[0]}, …) refers to "${missing[0]}", which is not in parts:. Add it to parts: [${[...parts, missing[0]].join(", ")}].`, span);
   }
   // the bolts preload: names are analysed with the rest
@@ -914,6 +935,13 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     const other = modal ? "natural frequencies" : drop ? "a drop" : buckling ? "buckling" : fatigue ? "fatigue" : topology ? "topology optimisation" : null;
     if (other) fail(`preload: tightens the bolts so the parts they clamp press together, part and slide, which ${other} cannot follow. Check ${other} in an analysis of its own.`, preP!.span);
   }
+  // ---- large deflection: parts that bend and turn far (snap fits, flexures, springs, straps that stretch as they sag) ----
+  const large = bool("large_deflection");
+  if (large) {
+    const at = (one("large_deflection") ?? flags.find((f) => f.name === "large_deflection"))!.span;
+    const other = modal ? "natural frequencies" : drop ? "a drop" : buckling ? "buckling" : fatigue ? "fatigue" : topology ? "topology optimisation" : touching ? "touching parts" : preload ? "tightened bolts" : thermalOn || uniformTemp !== undefined ? "temperatures" : null;
+    if (other) fail(`large_deflection solves the parts bending and turning far under the loads as given, which ${other} cannot follow yet. Check ${other} in an analysis of its own.`, at);
+  }
   if (supports.length + loads.length > MAX_BOUNDARY_ITEMS) fail(`An analysis takes at most ${MAX_BOUNDARY_ITEMS} supports and loads together; this one has ${supports.length + loads.length}. Combine regions, for example one zone() covering a row of holes.`, span);
   if (!supports.length && !thermalOn)
     fail('Add fix: to say how the part is held, for example fix: face(bracket, -Y). A part that only rests on a surface can use roller(face(part, -Z), Z) plus one fixed point. For a fall use drop: 1m or tip: +X instead; for temperatures alone use heat:.', span);
@@ -944,6 +972,25 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     else if (typeof resP.value === "number") fail(`resolution: the element size must be at least ${MIN_ELEMENT_SIZE}mm`, resP.span);
     else fail('resolution: should be "draft", "standard", "fine" or an element size like 0.8mm', resP.span);
   }
+  // ---- elements: frame members as beams (the default for a frame on its own), thin walls as shells (the default for
+  // carbon layups and sheet metal on their own), or the real shape as solids ----
+  const elemP = one("elements");
+  let elements: "beams" | "solid" | "shells" | undefined;
+  if (elemP) {
+    const v = typeof elemP.value === "string" ? elemP.value.toLowerCase() : "";
+    if (v === "beams" || v === "beam") elements = "beams";
+    else if (v === "solid" || v === "solids") elements = "solid";
+    else if (v === "shells" || v === "shell") elements = "shells";
+    else
+      fail(
+        'elements: should be "beams" (frame members as beams through their joints: quick, and exact for slender members), "shells" (thin walls as their surface: carbon layups, sheet metal, thin moulded walls) or "solid" (the real shape in small cubes, for joints, holes and short stubby parts)',
+        elemP.span,
+      );
+    if (elements === "beams" || elements === "shells") {
+      const other = modal ? "natural frequencies" : drop ? "a drop" : thermalOn || uniformTemp !== undefined ? "temperatures" : fatigue ? "fatigue" : topology ? "topology optimisation" : touching ? "touching parts" : preload ? "tightened bolts" : large ? "large deflection" : null;
+      if (other) fail(`elements: "${elements}" cannot follow ${other} yet; use elements: "solid" for it.`, elemP.span);
+    }
+  }
   const cycles = num("cycles", 0);
   return {
     kind: "structural",
@@ -969,6 +1016,8 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(buckling ? { buckling } : {}),
     ...(fatigue ? { fatigue } : {}),
     ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
+    ...(large !== undefined ? { large } : {}),
+    ...(elements ? { elements } : {}),
     ...(topology ? { topology } : {}),
     ...(touching ? { touching } : {}),
     ...(preload ? { preload } : {}),

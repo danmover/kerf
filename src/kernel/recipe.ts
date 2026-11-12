@@ -158,6 +158,12 @@ export type PartOp = (
   | { op: "shell"; t: number; open: V3 | OpenSpec[] }
   | { op: "fillet" | "chamfer"; r: number | V2; edges: Sel }
   | { op: "draft"; angle: number; faces: Sel; pull: V3; neutral: V3 }
+  /** direct edits, on the solid as it is at this step whatever made it (an imported body too) */
+  | { op: "push_pull"; d: number; faces: Sel }
+  | { op: "replace_faces"; faces: Sel; with: Sel }
+  | { op: "delete_faces"; faces: Sel }
+  /** a feature moved by `by` and turned `turn` degrees about `axis` through `about` (its middle when absent) */
+  | { op: "move_faces"; faces: Sel; by: V3; turn: number; axis: V3; about?: V3; copy: boolean }
 ) & {
   /** cosmetic detail: skipped in fast builds, and dropped (with a warning) if it fails */
   cosmetic?: boolean;

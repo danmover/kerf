@@ -1,5 +1,6 @@
 // Runtime values for the Kerf evaluator.
 
+import type { ImportTable } from "../kernel/imports";
 import type { FlexInfo } from "../core/model";
 import type { PartRecipe, Path3, Profile, Sel, ShapeRecipe, V2, V3, Xform } from "../kernel/recipe";
 import type { MachineData } from "../machine/types";
@@ -135,6 +136,8 @@ export interface CallCtx {
   partShape?(name: string): { recipe: PartRecipe; xf: Xform[]; material: string } | undefined;
   /** Every solid a part or component defined above is made of, each with its placement (shape_of()). */
   partShapes?(name: string): { recipe: PartRecipe; xf: Xform[]; kind: "part" | "component" }[] | undefined;
+  /** The project's imported files (STEP and meshes), for step("name") used as a part's body. */
+  imports?(): ImportTable;
 }
 
 export type GeoQuery =

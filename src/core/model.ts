@@ -13,6 +13,7 @@ import type { AnalysisSpec } from "../analysis/spec";
 import type { ProcessSpec } from "../mfg/types";
 import type { DrawingSpec } from "../drawing/spec";
 import type { SheetInfo } from "../lang/sheet";
+import type { BeamSection } from "../lang/frames";
 import type { ChainInfo } from "../machine/chains";
 import type { AeroTube } from "../lang/aero";
 import type { BodyFreedom, BodyMove, MateBody, MateKind, MateSpec } from "./mates";
@@ -260,6 +261,19 @@ export interface EvalPart {
   imported?: ImportedBody;
   /** the frame block this member belongs to: edits to it go to that block */
   frame?: string;
+  /** a frame member as a beam, for analysing the frame with beam elements */
+  beam?: BeamInfo;
+}
+
+/** A frame member as a beam: the line it was drawn on (through the joints), its section's own axes across it, the section. */
+export interface BeamInfo {
+  frame: string;
+  a: V3;
+  b: V3;
+  /** the section's own x (its width w) and y (its height h) across the member */
+  u: V3;
+  v: V3;
+  section: BeamSection;
 }
 
 /** A sheet-metal part's data: flanges, bends and regions (part coordinates), and its flat pattern as a part of its own. */

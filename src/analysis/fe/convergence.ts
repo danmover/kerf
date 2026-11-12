@@ -56,6 +56,11 @@ export function compareSolves(coarse: StructuralResult, fine: StructuralResult):
 
 /** Solve, solve again with smaller elements, and return the finer result with how much the answers moved. */
 export function runConverged(inp: StructuralInput, progress: Progress = () => undefined): StructuralResult {
+  // beams follow a frame's bending exactly with a handful of elements per member: there is nothing to refine
+  if (inp.elements === "beams") {
+    const r = runStructural(inp, progress);
+    return { ...r, warnings: [...r.warnings, "The accuracy check is for solid elements: beams are exact for the members' bending and stretching, so it was solved once."] };
+  }
   const coarse = runStructural(inp, (s, frac, info) => progress(`Accuracy check, first solve: ${s.toLowerCase()}`, 0.22 * frac, info));
   const fine = runStructural({ ...inp, h: coarse.mesh.h / REFINE }, (s, frac, info) => progress(`Accuracy check, finer solve: ${s.toLowerCase()}`, 0.22 + 0.78 * frac, info));
   const convergence = compareSolves(coarse, fine);

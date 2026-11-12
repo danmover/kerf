@@ -80,6 +80,17 @@ describe("sheet()", () => {
     ]);
   });
 
+  it("builds an L bracket (one flange) with its base and bend", () => {
+    const { model, core } = built(part('sheet(rect(60, 40), t: 1.5, flanges: [flange("left", 15)])'));
+    const e = core.get(model.parts[0].hash)!;
+    expect(size(e.bbox)).toEqual([60, 40, 15].map((x) => expect.closeTo(x, 2)));
+    // the base short of the bend, the quarter-round bend (r = t) and the flange above it
+    const plate = 57 * 40 * 1.5;
+    const bend = (Math.PI / 4) * (3 ** 2 - 1.5 ** 2) * 40;
+    const wall = 12 * 40 * 1.5;
+    expect(e.volume).toBeCloseTo(plate + bend + wall, 0);
+  });
+
   it("builds the bent part and lays it flat with its holes, keeping the metal", () => {
     const { model, core } = built(part('sheet(rect(100, 50), t: 2, r: 2, flanges: [flange("left", 20), flange("right", 20, lip: 8)])', "  cut hole(d: 6, through: true, at: (0, 0, 5), dir: -Z)\n  cut hole(d: 5, depth: 6, at: (47, 0, 12), dir: X)\n"));
     const p = model.parts[0];

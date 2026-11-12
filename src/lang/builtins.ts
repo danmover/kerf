@@ -258,18 +258,29 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
   ),
 ]);
 
-/** Modifiers usable as statements inside a part: shell(), fillet(), chamfer(), draft(). */
+/** Modifiers usable as statements inside a part: shell(), fillet(), chamfer(), draft() and the direct edits. */
 export const MODIFIER_PARAMS: Record<string, string[]> = {
   shell: ["t", "open"],
   fillet: ["r", "edges"],
   chamfer: ["r", "edges"],
   draft: ["angle", "faces", "pull", "neutral"],
+  push_pull: ["by", "faces"],
+  replace_faces: ["faces", "with"],
+  delete_faces: ["faces"],
+  move_faces: ["faces", "by", "turn", "axis", "about", "copy"],
 };
 export const modifierDocs: Record<string, string> = {
   shell: "shell(t, open: Z) — hollow the body to wall thickness t, leaving open the outermost flat face looking along `open` (Z = open top). open also takes a face selection or a list, e.g. open: [Z, facing(-Y)].",
   fillet: 'fillet(r, edges: "all") — round edges of the body as it is at this step. edges: a preset ("all", "top", "bottom", "vertical", "horizontal", "convex", "concave", "sharp"), a named feature (boss.root, boss.tip, boss.edges), a selector (near(), in_plane(), along(), facing(), circles(), inside(), between()), or a list. Combine with + and -.',
   chamfer: 'chamfer(r, edges: "all") — bevel edges, picked the same way as fillet.',
   draft: 'draft(angle, faces: "vertical", pull: Z, neutral: (0, 0, 0)) — tilt faces by angle (degrees) so the part releases from a mould pulled along `pull`; faces stay put on the neutral plane through `neutral`. Draft before filleting.',
+  push_pull:
+    "push_pull(by, faces: …) — direct edit: move faces along their outward normals by `by` mm, out (adding material) when positive and in when negative. A flat face's neighbours stretch to follow, square, sloping or conical; a round face (a hole's or a boss's side) gets bigger or smaller. Works on the solid as it is at that step, imported bodies too; pick faces with near(), facing(), in_plane(), circles(), inside() or a feature name.",
+  replace_faces: "replace_faces(faces: …, with: …) — direct edit: move flat faces into the plane of another flat face (`with`), flush with it or at its slope; the faces around them stretch to meet it.",
+  delete_faces:
+    "delete_faces(faces: …) — direct edit: take faces away and heal the solid: a hole, pocket, slot or letter is filled in, a boss or rib cut off, a round or chamfer made a sharp edge again (outside edges and inside corners, between flat and round faces). Pick the feature's sides; a floor or top bounded only by them comes too.",
+  move_faces:
+    "move_faces(faces: …, by: (x, y, z), turn: 0, axis: Z, about: …, copy: false) — direct edit: move a feature (a hole, pocket, slot or boss) by `by` and turn it `turn` degrees about `axis` through its middle (or the point `about`), healing where it was; copy: true leaves the original. A flat side moved along its normal is push_pull.",
 };
 
 const pt = (x: number, y: number, z = 0) => new Vec([x, y, z]);

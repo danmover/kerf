@@ -1,7 +1,7 @@
 // What is picked in the 3D view below the level of whole parts: faces, edges
 // and corners, chosen with the selection filter (Q) or by dragging a box
 // (B). A pick knows its part and a point on it in the part's own
-// coordinates, so it can be written as a selector, near(point, 0.2), for a
+// coordinates, so it can be written as a selector, near(point, 0.2) (less on a thin face), for a
 // fillet, a chamfer or Claude, and kept as a named selection set.
 
 import { create } from "zustand";
@@ -70,32 +70,14 @@ export function addPicks(more: Pick[], toggle: boolean) {
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 
 /**
- * The point a selector names a pick by: inside a face (the middle of its
- * largest triangle, well away from its edges), the middle of an edge
- * (a point along it, not an end, so near() catches it and not its
- * neighbours), or the corner itself.
+ * The point a selector names a pick by: inside a face (the middle of the
+ * triangle farthest from the face's edges, so near() catches it and not its
+ * neighbours, even on a thin chamfer), the middle of an edge (a point along
+ * it, not an end), or the corner itself.
  */
 export function anchorOf(kind: Pick["kind"], at: V3, range: [number, number] | undefined, data: MeshData | undefined): V3 {
   if (!data || !range || kind === "vertex") return at.map(r3) as V3;
-  if (kind === "face") {
-    const P = data.positions;
-    const I = data.indices;
-    let best = -1;
-    let out: V3 = at;
-    for (let i = range[0]; i + 2 < range[0] + range[1]; i += 3) {
-      const a = I[i] * 3;
-      const b = I[i + 1] * 3;
-      const c = I[i + 2] * 3;
-      const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
-      const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
-      const area = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
-      if (area > best) {
-        best = area;
-        out = [(P[a] + P[b] + P[c]) / 3, (P[a + 1] + P[b + 1] + P[c + 1]) / 3, (P[a + 2] + P[b + 2] + P[c + 2]) / 3];
-      }
-    }
-    return out.map(r3) as V3;
-  }
+  if (kind === "face") return (faceSpot(range, data)?.p ?? at).map(r3) as V3;
   // an edge: its points in order, then the one nearest half way along
   const E = data.edges;
   const pts: V3[] = [];
@@ -118,11 +100,71 @@ export function anchorOf(kind: Pick["kind"], at: V3, range: [number, number] | u
   return pts[pts.length - 1].map(r3) as V3;
 }
 
+/** How far near() reaches for a pick: 0.2 mm, less on a face so thin its neighbours are closer, at most 0.25 (a coarse mesh of a big curve can sit 0.22 mm off it). */
+function reachOf(p: Pick): number {
+  if (p.kind !== "face" || !p.range || !p.data) return 0.2;
+  const clear = faceSpot(p.range, p.data)?.clear;
+  return clear === undefined ? 0.2 : Math.min(0.25, Math.max(0.02, Math.round(clear * 40) / 100));
+}
+
+const spots = new WeakMap<MeshData, Map<number, { p: V3; clear: number } | null>>();
+
+/**
+ * Inside a face: the middle of its triangle farthest from the face's edges (the triangle sides used once), and how
+ * far that is. Big faces are sampled, about 400 triangles. Kept per mesh.
+ */
+function faceSpot(range: [number, number], data: MeshData): { p: V3; clear: number } | null {
+  let byStart = spots.get(data);
+  if (!byStart) spots.set(data, (byStart = new Map()));
+  const known = byStart.get(range[0]);
+  if (known !== undefined) return known;
+  const P = data.positions;
+  const I = data.indices;
+  const key = (v: number) => `${Math.round(P[v * 3] * 1e4)},${Math.round(P[v * 3 + 1] * 1e4)},${Math.round(P[v * 3 + 2] * 1e4)}`;
+  const sides = new Map<string, { a: number; b: number; n: number }>();
+  const tris: number[] = [];
+  for (let i = range[0]; i + 2 < range[0] + range[1]; i += 3) {
+    tris.push(i);
+    for (const [a, b] of [[I[i], I[i + 1]], [I[i + 1], I[i + 2]], [I[i + 2], I[i]]]) {
+      const ka = key(a);
+      const kb = key(b);
+      if (ka === kb) continue;
+      const k = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+      const s = sides.get(k);
+      if (s) s.n++;
+      else sides.set(k, { a, b, n: 1 });
+    }
+  }
+  const rim = [...sides.values()].filter((s) => s.n === 1);
+  let best: { p: V3; clear: number } | null = null;
+  const step = Math.max(1, Math.ceil(tris.length / 400));
+  for (let t = 0; t < tris.length; t += step) {
+    const i = tris[t];
+    const c: V3 = [0, 1, 2].map((k) => (P[I[i] * 3 + k] + P[I[i + 1] * 3 + k] + P[I[i + 2] * 3 + k]) / 3) as V3;
+    let d = Infinity;
+    for (const s of rim) {
+      d = Math.min(d, segDist(c, P, s.a * 3, s.b * 3));
+      if (best && d <= best.clear) break;
+    }
+    if (!best || d > best.clear) best = { p: c, clear: d };
+  }
+  byStart.set(range[0], best);
+  return best;
+}
+
+function segDist(p: V3, P: Float32Array, a: number, b: number): number {
+  const ab: V3 = [P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]];
+  const ap: V3 = [p[0] - P[a], p[1] - P[a + 1], p[2] - P[a + 2]];
+  const L = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+  const t = L > 0 ? Math.max(0, Math.min(1, (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / L)) : 0;
+  return Math.hypot(ap[0] - ab[0] * t, ap[1] - ab[1] * t, ap[2] - ab[2] * t);
+}
+
 const vec = (v: V3) => `(${v.map((x) => fmtNum(Math.abs(x) < 5e-4 ? 0 : x, 3)).join(", ")})`;
 
-/** The selector for some picks on one part: near(point, 0.2), or a list of them. */
+/** The selector for some picks on one part: near(point, reach), or a list of them. */
 export function selectorFor(picks: Pick[]): string {
-  const one = (p: Pick) => `near(${vec(anchorOf(p.kind, p.at, p.range, p.data))}, 0.2)`;
+  const one = (p: Pick) => `near(${vec(anchorOf(p.kind, p.at, p.range, p.data))}, ${fmtNum(reachOf(p), 2)})`;
   return picks.length === 1 ? one(picks[0]) : `[${picks.map(one).join(", ")}]`;
 }
 

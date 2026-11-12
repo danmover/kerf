@@ -10,6 +10,7 @@ import { buildPart, meshShape, type MeshData } from "../src/kernel/build";
 import { anchorOf, countText, resolvePick, selectorFor, type Pick } from "../src/app/picks";
 import { applyQuick } from "../src/core/quickCommands";
 import type { V3 } from "../src/kernel/recipe";
+import { Topo } from "../src/kernel/topology";
 import { initKernel } from "./helpers/kernel";
 
 /** A unit square in z = 0 as two triangles (one face), with its four sides as edges and a bent edge. */
@@ -99,5 +100,36 @@ part block {
     // each rounded 20 mm edge takes off (r² − πr²/4) × 20
     const perEdge = (4 - Math.PI) * 20;
     expect(before - after).toBeCloseTo(2 * perEdge, 1);
+  });
+});
+
+describe("naming picked faces", () => {
+  beforeAll(() => initKernel(), 60_000);
+
+  it("names every face of a chamfered, drilled block so near() takes it and no other, on coarse and fine meshes", () => {
+    const model = evaluate('design "t"\npart block { body box(30, 20, 10) chamfer(0.6, edges: near((15, 0, 10))) fillet(8, edges: near((-15, -10, 5))) cut cylinder(d: 6, h: 20, at: (0, 0, -5)) }');
+    expect(model.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const shape = buildPart(model.parts[0].recipe);
+    const topo = new Topo(shape, new Map());
+    try {
+      for (const quality of ["preview", "final"] as const) {
+        const data = meshShape(shape, quality);
+        const fg = data.faceGroups!;
+        expect(fg.length / 3).toBe(topo.faces.length);
+        const reaches: number[] = [];
+        for (let g = 0; g < fg.length; g += 3) {
+          const sel = selectorFor([{ partId: "p", kind: "face", at: [0, 0, 0], range: [fg[g], fg[g + 1]], data }]);
+          const m = /^near\(\((.+)\), (.+)\)$/.exec(sel)!;
+          const r = Number(m[2]);
+          reaches.push(r);
+          expect(topo.selectFaces({ s: "near", p: m[1].split(", ").map(Number) as V3, r }).size, sel).toBe(1);
+        }
+        // the 0.6 mm chamfer is narrow, so its reach is short; big faces reach 0.25
+        expect(Math.min(...reaches)).toBeLessThan(0.2);
+        expect(Math.max(...reaches)).toBe(0.25);
+      }
+    } finally {
+      topo.dispose();
+    }
   });
 });
