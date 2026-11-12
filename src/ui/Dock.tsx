@@ -25,6 +25,8 @@ import { SimPanel } from "./sim/SimPanel";
 import { MakePanel } from "./make/MakePanel";
 import { useSim } from "../sim/runtime";
 import { Icon } from "./icons";
+import { AppsPanel } from "./apps/AppsPanel";
+import { AppGlyph } from "./apps/actions";
 import { lineCol } from "../lang/lexer";
 
 export interface DockTabDef {
@@ -98,6 +100,14 @@ function SimIcon() {
 
 const useHasMadeParts = () => useDesign((s) => !!s.model?.parts.some((p) => p.kind === "part" && !p.imported));
 
+/** apps are for machines (they talk to the firmware), or any design that has one */
+const useHasApps = () => useDesign((s) => !!s.model?.machine || !!s.model?.apps?.length);
+
+function useAppsBadge() {
+  const n = useDesign((s) => s.model?.apps?.length ?? 0);
+  return n ? { count: n } : null;
+}
+
 const useHasSims = () => useDesign((s) => !!s.model?.machine || !!s.model?.scenarios?.length);
 
 export const DOCK_TABS: DockTabDef[] = [
@@ -107,6 +117,7 @@ export const DOCK_TABS: DockTabDef[] = [
   { id: "analysis", label: "analysis", icon: <AnalysisIcon />, useBadge: useAnalysisBadge, Body: AnalysisPanel },
   { id: "build", label: "build", icon: <Icon.Wrench size={13} />, useBadge: useBuildBadge, useShown: useIsMachine, Body: MachinePanel },
   { id: "sim", label: "simulate", icon: <SimIcon />, useBadge: useSimBadge, useShown: useHasSims, Body: SimPanel },
+  { id: "apps", label: "apps", icon: <AppGlyph size={13} />, useBadge: useAppsBadge, useShown: useHasApps, Body: AppsPanel },
   { id: "make", label: "make", icon: <Icon.Factory size={13} />, useShown: useHasMadeParts, Body: MakePanel },
   { id: "bom", label: "parts list", icon: <Icon.List size={13} />, Body: BomTable },
   { id: "graph", label: "graph", icon: <Icon.Graph size={13} />, Body: GraphView },

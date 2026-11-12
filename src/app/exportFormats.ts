@@ -125,6 +125,26 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "report", group: "document", label: "Design report", detail: "Brief, views, checks and parts; prints to PDF", ext: ".html", icon: "Doc", run: () => exportReport() },
   { id: "bom", group: "document", label: "Parts list", detail: "Quantities, make or buy, materials", ext: ".csv", icon: "List", run: () => exportBom() },
 
+  {
+    id: "app-html",
+    group: "project",
+    label: "App as a program",
+    detail: "The design's app in one file that runs on its own in Chrome or Edge: the simulated twin and USB",
+    ext: ".html",
+    icon: "Graph",
+    shown: () => !!useDesign.getState().model?.apps?.length,
+    run: async () => (await import("../apps/export")).exportStandaloneApp(),
+  },
+  {
+    id: "app-desktop",
+    group: "project",
+    label: "App as a desktop program",
+    detail: "An Electron project around the app, to run on its own or build an installer from",
+    ext: ".zip",
+    icon: "Box",
+    shown: () => !!useDesign.getState().model?.apps?.length,
+    run: async () => (await import("../apps/export")).exportDesktopApp(),
+  },
   { id: "project", group: "project", label: "Project with history", detail: "Every version, references and imports", ext: ".kerfproj", icon: "Doc", run: () => exportProjectFile() },
   { id: "source", group: "project", label: "Design source", detail: "The design.kerf file", ext: ".kerf", icon: "Code", run: () => exportSource() },
 ];

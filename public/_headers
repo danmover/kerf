@@ -1,10 +1,11 @@
 # Security headers for static hosts that read this file (Netlify, Cloudflare Pages).
 # Keep in step with vite.config.ts. Paths do not overlap, so no policy is merged with another.
-# The microphone is allowed on Kerf's own page only, for voice input.
+# The microphone is allowed on Kerf's own page only, for voice input, and the
+# camera for an app's camera panel.
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
-  Permissions-Policy: camera=(), microphone=(self), geolocation=(), payment=(), usb=()
+  Permissions-Policy: camera=(self), microphone=(self), geolocation=(), payment=(), usb=()
   Cross-Origin-Opener-Policy: same-origin
 
 /
@@ -49,4 +50,13 @@
 
 # The 3D wiring's cable router: plain geometry on meshes, no network.
 /assets/cables.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
+# The page an app's custom drawing panels run in: framed by Kerf only, in a
+# sandbox with no origin of its own. Their code may use eval, and nothing else.
+/app-sandbox.html
+  Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; frame-ancestors 'self'
+
+# An app's simulated twin: firmware compiled to closures on a virtual chip, no eval, no network.
+/assets/twin.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'

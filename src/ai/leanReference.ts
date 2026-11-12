@@ -13,6 +13,7 @@ import { languageReference } from "./reference";
 export const DEFERRED = [
   { id: "machines", heading: "## Machines", when: "a machine, purchasable parts (motors, boards, drivers, batteries, sensors), wiring, power, calculations, firmware or physical tests" },
   { id: "simulations", heading: "## Simulations", when: "a scenario block (a simulated run of the machine and its firmware)" },
+  { id: "apps", heading: "## Apps", when: "an app block (a live control program for the machine: panels, telemetry, controls)" },
   { id: "analysis", heading: "## Analysis blocks", when: "an analysis block (strength, stiffness, heat, vibration, airflow)" },
   { id: "drawings", heading: "## Drawings", when: "a drawing block" },
   { id: "step", heading: "## Imported STEP files", when: "an imported STEP part (step() components, inspect_import)" },

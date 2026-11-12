@@ -7,6 +7,7 @@ import type { PartRecipe, V3, Xform } from "../kernel/recipe";
 import type { GeoQuery } from "../lang/values";
 import type { MachineData } from "../machine/types";
 import type { ScenarioDef } from "../sim/scenario";
+import type { AppSpec } from "../apps/spec";
 import type { EvalSketch } from "../sketch/types";
 import type { AnalysisSpec } from "../analysis/spec";
 import type { ProcessSpec } from "../mfg/types";
@@ -454,4 +455,6 @@ export interface Model {
   machine?: MachineData;
   /** simulated tests: a world, the machine in it, its firmware and what has to come true */
   scenarios?: ScenarioDef[];
+  /** control rooms and live views for the machine (app blocks) */
+  apps?: AppSpec[];
 }

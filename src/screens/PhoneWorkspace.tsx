@@ -22,6 +22,7 @@ import { SketchPad } from "../ui/SketchPad";
 import { OverviewGlyph } from "../ui/Overview";
 import { useWorkspaceLayout } from "../app/layout";
 import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
+import { AppView } from "../ui/apps/AppView";
 import { useDrawings } from "../drawing/engine";
 import "../styles/phone.css";
 
@@ -119,6 +120,11 @@ export function PhoneWorkspace({ projectKey }: { projectKey: string }) {
           </ErrorBoundary>
           <ErrorBoundary label="Drawings">
             <DrawingView />
+          </ErrorBoundary>
+          <ErrorBoundary label="App">
+            <AppView />
+          </ErrorBoundary>
+          <ErrorBoundary label="Drawings">
             <DrawingSwitch />
           </ErrorBoundary>
           <PreviewBanner />

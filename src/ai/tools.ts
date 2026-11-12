@@ -31,6 +31,7 @@ import type { CatalogPart } from "../machine/types";
 import { calcParams } from "./reference";
 import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
 import { SIM_TOOL_DEFS, SIM_TOOL_TITLES, runSimTool } from "./simTools";
+import { APP_TOOL_DEFS, APP_TOOL_TITLES, runAppTool } from "./appTools";
 import { PROCESSES } from "../mfg/profiles";
 import { processFromText } from "../mfg/spec";
 import { pmiNote, sheetFor, useDrawings } from "../drawing/engine";
@@ -404,6 +405,7 @@ export const TOOL_DEFS = [
   },
   ...PROCESS_TOOL_DEFS,
   ...SIM_TOOL_DEFS,
+  ...APP_TOOL_DEFS,
   BUILD_TOOL,
   REVIEW_TOOL,
   {
@@ -1522,6 +1524,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (processOutcome) return processOutcome;
   const simOutcome = await runSimTool(name, input, ctx);
   if (simOutcome) return simOutcome;
+  const appOutcome = await runAppTool(name, input);
+  if (appOutcome) return appOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;
   const material = await runMaterialTool(name, input, ctx);
@@ -1571,6 +1575,7 @@ export const TOOL_TITLES: Record<string, string> = {
   engineering_calc: "Calculating",
   ...PROCESS_TOOL_TITLES,
   ...SIM_TOOL_TITLES,
+  ...APP_TOOL_TITLES,
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
   suggest_next_steps: "Suggesting next steps",

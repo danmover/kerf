@@ -26,6 +26,8 @@ import { emptyMachine, type BeltDef, type MachineComponent, type MachineData, ty
 import { ChainError, chainAsBelt, chainRecipe, chainSpec, linksFor, type ChainInfo, type ChainNode } from "../machine/chains";
 import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
+import { APP_FNS, buildApp, finishApps } from "../apps/lang";
+import type { AppSpec } from "../apps/spec";
 import { MEASURED } from "../machine/measured";
 import { suggest } from "./suggest";
 import { evaluateSketch, type SketchHost } from "../sketch/evaluate";
@@ -266,6 +268,7 @@ class Evaluator {
   /** board parts waiting for an automatic reference designator (R1, C4...) */
   pendingRefs: { mc: MachineComponent; prefix: string }[] = [];
   scenarios: ScenarioDef[] = [];
+  apps: AppSpec[] = [];
 
   constructor(
     private src: string,
@@ -339,7 +342,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : s.k === "app" ? `In app "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -355,7 +358,7 @@ class Evaluator {
   stmtId(s: Stmt): string | undefined {
     if (s.k === "require") return `require:${s.label}`;
     if (s.k === "scenario") return `scenario:${s.label}`;
-    if (s.k === "drawing" || s.k === "wire" || s.k === "net" || s.k === "firmware" || s.k === "test" || s.k === "buy") return undefined;
+    if (s.k === "drawing" || s.k === "wire" || s.k === "net" || s.k === "firmware" || s.k === "test" || s.k === "buy" || s.k === "app") return undefined;
     // decisions record choices; nothing reads them, so they stay out of the dependency graph
     if (s.k === "analysis") return `analysis:${s.label}`;
     return "name" in s && s.k !== "design" && s.k !== "decision" ? s.name : undefined;
@@ -442,6 +445,9 @@ class Evaluator {
         return;
       case "analysis":
         this.analysis(s);
+        return;
+      case "app":
+        this.app(s);
         return;
       case "wire":
       case "net":
@@ -2795,6 +2801,33 @@ class Evaluator {
     this.analyses.push(spec);
   }
 
+  // ---------------- apps ----------------
+
+  app(s: Extract<Stmt, { k: "app" }>) {
+    this.blocks.push({ name: s.label, kind: "app", span: s.span, locked: s.items.some((i) => i.k === "flag" && i.name === "locked") });
+    if (this.apps.some((a) => a.name === s.label)) throw new EvalError(`There is already an app called "${s.label}"`, s.labelSpan);
+    const props: AnalysisItem[] = [];
+    const flags: AnalysisItem[] = [];
+    const saved = this.callOverride;
+    this.callOverride = APP_FNS;
+    try {
+      this.analysisItems(s.items, new Scope(), props, flags, 0);
+    } finally {
+      this.callOverride = saved;
+    }
+    // each panel's place in the source, so the app builder can change one panel without touching the rest
+    const pp = s.items.find((i) => i.k === "prop" && i.name === "panels");
+    const panelSpans = pp && pp.k === "prop" && pp.value.k === "list" ? pp.value.items.map((e) => e.span) : undefined;
+    this.apps.push(
+      buildApp(s.label, props, flags, s.span, s.labelSpan, {
+        fail: (msg, span) => {
+          throw new EvalError(msg, span);
+        },
+        panelSpans,
+      }),
+    );
+  }
+
   /** vary: [thickness, bend_r(1mm, 6mm), ribs(0, 4, 1)]: parameters by name, each with an optional range and step. */
   varyList(e: Expr, scope: Scope): Value {
     const items = e.k === "list" ? e.items : [e];
@@ -2868,6 +2901,13 @@ class Evaluator {
         for (const st of o.sets)
           if (!paramNames.has(st.param)) this.diags.push({ message: `Option "${o.label}" sets "${st.param}", which is not a parameter`, start: st.span.start, end: st.span.end, severity: "warning" });
     for (const sk of this.sketches) sk.usedBy = (usedBy.get(sk.name) ?? []).filter((n) => this.defKind.get(n) === "part");
+    if (this.apps.length)
+      for (const d of finishApps(
+        this.apps,
+        this.scenarios.map((c) => ({ label: c.label, firmware: c.spec.firmware, printer: c.spec.world.kind === "printer" })),
+        this.machine.firmware.map((f) => f.name),
+      ))
+        this.diags.push({ message: d.message, start: d.span.start, end: Math.max(d.span.end, d.span.start + 1), severity: d.severity });
     const model: Model = {
       name: this.name,
       notes: this.notes,
@@ -2886,6 +2926,7 @@ class Evaluator {
       evalMs: 0,
       machine: hasMachine(this.machine) ? this.machine : undefined,
       scenarios: this.scenarios,
+      apps: this.apps.length ? this.apps : undefined,
     };
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;

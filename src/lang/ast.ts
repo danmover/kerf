@@ -125,7 +125,9 @@ export type Stmt =
       /** offset of the closing brace, where new items are inserted */
       bodyEnd: number;
     }
-  | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span };
+  | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span }
+  // a control room or live view for the machine: panels that read its signals, controls that send it commands
+  | { k: "app"; label: string; items: Item[]; span: Span; labelSpan: Span };
 
 /** Geometry declared in a sketch: points, lines, circles and arcs. */
 export type SketchEntityKind = "point" | "line" | "circle" | "arc";
@@ -188,6 +190,7 @@ export function stmtName(s: Stmt): string | undefined {
     case "require":
     case "scenario":
     case "analysis":
+    case "app":
       return s.label;
     case "net":
     case "firmware":

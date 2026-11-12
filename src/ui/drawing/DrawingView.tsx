@@ -24,6 +24,7 @@ import { Menu, MenuItem } from "../common";
 import { Icon } from "../icons";
 import { BLUEPRINT, SheetCanvas, WHITE, type CanvasApi } from "./SheetCanvas";
 import { useTheme } from "../../app/theme";
+import { closeApp, openApp, useApps } from "../../apps/session";
 
 const SheetIcon = ({ size = 16 }: { size?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -36,19 +37,47 @@ const SheetIcon = ({ size = 16 }: { size?: number }) => (
 export function DrawingSwitch() {
   const open = useDrawings((s) => s.open);
   const model = useDesign((s) => s.model);
-  if (!model?.parts.length) return null;
+  // the design's apps (app blocks) take the centre too
+  const app = useApps((s) => s.open);
+  const apps = model?.apps ?? [];
+  if (!model?.parts.length && !apps.length) return null;
+  const in3d = !open && !app;
   return (
     // the row measures the centre's width, so the switch can step below a toolbar it would cover
     <div className="dwg-switch-row">
       <div className="dwg-switch segmented" role="tablist" aria-label="Centre view">
-        <button className={!open ? "active" : ""} role="tab" aria-selected={!open} onClick={closeDrawings} data-tip="3D model">
-          {!open && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
+        <button
+          className={in3d ? "active" : ""}
+          role="tab"
+          aria-selected={in3d}
+          onClick={() => {
+            closeDrawings();
+            closeApp();
+          }}
+          data-tip="3D model"
+        >
+          {in3d && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
           <span>3D</span>
         </button>
-        <button className={open ? "active" : ""} role="tab" aria-selected={open} onClick={() => openDrawings()} data-tip="Engineering drawings (D)">
+        <button
+          className={open ? "active" : ""}
+          role="tab"
+          aria-selected={open}
+          onClick={() => {
+            closeApp();
+            openDrawings();
+          }}
+          data-tip="Engineering drawings (D)"
+        >
           {open && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
           <span>Drawings</span>
         </button>
+        {apps.length > 0 && (
+          <button className={app ? "active" : ""} role="tab" aria-selected={!!app} onClick={() => openApp(app ?? apps[0].name)} data-tip="The design's apps: live views and controls for the machine">
+            {!!app && <motion.div layoutId="seg-dwg" className="seg-bg" transition={{ type: "spring", stiffness: 500, damping: 38 }} />}
+            <span>App</span>
+          </button>
+        )}
       </div>
     </div>
   );

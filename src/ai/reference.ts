@@ -1,6 +1,7 @@
 // The Kerf language reference given to Claude, generated from the same
 // builtin tables the evaluator uses so it cannot drift from the code.
 
+import { appReference } from "../apps/reference";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../lang/builtins";
 import { FEATURE_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../lang/modelling";
 import { AERO_FNS } from "../lang/aero";
@@ -293,6 +294,7 @@ wire a.PIN -> b.PIN { gauge: 22 }  /  net NAME: a.PIN, b.PIN   // wiring between
 firmware name { board: ctrl, ... }                             // generated firmware for a controller
 test "Label": "procedure"                                      // a physical test the build must pass
 buy "Label" { qty: 1, price: 10, url: "https://…" }            // a purchase with no model
+app "Name" { telemetry, panels, ... }                          // a live control program for the machine: panels and controls on its twin or the real one over USB (see Apps)
 analysis "Label" { props }                                     // a strength analysis, drivetrain duty, UCI rules check or airflow (drag), re-run after every change (see Analysis blocks)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
@@ -615,7 +617,9 @@ Things geometry cannot prove are reported as "needs analysis" until an analysis 
 
 ${machineReference()}
 
-${simulationReference()}`;
+${simulationReference()}
+
+${appReference()}`;
 }
 
 function drawingReference(): string {

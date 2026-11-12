@@ -1,0 +1,377 @@
+/* Apps inside Kerf: the centre view an app runs in (its bar, the panels, the
+   builder's inspector) and the apps tab. The panels themselves are in
+   apps.css, which saved apps carry too. */
+
+.kapp-pane {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background:
+    radial-gradient(1100px 560px at 70% -8%, rgb(var(--accent-rgb) / 0.07), transparent 60%),
+    var(--bg-0);
+  container: kapp / inline-size;
+}
+
+.kapp-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* the 3D | Drawings | App switch sits top left */
+  padding: 10px 12px 8px 236px;
+  border-bottom: 1px solid var(--line);
+  background: rgb(var(--bg-1-rgb) / 0.7);
+}
+/* the switch stays top left over an app, beside the bar, however narrow the centre */
+.kapp-pane ~ .dwg-switch-row .dwg-switch {
+  top: 10px;
+}
+.kapp-bar .sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--line-2);
+}
+.kapp-bar .grow {
+  flex: 1;
+}
+.kapp-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  max-width: 260px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.kapp-name .t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kapp-name:hover,
+.kapp-name.active {
+  border-color: var(--line-3);
+  background: var(--bg-3);
+}
+.kapp-links button.active {
+  background: var(--bg-4);
+  box-shadow: 0 0 0 1px var(--line-2) inset;
+}
+.kapp-links button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.kapp-select {
+  height: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text);
+  font: 12px var(--mono);
+}
+.kapp-status .r {
+  color: var(--text-3);
+}
+.kapp-status .r.behind {
+  color: var(--warn-ink);
+}
+.kapp-rec i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-3);
+}
+.kapp-rec.on i {
+  background: var(--fail);
+  border-color: var(--fail);
+  box-shadow: 0 0 0 3px rgb(var(--fail-rgb) / 0.2);
+}
+.kapp-gone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgb(var(--warn-rgb) / 0.1);
+  border-bottom: 1px solid rgb(var(--warn-rgb) / 0.3);
+  color: var(--warn-ink);
+  font-size: 12.5px;
+}
+
+.kapp-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.kapp-main.editing {
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+.kapp-host {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+/* ---------- the builder's inspector ---------- */
+
+.kapp-side {
+  min-height: 0;
+  overflow: auto;
+  border-left: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.kai {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+.kai-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.kai-kind {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+}
+.kai-sub {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.kai-fields {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.kai-h {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.kai-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.kai-l {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.kai-v {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.kai-in {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text);
+  font: 12px var(--sans);
+  box-sizing: border-box;
+}
+textarea.kai-in {
+  height: auto;
+  padding: 6px 8px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.kai-in.mono {
+  font-family: var(--mono);
+}
+.kai-in.num {
+  width: 64px;
+  font-family: var(--mono);
+}
+.kai-in:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / 0.18);
+}
+.kai-in.bad {
+  border-color: rgb(var(--fail-rgb) / 0.6);
+}
+.kai-err {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--fail-ink);
+}
+.kai-size {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+}
+.kai-sigs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.kai-sig {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.kai-sig-top {
+  display: flex;
+  gap: 4px;
+  align-items: flex-start;
+}
+.kai-sig-top > input,
+.kai-sig-top > .kai-err {
+  flex: 1;
+}
+.kai-sig-opts {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 4px;
+}
+.kai-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+}
+.kai-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+.kai-note.mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.kai-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.kai-actions .danger {
+  color: var(--fail-ink);
+}
+.kai-menu-t {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.kai-menu-t small {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* ---------- the apps tab ---------- */
+
+.kapps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  max-width: 900px;
+}
+.kapps-intro {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.kapps-intro svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent-2);
+}
+.kapps-intro b {
+  color: var(--text);
+}
+.kapps-note,
+.kapps-empty {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.kapps-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+.kapps-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  overflow: hidden;
+}
+.kapps-card.active {
+  border-color: rgb(var(--accent-rgb) / 0.55);
+}
+.kapps-open {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.kapps-open:hover {
+  background: var(--bg-3);
+}
+.kapps-open .n {
+  font-weight: 600;
+  font-size: 13px;
+}
+.kapps-open .a {
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+.kapps-open .m {
+  font: 11px var(--mono);
+  color: var(--text-3);
+}
+.kapps-btns {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px 6px;
+}
+.kapps-actions {
+  display: flex;
+  gap: 6px;
+}

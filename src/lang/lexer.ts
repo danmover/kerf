@@ -237,6 +237,14 @@ export function lex(src: string): Token[] {
       push("num", src.slice(start, i), start, { num: value, unit });
       continue;
     }
+    // """...""": text over several lines, as written (a custom app panel's drawing code), indentation trimmed
+    if (src.startsWith('"""', i)) {
+      const end = src.indexOf('"""', i + 3);
+      if (end < 0) throw new LexError('Unterminated text: a """ needs a closing """', start, n);
+      push("str", dedent(src.slice(i + 3, end)), start);
+      i = end + 3;
+      continue;
+    }
     if (c === '"') {
       i++;
       let out = "";
@@ -302,4 +310,14 @@ export function lineCol(src: string, offset: number): { line: number; col: numbe
     }
   }
   return { line, col: offset - last + 1 };
+}
+
+/** Text from a """ block: without its first and last blank lines and the indentation every line shares. */
+function dedent(text: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  if (lines.length && lines[0].trim() === "") lines.shift();
+  if (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+  const indents = lines.filter((l) => l.trim()).map((l) => /^[ \t]*/.exec(l)![0].length);
+  const cut = indents.length ? Math.min(...indents) : 0;
+  return lines.map((l) => l.slice(cut)).join("\n");
 }

@@ -2,6 +2,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
+import { appRuntime } from "./scripts/appRuntime";
 
 /** /api goes to a Kerf server when one is running (see server/README.md); without it Kerf runs on its own. */
 const API_PROXY = process.env.KERF_API ? Object.fromEntries(["/api", "/mcp", "/oauth", "/.well-known"].map(path => [path, { target: process.env.KERF_API, changeOrigin: false }])) : undefined;
@@ -39,6 +40,12 @@ export const CIRCUIT_CSP = "default-src 'none'; script-src 'self'";
 /** The simulation worker runs the firmware as compiled closures on a virtual chip: no eval, no network. */
 export const SIM_CSP = "default-src 'none'; script-src 'self'";
 
+/** The page an app's custom drawing panels run in: Kerf frames it in a sandbox; the panels' code may use eval, and reach nothing. */
+export const APP_SANDBOX_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; frame-ancestors 'self'";
+
+/** An app's simulated twin, like the simulation worker: no eval, no network. */
+export const TWIN_CSP = "default-src 'none'; script-src 'self'";
+
 /** The photoreal view's BVH worker sorts triangles: no eval, no network. */
 export const BVH_CSP = "default-src 'none'; script-src 'self'";
 
@@ -51,8 +58,8 @@ export const AERO_CSP = "default-src 'none'; script-src 'self'";
 const COMMON_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
-  // the microphone is for voice input, and only on Kerf's own page
-  "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), payment=(), usb=()",
+  // the microphone is for voice input and the camera for an app's camera panel, only on Kerf's own page
+  "Permissions-Policy": "camera=(self), microphone=(self), geolocation=(), payment=(), usb=()",
   "Cross-Origin-Opener-Policy": "same-origin",
 };
 
@@ -77,6 +84,8 @@ function securityPolicy(): Plugin {
         else if (/^\/assets\/bvh\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", BVH_CSP);
         else if (/^\/assets\/cables\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CABLES_CSP);
         else if (/^\/assets\/aero\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", AERO_CSP);
+        else if (/^\/assets\/twin\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", TWIN_CSP);
+        else if (path === "/app-sandbox.html") res.setHeader("Content-Security-Policy", APP_SANDBOX_CSP);
         else if (path === "/" || path.endsWith(".html")) {
           res.setHeader("Content-Security-Policy", `${CSP}; frame-ancestors 'none'`);
           res.setHeader("X-Frame-Options", "DENY");
@@ -88,7 +97,7 @@ function securityPolicy(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), securityPolicy()],
+  plugins: [react(), securityPolicy(), appRuntime(pkg.version)],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
