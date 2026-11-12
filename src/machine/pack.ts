@@ -24,6 +24,7 @@ import type { RoutedBoard } from "./pcb";
 import { serviceMd, servicePlan, type UseFacts } from "./service";
 import type { CalcLine, CalcTrace, CatalogKind, CatalogPart, MachineData } from "./types";
 import { componentBodies, componentPositions, csvCell, wireList, wiresCsv, wiringDiagram, type WireRow } from "./wiring";
+import { schematicSheet, schematicSvg } from "./schematic";
 
 export interface PackFile {
   path: string;
@@ -992,6 +993,7 @@ function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readines
     [/^cad\/assembly\.step$/, "The whole assembly as exact solids, for any CAD program."],
     [/^wiring\/wiring\.svg$/, "Wiring diagram. Open it in a browser and print it landscape."],
     [/^wiring\/wires\.csv$/, "Every wire: from, to, size, colour and length."],
+    [/^wiring\/schematic\.svg$/, "The circuit as a schematic: every electronic part as a symbol and each wire between their pins."],
     [/^boards\/[^/]+\//, "A circuit board: the Gerber and drill files zipped for the board house (`*-gerbers.zip`) and loose in `gerbers/`, pictures of both sides, its parts list and a soldering guide."],
     [/^firmware\//, "Generated firmware. Start with the README in each folder."],
     [/^calculations\.md$/, "The engineering calculations with their inputs, methods and assumptions."],
@@ -1027,6 +1029,11 @@ function readmeMd(model: Model, name: string, date: Date, ctx: { ready: Readines
 // ---------------------------------------------------------------- the pack
 
 /** Every file of the build pack, ready to zip. */
+/** A machine with electronic parts that have pins has a schematic sheet to draw. */
+export function hasSchematic(m: MachineData): boolean {
+  return m.components.some((c) => (catalogPart(c.catalogId)?.pins.length ?? 0) > 0);
+}
+
 export function buildPack(model: Model, report: CheckReport | null, opts: PackOptions = {}): PackFile[] {
   const m = model.machine;
   if (!m) throw new Error("This design has no machine parts, wiring or firmware to make a build pack from.");
@@ -1054,6 +1061,8 @@ export function buildPack(model: Model, report: CheckReport | null, opts: PackOp
     add("wiring/wiring.svg", wiringDiagram(m, { title: name }).svg);
     add("wiring/wires.csv", wiresCsv(rows));
   }
+  // the circuit as a schematic sheet, laid out as the person left it in the Schematic view
+  if (hasSchematic(m)) add("wiring/schematic.svg", schematicSvg(schematicSheet(m, model.schematic), name));
   const boards = boardPackFiles(m, m.boards.length ? routeBoards(m, opts.boards) : [], date);
   for (const f of boards.files) add(f.path, f.data);
   for (const f of fw) for (const file of f.files) add(file.path.startsWith("firmware/") ? file.path : `firmware/${file.path}`, file.content);
