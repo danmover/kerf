@@ -4,7 +4,8 @@
 
 import { create } from "zustand";
 import * as db from "../persist/db";
-import type { BranchRecord, ProjectRecord, VersionRecord } from "../persist/db";
+import type { BranchRecord, ProjectRecord, ScriptRecord, VersionRecord } from "../persist/db";
+import { MAX_SCRIPTS, MAX_SCRIPT_CHARS, cleanScriptName, scriptNameProblem } from "../scripts/records";
 import { MAIN, branchList, branchNameProblem, branchOf, cleanBranchName, mainSource, merge3, mergeBase, mergedText, type MergeResult } from "../core/branches";
 import { loadSource, setSource, useDesign } from "../core/engine";
 import { describeChange } from "../core/sourceEdit";
@@ -102,12 +103,12 @@ function publishDesigns(reread: boolean) {
   if (!same) setSource(src, { force: true });
 }
 
-export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[], branches: Pick<ProjectRecord, "branch" | "branches"> = {}): Promise<ProjectRecord> {
+export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[], extra: Pick<ProjectRecord, "branch" | "branches" | "scripts"> = {}): Promise<ProjectRecord> {
   const t = templateById(templateId);
   const src = source ?? t?.source ?? "";
   const now = Date.now();
   const nameFromSrc = /design\s+"([^"]{1,120})"/.exec(src)?.[1];
-  const p: ProjectRecord = { id: db.newId("prj"), name: name ?? (templateId === "blank" ? "Untitled design" : nameFromSrc ?? t?.name ?? "Untitled design"), source: src, template: templateId, createdAt: now, updatedAt: now, ...branches };
+  const p: ProjectRecord = { id: db.newId("prj"), name: name ?? (templateId === "blank" ? "Untitled design" : nameFromSrc ?? t?.name ?? "Untitled design"), source: src, template: templateId, createdAt: now, updatedAt: now, ...extra };
   if (imports?.length) p.imports = imports;
   await db.put("projects", p);
   await db.addVersion({ id: db.newId("ver"), projectId: p.id, ts: now, author: "system", message: t ? `Created from “${t.name}”` : "Created", source: src, ...(p.branch ? { branch: p.branch } : {}) });
@@ -493,6 +494,37 @@ export function renameBranch(id: string, name: string): string | null {
   return null;
 }
 
+// ---------- scripts ----------
+
+/** The open project's own scripts (see src/scripts/). */
+export function projectScripts(p: ProjectRecord | null = get().current): ScriptRecord[] {
+  return p?.scripts ?? [];
+}
+
+/** Add one of the open project's scripts, or change it (by id). Returns why it couldn't, or null. */
+export function saveScript(s: ScriptRecord): string | null {
+  const cur = get().current;
+  if (!cur) return "No design is open.";
+  const list = cur.scripts ?? [];
+  const at = list.findIndex((x) => x.id === s.id);
+  if (at < 0 && list.length >= MAX_SCRIPTS) return `A design keeps ${MAX_SCRIPTS} scripts at most.`;
+  if (s.code.length > MAX_SCRIPT_CHARS) return `A script can be ${MAX_SCRIPT_CHARS / 1000}k characters at most.`;
+  const problem = scriptNameProblem(s.name, list, s.id);
+  if (problem) return problem;
+  const clean: ScriptRecord = { ...s, name: cleanScriptName(s.name), updatedAt: Date.now() };
+  set({ current: { ...cur, scripts: at >= 0 ? list.map((x) => (x.id === s.id ? clean : x)) : [...list, clean] } });
+  scheduleSave();
+  return null;
+}
+
+export function deleteScript(id: string) {
+  const cur = get().current;
+  if (!cur?.scripts?.some((x) => x.id === id)) return;
+  const rest = cur.scripts.filter((x) => x.id !== id);
+  set({ current: { ...cur, scripts: rest.length ? rest : undefined } });
+  scheduleSave();
+}
+
 // ---------- previews ----------
 
 /**
@@ -558,7 +590,7 @@ export async function duplicateProject(id: string) {
   await flushPending();
   const p = await db.getOne<ProjectRecord>("projects", id);
   if (!p) return;
-  const copy = await createProject(p.template, `${p.name} copy`, p.source, p.imports);
+  const copy = await createProject(p.template, `${p.name} copy`, p.source, p.imports, p.scripts?.length ? { scripts: p.scripts } : {});
   await copyAssets(p.id, copy.id);
   if (p.thumbnail) await db.put("projects", { ...copy, thumbnail: p.thumbnail });
   await refreshProjects();
@@ -624,7 +656,7 @@ export async function exportProject(id: string) {
   const imports = p.imports ?? [];
   const { files, missing } = await packImportFiles(imports);
   const kept = imports.filter((i) => files.some((a) => a.hash === i.hash));
-  download(projectFile(p.name, p.source, p.template, p.createdAt, versions, { assets, imports: kept, importFiles: files, ...fileBranches(p) }), safeFileName(p.name, "kerfproj"), "application/json");
+  download(projectFile(p.name, p.source, p.template, p.createdAt, versions, { assets, imports: kept, importFiles: files, ...fileExtras(p) }), safeFileName(p.name, "kerfproj"), "application/json");
   if (missing.length) toast({ kind: "warn", title: "Some imported files were left out", detail: `This browser does not have ${missing.join(", ")}.` }, 9000);
 }
 
@@ -632,7 +664,7 @@ export async function exportProject(id: string) {
 const fileVersion = (v: VersionRecord) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source, ...(v.branch ? { branch: v.branch } : {}) });
 
 /** A project's branches as a project file keeps them. */
-const fileBranches = (p: ProjectRecord) => (p.branches?.length ? { branches: p.branches, ...(p.branch ? { branch: p.branch } : {}) } : {});
+const fileExtras = (p: ProjectRecord) => ({ ...(p.branches?.length ? { branches: p.branches, ...(p.branch ? { branch: p.branch } : {}) } : {}), ...(p.scripts?.length ? { scripts: p.scripts } : {}) });
 
 /** Imports a file; returns the project to open when the file held exactly one. */
 export async function importProject(file: File): Promise<ProjectRecord | null> {
@@ -642,7 +674,7 @@ export async function importProject(file: File): Promise<ProjectRecord | null> {
     if (warnings.length) toast({ kind: "warn", title: "Part of the file could not be used", detail: [...new Set(warnings)].slice(0, 3).join(" ") }, 9000);
     let last: ProjectRecord | null = null;
     for (const imp of imported) {
-      last = await createProject("imported", imp.name, imp.source, imp.imports, imp.branches ? { branches: imp.branches, ...(imp.branch ? { branch: imp.branch } : {}) } : {});
+      last = await createProject("imported", imp.name, imp.source, imp.imports, { ...(imp.branches ? { branches: imp.branches, ...(imp.branch ? { branch: imp.branch } : {}) } : {}), ...(imp.scripts ? { scripts: imp.scripts } : {}) });
       if (imp.template !== "imported") await db.put("projects", { ...last, template: imp.template });
       for (const v of imp.versions) await db.addVersion({ id: db.newId("ver"), projectId: last.id, ts: v.ts, author: v.author, message: v.message, source: v.source, ...(v.branch ? { branch: v.branch } : {}) });
       await importAssets(last.id, imp.assets);
@@ -672,7 +704,7 @@ export async function exportAllProjects() {
     const versions = (await db.versionsFor(p.id)).map(fileVersion);
     const assets = await exportAssets(p.id, [p.source, ...versions.map((v) => v.source), ...(p.branches ?? []).map((b) => b.head)]);
     const imports = (p.imports ?? []).filter((i) => have.has(i.hash));
-    files.push({ format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...fileBranches(p) });
+    files.push({ format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...fileExtras(p) });
   }
   const stamp = new Date().toISOString().slice(0, 10);
   download(backupFile(files, importFiles), `kerf-backup-${stamp}.kerfbackup`, "application/json");

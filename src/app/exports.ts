@@ -327,7 +327,7 @@ export async function exportPlates(opts: { selectionOnly?: boolean; all?: boolea
 }
 
 /** Final meshes for parts of another reading of the design (a configuration): the ones built already, the rest built now. */
-async function meshesFor(parts: EvalPart[]): Promise<Map<string, MeshData>> {
+export async function meshesFor(parts: EvalPart[]): Promise<Map<string, MeshData>> {
   const out = new Map<string, MeshData>();
   const need: EvalPart[] = [];
   for (const p of parts) {

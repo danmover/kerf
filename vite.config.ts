@@ -43,6 +43,9 @@ export const SIM_CSP = "default-src 'none'; script-src 'self'";
 /** The page an app's custom drawing panels run in: Kerf frames it in a sandbox; the panels' code may use eval, and reach nothing. */
 export const APP_SANDBOX_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; frame-ancestors 'self'";
 
+/** The page your scripts run in: Kerf frames it in a sandbox and it starts each script in a blob worker; the script may use eval, and reach nothing. */
+export const SCRIPT_SANDBOX_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; worker-src blob:; frame-ancestors 'self'";
+
 /** An app's simulated twin, like the simulation worker: no eval, no network. */
 export const TWIN_CSP = "default-src 'none'; script-src 'self'";
 
@@ -90,6 +93,7 @@ function securityPolicy(): Plugin {
         else if (/^\/assets\/twin\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", TWIN_CSP);
         else if (/^\/assets\/(cam|sheet)\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CAM_CSP);
         else if (path === "/app-sandbox.html") res.setHeader("Content-Security-Policy", APP_SANDBOX_CSP);
+        else if (path === "/script-sandbox.html") res.setHeader("Content-Security-Policy", SCRIPT_SANDBOX_CSP);
         else if (path === "/" || path.endsWith(".html")) {
           res.setHeader("Content-Security-Policy", `${CSP}; frame-ancestors 'none'`);
           res.setHeader("X-Frame-Options", "DENY");

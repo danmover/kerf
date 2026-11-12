@@ -271,7 +271,8 @@ const studySafety = (r: StructuralResult) => (r.minSafety.nearBoundary && r.minS
 const studyStress = (r: StructuralResult) => (r.maxStress.nearBoundary && r.maxStress.away ? r.maxStress.away.value : r.maxStress.value);
 const loaded = (r: StructuralResult) => !r.heatOnly && (r.maxDisp.value > 0 || !r.modal);
 
-function summarise(spec: StructuralSpec, r: StructuralResult): StudyAnalysis {
+/** What a study (or a script) keeps of an analysis: its verdict and the worst of each measure. */
+export function summarise(spec: StructuralSpec, r: StructuralResult): StudyAnalysis {
   return {
     label: spec.label,
     verdict: structuralVerdict(spec, r),

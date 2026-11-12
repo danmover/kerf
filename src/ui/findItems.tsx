@@ -41,6 +41,9 @@ import { DOCK_TABS } from "./Dock";
 import { openApp } from "../apps/session";
 import { AppGlyph, newAppInDesign } from "./apps/actions";
 import { BUILD_APP_ASK } from "./apps/AppsPanel";
+import { ScriptGlyph, SCRIPT_ASK } from "./scripts/ScriptsPanel";
+import { addScript, openScripts, runSaved } from "../scripts/runtime";
+import { projectScripts } from "../app/project";
 import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
@@ -118,6 +121,11 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   make: { detail: "How each part is made: process, machine limits, cost and time", keywords: "manufacturing manufacture dfm process cost print cnc quote factory production" },
   bom: { detail: "Quantities, make or buy, prices and where to buy", keywords: "bom bill of materials buy shopping order cost price suppliers" },
   graph: { detail: "How the parts and features depend on each other", keywords: "dependencies dependency structure network" },
+  scripts: {
+    title: "Scripts",
+    detail: "JavaScript that works the design through the kerf API: try a size at many values, export every part or configuration, tables and files of your own, and checks that run after each change",
+    keywords: "script scripts scripting javascript js macro macros automation automate api batch batch export loop sweep parameter sweep design table run code program custom check custom rule rules own checks console plugin featurescript ilogic vba python api add-in addin",
+  },
   code: { title: "Design file (design.kerf)", detail: "The design as text: edit it by hand", keywords: "code source editor text script file kerf language" },
   structure: { title: "Parts", detail: "Every part and component, grouped as in the design: show a group on its own or hide it", keywords: "tree structure components assembly hierarchy outline groups grouping solo only subassembly" },
   features: {
@@ -217,6 +225,38 @@ export function findItems(ctx: FindContext): FindItem[] {
       push({ id: `app:${a.name}`, group: "Machines", title: a.name, detail: a.about ?? `An app with ${a.panels.length} panel${a.panels.length === 1 ? "" : "s"}`, keywords: "app control room live view dashboard run twin usb telemetry", icon: <AppGlyph size={14} />, tag: "here", run: () => openApp(a.name) });
     if (model?.machine || model?.apps?.length)
       push({ id: "app:new", group: "Machines", title: "New app", detail: "A starter control app from the machine's firmware and simulation, to build on", keywords: "app control room dashboard new create make gui hmi live view", icon: <AppGlyph size={14} />, run: newAppInDesign });
+    // ── scripts: the tab (shown once there is one), a new one, the design's own ──
+    if (!(ctx.dockShown.scripts ?? true))
+      push({ id: "tab:scripts", group: "Panels", title: TAB_FIND.scripts.title!, detail: TAB_FIND.scripts.detail, keywords: TAB_FIND.scripts.keywords, icon: <ScriptGlyph size={14} />, pane: "panel", run: () => openScripts() });
+    push({
+      id: "scripts:new",
+      group: "Model",
+      title: "New script",
+      detail: "JavaScript on the design through the kerf API, with examples to start from",
+      keywords: "script new script javascript macro automation automate batch sweep api code",
+      icon: <ScriptGlyph size={14} />,
+      pane: "panel",
+      run: () => {
+        const r = addScript();
+        if ("error" in r) toast({ kind: "error", title: "No new script", detail: r.error });
+      },
+    });
+    push(ask("ask:script", "Model", "Ask Claude for a script", "Claude writes one in the Scripts tab and runs it", "script macro automate automation batch sweep javascript write", SCRIPT_ASK, <Icon.Sparkle size={14} />));
+    for (const sc of projectScripts())
+      push({
+        id: `scripts:run:${sc.id}`,
+        group: "Model",
+        title: `Run the script “${sc.name}”`,
+        detail: sc.onChange ? "It runs after each change too; its checks are in the Checks tab" : "Its output shows in the Scripts tab",
+        keywords: "script run macro automation execute",
+        icon: <Icon.Play size={14} />,
+        tag: "here",
+        pane: "panel",
+        run: () => {
+          openScripts(`script:${sc.id}`);
+          runSaved(sc.id).catch((e: unknown) => toast({ kind: "error", title: "The script didn't run", detail: e instanceof Error ? e.message : String(e) }));
+        },
+      });
     for (const t of LEFT_TABS) {
       const f = TAB_FIND[t.id];
       push({ id: `left:${t.id}`, group: "Panels", title: f?.title ?? cap(t.label), detail: f?.detail, keywords: f?.keywords, icon: t.icon, pane: "model", run: () => useView.setState({ leftTab: t.id }) });

@@ -14,6 +14,7 @@ import { startBoardRuntime } from "./machine/pcb/runtime";
 import { startCableRuntime } from "./machine/harness/runtime";
 import "./core/sweepRuntime";
 import { startSimRuntime } from "./sim/runtime";
+import { startScripts } from "./scripts/runtime";
 import { loadRememberedKey } from "./persist/vault";
 import { loadOpenAIKey } from "./persist/openaiVault";
 import { loadChat, useChat } from "./ai/chat";
@@ -108,6 +109,7 @@ function useBoot() {
     startBoardRuntime();
     startCableRuntime();
     startSimRuntime();
+    startScripts(() => useChat.getState().busy);
     void Promise.allSettled([loadRememberedKey(), loadOpenAIKey(), refreshProjects(), initAccount()]).then(() => {
       startSync();
       if (!live) return;

@@ -152,7 +152,9 @@ export function projectRoutes(deps: Deps) {
         const versions = db.all<{ ts: number; author: string; message: string; source: string; branch: string }>("SELECT ts, author, message, source, branch FROM versions WHERE user_id = ? AND project_id = ? ORDER BY ts", user.id, p.id).map(out);
         // the app's branches travel in extra, and project files keep them beside the versions
         const lines = Array.isArray((extra as { branches?: unknown }).branches) ? { branches: (extra as { branches: unknown[] }).branches, ...(typeof (extra as { branch?: unknown }).branch === "string" ? { branch: (extra as { branch: string }).branch } : {}) } : {};
-        const entry = { format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.created_at, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...lines };
+        // and so do its scripts
+        const scripts = Array.isArray((extra as { scripts?: unknown }).scripts) ? { scripts: (extra as { scripts: unknown[] }).scripts } : {};
+        const entry = { format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.created_at, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...lines, ...scripts };
         yield (first ? "" : ",") + JSON.stringify(entry);
         first = false;
       }
