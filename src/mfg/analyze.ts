@@ -429,8 +429,8 @@ export function bedTurn(w: number, d: number, W: number, D: number): number | un
   return best;
 }
 
-function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
-  const ext: V3 = [c.hi[0] - c.lo[0], c.hi[1] - c.lo[1], c.hi[2] - c.lo[2]];
+/** Whether a part of this extent (its own x, y, z) fits the machine, and its size in words; the envelope check's test. */
+export function envelopeFit(ext: V3, env: NonNullable<Rules["envelope"]>): { fits: boolean; dims: string } {
   const size = env.size;
   let fits: boolean;
   let dims: string;
@@ -449,6 +449,13 @@ function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
     fits = a.every((v, i) => v <= b2[i] + 1e-6);
     dims = `${ext.map((v) => fmt(v, 1)).join(" × ")} mm`;
   }
+  return { fits, dims };
+}
+
+function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
+  const ext: V3 = [c.hi[0] - c.lo[0], c.hi[1] - c.lo[1], c.hi[2] - c.lo[2]];
+  const size = env.size;
+  const { fits, dims } = envelopeFit(ext, env);
   return fits
     ? { rule: "envelope", status: "pass", title: `Fits the ${env.what}`, detail: `${dims}, within ${size.map((v) => fmt(v)).join(" × ")} mm` }
     : {
@@ -456,7 +463,7 @@ function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
         status: "fail",
         title: `Too big for the ${env.what}`,
         detail: `${dims}; the limit is ${size.map((v) => fmt(v)).join(" × ")} mm.`,
-        fix: "Split the part into pieces that join with fasteners or a dovetail, reorient it, or use a bigger machine.",
+        fix: `Make it in pieces: split: ${"XYZ"[ext.indexOf(Math.max(...ext))]} on the part cuts it across its length into the fewest pieces that fit, joined on dowel pins. Or reorient it, or use a bigger machine.`,
       };
 }
 

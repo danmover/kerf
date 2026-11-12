@@ -12,6 +12,7 @@ import { fitItems } from "../analysis/fits/report";
 import { springItems } from "../analysis/springs/report";
 import { bandItems } from "../analysis/bands";
 import { hotSoakItems } from "../analysis/hotSoak";
+import { splitItems } from "./splitChecks";
 import type { ProcessResult } from "../mfg/types";
 
 export interface ReportContext {
@@ -34,6 +35,7 @@ export type ReportPass = (items: CheckItem[], ctx: ReportContext) => CheckItem[]
 const passes: { id: string; order: number; run: ReportPass }[] = [
   // stateless passes live here; modules with state of their own (the analysis runtime) register theirs
   { id: "process", order: 10, run: (items, ctx) => [...items, ...processItems(ctx.model, ctx.process, ctx.buildErrors, ctx.machines)] },
+  { id: "split", order: 11, run: (items, ctx) => [...items, ...splitItems(ctx.model)] },
   { id: "fits", order: 12, run: fitItems },
   { id: "springs", order: 13, run: springItems },
   { id: "bands", order: 13.5, run: bandItems },

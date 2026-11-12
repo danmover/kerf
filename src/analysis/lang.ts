@@ -644,7 +644,7 @@ export interface AnalysisEnv {
   fail(msg: string, span: Span): never;
   /** the kind of a top-level name: "part", "component", or undefined */
   kindOf(name: string): string | undefined;
-  /** a frame's member parts, when the name is a frame */
+  /** a frame's member parts, when the name is a frame, or the pieces of a part made in pieces (split:) */
   members?(name: string): string[] | undefined;
   /** a param declared so far, for a design study's vary: */
   param?(name: string): { value: number | string | boolean; text: string; min?: number; max?: number; locked: boolean } | undefined;
@@ -752,8 +752,8 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   if (pp.length) {
     const list = Array.isArray(pp[0].value) ? pp[0].value : [pp[0].value];
     for (const v of list) {
-      // a frame stands for all its members
-      const members = v instanceof Obj && v.kind === "frame" ? env.members?.(String(v.fields.name)) : undefined;
+      // a frame stands for all its members, and a part made in pieces (split:) for all its pieces
+      const members = v instanceof Obj && v.kind === "frame" ? env.members?.(String(v.fields.name)) : v instanceof Ref ? env.members?.(v.name) : undefined;
       if (members) {
         for (const m of members) if (!parts.includes(m)) parts.push(m);
         continue;
@@ -859,13 +859,16 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   for (const r of [...supports.map((s) => s.region), ...loads.map((l) => l.region), ...masses.map((m) => m.region), ...fixedTemps.map((f) => f.region), ...heatLoads.flatMap((h) => (h.region ? [h.region] : [])), ...currents.flatMap((c) => [c.from, c.to])])
     if (r.t === "face") named.add(r.part);
   for (const h of heatLoads) if (h.part) named.add(h.part);
-  // a frame named in face() stands for its members
+  // a frame named in face() stands for its members, and a part made in pieces for its pieces
   const namedParts: string[] = [];
   for (const n of named) {
     const members = env.members?.(n);
     if (members) {
       if (!parts.length) namedParts.push(...members.filter((m) => !namedParts.includes(m)));
-      else if (members.some((m) => !parts.includes(m))) fail(`face(${n}, …) is every member of the frame ${n}, and parts: leaves some out. Give parts: [${n}], or name single members, like face(${members[0]}, -Z).`, span);
+      else if (members.some((m) => !parts.includes(m))) {
+        const frame = env.kindOf(n) === "frame";
+        fail(`face(${n}, …) is every ${frame ? `member of the frame ${n}` : `piece of ${n} (it is made in pieces)`}, and parts: leaves some out. Give parts: [${n}], or name single ${frame ? "members" : "pieces"}, like face(${members[0]}, -Z).`, span);
+      }
       continue;
     }
     const k = env.kindOf(n);

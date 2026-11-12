@@ -1,5 +1,6 @@
 // The evaluated design model: what the viewer, checks, AI and UI consume.
 
+import type { SplitQuery } from "../lang/split";
 import type { BandLayout } from "../library/bands";
 import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
@@ -263,6 +264,8 @@ export interface EvalPart {
   frame?: string;
   /** a frame member as a beam, for analysing the frame with beam elements */
   beam?: BeamInfo;
+  /** a piece of a part made in pieces (split:), or that part's pins (no piece): edits go to that part's block */
+  split?: { part: string; piece?: number; of: number };
 }
 
 /** A frame member as a beam: the line it was drawn on (through the joints), its section's own axes across it, the section. */
@@ -490,6 +493,34 @@ export interface Model {
   };
   /** geometry hashes of the solids mates pick faces from (the engine has the kernel list any it has not, then evaluates again) */
   mateQueries?: string[];
+  /** parts made in pieces (split:): where they were cut and how the pieces join */
+  splits?: SplitRecord[];
+  /** split parts waiting for their cuts and pins, worked out from the part as built (the engine does, then evaluates again) */
+  splitQueries?: SplitQuery[];
+}
+
+/** A part made in pieces: its pieces (parts of the same name), the cuts and the pins in each joint. */
+export interface SplitRecord {
+  name: string;
+  label: string;
+  span: Span;
+  /** the split as asked for, in words ("across x to fit the printer") */
+  asked: string;
+  /** "whole" while the cuts are being worked out, or when it fits whole; "error" when it could not be cut */
+  status: "split" | "whole" | "waiting" | "error";
+  /** piece ids, in order */
+  pieces: string[];
+  /** cut heights per direction, with the direction in words */
+  cuts: { axis: string; at: number[] }[];
+  join: "dowel" | "printed" | "glue" | "none";
+  /** pin diameter and length, mm, and the name of the pins' component or part */
+  pin?: { d: number; length: number; name: string; count: number; hole: number };
+  joints: { axis: string; at: number; pins: number; area: number; room: number }[];
+  /** each piece's extent, mm (x, y, z of the part) */
+  sizes: V3[];
+  bed?: { size: V3; what: string };
+  warnings: string[];
+  error?: string;
 }
 
 /** One member of a frame: the part or component it became, and how its piece is cut. */

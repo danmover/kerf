@@ -89,6 +89,7 @@ export function buildChecksRequest(model: Model, builtHashes: Set<string>): Chec
     moving: !!p.motion,
     density: materialDensity(p.material),
     noInterference: !!p.gear || (!!p.imported && p.imported.kind !== "solid"),
+    ...(p.split?.piece ? { of: p.split.part } : {}),
   }));
   const access = visible
     .filter((p) => p.fastener)

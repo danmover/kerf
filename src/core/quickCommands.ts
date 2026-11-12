@@ -37,6 +37,8 @@ export type QuickCommand =
   | { k: "mirror"; axis: 0 | 1 | 2; at?: number; target?: string }
   /** cut another part or component (`tool`, which stays) out of this part, where it really sits */
   | { k: "subtract"; tool: string; target?: string }
+  /** make a part in pieces (split:): across an axis of its own (its longest when left out), into count pieces or the fewest that fit; glued instead of pinned */
+  | { k: "split"; axis?: 0 | 1 | 2; count?: number; glue?: boolean; target?: string }
   | { k: "undo" }
   | { k: "redo" };
 
@@ -228,6 +230,7 @@ const FAMILY: Record<string, QuickCommand["k"]> = {
   delete: "delete", remove: "delete", erase: "delete",
   box: "new", cube: "new", block: "new", cylinder: "new", rod: "new", disc: "new", disk: "new", puck: "new", sphere: "new", ball: "new",
   undo: "undo", redo: "redo",
+  split: "split", halve: "split", pieces: "split", sections: "split",
 };
 
 function parseTokens(tokens: string[], vocab: QuickVocab, target: string | undefined): QuickCommand | null {
@@ -272,6 +275,8 @@ function parseCommand(tokens: string[], verbAt: number, target: string | undefin
     case "undo":
     case "redo":
       return !target && onlyWords(rest, new Set(["that", "last", "change", "it"])) ? { k: FAMILY[verb] as "undo" | "redo" } : null;
+    case "split":
+      return parseSplit(verb, rest, target);
   }
   return null;
 }
@@ -315,6 +320,25 @@ function parseShell(rest: string[], target: string | undefined): QuickCommand | 
   if (openWord && open === undefined && (words.includes("here") || words.includes("this") || words.includes("face"))) open = "here";
   if (openWord && open === null) return null;
   return { k: "shell", t: nums[0]?.v, open, target };
+}
+
+const SPLIT_WORDS = new Set(["split", "make", "print", "printing", "printed", "in", "into", "pieces", "piece", "parts", "sections", "bits", "along", "across", "fit", "fits", "bed", "printer", "machine", "so", "can", "is", "and", "pins", "dowels", "pinned", "glue", "glued", "together", "two", "three", "four", "five", "six", "half", "halves", "halve", "up"]);
+const COUNT_WORDS: Record<string, number> = { two: 2, half: 2, halves: 2, halve: 2, three: 3, four: 4, five: 5, six: 6 };
+
+/** "split it", "split along x into 3", "print it in two pieces", "halve the rail", "split into 4 and glue it". */
+function parseSplit(verb: string, rest: string[], target: string | undefined): QuickCommand | null {
+  const { nums, rest: words } = takeNumbers(rest);
+  if (nums.length > 1 || nums.some((n) => n.unit || !Number.isInteger(n.v) || n.v < 2 || n.v > 31)) return null;
+  let axis: 0 | 1 | 2 | undefined;
+  let count = nums[0]?.v ?? (verb === "halve" ? 2 : undefined);
+  let glue = false;
+  for (const w of words) {
+    if (w === "x" || w === "y" || w === "z") axis = "xyz".indexOf(w) as 0 | 1 | 2;
+    else if (COUNT_WORDS[w]) count = COUNT_WORDS[w];
+    else if (w === "glue" || w === "glued") glue = true;
+    else if (!SPLIT_WORDS.has(w) && !COMMON.has(w)) return null;
+  }
+  return { k: "split", ...(axis !== undefined ? { axis } : {}), ...(count ? { count } : {}), ...(glue ? { glue } : {}), target };
 }
 
 const HOLE_WORDS = new Set(["add", "make", "put", "drill", "cut", "hole", "for", "screw", "bolt", "dia", "diameter", "d", "size", "wide", "deep", "depth", "through", "thru", "all", "way", "the", "clearance", "close", "tap", "tapped", "threaded", "thread", "insert", "heat-set", "heatset", "countersunk", "countersink", "csk", "counterbored", "counterbore", "cbore", "an", "x", "blind"]);
@@ -662,8 +686,15 @@ export function applyQuick(cmd: QuickCommand, ctx: QuickContext): QuickResult {
   }
   const target = cmd.target ?? ctx.target;
   if (!target) return fail(`Click a part first (or name it, like “${example(cmd)} on ${ctx.model.parts.find((p) => p.kind === "part")?.name ?? "bracket"}”), then say it again.`, true);
-  const part = ctx.model.parts.find((p) => p.name === target && !p.id.startsWith(`${target}.`)) ?? ctx.model.parts.find((p) => p.name === target);
+  let part = ctx.model.parts.find((p) => p.name === target && !p.id.startsWith(`${target}.`)) ?? ctx.model.parts.find((p) => p.name === target);
   const stmt = blockStmt(ctx.src, target);
+  // a piece of a part made in pieces, or its pins, is changed through that part
+  if (part?.split && !stmt) return applyQuick({ ...cmd, target: part.split.part } as QuickCommand, { ...ctx, target: part.split.part });
+  // the part made in pieces itself: its pieces stand for it
+  if (!part && stmt) {
+    const piece = ctx.model.parts.find((p) => p.split?.part === target && p.split.piece !== undefined);
+    if (piece) part = { ...piece, name: target, label: ctx.model.splits?.find((r) => r.name === target)?.label ?? target };
+  }
   if (part?.frame && !stmt) return applyFrameMember(cmd, part, ctx);
   if (!part || !stmt) return fail(`There is no part called ${target}.`);
   if (part.locked) return fail(`${part.label} is locked. Unlock it in the parts list first.`);
@@ -698,7 +729,35 @@ export function applyQuick(cmd: QuickCommand, ctx: QuickContext): QuickResult {
     case "subtract":
       if (stmt.k !== "part") return fail(`${part.label} is a library part, so nothing can be cut out of it here. Pick the part to cut first, then the part to cut out of it.`);
       return applySubtract(cmd, stmt, part.label, ctx);
+    case "split":
+      if (stmt.k !== "part") return fail(`${part.label} is a library part: it comes in one piece.`);
+      return applySplit(cmd, stmt, part.label, ctx);
   }
+}
+
+/** split: on the part: across the axis asked for, or its longest. */
+function applySplit(cmd: Extract<QuickCommand, { k: "split" }>, stmt: PartStmt, label: string, ctx: QuickContext): QuickResult {
+  let axis = cmd.axis;
+  if (axis === undefined) {
+    // a part already made in pieces is as big as its pieces together
+    const own = ctx.box?.(stmt.name);
+    const boxes = own ? [own] : ctx.model.parts.filter((p) => p.split?.part === stmt.name && p.split.piece !== undefined).map((p) => ctx.box?.(p.name));
+    const b = boxes.length && boxes.every((x) => x) ? (boxes as [Vec3, Vec3][]).reduce((u, x) => [u[0].map((v, k) => Math.min(v, x[0][k])) as Vec3, u[1].map((v, k) => Math.max(v, x[1][k])) as Vec3]) : undefined;
+    const ext = b ? [0, 1, 2].map((k) => b[1][k] - b[0][k]) : null;
+    axis = ext ? (ext.indexOf(Math.max(...ext)) as 0 | 1 | 2) : 0;
+  }
+  const A = "XYZ"[axis];
+  const opts = [...(cmd.count ? [`count: ${cmd.count}`] : []), ...(cmd.glue ? ['join: "glue"'] : [])];
+  const value = opts.length ? `pieces(${A}, ${opts.join(", ")})` : A;
+  const src = setBlockProps(ctx.src, stmt.name, { split: value });
+  const how = cmd.count ? `into ${cmd.count} pieces` : "into the fewest pieces that fit its printer";
+  return {
+    ok: true,
+    src,
+    title: `Split ${label} across ${A.toLowerCase()} ${how}`,
+    detail: `Each piece is a part of its own${cmd.glue ? ", glued face to face" : ", lined up on steel dowel pins placed where the part is solid"}. The checks list the cuts, each piece's size and the pins; pieces(${A}, at: [..]) in split: moves the cuts.`,
+    target: stmt.name,
+  };
 }
 
 function example(cmd: QuickCommand): string {
@@ -1254,6 +1313,8 @@ export function describeQuick(cmd: QuickCommand): string {
       return cmd.op === "set" ? `Set ${cmd.name} to ${String(cmd.value)}` : cmd.op === "add" ? `${cmd.name} ${Number(cmd.value) >= 0 ? "+" : "−"}${f(Math.abs(Number(cmd.value)))}` : `${cmd.name} × ${String(cmd.value)}`;
     case "material":
       return `Material: ${cmd.material}`;
+    case "split":
+      return `Split${cmd.axis !== undefined ? ` across ${"xyz"[cmd.axis]}` : ""} ${cmd.count ? `into ${cmd.count} pieces` : "to fit the printer"}${cmd.glue ? ", glued" : ""}`;
     case "color":
       return `Colour: ${cmd.name}`;
     case "copy":

@@ -12,6 +12,7 @@ import { useImports } from "../../core/imports";
 import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../../lang/modelling";
 import { SHEET_FNS } from "../../lang/sheet";
 import { MOULD_FNS } from "../../lang/mould";
+import { SPLIT_FNS } from "../../lang/split";
 import { AERO_FNS } from "../../lang/aero";
 import { LIBRARY } from "../../library/components";
 import { PROCESSES, PROCESS_IDS } from "../../mfg/profiles";
@@ -207,6 +208,7 @@ export function kerfCompletions(getModel: () => Model | null) {
     ...Object.values(PATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "path", apply: f.name + "(" })),
     ...Object.values(FEATURE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "feature", apply: f.name + "(" })),
     ...Object.values({ ...SHEET_FNS, ...MOULD_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "mould" ? "mould" : "sheet metal", apply: f.name + "(" })),
+    ...Object.values(SPLIT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "split into pieces", apply: f.name + "(" })),
     ...Object.values(AERO_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "airfoil" ? "profile" : "aero tube", apply: f.name + "(" })),
     ...Object.values(SELECT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "selection", apply: f.name + "(" })),
     ...Object.entries(CONSTRAINTS).map(([k, c]) => ({ label: k, type: "keyword", info: c.doc, detail: c.dim ? "sketch dimension" : "sketch relation" })),
@@ -230,7 +232,7 @@ export function kerfCompletions(getModel: () => Model | null) {
   const mfgItems: Completion[] = PROCESS_IDS.map((id) => ({ label: id, type: "class", info: `${PROCESSES[id].label}. ${PROCESSES[id].summary}\n\nSettings: ${PROCESSES[id].settings.map((s) => `${s.key}: ${s.doc}`).join("; ") || "none"}`, detail: "process", apply: id + "(" }));
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
-  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "chain", "label", "axis_at", "plane", "offset", "profile", "box", "path", "levels", "ends", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "split", "chain", "label", "axis_at", "plane", "offset", "profile", "box", "path", "levels", "ends", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 

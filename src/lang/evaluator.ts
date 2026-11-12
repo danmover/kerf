@@ -19,7 +19,7 @@ import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import { materialDensity } from "../library/standards";
 import { materialRecord, pricePerKg } from "../library/materialDb";
-import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, Link, Model, Motion } from "../core/model";
+import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, Link, Model, Motion, SplitRecord } from "../core/model";
 import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
@@ -40,6 +40,7 @@ import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
 import { MATE_FNS, MateRefV, MateV, evalFaces, type FaceLookup } from "./mates";
+import { axisFrame, axisWord, evalSplits, pinDepth, pinHoleClearance, splitKey, splitPrinted, splitSpec, splitWords, type SplitLookup, type SplitQuery } from "./split";
 import { bodyBox, mateFits, moveDir, movePoint, moveXforms, pickAxis, pickPlane, solveMates, isStill, type BodyMove, type FaceCatalogue, type MateBody, type MateGeom, type MateSpec } from "../core/mates";
 import { studyVariable } from "../analysis/studyLang";
 import type { AnalysisSpec } from "../analysis/spec";
@@ -61,6 +62,8 @@ export interface EvalOptions {
   imports?: ImportTable;
   /** each built solid's flat and round faces, by geometry hash, for mates (defaults to the table set with setEvalFaces) */
   faces?: FaceLookup;
+  /** the cuts and pins of split parts, worked out from each part as built (defaults to the table set with setEvalSplits) */
+  splits?: SplitLookup;
 }
 
 class EvalError extends Error {
@@ -109,7 +112,7 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode", "split"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label", "explode"];
 
 /** Fields of the brief block, by the type of value each takes. */
@@ -295,6 +298,10 @@ class Evaluator {
   mateResult: Model["mates"] | undefined;
   /** frame members by name, to the frame they belong to (references to a member depend on its frame) */
   memberOf = new Map<string, string>();
+  /** split parts: what each asks of the part as built, how it came out, and the whole part (what shape_of() and mould() see) */
+  splitQueries: SplitQuery[] = [];
+  splits: SplitRecord[] = [];
+  splitWhole = new Map<string, EvalPart>();
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
@@ -347,13 +354,15 @@ class Evaluator {
       imports: () => this.opts.imports ?? evalImports(),
       tick: (n: number) => this.tick(n, this.callSpan),
       partShape: (name: string) => {
-        const p = this.parts.find((q) => q.name === name && q.kind === "part");
+        const p = this.splitWhole.get(name) ?? this.parts.find((q) => q.name === name && q.kind === "part");
         if (!p) return undefined;
         this.current?.add(this.memberOf.get(name) ?? name);
         return { recipe: p.recipe, xf: p.xf, material: p.material };
       },
       partShapes: (name: string) => {
-        const ps = this.parts.filter((q) => q.name === name);
+        // a part made in pieces is used whole: one solid, no pin holes
+        const whole = this.splitWhole.get(name);
+        const ps = whole ? [whole] : this.parts.filter((q) => q.name === name);
         if (!ps.length) return undefined;
         this.current?.add(this.memberOf.get(name) ?? name);
         this.shapeRefs++;
@@ -2000,7 +2009,7 @@ class Evaluator {
       sheet = { ...rest, flat, flatHash: recipeHash(flat) };
     }
     const explodeDir = explodeProp(state.props.explode, ctx, state.propSpans.explode);
-    this.parts.push({
+    const record: EvalPart = {
       id: s.name,
       name: s.name,
       label: typeof state.props.label === "string" ? state.props.label : s.name,
@@ -2030,7 +2039,181 @@ class Evaluator {
       ...(state.flex.length ? { flex: state.flex } : {}),
       ...(sheet ? { sheet } : {}),
       ...(state.tubes.length ? { tubes: state.tubes } : {}),
+    };
+    if (state.props.split !== undefined && state.props.split !== false) this.splitPart(s, state.props.split, state.propSpans.split, record);
+    else this.parts.push(record);
+  }
+
+  // ---------------- split: a part made in pieces ----------------
+
+  /** The parts a name stands for: the part or component itself, or the pieces of a part made in pieces. */
+  partsNamed(name: string): EvalPart[] {
+    const own = this.parts.filter((p) => p.name === name);
+    return own.length ? own : this.parts.filter((p) => p.split?.part === name && p.split.piece !== undefined);
+  }
+
+  /**
+   * `split: X` or `split: pieces(...)`: the part made in pieces that fit its machine, cut where the engine worked out
+   * from the part as built (src/core/splitGeom.ts) and joined on pins. Each piece is a part of its own (name_1,
+   * name_2...) and the part's name stands for all of them (partsNamed); the pins are a component of their own
+   * (name_pins). Until the cuts are known the part is shown whole.
+   */
+  splitPart(s: Extract<Stmt, { k: "part" }>, value: Value, span: Span, whole: EvalPart) {
+    const ctx = this.ctx();
+    this.callSpan = span;
+    const spec = splitSpec(value, ctx);
+    if (whole.sheet) throw new EvalError("split: is for printed, machined and cast parts; a sheet() part is cut and bent from one sheet (make the pieces as sheet parts of their own)", span);
+    if (whole.process?.id === "carbon_layup") throw new EvalError("split: a carbon layup is laid up in its mould in one piece; split its mould instead", span);
+    if (whole.motion) throw new EvalError("split: a moving part is made whole; split the parts that stand still", span);
+    const asked = splitWords(spec);
+    const q: SplitQuery = { key: splitKey(whole.hash, spec), hash: whole.hash, part: s.name, spec, ...(whole.process ? { process: whole.process } : {}), material: whole.material };
+    this.splitQueries.push(q);
+    this.splitWhole.set(s.name, whole);
+    const warn = (message: string, severity: "warning" | "error" = "warning") => this.diags.push({ message: `In part "${s.name}": ${message}`, start: span.start, end: span.end, severity });
+    const record = (status: SplitRecord["status"], extra: Partial<SplitRecord> = {}): SplitRecord => ({ name: s.name, label: whole.label, span, asked, status, pieces: [], cuts: [], join: spec.join, joints: [], sizes: [], warnings: [], ...extra });
+    const info = (this.opts.splits ?? evalSplits())(q);
+    if (!info) {
+      this.parts.push(whole);
+      this.splits.push(record("waiting", { pieces: [whole.id] }));
+      return;
+    }
+    const warnings = info.warnings.map((w) => w.charAt(0).toUpperCase() + w.slice(1) + ".");
+    if (info.error) {
+      warn(`split: ${info.error}.`, "error");
+      this.parts.push(whole);
+      this.splits.push(record("error", { pieces: [whole.id], error: info.error, warnings }));
+      return;
+    }
+    for (const w of info.warnings) warn(`split: ${w}.`);
+    const cuts = info.cuts.map((at, i) => ({ axis: axisWord(spec.axes[i].dir), at: at.map((t) => Math.round(t * 10) / 10) }));
+    const box = (c: { box: [V3, V3] }): V3 => [0, 1, 2].map((k) => Math.round((c.box[1][k] - c.box[0][k]) * 10) / 10) as V3;
+    if (info.cells.length < 2) {
+      this.parts.push(whole);
+      this.splits.push(record("whole", { pieces: [whole.id], cuts, sizes: info.cells.map(box), ...(info.bed ? { bed: info.bed } : {}), warnings }));
+      return;
+    }
+    if (whole.mass !== undefined) warn("split: mass: is shared out evenly between the pieces.");
+    const n = info.cells.length;
+    const printed = splitPrinted(whole);
+    const pinned = (spec.join === "dowel" || spec.join === "printed") && info.pin > 0;
+    const clr = pinHoleClearance(spec.join, printed);
+    const depth = pinDepth(info.length);
+    const frames = spec.axes.map((a) => axisFrame(a.dir));
+    // the slab between two cuts (the part's ends 5 mm beyond its extent), as wide as the part across
+    const slab = (a: number, ix: number): ShapeRecipe => {
+      const c = info.cuts[a];
+      const [lo, hi] = info.range[a];
+      const t0 = ix === 0 ? lo - 5 : c[ix - 1];
+      const t1 = ix === c.length ? hi + 5 : c[ix];
+      const [[u0, u1], [v0, v1]] = info.across[a];
+      const { u, n: dir } = frames[a];
+      return { t: "extrude", p: { t: "rect", w: u1 - u0 + 10, h: v1 - v0 + 10, r: 0, c: [(u0 + u1) / 2, (v0 + v1) / 2] }, h: t1 - t0, f: { o: vscale(dir, t0), u, n: dir }, twist: 0, scale: 1 };
+    };
+    const ids: string[] = [];
+    info.cells.forEach((cell, k) => {
+      const ops: PartOp[] = [];
+      cell.index.forEach((ix, a) => {
+        if (info.cuts[a].length) ops.push({ op: "intersect", shape: slab(a, ix) });
+      });
+      if (pinned)
+        for (const j of info.joints) {
+          if (j.below !== k && j.above !== k) continue;
+          const dir = vscale(frames[j.axis].n, j.below === k ? -1 : 1);
+          for (const p of j.spots) ops.push({ op: "cut", shape: { t: "hole", d: info.pin + clr, depth, at: p, dir } });
+        }
+      const recipe: PartRecipe = { base: { t: "part", part: whole.recipe, xf: [], hash: whole.hash }, ops };
+      // each piece is a part of its own (bar_1, bar_2), the way a frame's members are, for the parts list, the
+      // print files and the drawings; the part's own name stands for all of them
+      const id = `${s.name}_${k + 1}`;
+      ids.push(id);
+      this.define(id, "part", new Ref(id, "part"), s.nameSpan);
+      this.memberOf.set(id, s.name);
+      this.defKind.delete(id);
+      const { flex: _flex, tubes: _tubes, ...rest } = whole;
+      this.parts.push({
+        ...rest,
+        id,
+        name: id,
+        label: `${whole.label} (piece ${k + 1} of ${n})`,
+        recipe,
+        hash: recipeHash(recipe),
+        detail: hasDetail(whole.recipe),
+        ...(whole.mass !== undefined ? { mass: whole.mass / n } : {}),
+        // a glued piece is held by the glue; pinned ones by their pins
+        ...(!whole.held && spec.join === "glue" && k > 0 ? { held: "glued to the piece beside it" } : {}),
+        split: { part: s.name, piece: k + 1, of: n },
+      });
     });
+    if (whole.flex?.length) warn("split: the snap hooks of a part made in pieces are not checked; give them their own part.");
+    let pin: SplitRecord["pin"];
+    const spots = info.joints.reduce((t, j) => t + j.spots.length, 0);
+    if (pinned && spots) {
+      const name = `${s.name}_pins`;
+      const xf = whole.xf;
+      const sp = s.span;
+      const num = (v: number): Expr => ({ k: "num", v: Math.round(v * 1e6) / 1e6, span: sp });
+      const str = (v: string): Expr => ({ k: "str", v, span: sp });
+      const vec = (p: V3): Expr => ({ k: "vec", items: p.map(num), span: sp });
+      const prop = (pname: string, v: Expr): Item => ({ k: "prop", name: pname, value: v, span: sp });
+      const L = info.length;
+      if (spec.join === "dowel") {
+        const blocksBefore = this.blocks.length;
+        try {
+          // one pattern of pins per cut direction (a pattern shares one axis)
+          const byAxis = new Map<number, V3[]>();
+          for (const j of info.joints) for (const p of j.spots) byAxis.set(j.axis, [...(byAxis.get(j.axis) ?? []), p]);
+          const groups = [...byAxis];
+          groups.forEach(([a, pts], gi) => {
+            const cname = groups.length === 1 ? name : `${name}_${gi + 1}`;
+            const dir = frames[a].n;
+            const ends = pts.map((p) => applyXforms(vsub(p, vscale(dir, L / 2)), xf));
+            const items: Item[] = [prop("at", { k: "list", items: ends.map(vec), span: sp }), prop("axis", vec(vnorm(applyXformsToDir(dir, xf)))), prop("group", str(whole.group)), prop("label", str(`${whole.label} pin`))];
+            const call: Expr & { k: "call" } = {
+              k: "call",
+              callee: { k: "member", obj: { k: "ident", name: "lib", span: sp }, name: "dowel", span: sp },
+              args: [
+                { name: "d", value: num(info.pin), span: sp },
+                { name: "length", value: num(L), span: sp },
+              ],
+              span: sp,
+            };
+            const first = this.parts.length;
+            this.component({ k: "component", name: cname, call, items, span: sp, nameSpan: s.nameSpan });
+            for (let i = first; i < this.parts.length; i++) this.parts[i].split = { part: s.name, of: n };
+            this.memberOf.set(cname, s.name);
+            this.defKind.delete(cname);
+          });
+        } finally {
+          this.blocks.splice(blocksBefore);
+        }
+      } else {
+        // printed pins: one part of them all, printed with the pieces, a little short so they never bottom out
+        this.define(name, "part", new Ref(name, "part"), s.nameSpan);
+        this.memberOf.set(name, s.name);
+        this.defKind.delete(name);
+        const cyl = (j: (typeof info.joints)[number], p: V3): ShapeRecipe => {
+          const dir = frames[j.axis].n;
+          return { t: "cyl", d: info.pin, h: L - 0.4, at: vsub(p, vscale(dir, (L - 0.4) / 2)), dir };
+        };
+        const shapes = info.joints.flatMap((j) => j.spots.map((p) => cyl(j, p)));
+        const recipe: PartRecipe = { base: shapes.length === 1 ? shapes[0] : { t: "union", shapes }, ops: [{ op: "chamfer", r: Math.min(0.4, info.pin * 0.1), edges: "all" }] };
+        const { flex: _flex, tubes: _tubes, mass: _mass, features: _features, ...rest } = whole;
+        this.parts.push({ ...rest, id: name, name, label: `${whole.label} pins`, recipe, hash: recipeHash(recipe), detail: false, features: [], split: { part: s.name, of: n } });
+      }
+      pin = { d: info.pin, length: L, name, count: spots, hole: Math.round((info.pin + clr) * 100) / 100 };
+    }
+    const sizes = info.cells.map(box);
+    this.splits.push(
+      record("split", {
+        pieces: ids,
+        cuts,
+        ...(pin ? { pin } : {}),
+        joints: info.joints.map((j) => ({ axis: axisWord(spec.axes[j.axis].dir), at: Math.round(info.cuts[j.axis][j.cut] * 10) / 10, pins: pinned ? j.spots.length : 0, area: j.area, room: j.room })),
+        sizes,
+        ...(info.bed ? { bed: info.bed } : {}),
+        warnings,
+      }),
+    );
   }
 
   // ---------------- frames: structural members along lines ----------------
@@ -3093,7 +3276,7 @@ class Evaluator {
   /** What a mate holds by, where the parts are drawn; null while a solid's faces are not listed yet. */
   mateGeom(r: MateRefV, span: Span): MateGeom | null {
     const ref = r.ref;
-    const solids = this.parts.filter((p) => p.name === ref.body);
+    const solids = this.partsNamed(ref.body);
     if (!solids.length) throw new EvalError(`${ref.body} is not a part or component defined above this mate (mates come after the parts they join)`, span);
     switch (ref.t) {
       case "body":
@@ -3128,7 +3311,7 @@ class Evaluator {
     const names = new Set(specs.flatMap((s) => [s.a.body, s.b.body]));
     const lookup = this.opts.faces ?? evalFaces();
     const bodies: MateBody[] = [...names].map((name) => {
-      const solids = this.parts.filter((p) => p.name === name).flatMap((p) => {
+      const solids = this.partsNamed(name).flatMap((p) => {
         const cat = lookup(p.hash, p.name);
         return cat ? [{ cat, xf: p.xf }] : [];
       });
@@ -3189,6 +3372,11 @@ class Evaluator {
         return k;
       },
       members: (name) => {
+        const pieces = this.parts.filter((p) => p.split?.part === name && p.split.piece !== undefined && p.name !== name);
+        if (pieces.length) {
+          this.current?.add(name);
+          return pieces.map((p) => p.name);
+        }
         if (this.defKind.get(name) !== "frame") return undefined;
         this.current?.add(name);
         return [...this.memberOf].filter(([, f]) => f === name).map(([m]) => m);
@@ -3339,6 +3527,8 @@ class Evaluator {
       ...(this.frames.length ? { frames: this.frames } : {}),
       ...(this.mateResult ? { mates: this.mateResult } : {}),
       ...(this.mateQueries.size ? { mateQueries: [...this.mateQueries] } : {}),
+      ...(this.splits.length ? { splits: this.splits } : {}),
+      ...(this.splitQueries.length ? { splitQueries: this.splitQueries } : {}),
     };
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;
@@ -3540,7 +3730,8 @@ export type { V2 };
 export function moveParts(parts: EvalPart[], moves: Map<string, BodyMove>) {
   const remap = new Map<Motion, Motion>();
   for (const p of parts) {
-    const mv = moves.get(p.name);
+    // the pieces and pins of a part made in pieces move with it
+    const mv = moves.get(p.name) ?? (p.split ? moves.get(p.split.part) : undefined);
     if (!mv) continue;
     p.xf = [...p.xf, ...moveXforms(mv)];
     const pt = (q: V3) => movePoint(mv, q);

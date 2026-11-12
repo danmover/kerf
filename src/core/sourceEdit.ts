@@ -249,12 +249,15 @@ export function setBlockLocked(src: string, blockName: string, locked: boolean):
   return src.slice(0, open + 1) + `\n${indent}locked` + src.slice(open + 1);
 }
 
-/** A part, component or frame block by name; a frame member (stand_3) is edited through its frame block (stand). */
+/**
+ * A part, component or frame block by name; a frame member (stand_3) is edited through its frame block (stand), and
+ * a piece of a part made in pieces (bar_2) or its pins (bar_pins) through that part's block (bar).
+ */
 function editableBlock(stmts: Stmt[], name: string) {
   const own = stmts.find((s): s is Extract<Stmt, { k: "part" | "component" | "frame" }> => (s.k === "part" || s.k === "component" || s.k === "frame") && s.name === name);
   if (own) return own;
-  const member = /^(.+)_\d+$/.exec(name);
-  return member ? stmts.find((s): s is Extract<Stmt, { k: "frame" }> => s.k === "frame" && s.name === member[1]) : undefined;
+  const member = /^(.+)_(?:\d+|pins(?:_\d+)?)$/.exec(name);
+  return member ? stmts.find((s): s is Extract<Stmt, { k: "frame" | "part" }> => (s.k === "frame" || (s.k === "part" && s.items.some((i) => i.k === "prop" && i.name === "split"))) && s.name === member[1]) : undefined;
 }
 
 /** The text range to delete for one property: its whole line, or the item and its separating comma. */

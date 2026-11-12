@@ -205,8 +205,32 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     case "mould":
       return buildMould(r, buildPart(r.part), (s) => applyXf(s, r.xf));
     case "part":
-      return applyXf(applyXf(buildPart(r.part, { detail }), r.xf), r.into ?? []);
+      return applyXf(applyXf(r.hash ? sharedPart(r.hash, r.part, detail) : buildPart(r.part, { detail }), r.xf), r.into ?? []);
   }
+}
+
+/**
+ * A part built once for the shapes made from it (the pieces of a split part): the last few, by geometry hash and
+ * detail. Each use gets its own handle on the same solid.
+ */
+const shared = new Map<string, Shape3D>();
+function sharedPart(hash: string, part: PartRecipe, detail: boolean): Shape3D {
+  const key = `${hash}|${detail ? "d" : "f"}`;
+  let s = shared.get(key);
+  if (!s) {
+    s = buildPart(part, { detail });
+    shared.set(key, s);
+    while (shared.size > 4) {
+      const [k, old] = shared.entries().next().value as [string, Shape3D];
+      shared.delete(k);
+      old.delete();
+    }
+  } else {
+    // most recently used last
+    shared.delete(key);
+    shared.set(key, s);
+  }
+  return s.clone() as Shape3D;
 }
 
 /** The flat pattern of a sheet-metal part, from the part as built: every hole and cut-out on its flat regions comes along. */

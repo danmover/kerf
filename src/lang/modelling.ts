@@ -7,6 +7,7 @@ import { Args, toV3 } from "./args";
 import { def, SHAPE_FNS } from "./builtins";
 import { SHEET_FNS } from "./sheet";
 import { MOULD_FNS } from "./mould";
+import { SPLIT_FNS } from "./split";
 import { AERO_FNS } from "./aero";
 import { BLOCK_FNS } from "./blocks";
 import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, Ref, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
@@ -1058,4 +1059,4 @@ export function selMember(s: SelV, name: string): Value | undefined {
   return undefined;
 }
 
-export const MODELLING_FNS: Record<string, Fn> = { ...PROFILE_FNS, ...PATH_FNS, ...SOLID_FNS, ...FEATURE_FNS, ...SELECT_FNS, ...SHEET_FNS, ...MOULD_FNS, ...AERO_FNS };
+export const MODELLING_FNS: Record<string, Fn> = { ...PROFILE_FNS, ...PATH_FNS, ...SOLID_FNS, ...FEATURE_FNS, ...SELECT_FNS, ...SHEET_FNS, ...MOULD_FNS, ...SPLIT_FNS, ...AERO_FNS };

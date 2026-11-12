@@ -95,8 +95,11 @@ export type ShapeRecipe =
   | { t: "unfold"; part: PartRecipe; pieces: { region: ShapeRecipe; xf: Xform[] }[]; bends: ShapeRecipe[] }
   /** one half of a two-part mould round a part (placed by xf), split across the pull at `split` (null: where the part is widest) */
   | { t: "mould"; part: PartRecipe; xf: Xform[]; half: "top" | "bottom"; pull: V3; split: number | null; wall: number; shrink: number; keys: number; sprue: number; vents: number; bolt: number }
-  /** another part's solid where it sits (xf), brought into the frame of the part that uses it (into: that part's placement undone) */
-  | { t: "part"; part: PartRecipe; xf: Xform[]; into?: Xform[] };
+  /**
+   * another part's solid where it sits (xf), brought into the frame of the part that uses it (into: that part's
+   * placement undone); hash: that part's geometry hash, so the kernel builds it once for every piece cut from it
+   */
+  | { t: "part"; part: PartRecipe; xf: Xform[]; into?: Xform[]; hash?: string };
 
 /** Steepest taper an extrusion takes, degrees from straight. */
 export const MAX_TAPER = 80;

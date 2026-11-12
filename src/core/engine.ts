@@ -22,6 +22,8 @@ import { detailImportsLoaded, importsLoaded, modelUsesImports, onImportsChanged,
 import { evalImports } from "../lang/imports";
 import { setEvalFaces } from "../lang/mates";
 import type { FaceCatalogue } from "./mates";
+import { setEvalSplits } from "../lang/split";
+import { splitTable } from "./splitGeom";
 
 export interface MeshEntry {
   preview?: MeshData;
@@ -68,6 +70,9 @@ export const meshes = new Map<string, MeshEntry>();
 const faceCats = new Map<string, FaceCatalogue>();
 const faceCatsByName = new Map<string, FaceCatalogue>();
 setEvalFaces((hash, name) => faceCats.get(hash) ?? faceCatsByName.get(name));
+/** Split parts' cuts and pins, worked out from each part's mesh as built, for the printer chosen in Settings. */
+const splits = splitTable(userMachines);
+setEvalSplits(splits.lookup);
 /** A part's fast mesh (or its fine one), for measuring the design: what each screw clamps. */
 export const meshOf = (hash: string): MeshData | undefined => {
   const e = meshes.get(hash);
@@ -296,6 +301,15 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     if (r.cancelled || get().rev !== rev) return;
   }
   const buildMs = performance.now() - tBuild;
+
+  // a split part is built whole first: its cuts and pins come from that solid, then the design is read again and the
+  // pieces are built
+  if (splits.resolve(model, meshOf)) {
+    const next = evaluate(src, { parsed });
+    if (get().rev !== rev) return;
+    set({ model: next });
+    return runPipeline(rev, src, next, parsed);
+  }
 
   // mates pick from the built solids' faces: have the kernel list any not listed yet, then read the design again
   const mated = await withFaces(rev, src, model, parsed);
